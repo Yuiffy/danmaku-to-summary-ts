@@ -1,3 +1,20 @@
+## 介绍
+
+这个工具先用js脚本将直播弹幕xml文件简化为内容更少的纯文本文件，用于丢入ai工具进行总结。
+
+## 步骤
+
+1. 把弹幕xml放进source/source.xml
+2. 使用src/utils/do_danmaku_to_simple.js
+3. 获得source/output.txt，拿去给ai总结
+
+prompt可参考：
+```
+根据直播弹幕记录来描述直播内容，做成直播repo，让没看这场直播的人也能了解直播内容和有趣的部分。按照时间顺序描述直播中的各个直播内容，对其中观众反应强烈的、有趣的点重点描写。
+```
+
+（下面不用看）
+
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
 ## Getting Started
