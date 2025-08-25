@@ -2,6 +2,18 @@ const fs = require('fs');
 const xml2js = require('xml2js');
 const moment = require('moment');
 
+// 降噪策略参数（可按需调整）
+const KEEP_THRESHOLD = 3;       // 相同内容出现次数 >= 3 的一律保留
+const EMOTE_DROP_MULT = 1.6;    // 纯表情的丢弃加权倍率（>1 更容易被丢弃）
+const MAX_EFFECTIVE_DROP = 95;  // 有上限，避免概率过大
+const DROP_RATE = 70;           // 丢弃比例（0-100）
+
+function isPureEmote(text) {
+    if (!text) return false;
+    return /^\s*\[[^\]]+\]\s*$/.test(text);
+}
+
+
 // 将时间戳转换为 "时:分" 格式
 function convertTimestampToMinute(timestamp) {
     // 转成数字
@@ -68,27 +80,22 @@ function processDanmaku(xmlFile, outputFile, dropRate = 0) {
             }
 
             const danmakuByMinute = {};
-            const danmakus = result.i.d;  // 获取所有 <d> 标签
+            let danmakus = result.i.d || [];
+            if (!Array.isArray(danmakus)) danmakus = [danmakus];
 
+            // 1) 先合并（不做随机丢弃）
             danmakus.forEach(d => {
-                // 随机丢弃弹幕
-                if (!shouldKeepDanmaku(dropRate)) {
-                    return;
-                }
-
                 const attributes = d.$.p.split(",");
-                const timestamp = attributes[4]; // 时间戳
-                const userId = attributes[6]; // 用户ID
-                const content = simplifyEmotes(d._); // 弹幕内容（表情批量精简）
+                const timestamp = attributes[4];  // 绝对时间戳（秒/毫秒都有可能）
+                const userId = attributes[6];     // 用户ID
+                const content = simplifyEmotes(d._); // 表情批量精简
 
                 const formattedMinute = convertTimestampToMinute(timestamp);
 
-                // 如果当前分钟还没有记录，则初始化该分钟
                 if (!danmakuByMinute[formattedMinute]) {
                     danmakuByMinute[formattedMinute] = {};
                 }
 
-                // 合并相同的弹幕内容
                 if (!danmakuByMinute[formattedMinute][content]) {
                     danmakuByMinute[formattedMinute][content] = {
                         count: 0,
@@ -100,31 +107,48 @@ function processDanmaku(xmlFile, outputFile, dropRate = 0) {
                 danmakuByMinute[formattedMinute][content].users.add(userId);
             });
 
-            // console.log("danmakuByMinute=", danmakuByMinute);
+            // 2) 合并后再做“内容级”抽样：高重复保留，纯表情更易被丢弃
+            for (const [minute, danmakuList] of Object.entries(danmakuByMinute)) {
+                for (const [content, info] of Object.entries(danmakuList)) {
+                    const c = info.count;
 
-            // 输出按照分钟分组的弹幕
+                    // 高重复：必保留
+                    if (c >= KEEP_THRESHOLD) continue;
+
+                    // 计算有效丢弃率
+                    let effectiveDrop = dropRate;
+                    if (isPureEmote(content)) {
+                        effectiveDrop = Math.min(MAX_EFFECTIVE_DROP, dropRate * EMOTE_DROP_MULT);
+                    }
+                    // 也可以按出现次数微调（次数越多越不容易丢）
+                    // effectiveDrop = Math.max(0, effectiveDrop - (c - 1) * 10);
+
+                    // 抽样决定是否保留该“内容项”
+                    if (!shouldKeepDanmaku(effectiveDrop)) {
+                        delete danmakuList[content];
+                    }
+                }
+            }
+
+            // 3) 输出
             const output = [];
             for (const [minute, danmakuList] of Object.entries(danmakuByMinute)) {
-                if(Object.keys(danmakuList).length === 0) continue;
-                // console.log("minute=", minute, "danmakuList=", danmakuList);
+                if (Object.keys(danmakuList).length === 0) continue;
                 output.push(minute);
                 for (const [content, info] of Object.entries(danmakuList)) {
                     const userCount = info.users.size;
                     const totalCount = info.count;
 
-                    // 简化输出格式
                     if (userCount === 1 && totalCount === 1) {
-                        // const userLetter = String.fromCharCode(65 + parseInt(userId) % 26); // 生成 A-Z 的用户标识
-                        output.push(`${content}`);  // 1人发1次，省略信息
+                        output.push(`${content}`);
                     } else if (userCount === 1 && totalCount > 1) {
-                        output.push(`${content} *${totalCount}`);  // 1人发多次，简化为 *n
+                        output.push(`${content} *${totalCount}`);
                     } else {
-                        output.push(`${content} *${totalCount}by${userCount}人`);  // 多人发多次
+                        output.push(`${content} *${totalCount}by${userCount}人`);
                     }
                 }
             }
 
-            // 写入到文件
             fs.writeFileSync(outputFile, output.join("\n"), 'utf8');
             console.log(`弹幕内容已成功写入文件: ${outputFile}`);
         });
@@ -132,4 +156,4 @@ function processDanmaku(xmlFile, outputFile, dropRate = 0) {
 }
 
 // 调用函数处理文件，传入丢弃比例
-processDanmaku('../../source/source.xml', '../../source/output.txt', 90);
+processDanmaku('../../source/source.xml', '../../source/output.txt', DROP_RATE);
