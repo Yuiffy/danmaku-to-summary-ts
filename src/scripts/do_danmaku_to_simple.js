@@ -32,6 +32,11 @@ function processDanmaku(xmlFile, outputFile, dropRate = 0) {
             const danmakus = result.i.d;  // 获取所有 <d> 标签
 
             danmakus.forEach(d => {
+                // 随机丢弃弹幕
+                if (!shouldKeepDanmaku(dropRate)) {
+                    return;
+                }
+
                 const attributes = d.$.p.split(",");
                 const timestamp = attributes[4]; // 时间戳
                 const userId = attributes[6]; // 用户ID
@@ -42,11 +47,6 @@ function processDanmaku(xmlFile, outputFile, dropRate = 0) {
                 // 如果当前分钟还没有记录，则初始化该分钟
                 if (!danmakuByMinute[formattedMinute]) {
                     danmakuByMinute[formattedMinute] = {};
-                }
-
-                // 随机丢弃弹幕
-                if (!shouldKeepDanmaku(dropRate)) {
-                    return;
                 }
 
                 // 合并相同的弹幕内容
@@ -61,9 +61,13 @@ function processDanmaku(xmlFile, outputFile, dropRate = 0) {
                 danmakuByMinute[formattedMinute][content].users.add(userId);
             });
 
+            // console.log("danmakuByMinute=", danmakuByMinute);
+
             // 输出按照分钟分组的弹幕
             const output = [];
             for (const [minute, danmakuList] of Object.entries(danmakuByMinute)) {
+                if(Object.keys(danmakuList).length === 0) continue;
+                // console.log("minute=", minute, "danmakuList=", danmakuList);
                 output.push(minute);
                 for (const [content, info] of Object.entries(danmakuList)) {
                     const userCount = info.users.size;
@@ -89,4 +93,4 @@ function processDanmaku(xmlFile, outputFile, dropRate = 0) {
 }
 
 // 调用函数处理文件，传入丢弃比例
-processDanmaku('../../source/source.xml', '../../source/output.txt', 50);
+processDanmaku('../../source/source.xml', '../../source/output.txt', 90);
