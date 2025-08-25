@@ -20,6 +20,37 @@ function shouldKeepDanmaku(dropRate) {
     return Math.random() * 100 >= dropRate;
 }
 
+// —— 批量表情精简 ——
+// 1) 通用规则：把 [系列_系列_..._名字] 抽取为最后一个段落 [名字]
+// 2) 别名精简：可按需扩展
+const EMOTE_ALIAS = {
+    '哈哈': '笑',
+    '妈呀': '惊',
+    '哭死': '哭',
+    '啵啵': '亲',
+    '我在': '在',
+    '流汗了': '流汗',
+    '喜欢': '喜欢',
+    '好听': '好听',
+    '好耶': '好耶',
+    '哇': '惊',
+    '凝视': '凝视',
+    '对吗': '疑问',
+    // 按需继续补充……
+};
+
+function simplifyEmotes(text) {
+    if (!text) return text;
+    // 匹配所有 [ ... ]，把最后一个下划线后的部分拿出来
+    return text.replace(/\[([^\]]+)\]/g, (_m, inner) => {
+        const parts = inner.split('_');
+        let last = parts[parts.length - 1] || inner;
+        // 二次精简（可选）
+        if (EMOTE_ALIAS[last]) last = EMOTE_ALIAS[last];
+        return `[${last}]`;
+    });
+}
+
 // 读取并处理 XML 文件
 function processDanmaku(xmlFile, outputFile, dropRate = 0) {
     const parser = new xml2js.Parser();
@@ -48,7 +79,7 @@ function processDanmaku(xmlFile, outputFile, dropRate = 0) {
                 const attributes = d.$.p.split(",");
                 const timestamp = attributes[4]; // 时间戳
                 const userId = attributes[6]; // 用户ID
-                const content = d._; // 弹幕内容
+                const content = simplifyEmotes(d._); // 弹幕内容（表情批量精简）
 
                 const formattedMinute = convertTimestampToMinute(timestamp);
 
