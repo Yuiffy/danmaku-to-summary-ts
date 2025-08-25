@@ -4,7 +4,15 @@ const moment = require('moment');
 
 // 将时间戳转换为 "时:分" 格式
 function convertTimestampToMinute(timestamp) {
-    return moment.unix(timestamp).format('HH:mm');
+    // 转成数字
+    const ts = Number(timestamp);
+
+    // 判断长度：大于 1e12 基本就是毫秒级（13 位）
+    if (ts > 1e12) {
+        return moment(ts).format('HH:mm'); // 毫秒
+    } else {
+        return moment.unix(ts).format('HH:mm'); // 秒
+    }
 }
 
 // 随机丢弃部分弹幕
