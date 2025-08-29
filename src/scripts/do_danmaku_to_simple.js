@@ -3,14 +3,43 @@ const xml2js = require('xml2js');
 const moment = require('moment');
 
 // 降噪策略参数（可按需调整）
-const KEEP_THRESHOLD = 3;       // 相同内容出现次数 >= 3 的一律保留
-const EMOTE_DROP_MULT = 1.6;    // 纯表情的丢弃加权倍率（>1 更容易被丢弃）
-const MAX_EFFECTIVE_DROP = 95;  // 有上限，避免概率过大
-const DROP_RATE = 70;           // 丢弃比例（0-100）
+const KEEP_THRESHOLD_TEXT = 3;     // 仅“高信号文本”达到该次数才考虑保留
+const KEEP_THRESHOLD_USERS = 3;    // 且需要至少这么多唯一用户参与
+
+const EMOTE_DROP_MULT = 1.8;       // 纯表情丢弃倍率（>1 更易被丢）
+const LOW_SIGNAL_DROP_MULT = 2.2;  // 低信号（含“草/？/哈哈/妈呀”等）丢弃倍率
+
+const COUNT_PROTECT_STEP = 8;      // 次数保护：每多出现1次，丢弃率减少的百分点
+const USERS_PROTECT_STEP = 6;      // 用户保护：每多1个唯一用户，丢弃率减少的百分点
+
+const MAX_EFFECTIVE_DROP = 99;     // 丢弃率上限
+const DROP_RATE = 95;              // 基础丢弃比例（0-100）
 
 function isPureEmote(text) {
     if (!text) return false;
     return /^\s*\[[^\]]+\]\s*$/.test(text);
+}
+
+function isLowSignal(text) {
+    if (!text) return true;
+    if (isPureEmote(text)) return true;
+
+    const t = String(text).trim();
+
+    // 典型低信号：问号/草/哈哈/妈呀/xswl/嗯/哦/啊/喔/唉/看看/好家伙 等
+    const LOW_SIGNAL_SET = new Set(['草', '问号', '？', '??', '???', 'xswl', '看看', '好家伙']);
+
+    if (LOW_SIGNAL_SET.has(t.toLowerCase())) return true;
+
+    // 正则类低信号：大量重复的情绪词或标点
+    if (
+        /^哈+$/.test(t) || /(哈哈){2,}/.test(t) ||
+        /^啊+$/.test(t) || /^哦+$/.test(t) || /^喔+$/.test(t) || /^唉+$/.test(t) ||
+        /^妈(呀|呀呀)+$/.test(t) ||
+        /^？+$/.test(t) || /^\?+$/.test(t)
+    ) return true;
+
+    return false;
 }
 
 
@@ -111,21 +140,47 @@ function processDanmaku(xmlFile, outputFile, dropRate = 0) {
             for (const [minute, danmakuList] of Object.entries(danmakuByMinute)) {
                 for (const [content, info] of Object.entries(danmakuList)) {
                     const c = info.count;
+                    const u = info.users.size;
+                    const emote = isPureEmote(content);
+                    const lowSig = isLowSignal(content); // 包含纯表情/哈哈/草/问号等
 
-                    // 高重复：必保留
-                    if (c >= KEEP_THRESHOLD) continue;
+                    // 仅“高信号文本”才有“必留”资格：次数 & 多用户
+                    if (!lowSig && c >= KEEP_THRESHOLD_TEXT && u >= KEEP_THRESHOLD_USERS) {
+                        continue; // 必留
+                    }
 
                     // 计算有效丢弃率
-                    let effectiveDrop = dropRate;
-                    if (isPureEmote(content)) {
-                        effectiveDrop = Math.min(MAX_EFFECTIVE_DROP, dropRate * EMOTE_DROP_MULT);
-                    }
-                    // 也可以按出现次数微调（次数越多越不容易丢）
-                    // effectiveDrop = Math.max(0, effectiveDrop - (c - 1) * 10);
+                    let effectiveDrop = DROP_RATE;
 
-                    // 抽样决定是否保留该“内容项”
+                    // 低信号内容：提高丢弃概率
+                    if (lowSig) {
+                        effectiveDrop = Math.min(MAX_EFFECTIVE_DROP, effectiveDrop * LOW_SIGNAL_DROP_MULT);
+                    } else if (emote) {
+                        //（严格来说 emote 已被 lowSig 覆盖，这行保底）
+                        effectiveDrop = Math.min(MAX_EFFECTIVE_DROP, effectiveDrop * EMOTE_DROP_MULT);
+                    }
+
+                    // 次数/用户保护（线性降低丢弃率，但不至于“必留”）
+                    effectiveDrop -= (c - 1) * COUNT_PROTECT_STEP;
+                    effectiveDrop -= (u - 1) * USERS_PROTECT_STEP;
+
+                    // 限幅
+                    effectiveDrop = Math.max(0, Math.min(MAX_EFFECTIVE_DROP, effectiveDrop));
+
+                    // 抽样：如果没通过，就从本分钟里删掉该内容
                     if (!shouldKeepDanmaku(effectiveDrop)) {
                         delete danmakuList[content];
+                    }
+                }
+            }
+
+// 可选：一步“事后清理”——对仍然留下的低信号做最低门槛
+            for (const [minute, danmakuList] of Object.entries(danmakuByMinute)) {
+                for (const [content, info] of Object.entries(danmakuList)) {
+                    const c = info.count;
+                    const u = info.users.size;
+                    if (isLowSignal(content) && c < 2 && u < 2) {
+                        delete danmakuList[content]; // 太弱信号，直接去掉
                     }
                 }
             }
