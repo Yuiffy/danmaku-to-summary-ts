@@ -354,6 +354,8 @@ function processDanmaku(xmlFile, outputFile, options = {}) {
                 .filter(idx => Object.keys(byMinute.get(idx).map).length > 0)
                 .sort((a, b) => a - b); // 按时间轴升序
 
+            let lastDay = null;   // <=== 新增：记录上一条的日期
+
             if (DEBUG) {
                 const first = byMinute.get(minuteIndices[0]).m;
                 const last  = byMinute.get(minuteIndices[minuteIndices.length - 1]).m;
@@ -382,7 +384,10 @@ function processDanmaku(xmlFile, outputFile, options = {}) {
                 if (items.length === 0) continue;
 
                 // 分钟标题（自动带日期或不带）
-                output.push(fmtLabel(m, showDateInLabel));
+                const day = m.format('YYYY-MM-DD');
+                const label = (day !== lastDay) ? m.format('MM-DD HH:mm') : m.format('HH:mm');
+                output.push(label);
+                lastDay = day;
 
                 // 内容行
                 for (const it of items) {
