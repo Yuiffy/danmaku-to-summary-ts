@@ -2,7 +2,7 @@ const fs = require('fs');
 const xml2js = require('xml2js');
 const moment = require('moment');
 
-// —— 参数（可按需调整）——
+// ====== 可调参数 ======
 const KEEP_THRESHOLD_TEXT = 3;     // “高信号文本”次数阈值
 const KEEP_THRESHOLD_USERS = 3;    // “高信号文本”唯一用户阈值
 
@@ -13,13 +13,33 @@ const COUNT_PROTECT_STEP = 8;      // 次数保护：每多1次，降低“被�
 const USERS_PROTECT_STEP = 6;      // 用户保护：每多1人，降低“被删倾向”6 个百分点
 
 const MAX_EFFECTIVE_DROP = 99;     // 评分上限约束（最终 clamp）
-const DROP_RATE_BASE = 85;         // 评分基准（不再随机丢弃，仅排序依据）
+const DROP_RATE_BASE = 85;         // 评分基准（仅排序依据，不做随机）
 
-const TARGET_LINES = 1000;         // 全局目标总行数（含分钟标题；可在调用处覆盖）
+const TARGET_LINES = 1000;         // 目标总行数（含分钟标题；可在调用处覆盖）
 const MINUTE_CAP = 5;              // 每分钟最多保留多少条（不含“必留”）
 const MY_USER_ID = '14279';        // 你的用户ID：出现即“必留”
 
-// —— 工具函数 ——
+const DEBUG = false;               // 调试输出（true 可打印时间范围等信息）
+
+// ====== 工具函数 ======
+
+// 将原始时间戳（秒或毫秒）转为【绝对毫秒】与 moment 实例
+function normalizeTs(tsRaw) {
+    const tsNum = Number(tsRaw);
+    if (!Number.isFinite(tsNum)) return null;
+    const ms = tsNum > 1e12 ? tsNum : tsNum * 1000; // 13位≈毫秒，否则按秒
+    return { ms, m: moment(ms) };
+}
+
+// 用“绝对分钟索引”聚合，避免跨天/跨小时合并
+function minuteIndexFromMs(ms) {
+    return Math.floor(ms / 60000); // 自 1970-01-01 起的第 N 分钟
+}
+
+// 输出标签：自动在跨天时显示日期
+function fmtLabel(m, showDate) {
+    return m.format(showDate ? 'MM-DD HH:mm' : 'HH:mm');
+}
 
 // 是否纯表情块（如：[笑]）
 function isPureEmote(text) {
@@ -27,20 +47,19 @@ function isPureEmote(text) {
     return /^\s*\[[^\]]+\]\s*$/.test(text);
 }
 
-// 估算 emoji/符号占比（粗略即可）
+// 估算 emoji/符号占比（粗略）
 function emojiSymbolRatio(text) {
     if (!text) return 0;
     const chars = Array.from(text);
     const nonSpace = chars.filter(ch => !/\s/.test(ch));
     if (nonSpace.length === 0) return 0;
-
-    // 需要 Node 支持 Unicode 属性类
+    // Node 需支持 Unicode 属性类
     const symbolRe = /[\p{Extended_Pictographic}\p{S}\p{P}]/u;
     const symbolCount = nonSpace.reduce((acc, ch) => acc + (symbolRe.test(ch) ? 1 : 0), 0);
     return symbolCount / nonSpace.length;
 }
 
-// 是否为“表情/应援墙”或重复花纹
+// 是否“表情/应援墙”或重复花纹
 function isEmojiHeavyOrPattern(text) {
     const t = String(text || '');
     if (emojiSymbolRatio(t) >= 0.5) return true;
@@ -72,13 +91,6 @@ function isLowSignal(text) {
     ) return true;
 
     return false;
-}
-
-// 将时间戳转换为 "HH:mm"
-function convertTimestampToMinute(timestamp) {
-    const ts = Number(timestamp);
-    if (ts > 1e12) return moment(ts).format('HH:mm'); // 毫秒
-    return moment.unix(ts).format('HH:mm');           // 秒
 }
 
 // —— 批量表情精简 ——
@@ -126,7 +138,7 @@ function informativeBonus(text) {
 
 /**
  * 把“被删倾向”转为“保留分数”（越高越该留）
- * 修正顺序：先乘惩罚 -> 再减保护 -> 最后 clamp -> 转 100-值
+ * 修正顺序：先乘惩罚 -> 再减保护 -> clamp -> 转 100-值 -> 加信息度&我的加成
  */
 function computeKeepScore({ content, count, users, hasMy }) {
     const emote = isPureEmote(content);
@@ -165,7 +177,7 @@ function isMustKeepEntry({ content, count, users, hasMy }) {
  * @param {string} xmlFile
  * @param {string} outputFile
  * @param {object} options
- * @param {number} options.targetLines 期望总行数（分钟标题+内容行），默认 1000
+ * @param {number} options.targetLines 期望总行数（分钟标题+内容行），默认 TARGET_LINES
  * @param {boolean} options.countHeadersInTarget 是否将分钟标题计入目标（默认 true）
  */
 function processDanmaku(xmlFile, outputFile, options = {}) {
@@ -188,94 +200,102 @@ function processDanmaku(xmlFile, outputFile, options = {}) {
                 return;
             }
 
-            // —— 1) 按 “分钟+内容” 聚合 —— //
-            const danmakuByMinute = {};
+            // ====== 1) 按“绝对分钟索引 + 内容”聚合 ======
+            const byMinute = new Map(); // minuteIndex -> { m: moment, map: {content: {count, users:Set}} }
             let danmakus = result.i.d || [];
             if (!Array.isArray(danmakus)) danmakus = [danmakus];
 
-            danmakus.forEach(d => {
-                const attributes = d.$.p.split(",");
-                const timestamp = attributes[4];  // 绝对时间戳（秒/毫秒都有可能）
-                const userId = attributes[6];     // 用户ID（字符串）
-                const content = simplifyEmotes(d._); // 表情精简
+            for (const d of danmakus) {
+                const attributes = String(d.$.p).split(",");
+                const tsNorm = normalizeTs(attributes[4]);
+                if (!tsNorm) continue;
+                const { ms, m } = tsNorm;
+                const minuteIdx = minuteIndexFromMs(ms);
+                const userId = String(attributes[6]);
+                const content = simplifyEmotes(d._);
 
-                const minute = convertTimestampToMinute(timestamp);
-                if (!danmakuByMinute[minute]) danmakuByMinute[minute] = {};
-
-                if (!danmakuByMinute[minute][content]) {
-                    danmakuByMinute[minute][content] = { count: 0, users: new Set() };
+                if (!byMinute.has(minuteIdx)) {
+                    byMinute.set(minuteIdx, { m, map: {} });
                 }
-                danmakuByMinute[minute][content].count += 1;
-                danmakuByMinute[minute][content].users.add(String(userId));
-            });
+                const bucket = byMinute.get(minuteIdx).map;
+                if (!bucket[content]) {
+                    bucket[content] = { count: 0, users: new Set() };
+                }
+                bucket[content].count += 1;
+                bucket[content].users.add(userId);
+            }
 
-            // —— 2) 事后清理：明显弱的低信号直接去掉 —— //
-            for (const [minute, dict] of Object.entries(danmakuByMinute)) {
-                for (const [content, info] of Object.entries(dict)) {
+            if (byMinute.size === 0) {
+                fs.writeFileSync(outputFile, '', 'utf8');
+                console.log(`弹幕内容已成功写入文件: ${outputFile}（无可输出项）`);
+                return;
+            }
+
+            // ====== 2) 事后清理：明显弱的低信号直接去掉 ======
+            for (const [, { map }] of byMinute) {
+                for (const [content, info] of Object.entries(map)) {
                     const c = info.count;
                     const u = info.users.size;
                     if (isLowSignal(content) && c < 2 && u < 2) {
-                        delete dict[content];
+                        delete map[content];
                     }
                 }
             }
 
-            // —— 3) 初步建模：计算每条的分数/必留，并按分钟分桶 —— //
-            const minuteBuckets = new Map(); // minute -> entries[]
-            for (const [minute, dict] of Object.entries(danmakuByMinute)) {
-                for (const [content, info] of Object.entries(dict)) {
+            // ====== 3) 统计天数，决定标签是否带日期 ======
+            const daySet = new Set();
+            for (const [, { m }] of byMinute) {
+                daySet.add(m.format('YYYY-MM-DD'));
+            }
+            const showDateInLabel = daySet.size > 1;
+
+            // ====== 4) 分钟内上限预筛：必留全部 + 最高分补足到 MINUTE_CAP ======
+            const keepSet = new Set(); // key: minuteIdx||content
+
+            for (const [minuteIdx, { map, m }] of byMinute) {
+                const arr = [];
+                for (const [content, info] of Object.entries(map)) {
                     const count = info.count;
                     const users = info.users.size;
                     const hasMy = info.users.has(MY_USER_ID);
                     const mustKeep = isMustKeepEntry({ content, count, users, hasMy });
                     const score = mustKeep ? Number.POSITIVE_INFINITY
                         : computeKeepScore({ content, count, users, hasMy });
-                    const e = { minute, content, count, users, score, mustKeep, hasMy };
-                    if (!minuteBuckets.has(minute)) minuteBuckets.set(minute, []);
-                    minuteBuckets.get(minute).push(e);
+                    arr.push({ minuteIdx, m, content, count, users, hasMy, mustKeep, score });
                 }
-            }
 
-            // 如果全被清空，直接输出空
-            if (minuteBuckets.size === 0) {
-                fs.writeFileSync(outputFile, '', 'utf8');
-                console.log(`弹幕内容已成功写入文件: ${outputFile}（无可输出项）`);
-                return;
-            }
-
-            // —— 4) 分钟内上限预筛：必留全部 + 最高分补足到 MINUTE_CAP —— //
-            const keepSet = new Set(); // key: "minute||content"
-            for (const [minute, arr] of minuteBuckets) {
                 const must = arr.filter(e => e.mustKeep);
-                must.forEach(e => keepSet.add(`${e.minute}||${e.content}`));
+                must.forEach(e => keepSet.add(`${e.minuteIdx}||${e.content}`));
 
                 const rest = arr.filter(e => !e.mustKeep).sort((a, b) => b.score - a.score);
                 const need = Math.max(0, MINUTE_CAP - must.length);
                 for (let i = 0; i < need && i < rest.length; i++) {
-                    keepSet.add(`${rest[i].minute}||${rest[i].content}`);
+                    keepSet.add(`${rest[i].minuteIdx}||${rest[i].content}`);
                 }
             }
 
             // 将未入选的从结构中去掉（先控每分钟质量/数量）
-            for (const [minute, dict] of Object.entries(danmakuByMinute)) {
-                for (const content of Object.keys(dict)) {
-                    const key = `${minute}||${content}`;
-                    if (!keepSet.has(key)) {
-                        delete dict[content];
-                    }
+            for (const [, { map }] of byMinute) {
+                for (const content of Object.keys(map)) {
+                    const key = `${content}`; // 先收集，后删
+                }
+            }
+            for (const [minuteIdx, obj] of byMinute) {
+                const { map } = obj;
+                for (const content of Object.keys(map)) {
+                    const key = `${minuteIdx}||${content}`;
+                    if (!keepSet.has(key)) delete map[content];
                 }
             }
 
-            // —— 5) 若仍超出目标：做全局精细裁（只在 keepSet 内、且非必留的项目里删） —— //
-
-            // 计算当前总行数（基于当前结构）
+            // ====== 5) 若仍超出目标：做全局精细裁（只在 keepSet 内、且非必留的项目里删） ======
             const currentTotalLines = () => {
                 let lines = 0;
-                for (const [minute, dict] of Object.entries(danmakuByMinute)) {
-                    const n = Object.keys(dict).length;
+                for (const [, { map }] of byMinute) {
+                    const n = Object.keys(map).length;
                     if (n > 0) {
+                        lines += n; // 内容行
                         if (countHeadersInTarget) lines += 1; // 分钟标题
-                        lines += n;                            // 内容行
                     }
                 }
                 return lines;
@@ -284,19 +304,18 @@ function processDanmaku(xmlFile, outputFile, options = {}) {
             let totalLines = currentTotalLines();
 
             if (totalLines > targetLines) {
-                // 重新构造“可删除项”：仅限 keepSet 内的非必留项
                 const removable = [];
-                for (const [minute, dict] of Object.entries(danmakuByMinute)) {
-                    for (const [content, info] of Object.entries(dict)) {
-                        const key = `${minute}||${content}`;
-                        if (!keepSet.has(key)) continue; // 理论上已被删除，不会出现
+                for (const [minuteIdx, { map, m }] of byMinute) {
+                    for (const [content, info] of Object.entries(map)) {
+                        const key = `${minuteIdx}||${content}`;
+                        if (!keepSet.has(key)) continue; // 理论上不会进来
                         const count = info.count;
                         const users = info.users.size;
                         const hasMy = info.users.has(MY_USER_ID);
                         const mustKeep = isMustKeepEntry({ content, count, users, hasMy });
                         if (mustKeep) continue;
                         const score = computeKeepScore({ content, count, users, hasMy });
-                        removable.push({ minute, content, count, users, score });
+                        removable.push({ minuteIdx, m, content, count, users, score });
                     }
                 }
 
@@ -305,43 +324,50 @@ function processDanmaku(xmlFile, outputFile, options = {}) {
                     if (a.score !== b.score) return a.score - b.score; // 分数低先删
                     if (a.count !== b.count) return a.count - b.count; // 次数少先删
                     if (a.users !== b.users) return a.users - b.users; // 用户少先删
-                    if (a.minute !== b.minute) return a.minute.localeCompare(b.minute);
+                    if (a.minuteIdx !== b.minuteIdx) return a.minuteIdx - b.minuteIdx;
                     return String(a.content).localeCompare(String(b.content));
                 });
 
                 for (const e of removable) {
                     if (totalLines <= targetLines) break;
-                    const { minute, content } = e;
-                    if (!danmakuByMinute[minute] || !danmakuByMinute[minute][content]) continue;
+                    const { minuteIdx, content } = e;
+                    const bucket = byMinute.get(minuteIdx);
+                    if (!bucket || !bucket.map[content]) continue;
 
-                    // 删除该聚合项
-                    delete danmakuByMinute[minute][content];
+                    delete bucket.map[content];
                     totalLines -= 1; // 内容行 -1
-
-                    // 若该分钟已无内容，标题行也消失
-                    if (Object.keys(danmakuByMinute[minute]).length === 0) {
-                        if (countHeadersInTarget) totalLines -= 1;
+                    if (Object.keys(bucket.map).length === 0) {
+                        if (countHeadersInTarget) totalLines -= 1; // 该分钟标题也消失
                     }
                 }
 
-                // 若删到极限仍超标（全是必留），提示一下
                 if (totalLines > targetLines) {
                     console.warn(
                         `提示：必留项过多，无法收缩到目标 ${targetLines} 行；最终约为 ${totalLines} 行。` +
-                        `如需更强收缩，调高 KEEP_THRESHOLD_*，提高 LOW_SIGNAL_DROP_MULT 或降低 MINUTE_CAP。`
+                        `可调高 KEEP_THRESHOLD_*、提高 LOW_SIGNAL_DROP_MULT 或降低 MINUTE_CAP。`
                     );
                 }
             }
 
-            // —— 6) 输出（时间升序，同一分钟内按 count/用户降序） —— //
-            const sortedMinutes = Object.keys(danmakuByMinute)
-                .filter(m => Object.keys(danmakuByMinute[m]).length > 0)
-                .sort((a, b) => a.localeCompare(b));
+            // ====== 6) 输出（按真实时间顺序） ======
+            const minuteIndices = Array.from(byMinute.keys())
+                .filter(idx => Object.keys(byMinute.get(idx).map).length > 0)
+                .sort((a, b) => a - b); // 按时间轴升序
+
+            if (DEBUG) {
+                const first = byMinute.get(minuteIndices[0]).m;
+                const last  = byMinute.get(minuteIndices[minuteIndices.length - 1]).m;
+                console.log(
+                    `[DEBUG] minutes: ${minuteIndices.length}, ` +
+                    `range: ${first.format('YYYY-MM-DD HH:mm')} ~ ${last.format('YYYY-MM-DD HH:mm')}, ` +
+                    `totalLines=${totalLines}`
+                );
+            }
 
             const output = [];
-            for (const minute of sortedMinutes) {
-                const dict = danmakuByMinute[minute];
-                const items = Object.entries(dict)
+            for (const idx of minuteIndices) {
+                const { m, map } = byMinute.get(idx);
+                const items = Object.entries(map)
                     .map(([content, info]) => ({
                         content,
                         count: info.count,
@@ -355,8 +381,8 @@ function processDanmaku(xmlFile, outputFile, options = {}) {
 
                 if (items.length === 0) continue;
 
-                // 分钟标题
-                output.push(minute);
+                // 分钟标题（自动带日期或不带）
+                output.push(fmtLabel(m, showDateInLabel));
 
                 // 内容行
                 for (const it of items) {
@@ -378,8 +404,8 @@ function processDanmaku(xmlFile, outputFile, options = {}) {
     });
 }
 
-// —— 调用示例 ——
-// 期望总行数“包含分钟标题行”；想要 1000 行左右：
+// ====== 调用示例 ======
+// 期望总行数“包含分钟标题行”；目标 1000 行左右：
 processDanmaku(
     '../../source/source.xml',
     '../../source/output.txt',
