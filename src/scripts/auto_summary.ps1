@@ -4,6 +4,7 @@
 # ===================================================
 
 param (
+    [Parameter(ValueFromRemainingArguments=$true)]
     [string[]]$InputPaths
 )
 
@@ -13,7 +14,7 @@ $ScriptRoot = $PSScriptRoot
 
 # 1. Calculate path to Python script (Assuming it is in the project root, 2 levels up)
 # Adjust "..\.." if your python file is somewhere else
-$PythonScript = Join-Path $ScriptRoot "..\..\fast_sub_batch_fix.py"
+$PythonScript = Join-Path $ScriptRoot "..\..\..\..\fun\whisper-my-project\fast_sub_batch_fix.py"
 
 # 2. Calculate path to Node.js script (Assuming it is in the same folder as this ps1)
 $NodeScript = Join-Path $ScriptRoot "do_fusion_summary.js"
@@ -37,7 +38,7 @@ $VideoFiles = @()
 $XmlFiles = @()
 $FilesToProcess = @()
 
-$VideoExts = @('.mp4', '.flv', '.mkv', '.ts', '.mov')
+$VideoExts = @('.mp4', '.flv', '.mkv', '.ts', '.mov', '.m4a')
 
 Write-Host "-> Analyzing input files..." -ForegroundColor Gray
 
