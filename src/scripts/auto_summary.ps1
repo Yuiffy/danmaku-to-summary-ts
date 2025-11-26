@@ -1,6 +1,6 @@
 # ===================================================
-#   Auto Live Summary Pipeline (English Version)
-#   Usage: Drag video (.mp4) + danmaku (.xml) onto the .bat file
+#   DDTV 自动切片流水线 (v5080 Pro)
+#   把视频+XML拖进来，自动转字幕 + 自动浓缩摘要
 # ===================================================
 
 param (
@@ -8,15 +8,16 @@ param (
     [string[]]$InputPaths
 )
 
-# --- Path Configuration ---
-# $PSScriptRoot is "D:\workspace\myrepo\danmaku-to-summary-ts\src\scripts"
+# 1. 动态获取当前脚本所在目录
 $ScriptRoot = $PSScriptRoot
+$PyRoot = Join-Path $ScriptRoot "..\..\..\..\fun\whisper-my-project"
 
-# 1. Calculate path to Python script (Assuming it is in the project root, 2 levels up)
-# Adjust "..\.." if your python file is somewhere else
-$PythonScript = Join-Path $ScriptRoot "..\..\..\..\fun\whisper-my-project\fast_sub_batch_fix.py"
+# 2. 默认 Python 脚本就在旁边 (batch_whisper.py)
+$PythonScript = Join-Path $PyRoot "batch_whisper.py"
+# 如果你执意要用原来的名字，改这里：
+# $PythonScript = Join-Path $ScriptRoot "fast_sub_batch_fix.py"
 
-# 2. Calculate path to Node.js script (Assuming it is in the same folder as this ps1)
+# 3. 默认 Node.js 脚本也在旁边 (highlight_cleaner.js)
 $NodeScript = Join-Path $ScriptRoot "do_fusion_summary.js"
 
 # Force UTF-8 output
@@ -24,7 +25,7 @@ $NodeScript = Join-Path $ScriptRoot "do_fusion_summary.js"
 
 Clear-Host
 Write-Host "============================================" -ForegroundColor Cyan
-Write-Host "      Live Summary Pipeline Starting...     " -ForegroundColor Yellow
+Write-Host "      Live Summary 自动化工厂 (Watchdog 启用)       " -ForegroundColor Yellow
 Write-Host "============================================" -ForegroundColor Cyan
 
 if ($InputPaths.Count -eq 0) {
@@ -69,8 +70,9 @@ foreach ($VideoPath in $VideoFiles) {
     # Check python script existence
     if (-not (Test-Path $PythonScript)) {
         Write-Host "X Error: Python script not found at: $PythonScript" -ForegroundColor Red
-        Write-Host "Please check the path configuration in the ps1 file." -ForegroundColor Yellow
-        continue
+        Write-Host "Please place 'batch_whisper.py' in the same folder as this script." -ForegroundColor Yellow
+        Read-Host "Press Enter to exit..."
+        exit
     }
 
     if (-not (Test-Path $SrtPath)) {
@@ -119,5 +121,4 @@ if ($FilesToProcess.Count -gt 0) {
 }
 Write-Host "============================================" -ForegroundColor Cyan
 
-# 这一行就是之前报错的地方，现在改成英文了
 Read-Host "Press Enter to close..."
