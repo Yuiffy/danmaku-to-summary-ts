@@ -41,7 +41,35 @@ app.post('/ddtv', (req, res) => {
     // 🔥 核心：打印完整的 Payload 结构，让你看清楚格式
     // 可能会很长，但这是你现在需要的
     console.log(`📦 完整数据结构:`);
-    console.log(JSON.stringify(payload, null, 2));
+
+    // 对于StopLiveEvent，过滤掉详细的弹幕内容，只显示数量统计
+    let displayPayload = payload;
+    if (cmd === 'StopLiveEvent' && payload.data?.DownInfo?.DanmuMessage?.LiveChatListener?.DanmuMessage) {
+        const danmuMsg = payload.data.DownInfo.DanmuMessage.LiveChatListener.DanmuMessage;
+        const filteredPayload = JSON.parse(JSON.stringify(payload)); // 深拷贝
+
+        if (filteredPayload.data?.DownInfo?.DanmuMessage?.LiveChatListener?.DanmuMessage) {
+            const filteredDanmuMsg = filteredPayload.data.DownInfo.DanmuMessage.LiveChatListener.DanmuMessage;
+
+            // 只保留数量统计，不显示具体内容
+            if (Array.isArray(danmuMsg.Danmu)) {
+                filteredDanmuMsg.Danmu = `[${danmuMsg.Danmu.length}条弹幕]`;
+            }
+            if (Array.isArray(danmuMsg.SuperChat)) {
+                filteredDanmuMsg.SuperChat = `[${danmuMsg.SuperChat.length}条SC]`;
+            }
+            if (Array.isArray(danmuMsg.Gift)) {
+                filteredDanmuMsg.Gift = `[${danmuMsg.Gift.length}条礼物]`;
+            }
+            if (Array.isArray(danmuMsg.GuardBuy)) {
+                filteredDanmuMsg.GuardBuy = `[${danmuMsg.GuardBuy.length}条舰长]`;
+            }
+        }
+
+        displayPayload = filteredPayload;
+    }
+
+    console.log(JSON.stringify(displayPayload, null, 2));
     console.log(`▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n`);
 
     // ============================================================
@@ -77,6 +105,64 @@ app.post('/ddtv', (req, res) => {
     // ------------------------------------------------------------
     // 筛选与处理
     // ------------------------------------------------------------
+
+    // 特殊处理SaveBulletScreenFile事件 - 虽然没有完整的视频文件列表，但有xml和original视频路径
+    if (videoFiles.length === 0 && cmd === 'SaveBulletScreenFile') {
+        // 提取xml文件
+        if (Array.isArray(downloadFileList?.DanmuFile)) {
+            xmlFiles = downloadFileList.DanmuFile.filter(f => f.endsWith('.xml'));
+        }
+
+        // 从CurrentOperationVideoFile推导fix视频路径
+        const currentOpVideo = downloadFileList?.CurrentOperationVideoFile;
+        if (currentOpVideo && xmlFiles.length > 0) {
+            const originalVideoPath = path.normalize(currentOpVideo);
+            const fixVideoPath = originalVideoPath.replace('_original.mp4', '_fix.mp4');
+
+            console.log(`🔄 SaveBulletScreenFile事件：等待fix视频生成... (${path.basename(fixVideoPath)})`);
+
+            // 异步检查fix视频文件
+            setTimeout(() => {
+                if (fs.existsSync(fixVideoPath)) {
+                    console.log(`✅ 发现fix视频文件，开始处理: ${path.basename(fixVideoPath)}`);
+
+                    if (processedFiles.has(fixVideoPath)) {
+                        console.log(`⚠️ 跳过：文件已在处理队列中 -> ${path.basename(fixVideoPath)}`);
+                        return;
+                    }
+
+                    // 加入去重缓存
+                    processedFiles.add(fixVideoPath);
+                    setTimeout(() => processedFiles.delete(fixVideoPath), 3600 * 1000);
+
+                    // 启动处理流程
+                    const targetXml = path.normalize(xmlFiles[0]);
+                    const psArgs = [
+                        '-NoProfile',
+                        '-ExecutionPolicy', 'Bypass',
+                        '-File', PS_SCRIPT_PATH,
+                        fixVideoPath
+                    ];
+                    if (targetXml) psArgs.push(targetXml);
+
+                    console.log('🚀 启动SaveBulletScreenFile处理流程...');
+
+                    const ps = spawn('powershell.exe', psArgs, {
+                        cwd: path.dirname(PS_SCRIPT_PATH),
+                        windowsHide: true
+                    });
+
+                    ps.stdout.on('data', (d) => console.log(`[PS] ${d.toString().trim()}`));
+                    ps.stderr.on('data', (d) => console.error(`[PS ERR] ${d.toString().trim()}`));
+                    ps.on('close', (code) => console.log(`🏁 SaveBulletScreenFile流程结束 (Exit: ${code})`));
+                } else {
+                    console.log(`❌ 超时未发现fix视频文件，跳过处理: ${path.basename(fixVideoPath)}`);
+                }
+            }, 3000); // 等待3秒
+
+            return res.send('Processing SaveBulletScreenFile (waiting for fix file)');
+        }
+    }
 
     if (videoFiles.length === 0) {
         console.log('❌ 忽略：未发现视频文件 (可能是配置变更或单纯的状态心跳)');
