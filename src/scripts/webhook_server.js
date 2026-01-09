@@ -42,31 +42,48 @@ app.post('/ddtv', (req, res) => {
     // 可能会很长，但这是你现在需要的
     console.log(`📦 完整数据结构:`);
 
-    // 对于StopLiveEvent，过滤掉详细的弹幕内容，只显示数量统计
+    // 对于包含弹幕详细内容的StopLiveEvent和ModifyRoomRecordingConfiguration，过滤掉详细的弹幕内容，只显示数量统计
     let displayPayload = payload;
-    if (cmd === 'StopLiveEvent' && payload.data?.DownInfo?.DanmuMessage?.LiveChatListener?.DanmuMessage) {
-        const danmuMsg = payload.data.DownInfo.DanmuMessage.LiveChatListener.DanmuMessage;
-        const filteredPayload = JSON.parse(JSON.stringify(payload)); // 深拷贝
+    if (cmd === 'StopLiveEvent' || cmd === 'ModifyRoomRecordingConfiguration') {
+        let danmuMsgPath = null;
 
-        if (filteredPayload.data?.DownInfo?.DanmuMessage?.LiveChatListener?.DanmuMessage) {
-            const filteredDanmuMsg = filteredPayload.data.DownInfo.DanmuMessage.LiveChatListener.DanmuMessage;
-
-            // 只保留数量统计，不显示具体内容
-            if (Array.isArray(danmuMsg.Danmu)) {
-                filteredDanmuMsg.Danmu = `[${danmuMsg.Danmu.length}条弹幕]`;
-            }
-            if (Array.isArray(danmuMsg.SuperChat)) {
-                filteredDanmuMsg.SuperChat = `[${danmuMsg.SuperChat.length}条SC]`;
-            }
-            if (Array.isArray(danmuMsg.Gift)) {
-                filteredDanmuMsg.Gift = `[${danmuMsg.Gift.length}条礼物]`;
-            }
-            if (Array.isArray(danmuMsg.GuardBuy)) {
-                filteredDanmuMsg.GuardBuy = `[${danmuMsg.GuardBuy.length}条舰长]`;
-            }
+        // StopLiveEvent的路径：data.DownInfo.DanmuMessage.LiveChatListener.DanmuMessage
+        if (payload.data?.DownInfo?.DanmuMessage?.LiveChatListener?.DanmuMessage) {
+            danmuMsgPath = payload.data.DownInfo.DanmuMessage.LiveChatListener.DanmuMessage;
+        }
+        // ModifyRoomRecordingConfiguration的路径：data.DownInfo.LiveChatListener.DanmuMessage
+        else if (payload.data?.DownInfo?.LiveChatListener?.DanmuMessage) {
+            danmuMsgPath = payload.data.DownInfo.LiveChatListener.DanmuMessage;
         }
 
-        displayPayload = filteredPayload;
+        if (danmuMsgPath) {
+            const filteredPayload = JSON.parse(JSON.stringify(payload)); // 深拷贝
+            let filteredDanmuMsg = null;
+
+            if (filteredPayload.data?.DownInfo?.DanmuMessage?.LiveChatListener?.DanmuMessage) {
+                filteredDanmuMsg = filteredPayload.data.DownInfo.DanmuMessage.LiveChatListener.DanmuMessage;
+            } else if (filteredPayload.data?.DownInfo?.LiveChatListener?.DanmuMessage) {
+                filteredDanmuMsg = filteredPayload.data.DownInfo.LiveChatListener.DanmuMessage;
+            }
+
+            if (filteredDanmuMsg) {
+                // 只保留数量统计，不显示具体内容
+                if (Array.isArray(danmuMsgPath.Danmu)) {
+                    filteredDanmuMsg.Danmu = `[${danmuMsgPath.Danmu.length}条弹幕]`;
+                }
+                if (Array.isArray(danmuMsgPath.SuperChat)) {
+                    filteredDanmuMsg.SuperChat = `[${danmuMsgPath.SuperChat.length}条SC]`;
+                }
+                if (Array.isArray(danmuMsgPath.Gift)) {
+                    filteredDanmuMsg.Gift = `[${danmuMsgPath.Gift.length}条礼物]`;
+                }
+                if (Array.isArray(danmuMsgPath.GuardBuy)) {
+                    filteredDanmuMsg.GuardBuy = `[${danmuMsgPath.GuardBuy.length}条舰长]`;
+                }
+            }
+
+            displayPayload = filteredPayload;
+        }
     }
 
     console.log(JSON.stringify(displayPayload, null, 2));
