@@ -123,4 +123,16 @@ if ($FilesToProcess.Count -gt 0) {
 }
 Write-Host "============================================" -ForegroundColor Cyan
 
-Read-Host "Press Enter to close..."
+# 检查是否在非交互模式下运行（通过环境变量判断）
+if ($env:NODE_ENV -eq 'automation' -or $env:CI) {
+    # 非交互模式，直接退出
+    exit 0
+} else {
+    # 交互模式，等待用户输入
+    try {
+        Read-Host "Press Enter to close..."
+    } catch {
+        # 如果无法读取输入（非交互模式），直接退出
+        exit 0
+    }
+}

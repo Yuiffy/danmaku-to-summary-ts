@@ -166,7 +166,8 @@ app.post('/ddtv', (req, res) => {
 
                     const ps = spawn('powershell.exe', psArgs, {
                         cwd: path.dirname(PS_SCRIPT_PATH),
-                        windowsHide: true
+                        windowsHide: true,
+                        env: { ...process.env, NODE_ENV: 'automation' } // 标记为自动化环境
                     });
 
                     let saveTimeout = setTimeout(() => {
@@ -243,7 +244,8 @@ app.post('/ddtv', (req, res) => {
 
     const ps = spawn('powershell.exe', psArgs, {
         cwd: path.dirname(PS_SCRIPT_PATH),
-        windowsHide: true
+        windowsHide: true,
+        env: { ...process.env, NODE_ENV: 'automation' } // 标记为自动化环境
     });
 
     let processTimeout = setTimeout(() => {
