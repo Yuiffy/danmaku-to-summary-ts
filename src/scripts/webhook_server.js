@@ -6,6 +6,9 @@ const fs = require('fs');
 const app = express();
 const PORT = 15121;
 
+// 防止重复处理的缓存 Set (保存最近处理过的文件路径)
+const processedFiles = new Set();
+
 app.use(express.json());
 
 // PowerShell 脚本路径
@@ -14,106 +17,121 @@ const PS_SCRIPT_PATH = path.join(__dirname, 'auto_summary.ps1');
 app.post('/ddtv', (req, res) => {
     const payload = req.body;
 
-    // 1. 打印完整日志，方便观察真实结构
-    console.log(`\n[${new Date().toLocaleString()}] 收到 Webhook 请求:`);
-    console.log(JSON.stringify(payload, null, 2));
-
+    // 1. 打印简略日志，避免刷屏
+    const cmd = payload.cmd || 'Unknown';
+    console.log(`\n[${new Date().toLocaleString()}] 收到 Webhook: ${cmd}`);
+    
     // ============================================================
-    // 参考 Janet-Baker/webhookGo 的解析逻辑
+    // 核心修改：适配你的日志结构 (data -> DownInfo -> DownloadFileList)
     // ============================================================
     
-    // 检查 hook_type 是否为 DDTV (通常是 "DDTV")
-    if (payload.hook_type && payload.hook_type !== 'DDTV') {
-        console.log('-> 忽略：非 DDTV 类型 Webhook');
-        return res.send('Ignored: Not DDTV hook_type');
-    }
+    let videoFiles = [];
+    let xmlFiles = [];
 
-    // 检查是否有 files 数组 (这是核心判断依据)
-    const files = payload.files;
-    if (!files || !Array.isArray(files) || files.length === 0) {
-        console.log('-> 忽略：Payload 中没有文件列表 (可能是开播/下播事件)');
-        return res.send('Ignored: No files in payload');
-    }
+    // 尝试从不同的位置提取文件列表
+    const downInfo = payload.data?.DownInfo;
+    const downloadFileList = downInfo?.DownloadFileList;
 
-    // 2. 从 files 数组中分离视频和弹幕
-    let videoPath = null;
-    let xmlPath = null;
-
-    // 常见的视频后缀
-    const videoExtensions = ['.mp4', '.flv', '.mkv', '.ts'];
-
-    files.forEach(file => {
-        const filePath = file.path; // Go结构体中是 Path 字段
-        const ext = path.extname(filePath).toLowerCase();
-
-        if (videoExtensions.includes(ext)) {
-            videoPath = filePath;
-        } else if (ext === '.xml') {
-            xmlPath = filePath;
+    if (downloadFileList) {
+        // 提取视频 (优先找 .mp4)
+        if (Array.isArray(downloadFileList.VideoFile)) {
+            videoFiles = downloadFileList.VideoFile.filter(f => f.endsWith('.mp4'));
         }
-    });
-
-    // 3. 校验逻辑
-    if (!videoPath) {
-        console.log('-> 忽略：文件列表中未找到视频文件');
-        return res.send('Ignored: No video file found');
+        // 提取弹幕
+        if (Array.isArray(downloadFileList.DanmuFile)) {
+            xmlFiles = downloadFileList.DanmuFile.filter(f => f.endsWith('.xml'));
+        }
+    } else if (payload.files) {
+        // 兼容旧版/通用结构
+        payload.files.forEach(f => {
+            if (f.path.endsWith('.mp4')) videoFiles.push(f.path);
+            if (f.path.endsWith('.xml')) xmlFiles.push(f.path);
+        });
     }
 
-    console.log(`-> 🎯 捕获目标:`);
-    console.log(`   视频: ${videoPath}`);
-    console.log(`   弹幕: ${xmlPath || '未在 Payload 中找到 (将尝试自动推导)'}`);
+    // ============================================================
+    // 2. 筛选最佳视频文件
+    // ============================================================
+    
+    if (videoFiles.length === 0) {
+        console.log('-> 忽略：当前事件中未找到视频文件 (可能是下播/仅弹幕保存)');
+        return res.send('Ignored: No video files');
+    }
 
-    // 如果 Payload 里没带 XML，尝试在本地通过文件名推导一下
-    if (!xmlPath) {
-        const potentialXml = videoPath.replace(/\.(mp4|flv|mkv|ts)$/i, '.xml');
+    // 你的日志里同时出现了 original.mp4 和 fix.mp4
+    // 逻辑：如果有 fix.mp4 (修复版)，优先用它；否则用 original.mp4
+    let targetVideo = videoFiles.find(f => f.includes('fix.mp4')) || videoFiles[0];
+
+    // 标准化路径 (Windows 斜杠转换)
+    targetVideo = path.normalize(targetVideo);
+
+    // ============================================================
+    // 3. 关键：去重检查
+    // ============================================================
+    
+    if (processedFiles.has(targetVideo)) {
+        console.log(`-> 跳过：该文件已在处理队列中或已处理 -> ${path.basename(targetVideo)}`);
+        return res.send('Ignored: Already processed');
+    }
+
+    // ============================================================
+    // 4. 寻找匹配的 XML
+    // ============================================================
+    
+    // 优先从 Payload 里找
+    let targetXml = xmlFiles.length > 0 ? path.normalize(xmlFiles[0]) : null;
+
+    // 如果 Payload 里没弹幕，但在本地硬盘能推导出来，也可以用
+    if (!targetXml) {
+        const potentialXml = targetVideo.replace(/\.(mp4|flv|mkv|ts)$/i, '.xml'); // 也可以尝试 _1.xml
+        // 这里只是简单推导，你的 ps1 脚本其实也会自己找，所以这里传 null 也没关系
         if (fs.existsSync(potentialXml)) {
-            xmlPath = potentialXml;
-            console.log(`   推导: 本地发现同名 XML -> ${xmlPath}`);
+            targetXml = potentialXml;
+        } else {
+            // 尝试 _1.xml (你的日志里弹幕经常带 _1)
+            const potentialXml1 = targetVideo.replace(/\.(mp4|flv|mkv|ts)$/i, '_1.xml');
+            if(fs.existsSync(potentialXml1)) targetXml = potentialXml1;
         }
     }
 
+    console.log(`-> 🎯 命中目标: ${path.basename(targetVideo)}`);
+    if(targetXml) console.log(`   关联弹幕: ${path.basename(targetXml)}`);
+
     // ============================================================
-    // 4. 调用 PowerShell 自动化流程
+    // 5. 启动处理
     // ============================================================
+
+    // 加入缓存，防止重复触发
+    processedFiles.add(targetVideo);
+    
+    // 1小时后清除缓存，防止内存无限增长 (虽然 Set 存字符串占不了多少内存)
+    setTimeout(() => processedFiles.delete(targetVideo), 3600 * 1000);
+
     const psArgs = [
         '-NoProfile',
         '-ExecutionPolicy', 'Bypass',
         '-File', PS_SCRIPT_PATH,
-        videoPath // 始终传入视频路径作为主要参数
+        targetVideo
     ];
 
-    // 如果有 xml，作为第二个参数传入，或者让 ps1 脚本自己去同级目录找
-    // 这里我们将 XML 也传进去，确保你的 PS 脚本能收到
-    if (xmlPath) {
-        psArgs.push(xmlPath);
+    if (targetXml) {
+        psArgs.push(targetXml);
     }
 
-    console.log('-> 🚀 正在启动处理脚本...');
+    console.log('-> 🚀 启动 PowerShell 流水线...');
 
     const ps = spawn('powershell.exe', psArgs, {
-        cwd: path.dirname(PS_SCRIPT_PATH), // 确保工作目录正确
-        windowsHide: true // 隐藏黑框
+        cwd: path.dirname(PS_SCRIPT_PATH),
+        windowsHide: true
     });
 
-    ps.stdout.on('data', (data) => {
-        // 转换 Buffer 为字符串并处理乱码 (Nodejs console 默认 utf8, PS 可能是 GBK，视情况而定)
-        console.log(`[PS] ${data.toString().trim()}`);
-    });
+    ps.stdout.on('data', (data) => console.log(`[PS] ${data.toString().trim()}`));
+    ps.stderr.on('data', (data) => console.error(`[PS ERR] ${data.toString().trim()}`));
+    ps.on('close', (code) => console.log(`-> ✅ 任务完成，退出码: ${code}`));
 
-    ps.stderr.on('data', (data) => {
-        console.error(`[PS ERR] ${data.toString().trim()}`);
-    });
-
-    ps.on('close', (code) => {
-        console.log(`-> ✅ 任务结束，退出码: ${code}`);
-    });
-
-    res.status(200).send('Processing Started');
+    res.send('Processing Started');
 });
 
 app.listen(PORT, () => {
-    console.log(`\n==================================================`);
-    console.log(`DDTV 监听服务已启动: http://localhost:${PORT}/ddtv`);
-    console.log(`等待 DDTV5 录制完成回调...`);
-    console.log(`==================================================\n`);
+    console.log(`DDTV 监听服务 (Deep Fix版) 已启动: http://localhost:${PORT}/ddtv`);
 });
