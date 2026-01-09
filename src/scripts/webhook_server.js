@@ -42,49 +42,68 @@ app.post('/ddtv', (req, res) => {
     // 可能会很长，但这是你现在需要的
     console.log(`📦 完整数据结构:`);
 
-    // 对于包含弹幕详细内容的StopLiveEvent和ModifyRoomRecordingConfiguration，过滤掉详细的弹幕内容，只显示数量统计
-    let displayPayload = payload;
-    if (cmd === 'StopLiveEvent' || cmd === 'ModifyRoomRecordingConfiguration') {
-        let danmuMsgPath = null;
-
-        // StopLiveEvent的路径：data.DownInfo.DanmuMessage.LiveChatListener.DanmuMessage
-        if (payload.data?.DownInfo?.DanmuMessage?.LiveChatListener?.DanmuMessage) {
-            danmuMsgPath = payload.data.DownInfo.DanmuMessage.LiveChatListener.DanmuMessage;
+    // 通用函数：压缩数组显示（第一条、统计、最后一条）
+    function compressArray(arr, fieldName) {
+        if (!Array.isArray(arr) || arr.length === 0) {
+            return arr;
         }
-        // ModifyRoomRecordingConfiguration的路径：data.DownInfo.LiveChatListener.DanmuMessage
-        else if (payload.data?.DownInfo?.LiveChatListener?.DanmuMessage) {
-            danmuMsgPath = payload.data.DownInfo.LiveChatListener.DanmuMessage;
+        if (arr.length === 1) {
+            return arr; // 只有1条，显示完整
         }
-
-        if (danmuMsgPath) {
-            const filteredPayload = JSON.parse(JSON.stringify(payload)); // 深拷贝
-            let filteredDanmuMsg = null;
-
-            if (filteredPayload.data?.DownInfo?.DanmuMessage?.LiveChatListener?.DanmuMessage) {
-                filteredDanmuMsg = filteredPayload.data.DownInfo.DanmuMessage.LiveChatListener.DanmuMessage;
-            } else if (filteredPayload.data?.DownInfo?.LiveChatListener?.DanmuMessage) {
-                filteredDanmuMsg = filteredPayload.data.DownInfo.LiveChatListener.DanmuMessage;
-            }
-
-            if (filteredDanmuMsg) {
-                // 只保留数量统计，不显示具体内容
-                if (Array.isArray(danmuMsgPath.Danmu)) {
-                    filteredDanmuMsg.Danmu = `[${danmuMsgPath.Danmu.length}条弹幕]`;
-                }
-                if (Array.isArray(danmuMsgPath.SuperChat)) {
-                    filteredDanmuMsg.SuperChat = `[${danmuMsgPath.SuperChat.length}条SC]`;
-                }
-                if (Array.isArray(danmuMsgPath.Gift)) {
-                    filteredDanmuMsg.Gift = `[${danmuMsgPath.Gift.length}条礼物]`;
-                }
-                if (Array.isArray(danmuMsgPath.GuardBuy)) {
-                    filteredDanmuMsg.GuardBuy = `[${danmuMsgPath.GuardBuy.length}条舰长]`;
-                }
-            }
-
-            displayPayload = filteredPayload;
-        }
+        // >=2条：显示第一条、统计信息、最后一条
+        return [
+            arr[0],
+            {
+                _summary: `${fieldName}统计`,
+                _total: arr.length,
+                _omitted: arr.length - 2
+            },
+            arr[arr.length - 1]
+        ];
     }
+
+    // 通用函数：递归查找并压缩弹幕数据
+    function compressDanmuData(obj) {
+        if (!obj || typeof obj !== 'object') {
+            return obj;
+        }
+
+        // 如果是数组，直接返回（不处理数组本身）
+        if (Array.isArray(obj)) {
+            return obj;
+        }
+
+        const result = Array.isArray(obj) ? [...obj] : { ...obj };
+
+        // 检查是否是弹幕消息对象（包含Danmu、SuperChat、Gift、GuardBuy字段）
+        if (result.Danmu || result.SuperChat || result.Gift || result.GuardBuy) {
+            if (Array.isArray(result.Danmu)) {
+                result.Danmu = compressArray(result.Danmu, '弹幕');
+            }
+            if (Array.isArray(result.SuperChat)) {
+                result.SuperChat = compressArray(result.SuperChat, 'SC');
+            }
+            if (Array.isArray(result.Gift)) {
+                result.Gift = compressArray(result.Gift, '礼物');
+            }
+            if (Array.isArray(result.GuardBuy)) {
+                result.GuardBuy = compressArray(result.GuardBuy, '舰长');
+            }
+        }
+
+        // 递归处理所有子对象
+        for (const key in result) {
+            if (result[key] && typeof result[key] === 'object' && !Array.isArray(result[key])) {
+                result[key] = compressDanmuData(result[key]);
+            }
+        }
+
+        return result;
+    }
+
+    // 对所有payload进行通用压缩处理
+    let displayPayload = JSON.parse(JSON.stringify(payload)); // 深拷贝
+    displayPayload = compressDanmuData(displayPayload);
 
     console.log(JSON.stringify(displayPayload, null, 2));
     console.log(`▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n`);
