@@ -1,90 +1,119 @@
-// src/scripts/webhook_server.js
 const express = require('express');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
 const app = express();
-const PORT = 3000; // 你可以在这里修改端口
+const PORT = 15121;
 
-// 中间件解析 JSON body
 app.use(express.json());
 
-// 你的 PowerShell 脚本绝对路径 (根据你的实际部署位置动态获取)
+// PowerShell 脚本路径
 const PS_SCRIPT_PATH = path.join(__dirname, 'auto_summary.ps1');
 
 app.post('/ddtv', (req, res) => {
     const payload = req.body;
 
-    // 打印日志方便调试
-    console.log(`[${new Date().toLocaleString()}] 收到 Webhook:`, JSON.stringify(payload, null, 2));
+    // 1. 打印完整日志，方便观察真实结构
+    console.log(`\n[${new Date().toLocaleString()}] 收到 Webhook 请求:`);
+    console.log(JSON.stringify(payload, null, 2));
 
-    // DDTV 5 的 Webhook 结构通常包含 EventType
-    // 核心事件通常是 "FileDownloadComplete" 或 "RecordingComplete" (具体视版本而定)
-    // 或者是 Shell 脚本钩子触发的，这里假设是通用 Webhook
-    const eventType = payload.EventType || payload.type;
+    // ============================================================
+    // 参考 Janet-Baker/webhookGo 的解析逻辑
+    // ============================================================
+    
+    // 检查 hook_type 是否为 DDTV (通常是 "DDTV")
+    if (payload.hook_type && payload.hook_type !== 'DDTV') {
+        console.log('-> 忽略：非 DDTV 类型 Webhook');
+        return res.send('Ignored: Not DDTV hook_type');
+    }
 
-    // 根据 DDTV 文档，录制完成通常会有视频文件路径
-    // 假设 payload.VideoFile 是视频路径 (如果不确定，先运行一次看 console.log)
-    const videoPath = payload.VideoFile || payload.data?.path;
+    // 检查是否有 files 数组 (这是核心判断依据)
+    const files = payload.files;
+    if (!files || !Array.isArray(files) || files.length === 0) {
+        console.log('-> 忽略：Payload 中没有文件列表 (可能是开播/下播事件)');
+        return res.send('Ignored: No files in payload');
+    }
 
+    // 2. 从 files 数组中分离视频和弹幕
+    let videoPath = null;
+    let xmlPath = null;
+
+    // 常见的视频后缀
+    const videoExtensions = ['.mp4', '.flv', '.mkv', '.ts'];
+
+    files.forEach(file => {
+        const filePath = file.path; // Go结构体中是 Path 字段
+        const ext = path.extname(filePath).toLowerCase();
+
+        if (videoExtensions.includes(ext)) {
+            videoPath = filePath;
+        } else if (ext === '.xml') {
+            xmlPath = filePath;
+        }
+    });
+
+    // 3. 校验逻辑
     if (!videoPath) {
-        console.log('-> 忽略：未在 Payload 中找到视频路径');
-        return res.status(200).send('Ignored: No video path');
+        console.log('-> 忽略：文件列表中未找到视频文件');
+        return res.send('Ignored: No video file found');
     }
 
-    // 只有录制完成才处理
-    if (eventType !== 'FileDownloadComplete' && eventType !== 'DownloadComplete') {
-        console.log(`-> 忽略：事件类型 ${eventType} 不是录制完成`);
-        return res.status(200).send('Ignored: Not a completion event');
+    console.log(`-> 🎯 捕获目标:`);
+    console.log(`   视频: ${videoPath}`);
+    console.log(`   弹幕: ${xmlPath || '未在 Payload 中找到 (将尝试自动推导)'}`);
+
+    // 如果 Payload 里没带 XML，尝试在本地通过文件名推导一下
+    if (!xmlPath) {
+        const potentialXml = videoPath.replace(/\.(mp4|flv|mkv|ts)$/i, '.xml');
+        if (fs.existsSync(potentialXml)) {
+            xmlPath = potentialXml;
+            console.log(`   推导: 本地发现同名 XML -> ${xmlPath}`);
+        }
     }
 
-    console.log(`-> 检测到视频文件: ${videoPath}`);
-
-    // 1. 推导 XML 文件路径 (DDTV 通常是同名 xml)
-    const xmlPath = videoPath.replace(/\.(mp4|flv|mkv|ts)$/i, '.xml');
-
-    // 2. 准备传给 PowerShell 的参数
-    // auto_summary.ps1 接受 InputPaths 数组
-    const args = [
+    // ============================================================
+    // 4. 调用 PowerShell 自动化流程
+    // ============================================================
+    const psArgs = [
         '-NoProfile',
         '-ExecutionPolicy', 'Bypass',
         '-File', PS_SCRIPT_PATH,
-        videoPath // 传入视频
+        videoPath // 始终传入视频路径作为主要参数
     ];
 
-    // 如果对应的 XML 存在，也传进去，这样 ps1 里的分类逻辑就能把它们关联起来
-    if (fs.existsSync(xmlPath)) {
-        console.log(`-> 检测到同名 XML: ${xmlPath}`);
-        args.push(xmlPath);
-    } else {
-        console.warn('->以此视频未找到同名 XML，可能只有字幕生成');
+    // 如果有 xml，作为第二个参数传入，或者让 ps1 脚本自己去同级目录找
+    // 这里我们将 XML 也传进去，确保你的 PS 脚本能收到
+    if (xmlPath) {
+        psArgs.push(xmlPath);
     }
 
-    console.log('-> 正在启动 PowerShell 流水线...');
+    console.log('-> 🚀 正在启动处理脚本...');
 
-    // 3. 启动 PowerShell 子进程
-    const ps = spawn('powershell.exe', args, {
-        cwd: path.dirname(PS_SCRIPT_PATH) // 确保工作目录在脚本所在目录，方便它找 python/node 兄弟脚本
+    const ps = spawn('powershell.exe', psArgs, {
+        cwd: path.dirname(PS_SCRIPT_PATH), // 确保工作目录正确
+        windowsHide: true // 隐藏黑框
     });
 
-    // 实时输出日志
     ps.stdout.on('data', (data) => {
+        // 转换 Buffer 为字符串并处理乱码 (Nodejs console 默认 utf8, PS 可能是 GBK，视情况而定)
         console.log(`[PS] ${data.toString().trim()}`);
     });
 
     ps.stderr.on('data', (data) => {
-        console.error(`[PS Error] ${data.toString().trim()}`);
+        console.error(`[PS ERR] ${data.toString().trim()}`);
     });
 
     ps.on('close', (code) => {
-        console.log(`-> 流水线执行完毕，退出码: ${code}`);
+        console.log(`-> ✅ 任务结束，退出码: ${code}`);
     });
 
-    res.status(200).send('Processing started');
+    res.status(200).send('Processing Started');
 });
 
 app.listen(PORT, () => {
-    console.log(`DDTV 自动化监听服务已启动: http://localhost:${PORT}/ddtv`);
-    console.log(`脚本路径: ${PS_SCRIPT_PATH}`);
+    console.log(`\n==================================================`);
+    console.log(`DDTV 监听服务已启动: http://localhost:${PORT}/ddtv`);
+    console.log(`等待 DDTV5 录制完成回调...`);
+    console.log(`==================================================\n`);
 });
