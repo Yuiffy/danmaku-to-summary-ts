@@ -169,9 +169,27 @@ app.post('/ddtv', (req, res) => {
                         windowsHide: true
                     });
 
+                    let saveTimeout = setTimeout(() => {
+                        console.log(`⏰ SaveBulletScreenFile进程超时，强制终止并清理队列: ${path.basename(fixVideoPath)}`);
+                        ps.kill('SIGTERM');
+                        processedFiles.delete(fixVideoPath);
+                    }, 30 * 60 * 1000); // 30分钟超时
+
                     ps.stdout.on('data', (d) => console.log(`[PS] ${d.toString().trim()}`));
                     ps.stderr.on('data', (d) => console.error(`[PS ERR] ${d.toString().trim()}`));
-                    ps.on('close', (code) => console.log(`🏁 SaveBulletScreenFile流程结束 (Exit: ${code})`));
+
+                    ps.on('error', (err) => {
+                        console.error(`💥 SaveBulletScreenFile PowerShell进程错误: ${err.message}`);
+                        clearTimeout(saveTimeout);
+                        processedFiles.delete(fixVideoPath);
+                    });
+
+                    ps.on('close', (code) => {
+                        clearTimeout(saveTimeout);
+                        console.log(`🏁 SaveBulletScreenFile流程结束 (Exit: ${code})`);
+                        // 进程结束后立即删除，避免立即重入
+                        setTimeout(() => processedFiles.delete(fixVideoPath), 5000); // 5秒后删除，给日志时间输出
+                    });
                 } else {
                     console.log(`❌ 超时未发现fix视频文件，跳过处理: ${path.basename(fixVideoPath)}`);
                 }
@@ -228,9 +246,27 @@ app.post('/ddtv', (req, res) => {
         windowsHide: true
     });
 
+    let processTimeout = setTimeout(() => {
+        console.log(`⏰ 进程超时，强制终止并清理队列: ${path.basename(targetVideo)}`);
+        ps.kill('SIGTERM');
+        processedFiles.delete(targetVideo);
+    }, 30 * 60 * 1000); // 30分钟超时
+
     ps.stdout.on('data', (d) => console.log(`[PS] ${d.toString().trim()}`));
     ps.stderr.on('data', (d) => console.error(`[PS ERR] ${d.toString().trim()}`));
-    ps.on('close', (code) => console.log(`🏁 流程结束 (Exit: ${code})`));
+
+    ps.on('error', (err) => {
+        console.error(`💥 PowerShell进程错误: ${err.message}`);
+        clearTimeout(processTimeout);
+        processedFiles.delete(targetVideo);
+    });
+
+    ps.on('close', (code) => {
+        clearTimeout(processTimeout);
+        console.log(`🏁 流程结束 (Exit: ${code})`);
+        // 进程结束后立即删除，避免立即重入
+        setTimeout(() => processedFiles.delete(targetVideo), 5000); // 5秒后删除，给日志时间输出
+    });
 
     res.send('Processing Started');
 });

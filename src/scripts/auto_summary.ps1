@@ -79,6 +79,8 @@ foreach ($VideoPath in $VideoFiles) {
         Write-Host "`n-> [ASR] Generating Subtitles (Whisper)..." -ForegroundColor Cyan
         Write-Host "   Target: $(Split-Path $VideoPath -Leaf)" -ForegroundColor Gray
         try {
+            # [Fix] 强制 Python 使用 UTF-8 编码，解决 Emoji 打印报错问题
+            $env:PYTHONUTF8 = "1"
             python $PythonScript "$VideoPath"
         } catch {
             Write-Host "X Python Error: $_" -ForegroundColor Red
