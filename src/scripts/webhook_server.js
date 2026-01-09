@@ -21,12 +21,19 @@ app.post('/ddtv', (req, res) => {
     const eventTime = new Date().toLocaleString();
 
     // ============================================================
-    // 🔍 调试日志区域：打印所有细节
+    // 🔍 调试日志区域：打印所有细节 (除了配置变更)
     // ============================================================
+
+    // 对于配置变更事件，只打印简短信息
+    if (cmd === 'ModifyConfiguration' || cmd === 'UpdateToConfigurationFile') {
+        console.log(`\n📅 ${eventTime} | ⚙️ 配置变更: ${payload.message || '未知配置'}`);
+        return res.send('Configuration change logged');
+    }
+
     console.log(`\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬`);
     console.log(`📅 时间: ${eventTime}`);
     console.log(`📨 事件 (cmd): ${cmd}`);
-    
+
     // 尝试提取主播名字，方便你看是谁触发的
     const roomName = payload.data?.Name || payload.room_info?.uname || '未知主播';
     console.log(`👤 主播: ${roomName}`);
@@ -34,7 +41,7 @@ app.post('/ddtv', (req, res) => {
     // 🔥 核心：打印完整的 Payload 结构，让你看清楚格式
     // 可能会很长，但这是你现在需要的
     console.log(`📦 完整数据结构:`);
-    console.log(JSON.stringify(payload, null, 2)); 
+    console.log(JSON.stringify(payload, null, 2));
     console.log(`▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n`);
 
     // ============================================================
