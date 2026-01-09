@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "start:webhook": "node src/scripts/webhook_server.js"
   },
   "dependencies": {
     "express": "^5.2.1",

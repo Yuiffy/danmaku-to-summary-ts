@@ -25,10 +25,47 @@ pnpm add express
 node src/scripts/webhook_server.js
 
 # 或者使用 PM2 后台运行 (推荐)
-npm install pm2 -g
-pm2 start src/scripts/webhook_server.js --name "ddtv-watcher"
-pm2 startup  # 设置开机自启 (Windows)
+## 方案一：使用 PM2（最推荐，专业、稳定）
+## 优点：服务崩溃自动重启、后台运行无黑框、日志管理方便。
+
+### 全局安装 PM2 和 Windows 自启插件
+打开你的终端（PowerShell 或 Git Bash），运行：
+
+```bash
+pnpm add -g pm2 pm2-windows-startup
+```
+
+### 安装自启服务
+运行以下命令，这会告诉 Windows 注册一个开机启动项：
+
+```bash
+pm2-startup install
+```
+
+### 启动你的服务
+进入你的项目目录，使用 PM2 启动脚本：
+
+```bash
+cd D:\workspace\myrepo\danmaku-to-summary-ts
+
+# 直接启动 JS 文件，命名为 ddtv-hook
+pm2 start src/scripts/webhook_server.js --name ddtv-hook
+```
+
+### 保存当前运行列表
+这一步至关重要，它会把当前正在运行的服务"冻结"并保存，下次开机 PM2 就会自动恢复这个列表：
+
+```bash
 pm2 save
+```
+
+搞定！ 下次重启电脑，PM2 会在后台自动拉起这个服务。
+
+查看日志命令：`pm2 logs ddtv-hook`
+
+停止服务命令：`pm2 stop ddtv-hook`
+
+重启服务命令：`pm2 restart ddtv-hook`
 ```
 
 服务将在 `http://localhost:3000/ddtv` 监听请求。
