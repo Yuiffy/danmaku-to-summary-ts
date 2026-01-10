@@ -206,5 +206,9 @@ async function processLiveData(inputFiles) {
 }
 
 // 入口
-const files = process.argv.slice(2);
-if (files.length > 0) processLiveData(files);
+if (require.main === module) {
+    const files = process.argv.slice(2);
+    if (files.length > 0) processLiveData(files);
+}
+
+module.exports = { processLiveData };
