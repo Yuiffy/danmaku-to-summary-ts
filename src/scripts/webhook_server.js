@@ -2,6 +2,9 @@ const express = require('express');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const { promisify } = require('util');
+const stat = promisify(fs.stat);
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 const app = express();
 const PORT = 15121;
@@ -14,6 +17,52 @@ app.use(express.json({ limit: '50mb' }));
 
 // PowerShell 脚本路径
 const PS_SCRIPT_PATH = path.join(__dirname, 'auto_summary.ps1');
+
+/**
+ * 等待文件大小稳定
+ * 每 5 秒检查一次，连续三次大小不变则认为稳定
+ */
+async function waitFileStable(filePath) {
+    if (!fs.existsSync(filePath)) return false;
+
+    console.log(`⏳ 开始检查文件稳定性: ${path.basename(filePath)}`);
+    let lastSize = -1;
+    let stableCount = 0;
+    const MAX_WAIT_STABLE = 3; // 连续 3 次大小相同
+    const CHECK_INTERVAL = 5000; // 5 秒检查一次
+
+    while (stableCount < MAX_WAIT_STABLE) {
+        try {
+            const stats = await stat(filePath);
+            const currentSize = stats.size;
+            
+            if (currentSize === lastSize && currentSize > 0) {
+                stableCount++;
+                console.log(`[稳定性检查] ${path.basename(filePath)} 大小未变化 (${stableCount}/${MAX_WAIT_STABLE})`);
+            } else {
+                stableCount = 0;
+                lastSize = currentSize;
+                console.log(`[稳定性检查] ${path.basename(filePath)} 大小还在变化: ${currentSize} 字节`);
+            }
+        } catch (e) {
+            console.error(`[稳定性检查] 错误: ${e.message}`);
+        }
+        
+        if (stableCount < MAX_WAIT_STABLE) {
+            await sleep(CHECK_INTERVAL);
+        }
+    }
+    console.log(`✅ 文件已稳定: ${path.basename(filePath)}`);
+    return true;
+}
+
+/**
+ * 弹出 Windows 弹窗提醒
+ */
+function showWindowsNotification(title, message) {
+    const psCommand = `[void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms'); [System.Windows.Forms.MessageBox]::Show('${message}', '${title}', 'OK', 'Warning')`;
+    spawn('powershell.exe', ['-Command', psCommand], { windowsHide: true });
+}
 
 app.post('/ddtv', (req, res) => {
     const payload = req.body;
@@ -105,15 +154,26 @@ app.post('/ddtv', (req, res) => {
     let displayPayload = JSON.parse(JSON.stringify(payload)); // 深拷贝
     displayPayload = compressDanmuData(displayPayload);
 
+    displayPayload = compressDanmuData(displayPayload);
+
     console.log(JSON.stringify(displayPayload, null, 2));
     console.log(`▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n`);
+
+    // 处理登陆失效
+    if (cmd === 'InvalidLoginStatus') {
+        const msg = payload.message || '触发登陆失效事件';
+        console.log(`⚠️ 登陆失效提醒: ${msg}`);
+        showWindowsNotification('DDTV 提醒', `登录态已失效！\n\n${msg}\n\n请尽快处理以免影响弹幕录制。`);
+        return res.send('Login invalid notification shown');
+    }
 
     // ============================================================
     // 下面是原本的处理逻辑
     // ============================================================
     
-    let videoFiles = [];
-    let xmlFiles = [];
+    (async () => {
+        let videoFiles = [];
+        let xmlFiles = [];
 
     // 1. 尝试从 data.DownInfo.DownloadFileList 提取 (DDTV5 常见结构)
     const downInfo = payload.data?.DownInfo;
@@ -157,10 +217,20 @@ app.post('/ddtv', (req, res) => {
 
             console.log(`🔄 SaveBulletScreenFile事件：等待fix视频生成... (${path.basename(fixVideoPath)})`);
 
-            // 异步检查fix视频文件
-            setTimeout(() => {
-                if (fs.existsSync(fixVideoPath)) {
-                    console.log(`✅ 发现fix视频文件，开始处理: ${path.basename(fixVideoPath)}`);
+            console.log(`🔄 SaveBulletScreenFile事件：等待fix视频生成... (${path.basename(fixVideoPath)})`);
+
+            // 延迟检查是否存在，然后再检查稳定性
+            await sleep(3000);
+            
+            if (fs.existsSync(fixVideoPath)) {
+                // 等待文件稳定
+                const isStable = await waitFileStable(fixVideoPath);
+                if (!isStable) {
+                    console.log(`❌ 文件稳定性检查失败，跳过处理: ${path.basename(fixVideoPath)}`);
+                    return;
+                }
+
+                console.log(`✅ 发现fix视频文件且已稳定，开始处理: ${path.basename(fixVideoPath)}`);
 
                     if (processedFiles.has(fixVideoPath)) {
                         console.log(`⚠️ 跳过：文件已在处理队列中 -> ${path.basename(fixVideoPath)}`);
@@ -213,15 +283,13 @@ app.post('/ddtv', (req, res) => {
                 } else {
                     console.log(`❌ 超时未发现fix视频文件，跳过处理: ${path.basename(fixVideoPath)}`);
                 }
-            }, 3000); // 等待3秒
-
-            return res.send('Processing SaveBulletScreenFile (waiting for fix file)');
+            return;
         }
     }
 
     if (videoFiles.length === 0) {
         console.log('❌ 忽略：未发现视频文件 (可能是配置变更或单纯的状态心跳)');
-        return res.send('Ignored: No video files');
+        return;
     }
 
     // 优先处理 fix.mp4，如果没有则处理 original.mp4
@@ -230,7 +298,14 @@ app.post('/ddtv', (req, res) => {
 
     if (processedFiles.has(targetVideo)) {
         console.log(`⚠️ 跳过：文件已在处理队列中 -> ${path.basename(targetVideo)}`);
-        return res.send('Ignored: Already processed');
+        return;
+    }
+
+    // 等待文件稳定
+    const isVideoStable = await waitFileStable(targetVideo);
+    if (!isVideoStable) {
+        console.log(`❌ 视频文件稳定性检查失败，跳过处理: ${path.basename(targetVideo)}`);
+        return;
     }
 
     // 寻找弹幕
@@ -282,14 +357,16 @@ app.post('/ddtv', (req, res) => {
         processedFiles.delete(targetVideo);
     });
 
-    ps.on('close', (code) => {
-        clearTimeout(processTimeout);
-        console.log(`🏁 流程结束 (Exit: ${code})`);
-        // 进程结束后立即删除，避免立即重入
-        setTimeout(() => processedFiles.delete(targetVideo), 5000); // 5秒后删除，给日志时间输出
-    });
+        ps.on('close', (code) => {
+            clearTimeout(processTimeout);
+            console.log(`🏁 流程结束 (Exit: ${code})`);
+            // 进程结束后立即删除，避免立即重入
+            setTimeout(() => processedFiles.delete(targetVideo), 5000); // 5秒后删除，给日志时间输出
+        });
 
-    res.send('Processing Started');
+    })();
+
+    res.send('Processing Started (or logic branched)');
 });
 
 app.listen(PORT, () => {

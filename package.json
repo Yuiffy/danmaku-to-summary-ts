@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "start:webhook": "node src/scripts/webhook_server.js"
+    "restart:webhook": "pm2 restart ddtv-hook"
   },
   "dependencies": {
     "express": "^5.2.1",
