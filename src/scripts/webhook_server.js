@@ -20,16 +20,24 @@ const JS_SCRIPT_PATH = path.join(__dirname, 'auto_summary.js');
 
 /**
  * 等待文件大小稳定
- * 每 5 秒检查一次，连续三次大小不变则认为稳定
+ * 先等待30秒避免干扰写入，然后每6秒检查一次，连续两次大小不变则认为稳定
  */
 async function waitFileStable(filePath) {
     if (!fs.existsSync(filePath)) return false;
 
     console.log(`⏳ 开始检查文件稳定性: ${path.basename(filePath)}`);
+
+    // 先等待30秒，避免干扰DDTV5的写入过程
+    console.log(`⏳ 倒计时开始：30秒后开始文件大小检查`);
+    for (let i = 30; i > 0; i -= 5) {
+        console.log(`⏳ 倒计时：${i}秒`);
+        await sleep(5000);
+    }
+
     let lastSize = -1;
     let stableCount = 0;
-    const MAX_WAIT_STABLE = 3; // 连续 3 次大小相同
-    const CHECK_INTERVAL = 5000; // 5 秒检查一次
+    const MAX_WAIT_STABLE = 2; // 连续 2 次大小相同
+    const CHECK_INTERVAL = 6000; // 6 秒检查一次
 
     while (stableCount < MAX_WAIT_STABLE) {
         try {
