@@ -217,7 +217,11 @@ app.post('/ddtv', (req, res) => {
 
             console.log(`🔄 SaveBulletScreenFile事件：等待fix视频生成... (${path.basename(fixVideoPath)})`);
 
-            console.log(`🔄 SaveBulletScreenFile事件：等待fix视频生成... (${path.basename(fixVideoPath)})`);
+            // 立即检查去重，避免重复触发
+            if (processedFiles.has(fixVideoPath)) {
+                console.log(`⚠️ 跳过：文件已在处理队列中 -> ${path.basename(fixVideoPath)}`);
+                return;
+            }
 
             // 延迟检查是否存在，然后再检查稳定性
             await sleep(3000);
@@ -232,14 +236,9 @@ app.post('/ddtv', (req, res) => {
 
                 console.log(`✅ 发现fix视频文件且已稳定，开始处理: ${path.basename(fixVideoPath)}`);
 
-                    if (processedFiles.has(fixVideoPath)) {
-                        console.log(`⚠️ 跳过：文件已在处理队列中 -> ${path.basename(fixVideoPath)}`);
-                        return;
-                    }
-
-                    // 加入去重缓存
-                    processedFiles.add(fixVideoPath);
-                    setTimeout(() => processedFiles.delete(fixVideoPath), 3600 * 1000);
+                // 加入去重缓存
+                processedFiles.add(fixVideoPath);
+                setTimeout(() => processedFiles.delete(fixVideoPath), 3600 * 1000);
 
                     // 启动处理流程
                     const targetXml = path.normalize(xmlFiles[0]);
@@ -296,30 +295,18 @@ app.post('/ddtv', (req, res) => {
         return;
     }
 
+    // 加入去重缓存 (1小时)
+    processedFiles.add(targetVideo);
+    setTimeout(() => processedFiles.delete(targetVideo), 3600 * 1000);
+
     // 等待文件稳定
     const isVideoStable = await waitFileStable(targetVideo);
     if (!isVideoStable) {
         console.log(`❌ 视频文件稳定性检查失败，跳过处理: ${path.basename(targetVideo)}`);
+        // 如果稳定性检查失败，立即从缓存中移除，允许下次重试
+        processedFiles.delete(targetVideo);
         return;
     }
-
-    // 寻找弹幕
-    let targetXml = xmlFiles.length > 0 ? path.normalize(xmlFiles[0]) : null;
-    if (!targetXml) {
-        // 推导逻辑
-        const potentialXml = targetVideo.replace(/\.(mp4|flv|mkv|ts)$/i, '.xml');
-        if (fs.existsSync(potentialXml)) targetXml = potentialXml;
-        else {
-            const potentialXml1 = targetVideo.replace(/\.(mp4|flv|mkv|ts)$/i, '_1.xml');
-            if(fs.existsSync(potentialXml1)) targetXml = potentialXml1;
-        }
-    }
-
-    console.log(`✅ 捕获录制完成: ${path.basename(targetVideo)}`);
-
-    // 加入去重缓存 (1小时)
-    processedFiles.add(targetVideo);
-    setTimeout(() => processedFiles.delete(targetVideo), 3600 * 1000);
 
     const jsArgs = [JS_SCRIPT_PATH, targetVideo];
     if (targetXml) jsArgs.push(targetXml);
