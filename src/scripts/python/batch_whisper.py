@@ -261,11 +261,13 @@ def main():
 
     print(f"🔥 正在加载 RTX 5080 引擎 (ASMR 智能版)...")
     try:
-        # 这里只加载基础模型，BatchPipeline 在策略1里动态创建
-        model = WhisperModel(MODEL_SIZE, device="cpu", compute_type="float32")
+        # 优先尝试GPU，如果失败则用CPU
+        model = WhisperModel(MODEL_SIZE, device="cuda", compute_type="float16")
+        print("   ✅ 使用GPU加速 (CUDA)")
     except Exception as e:
-        print(f"❌ 显卡报错: {e}")
-        return
+        print(f"   ⚠️ GPU不可用，回退到CPU: {e}")
+        model = WhisperModel(MODEL_SIZE, device="cpu", compute_type="float32")
+        print("   ✅ 使用CPU模式")
 
     for idx, video_path in enumerate(todo_list, start=1):
         process_one_video(model, video_path, idx, len(todo_list))
