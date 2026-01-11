@@ -15,8 +15,8 @@ const processedFiles = new Set();
 // 增加请求体大小限制，防止超大 JSON 报错
 app.use(express.json({ limit: '50mb' }));
 
-// PowerShell 脚本路径
-const PS_SCRIPT_PATH = path.join(__dirname, 'auto_summary.ps1');
+// JavaScript 脚本路径
+const JS_SCRIPT_PATH = path.join(__dirname, 'auto_summary.js');
 
 /**
  * 等待文件大小稳定
@@ -243,18 +243,13 @@ app.post('/ddtv', (req, res) => {
 
                     // 启动处理流程
                     const targetXml = path.normalize(xmlFiles[0]);
-                    const psArgs = [
-                        '-NoProfile',
-                        '-ExecutionPolicy', 'Bypass',
-                        '-File', PS_SCRIPT_PATH,
-                        fixVideoPath
-                    ];
-                    if (targetXml) psArgs.push(targetXml);
+                    const jsArgs = [JS_SCRIPT_PATH, fixVideoPath];
+                    if (targetXml) jsArgs.push(targetXml);
 
                     console.log('🚀 启动SaveBulletScreenFile处理流程...');
 
-                    const ps = spawn('powershell.exe', psArgs, {
-                        cwd: path.dirname(PS_SCRIPT_PATH),
+                    const ps = spawn('node', jsArgs, {
+                        cwd: __dirname,
                         windowsHide: true,
                         env: { ...process.env, NODE_ENV: 'automation' } // 标记为自动化环境
                     });
@@ -326,18 +321,13 @@ app.post('/ddtv', (req, res) => {
     processedFiles.add(targetVideo);
     setTimeout(() => processedFiles.delete(targetVideo), 3600 * 1000);
 
-    const psArgs = [
-        '-NoProfile',
-        '-ExecutionPolicy', 'Bypass',
-        '-File', PS_SCRIPT_PATH,
-        targetVideo
-    ];
-    if (targetXml) psArgs.push(targetXml);
+    const jsArgs = [JS_SCRIPT_PATH, targetVideo];
+    if (targetXml) jsArgs.push(targetXml);
 
     console.log('🚀 启动处理流程...');
 
-    const ps = spawn('powershell.exe', psArgs, {
-        cwd: path.dirname(PS_SCRIPT_PATH),
+    const ps = spawn('node', jsArgs, {
+        cwd: __dirname,
         windowsHide: true,
         env: { ...process.env, NODE_ENV: 'automation' } // 标记为自动化环境
     });

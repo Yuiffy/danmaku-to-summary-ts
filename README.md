@@ -2,6 +2,27 @@
 
 这个工具先用js脚本将直播弹幕xml文件简化为内容更少的纯文本文件，用于丢入ai工具进行总结。
 
+## 脚本使用
+
+项目包含自动化脚本用于处理视频和弹幕：
+
+- `src/scripts/auto_summary.js`: 主要自动化脚本，将视频拖入自动生成字幕并与弹幕融合。
+- `src/scripts/webhook_server.js`: Webhook服务器，用于监听DDTV事件并自动处理。
+- `src/scripts/python/batch_whisper.py`: Python脚本用于语音转文字（依赖faster-whisper）。
+- `src/scripts/python/requirements.txt`: Python依赖列表。
+
+### 安装Python依赖
+
+```bash
+pip install -r src/scripts/python/requirements.txt
+```
+
+### 运行自动化脚本
+
+```bash
+node src/scripts/auto_summary.js <视频文件> [弹幕文件]
+```
+
 ## 步骤
 
 1. 把弹幕xml放进source/source.xml
