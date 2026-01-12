@@ -298,6 +298,12 @@ app.post('/ddtv', (req, res) => {
     let targetVideo = videoFiles.find(f => f.includes('fix.mp4')) || videoFiles[0];
     targetVideo = path.normalize(targetVideo);
 
+    // 检查文件是否存在，如果不存在跳过
+    if (!fs.existsSync(targetVideo)) {
+        console.log(`❌ 忽略：目标视频文件不存在 -> ${path.basename(targetVideo)}`);
+        return;
+    }
+
     if (processedFiles.has(targetVideo)) {
         console.log(`⚠️ 跳过：文件已在处理队列中 -> ${path.basename(targetVideo)}`);
         return;
@@ -314,6 +320,15 @@ app.post('/ddtv', (req, res) => {
         // 如果稳定性检查失败，立即从缓存中移除，允许下次重试
         processedFiles.delete(targetVideo);
         return;
+    }
+
+    // 选择对应的xml文件
+    let targetXml = null;
+    if (xmlFiles.length > 0) {
+        // 尝试通过文件名匹配，如果没有则用第一个
+        const videoBaseName = path.basename(targetVideo, path.extname(targetVideo));
+        const matchedXml = xmlFiles.find(xml => path.basename(xml, '.xml').includes(videoBaseName.split('_')[0]));
+        targetXml = matchedXml ? path.normalize(matchedXml) : path.normalize(xmlFiles[0]);
     }
 
     const jsArgs = [JS_SCRIPT_PATH, targetVideo];
