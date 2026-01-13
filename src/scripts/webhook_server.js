@@ -6,6 +6,61 @@ const { promisify } = require('util');
 const stat = promisify(fs.stat);
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+// 配置文件加载函数
+function loadConfig() {
+    const configPath = path.join(__dirname, 'config.json');
+    const defaultConfig = {
+        audioRecording: {
+            enabled: true,
+            audioOnlyRooms: [],
+            audioFormats: ['.m4a', '.aac', '.mp3', '.wav', '.ogg', '.flac'],
+            defaultFormat: '.m4a'
+        },
+        timeouts: {
+            fixVideoWait: 60000,
+            fileStableCheck: 30000,
+            processTimeout: 1800000
+        },
+        recorders: {
+            ddtv: {
+                enabled: true,
+                endpoint: '/ddtv'
+            },
+            mikufans: {
+                enabled: true,
+                endpoint: '/mikufans',
+                basePath: 'D:/files/videos/DDTV录播'
+            }
+        }
+    };
+
+    try {
+        if (fs.existsSync(configPath)) {
+            const userConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+            return { ...defaultConfig, ...userConfig };
+        }
+    } catch (error) {
+        console.error('Error loading config:', error);
+    }
+    return defaultConfig;
+}
+
+function getRecorderConfig(recorderName) {
+    const config = loadConfig();
+    return config.recorders[recorderName] || null;
+}
+
+function getTimeoutConfig() {
+    const config = loadConfig();
+    return config.timeouts;
+}
+
+function isAudioOnlyRoom(roomId) {
+    const config = loadConfig();
+    return config.audioRecording.enabled &&
+           config.audioRecording.audioOnlyRooms.includes(parseInt(roomId));
+}
+
 const app = express();
 const PORT = 15121;
 
@@ -231,10 +286,29 @@ app.post('/ddtv', (req, res) => {
                 return;
             }
 
-            // 延迟检查是否存在，然后再检查稳定性
-            await sleep(3000);
+            // 等待文件创建（使用配置的超时参数）
+            const timeouts = getTimeoutConfig();
+            const maxWaitTime = timeouts.fixVideoWait || 60000; // 60秒
+            const checkInterval = 5000; // 每5秒检查一次
+            let waitedTime = 0;
+            let fileFound = false;
             
-            if (fs.existsSync(fixVideoPath)) {
+            console.log(`⏳ 等待fix视频文件生成，最多等待${maxWaitTime/1000}秒...`);
+            
+            while (waitedTime < maxWaitTime && !fileFound) {
+                await sleep(checkInterval);
+                waitedTime += checkInterval;
+                
+                if (fs.existsSync(fixVideoPath)) {
+                    fileFound = true;
+                    console.log(`✅ 发现fix视频文件 (等待了${waitedTime/1000}秒): ${path.basename(fixVideoPath)}`);
+                    break;
+                }
+                
+                console.log(`⏳ 等待中... ${waitedTime/1000}秒 (${path.basename(fixVideoPath)})`);
+            }
+            
+            if (fileFound) {
                 // 等待文件稳定
                 const isStable = await waitFileStable(fixVideoPath);
                 if (!isStable) {
@@ -369,9 +443,174 @@ app.post('/ddtv', (req, res) => {
     res.send('Processing Started (or logic branched)');
 });
 
+// ============================================================
+// mikufans录播姬 Webhook 处理
+// ============================================================
+app.post('/mikufans', (req, res) => {
+    const payload = req.body;
+    const eventType = payload.EventType || 'Unknown';
+    const eventTime = new Date().toLocaleString();
+    
+    console.log(`\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬`);
+    console.log(`📅 时间: ${eventTime}`);
+    console.log(`📨 事件 (mikufans): ${eventType}`);
+    
+    // 提取主播信息
+    const roomName = payload.EventData?.Name || '未知主播';
+    const roomId = payload.EventData?.RoomId || '未知房间';
+    console.log(`👤 主播: ${roomName} (房间: ${roomId})`);
+    
+    console.log(`📦 完整数据结构:`);
+    console.log(JSON.stringify(payload, null, 2));
+    console.log(`▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n`);
+    
+    // 只处理FileOpening和FileClosed事件
+    if (eventType !== 'FileOpening' && eventType !== 'FileClosed') {
+        console.log(`ℹ️ 忽略非文件事件: ${eventType}`);
+        return res.send('Event logged (non-file event ignored)');
+    }
+    
+    // 获取mikufans配置
+    const mikufansConfig = getRecorderConfig('mikufans');
+    if (!mikufansConfig || !mikufansConfig.enabled) {
+        console.log('❌ mikufans录播姬支持未启用或配置错误');
+        return res.send('Mikufans recorder not enabled');
+    }
+    
+    const relativePath = payload.EventData?.RelativePath;
+    if (!relativePath) {
+        console.log('❌ 未找到RelativePath字段');
+        return res.send('No RelativePath found');
+    }
+    
+    // 构建完整文件路径
+    const basePath = mikufansConfig.basePath || 'D:/files/videos/DDTV录播';
+    const fullPath = path.join(basePath, relativePath);
+    const normalizedPath = path.normalize(fullPath);
+    
+    console.log(`📁 文件路径: ${normalizedPath}`);
+    
+    // 检查文件扩展名
+    const ext = path.extname(normalizedPath).toLowerCase();
+    const supportedExtensions = ['.mp4', '.flv', '.mkv', '.ts', '.mov', '.m4a', '.aac', '.mp3', '.wav'];
+    
+    if (!supportedExtensions.includes(ext)) {
+        console.log(`❌ 不支持的文件类型: ${ext}`);
+        return res.send('Unsupported file type');
+    }
+    
+    // 异步处理文件
+    (async () => {
+        // 检查去重
+        if (processedFiles.has(normalizedPath)) {
+            console.log(`⚠️ 跳过：文件已在处理队列中 -> ${path.basename(normalizedPath)}`);
+            return;
+        }
+        
+        // 对于FileOpening事件，等待文件稳定
+        if (eventType === 'FileOpening') {
+            console.log(`🔄 FileOpening事件：等待文件稳定... (${path.basename(normalizedPath)})`);
+            
+            // 等待文件出现（使用配置的超时参数）
+            const timeouts = getTimeoutConfig();
+            const maxWaitTime = timeouts.fileStableCheck || 30000; // 30秒
+            const checkInterval = 2000; // 每2秒检查一次
+            let waitedTime = 0;
+            let fileFound = false;
+            
+            while (waitedTime < maxWaitTime && !fileFound) {
+                await sleep(checkInterval);
+                waitedTime += checkInterval;
+                
+                if (fs.existsSync(normalizedPath)) {
+                    fileFound = true;
+                    console.log(`✅ 发现文件 (等待了${waitedTime/1000}秒): ${path.basename(normalizedPath)}`);
+                    break;
+                }
+                
+                console.log(`⏳ 等待文件出现... ${waitedTime/1000}秒`);
+            }
+            
+            if (!fileFound) {
+                console.log(`❌ 超时未发现文件: ${path.basename(normalizedPath)}`);
+                return;
+            }
+        }
+        
+        // 等待文件稳定
+        const isStable = await waitFileStable(normalizedPath);
+        if (!isStable) {
+            console.log(`❌ 文件稳定性检查失败，跳过处理: ${path.basename(normalizedPath)}`);
+            return;
+        }
+        
+        // 加入去重缓存
+        processedFiles.add(normalizedPath);
+        setTimeout(() => processedFiles.delete(normalizedPath), 3600 * 1000);
+        
+        console.log(`✅ 文件已稳定，开始处理: ${path.basename(normalizedPath)}`);
+        
+        // 查找对应的xml文件（如果有）
+        let targetXml = null;
+        const dir = path.dirname(normalizedPath);
+        const baseName = path.basename(normalizedPath, path.extname(normalizedPath));
+        
+        // 尝试查找同目录下的xml文件
+        const xmlPattern = path.join(dir, '*.xml');
+        try {
+            const files = fs.readdirSync(dir);
+            const xmlFiles = files.filter(f => f.endsWith('.xml') && f.includes(baseName.split('-')[0]));
+            if (xmlFiles.length > 0) {
+                targetXml = path.join(dir, xmlFiles[0]);
+                console.log(`📄 找到对应的弹幕文件: ${path.basename(targetXml)}`);
+            }
+        } catch (error) {
+            console.log(`ℹ️ 未找到弹幕文件: ${error.message}`);
+        }
+        
+        // 启动处理流程
+        const jsArgs = [JS_SCRIPT_PATH, normalizedPath];
+        if (targetXml) jsArgs.push(targetXml);
+        
+        console.log('🚀 启动mikufans处理流程...');
+        
+        const ps = spawn('node', jsArgs, {
+            cwd: __dirname,
+            windowsHide: true,
+            env: { ...process.env, NODE_ENV: 'automation' }
+        });
+        
+        const timeouts = getTimeoutConfig();
+        const processTimeout = setTimeout(() => {
+            console.log(`⏰ 进程超时，强制终止并清理队列: ${path.basename(normalizedPath)}`);
+            ps.kill('SIGTERM');
+            processedFiles.delete(normalizedPath);
+        }, timeouts.processTimeout || 1800000);
+        
+        ps.stdout.on('data', (d) => console.log(`[Mikufans PS] ${d.toString().trim()}`));
+        ps.stderr.on('data', (d) => console.error(`[Mikufans PS ERR] ${d.toString().trim()}`));
+        
+        ps.on('error', (err) => {
+            console.error(`💥 mikufans进程错误: ${err.message}`);
+            clearTimeout(processTimeout);
+            processedFiles.delete(normalizedPath);
+        });
+        
+        ps.on('close', (code) => {
+            clearTimeout(processTimeout);
+            console.log(`🏁 mikufans流程结束 (Exit: ${code})`);
+            setTimeout(() => processedFiles.delete(normalizedPath), 5000);
+        });
+        
+    })();
+    
+    res.send('Mikufans processing started');
+});
+
 app.listen(PORT, () => {
     console.log(`\n==================================================`);
-    console.log(`DDTV 监听服务 (调试版) 已启动: http://localhost:${PORT}/ddtv`);
-    console.log(`现在所有 Webhook 内容都会完整打印在日志里`);
+    console.log(`DDTV 监听服务 (增强版) 已启动`);
+    console.log(`DDTV 端点: http://localhost:${PORT}/ddtv`);
+    console.log(`mikufans 端点: http://localhost:${PORT}/mikufans`);
     console.log(`==================================================\n`);
 });

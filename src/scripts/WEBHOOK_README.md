@@ -1,13 +1,21 @@
-# DDTV 自动化 Webhook 服务
+# 录播姬自动化 Webhook 服务
 
 ## 概述
 
-这个 Node.js Webhook 服务用于监听 DDTV 的录制完成事件，自动触发弹幕转摘要的处理流水线。
+这个 Node.js Webhook 服务用于监听 DDTV 和 mikufans录播姬的录制完成事件，自动触发弹幕转摘要的处理流水线。支持音频文件处理和可配置的超时参数。
+
+## 新功能亮点
+
+1. **修复DDTV超时问题**：SaveBulletScreenFile事件等待时间从3秒增加到60秒，避免文件未生成就跳过处理
+2. **支持mikufans录播姬**：新增独立端点 `/mikufans`，支持BililiveRecorder格式的webhook
+3. **音频录制支持**：支持为特定房间配置纯音频录制，节省存储空间
+4. **可配置参数**：所有超时参数和路径均可通过配置文件调整
 
 ## 架构
 
 ```
-DDTV 5 → HTTP POST /ddtv → Node.js Webhook 服务 → PowerShell auto_summary.ps1 → 处理完成
+DDTV 5 → HTTP POST /ddtv → Node.js Webhook 服务 → auto_summary.js → 处理完成
+mikufans录播姬 → HTTP POST /mikufans ↗
 ```
 
 ## 安装和设置
@@ -68,80 +76,202 @@ pm2 save
 重启服务命令：`pm2 restart ddtv-hook`
 ```
 
-服务将在 `http://localhost:3000/ddtv` 监听请求。
+服务将在以下端点监听请求：
+- DDTV: `http://localhost:15121/ddtv`
+- mikufans: `http://localhost:15121/mikufans`
+
+## 配置说明
+
+### 配置文件位置
+`src/scripts/config.json`
+
+### 默认配置
+如果`config.json`文件不存在，将使用以下默认配置：
+```json
+{
+  "audioRecording": {
+    "enabled": true,
+    "audioOnlyRooms": [],
+    "audioFormats": [".m4a", ".aac", ".mp3", ".wav", ".ogg", ".flac"],
+    "defaultFormat": ".m4a"
+  },
+  "timeouts": {
+    "fixVideoWait": 60000,
+    "fileStableCheck": 30000,
+    "processTimeout": 1800000
+  },
+  "recorders": {
+    "ddtv": {
+      "enabled": true,
+      "endpoint": "/ddtv"
+    },
+    "mikufans": {
+      "enabled": true,
+      "endpoint": "/mikufans",
+      "basePath": "D:/files/videos/DDTV录播"
+    }
+  }
+}
+```
+
+### 创建配置文件
+如果需要自定义配置，创建`src/scripts/config.json`文件并覆盖需要的配置项即可。配置采用合并策略，未指定的配置项将使用默认值。
+
+### 配置说明
+
+#### 音频录制配置
+- `audioOnlyRooms`: 数组，指定哪些房间ID录制纯音频（例如：`[12345, 67890]`）
+- `audioFormats`: 支持的音频文件格式
+- `defaultFormat`: 默认音频格式
+
+#### 超时配置
+- `fixVideoWait`: 等待fix视频文件生成的最大时间（毫秒），默认30秒
+- `fileStableCheck`: 文件稳定性检查等待时间，默认30秒
+- `processTimeout`: 处理进程超时时间，默认30分钟
+
+#### 录播姬配置
+- `mikufans.basePath`: mikufans录播姬的录制文件存储根目录
 
 ## DDTV 配置
 
 1. 打开 DDTV 客户端
 2. 进入设置 → Webhook 配置
-3. 设置 Webhook URL: `http://127.0.0.1:3000/ddtv`
+3. 设置 Webhook URL: `http://127.0.0.1:15121/ddtv`
 4. 勾选 "文件下载完成" 或 "录制完成" 事件
+5. 保存配置
+
+## mikufans录播姬配置
+
+1. 打开 mikufans录播姬 (BililiveRecorder)
+2. 进入设置 → Webhook
+3. 添加新的 Webhook URL: `http://127.0.0.1:15121/mikufans`
+4. 选择要发送的事件类型（推荐：`FileOpening`, `FileClosed`）
 5. 保存配置
 
 ## Webhook Payload 格式
 
-DDTV 发送的 Webhook 通常包含以下字段：
-
+### DDTV 格式示例
 ```json
 {
-  "EventType": "FileDownloadComplete",
-  "VideoFile": "/path/to/video.mp4"
+  "cmd": "SaveBulletScreenFile",
+  "code": 40101,
+  "data": {
+    "DownInfo": {
+      "DownloadFileList": {
+        "DanmuFile": ["path/to/danmu.xml"],
+        "CurrentOperationVideoFile": "path/to/video_original.mp4"
+      }
+    }
+  }
 }
 ```
 
-如果字段名不同，服务会在控制台输出完整的 payload，你可以据此调整代码中的字段名。
-
-## 测试
-
-运行测试脚本验证服务是否正常：
-
-```bash
-node src/scripts/test_webhook.js
+### mikufans录播姬格式示例
+```json
+{
+  "EventType": "FileOpening",
+  "EventTimestamp": "2026-01-14T01:29:16.3983903+08:00",
+  "EventId": "66e7b5d6-e844-40cc-b1ee-94947d4d85e5",
+  "EventData": {
+    "SessionId": "add80566-c420-4f00-9393-bd55d1cd218c",
+    "RelativePath": "80397_阿梓从小就很可爱/2026_01_14/录制-80397-20260114-012916-397-训练！.flv",
+    "RoomId": 80397,
+    "Name": "阿梓从小就很可爱",
+    "Title": "训练！"
+  }
+}
 ```
+
+## 音频录制功能
+
+### 启用音频录制
+1. 编辑 `src/scripts/config.json`
+2. 在 `audioOnlyRooms` 数组中添加要录制音频的房间ID
+3. 重启webhook服务
+
+### 示例配置
+```json
+{
+  "audioRecording": {
+    "enabled": true,
+    "audioOnlyRooms": [12345, 67890],
+    "audioFormats": [".m4a", ".aac"],
+    "defaultFormat": ".m4a"
+  }
+}
+```
+
+### 注意事项
+- 音频录制需要在录播姬中单独配置相应房间的录制格式
+- 目前支持 `.m4a`, `.aac`, `.mp3`, `.wav`, `.ogg`, `.flac` 格式
+- 音频文件同样会进行ASR转字幕处理
 
 ## 日志输出
 
 服务会输出详细的处理日志：
 
-- `[时间] 收到 Webhook:` - 显示收到的完整 payload
-- `-> 检测到视频文件:` - 显示找到的视频路径
-- `-> 检测到同名 XML:` - 如果找到对应的弹幕文件
-- `[PS]` - PowerShell 脚本的输出
-- `-> 流水线执行完毕，退出码:` - 处理结果
+- `📅 时间:` - 事件发生时间
+- `📨 事件:` - 事件类型（DDTV cmd 或 mikufans EventType）
+- `👤 主播:` - 主播名称和房间ID
+- `📦 完整数据结构:` - 完整的webhook payload
+- `⏳ 等待文件生成/稳定:` - 文件等待状态
+- `✅ 发现文件:` - 文件找到确认
+- `🚀 启动处理流程:` - 开始处理
+- `[PS]` - 处理脚本的输出
+- `🏁 流程结束:` - 处理完成
 
 ## 故障排除
 
 ### 常见问题
 
 1. **服务启动失败**
-   - 检查端口 3000 是否被占用
+   - 检查端口 15121 是否被占用
    - 确认 express 已正确安装
 
-2. **PowerShell 脚本找不到**
-   - 确认 `auto_summary.ps1` 在 `src/scripts/` 目录中
-   - 检查相对路径是否正确
+2. **DDTV fix视频超时**
+   - 检查 `fixVideoWait` 配置值是否足够（建议60秒以上）
+   - 查看DDTV日志确认fix视频生成时间
 
-3. **Python/Node 脚本找不到**
-   - auto_summary.ps1 中的 `$PyRoot` 路径可能需要调整
-   - 考虑改为绝对路径
+3. **mikufans文件找不到**
+   - 检查 `basePath` 配置是否正确
+   - 确认 `RelativePath` 拼接后的完整路径存在
 
-4. **Webhook 字段名不匹配**
-   - 运行一次真正的 DDTV webhook
-   - 查看控制台输出的 payload
-   - 调整 `webhook_server.js` 中的字段名
+4. **音频文件不支持**
+   - 检查 `audioFormats` 配置是否包含所需格式
+   - 确认录播姬配置的音频格式在支持列表中
+
+5. **Webhook字段名不匹配**
+   - 运行一次真正的webhook
+   - 查看控制台输出的完整payload
+   - 调整代码中的字段名
 
 ### 日志位置
 
-- Webhook 服务日志：控制台输出
-- PowerShell 脚本日志：通过 webhook 服务转发显示
+- Webhook服务日志：控制台输出或PM2日志
+- 处理脚本日志：通过webhook服务转发显示
 
 ## 停止服务
 
 ```bash
 # 如果使用 PM2
-pm2 stop ddtv-watcher
-pm2 delete ddtv-watcher
+pm2 stop ddtv-hook
+pm2 delete ddtv-hook
 
 # 直接杀死进程
 # 找到 node webhook_server.js 的进程并终止
 ```
+
+## 更新日志
+
+### v2.0 增强版
+- 修复DDTV SaveBulletScreenFile超时问题
+- 新增mikufans录播姬webhook支持
+- 添加音频录制配置功能
+- 支持可配置的超时参数
+- 改进文件稳定性检查逻辑
+- 增强日志输出和错误处理
+
+### v1.0 基础版
+- 基础DDTV webhook支持
+- 自动触发弹幕转摘要流水线
+- 文件去重和稳定性检查

@@ -4,11 +4,40 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 
-const VIDEO_EXTS = ['.mp4', '.flv', '.mkv', '.ts', '.mov', '.m4a'];
+// 获取音频格式配置
+function getAudioFormats() {
+    const configPath = path.join(__dirname, 'config.json');
+    const defaultAudioFormats = ['.m4a', '.aac', '.mp3', '.wav', '.ogg', '.flac'];
+    
+    try {
+        if (fs.existsSync(configPath)) {
+            const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+            return config.audioRecording?.audioFormats || defaultAudioFormats;
+        }
+    } catch (error) {
+        console.error('Error loading audio formats:', error);
+    }
+    return defaultAudioFormats;
+}
 
-function isVideoFile(filePath) {
+// 获取支持的媒体文件扩展名
+function getMediaExtensions() {
+    const audioFormats = getAudioFormats();
+    const videoExtensions = ['.mp4', '.flv', '.mkv', '.ts', '.mov'];
+    return [...videoExtensions, ...audioFormats];
+}
+
+const MEDIA_EXTS = getMediaExtensions();
+
+function isMediaFile(filePath) {
     const ext = path.extname(filePath).toLowerCase();
-    return VIDEO_EXTS.includes(ext);
+    return MEDIA_EXTS.includes(ext);
+}
+
+function isAudioFile(filePath) {
+    const ext = path.extname(filePath).toLowerCase();
+    const audioFormats = getAudioFormats();
+    return audioFormats.includes(ext);
 }
 
 function runCommand(command, args, options = {}) {
@@ -25,9 +54,9 @@ function runCommand(command, args, options = {}) {
     });
 }
 
-async function processVideo(videoPath) {
-    const dir = path.dirname(videoPath);
-    const nameNoExt = path.basename(videoPath, path.extname(videoPath));
+async function processMedia(mediaPath) {
+    const dir = path.dirname(mediaPath);
+    const nameNoExt = path.basename(mediaPath, path.extname(mediaPath));
     const srtPath = path.join(dir, `${nameNoExt}.srt`);
 
     const pythonScript = path.join(__dirname, 'python', 'batch_whisper.py');
@@ -37,10 +66,11 @@ async function processVideo(videoPath) {
     }
 
     if (!fs.existsSync(srtPath)) {
+        const fileType = isAudioFile(mediaPath) ? 'Audio' : 'Video';
         console.log(`\n-> [ASR] Generating Subtitles (Whisper)...`);
-        console.log(`   Target: ${path.basename(videoPath)}`);
+        console.log(`   Target: ${path.basename(mediaPath)} (${fileType})`);
 
-        await runCommand('python', [pythonScript, videoPath], {
+        await runCommand('python', [pythonScript, mediaPath], {
             env: { ...process.env, PYTHONUTF8: '1' }
         });
     } else {
@@ -65,7 +95,7 @@ const main = async () => {
     console.log('      Live Summary 自动化工厂 (Watchdog 启用)       ');
     console.log('===========================================');
 
-    let videoFiles = [];
+    let mediaFiles = [];
     let xmlFiles = [];
     let filesToProcess = [];
 
@@ -76,9 +106,10 @@ const main = async () => {
             const ext = path.extname(filePath).toLowerCase();
             const fileName = path.basename(filePath);
 
-            if (isVideoFile(filePath)) {
-                console.log(`   [Video] Found: ${fileName}`);
-                videoFiles.push(filePath);
+            if (isMediaFile(filePath)) {
+                const fileType = isAudioFile(filePath) ? 'Audio' : 'Video';
+                console.log(`   [${fileType}] Found: ${fileName}`);
+                mediaFiles.push(filePath);
             } else if (ext === '.xml') {
                 console.log(`   [XML]   Found: ${fileName}`);
                 xmlFiles.push(filePath);
@@ -90,8 +121,8 @@ const main = async () => {
         }
     });
 
-    // Process Video (ASR)
-    const srtFiles = await Promise.all(videoFiles.map(processVideo));
+    // Process Media (ASR)
+    const srtFiles = await Promise.all(mediaFiles.map(processMedia));
     srtFiles.forEach(srtPath => {
         if (srtPath) {
             filesToProcess.push(srtPath);

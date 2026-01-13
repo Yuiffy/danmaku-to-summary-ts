@@ -1,0 +1,24 @@
+{
+  "audioRecording": {
+    "enabled": true,
+    "audioOnlyRooms": [],
+    "audioFormats": [".m4a", ".aac", ".mp3", ".wav", ".ogg", ".flac"],
+    "defaultFormat": ".m4a"
+  },
+  "timeouts": {
+    "fixVideoWait": 30000,
+    "fileStableCheck": 30000,
+    "processTimeout": 1800000
+  },
+  "recorders": {
+    "ddtv": {
+      "enabled": true,
+      "endpoint": "/ddtv"
+    },
+    "mikufans": {
+      "enabled": true,
+      "endpoint": "/mikufans",
+      "basePath": "D:/files/videos/DDTV录播"
+    }
+  }
+}
