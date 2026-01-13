@@ -4,111 +4,106 @@
 """
 
 import os
-import sys
 import json
+import sys
 
-# 添加当前目录到路径
-sys.path.append(os.path.dirname(__file__))
-
-# 测试配置加载
 def test_config_loading():
     print("测试配置加载...")
     
-    # 检查配置文件
     config_path = os.path.join(os.path.dirname(__file__), 'config.json')
     secrets_path = os.path.join(os.path.dirname(__file__), 'config.secrets.json')
     
     print(f"1. 检查配置文件: {config_path}")
     if os.path.exists(config_path):
-        print("   [OK] 配置文件存在")
-        try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-            print("   [OK] 配置文件可解析")
-            
-            # 检查默认图片配置
-            default_image = config.get('aiServices', {}).get('defaultReferenceImage', '')
-            if default_image:
-                print(f"   [OK] 默认图片配置: {default_image}")
-                
-                # 检查文件是否存在
-                if os.path.exists(default_image):
-                    print(f"   [OK] 默认图片文件存在: {os.path.basename(default_image)}")
-                else:
-                    # 尝试从项目根目录查找
-                    project_root = os.path.join(os.path.dirname(__file__), '..', '..')
-                    root_image_path = os.path.join(project_root, default_image.replace('../', ''))
-                    if os.path.exists(root_image_path):
-                        print(f"   [OK] 默认图片文件存在（项目根目录）: {os.path.basename(root_image_path)}")
-                    else:
-                        print(f"   [ERROR] 默认图片文件不存在: {default_image}")
-            else:
-                print("   [ERROR] 未找到默认图片配置")
-                
-        except Exception as e:
-            print(f"   [ERROR] 配置文件解析失败: {e}")
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+        print("   [OK] 配置文件加载成功")
+        
+        # 检查Hugging Face配置
+        hf_config = config.get('aiServices', {}).get('huggingFace', {})
+        print(f"   Hugging Face enabled: {hf_config.get('enabled', False)}")
+        print(f"   Proxy: {hf_config.get('proxy', '未配置')}")
+        print(f"   Model: {hf_config.get('comicFactoryModel', '未配置')}")
     else:
         print("   [ERROR] 配置文件不存在")
+        return False
     
     print(f"\n2. 检查密钥文件: {secrets_path}")
     if os.path.exists(secrets_path):
-        print("   [OK] 密钥文件存在")
-        try:
-            with open(secrets_path, 'r', encoding='utf-8') as f:
-                secrets = json.load(f)
-            print("   [OK] 密钥文件可解析")
-            
-            # 检查Gemini API密钥
-            gemini_key = secrets.get('aiServices', {}).get('gemini', {}).get('apiKey', '')
-            if gemini_key and gemini_key.strip():
-                print("   [OK] Gemini API密钥已配置")
-            else:
-                print("   [ERROR] Gemini API密钥未配置")
-                
-            # 检查Hugging Face令牌
-            hf_token = secrets.get('aiServices', {}).get('huggingFace', {}).get('apiToken', '')
-            if hf_token and hf_token.strip():
-                print("   [OK] Hugging Face令牌已配置")
-            else:
-                print("   [ERROR] Hugging Face令牌未配置")
-                
-        except Exception as e:
-            print(f"   [ERROR] 密钥文件解析失败: {e}")
+        with open(secrets_path, 'r', encoding='utf-8') as f:
+            secrets = json.load(f)
+        print("   [OK] 密钥文件加载成功")
+        
+        # 检查Hugging Face令牌
+        hf_token = secrets.get('aiServices', {}).get('huggingFace', {}).get('apiToken', '')
+        if hf_token and hf_token.strip():
+            print("   [OK] Hugging Face令牌已配置")
+            print(f"   令牌长度: {len(hf_token)} 字符")
+            print(f"   令牌前10位: {hf_token[:10]}...")
+            return True
+        else:
+            print("   [ERROR] Hugging Face令牌未配置或为空")
+            return False
     else:
         print("   [ERROR] 密钥文件不存在")
-    
-    print("\n3. 测试房间配置...")
-    room_id = "22470216"  # 测试房间
-    print(f"   测试房间: {room_id}")
-    
-    if 'config' in locals():
-        if 'roomSettings' in config and room_id in config['roomSettings']:
-            room_config = config['roomSettings'][room_id]
-            print(f"   [OK] 房间 {room_id} 有特定配置")
-            print(f"      referenceImage: {room_config.get('referenceImage', '未配置')}")
-            print(f"      enableTextGeneration: {room_config.get('enableTextGeneration', True)}")
-            print(f"      enableComicGeneration: {room_config.get('enableComicGeneration', True)}")
+        return False
+
+def test_ai_comic_generator_config():
+    print("\n3. 测试ai_comic_generator.py配置加载...")
+    try:
+        # 导入ai_comic_generator的配置函数
+        sys.path.insert(0, os.path.dirname(__file__))
+        from ai_comic_generator import load_config, is_huggingface_configured
+        
+        config = load_config()
+        print("   [OK] load_config()成功")
+        
+        print(f"   Config keys: {list(config.keys())}")
+        
+        hf_config = config.get('aiServices', {}).get('huggingFace', {})
+        print(f"   Hugging Face config: {hf_config}")
+        
+        is_configured = is_huggingface_configured()
+        print(f"   is_huggingface_configured(): {is_configured}")
+        
+        if is_configured:
+            print("   [OK] Hugging Face配置检查通过")
+            return True
         else:
-            print(f"   [INFO] 房间 {room_id} 无特定配置，将使用默认设置")
-            print(f"      默认图片: {default_image}")
+            print("   [ERROR] Hugging Face配置检查失败")
+            return False
+            
+    except Exception as e:
+        print(f"   [ERROR] 导入失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+def main():
+    print("配置加载测试")
+    print("============\n")
     
-    print("\n4. 测试文件路径解析...")
-    test_file = "2026_01_11_23_40_59_你好你好小悠复活_DDTV5_1_AI_HIGHLIGHT.txt"
-    print(f"   测试文件名: {test_file}")
+    config_ok = test_config_loading()
     
-    # 提取房间ID
-    import re
-    match = re.match(r'^(\d+)_', test_file)
-    if match:
-        extracted_room_id = match.group(1)
-        print(f"   [OK] 从文件名提取房间ID: {extracted_room_id}")
+    if config_ok:
+        print("\n[INFO] 基本配置检查通过，测试ai_comic_generator配置...")
+        generator_ok = test_ai_comic_generator_config()
+        
+        if generator_ok:
+            print("\n[OK] 所有配置测试通过！")
+        else:
+            print("\n[ERROR] ai_comic_generator配置测试失败")
+            print("\n可能的问题:")
+            print("1. config.secrets.json格式不正确")
+            print("2. ai_comic_generator.py中的load_config()函数有问题")
+            print("3. 文件编码问题")
     else:
-        print("   [ERROR] 无法从文件名提取房间ID")
+        print("\n[ERROR] 基本配置检查失败")
     
-    print("\n测试总结")
-    print("===========")
-    print("配置加载测试完成。")
-    print("如果所有检查都通过，系统配置正确。")
+    print("\n建议:")
+    print("1. 检查config.secrets.json文件格式")
+    print("2. 确保Hugging Face令牌正确")
+    print("3. 检查文件编码是否为UTF-8")
 
 if __name__ == "__main__":
-    test_config_loading()
+    main()
