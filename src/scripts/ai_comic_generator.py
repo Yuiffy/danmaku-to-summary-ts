@@ -156,8 +156,82 @@ def extract_room_id_from_filename(filename: str) -> Optional[str]:
     match = re.match(r'^(\d+)_', filename)
     return match.group(1) if match else None
 
+def optimize_prompt_with_gemini(highlight_content: str, reference_image_path: Optional[str] = None) -> str:
+    """使用Gemini优化漫画生成提示词"""
+    print("[GEMINI] 使用Gemini优化漫画提示词...")
+    
+    try:
+        # 导入Google Generative AI
+        import google.generativeai as genai
+        
+        # 加载配置
+        config = load_config()
+        
+        # 获取Gemini配置
+        gemini_config = config.get('aiServices', {}).get('gemini', {})
+        gemini_api_key = gemini_config.get('apiKey', '')
+        
+        if not gemini_api_key:
+            print("[WARNING]  Gemini API密钥未配置，使用原始提示词")
+            return build_comic_prompt(highlight_content, reference_image_path)
+        
+        # 配置Gemini
+        genai.configure(api_key=gemini_api_key)
+        
+        # 设置代理
+        proxy_url = gemini_config.get('proxy', '')
+        if proxy_url:
+            import os
+            os.environ['http_proxy'] = proxy_url
+            os.environ['https_proxy'] = proxy_url
+        
+        # 创建模型
+        model_name = gemini_config.get('model', 'gemini-2.0-flash-exp')
+        model = genai.GenerativeModel(model_name)
+        
+        # 构建优化提示词
+        optimization_prompt = f"""你是一个专业的漫画脚本作家和AI绘画提示词专家。
+
+任务：将直播内容转化为适合AI图像生成的漫画脚本提示词。
+
+直播内容：
+{highlight_content[:1500]}  # 限制长度
+
+要求：
+1. 生成适合Stable Diffusion/DALL-E/Midjourney等AI绘画模型的英文提示词
+2. 提示词要详细描述场景、角色、动作、表情、构图、风格
+3. 如果是虚拟主播直播，注意角色特征（如：岁己SUI是白发红瞳女生，饼干岁是小饼干状生物）
+4. 风格要求：日本漫画风格，多分镜（5-8个场景），每个场景有简短文字说明
+5. 画面要生动、有趣、有故事性
+6. 输出格式：纯英文的详细提示词，适合直接输入给AI绘画模型
+
+请生成优化的AI绘画提示词："""
+        
+        # 调用Gemini
+        response = model.generate_content(optimization_prompt)
+        
+        if response and response.text:
+            optimized_prompt = response.text.strip()
+            print("[OK] Gemini提示词优化完成")
+            print(f"优化后提示词长度: {len(optimized_prompt)} 字符")
+            return optimized_prompt
+        else:
+            print("[WARNING]  Gemini返回空结果，使用原始提示词")
+            return build_comic_prompt(highlight_content, reference_image_path)
+            
+    except ImportError:
+        print("[WARNING]  google-generativeai库未安装，使用原始提示词")
+        print("   请安装: pip install google-generativeai")
+    except Exception as e:
+        print(f"[ERROR]  Gemini优化失败: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    # 失败时返回原始提示词
+    return build_comic_prompt(highlight_content, reference_image_path)
+
 def build_comic_prompt(highlight_content: str, reference_image_path: Optional[str] = None) -> str:
-    """构建漫画生成提示词"""
+    """构建漫画生成提示词（原始版本）"""
     base_prompt = f"""<job>你作为虚拟主播二创画师大手子，根据直播内容，绘制直播总结插画。</job>
 
 <character>注意一定要还原附件image_0图片中的角色形象，岁己SUI（白发红瞳女生），饼干岁（有细细四肢的小小的饼干状生物）</character>
@@ -474,8 +548,8 @@ def generate_comic_from_highlight(highlight_path: str) -> Optional[str]:
         highlight_content = read_highlight_file(highlight_path)
         print(f"[BOOK] 读取内容完成 ({len(highlight_content)} 字符)")
         
-        # 构建提示词
-        prompt = build_comic_prompt(highlight_content, reference_image_path)
+        # 构建提示词（使用Gemini优化）
+        prompt = optimize_prompt_with_gemini(highlight_content, reference_image_path)
         
         # 调用API生成漫画
         comic_result = call_huggingface_comic_factory(prompt, reference_image_path)
