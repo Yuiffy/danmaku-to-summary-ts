@@ -129,8 +129,19 @@ async function generateTextWithGemini(prompt) {
     console.log(`   温度: ${geminiConfig.temperature}`);
     
     try {
-        const genAI = new GoogleGenerativeAI(geminiConfig.apiKey);
-        const model = genAI.getGenerativeModel({ 
+        // 配置代理
+        const fetch = require('node-fetch');
+        const { HttpsProxyAgent } = require('https-proxy-agent');
+        
+        let fetchOptions = {};
+        if (geminiConfig.proxy) {
+            console.log(`   使用代理: ${geminiConfig.proxy}`);
+            const agent = new HttpsProxyAgent(geminiConfig.proxy);
+            fetchOptions = { agent };
+        }
+        
+        const genAI = new GoogleGenerativeAI(geminiConfig.apiKey, fetchOptions);
+        const model = genAI.getGenerativeModel({
             model: geminiConfig.model,
             generationConfig: {
                 temperature: geminiConfig.temperature,

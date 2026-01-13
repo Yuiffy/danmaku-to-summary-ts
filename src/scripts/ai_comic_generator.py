@@ -95,6 +95,27 @@ def get_room_reference_image(room_id: str) -> Optional[str]:
                 if os.path.exists(file_path):
                     return file_path
     
+    # 如果没有找到房间特定的图片，使用默认图片
+    default_image = config.get("aiServices", {}).get("defaultReferenceImage", "")
+    if default_image and os.path.exists(default_image):
+        print(f"ℹ️  使用默认参考图片: {os.path.basename(default_image)}")
+        return default_image
+    
+    # 检查默认图片文件是否存在
+    ref_images_dir = os.path.join(os.path.dirname(__file__), "reference_images")
+    if os.path.exists(ref_images_dir):
+        default_files = [
+            os.path.join(ref_images_dir, "default.jpg"),
+            os.path.join(ref_images_dir, "default.jpeg"),
+            os.path.join(ref_images_dir, "default.png"),
+            os.path.join(ref_images_dir, "default.webp"),
+            os.path.join(ref_images_dir, "岁己小红帽立绘.png")  # 特定文件名
+        ]
+        for file_path in default_files:
+            if os.path.exists(file_path):
+                print(f"ℹ️  找到默认图片: {os.path.basename(file_path)}")
+                return file_path
+    
     return None
 
 def read_highlight_file(highlight_path: str) -> str:

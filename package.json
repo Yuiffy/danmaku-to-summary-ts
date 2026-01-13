@@ -10,9 +10,12 @@
     "restart:webhook": "pm2 restart ddtv-hook"
   },
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
     "express": "^5.2.1",
+    "https-proxy-agent": "^7.0.6",
     "moment": "^2.30.1",
     "next": "14.2.15",
+    "node-fetch": "^3.3.2",
     "react": "^18",
     "react-dom": "^18",
     "xml2js": "^0.6.2"
