@@ -35,3 +35,6 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 .idea
+
+# 敏感配置文件
+src/scripts/config.secrets.json

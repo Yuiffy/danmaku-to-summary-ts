@@ -70,8 +70,8 @@ const processedFiles = new Set();
 // 增加请求体大小限制，防止超大 JSON 报错
 app.use(express.json({ limit: '50mb' }));
 
-// JavaScript 脚本路径
-const JS_SCRIPT_PATH = path.join(__dirname, 'auto_summary.js');
+// JavaScript 脚本路径 - 使用增强版脚本
+const JS_SCRIPT_PATH = path.join(__dirname, 'enhanced_auto_summary.js');
 
 /**
  * 等待文件大小稳定

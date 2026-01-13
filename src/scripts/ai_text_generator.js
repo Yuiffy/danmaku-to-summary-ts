@@ -1,0 +1,298 @@
+const fs = require('fs');
+const path = require('path');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+
+// 加载配置
+function loadConfig() {
+    const configPath = path.join(__dirname, 'config.json');
+    const secretsPath = path.join(__dirname, 'config.secrets.json');
+    const defaultConfig = {
+        aiServices: {
+            gemini: {
+                enabled: true,
+                apiKey: '',
+                model: 'gemini-1.5-flash',
+                temperature: 0.7,
+                maxTokens: 2000
+            }
+        },
+        timeouts: {
+            aiApiTimeout: 60000
+        }
+    };
+
+    try {
+        // 加载主配置文件
+        if (fs.existsSync(configPath)) {
+            const userConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+            // 深度合并配置
+            const merged = JSON.parse(JSON.stringify(defaultConfig));
+            if (userConfig.aiServices?.gemini) {
+                Object.assign(merged.aiServices.gemini, userConfig.aiServices.gemini);
+            }
+            if (userConfig.timeouts) {
+                Object.assign(merged.timeouts, userConfig.timeouts);
+            }
+            
+            // 加载密钥配置文件（如果存在）
+            if (fs.existsSync(secretsPath)) {
+                try {
+                    const secretsConfig = JSON.parse(fs.readFileSync(secretsPath, 'utf8'));
+                    if (secretsConfig.aiServices?.gemini?.apiKey) {
+                        merged.aiServices.gemini.apiKey = secretsConfig.aiServices.gemini.apiKey;
+                    }
+                } catch (secretsError) {
+                    console.warn('警告: 无法加载密钥配置文件，API密钥将为空:', secretsError.message);
+                }
+            }
+            
+            return merged;
+        }
+    } catch (error) {
+        console.error('Error loading AI config:', error);
+    }
+    return defaultConfig;
+}
+
+// 检查Gemini配置是否有效
+function isGeminiConfigured() {
+    const config = loadConfig();
+    return config.aiServices.gemini.enabled && 
+           config.aiServices.gemini.apiKey && 
+           config.aiServices.gemini.apiKey.trim() !== '';
+}
+
+// 读取AI_HIGHLIGHT.txt内容
+function readHighlightFile(highlightPath) {
+    try {
+        return fs.readFileSync(highlightPath, 'utf8');
+    } catch (error) {
+        console.error(`❌ 读取AI_HIGHLIGHT文件失败: ${error.message}`);
+        throw error;
+    }
+}
+
+// 构建提示词
+function buildPrompt(highlightContent) {
+    return `【角色设定】
+
+身份：岁己SUI的铁粉（自称"饼干岁"或"饼干"）。
+
+性格：喜欢调侃、宠溺主播，有点话痨，对主播的生活琐事和梗如数家珍。
+
+语气：亲昵、幽默、像老朋友一样聊天。常用语气词（如：哈哈、捏、嘛、呜呜），会使用直播间黑话（如：老己、漂亮饭、阿肯苦力等）。
+
+【核心原则（最重要！）】
+
+严格限定素材：只根据用户当前提供的文档/文本内容进行创作。绝对禁止混入该文档以外的任何已知信息、历史直播内容或互联网搜索结果（因为岁己的梗很多，AI容易串台，这一点必须强调）。
+
+时效性：根据文档内容判断是早播、午播还是晚播，分别对应"早安"、"午安"或"晚安"的场景。
+
+【写作结构与要素】
+
+开场白：
+格式：晚安/早安岁岁！🌙/☀️
+内容：一句话总结今天直播的整体感受（如：含金量极高、含梗量爆炸、辛苦了、被治愈了等）。
+
+正文（核心内容回顾）：
+抓细节：从文档中提取3-5个具体的直播亮点。
+生活碎碎念（如：洗碗、理发、吃东西、身体不舒服、猫咪嘉嘉的趣事）。
+直播事故/趣事（如：迟到理由、设备故障、口误、奇怪的脑洞）。
+鉴赏/游戏环节（如：看了什么电影/视频、玩了什么游戏，主播的反应和吐槽）。
+歌回：提到了哪些歌，唱得怎么样（好听/糊弄/搞笑）。
+互动吐槽：针对上述细节进行粉丝视角的吐槽或夸奖（如："只有你能干出这事"、"心疼小笨蛋"、"笑死我了"）。
+
+结尾（情感升华）：
+关怀：叮嘱主播注意身体（嗓子、睡眠、吃饭），不要太累。
+期待：确认下一次直播的时间（如果文档里提到了）。
+落款：—— 永远爱你的/支持你的/陪着你的饼干岁 🍪
+
+字数要求：800字以内。
+
+【直播内容摘要】
+${highlightContent}
+
+请根据以上直播内容，以饼干岁的身份写一篇晚安回复。记住：只使用提供的直播内容，不要添加任何外部信息。`;
+}
+
+// 调用Gemini API生成文本
+async function generateTextWithGemini(prompt) {
+    const config = loadConfig();
+    const geminiConfig = config.aiServices.gemini;
+    
+    if (!isGeminiConfigured()) {
+        throw new Error('Gemini API未配置，请检查config.secrets.json中的apiKey');
+    }
+    
+    console.log('🤖 调用Gemini API生成文本...');
+    console.log(`   模型: ${geminiConfig.model}`);
+    console.log(`   温度: ${geminiConfig.temperature}`);
+    
+    try {
+        const genAI = new GoogleGenerativeAI(geminiConfig.apiKey);
+        const model = genAI.getGenerativeModel({ 
+            model: geminiConfig.model,
+            generationConfig: {
+                temperature: geminiConfig.temperature,
+                maxOutputTokens: geminiConfig.maxTokens,
+            }
+        });
+        
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        const text = response.text();
+        
+        console.log('✅ Gemini API调用成功');
+        return text;
+    } catch (error) {
+        console.error(`❌ Gemini API调用失败: ${error.message}`);
+        throw error;
+    }
+}
+
+// 保存生成的文本
+function saveGeneratedText(outputPath, text, highlightPath) {
+    try {
+        // 添加元信息
+        const highlightName = path.basename(highlightPath);
+        const timestamp = new Date().toLocaleString('zh-CN');
+        const metaInfo = `# 晚安回复（基于${highlightName}）
+生成时间: ${timestamp}
+---
+        
+`;
+        
+        const fullText = metaInfo + text;
+        fs.writeFileSync(outputPath, fullText, 'utf8');
+        console.log(`✅ 晚安回复已保存: ${path.basename(outputPath)}`);
+        return outputPath;
+    } catch (error) {
+        console.error(`❌ 保存生成文本失败: ${error.message}`);
+        throw error;
+    }
+}
+
+// 生成晚安回复
+async function generateGoodnightReply(highlightPath) {
+    const config = loadConfig();
+    
+    if (!config.aiServices.gemini.enabled) {
+        console.log('ℹ️  AI文本生成功能已禁用');
+        return null;
+    }
+    
+    if (!isGeminiConfigured()) {
+        console.log('⚠️  Gemini API未配置，跳过文本生成');
+        return null;
+    }
+    
+    console.log(`📄 处理AI_HIGHLIGHT文件: ${path.basename(highlightPath)}`);
+    
+    try {
+        // 检查输入文件
+        if (!fs.existsSync(highlightPath)) {
+            throw new Error(`AI_HIGHLIGHT文件不存在: ${highlightPath}`);
+        }
+        
+        // 读取内容
+        const highlightContent = readHighlightFile(highlightPath);
+        console.log(`📖 读取内容完成 (${highlightContent.length} 字符)`);
+        
+        // 构建提示词
+        const prompt = buildPrompt(highlightContent);
+        
+        // 调用API生成文本
+        const generatedText = await generateTextWithGemini(prompt);
+        
+        // 确定输出路径
+        const dir = path.dirname(highlightPath);
+        const baseName = path.basename(highlightPath, '_AI_HIGHLIGHT.txt');
+        const outputPath = path.join(dir, `${baseName}_晚安回复.md`);
+        
+        // 保存结果
+        return saveGeneratedText(outputPath, generatedText, highlightPath);
+        
+    } catch (error) {
+        console.error(`❌ 生成晚安回复失败: ${error.message}`);
+        return null;
+    }
+}
+
+// 批量处理目录中的所有AI_HIGHLIGHT文件
+async function batchGenerateGoodnightReplies(directory) {
+    try {
+        const files = fs.readdirSync(directory);
+        const highlightFiles = files.filter(f => f.includes('_AI_HIGHLIGHT.txt'));
+        
+        console.log(`🔍 在目录中发现 ${highlightFiles.length} 个AI_HIGHLIGHT文件`);
+        
+        const results = [];
+        for (const file of highlightFiles) {
+            const filePath = path.join(directory, file);
+            console.log(`\n--- 处理: ${file} ---`);
+            
+            try {
+                const result = await generateGoodnightReply(filePath);
+                if (result) {
+                    results.push({ file, success: true, output: result });
+                } else {
+                    results.push({ file, success: false, error: '生成失败' });
+                }
+            } catch (error) {
+                console.error(`处理 ${file} 时出错: ${error.message}`);
+                results.push({ file, success: false, error: error.message });
+            }
+        }
+        
+        // 输出统计信息
+        const successCount = results.filter(r => r.success).length;
+        const failCount = results.filter(r => !r.success).length;
+        
+        console.log(`\n📊 批量处理完成:`);
+        console.log(`   ✅ 成功: ${successCount} 个`);
+        console.log(`   ❌ 失败: ${failCount} 个`);
+        
+        return results;
+    } catch (error) {
+        console.error(`❌ 批量处理失败: ${error.message}`);
+        throw error;
+    }
+}
+
+// 导出函数
+module.exports = {
+    loadConfig,
+    isGeminiConfigured,
+    generateGoodnightReply,
+    batchGenerateGoodnightReplies
+};
+
+// 命令行测试
+if (require.main === module) {
+    const args = process.argv.slice(2);
+    
+    if (args.length === 0) {
+        console.log('用法:');
+        console.log('  1. 处理单个文件: node ai_text_generator.js <AI_HIGHLIGHT.txt路径>');
+        console.log('  2. 批量处理目录: node ai_text_generator.js --batch <目录路径>');
+        process.exit(1);
+    }
+    
+    (async () => {
+        try {
+            if (args[0] === '--batch' && args[1]) {
+                await batchGenerateGoodnightReplies(args[1]);
+            } else {
+                const result = await generateGoodnightReply(args[0]);
+                if (result) {
+                    console.log(`\n🎉 处理完成，输出文件: ${result}`);
+                } else {
+                    console.log('\nℹ️  未生成任何文件');
+                }
+            }
+        } catch (error) {
+            console.error(`💥 处理失败: ${error.message}`);
+            process.exit(1);
+        }
+    })();
+}

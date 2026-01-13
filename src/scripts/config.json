@@ -5,10 +5,38 @@
     "audioFormats": [".m4a", ".aac", ".mp3", ".wav", ".ogg", ".flac"],
     "defaultFormat": ".m4a"
   },
+  "audioProcessing": {
+    "enabled": true,
+    "audioOnlyRooms": [26966466],
+    "keepOriginalVideo": false,
+    "ffmpegPath": "ffmpeg"
+  },
+  "aiServices": {
+    "gemini": {
+      "enabled": true,
+      "model": "gemini-1.5-flash",
+      "temperature": 0.7,
+      "maxTokens": 2000
+    },
+    "huggingFace": {
+      "enabled": true,
+      "comicFactoryModel": "jbilcke-hf/ai-comic-factory"
+    }
+  },
+  "roomSettings": {
+    "26966466": {
+      "audioOnly": true,
+      "referenceImage": "reference_images/26966466.jpg",
+      "enableTextGeneration": true,
+      "enableComicGeneration": true
+    }
+  },
   "timeouts": {
     "fixVideoWait": 30000,
     "fileStableCheck": 30000,
-    "processTimeout": 1800000
+    "processTimeout": 1800000,
+    "aiApiTimeout": 60000,
+    "ffmpegTimeout": 300000
   },
   "recorders": {
     "ddtv": {
