@@ -802,6 +802,8 @@ def generate_comic_from_highlight(highlight_path: str) -> Optional[str]:
     """从AI_HIGHLIGHT文件生成漫画（已禁用）"""
     print(f"[FILE] 处理AI_HIGHLIGHT文件: {os.path.basename(highlight_path)}")
     
+    config = load_config()
+    
     try:
         # 检查输入文件
         if not os.path.exists(highlight_path):
