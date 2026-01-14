@@ -566,8 +566,8 @@ app.post('/mikufans', (req, res) => {
         return res.send('Session ended logged');
     }
 
-    // 只处理文件相关事件
-    if (eventType !== 'FileOpening' && eventType !== 'FileClosed') {
+    // 只处理文件关闭事件
+    if (eventType !== 'FileClosed') {
         console.log(`ℹ️ 忽略非文件事件: ${eventType}`);
         return res.send('Event logged (non-file event ignored)');
     }
@@ -603,68 +603,23 @@ app.post('/mikufans', (req, res) => {
     
     // 异步处理文件事件
     (async () => {
-        // 对于FileOpening事件，等待文件稳定并记录到会话
-        if (eventType === 'FileOpening') {
-            console.log(`🔄 FileOpening事件：等待文件稳定... (${path.basename(normalizedPath)})`);
-
-            // 等待文件出现
-            const timeouts = getTimeoutConfig();
-            const maxWaitTime = timeouts.fileStableCheck || 30000;
-            const checkInterval = 2000;
-            let waitedTime = 0;
-            let fileFound = false;
-
-            while (waitedTime < maxWaitTime && !fileFound) {
-                await sleep(checkInterval);
-                waitedTime += checkInterval;
-
-                if (fs.existsSync(normalizedPath)) {
-                    fileFound = true;
-                    console.log(`✅ 发现文件 (等待了${waitedTime/1000}秒): ${path.basename(normalizedPath)}`);
-                    break;
-                }
-
-                console.log(`⏳ 等待文件出现... ${waitedTime/1000}秒`);
+        // 对于FileClosed事件，检查Recording状态
+        if (recording === true) {
+            // 直播仍在继续，只添加到会话列表，不等待稳定
+            if (sessionFiles.has(sessionId)) {
+                sessionFiles.get(sessionId).push(normalizedPath);
+                console.log(`📝 文件添加到会话列表 (直播继续): ${path.basename(normalizedPath)} (Session: ${sessionId})`);
             }
-
-            if (!fileFound) {
-                console.log(`❌ 超时未发现文件: ${path.basename(normalizedPath)}`);
-                return;
-            }
-
-            // 等待文件稳定
+        } else {
+            // 直播已结束，等待稳定后直接处理该文件
+            console.log(`🔄 FileClosed事件：检查文件稳定... (${path.basename(normalizedPath)})`);
             const isStable = await waitFileStable(normalizedPath);
             if (!isStable) {
                 console.log(`❌ 文件稳定性检查失败: ${path.basename(normalizedPath)}`);
                 return;
             }
-
-            // 添加到会话文件列表
-            if (sessionFiles.has(sessionId)) {
-                sessionFiles.get(sessionId).push(normalizedPath);
-                console.log(`📝 文件添加到会话列表: ${path.basename(normalizedPath)} (Session: ${sessionId})`);
-            }
-        }
-
-        // 对于FileClosed事件，检查Recording状态
-        if (eventType === 'FileClosed') {
-            if (recording === true) {
-                // 直播仍在继续，只添加到会话列表，不等待稳定
-                if (sessionFiles.has(sessionId)) {
-                    sessionFiles.get(sessionId).push(normalizedPath);
-                    console.log(`📝 文件添加到会话列表 (直播继续): ${path.basename(normalizedPath)} (Session: ${sessionId})`);
-                }
-            } else {
-                // 直播已结束，等待稳定后直接处理该文件
-                console.log(`🔄 FileClosed事件：检查文件稳定... (${path.basename(normalizedPath)})`);
-                const isStable = await waitFileStable(normalizedPath);
-                if (!isStable) {
-                    console.log(`❌ 文件稳定性检查失败: ${path.basename(normalizedPath)}`);
-                    return;
-                }
-                console.log(`🏁 直播结束，立即处理文件: ${path.basename(normalizedPath)}`);
-                await processMikufansFile(normalizedPath);
-            }
+            console.log(`🏁 直播结束，立即处理文件: ${path.basename(normalizedPath)}`);
+            await processMikufansFile(normalizedPath);
         }
     })();
     
