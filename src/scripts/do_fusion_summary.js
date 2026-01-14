@@ -45,7 +45,7 @@ async function processLiveData(inputFiles) {
     const baseName = path.basename(inputFiles[0]).replace(/\.(srt|xml|mp4|flv|mkv)$/i, '').replace(/_fix$/, '');
     const outputFile = path.join(baseDir, `${baseName}_AI_HIGHLIGHT.txt`);
 
-    console.log(`🔥 启动热力图采样模式...`);
+    console.log(`🔥 启动热力图采样模式...来源文件：${srtFiles.map(f => path.basename(f)).join(', ')} ${xmlFiles.map(f => path.basename(f)).join(', ')}`);
 
     // --- 1. 解析弹幕 (生成热力数据) ---
     const parser = new xml2js.Parser();
