@@ -226,9 +226,11 @@ app.post('/ddtv', (req, res) => {
     console.log(`📅 时间: ${eventTime}`);
     console.log(`📨 事件 (cmd): ${cmd}`);
 
-    // 尝试提取主播名字，方便你看是谁触发的
+    // 尝试提取主播名字与房间ID，方便你看是谁触发的
     const roomName = payload.data?.Name || payload.room_info?.uname || '未知主播';
+    const roomId = payload.data?.RoomId || payload.room_info?.roomid || payload.room_info?.roomId || payload.roomId || payload.room || payload.data?.roomId || 'unknown';
     console.log(`👤 主播: ${roomName}`);
+    console.log(`🏷️ 房间ID: ${roomId}`);
 
     // 🔥 核心：打印完整的 Payload 结构，让你看清楚格式
     // 可能会很长，但这是你现在需要的
@@ -412,7 +414,7 @@ app.post('/ddtv', (req, res) => {
                     const ps = spawn('node', jsArgs, {
                         cwd: __dirname,
                         windowsHide: true,
-                        env: { ...process.env, NODE_ENV: 'automation' } // 标记为自动化环境
+                        env: { ...process.env, NODE_ENV: 'automation', ROOM_ID: String(roomId) } // 标记为自动化环境并传递房间ID
                     });
 
                     let saveTimeout = setTimeout(() => {
@@ -493,7 +495,7 @@ app.post('/ddtv', (req, res) => {
     const ps = spawn('node', jsArgs, {
         cwd: __dirname,
         windowsHide: true,
-        env: { ...process.env, NODE_ENV: 'automation' } // 标记为自动化环境
+        env: { ...process.env, NODE_ENV: 'automation', ROOM_ID: String(roomId) } // 标记为自动化环境并传递房间ID
     });
 
     let processTimeout = setTimeout(() => {

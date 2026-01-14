@@ -73,12 +73,47 @@ function readHighlightFile(highlightPath) {
         throw error;
     }
 }
+// 从文件名提取房间ID（如 26966466_...）
+function extractRoomIdFromFilename(filename) {
+    const m = filename.match(/^(\d+)_/);
+    return m ? m[1] : null;
+}
 
-// 构建提示词
-function buildPrompt(highlightContent) {
+// 获取主播与粉丝名称（支持房间级覆盖与全局默认）
+function getNames(roomId) {
+    const configPath = path.join(__dirname, 'config.json');
+    let anchor = '岁己SUI';
+    let fan = '饼干岁';
+
+    try {
+        if (fs.existsSync(configPath)) {
+            const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+            if (cfg.aiServices) {
+                if (cfg.aiServices.defaultAnchorName) anchor = cfg.aiServices.defaultAnchorName;
+                if (cfg.aiServices.defaultFanName) fan = cfg.aiServices.defaultFanName;
+            }
+            if (roomId && cfg.roomSettings && cfg.roomSettings[roomId]) {
+                const r = cfg.roomSettings[roomId];
+                if (r.anchorName) anchor = r.anchorName;
+                if (r.fanName) fan = r.fanName;
+            }
+        }
+    } catch (e) {
+        console.warn('警告: 读取配置以获取名称失败，使用默认名称', e.message);
+    }
+
+    return { anchor, fan };
+}
+
+// 构建提示词（支持传入 roomId 以使用房间级名称覆盖）
+function buildPrompt(highlightContent, roomId) {
+    const names = getNames(roomId);
+    const anchor = names.anchor;
+    const fan = names.fan;
+
     return `【角色设定】
 
-身份：岁己SUI的铁粉（自称"饼干岁"或"饼干"）。
+身份：${anchor}的铁粉（自称"${fan}"或"${fan.replace(/岁$/, '')}"）。
 
 性格：喜欢调侃、宠溺主播，有点话痨，对主播的生活琐事和梗如数家珍。
 
@@ -86,14 +121,14 @@ function buildPrompt(highlightContent) {
 
 【核心原则（最重要！）】
 
-严格限定素材：只根据用户当前提供的文档/文本内容进行创作。绝对禁止混入该文档以外的任何已知信息、历史直播内容或互联网搜索结果（因为岁己的梗很多，AI容易串台，这一点必须强调）。
+严格限定素材：只根据用户当前提供的文档/文本内容进行创作。绝对禁止混入该文档以外的任何已知信息、历史直播内容或互联网搜索结果（因为${anchor}的梗很多，AI容易串台，这一点必须强调）。
 
 时效性：根据文档内容判断是早播、午播还是晚播，分别对应"早安"、"午安"或"晚安"的场景。
 
 【写作结构与要素】
 
 开场白：
-格式：晚安/早安岁岁！🌙/☀️
+格式：晚安/早安${anchor}！🌙/☀️
 内容：一句话总结今天直播的整体感受（如：含金量极高、含梗量爆炸、辛苦了、被治愈了等）。
 
 正文（核心内容回顾）：
@@ -102,19 +137,19 @@ function buildPrompt(highlightContent) {
 直播事故/趣事（如：迟到理由、设备故障、口误、奇怪的脑洞）。
 鉴赏/游戏环节（如：看了什么电影/视频、玩了什么游戏，主播的反应和吐槽）。
 歌回：提到了哪些歌，唱得怎么样（好听/糊弄/搞笑）。
-互动吐槽：针对上述细节进行粉丝视角的吐槽或夸奖（如："只有你能干出这事"、"心疼小笨蛋"、"笑死我了"）。
+互动吐槽：针对上述细节进行粉丝视角的吐槽或夸奖（如:"只有你能干出这事"、"心疼小笨蛋"、"笑死我了")。
 
 结尾（情感升华）：
 关怀：叮嘱主播注意身体（嗓子、睡眠、吃饭），不要太累。
 期待：确认下一次直播的时间（如果文档里提到了）。
-落款：—— 永远爱你的/支持你的/陪着你的饼干岁 🍪
+落款：—— 永远爱你的/支持你的/陪着你的${fan} 🍪
 
 字数要求：800字以内。
 
 【直播内容摘要】
 ${highlightContent}
 
-请根据以上直播内容，以饼干岁的身份写一篇晚安回复。记住：只使用提供的直播内容，不要添加任何外部信息。`;
+请根据以上直播内容，以${fan}的身份写一篇晚安回复。记住：只使用提供的直播内容，不要添加任何外部信息。`;
 }
 
 // 调用Gemini API生成文本
@@ -229,8 +264,12 @@ async function generateGoodnightReply(highlightPath) {
         const highlightContent = readHighlightFile(highlightPath);
         console.log(`📖 读取内容完成 (${highlightContent.length} 字符)`);
         
+        // 构建提示词（尝试从环境或文件名获取 roomId 以使用房间级名称覆盖）
+        const envRoomId = process.env.ROOM_ID || null;
+        const fileRoomId = extractRoomIdFromFilename(path.basename(highlightPath));
+        const roomId = envRoomId || fileRoomId;
         // 构建提示词
-        const prompt = buildPrompt(highlightContent);
+        const prompt = buildPrompt(highlightContent, roomId);
         
         // 调用API生成文本
         const generatedText = await generateTextWithGemini(prompt);

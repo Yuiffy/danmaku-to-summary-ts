@@ -12,7 +12,7 @@ import time
 import base64
 import requests
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 import traceback
 import subprocess
 import shutil
@@ -165,20 +165,57 @@ def extract_room_id_from_filename(filename: str) -> Optional[str]:
     match = re.match(r'^(\d+)_', filename)
     return match.group(1) if match else None
 
-def build_comic_prompt(highlight_content: str, reference_image_path: Optional[str] = None) -> str:
-    """构建漫画生成提示词（先生成漫画内容，再构建绘画提示词）"""
+def get_room_character_description(room_id: Optional[str] = None) -> str:
+    """从配置中获取房间或全局的角色描述，返回已清洗的字符串。"""
+    try:
+        config = load_config()
 
-    # 第一步：使用Gemini生成漫画内容脚本
-    comic_content = generate_comic_content_with_ai(highlight_content)
+        desc = ""
+        if room_id:
+            room_cfg = config.get("roomSettings", {}).get(str(room_id), {})
+            desc = room_cfg.get("characterDescription") or room_cfg.get("characterDesc", "")
 
-    # 第二步：基于漫画内容构建绘画提示词
+        if not desc:
+            desc = config.get("aiServices", {}).get("defaultCharacterDescription", "")
+
+        if not desc:
+            # 内置回退描述（与原先硬编码内容一致）
+            desc = "岁己SUI（白发红瞳女生），饼干岁（有细细四肢的小小的饼干状生物）"
+
+        # 清洗：折叠换行、去两端空白、截断、去除尖括号以避免模型解析问题
+        desc = " ".join([s.strip() for s in desc.splitlines() if s.strip()])
+        desc = desc.replace("<", "").replace(">", "")
+        if len(desc) > 400:
+            desc = desc[:400]
+
+        return desc
+    except Exception:
+        return "岁己SUI（白发红瞳女生），饼干岁（有细细四肢的小小的饼干状生物）"
+
+def build_comic_prompt(highlight_content: str, reference_image_path: Optional[str] = None, room_id: Optional[str] = None, existing_comic: Optional[str] = None) -> Tuple[str, str]:
+    """构建漫画生成提示词并返回 (prompt, comic_content)。
+
+    如果提供 `existing_comic` 则复用已有脚本而不再调用AI生成。
+    返回值: (base_prompt, comic_content)
+    """
+    # 第一步：如果传入已有脚本则复用，否则使用AI生成漫画内容脚本
+    if existing_comic and existing_comic.strip() != "":
+        comic_content = existing_comic
+    else:
+        comic_content = generate_comic_content_with_ai(highlight_content, room_id=room_id)
+
+    # 获取角色描述并注入绘画提示词（优先房间配置、再全局默认、最后内置默认）
+    character_desc = get_room_character_description(room_id)
+
+    # 第二步：基于漫画内容构建绘画提示词（包含角色设定，便于图像生成一致）
     base_prompt = f"""<note>一定要按照给你的参考图还原形象，而不是自己乱画一个动漫角色</note>
+<character>{character_desc}</character>
 下面是根据直播内容生成的漫画脚本，请根据这个脚本绘制漫画：
 {comic_content}"""
 
-    return base_prompt
+    return base_prompt, comic_content
 
-def generate_comic_content_with_ai(highlight_content: str) -> str:
+def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str] = None) -> str:
     """使用AI生成漫画内容脚本"""
     print("[AI] 使用AI生成漫画内容脚本...")
 
@@ -238,17 +275,18 @@ def generate_comic_content_with_ai(highlight_content: str) -> str:
         # 获取模型名称
         model_name = gemini_config.get('model', 'gemini-1.5-flash')
 
-        # 生成漫画内容脚本
+        # 生成漫画内容脚本（注入配置化的角色描述）
+        character_desc = get_room_character_description(room_id)
         content_prompt = f"""<job>你作为虚拟主播二创画师大手子，根据直播内容，绘制直播总结插画</job>
 
-<character>注意一定要还原附件image_0图片中的角色形象，岁己SUI（白发红瞳女生），饼干岁（有细细四肢的小小的饼干状生物）</character>
+    <character>{character_desc}</character>
 
-<style>多个剪贴画风格或者少年漫多个分镜（5~8个吧），每个是一个片段场景，画图+文字台词or简介，文字要短。要画得精致，岁己要美丽动人，饼干岁要可爱。</style>
+    <style>多个剪贴画风格或者少年漫多个分镜（5~8个吧），每个是一个片段场景，画图+文字台词or简介，文字要短。要画得精致，岁己要美丽动人，饼干岁要可爱。</style>
 
-<note>一定要按照给你的参考图还原形象，而不是自己乱画一个动漫角色</note>
-直播内容：
-{highlight_content}
-请创作漫画故事脚本："""
+    <note>一定要按照给你的参考图还原形象，而不是自己乱画一个动漫角色</note>
+    直播内容：
+    {highlight_content}
+    请创作漫画故事脚本："""
 
         # 调用Gemini
         response = client.models.generate_content(
@@ -394,19 +432,7 @@ def call_google_image_api(prompt: str, reference_image_path: Optional[str] = Non
                 # 构建提示词（优化为适合图像生成）
 
                 # 构建提示词（优化为适合图像生成）
-                image_prompt = f"""Create a comic panel in Japanese manga style based on this description:
-
-                {prompt[:1000]}
-
-                Requirements:
-                - Japanese manga style
-                - Comic panel layout
-                - Cute anime characters
-                - Vibrant colors
-                - Clear storytelling
-                - Include text bubbles with Chinese text if needed
-
-                Style: Anime, manga, comic book, vibrant colors, detailed background"""
+                image_prompt = prompt
 
                 if attempt == 0:
                     print("[WAIT] 正在通过Google API生成图像...")
@@ -832,14 +858,16 @@ def generate_comic_from_highlight(highlight_path: str) -> Optional[str]:
         if not os.path.exists(highlight_path):
             raise FileNotFoundError(f"AI_HIGHLIGHT文件不存在: {highlight_path}")
         
-        # 提取房间ID
+        # 提取房间ID（优先使用环境变量 ROOM_ID，其次从文件名提取）
+        env_room = os.environ.get('ROOM_ID', '')
         filename = os.path.basename(highlight_path)
-        room_id = extract_room_id_from_filename(filename)
-        
-        if not room_id:
-            print("[WARNING]  无法从文件名提取房间ID")
+        file_room_id = extract_room_id_from_filename(filename)
+        room_id = env_room if env_room and env_room.strip() != '' else (file_room_id or "unknown")
+
+        if not room_id or str(room_id).strip() == '':
+            print("[WARNING]  无法确定房间ID，使用 'unknown'")
             room_id = "unknown"
-        
+
         print(f"[ROOM] 房间ID: {room_id}")
         
         # 获取参考图片
@@ -860,9 +888,32 @@ def generate_comic_from_highlight(highlight_path: str) -> Optional[str]:
         highlight_content = read_highlight_file(highlight_path)
         print(f"[BOOK] 读取内容完成 ({len(highlight_content)} 字符)")
 
-        # 构建提示词（包含漫画内容生成）
-        prompt = build_comic_prompt(highlight_content, reference_image_path)
-        
+        # 确定脚本文件路径，优先复用已存在的脚本以避免重复AI调用
+        dir_name = os.path.dirname(highlight_path)
+        base_name = os.path.basename(highlight_path).replace('_AI_HIGHLIGHT.txt', '')
+        text_output_path = os.path.join(dir_name, f"{base_name}_COMIC_SCRIPT.txt")
+
+        comic_text = None
+        if os.path.exists(text_output_path):
+            try:
+                with open(text_output_path, 'r', encoding='utf-8') as tf:
+                    comic_text = tf.read()
+                print(f"[INFO]  已存在漫画脚本，复用: {os.path.basename(text_output_path)}")
+            except Exception as e:
+                print(f"[WARNING]  读取已存在漫画脚本失败，重新生成: {e}")
+
+        # 构建提示词（包含漫画内容生成），如果已有脚本则复用
+        prompt, comic_text = build_comic_prompt(highlight_content, reference_image_path, room_id, existing_comic=comic_text)
+
+        # 如果刚生成了脚本且磁盘上没有文件，则先保存脚本（在生成图像之前保存）
+        try:
+            if not os.path.exists(text_output_path) and comic_text:
+                with open(text_output_path, 'w', encoding='utf-8') as tf:
+                    tf.write(comic_text)
+                print(f"[OK] 漫画脚本已保存: {os.path.basename(text_output_path)}")
+        except Exception as e:
+            print(f"[WARNING] 保存漫画脚本失败: {e}")
+
         # 调用API生成漫画（按优先级顺序）
         comic_result = None
 
@@ -881,10 +932,8 @@ def generate_comic_from_highlight(highlight_path: str) -> Optional[str]:
             return None
         
         # 确定输出路径
-        dir_name = os.path.dirname(highlight_path)
-        base_name = os.path.basename(highlight_path).replace('_AI_HIGHLIGHT.txt', '')
         output_path = os.path.join(dir_name, f"{base_name}_COMIC_FACTORY.png")
-        
+
         # 保存结果
         return save_comic_result(output_path, comic_result)
         

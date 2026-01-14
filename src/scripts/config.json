@@ -25,12 +25,18 @@
       "model": "nano-banana",
       "proxy": "http://127.0.0.1:7890"
     },
-    "defaultReferenceImage": "../public/reference_images/岁己小红帽立绘.png"
+    "defaultReferenceImage": "../public/reference_images/岁己小红帽立绘.png",
+    "defaultCharacterDescription": "岁己SUI（白发红瞳女生），饼干岁（有细细四肢的小小的饼干状生物）",
+    "defaultAnchorName": "岁己SUI",
+    "defaultFanName": "饼干岁"
   },
   "roomSettings": {
     "26966466": {
       "audioOnly": true,
       "referenceImage": "../public/reference_images/栞栞新衣_舰长礼物长图里截图.png",
+      "characterDescription": "栞栞Shiori（有兽耳的女生，浅黄色头发小孩），獭獭栞（长得像滑板的海獭）",
+      "anchorName": "栞栞Shiori",
+      "fanName": "獭獭栞",
       "enableTextGeneration": true,
       "enableComicGeneration": true
     }
