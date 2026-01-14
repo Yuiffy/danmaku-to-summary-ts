@@ -591,24 +591,15 @@ app.post('/mikufans', (req, res) => {
     // 异步处理文件事件
     (async () => {
         // 对于FileClosed事件
-        if (sessionEnded.has(sessionId)) {
-            // 会话已结束，等待稳定后处理该文件
-            console.log(`🔄 FileClosed事件：检查文件稳定... (${path.basename(normalizedPath)})`);
-            const isStable = await waitFileStable(normalizedPath);
-            if (!isStable) {
-                console.log(`❌ 文件稳定性检查失败: ${path.basename(normalizedPath)}`);
-                return;
-            }
-            console.log(`🏁 会话已结束，处理文件: ${path.basename(normalizedPath)}`);
-            await processMikufansFile(normalizedPath);
-        } else {
-            // 会话仍在继续，添加到会话列表
-            if (!sessionFiles.has(sessionId)) {
-                sessionFiles.set(sessionId, []);
-            }
-            sessionFiles.get(sessionId).push(normalizedPath);
-            console.log(`📝 文件添加到会话列表 (会话继续): ${path.basename(normalizedPath)} (Session: ${sessionId})`);
+        // 会话已结束，等待稳定后处理该文件
+        console.log(`🔄 FileClosed事件：检查文件稳定... (${path.basename(normalizedPath)})`);
+        const isStable = await waitFileStable(normalizedPath);
+        if (!isStable) {
+            console.log(`❌ 文件稳定性检查失败: ${path.basename(normalizedPath)}`);
+            return;
         }
+        console.log(`🏁 会话已结束，处理文件: ${path.basename(normalizedPath)}`);
+        await processMikufansFile(normalizedPath);
     })();
     
     res.send('Mikufans processing started');

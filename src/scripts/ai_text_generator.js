@@ -130,8 +130,8 @@ async function generateTextWithGemini(prompt) {
     
     try {
         // 配置代理
-        const fetch = require('node-fetch');
-        const { HttpsProxyAgent } = require('https-proxy-agent');
+        const { default: fetch } = await import('node-fetch');
+        const { HttpsProxyAgent } = await import('https-proxy-agent');
         
         let fetchOptions = {};
         if (geminiConfig.proxy) {
