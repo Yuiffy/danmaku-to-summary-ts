@@ -646,25 +646,22 @@ app.post('/mikufans', (req, res) => {
             }
         }
 
-        // 对于FileClosed事件，检查Recording状态，如果true则添加到列表，否则直接处理
+        // 对于FileClosed事件，检查Recording状态
         if (eventType === 'FileClosed') {
-            console.log(`🔄 FileClosed事件：检查文件稳定... (${path.basename(normalizedPath)})`);
-
-            // 等待文件稳定
-            const isStable = await waitFileStable(normalizedPath);
-            if (!isStable) {
-                console.log(`❌ 文件稳定性检查失败: ${path.basename(normalizedPath)}`);
-                return;
-            }
-
             if (recording === true) {
-                // 直播仍在继续，添加到会话列表
+                // 直播仍在继续，只添加到会话列表，不等待稳定
                 if (sessionFiles.has(sessionId)) {
                     sessionFiles.get(sessionId).push(normalizedPath);
                     console.log(`📝 文件添加到会话列表 (直播继续): ${path.basename(normalizedPath)} (Session: ${sessionId})`);
                 }
             } else {
-                // 直播已结束，直接处理该文件
+                // 直播已结束，等待稳定后直接处理该文件
+                console.log(`🔄 FileClosed事件：检查文件稳定... (${path.basename(normalizedPath)})`);
+                const isStable = await waitFileStable(normalizedPath);
+                if (!isStable) {
+                    console.log(`❌ 文件稳定性检查失败: ${path.basename(normalizedPath)}`);
+                    return;
+                }
                 console.log(`🏁 直播结束，立即处理文件: ${path.basename(normalizedPath)}`);
                 await processMikufansFile(normalizedPath);
             }
