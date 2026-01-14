@@ -19,9 +19,10 @@
       "maxTokens": 2000,
       "proxy": "http://127.0.0.1:7890"
     },
-    "huggingFace": {
+    "tuZi": {
       "enabled": true,
-      "comicFactoryModel": "jbilcke-hf/ai-comic-factory",
+      "baseUrl": "https://api.tu-zi.com",
+      "model": "nano-banana",
       "proxy": "http://127.0.0.1:7890"
     },
     "defaultReferenceImage": "../public/reference_images/岁己小红帽立绘.png"

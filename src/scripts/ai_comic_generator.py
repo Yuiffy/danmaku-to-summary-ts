@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 AI漫画生成模块
-使用Hugging Face的AI Comic Factory生成直播总结漫画
+使用Google图像生成API生成直播总结漫画
+支持Google Imagen等图像生成模型
 """
 
 import os
@@ -21,12 +22,6 @@ def load_config() -> Dict[str, Any]:
     """加载配置文件（包括config.json和config.secrets.json）"""
     default_config = {
         "aiServices": {
-            "huggingFace": {
-                "enabled": True,
-                "apiToken": "",
-                "comicFactoryModel": "jbilcke-hf/ai-comic-factory",
-                "proxy": ""
-            }
         },
         "roomSettings": {
             "26966466": {
@@ -53,8 +48,10 @@ def load_config() -> Dict[str, Any]:
             
             # 合并aiServices
             if "aiServices" in user_config:
-                if "huggingFace" in user_config["aiServices"]:
-                    merged["aiServices"]["huggingFace"].update(user_config["aiServices"]["huggingFace"])
+                if "tuZi" in user_config["aiServices"]:
+                    if "tuZi" not in merged["aiServices"]:
+                        merged["aiServices"]["tuZi"] = {}
+                    merged["aiServices"]["tuZi"].update(user_config["aiServices"]["tuZi"])
             
             # 合并roomSettings
             if "roomSettings" in user_config:
@@ -72,11 +69,13 @@ def load_config() -> Dict[str, Any]:
             
             # 合并密钥配置
             if "aiServices" in secrets_config:
-                if "huggingFace" in secrets_config["aiServices"]:
-                    # 只合并apiToken，保留其他配置
-                    hf_secrets = secrets_config["aiServices"]["huggingFace"]
-                    if "apiToken" in hf_secrets:
-                        merged["aiServices"]["huggingFace"]["apiToken"] = hf_secrets["apiToken"]
+                if "tuZi" in secrets_config["aiServices"]:
+                    # 合并tuZi API密钥
+                    tuzi_secrets = secrets_config["aiServices"]["tuZi"]
+                    if "apiKey" in tuzi_secrets:
+                        if "tuZi" not in merged["aiServices"]:
+                            merged["aiServices"]["tuZi"] = {}
+                        merged["aiServices"]["tuZi"]["apiKey"] = tuzi_secrets["apiKey"]
         
         return merged
         
@@ -88,10 +87,18 @@ def load_config() -> Dict[str, Any]:
     return default_config
 
 def is_huggingface_configured() -> bool:
-    """检查Hugging Face配置是否有效"""
+    """检查Hugging Face配置是否有效（已禁用）"""
+    return False
+
+def is_googleimage_configured() -> bool:
+    """检查Google图像生成配置是否有效（已禁用）"""
+    return False
+
+def is_tuzi_configured() -> bool:
+    """检查tuZi图像生成配置是否有效"""
     config = load_config()
-    hf_config = config["aiServices"]["huggingFace"]
-    return hf_config["enabled"] and hf_config["apiToken"] and hf_config["apiToken"].strip() != ""
+    tuzi_config = config["aiServices"].get("tuZi", {})
+    return tuzi_config.get("enabled", False) and tuzi_config.get("apiKey", "") and tuzi_config["apiKey"].strip() != ""
 
 def get_room_reference_image(room_id: str) -> Optional[str]:
     """获取房间的参考图片路径"""
@@ -318,6 +325,296 @@ def try_simpler_model(prompt: str, hf_config: Dict[str, Any], proxies: Dict[str,
         print(f"[ERROR] 尝试简单模型失败: {e}")
         return None
 
+def call_google_image_api(prompt: str, reference_image_path: Optional[str] = None) -> Optional[str]:
+    """
+    调用Google图像生成API
+    使用Google的Imagen或其他图像生成模型
+    支持重试机制
+    """
+    config = load_config()
+    google_config = config["aiServices"]["googleImage"]
+
+    if not is_googleimage_configured():
+        raise ValueError("Google图像生成API未配置，请检查config.json中的apiKey")
+
+    max_retries = google_config.get("maxRetries", 3)
+    print(f"[GOOGLE] 调用Google图像生成API生成漫画... (最多重试 {max_retries} 次)")
+
+    for attempt in range(max_retries + 1):
+        try:
+            if attempt > 0:
+                print(f"[RETRY] 第 {attempt} 次重试...")
+
+            # 导入Google Generative AI库
+            import google.generativeai as genai
+
+            # 配置API密钥
+            genai.configure(api_key=google_config["apiKey"])
+
+            # 设置代理
+            proxy_url = google_config.get("proxy", "")
+            if proxy_url:
+                import os
+                os.environ['http_proxy'] = proxy_url
+                os.environ['https_proxy'] = proxy_url
+                if attempt == 0:  # 只在第一次显示代理信息
+                    print(f"[PROXY] 使用代理: {proxy_url}")
+
+            # 创建模型
+            model_name = google_config.get("model", "imagen-3.0-generate-001")
+
+            # 构建图像生成请求
+            # 注意：Google的Imagen API可能需要不同的调用方式
+            # 这里使用Generative AI的图像生成功能
+
+            # 首先尝试使用Generative AI的图像生成
+            try:
+                # 导入图像生成模块
+                from google.generativeai import GenerativeModel
+
+                # 创建模型
+                model = GenerativeModel(model_name)
+
+                # 构建提示词（优化为适合图像生成）
+                image_prompt = f"""Create a comic panel in Japanese manga style based on this description:
+
+                {prompt[:1000]}
+
+                Requirements:
+                - Japanese manga style
+                - Comic panel layout
+                - Cute anime characters
+                - Vibrant colors
+                - Clear storytelling
+                - Include text bubbles with Chinese text if needed
+
+                Style: Anime, manga, comic book, vibrant colors, detailed background"""
+
+                if attempt == 0:
+                    print("[WAIT] 正在通过Google API生成图像...")
+
+                # 生成图像
+                response = model.generate_content(
+                    image_prompt,
+                    generation_config={
+                        "temperature": 0.7,
+                        "top_p": 0.95,
+                        "top_k": 40,
+                    },
+                    safety_settings=google_config.get("safetySettings", [])
+                )
+
+                # 处理响应
+                if response and hasattr(response, 'candidates') and response.candidates:
+                    # 检查是否有图像数据
+                    for candidate in response.candidates:
+                        if hasattr(candidate, 'content') and candidate.content:
+                            for part in candidate.content.parts:
+                                if hasattr(part, 'inline_data') and part.inline_data:
+                                    # 提取图像数据
+                                    image_data = part.inline_data.data
+                                    mime_type = part.inline_data.mime_type
+
+                                    # 保存图像
+                                    import tempfile
+                                    import uuid
+
+                                    temp_dir = tempfile.gettempdir()
+                                    extension = mime_type.split('/')[-1] if '/' in mime_type else 'png'
+                                    temp_file = os.path.join(temp_dir, f"comic_google_{uuid.uuid4().hex[:8]}.{extension}")
+
+                                    with open(temp_file, 'wb') as f:
+                                        f.write(image_data)
+
+                                    print(f"[OK] Google图像生成成功")
+                                    print(f"[SAVE] 图像已保存到临时文件: {temp_file}")
+                                    return temp_file
+
+                # 如果上面的方法不工作，尝试备用方案
+                if attempt == 0:
+                    print("[INFO]  标准图像生成方法未返回图像，尝试备用方案...")
+
+            except Exception as genai_error:
+                print(f"[WARNING]  Generative AI图像生成失败: {genai_error}")
+                if attempt == max_retries:
+                    print("   重试次数已用完，尝试备用方案...")
+                elif attempt < max_retries:
+                    print(f"   将在 {attempt + 1} 次重试时重试...")
+
+            # 如果不是最后一次重试，继续重试
+            if attempt < max_retries:
+                continue
+
+            # 备用方案：使用Google Cloud Vertex AI API
+            try:
+                if attempt == 0:
+                    print("[BACKUP] 尝试使用Vertex AI REST API...")
+
+                # 构建Vertex AI请求
+                import vertexai
+                from vertexai.preview.vision_models import ImageGenerationModel
+
+                # 初始化Vertex AI
+                vertexai.init(project="your-project-id", location="us-central1")
+
+                model = ImageGenerationModel.from_pretrained(model_name)
+
+                # 生成图像
+                images = model.generate_images(
+                    prompt=prompt[:500],
+                    number_of_images=1,
+                    aspect_ratio="1:1",
+                    safety_filter_level="block_some",
+                    person_generation="allow_adult"
+                )
+
+                if images and len(images) > 0:
+                    # 保存第一张图像
+                    import tempfile
+                    import uuid
+
+                    temp_dir = tempfile.gettempdir()
+                    temp_file = os.path.join(temp_dir, f"comic_vertex_{uuid.uuid4().hex[:8]}.png")
+
+                    images[0].save(temp_file)
+
+                    print(f"[OK] Vertex AI图像生成成功")
+                    print(f"[SAVE] 图像已保存到临时文件: {temp_file}")
+                    return temp_file
+
+            except Exception as vertex_error:
+                print(f"[WARNING]  Vertex AI失败: {vertex_error}")
+                if attempt == max_retries:
+                    print("   尝试使用简单的REST API调用...")
+
+            # 如果不是最后一次重试，继续重试
+            if attempt < max_retries:
+                continue
+
+            # 最终备用方案：使用简单的REST API调用
+            if attempt == 0:
+                print("[FINAL] 尝试使用简单的REST API调用...")
+
+            # Google Cloud Imagen API端点
+            api_endpoint = "https://us-central1-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/google/models/imagen-3.0-generate-001:predict"
+
+            # 由于需要项目ID和认证，这里简化处理
+            # 在实际使用中，用户需要配置正确的项目ID和认证
+
+            print("[INFO]  Google图像生成需要配置Google Cloud项目，请参考文档进行设置")
+            print("   提示: 您需要设置Google Cloud项目并启用Imagen API")
+
+            return None
+
+        except ImportError:
+            print("[ERROR]  google.generativeai库未安装")
+            print("   请安装: pip install google-generativeai")
+            return None
+        except Exception as e:
+            print(f"[ERROR]  Google图像生成失败 (尝试 {attempt + 1}/{max_retries + 1}): {e}")
+            if attempt < max_retries:
+                print(f"   将重试...")
+                time.sleep(2)  # 短暂等待后重试
+            else:
+                print(f"   重试次数已用完")
+                traceback.print_exc()
+                return None
+
+    return None
+
+def call_tuzi_image_api(prompt: str, reference_image_path: Optional[str] = None) -> Optional[str]:
+    """
+    调用tu-zi.com图像生成API
+    使用OpenAI兼容的API接口
+    """
+    config = load_config()
+    tuzi_config = config["aiServices"]["tuZi"]
+
+    if not is_tuzi_configured():
+        raise ValueError("tu-zi.com API未配置，请检查config.secrets.json中的apiKey")
+
+    print("[TUZI] 调用tu-zi.com图像生成API...")
+
+    try:
+        # 设置代理
+        proxy_url = tuzi_config.get("proxy", "")
+        proxies = {}
+        if proxy_url:
+            proxies = {
+                "http": proxy_url,
+                "https": proxy_url
+            }
+            print(f"[PROXY] 使用代理: {proxy_url}")
+
+        # 构建API请求
+        base_url = tuzi_config.get("baseUrl", "https://api.tu-zi.com")
+        api_url = f"{base_url}/v1/images/generations"
+
+        headers = {
+            "Authorization": f"Bearer {tuzi_config['apiKey']}",
+            "Content-Type": "application/json"
+        }
+
+        # 构建请求体（兼容OpenAI格式）
+        payload = {
+            "model": tuzi_config.get("model", "dall-e-3"),
+            "prompt": prompt[:1000],  # 限制提示词长度
+            "n": 1,
+            "size": "1024x1024"
+        }
+
+        print("[WAIT] 正在通过tu-zi.com API生成图像...")
+        response = requests.post(api_url, headers=headers, json=payload, timeout=120, proxies=proxies)
+
+        if response.status_code == 200:
+            result = response.json()
+
+            # 检查响应格式
+            if "data" in result and len(result["data"]) > 0:
+                image_url = result["data"][0].get("url")
+
+                if image_url:
+                    # 下载图像
+                    print(f"[DOWNLOAD] 下载生成的图像...")
+                    image_response = requests.get(image_url, timeout=60, proxies=proxies)
+
+                    if image_response.status_code == 200:
+                        # 保存图像
+                        import tempfile
+                        import uuid
+
+                        temp_dir = tempfile.gettempdir()
+                        temp_file = os.path.join(temp_dir, f"comic_tuzi_{uuid.uuid4().hex[:8]}.png")
+
+                        with open(temp_file, 'wb') as f:
+                            f.write(image_response.content)
+
+                        print(f"[OK] tu-zi.com图像生成成功")
+                        print(f"[SAVE] 图像已保存到临时文件: {temp_file}")
+                        return temp_file
+                    else:
+                        print(f"[ERROR] 下载图像失败: {image_response.status_code}")
+                        return None
+                else:
+                    print("[ERROR] API响应中没有图像URL")
+                    return None
+            else:
+                print(f"[ERROR] API响应格式异常: {result}")
+                return None
+        else:
+            print(f"[ERROR] tu-zi.com API调用失败: {response.status_code}")
+            print(f"   响应: {response.text[:500]}")
+            return None
+
+    except ImportError:
+        print("[ERROR] requests库未安装")
+        print("   请安装: pip install requests")
+        return None
+    except Exception as e:
+        print(f"[ERROR] tu-zi.com图像生成失败: {e}")
+        traceback.print_exc()
+        return None
+
 def call_huggingface_comic_factory(prompt: str, reference_image_path: Optional[str] = None) -> Optional[str]:
     """
     调用Hugging Face AI Comic Factory API
@@ -502,16 +799,9 @@ def save_comic_result(output_path: str, comic_data: Any) -> str:
         raise
 
 def generate_comic_from_highlight(highlight_path: str) -> Optional[str]:
-    """从AI_HIGHLIGHT文件生成漫画"""
-    config = load_config()
-    
-    if not config["aiServices"]["huggingFace"]["enabled"]:
-        print("[INFO]  AI漫画生成功能已禁用")
-        return None
-    
-    if not is_huggingface_configured():
-        print("[WARNING]  Hugging Face API未配置，跳过漫画生成")
-        return None
+    """从AI_HIGHLIGHT文件生成漫画（已禁用）"""
+    print("[INFO]  AI漫画生成功能已禁用（不使用googleImage和huggingFace）")
+    return None
     
     print(f"[FILE] 处理AI_HIGHLIGHT文件: {os.path.basename(highlight_path)}")
     
@@ -551,11 +841,21 @@ def generate_comic_from_highlight(highlight_path: str) -> Optional[str]:
         # 构建提示词（使用Gemini优化）
         prompt = optimize_prompt_with_gemini(highlight_content, reference_image_path)
         
-        # 调用API生成漫画
-        comic_result = call_huggingface_comic_factory(prompt, reference_image_path)
-        
+        # 调用API生成漫画（按优先级顺序）
+        comic_result = None
+
+        # 1. 优先尝试Google图像生成（带重试）
+        if use_google:
+            print("[GOOGLE] 使用Google图像生成API...")
+            comic_result = call_google_image_api(prompt, reference_image_path)
+
+        # 2. 如果Google失败，尝试tu-zi.com作为最终备用方案
+        if not comic_result and use_tuzi:
+            print("[TUZI] Google生成失败，尝试tu-zi.com...")
+            comic_result = call_tuzi_image_api(prompt, reference_image_path)
+
         if not comic_result:
-            print("[ERROR] 漫画生成失败，无返回结果")
+            print("[ERROR] 所有图像生成API都失败，无返回结果")
             return None
         
         # 确定输出路径

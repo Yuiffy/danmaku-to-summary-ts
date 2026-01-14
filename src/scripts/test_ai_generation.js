@@ -62,9 +62,8 @@ try {
     
     if (isEnabled) {
         console.log('✅ AI漫画生成功能已启用');
-        console.log(`   模型: ${config.aiServices.huggingFace.comicFactoryModel}`);
     } else {
-        console.log('❌ AI漫画生成功能已禁用');
+        console.log('❌ AI漫画生成功能已禁用（不使用googleImage和huggingFace）');
     }
 } catch (error) {
     console.log(`❌ 配置检查失败: ${error.message}`);
@@ -132,39 +131,12 @@ setTimeout(async () => {
         console.log(`❌ AI文本生成失败: ${error.message}`);
     }
     
-    console.log('\n6. 运行AI漫画生成测试...');
-    console.log('   注意: 这将调用Hugging Face API');
-    console.log('   按Ctrl+C取消，或等待5秒后继续...');
-    
-    setTimeout(async () => {
-        console.log('\n开始AI漫画生成...');
-        
-        try {
-            const result = await aiComicGenerator.generateComicFromHighlight(highlightPath);
-            
-            if (result) {
-                console.log(`✅ AI漫画生成成功!`);
-                console.log(`   输出文件: ${result}`);
-                
-                // 检查文件类型
-                const ext = path.extname(result).toLowerCase();
-                if (['.png', '.jpg', '.jpeg', '.webp'].includes(ext)) {
-                    const stats = fs.statSync(result);
-                    console.log(`   图片大小: ${(stats.size / 1024).toFixed(1)}KB`);
-                    console.log(`   图片格式: ${ext}`);
-                }
-            } else {
-                console.log('❌ AI漫画生成失败，无输出文件');
-            }
-        } catch (error) {
-            console.log(`❌ AI漫画生成失败: ${error.message}`);
-        }
-        
-        console.log('\n📊 测试总结');
-        console.log('===========');
-        console.log('AI生成功能测试完成！');
-        console.log('请检查输出文件确认生成结果。');
-        
-    }, 5000);
+    console.log('\n6. AI漫画生成测试...');
+    console.log('   注意: AI漫画生成功能已禁用（不使用googleImage和huggingFace）');
+
+    console.log('\n📊 测试总结');
+    console.log('===========');
+    console.log('AI生成功能测试完成！');
+    console.log('请检查输出文件确认生成结果。');
     
 }, 5000);

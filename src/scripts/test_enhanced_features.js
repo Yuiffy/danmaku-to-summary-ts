@@ -23,7 +23,6 @@ try {
         // 检查AI服务配置
         if (config.aiServices) {
             console.log(`  Gemini API: ${config.aiServices.gemini?.enabled ? '启用' : '禁用'}`);
-            console.log(`  Hugging Face: ${config.aiServices.huggingFace?.enabled ? '启用' : '禁用'}`);
         }
         
         // 检查房间设置
@@ -154,7 +153,7 @@ console.log('===========');
 console.log('增强功能已成功实现，包括：');
 console.log('1. ✅ 音频处理功能 - 将指定直播间视频转为音频');
 console.log('2. ✅ AI文本生成 - 使用Gemini API生成"饼干岁"风格晚安回复');
-console.log('3. ✅ AI漫画生成 - 使用Hugging Face AI Comic Factory生成直播漫画');
+console.log('3. ❌ AI漫画生成 - 功能已禁用（不使用googleImage和huggingFace）');
 console.log('4. ✅ 配置系统 - 支持房间级配置和API密钥管理');
 console.log('5. ✅ 主流程集成 - 增强版自动化脚本整合所有功能');
 
@@ -166,8 +165,6 @@ console.log('4. Webhook服务器已自动使用增强版功能');
 
 console.log('\n⚠️  注意事项：');
 console.log('1. Gemini API需要有效的API密钥');
-console.log('2. Hugging Face API需要注册获取token');
-console.log('3. ffmpeg需要安装并添加到PATH环境变量');
-console.log('4. Python环境需要安装gradio_client库（用于漫画生成）');
+console.log('2. ffmpeg需要安装并添加到PATH环境变量');
 
 console.log('\n🎉 测试完成！增强功能已就绪。');

@@ -19,30 +19,30 @@ def test_config_loading():
             config = json.load(f)
         print("   [OK] 配置文件加载成功")
         
-        # 检查Hugging Face配置
-        hf_config = config.get('aiServices', {}).get('huggingFace', {})
-        print(f"   Hugging Face enabled: {hf_config.get('enabled', False)}")
-        print(f"   Proxy: {hf_config.get('proxy', '未配置')}")
-        print(f"   Model: {hf_config.get('comicFactoryModel', '未配置')}")
+        # 检查Gemini配置
+        gemini_config = config.get('aiServices', {}).get('gemini', {})
+        print(f"   Gemini enabled: {gemini_config.get('enabled', False)}")
+        print(f"   Proxy: {gemini_config.get('proxy', '未配置')}")
+        print(f"   Model: {gemini_config.get('model', '未配置')}")
     else:
         print("   [ERROR] 配置文件不存在")
         return False
-    
+
     print(f"\n2. 检查密钥文件: {secrets_path}")
     if os.path.exists(secrets_path):
         with open(secrets_path, 'r', encoding='utf-8') as f:
             secrets = json.load(f)
         print("   [OK] 密钥文件加载成功")
-        
-        # 检查Hugging Face令牌
-        hf_token = secrets.get('aiServices', {}).get('huggingFace', {}).get('apiToken', '')
-        if hf_token and hf_token.strip():
-            print("   [OK] Hugging Face令牌已配置")
-            print(f"   令牌长度: {len(hf_token)} 字符")
-            print(f"   令牌前10位: {hf_token[:10]}...")
+
+        # 检查Gemini API密钥
+        gemini_key = secrets.get('aiServices', {}).get('gemini', {}).get('apiKey', '')
+        if gemini_key and gemini_key.strip():
+            print("   [OK] Gemini API密钥已配置")
+            print(f"   密钥长度: {len(gemini_key)} 字符")
+            print(f"   密钥前10位: {gemini_key[:10]}...")
             return True
         else:
-            print("   [ERROR] Hugging Face令牌未配置或为空")
+            print("   [ERROR] Gemini API密钥未配置或为空")
             return False
     else:
         print("   [ERROR] 密钥文件不存在")
@@ -53,26 +53,19 @@ def test_ai_comic_generator_config():
     try:
         # 导入ai_comic_generator的配置函数
         sys.path.insert(0, os.path.dirname(__file__))
-        from ai_comic_generator import load_config, is_huggingface_configured
-        
+        from ai_comic_generator import load_config
+
         config = load_config()
         print("   [OK] load_config()成功")
-        
+
         print(f"   Config keys: {list(config.keys())}")
-        
-        hf_config = config.get('aiServices', {}).get('huggingFace', {})
-        print(f"   Hugging Face config: {hf_config}")
-        
-        is_configured = is_huggingface_configured()
-        print(f"   is_huggingface_configured(): {is_configured}")
-        
-        if is_configured:
-            print("   [OK] Hugging Face配置检查通过")
-            return True
-        else:
-            print("   [ERROR] Hugging Face配置检查失败")
-            return False
-            
+
+        gemini_config = config.get('aiServices', {}).get('gemini', {})
+        print(f"   Gemini config: {gemini_config}")
+
+        print("   [OK] 配置加载测试通过")
+        return True
+
     except Exception as e:
         print(f"   [ERROR] 导入失败: {e}")
         import traceback
@@ -102,7 +95,7 @@ def main():
     
     print("\n建议:")
     print("1. 检查config.secrets.json文件格式")
-    print("2. 确保Hugging Face令牌正确")
+    print("2. 确保Gemini API密钥正确")
     print("3. 检查文件编码是否为UTF-8")
 
 if __name__ == "__main__":

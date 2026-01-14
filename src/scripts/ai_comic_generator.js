@@ -8,11 +8,6 @@ function loadConfig() {
     const secretsPath = path.join(__dirname, 'config.secrets.json');
     const defaultConfig = {
         aiServices: {
-            huggingFace: {
-                enabled: true,
-                apiToken: '',
-                comicFactoryModel: "jbilcke-hf/ai-comic-factory"
-            }
         }
     };
 
@@ -21,22 +16,15 @@ function loadConfig() {
         if (fs.existsSync(configPath)) {
             const userConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
             const merged = JSON.parse(JSON.stringify(defaultConfig));
-            if (userConfig.aiServices?.huggingFace) {
-                Object.assign(merged.aiServices.huggingFace, userConfig.aiServices.huggingFace);
-            }
-            
             // 加载密钥配置文件（如果存在）
             if (fs.existsSync(secretsPath)) {
                 try {
                     const secretsConfig = JSON.parse(fs.readFileSync(secretsPath, 'utf8'));
-                    if (secretsConfig.aiServices?.huggingFace?.apiToken) {
-                        merged.aiServices.huggingFace.apiToken = secretsConfig.aiServices.huggingFace.apiToken;
-                    }
                 } catch (secretsError) {
                     console.warn('警告: 无法加载密钥配置文件，API令牌将为空:', secretsError.message);
                 }
             }
-            
+
             return merged;
         }
     } catch (error) {
@@ -47,8 +35,8 @@ function loadConfig() {
 
 // 检查配置是否有效
 function isComicGenerationEnabled() {
-    const config = loadConfig();
-    return config.aiServices.huggingFace.enabled;
+    // AI漫画生成功能已禁用（不使用googleImage和huggingFace）
+    return false;
 }
 
 // 调用Python脚本生成漫画
@@ -125,36 +113,8 @@ async function generateComicWithPython(highlightPath) {
 
 // 生成漫画
 async function generateComicFromHighlight(highlightPath) {
-    const config = loadConfig();
-    
-    if (!config.aiServices.huggingFace.enabled) {
-        console.log('ℹ️  AI漫画生成功能已禁用');
-        return null;
-    }
-    
-    console.log(`🎨 开始生成漫画: ${path.basename(highlightPath)}`);
-    
-    try {
-        // 检查输入文件
-        if (!fs.existsSync(highlightPath)) {
-            throw new Error(`AI_HIGHLIGHT文件不存在: ${highlightPath}`);
-        }
-        
-        // 调用Python脚本
-        const result = await generateComicWithPython(highlightPath);
-        
-        if (result) {
-            console.log(`✅ 漫画生成完成: ${path.basename(result)}`);
-            return result;
-        } else {
-            console.log('⚠️  漫画生成完成但未找到输出文件');
-            return null;
-        }
-        
-    } catch (error) {
-        console.error(`❌ 漫画生成失败: ${error.message}`);
-        return null;
-    }
+    console.log('ℹ️  AI漫画生成功能已禁用（不使用googleImage和huggingFace）');
+    return null;
 }
 
 // 批量生成漫画
