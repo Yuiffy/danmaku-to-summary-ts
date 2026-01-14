@@ -66,16 +66,16 @@ def load_config() -> Dict[str, Any]:
         if os.path.exists(secrets_path):
             with open(secrets_path, 'r', encoding='utf-8') as f:
                 secrets_config = json.load(f)
-            
+
             # 合并密钥配置
             if "aiServices" in secrets_config:
-                if "tuZi" in secrets_config["aiServices"]:
-                    # 合并tuZi API密钥
-                    tuzi_secrets = secrets_config["aiServices"]["tuZi"]
-                    if "apiKey" in tuzi_secrets:
-                        if "tuZi" not in merged["aiServices"]:
-                            merged["aiServices"]["tuZi"] = {}
-                        merged["aiServices"]["tuZi"]["apiKey"] = tuzi_secrets["apiKey"]
+                if "aiServices" not in merged:
+                    merged["aiServices"] = {}
+                # 通用合并所有aiServices配置
+                for service_name, service_config in secrets_config["aiServices"].items():
+                    if service_name not in merged["aiServices"]:
+                        merged["aiServices"][service_name] = {}
+                    merged["aiServices"][service_name].update(service_config)
         
         return merged
         
@@ -163,60 +163,64 @@ def extract_room_id_from_filename(filename: str) -> Optional[str]:
     match = re.match(r'^(\d+)_', filename)
     return match.group(1) if match else None
 
-def optimize_prompt_with_gemini(highlight_content: str, reference_image_path: Optional[str] = None) -> str:
-    """使用Gemini优化漫画生成提示词"""
-    print("[GEMINI] 使用Gemini优化漫画提示词...")
-    
+
+
+def optimize_prompt_with_gemini(comic_content: str, reference_image_path: Optional[str] = None) -> str:
+    """使用Gemini将漫画内容转换为绘画提示词"""
+    print("[GEMINI] 使用Gemini将漫画内容转换为绘画提示词...")
+
     try:
-        # 导入Google Generative AI
-        import google.generativeai as genai
-        
+        # 导入Google GenAI (新版本)
+        import google.genai as genai
+
         # 加载配置
         config = load_config()
-        
+
         # 获取Gemini配置
         gemini_config = config.get('aiServices', {}).get('gemini', {})
         gemini_api_key = gemini_config.get('apiKey', '')
-        
+
         if not gemini_api_key:
             print("[WARNING]  Gemini API密钥未配置，使用原始提示词")
-            return build_comic_prompt(highlight_content, reference_image_path)
-        
-        # 配置Gemini
-        genai.configure(api_key=gemini_api_key)
-        
-        # 设置代理
+            return build_comic_prompt(comic_content, reference_image_path)
+
+        # 创建客户端
+        ai = genai.GoogleGenAI(api_key=gemini_api_key)
+
+        # 设置代理 (如果需要)
         proxy_url = gemini_config.get('proxy', '')
         if proxy_url:
             import os
             os.environ['http_proxy'] = proxy_url
             os.environ['https_proxy'] = proxy_url
-        
-        # 创建模型
-        model_name = gemini_config.get('model', 'gemini-2.0-flash-exp')
-        model = genai.GenerativeModel(model_name)
-        
-        # 构建优化提示词
-        optimization_prompt = f"""你是一个专业的漫画脚本作家和AI绘画提示词专家。
 
-任务：将直播内容转化为适合AI图像生成的漫画脚本提示词。
+        # 获取模型名称
+        model_name = gemini_config.get('model', 'gemini-1.5-flash')
 
-直播内容：
-{highlight_content[:1500]}  # 限制长度
+        # 生成优化提示词
+        optimization_prompt = f"""你是一个专业的AI绘画提示词专家。
+
+任务：将漫画故事脚本转化为适合AI图像生成的绘画提示词。
+
+漫画内容：
+{comic_content[:1500]}  # 限制长度
 
 要求：
 1. 生成适合Stable Diffusion/DALL-E/Midjourney等AI绘画模型的英文提示词
 2. 提示词要详细描述场景、角色、动作、表情、构图、风格
-3. 如果是虚拟主播直播，注意角色特征（如：岁己SUI是白发红瞳女生，饼干岁是小饼干状生物）
+3. 如果是虚拟主播，注意角色特征（如：岁己SUI是白发红瞳女生，饼干岁是小饼干状生物）
 4. 风格要求：日本漫画风格，多分镜（5-8个场景），每个场景有简短文字说明
 5. 画面要生动、有趣、有故事性
 6. 输出格式：纯英文的详细提示词，适合直接输入给AI绘画模型
 
 请生成优化的AI绘画提示词："""
-        
+
         # 调用Gemini
-        response = model.generate_content(optimization_prompt)
-        
+        response = ai.models.generate_content(
+            model=model_name,
+            contents=optimization_prompt
+        )
+
         if response and response.text:
             optimized_prompt = response.text.strip()
             print("[OK] Gemini提示词优化完成")
@@ -224,22 +228,27 @@ def optimize_prompt_with_gemini(highlight_content: str, reference_image_path: Op
             return optimized_prompt
         else:
             print("[WARNING]  Gemini返回空结果，使用原始提示词")
-            return build_comic_prompt(highlight_content, reference_image_path)
-            
+            return build_comic_prompt(comic_content, reference_image_path)
+
     except ImportError:
-        print("[WARNING]  google-generativeai库未安装，使用原始提示词")
-        print("   请安装: pip install google-generativeai")
+        print("[WARNING]  google-genai库未安装，使用原始提示词")
+        print("   请安装: pip install google-genai")
     except Exception as e:
         print(f"[ERROR]  Gemini优化失败: {e}")
         import traceback
         traceback.print_exc()
-    
+
     # 失败时返回原始提示词
-    return build_comic_prompt(highlight_content, reference_image_path)
+    return build_comic_prompt(comic_content, reference_image_path)
 
 def build_comic_prompt(highlight_content: str, reference_image_path: Optional[str] = None) -> str:
-    """构建漫画生成提示词（原始版本）"""
-    base_prompt = f"""<job>你作为虚拟主播二创画师大手子，根据直播内容，绘制直播总结插画。</job>
+    """构建漫画生成提示词（先生成漫画内容，再构建绘画提示词）"""
+
+    # 第一步：使用Gemini生成漫画内容脚本
+    comic_content = generate_comic_content_with_ai(highlight_content)
+
+    # 第二步：基于漫画内容构建绘画提示词
+    base_prompt = f"""<job>你作为虚拟主播二创画师大手子，根据漫画脚本，绘制直播总结插画。</job>
 
 <character>注意一定要还原附件image_0图片中的角色形象，岁己SUI（白发红瞳女生），饼干岁（有细细四肢的小小的饼干状生物）</character>
 
@@ -249,10 +258,86 @@ def build_comic_prompt(highlight_content: str, reference_image_path: Optional[st
 
 <language>画面内的文字要用中文</language>
 
-下面是岁己一场直播的asr+弹幕记录TXT，请根据这个内容生成漫画：
-{highlight_content}"""
-    
+下面是根据直播内容生成的漫画脚本，请根据这个脚本绘制漫画：
+{comic_content}"""
+
     return base_prompt
+
+def generate_comic_content_with_ai(highlight_content: str) -> str:
+    """使用AI生成漫画内容脚本"""
+    print("[AI] 使用AI生成漫画内容脚本...")
+
+    try:
+        # 导入Google GenAI (新版本)
+        import google.genai as genai
+
+        # 加载配置
+        config = load_config()
+
+        # 获取Gemini配置
+        gemini_config = config.get('aiServices', {}).get('gemini', {})
+        gemini_api_key = gemini_config.get('apiKey', '')
+
+        if not gemini_api_key:
+            print("[WARNING]  Gemini API密钥未配置，使用原始内容")
+            return highlight_content
+
+        # 创建客户端
+        client = genai.Client(api_key=gemini_api_key)
+
+        # 设置代理 (如果需要)
+        proxy_url = gemini_config.get('proxy', '')
+        if proxy_url:
+            import os
+            os.environ['http_proxy'] = proxy_url
+            os.environ['https_proxy'] = proxy_url
+
+        # 获取模型名称
+        model_name = gemini_config.get('model', 'gemini-1.5-flash')
+
+        # 生成漫画内容脚本
+        content_prompt = f"""你是一个专业的漫画脚本作家。
+
+任务：根据直播内容创作一个有趣的漫画故事脚本。
+
+直播内容：
+{highlight_content[:1500]}  # 限制长度
+
+要求：
+1. 创作一个完整的漫画故事，包括开头、发展和结尾
+2. 故事要生动、有趣，突出直播的精彩瞬间
+3. 包含5-8个场景，每个场景有简短的描述和对话
+4. 如果是虚拟主播直播，注意角色特征（如：岁己SUI是白发红瞳女生，饼干岁是小饼干状生物）
+5. 风格：日本漫画风格，适合转换为视觉漫画
+6. 输出格式：用中文描述故事脚本，包括场景编号、场景描述和对话
+
+请创作漫画故事脚本："""
+
+        # 调用Gemini
+        response = client.models.generate_content(
+            model=model_name,
+            contents=content_prompt
+        )
+
+        if response and response.text:
+            comic_content = response.text.strip()
+            print("[OK] AI漫画内容生成完成")
+            print(f"生成内容长度: {len(comic_content)} 字符")
+            return comic_content
+        else:
+            print("[WARNING]  AI返回空结果，使用原始内容")
+            return highlight_content
+
+    except ImportError:
+        print("[WARNING]  google-genai库未安装，使用原始内容")
+        print("   请安装: pip install google-genai")
+    except Exception as e:
+        print(f"[ERROR]  AI内容生成失败: {e}")
+        import traceback
+        traceback.print_exc()
+
+    # 失败时返回原始内容
+    return highlight_content
 
 def encode_image_to_base64(image_path: str) -> str:
     """将图片编码为base64"""
@@ -345,11 +430,11 @@ def call_google_image_api(prompt: str, reference_image_path: Optional[str] = Non
             if attempt > 0:
                 print(f"[RETRY] 第 {attempt} 次重试...")
 
-            # 导入Google Generative AI库
-            import google.generativeai as genai
+            # 导入Google GenAI库 (新版本)
+            import google.genai as genai
 
-            # 配置API密钥
-            genai.configure(api_key=google_config["apiKey"])
+            # 创建客户端
+            ai = genai.GoogleGenAI(api_key=google_config["apiKey"])
 
             # 设置代理
             proxy_url = google_config.get("proxy", "")
@@ -360,20 +445,16 @@ def call_google_image_api(prompt: str, reference_image_path: Optional[str] = Non
                 if attempt == 0:  # 只在第一次显示代理信息
                     print(f"[PROXY] 使用代理: {proxy_url}")
 
-            # 创建模型
+            # 获取模型名称
             model_name = google_config.get("model", "imagen-3.0-generate-001")
 
             # 构建图像生成请求
             # 注意：Google的Imagen API可能需要不同的调用方式
-            # 这里使用Generative AI的图像生成功能
+            # 这里使用GenAI的图像生成功能
 
-            # 首先尝试使用Generative AI的图像生成
+            # 首先尝试使用GenAI的图像生成
             try:
-                # 导入图像生成模块
-                from google.generativeai import GenerativeModel
-
-                # 创建模型
-                model = GenerativeModel(model_name)
+                # 构建提示词（优化为适合图像生成）
 
                 # 构建提示词（优化为适合图像生成）
                 image_prompt = f"""Create a comic panel in Japanese manga style based on this description:
@@ -394,8 +475,9 @@ def call_google_image_api(prompt: str, reference_image_path: Optional[str] = Non
                     print("[WAIT] 正在通过Google API生成图像...")
 
                 # 生成图像
-                response = model.generate_content(
-                    image_prompt,
+                response = ai.models.generate_content(
+                    model=model_name,
+                    contents=image_prompt,
                     generation_config={
                         "temperature": 0.7,
                         "top_p": 0.95,
@@ -507,8 +589,8 @@ def call_google_image_api(prompt: str, reference_image_path: Optional[str] = Non
             return None
 
         except ImportError:
-            print("[ERROR]  google.generativeai库未安装")
-            print("   请安装: pip install google-generativeai")
+            print("[ERROR]  google-genai库未安装")
+            print("   请安装: pip install google-genai")
             return None
         except Exception as e:
             print(f"[ERROR]  Google图像生成失败 (尝试 {attempt + 1}/{max_retries + 1}): {e}")
@@ -840,9 +922,9 @@ def generate_comic_from_highlight(highlight_path: str) -> Optional[str]:
         # 读取内容
         highlight_content = read_highlight_file(highlight_path)
         print(f"[BOOK] 读取内容完成 ({len(highlight_content)} 字符)")
-        
-        # 构建提示词（使用Gemini优化）
-        prompt = optimize_prompt_with_gemini(highlight_content, reference_image_path)
+
+        # 构建提示词（包含漫画内容生成）
+        prompt = build_comic_prompt(highlight_content, reference_image_path)
         
         # 调用API生成漫画（按优先级顺序）
         comic_result = None
