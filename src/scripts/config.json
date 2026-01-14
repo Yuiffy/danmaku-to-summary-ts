@@ -39,6 +39,15 @@
       "fanName": "獭獭栞",
       "enableTextGeneration": true,
       "enableComicGeneration": true
+    },
+    "545068": {
+      "audioOnly": false,
+      "referenceImage": "../public/reference_images/栞栞新衣_舰长礼物长图里截图.png",
+      "characterDescription": "笑笑SunYalong（戴黑框眼镜的中年男子，发际线较高或光头，穿着黑色T恤，表情滑稽丰富，经常张嘴大笑），德云色（背景通常有电竞椅或两个人）",
+      "anchorName": "老实憨厚的笑笑",
+      "fanName": "色友",
+      "enableTextGeneration": true,
+      "enableComicGeneration": true
     }
   },
   "timeouts": {
