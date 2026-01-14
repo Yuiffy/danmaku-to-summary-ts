@@ -87,9 +87,10 @@ async function waitFileStable(filePath) {
 
     console.log(`⏳ 开始检查文件稳定性: ${path.basename(filePath)}`);
 
-    // 先等待30秒，避免干扰DDTV5的写入过程
-    console.log(`⏳ 倒计时开始：30秒后开始文件大小检查`);
-    for (let i = 30; i > 0; i -= 5) {
+    // 先等待若干秒，避免干扰DDTV5的写入过程
+    const INITIAL_WAIT = 10000;
+    console.log(`⏳ 倒计时开始：${INITIAL_WAIT / 1000}秒后开始文件大小检查`);
+    for (let i = INITIAL_WAIT / 1000; i > 0; i -= 5) {
         console.log(`⏳ 倒计时：${i}秒`);
         await sleep(5000);
     }
@@ -107,7 +108,10 @@ async function waitFileStable(filePath) {
             if (currentSize === lastSize && currentSize > 0) {
                 stableCount++;
                 console.log(`[稳定性检查] ${path.basename(filePath)} 大小未变化 (${stableCount}/${MAX_WAIT_STABLE})`);
-            } else {
+            } else if (lastSize === -1){
+                lastSize = currentSize;
+                console.log(`[稳定性检查] ${path.basename(filePath)} 初始大小: ${currentSize} 字节`);
+            }else {
                 stableCount = 0;
                 lastSize = currentSize;
                 console.log(`[稳定性检查] ${path.basename(filePath)} 大小还在变化: ${currentSize} 字节`);
