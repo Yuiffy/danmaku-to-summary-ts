@@ -70,8 +70,7 @@ const processedFiles = new Set();
 // mikufans 会话文件跟踪 Map: sessionId -> fileList
 const sessionFiles = new Map();
 
-// mikufans 会话结束标记 Map: sessionId -> boolean
-const sessionEnded = new Map();
+
 
 // 增加请求体大小限制，防止超大 JSON 报错
 app.use(express.json({ limit: '50mb' }));
@@ -552,25 +551,7 @@ app.post('/mikufans', (req, res) => {
         return res.send('Session started logged');
     }
 
-    if (eventType === 'SessionEnded' && recording === false) {
-        // 直播结束：标记会话结束
-        sessionEnded.set(sessionId, true);
-        console.log(`🏁 直播结束: ${roomName} (Session: ${sessionId})`);
 
-        // 检查是否有已收集的文件，如果有则处理
-        const fileList = sessionFiles.get(sessionId) || [];
-        if (fileList.length > 0) {
-            console.log(`处理 ${fileList.length} 个文件`);
-            sessionFiles.delete(sessionId);
-            // 异步处理所有文件
-            (async () => {
-                for (const filePath of fileList) {
-                    await processMikufansFile(filePath);
-                }
-            })();
-        }
-        return res.send('Session ended logged');
-    }
 
     // 只处理文件关闭事件
     if (eventType !== 'FileClosed') {
