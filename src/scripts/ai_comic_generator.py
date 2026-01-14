@@ -14,6 +14,8 @@ import requests
 from pathlib import Path
 from typing import Optional, Dict, Any
 import traceback
+import subprocess
+import shutil
 
 # 配置路径
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'config.json')
@@ -179,6 +181,34 @@ def build_comic_prompt(highlight_content: str, reference_image_path: Optional[st
 def generate_comic_content_with_ai(highlight_content: str) -> str:
     """使用AI生成漫画内容脚本"""
     print("[AI] 使用AI生成漫画内容脚本...")
+
+    # 首先尝试复用已有的 Node 文本生成器（ai_text_generator.js），避免在 Python 中重复实现 Gemini 调用
+    try:
+        node_bin = shutil.which('node')
+        script_path = os.path.join(os.path.dirname(__file__), 'ai_text_generator.js')
+        if node_bin and os.path.exists(script_path):
+            try:
+                print(f"[AI] 调用 node 脚本生成文本: {script_path}")
+                proc = subprocess.run(
+                    [node_bin, script_path, '--generate-text'],
+                    input=highlight_content.encode('utf-8'),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    cwd=os.path.dirname(__file__),
+                    timeout=120
+                )
+                if proc.returncode == 0 and proc.stdout:
+                    text = proc.stdout.decode('utf-8').strip()
+                    if text:
+                        print('[OK] 从 ai_text_generator 返回内容')
+                        return text
+                else:
+                    stderr = proc.stderr.decode('utf-8') if proc.stderr else ''
+                    print(f"[INFO] node 脚本返回非零状态: {proc.returncode}, stderr: {stderr}")
+            except Exception as e:
+                print(f"[INFO] 调用 node 脚本失败: {e}")
+    except Exception:
+        pass
 
     try:
         # 导入Google GenAI (新版本)

@@ -295,6 +295,7 @@ module.exports = {
     loadConfig,
     isGeminiConfigured,
     generateGoodnightReply,
+    generateTextWithGemini,
     batchGenerateGoodnightReplies
 };
 
@@ -306,6 +307,7 @@ if (require.main === module) {
         console.log('用法:');
         console.log('  1. 处理单个文件: node ai_text_generator.js <AI_HIGHLIGHT.txt路径>');
         console.log('  2. 批量处理目录: node ai_text_generator.js --batch <目录路径>');
+        console.log('  3. 生成文本并输出原始内容: node ai_text_generator.js --generate-text [<promptFilePath>|-]');
         process.exit(1);
     }
     
@@ -313,6 +315,30 @@ if (require.main === module) {
         try {
             if (args[0] === '--batch' && args[1]) {
                 await batchGenerateGoodnightReplies(args[1]);
+            } else if (args[0] === '--generate-text') {
+                // args[1] may be a file path, '-' for stdin, or omitted (read stdin)
+                const promptSource = args[1];
+                let prompt = '';
+                if (!promptSource || promptSource === '-') {
+                    // read from stdin
+                    prompt = await new Promise((resolve, reject) => {
+                        let data = '';
+                        process.stdin.setEncoding('utf8');
+                        process.stdin.on('data', chunk => data += chunk);
+                        process.stdin.on('end', () => resolve(data));
+                        process.stdin.on('error', err => reject(err));
+                    });
+                } else {
+                    // read from file
+                    if (!fs.existsSync(promptSource)) {
+                        throw new Error(`提示词文件不存在: ${promptSource}`);
+                    }
+                    prompt = fs.readFileSync(promptSource, 'utf8');
+                }
+
+                const generated = await generateTextWithGemini(prompt);
+                // print raw generated text to stdout
+                process.stdout.write(generated + '\n');
             } else {
                 const result = await generateGoodnightReply(args[0]);
                 if (result) {
