@@ -96,7 +96,7 @@ describe('AI文本生成器测试', () => {
             // 如果API调用失败，result 可能为 null
             expect(result).toBeNull();
         }
-    }, { timeout: 60000 }); // 设置60秒超时，因为API调用可能需要时间
+    },  60000); // 设置60秒超时，因为API调用可能需要时间
 
     test('batchGenerateGoodnightReplies函数应该能发现文件', async () => {
         // 创建多个测试文件

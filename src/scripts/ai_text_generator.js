@@ -131,15 +131,27 @@ async function generateTextWithGemini(prompt) {
     console.log(`   温度: ${geminiConfig.temperature}`);
     
     try {
-        // 配置代理
-        let fetchOptions = {};
+        // --- 核心修改开始 ---
+        // SDK 不支持在构造函数传 agent，我们需要劫持全局 fetch 来注入代理
+        let originalFetch;
         if (geminiConfig.proxy) {
             console.log(`   使用代理: ${geminiConfig.proxy}`);
             const agent = new HttpsProxyAgent(geminiConfig.proxy);
-            fetchOptions = { agent };
-        }
 
-        const genAI = new GoogleGenerativeAI(geminiConfig.apiKey, fetchOptions);
+            // 临时覆盖全局 fetch，强制让 SDK 走 node-fetch 并带上 agent
+            // 注意：这是一种 Hack 方式，但兼容性最好
+            originalFetch = global.fetch;
+            global.fetch = (url, init) => {
+                return fetch(url, {
+                    ...init,
+                    agent: agent
+                });
+            };
+        }
+        // --- 核心修改结束 ---
+
+        // 注意：这里只传 apiKey，不要传 fetchOptions，因为无效
+        const genAI = new GoogleGenerativeAI(geminiConfig.apiKey);
         const model = genAI.getGenerativeModel({
             model: geminiConfig.model,
             generationConfig: {
@@ -151,10 +163,19 @@ async function generateTextWithGemini(prompt) {
         const result = await model.generateContent(prompt);
         const response = await result.response;
         const text = response.text();
-        
+
+        // 恢复原始 fetch（如果被覆盖了）
+        if (geminiConfig.proxy) {
+            global.fetch = originalFetch;
+        }
+
         console.log('✅ Gemini API调用成功');
         return text;
     } catch (error) {
+        // 恢复原始 fetch（如果被覆盖了）
+        if (geminiConfig.proxy) {
+            global.fetch = originalFetch;
+        }
         console.error(`❌ Gemini API调用失败: ${error.message}`);
         throw error;
     }
