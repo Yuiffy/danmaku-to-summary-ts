@@ -70,6 +70,9 @@ const processedFiles = new Set();
 // mikufans 会话文件跟踪 Map: sessionId -> fileList
 const sessionFiles = new Map();
 
+// mikufans 会话结束标记 Map: sessionId -> boolean
+const sessionEnded = new Map();
+
 // 增加请求体大小限制，防止超大 JSON 报错
 app.use(express.json({ limit: '50mb' }));
 
@@ -550,12 +553,15 @@ app.post('/mikufans', (req, res) => {
     }
 
     if (eventType === 'SessionEnded' && recording === false) {
-        // 直播结束：处理所有文件
-        const fileList = sessionFiles.get(sessionId) || [];
-        sessionFiles.delete(sessionId);
-        console.log(`🏁 直播结束: ${roomName} (Session: ${sessionId}), 处理 ${fileList.length} 个文件`);
+        // 直播结束：标记会话结束
+        sessionEnded.set(sessionId, true);
+        console.log(`🏁 直播结束: ${roomName} (Session: ${sessionId})`);
 
+        // 检查是否有已收集的文件，如果有则处理
+        const fileList = sessionFiles.get(sessionId) || [];
         if (fileList.length > 0) {
+            console.log(`处理 ${fileList.length} 个文件`);
+            sessionFiles.delete(sessionId);
             // 异步处理所有文件
             (async () => {
                 for (const filePath of fileList) {
@@ -603,23 +609,24 @@ app.post('/mikufans', (req, res) => {
     
     // 异步处理文件事件
     (async () => {
-        // 对于FileClosed事件，检查Recording状态
-        if (recording === true) {
-            // 直播仍在继续，只添加到会话列表，不等待稳定
-            if (sessionFiles.has(sessionId)) {
-                sessionFiles.get(sessionId).push(normalizedPath);
-                console.log(`📝 文件添加到会话列表 (直播继续): ${path.basename(normalizedPath)} (Session: ${sessionId})`);
-            }
-        } else {
-            // 直播已结束，等待稳定后直接处理该文件
+        // 对于FileClosed事件
+        if (sessionEnded.has(sessionId)) {
+            // 会话已结束，等待稳定后处理该文件
             console.log(`🔄 FileClosed事件：检查文件稳定... (${path.basename(normalizedPath)})`);
             const isStable = await waitFileStable(normalizedPath);
             if (!isStable) {
                 console.log(`❌ 文件稳定性检查失败: ${path.basename(normalizedPath)}`);
                 return;
             }
-            console.log(`🏁 直播结束，立即处理文件: ${path.basename(normalizedPath)}`);
+            console.log(`🏁 会话已结束，处理文件: ${path.basename(normalizedPath)}`);
             await processMikufansFile(normalizedPath);
+        } else {
+            // 会话仍在继续，添加到会话列表
+            if (!sessionFiles.has(sessionId)) {
+                sessionFiles.set(sessionId, []);
+            }
+            sessionFiles.get(sessionId).push(normalizedPath);
+            console.log(`📝 文件添加到会话列表 (会话继续): ${path.basename(normalizedPath)} (Session: ${sessionId})`);
         }
     })();
     
