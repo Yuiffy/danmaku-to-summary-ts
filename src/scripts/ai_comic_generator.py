@@ -804,6 +804,10 @@ def generate_comic_from_highlight(highlight_path: str) -> Optional[str]:
     
     config = load_config()
     
+    # 设置API启用状态
+    use_google = config["aiServices"].get("gemini", {}).get("enabled", False)
+    use_tuzi = config["aiServices"].get("tuZi", {}).get("enabled", False)
+    
     try:
         # 检查输入文件
         if not os.path.exists(highlight_path):
