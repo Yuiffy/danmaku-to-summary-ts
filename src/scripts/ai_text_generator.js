@@ -1,6 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const fetch = require('node-fetch');
+const { HttpsProxyAgent } = require('https-proxy-agent');
 
 // 加载配置
 function loadConfig() {
@@ -130,16 +132,13 @@ async function generateTextWithGemini(prompt) {
     
     try {
         // 配置代理
-        const { default: fetch } = await import('node-fetch');
-        const { HttpsProxyAgent } = await import('https-proxy-agent');
-        
         let fetchOptions = {};
         if (geminiConfig.proxy) {
             console.log(`   使用代理: ${geminiConfig.proxy}`);
             const agent = new HttpsProxyAgent(geminiConfig.proxy);
             fetchOptions = { agent };
         }
-        
+
         const genAI = new GoogleGenerativeAI(geminiConfig.apiKey, fetchOptions);
         const model = genAI.getGenerativeModel({
             model: geminiConfig.model,
