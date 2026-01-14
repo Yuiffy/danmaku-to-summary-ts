@@ -67,6 +67,9 @@ const PORT = 15121;
 // 防止重复处理的缓存 Set
 const processedFiles = new Set();
 
+// mikufans 会话文件跟踪 Map: sessionId -> fileList
+const sessionFiles = new Map();
+
 // 增加请求体大小限制，防止超大 JSON 报错
 app.use(express.json({ limit: '50mb' }));
 
@@ -125,6 +128,77 @@ async function waitFileStable(filePath) {
 function showWindowsNotification(title, message) {
     const psCommand = `[void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms'); [System.Windows.Forms.MessageBox]::Show('${message}', '${title}', 'OK', 'Warning')`;
     spawn('powershell.exe', ['-Command', psCommand], { windowsHide: true });
+}
+
+/**
+ * 处理单个mikufans文件
+ */
+async function processMikufansFile(filePath) {
+    const fileName = path.basename(filePath);
+
+    // 检查去重
+    if (processedFiles.has(filePath)) {
+        console.log(`⚠️ 跳过：文件已在处理队列中 -> ${fileName}`);
+        return;
+    }
+
+    // 加入去重缓存
+    processedFiles.add(filePath);
+    setTimeout(() => processedFiles.delete(filePath), 3600 * 1000);
+
+    console.log(`✅ 文件已稳定，开始处理: ${fileName}`);
+
+    // 查找对应的xml文件（如果有）
+    let targetXml = null;
+    const dir = path.dirname(filePath);
+    const baseName = path.basename(filePath, path.extname(filePath));
+
+    // 尝试查找同目录下的xml文件
+    const xmlPattern = path.join(dir, '*.xml');
+    try {
+        const files = fs.readdirSync(dir);
+        const xmlFiles = files.filter(f => f.endsWith('.xml') && f.includes(baseName.split('-')[0]));
+        if (xmlFiles.length > 0) {
+            targetXml = path.join(dir, xmlFiles[0]);
+            console.log(`📄 找到对应的弹幕文件: ${path.basename(targetXml)}`);
+        }
+    } catch (error) {
+        console.log(`ℹ️ 未找到弹幕文件: ${error.message}`);
+    }
+
+    // 启动处理流程
+    const jsArgs = [JS_SCRIPT_PATH, filePath];
+    if (targetXml) jsArgs.push(targetXml);
+
+    console.log('🚀 启动mikufans处理流程...');
+
+    const ps = spawn('node', jsArgs, {
+        cwd: __dirname,
+        windowsHide: true,
+        env: { ...process.env, NODE_ENV: 'automation' }
+    });
+
+    const timeouts = getTimeoutConfig();
+    const processTimeout = setTimeout(() => {
+        console.log(`⏰ 进程超时，强制终止并清理队列: ${fileName}`);
+        ps.kill('SIGTERM');
+        processedFiles.delete(filePath);
+    }, timeouts.processTimeout || 1800000);
+
+    ps.stdout.on('data', (d) => console.log(`[Mikufans PS] ${d.toString().trim()}`));
+    ps.stderr.on('data', (d) => console.error(`[Mikufans PS ERR] ${d.toString().trim()}`));
+
+    ps.on('error', (err) => {
+        console.error(`💥 mikufans进程错误: ${err.message}`);
+        clearTimeout(processTimeout);
+        processedFiles.delete(filePath);
+    });
+
+    ps.on('close', (code) => {
+        clearTimeout(processTimeout);
+        console.log(`🏁 mikufans流程结束 (Exit: ${code})`);
+        setTimeout(() => processedFiles.delete(filePath), 5000);
+    });
 }
 
 app.post('/ddtv', (req, res) => {
@@ -464,7 +538,35 @@ app.post('/mikufans', (req, res) => {
     console.log(JSON.stringify(payload, null, 2));
     console.log(`▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n`);
     
-    // 只处理FileOpening和FileClosed事件
+    // 处理所有mikufans事件，但只对文件事件和会话事件进行特殊处理
+    const sessionId = payload.EventData?.SessionId;
+    const recording = payload.EventData?.Recording;
+
+    if (eventType === 'SessionStarted' && recording === true) {
+        // 直播开始：初始化会话文件列表
+        sessionFiles.set(sessionId, []);
+        console.log(`🎬 直播开始: ${roomName} (Session: ${sessionId})`);
+        return res.send('Session started logged');
+    }
+
+    if (eventType === 'SessionEnded' && recording === false) {
+        // 直播结束：处理所有文件
+        const fileList = sessionFiles.get(sessionId) || [];
+        sessionFiles.delete(sessionId);
+        console.log(`🏁 直播结束: ${roomName} (Session: ${sessionId}), 处理 ${fileList.length} 个文件`);
+
+        if (fileList.length > 0) {
+            // 异步处理所有文件
+            (async () => {
+                for (const filePath of fileList) {
+                    await processMikufansFile(filePath);
+                }
+            })();
+        }
+        return res.send('Session ended logged');
+    }
+
+    // 只处理文件相关事件
     if (eventType !== 'FileOpening' && eventType !== 'FileClosed') {
         console.log(`ℹ️ 忽略非文件事件: ${eventType}`);
         return res.send('Event logged (non-file event ignored)');
@@ -499,109 +601,74 @@ app.post('/mikufans', (req, res) => {
         return res.send('Unsupported file type');
     }
     
-    // 异步处理文件
+    // 异步处理文件事件
     (async () => {
-        // 检查去重
-        if (processedFiles.has(normalizedPath)) {
-            console.log(`⚠️ 跳过：文件已在处理队列中 -> ${path.basename(normalizedPath)}`);
-            return;
-        }
-        
-        // 对于FileOpening事件，等待文件稳定
+        // 对于FileOpening事件，等待文件稳定并记录到会话
         if (eventType === 'FileOpening') {
             console.log(`🔄 FileOpening事件：等待文件稳定... (${path.basename(normalizedPath)})`);
-            
-            // 等待文件出现（使用配置的超时参数）
+
+            // 等待文件出现
             const timeouts = getTimeoutConfig();
-            const maxWaitTime = timeouts.fileStableCheck || 30000; // 30秒
-            const checkInterval = 2000; // 每2秒检查一次
+            const maxWaitTime = timeouts.fileStableCheck || 30000;
+            const checkInterval = 2000;
             let waitedTime = 0;
             let fileFound = false;
-            
+
             while (waitedTime < maxWaitTime && !fileFound) {
                 await sleep(checkInterval);
                 waitedTime += checkInterval;
-                
+
                 if (fs.existsSync(normalizedPath)) {
                     fileFound = true;
                     console.log(`✅ 发现文件 (等待了${waitedTime/1000}秒): ${path.basename(normalizedPath)}`);
                     break;
                 }
-                
+
                 console.log(`⏳ 等待文件出现... ${waitedTime/1000}秒`);
             }
-            
+
             if (!fileFound) {
                 console.log(`❌ 超时未发现文件: ${path.basename(normalizedPath)}`);
                 return;
             }
-        }
-        
-        // 等待文件稳定
-        const isStable = await waitFileStable(normalizedPath);
-        if (!isStable) {
-            console.log(`❌ 文件稳定性检查失败，跳过处理: ${path.basename(normalizedPath)}`);
-            return;
-        }
-        
-        // 加入去重缓存
-        processedFiles.add(normalizedPath);
-        setTimeout(() => processedFiles.delete(normalizedPath), 3600 * 1000);
-        
-        console.log(`✅ 文件已稳定，开始处理: ${path.basename(normalizedPath)}`);
-        
-        // 查找对应的xml文件（如果有）
-        let targetXml = null;
-        const dir = path.dirname(normalizedPath);
-        const baseName = path.basename(normalizedPath, path.extname(normalizedPath));
-        
-        // 尝试查找同目录下的xml文件
-        const xmlPattern = path.join(dir, '*.xml');
-        try {
-            const files = fs.readdirSync(dir);
-            const xmlFiles = files.filter(f => f.endsWith('.xml') && f.includes(baseName.split('-')[0]));
-            if (xmlFiles.length > 0) {
-                targetXml = path.join(dir, xmlFiles[0]);
-                console.log(`📄 找到对应的弹幕文件: ${path.basename(targetXml)}`);
+
+            // 等待文件稳定
+            const isStable = await waitFileStable(normalizedPath);
+            if (!isStable) {
+                console.log(`❌ 文件稳定性检查失败: ${path.basename(normalizedPath)}`);
+                return;
             }
-        } catch (error) {
-            console.log(`ℹ️ 未找到弹幕文件: ${error.message}`);
+
+            // 添加到会话文件列表
+            if (sessionFiles.has(sessionId)) {
+                sessionFiles.get(sessionId).push(normalizedPath);
+                console.log(`📝 文件添加到会话列表: ${path.basename(normalizedPath)} (Session: ${sessionId})`);
+            }
         }
-        
-        // 启动处理流程
-        const jsArgs = [JS_SCRIPT_PATH, normalizedPath];
-        if (targetXml) jsArgs.push(targetXml);
-        
-        console.log('🚀 启动mikufans处理流程...');
-        
-        const ps = spawn('node', jsArgs, {
-            cwd: __dirname,
-            windowsHide: true,
-            env: { ...process.env, NODE_ENV: 'automation' }
-        });
-        
-        const timeouts = getTimeoutConfig();
-        const processTimeout = setTimeout(() => {
-            console.log(`⏰ 进程超时，强制终止并清理队列: ${path.basename(normalizedPath)}`);
-            ps.kill('SIGTERM');
-            processedFiles.delete(normalizedPath);
-        }, timeouts.processTimeout || 1800000);
-        
-        ps.stdout.on('data', (d) => console.log(`[Mikufans PS] ${d.toString().trim()}`));
-        ps.stderr.on('data', (d) => console.error(`[Mikufans PS ERR] ${d.toString().trim()}`));
-        
-        ps.on('error', (err) => {
-            console.error(`💥 mikufans进程错误: ${err.message}`);
-            clearTimeout(processTimeout);
-            processedFiles.delete(normalizedPath);
-        });
-        
-        ps.on('close', (code) => {
-            clearTimeout(processTimeout);
-            console.log(`🏁 mikufans流程结束 (Exit: ${code})`);
-            setTimeout(() => processedFiles.delete(normalizedPath), 5000);
-        });
-        
+
+        // 对于FileClosed事件，检查Recording状态，如果true则添加到列表，否则直接处理
+        if (eventType === 'FileClosed') {
+            console.log(`🔄 FileClosed事件：检查文件稳定... (${path.basename(normalizedPath)})`);
+
+            // 等待文件稳定
+            const isStable = await waitFileStable(normalizedPath);
+            if (!isStable) {
+                console.log(`❌ 文件稳定性检查失败: ${path.basename(normalizedPath)}`);
+                return;
+            }
+
+            if (recording === true) {
+                // 直播仍在继续，添加到会话列表
+                if (sessionFiles.has(sessionId)) {
+                    sessionFiles.get(sessionId).push(normalizedPath);
+                    console.log(`📝 文件添加到会话列表 (直播继续): ${path.basename(normalizedPath)} (Session: ${sessionId})`);
+                }
+            } else {
+                // 直播已结束，直接处理该文件
+                console.log(`🏁 直播结束，立即处理文件: ${path.basename(normalizedPath)}`);
+                await processMikufansFile(normalizedPath);
+            }
+        }
     })();
     
     res.send('Mikufans processing started');
