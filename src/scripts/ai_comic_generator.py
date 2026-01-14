@@ -800,9 +800,6 @@ def save_comic_result(output_path: str, comic_data: Any) -> str:
 
 def generate_comic_from_highlight(highlight_path: str) -> Optional[str]:
     """从AI_HIGHLIGHT文件生成漫画（已禁用）"""
-    print("[INFO]  AI漫画生成功能已禁用（不使用googleImage和huggingFace）")
-    return None
-    
     print(f"[FILE] 处理AI_HIGHLIGHT文件: {os.path.basename(highlight_path)}")
     
     try:
