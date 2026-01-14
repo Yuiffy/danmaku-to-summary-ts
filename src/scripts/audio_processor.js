@@ -146,10 +146,14 @@ async function convertVideoToAudio(videoPath, audioFormat = '.m4a') {
 }
 
 // 处理音频专用房间的视频
-async function processAudioOnlyRoom(videoPath) {
+async function processAudioOnlyRoom(videoPath, roomId = null) {
     const config = loadConfig();
     const filename = path.basename(videoPath);
-    const roomId = extractRoomIdFromFilename(filename);
+    
+    // 如果没有提供roomId，从文件名提取
+    if (!roomId) {
+        roomId = extractRoomIdFromFilename(filename);
+    }
     
     if (!roomId) {
         console.log(`⚠️  无法从文件名提取房间ID: ${filename}`);
@@ -204,7 +208,7 @@ async function checkFfmpegAvailability() {
 }
 
 // 主处理函数（供外部调用）
-async function processVideoForAudio(videoPath) {
+async function processVideoForAudio(videoPath, roomId = null) {
     const config = loadConfig();
     
     if (!config.audioProcessing.enabled) {
@@ -228,7 +232,7 @@ async function processVideoForAudio(videoPath) {
     }
     
     // 处理音频专用房间
-    return await processAudioOnlyRoom(videoPath);
+    return await processAudioOnlyRoom(videoPath, roomId);
 }
 
 // 导出函数

@@ -35,8 +35,7 @@ function loadConfig() {
 
 // 检查配置是否有效
 function isComicGenerationEnabled() {
-    // AI漫画生成功能已禁用（不使用googleImage和huggingFace）
-    return false;
+    return true;
 }
 
 // 调用Python脚本生成漫画
@@ -112,9 +111,39 @@ async function generateComicWithPython(highlightPath) {
 }
 
 // 生成漫画
+
+// 生成漫画
 async function generateComicFromHighlight(highlightPath) {
-    console.log('ℹ️  AI漫画生成功能已禁用（不使用googleImage和huggingFace）');
-    return null;
+    const config = loadConfig();
+    
+    if (!isComicGenerationEnabled()) {
+        console.log('ℹ️  AI漫画生成功能已禁用');
+        return null;
+    }
+    
+    console.log(`🎨 开始生成漫画: ${path.basename(highlightPath)}`);
+    
+    try {
+        // 检查输入文件
+        if (!fs.existsSync(highlightPath)) {
+            throw new Error(`AI_HIGHLIGHT文件不存在: ${highlightPath}`);
+        }
+        
+        // 调用Python脚本
+        const result = await generateComicWithPython(highlightPath);
+        
+        if (result) {
+            console.log(`✅ 漫画生成完成: ${path.basename(result)}`);
+            return result;
+        } else {
+            console.log('⚠️  漫画生成完成但未找到输出文件');
+            return null;
+        }
+        
+    } catch (error) {
+        console.error(`❌ 漫画生成失败: ${error.message}`);
+        return null;
+    }
 }
 
 // 批量生成漫画

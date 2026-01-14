@@ -89,11 +89,11 @@ async function processMedia(mediaPath) {
 }
 
 // 音频处理
-async function processAudioIfNeeded(mediaPath) {
+async function processAudioIfNeeded(mediaPath, roomId = null) {
     console.log('\n🔊 检查音频处理需求...');
     
     try {
-        const result = await audioProcessor.processVideoForAudio(mediaPath);
+        const result = await audioProcessor.processVideoForAudio(mediaPath, roomId);
         if (result) {
             console.log(`✅ 音频处理完成，使用音频文件: ${path.basename(result)}`);
             return result; // 返回音频文件路径
@@ -178,6 +178,9 @@ const main = async () => {
         process.exit(1);
     }
 
+    // 获取房间ID（从环境变量或文件名）
+    const roomId = process.env.ROOM_ID ? parseInt(process.env.ROOM_ID) : null;
+
     console.log('===========================================');
     console.log('      Live Summary 增强版自动化工厂       ');
     console.log('      (支持音频处理 + AI生成)             ');
@@ -215,7 +218,7 @@ const main = async () => {
         console.log(`\n--- 处理媒体文件: ${path.basename(mediaFile)} ---`);
         
         // 1. 音频处理（如果需要）
-        const processedFile = await processAudioIfNeeded(mediaFile);
+        const processedFile = await processAudioIfNeeded(mediaFile, roomId);
         
         // 2. ASR生成字幕
         const srtPath = await processMedia(processedFile);

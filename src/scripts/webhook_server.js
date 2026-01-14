@@ -135,7 +135,7 @@ function showWindowsNotification(title, message) {
 /**
  * 处理单个mikufans文件
  */
-async function processMikufansFile(filePath) {
+async function processMikufansFile(filePath, roomId) {
     const fileName = path.basename(filePath);
 
     // 检查去重
@@ -177,7 +177,7 @@ async function processMikufansFile(filePath) {
     const ps = spawn('node', jsArgs, {
         cwd: __dirname,
         windowsHide: true,
-        env: { ...process.env, NODE_ENV: 'automation' }
+        env: { ...process.env, NODE_ENV: 'automation', ROOM_ID: String(roomId) }
     });
 
     const timeouts = getTimeoutConfig();
@@ -599,7 +599,7 @@ app.post('/mikufans', (req, res) => {
             return;
         }
         console.log(`🏁 会话已结束，处理文件: ${path.basename(normalizedPath)}`);
-        await processMikufansFile(normalizedPath);
+        await processMikufansFile(normalizedPath, roomId);
     })();
     
     res.send('Mikufans processing started');
