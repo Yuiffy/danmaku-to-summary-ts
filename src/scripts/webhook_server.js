@@ -159,17 +159,26 @@ async function processMikufansFile(filePath, roomId) {
     const dir = path.dirname(filePath);
     const baseName = path.basename(filePath, path.extname(filePath));
 
-    // 尝试查找同目录下的xml文件
-    const xmlPattern = path.join(dir, '*.xml');
+    // 尝试查找同目录下的xml文件（找和视频同名的xml，只把视频名后缀改为.xml来找）
     try {
-        const files = fs.readdirSync(dir);
-        const xmlFiles = files.filter(f => f.endsWith('.xml') && f.includes(baseName.split('-')[0]));
-        if (xmlFiles.length > 0) {
-            targetXml = path.join(dir, xmlFiles[0]);
+        const expectedXmlName = baseName + '.xml';
+        const xmlPath = path.join(dir, expectedXmlName);
+        if (fs.existsSync(xmlPath)) {
+            targetXml = xmlPath;
             console.log(`📄 找到对应的弹幕文件: ${path.basename(targetXml)}`);
+        } else {
+            // 如果没有完全匹配的同名文件，可以尝试查找包含视频文件名的xml文件作为备选
+            const files = fs.readdirSync(dir);
+            const xmlFiles = files.filter(f => f.endsWith('.xml') && f.includes(baseName));
+            if (xmlFiles.length > 0) {
+                targetXml = path.join(dir, xmlFiles[0]);
+                console.log(`📄 找到备选弹幕文件（包含视频名）: ${path.basename(targetXml)}`);
+            } else {
+                console.log(`ℹ️ 未找到弹幕文件: 目录中没有 ${expectedXmlName}`);
+            }
         }
     } catch (error) {
-        console.log(`ℹ️ 未找到弹幕文件: ${error.message}`);
+        console.log(`ℹ️ 查找弹幕文件时出错: ${error.message}`);
     }
 
     // 启动处理流程
@@ -481,10 +490,27 @@ app.post('/ddtv', (req, res) => {
     // 选择对应的xml文件
     let targetXml = null;
     if (xmlFiles.length > 0) {
-        // 尝试通过文件名匹配，如果没有则用第一个
+        // 尝试通过文件名匹配（找和视频同名的xml，只把视频名后缀改为.xml来找）
         const videoBaseName = path.basename(targetVideo, path.extname(targetVideo));
-        const matchedXml = xmlFiles.find(xml => path.basename(xml, '.xml').includes(videoBaseName.split('_')[0]));
-        targetXml = matchedXml ? path.normalize(matchedXml) : path.normalize(xmlFiles[0]);
+        // 先尝试完全匹配（去掉可能的_fix/_original后缀）
+        const baseWithoutSuffix = videoBaseName.replace(/(_fix|_original)$/, '');
+        const expectedXmlName = baseWithoutSuffix + '.xml';
+        
+        // 查找完全匹配的xml文件
+        const exactMatch = xmlFiles.find(xml => path.basename(xml) === expectedXmlName);
+        if (exactMatch) {
+            targetXml = path.normalize(exactMatch);
+            console.log(`📄 找到完全匹配的弹幕文件: ${path.basename(targetXml)}`);
+        } else {
+            // 如果没有完全匹配，尝试查找包含视频文件名的xml文件
+            const matchedXml = xmlFiles.find(xml => path.basename(xml, '.xml').includes(baseWithoutSuffix));
+            targetXml = matchedXml ? path.normalize(matchedXml) : path.normalize(xmlFiles[0]);
+            if (matchedXml) {
+                console.log(`📄 找到包含视频名的弹幕文件: ${path.basename(targetXml)}`);
+            } else {
+                console.log(`📄 使用第一个可用的弹幕文件: ${path.basename(targetXml)}`);
+            }
+        }
     }
 
     const jsArgs = [JS_SCRIPT_PATH, targetVideo];
