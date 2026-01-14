@@ -163,84 +163,6 @@ def extract_room_id_from_filename(filename: str) -> Optional[str]:
     match = re.match(r'^(\d+)_', filename)
     return match.group(1) if match else None
 
-
-
-def optimize_prompt_with_gemini(comic_content: str, reference_image_path: Optional[str] = None) -> str:
-    """使用Gemini将漫画内容转换为绘画提示词"""
-    print("[GEMINI] 使用Gemini将漫画内容转换为绘画提示词...")
-
-    try:
-        # 导入Google GenAI (新版本)
-        import google.genai as genai
-
-        # 加载配置
-        config = load_config()
-
-        # 获取Gemini配置
-        gemini_config = config.get('aiServices', {}).get('gemini', {})
-        gemini_api_key = gemini_config.get('apiKey', '')
-
-        if not gemini_api_key:
-            print("[WARNING]  Gemini API密钥未配置，使用原始提示词")
-            return build_comic_prompt(comic_content, reference_image_path)
-
-        # 创建客户端
-        ai = genai.GoogleGenAI(api_key=gemini_api_key)
-
-        # 设置代理 (如果需要)
-        proxy_url = gemini_config.get('proxy', '')
-        if proxy_url:
-            import os
-            os.environ['http_proxy'] = proxy_url
-            os.environ['https_proxy'] = proxy_url
-
-        # 获取模型名称
-        model_name = gemini_config.get('model', 'gemini-1.5-flash')
-
-        # 生成优化提示词
-        optimization_prompt = f"""你是一个专业的AI绘画提示词专家。
-
-任务：将漫画故事脚本转化为适合AI图像生成的绘画提示词。
-
-漫画内容：
-{comic_content[:1500]}  # 限制长度
-
-要求：
-1. 生成适合Stable Diffusion/DALL-E/Midjourney等AI绘画模型的英文提示词
-2. 提示词要详细描述场景、角色、动作、表情、构图、风格
-3. 如果是虚拟主播，注意角色特征（如：岁己SUI是白发红瞳女生，饼干岁是小饼干状生物）
-4. 风格要求：日本漫画风格，多分镜（5-8个场景），每个场景有简短文字说明
-5. 画面要生动、有趣、有故事性
-6. 输出格式：纯英文的详细提示词，适合直接输入给AI绘画模型
-
-请生成优化的AI绘画提示词："""
-
-        # 调用Gemini
-        response = ai.models.generate_content(
-            model=model_name,
-            contents=optimization_prompt
-        )
-
-        if response and response.text:
-            optimized_prompt = response.text.strip()
-            print("[OK] Gemini提示词优化完成")
-            print(f"优化后提示词长度: {len(optimized_prompt)} 字符")
-            return optimized_prompt
-        else:
-            print("[WARNING]  Gemini返回空结果，使用原始提示词")
-            return build_comic_prompt(comic_content, reference_image_path)
-
-    except ImportError:
-        print("[WARNING]  google-genai库未安装，使用原始提示词")
-        print("   请安装: pip install google-genai")
-    except Exception as e:
-        print(f"[ERROR]  Gemini优化失败: {e}")
-        import traceback
-        traceback.print_exc()
-
-    # 失败时返回原始提示词
-    return build_comic_prompt(comic_content, reference_image_path)
-
 def build_comic_prompt(highlight_content: str, reference_image_path: Optional[str] = None) -> str:
     """构建漫画生成提示词（先生成漫画内容，再构建绘画提示词）"""
 
@@ -248,16 +170,7 @@ def build_comic_prompt(highlight_content: str, reference_image_path: Optional[st
     comic_content = generate_comic_content_with_ai(highlight_content)
 
     # 第二步：基于漫画内容构建绘画提示词
-    base_prompt = f"""<job>你作为虚拟主播二创画师大手子，根据漫画脚本，绘制直播总结插画。</job>
-
-<character>注意一定要还原附件image_0图片中的角色形象，岁己SUI（白发红瞳女生），饼干岁（有细细四肢的小小的饼干状生物）</character>
-
-<style>多个剪贴画风格或者少年漫多个分镜（5~8个吧），每个是一个片段场景，画图+文字台词or简介，文字要短。要画得精致，岁己要美丽动人，饼干岁要可爱。</style>
-
-<note>一定要按照给你的参考图还原形象，而不是自己乱画一个动漫角色</note>
-
-<language>画面内的文字要用中文</language>
-
+    base_prompt = f"""<note>一定要按照给你的参考图还原形象，而不是自己乱画一个动漫角色</note>
 下面是根据直播内容生成的漫画脚本，请根据这个脚本绘制漫画：
 {comic_content}"""
 
@@ -296,21 +209,15 @@ def generate_comic_content_with_ai(highlight_content: str) -> str:
         model_name = gemini_config.get('model', 'gemini-1.5-flash')
 
         # 生成漫画内容脚本
-        content_prompt = f"""你是一个专业的漫画脚本作家。
+        content_prompt = f"""<job>你作为虚拟主播二创画师大手子，根据直播内容，绘制直播总结插画</job>
 
-任务：根据直播内容创作一个有趣的漫画故事脚本。
+<character>注意一定要还原附件image_0图片中的角色形象，岁己SUI（白发红瞳女生），饼干岁（有细细四肢的小小的饼干状生物）</character>
 
+<style>多个剪贴画风格或者少年漫多个分镜（5~8个吧），每个是一个片段场景，画图+文字台词or简介，文字要短。要画得精致，岁己要美丽动人，饼干岁要可爱。</style>
+
+<note>一定要按照给你的参考图还原形象，而不是自己乱画一个动漫角色</note>
 直播内容：
-{highlight_content[:1500]}  # 限制长度
-
-要求：
-1. 创作一个完整的漫画故事，包括开头、发展和结尾
-2. 故事要生动、有趣，突出直播的精彩瞬间
-3. 包含5-8个场景，每个场景有简短的描述和对话
-4. 如果是虚拟主播直播，注意角色特征（如：岁己SUI是白发红瞳女生，饼干岁是小饼干状生物）
-5. 风格：日本漫画风格，适合转换为视觉漫画
-6. 输出格式：用中文描述故事脚本，包括场景编号、场景描述和对话
-
+{highlight_content}
 请创作漫画故事脚本："""
 
         # 调用Gemini
@@ -881,7 +788,7 @@ def save_comic_result(output_path: str, comic_data: Any) -> str:
         raise
 
 def generate_comic_from_highlight(highlight_path: str) -> Optional[str]:
-    """从AI_HIGHLIGHT文件生成漫画（已禁用）"""
+    """从AI_HIGHLIGHT文件生成漫画"""
     print(f"[FILE] 处理AI_HIGHLIGHT文件: {os.path.basename(highlight_path)}")
     
     config = load_config()
