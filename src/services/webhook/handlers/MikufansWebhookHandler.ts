@@ -246,10 +246,11 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       const ps: ChildProcess = spawn('node', args, {
         cwd: process.cwd(),
         windowsHide: true,
-        env: { 
-          ...process.env, 
+        env: {
+          ...process.env,
           NODE_ENV: 'production',
-          ROOM_ID: String(roomId) 
+          ROOM_ID: String(roomId),
+          AUTOMATION: 'true'  // 标识为自动化环境，避免等待用户输入
         }
       });
 
@@ -265,11 +266,17 @@ export class MikufansWebhookHandler implements IWebhookHandler {
 
       // 处理输出
       ps.stdout?.on('data', (data: Buffer) => {
-        this.logger.info(`[Mikufans处理进程] ${data.toString().trim()}`);
+        const output = data.toString().trim();
+        if (output) {
+          this.logger.info(`[Mikufans处理进程] ${output}`);
+        }
       });
 
       ps.stderr?.on('data', (data: Buffer) => {
-        this.logger.error(`[Mikufans处理进程错误] ${data.toString().trim()}`);
+        const output = data.toString().trim();
+        if (output) {
+          this.logger.error(`[Mikufans处理进程错误] ${output}`);
+        }
       });
 
       // 处理进程事件

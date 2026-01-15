@@ -215,6 +215,7 @@ const main = async () => {
     let mediaFiles = [];
     let xmlFiles = [];
     let filesToProcess = [];
+    let fileSnapshots = new Map();  // 用于记录文件快照
 
     console.log('-> Analyzing input files...');
 
@@ -256,6 +257,25 @@ const main = async () => {
     }
 
     console.log('\n--------------------------------------------');
+
+    // 在处理开始前记录文件列表快照，用于后续过滤本次生成的文件
+    if (filesToProcess.length > 0) {
+        const outputDir = path.dirname(filesToProcess[0]);
+        try {
+            const existingFiles = fs.readdirSync(outputDir);
+            existingFiles.forEach(file => {
+                const filePath = path.join(outputDir, file);
+                try {
+                    const stats = fs.statSync(filePath);
+                    fileSnapshots.set(file, stats.mtimeMs);
+                } catch (e) {
+                    fileSnapshots.set(file, 0);
+                }
+            });
+        } catch (e) {
+            // 忽略错误
+        }
+    }
 
     // Node.js Fusion（弹幕融合）
     let generatedHighlightFile = null;
@@ -333,22 +353,37 @@ const main = async () => {
     if (filesToProcess.length > 0) {
         console.log(`输出目录: ${outputDir}`);
         
-        // 列出生成的文件
+        // 列出生成的文件（只显示本次新生成的文件）
         try {
             const files = fs.readdirSync(outputDir);
-            const generatedFiles = files.filter(f => 
-                f.includes('_晚安回复.md') || 
-                f.includes('_COMIC_FACTORY.') ||
-                f.includes('_AI_HIGHLIGHT.txt')
-            );
+            const now = Date.now();
+            // 过滤出本次会话新生成的文件（包括本次创建的AI_HIGHLIGHT文件）
+            const generatedFiles = files.filter(f => {
+                const filePath = path.join(outputDir, f);
+                try {
+                    const stats = fs.statSync(filePath);
+                    // 如果文件在快照中不存在，或者修改时间在快照之后，则是新生成的文件
+                    const originalMtime = fileSnapshots.get(f) || 0;
+                    // 5分钟内的文件视为本次生成的（容忍时间差）
+                    const isNew = stats.mtimeMs > originalMtime || (now - stats.mtimeMs < 300000);
+                    // 只显示AI相关的文件
+                    const isAiFile = f.includes('_晚安回复.md') ||
+                                   f.includes('_COMIC_FACTORY.') ||
+                                   f.includes('_AI_HIGHLIGHT.txt');
+                    return isAiFile && isNew;
+                } catch (e) {
+                    return false;
+                }
+            });
             
             if (generatedFiles.length > 0) {
-                console.log('\n📁 生成的文件:');
+                console.log('\n📁 本次生成的文件:');
                 generatedFiles.forEach(file => {
                     const filePath = path.join(outputDir, file);
                     const stats = fs.statSync(filePath);
                     const size = (stats.size / 1024).toFixed(1);
-                    console.log(`   ${file} (${size}KB)`);
+                    const mtime = new Date(stats.mtimeMs).toLocaleTimeString();
+                    console.log(`   ${file} (${size}KB) [${mtime}]`);
                 });
             }
         } catch (error) {
@@ -356,8 +391,8 @@ const main = async () => {
         }
     }
 
-    // 检查是否在自动化模式
-    if (process.env.NODE_ENV === 'automation' || process.env.CI) {
+    // 检查是否在自动化模式（支持 NODE_ENV、CI 和 AUTOMATION 环境变量）
+    if (process.env.NODE_ENV === 'automation' || process.env.CI || process.env.AUTOMATION === 'true') {
         process.exit(0);
     } else {
         // 交互模式，等待用户

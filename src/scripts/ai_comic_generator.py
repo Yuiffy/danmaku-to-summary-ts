@@ -10,6 +10,7 @@ import sys
 import json
 import time
 import base64
+import copy
 import requests
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
@@ -422,13 +423,86 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
     except ImportError:
         print("[WARNING]  google-genai库未安装，使用原始内容")
         print("   请安装: pip install google-genai")
+        return highlight_content, False
     except Exception as e:
         error_str = str(e)
-        # 检查是否是429超频错误
+        # 检查是否是429超频错误，尝试使用tuZi API作为备用方案
         if '429' in error_str or 'RESOURCE_EXHAUSTED' in error_str:
-            print("[WARNING]  ⚠️ Gemini API超频 (429)，使用原始内容")
+            print("[WARNING]  ⚠️ Gemini API超频 (429)，尝试使用tuZi API作为备用方案...")
+            
+            # 尝试使用tuZi API生成文本
+            try:
+                config = load_config()
+                tuzi_config = config.get("aiServices", {}).get("tuZi", {})
+                
+                if not is_tuzi_configured():
+                    print("[WARNING]  tuZi API未配置，使用原始内容")
+                    return highlight_content, False
+                
+                # 设置代理
+                proxy_url = tuzi_config.get("proxy", "")
+                proxies = {}
+                if proxy_url:
+                    proxies = {
+                        "http": proxy_url,
+                        "https": proxy_url
+                    }
+                
+                # 构建请求
+                base_url = tuzi_config.get("baseUrl", "https://api.tu-zi.com")
+                api_url = f"{base_url}/v1/chat/completions"
+                
+                headers = {
+                    "Authorization": f"Bearer {tuzi_config['apiKey']}",
+                    "Content-Type": "application/json"
+                }
+                
+                # 构建提示词（生成漫画脚本）
+                character_desc = get_room_character_description(room_id)
+                system_prompt = f"""你作为虚拟主播二创画师大手子，根据直播内容，绘制直播总结插画。
+
+角色描述：{character_desc}
+
+风格：多个剪贴画风格或者少年漫多个分镜（5~8个吧），每个是一个片段场景，画图+文字台词or简介，文字要短。要画得精致。
+
+请创作漫画故事脚本（纯文本描述，不需要图像生成）："""
+                
+                payload = {
+                    "model": tuzi_config.get("model", "nano-banana"),
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"直播内容：\n{highlight_content}\n\n请创作漫画故事脚本："}
+                    ],
+                    "temperature": 0.7,
+                    "max_tokens": 1000
+                }
+                
+                print("[TUZI_TEXT] 调用tuZi API生成漫画文本内容...")
+                response = requests.post(api_url, headers=headers, json=payload, timeout=120, proxies=proxies)
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if "choices" in result and len(result["choices"]) > 0:
+                        content = result["choices"][0]["message"]["content"]
+                        if content and content.strip():
+                            comic_content = content.strip()
+                            print("[OK] tuZi API漫画文本生成成功")
+                            print(f"生成内容长度: {len(comic_content)} 字符")
+                            return comic_content, True
+                
+                print("[WARNING]  tuZi API调用失败，使用原始内容")
+                return highlight_content, False
+                
+            except Exception as tuzi_error:
+                print(f"[ERROR]  tuZi API备用方案失败: {tuzi_error}")
+                print("[WARNING]  所有API都失败，使用原始内容")
+                return highlight_content, False
         else:
             print(f"[ERROR]  AI内容生成失败: {e}")
+            return highlight_content, False
+    
+    # 确保函数在所有路径都返回有效值
+    return highlight_content, False
 
 def encode_image_to_base64(image_path: str) -> str:
     """将图片编码为base64"""
