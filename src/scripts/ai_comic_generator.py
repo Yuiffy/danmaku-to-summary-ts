@@ -17,45 +17,59 @@ import traceback
 import subprocess
 import shutil
 
-# 配置路径
-CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'config.json')
+# 配置路径 - 优先读取外部配置文件
+def get_config_path():
+    """获取配置文件路径，优先使用外部config目录下的配置"""
+    env = os.environ.get('NODE_ENV', 'development')
+    # 脚本在 src/scripts 目录，外部配置在 config 目录
+    scripts_dir = os.path.dirname(__file__)
+    project_root = os.path.dirname(os.path.dirname(scripts_dir))
+    config_dir = os.path.join(project_root, 'config')
+    
+    config_path = os.path.join(config_dir, 'production.json' if env == 'production' else 'default.json')
+    fallback_path = os.path.join(os.path.dirname(__file__), 'config.json')
+    
+    if os.path.exists(config_path):
+        return config_path
+    return fallback_path
+
+CONFIG_PATH = get_config_path()
 
 def load_config() -> Dict[str, Any]:
-    """加载配置文件（包括config.json和config.secrets.json）"""
+    """加载配置文件（外部config目录优先，然后是scripts/config.json，最后是config.secrets.json）"""
     default_config = {
         "aiServices": {
         },
-        "roomSettings": {
-            "26966466": {
-                "referenceImage": "reference_images/26966466.jpg",
-                "enableComicGeneration": True
-            }
-        },
+        "roomSettings": {},
         "timeouts": {
             "aiApiTimeout": 120000
         }
     }
     
     try:
-        merged = default_config.copy()
+        merged = copy.deepcopy(default_config)
         
         # 加载主配置文件
         if os.path.exists(CONFIG_PATH):
             with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
                 user_config = json.load(f)
             
-            # 深度合并配置
-            import copy
-            merged = copy.deepcopy(default_config)
-            
-            # 合并aiServices
-            if "aiServices" in user_config:
-                if "tuZi" in user_config["aiServices"]:
+            # 新格式：从 ai.comic.tuZi 和 ai.roomSettings 读取
+            if "ai" in user_config:
+                if "comic" in user_config["ai"] and "tuZi" in user_config["ai"]["comic"]:
                     if "tuZi" not in merged["aiServices"]:
                         merged["aiServices"]["tuZi"] = {}
-                    merged["aiServices"]["tuZi"].update(user_config["aiServices"]["tuZi"])
+                    merged["aiServices"]["tuZi"].update(user_config["ai"]["comic"]["tuZi"])
+                if "roomSettings" in user_config["ai"]:
+                    merged["roomSettings"].update(user_config["ai"]["roomSettings"])
             
-            # 合并roomSettings
+            # 兼容旧格式
+            if "aiServices" in user_config:
+                for service_name, service_config in user_config["aiServices"].items():
+                    if service_name not in merged["aiServices"]:
+                        merged["aiServices"][service_name] = {}
+                    merged["aiServices"][service_name].update(service_config)
+            
             if "roomSettings" in user_config:
                 merged["roomSettings"].update(user_config["roomSettings"])
             
@@ -158,16 +172,27 @@ def get_live_cover_image(highlight_path: str) -> Optional[str]:
 def get_room_reference_image(room_id: str, highlight_path: Optional[str] = None) -> Optional[str]:
     """获取房间的参考图片路径"""
     config = load_config()
+    
+    # 获取脚本所在目录的上级目录（项目根目录）
+    scripts_dir = os.path.dirname(__file__)
+    project_root = os.path.dirname(os.path.dirname(scripts_dir))
 
     # 首先检查roomSettings中的配置
     room_str = str(room_id)
     if room_str in config["roomSettings"]:
         ref_image = config["roomSettings"][room_str].get("referenceImage", "")
-        if ref_image and os.path.exists(ref_image):
-            return ref_image
+        if ref_image:
+            # 尝试相对于项目根目录的路径
+            absolute_path = os.path.join(project_root, ref_image) if not os.path.isabs(ref_image) else ref_image
+            if os.path.exists(absolute_path):
+                return absolute_path
+            # 尝试相对于脚本目录的路径
+            script_relative = os.path.join(scripts_dir, ref_image) if not os.path.isabs(ref_image) else ref_image
+            if os.path.exists(script_relative):
+                return script_relative
 
         # 如果配置了但文件不存在，尝试在reference_images目录中查找
-        ref_images_dir = os.path.join(os.path.dirname(__file__), "reference_images")
+        ref_images_dir = os.path.join(scripts_dir, "reference_images")
         if os.path.exists(ref_images_dir):
             possible_files = [
                 os.path.join(ref_images_dir, f"{room_id}.jpg"),
@@ -186,25 +211,46 @@ def get_room_reference_image(room_id: str, highlight_path: Optional[str] = None)
             return live_cover
 
     # 如果没有找到房间特定的图片，使用默认图片
-    default_image = config.get("aiServices", {}).get("defaultReferenceImage", "")
-    if default_image and os.path.exists(default_image):
-        print(f"[INFO]  使用默认参考图片: {os.path.basename(default_image)}")
-        return default_image
+    # 新格式：ai.defaultReferenceImage 或 ai.comic.defaultReferenceImage
+    default_image = ""
+    if "ai" in config:
+        if config["ai"].get("defaultReferenceImage"):
+            default_image = config["ai"]["defaultReferenceImage"]
+        elif config["ai"].get("comic", {}).get("defaultReferenceImage"):
+            default_image = config["ai"]["comic"]["defaultReferenceImage"]
+    # 兼容旧格式
+    if not default_image and config.get("aiServices", {}).get("defaultReferenceImage"):
+        default_image = config["aiServices"]["defaultReferenceImage"]
+    
+    if default_image:
+        # 尝试相对于项目根目录的路径
+        absolute_path = os.path.join(project_root, default_image) if not os.path.isabs(default_image) else default_image
+        if os.path.exists(absolute_path):
+            print(f"[INFO]  使用默认参考图片: {os.path.basename(absolute_path)}")
+            return absolute_path
+        # 尝试相对于脚本目录的路径
+        script_relative = os.path.join(scripts_dir, default_image) if not os.path.isabs(default_image) else default_image
+        if os.path.exists(script_relative):
+            print(f"[INFO]  使用默认参考图片: {os.path.basename(script_relative)}")
+            return script_relative
 
     # 检查默认图片文件是否存在
-    ref_images_dir = os.path.join(os.path.dirname(__file__), "reference_images")
-    if os.path.exists(ref_images_dir):
-        default_files = [
-            os.path.join(ref_images_dir, "default.jpg"),
-            os.path.join(ref_images_dir, "default.jpeg"),
-            os.path.join(ref_images_dir, "default.png"),
-            os.path.join(ref_images_dir, "default.webp"),
-            os.path.join(ref_images_dir, "岁己小红帽立绘.png")  # 特定文件名
-        ]
-        for file_path in default_files:
-            if os.path.exists(file_path):
-                print(f"[INFO]  找到默认图片: {os.path.basename(file_path)}")
-                return file_path
+    # 先尝试 public/reference_images（新位置）
+    public_ref_dir = os.path.join(project_root, "public", "reference_images")
+    for ref_dir in [public_ref_dir, os.path.join(scripts_dir, "reference_images")]:
+        if os.path.exists(ref_dir):
+            default_files = [
+                os.path.join(ref_dir, "default.jpg"),
+                os.path.join(ref_dir, "default.jpeg"),
+                os.path.join(ref_dir, "default.png"),
+                os.path.join(ref_dir, "default.webp"),
+                os.path.join(ref_dir, "岁己小红帽立绘.png"),  # 特定文件名
+                os.path.join(ref_dir, "雪绘.png")  # 雪绘特定文件
+            ]
+            for file_path in default_files:
+                if os.path.exists(file_path):
+                    print(f"[INFO]  找到默认图片: {os.path.basename(file_path)}")
+                    return file_path
 
     return None
 
@@ -235,11 +281,16 @@ def get_room_character_description(room_id: Optional[str] = None) -> str:
             desc = room_cfg.get("characterDescription") or room_cfg.get("characterDesc", "")
 
         if not desc:
-            desc = config.get("aiServices", {}).get("defaultCharacterDescription", "")
+            # 新格式：从 ai.defaultCharacterDescription 读取
+            if "ai" in config and config["ai"].get("defaultCharacterDescription"):
+                desc = config["ai"]["defaultCharacterDescription"]
+            # 兼容旧格式
+            elif config.get("aiServices", {}).get("defaultCharacterDescription"):
+                desc = config["aiServices"]["defaultCharacterDescription"]
 
         if not desc:
             # 内置回退描述（与原先硬编码内容一致）
-            desc = "岁己SUI（白发红瞳女生），饼干岁（有细细四肢的小小的饼干状生物）"
+            desc = "岁己SUI（白发红瞳女生），饼干岁（有细细四肢的小小小的饼干状生物）"
 
         # 清洗：折叠换行、去两端空白、截断、去除尖括号以避免模型解析问题
         desc = " ".join([s.strip() for s in desc.splitlines() if s.strip()])

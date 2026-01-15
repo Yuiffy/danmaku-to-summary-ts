@@ -8,8 +8,26 @@ const unlink = promisify(fs.unlink);
 
 // 加载配置
 function loadConfig() {
-    const configPath = path.join(__dirname, 'config.json');
+    const env = process.env.NODE_ENV || 'development';
+    const configDir = path.resolve(path.join(__dirname, '..', '..', 'config'));
+    const configPath = path.join(configDir, env === 'production' ? 'production.json' : 'default.json');
+    const fallbackPath = path.join(__dirname, 'config.json');
+    
     const defaultConfig = {
+        audio: {
+            enabled: true,
+            audioOnlyRooms: [],
+            formats: ['.m4a', '.aac', '.mp3', '.wav', '.ogg', '.flac'],
+            defaultFormat: '.m4a',
+            ffmpeg: {
+                path: 'ffmpeg',
+                timeout: 300000
+            },
+            storage: {
+                keepOriginalVideo: false,
+                maxFileAgeDays: 30
+            }
+        },
         audioProcessing: {
             enabled: true,
             audioOnlyRooms: [],
@@ -22,10 +40,17 @@ function loadConfig() {
     };
 
     try {
-        if (fs.existsSync(configPath)) {
-            const userConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-            // 深度合并配置
+        let targetPath = configPath;
+        if (!fs.existsSync(targetPath)) {
+            targetPath = fallbackPath;
+        }
+        
+        if (fs.existsSync(targetPath)) {
+            const userConfig = JSON.parse(fs.readFileSync(targetPath, 'utf8'));
             const merged = JSON.parse(JSON.stringify(defaultConfig));
+            if (userConfig.audio) {
+                Object.assign(merged.audio, userConfig.audio);
+            }
             if (userConfig.audioProcessing) {
                 Object.assign(merged.audioProcessing, userConfig.audioProcessing);
             }
@@ -43,8 +68,14 @@ function loadConfig() {
 // 检查是否为音频专用房间
 function isAudioOnlyRoom(roomId) {
     const config = loadConfig();
-    return config.audioProcessing.enabled &&
-           config.audioProcessing.audioOnlyRooms.includes(parseInt(roomId));
+    const roomIdInt = parseInt(roomId);
+    
+    // 新格式：audio.audioOnlyRooms
+    if (config.audio?.enabled && config.audio.audioOnlyRooms) {
+        return config.audio.audioOnlyRooms.includes(roomIdInt);
+    }
+    // 兼容旧格式：audioProcessing.audioOnlyRooms
+    return config.audioProcessing?.enabled && config.audioProcessing.audioOnlyRooms?.includes(roomIdInt);
 }
 
 // 获取房间ID从文件名（从DDTV文件名中提取）
@@ -58,7 +89,7 @@ function extractRoomIdFromFilename(filename) {
 function runFfmpegCommand(args, timeout = 300000) {
     return new Promise((resolve, reject) => {
         const config = loadConfig();
-        const ffmpegPath = config.audioProcessing.ffmpegPath || 'ffmpeg';
+        const ffmpegPath = config.audio?.ffmpeg?.path || config.audioProcessing?.ffmpegPath || 'ffmpeg';
         
         console.log(`🎵 执行ffmpeg命令: ${ffmpegPath} ${args.join(' ')}`);
         
@@ -169,13 +200,14 @@ async function processAudioOnlyRoom(videoPath, roomId = null) {
     
     try {
         // 获取音频格式配置
-        const audioFormat = config.audioRecording?.defaultFormat || '.m4a';
+        const audioFormat = config.audio?.defaultFormat || config.audioRecording?.defaultFormat || '.m4a';
         
         // 转换视频为音频
         const audioPath = await convertVideoToAudio(videoPath, audioFormat);
         
         // 是否删除原始视频
-        if (config.audioProcessing.keepOriginalVideo === false) {
+        const keepOriginal = config.audio?.storage?.keepOriginalVideo !== undefined ? config.audio.storage.keepOriginalVideo : config.audioProcessing?.keepOriginalVideo;
+        if (keepOriginal === false) {
             console.log(`🗑️  删除原始视频文件: ${path.basename(videoPath)}`);
             try {
                 await unlink(videoPath);
@@ -211,7 +243,8 @@ async function checkFfmpegAvailability() {
 async function processVideoForAudio(videoPath, roomId = null) {
     const config = loadConfig();
     
-    if (!config.audioProcessing.enabled) {
+    const audioEnabled = config.audio?.enabled !== undefined ? config.audio.enabled : config.audioProcessing?.enabled;
+    if (!audioEnabled) {
         console.log('ℹ️  音频处理功能已禁用');
         return null;
     }
