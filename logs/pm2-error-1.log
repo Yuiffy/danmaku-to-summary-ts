@@ -1,0 +1,12 @@
+2026-01-15 22:42:35: (node:582388) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+2026-01-15 22:42:35: [31m2026-01-15T14:42:35.976Z ERROR   [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:87] 启动Webhook服务器时出错: bind EADDRINUSE ::1:15121[0m {"source":"WebhookService"}
+2026-01-15 22:45:58: (node:583120) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+2026-01-15 22:45:58: [31m2026-01-15T14:45:58.211Z ERROR   [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:87] 启动Webhook服务器时出错: bind EADDRINUSE ::1:15121[0m {"source":"WebhookService"}
+2026-01-15 22:46:29: (node:583204) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+2026-01-15 22:46:29: [31m2026-01-15T14:46:29.833Z ERROR   [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:87] 启动Webhook服务器时出错: bind EADDRINUSE ::1:15121[0m {"source":"WebhookService"}
+2026-01-15 22:53:07: (node:574672) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+2026-01-15 22:53:07: [31m2026-01-15T14:53:07.979Z ERROR   [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:87] 启动Webhook服务器时出错: bind EADDRINUSE ::1:15121[0m {"source":"WebhookService"}

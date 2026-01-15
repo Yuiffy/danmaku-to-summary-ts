@@ -1,0 +1,160 @@
+2026-01-15 22:42:35: [INFO] MainApplication: 正在启动弹幕转总结应用程序...
+2026-01-15 22:42:35: [INFO] ServiceManager: 正在初始化服务管理器...
+2026-01-15 22:42:35: Loading configuration from: d:\workspace\myrepo\danmaku-to-summary-ts\src\scripts\config.json
+2026-01-15 22:42:35: Configuration loaded from file: d:\workspace\myrepo\danmaku-to-summary-ts\src\scripts\config.json
+2026-01-15 22:42:35: [DEBUG] DuplicateProcessorGuard: 启动清理定时器，间隔: 300 秒
+2026-01-15 22:42:35: [DEBUG] DuplicateProcessorGuard: 启动清理定时器，间隔: 300 秒
+2026-01-15 22:42:35: [DEBUG] DuplicateProcessorGuard: 启动清理定时器，间隔: 300 秒
+2026-01-15 22:42:35: [INFO] 初始化了 2 个Webhook处理器
+2026-01-15 22:42:35: [32m2026-01-15T14:42:35.922Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\core\logging\LogManager.ts:24] LogManager initialized[0m
+2026-01-15 22:42:35: [32m2026-01-15T14:42:35.933Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\core\logging\LogManager.ts:24] LogManager initialized[0m
+2026-01-15 22:42:35: [INFO] ServiceManager: 服务初始化成功: webhook
+2026-01-15 22:42:35: [INFO] ServiceManager: 服务初始化成功: audio
+2026-01-15 22:42:35: [INFO] ServiceManager: 服务初始化成功: ai-text
+2026-01-15 22:42:35: [INFO] ServiceManager: 服务管理器初始化完成
+2026-01-15 22:42:35: [INFO] ServiceManager: 正在启动所有服务...
+2026-01-15 22:42:35: [INFO] DDTVWebhookHandler: 注册DDTV Webhook处理器，路径: /ddtv
+2026-01-15 22:42:35: [32m2026-01-15T14:42:35.935Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:348] 注册处理器: DDTV Webhook Handler (/ddtv)[0m {"source":"WebhookService"}
+2026-01-15 22:42:35: [INFO] MikufansWebhookHandler: 注册Mikufans Webhook处理器，路径: /mikufans
+2026-01-15 22:42:35: [32m2026-01-15T14:42:35.944Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:348] 注册处理器: Mikufans Webhook Handler (/mikufans)[0m {"source":"WebhookService"}
+2026-01-15 22:42:35: [32m2026-01-15T14:42:35.974Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:77] 
+==================================================[0m {"source":"WebhookService"}
+2026-01-15 22:42:35: [32m2026-01-15T14:42:35.976Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:78] Webhook服务已启动[0m {"source":"WebhookService"}
+2026-01-15 22:42:35: [32m2026-01-15T14:42:35.976Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:79] 地址: http://localhost:15121[0m {"source":"WebhookService"}
+2026-01-15 22:42:35: [32m2026-01-15T14:42:35.976Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:80] DDTV端点: http://localhost:15121/ddtv[0m {"source":"WebhookService"}
+2026-01-15 22:42:35: [32m2026-01-15T14:42:35.976Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:81] Mikufans端点: http://localhost:15121/mikufans[0m {"source":"WebhookService"}
+2026-01-15 22:42:35: [32m2026-01-15T14:42:35.976Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:82] ==================================================
+[0m {"source":"WebhookService"}
+2026-01-15 22:42:35: [INFO] ServiceManager: 服务启动成功: webhook
+2026-01-15 22:42:35: [INFO] ServiceManager: 所有服务启动完成
+2026-01-15 22:42:35: [INFO] MainApplication: 应用程序启动完成，等待Webhook事件...
+2026-01-15 22:42:35: [INFO] MainApplication: 
+==================================================
+2026-01-15 22:42:35: [INFO] MainApplication: 弹幕转总结应用程序
+2026-01-15 22:42:35: [INFO] MainApplication: 版本: 0.2.0
+2026-01-15 22:42:35: [INFO] MainApplication: 环境: development
+2026-01-15 22:42:35: [INFO] MainApplication: 日志级别: info
+2026-01-15 22:42:35: [INFO] MainApplication: Webhook端口: 15121
+2026-01-15 22:42:35: [INFO] MainApplication: Webhook主机: localhost
+2026-01-15 22:42:35: [INFO] MainApplication: ==================================================
+
+2026-01-15 22:45:58: [INFO] MainApplication: 正在启动弹幕转总结应用程序...
+2026-01-15 22:45:58: [INFO] ServiceManager: 正在初始化服务管理器...
+2026-01-15 22:45:58: Loading configuration from: d:\workspace\myrepo\danmaku-to-summary-ts\src\scripts\config.json
+2026-01-15 22:45:58: Configuration loaded from file: d:\workspace\myrepo\danmaku-to-summary-ts\src\scripts\config.json
+2026-01-15 22:45:58: [DEBUG] DuplicateProcessorGuard: 启动清理定时器，间隔: 300 秒
+2026-01-15 22:45:58: [DEBUG] DuplicateProcessorGuard: 启动清理定时器，间隔: 300 秒
+2026-01-15 22:45:58: [DEBUG] DuplicateProcessorGuard: 启动清理定时器，间隔: 300 秒
+2026-01-15 22:45:58: [INFO] 初始化了 2 个Webhook处理器
+2026-01-15 22:45:58: [32m2026-01-15T14:45:58.164Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\core\logging\LogManager.ts:24] LogManager initialized[0m
+2026-01-15 22:45:58: [32m2026-01-15T14:45:58.175Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\core\logging\LogManager.ts:24] LogManager initialized[0m
+2026-01-15 22:45:58: [INFO] ServiceManager: 服务初始化成功: webhook
+2026-01-15 22:45:58: [INFO] ServiceManager: 服务初始化成功: audio
+2026-01-15 22:45:58: [INFO] ServiceManager: 服务初始化成功: ai-text
+2026-01-15 22:45:58: [INFO] ServiceManager: 服务管理器初始化完成
+2026-01-15 22:45:58: [INFO] ServiceManager: 正在启动所有服务...
+2026-01-15 22:45:58: [INFO] DDTVWebhookHandler: 注册DDTV Webhook处理器，路径: /ddtv
+2026-01-15 22:45:58: [32m2026-01-15T14:45:58.177Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:348] 注册处理器: DDTV Webhook Handler (/ddtv)[0m {"source":"WebhookService"}
+2026-01-15 22:45:58: [INFO] MikufansWebhookHandler: 注册Mikufans Webhook处理器，路径: /mikufans
+2026-01-15 22:45:58: [32m2026-01-15T14:45:58.186Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:348] 注册处理器: Mikufans Webhook Handler (/mikufans)[0m {"source":"WebhookService"}
+2026-01-15 22:45:58: [32m2026-01-15T14:45:58.207Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:77] 
+==================================================[0m {"source":"WebhookService"}
+2026-01-15 22:45:58: [32m2026-01-15T14:45:58.209Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:78] Webhook服务已启动[0m {"source":"WebhookService"}
+2026-01-15 22:45:58: [32m2026-01-15T14:45:58.209Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:79] 地址: http://localhost:15121[0m {"source":"WebhookService"}
+2026-01-15 22:45:58: [32m2026-01-15T14:45:58.210Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:80] DDTV端点: http://localhost:15121/ddtv[0m {"source":"WebhookService"}
+2026-01-15 22:45:58: [32m2026-01-15T14:45:58.210Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:81] Mikufans端点: http://localhost:15121/mikufans[0m {"source":"WebhookService"}
+2026-01-15 22:45:58: [32m2026-01-15T14:45:58.211Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:82] ==================================================
+[0m {"source":"WebhookService"}
+2026-01-15 22:45:58: [INFO] ServiceManager: 服务启动成功: webhook
+2026-01-15 22:45:58: [INFO] ServiceManager: 所有服务启动完成
+2026-01-15 22:45:58: [INFO] MainApplication: 应用程序启动完成，等待Webhook事件...
+2026-01-15 22:45:58: [INFO] MainApplication: 
+==================================================
+2026-01-15 22:45:58: [INFO] MainApplication: 弹幕转总结应用程序
+2026-01-15 22:45:58: [INFO] MainApplication: 版本: 0.2.0
+2026-01-15 22:45:58: [INFO] MainApplication: 环境: development
+2026-01-15 22:45:58: [INFO] MainApplication: 日志级别: info
+2026-01-15 22:45:58: [INFO] MainApplication: Webhook端口: 15121
+2026-01-15 22:45:58: [INFO] MainApplication: Webhook主机: localhost
+2026-01-15 22:45:58: [INFO] MainApplication: ==================================================
+
+2026-01-15 22:46:29: [INFO] MainApplication: 正在启动弹幕转总结应用程序...
+2026-01-15 22:46:29: [INFO] ServiceManager: 正在初始化服务管理器...
+2026-01-15 22:46:29: Loading configuration from: d:\workspace\myrepo\danmaku-to-summary-ts\src\scripts\config.json
+2026-01-15 22:46:29: Configuration loaded from file: d:\workspace\myrepo\danmaku-to-summary-ts\src\scripts\config.json
+2026-01-15 22:46:29: [DEBUG] DuplicateProcessorGuard: 启动清理定时器，间隔: 300 秒
+2026-01-15 22:46:29: [DEBUG] DuplicateProcessorGuard: 启动清理定时器，间隔: 300 秒
+2026-01-15 22:46:29: [DEBUG] DuplicateProcessorGuard: 启动清理定时器，间隔: 300 秒
+2026-01-15 22:46:29: [INFO] 初始化了 2 个Webhook处理器
+2026-01-15 22:46:29: [32m2026-01-15T14:46:29.780Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\core\logging\LogManager.ts:24] LogManager initialized[0m
+2026-01-15 22:46:29: [32m2026-01-15T14:46:29.791Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\core\logging\LogManager.ts:24] LogManager initialized[0m
+2026-01-15 22:46:29: [INFO] ServiceManager: 服务初始化成功: webhook
+2026-01-15 22:46:29: [INFO] ServiceManager: 服务初始化成功: audio
+2026-01-15 22:46:29: [INFO] ServiceManager: 服务初始化成功: ai-text
+2026-01-15 22:46:29: [INFO] ServiceManager: 服务管理器初始化完成
+2026-01-15 22:46:29: [INFO] ServiceManager: 正在启动所有服务...
+2026-01-15 22:46:29: [INFO] DDTVWebhookHandler: 注册DDTV Webhook处理器，路径: /ddtv
+2026-01-15 22:46:29: [32m2026-01-15T14:46:29.793Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:348] 注册处理器: DDTV Webhook Handler (/ddtv)[0m {"source":"WebhookService"}
+2026-01-15 22:46:29: [INFO] MikufansWebhookHandler: 注册Mikufans Webhook处理器，路径: /mikufans
+2026-01-15 22:46:29: [32m2026-01-15T14:46:29.804Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:348] 注册处理器: Mikufans Webhook Handler (/mikufans)[0m {"source":"WebhookService"}
+2026-01-15 22:46:29: [32m2026-01-15T14:46:29.829Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:77] 
+==================================================[0m {"source":"WebhookService"}
+2026-01-15 22:46:29: [32m2026-01-15T14:46:29.831Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:78] Webhook服务已启动[0m {"source":"WebhookService"}
+2026-01-15 22:46:29: [32m2026-01-15T14:46:29.832Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:79] 地址: http://localhost:15121[0m {"source":"WebhookService"}
+2026-01-15 22:46:29: [32m2026-01-15T14:46:29.832Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:80] DDTV端点: http://localhost:15121/ddtv[0m {"source":"WebhookService"}
+2026-01-15 22:46:29: [32m2026-01-15T14:46:29.832Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:81] Mikufans端点: http://localhost:15121/mikufans[0m {"source":"WebhookService"}
+2026-01-15 22:46:29: [32m2026-01-15T14:46:29.832Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:82] ==================================================
+[0m {"source":"WebhookService"}
+2026-01-15 22:46:29: [INFO] ServiceManager: 服务启动成功: webhook
+2026-01-15 22:46:29: [INFO] ServiceManager: 所有服务启动完成
+2026-01-15 22:46:29: [INFO] MainApplication: 应用程序启动完成，等待Webhook事件...
+2026-01-15 22:46:29: [INFO] MainApplication: 
+==================================================
+2026-01-15 22:46:29: [INFO] MainApplication: 弹幕转总结应用程序
+2026-01-15 22:46:29: [INFO] MainApplication: 版本: 0.2.0
+2026-01-15 22:46:29: [INFO] MainApplication: 环境: development
+2026-01-15 22:46:29: [INFO] MainApplication: 日志级别: info
+2026-01-15 22:46:29: [INFO] MainApplication: Webhook端口: 15121
+2026-01-15 22:46:29: [INFO] MainApplication: Webhook主机: localhost
+2026-01-15 22:46:29: [INFO] MainApplication: ==================================================
+
+2026-01-15 22:53:07: [INFO] MainApplication: 正在启动弹幕转总结应用程序...
+2026-01-15 22:53:07: [INFO] ServiceManager: 正在初始化服务管理器...
+2026-01-15 22:53:07: Loading configuration from: d:\workspace\myrepo\danmaku-to-summary-ts\src\scripts\config.json
+2026-01-15 22:53:07: Configuration loaded from file: d:\workspace\myrepo\danmaku-to-summary-ts\src\scripts\config.json
+2026-01-15 22:53:07: [DEBUG] DuplicateProcessorGuard: 启动清理定时器，间隔: 300 秒
+2026-01-15 22:53:07: [DEBUG] DuplicateProcessorGuard: 启动清理定时器，间隔: 300 秒
+2026-01-15 22:53:07: [DEBUG] DuplicateProcessorGuard: 启动清理定时器，间隔: 300 秒
+2026-01-15 22:53:07: [INFO] 初始化了 2 个Webhook处理器
+2026-01-15 22:53:07: [32m2026-01-15T14:53:07.928Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\core\logging\LogManager.ts:24] LogManager initialized[0m
+2026-01-15 22:53:07: [32m2026-01-15T14:53:07.938Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\core\logging\LogManager.ts:24] LogManager initialized[0m
+2026-01-15 22:53:07: [INFO] ServiceManager: 服务初始化成功: webhook
+2026-01-15 22:53:07: [INFO] ServiceManager: 服务初始化成功: audio
+2026-01-15 22:53:07: [INFO] ServiceManager: 服务初始化成功: ai-text
+2026-01-15 22:53:07: [INFO] ServiceManager: 服务管理器初始化完成
+2026-01-15 22:53:07: [INFO] ServiceManager: 正在启动所有服务...
+2026-01-15 22:53:07: [INFO] DDTVWebhookHandler: 注册DDTV Webhook处理器，路径: /ddtv
+2026-01-15 22:53:07: [32m2026-01-15T14:53:07.940Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:348] 注册处理器: DDTV Webhook Handler (/ddtv)[0m {"source":"WebhookService"}
+2026-01-15 22:53:07: [INFO] MikufansWebhookHandler: 注册Mikufans Webhook处理器，路径: /mikufans
+2026-01-15 22:53:07: [32m2026-01-15T14:53:07.949Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:348] 注册处理器: Mikufans Webhook Handler (/mikufans)[0m {"source":"WebhookService"}
+2026-01-15 22:53:07: [32m2026-01-15T14:53:07.976Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:77] 
+==================================================[0m {"source":"WebhookService"}
+2026-01-15 22:53:07: [32m2026-01-15T14:53:07.978Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:78] Webhook服务已启动[0m {"source":"WebhookService"}
+2026-01-15 22:53:07: [32m2026-01-15T14:53:07.978Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:79] 地址: http://localhost:15121[0m {"source":"WebhookService"}
+2026-01-15 22:53:07: [32m2026-01-15T14:53:07.978Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:80] DDTV端点: http://localhost:15121/ddtv[0m {"source":"WebhookService"}
+2026-01-15 22:53:07: [32m2026-01-15T14:53:07.978Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:81] Mikufans端点: http://localhost:15121/mikufans[0m {"source":"WebhookService"}
+2026-01-15 22:53:07: [32m2026-01-15T14:53:07.978Z INFO    [d:\workspace\myrepo\danmaku-to-summary-ts\src\services\webhook\WebhookService.ts:82] ==================================================
+[0m {"source":"WebhookService"}
+2026-01-15 22:53:07: [INFO] ServiceManager: 服务启动成功: webhook
+2026-01-15 22:53:07: [INFO] ServiceManager: 所有服务启动完成
+2026-01-15 22:53:07: [INFO] MainApplication: 应用程序启动完成，等待Webhook事件...
+2026-01-15 22:53:07: [INFO] MainApplication: 
+==================================================
+2026-01-15 22:53:07: [INFO] MainApplication: 弹幕转总结应用程序
+2026-01-15 22:53:07: [INFO] MainApplication: 版本: 0.2.0
+2026-01-15 22:53:07: [INFO] MainApplication: 环境: development
+2026-01-15 22:53:07: [INFO] MainApplication: 日志级别: info
+2026-01-15 22:53:07: [INFO] MainApplication: Webhook端口: 15121
+2026-01-15 22:53:07: [INFO] MainApplication: Webhook主机: localhost
+2026-01-15 22:53:07: [INFO] MainApplication: ==================================================
+
