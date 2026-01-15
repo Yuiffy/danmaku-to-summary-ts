@@ -1,0 +1,129 @@
+{
+  "app": {
+    "name": "danmaku-to-summary",
+    "version": "2.0.0",
+    "environment": "production",
+    "logLevel": "info"
+  },
+  "webhook": {
+    "enabled": true,
+    "port": 15121,
+    "host": "0.0.0.0",
+    "endpoints": {
+      "ddtv": {
+        "enabled": true,
+        "endpoint": "/ddtv"
+      },
+      "mikufans": {
+        "enabled": true,
+        "endpoint": "/mikufans",
+        "basePath": "D:/files/videos/DDTV录播"
+      }
+    },
+    "timeouts": {
+      "fixVideoWait": 30000,
+      "fileStableCheck": 30000,
+      "processTimeout": 1800000
+    }
+  },
+  "audio": {
+    "enabled": true,
+    "audioOnlyRooms": [],
+    "formats": [
+      ".m4a",
+      ".aac",
+      ".mp3",
+      ".wav",
+      ".ogg",
+      ".flac"
+    ],
+    "defaultFormat": ".m4a",
+    "ffmpeg": {
+      "path": "ffmpeg",
+      "timeout": 30000
+    },
+    "storage": {
+      "keepOriginalVideo": true,
+      "maxFileAgeDays": 30
+    }
+  },
+  "ai": {
+    "text": {
+      "enabled": true,
+      "provider": "gemini",
+      "gemini": {
+        "apiKey": "",
+        "model": "gemini-3-flash-preview",
+        "temperature": 0.7,
+        "maxTokens": 2000
+      }
+    },
+    "comic": {
+      "enabled": true,
+      "provider": "python",
+      "tuZi": {
+        "baseUrl": "https://api.tu-zi.com",
+        "model": "nano-banana"
+      }
+    },
+    "defaultNames": {
+      "anchor": "岁己SUI",
+      "fan": "饼干岁"
+    },
+    "defaultReferenceImage": "../public/reference_images/岁己小红帽立绘.png",
+    "defaultCharacterDescription": "岁己SUI（白发红瞳女生），饼干岁（有细细四肢的小小的饼干状生物）",
+    "roomSettings": {
+      "545068": {
+        "audioOnly": false,
+        "referenceImage": "../public/reference_images/栞栞新衣_舰长礼物长图里截图.png",
+        "characterDescription": "笑笑SunYalong（戴黑框眼镜的中年男子，发际线较高或光头，穿着黑色T恤，表情滑稽丰富，经常张嘴大笑），德云色（背景通常有电竞椅或两个人）",
+        "anchorName": "老实憨厚的笑笑",
+        "fanName": "色友",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true
+      },
+      "26966466": {
+        "audioOnly": true,
+        "referenceImage": "../public/reference_images/栞栞新衣_舰长礼物长图里截图.png",
+        "characterDescription": "栞栞Shiori（有兽耳的女生，浅黄色头发小孩），獭獭栞（长得像滑板的海獭）",
+        "anchorName": "栞栞Shiori",
+        "fanName": "獭獭栞",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true
+      }
+    }
+  },
+  "fusion": {
+    "timeWindowSec": 60,
+    "densityPercentile": 90,
+    "lowEnergySampleRate": 5,
+    "myUserId": "12345",
+    "stopWords": [
+      "的",
+      "了",
+      "在"
+    ],
+    "fillerRegex": "^[\\s\\W]*$"
+  },
+  "storage": {
+    "basePath": "D:/files/videos/DDTV录播",
+    "tempPath": "D:\\files\\videos\\DDTV录播\\temp",
+    "outputPath": "D:\\files\\videos\\DDTV录播\\output",
+    "cleanup": {
+      "enabled": true,
+      "intervalHours": 24,
+      "maxAgeDays": 7
+    }
+  },
+  "monitoring": {
+    "enabled": true,
+    "metrics": {
+      "enabled": false,
+      "port": 9090
+    },
+    "health": {
+      "enabled": true,
+      "endpoint": "/health"
+    }
+  }
+}

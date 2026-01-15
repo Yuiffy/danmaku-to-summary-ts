@@ -34,6 +34,7 @@ export interface IFileProcessingResult {
   success: boolean;
   filePath: string;
   outputPath?: string;
+  outputFiles?: string[];
   error?: string;
   processingTime?: number;
 }

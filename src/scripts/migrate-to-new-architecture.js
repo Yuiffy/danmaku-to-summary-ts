@@ -84,20 +84,26 @@ async function migrateConfig() {
             provider: 'gemini',
             gemini: {
               apiKey: '', // 需要从secrets配置迁移
-              model: 'gemini-pro',
-              temperature: 0.7,
-              maxTokens: 1000
+              model: oldConfig.aiServices?.gemini?.model || 'gemini-pro',
+              temperature: oldConfig.aiServices?.gemini?.temperature || 0.7,
+              maxTokens: oldConfig.aiServices?.gemini?.maxTokens || 1000
             }
           },
           comic: {
-            enabled: false,
-            provider: 'python'
+            enabled: oldConfig.aiServices?.tuZi?.enabled ?? false,
+            provider: 'python',
+            tuZi: {
+              baseUrl: oldConfig.aiServices?.tuZi?.baseUrl || 'https://api.tu-zi.com',
+              model: oldConfig.aiServices?.tuZi?.model || 'nano-banana'
+            }
           },
           defaultNames: {
-            anchor: '主播',
-            fan: '粉丝'
+            anchor: oldConfig.aiServices?.defaultAnchorName || '主播',
+            fan: oldConfig.aiServices?.defaultFanName || '粉丝'
           },
-          roomSettings: {}
+          defaultReferenceImage: oldConfig.aiServices?.defaultReferenceImage || '',
+          defaultCharacterDescription: oldConfig.aiServices?.defaultCharacterDescription || '',
+          roomSettings: oldConfig.roomSettings || {}
         },
         fusion: {
           timeWindowSec: 60,
@@ -152,10 +158,15 @@ async function migrateConfig() {
         ai: {
           text: {
             gemini: {
-              apiKey: oldSecrets.geminiApiKey || ''
+              apiKey: oldSecrets.geminiApiKey || oldSecrets.aiServices?.gemini?.apiKey || ''
             },
             openai: {
-              apiKey: oldSecrets.openaiApiKey || ''
+              apiKey: oldSecrets.openaiApiKey || oldSecrets.aiServices?.openai?.apiKey || ''
+            }
+          },
+          comic: {
+            tuZi: {
+              apiKey: oldSecrets.tuZiApiKey || oldSecrets.aiServices?.tuZi?.apiKey || ''
             }
           }
         },

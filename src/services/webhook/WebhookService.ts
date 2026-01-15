@@ -7,6 +7,7 @@ import { DDTVWebhookHandler } from './handlers/DDTVWebhookHandler';
 import { MikufansWebhookHandler } from './handlers/MikufansWebhookHandler';
 import { FileStabilityChecker } from './FileStabilityChecker';
 import { DuplicateProcessorGuard } from './DuplicateProcessorGuard';
+import { ComicGeneratorService } from '../comic/ComicGeneratorService';
 
 /**
  * Webhook服务实现
@@ -22,11 +23,13 @@ export class WebhookService implements IWebhookService {
   private handlers: IWebhookHandler[] = [];
   private processingHistory: IWebhookEvent[] = [];
   private maxHistorySize = 100;
+  private comicGenerator: ComicGeneratorService;
 
   constructor() {
     this.app = express.default();
     this.port = 15121; // 默认端口
     this.host = '0.0.0.0'; // 默认主机
+    this.comicGenerator = new ComicGeneratorService();
     
     // 配置中间件
     this.configureMiddleware();
@@ -179,20 +182,30 @@ export class WebhookService implements IWebhookService {
             continue;
           }
 
-          // TODO: 启动实际处理流程
-          // 这里需要集成现有的处理逻辑
+          // 根据文件类型启动相应的处理流程
+          const processingResult = await this.processFileBasedOnType(filePath, event.roomId);
           const processingTime = Date.now() - startTime;
           
           // 标记为处理完成
           this.duplicateGuard.markAsProcessed(filePath);
           
-          results.push({
-            success: true,
-            filePath,
-            processingTime
-          });
-
-          this.getLogger().info(`文件处理完成: ${filePath} (耗时: ${processingTime / 1000} 秒)`);
+          if (processingResult.success) {
+            results.push({
+              success: true,
+              filePath,
+              processingTime,
+              outputFiles: processingResult.outputFiles
+            });
+            this.getLogger().info(`文件处理成功: ${filePath} (耗时: ${processingTime / 1000} 秒)`);
+          } else {
+            results.push({
+              success: false,
+              filePath,
+              processingTime,
+              error: processingResult.error
+            });
+            this.getLogger().error(`文件处理失败: ${filePath}`, { error: processingResult.error });
+          }
         } catch (error: any) {
           this.getLogger().error(`处理文件时出错: ${filePath}`, { error });
           this.duplicateGuard.markAsProcessed(filePath);
@@ -361,6 +374,122 @@ export class WebhookService implements IWebhookService {
     // 限制历史记录大小
     if (this.processingHistory.length > this.maxHistorySize) {
       this.processingHistory = this.processingHistory.slice(0, this.maxHistorySize);
+    }
+  }
+
+  /**
+   * 根据文件类型处理文件
+   */
+  private async processFileBasedOnType(filePath: string, roomId?: string): Promise<{
+    success: boolean;
+    outputFiles?: string[];
+    error?: string;
+  }> {
+    const logger = this.getLogger();
+    const fileName = filePath.split(/[\\/]/).pop() || '';
+    const fileExtension = fileName.split('.').pop()?.toLowerCase() || '';
+    
+    logger.info(`开始处理文件: ${fileName} (类型: ${fileExtension})`, { filePath, roomId });
+
+    try {
+      // 根据文件类型和内容决定处理方式
+      if (fileName.includes('AI_HIGHLIGHT') && fileExtension === 'txt') {
+        // AI高亮文本文件 - 生成漫画
+        logger.info(`检测到AI高亮文件，开始生成漫画: ${fileName}`);
+        const comicPath = await this.comicGenerator.generateComicFromHighlight(filePath, roomId);
+        
+        if (comicPath) {
+          logger.info(`漫画生成成功: ${comicPath}`);
+          return {
+            success: true,
+            outputFiles: [comicPath]
+          };
+        } else {
+          logger.warn(`漫画生成失败: ${fileName}`);
+          return {
+            success: false,
+            error: '漫画生成失败'
+          };
+        }
+      } else if (fileName.includes('COMIC_SCRIPT') && fileExtension === 'txt') {
+        // 漫画脚本文件 - 生成漫画
+        logger.info(`检测到漫画脚本文件，开始生成漫画: ${fileName}`);
+        const comicPath = await this.comicGenerator.generateComicFromHighlight(filePath, roomId);
+        
+        if (comicPath) {
+          logger.info(`漫画生成成功: ${comicPath}`);
+          return {
+            success: true,
+            outputFiles: [comicPath]
+          };
+        } else {
+          logger.warn(`漫画生成失败: ${fileName}`);
+          return {
+            success: false,
+            error: '漫画生成失败'
+          };
+        }
+      } else if (fileExtension === 'flv' || fileExtension === 'mp4' || fileExtension === 'mkv') {
+        // 视频文件 - 音频处理流程
+        logger.info(`检测到视频文件，开始音频处理: ${fileName}`);
+        
+        // TODO: 集成音频处理服务
+        // const audioProcessor = new AudioProcessor();
+        // const result = await audioProcessor.processVideo(filePath);
+        
+        // 暂时返回成功，但标记为需要实现
+        logger.warn(`视频处理功能尚未完全实现: ${fileName}`);
+        return {
+          success: true,
+          outputFiles: []
+        };
+      } else if (fileExtension === 'xml' || fileExtension === 'srt') {
+        // 字幕文件 - 字幕处理流程
+        logger.info(`检测到字幕文件，开始字幕处理: ${fileName}`);
+        
+        // TODO: 集成字幕处理服务
+        // const subtitleProcessor = new SubtitleProcessor();
+        // const result = await subtitleProcessor.processSubtitle(filePath);
+        
+        // 暂时返回成功，但标记为需要实现
+        logger.warn(`字幕处理功能尚未完全实现: ${fileName}`);
+        return {
+          success: true,
+          outputFiles: []
+        };
+      } else if (fileExtension === 'md') {
+        // Markdown文件 - 可能是总结文件
+        logger.info(`检测到Markdown文件: ${fileName}`);
+        
+        // 检查是否是晚安回复文件
+        if (fileName.includes('晚安回复')) {
+          logger.info(`检测到晚安回复文件，跳过处理: ${fileName}`);
+          return {
+            success: true,
+            outputFiles: []
+          };
+        }
+        
+        // 其他Markdown文件暂时跳过
+        logger.info(`跳过Markdown文件处理: ${fileName}`);
+        return {
+          success: true,
+          outputFiles: []
+        };
+      } else {
+        // 未知文件类型
+        logger.warn(`未知文件类型，跳过处理: ${fileName} (扩展名: ${fileExtension})`);
+        return {
+          success: true,
+          outputFiles: []
+        };
+      }
+    } catch (error: any) {
+      logger.error(`处理文件时出错: ${fileName}`, { error: error.message, stack: error.stack });
+      return {
+        success: false,
+        error: `处理文件时出错: ${error.message}`
+      };
     }
   }
 }

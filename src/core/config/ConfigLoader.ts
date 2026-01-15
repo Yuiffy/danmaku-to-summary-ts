@@ -129,7 +129,10 @@ export class ConfigLoader {
     // 5. 应用环境变量覆盖
     config = this.applyEnvironmentVariables(config);
 
-    // 6. 验证配置
+    // 6. 处理代理配置
+    config = this.applyProxyConfig(config);
+
+    // 7. 验证配置
     if (validate) {
       const validationResult = ConfigValidator.validate(config);
       if (!validationResult.valid) {
@@ -144,7 +147,7 @@ export class ConfigLoader {
       this.config = config as AppConfig;
     }
 
-    // 7. 设置环境变量
+    // 8. 设置环境变量
     this.setEnvironmentVariables();
 
     return this.config!;
@@ -217,6 +220,37 @@ export class ConfigLoader {
     }
 
     current[keys[keys.length - 1]] = value;
+  }
+
+  /**
+   * 应用代理配置
+   * 将根级别的proxy字段复制到AI配置中
+   */
+  private applyProxyConfig(config: any): any {
+    const proxyConfig = { ...config };
+    
+    // 如果根级别有proxy配置
+    if (proxyConfig.proxy) {
+      const proxyUrl = proxyConfig.proxy;
+      
+      // 复制到Gemini配置
+      if (proxyConfig.ai?.text?.gemini) {
+        if (!proxyConfig.ai.text.gemini.proxy) {
+          proxyConfig.ai.text.gemini.proxy = proxyUrl;
+        }
+      }
+      
+      // 复制到OpenAI配置
+      if (proxyConfig.ai?.text?.openai) {
+        if (!proxyConfig.ai.text.openai.proxy) {
+          proxyConfig.ai.text.openai.proxy = proxyUrl;
+        }
+      }
+      
+      console.log(`代理配置已应用到AI服务: ${proxyUrl}`);
+    }
+    
+    return proxyConfig;
   }
 
   /**
