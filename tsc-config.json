@@ -1,0 +1,92 @@
+{
+    "compilerOptions": {
+        "target": "es2022",
+        "lib": [
+            "es2022"
+        ],
+        "module": "commonjs",
+        "moduleResolution": "node10",
+        "outDir": "./dist",
+        "rootDir": "./src",
+        "strict": true,
+        "noImplicitAny": true,
+        "strictNullChecks": true,
+        "strictFunctionTypes": true,
+        "strictBindCallApply": true,
+        "strictPropertyInitialization": true,
+        "noImplicitThis": true,
+        "alwaysStrict": true,
+        "noUnusedLocals": false,
+        "noUnusedParameters": false,
+        "noImplicitReturns": true,
+        "noFallthroughCasesInSwitch": true,
+        "esModuleInterop": true,
+        "allowSyntheticDefaultImports": true,
+        "experimentalDecorators": true,
+        "emitDecoratorMetadata": true,
+        "skipLibCheck": true,
+        "forceConsistentCasingInFileNames": true,
+        "declaration": true,
+        "declarationMap": true,
+        "sourceMap": true,
+        "baseUrl": "./",
+        "paths": {
+            "@/*": [
+                "src/*"
+            ],
+            "@tests/*": [
+                "tests/*"
+            ]
+        },
+        "noEmit": false,
+        "resolveJsonModule": true,
+        "allowJs": true,
+        "checkJs": false,
+        "useDefineForClassFields": true,
+        "strictBuiltinIteratorReturn": true,
+        "useUnknownInCatchVariables": true
+    },
+    "files": [
+        "./src/app/main.ts",
+        "./src/core/config/ConfigInterface.ts",
+        "./src/core/config/ConfigLoader.ts",
+        "./src/core/config/ConfigProvider.ts",
+        "./src/core/config/ConfigValidator.ts",
+        "./src/core/errors/AppError.ts",
+        "./src/core/errors/ErrorHandler.ts",
+        "./src/core/errors/ErrorMiddleware.ts",
+        "./src/core/logging/LogFormatter.ts",
+        "./src/core/logging/LogManager.ts",
+        "./src/core/logging/LogTransport.ts",
+        "./src/core/logging/Logger.ts",
+        "./src/core/logging/LoggerInterface.ts",
+        "./src/core/test/InfrastructureTest.ts",
+        "./src/services/ServiceManager.ts",
+        "./src/services/ai/AITextGenerator.ts",
+        "./src/services/ai/IAITextGenerator.ts",
+        "./src/services/audio/AudioProcessor.ts",
+        "./src/services/audio/IAudioProcessor.ts",
+        "./src/services/comic/ComicGeneratorService.ts",
+        "./src/services/comic/index.ts",
+        "./src/services/webhook/DuplicateProcessorGuard.ts",
+        "./src/services/webhook/FileStabilityChecker.ts",
+        "./src/services/webhook/IWebhookService.ts",
+        "./src/services/webhook/WebhookService.ts",
+        "./src/services/webhook/index.ts",
+        "./src/services/webhook/handlers/DDTVWebhookHandler.ts",
+        "./src/services/webhook/handlers/MikufansWebhookHandler.ts"
+    ],
+    "include": [
+        "src/**/*.ts",
+        "src/**/*.tsx"
+    ],
+    "exclude": [
+        "node_modules",
+        "coverage",
+        "**/*.test.ts",
+        "**/*.spec.ts",
+        "src/app/page.tsx",
+        "src/app/layout.tsx",
+        "src/app/globals.css"
+    ]
+}

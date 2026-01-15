@@ -48,7 +48,7 @@
       ]
     },
     "jsx": "preserve",
-    "noEmit": true,
+    "noEmit": false,
     "incremental": true,
     "isolatedModules": true,
     "plugins": [
@@ -59,7 +59,6 @@
   },
   "include": [
     "src/**/*",
-    "tests/**/*",
     ".next/types/**/*.ts"
   ],
   "exclude": [
