@@ -22,7 +22,7 @@
     "test:e2e": "jest tests/e2e",
     "test:all": "npm run test:unit && npm run test:integration",
     "webhook": "node dist/app/main.js",
-    "webhook:dev": "node dist/app/main.js --port 15121 --host localhost",
+    "webhook:dev": "node dist/app/main.js --port 15122 --host localhost",
     "webhook:prod": "node dist/app/main.js --port 15121 --host 0.0.0.0",
     "process": "node dist/app/main.js process",
     "batch": "node dist/app/main.js batch",

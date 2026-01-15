@@ -90,6 +90,51 @@
         "fanName": "獭獭栞",
         "enableTextGeneration": true,
         "enableComicGeneration": true
+      },
+      "21756924": {
+        "audioOnly": true,
+        "referenceImage": "../public/reference_images/雪绘.png",
+        "characterDescription": "金发蓝瞳女生",
+        "anchorName": "雪绘Yukie",
+        "fanName": "态度人",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true
+      },
+      "1741667419": {
+        "audioOnly": true,
+        "referenceImage": "../public/reference_images/Hazel_灰泽满_立绘.png",
+        "characterDescription": "灰泽满Hazel（永远16岁的女高中生，浅色短发，风纪委员，身上挂着很多果冻形状的饰品，随身带着果冻应急储备箱，性格有些偏执和元气）",
+        "anchorName": "灰泽满Hazel",
+        "fanName": "果冻",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true
+      },
+      "1713546334": {
+        "audioOnly": true,
+        "referenceImage": "../public/reference_images/Liko_莉蔻_立绘.png",
+        "characterDescription": "莉蔻Liko（长着兔耳的少女，戴着大帽子，性格胆小没见过世面，手里常拿着胡萝卜棒冰，虽然是秘密组织的特工但看起来很弱气）",
+        "anchorName": "莉蔻Liko",
+        "fanName": "胡萝卜",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true
+      },
+      "1713548468": {
+        "audioOnly": true,
+        "referenceImage": "../public/reference_images/Kloa_克罗雅_立绘.png",
+        "characterDescription": "克罗雅Kloa（混沌属性的少女，头顶天使光环但背后是黑色的恶魔翅膀，戴着黑色头纱，表情慵懒，喜欢睡觉和发呆，废柴神造物）",
+        "anchorName": "克罗雅Kloa",
+        "fanName": "信徒",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true
+      },
+      "1986461465": {
+        "audioOnly": true,
+        "referenceImage": "../public/reference_images/Izayoi_十六萤_立绘.png",
+        "characterDescription": "十六萤Izayoi（拥有浣熊耳朵和毛茸茸大尾巴的少女，面无表情的三无特工，穿着女仆装或异域服饰，气质清冷，经常用尾巴把自己裹住）",
+        "anchorName": "十六萤Izayoi",
+        "fanName": "萤火虫",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true
       }
     }
   },
