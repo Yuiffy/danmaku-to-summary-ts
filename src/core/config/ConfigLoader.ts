@@ -27,23 +27,32 @@ export class ConfigLoader {
 
   /**
    * 查找配置文件路径
+   * 优先级: /config/production.json > /config/default.json > /src/scripts/config.json
    */
   private findConfigPath(): string {
+    const env = process.env.NODE_ENV || 'development';
     const possiblePaths = [
-      path.join(process.cwd(), 'config.json'),
-      path.join(process.cwd(), 'config', 'config.json'),
-      path.join(process.cwd(), 'src', 'scripts', 'config.json'),
+      // 优先读取外部config目录中的环境特定配置
+      path.join(process.cwd(), 'config', env === 'production' ? 'production.json' : 'default.json'),
+      // 其次读取外部config目录中的默认配置
       path.join(process.cwd(), 'config', 'default.json'),
+      // 再次读取根目录config.json
+      path.join(process.cwd(), 'config.json'),
+      // 最后回退到scripts目录
+      path.join(process.cwd(), 'src', 'scripts', 'config.json'),
     ];
 
     for (const configPath of possiblePaths) {
       if (fs.existsSync(configPath)) {
+        console.log(`✓ 配置路径优先级: ${configPath}`);
         return configPath;
       }
     }
 
     // 如果找不到配置文件，返回默认路径
-    return path.join(process.cwd(), 'config.json');
+    const defaultPath = path.join(process.cwd(), 'config', 'default.json');
+    console.warn(`⚠ 配置文件未找到，使用默认路径: ${defaultPath}`);
+    return defaultPath;
   }
 
   /**
