@@ -233,6 +233,7 @@ const main = async () => {
 
     // Node.js Fusion（弹幕融合）
     let generatedHighlightFile = null;
+    let outputDir = null;
     
     if (filesToProcess.length === 0) {
         console.log('X Warning: No valid SRT or XML files to process.');
@@ -241,11 +242,13 @@ const main = async () => {
 
         const nodeScript = path.join(__dirname, 'do_fusion_summary.js');
 
+        // 获取输出目录
+        outputDir = path.dirname(filesToProcess[0]);
+
         if (!fs.existsSync(nodeScript)) {
             console.error(`X Error: Node.js script not found at: ${nodeScript}`);
         } else {
             // 获取输出目录和基础名称
-            const outputDir = path.dirname(filesToProcess[0]);
             const baseName = path.basename(filesToProcess[0]).replace(/\.(srt|xml|mp4|flv|mkv)$/i, '').replace(/_fix$/, '');
             generatedHighlightFile = path.join(outputDir, `${baseName}_AI_HIGHLIGHT.txt`);
             

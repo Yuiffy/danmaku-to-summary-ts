@@ -372,12 +372,12 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
         print("[WARNING]  google-genai库未安装，使用原始内容")
         print("   请安装: pip install google-genai")
     except Exception as e:
-        print(f"[ERROR]  AI内容生成失败: {e}")
-        import traceback
-        traceback.print_exc()
-
-    # 失败时返回原始内容，标记为未生成
-    return highlight_content, False
+        error_str = str(e)
+        # 检查是否是429超频错误
+        if '429' in error_str or 'RESOURCE_EXHAUSTED' in error_str:
+            print("[WARNING]  ⚠️ Gemini API超频 (429)，使用原始内容")
+        else:
+            print(f"[ERROR]  AI内容生成失败: {e}")
 
 def encode_image_to_base64(image_path: str) -> str:
     """将图片编码为base64"""
