@@ -9,8 +9,19 @@ function loadConfig() {
     // 优先读取外部配置文件
     const env = process.env.NODE_ENV || 'development';
     const configDir = path.resolve(path.join(__dirname, '..', '..', 'config'));
-    const configPath = path.join(configDir, env === 'production' ? 'production.json' : 'default.json');
-    const fallbackPath = path.join(__dirname, 'config.json'); // 备用
+    // 优先级: /config/production.json > /config/default.json > /src/scripts/config.json
+    const possiblePaths = [
+        path.join(configDir, env === 'production' ? 'production.json' : 'default.json'),
+        path.join(configDir, 'default.json'),
+        path.join(__dirname, 'config.json'),
+    ];
+    let configPath = possiblePaths[2]; // 默认备用
+    for (const p of possiblePaths) {
+        if (fs.existsSync(p)) {
+            configPath = p;
+            break;
+        }
+    }
     const secretsPath = path.join(__dirname, 'config.secrets.json');
     
     const defaultConfig = {
@@ -39,13 +50,9 @@ function loadConfig() {
 
     try {
         // 加载主配置文件
-        let targetPath = configPath;
-        if (!fs.existsSync(targetPath)) {
-            targetPath = fallbackPath;
-        }
-        
-        if (fs.existsSync(targetPath)) {
-            const userConfig = JSON.parse(fs.readFileSync(targetPath, 'utf8'));
+        if (fs.existsSync(configPath)) {
+            const userConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+            console.log(`📋 加载配置文件: ${configPath}`);
             // 深度合并配置
             const merged = JSON.parse(JSON.stringify(defaultConfig));
             

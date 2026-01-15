@@ -20,19 +20,26 @@ import shutil
 
 # 配置路径 - 优先读取外部配置文件
 def get_config_path():
-    """获取配置文件路径，优先使用外部config目录下的配置"""
+    """获取配置文件路径，优先级: /config/production.json > /config/default.json > /src/scripts/config.json"""
     env = os.environ.get('NODE_ENV', 'development')
     # 脚本在 src/scripts 目录，外部配置在 config 目录
     scripts_dir = os.path.dirname(__file__)
     project_root = os.path.dirname(os.path.dirname(scripts_dir))
     config_dir = os.path.join(project_root, 'config')
     
-    config_path = os.path.join(config_dir, 'production.json' if env == 'production' else 'default.json')
-    fallback_path = os.path.join(os.path.dirname(__file__), 'config.json')
+    # 优先级顺序
+    possible_paths = [
+        os.path.join(config_dir, 'production.json' if env == 'production' else 'default.json'),
+        os.path.join(config_dir, 'default.json'),
+        os.path.join(os.path.dirname(__file__), 'config.json'),
+    ]
     
-    if os.path.exists(config_path):
-        return config_path
-    return fallback_path
+    for config_path in possible_paths:
+        if os.path.exists(config_path):
+            return config_path
+    
+    # 如果都不存在，返回脚本目录的config.json
+    return os.path.join(os.path.dirname(__file__), 'config.json')
 
 CONFIG_PATH = get_config_path()
 
