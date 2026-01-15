@@ -28,7 +28,7 @@
   },
   "audio": {
     "enabled": true,
-    "audioOnlyRooms": [],
+    "audioOnlyRooms": [26966466, 21756924, 1741667419, 1713546334, 1713548468, 1986461465],
     "formats": [
       ".m4a",
       ".aac",
@@ -94,14 +94,12 @@
     }
   },
   "fusion": {
-    "timeWindowSec": 60,
-    "densityPercentile": 90,
-    "lowEnergySampleRate": 5,
-    "myUserId": "12345",
+    "timeWindowSec": 30,
+    "densityPercentile": 35,
+    "lowEnergySampleRate": 10,
+    "myUserId": "14279",
     "stopWords": [
-      "的",
-      "了",
-      "在"
+      "晚上好", "晚安", "来了", "打call", "拜拜", "卡了", "嗯", "好", "草", "哈哈", "确实", "牛", "可爱"
     ],
     "fillerRegex": "^[\\s\\W]*$"
   },
