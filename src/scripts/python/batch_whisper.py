@@ -4,6 +4,7 @@ import time
 import shutil
 import traceback
 import gc
+import subprocess
 from faster_whisper import WhisperModel, BatchedInferencePipeline
 
 # ================= ❄️ RTX 5080 终极智能降级版 ❄️ =================
@@ -22,6 +23,25 @@ TOLERANCE_SECONDS = 60
 MAX_RETRIES = 3
 
 VIDEO_EXTS = {'.mp4', '.flv', '.mkv', '.avi', '.mov', '.webm', '.ts', '.m4v', '.m4a'}
+
+
+def get_duration_fast(file_path):
+    """
+    使用 ffprobe 瞬间读取视频时长，无需解码音频。
+    """
+    try:
+        command = [
+            'ffprobe',
+            '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            file_path
+        ]
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        return float(result.stdout.strip())
+    except Exception as e:
+        print(f"   ⚠️ ffprobe 读取失败，回退到慢速模式: {e}")
+        return None
 
 
 # ===========================================================
@@ -232,9 +252,13 @@ def process_one_video(model, video_path, file_idx, total_files):
     try:
         # 获取时长 (不使用 pipeline，使用原生 model 快速探测)
         print("   🔍 分析视频时长...", end="", flush=True)
-        _, info = model.transcribe(video_path, beam_size=1, temperature=0, no_speech_threshold=1.0,
-                                   condition_on_previous_text=False)
-        total_duration = info.duration
+        total_duration = get_duration_fast(video_path)
+
+        # 如果快速读取失败（比如文件损坏），再用原来的慢速方法兜底
+        if total_duration is None:
+            _, info = model.transcribe(video_path, beam_size=1, temperature=0, no_speech_threshold=1.0, condition_on_previous_text=False)
+            total_duration = info.duration
+
         print(f" -> {format_timestamp(total_duration)}")
 
         # 核心逻辑
