@@ -259,11 +259,21 @@ const main = async () => {
         
         console.log(`🔍 找到 ${highlightFiles.length} 个AI_HIGHLIGHT文件`);
         
-        for (const highlightFile of highlightFiles) {
-            const highlightPath = path.join(outputDir, highlightFile);
-            const roomId = extractRoomIdFromFilename(highlightFile);
+        // 只处理最新生成的AI_HIGHLIGHT文件
+        if (highlightFiles.length > 0) {
+            // 按修改时间排序，获取最新的文件
+            const highlightFilesWithTime = highlightFiles.map(f => ({
+                name: f,
+                path: path.join(outputDir, f),
+                mtime: fs.statSync(path.join(outputDir, f)).mtime.getTime()
+            })).sort((a, b) => b.mtime - a.mtime);
             
-            console.log(`\n--- 处理: ${highlightFile} ---`);
+            const latestHighlightFile = highlightFilesWithTime[0].name;
+            const highlightPath = highlightFilesWithTime[0].path;
+            const roomId = extractRoomIdFromFilename(latestHighlightFile);
+            
+            console.log(`📌 使用最新生成的文件: ${latestHighlightFile}`);
+            console.log(`\n--- 处理: ${latestHighlightFile} ---`);
             
             // 检查房间AI设置
             const aiSettings = roomId ? shouldGenerateAiForRoom(roomId) : { text: true, comic: true };
