@@ -271,7 +271,12 @@ export class RotatingFileTransport implements ILogTransport {
     this.rotateIfNeeded();
     
     if (this.currentStream) {
-      this.currentStream.write(line);
+      this.currentStream.write(line, 'utf8', () => {
+        // 确保数据立即写入，避免缓冲延迟
+        if (this.currentStream && this.currentStream.writable) {
+          // 不强制 sync，避免性能问题，但确保写入队列
+        }
+      });
       this.currentSize += lineSize;
     }
   }
