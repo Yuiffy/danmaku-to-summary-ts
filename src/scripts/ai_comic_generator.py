@@ -69,8 +69,9 @@ def load_config() -> Dict[str, Any]:
             with open(secrets_path, 'r', encoding='utf-8') as f:
                 secrets_config = json.load(f)
 
-            # 合并密钥配置
+            # 合并密钥配置 - 支持新旧两种格式
             if "aiServices" in secrets_config:
+                # 旧格式: aiServices.tuZi.apiKey
                 if "aiServices" not in merged:
                     merged["aiServices"] = {}
                 # 通用合并所有aiServices配置
@@ -78,6 +79,23 @@ def load_config() -> Dict[str, Any]:
                     if service_name not in merged["aiServices"]:
                         merged["aiServices"][service_name] = {}
                     merged["aiServices"][service_name].update(service_config)
+            
+            # 新格式: ai.text.gemini.apiKey 和 ai.comic.tuZi.apiKey
+            if "ai" in secrets_config:
+                if "aiServices" not in merged:
+                    merged["aiServices"] = {}
+                
+                # 处理文本生成 (Gemini)
+                if "text" in secrets_config["ai"] and "gemini" in secrets_config["ai"]["text"]:
+                    if "gemini" not in merged["aiServices"]:
+                        merged["aiServices"]["gemini"] = {}
+                    merged["aiServices"]["gemini"].update(secrets_config["ai"]["text"]["gemini"])
+                
+                # 处理漫画生成 (tuZi)
+                if "comic" in secrets_config["ai"] and "tuZi" in secrets_config["ai"]["comic"]:
+                    if "tuZi" not in merged["aiServices"]:
+                        merged["aiServices"]["tuZi"] = {}
+                    merged["aiServices"]["tuZi"].update(secrets_config["ai"]["comic"]["tuZi"])
         
         return merged
         
