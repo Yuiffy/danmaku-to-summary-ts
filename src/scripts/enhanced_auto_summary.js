@@ -11,13 +11,22 @@ const aiComicGenerator = require('./ai_comic_generator');
 
 // 获取音频格式配置
 function getAudioFormats() {
-    const configPath = path.join(__dirname, 'config.json');
+    // 优先读取外部配置文件
+    const env = process.env.NODE_ENV || 'development';
+    const configDir = path.resolve(path.join(__dirname, '..', '..', 'config'));
+    const configPath = path.join(configDir, env === 'production' ? 'production.json' : 'default.json');
+    const fallbackPath = path.join(__dirname, 'config.json'); // 备用
     const defaultAudioFormats = ['.m4a', '.aac', '.mp3', '.wav', '.ogg', '.flac'];
     
     try {
-        if (fs.existsSync(configPath)) {
-            const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-            return config.audioRecording?.audioFormats || defaultAudioFormats;
+        let targetPath = configPath;
+        if (!fs.existsSync(targetPath)) {
+            targetPath = fallbackPath;
+        }
+        
+        if (fs.existsSync(targetPath)) {
+            const config = JSON.parse(fs.readFileSync(targetPath, 'utf8'));
+            return config.audio?.formats || config.audioRecording?.audioFormats || defaultAudioFormats;
         }
     } catch (error) {
         console.error('Error loading audio formats:', error);
@@ -141,13 +150,30 @@ async function generateAiComic(highlightPath) {
 
 // 检查房间是否启用AI功能
 function shouldGenerateAiForRoom(roomId) {
-    const configPath = path.join(__dirname, 'config.json');
+    // 优先读取外部配置文件
+    const env = process.env.NODE_ENV || 'development';
+    const configDir = path.resolve(path.join(__dirname, '..', '..', 'config'));
+    const configPath = path.join(configDir, env === 'production' ? 'production.json' : 'default.json');
+    const fallbackPath = path.join(__dirname, 'config.json'); // 备用
     
     try {
-        if (fs.existsSync(configPath)) {
-            const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        let targetPath = configPath;
+        if (!fs.existsSync(targetPath)) {
+            targetPath = fallbackPath;
+        }
+        
+        if (fs.existsSync(targetPath)) {
+            const config = JSON.parse(fs.readFileSync(targetPath, 'utf8'));
             const roomStr = String(roomId);
             
+            if (config.ai?.roomSettings && config.ai.roomSettings[roomStr]) {
+                const roomConfig = config.ai.roomSettings[roomStr];
+                return {
+                    text: roomConfig.enableTextGeneration !== false,
+                    comic: roomConfig.enableComicGeneration !== false
+                };
+            }
+            // 兼容旧格式 roomSettings（直接在config下）
             if (config.roomSettings && config.roomSettings[roomStr]) {
                 const roomConfig = config.roomSettings[roomStr];
                 return {

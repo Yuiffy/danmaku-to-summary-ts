@@ -6,8 +6,13 @@ const { HttpsProxyAgent } = require('https-proxy-agent');
 
 // 加载配置
 function loadConfig() {
-    const configPath = path.join(__dirname, 'config.json');
+    // 优先读取外部配置文件
+    const env = process.env.NODE_ENV || 'development';
+    const configDir = path.resolve(path.join(__dirname, '..', '..', 'config'));
+    const configPath = path.join(configDir, env === 'production' ? 'production.json' : 'default.json');
+    const fallbackPath = path.join(__dirname, 'config.json'); // 备用
     const secretsPath = path.join(__dirname, 'config.secrets.json');
+    
     const defaultConfig = {
         aiServices: {
             gemini: {
@@ -33,16 +38,32 @@ function loadConfig() {
 
     try {
         // 加载主配置文件
-        if (fs.existsSync(configPath)) {
-            const userConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        let targetPath = configPath;
+        if (!fs.existsSync(targetPath)) {
+            targetPath = fallbackPath;
+        }
+        
+        if (fs.existsSync(targetPath)) {
+            const userConfig = JSON.parse(fs.readFileSync(targetPath, 'utf8'));
             // 深度合并配置
             const merged = JSON.parse(JSON.stringify(defaultConfig));
+            
+            // 从外部配置读取（新格式：ai.text 和 ai.comic）
+            if (userConfig.ai?.text) {
+                Object.assign(merged.aiServices.gemini, userConfig.ai.text);
+            }
+            if (userConfig.ai?.comic?.tuZi) {
+                Object.assign(merged.aiServices.tuZi, userConfig.ai.comic.tuZi);
+            }
+            
+            // 兼容旧格式 aiServices
             if (userConfig.aiServices?.gemini) {
                 Object.assign(merged.aiServices.gemini, userConfig.aiServices.gemini);
             }
             if (userConfig.aiServices?.tuZi) {
                 Object.assign(merged.aiServices.tuZi, userConfig.aiServices.tuZi);
             }
+            
             if (userConfig.timeouts) {
                 Object.assign(merged.timeouts, userConfig.timeouts);
             }
@@ -133,21 +154,47 @@ function extractRoomIdFromFilename(filename) {
 
 // 获取主播与粉丝名称（支持房间级覆盖与全局默认）
 function getNames(roomId) {
-    const configPath = path.join(__dirname, 'config.json');
+    // 优先读取外部配置文件
+    const env = process.env.NODE_ENV || 'development';
+    const configDir = path.resolve(path.join(__dirname, '..', '..', 'config'));
+    const configPath = path.join(configDir, env === 'production' ? 'production.json' : 'default.json');
+    const fallbackPath = path.join(__dirname, 'config.json'); // 备用
+    
     let anchor = '岁己SUI';
     let fan = '饼干岁';
 
     try {
-        if (fs.existsSync(configPath)) {
-            const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-            if (cfg.aiServices) {
-                if (cfg.aiServices.defaultAnchorName) anchor = cfg.aiServices.defaultAnchorName;
-                if (cfg.aiServices.defaultFanName) fan = cfg.aiServices.defaultFanName;
+        let targetPath = configPath;
+        if (!fs.existsSync(targetPath)) {
+            targetPath = fallbackPath;
+        }
+        
+        if (fs.existsSync(targetPath)) {
+            const cfg = JSON.parse(fs.readFileSync(targetPath, 'utf8'));
+            
+            // 新格式：从 ai.defaultNames 读取
+            if (cfg.ai?.defaultNames) {
+                if (cfg.ai.defaultNames.anchor) anchor = cfg.ai.defaultNames.anchor;
+                if (cfg.ai.defaultNames.fan) fan = cfg.ai.defaultNames.fan;
             }
-            if (roomId && cfg.roomSettings && cfg.roomSettings[roomId]) {
-                const r = cfg.roomSettings[roomId];
-                if (r.anchorName) anchor = r.anchorName;
-                if (r.fanName) fan = r.fanName;
+            // 兼容旧格式：aiServices.defaultAnchorName
+            if (cfg.aiServices?.defaultAnchorName) anchor = cfg.aiServices.defaultAnchorName;
+            if (cfg.aiServices?.defaultFanName) fan = cfg.aiServices.defaultFanName;
+            
+            // 读取房间级配置（新格式：ai.roomSettings）
+            if (roomId) {
+                const roomStr = String(roomId);
+                if (cfg.ai?.roomSettings?.[roomStr]) {
+                    const r = cfg.ai.roomSettings[roomStr];
+                    if (r.anchorName) anchor = r.anchorName;
+                    if (r.fanName) fan = r.fanName;
+                }
+                // 兼容旧格式：config.roomSettings
+                if (cfg.roomSettings?.[roomStr]) {
+                    const r = cfg.roomSettings[roomStr];
+                    if (r.anchorName) anchor = r.anchorName;
+                    if (r.fanName) fan = r.fanName;
+                }
             }
         }
     } catch (e) {
