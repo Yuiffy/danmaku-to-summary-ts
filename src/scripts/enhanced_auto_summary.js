@@ -232,6 +232,8 @@ const main = async () => {
     console.log('\n--------------------------------------------');
 
     // Node.js Fusion（弹幕融合）
+    let generatedHighlightFile = null;
+    
     if (filesToProcess.length === 0) {
         console.log('X Warning: No valid SRT or XML files to process.');
     } else {
@@ -242,6 +244,11 @@ const main = async () => {
         if (!fs.existsSync(nodeScript)) {
             console.error(`X Error: Node.js script not found at: ${nodeScript}`);
         } else {
+            // 获取输出目录和基础名称
+            const outputDir = path.dirname(filesToProcess[0]);
+            const baseName = path.basename(filesToProcess[0]).replace(/\.(srt|xml|mp4|flv|mkv)$/i, '').replace(/_fix$/, '');
+            generatedHighlightFile = path.join(outputDir, `${baseName}_AI_HIGHLIGHT.txt`);
+            
             await runCommand('node', [nodeScript, ...filesToProcess]);
         }
     }
@@ -250,30 +257,15 @@ const main = async () => {
     console.log('\n--------------------------------------------');
     console.log('-> [AI Generation] Starting AI content generation...');
     
-    // 查找生成的AI_HIGHLIGHT文件
-    const outputDir = filesToProcess.length > 0 ? path.dirname(filesToProcess[0]) : process.cwd();
-    
     try {
-        const files = fs.readdirSync(outputDir);
-        const highlightFiles = files.filter(f => f.includes('_AI_HIGHLIGHT.txt'));
-        
-        console.log(`🔍 找到 ${highlightFiles.length} 个AI_HIGHLIGHT文件`);
-        
-        // 只处理最新生成的AI_HIGHLIGHT文件
-        if (highlightFiles.length > 0) {
-            // 按修改时间排序，获取最新的文件
-            const highlightFilesWithTime = highlightFiles.map(f => ({
-                name: f,
-                path: path.join(outputDir, f),
-                mtime: fs.statSync(path.join(outputDir, f)).mtime.getTime()
-            })).sort((a, b) => b.mtime - a.mtime);
+        // 使用 do_fusion_summary 生成的文件
+        if (generatedHighlightFile && fs.existsSync(generatedHighlightFile)) {
+            const highlightPath = generatedHighlightFile;
+            const highlightFile = path.basename(highlightPath);
+            const roomId = extractRoomIdFromFilename(highlightFile);
             
-            const latestHighlightFile = highlightFilesWithTime[0].name;
-            const highlightPath = highlightFilesWithTime[0].path;
-            const roomId = extractRoomIdFromFilename(latestHighlightFile);
-            
-            console.log(`📌 使用最新生成的文件: ${latestHighlightFile}`);
-            console.log(`\n--- 处理: ${latestHighlightFile} ---`);
+            console.log(`📌 处理 do_fusion_summary 生成的文件: ${highlightFile}`);
+            console.log(`\n--- 处理: ${highlightFile} ---`);
             
             // 检查房间AI设置
             const aiSettings = roomId ? shouldGenerateAiForRoom(roomId) : { text: true, comic: true };
@@ -297,6 +289,8 @@ const main = async () => {
             } else {
                 console.log('ℹ️  跳过AI漫画生成（房间设置禁用）');
             }
+        } else {
+            console.log('⚠️  未找到 do_fusion_summary 生成的 AI_HIGHLIGHT 文件');
         }
     } catch (error) {
         console.error(`⚠️  AI生成阶段出错: ${error.message}`);
