@@ -48,7 +48,15 @@
         "apiKey": "",
         "model": "gemini-1.5-flash",
         "temperature": 0.7,
-        "maxTokens": 2000
+        "maxTokens": 2000,
+        "proxy": ""
+      },
+      "tuZi": {
+        "enabled": true,
+        "apiKey": "",
+        "baseUrl": "https://api.tu-zi.com",
+        "model": "gemini-1.5-flash",
+        "proxy": ""
       }
     },
     "comic": {
@@ -56,6 +64,19 @@
       "provider": "python",
       "python": {
         "script": "ai_comic_generator.py"
+      },
+      "googleImage": {
+        "enabled": true,
+        "apiKey": "",
+        "model": "imagen-3.0-generate-001",
+        "proxy": ""
+      },
+      "tuZi": {
+        "enabled": true,
+        "apiKey": "",
+        "baseUrl": "https://api.tu-zi.com",
+        "model": "dall-e-3",
+        "proxy": ""
       }
     },
     "defaultNames": {

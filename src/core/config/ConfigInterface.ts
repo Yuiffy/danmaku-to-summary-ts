@@ -56,6 +56,15 @@ export interface GeminiConfig {
   proxy?: string;
 }
 
+// tuZi配置
+export interface TuZiConfig {
+  enabled: boolean;
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+  proxy?: string;
+}
+
 // OpenAI配置
 export interface OpenAIConfig {
   apiKey: string;
@@ -70,8 +79,17 @@ export interface TextAIConfig {
   enabled: boolean;
   provider: 'gemini' | 'openai' | 'claude';
   gemini?: GeminiConfig;
+  tuZi?: TuZiConfig;
   openai?: OpenAIConfig;
   claude?: any; // 可根据需要具体化
+}
+
+// Google图像生成配置
+export interface GoogleImageConfig {
+  enabled: boolean;
+  apiKey: string;
+  model: string;
+  proxy?: string;
 }
 
 // 漫画AI配置
@@ -81,6 +99,8 @@ export interface ComicAIConfig {
   python?: {
     script: string;
   };
+  googleImage?: GoogleImageConfig;
+  tuZi?: TuZiConfig;
   huggingface?: {
     apiToken: string;
     model: string;
