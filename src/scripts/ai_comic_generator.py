@@ -235,17 +235,19 @@ def get_room_character_description(room_id: Optional[str] = None) -> str:
     except Exception:
         return "岁己SUI（白发红瞳女生），饼干岁（有细细四肢的小小的饼干状生物）"
 
-def build_comic_prompt(highlight_content: str, reference_image_path: Optional[str] = None, room_id: Optional[str] = None, existing_comic: Optional[str] = None) -> Tuple[str, str]:
-    """构建漫画生成提示词并返回 (prompt, comic_content)。
+def build_comic_prompt(highlight_content: str, reference_image_path: Optional[str] = None, room_id: Optional[str] = None, existing_comic: Optional[str] = None) -> Tuple[str, str, bool]:
+    """构建漫画生成提示词并返回 (prompt, comic_content, is_generated)。
 
     如果提供 `existing_comic` 则复用已有脚本而不再调用AI生成。
-    返回值: (base_prompt, comic_content)
+    返回值: (base_prompt, comic_content, is_generated)
+    is_generated: 是否真正生成了漫画脚本（True）还是使用原文或已有脚本（False）
     """
     # 第一步：如果传入已有脚本则复用，否则使用AI生成漫画内容脚本
+    is_generated = False
     if existing_comic and existing_comic.strip() != "":
         comic_content = existing_comic
     else:
-        comic_content = generate_comic_content_with_ai(highlight_content, room_id=room_id)
+        comic_content, is_generated = generate_comic_content_with_ai(highlight_content, room_id=room_id)
 
     # 获取角色描述并注入绘画提示词（优先房间配置、再全局默认、最后内置默认）
     character_desc = get_room_character_description(room_id)
@@ -256,10 +258,14 @@ def build_comic_prompt(highlight_content: str, reference_image_path: Optional[st
 下面是根据直播内容生成的漫画脚本，请根据这个脚本绘制漫画：
 {comic_content}"""
 
-    return base_prompt, comic_content
+    return base_prompt, comic_content, is_generated
 
-def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str] = None) -> str:
-    """使用AI生成漫画内容脚本"""
+def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str] = None) -> Tuple[str, bool]:
+    """使用AI生成漫画内容脚本
+    
+    返回值: (comic_content, is_generated)
+    is_generated: 是否真正生成了脚本（True）还是返回原文作为备选（False）
+    """
     print("[AI] 使用AI生成漫画内容脚本...")
 
     # 首先尝试复用已有的 Node 文本生成器（ai_text_generator.js），避免在 Python 中重复实现 Gemini 调用
@@ -281,7 +287,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                     text = proc.stdout.decode('utf-8').strip()
                     if text:
                         print('[OK] 从 ai_text_generator 返回内容')
-                        return text
+                        return text, True
                 else:
                     stderr = proc.stderr.decode('utf-8') if proc.stderr else ''
                     print(f"[INFO] node 脚本返回非零状态: {proc.returncode}, stderr: {stderr}")
@@ -303,7 +309,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
 
         if not gemini_api_key:
             print("[WARNING]  Gemini API密钥未配置，使用原始内容")
-            return highlight_content
+            return highlight_content, False
 
         # 创建客户端
         client = genai.Client(api_key=gemini_api_key)
@@ -341,10 +347,10 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
             comic_content = response.text.strip()
             print("[OK] AI漫画内容生成完成")
             print(f"生成内容长度: {len(comic_content)} 字符")
-            return comic_content
+            return comic_content, True
         else:
             print("[WARNING]  AI返回空结果，使用原始内容")
-            return highlight_content
+            return highlight_content, False
 
     except ImportError:
         print("[WARNING]  google-genai库未安装，使用原始内容")
@@ -354,8 +360,8 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
         import traceback
         traceback.print_exc()
 
-    # 失败时返回原始内容
-    return highlight_content
+    # 失败时返回原始内容，标记为未生成
+    return highlight_content, False
 
 def encode_image_to_base64(image_path: str) -> str:
     """将图片编码为base64"""
@@ -948,11 +954,11 @@ def generate_comic_from_highlight(highlight_path: str) -> Optional[str]:
                 print(f"[WARNING]  读取已存在漫画脚本失败，重新生成: {e}")
 
         # 构建提示词（包含漫画内容生成），如果已有脚本则复用
-        prompt, comic_text = build_comic_prompt(highlight_content, reference_image_path, room_id, existing_comic=comic_text)
+        prompt, comic_text, is_comic_generated = build_comic_prompt(highlight_content, reference_image_path, room_id, existing_comic=comic_text)
 
-        # 如果刚生成了脚本且磁盘上没有文件，则先保存脚本（在生成图像之前保存）
+        # 图像生成成功，现在保存漫画脚本（只在真正生成脚本时保存，不保存原文备选）
         try:
-            if not os.path.exists(text_output_path) and comic_text:
+            if not os.path.exists(text_output_path) and comic_text and is_comic_generated:
                 with open(text_output_path, 'w', encoding='utf-8') as tf:
                     tf.write(comic_text)
                 print(f"[OK] 漫画脚本已保存: {os.path.basename(text_output_path)}")
@@ -975,6 +981,8 @@ def generate_comic_from_highlight(highlight_path: str) -> Optional[str]:
         if not comic_result:
             print("[ERROR] 所有图像生成API都失败，无返回结果")
             return None
+        
+
         
         # 确定输出路径
         output_path = os.path.join(dir_name, f"{base_name}_COMIC_FACTORY.png")
