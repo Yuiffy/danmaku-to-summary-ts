@@ -64,9 +64,30 @@ function loadConfig() {
 // 检查Gemini配置是否有效
 function isGeminiConfigured() {
     const config = loadConfig();
-    return config.aiServices.gemini.enabled && 
-           config.aiServices.gemini.apiKey && 
+    return config.aiServices.gemini.enabled &&
+           config.aiServices.gemini.apiKey &&
            config.aiServices.gemini.apiKey.trim() !== '';
+}
+
+// 生成不重复的文件名（如果文件已存在，添加 _1, _2 等后缀）
+function generateUniqueFilename(basePath) {
+    if (!fs.existsSync(basePath)) {
+        return basePath;
+    }
+    
+    const dir = path.dirname(basePath);
+    const ext = path.extname(basePath);
+    const nameWithoutExt = path.basename(basePath, ext);
+    
+    let counter = 1;
+    let newPath;
+    while (true) {
+        newPath = path.join(dir, `${nameWithoutExt}_${counter}${ext}`);
+        if (!fs.existsSync(newPath)) {
+            return newPath;
+        }
+        counter++;
+    }
 }
 
 // 读取AI_HIGHLIGHT.txt内容
@@ -224,6 +245,9 @@ async function generateTextWithGemini(prompt) {
 // 保存生成的文本
 function saveGeneratedText(outputPath, text, highlightPath) {
     try {
+        // 生成不重复的文件名
+        const uniquePath = generateUniqueFilename(outputPath);
+        
         // 添加元信息
         const highlightName = path.basename(highlightPath);
         const timestamp = new Date().toLocaleString('zh-CN');
@@ -234,9 +258,9 @@ function saveGeneratedText(outputPath, text, highlightPath) {
 `;
         
         const fullText = metaInfo + text;
-        fs.writeFileSync(outputPath, fullText, 'utf8');
-        console.log(`✅ 晚安回复已保存: ${path.basename(outputPath)}`);
-        return outputPath;
+        fs.writeFileSync(uniquePath, fullText, 'utf8');
+        console.log(`✅ 晚安回复已保存: ${path.basename(uniquePath)}`);
+        return uniquePath;
     } catch (error) {
         console.error(`❌ 保存生成文本失败: ${error.message}`);
         throw error;

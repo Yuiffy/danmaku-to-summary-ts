@@ -120,6 +120,22 @@ def is_tuzi_configured() -> bool:
     tuzi_config = config["aiServices"].get("tuZi", {})
     return tuzi_config.get("enabled", False) and tuzi_config.get("apiKey", "") and tuzi_config["apiKey"].strip() != ""
 
+def generate_unique_filename(base_path: str) -> str:
+    """生成不重复的文件名（如果文件已存在，添加 _1, _2 等后缀）"""
+    if not os.path.exists(base_path):
+        return base_path
+    
+    dir_name = os.path.dirname(base_path)
+    ext = os.path.splitext(base_path)[1]
+    name_without_ext = os.path.splitext(os.path.basename(base_path))[0]
+    
+    counter = 1
+    while True:
+        new_path = os.path.join(dir_name, f"{name_without_ext}_{counter}{ext}")
+        if not os.path.exists(new_path):
+            return new_path
+        counter += 1
+
 def get_live_cover_image(highlight_path: str) -> Optional[str]:
     """从录制目录查找对应的直播封面图片"""
     try:
@@ -851,23 +867,26 @@ def call_huggingface_comic_factory(prompt: str, reference_image_path: Optional[s
 def save_comic_result(output_path: str, comic_data: Any) -> str:
     """保存漫画结果"""
     try:
+        # 生成不重复的文件名
+        unique_path = generate_unique_filename(output_path)
+        
         # 如果comic_data是文件路径，复制文件
         if isinstance(comic_data, str) and os.path.exists(comic_data):
             print(f"[COPY] 复制漫画图片: {os.path.basename(comic_data)}")
             import shutil
-            shutil.copy2(comic_data, output_path)
-            print(f"[OK] 漫画图片已保存: {os.path.basename(output_path)}")
-            return output_path
+            shutil.copy2(comic_data, unique_path)
+            print(f"[OK] 漫画图片已保存: {os.path.basename(unique_path)}")
+            return unique_path
         
         # 如果comic_data是URL，下载图片
         elif isinstance(comic_data, str) and comic_data.startswith(('http://', 'https://')):
             print(f"[DOWNLOAD] 下载漫画图片: {comic_data}")
             response = requests.get(comic_data, timeout=60)
             if response.status_code == 200:
-                with open(output_path, 'wb') as f:
+                with open(unique_path, 'wb') as f:
                     f.write(response.content)
-                print(f"[OK] 漫画图片已保存: {os.path.basename(output_path)}")
-                return output_path
+                print(f"[OK] 漫画图片已保存: {os.path.basename(unique_path)}")
+                return unique_path
             else:
                 raise ValueError(f"下载失败: {response.status_code}")
         
@@ -878,17 +897,17 @@ def save_comic_result(output_path: str, comic_data: Any) -> str:
             match = re.search(r'base64,(.+)', comic_data)
             if match:
                 image_data = base64.b64decode(match.group(1))
-                with open(output_path, 'wb') as f:
+                with open(unique_path, 'wb') as f:
                     f.write(image_data)
-                print(f"[OK] 漫画图片已保存: {os.path.basename(output_path)}")
-                return output_path
+                print(f"[OK] 漫画图片已保存: {os.path.basename(unique_path)}")
+                return unique_path
         
         # 其他情况，直接保存为文本（可能是错误信息或文本结果）
         else:
-            with open(output_path, 'w', encoding='utf-8') as f:
+            with open(unique_path, 'w', encoding='utf-8') as f:
                 f.write(str(comic_data))
-            print(f"[OK] 漫画结果已保存为文本: {os.path.basename(output_path)}")
-            return output_path
+            print(f"[OK] 漫画结果已保存为文本: {os.path.basename(unique_path)}")
+            return unique_path
             
     except Exception as e:
         print(f"[ERROR] 保存漫画结果失败: {e}")
