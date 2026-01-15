@@ -7,7 +7,7 @@
   },
   "webhook": {
     "enabled": true,
-    "port": 15121,
+    "port": 12523,
     "host": "0.0.0.0",
     "endpoints": {
       "ddtv": {

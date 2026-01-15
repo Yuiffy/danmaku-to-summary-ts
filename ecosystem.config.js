@@ -19,30 +19,33 @@ module.exports = {
       max_memory_restart: '1G',
       env: {
         NODE_ENV: 'production',
-        PORT: 15121,
+        PORT: 15123,
         HOST: '0.0.0.0',
         LOG_LEVEL: 'info'
       },
       env_development: {
         NODE_ENV: 'development',
-        PORT: 15122,
+        PORT: 15124,
         HOST: 'localhost',
         LOG_LEVEL: 'debug'
       },
       env_test: {
         NODE_ENV: 'test',
-        PORT: 15123,
+        PORT: 12525,
         HOST: 'localhost',
         LOG_LEVEL: 'debug'
       },
-      // 日志配置
-      log_date_format: 'YYYY-MM-DD HH:mm:ss',
+      // 日志配置 - 禁用 PM2 日志时间戳，使用应用自己的日志
+      log_date_format: '',
       error_file: path.join(__dirname, 'logs', 'pm2-error.log'),
       out_file: path.join(__dirname, 'logs', 'pm2-out.log'),
       log_file: path.join(__dirname, 'logs', 'pm2-combined.log'),
-      time: true,
+      time: false,
       // 合并日志输出
-      merge_logs: true,
+      merge_logs: false,
+      // 禁用 PM2 的日志缓冲，确保实时输出
+      pm2_module: false,
+      automation: false,
       // 进程管理
       min_uptime: '10s',
       max_restarts: 10,
