@@ -468,7 +468,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
 请创作漫画故事脚本（纯文本描述，不需要图像生成）："""
                 
                 payload = {
-                    "model": tuzi_config.get("model", "nano-banana"),
+                    "model": tuzi_config.get("textModel", "gemini-3-flash-preview"),
                     "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": f"直播内容：\n{highlight_content}\n\n请创作漫画故事脚本："}
@@ -794,8 +794,8 @@ def call_tuzi_image_api(prompt: str, reference_image_path: Optional[str] = None)
 
         # 构建请求体（兼容OpenAI格式）
         payload = {
-            "model": tuzi_config.get("model", "dall-e-3"),
-            "prompt": prompt[:1000],  # 限制提示词长度
+            "model": tuzi_config.get("model", "nano-banana"),
+            "prompt": prompt,
             "n": 1,
             "size": "1024x1024"
         }
