@@ -55,7 +55,7 @@
         "apiKey": "",
         "model": "gemini-3-flash-preview",
         "temperature": 0.7,
-        "maxTokens": 2000
+        "maxTokens": 100000
       }
     },
     "comic": {
@@ -99,6 +99,15 @@
         "characterDescription": "金发蓝瞳女生",
         "anchorName": "雪绘Yukie",
         "fanName": "态度人",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true
+      },
+      "52030": {
+        "audioOnly": true,
+        "referenceImage": "../public/reference_images/Aza_阿萨_立绘.webp",
+        "characterDescription": "阿萨Aza（浅黄色头发绿挑染的酷盖，身边的小毛线（有触角和细细四肢的毛球状生物）是他的宠物兼伙伴",
+        "anchorName": "阿萨Aza",
+        "fanName": "小毛线",
         "enableTextGeneration": true,
         "enableComicGeneration": true
       },

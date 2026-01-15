@@ -474,7 +474,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                         {"role": "user", "content": f"直播内容：\n{highlight_content}\n\n请创作漫画故事脚本："}
                     ],
                     "temperature": 0.7,
-                    "max_tokens": 1000
+                    "max_tokens": 100000,
                 }
                 
                 print("[TUZI_TEXT] 调用tuZi API生成漫画文本内容...")
@@ -488,10 +488,18 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                             comic_content = content.strip()
                             print("[OK] tuZi API漫画文本生成成功")
                             print(f"生成内容长度: {len(comic_content)} 字符")
+                            print(f"内容预览: {comic_content[:200]}...")
                             return comic_content, True
-                
-                print("[WARNING]  tuZi API调用失败，使用原始内容")
-                return highlight_content, False
+                        else:
+                            print("[WARNING]  tuZi API返回空内容")
+                            return highlight_content, False
+                    else:
+                        print(f"[WARNING]  tuZi API响应格式异常: {result}")
+                        return highlight_content, False
+                else:
+                    print(f"[WARNING]  tuZi API调用失败: HTTP {response.status_code}")
+                    print(f"响应内容: {response.text[:500]}")
+                    return highlight_content, False
                 
             except Exception as tuzi_error:
                 print(f"[ERROR]  tuZi API备用方案失败: {tuzi_error}")
@@ -823,7 +831,7 @@ def call_tuzi_image_api(prompt: str, reference_image_path: Optional[str] = None)
                 }
             ],
             "temperature": 0.7,
-            "max_tokens": 2000
+            "max_tokens": 100000
         }
 
         print("[WAIT] 正在通过tu-zi.com API生成图像...")
@@ -832,32 +840,51 @@ def call_tuzi_image_api(prompt: str, reference_image_path: Optional[str] = None)
         if response.status_code == 200:
             result = response.json()
             
+            # 打印响应结构以便调试
+            print(f"[DEBUG] 响应结构: {list(result.keys())}")
+            if "choices" in result:
+                print(f"[DEBUG] choices数量: {len(result['choices'])}")
+                if len(result["choices"]) > 0:
+                    print(f"[DEBUG] 第一个choice的结构: {list(result['choices'][0].keys())}")
+            
             # 处理 chat/completions 响应格式
             if "choices" in result and len(result["choices"]) > 0:
                 message = result["choices"][0].get("message", {})
                 content = message.get("content", "")
+                print(f"[DEBUG] 响应内容长度: {len(content)}")
+                print(f"[DEBUG] 响应内容预览: {content[:300]}...")
                 
                 # 尝试从文本中提取图片URL（如果API返回的是URL）
                 import re
-                url_match = re.search(r'https?://[^\s]+\.(png|jpg|jpeg|webp)[^\s]*', content)
+                # 修复正则表达式以匹配更多格式的URL（包括末尾可能的括号）
+                url_match = re.search(r'https?://[^\s\)]+\.(png|jpg|jpeg|webp)[^\s\)]*', content)
                 if url_match:
                     image_url = url_match.group(0)
+                    # 清理URL末尾可能的右括号
+                    image_url = image_url.rstrip(')')
                     print(f"[DOWNLOAD] 下载生成的图像: {image_url}")
-                    image_response = requests.get(image_url, timeout=60, proxies=proxies)
-                    
-                    if image_response.status_code == 200:
-                        import tempfile
-                        import uuid
+                    try:
+                        image_response = requests.get(image_url, timeout=60, proxies=proxies)
+                        
+                        if image_response.status_code == 200:
+                            import tempfile
+                            import uuid
 
-                        temp_dir = tempfile.gettempdir()
-                        temp_file = os.path.join(temp_dir, f"comic_tuzi_{uuid.uuid4().hex[:8]}.png")
+                            temp_dir = tempfile.gettempdir()
+                            temp_file = os.path.join(temp_dir, f"comic_tuzi_{uuid.uuid4().hex[:8]}.png")
 
-                        with open(temp_file, 'wb') as f:
-                            f.write(image_response.content)
+                            with open(temp_file, 'wb') as f:
+                                f.write(image_response.content)
 
-                        print(f"[OK] tu-zi.com图像生成成功")
-                        print(f"[SAVE] 图像已保存到临时文件: {temp_file}")
-                        return temp_file
+                            print(f"[OK] tu-zi.com图像生成成功")
+                            print(f"[SAVE] 图像已保存到临时文件: {temp_file}")
+                            return temp_file
+                        else:
+                            print(f"[ERROR] 图像下载失败: HTTP {image_response.status_code}")
+                            return None
+                    except Exception as download_error:
+                        print(f"[ERROR] 图像下载异常: {download_error}")
+                        return None
                 
                 # 如果返回的是 inline_data (Gemini 原生格式)
                 if "inline_data" in str(result):
@@ -945,10 +972,14 @@ def call_tuzi_image_api(prompt: str, reference_image_path: Optional[str] = None)
                         print(f"[OK] tu-zi.com图像生成成功")
                         print(f"[SAVE] 图像已保存到临时文件: {temp_file}")
                         return temp_file
-        else:
-            print(f"[ERROR] tu-zi.com API调用失败: {response.status_code}")
-            print(f"   响应: {response.text[:500]}")
-            return None
+                    else:
+                        print(f"[ERROR] 图像下载失败: HTTP {image_response.status_code}")
+                        return None
+        
+        # 如果到这里还没返回，说明所有解析尝试都失败了
+        print(f"[ERROR] 无法从响应中提取图像数据")
+        print(f"[DEBUG] 完整响应: {json.dumps(result, ensure_ascii=False, indent=2)[:1000]}")
+        return None
 
     except Exception as e:
         print(f"[ERROR] tu-zi.com图像生成失败: {e}")
@@ -1224,15 +1255,20 @@ def generate_comic_from_highlight(highlight_path: str) -> Optional[str]:
         if not comic_result and use_tuzi:
             print("[TUZI] Google生成失败，尝试tu-zi.com...")
             comic_result = call_tuzi_image_api(prompt, reference_image_path)
+            if comic_result:
+                print(f"[DEBUG] tu-zi.com返回结果: {comic_result}")
+            else:
+                print("[DEBUG] tu-zi.com返回None")
 
         if not comic_result:
             print("[ERROR] 所有图像生成API都失败，无返回结果")
             return None
         
-
+        print(f"[DEBUG] comic_result类型: {type(comic_result)}, 内容: {comic_result}")
         
         # 确定输出路径
         output_path = os.path.join(dir_name, f"{base_name}_COMIC_FACTORY.png")
+        print(f"[DEBUG] 输出路径: {output_path}")
 
         # 保存结果
         return save_comic_result(output_path, comic_result)
