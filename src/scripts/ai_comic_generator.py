@@ -405,7 +405,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
 
     <character>{character_desc}</character>
 
-    <style>多个剪贴画风格或者少年漫多个分镜（5~8个吧），每个是一个片段场景，画图+文字台词or简介，文字要短。要画得精致，岁己要美丽动人，饼干岁要可爱。</style>
+    <style>多个剪贴画风格或者少年漫多个分镜（5~8个吧），每个是一个片段场景，画图+文字台词or简介，文字要短。要画得精致，角色要画得帅气、美丽、可爱。</style>
 
     <note>一定要按照给你的参考图还原形象，而不是自己乱画一个动漫角色</note>
     直播内容：
