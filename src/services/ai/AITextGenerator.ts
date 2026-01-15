@@ -522,9 +522,45 @@ ${highlightContent}
       // 保存结果
       return this.saveGeneratedText(outputPath, generatedText, highlightPath);
     } catch (error) {
+      // 检查是否是429超频错误
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const is429Error = errorMessage.includes('429') ||
+                        errorMessage.includes('Too Many Requests') ||
+                        errorMessage.includes('RESOURCE_EXHAUSTED') ||
+                        errorMessage.includes('quota');
+
+      if (is429Error && this.isTuZiConfigured()) {
+        this.logger.warn('生成晚安回复时Gemini API超频，尝试使用tuZi API作为备用方案');
+        try {
+          // 重新读取高亮内容并构建提示词
+          const highlightContent = this.readHighlightFile(highlightPath);
+          
+          // 如果没有提供roomId，尝试从文件名提取
+          let actualRoomId: string | undefined = roomId;
+          if (!actualRoomId) {
+            const extractedRoomId = this.extractRoomIdFromFilename(path.basename(highlightPath));
+            if (extractedRoomId !== null) {
+              actualRoomId = extractedRoomId;
+            }
+          }
+
+          const prompt = this.buildGoodnightPrompt(highlightContent, actualRoomId);
+          const generatedText = await this.generateWithTuZi(prompt);
+
+          // 保存结果
+          const dir = path.dirname(highlightPath);
+          const baseName = path.basename(highlightPath, '_AI_HIGHLIGHT.txt');
+          const outputPath = path.join(dir, `${baseName}_晚安回复.md`);
+
+          return this.saveGeneratedText(outputPath, generatedText, highlightPath);
+        } catch (tuziError) {
+          this.logger.error('tuZi API备用方案也失败', { error: tuziError instanceof Error ? tuziError.message : tuziError });
+        }
+      }
+
       this.logger.error('生成晚安回复失败', {
         highlightPath,
-        error: error instanceof Error ? error.message : error
+        error: errorMessage
       });
       return null;
     }

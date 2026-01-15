@@ -21,6 +21,7 @@
     },
     "tuZi": {
       "enabled": true,
+      "apiKey": "",
       "baseUrl": "https://api.tu-zi.com",
       "model": "nano-banana",
       "proxy": "http://127.0.0.1:7890"

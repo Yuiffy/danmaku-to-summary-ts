@@ -62,6 +62,8 @@
       "enabled": true,
       "provider": "python",
       "tuZi": {
+        "enabled": true,
+        "apiKey": "",
         "baseUrl": "https://api.tu-zi.com",
         "model": "nano-banana"
       }
