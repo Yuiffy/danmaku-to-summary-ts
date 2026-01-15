@@ -71,10 +71,19 @@ export class AudioProcessor implements IAudioProcessor {
    * 检查是否为音频专用房间
    */
   isAudioOnlyRoom(roomId: number): boolean {
-    const isAudioRoom = this.config.enabled && 
-                       this.config.audioOnlyRooms.includes(roomId);
-    
-    this.logger.debug('检查音频专用房间', { roomId, isAudioRoom });
+    // 优先检查房间特定的audioOnly设置
+    const roomConfig = ConfigProvider.getRoomAIConfig(roomId.toString());
+    if (roomConfig.audioOnly !== undefined) {
+      const isAudioRoom = this.config.enabled && roomConfig.audioOnly;
+      this.logger.debug('检查房间特定音频专用设置', { roomId, isAudioRoom, roomAudioOnly: roomConfig.audioOnly });
+      return isAudioRoom;
+    }
+
+    // 回退到全局audioOnlyRooms列表
+    const isAudioRoom = this.config.enabled &&
+                        this.config.audioOnlyRooms.includes(roomId);
+
+    this.logger.debug('检查全局音频专用房间', { roomId, isAudioRoom });
     return isAudioRoom;
   }
 

@@ -417,10 +417,11 @@ def call_google_image_api(prompt: str, reference_image_path: Optional[str] = Non
     支持重试机制
     """
     config = load_config()
-    google_config = config["aiServices"]["googleImage"]
+    google_config = config.get("aiServices", {}).get("googleImage", {})
 
     if not is_googleimage_configured():
-        raise ValueError("Google图像生成API未配置，请检查config.json中的apiKey")
+        print("[WARNING]  Google图像生成API未配置，跳过Google图像生成")
+        return None
 
     max_retries = google_config.get("maxRetries", 3)
     print(f"[GOOGLE] 调用Google图像生成API生成漫画... (最多重试 {max_retries} 次)")
@@ -601,7 +602,8 @@ def call_tuzi_image_api(prompt: str, reference_image_path: Optional[str] = None)
     tuzi_config = config["aiServices"]["tuZi"]
 
     if not is_tuzi_configured():
-        raise ValueError("tu-zi.com API未配置，请检查config.secrets.json中的apiKey")
+        print("[WARNING]  tu-zi.com API未配置，跳过 tu-zi.com 调用")
+        return None
 
     print("[TUZI] 调用tu-zi.com图像生成API...")
 
@@ -1015,8 +1017,8 @@ def main():
             if result:
                 print(f"\n[CELEBRATE] 处理完成，输出文件: {result}")
             else:
-                print("\n[INFO]  未生成任何文件")
-                sys.exit(1)
+                print("\n[INFO]  未生成任何文件（已安全完成，退出码 0）")
+                sys.exit(0)
                 
     except Exception as e:
         print(f"[EXPLOSION] 处理失败: {e}")

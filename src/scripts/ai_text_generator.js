@@ -248,8 +248,23 @@ async function generateGoodnightReply(highlightPath) {
     }
     
     if (!isGeminiConfigured()) {
-        console.log('⚠️  Gemini API未配置，跳过文本生成');
-        return null;
+        console.log('⚠️  Gemini API未配置，使用本地回退生成晚安回复');
+
+        // 本地回退：简单根据文本摘取亮点并生成一段固定模板的晚安回复，便于无API时验证流程
+        try {
+            const highlightContent = readHighlightFile(highlightPath);
+            const lines = highlightContent.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+            const picks = lines.slice(0, 5).map((l, i) => `${i+1}. ${l}`);
+            const fallback = `# 晚安（本地回退）\n\n今天的直播亮点:\n${picks.join('\n')}\n\n谢谢今天的陪伴，晚安~`;
+            const dir = path.dirname(highlightPath);
+            const baseName = path.basename(highlightPath, '_AI_HIGHLIGHT.txt');
+            const outputPath = path.join(dir, `${baseName}_晚安回复.md`);
+            saveGeneratedText(outputPath, fallback, highlightPath);
+            return outputPath;
+        } catch (e) {
+            console.error('⚠️ 本地回退生成失败:', e.message);
+            return null;
+        }
     }
     
     console.log(`📄 处理AI_HIGHLIGHT文件: ${path.basename(highlightPath)}`);

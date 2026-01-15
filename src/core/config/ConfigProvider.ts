@@ -117,6 +117,13 @@ export class ConfigProvider {
    * 检查是否为音频专用房间
    */
   static isAudioOnlyRoom(roomId: string): boolean {
+    // 优先检查房间特定的audioOnly设置
+    const roomConfig = this.getRoomAIConfig(roomId);
+    if (roomConfig.audioOnly !== undefined) {
+      return roomConfig.audioOnly;
+    }
+
+    // 回退到全局audioOnlyRooms列表
     const audioConfig = this.getAudioConfig();
     return audioConfig.audioOnlyRooms.includes(Number(roomId));
   }
