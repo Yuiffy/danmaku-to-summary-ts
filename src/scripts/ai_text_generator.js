@@ -16,6 +16,14 @@ function loadConfig() {
                 model: 'gemini-2.0-flash',
                 temperature: 0.7,
                 maxTokens: 2000
+            },
+            tuZi: {
+                enabled: false,
+                apiKey: '',
+                model: 'gemini-3-flash-preview',
+                baseUrl: 'https://api.tu-zi.com',
+                temperature: 0.7,
+                maxTokens: 2000
             }
         },
         timeouts: {
@@ -32,6 +40,9 @@ function loadConfig() {
             if (userConfig.aiServices?.gemini) {
                 Object.assign(merged.aiServices.gemini, userConfig.aiServices.gemini);
             }
+            if (userConfig.aiServices?.tuZi) {
+                Object.assign(merged.aiServices.tuZi, userConfig.aiServices.tuZi);
+            }
             if (userConfig.timeouts) {
                 Object.assign(merged.timeouts, userConfig.timeouts);
             }
@@ -47,6 +58,13 @@ function loadConfig() {
                     } else if (secretsConfig.ai?.text?.gemini?.apiKey) {
                         // 新格式
                         merged.aiServices.gemini.apiKey = secretsConfig.ai.text.gemini.apiKey;
+                    }
+                    
+                    // 加载tuZi配置
+                    if (secretsConfig.aiServices?.tuZi?.apiKey) {
+                        merged.aiServices.tuZi.apiKey = secretsConfig.aiServices.tuZi.apiKey;
+                    } else if (secretsConfig.ai?.comic?.tuZi?.apiKey) {
+                        merged.aiServices.tuZi.apiKey = secretsConfig.ai.comic.tuZi.apiKey;
                     }
                 } catch (secretsError) {
                     console.warn('警告: 无法加载密钥配置文件，API密钥将为空:', secretsError.message);
@@ -67,6 +85,14 @@ function isGeminiConfigured() {
     return config.aiServices.gemini.enabled &&
            config.aiServices.gemini.apiKey &&
            config.aiServices.gemini.apiKey.trim() !== '';
+}
+
+// 检查tuZi配置是否有效
+function isTuZiConfigured() {
+    const config = loadConfig();
+    return config.aiServices.tuZi.enabled &&
+           config.aiServices.tuZi.apiKey &&
+           config.aiServices.tuZi.apiKey.trim() !== '';
 }
 
 // 生成不重复的文件名（如果文件已存在，添加 _1, _2 等后缀）
@@ -178,6 +204,71 @@ ${highlightContent}
 请根据以上直播内容，以${fan}的身份写一篇晚安回复。记住：只使用提供的直播内容，不要添加任何外部信息。`;
 }
 
+// 调用tuZi API生成文本（备用方案）
+async function generateTextWithTuZi(prompt) {
+    const config = loadConfig();
+    const tuziConfig = config.aiServices.tuZi;
+    
+    if (!isTuZiConfigured()) {
+        throw new Error('tuZi API未配置，请检查config.secrets.json中的apiKey');
+    }
+    
+    console.log('🤖 调用tuZi API生成文本（Gemini超频备用方案）...');
+    console.log(`   模型: ${tuziConfig.model}`);
+    console.log(`   温度: ${tuziConfig.temperature}`);
+    
+    try {
+        const baseUrl = tuziConfig.baseUrl || 'https://api.tu-zi.com';
+        const apiUrl = `${baseUrl}/v1/chat/completions`;
+        
+        // 设置代理
+        let agent = null;
+        if (tuziConfig.proxy) {
+            console.log(`   使用代理: ${tuziConfig.proxy}`);
+            agent = new HttpsProxyAgent(tuziConfig.proxy);
+        }
+        
+        const response = await fetch(apiUrl, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${tuziConfig.apiKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: tuziConfig.model,
+                messages: [
+                    {
+                        role: 'user',
+                        content: prompt
+                    }
+                ],
+                temperature: tuziConfig.temperature,
+                max_tokens: tuziConfig.maxTokens
+            }),
+            agent: agent,
+            timeout: 60000
+        });
+        
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`tuZi API返回错误 ${response.status}: ${errorText}`);
+        }
+        
+        const data = await response.json();
+        const text = data.choices?.[0]?.message?.content;
+        
+        if (!text) {
+            throw new Error('tuZi API返回空结果');
+        }
+        
+        console.log('✅ tuZi API调用成功');
+        return text;
+    } catch (error) {
+        console.error(`❌ tuZi API调用失败: ${error.message}`);
+        throw error;
+    }
+}
+
 // 调用Gemini API生成文本
 async function generateTextWithGemini(prompt) {
     const config = loadConfig();
@@ -237,6 +328,24 @@ async function generateTextWithGemini(prompt) {
         if (originalFetch !== null) {
             global.fetch = originalFetch;
         }
+        
+        // 检查是否是429超频错误
+        const errorMessage = error.message || '';
+        const is429Error = errorMessage.includes('429') || 
+                          errorMessage.includes('Too Many Requests') ||
+                          errorMessage.includes('RESOURCE_EXHAUSTED') ||
+                          errorMessage.includes('quota');
+        
+        if (is429Error && isTuZiConfigured()) {
+            console.warn(`⚠️  Gemini API超频 (429)，尝试使用tuZi API作为备用方案...`);
+            try {
+                return await generateTextWithTuZi(prompt);
+            } catch (tuziError) {
+                console.error(`❌ tuZi API备用方案也失败: ${tuziError.message}`);
+                throw new Error(`Gemini和tuZi API都失败: Gemini - ${error.message}, tuZi - ${tuziError.message}`);
+            }
+        }
+        
         console.error(`❌ Gemini API调用失败: ${error.message}`);
         throw error;
     }
@@ -377,8 +486,10 @@ async function batchGenerateGoodnightReplies(directory) {
 module.exports = {
     loadConfig,
     isGeminiConfigured,
+    isTuZiConfigured,
     generateGoodnightReply,
     generateTextWithGemini,
+    generateTextWithTuZi,
     batchGenerateGoodnightReplies
 };
 

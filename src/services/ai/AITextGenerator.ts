@@ -52,6 +52,14 @@ export class AITextGenerator implements IAITextGenerator {
               model: 'gemini-3-flash',
               temperature: 0.7,
               maxTokens: 2000
+            },
+            tuZi: {
+              enabled: false,
+              apiKey: '',
+              model: 'gemini-3-flash-preview',
+              baseUrl: 'https://api.tu-zi.com',
+              temperature: 0.7,
+              maxTokens: 2000
             }
           },
           defaultNames: {
@@ -103,6 +111,95 @@ export class AITextGenerator implements IAITextGenerator {
         };
       default:
         return null;
+    }
+  }
+
+  /**
+   * 检查tuZi配置是否有效
+   */
+  private isTuZiConfigured(): boolean {
+    const tuziConfig = this.config.ai?.text?.tuZi;
+    return tuziConfig?.enabled && 
+           tuziConfig?.apiKey && 
+           tuziConfig.apiKey.trim() !== '';
+  }
+
+  /**
+   * 使用tuZi API生成文本（备用方案）
+   */
+  private async generateWithTuZi(prompt: string, options?: TextGenerationOptions): Promise<string> {
+    const tuziConfig = this.config.ai?.text?.tuZi;
+    if (!tuziConfig?.apiKey) {
+      throw new AppError('tuZi API密钥未配置', 'CONFIGURATION_ERROR', 400);
+    }
+
+    const temperature = options?.temperature ?? tuziConfig.temperature;
+    const maxTokens = options?.maxTokens ?? tuziConfig.maxTokens;
+    const modelName = options?.model ?? tuziConfig.model;
+    const proxy = options?.proxy ?? tuziConfig.proxy;
+    const baseUrl = tuziConfig.baseUrl || 'https://api.tu-zi.com';
+
+    this.logger.info('调用tuZi API生成文本（Gemini超频备用方案）', {
+      model: modelName,
+      temperature,
+      maxTokens,
+      baseUrl,
+      proxy: proxy ? '已配置' : '未配置'
+    });
+
+    try {
+      const apiUrl = `${baseUrl}/v1/chat/completions`;
+      
+      // 设置代理
+      let agent: any = null;
+      if (proxy) {
+        agent = new HttpsProxyAgent(proxy);
+      }
+
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${tuziConfig.apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: modelName,
+          messages: [
+            {
+              role: 'user',
+              content: prompt
+            }
+          ],
+          temperature: temperature,
+          max_tokens: maxTokens
+        }),
+        agent: agent,
+        timeout: 60000
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new AppError(`tuZi API返回错误 ${response.status}: ${errorText}`, 'AI_SERVICE_ERROR', response.status);
+      }
+
+      const data = await response.json();
+      const text = data.choices?.[0]?.message?.content;
+
+      if (!text) {
+        throw new AppError('tuZi API返回空结果', 'AI_SERVICE_ERROR', 500);
+      }
+
+      this.logger.info('tuZi API调用成功', { textLength: text.length });
+      return text;
+    } catch (error) {
+      if (error instanceof AppError) {
+        throw error;
+      }
+      throw new AppError(
+        `tuZi API调用失败: ${error instanceof Error ? error.message : error}`,
+        'AI_SERVICE_ERROR',
+        500
+      );
     }
   }
 
@@ -329,8 +426,29 @@ ${highlightContent}
         throw error;
       }
 
+      // 检查是否是429超频错误
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const is429Error = errorMessage.includes('429') || 
+                        errorMessage.includes('Too Many Requests') ||
+                        errorMessage.includes('RESOURCE_EXHAUSTED') ||
+                        errorMessage.includes('quota');
+
+      if (is429Error && this.isTuZiConfigured()) {
+        this.logger.warn('Gemini API超频 (429)，尝试使用tuZi API作为备用方案');
+        try {
+          return await this.generateWithTuZi(prompt, options);
+        } catch (tuziError) {
+          this.logger.error('tuZi API备用方案也失败', { error: tuziError });
+          throw new AppError(
+            `Gemini和tuZi API都失败: Gemini - ${errorMessage}, tuZi - ${tuziError instanceof Error ? tuziError.message : tuziError}`,
+            'AI_SERVICE_ERROR',
+            500
+          );
+        }
+      }
+
       throw new AppError(
-        `Gemini API调用失败: ${error instanceof Error ? error.message : error}`,
+        `Gemini API调用失败: ${errorMessage}`,
         'AI_SERVICE_ERROR',
         500
       );
