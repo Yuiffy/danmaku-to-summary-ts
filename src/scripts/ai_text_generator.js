@@ -25,7 +25,8 @@ function loadConfig() {
             tuZi: {
                 enabled: false,
                 apiKey: '',
-                model: 'gemini-3-flash-preview',
+                model: 'default', // 图片生成模型
+                textModel: 'gemini-3-flash-preview', // 文本生成模型
                 baseUrl: 'https://api.tu-zi.com',
                 temperature: 0.7,
                 maxTokens: 2000
@@ -52,7 +53,16 @@ function loadConfig() {
             if (userConfig.ai?.text) {
                 Object.assign(merged.aiServices.gemini, userConfig.ai.text);
             }
-            if (userConfig.ai?.comic?.tuZi) {
+            // 图片模型配置（用于 ai.comic）
+            if (userConfig.ai?.comic?.tuZi?.model) {
+                merged.aiServices.tuZi.model = userConfig.ai.comic.tuZi.model;
+            }
+            // 文本模型配置（用于 ai.text），优先级高于图片模型配置
+            if (userConfig.ai?.comic?.tuZi?.textModel) {
+                merged.aiServices.tuZi.textModel = userConfig.ai.comic.tuZi.textModel;
+            }
+            // 兼容旧格式：直接覆盖整个 tuZi 对象（可能包含 model 但不包含 textModel）
+            if (userConfig.ai?.comic?.tuZi && !userConfig.ai.comic.tuZi.textModel) {
                 Object.assign(merged.aiServices.tuZi, userConfig.ai.comic.tuZi);
             }
             
@@ -261,7 +271,8 @@ async function generateTextWithTuZi(prompt) {
     }
     
     console.log('🤖 调用tuZi API生成文本（Gemini超频备用方案）...');
-    console.log(`   模型: ${tuziConfig.model}`);
+    const textModel = tuziConfig.textModel || 'gemini-3-flash-preview';
+    console.log(`   模型: ${textModel}`);
     console.log(`   温度: ${tuziConfig.temperature}`);
     
     try {
@@ -282,7 +293,7 @@ async function generateTextWithTuZi(prompt) {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                model: tuziConfig.model,
+                model: textModel,
                 messages: [
                     {
                         role: 'user',
