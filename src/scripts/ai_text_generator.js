@@ -13,7 +13,7 @@ function loadConfig() {
             gemini: {
                 enabled: true,
                 apiKey: '',
-                model: 'gemini-1.5-flash',
+                model: 'gemini-2.0-flash',
                 temperature: 0.7,
                 maxTokens: 2000
             }
@@ -191,10 +191,10 @@ async function generateTextWithGemini(prompt) {
     console.log(`   模型: ${geminiConfig.model}`);
     console.log(`   温度: ${geminiConfig.temperature}`);
     
+    let originalFetch = null;
     try {
         // --- 核心修改开始 ---
         // SDK 不支持在构造函数传 agent，我们需要劫持全局 fetch 来注入代理
-        let originalFetch = null;
         if (geminiConfig.proxy) {
             console.log(`   使用代理: ${geminiConfig.proxy}`);
             const agent = new HttpsProxyAgent(geminiConfig.proxy);

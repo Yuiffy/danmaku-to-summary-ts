@@ -49,7 +49,7 @@ export class AITextGenerator implements IAITextGenerator {
             gemini: {
               enabled: false,
               apiKey: '',
-              model: 'gemini-1.5-flash',
+              model: 'gemini-3-flash',
               temperature: 0.7,
               maxTokens: 2000
             }
@@ -87,7 +87,7 @@ export class AITextGenerator implements IAITextGenerator {
         return {
           enabled: aiConfig.gemini?.enabled ?? false,
           apiKey: aiConfig.gemini?.apiKey,
-          model: aiConfig.gemini?.model || 'gemini-1.5-flash',
+          model: aiConfig.gemini?.model || 'gemini-3-flash',
           temperature: aiConfig.gemini?.temperature || 0.7,
           maxTokens: aiConfig.gemini?.maxTokens || 2000,
           proxy: aiConfig.gemini?.proxy

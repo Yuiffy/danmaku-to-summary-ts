@@ -338,7 +338,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
             os.environ['https_proxy'] = proxy_url
 
         # 获取模型名称
-        model_name = gemini_config.get('model', 'gemini-1.5-flash')
+        model_name = gemini_config.get('model', 'gemini-2.0-flash')
 
         # 生成漫画内容脚本（注入配置化的角色描述）
         character_desc = get_room_character_description(room_id)

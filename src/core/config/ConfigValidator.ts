@@ -110,7 +110,7 @@ export class ConfigValidator {
           provider: 'gemini',
           gemini: {
             apiKey: '',
-            model: 'gemini-1.5-flash',
+            model: 'gemini-3-flash',
             temperature: 0.7,
             maxTokens: 2000,
           },
