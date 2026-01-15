@@ -1,5 +1,4 @@
-import * as express from 'express';
-import { Express, Request, Response } from 'express';
+import express, { Express, Request, Response } from 'express';
 import { IWebhookService, IWebhookEvent, IFileProcessingResult, IWebhookHandler } from './IWebhookService';
 import { getLogger } from '../../core/logging/LogManager';
 import { ConfigProvider } from '../../core/config/ConfigProvider';
@@ -26,7 +25,7 @@ export class WebhookService implements IWebhookService {
   private comicGenerator: ComicGeneratorService;
 
   constructor() {
-    this.app = express.default();
+    this.app = express();
     this.port = 15121; // 默认端口
     this.host = '0.0.0.0'; // 默认主机
     this.comicGenerator = new ComicGeneratorService();
@@ -296,7 +295,7 @@ export class WebhookService implements IWebhookService {
    */
   private configureMiddleware(): void {
     // 解析JSON请求体
-    this.app.use(express.default.json({ limit: '50mb' }));
+    this.app.use(express.json({ limit: '50mb' }));
     
     // 健康检查端点
     this.app.get('/health', (req: Request, res: Response) => {
