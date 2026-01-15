@@ -194,7 +194,7 @@ async function generateTextWithGemini(prompt) {
     try {
         // --- 核心修改开始 ---
         // SDK 不支持在构造函数传 agent，我们需要劫持全局 fetch 来注入代理
-        let originalFetch;
+        let originalFetch = null;
         if (geminiConfig.proxy) {
             console.log(`   使用代理: ${geminiConfig.proxy}`);
             const agent = new HttpsProxyAgent(geminiConfig.proxy);
@@ -226,7 +226,7 @@ async function generateTextWithGemini(prompt) {
         const text = response.text();
 
         // 恢复原始 fetch（如果被覆盖了）
-        if (geminiConfig.proxy) {
+        if (originalFetch !== null) {
             global.fetch = originalFetch;
         }
 
@@ -234,7 +234,7 @@ async function generateTextWithGemini(prompt) {
         return text;
     } catch (error) {
         // 恢复原始 fetch（如果被覆盖了）
-        if (geminiConfig.proxy) {
+        if (originalFetch !== null) {
             global.fetch = originalFetch;
         }
         console.error(`❌ Gemini API调用失败: ${error.message}`);

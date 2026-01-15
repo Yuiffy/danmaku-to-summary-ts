@@ -270,16 +270,16 @@ ${highlightContent}
     const proxy = options?.proxy ?? config.proxy;
     const timeout = options?.timeout ?? 60000;
 
-    this.logger.info('调用Gemini API生成文本', { 
-      model: modelName, 
-      temperature, 
+    this.logger.info('调用Gemini API生成文本', {
+      model: modelName,
+      temperature,
       maxTokens,
       proxy: proxy ? '已配置' : '未配置'
     });
 
+    // 处理代理配置 - 在try块外声明，以便在catch块中访问
+    let originalFetch: any = null;
     try {
-      // 处理代理配置
-      let originalFetch: any;
       if (proxy) {
         const agent = new HttpsProxyAgent(proxy);
         
@@ -313,7 +313,7 @@ ${highlightContent}
       const text = response.text();
 
       // 恢复原始fetch
-      if (proxy && originalFetch) {
+      if (originalFetch !== null) {
         (global as any).fetch = originalFetch;
       }
 
@@ -321,8 +321,8 @@ ${highlightContent}
       return text;
     } catch (error) {
       // 确保恢复原始fetch
-      if (proxy) {
-        (global as any).fetch = fetch;
+      if (originalFetch !== null) {
+        (global as any).fetch = originalFetch;
       }
 
       if (error instanceof AppError) {
