@@ -102,17 +102,36 @@ def is_tuzi_configured() -> bool:
     tuzi_config = config["aiServices"].get("tuZi", {})
     return tuzi_config.get("enabled", False) and tuzi_config.get("apiKey", "") and tuzi_config["apiKey"].strip() != ""
 
-def get_room_reference_image(room_id: str) -> Optional[str]:
+def get_live_cover_image(highlight_path: str) -> Optional[str]:
+    """从录制目录查找对应的直播封面图片"""
+    try:
+        dir_path = os.path.dirname(highlight_path)
+        base_name = os.path.basename(highlight_path).replace('_AI_HIGHLIGHT.txt', '')
+
+        # 查找.cover文件
+        cover_extensions = ['.jpg', '.jpeg', '.png', '.webp']
+        for ext in cover_extensions:
+            cover_path = os.path.join(dir_path, f"{base_name}.cover{ext}")
+            if os.path.exists(cover_path):
+                print(f"[INFO]  找到直播封面: {os.path.basename(cover_path)}")
+                return cover_path
+
+        return None
+    except Exception as e:
+        print(f"[WARNING] 查找直播封面失败: {e}")
+        return None
+
+def get_room_reference_image(room_id: str, highlight_path: Optional[str] = None) -> Optional[str]:
     """获取房间的参考图片路径"""
     config = load_config()
-    
+
     # 首先检查roomSettings中的配置
     room_str = str(room_id)
     if room_str in config["roomSettings"]:
         ref_image = config["roomSettings"][room_str].get("referenceImage", "")
         if ref_image and os.path.exists(ref_image):
             return ref_image
-        
+
         # 如果配置了但文件不存在，尝试在reference_images目录中查找
         ref_images_dir = os.path.join(os.path.dirname(__file__), "reference_images")
         if os.path.exists(ref_images_dir):
@@ -125,13 +144,19 @@ def get_room_reference_image(room_id: str) -> Optional[str]:
             for file_path in possible_files:
                 if os.path.exists(file_path):
                     return file_path
-    
+
+    # 如果没有设置房间特定的图片，尝试使用直播封面
+    if highlight_path:
+        live_cover = get_live_cover_image(highlight_path)
+        if live_cover:
+            return live_cover
+
     # 如果没有找到房间特定的图片，使用默认图片
     default_image = config.get("aiServices", {}).get("defaultReferenceImage", "")
     if default_image and os.path.exists(default_image):
         print(f"[INFO]  使用默认参考图片: {os.path.basename(default_image)}")
         return default_image
-    
+
     # 检查默认图片文件是否存在
     ref_images_dir = os.path.join(os.path.dirname(__file__), "reference_images")
     if os.path.exists(ref_images_dir):
@@ -146,7 +171,7 @@ def get_room_reference_image(room_id: str) -> Optional[str]:
             if os.path.exists(file_path):
                 print(f"[INFO]  找到默认图片: {os.path.basename(file_path)}")
                 return file_path
-    
+
     return None
 
 def read_highlight_file(highlight_path: str) -> str:
@@ -871,7 +896,7 @@ def generate_comic_from_highlight(highlight_path: str) -> Optional[str]:
         print(f"[ROOM] 房间ID: {room_id}")
         
         # 获取参考图片
-        reference_image_path = get_room_reference_image(room_id)
+        reference_image_path = get_room_reference_image(room_id, highlight_path)
         if reference_image_path:
             print(f"[IMAGE]  找到参考图片: {os.path.basename(reference_image_path)}")
         else:
