@@ -40,8 +40,13 @@ function loadConfig() {
             if (fs.existsSync(secretsPath)) {
                 try {
                     const secretsConfig = JSON.parse(fs.readFileSync(secretsPath, 'utf8'));
+                    // 支持新旧两种配置格式
                     if (secretsConfig.aiServices?.gemini?.apiKey) {
+                        // 旧格式
                         merged.aiServices.gemini.apiKey = secretsConfig.aiServices.gemini.apiKey;
+                    } else if (secretsConfig.ai?.text?.gemini?.apiKey) {
+                        // 新格式
+                        merged.aiServices.gemini.apiKey = secretsConfig.ai.text.gemini.apiKey;
                     }
                 } catch (secretsError) {
                     console.warn('警告: 无法加载密钥配置文件，API密钥将为空:', secretsError.message);
