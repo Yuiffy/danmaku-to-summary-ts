@@ -348,7 +348,15 @@ export class AudioFileHandler implements IWebhookHandler {
 
       // 构建参数：音频文件作为第一个参数，XML作为第二个参数
       const args = [scriptPath, audioPath];
-      if (xmlPath) args.push(xmlPath);
+      
+      // 确保XML路径被正确传入
+      if (xmlPath) {
+        const normalizedXmlPath = path.normalize(xmlPath);
+        args.push(normalizedXmlPath);
+        this.logger.info(`✓ XML文件路径已添加到处理参数: ${normalizedXmlPath}`);
+      } else {
+        this.logger.warn(`⚠ 未找到XML文件，仅处理音频`);
+      }
 
       this.logger.info(`启动处理流程: ${path.basename(audioPath)}`);
 
