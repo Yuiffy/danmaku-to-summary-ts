@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const crypto = require('crypto');
 
 // 导入新模块
 const audioProcessor = require('./audio_processor');
@@ -68,6 +69,76 @@ function runCommand(command, args, options = {}) {
     });
 }
 
+// Whisper 文件锁 - 防止并发调用导致 GPU 冲突
+const WHISPER_LOCK_FILE = path.join(__dirname, '.whisper_lock');
+const WHISPER_LOCK_TIMEOUT = 60 * 60 * 1000; // 1小时超时
+const WHISPER_LOCK_RETRY_INTERVAL = 2000; // 2秒重试间隔
+const WHISPER_MAX_RETRIES = 180; // 最多重试 180 次（6分钟）
+
+async function acquireWhisperLock() {
+    const startTime = Date.now();
+    
+    for (let i = 0; i < WHISPER_MAX_RETRIES; i++) {
+        try {
+            // 尝试创建锁文件
+            const fd = fs.openSync(WHISPER_LOCK_FILE, 'wx');
+            const lockData = {
+                pid: process.pid,
+                startTime: new Date().toISOString(),
+                timestamp: Date.now()
+            };
+            fs.writeSync(fd, JSON.stringify(lockData, null, 2));
+            fs.closeSync(fd);
+            console.log('🔒 获取 Whisper 锁成功');
+            return;
+        } catch (error) {
+            if (error.code === 'EEXIST') {
+                // 检查锁是否过期
+                try {
+                    const lockContent = fs.readFileSync(WHISPER_LOCK_FILE, 'utf8');
+                    const lock = JSON.parse(lockContent);
+                    const age = Date.now() - lock.timestamp;
+                    
+                    if (age > WHISPER_LOCK_TIMEOUT) {
+                        console.warn(`⚠️  检测到过期锁文件 (${(age / 60000).toFixed(1)} 分钟前)，尝试删除...`);
+                        fs.unlinkSync(WHISPER_LOCK_FILE);
+                        continue; // 重试
+                    }
+                    
+                    const elapsed = Date.now() - startTime;
+                    console.log(`⏳ 等待 Whisper 锁释放... (${(elapsed / 1000).toFixed(0)}s)`);
+                } catch (readError) {
+                    // 锁文件损坏，删除重试
+                    console.warn('⚠️  锁文件损坏，尝试删除...');
+                    try {
+                        fs.unlinkSync(WHISPER_LOCK_FILE);
+                    } catch (e) {
+                        // 忽略删除失败
+                    }
+                }
+                
+                // 等待后重试
+                await new Promise(r => setTimeout(r, WHISPER_LOCK_RETRY_INTERVAL));
+            } else {
+                throw error;
+            }
+        }
+    }
+    
+    throw new Error(`获取 Whisper 锁超时 (超过 ${WHISPER_MAX_RETRIES * WHISPER_LOCK_RETRY_INTERVAL / 1000} 秒)`);
+}
+
+function releaseWhisperLock() {
+    try {
+        if (fs.existsSync(WHISPER_LOCK_FILE)) {
+            fs.unlinkSync(WHISPER_LOCK_FILE);
+            console.log('🔓 释放 Whisper 锁');
+        }
+    } catch (error) {
+        console.warn(`⚠️  释放 Whisper 锁时出错: ${error.message}`);
+    }
+}
+
 // 带重试的命令执行函数
 async function runCommandWithRetry(command, args, options = {}, maxRetries = 2) {
     let lastError;
@@ -104,9 +175,17 @@ async function processMedia(mediaPath) {
         console.log(`\n-> [ASR] Generating Subtitles (Whisper)...`);
         console.log(`   Target: ${path.basename(mediaPath)} (${fileType})`);
 
-        await runCommand('python', [pythonScript, mediaPath], {
-            env: { ...process.env, PYTHONUTF8: '1' }
-        });
+        // 获取 Whisper 锁，防止并发调用导致 GPU 冲突
+        await acquireWhisperLock();
+        
+        try {
+            await runCommand('python', [pythonScript, mediaPath], {
+                env: { ...process.env, PYTHONUTF8: '1' }
+            });
+        } finally {
+            // 释放锁
+            releaseWhisperLock();
+        }
     } else {
         console.log(`-> [Skip] Subtitle exists: ${path.basename(srtPath)}`);
     }
