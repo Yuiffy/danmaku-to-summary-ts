@@ -513,12 +513,31 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
     # 确保函数在所有路径都返回有效值
     return highlight_content, False
 
-def encode_image_to_base64(image_path: str) -> str:
-    """将图片编码为base64"""
+def encode_image_to_base64(image_path: str, with_data_uri: bool = False) -> str:
+    """将图片编码为base64
+    
+    Args:
+        image_path: 图片路径
+        with_data_uri: 是否添加 data:image/xxx;base64, 前缀
+    """
     try:
         with open(image_path, "rb") as image_file:
-            encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
-        return encoded_string
+            base64_data = base64.b64encode(image_file.read()).decode('utf-8')
+        
+        if with_data_uri:
+            # 根据文件扩展名确定MIME类型
+            ext = os.path.splitext(image_path)[1].lower()
+            mime_map = {
+                '.png': 'image/png',
+                '.jpg': 'image/jpeg',
+                '.jpeg': 'image/jpeg',
+                '.webp': 'image/webp',
+                '.gif': 'image/gif'
+            }
+            mime_type = mime_map.get(ext, 'image/png')
+            return f"data:{mime_type};base64,{base64_data}"
+        
+        return base64_data
     except Exception as e:
         print(f"[ERROR] 图片编码失败: {e}")
         raise
@@ -816,9 +835,10 @@ def call_tuzi_image_api(prompt: str, reference_image_path: Optional[str] = None)
 
         # 如果有参考图，添加到请求中
         if reference_image_path and os.path.exists(reference_image_path):
-            image_base64 = encode_image_to_base64(reference_image_path)
+            # 使用 data URI 格式（data:image/png;base64,...）
+            image_base64 = encode_image_to_base64(reference_image_path, with_data_uri=True)
             payload["image"] = [image_base64]
-            print(f"[INFO]  已添加参考图到请求, base64长度: {len(image_base64)}")
+            print(f"[INFO]  已添加参考图到请求, base64长度: {len(image_base64)} 开头：{image_base64[:80]}...")
 
         # 获取超时设置 (默认为360秒)
         timeout_ms = config.get("timeouts", {}).get("aiApiTimeout", 360000)
