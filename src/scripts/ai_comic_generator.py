@@ -809,15 +809,16 @@ def call_tuzi_image_api(prompt: str, reference_image_path: Optional[str] = None)
             "model": tuzi_config.get("model", "gpt-image-1.5"),
             "prompt": prompt,
             "n": 1,
-            "size": "1024x1024",
-            "quality": "hd",
+            "size": "9x16",
+            "quality": "4k",
             "style": "vivid"
         }
 
         # 如果有参考图，添加到请求中
         if reference_image_path and os.path.exists(reference_image_path):
             image_base64 = encode_image_to_base64(reference_image_path)
-            payload["image"] = image_base64
+            payload["image"] = [image_base64]
+            print(f"[INFO]  已添加参考图到请求, base64长度: {len(image_base64)}")
 
         # 获取超时设置 (默认为360秒)
         timeout_ms = config.get("timeouts", {}).get("aiApiTimeout", 360000)
