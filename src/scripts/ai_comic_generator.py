@@ -48,6 +48,7 @@ def load_config() -> Dict[str, Any]:
     default_config = {
         "aiServices": {
         },
+        "ai": {},  # 新增：保留 ai 结构，用于 get_room_reference_image 等函数
         "roomSettings": {},
         "timeouts": {
             "aiApiTimeout": 120000
@@ -64,12 +65,31 @@ def load_config() -> Dict[str, Any]:
             
             # 新格式：从 ai.comic.tuZi 和 ai.roomSettings 读取
             if "ai" in user_config:
+                # 保留完整的 ai 结构（新增）
+                if "ai" not in merged:
+                    merged["ai"] = {}
+                merged["ai"].update(user_config["ai"])
+                
+                # 同时也更新到 aiServices 中（保持向后兼容）
                 if "comic" in user_config["ai"] and "tuZi" in user_config["ai"]["comic"]:
                     if "tuZi" not in merged["aiServices"]:
                         merged["aiServices"]["tuZi"] = {}
                     merged["aiServices"]["tuZi"].update(user_config["ai"]["comic"]["tuZi"])
                 if "roomSettings" in user_config["ai"]:
                     merged["roomSettings"].update(user_config["ai"]["roomSettings"])
+                # 处理 ai 对象下的默认配置（新增）
+                if "defaultReferenceImage" in user_config["ai"]:
+                    if "defaultReferenceImage" not in merged["aiServices"]:
+                        merged["aiServices"]["defaultReferenceImage"] = ""
+                    merged["aiServices"]["defaultReferenceImage"] = user_config["ai"]["defaultReferenceImage"]
+                if "defaultCharacterDescription" in user_config["ai"]:
+                    if "defaultCharacterDescription" not in merged["aiServices"]:
+                        merged["aiServices"]["defaultCharacterDescription"] = ""
+                    merged["aiServices"]["defaultCharacterDescription"] = user_config["ai"]["defaultCharacterDescription"]
+                if "defaultNames" in user_config["ai"]:
+                    if "defaultNames" not in merged["aiServices"]:
+                        merged["aiServices"]["defaultNames"] = {}
+                    merged["aiServices"]["defaultNames"].update(user_config["ai"]["defaultNames"])
             
             # 兼容旧格式
             if "aiServices" in user_config:
