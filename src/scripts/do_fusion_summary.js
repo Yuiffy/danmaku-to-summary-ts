@@ -56,7 +56,12 @@ async function processLiveData(inputFiles) {
          try {
              const data = fs.readFileSync(file, 'utf8');
              const result = await parser.parseStringPromise(data);
-             const rawList = result?.i?.d || [];
+             // xml2js 单个元素返回对象，多个元素返回数组，需要统一处理
+             let rawList = result?.i?.d || [];
+             if (!Array.isArray(rawList)) {
+                 rawList = rawList ? [rawList] : [];
+             }
+             
             for (const d of rawList) {
                  if (!d || !d.$ || !d.$.p) continue;
                  const attrs = String(d.$.p).split(",");
