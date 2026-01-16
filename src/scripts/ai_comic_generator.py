@@ -874,11 +874,11 @@ def call_tuzi_image_api(prompt: str, reference_image_path: Optional[str] = None)
             try:
                 print(f"[WAIT] 正在通过tu-zi.com API生成图像... (尝试 {attempt + 1}/{max_retries + 1}, 超时: {timeout_sec}s)")
                 if attempt == 1:
-                    payload["model"] = "gemini-2.5-flash-image"
-                    print(f"[RETRY] 第 {attempt + 1} 次重试...模型替换为{payload['model']}")
-                if (attempt == 2):
                     payload["model"] = "gpt-image-1.5"
                     print(f"[RETRY] 第 {attempt + 1} 次重试...模型替换为{payload['model']}")
+                if (attempt == 2):
+                    payload["model"] = "nano-banana-2" # 含泪用3毛钱一次的超贵模型
+                    print(f"[RETRY] 第 {attempt + 1} 次重试...模型替换为{payload['model']}，含泪用3毛钱一次的超贵模型")
                 response = requests.post(api_url, headers=headers, json=payload, timeout=timeout_sec, proxies=proxies)
                 
                 if response.status_code == 200:
