@@ -371,6 +371,11 @@ export class AudioFileHandler implements IWebhookHandler {
         }
       });
 
+      // spawn 成功，子进程已启动，立即释放文件锁
+      // 这样相同的文件可以再次被处理（用于重试场景）
+      this.duplicateGuard.markAsProcessed(audioPath);
+      this.logger.info(`✓ 子进程已启动，释放文件锁: ${path.basename(audioPath)}`);
+
       // 设置超时
       const processTimeout = config.webhook.timeouts.processTimeout || 30 * 60 * 1000; // 30分钟
       const timeoutId = setTimeout(() => {
@@ -378,7 +383,6 @@ export class AudioFileHandler implements IWebhookHandler {
         if (ps.pid) {
           process.kill(ps.pid, 'SIGTERM');
         }
-        this.duplicateGuard.markAsProcessed(audioPath);
       }, processTimeout);
 
       // 处理输出
@@ -394,13 +398,12 @@ export class AudioFileHandler implements IWebhookHandler {
       ps.on('error', (error: Error) => {
         this.logger.error(`处理进程错误: ${error.message}`);
         clearTimeout(timeoutId);
-        this.duplicateGuard.markAsProcessed(audioPath);
+        // 注意：文件锁已在 spawn 成功时释放，这里无需重复调用
       });
 
       ps.on('close', (code: number | null) => {
         clearTimeout(timeoutId);
         this.logger.info(`处理流程结束 (退出码: ${code}): ${path.basename(audioPath)}`);
-        this.duplicateGuard.markAsProcessed(audioPath);
       });
 
     } catch (error: any) {
