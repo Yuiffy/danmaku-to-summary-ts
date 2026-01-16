@@ -377,6 +377,15 @@ export class WebhookService implements IWebhookService {
   }
 
   /**
+   * 检查高亮内容是否太短（只有顶端固定的2行+0~1行）
+   */
+  private isHighlightTooShort(content: string): boolean {
+    const lines = content.split('\n').filter(line => line.trim() !== '');
+    // 只有顶端固定的2行 + 0~1行 = 最多3行有效内容
+    return lines.length <= 3;
+  }
+
+  /**
    * 根据文件类型处理文件
    */
   private async processFileBasedOnType(filePath: string, roomId?: string): Promise<{
@@ -393,7 +402,19 @@ export class WebhookService implements IWebhookService {
     try {
       // 根据文件类型和内容决定处理方式
       if (fileName.includes('AI_HIGHLIGHT') && fileExtension === 'txt') {
-        // AI高亮文本文件 - 生成漫画
+        // AI高亮文本文件 - 检查内容是否太短
+        const fs = await import('fs');
+        const content = fs.readFileSync(filePath, 'utf8');
+        
+        if (this.isHighlightTooShort(content)) {
+          logger.info(`AI_HIGHLIGHT内容太短（只有顶端固定的2行+0~1行），跳过漫画生成: ${fileName}`);
+          return {
+            success: true,
+            outputFiles: []
+          };
+        }
+        
+        // 内容充分，开始生成漫画
         logger.info(`检测到AI高亮文件，开始生成漫画: ${fileName}`);
         const comicPath = await this.comicGenerator.generateComicFromHighlight(filePath, roomId);
         

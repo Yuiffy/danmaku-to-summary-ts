@@ -328,6 +328,18 @@ ${highlightContent}
   }
 
   /**
+   * 检查高亮内容是否太短（只有顶端固定的2行+0~1行）
+   * @param content 高亮文件内容
+   * @returns 如果内容太短返回true，否则返回false
+   */
+  private isHighlightTooShort(content: string): boolean {
+    const lines = content.split('\n').filter(line => line.trim() !== '');
+    // 只有顶端固定的2行 + 0~1行 = 最多3行有效内容
+    // 通常顶端2行是标题/描述，如果只有这些则认为太短
+    return lines.length <= 3;
+  }
+
+  /**
    * 保存生成的文本
    */
   private saveGeneratedText(outputPath: string, text: string, highlightPath: string): string {
@@ -499,6 +511,12 @@ ${highlightContent}
       // 读取内容
       const highlightContent = this.readHighlightFile(highlightPath);
       this.logger.debug('读取高亮内容完成', { contentLength: highlightContent.length });
+
+      // 检查高亮内容是否太短
+      if (this.isHighlightTooShort(highlightContent)) {
+        this.logger.info('AI_HIGHLIGHT内容太短（只有顶端固定的2行+0~1行），跳过晚安回复生成', { highlightPath });
+        return null;
+      }
 
       // 如果没有提供roomId，尝试从文件名提取
       let actualRoomId: string | undefined = roomId;
