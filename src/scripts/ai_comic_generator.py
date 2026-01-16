@@ -51,7 +51,7 @@ def load_config() -> Dict[str, Any]:
         "ai": {},  # 新增：保留 ai 结构，用于 get_room_reference_image 等函数
         "roomSettings": {},
         "timeouts": {
-            "aiApiTimeout": 120000
+            "aiApiTimeout": 360000
         }
     }
     
