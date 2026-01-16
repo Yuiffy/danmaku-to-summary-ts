@@ -862,8 +862,36 @@ def call_tuzi_image_api(prompt: str, reference_image_path: Optional[str] = None)
             "max_tokens": 100000
         }
 
-        print("[WAIT] 正在通过tu-zi.com API生成图像...")
-        response = requests.post(api_url, headers=headers, json=payload, timeout=120, proxies=proxies)
+        # 获取超时设置 (默认为360秒)
+        timeout_ms = config.get("timeouts", {}).get("aiApiTimeout", 360000)
+        timeout_sec = timeout_ms / 1000
+        
+        # 重试逻辑
+        max_retries = 1
+        response = None
+        
+        for attempt in range(max_retries + 1):
+            try:
+                print(f"[WAIT] 正在通过tu-zi.com API生成图像... (尝试 {attempt + 1}/{max_retries + 1}, 超时: {timeout_sec}s)")
+                response = requests.post(api_url, headers=headers, json=payload, timeout=timeout_sec, proxies=proxies)
+                
+                if response.status_code == 200:
+                    break
+                else:
+                    print(f"[WARNING] tu-zi.com API调用失败 (尝试 {attempt + 1}): HTTP {response.status_code}")
+                    if attempt < max_retries:
+                        print("[RETRY] 2秒后重试...")
+                        time.sleep(2)
+            except Exception as req_err:
+                print(f"[WARNING] 请求异常 (尝试 {attempt + 1}): {req_err}")
+                if attempt < max_retries:
+                    print("[RETRY] 2秒后重试...")
+                    time.sleep(2)
+                
+        # 如果彻底失败且response为None (即全是Exception)，手动return避免后续AttributeError
+        if response is None:
+             print("[ERROR] 所有重试均抛出异常，无API响应")
+             return None
 
         if response.status_code == 200:
             result = response.json()
