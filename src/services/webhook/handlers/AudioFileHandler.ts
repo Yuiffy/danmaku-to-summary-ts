@@ -115,6 +115,7 @@ export class AudioFileHandler implements IWebhookHandler {
    */
   private async processAudioFile(payload: any): Promise<any> {
     const filePath = payload.filePath;
+    const forceWithoutDuplicateCheck = payload.forceWithoutDuplicateCheck === true;
     const fileName = path.basename(filePath);
     const fileExtension = fileName.split('.').pop()?.toLowerCase() || '';
 
@@ -161,7 +162,7 @@ export class AudioFileHandler implements IWebhookHandler {
       this.logger.info(`✓ 文件存在验证成功`);
 
       // 3. 检查去重
-      if (this.duplicateGuard.isDuplicate(filePath)) {
+      if (!forceWithoutDuplicateCheck && this.duplicateGuard.isDuplicate(filePath)) {
         this.logger.warn(`文件已在处理队列中: ${fileName}`);
         return {
           success: false,
