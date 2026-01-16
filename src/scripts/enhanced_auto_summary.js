@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const crypto = require('crypto');
 
 // 导入新模块
 const audioProcessor = require('./audio_processor');
@@ -11,13 +12,22 @@ const aiComicGenerator = require('./ai_comic_generator');
 
 // 获取音频格式配置
 function getAudioFormats() {
-    const configPath = path.join(__dirname, 'config.json');
+    // 优先读取外部配置文件
+    const env = process.env.NODE_ENV || 'development';
+    const configDir = path.resolve(path.join(__dirname, '..', '..', 'config'));
+    const configPath = path.join(configDir, env === 'production' ? 'production.json' : 'default.json');
+    const fallbackPath = path.join(__dirname, 'config.json'); // 备用
     const defaultAudioFormats = ['.m4a', '.aac', '.mp3', '.wav', '.ogg', '.flac'];
     
     try {
-        if (fs.existsSync(configPath)) {
-            const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-            return config.audioRecording?.audioFormats || defaultAudioFormats;
+        let targetPath = configPath;
+        if (!fs.existsSync(targetPath)) {
+            targetPath = fallbackPath;
+        }
+        
+        if (fs.existsSync(targetPath)) {
+            const config = JSON.parse(fs.readFileSync(targetPath, 'utf8'));
+            return config.audio?.formats || config.audioRecording?.audioFormats || defaultAudioFormats;
         }
     } catch (error) {
         console.error('Error loading audio formats:', error);
@@ -59,6 +69,96 @@ function runCommand(command, args, options = {}) {
     });
 }
 
+// Whisper 文件锁 - 防止并发调用导致 GPU 冲突
+const WHISPER_LOCK_FILE = path.join(__dirname, '.whisper_lock');
+const WHISPER_LOCK_TIMEOUT = 60 * 60 * 1000; // 1小时超时
+const WHISPER_LOCK_RETRY_INTERVAL = 2000; // 2秒重试间隔
+const WHISPER_MAX_RETRIES = 180; // 最多重试 180 次（6分钟）
+
+async function acquireWhisperLock() {
+    const startTime = Date.now();
+    
+    for (let i = 0; i < WHISPER_MAX_RETRIES; i++) {
+        try {
+            // 尝试创建锁文件
+            const fd = fs.openSync(WHISPER_LOCK_FILE, 'wx');
+            const lockData = {
+                pid: process.pid,
+                startTime: new Date().toISOString(),
+                timestamp: Date.now()
+            };
+            fs.writeSync(fd, JSON.stringify(lockData, null, 2));
+            fs.closeSync(fd);
+            console.log('🔒 获取 Whisper 锁成功');
+            return;
+        } catch (error) {
+            if (error.code === 'EEXIST') {
+                // 检查锁是否过期
+                try {
+                    const lockContent = fs.readFileSync(WHISPER_LOCK_FILE, 'utf8');
+                    const lock = JSON.parse(lockContent);
+                    const age = Date.now() - lock.timestamp;
+                    
+                    if (age > WHISPER_LOCK_TIMEOUT) {
+                        console.warn(`⚠️  检测到过期锁文件 (${(age / 60000).toFixed(1)} 分钟前)，尝试删除...`);
+                        fs.unlinkSync(WHISPER_LOCK_FILE);
+                        continue; // 重试
+                    }
+                    
+                    const elapsed = Date.now() - startTime;
+                    console.log(`⏳ 等待 Whisper 锁释放... (${(elapsed / 1000).toFixed(0)}s)`);
+                } catch (readError) {
+                    // 锁文件损坏，删除重试
+                    console.warn('⚠️  锁文件损坏，尝试删除...');
+                    try {
+                        fs.unlinkSync(WHISPER_LOCK_FILE);
+                    } catch (e) {
+                        // 忽略删除失败
+                    }
+                }
+                
+                // 等待后重试
+                await new Promise(r => setTimeout(r, WHISPER_LOCK_RETRY_INTERVAL));
+            } else {
+                throw error;
+            }
+        }
+    }
+    
+    throw new Error(`获取 Whisper 锁超时 (超过 ${WHISPER_MAX_RETRIES * WHISPER_LOCK_RETRY_INTERVAL / 1000} 秒)`);
+}
+
+function releaseWhisperLock() {
+    try {
+        if (fs.existsSync(WHISPER_LOCK_FILE)) {
+            fs.unlinkSync(WHISPER_LOCK_FILE);
+            console.log('🔓 释放 Whisper 锁');
+        }
+    } catch (error) {
+        console.warn(`⚠️  释放 Whisper 锁时出错: ${error.message}`);
+    }
+}
+
+// 带重试的命令执行函数
+async function runCommandWithRetry(command, args, options = {}, maxRetries = 2) {
+    let lastError;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            console.log(`尝试执行 (第 ${attempt}/${maxRetries} 次): ${command} ${args.join(' ')}`);
+            await runCommand(command, args, options);
+            return; // 成功则返回
+        } catch (error) {
+            lastError = error;
+            if (attempt < maxRetries) {
+                console.warn(`⚠️  第 ${attempt} 次尝试失败: ${error.message}`);
+                console.log(`⏳ 等待5秒后进行第 ${attempt + 1} 次尝试...`);
+                await new Promise(r => setTimeout(r, 5000)); // 等待5秒后重试
+            }
+        }
+    }
+    throw lastError; // 所有重试都失败则抛出错误
+}
+
 async function processMedia(mediaPath) {
     const dir = path.dirname(mediaPath);
     const nameNoExt = path.basename(mediaPath, path.extname(mediaPath));
@@ -75,9 +175,17 @@ async function processMedia(mediaPath) {
         console.log(`\n-> [ASR] Generating Subtitles (Whisper)...`);
         console.log(`   Target: ${path.basename(mediaPath)} (${fileType})`);
 
-        await runCommand('python', [pythonScript, mediaPath], {
-            env: { ...process.env, PYTHONUTF8: '1' }
-        });
+        // 获取 Whisper 锁，防止并发调用导致 GPU 冲突
+        await acquireWhisperLock();
+        
+        try {
+            await runCommand('python', [pythonScript, mediaPath], {
+                env: { ...process.env, PYTHONUTF8: '1' }
+            });
+        } finally {
+            // 释放锁
+            releaseWhisperLock();
+        }
     } else {
         console.log(`-> [Skip] Subtitle exists: ${path.basename(srtPath)}`);
     }
@@ -141,13 +249,30 @@ async function generateAiComic(highlightPath) {
 
 // 检查房间是否启用AI功能
 function shouldGenerateAiForRoom(roomId) {
-    const configPath = path.join(__dirname, 'config.json');
+    // 优先读取外部配置文件
+    const env = process.env.NODE_ENV || 'development';
+    const configDir = path.resolve(path.join(__dirname, '..', '..', 'config'));
+    const configPath = path.join(configDir, env === 'production' ? 'production.json' : 'default.json');
+    const fallbackPath = path.join(__dirname, 'config.json'); // 备用
     
     try {
-        if (fs.existsSync(configPath)) {
-            const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        let targetPath = configPath;
+        if (!fs.existsSync(targetPath)) {
+            targetPath = fallbackPath;
+        }
+        
+        if (fs.existsSync(targetPath)) {
+            const config = JSON.parse(fs.readFileSync(targetPath, 'utf8'));
             const roomStr = String(roomId);
             
+            if (config.ai?.roomSettings && config.ai.roomSettings[roomStr]) {
+                const roomConfig = config.ai.roomSettings[roomStr];
+                return {
+                    text: roomConfig.enableTextGeneration !== false,
+                    comic: roomConfig.enableComicGeneration !== false
+                };
+            }
+            // 兼容旧格式 roomSettings（直接在config下）
             if (config.roomSettings && config.roomSettings[roomStr]) {
                 const roomConfig = config.roomSettings[roomStr];
                 return {
@@ -189,6 +314,7 @@ const main = async () => {
     let mediaFiles = [];
     let xmlFiles = [];
     let filesToProcess = [];
+    let fileSnapshots = new Map();  // 用于记录文件快照
 
     console.log('-> Analyzing input files...');
 
@@ -231,7 +357,29 @@ const main = async () => {
 
     console.log('\n--------------------------------------------');
 
+    // 在处理开始前记录文件列表快照，用于后续过滤本次生成的文件
+    if (filesToProcess.length > 0) {
+        const outputDir = path.dirname(filesToProcess[0]);
+        try {
+            const existingFiles = fs.readdirSync(outputDir);
+            existingFiles.forEach(file => {
+                const filePath = path.join(outputDir, file);
+                try {
+                    const stats = fs.statSync(filePath);
+                    fileSnapshots.set(file, stats.mtimeMs);
+                } catch (e) {
+                    fileSnapshots.set(file, 0);
+                }
+            });
+        } catch (e) {
+            // 忽略错误
+        }
+    }
+
     // Node.js Fusion（弹幕融合）
+    let generatedHighlightFile = null;
+    let outputDir = null;
+    
     if (filesToProcess.length === 0) {
         console.log('X Warning: No valid SRT or XML files to process.');
     } else {
@@ -239,10 +387,22 @@ const main = async () => {
 
         const nodeScript = path.join(__dirname, 'do_fusion_summary.js');
 
+        // 获取输出目录
+        outputDir = path.dirname(filesToProcess[0]);
+
         if (!fs.existsSync(nodeScript)) {
             console.error(`X Error: Node.js script not found at: ${nodeScript}`);
         } else {
-            await runCommand('node', [nodeScript, ...filesToProcess]);
+            // 获取输出目录和基础名称
+            const baseName = path.basename(filesToProcess[0]).replace(/\.(srt|xml|mp4|flv|mkv)$/i, '').replace(/_fix$/, '');
+            generatedHighlightFile = path.join(outputDir, `${baseName}_AI_HIGHLIGHT.txt`);
+            
+            try {
+                await runCommandWithRetry('node', [nodeScript, ...filesToProcess], {}, 2);
+            } catch (error) {
+                console.error(`❌ Fusion处理失败（经过重试）: ${error.message}`);
+                // 继续处理而不中断，因为可能已经部分生成了数据
+            }
         }
     }
 
@@ -250,19 +410,14 @@ const main = async () => {
     console.log('\n--------------------------------------------');
     console.log('-> [AI Generation] Starting AI content generation...');
     
-    // 查找生成的AI_HIGHLIGHT文件
-    const outputDir = filesToProcess.length > 0 ? path.dirname(filesToProcess[0]) : process.cwd();
-    
     try {
-        const files = fs.readdirSync(outputDir);
-        const highlightFiles = files.filter(f => f.includes('_AI_HIGHLIGHT.txt'));
-        
-        console.log(`🔍 找到 ${highlightFiles.length} 个AI_HIGHLIGHT文件`);
-        
-        for (const highlightFile of highlightFiles) {
-            const highlightPath = path.join(outputDir, highlightFile);
+        // 使用 do_fusion_summary 生成的文件
+        if (generatedHighlightFile && fs.existsSync(generatedHighlightFile)) {
+            const highlightPath = generatedHighlightFile;
+            const highlightFile = path.basename(highlightPath);
             const roomId = extractRoomIdFromFilename(highlightFile);
             
+            console.log(`📌 处理 do_fusion_summary 生成的文件: ${highlightFile}`);
             console.log(`\n--- 处理: ${highlightFile} ---`);
             
             // 检查房间AI设置
@@ -287,6 +442,8 @@ const main = async () => {
             } else {
                 console.log('ℹ️  跳过AI漫画生成（房间设置禁用）');
             }
+        } else {
+            console.log('⚠️  未找到 do_fusion_summary 生成的 AI_HIGHLIGHT 文件');
         }
     } catch (error) {
         console.error(`⚠️  AI生成阶段出错: ${error.message}`);
@@ -300,22 +457,37 @@ const main = async () => {
     if (filesToProcess.length > 0) {
         console.log(`输出目录: ${outputDir}`);
         
-        // 列出生成的文件
+        // 列出生成的文件（只显示本次新生成的文件）
         try {
             const files = fs.readdirSync(outputDir);
-            const generatedFiles = files.filter(f => 
-                f.includes('_晚安回复.md') || 
-                f.includes('_COMIC_FACTORY.') ||
-                f.includes('_AI_HIGHLIGHT.txt')
-            );
+            const now = Date.now();
+            // 过滤出本次会话新生成的文件（包括本次创建的AI_HIGHLIGHT文件）
+            const generatedFiles = files.filter(f => {
+                const filePath = path.join(outputDir, f);
+                try {
+                    const stats = fs.statSync(filePath);
+                    // 如果文件在快照中不存在，或者修改时间在快照之后，则是新生成的文件
+                    const originalMtime = fileSnapshots.get(f) || 0;
+                    // 5分钟内的文件视为本次生成的（容忍时间差）
+                    const isNew = stats.mtimeMs > originalMtime || (now - stats.mtimeMs < 300000);
+                    // 只显示AI相关的文件
+                    const isAiFile = f.includes('_晚安回复.md') ||
+                                   f.includes('_COMIC_FACTORY.') ||
+                                   f.includes('_AI_HIGHLIGHT.txt');
+                    return isAiFile && isNew;
+                } catch (e) {
+                    return false;
+                }
+            });
             
             if (generatedFiles.length > 0) {
-                console.log('\n📁 生成的文件:');
+                console.log('\n📁 本次生成的文件:');
                 generatedFiles.forEach(file => {
                     const filePath = path.join(outputDir, file);
                     const stats = fs.statSync(filePath);
                     const size = (stats.size / 1024).toFixed(1);
-                    console.log(`   ${file} (${size}KB)`);
+                    const mtime = new Date(stats.mtimeMs).toLocaleTimeString();
+                    console.log(`   ${file} (${size}KB) [${mtime}]`);
                 });
             }
         } catch (error) {
@@ -323,8 +495,8 @@ const main = async () => {
         }
     }
 
-    // 检查是否在自动化模式
-    if (process.env.NODE_ENV === 'automation' || process.env.CI) {
+    // 检查是否在自动化模式（支持 NODE_ENV、CI 和 AUTOMATION 环境变量）
+    if (process.env.NODE_ENV === 'automation' || process.env.CI || process.env.AUTOMATION === 'true') {
         process.exit(0);
     } else {
         // 交互模式，等待用户

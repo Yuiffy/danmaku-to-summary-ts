@@ -1,1 +1,2 @@
 faster-whisper
+requests[socks]

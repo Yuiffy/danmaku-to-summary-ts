@@ -6,14 +6,39 @@ const { HttpsProxyAgent } = require('https-proxy-agent');
 
 // 加载配置
 function loadConfig() {
-    const configPath = path.join(__dirname, 'config.json');
+    // 优先读取外部配置文件
+    const env = process.env.NODE_ENV || 'development';
+    const configDir = path.resolve(path.join(__dirname, '..', '..', 'config'));
+    // 优先级: /config/production.json > /config/default.json > /src/scripts/config.json
+    const possiblePaths = [
+        path.join(configDir, env === 'production' ? 'production.json' : 'default.json'),
+        path.join(configDir, 'default.json'),
+        path.join(__dirname, 'config.json'),
+    ];
+    let configPath = possiblePaths[2]; // 默认备用
+    for (const p of possiblePaths) {
+        if (fs.existsSync(p)) {
+            configPath = p;
+            break;
+        }
+    }
     const secretsPath = path.join(__dirname, 'config.secrets.json');
+    
     const defaultConfig = {
         aiServices: {
             gemini: {
                 enabled: true,
                 apiKey: '',
-                model: 'gemini-1.5-flash',
+                model: 'gemini-2.0-flash',
+                temperature: 0.7,
+                maxTokens: 2000
+            },
+            tuZi: {
+                enabled: false,
+                apiKey: '',
+                model: 'default', // 图片生成模型
+                textModel: 'gemini-3-flash-preview', // 文本生成模型
+                baseUrl: 'https://api.tu-zi.com',
                 temperature: 0.7,
                 maxTokens: 2000
             }
@@ -27,11 +52,37 @@ function loadConfig() {
         // 加载主配置文件
         if (fs.existsSync(configPath)) {
             const userConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+            console.log(`📋 加载配置文件: ${configPath}`);
             // 深度合并配置
             const merged = JSON.parse(JSON.stringify(defaultConfig));
+            
+            // 从外部配置读取（新格式：ai.text 和 ai.comic）
+            if (userConfig.ai?.text) {
+                Object.assign(merged.aiServices.gemini, userConfig.ai.text);
+                Object.assign(merged.aiServices.gemini, userConfig.ai.text.gemini);
+            }
+            // 图片模型配置（用于 ai.comic）
+            if (userConfig.ai?.comic?.tuZi?.model) {
+                Object.assign(merged.aiServices.tuZi, userConfig.ai.comic.tuZi);
+                merged.aiServices.tuZi.model = userConfig.ai.comic.tuZi.model;
+            }
+            // 文本模型配置（用于 ai.text），优先级高于图片模型配置
+            if (userConfig.ai?.comic?.tuZi?.textModel) {
+                merged.aiServices.tuZi.textModel = userConfig.ai.comic.tuZi.textModel;
+            }
+            // 兼容旧格式：直接覆盖整个 tuZi 对象（可能包含 model 但不包含 textModel）
+            if (userConfig.ai?.comic?.tuZi && !userConfig.ai.comic.tuZi.textModel) {
+                Object.assign(merged.aiServices.tuZi, userConfig.ai.comic.tuZi);
+            }
+            
+            // 兼容旧格式 aiServices
             if (userConfig.aiServices?.gemini) {
                 Object.assign(merged.aiServices.gemini, userConfig.aiServices.gemini);
             }
+            if (userConfig.aiServices?.tuZi) {
+                Object.assign(merged.aiServices.tuZi, userConfig.aiServices.tuZi);
+            }
+            
             if (userConfig.timeouts) {
                 Object.assign(merged.timeouts, userConfig.timeouts);
             }
@@ -40,8 +91,20 @@ function loadConfig() {
             if (fs.existsSync(secretsPath)) {
                 try {
                     const secretsConfig = JSON.parse(fs.readFileSync(secretsPath, 'utf8'));
+                    // 支持新旧两种配置格式
                     if (secretsConfig.aiServices?.gemini?.apiKey) {
+                        // 旧格式
                         merged.aiServices.gemini.apiKey = secretsConfig.aiServices.gemini.apiKey;
+                    } else if (secretsConfig.ai?.text?.gemini?.apiKey) {
+                        // 新格式
+                        merged.aiServices.gemini.apiKey = secretsConfig.ai.text.gemini.apiKey;
+                    }
+                    
+                    // 加载tuZi配置
+                    if (secretsConfig.aiServices?.tuZi?.apiKey) {
+                        merged.aiServices.tuZi.apiKey = secretsConfig.aiServices.tuZi.apiKey;
+                    } else if (secretsConfig.ai?.comic?.tuZi?.apiKey) {
+                        merged.aiServices.tuZi.apiKey = secretsConfig.ai.comic.tuZi.apiKey;
                     }
                 } catch (secretsError) {
                     console.warn('警告: 无法加载密钥配置文件，API密钥将为空:', secretsError.message);
@@ -59,9 +122,38 @@ function loadConfig() {
 // 检查Gemini配置是否有效
 function isGeminiConfigured() {
     const config = loadConfig();
-    return config.aiServices.gemini.enabled && 
-           config.aiServices.gemini.apiKey && 
+    return config.aiServices.gemini.enabled &&
+           config.aiServices.gemini.apiKey &&
            config.aiServices.gemini.apiKey.trim() !== '';
+}
+
+// 检查tuZi配置是否有效
+function isTuZiConfigured() {
+    const config = loadConfig();
+    return config.aiServices.tuZi.enabled &&
+           config.aiServices.tuZi.apiKey &&
+           config.aiServices.tuZi.apiKey.trim() !== '';
+}
+
+// 生成不重复的文件名（如果文件已存在，添加 _1, _2 等后缀）
+function generateUniqueFilename(basePath) {
+    if (!fs.existsSync(basePath)) {
+        return basePath;
+    }
+    
+    const dir = path.dirname(basePath);
+    const ext = path.extname(basePath);
+    const nameWithoutExt = path.basename(basePath, ext);
+    
+    let counter = 1;
+    let newPath;
+    while (true) {
+        newPath = path.join(dir, `${nameWithoutExt}_${counter}${ext}`);
+        if (!fs.existsSync(newPath)) {
+            return newPath;
+        }
+        counter++;
+    }
 }
 
 // 读取AI_HIGHLIGHT.txt内容
@@ -81,21 +173,47 @@ function extractRoomIdFromFilename(filename) {
 
 // 获取主播与粉丝名称（支持房间级覆盖与全局默认）
 function getNames(roomId) {
-    const configPath = path.join(__dirname, 'config.json');
+    // 优先读取外部配置文件
+    const env = process.env.NODE_ENV || 'development';
+    const configDir = path.resolve(path.join(__dirname, '..', '..', 'config'));
+    const configPath = path.join(configDir, env === 'production' ? 'production.json' : 'default.json');
+    const fallbackPath = path.join(__dirname, 'config.json'); // 备用
+    
     let anchor = '岁己SUI';
     let fan = '饼干岁';
 
     try {
-        if (fs.existsSync(configPath)) {
-            const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-            if (cfg.aiServices) {
-                if (cfg.aiServices.defaultAnchorName) anchor = cfg.aiServices.defaultAnchorName;
-                if (cfg.aiServices.defaultFanName) fan = cfg.aiServices.defaultFanName;
+        let targetPath = configPath;
+        if (!fs.existsSync(targetPath)) {
+            targetPath = fallbackPath;
+        }
+        
+        if (fs.existsSync(targetPath)) {
+            const cfg = JSON.parse(fs.readFileSync(targetPath, 'utf8'));
+            
+            // 新格式：从 ai.defaultNames 读取
+            if (cfg.ai?.defaultNames) {
+                if (cfg.ai.defaultNames.anchor) anchor = cfg.ai.defaultNames.anchor;
+                if (cfg.ai.defaultNames.fan) fan = cfg.ai.defaultNames.fan;
             }
-            if (roomId && cfg.roomSettings && cfg.roomSettings[roomId]) {
-                const r = cfg.roomSettings[roomId];
-                if (r.anchorName) anchor = r.anchorName;
-                if (r.fanName) fan = r.fanName;
+            // 兼容旧格式：aiServices.defaultAnchorName
+            if (cfg.aiServices?.defaultAnchorName) anchor = cfg.aiServices.defaultAnchorName;
+            if (cfg.aiServices?.defaultFanName) fan = cfg.aiServices.defaultFanName;
+            
+            // 读取房间级配置（新格式：ai.roomSettings）
+            if (roomId) {
+                const roomStr = String(roomId);
+                if (cfg.ai?.roomSettings?.[roomStr]) {
+                    const r = cfg.ai.roomSettings[roomStr];
+                    if (r.anchorName) anchor = r.anchorName;
+                    if (r.fanName) fan = r.fanName;
+                }
+                // 兼容旧格式：config.roomSettings
+                if (cfg.roomSettings?.[roomStr]) {
+                    const r = cfg.roomSettings[roomStr];
+                    if (r.anchorName) anchor = r.anchorName;
+                    if (r.fanName) fan = r.fanName;
+                }
             }
         }
     } catch (e) {
@@ -113,7 +231,7 @@ function buildPrompt(highlightContent, roomId) {
 
     return `【角色设定】
 
-身份：${anchor}的铁粉（自称"${fan}"或"${fan.replace(/岁$/, '')}"）。
+身份：${anchor}的铁粉（自称"${fan}"）。
 
 性格：喜欢调侃、宠溺主播，有点话痨，对主播的生活琐事和梗如数家珍。
 
@@ -142,7 +260,7 @@ function buildPrompt(highlightContent, roomId) {
 结尾（情感升华）：
 关怀：叮嘱主播注意身体（嗓子、睡眠、吃饭），不要太累。
 期待：确认下一次直播的时间（如果文档里提到了）。
-落款：—— 永远爱你的/支持你的/陪着你的${fan} 🍪
+落款：—— 永远爱你的/支持你的/陪着你的${fan} + emoji
 
 字数要求：800字以内。
 
@@ -150,6 +268,72 @@ function buildPrompt(highlightContent, roomId) {
 ${highlightContent}
 
 请根据以上直播内容，以${fan}的身份写一篇晚安回复。记住：只使用提供的直播内容，不要添加任何外部信息。`;
+}
+
+// 调用tuZi API生成文本（备用方案）
+async function generateTextWithTuZi(prompt) {
+    const config = loadConfig();
+    const tuziConfig = config.aiServices.tuZi;
+    
+    if (!isTuZiConfigured()) {
+        throw new Error('tuZi API未配置，请检查config.secrets.json中的apiKey');
+    }
+    
+    console.log('🤖 调用tuZi API生成文本（Gemini超频备用方案）...');
+    const textModel = tuziConfig.textModel || 'gemini-3-flash-preview';
+    console.log(`   模型: ${textModel}`);
+    console.log(`   温度: ${tuziConfig.temperature}`);
+    
+    try {
+        const baseUrl = tuziConfig.baseUrl || 'https://api.tu-zi.com';
+        const apiUrl = `${baseUrl}/v1/chat/completions`;
+        
+        // 设置代理
+        let agent = null;
+        if (tuziConfig.proxy) {
+            console.log(`   使用代理: ${tuziConfig.proxy}`);
+            agent = new HttpsProxyAgent(tuziConfig.proxy);
+        }
+        
+        const response = await fetch(apiUrl, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${tuziConfig.apiKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: textModel,
+                messages: [
+                    {
+                        role: 'user',
+                        content: prompt
+                    }
+                ],
+                temperature: tuziConfig.temperature,
+                max_tokens: tuziConfig.maxTokens
+            }),
+            agent: agent,
+            timeout: 60000
+        });
+        
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`tuZi API返回错误 ${response.status}: ${errorText}`);
+        }
+        
+        const data = await response.json();
+        const text = data.choices?.[0]?.message?.content;
+        
+        if (!text) {
+            throw new Error('tuZi API返回空结果');
+        }
+        
+        console.log('✅ tuZi API调用成功');
+        return text;
+    } catch (error) {
+        console.error(`❌ tuZi API调用失败: ${error.message}`);
+        throw error;
+    }
 }
 
 // 调用Gemini API生成文本
@@ -165,10 +349,10 @@ async function generateTextWithGemini(prompt) {
     console.log(`   模型: ${geminiConfig.model}`);
     console.log(`   温度: ${geminiConfig.temperature}`);
     
+    let originalFetch = null;
     try {
         // --- 核心修改开始 ---
         // SDK 不支持在构造函数传 agent，我们需要劫持全局 fetch 来注入代理
-        let originalFetch;
         if (geminiConfig.proxy) {
             console.log(`   使用代理: ${geminiConfig.proxy}`);
             const agent = new HttpsProxyAgent(geminiConfig.proxy);
@@ -200,7 +384,7 @@ async function generateTextWithGemini(prompt) {
         const text = response.text();
 
         // 恢复原始 fetch（如果被覆盖了）
-        if (geminiConfig.proxy) {
+        if (originalFetch !== null) {
             global.fetch = originalFetch;
         }
 
@@ -208,9 +392,27 @@ async function generateTextWithGemini(prompt) {
         return text;
     } catch (error) {
         // 恢复原始 fetch（如果被覆盖了）
-        if (geminiConfig.proxy) {
+        if (originalFetch !== null) {
             global.fetch = originalFetch;
         }
+        
+        // 检查是否是429超频错误
+        const errorMessage = error.message || '';
+        const is429Error = errorMessage.includes('429') || 
+                          errorMessage.includes('Too Many Requests') ||
+                          errorMessage.includes('RESOURCE_EXHAUSTED') ||
+                          errorMessage.includes('quota');
+        
+        if (is429Error && isTuZiConfigured()) {
+            console.warn(`⚠️  Gemini API超频 (429)，尝试使用tuZi API作为备用方案...`);
+            try {
+                return await generateTextWithTuZi(prompt);
+            } catch (tuziError) {
+                console.error(`❌ tuZi API备用方案也失败: ${tuziError.message}`);
+                throw new Error(`Gemini和tuZi API都失败: Gemini - ${error.message}, tuZi - ${tuziError.message}`);
+            }
+        }
+        
         console.error(`❌ Gemini API调用失败: ${error.message}`);
         throw error;
     }
@@ -219,19 +421,18 @@ async function generateTextWithGemini(prompt) {
 // 保存生成的文本
 function saveGeneratedText(outputPath, text, highlightPath) {
     try {
+        // 生成不重复的文件名
+        const uniquePath = generateUniqueFilename(outputPath);
+        
         // 添加元信息
         const highlightName = path.basename(highlightPath);
         const timestamp = new Date().toLocaleString('zh-CN');
-        const metaInfo = `# 晚安回复（基于${highlightName}）
-生成时间: ${timestamp}
----
-        
-`;
+        const metaInfo = ``;
         
         const fullText = metaInfo + text;
-        fs.writeFileSync(outputPath, fullText, 'utf8');
-        console.log(`✅ 晚安回复已保存: ${path.basename(outputPath)}`);
-        return outputPath;
+        fs.writeFileSync(uniquePath, fullText, 'utf8');
+        console.log(`✅ 晚安回复已保存: ${path.basename(uniquePath)}`);
+        return uniquePath;
     } catch (error) {
         console.error(`❌ 保存生成文本失败: ${error.message}`);
         throw error;
@@ -248,8 +449,23 @@ async function generateGoodnightReply(highlightPath) {
     }
     
     if (!isGeminiConfigured()) {
-        console.log('⚠️  Gemini API未配置，跳过文本生成');
-        return null;
+        console.log('⚠️  Gemini API未配置，使用本地回退生成晚安回复');
+
+        // 本地回退：简单根据文本摘取亮点并生成一段固定模板的晚安回复，便于无API时验证流程
+        try {
+            const highlightContent = readHighlightFile(highlightPath);
+            const lines = highlightContent.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+            const picks = lines.slice(0, 5).map((l, i) => `${i+1}. ${l}`);
+            const fallback = `# 晚安（本地回退）\n\n今天的直播亮点:\n${picks.join('\n')}\n\n谢谢今天的陪伴，晚安~`;
+            const dir = path.dirname(highlightPath);
+            const baseName = path.basename(highlightPath, '_AI_HIGHLIGHT.txt');
+            const outputPath = path.join(dir, `${baseName}_晚安回复.md`);
+            saveGeneratedText(outputPath, fallback, highlightPath);
+            return outputPath;
+        } catch (e) {
+            console.error('⚠️ 本地回退生成失败:', e.message);
+            return null;
+        }
     }
     
     console.log(`📄 处理AI_HIGHLIGHT文件: ${path.basename(highlightPath)}`);
@@ -333,8 +549,10 @@ async function batchGenerateGoodnightReplies(directory) {
 module.exports = {
     loadConfig,
     isGeminiConfigured,
+    isTuZiConfigured,
     generateGoodnightReply,
     generateTextWithGemini,
+    generateTextWithTuZi,
     batchGenerateGoodnightReplies
 };
 

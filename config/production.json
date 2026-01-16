@@ -1,0 +1,185 @@
+{
+  "app": {
+    "name": "danmaku-to-summary",
+    "version": "2.0.0",
+    "environment": "production",
+    "logLevel": "info"
+  },
+  "webhook": {
+    "enabled": true,
+    "port": 12523,
+    "host": "0.0.0.0",
+    "endpoints": {
+      "ddtv": {
+        "enabled": true,
+        "endpoint": "/ddtv"
+      },
+      "mikufans": {
+        "enabled": true,
+        "endpoint": "/mikufans",
+        "basePath": "D:/files/videos/DDTV录播"
+      }
+    },
+    "timeouts": {
+      "fixVideoWait": 30000,
+      "fileStableCheck": 30000,
+      "processTimeout": 1800000
+    }
+  },
+  "audio": {
+    "enabled": true,
+    "audioOnlyRooms": [26966466, 21756924, 1741667419, 1713546334, 1713548468, 1986461465],
+    "formats": [
+      ".m4a",
+      ".aac",
+      ".mp3",
+      ".wav",
+      ".ogg",
+      ".flac"
+    ],
+    "defaultFormat": ".m4a",
+    "ffmpeg": {
+      "path": "ffmpeg",
+      "timeout": 30000
+    },
+    "storage": {
+      "keepOriginalVideo": true,
+      "maxFileAgeDays": 30
+    }
+  },
+  "ai": {
+    "text": {
+      "enabled": true,
+      "provider": "gemini",
+      "gemini": {
+        "apiKey": "",
+        "model": "gemini-3-flash-preview",
+        "temperature": 0.7,
+        "maxTokens": 100000,
+        "proxy": "socks5://127.0.0.1:7890"
+      }
+    },
+    "comic": {
+      "enabled": true,
+      "provider": "python",
+      "tuZi": {
+        "enabled": true,
+        "apiKey": "",
+        "baseUrl": "https://api.tu-zi.com",
+        "model": "nano-banana",
+        "proxy": "socks5://127.0.0.1:7890"
+      }
+    },
+    "defaultNames": {
+      "anchor": "主播",
+      "fan": "粉丝"
+    },
+    "defaultReferenceImage": "public/reference_images/岁己小红帽立绘.png",
+    "defaultCharacterDescription": "主播（帅气/美丽的人类），粉丝（有细细四肢的小小的可爱生物）",
+    "roomSettings": {
+      "545068": {
+        "audioOnly": false,
+        "referenceImage": "public/reference_images/栞栞新衣_舰长礼物长图里截图.png",
+        "characterDescription": "笑笑SunYalong（戴黑框眼镜的中年男子，发际线较高或光头，穿着黑色T恤，表情滑稽丰富，经常张嘴大笑），德云色（背景通常有电竞椅或两个人）",
+        "anchorName": "老实憨厚的笑笑",
+        "fanName": "色友",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true
+      },
+      "26966466": {
+        "audioOnly": true,
+        "referenceImage": "public/reference_images/栞栞新衣_舰长礼物长图里截图.png",
+        "characterDescription": "栞栞Shiori（有兽耳的女生，浅黄色头发小孩），獭獭栞（长得像滑板的海獭）",
+        "anchorName": "栞栞Shiori",
+        "fanName": "獭獭栞",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true
+      },
+      "21756924": {
+        "audioOnly": true,
+        "referenceImage": "public/reference_images/雪绘.png",
+        "characterDescription": "金发蓝瞳女生",
+        "anchorName": "雪绘Yukie",
+        "fanName": "态度人",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true
+      },
+      "21696950": {
+        "audioOnly": true,
+        "referenceImage": "../public/reference_images/Aza_阿萨_立绘.webp",
+        "characterDescription": "阿萨Aza（浅黄色头发绿挑染的酷盖，身边的小毛线（有触角和细细四肢的毛球状生物）是他的宠物兼伙伴",
+        "anchorName": "阿萨Aza",
+        "fanName": "小毛线",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true
+      },
+      "1713546334": {
+        "audioOnly": true,
+        "referenceImage": "public/reference_images/Hazel_灰泽满_立绘.png",
+        "characterDescription": "灰泽满Hazel（永远16岁的女高中生，浅色短发，风纪委员，身上挂着很多果冻形状的饰品，随身带着果冻应急储备箱，性格有些偏执和元气）",
+        "anchorName": "灰泽满Hazel",
+        "fanName": "果冻",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true
+      },
+      "1713548468": {
+        "audioOnly": true,
+        "referenceImage": "public/reference_images/Liko_莉蔻_立绘.png",
+        "characterDescription": "莉蔻Liko（长着兔耳的少女，戴着大帽子，性格胆小没见过世面，手里常拿着胡萝卜棒冰，虽然是秘密组织的特工但看起来很弱气）",
+        "anchorName": "莉蔻Liko",
+        "fanName": "胡萝卜",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true
+      },
+      "1986461465": {
+        "audioOnly": true,
+        "referenceImage": "public/reference_images/Kloa_克罗雅_立绘.png",
+        "characterDescription": "克罗雅Kloa（混沌属性的少女，头顶天使光环但背后是黑色的恶魔翅膀，戴着黑色头纱，表情慵懒，喜欢睡觉和发呆，废柴神造物）",
+        "anchorName": "克罗雅Kloa",
+        "fanName": "信徒",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true
+      },
+      "1741667419": {
+        "audioOnly": true,
+        "referenceImage": "public/reference_images/十六萤Izayoi.png",
+        "characterDescription": "十六萤Izayoi（拥有浣熊耳朵和毛茸茸大尾巴的少女，面无表情的三无特工，穿着女仆装或异域服饰，气质清冷，经常用尾巴把自己裹住）",
+        "anchorName": "十六萤Izayoi",
+        "fanName": "萤火虫",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true
+      }
+    }
+  },
+  "fusion": {
+    "timeWindowSec": 30,
+    "densityPercentile": 35,
+    "lowEnergySampleRate": 10,
+    "myUserId": "14279",
+    "stopWords": [
+      "晚上好", "晚安", "来了", "打call", "拜拜", "卡了", "嗯", "好", "草", "哈哈", "确实", "牛", "可爱"
+    ],
+    "fillerRegex": "^[\\s\\W]*$"
+  },
+  "storage": {
+    "basePath": "D:/files/videos/DDTV录播",
+    "tempPath": "D:\\files\\videos\\DDTV录播\\temp",
+    "outputPath": "D:\\files\\videos\\DDTV录播\\output",
+    "cleanup": {
+      "enabled": true,
+      "intervalHours": 24,
+      "maxAgeDays": 7
+    }
+  },
+  "monitoring": {
+    "enabled": true,
+    "metrics": {
+      "enabled": false,
+      "port": 9090
+    },
+    "health": {
+      "enabled": true,
+      "endpoint": "/health"
+    }
+  }
+}

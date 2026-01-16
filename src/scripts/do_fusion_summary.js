@@ -36,39 +36,47 @@ function aggressiveClean(text) {
 }
 
 async function processLiveData(inputFiles) {
-    const srtFiles = inputFiles.filter(f => /\.srt$/i.test(f));
-    const xmlFiles = inputFiles.filter(f => /\.xml$/i.test(f));
+     const srtFiles = inputFiles.filter(f => /\.srt$/i.test(f));
+     const xmlFiles = inputFiles.filter(f => /\.xml$/i.test(f));
 
-    if (srtFiles.length === 0 && xmlFiles.length === 0) return;
+     if (srtFiles.length === 0 && xmlFiles.length === 0) return;
 
-    const baseDir = path.dirname(inputFiles[0]);
-    const baseName = path.basename(inputFiles[0]).replace(/\.(srt|xml|mp4|flv|mkv)$/i, '').replace(/_fix$/, '');
-    const outputFile = path.join(baseDir, `${baseName}_AI_HIGHLIGHT.txt`);
+     const baseDir = path.dirname(inputFiles[0]);
+     const baseName = path.basename(inputFiles[0]).replace(/\.(srt|xml|mp4|flv|mkv)$/i, '').replace(/_fix$/, '');
+     const outputFile = path.join(baseDir, `${baseName}_AI_HIGHLIGHT.txt`);
 
-    console.log(`🔥 启动热力图采样模式...来源文件：${srtFiles.map(f => path.basename(f)).join(', ')} ${xmlFiles.map(f => path.basename(f)).join(', ')}`);
+     console.log(`🔥 启动热力图采样模式...来源文件：${srtFiles.map(f => path.basename(f)).join(', ')} ${xmlFiles.map(f => path.basename(f)).join(', ')}`);
 
-    // --- 1. 解析弹幕 (生成热力数据) ---
-    const parser = new xml2js.Parser();
-    const danmakuMap = []; // 存储所有弹幕对象 {ms, text}
-    let maxDuration = 0;
+     // --- 1. 解析弹幕 (生成热力数据) ---
+     const parser = new xml2js.Parser();
+     const danmakuMap = []; // 存储所有弹幕对象 {ms, text}
+     let maxDuration = 0;
 
-    for (const file of xmlFiles) {
-        try {
-            const data = fs.readFileSync(file);
-            const result = await parser.parseStringPromise(data);
-            const rawList = result?.i?.d || [];
+     for (const file of xmlFiles) {
+         try {
+             const data = fs.readFileSync(file, 'utf8');
+             const result = await parser.parseStringPromise(data);
+             // xml2js 单个元素返回对象，多个元素返回数组，需要统一处理
+             let rawList = result?.i?.d || [];
+             if (!Array.isArray(rawList)) {
+                 rawList = rawList ? [rawList] : [];
+             }
+             
             for (const d of rawList) {
-                if (!d || !d.$ || !d.$.p) continue;
-                const attrs = String(d.$.p).split(",");
-                const ms = parseFloat(attrs[0]) * 1000;
-                const content = String(d._).trim();
-                const uid = String(attrs[6]);
+                 if (!d || !d.$ || !d.$.p) continue;
+                 const attrs = String(d.$.p).split(",");
+                 const ms = parseFloat(attrs[0]) * 1000;
+                 const content = String(d._).trim();
+                 const uid = String(attrs[6]);
 
-                if (ms > maxDuration) maxDuration = ms;
-                danmakuMap.push({ ms, content, uid });
-            }
-        } catch (e) {}
-    }
+                 if (ms > maxDuration) maxDuration = ms;
+                     danmakuMap.push({ ms, content, uid });
+             }
+         } catch (e) {
+             console.error(`处理弹幕文件失败: ${e.message}`);
+         }
+     }
+     console.log(`💬 总弹幕数: ${danmakuMap.length}, 直播总时长约 ${Math.floor(maxDuration/60000)} 分钟`);
 
     // --- 2. 计算热力阈值 ---
     const windowMs = TIME_WINDOW_SEC * 1000;
@@ -92,41 +100,45 @@ async function processLiveData(inputFiles) {
     // --- 3. 解析并过滤字幕 (核心逻辑) ---
     let subtitles = [];
     for (const srtPath of srtFiles) {
-        const content = fs.readFileSync(srtPath, 'utf8');
-        const blocks = content.split(/\n\s*\n/);
+        try {
+            const content = fs.readFileSync(srtPath, 'utf8');
+            const blocks = content.split(/\n\s*\n/);
 
-        for (const block of blocks) {
-            const lines = block.split('\n').map(l => l.trim()).filter(l => l);
-            if (lines.length < 3) continue;
+            for (const block of blocks) {
+                const lines = block.split('\n').map(l => l.trim()).filter(l => l);
+                if (lines.length < 3) continue;
 
-            const timeLine = lines.find(l => l.includes('-->'));
-            if (!timeLine) continue;
+                const timeLine = lines.find(l => l.includes('-->'));
+                if (!timeLine) continue;
 
-            const [startStr] = timeLine.split(' --> ');
-            const ms = parseSrtTimestamp(startStr);
-            const rawText = lines.slice(lines.indexOf(timeLine) + 1).join('');
-            const text = aggressiveClean(rawText);
+                const [startStr] = timeLine.split(' --> ');
+                const ms = parseSrtTimestamp(startStr);
+                const rawText = lines.slice(lines.indexOf(timeLine) + 1).join('');
+                const text = aggressiveClean(rawText);
 
-            if (text.length < 2 || STOP_WORDS.has(text)) continue;
+                if (text.length < 2 || STOP_WORDS.has(text)) continue;
 
-            // === 🎯 命运的审判 ===
-            const bucketIdx = Math.floor(ms / windowMs);
-            const currentDensity = densityArr[bucketIdx] || 0;
-            const isHighEnergy = currentDensity >= thresholdCount;
+                // === 🎯 命运的审判 ===
+                const bucketIdx = Math.floor(ms / windowMs);
+                const currentDensity = densityArr[bucketIdx] || 0;
+                const isHighEnergy = currentDensity >= thresholdCount;
 
-            // 策略：
-            // 1. 如果是高能时刻 -> 保留
-            // 2. 如果包含特定关键词(如"总结") -> 强制保留
-            // 3. 否则 -> 随机丢弃 (Sample Rate)
-            const isKeyword = /总结|最后|打算|明天|下播/.test(text);
+                // 策略：
+                // 1. 如果是高能时刻 -> 保留
+                // 2. 如果包含特定关键词(如"总结") -> 强制保留
+                // 3. 否则 -> 随机丢弃 (Sample Rate)
+                const isKeyword = /总结|最后|打算|明天|下播/.test(text);
 
-            if (isHighEnergy || isKeyword || Math.random() < LOW_ENERGY_SAMPLE_RATE) {
-                subtitles.push({
-                    ms,
-                    text: text,
-                    isHighEnergy // 标记一下，方便后面排版
-                });
+                if (isHighEnergy || isKeyword || Math.random() < LOW_ENERGY_SAMPLE_RATE) {
+                    subtitles.push({
+                        ms,
+                        text: text,
+                        isHighEnergy // 标记一下，方便后面排版
+                    });
+                }
             }
+        } catch (e) {
+            console.error(`处理字幕文件失败: ${e.message}`);
         }
     }
 
@@ -135,8 +147,8 @@ async function processLiveData(inputFiles) {
     // --- 4. 智能聚合输出 ---
     // 为了进一步压缩，我们把连续的字幕合并
     const output = [];
-    output.push(`【高能浓缩摘要】(保留率: 前${DENSITY_PERCENTILE*100}%热度 + ${LOW_ENERGY_SAMPLE_RATE*100}%随机)`);
-    output.push(`---------------------------------`);
+    output.push(`【摘要】(保留率: 前${DENSITY_PERCENTILE*100}%热度 + ${LOW_ENERGY_SAMPLE_RATE*100}%随机)`);
+    output.push(`---`);
 
     let currentBlock = { startTime: -1, lines: [], isHighlight: false };
 

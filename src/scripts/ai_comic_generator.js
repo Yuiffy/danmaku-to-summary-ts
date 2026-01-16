@@ -51,7 +51,8 @@ async function generateComicWithPython(highlightPath) {
     return new Promise((resolve, reject) => {
         const pythonProcess = spawn('python', [pythonScript, highlightPath], {
             stdio: 'pipe',
-            env: { ...process.env, PYTHONUTF8: '1', ROOM_ID: process.env.ROOM_ID || '' }
+            env: { ...process.env, PYTHONUTF8: '1', PYTHONUNBUFFERED: '1', ROOM_ID: process.env.ROOM_ID || '' }
+
         });
         
         let stdout = '';
@@ -106,7 +107,7 @@ async function generateComicWithPython(highlightPath) {
         setTimeout(() => {
             pythonProcess.kill('SIGTERM');
             reject(new Error('Python脚本执行超时'));
-        }, 300000); // 5分钟超时
+        }, 360* 4 * 1000); // 里面图片360秒超时，允许它重试4次
     });
 }
 
