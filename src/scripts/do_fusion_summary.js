@@ -71,6 +71,7 @@ async function processLiveData(inputFiles) {
              console.error(`处理弹幕文件失败: ${e.message}`);
          }
      }
+     console.log(`💬 总弹幕数: ${danmakuMap.length}, 直播总时长约 ${Math.floor(maxDuration/60000)} 分钟`);
 
     // --- 2. 计算热力阈值 ---
     const windowMs = TIME_WINDOW_SEC * 1000;
