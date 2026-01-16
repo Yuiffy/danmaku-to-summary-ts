@@ -121,7 +121,7 @@ export class AudioFileHandler implements IWebhookHandler {
     this.logger.info(`开始处理音频文件: ${fileName}`);
 
     // 验证文件类型
-    const audioExtensions = ['m4a', 'mp3', 'wav', 'aac', 'flac', '.mp4', '.flv', '.mkv', '.ts', '.mov'];
+    const audioExtensions = ['m4a', 'mp3', 'wav', 'aac', 'flac', 'mp4', 'flv', 'mkv', 'ts', 'mov'];
     if (!audioExtensions.includes(fileExtension)) {
       const errorMsg = `不支持的文件类型: ${fileExtension}`;
       this.logger.error(errorMsg);
