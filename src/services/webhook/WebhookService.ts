@@ -4,6 +4,7 @@ import { getLogger } from '../../core/logging/LogManager';
 import { ConfigProvider } from '../../core/config/ConfigProvider';
 import { DDTVWebhookHandler } from './handlers/DDTVWebhookHandler';
 import { MikufansWebhookHandler } from './handlers/MikufansWebhookHandler';
+import { AudioFileHandler } from './handlers/AudioFileHandler';
 import { FileStabilityChecker } from './FileStabilityChecker';
 import { DuplicateProcessorGuard } from './DuplicateProcessorGuard';
 import { ComicGeneratorService } from '../comic/ComicGeneratorService';
@@ -344,7 +345,8 @@ export class WebhookService implements IWebhookService {
     // 创建处理器实例
     this.handlers = [
       new DDTVWebhookHandler(),
-      new MikufansWebhookHandler()
+      new MikufansWebhookHandler(),
+      new AudioFileHandler()
     ];
     
     this.getLogger().info(`初始化了 ${this.handlers.length} 个Webhook处理器`);
