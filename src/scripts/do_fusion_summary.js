@@ -48,13 +48,13 @@ async function processLiveData(inputFiles) {
      console.log(`🔥 启动热力图采样模式...来源文件：${srtFiles.map(f => path.basename(f)).join(', ')} ${xmlFiles.map(f => path.basename(f)).join(', ')}`);
 
      // --- 1. 解析弹幕 (生成热力数据) ---
-     const parser = new xml2js.Parser({ strict: false, trim: true });
+     const parser = new xml2js.Parser();
      const danmakuMap = []; // 存储所有弹幕对象 {ms, text}
      let maxDuration = 0;
 
      for (const file of xmlFiles) {
          try {
-             const data = fs.readFileSync(file);
+             const data = fs.readFileSync(file, 'utf8');
              const result = await parser.parseStringPromise(data);
              // xml2js 单个元素返回对象，多个元素返回数组，需要统一处理
              let rawList = result?.i?.d || [];
