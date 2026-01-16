@@ -175,19 +175,19 @@ export class AudioFileHandler implements IWebhookHandler {
       this.duplicateGuard.markAsProcessing(filePath);
 
       // 4. 等待文件稳定
-      const isStable = await this.stabilityChecker.waitForFileStability(filePath);
-      if (!isStable) {
-        this.logger.error(`文件稳定性检查失败: ${fileName}`);
-        this.duplicateGuard.markAsProcessed(filePath);
-        return {
-          success: false,
-          error: 'File stability check failed',
-          filePath,
-          roomId: extractedInfo.roomId
-        };
-      }
+      // const isStable = await this.stabilityChecker.waitForFileStability(filePath);
+      // if (!isStable) {
+      //   this.logger.error(`文件稳定性检查失败: ${fileName}`);
+      //   this.duplicateGuard.markAsProcessed(filePath);
+      //   return {
+      //     success: false,
+      //     error: 'File stability check failed',
+      //     filePath,
+      //     roomId: extractedInfo.roomId
+      //   };
+      // }
 
-      this.logger.info(`✓ 文件稳定性验证成功`);
+      // this.logger.info(`✓ 文件稳定性验证成功`);
 
       // 5. 查找对应的XML文件
       const xmlPath = await this.findCorrespondingXML(filePath, extractedInfo);
