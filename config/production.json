@@ -55,7 +55,8 @@
         "apiKey": "",
         "model": "gemini-3-flash-preview",
         "temperature": 0.7,
-        "maxTokens": 100000
+        "maxTokens": 100000,
+        "proxy": "socks5://127.0.0.1:7890"
       }
     },
     "comic": {
@@ -65,7 +66,8 @@
         "enabled": true,
         "apiKey": "",
         "baseUrl": "https://api.tu-zi.com",
-        "model": "nano-banana"
+        "model": "nano-banana",
+        "proxy": "socks5://127.0.0.1:7890"
       }
     },
     "defaultNames": {
