@@ -68,6 +68,26 @@ function runCommand(command, args, options = {}) {
     });
 }
 
+// 带重试的命令执行函数
+async function runCommandWithRetry(command, args, options = {}, maxRetries = 2) {
+    let lastError;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            console.log(`尝试执行 (第 ${attempt}/${maxRetries} 次): ${command} ${args.join(' ')}`);
+            await runCommand(command, args, options);
+            return; // 成功则返回
+        } catch (error) {
+            lastError = error;
+            if (attempt < maxRetries) {
+                console.warn(`⚠️  第 ${attempt} 次尝试失败: ${error.message}`);
+                console.log(`⏳ 等待5秒后进行第 ${attempt + 1} 次尝试...`);
+                await new Promise(r => setTimeout(r, 5000)); // 等待5秒后重试
+            }
+        }
+    }
+    throw lastError; // 所有重试都失败则抛出错误
+}
+
 async function processMedia(mediaPath) {
     const dir = path.dirname(mediaPath);
     const nameNoExt = path.basename(mediaPath, path.extname(mediaPath));
@@ -298,7 +318,12 @@ const main = async () => {
             const baseName = path.basename(filesToProcess[0]).replace(/\.(srt|xml|mp4|flv|mkv)$/i, '').replace(/_fix$/, '');
             generatedHighlightFile = path.join(outputDir, `${baseName}_AI_HIGHLIGHT.txt`);
             
-            await runCommand('node', [nodeScript, ...filesToProcess]);
+            try {
+                await runCommandWithRetry('node', [nodeScript, ...filesToProcess], {}, 2);
+            } catch (error) {
+                console.error(`❌ Fusion处理失败（经过重试）: ${error.message}`);
+                // 继续处理而不中断，因为可能已经部分生成了数据
+            }
         }
     }
 
