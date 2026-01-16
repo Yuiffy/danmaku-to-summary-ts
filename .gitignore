@@ -12,6 +12,7 @@
 # next.js
 /.next/
 /out/
+/logs/*
 
 # production
 /build

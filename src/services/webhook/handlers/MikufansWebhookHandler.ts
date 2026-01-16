@@ -164,6 +164,22 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       return;
     }
 
+    // 检查文件大小，小于1MB则跳过处理
+    try {
+      if (fs.existsSync(normalizedPath)) {
+        const fileSize = fs.statSync(normalizedPath).size;
+        const fileSizeInMB = fileSize / (1024 * 1024);
+        const minSizeMB = 1; // 最小处理大小：1MB
+        
+        if (fileSizeInMB < minSizeMB) {
+          this.logger.info(`⏭️  文件过小 (${fileSizeInMB.toFixed(2)}MB < ${minSizeMB}MB)，跳过处理: ${path.basename(normalizedPath)}`);
+          return;
+        }
+      }
+    } catch (error: any) {
+      this.logger.warn(`检查文件大小时出错: ${error.message}`);
+    }
+
     // 异步处理文件事件
     await this.processMikufansFile(normalizedPath, payload);
   }
