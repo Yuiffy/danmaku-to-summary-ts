@@ -54,7 +54,7 @@ async function processLiveData(inputFiles) {
 
      for (const file of xmlFiles) {
          try {
-             const data = fs.readFileSync(file, 'utf8');
+             const data = fs.readFileSync(file);
              const result = await parser.parseStringPromise(data);
              // xml2js 单个元素返回对象，多个元素返回数组，需要统一处理
              let rawList = result?.i?.d || [];
