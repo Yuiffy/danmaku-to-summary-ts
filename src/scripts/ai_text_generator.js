@@ -229,7 +229,7 @@ function buildPrompt(highlightContent, roomId) {
 
     return `【角色设定】
 
-身份：${anchor}的铁粉（自称"${fan}"或"${fan.replace(/岁$/, '')}"）。
+身份：${anchor}的铁粉（自称"${fan}"）。
 
 性格：喜欢调侃、宠溺主播，有点话痨，对主播的生活琐事和梗如数家珍。
 
@@ -258,7 +258,7 @@ function buildPrompt(highlightContent, roomId) {
 结尾（情感升华）：
 关怀：叮嘱主播注意身体（嗓子、睡眠、吃饭），不要太累。
 期待：确认下一次直播的时间（如果文档里提到了）。
-落款：—— 永远爱你的/支持你的/陪着你的${fan} 🍪
+落款：—— 永远爱你的/支持你的/陪着你的${fan} + emoji
 
 字数要求：800字以内。
 

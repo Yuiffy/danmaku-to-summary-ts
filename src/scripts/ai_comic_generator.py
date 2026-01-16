@@ -355,6 +355,31 @@ def build_comic_prompt(highlight_content: str, reference_image_path: Optional[st
 
     return base_prompt, comic_content, is_generated
 
+# 虚拟主播二创画师大手子的统一prompt模板（方便统一修改）
+COMIC_ARTIST_PROMPT_TEMPLATE = """你作为虚拟主播二创画师大手子，根据直播内容，绘制直播总结插画。
+
+角色描述：{character_desc}
+
+风格：多个剪贴画风格或者少年漫多个分镜（5~8个吧），每个是一个片段场景，画图+文字台词or简介，文字要短。要画得精致，角色要画得帅气、美丽、可爱。
+
+<note>一定要按照给你的参考图还原形象，而不是自己乱画一个动漫角色</note>"""
+
+def build_comic_generation_prompt(character_desc: str, highlight_content: str) -> str:
+    """使用COMIC_ARTIST_PROMPT_TEMPLATE构建完整的prompt（用于Gemini等调用）"""
+    template = COMIC_ARTIST_PROMPT_TEMPLATE.strip()
+    base = template.replace("{character_desc}", character_desc)
+    return f"""{base}
+
+直播内容：
+{highlight_content}
+请创作漫画故事脚本："""
+
+def build_comic_system_prompt(character_desc: str) -> str:
+    """构建system prompt（用于tuZi等需要单独system role的API）"""
+    template = COMIC_ARTIST_PROMPT_TEMPLATE.strip()
+    base = template.replace("{character_desc}", character_desc)
+    return base + "\n\n请创作漫画故事脚本（纯文本描述，不需要图像生成）："
+
 def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str] = None) -> Tuple[str, bool]:
     """使用AI生成漫画内容脚本
     
@@ -419,18 +444,9 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
         # 获取模型名称
         model_name = gemini_config.get('model', 'gemini-2.0-flash')
 
-        # 生成漫画内容脚本（注入配置化的角色描述）
+        # 生成漫画内容脚本（使用统一的prompt模板）
         character_desc = get_room_character_description(room_id)
-        content_prompt = f"""<job>你作为虚拟主播二创画师大手子，根据直播内容，绘制直播总结插画</job>
-
-    <character>{character_desc}</character>
-
-    <style>多个剪贴画风格或者少年漫多个分镜（5~8个吧），每个是一个片段场景，画图+文字台词or简介，文字要短。要画得精致，角色要画得帅气、美丽、可爱。</style>
-
-    <note>一定要按照给你的参考图还原形象，而不是自己乱画一个动漫角色</note>
-    直播内容：
-    {highlight_content}
-    请创作漫画故事脚本："""
+        content_prompt = build_comic_generation_prompt(character_desc, highlight_content)
 
         # 调用Gemini
         response = client.models.generate_content(
@@ -484,15 +500,9 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                     "Content-Type": "application/json"
                 }
                 
-                # 构建提示词（生成漫画脚本）
+                # 构建提示词（使用统一的prompt模板）
                 character_desc = get_room_character_description(room_id)
-                system_prompt = f"""你作为虚拟主播二创画师大手子，根据直播内容，绘制直播总结插画。
-
-角色描述：{character_desc}
-
-风格：多个剪贴画风格或者少年漫多个分镜（5~8个吧），每个是一个片段场景，画图+文字台词or简介，文字要短。要画得精致。
-
-请创作漫画故事脚本（纯文本描述，不需要图像生成）："""
+                system_prompt = build_comic_system_prompt(character_desc)
                 
                 payload = {
                     "model": tuzi_config.get("textModel", "gemini-3-flash-preview"),
