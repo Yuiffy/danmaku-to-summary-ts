@@ -59,9 +59,11 @@ function loadConfig() {
             // 从外部配置读取（新格式：ai.text 和 ai.comic）
             if (userConfig.ai?.text) {
                 Object.assign(merged.aiServices.gemini, userConfig.ai.text);
+                Object.assign(merged.aiServices.gemini, userConfig.ai.text.gemini);
             }
             // 图片模型配置（用于 ai.comic）
             if (userConfig.ai?.comic?.tuZi?.model) {
+                Object.assign(merged.aiServices.tuZi, userConfig.ai.comic.tuZi);
                 merged.aiServices.tuZi.model = userConfig.ai.comic.tuZi.model;
             }
             // 文本模型配置（用于 ai.text），优先级高于图片模型配置
