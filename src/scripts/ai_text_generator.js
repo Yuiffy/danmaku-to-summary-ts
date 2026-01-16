@@ -427,11 +427,7 @@ function saveGeneratedText(outputPath, text, highlightPath) {
         // 添加元信息
         const highlightName = path.basename(highlightPath);
         const timestamp = new Date().toLocaleString('zh-CN');
-        const metaInfo = `# 晚安回复（基于${highlightName}）
-生成时间: ${timestamp}
----
-        
-`;
+        const metaInfo = ``;
         
         const fullText = metaInfo + text;
         fs.writeFileSync(uniquePath, fullText, 'utf8');

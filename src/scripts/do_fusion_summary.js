@@ -147,8 +147,8 @@ async function processLiveData(inputFiles) {
     // --- 4. 智能聚合输出 ---
     // 为了进一步压缩，我们把连续的字幕合并
     const output = [];
-    output.push(`【高能浓缩摘要】(保留率: 前${DENSITY_PERCENTILE*100}%热度 + ${LOW_ENERGY_SAMPLE_RATE*100}%随机)`);
-    output.push(`---------------------------------`);
+    output.push(`【摘要】(保留率: 前${DENSITY_PERCENTILE*100}%热度 + ${LOW_ENERGY_SAMPLE_RATE*100}%随机)`);
+    output.push(`---`);
 
     let currentBlock = { startTime: -1, lines: [], isHighlight: false };
 
