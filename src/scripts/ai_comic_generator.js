@@ -107,7 +107,7 @@ async function generateComicWithPython(highlightPath) {
         setTimeout(() => {
             pythonProcess.kill('SIGTERM');
             reject(new Error('Python脚本执行超时'));
-        }, 300000); // 5分钟超时
+        }, 360* 4 * 1000); // 里面图片360秒超时，允许它重试4次
     });
 }
 
