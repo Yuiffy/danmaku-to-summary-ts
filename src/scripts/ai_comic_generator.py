@@ -867,18 +867,24 @@ def call_tuzi_image_api(prompt: str, reference_image_path: Optional[str] = None)
         timeout_sec = timeout_ms / 1000
         
         # 重试逻辑
-        max_retries = 1
+        max_retries = 2
         response = None
         
         for attempt in range(max_retries + 1):
             try:
                 print(f"[WAIT] 正在通过tu-zi.com API生成图像... (尝试 {attempt + 1}/{max_retries + 1}, 超时: {timeout_sec}s)")
+                if attempt == 1:
+                    payload["model"] = "gemini-2.5-flash-image"
+                    print(f"[RETRY] 第 {attempt + 1} 次重试...模型替换为{payload['model']}")
+                if (attempt == 2):
+                    payload["model"] = "gpt-image-1.5"
+                    print(f"[RETRY] 第 {attempt + 1} 次重试...模型替换为{payload['model']}")
                 response = requests.post(api_url, headers=headers, json=payload, timeout=timeout_sec, proxies=proxies)
                 
                 if response.status_code == 200:
                     break
                 else:
-                    print(f"[WARNING] tu-zi.com API调用失败 (尝试 {attempt + 1}): HTTP {response.status_code}")
+                    print(f"[WARNING] tu-zi.com API调用失败 (尝试 {attempt + 1}): HTTP {response.status_code} elapsed: {response.elapsed.total_seconds()}s")
                     if attempt < max_retries:
                         print("[RETRY] 2秒后重试...")
                         time.sleep(2)
