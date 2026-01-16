@@ -439,6 +439,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
         content_prompt = build_comic_generation_prompt(character_desc, highlight_content)
 
         # 调用Gemini
+        print(f"[AI] 使用Gemini生成漫画内容脚本: {model_name}")
         response = client.models.generate_content(
             model=model_name,
             contents=content_prompt
@@ -504,7 +505,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                     "max_tokens": 100000,
                 }
                 
-                print("[TUZI_TEXT] 调用tuZi API生成漫画文本内容...")
+                print("[TUZI_TEXT] 调用tuZi API生成漫画文本内容...{payload}")
                 response = requests.post(api_url, headers=headers, json=payload, timeout=120, proxies=proxies)
                 
                 if response.status_code == 200:
