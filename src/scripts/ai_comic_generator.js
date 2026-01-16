@@ -51,7 +51,8 @@ async function generateComicWithPython(highlightPath) {
     return new Promise((resolve, reject) => {
         const pythonProcess = spawn('python', [pythonScript, highlightPath], {
             stdio: 'pipe',
-            env: { ...process.env, PYTHONUTF8: '1', ROOM_ID: process.env.ROOM_ID || '' }
+            env: { ...process.env, PYTHONUTF8: '1', PYTHONUNBUFFERED: '1', ROOM_ID: process.env.ROOM_ID || '' }
+
         });
         
         let stdout = '';
