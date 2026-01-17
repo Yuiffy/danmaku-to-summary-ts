@@ -251,18 +251,18 @@ def build_comic_prompt(highlight_content: str, reference_image_path: Optional[st
 
 # 虚拟主播二创画师大手子的统一prompt模板（方便统一修改）
 COMIC_ARTIST_PROMPT_TEMPLATE = """你作为虚拟主播二创画师大手子，根据直播内容，绘制直播总结插画。
-角色描述：{character_desc}
-风格：多个剪贴画风格或者少年漫多个分镜（5~8个吧），每个是一个片段场景，画图+文字台词or简介，可以没有文字，有的话要很短，不要用中文。要画得精致，角色要画得帅气、美丽、可爱。
+角色描述：{character_desc}。
+风格：多个剪贴画风格分镜（4~6个吧），每个是一个片段场景，画图+文字台词or简介，可以没有文字，有的话要很短（5个单词内），不要用中文。要画得精致，角色要画得帅气、美丽、可爱。
+下面是岁己一场直播的asr+弹幕记录TXT，请先构思图片并用文字给我，我再拿去绘制图片。整体800个字符以内。
+{highlight_content}
 """
 
 def build_comic_generation_prompt(character_desc: str, highlight_content: str) -> str:
     """使用COMIC_ARTIST_PROMPT_TEMPLATE构建完整的prompt（用于Gemini等调用）"""
     template = COMIC_ARTIST_PROMPT_TEMPLATE.strip()
     base = template.replace("{character_desc}", character_desc)
-    return f"""{base}
-直播内容：
-{highlight_content}
-请创作漫画故事脚本："""
+    base = base.replace("{highlight_content}", highlight_content)
+    return base
 
 def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str] = None) -> Tuple[str, bool]:
     """使用AI生成漫画内容脚本
