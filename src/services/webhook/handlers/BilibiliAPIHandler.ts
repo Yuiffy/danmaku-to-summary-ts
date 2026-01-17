@@ -63,8 +63,11 @@ export class BilibiliAPIHandler implements IWebhookHandler {
     // 检查Cookie有效性
     app.get(`${this.path}/check-cookie`, this.handleCheckCookie.bind(this));
 
-    // 获取主播动态列表
+    // 获取主播动态列表（通过UID）
     app.get(`${this.path}/dynamics/:uid`, this.handleGetDynamics.bind(this));
+
+    // 获取主播动态列表（通过直播间ID）
+    app.get(`${this.path}/room/:roomId/dynamics`, this.handleGetRoomDynamics.bind(this));
 
     // 发布评论
     app.post(`${this.path}/comment`, this.handlePublishComment.bind(this));
@@ -167,6 +170,64 @@ export class BilibiliAPIHandler implements IWebhookHandler {
       });
     } catch (error: any) {
       this.logger.error('获取动态失败', { error });
+      res.status(500).json({
+        success: false,
+        error: error.message || '获取动态失败'
+      });
+    }
+  }
+
+  /**
+   * 处理通过直播间ID获取主播动态列表请求
+   */
+  private async handleGetRoomDynamics(req: Request, res: Response): Promise<void> {
+    try {
+      const { roomId }: { roomId?: string } = req.params;
+      const { limit } = req.query;
+
+      this.logger.info(`通过直播间ID获取主播动态: ${roomId}`, { limit });
+
+      if (!roomId) {
+        res.status(400).json({
+          success: false,
+          error: '缺少必要参数: roomId'
+        });
+        return;
+      }
+
+      // 根据直播间ID获取UID
+      const uid = await this.bilibiliAPI.getUidByRoomId(roomId);
+
+      // 获取动态列表
+      const dynamics = await this.bilibiliAPI.getDynamics(uid);
+
+      // 处理limit参数
+      let resultDynamics = dynamics;
+      if (limit && typeof limit === 'string') {
+        const numLimit = parseInt(limit, 10);
+        if (!isNaN(numLimit) && numLimit > 0) {
+          resultDynamics = dynamics.slice(0, numLimit);
+        }
+      }
+
+      res.json({
+        success: true,
+        data: {
+          roomId,
+          uid,
+          count: resultDynamics.length,
+          dynamics: resultDynamics.map(d => ({
+            id: d.id,
+            type: d.type,
+            content: d.content,
+            images: d.images,
+            publishTime: d.publishTime,
+            url: d.url
+          }))
+        }
+      });
+    } catch (error: any) {
+      this.logger.error('通过直播间ID获取动态失败', { error });
       res.status(500).json({
         success: false,
         error: error.message || '获取动态失败'

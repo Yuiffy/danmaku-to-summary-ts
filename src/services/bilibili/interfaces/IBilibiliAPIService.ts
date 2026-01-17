@@ -13,6 +13,13 @@ export interface IBilibiliAPIService {
   getDynamics(uid: string, offset?: string): Promise<BilibiliDynamic[]>;
 
   /**
+   * 根据直播间ID获取主播UID
+   * @param roomId 直播间ID
+   * @returns 主播UID
+   */
+  getUidByRoomId(roomId: string): Promise<string>;
+
+  /**
    * 发布动态评论
    * @param request 评论请求
    * @returns 评论响应

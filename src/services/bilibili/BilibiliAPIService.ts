@@ -57,6 +57,79 @@ export class BilibiliAPIService implements IBilibiliAPIService {
   }
 
   /**
+   * 根据直播间ID获取主播UID
+   */
+  async getUidByRoomId(roomId: string): Promise<string> {
+    try {
+      this.logger.debug(`根据直播间ID获取UID: ${roomId}`);
+
+      const url = `${this.baseUrl}/x/space/acc/info`;
+      const params = new URLSearchParams({
+        mid: roomId
+      });
+
+      // 先尝试直接用roomId作为uid查询用户信息
+      const response = await fetch(`${url}?${params}`, {
+        method: 'GET',
+        headers: {
+          'Cookie': this.cookie,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Referer': `${this.webUrl}/`
+        }
+      });
+
+      if (response.ok) {
+        const data: BilibiliAPIResponse = await response.json();
+        if (data.code === 0 && data.data) {
+          this.logger.debug(`直接使用roomId作为uid成功: ${roomId}`);
+          return roomId;
+        }
+      }
+
+      // 如果直接查询失败，尝试通过直播间API获取uid
+      const liveUrl = 'https://api.live.bilibili.com/room/v1/Room/get_info';
+      const liveParams = new URLSearchParams({
+        room_id: roomId
+      });
+
+      const liveResponse = await fetch(`${liveUrl}?${liveParams}`, {
+        method: 'GET',
+        headers: {
+          'Cookie': this.cookie,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Referer': `${this.webUrl}/`
+        }
+      });
+
+      if (!liveResponse.ok) {
+        this.logger.error('获取直播间信息失败', { status: liveResponse.status, roomId });
+        throw new AppError(`获取直播间信息失败: HTTP ${liveResponse.status}`, 'API_ERROR', liveResponse.status);
+      }
+
+      const liveData: BilibiliAPIResponse = await liveResponse.json();
+
+      if (liveData.code !== 0 || !liveData.data) {
+        this.logger.error('获取直播间信息失败', { code: liveData.code, message: liveData.message, roomId });
+        throw new AppError(`获取直播间信息失败: ${liveData.message}`, 'API_ERROR', liveData.code);
+      }
+
+      const uid = String(liveData.data.uid);
+      this.logger.debug(`通过直播间API获取UID成功: ${roomId} -> ${uid}`);
+
+      return uid;
+    } catch (error) {
+      if (error instanceof AppError) {
+        throw error;
+      }
+      throw new AppError(
+        `获取UID失败: ${error instanceof Error ? error.message : error}`,
+        'API_ERROR',
+        500
+      );
+    }
+  }
+
+  /**
    * 获取主播动态列表
    */
   async getDynamics(uid: string, offset?: string): Promise<BilibiliDynamic[]> {
