@@ -40,9 +40,15 @@ export class ReplyManager implements IReplyManager {
     try {
       this.tasks.set(task.taskId, task);
       this.taskStatus.set(task.taskId, 'pending');
-      this.logger.info(`添加回复任务: ${task.taskId}`, { dynamicId: task.dynamic.id });
+      // 确保 dynamicId 以字符串形式记录日志，避免大数精度丢失
+      this.logger.info(`添加回复任务: ${task.taskId}`, { dynamicId: String(task.dynamic.id) });
     } catch (error) {
-      this.logger.error('添加回复任务失败', { error, task });
+      // 避免 JSON.stringify 导致大数精度丢失，只记录关键字段
+      this.logger.error('添加回复任务失败', {
+        taskId: task.taskId,
+        dynamicId: String(task.dynamic.id),
+        error
+      });
       throw error;
     }
   }
@@ -58,7 +64,8 @@ export class ReplyManager implements IReplyManager {
     }
 
     this.taskStatus.set(taskId, 'processing');
-    this.logger.info(`处理回复任务: ${taskId}`, { dynamicId: task.dynamic.id });
+    // 确保 dynamicId 以字符串形式记录日志，避免大数精度丢失
+    this.logger.info(`处理回复任务: ${taskId}`, { dynamicId: String(task.dynamic.id) });
 
     try {
       // 读取晚安回复文本
@@ -95,10 +102,18 @@ export class ReplyManager implements IReplyManager {
 
       // 标记任务完成
       this.taskStatus.set(taskId, 'completed');
-      this.logger.info(`回复任务完成: ${taskId}`, { replyId: result.replyId });
+      // 确保 dynamicId 和 replyId 以字符串形式记录日志，避免大数精度丢失
+      this.logger.info(`回复任务完成: ${taskId}`, {
+        dynamicId: String(task.dynamic.id),
+        replyId: String(result.replyId)
+      });
 
     } catch (error) {
-      this.logger.error(`处理回复任务失败: ${taskId}`, { error });
+      // 确保 dynamicId 以字符串形式记录日志，避免大数精度丢失
+      this.logger.error(`处理回复任务失败: ${taskId}`, {
+        dynamicId: String(task.dynamic.id),
+        error
+      });
 
       // 记录失败历史
       await this.replyHistoryStore.recordReply({

@@ -221,13 +221,22 @@ export class DynamicPollingService implements IDynamicPollingService {
 
       // 触发回调
       for (const dynamic of newDynamics) {
-        this.logger.info(`发现新动态: ${dynamic.id}`, { uid, content: dynamic.content.substring(0, 50) });
+        // 确保 dynamicId 以字符串形式记录日志，避免大数精度丢失
+        this.logger.info(`发现新动态: ${dynamic.id}`, {
+          uid,
+          dynamicId: String(dynamic.id),
+          content: dynamic.content.substring(0, 50)
+        });
         
         for (const callback of this.newDynamicCallbacks) {
           try {
             callback(dynamic);
           } catch (error) {
-            this.logger.error('新动态回调执行失败', { error, dynamicId: dynamic.id });
+            // 确保 dynamicId 以字符串形式记录日志，避免大数精度丢失
+            this.logger.error('新动态回调执行失败', {
+              dynamicId: String(dynamic.id),
+              error
+            });
           }
         }
       }
@@ -236,7 +245,11 @@ export class DynamicPollingService implements IDynamicPollingService {
       anchor.lastCheckTime = new Date();
 
     } catch (error) {
-      this.logger.error(`轮询主播失败: ${anchor.name} (${uid})`, { error });
+      // 避免 JSON.stringify 导致大数精度丢失，只记录关键字段
+      this.logger.error(`轮询主播失败: ${anchor.name} (${uid})`, {
+        uid,
+        error
+      });
     }
 
     // 移动到下一个主播
@@ -258,14 +271,17 @@ export class DynamicPollingService implements IDynamicPollingService {
       // 检查是否已回复
       const hasReplied = await this.replyHistoryStore.hasReplied(dynamic.id);
       if (hasReplied) {
-        this.logger.debug(`动态已回复，跳过: ${dynamic.id}`);
+        // 确保 dynamicId 以字符串形式记录日志，避免大数精度丢失
+        this.logger.debug(`动态已回复，跳过: ${dynamic.id}`, { dynamicId: String(dynamic.id) });
         continue;
       }
 
       // 检查是否在直播开始后发布
       if (anchor.liveStartTime) {
         if (dynamic.publishTime < anchor.liveStartTime) {
+          // 确保 dynamicId 以字符串形式记录日志，避免大数精度丢失
           this.logger.debug(`动态在直播开始前发布，跳过: ${dynamic.id}`, {
+            dynamicId: String(dynamic.id),
             publishTime: dynamic.publishTime,
             liveStartTime: anchor.liveStartTime
           });

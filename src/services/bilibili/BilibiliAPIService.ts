@@ -57,7 +57,8 @@ export class BilibiliAPIService implements IBilibiliAPIService {
    */
   async getDynamics(uid: string, offset?: string): Promise<BilibiliDynamic[]> {
     try {
-      this.logger.debug(`获取主播动态: ${uid}`, { offset });
+      // 确保 offset 以字符串形式记录日志，避免大数精度丢失
+      this.logger.debug(`获取主播动态: ${uid}`, { offset: String(offset || '') });
 
       const url = `${this.baseUrl}/x/polymer/web-dynamic/v1/feed/space`;
       const params = new URLSearchParams({
@@ -77,17 +78,32 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       });
 
       if (!response.ok) {
+        // 避免大数精度丢失，只记录关键字段
+        this.logger.error('获取动态失败', {
+          status: response.status,
+          uid
+        });
         throw new AppError(`获取动态失败: HTTP ${response.status}`, 'API_ERROR', response.status);
       }
 
       const data: BilibiliAPIResponse = await response.json();
 
       if (data.code !== 0) {
+        // 避免大数精度丢失，只记录关键字段
+        this.logger.error('获取动态失败', {
+          code: data.code,
+          message: data.message,
+          uid
+        });
         throw new AppError(`获取动态失败: ${data.message}`, 'API_ERROR', data.code);
       }
 
       const dynamics = this.parseDynamics(data.data);
-      this.logger.debug(`获取到 ${dynamics.length} 条动态`, { uid });
+      // 确保 dynamicId 以字符串形式记录日志，避免大数精度丢失
+      this.logger.debug(`获取到 ${dynamics.length} 条动态`, {
+        uid,
+        dynamicIds: dynamics.map(d => String(d.id))
+      });
 
       return dynamics;
     } catch (error) {
@@ -119,7 +135,11 @@ export class BilibiliAPIService implements IBilibiliAPIService {
           dynamics.push(dynamic);
         }
       } catch (error) {
-        this.logger.warn('解析动态失败', { error, item });
+        // 避免 JSON.stringify 导致大数精度丢失，只记录关键字段
+        this.logger.warn('解析动态失败', {
+          error,
+          itemId: String(item?.desc?.dynamic_id_str || '')
+        });
       }
     }
 
@@ -188,7 +208,9 @@ export class BilibiliAPIService implements IBilibiliAPIService {
    */
   async publishComment(request: PublishCommentRequest): Promise<PublishCommentResponse> {
     try {
+      // 确保 dynamicId 以字符串形式记录日志，避免大数精度丢失
       this.logger.info(`发布评论: ${request.dynamicId}`, {
+        dynamicId: String(request.dynamicId),
         contentLength: request.content.length,
         hasImages: !!(request.images && request.images.length > 0),
         images: request.images
@@ -209,7 +231,13 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       }
 
       const url = `${this.baseUrl}/x/v2/reply/add`;
-      this.logger.info('发送评论请求', { url, params });
+      // 确保 oid 以字符串形式记录日志，避免大数精度丢失
+      this.logger.info('发送评论请求', {
+        url,
+        oid: String(params.oid),
+        type: params.type,
+        messageLength: params.message?.length || 0
+      });
 
       const response = await fetch(url, {
         method: 'POST',
@@ -225,26 +253,47 @@ export class BilibiliAPIService implements IBilibiliAPIService {
 
       if (!response.ok) {
         const errorText = await response.text();
-        this.logger.error('发布评论HTTP错误', { status: response.status, errorText });
+        // 避免大数精度丢失，只记录关键字段
+        this.logger.error('发布评论HTTP错误', {
+          status: response.status,
+          errorText: errorText.substring(0, 200)
+        });
         throw new AppError(`发布评论失败: HTTP ${response.status}`, 'API_ERROR', response.status);
       }
 
       const data: BilibiliAPIResponse = await response.json();
-      this.logger.info('评论API响应', { code: data.code, message: data.message, data: JSON.stringify(data.data) });
+      // 确保 oid 以字符串形式记录日志，避免大数精度丢失
+      this.logger.info('评论API响应', {
+        code: data.code,
+        message: data.message,
+        oid: String(data.data?.oid || ''),
+        rpid: data.data?.rpid_str || data.data?.rpid
+      });
 
       if (data.code !== 0) {
-        this.logger.error('发布评论API错误', { code: data.code, message: data.message });
+        // 避免大数精度丢失，只记录关键字段
+        this.logger.error('发布评论API错误', {
+          code: data.code,
+          message: data.message,
+          oid: String(data.data?.oid || '')
+        });
         throw new AppError(`发布评论失败: ${data.message}`, 'API_ERROR', data.code);
       }
 
       // B站API返回的评论ID在 data.rpid 或 data.rpid_str 中
       const replyId = data.data.rpid_str || data.data.rpid;
       if (!replyId) {
-        this.logger.error('发布评论返回的reply_id为空', { data });
+        // 避免大数精度丢失，只记录关键字段
+        this.logger.error('发布评论返回的reply_id为空', {
+          code: data.code,
+          message: data.message,
+          oid: String(data.data?.oid || '')
+        });
         throw new AppError('发布评论失败: 未获取到评论ID', 'API_ERROR', 500);
       }
 
-      this.logger.info('评论发布成功', { replyId });
+      // 确保 replyId 以字符串形式记录日志，避免大数精度丢失
+      this.logger.info('评论发布成功', { replyId: String(replyId) });
 
       return {
         replyId: replyId.toString(),
@@ -318,14 +367,28 @@ export class BilibiliAPIService implements IBilibiliAPIService {
 
       if (!response.ok) {
         const errorText = await response.text();
-        this.logger.error('上传图片HTTP错误', { status: response.status, errorText });
+        // 避免大数精度丢失，只记录关键字段
+        this.logger.error('上传图片HTTP错误', {
+          status: response.status,
+          errorText: errorText.substring(0, 200)
+        });
         throw new AppError(`上传图片失败: HTTP ${response.status}`, 'API_ERROR', response.status);
       }
 
       const data: BilibiliAPIResponse = await response.json();
-      this.logger.info('图片上传API响应', { code: data.code, message: data.message, data: JSON.stringify(data.data) });
+      // 避免大数精度丢失，只记录关键字段
+      this.logger.info('图片上传API响应', {
+        code: data.code,
+        message: data.message,
+        imageUrl: data.data?.image_url || ''
+      });
 
       if (data.code !== 0) {
+        // 避免大数精度丢失，只记录关键字段
+        this.logger.error('上传图片失败', {
+          code: data.code,
+          message: data.message
+        });
         throw new AppError(`上传图片失败: ${data.message}`, 'API_ERROR', data.code);
       }
 
@@ -360,12 +423,21 @@ export class BilibiliAPIService implements IBilibiliAPIService {
     });
 
     if (!response.ok) {
+      // 避免大数精度丢失，只记录关键字段
+      this.logger.error('获取上传URL失败', {
+        status: response.status
+      });
       throw new AppError(`获取上传URL失败: HTTP ${response.status}`, 'API_ERROR', response.status);
     }
 
     const data: BilibiliAPIResponse = await response.json();
 
     if (data.code !== 0) {
+      // 避免大数精度丢失，只记录关键字段
+      this.logger.error('获取上传URL失败', {
+        code: data.code,
+        message: data.message
+      });
       throw new AppError(`获取上传URL失败: ${data.message}`, 'API_ERROR', data.code);
     }
 
@@ -388,6 +460,10 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       });
 
       if (!response.ok) {
+        // 避免大数精度丢失，只记录关键字段
+        this.logger.warn('检查Cookie有效性失败', {
+          status: response.status
+        });
         return false;
       }
 

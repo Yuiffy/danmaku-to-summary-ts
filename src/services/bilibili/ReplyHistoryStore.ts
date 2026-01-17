@@ -67,9 +67,18 @@ export class ReplyHistoryStore implements IReplyHistoryStore {
     try {
       this.history.set(history.dynamicId, history);
       await this.save();
-      this.logger.info(`记录回复历史: ${history.dynamicId}`, { success: history.success });
+      // 确保 dynamicId 以字符串形式记录日志，避免大数精度丢失
+      this.logger.info(`记录回复历史: ${history.dynamicId}`, {
+        dynamicId: String(history.dynamicId),
+        success: history.success
+      });
     } catch (error) {
-      this.logger.error('记录回复历史失败', { error, history });
+      // 避免 JSON.stringify 导致大数精度丢失，只记录关键字段
+      this.logger.error('记录回复历史失败', {
+        dynamicId: String(history.dynamicId),
+        uid: history.uid,
+        error
+      });
       throw error;
     }
   }
