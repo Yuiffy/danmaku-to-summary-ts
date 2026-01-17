@@ -239,11 +239,24 @@ export class BilibiliAPIService implements IBilibiliAPIService {
 
       const { stdout, stderr } = await execAsync(command);
 
+      // 输出Python脚本的日志（stderr）
       if (stderr) {
-        this.logger.warn('Python脚本警告', { stderr });
+        // 按行分割日志并逐行输出
+        const logLines = stderr.trim().split('\n');
+        for (const line of logLines) {
+          if (line.includes('[ERROR]')) {
+            this.logger.error(`Python: ${line}`);
+          } else if (line.includes('[WARNING]')) {
+            this.logger.warn(`Python: ${line}`);
+          } else if (line.includes('[OK]')) {
+            this.logger.info(`Python: ${line}`);
+          } else {
+            this.logger.info(`Python: ${line}`);
+          }
+        }
       }
 
-      // 解析 Python 脚本的输出
+      // 解析 Python 脚本的输出（stdout只包含JSON）
       const result = JSON.parse(stdout);
 
       if (!result.success) {
