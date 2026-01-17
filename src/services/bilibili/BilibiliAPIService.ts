@@ -63,57 +63,49 @@ export class BilibiliAPIService implements IBilibiliAPIService {
     try {
       this.logger.debug(`根据直播间ID获取UID: ${roomId}`);
 
-      const url = `${this.baseUrl}/x/space/acc/info`;
-      const params = new URLSearchParams({
-        mid: roomId
-      });
+      // 解析 Cookie 获取必要的参数
+      const sessdata = this.extractCookieValue(this.cookie, 'SESSDATA');
+      const bili_jct = this.extractCookieValue(this.cookie, 'bili_jct');
+      const dedeuserid = this.extractCookieValue(this.cookie, 'DedeUserID');
 
-      // 先尝试直接用roomId作为uid查询用户信息
-      const response = await fetch(`${url}?${params}`, {
-        method: 'GET',
-        headers: {
-          'Cookie': this.cookie,
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Referer': `${this.webUrl}/`
-        }
-      });
+      if (!sessdata || !bili_jct || !dedeuserid) {
+        throw new AppError('Cookie中缺少必要的参数 (SESSDATA, bili_jct, DedeUserID)', 'CONFIGURATION_ERROR', 400);
+      }
 
-      if (response.ok) {
-        const data: BilibiliAPIResponse = await response.json();
-        if (data.code === 0 && data.data) {
-          this.logger.debug(`直接使用roomId作为uid成功: ${roomId}`);
-          return roomId;
+      // 调用 Python 脚本获取直播间信息
+      const scriptPath = path.join(process.cwd(), 'src/scripts/bilibili_room_info.py');
+      const command = `python "${scriptPath}" "${roomId}" "${sessdata}" "${bili_jct}" "${dedeuserid}"`;
+
+      this.logger.debug('调用Python脚本获取直播间信息', { command });
+
+      const { stdout, stderr } = await execAsync(command);
+
+      // 输出Python脚本的日志（stderr）
+      if (stderr) {
+        const logLines = stderr.trim().split('\n');
+        for (const line of logLines) {
+          if (line.includes('[ERROR]')) {
+            this.logger.error(`Python: ${line}`);
+          } else if (line.includes('[WARNING]')) {
+            this.logger.warn(`Python: ${line}`);
+          } else if (line.includes('[OK]')) {
+            this.logger.info(`Python: ${line}`);
+          } else {
+            this.logger.debug(`Python: ${line}`);
+          }
         }
       }
 
-      // 如果直接查询失败，尝试通过直播间API获取uid
-      const liveUrl = 'https://api.live.bilibili.com/room/v1/Room/get_info';
-      const liveParams = new URLSearchParams({
-        room_id: roomId
-      });
+      // 解析 Python 脚本的输出（stdout只包含JSON）
+      const result = JSON.parse(stdout);
 
-      const liveResponse = await fetch(`${liveUrl}?${liveParams}`, {
-        method: 'GET',
-        headers: {
-          'Cookie': this.cookie,
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Referer': `${this.webUrl}/`
-        }
-      });
-
-      if (!liveResponse.ok) {
-        this.logger.error('获取直播间信息失败', { status: liveResponse.status, roomId });
-        throw new AppError(`获取直播间信息失败: HTTP ${liveResponse.status}`, 'API_ERROR', liveResponse.status);
+      if (!result.success) {
+        this.logger.error('Python脚本返回错误', { result });
+        throw new AppError(`获取直播间信息失败: ${result.message || result.error}`, 'API_ERROR', 500);
       }
 
-      const liveData: BilibiliAPIResponse = await liveResponse.json();
-
-      if (liveData.code !== 0 || !liveData.data) {
-        this.logger.error('获取直播间信息失败', { code: liveData.code, message: liveData.message, roomId });
-        throw new AppError(`获取直播间信息失败: ${liveData.message}`, 'API_ERROR', liveData.code);
-      }
-
-      const uid = String(liveData.data.uid);
+      // 从返回的数据中获取UID
+      const uid = String(result.data.room_info.uid);
       this.logger.debug(`通过直播间API获取UID成功: ${roomId} -> ${uid}`);
 
       return uid;
@@ -121,6 +113,7 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       if (error instanceof AppError) {
         throw error;
       }
+      this.logger.error('获取UID失败', { error });
       throw new AppError(
         `获取UID失败: ${error instanceof Error ? error.message : error}`,
         'API_ERROR',
@@ -175,6 +168,14 @@ export class BilibiliAPIService implements IBilibiliAPIService {
         throw new AppError(`获取动态失败: ${data.message}`, 'API_ERROR', data.code);
       }
 
+      // 记录API返回的数据结构
+      this.logger.debug('API返回数据结构', {
+        hasData: !!data.data,
+        dataKeys: data.data ? Object.keys(data.data) : [],
+        hasItems: !!(data.data && data.data.items),
+        itemsCount: data.data && data.data.items ? data.data.items.length : 0
+      });
+
       const dynamics = this.parseDynamics(data.data);
       // 确保 dynamicId 以字符串形式记录日志，避免大数精度丢失
       this.logger.debug(`获取到 ${dynamics.length} 条动态`, {
@@ -201,9 +202,17 @@ export class BilibiliAPIService implements IBilibiliAPIService {
   private parseDynamics(data: any): BilibiliDynamic[] {
     const dynamics: BilibiliDynamic[] = [];
 
-    if (!data || !data.items) {
+    if (!data) {
+      this.logger.warn('API返回数据为空');
       return dynamics;
     }
+
+    if (!data.items) {
+      this.logger.warn('API返回数据中没有items字段', { dataKeys: Object.keys(data) });
+      return dynamics;
+    }
+
+    this.logger.debug(`API返回 ${data.items.length} 条动态数据`);
 
     for (const item of data.items) {
       try {
@@ -229,11 +238,17 @@ export class BilibiliAPIService implements IBilibiliAPIService {
   private parseDynamicItem(item: any): BilibiliDynamic | null {
     const card = item.card;
     if (!card) {
+      this.logger.debug('动态项没有card字段', { itemKeys: Object.keys(item) });
       return null;
     }
 
     const cardData = typeof card === 'string' ? JSON.parse(card) : card;
     const desc = item.desc;
+
+    if (!desc) {
+      this.logger.debug('动态项没有desc字段', { itemKeys: Object.keys(item) });
+      return null;
+    }
 
     // 解析动态类型
     let type: DynamicType;
@@ -262,9 +277,15 @@ export class BilibiliAPIService implements IBilibiliAPIService {
         type = DynamicType.ARTICLE;
         content = cardData.item.title;
       } else {
+        this.logger.debug('动态项cardData.item没有匹配的类型', {
+          cardDataItemKeys: Object.keys(cardData.item)
+        });
         return null;
       }
     } else {
+      this.logger.debug('动态项cardData没有item字段', {
+        cardDataKeys: Object.keys(cardData)
+      });
       return null;
     }
 
