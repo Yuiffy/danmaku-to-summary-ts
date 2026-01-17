@@ -168,24 +168,23 @@ async function generateTextWithGemini(prompt) {
     console.log(`   模型: ${geminiConfig.model}`);
     console.log(`   温度: ${geminiConfig.temperature}`);
 
-    let originalEnv = null;
+    let originalFetch = null;
     try {
         // --- 核心修改开始 ---
-        // SDK 内部使用自己的 fetch 实现，需要通过环境变量设置代理
+        // SDK 不支持在构造函数传 agent，我们需要劫持全局 fetch 来注入代理
         if (geminiConfig.proxy) {
             console.log(`   使用代理: ${geminiConfig.proxy}`);
-            // 保存原始环境变量
-            originalEnv = {
-                HTTP_PROXY: process.env.HTTP_PROXY,
-                HTTPS_PROXY: process.env.HTTPS_PROXY,
-                http_proxy: process.env.http_proxy,
-                https_proxy: process.env.https_proxy
+            const agent = new HttpsProxyAgent(geminiConfig.proxy);
+
+            // 临时覆盖全局 fetch，强制让 SDK 走 node-fetch 并带上 agent
+            // 注意：这是一种 Hack 方式，但兼容性最好
+            originalFetch = global.fetch;
+            global.fetch = (url, init) => {
+                return fetch(url, {
+                    ...init,
+                    agent: agent
+                });
             };
-            // 设置代理环境变量
-            process.env.HTTP_PROXY = geminiConfig.proxy;
-            process.env.HTTPS_PROXY = geminiConfig.proxy;
-            process.env.http_proxy = geminiConfig.proxy;
-            process.env.https_proxy = geminiConfig.proxy;
         }
         // --- 核心修改结束 ---
 
@@ -198,60 +197,22 @@ async function generateTextWithGemini(prompt) {
                 maxOutputTokens: geminiConfig.maxTokens,
             }
         });
-
+        
         const result = await model.generateContent(prompt);
         const response = await result.response;
         const text = response.text();
 
-        // 恢复原始环境变量（如果被修改了）
-        if (originalEnv !== null) {
-            if (originalEnv.HTTP_PROXY !== undefined) {
-                process.env.HTTP_PROXY = originalEnv.HTTP_PROXY;
-            } else {
-                delete process.env.HTTP_PROXY;
-            }
-            if (originalEnv.HTTPS_PROXY !== undefined) {
-                process.env.HTTPS_PROXY = originalEnv.HTTPS_PROXY;
-            } else {
-                delete process.env.HTTPS_PROXY;
-            }
-            if (originalEnv.http_proxy !== undefined) {
-                process.env.http_proxy = originalEnv.http_proxy;
-            } else {
-                delete process.env.http_proxy;
-            }
-            if (originalEnv.https_proxy !== undefined) {
-                process.env.https_proxy = originalEnv.https_proxy;
-            } else {
-                delete process.env.https_proxy;
-            }
+        // 恢复原始 fetch（如果被覆盖了）
+        if (originalFetch !== null) {
+            global.fetch = originalFetch;
         }
 
         console.log('✅ Gemini API调用成功');
         return text;
     } catch (error) {
-        // 恢复原始环境变量（如果被修改了）
-        if (originalEnv !== null) {
-            if (originalEnv.HTTP_PROXY !== undefined) {
-                process.env.HTTP_PROXY = originalEnv.HTTP_PROXY;
-            } else {
-                delete process.env.HTTP_PROXY;
-            }
-            if (originalEnv.HTTPS_PROXY !== undefined) {
-                process.env.HTTPS_PROXY = originalEnv.HTTPS_PROXY;
-            } else {
-                delete process.env.HTTPS_PROXY;
-            }
-            if (originalEnv.http_proxy !== undefined) {
-                process.env.http_proxy = originalEnv.http_proxy;
-            } else {
-                delete process.env.http_proxy;
-            }
-            if (originalEnv.https_proxy !== undefined) {
-                process.env.https_proxy = originalEnv.https_proxy;
-            } else {
-                delete process.env.https_proxy;
-            }
+        // 恢复原始 fetch（如果被覆盖了）
+        if (originalFetch !== null) {
+            global.fetch = originalFetch;
         }
 
         // 检查是否是429超频错误
