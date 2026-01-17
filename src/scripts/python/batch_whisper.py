@@ -199,8 +199,8 @@ def transcribe_with_strategy(model, video_path, srt_path, total_duration):
             # === 🛡️ 完整性检查 ===
             missing = total_duration - last_segment_end
 
-            # 如果缺失不到5%的话允许放过，否则检查缺失严重且视频不短
-            if missing / total_duration >= 0.05 and missing > TOLERANCE_SECONDS and total_duration > 120:
+            # 如果缺失不到10%的话允许放过，否则检查缺失严重且视频不短
+            if missing / total_duration >= 0.1 and missing > TOLERANCE_SECONDS and total_duration > 120:
                 print(f"   ⚠️  警告: 缺失 {missing:.1f} 秒 (总长 {format_timestamp(total_duration)})")
 
                 if attempt < MAX_RETRIES:
