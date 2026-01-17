@@ -5,6 +5,7 @@ import { ConfigProvider } from '../../core/config/ConfigProvider';
 import { DDTVWebhookHandler } from './handlers/DDTVWebhookHandler';
 import { MikufansWebhookHandler } from './handlers/MikufansWebhookHandler';
 import { AudioFileHandler } from './handlers/AudioFileHandler';
+import { BilibiliAPIHandler } from './handlers/BilibiliAPIHandler';
 import { FileStabilityChecker } from './FileStabilityChecker';
 import { DuplicateProcessorGuard } from './DuplicateProcessorGuard';
 import { ComicGeneratorService } from '../comic/ComicGeneratorService';
@@ -346,7 +347,8 @@ export class WebhookService implements IWebhookService {
     this.handlers = [
       new DDTVWebhookHandler(),
       new MikufansWebhookHandler(),
-      new AudioFileHandler()
+      new AudioFileHandler(),
+      new BilibiliAPIHandler()
     ];
     
     this.getLogger().info(`初始化了 ${this.handlers.length} 个Webhook处理器`);

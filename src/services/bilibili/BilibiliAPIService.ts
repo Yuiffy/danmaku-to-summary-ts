@@ -62,7 +62,7 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       const url = `${this.baseUrl}/x/polymer/web-dynamic/v1/feed/space`;
       const params = new URLSearchParams({
         host_mid: uid,
-        offset: offset || '',
+        offset: offset ? offset.toString() : '',
         timezone_offset: '-480',
         features: 'itemOpusStyle'
       });
