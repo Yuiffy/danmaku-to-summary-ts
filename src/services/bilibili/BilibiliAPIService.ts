@@ -229,10 +229,22 @@ export class BilibiliAPIService implements IBilibiliAPIService {
         throw new AppError(`发布评论失败: ${data.message}`, 'API_ERROR', data.code);
       }
 
-      this.logger.info('评论发布成功', { replyId: data.data.reply.reply_id });
+      // 检查返回数据结构
+      if (!data.data || !data.data.reply) {
+        this.logger.error('发布评论返回数据格式异常', { data });
+        throw new AppError('发布评论失败: 返回数据格式异常', 'API_ERROR', 500);
+      }
+
+      const replyId = data.data.reply.reply_id;
+      if (!replyId) {
+        this.logger.error('发布评论返回的reply_id为空', { data });
+        throw new AppError('发布评论失败: 未获取到评论ID', 'API_ERROR', 500);
+      }
+
+      this.logger.info('评论发布成功', { replyId });
 
       return {
-        replyId: data.data.reply.reply_id.toString(),
+        replyId: replyId.toString(),
         replyTime: data.data.reply.like_timestamp || Date.now()
       };
     } catch (error) {
