@@ -28,3 +28,4 @@ export { BilibiliAPIService } from './BilibiliAPIService';
 export { ReplyHistoryStore } from './ReplyHistoryStore';
 export { DynamicPollingService } from './DynamicPollingService';
 export { ReplyManager } from './ReplyManager';
+export { parseDynamicItem, parseDynamicItems } from './DynamicParser';
