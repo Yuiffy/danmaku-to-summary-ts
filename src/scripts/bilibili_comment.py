@@ -10,8 +10,11 @@ import json
 import asyncio
 import io
 import aiohttp
+import os
+import base64
 from bilibili_api import comment, Credential
 from bilibili_api.comment import CommentResourceType
+from bilibili_api.utils.picture import Picture
 
 # 禁用输出缓冲，确保日志实时输出到Node.js
 try:
@@ -87,7 +90,7 @@ async def get_dynamic_comment_id(dynamic_id: str) -> tuple[str, CommentResourceT
             return comment_id_str, comment_resource_type
 
 
-async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct: str, dedeuserid: str) -> dict:
+async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct: str, dedeuserid: str, image_path: str = None) -> dict:
     """
     发布动态评论
 
@@ -97,12 +100,15 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
         sessdata: SESSDATA
         bili_jct: CSRF Token
         dedeuserid: DedeUserID
+        image_path: 图片路径（可选）
 
     Returns:
         dict: 包含评论结果的字典
     """
     log(f"[INFO] 开始发布评论到动态: {dynamic_id}")
     log(f"[INFO] 评论内容: {content}")
+    if image_path:
+        log(f"[INFO] 图片路径: {image_path}")
 
     try:
         # 获取动态的comment_id和评论类型
@@ -131,21 +137,35 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
                 'message': 'SESSDATA或bili_jct无效，请检查Cookie'
             }
 
+        # 如果有图片，先上传图片
+        pic = None
+        image_url = None
+        if image_path:
+            log(f"[INFO] 开始上传图片...")
+            # 使用Picture类从文件加载图片
+            pic = Picture.from_file(image_path)
+            # 上传图片到B站
+            await pic.upload(credential)
+            image_url = pic.url
+            log(f"[INFO] 图片上传成功，URL: {image_url}")
+
         # 使用 comment.send_comment 函数发送评论
         log(f"[INFO] 调用B站API发送评论，oid={comment_id}, type={comment_type.value}...")
         result = await comment.send_comment(
             text=content,
             oid=int(comment_id),
             type_=comment_type,
-            credential=credential
+            credential=credential,
+            pic=pic
         )
 
         reply_id = str(result.get('rpid', ''))
         log(f"[OK] 评论发布成功，回复ID: {reply_id}")
-        
+
         return {
             'success': True,
             'reply_id': reply_id,
+            'image_url': image_url,
             'message': '评论发布成功'
         }
 
@@ -163,14 +183,14 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
 def main():
     """主函数"""
     log(f"[INFO] B站评论发布脚本启动")
-    
+
     # 从命令行参数读取输入
     if len(sys.argv) < 6:
-        log(f"[ERROR] 参数不足，需要参数: dynamic_id content sessdata bili_jct dedeuserid")
+        log(f"[ERROR] 参数不足，需要参数: dynamic_id content sessdata bili_jct dedeuserid [image_path]")
         print(json.dumps({
             'success': False,
             'error': '参数不足',
-            'message': '需要参数: dynamic_id content sessdata bili_jct dedeuserid'
+            'message': '需要参数: dynamic_id content sessdata bili_jct dedeuserid [image_path]'
         }))
         sys.exit(1)
 
@@ -179,11 +199,12 @@ def main():
     sessdata = sys.argv[3]
     bili_jct = sys.argv[4]
     dedeuserid = sys.argv[5]
+    image_path = sys.argv[6] if len(sys.argv) > 6 else None
 
-    log(f"[INFO] 接收到参数: dynamic_id={dynamic_id}, content_length={len(content)}")
+    log(f"[INFO] 接收到参数: dynamic_id={dynamic_id}, content_length={len(content)}, has_image={image_path is not None}")
 
     # 发布评论
-    result = asyncio.run(publish_comment(dynamic_id, content, sessdata, bili_jct, dedeuserid))
+    result = asyncio.run(publish_comment(dynamic_id, content, sessdata, bili_jct, dedeuserid, image_path))
 
     # 输出JSON结果到stdout（仅JSON，不带日志前缀）
     log(f"[INFO] 输出结果: {json.dumps(result, ensure_ascii=False)}")
