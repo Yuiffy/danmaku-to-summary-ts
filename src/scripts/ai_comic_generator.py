@@ -7,6 +7,12 @@ AI漫画生成模块
 
 import os
 import sys
+import io
+
+# 禁用输出缓冲，确保日志实时输出到Node.js
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', line_buffering=True)
+
 import json
 import time
 import base64

@@ -11,11 +11,10 @@ import sys
 import json
 from typing import Dict, Any, Optional
 
-# Windows下设置UTF-8输出
-if sys.platform == 'win32':
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+# 禁用输出缓冲，确保日志实时输出到Node.js
+import io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', line_buffering=True)
 
 
 def get_project_root() -> str:
