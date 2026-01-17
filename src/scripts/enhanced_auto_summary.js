@@ -439,7 +439,7 @@ const main = async () => {
         // 使用 do_fusion_summary 生成的文件
         if (generatedHighlightFile && fs.existsSync(generatedHighlightFile)) {
             const highlightPath = generatedHighlightFile;
-            const highlightFile = path.basename(highlightFile);
+            const highlightFile = path.basename(highlightPath);
             const roomId = extractRoomIdFromFilename(highlightFile);
             
             console.log(`📌 处理 do_fusion_summary 生成的文件: ${highlightFile}`);
