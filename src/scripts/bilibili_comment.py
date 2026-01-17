@@ -9,12 +9,17 @@ import sys
 import json
 import asyncio
 import io
-import aiohttp
 import os
 import base64
-from bilibili_api import comment, Credential
+from bilibili_api import comment, Credential, dynamic
 from bilibili_api.comment import CommentResourceType
 from bilibili_api.utils.picture import Picture
+from bilibili_api import request_settings
+
+Dynamic = dynamic.Dynamic
+
+# 设置wbi重试次数上限，默认为3，增加到10以应对反爬虫
+request_settings.set_wbi_retry_times(10)
 
 # 禁用输出缓冲，确保日志实时输出到Node.js
 try:
@@ -44,50 +49,38 @@ def log(*args, **kwargs):
 print = safe_print
 
 
-async def get_dynamic_comment_id(dynamic_id: str) -> tuple[str, CommentResourceType]:
+async def get_dynamic_comment_id(dynamic_id: str, credential: Credential) -> tuple[str, CommentResourceType]:
     """
     获取动态的comment_id和评论类型
 
     Args:
         dynamic_id: 动态ID
+        credential: 凭证对象
 
     Returns:
         tuple: (comment_id, comment_type)
     """
-    url = f"https://api.bilibili.com/x/polymer/web-dynamic/v1/detail"
-    params = {
-        'id': dynamic_id,
-        'timezone_offset': '-480',
-        'features': 'itemOpusStyle'
-    }
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://www.bilibili.com/'
-    }
+    # 使用bilibili-api的Dynamic类获取动态信息，自动处理wbi签名和重试
+    dynamic = Dynamic(dynamic_id=int(dynamic_id), credential=credential)
+    info = await dynamic.get_info()
 
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, params=params, headers=headers) as response:
-            data = await response.json()
+    # 从返回的数据中提取comment_id和comment_type
+    item = info.get('item', {})
+    basic = item.get('basic', {})
+    comment_id_str = basic.get('comment_id_str', '')
+    comment_type = basic.get('comment_type', 11)
 
-            if data.get('code') != 0:
-                raise Exception(f"获取动态详情失败: {data.get('message')}")
+    # 根据comment_type映射到CommentResourceType
+    if comment_type == 11:
+        comment_resource_type = CommentResourceType.DYNAMIC_DRAW
+    elif comment_type == 17:
+        comment_resource_type = CommentResourceType.DYNAMIC
+    elif comment_type == 12:
+        comment_resource_type = CommentResourceType.ARTICLE
+    else:
+        comment_resource_type = CommentResourceType.DYNAMIC_DRAW
 
-            item = data.get('data', {}).get('item', {})
-            basic = item.get('basic', {})
-            comment_id_str = basic.get('comment_id_str', '')
-            comment_type = basic.get('comment_type', 11)
-
-            # 根据comment_type映射到CommentResourceType
-            if comment_type == 11:
-                comment_resource_type = CommentResourceType.DYNAMIC_DRAW
-            elif comment_type == 17:
-                comment_resource_type = CommentResourceType.DYNAMIC
-            elif comment_type == 12:
-                comment_resource_type = CommentResourceType.ARTICLE
-            else:
-                comment_resource_type = CommentResourceType.DYNAMIC_DRAW
-
-            return comment_id_str, comment_resource_type
+    return comment_id_str, comment_resource_type
 
 
 async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct: str, dedeuserid: str, image_path: str = None) -> dict:
@@ -111,11 +104,6 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
         log(f"[INFO] 图片路径: {image_path}")
 
     try:
-        # 获取动态的comment_id和评论类型
-        log(f"[INFO] 获取动态的comment_id...")
-        comment_id, comment_type = await get_dynamic_comment_id(dynamic_id)
-        log(f"[INFO] 获取到comment_id: {comment_id}, 评论类型: {comment_type.value}")
-
         # 创建 Credential 对象
         log(f"[INFO] 创建凭证对象...")
         credential = Credential(
@@ -136,6 +124,11 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
                 'error': '凭证无效',
                 'message': 'SESSDATA或bili_jct无效，请检查Cookie'
             }
+
+        # 获取动态的comment_id和评论类型（使用bilibili-api的Dynamic类，自动处理wbi签名）
+        log(f"[INFO] 获取动态的comment_id...")
+        comment_id, comment_type = await get_dynamic_comment_id(dynamic_id, credential)
+        log(f"[INFO] 获取到comment_id: {comment_id}, 评论类型: {comment_type.value}")
 
         # 如果有图片，先上传图片
         pic = None
