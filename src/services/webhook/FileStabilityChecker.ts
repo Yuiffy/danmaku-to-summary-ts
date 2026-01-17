@@ -18,8 +18,8 @@ export class FileStabilityChecker implements IFileStabilityChecker {
    * 默认配置
    */
   private defaultConfig = {
-    initialWaitMs: 10000, // 初始等待时间（避免干扰写入过程）
-    checkIntervalMs: 6000, // 检查间隔
+    initialWaitMs: 6000, // 初始等待时间（避免干扰写入过程）
+    checkIntervalMs: 4000, // 检查间隔
     maxStableChecks: 2, // 连续稳定检查次数
     timeoutMs: 30000, // 超时时间
   };
