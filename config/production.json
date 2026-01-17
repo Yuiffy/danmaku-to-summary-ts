@@ -43,7 +43,7 @@
       "timeout": 30000
     },
     "storage": {
-      "keepOriginalVideo": true,
+      "keepOriginalVideo": false,
       "maxFileAgeDays": 30
     }
   },

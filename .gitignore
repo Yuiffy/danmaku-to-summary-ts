@@ -40,3 +40,4 @@ next-env.d.ts
 
 # 敏感配置文件
 src/scripts/config.secrets.json
+config/secrets.json

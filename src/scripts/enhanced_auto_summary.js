@@ -6,33 +6,16 @@ const { spawn } = require('child_process');
 const crypto = require('crypto');
 
 // 导入新模块
+const configLoader = require('./config-loader');
 const audioProcessor = require('./audio_processor');
 const aiTextGenerator = require('./ai_text_generator');
 const aiComicGenerator = require('./ai_comic_generator');
 
 // 获取音频格式配置
 function getAudioFormats() {
-    // 优先读取外部配置文件
-    const env = process.env.NODE_ENV || 'development';
-    const configDir = path.resolve(path.join(__dirname, '..', '..', 'config'));
-    const configPath = path.join(configDir, env === 'production' ? 'production.json' : 'default.json');
-    const fallbackPath = path.join(__dirname, 'config.json'); // 备用
+    const config = configLoader.getConfig();
     const defaultAudioFormats = ['.m4a', '.aac', '.mp3', '.wav', '.ogg', '.flac'];
-    
-    try {
-        let targetPath = configPath;
-        if (!fs.existsSync(targetPath)) {
-            targetPath = fallbackPath;
-        }
-        
-        if (fs.existsSync(targetPath)) {
-            const config = JSON.parse(fs.readFileSync(targetPath, 'utf8'));
-            return config.audio?.formats || config.audioRecording?.audioFormats || defaultAudioFormats;
-        }
-    } catch (error) {
-        console.error('Error loading audio formats:', error);
-    }
-    return defaultAudioFormats;
+    return config.audio?.formats || config.audioRecording?.audioFormats || defaultAudioFormats;
 }
 
 // 获取支持的媒体文件扩展名
@@ -249,40 +232,23 @@ async function generateAiComic(highlightPath) {
 
 // 检查房间是否启用AI功能
 function shouldGenerateAiForRoom(roomId) {
-    // 优先读取外部配置文件
-    const env = process.env.NODE_ENV || 'development';
-    const configDir = path.resolve(path.join(__dirname, '..', '..', 'config'));
-    const configPath = path.join(configDir, env === 'production' ? 'production.json' : 'default.json');
-    const fallbackPath = path.join(__dirname, 'config.json'); // 备用
+    const config = configLoader.getConfig();
+    const roomStr = String(roomId);
     
-    try {
-        let targetPath = configPath;
-        if (!fs.existsSync(targetPath)) {
-            targetPath = fallbackPath;
-        }
-        
-        if (fs.existsSync(targetPath)) {
-            const config = JSON.parse(fs.readFileSync(targetPath, 'utf8'));
-            const roomStr = String(roomId);
-            
-            if (config.ai?.roomSettings && config.ai.roomSettings[roomStr]) {
-                const roomConfig = config.ai.roomSettings[roomStr];
-                return {
-                    text: roomConfig.enableTextGeneration !== false,
-                    comic: roomConfig.enableComicGeneration !== false
-                };
-            }
-            // 兼容旧格式 roomSettings（直接在config下）
-            if (config.roomSettings && config.roomSettings[roomStr]) {
-                const roomConfig = config.roomSettings[roomStr];
-                return {
-                    text: roomConfig.enableTextGeneration !== false,
-                    comic: roomConfig.enableComicGeneration !== false
-                };
-            }
-        }
-    } catch (error) {
-        console.error('Error checking room AI settings:', error);
+    if (config.ai?.roomSettings && config.ai.roomSettings[roomStr]) {
+        const roomConfig = config.ai.roomSettings[roomStr];
+        return {
+            text: roomConfig.enableTextGeneration !== false,
+            comic: roomConfig.enableComicGeneration !== false
+        };
+    }
+    // 兼容旧格式 roomSettings（直接在config下）
+    if (config.roomSettings && config.roomSettings[roomStr]) {
+        const roomConfig = config.roomSettings[roomStr];
+        return {
+            text: roomConfig.enableTextGeneration !== false,
+            comic: roomConfig.enableComicGeneration !== false
+        };
     }
     
     // 默认启用所有AI功能

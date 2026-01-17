@@ -5,60 +5,23 @@ const fs = require('fs');
 const { promisify } = require('util');
 const stat = promisify(fs.stat);
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-// 配置文件加载函数
-function loadConfig() {
-    const configPath = path.join(__dirname, 'config.json');
-    const defaultConfig = {
-        audioRecording: {
-            enabled: true,
-            audioOnlyRooms: [],
-            audioFormats: ['.m4a', '.aac', '.mp3', '.wav', '.ogg', '.flac'],
-            defaultFormat: '.m4a'
-        },
-        timeouts: {
-            fixVideoWait: 60000,
-            fileStableCheck: 30000,
-            processTimeout: 1800000
-        },
-        recorders: {
-            ddtv: {
-                enabled: true,
-                endpoint: '/ddtv'
-            },
-            mikufans: {
-                enabled: true,
-                endpoint: '/mikufans',
-                basePath: 'D:/files/videos/DDTV录播'
-            }
-        }
-    };
-
-    try {
-        if (fs.existsSync(configPath)) {
-            const userConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-            return { ...defaultConfig, ...userConfig };
-        }
-    } catch (error) {
-        console.error('Error loading config:', error);
-    }
-    return defaultConfig;
-}
+const configLoader = require('./config-loader');
 
 function getRecorderConfig(recorderName) {
-    const config = loadConfig();
-    return config.recorders[recorderName] || null;
+    const config = configLoader.getConfig();
+    return config.recorders?.[recorderName] || config.webhook?.endpoints?.[recorderName] || null;
 }
 
 function getTimeoutConfig() {
-    const config = loadConfig();
-    return config.timeouts;
+    const config = configLoader.getConfig();
+    return config.timeouts || config.webhook?.timeouts || {};
 }
 
 function isAudioOnlyRoom(roomId) {
-    const config = loadConfig();
-    return config.audioRecording.enabled &&
-           config.audioRecording.audioOnlyRooms.includes(parseInt(roomId));
+    const config = configLoader.getConfig();
+    const audioOnlyRooms = config.audio?.audioOnlyRooms || config.audioRecording?.audioOnlyRooms || [];
+    return (config.audio?.enabled || config.audioRecording?.enabled) &&
+           audioOnlyRooms.includes(parseInt(roomId));
 }
 
 const app = express();

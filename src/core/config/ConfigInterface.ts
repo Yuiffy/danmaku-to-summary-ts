@@ -154,6 +154,24 @@ export interface StorageConfig {
   };
 }
 
+// B站配置
+export interface BilibiliConfig {
+  enabled: boolean;
+  cookie?: string;
+  csrf?: string;
+  polling: {
+    interval: number;
+    maxRetries: number;
+    retryDelay: number;
+  };
+  anchors: Record<string, {
+    uid: string;
+    name: string;
+    roomId?: string;
+    enabled: boolean;
+  }>;
+}
+
 // 监控配置
 export interface MonitoringConfig {
   enabled: boolean;
@@ -181,6 +199,7 @@ export interface AppConfig {
   fusion: FusionConfig;
   storage: StorageConfig;
   monitoring: MonitoringConfig;
+  bilibili: BilibiliConfig;
 }
 
 // 配置验证结果

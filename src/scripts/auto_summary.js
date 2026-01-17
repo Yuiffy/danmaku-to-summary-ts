@@ -3,21 +3,13 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const configLoader = require('./config-loader');
 
 // 获取音频格式配置
 function getAudioFormats() {
-    const configPath = path.join(__dirname, 'config.json');
+    const config = configLoader.getConfig();
     const defaultAudioFormats = ['.m4a', '.aac', '.mp3', '.wav', '.ogg', '.flac'];
-    
-    try {
-        if (fs.existsSync(configPath)) {
-            const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-            return config.audioRecording?.audioFormats || defaultAudioFormats;
-        }
-    } catch (error) {
-        console.error('Error loading audio formats:', error);
-    }
-    return defaultAudioFormats;
+    return config.audio?.formats || config.audioRecording?.audioFormats || defaultAudioFormats;
 }
 
 // 获取支持的媒体文件扩展名

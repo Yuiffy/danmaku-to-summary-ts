@@ -113,5 +113,20 @@
       "enabled": true,
       "endpoint": "/health"
     }
+  },
+  "bilibili": {
+    "enabled": true,
+    "polling": {
+      "interval": 60000,
+      "maxRetries": 3,
+      "retryDelay": 5000
+    },
+    "anchors": {
+      "14279": {
+        "uid": "14279",
+        "name": "测试账号",
+        "enabled": true
+      }
+    }
   }
 }

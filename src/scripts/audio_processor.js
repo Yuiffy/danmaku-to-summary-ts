@@ -2,72 +2,14 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const { promisify } = require('util');
+const configLoader = require('./config-loader');
 
 const stat = promisify(fs.stat);
 const unlink = promisify(fs.unlink);
 
-// 加载配置
-function loadConfig() {
-    const env = process.env.NODE_ENV || 'development';
-    const configDir = path.resolve(path.join(__dirname, '..', '..', 'config'));
-    const configPath = path.join(configDir, env === 'production' ? 'production.json' : 'default.json');
-    const fallbackPath = path.join(__dirname, 'config.json');
-    
-    const defaultConfig = {
-        audio: {
-            enabled: true,
-            audioOnlyRooms: [],
-            formats: ['.m4a', '.aac', '.mp3', '.wav', '.ogg', '.flac'],
-            defaultFormat: '.m4a',
-            ffmpeg: {
-                path: 'ffmpeg',
-                timeout: 300000
-            },
-            storage: {
-                keepOriginalVideo: false,
-                maxFileAgeDays: 30
-            }
-        },
-        audioProcessing: {
-            enabled: true,
-            audioOnlyRooms: [],
-            keepOriginalVideo: false,
-            ffmpegPath: 'ffmpeg'
-        },
-        timeouts: {
-            ffmpegTimeout: 300000
-        }
-    };
-
-    try {
-        let targetPath = configPath;
-        if (!fs.existsSync(targetPath)) {
-            targetPath = fallbackPath;
-        }
-        
-        if (fs.existsSync(targetPath)) {
-            const userConfig = JSON.parse(fs.readFileSync(targetPath, 'utf8'));
-            const merged = JSON.parse(JSON.stringify(defaultConfig));
-            if (userConfig.audio) {
-                Object.assign(merged.audio, userConfig.audio);
-            }
-            if (userConfig.audioProcessing) {
-                Object.assign(merged.audioProcessing, userConfig.audioProcessing);
-            }
-            if (userConfig.timeouts) {
-                Object.assign(merged.timeouts, userConfig.timeouts);
-            }
-            return merged;
-        }
-    } catch (error) {
-        console.error('Error loading audio processing config:', error);
-    }
-    return defaultConfig;
-}
-
 // 检查是否为音频专用房间
 function isAudioOnlyRoom(roomId) {
-    const config = loadConfig();
+    const config = configLoader.getConfig();
     const roomIdInt = parseInt(roomId);
     
     // 新格式：audio.audioOnlyRooms
@@ -88,7 +30,7 @@ function extractRoomIdFromFilename(filename) {
 // 执行ffmpeg命令
 function runFfmpegCommand(args, timeout = 300000) {
     return new Promise((resolve, reject) => {
-        const config = loadConfig();
+        const config = configLoader.getConfig();
         const ffmpegPath = config.audio?.ffmpeg?.path || config.audioProcessing?.ffmpegPath || 'ffmpeg';
         
         console.log(`🎵 执行ffmpeg命令: ${ffmpegPath} ${args.join(' ')}`);
@@ -178,7 +120,7 @@ async function convertVideoToAudio(videoPath, audioFormat = '.m4a') {
 
 // 处理音频专用房间的视频
 async function processAudioOnlyRoom(videoPath, roomId = null) {
-    const config = loadConfig();
+    const config = configLoader.getConfig();
     const filename = path.basename(videoPath);
     
     // 如果没有提供roomId，从文件名提取
@@ -241,7 +183,7 @@ async function checkFfmpegAvailability() {
 
 // 主处理函数（供外部调用）
 async function processVideoForAudio(videoPath, roomId = null) {
-    const config = loadConfig();
+    const config = configLoader.getConfig();
     
     const audioEnabled = config.audio?.enabled !== undefined ? config.audio.enabled : config.audioProcessing?.enabled;
     if (!audioEnabled) {
@@ -270,7 +212,6 @@ async function processVideoForAudio(videoPath, roomId = null) {
 
 // 导出函数
 module.exports = {
-    loadConfig,
     isAudioOnlyRoom,
     extractRoomIdFromFilename,
     convertVideoToAudio,

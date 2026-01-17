@@ -3,148 +3,18 @@ const path = require('path');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const fetch = require('node-fetch');
 const { HttpsProxyAgent } = require('https-proxy-agent');
-
-// 加载配置
-function loadConfig() {
-    // 优先读取外部配置文件
-    const env = process.env.NODE_ENV || 'development';
-    const configDir = path.resolve(path.join(__dirname, '..', '..', 'config'));
-    // 优先级: /config/production.json > /config/default.json > /src/scripts/config.json
-    const possiblePaths = [
-        path.join(configDir, env === 'production' ? 'production.json' : 'default.json'),
-        path.join(configDir, 'default.json'),
-        path.join(__dirname, 'config.json'),
-    ];
-    let configPath = possiblePaths[2]; // 默认备用
-    for (const p of possiblePaths) {
-        if (fs.existsSync(p)) {
-            configPath = p;
-            break;
-        }
-    }
-    const secretsPath = path.join(__dirname, 'config.secrets.json');
-    
-    const defaultConfig = {
-        aiServices: {
-            gemini: {
-                enabled: true,
-                apiKey: '',
-                model: 'gemini-2.0-flash',
-                temperature: 0.7,
-                maxTokens: 2000
-            },
-            tuZi: {
-                enabled: false,
-                apiKey: '',
-                model: 'default', // 图片生成模型
-                textModel: 'gemini-3-flash-preview', // 文本生成模型
-                baseUrl: 'https://api.tu-zi.com',
-                temperature: 0.7,
-                maxTokens: 2000
-            }
-        },
-        timeouts: {
-            aiApiTimeout: 60000
-        }
-    };
-
-    try {
-        // 加载主配置文件
-        if (fs.existsSync(configPath)) {
-            const userConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-            console.log(`📋 加载配置文件: ${configPath}`);
-            // 深度合并配置
-            const merged = JSON.parse(JSON.stringify(defaultConfig));
-            
-            // 从外部配置读取（新格式：ai.text 和 ai.comic）
-            if (userConfig.ai?.text) {
-                Object.assign(merged.aiServices.gemini, userConfig.ai.text);
-                Object.assign(merged.aiServices.gemini, userConfig.ai.text.gemini);
-            }
-            // 图片模型配置（用于 ai.comic）
-            if (userConfig.ai?.comic?.tuZi?.model) {
-                Object.assign(merged.aiServices.tuZi, userConfig.ai.comic.tuZi);
-                merged.aiServices.tuZi.model = userConfig.ai.comic.tuZi.model;
-            }
-            // 文本模型配置（用于 ai.text），优先级高于图片模型配置
-            if (userConfig.ai?.comic?.tuZi?.textModel) {
-                merged.aiServices.tuZi.textModel = userConfig.ai.comic.tuZi.textModel;
-            }
-            // 兼容旧格式：直接覆盖整个 tuZi 对象（可能包含 model 但不包含 textModel）
-            if (userConfig.ai?.comic?.tuZi && !userConfig.ai.comic.tuZi.textModel) {
-                Object.assign(merged.aiServices.tuZi, userConfig.ai.comic.tuZi);
-            }
-            
-            // 兼容旧格式 aiServices
-            if (userConfig.aiServices?.gemini) {
-                Object.assign(merged.aiServices.gemini, userConfig.aiServices.gemini);
-            }
-            if (userConfig.aiServices?.tuZi) {
-                Object.assign(merged.aiServices.tuZi, userConfig.aiServices.tuZi);
-            }
-            
-            if (userConfig.timeouts) {
-                Object.assign(merged.timeouts, userConfig.timeouts);
-            }
-            
-            // 加载密钥配置文件（如果存在）
-            if (fs.existsSync(secretsPath)) {
-                try {
-                    const secretsConfig = JSON.parse(fs.readFileSync(secretsPath, 'utf8'));
-                    // 支持新旧两种配置格式
-                    if (secretsConfig.aiServices?.gemini?.apiKey) {
-                        // 旧格式
-                        merged.aiServices.gemini.apiKey = secretsConfig.aiServices.gemini.apiKey;
-                    } else if (secretsConfig.ai?.text?.gemini?.apiKey) {
-                        // 新格式
-                        merged.aiServices.gemini.apiKey = secretsConfig.ai.text.gemini.apiKey;
-                    }
-                    
-                    // 加载tuZi配置
-                    if (secretsConfig.aiServices?.tuZi?.apiKey) {
-                        merged.aiServices.tuZi.apiKey = secretsConfig.aiServices.tuZi.apiKey;
-                    } else if (secretsConfig.ai?.comic?.tuZi?.apiKey) {
-                        merged.aiServices.tuZi.apiKey = secretsConfig.ai.comic.tuZi.apiKey;
-                    }
-                } catch (secretsError) {
-                    console.warn('警告: 无法加载密钥配置文件，API密钥将为空:', secretsError.message);
-                }
-            }
-            
-            return merged;
-        }
-    } catch (error) {
-        console.error('Error loading AI config:', error);
-    }
-    return defaultConfig;
-}
-
-// 检查Gemini配置是否有效
-function isGeminiConfigured() {
-    const config = loadConfig();
-    return config.aiServices.gemini.enabled &&
-           config.aiServices.gemini.apiKey &&
-           config.aiServices.gemini.apiKey.trim() !== '';
-}
-
-// 检查tuZi配置是否有效
-function isTuZiConfigured() {
-    const config = loadConfig();
-    return config.aiServices.tuZi.enabled &&
-           config.aiServices.tuZi.apiKey &&
-           config.aiServices.tuZi.apiKey.trim() !== '';
-}
+const configLoader = require('./config-loader');
 
 // 生成不重复的文件名（如果文件已存在，添加 _1, _2 等后缀）
 function generateUniqueFilename(basePath) {
     if (!fs.existsSync(basePath)) {
         return basePath;
     }
-    
+
     const dir = path.dirname(basePath);
     const ext = path.extname(basePath);
     const nameWithoutExt = path.basename(basePath, ext);
-    
+
     let counter = 1;
     let newPath;
     while (true) {
@@ -165,67 +35,16 @@ function readHighlightFile(highlightPath) {
         throw error;
     }
 }
+
 // 从文件名提取房间ID（如 26966466_...）
 function extractRoomIdFromFilename(filename) {
     const m = filename.match(/^(\d+)_/);
     return m ? m[1] : null;
 }
 
-// 获取主播与粉丝名称（支持房间级覆盖与全局默认）
-function getNames(roomId) {
-    // 优先读取外部配置文件
-    const env = process.env.NODE_ENV || 'development';
-    const configDir = path.resolve(path.join(__dirname, '..', '..', 'config'));
-    const configPath = path.join(configDir, env === 'production' ? 'production.json' : 'default.json');
-    const fallbackPath = path.join(__dirname, 'config.json'); // 备用
-    
-    let anchor = '岁己SUI';
-    let fan = '饼干岁';
-
-    try {
-        let targetPath = configPath;
-        if (!fs.existsSync(targetPath)) {
-            targetPath = fallbackPath;
-        }
-        
-        if (fs.existsSync(targetPath)) {
-            const cfg = JSON.parse(fs.readFileSync(targetPath, 'utf8'));
-            
-            // 新格式：从 ai.defaultNames 读取
-            if (cfg.ai?.defaultNames) {
-                if (cfg.ai.defaultNames.anchor) anchor = cfg.ai.defaultNames.anchor;
-                if (cfg.ai.defaultNames.fan) fan = cfg.ai.defaultNames.fan;
-            }
-            // 兼容旧格式：aiServices.defaultAnchorName
-            if (cfg.aiServices?.defaultAnchorName) anchor = cfg.aiServices.defaultAnchorName;
-            if (cfg.aiServices?.defaultFanName) fan = cfg.aiServices.defaultFanName;
-            
-            // 读取房间级配置（新格式：ai.roomSettings）
-            if (roomId) {
-                const roomStr = String(roomId);
-                if (cfg.ai?.roomSettings?.[roomStr]) {
-                    const r = cfg.ai.roomSettings[roomStr];
-                    if (r.anchorName) anchor = r.anchorName;
-                    if (r.fanName) fan = r.fanName;
-                }
-                // 兼容旧格式：config.roomSettings
-                if (cfg.roomSettings?.[roomStr]) {
-                    const r = cfg.roomSettings[roomStr];
-                    if (r.anchorName) anchor = r.anchorName;
-                    if (r.fanName) fan = r.fanName;
-                }
-            }
-        }
-    } catch (e) {
-        console.warn('警告: 读取配置以获取名称失败，使用默认名称', e.message);
-    }
-
-    return { anchor, fan };
-}
-
 // 构建提示词（支持传入 roomId 以使用房间级名称覆盖）
 function buildPrompt(highlightContent, roomId) {
-    const names = getNames(roomId);
+    const names = configLoader.getNames(roomId);
     const anchor = names.anchor;
     const fan = names.fan;
 
@@ -272,29 +91,29 @@ ${highlightContent}
 
 // 调用tuZi API生成文本（备用方案）
 async function generateTextWithTuZi(prompt) {
-    const config = loadConfig();
-    const tuziConfig = config.aiServices.tuZi;
-    
-    if (!isTuZiConfigured()) {
-        throw new Error('tuZi API未配置，请检查config.secrets.json中的apiKey');
+    const config = configLoader.getConfig();
+    const tuziConfig = config.aiServices?.tuZi || config.ai?.text?.tuZi || {};
+
+    if (!configLoader.isTuZiConfigured()) {
+        throw new Error('tuZi API未配置，请检查secrets.json中的apiKey');
     }
-    
+
     console.log('🤖 调用tuZi API生成文本（Gemini超频备用方案）...');
-    const textModel = tuziConfig.textModel || 'gemini-3-flash-preview';
+    const textModel = tuziConfig.textModel || tuziConfig.model || 'gemini-3-flash-preview';
     console.log(`   模型: ${textModel}`);
     console.log(`   温度: ${tuziConfig.temperature}`);
-    
+
     try {
         const baseUrl = tuziConfig.baseUrl || 'https://api.tu-zi.com';
         const apiUrl = `${baseUrl}/v1/chat/completions`;
-        
+
         // 设置代理
         let agent = null;
         if (tuziConfig.proxy) {
             console.log(`   使用代理: ${tuziConfig.proxy}`);
             agent = new HttpsProxyAgent(tuziConfig.proxy);
         }
-        
+
         const response = await fetch(apiUrl, {
             method: 'POST',
             headers: {
@@ -315,19 +134,19 @@ async function generateTextWithTuZi(prompt) {
             agent: agent,
             timeout: 60000
         });
-        
+
         if (!response.ok) {
             const errorText = await response.text();
             throw new Error(`tuZi API返回错误 ${response.status}: ${errorText}`);
         }
-        
+
         const data = await response.json();
         const text = data.choices?.[0]?.message?.content;
-        
+
         if (!text) {
             throw new Error('tuZi API返回空结果');
         }
-        
+
         console.log('✅ tuZi API调用成功');
         return text;
     } catch (error) {
@@ -338,34 +157,35 @@ async function generateTextWithTuZi(prompt) {
 
 // 调用Gemini API生成文本
 async function generateTextWithGemini(prompt) {
-    const config = loadConfig();
-    const geminiConfig = config.aiServices.gemini;
-    
-    if (!isGeminiConfigured()) {
-        throw new Error('Gemini API未配置，请检查config.secrets.json中的apiKey');
+    const config = configLoader.getConfig();
+    const geminiConfig = config.aiServices?.gemini || config.ai?.text?.gemini || {};
+
+    if (!configLoader.isGeminiConfigured()) {
+        throw new Error('Gemini API未配置，请检查secrets.json中的apiKey');
     }
-    
+
     console.log('🤖 调用Gemini API生成文本...');
     console.log(`   模型: ${geminiConfig.model}`);
     console.log(`   温度: ${geminiConfig.temperature}`);
-    
-    let originalFetch = null;
+
+    let originalEnv = null;
     try {
         // --- 核心修改开始 ---
-        // SDK 不支持在构造函数传 agent，我们需要劫持全局 fetch 来注入代理
+        // SDK 内部使用自己的 fetch 实现，需要通过环境变量设置代理
         if (geminiConfig.proxy) {
             console.log(`   使用代理: ${geminiConfig.proxy}`);
-            const agent = new HttpsProxyAgent(geminiConfig.proxy);
-
-            // 临时覆盖全局 fetch，强制让 SDK 走 node-fetch 并带上 agent
-            // 注意：这是一种 Hack 方式，但兼容性最好
-            originalFetch = global.fetch;
-            global.fetch = (url, init) => {
-                return fetch(url, {
-                    ...init,
-                    agent: agent
-                });
+            // 保存原始环境变量
+            originalEnv = {
+                HTTP_PROXY: process.env.HTTP_PROXY,
+                HTTPS_PROXY: process.env.HTTPS_PROXY,
+                http_proxy: process.env.http_proxy,
+                https_proxy: process.env.https_proxy
             };
+            // 设置代理环境变量
+            process.env.HTTP_PROXY = geminiConfig.proxy;
+            process.env.HTTPS_PROXY = geminiConfig.proxy;
+            process.env.http_proxy = geminiConfig.proxy;
+            process.env.https_proxy = geminiConfig.proxy;
         }
         // --- 核心修改结束 ---
 
@@ -378,32 +198,70 @@ async function generateTextWithGemini(prompt) {
                 maxOutputTokens: geminiConfig.maxTokens,
             }
         });
-        
+
         const result = await model.generateContent(prompt);
         const response = await result.response;
         const text = response.text();
 
-        // 恢复原始 fetch（如果被覆盖了）
-        if (originalFetch !== null) {
-            global.fetch = originalFetch;
+        // 恢复原始环境变量（如果被修改了）
+        if (originalEnv !== null) {
+            if (originalEnv.HTTP_PROXY !== undefined) {
+                process.env.HTTP_PROXY = originalEnv.HTTP_PROXY;
+            } else {
+                delete process.env.HTTP_PROXY;
+            }
+            if (originalEnv.HTTPS_PROXY !== undefined) {
+                process.env.HTTPS_PROXY = originalEnv.HTTPS_PROXY;
+            } else {
+                delete process.env.HTTPS_PROXY;
+            }
+            if (originalEnv.http_proxy !== undefined) {
+                process.env.http_proxy = originalEnv.http_proxy;
+            } else {
+                delete process.env.http_proxy;
+            }
+            if (originalEnv.https_proxy !== undefined) {
+                process.env.https_proxy = originalEnv.https_proxy;
+            } else {
+                delete process.env.https_proxy;
+            }
         }
 
         console.log('✅ Gemini API调用成功');
         return text;
     } catch (error) {
-        // 恢复原始 fetch（如果被覆盖了）
-        if (originalFetch !== null) {
-            global.fetch = originalFetch;
+        // 恢复原始环境变量（如果被修改了）
+        if (originalEnv !== null) {
+            if (originalEnv.HTTP_PROXY !== undefined) {
+                process.env.HTTP_PROXY = originalEnv.HTTP_PROXY;
+            } else {
+                delete process.env.HTTP_PROXY;
+            }
+            if (originalEnv.HTTPS_PROXY !== undefined) {
+                process.env.HTTPS_PROXY = originalEnv.HTTPS_PROXY;
+            } else {
+                delete process.env.HTTPS_PROXY;
+            }
+            if (originalEnv.http_proxy !== undefined) {
+                process.env.http_proxy = originalEnv.http_proxy;
+            } else {
+                delete process.env.http_proxy;
+            }
+            if (originalEnv.https_proxy !== undefined) {
+                process.env.https_proxy = originalEnv.https_proxy;
+            } else {
+                delete process.env.https_proxy;
+            }
         }
-        
+
         // 检查是否是429超频错误
         const errorMessage = error.message || '';
-        const is429Error = errorMessage.includes('429') || 
+        const is429Error = errorMessage.includes('429') ||
                           errorMessage.includes('Too Many Requests') ||
                           errorMessage.includes('RESOURCE_EXHAUSTED') ||
                           errorMessage.includes('quota');
-        
-        if (is429Error && isTuZiConfigured()) {
+
+        if (is429Error && configLoader.isTuZiConfigured()) {
             console.warn(`⚠️  Gemini API超频 (429)，尝试使用tuZi API作为备用方案...`);
             try {
                 return await generateTextWithTuZi(prompt);
@@ -412,7 +270,7 @@ async function generateTextWithGemini(prompt) {
                 throw new Error(`Gemini和tuZi API都失败: Gemini - ${error.message}, tuZi - ${tuziError.message}`);
             }
         }
-        
+
         console.error(`❌ Gemini API调用失败: ${error.message}`);
         throw error;
     }
@@ -423,12 +281,12 @@ function saveGeneratedText(outputPath, text, highlightPath) {
     try {
         // 生成不重复的文件名
         const uniquePath = generateUniqueFilename(outputPath);
-        
+
         // 添加元信息
         const highlightName = path.basename(highlightPath);
         const timestamp = new Date().toLocaleString('zh-CN');
         const metaInfo = ``;
-        
+
         const fullText = metaInfo + text;
         fs.writeFileSync(uniquePath, fullText, 'utf8');
         console.log(`✅ 晚安回复已保存: ${path.basename(uniquePath)}`);
@@ -441,14 +299,14 @@ function saveGeneratedText(outputPath, text, highlightPath) {
 
 // 生成晚安回复
 async function generateGoodnightReply(highlightPath) {
-    const config = loadConfig();
-    
-    if (!config.aiServices.gemini.enabled) {
+    const config = configLoader.getConfig();
+
+    if (!config.aiServices?.gemini?.enabled && !config.ai?.text?.enabled) {
         console.log('ℹ️  AI文本生成功能已禁用');
         return null;
     }
-    
-    if (!isGeminiConfigured()) {
+
+    if (!configLoader.isGeminiConfigured()) {
         console.log('⚠️  Gemini API未配置，使用本地回退生成晚安回复');
 
         // 本地回退：简单根据文本摘取亮点并生成一段固定模板的晚安回复，便于无API时验证流程
@@ -467,37 +325,37 @@ async function generateGoodnightReply(highlightPath) {
             return null;
         }
     }
-    
+
     console.log(`📄 处理AI_HIGHLIGHT文件: ${path.basename(highlightPath)}`);
-    
+
     try {
         // 检查输入文件
         if (!fs.existsSync(highlightPath)) {
             throw new Error(`AI_HIGHLIGHT文件不存在: ${highlightPath}`);
         }
-        
+
         // 读取内容
         const highlightContent = readHighlightFile(highlightPath);
         console.log(`📖 读取内容完成 (${highlightContent.length} 字符)`);
-        
+
         // 构建提示词（尝试从环境或文件名获取 roomId 以使用房间级名称覆盖）
         const envRoomId = process.env.ROOM_ID || null;
         const fileRoomId = extractRoomIdFromFilename(path.basename(highlightPath));
         const roomId = envRoomId || fileRoomId;
         // 构建提示词
         const prompt = buildPrompt(highlightContent, roomId);
-        
+
         // 调用API生成文本
         const generatedText = await generateTextWithGemini(prompt);
-        
+
         // 确定输出路径
         const dir = path.dirname(highlightPath);
         const baseName = path.basename(highlightPath, '_AI_HIGHLIGHT.txt');
         const outputPath = path.join(dir, `${baseName}_晚安回复.md`);
-        
+
         // 保存结果
         return saveGeneratedText(outputPath, generatedText, highlightPath);
-        
+
     } catch (error) {
         console.error(`❌ 生成晚安回复失败: ${error.message}`);
         return null;
@@ -509,14 +367,14 @@ async function batchGenerateGoodnightReplies(directory) {
     try {
         const files = fs.readdirSync(directory);
         const highlightFiles = files.filter(f => f.includes('_AI_HIGHLIGHT.txt'));
-        
+
         console.log(`🔍 在目录中发现 ${highlightFiles.length} 个AI_HIGHLIGHT文件`);
-        
+
         const results = [];
         for (const file of highlightFiles) {
             const filePath = path.join(directory, file);
             console.log(`\n--- 处理: ${file} ---`);
-            
+
             try {
                 const result = await generateGoodnightReply(filePath);
                 if (result) {
@@ -529,15 +387,15 @@ async function batchGenerateGoodnightReplies(directory) {
                 results.push({ file, success: false, error: error.message });
             }
         }
-        
+
         // 输出统计信息
         const successCount = results.filter(r => r.success).length;
         const failCount = results.filter(r => !r.success).length;
-        
+
         console.log(`\n📊 批量处理完成:`);
         console.log(`   ✅ 成功: ${successCount} 个`);
         console.log(`   ❌ 失败: ${failCount} 个`);
-        
+
         return results;
     } catch (error) {
         console.error(`❌ 批量处理失败: ${error.message}`);
@@ -547,9 +405,6 @@ async function batchGenerateGoodnightReplies(directory) {
 
 // 导出函数
 module.exports = {
-    loadConfig,
-    isGeminiConfigured,
-    isTuZiConfigured,
     generateGoodnightReply,
     generateTextWithGemini,
     generateTextWithTuZi,
@@ -559,7 +414,7 @@ module.exports = {
 // 命令行测试
 if (require.main === module) {
     const args = process.argv.slice(2);
-    
+
     if (args.length === 0) {
         console.log('用法:');
         console.log('  1. 处理单个文件: node ai_text_generator.js <AI_HIGHLIGHT.txt路径>');
@@ -567,7 +422,7 @@ if (require.main === module) {
         console.log('  3. 生成文本并输出原始内容: node ai_text_generator.js --generate-text [<promptFilePath>|-]');
         process.exit(1);
     }
-    
+
     (async () => {
         try {
             if (args[0] === '--batch' && args[1]) {

@@ -40,6 +40,8 @@ export class ConfigLoader {
       path.join(process.cwd(), 'config.json'),
       // 最后回退到scripts目录
       path.join(process.cwd(), 'src', 'scripts', 'config.json'),
+      // 添加secrets配置文件
+      path.join(process.cwd(), 'src', 'scripts', 'config.secrets.json'),
     ];
 
     for (const configPath of possiblePaths) {
@@ -135,13 +137,31 @@ export class ConfigLoader {
       }
     }
 
-    // 5. 应用环境变量覆盖
+    // 5. 加载secrets配置（包含敏感信息，不提交到版本控制）
+    const secretsConfigPaths = [
+      path.join(process.cwd(), 'config', 'secrets.json'),
+      path.join(process.cwd(), 'src', 'scripts', 'config.secrets.json'),
+    ];
+    for (const secretsPath of secretsConfigPaths) {
+      if (fs.existsSync(secretsPath)) {
+        try {
+          const secretsConfig = this.readJsonFile(secretsPath);
+          config = this.deepMerge(config, secretsConfig);
+          console.log(`Secrets configuration loaded from: ${secretsPath}`);
+          break; // 找到第一个secrets文件后停止
+        } catch (error) {
+          console.warn(`Failed to load secrets configuration from ${secretsPath}:`, error);
+        }
+      }
+    }
+
+    // 6. 应用环境变量覆盖
     config = this.applyEnvironmentVariables(config);
 
-    // 6. 处理代理配置
+    // 7. 处理代理配置
     config = this.applyProxyConfig(config);
 
-    // 7. 验证配置
+    // 8. 验证配置
     if (validate) {
       const validationResult = ConfigValidator.validate(config);
       if (!validationResult.valid) {
@@ -156,7 +176,7 @@ export class ConfigLoader {
       this.config = config as AppConfig;
     }
 
-    // 8. 设置环境变量
+    // 9. 设置环境变量
     this.setEnvironmentVariables();
 
     return this.config!;
