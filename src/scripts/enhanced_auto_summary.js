@@ -6,33 +6,16 @@ const { spawn } = require('child_process');
 const crypto = require('crypto');
 
 // 导入新模块
+const configLoader = require('./config-loader');
 const audioProcessor = require('./audio_processor');
 const aiTextGenerator = require('./ai_text_generator');
 const aiComicGenerator = require('./ai_comic_generator');
 
 // 获取音频格式配置
 function getAudioFormats() {
-    // 优先读取外部配置文件
-    const env = process.env.NODE_ENV || 'development';
-    const configDir = path.resolve(path.join(__dirname, '..', '..', 'config'));
-    const configPath = path.join(configDir, env === 'production' ? 'production.json' : 'default.json');
-    const fallbackPath = path.join(__dirname, 'config.json'); // 备用
+    const config = configLoader.getConfig();
     const defaultAudioFormats = ['.m4a', '.aac', '.mp3', '.wav', '.ogg', '.flac'];
-    
-    try {
-        let targetPath = configPath;
-        if (!fs.existsSync(targetPath)) {
-            targetPath = fallbackPath;
-        }
-        
-        if (fs.existsSync(targetPath)) {
-            const config = JSON.parse(fs.readFileSync(targetPath, 'utf8'));
-            return config.audio?.formats || config.audioRecording?.audioFormats || defaultAudioFormats;
-        }
-    } catch (error) {
-        console.error('Error loading audio formats:', error);
-    }
-    return defaultAudioFormats;
+    return config.audio?.formats || config.audioRecording?.audioFormats || defaultAudioFormats;
 }
 
 // 获取支持的媒体文件扩展名
@@ -66,6 +49,44 @@ function runCommand(command, args, options = {}) {
             }
         });
         child.on('error', reject);
+    });
+}
+
+// 获取视频时长（秒）
+async function getVideoDuration(filePath) {
+    return new Promise((resolve, reject) => {
+        const ffprobe = spawn('ffprobe', [
+            '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            filePath
+        ], { stdio: ['ignore', 'pipe', 'pipe'] });
+        
+        let output = '';
+        let error = '';
+        
+        ffprobe.stdout.on('data', (data) => {
+            output += data.toString();
+        });
+        
+        ffprobe.stderr.on('data', (data) => {
+            error += data.toString();
+        });
+        
+        ffprobe.on('close', (code) => {
+            if (code === 0 && output.trim()) {
+                const duration = parseFloat(output.trim());
+                if (!isNaN(duration)) {
+                    resolve(duration);
+                } else {
+                    reject(new Error(`Invalid duration: ${output}`));
+                }
+            } else {
+                reject(new Error(`ffprobe failed: ${error || 'unknown error'}`));
+            }
+        });
+        
+        ffprobe.on('error', reject);
     });
 }
 
@@ -171,6 +192,27 @@ async function processMedia(mediaPath) {
     }
 
     if (!fs.existsSync(srtPath)) {
+        // 检查视频时长，小于30秒则跳过Whisper处理
+        if (!isAudioFile(mediaPath)) {
+            try {
+                console.log(`🔍 分析视频时长...`);
+                const duration = await getVideoDuration(mediaPath);
+                const minDurationSeconds = 30; // 最小视频时长：30秒
+                
+                if (duration < minDurationSeconds) {
+                    console.log(`⏭️  视频时长过短 (${duration.toFixed(1)}秒 < ${minDurationSeconds}秒)，跳过Whisper处理`);
+                    return null;
+                }
+                
+                const minutes = Math.floor(duration / 60);
+                const seconds = Math.floor(duration % 60);
+                const ms = Math.floor((duration % 1) * 1000);
+                console.log(`-> ${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')},${String(ms).padStart(3, '0')}`);
+            } catch (error) {
+                console.warn(`⚠️  获取视频时长失败: ${error.message}，继续处理`);
+            }
+        }
+        
         const fileType = isAudioFile(mediaPath) ? 'Audio' : 'Video';
         console.log(`\n-> [ASR] Generating Subtitles (Whisper)...`);
         console.log(`   Target: ${path.basename(mediaPath)} (${fileType})`);
@@ -249,40 +291,23 @@ async function generateAiComic(highlightPath) {
 
 // 检查房间是否启用AI功能
 function shouldGenerateAiForRoom(roomId) {
-    // 优先读取外部配置文件
-    const env = process.env.NODE_ENV || 'development';
-    const configDir = path.resolve(path.join(__dirname, '..', '..', 'config'));
-    const configPath = path.join(configDir, env === 'production' ? 'production.json' : 'default.json');
-    const fallbackPath = path.join(__dirname, 'config.json'); // 备用
+    const config = configLoader.getConfig();
+    const roomStr = String(roomId);
     
-    try {
-        let targetPath = configPath;
-        if (!fs.existsSync(targetPath)) {
-            targetPath = fallbackPath;
-        }
-        
-        if (fs.existsSync(targetPath)) {
-            const config = JSON.parse(fs.readFileSync(targetPath, 'utf8'));
-            const roomStr = String(roomId);
-            
-            if (config.ai?.roomSettings && config.ai.roomSettings[roomStr]) {
-                const roomConfig = config.ai.roomSettings[roomStr];
-                return {
-                    text: roomConfig.enableTextGeneration !== false,
-                    comic: roomConfig.enableComicGeneration !== false
-                };
-            }
-            // 兼容旧格式 roomSettings（直接在config下）
-            if (config.roomSettings && config.roomSettings[roomStr]) {
-                const roomConfig = config.roomSettings[roomStr];
-                return {
-                    text: roomConfig.enableTextGeneration !== false,
-                    comic: roomConfig.enableComicGeneration !== false
-                };
-            }
-        }
-    } catch (error) {
-        console.error('Error checking room AI settings:', error);
+    if (config.ai?.roomSettings && config.ai.roomSettings[roomStr]) {
+        const roomConfig = config.ai.roomSettings[roomStr];
+        return {
+            text: roomConfig.enableTextGeneration !== false,
+            comic: roomConfig.enableComicGeneration !== false
+        };
+    }
+    // 兼容旧格式 roomSettings（直接在config下）
+    if (config.roomSettings && config.roomSettings[roomStr]) {
+        const roomConfig = config.roomSettings[roomStr];
+        return {
+            text: roomConfig.enableTextGeneration !== false,
+            comic: roomConfig.enableComicGeneration !== false
+        };
     }
     
     // 默认启用所有AI功能
@@ -419,6 +444,34 @@ const main = async () => {
             
             console.log(`📌 处理 do_fusion_summary 生成的文件: ${highlightFile}`);
             console.log(`\n--- 处理: ${highlightFile} ---`);
+            
+            // 检查AI_HIGHLIGHT文件大小，小于0.5KB则跳过AI生成
+            const highlightStats = fs.statSync(highlightPath);
+            const highlightSizeKB = highlightStats.size / 1024;
+            const minHighlightSizeKB = 0.5; // 最小AI_HIGHLIGHT文件大小：0.5KB
+            
+            if (highlightSizeKB < minHighlightSizeKB) {
+                console.log(`⏭️  AI_HIGHLIGHT文件过小 (${highlightSizeKB.toFixed(2)}KB < ${minHighlightSizeKB}KB)，跳过AI生成`);
+                return;
+            }
+            
+            // 检查视频时长（从SRT文件获取）
+            const srtFile = filesToProcess.find(f => f.endsWith('.srt'));
+            if (srtFile && fs.existsSync(srtFile)) {
+                const srtContent = fs.readFileSync(srtFile, 'utf8');
+                const timeMatches = srtContent.match(/\d{2}:\d{2}:\d{2},\d{3}/g);
+                if (timeMatches && timeMatches.length > 0) {
+                    const lastTimeStr = timeMatches[timeMatches.length - 1];
+                    const [h, m, s] = lastTimeStr.split(':').map(Number);
+                    const totalSeconds = h * 3600 + m * 60 + s;
+                    const minDurationSeconds = 30; // 最小视频时长：30秒
+                    
+                    if (totalSeconds < minDurationSeconds) {
+                        console.log(`⏭️  视频时长过短 (${totalSeconds}秒 < ${minDurationSeconds}秒)，跳过AI生成`);
+                        return;
+                    }
+                }
+            }
             
             // 检查房间AI设置
             const aiSettings = roomId ? shouldGenerateAiForRoom(roomId) : { text: true, comic: true };

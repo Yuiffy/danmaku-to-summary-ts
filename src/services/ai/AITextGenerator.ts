@@ -391,7 +391,9 @@ ${highlightContent}
     let originalFetch: any = null;
     try {
       if (proxy) {
-        const agent = new HttpsProxyAgent(proxy);
+        // 根据代理类型选择合适的agent
+        let agent: any;
+        agent = new HttpsProxyAgent(proxy);
         
         // 临时覆盖全局fetch
         originalFetch = (global as any).fetch;
@@ -439,13 +441,15 @@ ${highlightContent}
         throw error;
       }
 
-      // 检查是否是429超频错误
       const errorMessage = error instanceof Error ? error.message : String(error);
-      const is429Error = errorMessage.includes('429') || 
+
+      // 检查是否是429超频错误
+      const is429Error = errorMessage.includes('429') ||
                         errorMessage.includes('Too Many Requests') ||
                         errorMessage.includes('RESOURCE_EXHAUSTED') ||
                         errorMessage.includes('quota');
 
+      // 如果是429错误且配置了tuZi API，尝试使用tuZi API作为备用方案
       if (is429Error && this.isTuZiConfigured()) {
         this.logger.warn('Gemini API超频 (429)，尝试使用tuZi API作为备用方案');
         try {

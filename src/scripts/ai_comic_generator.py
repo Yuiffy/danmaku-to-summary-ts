@@ -7,10 +7,43 @@ AI漫画生成模块
 
 import os
 import sys
+import io
+
+# 禁用输出缓冲，确保日志实时输出到Node.js
+# 添加异常处理，防止stdout/stderr已关闭的情况
+try:
+    if hasattr(sys.stdout, 'buffer') and not sys.stdout.closed:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
+    if hasattr(sys.stderr, 'buffer') and not sys.stderr.closed:
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', line_buffering=True)
+except (ValueError, AttributeError, OSError) as e:
+    # 如果stdout/stderr已关闭或无法访问，尝试使用原始流
+    pass
+
+# 创建安全的打印函数，防止在stdout/stderr关闭时崩溃
+def safe_print(*args, **kwargs):
+    """安全的打印函数，在stdout/stderr不可用时静默失败"""
+    try:
+        __builtins__.print(*args, **kwargs)
+    except (ValueError, OSError, AttributeError):
+        # stdout/stderr已关闭或不可用，静默忽略
+        pass
+
+# 创建安全的traceback打印函数
+def safe_print_exc():
+    """安全的traceback打印函数，在stderr不可用时静默失败"""
+    try:
+        traceback.print_exc()
+    except (ValueError, OSError, AttributeError):
+        # stderr已关闭或不可用，静默忽略
+        pass
+
+# 全局替换内置print函数，防止I/O错误导致崩溃
+print = safe_print
+
 import json
 import time
 import base64
-import copy
 import requests
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
@@ -18,135 +51,36 @@ import traceback
 import subprocess
 import shutil
 
-# 配置路径 - 优先读取外部配置文件
-def get_config_path():
-    """获取配置文件路径，优先级: /config/production.json > /config/default.json > /src/scripts/config.json"""
-    env = os.environ.get('NODE_ENV', 'development')
-    # 脚本在 src/scripts 目录，外部配置在 config 目录
-    scripts_dir = os.path.dirname(__file__)
-    project_root = os.path.dirname(os.path.dirname(scripts_dir))
-    config_dir = os.path.join(project_root, 'config')
-    
-    # 优先级顺序
-    possible_paths = [
-        os.path.join(config_dir, 'production.json' if env == 'production' else 'default.json'),
-        os.path.join(config_dir, 'default.json'),
-        os.path.join(os.path.dirname(__file__), 'config.json'),
-    ]
-    
-    for config_path in possible_paths:
-        if os.path.exists(config_path):
-            return config_path
-    
-    # 如果都不存在，返回脚本目录的config.json
-    return os.path.join(os.path.dirname(__file__), 'config.json')
-
-CONFIG_PATH = get_config_path()
+# 导入统一配置加载器
+from config_loader import (
+    get_config,
+    is_gemini_configured,
+    is_tuzi_configured,
+    get_gemini_api_key,
+    get_tuzi_api_key,
+    get_room_names,
+    get_project_root
+)
 
 def load_config() -> Dict[str, Any]:
-    """加载配置文件（外部config目录优先，然后是scripts/config.json，最后是config.secrets.json）"""
-    default_config = {
+    """加载配置文件（使用统一配置加载器）"""
+    config = get_config()
+    
+    # 为了向后兼容，构建 aiServices 结构
+    legacy_config = {
         "aiServices": {
+            "gemini": config.get('ai', {}).get('text', {}).get('gemini', {}),
+            "tuZi": config.get('ai', {}).get('comic', {}).get('tuZi', {}),
+            "defaultReferenceImage": config.get('ai', {}).get('defaultReferenceImage', ''),
+            "defaultCharacterDescription": config.get('ai', {}).get('defaultCharacterDescription', ''),
+            "defaultNames": config.get('ai', {}).get('defaultNames', {})
         },
-        "ai": {},  # 新增：保留 ai 结构，用于 get_room_reference_image 等函数
-        "roomSettings": {},
-        "timeouts": {
-            "aiApiTimeout": 360000
-        }
+        "ai": config.get('ai', {}),
+        "roomSettings": config.get('ai', {}).get('roomSettings', {}),
+        "timeouts": config.get('timeouts', {})
     }
     
-    try:
-        merged = copy.deepcopy(default_config)
-        
-        # 加载主配置文件
-        if os.path.exists(CONFIG_PATH):
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                user_config = json.load(f)
-            
-            # 新格式：从 ai.comic.tuZi 和 ai.roomSettings 读取
-            if "ai" in user_config:
-                # 保留完整的 ai 结构（新增）
-                if "ai" not in merged:
-                    merged["ai"] = {}
-                merged["ai"].update(user_config["ai"])
-                
-                # 同时也更新到 aiServices 中（保持向后兼容）
-                if "comic" in user_config["ai"] and "tuZi" in user_config["ai"]["comic"]:
-                    if "tuZi" not in merged["aiServices"]:
-                        merged["aiServices"]["tuZi"] = {}
-                    merged["aiServices"]["tuZi"].update(user_config["ai"]["comic"]["tuZi"])
-                if "roomSettings" in user_config["ai"]:
-                    merged["roomSettings"].update(user_config["ai"]["roomSettings"])
-                # 处理 ai 对象下的默认配置（新增）
-                if "defaultReferenceImage" in user_config["ai"]:
-                    if "defaultReferenceImage" not in merged["aiServices"]:
-                        merged["aiServices"]["defaultReferenceImage"] = ""
-                    merged["aiServices"]["defaultReferenceImage"] = user_config["ai"]["defaultReferenceImage"]
-                if "defaultCharacterDescription" in user_config["ai"]:
-                    if "defaultCharacterDescription" not in merged["aiServices"]:
-                        merged["aiServices"]["defaultCharacterDescription"] = ""
-                    merged["aiServices"]["defaultCharacterDescription"] = user_config["ai"]["defaultCharacterDescription"]
-                if "defaultNames" in user_config["ai"]:
-                    if "defaultNames" not in merged["aiServices"]:
-                        merged["aiServices"]["defaultNames"] = {}
-                    merged["aiServices"]["defaultNames"].update(user_config["ai"]["defaultNames"])
-            
-            # 兼容旧格式
-            if "aiServices" in user_config:
-                for service_name, service_config in user_config["aiServices"].items():
-                    if service_name not in merged["aiServices"]:
-                        merged["aiServices"][service_name] = {}
-                    merged["aiServices"][service_name].update(service_config)
-            
-            if "roomSettings" in user_config:
-                merged["roomSettings"].update(user_config["roomSettings"])
-            
-            # 合并timeouts
-            if "timeouts" in user_config:
-                merged["timeouts"].update(user_config["timeouts"])
-        
-        # 加载密钥文件
-        secrets_path = os.path.join(os.path.dirname(__file__), 'config.secrets.json')
-        if os.path.exists(secrets_path):
-            with open(secrets_path, 'r', encoding='utf-8') as f:
-                secrets_config = json.load(f)
-
-            # 合并密钥配置 - 支持新旧两种格式
-            if "aiServices" in secrets_config:
-                # 旧格式: aiServices.tuZi.apiKey
-                if "aiServices" not in merged:
-                    merged["aiServices"] = {}
-                # 通用合并所有aiServices配置
-                for service_name, service_config in secrets_config["aiServices"].items():
-                    if service_name not in merged["aiServices"]:
-                        merged["aiServices"][service_name] = {}
-                    merged["aiServices"][service_name].update(service_config)
-            
-            # 新格式: ai.text.gemini.apiKey 和 ai.comic.tuZi.apiKey
-            if "ai" in secrets_config:
-                if "aiServices" not in merged:
-                    merged["aiServices"] = {}
-                
-                # 处理文本生成 (Gemini)
-                if "text" in secrets_config["ai"] and "gemini" in secrets_config["ai"]["text"]:
-                    if "gemini" not in merged["aiServices"]:
-                        merged["aiServices"]["gemini"] = {}
-                    merged["aiServices"]["gemini"].update(secrets_config["ai"]["text"]["gemini"])
-                
-                # 处理漫画生成 (tuZi)
-                if "comic" in secrets_config["ai"] and "tuZi" in secrets_config["ai"]["comic"]:
-                    if "tuZi" not in merged["aiServices"]:
-                        merged["aiServices"]["tuZi"] = {}
-                    merged["aiServices"]["tuZi"].update(secrets_config["ai"]["comic"]["tuZi"])
-        
-        return merged
-        
-    except Exception as e:
-        print(f"[ERROR] 加载配置文件失败: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    return default_config
+    return legacy_config
 
 def is_huggingface_configured() -> bool:
     """检查Hugging Face配置是否有效（已禁用）"""
@@ -155,12 +89,6 @@ def is_huggingface_configured() -> bool:
 def is_googleimage_configured() -> bool:
     """检查Google图像生成配置是否有效（已禁用）"""
     return False
-
-def is_tuzi_configured() -> bool:
-    """检查tuZi图像生成配置是否有效"""
-    config = load_config()
-    tuzi_config = config["aiServices"].get("tuZi", {})
-    return tuzi_config.get("enabled", False) and tuzi_config.get("apiKey", "") and tuzi_config["apiKey"].strip() != ""
 
 def generate_unique_filename(base_path: str) -> str:
     """生成不重复的文件名（如果文件已存在，添加 _1, _2 等后缀）"""
@@ -201,9 +129,9 @@ def get_room_reference_image(room_id: str, highlight_path: Optional[str] = None)
     """获取房间的参考图片路径"""
     config = load_config()
     
-    # 获取脚本所在目录的上级目录（项目根目录）
+    # 获取项目根目录
     scripts_dir = os.path.dirname(__file__)
-    project_root = os.path.dirname(os.path.dirname(scripts_dir))
+    project_root = get_project_root()
 
     # 首先检查roomSettings中的配置
     room_str = str(room_id)
@@ -357,18 +285,18 @@ def build_comic_prompt(highlight_content: str, reference_image_path: Optional[st
 
 # 虚拟主播二创画师大手子的统一prompt模板（方便统一修改）
 COMIC_ARTIST_PROMPT_TEMPLATE = """你作为虚拟主播二创画师大手子，根据直播内容，绘制直播总结插画。
-角色描述：{character_desc}
-风格：多个剪贴画风格或者少年漫多个分镜（5~8个吧），每个是一个片段场景，画图+文字台词or简介，可以没有文字，有的话要很短，不要用中文。要画得精致，角色要画得帅气、美丽、可爱。
+角色描述：{character_desc}。
+风格：多个剪贴画风格分镜（4~6个吧），每个是一个片段场景，画图+文字台词or简介，可以没有文字，有的话要很短（5个单词内），不要用中文。要画得精致，角色要画得帅气、美丽、可爱。
+下面是岁己一场直播的asr+弹幕记录TXT，请先构思图片并用文字给我，我再拿去绘制图片。整体800个字符以内。
+{highlight_content}
 """
 
 def build_comic_generation_prompt(character_desc: str, highlight_content: str) -> str:
     """使用COMIC_ARTIST_PROMPT_TEMPLATE构建完整的prompt（用于Gemini等调用）"""
     template = COMIC_ARTIST_PROMPT_TEMPLATE.strip()
     base = template.replace("{character_desc}", character_desc)
-    return f"""{base}
-直播内容：
-{highlight_content}
-请创作漫画故事脚本："""
+    base = base.replace("{highlight_content}", highlight_content)
+    return base
 
 def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str] = None) -> Tuple[str, bool]:
     """使用AI生成漫画内容脚本
@@ -410,16 +338,16 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
         # 导入Google GenAI (新版本)
         import google.genai as genai
 
-        # 加载配置
-        config = load_config()
-
-        # 获取Gemini配置
-        gemini_config = config.get('aiServices', {}).get('gemini', {})
-        gemini_api_key = gemini_config.get('apiKey', '')
+        # 获取Gemini API密钥（使用统一配置加载器）
+        gemini_api_key = get_gemini_api_key()
 
         if not gemini_api_key:
             print("[WARNING]  Gemini API密钥未配置，使用原始内容")
             return highlight_content, False
+
+        # 加载配置获取其他参数
+        config = load_config()
+        gemini_config = config.get('aiServices', {}).get('gemini', {})
 
         # 创建客户端
         client = genai.Client(api_key=gemini_api_key)
@@ -455,60 +383,56 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
             return highlight_content, False
 
     except ImportError:
-        print("[WARNING]  google-genai库未安装，使用原始内容")
+        print("[WARNING]  google-genai库未安装，尝试使用tuZi API...")
         print("   请安装: pip install google-genai")
-        return highlight_content, False
     except Exception as e:
-        error_str = str(e)
-        # 检查是否是429超频错误，尝试使用tuZi API作为备用方案
-        if '429' in error_str or 'RESOURCE_EXHAUSTED' in error_str:
-            print("[WARNING]  ⚠️ Gemini API超频 (429)，尝试使用tuZi API作为备用方案...")
-            
-            # 尝试使用tuZi API生成文本
-            try:
-                from tuzi_chat_completions import call_tuzi_chat_completions
-                
-                config = load_config()
-                tuzi_config = config.get("aiServices", {}).get("tuZi", {})
-                
-                if not is_tuzi_configured():
-                    print("[WARNING]  tuZi API未配置，使用原始内容")
-                    return highlight_content, False
-                
-                # 构建提示词（使用统一的prompt模板）
-                character_desc = get_room_character_description(room_id)
-                system_prompt = build_comic_generation_prompt(character_desc, highlight_content)
-                user_prompt = f"直播内容：\n{highlight_content}\n\n请创作漫画故事脚本："
-                
-                # 调用tuZi Chat Completions API
-                comic_content = call_tuzi_chat_completions(
-                    prompt=user_prompt,
-                    system_prompt=system_prompt,
-                    model=tuzi_config.get("textModel", "gemini-3-flash-preview"),
-                    base_url=tuzi_config.get("baseUrl", "https://api.tu-zi.com"),
-                    api_key=tuzi_config.get("apiKey", ""),
-                    proxy_url=tuzi_config.get("proxy", ""),
-                    timeout=120,
-                    temperature=0.7,
-                    max_tokens=100000
-                )
-                
-                if comic_content:
-                    print("[OK] tuZi API漫画文本生成成功")
-                    print(f"生成内容长度: {len(comic_content)} 字符")
-                    print(f"内容预览: {comic_content[:200]}...")
-                    return comic_content, True
-                else:
-                    print("[WARNING]  tuZi API返回空内容")
-                    return highlight_content, False
-                
-            except Exception as tuzi_error:
-                print(f"[ERROR]  tuZi API备用方案失败: {tuzi_error}")
-                print("[WARNING]  所有API都失败，使用原始内容")
-                return highlight_content, False
-        else:
-            print(f"[ERROR]  AI内容生成失败: {e}")
+        print(f"[ERROR]  AI内容生成失败: {e}")
+    
+    # Gemini失败后，尝试使用tuZi API作为备用方案
+    print("[TUZI] Google生成失败，尝试tu-zi.com生成文本...")
+    
+    # 尝试使用tuZi API生成文本
+    try:
+        from tuzi_chat_completions import call_tuzi_chat_completions
+        
+        config = load_config()
+        tuzi_config = config.get("aiServices", {}).get("tuZi", {})
+        
+        if not is_tuzi_configured():
+            print("[WARNING]  tuZi API未配置，使用原始内容")
             return highlight_content, False
+        
+        # 构建提示词（使用统一的prompt模板）
+        character_desc = get_room_character_description(room_id)
+        system_prompt = build_comic_generation_prompt(character_desc, highlight_content)
+        user_prompt = f"直播内容：\n{highlight_content}\n\n请创作漫画故事脚本："
+        
+        # 调用tuZi Chat Completions API
+        comic_content = call_tuzi_chat_completions(
+            prompt=user_prompt,
+            system_prompt=system_prompt,
+            model=tuzi_config.get("textModel", "gemini-3-flash-preview"),
+            base_url=tuzi_config.get("baseUrl", "https://api.tu-zi.com"),
+            api_key=tuzi_config.get("apiKey", ""),
+            proxy_url=tuzi_config.get("proxy", ""),
+            timeout=120,
+            temperature=0.7,
+            max_tokens=100000
+        )
+        
+        if comic_content:
+            print("[OK] tuZi API漫画文本生成成功")
+            print(f"生成内容长度: {len(comic_content)} 字符")
+            print(f"内容预览: {comic_content[:200]}...")
+            return comic_content, True
+        else:
+            print("[WARNING]  tuZi API返回空内容")
+            return highlight_content, False
+        
+    except Exception as tuzi_error:
+        print(f"[ERROR]  tuZi API备用方案失败: {tuzi_error}")
+        print("[WARNING]  所有API都失败，使用原始内容")
+        return highlight_content, False
     
     # 确保函数在所有路径都返回有效值
     return highlight_content, False
@@ -781,7 +705,7 @@ def call_google_image_api(prompt: str, reference_image_path: Optional[str] = Non
                 time.sleep(2)  # 短暂等待后重试
             else:
                 print(f"   重试次数已用完")
-                traceback.print_exc()
+                safe_print_exc()
                 return None
 
     return None
@@ -860,7 +784,89 @@ def call_tuzi_image_api(prompt: str, reference_image_path: Optional[str] = None)
                 response = requests.post(api_url, headers=headers, json=payload, timeout=timeout_sec, proxies=proxies)
                 
                 if response.status_code == 200:
-                    break
+                    # 尝试解析响应，如果解析失败则继续重试
+                    result = response.json()
+                    
+                    # 打印响应结构以便调试
+                    print(f"[DEBUG] 响应结构: {list(result.keys())}")
+                    
+                    # 处理 /v1/images/generations 响应格式 (OpenAI兼容格式)
+                    if "data" in result and isinstance(result["data"], list) and len(result["data"]) > 0:
+                        image_data = result["data"][0]
+                        
+                        # 检查是否有URL
+                        if "url" in image_data:
+                            image_url = image_data["url"]
+                            print(f"[DOWNLOAD] 下载生成的图像: {image_url}")
+                            try:
+                                image_response = requests.get(image_url, timeout=60, proxies=proxies)
+                                
+                                if image_response.status_code == 200:
+                                    import tempfile
+                                    import uuid
+
+                                    temp_dir = tempfile.gettempdir()
+                                    temp_file = os.path.join(temp_dir, f"comic_tuzi_{uuid.uuid4().hex[:8]}.png")
+
+                                    with open(temp_file, 'wb') as f:
+                                        f.write(image_response.content)
+
+                                    print(f"[OK] tu-zi.com图像生成成功")
+                                    print(f"[SAVE] 图像已保存到临时文件: {temp_file}")
+                                    return temp_file
+                                else:
+                                    print(f"[ERROR] 图像下载失败: HTTP {image_response.status_code}")
+                                    # 下载失败，继续重试
+                                    if attempt < max_retries:
+                                        print("[RETRY] 2秒后重试...")
+                                        time.sleep(2)
+                                        continue
+                                    return None
+                            except Exception as download_error:
+                                print(f"[ERROR] 图像下载异常: {download_error}")
+                                # 下载异常，继续重试
+                                if attempt < max_retries:
+                                    print("[RETRY] 2秒后重试...")
+                                    time.sleep(2)
+                                    continue
+                                return None
+                        
+                        # 检查是否有base64编码的图像数据
+                        elif "b64_json" in image_data:
+                            image_base64 = image_data["b64_json"]
+                            try:
+                                image_data_bytes = base64.b64decode(image_base64)
+                                
+                                import tempfile
+                                import uuid
+
+                                temp_dir = tempfile.gettempdir()
+                                temp_file = os.path.join(temp_dir, f"comic_tuzi_{uuid.uuid4().hex[:8]}.png")
+
+                                with open(temp_file, 'wb') as f:
+                                    f.write(image_data_bytes)
+
+                                print(f"[OK] tu-zi.com图像生成成功")
+                                print(f"[SAVE] 图像已保存到临时文件: {temp_file}")
+                                return temp_file
+                            except Exception as decode_error:
+                                print(f"[WARNING] 解码base64图像失败: {decode_error}")
+                                # 解码失败，继续重试
+                                if attempt < max_retries:
+                                    print("[RETRY] 2秒后重试...")
+                                    time.sleep(2)
+                                    continue
+                                return None
+                    
+                    # 如果到这里还没返回，说明响应格式不符合预期（如 NO_IMAGE）
+                    print(f"[ERROR] 无法从响应中提取图像数据")
+                    print(f"[DEBUG] 完整响应: {json.dumps(result, ensure_ascii=False, indent=2)[:1000]}")
+                    # 响应格式不符合预期，继续重试
+                    if attempt < max_retries:
+                        print("[RETRY] 2秒后重试...")
+                        time.sleep(2)
+                        continue
+                    return None
                 else:
                     print(f"[WARNING] tu-zi.com API调用失败 (尝试 {attempt + 1}): HTTP {response.status_code} elapsed: {response.elapsed.total_seconds()}s")
                     if attempt < max_retries:
@@ -877,73 +883,9 @@ def call_tuzi_image_api(prompt: str, reference_image_path: Optional[str] = None)
              print("[ERROR] 所有重试均抛出异常，无API响应")
              return None
 
-        if response.status_code == 200:
-            result = response.json()
-            
-            # 打印响应结构以便调试
-            print(f"[DEBUG] 响应结构: {list(result.keys())}")
-            
-            # 处理 /v1/images/generations 响应格式 (OpenAI兼容格式)
-            if "data" in result and isinstance(result["data"], list) and len(result["data"]) > 0:
-                image_data = result["data"][0]
-                
-                # 检查是否有URL
-                if "url" in image_data:
-                    image_url = image_data["url"]
-                    print(f"[DOWNLOAD] 下载生成的图像: {image_url}")
-                    try:
-                        image_response = requests.get(image_url, timeout=60, proxies=proxies)
-                        
-                        if image_response.status_code == 200:
-                            import tempfile
-                            import uuid
-
-                            temp_dir = tempfile.gettempdir()
-                            temp_file = os.path.join(temp_dir, f"comic_tuzi_{uuid.uuid4().hex[:8]}.png")
-
-                            with open(temp_file, 'wb') as f:
-                                f.write(image_response.content)
-
-                            print(f"[OK] tu-zi.com图像生成成功")
-                            print(f"[SAVE] 图像已保存到临时文件: {temp_file}")
-                            return temp_file
-                        else:
-                            print(f"[ERROR] 图像下载失败: HTTP {image_response.status_code}")
-                            return None
-                    except Exception as download_error:
-                        print(f"[ERROR] 图像下载异常: {download_error}")
-                        return None
-                
-                # 检查是否有base64编码的图像数据
-                elif "b64_json" in image_data:
-                    image_base64 = image_data["b64_json"]
-                    try:
-                        image_data_bytes = base64.b64decode(image_base64)
-                        
-                        import tempfile
-                        import uuid
-
-                        temp_dir = tempfile.gettempdir()
-                        temp_file = os.path.join(temp_dir, f"comic_tuzi_{uuid.uuid4().hex[:8]}.png")
-
-                        with open(temp_file, 'wb') as f:
-                            f.write(image_data_bytes)
-
-                        print(f"[OK] tu-zi.com图像生成成功")
-                        print(f"[SAVE] 图像已保存到临时文件: {temp_file}")
-                        return temp_file
-                    except Exception as decode_error:
-                        print(f"[WARNING] 解码base64图像失败: {decode_error}")
-                        return None
-            
-            # 如果到这里还没返回，说明响应格式不符合预期
-            print(f"[ERROR] 无法从响应中提取图像数据")
-            print(f"[DEBUG] 完整响应: {json.dumps(result, ensure_ascii=False, indent=2)[:1000]}")
-            return None
-
     except Exception as e:
         print(f"[ERROR] tu-zi.com图像生成失败: {e}")
-        traceback.print_exc()
+        safe_print_exc()
         return None
 
 def call_huggingface_comic_factory(prompt: str, reference_image_path: Optional[str] = None) -> Optional[str]:
@@ -1080,7 +1022,7 @@ def call_huggingface_comic_factory(prompt: str, reference_image_path: Optional[s
             
     except Exception as e:
         print(f"[ERROR] 备用方案也失败: {e}")
-        traceback.print_exc()
+        safe_print_exc()
         return None
 
 def save_comic_result(output_path: str, comic_data: Any) -> str:
@@ -1194,6 +1136,11 @@ def generate_comic_from_highlight(highlight_path: str) -> Optional[str]:
         # 构建提示词（包含漫画内容生成），如果已有脚本则复用
         prompt, comic_text, is_comic_generated = build_comic_prompt(highlight_content, reference_image_path, room_id, existing_comic=comic_text)
 
+        # 如果脚本生成失败（使用原文作为备选），则不生成图片
+        if not is_comic_generated:
+            print("[ERROR] 漫画脚本生成失败，跳过图像生成")
+            return None
+
         # 图像生成成功，现在保存漫画脚本（只在真正生成脚本时保存，不保存原文备选）
         try:
             if not os.path.exists(text_output_path) and comic_text and is_comic_generated:
@@ -1235,7 +1182,7 @@ def generate_comic_from_highlight(highlight_path: str) -> Optional[str]:
         
     except Exception as e:
         print(f"[ERROR] 生成漫画失败: {e}")
-        traceback.print_exc()
+        safe_print_exc()
         return None
 
 def main():
@@ -1291,7 +1238,7 @@ def main():
                 
     except Exception as e:
         print(f"[EXPLOSION] 处理失败: {e}")
-        traceback.print_exc()
+        safe_print_exc()
         sys.exit(1)
 
 if __name__ == "__main__":

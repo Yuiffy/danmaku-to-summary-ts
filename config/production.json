@@ -43,7 +43,7 @@
       "timeout": 30000
     },
     "storage": {
-      "keepOriginalVideo": true,
+      "keepOriginalVideo": false,
       "maxFileAgeDays": 30
     }
   },
@@ -77,6 +77,16 @@
     "defaultReferenceImage": "public/reference_images/岁己小红帽立绘.png",
     "defaultCharacterDescription": "主播（帅气/美丽的人类），粉丝（有细细四肢的小小的可爱生物）",
     "roomSettings": {
+      "25788785": {
+        "audioOnly": false,
+        "referenceImage": "public/reference_images/岁己SUI小猫帽带饼干岁紫色外套双马尾.png",
+        "characterDescription": "岁己SUI（白发红瞳女生），饼干岁（有细细四肢的小小的饼干状生物）",
+        "anchorName": "小岁",
+        "fanName": "饼干岁",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "wordLimit": 800
+      },
       "545068": {
         "audioOnly": false,
         "referenceImage": "public/reference_images/栞栞新衣_舰长礼物长图里截图.png",

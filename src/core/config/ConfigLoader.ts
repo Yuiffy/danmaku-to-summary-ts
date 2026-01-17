@@ -26,20 +26,36 @@ export class ConfigLoader {
   }
 
   /**
+   * 获取项目根目录
+   */
+  private getProjectRoot(): string {
+    // 向上查找项目根目录（包含config目录的目录）
+    let currentDir = process.cwd();
+    
+    while (currentDir && currentDir !== path.dirname(currentDir)) {
+      if (fs.existsSync(path.join(currentDir, 'config'))) {
+        return currentDir;
+      }
+      currentDir = path.dirname(currentDir);
+    }
+    
+    // 如果找不到，返回当前目录
+    return process.cwd();
+  }
+
+  /**
    * 查找配置文件路径
-   * 优先级: /config/production.json > /config/default.json > /src/scripts/config.json
+   * 优先级: /config/production.json > /config/default.json
    */
   private findConfigPath(): string {
     const env = process.env.NODE_ENV || 'development';
+    const projectRoot = this.getProjectRoot();
+    
     const possiblePaths = [
       // 优先读取外部config目录中的环境特定配置
-      path.join(process.cwd(), 'config', env === 'production' ? 'production.json' : 'default.json'),
+      path.join(projectRoot, 'config', env === 'production' ? 'production.json' : 'default.json'),
       // 其次读取外部config目录中的默认配置
-      path.join(process.cwd(), 'config', 'default.json'),
-      // 再次读取根目录config.json
-      path.join(process.cwd(), 'config.json'),
-      // 最后回退到scripts目录
-      path.join(process.cwd(), 'src', 'scripts', 'config.json'),
+      path.join(projectRoot, 'config', 'default.json'),
     ];
 
     for (const configPath of possiblePaths) {
@@ -49,8 +65,8 @@ export class ConfigLoader {
       }
     }
 
-    // 如果找不到配置文件，返回默认路径
-    const defaultPath = path.join(process.cwd(), 'config', 'default.json');
+    // 默认返回 config/default.json
+    const defaultPath = path.join(projectRoot, 'config', 'default.json');
     console.warn(`⚠ 配置文件未找到，使用默认路径: ${defaultPath}`);
     return defaultPath;
   }
@@ -65,101 +81,6 @@ export class ConfigLoader {
     } catch (error) {
       throw new Error(`Failed to read JSON file ${filePath}: ${error}`);
     }
-  }
-
-  /**
-   * 写入JSON文件
-   */
-  private writeJsonFile(filePath: string, data: any): void {
-    try {
-      const dir = path.dirname(filePath);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
-    } catch (error) {
-      throw new Error(`Failed to write JSON file ${filePath}: ${error}`);
-    }
-  }
-
-  /**
-   * 加载配置
-   */
-  async load(options: ConfigLoaderOptions = {}): Promise<AppConfig> {
-    const configPath = options.configPath || this.configPath;
-    const validate = options.validate !== false;
-
-    console.log(`Loading configuration from: ${configPath}`);
-
-    let config: any = {};
-
-    // 1. 加载默认配置
-    const defaultConfig = ConfigValidator.getDefaultConfig();
-    config = { ...defaultConfig };
-
-    // 2. 尝试加载配置文件
-    if (fs.existsSync(configPath)) {
-      try {
-        const fileConfig = this.readJsonFile(configPath);
-        config = this.deepMerge(config, fileConfig);
-        console.log(`Configuration loaded from file: ${configPath}`);
-      } catch (error) {
-        console.warn(`Failed to load configuration from ${configPath}:`, error);
-      }
-    } else {
-      console.warn(`Configuration file not found at ${configPath}, using defaults`);
-    }
-
-    // 3. 加载环境特定配置
-    const env = options.environment || process.env.NODE_ENV || 'development';
-    const envConfigPath = configPath.replace(/\.json$/, `.${env}.json`);
-    if (fs.existsSync(envConfigPath)) {
-      try {
-        const envConfig = this.readJsonFile(envConfigPath);
-        config = this.deepMerge(config, envConfig);
-        console.log(`Environment configuration loaded from: ${envConfigPath}`);
-      } catch (error) {
-        console.warn(`Failed to load environment configuration from ${envConfigPath}:`, error);
-      }
-    }
-
-    // 4. 加载本地配置（不提交到版本控制）
-    const localConfigPath = configPath.replace(/\.json$/, '.local.json');
-    if (fs.existsSync(localConfigPath)) {
-      try {
-        const localConfig = this.readJsonFile(localConfigPath);
-        config = this.deepMerge(config, localConfig);
-        console.log(`Local configuration loaded from: ${localConfigPath}`);
-      } catch (error) {
-        console.warn(`Failed to load local configuration from ${localConfigPath}:`, error);
-      }
-    }
-
-    // 5. 应用环境变量覆盖
-    config = this.applyEnvironmentVariables(config);
-
-    // 6. 处理代理配置
-    config = this.applyProxyConfig(config);
-
-    // 7. 验证配置
-    if (validate) {
-      const validationResult = ConfigValidator.validate(config);
-      if (!validationResult.valid) {
-        console.error('Configuration validation failed:');
-        validationResult.errors.forEach(error => {
-          console.error(`  ${error.path}: ${error.message}`);
-        });
-        throw new Error('Configuration validation failed');
-      }
-      this.config = validationResult.config;
-    } else {
-      this.config = config as AppConfig;
-    }
-
-    // 8. 设置环境变量
-    this.setEnvironmentVariables();
-
-    return this.config!;
   }
 
   /**
@@ -183,6 +104,94 @@ export class ConfigLoader {
     }
 
     return result;
+  }
+
+  /**
+   * 加载配置
+   */
+  async load(options: ConfigLoaderOptions = {}): Promise<AppConfig> {
+    const configPath = options.configPath || this.configPath;
+    const validate = options.validate !== false;
+
+    console.log(`Loading configuration from: ${configPath}`);
+
+    let config: any = {};
+
+    // 1. 加载主配置文件
+    if (fs.existsSync(configPath)) {
+      try {
+        config = this.readJsonFile(configPath);
+        console.log(`Configuration loaded from file: ${configPath}`);
+      } catch (error) {
+        console.warn(`Failed to load configuration from ${configPath}:`, error);
+      }
+    } else {
+      console.warn(`Configuration file not found at ${configPath}, using defaults`);
+    }
+
+    // 2. 加载secrets配置（包含敏感信息，不提交到版本控制）
+    // 位置: /config/secret.json
+    const projectRoot = this.getProjectRoot();
+    const secretsPath = path.join(projectRoot, 'config', 'secret.json');
+    if (fs.existsSync(secretsPath)) {
+      try {
+        const secretsConfig = this.readJsonFile(secretsPath);
+        // 将扁平的secrets结构映射到嵌套结构
+        const mappedSecrets: any = {};
+        
+        // gemini.apiKey -> ai.text.gemini.apiKey
+        if (secretsConfig.gemini && secretsConfig.gemini.apiKey) {
+          if (!mappedSecrets.ai) mappedSecrets.ai = {};
+          if (!mappedSecrets.ai.text) mappedSecrets.ai.text = {};
+          if (!mappedSecrets.ai.text.gemini) mappedSecrets.ai.text.gemini = {};
+          mappedSecrets.ai.text.gemini.apiKey = secretsConfig.gemini.apiKey;
+        }
+        
+        // tuZi.apiKey -> ai.comic.tuZi.apiKey
+        if (secretsConfig.tuZi && secretsConfig.tuZi.apiKey) {
+          if (!mappedSecrets.ai) mappedSecrets.ai = {};
+          if (!mappedSecrets.ai.comic) mappedSecrets.ai.comic = {};
+          if (!mappedSecrets.ai.comic.tuZi) mappedSecrets.ai.comic.tuZi = {};
+          mappedSecrets.ai.comic.tuZi.apiKey = secretsConfig.tuZi.apiKey;
+        }
+        
+        // bilibili -> bilibili
+        if (secretsConfig.bilibili) {
+          mappedSecrets.bilibili = secretsConfig.bilibili;
+        }
+        
+        config = this.deepMerge(config, mappedSecrets);
+        console.log(`Secrets configuration loaded from: ${secretsPath}`);
+      } catch (error) {
+        console.warn(`Failed to load secrets configuration from ${secretsPath}:`, error);
+      }
+    }
+
+    // 3. 应用环境变量覆盖
+    config = this.applyEnvironmentVariables(config);
+
+    // 4. 处理代理配置
+    config = this.applyProxyConfig(config);
+
+    // 5. 验证配置
+    if (validate) {
+      const validationResult = ConfigValidator.validate(config);
+      if (!validationResult.valid) {
+        console.error('Configuration validation failed:');
+        validationResult.errors.forEach(error => {
+          console.error(`  ${error.path}: ${error.message}`);
+        });
+        throw new Error('Configuration validation failed');
+      }
+      this.config = validationResult.config;
+    } else {
+      this.config = config as AppConfig;
+    }
+
+    // 6. 设置环境变量
+    this.setEnvironmentVariables();
+
+    return this.config!;
   }
 
   /**
@@ -314,7 +323,7 @@ export class ConfigLoader {
     }
 
     // 保存配置
-    this.writeJsonFile(savePath, mergedConfig);
+    fs.writeFileSync(savePath, JSON.stringify(mergedConfig, null, 2), 'utf-8');
     console.log(`Configuration saved to: ${savePath}`);
 
     // 重新加载配置

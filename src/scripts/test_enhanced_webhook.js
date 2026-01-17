@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 
 const http = require('http');
+const path = require('path');
+const fs = require('fs');
+const configLoader = require('./config-loader');
 
 const testPort = 15121;
 const testEndpoints = [
@@ -156,17 +159,11 @@ async function runTests() {
   // 测试3: 检查配置文件
   console.log('\n3. 检查配置文件...');
   try {
-    const configPath = path.join(__dirname, 'config.json');
-    if (fs.existsSync(configPath)) {
-      const configData = fs.readFileSync(configPath, 'utf8');
-      const loadedConfig = JSON.parse(configData);
-      console.log('✅ 配置文件加载成功');
-      console.log(`   - 音频录制: ${loadedConfig.audioRecording?.enabled ? '启用' : '禁用'}`);
-      console.log(`   - DDTV: ${loadedConfig.recorders?.ddtv?.enabled ? '启用' : '禁用'}`);
-      console.log(`   - mikufans: ${loadedConfig.recorders?.mikufans?.enabled ? '启用' : '禁用'}`);
-    } else {
-      console.log('ℹ️ 配置文件不存在，使用默认配置');
-    }
+    const loadedConfig = configLoader.getConfig();
+    console.log('✅ 配置文件加载成功');
+    console.log(`   - 音频录制: ${loadedConfig.audio?.enabled ? '启用' : '禁用'}`);
+    console.log(`   - DDTV: ${loadedConfig.webhook?.endpoints?.ddtv?.enabled ? '启用' : '禁用'}`);
+    console.log(`   - mikufans: ${loadedConfig.webhook?.endpoints?.mikufans?.enabled ? '启用' : '禁用'}`);
   } catch (error) {
     console.log(`❌ 配置文件加载失败: ${error.message}`);
   }

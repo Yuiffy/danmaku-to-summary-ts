@@ -43,6 +43,14 @@ export class ConfigValidator {
       errors.push({ path: 'storage', message: 'Storage configuration is required', type: 'required' });
     }
 
+    if (!config.bilibili) {
+      errors.push({ path: 'bilibili', message: 'Bilibili configuration is required', type: 'required' });
+    } else {
+      if (!config.bilibili.enabled) errors.push({ path: 'bilibili.enabled', message: 'Bilibili enabled is required', type: 'required' });
+      if (!config.bilibili.polling) errors.push({ path: 'bilibili.polling', message: 'Bilibili polling configuration is required', type: 'required' });
+      if (!config.bilibili.anchors) errors.push({ path: 'bilibili.anchors', message: 'Bilibili anchors configuration is required', type: 'required' });
+    }
+
     if (errors.length > 0) {
       return {
         valid: false,
@@ -156,6 +164,17 @@ export class ConfigValidator {
           enabled: true,
           endpoint: '/health',
         },
+      },
+      bilibili: {
+        enabled: false,
+        cookie: '',
+        csrf: '',
+        polling: {
+          interval: 60000,
+          maxRetries: 3,
+          retryDelay: 5000,
+        },
+        anchors: {},
       },
     };
   }

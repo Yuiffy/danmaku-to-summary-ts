@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const configLoader = require('./config-loader');
 
 console.log('🔧 测试增强功能模块');
 console.log('====================\n');
@@ -9,28 +10,23 @@ console.log('====================\n');
 // 测试配置文件
 console.log('1. 测试配置文件...');
 try {
-    const configPath = path.join(__dirname, 'config.json');
-    if (fs.existsSync(configPath)) {
-        const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-        console.log('✅ 配置文件加载成功');
-        
-        // 检查音频处理配置
-        if (config.audioProcessing) {
-            console.log(`  音频处理: ${config.audioProcessing.enabled ? '启用' : '禁用'}`);
-            console.log(`  音频专用房间: ${JSON.stringify(config.audioProcessing.audioOnlyRooms)}`);
-        }
-        
-        // 检查AI服务配置
-        if (config.aiServices) {
-            console.log(`  Gemini API: ${config.aiServices.gemini?.enabled ? '启用' : '禁用'}`);
-        }
-        
-        // 检查房间设置
-        if (config.roomSettings && config.roomSettings['26966466']) {
-            console.log(`  房间26966466设置:`, config.roomSettings['26966466']);
-        }
-    } else {
-        console.log('❌ 配置文件不存在');
+    const config = configLoader.getConfig();
+    console.log('✅ 配置文件加载成功');
+    
+    // 检查音频处理配置
+    if (config.audio) {
+        console.log(`  音频处理: ${config.audio.enabled ? '启用' : '禁用'}`);
+        console.log(`  音频专用房间: ${JSON.stringify(config.audio.audioOnlyRooms)}`);
+    }
+    
+    // 检查AI服务配置
+    if (config.ai?.text) {
+        console.log(`  Gemini API: ${config.ai.text.enabled ? '启用' : '禁用'}`);
+    }
+    
+    // 检查房间设置
+    if (config.ai?.roomSettings?.['26966466']) {
+        console.log(`  房间26966466设置:`, config.ai.roomSettings['26966466']);
     }
 } catch (error) {
     console.log(`❌ 配置文件测试失败: ${error.message}`);
