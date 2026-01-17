@@ -188,7 +188,11 @@ export class BilibiliAPIService implements IBilibiliAPIService {
    */
   async publishComment(request: PublishCommentRequest): Promise<PublishCommentResponse> {
     try {
-      this.logger.info(`发布评论: ${request.dynamicId}`, { contentLength: request.content.length });
+      this.logger.info(`发布评论: ${request.dynamicId}`, {
+        contentLength: request.content.length,
+        hasImages: !!(request.images && request.images.length > 0),
+        images: request.images
+      });
 
       // 构建请求参数
       const params: any = {
@@ -201,9 +205,12 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       // 如果有图片，添加图片参数
       if (request.images && request.images.length > 0) {
         params.pics = request.images.join(',');
+        this.logger.info('添加图片参数', { pics: params.pics });
       }
 
       const url = `${this.baseUrl}/x/v2/reply/add`;
+      this.logger.info('发送评论请求', { url, params });
+
       const response = await fetch(url, {
         method: 'POST',
         headers: {
@@ -223,6 +230,7 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       }
 
       const data: BilibiliAPIResponse = await response.json();
+      this.logger.info('评论API响应', { code: data.code, message: data.message, data: JSON.stringify(data.data) });
 
       if (data.code !== 0) {
         this.logger.error('发布评论API错误', { code: data.code, message: data.message });
@@ -265,7 +273,7 @@ export class BilibiliAPIService implements IBilibiliAPIService {
    */
   async uploadImage(imagePath: string): Promise<string> {
     try {
-      this.logger.info(`上传图片: ${path.basename(imagePath)}`);
+      this.logger.info(`上传图片: ${path.basename(imagePath)}`, { fullPath: imagePath });
 
       // 检查文件是否存在
       if (!fs.existsSync(imagePath)) {
@@ -274,10 +282,12 @@ export class BilibiliAPIService implements IBilibiliAPIService {
 
       // 获取上传URL
       const uploadUrl = await this.getUploadUrl();
+      this.logger.info('获取上传URL成功', { uploadUrl });
 
       // 读取文件
       const fileBuffer = fs.readFileSync(imagePath);
       const fileName = path.basename(imagePath);
+      this.logger.info('读取文件成功', { fileName, fileSize: fileBuffer.length });
 
       // 构建multipart/form-data
       const boundary = `----WebKitFormBoundary${Date.now()}`;
@@ -298,6 +308,8 @@ export class BilibiliAPIService implements IBilibiliAPIService {
         `--${boundary}--`
       ].join('\r\n');
 
+      this.logger.info('发送图片上传请求', { uploadUrl, boundary });
+
       const response = await fetch(uploadUrl, {
         method: 'POST',
         headers: {
@@ -310,10 +322,13 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       });
 
       if (!response.ok) {
+        const errorText = await response.text();
+        this.logger.error('上传图片HTTP错误', { status: response.status, errorText });
         throw new AppError(`上传图片失败: HTTP ${response.status}`, 'API_ERROR', response.status);
       }
 
       const data: BilibiliAPIResponse = await response.json();
+      this.logger.info('图片上传API响应', { code: data.code, message: data.message, data: JSON.stringify(data.data) });
 
       if (data.code !== 0) {
         throw new AppError(`上传图片失败: ${data.message}`, 'API_ERROR', data.code);
