@@ -52,6 +52,44 @@ function runCommand(command, args, options = {}) {
     });
 }
 
+// 获取视频时长（秒）
+async function getVideoDuration(filePath) {
+    return new Promise((resolve, reject) => {
+        const ffprobe = spawn('ffprobe', [
+            '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            filePath
+        ], { stdio: ['ignore', 'pipe', 'pipe'] });
+        
+        let output = '';
+        let error = '';
+        
+        ffprobe.stdout.on('data', (data) => {
+            output += data.toString();
+        });
+        
+        ffprobe.stderr.on('data', (data) => {
+            error += data.toString();
+        });
+        
+        ffprobe.on('close', (code) => {
+            if (code === 0 && output.trim()) {
+                const duration = parseFloat(output.trim());
+                if (!isNaN(duration)) {
+                    resolve(duration);
+                } else {
+                    reject(new Error(`Invalid duration: ${output}`));
+                }
+            } else {
+                reject(new Error(`ffprobe failed: ${error || 'unknown error'}`));
+            }
+        });
+        
+        ffprobe.on('error', reject);
+    });
+}
+
 // Whisper 文件锁 - 防止并发调用导致 GPU 冲突
 const WHISPER_LOCK_FILE = path.join(__dirname, '.whisper_lock');
 const WHISPER_LOCK_TIMEOUT = 60 * 60 * 1000; // 1小时超时
@@ -154,6 +192,27 @@ async function processMedia(mediaPath) {
     }
 
     if (!fs.existsSync(srtPath)) {
+        // 检查视频时长，小于30秒则跳过Whisper处理
+        if (!isAudioFile(mediaPath)) {
+            try {
+                console.log(`🔍 分析视频时长...`);
+                const duration = await getVideoDuration(mediaPath);
+                const minDurationSeconds = 30; // 最小视频时长：30秒
+                
+                if (duration < minDurationSeconds) {
+                    console.log(`⏭️  视频时长过短 (${duration.toFixed(1)}秒 < ${minDurationSeconds}秒)，跳过Whisper处理`);
+                    return null;
+                }
+                
+                const minutes = Math.floor(duration / 60);
+                const seconds = Math.floor(duration % 60);
+                const ms = Math.floor((duration % 1) * 1000);
+                console.log(`-> ${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')},${String(ms).padStart(3, '0')}`);
+            } catch (error) {
+                console.warn(`⚠️  获取视频时长失败: ${error.message}，继续处理`);
+            }
+        }
+        
         const fileType = isAudioFile(mediaPath) ? 'Audio' : 'Video';
         console.log(`\n-> [ASR] Generating Subtitles (Whisper)...`);
         console.log(`   Target: ${path.basename(mediaPath)} (${fileType})`);
@@ -380,11 +439,39 @@ const main = async () => {
         // 使用 do_fusion_summary 生成的文件
         if (generatedHighlightFile && fs.existsSync(generatedHighlightFile)) {
             const highlightPath = generatedHighlightFile;
-            const highlightFile = path.basename(highlightPath);
+            const highlightFile = path.basename(highlightFile);
             const roomId = extractRoomIdFromFilename(highlightFile);
             
             console.log(`📌 处理 do_fusion_summary 生成的文件: ${highlightFile}`);
             console.log(`\n--- 处理: ${highlightFile} ---`);
+            
+            // 检查AI_HIGHLIGHT文件大小，小于0.5KB则跳过AI生成
+            const highlightStats = fs.statSync(highlightPath);
+            const highlightSizeKB = highlightStats.size / 1024;
+            const minHighlightSizeKB = 0.5; // 最小AI_HIGHLIGHT文件大小：0.5KB
+            
+            if (highlightSizeKB < minHighlightSizeKB) {
+                console.log(`⏭️  AI_HIGHLIGHT文件过小 (${highlightSizeKB.toFixed(2)}KB < ${minHighlightSizeKB}KB)，跳过AI生成`);
+                return;
+            }
+            
+            // 检查视频时长（从SRT文件获取）
+            const srtFile = filesToProcess.find(f => f.endsWith('.srt'));
+            if (srtFile && fs.existsSync(srtFile)) {
+                const srtContent = fs.readFileSync(srtFile, 'utf8');
+                const timeMatches = srtContent.match(/\d{2}:\d{2}:\d{2},\d{3}/g);
+                if (timeMatches && timeMatches.length > 0) {
+                    const lastTimeStr = timeMatches[timeMatches.length - 1];
+                    const [h, m, s] = lastTimeStr.split(':').map(Number);
+                    const totalSeconds = h * 3600 + m * 60 + s;
+                    const minDurationSeconds = 30; // 最小视频时长：30秒
+                    
+                    if (totalSeconds < minDurationSeconds) {
+                        console.log(`⏭️  视频时长过短 (${totalSeconds}秒 < ${minDurationSeconds}秒)，跳过AI生成`);
+                        return;
+                    }
+                }
+            }
             
             // 检查房间AI设置
             const aiSettings = roomId ? shouldGenerateAiForRoom(roomId) : { text: true, comic: true };
