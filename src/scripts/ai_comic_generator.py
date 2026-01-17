@@ -24,7 +24,7 @@ except (ValueError, AttributeError, OSError) as e:
 def safe_print(*args, **kwargs):
     """安全的打印函数，在stdout/stderr不可用时静默失败"""
     try:
-        print(*args, **kwargs)
+        __builtins__.print(*args, **kwargs)
     except (ValueError, OSError, AttributeError):
         # stdout/stderr已关闭或不可用，静默忽略
         pass
