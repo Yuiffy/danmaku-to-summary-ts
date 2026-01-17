@@ -9,6 +9,7 @@ import sys
 import json
 import asyncio
 import io
+import aiohttp
 from bilibili_api import comment, Credential
 from bilibili_api.comment import CommentResourceType
 
@@ -40,6 +41,52 @@ def log(*args, **kwargs):
 print = safe_print
 
 
+async def get_dynamic_comment_id(dynamic_id: str) -> tuple[str, CommentResourceType]:
+    """
+    获取动态的comment_id和评论类型
+
+    Args:
+        dynamic_id: 动态ID
+
+    Returns:
+        tuple: (comment_id, comment_type)
+    """
+    url = f"https://api.bilibili.com/x/polymer/web-dynamic/v1/detail"
+    params = {
+        'id': dynamic_id,
+        'timezone_offset': '-480',
+        'features': 'itemOpusStyle'
+    }
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://www.bilibili.com/'
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, params=params, headers=headers) as response:
+            data = await response.json()
+
+            if data.get('code') != 0:
+                raise Exception(f"获取动态详情失败: {data.get('message')}")
+
+            item = data.get('data', {}).get('item', {})
+            basic = item.get('basic', {})
+            comment_id_str = basic.get('comment_id_str', '')
+            comment_type = basic.get('comment_type', 11)
+
+            # 根据comment_type映射到CommentResourceType
+            if comment_type == 11:
+                comment_resource_type = CommentResourceType.DYNAMIC_DRAW
+            elif comment_type == 17:
+                comment_resource_type = CommentResourceType.DYNAMIC
+            elif comment_type == 12:
+                comment_resource_type = CommentResourceType.ARTICLE
+            else:
+                comment_resource_type = CommentResourceType.DYNAMIC_DRAW
+
+            return comment_id_str, comment_resource_type
+
+
 async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct: str, dedeuserid: str) -> dict:
     """
     发布动态评论
@@ -56,8 +103,13 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
     """
     log(f"[INFO] 开始发布评论到动态: {dynamic_id}")
     log(f"[INFO] 评论内容: {content}")
-    
+
     try:
+        # 获取动态的comment_id和评论类型
+        log(f"[INFO] 获取动态的comment_id...")
+        comment_id, comment_type = await get_dynamic_comment_id(dynamic_id)
+        log(f"[INFO] 获取到comment_id: {comment_id}, 评论类型: {comment_type.value}")
+
         # 创建 Credential 对象
         log(f"[INFO] 创建凭证对象...")
         credential = Credential(
@@ -80,11 +132,11 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
             }
 
         # 使用 comment.send_comment 函数发送评论
-        log(f"[INFO] 调用B站API发送评论...")
+        log(f"[INFO] 调用B站API发送评论，oid={comment_id}, type={comment_type.value}...")
         result = await comment.send_comment(
             text=content,
-            oid=int(dynamic_id),
-            type_=CommentResourceType.DYNAMIC,
+            oid=int(comment_id),
+            type_=comment_type,
             credential=credential
         )
 
