@@ -233,7 +233,12 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       // 调用 Python 脚本发布评论
       // 使用 process.cwd() 获取项目根目录，确保路径正确
       const scriptPath = path.join(process.cwd(), 'src/scripts/bilibili_comment.py');
-      const command = `python "${scriptPath}" "${request.dynamicId}" "${request.content}" "${sessdata}" "${bili_jct}" "${dedeuserid}"`;
+      let command = `python "${scriptPath}" "${request.dynamicId}" "${request.content}" "${sessdata}" "${bili_jct}" "${dedeuserid}"`;
+
+      // 如果有图片，添加图片路径参数
+      if (request.images && request.images.length > 0) {
+        command += ` "${request.images[0]}"`;
+      }
 
       this.logger.info('调用Python脚本发布评论', { command });
 
@@ -264,11 +269,12 @@ export class BilibiliAPIService implements IBilibiliAPIService {
         throw new AppError(`发布评论失败: ${result.message || result.error}`, 'API_ERROR', 500);
       }
 
-      this.logger.info('评论发布成功', { replyId: result.reply_id });
+      this.logger.info('评论发布成功', { replyId: result.reply_id, imageUrl: result.image_url });
 
       return {
         replyId: result.reply_id,
-        replyTime: Date.now()
+        replyTime: Date.now(),
+        imageUrl: result.image_url
       };
     } catch (error) {
       if (error instanceof AppError) {

@@ -136,6 +136,8 @@ export interface PublishCommentResponse {
   replyId: string;
   /** 回复时间 */
   replyTime: number;
+  /** 图片URL（如果有） */
+  imageUrl?: string;
 }
 
 /**

@@ -272,25 +272,24 @@ export class BilibiliAPIHandler implements IWebhookHandler {
         return;
       }
 
-      let imageUrl: string | undefined;
+      let imagePath: string | undefined;
 
-      // 如果有图片，先上传
+      // 如果有图片，保存图片路径
       if (req.file) {
-        this.logger.info(`上传图片: ${req.file.originalname}`, { path: req.file.path });
-        imageUrl = await this.bilibiliAPI.uploadImage(req.file.path);
-        this.logger.info('图片上传成功', { imageUrl });
+        imagePath = req.file.path;
+        this.logger.info(`收到图片文件: ${req.file.originalname}`, { path: imagePath });
       }
 
-      // 发布评论
+      // 发布评论（Python脚本会处理图片上传）
       const result = await this.bilibiliAPI.publishComment({
         dynamicId,
         content,
-        images: imageUrl ? [imageUrl] : undefined
+        images: imagePath ? [imagePath] : undefined
       });
 
       // 删除临时文件
-      if (req.file && fs.existsSync(req.file.path)) {
-        fs.unlinkSync(req.file.path);
+      if (imagePath && fs.existsSync(imagePath)) {
+        fs.unlinkSync(imagePath);
       }
 
       res.json({
@@ -298,7 +297,7 @@ export class BilibiliAPIHandler implements IWebhookHandler {
         data: {
           replyId: result.replyId,
           replyTime: result.replyTime,
-          imageUrl,
+          imageUrl: result.imageUrl,
           message: '评论发布成功'
         }
       });

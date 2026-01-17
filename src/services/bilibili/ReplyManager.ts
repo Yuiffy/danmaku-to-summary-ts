@@ -74,21 +74,11 @@ export class ReplyManager implements IReplyManager {
         throw new Error('晚安回复文本为空');
       }
 
-      // 上传图片（如果有）
-      let imageUrl: string | undefined;
-      if (task.imagePath && fs.existsSync(task.imagePath)) {
-        imageUrl = await this.bilibiliAPI.uploadImage(task.imagePath);
-        this.logger.info('图片上传成功', { imageUrl });
-      }
-
-      // 构建评论内容
-      const commentContent = this.buildCommentContent(replyText, imageUrl);
-
-      // 发布评论
+      // 发布评论（Python脚本会处理图片上传）
       const result = await this.bilibiliAPI.publishComment({
         dynamicId: task.dynamic.id,
-        content: commentContent,
-        images: imageUrl ? [imageUrl] : undefined
+        content: replyText,
+        images: task.imagePath && fs.existsSync(task.imagePath) ? [task.imagePath] : undefined
       });
 
       // 记录回复历史
