@@ -27,8 +27,6 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
         dict: 包含评论结果的字典
     """
     try:
-        print(f"[DEBUG] 动态ID: {dynamic_id}")
-
         # 创建 Credential 对象
         credential = Credential(
             sessdata=sessdata,
@@ -37,9 +35,7 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
         )
 
         # 验证凭证是否有效
-        print(f"[DEBUG] 验证凭证...")
         is_valid = await credential.check_valid()
-        print(f"[DEBUG] 凭证有效: {is_valid}")
 
         if not is_valid:
             return {
@@ -56,8 +52,6 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
             credential=credential
         )
 
-        print(f"[DEBUG] 评论发送成功: {result}")
-
         return {
             'success': True,
             'reply_id': str(result.get('rpid', '')),
@@ -65,7 +59,6 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
         }
 
     except Exception as e:
-        print(f"[ERROR] 评论发布失败: {str(e)}")
         return {
             'success': False,
             'error': str(e),
