@@ -84,7 +84,8 @@
         "anchorName": "小岁",
         "fanName": "饼干岁",
         "enableTextGeneration": true,
-        "enableComicGeneration": true
+        "enableComicGeneration": true,
+        "wordLimit": 800
       },
       "545068": {
         "audioOnly": false,

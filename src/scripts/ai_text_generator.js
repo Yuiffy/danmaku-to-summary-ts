@@ -47,6 +47,7 @@ function buildPrompt(highlightContent, roomId) {
     const names = configLoader.getNames(roomId);
     const anchor = names.anchor;
     const fan = names.fan;
+    const wordLimit = configLoader.getWordLimit(roomId);
 
     return `【角色设定】
 
@@ -81,7 +82,7 @@ function buildPrompt(highlightContent, roomId) {
 期待：确认下一次直播的时间（如果文档里提到了）。
 落款：—— 永远爱你的/支持你的/陪着你的${fan} + emoji
 
-字数要求：800字以内。
+字数要求：${wordLimit}字以内。
 
 【直播内容摘要】
 ${highlightContent}

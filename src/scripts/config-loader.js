@@ -202,6 +202,30 @@ function getNames(roomId) {
 }
 
 /**
+ * 获取字数限制
+ */
+function getWordLimit(roomId) {
+    const config = getConfig();
+    let wordLimit = config.ai?.defaultWordLimit || 100;
+
+    if (roomId) {
+        const roomStr = String(roomId);
+        // 新格式：ai.roomSettings
+        if (config.ai?.roomSettings?.[roomStr]) {
+            const r = config.ai.roomSettings[roomStr];
+            if (r.wordLimit !== undefined) wordLimit = r.wordLimit;
+        }
+        // 旧格式：roomSettings
+        if (config.roomSettings?.[roomStr]) {
+            const r = config.roomSettings[roomStr];
+            if (r.wordLimit !== undefined) wordLimit = r.wordLimit;
+        }
+    }
+
+    return wordLimit;
+}
+
+/**
  * 清除缓存
  */
 function clearCache() {
@@ -224,6 +248,7 @@ module.exports = {
     isGeminiConfigured,
     isTuZiConfigured,
     getNames,
+    getWordLimit,
     clearCache,
     reloadConfig,
     findConfigPath,
