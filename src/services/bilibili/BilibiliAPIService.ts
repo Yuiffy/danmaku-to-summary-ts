@@ -190,45 +190,56 @@ export class BilibiliAPIService implements IBilibiliAPIService {
     try {
       this.logger.info(`发布评论: ${request.dynamicId}`, { contentLength: request.content.length });
 
-      const url = `${this.baseUrl}/x/v2/reply/add`;
-      const body = {
+      // 构建请求参数
+      const params: any = {
         oid: request.dynamicId,
         type: 17, // 17表示动态
         message: request.content,
         csrf: this.csrf
       };
 
+      // 如果有图片，添加图片参数
+      if (request.images && request.images.length > 0) {
+        params.pics = request.images.join(',');
+      }
+
+      const url = `${this.baseUrl}/x/v2/reply/add`;
       const response = await fetch(url, {
         method: 'POST',
         headers: {
           'Cookie': this.cookie,
           'Content-Type': 'application/x-www-form-urlencoded',
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Referer': `${this.webUrl}/`
+          'Referer': `${this.webUrl}/`,
+          'Origin': this.webUrl
         },
-        body: new URLSearchParams(body as any).toString()
+        body: new URLSearchParams(params).toString()
       });
 
       if (!response.ok) {
+        const errorText = await response.text();
+        this.logger.error('发布评论HTTP错误', { status: response.status, errorText });
         throw new AppError(`发布评论失败: HTTP ${response.status}`, 'API_ERROR', response.status);
       }
 
       const data: BilibiliAPIResponse = await response.json();
 
       if (data.code !== 0) {
+        this.logger.error('发布评论API错误', { code: data.code, message: data.message });
         throw new AppError(`发布评论失败: ${data.message}`, 'API_ERROR', data.code);
       }
 
-      this.logger.info('评论发布成功', { replyId: data.data.reply_id });
+      this.logger.info('评论发布成功', { replyId: data.data.reply.reply_id });
 
       return {
-        replyId: data.data.reply_id.toString(),
-        replyTime: data.data.like_timestamp || Date.now()
+        replyId: data.data.reply.reply_id.toString(),
+        replyTime: data.data.reply.like_timestamp || Date.now()
       };
     } catch (error) {
       if (error instanceof AppError) {
         throw error;
       }
+      this.logger.error('发布评论异常', { error });
       throw new AppError(
         `发布评论失败: ${error instanceof Error ? error.message : error}`,
         'API_ERROR',
