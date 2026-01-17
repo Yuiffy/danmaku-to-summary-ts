@@ -349,60 +349,56 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
             return highlight_content, False
 
     except ImportError:
-        print("[WARNING]  google-genai库未安装，使用原始内容")
+        print("[WARNING]  google-genai库未安装，尝试使用tuZi API...")
         print("   请安装: pip install google-genai")
-        return highlight_content, False
     except Exception as e:
-        error_str = str(e)
-        # 检查是否是429超频错误，尝试使用tuZi API作为备用方案
-        if '429' in error_str or 'RESOURCE_EXHAUSTED' in error_str:
-            print("[WARNING]  ⚠️ Gemini API超频 (429)，尝试使用tuZi API作为备用方案...")
-            
-            # 尝试使用tuZi API生成文本
-            try:
-                from tuzi_chat_completions import call_tuzi_chat_completions
-                
-                config = load_config()
-                tuzi_config = config.get("aiServices", {}).get("tuZi", {})
-                
-                if not is_tuzi_configured():
-                    print("[WARNING]  tuZi API未配置，使用原始内容")
-                    return highlight_content, False
-                
-                # 构建提示词（使用统一的prompt模板）
-                character_desc = get_room_character_description(room_id)
-                system_prompt = build_comic_generation_prompt(character_desc, highlight_content)
-                user_prompt = f"直播内容：\n{highlight_content}\n\n请创作漫画故事脚本："
-                
-                # 调用tuZi Chat Completions API
-                comic_content = call_tuzi_chat_completions(
-                    prompt=user_prompt,
-                    system_prompt=system_prompt,
-                    model=tuzi_config.get("textModel", "gemini-3-flash-preview"),
-                    base_url=tuzi_config.get("baseUrl", "https://api.tu-zi.com"),
-                    api_key=tuzi_config.get("apiKey", ""),
-                    proxy_url=tuzi_config.get("proxy", ""),
-                    timeout=120,
-                    temperature=0.7,
-                    max_tokens=100000
-                )
-                
-                if comic_content:
-                    print("[OK] tuZi API漫画文本生成成功")
-                    print(f"生成内容长度: {len(comic_content)} 字符")
-                    print(f"内容预览: {comic_content[:200]}...")
-                    return comic_content, True
-                else:
-                    print("[WARNING]  tuZi API返回空内容")
-                    return highlight_content, False
-                
-            except Exception as tuzi_error:
-                print(f"[ERROR]  tuZi API备用方案失败: {tuzi_error}")
-                print("[WARNING]  所有API都失败，使用原始内容")
-                return highlight_content, False
-        else:
-            print(f"[ERROR]  AI内容生成失败: {e}")
+        print(f"[ERROR]  AI内容生成失败: {e}")
+    
+    # Gemini失败后，尝试使用tuZi API作为备用方案
+    print("[TUZI] Google生成失败，尝试tu-zi.com生成文本...")
+    
+    # 尝试使用tuZi API生成文本
+    try:
+        from tuzi_chat_completions import call_tuzi_chat_completions
+        
+        config = load_config()
+        tuzi_config = config.get("aiServices", {}).get("tuZi", {})
+        
+        if not is_tuzi_configured():
+            print("[WARNING]  tuZi API未配置，使用原始内容")
             return highlight_content, False
+        
+        # 构建提示词（使用统一的prompt模板）
+        character_desc = get_room_character_description(room_id)
+        system_prompt = build_comic_generation_prompt(character_desc, highlight_content)
+        user_prompt = f"直播内容：\n{highlight_content}\n\n请创作漫画故事脚本："
+        
+        # 调用tuZi Chat Completions API
+        comic_content = call_tuzi_chat_completions(
+            prompt=user_prompt,
+            system_prompt=system_prompt,
+            model=tuzi_config.get("textModel", "gemini-3-flash-preview"),
+            base_url=tuzi_config.get("baseUrl", "https://api.tu-zi.com"),
+            api_key=tuzi_config.get("apiKey", ""),
+            proxy_url=tuzi_config.get("proxy", ""),
+            timeout=120,
+            temperature=0.7,
+            max_tokens=100000
+        )
+        
+        if comic_content:
+            print("[OK] tuZi API漫画文本生成成功")
+            print(f"生成内容长度: {len(comic_content)} 字符")
+            print(f"内容预览: {comic_content[:200]}...")
+            return comic_content, True
+        else:
+            print("[WARNING]  tuZi API返回空内容")
+            return highlight_content, False
+        
+    except Exception as tuzi_error:
+        print(f"[ERROR]  tuZi API备用方案失败: {tuzi_error}")
+        print("[WARNING]  所有API都失败，使用原始内容")
+        return highlight_content, False
     
     # 确保函数在所有路径都返回有效值
     return highlight_content, False
@@ -1087,6 +1083,11 @@ def generate_comic_from_highlight(highlight_path: str) -> Optional[str]:
 
         # 构建提示词（包含漫画内容生成），如果已有脚本则复用
         prompt, comic_text, is_comic_generated = build_comic_prompt(highlight_content, reference_image_path, room_id, existing_comic=comic_text)
+
+        # 如果脚本生成失败（使用原文作为备选），则不生成图片
+        if not is_comic_generated:
+            print("[ERROR] 漫画脚本生成失败，跳过图像生成")
+            return None
 
         # 图像生成成功，现在保存漫画脚本（只在真正生成脚本时保存，不保存原文备选）
         try:
