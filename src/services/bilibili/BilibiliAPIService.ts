@@ -4,6 +4,8 @@
 import fetch from 'node-fetch';
 import * as fs from 'fs';
 import * as path from 'path';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import { getLogger } from '../../core/logging/LogManager';
 import { ConfigProvider } from '../../core/config/ConfigProvider';
 import { AppError } from '../../core/errors/AppError';
@@ -15,6 +17,8 @@ import {
   DynamicType,
   BilibiliAPIResponse
 } from './interfaces/types';
+
+const execAsync = promisify(exec);
 
 /**
  * B站API服务实现
@@ -205,6 +209,7 @@ export class BilibiliAPIService implements IBilibiliAPIService {
 
   /**
    * 发布动态评论
+   * 使用 Python bilibili-api 库处理评论功能
    */
   async publishComment(request: PublishCommentRequest): Promise<PublishCommentResponse> {
     try {
@@ -216,88 +221,41 @@ export class BilibiliAPIService implements IBilibiliAPIService {
         images: request.images
       });
 
-      // 构建请求参数
-      const params: any = {
-        oid: request.dynamicId,
-        type: 17, // 17表示动态
-        message: request.content,
-        csrf: this.csrf
-      };
+      // 解析 Cookie 获取必要的参数
+      const sessdata = this.extractCookieValue(this.cookie, 'SESSDATA');
+      const bili_jct = this.extractCookieValue(this.cookie, 'bili_jct');
+      const dedeuserid = this.extractCookieValue(this.cookie, 'DedeUserID');
 
-      // 如果有图片，添加图片参数
-      if (request.images && request.images.length > 0) {
-        params.pics = request.images.join(',');
-        this.logger.info('添加图片参数', { pics: params.pics });
+      if (!sessdata || !bili_jct || !dedeuserid) {
+        throw new AppError('Cookie中缺少必要的参数 (SESSDATA, bili_jct, DedeUserID)', 'CONFIGURATION_ERROR', 400);
       }
 
-      const url = `${this.baseUrl}/x/v2/reply/add`;
-      // 确保 oid 以字符串形式记录日志，避免大数精度丢失
-      this.logger.info('发送评论请求', {
-        url,
-        oid: String(params.oid),
-        type: params.type,
-        messageLength: params.message?.length || 0
-      });
+      // 调用 Python 脚本发布评论
+      // 使用 process.cwd() 获取项目根目录，确保路径正确
+      const scriptPath = path.join(process.cwd(), 'src/scripts/bilibili_comment.py');
+      const command = `python "${scriptPath}" "${request.dynamicId}" "${request.content}" "${sessdata}" "${bili_jct}" "${dedeuserid}"`;
 
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Cookie': this.cookie,
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Referer': `${this.webUrl}/`,
-          'Origin': this.webUrl
-        },
-        body: new URLSearchParams(params).toString()
-      });
+      this.logger.info('调用Python脚本发布评论', { command });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        // 避免大数精度丢失，只记录关键字段
-        this.logger.error('发布评论HTTP错误', {
-          status: response.status,
-          errorText: errorText.substring(0, 200)
-        });
-        throw new AppError(`发布评论失败: HTTP ${response.status}`, 'API_ERROR', response.status);
+      const { stdout, stderr } = await execAsync(command);
+
+      if (stderr) {
+        this.logger.warn('Python脚本警告', { stderr });
       }
 
-      const data: BilibiliAPIResponse = await response.json();
-      // 确保 oid 以字符串形式记录日志，避免大数精度丢失
-      this.logger.info('评论API响应', {
-        code: data.code,
-        message: data.message,
-        oid: String(data.data?.oid || ''),
-        rpid: data.data?.rpid_str || data.data?.rpid
-      });
+      // 解析 Python 脚本的输出
+      const result = JSON.parse(stdout);
 
-      if (data.code !== 0) {
-        // 避免大数精度丢失，只记录关键字段
-        this.logger.error('发布评论API错误', {
-          code: data.code,
-          message: data.message,
-          oid: String(data.data?.oid || '')
-        });
-        throw new AppError(`发布评论失败: ${data.message}`, 'API_ERROR', data.code);
+      if (!result.success) {
+        this.logger.error('Python脚本返回错误', { result });
+        throw new AppError(`发布评论失败: ${result.message || result.error}`, 'API_ERROR', 500);
       }
 
-      // B站API返回的评论ID在 data.rpid 或 data.rpid_str 中
-      const replyId = data.data.rpid_str || data.data.rpid;
-      if (!replyId) {
-        // 避免大数精度丢失，只记录关键字段
-        this.logger.error('发布评论返回的reply_id为空', {
-          code: data.code,
-          message: data.message,
-          oid: String(data.data?.oid || '')
-        });
-        throw new AppError('发布评论失败: 未获取到评论ID', 'API_ERROR', 500);
-      }
-
-      // 确保 replyId 以字符串形式记录日志，避免大数精度丢失
-      this.logger.info('评论发布成功', { replyId: String(replyId) });
+      this.logger.info('评论发布成功', { replyId: result.reply_id });
 
       return {
-        replyId: replyId.toString(),
-        replyTime: data.data.reply?.ctime || Date.now()
+        replyId: result.reply_id,
+        replyTime: Date.now()
       };
     } catch (error) {
       if (error instanceof AppError) {
@@ -310,6 +268,14 @@ export class BilibiliAPIService implements IBilibiliAPIService {
         500
       );
     }
+  }
+
+  /**
+   * 从Cookie中提取指定值
+   */
+  private extractCookieValue(cookie: string, name: string): string | null {
+    const match = cookie.match(new RegExp(`${name}=([^;]+)`));
+    return match ? match[1] : null;
   }
 
   /**
