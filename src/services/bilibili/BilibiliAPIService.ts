@@ -237,13 +237,8 @@ export class BilibiliAPIService implements IBilibiliAPIService {
         throw new AppError(`发布评论失败: ${data.message}`, 'API_ERROR', data.code);
       }
 
-      // 检查返回数据结构
-      if (!data.data || !data.data.reply) {
-        this.logger.error('发布评论返回数据格式异常', { data });
-        throw new AppError('发布评论失败: 返回数据格式异常', 'API_ERROR', 500);
-      }
-
-      const replyId = data.data.reply.reply_id;
+      // B站API返回的评论ID在 data.rpid 或 data.rpid_str 中
+      const replyId = data.data.rpid_str || data.data.rpid;
       if (!replyId) {
         this.logger.error('发布评论返回的reply_id为空', { data });
         throw new AppError('发布评论失败: 未获取到评论ID', 'API_ERROR', 500);
@@ -253,7 +248,7 @@ export class BilibiliAPIService implements IBilibiliAPIService {
 
       return {
         replyId: replyId.toString(),
-        replyTime: data.data.reply.like_timestamp || Date.now()
+        replyTime: data.data.reply?.ctime || Date.now()
       };
     } catch (error) {
       if (error instanceof AppError) {
