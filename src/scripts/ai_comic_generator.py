@@ -10,7 +10,6 @@ import sys
 import json
 import time
 import base64
-import copy
 import requests
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
@@ -18,135 +17,36 @@ import traceback
 import subprocess
 import shutil
 
-# 配置路径 - 优先读取外部配置文件
-def get_config_path():
-    """获取配置文件路径，优先级: /config/production.json > /config/default.json > /src/scripts/config.json"""
-    env = os.environ.get('NODE_ENV', 'development')
-    # 脚本在 src/scripts 目录，外部配置在 config 目录
-    scripts_dir = os.path.dirname(__file__)
-    project_root = os.path.dirname(os.path.dirname(scripts_dir))
-    config_dir = os.path.join(project_root, 'config')
-    
-    # 优先级顺序
-    possible_paths = [
-        os.path.join(config_dir, 'production.json' if env == 'production' else 'default.json'),
-        os.path.join(config_dir, 'default.json'),
-        os.path.join(os.path.dirname(__file__), 'config.json'),
-    ]
-    
-    for config_path in possible_paths:
-        if os.path.exists(config_path):
-            return config_path
-    
-    # 如果都不存在，返回脚本目录的config.json
-    return os.path.join(os.path.dirname(__file__), 'config.json')
-
-CONFIG_PATH = get_config_path()
+# 导入统一配置加载器
+from config_loader import (
+    get_config,
+    is_gemini_configured,
+    is_tuzi_configured,
+    get_gemini_api_key,
+    get_tuzi_api_key,
+    get_room_names,
+    get_project_root
+)
 
 def load_config() -> Dict[str, Any]:
-    """加载配置文件（外部config目录优先，然后是scripts/config.json，最后是config.secrets.json）"""
-    default_config = {
+    """加载配置文件（使用统一配置加载器）"""
+    config = get_config()
+    
+    # 为了向后兼容，构建 aiServices 结构
+    legacy_config = {
         "aiServices": {
+            "gemini": config.get('ai', {}).get('text', {}).get('gemini', {}),
+            "tuZi": config.get('ai', {}).get('comic', {}).get('tuZi', {}),
+            "defaultReferenceImage": config.get('ai', {}).get('defaultReferenceImage', ''),
+            "defaultCharacterDescription": config.get('ai', {}).get('defaultCharacterDescription', ''),
+            "defaultNames": config.get('ai', {}).get('defaultNames', {})
         },
-        "ai": {},  # 新增：保留 ai 结构，用于 get_room_reference_image 等函数
-        "roomSettings": {},
-        "timeouts": {
-            "aiApiTimeout": 360000
-        }
+        "ai": config.get('ai', {}),
+        "roomSettings": config.get('ai', {}).get('roomSettings', {}),
+        "timeouts": config.get('timeouts', {})
     }
     
-    try:
-        merged = copy.deepcopy(default_config)
-        
-        # 加载主配置文件
-        if os.path.exists(CONFIG_PATH):
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                user_config = json.load(f)
-            
-            # 新格式：从 ai.comic.tuZi 和 ai.roomSettings 读取
-            if "ai" in user_config:
-                # 保留完整的 ai 结构（新增）
-                if "ai" not in merged:
-                    merged["ai"] = {}
-                merged["ai"].update(user_config["ai"])
-                
-                # 同时也更新到 aiServices 中（保持向后兼容）
-                if "comic" in user_config["ai"] and "tuZi" in user_config["ai"]["comic"]:
-                    if "tuZi" not in merged["aiServices"]:
-                        merged["aiServices"]["tuZi"] = {}
-                    merged["aiServices"]["tuZi"].update(user_config["ai"]["comic"]["tuZi"])
-                if "roomSettings" in user_config["ai"]:
-                    merged["roomSettings"].update(user_config["ai"]["roomSettings"])
-                # 处理 ai 对象下的默认配置（新增）
-                if "defaultReferenceImage" in user_config["ai"]:
-                    if "defaultReferenceImage" not in merged["aiServices"]:
-                        merged["aiServices"]["defaultReferenceImage"] = ""
-                    merged["aiServices"]["defaultReferenceImage"] = user_config["ai"]["defaultReferenceImage"]
-                if "defaultCharacterDescription" in user_config["ai"]:
-                    if "defaultCharacterDescription" not in merged["aiServices"]:
-                        merged["aiServices"]["defaultCharacterDescription"] = ""
-                    merged["aiServices"]["defaultCharacterDescription"] = user_config["ai"]["defaultCharacterDescription"]
-                if "defaultNames" in user_config["ai"]:
-                    if "defaultNames" not in merged["aiServices"]:
-                        merged["aiServices"]["defaultNames"] = {}
-                    merged["aiServices"]["defaultNames"].update(user_config["ai"]["defaultNames"])
-            
-            # 兼容旧格式
-            if "aiServices" in user_config:
-                for service_name, service_config in user_config["aiServices"].items():
-                    if service_name not in merged["aiServices"]:
-                        merged["aiServices"][service_name] = {}
-                    merged["aiServices"][service_name].update(service_config)
-            
-            if "roomSettings" in user_config:
-                merged["roomSettings"].update(user_config["roomSettings"])
-            
-            # 合并timeouts
-            if "timeouts" in user_config:
-                merged["timeouts"].update(user_config["timeouts"])
-        
-        # 加载密钥文件
-        secrets_path = os.path.join(os.path.dirname(__file__), 'config.secrets.json')
-        if os.path.exists(secrets_path):
-            with open(secrets_path, 'r', encoding='utf-8') as f:
-                secrets_config = json.load(f)
-
-            # 合并密钥配置 - 支持新旧两种格式
-            if "aiServices" in secrets_config:
-                # 旧格式: aiServices.tuZi.apiKey
-                if "aiServices" not in merged:
-                    merged["aiServices"] = {}
-                # 通用合并所有aiServices配置
-                for service_name, service_config in secrets_config["aiServices"].items():
-                    if service_name not in merged["aiServices"]:
-                        merged["aiServices"][service_name] = {}
-                    merged["aiServices"][service_name].update(service_config)
-            
-            # 新格式: ai.text.gemini.apiKey 和 ai.comic.tuZi.apiKey
-            if "ai" in secrets_config:
-                if "aiServices" not in merged:
-                    merged["aiServices"] = {}
-                
-                # 处理文本生成 (Gemini)
-                if "text" in secrets_config["ai"] and "gemini" in secrets_config["ai"]["text"]:
-                    if "gemini" not in merged["aiServices"]:
-                        merged["aiServices"]["gemini"] = {}
-                    merged["aiServices"]["gemini"].update(secrets_config["ai"]["text"]["gemini"])
-                
-                # 处理漫画生成 (tuZi)
-                if "comic" in secrets_config["ai"] and "tuZi" in secrets_config["ai"]["comic"]:
-                    if "tuZi" not in merged["aiServices"]:
-                        merged["aiServices"]["tuZi"] = {}
-                    merged["aiServices"]["tuZi"].update(secrets_config["ai"]["comic"]["tuZi"])
-        
-        return merged
-        
-    except Exception as e:
-        print(f"[ERROR] 加载配置文件失败: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    return default_config
+    return legacy_config
 
 def is_huggingface_configured() -> bool:
     """检查Hugging Face配置是否有效（已禁用）"""
@@ -155,12 +55,6 @@ def is_huggingface_configured() -> bool:
 def is_googleimage_configured() -> bool:
     """检查Google图像生成配置是否有效（已禁用）"""
     return False
-
-def is_tuzi_configured() -> bool:
-    """检查tuZi图像生成配置是否有效"""
-    config = load_config()
-    tuzi_config = config["aiServices"].get("tuZi", {})
-    return tuzi_config.get("enabled", False) and tuzi_config.get("apiKey", "") and tuzi_config["apiKey"].strip() != ""
 
 def generate_unique_filename(base_path: str) -> str:
     """生成不重复的文件名（如果文件已存在，添加 _1, _2 等后缀）"""
@@ -201,9 +95,9 @@ def get_room_reference_image(room_id: str, highlight_path: Optional[str] = None)
     """获取房间的参考图片路径"""
     config = load_config()
     
-    # 获取脚本所在目录的上级目录（项目根目录）
+    # 获取项目根目录
     scripts_dir = os.path.dirname(__file__)
-    project_root = os.path.dirname(os.path.dirname(scripts_dir))
+    project_root = get_project_root()
 
     # 首先检查roomSettings中的配置
     room_str = str(room_id)
@@ -410,16 +304,16 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
         # 导入Google GenAI (新版本)
         import google.genai as genai
 
-        # 加载配置
-        config = load_config()
-
-        # 获取Gemini配置
-        gemini_config = config.get('aiServices', {}).get('gemini', {})
-        gemini_api_key = gemini_config.get('apiKey', '')
+        # 获取Gemini API密钥（使用统一配置加载器）
+        gemini_api_key = get_gemini_api_key()
 
         if not gemini_api_key:
             print("[WARNING]  Gemini API密钥未配置，使用原始内容")
             return highlight_content, False
+
+        # 加载配置获取其他参数
+        config = load_config()
+        gemini_config = config.get('aiServices', {}).get('gemini', {})
 
         # 创建客户端
         client = genai.Client(api_key=gemini_api_key)
