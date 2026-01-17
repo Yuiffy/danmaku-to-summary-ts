@@ -105,7 +105,31 @@ function getConfig() {
     if (fs.existsSync(secretsPath)) {
         try {
             const secrets = readJsonFile(secretsPath);
-            config = deepMerge(config, secrets);
+            // 将扁平的secrets结构映射到嵌套结构
+            const mappedSecrets = {};
+            
+            // gemini.apiKey -> ai.text.gemini.apiKey
+            if (secrets.gemini && secrets.gemini.apiKey) {
+                if (!mappedSecrets.ai) mappedSecrets.ai = {};
+                if (!mappedSecrets.ai.text) mappedSecrets.ai.text = {};
+                if (!mappedSecrets.ai.text.gemini) mappedSecrets.ai.text.gemini = {};
+                mappedSecrets.ai.text.gemini.apiKey = secrets.gemini.apiKey;
+            }
+            
+            // tuZi.apiKey -> ai.comic.tuZi.apiKey
+            if (secrets.tuZi && secrets.tuZi.apiKey) {
+                if (!mappedSecrets.ai) mappedSecrets.ai = {};
+                if (!mappedSecrets.ai.comic) mappedSecrets.ai.comic = {};
+                if (!mappedSecrets.ai.comic.tuZi) mappedSecrets.ai.comic.tuZi = {};
+                mappedSecrets.ai.comic.tuZi.apiKey = secrets.tuZi.apiKey;
+            }
+            
+            // bilibili -> bilibili
+            if (secrets.bilibili) {
+                mappedSecrets.bilibili = secrets.bilibili;
+            }
+            
+            config = deepMerge(config, mappedSecrets);
             console.log(`✓ Secrets配置文件已加载: ${secretsPath}`);
         } catch (error) {
             console.warn(`⚠ 加载secrets配置文件失败: ${error.message}`);

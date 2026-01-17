@@ -101,7 +101,35 @@ def get_config(force_reload: bool = False) -> Dict[str, Any]:
     # 读取secrets并合并
     if os.path.exists(secrets_path):
         secrets = read_json_file(secrets_path)
-        config = deep_merge(config, secrets)
+        # 将扁平的secrets结构映射到嵌套结构
+        mapped_secrets = {}
+        
+        # gemini.apiKey -> ai.text.gemini.apiKey
+        if 'gemini' in secrets and 'apiKey' in secrets['gemini']:
+            if 'ai' not in mapped_secrets:
+                mapped_secrets['ai'] = {}
+            if 'text' not in mapped_secrets['ai']:
+                mapped_secrets['ai']['text'] = {}
+            if 'gemini' not in mapped_secrets['ai']['text']:
+                mapped_secrets['ai']['text']['gemini'] = {}
+            mapped_secrets['ai']['text']['gemini']['apiKey'] = secrets['gemini']['apiKey']
+        
+        # tuZi.apiKey -> ai.comic.tuZi.apiKey
+        if 'tuZi' in secrets and 'apiKey' in secrets['tuZi']:
+            if 'ai' not in mapped_secrets:
+                mapped_secrets['ai'] = {}
+            if 'comic' not in mapped_secrets['ai']:
+                mapped_secrets['ai']['comic'] = {}
+            if 'tuZi' not in mapped_secrets['ai']['comic']:
+                mapped_secrets['ai']['comic']['tuZi'] = {}
+            mapped_secrets['ai']['comic']['tuZi']['apiKey'] = secrets['tuZi']['apiKey']
+        
+        # bilibili -> bilibili
+        if 'bilibili' in secrets:
+            mapped_secrets['bilibili'] = secrets['bilibili']
+        
+        # 合并映射后的secrets
+        config = deep_merge(config, mapped_secrets)
         print(f"✓ Secrets配置文件已加载: {secrets_path}")
     else:
         print(f"⚠ Secrets配置文件不存在: {secrets_path}")

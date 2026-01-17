@@ -136,7 +136,31 @@ export class ConfigLoader {
     if (fs.existsSync(secretsPath)) {
       try {
         const secretsConfig = this.readJsonFile(secretsPath);
-        config = this.deepMerge(config, secretsConfig);
+        // 将扁平的secrets结构映射到嵌套结构
+        const mappedSecrets: any = {};
+        
+        // gemini.apiKey -> ai.text.gemini.apiKey
+        if (secretsConfig.gemini && secretsConfig.gemini.apiKey) {
+          if (!mappedSecrets.ai) mappedSecrets.ai = {};
+          if (!mappedSecrets.ai.text) mappedSecrets.ai.text = {};
+          if (!mappedSecrets.ai.text.gemini) mappedSecrets.ai.text.gemini = {};
+          mappedSecrets.ai.text.gemini.apiKey = secretsConfig.gemini.apiKey;
+        }
+        
+        // tuZi.apiKey -> ai.comic.tuZi.apiKey
+        if (secretsConfig.tuZi && secretsConfig.tuZi.apiKey) {
+          if (!mappedSecrets.ai) mappedSecrets.ai = {};
+          if (!mappedSecrets.ai.comic) mappedSecrets.ai.comic = {};
+          if (!mappedSecrets.ai.comic.tuZi) mappedSecrets.ai.comic.tuZi = {};
+          mappedSecrets.ai.comic.tuZi.apiKey = secretsConfig.tuZi.apiKey;
+        }
+        
+        // bilibili -> bilibili
+        if (secretsConfig.bilibili) {
+          mappedSecrets.bilibili = secretsConfig.bilibili;
+        }
+        
+        config = this.deepMerge(config, mappedSecrets);
         console.log(`Secrets configuration loaded from: ${secretsPath}`);
       } catch (error) {
         console.warn(`Failed to load secrets configuration from ${secretsPath}:`, error);
