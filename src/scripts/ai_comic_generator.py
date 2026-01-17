@@ -10,8 +10,36 @@ import sys
 import io
 
 # 禁用输出缓冲，确保日志实时输出到Node.js
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', line_buffering=True)
+# 添加异常处理，防止stdout/stderr已关闭的情况
+try:
+    if hasattr(sys.stdout, 'buffer') and not sys.stdout.closed:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
+    if hasattr(sys.stderr, 'buffer') and not sys.stderr.closed:
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', line_buffering=True)
+except (ValueError, AttributeError, OSError) as e:
+    # 如果stdout/stderr已关闭或无法访问，尝试使用原始流
+    pass
+
+# 创建安全的打印函数，防止在stdout/stderr关闭时崩溃
+def safe_print(*args, **kwargs):
+    """安全的打印函数，在stdout/stderr不可用时静默失败"""
+    try:
+        print(*args, **kwargs)
+    except (ValueError, OSError, AttributeError):
+        # stdout/stderr已关闭或不可用，静默忽略
+        pass
+
+# 创建安全的traceback打印函数
+def safe_print_exc():
+    """安全的traceback打印函数，在stderr不可用时静默失败"""
+    try:
+        traceback.print_exc()
+    except (ValueError, OSError, AttributeError):
+        # stderr已关闭或不可用，静默忽略
+        pass
+
+# 全局替换内置print函数，防止I/O错误导致崩溃
+print = safe_print
 
 import json
 import time
@@ -677,7 +705,7 @@ def call_google_image_api(prompt: str, reference_image_path: Optional[str] = Non
                 time.sleep(2)  # 短暂等待后重试
             else:
                 print(f"   重试次数已用完")
-                traceback.print_exc()
+                safe_print_exc()
                 return None
 
     return None
@@ -857,7 +885,7 @@ def call_tuzi_image_api(prompt: str, reference_image_path: Optional[str] = None)
 
     except Exception as e:
         print(f"[ERROR] tu-zi.com图像生成失败: {e}")
-        traceback.print_exc()
+        safe_print_exc()
         return None
 
 def call_huggingface_comic_factory(prompt: str, reference_image_path: Optional[str] = None) -> Optional[str]:
@@ -994,7 +1022,7 @@ def call_huggingface_comic_factory(prompt: str, reference_image_path: Optional[s
             
     except Exception as e:
         print(f"[ERROR] 备用方案也失败: {e}")
-        traceback.print_exc()
+        safe_print_exc()
         return None
 
 def save_comic_result(output_path: str, comic_data: Any) -> str:
@@ -1154,7 +1182,7 @@ def generate_comic_from_highlight(highlight_path: str) -> Optional[str]:
         
     except Exception as e:
         print(f"[ERROR] 生成漫画失败: {e}")
-        traceback.print_exc()
+        safe_print_exc()
         return None
 
 def main():
@@ -1210,7 +1238,7 @@ def main():
                 
     except Exception as e:
         print(f"[EXPLOSION] 处理失败: {e}")
-        traceback.print_exc()
+        safe_print_exc()
         sys.exit(1)
 
 if __name__ == "__main__":
