@@ -84,7 +84,24 @@
       "fan": "饼干岁"
     },
     "defaultWordLimit": 100,
-    "roomSettings": {}
+    "roomSettings": {
+      "21696950": {
+        "anchorName": "阿萨Aza",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true,
+        "referenceImage": "public/reference_images/Aza_阿萨_立绘.webp",
+        "characterDescription": "阿萨Aza（白发红瞳女生）"
+      },
+      "23197314": {
+        "anchorName": "飞天狙想要努力变胖",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true,
+        "referenceImage": "public/reference_images/岁己小红帽立绘.png",
+        "characterDescription": "岁己SUI（白发红瞳女生），饼干岁（有细细四肢的小小的饼干状生物）"
+      }
+    }
   },
   "fusion": {
     "timeWindowSec": 30,
