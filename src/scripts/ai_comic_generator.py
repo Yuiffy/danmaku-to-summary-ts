@@ -817,8 +817,10 @@ def call_tuzi_image_api(prompt: str, reference_image_path: Optional[str] = None)
                 if (attempt == 2):
                     payload["model"] = "nano-banana-2" # 含泪用3毛钱一次的超贵模型
                     print(f"[RETRY] 第 {attempt + 1} 次重试...模型替换为{payload['model']}，含泪用3毛钱一次的超贵模型")
+                print(f"[DEBUG] 发起请求，内容：{json.dumps(payload)[:100]}..., 代理: {proxies}, 超时: {timeout_sec}s")
                 response = requests.post(api_url, headers=headers, json=payload, timeout=timeout_sec, proxies=proxies)
-                
+                print(f"[DEBUG] 收到响应，状态码: {response.status_code}, 用时: {response.elapsed.total_seconds()}s")
+
                 if response.status_code == 200:
                     # 尝试解析响应，如果解析失败则继续重试
                     result = response.json()
