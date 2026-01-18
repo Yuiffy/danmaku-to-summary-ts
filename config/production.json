@@ -181,6 +181,21 @@
       "maxAgeDays": 7
     }
   },
+  "bilibili": {
+    "enabled": false,
+    "polling": {
+      "interval": 60000,
+      "maxRetries": 3,
+      "retryDelay": 5000
+    },
+    "anchors": {},
+    "delayedReply": {
+      "enabled": false,
+      "delayMinutes": 10,
+      "maxRetries": 3,
+      "retryDelayMinutes": 5
+    }
+  },
   "monitoring": {
     "enabled": true,
     "metrics": {

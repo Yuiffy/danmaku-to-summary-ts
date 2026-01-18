@@ -9,6 +9,7 @@ import { BilibiliAPIHandler } from './handlers/BilibiliAPIHandler';
 import { FileStabilityChecker } from './FileStabilityChecker';
 import { DuplicateProcessorGuard } from './DuplicateProcessorGuard';
 import { ComicGeneratorService } from '../comic/ComicGeneratorService';
+import { IDelayedReplyService } from '../bilibili/interfaces/IDelayedReplyService';
 
 /**
  * Webhook服务实现
@@ -25,6 +26,7 @@ export class WebhookService implements IWebhookService {
   private processingHistory: IWebhookEvent[] = [];
   private maxHistorySize = 100;
   private comicGenerator: ComicGeneratorService;
+  private delayedReplyService?: IDelayedReplyService;
 
   constructor() {
     this.app = express();
@@ -424,6 +426,10 @@ export class WebhookService implements IWebhookService {
         
         if (comicPath) {
           logger.info(`漫画生成成功: ${comicPath}`);
+          
+          // 触发延迟回复任务
+          await this.triggerDelayedReply(roomId, fileName, comicPath);
+          
           return {
             success: true,
             outputFiles: [comicPath]
@@ -442,6 +448,10 @@ export class WebhookService implements IWebhookService {
         
         if (comicPath) {
           logger.info(`漫画生成成功: ${comicPath}`);
+          
+          // 触发延迟回复任务
+          await this.triggerDelayedReply(roomId, fileName, comicPath);
+          
           return {
             success: true,
             outputFiles: [comicPath]
@@ -514,6 +524,52 @@ export class WebhookService implements IWebhookService {
         success: false,
         error: `处理文件时出错: ${error.message}`
       };
+    }
+  }
+
+  /**
+   * 设置延迟回复服务
+   */
+  setDelayedReplyService(service: IDelayedReplyService): void {
+    this.delayedReplyService = service;
+    this.getLogger().info('延迟回复服务已设置');
+  }
+
+  /**
+   * 触发延迟回复任务
+   */
+  private async triggerDelayedReply(roomId: string | undefined, fileName: string, comicPath: string): Promise<void> {
+    if (!this.delayedReplyService) {
+      this.getLogger().debug('延迟回复服务未设置，跳过触发');
+      return;
+    }
+
+    if (!roomId) {
+      this.getLogger().debug('房间ID未提供，跳过触发延迟回复');
+      return;
+    }
+
+    try {
+      // 从文件名中提取晚安回复文件路径
+      const dir = comicPath.substring(0, comicPath.lastIndexOf('/'));
+      const baseName = fileName.replace('COMIC_FACTORY', '晚安回复').replace('.png', '.md');
+      const goodnightTextPath = `${dir}/${baseName}`;
+
+      // 检查晚安回复文件是否存在
+      const fs = await import('fs');
+      if (!fs.existsSync(goodnightTextPath)) {
+        this.getLogger().warn('晚安回复文件不存在，跳过触发延迟回复', { goodnightTextPath });
+        return;
+      }
+
+      // 添加延迟回复任务
+      const taskId = await this.delayedReplyService.addTask(roomId, goodnightTextPath, comicPath);
+      
+      if (taskId) {
+        this.getLogger().info('已触发延迟回复任务', { taskId, roomId });
+      }
+    } catch (error: any) {
+      this.getLogger().error('触发延迟回复任务失败', { error, roomId });
     }
   }
 }

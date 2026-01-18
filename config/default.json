@@ -116,7 +116,7 @@
     }
   },
   "bilibili": {
-    "enabled": true,
+    "enabled": false,
     "polling": {
       "interval": 60000,
       "maxRetries": 3,
@@ -126,8 +126,15 @@
       "14279": {
         "uid": "14279",
         "name": "测试账号",
-        "enabled": true
+        "enabled": true,
+        "delayedReplyEnabled": false
       }
+    },
+    "delayedReply": {
+      "enabled": false,
+      "delayMinutes": 10,
+      "maxRetries": 3,
+      "retryDelayMinutes": 5
     }
   }
 }

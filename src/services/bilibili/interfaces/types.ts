@@ -160,6 +160,32 @@ export interface BilibiliConfig {
 }
 
 /**
+ * 延迟回复任务
+ */
+export interface DelayedReplyTask {
+  /** 任务ID */
+  taskId: string;
+  /** 房间ID */
+  roomId: string;
+  /** 主播UID */
+  uid?: string;
+  /** 晚安回复文本路径 */
+  goodnightTextPath: string;
+  /** 漫画图片路径 */
+  comicImagePath?: string;
+  /** 创建时间 */
+  createTime: Date;
+  /** 计划执行时间 */
+  scheduledTime: Date;
+  /** 任务状态 */
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  /** 重试次数 */
+  retryCount: number;
+  /** 错误信息 */
+  error?: string;
+}
+
+/**
  * B站密钥配置
  */
 export interface BilibiliSecretConfig {

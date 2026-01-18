@@ -154,6 +154,18 @@ export interface StorageConfig {
   };
 }
 
+// 延迟回复配置
+export interface DelayedReplyConfig {
+  /** 是否启用延迟回复 */
+  enabled: boolean;
+  /** 延迟时间（分钟） */
+  delayMinutes: number;
+  /** 最大重试次数 */
+  maxRetries: number;
+  /** 重试延迟（分钟） */
+  retryDelayMinutes: number;
+}
+
 // B站配置
 export interface BilibiliConfig {
   enabled: boolean;
@@ -169,7 +181,9 @@ export interface BilibiliConfig {
     name: string;
     roomId?: string;
     enabled: boolean;
+    delayedReplyEnabled?: boolean;
   }>;
+  delayedReply: DelayedReplyConfig;
 }
 
 // 监控配置
