@@ -19,8 +19,12 @@ export interface IDelayedReplyService {
 
   /**
    * 添加延迟回复任务
+   * @param roomId 房间ID
+   * @param goodnightTextPath 晚安文本路径
+   * @param comicImagePath 漫画图片路径（可选）
+   * @param delaySeconds 延迟秒数（可选，不传则使用配置的延迟时间）
    */
-  addTask(roomId: string, goodnightTextPath: string, comicImagePath?: string): Promise<string>;
+  addTask(roomId: string, goodnightTextPath: string, comicImagePath?: string, delaySeconds?: number): Promise<string>;
 
   /**
    * 移除任务

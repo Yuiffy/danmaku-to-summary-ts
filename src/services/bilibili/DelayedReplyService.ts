@@ -94,7 +94,7 @@ export class DelayedReplyService implements IDelayedReplyService {
   /**
    * 添加延迟回复任务
    */
-  async addTask(roomId: string, goodnightTextPath: string, comicImagePath?: string): Promise<string> {
+  async addTask(roomId: string, goodnightTextPath: string, comicImagePath?: string, delaySeconds?: number): Promise<string> {
     try {
       // 获取延迟回复配置
       const delayedReplySettings = BilibiliConfigHelper.getDelayedReplySettings(roomId);
@@ -114,8 +114,11 @@ export class DelayedReplyService implements IDelayedReplyService {
         }
       }
 
-      // 计算延迟时间
-      const scheduledTime = new Date(Date.now() + delayedReplySettings.delayMinutes * 60 * 1000);
+      // 计算延迟时间（优先使用传入的 delaySeconds，否则使用配置的 delayMinutes）
+      const delayMs = delaySeconds !== undefined
+        ? delaySeconds * 1000
+        : delayedReplySettings.delayMinutes * 60 * 1000;
+      const scheduledTime = new Date(Date.now() + delayMs);
 
       // 创建任务
       const task: DelayedReplyTask = {

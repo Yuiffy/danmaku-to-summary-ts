@@ -84,7 +84,16 @@
       "fan": "饼干岁"
     },
     "defaultWordLimit": 100,
-    "roomSettings": {}
+    "roomSettings": {
+      "628684": {
+        "audioOnly": false,
+        "anchorName": "带鱼",
+        "fanName": "带鱼饭",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
+      }
+    }
   },
   "fusion": {
     "timeWindowSec": 30,

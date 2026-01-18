@@ -96,6 +96,14 @@
         "enableComicGeneration": true,
         "wordLimit": 800
       },
+      "628684": {
+        "audioOnly": false,
+        "anchorName": "带鱼",
+        "fanName": "带鱼饭",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
+      },
       "545068": {
         "audioOnly": false,
         "referenceImage": "public/reference_images/栞栞新衣_舰长礼物长图里截图.png",

@@ -49,17 +49,6 @@ export class DelayedReplyHandler implements IWebhookHandler {
           });
         }
         
-        // 如果指定了延迟秒数，临时修改配置
-        let originalDelayMinutes: number | undefined;
-        if (delaySeconds !== undefined) {
-          const { BilibiliConfigHelper } = await import('../../bilibili/BilibiliConfigHelper');
-          const config = BilibiliConfigHelper.getDelayedReplySettings(roomId);
-          if (config) {
-            originalDelayMinutes = config.delayMinutes;
-            config.delayMinutes = delaySeconds / 60;
-          }
-        }
-        
         // 查找文件路径（如果未指定）
         const textPath = goodnightTextPath || await this.findLatestGoodnightFile(roomId);
         const imagePath = comicImagePath || await this.findLatestComicFile(roomId);
@@ -71,17 +60,8 @@ export class DelayedReplyHandler implements IWebhookHandler {
           });
         }
         
-        // 添加延迟回复任务
-        const taskId = await this.delayedReplyService.addTask(roomId, textPath, imagePath || '');
-        
-        // 恢复原始延迟时间
-        if (originalDelayMinutes !== undefined) {
-          const { BilibiliConfigHelper } = await import('../../bilibili/BilibiliConfigHelper');
-          const config = BilibiliConfigHelper.getDelayedReplySettings(roomId);
-          if (config) {
-            config.delayMinutes = originalDelayMinutes;
-          }
-        }
+        // 添加延迟回复任务（直接传递 delaySeconds）
+        const taskId = await this.delayedReplyService.addTask(roomId, textPath, imagePath || '', delaySeconds);
         
         this.logger.info(`手动触发延迟回复任务:`, {
           taskId,

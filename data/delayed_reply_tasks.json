@@ -10,7 +10,18 @@
       "scheduledTime": "2026-01-18T09:50:56.776Z",
       "status": "completed",
       "retryCount": 0
+    },
+    {
+      "taskId": "e3cab8df-12b8-416f-abe5-a9c8f7e20cae",
+      "roomId": "628684",
+      "uid": "14279",
+      "goodnightTextPath": "D:/files/videos/DDTV录播/23197314_飞天狙想要努力变胖/2026_01_18里的/录制-23197314-20260118-171927-159-和大甜把决赛看完_晚安回复.md",
+      "comicImagePath": "D:/files/videos/DDTV录播/23197314_飞天狙想要努力变胖/2026_01_18里的/录制-23197314-20260118-171927-159-和大甜把决赛看完_COMIC_FACTORY.png",
+      "createTime": "2026-01-18T11:15:34.087Z",
+      "scheduledTime": "2026-01-18T11:25:34.087Z",
+      "status": "completed",
+      "retryCount": 0
     }
   ],
-  "lastUpdated": "2026-01-18T09:50:56.975Z"
+  "lastUpdated": "2026-01-18T11:25:34.351Z"
 }
