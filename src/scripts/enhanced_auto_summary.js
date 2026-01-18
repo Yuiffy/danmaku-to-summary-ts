@@ -509,6 +509,8 @@ const main = async () => {
             const highlightSizeKB = highlightStats.size / 1024;
             const minHighlightSizeKB = 0.5; // 最小AI_HIGHLIGHT文件大小：0.5KB
             
+            console.log(`📊 AI_HIGHLIGHT文件大小: ${highlightSizeKB.toFixed(2)}KB`);
+            
             if (highlightSizeKB < minHighlightSizeKB) {
                 console.log(`⏭️  AI_HIGHLIGHT文件过小 (${highlightSizeKB.toFixed(2)}KB < ${minHighlightSizeKB}KB)，跳过AI生成`);
                 return;
@@ -525,6 +527,8 @@ const main = async () => {
                     const totalSeconds = h * 3600 + m * 60 + s;
                     const minDurationSeconds = 30; // 最小视频时长：30秒
                     
+                    console.log(`⏱️  视频时长: ${totalSeconds}秒`);
+                    
                     if (totalSeconds < minDurationSeconds) {
                         console.log(`⏭️  视频时长过短 (${totalSeconds}秒 < ${minDurationSeconds}秒)，跳过AI生成`);
                         return;
@@ -535,16 +539,16 @@ const main = async () => {
             // 检查房间AI设置
             const aiSettings = roomId ? shouldGenerateAiForRoom(roomId) : { text: true, comic: true };
             
-            if (roomId) {
-                console.log(`🏠 房间ID: ${roomId}`);
-                console.log(`   AI文本生成: ${aiSettings.text ? '启用' : '禁用'}`);
-                console.log(`   AI漫画生成: ${aiSettings.comic ? '启用' : '禁用'}`);
-            }
+            console.log(`🏠 房间ID: ${roomId}`);
+            console.log(`   AI文本生成: ${aiSettings.text ? '启用' : '禁用'}`);
+            console.log(`   AI漫画生成: ${aiSettings.comic ? '启用' : '禁用'}`);
             
             // AI文本生成
             let goodnightTextPath = null;
             if (aiSettings.text) {
+                console.log(`📝 开始AI文本生成...`);
                 goodnightTextPath = await generateAiText(highlightPath);
+                console.log(`📝 AI文本生成结果: ${goodnightTextPath || 'null'}`);
             } else {
                 console.log('ℹ️  跳过AI文本生成（房间设置禁用）');
             }
@@ -552,20 +556,29 @@ const main = async () => {
             // AI漫画生成
             let comicImagePath = null;
             if (aiSettings.comic) {
+                console.log(`🎨 开始AI漫画生成...`);
                 comicImagePath = await generateAiComic(highlightPath);
+                console.log(`🎨 AI漫画生成结果: ${comicImagePath || 'null'}`);
             } else {
                 console.log('ℹ️  跳过AI漫画生成（房间设置禁用）');
             }
 
             // 触发延迟回复任务
+            console.log(`🔍 检查延迟回复触发条件: roomId=${roomId}, goodnightTextPath=${goodnightTextPath}, comicImagePath=${comicImagePath}`);
             if (roomId && goodnightTextPath && comicImagePath) {
+                console.log(`✅ 满足延迟回复触发条件，开始触发...`);
                 await triggerDelayedReply(roomId, goodnightTextPath, comicImagePath);
+            } else {
+                console.log(`⏭️  不满足延迟回复触发条件，跳过`);
             }
         } else {
             console.log('⚠️  未找到 do_fusion_summary 生成的 AI_HIGHLIGHT 文件');
+            console.log(`   generatedHighlightFile: ${generatedHighlightFile}`);
+            console.log(`   exists: ${generatedHighlightFile ? fs.existsSync(generatedHighlightFile) : 'N/A'}`);
         }
     } catch (error) {
         console.error(`⚠️  AI生成阶段出错: ${error.message}`);
+        console.error(error.stack);
     }
 
     console.log('');

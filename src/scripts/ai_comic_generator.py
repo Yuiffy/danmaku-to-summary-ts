@@ -411,14 +411,13 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
             character_desc = get_room_character_description(room_id)
             content_prompt = build_comic_generation_prompt(character_desc, highlight_content)
 
-            # 调用Gemini（60秒超时）
+            # 调用Gemini
             if gemini_attempt > 0:
                 print(f"[RETRY] 第 {gemini_attempt + 1} 次重试 Gemini...")
             print(f"[AI] 使用Gemini生成漫画内容脚本: {model_name}")
             response = client.models.generate_content(
                 model=model_name,
-                contents=content_prompt,
-                timeout=60
+                contents=content_prompt
             )
 
             if response and response.text:

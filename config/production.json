@@ -57,6 +57,15 @@
         "temperature": 0.7,
         "maxTokens": 100000,
         "proxy": "socks5://127.0.0.1:7890"
+      },
+      "tuZi": {
+        "enabled": true,
+        "apiKey": "",
+        "baseUrl": "https://api.tu-zi.com",
+        "model": "gemini-3-flash-preview",
+        "temperature": 0.7,
+        "maxTokens": 100000,
+        "proxy": "socks5://127.0.0.1:7890"
       }
     },
     "comic": {

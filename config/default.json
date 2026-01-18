@@ -116,7 +116,7 @@
     }
   },
   "bilibili": {
-    "enabled": false,
+    "enabled": true,
     "polling": {
       "interval": 60000,
       "maxRetries": 3,
@@ -131,7 +131,7 @@
       }
     },
     "delayedReply": {
-      "enabled": false,
+      "enabled": true,
       "delayMinutes": 10,
       "maxRetries": 3,
       "retryDelayMinutes": 5

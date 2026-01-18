@@ -92,14 +92,15 @@ ${highlightContent}
 // 调用tuZi API生成文本（备用方案）
 async function generateTextWithTuZi(prompt) {
     const config = configLoader.getConfig();
-    const tuziConfig = config.aiServices?.tuZi || config.ai?.text?.tuZi || {};
+    // 优先使用 ai.text.tuZi 配置（文本生成专用），其次使用 ai.comic.tuZi（兼容旧配置）
+    const tuziConfig = config.ai?.text?.tuZi || config.aiServices?.tuZi || {};
 
     if (!configLoader.isTuZiConfigured()) {
         throw new Error('tuZi API未配置，请检查secrets.json中的apiKey');
     }
 
     console.log('🤖 调用tuZi API生成文本（Gemini超频备用方案）...');
-    const textModel = tuziConfig.textModel || tuziConfig.model || 'gemini-3-flash-preview';
+    const textModel = tuziConfig.model || 'gemini-3-flash-preview';
     console.log(`   模型: ${textModel}`);
     console.log(`   温度: ${tuziConfig.temperature}`);
 
@@ -261,6 +262,12 @@ function saveGeneratedText(outputPath, text, highlightPath) {
 // 生成晚安回复
 async function generateGoodnightReply(highlightPath) {
     const config = configLoader.getConfig();
+
+    console.log(`🔍 检查AI文本生成配置...`);
+    console.log(`   aiServices?.gemini?.enabled: ${config.aiServices?.gemini?.enabled}`);
+    console.log(`   ai?.text?.enabled: ${config.ai?.text?.enabled}`);
+    console.log(`   isGeminiConfigured: ${configLoader.isGeminiConfigured()}`);
+    console.log(`   isTuZiConfigured: ${configLoader.isTuZiConfigured()}`);
 
     if (!config.aiServices?.gemini?.enabled && !config.ai?.text?.enabled) {
         console.log('ℹ️  AI文本生成功能已禁用');
