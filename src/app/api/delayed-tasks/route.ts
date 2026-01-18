@@ -95,7 +95,7 @@ export async function GET() {
  */
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
+    const body = await request.json() as any;
     const { roomId, delaySeconds, goodnightTextPath, comicImagePath } = body;
 
     if (!roomId) {
@@ -167,7 +167,7 @@ export async function POST(request: NextRequest) {
  */
 export async function DELETE(request: NextRequest) {
   try {
-    const body = await request.json();
+    const body = await request.json() as any;
     const { taskId } = body;
 
     if (!taskId) {
