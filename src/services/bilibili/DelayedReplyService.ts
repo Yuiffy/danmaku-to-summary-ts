@@ -99,9 +99,11 @@ export class DelayedReplyService implements IDelayedReplyService {
       }
 
       // 检查主播配置 - 优先从 ai.roomSettings 检查
-      const roomConfig = (config.ai as any)?.roomSettings?.[roomId] as any;
+      // roomId 可能是字符串或数字，需要同时尝试两种类型
+      const roomConfig = (config.ai as any)?.roomSettings?.[roomId] as any ||
+                         (config.ai as any)?.roomSettings?.[parseInt(roomId, 10)] as any;
       const anchorConfig = Object.values(bilibiliConfig.anchors || {}).find(
-        (a: any) => a.roomId === roomId
+        (a: any) => a.roomId === roomId || a.roomId === parseInt(roomId, 10)
       ) as any;
 
       const delayedReplyEnabled = roomConfig?.enableDelayedReply || anchorConfig?.delayedReplyEnabled;
