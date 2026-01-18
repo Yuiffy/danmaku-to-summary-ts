@@ -569,7 +569,7 @@ const main = async () => {
                 console.log(`✅ 满足延迟回复触发条件，开始触发...`);
                 await triggerDelayedReply(roomId, goodnightTextPath, comicImagePath);
             } else {
-                console.log(`⏭️  不满足延迟回复触发条件，跳过`);
+                console.log(`⏭️  不满足延迟回复触发条件，跳过。（roomId=${roomId}, goodnightTextPath=${goodnightTextPath ?? '无'}, comicImagePath=${comicImagePath ?? '无'}）`);
             }
         } else {
             console.log('⚠️  未找到 do_fusion_summary 生成的 AI_HIGHLIGHT 文件');
