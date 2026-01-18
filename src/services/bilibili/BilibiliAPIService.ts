@@ -177,8 +177,12 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       });
 
       const dynamics = this.parseDynamics(data.data);
+      
+      // 按发布时间降序排序，确保最新的动态排在前面（过滤置顶动态）
+      dynamics.sort((a, b) => b.publishTime.getTime() - a.publishTime.getTime());
+      
       // 确保 dynamicId 以字符串形式记录日志，避免大数精度丢失
-      this.logger.debug(`获取到 ${dynamics.length} 条动态`, {
+      this.logger.debug(`获取到 ${dynamics.length} 条动态（已按时间排序）`, {
         uid,
         dynamicIds: dynamics.map(d => String(d.id))
       });
