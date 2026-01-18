@@ -332,6 +332,12 @@ def build_comic_generation_prompt(character_desc: str, highlight_content: str) -
     base = base.replace("{highlight_content}", highlight_content)
     return base
 
+def is_gemini_error(text: str) -> bool:
+    """检测文本是否包含Gemini错误信息"""
+    if not text:
+        return False
+    return '[Gemini Error:' in text
+
 def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str] = None) -> Tuple[str, bool]:
     """使用AI生成漫画内容脚本
     
@@ -357,71 +363,98 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                 )
                 if proc.returncode == 0 and proc.stdout:
                     text = proc.stdout.decode('utf-8').strip()
-                    if text:
+                    if text and not is_gemini_error(text):
                         print('[OK] 从 ai_text_generator 返回内容')
                         return text, True
-                else:
-                    stderr = proc.stderr.decode('utf-8') if proc.stderr else ''
-                    print(f"[INFO] node 脚本返回非零状态: {proc.returncode}, stderr: {stderr}")
+                    elif is_gemini_error(text):
+                        print('[WARNING] ai_text_generator 返回了错误内容，尝试其他方案')
+                    else:
+                        stderr = proc.stderr.decode('utf-8') if proc.stderr else ''
+                        print(f"[INFO] node 脚本返回非零状态: {proc.returncode}, stderr: {stderr}")
             except Exception as e:
                 print(f"[INFO] 调用 node 脚本失败: {e}")
     except Exception:
         pass
 
-    try:
-        # 导入Google GenAI (新版本)
-        import google.genai as genai
+    # Gemini重试逻辑
+    max_gemini_retries = 3
+    for gemini_attempt in range(max_gemini_retries):
+        try:
+            # 导入Google GenAI (新版本)
+            import google.genai as genai
 
-        # 获取Gemini API密钥（使用统一配置加载器）
-        gemini_api_key = get_gemini_api_key()
+            # 获取Gemini API密钥（使用统一配置加载器）
+            gemini_api_key = get_gemini_api_key()
 
-        if not gemini_api_key:
-            print("[WARNING]  Gemini API密钥未配置，使用原始内容")
-            return highlight_content, False
+            if not gemini_api_key:
+                print("[WARNING]  Gemini API密钥未配置，使用原始内容")
+                return highlight_content, False
 
-        # 加载配置获取其他参数
-        config = load_config()
-        gemini_config = config.get('aiServices', {}).get('gemini', {})
+            # 加载配置获取其他参数
+            config = load_config()
+            gemini_config = config.get('aiServices', {}).get('gemini', {})
 
-        # 创建客户端
-        client = genai.Client(api_key=gemini_api_key)
+            # 创建客户端
+            client = genai.Client(api_key=gemini_api_key)
 
-        # 设置代理 (如果需要)
-        proxy_url = gemini_config.get('proxy', '')
-        if proxy_url:
-            import os
-            os.environ['http_proxy'] = proxy_url
-            os.environ['https_proxy'] = proxy_url
+            # 设置代理 (如果需要)
+            proxy_url = gemini_config.get('proxy', '')
+            if proxy_url:
+                import os
+                os.environ['http_proxy'] = proxy_url
+                os.environ['https_proxy'] = proxy_url
 
-        # 获取模型名称
-        model_name = gemini_config.get('model', 'gemini-2.0-flash')
+            # 获取模型名称
+            model_name = gemini_config.get('model', 'gemini-2.0-flash')
 
-        # 生成漫画内容脚本（使用统一的prompt模板）
-        character_desc = get_room_character_description(room_id)
-        content_prompt = build_comic_generation_prompt(character_desc, highlight_content)
+            # 生成漫画内容脚本（使用统一的prompt模板）
+            character_desc = get_room_character_description(room_id)
+            content_prompt = build_comic_generation_prompt(character_desc, highlight_content)
 
-        # 调用Gemini（60秒超时）
-        print(f"[AI] 使用Gemini生成漫画内容脚本: {model_name}")
-        response = client.models.generate_content(
-            model=model_name,
-            contents=content_prompt,
-            timeout=60
-        )
+            # 调用Gemini（60秒超时）
+            if gemini_attempt > 0:
+                print(f"[RETRY] 第 {gemini_attempt + 1} 次重试 Gemini...")
+            print(f"[AI] 使用Gemini生成漫画内容脚本: {model_name}")
+            response = client.models.generate_content(
+                model=model_name,
+                contents=content_prompt,
+                timeout=60
+            )
 
-        if response and response.text:
-            comic_content = response.text.strip()
-            print("[OK] AI漫画内容生成完成")
-            print(f"生成内容长度: {len(comic_content)} 字符")
-            return comic_content, True
-        else:
-            print("[WARNING]  AI返回空结果，使用原始内容")
-            return highlight_content, False
+            if response and response.text:
+                comic_content = response.text.strip()
+                
+                # 检测是否包含错误信息
+                if is_gemini_error(comic_content):
+                    print(f"[WARNING] Gemini返回了错误内容 (尝试 {gemini_attempt + 1}/{max_gemini_retries})")
+                    if gemini_attempt < max_gemini_retries - 1:
+                        print("[RETRY] 2秒后重试...")
+                        time.sleep(2)
+                        continue
+                    else:
+                        print("[ERROR] Gemini重试次数已用完，尝试备用方案")
+                        break
+                
+                print("[OK] AI漫画内容生成完成")
+                print(f"生成内容长度: {len(comic_content)} 字符")
+                return comic_content, True
+            else:
+                print("[WARNING]  AI返回空结果，使用原始内容")
+                return highlight_content, False
 
-    except ImportError:
-        print("[WARNING]  google-genai库未安装，尝试使用tuZi API...")
-        print("   请安装: pip install google-genai")
-    except Exception as e:
-        print(f"[ERROR]  AI内容生成失败: {e}")
+        except ImportError:
+            print("[WARNING]  google-genai库未安装，尝试使用tuZi API...")
+            print("   请安装: pip install google-genai")
+            break
+        except Exception as e:
+            print(f"[ERROR]  AI内容生成失败 (尝试 {gemini_attempt + 1}/{max_gemini_retries}): {e}")
+            if gemini_attempt < max_gemini_retries - 1:
+                print("[RETRY] 2秒后重试...")
+                time.sleep(2)
+                continue
+            else:
+                print("[ERROR] Gemini重试次数已用完，尝试备用方案")
+                break
     
     # Gemini失败后，尝试使用tuZi API作为备用方案
     print("[TUZI] Google生成失败，尝试tu-zi.com生成文本...")
