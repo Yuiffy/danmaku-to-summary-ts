@@ -271,7 +271,7 @@
     "anchors": {},
     "delayedReply": {
       "enabled": true,
-      "delayMinutes": 10,
+      "delayMinutes": 5,
       "maxRetries": 3,
       "retryDelayMinutes": 5
     }
