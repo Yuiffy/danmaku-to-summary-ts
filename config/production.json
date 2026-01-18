@@ -112,7 +112,8 @@
         "fanName": "獭獭栞",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
-        "enableDelayedReply": true
+        "enableDelayedReply": true,
+        "wordLimit": 200
       },
       "31368705": {
         "audioOnly": true,
@@ -131,7 +132,7 @@
         "enableTextGeneration": true,
         "enableComicGeneration": true,
         "enableDelayedReply": true,
-        "wordLimit": 800
+        "wordLimit": 600
       },
       "23260993": {
         "audioOnly": true,
