@@ -6,6 +6,7 @@ import { DDTVWebhookHandler } from './handlers/DDTVWebhookHandler';
 import { MikufansWebhookHandler } from './handlers/MikufansWebhookHandler';
 import { AudioFileHandler } from './handlers/AudioFileHandler';
 import { BilibiliAPIHandler } from './handlers/BilibiliAPIHandler';
+import { DelayedReplyHandler } from './handlers/DelayedReplyHandler';
 import { FileStabilityChecker } from './FileStabilityChecker';
 import { DuplicateProcessorGuard } from './DuplicateProcessorGuard';
 import { ComicGeneratorService } from '../comic/ComicGeneratorService';
@@ -85,6 +86,7 @@ export class WebhookService implements IWebhookService {
           this.getLogger().info(`地址: http://${this.host}:${this.port}`);
           this.getLogger().info(`DDTV端点: http://${this.host}:${this.port}/ddtv`);
           this.getLogger().info(`Mikufans端点: http://${this.host}:${this.port}/mikufans`);
+          this.getLogger().info(`延迟回复端点: http://${this.host}:${this.port}/api/delayed-reply`);
           this.getLogger().info(`==================================================\n`);
           resolve();
         });
@@ -350,7 +352,8 @@ export class WebhookService implements IWebhookService {
       new DDTVWebhookHandler(),
       new MikufansWebhookHandler(),
       new AudioFileHandler(),
-      new BilibiliAPIHandler()
+      new BilibiliAPIHandler(),
+      new DelayedReplyHandler()
     ];
     
     this.getLogger().info(`初始化了 ${this.handlers.length} 个Webhook处理器`);
