@@ -462,48 +462,74 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
     # Gemini失败后，尝试使用tuZi API作为备用方案
     print("[TUZI] Google生成失败，尝试tu-zi.com生成文本...")
     
-    # 尝试使用tuZi API生成文本
-    try:
-        from tuzi_chat_completions import call_tuzi_chat_completions
-        
-        config = load_config()
-        tuzi_config = config.get("aiServices", {}).get("tuZi", {})
-        
-        if not is_tuzi_configured():
-            print("[WARNING]  tuZi API未配置，使用原始内容")
-            return highlight_content, False
-        
-        # 构建提示词（使用统一的prompt模板）
-        character_desc = get_room_character_description(room_id)
-        system_prompt = build_comic_generation_prompt(character_desc, highlight_content)
-        user_prompt = f"直播内容：\n{highlight_content}\n\n请创作漫画故事脚本："
-        
-        # 调用tuZi Chat Completions API
-        comic_content = call_tuzi_chat_completions(
-            prompt=user_prompt,
-            system_prompt=system_prompt,
-            model=tuzi_config.get("textModel", "gemini-3-flash-preview"),
-            base_url=tuzi_config.get("baseUrl", "https://api.tu-zi.com"),
-            api_key=tuzi_config.get("apiKey", ""),
-            proxy_url=tuzi_config.get("proxy", ""),
-            timeout=120,
-            temperature=0.7,
-            max_tokens=100000
-        )
-        
-        if comic_content:
-            print("[OK] tuZi API漫画文本生成成功")
-            print(f"生成内容长度: {len(comic_content)} 字符")
-            print(f"内容预览: {comic_content[:200]}...")
-            return comic_content, True
-        else:
-            print("[WARNING]  tuZi API返回空内容")
-            return highlight_content, False
-        
-    except Exception as tuzi_error:
-        print(f"[ERROR]  tuZi API备用方案失败: {tuzi_error}")
-        print("[WARNING]  所有API都失败，使用原始内容")
-        return highlight_content, False
+    # 尝试使用tuZi API生成文本（带重试机制）
+    max_tuzi_retries = 3
+    for tuzi_attempt in range(max_tuzi_retries):
+        try:
+            from tuzi_chat_completions import call_tuzi_chat_completions
+            
+            config = load_config()
+            tuzi_config = config.get("aiServices", {}).get("tuZi", {})
+            
+            if not is_tuzi_configured():
+                print("[WARNING]  tuZi API未配置，使用原始内容")
+                return highlight_content, False
+            
+            # 构建提示词（使用统一的prompt模板）
+            character_desc = get_room_character_description(room_id)
+            system_prompt = build_comic_generation_prompt(character_desc, highlight_content)
+            user_prompt = f"直播内容：\n{highlight_content}\n\n请创作漫画故事脚本："
+            
+            if tuzi_attempt > 0:
+                print(f"[RETRY] 第 {tuzi_attempt + 1} 次重试 tuZi API...")
+            
+            # 调用tuZi Chat Completions API
+            comic_content = call_tuzi_chat_completions(
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                model=tuzi_config.get("textModel", "gemini-3-flash-preview"),
+                base_url=tuzi_config.get("baseUrl", "https://api.tu-zi.com"),
+                api_key=tuzi_config.get("apiKey", ""),
+                proxy_url=tuzi_config.get("proxy", ""),
+                timeout=120,
+                temperature=0.7,
+                max_tokens=100000
+            )
+            
+            if comic_content:
+                # 检测是否包含Gemini错误信息
+                if is_gemini_error(comic_content):
+                    print(f"[WARNING] tuZi API返回了Gemini错误内容 (尝试 {tuzi_attempt + 1}/{max_tuzi_retries})")
+                    if tuzi_attempt < max_tuzi_retries - 1:
+                        print("[RETRY] 2秒后重试...")
+                        time.sleep(2)
+                        continue
+                    else:
+                        print("[ERROR] tuZi API重试次数已用完，使用原始内容")
+                        return highlight_content, False
+                
+                print("[OK] tuZi API漫画文本生成成功")
+                print(f"生成内容长度: {len(comic_content)} 字符")
+                print(f"内容预览: {comic_content[:200]}...")
+                return comic_content, True
+            else:
+                print("[WARNING]  tuZi API返回空内容")
+                if tuzi_attempt < max_tuzi_retries - 1:
+                    print("[RETRY] 2秒后重试...")
+                    time.sleep(2)
+                    continue
+                else:
+                    return highlight_content, False
+            
+        except Exception as tuzi_error:
+            print(f"[ERROR]  tuZi API备用方案失败 (尝试 {tuzi_attempt + 1}/{max_tuzi_retries}): {tuzi_error}")
+            if tuzi_attempt < max_tuzi_retries - 1:
+                print("[RETRY] 2秒后重试...")
+                time.sleep(2)
+                continue
+            else:
+                print("[WARNING]  所有API都失败，使用原始内容")
+                return highlight_content, False
     
     # 确保函数在所有路径都返回有效值
     return highlight_content, False
