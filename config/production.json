@@ -162,6 +162,24 @@
         "enableTextGeneration": true,
         "enableComicGeneration": true,
         "enableDelayedReply": true
+      },
+        "23197314": {
+        "audioOnly": true,
+        "characterDescription": "飞天狙想要努力变胖，戴着眼镜的男性骷髅兵主播",
+        "anchorName": "狙神",
+        "fanName": "狙奴",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
+      },
+        "1844410596": {
+        "audioOnly": true,
+        "characterDescription": "夜永awa，银色美少女主播",
+        "anchorName": "酱酱",
+        "fanName": "foam",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
       }
     }
   },
