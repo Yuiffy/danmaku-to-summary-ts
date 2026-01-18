@@ -119,6 +119,8 @@ export interface RoomAIConfig {
   fanName?: string;
   enableTextGeneration?: boolean;
   enableComicGeneration?: boolean;
+  /** 是否启用延迟回复 */
+  enableDelayedReply?: boolean;
 }
 
 // AI配置

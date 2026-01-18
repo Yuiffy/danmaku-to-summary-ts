@@ -128,6 +128,13 @@
         "name": "测试账号",
         "enabled": true,
         "delayedReplyEnabled": false
+      },
+      "23197314": {
+        "uid": "23197314",
+        "name": "飞天狙想要努力变胖",
+        "roomId": "23197314",
+        "enabled": true,
+        "delayedReplyEnabled": true
       }
     },
     "delayedReply": {

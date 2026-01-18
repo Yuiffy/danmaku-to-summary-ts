@@ -3,12 +3,12 @@
  */
 import * as crypto from 'crypto';
 import { getLogger } from '../../core/logging/LogManager';
-import { ConfigProvider } from '../../core/config/ConfigProvider';
 import { IDelayedReplyService } from './interfaces/IDelayedReplyService';
 import { IDelayedReplyStore } from './interfaces/IDelayedReplyStore';
 import { IBilibiliAPIService } from './interfaces/IBilibiliAPIService';
 import { IReplyManager } from './interfaces/IReplyManager';
 import { DelayedReplyTask, BilibiliDynamic } from './interfaces/types';
+import { BilibiliConfigHelper } from './BilibiliConfigHelper';
 
 /**
  * 生成UUID
@@ -89,40 +89,26 @@ export class DelayedReplyService implements IDelayedReplyService {
    */
   async addTask(roomId: string, goodnightTextPath: string, comicImagePath?: string): Promise<string> {
     try {
-      // 检查配置
-      const config = ConfigProvider.getConfig();
-      const bilibiliConfig = config.bilibili as any;
-
-      if (!bilibiliConfig?.delayedReply?.enabled) {
-        this.logger.info('延迟回复功能未启用，跳过添加任务', { roomId });
-        return '';
-      }
-
-      // 检查主播配置 - 优先从 ai.roomSettings 检查
-      // roomId 可能是字符串或数字，需要同时尝试两种类型
-      const roomConfig = (config.ai as any)?.roomSettings?.[roomId] as any ||
-                         (config.ai as any)?.roomSettings?.[parseInt(roomId, 10)] as any;
-      const anchorConfig = Object.values(bilibiliConfig.anchors || {}).find(
-        (a: any) => a.roomId === roomId || a.roomId === parseInt(roomId, 10)
-      ) as any;
-
-      const delayedReplyEnabled = roomConfig?.enableDelayedReply || anchorConfig?.delayedReplyEnabled;
-
-      if (!delayedReplyEnabled) {
-        this.logger.info('主播未启用延迟回复，跳过添加任务', { roomId });
+      // 获取延迟回复配置
+      const delayedReplySettings = BilibiliConfigHelper.getDelayedReplySettings(roomId);
+      if (!delayedReplySettings) {
+        this.logger.info('延迟回复未启用，跳过添加任务', { roomId });
         return '';
       }
 
       // 获取主播UID
-      const uid = await this.getAnchorUid(roomId);
+      let uid = BilibiliConfigHelper.getAnchorUid(roomId);
       if (!uid) {
-        this.logger.warn('无法获取主播UID，跳过添加任务', { roomId });
-        return '';
+        // 如果配置中没有 UID，尝试通过 API 获取
+        uid = await this.bilibiliAPI.getUidByRoomId(roomId);
+        if (!uid) {
+          this.logger.warn('无法获取主播UID，跳过添加任务', { roomId });
+          return '';
+        }
       }
 
       // 计算延迟时间
-      const delayMinutes = bilibiliConfig.delayedReply.delayMinutes || 10;
-      const scheduledTime = new Date(Date.now() + delayMinutes * 60 * 1000);
+      const scheduledTime = new Date(Date.now() + delayedReplySettings.delayMinutes * 60 * 1000);
 
       // 创建任务
       const task: DelayedReplyTask = {
@@ -326,16 +312,15 @@ export class DelayedReplyService implements IDelayedReplyService {
       });
 
       // 重试逻辑
-      const config = ConfigProvider.getConfig();
-      const bilibiliConfig = config.bilibili as any;
-      const maxRetries = bilibiliConfig?.delayedReply?.maxRetries || 3;
+      const delayedReplyConfig = BilibiliConfigHelper.getDelayedReplyConfig();
+      const maxRetries = delayedReplyConfig.maxRetries;
 
       if (task.retryCount < maxRetries) {
         task.retryCount++;
         task.status = 'pending';
 
         // 计算重试延迟
-        const retryDelayMinutes = bilibiliConfig?.delayedReply?.retryDelayMinutes || 5;
+        const retryDelayMinutes = delayedReplyConfig.retryDelayMinutes;
         task.scheduledTime = new Date(Date.now() + retryDelayMinutes * 60 * 1000);
 
         await this.store.updateTask(task.taskId, {
@@ -349,32 +334,6 @@ export class DelayedReplyService implements IDelayedReplyService {
 
         this.logger.info(`准备重试延迟回复: ${task.taskId} (${task.retryCount}/${maxRetries})`);
       }
-    }
-  }
-
-  /**
-   * 获取主播UID
-   */
-  private async getAnchorUid(roomId: string): Promise<string | null> {
-    try {
-      const config = ConfigProvider.getConfig();
-      const bilibiliConfig = config.bilibili as any;
-
-      // 从配置中查找
-      const anchorConfig = Object.values(bilibiliConfig.anchors || {}).find(
-        (a: any) => a.roomId === roomId
-      ) as any;
-
-      if (anchorConfig && anchorConfig.uid) {
-        return anchorConfig.uid;
-      }
-
-      // 通过API获取
-      const uid = await this.bilibiliAPI.getUidByRoomId(roomId);
-      return uid;
-    } catch (error) {
-      this.logger.error('获取主播UID失败', { error, roomId });
-      return null;
     }
   }
 

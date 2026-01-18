@@ -26,6 +26,10 @@ export type {
   DelayedReplyTask
 } from './interfaces/types';
 
+// 配置工具
+export type { AnchorConfig as BilibiliAnchorConfig, DelayedReplySettings } from './BilibiliConfigHelper';
+export { BilibiliConfigHelper } from './BilibiliConfigHelper';
+
 // 实现
 export { BilibiliAPIService } from './BilibiliAPIService';
 export { ReplyHistoryStore } from './ReplyHistoryStore';
