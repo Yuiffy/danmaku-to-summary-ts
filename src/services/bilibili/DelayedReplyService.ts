@@ -399,10 +399,22 @@ export class DelayedReplyService implements IDelayedReplyService {
         return null;
       }
       
+      // 输出前5个动态的详细信息，帮助调试
       this.logger.info(`找到有效动态: ${validDynamics.length} 个`, {
         uid,
+        top5Dynamics: validDynamics.slice(0, 5).map(d => ({
+          id: String(d.id),
+          type: d.type,
+          content: d.content.substring(0, 50),
+          publishTime: d.publishTime.toISOString()
+        }))
+      });
+      
+      this.logger.info(`选择最新动态: ${String(validDynamics[0].id)}`, {
+        uid,
         dynamicId: String(validDynamics[0].id),
-        dynamicType: validDynamics[0].type
+        dynamicType: validDynamics[0].type,
+        content: validDynamics[0].content.substring(0, 100)
       });
       
       return validDynamics[0];
