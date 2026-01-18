@@ -130,7 +130,8 @@
         "anchorName": "阿萨Aza",
         "fanName": "小毛线",
         "enableTextGeneration": true,
-        "enableComicGeneration": true
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
       },
       "1713546334": {
         "audioOnly": true,
