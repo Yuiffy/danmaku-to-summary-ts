@@ -216,15 +216,9 @@ async function generateTextWithGemini(prompt) {
             global.fetch = originalFetch;
         }
 
-        // 检查是否是429超频错误
-        const errorMessage = error.message || '';
-        const is429Error = errorMessage.includes('429') ||
-                          errorMessage.includes('Too Many Requests') ||
-                          errorMessage.includes('RESOURCE_EXHAUSTED') ||
-                          errorMessage.includes('quota');
-
-        if (is429Error && configLoader.isTuZiConfigured()) {
-            console.warn(`⚠️  Gemini API超频 (429)，尝试使用tuZi API作为备用方案...`);
+        // 不管什么 Gemini 错误，都尝试使用 tuZi API 重试
+        if (configLoader.isTuZiConfigured()) {
+            console.warn(`⚠️  Gemini API调用失败 (${error.message})，尝试使用tuZi API作为备用方案...`);
             try {
                 return await generateTextWithTuZi(prompt);
             } catch (tuziError) {
