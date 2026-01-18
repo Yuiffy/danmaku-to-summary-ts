@@ -25,7 +25,7 @@
     "test:all": "npm run test:unit && npm run test:integration",
     "webhook": "node dist/app/main.js",
     "webhook:dev": "node dist/app/main.js --port 12522 --host 0.0.0.0",
-    "webhook:prod": "node dist/app/main.js --port 12521 --host 0.0.0.0",
+    "webhook:prod": "node dist/app/main.js --port 12522 --host 0.0.0.0  --env production",
     "process": "node dist/app/main.js process",
     "batch": "node dist/app/main.js batch",
     "status": "node dist/app/main.js status",

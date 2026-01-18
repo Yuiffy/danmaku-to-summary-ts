@@ -5,7 +5,6 @@
 // 接口
 export type { IBilibiliAPIService } from './interfaces/IBilibiliAPIService';
 export type { IReplyHistoryStore } from './interfaces/IReplyHistoryStore';
-export type { IDynamicPollingService, NewDynamicCallback } from './interfaces/IDynamicPollingService';
 export type { IReplyManager } from './interfaces/IReplyManager';
 export type { IDelayedReplyService } from './interfaces/IDelayedReplyService';
 export type { IDelayedReplyStore } from './interfaces/IDelayedReplyStore';
@@ -33,7 +32,6 @@ export { BilibiliConfigHelper } from './BilibiliConfigHelper';
 // 实现
 export { BilibiliAPIService } from './BilibiliAPIService';
 export { ReplyHistoryStore } from './ReplyHistoryStore';
-export { DynamicPollingService } from './DynamicPollingService';
 export { ReplyManager } from './ReplyManager';
 export { DelayedReplyService } from './DelayedReplyService';
 export { DelayedReplyStore } from './DelayedReplyStore';

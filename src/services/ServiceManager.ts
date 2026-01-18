@@ -8,7 +8,6 @@ import { AITextGenerator } from './ai/AITextGenerator';
 import { BilibiliAPIService } from './bilibili/BilibiliAPIService';
 import { ReplyManager } from './bilibili/ReplyManager';
 import { ReplyHistoryStore } from './bilibili/ReplyHistoryStore';
-import { DynamicPollingService } from './bilibili/DynamicPollingService';
 import { DelayedReplyService } from './bilibili/DelayedReplyService';
 import { DelayedReplyStore } from './bilibili/DelayedReplyStore';
 import { IDelayedReplyService } from './bilibili/interfaces/IDelayedReplyService';
@@ -69,7 +68,6 @@ export class ServiceManager {
   private bilibiliAPIService?: BilibiliAPIService;
   private replyManager?: ReplyManager;
   private replyHistoryStore?: ReplyHistoryStore;
-  private dynamicPollingService?: DynamicPollingService;
   private delayedReplyStore?: IDelayedReplyStore;
   private delayedReplyService?: IDelayedReplyService;
 
@@ -124,11 +122,6 @@ export class ServiceManager {
       // 启动Webhook服务
       if (this.webhookService) {
         await this.startService('webhook', () => this.webhookService!.start());
-      }
-
-      // 启动动态轮询服务
-      if (this.dynamicPollingService) {
-        await this.startService('dynamic-polling', () => this.dynamicPollingService!.start());
       }
 
       // 启动延迟回复服务
@@ -523,45 +516,6 @@ export class ServiceManager {
       }
     });
 
-    // 动态轮询服务
-    await this.initializeService('dynamic-polling', async () => {
-      if (this.bilibiliAPIService && this.replyHistoryStore && this.replyManager) {
-        this.dynamicPollingService = new DynamicPollingService(
-          this.bilibiliAPIService,
-          this.replyHistoryStore
-        );
-        // 注册新动态回调，自动触发回复
-        this.dynamicPollingService.onNewDynamic(async (dynamic) => {
-          try {
-            // 检查是否已回复
-            const hasReplied = await this.replyHistoryStore!.hasReplied(dynamic.id);
-            if (hasReplied) {
-              return;
-            }
-
-            // 获取主播配置
-            const config = ConfigProvider.getConfig();
-            const bilibiliConfig = config.bilibili as any;
-            const anchorConfig = bilibiliConfig?.anchors?.[dynamic.uid];
-
-            if (!anchorConfig || !anchorConfig.enabled) {
-              return;
-            }
-
-            // 查找对应的晚安回复文件和漫画图片
-            // 这里需要根据实际业务逻辑来获取文件路径
-            // 暂时跳过，因为需要更多上下文信息
-            this.getLogger().info(`发现新动态，但暂未实现自动回复: ${dynamic.id}`, {
-              uid: dynamic.uid,
-              content: dynamic.content.substring(0, 50)
-            });
-          } catch (error) {
-            this.getLogger().error('处理新动态回调失败', { error, dynamicId: String(dynamic.id) });
-          }
-        });
-      }
-    });
-
     // 延迟回复存储
     await this.initializeService('delayed-reply-store', async () => {
       this.delayedReplyStore = new DelayedReplyStore();
@@ -653,11 +607,6 @@ export class ServiceManager {
    * 清理服务资源
    */
   private async cleanupServices(): Promise<void> {
-    // 停止动态轮询服务
-    if (this.dynamicPollingService) {
-      await this.dynamicPollingService.stop();
-    }
-
     // 停止回复管理器
     if (this.replyManager) {
       await this.replyManager.stop();
