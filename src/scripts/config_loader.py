@@ -13,8 +13,26 @@ from typing import Dict, Any, Optional
 
 # 禁用输出缓冲，确保日志实时输出到Node.js
 import io
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', line_buffering=True)
+try:
+    if hasattr(sys.stdout, 'buffer') and not sys.stdout.closed:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
+    if hasattr(sys.stderr, 'buffer') and not sys.stderr.closed:
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', line_buffering=True)
+except (ValueError, AttributeError, OSError):
+    # 如果stdout/stderr已关闭或无法访问，使用原始流
+    pass
+
+# 创建安全的打印函数，防止在stdout/stderr关闭时崩溃
+def safe_print(*args, **kwargs):
+    """安全的打印函数，在stdout/stderr不可用时静默失败"""
+    try:
+        __builtins__.print(*args, **kwargs)
+    except (ValueError, OSError, AttributeError):
+        # stdout/stderr已关闭或不可用，静默忽略
+        pass
+
+# 全局替换内置print函数，防止I/O错误导致崩溃
+print = safe_print
 
 
 def get_project_root() -> str:

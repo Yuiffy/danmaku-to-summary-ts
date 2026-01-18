@@ -88,6 +88,15 @@ async function convertVideoToAudio(videoPath, audioFormat = '.m4a') {
     const videoName = path.basename(videoPath, path.extname(videoPath));
     const audioPath = path.join(videoDir, `${videoName}${audioFormat}`);
     
+    // 检查输入文件是否已经是音频格式
+    const inputExt = path.extname(videoPath).toLowerCase();
+    const audioFormats = getAudioFormats();
+    
+    if (audioFormats.includes(inputExt)) {
+        console.log(`ℹ️  输入文件已经是音频格式 (${inputExt})，跳过转换`);
+        return videoPath;
+    }
+    
     console.log(`🔊 开始转换视频为音频:`);
     console.log(`   输入: ${path.basename(videoPath)}`);
     console.log(`   输出: ${path.basename(audioPath)}`);
