@@ -86,46 +86,10 @@ export class BilibiliConfigHelper {
   }
 
   /**
-   * 从 Bilibili 配置中获取主播配置
-   */
-  private static getAnchorConfigFromBilibili(roomId: string | number): AnchorConfig | undefined {
-    const bilibiliConfig = this.getBilibiliConfig();
-    const normalizedRoomId = this.normalizeRoomId(roomId);
-    const numericRoomId = parseInt(normalizedRoomId, 10);
-
-    // 遍历所有主播配置
-    for (const [key, anchor] of Object.entries(bilibiliConfig.anchors || {})) {
-      // 检查 roomId 是否匹配（字符串或数字）
-      if (
-        anchor.roomId === normalizedRoomId ||
-        anchor.roomId === String(numericRoomId) ||
-        key === normalizedRoomId ||
-        key === String(numericRoomId)
-      ) {
-        return {
-          uid: anchor.uid,
-          name: anchor.name,
-          roomId: normalizedRoomId,
-          enabled: anchor.enabled,
-          delayedReplyEnabled: anchor.delayedReplyEnabled ?? false,
-        };
-      }
-    }
-
-    return undefined;
-  }
-
-  /**
-   * 获取主播配置（合并 AI 和 Bilibili 配置）
+   * 获取主播配置（从 AI 配置获取）
    */
   static getAnchorConfig(roomId: string | number): AnchorConfig | null {
     const normalizedRoomId = this.normalizeRoomId(roomId);
-
-    // 优先从 Bilibili 配置获取
-    const bilibiliAnchor = this.getAnchorConfigFromBilibili(roomId);
-    if (bilibiliAnchor) {
-      return bilibiliAnchor;
-    }
 
     // 从 AI 配置获取
     const roomAIConfig = this.getRoomAIConfig(roomId);
@@ -220,32 +184,24 @@ export class BilibiliConfigHelper {
   }
 
   /**
-   * 获取所有启用的主播列表
+   * 获取所有启用了延迟回复的主播列表
    */
-  static getAllEnabledAnchors(): AnchorConfig[] {
-    const bilibiliConfig = this.getBilibiliConfig();
+  static getDelayedReplyEnabledAnchors(): AnchorConfig[] {
+    const config = this.getConfig();
     const anchors: AnchorConfig[] = [];
 
-    for (const [key, anchor] of Object.entries(bilibiliConfig.anchors || {})) {
-      if (anchor.enabled) {
+    for (const [roomId, roomConfig] of Object.entries(config.ai.roomSettings || {})) {
+      if (roomConfig.enableDelayedReply) {
         anchors.push({
-          uid: anchor.uid,
-          name: anchor.name,
-          roomId: anchor.roomId || key,
-          enabled: anchor.enabled,
-          delayedReplyEnabled: anchor.delayedReplyEnabled ?? false,
+          uid: '', // AI 配置中没有 UID，需要通过 API 获取
+          name: roomConfig.anchorName || '未知主播',
+          roomId,
+          enabled: true,
+          delayedReplyEnabled: roomConfig.enableDelayedReply ?? false,
         });
       }
     }
 
     return anchors;
-  }
-
-  /**
-   * 获取所有启用了延迟回复的主播列表
-   */
-  static getDelayedReplyEnabledAnchors(): AnchorConfig[] {
-    const anchors = this.getAllEnabledAnchors();
-    return anchors.filter(anchor => anchor.delayedReplyEnabled);
   }
 }
