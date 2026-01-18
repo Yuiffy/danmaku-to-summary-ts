@@ -26,6 +26,7 @@ export class DelayedReplyService implements IDelayedReplyService {
   private timers: Map<string, NodeJS.Timeout> = new Map();
   private isRunningFlag = false;
   private checkInterval: NodeJS.Timeout | null = null;
+  private countdownInterval: NodeJS.Timeout | null = null;
 
   constructor(
     private bilibiliAPI: IBilibiliAPIService,
@@ -72,6 +73,12 @@ export class DelayedReplyService implements IDelayedReplyService {
     if (this.checkInterval) {
       clearInterval(this.checkInterval);
       this.checkInterval = null;
+    }
+
+    // 停止倒计时预告
+    if (this.countdownInterval) {
+      clearInterval(this.countdownInterval);
+      this.countdownInterval = null;
     }
 
     // 清除所有定时器
@@ -207,8 +214,42 @@ export class DelayedReplyService implements IDelayedReplyService {
       this.checkDueTasks();
     }, 30000);
 
+    // 每分钟倒计时预告
+    this.countdownInterval = setInterval(() => {
+      this.logCountdown();
+    }, 60000);
+
     // 立即检查一次
     this.checkDueTasks();
+  }
+
+  /**
+   * 倒计时预告
+   */
+  private logCountdown(): void {
+    const now = new Date();
+    const pendingTasks = Array.from(this.tasks.values()).filter(
+      task => task.status === 'pending'
+    );
+
+    if (pendingTasks.length === 0) {
+      return;
+    }
+
+    this.logger.info(`📊 延迟任务倒计时预告 (${pendingTasks.length} 个待处理任务):`);
+
+    for (const task of pendingTasks) {
+      const remainingMs = task.scheduledTime.getTime() - now.getTime();
+      const remainingMinutes = Math.ceil(remainingMs / 60000);
+
+      if (remainingMinutes > 0) {
+        const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
+        const anchorName = anchorConfig?.name || task.roomId;
+        this.logger.info(
+          `   ⏰ [${task.taskId.slice(0, 8)}] ${anchorName} - 还剩 ${remainingMinutes} 分钟`
+        );
+      }
+    }
   }
 
   /**
