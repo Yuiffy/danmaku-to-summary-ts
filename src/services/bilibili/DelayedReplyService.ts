@@ -384,7 +384,22 @@ export class DelayedReplyService implements IDelayedReplyService {
   private async getLatestDynamic(uid: string): Promise<BilibiliDynamic | null> {
     try {
       const dynamics = await this.bilibiliAPI.getDynamics(uid);
-      return dynamics.length > 0 ? dynamics[0] : null;
+      
+      // 过滤掉无法解析的动态（如直播推荐等）
+      const validDynamics = dynamics.filter(d => d !== null);
+      
+      if (validDynamics.length === 0) {
+        this.logger.warn('未找到有效的动态', { uid, totalDynamics: dynamics.length });
+        return null;
+      }
+      
+      this.logger.info(`找到有效动态: ${validDynamics.length} 个`, {
+        uid,
+        dynamicId: String(validDynamics[0].id),
+        dynamicType: validDynamics[0].type
+      });
+      
+      return validDynamics[0];
     } catch (error) {
       this.logger.error('获取最新动态失败', { error, uid });
       return null;

@@ -202,6 +202,16 @@ function parseMajorContent(major: DynamicItemV2['modules']['module_dynamic']['ma
 } {
   const { type: majorType, opus, draw, archive, article, common } = major;
 
+  // LIVE_RCMD类型（直播推荐）- 跳过，不回复此类动态
+  if (majorType === 'MAJOR_TYPE_LIVE_RCMD') {
+    logger.debug('跳过直播推荐类型动态', { majorType });
+    return {
+      type: null,
+      content: '',
+      images: []
+    };
+  }
+
   // OPUS类型（图文混合）
   if (majorType === 'MAJOR_TYPE_OPUS' && opus) {
     const content = opus.summary?.text || opus.title || '';
