@@ -10,35 +10,64 @@ import sys
 import io
 
 # 禁用输出缓冲，确保日志实时输出到Node.js
-# 添加异常处理，防止stdout/stderr已关闭的情况
-try:
-    if hasattr(sys.stdout, 'buffer') and not sys.stdout.closed:
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
-    if hasattr(sys.stderr, 'buffer') and not sys.stderr.closed:
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', line_buffering=True)
-except (ValueError, AttributeError, OSError) as e:
-    # 如果stdout/stderr已关闭或无法访问，尝试使用原始流
-    pass
+# 保存原始的stdout/stderr，以便在包装失败时使用
+_original_stdout = sys.stdout
+_original_stderr = sys.stderr
 
-# 创建安全的打印函数，防止在stdout/stderr关闭时崩溃
+# 创建安全的打印函数，确保日志能够输出
 def safe_print(*args, **kwargs):
-    """安全的打印函数，在stdout/stderr不可用时静默失败"""
+    """安全的打印函数，尝试多种方式输出日志"""
+    message = ' '.join(str(arg) for arg in args)
+    
+    # 尝试1: 使用原始stdout
+    try:
+        if not _original_stdout.closed:
+            _original_stdout.write(message + '\n')
+            _original_stdout.flush()
+            return
+    except (ValueError, OSError, AttributeError):
+        pass
+    
+    # 尝试2: 使用内置print
     try:
         __builtins__.print(*args, **kwargs)
+        return
     except (ValueError, OSError, AttributeError):
-        # stdout/stderr已关闭或不可用，静默忽略
+        pass
+    
+    # 尝试3: 直接写入sys.stdout
+    try:
+        if hasattr(sys.stdout, 'write') and not sys.stdout.closed:
+            sys.stdout.write(message + '\n')
+            sys.stdout.flush()
+            return
+    except (ValueError, OSError, AttributeError):
+        pass
+    
+    # 尝试4: 写入stderr作为最后手段
+    try:
+        if hasattr(sys.stderr, 'write') and not sys.stderr.closed:
+            sys.stderr.write(message + '\n')
+            sys.stderr.flush()
+            return
+    except (ValueError, OSError, AttributeError):
         pass
 
 # 创建安全的traceback打印函数
 def safe_print_exc():
-    """安全的traceback打印函数，在stderr不可用时静默失败"""
+    """安全的traceback打印函数"""
+    import traceback as tb
     try:
-        traceback.print_exc()
+        tb.print_exc(file=_original_stderr)
     except (ValueError, OSError, AttributeError):
-        # stderr已关闭或不可用，静默忽略
-        pass
+        # 尝试使用原始stderr
+        try:
+            _original_stderr.write(str(tb.format_exc()) + '\n')
+            _original_stderr.flush()
+        except:
+            pass
 
-# 全局替换内置print函数，防止I/O错误导致崩溃
+# 全局替换内置print函数
 print = safe_print
 
 import json
@@ -47,7 +76,7 @@ import base64
 import requests
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
-import traceback
+import traceback as tb
 import subprocess
 import shutil
 
@@ -67,10 +96,14 @@ def load_config() -> Dict[str, Any]:
     config = get_config()
     
     # 为了向后兼容，构建 aiServices 结构
+    # 注意：aiServices.gemini 来自 ai.text.gemini（文本生成）
+    #       aiServices.tuZi 来自 ai.comic.tuZi（图像生成）
+    #       aiServices.googleImage 来自 ai.comic.googleImage（图像生成）
     legacy_config = {
         "aiServices": {
             "gemini": config.get('ai', {}).get('text', {}).get('gemini', {}),
             "tuZi": config.get('ai', {}).get('comic', {}).get('tuZi', {}),
+            "googleImage": config.get('ai', {}).get('comic', {}).get('googleImage', {}),
             "defaultReferenceImage": config.get('ai', {}).get('defaultReferenceImage', ''),
             "defaultCharacterDescription": config.get('ai', {}).get('defaultCharacterDescription', ''),
             "defaultNames": config.get('ai', {}).get('defaultNames', {})
@@ -269,6 +302,7 @@ def build_comic_prompt(highlight_content: str, reference_image_path: Optional[st
     is_generated = False
     if existing_comic and existing_comic.strip() != "":
         comic_content = existing_comic
+        is_generated = True  # 复用已有脚本也算成功，允许继续生成图像
     else:
         comic_content, is_generated = generate_comic_content_with_ai(highlight_content, room_id=room_id)
 
@@ -284,10 +318,13 @@ def build_comic_prompt(highlight_content: str, reference_image_path: Optional[st
     return base_prompt, comic_content, is_generated
 
 # 虚拟主播二创画师大手子的统一prompt模板（方便统一修改）
+# 文字prompt: 画图+文字台词or简介，可以没有文字，有的话要很短（5个单词内），不要用中文。
 COMIC_ARTIST_PROMPT_TEMPLATE = """你作为虚拟主播二创画师大手子，根据直播内容，绘制直播总结插画。
 角色描述：{character_desc}。
-风格：多个剪贴画风格分镜（4~6个吧），每个是一个片段场景，画图+文字台词or简介，可以没有文字，有的话要很短（5个单词内），不要用中文。要画得精致，角色要画得帅气、美丽、可爱。
-下面是岁己一场直播的asr+弹幕记录TXT，请先构思图片并用文字给我，我再拿去绘制图片。整体800个字符以内。
+风格：多个剪贴画风格分镜（4~6个吧），每个是一个片段场景，
+不要有文字，纯默剧，用表情和动作、场景来表现。
+要画得精致，角色要画得帅气、美丽、可爱。
+下面是一场直播的asr+弹幕记录TXT，请先构思图片并用文字给我，我再拿去绘制图片。整体800个字符以内。
 {highlight_content}
 """
 
@@ -297,6 +334,12 @@ def build_comic_generation_prompt(character_desc: str, highlight_content: str) -
     base = template.replace("{character_desc}", character_desc)
     base = base.replace("{highlight_content}", highlight_content)
     return base
+
+def is_gemini_error(text: str) -> bool:
+    """检测文本是否包含Gemini错误信息"""
+    if not text:
+        return False
+    return '[Gemini Error:' in text
 
 def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str] = None) -> Tuple[str, bool]:
     """使用AI生成漫画内容脚本
@@ -323,70 +366,98 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                 )
                 if proc.returncode == 0 and proc.stdout:
                     text = proc.stdout.decode('utf-8').strip()
-                    if text:
+                    if text and not is_gemini_error(text):
                         print('[OK] 从 ai_text_generator 返回内容')
                         return text, True
-                else:
-                    stderr = proc.stderr.decode('utf-8') if proc.stderr else ''
-                    print(f"[INFO] node 脚本返回非零状态: {proc.returncode}, stderr: {stderr}")
+                    elif is_gemini_error(text):
+                        print('[WARNING] ai_text_generator 返回了错误内容，尝试其他方案')
+                    else:
+                        stderr = proc.stderr.decode('utf-8') if proc.stderr else ''
+                        print(f"[INFO] node 脚本返回非零状态: {proc.returncode}, stderr: {stderr}")
             except Exception as e:
                 print(f"[INFO] 调用 node 脚本失败: {e}")
     except Exception:
         pass
 
-    try:
-        # 导入Google GenAI (新版本)
-        import google.genai as genai
+    # Gemini重试逻辑
+    max_gemini_retries = 3
+    for gemini_attempt in range(max_gemini_retries):
+        try:
+            # 导入Google GenAI (新版本)
+            from google import genai
+            from google.genai import types
 
-        # 获取Gemini API密钥（使用统一配置加载器）
-        gemini_api_key = get_gemini_api_key()
+            # 获取Gemini API密钥（使用统一配置加载器）
+            gemini_api_key = get_gemini_api_key()
 
-        if not gemini_api_key:
-            print("[WARNING]  Gemini API密钥未配置，使用原始内容")
-            return highlight_content, False
+            if not gemini_api_key:
+                print("[WARNING]  Gemini API密钥未配置，使用原始内容")
+                return highlight_content, False
 
-        # 加载配置获取其他参数
-        config = load_config()
-        gemini_config = config.get('aiServices', {}).get('gemini', {})
+            # 加载配置获取其他参数
+            config = load_config()
+            gemini_config = config.get('aiServices', {}).get('gemini', {})
 
-        # 创建客户端
-        client = genai.Client(api_key=gemini_api_key)
+            # 创建客户端
+            client = genai.Client(api_key=gemini_api_key, http_options=types.HttpOptions(timeout=60))
 
-        # 设置代理 (如果需要)
-        proxy_url = gemini_config.get('proxy', '')
-        if proxy_url:
-            import os
-            os.environ['http_proxy'] = proxy_url
-            os.environ['https_proxy'] = proxy_url
+            # 设置代理 (如果需要)
+            proxy_url = gemini_config.get('proxy', '')
+            if proxy_url:
+                import os
+                os.environ['http_proxy'] = proxy_url
+                os.environ['https_proxy'] = proxy_url
 
-        # 获取模型名称
-        model_name = gemini_config.get('model', 'gemini-2.0-flash')
+            # 获取模型名称
+            model_name = gemini_config.get('model', 'gemini-2.0-flash')
 
-        # 生成漫画内容脚本（使用统一的prompt模板）
-        character_desc = get_room_character_description(room_id)
-        content_prompt = build_comic_generation_prompt(character_desc, highlight_content)
+            # 生成漫画内容脚本（使用统一的prompt模板）
+            character_desc = get_room_character_description(room_id)
+            content_prompt = build_comic_generation_prompt(character_desc, highlight_content)
 
-        # 调用Gemini
-        print(f"[AI] 使用Gemini生成漫画内容脚本: {model_name}")
-        response = client.models.generate_content(
-            model=model_name,
-            contents=content_prompt
-        )
+            # 调用Gemini
+            if gemini_attempt > 0:
+                print(f"[RETRY] 第 {gemini_attempt + 1} 次重试 Gemini...")
+            print(f"[AI] 使用Gemini生成漫画内容脚本: {model_name}")
+            response = client.models.generate_content(
+                model=model_name,
+                contents=content_prompt
+            )
 
-        if response and response.text:
-            comic_content = response.text.strip()
-            print("[OK] AI漫画内容生成完成")
-            print(f"生成内容长度: {len(comic_content)} 字符")
-            return comic_content, True
-        else:
-            print("[WARNING]  AI返回空结果，使用原始内容")
-            return highlight_content, False
+            if response and response.text:
+                comic_content = response.text.strip()
+                
+                # 检测是否包含错误信息
+                if is_gemini_error(comic_content):
+                    print(f"[WARNING] Gemini返回了错误内容 (尝试 {gemini_attempt + 1}/{max_gemini_retries})")
+                    if gemini_attempt < max_gemini_retries - 1:
+                        print("[RETRY] 2秒后重试...")
+                        time.sleep(2)
+                        continue
+                    else:
+                        print("[ERROR] Gemini重试次数已用完，尝试备用方案")
+                        break
+                
+                print("[OK] AI漫画内容生成完成")
+                print(f"生成内容长度: {len(comic_content)} 字符")
+                return comic_content, True
+            else:
+                print("[WARNING]  AI返回空结果，使用原始内容")
+                return highlight_content, False
 
-    except ImportError:
-        print("[WARNING]  google-genai库未安装，尝试使用tuZi API...")
-        print("   请安装: pip install google-genai")
-    except Exception as e:
-        print(f"[ERROR]  AI内容生成失败: {e}")
+        except ImportError:
+            print("[WARNING]  google-genai库未安装，尝试使用tuZi API...")
+            print("   请安装: pip install google-genai")
+            break
+        except Exception as e:
+            print(f"[ERROR]  AI内容生成失败 (尝试 {gemini_attempt + 1}/{max_gemini_retries}): {e}")
+            if gemini_attempt < max_gemini_retries - 1:
+                print("[RETRY] 2秒后重试...")
+                time.sleep(2)
+                continue
+            else:
+                print("[ERROR] Gemini重试次数已用完，尝试备用方案")
+                break
     
     # Gemini失败后，尝试使用tuZi API作为备用方案
     print("[TUZI] Google生成失败，尝试tu-zi.com生成文本...")
@@ -580,7 +651,7 @@ def call_google_image_api(prompt: str, reference_image_path: Optional[str] = Non
                 if attempt == 0:
                     print("[WAIT] 正在通过Google API生成图像...")
 
-                # 生成图像
+                # 生成图像（60秒超时）
                 response = ai.models.generate_content(
                     model=model_name,
                     contents=image_prompt,
@@ -589,7 +660,8 @@ def call_google_image_api(prompt: str, reference_image_path: Optional[str] = Non
                         "top_p": 0.95,
                         "top_k": 40,
                     },
-                    safety_settings=google_config.get("safetySettings", [])
+                    safety_settings=google_config.get("safetySettings", []),
+                    timeout=60
                 )
 
                 # 处理响应
@@ -781,8 +853,10 @@ def call_tuzi_image_api(prompt: str, reference_image_path: Optional[str] = None)
                 if (attempt == 2):
                     payload["model"] = "nano-banana-2" # 含泪用3毛钱一次的超贵模型
                     print(f"[RETRY] 第 {attempt + 1} 次重试...模型替换为{payload['model']}，含泪用3毛钱一次的超贵模型")
+                print(f"[DEBUG] 发起请求，内容：{json.dumps(payload)[:100]}..., 代理: {proxies}, 超时: {timeout_sec}s")
                 response = requests.post(api_url, headers=headers, json=payload, timeout=timeout_sec, proxies=proxies)
-                
+                print(f"[DEBUG] 收到响应，状态码: {response.status_code}, 用时: {response.elapsed.total_seconds()}s")
+
                 if response.status_code == 200:
                     # 尝试解析响应，如果解析失败则继续重试
                     result = response.json()
@@ -1081,7 +1155,8 @@ def generate_comic_from_highlight(highlight_path: str) -> Optional[str]:
     config = load_config()
     
     # 设置API启用状态
-    use_google = config["aiServices"].get("gemini", {}).get("enabled", False)
+    # 注意：这里检查的是图像生成API的启用状态，不是文本生成API
+    use_google = config["aiServices"].get("googleImage", {}).get("enabled", False)
     use_tuzi = config["aiServices"].get("tuZi", {}).get("enabled", False)
     
     try:
@@ -1157,6 +1232,10 @@ def generate_comic_from_highlight(highlight_path: str) -> Optional[str]:
         if use_google:
             print("[GOOGLE] 使用Google图像生成API...")
             comic_result = call_google_image_api(prompt, reference_image_path)
+            if comic_result:
+                print(f"[DEBUG] Google API返回结果: {comic_result}")
+            else:
+                print("[DEBUG] Google API返回None")
 
         # 2. 如果Google失败，尝试tu-zi.com作为最终备用方案
         if not comic_result and use_tuzi:

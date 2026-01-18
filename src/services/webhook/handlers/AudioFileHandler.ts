@@ -152,6 +152,7 @@ export class AudioFileHandler implements IWebhookHandler {
 
       // 2. 检查文件是否存在
       if (!fs.existsSync(filePath)) {
+        this.logger.info(`文件不存在: ${filePath}`);
         return {
           success: false,
           error: `文件不存在: ${filePath}`,

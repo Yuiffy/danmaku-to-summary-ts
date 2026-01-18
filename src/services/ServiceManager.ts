@@ -5,6 +5,13 @@ import { IAudioProcessor } from './audio/IAudioProcessor';
 import { AudioProcessor } from './audio/AudioProcessor';
 import { IAITextGenerator } from './ai/IAITextGenerator';
 import { AITextGenerator } from './ai/AITextGenerator';
+import { BilibiliAPIService } from './bilibili/BilibiliAPIService';
+import { ReplyManager } from './bilibili/ReplyManager';
+import { ReplyHistoryStore } from './bilibili/ReplyHistoryStore';
+import { DelayedReplyService } from './bilibili/DelayedReplyService';
+import { DelayedReplyStore } from './bilibili/DelayedReplyStore';
+import { IDelayedReplyService } from './bilibili/interfaces/IDelayedReplyService';
+import { IDelayedReplyStore } from './bilibili/interfaces/IDelayedReplyStore';
 
 /**
  * 服务状态
@@ -58,6 +65,11 @@ export class ServiceManager {
   private webhookService?: WebhookService;
   private audioProcessor?: IAudioProcessor;
   private aiTextGenerator?: IAITextGenerator;
+  private bilibiliAPIService?: BilibiliAPIService;
+  private replyManager?: ReplyManager;
+  private replyHistoryStore?: ReplyHistoryStore;
+  private delayedReplyStore?: IDelayedReplyStore;
+  private delayedReplyService?: IDelayedReplyService;
 
   /**
    * 获取logger（安全方法）
@@ -111,6 +123,11 @@ export class ServiceManager {
       if (this.webhookService) {
         await this.startService('webhook', () => this.webhookService!.start());
       }
+
+      // 启动延迟回复服务
+      if (this.delayedReplyService && 'start' in this.delayedReplyService) {
+        await this.startService('delayed-reply', () => (this.delayedReplyService as any).start());
+      }
       
       // 其他服务按需启动
       // 音频处理服务、AI生成服务等通常是按需使用，不需要常驻启动
@@ -163,6 +180,13 @@ export class ServiceManager {
    */
   getAITextGenerator(): IAITextGenerator | undefined {
     return this.aiTextGenerator;
+  }
+
+  /**
+   * 获取延迟回复服务
+   */
+  getDelayedReplyService(): IDelayedReplyService | undefined {
+    return this.delayedReplyService;
   }
 
   /**
@@ -473,7 +497,62 @@ export class ServiceManager {
       this.aiTextGenerator = new AITextGenerator();
     });
 
-    // 其他服务可以在这里添加
+    // B站API服务
+    await this.initializeService('bilibili-api', async () => {
+      this.bilibiliAPIService = new BilibiliAPIService();
+    });
+
+    // 回复历史存储
+    await this.initializeService('reply-history-store', async () => {
+      this.replyHistoryStore = new ReplyHistoryStore();
+    });
+
+    // 回复管理器
+    await this.initializeService('reply-manager', async () => {
+      if (this.bilibiliAPIService && this.replyHistoryStore) {
+        this.replyManager = new ReplyManager(this.bilibiliAPIService, this.replyHistoryStore);
+        // 启动回复管理器
+        await this.replyManager.start();
+      }
+    });
+
+    // 延迟回复存储
+    await this.initializeService('delayed-reply-store', async () => {
+      this.delayedReplyStore = new DelayedReplyStore();
+    });
+
+    // 延迟回复服务
+    await this.initializeService('delayed-reply', async () => {
+      if (this.bilibiliAPIService && this.delayedReplyStore) {
+        this.delayedReplyService = new DelayedReplyService(
+          this.bilibiliAPIService,
+          this.delayedReplyStore
+        );
+      }
+    });
+
+    // 将延迟回复服务注入到WebhookService
+    if (this.webhookService && this.delayedReplyService) {
+      this.webhookService.setDelayedReplyService(this.delayedReplyService);
+      this.getLogger().info('延迟回复服务已注入到WebhookService');
+    } else {
+      this.getLogger().warn('延迟回复服务注入失败: webhookService=' + !!this.webhookService + ', delayedReplyService=' + !!this.delayedReplyService);
+    }
+
+    // 将延迟回复服务注入到各个Handler
+    if (this.webhookService && this.delayedReplyService) {
+      const handlers = this.webhookService.getHandlers();
+      this.getLogger().info('当前注册的handlers: ' + handlers.map(h => h.name).join(', '));
+      for (const handler of handlers) {
+        this.getLogger().info('检查handler: ' + handler.name + ', has setDelayedReplyService: ' + ('setDelayedReplyService' in handler));
+        if ('setDelayedReplyService' in handler) {
+          (handler as any).setDelayedReplyService(this.delayedReplyService);
+          this.getLogger().info('延迟回复服务已注入到: ' + handler.name);
+        }
+      }
+    } else {
+      this.getLogger().warn('延迟回复服务注入到Handler失败: webhookService=' + !!this.webhookService + ', delayedReplyService=' + !!this.delayedReplyService);
+    }
   }
 
   /**
@@ -528,6 +607,16 @@ export class ServiceManager {
    * 清理服务资源
    */
   private async cleanupServices(): Promise<void> {
+    // 停止回复管理器
+    if (this.replyManager) {
+      await this.replyManager.stop();
+    }
+
+    // 停止延迟回复服务
+    if (this.delayedReplyService && 'stop' in this.delayedReplyService) {
+      await (this.delayedReplyService as any).stop?.();
+    }
+
     // 清理音频处理服务
     if (this.audioProcessor && 'cleanup' in this.audioProcessor) {
       await (this.audioProcessor as any).cleanup?.();

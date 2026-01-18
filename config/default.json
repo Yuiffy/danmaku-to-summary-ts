@@ -84,7 +84,16 @@
       "fan": "饼干岁"
     },
     "defaultWordLimit": 100,
-    "roomSettings": {}
+    "roomSettings": {
+      "628684": {
+        "audioOnly": false,
+        "anchorName": "带鱼",
+        "fanName": "带鱼饭",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
+      }
+    }
   },
   "fusion": {
     "timeWindowSec": 30,
@@ -126,8 +135,22 @@
       "14279": {
         "uid": "14279",
         "name": "测试账号",
-        "enabled": true
+        "enabled": true,
+        "delayedReplyEnabled": false
+      },
+      "23197314": {
+        "uid": "23197314",
+        "name": "飞天狙想要努力变胖",
+        "roomId": "23197314",
+        "enabled": true,
+        "delayedReplyEnabled": true
       }
+    },
+    "delayedReply": {
+      "enabled": true,
+      "delayMinutes": 10,
+      "maxRetries": 3,
+      "retryDelayMinutes": 5
     }
   }
 }

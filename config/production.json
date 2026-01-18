@@ -57,6 +57,15 @@
         "temperature": 0.7,
         "maxTokens": 100000,
         "proxy": "socks5://127.0.0.1:7890"
+      },
+      "tuZi": {
+        "enabled": true,
+        "apiKey": "",
+        "baseUrl": "https://api.tu-zi.com",
+        "model": "gemini-3-flash-preview",
+        "temperature": 0.7,
+        "maxTokens": 100000,
+        "proxy": "socks5://127.0.0.1:7890"
       }
     },
     "comic": {
@@ -86,6 +95,14 @@
         "enableTextGeneration": true,
         "enableComicGeneration": true,
         "wordLimit": 800
+      },
+      "628684": {
+        "audioOnly": false,
+        "anchorName": "带鱼",
+        "fanName": "带鱼饭",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
       },
       "545068": {
         "audioOnly": false,
@@ -121,25 +138,28 @@
         "anchorName": "阿萨Aza",
         "fanName": "小毛线",
         "enableTextGeneration": true,
-        "enableComicGeneration": true
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
       },
       "1713546334": {
         "audioOnly": true,
         "referenceImage": "public/reference_images/Hazel_灰泽满_立绘.png",
         "characterDescription": "灰泽满Hazel（永远16岁的女高中生，浅色短发，风纪委员，身上挂着很多果冻形状的饰品，随身带着果冻应急储备箱，性格有些偏执和元气）",
         "anchorName": "灰泽满Hazel",
-        "fanName": "果冻",
+        "fanName": "绿冻",
         "enableTextGeneration": true,
-        "enableComicGeneration": true
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
       },
       "1713548468": {
         "audioOnly": true,
         "referenceImage": "public/reference_images/Liko_莉蔻_立绘.png",
         "characterDescription": "莉蔻Liko（长着兔耳的少女，戴着大帽子，性格胆小没见过世面，手里常拿着胡萝卜棒冰，虽然是秘密组织的特工但看起来很弱气）",
         "anchorName": "莉蔻Liko",
-        "fanName": "胡萝卜",
+        "fanName": "蔻萝特",
         "enableTextGeneration": true,
-        "enableComicGeneration": true
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
       },
       "1986461465": {
         "audioOnly": true,
@@ -148,16 +168,36 @@
         "anchorName": "克罗雅Kloa",
         "fanName": "信徒",
         "enableTextGeneration": true,
-        "enableComicGeneration": true
+        "enableComicGeneration": true,
+          "enableDelayedReply": true
       },
       "1741667419": {
         "audioOnly": true,
         "referenceImage": "public/reference_images/十六萤Izayoi.png",
         "characterDescription": "十六萤Izayoi（拥有浣熊耳朵和毛茸茸大尾巴的少女，面无表情的三无特工，穿着女仆装或异域服饰，气质清冷，经常用尾巴把自己裹住）",
         "anchorName": "十六萤Izayoi",
-        "fanName": "萤火虫",
+        "fanName": "照夜萤",
         "enableTextGeneration": true,
-        "enableComicGeneration": true
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
+      },
+        "23197314": {
+        "audioOnly": true,
+        "characterDescription": "飞天狙想要努力变胖，戴着眼镜的男性瘦瘦的主播",
+        "anchorName": "狙神",
+        "fanName": "狙奴",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
+      },
+        "1844410596": {
+        "audioOnly": true,
+        "characterDescription": "夜永awa，银色美少女主播",
+        "anchorName": "酱酱",
+        "fanName": "foam",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
       }
     }
   },
@@ -179,6 +219,21 @@
       "enabled": true,
       "intervalHours": 24,
       "maxAgeDays": 7
+    }
+  },
+  "bilibili": {
+    "enabled": true,
+    "polling": {
+      "interval": 60000,
+      "maxRetries": 3,
+      "retryDelay": 5000
+    },
+    "anchors": {},
+    "delayedReply": {
+      "enabled": true,
+      "delayMinutes": 10,
+      "maxRetries": 3,
+      "retryDelayMinutes": 5
     }
   },
   "monitoring": {

@@ -4,7 +4,7 @@
 import fetch from 'node-fetch';
 import * as fs from 'fs';
 import * as path from 'path';
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import { getLogger } from '../../core/logging/LogManager';
 import { ConfigProvider } from '../../core/config/ConfigProvider';
@@ -14,9 +14,9 @@ import {
   BilibiliDynamic,
   PublishCommentRequest,
   PublishCommentResponse,
-  DynamicType,
   BilibiliAPIResponse
 } from './interfaces/types';
+import { parseDynamicItems } from './DynamicParser';
 
 const execAsync = promisify(exec);
 
@@ -177,8 +177,12 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       });
 
       const dynamics = this.parseDynamics(data.data);
+      
+      // 按发布时间降序排序，确保最新的动态排在前面（过滤置顶动态）
+      dynamics.sort((a, b) => b.publishTime.getTime() - a.publishTime.getTime());
+      
       // 确保 dynamicId 以字符串形式记录日志，避免大数精度丢失
-      this.logger.debug(`获取到 ${dynamics.length} 条动态`, {
+      this.logger.debug(`获取到 ${dynamics.length} 条动态（已按时间排序）`, {
         uid,
         dynamicIds: dynamics.map(d => String(d.id))
       });
@@ -200,105 +204,20 @@ export class BilibiliAPIService implements IBilibiliAPIService {
    * 解析动态数据
    */
   private parseDynamics(data: any): BilibiliDynamic[] {
-    const dynamics: BilibiliDynamic[] = [];
-
     if (!data) {
       this.logger.warn('API返回数据为空');
-      return dynamics;
+      return [];
     }
 
     if (!data.items) {
       this.logger.warn('API返回数据中没有items字段', { dataKeys: Object.keys(data) });
-      return dynamics;
+      return [];
     }
 
     this.logger.debug(`API返回 ${data.items.length} 条动态数据`);
 
-    for (const item of data.items) {
-      try {
-        const dynamic = this.parseDynamicItem(item);
-        if (dynamic) {
-          dynamics.push(dynamic);
-        }
-      } catch (error) {
-        // 避免 JSON.stringify 导致大数精度丢失，只记录关键字段
-        this.logger.warn('解析动态失败', {
-          error,
-          itemId: String(item?.desc?.dynamic_id_str || '')
-        });
-      }
-    }
-
-    return dynamics;
-  }
-
-  /**
-   * 解析单个动态项
-   */
-  private parseDynamicItem(item: any): BilibiliDynamic | null {
-    const card = item.card;
-    if (!card) {
-      this.logger.debug('动态项没有card字段', { itemKeys: Object.keys(item) });
-      return null;
-    }
-
-    const cardData = typeof card === 'string' ? JSON.parse(card) : card;
-    const desc = item.desc;
-
-    if (!desc) {
-      this.logger.debug('动态项没有desc字段', { itemKeys: Object.keys(item) });
-      return null;
-    }
-
-    // 解析动态类型
-    let type: DynamicType;
-    let content = '';
-    let images: string[] = [];
-
-    if (cardData.item) {
-      // 视频动态
-      if (cardData.item.uri) {
-        type = DynamicType.AV;
-        content = cardData.item.description || '';
-      }
-      // 图片动态
-      else if (cardData.item.pictures) {
-        type = DynamicType.DRAW;
-        content = cardData.item.description || '';
-        images = cardData.item.pictures.map((pic: any) => pic.img_src);
-      }
-      // 纯文本动态
-      else if (cardData.item.content) {
-        type = DynamicType.WORD;
-        content = cardData.item.content;
-      }
-      // 文章动态
-      else if (cardData.item.title) {
-        type = DynamicType.ARTICLE;
-        content = cardData.item.title;
-      } else {
-        this.logger.debug('动态项cardData.item没有匹配的类型', {
-          cardDataItemKeys: Object.keys(cardData.item)
-        });
-        return null;
-      }
-    } else {
-      this.logger.debug('动态项cardData没有item字段', {
-        cardDataKeys: Object.keys(cardData)
-      });
-      return null;
-    }
-
-    return {
-      id: desc.dynamic_id_str,
-      uid: desc.user_profile.info.uid,
-      type,
-      content,
-      images: images.length > 0 ? images : undefined,
-      publishTime: new Date(desc.timestamp * 1000),
-      url: `${this.webUrl}/opus/${desc.dynamic_id_str}`,
-      rawData: item
-    };
+    // 使用DynamicParser解析动态数据
+    return parseDynamicItems(data.items);
   }
 
   /**
@@ -327,21 +246,58 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       // 调用 Python 脚本发布评论
       // 使用 process.cwd() 获取项目根目录，确保路径正确
       const scriptPath = path.join(process.cwd(), 'src/scripts/bilibili_comment.py');
-      let command = `python "${scriptPath}" "${request.dynamicId}" "${request.content}" "${sessdata}" "${bili_jct}" "${dedeuserid}"`;
+
+      // 使用 spawn 传递参数数组，避免 shell 解析问题
+      const args = [
+        scriptPath,
+        request.dynamicId,
+        request.content,
+        sessdata,
+        bili_jct,
+        dedeuserid
+      ];
 
       // 如果有图片，添加图片路径参数
       if (request.images && request.images.length > 0) {
-        command += ` "${request.images[0]}"`;
+        args.push(request.images[0]);
       }
 
-      this.logger.info('调用Python脚本发布评论', { command });
+      this.logger.info('调用Python脚本发布评论', { scriptPath, argsCount: args.length });
 
-      const { stdout, stderr } = await execAsync(command);
+      // 使用 Promise 包装 spawn
+      const result = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+        const pythonProcess = spawn('python', args, {
+          windowsHide: true
+        });
+
+        let stdout = '';
+        let stderr = '';
+
+        pythonProcess.stdout.on('data', (data) => {
+          stdout += data.toString();
+        });
+
+        pythonProcess.stderr.on('data', (data) => {
+          stderr += data.toString();
+        });
+
+        pythonProcess.on('close', (code) => {
+          if (code === 0) {
+            resolve({ stdout, stderr });
+          } else {
+            reject(new Error(`Python脚本退出码: ${code}`));
+          }
+        });
+
+        pythonProcess.on('error', (err) => {
+          reject(err);
+        });
+      });
 
       // 输出Python脚本的日志（stderr）
-      if (stderr) {
+      if (result.stderr) {
         // 按行分割日志并逐行输出
-        const logLines = stderr.trim().split('\n');
+        const logLines = result.stderr.trim().split('\n');
         for (const line of logLines) {
           if (line.includes('[ERROR]')) {
             this.logger.error(`Python: ${line}`);
@@ -356,19 +312,19 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       }
 
       // 解析 Python 脚本的输出（stdout只包含JSON）
-      const result = JSON.parse(stdout);
+      const jsonResult = JSON.parse(result.stdout);
 
-      if (!result.success) {
-        this.logger.error('Python脚本返回错误', { result });
-        throw new AppError(`发布评论失败: ${result.message || result.error}`, 'API_ERROR', 500);
+      if (!jsonResult.success) {
+        this.logger.error('Python脚本返回错误', { result: jsonResult });
+        throw new AppError(`发布评论失败: ${jsonResult.message || jsonResult.error}`, 'API_ERROR', 500);
       }
 
-      this.logger.info('评论发布成功', { replyId: result.reply_id, imageUrl: result.image_url });
+      this.logger.info('评论发布成功', { replyId: jsonResult.reply_id, imageUrl: jsonResult.image_url });
 
       return {
-        replyId: result.reply_id,
+        replyId: jsonResult.reply_id,
         replyTime: Date.now(),
-        imageUrl: result.image_url
+        imageUrl: jsonResult.image_url
       };
     } catch (error) {
       if (error instanceof AppError) {

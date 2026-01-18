@@ -237,23 +237,42 @@ export class ReplyManager implements IReplyManager {
    */
   private async readReplyText(textPath: string): Promise<string> {
     try {
+      this.logger.debug('开始读取晚安回复文本', { textPath });
+      
       if (!fs.existsSync(textPath)) {
-        throw new Error(`晚安回复文件不存在: ${textPath}`);
+        const errorMsg = `晚安回复文件不存在: ${textPath}`;
+        this.logger.error(errorMsg, { textPath, exists: false });
+        throw new Error(errorMsg);
       }
 
+      this.logger.debug('文件存在，开始读取内容', { textPath });
+      
       const content = fs.readFileSync(textPath, 'utf8');
+      this.logger.debug('文件读取成功', { textPath, contentLength: content.length });
       
       // 提取正文部分（跳过元数据）
       const lines = content.split('\n');
       const startIndex = lines.findIndex(line => line.startsWith('---'));
       
       if (startIndex >= 0) {
-        return lines.slice(startIndex + 1).join('\n').trim();
+        const result = lines.slice(startIndex + 1).join('\n').trim();
+        this.logger.debug('提取正文成功（跳过元数据）', { textPath, resultLength: result.length });
+        return result;
       }
 
-      return content.trim();
+      const result = content.trim();
+      this.logger.debug('提取正文成功（无元数据）', { textPath, resultLength: result.length });
+      return result;
     } catch (error) {
-      this.logger.error('读取晚安回复文本失败', { error, textPath });
+      const errorInfo = {
+        textPath,
+        error: error instanceof Error ? {
+          name: error.name,
+          message: error.message,
+          stack: error.stack
+        } : String(error)
+      };
+      this.logger.error('读取晚安回复文本失败', errorInfo);
       throw error;
     }
   }

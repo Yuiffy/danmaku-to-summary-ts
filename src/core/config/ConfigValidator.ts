@@ -46,7 +46,7 @@ export class ConfigValidator {
     if (!config.bilibili) {
       errors.push({ path: 'bilibili', message: 'Bilibili configuration is required', type: 'required' });
     } else {
-      if (!config.bilibili.enabled) errors.push({ path: 'bilibili.enabled', message: 'Bilibili enabled is required', type: 'required' });
+      if (config.bilibili.enabled === undefined) errors.push({ path: 'bilibili.enabled', message: 'Bilibili enabled is required', type: 'required' });
       if (!config.bilibili.polling) errors.push({ path: 'bilibili.polling', message: 'Bilibili polling configuration is required', type: 'required' });
       if (!config.bilibili.anchors) errors.push({ path: 'bilibili.anchors', message: 'Bilibili anchors configuration is required', type: 'required' });
     }
@@ -175,6 +175,12 @@ export class ConfigValidator {
           retryDelay: 5000,
         },
         anchors: {},
+        delayedReply: {
+          enabled: false,
+          delayMinutes: 10,
+          maxRetries: 3,
+          retryDelayMinutes: 5,
+        },
       },
     };
   }

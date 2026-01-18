@@ -55,7 +55,7 @@ function buildPrompt(highlightContent, roomId) {
 
 性格：喜欢调侃、宠溺主播，有点话痨，对主播的生活琐事和梗如数家珍。
 
-语气：亲昵、幽默、像老朋友一样聊天。常用语气词（如：哈哈、捏、嘛、呜呜），会使用直播间黑话（如：老己、漂亮饭、阿肯苦力等）。
+语气：亲昵、幽默、像老朋友一样聊天。常用语气词（如：哈哈、捏、嘛、呜呜），会使用直播间弹幕黑话。
 
 【核心原则（最重要！）】
 
@@ -66,7 +66,7 @@ function buildPrompt(highlightContent, roomId) {
 【写作结构与要素】
 
 开场白：
-格式：晚安/早安${anchor}！🌙/☀️
+格式：晚安/早安xx（用昵称）！🌙/☀️
 内容：一句话总结今天直播的整体感受（如：含金量极高、含梗量爆炸、辛苦了、被治愈了等）。
 
 正文（核心内容回顾）：
@@ -80,7 +80,6 @@ function buildPrompt(highlightContent, roomId) {
 结尾（情感升华）：
 关怀：叮嘱主播注意身体（嗓子、睡眠、吃饭），不要太累。
 期待：确认下一次直播的时间（如果文档里提到了）。
-落款：—— 永远爱你的/支持你的/陪着你的${fan} + emoji
 
 字数要求：${wordLimit}字以内。
 
@@ -93,14 +92,15 @@ ${highlightContent}
 // 调用tuZi API生成文本（备用方案）
 async function generateTextWithTuZi(prompt) {
     const config = configLoader.getConfig();
-    const tuziConfig = config.aiServices?.tuZi || config.ai?.text?.tuZi || {};
+    // 优先使用 ai.text.tuZi 配置（文本生成专用），其次使用 ai.comic.tuZi（兼容旧配置）
+    const tuziConfig = config.ai?.text?.tuZi || config.aiServices?.tuZi || {};
 
     if (!configLoader.isTuZiConfigured()) {
         throw new Error('tuZi API未配置，请检查secrets.json中的apiKey');
     }
 
     console.log('🤖 调用tuZi API生成文本（Gemini超频备用方案）...');
-    const textModel = tuziConfig.textModel || tuziConfig.model || 'gemini-3-flash-preview';
+    const textModel = tuziConfig.model || 'gemini-3-flash-preview';
     console.log(`   模型: ${textModel}`);
     console.log(`   温度: ${tuziConfig.temperature}`);
 
@@ -216,15 +216,9 @@ async function generateTextWithGemini(prompt) {
             global.fetch = originalFetch;
         }
 
-        // 检查是否是429超频错误
-        const errorMessage = error.message || '';
-        const is429Error = errorMessage.includes('429') ||
-                          errorMessage.includes('Too Many Requests') ||
-                          errorMessage.includes('RESOURCE_EXHAUSTED') ||
-                          errorMessage.includes('quota');
-
-        if (is429Error && configLoader.isTuZiConfigured()) {
-            console.warn(`⚠️  Gemini API超频 (429)，尝试使用tuZi API作为备用方案...`);
+        // 不管什么 Gemini 错误，都尝试使用 tuZi API 重试
+        if (configLoader.isTuZiConfigured()) {
+            console.warn(`⚠️  Gemini API调用失败 (${error.message})，尝试使用tuZi API作为备用方案...`);
             try {
                 return await generateTextWithTuZi(prompt);
             } catch (tuziError) {
@@ -262,6 +256,12 @@ function saveGeneratedText(outputPath, text, highlightPath) {
 // 生成晚安回复
 async function generateGoodnightReply(highlightPath) {
     const config = configLoader.getConfig();
+
+    console.log(`🔍 检查AI文本生成配置...`);
+    console.log(`   aiServices?.gemini?.enabled: ${config.aiServices?.gemini?.enabled}`);
+    console.log(`   ai?.text?.enabled: ${config.ai?.text?.enabled}`);
+    console.log(`   isGeminiConfigured: ${configLoader.isGeminiConfigured()}`);
+    console.log(`   isTuZiConfigured: ${configLoader.isTuZiConfigured()}`);
 
     if (!config.aiServices?.gemini?.enabled && !config.ai?.text?.enabled) {
         console.log('ℹ️  AI文本生成功能已禁用');

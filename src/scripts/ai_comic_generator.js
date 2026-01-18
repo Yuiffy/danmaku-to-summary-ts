@@ -19,8 +19,11 @@ async function generateComicWithPython(highlightPath) {
 
     console.log(`🐍 调用Python脚本生成漫画: ${path.basename(highlightPath)}`);
 
+    // 使用正确的Python路径（优先使用环境变量，否则使用默认路径）
+    const pythonPath = process.env.PYTHON_PATH || 'D:\\develop\\Python\\python.exe';
+
     return new Promise((resolve, reject) => {
-        const pythonProcess = spawn('python', [pythonScript, highlightPath], {
+        const pythonProcess = spawn(pythonPath, [pythonScript, highlightPath], {
             stdio: 'pipe',
             env: { ...process.env, PYTHONUTF8: '1', PYTHONUNBUFFERED: '1', ROOM_ID: process.env.ROOM_ID || '' }
 

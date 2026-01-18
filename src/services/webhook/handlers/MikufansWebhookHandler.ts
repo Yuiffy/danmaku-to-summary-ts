@@ -7,6 +7,7 @@ import { getLogger } from '../../../core/logging/LogManager';
 import { ConfigProvider } from '../../../core/config/ConfigProvider';
 import { FileStabilityChecker } from '../FileStabilityChecker';
 import { DuplicateProcessorGuard } from '../DuplicateProcessorGuard';
+import { IDelayedReplyService } from '../../../services/bilibili/interfaces/IDelayedReplyService';
 
 /**
  * Mikufans Webhook处理器
@@ -20,6 +21,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   private stabilityChecker = new FileStabilityChecker();
   private duplicateGuard = new DuplicateProcessorGuard();
   private sessionFiles = new Map<string, string[]>(); // sessionId -> fileList
+  private delayedReplyService?: IDelayedReplyService;
 
 
   /**
@@ -239,8 +241,22 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     }
 
     // 启动处理流程
-    const roomId = payload.EventData?.RoomId || 'unknown';
-    await this.startProcessing(filePath, targetXml, roomId);
+    let roomId = payload.EventData?.RoomId || null;
+    
+    // 如果 payload 中没有 roomId，尝试从文件名中提取
+    if (!roomId) {
+      const fileName = path.basename(filePath);
+      // 尝试匹配 "录制-23197314-..." 或 "23197314-..." 格式
+      const match = fileName.match(/(?:录制-)?(\d+)-/);
+      if (match) {
+        roomId = match[1];
+        this.logger.info(`🔍 从文件名提取房间ID: ${roomId}`);
+      }
+    }
+    
+    // 如果仍然没有 roomId，使用 'unknown'
+    const finalRoomId = roomId || 'unknown';
+    await this.startProcessing(filePath, targetXml, finalRoomId);
   }
 
   /**
@@ -302,10 +318,13 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         this.duplicateGuard.markAsProcessed(videoPath);
       });
 
-      ps.on('close', (code: number | null) => {
+      ps.on('close', async (code: number | null) => {
         clearTimeout(timeoutId);
         this.logger.info(`Mikufans处理流程结束 (退出码: ${code}): ${path.basename(videoPath)}`);
         this.duplicateGuard.markAsProcessed(videoPath);
+        
+        // 处理完成后，检查是否需要触发延迟回复
+        await this.checkAndTriggerDelayedReply(videoPath, roomId);
       });
 
     } catch (error: any) {
@@ -326,6 +345,62 @@ export class MikufansWebhookHandler implements IWebhookHandler {
    */
   getAllSessions(): Map<string, string[]> {
     return new Map(this.sessionFiles);
+  }
+
+  /**
+   * 设置延迟回复服务
+   */
+  setDelayedReplyService(service: IDelayedReplyService): void {
+    this.delayedReplyService = service;
+    this.logger.info('延迟回复服务已设置');
+  }
+
+  /**
+   * 检查并触发延迟回复
+   */
+  private async checkAndTriggerDelayedReply(videoPath: string, roomId: string): Promise<void> {
+    if (!this.delayedReplyService) {
+      this.logger.debug('延迟回复服务未设置，跳过触发');
+      return;
+    }
+
+    if (!roomId || roomId === 'unknown') {
+      this.logger.debug('房间ID无效，跳过触发延迟回复');
+      return;
+    }
+
+    try {
+      const dir = path.dirname(videoPath);
+      const baseName = path.basename(videoPath, path.extname(videoPath));
+      
+      // 查找晚安回复文件
+      const goodnightTextPath = path.join(dir, `${baseName}_晚安回复.md`);
+      // 查找漫画文件
+      const comicImagePath = path.join(dir, `${baseName}_COMIC_FACTORY.png`);
+      
+      // 检查文件是否存在
+      const hasGoodnightText = fs.existsSync(goodnightTextPath);
+      const hasComicImage = fs.existsSync(comicImagePath);
+      
+      if (hasGoodnightText && hasComicImage) {
+        this.logger.info(`✅ 找到晚安回复和漫画文件，触发延迟回复任务`);
+        this.logger.info(`   房间ID: ${roomId}`);
+        this.logger.info(`   晚安回复: ${path.basename(goodnightTextPath)}`);
+        this.logger.info(`   漫画: ${path.basename(comicImagePath)}`);
+        
+        const taskId = await this.delayedReplyService.addTask(roomId, goodnightTextPath, comicImagePath);
+        
+        if (taskId) {
+          this.logger.info(`✅ 延迟回复任务已触发: ${taskId}`);
+        } else {
+          this.logger.info(`ℹ️  延迟回复任务未添加（可能配置未启用）`);
+        }
+      } else {
+        this.logger.debug(`未找到完整的延迟回复文件: 晚安回复=${hasGoodnightText}, 漫画=${hasComicImage}`);
+      }
+    } catch (error: any) {
+      this.logger.error(`检查并触发延迟回复失败: ${error.message}`, { error });
+    }
   }
 
   /**

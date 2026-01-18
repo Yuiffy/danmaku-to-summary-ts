@@ -129,6 +129,7 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
         log(f"[INFO] 获取动态的comment_id...")
         comment_id, comment_type = await get_dynamic_comment_id(dynamic_id, credential)
         log(f"[INFO] 获取到comment_id: {comment_id}, 评论类型: {comment_type.value}")
+        log(f"[INFO] 动态ID: {dynamic_id}")
 
         # 如果有图片，先上传图片
         pic = None
@@ -144,6 +145,7 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
 
         # 使用 comment.send_comment 函数发送评论
         log(f"[INFO] 调用B站API发送评论，oid={comment_id}, type={comment_type.value}...")
+        log(f"[INFO] 评论内容长度: {len(content)}")
         result = await comment.send_comment(
             text=content,
             oid=int(comment_id),
@@ -154,6 +156,7 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
 
         reply_id = str(result.get('rpid', ''))
         log(f"[OK] 评论发布成功，回复ID: {reply_id}")
+        log(f"[INFO] 完整返回结果: {result}")
 
         return {
             'success': True,
