@@ -400,11 +400,12 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
         character_desc = get_room_character_description(room_id)
         content_prompt = build_comic_generation_prompt(character_desc, highlight_content)
 
-        # 调用Gemini
+        # 调用Gemini（60秒超时）
         print(f"[AI] 使用Gemini生成漫画内容脚本: {model_name}")
         response = client.models.generate_content(
             model=model_name,
-            contents=content_prompt
+            contents=content_prompt,
+            timeout=60
         )
 
         if response and response.text:
@@ -614,7 +615,7 @@ def call_google_image_api(prompt: str, reference_image_path: Optional[str] = Non
                 if attempt == 0:
                     print("[WAIT] 正在通过Google API生成图像...")
 
-                # 生成图像
+                # 生成图像（60秒超时）
                 response = ai.models.generate_content(
                     model=model_name,
                     contents=image_prompt,
@@ -623,7 +624,8 @@ def call_google_image_api(prompt: str, reference_image_path: Optional[str] = Non
                         "top_p": 0.95,
                         "top_k": 40,
                     },
-                    safety_settings=google_config.get("safetySettings", [])
+                    safety_settings=google_config.get("safetySettings", []),
+                    timeout=60
                 )
 
                 # 处理响应
