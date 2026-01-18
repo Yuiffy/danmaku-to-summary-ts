@@ -381,7 +381,8 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
     for gemini_attempt in range(max_gemini_retries):
         try:
             # 导入Google GenAI (新版本)
-            import google.genai as genai
+            from google import genai
+            from google.genai import types
 
             # 获取Gemini API密钥（使用统一配置加载器）
             gemini_api_key = get_gemini_api_key()
@@ -395,7 +396,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
             gemini_config = config.get('aiServices', {}).get('gemini', {})
 
             # 创建客户端
-            client = genai.Client(api_key=gemini_api_key)
+            client = genai.Client(api_key=gemini_api_key, http_options=types.HttpOptions(timeout=60))
 
             # 设置代理 (如果需要)
             proxy_url = gemini_config.get('proxy', '')
