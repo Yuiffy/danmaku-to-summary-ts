@@ -2,11 +2,11 @@
  * 延迟回复服务实现
  */
 import * as crypto from 'crypto';
+import * as fs from 'fs';
 import { getLogger } from '../../core/logging/LogManager';
 import { IDelayedReplyService } from './interfaces/IDelayedReplyService';
 import { IDelayedReplyStore } from './interfaces/IDelayedReplyStore';
 import { IBilibiliAPIService } from './interfaces/IBilibiliAPIService';
-import { IReplyManager } from './interfaces/IReplyManager';
 import { DelayedReplyTask, BilibiliDynamic } from './interfaces/types';
 import { BilibiliConfigHelper } from './BilibiliConfigHelper';
 
@@ -30,7 +30,6 @@ export class DelayedReplyService implements IDelayedReplyService {
 
   constructor(
     private bilibiliAPI: IBilibiliAPIService,
-    private replyManager: IReplyManager,
     private store: IDelayedReplyStore
   ) {}
 
@@ -324,21 +323,24 @@ export class DelayedReplyService implements IDelayedReplyService {
         throw new Error('未找到最新动态');
       }
 
-      // 创建回复任务
-      const replyTask = {
-        taskId: generateUUID(),
-        dynamic: latestDynamic,
-        textPath: task.goodnightTextPath,
-        imagePath: task.comicImagePath || '',
-        retryCount: 0,
-        createTime: new Date()
-      };
+      // 直接发布评论，而不是通过ReplyManager
+      // 读取晚安回复文本
+      const replyText = await this.readReplyText(task.goodnightTextPath);
+      if (!replyText) {
+        throw new Error('晚安回复文本为空');
+      }
 
-      // 执行回复
-      await this.replyManager.addTask(replyTask);
-      
-      // 立即处理回复任务
-      await this.replyManager.processTask(replyTask.taskId);
+      // 发布评论
+      const result = await this.bilibiliAPI.publishComment({
+        dynamicId: latestDynamic.id,
+        content: replyText,
+        images: task.comicImagePath && (await this.checkFileExists(task.comicImagePath)) ? [task.comicImagePath] : undefined
+      });
+
+      this.logger.info(`延迟回复评论发布成功: ${task.taskId}`, {
+        dynamicId: String(latestDynamic.id),
+        replyId: String(result.replyId)
+      });
 
       // 更新任务状态
       task.status = 'completed';
@@ -381,6 +383,63 @@ export class DelayedReplyService implements IDelayedReplyService {
 
         this.logger.info(`准备重试延迟回复: ${task.taskId} (${task.retryCount}/${maxRetries})`);
       }
+    }
+  }
+
+  /**
+   * 读取晚安回复文本
+   */
+  private async readReplyText(textPath: string): Promise<string> {
+    try {
+      this.logger.debug('开始读取晚安回复文本', { textPath });
+      
+      if (!fs.existsSync(textPath)) {
+        const errorMsg = `晚安回复文件不存在: ${textPath}`;
+        this.logger.error(errorMsg, { textPath, exists: false });
+        throw new Error(errorMsg);
+      }
+
+      this.logger.debug('文件存在，开始读取内容', { textPath });
+      
+      const content = fs.readFileSync(textPath, 'utf8');
+      this.logger.debug('文件读取成功', { textPath, contentLength: content.length });
+      
+      // 提取正文部分（跳过元数据）
+      const lines = content.split('\n');
+      const startIndex = lines.findIndex(line => line.startsWith('---'));
+      
+      if (startIndex >= 0) {
+        const result = lines.slice(startIndex + 1).join('\n').trim();
+        this.logger.debug('提取正文成功（跳过元数据）', { textPath, resultLength: result.length });
+        return result;
+      }
+
+      const result = content.trim();
+      this.logger.debug('提取正文成功（无元数据）', { textPath, resultLength: result.length });
+      return result;
+    } catch (error) {
+      const errorInfo = {
+        textPath,
+        error: error instanceof Error ? {
+          name: error.name,
+          message: error.message,
+          stack: error.stack
+        } : String(error)
+      };
+      this.logger.error('读取晚安回复文本失败', errorInfo);
+      throw error;
+    }
+  }
+
+  /**
+   * 检查文件是否存在
+   */
+  private async checkFileExists(filePath: string): Promise<boolean> {
+    try {
+      return fs.existsSync(filePath);
+    } catch (error) {
+      this.logger.error('检查文件存在性失败', { filePath, error });
+      return false;
     }
   }
 

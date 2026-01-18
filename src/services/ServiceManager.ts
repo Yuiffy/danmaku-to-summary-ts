@@ -569,10 +569,9 @@ export class ServiceManager {
 
     // 延迟回复服务
     await this.initializeService('delayed-reply', async () => {
-      if (this.bilibiliAPIService && this.replyManager && this.delayedReplyStore) {
+      if (this.bilibiliAPIService && this.delayedReplyStore) {
         this.delayedReplyService = new DelayedReplyService(
           this.bilibiliAPIService,
-          this.replyManager,
           this.delayedReplyStore
         );
       }
