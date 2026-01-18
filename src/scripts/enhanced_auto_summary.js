@@ -290,62 +290,12 @@ async function generateAiComic(highlightPath) {
     return null;
 }
 
-// 触发延迟回复任务
+// 触发延迟回复任务（已废弃，现在由 MikufansWebhookHandler 直接调用）
 async function triggerDelayedReply(roomId, goodnightTextPath, comicImagePath) {
-    try {
-        const config = configLoader.getConfig();
-        const webhookPort = config.webhook?.port || 15121;
-        const webhookHost = config.webhook?.host || 'localhost';
-
-        const postData = JSON.stringify({
-            roomId: String(roomId),
-            goodnightTextPath,
-            comicImagePath
-        });
-
-        const options = {
-            hostname: webhookHost,
-            port: webhookPort,
-            path: '/api/bilibili/delayed-reply',
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Content-Length': Buffer.byteLength(postData)
-            }
-        };
-
-        return new Promise((resolve) => {
-            const req = http.request(options, (res) => {
-                let data = '';
-                res.on('data', (chunk) => {
-                    data += chunk;
-                });
-                res.on('end', () => {
-                    try {
-                        const response = JSON.parse(data);
-                        if (response.success) {
-                            console.log(`✅ 延迟回复任务已触发: ${response.data.taskId || '配置未启用'}`);
-                        } else {
-                            console.log(`ℹ️  延迟回复任务未触发: ${response.error || response.data?.message}`);
-                        }
-                    } catch (e) {
-                        console.log(`⚠️  解析延迟回复响应失败: ${e.message}`);
-                    }
-                    resolve();
-                });
-            });
-
-            req.on('error', (error) => {
-                console.log(`⚠️  触发延迟回复失败: ${error.message}`);
-                resolve();
-            });
-
-            req.write(postData);
-            req.end();
-        });
-    } catch (error) {
-        console.log(`⚠️  触发延迟回复异常: ${error.message}`);
-    }
+    console.log(`ℹ️  延迟回复触发已移至父进程，此函数已废弃`);
+    console.log(`   房间ID: ${roomId}`);
+    console.log(`   晚安回复: ${goodnightTextPath}`);
+    console.log(`   漫画: ${comicImagePath}`);
 }
 
 // 检查房间是否启用AI功能
@@ -565,14 +515,8 @@ const main = async () => {
                 console.log('ℹ️  跳过AI漫画生成（房间设置禁用）');
             }
 
-            // 触发延迟回复任务
-            console.log(`🔍 检查延迟回复触发条件: roomId=${finalRoomId}, goodnightTextPath=${goodnightTextPath}, comicImagePath=${comicImagePath}`);
-            if (finalRoomId && goodnightTextPath && comicImagePath) {
-                console.log(`✅ 满足延迟回复触发条件，开始触发...`);
-                await triggerDelayedReply(finalRoomId, goodnightTextPath, comicImagePath);
-            } else {
-                console.log(`⏭️  不满足延迟回复触发条件，跳过。（roomId=${finalRoomId}, goodnightTextPath=${goodnightTextPath ?? '无'}, comicImagePath=${comicImagePath ?? '无'}）`);
-            }
+            // 触发延迟回复任务（现在由父进程 MikufansWebhookHandler 处理）
+            console.log(`🔍 延迟回复将由父进程处理: roomId=${finalRoomId}, goodnightTextPath=${goodnightTextPath}, comicImagePath=${comicImagePath}`);
         } else {
             console.log('⚠️  未找到 do_fusion_summary 生成的 AI_HIGHLIGHT 文件');
             console.log(`   generatedHighlightFile: ${generatedHighlightFile}`);

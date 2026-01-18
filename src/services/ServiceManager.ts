@@ -530,7 +530,7 @@ export class ServiceManager {
       }
     });
 
-    // 将延迟回复服务注入到Webhook服务
+    // 将延迟回复服务注入到WebhookService
     if (this.webhookService && this.delayedReplyService) {
       this.webhookService.setDelayedReplyService(this.delayedReplyService);
       this.getLogger().info('延迟回复服务已注入到WebhookService');
@@ -538,19 +538,19 @@ export class ServiceManager {
       this.getLogger().warn('延迟回复服务注入失败: webhookService=' + !!this.webhookService + ', delayedReplyService=' + !!this.delayedReplyService);
     }
 
-    // 将延迟回复服务注入到BilibiliAPIHandler
+    // 将延迟回复服务注入到各个Handler
     if (this.webhookService && this.delayedReplyService) {
       const handlers = this.webhookService.getHandlers();
       this.getLogger().info('当前注册的handlers: ' + handlers.map(h => h.name).join(', '));
       for (const handler of handlers) {
         this.getLogger().info('检查handler: ' + handler.name + ', has setDelayedReplyService: ' + ('setDelayedReplyService' in handler));
-        if (handler.name === 'Bilibili API Handler' && 'setDelayedReplyService' in handler) {
+        if ('setDelayedReplyService' in handler) {
           (handler as any).setDelayedReplyService(this.delayedReplyService);
-          this.getLogger().info('延迟回复服务已注入到BilibiliAPIHandler');
+          this.getLogger().info('延迟回复服务已注入到: ' + handler.name);
         }
       }
     } else {
-      this.getLogger().warn('延迟回复服务注入到BilibiliAPIHandler失败: webhookService=' + !!this.webhookService + ', delayedReplyService=' + !!this.delayedReplyService);
+      this.getLogger().warn('延迟回复服务注入到Handler失败: webhookService=' + !!this.webhookService + ', delayedReplyService=' + !!this.delayedReplyService);
     }
   }
 
