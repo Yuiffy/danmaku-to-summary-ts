@@ -98,12 +98,15 @@ export class DelayedReplyService implements IDelayedReplyService {
         return '';
       }
 
-      // 检查主播配置
+      // 检查主播配置 - 优先从 ai.roomSettings 检查
+      const roomConfig = (config.ai as any)?.roomSettings?.[roomId] as any;
       const anchorConfig = Object.values(bilibiliConfig.anchors || {}).find(
         (a: any) => a.roomId === roomId
       ) as any;
 
-      if (!anchorConfig || !anchorConfig.delayedReplyEnabled) {
+      const delayedReplyEnabled = roomConfig?.enableDelayedReply || anchorConfig?.delayedReplyEnabled;
+
+      if (!delayedReplyEnabled) {
         this.logger.info('主播未启用延迟回复，跳过添加任务', { roomId });
         return '';
       }

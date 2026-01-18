@@ -139,7 +139,8 @@
         "anchorName": "莉蔻Liko",
         "fanName": "胡萝卜",
         "enableTextGeneration": true,
-        "enableComicGeneration": true
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
       },
       "1986461465": {
         "audioOnly": true,
@@ -190,7 +191,7 @@
     },
     "anchors": {},
     "delayedReply": {
-      "enabled": false,
+      "enabled": true,
       "delayMinutes": 10,
       "maxRetries": 3,
       "retryDelayMinutes": 5
