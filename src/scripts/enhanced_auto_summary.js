@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const crypto = require('crypto');
+const http = require('http');
 
 // 导入新模块
 const configLoader = require('./config-loader');
@@ -289,6 +290,64 @@ async function generateAiComic(highlightPath) {
     return null;
 }
 
+// 触发延迟回复任务
+async function triggerDelayedReply(roomId, goodnightTextPath, comicImagePath) {
+    try {
+        const config = configLoader.getConfig();
+        const webhookPort = config.webhook?.port || 15121;
+        const webhookHost = config.webhook?.host || 'localhost';
+
+        const postData = JSON.stringify({
+            roomId: String(roomId),
+            goodnightTextPath,
+            comicImagePath
+        });
+
+        const options = {
+            hostname: webhookHost,
+            port: webhookPort,
+            path: '/api/bilibili/delayed-reply',
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(postData)
+            }
+        };
+
+        return new Promise((resolve) => {
+            const req = http.request(options, (res) => {
+                let data = '';
+                res.on('data', (chunk) => {
+                    data += chunk;
+                });
+                res.on('end', () => {
+                    try {
+                        const response = JSON.parse(data);
+                        if (response.success) {
+                            console.log(`✅ 延迟回复任务已触发: ${response.data.taskId || '配置未启用'}`);
+                        } else {
+                            console.log(`ℹ️  延迟回复任务未触发: ${response.error || response.data?.message}`);
+                        }
+                    } catch (e) {
+                        console.log(`⚠️  解析延迟回复响应失败: ${e.message}`);
+                    }
+                    resolve();
+                });
+            });
+
+            req.on('error', (error) => {
+                console.log(`⚠️  触发延迟回复失败: ${error.message}`);
+                resolve();
+            });
+
+            req.write(postData);
+            req.end();
+        });
+    } catch (error) {
+        console.log(`⚠️  触发延迟回复异常: ${error.message}`);
+    }
+}
+
 // 检查房间是否启用AI功能
 function shouldGenerateAiForRoom(roomId) {
     const config = configLoader.getConfig();
@@ -483,17 +542,24 @@ const main = async () => {
             }
             
             // AI文本生成
+            let goodnightTextPath = null;
             if (aiSettings.text) {
-                await generateAiText(highlightPath);
+                goodnightTextPath = await generateAiText(highlightPath);
             } else {
                 console.log('ℹ️  跳过AI文本生成（房间设置禁用）');
             }
             
             // AI漫画生成
+            let comicImagePath = null;
             if (aiSettings.comic) {
-                await generateAiComic(highlightPath);
+                comicImagePath = await generateAiComic(highlightPath);
             } else {
                 console.log('ℹ️  跳过AI漫画生成（房间设置禁用）');
+            }
+
+            // 触发延迟回复任务
+            if (roomId && goodnightTextPath && comicImagePath) {
+                await triggerDelayedReply(roomId, goodnightTextPath, comicImagePath);
             }
         } else {
             console.log('⚠️  未找到 do_fusion_summary 生成的 AI_HIGHLIGHT 文件');

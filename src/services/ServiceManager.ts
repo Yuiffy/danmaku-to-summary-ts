@@ -123,6 +123,11 @@ export class ServiceManager {
       if (this.webhookService) {
         await this.startService('webhook', () => this.webhookService!.start());
       }
+
+      // 启动延迟回复服务
+      if (this.delayedReplyService && 'start' in this.delayedReplyService) {
+        await this.startService('delayed-reply', () => (this.delayedReplyService as any).start());
+      }
       
       // 其他服务按需启动
       // 音频处理服务、AI生成服务等通常是按需使用，不需要常驻启动
@@ -528,6 +533,17 @@ export class ServiceManager {
     // 将延迟回复服务注入到Webhook服务
     if (this.webhookService && this.delayedReplyService) {
       this.webhookService.setDelayedReplyService(this.delayedReplyService);
+    }
+
+    // 将延迟回复服务注入到BilibiliAPIHandler
+    if (this.webhookService && this.delayedReplyService) {
+      const handlers = this.webhookService.getHandlers();
+      for (const handler of handlers) {
+        if (handler.name === 'Bilibili API Handler' && 'setDelayedReplyService' in handler) {
+          (handler as any).setDelayedReplyService(this.delayedReplyService);
+          this.getLogger().info('延迟回复服务已注入到BilibiliAPIHandler');
+        }
+      }
     }
   }
 

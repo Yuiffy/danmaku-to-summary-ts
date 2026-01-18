@@ -6,6 +6,7 @@ import { IWebhookHandler } from '../IWebhookService';
 import { getLogger } from '../../../core/logging/LogManager';
 import { ConfigProvider } from '../../../core/config/ConfigProvider';
 import { BilibiliAPIService } from '../../../services/bilibili/BilibiliAPIService';
+import { IDelayedReplyService } from '../../../services/bilibili/interfaces/IDelayedReplyService';
 
 /**
  * B站API处理器 - 提供B站动态回复相关的HTTP接口
@@ -18,6 +19,7 @@ export class BilibiliAPIHandler implements IWebhookHandler {
   private logger = getLogger('BilibiliAPIHandler');
   private bilibiliAPI: BilibiliAPIService;
   private upload: multer.Multer;
+  private delayedReplyService?: IDelayedReplyService;
 
   constructor() {
     // 初始化B站API服务
@@ -80,6 +82,9 @@ export class BilibiliAPIHandler implements IWebhookHandler {
 
     // 获取配置信息
     app.get(`${this.path}/config`, this.handleGetConfig.bind(this));
+
+    // 触发延迟回复任务
+    app.post(`${this.path}/delayed-reply`, this.handleTriggerDelayedReply.bind(this));
 
     this.logger.info(`注册${this.name}处理器，路径: ${this.path}`);
   }
@@ -400,6 +405,68 @@ export class BilibiliAPIHandler implements IWebhookHandler {
         error: error.message || '获取配置失败'
       });
     }
+  }
+
+  /**
+   * 处理触发延迟回复请求
+   */
+  private async handleTriggerDelayedReply(req: Request, res: Response): Promise<void> {
+    try {
+      const { roomId, goodnightTextPath, comicImagePath } = req.body;
+
+      if (!roomId || !goodnightTextPath) {
+        res.status(400).json({
+          success: false,
+          error: '缺少必要参数: roomId, goodnightTextPath'
+        });
+        return;
+      }
+
+      if (!this.delayedReplyService) {
+        this.logger.warn('延迟回复服务未设置');
+        res.status(503).json({
+          success: false,
+          error: '延迟回复服务未设置'
+        });
+        return;
+      }
+
+      this.logger.info(`触发延迟回复: roomId=${roomId}, goodnightTextPath=${goodnightTextPath}`);
+
+      const taskId = await this.delayedReplyService.addTask(roomId, goodnightTextPath, comicImagePath);
+
+      if (taskId) {
+        res.json({
+          success: true,
+          data: {
+            taskId,
+            message: '延迟回复任务已添加'
+          }
+        });
+      } else {
+        res.json({
+          success: true,
+          data: {
+            taskId: null,
+            message: '延迟回复任务未添加（可能配置未启用）'
+          }
+        });
+      }
+    } catch (error: any) {
+      this.logger.error('触发延迟回复失败', { error });
+      res.status(500).json({
+        success: false,
+        error: error.message || '触发延迟回复失败'
+      });
+    }
+  }
+
+  /**
+   * 设置延迟回复服务
+   */
+  setDelayedReplyService(service: IDelayedReplyService): void {
+    this.delayedReplyService = service;
+    this.logger.info('延迟回复服务已设置');
   }
 
   /**

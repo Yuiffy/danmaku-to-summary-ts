@@ -165,7 +165,7 @@
       },
         "23197314": {
         "audioOnly": true,
-        "characterDescription": "飞天狙想要努力变胖，戴着眼镜的男性骷髅兵主播",
+        "characterDescription": "飞天狙想要努力变胖，戴着眼镜的男性瘦瘦的主播",
         "anchorName": "狙神",
         "fanName": "狙奴",
         "enableTextGeneration": true,
@@ -204,7 +204,7 @@
     }
   },
   "bilibili": {
-    "enabled": false,
+    "enabled": true,
     "polling": {
       "interval": 60000,
       "maxRetries": 3,
