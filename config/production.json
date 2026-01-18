@@ -104,15 +104,6 @@
         "enableComicGeneration": true,
         "enableDelayedReply": true
       },
-      "545068": {
-        "audioOnly": false,
-        "referenceImage": "public/reference_images/栞栞新衣_舰长礼物长图里截图.png",
-        "characterDescription": "笑笑SunYalong（戴黑框眼镜的中年男子，发际线较高或光头，穿着黑色T恤，表情滑稽丰富，经常张嘴大笑），德云色（背景通常有电竞椅或两个人）",
-        "anchorName": "老实憨厚的笑笑",
-        "fanName": "色友",
-        "enableTextGeneration": true,
-        "enableComicGeneration": true
-      },
       "26966466": {
         "audioOnly": true,
         "referenceImage": "public/reference_images/栞栞新衣_舰长礼物长图里截图.png",
@@ -120,7 +111,55 @@
         "anchorName": "栞栞Shiori",
         "fanName": "獭獭栞",
         "enableTextGeneration": true,
-        "enableComicGeneration": true
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
+      },
+      "31368705": {
+        "audioOnly": true,
+        "characterDescription": "米汀Nagisa，银发灰瞳，戴帽子的女性推理社社员",
+        "anchorName": "米米",
+        "fanName": "旁汀生",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
+      },
+      "22470216": {
+        "audioOnly": true,
+        "characterDescription": "花礼Harei，黑发蓝瞳鼠耳的女生",
+        "anchorName": "礼礼",
+        "fanName": "猫",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true,
+        "wordLimit": 800
+      },
+      "23260993": {
+        "audioOnly": true,
+        "characterDescription": "瑞娅_Rhea，白发紫瞳的北欧魔法学院少女",
+        "anchorName": "瑞瑞",
+        "fanName": "瑞世糖",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true,
+        "wordLimit": 400
+      },
+      "1967216004": {
+        "audioOnly": true,
+        "characterDescription": "三理Mit3uri，淡紫发戴着挡风镜的实验室少女",
+        "anchorName": "三理",
+        "fanName": "理电池",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
+      },
+      "1820703922": {
+        "audioOnly": true,
+        "characterDescription": "悠亚Yua，银发蓝瞳的喜欢企鹅的女生",
+        "anchorName": "小悠",
+        "fanName": "悠悠球",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
       },
       "21756924": {
         "audioOnly": true,
