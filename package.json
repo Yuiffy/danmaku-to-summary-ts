@@ -6,8 +6,10 @@
   "main": "dist/app/main.js",
   "types": "dist/app/main.d.ts",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
+    "dev": "node dist/app/main.js --port 12522 --host 0.0.0.0",
+    "build": "tsc --project tsconfig.build.json",
+    "dev:next": "next dev",
+    "build:next": "next build",
     "start": "next start",
     "lint": "next lint",
     "test": "jest",

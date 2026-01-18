@@ -12,6 +12,7 @@
 - **音频处理**：自动将音频专用房间的视频转换为音频文件
 - **字幕融合**：分析弹幕文件，提取高光时刻和总结
 - **AI文本生成**：使用Gemini/OpenAI API生成晚安回复和总结
+- **B站动态回复**：自动检测主播动态并回复（支持延迟回复）
 - **服务管理**：统一的启动、停止和状态管理
 - **配置管理**：分层配置系统，支持环境特定配置
 
@@ -31,6 +32,7 @@ danmaku-to-summary-ts/
 │   │   ├── webhook/          # Webhook服务
 │   │   ├── audio/            # 音频处理服务
 │   │   ├── ai/               # AI生成服务
+│   │   ├── bilibili/         # B站动态回复服务
 │   │   ├── fusion/           # 字幕融合服务（待实现）
 │   │   └── ServiceManager.ts # 服务管理器
 │   └── scripts/              # 原有脚本（兼容性保留）
@@ -164,6 +166,29 @@ interface AppConfig {
     };
     roomSettings: Record<string, RoomAIConfig>; // 房间特定配置
   };
+  bilibili: {
+    enabled: boolean;                // 是否启用B站动态回复
+    cookie: string;                  // B站Cookie
+    csrf: string;                    // B站CSRF Token
+    polling: {
+      interval: number;              // 轮询间隔（毫秒）
+      maxRetries: number;            // 最大重试次数
+      retryDelay: number;            // 重试延迟（毫秒）
+    };
+    anchors: Record<string, {
+      uid: string;                   // 主播UID
+      name: string;                  // 主播名称
+      roomId?: string;               // 房间ID
+      enabled: boolean;              // 是否启用
+      delayedReplyEnabled?: boolean;  // 是否启用延迟回复
+    }>;
+    delayedReply: {
+      enabled: boolean;              // 是否启用延迟回复
+      delayMinutes: number;          // 延迟时间（分钟）
+      maxRetries: number;            // 最大重试次数
+      retryDelayMinutes: number;     // 重试延迟（分钟）
+    };
+  };
   // ... 其他配置
 }
 ```
@@ -187,6 +212,18 @@ interface AppConfig {
   - 文件关闭
   - 会话结束
 
+### B站动态回复API
+
+- **健康检查**: `GET http://localhost:15121/api/bilibili/health`
+- **检查Cookie**: `GET http://localhost:15121/api/bilibili/check-cookie`
+- **获取动态（UID）**: `GET http://localhost:15121/api/bilibili/dynamics/:uid`
+- **获取动态（房间ID）**: `GET http://localhost:15121/api/bilibili/room/:roomId/dynamics`
+- **发布评论**: `POST http://localhost:15121/api/bilibili/comment`
+- **上传图片**: `POST http://localhost:15121/api/bilibili/upload`
+- **发布带图片评论**: `POST http://localhost:15121/api/bilibili/comment-with-image`
+- **获取配置**: `GET http://localhost:15121/api/bilibili/config`
+- **触发延迟回复**: `POST http://localhost:15121/api/bilibili/delayed-reply`
+
 ## 🔄 处理流程
 
 1. **文件接收**：Webhook接收录播姬事件
@@ -195,7 +232,10 @@ interface AppConfig {
 4. **音频处理**（如适用）：转换音频专用房间的视频
 5. **字幕融合**：分析弹幕，提取高光时刻
 6. **AI生成**：生成晚安回复和总结
-7. **结果输出**：保存处理结果到指定目录
+7. **B站动态回复**：
+   - 延迟回复：直播结束后延迟指定时间回复最新动态
+   - 动态轮询：定期轮询主播动态，发现新动态后自动回复
+8. **结果输出**：保存处理结果到指定目录
 
 ## 🧪 测试
 
@@ -529,6 +569,7 @@ tail -f logs/error.log
 
 - [架构设计文档](plans/ai_summary_enhancement_plan.md)
 - [Webhook增强计划](plans/webhook_enhancement_plan.md)
+- [B站动态回复计划](plans/bilibili_dynamic_reply_plan.md)
 - [配置参考](src/core/config/README.md)
 - [API文档](docs/api.md)
 

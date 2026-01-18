@@ -336,6 +336,9 @@ export class DelayedReplyService implements IDelayedReplyService {
 
       // 执行回复
       await this.replyManager.addTask(replyTask);
+      
+      // 立即处理回复任务
+      await this.replyManager.processTask(replyTask.taskId);
 
       // 更新任务状态
       task.status = 'completed';
