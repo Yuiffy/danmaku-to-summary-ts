@@ -375,7 +375,8 @@ function shouldGenerateAiForRoom(roomId) {
 
 // 从文件名提取房间ID
 function extractRoomIdFromFilename(filename) {
-    const match = filename.match(/^(\d+)_/);
+    // 尝试匹配 "录制-23197314-..." 或 "23197314-..." 格式
+    const match = filename.match(/(?:录制-)?(\d+)-/);
     return match ? parseInt(match[1]) : null;
 }
 
@@ -499,7 +500,8 @@ const main = async () => {
         if (generatedHighlightFile && fs.existsSync(generatedHighlightFile)) {
             const highlightPath = generatedHighlightFile;
             const highlightFile = path.basename(highlightPath);
-            const roomId = extractRoomIdFromFilename(highlightFile);
+            // 优先使用环境变量中的 roomId，如果没有再从文件名提取
+            const finalRoomId = roomId || extractRoomIdFromFilename(highlightFile);
             
             console.log(`📌 处理 do_fusion_summary 生成的文件: ${highlightFile}`);
             console.log(`\n--- 处理: ${highlightFile} ---`);
@@ -537,9 +539,9 @@ const main = async () => {
             }
             
             // 检查房间AI设置
-            const aiSettings = roomId ? shouldGenerateAiForRoom(roomId) : { text: true, comic: true };
+            const aiSettings = finalRoomId ? shouldGenerateAiForRoom(finalRoomId) : { text: true, comic: true };
             
-            console.log(`🏠 房间ID: ${roomId}`);
+            console.log(`🏠 房间ID: ${finalRoomId}`);
             console.log(`   AI文本生成: ${aiSettings.text ? '启用' : '禁用'}`);
             console.log(`   AI漫画生成: ${aiSettings.comic ? '启用' : '禁用'}`);
             
@@ -564,12 +566,12 @@ const main = async () => {
             }
 
             // 触发延迟回复任务
-            console.log(`🔍 检查延迟回复触发条件: roomId=${roomId}, goodnightTextPath=${goodnightTextPath}, comicImagePath=${comicImagePath}`);
-            if (roomId && goodnightTextPath && comicImagePath) {
+            console.log(`🔍 检查延迟回复触发条件: roomId=${finalRoomId}, goodnightTextPath=${goodnightTextPath}, comicImagePath=${comicImagePath}`);
+            if (finalRoomId && goodnightTextPath && comicImagePath) {
                 console.log(`✅ 满足延迟回复触发条件，开始触发...`);
-                await triggerDelayedReply(roomId, goodnightTextPath, comicImagePath);
+                await triggerDelayedReply(finalRoomId, goodnightTextPath, comicImagePath);
             } else {
-                console.log(`⏭️  不满足延迟回复触发条件，跳过。（roomId=${roomId}, goodnightTextPath=${goodnightTextPath ?? '无'}, comicImagePath=${comicImagePath ?? '无'}）`);
+                console.log(`⏭️  不满足延迟回复触发条件，跳过。（roomId=${finalRoomId}, goodnightTextPath=${goodnightTextPath ?? '无'}, comicImagePath=${comicImagePath ?? '无'}）`);
             }
         } else {
             console.log('⚠️  未找到 do_fusion_summary 生成的 AI_HIGHLIGHT 文件');

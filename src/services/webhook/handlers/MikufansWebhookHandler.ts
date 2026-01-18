@@ -239,8 +239,22 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     }
 
     // 启动处理流程
-    const roomId = payload.EventData?.RoomId || 'unknown';
-    await this.startProcessing(filePath, targetXml, roomId);
+    let roomId = payload.EventData?.RoomId || null;
+    
+    // 如果 payload 中没有 roomId，尝试从文件名中提取
+    if (!roomId) {
+      const fileName = path.basename(filePath);
+      // 尝试匹配 "录制-23197314-..." 或 "23197314-..." 格式
+      const match = fileName.match(/(?:录制-)?(\d+)-/);
+      if (match) {
+        roomId = match[1];
+        this.logger.info(`🔍 从文件名提取房间ID: ${roomId}`);
+      }
+    }
+    
+    // 如果仍然没有 roomId，使用 'unknown'
+    const finalRoomId = roomId || 'unknown';
+    await this.startProcessing(filePath, targetXml, finalRoomId);
   }
 
   /**
