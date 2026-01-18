@@ -10,35 +10,64 @@ import sys
 import io
 
 # 禁用输出缓冲，确保日志实时输出到Node.js
-# 添加异常处理，防止stdout/stderr已关闭的情况
-try:
-    if hasattr(sys.stdout, 'buffer') and not sys.stdout.closed:
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
-    if hasattr(sys.stderr, 'buffer') and not sys.stderr.closed:
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', line_buffering=True)
-except (ValueError, AttributeError, OSError) as e:
-    # 如果stdout/stderr已关闭或无法访问，尝试使用原始流
-    pass
+# 保存原始的stdout/stderr，以便在包装失败时使用
+_original_stdout = sys.stdout
+_original_stderr = sys.stderr
 
-# 创建安全的打印函数，防止在stdout/stderr关闭时崩溃
+# 创建安全的打印函数，确保日志能够输出
 def safe_print(*args, **kwargs):
-    """安全的打印函数，在stdout/stderr不可用时静默失败"""
+    """安全的打印函数，尝试多种方式输出日志"""
+    message = ' '.join(str(arg) for arg in args)
+    
+    # 尝试1: 使用原始stdout
+    try:
+        if not _original_stdout.closed:
+            _original_stdout.write(message + '\n')
+            _original_stdout.flush()
+            return
+    except (ValueError, OSError, AttributeError):
+        pass
+    
+    # 尝试2: 使用内置print
     try:
         __builtins__.print(*args, **kwargs)
+        return
     except (ValueError, OSError, AttributeError):
-        # stdout/stderr已关闭或不可用，静默忽略
+        pass
+    
+    # 尝试3: 直接写入sys.stdout
+    try:
+        if hasattr(sys.stdout, 'write') and not sys.stdout.closed:
+            sys.stdout.write(message + '\n')
+            sys.stdout.flush()
+            return
+    except (ValueError, OSError, AttributeError):
+        pass
+    
+    # 尝试4: 写入stderr作为最后手段
+    try:
+        if hasattr(sys.stderr, 'write') and not sys.stderr.closed:
+            sys.stderr.write(message + '\n')
+            sys.stderr.flush()
+            return
+    except (ValueError, OSError, AttributeError):
         pass
 
 # 创建安全的traceback打印函数
 def safe_print_exc():
-    """安全的traceback打印函数，在stderr不可用时静默失败"""
+    """安全的traceback打印函数"""
+    import traceback as tb
     try:
-        traceback.print_exc()
+        tb.print_exc(file=_original_stderr)
     except (ValueError, OSError, AttributeError):
-        # stderr已关闭或不可用，静默忽略
-        pass
+        # 尝试使用原始stderr
+        try:
+            _original_stderr.write(str(tb.format_exc()) + '\n')
+            _original_stderr.flush()
+        except:
+            pass
 
-# 全局替换内置print函数，防止I/O错误导致崩溃
+# 全局替换内置print函数
 print = safe_print
 
 import json
@@ -47,7 +76,7 @@ import base64
 import requests
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
-import traceback
+import traceback as tb
 import subprocess
 import shutil
 
@@ -67,10 +96,14 @@ def load_config() -> Dict[str, Any]:
     config = get_config()
     
     # 为了向后兼容，构建 aiServices 结构
+    # 注意：aiServices.gemini 来自 ai.text.gemini（文本生成）
+    #       aiServices.tuZi 来自 ai.comic.tuZi（图像生成）
+    #       aiServices.googleImage 来自 ai.comic.googleImage（图像生成）
     legacy_config = {
         "aiServices": {
             "gemini": config.get('ai', {}).get('text', {}).get('gemini', {}),
             "tuZi": config.get('ai', {}).get('comic', {}).get('tuZi', {}),
+            "googleImage": config.get('ai', {}).get('comic', {}).get('googleImage', {}),
             "defaultReferenceImage": config.get('ai', {}).get('defaultReferenceImage', ''),
             "defaultCharacterDescription": config.get('ai', {}).get('defaultCharacterDescription', ''),
             "defaultNames": config.get('ai', {}).get('defaultNames', {})
@@ -269,6 +302,7 @@ def build_comic_prompt(highlight_content: str, reference_image_path: Optional[st
     is_generated = False
     if existing_comic and existing_comic.strip() != "":
         comic_content = existing_comic
+        is_generated = True  # 复用已有脚本也算成功，允许继续生成图像
     else:
         comic_content, is_generated = generate_comic_content_with_ai(highlight_content, room_id=room_id)
 
@@ -1081,7 +1115,8 @@ def generate_comic_from_highlight(highlight_path: str) -> Optional[str]:
     config = load_config()
     
     # 设置API启用状态
-    use_google = config["aiServices"].get("gemini", {}).get("enabled", False)
+    # 注意：这里检查的是图像生成API的启用状态，不是文本生成API
+    use_google = config["aiServices"].get("googleImage", {}).get("enabled", False)
     use_tuzi = config["aiServices"].get("tuZi", {}).get("enabled", False)
     
     try:
@@ -1157,6 +1192,10 @@ def generate_comic_from_highlight(highlight_path: str) -> Optional[str]:
         if use_google:
             print("[GOOGLE] 使用Google图像生成API...")
             comic_result = call_google_image_api(prompt, reference_image_path)
+            if comic_result:
+                print(f"[DEBUG] Google API返回结果: {comic_result}")
+            else:
+                print("[DEBUG] Google API返回None")
 
         # 2. 如果Google失败，尝试tu-zi.com作为最终备用方案
         if not comic_result and use_tuzi:

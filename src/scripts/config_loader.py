@@ -13,25 +13,50 @@ from typing import Dict, Any, Optional
 
 # 禁用输出缓冲，确保日志实时输出到Node.js
 import io
-try:
-    if hasattr(sys.stdout, 'buffer') and not sys.stdout.closed:
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
-    if hasattr(sys.stderr, 'buffer') and not sys.stderr.closed:
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', line_buffering=True)
-except (ValueError, AttributeError, OSError):
-    # 如果stdout/stderr已关闭或无法访问，使用原始流
-    pass
+# 保存原始的stdout/stderr，以便在包装失败时使用
+_original_stdout = sys.stdout
+_original_stderr = sys.stderr
 
-# 创建安全的打印函数，防止在stdout/stderr关闭时崩溃
+# 创建安全的打印函数，确保日志能够输出
 def safe_print(*args, **kwargs):
-    """安全的打印函数，在stdout/stderr不可用时静默失败"""
+    """安全的打印函数，尝试多种方式输出日志"""
+    message = ' '.join(str(arg) for arg in args)
+    
+    # 尝试1: 使用原始stdout
+    try:
+        if not _original_stdout.closed:
+            _original_stdout.write(message + '\n')
+            _original_stdout.flush()
+            return
+    except (ValueError, OSError, AttributeError):
+        pass
+    
+    # 尝试2: 使用内置print
     try:
         __builtins__.print(*args, **kwargs)
+        return
     except (ValueError, OSError, AttributeError):
-        # stdout/stderr已关闭或不可用，静默忽略
+        pass
+    
+    # 尝试3: 直接写入sys.stdout
+    try:
+        if hasattr(sys.stdout, 'write') and not sys.stdout.closed:
+            sys.stdout.write(message + '\n')
+            sys.stdout.flush()
+            return
+    except (ValueError, OSError, AttributeError):
+        pass
+    
+    # 尝试4: 写入stderr作为最后手段
+    try:
+        if hasattr(sys.stderr, 'write') and not sys.stderr.closed:
+            sys.stderr.write(message + '\n')
+            sys.stderr.flush()
+            return
+    except (ValueError, OSError, AttributeError):
         pass
 
-# 全局替换内置print函数，防止I/O错误导致崩溃
+# 全局替换内置print函数
 print = safe_print
 
 
