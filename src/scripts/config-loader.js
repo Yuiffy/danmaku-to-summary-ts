@@ -235,6 +235,11 @@ function transformSecrets(secrets) {
 
     if (secrets.tuZi?.apiKey) {
         transformed.ai = transformed.ai || {};
+        // tuZi API Key 用于文本生成（备用方案）
+        transformed.ai.text = transformed.ai.text || {};
+        transformed.ai.text.tuZi = transformed.ai.text.tuZi || {};
+        transformed.ai.text.tuZi.apiKey = secrets.tuZi.apiKey;
+        // tuZi API Key 也用于漫画生成
         transformed.ai.comic = transformed.ai.comic || {};
         transformed.ai.comic.tuZi = transformed.ai.comic.tuZi || {};
         transformed.ai.comic.tuZi.apiKey = secrets.tuZi.apiKey;
