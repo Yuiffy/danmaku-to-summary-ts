@@ -110,7 +110,10 @@ export class ReplyManager implements IReplyManager {
       if (this.notifier) {
         await this.notifier.notifyReplySuccess(
           String(task.dynamic.id),
-          String(result.replyId)
+          String(result.replyId),
+          undefined, // anchorName - ReplyManager 没有这个信息
+          replyText,
+          result.imageUrl
         );
       }
 

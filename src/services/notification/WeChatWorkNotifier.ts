@@ -76,12 +76,33 @@ export class WeChatWorkNotifier {
   /**
    * 发送动态回复成功通知
    */
-  async notifyReplySuccess(dynamicId: string, replyId: string, anchorName?: string): Promise<boolean> {
+  async notifyReplySuccess(
+    dynamicId: string,
+    replyId: string,
+    anchorName?: string,
+    replyContent?: string,
+    imageUrl?: string
+  ): Promise<boolean> {
     const replyUrl = `https://www.bilibili.com/opus/${dynamicId}#reply${replyId}`;
-    const content = anchorName
-      ? `✅ 动态回复成功\n\n主播: ${anchorName}\n动态ID: ${dynamicId}\n回复ID: ${replyId}\n\n[查看回复](${replyUrl})`
-      : `✅ 动态回复成功\n\n动态ID: ${dynamicId}\n回复ID: ${replyId}\n\n[查看回复](${replyUrl})`;
-
+    
+    let content = anchorName
+      ? `✅ 动态回复成功\n\n主播: ${anchorName}\n动态ID: ${dynamicId}\n回复ID: ${replyId}`
+      : `✅ 动态回复成功\n\n动态ID: ${dynamicId}\n回复ID: ${replyId}`;
+    
+    // 添加回复内容（截取前200字符）
+    if (replyContent) {
+      const truncatedContent = replyContent.length > 200 ? replyContent.substring(0, 200) + '...' : replyContent;
+      content += `\n\n回复内容:\n${truncatedContent}`;
+    }
+    
+    // 添加图片信息
+    if (imageUrl) {
+      content += `\n\n附图: ${imageUrl}`;
+    }
+    
+    // 添加查看链接
+    content += `\n\n[查看回复](${replyUrl})`;
+    
     return await this.sendMarkdown(content);
   }
 

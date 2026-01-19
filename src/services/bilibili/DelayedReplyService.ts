@@ -385,7 +385,9 @@ export class DelayedReplyService implements IDelayedReplyService {
         await this.notifier.notifyReplySuccess(
           String(latestDynamic.id),
           String(result.replyId),
-          anchorName
+          anchorName,
+          replyText,
+          result.imageUrl
         );
       }
 
