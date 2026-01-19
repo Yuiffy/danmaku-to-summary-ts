@@ -52,7 +52,7 @@ export class DelayedReplyStore implements IDelayedReplyStore {
 
       this.initialized = true;
     } catch (error) {
-      this.logger.error('初始化延迟回复存储失败', { error });
+      this.logger.error('初始化延迟回复存储失败', undefined, error instanceof Error ? error : new Error(String(error)));
       throw error;
     }
   }
@@ -148,7 +148,7 @@ export class DelayedReplyStore implements IDelayedReplyStore {
         this.logger.info(`清理了 ${tasksToRemove.length} 个旧任务`);
       }
     } catch (error) {
-      this.logger.error('清理旧任务失败', { error });
+      this.logger.error('清理旧任务失败', undefined, error instanceof Error ? error : new Error(String(error)));
     }
   }
 
@@ -164,7 +164,7 @@ export class DelayedReplyStore implements IDelayedReplyStore {
 
       fs.writeFileSync(this.storagePath, JSON.stringify(data, null, 2), 'utf8');
     } catch (error) {
-      this.logger.error('保存延迟任务失败', { error });
+      this.logger.error('保存延迟任务失败', undefined, error instanceof Error ? error : new Error(String(error)));
       throw error;
     }
   }

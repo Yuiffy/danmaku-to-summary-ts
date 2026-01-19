@@ -48,7 +48,7 @@ export class ReplyHistoryStore implements IReplyHistoryStore {
         this.save();
       }
     } catch (error) {
-      this.logger.error('初始化回复历史存储失败', { error });
+      this.logger.error('初始化回复历史存储失败', undefined, error instanceof Error ? error : new Error(String(error)));
       throw error;
     }
   }
@@ -131,7 +131,7 @@ export class ReplyHistoryStore implements IReplyHistoryStore {
       const data = JSON.stringify(historyArray, null, 2);
       fs.writeFileSync(this.storagePath, data, 'utf8');
     } catch (error) {
-      this.logger.error('保存回复历史失败', { error });
+      this.logger.error('保存回复历史失败', undefined, error instanceof Error ? error : new Error(String(error)));
       throw error;
     }
   }

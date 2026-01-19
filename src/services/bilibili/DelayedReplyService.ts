@@ -231,7 +231,7 @@ export class DelayedReplyService implements IDelayedReplyService {
 
       this.logger.info(`加载了 ${pendingTasks.length} 个待处理任务`);
     } catch (error) {
-      this.logger.error('加载延迟任务失败', { error });
+      this.logger.error('加载延迟任务失败', undefined, error instanceof Error ? error : new Error(String(error)));
     }
   }
 
@@ -306,7 +306,7 @@ export class DelayedReplyService implements IDelayedReplyService {
         await this.executeDelayedReply(task);
       }
     } catch (error) {
-      this.logger.error('检查到期任务失败', { error });
+      this.logger.error('检查到期任务失败', undefined, error instanceof Error ? error : new Error(String(error)));
     }
   }
 
@@ -378,7 +378,7 @@ export class DelayedReplyService implements IDelayedReplyService {
         dynamicId: String(latestDynamic.id)
       });
     } catch (error) {
-      this.logger.error(`执行延迟回复失败: ${task.taskId}`, { error });
+      this.logger.error(`执行延迟回复失败: ${task.taskId}`, undefined, error instanceof Error ? error : new Error(String(error)));
 
       // 更新任务状态
       task.status = 'failed';
