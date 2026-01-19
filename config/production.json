@@ -169,7 +169,8 @@
         "anchorName": "雪绘Yukie",
         "fanName": "态度人",
         "enableTextGeneration": true,
-        "enableComicGeneration": true
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
       },
       "21696950": {
         "audioOnly": true,
