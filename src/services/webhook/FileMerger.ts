@@ -150,7 +150,7 @@ export class FileMerger {
         '-show_entries', 'format=duration',
         '-of', 'default=noprint_wrappers=1:nokey=1',
         videoPath
-      ], { stdio: ['ignore', 'pipe', 'pipe'] });
+      ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
 
       let output = '';
       let error = '';
@@ -243,7 +243,7 @@ export class FileMerger {
    */
   private async runFfmpeg(args: string[]): Promise<void> {
     return new Promise((resolve, reject) => {
-      const ffmpeg = spawn('ffmpeg', args);
+      const ffmpeg = spawn('ffmpeg', args, { windowsHide: true });
 
       ffmpeg.on('close', (code: number | null) => {
         if (code === 0) {

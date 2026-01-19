@@ -4,8 +4,7 @@
 import fetch from 'node-fetch';
 import * as fs from 'fs';
 import * as path from 'path';
-import { exec, spawn } from 'child_process';
-import { promisify } from 'util';
+import { spawn } from 'child_process';
 import { getLogger } from '../../core/logging/LogManager';
 import { ConfigProvider } from '../../core/config/ConfigProvider';
 import { AppError } from '../../core/errors/AppError';
@@ -17,8 +16,6 @@ import {
   BilibiliAPIResponse
 } from './interfaces/types';
 import { parseDynamicItems } from './DynamicParser';
-
-const execAsync = promisify(exec);
 
 /**
  * B站API服务实现
@@ -74,15 +71,43 @@ export class BilibiliAPIService implements IBilibiliAPIService {
 
       // 调用 Python 脚本获取直播间信息
       const scriptPath = path.join(process.cwd(), 'src/scripts/bilibili_room_info.py');
-      const command = `python "${scriptPath}" "${roomId}" "${sessdata}" "${bili_jct}" "${dedeuserid}"`;
+      const args = [scriptPath, roomId, sessdata, bili_jct, dedeuserid];
 
-      this.logger.debug('调用Python脚本获取直播间信息', { command });
+      this.logger.debug('调用Python脚本获取直播间信息', { scriptPath, argsCount: args.length });
 
-      const { stdout, stderr } = await execAsync(command);
+      // 使用 spawn 替代 exec，避免弹出黑窗口
+      const result = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+        const pythonProcess = spawn('python', args, {
+          windowsHide: true
+        });
+
+        let stdout = '';
+        let stderr = '';
+
+        pythonProcess.stdout.on('data', (data) => {
+          stdout += data.toString();
+        });
+
+        pythonProcess.stderr.on('data', (data) => {
+          stderr += data.toString();
+        });
+
+        pythonProcess.on('close', (code) => {
+          if (code === 0) {
+            resolve({ stdout, stderr });
+          } else {
+            reject(new Error(`Python脚本退出码: ${code}`));
+          }
+        });
+
+        pythonProcess.on('error', (err) => {
+          reject(err);
+        });
+      });
 
       // 输出Python脚本的日志（stderr）
-      if (stderr) {
-        const logLines = stderr.trim().split('\n');
+      if (result.stderr) {
+        const logLines = result.stderr.trim().split('\n');
         for (const line of logLines) {
           if (line.includes('[ERROR]')) {
             this.logger.error(`Python: ${line}`);
@@ -97,15 +122,15 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       }
 
       // 解析 Python 脚本的输出（stdout只包含JSON）
-      const result = JSON.parse(stdout);
+      const jsonResult = JSON.parse(result.stdout);
 
-      if (!result.success) {
-        this.logger.error('Python脚本返回错误', { result });
-        throw new AppError(`获取直播间信息失败: ${result.message || result.error}`, 'API_ERROR', 500);
+      if (!jsonResult.success) {
+        this.logger.error('Python脚本返回错误', { result: jsonResult });
+        throw new AppError(`获取直播间信息失败: ${jsonResult.message || jsonResult.error}`, 'API_ERROR', 500);
       }
 
       // 从返回的数据中获取UID
-      const uid = String(result.data.room_info.uid);
+      const uid = String(jsonResult.data.room_info.uid);
       this.logger.debug(`通过直播间API获取UID成功: ${roomId} -> ${uid}`);
 
       return uid;

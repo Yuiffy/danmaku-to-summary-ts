@@ -92,7 +92,8 @@ export class ComicGeneratorService implements IComicGeneratorService {
         const pythonProcess = spawn('python', args, {
           env: process.env,
           cwd: path.dirname(this.pythonScriptPath),
-          stdio: ['pipe', 'pipe', 'pipe']
+          stdio: ['pipe', 'pipe', 'pipe'],
+          windowsHide: true
         });
 
         let output = '';
@@ -203,7 +204,8 @@ export class ComicGeneratorService implements IComicGeneratorService {
       return new Promise((resolve, reject) => {
         const pythonProcess = spawn('python', [this.pythonScriptPath, '--batch', directory], {
           cwd: path.dirname(this.pythonScriptPath),
-          stdio: ['pipe', 'pipe', 'pipe']
+          stdio: ['pipe', 'pipe', 'pipe'],
+          windowsHide: true
         });
 
         let output = '';
@@ -281,7 +283,8 @@ export class ComicGeneratorService implements IComicGeneratorService {
       return new Promise((resolve, reject) => {
         const nodeProcess = spawn('node', [this.nodeScriptPath, '--generate-text'], {
           cwd: path.dirname(this.nodeScriptPath),
-          stdio: ['pipe', 'pipe', 'pipe']
+          stdio: ['pipe', 'pipe', 'pipe'],
+          windowsHide: true
         });
 
         let output = '';
