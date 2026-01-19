@@ -159,7 +159,12 @@ export class ConfigLoader {
         if (secretsConfig.bilibili) {
           mappedSecrets.bilibili = secretsConfig.bilibili;
         }
-        
+
+        // wechatWork -> wechatWork
+        if (secretsConfig.wechatWork) {
+          mappedSecrets.wechatWork = secretsConfig.wechatWork;
+        }
+
         config = this.deepMerge(config, mappedSecrets);
         console.log(`Secrets configuration loaded from: ${secretsPath}`);
       } catch (error) {

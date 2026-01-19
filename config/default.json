@@ -152,8 +152,5 @@
       "maxRetries": 3,
       "retryDelayMinutes": 5
     }
-  },
-  "wechatWork": {
-    "webhookUrl": ""
   }
 }

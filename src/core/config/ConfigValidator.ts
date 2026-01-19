@@ -182,6 +182,9 @@ export class ConfigValidator {
           retryDelayMinutes: 5,
         },
       },
+      wechatWork: {
+        webhookUrl: '',
+      },
     };
   }
 }
