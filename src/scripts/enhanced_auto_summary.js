@@ -94,7 +94,7 @@ async function getVideoDuration(filePath) {
 // Whisper 文件锁 - 防止并发调用导致 GPU 冲突
 const WHISPER_LOCK_FILE = path.join(__dirname, '.whisper_lock');
 const WHISPER_LOCK_TIMEOUT = 60 * 60 * 1000; // 1小时超时
-const WHISPER_LOCK_RETRY_INTERVAL = 2000; // 2秒重试间隔
+const WHISPER_LOCK_RETRY_INTERVAL = 10000; // 10秒重试间隔
 const WHISPER_MAX_RETRIES = 180; // 最多重试 180 次（6分钟）
 
 async function acquireWhisperLock() {

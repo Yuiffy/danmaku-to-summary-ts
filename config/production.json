@@ -272,7 +272,7 @@
     "anchors": {},
     "delayedReply": {
       "enabled": true,
-      "delayMinutes": 5,
+      "delayMinutes": 2,
       "maxRetries": 3,
       "retryDelayMinutes": 5
     }
