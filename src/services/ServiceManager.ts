@@ -12,6 +12,7 @@ import { DelayedReplyService } from './bilibili/DelayedReplyService';
 import { DelayedReplyStore } from './bilibili/DelayedReplyStore';
 import { IDelayedReplyService } from './bilibili/interfaces/IDelayedReplyService';
 import { IDelayedReplyStore } from './bilibili/interfaces/IDelayedReplyStore';
+import { WeChatWorkNotifier } from './notification/WeChatWorkNotifier';
 
 /**
  * 服务状态
@@ -70,6 +71,7 @@ export class ServiceManager {
   private replyHistoryStore?: ReplyHistoryStore;
   private delayedReplyStore?: IDelayedReplyStore;
   private delayedReplyService?: IDelayedReplyService;
+  private weChatWorkNotifier?: WeChatWorkNotifier;
 
   /**
    * 获取logger（安全方法）
@@ -481,6 +483,18 @@ export class ServiceManager {
    * 初始化各个服务
    */
   private async initializeServices(): Promise<void> {
+    // 企业微信通知服务
+    await this.initializeService('wechat-work-notifier', async () => {
+      const config = ConfigProvider.getConfig();
+      const webhookUrl = config.wechatWork?.webhookUrl;
+      if (webhookUrl) {
+        this.weChatWorkNotifier = new WeChatWorkNotifier(webhookUrl);
+        this.getLogger().info('企业微信通知服务初始化成功');
+      } else {
+        this.getLogger().warn('企业微信通知服务未配置webhookUrl，跳过初始化');
+      }
+    });
+
     // Webhook服务
     await this.initializeService('webhook', async () => {
       this.webhookService = new WebhookService();
@@ -510,7 +524,11 @@ export class ServiceManager {
     // 回复管理器
     await this.initializeService('reply-manager', async () => {
       if (this.bilibiliAPIService && this.replyHistoryStore) {
-        this.replyManager = new ReplyManager(this.bilibiliAPIService, this.replyHistoryStore);
+        this.replyManager = new ReplyManager(
+          this.bilibiliAPIService,
+          this.replyHistoryStore,
+          this.weChatWorkNotifier
+        );
         // 启动回复管理器
         await this.replyManager.start();
       }
@@ -526,7 +544,8 @@ export class ServiceManager {
       if (this.bilibiliAPIService && this.delayedReplyStore) {
         this.delayedReplyService = new DelayedReplyService(
           this.bilibiliAPIService,
-          this.delayedReplyStore
+          this.delayedReplyStore,
+          this.weChatWorkNotifier
         );
       }
     });

@@ -312,6 +312,7 @@ def build_comic_prompt(highlight_content: str, reference_image_path: Optional[st
     # 第二步：基于漫画内容构建绘画提示词（包含角色设定，便于图像生成一致）
     base_prompt = f"""<note>一定要按照给你的参考图还原形象，而不是自己乱画一个动漫角色</note>
 <character>{character_desc}</character>
+要画得精致，角色要画得帅气、美丽、可爱。
 下面是根据直播内容生成的漫画脚本，请根据这个脚本绘制漫画：
 {comic_content}"""
 
@@ -323,8 +324,7 @@ COMIC_ARTIST_PROMPT_TEMPLATE = """你作为虚拟主播二创画师大手子，�
 角色描述：{character_desc}。
 风格：多个剪贴画风格分镜（4~6个吧），每个是一个片段场景，
 不要有文字，纯默剧，用表情和动作、场景来表现。
-要画得精致，角色要画得帅气、美丽、可爱。
-下面是一场直播的asr+弹幕记录TXT，请先构思图片并用文字给我，我再拿去绘制图片。整体800个字符以内。
+下面是一场直播的语音+弹幕文本，请先构思图片并用文字给我，我再拿去绘制图片。整体800个字符以内。只返回各个分镜的文字描述，不要包含任何多余的说明、格式。
 {highlight_content}
 """
 
@@ -339,7 +339,7 @@ def is_gemini_error(text: str) -> bool:
     """检测文本是否包含Gemini错误信息"""
     if not text:
         return False
-    return '[Gemini Error:' in text
+    return 'Gemini Error' in text
 
 def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str] = None) -> Tuple[str, bool]:
     """使用AI生成漫画内容脚本
@@ -462,48 +462,74 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
     # Gemini失败后，尝试使用tuZi API作为备用方案
     print("[TUZI] Google生成失败，尝试tu-zi.com生成文本...")
     
-    # 尝试使用tuZi API生成文本
-    try:
-        from tuzi_chat_completions import call_tuzi_chat_completions
-        
-        config = load_config()
-        tuzi_config = config.get("aiServices", {}).get("tuZi", {})
-        
-        if not is_tuzi_configured():
-            print("[WARNING]  tuZi API未配置，使用原始内容")
-            return highlight_content, False
-        
-        # 构建提示词（使用统一的prompt模板）
-        character_desc = get_room_character_description(room_id)
-        system_prompt = build_comic_generation_prompt(character_desc, highlight_content)
-        user_prompt = f"直播内容：\n{highlight_content}\n\n请创作漫画故事脚本："
-        
-        # 调用tuZi Chat Completions API
-        comic_content = call_tuzi_chat_completions(
-            prompt=user_prompt,
-            system_prompt=system_prompt,
-            model=tuzi_config.get("textModel", "gemini-3-flash-preview"),
-            base_url=tuzi_config.get("baseUrl", "https://api.tu-zi.com"),
-            api_key=tuzi_config.get("apiKey", ""),
-            proxy_url=tuzi_config.get("proxy", ""),
-            timeout=120,
-            temperature=0.7,
-            max_tokens=100000
-        )
-        
-        if comic_content:
-            print("[OK] tuZi API漫画文本生成成功")
-            print(f"生成内容长度: {len(comic_content)} 字符")
-            print(f"内容预览: {comic_content[:200]}...")
-            return comic_content, True
-        else:
-            print("[WARNING]  tuZi API返回空内容")
-            return highlight_content, False
-        
-    except Exception as tuzi_error:
-        print(f"[ERROR]  tuZi API备用方案失败: {tuzi_error}")
-        print("[WARNING]  所有API都失败，使用原始内容")
-        return highlight_content, False
+    # 尝试使用tuZi API生成文本（带重试机制）
+    max_tuzi_retries = 3
+    for tuzi_attempt in range(max_tuzi_retries):
+        try:
+            from tuzi_chat_completions import call_tuzi_chat_completions
+            
+            config = load_config()
+            tuzi_config = config.get("aiServices", {}).get("tuZi", {})
+            
+            if not is_tuzi_configured():
+                print("[WARNING]  tuZi API未配置，使用原始内容")
+                return highlight_content, False
+            
+            # 构建提示词（使用统一的prompt模板）
+            character_desc = get_room_character_description(room_id)
+            system_prompt = build_comic_generation_prompt(character_desc, highlight_content)
+            user_prompt = f"直播内容：\n{highlight_content}\n\n请创作漫画故事脚本："
+            
+            if tuzi_attempt > 0:
+                print(f"[RETRY] 第 {tuzi_attempt + 1} 次重试 tuZi API...")
+            
+            # 调用tuZi Chat Completions API
+            comic_content = call_tuzi_chat_completions(
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                model=tuzi_config.get("textModel", "gemini-3-flash-preview"),
+                base_url=tuzi_config.get("baseUrl", "https://api.tu-zi.com"),
+                api_key=tuzi_config.get("apiKey", ""),
+                proxy_url=tuzi_config.get("proxy", ""),
+                timeout=120,
+                temperature=0.7,
+                max_tokens=100000
+            )
+            
+            if comic_content:
+                # 检测是否包含Gemini错误信息
+                if is_gemini_error(comic_content):
+                    print(f"[WARNING] tuZi API返回了Gemini错误内容 (尝试 {tuzi_attempt + 1}/{max_tuzi_retries})")
+                    if tuzi_attempt < max_tuzi_retries - 1:
+                        print("[RETRY] 2秒后重试...")
+                        time.sleep(2)
+                        continue
+                    else:
+                        print("[ERROR] tuZi API重试次数已用完，使用原始内容")
+                        return highlight_content, False
+                
+                print("[OK] tuZi API漫画文本生成成功")
+                print(f"生成内容长度: {len(comic_content)} 字符")
+                print(f"内容预览: {comic_content[:200]}...")
+                return comic_content, True
+            else:
+                print("[WARNING]  tuZi API返回空内容")
+                if tuzi_attempt < max_tuzi_retries - 1:
+                    print("[RETRY] 2秒后重试...")
+                    time.sleep(2)
+                    continue
+                else:
+                    return highlight_content, False
+            
+        except Exception as tuzi_error:
+            print(f"[ERROR]  tuZi API备用方案失败 (尝试 {tuzi_attempt + 1}/{max_tuzi_retries}): {tuzi_error}")
+            if tuzi_attempt < max_tuzi_retries - 1:
+                print("[RETRY] 2秒后重试...")
+                time.sleep(2)
+                continue
+            else:
+                print("[WARNING]  所有API都失败，使用原始内容")
+                return highlight_content, False
     
     # 确保函数在所有路径都返回有效值
     return highlight_content, False
@@ -1148,7 +1174,7 @@ def save_comic_result(output_path: str, comic_data: Any) -> str:
         print(f"[ERROR] 保存漫画结果失败: {e}")
         raise
 
-def generate_comic_from_highlight(highlight_path: str) -> Optional[str]:
+def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = None) -> Optional[str]:
     """从AI_HIGHLIGHT文件生成漫画"""
     print(f"[FILE] 处理AI_HIGHLIGHT文件: {os.path.basename(highlight_path)}")
     
@@ -1164,11 +1190,11 @@ def generate_comic_from_highlight(highlight_path: str) -> Optional[str]:
         if not os.path.exists(highlight_path):
             raise FileNotFoundError(f"AI_HIGHLIGHT文件不存在: {highlight_path}")
         
-        # 提取房间ID（优先使用环境变量 ROOM_ID，其次从文件名提取）
-        env_room = os.environ.get('ROOM_ID', '')
-        filename = os.path.basename(highlight_path)
-        file_room_id = extract_room_id_from_filename(filename)
-        room_id = env_room if env_room and env_room.strip() != '' else (file_room_id or "unknown")
+        # 提取房间ID（优先使用传入的 room_id，其次从文件名提取）
+        if room_id is None:
+            filename = os.path.basename(highlight_path)
+            file_room_id = extract_room_id_from_filename(filename)
+            room_id = file_room_id or "unknown"
 
         if not room_id or str(room_id).strip() == '':
             print("[WARNING]  无法确定房间ID，使用 'unknown'")
@@ -1267,13 +1293,38 @@ def generate_comic_from_highlight(highlight_path: str) -> Optional[str]:
 def main():
     """主函数"""
     if len(sys.argv) < 2:
-        print("用法: python ai_comic_generator.py <AI_HIGHLIGHT.txt路径>")
+        print("用法: python ai_comic_generator.py <AI_HIGHLIGHT.txt路径> [--room-id <房间ID>]")
         print("或:    python ai_comic_generator.py --batch <目录路径>")
         sys.exit(1)
     
     try:
-        if sys.argv[1] == "--batch" and len(sys.argv) > 2:
-            directory = sys.argv[2]
+        # 解析命令行参数
+        room_id = None
+        highlight_path = None
+        batch_mode = False
+        directory = None
+        
+        i = 1
+        while i < len(sys.argv):
+            arg = sys.argv[i]
+            if arg == "--batch":
+                batch_mode = True
+                if i + 1 < len(sys.argv):
+                    directory = sys.argv[i + 1]
+                    i += 1
+            elif arg == "--room-id":
+                if i + 1 < len(sys.argv):
+                    room_id = sys.argv[i + 1]
+                    i += 1
+            elif not arg.startswith("-"):
+                highlight_path = arg
+            i += 1
+        
+        if batch_mode:
+            if not directory:
+                print("[ERROR] 批量模式需要指定目录")
+                sys.exit(1)
+                
             print(f"[SEARCH] 批量处理目录: {directory}")
             
             if not os.path.exists(directory):
@@ -1292,7 +1343,7 @@ def main():
             for i, file_path in enumerate(highlight_files, 1):
                 print(f"\n--- [{i}/{len(highlight_files)}] 处理: {os.path.basename(file_path)} ---")
                 try:
-                    result = generate_comic_from_highlight(file_path)
+                    result = generate_comic_from_highlight(file_path, room_id)
                     if result:
                         success_count += 1
                         print(f"[OK] 成功生成: {os.path.basename(result)}")
@@ -1306,8 +1357,11 @@ def main():
             print(f"   [ERROR] 失败: {len(highlight_files) - success_count} 个")
             
         else:
-            highlight_path = sys.argv[1]
-            result = generate_comic_from_highlight(highlight_path)
+            if not highlight_path:
+                print("[ERROR] 需要指定AI_HIGHLIGHT文件路径")
+                sys.exit(1)
+                
+            result = generate_comic_from_highlight(highlight_path, room_id)
             
             if result:
                 print(f"\n[CELEBRATE] 处理完成，输出文件: {result}")

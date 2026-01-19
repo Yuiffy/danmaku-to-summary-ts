@@ -10,6 +10,7 @@ import { IReplyManager } from './interfaces/IReplyManager';
 import { IBilibiliAPIService } from './interfaces/IBilibiliAPIService';
 import { IReplyHistoryStore } from './interfaces/IReplyHistoryStore';
 import { ReplyTask, ReplyHistory, BilibiliDynamic } from './interfaces/types';
+import { WeChatWorkNotifier } from '../notification/WeChatWorkNotifier';
 
 /**
  * 生成UUID
@@ -27,11 +28,15 @@ export class ReplyManager implements IReplyManager {
   private taskStatus: Map<string, 'pending' | 'processing' | 'completed' | 'failed'> = new Map();
   private processingInterval: NodeJS.Timeout | null = null;
   private isRunningFlag = false;
+  private notifier?: WeChatWorkNotifier;
 
   constructor(
     private bilibiliAPI: IBilibiliAPIService,
-    private replyHistoryStore: IReplyHistoryStore
-  ) {}
+    private replyHistoryStore: IReplyHistoryStore,
+    notifier?: WeChatWorkNotifier
+  ) {
+    this.notifier = notifier;
+  }
 
   /**
    * 添加回复任务
@@ -97,6 +102,20 @@ export class ReplyManager implements IReplyManager {
         dynamicId: String(task.dynamic.id),
         replyId: String(result.replyId)
       });
+      // 输出回复链接
+      const replyUrl = `https://www.bilibili.com/opus/${String(task.dynamic.id)}#reply${String(result.replyId)}`;
+      this.logger.info(`回复链接: ${replyUrl}`);
+
+      // 发送企业微信通知
+      if (this.notifier) {
+        await this.notifier.notifyReplySuccess(
+          String(task.dynamic.id),
+          String(result.replyId),
+          undefined, // anchorName - ReplyManager 没有这个信息
+          replyText,
+          result.imageUrl
+        );
+      }
 
     } catch (error) {
       // 确保 dynamicId 以字符串形式记录日志，避免大数精度丢失
@@ -117,6 +136,14 @@ export class ReplyManager implements IReplyManager {
 
       // 标记任务失败
       this.taskStatus.set(taskId, 'failed');
+
+      // 发送企业微信通知
+      if (this.notifier) {
+        await this.notifier.notifyReplyFailure(
+          String(task.dynamic.id),
+          error instanceof Error ? error.message : String(error)
+        );
+      }
 
       // 重试逻辑
       if (task.retryCount < 3) {

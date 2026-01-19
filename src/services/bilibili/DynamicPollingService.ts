@@ -54,7 +54,7 @@ export class DynamicPollingService implements IDynamicPollingService {
 
       this.logger.info(`加载了 ${this.anchors.size} 个主播`);
     } catch (error) {
-      this.logger.error('加载主播配置失败', { error });
+      this.logger.error('加载主播配置失败', undefined, error instanceof Error ? error : new Error(String(error)));
     }
   }
 

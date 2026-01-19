@@ -9,6 +9,7 @@ import { IDelayedReplyStore } from './interfaces/IDelayedReplyStore';
 import { IBilibiliAPIService } from './interfaces/IBilibiliAPIService';
 import { DelayedReplyTask, BilibiliDynamic } from './interfaces/types';
 import { BilibiliConfigHelper } from './BilibiliConfigHelper';
+import { WeChatWorkNotifier } from '../notification/WeChatWorkNotifier';
 
 /**
  * 生成UUID
@@ -27,11 +28,15 @@ export class DelayedReplyService implements IDelayedReplyService {
   private isRunningFlag = false;
   private checkInterval: NodeJS.Timeout | null = null;
   private countdownInterval: NodeJS.Timeout | null = null;
+  private notifier?: WeChatWorkNotifier;
 
   constructor(
     private bilibiliAPI: IBilibiliAPIService,
-    private store: IDelayedReplyStore
-  ) {}
+    private store: IDelayedReplyStore,
+    notifier?: WeChatWorkNotifier
+  ) {
+    this.notifier = notifier;
+  }
 
   /**
    * 启动服务
@@ -111,6 +116,34 @@ export class DelayedReplyService implements IDelayedReplyService {
           this.logger.warn('无法获取主播UID，跳过添加任务', { roomId });
           return '';
         }
+      }
+
+      // 检查是否已有待处理或处理中的任务（去重逻辑）
+      const now = new Date();
+      const existingTask = Array.from(this.tasks.values()).find(
+        task => task.roomId === roomId &&
+                (task.status === 'pending' || task.status === 'processing')
+      );
+
+      if (existingTask) {
+        // 检查是否在30分钟CD内
+        const timeSinceCreation = now.getTime() - existingTask.createTime.getTime();
+        const cooldownMs = 30 * 60 * 1000; // 30分钟CD
+
+        if (timeSinceCreation < cooldownMs) {
+          const remainingMinutes = Math.ceil((cooldownMs - timeSinceCreation) / 60000);
+          this.logger.info(`跳过添加任务：房间 ${roomId} 已有待处理任务，CD剩余 ${remainingMinutes} 分钟`, {
+            roomId,
+            existingTaskId: existingTask.taskId,
+            existingStatus: existingTask.status,
+            scheduledTime: existingTask.scheduledTime.toISOString()
+          });
+          return existingTask.taskId;
+        }
+
+        // 如果CD已过，删除旧任务
+        this.logger.info(`CD已过，删除旧任务: ${existingTask.taskId}`, { roomId });
+        await this.removeTask(existingTask.taskId);
       }
 
       // 计算延迟时间（优先使用传入的 delaySeconds，否则使用配置的 delayMinutes）
@@ -203,7 +236,7 @@ export class DelayedReplyService implements IDelayedReplyService {
 
       this.logger.info(`加载了 ${pendingTasks.length} 个待处理任务`);
     } catch (error) {
-      this.logger.error('加载延迟任务失败', { error });
+      this.logger.error('加载延迟任务失败', undefined, error instanceof Error ? error : new Error(String(error)));
     }
   }
 
@@ -278,7 +311,7 @@ export class DelayedReplyService implements IDelayedReplyService {
         await this.executeDelayedReply(task);
       }
     } catch (error) {
-      this.logger.error('检查到期任务失败', { error });
+      this.logger.error('检查到期任务失败', undefined, error instanceof Error ? error : new Error(String(error)));
     }
   }
 
@@ -341,6 +374,22 @@ export class DelayedReplyService implements IDelayedReplyService {
         dynamicId: String(latestDynamic.id),
         replyId: String(result.replyId)
       });
+      // 输出回复链接
+      const replyUrl = `https://www.bilibili.com/opus/${String(latestDynamic.id)}#reply${String(result.replyId)}`;
+      this.logger.info(`回复链接: ${replyUrl}`);
+
+      // 发送企业微信通知
+      if (this.notifier) {
+        const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
+        const anchorName = anchorConfig?.name;
+        await this.notifier.notifyReplySuccess(
+          String(latestDynamic.id),
+          String(result.replyId),
+          anchorName,
+          replyText,
+          result.imageUrl
+        );
+      }
 
       // 更新任务状态
       task.status = 'completed';
@@ -350,7 +399,7 @@ export class DelayedReplyService implements IDelayedReplyService {
         dynamicId: String(latestDynamic.id)
       });
     } catch (error) {
-      this.logger.error(`执行延迟回复失败: ${task.taskId}`, { error });
+      this.logger.error(`执行延迟回复失败: ${task.taskId}`, undefined, error instanceof Error ? error : new Error(String(error)));
 
       // 更新任务状态
       task.status = 'failed';
@@ -359,6 +408,17 @@ export class DelayedReplyService implements IDelayedReplyService {
         status: 'failed',
         error: task.error
       });
+
+      // 发送企业微信通知
+      if (this.notifier) {
+        const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
+        const anchorName = anchorConfig?.name;
+        await this.notifier.notifyReplyFailure(
+          task.uid || 'unknown',
+          task.error || '未知错误',
+          anchorName
+        );
+      }
 
       // 重试逻辑
       const delayedReplyConfig = BilibiliConfigHelper.getDelayedReplyConfig();

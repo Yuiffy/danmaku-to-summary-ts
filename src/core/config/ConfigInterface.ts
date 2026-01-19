@@ -188,6 +188,12 @@ export interface BilibiliConfig {
   delayedReply: DelayedReplyConfig;
 }
 
+// 企业微信配置
+export interface WeChatWorkConfig {
+  /** 企业微信机器人webhook URL */
+  webhookUrl?: string;
+}
+
 // 监控配置
 export interface MonitoringConfig {
   enabled: boolean;
@@ -216,6 +222,7 @@ export interface AppConfig {
   storage: StorageConfig;
   monitoring: MonitoringConfig;
   bilibili: BilibiliConfig;
+  wechatWork: WeChatWorkConfig;
 }
 
 // 配置验证结果

@@ -51,7 +51,7 @@ export class BilibiliAPIService implements IBilibiliAPIService {
 
       this.logger.info('B站API服务配置加载完成');
     } catch (error) {
-      this.logger.error('加载B站配置失败', { error });
+      this.logger.error('加载B站配置失败', undefined, error instanceof Error ? error : new Error(String(error)));
       throw error;
     }
   }
@@ -113,7 +113,7 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       if (error instanceof AppError) {
         throw error;
       }
-      this.logger.error('获取UID失败', { error });
+      this.logger.error('获取UID失败', undefined, error instanceof Error ? error : new Error(String(error)));
       throw new AppError(
         `获取UID失败: ${error instanceof Error ? error.message : error}`,
         'API_ERROR',
@@ -330,7 +330,7 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       if (error instanceof AppError) {
         throw error;
       }
-      this.logger.error('发布评论异常', { error });
+      this.logger.error('发布评论异常', undefined, error instanceof Error ? error : new Error(String(error)));
       throw new AppError(
         `发布评论失败: ${error instanceof Error ? error.message : error}`,
         'API_ERROR',

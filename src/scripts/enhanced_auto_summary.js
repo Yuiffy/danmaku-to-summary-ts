@@ -94,7 +94,7 @@ async function getVideoDuration(filePath) {
 // Whisper 文件锁 - 防止并发调用导致 GPU 冲突
 const WHISPER_LOCK_FILE = path.join(__dirname, '.whisper_lock');
 const WHISPER_LOCK_TIMEOUT = 60 * 60 * 1000; // 1小时超时
-const WHISPER_LOCK_RETRY_INTERVAL = 2000; // 2秒重试间隔
+const WHISPER_LOCK_RETRY_INTERVAL = 10000; // 10秒重试间隔
 const WHISPER_MAX_RETRIES = 180; // 最多重试 180 次（6分钟）
 
 async function acquireWhisperLock() {
@@ -257,11 +257,11 @@ async function processAudioIfNeeded(mediaPath, roomId = null) {
 }
 
 // AI文本生成
-async function generateAiText(highlightPath) {
+async function generateAiText(highlightPath, roomId = null) {
     console.log('\n🤖 开始AI文本生成...');
     
     try {
-        const result = await aiTextGenerator.generateGoodnightReply(highlightPath);
+        const result = await aiTextGenerator.generateGoodnightReply(highlightPath, roomId);
         if (result) {
             console.log(`✅ AI文本生成完成: ${path.basename(result)}`);
             return result;
@@ -274,11 +274,11 @@ async function generateAiText(highlightPath) {
 }
 
 // AI漫画生成
-async function generateAiComic(highlightPath) {
+async function generateAiComic(highlightPath, roomId = null) {
     console.log('\n🎨 开始AI漫画生成...');
     
     try {
-        const result = await aiComicGenerator.generateComicFromHighlight(highlightPath);
+        const result = await aiComicGenerator.generateComicFromHighlight(highlightPath, roomId);
         if (result) {
             console.log(`✅ AI漫画生成完成: ${path.basename(result)}`);
             return result;
@@ -499,7 +499,7 @@ const main = async () => {
             let goodnightTextPath = null;
             if (aiSettings.text) {
                 console.log(`📝 开始AI文本生成...`);
-                goodnightTextPath = await generateAiText(highlightPath);
+                goodnightTextPath = await generateAiText(highlightPath, finalRoomId);
                 console.log(`📝 AI文本生成结果: ${goodnightTextPath || 'null'}`);
             } else {
                 console.log('ℹ️  跳过AI文本生成（房间设置禁用）');
@@ -509,7 +509,7 @@ const main = async () => {
             let comicImagePath = null;
             if (aiSettings.comic) {
                 console.log(`🎨 开始AI漫画生成...`);
-                comicImagePath = await generateAiComic(highlightPath);
+                comicImagePath = await generateAiComic(highlightPath, finalRoomId);
                 console.log(`🎨 AI漫画生成结果: ${comicImagePath || 'null'}`);
             } else {
                 console.log('ℹ️  跳过AI漫画生成（房间设置禁用）');

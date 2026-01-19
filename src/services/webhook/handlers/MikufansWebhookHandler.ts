@@ -8,6 +8,8 @@ import { ConfigProvider } from '../../../core/config/ConfigProvider';
 import { FileStabilityChecker } from '../FileStabilityChecker';
 import { DuplicateProcessorGuard } from '../DuplicateProcessorGuard';
 import { IDelayedReplyService } from '../../../services/bilibili/interfaces/IDelayedReplyService';
+import { LiveSessionManager, LiveSegment } from '../LiveSessionManager';
+import { FileMerger } from '../FileMerger';
 
 /**
  * Mikufans Webhook处理器
@@ -20,7 +22,8 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   private logger = getLogger('MikufansWebhookHandler');
   private stabilityChecker = new FileStabilityChecker();
   private duplicateGuard = new DuplicateProcessorGuard();
-  private sessionFiles = new Map<string, string[]>(); // sessionId -> fileList
+  private liveSessionManager = new LiveSessionManager();
+  private fileMerger = new FileMerger();
   private delayedReplyService?: IDelayedReplyService;
 
 
@@ -118,6 +121,12 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       return;
     }
 
+    // 处理直播结束事件
+    if (eventType === 'StreamEnded') {
+      await this.handleStreamEnded(sessionId, payload);
+      return;
+    }
+
     // 只处理文件关闭事件
     if (eventType !== 'FileClosed') {
       this.logger.info(`忽略非文件事件: ${eventType}`);
@@ -132,11 +141,40 @@ export class MikufansWebhookHandler implements IWebhookHandler {
    * 处理会话开始事件
    */
   private async handleSessionStarted(sessionId: string, payload: any): Promise<void> {
-    // 初始化会话文件列表
-    this.sessionFiles.set(sessionId, []);
-    
     const roomName = payload.EventData?.Name || '未知主播';
-    this.logger.info(`🎬 直播开始: ${roomName} (Session: ${sessionId})`);
+    const roomId = payload.EventData?.RoomId || 'unknown';
+    const title = payload.EventData?.Title || '直播';
+    
+    // 使用LiveSessionManager创建会话
+    this.liveSessionManager.createSession(sessionId, roomId, roomName, title);
+    
+    this.logger.info(`🎬 直播开始: ${roomName} (Session: ${sessionId}, Room: ${roomId})`);
+  }
+
+  /**
+   * 处理直播结束事件
+   */
+  private async handleStreamEnded(sessionId: string, payload: any): Promise<void> {
+    const session = this.liveSessionManager.getSession(sessionId);
+    if (!session) {
+      this.logger.warn(`会话不存在: ${sessionId}`);
+      return;
+    }
+
+    this.logger.info(`🏁 直播结束: ${session.roomName} (Session: ${sessionId}, 片段数: ${session.segments.length})`);
+
+    // 检查是否需要合并
+    const shouldMerge = this.liveSessionManager.shouldMerge(sessionId);
+    
+    if (shouldMerge) {
+      // 多片段场景：触发合并
+      await this.mergeAndProcessSession(sessionId);
+    } else if (session.segments.length === 1) {
+      // 单片段场景：直接处理
+      await this.processSingleSegment(sessionId);
+    } else {
+      this.logger.warn(`会话没有片段: ${sessionId}`);
+    }
   }
 
   /**
@@ -182,8 +220,54 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       this.logger.warn(`检查文件大小时出错: ${error.message}`);
     }
 
-    // 异步处理文件事件
-    await this.processMikufansFile(normalizedPath, payload);
+    // 收集片段到会话
+    const sessionId = payload.EventData?.SessionId;
+    if (sessionId) {
+      await this.collectSegment(sessionId, normalizedPath, payload);
+    } else {
+      // 如果没有sessionId，直接处理文件（兼容旧逻辑）
+      await this.processMikufansFile(normalizedPath, payload);
+    }
+  }
+
+  /**
+   * 收集片段到会话
+   */
+  private async collectSegment(sessionId: string, videoPath: string, payload: any): Promise<void> {
+    const session = this.liveSessionManager.getSession(sessionId);
+    if (!session) {
+      this.logger.warn(`会话不存在: ${sessionId}，直接处理文件`);
+      await this.processMikufansFile(videoPath, payload);
+      return;
+    }
+
+    // 查找对应的xml文件
+    const dir = path.dirname(videoPath);
+    const baseName = path.basename(videoPath, path.extname(videoPath));
+    const xmlPath = path.join(dir, `${baseName}.xml`);
+
+    // 检查xml文件是否存在
+    if (!fs.existsSync(xmlPath)) {
+      this.logger.warn(`未找到XML文件: ${path.basename(xmlPath)}，跳过收集`);
+      return;
+    }
+
+    // 获取文件时间信息
+    const fileOpenTime = new Date(payload.EventData?.FileOpenTime || Date.now());
+    const fileCloseTime = new Date(payload.EventData?.FileCloseTime || Date.now());
+    const eventTimestamp = new Date();
+
+    // 添加片段到会话
+    this.liveSessionManager.addSegment(
+      sessionId,
+      videoPath,
+      xmlPath,
+      fileOpenTime,
+      fileCloseTime,
+      eventTimestamp
+    );
+
+    this.logger.info(`📦 收集片段: ${path.basename(videoPath)} (会话: ${sessionId}, 片段数: ${session.segments.length + 1})`);
   }
 
   /**
@@ -323,6 +407,16 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         this.logger.info(`Mikufans处理流程结束 (退出码: ${code}): ${path.basename(videoPath)}`);
         this.duplicateGuard.markAsProcessed(videoPath);
         
+        // 检查是否是合并后的文件，如果是则标记会话为完成
+        if (videoPath.includes('_merged')) {
+          // 从文件路径中提取sessionId
+          const session = this.findSessionByVideoPath(videoPath);
+          if (session) {
+            this.liveSessionManager.markAsCompleted(session.sessionId);
+            this.logger.info(`✅ 会话处理完成: ${session.sessionId}`);
+          }
+        }
+        
         // 处理完成后，检查是否需要触发延迟回复
         await this.checkAndTriggerDelayedReply(videoPath, roomId);
       });
@@ -334,17 +428,17 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   }
 
   /**
-   * 获取会话文件列表
+   * 获取会话
    */
-  getSessionFiles(sessionId: string): string[] {
-    return this.sessionFiles.get(sessionId) || [];
+  getSession(sessionId: string) {
+    return this.liveSessionManager.getSession(sessionId);
   }
 
   /**
    * 获取所有会话
    */
-  getAllSessions(): Map<string, string[]> {
-    return new Map(this.sessionFiles);
+  getAllSessions() {
+    return this.liveSessionManager.getAllSessions();
   }
 
   /**
@@ -404,23 +498,98 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   }
 
   /**
+   * 合并并处理会话（多片段场景）
+   */
+  private async mergeAndProcessSession(sessionId: string): Promise<void> {
+    const session = this.liveSessionManager.getSession(sessionId);
+    if (!session) {
+      this.logger.warn(`会话不存在: ${sessionId}`);
+      return;
+    }
+
+    this.logger.info(`🔄 开始合并会话: ${sessionId} (${session.segments.length} 个片段)`);
+
+    // 标记为合并中
+    this.liveSessionManager.markAsMerging(sessionId);
+
+    try {
+      // 获取合并配置
+      const mergeConfig = this.liveSessionManager.getMergeConfig();
+
+      // 确定输出文件路径
+      const firstSegment = session.segments[0];
+      const outputDir = path.dirname(firstSegment.videoPath);
+      const outputBaseName = path.basename(firstSegment.videoPath, path.extname(firstSegment.videoPath));
+      const mergedVideoPath = path.join(outputDir, `${outputBaseName}_merged.flv`);
+      const mergedXmlPath = path.join(outputDir, `${outputBaseName}_merged.xml`);
+
+      // 备份原始片段
+      if (mergeConfig.backupOriginals) {
+        await this.fileMerger.backupSegments(session.segments, outputDir);
+      }
+
+      // 合并视频文件
+      await this.fileMerger.mergeVideos(session.segments, mergedVideoPath, mergeConfig.fillGaps);
+
+      // 合并XML文件
+      await this.fileMerger.mergeXmlFiles(session.segments, mergedXmlPath);
+
+      // 复制封面图
+      if (mergeConfig.copyCover) {
+        await this.fileMerger.copyCover(session.segments, outputDir);
+      }
+
+      this.logger.info(`✅ 合并完成: ${path.basename(mergedVideoPath)}`);
+
+      // 标记为处理中
+      this.liveSessionManager.markAsProcessing(sessionId);
+
+      // 处理合并后的文件
+      await this.startProcessing(mergedVideoPath, mergedXmlPath, session.roomId);
+    } catch (error: any) {
+      this.logger.error(`合并会话失败: ${error.message}`, { error });
+    }
+  }
+
+  /**
+   * 处理单个片段（单片段场景）
+   */
+  private async processSingleSegment(sessionId: string): Promise<void> {
+    const session = this.liveSessionManager.getSession(sessionId);
+    if (!session || session.segments.length === 0) {
+      this.logger.warn(`会话或片段不存在: ${sessionId}`);
+      return;
+    }
+
+    const segment = session.segments[0];
+    this.logger.info(`📄 处理单个片段: ${path.basename(segment.videoPath)}`);
+
+    // 标记为处理中
+    this.liveSessionManager.markAsProcessing(sessionId);
+
+    // 直接处理单个片段
+    await this.startProcessing(segment.videoPath, segment.xmlPath, session.roomId);
+  }
+
+  /**
+   * 根据视频路径查找会话
+   */
+  private findSessionByVideoPath(videoPath: string) {
+    const allSessions = this.liveSessionManager.getAllSessions();
+    for (const [sessionId, session] of allSessions.entries()) {
+      for (const segment of session.segments) {
+        if (segment.videoPath === videoPath) {
+          return session;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
    * 清理过期的会话
    */
   cleanupExpiredSessions(maxAgeHours: number = 24): void {
-    const now = Date.now();
-    let cleanedCount = 0;
-    
-    for (const [sessionId, files] of this.sessionFiles.entries()) {
-      // 简单实现：如果会话没有文件或假设会话已结束，可以清理
-      // 实际实现可能需要更复杂的逻辑
-      if (files.length === 0) {
-        this.sessionFiles.delete(sessionId);
-        cleanedCount++;
-      }
-    }
-    
-    if (cleanedCount > 0) {
-      this.logger.info(`清理了 ${cleanedCount} 个过期会话`);
-    }
+    this.liveSessionManager.cleanupExpiredSessions(maxAgeHours);
   }
 }
