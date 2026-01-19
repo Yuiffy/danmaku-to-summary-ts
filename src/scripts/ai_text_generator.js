@@ -254,7 +254,7 @@ function saveGeneratedText(outputPath, text, highlightPath) {
 }
 
 // 生成晚安回复
-async function generateGoodnightReply(highlightPath) {
+async function generateGoodnightReply(highlightPath, roomId = null) {
     const config = configLoader.getConfig();
 
     console.log(`🔍 检查AI文本生成配置...`);
@@ -300,12 +300,10 @@ async function generateGoodnightReply(highlightPath) {
         const highlightContent = readHighlightFile(highlightPath);
         console.log(`📖 读取内容完成 (${highlightContent.length} 字符)`);
 
-        // 构建提示词（尝试从环境或文件名获取 roomId 以使用房间级名称覆盖）
-        const envRoomId = process.env.ROOM_ID || null;
-        const fileRoomId = extractRoomIdFromFilename(path.basename(highlightPath));
-        const roomId = envRoomId || fileRoomId;
+        // 构建提示词（优先使用传入的 roomId，其次从文件名提取）
+        const finalRoomId = roomId || extractRoomIdFromFilename(path.basename(highlightPath));
         // 构建提示词
-        const prompt = buildPrompt(highlightContent, roomId);
+        const prompt = buildPrompt(highlightContent, finalRoomId);
 
         // 调用API生成文本
         const generatedText = await generateTextWithGemini(prompt);

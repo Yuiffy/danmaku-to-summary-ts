@@ -1174,7 +1174,7 @@ def save_comic_result(output_path: str, comic_data: Any) -> str:
         print(f"[ERROR] 保存漫画结果失败: {e}")
         raise
 
-def generate_comic_from_highlight(highlight_path: str) -> Optional[str]:
+def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = None) -> Optional[str]:
     """从AI_HIGHLIGHT文件生成漫画"""
     print(f"[FILE] 处理AI_HIGHLIGHT文件: {os.path.basename(highlight_path)}")
     
@@ -1190,11 +1190,11 @@ def generate_comic_from_highlight(highlight_path: str) -> Optional[str]:
         if not os.path.exists(highlight_path):
             raise FileNotFoundError(f"AI_HIGHLIGHT文件不存在: {highlight_path}")
         
-        # 提取房间ID（优先使用环境变量 ROOM_ID，其次从文件名提取）
-        env_room = os.environ.get('ROOM_ID', '')
-        filename = os.path.basename(highlight_path)
-        file_room_id = extract_room_id_from_filename(filename)
-        room_id = env_room if env_room and env_room.strip() != '' else (file_room_id or "unknown")
+        # 提取房间ID（优先使用传入的 room_id，其次从文件名提取）
+        if room_id is None:
+            filename = os.path.basename(highlight_path)
+            file_room_id = extract_room_id_from_filename(filename)
+            room_id = file_room_id or "unknown"
 
         if not room_id or str(room_id).strip() == '':
             print("[WARNING]  无法确定房间ID，使用 'unknown'")
@@ -1293,13 +1293,38 @@ def generate_comic_from_highlight(highlight_path: str) -> Optional[str]:
 def main():
     """主函数"""
     if len(sys.argv) < 2:
-        print("用法: python ai_comic_generator.py <AI_HIGHLIGHT.txt路径>")
+        print("用法: python ai_comic_generator.py <AI_HIGHLIGHT.txt路径> [--room-id <房间ID>]")
         print("或:    python ai_comic_generator.py --batch <目录路径>")
         sys.exit(1)
     
     try:
-        if sys.argv[1] == "--batch" and len(sys.argv) > 2:
-            directory = sys.argv[2]
+        # 解析命令行参数
+        room_id = None
+        highlight_path = None
+        batch_mode = False
+        directory = None
+        
+        i = 1
+        while i < len(sys.argv):
+            arg = sys.argv[i]
+            if arg == "--batch":
+                batch_mode = True
+                if i + 1 < len(sys.argv):
+                    directory = sys.argv[i + 1]
+                    i += 1
+            elif arg == "--room-id":
+                if i + 1 < len(sys.argv):
+                    room_id = sys.argv[i + 1]
+                    i += 1
+            elif not arg.startswith("-"):
+                highlight_path = arg
+            i += 1
+        
+        if batch_mode:
+            if not directory:
+                print("[ERROR] 批量模式需要指定目录")
+                sys.exit(1)
+                
             print(f"[SEARCH] 批量处理目录: {directory}")
             
             if not os.path.exists(directory):
@@ -1318,7 +1343,7 @@ def main():
             for i, file_path in enumerate(highlight_files, 1):
                 print(f"\n--- [{i}/{len(highlight_files)}] 处理: {os.path.basename(file_path)} ---")
                 try:
-                    result = generate_comic_from_highlight(file_path)
+                    result = generate_comic_from_highlight(file_path, room_id)
                     if result:
                         success_count += 1
                         print(f"[OK] 成功生成: {os.path.basename(result)}")
@@ -1332,8 +1357,11 @@ def main():
             print(f"   [ERROR] 失败: {len(highlight_files) - success_count} 个")
             
         else:
-            highlight_path = sys.argv[1]
-            result = generate_comic_from_highlight(highlight_path)
+            if not highlight_path:
+                print("[ERROR] 需要指定AI_HIGHLIGHT文件路径")
+                sys.exit(1)
+                
+            result = generate_comic_from_highlight(highlight_path, room_id)
             
             if result:
                 print(f"\n[CELEBRATE] 处理完成，输出文件: {result}")

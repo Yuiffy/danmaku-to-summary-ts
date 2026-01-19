@@ -10,7 +10,7 @@ function isComicGenerationEnabled() {
 }
 
 // 调用Python脚本生成漫画
-async function generateComicWithPython(highlightPath) {
+async function generateComicWithPython(highlightPath, roomId = null) {
     const pythonScript = path.join(__dirname, 'ai_comic_generator.py');
 
     if (!fs.existsSync(pythonScript)) {
@@ -25,7 +25,7 @@ async function generateComicWithPython(highlightPath) {
     return new Promise((resolve, reject) => {
         const pythonProcess = spawn(pythonPath, [pythonScript, highlightPath], {
             stdio: 'pipe',
-            env: { ...process.env, PYTHONUTF8: '1', PYTHONUNBUFFERED: '1', ROOM_ID: process.env.ROOM_ID || '' }
+            env: { ...process.env, PYTHONUTF8: '1', PYTHONUNBUFFERED: '1', ROOM_ID: roomId || '' }
 
         });
 
@@ -86,7 +86,7 @@ async function generateComicWithPython(highlightPath) {
 }
 
 // 生成漫画
-async function generateComicFromHighlight(highlightPath) {
+async function generateComicFromHighlight(highlightPath, roomId = null) {
     if (!isComicGenerationEnabled()) {
         console.log('ℹ️  AI漫画生成功能已禁用');
         return null;
@@ -101,7 +101,7 @@ async function generateComicFromHighlight(highlightPath) {
         }
 
         // 调用Python脚本
-        const result = await generateComicWithPython(highlightPath);
+        const result = await generateComicWithPython(highlightPath, roomId);
 
         if (result) {
             console.log(`✅ 漫画生成完成: ${path.basename(result)}`);

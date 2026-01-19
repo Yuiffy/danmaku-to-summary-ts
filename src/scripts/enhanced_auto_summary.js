@@ -257,11 +257,11 @@ async function processAudioIfNeeded(mediaPath, roomId = null) {
 }
 
 // AI文本生成
-async function generateAiText(highlightPath) {
+async function generateAiText(highlightPath, roomId = null) {
     console.log('\n🤖 开始AI文本生成...');
     
     try {
-        const result = await aiTextGenerator.generateGoodnightReply(highlightPath);
+        const result = await aiTextGenerator.generateGoodnightReply(highlightPath, roomId);
         if (result) {
             console.log(`✅ AI文本生成完成: ${path.basename(result)}`);
             return result;
@@ -274,11 +274,11 @@ async function generateAiText(highlightPath) {
 }
 
 // AI漫画生成
-async function generateAiComic(highlightPath) {
+async function generateAiComic(highlightPath, roomId = null) {
     console.log('\n🎨 开始AI漫画生成...');
     
     try {
-        const result = await aiComicGenerator.generateComicFromHighlight(highlightPath);
+        const result = await aiComicGenerator.generateComicFromHighlight(highlightPath, roomId);
         if (result) {
             console.log(`✅ AI漫画生成完成: ${path.basename(result)}`);
             return result;
@@ -499,7 +499,7 @@ const main = async () => {
             let goodnightTextPath = null;
             if (aiSettings.text) {
                 console.log(`📝 开始AI文本生成...`);
-                goodnightTextPath = await generateAiText(highlightPath);
+                goodnightTextPath = await generateAiText(highlightPath, finalRoomId);
                 console.log(`📝 AI文本生成结果: ${goodnightTextPath || 'null'}`);
             } else {
                 console.log('ℹ️  跳过AI文本生成（房间设置禁用）');
@@ -509,7 +509,7 @@ const main = async () => {
             let comicImagePath = null;
             if (aiSettings.comic) {
                 console.log(`🎨 开始AI漫画生成...`);
-                comicImagePath = await generateAiComic(highlightPath);
+                comicImagePath = await generateAiComic(highlightPath, finalRoomId);
                 console.log(`🎨 AI漫画生成结果: ${comicImagePath || 'null'}`);
             } else {
                 console.log('ℹ️  跳过AI漫画生成（房间设置禁用）');

@@ -80,17 +80,17 @@ export class ComicGeneratorService implements IComicGeneratorService {
       }
 
       this.logger.info(`开始生成漫画: ${path.basename(highlightPath)}`, { roomId });
-
-      // 设置环境变量（如果需要）
-      const env = { ...process.env };
+ 
+      // 构建命令行参数
+      const args = [this.pythonScriptPath, highlightPath];
       if (roomId) {
-        env.ROOM_ID = roomId;
+        args.push('--room-id', roomId);
       }
-
+ 
       // 调用Python脚本
       return new Promise((resolve, reject) => {
-        const pythonProcess = spawn('python', [this.pythonScriptPath, highlightPath], {
-          env,
+        const pythonProcess = spawn('python', args, {
+          env: process.env,
           cwd: path.dirname(this.pythonScriptPath),
           stdio: ['pipe', 'pipe', 'pipe']
         });
