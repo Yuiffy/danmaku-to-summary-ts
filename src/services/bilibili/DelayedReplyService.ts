@@ -9,6 +9,7 @@ import { IDelayedReplyStore } from './interfaces/IDelayedReplyStore';
 import { IBilibiliAPIService } from './interfaces/IBilibiliAPIService';
 import { DelayedReplyTask, BilibiliDynamic } from './interfaces/types';
 import { BilibiliConfigHelper } from './BilibiliConfigHelper';
+import { WeChatWorkNotifier } from '../notification/WeChatWorkNotifier';
 
 /**
  * 生成UUID
@@ -27,11 +28,15 @@ export class DelayedReplyService implements IDelayedReplyService {
   private isRunningFlag = false;
   private checkInterval: NodeJS.Timeout | null = null;
   private countdownInterval: NodeJS.Timeout | null = null;
+  private notifier?: WeChatWorkNotifier;
 
   constructor(
     private bilibiliAPI: IBilibiliAPIService,
-    private store: IDelayedReplyStore
-  ) {}
+    private store: IDelayedReplyStore,
+    notifier?: WeChatWorkNotifier
+  ) {
+    this.notifier = notifier;
+  }
 
   /**
    * 启动服务
@@ -373,6 +378,17 @@ export class DelayedReplyService implements IDelayedReplyService {
       const replyUrl = `https://www.bilibili.com/opus/${String(latestDynamic.id)}#reply${String(result.replyId)}`;
       this.logger.info(`回复链接: ${replyUrl}`);
 
+      // 发送企业微信通知
+      if (this.notifier) {
+        const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
+        const anchorName = anchorConfig?.name;
+        await this.notifier.notifyReplySuccess(
+          String(latestDynamic.id),
+          String(result.replyId),
+          anchorName
+        );
+      }
+
       // 更新任务状态
       task.status = 'completed';
       await this.store.updateTask(task.taskId, { status: 'completed' });
@@ -390,6 +406,17 @@ export class DelayedReplyService implements IDelayedReplyService {
         status: 'failed',
         error: task.error
       });
+
+      // 发送企业微信通知
+      if (this.notifier) {
+        const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
+        const anchorName = anchorConfig?.name;
+        await this.notifier.notifyReplyFailure(
+          task.uid || 'unknown',
+          task.error || '未知错误',
+          anchorName
+        );
+      }
 
       // 重试逻辑
       const delayedReplyConfig = BilibiliConfigHelper.getDelayedReplyConfig();
