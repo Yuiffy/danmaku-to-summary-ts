@@ -369,6 +369,9 @@ export class DelayedReplyService implements IDelayedReplyService {
         dynamicId: String(latestDynamic.id),
         replyId: String(result.replyId)
       });
+      // 输出回复链接
+      const replyUrl = `https://www.bilibili.com/opus/${String(latestDynamic.id)}#reply${String(result.replyId)}`;
+      this.logger.info(`回复链接: ${replyUrl}`);
 
       // 更新任务状态
       task.status = 'completed';

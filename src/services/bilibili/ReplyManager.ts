@@ -97,6 +97,9 @@ export class ReplyManager implements IReplyManager {
         dynamicId: String(task.dynamic.id),
         replyId: String(result.replyId)
       });
+      // 输出回复链接
+      const replyUrl = `https://www.bilibili.com/opus/${String(task.dynamic.id)}#reply${String(result.replyId)}`;
+      this.logger.info(`回复链接: ${replyUrl}`);
 
     } catch (error) {
       // 确保 dynamicId 以字符串形式记录日志，避免大数精度丢失
