@@ -113,6 +113,34 @@ export class DelayedReplyService implements IDelayedReplyService {
         }
       }
 
+      // 检查是否已有待处理或处理中的任务（去重逻辑）
+      const now = new Date();
+      const existingTask = Array.from(this.tasks.values()).find(
+        task => task.roomId === roomId &&
+                (task.status === 'pending' || task.status === 'processing')
+      );
+
+      if (existingTask) {
+        // 检查是否在30分钟CD内
+        const timeSinceCreation = now.getTime() - existingTask.createTime.getTime();
+        const cooldownMs = 30 * 60 * 1000; // 30分钟CD
+
+        if (timeSinceCreation < cooldownMs) {
+          const remainingMinutes = Math.ceil((cooldownMs - timeSinceCreation) / 60000);
+          this.logger.info(`跳过添加任务：房间 ${roomId} 已有待处理任务，CD剩余 ${remainingMinutes} 分钟`, {
+            roomId,
+            existingTaskId: existingTask.taskId,
+            existingStatus: existingTask.status,
+            scheduledTime: existingTask.scheduledTime.toISOString()
+          });
+          return existingTask.taskId;
+        }
+
+        // 如果CD已过，删除旧任务
+        this.logger.info(`CD已过，删除旧任务: ${existingTask.taskId}`, { roomId });
+        await this.removeTask(existingTask.taskId);
+      }
+
       // 计算延迟时间（优先使用传入的 delaySeconds，否则使用配置的 delayMinutes）
       const delayMs = delaySeconds !== undefined
         ? delaySeconds * 1000
