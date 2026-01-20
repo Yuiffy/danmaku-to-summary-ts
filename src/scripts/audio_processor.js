@@ -11,13 +11,29 @@ const unlink = promisify(fs.unlink);
 function isAudioOnlyRoom(roomId) {
     const config = configLoader.getConfig();
     const roomIdInt = parseInt(roomId);
+    const roomIdStr = String(roomId);
     
+    // 优先检查房间特定的audioOnly设置
+    if (config.ai?.roomSettings && config.ai.roomSettings[roomIdStr]) {
+        const roomConfig = config.ai.roomSettings[roomIdStr];
+        if (roomConfig.audioOnly !== undefined) {
+            const isAudioRoom = config.audio?.enabled && roomConfig.audioOnly;
+            console.log(`🔍 检查房间特定音频专用设置: roomId=${roomId}, isAudioRoom=${isAudioRoom}, roomAudioOnly=${roomConfig.audioOnly}`);
+            return isAudioRoom;
+        }
+    }
+    
+    // 回退到全局audioOnlyRooms列表
     // 新格式：audio.audioOnlyRooms
     if (config.audio?.enabled && config.audio.audioOnlyRooms) {
-        return config.audio.audioOnlyRooms.includes(roomIdInt);
+        const isAudioRoom = config.audio.audioOnlyRooms.includes(roomIdInt);
+        console.log(`🔍 检查全局音频专用房间: roomId=${roomId}, isAudioRoom=${isAudioRoom}`);
+        return isAudioRoom;
     }
     // 兼容旧格式：audioProcessing.audioOnlyRooms
-    return config.audioProcessing?.enabled && config.audioProcessing.audioOnlyRooms?.includes(roomIdInt);
+    const isAudioRoom = config.audioProcessing?.enabled && config.audioProcessing.audioOnlyRooms?.includes(roomIdInt);
+    console.log(`🔍 检查旧格式音频专用房间: roomId=${roomId}, isAudioRoom=${isAudioRoom}`);
+    return isAudioRoom;
 }
 
 // 获取房间ID从文件名（从DDTV文件名中提取）
