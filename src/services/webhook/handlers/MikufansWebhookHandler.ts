@@ -145,8 +145,8 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     const roomId = payload.EventData?.RoomId || 'unknown';
     const title = payload.EventData?.Title || '直播';
     
-    // 使用LiveSessionManager创建会话
-    this.liveSessionManager.createSession(sessionId, roomId, roomName, title);
+    // 使用LiveSessionManager创建或获取会话（使用RoomId）
+    this.liveSessionManager.createOrGetSession(roomId, roomName, title);
     
     this.logger.info(`🎬 直播开始: ${roomName} (Session: ${sessionId}, Room: ${roomId})`);
   }
@@ -155,52 +155,50 @@ export class MikufansWebhookHandler implements IWebhookHandler {
    * 处理直播结束事件
    */
   private async handleStreamEnded(sessionId: string, payload: any): Promise<void> {
-    let session = this.liveSessionManager.getSession(sessionId);
-    if (!session) {
-      // 如果没有sessionId，根据roomId查找
-      const roomId = payload.EventData?.RoomId;
-      if (roomId) {
-        session = this.liveSessionManager.getSessionByRoomId(roomId);
-      }
-    }
-
-    if (!session) {
-      this.logger.warn(`会话不存在: ${sessionId || 'unknown'}`);
+    const roomId = payload.EventData?.RoomId;
+    if (!roomId) {
+      this.logger.warn(`StreamEnded事件缺少RoomId`);
       return;
     }
 
-    this.logger.info(`🏁 直播结束 (收到事件): ${session.roomName} (Session: ${session.sessionId}, 当前片段数: ${session.segments.length})`);
+    const session = this.liveSessionManager.getSession(roomId);
+    if (!session) {
+      this.logger.warn(`会话不存在: ${roomId}`);
+      return;
+    }
+
+    this.logger.info(`🏁 直播结束 (收到事件): ${session.roomName} (Room: ${roomId}, 当前片段数: ${session.segments.length})`);
 
     // 延迟处理，等待可能的FileClosed事件
     const delayMs = 5000; // 5秒
     setTimeout(async () => {
-      await this.processStreamEnded(session.sessionId);
+      await this.processStreamEnded(roomId);
     }, delayMs);
   }
 
   /**
    * 延迟处理直播结束（等待FileClosed事件完成）
    */
-  private async processStreamEnded(sessionId: string): Promise<void> {
-    const session = this.liveSessionManager.getSession(sessionId);
+  private async processStreamEnded(roomId: string): Promise<void> {
+    const session = this.liveSessionManager.getSession(roomId);
     if (!session) {
-      this.logger.warn(`延迟处理时会话不存在: ${sessionId}`);
+      this.logger.warn(`延迟处理时会话不存在: ${roomId}`);
       return;
     }
 
-    this.logger.info(`🏁 直播结束 (延迟处理): ${session.roomName} (Session: ${session.sessionId}, 最终片段数: ${session.segments.length})`);
+    this.logger.info(`🏁 直播结束 (延迟处理): ${session.roomName} (Room: ${roomId}, 最终片段数: ${session.segments.length})`);
 
     // 检查是否需要合并
-    const shouldMerge = this.liveSessionManager.shouldMerge(session.sessionId);
+    const shouldMerge = this.liveSessionManager.shouldMerge(roomId);
 
     if (shouldMerge) {
       // 多片段场景：触发合并
-      await this.mergeAndProcessSession(session.sessionId);
+      await this.mergeAndProcessSession(roomId);
     } else if (session.segments.length === 1) {
       // 单片段场景：直接处理
-      await this.processSingleSegment(session.sessionId);
+      await this.processSingleSegment(roomId);
     } else {
-      this.logger.warn(`会话没有片段: ${session.sessionId}`);
+      this.logger.warn(`会话没有片段: ${roomId}`);
     }
   }
 
@@ -248,11 +246,11 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     }
 
     // 收集片段到会话
-    const sessionId = payload.EventData?.SessionId;
-    if (sessionId) {
-      await this.collectSegment(sessionId, normalizedPath, payload);
+    const roomId = payload.EventData?.RoomId;
+    if (roomId) {
+      await this.collectSegment(roomId, normalizedPath, payload);
     } else {
-      // 如果没有sessionId，直接处理文件（兼容旧逻辑）
+      // 如果没有roomId，直接处理文件（兼容旧逻辑）
       await this.processMikufansFile(normalizedPath, payload);
     }
   }
@@ -260,10 +258,10 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   /**
    * 收集片段到会话
    */
-  private async collectSegment(sessionId: string, videoPath: string, payload: any): Promise<void> {
-    const session = this.liveSessionManager.getSession(sessionId);
+  private async collectSegment(roomId: string, videoPath: string, payload: any): Promise<void> {
+    const session = this.liveSessionManager.getSession(roomId);
     if (!session) {
-      this.logger.warn(`会话不存在: ${sessionId}，直接处理文件`);
+      this.logger.warn(`会话不存在: ${roomId}，直接处理文件`);
       await this.processMikufansFile(videoPath, payload);
       return;
     }
@@ -286,7 +284,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
 
     // 添加片段到会话
     this.liveSessionManager.addSegment(
-      sessionId,
+      roomId,
       videoPath,
       xmlPath,
       fileOpenTime,
@@ -294,7 +292,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       eventTimestamp
     );
 
-    this.logger.info(`📦 收集片段: ${path.basename(videoPath)} (会话: ${sessionId}, 片段数: ${session.segments.length + 1})`);
+    this.logger.info(`📦 收集片段: ${path.basename(videoPath)} (会话: ${roomId}, 片段数: ${session.segments.length + 1})`);
   }
 
   /**
@@ -436,11 +434,11 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         
         // 检查是否是合并后的文件，如果是则标记会话为完成
         if (videoPath.includes('_merged')) {
-          // 从文件路径中提取sessionId
+          // 从文件路径中提取roomId
           const session = this.findSessionByVideoPath(videoPath);
           if (session) {
-            this.liveSessionManager.markAsCompleted(session.sessionId);
-            this.logger.info(`✅ 会话处理完成: ${session.sessionId}`);
+            this.liveSessionManager.markAsCompleted(session.roomId);
+            this.logger.info(`✅ 会话处理完成: ${session.roomId}`);
           }
         }
         
@@ -527,17 +525,17 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   /**
    * 合并并处理会话（多片段场景）
    */
-  private async mergeAndProcessSession(sessionId: string): Promise<void> {
-    const session = this.liveSessionManager.getSession(sessionId);
+  private async mergeAndProcessSession(roomId: string): Promise<void> {
+    const session = this.liveSessionManager.getSession(roomId);
     if (!session) {
-      this.logger.warn(`会话不存在: ${sessionId}`);
+      this.logger.warn(`会话不存在: ${roomId}`);
       return;
     }
 
-    this.logger.info(`🔄 开始合并会话: ${sessionId} (${session.segments.length} 个片段)`);
+    this.logger.info(`🔄 开始合并会话: ${roomId} (${session.segments.length} 个片段)`);
 
     // 标记为合并中
-    this.liveSessionManager.markAsMerging(sessionId);
+    this.liveSessionManager.markAsMerging(roomId);
 
     try {
       // 获取合并配置
@@ -569,7 +567,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       this.logger.info(`✅ 合并完成: ${path.basename(mergedVideoPath)}`);
 
       // 标记为处理中
-      this.liveSessionManager.markAsProcessing(sessionId);
+      this.liveSessionManager.markAsProcessing(roomId);
 
       // 处理合并后的文件
       await this.startProcessing(mergedVideoPath, mergedXmlPath, session.roomId);
@@ -581,10 +579,10 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   /**
    * 处理单个片段（单片段场景）
    */
-  private async processSingleSegment(sessionId: string): Promise<void> {
-    const session = this.liveSessionManager.getSession(sessionId);
+  private async processSingleSegment(roomId: string): Promise<void> {
+    const session = this.liveSessionManager.getSession(roomId);
     if (!session || session.segments.length === 0) {
-      this.logger.warn(`会话或片段不存在: ${sessionId}`);
+      this.logger.warn(`会话或片段不存在: ${roomId}`);
       return;
     }
 
@@ -592,7 +590,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     this.logger.info(`📄 处理单个片段: ${path.basename(segment.videoPath)}`);
 
     // 标记为处理中
-    this.liveSessionManager.markAsProcessing(sessionId);
+    this.liveSessionManager.markAsProcessing(roomId);
 
     // 直接处理单个片段
     await this.startProcessing(segment.videoPath, segment.xmlPath, session.roomId);
@@ -603,7 +601,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
    */
   private findSessionByVideoPath(videoPath: string) {
     const allSessions = this.liveSessionManager.getAllSessions();
-    for (const [sessionId, session] of allSessions.entries()) {
+    for (const [roomId, session] of allSessions.entries()) {
       for (const segment of session.segments) {
         if (segment.videoPath === videoPath) {
           return session;
