@@ -811,7 +811,7 @@ def call_google_image_api(prompt: str, reference_image_path: Optional[str] = Non
 def call_tuzi_image_api(prompt: str, reference_image_path: Optional[str] = None) -> Optional[str]:
     """
     调用tu-zi.com图像生成API
-    使用 /v1/images/generations 端点，支持参考图
+    使用 /v1/chat/completions 端点，支持参考图
     """
     config = load_config()
     tuzi_config = config["aiServices"]["tuZi"]
@@ -838,50 +838,64 @@ def call_tuzi_image_api(prompt: str, reference_image_path: Optional[str] = None)
 
         # 构建API请求
         base_url = tuzi_config.get("baseUrl", "https://api.tu-zi.com")
-        api_url = f"{base_url}/v1/images/generations"
+        api_url = f"{base_url}/v1/chat/completions"
 
         headers = {
             "Authorization": f"Bearer {tuzi_config['apiKey']}",
             "Content-Type": "application/json"
         }
 
-        # 构建请求体 - /v1/images/generations 格式
-        payload = {
-            "model": tuzi_config.get("model", "gpt-image-1.5"),
-            "prompt": prompt,
-            "n": 1,
-            "size": "9x16",
-            "quality": "4k",
-            "style": "vivid"
-        }
+        # 构建消息列表
+        messages = []
 
-        # 如果有参考图，添加到请求中
+        # 如果有参考图，添加到消息中
         if reference_image_path and os.path.exists(reference_image_path):
             # 使用 data URI 格式（data:image/png;base64,...）
             image_base64 = encode_image_to_base64(reference_image_path, with_data_uri=True)
-            payload["image"] = [image_base64]
+            messages.append({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "请参考这张图片的风格和角色形象："},
+                    {"type": "image_url", "image_url": {"url": image_base64}}
+                ]
+            })
             print(f"[INFO]  已添加参考图到请求, base64长度: {len(image_base64)} 开头：{image_base64[:80]}...")
+
+        # 添加图像生成提示词
+        messages.append({
+            "role": "user",
+            "content": prompt
+        })
 
         # 获取超时设置 (默认为360秒)
         timeout_ms = config.get("timeouts", {}).get("aiApiTimeout", 360000)
         timeout_sec = timeout_ms / 1000
-        
+
         # 重试逻辑
         max_retries = 3
         response = None
-        
+
         for attempt in range(max_retries + 1):
             try:
-                print(f"[WAIT] 正在通过tu-zi.com API生成图像... (尝试 {attempt + 1}/{max_retries + 1}, 超时: {timeout_sec}s)")
-                if attempt == 1:
-                    payload["model"] = "gpt-image-1.5"
-                    print(f"[RETRY] 第 {attempt + 1} 次重试...模型替换为{payload['model']}")
-                elif attempt == 2:
-                    payload["model"] = "gemini-2.5-flash-image-vip"
-                    print(f"[RETRY] 第 {attempt + 1} 次重试...模型替换为{payload['model']}")
-                elif (attempt == 3):
-                    payload["model"] = "gemini-3-pro-image-preview/nano-banana-2" # 含泪用2毛钱一次的超贵模型
-                    print(f"[RETRY] 第 {attempt + 1} 次重试...模型替换为{payload['model']}，含泪用3毛钱一次的超贵模型")
+                # 模型列表（按优先级）
+                models = [
+                    tuzi_config.get("model", "gpt-image-1.5"),
+                    "gpt-image-1.5",
+                    "gemini-2.5-flash-image-vip",
+                    "gemini-3-pro-image-preview/nano-banana-2"
+                ]
+                current_model = models[attempt] if attempt < len(models) else models[-1]
+
+                print(f"[WAIT] 正在通过tu-zi.com API生成图像... (尝试 {attempt + 1}/{max_retries + 1}, 超时: {timeout_sec}s, 模型: {current_model})")
+
+                # 构建请求体 - /v1/chat/completions 格式
+                payload = {
+                    "model": current_model,
+                    "messages": messages,
+                    "temperature": 0.7,
+                    "max_tokens": 100000,
+                }
+
                 print(f"[DEBUG] 发起请求，内容：{json.dumps(payload)[:100]}..., 代理: {proxies}, 超时: {timeout_sec}s")
                 response = requests.post(api_url, headers=headers, json=payload, timeout=timeout_sec, proxies=proxies)
                 print(f"[DEBUG] 收到响应，状态码: {response.status_code}, 用时: {response.elapsed.total_seconds()}s")
@@ -889,22 +903,64 @@ def call_tuzi_image_api(prompt: str, reference_image_path: Optional[str] = None)
                 if response.status_code == 200:
                     # 尝试解析响应，如果解析失败则继续重试
                     result = response.json()
-                    
+
                     # 打印响应结构以便调试
                     print(f"[DEBUG] 响应结构: {list(result.keys())}")
-                    
-                    # 处理 /v1/images/generations 响应格式 (OpenAI兼容格式)
-                    if "data" in result and isinstance(result["data"], list) and len(result["data"]) > 0:
-                        image_data = result["data"][0]
-                        
-                        # 检查是否有URL
-                        if "url" in image_data:
-                            image_url = image_data["url"]
-                            print(f"[DOWNLOAD] 下载生成的图像: {image_url}")
-                            try:
-                                image_response = requests.get(image_url, timeout=60, proxies=proxies)
-                                
-                                if image_response.status_code == 200:
+
+                    # 处理 /v1/chat/completions 响应格式
+                    if "choices" in result and len(result["choices"]) > 0:
+                        choice = result["choices"][0]
+                        message = choice.get("message", {})
+                        content = message.get("content", "")
+
+                        # 检查是否包含图像URL
+                        if content and isinstance(content, str):
+                            # 尝试从内容中提取图像URL
+                            import re
+                            url_match = re.search(r'https?://[^\s\)]+\.(?:png|jpg|jpeg|webp)', content)
+                            if url_match:
+                                image_url = url_match.group(0)
+                                print(f"[DOWNLOAD] 下载生成的图像: {image_url}")
+                                try:
+                                    image_response = requests.get(image_url, timeout=60, proxies=proxies)
+
+                                    if image_response.status_code == 200:
+                                        import tempfile
+                                        import uuid
+
+                                        temp_dir = tempfile.gettempdir()
+                                        temp_file = os.path.join(temp_dir, f"comic_tuzi_{uuid.uuid4().hex[:8]}.png")
+
+                                        with open(temp_file, 'wb') as f:
+                                            f.write(image_response.content)
+
+                                        print(f"[OK] tu-zi.com图像生成成功")
+                                        print(f"[SAVE] 图像已保存到临时文件: {temp_file}")
+                                        return temp_file
+                                    else:
+                                        print(f"[ERROR] 图像下载失败: HTTP {image_response.status_code}")
+                                        # 下载失败，继续重试
+                                        if attempt < max_retries:
+                                            print("[RETRY] 2秒后重试...")
+                                            time.sleep(2)
+                                            continue
+                                        return None
+                                except Exception as download_error:
+                                    print(f"[ERROR] 图像下载异常: {download_error}")
+                                    # 下载异常，继续重试
+                                    if attempt < max_retries:
+                                        print("[RETRY] 2秒后重试...")
+                                        time.sleep(2)
+                                        continue
+                                    return None
+
+                            # 检查是否包含base64编码的图像数据
+                            b64_match = re.search(r'data:image/[a-z]+;base64,([A-Za-z0-9+/=]+)', content)
+                            if b64_match:
+                                image_base64 = b64_match.group(1)
+                                try:
+                                    image_data_bytes = base64.b64decode(image_base64)
+
                                     import tempfile
                                     import uuid
 
@@ -912,56 +968,58 @@ def call_tuzi_image_api(prompt: str, reference_image_path: Optional[str] = None)
                                     temp_file = os.path.join(temp_dir, f"comic_tuzi_{uuid.uuid4().hex[:8]}.png")
 
                                     with open(temp_file, 'wb') as f:
-                                        f.write(image_response.content)
+                                        f.write(image_data_bytes)
 
                                     print(f"[OK] tu-zi.com图像生成成功")
                                     print(f"[SAVE] 图像已保存到临时文件: {temp_file}")
                                     return temp_file
-                                else:
-                                    print(f"[ERROR] 图像下载失败: HTTP {image_response.status_code}")
-                                    # 下载失败，继续重试
+                                except Exception as decode_error:
+                                    print(f"[WARNING] 解码base64图像失败: {decode_error}")
+                                    # 解码失败，继续重试
                                     if attempt < max_retries:
                                         print("[RETRY] 2秒后重试...")
                                         time.sleep(2)
                                         continue
                                     return None
-                            except Exception as download_error:
-                                print(f"[ERROR] 图像下载异常: {download_error}")
-                                # 下载异常，继续重试
-                                if attempt < max_retries:
-                                    print("[RETRY] 2秒后重试...")
-                                    time.sleep(2)
-                                    continue
-                                return None
-                        
-                        # 检查是否有base64编码的图像数据
-                        elif "b64_json" in image_data:
-                            image_base64 = image_data["b64_json"]
-                            try:
-                                image_data_bytes = base64.b64decode(image_base64)
-                                
-                                import tempfile
-                                import uuid
 
-                                temp_dir = tempfile.gettempdir()
-                                temp_file = os.path.join(temp_dir, f"comic_tuzi_{uuid.uuid4().hex[:8]}.png")
+                        # 检查是否有工具调用（某些API可能通过工具返回图像）
+                        tool_calls = message.get("tool_calls", [])
+                        if tool_calls:
+                            for tool_call in tool_calls:
+                                if tool_call.get("type") == "function":
+                                    function_args = tool_call.get("function", {}).get("arguments", "{}")
+                                    try:
+                                        args_json = json.loads(function_args)
+                                        if "image_url" in args_json:
+                                            image_url = args_json["image_url"]
+                                            print(f"[DOWNLOAD] 下载生成的图像: {image_url}")
+                                            try:
+                                                image_response = requests.get(image_url, timeout=60, proxies=proxies)
 
-                                with open(temp_file, 'wb') as f:
-                                    f.write(image_data_bytes)
+                                                if image_response.status_code == 200:
+                                                    import tempfile
+                                                    import uuid
 
-                                print(f"[OK] tu-zi.com图像生成成功")
-                                print(f"[SAVE] 图像已保存到临时文件: {temp_file}")
-                                return temp_file
-                            except Exception as decode_error:
-                                print(f"[WARNING] 解码base64图像失败: {decode_error}")
-                                # 解码失败，继续重试
-                                if attempt < max_retries:
-                                    print("[RETRY] 2秒后重试...")
-                                    time.sleep(2)
-                                    continue
-                                return None
-                    
-                    # 如果到这里还没返回，说明响应格式不符合预期（如 NO_IMAGE）
+                                                    temp_dir = tempfile.gettempdir()
+                                                    temp_file = os.path.join(temp_dir, f"comic_tuzi_{uuid.uuid4().hex[:8]}.png")
+
+                                                    with open(temp_file, 'wb') as f:
+                                                        f.write(image_response.content)
+
+                                                    print(f"[OK] tu-zi.com图像生成成功")
+                                                    print(f"[SAVE] 图像已保存到临时文件: {temp_file}")
+                                                    return temp_file
+                                            except Exception as download_error:
+                                                print(f"[ERROR] 图像下载异常: {download_error}")
+                                                if attempt < max_retries:
+                                                    print("[RETRY] 2秒后重试...")
+                                                    time.sleep(2)
+                                                    continue
+                                                return None
+                                    except Exception as json_error:
+                                        print(f"[WARNING] 解析工具调用参数失败: {json_error}")
+
+                    # 如果到这里还没返回，说明响应格式不符合预期
                     print(f"[ERROR] 无法从响应中提取图像数据")
                     print(f"[DEBUG] 完整响应: {json.dumps(result, ensure_ascii=False, indent=2)[:1000]}")
                     # 响应格式不符合预期，继续重试
@@ -980,7 +1038,7 @@ def call_tuzi_image_api(prompt: str, reference_image_path: Optional[str] = None)
                 if attempt < max_retries:
                     print("[RETRY] 2秒后重试...")
                     time.sleep(2)
-                
+
         # 如果彻底失败且response为None (即全是Exception)，手动return避免后续AttributeError
         if response is None:
              print("[ERROR] 所有重试均抛出异常，无API响应")
