@@ -478,13 +478,15 @@ export class MikufansWebhookHandler implements IWebhookHandler {
    * 检查并触发延迟回复
    */
   private async checkAndTriggerDelayedReply(videoPath: string, roomId: string): Promise<void> {
+    this.logger.info(`🔍 [延迟回复检查] 开始检查: roomId=${roomId}, videoPath=${path.basename(videoPath)}`);
+    
     if (!this.delayedReplyService) {
-      this.logger.debug('延迟回复服务未设置，跳过触发');
+      this.logger.warn('⚠️  延迟回复服务未设置，跳过触发');
       return;
     }
 
     if (!roomId || roomId === 'unknown') {
-      this.logger.debug('房间ID无效，跳过触发延迟回复');
+      this.logger.warn(`⚠️  房间ID无效 (${roomId})，跳过触发延迟回复`);
       return;
     }
 
@@ -497,9 +499,16 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       // 查找漫画文件
       const comicImagePath = path.join(dir, `${baseName}_COMIC_FACTORY.png`);
       
+      this.logger.info(`🔍 [延迟回复检查] 检查文件:`);
+      this.logger.info(`   晚安回复路径: ${goodnightTextPath}`);
+      this.logger.info(`   漫画路径: ${comicImagePath}`);
+      
       // 检查文件是否存在
       const hasGoodnightText = fs.existsSync(goodnightTextPath);
       const hasComicImage = fs.existsSync(comicImagePath);
+      
+      this.logger.info(`   晚安回复存在: ${hasGoodnightText}`);
+      this.logger.info(`   漫画存在: ${hasComicImage}`);
       
       // 只要有晚安回复就触发延迟回复（漫画可选）
       if (hasGoodnightText) {
@@ -520,10 +529,10 @@ export class MikufansWebhookHandler implements IWebhookHandler {
           this.logger.info(`ℹ️  延迟回复任务未添加（可能配置未启用）`);
         }
       } else {
-        this.logger.debug(`未找到晚安回复文件，跳过延迟回复`);
+        this.logger.info(`ℹ️  未找到晚安回复文件，跳过延迟回复`);
       }
     } catch (error: any) {
-      this.logger.error(`检查并触发延迟回复失败: ${error.message}`, { error });
+      this.logger.error(`❌ 检查并触发延迟回复失败: ${error.message}`, { error });
     }
   }
 

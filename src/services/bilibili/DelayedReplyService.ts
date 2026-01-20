@@ -100,22 +100,29 @@ export class DelayedReplyService implements IDelayedReplyService {
    */
   async addTask(roomId: string, goodnightTextPath: string, comicImagePath?: string, delaySeconds?: number): Promise<string> {
     try {
+      this.logger.info(`[延迟回复] 尝试添加任务: roomId=${roomId}, goodnightTextPath=${goodnightTextPath}, comicImagePath=${comicImagePath}`);
+      
       // 获取延迟回复配置
       const delayedReplySettings = BilibiliConfigHelper.getDelayedReplySettings(roomId);
       if (!delayedReplySettings) {
-        this.logger.info('延迟回复未启用，跳过添加任务', { roomId });
+        this.logger.warn('⚠️  延迟回复未启用，跳过添加任务', { roomId });
         return '';
       }
+      this.logger.info(`✅ 延迟回复配置已加载: enabled=${delayedReplySettings.enabled}, anchorEnabled=${delayedReplySettings.anchorEnabled}, delayMinutes=${delayedReplySettings.delayMinutes}`);
 
       // 获取主播UID
       let uid = BilibiliConfigHelper.getAnchorUid(roomId);
+      this.logger.info(`🔍 配置中的UID: ${uid || '未配置'}`);
+      
       if (!uid) {
         // 如果配置中没有 UID，尝试通过 API 获取
+        this.logger.info(`📡 通过API获取UID: roomId=${roomId}`);
         uid = await this.bilibiliAPI.getUidByRoomId(roomId);
         if (!uid) {
-          this.logger.warn('无法获取主播UID，跳过添加任务', { roomId });
+          this.logger.warn('⚠️  无法获取主播UID，跳过添加任务', { roomId });
           return '';
         }
+        this.logger.info(`✅ API获取UID成功: ${uid}`);
       }
 
       // 检查是否已有待处理或处理中的任务（去重逻辑）
