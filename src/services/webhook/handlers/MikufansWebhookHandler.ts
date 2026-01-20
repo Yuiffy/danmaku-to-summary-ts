@@ -155,25 +155,52 @@ export class MikufansWebhookHandler implements IWebhookHandler {
    * 处理直播结束事件
    */
   private async handleStreamEnded(sessionId: string, payload: any): Promise<void> {
-    const session = this.liveSessionManager.getSession(sessionId);
+    let session = this.liveSessionManager.getSession(sessionId);
     if (!session) {
-      this.logger.warn(`会话不存在: ${sessionId}`);
+      // 如果没有sessionId，根据roomId查找
+      const roomId = payload.EventData?.RoomId;
+      if (roomId) {
+        session = this.liveSessionManager.getSessionByRoomId(roomId);
+      }
+    }
+
+    if (!session) {
+      this.logger.warn(`会话不存在: ${sessionId || 'unknown'}`);
       return;
     }
 
-    this.logger.info(`🏁 直播结束: ${session.roomName} (Session: ${sessionId}, 片段数: ${session.segments.length})`);
+    this.logger.info(`🏁 直播结束 (收到事件): ${session.roomName} (Session: ${session.sessionId}, 当前片段数: ${session.segments.length})`);
+
+    // 延迟处理，等待可能的FileClosed事件
+    const delayMs = 5000; // 5秒
+    setTimeout(async () => {
+      await this.processStreamEnded(session.sessionId);
+    }, delayMs);
+  }
+
+  /**
+   * 延迟处理直播结束（等待FileClosed事件完成）
+   */
+  private async processStreamEnded(sessionId: string): Promise<void> {
+    const session = this.liveSessionManager.getSession(sessionId);
+    if (!session) {
+      this.logger.warn(`延迟处理时会话不存在: ${sessionId}`);
+      return;
+    }
+
+    this.logger.info(`🏁 直播结束 (延迟处理): ${session.roomName} (Session: ${session.sessionId}, 最终片段数: ${session.segments.length})`);
 
     // 检查是否需要合并
-    const shouldMerge = this.liveSessionManager.shouldMerge(sessionId);
-    
+    const shouldMerge = this.liveSessionManager.shouldMerge(session.sessionId);
+
     if (shouldMerge) {
       // 多片段场景：触发合并
-      await this.mergeAndProcessSession(sessionId);
+      await this.mergeAndProcessSession(session.sessionId);
     } else if (session.segments.length === 1) {
       // 单片段场景：直接处理
-      await this.processSingleSegment(sessionId);
+      await this.processSingleSegment(session.sessionId);
     } else {
-      this.logger.warn(`会话没有片段: ${sessionId}`);
+      this.logger.warn(`会话没有片段: ${session.sessionId}`);
     }
   }
 

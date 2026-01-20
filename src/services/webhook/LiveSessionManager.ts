@@ -103,6 +103,27 @@ export class LiveSessionManager {
   }
 
   /**
+   * 根据房间ID获取会话（返回最近有片段的活跃会话）
+   */
+  getSessionByRoomId(roomId: string): LiveSession | undefined {
+    let latestSession: LiveSession | undefined;
+    let latestTime = 0;
+
+    for (const session of this.sessions.values()) {
+      if (session.roomId === roomId && session.status !== 'completed' && session.segments.length > 0) {
+        // 找到最近有片段的会话
+        const sessionTime = session.startTime.getTime();
+        if (sessionTime > latestTime) {
+          latestTime = sessionTime;
+          latestSession = session;
+        }
+      }
+    }
+
+    return latestSession;
+  }
+
+  /**
    * 标记会话为合并中
    */
   markAsMerging(sessionId: string): void {
