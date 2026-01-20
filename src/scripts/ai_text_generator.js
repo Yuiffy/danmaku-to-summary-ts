@@ -100,59 +100,80 @@ async function generateTextWithTuZi(prompt) {
     }
 
     console.log('🤖 调用tuZi API生成文本（Gemini超频备用方案）...');
-    const textModel = tuziConfig.model || 'gemini-3-flash-preview';
-    console.log(`   模型: ${textModel}`);
-    console.log(`   温度: ${tuziConfig.temperature}`);
 
-    try {
-        const baseUrl = tuziConfig.baseUrl || 'https://api.tu-zi.com';
-        const apiUrl = `${baseUrl}/v1/chat/completions`;
+    const maxRetries = 3;
+    const baseUrl = tuziConfig.baseUrl || 'https://api.tu-zi.com';
+    const apiUrl = `${baseUrl}/v1/chat/completions`;
 
-        // 设置代理
-        let agent = null;
-        if (tuziConfig.proxy) {
-            console.log(`   使用代理: ${tuziConfig.proxy}`);
-            agent = new HttpsProxyAgent(tuziConfig.proxy);
+    // 设置代理
+    let agent = null;
+    if (tuziConfig.proxy) {
+        console.log(`   使用代理: ${tuziConfig.proxy}`);
+        agent = new HttpsProxyAgent(tuziConfig.proxy);
+    }
+
+    // 重试逻辑
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+            let textModel = tuziConfig.model || 'gemini-3-flash-preview';
+
+            // 根据重试次数切换模型
+            if (attempt === 1) {
+                textModel = 'o3-mini';
+            } else if (attempt === 2) {
+                textModel = 'gemini-3-pro';
+            } else if (attempt === 3) {
+                textModel = 'claude-haiku-4-5-20251001';
+            }
+
+            console.log(`[WAIT] 正在通过tu-zi.com API生成文本... (尝试 ${attempt + 1}/${maxRetries + 1} model: ${textModel}, 超时: 60s)`);
+
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${tuziConfig.apiKey}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    model: textModel,
+                    messages: [
+                        {
+                            role: 'user',
+                            content: prompt
+                        }
+                    ],
+                    temperature: tuziConfig.temperature,
+                    max_tokens: tuziConfig.maxTokens
+                }),
+                agent: agent,
+                timeout: 60000
+            });
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`tuZi API返回错误 ${response.status}: ${errorText}`);
+            }
+
+            const data = await response.json();
+            const text = data.choices?.[0]?.message?.content;
+
+            if (!text) {
+                throw new Error('tuZi API返回空结果');
+            }
+
+            console.log('✅ tuZi API调用成功');
+            return text;
+        } catch (error) {
+            console.error(`❌ tuZi API调用失败 (尝试 ${attempt + 1}/${maxRetries + 1}): ${error.message}`);
+
+            // 如果是最后一次尝试，抛出错误
+            if (attempt === maxRetries) {
+                throw error;
+            }
+
+            // 等待一小段时间后重试
+            await new Promise(resolve => setTimeout(resolve, 1000));
         }
-
-        const response = await fetch(apiUrl, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${tuziConfig.apiKey}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                model: textModel,
-                messages: [
-                    {
-                        role: 'user',
-                        content: prompt
-                    }
-                ],
-                temperature: tuziConfig.temperature,
-                max_tokens: tuziConfig.maxTokens
-            }),
-            agent: agent,
-            timeout: 60000
-        });
-
-        if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`tuZi API返回错误 ${response.status}: ${errorText}`);
-        }
-
-        const data = await response.json();
-        const text = data.choices?.[0]?.message?.content;
-
-        if (!text) {
-            throw new Error('tuZi API返回空结果');
-        }
-
-        console.log('✅ tuZi API调用成功');
-        return text;
-    } catch (error) {
-        console.error(`❌ tuZi API调用失败: ${error.message}`);
-        throw error;
     }
 }
 
