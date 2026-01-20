@@ -64,18 +64,25 @@ async def get_dynamic_comment_id(dynamic_id: str, credential: Credential) -> tup
     dynamic = Dynamic(dynamic_id=int(dynamic_id), credential=credential)
     info = await dynamic.get_info()
 
-    # 从返回的数据中提取comment_id和comment_type
+    # 从返回的数据中提取comment_id和major_type
     item = info.get('item', {})
     basic = item.get('basic', {})
     comment_id_str = basic.get('comment_id_str', '')
-    comment_type = basic.get('comment_type', 11)
 
-    # 根据comment_type映射到CommentResourceType
-    if comment_type == 11:
+    # 获取major_type
+    modules = item.get('modules', {})
+    module_dynamic = modules.get('module_dynamic', {})
+    major = module_dynamic.get('major', {})
+    major_type = major.get('type', '')
+
+    log(f"[INFO] major_type: {major_type}")
+
+    # 根据major_type映射到CommentResourceType
+    if major_type == 'MAJOR_TYPE_DRAW':
         comment_resource_type = CommentResourceType.DYNAMIC_DRAW
-    elif comment_type == 17:
+    elif major_type in ['MAJOR_TYPE_OPUS', 'MAJOR_TYPE_COMMON', 'MAJOR_TYPE_ARCHIVE']:
         comment_resource_type = CommentResourceType.DYNAMIC
-    elif comment_type == 12:
+    elif major_type == 'MAJOR_TYPE_ARTICLE':
         comment_resource_type = CommentResourceType.ARTICLE
     else:
         comment_resource_type = CommentResourceType.DYNAMIC_DRAW
