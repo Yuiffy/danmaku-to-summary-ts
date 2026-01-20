@@ -29,14 +29,14 @@ const AISchema = Joi.object({
             model: Joi.string().default('gemini-3-flash-preview'),
             temperature: Joi.number().default(0.7),
             maxTokens: Joi.number().default(100000),
-            proxy: Joi.string().allow('').default('')
+            proxy: Joi.string().allow('', null).default('')
         }).default(),
         tuZi: Joi.object({
             enabled: Joi.boolean().default(true),
             apiKey: Joi.string().allow('').default(''),
             baseUrl: Joi.string().default('https://api.tu-zi.com'),
             model: Joi.string().default('gemini-3-flash-preview'),
-            proxy: Joi.string().allow('').default('')
+            proxy: Joi.string().allow('', null).default('')
         }).default()
     }).default(),
     comic: Joi.object({
@@ -49,14 +49,14 @@ const AISchema = Joi.object({
             enabled: Joi.boolean().default(true),
             apiKey: Joi.string().allow('').default(''),
             model: Joi.string().default('imagen-3.0-generate-001'),
-            proxy: Joi.string().allow('').default('')
+            proxy: Joi.string().allow('', null).default('')
         }).default(),
         tuZi: Joi.object({
             enabled: Joi.boolean().default(true),
             apiKey: Joi.string().allow('').default(''),
             baseUrl: Joi.string().default('https://api.tu-zi.com'),
             model: Joi.string().default('dall-e-3'),
-            proxy: Joi.string().allow('').default('')
+            proxy: Joi.string().allow('', null).default('')
         }).default()
     }).default(),
     defaultNames: Joi.object({
