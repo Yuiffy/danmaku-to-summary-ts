@@ -121,6 +121,11 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       return;
     }
 
+    // 处理会话结束事件
+    if (eventType === 'SessionEnded') {
+      // 暂无…等StreamEnded再处理
+    }
+
     // 处理直播结束事件
     if (eventType === 'StreamEnded') {
       await this.handleStreamEnded(sessionId, payload);
