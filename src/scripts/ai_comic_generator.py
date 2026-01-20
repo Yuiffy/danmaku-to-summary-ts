@@ -867,7 +867,7 @@ def call_tuzi_image_api(prompt: str, reference_image_path: Optional[str] = None)
         timeout_sec = timeout_ms / 1000
         
         # 重试逻辑
-        max_retries = 2
+        max_retries = 3
         response = None
         
         for attempt in range(max_retries + 1):
@@ -876,8 +876,11 @@ def call_tuzi_image_api(prompt: str, reference_image_path: Optional[str] = None)
                 if attempt == 1:
                     payload["model"] = "gpt-image-1.5"
                     print(f"[RETRY] 第 {attempt + 1} 次重试...模型替换为{payload['model']}")
-                if (attempt == 2):
-                    payload["model"] = "nano-banana-2" # 含泪用3毛钱一次的超贵模型
+                elif attempt == 2:
+                    payload["model"] = "nano-banana-vip"
+                    print(f"[RETRY] 第 {attempt + 1} 次重试...模型替换为{payload['model']}")
+                elif (attempt == 3):
+                    payload["model"] = "gemini-3-pro-image-preview/nano-banana-2" # 含泪用2毛钱一次的超贵模型
                     print(f"[RETRY] 第 {attempt + 1} 次重试...模型替换为{payload['model']}，含泪用3毛钱一次的超贵模型")
                 print(f"[DEBUG] 发起请求，内容：{json.dumps(payload)[:100]}..., 代理: {proxies}, 超时: {timeout_sec}s")
                 response = requests.post(api_url, headers=headers, json=payload, timeout=timeout_sec, proxies=proxies)
