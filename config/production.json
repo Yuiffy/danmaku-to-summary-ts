@@ -122,7 +122,8 @@
         "fanName": "旁汀生",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
-        "enableDelayedReply": true
+        "enableDelayedReply": true,
+        "wordLimit": 500
       },
       "1820703922": {
         "audioOnly": true,
