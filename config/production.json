@@ -94,6 +94,7 @@
         "fanName": "饼干岁",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
+        "enableDelayedReply": true,
         "wordLimit": 800
       },
       "628684": {
@@ -117,7 +118,8 @@
       },
       "31368705": {
         "audioOnly": true,
-        "characterDescription": "米汀Nagisa，银发灰瞳，戴帽子的女性推理社社员",
+        "referenceImage": "public/reference_images/米汀.png",
+        "characterDescription": "米汀Nagisa，银发灰瞳，戴帽子的女性推理社社员。粉丝“旁汀生”是怀表或者猫头鹰形象小生物",
         "anchorName": "米米",
         "fanName": "旁汀生",
         "enableTextGeneration": true,
@@ -127,6 +129,7 @@
       },
       "1820703922": {
         "audioOnly": true,
+        "referenceImage": "public/reference_images/花礼电飞鼠.png",
         "characterDescription": "花礼Harei，黑发蓝瞳鼠耳的女生",
         "anchorName": "礼礼",
         "fanName": "猫",
@@ -137,7 +140,8 @@
       },
       "23260993": {
         "audioOnly": true,
-        "characterDescription": "瑞娅_Rhea，白发紫瞳的北欧魔法学院少女",
+        "referenceImage": "public/reference_images/瑞娅.png",
+        "characterDescription": "瑞娅_Rhea，白发紫瞳的北欧魔法学院少女。粉丝”瑞世糖“是她的魔法小助手，外形是个方形的瑞士糖",
         "anchorName": "瑞瑞",
         "fanName": "瑞世糖",
         "enableTextGeneration": true,
@@ -156,7 +160,8 @@
       },
       "22470216": {
         "audioOnly": true,
-        "characterDescription": "悠亚Yua，银发蓝瞳的喜欢企鹅的女生",
+        "referenceImage": "public/reference_images/悠亚外套眼镜.png",
+        "characterDescription": "悠亚Yua，银发蓝瞳的喜欢企鹅的女生；粉丝“悠悠球”是蓝色的有细细手脚的“uqu”表情的悠悠球状生物",
         "anchorName": "小悠",
         "fanName": "悠悠球",
         "enableTextGeneration": true,
@@ -186,7 +191,7 @@
       "1713546334": {
         "audioOnly": true,
         "referenceImage": "public/reference_images/Hazel_灰泽满_立绘.png",
-        "characterDescription": "灰泽满Hazel（永远16岁的女高中生，浅色短发，风纪委员，身上挂着很多果冻形状的饰品，随身带着果冻应急储备箱，性格有些偏执和元气）",
+        "characterDescription": "灰泽满Hazel（永远16岁的女高中生，浅色短发，风纪委员，身上挂着很多果冻形状的饰品，随身带着果冻应急储备箱），粉丝“绿冻”是绿色的果冻小生物",
         "anchorName": "灰泽满Hazel",
         "fanName": "绿冻",
         "enableTextGeneration": true,
@@ -196,7 +201,7 @@
       "1713548468": {
         "audioOnly": true,
         "referenceImage": "public/reference_images/Liko_莉蔻_立绘.png",
-        "characterDescription": "莉蔻Liko（长着兔耳的少女，戴着大帽子，性格胆小没见过世面，手里常拿着胡萝卜棒冰，虽然是秘密组织的特工但看起来很弱气）",
+        "characterDescription": "莉蔻Liko（长着兔耳的少女，戴着大帽子，性格胆小没见过世面，手里常拿着胡萝卜棒冰，虽然是秘密组织的特工但看起来很弱气）。粉丝“蔻萝特”是抱着胡萝卜的小兔子",
         "anchorName": "莉蔻Liko",
         "fanName": "蔻萝特",
         "enableTextGeneration": true,
@@ -208,7 +213,7 @@
         "referenceImage": "public/reference_images/Kloa_克罗雅_立绘.png",
         "characterDescription": "克罗雅Kloa（混沌属性的少女，头顶天使光环但背后是黑色的恶魔翅膀，戴着黑色头纱，表情慵懒，喜欢睡觉和发呆，废柴神造物）",
         "anchorName": "克罗雅Kloa",
-        "fanName": "信徒",
+        "fanName": "雅团子",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
           "enableDelayedReply": true
@@ -216,7 +221,7 @@
       "1741667419": {
         "audioOnly": true,
         "referenceImage": "public/reference_images/十六萤Izayoi.png",
-        "characterDescription": "十六萤Izayoi（拥有浣熊耳朵和毛茸茸大尾巴的少女，面无表情的三无特工，穿着女仆装或异域服饰，气质清冷，经常用尾巴把自己裹住）",
+        "characterDescription": "十六萤Izayoi（拥有浣熊耳朵和毛茸茸大尾巴的少女，面无表情的三无特工，穿着女仆装或异域服饰，气质清冷，经常用尾巴把自己裹住）。粉丝“照夜萤”是小浣熊形象",
         "anchorName": "十六萤Izayoi",
         "fanName": "照夜萤",
         "enableTextGeneration": true,
