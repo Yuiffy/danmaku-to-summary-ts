@@ -877,7 +877,7 @@ def call_tuzi_image_api(prompt: str, reference_image_path: Optional[str] = None)
                     payload["model"] = "gpt-image-1.5"
                     print(f"[RETRY] 第 {attempt + 1} 次重试...模型替换为{payload['model']}")
                 elif attempt == 2:
-                    payload["model"] = "nano-banana-vip"
+                    payload["model"] = "gemini-2.5-flash-image-vip"
                     print(f"[RETRY] 第 {attempt + 1} 次重试...模型替换为{payload['model']}")
                 elif (attempt == 3):
                     payload["model"] = "gemini-3-pro-image-preview/nano-banana-2" # 含泪用2毛钱一次的超贵模型
