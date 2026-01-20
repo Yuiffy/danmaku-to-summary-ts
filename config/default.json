@@ -46,7 +46,7 @@
       "provider": "gemini",
       "gemini": {
         "apiKey": "",
-        "model": "gemini-3-flash",
+        "model": "gemini-3-flash-preview",
         "temperature": 0.7,
         "maxTokens": 100000,
         "proxy": ""
@@ -55,7 +55,7 @@
         "enabled": true,
         "apiKey": "",
         "baseUrl": "https://api.tu-zi.com",
-        "model": "gemini-3-flash",
+        "model": "gemini-3-flash-preview",
         "proxy": ""
       }
     },

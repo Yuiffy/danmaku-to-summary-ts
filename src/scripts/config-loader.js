@@ -26,7 +26,7 @@ const AISchema = Joi.object({
         provider: Joi.string().default('gemini'),
         gemini: Joi.object({
             apiKey: Joi.string().allow('').default(''),
-            model: Joi.string().default('gemini-3-flash'),
+            model: Joi.string().default('gemini-3-flash-preview'),
             temperature: Joi.number().default(0.7),
             maxTokens: Joi.number().default(100000),
             proxy: Joi.string().allow('').default('')
@@ -35,7 +35,7 @@ const AISchema = Joi.object({
             enabled: Joi.boolean().default(true),
             apiKey: Joi.string().allow('').default(''),
             baseUrl: Joi.string().default('https://api.tu-zi.com'),
-            model: Joi.string().default('gemini-3-flash'),
+            model: Joi.string().default('gemini-3-flash-preview'),
             proxy: Joi.string().allow('').default('')
         }).default()
     }).default(),
