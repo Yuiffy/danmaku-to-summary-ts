@@ -78,11 +78,15 @@ export class FileMerger {
       const mergedDanmakus: any[] = [];
 
       for (const segment of segments) {
-        // 解析XML文件
-        const danmakus = await this.parseXml(segment.xmlPath);
+        // 解析XML文件（带超时）
+        const danmakus = await this.withTimeout(
+          this.parseXml(segment.xmlPath),
+          30000, // 30秒超时
+          `解析XML文件超时: ${path.basename(segment.xmlPath)}`
+        );
 
         // 调整弹幕时间戳
-        const adjustedDanmakus = danmakus.map(d => ({
+        const adjustedDanmakus = danmakus.map((d: any) => ({
           ...d,
           time: d.time + currentTimeOffset
         }));
@@ -90,8 +94,13 @@ export class FileMerger {
         // 添加到合并列表
         mergedDanmakus.push(...adjustedDanmakus);
 
-        // 更新时间偏移量（加上当前片段时长）
-        currentTimeOffset += await this.getSegmentDuration(segment);
+        // 更新时间偏移量（加上当前片段时长，带超时）
+        const duration = await this.withTimeout(
+          this.getSegmentDuration(segment),
+          30000, // 30秒超时
+          `获取视频时长超时: ${path.basename(segment.videoPath)}`
+        );
+        currentTimeOffset += duration;
 
         this.logger.info(`处理片段: ${path.basename(segment.xmlPath)}, 偏移量: ${currentTimeOffset}ms`);
       }
@@ -104,6 +113,18 @@ export class FileMerger {
       this.logger.error('合并XML文件失败', { error });
       throw error;
     }
+  }
+
+  /**
+   * 添加超时包装
+   */
+  private withTimeout<T>(promise: Promise<T>, timeoutMs: number, errorMessage: string): Promise<T> {
+    return Promise.race([
+      promise,
+      new Promise<T>((_, reject) =>
+        setTimeout(() => reject(new Error(errorMessage)), timeoutMs)
+      )
+    ]);
   }
 
   /**
@@ -193,20 +214,34 @@ export class FileMerger {
   private async parseXml(xmlPath: string): Promise<any[]> {
     try {
       const content = fs.readFileSync(xmlPath, 'utf8');
-      // 简单的XML解析，实际实现可能需要更复杂的解析逻辑
-      // 这里假设XML格式为 <d><p>...</p><p>...</p></d>
       const danmakus: any[] = [];
 
-      // 提取弹幕内容
-      const pMatches = content.match(/<p[^>]*>([^<]*)<\/p>/g);
-      if (pMatches) {
-        pMatches.forEach((match, index) => {
-          const contentMatch = match.match(/>([^<]*)</);
-          if (contentMatch) {
-            danmakus.push({
-              time: index * 1000, // 简化处理，实际需要解析真实时间戳
-              content: contentMatch[1]
-            });
+      // 解析弹幕条目 <d p="time,..." user="username">content</d>
+      const dMatches = content.match(/<d\s+[^>]*>[^<]*<\/d>/g);
+      if (dMatches) {
+        dMatches.forEach((match) => {
+          // 提取p属性中的时间戳（第一个值）
+          const pMatch = match.match(/p="([^"]*)"/);
+          if (pMatch) {
+            const pValues = pMatch[1].split(',');
+            const time = parseFloat(pValues[0]); // 时间戳（秒）
+
+            // 提取user属性
+            const userMatch = match.match(/user="([^"]*)"/);
+            const user = userMatch ? userMatch[1] : '';
+
+            // 提取弹幕内容（在<d>标签之后，直到</d>）
+            const contentMatch = match.match(/>([^<]*)</);
+            const contentText = contentMatch ? contentMatch[1] : '';
+
+            if (!isNaN(time)) {
+              danmakus.push({
+                time: time * 1000, // 转换为毫秒
+                content: contentText,
+                user: user,
+                p: pMatch[1] // 保留原始p属性
+              });
+            }
           }
         });
       }
@@ -223,10 +258,29 @@ export class FileMerger {
    */
   private async generateXml(danmakus: any[], outputXmlPath: string): Promise<void> {
     try {
-      let xmlContent = '<?xml version="1.0" encoding="UTF-8"?>\n<i>\n';
+      let xmlContent = '<?xml version="1.0" encoding="utf-8"?>\n';
+      xmlContent += '<?xml-stylesheet type="text/xsl" href="#s"?>\n';
+      xmlContent += '<i>\n';
+      xmlContent += '  <chatserver>chat.bilibili.com</chatserver>\n';
+      xmlContent += '  <chatid>0</chatid>\n';
+      xmlContent += '  <mission>0</mission>\n';
+      xmlContent += '  <maxlimit>1000</maxlimit>\n';
+      xmlContent += '  <state>0</state>\n';
+      xmlContent += '  <real_name>0</real_name>\n';
+      xmlContent += '  <source>0</source>\n';
+      xmlContent += '  <BililiveRecorder version="2.18.0" />\n';
+      xmlContent += '  <BililiveRecorderRecordInfo roomid="0" shortid="0" name="Merged" title="Merged" areanameparent="" areanamechild="" start_time="" />\n';
+      xmlContent += '  <BililiveRecorderXmlStyle><z:stylesheet version="1.0" id="s" xml:id="s" xmlns:z="http://www.w3.org/1999/XSL/Transform"><z:output method="html"/><z:template match="/"><html><meta name="viewport" content="width=device-width"/><title>mikufans录播姬弹幕文件 - <z:value-of select="/i/BililiveRecorderRecordInfo/@name"/></title><style>body{margin:0}h1,h2,p,table{margin-left:5px}table{border-spacing:0}td,th{border:1px solid grey;padding:1px}th{position:sticky;top:0;background:#4098de}tr:hover{background:#d9f4ff}div{overflow:auto;max-height:80vh;max-width:100vw;width:fit-content}</style><h1><a href="https://rec.danmuji.org">mikufans录播姬</a>弹幕XML文件</h1><p>本文件不支持在 IE 浏览器里预览，请使用 Chrome Firefox Edge 等浏览器。</p><p>文件用法参考文档 <a href="https://rec.danmuji.org/user/danmaku/">https://rec.danmuji.org/user/danmaku/</a></p><table><tr><td>录播姬版本</td><td><z:value-of select="/i/BililiveRecorder/@version"/></td></tr><tr><td>房间号</td><td><z:value-of select="/i/BililiveRecorderRecordInfo/@roomid"/></td></tr><tr><td>主播名</td><td><z:value-of select="/i/BililiveRecorderRecordInfo/@name"/></td></tr><tr><td>录制开始时间</td><td><z:value-of select="/i/BililiveRecorderRecordInfo/@start_time"/></td></tr><tr><td><a href="#d">弹幕</a></td><td>共<z:value-of select="count(/i/d)"/>条记录</td></tr><tr><td><a href="#guard">上船</a></td><td>共<z:value-of select="count(/i/guard)"/>条记录</td></tr><tr><td><a href="#sc">SC</a></td><td>共<z:value-of select="count(/i/sc)"/>条记录</td></tr><tr><td><a href="#gift">礼物</a></td><td>共<z:value-of select="count(/i/gift)"/>条记录</td></tr></table><h2 id="d">弹幕</h2><div id="dm"><table><tr><th>用户名</th><th>出现时间</th><th>用户ID</th><th>弹幕</th><th>参数</th></tr><z:for-each select="/i/d"><tr><td><z:value-of select="@user"/></td><td></td><td></td><td><z:value-of select="."/></td><td><z:value-of select="@p"/></td></tr></z:for-each></table></div><script>Array.from(document.querySelectorAll(\'#dm tr\')).slice(1).map(t=>t.querySelectorAll(\'td\')).forEach(t=>{let p=t[4].textContent.split(\',\'),a=p[0];t[1].textContent=`${(Math.floor(a/60/60)+\'\').padStart(2,0)}:${(Math.floor(a/60%60)+\'\').padStart(2,0)}:${(a%60).toFixed(3).padStart(6,0)}`;t[2].innerHTML=`<a target=_blank rel="nofollow noreferrer" href="https://space.bilibili.com/${p[6]}">${p[6]}</a>`})</script><h2 id="guard">舰长购买</h2><div><table><tr><th>用户名</th><th>用户ID</th><th>舰长等级</th><th>购买数量</th><th>出现时间</th></tr><z:for-each select="/i/guard"><tr><td><z:value-of select="@user"/></td><td><a rel="nofollow noreferrer"><z:attribute name="href"><z:text>https://space.bilibili.com/</z:text><z:value-of select="@uid" /></z:attribute><z:value-of select="@uid"/></a></td><td><z:value-of select="@level"/></td><td><z:value-of select="@count"/></td><td><z:value-of select="@ts"/></td></tr></z:for-each></table></div><h2 id="sc">SuperChat 醒目留言</h2><div><table><tr><th>用户名</th><th>用户ID</th><th>内容</th><th>显示时长</th><th>价格</th><th>出现时间</th></tr><z:for-each select="/i/sc"><tr><td><z:value-of select="@user"/></td><td><a rel="nofollow noreferrer"><z:attribute name="href"><z:text>https://space.bilibili.com/</z:text><z:value-of select="@uid" /></z:attribute><z:value-of select="@uid"/></a></td><td><z:value-of select="."/></td><td><z:value-of select="@time"/></td><td><z:value-of select="@price"/></td><td><z:value-of select="@ts"/></td></tr></z:for-each></table></div><h2 id="gift">礼物</h2><div><table><tr><th>用户名</th><th>用户ID</th><th>礼物名</th><th>礼物数量</th><th>出现时间</th></tr><z:for-each select="/i/gift"><tr><td><z:value-of select="@user"/></td><td><a rel="nofollow noreferrer"><z:attribute name="href"><z:text>https://space.bilibili.com/</z:text><z:value-of select="@uid" /></z:attribute><z:value-of select="@uid"/></a></td><td><z:value-of select="@giftname"/></td><td><z:value-of select="@giftcount"/></td><td><z:value-of select="@ts"/></td></tr></z:for-each></table></div></html></z:template></z:stylesheet></BililiveRecorderXmlStyle>\n';
 
-      danmakus.forEach(d => {
-        xmlContent += `  <p>${d.time}</p>\n`;
+      // 添加弹幕条目
+      danmakus.forEach((d: any) => {
+        // 将毫秒转换为秒
+        const timeInSeconds = (d.time / 1000).toFixed(3);
+        // 重新构建p属性，更新时间戳
+        const pValues = d.p.split(',');
+        pValues[0] = timeInSeconds;
+        const newP = pValues.join(',');
+        xmlContent += `  <d p="${newP}" user="${d.user}">${d.content}</d>\n`;
       });
 
       xmlContent += '</i>';
