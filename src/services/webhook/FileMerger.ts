@@ -245,15 +245,30 @@ export class FileMerger {
     return new Promise((resolve, reject) => {
       const ffmpeg = spawn('ffmpeg', args, { windowsHide: true });
 
+      let stderrOutput = '';
+
+      ffmpeg.stderr?.on('data', (data: Buffer) => {
+        stderrOutput += data.toString();
+      });
+
       ffmpeg.on('close', (code: number | null) => {
         if (code === 0) {
           resolve();
         } else {
-          reject(new Error(`ffmpeg exited with code ${code}`));
+          const errorMsg = stderrOutput || `Unknown error`;
+          this.logger.error(`ffmpeg执行失败`, {
+            code,
+            args: args.join(' '),
+            stderr: errorMsg.substring(0, 500) // 只记录前500字符
+          });
+          reject(new Error(`ffmpeg exited with code ${code}: ${errorMsg.substring(0, 200)}`));
         }
       });
 
-      ffmpeg.on('error', reject);
+      ffmpeg.on('error', (error) => {
+        this.logger.error(`ffmpeg进程错误`, { error: error.message });
+        reject(error);
+      });
     });
   }
 
