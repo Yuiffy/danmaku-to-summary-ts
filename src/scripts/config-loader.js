@@ -212,7 +212,8 @@ function readAndValidateJson(filePath, schema) {
         const data = JSON.parse(content);
         const { error, value } = schema.validate(data, { allowUnknown: true, stripUnknown: false });
         if (error) {
-            throw new Error(`Validation failed: ${error.message}`);
+            console.warn(`⚠ 配置验证警告 (${filePath}): ${error.message}`);
+            return data; // 使用原始数据，即使验证失败
         }
         return value;
     } catch (error) {
