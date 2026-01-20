@@ -501,13 +501,18 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       const hasGoodnightText = fs.existsSync(goodnightTextPath);
       const hasComicImage = fs.existsSync(comicImagePath);
       
-      if (hasGoodnightText && hasComicImage) {
-        this.logger.info(`✅ 找到晚安回复和漫画文件，触发延迟回复任务`);
+      // 只要有晚安回复就触发延迟回复（漫画可选）
+      if (hasGoodnightText) {
+        this.logger.info(`✅ 找到晚安回复文件，触发延迟回复任务`);
         this.logger.info(`   房间ID: ${roomId}`);
         this.logger.info(`   晚安回复: ${path.basename(goodnightTextPath)}`);
-        this.logger.info(`   漫画: ${path.basename(comicImagePath)}`);
+        if (hasComicImage) {
+          this.logger.info(`   漫画: ${path.basename(comicImagePath)}`);
+        } else {
+          this.logger.info(`   漫画: 未生成（将只发送晚安回复）`);
+        }
         
-        const taskId = await this.delayedReplyService.addTask(roomId, goodnightTextPath, comicImagePath);
+        const taskId = await this.delayedReplyService.addTask(roomId, goodnightTextPath, hasComicImage ? comicImagePath : '');
         
         if (taskId) {
           this.logger.info(`✅ 延迟回复任务已触发: ${taskId}`);
@@ -515,7 +520,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
           this.logger.info(`ℹ️  延迟回复任务未添加（可能配置未启用）`);
         }
       } else {
-        this.logger.debug(`未找到完整的延迟回复文件: 晚安回复=${hasGoodnightText}, 漫画=${hasComicImage}`);
+        this.logger.debug(`未找到晚安回复文件，跳过延迟回复`);
       }
     } catch (error: any) {
       this.logger.error(`检查并触发延迟回复失败: ${error.message}`, { error });
