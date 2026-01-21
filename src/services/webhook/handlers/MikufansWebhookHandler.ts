@@ -26,11 +26,13 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   private fileMerger = new FileMerger();
   private delayedReplyService?: IDelayedReplyService;
 
-  // 动态延迟等待定时器（roomId -> NodeJS.Timeout）
+  // 动态延迟等待定时器(roomId -> NodeJS.Timeout)
   private delayTimers: Map<string, NodeJS.Timeout> = new Map();
-  // SessionEnded后的延迟处理定时器（roomId -> NodeJS.Timeout）
+  // SessionEnded后的延迟处理定时器(roomId -> NodeJS.Timeout)
   private sessionEndedTimers: Map<string, NodeJS.Timeout> = new Map();
-  // 最大等待时间（毫秒）
+  // SessionEnded延迟期间收到的待处理文件(roomId -> {videoPath, payload}[])
+  private pendingFiles: Map<string, Array<{videoPath: string, payload: any}>> = new Map();
+  // 最大等待时间(毫秒)
   private readonly MAX_DELAY_MS = 30000; // 30秒
 
 
@@ -70,7 +72,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
 
       // 处理事件
       await this.handleEvent(payload, eventType);
-      
+
       res.send('Mikufans processing started');
     } catch (error: any) {
       this.logger.error(`处理Mikufans Webhook时出错: ${error.message}`, { error });
@@ -105,12 +107,12 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     this.logger.info(`\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬`);
     this.logger.info(`📅 时间: ${eventTime}`);
     this.logger.info(`📨 事件 (mikufans): ${eventType}`);
-    
+
     // 提取主播信息
     const roomName = payload.EventData?.Name || '未知主播';
     const roomId = payload.EventData?.RoomId || '未知房间';
     this.logger.info(`👤 主播: ${roomName} (房间: ${roomId})`);
-    
+
     this.logger.info(`📦 事件数据:`, { payload });
     this.logger.info(`▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n`);
   }
@@ -157,10 +159,10 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     const roomName = payload.EventData?.Name || '未知主播';
     const roomId = payload.EventData?.RoomId || 'unknown';
     const title = payload.EventData?.Title || '直播';
-    
+
     // 使用LiveSessionManager创建或获取会话（使用RoomId）
     this.liveSessionManager.createOrGetSession(roomId, roomName, title);
-    
+
     // 如果有SessionEnded延迟定时器，取消它（说明直播重新开始了）
     const existingTimer = this.sessionEndedTimers.get(roomId);
     if (existingTimer) {
@@ -168,7 +170,14 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       this.sessionEndedTimers.delete(roomId);
       this.logger.info(`🔄 取消SessionEnded延迟处理: ${roomId} (检测到SessionStart)`);
     }
-    
+
+    // 清除待处理的文件（说明是断线重连，这些文件属于当前会话）
+    const pendingFiles = this.pendingFiles.get(roomId);
+    if (pendingFiles && pendingFiles.length > 0) {
+      this.logger.info(`🔄 清除待处理文件: ${roomId} (${pendingFiles.length}个文件，属于当前会话)`);
+      this.pendingFiles.delete(roomId);
+    }
+
     this.logger.info(`🎬 直播开始: ${roomName} (Session: ${sessionId}, Room: ${roomId})`);
   }
 
@@ -214,11 +223,24 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     const session = this.liveSessionManager.getSession(roomId);
     if (session) {
       this.logger.info(`📝 延迟处理时发现会话已存在，跳过处理: ${roomId}`);
+      // 清除待处理文件（这些文件属于新会话）
+      this.pendingFiles.delete(roomId);
       return;
     }
 
-    this.logger.info(`📝 SessionEnded延迟处理: ${roomId} (会话仍不存在，将等待FileClosed事件)`);
-    // 不做任何处理，等待FileClosed事件时，由于会话不存在，会直接处理文件
+    this.logger.info(`📝 SessionEnded延迟结束: ${roomId} (会话仍不存在，开始处理待处理文件)`);
+
+    // 处理延迟期间收到的文件
+    const pendingFiles = this.pendingFiles.get(roomId);
+    if (pendingFiles && pendingFiles.length > 0) {
+      this.logger.info(`📦 处理 ${pendingFiles.length} 个待处理文件`);
+      for (const {videoPath, payload} of pendingFiles) {
+        await this.processMikufansFile(videoPath, payload);
+      }
+      this.pendingFiles.delete(roomId);
+    } else {
+      this.logger.info(`ℹ️  没有待处理的文件`);
+    }
   }
 
   /**
@@ -297,13 +319,13 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     const basePath = config.webhook.endpoints.mikufans.basePath || 'D:/files/videos/DDTV录播';
     const fullPath = path.join(basePath, relativePath);
     const normalizedPath = path.normalize(fullPath);
-    
+
     this.logger.info(`📁 文件路径: ${normalizedPath}`);
-    
+
     // 检查文件扩展名
     const ext = path.extname(normalizedPath).toLowerCase();
     const supportedExtensions = ['.mp4', '.flv', '.mkv', '.ts', '.mov', '.m4a', '.aac', '.mp3', '.wav'];
-    
+
     if (!supportedExtensions.includes(ext)) {
       this.logger.warn(`不支持的文件类型: ${ext}`);
       return;
@@ -315,7 +337,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         const fileSize = fs.statSync(normalizedPath).size;
         const fileSizeInMB = fileSize / (1024 * 1024);
         const minSizeMB = 1; // 最小处理大小：1MB
-        
+
         if (fileSizeInMB < minSizeMB) {
           this.logger.info(`⏭️  文件过小 (${fileSizeInMB.toFixed(2)}MB < ${minSizeMB}MB)，跳过处理: ${path.basename(normalizedPath)}`);
           return;
@@ -344,15 +366,18 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       // 检查是否有SessionEnded延迟定时器
       const sessionEndedTimer = this.sessionEndedTimers.get(roomId);
       if (sessionEndedTimer) {
-        // 有SessionEnded延迟定时器，说明是网络不稳定的情况
-        // 取消定时器，直接处理文件
-        clearTimeout(sessionEndedTimer);
-        this.sessionEndedTimers.delete(roomId);
-        this.logger.info(`📝 检测到SessionEnded延迟定时器，取消并直接处理文件: ${roomId}`);
+        // 有SessionEnded延迟定时器，说明在等待确认是否断线重连
+        // 将文件加入待处理队列，等待延迟结束后处理
+        if (!this.pendingFiles.has(roomId)) {
+          this.pendingFiles.set(roomId, []);
+        }
+        this.pendingFiles.get(roomId)!.push({videoPath, payload});
+        this.logger.info(`📝 SessionEnded延迟期间收到文件，加入待处理队列: ${roomId} (${path.basename(videoPath)})`);
       } else {
+        // 没有延迟定时器，说明会话已经结束，直接处理
         this.logger.warn(`会话不存在: ${roomId}，直接处理文件`);
+        await this.processMikufansFile(videoPath, payload);
       }
-      await this.processMikufansFile(videoPath, payload);
       return;
     }
 
@@ -413,7 +438,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     this.duplicateGuard.markAsProcessing(filePath);
 
     this.logger.info(`FileClosed事件：检查文件稳定... (${fileName})`);
-    
+
     // 等待文件稳定
     const isStable = await this.stabilityChecker.waitForFileStability(filePath);
     if (!isStable) {
@@ -451,22 +476,23 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       this.logger.info(`ℹ️ 查找弹幕文件时出错: ${error.message}`);
     }
 
-    // 启动处理流程
+    // 获取roomId
     let roomId = payload.EventData?.RoomId || null;
-    
+
     // 如果 payload 中没有 roomId，尝试从文件名中提取
     if (!roomId) {
-      const fileName = path.basename(filePath);
+      const fileNameForMatch = path.basename(filePath);
       // 尝试匹配 "录制-23197314-..." 或 "23197314-..." 格式
-      const match = fileName.match(/(?:录制-)?(\d+)-/);
+      const match = fileNameForMatch.match(/(?:录制-)?(\d+)-/);
       if (match) {
         roomId = match[1];
         this.logger.info(`🔍 从文件名提取房间ID: ${roomId}`);
       }
     }
-    
-    // 如果仍然没有 roomId，使用 'unknown'
+
     const finalRoomId = roomId || 'unknown';
+
+    // 启动处理流程
     await this.startProcessing(filePath, targetXml, finalRoomId);
   }
 
@@ -478,13 +504,13 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       // 获取配置
       const config = ConfigProvider.getConfig();
       const scriptPath = 'src/scripts/enhanced_auto_summary.js'; // 硬编码路径，后续可从配置读取
-      
+
       // 构建参数
       const args = [scriptPath, videoPath];
       if (xmlPath) args.push(xmlPath);
 
       this.logger.info(`启动Mikufans处理流程: ${path.basename(videoPath)}`);
-      
+
       // 启动子进程
       const ps: ChildProcess = spawn('node', args, {
         cwd: process.cwd(),
@@ -533,7 +559,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         clearTimeout(timeoutId);
         this.logger.info(`Mikufans处理流程结束 (退出码: ${code}): ${path.basename(videoPath)}`);
         this.duplicateGuard.markAsProcessed(videoPath);
-        
+
         // 检查是否是合并后的文件，如果是则标记会话为完成
         if (videoPath.includes('_merged')) {
           // 从文件路径中提取roomId
@@ -543,7 +569,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
             this.logger.info(`✅ 会话处理完成: ${session.roomId}`);
           }
         }
-        
+
         // 处理完成后，检查是否需要触发延迟回复
         await this.checkAndTriggerDelayedReply(videoPath, roomId);
       });
@@ -581,7 +607,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
    */
   private async checkAndTriggerDelayedReply(videoPath: string, roomId: string): Promise<void> {
     this.logger.info(`🔍 [延迟回复检查] 开始检查: roomId=${roomId}, videoPath=${path.basename(videoPath)}`);
-    
+
     if (!this.delayedReplyService) {
       this.logger.warn('⚠️  延迟回复服务未设置，跳过触发');
       return;
@@ -595,23 +621,23 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     try {
       const dir = path.dirname(videoPath);
       const baseName = path.basename(videoPath, path.extname(videoPath));
-      
+
       // 查找晚安回复文件
       const goodnightTextPath = path.join(dir, `${baseName}_晚安回复.md`);
       // 查找漫画文件
       const comicImagePath = path.join(dir, `${baseName}_COMIC_FACTORY.png`);
-      
+
       this.logger.info(`🔍 [延迟回复检查] 检查文件:`);
       this.logger.info(`   晚安回复路径: ${goodnightTextPath}`);
       this.logger.info(`   漫画路径: ${comicImagePath}`);
-      
+
       // 检查文件是否存在
       const hasGoodnightText = fs.existsSync(goodnightTextPath);
       const hasComicImage = fs.existsSync(comicImagePath);
-      
+
       this.logger.info(`   晚安回复存在: ${hasGoodnightText}`);
       this.logger.info(`   漫画存在: ${hasComicImage}`);
-      
+
       // 只要有晚安回复就触发延迟回复（漫画可选）
       if (hasGoodnightText) {
         this.logger.info(`✅ 找到晚安回复文件，触发延迟回复任务`);
@@ -622,9 +648,9 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         } else {
           this.logger.info(`   漫画: 未生成（将只发送晚安回复）`);
         }
-        
+
         const taskId = await this.delayedReplyService.addTask(roomId, goodnightTextPath, hasComicImage ? comicImagePath : '');
-        
+
         if (taskId) {
           this.logger.info(`✅ 延迟回复任务已触发: ${taskId}`);
         } else {
