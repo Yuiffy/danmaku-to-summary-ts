@@ -221,9 +221,18 @@ async function processMedia(mediaPath) {
         await acquireWhisperLock();
         
         try {
-            await runCommand('python', [pythonScript, mediaPath], {
-                env: { ...process.env, PYTHONUTF8: '1' }
-            });
+            try {
+                await runCommand('python', [pythonScript, mediaPath], {
+                    env: { ...process.env, PYTHONUTF8: '1' }
+                });
+            } catch (error) {
+                // 特殊处理：如果进程报错（比如 code 3221226505/0xC0000409），但文件确实生成了，视为成功
+                if (fs.existsSync(srtPath) && fs.statSync(srtPath).size > 100) {
+                    console.log(`⚠️  Whisper 进程异常退出 (可能在资源释放阶段崩溃)，但检测到有效输出文件，继续后续流程。`);
+                } else {
+                    throw error;
+                }
+            }
         } finally {
             // 释放锁
             releaseWhisperLock();
