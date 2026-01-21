@@ -4,8 +4,9 @@
 import fetch from 'node-fetch';
 import { getLogger } from '../../core/logging/LogManager';
 import FormData = require('form-data');
-import { createReadStream, statSync } from 'fs';
+import { createReadStream, readFileSync, statSync } from 'fs';
 import { basename, join } from 'path';
+import * as crypto from 'crypto';
 
 /**
  * 企业微信消息类型
@@ -26,7 +27,9 @@ export interface WeChatWorkMessage {
     content: string;
   };
   image?: {
-    media_id: string;
+    media_id?: string;
+    base64?: string;
+    md5?: string;
   };
 }
 
@@ -95,84 +98,92 @@ export class WeChatWorkNotifier {
     }
   }
 
-  /**
-   * 发送图片消息
+    /**
+   * 直接通过本地路径发送图片消息
+   * 限制：图片大小不能超过 2MB
    */
-  async sendImage(mediaId: string): Promise<boolean> {
+  async sendImage(imagePath: string): Promise<boolean> {
     try {
+      this.logger.debug('准备发送图片消息', { imagePath });
+      
+      // 1. 读取文件
+      const fileBuffer = readFileSync(imagePath);
+      
+      // 2. 计算 MD5 (必须是原始二进制的 MD5)
+      const md5 = crypto.createHash('md5').update(fileBuffer).digest('hex');
+      
+      // 3. 转 Base64
+      const base64 = fileBuffer.toString('base64');
+
       const message: WeChatWorkMessage = {
         msgtype: 'image',
         image: {
-          media_id: mediaId
+          base64,
+          md5
         }
       };
 
       return await this.sendMessage(message);
     } catch (error) {
-      this.logger.error('发送企业微信图片消息失败', undefined, error instanceof Error ? error : new Error(String(error)));
+      this.logger.error('发送企业微信本地图片失败', undefined, error instanceof Error ? error : new Error(String(error)));
       return false;
     }
   }
 
   /**
-   * 上传图片到企业微信临时素材
+   * 上传图片到企业微信临时素材（写得不对，这个只能上传文件，不能上传图片）
    * @param imagePath 图片文件路径
    * @returns media_id，失败返回null
    */
   async uploadImage(imagePath: string): Promise<string | null> {
-    try {
-      this.logger.debug('上传图片到企业微信', { imagePath });
+  try {
+    this.logger.debug('上传图片到企业微信', { imagePath });
 
-      // 1. 获取文件大小和文件名
-      // statSync 既能获取大小，也能检查文件是否存在（不存在会直接抛错，被catch捕获）
-      const fileStat = statSync(imagePath);
-      const fileSize = fileStat.size;
-      const fileName = basename(imagePath); // 自动从路径提取文件名
+    // 1. 直接读取文件为 Buffer，避免流式传输的各种坑
+    const fileBuffer = readFileSync(imagePath);
+    
+    // 2. 创建 FormData
+    const form = new FormData();
+    
+    // 关键点：手动指定一个简单的英文文件名
+    // 企微机器人其实不在乎你上传时叫什么，只要后缀是 .png 且数据正确即可
+    form.append('media', fileBuffer, {
+      filename: 'image.png', 
+      contentType: 'image/png',
+    });
 
-      const form = new FormData();
-      
-      // 2. 添加文件流，显式指定 knownLength 和 filename
-      form.append('media', createReadStream(imagePath), {
-        filename: fileName,      // 必填：显式指定文件名，防止乱码或识别失败
-        contentType: 'image/png', // 选填：指定类型
-        knownLength: fileSize     // 关键：告诉 form-data 库流的大小
+    // 3. 发起请求
+    const response = await fetch(this.uploadUrl, {
+      method: 'POST',
+      body: form,
+      headers: form.getHeaders() // 这里会自动包含正确的 Content-Length (因为是Buffer)
+    });
+
+    if (!response.ok) {
+      this.logger.error('企业微信上传图片请求失败', {
+        status: response.status,
+        statusText: response.statusText
       });
-
-      // 3. 构建请求头，必须包含 Content-Length
-      const headers = form.getHeaders();
-      headers['Content-Length'] = fileSize.toString(); // 关键：显式设置 HTTP 头
-
-      const response = await fetch(this.uploadUrl, {
-        method: 'POST',
-        body: form,
-        headers: headers
-      });
-
-      if (!response.ok) {
-        this.logger.error('企业微信上传图片请求失败', {
-          status: response.status,
-          statusText: response.statusText
-        });
-        return null;
-      }
-
-      const result: UploadMediaResponse = await response.json() as UploadMediaResponse;
-
-      if (result.errcode !== 0) {
-        this.logger.error('企业微信上传图片返回错误', {
-          errcode: result.errcode,
-          errmsg: result.errmsg
-        });
-        return null;
-      }
-
-      this.logger.debug('企业微信图片上传成功', { media_id: result.media_id });
-      return result.media_id;
-    } catch (error) {
-      this.logger.error('上传企业微信图片异常', undefined, error instanceof Error ? error : new Error(String(error)));
       return null;
     }
+
+    const result: UploadMediaResponse = await response.json() as UploadMediaResponse;
+
+    if (result.errcode !== 0) {
+      this.logger.error('企业微信上传图片返回错误', {
+        errcode: result.errcode,
+        errmsg: result.errmsg
+      });
+      return null;
+    }
+
+    this.logger.debug('企业微信图片上传成功', { media_id: result.media_id });
+    return result.media_id;
+  } catch (error) {
+    this.logger.error('上传企业微信图片异常', undefined, error instanceof Error ? error : new Error(String(error)));
+    return null;
   }
+}
 
   /**
    * 发送动态回复成功通知
