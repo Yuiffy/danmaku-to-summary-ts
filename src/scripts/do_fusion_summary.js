@@ -48,7 +48,23 @@ async function processLiveData(inputFiles) {
      console.log(`🔥 启动热力图采样模式...来源文件：${srtFiles.map(f => path.basename(f)).join(', ')} ${xmlFiles.map(f => path.basename(f)).join(', ')}`);
 
      // --- 1. 解析弹幕 (生成热力数据) ---
-     const parser = new xml2js.Parser();
+     const parser = new xml2js.Parser({
+         strict: false,        // 允许不严格的 XML 格式
+         normalize: true,      // 规范化空白字符
+         trim: true,           // 修剪文本内容
+         explicitArray: false, // 单个元素不强制为数组
+         mergeAttrs: false,    // 不合并属性到父节点
+         attrValueProcessors: [
+             // 处理属性值中的特殊字符
+             (value) => {
+                 if (typeof value === 'string') {
+                     // 移除或转义可能导致问题的字符
+                     return value.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
+                 }
+                 return value;
+             }
+         ]
+     });
      const danmakuMap = []; // 存储所有弹幕对象 {ms, text}
      let maxDuration = 0;
 
