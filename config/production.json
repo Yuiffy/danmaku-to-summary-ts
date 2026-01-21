@@ -23,7 +23,8 @@
     "timeouts": {
       "fixVideoWait": 30000,
       "fileStableCheck": 30000,
-      "processTimeout": 1800000
+      "processTimeout": 1800000,
+      "aiApiTimeout": 120000
     }
   },
   "audio": {

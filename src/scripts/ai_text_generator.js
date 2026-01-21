@@ -128,6 +128,9 @@ async function generateTextWithTuZi(prompt) {
 
             console.log(`[WAIT] 正在通过tu-zi.com API生成文本... (尝试 ${attempt + 1}/${maxRetries + 1} model: ${textModel}, 超时: 60s)`);
 
+            // 获取超时时间 (默认 60 秒)
+            const timeoutMs = config.timeouts?.aiApiTimeout || 60000;
+
             const response = await fetch(apiUrl, {
                 method: 'POST',
                 headers: {
@@ -146,7 +149,7 @@ async function generateTextWithTuZi(prompt) {
                     max_tokens: tuziConfig.maxTokens
                 }),
                 agent: agent,
-                timeout: 60000
+                timeout: timeoutMs
             });
 
             if (!response.ok) {
@@ -192,25 +195,28 @@ async function generateTextWithGemini(prompt) {
 
     let originalFetch = null;
     try {
+        // 获取超时时间 (默认 90 秒)
+        const timeoutMs = config.timeouts?.aiApiTimeout || 90000;
+        console.log(`   超时设置: ${timeoutMs / 1000}s`);
+
         // --- 核心修改开始 ---
         // SDK 不支持在构造函数传 agent，我们需要劫持全局 fetch 来注入代理
         if (geminiConfig.proxy) {
             console.log(`   使用代理: ${geminiConfig.proxy}`);
             const agent = new HttpsProxyAgent(geminiConfig.proxy);
 
-            // 临时覆盖全局 fetch，强制让 SDK 走 node-fetch 并带上 agent
-            // 注意：这是一种 Hack 方式，但兼容性最好
+            // 临时覆盖全局 fetch，强制让 SDK 走 node-fetch 并带上 agent 和 timeout
             originalFetch = global.fetch;
             global.fetch = (url, init) => {
                 return fetch(url, {
                     ...init,
-                    agent: agent
+                    agent: agent,
+                    timeout: timeoutMs // node-fetch 支持 timeout 选项
                 });
             };
         }
         // --- 核心修改结束 ---
 
-        // 注意：这里只传 apiKey，不要传 fetchOptions，因为无效
         const genAI = new GoogleGenerativeAI(geminiConfig.apiKey);
         const model = genAI.getGenerativeModel({
             model: geminiConfig.model,
@@ -220,9 +226,18 @@ async function generateTextWithGemini(prompt) {
             }
         });
         
-        const result = await model.generateContent(prompt);
-        const response = await result.response;
-        const text = response.text();
+        // 使用 Promise.race 实现外部超时控制，双重保障
+        const timeoutPromise = new Promise((_, reject) => {
+            setTimeout(() => reject(new Error(`Gemini API 调用超时 (${timeoutMs / 1000}s)`)), timeoutMs);
+        });
+
+        const apiPromise = (async () => {
+            const result = await model.generateContent(prompt);
+            const response = await result.response;
+            return response.text();
+        })();
+
+        const text = await Promise.race([apiPromise, timeoutPromise]);
 
         if (!text || text.trim().length === 0) {
             throw new Error('Gemini API返回结果为空');
