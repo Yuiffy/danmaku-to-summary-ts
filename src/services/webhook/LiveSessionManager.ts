@@ -79,6 +79,15 @@ export class LiveSessionManager {
       return;
     }
 
+    // 检查是否正在合并，如果是则跳过添加
+    if (session.status === 'merging') {
+      this.logger.warn(`会话正在合并中，跳过添加片段: ${roomId}`, {
+        roomId,
+        videoPath: path.basename(videoPath)
+      });
+      return;
+    }
+
     const segment: LiveSegment = {
       videoPath,
       xmlPath,
@@ -108,6 +117,14 @@ export class LiveSessionManager {
    */
   getAllSessions(): Map<string, LiveSession> {
     return new Map(this.sessions);
+  }
+
+  /**
+   * 检查会话是否正在合并
+   */
+  isMerging(roomId: string): boolean {
+    const session = this.sessions.get(roomId);
+    return session?.status === 'merging' || false;
   }
 
   /**
@@ -143,6 +160,17 @@ export class LiveSessionManager {
       this.logger.info(`标记会话为完成: ${roomId}`, {
         duration: session.endTime.getTime() - session.startTime.getTime()
       });
+    }
+  }
+
+  /**
+   * 重置会话状态为收集中（用于合并失败后的降级处理）
+   */
+  resetToCollecting(roomId: string): void {
+    const session = this.sessions.get(roomId);
+    if (session) {
+      session.status = 'collecting';
+      this.logger.info(`重置会话状态为收集中: ${roomId}`);
     }
   }
 

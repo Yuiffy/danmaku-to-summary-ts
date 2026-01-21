@@ -26,6 +26,11 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   private fileMerger = new FileMerger();
   private delayedReplyService?: IDelayedReplyService;
 
+  // 动态延迟等待定时器（roomId -> NodeJS.Timeout）
+  private delayTimers: Map<string, NodeJS.Timeout> = new Map();
+  // 最大等待时间（毫秒）
+  private readonly MAX_DELAY_MS = 30000; // 30秒
+
 
   /**
    * 注册Express路由
@@ -174,11 +179,21 @@ export class MikufansWebhookHandler implements IWebhookHandler {
 
     this.logger.info(`🏁 直播结束 (收到事件): ${session.roomName} (Room: ${roomId}, 当前片段数: ${session.segments.length})`);
 
-    // 延迟处理，等待可能的FileClosed事件
-    const delayMs = 5000; // 5秒
-    setTimeout(async () => {
+    // 清除已有的定时器（如果存在）
+    const existingTimer = this.delayTimers.get(roomId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      this.logger.info(`清除已有的延迟定时器: ${roomId}`);
+    }
+
+    // 启动动态延迟等待
+    this.logger.info(`⏳ 启动动态延迟等待: ${roomId} (最多等待 ${this.MAX_DELAY_MS / 1000} 秒)`);
+    const timer = setTimeout(async () => {
       await this.processStreamEnded(roomId);
-    }, delayMs);
+      this.delayTimers.delete(roomId);
+    }, this.MAX_DELAY_MS);
+
+    this.delayTimers.set(roomId, timer);
   }
 
   /**
@@ -298,6 +313,18 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     );
 
     this.logger.info(`📦 收集片段: ${path.basename(videoPath)} (会话: ${roomId}, 片段数: ${session.segments.length + 1})`);
+
+    // 如果有延迟定时器，重置它（等待更多片段）
+    const existingTimer = this.delayTimers.get(roomId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      this.logger.info(`🔄 重置延迟定时器: ${roomId} (等待更多片段)`);
+      const newTimer = setTimeout(async () => {
+        await this.processStreamEnded(roomId);
+        this.delayTimers.delete(roomId);
+      }, this.MAX_DELAY_MS);
+      this.delayTimers.set(roomId, newTimer);
+    }
   }
 
   /**
@@ -567,11 +594,6 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       const mergedVideoPath = path.join(outputDir, `${outputBaseName}_merged.flv`);
       const mergedXmlPath = path.join(outputDir, `${outputBaseName}_merged.xml`);
 
-      // 备份原始片段
-      if (mergeConfig.backupOriginals) {
-        await this.fileMerger.backupSegments(session.segments, outputDir);
-      }
-
       // 合并视频文件
       await this.fileMerger.mergeVideos(session.segments, mergedVideoPath, mergeConfig.fillGaps);
 
@@ -585,6 +607,11 @@ export class MikufansWebhookHandler implements IWebhookHandler {
 
       this.logger.info(`✅ 合并完成: ${path.basename(mergedVideoPath)}`);
 
+      // 备份原始片段（合并成功后才备份）
+      if (mergeConfig.backupOriginals) {
+        await this.fileMerger.backupSegments(session.segments, outputDir);
+      }
+
       // 标记为处理中
       this.liveSessionManager.markAsProcessing(roomId);
 
@@ -592,7 +619,40 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       await this.startProcessing(mergedVideoPath, mergedXmlPath, session.roomId);
     } catch (error: any) {
       this.logger.error(`合并会话失败: ${error.message}`, { error });
+
+      // 降级处理：使用最大的片段
+      this.logger.warn(`🔄 合并失败，使用降级处理（最大片段）: ${roomId}`);
+      await this.fallbackToLargestSegment(roomId);
     }
+  }
+
+  /**
+   * 降级处理：使用最大的片段
+   */
+  private async fallbackToLargestSegment(roomId: string): Promise<void> {
+    const session = this.liveSessionManager.getSession(roomId);
+    if (!session || session.segments.length === 0) {
+      this.logger.warn(`会话或片段不存在: ${roomId}`);
+      return;
+    }
+
+    // 获取最大的片段
+    const largestSegment = this.fileMerger.getLargestSegment(session.segments);
+    if (!largestSegment) {
+      this.logger.error(`无法获取最大片段: ${roomId}`);
+      return;
+    }
+
+    this.logger.info(`📄 降级处理: 使用最大片段 ${path.basename(largestSegment.videoPath)}`);
+
+    // 重置会话状态为收集中
+    this.liveSessionManager.resetToCollecting(roomId);
+
+    // 标记为处理中
+    this.liveSessionManager.markAsProcessing(roomId);
+
+    // 处理最大片段
+    await this.startProcessing(largestSegment.videoPath, largestSegment.xmlPath, session.roomId);
   }
 
   /**

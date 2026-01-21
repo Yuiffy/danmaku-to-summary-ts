@@ -327,6 +327,33 @@ export class FileMerger {
   }
 
   /**
+   * 获取最大的片段（按文件大小）
+   */
+  getLargestSegment(segments: LiveSegment[]): LiveSegment | null {
+    if (segments.length === 0) {
+      return null;
+    }
+
+    let largestSegment = segments[0];
+    let largestSize = 0;
+
+    for (const segment of segments) {
+      try {
+        const stats = fs.statSync(segment.videoPath);
+        if (stats.size > largestSize) {
+          largestSize = stats.size;
+          largestSegment = segment;
+        }
+      } catch (error) {
+        this.logger.warn(`无法获取文件大小: ${segment.videoPath}`, { error });
+      }
+    }
+
+    this.logger.info(`获取最大片段: ${path.basename(largestSegment.videoPath)} (${(largestSize / 1024 / 1024).toFixed(2)}MB)`);
+    return largestSegment;
+  }
+
+  /**
    * 备份原始片段到bak文件夹
    */
   async backupSegments(segments: LiveSegment[], outputDir: string): Promise<void> {
