@@ -96,8 +96,41 @@ def log(*args, **kwargs):
         except (ValueError, OSError, AttributeError):
             pass
 
-# 全局替换内置print函数
-print = safe_print
+# 自定义JSON打印函数，只输出到stdout
+def json_print(*args, **kwargs):
+    """JSON打印函数，只输出到stdout"""
+    message = ' '.join(str(arg) for arg in args)
+    try:
+        if not _original_stdout.closed:
+            _original_stdout.write(message + '\n')
+            _original_stdout.flush()
+            return
+    except (ValueError, OSError, AttributeError):
+        pass
+    # 如果stdout失败，尝试其他方式
+    try:
+        __builtins__.print(message, file=_original_stdout, **kwargs)
+    except (ValueError, OSError, AttributeError):
+        pass
+
+# 全局替换内置print函数为日志版本（使用stderr）
+def log_print(*args, **kwargs):
+    """日志打印函数，只输出到stderr"""
+    message = ' '.join(str(arg) for arg in args)
+    try:
+        if not _original_stderr.closed:
+            _original_stderr.write(message + '\n')
+            _original_stderr.flush()
+            return
+    except (ValueError, OSError, AttributeError):
+        pass
+    # 如果stderr失败，尝试其他方式
+    try:
+        __builtins__.print(message, file=_original_stderr, **kwargs)
+    except (ValueError, OSError, AttributeError):
+        pass
+
+print = log_print
 
 
 async def get_dynamic_comment_id(dynamic_id: str, credential: Credential) -> tuple[str, CommentResourceType]:
@@ -252,7 +285,7 @@ def main():
     # 从命令行参数读取输入
     if len(sys.argv) < 6:
         print(f"[ERROR] 参数不足，需要参数: dynamic_id content sessdata bili_jct dedeuserid [image_path]")
-        print(json.dumps({
+        json_print(json.dumps({
             'success': False,
             'error': '参数不足',
             'message': '需要参数: dynamic_id content sessdata bili_jct dedeuserid [image_path]'
@@ -273,7 +306,7 @@ def main():
 
     # 输出JSON结果到stdout（仅JSON，不带日志前缀）
     print(f"[INFO] 输出结果: {json.dumps(result, ensure_ascii=False)}")
-    print(json.dumps(result, ensure_ascii=False))
+    json_print(json.dumps(result, ensure_ascii=False))
 
     # 根据结果设置退出码
     exit_code = 0 if result['success'] else 1
