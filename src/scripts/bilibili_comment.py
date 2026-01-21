@@ -30,7 +30,7 @@ _original_stderr = sys.stderr
 def safe_print(*args, **kwargs):
     """安全的打印函数，尝试多种方式输出日志"""
     message = ' '.join(str(arg) for arg in args)
-    
+
     # 尝试1: 使用原始stdout
     try:
         if not _original_stdout.closed:
@@ -39,14 +39,14 @@ def safe_print(*args, **kwargs):
             return
     except (ValueError, OSError, AttributeError):
         pass
-    
+
     # 尝试2: 使用内置print
     try:
         __builtins__.print(*args, **kwargs)
         return
     except (ValueError, OSError, AttributeError):
         pass
-    
+
     # 尝试3: 直接写入sys.stdout
     try:
         if hasattr(sys.stdout, 'write') and not sys.stdout.closed:
@@ -55,7 +55,7 @@ def safe_print(*args, **kwargs):
             return
     except (ValueError, OSError, AttributeError):
         pass
-    
+
     # 尝试4: 写入stderr作为最后手段
     try:
         if hasattr(sys.stderr, 'write') and not sys.stderr.closed:
@@ -148,40 +148,21 @@ async def get_dynamic_comment_id(dynamic_id: str, credential: Credential) -> tup
     dynamic = Dynamic(dynamic_id=int(dynamic_id), credential=credential)
     info = await dynamic.get_info()
 
-    # 从返回的数据中提取comment_id和major_type
+    # 从返回的数据中提取comment_id和comment_type
     item = info.get('item', {})
     basic = item.get('basic', {})
     comment_id_str = basic.get('comment_id_str', '')
+    comment_type = basic.get('comment_type', 11)
 
-    # 获取major_type（新方式）
-    modules = item.get('modules', {})
-    module_dynamic = modules.get('module_dynamic', {})
-    major = module_dynamic.get('major', {})
-    major_type = major.get('type', '')
-
-    # 后备：如果major_type为空，使用旧方式
-    if not major_type:
-        comment_type_old = basic.get('comment_type', 11)
-        log(f"[INFO] major_type为空，使用旧方式comment_type: {comment_type_old}")
-        if comment_type_old == 11:
-            comment_resource_type = CommentResourceType.DYNAMIC_DRAW
-        elif comment_type_old == 17:
-            comment_resource_type = CommentResourceType.DYNAMIC
-        elif comment_type_old == 12:
-            comment_resource_type = CommentResourceType.ARTICLE
-        else:
-            comment_resource_type = CommentResourceType.DYNAMIC_DRAW
+    # 根据comment_type映射到CommentResourceType
+    if comment_type == 11:
+        comment_resource_type = CommentResourceType.DYNAMIC_DRAW
+    elif comment_type == 17:
+        comment_resource_type = CommentResourceType.DYNAMIC
+    elif comment_type == 12:
+        comment_resource_type = CommentResourceType.ARTICLE
     else:
-        log(f"[INFO] major_type: {major_type}")
-        # 根据major_type映射到CommentResourceType
-        if major_type == 'MAJOR_TYPE_DRAW':
-            comment_resource_type = CommentResourceType.DYNAMIC_DRAW
-        elif major_type in ['MAJOR_TYPE_OPUS', 'MAJOR_TYPE_COMMON', 'MAJOR_TYPE_ARCHIVE']:
-            comment_resource_type = CommentResourceType.DYNAMIC
-        elif major_type == 'MAJOR_TYPE_ARTICLE':
-            comment_resource_type = CommentResourceType.ARTICLE
-        else:
-            comment_resource_type = CommentResourceType.DYNAMIC_DRAW
+        comment_resource_type = CommentResourceType.DYNAMIC_DRAW
 
     return comment_id_str, comment_resource_type
 
