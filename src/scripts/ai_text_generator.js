@@ -157,12 +157,12 @@ async function generateTextWithTuZi(prompt) {
             const data = await response.json();
             const text = data.choices?.[0]?.message?.content;
 
-            if (!text) {
+            if (!text || text.trim().length === 0) {
                 throw new Error('tuZi API返回空结果');
             }
 
             console.log('✅ tuZi API调用成功');
-            return text;
+            return text.trim();
         } catch (error) {
             console.error(`❌ tuZi API调用失败 (尝试 ${attempt + 1}/${maxRetries + 1}): ${error.message}`);
 
@@ -224,13 +224,17 @@ async function generateTextWithGemini(prompt) {
         const response = await result.response;
         const text = response.text();
 
+        if (!text || text.trim().length === 0) {
+            throw new Error('Gemini API返回结果为空');
+        }
+
         // 恢复原始 fetch（如果被覆盖了）
         if (originalFetch !== null) {
             global.fetch = originalFetch;
         }
 
         console.log('✅ Gemini API调用成功');
-        return text;
+        return text.trim();
     } catch (error) {
         // 恢复原始 fetch（如果被覆盖了）
         if (originalFetch !== null) {
@@ -311,36 +315,58 @@ async function generateGoodnightReply(highlightPath, roomId = null) {
 
     console.log(`📄 处理AI_HIGHLIGHT文件: ${path.basename(highlightPath)}`);
 
-    try {
-        // 检查输入文件
-        if (!fs.existsSync(highlightPath)) {
-            throw new Error(`AI_HIGHLIGHT文件不存在: ${highlightPath}`);
+    const maxRetries = 3;
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            // 检查输入文件
+            if (!fs.existsSync(highlightPath)) {
+                throw new Error(`AI_HIGHLIGHT文件不存在: ${highlightPath}`);
+            }
+
+            // 读取内容
+            const highlightContent = readHighlightFile(highlightPath);
+            if (!highlightContent || highlightContent.trim().length < 10) {
+                 console.log(`⚠️  AI_HIGHLIGHT内容过短 (${highlightContent?.length || 0} 字符)，跳过AI生成`);
+                 return null;
+            }
+            console.log(`📖 读取内容完成 (${highlightContent.length} 字符)`);
+
+            // 构建提示词（优先使用传入的 roomId，其次从文件名提取）
+            const finalRoomId = roomId || extractRoomIdFromFilename(path.basename(highlightPath));
+            // 构建提示词
+            const prompt = buildPrompt(highlightContent, finalRoomId);
+
+            // 调用API生成文本
+            const generatedText = await generateTextWithGemini(prompt);
+
+            if (!generatedText || generatedText.trim().length < 20) {
+                throw new Error(generatedText ? '生成的文本过短' : '生成的文本为空');
+            }
+
+            // 确定输出路径
+            const dir = path.dirname(highlightPath);
+            const baseName = path.basename(highlightPath, '_AI_HIGHLIGHT.txt');
+            const outputPath = path.join(dir, `${baseName}_晚安回复.md`);
+
+            // 保存结果
+            return saveGeneratedText(outputPath, generatedText, highlightPath);
+
+        } catch (error) {
+            lastError = error;
+            console.error(`❌ 生成晚安回复失败 (第 ${attempt}/${maxRetries} 次尝试): ${error.message}`);
+            
+            if (attempt < maxRetries) {
+                const waitTime = 2000 * attempt;
+                console.log(`⏳ 等待 ${waitTime/1000} 秒后重试...`);
+                await new Promise(resolve => setTimeout(resolve, waitTime));
+            }
         }
-
-        // 读取内容
-        const highlightContent = readHighlightFile(highlightPath);
-        console.log(`📖 读取内容完成 (${highlightContent.length} 字符)`);
-
-        // 构建提示词（优先使用传入的 roomId，其次从文件名提取）
-        const finalRoomId = roomId || extractRoomIdFromFilename(path.basename(highlightPath));
-        // 构建提示词
-        const prompt = buildPrompt(highlightContent, finalRoomId);
-
-        // 调用API生成文本
-        const generatedText = await generateTextWithGemini(prompt);
-
-        // 确定输出路径
-        const dir = path.dirname(highlightPath);
-        const baseName = path.basename(highlightPath, '_AI_HIGHLIGHT.txt');
-        const outputPath = path.join(dir, `${baseName}_晚安回复.md`);
-
-        // 保存结果
-        return saveGeneratedText(outputPath, generatedText, highlightPath);
-
-    } catch (error) {
-        console.error(`❌ 生成晚安回复失败: ${error.message}`);
-        return null;
     }
+
+    console.error(`❌ 在 ${maxRetries} 次重试后仍然失败: ${lastError.message}`);
+    return null;
 }
 
 // 批量处理目录中的所有AI_HIGHLIGHT文件
