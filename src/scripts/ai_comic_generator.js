@@ -23,10 +23,15 @@ async function generateComicWithPython(highlightPath, roomId = null) {
     const pythonPath = process.env.PYTHON_PATH || 'D:\\develop\\Python\\python.exe';
 
     return new Promise((resolve, reject) => {
-        const pythonProcess = spawn(pythonPath, [pythonScript, highlightPath], {
+        // 构建命令行参数
+        const args = [pythonScript, highlightPath];
+        if (roomId) {
+            args.push('--room-id', roomId);
+        }
+        
+        const pythonProcess = spawn(pythonPath, args, {
             stdio: 'pipe',
-            env: { ...process.env, PYTHONUTF8: '1', PYTHONUNBUFFERED: '1', ROOM_ID: roomId || '' }
-
+            env: { ...process.env, PYTHONUTF8: '1', PYTHONUNBUFFERED: '1' }
         });
 
         let stdout = '';
