@@ -28,6 +28,8 @@ export class MikufansWebhookHandler implements IWebhookHandler {
 
   // 动态延迟等待定时器（roomId -> NodeJS.Timeout）
   private delayTimers: Map<string, NodeJS.Timeout> = new Map();
+  // SessionEnded后的延迟处理定时器（roomId -> NodeJS.Timeout）
+  private sessionEndedTimers: Map<string, NodeJS.Timeout> = new Map();
   // 最大等待时间（毫秒）
   private readonly MAX_DELAY_MS = 30000; // 30秒
 
@@ -128,7 +130,8 @@ export class MikufansWebhookHandler implements IWebhookHandler {
 
     // 处理会话结束事件
     if (eventType === 'SessionEnded') {
-      // 暂无…等StreamEnded再处理
+      await this.handleSessionEnded(sessionId, payload);
+      return;
     }
 
     // 处理直播结束事件
@@ -158,7 +161,64 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     // 使用LiveSessionManager创建或获取会话（使用RoomId）
     this.liveSessionManager.createOrGetSession(roomId, roomName, title);
     
+    // 如果有SessionEnded延迟定时器，取消它（说明直播重新开始了）
+    const existingTimer = this.sessionEndedTimers.get(roomId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      this.sessionEndedTimers.delete(roomId);
+      this.logger.info(`🔄 取消SessionEnded延迟处理: ${roomId} (检测到SessionStart)`);
+    }
+    
     this.logger.info(`🎬 直播开始: ${roomName} (Session: ${sessionId}, Room: ${roomId})`);
+  }
+
+  /**
+   * 处理会话结束事件
+   */
+  private async handleSessionEnded(sessionId: string, payload: any): Promise<void> {
+    const roomId = payload.EventData?.RoomId;
+    if (!roomId) {
+      this.logger.warn(`SessionEnded事件缺少RoomId`);
+      return;
+    }
+
+    const session = this.liveSessionManager.getSession(roomId);
+    if (session) {
+      // 会话存在，说明是正常的SessionEnded，等待StreamEnded再处理
+      this.logger.info(`📝 会话结束 (会话存在): ${session.roomName} (Room: ${roomId})`);
+      return;
+    }
+
+    // 会话不存在，可能是网络不稳定导致的SessionStart丢失
+    // 启动延迟处理，等待30秒看是否有SessionStart
+    const existingTimer = this.sessionEndedTimers.get(roomId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      this.logger.info(`清除已有的SessionEnded延迟定时器: ${roomId}`);
+    }
+
+    this.logger.info(`⏳ SessionEnded但会话不存在，启动延迟处理: ${roomId} (等待 ${this.MAX_DELAY_MS / 1000} 秒)`);
+    const timer = setTimeout(async () => {
+      await this.processSessionEndedWithoutSession(roomId, payload);
+      this.sessionEndedTimers.delete(roomId);
+    }, this.MAX_DELAY_MS);
+
+    this.sessionEndedTimers.set(roomId, timer);
+  }
+
+  /**
+   * 处理没有会话的SessionEnded（延迟30秒后执行）
+   */
+  private async processSessionEndedWithoutSession(roomId: string, payload: any): Promise<void> {
+    // 再次检查会话是否存在（可能在延迟期间收到了SessionStart）
+    const session = this.liveSessionManager.getSession(roomId);
+    if (session) {
+      this.logger.info(`📝 延迟处理时发现会话已存在，跳过处理: ${roomId}`);
+      return;
+    }
+
+    this.logger.info(`📝 SessionEnded延迟处理: ${roomId} (会话仍不存在，将等待FileClosed事件)`);
+    // 不做任何处理，等待FileClosed事件时，由于会话不存在，会直接处理文件
   }
 
   /**
@@ -281,7 +341,17 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   private async collectSegment(roomId: string, videoPath: string, payload: any): Promise<void> {
     const session = this.liveSessionManager.getSession(roomId);
     if (!session) {
-      this.logger.warn(`会话不存在: ${roomId}，直接处理文件`);
+      // 检查是否有SessionEnded延迟定时器
+      const sessionEndedTimer = this.sessionEndedTimers.get(roomId);
+      if (sessionEndedTimer) {
+        // 有SessionEnded延迟定时器，说明是网络不稳定的情况
+        // 取消定时器，直接处理文件
+        clearTimeout(sessionEndedTimer);
+        this.sessionEndedTimers.delete(roomId);
+        this.logger.info(`📝 检测到SessionEnded延迟定时器，取消并直接处理文件: ${roomId}`);
+      } else {
+        this.logger.warn(`会话不存在: ${roomId}，直接处理文件`);
+      }
       await this.processMikufansFile(videoPath, payload);
       return;
     }
