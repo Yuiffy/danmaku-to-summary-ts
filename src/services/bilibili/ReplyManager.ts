@@ -124,12 +124,20 @@ export class ReplyManager implements IReplyManager {
         error
       });
 
+      // 尝试读取回复文本用于通知
+      let replyText: string | undefined;
+      try {
+        replyText = await this.readReplyText(task.textPath);
+      } catch {
+        // 读取失败时忽略，不影响主流程
+      }
+
       // 记录失败历史
       await this.replyHistoryStore.recordReply({
         dynamicId: task.dynamic.id,
         uid: task.dynamic.uid,
         replyTime: new Date(),
-        contentSummary: '回复失败',
+        contentSummary: replyText ? replyText.substring(0, 100) : '回复失败',
         success: false,
         error: error instanceof Error ? error.message : String(error)
       });
@@ -141,7 +149,11 @@ export class ReplyManager implements IReplyManager {
       if (this.notifier) {
         await this.notifier.notifyReplyFailure(
           String(task.dynamic.id),
-          error instanceof Error ? error.message : String(error)
+          error instanceof Error ? error.message : String(error),
+          undefined, // anchorName - ReplyManager 没有这个信息
+          replyText,
+          undefined, // imageUrl - 失败时没有返回图片URL
+          task.imagePath
         );
       }
 

@@ -245,10 +245,32 @@ export class WeChatWorkNotifier {
   /**
    * 发送动态回复失败通知
    */
-  async notifyReplyFailure(dynamicId: string, error: string, anchorName?: string): Promise<boolean> {
-    const content = anchorName
+  async notifyReplyFailure(
+    dynamicId: string,
+    error: string,
+    anchorName?: string,
+    replyContent?: string,
+    imageUrl?: string,
+    imagePath?: string
+  ): Promise<boolean> {
+    // 如果提供了本地图片路径，先发送图片消息
+    if (imagePath) {
+      await this.sendImage(imagePath);
+    }
+
+    let content = anchorName
       ? `❌ 动态回复失败\n\n主播: ${anchorName}\n动态ID: ${dynamicId}\n错误: ${error}`
       : `❌ 动态回复失败\n\n动态ID: ${dynamicId}\n错误: ${error}`;
+
+    // 添加回复内容
+    if (replyContent) {
+      content += `\n\n回复内容:\n${replyContent}`;
+    }
+
+    // 添加图片信息
+    if (imageUrl) {
+      content += `\n\n[查看附图](${imageUrl})`;
+    }
 
     return await this.sendMarkdown(content);
   }

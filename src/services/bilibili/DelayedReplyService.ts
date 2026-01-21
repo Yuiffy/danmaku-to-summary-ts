@@ -413,6 +413,14 @@ export class DelayedReplyService implements IDelayedReplyService {
     } catch (error) {
       this.logger.error(`执行延迟回复失败: ${task.taskId}`, undefined, error instanceof Error ? error : new Error(String(error)));
 
+      // 尝试读取回复文本用于通知
+      let replyText: string | undefined;
+      try {
+        replyText = await this.readReplyText(task.goodnightTextPath);
+      } catch {
+        // 读取失败时忽略，不影响主流程
+      }
+
       // 更新任务状态
       task.status = 'failed';
       task.error = error instanceof Error ? error.message : String(error);
@@ -428,7 +436,10 @@ export class DelayedReplyService implements IDelayedReplyService {
         await this.notifier.notifyReplyFailure(
           task.uid || 'unknown',
           task.error || '未知错误',
-          anchorName
+          anchorName,
+          replyText,
+          undefined, // imageUrl - 失败时没有返回图片URL
+          task.comicImagePath
         );
       }
 
