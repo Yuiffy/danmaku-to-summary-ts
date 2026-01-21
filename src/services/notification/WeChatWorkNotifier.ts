@@ -7,6 +7,7 @@ import FormData = require('form-data');
 import { createReadStream, readFileSync, statSync } from 'fs';
 import { basename, join } from 'path';
 import * as crypto from 'crypto';
+import sharp = require('sharp');
 
 /**
  * 企业微信消息类型
@@ -98,6 +99,40 @@ export class WeChatWorkNotifier {
     }
   }
 
+/**
+   * 核心处理逻辑：检查图片大小，必要时进行压缩并转为 JPEG
+   * @param input 图片路径或 Buffer
+   * @returns 处理后的 Buffer
+   */
+  private async processImage(input: string | Buffer): Promise<Buffer> {
+    const MAX_SIZE = 2 * 1024 * 1024; // 2MB
+    let buffer = typeof input === 'string' ? readFileSync(input) : input;
+
+    // 如果小于 2MB，直接返回原图 Buffer
+    if (buffer.length <= MAX_SIZE) {
+      return buffer;
+    }
+
+    this.logger.info(`图片大小为 ${(buffer.length / 1024 / 1024).toFixed(2)}MB，启动压缩策略...`);
+
+    // 第一轮压缩：限制宽度 1920px，转换为 jpeg，质量 80
+    buffer = await sharp(buffer)
+      .resize({ width: 1920, withoutEnlargement: true })
+      .jpeg({ quality: 80, progressive: true })
+      .toBuffer();
+
+    // 如果第一轮压缩后还是超标（极少见），进行第二轮极限压缩
+    if (buffer.length > MAX_SIZE) {
+      this.logger.warn('第一轮压缩后仍超过2MB，执行极限压缩');
+      buffer = await sharp(buffer)
+        .jpeg({ quality: 60 })
+        .toBuffer();
+    }
+
+    this.logger.info(`压缩处理完成，最终大小: ${(buffer.length / 1024 / 1024).toFixed(2)}MB`);
+    return buffer;
+  }
+
     /**
    * 直接通过本地路径发送图片消息
    * 限制：图片大小不能超过 2MB
@@ -107,7 +142,8 @@ export class WeChatWorkNotifier {
       this.logger.debug('准备发送图片消息', { imagePath });
       
       // 1. 读取文件
-      const fileBuffer = readFileSync(imagePath);
+      const originFileBuffer = readFileSync(imagePath);
+      const fileBuffer = await this.processImage(originFileBuffer);
       
       // 2. 计算 MD5 (必须是原始二进制的 MD5)
       const md5 = crypto.createHash('md5').update(fileBuffer).digest('hex');
