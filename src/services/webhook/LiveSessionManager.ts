@@ -45,7 +45,10 @@ export class LiveSessionManager {
   createOrGetSession(roomId: string, roomName: string, title: string): LiveSession {
     let session = this.sessions.get(roomId);
     
-    if (!session) {
+    // 如果会话不存在，或者已经标记为已完成（说明由于超时或手动结束已处理过一次），则重置
+    // 注意：WebhookHandler 会在 30 秒内的 handleSessionStarted 中取消结算定时器
+    // 因此，如果状态已变为 completed，说明已经超过 30s 的判定窗口，应当作为新直播开始
+    if (!session || session.status === 'completed') {
       session = {
         roomId,
         roomName,
@@ -55,13 +58,13 @@ export class LiveSessionManager {
         status: 'collecting'
       };
       this.sessions.set(roomId, session);
-      this.logger.info(`创建直播会话: ${roomId}`, {
+      this.logger.info(`${session ? '重置' : '创建'}直播会话: ${roomId}`, {
         roomId,
         roomName,
         title
       });
     } else {
-      // 更新会话信息
+      // 仍然在收集中的活跃会话：更新信息并继续使用现有片段（支持断线重连）
       session.roomName = roomName;
       session.title = title;
     }

@@ -83,7 +83,19 @@ export class FileMerger {
       let currentTimeOffset = 0; // 当前时间偏移量（毫秒）
       const mergedDanmakus: any[] = [];
 
-      for (const segment of segments) {
+      for (let i = 0; i < segments.length; i++) {
+        const segment = segments[i];
+
+        // 如果启用填补空白，且不是第一个片段，计算与上一个片段的间隙并加入偏移量
+        if (i > 0) {
+          const prevSegment = segments[i - 1];
+          const gapTime = this.calculateGapTime(prevSegment, segment);
+          if (gapTime > 0) {
+            currentTimeOffset += gapTime;
+            this.logger.info(`XML偏移增加空白时间: ${gapTime}ms`);
+          }
+        }
+
         // 解析XML文件（带超时）
         const danmakus = await this.withTimeout(
           this.parseXml(segment.xmlPath),
@@ -106,7 +118,7 @@ export class FileMerger {
           30000, // 30秒超时
           `获取视频时长超时: ${path.basename(segment.videoPath)}`
         );
-        // 注意：durationSec 是秒，需要转换为毫秒累加到 currentTimeOffset
+        // 注意：durationSec 是秒，需要转换为毫秒累积到 currentTimeOffset
         currentTimeOffset += Math.round(durationSec * 1000);
 
         this.logger.info(`处理片段: ${path.basename(segment.xmlPath)}, 偏移量: ${currentTimeOffset}ms`);
@@ -142,7 +154,16 @@ export class FileMerger {
     const nextStartTime = nextSegment.fileOpenTime.getTime();
 
     // 空白时间（毫秒）
-    return nextStartTime - prevEndTime;
+    let gap = nextStartTime - prevEndTime;
+
+    // 安全检查：如果间隙超过 1 小时，或者小于 0，通常是数据异常或跨度过大（例如不同日的录像）
+    // 在这种情况下不应填充空白视频，直接返回 0
+    if (gap > 3600000 || gap < 0) {
+      this.logger.warn(`检测到异常间隙: ${gap}ms (从 ${prevSegment.fileCloseTime.toISOString()} 到 ${nextSegment.fileOpenTime.toISOString()}), 将重置为 0`);
+      return 0;
+    }
+
+    return gap;
   }
 
   /**
