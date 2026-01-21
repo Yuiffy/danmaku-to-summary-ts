@@ -161,18 +161,17 @@ async def get_dynamic_comment_id(dynamic_id: str, credential: Credential) -> tup
     log(f"[INFO] 动态 {dynamic_id} 解析: api_type={api_comment_type}, major_type={major_type}")
 
     # 3. 智能映射逻辑
-    # 优先处理必须强制指定的特殊类型 (如专栏/笔记)
-    if major_type in ['MAJOR_TYPE_OPUS', 'MAJOR_TYPE_ARTICLE']:
-        comment_resource_type = CommentResourceType.ARTICLE # 强制为 12
-    elif api_comment_type == 12:
+    # 优先处理必须强制指定的特殊类型 (如专栏/笔记)（这个不行啊！不能加这个）
+    # if major_type in ['MAJOR_TYPE_OPUS', 'MAJOR_TYPE_ARTICLE']:
+    #     comment_resource_type = CommentResourceType.ARTICLE # 强制为 12
+    if api_comment_type == 12:
         comment_resource_type = CommentResourceType.ARTICLE
     elif api_comment_type == 17:
         comment_resource_type = CommentResourceType.DYNAMIC
-    elif api_comment_type == 11:
+    elif api_comment_type == 1:
         # 如果是视频，通常API需要 Type 1，但在动态流中评论有时也允许 11
-        # 这里暂时保留 1，如果视频评论失败，可以改为 11。根本不行，直接改为11。
+        # 这里暂时保留 1，如果视频评论失败，可以改为 11
         comment_resource_type = CommentResourceType.VIDEO
-            
     else:
         # 默认情况 (包括 11 和纯文字动态)
         comment_resource_type = CommentResourceType.DYNAMIC_DRAW
