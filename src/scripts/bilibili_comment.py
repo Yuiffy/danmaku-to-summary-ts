@@ -88,7 +88,13 @@ def log(*args, **kwargs):
             _original_stderr.write(message + '\n')
             _original_stderr.flush()
     except (ValueError, OSError, AttributeError):
-        pass
+        # 如果stderr失败，尝试stdout
+        try:
+            if not _original_stdout.closed:
+                _original_stdout.write(message + '\n')
+                _original_stdout.flush()
+        except (ValueError, OSError, AttributeError):
+            pass
 
 # 全局替换内置print函数
 print = safe_print
@@ -241,15 +247,11 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
 
 def main():
     """主函数"""
-    try:
-        log(f"[INFO] B站评论发布脚本启动")
-    except Exception as e:
-        # 如果log失败，使用print
-        print(f"[INFO] B站评论发布脚本启动 (fallback)", file=sys.stderr)
+    print(f"[INFO] B站评论发布脚本启动")
 
     # 从命令行参数读取输入
     if len(sys.argv) < 6:
-        log(f"[ERROR] 参数不足，需要参数: dynamic_id content sessdata bili_jct dedeuserid [image_path]")
+        print(f"[ERROR] 参数不足，需要参数: dynamic_id content sessdata bili_jct dedeuserid [image_path]")
         print(json.dumps({
             'success': False,
             'error': '参数不足',
@@ -264,21 +266,18 @@ def main():
     dedeuserid = sys.argv[5]
     image_path = sys.argv[6] if len(sys.argv) > 6 else None
 
-    try:
-        log(f"[INFO] 接收到参数: dynamic_id={dynamic_id}, content_length={len(content)}, has_image={image_path is not None}")
-    except Exception as e:
-        print(f"[INFO] 接收到参数: dynamic_id={dynamic_id}, content_length={len(content)}, has_image={image_path is not None}", file=sys.stderr)
+    print(f"[INFO] 接收到参数: dynamic_id={dynamic_id}, content_length={len(content)}, has_image={image_path is not None}")
 
     # 发布评论
     result = asyncio.run(publish_comment(dynamic_id, content, sessdata, bili_jct, dedeuserid, image_path))
 
     # 输出JSON结果到stdout（仅JSON，不带日志前缀）
-    log(f"[INFO] 输出结果: {json.dumps(result, ensure_ascii=False)}")
+    print(f"[INFO] 输出结果: {json.dumps(result, ensure_ascii=False)}")
     print(json.dumps(result, ensure_ascii=False))
 
     # 根据结果设置退出码
     exit_code = 0 if result['success'] else 1
-    log(f"[INFO] 脚本退出，退出码: {exit_code}")
+    print(f"[INFO] 脚本退出，退出码: {exit_code}")
     sys.exit(exit_code)
 
 
