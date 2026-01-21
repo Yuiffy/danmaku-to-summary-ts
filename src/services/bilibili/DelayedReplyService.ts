@@ -370,11 +370,15 @@ export class DelayedReplyService implements IDelayedReplyService {
         throw new Error('晚安回复文本为空');
       }
 
+      const imagePath = task.comicImagePath && await this.checkFileExists(task.comicImagePath)
+        ? [task.comicImagePath]
+        : undefined;
+
       // 发布评论
       const result = await this.bilibiliAPI.publishComment({
         dynamicId: latestDynamic.id,
         content: replyText,
-        images: task.comicImagePath && (await this.checkFileExists(task.comicImagePath)) ? [task.comicImagePath] : undefined
+        images: imagePath
       });
 
       this.logger.info(`延迟回复评论发布成功: ${task.taskId}`, {
@@ -394,7 +398,8 @@ export class DelayedReplyService implements IDelayedReplyService {
           String(result.replyId),
           anchorName,
           replyText,
-          result.imageUrl
+          result.imageUrl,
+          imagePath ? imagePath[0] : undefined
         );
       }
 
