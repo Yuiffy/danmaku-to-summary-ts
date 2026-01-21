@@ -200,10 +200,10 @@ export class WeChatWorkNotifier {
 
     // 如果提供了本地图片路径，先上传图片并发送图片消息
     if (imagePath) {
-      const mediaId = await this.uploadImage(imagePath);
-      if (mediaId) {
+      // const mediaId = await this.uploadImage(imagePath);
+      if (true) {
         // 发送图片消息
-        await this.sendImage(mediaId);
+        await this.sendImage(imagePath);
         // 发送文本消息补充信息
         let content = anchorName
           ? `✅ 动态回复成功\n\n主播: ${anchorName}\n动态ID: ${dynamicId}\n回复ID: ${replyId}`
