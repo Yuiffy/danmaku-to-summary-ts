@@ -180,8 +180,8 @@
       },
       "21696950": {
         "audioOnly": true,
-        "referenceImage": "../public/reference_images/Aza_阿萨_立绘.webp",
-        "characterDescription": "阿萨Aza（浅黄色头发绿挑染的酷盖，身边的小毛线（有触角和细细四肢的毛球状生物）是他的宠物兼伙伴",
+        "referenceImage": "public/reference_images/Aza_阿萨_立绘.webp",
+        "characterDescription": "阿萨Aza（浅黄色头发绿挑染的酷盖），身边的小毛线（有触角和细细四肢的毛球状生物）是他的宠物兼伙伴",
         "anchorName": "阿萨Aza",
         "fanName": "小毛线",
         "enableTextGeneration": true,

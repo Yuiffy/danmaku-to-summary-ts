@@ -182,6 +182,8 @@ def get_room_reference_image(room_id: str, highlight_path: Optional[str] = None)
             script_relative = os.path.join(scripts_dir, ref_image) if not os.path.isabs(ref_image) else ref_image
             if os.path.exists(script_relative):
                 return script_relative
+            
+            print(f"[WARNING] 配置的参考图片不存在: {ref_image}")
 
         # 如果配置了但文件不存在，尝试在reference_images目录中查找
         ref_images_dir = os.path.join(scripts_dir, "reference_images")
