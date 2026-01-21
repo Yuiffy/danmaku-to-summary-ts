@@ -107,9 +107,9 @@
       },
       "26966466": {
         "audioOnly": true,
-        "referenceImage": "public/reference_images/栞栞新衣_舰长礼物长图里截图.png",
-        "characterDescription": "栞栞Shiori（有兽耳的女生，浅黄色头发小孩），獭獭栞（长得像滑板的海獭）",
-        "anchorName": "栞栞Shiori",
+        "referenceImage": "public/reference_images/栞栞制服加獭獭栞.png",
+        "characterDescription": "栞栞Shiori（有兽耳的女生，浅黄色头发小孩），粉丝是獭獭栞（长条形短手短脚的海獭）",
+        "anchorName": "小栞",
         "fanName": "獭獭栞",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
