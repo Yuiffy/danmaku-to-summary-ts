@@ -142,6 +142,12 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       return;
     }
 
+    // 处理文件打开事件
+    if (eventType === 'FileOpening') {
+      await this.handleFileOpening(payload);
+      return;
+    }
+
     // 只处理文件关闭事件
     if (eventType !== 'FileClosed') {
       this.logger.info(`忽略非文件事件: ${eventType}`);
@@ -179,6 +185,34 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     }
 
     this.logger.info(`🎬 直播开始: ${roomName} (Session: ${sessionId}, Room: ${roomId})`);
+  }
+
+  /**
+   * 处理文件打开事件
+   */
+  private async handleFileOpening(payload: any): Promise<void> {
+    const roomId = payload.EventData?.RoomId;
+    if (!roomId) {
+      this.logger.warn(`FileOpening事件缺少RoomId`);
+      return;
+    }
+
+    // 如果有延迟定时器，取消它（说明直播重新开始了）
+    const existingTimer = this.sessionEndedTimers.get(roomId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      this.sessionEndedTimers.delete(roomId);
+      this.logger.info(`🔄 取消延迟处理: ${roomId} (检测到FileOpening)`);
+    }
+
+    // // 清除待处理的文件（这些文件属于上一个会话，不应该处理）
+    // const pendingFiles = this.pendingFiles.get(roomId);
+    // if (pendingFiles && pendingFiles.length > 0) {
+    //   this.logger.info(`🔄 清除待处理文件: ${roomId} (${pendingFiles.length}个文件，属于上一个会话)`);
+    //   this.pendingFiles.delete(roomId);
+    // }
+
+    this.logger.info(`📂 handleFileOpening over: ${roomId}`);
   }
 
   /**
@@ -229,6 +263,34 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     }
 
     this.logger.info(`📝 SessionEnded延迟结束: ${roomId} (会话仍不存在，开始处理待处理文件)`);
+
+    // 处理延迟期间收到的文件
+    const pendingFiles = this.pendingFiles.get(roomId);
+    if (pendingFiles && pendingFiles.length > 0) {
+      this.logger.info(`📦 处理 ${pendingFiles.length} 个待处理文件`);
+      for (const {videoPath, payload} of pendingFiles) {
+        await this.processMikufansFile(videoPath, payload);
+      }
+      this.pendingFiles.delete(roomId);
+    } else {
+      this.logger.info(`ℹ️  没有待处理的文件`);
+    }
+  }
+
+  /**
+   * 处理没有会话时收到的文件（延迟30秒后执行）
+   */
+  private async processFilesWithoutSession(roomId: string): Promise<void> {
+    // 再次检查会话是否存在（可能在延迟期间收到了SessionStart或FileOpening）
+    const session = this.liveSessionManager.getSession(roomId);
+    if (session) {
+      this.logger.info(`📝 延迟处理时发现会话已存在，跳过处理: ${roomId}`);
+      // 清除待处理文件（这些文件属于新会话）
+      this.pendingFiles.delete(roomId);
+      return;
+    }
+
+    this.logger.info(`📝 延迟结束: ${roomId} (会话仍不存在，开始处理待处理文件)`);
 
     // 处理延迟期间收到的文件
     const pendingFiles = this.pendingFiles.get(roomId);
@@ -363,20 +425,25 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   private async collectSegment(roomId: string, videoPath: string, payload: any): Promise<void> {
     const session = this.liveSessionManager.getSession(roomId);
     if (!session) {
-      // 检查是否有SessionEnded延迟定时器
-      const sessionEndedTimer = this.sessionEndedTimers.get(roomId);
-      if (sessionEndedTimer) {
-        // 有SessionEnded延迟定时器，说明在等待确认是否断线重连
-        // 将文件加入待处理队列，等待延迟结束后处理
-        if (!this.pendingFiles.has(roomId)) {
-          this.pendingFiles.set(roomId, []);
-        }
-        this.pendingFiles.get(roomId)!.push({videoPath, payload});
-        this.logger.info(`📝 SessionEnded延迟期间收到文件，加入待处理队列: ${roomId} (${path.basename(videoPath)})`);
+      // 会话不存在，将文件加入待处理队列
+      if (!this.pendingFiles.has(roomId)) {
+        this.pendingFiles.set(roomId, []);
+      }
+      this.pendingFiles.get(roomId)!.push({videoPath, payload});
+      
+      // 检查是否已有延迟定时器
+      const existingTimer = this.sessionEndedTimers.get(roomId);
+      if (existingTimer) {
+        // 已有延迟定时器，只需加入队列即可
+        this.logger.info(`📝 延迟期间收到文件，加入待处理队列: ${roomId} (${path.basename(videoPath)})`);
       } else {
-        // 没有延迟定时器，说明会话已经结束，直接处理
-        this.logger.warn(`会话不存在: ${roomId}，直接处理文件`);
-        await this.processMikufansFile(videoPath, payload);
+        // 没有延迟定时器，启动一个新的延迟处理
+        this.logger.warn(`会话不存在: ${roomId}，启动延迟处理 (等待 ${this.MAX_DELAY_MS / 1000} 秒)`);
+        const timer = setTimeout(async () => {
+          await this.processFilesWithoutSession(roomId);
+          this.sessionEndedTimers.delete(roomId);
+        }, this.MAX_DELAY_MS);
+        this.sessionEndedTimers.set(roomId, timer);
       }
       return;
     }
