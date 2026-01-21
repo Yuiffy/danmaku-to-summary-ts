@@ -4,8 +4,8 @@
 import fetch from 'node-fetch';
 import { getLogger } from '../../core/logging/LogManager';
 import FormData = require('form-data');
-import { createReadStream } from 'fs';
-import { join } from 'path';
+import { createReadStream, statSync } from 'fs';
+import { basename, join } from 'path';
 
 /**
  * 企业微信消息类型
@@ -123,12 +123,29 @@ export class WeChatWorkNotifier {
     try {
       this.logger.debug('上传图片到企业微信', { imagePath });
 
+      // 1. 获取文件大小和文件名
+      // statSync 既能获取大小，也能检查文件是否存在（不存在会直接抛错，被catch捕获）
+      const fileStat = statSync(imagePath);
+      const fileSize = fileStat.size;
+      const fileName = basename(imagePath); // 自动从路径提取文件名
+
       const form = new FormData();
-      form.append('media', createReadStream(imagePath));
+      
+      // 2. 添加文件流，显式指定 knownLength 和 filename
+      form.append('media', createReadStream(imagePath), {
+        filename: fileName,      // 必填：显式指定文件名，防止乱码或识别失败
+        contentType: 'image/png', // 选填：指定类型
+        knownLength: fileSize     // 关键：告诉 form-data 库流的大小
+      });
+
+      // 3. 构建请求头，必须包含 Content-Length
+      const headers = form.getHeaders();
+      headers['Content-Length'] = fileSize.toString(); // 关键：显式设置 HTTP 头
 
       const response = await fetch(this.uploadUrl, {
         method: 'POST',
-        body: form
+        body: form,
+        headers: headers
       });
 
       if (!response.ok) {
@@ -139,7 +156,7 @@ export class WeChatWorkNotifier {
         return null;
       }
 
-      const result: UploadMediaResponse = await response.json();
+      const result: UploadMediaResponse = await response.json() as UploadMediaResponse;
 
       if (result.errcode !== 0) {
         this.logger.error('企业微信上传图片返回错误', {
@@ -182,8 +199,8 @@ export class WeChatWorkNotifier {
           : `✅ 动态回复成功\n\n动态ID: ${dynamicId}\n回复ID: ${replyId}`;
         
         if (replyContent) {
-          const truncatedContent = replyContent.length > 200 ? replyContent.substring(0, 200) + '...' : replyContent;
-          content += `\n\n回复内容:\n${truncatedContent}`;
+          // const truncatedContent = replyContent.length > 200 ? replyContent.substring(0, 200) + '...' : replyContent;
+          content += `\n\n回复内容:\n${replyContent}`;
         }
         
         content += `\n\n[查看回复](${replyUrl})`;
@@ -199,13 +216,13 @@ export class WeChatWorkNotifier {
     
     // 添加回复内容（截取前200字符）
     if (replyContent) {
-      const truncatedContent = replyContent.length > 200 ? replyContent.substring(0, 200) + '...' : replyContent;
-      content += `\n\n回复内容:\n${truncatedContent}`;
+      // const truncatedContent = replyContent.length > 200 ? replyContent.substring(0, 200) + '...' : replyContent;
+      content += `\n\n回复内容:\n${replyContent}`;
     }
     
     // 添加图片信息
     if (imageUrl) {
-      content += `\n\n附图: ${imageUrl}`;
+      content += `\n\n[查看附图](${imageUrl})`;
     }
     
     // 添加查看链接
