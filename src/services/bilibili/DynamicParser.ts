@@ -336,7 +336,12 @@ export function parseDynamicItems(items: any[]): BilibiliDynamic[] {
   for (const item of items) {
     const dynamic = parseDynamicItem(item);
     if (dynamic) {
-      dynamics.push(dynamic);
+      // 过滤掉视频类型的动态，只保留非视频动态
+      if (dynamic.type !== DynamicType.AV) {
+        dynamics.push(dynamic);
+      } else {
+        logger.debug('跳过视频类型动态', { dynamicId: dynamic.id, type: dynamic.type });
+      }
     }
   }
 
