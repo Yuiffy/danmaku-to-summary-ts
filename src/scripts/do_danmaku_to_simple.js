@@ -162,7 +162,6 @@ async function processDanmakuFromDir(sourceDir, outputFile, options = {}) {
         strict: false,        // 允许不严格的 XML 格式
         normalize: true,      // 规范化空白字符
         trim: true,           // 修剪文本内容
-        explicitArray: false, // 单个元素不强制为数组
         mergeAttrs: false,    // 不合并属性到父节点
         attrValueProcessors: [
             // 处理属性值中的特殊字符
@@ -181,8 +180,8 @@ async function processDanmakuFromDir(sourceDir, outputFile, options = {}) {
         try {
             const data = fs.readFileSync(file);
             const result = await parser.parseStringPromise(data);
-            let danmakus = result?.i?.d || [];
-            if (!Array.isArray(danmakus)) danmakus = [danmakus];
+            // xml2js 默认 explicitArray: true，所以 d 始终是数组
+            const danmakus = result?.i?.d || [];
 
             for (const d of danmakus) {
                 if (!d || !d.$ || !d.$.p) continue;
