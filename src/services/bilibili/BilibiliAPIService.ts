@@ -93,9 +93,29 @@ export class BilibiliAPIService implements IBilibiliAPIService {
         });
 
         pythonProcess.on('close', (code) => {
+          // 无论成功还是失败,都先输出日志
+          if (stderr) {
+            const logLines = stderr.trim().split('\n');
+            for (const line of logLines) {
+              if (line.includes('[ERROR]')) {
+                this.logger.error(`Python: ${line}`);
+              } else if (line.includes('[WARNING]')) {
+                this.logger.warn(`Python: ${line}`);
+              } else if (line.includes('[OK]') || line.includes('[INFO]')) {
+                this.logger.info(`Python: ${line}`);
+              } else if (line.trim()) {
+                this.logger.debug(`Python: ${line}`);
+              }
+            }
+          }
+          
           if (code === 0) {
             resolve({ stdout, stderr });
           } else {
+            // 输出 stdout 以便调试
+            if (stdout.trim()) {
+              this.logger.error(`Python stdout: ${stdout.trim()}`);
+            }
             reject(new Error(`Python脚本退出码: ${code}`));
           }
         });
@@ -104,22 +124,6 @@ export class BilibiliAPIService implements IBilibiliAPIService {
           reject(err);
         });
       });
-
-      // 输出Python脚本的日志（stderr）
-      if (result.stderr) {
-        const logLines = result.stderr.trim().split('\n');
-        for (const line of logLines) {
-          if (line.includes('[ERROR]')) {
-            this.logger.error(`Python: ${line}`);
-          } else if (line.includes('[WARNING]')) {
-            this.logger.warn(`Python: ${line}`);
-          } else if (line.includes('[OK]')) {
-            this.logger.info(`Python: ${line}`);
-          } else {
-            this.logger.debug(`Python: ${line}`);
-          }
-        }
-      }
 
       // 解析 Python 脚本的输出（stdout只包含JSON）
       const jsonResult = JSON.parse(result.stdout);
@@ -307,9 +311,29 @@ export class BilibiliAPIService implements IBilibiliAPIService {
         });
 
         pythonProcess.on('close', (code) => {
+          // 无论成功还是失败,都先输出日志
+          if (stderr) {
+            const logLines = stderr.trim().split('\n');
+            for (const line of logLines) {
+              if (line.includes('[ERROR]')) {
+                this.logger.error(`Python: ${line}`);
+              } else if (line.includes('[WARNING]')) {
+                this.logger.warn(`Python: ${line}`);
+              } else if (line.includes('[OK]') || line.includes('[INFO]')) {
+                this.logger.info(`Python: ${line}`);
+              } else if (line.trim()) {
+                this.logger.info(`Python: ${line}`);
+              }
+            }
+          }
+          
           if (code === 0) {
             resolve({ stdout, stderr });
           } else {
+            // 输出 stdout 以便调试
+            if (stdout.trim()) {
+              this.logger.error(`Python stdout: ${stdout.trim()}`);
+            }
             reject(new Error(`Python脚本退出码: ${code}`));
           }
         });
@@ -318,23 +342,6 @@ export class BilibiliAPIService implements IBilibiliAPIService {
           reject(err);
         });
       });
-
-      // 输出Python脚本的日志（stderr）
-      if (result.stderr) {
-        // 按行分割日志并逐行输出
-        const logLines = result.stderr.trim().split('\n');
-        for (const line of logLines) {
-          if (line.includes('[ERROR]')) {
-            this.logger.error(`Python: ${line}`);
-          } else if (line.includes('[WARNING]')) {
-            this.logger.warn(`Python: ${line}`);
-          } else if (line.includes('[OK]')) {
-            this.logger.info(`Python: ${line}`);
-          } else {
-            this.logger.info(`Python: ${line}`);
-          }
-        }
-      }
 
       // 解析 Python 脚本的输出（stdout只包含JSON）
       const jsonResult = JSON.parse(result.stdout);
