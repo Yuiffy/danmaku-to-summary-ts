@@ -168,16 +168,11 @@ async def get_dynamic_comment_id(dynamic_id: str, credential: Credential) -> tup
         comment_resource_type = CommentResourceType.ARTICLE
     elif api_comment_type == 17:
         comment_resource_type = CommentResourceType.DYNAMIC
-    elif api_comment_type == 1:
+    elif api_comment_type == 11:
         # 如果是视频，通常API需要 Type 1，但在动态流中评论有时也允许 11
-        # 这里暂时保留 1，如果视频评论失败，可以改为 11
-        try:
-            # 尝试使用 VIDEO 类型 (如果库支持)
-            comment_resource_type = CommentResourceType.VIDEO
-        except AttributeError:
-            # 如果库版本旧没有 VIDEO 枚举，使用整数 1 或者回退到 11
-            # 大部分情况视频动态用 11 也是能发的
-            comment_resource_type = CommentResourceType.DYNAMIC_DRAW
+        # 这里暂时保留 1，如果视频评论失败，可以改为 11。根本不行，直接改为11。
+        comment_resource_type = CommentResourceType.VIDEO
+            
     else:
         # 默认情况 (包括 11 和纯文字动态)
         comment_resource_type = CommentResourceType.DYNAMIC_DRAW
