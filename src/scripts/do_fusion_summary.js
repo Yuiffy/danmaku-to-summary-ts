@@ -71,12 +71,13 @@ async function processLiveData(inputFiles) {
          try {
              const data = fs.readFileSync(file, 'utf8');
              const result = await parser.parseStringPromise(data);
-             // xml2js 默认 explicitArray: true，所以 d 始终是数组
-             const rawList = result?.i?.d || [];
+             // xml2js 的 normalize: true 会将标签名转换为大写
+              // 所以 <i> 变成 I, <d> 变成 D, 属性p变成P
+             const rawList = result?.I?.D || [];
              
             for (const d of rawList) {
-                 if (!d || !d.$ || !d.$.p) continue;
-                 const attrs = String(d.$.p).split(",");
+                 if (!d || !d.$ || !d.$.P) continue;
+                 const attrs = String(d.$.P).split(",");
                  const ms = parseFloat(attrs[0]) * 1000;
                  const content = String(d._).trim();
                  const uid = String(attrs[6]);
