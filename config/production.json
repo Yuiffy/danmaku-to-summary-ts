@@ -107,6 +107,26 @@
         "enableComicGeneration": true,
         "enableDelayedReply": true
       },
+      "21452505": {
+        "audioOnly": true,
+        "referenceImage": "public/reference_images/七海手办.png",
+        "characterDescription": "七海Nana7mi（棕发金瞳的鲨鱼系少女，穿着时尚卫衣，身后有鲨鱼尾巴，牙齿是锯齿状），粉丝是脆鲨（蓝色的Q版小鲨鱼，有时也戴着墨镜）",
+        "anchorName": "海子姐",
+        "fanName": "脆鲨",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
+      },
+      "80397": {
+        "audioOnly": true,
+        "referenceImage": "public/reference_images/梓神百万.webp",
+        "characterDescription": "阿梓从小就很可爱（紫发豆豆眉双马尾的可爱少女），粉丝是小孩梓（一群Q版形象的狂热粉丝/阿伟）",
+        "anchorName": "梓神",
+        "fanName": "小孩梓",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
+      },
       "26966466": {
         "audioOnly": true,
         "referenceImage": "public/reference_images/栞栞制服加獭獭栞.png",
