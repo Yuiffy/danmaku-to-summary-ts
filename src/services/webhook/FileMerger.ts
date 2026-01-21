@@ -29,7 +29,9 @@ export class FileMerger {
 
       for (let i = 0; i < segments.length; i++) {
         const segment = segments[i];
-        fileList.push(`file '${segment.videoPath}'`);
+        // 将路径中的反斜杠替换为正斜杠（ffmpeg concat协议要求）
+        const normalizedPath = segment.videoPath.replace(/\\/g, '/');
+        fileList.push(`file '${normalizedPath}'`);
 
         // 计算空白时间
         if (fillGaps && i < segments.length - 1) {
@@ -39,7 +41,9 @@ export class FileMerger {
           if (gapTime > 0) {
             // 创建空白片段
             const blankPath = await this.createBlankVideo(dir, gapTime);
-            fileList.push(`file '${blankPath}'`);
+            // 将路径中的反斜杠替换为正斜杠（ffmpeg concat协议要求）
+            const normalizedBlankPath = blankPath.replace(/\\/g, '/');
+            fileList.push(`file '${normalizedBlankPath}'`);
             this.logger.info(`创建空白片段: ${gapTime}ms`);
           }
         }
