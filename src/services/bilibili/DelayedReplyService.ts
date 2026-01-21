@@ -427,26 +427,7 @@ export class DelayedReplyService implements IDelayedReplyService {
           images: imagePath
         });
       } catch (publishError) {
-        const errorMsg = publishError instanceof Error ? publishError.message : String(publishError);
-        
-        // 发送企微错误通知
-        if (this.notifier) {
-          const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
-          const anchorName = anchorConfig?.name || '未知主播';
-          await this.notifier.notifyProcessError(
-            anchorName,
-            '发布评论',
-            errorMsg,
-            task.roomId,
-            {
-              dynamicId: String(latestDynamic.id),
-              goodnightTextPath: task.goodnightTextPath,
-              comicImagePath: task.comicImagePath,
-              error: publishError instanceof Error ? publishError.stack : String(publishError)
-            }
-          );
-        }
-        
+        // 不在这里发送通知，由外部 catch 统一处理
         throw publishError;
       }
 
@@ -521,6 +502,12 @@ export class DelayedReplyService implements IDelayedReplyService {
       }
 
       // 重试逻辑
+      const isBlacklistError = task.error?.includes('黑名单') || task.error?.includes('12035');
+      if (isBlacklistError) {
+        this.logger.warn(`检测到黑名单或禁言错误，不进行重试: ${task.taskId}`, { error: task.error });
+        return;
+      }
+
       const delayedReplyConfig = BilibiliConfigHelper.getDelayedReplyConfig();
       const maxRetries = delayedReplyConfig.maxRetries;
 

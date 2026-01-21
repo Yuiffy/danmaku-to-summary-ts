@@ -348,7 +348,9 @@ export class BilibiliAPIService implements IBilibiliAPIService {
 
       if (!jsonResult.success) {
         this.logger.error('Python脚本返回错误', { result: jsonResult });
-        throw new AppError(`发布评论失败: ${jsonResult.message || jsonResult.error}`, 'API_ERROR', 500);
+        // 优先使用详细的 error 字段，它通常包含 B站 API 的具体报错信息
+        const detailedError = jsonResult.error || jsonResult.message || '未知错误';
+        throw new AppError(`发布评论失败: ${detailedError}`, 'API_ERROR', 500);
       }
 
       this.logger.info('评论发布成功', { replyId: jsonResult.reply_id, imageUrl: jsonResult.image_url });

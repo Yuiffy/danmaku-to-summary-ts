@@ -158,6 +158,12 @@ export class ReplyManager implements IReplyManager {
       }
 
       // 重试逻辑
+      const isBlacklistError = error instanceof Error && (error.message.includes('黑名单') || error.message.includes('12035'));
+      if (isBlacklistError) {
+        this.logger.warn(`检测到黑名单或禁言错误，不进行重试: ${taskId}`, { error: error instanceof Error ? error.message : String(error) });
+        return;
+      }
+
       if (task.retryCount < 3) {
         this.logger.info(`准备重试任务: ${taskId} (${task.retryCount + 1}/3)`);
         task.retryCount++;
