@@ -174,9 +174,9 @@
         "characterDescription": "金发蓝瞳女生",
         "anchorName": "雪绘Yukie",
         "fanName": "态度人",
-        "enableTextGeneration": true,
-        "enableComicGeneration": true,
-        "enableDelayedReply": true
+        "enableTextGeneration": false,
+        "enableComicGeneration": false,
+        "enableDelayedReply": false
       },
       "21696950": {
         "audioOnly": true,
