@@ -188,6 +188,20 @@ export class DelayedReplyService implements IDelayedReplyService {
       return task.taskId;
     } catch (error) {
       this.logger.error('添加延迟回复任务失败', { error, roomId });
+      
+      // 发送企微错误通知
+      if (this.notifier) {
+        const anchorConfig = BilibiliConfigHelper.getAnchorConfig(roomId);
+        const anchorName = anchorConfig?.name || '未知主播';
+        await this.notifier.notifyProcessError(
+          anchorName,
+          '添加延迟回复任务',
+          error instanceof Error ? error.message : String(error),
+          roomId,
+          { goodnightTextPath, comicImagePath, error: error instanceof Error ? error.stack : String(error) }
+        );
+      }
+      
       throw error;
     }
   }
@@ -360,14 +374,44 @@ export class DelayedReplyService implements IDelayedReplyService {
       // 获取最新动态
       const latestDynamic = await this.getLatestDynamic(task.uid!);
       if (!latestDynamic) {
-        throw new Error('未找到最新动态');
+        const errorMsg = '未找到最新动态';
+        
+        // 发送企微错误通知
+        if (this.notifier) {
+          const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
+          const anchorName = anchorConfig?.name || '未知主播';
+          await this.notifier.notifyProcessError(
+            anchorName,
+            '获取最新动态',
+            errorMsg,
+            task.roomId,
+            { uid: task.uid, taskId: task.taskId }
+          );
+        }
+        
+        throw new Error(errorMsg);
       }
 
       // 直接发布评论，而不是通过ReplyManager
       // 读取晚安回复文本
       const replyText = await this.readReplyText(task.goodnightTextPath);
       if (!replyText) {
-        throw new Error('晚安回复文本为空');
+        const errorMsg = '晚安回复文本为空';
+        
+        // 发送企微错误通知
+        if (this.notifier) {
+          const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
+          const anchorName = anchorConfig?.name || '未知主播';
+          await this.notifier.notifyProcessError(
+            anchorName,
+            '读取晚安回复文本',
+            errorMsg,
+            task.roomId,
+            { goodnightTextPath: task.goodnightTextPath, taskId: task.taskId }
+          );
+        }
+        
+        throw new Error(errorMsg);
       }
 
       const imagePath = task.comicImagePath && await this.checkFileExists(task.comicImagePath)
@@ -375,11 +419,36 @@ export class DelayedReplyService implements IDelayedReplyService {
         : undefined;
 
       // 发布评论
-      const result = await this.bilibiliAPI.publishComment({
-        dynamicId: latestDynamic.id,
-        content: replyText,
-        images: imagePath
-      });
+      let result;
+      try {
+        result = await this.bilibiliAPI.publishComment({
+          dynamicId: latestDynamic.id,
+          content: replyText,
+          images: imagePath
+        });
+      } catch (publishError) {
+        const errorMsg = publishError instanceof Error ? publishError.message : String(publishError);
+        
+        // 发送企微错误通知
+        if (this.notifier) {
+          const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
+          const anchorName = anchorConfig?.name || '未知主播';
+          await this.notifier.notifyProcessError(
+            anchorName,
+            '发布评论',
+            errorMsg,
+            task.roomId,
+            {
+              dynamicId: String(latestDynamic.id),
+              goodnightTextPath: task.goodnightTextPath,
+              comicImagePath: task.comicImagePath,
+              error: publishError instanceof Error ? publishError.stack : String(publishError)
+            }
+          );
+        }
+        
+        throw publishError;
+      }
 
       this.logger.info(`延迟回复评论发布成功: ${task.taskId}`, {
         dynamicId: String(latestDynamic.id),
@@ -432,14 +501,22 @@ export class DelayedReplyService implements IDelayedReplyService {
       // 发送企业微信通知
       if (this.notifier) {
         const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
-        const anchorName = anchorConfig?.name;
-        await this.notifier.notifyReplyFailure(
-          task.uid || 'unknown',
-          task.error || '未知错误',
+        const anchorName = anchorConfig?.name || '未知主播';
+        
+        // 使用新的通用错误通知方法
+        await this.notifier.notifyProcessError(
           anchorName,
-          replyText,
-          undefined, // imageUrl - 失败时没有返回图片URL
-          task.comicImagePath
+          '延迟回复执行',
+          task.error || '未知错误',
+          task.roomId,
+          {
+            taskId: task.taskId,
+            uid: task.uid,
+            goodnightTextPath: task.goodnightTextPath,
+            comicImagePath: task.comicImagePath,
+            replyText,
+            error: error instanceof Error ? error.stack : String(error)
+          }
         );
       }
 

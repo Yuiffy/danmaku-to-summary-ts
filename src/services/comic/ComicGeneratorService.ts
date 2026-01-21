@@ -3,6 +3,7 @@ import { ConfigProvider } from '../../core/config/ConfigProvider';
 import { spawn } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import { WeChatWorkNotifier } from '../notification/WeChatWorkNotifier';
 
 /**
  * 漫画生成服务接口
@@ -32,8 +33,10 @@ export class ComicGeneratorService implements IComicGeneratorService {
   private logger = getLogger('ComicGeneratorService');
   private pythonScriptPath: string;
   private nodeScriptPath: string;
+  private notifier?: WeChatWorkNotifier;
 
-  constructor() {
+  constructor(notifier?: WeChatWorkNotifier) {
+    this.notifier = notifier;
     // 获取脚本路径
     const scriptsDir = path.join(__dirname, '../../../scripts');
     this.pythonScriptPath = path.join(scriptsDir, 'ai_comic_generator.py');
@@ -133,6 +136,19 @@ export class ComicGeneratorService implements IComicGeneratorService {
       });
     } catch (error: any) {
       this.logger.error(`生成漫画失败: ${error.message}`, { error, highlightPath });
+      
+      // 发送企微错误通知
+      if (this.notifier) {
+        const anchorName = this.getAnchorName(roomId);
+        await this.notifier.notifyProcessError(
+          anchorName,
+          '漫画生成',
+          error.message,
+          roomId,
+          { highlightPath, error: error.stack }
+        );
+      }
+      
       return null;
     }
   }
@@ -240,6 +256,18 @@ export class ComicGeneratorService implements IComicGeneratorService {
       });
     } catch (error: any) {
       this.logger.error(`批量生成漫画失败: ${error.message}`, { error, directory });
+      
+      // 发送企微错误通知
+      if (this.notifier) {
+        await this.notifier.notifyProcessError(
+          '批量漫画生成',
+          '漫画生成',
+          error.message,
+          undefined,
+          { directory, error: error.stack }
+        );
+      }
+      
       return 0;
     }
   }
@@ -319,5 +347,36 @@ export class ComicGeneratorService implements IComicGeneratorService {
       this.logger.error(`Node文本生成失败: ${error.message}`);
       return null;
     }
+  }
+
+  /**
+   * 获取主播名称
+   */
+  private getAnchorName(roomId?: string): string {
+    if (!roomId) {
+      return '未知主播';
+    }
+    
+    // 尝试从AI配置中获取主播名
+    try {
+      const roomConfig = ConfigProvider.getRoomAIConfig(roomId);
+      if (roomConfig?.anchorName) {
+        return roomConfig.anchorName;
+      }
+    } catch {
+      // 忽略错误
+    }
+    
+    // 尝试从B站配置中获取主播名
+    try {
+      const bilibiliConfig = ConfigProvider.getConfig().bilibili;
+      if (bilibiliConfig?.anchors?.[roomId]?.name) {
+        return bilibiliConfig.anchors[roomId].name;
+      }
+    } catch {
+      // 忽略错误
+    }
+    
+    return '未知主播';
   }
 }

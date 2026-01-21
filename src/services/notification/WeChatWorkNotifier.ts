@@ -312,6 +312,43 @@ export class WeChatWorkNotifier {
   }
 
   /**
+   * 发送流程错误通知
+   * @param anchorName 主播名
+   * @param stage 处理环节
+   * @param error 错误信息
+   * @param roomId 房间ID（可选）
+   * @param additionalInfo 额外信息（可选）
+   */
+  async notifyProcessError(
+    anchorName: string,
+    stage: string,
+    error: string,
+    roomId?: string,
+    additionalInfo?: Record<string, any>
+  ): Promise<boolean> {
+    let content = `❌ 处理流程错误\n\n`;
+    content += `👤 主播: ${anchorName}\n`;
+    content += `🔧 环节: ${stage}\n`;
+    content += `❓ 错误: ${error}`;
+    
+    if (roomId) {
+      content += `\n🏷️ 房间ID: ${roomId}`;
+    }
+    
+    if (additionalInfo) {
+      content += `\n\n📋 额外信息:\n`;
+      for (const [key, value] of Object.entries(additionalInfo)) {
+        const valueStr = typeof value === 'object' ? JSON.stringify(value) : String(value);
+        content += `  ${key}: ${valueStr}\n`;
+      }
+    }
+    
+    content += `\n⏰ 时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`;
+    
+    return await this.sendMarkdown(content);
+  }
+
+  /**
    * 发送消息到企业微信
    */
   private async sendMessage(message: WeChatWorkMessage): Promise<boolean> {
