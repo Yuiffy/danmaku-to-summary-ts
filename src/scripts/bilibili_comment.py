@@ -114,23 +114,35 @@ async def get_dynamic_comment_id(dynamic_id: str, credential: Credential) -> tup
     basic = item.get('basic', {})
     comment_id_str = basic.get('comment_id_str', '')
 
-    # 获取major_type
+    # 获取major_type（新方式）
     modules = item.get('modules', {})
     module_dynamic = modules.get('module_dynamic', {})
     major = module_dynamic.get('major', {})
     major_type = major.get('type', '')
 
-    log(f"[INFO] major_type: {major_type}")
-
-    # 根据major_type映射到CommentResourceType
-    if major_type == 'MAJOR_TYPE_DRAW':
-        comment_resource_type = CommentResourceType.DYNAMIC_DRAW
-    elif major_type in ['MAJOR_TYPE_OPUS', 'MAJOR_TYPE_COMMON', 'MAJOR_TYPE_ARCHIVE']:
-        comment_resource_type = CommentResourceType.DYNAMIC
-    elif major_type == 'MAJOR_TYPE_ARTICLE':
-        comment_resource_type = CommentResourceType.ARTICLE
+    # 后备：如果major_type为空，使用旧方式
+    if not major_type:
+        comment_type_old = basic.get('comment_type', 11)
+        log(f"[INFO] major_type为空，使用旧方式comment_type: {comment_type_old}")
+        if comment_type_old == 11:
+            comment_resource_type = CommentResourceType.DYNAMIC_DRAW
+        elif comment_type_old == 17:
+            comment_resource_type = CommentResourceType.DYNAMIC
+        elif comment_type_old == 12:
+            comment_resource_type = CommentResourceType.ARTICLE
+        else:
+            comment_resource_type = CommentResourceType.DYNAMIC_DRAW
     else:
-        comment_resource_type = CommentResourceType.DYNAMIC_DRAW
+        log(f"[INFO] major_type: {major_type}")
+        # 根据major_type映射到CommentResourceType
+        if major_type == 'MAJOR_TYPE_DRAW':
+            comment_resource_type = CommentResourceType.DYNAMIC_DRAW
+        elif major_type in ['MAJOR_TYPE_OPUS', 'MAJOR_TYPE_COMMON', 'MAJOR_TYPE_ARCHIVE']:
+            comment_resource_type = CommentResourceType.DYNAMIC
+        elif major_type == 'MAJOR_TYPE_ARTICLE':
+            comment_resource_type = CommentResourceType.ARTICLE
+        else:
+            comment_resource_type = CommentResourceType.DYNAMIC_DRAW
 
     return comment_id_str, comment_resource_type
 
@@ -229,7 +241,11 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
 
 def main():
     """主函数"""
-    log(f"[INFO] B站评论发布脚本启动")
+    try:
+        log(f"[INFO] B站评论发布脚本启动")
+    except Exception as e:
+        # 如果log失败，使用print
+        print(f"[INFO] B站评论发布脚本启动 (fallback)", file=sys.stderr)
 
     # 从命令行参数读取输入
     if len(sys.argv) < 6:
@@ -248,7 +264,10 @@ def main():
     dedeuserid = sys.argv[5]
     image_path = sys.argv[6] if len(sys.argv) > 6 else None
 
-    log(f"[INFO] 接收到参数: dynamic_id={dynamic_id}, content_length={len(content)}, has_image={image_path is not None}")
+    try:
+        log(f"[INFO] 接收到参数: dynamic_id={dynamic_id}, content_length={len(content)}, has_image={image_path is not None}")
+    except Exception as e:
+        print(f"[INFO] 接收到参数: dynamic_id={dynamic_id}, content_length={len(content)}, has_image={image_path is not None}", file=sys.stderr)
 
     # 发布评论
     result = asyncio.run(publish_comment(dynamic_id, content, sessdata, bili_jct, dedeuserid, image_path))
