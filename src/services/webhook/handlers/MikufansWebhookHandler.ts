@@ -242,10 +242,13 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     // 取消SessionEnded延迟处理(说明直播重新开始了)
     this.cancelDelayedAction(roomId, DelayedActionType.SESSION_ENDED);
 
-    // 清除待处理的文件（说明是断线重连，这些文件属于当前会话）
+    // 恢复待处理的文件到新会话（说明是断线重连或事件乱序，这些文件属于当前会话）
     const pendingFiles = this.pendingFiles.get(roomId);
     if (pendingFiles && pendingFiles.length > 0) {
-      this.logger.info(`🔄 清除待处理文件: ${roomId} (${pendingFiles.length}个文件，属于当前会话)`);
+      this.logger.info(`🔄 恢复待处理文件到会话: ${roomId} (${pendingFiles.length}个文件)`);
+      for (const item of pendingFiles) {
+        await this.collectSegment(roomId, item.videoPath, item.payload);
+      }
       this.pendingFiles.delete(roomId);
     }
 
@@ -414,6 +417,11 @@ export class MikufansWebhookHandler implements IWebhookHandler {
    * 延迟处理直播结束（等待FileClosed事件完成）
    */
   private async processStreamEnded(roomId: string): Promise<void> {
+    // 立即取消所有相关的延迟处理，防止重复触发结算
+    this.cancelDelayedAction(roomId, DelayedActionType.STREAM_ENDED);
+    this.cancelDelayedAction(roomId, DelayedActionType.SESSION_ENDED);
+    this.cancelDelayedAction(roomId, DelayedActionType.SEGMENT_COLLECTION);
+
     const session = this.liveSessionManager.getSession(roomId);
     if (!session) {
       this.logger.warn(`延迟处理时会话不存在: ${roomId}`);
@@ -541,7 +549,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       eventTimestamp
     );
 
-    this.logger.info(`📦 收集片段: ${path.basename(videoPath)} (会话: ${roomId}, 片段数: ${session.segments.length + 1})`);
+    this.logger.info(`📦 收集片段: ${path.basename(videoPath)} (会话: ${roomId}, 片段数: ${session.segments.length})`);
 
     // 启动/重置片段收集延迟处理(等待更多片段或超时结算)
     this.startDelayedAction(
