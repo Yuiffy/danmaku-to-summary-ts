@@ -7,6 +7,13 @@ const configLoader = require('./config-loader');
 const stat = promisify(fs.stat);
 const unlink = promisify(fs.unlink);
 
+// 获取音频格式配置
+function getAudioFormats() {
+    const config = configLoader.getConfig();
+    const defaultAudioFormats = ['.m4a', '.aac', '.mp3', '.wav', '.ogg', '.flac'];
+    return config.audio?.formats || config.audioRecording?.audioFormats || defaultAudioFormats;
+}
+
 // 检查是否为音频专用房间
 function isAudioOnlyRoom(roomId) {
     const config = configLoader.getConfig();
