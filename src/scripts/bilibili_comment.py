@@ -22,30 +22,75 @@ Dynamic = dynamic.Dynamic
 request_settings.set_wbi_retry_times(10)
 
 # 禁用输出缓冲，确保日志实时输出到Node.js
-try:
-    if hasattr(sys.stdout, 'buffer') and not sys.stdout.closed:
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
-    if hasattr(sys.stderr, 'buffer') and not sys.stderr.closed:
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', line_buffering=True)
-except (ValueError, AttributeError, OSError):
-    pass
+# 保存原始的stdout/stderr，以便在包装失败时使用
+_original_stdout = sys.stdout
+_original_stderr = sys.stderr
 
-# 创建安全的打印函数
+# 创建安全的打印函数，确保日志能够输出
 def safe_print(*args, **kwargs):
-    """安全的打印函数，在stdout/stderr不可用时静默失败"""
+    """安全的打印函数，尝试多种方式输出日志"""
+    message = ' '.join(str(arg) for arg in args)
+    
+    # 尝试1: 使用原始stdout
     try:
-        __builtins__.print(*args, **kwargs)
+        if not _original_stdout.closed:
+            _original_stdout.write(message + '\n')
+            _original_stdout.flush()
+            return
     except (ValueError, OSError, AttributeError):
         pass
+    
+    # 尝试2: 使用内置print
+    try:
+        __builtins__.print(*args, **kwargs)
+        return
+    except (ValueError, OSError, AttributeError):
+        pass
+    
+    # 尝试3: 直接写入sys.stdout
+    try:
+        if hasattr(sys.stdout, 'write') and not sys.stdout.closed:
+            sys.stdout.write(message + '\n')
+            sys.stdout.flush()
+            return
+    except (ValueError, OSError, AttributeError):
+        pass
+    
+    # 尝试4: 写入stderr作为最后手段
+    try:
+        if hasattr(sys.stderr, 'write') and not sys.stderr.closed:
+            sys.stderr.write(message + '\n')
+            sys.stderr.flush()
+            return
+    except (ValueError, OSError, AttributeError):
+        pass
+
+# 创建安全的traceback打印函数
+def safe_print_exc():
+    """安全的traceback打印函数"""
+    import traceback as tb
+    try:
+        tb.print_exc(file=_original_stderr)
+    except (ValueError, OSError, AttributeError):
+        # 尝试使用原始stderr
+        try:
+            _original_stderr.write(str(tb.format_exc()) + '\n')
+            _original_stderr.flush()
+        except:
+            pass
 
 # 日志输出到stderr，JSON结果输出到stdout
 def log(*args, **kwargs):
     """日志输出到stderr"""
+    message = ' '.join(str(arg) for arg in args)
     try:
-        __builtins__.print(*args, file=sys.stderr, **kwargs)
+        if not _original_stderr.closed:
+            _original_stderr.write(message + '\n')
+            _original_stderr.flush()
     except (ValueError, OSError, AttributeError):
         pass
 
+# 全局替换内置print函数
 print = safe_print
 
 
@@ -174,8 +219,7 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
 
     except Exception as e:
         log(f"[ERROR] 评论发布失败: {e}")
-        import traceback
-        traceback.print_exc()
+        safe_print_exc()
         return {
             'success': False,
             'error': str(e),
