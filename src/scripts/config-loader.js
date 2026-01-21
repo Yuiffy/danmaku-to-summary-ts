@@ -25,6 +25,7 @@ const AISchema = Joi.object({
         enabled: Joi.boolean().default(true),
         provider: Joi.string().default('gemini'),
         gemini: Joi.object({
+            enabled: Joi.boolean().default(true),
             apiKey: Joi.string().allow('').default(''),
             model: Joi.string().default('gemini-3-flash-preview'),
             temperature: Joi.number().default(0.7),

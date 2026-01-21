@@ -282,14 +282,19 @@ function saveGeneratedText(outputPath, text, highlightPath) {
 async function generateGoodnightReply(highlightPath, roomId = null) {
     const config = configLoader.getConfig();
 
+    const geminiConfig = config.ai?.text?.gemini || config.aiServices?.gemini || {};
+    const textEnabled = config.ai?.text?.enabled !== false;
+    const geminiEnabled = geminiConfig.enabled !== false;
+
     console.log(`🔍 检查AI文本生成配置...`);
-    console.log(`   aiServices?.gemini?.enabled: ${config.aiServices?.gemini?.enabled}`);
-    console.log(`   ai?.text?.enabled: ${config.ai?.text?.enabled}`);
+    console.log(`   总开关 (ai.text.enabled): ${textEnabled ? '启用' : '禁用'}`);
+    console.log(`   Gemini开关 (gemini.enabled): ${geminiEnabled ? '启用' : '禁用'}`);
+    console.log(`   当前服务商: ${config.ai?.text?.provider || 'gemini'}`);
     console.log(`   isGeminiConfigured: ${configLoader.isGeminiConfigured()}`);
     console.log(`   isTuZiConfigured: ${configLoader.isTuZiConfigured()}`);
 
-    if (!config.aiServices?.gemini?.enabled && !config.ai?.text?.enabled) {
-        console.log('ℹ️  AI文本生成功能已禁用');
+    if (!textEnabled || (!geminiEnabled && config.ai?.text?.provider === 'gemini')) {
+        console.log('ℹ️  AI文本生成功能已禁用 (或当前服务商已禁用)');
         return null;
     }
 
@@ -339,7 +344,15 @@ async function generateGoodnightReply(highlightPath, roomId = null) {
             const prompt = buildPrompt(highlightContent, finalRoomId);
 
             // 调用API生成文本
-            const generatedText = await generateTextWithGemini(prompt);
+            let generatedText;
+            const provider = config.ai?.text?.provider || 'gemini';
+
+            if (provider === 'tuZi') {
+                generatedText = await generateTextWithTuZi(prompt);
+            } else {
+                // 默认使用 Gemini
+                generatedText = await generateTextWithGemini(prompt);
+            }
 
             if (!generatedText || generatedText.trim().length < 20) {
                 throw new Error(generatedText ? '生成的文本过短' : '生成的文本为空');
