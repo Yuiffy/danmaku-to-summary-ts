@@ -125,7 +125,7 @@
         "enableTextGeneration": true,
         "enableComicGeneration": true,
         "enableDelayedReply": true,
-        "wordLimit": 500
+        "wordLimit": 150
       },
       "1820703922": {
         "audioOnly": true,
