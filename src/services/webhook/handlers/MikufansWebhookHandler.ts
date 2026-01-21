@@ -12,6 +12,16 @@ import { LiveSessionManager, LiveSegment } from '../LiveSessionManager';
 import { FileMerger } from '../FileMerger';
 
 /**
+ * 延迟动作类型
+ */
+enum DelayedActionType {
+  STREAM_ENDED = 'stream_ended',           // StreamEnded后等待更多片段
+  SESSION_ENDED = 'session_ended',         // SessionEnded后等待SessionStart
+  FILE_WITHOUT_SESSION = 'file_no_session', // FileClosed但会话不存在
+  SEGMENT_COLLECTION = 'segment_collection' // 收集片段后等待更多片段或结算
+}
+
+/**
  * Mikufans Webhook处理器
  */
 export class MikufansWebhookHandler implements IWebhookHandler {
@@ -26,10 +36,8 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   private fileMerger = new FileMerger();
   private delayedReplyService?: IDelayedReplyService;
 
-  // 动态延迟等待定时器(roomId -> NodeJS.Timeout)
-  private delayTimers: Map<string, NodeJS.Timeout> = new Map();
-  // SessionEnded后的延迟处理定时器(roomId -> NodeJS.Timeout)
-  private sessionEndedTimers: Map<string, NodeJS.Timeout> = new Map();
+  // 延迟处理定时器管理器(roomId -> Map<actionType, timer>)
+  private delayedActions: Map<string, Map<DelayedActionType, NodeJS.Timeout>> = new Map();
   // SessionEnded延迟期间收到的待处理文件(roomId -> {videoPath, payload}[])
   private pendingFiles: Map<string, Array<{videoPath: string, payload: any}>> = new Map();
   // 最大等待时间(毫秒)
@@ -118,6 +126,68 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   }
 
   /**
+   * 启动延迟处理(统一的30秒计时器管理)
+   */
+  private startDelayedAction(
+    roomId: string,
+    actionType: DelayedActionType,
+    action: () => Promise<void>,
+    description: string
+  ): void {
+    // 清除已有的同类型定时器
+    this.cancelDelayedAction(roomId, actionType);
+
+    this.logger.info(`⏳ 启动延迟处理: ${description} (等待 ${this.MAX_DELAY_MS / 1000} 秒)`);
+
+    const timer = setTimeout(async () => {
+      this.logger.info(`⏰ 延迟处理超时触发: ${description}`);
+      await action();
+      this.removeDelayedAction(roomId, actionType);
+    }, this.MAX_DELAY_MS);
+
+    // 保存定时器
+    if (!this.delayedActions.has(roomId)) {
+      this.delayedActions.set(roomId, new Map());
+    }
+    this.delayedActions.get(roomId)!.set(actionType, timer);
+  }
+
+  /**
+   * 取消延迟处理
+   */
+  private cancelDelayedAction(roomId: string, actionType: DelayedActionType): boolean {
+    const roomActions = this.delayedActions.get(roomId);
+    if (!roomActions) return false;
+
+    const timer = roomActions.get(actionType);
+    if (timer) {
+      clearTimeout(timer);
+      roomActions.delete(actionType);
+      this.logger.info(`🔄 取消延迟处理: ${actionType} (roomId: ${roomId})`);
+      
+      // 如果该房间没有其他定时器了,删除整个Map
+      if (roomActions.size === 0) {
+        this.delayedActions.delete(roomId);
+      }
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * 移除延迟处理记录(定时器已执行完毕)
+   */
+  private removeDelayedAction(roomId: string, actionType: DelayedActionType): void {
+    const roomActions = this.delayedActions.get(roomId);
+    if (roomActions) {
+      roomActions.delete(actionType);
+      if (roomActions.size === 0) {
+        this.delayedActions.delete(roomId);
+      }
+    }
+  }
+
+  /**
    * 处理事件
    */
   private async handleEvent(payload: any, eventType: string): Promise<void> {
@@ -169,13 +239,8 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     // 使用LiveSessionManager创建或获取会话（使用RoomId）
     this.liveSessionManager.createOrGetSession(roomId, roomName, title);
 
-    // 如果有SessionEnded延迟定时器，取消它（说明直播重新开始了）
-    const existingTimer = this.sessionEndedTimers.get(roomId);
-    if (existingTimer) {
-      clearTimeout(existingTimer);
-      this.sessionEndedTimers.delete(roomId);
-      this.logger.info(`🔄 取消SessionEnded延迟处理: ${roomId} (检测到SessionStart)`);
-    }
+    // 取消SessionEnded延迟处理(说明直播重新开始了)
+    this.cancelDelayedAction(roomId, DelayedActionType.SESSION_ENDED);
 
     // 清除待处理的文件（说明是断线重连，这些文件属于当前会话）
     const pendingFiles = this.pendingFiles.get(roomId);
@@ -197,22 +262,12 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       return;
     }
 
-    // 如果有延迟定时器，取消它（说明直播重新开始了）
-    const existingTimer = this.sessionEndedTimers.get(roomId);
-    if (existingTimer) {
-      clearTimeout(existingTimer);
-      this.sessionEndedTimers.delete(roomId);
-      this.logger.info(`🔄 取消延迟处理: ${roomId} (检测到FileOpening)`);
-    }
+    // 取消所有相关的延迟处理(说明有新文件开始录制了)
+    this.cancelDelayedAction(roomId, DelayedActionType.SESSION_ENDED);
+    this.cancelDelayedAction(roomId, DelayedActionType.FILE_WITHOUT_SESSION);
+    this.cancelDelayedAction(roomId, DelayedActionType.SEGMENT_COLLECTION);
 
-    // // 清除待处理的文件（这些文件属于上一个会话，不应该处理）
-    // const pendingFiles = this.pendingFiles.get(roomId);
-    // if (pendingFiles && pendingFiles.length > 0) {
-    //   this.logger.info(`🔄 清除待处理文件: ${roomId} (${pendingFiles.length}个文件，属于上一个会话)`);
-    //   this.pendingFiles.delete(roomId);
-    // }
-
-    this.logger.info(`📂 handleFileOpening over: ${roomId}`);
+    this.logger.info(`📂 FileOpening: ${roomId} (已取消相关延迟处理)`);
   }
 
   /**
@@ -227,26 +282,47 @@ export class MikufansWebhookHandler implements IWebhookHandler {
 
     const session = this.liveSessionManager.getSession(roomId);
     if (session) {
-      // 会话存在，说明是正常的SessionEnded，等待StreamEnded再处理
+      // 会话存在,启动延迟处理,等待FileOpen或SessionStart
       this.logger.info(`📝 会话结束 (会话存在): ${session.roomName} (Room: ${roomId})`);
+      
+      this.startDelayedAction(
+        roomId,
+        DelayedActionType.SESSION_ENDED,
+        async () => {
+          await this.processSessionEndedWithSession(roomId);
+        },
+        `SessionEnded(会话存在): ${roomId}`
+      );
       return;
     }
 
     // 会话不存在，可能是网络不稳定导致的SessionStart丢失
     // 启动延迟处理，等待30秒看是否有SessionStart
-    const existingTimer = this.sessionEndedTimers.get(roomId);
-    if (existingTimer) {
-      clearTimeout(existingTimer);
-      this.logger.info(`清除已有的SessionEnded延迟定时器: ${roomId}`);
+    this.startDelayedAction(
+      roomId,
+      DelayedActionType.SESSION_ENDED,
+      async () => {
+        await this.processSessionEndedWithoutSession(roomId, payload);
+      },
+      `SessionEnded(会话不存在): ${roomId}`
+    );
+  }
+
+  /**
+   * 处理会话存在时的SessionEnded（延迟30秒后执行）
+   */
+  private async processSessionEndedWithSession(roomId: string): Promise<void> {
+    // 再次检查会话是否存在
+    const session = this.liveSessionManager.getSession(roomId);
+    if (!session) {
+      this.logger.info(`📝 延迟处理时会话已不存在: ${roomId}`);
+      return;
     }
 
-    this.logger.info(`⏳ SessionEnded但会话不存在，启动延迟处理: ${roomId} (等待 ${this.MAX_DELAY_MS / 1000} 秒)`);
-    const timer = setTimeout(async () => {
-      await this.processSessionEndedWithoutSession(roomId, payload);
-      this.sessionEndedTimers.delete(roomId);
-    }, this.MAX_DELAY_MS);
-
-    this.sessionEndedTimers.set(roomId, timer);
+    this.logger.info(`📝 SessionEnded延迟结束(会话存在): ${roomId} (开始结算)`);
+    
+    // 触发结算流程
+    await this.processStreamEnded(roomId);
   }
 
   /**
@@ -323,21 +399,15 @@ export class MikufansWebhookHandler implements IWebhookHandler {
 
     this.logger.info(`🏁 直播结束 (收到事件): ${session.roomName} (Room: ${roomId}, 当前片段数: ${session.segments.length})`);
 
-    // 清除已有的定时器（如果存在）
-    const existingTimer = this.delayTimers.get(roomId);
-    if (existingTimer) {
-      clearTimeout(existingTimer);
-      this.logger.info(`清除已有的延迟定时器: ${roomId}`);
-    }
-
     // 启动动态延迟等待
-    this.logger.info(`⏳ 启动动态延迟等待: ${roomId} (最多等待 ${this.MAX_DELAY_MS / 1000} 秒)`);
-    const timer = setTimeout(async () => {
-      await this.processStreamEnded(roomId);
-      this.delayTimers.delete(roomId);
-    }, this.MAX_DELAY_MS);
-
-    this.delayTimers.set(roomId, timer);
+    this.startDelayedAction(
+      roomId,
+      DelayedActionType.STREAM_ENDED,
+      async () => {
+        await this.processStreamEnded(roomId);
+      },
+      `StreamEnded: ${roomId}`
+    );
   }
 
   /**
@@ -431,20 +501,17 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       }
       this.pendingFiles.get(roomId)!.push({videoPath, payload});
       
-      // 检查是否已有延迟定时器
-      const existingTimer = this.sessionEndedTimers.get(roomId);
-      if (existingTimer) {
-        // 已有延迟定时器，只需加入队列即可
-        this.logger.info(`📝 延迟期间收到文件，加入待处理队列: ${roomId} (${path.basename(videoPath)})`);
-      } else {
-        // 没有延迟定时器，启动一个新的延迟处理
-        this.logger.warn(`会话不存在: ${roomId}，启动延迟处理 (等待 ${this.MAX_DELAY_MS / 1000} 秒)`);
-        const timer = setTimeout(async () => {
+      // 启动延迟处理
+      this.startDelayedAction(
+        roomId,
+        DelayedActionType.FILE_WITHOUT_SESSION,
+        async () => {
           await this.processFilesWithoutSession(roomId);
-          this.sessionEndedTimers.delete(roomId);
-        }, this.MAX_DELAY_MS);
-        this.sessionEndedTimers.set(roomId, timer);
-      }
+        },
+        `FileClosed(会话不存在): ${roomId}`
+      );
+      
+      this.logger.info(`📝 会话不存在，文件加入待处理队列: ${roomId} (${path.basename(videoPath)})`);
       return;
     }
 
@@ -476,17 +543,31 @@ export class MikufansWebhookHandler implements IWebhookHandler {
 
     this.logger.info(`📦 收集片段: ${path.basename(videoPath)} (会话: ${roomId}, 片段数: ${session.segments.length + 1})`);
 
-    // 如果有延迟定时器，重置它（等待更多片段）
-    const existingTimer = this.delayTimers.get(roomId);
-    if (existingTimer) {
-      clearTimeout(existingTimer);
-      this.logger.info(`🔄 重置延迟定时器: ${roomId} (等待更多片段)`);
-      const newTimer = setTimeout(async () => {
-        await this.processStreamEnded(roomId);
-        this.delayTimers.delete(roomId);
-      }, this.MAX_DELAY_MS);
-      this.delayTimers.set(roomId, newTimer);
+    // 启动/重置片段收集延迟处理(等待更多片段或超时结算)
+    this.startDelayedAction(
+      roomId,
+      DelayedActionType.SEGMENT_COLLECTION,
+      async () => {
+        await this.processSegmentCollectionTimeout(roomId);
+      },
+      `SegmentCollection: ${roomId}`
+    );
+  }
+
+  /**
+   * 处理片段收集超时
+   */
+  private async processSegmentCollectionTimeout(roomId: string): Promise<void> {
+    const session = this.liveSessionManager.getSession(roomId);
+    if (!session) {
+      this.logger.info(`📝 片段收集超时，但会话已不存在: ${roomId}`);
+      return;
     }
+
+    this.logger.info(`📝 片段收集超时: ${roomId} (开始结算)`);
+    
+    // 触发结算流程
+    await this.processStreamEnded(roomId);
   }
 
   /**
