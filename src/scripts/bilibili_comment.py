@@ -136,11 +136,9 @@ print = log_print
 async def get_dynamic_comment_id(dynamic_id: str, credential: Credential) -> tuple[str, CommentResourceType]:
     """
     获取动态的comment_id和评论类型
-
     Args:
         dynamic_id: 动态ID
         credential: 凭证对象
-
     Returns:
         tuple: (comment_id, comment_type)
     """
@@ -148,20 +146,40 @@ async def get_dynamic_comment_id(dynamic_id: str, credential: Credential) -> tup
     dynamic = Dynamic(dynamic_id=int(dynamic_id), credential=credential)
     info = await dynamic.get_info()
 
-    # 从返回的数据中提取comment_id和comment_type
+    # 1. 基础信息提取 (最稳健的方式)
     item = info.get('item', {})
     basic = item.get('basic', {})
     comment_id_str = basic.get('comment_id_str', '')
-    comment_type = basic.get('comment_type', 11)
+    
+    # 获取官方返回的 comment_type，默认为 11
+    api_comment_type = basic.get('comment_type', 11)
 
-    # 根据comment_type映射到CommentResourceType
-    if comment_type == 11:
-        comment_resource_type = CommentResourceType.DYNAMIC_DRAW
-    elif comment_type == 17:
-        comment_resource_type = CommentResourceType.DYNAMIC
-    elif comment_type == 12:
+    # 2. 辅助判断：安全地获取 major_type (用于修正特殊类型)
+    # 使用链式 .get 防止报错，因为纯文字动态可能没有 major
+    major_type = item.get('modules', {}).get('module_dynamic', {}).get('major', {}).get('type', '')
+
+    log(f"[INFO] 动态 {dynamic_id} 解析: api_type={api_comment_type}, major_type={major_type}")
+
+    # 3. 智能映射逻辑
+    # 优先处理必须强制指定的特殊类型 (如专栏/笔记)
+    if major_type in ['MAJOR_TYPE_OPUS', 'MAJOR_TYPE_ARTICLE']:
+        comment_resource_type = CommentResourceType.ARTICLE # 强制为 12
+    elif api_comment_type == 12:
         comment_resource_type = CommentResourceType.ARTICLE
+    elif api_comment_type == 17:
+        comment_resource_type = CommentResourceType.DYNAMIC
+    elif api_comment_type == 1:
+        # 如果是视频，通常API需要 Type 1，但在动态流中评论有时也允许 11
+        # 这里暂时保留 1，如果视频评论失败，可以改为 11
+        try:
+            # 尝试使用 VIDEO 类型 (如果库支持)
+            comment_resource_type = CommentResourceType.VIDEO
+        except AttributeError:
+            # 如果库版本旧没有 VIDEO 枚举，使用整数 1 或者回退到 11
+            # 大部分情况视频动态用 11 也是能发的
+            comment_resource_type = CommentResourceType.DYNAMIC_DRAW
     else:
+        # 默认情况 (包括 11 和纯文字动态)
         comment_resource_type = CommentResourceType.DYNAMIC_DRAW
 
     return comment_id_str, comment_resource_type
