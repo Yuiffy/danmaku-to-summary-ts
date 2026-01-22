@@ -227,7 +227,7 @@
       "1713546334": {
         "audioOnly": true,
         "referenceImage": "public/reference_images/Hazel_灰泽满_立绘.png",
-        "characterDescription": "灰泽满Hazel（永远16岁的女高中生，浅色短发，风纪委员，身上挂着很多果冻形状的饰品，随身带着果冻应急储备箱），粉丝“绿冻”是绿色的果冻小生物",
+        "characterDescription": "灰泽满Hazel（永远16岁的女高中生，灰色短发带一个带绿色线条的螺旋马尾，风纪委员，身上挂着很多果冻形状的饰品，随身带着果冻应急储备箱），粉丝“绿冻”是绿色的果冻小生物",
         "anchorName": "灰泽满Hazel",
         "fanName": "绿冻",
         "enableTextGeneration": true,
@@ -237,7 +237,7 @@
       "1713548468": {
         "audioOnly": true,
         "referenceImage": "public/reference_images/Liko_莉蔻_立绘.png",
-        "characterDescription": "莉蔻Liko（长着兔耳的少女，戴着大帽子，性格胆小没见过世面，手里常拿着胡萝卜棒冰，虽然是秘密组织的特工但看起来很弱气）。粉丝“蔻萝特”是抱着胡萝卜的小兔子",
+        "characterDescription": "莉蔻Liko（长着兔耳的深棕发少女，手里常拿着胡萝卜棒冰，背着胡萝卜包，虽然是秘密组织的特工但看起来很弱气）。粉丝“蔻萝特”是抱着胡萝卜的小兔子",
         "anchorName": "莉蔻Liko",
         "fanName": "蔻萝特",
         "enableTextGeneration": true,
@@ -247,7 +247,7 @@
       "1986461465": {
         "audioOnly": true,
         "referenceImage": "public/reference_images/Kloa_克罗雅_立绘.png",
-        "characterDescription": "克罗雅Kloa（混沌属性的少女，头顶天使光环但背后是黑色的恶魔翅膀，戴着黑色头纱，表情慵懒，喜欢睡觉和发呆，废柴神造物）",
+        "characterDescription": "克罗雅Kloa（粉色头发恶魔角的身材好的少女，头顶天使光环但背后是黑色的恶魔翅膀，表情慵懒，喜欢睡觉和发呆，废柴神造物）",
         "anchorName": "克罗雅Kloa",
         "fanName": "雅团子",
         "enableTextGeneration": true,

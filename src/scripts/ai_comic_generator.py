@@ -328,6 +328,7 @@ def build_comic_prompt(highlight_content: str, reference_image_path: Optional[st
         base_prompt = f"""<note>一定要按照给你的参考图还原形象，而不是自己乱画一个动漫角色</note>
 <character>{character_desc}</character>
 要画得精致，角色要画得帅气、美丽、可爱。
+尽量不要有汉字，除非就一两个字。
 下面是根据直播内容生成的漫画脚本，请根据这个脚本绘制漫画：
 {comic_content}"""
 
@@ -338,9 +339,9 @@ def build_comic_prompt(highlight_content: str, reference_image_path: Optional[st
 # 文字prompt: 画图+文字台词or简介，可以没有文字，有的话要很短（5个单词内），不要用中文。
 COMIC_ARTIST_PROMPT_TEMPLATE = """你作为虚拟主播二创画师大手子，根据直播内容，绘制直播总结插画。
 角色描述：{character_desc}。
-风格：多个剪贴画风格分镜（4~6个吧），每个是一个片段场景，
-不要有文字，纯默剧，用表情和动作、场景来表现。
-下面是一场直播的语音+弹幕文本，请先构思图片并用文字给我，我再拿去绘制图片。整体800个字符以内。只返回各个分镜的文字描述，不要包含任何多余的说明、格式。
+风格：多个剪贴画风格分镜（2~4个吧），每个是一个片段场景，
+不要有文字，纯默剧，用表情和动作、场景、图标来表现。
+下面是一场直播的语音+弹幕文本，请先构思图片并用文字给我，我再拿去绘制图片。整体600个字符以内。只返回各个分镜的文字描述，不要包含任何多余的说明、格式。
 {highlight_content}
 """
 
