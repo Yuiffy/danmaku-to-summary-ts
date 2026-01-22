@@ -314,14 +314,25 @@ def build_comic_prompt(highlight_content: str, reference_image_path: Optional[st
     # 获取角色描述并注入绘画提示词（优先房间配置、再全局默认、最后内置默认）
     character_desc = get_room_character_description(room_id)
 
+    # 尝试获取房间级别的自定义图片生成 prompt
+    config = load_config()
+    room_config = config.get("roomSettings", {}).get(str(room_id), {}) if room_id else {}
+    custom_image_prompt = room_config.get("customPrompts", {}).get("comicImage")
+
     # 第二步：基于漫画内容构建绘画提示词（包含角色设定，便于图像生成一致）
-    base_prompt = f"""<note>一定要按照给你的参考图还原形象，而不是自己乱画一个动漫角色</note>
+    if custom_image_prompt:
+        # 使用自定义 prompt 模板
+        base_prompt = custom_image_prompt.replace("{character_desc}", character_desc).replace("{comic_content}", comic_content)
+    else:
+        # 使用默认模板
+        base_prompt = f"""<note>一定要按照给你的参考图还原形象，而不是自己乱画一个动漫角色</note>
 <character>{character_desc}</character>
 要画得精致，角色要画得帅气、美丽、可爱。
 下面是根据直播内容生成的漫画脚本，请根据这个脚本绘制漫画：
 {comic_content}"""
 
     return base_prompt, comic_content, is_generated
+
 
 # 虚拟主播二创画师大手子的统一prompt模板（方便统一修改）
 # 文字prompt: 画图+文字台词or简介，可以没有文字，有的话要很短（5个单词内），不要用中文。
@@ -333,12 +344,24 @@ COMIC_ARTIST_PROMPT_TEMPLATE = """你作为虚拟主播二创画师大手子，�
 {highlight_content}
 """
 
-def build_comic_generation_prompt(character_desc: str, highlight_content: str) -> str:
+def build_comic_generation_prompt(character_desc: str, highlight_content: str, room_id: Optional[str] = None) -> str:
     """使用COMIC_ARTIST_PROMPT_TEMPLATE构建完整的prompt（用于Gemini等调用）"""
-    template = COMIC_ARTIST_PROMPT_TEMPLATE.strip()
+    # 尝试获取房间级别的自定义漫画脚本 prompt
+    config = load_config()
+    room_config = config.get("roomSettings", {}).get(str(room_id), {}) if room_id else {}
+    custom_prompt = room_config.get("customPrompts", {}).get("comicScript")
+    
+    # 如果有自定义 prompt，使用它
+    if custom_prompt:
+        template = custom_prompt.strip()
+    else:
+        # 否则使用默认模板
+        template = COMIC_ARTIST_PROMPT_TEMPLATE.strip()
+    
     base = template.replace("{character_desc}", character_desc)
     base = base.replace("{highlight_content}", highlight_content)
     return base
+
 
 def is_gemini_error(text: str) -> bool:
     """检测文本是否包含Gemini错误信息"""
@@ -418,7 +441,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
 
             # 生成漫画内容脚本（使用统一的prompt模板）
             character_desc = get_room_character_description(room_id)
-            content_prompt = build_comic_generation_prompt(character_desc, highlight_content)
+            content_prompt = build_comic_generation_prompt(character_desc, highlight_content, room_id)
 
             # 调用Gemini
             if gemini_attempt > 0:
@@ -482,7 +505,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
             
             # 构建提示词（使用统一的prompt模板）
             character_desc = get_room_character_description(room_id)
-            system_prompt = build_comic_generation_prompt(character_desc, highlight_content)
+            system_prompt = build_comic_generation_prompt(character_desc, highlight_content, room_id)
             user_prompt = f"直播内容：\n{highlight_content}\n\n请创作漫画故事脚本："
             
             if tuzi_attempt > 0:

@@ -49,6 +49,23 @@ function buildPrompt(highlightContent, roomId) {
     const fan = names.fan;
     const wordLimit = configLoader.getWordLimit(roomId);
 
+    // 尝试获取房间级别的自定义晚安回复 prompt
+    const config = configLoader.getConfig();
+    const roomSettings = config?.ai?.roomSettings || {};
+    const roomConfig = roomId ? roomSettings[String(roomId)] : null;
+    const customPrompt = roomConfig?.customPrompts?.goodnightReply;
+
+    // 如果有自定义 prompt，使用它并替换占位符
+    if (customPrompt) {
+        return customPrompt
+            .replace(/{anchor}/g, anchor)
+            .replace(/{fan}/g, fan)
+            .replace(/{wordLimit}/g, wordLimit)
+            .replace(/{highlightContent}/g, highlightContent);
+    }
+
+    // 否则使用默认模板
+
     return `【角色设定】
 
 身份：${anchor}的铁粉（自称"${fan}"）。
