@@ -49,7 +49,7 @@ export class AITextGenerator implements IAITextGenerator {
             gemini: {
               enabled: false,
               apiKey: '',
-              model: 'gemini-3-flash',
+              model: 'gemini-3-flash-preview',
               temperature: 0.7,
               maxTokens: 2000
             },
@@ -293,7 +293,7 @@ export class AITextGenerator implements IAITextGenerator {
 
 正文（核心内容回顾）：
 抓细节：从文档中提取3-5个具体的直播亮点。
-生活碎碎念（如：洗碗、理发、吃东西、身体不舒服、猫咪嘉嘉的趣事）。
+生活碎碎念（如：洗碗、吃东西、身体不舒服、猫咪的趣事）。
 直播事故/趣事（如：迟到理由、设备故障、口误、奇怪的脑洞）。
 鉴赏/游戏环节（如：看了什么电影/视频、玩了什么游戏，主播的反应和吐槽）。
 歌回：提到了哪些歌，唱得怎么样（好听/糊弄/搞笑）。

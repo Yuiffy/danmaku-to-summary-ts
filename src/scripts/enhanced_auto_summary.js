@@ -193,25 +193,24 @@ async function processMedia(mediaPath) {
     }
 
     if (!fs.existsSync(srtPath)) {
-        // 检查视频时长，小于30秒则跳过Whisper处理
-        if (!isAudioFile(mediaPath)) {
-            try {
-                console.log(`🔍 分析视频时长...`);
-                const duration = await getVideoDuration(mediaPath);
-                const minDurationSeconds = 30; // 最小视频时长：30秒
-                
-                if (duration < minDurationSeconds) {
-                    console.log(`⏭️  视频时长过短 (${duration.toFixed(1)}秒 < ${minDurationSeconds}秒)，跳过Whisper处理`);
-                    return null;
-                }
-                
-                const minutes = Math.floor(duration / 60);
-                const seconds = Math.floor(duration % 60);
-                const ms = Math.floor((duration % 1) * 1000);
-                console.log(`-> ${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')},${String(ms).padStart(3, '0')}`);
-            } catch (error) {
-                console.warn(`⚠️  获取视频时长失败: ${error.message}，继续处理`);
+        // 检查媒体文件时长，小于30秒则跳过Whisper处理
+        try {
+            console.log(`🔍 分析媒体文件时长...`);
+            const duration = await getVideoDuration(mediaPath);
+            const minDurationSeconds = 30; // 最小媒体文件时长：30秒
+            
+            if (duration < minDurationSeconds) {
+                const fileType = isAudioFile(mediaPath) ? '音频' : '视频';
+                console.log(`⏭️  ${fileType}时长过短 (${duration.toFixed(1)}秒 < ${minDurationSeconds}秒)，跳过Whisper处理`);
+                return null;
             }
+            
+            const minutes = Math.floor(duration / 60);
+            const seconds = Math.floor(duration % 60);
+            const ms = Math.floor((duration % 1) * 1000);
+            console.log(`-> ${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')},${String(ms).padStart(3, '0')}`);
+        } catch (error) {
+            console.warn(`⚠️  获取媒体文件时长失败: ${error.message}，继续处理`);
         }
         
         const fileType = isAudioFile(mediaPath) ? 'Audio' : 'Video';
@@ -222,9 +221,18 @@ async function processMedia(mediaPath) {
         await acquireWhisperLock();
         
         try {
-            await runCommand('python', [pythonScript, mediaPath], {
-                env: { ...process.env, PYTHONUTF8: '1' }
-            });
+            try {
+                await runCommand('python', [pythonScript, mediaPath], {
+                    env: { ...process.env, PYTHONUTF8: '1' }
+                });
+            } catch (error) {
+                // 特殊处理：如果进程报错（比如 code 3221226505/0xC0000409），但文件确实生成了，视为成功
+                if (fs.existsSync(srtPath) && fs.statSync(srtPath).size > 100) {
+                    console.log(`⚠️  Whisper 进程异常退出 (可能在资源释放阶段崩溃)，但检测到有效输出文件，继续后续流程。`);
+                } else {
+                    throw error;
+                }
+            }
         } finally {
             // 释放锁
             releaseWhisperLock();

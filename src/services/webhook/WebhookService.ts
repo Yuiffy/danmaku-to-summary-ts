@@ -11,6 +11,7 @@ import { FileStabilityChecker } from './FileStabilityChecker';
 import { DuplicateProcessorGuard } from './DuplicateProcessorGuard';
 import { ComicGeneratorService } from '../comic/ComicGeneratorService';
 import { IDelayedReplyService } from '../bilibili/interfaces/IDelayedReplyService';
+import { WeChatWorkNotifier } from '../notification/WeChatWorkNotifier';
 
 /**
  * Webhook服务实现
@@ -28,6 +29,7 @@ export class WebhookService implements IWebhookService {
   private maxHistorySize = 100;
   private comicGenerator: ComicGeneratorService;
   private delayedReplyService?: IDelayedReplyService;
+  private notifier?: WeChatWorkNotifier;
 
   constructor() {
     this.app = express();
@@ -74,6 +76,15 @@ export class WebhookService implements IWebhookService {
       
       // 初始化logger
       this.logger = getLogger('WebhookService');
+      
+      // 初始化企微通知器
+      if (config.wechatWork?.webhookUrl) {
+        this.notifier = new WeChatWorkNotifier(config.wechatWork.webhookUrl);
+        this.logger.info('企微通知器已初始化');
+        
+        // 更新 ComicGeneratorService 的 notifier
+        this.comicGenerator = new ComicGeneratorService(this.notifier);
+      }
       
       // 注册处理器路由
       this.registerHandlers();
@@ -349,7 +360,7 @@ export class WebhookService implements IWebhookService {
   private initializeHandlers(): void {
     // 创建处理器实例
     this.handlers = [
-      new DDTVWebhookHandler(),
+      new DDTVWebhookHandler(this.notifier),
       new MikufansWebhookHandler(),
       new AudioFileHandler(),
       new BilibiliAPIHandler(),
@@ -523,6 +534,19 @@ export class WebhookService implements IWebhookService {
       }
     } catch (error: any) {
       logger.error(`处理文件时出错: ${fileName}`, { error: error.message, stack: error.stack });
+      
+      // 发送企微错误通知
+      if (this.notifier) {
+        const anchorName = this.getAnchorName(roomId);
+        await this.notifier.notifyProcessError(
+          anchorName,
+          '文件处理',
+          error.message,
+          roomId,
+          { fileName, error: error.stack }
+        );
+      }
+      
       return {
         success: false,
         error: `处理文件时出错: ${error.message}`
@@ -573,6 +597,49 @@ export class WebhookService implements IWebhookService {
       }
     } catch (error: any) {
       this.getLogger().error('触发延迟回复任务失败', { error, roomId });
+      
+      // 发送企微错误通知
+      if (this.notifier) {
+        const anchorName = this.getAnchorName(roomId);
+        await this.notifier.notifyProcessError(
+          anchorName,
+          '触发延迟回复任务',
+          error.message,
+          roomId,
+          { fileName, comicPath, error: error.stack }
+        );
+      }
     }
+  }
+
+  /**
+   * 获取主播名称
+   */
+  private getAnchorName(roomId?: string): string {
+    if (!roomId) {
+      return '未知主播';
+    }
+    
+    // 尝试从AI配置中获取主播名
+    try {
+      const roomConfig = ConfigProvider.getRoomAIConfig(roomId);
+      if (roomConfig?.anchorName) {
+        return roomConfig.anchorName;
+      }
+    } catch {
+      // 忽略错误
+    }
+    
+    // 尝试从B站配置中获取主播名
+    try {
+      const bilibiliConfig = ConfigProvider.getConfig().bilibili;
+      if (bilibiliConfig?.anchors?.[roomId]?.name) {
+        return bilibiliConfig.anchors[roomId].name;
+      }
+    } catch {
+      // 忽略错误
+    }
+    
+    return '未知主播';
   }
 }

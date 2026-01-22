@@ -7,17 +7,40 @@ const configLoader = require('./config-loader');
 const stat = promisify(fs.stat);
 const unlink = promisify(fs.unlink);
 
+// 获取音频格式配置
+function getAudioFormats() {
+    const config = configLoader.getConfig();
+    const defaultAudioFormats = ['.m4a', '.aac', '.mp3', '.wav', '.ogg', '.flac'];
+    return config.audio?.formats || config.audioRecording?.audioFormats || defaultAudioFormats;
+}
+
 // 检查是否为音频专用房间
 function isAudioOnlyRoom(roomId) {
     const config = configLoader.getConfig();
     const roomIdInt = parseInt(roomId);
+    const roomIdStr = String(roomId);
     
+    // 优先检查房间特定的audioOnly设置
+    if (config.ai?.roomSettings && config.ai.roomSettings[roomIdStr]) {
+        const roomConfig = config.ai.roomSettings[roomIdStr];
+        if (roomConfig.audioOnly !== undefined) {
+            const isAudioRoom = config.audio?.enabled && roomConfig.audioOnly;
+            console.log(`🔍 检查房间特定音频专用设置: roomId=${roomId}, isAudioRoom=${isAudioRoom}, roomAudioOnly=${roomConfig.audioOnly}`);
+            return isAudioRoom;
+        }
+    }
+    
+    // 回退到全局audioOnlyRooms列表
     // 新格式：audio.audioOnlyRooms
     if (config.audio?.enabled && config.audio.audioOnlyRooms) {
-        return config.audio.audioOnlyRooms.includes(roomIdInt);
+        const isAudioRoom = config.audio.audioOnlyRooms.includes(roomIdInt);
+        console.log(`🔍 检查全局音频专用房间: roomId=${roomId}, isAudioRoom=${isAudioRoom}`);
+        return isAudioRoom;
     }
     // 兼容旧格式：audioProcessing.audioOnlyRooms
-    return config.audioProcessing?.enabled && config.audioProcessing.audioOnlyRooms?.includes(roomIdInt);
+    const isAudioRoom = config.audioProcessing?.enabled && config.audioProcessing.audioOnlyRooms?.includes(roomIdInt);
+    console.log(`🔍 检查旧格式音频专用房间: roomId=${roomId}, isAudioRoom=${isAudioRoom}`);
+    return isAudioRoom;
 }
 
 // 获取房间ID从文件名（从DDTV文件名中提取）
@@ -156,9 +179,11 @@ async function processAudioOnlyRoom(videoPath, roomId = null) {
         // 转换视频为音频
         const audioPath = await convertVideoToAudio(videoPath, audioFormat);
         
-        // 是否删除原始视频
+        // 只有在真正进行了转换（输出路径与输入路径不同）时才删除原始文件
+        const actuallyConverted = audioPath !== videoPath;
         const keepOriginal = config.audio?.storage?.keepOriginalVideo !== undefined ? config.audio.storage.keepOriginalVideo : config.audioProcessing?.keepOriginalVideo;
-        if (keepOriginal === false) {
+        
+        if (actuallyConverted && keepOriginal === false) {
             console.log(`🗑️  删除原始视频文件: ${path.basename(videoPath)}`);
             try {
                 await unlink(videoPath);
@@ -166,6 +191,8 @@ async function processAudioOnlyRoom(videoPath, roomId = null) {
             } catch (deleteError) {
                 console.error(`⚠️  删除原始视频失败: ${deleteError.message}`);
             }
+        } else if (!actuallyConverted) {
+            console.log(`💾 输入文件已是音频格式，无需删除`);
         } else {
             console.log(`💾 保留原始视频文件`);
         }

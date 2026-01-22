@@ -22,41 +22,123 @@ Dynamic = dynamic.Dynamic
 request_settings.set_wbi_retry_times(10)
 
 # 禁用输出缓冲，确保日志实时输出到Node.js
-try:
-    if hasattr(sys.stdout, 'buffer') and not sys.stdout.closed:
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
-    if hasattr(sys.stderr, 'buffer') and not sys.stderr.closed:
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', line_buffering=True)
-except (ValueError, AttributeError, OSError):
-    pass
+# 保存原始的stdout/stderr，以便在包装失败时使用
+_original_stdout = sys.stdout
+_original_stderr = sys.stderr
 
-# 创建安全的打印函数
+# 创建安全的打印函数，确保日志能够输出
 def safe_print(*args, **kwargs):
-    """安全的打印函数，在stdout/stderr不可用时静默失败"""
+    """安全的打印函数，尝试多种方式输出日志"""
+    message = ' '.join(str(arg) for arg in args)
+
+    # 尝试1: 使用原始stdout
     try:
-        __builtins__.print(*args, **kwargs)
+        if not _original_stdout.closed:
+            _original_stdout.write(message + '\n')
+            _original_stdout.flush()
+            return
     except (ValueError, OSError, AttributeError):
         pass
+
+    # 尝试2: 使用内置print
+    try:
+        __builtins__.print(*args, **kwargs)
+        return
+    except (ValueError, OSError, AttributeError):
+        pass
+
+    # 尝试3: 直接写入sys.stdout
+    try:
+        if hasattr(sys.stdout, 'write') and not sys.stdout.closed:
+            sys.stdout.write(message + '\n')
+            sys.stdout.flush()
+            return
+    except (ValueError, OSError, AttributeError):
+        pass
+
+    # 尝试4: 写入stderr作为最后手段
+    try:
+        if hasattr(sys.stderr, 'write') and not sys.stderr.closed:
+            sys.stderr.write(message + '\n')
+            sys.stderr.flush()
+            return
+    except (ValueError, OSError, AttributeError):
+        pass
+
+# 创建安全的traceback打印函数
+def safe_print_exc():
+    """安全的traceback打印函数"""
+    import traceback as tb
+    try:
+        tb.print_exc(file=_original_stderr)
+    except (ValueError, OSError, AttributeError):
+        # 尝试使用原始stderr
+        try:
+            _original_stderr.write(str(tb.format_exc()) + '\n')
+            _original_stderr.flush()
+        except:
+            pass
 
 # 日志输出到stderr，JSON结果输出到stdout
 def log(*args, **kwargs):
     """日志输出到stderr"""
+    message = ' '.join(str(arg) for arg in args)
     try:
-        __builtins__.print(*args, file=sys.stderr, **kwargs)
+        if not _original_stderr.closed:
+            _original_stderr.write(message + '\n')
+            _original_stderr.flush()
+    except (ValueError, OSError, AttributeError):
+        # 如果stderr失败，尝试stdout
+        try:
+            if not _original_stdout.closed:
+                _original_stdout.write(message + '\n')
+                _original_stdout.flush()
+        except (ValueError, OSError, AttributeError):
+            pass
+
+# 自定义JSON打印函数，只输出到stdout
+def json_print(*args, **kwargs):
+    """JSON打印函数，只输出到stdout"""
+    message = ' '.join(str(arg) for arg in args)
+    try:
+        if not _original_stdout.closed:
+            _original_stdout.write(message + '\n')
+            _original_stdout.flush()
+            return
+    except (ValueError, OSError, AttributeError):
+        pass
+    # 如果stdout失败，尝试其他方式
+    try:
+        __builtins__.print(message, file=_original_stdout, **kwargs)
     except (ValueError, OSError, AttributeError):
         pass
 
-print = safe_print
+# 全局替换内置print函数为日志版本（使用stderr）
+def log_print(*args, **kwargs):
+    """日志打印函数，只输出到stderr"""
+    message = ' '.join(str(arg) for arg in args)
+    try:
+        if not _original_stderr.closed:
+            _original_stderr.write(message + '\n')
+            _original_stderr.flush()
+            return
+    except (ValueError, OSError, AttributeError):
+        pass
+    # 如果stderr失败，尝试其他方式
+    try:
+        __builtins__.print(message, file=_original_stderr, **kwargs)
+    except (ValueError, OSError, AttributeError):
+        pass
+
+print = log_print
 
 
 async def get_dynamic_comment_id(dynamic_id: str, credential: Credential) -> tuple[str, CommentResourceType]:
     """
     获取动态的comment_id和评论类型
-
     Args:
         dynamic_id: 动态ID
         credential: 凭证对象
-
     Returns:
         tuple: (comment_id, comment_type)
     """
@@ -64,20 +146,34 @@ async def get_dynamic_comment_id(dynamic_id: str, credential: Credential) -> tup
     dynamic = Dynamic(dynamic_id=int(dynamic_id), credential=credential)
     info = await dynamic.get_info()
 
-    # 从返回的数据中提取comment_id和comment_type
+    # 1. 基础信息提取 (最稳健的方式)
     item = info.get('item', {})
     basic = item.get('basic', {})
     comment_id_str = basic.get('comment_id_str', '')
-    comment_type = basic.get('comment_type', 11)
+    
+    # 获取官方返回的 comment_type，默认为 11
+    api_comment_type = basic.get('comment_type', 11)
 
-    # 根据comment_type映射到CommentResourceType
-    if comment_type == 11:
-        comment_resource_type = CommentResourceType.DYNAMIC_DRAW
-    elif comment_type == 17:
-        comment_resource_type = CommentResourceType.DYNAMIC
-    elif comment_type == 12:
+    # 2. 辅助判断：安全地获取 major_type (用于修正特殊类型)
+    # 使用链式 .get 防止报错，因为纯文字动态可能没有 major
+    major_type = item.get('modules', {}).get('module_dynamic', {}).get('major', {}).get('type', '')
+
+    log(f"[INFO] 动态 {dynamic_id} 解析: api_type={api_comment_type}, major_type={major_type}")
+
+    # 3. 智能映射逻辑
+    # 优先处理必须强制指定的特殊类型 (如专栏/笔记)（这个不行啊！不能加这个）
+    # if major_type in ['MAJOR_TYPE_OPUS', 'MAJOR_TYPE_ARTICLE']:
+    #     comment_resource_type = CommentResourceType.ARTICLE # 强制为 12
+    if api_comment_type == 12:
         comment_resource_type = CommentResourceType.ARTICLE
+    elif api_comment_type == 17:
+        comment_resource_type = CommentResourceType.DYNAMIC
+    elif api_comment_type == 1:
+        # 如果是视频，通常API需要 Type 1，但在动态流中评论有时也允许 11
+        # 这里暂时保留 1，如果视频评论失败，可以改为 11
+        comment_resource_type = CommentResourceType.VIDEO
     else:
+        # 默认情况 (包括 11 和纯文字动态)
         comment_resource_type = CommentResourceType.DYNAMIC_DRAW
 
     return comment_id_str, comment_resource_type
@@ -167,8 +263,7 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
 
     except Exception as e:
         log(f"[ERROR] 评论发布失败: {e}")
-        import traceback
-        traceback.print_exc()
+        safe_print_exc()
         return {
             'success': False,
             'error': str(e),
@@ -178,12 +273,12 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
 
 def main():
     """主函数"""
-    log(f"[INFO] B站评论发布脚本启动")
+    print(f"[INFO] B站评论发布脚本启动")
 
     # 从命令行参数读取输入
     if len(sys.argv) < 6:
-        log(f"[ERROR] 参数不足，需要参数: dynamic_id content sessdata bili_jct dedeuserid [image_path]")
-        print(json.dumps({
+        print(f"[ERROR] 参数不足，需要参数: dynamic_id content sessdata bili_jct dedeuserid [image_path]")
+        json_print(json.dumps({
             'success': False,
             'error': '参数不足',
             'message': '需要参数: dynamic_id content sessdata bili_jct dedeuserid [image_path]'
@@ -197,18 +292,18 @@ def main():
     dedeuserid = sys.argv[5]
     image_path = sys.argv[6] if len(sys.argv) > 6 else None
 
-    log(f"[INFO] 接收到参数: dynamic_id={dynamic_id}, content_length={len(content)}, has_image={image_path is not None}")
+    print(f"[INFO] 接收到参数: dynamic_id={dynamic_id}, content_length={len(content)}, has_image={image_path is not None}")
 
     # 发布评论
     result = asyncio.run(publish_comment(dynamic_id, content, sessdata, bili_jct, dedeuserid, image_path))
 
     # 输出JSON结果到stdout（仅JSON，不带日志前缀）
-    log(f"[INFO] 输出结果: {json.dumps(result, ensure_ascii=False)}")
-    print(json.dumps(result, ensure_ascii=False))
+    print(f"[INFO] 输出结果: {json.dumps(result, ensure_ascii=False)}")
+    json_print(json.dumps(result, ensure_ascii=False))
 
     # 根据结果设置退出码
     exit_code = 0 if result['success'] else 1
-    log(f"[INFO] 脚本退出，退出码: {exit_code}")
+    print(f"[INFO] 脚本退出，退出码: {exit_code}")
     sys.exit(exit_code)
 
 

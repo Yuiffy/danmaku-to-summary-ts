@@ -158,15 +158,30 @@ async function processDanmakuFromDir(sourceDir, outputFile, options = {}) {
     }
 
     // 2) 逐个解析并合并到 byMinute
-    const parser = new xml2js.Parser();
+    const parser = new xml2js.Parser({
+        strict: false,        // 允许不严格的 XML 格式
+        normalize: true,      // 规范化空白字符
+        trim: true,           // 修剪文本内容
+        mergeAttrs: false,    // 不合并属性到父节点
+        attrValueProcessors: [
+            // 处理属性值中的特殊字符
+            (value) => {
+                if (typeof value === 'string') {
+                    // 移除或转义可能导致问题的字符
+                    return value.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
+                }
+                return value;
+            }
+        ]
+    });
     const byMinute = new Map(); // minuteIdx -> { m: moment, map: {content: {count, users:Set}} }
 
     for (const file of files) {
         try {
             const data = fs.readFileSync(file);
             const result = await parser.parseStringPromise(data);
-            let danmakus = result?.i?.d || [];
-            if (!Array.isArray(danmakus)) danmakus = [danmakus];
+            // xml2js 默认 explicitArray: true，所以 d 始终是数组
+            const danmakus = result?.i?.d || [];
 
             for (const d of danmakus) {
                 if (!d || !d.$ || !d.$.p) continue;
