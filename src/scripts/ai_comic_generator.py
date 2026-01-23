@@ -248,6 +248,48 @@ def get_room_reference_image(room_id: str, highlight_path: Optional[str] = None)
 
     return None
 
+def collect_all_images(room_id: str, highlight_path: Optional[str] = None) -> list[str]:
+    """收集所有可用的图片（引用图、封面、截图）用于AI输入
+    
+    返回图片路径列表，按优先级排序：
+    1. 引用图片（roomSettings配置）
+    2. 直播封面（.cover文件）
+    3. 直播截图（_SCREENSHOTS.jpg）
+    """
+    images = []
+    
+    # 1. 获取引用图片（配置的参考图）
+    reference_image = get_room_reference_image(room_id, highlight_path)
+    if reference_image:
+        images.append(reference_image)
+        print(f"[INFO]  收集到引用图片: {os.path.basename(reference_image)}")
+    
+    # 2. 获取直播封面（如果与引用图不同）
+    if highlight_path:
+        cover_image = get_live_cover_image(highlight_path)
+        if cover_image and cover_image not in images:
+            images.append(cover_image)
+            print(f"[INFO]  收集到直播封面: {os.path.basename(cover_image)}")
+    
+    # 3. 获取直播截图（从环境变量）
+    screenshot_path = os.environ.get('SCREENSHOT_PATH', '')
+    if screenshot_path and os.path.exists(screenshot_path) and screenshot_path not in images:
+        images.append(screenshot_path)
+        print(f"[INFO]  收集到直播截图: {os.path.basename(screenshot_path)}")
+    
+    # 如果没有截图路径，尝试从highlight_path推断
+    if not screenshot_path and highlight_path:
+        dir_path = os.path.dirname(highlight_path)
+        base_name = os.path.basename(highlight_path).replace('_AI_HIGHLIGHT.txt', '')
+        inferred_screenshot = os.path.join(dir_path, f"{base_name}_SCREENSHOTS.jpg")
+        if os.path.exists(inferred_screenshot) and inferred_screenshot not in images:
+            images.append(inferred_screenshot)
+            print(f"[INFO]  收集到推断的直播截图: {os.path.basename(inferred_screenshot)}")
+    
+    print(f"[INFO]  共收集到 {len(images)} 张图片用于AI输入")
+    return images
+
+
 def read_highlight_file(highlight_path: str) -> str:
     """读取AI_HIGHLIGHT.txt内容"""
     try:
@@ -427,8 +469,8 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
             config = load_config()
             gemini_config = config.get('aiServices', {}).get('gemini', {})
 
-            # 创建客户端
-            client = genai.Client(api_key=gemini_api_key, http_options=types.HttpOptions(timeout=60))
+            # 创建客户端（增加超时时间到120秒以应对SSL握手超时）
+            client = genai.Client(api_key=gemini_api_key, http_options=types.HttpOptions(timeout=120))
 
             # 设置代理 (如果需要)
             proxy_url = gemini_config.get('proxy', '')
@@ -479,10 +521,17 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
             print("   请安装: pip install google-genai")
             break
         except Exception as e:
+            error_msg = str(e)
             print(f"[ERROR]  AI内容生成失败 (尝试 {gemini_attempt + 1}/{max_gemini_retries}): {e}")
+            
+            # 检测是否是SSL相关错误
+            is_ssl_error = any(keyword in error_msg.lower() for keyword in ['ssl', 'handshake', 'timed out', 'timeout'])
+            
             if gemini_attempt < max_gemini_retries - 1:
-                print("[RETRY] 2秒后重试...")
-                time.sleep(2)
+                # SSL错误使用更长的重试间隔
+                retry_delay = 5 if is_ssl_error else 2
+                print(f"[RETRY] {retry_delay}秒后重试...")
+                time.sleep(retry_delay)
                 continue
             else:
                 print("[ERROR] Gemini重试次数已用完，尝试备用方案")

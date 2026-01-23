@@ -183,6 +183,14 @@ export interface DelayedReplyTask {
   retryCount: number;
   /** 错误信息 */
   error?: string;
+  /** 直播开始时间 */
+  liveStartTime?: Date;
+  /** 直播结束时间 */
+  liveEndTime?: Date;
+  /** 上次检查动态时间 */
+  lastCheckTime?: Date;
+  /** 检查次数 */
+  checkCount?: number;
 }
 
 /**

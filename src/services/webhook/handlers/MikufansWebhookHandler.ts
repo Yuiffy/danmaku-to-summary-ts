@@ -10,6 +10,7 @@ import { DuplicateProcessorGuard } from '../DuplicateProcessorGuard';
 import { IDelayedReplyService } from '../../../services/bilibili/interfaces/IDelayedReplyService';
 import { LiveSessionManager, LiveSegment } from '../LiveSessionManager';
 import { FileMerger } from '../FileMerger';
+import { VideoScreenshotService } from '../../video/VideoScreenshotService';
 
 /**
  * 延迟动作类型
@@ -35,6 +36,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   private liveSessionManager = new LiveSessionManager();
   private fileMerger = new FileMerger();
   private delayedReplyService?: IDelayedReplyService;
+  private screenshotService = new VideoScreenshotService();
 
   // 延迟处理定时器管理器(roomId -> Map<actionType, timer>)
   private delayedActions: Map<string, Map<DelayedActionType, NodeJS.Timeout>> = new Map();
@@ -667,6 +669,20 @@ export class MikufansWebhookHandler implements IWebhookHandler {
 
       this.logger.info(`启动Mikufans处理流程: ${path.basename(videoPath)}`);
 
+      // 生成视频截图
+      let screenshotPath: string | null = null;
+      try {
+        this.logger.info(`开始生成视频截图...`);
+        screenshotPath = await this.screenshotService.generateScreenshots(videoPath);
+        if (screenshotPath) {
+          this.logger.info(`视频截图生成成功: ${path.basename(screenshotPath)}`);
+        } else {
+          this.logger.warn(`视频截图生成失败，将继续处理流程`);
+        }
+      } catch (screenshotError: any) {
+        this.logger.error(`生成视频截图时出错: ${screenshotError.message}，将继续处理流程`);
+      }
+
       // 启动子进程
       const ps: ChildProcess = spawn('node', args, {
         cwd: process.cwd(),
@@ -675,7 +691,8 @@ export class MikufansWebhookHandler implements IWebhookHandler {
           ...process.env,
           NODE_ENV: 'production',
           ROOM_ID: String(roomId),
-          AUTOMATION: 'true'  // 标识为自动化环境，避免等待用户输入
+          AUTOMATION: 'true',  // 标识为自动化环境，避免等待用户输入
+          SCREENSHOT_PATH: screenshotPath || ''  // 传递截图路径给Python脚本
         }
       });
 
@@ -796,6 +813,19 @@ export class MikufansWebhookHandler implements IWebhookHandler {
 
       // 只要有晚安回复就触发延迟回复（漫画可选）
       if (hasGoodnightText) {
+        // 获取会话信息以获取直播时间
+        const session = this.liveSessionManager.getSession(roomId);
+        let liveStartTime: Date | undefined;
+        let liveEndTime: Date | undefined;
+
+        if (session) {
+          liveStartTime = session.startTime;
+          liveEndTime = session.endTime || new Date(); // 如果没有结束时间，使用当前时间
+          this.logger.info(`📅 获取到直播时间: 开始=${liveStartTime.toISOString()}, 结束=${liveEndTime.toISOString()}`);
+        } else {
+          this.logger.warn(`⚠️  未找到会话信息，无法获取直播时间`);
+        }
+
         this.logger.info(`✅ 找到晚安回复文件，触发延迟回复任务`);
         this.logger.info(`   房间ID: ${roomId}`);
         this.logger.info(`   晚安回复: ${path.basename(goodnightTextPath)}`);
@@ -805,7 +835,14 @@ export class MikufansWebhookHandler implements IWebhookHandler {
           this.logger.info(`   漫画: 未生成（将只发送晚安回复）`);
         }
 
-        const taskId = await this.delayedReplyService.addTask(roomId, goodnightTextPath, hasComicImage ? comicImagePath : '');
+        const taskId = await this.delayedReplyService.addTask(
+          roomId, 
+          goodnightTextPath, 
+          hasComicImage ? comicImagePath : '',
+          undefined, // delaySeconds使用默认配置
+          liveStartTime,
+          liveEndTime
+        );
 
         if (taskId) {
           this.logger.info(`✅ 延迟回复任务已触发: ${taskId}`);
