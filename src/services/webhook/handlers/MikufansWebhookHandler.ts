@@ -42,6 +42,8 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   private delayedActions: Map<string, Map<DelayedActionType, NodeJS.Timeout>> = new Map();
   // SessionEnded延迟期间收到的待处理文件(roomId -> {videoPath, payload}[])
   private pendingFiles: Map<string, Array<{videoPath: string, payload: any}>> = new Map();
+  // Stream事件时间戳记录(roomId -> {startTime?, endTime?})
+  private streamTimestamps: Map<string, {startTime?: Date, endTime?: Date}> = new Map();
   // 最大等待时间(毫秒)
   private readonly MAX_DELAY_MS = 30000; // 30秒
 
@@ -196,6 +198,12 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     const sessionId = payload.EventData?.SessionId;
     const recording = payload.EventData?.Recording;
 
+    // 处理直播开始事件（记录时间戳）
+    if (eventType === 'StreamStarted') {
+      await this.handleStreamStarted(payload);
+      return;
+    }
+
     // 处理会话开始事件
     if (eventType === 'SessionStarted' && recording === true) {
       await this.handleSessionStarted(sessionId, payload);
@@ -228,6 +236,32 @@ export class MikufansWebhookHandler implements IWebhookHandler {
 
     // 处理文件关闭事件
     await this.handleFileClosed(payload);
+  }
+
+  /**
+   * 处理直播开始事件（记录时间戳）
+   */
+  private async handleStreamStarted(payload: any): Promise<void> {
+    const roomId = payload.EventData?.RoomId;
+    if (!roomId) {
+      this.logger.warn(`StreamStarted事件缺少RoomId`);
+      return;
+    }
+
+    // 从 EventTimestamp 提取时间
+    const eventTimestamp = payload.EventTimestamp;
+    if (eventTimestamp) {
+      const startTime = new Date(eventTimestamp);
+      
+      // 记录或更新时间戳
+      const existing = this.streamTimestamps.get(roomId) || {};
+      this.streamTimestamps.set(roomId, {
+        ...existing,
+        startTime
+      });
+      
+      this.logger.info(`📅 记录直播开始时间: ${roomId} -> ${startTime.toISOString()}`);
+    }
   }
 
   /**
@@ -394,6 +428,21 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     if (!roomId) {
       this.logger.warn(`StreamEnded事件缺少RoomId`);
       return;
+    }
+
+    // 从 EventTimestamp 提取时间并记录
+    const eventTimestamp = payload.EventTimestamp;
+    if (eventTimestamp) {
+      const endTime = new Date(eventTimestamp);
+      
+      // 记录或更新时间戳
+      const existing = this.streamTimestamps.get(roomId) || {};
+      this.streamTimestamps.set(roomId, {
+        ...existing,
+        endTime
+      });
+      
+      this.logger.info(`📅 记录直播结束时间: ${roomId} -> ${endTime.toISOString()}`);
     }
 
     const session = this.liveSessionManager.getSession(roomId);
@@ -776,13 +825,25 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   }
 
   /**
-   * 从文件路径和元数据中提取直播时间（兜底方案）
+   * 从多个来源提取直播时间（兜底方案）
+   * 优先级：streamTimestamps > 文件名解析 > 文件系统时间
    */
-  private extractLiveTimeFallback(videoPath: string): { startTime: Date; endTime: Date; source: string } | null {
+  private extractLiveTimeFallback(videoPath: string, roomId: string): { startTime?: Date; endTime?: Date; source: string } | null {
     try {
+      // 方案1（最优先）: 从 streamTimestamps 获取（来自 StreamStarted/StreamEnded 事件）
+      const timestamps = this.streamTimestamps.get(roomId);
+      if (timestamps && (timestamps.startTime || timestamps.endTime)) {
+        this.logger.info(`🎯 从Stream事件记录中找到时间: start=${timestamps.startTime?.toISOString() || 'undefined'}, end=${timestamps.endTime?.toISOString() || 'undefined'}`);
+        return {
+          startTime: timestamps.startTime,
+          endTime: timestamps.endTime,
+          source: 'Stream事件记录'
+        };
+      }
+      
       const fileName = path.basename(videoPath, path.extname(videoPath));
       
-      // 方案1: 从文件名解析时间戳
+      // 方案2: 从文件名解析时间戳
       // 格式: 录制-1820703922-20260123-180036-344-鼠继续过鸣潮1.0
       // 或: 录制-1820703922-20260123-180036-344-鼠继续过鸣潮1.0_merged
       const timeMatch = fileName.match(/(\d{8})-(\d{6})/);
@@ -816,7 +877,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         };
       }
       
-      // 方案2: 使用文件的创建和修改时间
+      // 方案3: 使用文件的创建和修改时间
       try {
         const stats = fs.statSync(videoPath);
         return {
@@ -886,11 +947,15 @@ export class MikufansWebhookHandler implements IWebhookHandler {
           this.logger.warn(`⚠️  未找到会话信息，尝试从其他来源获取直播时间`);
           
           // 兜底方案：尝试从多个来源获取时间
-          const fallbackTimes = this.extractLiveTimeFallback(videoPath);
+          const fallbackTimes = this.extractLiveTimeFallback(videoPath, roomId);
           if (fallbackTimes) {
             liveStartTime = fallbackTimes.startTime;
             liveEndTime = fallbackTimes.endTime;
-            this.logger.info(`📅 [时间来源: ${fallbackTimes.source}] 开始=${liveStartTime.toISOString()}, 结束=${liveEndTime.toISOString()}`);
+            
+            // 构建日志信息
+            const startStr = liveStartTime ? liveStartTime.toISOString() : 'undefined';
+            const endStr = liveEndTime ? liveEndTime.toISOString() : 'undefined';
+            this.logger.info(`📅 [时间来源: ${fallbackTimes.source}] 开始=${startStr}, 结束=${endStr}`);
           } else {
             this.logger.warn(`⚠️  无法从任何来源获取直播时间，将使用 undefined`);
           }

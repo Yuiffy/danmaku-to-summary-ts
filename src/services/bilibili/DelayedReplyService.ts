@@ -386,19 +386,25 @@ export class DelayedReplyService implements IDelayedReplyService {
 
   /**
    * 查找目标动态（智能等待晚安动态）
-   * 返回直播开始后、直播结束前30分钟以后发表的新动态
+   * 返回直播结束前30分钟以后发表的新动态
+   * 注意：只需要 liveEndTime，不需要 liveStartTime
    */
   private async findTargetDynamic(task: DelayedReplyTask): Promise<BilibiliDynamic | null> {
     try {
-      // 如果没有直播时间信息，直接返回最新动态（立即回复）
-      if (!task.liveStartTime || !task.liveEndTime) {
-        this.logger.info(`任务 ${task.taskId} 没有直播时间信息，直接获取最新动态立即回复。liveStartTime: ${task.liveStartTime}, liveEndTime: ${task.liveEndTime}`);
+      // 如果没有直播结束时间信息，直接返回最新动态（立即回复）
+      if (!task.liveEndTime) {
+        this.logger.info(`任务 ${task.taskId} 没有直播结束时间信息，直接获取最新动态立即回复。liveEndTime: ${task.liveEndTime}`);
         return await this.getLatestDynamic(task.uid!);
       }
 
       // 计算目标时间范围：直播结束前30分钟到现在
-      const targetStartTime = new Date(task.liveEndTime.getTime() - 30 * 60 * 1000);
+      let targetStartTime = new Date(task.liveEndTime.getTime() - 30 * 60 * 1000);
       const targetEndTime = new Date();
+
+      // 如果有liveStartTime，则需要在liveStartTime之后
+      if (task.liveStartTime) {
+        targetStartTime = new Date(Math.max(targetStartTime.getTime(), task.liveStartTime.getTime()));
+      }
 
       this.logger.info(`查找目标动态: 时间范围 ${targetStartTime.toISOString()} 到 ${targetEndTime.toISOString()}`);
 
