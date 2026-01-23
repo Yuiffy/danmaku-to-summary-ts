@@ -390,10 +390,10 @@ export class DelayedReplyService implements IDelayedReplyService {
    */
   private async findTargetDynamic(task: DelayedReplyTask): Promise<BilibiliDynamic | null> {
     try {
-      // 如果没有直播时间信息，返回null（降级到获取最新动态）
+      // 如果没有直播时间信息，直接返回最新动态（立即回复）
       if (!task.liveStartTime || !task.liveEndTime) {
-        this.logger.info(`任务 ${task.taskId} 没有直播时间信息，将使用最新动态`);
-        return null;
+        this.logger.info(`任务 ${task.taskId} 没有直播时间信息，直接获取最新动态立即回复`);
+        return await this.getLatestDynamic(task.uid!);
       }
 
       // 计算目标时间范围：直播结束前30分钟到现在
