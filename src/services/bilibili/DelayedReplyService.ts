@@ -186,9 +186,6 @@ export class DelayedReplyService implements IDelayedReplyService {
       this.tasks.set(task.taskId, task);
       await this.store.addTask(task);
 
-      // 设置定时器
-      this.scheduleTask(task);
-
       this.logger.info(`添加延迟回复任务: ${task.taskId}`, {
         roomId,
         uid,
@@ -196,6 +193,31 @@ export class DelayedReplyService implements IDelayedReplyService {
         liveStartTime: liveStartTime?.toISOString(),
         liveEndTime: liveEndTime?.toISOString()
       });
+
+      // 🚀 立即检查是否已有符合条件的动态
+      this.logger.info(`🔍 [立即检查] 检查是否已有符合条件的晚安动态`, { taskId: task.taskId });
+      const immediateTargetDynamic = await this.findTargetDynamic(task);
+      
+      if (immediateTargetDynamic) {
+        this.logger.info(`✅ [立即回复] 发现符合条件的动态，立即执行回复！`, {
+          taskId: task.taskId,
+          dynamicId: String(immediateTargetDynamic.id),
+          publishTime: immediateTargetDynamic.publishTime.toISOString()
+        });
+        
+        // 立即执行回复（不等待延迟时间）
+        // 使用 setImmediate 确保异步执行，避免阻塞当前流程
+        setImmediate(async () => {
+          await this.executeDelayedReply(task);
+        });
+      } else {
+        this.logger.info(`⏰ [延迟回复] 未发现符合条件的动态，将在 ${delayMs / 60000} 分钟后检查`, {
+          taskId: task.taskId
+        });
+        
+        // 设置定时器（延迟执行）
+        this.scheduleTask(task);
+      }
 
       return task.taskId;
     } catch (error) {
