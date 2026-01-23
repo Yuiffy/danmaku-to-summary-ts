@@ -162,49 +162,63 @@ def get_live_cover_image(highlight_path: str) -> Optional[str]:
         return None
 
 def get_room_reference_image(room_id: str, highlight_path: Optional[str] = None) -> Optional[str]:
-    """获取房间的参考图片路径"""
+    """获取房间的参考图片路径
+    
+    兜底策略：
+    1. 优先使用 roomSettings 中配置的主播参考图
+    2. 如果没有配置主播参考图，使用直播封面
+    3. 只有连封面都拿不到，才使用 defaultReferenceImage
+    """
     config = load_config()
     
     # 获取项目根目录
     scripts_dir = os.path.dirname(__file__)
     project_root = get_project_root()
 
-    # 首先检查roomSettings中的配置
+    # 第一优先级：检查 roomSettings 中的配置（主播参考图）
     room_str = str(room_id)
+    room_has_config = False  # 标记是否配置了主播参考图
+    
     if room_str in config["roomSettings"]:
         ref_image = config["roomSettings"][room_str].get("referenceImage", "")
         if ref_image:
+            room_has_config = True
             # 尝试相对于项目根目录的路径
             absolute_path = os.path.join(project_root, ref_image) if not os.path.isabs(ref_image) else ref_image
             if os.path.exists(absolute_path):
+                print(f"[INFO]  使用主播参考图: {os.path.basename(absolute_path)}")
                 return absolute_path
             # 尝试相对于脚本目录的路径
             script_relative = os.path.join(scripts_dir, ref_image) if not os.path.isabs(ref_image) else ref_image
             if os.path.exists(script_relative):
+                print(f"[INFO]  使用主播参考图: {os.path.basename(script_relative)}")
                 return script_relative
             
-            print(f"[WARNING] 配置的参考图片不存在: {ref_image}")
+            print(f"[WARNING] 配置的主播参考图不存在: {ref_image}")
 
         # 如果配置了但文件不存在，尝试在reference_images目录中查找
-        ref_images_dir = os.path.join(scripts_dir, "reference_images")
-        if os.path.exists(ref_images_dir):
-            possible_files = [
-                os.path.join(ref_images_dir, f"{room_id}.jpg"),
-                os.path.join(ref_images_dir, f"{room_id}.jpeg"),
-                os.path.join(ref_images_dir, f"{room_id}.png"),
-                os.path.join(ref_images_dir, f"{room_id}.webp")
-            ]
-            for file_path in possible_files:
-                if os.path.exists(file_path):
-                    return file_path
+        if not room_has_config:
+            ref_images_dir = os.path.join(scripts_dir, "reference_images")
+            if os.path.exists(ref_images_dir):
+                possible_files = [
+                    os.path.join(ref_images_dir, f"{room_id}.jpg"),
+                    os.path.join(ref_images_dir, f"{room_id}.jpeg"),
+                    os.path.join(ref_images_dir, f"{room_id}.png"),
+                    os.path.join(ref_images_dir, f"{room_id}.webp")
+                ]
+                for file_path in possible_files:
+                    if os.path.exists(file_path):
+                        print(f"[INFO]  使用主播参考图: {os.path.basename(file_path)}")
+                        return file_path
 
-    # 如果没有设置房间特定的图片，尝试使用直播封面
-    if highlight_path:
+    # 第二优先级：如果没有配置主播参考图，尝试使用直播封面
+    if not room_has_config and highlight_path:
         live_cover = get_live_cover_image(highlight_path)
         if live_cover:
+            print(f"[INFO]  未配置主播参考图，使用直播封面: {os.path.basename(live_cover)}")
             return live_cover
 
-    # 如果没有找到房间特定的图片，使用默认图片
+    # 第三优先级（兜底）：只有连封面都拿不到，才使用默认参考图片
     # 新格式：ai.defaultReferenceImage 或 ai.comic.defaultReferenceImage
     default_image = ""
     if "ai" in config:
@@ -220,12 +234,12 @@ def get_room_reference_image(room_id: str, highlight_path: Optional[str] = None)
         # 尝试相对于项目根目录的路径
         absolute_path = os.path.join(project_root, default_image) if not os.path.isabs(default_image) else default_image
         if os.path.exists(absolute_path):
-            print(f"[INFO]  使用默认参考图片: {os.path.basename(absolute_path)}")
+            print(f"[INFO]  使用默认参考图片（兜底）: {os.path.basename(absolute_path)}")
             return absolute_path
         # 尝试相对于脚本目录的路径
         script_relative = os.path.join(scripts_dir, default_image) if not os.path.isabs(default_image) else default_image
         if os.path.exists(script_relative):
-            print(f"[INFO]  使用默认参考图片: {os.path.basename(script_relative)}")
+            print(f"[INFO]  使用默认参考图片（兜底）: {os.path.basename(script_relative)}")
             return script_relative
 
     # 检查默认图片文件是否存在
@@ -243,7 +257,7 @@ def get_room_reference_image(room_id: str, highlight_path: Optional[str] = None)
             ]
             for file_path in default_files:
                 if os.path.exists(file_path):
-                    print(f"[INFO]  找到默认图片: {os.path.basename(file_path)}")
+                    print(f"[INFO]  找到默认图片（兜底）: {os.path.basename(file_path)}")
                     return file_path
 
     return None
@@ -252,24 +266,24 @@ def collect_all_images(room_id: str, highlight_path: Optional[str] = None) -> li
     """收集所有可用的图片（引用图、封面、截图）用于AI输入
     
     返回图片路径列表，按优先级排序：
-    1. 引用图片（roomSettings配置）
-    2. 直播封面（.cover文件）
+    1. 引用图片（通过 get_room_reference_image 获取，已实现兜底策略：主播参考图 → 封面 → 默认图）
+    2. 直播封面（.cover文件，如果与引用图不同则额外添加）
     3. 直播截图（_SCREENSHOTS.jpg）
     """
     images = []
     
-    # 1. 获取引用图片（配置的参考图）
+    # 1. 获取引用图片（已实现兜底策略：主播参考图 → 封面 → 默认图）
     reference_image = get_room_reference_image(room_id, highlight_path)
     if reference_image:
         images.append(reference_image)
         print(f"[INFO]  收集到引用图片: {os.path.basename(reference_image)}")
     
-    # 2. 获取直播封面（如果与引用图不同）
+    # 2. 获取直播封面（如果与引用图不同则额外添加）
     if highlight_path:
         cover_image = get_live_cover_image(highlight_path)
         if cover_image and cover_image not in images:
             images.append(cover_image)
-            print(f"[INFO]  收集到直播封面: {os.path.basename(cover_image)}")
+            print(f"[INFO]  收集到直播封面（额外）: {os.path.basename(cover_image)}")
     
     # 3. 获取直播截图（从环境变量）
     screenshot_path = os.environ.get('SCREENSHOT_PATH', '')
