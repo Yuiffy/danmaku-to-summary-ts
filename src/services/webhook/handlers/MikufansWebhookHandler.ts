@@ -776,6 +776,66 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   }
 
   /**
+   * 从文件路径和元数据中提取直播时间（兜底方案）
+   */
+  private extractLiveTimeFallback(videoPath: string): { startTime: Date; endTime: Date; source: string } | null {
+    try {
+      const fileName = path.basename(videoPath, path.extname(videoPath));
+      
+      // 方案1: 从文件名解析时间戳
+      // 格式: 录制-1820703922-20260123-180036-344-鼠继续过鸣潮1.0
+      // 或: 录制-1820703922-20260123-180036-344-鼠继续过鸣潮1.0_merged
+      const timeMatch = fileName.match(/(\d{8})-(\d{6})/);
+      if (timeMatch) {
+        const dateStr = timeMatch[1]; // 20260123
+        const timeStr = timeMatch[2]; // 180036
+        
+        const year = parseInt(dateStr.substring(0, 4));
+        const month = parseInt(dateStr.substring(4, 6)) - 1; // 月份从0开始
+        const day = parseInt(dateStr.substring(6, 8));
+        const hour = parseInt(timeStr.substring(0, 2));
+        const minute = parseInt(timeStr.substring(2, 4));
+        const second = parseInt(timeStr.substring(4, 6));
+        
+        const startTime = new Date(year, month, day, hour, minute, second);
+        
+        // 尝试从文件的实际时长或修改时间推算结束时间
+        let endTime: Date;
+        try {
+          const stats = fs.statSync(videoPath);
+          endTime = new Date(stats.mtime); // 使用文件修改时间作为结束时间
+        } catch {
+          // 如果无法获取文件信息，假设直播持续了2小时（保守估计）
+          endTime = new Date(startTime.getTime() + 2 * 60 * 60 * 1000);
+        }
+        
+        return {
+          startTime,
+          endTime,
+          source: '文件名解析'
+        };
+      }
+      
+      // 方案2: 使用文件的创建和修改时间
+      try {
+        const stats = fs.statSync(videoPath);
+        return {
+          startTime: new Date(stats.birthtime), // 文件创建时间
+          endTime: new Date(stats.mtime),       // 文件修改时间
+          source: '文件系统时间'
+        };
+      } catch (error: any) {
+        this.logger.warn(`无法获取文件时间信息: ${error.message}`);
+      }
+      
+      return null;
+    } catch (error: any) {
+      this.logger.error(`提取兜底时间失败: ${error.message}`, { error });
+      return null;
+    }
+  }
+
+  /**
    * 检查并触发延迟回复
    */
   private async checkAndTriggerDelayedReply(videoPath: string, roomId: string): Promise<void> {
@@ -821,9 +881,19 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         if (session) {
           liveStartTime = session.startTime;
           liveEndTime = session.endTime || new Date(); // 如果没有结束时间，使用当前时间
-          this.logger.info(`📅 获取到直播时间: 开始=${liveStartTime.toISOString()}, 结束=${liveEndTime.toISOString()}`);
+          this.logger.info(`📅 [时间来源: 会话] 开始=${liveStartTime.toISOString()}, 结束=${liveEndTime.toISOString()}`);
         } else {
-          this.logger.warn(`⚠️  未找到会话信息，无法获取直播时间`);
+          this.logger.warn(`⚠️  未找到会话信息，尝试从其他来源获取直播时间`);
+          
+          // 兜底方案：尝试从多个来源获取时间
+          const fallbackTimes = this.extractLiveTimeFallback(videoPath);
+          if (fallbackTimes) {
+            liveStartTime = fallbackTimes.startTime;
+            liveEndTime = fallbackTimes.endTime;
+            this.logger.info(`📅 [时间来源: ${fallbackTimes.source}] 开始=${liveStartTime.toISOString()}, 结束=${liveEndTime.toISOString()}`);
+          } else {
+            this.logger.warn(`⚠️  无法从任何来源获取直播时间，将使用 undefined`);
+          }
         }
 
         this.logger.info(`✅ 找到晚安回复文件，触发延迟回复任务`);
@@ -833,6 +903,11 @@ export class MikufansWebhookHandler implements IWebhookHandler {
           this.logger.info(`   漫画: ${path.basename(comicImagePath)}`);
         } else {
           this.logger.info(`   漫画: 未生成（将只发送晚安回复）`);
+        }
+        if (liveStartTime && liveEndTime) {
+          this.logger.info(`   直播时间: ${liveStartTime.toISOString()} ~ ${liveEndTime.toISOString()}`);
+        } else {
+          this.logger.info(`   直播时间: 未知（将不显示直播时长信息）`);
         }
 
         const taskId = await this.delayedReplyService.addTask(
