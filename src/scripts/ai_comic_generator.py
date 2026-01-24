@@ -965,10 +965,13 @@ def call_google_image_api(prompt: str, reference_image_path: Optional[str] = Non
 
     return None
 
-def call_tuzi_image_api(prompt: str, reference_image_path: Optional[str] = None) -> Optional[str]:
+def call_tuzi_image_api(prompt: str, reference_image_path=None) -> Optional[str]:
     """
     调用tu-zi.com图像生成API
-    使用 /v1/chat/completions 端点，支持参考图
+    使用 /v1/chat/completions 端点，支持单张或多张参考图
+    
+    Args:
+        reference_image_path: 可以是单个路径(str)或多个路径(list)
     """
     config = load_config()
     tuzi_config = config["aiServices"]["tuZi"]
@@ -977,8 +980,20 @@ def call_tuzi_image_api(prompt: str, reference_image_path: Optional[str] = None)
         print("[WARNING]  tu-zi.com API未配置，跳过 tu-zi.com 调用")
         return None
 
-    if reference_image_path and os.path.exists(reference_image_path):
-        print(f"[TUZI] 调用tu-zi.com图像生成API (参考图: {os.path.basename(reference_image_path)})...")
+    # 打印参考图信息
+    if reference_image_path:
+        if isinstance(reference_image_path, list):
+            valid_images = [img for img in reference_image_path if os.path.exists(img)]
+            if valid_images:
+                print(f"[TUZI] 调用tu-zi.com图像生成API (参考图: {len(valid_images)} 张)...")
+                for idx, img in enumerate(valid_images, 1):
+                    print(f"  {idx}. {os.path.basename(img)}")
+            else:
+                print("[TUZI] 调用tu-zi.com图像生成API...")
+        elif isinstance(reference_image_path, str) and os.path.exists(reference_image_path):
+            print(f"[TUZI] 调用tu-zi.com图像生成API (参考图: {os.path.basename(reference_image_path)})...")
+        else:
+            print("[TUZI] 调用tu-zi.com图像生成API...")
     else:
         print("[TUZI] 调用tu-zi.com图像生成API...")
 
@@ -1231,14 +1246,15 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
         
         # 打印传入AI的图片信息
         if all_images:
-            print(f"[IMAGE] 本次漫画生成将使用以下 {len(all_images)} 张图片:")
+            print(f"[IMAGE] 共收集到 {len(all_images)} 张图片，将全部传入AI:")
             for idx, img_path in enumerate(all_images, 1):
-                print(f"  {idx}. {os.path.basename(img_path)}")
+                img_name = os.path.basename(img_path)
+                print(f"  ✅ {idx}. {img_name}")
         else:
             print("[WARNING] 未找到任何可用图片，将仅使用提示词生成")
         
-        # 使用第一张图片作为主要参考图（兼容现有API）
-        reference_image_path = all_images[0] if all_images else None
+        # 将所有图片传给AI（tuZi API支持多张参考图）
+        reference_image_path = all_images if all_images else None
         
         # 检查房间是否启用漫画生成
         room_str = str(room_id)
@@ -1297,11 +1313,12 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
         # 2. 如果Google失败，尝试tu-zi.com作为最终备用方案
         if not comic_result and use_tuzi:
             print("[TUZI] Google生成失败，尝试tu-zi.com...")
-            comic_result = call_tuzi_image_api(prompt, reference_image_path)
+            # 传入所有收集到的图片
+            comic_result = call_tuzi_image_api(prompt, all_images if all_images else None)
             if comic_result:
                 print(f"[DEBUG] tu-zi.com返回结果: {comic_result}")
             else:
-                print("[DEBUG] tu-zi.com返回None")
+                print(f"[DEBUG] tu-zi.com返回None")
 
         if not comic_result:
             print("[ERROR] 所有图像生成API都失败，无返回结果")

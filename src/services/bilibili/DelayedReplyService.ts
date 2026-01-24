@@ -328,6 +328,10 @@ export class DelayedReplyService implements IDelayedReplyService {
 
     this.logger.info(`📊 延迟任务倒计时预告 (${pendingTasks.length} 个待处理任务):`);
 
+    const MAX_CHECK_COUNT = 10; // 最多检查10次
+    const CHECK_INTERVAL_MINUTES = 2; // 每2分钟检查一次
+    const MAX_WAIT_MINUTES = MAX_CHECK_COUNT * CHECK_INTERVAL_MINUTES; // 最多等待20分钟
+
     for (const task of pendingTasks) {
       const remainingMs = task.scheduledTime.getTime() - now.getTime();
       const remainingMinutes = Math.ceil(remainingMs / 60000);
@@ -335,8 +339,13 @@ export class DelayedReplyService implements IDelayedReplyService {
       if (remainingMinutes > 0) {
         const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
         const anchorName = anchorConfig?.name || task.roomId;
+        
+        const checkCount = task.checkCount || 0;
+        const remainingChecks = MAX_CHECK_COUNT - checkCount;
+        const maxRemainingMinutes = remainingChecks * CHECK_INTERVAL_MINUTES;
+        
         this.logger.info(
-          `   ⏰ [${task.taskId.slice(0, 8)}] ${anchorName} - 还剩 ${remainingMinutes} 分钟`
+          `   ⏰ [${task.taskId.slice(0, 8)}] ${anchorName} - 还剩 ${remainingMinutes} 分钟 (已检查 ${checkCount}/${MAX_CHECK_COUNT} 次，最多还等 ${maxRemainingMinutes} 分钟)`
         );
       }
     }

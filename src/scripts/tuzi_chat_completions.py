@@ -133,7 +133,7 @@ def encode_image_to_base64(image_path: str, with_data_uri: bool = False) -> str:
 
 def call_tuzi_chat_completions_for_image(
     prompt: str,
-    reference_image_path: Optional[str] = None,
+    reference_image_path = None,  # 可以是单个路径(str)或多个路径(list)
     model: str = "gpt-image-1.5",
     base_url: str = "https://api.tu-zi.com",
     api_key: str = "",
@@ -147,7 +147,7 @@ def call_tuzi_chat_completions_for_image(
 
     Args:
         prompt: 图像生成提示词
-        reference_image_path: 参考图片路径（可选）
+        reference_image_path: 参考图片路径，可以是单个路径(str)或多个路径(list)
         model: 模型名称
         base_url: API基础URL
         api_key: API密钥
@@ -180,18 +180,34 @@ def call_tuzi_chat_completions_for_image(
         # 构建消息列表
         messages = []
 
+        # 处理参考图片（支持单张或多张）
+        reference_images = []
+        if reference_image_path:
+            # 统一转换为列表格式
+            if isinstance(reference_image_path, str):
+                reference_images = [reference_image_path] if os.path.exists(reference_image_path) else []
+            elif isinstance(reference_image_path, list):
+                reference_images = [img for img in reference_image_path if os.path.exists(img)]
+        
         # 如果有参考图，添加到消息中
-        if reference_image_path and os.path.exists(reference_image_path):
-            # 使用 data URI 格式（data:image/png;base64,...）
-            image_base64 = encode_image_to_base64(reference_image_path, with_data_uri=True)
+        if reference_images:
+            # 构建包含所有图片的消息内容
+            content_parts = [{"type": "text", "text": "请参考以下图片的风格和角色形象："}]
+            
+            for idx, img_path in enumerate(reference_images, 1):
+                # 使用 data URI 格式（data:image/png;base64,...）
+                image_base64 = encode_image_to_base64(img_path, with_data_uri=True)
+                content_parts.append({
+                    "type": "image_url", 
+                    "image_url": {"url": image_base64}
+                })
+                print(f"[INFO]  已添加参考图 {idx}/{len(reference_images)}: {os.path.basename(img_path)}, base64长度: {len(image_base64)}")
+            
             messages.append({
                 "role": "user",
-                "content": [
-                    {"type": "text", "text": "请参考这张图片的风格和角色形象："},
-                    {"type": "image_url", "image_url": {"url": image_base64}}
-                ]
+                "content": content_parts
             })
-            print(f"[INFO]  已添加参考图到请求, base64长度: {len(image_base64)} 开头：{image_base64[:80]}...")
+            print(f"[INFO]  共添加 {len(reference_images)} 张参考图到请求")
 
         # 添加图像生成提示词
         messages.append({
