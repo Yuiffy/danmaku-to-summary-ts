@@ -1001,31 +1001,18 @@ def call_tuzi_image_api(prompt: str, reference_image_path=None) -> Optional[str]
     timeout_ms = config.get("timeouts", {}).get("aiApiTimeout", 360000)
     timeout_sec = timeout_ms / 1000
 
-    # 模型列表（按优先级）
-    models = [
-        tuzi_config.get("model", "gpt-image-1.5"),
-        "gpt-image-1.5",
-        "gemini-2.5-flash-image-vip",
-        "gemini-3-pro-image-preview/nano-banana-2"
-    ]
-
-    # 重试逻辑
-    for attempt, model in enumerate(models):
-        result = call_tuzi_chat_completions_for_image(
-            prompt=prompt,
-            reference_image_path=reference_image_path,
-            model=model,
-            base_url=tuzi_config.get("baseUrl", "https://api.tu-zi.com"),
-            api_key=tuzi_config.get("apiKey", ""),
-            proxy_url=tuzi_config.get("proxy", ""),
-            timeout=timeout_sec,
-            temperature=0.7,
-            max_tokens=100000
-        )
-        if result:
-            return result
-
-    return None
+    # 调用tuZi API生成图像（重试和多模型切换现在由底层函数处理）
+    return call_tuzi_chat_completions_for_image(
+        prompt=prompt,
+        reference_image_path=reference_image_path,
+        model=tuzi_config.get("model", "gpt-image-1.5"),
+        base_url=tuzi_config.get("baseUrl", "https://api.tu-zi.com"),
+        api_key=tuzi_config.get("apiKey", ""),
+        proxy_url=tuzi_config.get("proxy", ""),
+        timeout=timeout_sec,
+        temperature=0.7,
+        max_tokens=100000
+    )
 
 def call_huggingface_comic_factory(prompt: str, reference_image_path: Optional[str] = None) -> Optional[str]:
     """

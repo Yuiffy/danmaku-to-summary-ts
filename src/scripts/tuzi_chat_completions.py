@@ -215,17 +215,22 @@ def call_tuzi_chat_completions_for_image(
             "content": prompt
         })
 
-        # 重试逻辑
-        max_retries = 3
-        response = None
+        # 模型重试逻辑
+        models_to_try = [model]
+        # 补充备选模型（去重）
+        fallbacks = ["gpt-image-1.5", "gemini-2.5-flash-image-vip", "gemini-3-pro-image-preview/nano-banana-2"]
+        for fb in fallbacks:
+            if fb not in models_to_try:
+                models_to_try.append(fb)
 
-        for attempt in range(max_retries + 1):
+        response = None
+        for attempt, current_model in enumerate(models_to_try):
             try:
-                print(f"[WAIT] 正在通过tu-zi.com API生成图像... (尝试 {attempt + 1}/{max_retries + 1}, 超时: {timeout}s, 模型: {model})")
+                print(f"[WAIT] 正在通过tu-zi.com API生成图像... (尝试 {attempt + 1}/{len(models_to_try)}, 超时: {timeout}s, 模型: {current_model})")
 
                 # 构建请求体 - /v1/chat/completions 格式
                 payload = {
-                    "model": model,
+                    "model": current_model,
                     "messages": messages,
                     "temperature": temperature,
                     "max_tokens": max_tokens,
@@ -236,7 +241,7 @@ def call_tuzi_chat_completions_for_image(
                 print(f"[DEBUG] 收到响应，状态码: {response.status_code}, 用时: {response.elapsed.total_seconds()}s")
 
                 if response.status_code == 200:
-                    # 尝试解析响应，如果解析失败则继续重试
+                    # 尝试解析响应
                     result = response.json()
 
                     # 打印响应结构以便调试
@@ -273,20 +278,8 @@ def call_tuzi_chat_completions_for_image(
                                         return temp_file
                                     else:
                                         print(f"[ERROR] 图像下载失败: HTTP {image_response.status_code}")
-                                        # 下载失败，继续重试
-                                        if attempt < max_retries:
-                                            print("[RETRY] 2秒后重试...")
-                                            time.sleep(2)
-                                            continue
-                                        return None
                                 except Exception as download_error:
                                     print(f"[ERROR] 图像下载异常: {download_error}")
-                                    # 下载异常，继续重试
-                                    if attempt < max_retries:
-                                        print("[RETRY] 2秒后重试...")
-                                        time.sleep(2)
-                                        continue
-                                    return None
 
                             # 检查是否包含base64编码的图像数据
                             b64_match = re.search(r'data:image/[a-z]+;base64,([A-Za-z0-9+/=]+)', content)
@@ -309,12 +302,6 @@ def call_tuzi_chat_completions_for_image(
                                     return temp_file
                                 except Exception as decode_error:
                                     print(f"[WARNING] 解码base64图像失败: {decode_error}")
-                                    # 解码失败，继续重试
-                                    if attempt < max_retries:
-                                        print("[RETRY] 2秒后重试...")
-                                        time.sleep(2)
-                                        continue
-                                    return None
 
                         # 检查是否有工具调用（某些API可能通过工具返回图像）
                         tool_calls = message.get("tool_calls", [])
@@ -345,38 +332,27 @@ def call_tuzi_chat_completions_for_image(
                                                     return temp_file
                                             except Exception as download_error:
                                                 print(f"[ERROR] 图像下载异常: {download_error}")
-                                                if attempt < max_retries:
-                                                    print("[RETRY] 2秒后重试...")
-                                                    time.sleep(2)
-                                                    continue
-                                                return None
                                     except Exception as json_error:
                                         print(f"[WARNING] 解析工具调用参数失败: {json_error}")
 
                     # 如果到这里还没返回，说明响应格式不符合预期
                     print(f"[ERROR] 无法从响应中提取图像数据")
                     print(f"[DEBUG] 完整响应: {json.dumps(result, ensure_ascii=False, indent=2)[:1000]}")
-                    # 响应格式不符合预期，继续重试
-                    if attempt < max_retries:
-                        print("[RETRY] 2秒后重试...")
-                        time.sleep(2)
-                        continue
-                    return None
                 else:
-                    print(f"[WARNING] tu-zi.com API调用失败 (尝试 {attempt + 1}): HTTP {response.status_code} elapsed: {response.elapsed.total_seconds()}s")
-                    if attempt < max_retries:
-                        print("[RETRY] 2秒后重试...")
-                        time.sleep(2)
-            except Exception as req_err:
-                print(f"[WARNING] 请求异常 (尝试 {attempt + 1}): {req_err}")
-                if attempt < max_retries:
-                    print("[RETRY] 2秒后重试...")
+                    print(f"[WARNING] tu-zi.com API调用失败 (尝试 {attempt + 1}/{len(models_to_try)}): HTTP {response.status_code} elapsed: {response.elapsed.total_seconds()}s")
+                
+                # 如果没成功且还有剩余模型，等待一下再试
+                if attempt < len(models_to_try) - 1:
+                    print("[RETRY] 2秒后更换模型重试...")
                     time.sleep(2)
 
-        # 如果彻底失败且response为None (即全是Exception)，手动return避免后续AttributeError
-        if response is None:
-             print("[ERROR] 所有重试均抛出异常，无API响应")
-             return None
+            except Exception as req_err:
+                print(f"[ERROR] 请求异常 (尝试 {attempt + 1}/{len(models_to_try)}): {req_err}")
+                if attempt < len(models_to_try) - 1:
+                    print("[RETRY] 2秒后更换模型重试...")
+                    time.sleep(2)
+        
+        return None
 
     except Exception as e:
         print(f"[ERROR] tu-zi.com图像生成失败: {e}")
