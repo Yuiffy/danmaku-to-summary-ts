@@ -512,7 +512,8 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     cwd=os.path.dirname(__file__),
-                    timeout=120
+                    timeout=120,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
                 )
                 if proc.returncode == 0 and proc.stdout:
                     text = proc.stdout.decode('utf-8').strip()

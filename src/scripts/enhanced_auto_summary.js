@@ -41,7 +41,7 @@ function isAudioFile(filePath) {
 
 function runCommand(command, args, options = {}) {
     return new Promise((resolve, reject) => {
-        const child = spawn(command, args, { ...options, stdio: 'inherit' });
+        const child = spawn(command, args, { windowsHide: true, ...options, stdio: 'inherit' });
         child.on('close', (code) => {
             if (code === 0) {
                 resolve();
@@ -61,7 +61,7 @@ async function getVideoDuration(filePath) {
             '-show_entries', 'format=duration',
             '-of', 'default=noprint_wrappers=1:nokey=1',
             filePath
-        ], { stdio: ['ignore', 'pipe', 'pipe'] });
+        ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
         
         let output = '';
         let error = '';

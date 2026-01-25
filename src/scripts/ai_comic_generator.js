@@ -31,6 +31,7 @@ async function generateComicWithPython(highlightPath, roomId = null) {
         
         const pythonProcess = spawn(pythonPath, args, {
             stdio: 'pipe',
+            windowsHide: true,
             env: { ...process.env, PYTHONUTF8: '1', PYTHONUNBUFFERED: '1' }
         });
 

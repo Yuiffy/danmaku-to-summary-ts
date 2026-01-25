@@ -59,7 +59,8 @@ function runFfmpegCommand(args, timeout = 300000) {
         console.log(`🎵 执行ffmpeg命令: ${ffmpegPath} ${args.join(' ')}`);
         
         const child = spawn(ffmpegPath, args, {
-            stdio: ['ignore', 'pipe', 'pipe']
+            stdio: ['ignore', 'pipe', 'pipe'],
+            windowsHide: true
         });
 
         let stdout = '';
