@@ -151,14 +151,14 @@
       },
       "1820703922": {
         "audioOnly": true,
-        "referenceImage": "public/reference_images/花礼电飞鼠.png",
-        "characterDescription": "花礼Harei，黑发蓝瞳鼠耳的女生。粉丝是小猫",
+        "referenceImage": "public/reference_images/花礼新衣抱小礼猫.png",
+        "characterDescription": "花礼Harei，黑发蓝瞳鼠耳的女生。粉丝是戴帽子的小猫（小礼猫、猫们）",
         "anchorName": "礼礼",
-        "fanName": "猫",
+        "fanName": "小礼猫（猫们）",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
         "enableDelayedReply": true,
-        "wordLimit": 600
+        "wordLimit": 300
       },
       "23260993": {
         "audioOnly": true,
