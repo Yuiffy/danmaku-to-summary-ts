@@ -255,7 +255,84 @@ def call_tuzi_chat_completions_for_image(
 
                         # 检查是否包含图像URL
                         if content and isinstance(content, str):
-                            # 尝试从内容中提取图像URL
+                            # 1. 优先检查是否有异步任务链接 (AsyncData / tuZi 格式)
+                            # 格式如: [原始数据](https://pro.asyncdata.net/source/xxxx)
+                            async_task_match = re.search(r'\[原始数据\]\((https?://[^)]+/source/[^)]+)\)', content)
+                            if async_task_match:
+                                task_url = async_task_match.group(1)
+                                print(f"[INFO] 检测到异步生成任务: {task_url}")
+                                
+                                # 轮询任务状态
+                                import tempfile
+                                import uuid
+                                
+                                start_time = time.time()
+                                while time.time() - start_time < timeout:
+                                    try:
+                                        task_resp = requests.get(task_url, proxies=proxies, timeout=30)
+                                        
+                                        if task_resp.status_code == 200:
+                                            try:
+                                                task_data = task_resp.json()
+                                                task_status = task_data.get("status")
+                                                
+                                                if task_status == "completed" or (task_status is None and "urls" in task_data):
+                                                    # 任务完成
+                                                    image_urls = task_data.get("urls", [])
+                                                    # 备选：从generations获取
+                                                    if not image_urls and "generations" in task_data:
+                                                        gens = task_data.get("generations", [])
+                                                        if gens and len(gens) > 0:
+                                                            if isinstance(gens[0], dict):
+                                                                if "url" in gens[0]:
+                                                                    image_urls.append(gens[0]["url"])
+                                                                elif "img_paths" in gens[0]:
+                                                                    image_urls.extend(gens[0]["img_paths"])
+                                                    
+                                                    if image_urls and len(image_urls) > 0:
+                                                        final_image_url = image_urls[0]
+                                                        print(f"[DOWNLOAD] 异步任务完成，下载图像: {final_image_url}")
+                                                        
+                                                        # 下载图片
+                                                        img_res = requests.get(final_image_url, timeout=60, proxies=proxies)
+                                                        if img_res.status_code == 200:
+                                                            temp_dir = tempfile.gettempdir()
+                                                            temp_file = os.path.join(temp_dir, f"comic_tuzi_async_{uuid.uuid4().hex[:8]}.png")
+                                                            with open(temp_file, 'wb') as f:
+                                                                f.write(img_res.content)
+                                                            print(f"[OK] tu-zi.com图像生成成功 (异步)")
+                                                            print(f"[SAVE] 图像已保存到临时文件: {temp_file}")
+                                                            return temp_file
+                                                        else:
+                                                            print(f"[ERROR] 下载图像失败: HTTP {img_res.status_code}")
+                                                            # 下载失败通常无法恢复，退出循环
+                                                            break
+                                                    else:
+                                                        print(f"[ERROR] 任务显示完成但未找到URL: {task_data.keys()}")
+                                                        break
+                                                        
+                                                elif task_status == "failed":
+                                                    print(f"[ERROR] 异步任务生成失败: {task_data.get('failure_reason', '未知原因')}")
+                                                    break
+                                                else:
+                                                    print(f"[WAIT] 任务进行中... (状态: {task_status})")
+                                                    time.sleep(3)
+                                            except json.JSONDecodeError:
+                                                print(f"[WARNING] 任务响应非JSON格式")
+                                                time.sleep(3)
+                                        else:
+                                            print(f"[WARNING] 获取任务状态HTTP错误: {task_resp.status_code}")
+                                            time.sleep(3)
+                                            
+                                    except Exception as poll_err:
+                                        print(f"[WARNING] 轮询出错: {poll_err}")
+                                        time.sleep(3)
+                                
+                                # 循环结束检查
+                                if time.time() - start_time >= timeout:
+                                    print(f"[ERROR] 异步任务轮询超时 ({timeout}s)")
+
+                            # 2. 尝试从内容中提取直接图像URL (旧逻辑)
                             url_match = re.search(r'https?://[^\s\)]+\.(?:png|jpg|jpeg|webp)', content)
                             if url_match:
                                 image_url = url_match.group(0)
