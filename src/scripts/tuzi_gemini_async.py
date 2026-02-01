@@ -147,11 +147,16 @@ def call_tuzi_gemini_async(
                     print(f"[OK] 任务完成！")
                     
                     # 尝试从响应中提取图像URL
-                    # 可能的字段：url, urls, output, outputs, result, data 等
+                    # 可能的字段：video_url, url, urls, output, outputs, result, data 等
                     image_url = None
                     
                     # 尝试多种可能的字段
-                    if "url" in query_result:
+                    # 优先检查 video_url（Gemini 异步 API 实际使用的字段）
+                    if "video_url" in query_result:
+                        image_url = query_result["video_url"]
+                    elif "image_url" in query_result:
+                        image_url = query_result["image_url"]
+                    elif "url" in query_result:
                         image_url = query_result["url"]
                     elif "urls" in query_result and isinstance(query_result["urls"], list) and len(query_result["urls"]) > 0:
                         image_url = query_result["urls"][0]
