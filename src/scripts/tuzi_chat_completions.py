@@ -21,6 +21,49 @@ except ImportError:
     call_tuzi_gemini_async = None
 
 
+def model_supports_chinese(model: str) -> bool:
+    """判断模型是否支持在图像中生成汉字
+    
+    Args:
+        model: 模型名称
+        
+    Returns:
+        True 如果模型支持汉字，False 否则
+    """
+    if not model:
+        return False
+    
+    # 高级模型列表（支持汉字）
+    advanced_models = [
+        "gemini-3-pro-image-preview-async",
+        "gemini-3-pro-image-preview/nano-banana-2",
+        "gemini-3-pro-image-preview-2k-async",
+        "gemini-3-pro-image-preview-4k-async",
+    ]
+    
+    # 检查模型名称是否在高级模型列表中
+    for advanced_model in advanced_models:
+        if advanced_model in model:
+            return True
+    
+    return False
+
+
+def get_chinese_instruction(model: str) -> str:
+    """根据模型能力获取汉字相关的指令文本
+    
+    Args:
+        model: 模型名称
+        
+    Returns:
+        汉字指令文本
+    """
+    if model_supports_chinese(model):
+        return "可以在画面中添加少量汉字来增强表现力（比如标题、对话、音效等），但要保持简洁美观。"
+    else:
+        return "尽量不要有汉字，除非就一两个字。"
+
+
 def call_tuzi_chat_completions(
     prompt: str,
     system_prompt: Optional[str] = None,
@@ -256,6 +299,9 @@ def call_tuzi_chat_completions_for_image(
                 strategy_type = strategy["type"]
                 current_model = strategy["model"]
                 
+                # 根据当前模型动态替换 prompt 中的汉字指令占位符
+                current_prompt = prompt.replace("{chinese_instruction}", get_chinese_instruction(current_model))
+                
                 print(f"[WAIT] 正在生成图像... (尝试 {attempt + 1}/{len(retry_strategies)}, 类型: {strategy_type}, 模型: {current_model}, 超时: {timeout}s)")
 
                 # 异步策略：调用 Gemini 异步 API
@@ -263,7 +309,7 @@ def call_tuzi_chat_completions_for_image(
                     print("[INFO] 使用 Gemini 异步 API...")
                     try:
                         gemini_result = call_tuzi_gemini_async(
-                            prompt=prompt,
+                            prompt=current_prompt,  # 使用替换后的 prompt
                             reference_image_paths=reference_images if reference_images else [],
                             model=current_model,
                             base_url=base_url,
@@ -290,10 +336,33 @@ def call_tuzi_chat_completions_for_image(
                 
                 # 同步策略：调用标准 chat/completions API
                 if strategy_type == "sync":
+                    # 重新构建消息列表，使用当前模型对应的 prompt
+                    current_messages = []
+                    
+                    # 如果有参考图，添加到消息中
+                    if reference_images:
+                        content_parts = [{"type": "text", "text": "请参考以下图片的风格和角色形象："}]
+                        for idx, img_path in enumerate(reference_images, 1):
+                            image_base64 = encode_image_to_base64(img_path, with_data_uri=True)
+                            content_parts.append({
+                                "type": "image_url", 
+                                "image_url": {"url": image_base64}
+                            })
+                        current_messages.append({
+                            "role": "user",
+                            "content": content_parts
+                        })
+                    
+                    # 添加图像生成提示词（使用替换后的 prompt）
+                    current_messages.append({
+                        "role": "user",
+                        "content": current_prompt
+                    })
+                    
                     # 构建请求体 - /v1/chat/completions 格式
                     payload = {
                         "model": current_model,
-                        "messages": messages,
+                        "messages": current_messages,
                         "temperature": temperature,
                         "max_tokens": max_tokens,
                     }

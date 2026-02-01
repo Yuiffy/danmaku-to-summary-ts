@@ -429,12 +429,46 @@ def get_room_character_description(room_id: Optional[str] = None) -> str:
     except Exception:
         return "岁己SUI（白发红瞳女生），饼干岁（有细细四肢的小小的饼干状生物）"
 
-def build_comic_prompt(highlight_content: str, reference_image_path: Optional[str] = None, room_id: Optional[str] = None, existing_comic: Optional[str] = None) -> Tuple[str, str, bool]:
+def model_supports_chinese(model: Optional[str] = None) -> bool:
+    """判断模型是否支持在图像中生成汉字
+    
+    Args:
+        model: 模型名称
+        
+    Returns:
+        True 如果模型支持汉字，False 否则
+    """
+    if not model:
+        return False
+    
+    # 高级模型列表（支持汉字）
+    advanced_models = [
+        "gemini-3-pro-image-preview-async",
+        "gemini-3-pro-image-preview/nano-banana-2",
+        "gemini-3-pro-image-preview-2k-async",
+        "gemini-3-pro-image-preview-4k-async",
+    ]
+    
+    # 检查模型名称是否在高级模型列表中
+    for advanced_model in advanced_models:
+        if advanced_model in model:
+            return True
+    
+    return False
+
+def build_comic_prompt(highlight_content: str, reference_image_path: Optional[str] = None, room_id: Optional[str] = None, existing_comic: Optional[str] = None, model: Optional[str] = None) -> Tuple[str, str, bool]:
     """构建漫画生成提示词并返回 (prompt, comic_content, is_generated)。
 
     如果提供 `existing_comic` 则复用已有脚本而不再调用AI生成。
     返回值: (base_prompt, comic_content, is_generated)
     is_generated: 是否真正生成了漫画脚本（True）还是使用原文或已有脚本（False）
+    
+    Args:
+        highlight_content: 直播内容
+        reference_image_path: 参考图片路径（已废弃，保留用于兼容性）
+        room_id: 房间ID
+        existing_comic: 已有的漫画脚本
+        model: 模型名称，用于判断是否支持汉字
     """
     # 第一步：如果传入已有脚本则复用，否则使用AI生成漫画内容脚本
     is_generated = False
@@ -457,11 +491,12 @@ def build_comic_prompt(highlight_content: str, reference_image_path: Optional[st
         # 使用自定义 prompt 模板
         base_prompt = custom_image_prompt.replace("{character_desc}", character_desc).replace("{comic_content}", comic_content)
     else:
-        # 使用默认模板
+        # 使用默认模板，包含 {chinese_instruction} 占位符
+        # 这个占位符会在实际调用 API 时根据模型能力动态替换
         base_prompt = f"""<note>一定要按照给你的参考图还原形象，而不是自己乱画一个动漫角色</note>
 <character>{character_desc}</character>
 要画得精致，角色要画得帅气、美丽、可爱。
-尽量不要有汉字，除非就一两个字。
+{{chinese_instruction}}
 下面是根据直播内容生成的漫画脚本，请根据这个脚本绘制漫画：
 {comic_content}"""
 
