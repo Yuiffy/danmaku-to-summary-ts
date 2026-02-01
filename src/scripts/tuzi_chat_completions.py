@@ -13,6 +13,13 @@ import re
 from typing import Optional, Dict, Any
 import traceback
 
+# 导入 Gemini 异步 API 模块
+try:
+    from tuzi_gemini_async import call_tuzi_gemini_async
+except ImportError:
+    print("[WARNING] 无法导入 tuzi_gemini_async 模块，Gemini异步功能将不可用")
+    call_tuzi_gemini_async = None
+
 
 def call_tuzi_chat_completions(
     prompt: str,
@@ -215,30 +222,85 @@ def call_tuzi_chat_completions_for_image(
             "content": prompt
         })
 
-        # 模型重试逻辑
-        models_to_try = [model]
-        # 补充备选模型（去重）
-        fallbacks = ["gpt-image-1.5", "gemini-2.5-flash-image-vip", "gemini-3-pro-image-preview/nano-banana-2"]
-        for fb in fallbacks:
-            if fb not in models_to_try:
-                models_to_try.append(fb)
+        # ========== 图片生成重试策略配置 ==========
+        # 每个策略包含：type (sync/async) 和 model
+        # 可以通过调整列表顺序来改变重试优先级
+        retry_strategies = [
+            # 第一顺位：Gemini 异步 API（失败不扣费，成本低）
+            {"type": "async", "model": "gemini-3-pro-image-preview-async"},
+            # 第二顺位：nano-banana（原第一顺位）
+            {"type": "sync", "model": model},
+            # 第三顺位及以后：其他备选模型
+            {"type": "sync", "model": "gpt-image-1.5"},
+            {"type": "sync", "model": "gemini-2.5-flash-image-vip"},
+            {"type": "sync", "model": "gemini-3-pro-image-preview/nano-banana-2"},
+        ]
+        
+        # 去重：如果传入的 model 已经在列表中，移除重复项
+        seen_models = set()
+        unique_strategies = []
+        for strategy in retry_strategies:
+            strategy_key = f"{strategy['type']}:{strategy['model']}"
+            if strategy_key not in seen_models:
+                seen_models.add(strategy_key)
+                unique_strategies.append(strategy)
+        retry_strategies = unique_strategies
+        
+        strategy_list = [f"{s['type']}:{s['model']}" for s in retry_strategies]
+        print(f"[INFO] 图片生成重试策略: {strategy_list}")
+        # ========================================
 
         response = None
-        for attempt, current_model in enumerate(models_to_try):
+        for attempt, strategy in enumerate(retry_strategies):
             try:
-                print(f"[WAIT] 正在通过tu-zi.com API生成图像... (尝试 {attempt + 1}/{len(models_to_try)}, 超时: {timeout}s, 模型: {current_model})")
+                strategy_type = strategy["type"]
+                current_model = strategy["model"]
+                
+                print(f"[WAIT] 正在生成图像... (尝试 {attempt + 1}/{len(retry_strategies)}, 类型: {strategy_type}, 模型: {current_model}, 超时: {timeout}s)")
 
-                # 构建请求体 - /v1/chat/completions 格式
-                payload = {
-                    "model": current_model,
-                    "messages": messages,
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                }
+                # 异步策略：调用 Gemini 异步 API
+                if strategy_type == "async" and call_tuzi_gemini_async is not None:
+                    print("[INFO] 使用 Gemini 异步 API...")
+                    try:
+                        gemini_result = call_tuzi_gemini_async(
+                            prompt=prompt,
+                            reference_image_paths=reference_images if reference_images else [],
+                            model=current_model,
+                            base_url=base_url,
+                            api_key=api_key,
+                            proxy_url=proxy_url,
+                            timeout=timeout,
+                            size="9:16",
+                            max_poll_time=300
+                        )
+                        
+                        if gemini_result:
+                            print("[OK] Gemini 异步 API 生成成功！")
+                            return gemini_result
+                        else:
+                            print("[WARNING] Gemini 异步 API 失败，继续尝试下一个策略...")
+                    except Exception as gemini_err:
+                        print(f"[WARNING] Gemini 异步 API 调用异常: {gemini_err}")
+                    
+                    # 异步失败后继续下一个策略
+                    if attempt < len(retry_strategies) - 1:
+                        print("[RETRY] 2秒后尝试下一个策略...")
+                        time.sleep(2)
+                    continue
+                
+                # 同步策略：调用标准 chat/completions API
+                if strategy_type == "sync":
+                    # 构建请求体 - /v1/chat/completions 格式
+                    payload = {
+                        "model": current_model,
+                        "messages": messages,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                    }
 
-                print(f"[DEBUG] 发起请求，内容：{json.dumps(payload)[:100]}..., 代理: {proxies}, 超时: {timeout}s")
-                response = requests.post(api_url, headers=headers, json=payload, timeout=timeout, proxies=proxies)
-                print(f"[DEBUG] 收到响应，状态码: {response.status_code}, 用时: {response.elapsed.total_seconds()}s")
+                    print(f"[DEBUG] 发起请求，内容：{json.dumps(payload)[:100]}..., 代理: {proxies}, 超时: {timeout}s")
+                    response = requests.post(api_url, headers=headers, json=payload, timeout=timeout, proxies=proxies)
+                    print(f"[DEBUG] 收到响应，状态码: {response.status_code}, 用时: {response.elapsed.total_seconds()}s")
 
                 if response.status_code == 200:
                     # 尝试解析响应
@@ -416,17 +478,18 @@ def call_tuzi_chat_completions_for_image(
                     print(f"[ERROR] 无法从响应中提取图像数据")
                     print(f"[DEBUG] 完整响应: {json.dumps(result, ensure_ascii=False, indent=2)[:1000]}")
                 else:
-                    print(f"[WARNING] tu-zi.com API调用失败 (尝试 {attempt + 1}/{len(models_to_try)}): HTTP {response.status_code} elapsed: {response.elapsed.total_seconds()}s")
+                    print(f"[WARNING] tu-zi.com API调用失败 (尝试 {attempt + 1}/{len(retry_strategies)}): HTTP {response.status_code} elapsed: {response.elapsed.total_seconds()}s")
                 
-                # 如果没成功且还有剩余模型，等待一下再试
-                if attempt < len(models_to_try) - 1:
-                    print("[RETRY] 2秒后更换模型重试...")
+                # 如果没成功且还有剩余策略，等待一下再试
+                if attempt < len(retry_strategies) - 1:
+                    print("[RETRY] 2秒后尝试下一个策略...")
                     time.sleep(2)
 
+
             except Exception as req_err:
-                print(f"[ERROR] 请求异常 (尝试 {attempt + 1}/{len(models_to_try)}): {req_err}")
-                if attempt < len(models_to_try) - 1:
-                    print("[RETRY] 2秒后更换模型重试...")
+                print(f"[ERROR] 请求异常 (尝试 {attempt + 1}/{len(retry_strategies)}): {req_err}")
+                if attempt < len(retry_strategies) - 1:
+                    print("[RETRY] 2秒后尝试下一个策略...")
                     time.sleep(2)
         
         return None
