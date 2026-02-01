@@ -94,6 +94,18 @@ from config_loader import (
 # 导入tuZi API封装
 from tuzi_chat_completions import call_tuzi_chat_completions, call_tuzi_chat_completions_for_image
 
+# 尝试导入 Google GenAI（可选依赖）
+try:
+    from google import genai
+    from google.genai import types as genai_types
+    HAS_GOOGLE_GENAI = True
+except ImportError:
+    genai = None
+    genai_types = None
+    HAS_GOOGLE_GENAI = False
+    print("[WARNING] google-genai 库未安装，Gemini 文本生成功能将不可用")
+    print("   安装方法: pip install google-genai")
+
 def load_config() -> Dict[str, Any]:
     """加载配置文件（使用统一配置加载器）"""
     config = get_config()
@@ -532,90 +544,88 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
 
     # Gemini重试逻辑
     max_gemini_retries = 3
-    for gemini_attempt in range(max_gemini_retries):
-        try:
-            # 导入Google GenAI (新版本)
-            from google import genai
-            from google.genai import types
+    
+    # 首先检查 google-genai 是否可用
+    if not HAS_GOOGLE_GENAI:
+        print("[INFO] google-genai 库未安装，跳过 Gemini 文本生成，直接使用 tuZi API")
+        # 直接跳到 tuZi API 备用方案
+    else:
+        for gemini_attempt in range(max_gemini_retries):
+            try:
+                # 获取Gemini API密钥（使用统一配置加载器）
+                gemini_api_key = get_gemini_api_key()
 
-            # 获取Gemini API密钥（使用统一配置加载器）
-            gemini_api_key = get_gemini_api_key()
+                if not gemini_api_key:
+                    print("[WARNING]  Gemini API密钥未配置，使用原始内容")
+                    return highlight_content, False
 
-            if not gemini_api_key:
-                print("[WARNING]  Gemini API密钥未配置，使用原始内容")
-                return highlight_content, False
+                # 加载配置获取其他参数
+                config = load_config()
+                gemini_config = config.get('aiServices', {}).get('gemini', {})
 
-            # 加载配置获取其他参数
-            config = load_config()
-            gemini_config = config.get('aiServices', {}).get('gemini', {})
+                # 创建客户端（增加超时时间到120秒以应对SSL握手超时）
+                client = genai.Client(api_key=gemini_api_key, http_options=genai_types.HttpOptions(timeout=120))
 
-            # 创建客户端（增加超时时间到120秒以应对SSL握手超时）
-            client = genai.Client(api_key=gemini_api_key, http_options=types.HttpOptions(timeout=120))
+                # 设置代理 (如果需要)
+                proxy_url = gemini_config.get('proxy', '')
+                if proxy_url:
+                    import os
+                    os.environ['http_proxy'] = proxy_url
+                    os.environ['https_proxy'] = proxy_url
 
-            # 设置代理 (如果需要)
-            proxy_url = gemini_config.get('proxy', '')
-            if proxy_url:
-                import os
-                os.environ['http_proxy'] = proxy_url
-                os.environ['https_proxy'] = proxy_url
+                # 获取模型名称
+                model_name = gemini_config.get('model', 'gemini-2.0-flash')
 
-            # 获取模型名称
-            model_name = gemini_config.get('model', 'gemini-2.0-flash')
+                # 生成漫画内容脚本（使用统一的prompt模板）
+                character_desc = get_room_character_description(room_id)
+                content_prompt = build_comic_generation_prompt(character_desc, highlight_content, room_id)
 
-            # 生成漫画内容脚本（使用统一的prompt模板）
-            character_desc = get_room_character_description(room_id)
-            content_prompt = build_comic_generation_prompt(character_desc, highlight_content, room_id)
+                # 调用Gemini
+                if gemini_attempt > 0:
+                    print(f"[RETRY] 第 {gemini_attempt + 1} 次重试 Gemini...")
+                print(f"[AI] 使用Gemini生成漫画内容脚本: {model_name}")
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=content_prompt
+                )
 
-            # 调用Gemini
-            if gemini_attempt > 0:
-                print(f"[RETRY] 第 {gemini_attempt + 1} 次重试 Gemini...")
-            print(f"[AI] 使用Gemini生成漫画内容脚本: {model_name}")
-            response = client.models.generate_content(
-                model=model_name,
-                contents=content_prompt
-            )
+                if response and response.text:
+                    comic_content = response.text.strip()
+                    
+                    # 检测是否包含错误信息
+                    if is_gemini_error(comic_content):
+                        print(f"[WARNING] Gemini返回了错误内容 (尝试 {gemini_attempt + 1}/{max_gemini_retries})")
+                        if gemini_attempt < max_gemini_retries - 1:
+                            print("[RETRY] 2秒后重试...")
+                            time.sleep(2)
+                            continue
+                        else:
+                            print("[ERROR] Gemini重试次数已用完，尝试备用方案")
+                            break
+                    
+                    print("[OK] AI漫画内容生成完成")
+                    print(f"生成内容长度: {len(comic_content)} 字符")
+                    return comic_content, True
+                else:
+                    print("[WARNING]  AI返回空结果，使用原始内容")
+                    return highlight_content, False
 
-            if response and response.text:
-                comic_content = response.text.strip()
+            except Exception as e:
+                error_msg = str(e)
+                print(f"[ERROR]  AI内容生成失败 (尝试 {gemini_attempt + 1}/{max_gemini_retries}): {e}")
                 
-                # 检测是否包含错误信息
-                if is_gemini_error(comic_content):
-                    print(f"[WARNING] Gemini返回了错误内容 (尝试 {gemini_attempt + 1}/{max_gemini_retries})")
-                    if gemini_attempt < max_gemini_retries - 1:
-                        print("[RETRY] 2秒后重试...")
-                        time.sleep(2)
-                        continue
-                    else:
-                        print("[ERROR] Gemini重试次数已用完，尝试备用方案")
-                        break
+                # 检测是否是SSL相关错误
+                is_ssl_error = any(keyword in error_msg.lower() for keyword in ['ssl', 'handshake', 'timed out', 'timeout'])
                 
-                print("[OK] AI漫画内容生成完成")
-                print(f"生成内容长度: {len(comic_content)} 字符")
-                return comic_content, True
-            else:
-                print("[WARNING]  AI返回空结果，使用原始内容")
-                return highlight_content, False
-
-        except ImportError:
-            print("[WARNING]  google-genai库未安装，尝试使用tuZi API...")
-            print("   请安装: pip install google-genai")
-            break
-        except Exception as e:
-            error_msg = str(e)
-            print(f"[ERROR]  AI内容生成失败 (尝试 {gemini_attempt + 1}/{max_gemini_retries}): {e}")
-            
-            # 检测是否是SSL相关错误
-            is_ssl_error = any(keyword in error_msg.lower() for keyword in ['ssl', 'handshake', 'timed out', 'timeout'])
-            
-            if gemini_attempt < max_gemini_retries - 1:
-                # SSL错误使用更长的重试间隔
-                retry_delay = 5 if is_ssl_error else 2
-                print(f"[RETRY] {retry_delay}秒后重试...")
-                time.sleep(retry_delay)
-                continue
-            else:
-                print("[ERROR] Gemini重试次数已用完，尝试备用方案")
-                break
+                if gemini_attempt < max_gemini_retries - 1:
+                    # SSL错误使用更长的重试间隔
+                    retry_delay = 5 if is_ssl_error else 2
+                    print(f"[RETRY] {retry_delay}秒后重试...")
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    print("[ERROR] Gemini重试次数已用完，尝试备用方案")
+                    break
     
     # Gemini失败后，尝试使用tuZi API作为备用方案
     print("[TUZI] Google生成失败，尝试tu-zi.com生成文本...")
