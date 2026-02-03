@@ -290,6 +290,40 @@ def main():
                 if is_video_file(file): todo_list.append(os.path.join(root, file))
 
     print(f"🔥 正在加载 RTX 5080 引擎 (ASMR 智能版)...")
+    
+    # 检查显存状态
+    try:
+        check_script = os.path.join(os.path.dirname(__file__), 'check_gpu_memory.py')
+        if os.path.exists(check_script):
+            print("🔍 检查GPU显存状态...")
+            result = subprocess.run(
+                ['python', check_script],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if result.returncode != 0:
+                print("⚠️  显存不足,等待显存释放...")
+                print("💡 提示: 如果您正在玩游戏或使用显存,请稍等或关闭相关程序")
+                
+                # 等待显存释放(最多30分钟)
+                wait_result = subprocess.run(
+                    ['python', check_script, '--wait', '1800'],
+                    timeout=1900  # 比等待时间多100秒
+                )
+                
+                if wait_result.returncode != 0:
+                    print("\n❌ 显存等待超时,无法继续处理")
+                    print("   建议: 关闭占用显存的程序后重试")
+                    return
+        else:
+            print("⚠️  显存检测脚本未找到,跳过显存检查")
+    except subprocess.TimeoutExpired:
+        print("⚠️  显存检测超时,继续尝试加载模型...")
+    except Exception as e:
+        print(f"⚠️  显存检测出错: {e},继续尝试加载模型...")
+    
     try:
         # 优先尝试GPU，如果失败则用CPU
         model = WhisperModel(MODEL_SIZE, device="cuda", compute_type="float16")
@@ -304,6 +338,7 @@ def main():
         gc.collect()
 
     print(f"\n🏆 全部完成！")
+
 
 
 if __name__ == "__main__":

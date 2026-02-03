@@ -93,12 +93,15 @@ async function getVideoDuration(filePath) {
 
 // Whisper 文件锁 - 防止并发调用导致 GPU 冲突
 const WHISPER_LOCK_FILE = path.join(__dirname, '.whisper_lock');
-const WHISPER_LOCK_TIMEOUT = 60 * 60 * 1000; // 1小时超时
+const WHISPER_LOCK_TIMEOUT = 60 * 60 * 1000; // 1小时超时(锁文件过期时间)
 const WHISPER_LOCK_RETRY_INTERVAL = 10000; // 10秒重试间隔
-const WHISPER_MAX_RETRIES = 180; // 最多重试 180 次（6分钟）
+const WHISPER_MAX_RETRIES = 360; // 最多重试 360 次（60分钟）- 增加到1小时以应对显存不足的情况
+const WHISPER_PROGRESS_LOG_INTERVAL = 30000; // 每30秒输出一次详细进度
 
 async function acquireWhisperLock() {
     const startTime = Date.now();
+    let lastProgressLog = 0;
+    let queuePosition = 0;
     
     for (let i = 0; i < WHISPER_MAX_RETRIES; i++) {
         try {
@@ -107,11 +110,18 @@ async function acquireWhisperLock() {
             const lockData = {
                 pid: process.pid,
                 startTime: new Date().toISOString(),
-                timestamp: Date.now()
+                timestamp: Date.now(),
+                videoFile: process.argv[2] ? path.basename(process.argv[2]) : 'unknown'
             };
             fs.writeSync(fd, JSON.stringify(lockData, null, 2));
             fs.closeSync(fd);
-            console.log('🔒 获取 Whisper 锁成功');
+            
+            const waitTime = ((Date.now() - startTime) / 1000).toFixed(0);
+            if (i > 0) {
+                console.log(`🔒 获取 Whisper 锁成功 (等待了 ${waitTime}秒)`);
+            } else {
+                console.log('🔒 获取 Whisper 锁成功');
+            }
             return;
         } catch (error) {
             if (error.code === 'EEXIST') {
@@ -122,13 +132,29 @@ async function acquireWhisperLock() {
                     const age = Date.now() - lock.timestamp;
                     
                     if (age > WHISPER_LOCK_TIMEOUT) {
-                        console.warn(`⚠️  检测到过期锁文件 (${(age / 60000).toFixed(1)} 分钟前)，尝试删除...`);
+                        console.warn(`⚠️  检测到过期锁文件 (${(age / 60000).toFixed(1)} 分钟前，PID: ${lock.pid})，尝试删除...`);
                         fs.unlinkSync(WHISPER_LOCK_FILE);
                         continue; // 重试
                     }
                     
                     const elapsed = Date.now() - startTime;
-                    console.log(`⏳ 等待 Whisper 锁释放... (${(elapsed / 1000).toFixed(0)}s)`);
+                    const elapsedMinutes = (elapsed / 60000).toFixed(1);
+                    const elapsedSeconds = (elapsed / 1000).toFixed(0);
+                    
+                    // 每10秒输出简短日志
+                    console.log(`⏳ 等待 Whisper 锁释放... (${elapsedSeconds}s)`);
+                    
+                    // 每30秒输出详细进度
+                    if (elapsed - lastProgressLog >= WHISPER_PROGRESS_LOG_INTERVAL) {
+                        lastProgressLog = elapsed;
+                        const lockAge = ((Date.now() - lock.timestamp) / 60000).toFixed(1);
+                        console.log(`📊 [Whisper队列状态]`);
+                        console.log(`   当前等待时间: ${elapsedMinutes} 分钟 (${elapsedSeconds}秒)`);
+                        console.log(`   当前持锁进程: PID ${lock.pid} (已持有 ${lockAge} 分钟)`);
+                        console.log(`   当前处理文件: ${lock.videoFile || '未知'}`);
+                        console.log(`   剩余最大等待: ${((WHISPER_MAX_RETRIES - i) * WHISPER_LOCK_RETRY_INTERVAL / 60000).toFixed(1)} 分钟`);
+                        console.log(`   💡 提示: 如果您正在玩游戏或使用显存，Whisper会等待显存释放`);
+                    }
                 } catch (readError) {
                     // 锁文件损坏，删除重试
                     console.warn('⚠️  锁文件损坏，尝试删除...');
@@ -147,7 +173,8 @@ async function acquireWhisperLock() {
         }
     }
     
-    throw new Error(`获取 Whisper 锁超时 (超过 ${WHISPER_MAX_RETRIES * WHISPER_LOCK_RETRY_INTERVAL / 1000} 秒)`);
+    const totalWaitMinutes = (WHISPER_MAX_RETRIES * WHISPER_LOCK_RETRY_INTERVAL / 60000).toFixed(1);
+    throw new Error(`获取 Whisper 锁超时 (超过 ${totalWaitMinutes} 分钟)`);
 }
 
 function releaseWhisperLock() {
