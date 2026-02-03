@@ -11,6 +11,7 @@ const configLoader = require('./config-loader');
 const audioProcessor = require('./audio_processor');
 const aiTextGenerator = require('./ai_text_generator');
 const aiComicGenerator = require('./ai_comic_generator');
+const queueManager = require('./whisper_queue_manager');
 
 // 获取音频格式配置
 function getAudioFormats() {
@@ -208,7 +209,7 @@ async function runCommandWithRetry(command, args, options = {}, maxRetries = 2) 
     throw lastError; // 所有重试都失败则抛出错误
 }
 
-async function processMedia(mediaPath) {
+async function processMedia(mediaPath, taskId = null) {
     const dir = path.dirname(mediaPath);
     const nameNoExt = path.basename(mediaPath, path.extname(mediaPath));
     const srtPath = path.join(dir, `${nameNoExt}.srt`);
@@ -247,6 +248,11 @@ async function processMedia(mediaPath) {
         // 获取 Whisper 锁，防止并发调用导致 GPU 冲突
         await acquireWhisperLock();
         
+        // 标记任务为处理中
+        if (taskId) {
+            queueManager.markProcessing(taskId);
+        }
+        
         try {
             try {
                 await runCommand('python', [pythonScript, mediaPath], {
@@ -260,6 +266,17 @@ async function processMedia(mediaPath) {
                     throw error;
                 }
             }
+            
+            // 标记任务完成
+            if (taskId) {
+                queueManager.markCompleted(taskId);
+            }
+        } catch (error) {
+            // 标记任务失败
+            if (taskId) {
+                queueManager.markFailed(taskId, error.message);
+            }
+            throw error;
         } finally {
             // 释放锁
             releaseWhisperLock();
@@ -381,6 +398,12 @@ const main = async () => {
     console.log('      (支持音频处理 + AI生成)             ');
     console.log('===========================================');
 
+    // 恢复中断的任务
+    queueManager.recoverInterruptedTasks();
+    
+    // 显示队列状态
+    queueManager.printStatus();
+
     let mediaFiles = [];
     let xmlFiles = [];
     let filesToProcess = [];
@@ -413,11 +436,14 @@ const main = async () => {
     for (const mediaFile of mediaFiles) {
         console.log(`\n--- 处理媒体文件: ${path.basename(mediaFile)} ---`);
         
+        // 添加任务到队列
+        const task = queueManager.addTask(mediaFile, roomId);
+        
         // 1. 音频处理（如果需要）
         const processedFile = await processAudioIfNeeded(mediaFile, roomId);
         
-        // 2. ASR生成字幕
-        const srtPath = await processMedia(processedFile);
+        // 2. ASR生成字幕（传递 taskId）
+        const srtPath = await processMedia(processedFile, task.id);
         
         if (srtPath) {
             processedMediaFiles.push(processedFile); // 记录处理后的文件
