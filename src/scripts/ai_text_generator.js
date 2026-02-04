@@ -49,13 +49,12 @@ function buildPrompt(highlightContent, roomId) {
     const fan = names.fan;
     const wordLimit = configLoader.getWordLimit(roomId);
 
-    // 尝试获取房间级别的自定义晚安回复 prompt
+    // 检查是否有自定义配置 (保持原有逻辑)
     const config = configLoader.getConfig();
     const roomSettings = config?.ai?.roomSettings || {};
     const roomConfig = roomId ? roomSettings[String(roomId)] : null;
     const customPrompt = roomConfig?.customPrompts?.goodnightReply;
 
-    // 如果有自定义 prompt，使用它并替换占位符
     if (customPrompt) {
         return customPrompt
             .replace(/{anchor}/g, anchor)
@@ -64,11 +63,32 @@ function buildPrompt(highlightContent, roomId) {
             .replace(/{highlightContent}/g, highlightContent);
     }
 
-    // 否则使用默认模板
+    // --- 核心修改：全肯定萌萌人 2.0 ---
 
-    return `【角色设定】
+    // 定义几种不同的“夸奖角度”，防止每天都只会说“含金量”
+    const praiseAngles = [
+        '角度A（心疼路线）：侧重于觉得主播今天很辛苦/很努力，表达关心和陪伴。',
+        '角度B（爆笑路线）：侧重于觉得今天节目效果太好了，全是梗，笑得肚子疼。',
+        '角度C（细节路线）：侧重于捕捉主播无意间的一个可爱小动作或一句话进行“过度解读”和夸奖。',
+        '角度D（崇拜路线）：侧重于夸赞主播的歌力/游戏技术/杂谈能力，带有粉丝滤镜的彩虹屁。'
+    ];
+    const randomAngle = praiseAngles[Math.floor(Math.random() * praiseAngles.length)];
 
-身份：${anchor}的铁粉（自称"${fan}"）。
+    const mainPrompts = [`性格：
+1. **全肯定**：自带800米厚的粉丝滤镜，主播干啥都觉得可爱/厉害。
+2. **宠溺**：语气要软，要有亲切感，把主播当成家里人或特别亲近的朋友。
+3. **萌萌人**：可以使用颜文字 ( ´∀\`)，语气词（捏、呀、嘛、呜呜），但要自然点。
+
+【当前任务】
+根据提供的直播内容，写一段晚安回复。
+**今日夸奖切入点**：${randomAngle}
+
+【写作要求】
+1. **拒绝机械感**：不要像写总结报告一样列123点。要像在发朋友圈或发弹幕一样，把几个亮点揉在一起说。
+2. **要有画面感**：如果文档里提到了具体的梗，一定要提一句，证明你真的看了。
+3. **情感浓度**：虽然禁止了某些词，但"喜欢"和"支持"的情绪要给足。如果主播今天很累，就多安慰；如果很开心，就跟着一起傻乐。
+`,
+`
 
 性格：喜欢调侃、宠溺主播，有点话痨，对主播的生活琐事和梗如数家珍。
 
@@ -96,14 +116,27 @@ function buildPrompt(highlightContent, roomId) {
 
 结尾（情感升华）：
 关怀：叮嘱主播注意身体（嗓子、睡眠、吃饭），不要太累。
-期待：确认下一次直播的时间（如果文档里提到了）。
+期待：确认下一次直播的时间（如果文档里提到了）。`
+];
 
-字数要求：${wordLimit}字以内。
+    const randomMainPrompt = mainPrompts[Math.floor(Math.random() * mainPrompts.length)];
 
-【直播内容摘要】
+    const result = `【角色设定】
+身份：${anchor}的铁粉（自称"${fan}"）。
+
+${randomMainPrompt}
+
+【字数与格式】
+字数：${wordLimit}字以内。
+格式：不要太长，适合手机阅读。
+
+【直播内容（主播语音转写+观众弹幕）】
 ${highlightContent}
 
-请根据以上直播内容，以${fan}的身份写一篇晚安回复。记住：只使用提供的直播内容，不要添加任何外部信息。`;
+请根据直播内容，以${fan}的身份写一篇晚安回复。记住：只使用提供的直播内容，不要添加任何外部信息。`;
+
+    console.log('晚安动态prompt主要内容:', randomMainPrompt.substring(0, 100), '直播内容长度:', highlightContent.length);
+    return result;
 }
 
 // 调用tuZi API生成文本（备用方案）
