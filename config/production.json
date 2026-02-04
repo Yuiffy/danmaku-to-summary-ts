@@ -127,6 +127,16 @@
         "enableComicGeneration": true,
         "enableDelayedReply": true
       },
+      "21484828": {
+        "audioOnly": true,
+        "referenceImage": "public/reference_images/轴伊多形态.png",
+        "characterDescription": "轴伊Joi（黑发、暗红发尾渐变，金瞳，可爱小女孩，通常梳着侧马尾或麻花辫），粉丝是轴芯（黄色的球，围着红围巾、顶着橘子的可爱小生物）",
+        "anchorName": "小轴",
+        "fanName": "轴芯",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
+      },
       "26966466": {
         "audioOnly": true,
         "referenceImage": "public/reference_images/栞栞制服加獭獭栞.png",
@@ -146,8 +156,7 @@
         "fanName": "旁汀生",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
-        "enableDelayedReply": true,
-        "wordLimit": 150
+        "enableDelayedReply": true
       },
       "1820703922": {
         "audioOnly": true,
@@ -157,8 +166,7 @@
         "fanName": "小礼猫（猫们）",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
-        "enableDelayedReply": true,
-        "wordLimit": 300
+        "enableDelayedReply": true
       },
       "23260993": {
         "audioOnly": true,
@@ -169,7 +177,7 @@
         "enableTextGeneration": true,
         "enableComicGeneration": true,
         "enableDelayedReply": true,
-        "wordLimit": 400
+        "wordLimit": 300
       },
       "1967216004": {
         "audioOnly": true,
