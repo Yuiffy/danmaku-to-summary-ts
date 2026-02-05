@@ -155,8 +155,10 @@ async def get_dynamic_comment_id(dynamic_id: str, credential: Credential) -> tup
     api_comment_type = basic.get('comment_type', 11)
 
     # 2. 辅助判断：安全地获取 major_type (用于修正特殊类型)
-    # 使用链式 .get 防止报错，因为纯文字动态可能没有 major
-    major_type = item.get('modules', {}).get('module_dynamic', {}).get('major', {}).get('type', '')
+    # 使用链式 .get 防止报错，因为纯文字动态和转发动态可能没有 major 或 major 为 None
+    module_dynamic = item.get('modules', {}).get('module_dynamic', {})
+    major = module_dynamic.get('major')
+    major_type = major.get('type', '') if major else ''
 
     log(f"[INFO] 动态 {dynamic_id} 解析: api_type={api_comment_type}, major_type={major_type}")
 
