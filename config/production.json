@@ -29,7 +29,14 @@
   },
   "audio": {
     "enabled": true,
-    "audioOnlyRooms": [26966466, 21756924, 1741667419, 1713546334, 1713548468, 1986461465],
+    "audioOnlyRooms": [
+      26966466,
+      21756924,
+      1741667419,
+      1713546334,
+      1713548468,
+      1986461465
+    ],
     "formats": [
       ".m4a",
       ".aac",
@@ -260,7 +267,7 @@
         "fanName": "雅团子",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
-          "enableDelayedReply": true
+        "enableDelayedReply": true
       },
       "1741667419": {
         "audioOnly": true,
@@ -272,7 +279,61 @@
         "enableComicGeneration": true,
         "enableDelayedReply": true
       },
-        "23197314": {
+      "1967215387": {
+        "audioOnly": true,
+        "characterDescription": "命依Mei（玫瑰金发、渐变瞳（紫+粉色+青色瞳孔）少女）可爱小女孩",
+        "anchorName": "命依Mei",
+        "fanName": "契命者",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
+      },
+      "30655190": {
+        "audioOnly": true,
+        "characterDescription": "兔川弥月Mizuki（亚麻发异瞳（左红右紫）少女），有两个浮游炮机械兔耳，被称作小弥、老弥",
+        "anchorName": "弥月Mizuki",
+        "fanName": "小博兔",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
+      },
+      "21224291": {
+        "audioOnly": true,
+        "characterDescription": "安堂Inori（橘发绿瞳狐娘机娘），机械狐狸型Vtuber，双马尾，自称机器人但内心是人类，擅长射击游戏",
+        "anchorName": "安堂Inori",
+        "fanName": "科研者",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
+      },
+      "1791260716": {
+        "audioOnly": true,
+        "characterDescription": "犬绒Mofu（棕粉渐变长发、黄蓝异瞳犬娘），可爱小女孩，立绘胸部较大，被称为大奶狗。粉丝绒绒民是白色小狗戴着粉色蝴蝶结",
+        "anchorName": "犬戎Mofu",
+        "fanName": "绒绒民",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
+      },
+      "31368686": {
+        "audioOnly": true,
+        "characterDescription": "帕可Pako（紫发绿瞳少女），有金色光环",
+        "anchorName": "帕可Pako",
+        "fanName": "托帕石",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
+      },
+      "27628030": {
+        "audioOnly": true,
+        "characterDescription": "未知夜Michiya（淡金长发金瞳御姐），受恶魔诅咒的不死贵族少女，自称黑心恶魔继承人，擅长杂谈与整蛊",
+        "anchorName": "未知夜Michiya",
+        "fanName": "烛台人",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
+      },
+      "23197314": {
         "audioOnly": true,
         "characterDescription": "飞天狙想要努力变胖，戴着眼镜的男性瘦瘦的主播",
         "anchorName": "狙神",
@@ -281,7 +342,7 @@
         "enableComicGeneration": true,
         "enableDelayedReply": true
       },
-        "1844410596": {
+      "1844410596": {
         "audioOnly": true,
         "characterDescription": "夜永awa，银色美少女主播",
         "anchorName": "酱酱",
@@ -298,7 +359,19 @@
     "lowEnergySampleRate": 10,
     "myUserId": "14279",
     "stopWords": [
-      "晚上好", "晚安", "来了", "打call", "拜拜", "卡了", "嗯", "好", "草", "哈哈", "确实", "牛", "可爱"
+      "晚上好",
+      "晚安",
+      "来了",
+      "打call",
+      "拜拜",
+      "卡了",
+      "嗯",
+      "好",
+      "草",
+      "哈哈",
+      "确实",
+      "牛",
+      "可爱"
     ],
     "fillerRegex": "^[\\s\\W]*$"
   },
