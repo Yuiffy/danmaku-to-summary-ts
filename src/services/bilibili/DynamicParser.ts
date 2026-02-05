@@ -157,7 +157,13 @@ function parseDynamicItemV2(item: DynamicItemV2): BilibiliDynamic | null {
     const { major } = module_dynamic;
 
     if (!major) {
-      logger.debug('动态项缺少major字段');
+      logger.debug('动态项缺少major字段', {
+        dynamicId: id_str,
+        type,
+        basic,
+        module_dynamic,
+        fullItem: JSON.stringify(item, null, 2)
+      });
       return null;
     }
 
