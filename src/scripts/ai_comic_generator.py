@@ -352,9 +352,10 @@ def collect_all_images(room_id: str, highlight_path: Optional[str] = None) -> li
             images.append(inferred_screenshot)
             print(f"[INFO]  收集到推断的直播截图: {os.path.basename(inferred_screenshot)}")
     
-    # 4. 只有在没有主播参考图和封面时，才使用默认参考图（兜底）
-    if not has_anchor_image and not has_cover:
-        print("[INFO]  未找到主播参考图和封面，尝试使用默认参考图...")
+    # 4. 只有在完全没有任何图片时，才使用默认参考图（兜底）
+    # 检查是否已经收集到任何图片（主播参考图、封面、截图）
+    if len(images) == 0:
+        print("[INFO]  未找到任何图片（主播参考图、封面、截图），尝试使用默认参考图作为兜底...")
         default_image = ""
         if "ai" in config:
             if config["ai"].get("defaultReferenceImage"):
@@ -377,6 +378,8 @@ def collect_all_images(room_id: str, highlight_path: Optional[str] = None) -> li
                 if os.path.exists(script_relative):
                     images.append(script_relative)
                     print(f"[INFO]  收集到默认参考图（兜底）: {os.path.basename(script_relative)}")
+    else:
+        print(f"[INFO]  已有 {len(images)} 张图片，跳过默认参考图")
     
     print(f"[INFO]  共收集到 {len(images)} 张图片用于AI输入")
     return images
