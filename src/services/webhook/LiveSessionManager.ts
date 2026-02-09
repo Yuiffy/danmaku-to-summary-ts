@@ -210,6 +210,62 @@ export class LiveSessionManager {
   }
 
   /**
+   * 检查并移除过期片段
+   * @param roomId 房间ID
+   * @param maxAgeHours 最大年龄(小时),默认18小时
+   * @returns 移除的片段数量
+   */
+  removeExpiredSegments(roomId: string, maxAgeHours: number = 18): number {
+    const session = this.sessions.get(roomId);
+    if (!session) {
+      return 0;
+    }
+
+    const now = Date.now();
+    const maxAge = maxAgeHours * 60 * 60 * 1000;
+    const originalCount = session.segments.length;
+
+    // 过滤掉过期的片段
+    session.segments = session.segments.filter(segment => {
+      const age = now - segment.fileCloseTime.getTime();
+      if (age > maxAge) {
+        this.logger.warn(`移除过期片段: ${path.basename(segment.videoPath)} (年龄: ${(age / 3600000).toFixed(1)}小时)`);
+        return false;
+      }
+      return true;
+    });
+
+    const removedCount = originalCount - session.segments.length;
+    if (removedCount > 0) {
+      this.logger.info(`移除了 ${removedCount} 个过期片段 (房间: ${roomId})`);
+    }
+
+    return removedCount;
+  }
+
+  /**
+   * 检查片段是否有效(未过期且未被处理)
+   * @param roomId 房间ID
+   * @param maxAgeHours 最大年龄(小时)
+   * @returns 是否有有效片段
+   */
+  hasValidSegments(roomId: string, maxAgeHours: number = 2): boolean {
+    const session = this.sessions.get(roomId);
+    if (!session || session.segments.length === 0) {
+      return false;
+    }
+
+    const now = Date.now();
+    const maxAge = maxAgeHours * 60 * 60 * 1000;
+
+    // 检查是否有未过期的片段
+    return session.segments.some(segment => {
+      const age = now - segment.fileCloseTime.getTime();
+      return age <= maxAge;
+    });
+  }
+
+  /**
    * 检查是否需要合并
    */
   shouldMerge(roomId: string): boolean {

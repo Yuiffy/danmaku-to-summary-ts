@@ -481,17 +481,41 @@ export class MikufansWebhookHandler implements IWebhookHandler {
 
     this.logger.info(`🏁 直播结束 (延迟处理): ${session.roomName} (Room: ${roomId}, 最终片段数: ${session.segments.length})`);
 
+    // ⚠️ 关键修复: 移除过期片段(超过18小时的片段)
+    const removedCount = this.liveSessionManager.removeExpiredSegments(roomId, 18);
+    if (removedCount > 0) {
+      this.logger.warn(`⚠️ 移除了 ${removedCount} 个过期片段 (房间: ${roomId})`);
+    }
+
+    // ⚠️ 关键修复: 检查是否还有有效片段
+    if (!this.liveSessionManager.hasValidSegments(roomId, 2)) {
+      this.logger.warn(`⚠️ 会话中没有有效片段(所有片段都已过期或被处理), 跳过处理: ${roomId}`);
+      this.liveSessionManager.markAsCompleted(roomId);
+      return;
+    }
+
+    // 重新获取会话(因为可能已经移除了过期片段)
+    const updatedSession = this.liveSessionManager.getSession(roomId);
+    if (!updatedSession || updatedSession.segments.length === 0) {
+      this.logger.warn(`移除过期片段后会话为空: ${roomId}`);
+      this.liveSessionManager.markAsCompleted(roomId);
+      return;
+    }
+
+    this.logger.info(`📊 有效片段数: ${updatedSession.segments.length}`);
+
     // 检查是否需要合并
     const shouldMerge = this.liveSessionManager.shouldMerge(roomId);
 
     if (shouldMerge) {
       // 多片段场景：触发合并
       await this.mergeAndProcessSession(roomId);
-    } else if (session.segments.length === 1) {
+    } else if (updatedSession.segments.length === 1) {
       // 单片段场景：直接处理
       await this.processSingleSegment(roomId);
     } else {
       this.logger.warn(`会话没有片段: ${roomId}`);
+      this.liveSessionManager.markAsCompleted(roomId);
     }
   }
 
@@ -1102,6 +1126,10 @@ export class MikufansWebhookHandler implements IWebhookHandler {
 
     // 直接处理单个片段
     await this.startProcessing(segment.videoPath, segment.xmlPath, session.roomId);
+    
+    // ⚠️ 关键修复: 处理完成后立即标记为completed,防止重复处理
+    this.liveSessionManager.markAsCompleted(roomId);
+    this.logger.info(`✅ 单片段处理已启动,会话已标记为完成: ${roomId}`);
   }
 
   /**
