@@ -271,11 +271,11 @@ def call_tuzi_chat_completions_for_image(
         retry_strategies = [
             # 第一顺位：Gemini 异步 API（失败不扣费，成本低）
             {"type": "async", "model": "gemini-3-pro-image-preview-async"},
-            # 第二顺位：nano-banana（原第一顺位）
-            {"type": "sync", "model": model},
-            # 第三顺位及以后：其他备选模型
+            # 第二顺位及以后：其他备选模型
             {"type": "sync", "model": "gpt-image-1.5"},
             {"type": "sync", "model": "gemini-2.5-flash-image-vip"},
+            {"type": "sync", "model": model},
+            # 最后顺位：nano-banana（涨价了，没有优势）
             {"type": "sync", "model": "gemini-3-pro-image-preview/nano-banana-2"},
         ]
         

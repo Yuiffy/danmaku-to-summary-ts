@@ -45,7 +45,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   // Stream事件时间戳记录(roomId -> {startTime?, endTime?})
   private streamTimestamps: Map<string, {startTime?: Date, endTime?: Date}> = new Map();
   // 最大等待时间(毫秒)
-  private readonly MAX_DELAY_MS = 30000; // 30秒
+  private readonly MAX_DELAY_MS = 120000; // 120秒 (2分钟)
 
 
   /**
