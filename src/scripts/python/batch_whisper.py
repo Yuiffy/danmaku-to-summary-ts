@@ -196,6 +196,11 @@ def transcribe_with_strategy(model, video_path, srt_path, total_duration):
                         start_s = format_timestamp(split_seg['start'])
                         end_s = format_timestamp(split_seg['end'])
                         text = split_seg['text']
+                        
+                        # --- 🎯 幻听过滤 (Hallucination Filter) ---
+                        if any(bad in text for bad in ["优优独播剧场", "字幕志愿者", "中文字幕志愿者", "感谢观看", "谢谢观看", "谢谢大家观看"]):
+                            continue
+                            
                         f.write(f"{line_count}\n{start_s} --> {end_s}\n{text}\n\n")
 
                     f.flush()

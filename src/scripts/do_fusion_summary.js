@@ -15,8 +15,9 @@ const LOW_ENERGY_SAMPLE_RATE = 0.1; // 低热度区域，只随机保留 10% 的
 const MY_USER_ID = '14279';      // 你的弹幕永不被删
 
 // 4. 垃圾词过滤 (复用之前的)
-const STOP_WORDS = new Set(['晚上好', '晚安', '来了', '打call', '拜拜', '卡了', '嗯', '好', '草', '哈哈', '确实', '牛', '可爱']);
+const STOP_WORDS = new Set(['晚上好', '晚安', '来了', '打call', '拜拜', '卡了', '嗯', '好', '草', '哈哈', '确实', '牛', '可爱', '感谢观看', '谢谢观看', '优优独播剧场——YoYo Television Series Exclusive', '杨茜茜', '李宗盛']);
 const FILLER_REGEX = /^(呃|那个|就是|然后|哪怕|其实|我觉得|算是|哎呀|有点|怎么说呢|所以|这种|啊|哦)+/g;
+const HALLUCINATION_REGEX = /字幕志愿者|中文字幕志愿者|优优独播剧场|感谢观看|谢谢观看|谢谢大家观看/;
 
 // =======================================
 
@@ -129,7 +130,7 @@ async function processLiveData(inputFiles) {
                 const rawText = lines.slice(lines.indexOf(timeLine) + 1).join('');
                 const text = aggressiveClean(rawText);
 
-                if (text.length < 2 || STOP_WORDS.has(text)) continue;
+                if (text.length < 2 || STOP_WORDS.has(text) || HALLUCINATION_REGEX.test(text)) continue;
 
                 // === 🎯 命运的审判 ===
                 const bucketIdx = Math.floor(ms / windowMs);
