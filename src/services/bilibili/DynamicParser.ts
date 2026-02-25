@@ -28,6 +28,10 @@ interface DynamicItemV2 {
       name?: string;
     };
     module_dynamic: {
+      desc?: {
+        text?: string;
+        rich_text_nodes?: any[];
+      };
       major: {
         type: string;
         opus?: {
@@ -67,7 +71,7 @@ interface DynamicItemV2 {
             text?: string;
           };
         };
-      };
+      } | null;
     };
   };
 }
@@ -154,10 +158,41 @@ function parseDynamicItemV2(item: DynamicItemV2): BilibiliDynamic | null {
     }
 
     const { mid, pub_ts } = module_author;
-    const { major } = module_dynamic;
+    const { major, desc } = module_dynamic;
+
+    // 处理转发动态（DYNAMIC_TYPE_FORWARD）
+    if (type === 'DYNAMIC_TYPE_FORWARD') {
+      // 转发动态没有 major 字段，但有 desc 字段包含转发时的评论
+      const forwardComment = desc?.text || '';
+      
+      logger.debug('解析转发动态', {
+        dynamicId: id_str,
+        forwardComment,
+        hasOrig: !!(item as any).orig
+      });
+
+      // 获取发布时间
+      const publishTime = pub_ts ? new Date(Number(pub_ts) * 1000) : new Date();
+
+      return {
+        id: id_str,
+        uid: String(mid),
+        type: DynamicType.WORD, // 转发动态作为文字类型处理
+        content: forwardComment,
+        publishTime,
+        url: `https://www.bilibili.com/opus/${id_str}`,
+        rawData: item
+      };
+    }
 
     if (!major) {
-      logger.debug('动态项缺少major字段');
+      logger.debug('动态项缺少major字段', {
+        dynamicId: id_str,
+        type,
+        basic,
+        module_dynamic,
+        fullItem: JSON.stringify(item, null, 2)
+      });
       return null;
     }
 
@@ -200,6 +235,14 @@ function parseMajorContent(major: DynamicItemV2['modules']['module_dynamic']['ma
   content: string;
   images: string[];
 } {
+  if (!major) {
+    return {
+      type: null,
+      content: '',
+      images: []
+    };
+  }
+
   const { type: majorType, opus, draw, archive, article, common } = major;
 
   // LIVE_RCMD类型（直播推荐）- 跳过，不回复此类动态
@@ -336,7 +379,12 @@ export function parseDynamicItems(items: any[]): BilibiliDynamic[] {
   for (const item of items) {
     const dynamic = parseDynamicItem(item);
     if (dynamic) {
-      dynamics.push(dynamic);
+      // 过滤掉视频类型的动态，只保留非视频动态
+      if (dynamic.type !== DynamicType.AV) {
+        dynamics.push(dynamic);
+      } else {
+        logger.debug('跳过视频类型动态', { dynamicId: dynamic.id, type: dynamic.type });
+      }
     }
   }
 

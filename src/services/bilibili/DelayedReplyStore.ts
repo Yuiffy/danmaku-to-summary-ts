@@ -44,6 +44,20 @@ export class DelayedReplyStore implements IDelayedReplyStore {
           // 转换日期字符串为Date对象
           task.createTime = new Date(task.createTime);
           task.scheduledTime = new Date(task.scheduledTime);
+          
+          // 转换直播时间（如果存在）
+          if (task.liveStartTime) {
+            task.liveStartTime = new Date(task.liveStartTime);
+          }
+          if (task.liveEndTime) {
+            task.liveEndTime = new Date(task.liveEndTime);
+          }
+          
+          // 转换最后检查时间（如果存在）
+          if (task.lastCheckTime) {
+            task.lastCheckTime = new Date(task.lastCheckTime);
+          }
+          
           this.tasks.set(task.taskId, task);
         }
 
@@ -84,7 +98,9 @@ export class DelayedReplyStore implements IDelayedReplyStore {
   async getPendingTasks(): Promise<DelayedReplyTask[]> {
     const now = new Date();
     return Array.from(this.tasks.values()).filter(
-      task => task.status === 'pending' && task.scheduledTime <= now
+      task => task.status === 'pending' && 
+      // 预计发送时间没有过期太久（24小时）
+      task.scheduledTime >= new Date(now.getTime() - 24 * 60 * 60 * 1000)
     );
   }
 

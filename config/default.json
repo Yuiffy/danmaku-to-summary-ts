@@ -45,8 +45,9 @@
       "enabled": true,
       "provider": "gemini",
       "gemini": {
+        "enabled": true,
         "apiKey": "",
-        "model": "gemini-3-flash",
+        "model": "gemini-3-flash-preview",
         "temperature": 0.7,
         "maxTokens": 100000,
         "proxy": ""
@@ -55,7 +56,7 @@
         "enabled": true,
         "apiKey": "",
         "baseUrl": "https://api.tu-zi.com",
-        "model": "gemini-3-flash",
+        "model": "gemini-3-flash-preview",
         "proxy": ""
       }
     },
@@ -100,7 +101,7 @@
     "densityPercentile": 0.35,
     "lowEnergySampleRate": 0.1,
     "myUserId": "14279",
-    "stopWords": ["晚上好", "晚安", "来了", "打call", "拜拜", "卡了", "嗯", "好", "草", "哈哈", "确实", "牛", "可爱"],
+    "stopWords": ["晚上好", "晚安", "来了", "打call", "拜拜", "卡了", "嗯", "好", "草", "哈哈", "确实", "牛", "可爱", "感谢观看", "谢谢观看", "优优独播剧场——YoYo Television Series Exclusive", "杨茜茜", "李宗盛"],
     "fillerRegex": "^(呃|那个|就是|然后|哪怕|其实|我觉得|算是|哎呀|有点|怎么说呢|所以|这种|啊|哦)+"
   },
   "storage": {
@@ -152,5 +153,9 @@
       "maxRetries": 3,
       "retryDelayMinutes": 5
     }
+  },
+  "wechatWork": {
+    "webhookUrl": "",
+    "enabled": true
   }
 }

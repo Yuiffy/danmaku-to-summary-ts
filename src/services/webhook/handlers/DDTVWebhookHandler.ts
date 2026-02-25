@@ -7,6 +7,7 @@ import { getLogger } from '../../../core/logging/LogManager';
 import { ConfigProvider } from '../../../core/config/ConfigProvider';
 import { FileStabilityChecker } from '../FileStabilityChecker';
 import { DuplicateProcessorGuard } from '../DuplicateProcessorGuard';
+import { WeChatWorkNotifier } from '../../notification/WeChatWorkNotifier';
 
 /**
  * DDTV Webhook处理器
@@ -19,6 +20,11 @@ export class DDTVWebhookHandler implements IWebhookHandler {
   private logger = getLogger('DDTVWebhookHandler');
   private stabilityChecker = new FileStabilityChecker();
   private duplicateGuard = new DuplicateProcessorGuard();
+  private notifier?: WeChatWorkNotifier;
+
+  constructor(notifier?: WeChatWorkNotifier) {
+    this.notifier = notifier;
+  }
 
 
   /**
@@ -33,6 +39,9 @@ export class DDTVWebhookHandler implements IWebhookHandler {
    * 处理Webhook请求
    */
   async handleRequest(req: Request, res: Response): Promise<void> {
+    const roomName = req.body?.data?.Name || req.body?.room_info?.uname || '未知主播';
+    const roomId = req.body?.data?.RoomId || req.body?.room_info?.roomid || req.body?.room_info?.roomId || req.body?.roomId || req.body?.room || req.body?.data?.roomId || 'unknown';
+    
     try {
       const payload = req.body;
       const cmd = payload.cmd || 'Unknown';
@@ -62,11 +71,23 @@ export class DDTVWebhookHandler implements IWebhookHandler {
       }
 
       // 处理文件事件
-      await this.handleFileEvent(payload, cmd);
+      await this.handleFileEvent(payload, cmd, roomName, roomId);
       
       res.send('Processing Started (or logic branched)');
     } catch (error: any) {
       this.logger.error(`处理DDTV Webhook时出错: ${error.message}`, { error });
+      
+      // 发送企微错误通知
+      if (this.notifier) {
+        await this.notifier.notifyProcessError(
+          roomName,
+          'Webhook请求处理',
+          error.message,
+          roomId,
+          { cmd: req.body?.cmd, error: error.stack }
+        );
+      }
+      
       res.status(500).send('Internal server error');
     }
   }
@@ -125,7 +146,7 @@ export class DDTVWebhookHandler implements IWebhookHandler {
   /**
    * 处理文件事件
    */
-  private async handleFileEvent(payload: any, cmd: string): Promise<void> {
+  private async handleFileEvent(payload: any, cmd: string, roomName: string, roomId: string): Promise<void> {
     // 提取视频和弹幕文件
     const { videoFiles, xmlFiles } = this.extractFiles(payload, cmd);
     
@@ -136,12 +157,12 @@ export class DDTVWebhookHandler implements IWebhookHandler {
 
     // 特殊处理SaveBulletScreenFile事件
     if (cmd === 'SaveBulletScreenFile' && videoFiles.length === 0) {
-      await this.handleSaveBulletScreenFile(payload, xmlFiles);
+      await this.handleSaveBulletScreenFile(payload, xmlFiles, roomName, roomId);
       return;
     }
 
     // 处理普通文件事件
-    await this.processVideoFiles(videoFiles, xmlFiles, payload);
+    await this.processVideoFiles(videoFiles, xmlFiles, payload, roomName, roomId);
   }
 
   /**
@@ -180,7 +201,7 @@ export class DDTVWebhookHandler implements IWebhookHandler {
   /**
    * 处理SaveBulletScreenFile事件
    */
-  private async handleSaveBulletScreenFile(payload: any, xmlFiles: string[]): Promise<void> {
+  private async handleSaveBulletScreenFile(payload: any, xmlFiles: string[], roomName: string, roomId: string): Promise<void> {
     const downInfo = payload.data?.DownInfo;
     const downloadFileList = downInfo?.DownloadFileList;
     
@@ -235,7 +256,7 @@ export class DDTVWebhookHandler implements IWebhookHandler {
 
       // 启动处理流程
       const targetXml = path.normalize(xmlFiles[0]);
-      await this.startProcessing(fixVideoPath, targetXml, payload);
+      await this.startProcessing(fixVideoPath, targetXml, payload, roomName, roomId);
     } else {
       this.logger.warn(`超时未发现fix视频文件，跳过处理: ${path.basename(fixVideoPath)}`);
     }
@@ -244,7 +265,7 @@ export class DDTVWebhookHandler implements IWebhookHandler {
   /**
    * 处理视频文件
    */
-  private async processVideoFiles(videoFiles: string[], xmlFiles: string[], payload: any): Promise<void> {
+  private async processVideoFiles(videoFiles: string[], xmlFiles: string[], payload: any, roomName: string, roomId: string): Promise<void> {
     // 优先处理 fix.mp4，如果没有则处理 original.mp4
     let targetVideo = videoFiles.find(f => f.includes('fix.mp4')) || videoFiles[0];
     targetVideo = path.normalize(targetVideo);
@@ -252,6 +273,17 @@ export class DDTVWebhookHandler implements IWebhookHandler {
     // 检查文件是否存在
     if (!fs.existsSync(targetVideo)) {
       this.logger.error(`目标视频文件不存在 -> ${path.basename(targetVideo)}`);
+      
+      // 发送企微错误通知
+      if (this.notifier) {
+        await this.notifier.notifyProcessError(
+          roomName,
+          '视频文件检查',
+          `目标视频文件不存在: ${path.basename(targetVideo)}`,
+          roomId,
+          { targetVideo }
+        );
+      }
       return;
     }
 
@@ -269,6 +301,17 @@ export class DDTVWebhookHandler implements IWebhookHandler {
     if (!isVideoStable) {
       this.logger.error(`视频文件稳定性检查失败，跳过处理: ${path.basename(targetVideo)}`);
       this.duplicateGuard.markAsProcessed(targetVideo); // 标记为处理完成（失败）
+      
+      // 发送企微错误通知
+      if (this.notifier) {
+        await this.notifier.notifyProcessError(
+          roomName,
+          '文件稳定性检查',
+          `视频文件稳定性检查失败: ${path.basename(targetVideo)}`,
+          roomId,
+          { targetVideo }
+        );
+      }
       return;
     }
 
@@ -297,13 +340,13 @@ export class DDTVWebhookHandler implements IWebhookHandler {
     }
 
     // 启动处理流程
-    await this.startProcessing(targetVideo, targetXml, payload);
+    await this.startProcessing(targetVideo, targetXml, payload, roomName, roomId);
   }
 
   /**
    * 启动处理流程
    */
-  private async startProcessing(videoPath: string, xmlPath: string | null, payload: any): Promise<void> {
+  private async startProcessing(videoPath: string, xmlPath: string | null, payload: any, roomName: string, roomId: string): Promise<void> {
     try {
       const roomId = payload.data?.RoomId || payload.room_info?.roomid || payload.room_info?.roomId || payload.roomId || payload.room || payload.data?.roomId || 'unknown';
       
@@ -363,6 +406,17 @@ export class DDTVWebhookHandler implements IWebhookHandler {
     } catch (error: any) {
       this.logger.error(`启动处理流程时出错: ${error.message}`, { error });
       this.duplicateGuard.markAsProcessed(videoPath);
+      
+      // 发送企微错误通知
+      if (this.notifier) {
+        await this.notifier.notifyProcessError(
+          roomName,
+          '启动处理流程',
+          error.message,
+          roomId,
+          { videoPath, xmlPath, error: error.stack }
+        );
+      }
     }
   }
 

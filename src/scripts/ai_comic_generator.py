@@ -91,6 +91,21 @@ from config_loader import (
     get_project_root
 )
 
+# 导入tuZi API封装
+from tuzi_chat_completions import call_tuzi_chat_completions, call_tuzi_chat_completions_for_image
+
+# 尝试导入 Google GenAI（可选依赖）
+try:
+    from google import genai
+    from google.genai import types as genai_types
+    HAS_GOOGLE_GENAI = True
+except ImportError:
+    genai = None
+    genai_types = None
+    HAS_GOOGLE_GENAI = False
+    print("[WARNING] google-genai 库未安装，Gemini 文本生成功能将不可用")
+    print("   安装方法: pip install google-genai")
+
 def load_config() -> Dict[str, Any]:
     """加载配置文件（使用统一配置加载器）"""
     config = get_config()
@@ -159,47 +174,63 @@ def get_live_cover_image(highlight_path: str) -> Optional[str]:
         return None
 
 def get_room_reference_image(room_id: str, highlight_path: Optional[str] = None) -> Optional[str]:
-    """获取房间的参考图片路径"""
+    """获取房间的参考图片路径
+    
+    兜底策略：
+    1. 优先使用 roomSettings 中配置的主播参考图
+    2. 如果没有配置主播参考图，使用直播封面
+    3. 只有连封面都拿不到，才使用 defaultReferenceImage
+    """
     config = load_config()
     
     # 获取项目根目录
     scripts_dir = os.path.dirname(__file__)
     project_root = get_project_root()
 
-    # 首先检查roomSettings中的配置
+    # 第一优先级：检查 roomSettings 中的配置（主播参考图）
     room_str = str(room_id)
+    room_has_config = False  # 标记是否配置了主播参考图
+    
     if room_str in config["roomSettings"]:
         ref_image = config["roomSettings"][room_str].get("referenceImage", "")
         if ref_image:
+            room_has_config = True
             # 尝试相对于项目根目录的路径
             absolute_path = os.path.join(project_root, ref_image) if not os.path.isabs(ref_image) else ref_image
             if os.path.exists(absolute_path):
+                print(f"[INFO]  使用主播参考图: {os.path.basename(absolute_path)}")
                 return absolute_path
             # 尝试相对于脚本目录的路径
             script_relative = os.path.join(scripts_dir, ref_image) if not os.path.isabs(ref_image) else ref_image
             if os.path.exists(script_relative):
+                print(f"[INFO]  使用主播参考图: {os.path.basename(script_relative)}")
                 return script_relative
+            
+            print(f"[WARNING] 配置的主播参考图不存在: {ref_image}")
 
         # 如果配置了但文件不存在，尝试在reference_images目录中查找
-        ref_images_dir = os.path.join(scripts_dir, "reference_images")
-        if os.path.exists(ref_images_dir):
-            possible_files = [
-                os.path.join(ref_images_dir, f"{room_id}.jpg"),
-                os.path.join(ref_images_dir, f"{room_id}.jpeg"),
-                os.path.join(ref_images_dir, f"{room_id}.png"),
-                os.path.join(ref_images_dir, f"{room_id}.webp")
-            ]
-            for file_path in possible_files:
-                if os.path.exists(file_path):
-                    return file_path
+        if not room_has_config:
+            ref_images_dir = os.path.join(scripts_dir, "reference_images")
+            if os.path.exists(ref_images_dir):
+                possible_files = [
+                    os.path.join(ref_images_dir, f"{room_id}.jpg"),
+                    os.path.join(ref_images_dir, f"{room_id}.jpeg"),
+                    os.path.join(ref_images_dir, f"{room_id}.png"),
+                    os.path.join(ref_images_dir, f"{room_id}.webp")
+                ]
+                for file_path in possible_files:
+                    if os.path.exists(file_path):
+                        print(f"[INFO]  使用主播参考图: {os.path.basename(file_path)}")
+                        return file_path
 
-    # 如果没有设置房间特定的图片，尝试使用直播封面
-    if highlight_path:
+    # 第二优先级：如果没有配置主播参考图，尝试使用直播封面
+    if not room_has_config and highlight_path:
         live_cover = get_live_cover_image(highlight_path)
         if live_cover:
+            print(f"[INFO]  未配置主播参考图，使用直播封面: {os.path.basename(live_cover)}")
             return live_cover
 
-    # 如果没有找到房间特定的图片，使用默认图片
+    # 第三优先级（兜底）：只有连封面都拿不到，才使用默认参考图片
     # 新格式：ai.defaultReferenceImage 或 ai.comic.defaultReferenceImage
     default_image = ""
     if "ai" in config:
@@ -215,12 +246,12 @@ def get_room_reference_image(room_id: str, highlight_path: Optional[str] = None)
         # 尝试相对于项目根目录的路径
         absolute_path = os.path.join(project_root, default_image) if not os.path.isabs(default_image) else default_image
         if os.path.exists(absolute_path):
-            print(f"[INFO]  使用默认参考图片: {os.path.basename(absolute_path)}")
+            print(f"[INFO]  使用默认参考图片（兜底）: {os.path.basename(absolute_path)}")
             return absolute_path
         # 尝试相对于脚本目录的路径
         script_relative = os.path.join(scripts_dir, default_image) if not os.path.isabs(default_image) else default_image
         if os.path.exists(script_relative):
-            print(f"[INFO]  使用默认参考图片: {os.path.basename(script_relative)}")
+            print(f"[INFO]  使用默认参考图片（兜底）: {os.path.basename(script_relative)}")
             return script_relative
 
     # 检查默认图片文件是否存在
@@ -238,10 +269,120 @@ def get_room_reference_image(room_id: str, highlight_path: Optional[str] = None)
             ]
             for file_path in default_files:
                 if os.path.exists(file_path):
-                    print(f"[INFO]  找到默认图片: {os.path.basename(file_path)}")
+                    print(f"[INFO]  找到默认图片（兜底）: {os.path.basename(file_path)}")
                     return file_path
 
     return None
+
+def collect_all_images(room_id: str, highlight_path: Optional[str] = None) -> list[str]:
+    """收集所有可用的图片（引用图、封面、截图）用于AI输入
+    
+    返回图片路径列表，按优先级排序：
+    1. 主播参考图（roomSettings中配置的referenceImage）
+    2. 直播封面（.cover文件）
+    3. 直播截图（_SCREENSHOTS.jpg）
+    4. 默认参考图（只有在没有主播参考图和封面时才使用）
+    """
+    images = []
+    config = load_config()
+    scripts_dir = os.path.dirname(__file__)
+    project_root = get_project_root()
+    
+    # 1. 尝试获取主播参考图（roomSettings中配置的）
+    room_str = str(room_id)
+    has_anchor_image = False
+    
+    if room_str in config["roomSettings"]:
+        ref_image = config["roomSettings"][room_str].get("referenceImage", "")
+        if ref_image:
+            # 尝试相对于项目根目录的路径
+            absolute_path = os.path.join(project_root, ref_image) if not os.path.isabs(ref_image) else ref_image
+            if os.path.exists(absolute_path):
+                images.append(absolute_path)
+                has_anchor_image = True
+                print(f"[INFO]  收集到主播参考图: {os.path.basename(absolute_path)}")
+            else:
+                # 尝试相对于脚本目录的路径
+                script_relative = os.path.join(scripts_dir, ref_image) if not os.path.isabs(ref_image) else ref_image
+                if os.path.exists(script_relative):
+                    images.append(script_relative)
+                    has_anchor_image = True
+                    print(f"[INFO]  收集到主播参考图: {os.path.basename(script_relative)}")
+                else:
+                    print(f"[WARNING] 配置的主播参考图不存在: {ref_image}")
+    
+    # 如果没有配置主播参考图，尝试在reference_images目录中查找
+    if not has_anchor_image:
+        ref_images_dir = os.path.join(scripts_dir, "reference_images")
+        if os.path.exists(ref_images_dir):
+            possible_files = [
+                os.path.join(ref_images_dir, f"{room_id}.jpg"),
+                os.path.join(ref_images_dir, f"{room_id}.jpeg"),
+                os.path.join(ref_images_dir, f"{room_id}.png"),
+                os.path.join(ref_images_dir, f"{room_id}.webp")
+            ]
+            for file_path in possible_files:
+                if os.path.exists(file_path):
+                    images.append(file_path)
+                    has_anchor_image = True
+                    print(f"[INFO]  收集到主播参考图: {os.path.basename(file_path)}")
+                    break
+    
+    # 2. 获取直播封面
+    has_cover = False
+    if highlight_path:
+        cover_image = get_live_cover_image(highlight_path)
+        if cover_image and cover_image not in images:
+            images.append(cover_image)
+            has_cover = True
+            print(f"[INFO]  收集到直播封面: {os.path.basename(cover_image)}")
+    
+    # 3. 获取直播截图（从环境变量）
+    screenshot_path = os.environ.get('SCREENSHOT_PATH', '')
+    if screenshot_path and os.path.exists(screenshot_path) and screenshot_path not in images:
+        images.append(screenshot_path)
+        print(f"[INFO]  收集到直播截图: {os.path.basename(screenshot_path)}")
+    
+    # 如果没有截图路径，尝试从highlight_path推断
+    if not screenshot_path and highlight_path:
+        dir_path = os.path.dirname(highlight_path)
+        base_name = os.path.basename(highlight_path).replace('_AI_HIGHLIGHT.txt', '')
+        inferred_screenshot = os.path.join(dir_path, f"{base_name}_SCREENSHOTS.jpg")
+        if os.path.exists(inferred_screenshot) and inferred_screenshot not in images:
+            images.append(inferred_screenshot)
+            print(f"[INFO]  收集到推断的直播截图: {os.path.basename(inferred_screenshot)}")
+    
+    # 4. 只有在完全没有任何图片时，才使用默认参考图（兜底）
+    # 检查是否已经收集到任何图片（主播参考图、封面、截图）
+    if len(images) == 0:
+        print("[INFO]  未找到任何图片（主播参考图、封面、截图），尝试使用默认参考图作为兜底...")
+        default_image = ""
+        if "ai" in config:
+            if config["ai"].get("defaultReferenceImage"):
+                default_image = config["ai"]["defaultReferenceImage"]
+            elif config["ai"].get("comic", {}).get("defaultReferenceImage"):
+                default_image = config["ai"]["comic"]["defaultReferenceImage"]
+        # 兼容旧格式
+        if not default_image and config.get("aiServices", {}).get("defaultReferenceImage"):
+            default_image = config["aiServices"]["defaultReferenceImage"]
+        
+        if default_image:
+            # 尝试相对于项目根目录的路径
+            absolute_path = os.path.join(project_root, default_image) if not os.path.isabs(default_image) else default_image
+            if os.path.exists(absolute_path):
+                images.append(absolute_path)
+                print(f"[INFO]  收集到默认参考图（兜底）: {os.path.basename(absolute_path)}")
+            else:
+                # 尝试相对于脚本目录的路径
+                script_relative = os.path.join(scripts_dir, default_image) if not os.path.isabs(default_image) else default_image
+                if os.path.exists(script_relative):
+                    images.append(script_relative)
+                    print(f"[INFO]  收集到默认参考图（兜底）: {os.path.basename(script_relative)}")
+    else:
+        print(f"[INFO]  已有 {len(images)} 张图片，跳过默认参考图")
+    
+    print(f"[INFO]  共收集到 {len(images)} 张图片用于AI输入")
+    return images
 
 def read_highlight_file(highlight_path: str) -> str:
     """读取AI_HIGHLIGHT.txt内容"""
@@ -291,12 +432,46 @@ def get_room_character_description(room_id: Optional[str] = None) -> str:
     except Exception:
         return "岁己SUI（白发红瞳女生），饼干岁（有细细四肢的小小的饼干状生物）"
 
-def build_comic_prompt(highlight_content: str, reference_image_path: Optional[str] = None, room_id: Optional[str] = None, existing_comic: Optional[str] = None) -> Tuple[str, str, bool]:
+def model_supports_chinese(model: Optional[str] = None) -> bool:
+    """判断模型是否支持在图像中生成汉字
+    
+    Args:
+        model: 模型名称
+        
+    Returns:
+        True 如果模型支持汉字，False 否则
+    """
+    if not model:
+        return False
+    
+    # 高级模型列表（支持汉字）
+    advanced_models = [
+        "gemini-3-pro-image-preview-async",
+        "gemini-3-pro-image-preview/nano-banana-2",
+        "gemini-3-pro-image-preview-2k-async",
+        "gemini-3-pro-image-preview-4k-async",
+    ]
+    
+    # 检查模型名称是否在高级模型列表中
+    for advanced_model in advanced_models:
+        if advanced_model in model:
+            return True
+    
+    return False
+
+def build_comic_prompt(highlight_content: str, reference_image_path: Optional[str] = None, room_id: Optional[str] = None, existing_comic: Optional[str] = None, model: Optional[str] = None) -> Tuple[str, str, bool]:
     """构建漫画生成提示词并返回 (prompt, comic_content, is_generated)。
 
     如果提供 `existing_comic` 则复用已有脚本而不再调用AI生成。
     返回值: (base_prompt, comic_content, is_generated)
     is_generated: 是否真正生成了漫画脚本（True）还是使用原文或已有脚本（False）
+    
+    Args:
+        highlight_content: 直播内容
+        reference_image_path: 参考图片路径（已废弃，保留用于兼容性）
+        room_id: 房间ID
+        existing_comic: 已有的漫画脚本
+        model: 模型名称，用于判断是否支持汉字
     """
     # 第一步：如果传入已有脚本则复用，否则使用AI生成漫画内容脚本
     is_generated = False
@@ -309,31 +484,56 @@ def build_comic_prompt(highlight_content: str, reference_image_path: Optional[st
     # 获取角色描述并注入绘画提示词（优先房间配置、再全局默认、最后内置默认）
     character_desc = get_room_character_description(room_id)
 
+    # 尝试获取房间级别的自定义图片生成 prompt
+    config = load_config()
+    room_config = config.get("roomSettings", {}).get(str(room_id), {}) if room_id else {}
+    custom_image_prompt = room_config.get("customPrompts", {}).get("comicImage")
+
     # 第二步：基于漫画内容构建绘画提示词（包含角色设定，便于图像生成一致）
-    base_prompt = f"""<note>一定要按照给你的参考图还原形象，而不是自己乱画一个动漫角色</note>
+    if custom_image_prompt:
+        # 使用自定义 prompt 模板
+        base_prompt = custom_image_prompt.replace("{character_desc}", character_desc).replace("{comic_content}", comic_content)
+    else:
+        # 使用默认模板，包含 {chinese_instruction} 占位符
+        # 这个占位符会在实际调用 API 时根据模型能力动态替换
+        base_prompt = f"""<note>一定要按照给你的参考图还原形象，而不是自己乱画一个动漫角色</note>
 <character>{character_desc}</character>
 要画得精致，角色要画得帅气、美丽、可爱。
+{{chinese_instruction}}
 下面是根据直播内容生成的漫画脚本，请根据这个脚本绘制漫画：
 {comic_content}"""
 
     return base_prompt, comic_content, is_generated
 
+
 # 虚拟主播二创画师大手子的统一prompt模板（方便统一修改）
 # 文字prompt: 画图+文字台词or简介，可以没有文字，有的话要很短（5个单词内），不要用中文。
 COMIC_ARTIST_PROMPT_TEMPLATE = """你作为虚拟主播二创画师大手子，根据直播内容，绘制直播总结插画。
 角色描述：{character_desc}。
-风格：多个剪贴画风格分镜（4~6个吧），每个是一个片段场景，
-不要有文字，纯默剧，用表情和动作、场景来表现。
-下面是一场直播的语音+弹幕文本，请先构思图片并用文字给我，我再拿去绘制图片。整体800个字符以内。只返回各个分镜的文字描述，不要包含任何多余的说明、格式。
+风格：多个剪贴画风格分镜（2~4个吧），每个是一个片段场景，
+不要有文字，纯默剧，用表情和动作、场景、图标来表现。
+下面是一场直播的语音+弹幕文本，请先构思图片并用文字给我，我再拿去绘制图片。整体600个字符以内。只返回各个分镜的文字描述，不要包含任何多余的说明、格式。
 {highlight_content}
 """
 
-def build_comic_generation_prompt(character_desc: str, highlight_content: str) -> str:
+def build_comic_generation_prompt(character_desc: str, highlight_content: str, room_id: Optional[str] = None) -> str:
     """使用COMIC_ARTIST_PROMPT_TEMPLATE构建完整的prompt（用于Gemini等调用）"""
-    template = COMIC_ARTIST_PROMPT_TEMPLATE.strip()
+    # 尝试获取房间级别的自定义漫画脚本 prompt
+    config = load_config()
+    room_config = config.get("roomSettings", {}).get(str(room_id), {}) if room_id else {}
+    custom_prompt = room_config.get("customPrompts", {}).get("comicScript")
+    
+    # 如果有自定义 prompt，使用它
+    if custom_prompt:
+        template = custom_prompt.strip()
+    else:
+        # 否则使用默认模板
+        template = COMIC_ARTIST_PROMPT_TEMPLATE.strip()
+    
     base = template.replace("{character_desc}", character_desc)
     base = base.replace("{highlight_content}", highlight_content)
     return base
+
 
 def is_gemini_error(text: str) -> bool:
     """检测文本是否包含Gemini错误信息"""
@@ -362,7 +562,8 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     cwd=os.path.dirname(__file__),
-                    timeout=120
+                    timeout=120,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
                 )
                 if proc.returncode == 0 and proc.stdout:
                     text = proc.stdout.decode('utf-8').strip()
@@ -381,83 +582,88 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
 
     # Gemini重试逻辑
     max_gemini_retries = 3
-    for gemini_attempt in range(max_gemini_retries):
-        try:
-            # 导入Google GenAI (新版本)
-            from google import genai
-            from google.genai import types
+    
+    # 首先检查 google-genai 是否可用
+    if not HAS_GOOGLE_GENAI:
+        print("[INFO] google-genai 库未安装，跳过 Gemini 文本生成，直接使用 tuZi API")
+        # 直接跳到 tuZi API 备用方案
+    else:
+        for gemini_attempt in range(max_gemini_retries):
+            try:
+                # 获取Gemini API密钥（使用统一配置加载器）
+                gemini_api_key = get_gemini_api_key()
 
-            # 获取Gemini API密钥（使用统一配置加载器）
-            gemini_api_key = get_gemini_api_key()
+                if not gemini_api_key:
+                    print("[WARNING]  Gemini API密钥未配置，使用原始内容")
+                    return highlight_content, False
 
-            if not gemini_api_key:
-                print("[WARNING]  Gemini API密钥未配置，使用原始内容")
-                return highlight_content, False
+                # 加载配置获取其他参数
+                config = load_config()
+                gemini_config = config.get('aiServices', {}).get('gemini', {})
 
-            # 加载配置获取其他参数
-            config = load_config()
-            gemini_config = config.get('aiServices', {}).get('gemini', {})
+                # 创建客户端（增加超时时间到120秒以应对SSL握手超时）
+                client = genai.Client(api_key=gemini_api_key, http_options=genai_types.HttpOptions(timeout=120))
 
-            # 创建客户端
-            client = genai.Client(api_key=gemini_api_key, http_options=types.HttpOptions(timeout=60))
+                # 设置代理 (如果需要)
+                proxy_url = gemini_config.get('proxy', '')
+                if proxy_url:
+                    import os
+                    os.environ['http_proxy'] = proxy_url
+                    os.environ['https_proxy'] = proxy_url
 
-            # 设置代理 (如果需要)
-            proxy_url = gemini_config.get('proxy', '')
-            if proxy_url:
-                import os
-                os.environ['http_proxy'] = proxy_url
-                os.environ['https_proxy'] = proxy_url
+                # 获取模型名称
+                model_name = gemini_config.get('model', 'gemini-2.0-flash')
 
-            # 获取模型名称
-            model_name = gemini_config.get('model', 'gemini-2.0-flash')
+                # 生成漫画内容脚本（使用统一的prompt模板）
+                character_desc = get_room_character_description(room_id)
+                content_prompt = build_comic_generation_prompt(character_desc, highlight_content, room_id)
 
-            # 生成漫画内容脚本（使用统一的prompt模板）
-            character_desc = get_room_character_description(room_id)
-            content_prompt = build_comic_generation_prompt(character_desc, highlight_content)
+                # 调用Gemini
+                if gemini_attempt > 0:
+                    print(f"[RETRY] 第 {gemini_attempt + 1} 次重试 Gemini...")
+                print(f"[AI] 使用Gemini生成漫画内容脚本: {model_name}")
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=content_prompt
+                )
 
-            # 调用Gemini
-            if gemini_attempt > 0:
-                print(f"[RETRY] 第 {gemini_attempt + 1} 次重试 Gemini...")
-            print(f"[AI] 使用Gemini生成漫画内容脚本: {model_name}")
-            response = client.models.generate_content(
-                model=model_name,
-                contents=content_prompt
-            )
+                if response and response.text:
+                    comic_content = response.text.strip()
+                    
+                    # 检测是否包含错误信息
+                    if is_gemini_error(comic_content):
+                        print(f"[WARNING] Gemini返回了错误内容 (尝试 {gemini_attempt + 1}/{max_gemini_retries})")
+                        if gemini_attempt < max_gemini_retries - 1:
+                            print("[RETRY] 2秒后重试...")
+                            time.sleep(2)
+                            continue
+                        else:
+                            print("[ERROR] Gemini重试次数已用完，尝试备用方案")
+                            break
+                    
+                    print("[OK] AI漫画内容生成完成")
+                    print(f"生成内容长度: {len(comic_content)} 字符")
+                    return comic_content, True
+                else:
+                    print("[WARNING]  AI返回空结果，使用原始内容")
+                    return highlight_content, False
 
-            if response and response.text:
-                comic_content = response.text.strip()
+            except Exception as e:
+                error_msg = str(e)
+                print(f"[ERROR]  AI内容生成失败 (尝试 {gemini_attempt + 1}/{max_gemini_retries}): {e}")
                 
-                # 检测是否包含错误信息
-                if is_gemini_error(comic_content):
-                    print(f"[WARNING] Gemini返回了错误内容 (尝试 {gemini_attempt + 1}/{max_gemini_retries})")
-                    if gemini_attempt < max_gemini_retries - 1:
-                        print("[RETRY] 2秒后重试...")
-                        time.sleep(2)
-                        continue
-                    else:
-                        print("[ERROR] Gemini重试次数已用完，尝试备用方案")
-                        break
+                # 检测是否是SSL相关错误
+                is_ssl_error = any(keyword in error_msg.lower() for keyword in ['ssl', 'handshake', 'timed out', 'timeout'])
                 
-                print("[OK] AI漫画内容生成完成")
-                print(f"生成内容长度: {len(comic_content)} 字符")
-                return comic_content, True
-            else:
-                print("[WARNING]  AI返回空结果，使用原始内容")
-                return highlight_content, False
-
-        except ImportError:
-            print("[WARNING]  google-genai库未安装，尝试使用tuZi API...")
-            print("   请安装: pip install google-genai")
-            break
-        except Exception as e:
-            print(f"[ERROR]  AI内容生成失败 (尝试 {gemini_attempt + 1}/{max_gemini_retries}): {e}")
-            if gemini_attempt < max_gemini_retries - 1:
-                print("[RETRY] 2秒后重试...")
-                time.sleep(2)
-                continue
-            else:
-                print("[ERROR] Gemini重试次数已用完，尝试备用方案")
-                break
+                if gemini_attempt < max_gemini_retries - 1:
+                    # SSL错误使用更长的重试间隔
+                    retry_delay = 5 if is_ssl_error else 2
+                    print(f"[RETRY] {retry_delay}秒后重试...")
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    print("[ERROR] Gemini重试次数已用完，尝试备用方案")
+                    break
     
     # Gemini失败后，尝试使用tuZi API作为备用方案
     print("[TUZI] Google生成失败，尝试tu-zi.com生成文本...")
@@ -477,7 +683,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
             
             # 构建提示词（使用统一的prompt模板）
             character_desc = get_room_character_description(room_id)
-            system_prompt = build_comic_generation_prompt(character_desc, highlight_content)
+            system_prompt = build_comic_generation_prompt(character_desc, highlight_content, room_id)
             user_prompt = f"直播内容：\n{highlight_content}\n\n请创作漫画故事脚本："
             
             if tuzi_attempt > 0:
@@ -808,10 +1014,13 @@ def call_google_image_api(prompt: str, reference_image_path: Optional[str] = Non
 
     return None
 
-def call_tuzi_image_api(prompt: str, reference_image_path: Optional[str] = None) -> Optional[str]:
+def call_tuzi_image_api(prompt: str, reference_image_path=None) -> Optional[str]:
     """
     调用tu-zi.com图像生成API
-    使用 /v1/images/generations 端点，支持参考图
+    使用 /v1/chat/completions 端点，支持单张或多张参考图
+    
+    Args:
+        reference_image_path: 可以是单个路径(str)或多个路径(list)
     """
     config = load_config()
     tuzi_config = config["aiServices"]["tuZi"]
@@ -820,173 +1029,39 @@ def call_tuzi_image_api(prompt: str, reference_image_path: Optional[str] = None)
         print("[WARNING]  tu-zi.com API未配置，跳过 tu-zi.com 调用")
         return None
 
-    if reference_image_path and os.path.exists(reference_image_path):
-        print(f"[TUZI] 调用tu-zi.com图像生成API (参考图: {os.path.basename(reference_image_path)})...")
+    # 打印参考图信息
+    if reference_image_path:
+        if isinstance(reference_image_path, list):
+            valid_images = [img for img in reference_image_path if os.path.exists(img)]
+            if valid_images:
+                print(f"[TUZI] 调用tu-zi.com图像生成API (参考图: {len(valid_images)} 张)...")
+                for idx, img in enumerate(valid_images, 1):
+                    print(f"  {idx}. {os.path.basename(img)}")
+            else:
+                print("[TUZI] 调用tu-zi.com图像生成API...")
+        elif isinstance(reference_image_path, str) and os.path.exists(reference_image_path):
+            print(f"[TUZI] 调用tu-zi.com图像生成API (参考图: {os.path.basename(reference_image_path)})...")
+        else:
+            print("[TUZI] 调用tu-zi.com图像生成API...")
     else:
         print("[TUZI] 调用tu-zi.com图像生成API...")
 
-    try:
-        # 设置代理
-        proxy_url = tuzi_config.get("proxy", "")
-        proxies = {}
-        if proxy_url:
-            proxies = {
-                "http": proxy_url,
-                "https": proxy_url
-            }
-            print(f"[PROXY] 使用代理: {proxy_url}")
+    # 获取超时设置 (默认为360秒)
+    timeout_ms = config.get("timeouts", {}).get("aiApiTimeout", 360000)
+    timeout_sec = timeout_ms / 1000
 
-        # 构建API请求
-        base_url = tuzi_config.get("baseUrl", "https://api.tu-zi.com")
-        api_url = f"{base_url}/v1/images/generations"
-
-        headers = {
-            "Authorization": f"Bearer {tuzi_config['apiKey']}",
-            "Content-Type": "application/json"
-        }
-
-        # 构建请求体 - /v1/images/generations 格式
-        payload = {
-            "model": tuzi_config.get("model", "gpt-image-1.5"),
-            "prompt": prompt,
-            "n": 1,
-            "size": "9x16",
-            "quality": "4k",
-            "style": "vivid"
-        }
-
-        # 如果有参考图，添加到请求中
-        if reference_image_path and os.path.exists(reference_image_path):
-            # 使用 data URI 格式（data:image/png;base64,...）
-            image_base64 = encode_image_to_base64(reference_image_path, with_data_uri=True)
-            payload["image"] = [image_base64]
-            print(f"[INFO]  已添加参考图到请求, base64长度: {len(image_base64)} 开头：{image_base64[:80]}...")
-
-        # 获取超时设置 (默认为360秒)
-        timeout_ms = config.get("timeouts", {}).get("aiApiTimeout", 360000)
-        timeout_sec = timeout_ms / 1000
-        
-        # 重试逻辑
-        max_retries = 2
-        response = None
-        
-        for attempt in range(max_retries + 1):
-            try:
-                print(f"[WAIT] 正在通过tu-zi.com API生成图像... (尝试 {attempt + 1}/{max_retries + 1}, 超时: {timeout_sec}s)")
-                if attempt == 1:
-                    payload["model"] = "gpt-image-1.5"
-                    print(f"[RETRY] 第 {attempt + 1} 次重试...模型替换为{payload['model']}")
-                if (attempt == 2):
-                    payload["model"] = "nano-banana-2" # 含泪用3毛钱一次的超贵模型
-                    print(f"[RETRY] 第 {attempt + 1} 次重试...模型替换为{payload['model']}，含泪用3毛钱一次的超贵模型")
-                print(f"[DEBUG] 发起请求，内容：{json.dumps(payload)[:100]}..., 代理: {proxies}, 超时: {timeout_sec}s")
-                response = requests.post(api_url, headers=headers, json=payload, timeout=timeout_sec, proxies=proxies)
-                print(f"[DEBUG] 收到响应，状态码: {response.status_code}, 用时: {response.elapsed.total_seconds()}s")
-
-                if response.status_code == 200:
-                    # 尝试解析响应，如果解析失败则继续重试
-                    result = response.json()
-                    
-                    # 打印响应结构以便调试
-                    print(f"[DEBUG] 响应结构: {list(result.keys())}")
-                    
-                    # 处理 /v1/images/generations 响应格式 (OpenAI兼容格式)
-                    if "data" in result and isinstance(result["data"], list) and len(result["data"]) > 0:
-                        image_data = result["data"][0]
-                        
-                        # 检查是否有URL
-                        if "url" in image_data:
-                            image_url = image_data["url"]
-                            print(f"[DOWNLOAD] 下载生成的图像: {image_url}")
-                            try:
-                                image_response = requests.get(image_url, timeout=60, proxies=proxies)
-                                
-                                if image_response.status_code == 200:
-                                    import tempfile
-                                    import uuid
-
-                                    temp_dir = tempfile.gettempdir()
-                                    temp_file = os.path.join(temp_dir, f"comic_tuzi_{uuid.uuid4().hex[:8]}.png")
-
-                                    with open(temp_file, 'wb') as f:
-                                        f.write(image_response.content)
-
-                                    print(f"[OK] tu-zi.com图像生成成功")
-                                    print(f"[SAVE] 图像已保存到临时文件: {temp_file}")
-                                    return temp_file
-                                else:
-                                    print(f"[ERROR] 图像下载失败: HTTP {image_response.status_code}")
-                                    # 下载失败，继续重试
-                                    if attempt < max_retries:
-                                        print("[RETRY] 2秒后重试...")
-                                        time.sleep(2)
-                                        continue
-                                    return None
-                            except Exception as download_error:
-                                print(f"[ERROR] 图像下载异常: {download_error}")
-                                # 下载异常，继续重试
-                                if attempt < max_retries:
-                                    print("[RETRY] 2秒后重试...")
-                                    time.sleep(2)
-                                    continue
-                                return None
-                        
-                        # 检查是否有base64编码的图像数据
-                        elif "b64_json" in image_data:
-                            image_base64 = image_data["b64_json"]
-                            try:
-                                image_data_bytes = base64.b64decode(image_base64)
-                                
-                                import tempfile
-                                import uuid
-
-                                temp_dir = tempfile.gettempdir()
-                                temp_file = os.path.join(temp_dir, f"comic_tuzi_{uuid.uuid4().hex[:8]}.png")
-
-                                with open(temp_file, 'wb') as f:
-                                    f.write(image_data_bytes)
-
-                                print(f"[OK] tu-zi.com图像生成成功")
-                                print(f"[SAVE] 图像已保存到临时文件: {temp_file}")
-                                return temp_file
-                            except Exception as decode_error:
-                                print(f"[WARNING] 解码base64图像失败: {decode_error}")
-                                # 解码失败，继续重试
-                                if attempt < max_retries:
-                                    print("[RETRY] 2秒后重试...")
-                                    time.sleep(2)
-                                    continue
-                                return None
-                    
-                    # 如果到这里还没返回，说明响应格式不符合预期（如 NO_IMAGE）
-                    print(f"[ERROR] 无法从响应中提取图像数据")
-                    print(f"[DEBUG] 完整响应: {json.dumps(result, ensure_ascii=False, indent=2)[:1000]}")
-                    # 响应格式不符合预期，继续重试
-                    if attempt < max_retries:
-                        print("[RETRY] 2秒后重试...")
-                        time.sleep(2)
-                        continue
-                    return None
-                else:
-                    print(f"[WARNING] tu-zi.com API调用失败 (尝试 {attempt + 1}): HTTP {response.status_code} elapsed: {response.elapsed.total_seconds()}s")
-                    if attempt < max_retries:
-                        print("[RETRY] 2秒后重试...")
-                        time.sleep(2)
-            except Exception as req_err:
-                print(f"[WARNING] 请求异常 (尝试 {attempt + 1}): {req_err}")
-                if attempt < max_retries:
-                    print("[RETRY] 2秒后重试...")
-                    time.sleep(2)
-                
-        # 如果彻底失败且response为None (即全是Exception)，手动return避免后续AttributeError
-        if response is None:
-             print("[ERROR] 所有重试均抛出异常，无API响应")
-             return None
-
-    except Exception as e:
-        print(f"[ERROR] tu-zi.com图像生成失败: {e}")
-        safe_print_exc()
-        return None
+    # 调用tuZi API生成图像（重试和多模型切换现在由底层函数处理）
+    return call_tuzi_chat_completions_for_image(
+        prompt=prompt,
+        reference_image_path=reference_image_path,
+        model=tuzi_config.get("model", "gpt-image-1.5"),
+        base_url=tuzi_config.get("baseUrl", "https://api.tu-zi.com"),
+        api_key=tuzi_config.get("apiKey", ""),
+        proxy_url=tuzi_config.get("proxy", ""),
+        timeout=timeout_sec,
+        temperature=0.7,
+        max_tokens=100000
+    )
 
 def call_huggingface_comic_factory(prompt: str, reference_image_path: Optional[str] = None) -> Optional[str]:
     """
@@ -1202,12 +1277,20 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
 
         print(f"[ROOM] 房间ID: {room_id}")
         
-        # 获取参考图片
-        reference_image_path = get_room_reference_image(room_id, highlight_path)
-        if reference_image_path:
-            print(f"[IMAGE]  找到参考图片: {os.path.basename(reference_image_path)}")
+        # 收集所有可用的图片（主播参考图、封面、截图）
+        all_images = collect_all_images(room_id, highlight_path)
+        
+        # 打印传入AI的图片信息
+        if all_images:
+            print(f"[IMAGE] 共收集到 {len(all_images)} 张图片，将全部传入AI:")
+            for idx, img_path in enumerate(all_images, 1):
+                img_name = os.path.basename(img_path)
+                print(f"  ✅ {idx}. {img_name}")
         else:
-            print("[WARNING]  未找到参考图片，将仅使用提示词生成")
+            print("[WARNING] 未找到任何可用图片，将仅使用提示词生成")
+        
+        # 将所有图片传给AI（tuZi API支持多张参考图）
+        reference_image_path = all_images if all_images else None
         
         # 检查房间是否启用漫画生成
         room_str = str(room_id)
@@ -1266,11 +1349,12 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
         # 2. 如果Google失败，尝试tu-zi.com作为最终备用方案
         if not comic_result and use_tuzi:
             print("[TUZI] Google生成失败，尝试tu-zi.com...")
-            comic_result = call_tuzi_image_api(prompt, reference_image_path)
+            # 传入所有收集到的图片
+            comic_result = call_tuzi_image_api(prompt, all_images if all_images else None)
             if comic_result:
                 print(f"[DEBUG] tu-zi.com返回结果: {comic_result}")
             else:
-                print("[DEBUG] tu-zi.com返回None")
+                print(f"[DEBUG] tu-zi.com返回None")
 
         if not comic_result:
             print("[ERROR] 所有图像生成API都失败，无返回结果")

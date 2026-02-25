@@ -98,24 +98,38 @@ export class DelayedReplyService implements IDelayedReplyService {
   /**
    * 添加延迟回复任务
    */
-  async addTask(roomId: string, goodnightTextPath: string, comicImagePath?: string, delaySeconds?: number): Promise<string> {
+  async addTask(
+    roomId: string, 
+    goodnightTextPath: string, 
+    comicImagePath?: string, 
+    delaySeconds?: number,
+    liveStartTime?: Date,
+    liveEndTime?: Date
+  ): Promise<string> {
     try {
+      this.logger.info(`[延迟回复] 尝试添加任务: roomId=${roomId}, goodnightTextPath=${goodnightTextPath}, comicImagePath=${comicImagePath}`);
+      
       // 获取延迟回复配置
       const delayedReplySettings = BilibiliConfigHelper.getDelayedReplySettings(roomId);
       if (!delayedReplySettings) {
-        this.logger.info('延迟回复未启用，跳过添加任务', { roomId });
+        this.logger.warn('⚠️  延迟回复未启用，跳过添加任务', { roomId });
         return '';
       }
+      this.logger.info(`✅ 延迟回复配置已加载: enabled=${delayedReplySettings.enabled}, anchorEnabled=${delayedReplySettings.anchorEnabled}, delayMinutes=${delayedReplySettings.delayMinutes}`);
 
       // 获取主播UID
       let uid = BilibiliConfigHelper.getAnchorUid(roomId);
+      this.logger.info(`🔍 配置中的UID: ${uid || '未配置'}`);
+      
       if (!uid) {
         // 如果配置中没有 UID，尝试通过 API 获取
+        this.logger.info(`📡 通过API获取UID: roomId=${roomId}`);
         uid = await this.bilibiliAPI.getUidByRoomId(roomId);
         if (!uid) {
-          this.logger.warn('无法获取主播UID，跳过添加任务', { roomId });
+          this.logger.warn('⚠️  无法获取主播UID，跳过添加任务', { roomId });
           return '';
         }
+        this.logger.info(`✅ API获取UID成功: ${uid}`);
       }
 
       // 检查是否已有待处理或处理中的任务（去重逻辑）
@@ -162,25 +176,66 @@ export class DelayedReplyService implements IDelayedReplyService {
         createTime: new Date(),
         scheduledTime,
         status: 'pending',
-        retryCount: 0
+        retryCount: 0,
+        liveStartTime,
+        liveEndTime,
+        checkCount: 0
       };
 
       // 保存任务
       this.tasks.set(task.taskId, task);
       await this.store.addTask(task);
 
-      // 设置定时器
-      this.scheduleTask(task);
-
       this.logger.info(`添加延迟回复任务: ${task.taskId}`, {
         roomId,
         uid,
-        scheduledTime: scheduledTime.toISOString()
+        scheduledTime: scheduledTime.toISOString(),
+        liveStartTime: liveStartTime?.toISOString(),
+        liveEndTime: liveEndTime?.toISOString()
       });
+
+      // 🚀 立即检查是否已有符合条件的动态
+      this.logger.info(`🔍 [立即检查] 检查是否已有符合条件的晚安动态`, { taskId: task.taskId });
+      const immediateTargetDynamic = await this.findTargetDynamic(task);
+      
+      if (immediateTargetDynamic) {
+        this.logger.info(`✅ [立即回复] 发现符合条件的动态，立即执行回复！`, {
+          taskId: task.taskId,
+          dynamicId: String(immediateTargetDynamic.id),
+          publishTime: immediateTargetDynamic.publishTime.toISOString()
+        });
+        
+        // 立即执行回复（不等待延迟时间）
+        // 使用 setImmediate 确保异步执行，避免阻塞当前流程
+        setImmediate(async () => {
+          await this.executeDelayedReply(task);
+        });
+      } else {
+        this.logger.info(`⏰ [延迟回复] 未发现符合条件的动态，将在 ${delayMs / 60000} 分钟后检查`, {
+          taskId: task.taskId
+        });
+        
+        // 设置定时器（延迟执行）
+        this.scheduleTask(task);
+      }
 
       return task.taskId;
     } catch (error) {
       this.logger.error('添加延迟回复任务失败', { error, roomId });
+      
+      // 发送企微错误通知
+      if (this.notifier) {
+        const anchorConfig = BilibiliConfigHelper.getAnchorConfig(roomId);
+        const anchorName = anchorConfig?.name || '未知主播';
+        await this.notifier.notifyProcessError(
+          anchorName,
+          '添加延迟回复任务',
+          error instanceof Error ? error.message : String(error),
+          roomId,
+          { goodnightTextPath, comicImagePath, error: error instanceof Error ? error.stack : String(error) }
+        );
+      }
+      
       throw error;
     }
   }
@@ -273,6 +328,10 @@ export class DelayedReplyService implements IDelayedReplyService {
 
     this.logger.info(`📊 延迟任务倒计时预告 (${pendingTasks.length} 个待处理任务):`);
 
+    const MAX_CHECK_COUNT = 10; // 最多检查10次
+    const CHECK_INTERVAL_MINUTES = 2; // 每2分钟检查一次
+    const MAX_WAIT_MINUTES = MAX_CHECK_COUNT * CHECK_INTERVAL_MINUTES; // 最多等待20分钟
+
     for (const task of pendingTasks) {
       const remainingMs = task.scheduledTime.getTime() - now.getTime();
       const remainingMinutes = Math.ceil(remainingMs / 60000);
@@ -280,8 +339,13 @@ export class DelayedReplyService implements IDelayedReplyService {
       if (remainingMinutes > 0) {
         const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
         const anchorName = anchorConfig?.name || task.roomId;
+        
+        const checkCount = task.checkCount || 0;
+        const remainingChecks = MAX_CHECK_COUNT - checkCount;
+        const maxRemainingMinutes = remainingChecks * CHECK_INTERVAL_MINUTES;
+        
         this.logger.info(
-          `   ⏰ [${task.taskId.slice(0, 8)}] ${anchorName} - 还剩 ${remainingMinutes} 分钟`
+          `   ⏰ [${task.taskId.slice(0, 8)}] ${anchorName} - 还剩 ${remainingMinutes} 分钟 (已检查 ${checkCount}/${MAX_CHECK_COUNT} 次，最多还等 ${maxRemainingMinutes} 分钟)`
         );
       }
     }
@@ -330,6 +394,55 @@ export class DelayedReplyService implements IDelayedReplyService {
   }
 
   /**
+   * 查找目标动态（智能等待晚安动态）
+   * 返回直播结束前30分钟以后发表的新动态
+   * 注意：只需要 liveEndTime，不需要 liveStartTime
+   */
+  private async findTargetDynamic(task: DelayedReplyTask): Promise<BilibiliDynamic | null> {
+    try {
+      // 如果没有直播结束时间信息，直接返回最新动态（立即回复）
+      if (!task.liveEndTime) {
+        this.logger.info(`任务 ${task.taskId} 没有直播结束时间信息，直接获取最新动态立即回复。liveEndTime: ${task.liveEndTime}`);
+        return await this.getLatestDynamic(task.uid!);
+      }
+
+      // 计算目标时间范围：直播结束前30分钟到现在
+      let targetStartTime = new Date(task.liveEndTime.getTime() - 30 * 60 * 1000);
+      const targetEndTime = new Date();
+
+      // 如果有liveStartTime，则需要在liveStartTime之后
+      if (task.liveStartTime) {
+        targetStartTime = new Date(Math.max(targetStartTime.getTime(), task.liveStartTime.getTime()));
+      }
+
+      this.logger.info(`查找目标动态: 时间范围 ${targetStartTime.toISOString()} 到 ${targetEndTime.toISOString()}`);
+
+      // 获取所有动态
+      const dynamics = await this.bilibiliAPI.getDynamics(task.uid!);
+      
+      // 筛选符合时间范围的动态
+      const targetDynamics = dynamics.filter(d => {
+        if (!d) return false;
+        const publishTime = d.publishTime;
+        return publishTime >= targetStartTime && publishTime <= targetEndTime;
+      });
+
+      if (targetDynamics.length > 0) {
+        // 返回最新的符合条件的动态
+        const targetDynamic = targetDynamics[0];
+        this.logger.info(`找到目标动态: ${String(targetDynamic.id)}, 发布时间: ${targetDynamic.publishTime.toISOString()}`);
+        return targetDynamic;
+      }
+
+      this.logger.info(`未找到符合条件的目标动态`);
+      return null;
+    } catch (error) {
+      this.logger.error(`查找目标动态失败: ${error}`, { taskId: task.taskId });
+      return null;
+    }
+  }
+
+  /**
    * 执行延迟回复
    */
   private async executeDelayedReply(task: DelayedReplyTask): Promise<void> {
@@ -350,32 +463,126 @@ export class DelayedReplyService implements IDelayedReplyService {
         uid: task.uid
       });
 
-      // 获取最新动态
-      const latestDynamic = await this.getLatestDynamic(task.uid!);
-      if (!latestDynamic) {
-        throw new Error('未找到最新动态');
+      // 智能等待晚安动态逻辑
+      const MAX_CHECK_COUNT = 10; // 最多检查10次（20分钟）
+      const CHECK_INTERVAL_MS = 2 * 60 * 1000; // 2分钟检查一次
+      
+      task.checkCount = task.checkCount || 0;
+      
+      // 尝试查找目标动态（晚安动态）
+      let targetDynamic = await this.findTargetDynamic(task);
+      
+      // 如果没有找到目标动态且未超过最大检查次数，则继续轮询
+      if (!targetDynamic && task.checkCount < MAX_CHECK_COUNT) {
+        task.checkCount++;
+        task.lastCheckTime = new Date();
+        
+        this.logger.info(`未找到目标动态，将在2分钟后重新检查 (${task.checkCount}/${MAX_CHECK_COUNT})`, {
+          taskId: task.taskId,
+          roomId: task.roomId
+        });
+        
+        // 更新任务状态为pending并重新调度
+        task.status = 'pending';
+        task.scheduledTime = new Date(Date.now() + CHECK_INTERVAL_MS);
+        
+        await this.store.updateTask(task.taskId, {
+          status: 'pending',
+          scheduledTime: task.scheduledTime,
+          checkCount: task.checkCount,
+          lastCheckTime: task.lastCheckTime
+        });
+        
+        // 重新安排任务
+        this.scheduleTask(task);
+        return;
+      }
+      
+      // 如果找到了目标动态，使用它；否则降级到最新动态
+      let finalDynamic: BilibiliDynamic | null = null;
+      
+      if (targetDynamic) {
+        this.logger.info(`✅ 找到目标动态，将回复到晚安动态`, {
+          taskId: task.taskId,
+          dynamicId: String(targetDynamic.id)
+        });
+        finalDynamic = targetDynamic;
+      } else {
+        // 超时或没有直播时间信息，降级到最新动态
+        if (task.checkCount >= MAX_CHECK_COUNT) {
+          this.logger.warn(`⏰ 已达到最大检查次数，降级到最新动态`, {
+            taskId: task.taskId,
+            checkCount: task.checkCount
+          });
+        }
+        
+        finalDynamic = await this.getLatestDynamic(task.uid!);
+        
+        if (!finalDynamic) {
+          const errorMsg = '未找到最新动态';
+          
+          // 发送企微错误通知
+          if (this.notifier) {
+            const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
+            const anchorName = anchorConfig?.name || '未知主播';
+            await this.notifier.notifyProcessError(
+              anchorName,
+              '获取最新动态',
+              errorMsg,
+              task.roomId,
+              { uid: task.uid, taskId: task.taskId }
+            );
+          }
+          
+          throw new Error(errorMsg);
+        }
       }
 
       // 直接发布评论，而不是通过ReplyManager
       // 读取晚安回复文本
       const replyText = await this.readReplyText(task.goodnightTextPath);
       if (!replyText) {
-        throw new Error('晚安回复文本为空');
+        const errorMsg = '晚安回复文本为空';
+        
+        // 发送企微错误通知
+        if (this.notifier) {
+          const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
+          const anchorName = anchorConfig?.name || '未知主播';
+          await this.notifier.notifyProcessError(
+            anchorName,
+            '读取晚安回复文本',
+            errorMsg,
+            task.roomId,
+            { goodnightTextPath: task.goodnightTextPath, taskId: task.taskId }
+          );
+        }
+        
+        throw new Error(errorMsg);
       }
 
+      const imagePath = task.comicImagePath && await this.checkFileExists(task.comicImagePath)
+        ? [task.comicImagePath]
+        : undefined;
+
       // 发布评论
-      const result = await this.bilibiliAPI.publishComment({
-        dynamicId: latestDynamic.id,
-        content: replyText,
-        images: task.comicImagePath && (await this.checkFileExists(task.comicImagePath)) ? [task.comicImagePath] : undefined
-      });
+      let result;
+      try {
+        result = await this.bilibiliAPI.publishComment({
+          dynamicId: finalDynamic.id,
+          content: replyText,
+          images: imagePath
+        });
+      } catch (publishError) {
+        // 不在这里发送通知，由外部 catch 统一处理
+        throw publishError;
+      }
 
       this.logger.info(`延迟回复评论发布成功: ${task.taskId}`, {
-        dynamicId: String(latestDynamic.id),
+        dynamicId: String(finalDynamic.id),
         replyId: String(result.replyId)
       });
       // 输出回复链接
-      const replyUrl = `https://www.bilibili.com/opus/${String(latestDynamic.id)}#reply${String(result.replyId)}`;
+      const replyUrl = `https://www.bilibili.com/opus/${String(finalDynamic.id)}#reply${String(result.replyId)}`;
       this.logger.info(`回复链接: ${replyUrl}`);
 
       // 发送企业微信通知
@@ -383,11 +590,12 @@ export class DelayedReplyService implements IDelayedReplyService {
         const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
         const anchorName = anchorConfig?.name;
         await this.notifier.notifyReplySuccess(
-          String(latestDynamic.id),
+          String(finalDynamic.id),
           String(result.replyId),
           anchorName,
           replyText,
-          result.imageUrl
+          result.imageUrl,
+          imagePath ? imagePath[0] : undefined
         );
       }
 
@@ -396,10 +604,18 @@ export class DelayedReplyService implements IDelayedReplyService {
       await this.store.updateTask(task.taskId, { status: 'completed' });
 
       this.logger.info(`延迟回复完成: ${task.taskId}`, {
-        dynamicId: String(latestDynamic.id)
+        dynamicId: String(finalDynamic.id)
       });
     } catch (error) {
       this.logger.error(`执行延迟回复失败: ${task.taskId}`, undefined, error instanceof Error ? error : new Error(String(error)));
+
+      // 尝试读取回复文本用于通知
+      let replyText: string | undefined;
+      try {
+        replyText = await this.readReplyText(task.goodnightTextPath);
+      } catch {
+        // 读取失败时忽略，不影响主流程
+      }
 
       // 更新任务状态
       task.status = 'failed';
@@ -412,15 +628,32 @@ export class DelayedReplyService implements IDelayedReplyService {
       // 发送企业微信通知
       if (this.notifier) {
         const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
-        const anchorName = anchorConfig?.name;
-        await this.notifier.notifyReplyFailure(
-          task.uid || 'unknown',
+        const anchorName = anchorConfig?.name || '未知主播';
+        
+        // 使用新的通用错误通知方法
+        await this.notifier.notifyProcessError(
+          anchorName,
+          '延迟回复执行',
           task.error || '未知错误',
-          anchorName
+          task.roomId,
+          {
+            taskId: task.taskId,
+            uid: task.uid,
+            goodnightTextPath: task.goodnightTextPath,
+            comicImagePath: task.comicImagePath,
+            replyText,
+            error: error instanceof Error ? error.stack : String(error)
+          }
         );
       }
 
       // 重试逻辑
+      const isBlacklistError = task.error?.includes('黑名单') || task.error?.includes('12035');
+      if (isBlacklistError) {
+        this.logger.warn(`检测到黑名单或禁言错误，不进行重试: ${task.taskId}`, { error: task.error });
+        return;
+      }
+
       const delayedReplyConfig = BilibiliConfigHelper.getDelayedReplyConfig();
       const maxRetries = delayedReplyConfig.maxRetries;
 

@@ -15,8 +15,9 @@ const LOW_ENERGY_SAMPLE_RATE = 0.1; // 低热度区域，只随机保留 10% 的
 const MY_USER_ID = '14279';      // 你的弹幕永不被删
 
 // 4. 垃圾词过滤 (复用之前的)
-const STOP_WORDS = new Set(['晚上好', '晚安', '来了', '打call', '拜拜', '卡了', '嗯', '好', '草', '哈哈', '确实', '牛', '可爱']);
+const STOP_WORDS = new Set(['晚上好', '晚安', '来了', '打call', '拜拜', '卡了', '嗯', '好', '草', '哈哈', '确实', '牛', '可爱', '感谢观看', '谢谢观看', '优优独播剧场——YoYo Television Series Exclusive', '杨茜茜', '李宗盛']);
 const FILLER_REGEX = /^(呃|那个|就是|然后|哪怕|其实|我觉得|算是|哎呀|有点|怎么说呢|所以|这种|啊|哦)+/g;
+const HALLUCINATION_REGEX = /字幕志愿者|中文字幕志愿者|优优独播剧场|感谢观看|谢谢观看|谢谢大家观看/;
 
 // =======================================
 
@@ -48,7 +49,22 @@ async function processLiveData(inputFiles) {
      console.log(`🔥 启动热力图采样模式...来源文件：${srtFiles.map(f => path.basename(f)).join(', ')} ${xmlFiles.map(f => path.basename(f)).join(', ')}`);
 
      // --- 1. 解析弹幕 (生成热力数据) ---
-     const parser = new xml2js.Parser();
+     const parser = new xml2js.Parser({
+         strict: false,        // 允许不严格的 XML 格式
+         normalize: true,      // 规范化空白字符
+         trim: true,           // 修剪文本内容
+         mergeAttrs: false,    // 不合并属性到父节点
+         attrValueProcessors: [
+             // 处理属性值中的特殊字符
+             (value) => {
+                 if (typeof value === 'string') {
+                     // 移除或转义可能导致问题的字符
+                     return value.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
+                 }
+                 return value;
+             }
+         ]
+     });
      const danmakuMap = []; // 存储所有弹幕对象 {ms, text}
      let maxDuration = 0;
 
@@ -56,15 +72,13 @@ async function processLiveData(inputFiles) {
          try {
              const data = fs.readFileSync(file, 'utf8');
              const result = await parser.parseStringPromise(data);
-             // xml2js 单个元素返回对象，多个元素返回数组，需要统一处理
-             let rawList = result?.i?.d || [];
-             if (!Array.isArray(rawList)) {
-                 rawList = rawList ? [rawList] : [];
-             }
+             // xml2js 的 normalize: true 会将标签名转换为大写
+              // 所以 <i> 变成 I, <d> 变成 D, 属性p变成P
+             const rawList = result?.I?.D || [];
              
             for (const d of rawList) {
-                 if (!d || !d.$ || !d.$.p) continue;
-                 const attrs = String(d.$.p).split(",");
+                 if (!d || !d.$ || !d.$.P) continue;
+                 const attrs = String(d.$.P).split(",");
                  const ms = parseFloat(attrs[0]) * 1000;
                  const content = String(d._).trim();
                  const uid = String(attrs[6]);
@@ -116,7 +130,7 @@ async function processLiveData(inputFiles) {
                 const rawText = lines.slice(lines.indexOf(timeLine) + 1).join('');
                 const text = aggressiveClean(rawText);
 
-                if (text.length < 2 || STOP_WORDS.has(text)) continue;
+                if (text.length < 2 || STOP_WORDS.has(text) || HALLUCINATION_REGEX.test(text)) continue;
 
                 // === 🎯 命运的审判 ===
                 const bucketIdx = Math.floor(ms / windowMs);

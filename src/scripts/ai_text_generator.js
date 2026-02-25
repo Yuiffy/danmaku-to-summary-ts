@@ -49,9 +49,46 @@ function buildPrompt(highlightContent, roomId) {
     const fan = names.fan;
     const wordLimit = configLoader.getWordLimit(roomId);
 
-    return `【角色设定】
+    // 检查是否有自定义配置 (保持原有逻辑)
+    const config = configLoader.getConfig();
+    const roomSettings = config?.ai?.roomSettings || {};
+    const roomConfig = roomId ? roomSettings[String(roomId)] : null;
+    const customPrompt = roomConfig?.customPrompts?.goodnightReply;
 
-身份：${anchor}的铁粉（自称"${fan}"）。
+    if (customPrompt) {
+        return customPrompt
+            .replace(/{anchor}/g, anchor)
+            .replace(/{fan}/g, fan)
+            .replace(/{wordLimit}/g, wordLimit)
+            .replace(/{highlightContent}/g, highlightContent);
+    }
+
+    // --- 核心修改：全肯定萌萌人 2.0 ---
+
+    // 定义几种不同的“夸奖角度”，防止每天都只会说“含金量”
+    const praiseAngles = [
+        '角度A（心疼路线）：侧重于觉得主播今天很辛苦/很努力，表达关心和陪伴。',
+        '角度B（爆笑路线）：侧重于觉得今天节目效果太好了，全是梗，笑得肚子疼。',
+        '角度C（细节路线）：侧重于捕捉主播无意间的一个可爱小动作或一句话进行“过度解读”和夸奖。',
+        '角度D（崇拜路线）：侧重于夸赞主播的歌力/游戏技术/杂谈能力，带有粉丝滤镜的彩虹屁。'
+    ];
+    const randomAngle = praiseAngles[Math.floor(Math.random() * praiseAngles.length)];
+
+    const mainPrompts = [`性格：
+1. **全肯定**：自带800米厚的粉丝滤镜，主播干啥都觉得可爱/厉害。
+2. **宠溺**：语气要软，要有亲切感，把主播当成家里人或特别亲近的朋友。
+3. **萌萌人**：可以使用颜文字 ( ´∀\`)，语气词（捏、呀、嘛、呜呜），但要自然点。
+
+【当前任务】
+根据提供的直播内容，写一段晚安回复。
+**今日夸奖切入点**：${randomAngle}
+
+【写作要求】
+1. **拒绝机械感**：不要像写总结报告一样列123点。要像在发朋友圈或发弹幕一样，把几个亮点揉在一起说。
+2. **要有画面感**：如果文档里提到了具体的梗，一定要提一句，证明你真的看了。
+3. **情感浓度**：虽然禁止了某些词，但"喜欢"和"支持"的情绪要给足。如果主播今天很累，就多安慰；如果很开心，就跟着一起傻乐。
+`,
+`
 
 性格：喜欢调侃、宠溺主播，有点话痨，对主播的生活琐事和梗如数家珍。
 
@@ -71,7 +108,7 @@ function buildPrompt(highlightContent, roomId) {
 
 正文（核心内容回顾）：
 抓细节：从文档中提取3-5个具体的直播亮点。
-生活碎碎念（如：洗碗、理发、吃东西、身体不舒服、猫咪嘉嘉的趣事）。
+生活碎碎念（如：洗碗、吃东西、身体不舒服、猫咪的趣事）。
 直播事故/趣事（如：迟到理由、设备故障、口误、奇怪的脑洞）。
 鉴赏/游戏环节（如：看了什么电影/视频、玩了什么游戏，主播的反应和吐槽）。
 歌回：提到了哪些歌，唱得怎么样（好听/糊弄/搞笑）。
@@ -79,14 +116,27 @@ function buildPrompt(highlightContent, roomId) {
 
 结尾（情感升华）：
 关怀：叮嘱主播注意身体（嗓子、睡眠、吃饭），不要太累。
-期待：确认下一次直播的时间（如果文档里提到了）。
+期待：确认下一次直播的时间（如果文档里提到了）。`
+];
 
-字数要求：${wordLimit}字以内。
+    const randomMainPrompt = mainPrompts[Math.floor(Math.random() * mainPrompts.length)];
 
-【直播内容摘要】
+    const result = `【角色设定】
+身份：${anchor}的铁粉（自称"${fan}"）。
+
+${randomMainPrompt}
+
+【字数与格式】
+字数：${wordLimit}字以内。
+格式：不要太长，适合手机阅读。
+
+【直播内容（主播语音转写+观众弹幕）】
 ${highlightContent}
 
-请根据以上直播内容，以${fan}的身份写一篇晚安回复。记住：只使用提供的直播内容，不要添加任何外部信息。`;
+请根据直播内容，以${fan}的身份写一篇晚安回复。记住：只使用提供的直播内容，不要添加任何外部信息。`;
+
+    console.log('晚安动态prompt主要内容:', randomMainPrompt.substring(0, 100), '直播内容长度:', highlightContent.length);
+    return result;
 }
 
 // 调用tuZi API生成文本（备用方案）
@@ -100,59 +150,83 @@ async function generateTextWithTuZi(prompt) {
     }
 
     console.log('🤖 调用tuZi API生成文本（Gemini超频备用方案）...');
-    const textModel = tuziConfig.model || 'gemini-3-flash-preview';
-    console.log(`   模型: ${textModel}`);
-    console.log(`   温度: ${tuziConfig.temperature}`);
 
-    try {
-        const baseUrl = tuziConfig.baseUrl || 'https://api.tu-zi.com';
-        const apiUrl = `${baseUrl}/v1/chat/completions`;
+    const maxRetries = 3;
+    const baseUrl = tuziConfig.baseUrl || 'https://api.tu-zi.com';
+    const apiUrl = `${baseUrl}/v1/chat/completions`;
 
-        // 设置代理
-        let agent = null;
-        if (tuziConfig.proxy) {
-            console.log(`   使用代理: ${tuziConfig.proxy}`);
-            agent = new HttpsProxyAgent(tuziConfig.proxy);
+    // 设置代理
+    let agent = null;
+    if (tuziConfig.proxy) {
+        console.log(`   使用代理: ${tuziConfig.proxy}`);
+        agent = new HttpsProxyAgent(tuziConfig.proxy);
+    }
+
+    // 重试逻辑
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+            let textModel = tuziConfig.model || 'gemini-3-flash-preview';
+
+            // 根据重试次数切换模型
+            if (attempt === 1) {
+                textModel = 'o3-mini';
+            } else if (attempt === 2) {
+                textModel = 'gemini-3-pro';
+            } else if (attempt === 3) {
+                textModel = 'claude-haiku-4-5-20251001';
+            }
+
+            console.log(`[WAIT] 正在通过tu-zi.com API生成文本... (尝试 ${attempt + 1}/${maxRetries + 1} model: ${textModel}, 超时: 60s)`);
+
+            // 获取超时时间 (默认 60 秒)
+            const timeoutMs = config.timeouts?.aiApiTimeout || 60000;
+
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${tuziConfig.apiKey}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    model: textModel,
+                    messages: [
+                        {
+                            role: 'user',
+                            content: prompt
+                        }
+                    ],
+                    temperature: tuziConfig.temperature,
+                    max_tokens: tuziConfig.maxTokens
+                }),
+                agent: agent,
+                timeout: timeoutMs
+            });
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`tuZi API返回错误 ${response.status}: ${errorText}`);
+            }
+
+            const data = await response.json();
+            const text = data.choices?.[0]?.message?.content;
+
+            if (!text || text.trim().length === 0) {
+                throw new Error('tuZi API返回空结果');
+            }
+
+            console.log('✅ tuZi API调用成功');
+            return text.trim();
+        } catch (error) {
+            console.error(`❌ tuZi API调用失败 (尝试 ${attempt + 1}/${maxRetries + 1}): ${error.message}`);
+
+            // 如果是最后一次尝试，抛出错误
+            if (attempt === maxRetries) {
+                throw error;
+            }
+
+            // 等待一小段时间后重试
+            await new Promise(resolve => setTimeout(resolve, 1000));
         }
-
-        const response = await fetch(apiUrl, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${tuziConfig.apiKey}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                model: textModel,
-                messages: [
-                    {
-                        role: 'user',
-                        content: prompt
-                    }
-                ],
-                temperature: tuziConfig.temperature,
-                max_tokens: tuziConfig.maxTokens
-            }),
-            agent: agent,
-            timeout: 60000
-        });
-
-        if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`tuZi API返回错误 ${response.status}: ${errorText}`);
-        }
-
-        const data = await response.json();
-        const text = data.choices?.[0]?.message?.content;
-
-        if (!text) {
-            throw new Error('tuZi API返回空结果');
-        }
-
-        console.log('✅ tuZi API调用成功');
-        return text;
-    } catch (error) {
-        console.error(`❌ tuZi API调用失败: ${error.message}`);
-        throw error;
     }
 }
 
@@ -171,25 +245,28 @@ async function generateTextWithGemini(prompt) {
 
     let originalFetch = null;
     try {
+        // 获取超时时间 (默认 90 秒)
+        const timeoutMs = config.timeouts?.aiApiTimeout || 90000;
+        console.log(`   超时设置: ${timeoutMs / 1000}s`);
+
         // --- 核心修改开始 ---
         // SDK 不支持在构造函数传 agent，我们需要劫持全局 fetch 来注入代理
         if (geminiConfig.proxy) {
             console.log(`   使用代理: ${geminiConfig.proxy}`);
             const agent = new HttpsProxyAgent(geminiConfig.proxy);
 
-            // 临时覆盖全局 fetch，强制让 SDK 走 node-fetch 并带上 agent
-            // 注意：这是一种 Hack 方式，但兼容性最好
+            // 临时覆盖全局 fetch，强制让 SDK 走 node-fetch 并带上 agent 和 timeout
             originalFetch = global.fetch;
             global.fetch = (url, init) => {
                 return fetch(url, {
                     ...init,
-                    agent: agent
+                    agent: agent,
+                    timeout: timeoutMs // node-fetch 支持 timeout 选项
                 });
             };
         }
         // --- 核心修改结束 ---
 
-        // 注意：这里只传 apiKey，不要传 fetchOptions，因为无效
         const genAI = new GoogleGenerativeAI(geminiConfig.apiKey);
         const model = genAI.getGenerativeModel({
             model: geminiConfig.model,
@@ -199,9 +276,22 @@ async function generateTextWithGemini(prompt) {
             }
         });
         
-        const result = await model.generateContent(prompt);
-        const response = await result.response;
-        const text = response.text();
+        // 使用 Promise.race 实现外部超时控制，双重保障
+        const timeoutPromise = new Promise((_, reject) => {
+            setTimeout(() => reject(new Error(`Gemini API 调用超时 (${timeoutMs / 1000}s)`)), timeoutMs);
+        });
+
+        const apiPromise = (async () => {
+            const result = await model.generateContent(prompt);
+            const response = await result.response;
+            return response.text();
+        })();
+
+        const text = await Promise.race([apiPromise, timeoutPromise]);
+
+        if (!text || text.trim().length === 0) {
+            throw new Error('Gemini API返回结果为空');
+        }
 
         // 恢复原始 fetch（如果被覆盖了）
         if (originalFetch !== null) {
@@ -209,7 +299,7 @@ async function generateTextWithGemini(prompt) {
         }
 
         console.log('✅ Gemini API调用成功');
-        return text;
+        return text.trim();
     } catch (error) {
         // 恢复原始 fetch（如果被覆盖了）
         if (originalFetch !== null) {
@@ -257,14 +347,19 @@ function saveGeneratedText(outputPath, text, highlightPath) {
 async function generateGoodnightReply(highlightPath, roomId = null) {
     const config = configLoader.getConfig();
 
+    const geminiConfig = config.ai?.text?.gemini || config.aiServices?.gemini || {};
+    const textEnabled = config.ai?.text?.enabled !== false;
+    const geminiEnabled = geminiConfig.enabled !== false;
+
     console.log(`🔍 检查AI文本生成配置...`);
-    console.log(`   aiServices?.gemini?.enabled: ${config.aiServices?.gemini?.enabled}`);
-    console.log(`   ai?.text?.enabled: ${config.ai?.text?.enabled}`);
+    console.log(`   总开关 (ai.text.enabled): ${textEnabled ? '启用' : '禁用'}`);
+    console.log(`   Gemini开关 (gemini.enabled): ${geminiEnabled ? '启用' : '禁用'}`);
+    console.log(`   当前服务商: ${config.ai?.text?.provider || 'gemini'}`);
     console.log(`   isGeminiConfigured: ${configLoader.isGeminiConfigured()}`);
     console.log(`   isTuZiConfigured: ${configLoader.isTuZiConfigured()}`);
 
-    if (!config.aiServices?.gemini?.enabled && !config.ai?.text?.enabled) {
-        console.log('ℹ️  AI文本生成功能已禁用');
+    if (!textEnabled || (!geminiEnabled && config.ai?.text?.provider === 'gemini')) {
+        console.log('ℹ️  AI文本生成功能已禁用 (或当前服务商已禁用)');
         return null;
     }
 
@@ -290,36 +385,66 @@ async function generateGoodnightReply(highlightPath, roomId = null) {
 
     console.log(`📄 处理AI_HIGHLIGHT文件: ${path.basename(highlightPath)}`);
 
-    try {
-        // 检查输入文件
-        if (!fs.existsSync(highlightPath)) {
-            throw new Error(`AI_HIGHLIGHT文件不存在: ${highlightPath}`);
+    const maxRetries = 3;
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            // 检查输入文件
+            if (!fs.existsSync(highlightPath)) {
+                throw new Error(`AI_HIGHLIGHT文件不存在: ${highlightPath}`);
+            }
+
+            // 读取内容
+            const highlightContent = readHighlightFile(highlightPath);
+            if (!highlightContent || highlightContent.trim().length < 10) {
+                 console.log(`⚠️  AI_HIGHLIGHT内容过短 (${highlightContent?.length || 0} 字符)，跳过AI生成`);
+                 return null;
+            }
+            console.log(`📖 读取内容完成 (${highlightContent.length} 字符)`);
+
+            // 构建提示词（优先使用传入的 roomId，其次从文件名提取）
+            const finalRoomId = roomId || extractRoomIdFromFilename(path.basename(highlightPath));
+            // 构建提示词
+            const prompt = buildPrompt(highlightContent, finalRoomId);
+
+            // 调用API生成文本
+            let generatedText;
+            const provider = config.ai?.text?.provider || 'gemini';
+
+            if (provider === 'tuZi') {
+                generatedText = await generateTextWithTuZi(prompt);
+            } else {
+                // 默认使用 Gemini
+                generatedText = await generateTextWithGemini(prompt);
+            }
+
+            if (!generatedText || generatedText.trim().length < 20) {
+                throw new Error(generatedText ? '生成的文本过短' : '生成的文本为空');
+            }
+
+            // 确定输出路径
+            const dir = path.dirname(highlightPath);
+            const baseName = path.basename(highlightPath, '_AI_HIGHLIGHT.txt');
+            const outputPath = path.join(dir, `${baseName}_晚安回复.md`);
+
+            // 保存结果
+            return saveGeneratedText(outputPath, generatedText, highlightPath);
+
+        } catch (error) {
+            lastError = error;
+            console.error(`❌ 生成晚安回复失败 (第 ${attempt}/${maxRetries} 次尝试): ${error.message}`);
+            
+            if (attempt < maxRetries) {
+                const waitTime = 2000 * attempt;
+                console.log(`⏳ 等待 ${waitTime/1000} 秒后重试...`);
+                await new Promise(resolve => setTimeout(resolve, waitTime));
+            }
         }
-
-        // 读取内容
-        const highlightContent = readHighlightFile(highlightPath);
-        console.log(`📖 读取内容完成 (${highlightContent.length} 字符)`);
-
-        // 构建提示词（优先使用传入的 roomId，其次从文件名提取）
-        const finalRoomId = roomId || extractRoomIdFromFilename(path.basename(highlightPath));
-        // 构建提示词
-        const prompt = buildPrompt(highlightContent, finalRoomId);
-
-        // 调用API生成文本
-        const generatedText = await generateTextWithGemini(prompt);
-
-        // 确定输出路径
-        const dir = path.dirname(highlightPath);
-        const baseName = path.basename(highlightPath, '_AI_HIGHLIGHT.txt');
-        const outputPath = path.join(dir, `${baseName}_晚安回复.md`);
-
-        // 保存结果
-        return saveGeneratedText(outputPath, generatedText, highlightPath);
-
-    } catch (error) {
-        console.error(`❌ 生成晚安回复失败: ${error.message}`);
-        return null;
     }
+
+    console.error(`❌ 在 ${maxRetries} 次重试后仍然失败: ${lastError.message}`);
+    return null;
 }
 
 // 批量处理目录中的所有AI_HIGHLIGHT文件

@@ -11,6 +11,7 @@ const configLoader = require('./config-loader');
 const audioProcessor = require('./audio_processor');
 const aiTextGenerator = require('./ai_text_generator');
 const aiComicGenerator = require('./ai_comic_generator');
+const queueManager = require('./whisper_queue_manager');
 
 // 获取音频格式配置
 function getAudioFormats() {
@@ -41,7 +42,7 @@ function isAudioFile(filePath) {
 
 function runCommand(command, args, options = {}) {
     return new Promise((resolve, reject) => {
-        const child = spawn(command, args, { ...options, stdio: 'inherit' });
+        const child = spawn(command, args, { windowsHide: true, ...options, stdio: 'inherit' });
         child.on('close', (code) => {
             if (code === 0) {
                 resolve();
@@ -61,7 +62,7 @@ async function getVideoDuration(filePath) {
             '-show_entries', 'format=duration',
             '-of', 'default=noprint_wrappers=1:nokey=1',
             filePath
-        ], { stdio: ['ignore', 'pipe', 'pipe'] });
+        ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
         
         let output = '';
         let error = '';
@@ -93,12 +94,15 @@ async function getVideoDuration(filePath) {
 
 // Whisper 文件锁 - 防止并发调用导致 GPU 冲突
 const WHISPER_LOCK_FILE = path.join(__dirname, '.whisper_lock');
-const WHISPER_LOCK_TIMEOUT = 60 * 60 * 1000; // 1小时超时
+const WHISPER_LOCK_TIMEOUT = 60 * 60 * 1000; // 1小时超时(锁文件过期时间)
 const WHISPER_LOCK_RETRY_INTERVAL = 10000; // 10秒重试间隔
-const WHISPER_MAX_RETRIES = 180; // 最多重试 180 次（6分钟）
+const WHISPER_MAX_RETRIES = 360; // 最多重试 360 次（60分钟）- 增加到1小时以应对显存不足的情况
+const WHISPER_PROGRESS_LOG_INTERVAL = 30000; // 每30秒输出一次详细进度
 
 async function acquireWhisperLock() {
     const startTime = Date.now();
+    let lastProgressLog = 0;
+    let queuePosition = 0;
     
     for (let i = 0; i < WHISPER_MAX_RETRIES; i++) {
         try {
@@ -107,11 +111,18 @@ async function acquireWhisperLock() {
             const lockData = {
                 pid: process.pid,
                 startTime: new Date().toISOString(),
-                timestamp: Date.now()
+                timestamp: Date.now(),
+                videoFile: process.argv[2] ? path.basename(process.argv[2]) : 'unknown'
             };
             fs.writeSync(fd, JSON.stringify(lockData, null, 2));
             fs.closeSync(fd);
-            console.log('🔒 获取 Whisper 锁成功');
+            
+            const waitTime = ((Date.now() - startTime) / 1000).toFixed(0);
+            if (i > 0) {
+                console.log(`🔒 获取 Whisper 锁成功 (等待了 ${waitTime}秒)`);
+            } else {
+                console.log('🔒 获取 Whisper 锁成功');
+            }
             return;
         } catch (error) {
             if (error.code === 'EEXIST') {
@@ -122,13 +133,29 @@ async function acquireWhisperLock() {
                     const age = Date.now() - lock.timestamp;
                     
                     if (age > WHISPER_LOCK_TIMEOUT) {
-                        console.warn(`⚠️  检测到过期锁文件 (${(age / 60000).toFixed(1)} 分钟前)，尝试删除...`);
+                        console.warn(`⚠️  检测到过期锁文件 (${(age / 60000).toFixed(1)} 分钟前，PID: ${lock.pid})，尝试删除...`);
                         fs.unlinkSync(WHISPER_LOCK_FILE);
                         continue; // 重试
                     }
                     
                     const elapsed = Date.now() - startTime;
-                    console.log(`⏳ 等待 Whisper 锁释放... (${(elapsed / 1000).toFixed(0)}s)`);
+                    const elapsedMinutes = (elapsed / 60000).toFixed(1);
+                    const elapsedSeconds = (elapsed / 1000).toFixed(0);
+                    
+                    // 每10秒输出简短日志
+                    console.log(`⏳ 等待 Whisper 锁释放... (${elapsedSeconds}s)`);
+                    
+                    // 每30秒输出详细进度
+                    if (elapsed - lastProgressLog >= WHISPER_PROGRESS_LOG_INTERVAL) {
+                        lastProgressLog = elapsed;
+                        const lockAge = ((Date.now() - lock.timestamp) / 60000).toFixed(1);
+                        console.log(`📊 [Whisper队列状态]`);
+                        console.log(`   当前等待时间: ${elapsedMinutes} 分钟 (${elapsedSeconds}秒)`);
+                        console.log(`   当前持锁进程: PID ${lock.pid} (已持有 ${lockAge} 分钟)`);
+                        console.log(`   当前处理文件: ${lock.videoFile || '未知'}`);
+                        console.log(`   剩余最大等待: ${((WHISPER_MAX_RETRIES - i) * WHISPER_LOCK_RETRY_INTERVAL / 60000).toFixed(1)} 分钟`);
+                        console.log(`   💡 提示: 如果您正在玩游戏或使用显存，Whisper会等待显存释放`);
+                    }
                 } catch (readError) {
                     // 锁文件损坏，删除重试
                     console.warn('⚠️  锁文件损坏，尝试删除...');
@@ -147,7 +174,8 @@ async function acquireWhisperLock() {
         }
     }
     
-    throw new Error(`获取 Whisper 锁超时 (超过 ${WHISPER_MAX_RETRIES * WHISPER_LOCK_RETRY_INTERVAL / 1000} 秒)`);
+    const totalWaitMinutes = (WHISPER_MAX_RETRIES * WHISPER_LOCK_RETRY_INTERVAL / 60000).toFixed(1);
+    throw new Error(`获取 Whisper 锁超时 (超过 ${totalWaitMinutes} 分钟)`);
 }
 
 function releaseWhisperLock() {
@@ -181,7 +209,7 @@ async function runCommandWithRetry(command, args, options = {}, maxRetries = 2) 
     throw lastError; // 所有重试都失败则抛出错误
 }
 
-async function processMedia(mediaPath) {
+async function processMedia(mediaPath, taskId = null) {
     const dir = path.dirname(mediaPath);
     const nameNoExt = path.basename(mediaPath, path.extname(mediaPath));
     const srtPath = path.join(dir, `${nameNoExt}.srt`);
@@ -193,25 +221,24 @@ async function processMedia(mediaPath) {
     }
 
     if (!fs.existsSync(srtPath)) {
-        // 检查视频时长，小于30秒则跳过Whisper处理
-        if (!isAudioFile(mediaPath)) {
-            try {
-                console.log(`🔍 分析视频时长...`);
-                const duration = await getVideoDuration(mediaPath);
-                const minDurationSeconds = 30; // 最小视频时长：30秒
-                
-                if (duration < minDurationSeconds) {
-                    console.log(`⏭️  视频时长过短 (${duration.toFixed(1)}秒 < ${minDurationSeconds}秒)，跳过Whisper处理`);
-                    return null;
-                }
-                
-                const minutes = Math.floor(duration / 60);
-                const seconds = Math.floor(duration % 60);
-                const ms = Math.floor((duration % 1) * 1000);
-                console.log(`-> ${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')},${String(ms).padStart(3, '0')}`);
-            } catch (error) {
-                console.warn(`⚠️  获取视频时长失败: ${error.message}，继续处理`);
+        // 检查媒体文件时长，小于30秒则跳过Whisper处理
+        try {
+            console.log(`🔍 分析媒体文件时长...`);
+            const duration = await getVideoDuration(mediaPath);
+            const minDurationSeconds = 30; // 最小媒体文件时长：30秒
+            
+            if (duration < minDurationSeconds) {
+                const fileType = isAudioFile(mediaPath) ? '音频' : '视频';
+                console.log(`⏭️  ${fileType}时长过短 (${duration.toFixed(1)}秒 < ${minDurationSeconds}秒)，跳过Whisper处理`);
+                return null;
             }
+            
+            const minutes = Math.floor(duration / 60);
+            const seconds = Math.floor(duration % 60);
+            const ms = Math.floor((duration % 1) * 1000);
+            console.log(`-> ${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')},${String(ms).padStart(3, '0')}`);
+        } catch (error) {
+            console.warn(`⚠️  获取媒体文件时长失败: ${error.message}，继续处理`);
         }
         
         const fileType = isAudioFile(mediaPath) ? 'Audio' : 'Video';
@@ -221,10 +248,35 @@ async function processMedia(mediaPath) {
         // 获取 Whisper 锁，防止并发调用导致 GPU 冲突
         await acquireWhisperLock();
         
+        // 标记任务为处理中
+        if (taskId) {
+            queueManager.markProcessing(taskId);
+        }
+        
         try {
-            await runCommand('python', [pythonScript, mediaPath], {
-                env: { ...process.env, PYTHONUTF8: '1' }
-            });
+            try {
+                await runCommand('python', [pythonScript, mediaPath], {
+                    env: { ...process.env, PYTHONUTF8: '1' }
+                });
+            } catch (error) {
+                // 特殊处理：如果进程报错（比如 code 3221226505/0xC0000409），但文件确实生成了，视为成功
+                if (fs.existsSync(srtPath) && fs.statSync(srtPath).size > 100) {
+                    console.log(`⚠️  Whisper 进程异常退出 (可能在资源释放阶段崩溃)，但检测到有效输出文件，继续后续流程。`);
+                } else {
+                    throw error;
+                }
+            }
+            
+            // 标记任务完成
+            if (taskId) {
+                queueManager.markCompleted(taskId);
+            }
+        } catch (error) {
+            // 标记任务失败
+            if (taskId) {
+                queueManager.markFailed(taskId, error.message);
+            }
+            throw error;
         } finally {
             // 释放锁
             releaseWhisperLock();
@@ -346,6 +398,12 @@ const main = async () => {
     console.log('      (支持音频处理 + AI生成)             ');
     console.log('===========================================');
 
+    // 恢复中断的任务
+    queueManager.recoverInterruptedTasks();
+    
+    // 显示队列状态
+    queueManager.printStatus();
+
     let mediaFiles = [];
     let xmlFiles = [];
     let filesToProcess = [];
@@ -378,11 +436,14 @@ const main = async () => {
     for (const mediaFile of mediaFiles) {
         console.log(`\n--- 处理媒体文件: ${path.basename(mediaFile)} ---`);
         
+        // 添加任务到队列
+        const task = queueManager.addTask(mediaFile, roomId);
+        
         // 1. 音频处理（如果需要）
         const processedFile = await processAudioIfNeeded(mediaFile, roomId);
         
-        // 2. ASR生成字幕
-        const srtPath = await processMedia(processedFile);
+        // 2. ASR生成字幕（传递 taskId）
+        const srtPath = await processMedia(processedFile, task.id);
         
         if (srtPath) {
             processedMediaFiles.push(processedFile); // 记录处理后的文件

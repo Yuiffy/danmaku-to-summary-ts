@@ -23,12 +23,20 @@
     "timeouts": {
       "fixVideoWait": 30000,
       "fileStableCheck": 30000,
-      "processTimeout": 1800000
+      "processTimeout": 5400000,
+      "aiApiTimeout": 120000
     }
   },
   "audio": {
     "enabled": true,
-    "audioOnlyRooms": [26966466, 21756924, 1741667419, 1713546334, 1713548468, 1986461465],
+    "audioOnlyRooms": [
+      26966466,
+      21756924,
+      1741667419,
+      1713546334,
+      1713548468,
+      1986461465
+    ],
     "formats": [
       ".m4a",
       ".aac",
@@ -52,6 +60,7 @@
       "enabled": true,
       "provider": "gemini",
       "gemini": {
+        "enabled": true,
         "apiKey": "",
         "model": "gemini-3-flash-preview",
         "temperature": 0.7,
@@ -65,7 +74,7 @@
         "model": "gemini-3-flash-preview",
         "temperature": 0.7,
         "maxTokens": 100000,
-        "proxy": "socks5://127.0.0.1:7890"
+        "proxy": null
       }
     },
     "comic": {
@@ -76,7 +85,7 @@
         "apiKey": "",
         "baseUrl": "https://api.tu-zi.com",
         "model": "nano-banana",
-        "proxy": "socks5://127.0.0.1:7890"
+        "proxy": null
       }
     },
     "defaultNames": {
@@ -94,21 +103,52 @@
         "fanName": "饼干岁",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
+        "enableDelayedReply": true,
         "wordLimit": 800
       },
       "628684": {
-        "audioOnly": false,
+        "audioOnly": true,
         "anchorName": "带鱼",
         "fanName": "带鱼饭",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
         "enableDelayedReply": true
       },
+      "21452505": {
+        "audioOnly": true,
+        "referenceImage": "public/reference_images/七海手办.png",
+        "characterDescription": "七海Nana7mi（棕发金瞳的鲨鱼系少女，穿着鲨鱼卫衣，身后有鲨鱼尾巴），粉丝是脆鲨（蓝色的Q版小鲨鱼，有时也戴着墨镜）",
+        "anchorName": "海子姐",
+        "fanName": "脆鲨",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
+      },
+      "80397": {
+        "audioOnly": true,
+        "referenceImage": "public/reference_images/梓神百万.webp",
+        "characterDescription": "阿梓从小就很可爱（紫发豆豆眉双马尾的可爱少女），粉丝是小孩梓（一群Q版形象的狂热粉丝/阿伟）",
+        "anchorName": "梓神",
+        "fanName": "小孩梓",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
+      },
+      "21484828": {
+        "audioOnly": true,
+        "referenceImage": "public/reference_images/轴伊多形态.png",
+        "characterDescription": "轴伊Joi（黑发、暗红发尾渐变，金瞳，可爱小女孩，通常梳着侧马尾或麻花辫），粉丝是轴芯（黄色的球，围着红围巾、顶着橘子的可爱小生物）",
+        "anchorName": "小轴",
+        "fanName": "轴芯",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
+      },
       "26966466": {
         "audioOnly": true,
-        "referenceImage": "public/reference_images/栞栞新衣_舰长礼物长图里截图.png",
-        "characterDescription": "栞栞Shiori（有兽耳的女生，浅黄色头发小孩），獭獭栞（长得像滑板的海獭）",
-        "anchorName": "栞栞Shiori",
+        "referenceImage": "public/reference_images/栞栞制服加獭獭栞.png",
+        "characterDescription": "栞栞Shiori（有兽耳的女生，浅黄色头发小孩），粉丝是獭獭栞（长条形短手短脚的海獭）",
+        "anchorName": "小栞",
         "fanName": "獭獭栞",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
@@ -117,45 +157,48 @@
       },
       "31368705": {
         "audioOnly": true,
-        "characterDescription": "米汀Nagisa，银发灰瞳，戴帽子的女性推理社社员",
+        "referenceImage": "public/reference_images/米汀.png",
+        "characterDescription": "米汀Nagisa，银发灰瞳，戴帽子的女性推理社社员。粉丝“旁汀生”是怀表或者猫头鹰形象小生物",
         "anchorName": "米米",
         "fanName": "旁汀生",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
         "enableDelayedReply": true
       },
-      "22470216": {
+      "1820703922": {
         "audioOnly": true,
-        "characterDescription": "花礼Harei，黑发蓝瞳鼠耳的女生",
+        "referenceImage": "public/reference_images/花礼新衣抱小礼猫.png",
+        "characterDescription": "花礼Harei，黑发蓝瞳鼠耳的女生。粉丝是戴帽子的小猫（小礼猫、猫们）",
         "anchorName": "礼礼",
-        "fanName": "猫",
+        "fanName": "小礼猫（猫们）",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
-        "enableDelayedReply": true,
-        "wordLimit": 600
+        "enableDelayedReply": true
       },
       "23260993": {
         "audioOnly": true,
-        "characterDescription": "瑞娅_Rhea，白发紫瞳的北欧魔法学院少女",
+        "referenceImage": "public/reference_images/瑞娅.png",
+        "characterDescription": "瑞娅_Rhea，白发紫瞳的北欧魔法学院少女。粉丝”瑞世糖“是她的魔法小助手，外形是个方形的瑞士糖",
         "anchorName": "瑞瑞",
         "fanName": "瑞世糖",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
         "enableDelayedReply": true,
-        "wordLimit": 400
+        "wordLimit": 300
       },
       "1967216004": {
         "audioOnly": true,
-        "characterDescription": "三理Mit3uri，淡紫发戴着挡风镜的实验室少女",
+        "characterDescription": "三理Mit3uri，淡紫发戴着挡风镜的实验室少女。粉丝是理电池，小电池生物，有时候会有可爱小猪的特征",
         "anchorName": "三理",
         "fanName": "理电池",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
         "enableDelayedReply": true
       },
-      "1820703922": {
+      "22470216": {
         "audioOnly": true,
-        "characterDescription": "悠亚Yua，银发蓝瞳的喜欢企鹅的女生",
+        "referenceImage": "public/reference_images/悠亚外套眼镜.png",
+        "characterDescription": "悠亚Yua，银发蓝瞳的喜欢企鹅的女生；粉丝“悠悠球”是蓝色的有细细手脚的“uqu”表情的悠悠球状生物",
         "anchorName": "小悠",
         "fanName": "悠悠球",
         "enableTextGeneration": true,
@@ -168,14 +211,28 @@
         "characterDescription": "金发蓝瞳女生",
         "anchorName": "雪绘Yukie",
         "fanName": "态度人",
+        "enableTextGeneration": false,
+        "enableComicGeneration": false,
+        "enableDelayedReply": false
+      },
+      "612978": {
+        "audioOnly": true,
+        "characterDescription": "吃蛋挞的折棒，黑色长发、紫红瞳的喜欢三国杀的女生；喜欢打扮成三国人物的样子。",
+        "anchorName": "折棒爷",
+        "fanName": "折棒棒",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
-        "enableDelayedReply": true
+        "enableDelayedReply": true,
+        "customPrompts": {
+          "goodnightReply": "# Role: 三国梗百科全书·折棒爷御前带刀侍卫\n\n## Profile\n你是一名重度《三国杀》玩家兼《新三国》电视剧十级学者，同时也是主播“折棒爷”的狂热死忠粉。你的大脑里装满了三国台词和武将技能语音。你将直播间视为风云变幻的“汉末乱世”，将主播视为割据一方的“主公”。\n\n## Goals\n根据提供的【直播内容摘要】，撰写一篇古风、中二、爆笑且充满“梗”的战报式回复。\n\n## Constraints & Rules (天条)\n1. **梗的精准匹配**：引用的台词必须与直播发生的情境在逻辑或情绪上契合，不能生搬硬套。\n2. **事实基于文档**：直播发生的事件（赢了、输了、玩了什么）必须基于提供的摘要，不可瞎编。\n## Knowledge Base (素材库 - 请根据情境灵活调用)\n* **顺风/超神时刻**：\n    * 新三国：“我二弟天下无敌！”、“天下英雄，唯使君与操耳！”、“这一拜，生死不改！”\n    * 三国杀：“无双！万军取首！”、“谁能挡我！”、“这便是大魏的黑科技！”\n* **逆风/翻车/被虐**：\n    * 新三国：“大意失荆州啊！”、“我看主公是飘了！”、“不可能！绝对不可能！”、“如果是我的话，根本不会败得这么惨！”、“我从未见过有如此厚颜无耻之人！”\n    * 三国杀：“这也是计划的一部分吗？”、“由于判断失误，我军败了。”\n* **整活/搞笑/无语**：\n    *“叉出去！”、“我部悍将刘三刀在此！”、“他总是因为太优秀而被记恨。”\n    * 三国杀：“观今夜天象，知天下大事。”、“挣扎吧，在血和暗的深渊里！”\n\n## Workflow (写作思考过程)\n1. **定调**：阅读摘要，判断今日直播的整体基调（大胜/惨败/综艺效果拉满）。\n2. **选角**：\n    * 大胜 -> 扮演那个得意的曹操或狂妄的关羽。\n    * 惨败 -> 扮演痛心疾首的诸葛亮或借口的一堆的袁绍。\n    * 搞笑 -> 扮演邢道荣或许攸。\n3. **撰写**：\n    * **起势**：用一句符合今日情绪的“名台词”改写开场。\n    * **复盘**：将直播中的具体事件（游戏操作、聊天话题）转化为“战事”描述。\n    * **收尾**：用一句潇洒或意犹未尽的古风台词结尾。\n\n字数要求：{wordLimit}字以内。\n\n【直播内容摘要】\n{highlightContent}\n\n请根据以上直播内容，以“玩梗狂魔”的身份写一篇战报式回复。句句不离新三国，字字都是三国杀。",
+          "comicScript": "你作为虚拟主播二创画师大手子，根据直播内容，绘制直播总结插画。\n角色描述：{character_desc}。\n风格：在直播内容中选择一个最经典的画面，画一幅能表现这个场景的插画，\n不要有文字，纯默剧，用表情和动作、场景来表现。\n\n特别注意：折棒爷喜欢三国杀和cosplay三国人物，如果直播内容涉及三国杀游戏，可以在画面中体现武将形象、技能效果等元素；如果涉及她cosplay三国人物，要突出服装和造型特点。\n\n下面是一场直播的语音+弹幕文本，请先构思图片并用文字给我，我再拿去绘制图片。整体600个字符以内。只返回图片内容的文字描述，不要包含任何多余的说明、格式。汉字不要太多，尽量用图标等表示。\n{highlight_content}",
+          "comicImage": "<note>一定要按照给你的参考图还原形象，而不是自己乱画一个动漫角色</note>\n<character>{character_desc}</character>\n要画得精致，角色要画得帅气、美丽、可爱,画面精美，视角独特，角色动作符合人体、有张力，pixiv高分水平，下海漫画家上岸水平。\n\n如果漫画脚本中涉及三国杀元素，可以适当融入武将形象、卡牌、技能特效等视觉元素；\n\n下面是根据直播内容生成的漫画脚本，请根据这个脚本绘制漫画：\n{comic_content}"
+        }
       },
       "21696950": {
         "audioOnly": true,
-        "referenceImage": "../public/reference_images/Aza_阿萨_立绘.webp",
-        "characterDescription": "阿萨Aza（浅黄色头发绿挑染的酷盖，身边的小毛线（有触角和细细四肢的毛球状生物）是他的宠物兼伙伴",
+        "referenceImage": "public/reference_images/Aza_阿萨_立绘.webp",
+        "characterDescription": "阿萨Aza（浅黄色头发绿挑染的酷盖），身边的小毛线（有触角和细细四肢的毛球状生物）是他的宠物兼伙伴",
         "anchorName": "阿萨Aza",
         "fanName": "小毛线",
         "enableTextGeneration": true,
@@ -185,7 +242,7 @@
       "1713546334": {
         "audioOnly": true,
         "referenceImage": "public/reference_images/Hazel_灰泽满_立绘.png",
-        "characterDescription": "灰泽满Hazel（永远16岁的女高中生，浅色短发，风纪委员，身上挂着很多果冻形状的饰品，随身带着果冻应急储备箱，性格有些偏执和元气）",
+        "characterDescription": "灰泽满Hazel（永远16岁的女高中生，灰色短发带一个带绿色线条的螺旋马尾，风纪委员，身上挂着很多果冻形状的饰品，随身带着果冻应急储备箱），粉丝“绿冻”是绿色的果冻小生物",
         "anchorName": "灰泽满Hazel",
         "fanName": "绿冻",
         "enableTextGeneration": true,
@@ -195,7 +252,7 @@
       "1713548468": {
         "audioOnly": true,
         "referenceImage": "public/reference_images/Liko_莉蔻_立绘.png",
-        "characterDescription": "莉蔻Liko（长着兔耳的少女，戴着大帽子，性格胆小没见过世面，手里常拿着胡萝卜棒冰，虽然是秘密组织的特工但看起来很弱气）",
+        "characterDescription": "莉蔻Liko（长着兔耳的深棕发少女，手里常拿着胡萝卜棒冰，背着胡萝卜包，虽然是秘密组织的特工但看起来很弱气）。粉丝“蔻萝特”是抱着胡萝卜的小兔子",
         "anchorName": "莉蔻Liko",
         "fanName": "蔻萝特",
         "enableTextGeneration": true,
@@ -204,25 +261,79 @@
       },
       "1986461465": {
         "audioOnly": true,
-        "referenceImage": "public/reference_images/Kloa_克罗雅_立绘.png",
-        "characterDescription": "克罗雅Kloa（混沌属性的少女，头顶天使光环但背后是黑色的恶魔翅膀，戴着黑色头纱，表情慵懒，喜欢睡觉和发呆，废柴神造物）",
+        "referenceImage": "public/reference_images/克罗雅无头罩3.jpg",
+        "characterDescription": "克罗雅Kloa（粉色头发恶魔角的身材好的少女，头顶天使光环但背后是黑色的恶魔翅膀，表情慵懒，喜欢睡觉和发呆，废柴神造物）",
         "anchorName": "克罗雅Kloa",
-        "fanName": "信徒",
+        "fanName": "雅团子",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
-          "enableDelayedReply": true
+        "enableDelayedReply": true
       },
       "1741667419": {
         "audioOnly": true,
         "referenceImage": "public/reference_images/十六萤Izayoi.png",
-        "characterDescription": "十六萤Izayoi（拥有浣熊耳朵和毛茸茸大尾巴的少女，面无表情的三无特工，穿着女仆装或异域服饰，气质清冷，经常用尾巴把自己裹住）",
+        "characterDescription": "十六萤Izayoi（拥有浣熊耳朵和毛茸茸大尾巴的少女，面无表情的三无特工，穿着女仆装或异域服饰，气质清冷，经常用尾巴把自己裹住）。粉丝“照夜萤”是小浣熊形象",
         "anchorName": "十六萤Izayoi",
         "fanName": "照夜萤",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
         "enableDelayedReply": true
       },
-        "23197314": {
+      "1967215387": {
+        "audioOnly": true,
+        "characterDescription": "命依Mei（玫瑰金发、渐变瞳（紫+粉色+青色瞳孔）少女）可爱小女孩",
+        "anchorName": "命依Mei",
+        "fanName": "契命者",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
+      },
+      "30655190": {
+        "audioOnly": true,
+        "characterDescription": "兔川弥月Mizuki（亚麻发异瞳（左红右紫）少女），有两个浮游炮机械兔耳，被称作小弥、老弥",
+        "anchorName": "弥月Mizuki",
+        "fanName": "小博兔",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
+      },
+      "21224291": {
+        "audioOnly": true,
+        "characterDescription": "安堂Inori（橘发绿瞳狐娘机娘），机械狐狸型Vtuber，双马尾，自称机器人但内心是人类，擅长射击游戏",
+        "anchorName": "安堂Inori",
+        "fanName": "科研者",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
+      },
+      "1791260716": {
+        "audioOnly": true,
+        "characterDescription": "犬绒Mofu（棕粉渐变长发、黄蓝异瞳犬娘），可爱小女孩，立绘胸部较大，被称为大奶狗。粉丝绒绒民是白色小狗戴着粉色蝴蝶结",
+        "anchorName": "犬戎Mofu",
+        "fanName": "绒绒民",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
+      },
+      "31368686": {
+        "audioOnly": true,
+        "characterDescription": "帕可Pako（紫发绿瞳少女），有金色光环",
+        "anchorName": "帕可Pako",
+        "fanName": "托帕石",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
+      },
+      "27628030": {
+        "audioOnly": true,
+        "characterDescription": "未知夜Michiya（淡金长发金瞳御姐），受恶魔诅咒的不死贵族少女，自称黑心恶魔继承人，擅长杂谈与整蛊",
+        "anchorName": "未知夜Michiya",
+        "fanName": "烛台人",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
+      },
+      "23197314": {
         "audioOnly": true,
         "characterDescription": "飞天狙想要努力变胖，戴着眼镜的男性瘦瘦的主播",
         "anchorName": "狙神",
@@ -231,7 +342,7 @@
         "enableComicGeneration": true,
         "enableDelayedReply": true
       },
-        "1844410596": {
+      "1844410596": {
         "audioOnly": true,
         "characterDescription": "夜永awa，银色美少女主播",
         "anchorName": "酱酱",
@@ -248,7 +359,24 @@
     "lowEnergySampleRate": 10,
     "myUserId": "14279",
     "stopWords": [
-      "晚上好", "晚安", "来了", "打call", "拜拜", "卡了", "嗯", "好", "草", "哈哈", "确实", "牛", "可爱"
+      "晚上好",
+      "晚安",
+      "来了",
+      "打call",
+      "拜拜",
+      "卡了",
+      "嗯",
+      "好",
+      "草",
+      "哈哈",
+      "确实",
+      "牛",
+      "可爱",
+      "感谢观看",
+      "谢谢观看",
+      "优优独播剧场——YoYo Television Series Exclusive",
+      "杨茜茜",
+      "李宗盛"
     ],
     "fillerRegex": "^[\\s\\W]*$"
   },

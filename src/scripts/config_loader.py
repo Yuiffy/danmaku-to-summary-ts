@@ -136,7 +136,7 @@ def get_config(force_reload: bool = False) -> Dict[str, Any]:
     config = {}
     if os.path.exists(config_path):
         config = read_json_file(config_path)
-        print(f"✓ 配置文件已加载: {config_path}")
+        # print(f"✓ 配置文件已加载: {config_path}")
     else:
         print(f"⚠ 配置文件不存在: {config_path}")
     
@@ -172,7 +172,7 @@ def get_config(force_reload: bool = False) -> Dict[str, Any]:
         
         # 合并映射后的secrets
         config = deep_merge(config, mapped_secrets)
-        print(f"✓ Secrets配置文件已加载: {secrets_path}")
+        # print(f"✓ Secrets配置文件已加载: {secrets_path}")
     else:
         print(f"⚠ Secrets配置文件不存在: {secrets_path}")
     

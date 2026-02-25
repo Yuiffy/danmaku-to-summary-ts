@@ -23,8 +23,17 @@ export interface IDelayedReplyService {
    * @param goodnightTextPath 晚安文本路径
    * @param comicImagePath 漫画图片路径（可选）
    * @param delaySeconds 延迟秒数（可选，不传则使用配置的延迟时间）
+   * @param liveStartTime 直播开始时间（可选）
+   * @param liveEndTime 直播结束时间（可选）
    */
-  addTask(roomId: string, goodnightTextPath: string, comicImagePath?: string, delaySeconds?: number): Promise<string>;
+  addTask(
+    roomId: string, 
+    goodnightTextPath: string, 
+    comicImagePath?: string, 
+    delaySeconds?: number,
+    liveStartTime?: Date,
+    liveEndTime?: Date
+  ): Promise<string>;
 
   /**
    * 移除任务

@@ -113,7 +113,8 @@ export class AudioProcessor implements IAudioProcessor {
 
     return new Promise((resolve, reject) => {
       const child = spawn(ffmpegPath, args, {
-        stdio: ['ignore', 'pipe', 'pipe']
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true
       });
 
       let stdout = '';

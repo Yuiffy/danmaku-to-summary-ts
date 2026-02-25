@@ -23,7 +23,7 @@
       "enabled": true,
       "apiKey": "",
       "baseUrl": "https://api.tu-zi.com",
-      "model": "nano-banana",
+      "model": "gemini-3-pro-image-preview-async",
       "proxy": "http://127.0.0.1:7890"
     },
     "defaultReferenceImage": "../public/reference_images/岁己小红帽立绘.png",
