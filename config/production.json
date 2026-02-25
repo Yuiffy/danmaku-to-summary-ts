@@ -86,6 +86,10 @@
         "baseUrl": "https://api.tu-zi.com",
         "model": "nano-banana",
         "proxy": null
+      },
+      "defaults": {
+        "minDurationMinutes": 60,
+        "generationProbability": 1.0
       }
     },
     "defaultNames": {
@@ -104,10 +108,12 @@
         "enableTextGeneration": true,
         "enableComicGeneration": true,
         "enableDelayedReply": true,
-        "wordLimit": 800
+        "wordLimit": 800,
+        "minComicDurationMinutes": 0,
+        "comicGenerationProbability": 1.0
       },
       "628684": {
-        "audioOnly": true,
+        "audioOnly": false,
         "anchorName": "带鱼",
         "fanName": "带鱼饭",
         "enableTextGeneration": true,

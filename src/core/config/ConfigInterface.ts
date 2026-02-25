@@ -108,6 +108,13 @@ export interface ComicAIConfig {
   local?: {
     modelPath: string;
   };
+  /** 漫画生成全局默认设置 */
+  defaults?: {
+    /** 生成图片所需的最短直播时长（分钟），默认60 */
+    minDurationMinutes: number;
+    /** 生成图片的概率（0.0~1.0），默认1.0 */
+    generationProbability: number;
+  };
 }
 
 // 房间AI配置
@@ -121,6 +128,10 @@ export interface RoomAIConfig {
   enableComicGeneration?: boolean;
   /** 是否启用延迟回复 */
   enableDelayedReply?: boolean;
+  /** 生成图片所需的最短直播时长（分钟），不设置则使用全局默认值 */
+  minComicDurationMinutes?: number;
+  /** 生成图片的概率（0.0~1.0），不设置则使用全局默认值 */
+  comicGenerationProbability?: number;
 }
 
 // AI配置

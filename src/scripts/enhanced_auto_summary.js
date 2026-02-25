@@ -354,25 +354,36 @@ async function triggerDelayedReply(roomId, goodnightTextPath, comicImagePath) {
 function shouldGenerateAiForRoom(roomId) {
     const config = configLoader.getConfig();
     const roomStr = String(roomId);
-    
+
+    // 获取全局默认图片生成配置
+    const comicDefaults = config.ai?.comic?.defaults || {};
+    const defaultMinDuration = comicDefaults.minDurationMinutes ?? 60;      // 默认 60 分钟
+    const defaultProbability = comicDefaults.generationProbability ?? 1.0;  // 默认 100%
+
+    let roomConfig = null;
     if (config.ai?.roomSettings && config.ai.roomSettings[roomStr]) {
-        const roomConfig = config.ai.roomSettings[roomStr];
+        roomConfig = config.ai.roomSettings[roomStr];
+    } else if (config.roomSettings && config.roomSettings[roomStr]) {
+        // 兼容旧格式
+        roomConfig = config.roomSettings[roomStr];
+    }
+
+    if (roomConfig) {
         return {
             text: roomConfig.enableTextGeneration !== false,
-            comic: roomConfig.enableComicGeneration !== false
+            comic: roomConfig.enableComicGeneration !== false,
+            minComicDurationMinutes: roomConfig.minComicDurationMinutes ?? defaultMinDuration,
+            comicGenerationProbability: roomConfig.comicGenerationProbability ?? defaultProbability,
         };
     }
-    // 兼容旧格式 roomSettings（直接在config下）
-    if (config.roomSettings && config.roomSettings[roomStr]) {
-        const roomConfig = config.roomSettings[roomStr];
-        return {
-            text: roomConfig.enableTextGeneration !== false,
-            comic: roomConfig.enableComicGeneration !== false
-        };
-    }
-    
-    // 默认启用所有AI功能
-    return { text: true, comic: true };
+
+    // 默认启用所有AI功能、使用全局默认时长和概率
+    return {
+        text: true,
+        comic: true,
+        minComicDurationMinutes: defaultMinDuration,
+        comicGenerationProbability: defaultProbability,
+    };
 }
 
 // 从文件名提取房间ID
@@ -550,11 +561,17 @@ const main = async () => {
             }
             
             // 检查房间AI设置
-            const aiSettings = finalRoomId ? shouldGenerateAiForRoom(finalRoomId) : { text: true, comic: true };
+            const aiSettings = finalRoomId ? shouldGenerateAiForRoom(finalRoomId) : {
+                text: true, comic: true,
+                minComicDurationMinutes: 60,
+                comicGenerationProbability: 1.0
+            };
             
             console.log(`🏠 房间ID: ${finalRoomId}`);
             console.log(`   AI文本生成: ${aiSettings.text ? '启用' : '禁用'}`);
             console.log(`   AI漫画生成: ${aiSettings.comic ? '启用' : '禁用'}`);
+            console.log(`   图片最短时长: ${aiSettings.minComicDurationMinutes} 分钟`);
+            console.log(`   图片生成概率: ${(aiSettings.comicGenerationProbability * 100).toFixed(0)}%`);
             
             // AI文本生成
             let goodnightTextPath = null;
@@ -569,9 +586,40 @@ const main = async () => {
             // AI漫画生成
             let comicImagePath = null;
             if (aiSettings.comic) {
-                console.log(`🎨 开始AI漫画生成...`);
-                comicImagePath = await generateAiComic(highlightPath, finalRoomId);
-                console.log(`🎨 AI漫画生成结果: ${comicImagePath || 'null'}`);
+                // --- 检查图片生成条件 ---
+
+                // 1. 检查直播时长是否达到阈值
+                let durationMinutes = null;
+                if (srtFile && fs.existsSync(srtFile)) {
+                    try {
+                        const srtContent = fs.readFileSync(srtFile, 'utf8');
+                        const timeMatches = srtContent.match(/\d{2}:\d{2}:\d{2},\d{3}/g);
+                        if (timeMatches && timeMatches.length > 0) {
+                            const lastTimeStr = timeMatches[timeMatches.length - 1];
+                            const [h, m, sv] = lastTimeStr.split(':').map(Number);
+                            durationMinutes = (h * 3600 + m * 60 + Math.floor(sv)) / 60;
+                        }
+                    } catch (e) {
+                        console.warn(`⚠️  读取SRT时长失败: ${e.message}`);
+                    }
+                }
+
+                const minDur = aiSettings.minComicDurationMinutes;
+                if (durationMinutes !== null && durationMinutes < minDur) {
+                    console.log(`⏭️  直播时长过短 (${durationMinutes.toFixed(1)}分钟 < 阈值 ${minDur}分钟)，跳过图片生成`);
+                } else {
+                    // 2. 概率抽样
+                    const prob = aiSettings.comicGenerationProbability;
+                    const roll = Math.random();
+                    if (roll > prob) {
+                        console.log(`🎲 概率抓取未命中 (${roll.toFixed(3)} > ${prob})，跳过图片生成`);
+                    } else {
+                        console.log(`🎲 概率抓取命中 (${roll.toFixed(3)} ≤ ${prob})，开始生成图片`);
+                        console.log(`🎨 开始AI漫画生成...`);
+                        comicImagePath = await generateAiComic(highlightPath, finalRoomId);
+                        console.log(`🎨 AI漫画生成结果: ${comicImagePath || 'null'}`);
+                    }
+                }
             } else {
                 console.log('ℹ️  跳过AI漫画生成（房间设置禁用）');
             }
