@@ -281,10 +281,10 @@ def call_tuzi_chat_completions_for_image(
                 {"type": "async", "model": "gemini-3-pro-image-preview-async"},
             ]
         else:
-            # 其他主播：nano-banana-pro 同步一次，失败直接放弃
-            print(f"[INFO] 房间 {room_id} 使用轻量策略：nano-banana-pro sync × 1，失败不重试")
+            # 其他主播：一次，失败直接放弃
+            print(f"[INFO] 房间 {room_id} 使用轻量策略：gemini-3-pro-image-preview-async × 1，失败不重试")
             retry_strategies = [
-                {"type": "sync", "model": "gemini-3-pro-image-preview/nano-banana-2"},
+                {"type": "async", "model": "gemini-3-pro-image-preview-async"},
             ]
             # --- 旧的多模型降级策略（已停用，保留备查） ---
             # retry_strategies = [
