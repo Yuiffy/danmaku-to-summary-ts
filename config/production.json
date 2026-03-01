@@ -286,13 +286,13 @@
         "enableDelayedReply": true
       },
       "1967215387": {
-        "audioOnly": true,
+        "audioOnly": false,
         "characterDescription": "命依Mei（玫瑰金发、渐变瞳（紫+粉色+青色瞳孔）少女）可爱小女孩",
         "anchorName": "命依Mei",
         "fanName": "契命者",
-        "enableTextGeneration": true,
-        "enableComicGeneration": true,
-        "enableDelayedReply": true
+        "enableTextGeneration": false,
+        "enableComicGeneration": false,
+        "enableDelayedReply": false
       },
       "30655190": {
         "audioOnly": true,
@@ -322,13 +322,13 @@
         "enableDelayedReply": true
       },
       "31368686": {
-        "audioOnly": true,
+        "audioOnly": false,
         "characterDescription": "帕可Pako（紫发绿瞳少女），有金色光环",
         "anchorName": "帕可Pako",
         "fanName": "托帕石",
-        "enableTextGeneration": true,
-        "enableComicGeneration": true,
-        "enableDelayedReply": true
+        "enableTextGeneration": false,
+        "enableComicGeneration": false,
+        "enableDelayedReply": false
       },
       "27628030": {
         "audioOnly": true,
