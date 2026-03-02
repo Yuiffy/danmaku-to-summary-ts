@@ -21,7 +21,7 @@ MODEL_SIZE = "deepdml/faster-whisper-large-v3-turbo-ct2"
 BATCH_SIZE = 12
 
 # 【功能开关】是否开启长句智能切分
-ENABLE_SMART_SPLIT = False
+ENABLE_SMART_SPLIT = True
 MAX_CHARS_PER_LINE = 18
 
 # 容错阈值：如果生成的时长比视频短了超过 60秒，触发降级
@@ -121,10 +121,10 @@ def transcribe_with_strategy(model, video_path, srt_path, total_duration):
 
         print(f"\n👉 第 {attempt} 次尝试: 启用 {strategy_name}...")
 
-        # ASMR 专用宽松参数
+        # 日常杂谈/游戏推荐参数
         vad_params = {
-            "min_silence_duration_ms": 3000,
-            "speech_pad_ms": 2000,
+            "min_silence_duration_ms": 700,  # 改成 700 或 1000：停顿 0.7秒 到 1秒 就自然切断
+            "speech_pad_ms": 400,            # 语音前后的缓冲也可以改小一点，字幕出现更精准
             "threshold": 0.3
         }
 
