@@ -100,7 +100,7 @@ def transcribe_with_strategy(model, video_path, srt_path, total_duration):
     2. Sequential模式: 稍慢，但极度稳定，死磕到底
     3. 核弹模式: 关闭 VAD，强行转写每一秒
     """
-    prompt = "饼干岁们好，我是岁己。今天直播玩游戏，杂谈唱歌。哎呀，这个好难啊？没关系，我们可以的。请多关照。"
+    prompt = "饼干岁你们在吗岁己要急哭了"
 
     # 临时文件，防止写坏正式文件
     temp_srt = srt_path + ".tmp"
