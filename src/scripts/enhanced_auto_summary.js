@@ -547,8 +547,9 @@ const main = async () => {
                 const timeMatches = srtContent.match(/\d{2}:\d{2}:\d{2},\d{3}/g);
                 if (timeMatches && timeMatches.length > 0) {
                     const lastTimeStr = timeMatches[timeMatches.length - 1];
-                    const [h, m, s] = lastTimeStr.split(':').map(Number);
-                    const totalSeconds = h * 3600 + m * 60 + s;
+                    const [h, m, sWithMs] = lastTimeStr.split(':');
+                    const s = sWithMs.split(',')[0]; // 取秒数部分，去掉毫秒
+                    const totalSeconds = parseInt(h) * 3600 + parseInt(m) * 60 + parseInt(s);
                     const minDurationSeconds = 30; // 最小视频时长：30秒
                     
                     console.log(`⏱️  视频时长: ${totalSeconds}秒`);
@@ -596,8 +597,9 @@ const main = async () => {
                         const timeMatches = srtContent.match(/\d{2}:\d{2}:\d{2},\d{3}/g);
                         if (timeMatches && timeMatches.length > 0) {
                             const lastTimeStr = timeMatches[timeMatches.length - 1];
-                            const [h, m, sv] = lastTimeStr.split(':').map(Number);
-                            durationMinutes = (h * 3600 + m * 60 + Math.floor(sv)) / 60;
+                            const [h, m, sWithMs] = lastTimeStr.split(':');
+                            const sv = parseInt(sWithMs.split(',')[0]); // 取秒数部分，去掉毫秒
+                            durationMinutes = (parseInt(h) * 3600 + parseInt(m) * 60 + sv) / 60;
                         }
                     } catch (e) {
                         console.warn(`⚠️  读取SRT时长失败: ${e.message}`);
