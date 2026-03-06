@@ -89,7 +89,7 @@
       },
       "defaults": {
         "minDurationMinutes": 60,
-        "generationProbability": 1.0
+        "generationProbability": 0.2
       }
     },
     "defaultNames": {
@@ -159,7 +159,7 @@
         "enableTextGeneration": true,
         "enableComicGeneration": true,
         "enableDelayedReply": true,
-        "wordLimit": 200
+        "wordLimit": 150
       },
       "31368705": {
         "audioOnly": true,
@@ -169,7 +169,9 @@
         "fanName": "旁汀生",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
-        "enableDelayedReply": true
+        "enableDelayedReply": true,
+        "wordLimit": 200,
+        "comicGenerationProbability": 0.8
       },
       "1820703922": {
         "audioOnly": true,
