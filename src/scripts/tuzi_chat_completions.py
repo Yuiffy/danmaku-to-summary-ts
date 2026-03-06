@@ -314,6 +314,11 @@ def call_tuzi_chat_completions_for_image(
                 if strategy_type == "async" and call_tuzi_gemini_async is not None:
                     print("[INFO] 使用 Gemini 异步 API...")
                     try:
+                        # 创建任务的 timeout 固定 60s（仅提交请求），
+                        # max_poll_time 控制轮询最大等待时长，设为 1400s（约23分钟），
+                        # 足以覆盖实测最长 864s 的生成耗时并留有余量
+                        ASYNC_CREATE_TIMEOUT = 60
+                        ASYNC_MAX_POLL_TIME = 1400
                         gemini_result = call_tuzi_gemini_async(
                             prompt=current_prompt,  # 使用替换后的 prompt
                             reference_image_paths=reference_images if reference_images else [],
@@ -321,9 +326,9 @@ def call_tuzi_chat_completions_for_image(
                             base_url=base_url,
                             api_key=api_key,
                             proxy_url=proxy_url,
-                            timeout=timeout,
+                            timeout=ASYNC_CREATE_TIMEOUT,
                             size="9:16",
-                            max_poll_time=300
+                            max_poll_time=ASYNC_MAX_POLL_TIME
                         )
                         
                         if gemini_result:

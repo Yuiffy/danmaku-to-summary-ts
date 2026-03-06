@@ -223,7 +223,7 @@ def call_tuzi_gemini_async(
                     return None
 
                 # 任务仍在进行中
-                elif current_status in ["queued", "processing", "pending", "running"]:
+                elif current_status in ["queued", "processing", "pending", "running", "in_progress"]:
                     print(f"[WAIT] 任务进行中，{poll_interval}秒后再次查询...")
                     time.sleep(poll_interval)
                     continue
