@@ -66,32 +66,64 @@ def format_timestamp(seconds):
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
-# --- ✂️ 智能切分算法 ✂️ ---
-def smart_split_segment(segment, max_chars=18):
-    if len(segment.text) <= max_chars or not segment.words:
+# --- ✂️ 真正的智能切分算法（按气口、标点、字数综合切分） ✂️ ---
+def smart_split_segment(segment, max_chars=18, max_gap=0.35):
+    """
+    max_gap: 气口阈值(秒)。相邻两个词时间间隔超过此值，即判定为停顿并分段。默认0.35秒，可根据视频语速调整。
+    """
+    if not segment.words:
         yield {"start": segment.start, "end": segment.end, "text": segment.text.strip()}
         return
 
     current_words = []
     current_len = 0
     segment_start = segment.words[0].start
+    
+    # 常见标点符号，如果模型输出了标点，可以直接顺势断句
+    punctuations = {'，', '。', '？', '！', ',', '.', '?', '!'}
 
     for word in segment.words:
         word_text = word.word
-        word_len = len(word_text)
-        if current_len + word_len > max_chars and current_words:
-            yield {"start": segment_start, "end": current_words[-1].end,
-                   "text": "".join([w.word for w in current_words]).strip()}
+        word_len = len(word_text.strip())
+        
+        # 判断是否需要在此处“切一刀”
+        need_split = False
+        if current_words:
+            prev_word = current_words[-1]
+            # 核心逻辑：计算气口时长
+            gap = word.start - prev_word.end
+            
+            # 条件1：遇到了长停顿（气口）
+            if gap > max_gap:
+                need_split = True
+            # 条件2：上一个词以标点符号结尾
+            elif prev_word.word.strip() and prev_word.word.strip()[-1] in punctuations:
+                need_split = True
+            # 条件3：字数实在太长了（兜底防爆屏）
+            elif current_len + word_len > max_chars:
+                need_split = True
+
+        if need_split and current_words:
+            yield {
+                "start": segment_start, 
+                "end": current_words[-1].end,
+                "text": "".join([w.word for w in current_words]).strip()
+            }
+            # 清空并重新开始下一句
             current_words = []
             current_len = 0
             segment_start = word.start
+
         current_words.append(word)
         current_len += word_len
 
+    # 把最后剩下的小尾巴输出
     if current_words:
-        yield {"start": segment_start, "end": current_words[-1].end,
-               "text": "".join([w.word for w in current_words]).strip()}
-
+        yield {
+            "start": segment_start, 
+            "end": current_words[-1].end,
+            "text": "".join([w.word for w in current_words]).strip()
+        }
 
 def transcribe_with_strategy(model, video_path, srt_path, total_duration):
     """
