@@ -1,4 +1,4 @@
-import sys
+﻿import sys
 import os
 import io
 
@@ -28,7 +28,7 @@ MAX_CHARS_PER_LINE = 18
 TOLERANCE_SECONDS = 60
 MAX_RETRIES = 3
 
-VIDEO_EXTS = {'.mp4', '.flv', '.mkv', '.avi', '.mov', '.webm', '.ts', '.m4v', '.m4a'}
+VIDEO_EXTS = {'.mp4', '.flv', '.mkv', '.avi', '.mov', '.webm', '.ts', '.m4v', '.m4a', '.mp3'}
 
 
 def get_duration_fast(file_path):

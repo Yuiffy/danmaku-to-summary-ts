@@ -168,6 +168,13 @@ def get_live_cover_image(highlight_path: str) -> Optional[str]:
                 print(f"[INFO]  找到直播封面: {os.path.basename(cover_path)}")
                 return cover_path
 
+        # 如果没有找到.cover文件，尝试查找同名的.jpg文件（封面）
+        for ext in cover_extensions:
+            cover_path = os.path.join(dir_path, f"{base_name}{ext}")
+            if os.path.exists(cover_path):
+                print(f"[INFO]  找到直播封面（同名文件）: {os.path.basename(cover_path)}")
+                return cover_path
+
         return None
     except Exception as e:
         print(f"[WARNING] 查找直播封面失败: {e}")
