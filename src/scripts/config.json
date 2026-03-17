@@ -113,5 +113,13 @@
       "endpoint": "/mikufans",
       "basePath": "D:/files/videos/DDTV录播"
     }
+  },
+  "whisper": {
+    "gpuDetection": {
+      "enabled": true,
+      "gpuUtilizationThreshold": 60,
+      "vramUsageThreshold": 70,
+      "checkIntervalSeconds": 30
+    }
   }
 }

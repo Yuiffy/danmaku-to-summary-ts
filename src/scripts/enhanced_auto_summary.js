@@ -99,10 +99,81 @@ const WHISPER_LOCK_RETRY_INTERVAL = 10000; // 10秒重试间隔
 const WHISPER_MAX_RETRIES = 360; // 最多重试 360 次（60分钟）- 增加到1小时以应对显存不足的情况
 const WHISPER_PROGRESS_LOG_INTERVAL = 30000; // 每30秒输出一次详细进度
 
+/**
+ * 通过 nvidia-smi 查询 GPU 占用情况
+ * @returns {{ gpuUtil: number, vramUsed: number, vramTotal: number } | null} 返回 null 表示不可用
+ */
+async function getGpuUsage() {
+    return new Promise((resolve) => {
+        const child = require('child_process').spawn(
+            'nvidia-smi',
+            ['--query-gpu=utilization.gpu,memory.used,memory.total', '--format=csv,noheader,nounits'],
+            { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }
+        );
+
+        let stdout = '';
+        child.stdout.on('data', (d) => { stdout += d.toString(); });
+
+        child.on('close', (code) => {
+            if (code !== 0) {
+                resolve(null); // nvidia-smi 不可用
+                return;
+            }
+            try {
+                // 可能有多个 GPU，取第一个
+                const line = stdout.trim().split('\n')[0];
+                const parts = line.split(',').map(s => parseFloat(s.trim()));
+                if (parts.length >= 3 && parts.every(n => !isNaN(n))) {
+                    resolve({ gpuUtil: parts[0], vramUsed: parts[1], vramTotal: parts[2] });
+                } else {
+                    resolve(null);
+                }
+            } catch {
+                resolve(null);
+            }
+        });
+
+        child.on('error', () => resolve(null)); // nvidia-smi 不存在
+    });
+}
+
+/**
+ * 根据配置判断 GPU 是否繁忙
+ * @returns {Promise<{ busy: boolean, reason: string }>}
+ */
+async function isGpuBusy() {
+    const config = configLoader.getConfig();
+    const gpuConfig = config.whisper?.gpuDetection;
+
+    if (!gpuConfig?.enabled) {
+        return { busy: false, reason: '' };
+    }
+
+    const usage = await getGpuUsage();
+    if (!usage) {
+        return { busy: false, reason: '' }; // nvidia-smi 不可用，跳过检测
+    }
+
+    const { gpuUtil, vramUsed, vramTotal } = usage;
+    const vramPct = vramTotal > 0 ? (vramUsed / vramTotal * 100) : 0;
+    const utilThreshold = gpuConfig.gpuUtilizationThreshold ?? 60;
+    const vramThreshold = gpuConfig.vramUsageThreshold ?? 70;
+
+    const utilBusy = gpuUtil >= utilThreshold;
+    const vramBusy = vramPct >= vramThreshold;
+
+    if (utilBusy || vramBusy) {
+        const reason = `运算: ${gpuUtil.toFixed(0)}%${utilBusy ? '⚠️' : ''}, 显存: ${vramUsed.toFixed(0)}/${vramTotal.toFixed(0)} MB (${vramPct.toFixed(1)}%)${vramBusy ? '⚠️' : ''}`;
+        return { busy: true, reason };
+    }
+
+    const info = `运算: ${gpuUtil.toFixed(0)}%, 显存: ${vramUsed.toFixed(0)}/${vramTotal.toFixed(0)} MB (${vramPct.toFixed(1)}%)`;
+    return { busy: false, reason: info };
+}
+
 async function acquireWhisperLock() {
     const startTime = Date.now();
     let lastProgressLog = 0;
-    let queuePosition = 0;
     
     for (let i = 0; i < WHISPER_MAX_RETRIES; i++) {
         try {
@@ -123,6 +194,32 @@ async function acquireWhisperLock() {
             } else {
                 console.log('🔒 获取 Whisper 锁成功');
             }
+
+            // ── GPU 负载检测：获取到锁后，检查 GPU 是否繁忙 ──
+            const config = configLoader.getConfig();
+            const gpuCheckIntervalSec = config.whisper?.gpuDetection?.checkIntervalSeconds ?? 30;
+            const gpuCheckIntervalMs = gpuCheckIntervalSec * 1000;
+
+            // eslint-disable-next-line no-constant-condition
+            while (true) {
+                console.log('🔍 检测 GPU 负载...');
+                const { busy, reason } = await isGpuBusy();
+                if (!busy) {
+                    if (reason) {
+                        console.log(`✅ GPU 空闲 (${reason})，继续启动 Whisper`);
+                    }
+                    break; // GPU 空闲，跳出循环，继续执行
+                }
+                // GPU 繁忙：释放锁，等待后重试
+                releaseWhisperLock();
+                console.log(`🎮 GPU 繁忙 (${reason})，Whisper 等待 ${gpuCheckIntervalSec} 秒...`);
+                await new Promise(r => setTimeout(r, gpuCheckIntervalMs));
+
+                // 重新抢锁（递归调用）
+                await acquireWhisperLock();
+                return; // 递归调用内部会处理后续逻辑
+            }
+
             return;
         } catch (error) {
             if (error.code === 'EEXIST') {
