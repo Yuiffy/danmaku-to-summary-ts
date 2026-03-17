@@ -53,18 +53,38 @@ export class FileMerger {
       fs.writeFileSync(fileListPath, fileList.join('\n'), 'utf8');
 
       // 使用ffmpeg合并视频
+      // 注意：视频流直接复制，音频流重新编码为AAC以确保不同片段间的音频格式一致性
+      // 直接 -c copy 会因为空白片段（libx264+AAC）与原始FLV流参数不匹配导致音频流断裂
       await this.runFfmpeg([
         '-f', 'concat',
         '-safe', '0',
         '-i', fileListPath,
-        '-c', 'copy',
+        '-c:v', 'copy',          // 视频流直接复制（无损）
+        '-c:a', 'aac',           // 音频流重新编码为AAC（确保格式统一）
+        '-ar', '44100',          // 统一采样率 44100Hz
+        '-b:a', '128k',          // 音频比特率128k
         '-avoid_negative_ts', 'make_zero', // 处理时间戳跳变
-        '-fflags', '+genpts', // 重新生成PTS确保时长准确
+        '-y',
         outputPath
       ]);
 
       // 删除临时文件列表
       fs.unlinkSync(fileListPath);
+
+      // 清理空白片段临时文件
+      for (const line of fileList) {
+        const blankMatch = line.match(/file '(.+)'/);
+        if (blankMatch) {
+          const filePath = blankMatch[1].replace(/\//g, path.sep);
+          if (path.basename(filePath).startsWith('blank_') && fs.existsSync(filePath)) {
+            try {
+              fs.unlinkSync(filePath);
+            } catch (e) {
+              // 忽略清理失败
+            }
+          }
+        }
+      }
 
       this.logger.info(`视频合并完成: ${path.basename(outputPath)}`);
     } catch (error) {

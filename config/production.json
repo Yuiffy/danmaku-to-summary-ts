@@ -86,6 +86,10 @@
         "baseUrl": "https://api.tu-zi.com",
         "model": "nano-banana",
         "proxy": null
+      },
+      "defaults": {
+        "minDurationMinutes": 60,
+        "generationProbability": 0.2
       }
     },
     "defaultNames": {
@@ -104,10 +108,12 @@
         "enableTextGeneration": true,
         "enableComicGeneration": true,
         "enableDelayedReply": true,
-        "wordLimit": 800
+        "wordLimit": 800,
+        "minComicDurationMinutes": 0,
+        "comicGenerationProbability": 1.0
       },
       "628684": {
-        "audioOnly": true,
+        "audioOnly": false,
         "anchorName": "带鱼",
         "fanName": "带鱼饭",
         "enableTextGeneration": true,
@@ -153,7 +159,7 @@
         "enableTextGeneration": true,
         "enableComicGeneration": true,
         "enableDelayedReply": true,
-        "wordLimit": 200
+        "wordLimit": 150
       },
       "31368705": {
         "audioOnly": true,
@@ -163,7 +169,9 @@
         "fanName": "旁汀生",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
-        "enableDelayedReply": true
+        "enableDelayedReply": true,
+        "wordLimit": 200,
+        "comicGenerationProbability": 0.8
       },
       "1820703922": {
         "audioOnly": true,
@@ -280,13 +288,13 @@
         "enableDelayedReply": true
       },
       "1967215387": {
-        "audioOnly": true,
+        "audioOnly": false,
         "characterDescription": "命依Mei（玫瑰金发、渐变瞳（紫+粉色+青色瞳孔）少女）可爱小女孩",
         "anchorName": "命依Mei",
         "fanName": "契命者",
-        "enableTextGeneration": true,
-        "enableComicGeneration": true,
-        "enableDelayedReply": true
+        "enableTextGeneration": false,
+        "enableComicGeneration": false,
+        "enableDelayedReply": false
       },
       "30655190": {
         "audioOnly": true,
@@ -316,13 +324,13 @@
         "enableDelayedReply": true
       },
       "31368686": {
-        "audioOnly": true,
+        "audioOnly": false,
         "characterDescription": "帕可Pako（紫发绿瞳少女），有金色光环",
         "anchorName": "帕可Pako",
         "fanName": "托帕石",
-        "enableTextGeneration": true,
-        "enableComicGeneration": true,
-        "enableDelayedReply": true
+        "enableTextGeneration": false,
+        "enableComicGeneration": false,
+        "enableDelayedReply": false
       },
       "27628030": {
         "audioOnly": true,

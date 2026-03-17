@@ -190,7 +190,8 @@ def call_tuzi_chat_completions_for_image(
     proxy_url: str = "",
     timeout: float = 360,
     temperature: float = 0.7,
-    max_tokens: int = 100000
+    max_tokens: int = 100000,
+    room_id: Optional[str] = None
 ) -> Optional[str]:
     """
     调用tuZi的/v1/chat/completions端点生成图像
@@ -205,6 +206,7 @@ def call_tuzi_chat_completions_for_image(
         timeout: 超时时间（秒）
         temperature: 温度参数
         max_tokens: 最大生成令牌数
+        room_id: 房间ID，用于决定差异化重试策略
 
     Returns:
         生成的图像文件路径，如果失败返回None
@@ -266,32 +268,36 @@ def call_tuzi_chat_completions_for_image(
         })
 
         # ========== 图片生成重试策略配置 ==========
-        # 每个策略包含：type (sync/async) 和 model
-        # 可以通过调整列表顺序来改变重试优先级
-        retry_strategies = [
-            # 第一顺位：Gemini 异步 API（失败不扣费，成本低）
-            {"type": "async", "model": "gemini-3-pro-image-preview-async"},
-            # 第二顺位及以后：其他备选模型
-            {"type": "sync", "model": "gpt-image-1.5"},
-            {"type": "sync", "model": "gemini-2.5-flash-image-vip"},
-            {"type": "sync", "model": model},
-            # 最后顺位：nano-banana（涨价了，没有优势）
-            {"type": "sync", "model": "gemini-3-pro-image-preview/nano-banana-2"},
-        ]
-        
-        # 去重：如果传入的 model 已经在列表中，移除重复项
-        seen_models = set()
-        unique_strategies = []
-        for strategy in retry_strategies:
-            strategy_key = f"{strategy['type']}:{strategy['model']}"
-            if strategy_key not in seen_models:
-                seen_models.add(strategy_key)
-                unique_strategies.append(strategy)
-        retry_strategies = unique_strategies
-        
+        # 岁己（房间ID: 25788785）：质量最高的异步 nano-banana-pro 重试3次，不降级
+        # 其他主播：nano-banana-pro 同步一次，失败直接放弃，节省成本
+        # 注：gemini-3-pro-image-preview-async 即 nano-banana-pro 的异步版本
+        SUI_ROOM_ID = "25788785"
+        if str(room_id) == SUI_ROOM_ID:
+            # 岁己专属：高质量异步模型，最多重试3次，不降级
+            print(f"[INFO] 房间 {room_id} (岁己) 使用专属高质量策略：async nano-banana-pro × 3")
+            retry_strategies = [
+                {"type": "async", "model": "gemini-3-pro-image-preview-async"},
+                {"type": "async", "model": "gemini-3-pro-image-preview-async"},
+                {"type": "async", "model": "gemini-3-pro-image-preview-async"},
+            ]
+        else:
+            # 其他主播：一次，失败直接放弃
+            print(f"[INFO] 房间 {room_id} 使用轻量策略：gemini-3-pro-image-preview-async × 1，失败不重试")
+            retry_strategies = [
+                {"type": "async", "model": "gemini-3-pro-image-preview-async"},
+            ]
+            # --- 旧的多模型降级策略（已停用，保留备查） ---
+            # retry_strategies = [
+            #     {"type": "async", "model": "gemini-3-pro-image-preview-async"},  # 异步 nano-banana-pro（失败不扣费）
+            #     {"type": "sync",  "model": "gpt-image-1.5"},                     # GPT Image 1.5
+            #     {"type": "sync",  "model": "gemini-2.5-flash-image-vip"},        # Gemini 2.5 Flash Image VIP
+            #     {"type": "sync",  "model": model},                               # config 中配置的当前模型
+            #     {"type": "sync",  "model": "gemini-3-pro-image-preview/nano-banana-2"},  # nano-banana（贵）
+            # ]
+
         strategy_list = [f"{s['type']}:{s['model']}" for s in retry_strategies]
         print(f"[INFO] 图片生成重试策略: {strategy_list}")
-        # ========================================
+        # ==========================================
 
         response = None
         for attempt, strategy in enumerate(retry_strategies):
@@ -308,6 +314,11 @@ def call_tuzi_chat_completions_for_image(
                 if strategy_type == "async" and call_tuzi_gemini_async is not None:
                     print("[INFO] 使用 Gemini 异步 API...")
                     try:
+                        # 创建任务的 timeout 固定 60s（仅提交请求），
+                        # max_poll_time 控制轮询最大等待时长，设为 1400s（约23分钟），
+                        # 足以覆盖实测最长 864s 的生成耗时并留有余量
+                        ASYNC_CREATE_TIMEOUT = 60
+                        ASYNC_MAX_POLL_TIME = 1400
                         gemini_result = call_tuzi_gemini_async(
                             prompt=current_prompt,  # 使用替换后的 prompt
                             reference_image_paths=reference_images if reference_images else [],
@@ -315,9 +326,9 @@ def call_tuzi_chat_completions_for_image(
                             base_url=base_url,
                             api_key=api_key,
                             proxy_url=proxy_url,
-                            timeout=timeout,
+                            timeout=ASYNC_CREATE_TIMEOUT,
                             size="9:16",
-                            max_poll_time=300
+                            max_poll_time=ASYNC_MAX_POLL_TIME
                         )
                         
                         if gemini_result:

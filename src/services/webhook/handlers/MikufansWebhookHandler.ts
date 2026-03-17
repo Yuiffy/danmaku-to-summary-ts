@@ -807,6 +807,8 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         this.duplicateGuard.markAsProcessed(videoPath);
 
         // 检查是否是合并后的文件，如果是则标记会话为完成
+        // 注意：单片段路径 (processSingleSegment) 和降级路径 (fallbackToLargestSegment)
+        // 已在各自调用 startProcessing 后立即 markAsCompleted，这里只处理 _merged 场景
         if (videoPath.includes('_merged')) {
           // 从文件路径中提取roomId
           const session = this.findSessionByVideoPath(videoPath);
@@ -1106,6 +1108,11 @@ export class MikufansWebhookHandler implements IWebhookHandler {
 
     // 处理最大片段
     await this.startProcessing(largestSegment.videoPath, largestSegment.xmlPath, session.roomId);
+
+    // ⚠️ 关键修复: 降级处理启动后立即标记会话为完成，防止下次开播时（session.status !== 'completed'）
+    // 错误复用仍含旧片段（如只狼）的 session，导致内容混入下一场直播（如鹅鸭杀）
+    this.liveSessionManager.markAsCompleted(roomId);
+    this.logger.info(`✅ 降级处理已启动，会话已标记为完成: ${roomId}`);
   }
 
   /**

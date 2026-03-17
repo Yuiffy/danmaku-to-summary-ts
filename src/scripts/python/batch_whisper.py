@@ -1,4 +1,4 @@
-import sys
+﻿import sys
 import os
 import io
 
@@ -21,14 +21,14 @@ MODEL_SIZE = "deepdml/faster-whisper-large-v3-turbo-ct2"
 BATCH_SIZE = 12
 
 # 【功能开关】是否开启长句智能切分
-ENABLE_SMART_SPLIT = False
+ENABLE_SMART_SPLIT = True
 MAX_CHARS_PER_LINE = 18
 
 # 容错阈值：如果生成的时长比视频短了超过 60秒，触发降级
 TOLERANCE_SECONDS = 60
 MAX_RETRIES = 3
 
-VIDEO_EXTS = {'.mp4', '.flv', '.mkv', '.avi', '.mov', '.webm', '.ts', '.m4v', '.m4a'}
+VIDEO_EXTS = {'.mp4', '.flv', '.mkv', '.avi', '.mov', '.webm', '.ts', '.m4v', '.m4a', '.mp3'}
 
 
 def get_duration_fast(file_path):
@@ -66,32 +66,64 @@ def format_timestamp(seconds):
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
-# --- ✂️ 智能切分算法 ✂️ ---
-def smart_split_segment(segment, max_chars=18):
-    if len(segment.text) <= max_chars or not segment.words:
+# --- ✂️ 真正的智能切分算法（按气口、标点、字数综合切分） ✂️ ---
+def smart_split_segment(segment, max_chars=18, max_gap=0.35):
+    """
+    max_gap: 气口阈值(秒)。相邻两个词时间间隔超过此值，即判定为停顿并分段。默认0.35秒，可根据视频语速调整。
+    """
+    if not segment.words:
         yield {"start": segment.start, "end": segment.end, "text": segment.text.strip()}
         return
 
     current_words = []
     current_len = 0
     segment_start = segment.words[0].start
+    
+    # 常见标点符号，如果模型输出了标点，可以直接顺势断句
+    punctuations = {'，', '。', '？', '！', ',', '.', '?', '!'}
 
     for word in segment.words:
         word_text = word.word
-        word_len = len(word_text)
-        if current_len + word_len > max_chars and current_words:
-            yield {"start": segment_start, "end": current_words[-1].end,
-                   "text": "".join([w.word for w in current_words]).strip()}
+        word_len = len(word_text.strip())
+        
+        # 判断是否需要在此处“切一刀”
+        need_split = False
+        if current_words:
+            prev_word = current_words[-1]
+            # 核心逻辑：计算气口时长
+            gap = word.start - prev_word.end
+            
+            # 条件1：遇到了长停顿（气口）
+            if gap > max_gap:
+                need_split = True
+            # 条件2：上一个词以标点符号结尾
+            elif prev_word.word.strip() and prev_word.word.strip()[-1] in punctuations:
+                need_split = True
+            # 条件3：字数实在太长了（兜底防爆屏）
+            elif current_len + word_len > max_chars:
+                need_split = True
+
+        if need_split and current_words:
+            yield {
+                "start": segment_start, 
+                "end": current_words[-1].end,
+                "text": "".join([w.word for w in current_words]).strip()
+            }
+            # 清空并重新开始下一句
             current_words = []
             current_len = 0
             segment_start = word.start
+
         current_words.append(word)
         current_len += word_len
 
+    # 把最后剩下的小尾巴输出
     if current_words:
-        yield {"start": segment_start, "end": current_words[-1].end,
-               "text": "".join([w.word for w in current_words]).strip()}
-
+        yield {
+            "start": segment_start, 
+            "end": current_words[-1].end,
+            "text": "".join([w.word for w in current_words]).strip()
+        }
 
 def transcribe_with_strategy(model, video_path, srt_path, total_duration):
     """
@@ -100,7 +132,7 @@ def transcribe_with_strategy(model, video_path, srt_path, total_duration):
     2. Sequential模式: 稍慢，但极度稳定，死磕到底
     3. 核弹模式: 关闭 VAD，强行转写每一秒
     """
-    prompt = "饼干岁们好，我是岁己。今天直播玩游戏，杂谈唱歌。哎呀，这个好难啊？没关系，我们可以的。请多关照。"
+    prompt = "饼干岁你们在吗岁己要急哭了"
 
     # 临时文件，防止写坏正式文件
     temp_srt = srt_path + ".tmp"
@@ -121,10 +153,10 @@ def transcribe_with_strategy(model, video_path, srt_path, total_duration):
 
         print(f"\n👉 第 {attempt} 次尝试: 启用 {strategy_name}...")
 
-        # ASMR 专用宽松参数
+        # 日常杂谈/游戏推荐参数
         vad_params = {
-            "min_silence_duration_ms": 3000,
-            "speech_pad_ms": 2000,
+            "min_silence_duration_ms": 700,  # 改成 700 或 1000：停顿 0.7秒 到 1秒 就自然切断
+            "speech_pad_ms": 400,            # 语音前后的缓冲也可以改小一点，字幕出现更精准
             "threshold": 0.3
         }
 

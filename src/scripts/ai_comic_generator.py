@@ -168,6 +168,13 @@ def get_live_cover_image(highlight_path: str) -> Optional[str]:
                 print(f"[INFO]  找到直播封面: {os.path.basename(cover_path)}")
                 return cover_path
 
+        # 如果没有找到.cover文件，尝试查找同名的.jpg文件（封面）
+        for ext in cover_extensions:
+            cover_path = os.path.join(dir_path, f"{base_name}{ext}")
+            if os.path.exists(cover_path):
+                print(f"[INFO]  找到直播封面（同名文件）: {os.path.basename(cover_path)}")
+                return cover_path
+
         return None
     except Exception as e:
         print(f"[WARNING] 查找直播封面失败: {e}")
@@ -1014,13 +1021,14 @@ def call_google_image_api(prompt: str, reference_image_path: Optional[str] = Non
 
     return None
 
-def call_tuzi_image_api(prompt: str, reference_image_path=None) -> Optional[str]:
+def call_tuzi_image_api(prompt: str, reference_image_path=None, room_id: Optional[str] = None) -> Optional[str]:
     """
     调用tu-zi.com图像生成API
     使用 /v1/chat/completions 端点，支持单张或多张参考图
-    
+
     Args:
         reference_image_path: 可以是单个路径(str)或多个路径(list)
+        room_id: 房间ID，用于决定差异化重试策略
     """
     config = load_config()
     tuzi_config = config["aiServices"]["tuZi"]
@@ -1060,7 +1068,8 @@ def call_tuzi_image_api(prompt: str, reference_image_path=None) -> Optional[str]
         proxy_url=tuzi_config.get("proxy", ""),
         timeout=timeout_sec,
         temperature=0.7,
-        max_tokens=100000
+        max_tokens=100000,
+        room_id=room_id
     )
 
 def call_huggingface_comic_factory(prompt: str, reference_image_path: Optional[str] = None) -> Optional[str]:
@@ -1349,8 +1358,8 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
         # 2. 如果Google失败，尝试tu-zi.com作为最终备用方案
         if not comic_result and use_tuzi:
             print("[TUZI] Google生成失败，尝试tu-zi.com...")
-            # 传入所有收集到的图片
-            comic_result = call_tuzi_image_api(prompt, all_images if all_images else None)
+            # 传入所有收集到的图片和房间ID（用于差异化重试策略）
+            comic_result = call_tuzi_image_api(prompt, all_images if all_images else None, room_id=str(room_id) if room_id else None)
             if comic_result:
                 print(f"[DEBUG] tu-zi.com返回结果: {comic_result}")
             else:
