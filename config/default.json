@@ -93,6 +93,19 @@
         "enableTextGeneration": true,
         "enableComicGeneration": true,
         "enableDelayedReply": true
+      },
+      "25788785": {
+        "audioOnly": false,
+        "referenceImage": "public/reference_images/岁己SUI小猫帽带饼干岁紫色外套双马尾.png",
+        "characterDescription": "岁己SUI（白发红瞳女生），饼干岁（有细细四肢的小小的饼干状生物）",
+        "anchorName": "小岁",
+        "fanName": "饼干岁",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true,
+        "wordLimit": 800,
+        "minComicDurationMinutes": 0,
+        "comicGenerationProbability": 1.0
       }
     }
   },
@@ -152,6 +165,14 @@
       "delayMinutes": 10,
       "maxRetries": 3,
       "retryDelayMinutes": 5
+    }
+  },
+  "whisper": {
+    "gpuDetection": {
+      "enabled": true,
+      "gpuUtilizationThreshold": 60,
+      "vramUsageThreshold": 70,
+      "checkIntervalSeconds": 30
     }
   },
   "wechatWork": {
