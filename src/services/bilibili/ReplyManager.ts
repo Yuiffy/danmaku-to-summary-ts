@@ -295,14 +295,20 @@ export class ReplyManager implements IReplyManager {
       const content = fs.readFileSync(textPath, 'utf8');
       this.logger.debug('文件读取成功', { textPath, contentLength: content.length });
       
-      // 提取正文部分（跳过元数据）
+      // 仅在文件开头存在 front matter 时才跳过元数据，避免正文中的 `---` 被误判。
       const lines = content.split('\n');
-      const startIndex = lines.findIndex(line => line.startsWith('---'));
+      const firstNonEmptyIndex = lines.findIndex(line => line.trim().length > 0);
       
-      if (startIndex >= 0) {
-        const result = lines.slice(startIndex + 1).join('\n').trim();
-        this.logger.debug('提取正文成功（跳过元数据）', { textPath, resultLength: result.length });
-        return result;
+      if (firstNonEmptyIndex >= 0 && lines[firstNonEmptyIndex].trim() === '---') {
+        const endIndex = lines.findIndex(
+          (line, index) => index > firstNonEmptyIndex && line.trim() === '---'
+        );
+
+        if (endIndex > firstNonEmptyIndex) {
+          const result = lines.slice(endIndex + 1).join('\n').trim();
+          this.logger.debug('提取正文成功（跳过 front matter 元数据）', { textPath, resultLength: result.length });
+          return result;
+        }
       }
 
       const result = content.trim();
