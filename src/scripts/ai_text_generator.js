@@ -48,6 +48,7 @@ function buildPrompt(highlightContent, roomId) {
     const anchor = names.anchor;
     const fan = names.fan;
     const wordLimit = configLoader.getWordLimit(roomId);
+    const minLengthHint = Math.min(wordLimit, Math.max(80, Math.floor(wordLimit * 0.35)));
 
     // 检查是否有自定义配置 (保持原有逻辑)
     const config = configLoader.getConfig();
@@ -128,7 +129,8 @@ ${randomMainPrompt}
 
 【字数与格式】
 字数：${wordLimit}字以内。
-格式：不要太长，适合手机阅读。
+建议长度：至少 ${minLengthHint} 字，不能只写一句话、不能只写一个问句。
+格式：不要太长，适合手机阅读，但必须是完整的一段回复。
 
 【直播内容（主播语音转写+观众弹幕）】
 ${highlightContent}
@@ -137,6 +139,37 @@ ${highlightContent}
 
     console.log('晚安动态prompt主要内容:', randomMainPrompt.substring(0, 100), '直播内容长度:', highlightContent.length);
     return result;
+}
+
+function countSentences(text) {
+    return text
+        .split(/[。！？!?]\s*/u)
+        .map(part => part.trim())
+        .filter(Boolean).length;
+}
+
+function getMinimumReplyLength(wordLimit) {
+    if (wordLimit >= 600) return 120;
+    if (wordLimit >= 400) return 100;
+    if (wordLimit >= 250) return 80;
+    if (wordLimit >= 150) return 60;
+    return 20;
+}
+
+function validateGeneratedReply(text, wordLimit) {
+    const normalized = text.trim();
+    const minLength = getMinimumReplyLength(wordLimit);
+    const sentenceCount = countSentences(normalized);
+
+    if (normalized.length < minLength) {
+        throw new Error(`生成的文本过短（${normalized.length} < ${minLength}）`);
+    }
+
+    if (wordLimit >= 250 && sentenceCount < 2) {
+        throw new Error(`生成的文本句子数过少（${sentenceCount} < 2）`);
+    }
+
+    return normalized;
 }
 
 // 调用tuZi API生成文本（备用方案）
@@ -407,6 +440,7 @@ async function generateGoodnightReply(highlightPath, roomId = null) {
             const finalRoomId = roomId || extractRoomIdFromFilename(path.basename(highlightPath));
             // 构建提示词
             const prompt = buildPrompt(highlightContent, finalRoomId);
+            const wordLimit = configLoader.getWordLimit(finalRoomId);
 
             // 调用API生成文本
             let generatedText;
@@ -422,6 +456,9 @@ async function generateGoodnightReply(highlightPath, roomId = null) {
             if (!generatedText || generatedText.trim().length < 20) {
                 throw new Error(generatedText ? '生成的文本过短' : '生成的文本为空');
             }
+
+            generatedText = validateGeneratedReply(generatedText, wordLimit);
+            console.log(`✅ 文本长度校验通过: ${generatedText.length} 字符 (wordLimit=${wordLimit})`);
 
             // 确定输出路径
             const dir = path.dirname(highlightPath);
