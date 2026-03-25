@@ -66,6 +66,36 @@ def format_timestamp(seconds):
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
+def should_retry_with_strict_mode(total_duration, last_segment_end, line_count, text_chars, attempt):
+    """
+    基于第一次识别结果判断是否需要切换到更严格的模式，而不是依赖文件名猜测。
+    """
+    if attempt >= MAX_RETRIES:
+        return False, ""
+
+    missing = max(0, total_duration - last_segment_end)
+    duration_minutes = max(total_duration / 60, 1)
+    line_density = line_count / duration_minutes
+    char_density = text_chars / duration_minutes
+
+    reasons = []
+    if total_duration > 120 and missing / total_duration >= 0.1 and missing > TOLERANCE_SECONDS:
+        reasons.append(f"尾部缺失 {missing:.1f} 秒")
+
+    if total_duration > 1800 and line_density < 2.0:
+        reasons.append(f"字幕过稀 ({line_density:.2f} 条/分钟)")
+
+    if total_duration > 1800 and text_chars < 400:
+        reasons.append(f"文本总量过少 ({text_chars} 字)")
+    elif total_duration > 600 and char_density < 12:
+        reasons.append(f"文本密度过低 ({char_density:.1f} 字/分钟)")
+
+    if line_count < 20 and total_duration > 600:
+        reasons.append(f"有效字幕太少 ({line_count} 条)")
+
+    return bool(reasons), "，".join(reasons)
+
+
 # --- ✂️ 真正的智能切分算法（按气口、标点、字数综合切分） ✂️ ---
 def smart_split_segment(segment, max_chars=18, max_gap=0.35):
     """
@@ -142,10 +172,10 @@ def transcribe_with_strategy(model, video_path, srt_path, total_duration):
         use_batch = True
         use_vad = True
         strategy_name = "🚀 [策略1] 极速 Batch 模式"
-
         if attempt == 2:
             use_batch = False
-            strategy_name = "🐢 [策略2] 稳健 Sequential 模式 (ASMR专用)"
+            use_vad = False
+            strategy_name = "🌙 [策略2] 严格 Sequential 模式 (关闭VAD，优先完整转写)"
         elif attempt == 3:
             use_batch = False
             use_vad = False
@@ -163,6 +193,7 @@ def transcribe_with_strategy(model, video_path, srt_path, total_duration):
         start_time = time.time()
         last_segment_end = 0
         line_count = 0
+        text_chars = 0
 
         try:
             segments = None
@@ -182,9 +213,13 @@ def transcribe_with_strategy(model, video_path, srt_path, total_duration):
                 )
             else:
                 # 策略2 & 3：原生串行模式 (不经过 Pipeline)
+                beam_size = 5
+                if attempt == 3:
+                    beam_size = 1
+
                 segments, _ = model.transcribe(
                     video_path,
-                    beam_size=5,
+                    beam_size=beam_size,
                     language="zh",
                     initial_prompt=prompt,
                     vad_filter=use_vad,
@@ -232,6 +267,8 @@ def transcribe_with_strategy(model, video_path, srt_path, total_duration):
                         # --- 🎯 幻听过滤 (Hallucination Filter) ---
                         if any(bad in text for bad in ["优优独播剧场", "字幕志愿者", "中文字幕志愿者", "感谢观看", "谢谢观看", "谢谢大家观看"]):
                             continue
+
+                        text_chars += len(text)
                             
                         f.write(f"{line_count}\n{start_s} --> {end_s}\n{text}\n\n")
 
@@ -242,16 +279,23 @@ def transcribe_with_strategy(model, video_path, srt_path, total_duration):
             # === 🛡️ 完整性检查 ===
             missing = total_duration - last_segment_end
 
-            # 如果缺失不到10%的话允许放过，否则检查缺失严重且视频不短
-            if missing / total_duration >= 0.1 and missing > TOLERANCE_SECONDS and total_duration > 120:
-                print(f"   ⚠️  警告: 缺失 {missing:.1f} 秒 (总长 {format_timestamp(total_duration)})")
-
-                if attempt < MAX_RETRIES:
-                    print(f"   🚫 当前策略不适合此视频 (ASMR音量过低)，准备切换策略重试...")
-                    time.sleep(2)
-                    continue  # 触发下一次循环(换策略)
-                else:
-                    print(f"   💀 所有策略耗尽，保留现有结果。")
+            needs_strict_retry, retry_reason = should_retry_with_strict_mode(
+                total_duration,
+                last_segment_end,
+                line_count,
+                text_chars,
+                attempt
+            )
+            if needs_strict_retry:
+                print(
+                    f"   ⚠️  当前结果偏稀疏: {retry_reason} "
+                    f"(字幕 {line_count} 条, 文本 {text_chars} 字, 缺失 {missing:.1f} 秒)"
+                )
+                print("   🚫 自动切换到更严格的 Whisper 模式重试...")
+                if os.path.exists(temp_srt):
+                    os.remove(temp_srt)
+                time.sleep(2)
+                continue
 
             # 成功：移动临时文件到目标路径
             if os.path.exists(srt_path): os.remove(srt_path)
