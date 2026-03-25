@@ -209,7 +209,7 @@ function findSecretsPath() {
  */
 function readAndValidateJson(filePath, schema) {
     try {
-        const content = fs.readFileSync(filePath, 'utf8');
+        const content = fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
         const data = JSON.parse(content);
         const { error, value } = schema.validate(data, { allowUnknown: true, stripUnknown: false });
         if (error) {

@@ -116,7 +116,8 @@ def deep_merge(target: Dict[str, Any], source: Dict[str, Any]) -> Dict[str, Any]
 def read_json_file(file_path: str) -> Dict[str, Any]:
     """读取JSON文件"""
     try:
-        with open(file_path, 'r', encoding='utf-8') as f:
+        # 兼容带 BOM 的 UTF-8 JSON 配置文件
+        with open(file_path, 'r', encoding='utf-8-sig') as f:
             return json.load(f)
     except Exception as e:
         raise Exception(f"Failed to read JSON file {file_path}: {e}")
