@@ -423,5 +423,13 @@
             "enabled": true,
             "endpoint": "/health"
         }
+    },
+    "whisper": {
+        "gpuDetection": {
+            "enabled": true,
+            "gpuUtilizationThreshold": 15,
+            "vramUsageThreshold": 30,
+            "checkIntervalSeconds": 30
+        }
     }
 }
