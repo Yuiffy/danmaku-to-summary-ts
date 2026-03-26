@@ -98,6 +98,7 @@ const WHISPER_LOCK_TIMEOUT = 60 * 60 * 1000; // 1小时超时(锁文件过期时
 const WHISPER_LOCK_RETRY_INTERVAL = 10000; // 10秒重试间隔
 const WHISPER_MAX_RETRIES = 360; // 最多重试 360 次（60分钟）- 增加到1小时以应对显存不足的情况
 const WHISPER_PROGRESS_LOG_INTERVAL = 30000; // 每30秒输出一次详细进度
+let hasLoggedGpuDetectionConfig = false;
 
 /**
  * 通过 nvidia-smi 查询 GPU 占用情况
@@ -137,6 +138,32 @@ async function getGpuUsage() {
     });
 }
 
+function logGpuDetectionConfig(config) {
+    if (hasLoggedGpuDetectionConfig) {
+        return;
+    }
+
+    hasLoggedGpuDetectionConfig = true;
+    const gpuConfig = config.whisper?.gpuDetection;
+    const configPath = configLoader.findConfigPath();
+
+    if (!gpuConfig) {
+        console.warn(`⚠️ GPU 检测配置缺失: ${configPath} 中未找到 whisper.gpuDetection，Whisper 将直接启动`);
+        return;
+    }
+
+    console.log(
+        `🧩 GPU 检测配置: file=${configPath}, enabled=${gpuConfig.enabled === true}, ` +
+        `gpuUtilThreshold=${gpuConfig.gpuUtilizationThreshold ?? 60}%, ` +
+        `vramThreshold=${gpuConfig.vramUsageThreshold ?? 70}%, ` +
+        `checkInterval=${gpuConfig.checkIntervalSeconds ?? 30}s`
+    );
+
+    if (!gpuConfig.enabled) {
+        console.warn('⚠️ GPU 检测已禁用，Whisper 不会因为 GPU 占用而等待');
+    }
+}
+
 /**
  * 根据配置判断 GPU 是否繁忙
  * @returns {Promise<{ busy: boolean, reason: string }>}
@@ -144,6 +171,7 @@ async function getGpuUsage() {
 async function isGpuBusy() {
     const config = configLoader.getConfig();
     const gpuConfig = config.whisper?.gpuDetection;
+    logGpuDetectionConfig(config);
 
     if (!gpuConfig?.enabled) {
         return { busy: false, reason: '' };
@@ -151,6 +179,7 @@ async function isGpuBusy() {
 
     const usage = await getGpuUsage();
     if (!usage) {
+        console.warn('⚠️ 无法获取 GPU 占用数据（nvidia-smi 不可用或执行失败），跳过 GPU 检测');
         return { busy: false, reason: '' }; // nvidia-smi 不可用，跳过检测
     }
 
