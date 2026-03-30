@@ -4,10 +4,28 @@
  */
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const QUEUE_FILE = path.join(__dirname, '.whisper_queue.json');
 const LOCK_FILE = path.join(__dirname, '.whisper_lock');
+
+function getSystemBootTimestamp() {
+    return Math.floor(Date.now() - (os.uptime() * 1000));
+}
+
+function isProcessAlive(pid) {
+    if (!Number.isInteger(pid) || pid <= 0) {
+        return false;
+    }
+
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (error) {
+        return error.code === 'EPERM';
+    }
+}
 
 /**
  * 队列任务结构
@@ -190,11 +208,16 @@ class WhisperQueueManager {
             if (fs.existsSync(LOCK_FILE)) {
                 const lockContent = fs.readFileSync(LOCK_FILE, 'utf8');
                 const lock = JSON.parse(lockContent);
-                const age = Date.now() - lock.timestamp;
-                
-                // 锁文件未过期，说明有任务在处理
-                const LOCK_TIMEOUT = 60 * 60 * 1000; // 1小时
-                if (age < LOCK_TIMEOUT) {
+                const currentBootTime = getSystemBootTimestamp();
+                const hasSameBootTime = typeof lock.bootTime !== 'number'
+                    || Math.abs(currentBootTime - lock.bootTime) <= 5 * 60 * 1000;
+                const hasLiveProcess = isProcessAlive(lock.pid);
+                const age = typeof lock.timestamp === 'number'
+                    ? Date.now() - lock.timestamp
+                    : Number.POSITIVE_INFINITY;
+
+                const LOCK_TIMEOUT = 24 * 60 * 60 * 1000; // 24??
+                if (hasSameBootTime && hasLiveProcess && age < LOCK_TIMEOUT) {
                     return true;
                 }
             }

@@ -29,6 +29,7 @@ TOLERANCE_SECONDS = 60
 MAX_RETRIES = 3
 
 VIDEO_EXTS = {'.mp4', '.flv', '.mkv', '.avi', '.mov', '.webm', '.ts', '.m4v', '.m4a', '.mp3'}
+GPU_WAIT_TIMEOUT_SECONDS = 24 * 60 * 60
 
 
 def get_duration_fast(file_path):
@@ -388,10 +389,10 @@ def main():
                 print("⚠️  显存不足,等待显存释放...")
                 print("💡 提示: 如果您正在玩游戏或使用显存,请稍等或关闭相关程序")
                 
-                # 等待显存释放(最多30分钟)
+                # 等待显存释放(最多24小时)
                 wait_result = subprocess.run(
-                    ['python', check_script, '--wait', '1800'],
-                    timeout=1900  # 比等待时间多100秒
+                    ['python', check_script, '--wait', str(GPU_WAIT_TIMEOUT_SECONDS)],
+                    timeout=GPU_WAIT_TIMEOUT_SECONDS + 100  # 比等待时间多100秒
                 )
                 
                 if wait_result.returncode != 0:

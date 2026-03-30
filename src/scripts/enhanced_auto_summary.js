@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 const crypto = require('crypto');
@@ -94,11 +95,57 @@ async function getVideoDuration(filePath) {
 
 // Whisper 文件锁 - 防止并发调用导致 GPU 冲突
 const WHISPER_LOCK_FILE = path.join(__dirname, '.whisper_lock');
-const WHISPER_LOCK_TIMEOUT = 60 * 60 * 1000; // 1小时超时(锁文件过期时间)
+const WHISPER_LOCK_TIMEOUT = 24 * 60 * 60 * 1000; // 24小时超时(锁文件过期时间)
 const WHISPER_LOCK_RETRY_INTERVAL = 10000; // 10秒重试间隔
-const WHISPER_MAX_RETRIES = 360; // 最多重试 360 次（60分钟）- 增加到1小时以应对显存不足的情况
+const WHISPER_MAX_RETRIES = 24 * 60 * 6; // 最多重试 8640 次（24小时）
 const WHISPER_PROGRESS_LOG_INTERVAL = 30000; // 每30秒输出一次详细进度
 let hasLoggedGpuDetectionConfig = false;
+
+function getSystemBootTimestamp() {
+    return Math.floor(Date.now() - (os.uptime() * 1000));
+}
+
+function isProcessAlive(pid) {
+    if (!Number.isInteger(pid) || pid <= 0) {
+        return false;
+    }
+
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (error) {
+        return error.code === 'EPERM';
+    }
+}
+
+function getInvalidLockReason(lock) {
+    if (!lock || typeof lock !== 'object') {
+        return 'invalid lock content';
+    }
+
+    if (typeof lock.bootTime === 'number') {
+        const currentBootTime = getSystemBootTimestamp();
+        const bootTimeDiff = Math.abs(currentBootTime - lock.bootTime);
+        if (bootTimeDiff > 5 * 60 * 1000) {
+            return 'system reboot detected';
+        }
+    }
+
+    if (!isProcessAlive(lock.pid)) {
+        return `lock holder process not found (PID: ${lock.pid ?? 'unknown'})`;
+    }
+
+    if (typeof lock.timestamp !== 'number') {
+        return 'lock timestamp missing';
+    }
+
+    const age = Date.now() - lock.timestamp;
+    if (age > WHISPER_LOCK_TIMEOUT) {
+        return `lock expired (${(age / 60000).toFixed(1)} minutes old, PID: ${lock.pid})`;
+    }
+
+    return null;
+}
 
 /**
  * 通过 nvidia-smi 查询 GPU 占用情况
@@ -211,6 +258,7 @@ async function acquireWhisperLock() {
             const lockData = {
                 pid: process.pid,
                 startTime: new Date().toISOString(),
+                bootTime: getSystemBootTimestamp(),
                 timestamp: Date.now(),
                 videoFile: process.argv[2] ? path.basename(process.argv[2]) : 'unknown'
             };
@@ -256,12 +304,12 @@ async function acquireWhisperLock() {
                 try {
                     const lockContent = fs.readFileSync(WHISPER_LOCK_FILE, 'utf8');
                     const lock = JSON.parse(lockContent);
-                    const age = Date.now() - lock.timestamp;
-                    
-                    if (age > WHISPER_LOCK_TIMEOUT) {
-                        console.warn(`⚠️  检测到过期锁文件 (${(age / 60000).toFixed(1)} 分钟前，PID: ${lock.pid})，尝试删除...`);
+                    const invalidReason = getInvalidLockReason(lock);
+
+                    if (invalidReason) {
+                        console.warn(`??  Invalid lock detected (${invalidReason}), removing...`);
                         fs.unlinkSync(WHISPER_LOCK_FILE);
-                        continue; // 重试
+                        continue; // retry
                     }
                     
                     const elapsed = Date.now() - startTime;

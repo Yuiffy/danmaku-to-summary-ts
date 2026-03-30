@@ -10,6 +10,8 @@ import subprocess
 import json
 import time
 
+DEFAULT_MAX_WAIT_SECONDS = 24 * 60 * 60
+
 def check_gpu_memory():
     """
     检查GPU显存状态
@@ -105,12 +107,12 @@ def check_gpu_memory():
             'message': f'检查显存时出错: {str(e)}'
         }
 
-def wait_for_gpu_memory(max_wait_seconds=1800, check_interval=30):
+def wait_for_gpu_memory(max_wait_seconds=DEFAULT_MAX_WAIT_SECONDS, check_interval=30):
     """
     等待显存释放
     
     Args:
-        max_wait_seconds: 最大等待时间(秒),默认30分钟
+        max_wait_seconds: 最大等待时间(秒),默认24小时
         check_interval: 检查间隔(秒),默认30秒
     
     Returns:
@@ -156,7 +158,7 @@ if __name__ == '__main__':
     # 命令行模式
     if len(sys.argv) > 1 and sys.argv[1] == '--wait':
         # 等待模式
-        max_wait = int(sys.argv[2]) if len(sys.argv) > 2 else 1800
+        max_wait = int(sys.argv[2]) if len(sys.argv) > 2 else DEFAULT_MAX_WAIT_SECONDS
         success = wait_for_gpu_memory(max_wait_seconds=max_wait)
         sys.exit(0 if success else 1)
     else:
