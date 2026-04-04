@@ -117,21 +117,6 @@ export class DelayedReplyService implements IDelayedReplyService {
       }
       this.logger.info(`✅ 延迟回复配置已加载: enabled=${delayedReplySettings.enabled}, anchorEnabled=${delayedReplySettings.anchorEnabled}, delayMinutes=${delayedReplySettings.delayMinutes}`);
 
-      // 获取主播UID
-      let uid = BilibiliConfigHelper.getAnchorUid(roomId);
-      this.logger.info(`🔍 配置中的UID: ${uid || '未配置'}`);
-      
-      if (!uid) {
-        // 如果配置中没有 UID，尝试通过 API 获取
-        this.logger.info(`📡 通过API获取UID: roomId=${roomId}`);
-        uid = await this.bilibiliAPI.getUidByRoomId(roomId);
-        if (!uid) {
-          this.logger.warn('⚠️  无法获取主播UID，跳过添加任务', { roomId });
-          return '';
-        }
-        this.logger.info(`✅ API获取UID成功: ${uid}`);
-      }
-
       // 检查是否已有待处理或处理中的任务（去重逻辑）
       const now = new Date();
       const existingTask = Array.from(this.tasks.values()).find(
@@ -166,11 +151,9 @@ export class DelayedReplyService implements IDelayedReplyService {
         : delayedReplySettings.delayMinutes * 60 * 1000;
       const scheduledTime = new Date(Date.now() + delayMs);
 
-      // 创建任务
       const task: DelayedReplyTask = {
         taskId: generateUUID(),
         roomId,
-        uid,
         goodnightTextPath,
         comicImagePath,
         createTime: new Date(),
@@ -182,17 +165,37 @@ export class DelayedReplyService implements IDelayedReplyService {
         checkCount: 0
       };
 
+      try {
+        task.uid = await this.resolveUidForRoom(roomId, task.taskId);
+      } catch (error) {
+        if (!this.isUidLookupRetriableError(error)) {
+          throw error;
+        }
+
+        task.error = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`UID解析失败，任务将进入队列等待重试: ${task.taskId}`, {
+          roomId,
+          scheduledTime: scheduledTime.toISOString(),
+          error: task.error
+        });
+      }
+
       // 保存任务
       this.tasks.set(task.taskId, task);
       await this.store.addTask(task);
 
       this.logger.info(`添加延迟回复任务: ${task.taskId}`, {
         roomId,
-        uid,
+        uid: task.uid,
         scheduledTime: scheduledTime.toISOString(),
         liveStartTime: liveStartTime?.toISOString(),
         liveEndTime: liveEndTime?.toISOString()
       });
+
+      if (!task.uid) {
+        this.scheduleTask(task);
+        return task.taskId;
+      }
 
       // 🚀 立即检查是否已有符合条件的动态
       this.logger.info(`🔍 [立即检查] 检查是否已有符合条件的晚安动态`, { taskId: task.taskId });
@@ -463,6 +466,8 @@ export class DelayedReplyService implements IDelayedReplyService {
         uid: task.uid
       });
 
+      const uid = await this.ensureTaskUid(task);
+
       // 智能等待晚安动态逻辑
       const MAX_CHECK_COUNT = 10; // 最多检查10次（20分钟）
       const CHECK_INTERVAL_MS = 2 * 60 * 1000; // 2分钟检查一次
@@ -516,7 +521,7 @@ export class DelayedReplyService implements IDelayedReplyService {
           });
         }
         
-        finalDynamic = await this.getLatestDynamic(task.uid!);
+        finalDynamic = await this.getLatestDynamic(uid);
         
         if (!finalDynamic) {
           const errorMsg = '未找到最新动态';
@@ -660,6 +665,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       if (task.retryCount < maxRetries) {
         task.retryCount++;
         task.status = 'pending';
+        task.error = undefined;
 
         // 计算重试延迟
         const retryDelayMinutes = delayedReplyConfig.retryDelayMinutes;
@@ -780,5 +786,88 @@ export class DelayedReplyService implements IDelayedReplyService {
       this.logger.error('获取最新动态失败', { error, uid });
       return null;
     }
+  }
+
+  /**
+   * 确保任务拥有可用的UID
+   */
+  private async ensureTaskUid(task: DelayedReplyTask): Promise<string> {
+    if (task.uid) {
+      return task.uid;
+    }
+
+    const uid = await this.resolveUidForRoom(task.roomId, task.taskId);
+    if (!uid) {
+      throw new Error(`无法解析主播UID: roomId=${task.roomId}`);
+    }
+
+    task.uid = uid;
+    task.error = undefined;
+    await this.store.updateTask(task.taskId, {
+      uid,
+      error: undefined
+    });
+
+    return uid;
+  }
+
+  /**
+   * 解析主播UID
+   */
+  private async resolveUidForRoom(roomId: string, currentTaskId?: string): Promise<string | undefined> {
+    const configuredUid = BilibiliConfigHelper.getAnchorUid(roomId);
+    this.logger.info(`🔍 配置中的UID: ${configuredUid || '未配置'}`, { roomId });
+    if (configuredUid) {
+      return configuredUid;
+    }
+
+    const historicalUid = this.findHistoricalUid(roomId, currentTaskId);
+    if (historicalUid) {
+      this.logger.info(`🗂️  使用历史任务中的UID: ${historicalUid}`, { roomId });
+      return historicalUid;
+    }
+
+    this.logger.info(`📡 通过API获取UID: roomId=${roomId}`);
+    const apiUid = await this.bilibiliAPI.getUidByRoomId(roomId);
+    if (apiUid) {
+      this.logger.info(`✅ API获取UID成功: ${apiUid}`, { roomId });
+    }
+    return apiUid;
+  }
+
+  /**
+   * 从历史任务中查找已知UID
+   */
+  private findHistoricalUid(roomId: string, currentTaskId?: string): string | undefined {
+    const historicalTasks = Array.from(this.tasks.values())
+      .filter(task =>
+        task.roomId === roomId &&
+        task.taskId !== currentTaskId &&
+        !!task.uid
+      )
+      .sort((a, b) => b.createTime.getTime() - a.createTime.getTime());
+
+    return historicalTasks[0]?.uid || undefined;
+  }
+
+  /**
+   * 判断UID解析失败是否适合进入队列重试
+   */
+  private isUidLookupRetriableError(error: unknown): boolean {
+    if (error instanceof Error) {
+      const message = error.message.toLowerCase();
+      return (
+        message.includes('timeout') ||
+        message.includes('timed out') ||
+        message.includes('cannot connect') ||
+        message.includes('connect to host') ||
+        message.includes('econnreset') ||
+        message.includes('etimedout') ||
+        message.includes('信号灯超时时间已到') ||
+        message.includes('网络')
+      );
+    }
+
+    return false;
   }
 }

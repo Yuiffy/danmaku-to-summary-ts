@@ -164,7 +164,7 @@
             "31368705": {
                 "audioOnly": true,
                 "referenceImage": "public/reference_images/米汀.png",
-                "characterDescription": "米汀Nagisa，银发灰瞳，戴帽子的女性推理社社员。粉丝“旁汀生”是怀表或者猫头鹰形象小生物",
+                "characterDescription": "米汀Nagisa，银发灰瞳，戴帽子的女性推理社社员。粉丝“旁汀生”是白色猫头鹰形象",
                 "anchorName": "米米",
                 "fanName": "旁汀生",
                 "enableTextGeneration": true,
@@ -428,7 +428,7 @@
         "gpuDetection": {
             "enabled": true,
             "gpuUtilizationThreshold": 15,
-            "vramUsageThreshold": 30,
+            "vramUsageThreshold": 35,
             "checkIntervalSeconds": 30
         }
     }
