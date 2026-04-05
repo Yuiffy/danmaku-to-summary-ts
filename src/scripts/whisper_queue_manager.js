@@ -34,7 +34,7 @@ function isProcessAlive(pid) {
  * @property {string} mediaPath - 媒体文件路径
  * @property {string} roomId - 房间ID（可选）
  * @property {number} addedTime - 添加时间戳
- * @property {string} status - 任务状态: 'pending' | 'processing' | 'completed' | 'failed'
+ * @property {string} status - 任务状态: 'pending' | 'processing' | 'completed' | 'completed_with_cleanup_crash' | 'failed'
  * @property {number} [startTime] - 开始处理时间戳
  * @property {number} [completedTime] - 完成时间戳
  * @property {string} [error] - 错误信息
@@ -60,7 +60,7 @@ class WhisperQueueManager {
                 // 显示队列状态
                 const pending = this.queue.filter(t => t.status === 'pending').length;
                 const processing = this.queue.filter(t => t.status === 'processing').length;
-                const completed = this.queue.filter(t => t.status === 'completed').length;
+                const completed = this.queue.filter(t => t.status === 'completed' || t.status === 'completed_with_cleanup_crash').length;
                 const failed = this.queue.filter(t => t.status === 'failed').length;
                 
                 if (this.queue.length > 0) {
@@ -151,15 +151,24 @@ class WhisperQueueManager {
      * 标记任务为已完成
      * @param {string} taskId - 任务ID
      */
-    markCompleted(taskId) {
+    markCompleted(taskId, options = {}) {
         const task = this.queue.find(t => t.id === taskId);
         if (task) {
-            task.status = 'completed';
+            task.status = options.status || 'completed';
             task.completedTime = Date.now();
+            if (options.warning) {
+                task.warning = options.warning;
+            }
             this.saveQueue();
             
             const duration = task.startTime ? ((task.completedTime - task.startTime) / 1000).toFixed(0) : 'N/A';
-            console.log(`✅ 任务完成: ${path.basename(task.mediaPath)} (耗时: ${duration}秒)`);
+            const statusLabel = task.status === 'completed_with_cleanup_crash'
+                ? '⚠️ 任务完成（清理异常）'
+                : '✅ 任务完成';
+            console.log(`${statusLabel}: ${path.basename(task.mediaPath)} (耗时: ${duration}秒)`);
+            if (options.warning) {
+                console.log(`   警告: ${options.warning}`);
+            }
             
             // 清理旧的已完成任务（保留最近100个）
             this.cleanupOldTasks();
@@ -253,7 +262,7 @@ class WhisperQueueManager {
      */
     cleanupOldTasks() {
         const completedTasks = this.queue.filter(t => 
-            t.status === 'completed' || t.status === 'failed'
+            t.status === 'completed' || t.status === 'completed_with_cleanup_crash' || t.status === 'failed'
         );
         
         if (completedTasks.length > 100) {

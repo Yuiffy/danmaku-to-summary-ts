@@ -89,14 +89,43 @@ def call_tuzi_gemini_async(
         print(f"[DEBUG] 模型: {model}, 尺寸: {size}, 提示词长度: {len(prompt)}, 参考图数量: {len(files_to_upload)}")
         
         # 第一步：创建任务
-        create_response = requests.post(
-            create_api_url,
-            headers=headers,
-            data=data,
-            files=files_to_upload if files_to_upload else None,
-            timeout=timeout,
-            proxies=proxies
-        )
+        # 注意：即使没有参考图，也需要使用multipart/form-data格式
+        # 当files_to_upload为空时，requests不会自动设置Content-Type为multipart/form-data
+        # 所以我们需要手动处理
+        if files_to_upload:
+            # 有参考图，正常发送
+            create_response = requests.post(
+                create_api_url,
+                headers=headers,
+                data=data,
+                files=files_to_upload,
+                timeout=timeout,
+                proxies=proxies
+            )
+        else:
+            # 没有参考图，手动构建multipart/form-data
+            from requests_toolbelt.multipart.encoder import MultipartEncoder
+            
+            # 构建multipart数据
+            fields = {
+                'model': model,
+                'prompt': prompt,
+                'size': size
+            }
+            
+            # 创建MultipartEncoder
+            multipart_data = MultipartEncoder(fields=fields)
+            
+            # 更新headers，设置正确的Content-Type
+            headers['Content-Type'] = multipart_data.content_type
+            
+            create_response = requests.post(
+                create_api_url,
+                headers=headers,
+                data=multipart_data,
+                timeout=timeout,
+                proxies=proxies
+            )
 
         if create_response.status_code != 200:
             print(f"[ERROR] 创建任务失败: HTTP {create_response.status_code}")

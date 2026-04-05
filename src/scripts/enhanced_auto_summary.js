@@ -3,7 +3,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
 const crypto = require('crypto');
 const http = require('http');
 
@@ -100,6 +100,10 @@ const WHISPER_LOCK_RETRY_INTERVAL = 10000; // 10秒重试间隔
 const WHISPER_MAX_RETRIES = 24 * 60 * 6; // 最多重试 8640 次（24小时）
 const WHISPER_PROGRESS_LOG_INTERVAL = 30000; // 每30秒输出一次详细进度
 let hasLoggedGpuDetectionConfig = false;
+let activeWhisperProcess = null;
+let whisperCleanupInProgress = null;
+let activeWhisperCleanupContext = null;
+let whisperSignalHooksInstalled = false;
 
 function getSystemBootTimestamp() {
     return Math.floor(Date.now() - (os.uptime() * 1000));
@@ -182,6 +186,219 @@ async function getGpuUsage() {
         });
 
         child.on('error', () => resolve(null)); // nvidia-smi 不存在
+    });
+}
+
+function execFileAsync(command, args, options = {}) {
+    return new Promise((resolve, reject) => {
+        execFile(command, args, { windowsHide: true, ...options }, (error, stdout, stderr) => {
+            if (error) {
+                reject(error);
+                return;
+            }
+            resolve({ stdout, stderr });
+        });
+    });
+}
+
+async function getRelevantProcessSnapshot() {
+    try {
+        const { stdout } = await execFileAsync('powershell', [
+            '-NoProfile',
+            '-Command',
+            'Get-Process python,node,ffmpeg -ErrorAction SilentlyContinue | Select-Object Id,ProcessName,Path | ConvertTo-Json -Compress'
+        ]);
+        const trimmed = stdout.trim();
+        if (!trimmed) {
+            return [];
+        }
+
+        const parsed = JSON.parse(trimmed);
+        const rows = Array.isArray(parsed) ? parsed : [parsed];
+        return rows.map(row => `pid=${row.Id} name=${row.ProcessName} path=${row.Path || 'unknown'}`);
+    } catch {
+        return [];
+    }
+}
+
+async function getGpuProcessSnapshot() {
+    try {
+        const { stdout } = await execFileAsync('nvidia-smi', [
+            '--query-compute-apps=pid,process_name,used_memory',
+            '--format=csv,noheader,nounits'
+        ]);
+        return stdout
+            .trim()
+            .split(/\r?\n/)
+            .map(line => line.trim())
+            .filter(Boolean);
+    } catch {
+        return [];
+    }
+}
+
+async function logWhisperResourceSnapshot(stage) {
+    const usage = await getGpuUsage();
+    if (usage) {
+        const vramPct = usage.vramTotal > 0 ? (usage.vramUsed / usage.vramTotal * 100) : 0;
+        console.log(`📸 [Whisper资源快照:${stage}] GPU=${usage.gpuUtil.toFixed(0)}%, VRAM=${usage.vramUsed.toFixed(0)}/${usage.vramTotal.toFixed(0)}MB (${vramPct.toFixed(1)}%)`);
+    } else {
+        console.log(`📸 [Whisper资源快照:${stage}] GPU占用数据不可用`);
+    }
+
+    const gpuProcesses = await getGpuProcessSnapshot();
+    if (gpuProcesses.length > 0) {
+        console.log(`📸 [Whisper资源快照:${stage}] GPU进程: ${gpuProcesses.join(' | ')}`);
+    } else {
+        console.log(`📸 [Whisper资源快照:${stage}] GPU进程: 无或不可获取`);
+    }
+
+    const relevantProcesses = await getRelevantProcessSnapshot();
+    if (relevantProcesses.length > 0) {
+        console.log(`📸 [Whisper资源快照:${stage}] 相关进程: ${relevantProcesses.join(' | ')}`);
+    } else {
+        console.log(`📸 [Whisper资源快照:${stage}] 相关进程: 无`);
+    }
+}
+
+function waitForChildExit(child, timeoutMs) {
+    return new Promise((resolve) => {
+        if (!child || child.exitCode !== null || child.killed) {
+            resolve(true);
+            return;
+        }
+
+        const timer = setTimeout(() => {
+            cleanup();
+            resolve(false);
+        }, timeoutMs);
+
+        const onExit = () => {
+            cleanup();
+            resolve(true);
+        };
+
+        const cleanup = () => {
+            clearTimeout(timer);
+            child.removeListener('close', onExit);
+            child.removeListener('exit', onExit);
+        };
+
+        child.once('close', onExit);
+        child.once('exit', onExit);
+    });
+}
+
+async function terminateChildProcessTree(child, label = 'Whisper子进程', gracePeriodMs = 5000) {
+    const pid = child?.pid;
+    if (!pid) {
+        console.warn(`⚠️ ${label} 没有有效 PID，跳过进程树清理`);
+        return;
+    }
+
+    try {
+        console.warn(`🧹 ${label} 开始温和终止，PID=${pid}`);
+        child.kill('SIGTERM');
+    } catch (error) {
+        console.warn(`⚠️ ${label} 发送 SIGTERM 失败，PID=${pid}: ${error.message}`);
+    }
+
+    const exitedGracefully = await waitForChildExit(child, gracePeriodMs);
+    if (exitedGracefully) {
+        console.log(`🧹 ${label} 已在宽限期内退出，PID=${pid}`);
+        return;
+    }
+
+    try {
+        console.warn(`🧹 ${label} 宽限期后仍存活，执行 taskkill /T /F，PID=${pid}`);
+        await execFileAsync('taskkill', ['/PID', String(pid), '/T', '/F']);
+    } catch (error) {
+        console.warn(`⚠️ ${label} taskkill 失败，PID=${pid}: ${error.message}`);
+    }
+
+    const exitedAfterForce = await waitForChildExit(child, 3000);
+    if (exitedAfterForce) {
+        console.log(`🧹 ${label} 已强制结束，PID=${pid}`);
+    } else {
+        console.warn(`⚠️ ${label} 强制结束后仍未确认退出，PID=${pid}`);
+    }
+}
+
+async function waitForGpuResidueCheck() {
+    const attempts = 3;
+    for (let i = 1; i <= attempts; i++) {
+        await new Promise(r => setTimeout(r, 1500));
+        const gpuProcesses = await getGpuProcessSnapshot();
+        if (gpuProcesses.length === 0) {
+            console.log(`✅ GPU 残留检查通过 (${i}/${attempts})，未检测到计算进程残留`);
+            return;
+        }
+        if (i === attempts) {
+            console.warn(`⚠️ gpu_residue_detected: ${gpuProcesses.join(' | ')}`);
+        }
+    }
+}
+
+async function cleanupWhisperProcess(reason = 'unknown') {
+    if (whisperCleanupInProgress) {
+        return whisperCleanupInProgress;
+    }
+
+    whisperCleanupInProgress = (async () => {
+        const child = activeWhisperProcess;
+        const context = activeWhisperCleanupContext;
+        console.log(`🧹 Whisper cleanup begin: reason=${reason}, pid=${child?.pid ?? 'none'}, media=${context?.mediaPath ? path.basename(context.mediaPath) : 'unknown'}`);
+        await logWhisperResourceSnapshot(`cleanup-before:${reason}`);
+
+        if (child) {
+            await terminateChildProcessTree(child, 'Whisper子进程');
+        }
+
+        activeWhisperProcess = null;
+        activeWhisperCleanupContext = null;
+        await logWhisperResourceSnapshot(`cleanup-after:${reason}`);
+        await waitForGpuResidueCheck();
+        console.log(`🧹 Whisper cleanup end: reason=${reason}`);
+    })();
+
+    try {
+        await whisperCleanupInProgress;
+    } finally {
+        whisperCleanupInProgress = null;
+    }
+}
+
+function installWhisperSignalHooks() {
+    if (whisperSignalHooksInstalled) {
+        return;
+    }
+    whisperSignalHooksInstalled = true;
+
+    const wrapCleanup = (signal, exitCode) => async () => {
+        try {
+            await cleanupWhisperProcess(`parent-${signal}`);
+        } finally {
+            process.exit(exitCode);
+        }
+    };
+
+    process.on('SIGINT', wrapCleanup('SIGINT', 130));
+    process.on('SIGTERM', wrapCleanup('SIGTERM', 143));
+    process.on('uncaughtException', async (error) => {
+        console.error(`❌ uncaughtException: ${error.stack || error.message}`);
+        try {
+            await cleanupWhisperProcess('uncaughtException');
+        } finally {
+            process.exit(1);
+        }
+    });
+    process.on('unhandledRejection', async (reason) => {
+        console.error(`❌ unhandledRejection: ${reason && reason.stack ? reason.stack : reason}`);
+        try {
+            await cleanupWhisperProcess('unhandledRejection');
+        } finally {
+            process.exit(1);
+        }
     });
 }
 
@@ -383,6 +600,60 @@ async function runCommandWithRetry(command, args, options = {}, maxRetries = 2) 
     throw lastError; // 所有重试都失败则抛出错误
 }
 
+async function runWhisperWithLifecycle(pythonScript, mediaPath) {
+    installWhisperSignalHooks();
+    await logWhisperResourceSnapshot('before-spawn');
+
+    return new Promise((resolve, reject) => {
+        const child = spawn('python', [pythonScript, mediaPath], {
+            env: { ...process.env, PYTHONUTF8: '1' },
+            windowsHide: true,
+            stdio: ['ignore', 'pipe', 'pipe']
+        });
+
+        activeWhisperProcess = child;
+        activeWhisperCleanupContext = { mediaPath, pythonScript, startedAt: Date.now() };
+        console.log(`🚀 Whisper 子进程已启动: PID=${child.pid}, target=${path.basename(mediaPath)}`);
+
+        child.stdout?.on('data', (data) => {
+            process.stdout.write(data);
+        });
+
+        child.stderr?.on('data', (data) => {
+            process.stderr.write(data);
+        });
+
+        child.on('error', async (error) => {
+            try {
+                await cleanupWhisperProcess(`spawn-error:${error.message}`);
+            } catch (cleanupError) {
+                console.warn(`⚠️ spawn-error cleanup 失败: ${cleanupError.message}`);
+            }
+            reject(error);
+        });
+
+        child.on('close', async (code, signal) => {
+            const abnormal = code !== 0;
+            try {
+                await cleanupWhisperProcess(abnormal ? `exit-${code ?? 'null'}${signal ? `-${signal}` : ''}` : 'normal-exit');
+            } catch (cleanupError) {
+                reject(cleanupError);
+                return;
+            }
+
+            if (abnormal) {
+                const error = new Error(`Command failed with exit code ${code}${signal ? ` (signal: ${signal})` : ''}`);
+                error.exitCode = code;
+                error.signal = signal;
+                reject(error);
+                return;
+            }
+
+            resolve();
+        });
+    });
+}
+
 async function processMedia(mediaPath, taskId = null) {
     const dir = path.dirname(mediaPath);
     const nameNoExt = path.basename(mediaPath, path.extname(mediaPath));
@@ -428,14 +699,18 @@ async function processMedia(mediaPath, taskId = null) {
         }
         
         try {
+            let completedWithCleanupCrash = false;
+            let completionWarning = null;
+
             try {
-                await runCommand('python', [pythonScript, mediaPath], {
-                    env: { ...process.env, PYTHONUTF8: '1' }
-                });
+                await runWhisperWithLifecycle(pythonScript, mediaPath);
             } catch (error) {
-                // 特殊处理：如果进程报错（比如 code 3221226505/0xC0000409），但文件确实生成了，视为成功
+                // 特殊处理：如果进程报错（比如 code 3221226505/0xC0000409），但文件确实生成了，视为可兼容完成
                 if (fs.existsSync(srtPath) && fs.statSync(srtPath).size > 100) {
+                    completedWithCleanupCrash = true;
+                    completionWarning = `Whisper 进程异常退出但产物有效: ${error.message}`;
                     console.log(`⚠️  Whisper 进程异常退出 (可能在资源释放阶段崩溃)，但检测到有效输出文件，继续后续流程。`);
+                    console.log(`⚠️  已标记任务状态: completed_with_cleanup_crash`);
                 } else {
                     throw error;
                 }
@@ -443,7 +718,9 @@ async function processMedia(mediaPath, taskId = null) {
             
             // 标记任务完成
             if (taskId) {
-                queueManager.markCompleted(taskId);
+                queueManager.markCompleted(taskId, completedWithCleanupCrash
+                    ? { status: 'completed_with_cleanup_crash', warning: completionWarning }
+                    : {});
             }
         } catch (error) {
             // 标记任务失败
@@ -452,6 +729,7 @@ async function processMedia(mediaPath, taskId = null) {
             }
             throw error;
         } finally {
+            await cleanupWhisperProcess('processMedia-finally');
             // 释放锁
             releaseWhisperLock();
         }

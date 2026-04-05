@@ -11,6 +11,7 @@ import { IDelayedReplyService } from '../../../services/bilibili/interfaces/IDel
 import { LiveSessionManager, LiveSegment } from '../LiveSessionManager';
 import { FileMerger } from '../FileMerger';
 import { VideoScreenshotService } from '../../video/VideoScreenshotService';
+import { listRelevantProcesses, terminateProcessTree } from '../../../utils/processCleanup';
 
 /**
  * 延迟动作类型
@@ -768,13 +769,20 @@ export class MikufansWebhookHandler implements IWebhookHandler {
           SCREENSHOT_PATH: screenshotPath || ''  // 传递截图路径给Python脚本
         }
       });
+      this.logger.info(`Mikufans处理子进程已启动: pid=${ps.pid ?? 'unknown'}, file=${path.basename(videoPath)}`);
 
       // 设置超时
       const processTimeout = config.webhook.timeouts.processTimeout || 30 * 60 * 1000; // 30分钟
-      const timeoutId = setTimeout(() => {
+      const timeoutId = setTimeout(async () => {
         this.logger.warn(`进程超时，强制终止: ${path.basename(videoPath)}`);
-        if (ps.pid) {
-          process.kill(ps.pid, 'SIGTERM');
+        await terminateProcessTree(ps, {
+          gracePeriodMs: 5000,
+          label: `Mikufans处理进程(${path.basename(videoPath)})`,
+          logger: this.logger
+        });
+        const processes = await listRelevantProcesses();
+        if (processes.length > 0) {
+          this.logger.warn(`超时清理后的相关进程快照: ${processes.join(' | ')}`);
         }
         this.duplicateGuard.markAsProcessed(videoPath);
       }, processTimeout);
