@@ -435,12 +435,17 @@ export class FileMerger {
       return null;
     }
 
-    let largestSegment = segments[0];
-    let largestSize = 0;
+    let largestSegment: LiveSegment | null = null;
+    let largestSize = -1;
 
     for (const segment of segments) {
       try {
         const stats = fs.statSync(segment.videoPath);
+        if (!stats.isFile()) {
+          this.logger.warn(`片段不是有效文件，跳过: ${segment.videoPath}`);
+          continue;
+        }
+
         if (stats.size > largestSize) {
           largestSize = stats.size;
           largestSegment = segment;
@@ -448,6 +453,11 @@ export class FileMerger {
       } catch (error) {
         this.logger.warn(`无法获取文件大小: ${segment.videoPath}`, { error });
       }
+    }
+
+    if (!largestSegment) {
+      this.logger.error(`所有片段都不可用，无法获取最大片段`);
+      return null;
     }
 
     this.logger.info(`获取最大片段: ${path.basename(largestSegment.videoPath)} (${(largestSize / 1024 / 1024).toFixed(2)}MB)`);

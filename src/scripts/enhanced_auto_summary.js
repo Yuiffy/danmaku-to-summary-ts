@@ -465,12 +465,13 @@ async function isGpuBusy() {
     return { busy: false, reason: info };
 }
 
-async function acquireWhisperLock(taskId = null) {
+async function acquireWhisperLock(taskId = null, options = {}) {
+    const { bypassQueueTurn = false } = options;
     const startTime = Date.now();
     let lastProgressLog = 0;
     
     for (let i = 0; i < WHISPER_MAX_RETRIES; i++) {
-        if (taskId && !queueManager.isTaskNext(taskId, { reload: true })) {
+        if (!bypassQueueTurn && taskId && !queueManager.isTaskNext(taskId, { reload: true })) {
             const position = queueManager.getPendingPosition(taskId, { reload: true });
             const elapsed = Date.now() - startTime;
 
@@ -671,7 +672,7 @@ async function runWhisperWithLifecycle(pythonScript, mediaPath) {
     });
 }
 
-async function processMedia(mediaPath, taskId = null) {
+async function processMedia(mediaPath, taskId = null, options = {}) {
     const dir = path.dirname(mediaPath);
     const nameNoExt = path.basename(mediaPath, path.extname(mediaPath));
     const srtPath = path.join(dir, `${nameNoExt}.srt`);
@@ -708,7 +709,7 @@ async function processMedia(mediaPath, taskId = null) {
         console.log(`   Target: ${path.basename(mediaPath)} (${fileType})`);
 
         // 获取 Whisper 锁，防止并发调用导致 GPU 冲突
-        await acquireWhisperLock(taskId);
+        await acquireWhisperLock(taskId, options);
         
         // 标记任务为处理中
         if (taskId) {
@@ -862,6 +863,33 @@ function extractRoomIdFromFilename(filename) {
     return match ? parseInt(match[1]) : null;
 }
 
+function resolveRoomIdForFile(filePath, fallbackRoomId = null) {
+    if (fallbackRoomId) {
+        return fallbackRoomId;
+    }
+
+    const extractedRoomId = extractRoomIdFromFilename(path.basename(filePath));
+    if (extractedRoomId) {
+        console.log(`🔍 从文件名提取房间ID: ${extractedRoomId}`);
+        return extractedRoomId;
+    }
+
+    console.warn(`⚠️  无法从文件名提取房间ID: ${path.basename(filePath)}`);
+    return null;
+}
+
+function shouldBypassQueueTurn(inputPaths) {
+    if (String(process.env.BYPASS_WHISPER_QUEUE || '').toLowerCase() === 'true') {
+        return true;
+    }
+
+    if (process.env.ROOM_ID) {
+        return false;
+    }
+
+    return inputPaths.length === 1;
+}
+
 const main = async () => {
     const inputPaths = process.argv.slice(2);
 
@@ -870,13 +898,16 @@ const main = async () => {
         process.exit(1);
     }
 
-    // 获取房间ID（从环境变量或文件名）
-    const roomId = process.env.ROOM_ID ? parseInt(process.env.ROOM_ID) : null;
+    const envRoomId = process.env.ROOM_ID ? parseInt(process.env.ROOM_ID) : null;
+    const bypassQueueTurn = shouldBypassQueueTurn(inputPaths);
 
     console.log('===========================================');
     console.log('      Live Summary 增强版自动化工厂       ');
     console.log('      (支持音频处理 + AI生成)             ');
     console.log('===========================================');
+    if (bypassQueueTurn) {
+        console.log('⚡ 当前为手动单文件执行，跳过队列轮转检查，仅保留 Whisper 互斥锁');
+    }
 
     // 恢复中断的任务
     queueManager.recoverInterruptedTasks();
@@ -915,15 +946,16 @@ const main = async () => {
     const processedMediaFiles = [];
     for (const mediaFile of mediaFiles) {
         console.log(`\n--- 处理媒体文件: ${path.basename(mediaFile)} ---`);
+        const mediaRoomId = resolveRoomIdForFile(mediaFile, envRoomId);
         
         // 添加任务到队列
-        const task = queueManager.addTask(mediaFile, roomId);
+        const task = queueManager.addTask(mediaFile, mediaRoomId);
         
         // 1. 音频处理（如果需要）
-        const processedFile = await processAudioIfNeeded(mediaFile, roomId);
+        const processedFile = await processAudioIfNeeded(mediaFile, mediaRoomId);
         
         // 2. ASR生成字幕（传递 taskId）
-        const srtPath = await processMedia(processedFile, task.id);
+        const srtPath = await processMedia(processedFile, task.id, { bypassQueueTurn });
         
         if (srtPath) {
             processedMediaFiles.push(processedFile); // 记录处理后的文件
@@ -992,7 +1024,7 @@ const main = async () => {
             const highlightPath = generatedHighlightFile;
             const highlightFile = path.basename(highlightPath);
             // 优先使用环境变量中的 roomId，如果没有再从文件名提取
-            const finalRoomId = roomId || extractRoomIdFromFilename(highlightFile);
+            const finalRoomId = envRoomId || extractRoomIdFromFilename(highlightFile);
             
             console.log(`📌 处理 do_fusion_summary 生成的文件: ${highlightFile}`);
             console.log(`\n--- 处理: ${highlightFile} ---`);

@@ -731,15 +731,28 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   /**
    * 启动处理流程
    */
-  private async startProcessing(videoPath: string, xmlPath: string | null, roomId: string): Promise<void> {
+  private async startProcessing(videoPath: string, xmlPath: string | null, roomId: string): Promise<boolean> {
     try {
+      if (!fs.existsSync(videoPath) || !fs.statSync(videoPath).isFile()) {
+        this.logger.error(`处理流程未启动，视频文件不存在或无效: ${videoPath}`);
+        return false;
+      }
+
+      let validatedXmlPath = xmlPath;
+      if (validatedXmlPath) {
+        if (!fs.existsSync(validatedXmlPath) || !fs.statSync(validatedXmlPath).isFile()) {
+          this.logger.warn(`弹幕文件不存在或无效，将按无XML继续处理: ${validatedXmlPath}`);
+          validatedXmlPath = null;
+        }
+      }
+
       // 获取配置
       const config = ConfigProvider.getConfig();
       const scriptPath = 'src/scripts/enhanced_auto_summary.js'; // 硬编码路径，后续可从配置读取
 
       // 构建参数
       const args = [scriptPath, videoPath];
-      if (xmlPath) args.push(xmlPath);
+      if (validatedXmlPath) args.push(validatedXmlPath);
 
       this.logger.info(`启动Mikufans处理流程: ${path.basename(videoPath)}`);
 
@@ -830,9 +843,12 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         await this.checkAndTriggerDelayedReply(videoPath, roomId);
       });
 
+      return true;
+
     } catch (error: any) {
       this.logger.error(`启动Mikufans处理流程时出错: ${error.message}`, { error });
       this.duplicateGuard.markAsProcessed(videoPath);
+      return false;
     }
   }
 
@@ -1115,12 +1131,14 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     this.liveSessionManager.markAsProcessing(roomId);
 
     // 处理最大片段
-    await this.startProcessing(largestSegment.videoPath, largestSegment.xmlPath, session.roomId);
+    const started = await this.startProcessing(largestSegment.videoPath, largestSegment.xmlPath, session.roomId);
 
-    // ⚠️ 关键修复: 降级处理启动后立即标记会话为完成，防止下次开播时（session.status !== 'completed'）
-    // 错误复用仍含旧片段（如只狼）的 session，导致内容混入下一场直播（如鹅鸭杀）
     this.liveSessionManager.markAsCompleted(roomId);
-    this.logger.info(`✅ 降级处理已启动，会话已标记为完成: ${roomId}`);
+    if (started) {
+      this.logger.info(`✅ 降级处理已启动，会话已标记为完成: ${roomId}`);
+    } else {
+      this.logger.warn(`⚠️ 降级处理未能启动，但会话已标记为完成以避免复用脏片段: ${roomId}`);
+    }
   }
 
   /**
@@ -1140,11 +1158,14 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     this.liveSessionManager.markAsProcessing(roomId);
 
     // 直接处理单个片段
-    await this.startProcessing(segment.videoPath, segment.xmlPath, session.roomId);
-    
-    // ⚠️ 关键修复: 处理完成后立即标记为completed,防止重复处理
+    const started = await this.startProcessing(segment.videoPath, segment.xmlPath, session.roomId);
+
     this.liveSessionManager.markAsCompleted(roomId);
-    this.logger.info(`✅ 单片段处理已启动,会话已标记为完成: ${roomId}`);
+    if (started) {
+      this.logger.info(`✅ 单片段处理已启动,会话已标记为完成: ${roomId}`);
+    } else {
+      this.logger.warn(`⚠️ 单片段处理未能启动，但会话已标记为完成以避免重复复用: ${roomId}`);
+    }
   }
 
   /**

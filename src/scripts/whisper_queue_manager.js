@@ -47,6 +47,70 @@ class WhisperQueueManager {
         this.loadQueue({ silent: false });
     }
 
+    normalizeMediaPath(mediaPath) {
+        if (typeof mediaPath !== 'string') {
+            return mediaPath;
+        }
+
+        const trimmed = mediaPath.trim();
+        if (!trimmed) {
+            return trimmed;
+        }
+
+        if (/^[a-zA-Z]:[\\\/]*$/.test(trimmed) || /^[\\\/]{2}[^\\\/]+[\\\/]+[^\\\/]+[\\\/]*$/.test(trimmed)) {
+            return trimmed.replace(/[\\\/]+$/, path.sep);
+        }
+
+        return trimmed.replace(/[\\\/]+$/, '');
+    }
+
+    cleanupInvalidPendingTasks(options = {}) {
+        const { silent = true } = options;
+        const completedStatuses = new Set(['completed', 'completed_with_cleanup_crash']);
+        const completedPaths = new Set(
+            this.queue
+                .filter(task => completedStatuses.has(task.status))
+                .map(task => this.normalizeMediaPath(task.mediaPath))
+        );
+
+        const removedTasks = [];
+
+        this.queue = this.queue.filter(task => {
+            task.mediaPath = this.normalizeMediaPath(task.mediaPath);
+            const normalizedPath = task.mediaPath;
+            const isActiveTask = task.status === 'pending' || task.status === 'processing';
+            if (!isActiveTask) {
+                return true;
+            }
+
+            if (!normalizedPath || !fs.existsSync(normalizedPath)) {
+                removedTasks.push({ task, reason: 'media_missing' });
+                return false;
+            }
+
+            if (completedPaths.has(normalizedPath)) {
+                removedTasks.push({ task, reason: 'already_completed' });
+                return false;
+            }
+
+            return true;
+        });
+
+        if (removedTasks.length > 0) {
+            this.saveQueue();
+            if (!silent) {
+                console.log(`🧹 清理失效待处理任务: ${removedTasks.length} 个`);
+                removedTasks.slice(0, 10).forEach(({ task, reason }) => {
+                    const reasonLabel = reason === 'already_completed' ? '已存在完成记录' : '媒体文件不存在';
+                    console.log(`   - ${path.basename(task.mediaPath)} (${reasonLabel})`);
+                });
+                if (removedTasks.length > 10) {
+                    console.log(`   ... 还有 ${removedTasks.length - 10} 个`);
+                }
+            }
+        }
+    }
+
     /**
      * 从文件加载队列
      */
@@ -56,7 +120,11 @@ class WhisperQueueManager {
             if (fs.existsSync(QUEUE_FILE)) {
                 const content = fs.readFileSync(QUEUE_FILE, 'utf8');
                 const data = JSON.parse(content);
-                this.queue = data.tasks || [];
+                this.queue = (data.tasks || []).map(task => ({
+                    ...task,
+                    mediaPath: this.normalizeMediaPath(task.mediaPath)
+                }));
+                this.cleanupInvalidPendingTasks({ silent });
                 if (!silent) {
                     console.log(`📋 加载队列: ${this.queue.length} 个任务`);
                 }
@@ -166,6 +234,9 @@ class WhisperQueueManager {
      * @returns {QueueTask} 添加的任务
      */
     addTask(mediaPath, roomId = null) {
+        mediaPath = this.normalizeMediaPath(mediaPath);
+        this.cleanupInvalidPendingTasks({ silent: true });
+
         // 检查是否已存在相同文件的待处理任务
         const existing = this.queue.find(t => 
             t.mediaPath === mediaPath && 
