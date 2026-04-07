@@ -55,6 +55,7 @@ export class FileMerger {
       // 使用ffmpeg合并视频
       // 注意：视频流直接复制，音频流重新编码为AAC以确保不同片段间的音频格式一致性
       // 直接 -c copy 会因为空白片段（libx264+AAC）与原始FLV流参数不匹配导致音频流断裂
+      this.logger.info(`开始执行ffmpeg合并: ${path.basename(outputPath)}`);
       await this.runFfmpeg([
         '-f', 'concat',
         '-safe', '0',
@@ -66,7 +67,7 @@ export class FileMerger {
         '-avoid_negative_ts', 'make_zero', // 处理时间戳跳变
         '-y',
         outputPath
-      ]);
+      ], `合并视频 ${path.basename(outputPath)}`);
 
       // 删除临时文件列表
       fs.unlinkSync(fileListPath);
@@ -201,15 +202,16 @@ export class FileMerger {
       '-f', 'lavfi',
       '-i', `color=c=black:s=1920x1080:d=${durationSec}`,
       '-f', 'lavfi',
-      '-i', `anullsrc=r=44100:cl=mono`,
+      '-i', `anullsrc=r=48000:cl=stereo`,
       '-c:v', 'libx264',
       '-preset', 'ultrafast',
+      '-r', '60',
       '-c:a', 'aac',
       '-t', String(durationSec),
       '-f', 'flv', // 明确指定格式
       '-y',
       blankPath
-    ]);
+    ], `创建空白片段 ${path.basename(blankPath)}`);
 
     return blankPath;
   }
@@ -364,18 +366,47 @@ export class FileMerger {
   /**
    * 运行ffmpeg命令
    */
-  private async runFfmpeg(args: string[]): Promise<void> {
+  private async runFfmpeg(args: string[], operationLabel?: string): Promise<void> {
     return new Promise((resolve, reject) => {
+      const label = operationLabel || 'ffmpeg任务';
+      const startedAt = Date.now();
       const ffmpeg = spawn('ffmpeg', args, { windowsHide: true });
 
       let stderrOutput = '';
+      let lastProgressLogAt = 0;
+      let latestTimestamp = '';
+
+      this.logger.info(`启动ffmpeg: ${label}`, {
+        args: args.join(' ')
+      });
+
+      const heartbeatTimer = setInterval(() => {
+        const elapsedSec = Math.floor((Date.now() - startedAt) / 1000);
+        const progressText = latestTimestamp ? `, 最近进度=${latestTimestamp}` : '';
+        this.logger.info(`ffmpeg仍在运行: ${label} (已运行 ${elapsedSec}s${progressText})`);
+      }, 30000);
 
       ffmpeg.stderr?.on('data', (data: Buffer) => {
-        stderrOutput += data.toString();
+        const chunk = data.toString();
+        stderrOutput += chunk;
+
+        const timeMatches = Array.from(chunk.matchAll(/time=(\d{2}:\d{2}:\d{2}\.\d{2})/g));
+        if (timeMatches.length > 0) {
+          latestTimestamp = timeMatches[timeMatches.length - 1][1];
+        }
+
+        const now = Date.now();
+        if (latestTimestamp && now - lastProgressLogAt >= 30000) {
+          lastProgressLogAt = now;
+          this.logger.info(`ffmpeg进度: ${label} -> ${latestTimestamp}`);
+        }
       });
 
       ffmpeg.on('close', (code: number | null) => {
+        clearInterval(heartbeatTimer);
         if (code === 0) {
+          const elapsedSec = Math.floor((Date.now() - startedAt) / 1000);
+          this.logger.info(`ffmpeg执行成功: ${label} (耗时 ${elapsedSec}s)`);
           resolve();
         } else {
           const errorMsg = stderrOutput || `Unknown error`;
@@ -389,6 +420,7 @@ export class FileMerger {
       });
 
       ffmpeg.on('error', (error) => {
+        clearInterval(heartbeatTimer);
         this.logger.error(`ffmpeg进程错误`, { error: error.message });
         reject(error);
       });
