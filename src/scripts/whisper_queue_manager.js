@@ -6,6 +6,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const configLoader = require('./config-loader');
 
 const QUEUE_FILE = path.join(__dirname, '.whisper_queue.json');
 const LOCK_FILE = path.join(__dirname, '.whisper_lock');
@@ -43,19 +44,22 @@ function isProcessAlive(pid) {
 class WhisperQueueManager {
     constructor() {
         this.queue = [];
-        this.loadQueue();
+        this.loadQueue({ silent: false });
     }
 
     /**
      * 从文件加载队列
      */
-    loadQueue() {
+    loadQueue(options = {}) {
+        const { silent = true } = options;
         try {
             if (fs.existsSync(QUEUE_FILE)) {
                 const content = fs.readFileSync(QUEUE_FILE, 'utf8');
                 const data = JSON.parse(content);
                 this.queue = data.tasks || [];
-                console.log(`📋 加载队列: ${this.queue.length} 个任务`);
+                if (!silent) {
+                    console.log(`📋 加载队列: ${this.queue.length} 个任务`);
+                }
                 
                 // 显示队列状态
                 const pending = this.queue.filter(t => t.status === 'pending').length;
@@ -63,14 +67,72 @@ class WhisperQueueManager {
                 const completed = this.queue.filter(t => t.status === 'completed' || t.status === 'completed_with_cleanup_crash').length;
                 const failed = this.queue.filter(t => t.status === 'failed').length;
                 
-                if (this.queue.length > 0) {
+                if (!silent && this.queue.length > 0) {
                     console.log(`   待处理: ${pending}, 处理中: ${processing}, 已完成: ${completed}, 失败: ${failed}`);
                 }
+            } else {
+                this.queue = [];
             }
         } catch (error) {
-            console.warn(`⚠️  加载队列失败: ${error.message}，将创建新队列`);
+            if (!silent) {
+                console.warn(`⚠️  加载队列失败: ${error.message}，将创建新队列`);
+            }
             this.queue = [];
         }
+    }
+
+    /**
+     * 根据房间配置获取 Whisper 优先级
+     * 规则：数值越大优先级越高；未配置默认 0
+     * @param {string | number | null | undefined} roomId
+     * @returns {number}
+     */
+    getTaskPriorityByRoomId(roomId) {
+        if (roomId === null || roomId === undefined || roomId === '') {
+            return 0;
+        }
+
+        const config = configLoader.getConfig();
+        const roomKey = String(roomId);
+        const roomConfig = config.ai?.roomSettings?.[roomKey]
+            || config.roomSettings?.[roomKey];
+        const priority = roomConfig?.whisperPriority;
+        return Number.isFinite(priority) ? priority : 0;
+    }
+
+    /**
+     * 获取任务优先级
+     * @param {QueueTask} task
+     * @returns {number}
+     */
+    getTaskPriority(task) {
+        if (Number.isFinite(task?.priority)) {
+            return task.priority;
+        }
+        return this.getTaskPriorityByRoomId(task?.roomId);
+    }
+
+    /**
+     * 获取按优先级排序后的待处理任务
+     * 排序规则：优先级高的在前，同优先级按入队时间早的在前
+     * @returns {QueueTask[]}
+     */
+    getSortedPendingTasks() {
+        return this.queue
+            .filter(t => t.status === 'pending')
+            .sort((a, b) => {
+                const priorityDiff = this.getTaskPriority(b) - this.getTaskPriority(a);
+                if (priorityDiff !== 0) {
+                    return priorityDiff;
+                }
+
+                const addedTimeDiff = (a.addedTime || 0) - (b.addedTime || 0);
+                if (addedTimeDiff !== 0) {
+                    return addedTimeDiff;
+                }
+
+                return String(a.id).localeCompare(String(b.id));
+            });
     }
 
     /**
@@ -119,6 +181,7 @@ class WhisperQueueManager {
             id: this.generateTaskId(mediaPath),
             mediaPath,
             roomId,
+            priority: this.getTaskPriorityByRoomId(roomId),
             addedTime: Date.now(),
             status: 'pending'
         };
@@ -128,7 +191,8 @@ class WhisperQueueManager {
         
         console.log(`➕ 添加任务到队列: ${path.basename(mediaPath)}`);
         console.log(`   任务ID: ${task.id}`);
-        console.log(`   队列位置: ${this.getPendingTasks().length}`);
+        console.log(`   优先级: ${task.priority}`);
+        console.log(`   队列位置: ${this.getPendingPosition(task.id)}`);
         
         return task;
     }
@@ -197,7 +261,38 @@ class WhisperQueueManager {
      * @returns {QueueTask[]}
      */
     getPendingTasks() {
-        return this.queue.filter(t => t.status === 'pending');
+        return this.getSortedPendingTasks();
+    }
+
+    /**
+     * 获取指定任务当前的待处理队列位置（从 1 开始）
+     * @param {string} taskId
+     * @param {{ reload?: boolean }} [options]
+     * @returns {number}
+     */
+    getPendingPosition(taskId, options = {}) {
+        if (options.reload) {
+            this.loadQueue({ silent: true });
+        }
+
+        const pendingTasks = this.getSortedPendingTasks();
+        const index = pendingTasks.findIndex(task => task.id === taskId);
+        return index >= 0 ? index + 1 : -1;
+    }
+
+    /**
+     * 判断当前是否轮到指定任务执行
+     * @param {string} taskId
+     * @param {{ reload?: boolean }} [options]
+     * @returns {boolean}
+     */
+    isTaskNext(taskId, options = {}) {
+        if (options.reload) {
+            this.loadQueue({ silent: true });
+        }
+
+        const nextTask = this.getSortedPendingTasks()[0];
+        return nextTask?.id === taskId;
     }
 
     /**

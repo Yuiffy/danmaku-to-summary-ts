@@ -124,6 +124,8 @@ export interface RoomAIConfig {
   characterDescription?: string;
   anchorName?: string;
   fanName?: string;
+  /** Whisper 排队优先级，数值越大越优先；同优先级按入队先后处理 */
+  whisperPriority?: number;
   enableTextGeneration?: boolean;
   enableComicGeneration?: boolean;
   /** 是否启用延迟回复 */

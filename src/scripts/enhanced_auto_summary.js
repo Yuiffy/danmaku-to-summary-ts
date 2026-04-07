@@ -99,6 +99,7 @@ const WHISPER_LOCK_TIMEOUT = 24 * 60 * 60 * 1000; // 24小时超时(锁文件过
 const WHISPER_LOCK_RETRY_INTERVAL = 10000; // 10秒重试间隔
 const WHISPER_MAX_RETRIES = 24 * 60 * 6; // 最多重试 8640 次（24小时）
 const WHISPER_PROGRESS_LOG_INTERVAL = 30000; // 每30秒输出一次详细进度
+const WHISPER_QUEUE_TURN_RETRY_INTERVAL = 5000; // 5秒检查一次是否轮到当前任务
 let hasLoggedGpuDetectionConfig = false;
 let activeWhisperProcess = null;
 let whisperCleanupInProgress = null;
@@ -464,11 +465,24 @@ async function isGpuBusy() {
     return { busy: false, reason: info };
 }
 
-async function acquireWhisperLock() {
+async function acquireWhisperLock(taskId = null) {
     const startTime = Date.now();
     let lastProgressLog = 0;
     
     for (let i = 0; i < WHISPER_MAX_RETRIES; i++) {
+        if (taskId && !queueManager.isTaskNext(taskId, { reload: true })) {
+            const position = queueManager.getPendingPosition(taskId, { reload: true });
+            const elapsed = Date.now() - startTime;
+
+            if (elapsed - lastProgressLog >= WHISPER_PROGRESS_LOG_INTERVAL) {
+                lastProgressLog = elapsed;
+                console.log(`📋 当前任务尚未轮到执行: taskId=${taskId}, queuePosition=${position > 0 ? position : 'unknown'}`);
+            }
+
+            await new Promise(r => setTimeout(r, WHISPER_QUEUE_TURN_RETRY_INTERVAL));
+            continue;
+        }
+
         try {
             // 尝试创建锁文件
             const fd = fs.openSync(WHISPER_LOCK_FILE, 'wx');
@@ -493,6 +507,7 @@ async function acquireWhisperLock() {
             const config = configLoader.getConfig();
             const gpuCheckIntervalSec = config.whisper?.gpuDetection?.checkIntervalSeconds ?? 30;
             const gpuCheckIntervalMs = gpuCheckIntervalSec * 1000;
+            let shouldRetryLock = false;
 
             // eslint-disable-next-line no-constant-condition
             while (true) {
@@ -508,10 +523,12 @@ async function acquireWhisperLock() {
                 releaseWhisperLock();
                 console.log(`🎮 GPU 繁忙 (${reason})，Whisper 等待 ${gpuCheckIntervalSec} 秒...`);
                 await new Promise(r => setTimeout(r, gpuCheckIntervalMs));
+                shouldRetryLock = true;
+                break;
+            }
 
-                // 重新抢锁（递归调用）
-                await acquireWhisperLock();
-                return; // 递归调用内部会处理后续逻辑
+            if (shouldRetryLock) {
+                continue;
             }
 
             return;
@@ -691,7 +708,7 @@ async function processMedia(mediaPath, taskId = null) {
         console.log(`   Target: ${path.basename(mediaPath)} (${fileType})`);
 
         // 获取 Whisper 锁，防止并发调用导致 GPU 冲突
-        await acquireWhisperLock();
+        await acquireWhisperLock(taskId);
         
         // 标记任务为处理中
         if (taskId) {

@@ -105,6 +105,7 @@
                 "characterDescription": "岁己SUI（白发红瞳女生），饼干岁（有细细四肢的小小的饼干状生物）",
                 "anchorName": "小岁",
                 "fanName": "饼干岁",
+                "whisperPriority": 100,
                 "enableTextGeneration": true,
                 "enableComicGeneration": true,
                 "enableDelayedReply": true,
