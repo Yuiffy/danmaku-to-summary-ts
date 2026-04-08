@@ -896,8 +896,27 @@ export class MikufansWebhookHandler implements IWebhookHandler {
 
     const scriptPath = 'src/scripts/enhanced_auto_summary.js';
     const args = [scriptPath, task.mediaPath];
-    if (task.xmlPath && fs.existsSync(task.xmlPath) && fs.statSync(task.xmlPath).isFile()) {
-      args.push(task.xmlPath);
+    let resolvedXmlPath = task.xmlPath;
+    if (!resolvedXmlPath) {
+      const inferredXmlPath = path.join(
+        path.dirname(task.mediaPath),
+        `${path.basename(task.mediaPath, path.extname(task.mediaPath))}.xml`
+      );
+      if (fs.existsSync(inferredXmlPath) && fs.statSync(inferredXmlPath).isFile()) {
+        resolvedXmlPath = inferredXmlPath;
+        queueManager.addTask(task.mediaPath, task.roomId, {
+          xmlPath: inferredXmlPath,
+          screenshotPath: task.screenshotPath || undefined,
+          trackOwnershipWhilePending: false
+        });
+        this.logger.info(`队列Worker自动补全XML路径: ${path.basename(task.mediaPath)} -> ${path.basename(inferredXmlPath)}`);
+      }
+    }
+
+    if (resolvedXmlPath && fs.existsSync(resolvedXmlPath) && fs.statSync(resolvedXmlPath).isFile()) {
+      args.push(resolvedXmlPath);
+    } else {
+      this.logger.warn(`队列Worker未找到XML，将仅基于ASR处理: ${path.basename(task.mediaPath)}`);
     }
 
     const roomId = task.roomId ? String(task.roomId) : 'unknown';
