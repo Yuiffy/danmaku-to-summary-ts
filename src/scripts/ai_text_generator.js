@@ -127,15 +127,16 @@ function buildPrompt(highlightContent, roomId) {
 
 ${randomMainPrompt}
 
-【字数与格式】
-字数：${wordLimit}字以内。
+【字数与格式（必须严格遵守！）】
+字数限制：${wordLimit}字以内。这是硬性要求，超过会被系统拒绝！
 建议长度：至少 ${minLengthHint} 字，不能只写一句话、不能只写一个问句。
-格式：不要太长，适合手机阅读，但必须是完整的一段回复。
+格式：一段完整的自然文字回复，适合手机阅读。不要使用markdown格式，不要使用加粗、标题、列表等。
+禁止输出思考过程：直接输出最终的回复内容，不要输出任何分析、推理、计划等中间过程。
 
 【直播内容（主播语音转写+观众弹幕）】
 ${highlightContent}
 
-请根据直播内容，以${fan}的身份写一篇晚安回复。记住：只使用提供的直播内容，不要添加任何外部信息。`;
+请根据直播内容，以${fan}的身份写一篇晚安回复。记住：只使用提供的直播内容，不要添加任何外部信息。直接输出回复内容，不要输出任何其他内容。`;
 
     console.log('晚安动态prompt主要内容:', randomMainPrompt.substring(0, 100), '直播内容长度:', highlightContent.length);
     return result;
@@ -156,20 +157,86 @@ function getMinimumReplyLength(wordLimit) {
     return 20;
 }
 
-function validateGeneratedReply(text, wordLimit) {
-    const normalized = text.trim();
-    const minLength = getMinimumReplyLength(wordLimit);
-    const sentenceCount = countSentences(normalized);
+function cleanGeneratedReply(text) {
+    let cleaned = text.trim();
+    
+    // 移除 Gemini thinking/reasoning 输出（常见格式）
+    // 匹配 **xxx** 标题块 + 下面的内容（思考过程）
+    cleaned = cleaned.replace(/\*\*[A-Z][a-zA-Z\s]+\*\*\n*[\s\S]*?(?=\n\n晚安|\n\n早安|\n\n午安|\n\n[^\*])/gi, '');
+    
+    // 移除 <details>...</details> 标签及内容
+    cleaned = cleaned.replace(/<details[\s\S]*?<\/details>/gi, '');
+    
+    // 移除 <think...</think 或 <thinking>...</thinking> 标签
+    cleaned = cleaned.replace(/<think[\s\S]*?<\/think>/gi, '');
+    cleaned = cleaned.replace(/<thinking[\s\S]*?<\/thinking>/gi, '');
+    
+    // 移除 ```thinking...``` 代码块
+    cleaned = cleaned.replace(/```thinking[\s\S]*?```/gi, '');
+    
+    // 移除以 ** 开头的思考步骤标题（如 "**Defining the Parameters**"）
+    cleaned = cleaned.replace(/^\*\*[A-Z][a-zA-Z\s]+\*\*\s*$/gim, '');
+    
+    // 移除 "I've ..." 开头的英文思考句子
+    cleaned = cleaned.replace(/^(?:I've |I |Let me |First, |Now, |The |This ).+$/gim, '');
+    
+    // 移除连续空行
+    cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
+    
+    return cleaned.trim();
+}
 
-    if (normalized.length < minLength) {
-        throw new Error(`生成的文本过短（${normalized.length} < ${minLength}）`);
+function validateGeneratedReply(text, wordLimit) {
+    // 先清理思考过程
+    let cleaned = cleanGeneratedReply(text);
+    
+    const minLength = getMinimumReplyLength(wordLimit);
+    const sentenceCount = countSentences(cleaned);
+
+    if (cleaned.length < minLength) {
+        throw new Error(`生成的文本过短（${cleaned.length} < ${minLength}）`);
     }
 
     if (wordLimit >= 250 && sentenceCount < 2) {
         throw new Error(`生成的文本句子数过少（${sentenceCount} < 2）`);
     }
 
-    return normalized;
+    // 硬性截断保护：B站评论最多1000字
+    const bilibiliMaxChars = 1000;
+    if (cleaned.length > bilibiliMaxChars) {
+        console.warn(`⚠️  生成文本超长（${cleaned.length}字），截断到${bilibiliMaxChars}字`);
+        // 尝试在句号处截断
+        const truncated = cleaned.substring(0, bilibiliMaxChars);
+        const lastSentence = Math.max(
+            truncated.lastIndexOf('。'),
+            truncated.lastIndexOf('！'),
+            truncated.lastIndexOf('？'),
+            truncated.lastIndexOf('.')
+        );
+        if (lastSentence > bilibiliMaxChars * 0.5) {
+            cleaned = truncated.substring(0, lastSentence + 1);
+        } else {
+            cleaned = truncated;
+        }
+    }
+    
+    // 按配置的 wordLimit 二次截断（保留一些余量，因为字数限制通常指字符数）
+    if (cleaned.length > wordLimit * 1.5) {
+        console.warn(`⚠️  生成文本超过wordLimit的1.5倍（${cleaned.length}字 > ${wordLimit * 1.5}），截断`);
+        const truncated = cleaned.substring(0, wordLimit);
+        const lastSentence = Math.max(
+            truncated.lastIndexOf('。'),
+            truncated.lastIndexOf('！'),
+            truncated.lastIndexOf('？')
+        );
+        if (lastSentence > wordLimit * 0.5) {
+            cleaned = truncated.substring(0, lastSentence + 1);
+        } else {
+            cleaned = truncated;
+        }
+    }
+
+    return cleaned;
 }
 
 // 调用tuZi API生成文本（备用方案）
