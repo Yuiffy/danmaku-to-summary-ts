@@ -953,6 +953,7 @@ const main = async () => {
         
         // 1. 音频处理（如果需要）
         const processedFile = await processAudioIfNeeded(mediaFile, mediaRoomId);
+        queueManager.updateTaskMediaPath(task.id, processedFile);
         
         // 2. ASR生成字幕（传递 taskId）
         const srtPath = await processMedia(processedFile, task.id, { bypassQueueTurn });

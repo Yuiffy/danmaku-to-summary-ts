@@ -283,6 +283,28 @@ class WhisperQueueManager {
     }
 
     /**
+     * 更新任务关联的媒体路径
+     * 用于音频专用房间转码后切换到音频文件，避免原视频删除后任务被清理出队列。
+     * @param {string} taskId - 任务ID
+     * @param {string} mediaPath - 新的媒体路径
+     */
+    updateTaskMediaPath(taskId, mediaPath) {
+        const task = this.queue.find(t => t.id === taskId);
+        if (!task) {
+            return;
+        }
+
+        const normalizedPath = this.normalizeMediaPath(mediaPath);
+        if (!normalizedPath || task.mediaPath === normalizedPath) {
+            return;
+        }
+
+        task.mediaPath = normalizedPath;
+        this.saveQueue();
+        console.log(`📝 更新任务媒体路径: ${task.id} -> ${path.basename(normalizedPath)}`);
+    }
+
+    /**
      * 标记任务为已完成
      * @param {string} taskId - 任务ID
      */
