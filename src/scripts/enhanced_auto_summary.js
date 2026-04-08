@@ -720,7 +720,12 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
             if (duration < minDurationSeconds) {
                 const fileType = isAudioFile(mediaPath) ? '音频' : '视频';
                 console.log(`⏭️  ${fileType}时长过短 (${duration.toFixed(1)}秒 < ${minDurationSeconds}秒)，跳过Whisper处理`);
-                return null;
+                return {
+                    srtPath: null,
+                    completionOptions: {
+                        warning: `${fileType}时长过短，跳过Whisper: ${duration.toFixed(1)}秒`
+                    }
+                };
             }
             
             const minutes = Math.floor(duration / 60);
@@ -740,11 +745,6 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
             // 获取 Whisper 锁，防止并发调用导致 GPU 冲突
             await acquireWhisperLock(taskId, options);
 
-            // 标记任务为处理中
-            if (taskId) {
-                queueManager.markProcessing(taskId);
-            }
-
             let completedWithCleanupCrash = false;
             let completionWarning = null;
 
@@ -762,17 +762,15 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
                 }
             }
             
-            // 标记任务完成
-            if (taskId) {
-                queueManager.markCompleted(taskId, completedWithCleanupCrash
-                    ? { status: 'completed_with_cleanup_crash', warning: completionWarning }
-                    : {});
-            }
+            const completionOptions = completedWithCleanupCrash
+                ? { status: 'completed_with_cleanup_crash', warning: completionWarning }
+                : null;
+
+            return {
+                srtPath: fs.existsSync(srtPath) ? srtPath : null,
+                completionOptions
+            };
         } catch (error) {
-            // 标记任务失败
-            if (taskId) {
-                queueManager.markFailed(taskId, error.message);
-            }
             throw error;
         } finally {
             await cleanupWhisperProcess('processMedia-finally');
@@ -782,18 +780,19 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
         }
     } else {
         console.log(`-> [Skip] Subtitle exists: ${path.basename(srtPath)}`);
-        if (taskId) {
-            queueManager.markCompleted(taskId, {
-                warning: `字幕已存在，跳过Whisper: ${path.basename(srtPath)}`
-            });
-        }
         clearActiveQueueTask(taskId);
+        return {
+            srtPath,
+            completionOptions: {
+                warning: `字幕已存在，跳过Whisper: ${path.basename(srtPath)}`
+            }
+        };
     }
 
-    if (fs.existsSync(srtPath)) {
-        return srtPath;
-    }
-    return null;
+    return {
+        srtPath: fs.existsSync(srtPath) ? srtPath : null,
+        completionOptions: null
+    };
 }
 
 // 音频处理
@@ -979,19 +978,55 @@ const main = async () => {
 
     // 处理媒体文件（音频处理 + ASR）
     const processedMediaFiles = [];
+    const queueTaskRecords = [];
+    const completionOptionsByTaskId = new Map();
     for (const mediaFile of mediaFiles) {
         console.log(`\n--- 处理媒体文件: ${path.basename(mediaFile)} ---`);
         const mediaRoomId = resolveRoomIdForFile(mediaFile, envRoomId);
         
         // 添加任务到队列
-        const task = queueManager.addTask(mediaFile, mediaRoomId);
+        const task = queueManager.addTask(mediaFile, mediaRoomId, {
+            trackOwnershipWhilePending: !bypassQueueTurn
+        });
+
+        if (task?.id) {
+            queueManager.markProcessing(task.id);
+            setActiveQueueTask(task.id, mediaFile);
+            queueTaskRecords.push({ id: task.id, mediaPath: mediaFile });
+        }
         
         // 1. 音频处理（如果需要）
-        const processedFile = await processAudioIfNeeded(mediaFile, mediaRoomId);
+        let processedFile;
+        try {
+            processedFile = await processAudioIfNeeded(mediaFile, mediaRoomId);
+        } catch (error) {
+            if (task?.id) {
+                queueManager.markFailed(task.id, error.message);
+            }
+            throw error;
+        }
         queueManager.updateTaskMediaPath(task.id, processedFile);
+        if (task?.id) {
+            setActiveQueueTask(task.id, processedFile);
+        }
         
         // 2. ASR生成字幕（传递 taskId）
-        const srtPath = await processMedia(processedFile, task.id, { bypassQueueTurn });
+        let mediaResult;
+        try {
+            mediaResult = await processMedia(processedFile, task.id, { bypassQueueTurn });
+        } catch (error) {
+            if (task?.id) {
+                queueManager.markFailed(task.id, error.message);
+                clearActiveQueueTask(task.id);
+            }
+            throw error;
+        }
+
+        if (mediaResult?.completionOptions && task?.id) {
+            completionOptionsByTaskId.set(task.id, mediaResult.completionOptions);
+        }
+
+        const srtPath = mediaResult?.srtPath || null;
         
         if (srtPath) {
             processedMediaFiles.push(processedFile); // 记录处理后的文件
@@ -1223,8 +1258,18 @@ const main = async () => {
 
     // 检查是否在自动化模式（支持 NODE_ENV、CI 和 AUTOMATION 环境变量）
     if (process.env.NODE_ENV === 'automation' || process.env.CI || process.env.AUTOMATION === 'true') {
+        for (const taskRecord of queueTaskRecords) {
+            const completionOptions = completionOptionsByTaskId.get(taskRecord.id) || {};
+            queueManager.markCompleted(taskRecord.id, completionOptions);
+            clearActiveQueueTask(taskRecord.id);
+        }
         process.exit(0);
     } else {
+        for (const taskRecord of queueTaskRecords) {
+            const completionOptions = completionOptionsByTaskId.get(taskRecord.id) || {};
+            queueManager.markCompleted(taskRecord.id, completionOptions);
+            clearActiveQueueTask(taskRecord.id);
+        }
         // 交互模式，等待用户
         console.log('\n按Enter键关闭...');
         process.stdin.resume();

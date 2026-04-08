@@ -13,6 +13,19 @@ import { FileMerger } from '../FileMerger';
 import { VideoScreenshotService } from '../../video/VideoScreenshotService';
 import { listRelevantProcesses, terminateProcessTree } from '../../../utils/processCleanup';
 
+const queueManager = require(path.join(process.cwd(), 'src', 'scripts', 'whisper_queue_manager'));
+
+interface QueuedSummaryTask {
+  id: string;
+  mediaPath: string;
+  roomId?: string | number | null;
+  priority?: number;
+  addedTime?: number;
+  status: string;
+  xmlPath?: string | null;
+  screenshotPath?: string | null;
+}
+
 /**
  * 延迟动作类型
  */
@@ -38,6 +51,9 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   private fileMerger = new FileMerger();
   private delayedReplyService?: IDelayedReplyService;
   private screenshotService = new VideoScreenshotService();
+  private queueWorkerPromise: Promise<void> | null = null;
+  private queueWorkerProcess: ChildProcess | null = null;
+  private queueWorkerShouldStop = false;
 
   // 延迟处理定时器管理器(roomId -> Map<actionType, timer>)
   private delayedActions: Map<string, Map<DelayedActionType, NodeJS.Timeout>> = new Map();
@@ -55,6 +71,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   registerRoutes(app: any): void {
     app.post(this.path, this.handleRequest.bind(this));
     this.logger.info(`注册Mikufans Webhook处理器，路径: ${this.path}`);
+    this.ensureQueueWorkerRunning();
   }
 
   /**
@@ -729,12 +746,248 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   }
 
   /**
+   * 延迟等待
+   */
+  private async sleep(ms: number): Promise<void> {
+    await new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * 查询 GPU 占用情况
+   */
+  private async getGpuUsage(): Promise<{ gpuUtil: number; vramUsed: number; vramTotal: number } | null> {
+    return new Promise((resolve) => {
+      const child = spawn('nvidia-smi', [
+        '--query-gpu=utilization.gpu,memory.used,memory.total',
+        '--format=csv,noheader,nounits'
+      ], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true
+      });
+
+      let stdout = '';
+
+      child.stdout?.on('data', (data: Buffer) => {
+        stdout += data.toString();
+      });
+
+      child.on('close', (code: number | null) => {
+        if (code !== 0) {
+          resolve(null);
+          return;
+        }
+
+        const firstLine = stdout.trim().split(/\r?\n/)[0];
+        if (!firstLine) {
+          resolve(null);
+          return;
+        }
+
+        const values = firstLine.split(',').map(item => Number.parseFloat(item.trim()));
+        if (values.length < 3 || values.some(value => Number.isNaN(value))) {
+          resolve(null);
+          return;
+        }
+
+        resolve({
+          gpuUtil: values[0],
+          vramUsed: values[1],
+          vramTotal: values[2]
+        });
+      });
+
+      child.on('error', () => resolve(null));
+    });
+  }
+
+  /**
+   * 检查 GPU 是否繁忙
+   */
+  private async isGpuBusyForWhisper(): Promise<{ busy: boolean; reason: string }> {
+    const config: any = ConfigProvider.getConfig();
+    const gpuConfig = config.whisper?.gpuDetection;
+
+    if (!gpuConfig?.enabled) {
+      return { busy: false, reason: 'gpuDetection disabled' };
+    }
+
+    const usage = await this.getGpuUsage();
+    if (!usage) {
+      return { busy: false, reason: 'nvidia-smi unavailable' };
+    }
+
+    const utilThreshold = gpuConfig.gpuUtilizationThreshold ?? 60;
+    const vramThreshold = gpuConfig.vramUsageThreshold ?? 70;
+    const vramPct = usage.vramTotal > 0 ? (usage.vramUsed / usage.vramTotal) * 100 : 0;
+    const busy = usage.gpuUtil >= utilThreshold || vramPct >= vramThreshold;
+    const reason = `运算: ${usage.gpuUtil.toFixed(0)}%, 显存: ${usage.vramUsed.toFixed(0)}/${usage.vramTotal.toFixed(0)} MB (${vramPct.toFixed(1)}%)`;
+
+    return { busy, reason };
+  }
+
+  /**
+   * 确保集中队列 worker 在运行
+   */
+  private ensureQueueWorkerRunning(): void {
+    if (this.queueWorkerPromise) {
+      return;
+    }
+
+    this.queueWorkerShouldStop = false;
+    this.queueWorkerPromise = this.runQueueWorkerLoop()
+      .catch((error: any) => {
+        this.logger.error(`Mikufans队列Worker异常退出: ${error.message}`, { error });
+      })
+      .finally(() => {
+        this.queueWorkerPromise = null;
+        this.queueWorkerProcess = null;
+      });
+  }
+
+  /**
+   * 集中队列 worker 主循环
+   */
+  private async runQueueWorkerLoop(): Promise<void> {
+    this.logger.info('Mikufans队列Worker已启动');
+    const config: any = ConfigProvider.getConfig();
+    const idleWaitMs = config.whisper?.gpuDetection?.checkIntervalSeconds
+      ? config.whisper.gpuDetection.checkIntervalSeconds * 1000
+      : 30000;
+
+    while (!this.queueWorkerShouldStop) {
+      queueManager.loadQueue({ silent: true });
+
+      if (!this.queueWorkerProcess && queueManager.hasActiveProcessing()) {
+        this.logger.info('检测到已有Whisper任务在处理，队列Worker等待当前任务结束');
+        await this.sleep(idleWaitMs);
+        continue;
+      }
+
+      const nextTask = queueManager.getNextPendingTask({ reload: true }) as QueuedSummaryTask | null;
+      if (!nextTask) {
+        this.logger.info('Mikufans队列Worker空闲，退出等待下次唤醒');
+        return;
+      }
+
+      const gpuStatus = await this.isGpuBusyForWhisper();
+      if (gpuStatus.busy) {
+        this.logger.info(`GPU 当前繁忙，队列Worker继续等待: ${gpuStatus.reason}`);
+        await this.sleep(idleWaitMs);
+        continue;
+      }
+
+      await this.executeQueuedTask(nextTask);
+    }
+  }
+
+  /**
+   * 执行单个排队任务
+   */
+  private async executeQueuedTask(task: QueuedSummaryTask): Promise<void> {
+    if (!task?.mediaPath) {
+      return;
+    }
+
+    if (!fs.existsSync(task.mediaPath) || !fs.statSync(task.mediaPath).isFile()) {
+      this.logger.warn(`队列任务媒体文件不存在，标记失败: ${task.mediaPath}`);
+      queueManager.markFailed(task.id, `媒体文件不存在: ${task.mediaPath}`);
+      return;
+    }
+
+    const scriptPath = 'src/scripts/enhanced_auto_summary.js';
+    const args = [scriptPath, task.mediaPath];
+    if (task.xmlPath && fs.existsSync(task.xmlPath) && fs.statSync(task.xmlPath).isFile()) {
+      args.push(task.xmlPath);
+    }
+
+    const roomId = task.roomId ? String(task.roomId) : 'unknown';
+    this.logger.info(`Mikufans队列Worker开始执行: ${path.basename(task.mediaPath)} (taskId=${task.id})`);
+
+    const ps: ChildProcess = spawn('node', args, {
+      cwd: process.cwd(),
+      windowsHide: true,
+      env: {
+        ...process.env,
+        NODE_ENV: 'production',
+        ROOM_ID: roomId,
+        AUTOMATION: 'true',
+        BYPASS_WHISPER_QUEUE: 'true',
+        SCREENSHOT_PATH: task.screenshotPath || ''
+      }
+    });
+
+    this.queueWorkerProcess = ps;
+    this.logger.info(`Mikufans队列Worker子进程已启动: pid=${ps.pid ?? 'unknown'}, file=${path.basename(task.mediaPath)}`);
+
+    const config = ConfigProvider.getConfig();
+    const processTimeout = config.webhook.timeouts.processTimeout || 30 * 60 * 1000;
+    let timedOut = false;
+
+    const timeoutId = setTimeout(async () => {
+      timedOut = true;
+      this.logger.warn(`队列Worker任务超时，强制终止: ${path.basename(task.mediaPath)}`);
+      await terminateProcessTree(ps, {
+        gracePeriodMs: 5000,
+        label: `Mikufans队列Worker(${path.basename(task.mediaPath)})`,
+        logger: this.logger
+      });
+      const processes = await listRelevantProcesses();
+      if (processes.length > 0) {
+        this.logger.warn(`队列Worker超时清理后的相关进程快照: ${processes.join(' | ')}`);
+      }
+      queueManager.markFailed(task.id, `队列Worker超时终止: ${path.basename(task.mediaPath)}`);
+    }, processTimeout);
+
+    await new Promise<void>((resolve) => {
+      ps.stdout?.on('data', (data: Buffer) => {
+        const output = data.toString().trim();
+        if (output) {
+          this.logger.info(`[Mikufans队列Worker] ${output}`);
+        }
+      });
+
+      ps.stderr?.on('data', (data: Buffer) => {
+        const output = data.toString().trim();
+        if (output) {
+          this.logger.error(`[Mikufans队列Worker错误] ${output}`);
+        }
+      });
+
+      ps.on('error', (error: Error) => {
+        clearTimeout(timeoutId);
+        this.queueWorkerProcess = null;
+        this.logger.error(`Mikufans队列Worker子进程错误: ${error.message}`);
+        queueManager.markFailed(task.id, `队列Worker启动失败: ${error.message}`);
+        resolve();
+      });
+
+      ps.on('close', async (code: number | null) => {
+        clearTimeout(timeoutId);
+        this.queueWorkerProcess = null;
+        this.logger.info(`Mikufans队列Worker任务结束 (退出码: ${code}, 超时: ${timedOut}): ${path.basename(task.mediaPath)}`);
+
+        if (task.mediaPath.includes('_merged')) {
+          const session = this.findSessionByVideoPath(task.mediaPath);
+          if (session) {
+            this.liveSessionManager.markAsCompleted(session.roomId);
+            this.logger.info(`✅ 会话处理完成: ${session.roomId}`);
+          }
+        }
+
+        await this.checkAndTriggerDelayedReply(task.mediaPath, roomId);
+        resolve();
+      });
+    });
+  }
+
+  /**
    * 启动处理流程
    */
   private async startProcessing(videoPath: string, xmlPath: string | null, roomId: string): Promise<boolean> {
     try {
       if (!fs.existsSync(videoPath) || !fs.statSync(videoPath).isFile()) {
         this.logger.error(`处理流程未启动，视频文件不存在或无效: ${videoPath}`);
+        this.duplicateGuard.markAsProcessed(videoPath);
         return false;
       }
 
@@ -746,15 +999,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         }
       }
 
-      // 获取配置
-      const config = ConfigProvider.getConfig();
-      const scriptPath = 'src/scripts/enhanced_auto_summary.js'; // 硬编码路径，后续可从配置读取
-
-      // 构建参数
-      const args = [scriptPath, videoPath];
-      if (validatedXmlPath) args.push(validatedXmlPath);
-
-      this.logger.info(`启动Mikufans处理流程: ${path.basename(videoPath)}`);
+      this.logger.info(`Mikufans任务准备入队: ${path.basename(videoPath)}`);
 
       // 生成视频截图
       let screenshotPath: string | null = null;
@@ -770,78 +1015,15 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         this.logger.error(`生成视频截图时出错: ${screenshotError.message}，将继续处理流程`);
       }
 
-      // 启动子进程
-      const ps: ChildProcess = spawn('node', args, {
-        cwd: process.cwd(),
-        windowsHide: true,
-        env: {
-          ...process.env,
-          NODE_ENV: 'production',
-          ROOM_ID: String(roomId),
-          AUTOMATION: 'true',  // 标识为自动化环境，避免等待用户输入
-          SCREENSHOT_PATH: screenshotPath || ''  // 传递截图路径给Python脚本
-        }
-      });
-      this.logger.info(`Mikufans处理子进程已启动: pid=${ps.pid ?? 'unknown'}, file=${path.basename(videoPath)}`);
+      const task = queueManager.addTask(videoPath, roomId, {
+        xmlPath: validatedXmlPath || undefined,
+        screenshotPath: screenshotPath || undefined,
+        trackOwnershipWhilePending: false
+      }) as QueuedSummaryTask;
 
-      // 设置超时
-      const processTimeout = config.webhook.timeouts.processTimeout || 30 * 60 * 1000; // 30分钟
-      const timeoutId = setTimeout(async () => {
-        this.logger.warn(`进程超时，强制终止: ${path.basename(videoPath)}`);
-        await terminateProcessTree(ps, {
-          gracePeriodMs: 5000,
-          label: `Mikufans处理进程(${path.basename(videoPath)})`,
-          logger: this.logger
-        });
-        const processes = await listRelevantProcesses();
-        if (processes.length > 0) {
-          this.logger.warn(`超时清理后的相关进程快照: ${processes.join(' | ')}`);
-        }
-        this.duplicateGuard.markAsProcessed(videoPath);
-      }, processTimeout);
-
-      // 处理输出
-      ps.stdout?.on('data', (data: Buffer) => {
-        const output = data.toString().trim();
-        if (output) {
-          this.logger.info(`[Mikufans处理进程] ${output}`);
-        }
-      });
-
-      ps.stderr?.on('data', (data: Buffer) => {
-        const output = data.toString().trim();
-        if (output) {
-          this.logger.error(`[Mikufans处理进程错误] ${output}`);
-        }
-      });
-
-      // 处理进程事件
-      ps.on('error', (error: Error) => {
-        this.logger.error(`Mikufans处理进程错误: ${error.message}`);
-        clearTimeout(timeoutId);
-        this.duplicateGuard.markAsProcessed(videoPath);
-      });
-
-      ps.on('close', async (code: number | null) => {
-        clearTimeout(timeoutId);
-        this.logger.info(`Mikufans处理流程结束 (退出码: ${code}): ${path.basename(videoPath)}`);
-        this.duplicateGuard.markAsProcessed(videoPath);
-
-        // 检查是否是合并后的文件，如果是则标记会话为完成
-        // 注意：单片段路径 (processSingleSegment) 和降级路径 (fallbackToLargestSegment)
-        // 已在各自调用 startProcessing 后立即 markAsCompleted，这里只处理 _merged 场景
-        if (videoPath.includes('_merged')) {
-          // 从文件路径中提取roomId
-          const session = this.findSessionByVideoPath(videoPath);
-          if (session) {
-            this.liveSessionManager.markAsCompleted(session.roomId);
-            this.logger.info(`✅ 会话处理完成: ${session.roomId}`);
-          }
-        }
-
-        // 处理完成后，检查是否需要触发延迟回复
-        await this.checkAndTriggerDelayedReply(videoPath, roomId);
-      });
+      this.logger.info(`Mikufans任务已入队: ${path.basename(videoPath)} (taskId=${task.id}, priority=${task.priority ?? 0})`);
+      this.duplicateGuard.markAsProcessed(videoPath);
+      this.ensureQueueWorkerRunning();
 
       return true;
 

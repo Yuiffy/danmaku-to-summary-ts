@@ -37,6 +37,8 @@ function isProcessAlive(pid) {
  * @property {string} roomId - 房间ID（可选）
  * @property {number} addedTime - 添加时间戳
  * @property {string} status - 任务状态: 'pending' | 'processing' | 'completed' | 'completed_with_cleanup_crash' | 'failed'
+ * @property {string} [xmlPath] - 关联的 XML 路径
+ * @property {string} [screenshotPath] - 关联的截图路径
  * @property {number} [startTime] - 开始处理时间戳
  * @property {number} [completedTime] - 完成时间戳
  * @property {string} [error] - 错误信息
@@ -121,7 +123,7 @@ class WhisperQueueManager {
         const removedTasks = [];
 
         for (const task of this.queue) {
-            if (task.status !== 'pending' && task.status !== 'processing') {
+            if (task.status !== 'processing') {
                 continue;
             }
 
@@ -303,9 +305,12 @@ class WhisperQueueManager {
      * @param {string} [roomId] - 房间ID
      * @returns {QueueTask} 添加的任务
      */
-    addTask(mediaPath, roomId = null) {
+    addTask(mediaPath, roomId = null, options = {}) {
         mediaPath = this.normalizeMediaPath(mediaPath);
         this.cleanupInvalidPendingTasks({ silent: true });
+        const normalizedXmlPath = options.xmlPath ? this.normalizeMediaPath(options.xmlPath) : null;
+        const normalizedScreenshotPath = options.screenshotPath ? this.normalizeMediaPath(options.screenshotPath) : null;
+        const trackOwnershipWhilePending = options.trackOwnershipWhilePending === true;
 
         // 检查是否已存在相同文件的待处理任务
         const existing = this.queue.find(t => 
@@ -314,6 +319,29 @@ class WhisperQueueManager {
         );
         
         if (existing) {
+            let updated = false;
+            if (roomId !== null && roomId !== undefined && roomId !== '' && String(existing.roomId || '') !== String(roomId)) {
+                existing.roomId = roomId;
+                existing.priority = this.getTaskPriorityByRoomId(roomId);
+                updated = true;
+            }
+            if (normalizedXmlPath && existing.xmlPath !== normalizedXmlPath) {
+                existing.xmlPath = normalizedXmlPath;
+                updated = true;
+            }
+            if (normalizedScreenshotPath && existing.screenshotPath !== normalizedScreenshotPath) {
+                existing.screenshotPath = normalizedScreenshotPath;
+                updated = true;
+            }
+            if (trackOwnershipWhilePending) {
+                existing.ownerPid = process.pid;
+                existing.ownerBootTime = getSystemBootTimestamp();
+                existing.lastHeartbeat = Date.now();
+                updated = true;
+            }
+            if (updated) {
+                this.saveQueue();
+            }
             console.log(`ℹ️  任务已在队列中: ${path.basename(mediaPath)}`);
             return existing;
         }
@@ -324,11 +352,22 @@ class WhisperQueueManager {
             roomId,
             priority: this.getTaskPriorityByRoomId(roomId),
             addedTime: Date.now(),
-            status: 'pending',
-            ownerPid: process.pid,
-            ownerBootTime: getSystemBootTimestamp(),
-            lastHeartbeat: Date.now()
+            status: 'pending'
         };
+
+        if (normalizedXmlPath) {
+            task.xmlPath = normalizedXmlPath;
+        }
+
+        if (normalizedScreenshotPath) {
+            task.screenshotPath = normalizedScreenshotPath;
+        }
+
+        if (trackOwnershipWhilePending) {
+            task.ownerPid = process.pid;
+            task.ownerBootTime = getSystemBootTimestamp();
+            task.lastHeartbeat = Date.now();
+        }
 
         this.queue.push(task);
         this.saveQueue();
@@ -448,6 +487,22 @@ class WhisperQueueManager {
      */
     getPendingTasks() {
         return this.getSortedPendingTasks();
+    }
+
+    getNextPendingTask(options = {}) {
+        if (options.reload) {
+            this.loadQueue({ silent: true });
+        }
+
+        return this.getSortedPendingTasks()[0] || null;
+    }
+
+    getTaskById(taskId, options = {}) {
+        if (options.reload) {
+            this.loadQueue({ silent: true });
+        }
+
+        return this.queue.find(t => t.id === taskId) || null;
     }
 
     /**
