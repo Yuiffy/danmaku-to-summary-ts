@@ -105,6 +105,7 @@ let activeWhisperProcess = null;
 let whisperCleanupInProgress = null;
 let activeWhisperCleanupContext = null;
 let whisperSignalHooksInstalled = false;
+let activeQueueTaskContext = null;
 
 function getSystemBootTimestamp() {
     return Math.floor(Date.now() - (os.uptime() * 1000));
@@ -120,6 +121,22 @@ function isProcessAlive(pid) {
         return true;
     } catch (error) {
         return error.code === 'EPERM';
+    }
+}
+
+function setActiveQueueTask(taskId, mediaPath) {
+    if (!taskId) {
+        activeQueueTaskContext = null;
+        return;
+    }
+
+    activeQueueTaskContext = { taskId, mediaPath };
+    queueManager.touchTask(taskId);
+}
+
+function clearActiveQueueTask(taskId = null) {
+    if (!taskId || activeQueueTaskContext?.taskId === taskId) {
+        activeQueueTaskContext = null;
     }
 }
 
@@ -377,6 +394,12 @@ function installWhisperSignalHooks() {
 
     const wrapCleanup = (signal, exitCode) => async () => {
         try {
+            if (activeQueueTaskContext?.taskId) {
+                const interruptedFile = activeQueueTaskContext.mediaPath
+                    ? path.basename(activeQueueTaskContext.mediaPath)
+                    : activeQueueTaskContext.taskId;
+                queueManager.markFailed(activeQueueTaskContext.taskId, `任务被 ${signal} 中止: ${interruptedFile}`);
+            }
             await cleanupWhisperProcess(`parent-${signal}`);
         } finally {
             process.exit(exitCode);
@@ -471,6 +494,10 @@ async function acquireWhisperLock(taskId = null, options = {}) {
     let lastProgressLog = 0;
     
     for (let i = 0; i < WHISPER_MAX_RETRIES; i++) {
+        if (taskId) {
+            queueManager.touchTask(taskId);
+        }
+
         if (!bypassQueueTurn && taskId && !queueManager.isTaskNext(taskId, { reload: true })) {
             const position = queueManager.getPendingPosition(taskId, { reload: true });
             const elapsed = Date.now() - startTime;
@@ -707,16 +734,17 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
         const fileType = isAudioFile(mediaPath) ? 'Audio' : 'Video';
         console.log(`\n-> [ASR] Generating Subtitles (Whisper)...`);
         console.log(`   Target: ${path.basename(mediaPath)} (${fileType})`);
+        setActiveQueueTask(taskId, mediaPath);
 
-        // 获取 Whisper 锁，防止并发调用导致 GPU 冲突
-        await acquireWhisperLock(taskId, options);
-        
-        // 标记任务为处理中
-        if (taskId) {
-            queueManager.markProcessing(taskId);
-        }
-        
         try {
+            // 获取 Whisper 锁，防止并发调用导致 GPU 冲突
+            await acquireWhisperLock(taskId, options);
+
+            // 标记任务为处理中
+            if (taskId) {
+                queueManager.markProcessing(taskId);
+            }
+
             let completedWithCleanupCrash = false;
             let completionWarning = null;
 
@@ -750,9 +778,16 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
             await cleanupWhisperProcess('processMedia-finally');
             // 释放锁
             releaseWhisperLock();
+            clearActiveQueueTask(taskId);
         }
     } else {
         console.log(`-> [Skip] Subtitle exists: ${path.basename(srtPath)}`);
+        if (taskId) {
+            queueManager.markCompleted(taskId, {
+                warning: `字幕已存在，跳过Whisper: ${path.basename(srtPath)}`
+            });
+        }
+        clearActiveQueueTask(taskId);
     }
 
     if (fs.existsSync(srtPath)) {

@@ -10,6 +10,7 @@ const configLoader = require('./config-loader');
 
 const QUEUE_FILE = path.join(__dirname, '.whisper_queue.json');
 const LOCK_FILE = path.join(__dirname, '.whisper_lock');
+const ACTIVE_TASK_HEARTBEAT_TIMEOUT = 2 * 60 * 1000;
 
 function getSystemBootTimestamp() {
     return Math.floor(Date.now() - (os.uptime() * 1000));
@@ -111,6 +112,74 @@ class WhisperQueueManager {
         }
     }
 
+    cleanupStaleActiveTasks(options = {}) {
+        const { silent = true } = options;
+        const now = Date.now();
+        const config = configLoader.getConfig();
+        const configuredProcessTimeout = Number(config?.webhook?.timeouts?.processTimeout) || 30 * 60 * 1000;
+        const legacyPendingTimeout = Math.max(configuredProcessTimeout + (5 * 60 * 1000), 45 * 60 * 1000);
+        const removedTasks = [];
+
+        for (const task of this.queue) {
+            if (task.status !== 'pending' && task.status !== 'processing') {
+                continue;
+            }
+
+            let staleReason = null;
+
+            if (Number.isInteger(task.ownerPid) && task.ownerPid > 0) {
+                if (typeof task.ownerBootTime === 'number') {
+                    const currentBootTime = getSystemBootTimestamp();
+                    const bootTimeDiff = Math.abs(currentBootTime - task.ownerBootTime);
+                    if (bootTimeDiff > 5 * 60 * 1000) {
+                        staleReason = 'owner_process_rebooted';
+                    }
+                }
+
+                if (!staleReason && !isProcessAlive(task.ownerPid)) {
+                    staleReason = `owner_process_missing:${task.ownerPid}`;
+                }
+            }
+
+            if (!staleReason && typeof task.lastHeartbeat === 'number') {
+                const heartbeatAge = now - task.lastHeartbeat;
+                if (heartbeatAge > ACTIVE_TASK_HEARTBEAT_TIMEOUT) {
+                    staleReason = `heartbeat_timeout:${Math.floor(heartbeatAge / 1000)}s`;
+                }
+            }
+
+            if (!staleReason && !task.ownerPid && !task.lastHeartbeat) {
+                const activeSince = task.startTime || task.addedTime || 0;
+                const activeAge = now - activeSince;
+                if (activeAge > legacyPendingTimeout) {
+                    staleReason = `legacy_timeout:${Math.floor(activeAge / 1000)}s`;
+                }
+            }
+
+            if (!staleReason) {
+                continue;
+            }
+
+            task.status = 'failed';
+            task.completedTime = now;
+            task.error = `stale_queue_task:${staleReason}`;
+            removedTasks.push(task);
+        }
+
+        if (removedTasks.length > 0) {
+            this.saveQueue();
+            if (!silent) {
+                console.log(`🧹 清理僵尸活动任务: ${removedTasks.length} 个`);
+                removedTasks.slice(0, 10).forEach((task) => {
+                    console.log(`   - ${path.basename(task.mediaPath)} (${task.error})`);
+                });
+                if (removedTasks.length > 10) {
+                    console.log(`   ... 还有 ${removedTasks.length - 10} 个`);
+                }
+            }
+        }
+    }
+
     /**
      * 从文件加载队列
      */
@@ -125,6 +194,7 @@ class WhisperQueueManager {
                     mediaPath: this.normalizeMediaPath(task.mediaPath)
                 }));
                 this.cleanupInvalidPendingTasks({ silent });
+                this.cleanupStaleActiveTasks({ silent });
                 if (!silent) {
                     console.log(`📋 加载队列: ${this.queue.length} 个任务`);
                 }
@@ -254,7 +324,10 @@ class WhisperQueueManager {
             roomId,
             priority: this.getTaskPriorityByRoomId(roomId),
             addedTime: Date.now(),
-            status: 'pending'
+            status: 'pending',
+            ownerPid: process.pid,
+            ownerBootTime: getSystemBootTimestamp(),
+            lastHeartbeat: Date.now()
         };
 
         this.queue.push(task);
@@ -277,9 +350,24 @@ class WhisperQueueManager {
         if (task) {
             task.status = 'processing';
             task.startTime = Date.now();
+            task.ownerPid = process.pid;
+            task.ownerBootTime = getSystemBootTimestamp();
+            task.lastHeartbeat = Date.now();
             this.saveQueue();
             console.log(`🔄 任务开始处理: ${path.basename(task.mediaPath)}`);
         }
+    }
+
+    touchTask(taskId) {
+        const task = this.queue.find(t => t.id === taskId);
+        if (!task) {
+            return;
+        }
+
+        task.ownerPid = process.pid;
+        task.ownerBootTime = getSystemBootTimestamp();
+        task.lastHeartbeat = Date.now();
+        this.saveQueue();
     }
 
     /**
@@ -313,6 +401,7 @@ class WhisperQueueManager {
         if (task) {
             task.status = options.status || 'completed';
             task.completedTime = Date.now();
+            task.lastHeartbeat = Date.now();
             if (options.warning) {
                 task.warning = options.warning;
             }
@@ -340,8 +429,12 @@ class WhisperQueueManager {
     markFailed(taskId, error) {
         const task = this.queue.find(t => t.id === taskId);
         if (task) {
+            if (task.status === 'completed' || task.status === 'completed_with_cleanup_crash' || task.status === 'failed') {
+                return;
+            }
             task.status = 'failed';
             task.completedTime = Date.now();
+            task.lastHeartbeat = Date.now();
             task.error = error;
             this.saveQueue();
             console.error(`❌ 任务失败: ${path.basename(task.mediaPath)}`);
