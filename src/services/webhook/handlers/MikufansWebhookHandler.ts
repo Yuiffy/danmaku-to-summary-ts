@@ -1097,7 +1097,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       // 方案2: 从文件名解析时间戳
       // 格式: 录制-1820703922-20260123-180036-344-鼠继续过鸣潮1.0
       // 或: 录制-1820703922-20260123-180036-344-鼠继续过鸣潮1.0_merged
-      const timeMatch = fileName.match(/(\d{8})-(\d{6})/);
+      const timeMatch = fileName.match(/(?:录制-)?\d+-(\d{8})-(\d{6})-(\d{3})-/);
       if (timeMatch) {
         const dateStr = timeMatch[1]; // 20260123
         const timeStr = timeMatch[2]; // 180036
@@ -1110,22 +1110,39 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         const second = parseInt(timeStr.substring(4, 6));
         
         const startTime = new Date(year, month, day, hour, minute, second);
-        
-        // 尝试从文件的实际时长或修改时间推算结束时间
-        let endTime: Date;
-        try {
-          const stats = fs.statSync(videoPath);
-          endTime = new Date(stats.mtime); // 使用文件修改时间作为结束时间
-        } catch {
-          // 如果无法获取文件信息，假设直播持续了2小时（保守估计）
-          endTime = new Date(startTime.getTime() + 2 * 60 * 60 * 1000);
+
+        if (
+          Number.isNaN(startTime.getTime()) ||
+          year < 2020 ||
+          year > 2100
+        ) {
+          this.logger.warn(`文件名解析出的直播开始时间无效，跳过该兜底结果: ${fileName}`);
+        } else {
+          // 尝试从文件的实际时长或修改时间推算结束时间
+          let endTime: Date;
+          try {
+            const stats = fs.statSync(videoPath);
+            endTime = new Date(stats.mtime); // 使用文件修改时间作为结束时间
+          } catch {
+            // 如果无法获取文件信息，假设直播持续了2小时（保守估计）
+            endTime = new Date(startTime.getTime() + 2 * 60 * 60 * 1000);
+          }
+
+          if (
+            Number.isNaN(endTime.getTime()) ||
+            endTime.getTime() < startTime.getTime()
+          ) {
+            this.logger.warn(
+              `文件名兜底时间异常，结束时间早于开始时间，放弃文件名解析: ${fileName}, start=${startTime.toISOString()}, end=${endTime.toISOString()}`
+            );
+          } else {
+            return {
+              startTime,
+              endTime,
+              source: '文件名解析'
+            };
+          }
         }
-        
-        return {
-          startTime,
-          endTime,
-          source: '文件名解析'
-        };
       }
       
       // 方案3: 使用文件的创建和修改时间

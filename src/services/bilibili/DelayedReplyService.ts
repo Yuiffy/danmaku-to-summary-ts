@@ -411,11 +411,27 @@ export class DelayedReplyService implements IDelayedReplyService {
 
       // 计算目标时间范围：直播结束前30分钟到现在
       let targetStartTime = new Date(task.liveEndTime.getTime() - 30 * 60 * 1000);
-      const targetEndTime = new Date();
+      let targetEndTime = new Date();
+
+      // 保护性修正：上游兜底时间可能解析异常，避免未来时间或倒挂时间窗口导致一直查不到。
+      if (task.liveEndTime.getTime() > targetEndTime.getTime()) {
+        this.logger.warn(
+          `直播结束时间晚于当前时间，忽略异常的 liveEndTime: ${task.liveEndTime.toISOString()}`
+        );
+        targetStartTime = new Date(targetEndTime.getTime() - 30 * 60 * 1000);
+      }
 
       // 如果有liveStartTime，则需要在liveStartTime之后
-      if (task.liveStartTime) {
+      if (task.liveStartTime && task.liveStartTime.getTime() <= targetEndTime.getTime()) {
         targetStartTime = new Date(Math.max(targetStartTime.getTime(), task.liveStartTime.getTime()));
+      }
+
+      if (targetStartTime.getTime() > targetEndTime.getTime()) {
+        this.logger.warn(
+          `动态查找时间范围异常，回退到“当前时间前30分钟”窗口: start=${targetStartTime.toISOString()}, end=${targetEndTime.toISOString()}`,
+          { taskId: task.taskId }
+        );
+        targetStartTime = new Date(targetEndTime.getTime() - 30 * 60 * 1000);
       }
 
       this.logger.info(`查找目标动态: 时间范围 ${targetStartTime.toISOString()} 到 ${targetEndTime.toISOString()}`);
