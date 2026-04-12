@@ -50,6 +50,13 @@ class WhisperQueueManager {
         this.loadQueue({ silent: false });
     }
 
+    /**
+     * 在执行写操作前刷新最新队列，避免多个进程各自持有旧快照时互相覆盖。
+     */
+    reloadForMutation() {
+        this.loadQueue({ silent: true });
+    }
+
     normalizeMediaPath(mediaPath) {
         if (typeof mediaPath !== 'string') {
             return mediaPath;
@@ -306,6 +313,7 @@ class WhisperQueueManager {
      * @returns {QueueTask} 添加的任务
      */
     addTask(mediaPath, roomId = null, options = {}) {
+        this.reloadForMutation();
         mediaPath = this.normalizeMediaPath(mediaPath);
         this.cleanupInvalidPendingTasks({ silent: true });
         const normalizedXmlPath = options.xmlPath ? this.normalizeMediaPath(options.xmlPath) : null;
@@ -385,6 +393,7 @@ class WhisperQueueManager {
      * @param {string} taskId - 任务ID
      */
     markProcessing(taskId) {
+        this.reloadForMutation();
         const task = this.queue.find(t => t.id === taskId);
         if (task) {
             task.status = 'processing';
@@ -398,6 +407,7 @@ class WhisperQueueManager {
     }
 
     touchTask(taskId) {
+        this.reloadForMutation();
         const task = this.queue.find(t => t.id === taskId);
         if (!task) {
             return;
@@ -416,6 +426,7 @@ class WhisperQueueManager {
      * @param {string} mediaPath - 新的媒体路径
      */
     updateTaskMediaPath(taskId, mediaPath) {
+        this.reloadForMutation();
         const task = this.queue.find(t => t.id === taskId);
         if (!task) {
             return;
@@ -436,6 +447,7 @@ class WhisperQueueManager {
      * @param {string} taskId - 任务ID
      */
     markCompleted(taskId, options = {}) {
+        this.reloadForMutation();
         const task = this.queue.find(t => t.id === taskId);
         if (task) {
             task.status = options.status || 'completed';
@@ -466,6 +478,7 @@ class WhisperQueueManager {
      * @param {string} error - 错误信息
      */
     markFailed(taskId, error) {
+        this.reloadForMutation();
         const task = this.queue.find(t => t.id === taskId);
         if (task) {
             if (task.status === 'completed' || task.status === 'completed_with_cleanup_crash' || task.status === 'failed') {
@@ -577,6 +590,7 @@ class WhisperQueueManager {
      * 将所有 'processing' 状态的任务重置为 'pending'
      */
     recoverInterruptedTasks() {
+        this.reloadForMutation();
         const interrupted = this.queue.filter(t => t.status === 'processing');
         
         if (interrupted.length > 0) {
@@ -597,6 +611,7 @@ class WhisperQueueManager {
      * 保留最近100个已完成的任务
      */
     cleanupOldTasks() {
+        this.reloadForMutation();
         const completedTasks = this.queue.filter(t => 
             t.status === 'completed' || t.status === 'completed_with_cleanup_crash' || t.status === 'failed'
         );
