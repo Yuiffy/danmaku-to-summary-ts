@@ -12,6 +12,8 @@ import time
 import re
 from typing import Optional, Dict, Any
 import traceback
+import tempfile
+import uuid
 
 # 导入 Gemini 异步 API 模块
 try:
@@ -64,6 +66,147 @@ def get_chinese_instruction(model: str) -> str:
         return "可以加入适量、清晰、排版工整的中文文字来增强漫画叙事，比如短台词、吐槽、标题、小标签、拟声词。优先使用自然中文，单处文字尽量简短，控制在1到12个字，整张图的文字数量要克制但可以比以前稍多，像成熟漫画分镜那样服务画面，不要做成大段说明书。"
     else:
         return "尽量不要有汉字，除非就一两个字。"
+
+
+def save_image_bytes(image_bytes: bytes, prefix: str = "comic_tuzi") -> str:
+    """将图像字节写入临时文件并返回路径。"""
+    temp_dir = tempfile.gettempdir()
+    temp_file = os.path.join(temp_dir, f"{prefix}_{uuid.uuid4().hex[:8]}.png")
+    with open(temp_file, 'wb') as f:
+        f.write(image_bytes)
+    print(f"[SAVE] 图像已保存到临时文件: {temp_file}")
+    return temp_file
+
+
+def download_image_to_temp(image_url: str, proxies: Dict[str, str], prefix: str = "comic_tuzi") -> Optional[str]:
+    """下载图片到临时文件。"""
+    print(f"[DOWNLOAD] 下载生成的图像: {image_url}")
+    try:
+        image_response = requests.get(image_url, timeout=60, proxies=proxies)
+        if image_response.status_code == 200:
+            print(f"[OK] tu-zi.com图像生成成功")
+            return save_image_bytes(image_response.content, prefix=prefix)
+        print(f"[ERROR] 图像下载失败: HTTP {image_response.status_code}")
+        return None
+    except Exception as download_error:
+        print(f"[ERROR] 图像下载异常: {download_error}")
+        return None
+
+
+def try_extract_image_from_data_items(data_items, proxies: Dict[str, str], prefix: str = "comic_tuzi") -> Optional[str]:
+    """兼容 OpenAI /images 响应风格的数据结构。"""
+    if not isinstance(data_items, list) or not data_items:
+        return None
+
+    image_data = data_items[0]
+    if not isinstance(image_data, dict):
+        return None
+
+    if image_data.get("url"):
+        return download_image_to_temp(image_data["url"], proxies, prefix=prefix)
+
+    if image_data.get("b64_json"):
+        try:
+            image_bytes = base64.b64decode(image_data["b64_json"])
+            print(f"[OK] tu-zi.com图像生成成功")
+            return save_image_bytes(image_bytes, prefix=prefix)
+        except Exception as decode_error:
+            print(f"[WARNING] 解码b64_json图像失败: {decode_error}")
+            return None
+
+    if image_data.get("image_url"):
+        return download_image_to_temp(image_data["image_url"], proxies, prefix=prefix)
+
+    return None
+
+
+def try_extract_image_from_message_content(content, proxies: Dict[str, str], timeout: float) -> Optional[str]:
+    """兼容 chat/completions 返回的多种 message.content 结构。"""
+    if isinstance(content, list):
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            image_url = item.get("image_url") or item.get("url")
+            if image_url:
+                result = download_image_to_temp(image_url, proxies)
+                if result:
+                    return result
+            b64_json = item.get("b64_json")
+            if b64_json:
+                try:
+                    image_bytes = base64.b64decode(b64_json)
+                    print(f"[OK] tu-zi.com图像生成成功")
+                    return save_image_bytes(image_bytes)
+                except Exception as decode_error:
+                    print(f"[WARNING] 解码content中的b64_json失败: {decode_error}")
+
+    if not isinstance(content, str) or not content:
+        return None
+
+    async_task_match = re.search(r'\[原始数据\]\((https?://[^)]+/source/[^)]+)\)', content)
+    if async_task_match:
+        task_url = async_task_match.group(1)
+        print(f"[INFO] 检测到异步生成任务: {task_url}")
+
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            try:
+                task_resp = requests.get(task_url, proxies=proxies, timeout=30)
+
+                if task_resp.status_code == 200:
+                    try:
+                        task_data = task_resp.json()
+                        task_status = task_data.get("status")
+
+                        if task_status == "completed" or (task_status is None and "urls" in task_data):
+                            image_urls = task_data.get("urls", [])
+                            if not image_urls and "generations" in task_data:
+                                gens = task_data.get("generations", [])
+                                if gens and isinstance(gens[0], dict):
+                                    if "url" in gens[0]:
+                                        image_urls.append(gens[0]["url"])
+                                    elif "img_paths" in gens[0]:
+                                        image_urls.extend(gens[0]["img_paths"])
+
+                            if image_urls:
+                                return download_image_to_temp(image_urls[0], proxies, prefix="comic_tuzi_async")
+
+                            print(f"[ERROR] 任务显示完成但未找到URL: {task_data.keys()}")
+                            return None
+
+                        if task_status == "failed":
+                            print(f"[ERROR] 异步任务生成失败: {task_data.get('failure_reason', '未知原因')}")
+                            return None
+
+                        print(f"[WAIT] 任务进行中... (状态: {task_status})")
+                        time.sleep(3)
+                    except json.JSONDecodeError:
+                        print(f"[WARNING] 任务响应非JSON格式")
+                        time.sleep(3)
+                else:
+                    print(f"[WARNING] 获取任务状态HTTP错误: {task_resp.status_code}")
+                    time.sleep(3)
+
+            except Exception as poll_err:
+                print(f"[WARNING] 轮询出错: {poll_err}")
+                time.sleep(3)
+
+        print(f"[ERROR] 异步任务轮询超时 ({timeout}s)")
+
+    url_match = re.search(r'https?://[^\s\)]+\.(?:png|jpg|jpeg|webp)', content)
+    if url_match:
+        return download_image_to_temp(url_match.group(0), proxies)
+
+    b64_match = re.search(r'data:image/[a-z]+;base64,([A-Za-z0-9+/=]+)', content)
+    if b64_match:
+        try:
+            image_data_bytes = base64.b64decode(b64_match.group(1))
+            print(f"[OK] tu-zi.com图像生成成功")
+            return save_image_bytes(image_data_bytes)
+        except Exception as decode_error:
+            print(f"[WARNING] 解码base64图像失败: {decode_error}")
+
+    return None
 
 
 def call_tuzi_chat_completions(
@@ -395,138 +538,19 @@ def call_tuzi_chat_completions_for_image(
                     # 打印响应结构以便调试
                     print(f"[DEBUG] 响应结构: {list(result.keys())}")
 
+                    direct_data_result = try_extract_image_from_data_items(result.get("data"), proxies)
+                    if direct_data_result:
+                        return direct_data_result
+
                     # 处理 /v1/chat/completions 响应格式
                     if "choices" in result and len(result["choices"]) > 0:
                         choice = result["choices"][0]
                         message = choice.get("message", {})
                         content = message.get("content", "")
 
-                        # 检查是否包含图像URL
-                        if content and isinstance(content, str):
-                            # 1. 优先检查是否有异步任务链接 (AsyncData / tuZi 格式)
-                            # 格式如: [原始数据](https://pro.asyncdata.net/source/xxxx)
-                            async_task_match = re.search(r'\[原始数据\]\((https?://[^)]+/source/[^)]+)\)', content)
-                            if async_task_match:
-                                task_url = async_task_match.group(1)
-                                print(f"[INFO] 检测到异步生成任务: {task_url}")
-                                
-                                # 轮询任务状态
-                                import tempfile
-                                import uuid
-                                
-                                start_time = time.time()
-                                while time.time() - start_time < timeout:
-                                    try:
-                                        task_resp = requests.get(task_url, proxies=proxies, timeout=30)
-                                        
-                                        if task_resp.status_code == 200:
-                                            try:
-                                                task_data = task_resp.json()
-                                                task_status = task_data.get("status")
-                                                
-                                                if task_status == "completed" or (task_status is None and "urls" in task_data):
-                                                    # 任务完成
-                                                    image_urls = task_data.get("urls", [])
-                                                    # 备选：从generations获取
-                                                    if not image_urls and "generations" in task_data:
-                                                        gens = task_data.get("generations", [])
-                                                        if gens and len(gens) > 0:
-                                                            if isinstance(gens[0], dict):
-                                                                if "url" in gens[0]:
-                                                                    image_urls.append(gens[0]["url"])
-                                                                elif "img_paths" in gens[0]:
-                                                                    image_urls.extend(gens[0]["img_paths"])
-                                                    
-                                                    if image_urls and len(image_urls) > 0:
-                                                        final_image_url = image_urls[0]
-                                                        print(f"[DOWNLOAD] 异步任务完成，下载图像: {final_image_url}")
-                                                        
-                                                        # 下载图片
-                                                        img_res = requests.get(final_image_url, timeout=60, proxies=proxies)
-                                                        if img_res.status_code == 200:
-                                                            temp_dir = tempfile.gettempdir()
-                                                            temp_file = os.path.join(temp_dir, f"comic_tuzi_async_{uuid.uuid4().hex[:8]}.png")
-                                                            with open(temp_file, 'wb') as f:
-                                                                f.write(img_res.content)
-                                                            print(f"[OK] tu-zi.com图像生成成功 (异步)")
-                                                            print(f"[SAVE] 图像已保存到临时文件: {temp_file}")
-                                                            return temp_file
-                                                        else:
-                                                            print(f"[ERROR] 下载图像失败: HTTP {img_res.status_code}")
-                                                            # 下载失败通常无法恢复，退出循环
-                                                            break
-                                                    else:
-                                                        print(f"[ERROR] 任务显示完成但未找到URL: {task_data.keys()}")
-                                                        break
-                                                        
-                                                elif task_status == "failed":
-                                                    print(f"[ERROR] 异步任务生成失败: {task_data.get('failure_reason', '未知原因')}")
-                                                    break
-                                                else:
-                                                    print(f"[WAIT] 任务进行中... (状态: {task_status})")
-                                                    time.sleep(3)
-                                            except json.JSONDecodeError:
-                                                print(f"[WARNING] 任务响应非JSON格式")
-                                                time.sleep(3)
-                                        else:
-                                            print(f"[WARNING] 获取任务状态HTTP错误: {task_resp.status_code}")
-                                            time.sleep(3)
-                                            
-                                    except Exception as poll_err:
-                                        print(f"[WARNING] 轮询出错: {poll_err}")
-                                        time.sleep(3)
-                                
-                                # 循环结束检查
-                                if time.time() - start_time >= timeout:
-                                    print(f"[ERROR] 异步任务轮询超时 ({timeout}s)")
-
-                            # 2. 尝试从内容中提取直接图像URL (旧逻辑)
-                            url_match = re.search(r'https?://[^\s\)]+\.(?:png|jpg|jpeg|webp)', content)
-                            if url_match:
-                                image_url = url_match.group(0)
-                                print(f"[DOWNLOAD] 下载生成的图像: {image_url}")
-                                try:
-                                    image_response = requests.get(image_url, timeout=60, proxies=proxies)
-
-                                    if image_response.status_code == 200:
-                                        import tempfile
-                                        import uuid
-
-                                        temp_dir = tempfile.gettempdir()
-                                        temp_file = os.path.join(temp_dir, f"comic_tuzi_{uuid.uuid4().hex[:8]}.png")
-
-                                        with open(temp_file, 'wb') as f:
-                                            f.write(image_response.content)
-
-                                        print(f"[OK] tu-zi.com图像生成成功")
-                                        print(f"[SAVE] 图像已保存到临时文件: {temp_file}")
-                                        return temp_file
-                                    else:
-                                        print(f"[ERROR] 图像下载失败: HTTP {image_response.status_code}")
-                                except Exception as download_error:
-                                    print(f"[ERROR] 图像下载异常: {download_error}")
-
-                            # 检查是否包含base64编码的图像数据
-                            b64_match = re.search(r'data:image/[a-z]+;base64,([A-Za-z0-9+/=]+)', content)
-                            if b64_match:
-                                image_base64 = b64_match.group(1)
-                                try:
-                                    image_data_bytes = base64.b64decode(image_base64)
-
-                                    import tempfile
-                                    import uuid
-
-                                    temp_dir = tempfile.gettempdir()
-                                    temp_file = os.path.join(temp_dir, f"comic_tuzi_{uuid.uuid4().hex[:8]}.png")
-
-                                    with open(temp_file, 'wb') as f:
-                                        f.write(image_data_bytes)
-
-                                    print(f"[OK] tu-zi.com图像生成成功")
-                                    print(f"[SAVE] 图像已保存到临时文件: {temp_file}")
-                                    return temp_file
-                                except Exception as decode_error:
-                                    print(f"[WARNING] 解码base64图像失败: {decode_error}")
+                        extracted_from_content = try_extract_image_from_message_content(content, proxies, timeout)
+                        if extracted_from_content:
+                            return extracted_from_content
 
                         # 检查是否有工具调用（某些API可能通过工具返回图像）
                         tool_calls = message.get("tool_calls", [])
@@ -537,26 +561,12 @@ def call_tuzi_chat_completions_for_image(
                                     try:
                                         args_json = json.loads(function_args)
                                         if "image_url" in args_json:
-                                            image_url = args_json["image_url"]
-                                            print(f"[DOWNLOAD] 下载生成的图像: {image_url}")
-                                            try:
-                                                image_response = requests.get(image_url, timeout=60, proxies=proxies)
-
-                                                if image_response.status_code == 200:
-                                                    import tempfile
-                                                    import uuid
-
-                                                    temp_dir = tempfile.gettempdir()
-                                                    temp_file = os.path.join(temp_dir, f"comic_tuzi_{uuid.uuid4().hex[:8]}.png")
-
-                                                    with open(temp_file, 'wb') as f:
-                                                        f.write(image_response.content)
-
-                                                    print(f"[OK] tu-zi.com图像生成成功")
-                                                    print(f"[SAVE] 图像已保存到临时文件: {temp_file}")
-                                                    return temp_file
-                                            except Exception as download_error:
-                                                print(f"[ERROR] 图像下载异常: {download_error}")
+                                            direct_tool_result = download_image_to_temp(args_json["image_url"], proxies)
+                                            if direct_tool_result:
+                                                return direct_tool_result
+                                        data_tool_result = try_extract_image_from_data_items(args_json.get("data"), proxies)
+                                        if data_tool_result:
+                                            return data_tool_result
                                     except Exception as json_error:
                                         print(f"[WARNING] 解析工具调用参数失败: {json_error}")
 

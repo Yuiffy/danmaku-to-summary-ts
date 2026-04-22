@@ -74,6 +74,7 @@ import json
 import time
 import base64
 import requests
+import importlib.util
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 import traceback as tb
@@ -550,6 +551,11 @@ def is_gemini_error(text: str) -> bool:
         return False
     return 'Gemini Error' in text
 
+
+def has_socks_proxy_support() -> bool:
+    """检查当前 Python 环境是否具备 SOCKS 代理支持。"""
+    return importlib.util.find_spec("socksio") is not None
+
 def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str] = None) -> Tuple[str, bool]:
     """使用AI生成漫画内容脚本
     
@@ -610,15 +616,20 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                 config = load_config()
                 gemini_config = config.get('aiServices', {}).get('gemini', {})
 
-                # 创建客户端（增加超时时间到120秒以应对SSL握手超时）
-                client = genai.Client(api_key=gemini_api_key, http_options=genai_types.HttpOptions(timeout=120))
-
                 # 设置代理 (如果需要)
                 proxy_url = gemini_config.get('proxy', '')
                 if proxy_url:
+                    if proxy_url.startswith('socks') and not has_socks_proxy_support():
+                        print("[WARNING] Gemini 配置了 SOCKS 代理，但当前环境缺少 socksio/httpx[socks]，跳过 Gemini 直连备用方案")
+                        break
                     import os
                     os.environ['http_proxy'] = proxy_url
                     os.environ['https_proxy'] = proxy_url
+                    os.environ['HTTP_PROXY'] = proxy_url
+                    os.environ['HTTPS_PROXY'] = proxy_url
+
+                # 创建客户端（增加超时时间到120秒以应对SSL握手超时）
+                client = genai.Client(api_key=gemini_api_key, http_options=genai_types.HttpOptions(timeout=120))
 
                 # 获取模型名称
                 model_name = gemini_config.get('model', 'gemini-2.0-flash')
