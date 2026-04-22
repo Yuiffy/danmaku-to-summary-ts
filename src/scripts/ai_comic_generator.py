@@ -453,6 +453,8 @@ def model_supports_chinese(model: Optional[str] = None) -> bool:
     
     # 高级模型列表（支持汉字）
     advanced_models = [
+        "gpt-image-2",
+        "gpt-image-1.5",
         "gemini-3-pro-image-preview-async",
         "gemini-3-pro-image-preview/nano-banana-2",
         "gemini-3-pro-image-preview-2k-async",
@@ -518,8 +520,8 @@ def build_comic_prompt(highlight_content: str, reference_image_path: Optional[st
 COMIC_ARTIST_PROMPT_TEMPLATE = """你作为虚拟主播二创画师大手子，根据直播内容，绘制直播总结插画。
 角色描述：{character_desc}。
 风格：多个剪贴画风格分镜（2~4个吧），每个是一个片段场景，
-不要有文字，纯默剧，用表情和动作、场景、图标来表现。
-下面是一场直播的语音+弹幕文本，请先构思图片并用文字给我，我再拿去绘制图片。整体600个字符以内。只返回各个分镜的文字描述，不要包含任何多余的说明、格式。
+默认以画面叙事为主，但如果有助于漫画效果，可以设计少量中文台词框、拟声词、标题字或路牌字，文字要自然、准确、排版清楚，不要过多。
+下面是一场直播的语音+弹幕文本，请先构思图片并用文字给我，我再拿去绘制图片。整体600个字符以内。只返回各个分镜的文字描述，不要包含任何多余的说明、格式。若适合带字，请明确写出这些字应该出现在什么位置、每处写什么，单处文字尽量控制在1到12个字。
 {highlight_content}
 """
 
@@ -1062,7 +1064,7 @@ def call_tuzi_image_api(prompt: str, reference_image_path=None, room_id: Optiona
     return call_tuzi_chat_completions_for_image(
         prompt=prompt,
         reference_image_path=reference_image_path,
-        model=tuzi_config.get("model", "gpt-image-1.5"),
+        model=tuzi_config.get("model", "gpt-image-2"),
         base_url=tuzi_config.get("baseUrl", "https://api.tu-zi.com"),
         api_key=tuzi_config.get("apiKey", ""),
         proxy_url=tuzi_config.get("proxy", ""),

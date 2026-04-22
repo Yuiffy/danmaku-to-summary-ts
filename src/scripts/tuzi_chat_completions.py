@@ -35,6 +35,8 @@ def model_supports_chinese(model: str) -> bool:
     
     # 高级模型列表（支持汉字）
     advanced_models = [
+        "gpt-image-2",
+        "gpt-image-1.5",
         "gemini-3-pro-image-preview-async",
         "gemini-3-pro-image-preview/nano-banana-2",
         "gemini-3-pro-image-preview-2k-async",
@@ -59,7 +61,7 @@ def get_chinese_instruction(model: str) -> str:
         汉字指令文本
     """
     if model_supports_chinese(model):
-        return "可以在画面中添加少量汉字来增强表现力（比如标题、对话、音效等），但要保持简洁美观。"
+        return "可以加入适量、清晰、排版工整的中文文字来增强漫画叙事，比如短台词、吐槽、标题、小标签、拟声词。优先使用自然中文，单处文字尽量简短，控制在1到12个字，整张图的文字数量要克制但可以比以前稍多，像成熟漫画分镜那样服务画面，不要做成大段说明书。"
     else:
         return "尽量不要有汉字，除非就一两个字。"
 
@@ -184,7 +186,7 @@ def encode_image_to_base64(image_path: str, with_data_uri: bool = False) -> str:
 def call_tuzi_chat_completions_for_image(
     prompt: str,
     reference_image_path = None,  # 可以是单个路径(str)或多个路径(list)
-    model: str = "gpt-image-1.5",
+    model: str = "gpt-image-2",
     base_url: str = "https://api.tu-zi.com",
     api_key: str = "",
     proxy_url: str = "",
@@ -268,23 +270,27 @@ def call_tuzi_chat_completions_for_image(
         })
 
         # ========== 图片生成重试策略配置 ==========
-        # 岁己（房间ID: 25788785）：质量最高的异步 nano-banana-pro 重试3次，不降级
-        # 其他主播：nano-banana-pro 同步一次，失败直接放弃，节省成本
+        # 第一优先级：gpt-image-2（更适合汉字与排版）
+        # 第二优先级：当前 tuZi Gemini async 方案
         # 注：gemini-3-pro-image-preview-async 即 nano-banana-pro 的异步版本
         SUI_ROOM_ID = "25788785"
+        primary_model = model or "gpt-image-2"
+        fallback_async_model = "gemini-3-pro-image-preview-async"
         if str(room_id) == SUI_ROOM_ID:
-            # 岁己专属：高质量异步模型，最多重试3次，不降级
-            print(f"[INFO] 房间 {room_id} (岁己) 使用专属高质量策略：async nano-banana-pro × 3")
+            # 岁己专属：先走 GPT 生图，再回退到高质量异步 Gemini 多次重试
+            print(f"[INFO] 房间 {room_id} (岁己) 使用专属策略：{primary_model} -> async nano-banana-pro × 3")
             retry_strategies = [
-                {"type": "async", "model": "gemini-3-pro-image-preview-async"},
-                {"type": "async", "model": "gemini-3-pro-image-preview-async"},
-                {"type": "async", "model": "gemini-3-pro-image-preview-async"},
+                {"type": "sync", "model": primary_model},
+                {"type": "async", "model": fallback_async_model},
+                {"type": "async", "model": fallback_async_model},
+                {"type": "async", "model": fallback_async_model},
             ]
         else:
-            # 其他主播：一次，失败直接放弃
-            print(f"[INFO] 房间 {room_id} 使用轻量策略：gemini-3-pro-image-preview-async × 1，失败不重试")
+            # 其他主播：先走 GPT 生图，再回退到当前异步 Gemini
+            print(f"[INFO] 房间 {room_id} 使用轻量策略：{primary_model} -> {fallback_async_model}")
             retry_strategies = [
-                {"type": "async", "model": "gemini-3-pro-image-preview-async"},
+                {"type": "sync", "model": primary_model},
+                {"type": "async", "model": fallback_async_model},
             ]
             # --- 旧的多模型降级策略（已停用，保留备查） ---
             # retry_strategies = [

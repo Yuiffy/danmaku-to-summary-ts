@@ -76,13 +76,13 @@
         "enabled": true,
         "apiKey": "",
         "baseUrl": "https://api.tu-zi.com",
-        "model": "dall-e-3",
+        "model": "gpt-image-2",
         "proxy": ""
       }
     },
     "defaultNames": {
-      "anchor": "岁己SUI",
-      "fan": "饼干岁"
+      "anchor": "主播",
+      "fan": "粉丝"
     },
     "defaultWordLimit": 100,
     "roomSettings": {
@@ -169,7 +169,7 @@
   },
   "whisper": {
     "gpuDetection": {
-      "enabled": true,
+      "enabled": false,
       "gpuUtilizationThreshold": 40,
       "vramUsageThreshold": 40,
       "checkIntervalSeconds": 30
