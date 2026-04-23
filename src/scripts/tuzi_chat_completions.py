@@ -326,6 +326,117 @@ def encode_image_to_base64(image_path: str, with_data_uri: bool = False) -> str:
         raise
 
 
+def call_tuzi_images_generations(
+    prompt: str,
+    reference_image_path = None,
+    model: str = "gpt-image-2",
+    base_url: str = "https://api.tu-zi.com",
+    api_key: str = "",
+    proxy_url: str = "",
+    timeout: float = 360,
+    size: str = "1:1",
+    n: int = 1,
+    response_format: str = "b64_json"
+) -> Optional[str]:
+    """
+    调用 /v1/images/generations 端点生成图像（OpenAI DALL-E 兼容格式）
+    专用于 gpt-image-2 / gpt-image-1.5 等图片生成模型
+
+    Args:
+        prompt: 图像生成提示词
+        reference_image_path: 参考图片路径（暂不支持，保留接口）
+        model: 模型名称
+        base_url: API基础URL
+        api_key: API密钥
+        proxy_url: 代理URL
+        timeout: 超时时间（秒）
+        size: 图像尺寸，如 "1:1", "2:3", "3:2" 等
+        n: 生成图像数量
+        response_format: 返回格式，"b64_json" 或 "url"
+
+    Returns:
+        生成的图像文件路径，如果失败返回None
+    """
+    try:
+        proxies = {}
+        if proxy_url:
+            proxies = {"http": proxy_url, "https": proxy_url}
+            print(f"[PROXY] 使用代理: {proxy_url}")
+
+        api_url = f"{base_url}/v1/images/generations"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+
+        # 参考图：支持 base64 列表
+        image_list = []
+        if reference_image_path:
+            if isinstance(reference_image_path, str):
+                reference_image_path = [reference_image_path]
+            for img_path in reference_image_path:
+                if os.path.exists(img_path):
+                    image_list.append(encode_image_to_base64(img_path, with_data_uri=False))
+                    print(f"[INFO]  已添加参考图: {os.path.basename(img_path)}, base64长度: {len(image_list[-1])}")
+
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "n": n,
+            "size": size,
+            "response_format": response_format,
+        }
+        if image_list:
+            payload["image"] = image_list
+
+        print(f"[INFO] [images/generations] 调用 {model}, size={size}, prompt长度={len(prompt)}")
+        print(f"[DEBUG] payload: model={model}, size={size}, n={n}, response_format={response_format}")
+
+        resp = requests.post(api_url, headers=headers, json=payload, timeout=timeout, proxies=proxies)
+        print(f"[DEBUG] 响应状态码: {resp.status_code}, 用时: {resp.elapsed.total_seconds()}s")
+
+        if resp.status_code != 200:
+            print(f"[ERROR] images/generations 失败: HTTP {resp.status_code}, body: {resp.text[:500]}")
+            return None
+
+        result = resp.json()
+        print(f"[DEBUG] 响应结构: {list(result.keys())}")
+
+        # 标准返回格式: { "data": [ { "b64_json": "...", "url": "..." } ] }
+        data_list = result.get("data", [])
+        if not data_list:
+            print(f"[ERROR] 响应中无 data 字段: {json.dumps(result, ensure_ascii=False)[:500]}")
+            return None
+
+        first = data_list[0]
+
+        # 优先 b64_json
+        b64 = first.get("b64_json")
+        if b64:
+            import base64
+            image_bytes = base64.b64decode(b64)
+            output_path = save_image_bytes(image_bytes, prefix=f"comic_{model.replace('/', '_')}")
+            if output_path:
+                print(f"[OK] images/generations 成功，保存到: {output_path}")
+                return output_path
+
+        # 其次 url
+        img_url = first.get("url")
+        if img_url:
+            downloaded = download_image_to_temp(img_url, proxies, prefix=f"comic_{model.replace('/', '_')}")
+            if downloaded:
+                print(f"[OK] images/generations 成功（URL模式），保存到: {downloaded}")
+                return downloaded
+
+        print(f"[ERROR] data[0] 中无 b64_json 也无 url: {json.dumps(first, ensure_ascii=False)[:500]}")
+        return None
+
+    except Exception as e:
+        print(f"[ERROR] images/generations 异常: {e}")
+        traceback.print_exc()
+        return None
+
+
 def call_tuzi_chat_completions_for_image(
     prompt: str,
     reference_image_path = None,  # 可以是单个路径(str)或多个路径(list)
@@ -420,20 +531,22 @@ def call_tuzi_chat_completions_for_image(
         primary_model = model or "gpt-image-2"
         fallback_async_model = "gemini-3-pro-image-preview-async"
         if str(room_id) == SUI_ROOM_ID:
-            # 岁己专属：先走 GPT 生图，再回退到高质量异步 Gemini 多次重试
-            print(f"[INFO] 房间 {room_id} (岁己) 使用专属策略：{primary_model} -> async nano-banana-pro × 3")
+            # 岁己专属：多次 GPT 生图，最后回退 async Gemini
+            print(f"[INFO] 房间 {room_id} (岁己) 使用专属策略：{primary_model} x3 -> async {fallback_async_model}")
             retry_strategies = [
                 {"type": "sync", "model": primary_model},
-                {"type": "async", "model": fallback_async_model},
-                {"type": "async", "model": fallback_async_model},
+                {"type": "sync", "model": primary_model},
+                {"type": "sync", "model": primary_model},
                 {"type": "async", "model": fallback_async_model},
             ]
         else:
-            # 其他主播：先走 GPT 生图，再回退到当前异步 Gemini
-            print(f"[INFO] 房间 {room_id} 使用轻量策略：{primary_model} -> {fallback_async_model}")
+            # 其他主播：GPT 生图多次重试
+            print(f"[INFO] 房间 {room_id} 使用轻量策略：{primary_model} x3")
             retry_strategies = [
                 {"type": "sync", "model": primary_model},
-                {"type": "async", "model": fallback_async_model},
+                {"type": "sync", "model": primary_model},
+                {"type": "sync", "model": primary_model},
+                # {"type": "async", "model": fallback_async_model},  # 2026-04-23: gemini-3-pro-image-preview-async 临时涨价，注释掉
             ]
             # --- 旧的多模型降级策略（已停用，保留备查） ---
             # retry_strategies = [
@@ -496,6 +609,26 @@ def call_tuzi_chat_completions_for_image(
                 
                 # 同步策略：调用标准 chat/completions API
                 if strategy_type == "sync":
+                    # gpt-image-2 专用：优先使用 /v1/images/generations 接口
+                    if current_model in ("gpt-image-2", "gpt-image-1.5", "gpt-image-1"):
+                        print(f"[INFO] 使用 /v1/images/generations 专用接口调用 {current_model}")
+                        img_gen_result = call_tuzi_images_generations(
+                            prompt=current_prompt,
+                            reference_image_path=reference_images if reference_images else None,
+                            model=current_model,
+                            base_url=base_url,
+                            api_key=api_key,
+                            proxy_url=proxy_url,
+                            timeout=timeout,
+                            size="1:1",
+                            n=1,
+                            response_format="b64_json"
+                        )
+                        if img_gen_result:
+                            return img_gen_result
+                        print(f"[WARNING] images/generations 失败，回退到 chat/completions 格式")
+
+                    # 回退：使用 /v1/chat/completions 格式（兼容旧模型）
                     # 重新构建消息列表，使用当前模型对应的 prompt
                     current_messages = []
                     
