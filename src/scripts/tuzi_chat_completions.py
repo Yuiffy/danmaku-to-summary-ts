@@ -10,6 +10,7 @@ import json
 import base64
 import time
 import re
+import mimetypes
 from typing import Optional, Dict, Any
 import traceback
 import tempfile
@@ -78,8 +79,29 @@ def save_image_bytes(image_bytes: bytes, prefix: str = "comic_tuzi") -> str:
     return temp_file
 
 
+def normalize_image_url(image_url: str) -> str:
+    """从 markdown/混合文本里提取可直接下载的图片 URL。"""
+    if not isinstance(image_url, str):
+        return image_url
+
+    markdown_target = re.search(r'\]\((https?://[^)\s]+\.(?:png|jpg|jpeg|webp))\)', image_url)
+    if markdown_target:
+        return markdown_target.group(1)
+
+    markdown_target = re.search(r'\]\((https?://[^)\s]+\.(?:png|jpg|jpeg|webp))', image_url)
+    if markdown_target:
+        return markdown_target.group(1)
+
+    direct_match = re.search(r'https?://[^\s\]\)]+\.(?:png|jpg|jpeg|webp)', image_url)
+    if direct_match:
+        return direct_match.group(0)
+
+    return image_url.strip()
+
+
 def download_image_to_temp(image_url: str, proxies: Dict[str, str], prefix: str = "comic_tuzi") -> Optional[str]:
     """下载图片到临时文件。"""
+    image_url = normalize_image_url(image_url)
     print(f"[DOWNLOAD] 下载生成的图像: {image_url}")
     try:
         image_response = requests.get(image_url, timeout=60, proxies=proxies)
@@ -193,9 +215,9 @@ def try_extract_image_from_message_content(content, proxies: Dict[str, str], tim
 
         print(f"[ERROR] 异步任务轮询超时 ({timeout}s)")
 
-    url_match = re.search(r'https?://[^\s\)]+\.(?:png|jpg|jpeg|webp)', content)
-    if url_match:
-        return download_image_to_temp(url_match.group(0), proxies)
+    normalized_url = normalize_image_url(content)
+    if isinstance(normalized_url, str) and normalized_url.startswith("http"):
+        return download_image_to_temp(normalized_url, proxies)
 
     b64_match = re.search(r'data:image/[a-z]+;base64,([A-Za-z0-9+/=]+)', content)
     if b64_match:
@@ -326,6 +348,106 @@ def encode_image_to_base64(image_path: str, with_data_uri: bool = False) -> str:
         raise
 
 
+def normalize_gpt_image_size(size: str) -> str:
+    """gpt-image-2 edits/generations 官方格式使用像素尺寸，兼容旧的比例写法。"""
+    ratio_to_pixels = {
+        "1:1": "1024x1024",
+        "2:3": "1024x1536",
+        "3:2": "1536x1024",
+        "16:9": "2048x1152",
+        "9:16": "1024x1792",
+    }
+    return ratio_to_pixels.get(size, size)
+
+
+def call_tuzi_images_edits(
+    prompt: str,
+    reference_image_path,
+    model: str = "gpt-image-2",
+    base_url: str = "https://api.tu-zi.com",
+    api_key: str = "",
+    proxy_url: str = "",
+    timeout: float = 360,
+    size: str = "1024x1024",
+    quality: str = "high",
+    output_format: str = "png",
+) -> Optional[str]:
+    """
+    调用 /v1/images/edits 端点生成参考图编辑/多图融合结果。
+    gpt-image-2 的参考图输入必须以 multipart/form-data 的 image[] 文件上传。
+    """
+    try:
+        proxies = {}
+        if proxy_url:
+            proxies = {"http": proxy_url, "https": proxy_url}
+            print(f"[PROXY] 使用代理: {proxy_url}")
+
+        if isinstance(reference_image_path, str):
+            reference_paths = [reference_image_path]
+        else:
+            reference_paths = list(reference_image_path or [])
+
+        reference_paths = [path for path in reference_paths if path and os.path.exists(path)]
+        if not reference_paths:
+            print("[WARNING] images/edits 缺少有效参考图，跳过")
+            return None
+
+        if len(reference_paths) > 5:
+            print(f"[WARNING] gpt-image-2 edits 最多支持 5 张参考图，当前 {len(reference_paths)} 张，仅使用前 5 张")
+            reference_paths = reference_paths[:5]
+
+        api_url = f"{base_url}/v1/images/edits"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+        }
+        data = {
+            "model": model,
+            "prompt": prompt,
+            "size": normalize_gpt_image_size(size),
+            "quality": quality,
+            "output_format": output_format,
+        }
+
+        opened_files = []
+        files = []
+        try:
+            for idx, img_path in enumerate(reference_paths, 1):
+                mime_type = mimetypes.guess_type(img_path)[0] or "application/octet-stream"
+                file_obj = open(img_path, "rb")
+                opened_files.append(file_obj)
+                files.append(("image[]", (os.path.basename(img_path), file_obj, mime_type)))
+                file_size = os.path.getsize(img_path)
+                print(f"[INFO]  已添加参考图 {idx}/{len(reference_paths)} 到 images/edits: {os.path.basename(img_path)}, {file_size} bytes, {mime_type}")
+
+            print(f"[INFO] [images/edits] 调用 {model}, size={data['size']}, quality={quality}, output_format={output_format}, prompt长度={len(prompt)}")
+            resp = requests.post(api_url, headers=headers, data=data, files=files, timeout=timeout, proxies=proxies)
+        finally:
+            for file_obj in opened_files:
+                file_obj.close()
+
+        print(f"[DEBUG] images/edits 响应状态码: {resp.status_code}, 用时: {resp.elapsed.total_seconds()}s")
+
+        if resp.status_code != 200:
+            print(f"[ERROR] images/edits 失败: HTTP {resp.status_code}, body: {resp.text[:500]}")
+            return None
+
+        result = resp.json()
+        print(f"[DEBUG] images/edits 响应结构: {list(result.keys())}")
+
+        extracted = try_extract_image_from_data_items(result.get("data"), proxies, prefix=f"comic_{model.replace('/', '_')}_edit")
+        if extracted:
+            print(f"[OK] images/edits 成功，保存到: {extracted}")
+            return extracted
+
+        print(f"[ERROR] images/edits 响应中未找到图片数据: {json.dumps(result, ensure_ascii=False)[:500]}")
+        return None
+
+    except Exception as e:
+        print(f"[ERROR] images/edits 异常: {e}")
+        traceback.print_exc()
+        return None
+
+
 def call_tuzi_images_generations(
     prompt: str,
     reference_image_path = None,
@@ -336,7 +458,9 @@ def call_tuzi_images_generations(
     timeout: float = 360,
     size: str = "1:1",
     n: int = 1,
-    response_format: str = "b64_json"
+    response_format: str = "b64_json",
+    quality: str = "high",
+    output_format: str = "png"
 ) -> Optional[str]:
     """
     调用 /v1/images/generations 端点生成图像（OpenAI DALL-E 兼容格式）
@@ -344,7 +468,7 @@ def call_tuzi_images_generations(
 
     Args:
         prompt: 图像生成提示词
-        reference_image_path: 参考图片路径（暂不支持，保留接口）
+        reference_image_path: 参考图片路径；有参考图时自动改用 /v1/images/edits
         model: 模型名称
         base_url: API基础URL
         api_key: API密钥
@@ -369,28 +493,37 @@ def call_tuzi_images_generations(
             "Content-Type": "application/json"
         }
 
-        # 参考图：支持 base64 列表
-        image_list = []
         if reference_image_path:
             if isinstance(reference_image_path, str):
                 reference_image_path = [reference_image_path]
-            for img_path in reference_image_path:
-                if os.path.exists(img_path):
-                    image_list.append(encode_image_to_base64(img_path, with_data_uri=False))
-                    print(f"[INFO]  已添加参考图: {os.path.basename(img_path)}, base64长度: {len(image_list[-1])}")
+            valid_reference_images = [img_path for img_path in reference_image_path if os.path.exists(img_path)]
+            if valid_reference_images:
+                print(f"[INFO] 检测到 {len(valid_reference_images)} 张参考图，使用 /v1/images/edits multipart 上传")
+                return call_tuzi_images_edits(
+                    prompt=prompt,
+                    reference_image_path=valid_reference_images,
+                    model=model,
+                    base_url=base_url,
+                    api_key=api_key,
+                    proxy_url=proxy_url,
+                    timeout=timeout,
+                    size=size,
+                    quality=quality,
+                    output_format=output_format,
+                )
 
         payload = {
             "model": model,
             "prompt": prompt,
             "n": n,
-            "size": size,
+            "size": normalize_gpt_image_size(size),
             "response_format": response_format,
+            "quality": quality,
+            "output_format": output_format,
         }
-        if image_list:
-            payload["image"] = image_list
 
-        print(f"[INFO] [images/generations] 调用 {model}, size={size}, prompt长度={len(prompt)}")
-        print(f"[DEBUG] payload: model={model}, size={size}, n={n}, response_format={response_format}")
+        print(f"[INFO] [images/generations] 调用 {model}, size={payload['size']}, prompt长度={len(prompt)}")
+        print(f"[DEBUG] payload: model={model}, size={payload['size']}, n={n}, response_format={response_format}, quality={quality}, output_format={output_format}")
 
         resp = requests.post(api_url, headers=headers, json=payload, timeout=timeout, proxies=proxies)
         print(f"[DEBUG] 响应状态码: {resp.status_code}, 用时: {resp.elapsed.total_seconds()}s")
@@ -622,7 +755,9 @@ def call_tuzi_chat_completions_for_image(
                             timeout=timeout,
                             size="1:1",
                             n=1,
-                            response_format="b64_json"
+                            response_format="b64_json",
+                            quality="high",
+                            output_format="png"
                         )
                         if img_gen_result:
                             return img_gen_result
