@@ -69,6 +69,53 @@ def get_chinese_instruction(model: str) -> str:
         return "尽量不要有汉字，除非就一两个字。"
 
 
+def sanitize_prompt_for_image_policy(prompt: str) -> str:
+    """在命中内容安全时，对提示词做保守降级，尽量保留角色设定和构图信息。"""
+    if not isinstance(prompt, str) or not prompt:
+        return prompt
+
+    replacements = [
+        ("恶魔", "暗色幻想"),
+        ("诅咒", "神秘宿命"),
+        ("不死", "古老"),
+        ("黑心", "古灵精怪"),
+        ("继承人", "后裔"),
+        ("整蛊", "恶作剧"),
+        ("性感", "精致"),
+        ("暴露", "简洁"),
+        ("血", "红色能量"),
+        ("伤口", "战损痕迹"),
+    ]
+
+    sanitized = prompt
+    for old, new in replacements:
+        sanitized = sanitized.replace(old, new)
+
+    if sanitized != prompt:
+        print("[INFO] 提示词已按内容安全策略做温和降级后重试")
+    return sanitized
+
+
+def is_content_policy_rejection(content) -> bool:
+    """判断响应是否明确因为内容安全策略被拒绝。"""
+    if isinstance(content, list):
+        content = json.dumps(content, ensure_ascii=False)
+
+    if not isinstance(content, str):
+        return False
+
+    lowered = content.lower()
+    markers = [
+        "content policy",
+        "content policies",
+        "内容安全策略拒绝",
+        "prompt 被内容安全策略拒绝",
+        "may violate our content policies",
+        "生图失败",
+    ]
+    return any(marker in lowered for marker in markers)
+
+
 def save_image_bytes(image_bytes: bytes, prefix: str = "comic_tuzi") -> str:
     """将图像字节写入临时文件并返回路径。"""
     temp_dir = tempfile.gettempdir()
@@ -663,24 +710,25 @@ def call_tuzi_chat_completions_for_image(
         SUI_ROOM_ID = "25788785"
         primary_model = model or "gpt-image-2"
         fallback_async_model = "gemini-3-pro-image-preview-async"
+        gpt_image_timeout = max(timeout, 1000) if primary_model in ("gpt-image-2", "gpt-image-1.5", "gpt-image-1") else timeout
         if str(room_id) == SUI_ROOM_ID:
-            # 岁己专属：多次 GPT 生图，最后回退 async Gemini
-            print(f"[INFO] 房间 {room_id} (岁己) 使用专属策略：{primary_model} x3 -> async {fallback_async_model}")
+            # 岁己专属：所有重试都保留参考图，最后回退 async Gemini
+            print(f"[INFO] 房间 {room_id} (岁己) 使用专属策略：{primary_model}(参考图) x3 -> async {fallback_async_model}")
             retry_strategies = [
-                {"type": "sync", "model": primary_model},
-                {"type": "sync", "model": primary_model},
-                {"type": "sync", "model": primary_model},
+                {"type": "sync", "model": primary_model, "use_reference_images": True, "timeout": gpt_image_timeout},
+                {"type": "sync", "model": primary_model, "use_reference_images": True, "timeout": gpt_image_timeout},
+                {"type": "sync", "model": primary_model, "use_reference_images": True, "timeout": gpt_image_timeout},
                 {"type": "async", "model": fallback_async_model},
             ]
         else:
-            # 其他主播：GPT 生图多次重试
-            print(f"[INFO] 房间 {room_id} 使用轻量策略：{primary_model} x3")
+            # 其他主播：所有重试都保留参考图；若明确命中内容安全，再自动启用温和降级提示词
+            print(f"[INFO] 房间 {room_id} 使用轻量策略：{primary_model}(参考图) x3")
             retry_strategies = [
-                {"type": "sync", "model": primary_model},
-                {"type": "sync", "model": primary_model},
-                {"type": "sync", "model": primary_model},
-                # {"type": "async", "model": fallback_async_model},  # 2026-04-23: gemini-3-pro-image-preview-async 临时涨价，注释掉
+                {"type": "sync", "model": primary_model, "use_reference_images": True, "timeout": gpt_image_timeout},
+                {"type": "sync", "model": primary_model, "use_reference_images": True, "timeout": gpt_image_timeout},
+                {"type": "sync", "model": primary_model, "use_reference_images": True, "timeout": gpt_image_timeout},
             ]
+            # {"type": "async", "model": fallback_async_model},  # 2026-04-23: gemini-3-pro-image-preview-async 临时涨价，注释掉
             # --- 旧的多模型降级策略（已停用，保留备查） ---
             # retry_strategies = [
             #     {"type": "async", "model": "gemini-3-pro-image-preview-async"},  # 异步 nano-banana-pro（失败不扣费）
@@ -690,20 +738,29 @@ def call_tuzi_chat_completions_for_image(
             #     {"type": "sync",  "model": "gemini-3-pro-image-preview/nano-banana-2"},  # nano-banana（贵）
             # ]
 
-        strategy_list = [f"{s['type']}:{s['model']}" for s in retry_strategies]
+        strategy_list = [
+            f"{s['type']}:{s['model']}:refs={'on' if s.get('use_reference_images', True) else 'off'}:timeout={s.get('timeout', timeout)}"
+            for s in retry_strategies
+        ]
         print(f"[INFO] 图片生成重试策略: {strategy_list}")
         # ==========================================
 
         response = None
+        force_sanitized_prompt = False
         for attempt, strategy in enumerate(retry_strategies):
             try:
                 strategy_type = strategy["type"]
                 current_model = strategy["model"]
+                current_timeout = strategy.get("timeout", timeout)
+                use_reference_images = strategy.get("use_reference_images", True)
+                current_reference_images = reference_images if use_reference_images else []
                 
                 # 根据当前模型动态替换 prompt 中的汉字指令占位符
                 current_prompt = prompt.replace("{chinese_instruction}", get_chinese_instruction(current_model))
+                if force_sanitized_prompt:
+                    current_prompt = sanitize_prompt_for_image_policy(current_prompt)
                 
-                print(f"[WAIT] 正在生成图像... (尝试 {attempt + 1}/{len(retry_strategies)}, 类型: {strategy_type}, 模型: {current_model}, 超时: {timeout}s)")
+                print(f"[WAIT] 正在生成图像... (尝试 {attempt + 1}/{len(retry_strategies)}, 类型: {strategy_type}, 模型: {current_model}, 参考图: {'开' if current_reference_images else '关'}, 超时: {current_timeout}s)")
 
                 # 异步策略：调用 Gemini 异步 API
                 if strategy_type == "async" and call_tuzi_gemini_async is not None:
@@ -716,7 +773,7 @@ def call_tuzi_chat_completions_for_image(
                         ASYNC_MAX_POLL_TIME = 1400
                         gemini_result = call_tuzi_gemini_async(
                             prompt=current_prompt,  # 使用替换后的 prompt
-                            reference_image_paths=reference_images if reference_images else [],
+                            reference_image_paths=current_reference_images if current_reference_images else [],
                             model=current_model,
                             base_url=base_url,
                             api_key=api_key,
@@ -747,12 +804,12 @@ def call_tuzi_chat_completions_for_image(
                         print(f"[INFO] 使用 /v1/images/generations 专用接口调用 {current_model}")
                         img_gen_result = call_tuzi_images_generations(
                             prompt=current_prompt,
-                            reference_image_path=reference_images if reference_images else None,
+                            reference_image_path=current_reference_images if current_reference_images else None,
                             model=current_model,
                             base_url=base_url,
                             api_key=api_key,
                             proxy_url=proxy_url,
-                            timeout=timeout,
+                            timeout=current_timeout,
                             size="1:1",
                             n=1,
                             response_format="b64_json",
@@ -768,9 +825,9 @@ def call_tuzi_chat_completions_for_image(
                     current_messages = []
                     
                     # 如果有参考图，添加到消息中
-                    if reference_images:
+                    if current_reference_images:
                         content_parts = [{"type": "text", "text": "请参考以下图片的风格和角色形象："}]
-                        for idx, img_path in enumerate(reference_images, 1):
+                        for idx, img_path in enumerate(current_reference_images, 1):
                             image_base64 = encode_image_to_base64(img_path, with_data_uri=True)
                             content_parts.append({
                                 "type": "image_url", 
@@ -795,8 +852,8 @@ def call_tuzi_chat_completions_for_image(
                         "max_tokens": max_tokens,
                     }
 
-                    print(f"[DEBUG] 发起请求，内容：{json.dumps(payload)[:100]}..., 代理: {proxies}, 超时: {timeout}s")
-                    response = requests.post(api_url, headers=headers, json=payload, timeout=timeout, proxies=proxies)
+                    print(f"[DEBUG] 发起请求，内容：{json.dumps(payload)[:100]}..., 代理: {proxies}, 超时: {current_timeout}s")
+                    response = requests.post(api_url, headers=headers, json=payload, timeout=current_timeout, proxies=proxies)
                     print(f"[DEBUG] 收到响应，状态码: {response.status_code}, 用时: {response.elapsed.total_seconds()}s")
 
                 if response.status_code == 200:
@@ -819,6 +876,10 @@ def call_tuzi_chat_completions_for_image(
                         extracted_from_content = try_extract_image_from_message_content(content, proxies, timeout)
                         if extracted_from_content:
                             return extracted_from_content
+
+                        if is_content_policy_rejection(content):
+                            print("[WARNING] 当前提示词命中内容安全策略，后续重试将自动使用温和降级提示词")
+                            force_sanitized_prompt = True
 
                         # 检查是否有工具调用（某些API可能通过工具返回图像）
                         tool_calls = message.get("tool_calls", [])

@@ -1067,8 +1067,10 @@ def call_tuzi_image_api(prompt: str, reference_image_path=None, room_id: Optiona
     else:
         print("[TUZI] 调用tu-zi.com图像生成API...")
 
-    # 获取超时设置 (默认为360秒)
+    # 获取超时设置；gpt-image-2 放宽到至少 1000 秒
     timeout_ms = config.get("timeouts", {}).get("aiApiTimeout", 360000)
+    if tuzi_config.get("model", "gpt-image-2") in ("gpt-image-2", "gpt-image-1.5", "gpt-image-1"):
+        timeout_ms = max(timeout_ms, 1000000)
     timeout_sec = timeout_ms / 1000
 
     # 调用tuZi API生成图像（重试和多模型切换现在由底层函数处理）

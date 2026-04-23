@@ -84,10 +84,11 @@ async function generateComicWithPython(highlightPath, roomId = null) {
         });
 
         // 设置超时
+        const pythonTimeoutMs = 1000 * 4 * 1000;
         setTimeout(() => {
             pythonProcess.kill('SIGTERM');
             reject(new Error('Python脚本执行超时'));
-        }, 360* 4 * 1000); // 里面图片360秒超时，允许它重试4次
+        }, pythonTimeoutMs); // 里面 gpt-image-2 单次可到 1000 秒，外层同步放宽
     });
 }
 
