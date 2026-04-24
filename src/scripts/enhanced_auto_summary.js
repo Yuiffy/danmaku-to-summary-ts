@@ -100,6 +100,7 @@ const WHISPER_LOCK_RETRY_INTERVAL = 10000; // 10秒重试间隔
 const WHISPER_MAX_RETRIES = 24 * 60 * 6; // 最多重试 8640 次（24小时）
 const WHISPER_PROGRESS_LOG_INTERVAL = 30000; // 每30秒输出一次详细进度
 const WHISPER_QUEUE_TURN_RETRY_INTERVAL = 5000; // 5秒检查一次是否轮到当前任务
+const WHISPER_PHASE_DONE_SENTINEL = '[[WHISPER_PHASE_DONE]]';
 let hasLoggedGpuDetectionConfig = false;
 let activeWhisperProcess = null;
 let whisperCleanupInProgress = null;
@@ -1014,6 +1015,7 @@ const main = async () => {
         let mediaResult;
         try {
             mediaResult = await processMedia(processedFile, task.id, { bypassQueueTurn });
+            console.log(`${WHISPER_PHASE_DONE_SENTINEL} taskId=${task.id} media=${path.basename(processedFile)}`);
         } catch (error) {
             if (task?.id) {
                 queueManager.markFailed(task.id, error.message);

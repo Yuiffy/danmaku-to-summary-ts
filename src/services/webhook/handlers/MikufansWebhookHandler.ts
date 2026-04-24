@@ -14,6 +14,7 @@ import { VideoScreenshotService } from '../../video/VideoScreenshotService';
 import { listRelevantProcesses, terminateProcessTree } from '../../../utils/processCleanup';
 
 const queueManager = require(path.join(process.cwd(), 'src', 'scripts', 'whisper_queue_manager'));
+const WHISPER_PHASE_DONE_SENTINEL = '[[WHISPER_PHASE_DONE]]';
 
 interface QueuedSummaryTask {
   id: string;
@@ -958,10 +959,27 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     }, processTimeout);
 
     await new Promise<void>((resolve) => {
+      let workerSlotReleased = false;
+      const releaseWorkerSlot = (reason: string) => {
+        if (workerSlotReleased) {
+          return;
+        }
+
+        workerSlotReleased = true;
+        if (this.queueWorkerProcess === ps) {
+          this.queueWorkerProcess = null;
+        }
+        this.logger.info(`Mikufans队列Worker释放Whisper槽位 (${reason}): ${path.basename(task.mediaPath)}`);
+        resolve();
+      };
+
       ps.stdout?.on('data', (data: Buffer) => {
         const output = data.toString().trim();
         if (output) {
           this.logger.info(`[Mikufans队列Worker] ${output}`);
+          if (output.includes(WHISPER_PHASE_DONE_SENTINEL)) {
+            releaseWorkerSlot('whisper-phase-done');
+          }
         }
       });
 
@@ -977,12 +995,14 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         this.queueWorkerProcess = null;
         this.logger.error(`Mikufans队列Worker子进程错误: ${error.message}`);
         queueManager.markFailed(task.id, `队列Worker启动失败: ${error.message}`);
-        resolve();
+        releaseWorkerSlot('spawn-error');
       });
 
       ps.on('close', async (code: number | null) => {
         clearTimeout(timeoutId);
-        this.queueWorkerProcess = null;
+        if (this.queueWorkerProcess === ps) {
+          this.queueWorkerProcess = null;
+        }
         this.logger.info(`Mikufans队列Worker任务结束 (退出码: ${code}, 超时: ${timedOut}): ${path.basename(task.mediaPath)}`);
 
         if (task.mediaPath.includes('_merged')) {
@@ -994,7 +1014,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         }
 
         await this.checkAndTriggerDelayedReply(task.mediaPath, roomId);
-        resolve();
+        releaseWorkerSlot('process-close');
       });
     });
   }

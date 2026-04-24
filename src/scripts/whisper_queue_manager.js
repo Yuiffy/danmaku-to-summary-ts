@@ -53,8 +53,8 @@ class WhisperQueueManager {
     /**
      * 在执行写操作前刷新最新队列，避免多个进程各自持有旧快照时互相覆盖。
      */
-    reloadForMutation() {
-        this.loadQueue({ silent: true });
+    reloadForMutation(options = {}) {
+        this.loadQueue({ silent: true, ...options });
     }
 
     normalizeMediaPath(mediaPath) {
@@ -193,7 +193,7 @@ class WhisperQueueManager {
      * 从文件加载队列
      */
     loadQueue(options = {}) {
-        const { silent = true } = options;
+        const { silent = true, cleanupInvalid = true, cleanupStale = true } = options;
         try {
             if (fs.existsSync(QUEUE_FILE)) {
                 const content = fs.readFileSync(QUEUE_FILE, 'utf8');
@@ -202,8 +202,12 @@ class WhisperQueueManager {
                     ...task,
                     mediaPath: this.normalizeMediaPath(task.mediaPath)
                 }));
-                this.cleanupInvalidPendingTasks({ silent });
-                this.cleanupStaleActiveTasks({ silent });
+                if (cleanupInvalid) {
+                    this.cleanupInvalidPendingTasks({ silent });
+                }
+                if (cleanupStale) {
+                    this.cleanupStaleActiveTasks({ silent });
+                }
                 if (!silent) {
                     console.log(`📋 加载队列: ${this.queue.length} 个任务`);
                 }
@@ -426,7 +430,7 @@ class WhisperQueueManager {
      * @param {string} mediaPath - 新的媒体路径
      */
     updateTaskMediaPath(taskId, mediaPath) {
-        this.reloadForMutation();
+        this.reloadForMutation({ cleanupInvalid: false });
         const task = this.queue.find(t => t.id === taskId);
         if (!task) {
             return;
