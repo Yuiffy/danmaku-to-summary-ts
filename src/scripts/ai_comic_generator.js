@@ -3,10 +3,106 @@ const path = require('path');
 const fs = require('fs');
 const configLoader = require('./config-loader');
 
+const GENERATION_LOCK_TIMEOUT_MS = 30 * 60 * 1000;
+const GENERATION_LOCK_WAIT_MS = 20 * 60 * 1000;
+const GENERATION_LOCK_POLL_MS = 3000;
+
 // 检查配置是否有效
 function isComicGenerationEnabled() {
     const config = configLoader.getConfig();
     return config.ai?.comic?.enabled !== false;
+}
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function getExistingGeneratedFile(basePath) {
+    if (fs.existsSync(basePath)) {
+        return basePath;
+    }
+
+    const dir = path.dirname(basePath);
+    const ext = path.extname(basePath);
+    const nameWithoutExt = path.basename(basePath, ext);
+
+    if (!fs.existsSync(dir)) {
+        return null;
+    }
+
+    const escapedName = nameWithoutExt.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const escapedExt = ext.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`^${escapedName}_(\\d+)${escapedExt}$`);
+
+    return fs.readdirSync(dir)
+        .filter(file => pattern.test(file))
+        .map(file => path.join(dir, file))
+        .sort((a, b) => {
+            try {
+                return fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs;
+            } catch {
+                return a.localeCompare(b);
+            }
+        })[0] || null;
+}
+
+function acquireGenerationLock(lockPath) {
+    try {
+        const fd = fs.openSync(lockPath, 'wx');
+        fs.writeFileSync(fd, JSON.stringify({
+            pid: process.pid,
+            createdAt: new Date().toISOString()
+        }));
+        fs.closeSync(fd);
+        return true;
+    } catch (error) {
+        if (error.code !== 'EEXIST') {
+            throw error;
+        }
+
+        try {
+            const age = Date.now() - fs.statSync(lockPath).mtimeMs;
+            if (age > GENERATION_LOCK_TIMEOUT_MS) {
+                fs.unlinkSync(lockPath);
+                return acquireGenerationLock(lockPath);
+            }
+        } catch (statError) {
+            if (statError.code === 'ENOENT') {
+                return acquireGenerationLock(lockPath);
+            }
+            throw statError;
+        }
+
+        return false;
+    }
+}
+
+async function waitForGeneratedFile(basePath, lockPath) {
+    const start = Date.now();
+    while (Date.now() - start < GENERATION_LOCK_WAIT_MS) {
+        const existing = getExistingGeneratedFile(basePath);
+        if (existing) {
+            return existing;
+        }
+
+        if (!fs.existsSync(lockPath)) {
+            return getExistingGeneratedFile(basePath);
+        }
+
+        await sleep(GENERATION_LOCK_POLL_MS);
+    }
+
+    return null;
+}
+
+function releaseGenerationLock(lockPath) {
+    try {
+        fs.unlinkSync(lockPath);
+    } catch (error) {
+        if (error.code !== 'ENOENT') {
+            console.warn(`⚠️  删除漫画生成锁失败: ${error.message}`);
+        }
+    }
 }
 
 // 调用Python脚本生成漫画
@@ -107,8 +203,37 @@ async function generateComicFromHighlight(highlightPath, roomId = null) {
             throw new Error(`AI_HIGHLIGHT文件不存在: ${highlightPath}`);
         }
 
-        // 调用Python脚本
-        const result = await generateComicWithPython(highlightPath, roomId);
+        const dir = path.dirname(highlightPath);
+        const baseName = path.basename(highlightPath, '_AI_HIGHLIGHT.txt');
+        const outputPath = path.join(dir, `${baseName}_COMIC_FACTORY.png`);
+        const lockPath = `${outputPath}.lock`;
+        const existingOutput = getExistingGeneratedFile(outputPath);
+
+        if (existingOutput) {
+            console.log(`ℹ️  漫画已存在，跳过重复生成: ${path.basename(existingOutput)}`);
+            return existingOutput;
+        }
+
+        const lockAcquired = acquireGenerationLock(lockPath);
+        if (!lockAcquired) {
+            console.log(`⏳ 漫画正在由其他进程生成，等待结果: ${path.basename(outputPath)}`);
+            const generatedByOtherProcess = await waitForGeneratedFile(outputPath, lockPath);
+            if (generatedByOtherProcess) {
+                console.log(`✅ 复用其他进程生成的漫画: ${path.basename(generatedByOtherProcess)}`);
+                return generatedByOtherProcess;
+            }
+
+            console.log('⚠️  等待漫画生成超时，跳过本次重复生成');
+            return null;
+        }
+
+        let result = null;
+        try {
+            // 调用Python脚本
+            result = await generateComicWithPython(highlightPath, roomId);
+        } finally {
+            releaseGenerationLock(lockPath);
+        }
 
         if (result) {
             console.log(`✅ 漫画生成完成: ${path.basename(result)}`);
@@ -128,7 +253,7 @@ async function generateComicFromHighlight(highlightPath, roomId = null) {
 async function batchGenerateComics(directory) {
     try {
         const files = fs.readdirSync(directory);
-        const highlightFiles = files.filter(f => f.includes('_AI_HIGHLIGHT.txt'));
+        const highlightFiles = files.filter(f => f.endsWith('_AI_HIGHLIGHT.txt'));
 
         console.log(`🔍 在目录中发现 ${highlightFiles.length} 个AI_HIGHLIGHT文件`);
 

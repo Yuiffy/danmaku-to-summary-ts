@@ -978,7 +978,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         if (output) {
           this.logger.info(`[Mikufans队列Worker] ${output}`);
           if (output.includes(WHISPER_PHASE_DONE_SENTINEL)) {
-            releaseWorkerSlot('whisper-phase-done');
+            this.logger.info(`Mikufans队列Worker已完成Whisper阶段，等待AI阶段结束后再处理下一个任务: ${path.basename(task.mediaPath)}`);
           }
         }
       });

@@ -155,6 +155,78 @@ def generate_unique_filename(base_path: str) -> str:
             return new_path
         counter += 1
 
+def get_existing_generated_file(base_path: str) -> Optional[str]:
+    """返回同一高亮已生成过的文件，优先返回无后缀原始文件。"""
+    if os.path.exists(base_path):
+        return base_path
+
+    dir_name = os.path.dirname(base_path)
+    ext = os.path.splitext(base_path)[1]
+    name_without_ext = os.path.splitext(os.path.basename(base_path))[0]
+
+    if not os.path.isdir(dir_name):
+        return None
+
+    import re
+    pattern = re.compile(rf"^{re.escape(name_without_ext)}_(\d+){re.escape(ext)}$")
+    candidates = []
+    for file_name in os.listdir(dir_name):
+        if pattern.match(file_name):
+            file_path = os.path.join(dir_name, file_name)
+            try:
+                candidates.append((os.path.getmtime(file_path), file_path))
+            except OSError:
+                candidates.append((0, file_path))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: item[0])
+    return candidates[0][1]
+
+def acquire_generation_lock(lock_path: str, timeout_seconds: int = 30 * 60) -> bool:
+    """原子创建生成锁；陈旧锁会被清理。"""
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump({
+                "pid": os.getpid(),
+                "createdAt": time.strftime("%Y-%m-%dT%H:%M:%S%z")
+            }, f)
+        return True
+    except FileExistsError:
+        try:
+            age = time.time() - os.path.getmtime(lock_path)
+            if age > timeout_seconds:
+                os.remove(lock_path)
+                return acquire_generation_lock(lock_path, timeout_seconds)
+        except FileNotFoundError:
+            return acquire_generation_lock(lock_path, timeout_seconds)
+        return False
+
+def wait_for_generated_file(base_path: str, lock_path: str, wait_seconds: int = 20 * 60) -> Optional[str]:
+    """等待其他进程生成结果。"""
+    deadline = time.time() + wait_seconds
+    while time.time() < deadline:
+        existing = get_existing_generated_file(base_path)
+        if existing:
+            return existing
+
+        if not os.path.exists(lock_path):
+            return get_existing_generated_file(base_path)
+
+        time.sleep(3)
+
+    return None
+
+def release_generation_lock(lock_path: str) -> None:
+    try:
+        os.remove(lock_path)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        print(f"[WARNING] 删除漫画生成锁失败: {e}")
+
 def get_live_cover_image(highlight_path: str) -> Optional[str]:
     """从录制目录查找对应的直播封面图片"""
     try:
@@ -1283,11 +1355,32 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
     # 注意：这里检查的是图像生成API的启用状态，不是文本生成API
     use_google = config["aiServices"].get("googleImage", {}).get("enabled", False)
     use_tuzi = config["aiServices"].get("tuZi", {}).get("enabled", False)
+    lock_path = None
+    lock_acquired = False
     
     try:
         # 检查输入文件
         if not os.path.exists(highlight_path):
             raise FileNotFoundError(f"AI_HIGHLIGHT文件不存在: {highlight_path}")
+
+        dir_name = os.path.dirname(highlight_path)
+        base_name = os.path.basename(highlight_path).replace('_AI_HIGHLIGHT.txt', '')
+        output_path = os.path.join(dir_name, f"{base_name}_COMIC_FACTORY.png")
+        lock_path = output_path + ".lock"
+        existing_output = get_existing_generated_file(output_path)
+        if existing_output:
+            print(f"[INFO]  漫画已存在，跳过重复生成: {os.path.basename(existing_output)}")
+            return existing_output
+
+        lock_acquired = acquire_generation_lock(lock_path)
+        if not lock_acquired:
+            print(f"[WAIT] 漫画正在由其他进程生成，等待结果: {os.path.basename(output_path)}")
+            generated_by_other_process = wait_for_generated_file(output_path, lock_path)
+            if generated_by_other_process:
+                print(f"[OK] 复用其他进程生成的漫画: {os.path.basename(generated_by_other_process)}")
+                return generated_by_other_process
+            print("[WARNING] 等待漫画生成超时，跳过本次重复生成")
+            return None
         
         # 提取房间ID（优先使用传入的 room_id，其次从文件名提取）
         if room_id is None:
@@ -1328,8 +1421,6 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
         print(f"[BOOK] 读取内容完成 ({len(highlight_content)} 字符)")
 
         # 确定脚本文件路径，优先复用已存在的脚本以避免重复AI调用
-        dir_name = os.path.dirname(highlight_path)
-        base_name = os.path.basename(highlight_path).replace('_AI_HIGHLIGHT.txt', '')
         text_output_path = os.path.join(dir_name, f"{base_name}_COMIC_SCRIPT.txt")
 
         comic_text = None
@@ -1387,7 +1478,6 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
         print(f"[DEBUG] comic_result类型: {type(comic_result)}, 内容: {comic_result}")
         
         # 确定输出路径
-        output_path = os.path.join(dir_name, f"{base_name}_COMIC_FACTORY.png")
         print(f"[DEBUG] 输出路径: {output_path}")
 
         # 保存结果
@@ -1397,6 +1487,9 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
         print(f"[ERROR] 生成漫画失败: {e}")
         safe_print_exc()
         return None
+    finally:
+        if lock_acquired and lock_path:
+            release_generation_lock(lock_path)
 
 def main():
     """主函数"""
@@ -1442,7 +1535,7 @@ def main():
             highlight_files = []
             for root, dirs, files in os.walk(directory):
                 for file in files:
-                    if "_AI_HIGHLIGHT.txt" in file:
+                    if file.endswith("_AI_HIGHLIGHT.txt"):
                         highlight_files.append(os.path.join(root, file))
             
             print(f"找到 {len(highlight_files)} 个AI_HIGHLIGHT文件")

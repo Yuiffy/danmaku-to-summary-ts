@@ -5,6 +5,10 @@ const fetch = require('node-fetch');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 const configLoader = require('./config-loader');
 
+const GENERATION_LOCK_TIMEOUT_MS = 30 * 60 * 1000;
+const GENERATION_LOCK_WAIT_MS = 10 * 60 * 1000;
+const GENERATION_LOCK_POLL_MS = 2000;
+
 // 生成不重复的文件名（如果文件已存在，添加 _1, _2 等后缀）
 function generateUniqueFilename(basePath) {
     if (!fs.existsSync(basePath)) {
@@ -23,6 +27,98 @@ function generateUniqueFilename(basePath) {
             return newPath;
         }
         counter++;
+    }
+}
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function getExistingGeneratedFile(basePath) {
+    if (fs.existsSync(basePath)) {
+        return basePath;
+    }
+
+    const dir = path.dirname(basePath);
+    const ext = path.extname(basePath);
+    const nameWithoutExt = path.basename(basePath, ext);
+
+    if (!fs.existsSync(dir)) {
+        return null;
+    }
+
+    const escapedName = nameWithoutExt.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const escapedExt = ext.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`^${escapedName}_(\\d+)${escapedExt}$`);
+
+    return fs.readdirSync(dir)
+        .filter(file => pattern.test(file))
+        .map(file => path.join(dir, file))
+        .sort((a, b) => {
+            try {
+                return fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs;
+            } catch {
+                return a.localeCompare(b);
+            }
+        })[0] || null;
+}
+
+function acquireGenerationLock(lockPath) {
+    try {
+        const fd = fs.openSync(lockPath, 'wx');
+        fs.writeFileSync(fd, JSON.stringify({
+            pid: process.pid,
+            createdAt: new Date().toISOString()
+        }));
+        fs.closeSync(fd);
+        return true;
+    } catch (error) {
+        if (error.code !== 'EEXIST') {
+            throw error;
+        }
+
+        try {
+            const age = Date.now() - fs.statSync(lockPath).mtimeMs;
+            if (age > GENERATION_LOCK_TIMEOUT_MS) {
+                fs.unlinkSync(lockPath);
+                return acquireGenerationLock(lockPath);
+            }
+        } catch (statError) {
+            if (statError.code === 'ENOENT') {
+                return acquireGenerationLock(lockPath);
+            }
+            throw statError;
+        }
+
+        return false;
+    }
+}
+
+async function waitForGeneratedFile(basePath, lockPath) {
+    const start = Date.now();
+    while (Date.now() - start < GENERATION_LOCK_WAIT_MS) {
+        const existing = getExistingGeneratedFile(basePath);
+        if (existing) {
+            return existing;
+        }
+
+        if (!fs.existsSync(lockPath)) {
+            return getExistingGeneratedFile(basePath);
+        }
+
+        await sleep(GENERATION_LOCK_POLL_MS);
+    }
+
+    return null;
+}
+
+function releaseGenerationLock(lockPath) {
+    try {
+        fs.unlinkSync(lockPath);
+    } catch (error) {
+        if (error.code !== 'ENOENT') {
+            console.warn(`⚠️  删除生成锁失败: ${error.message}`);
+        }
     }
 }
 
@@ -446,50 +542,70 @@ function saveGeneratedText(outputPath, text, highlightPath) {
 // 生成晚安回复
 async function generateGoodnightReply(highlightPath, roomId = null) {
     const config = configLoader.getConfig();
+    const dir = path.dirname(highlightPath);
+    const baseName = path.basename(highlightPath, '_AI_HIGHLIGHT.txt');
+    const outputPath = path.join(dir, `${baseName}_晚安回复.md`);
+    const lockPath = `${outputPath}.lock`;
+    const existingOutput = getExistingGeneratedFile(outputPath);
 
-    const geminiConfig = config.ai?.text?.gemini || config.aiServices?.gemini || {};
-    const textEnabled = config.ai?.text?.enabled !== false;
-    const geminiEnabled = geminiConfig.enabled !== false;
+    if (existingOutput) {
+        console.log(`ℹ️  晚安回复已存在，跳过重复生成: ${path.basename(existingOutput)}`);
+        return existingOutput;
+    }
 
-    console.log(`🔍 检查AI文本生成配置...`);
-    console.log(`   总开关 (ai.text.enabled): ${textEnabled ? '启用' : '禁用'}`);
-    console.log(`   Gemini开关 (gemini.enabled): ${geminiEnabled ? '启用' : '禁用'}`);
-    console.log(`   当前服务商: ${config.ai?.text?.provider || 'gemini'}`);
-    console.log(`   isGeminiConfigured: ${configLoader.isGeminiConfigured()}`);
-    console.log(`   isTuZiConfigured: ${configLoader.isTuZiConfigured()}`);
+    const lockAcquired = acquireGenerationLock(lockPath);
+    if (!lockAcquired) {
+        console.log(`⏳ 晚安回复正在由其他进程生成，等待结果: ${path.basename(outputPath)}`);
+        const generatedByOtherProcess = await waitForGeneratedFile(outputPath, lockPath);
+        if (generatedByOtherProcess) {
+            console.log(`✅ 复用其他进程生成的晚安回复: ${path.basename(generatedByOtherProcess)}`);
+            return generatedByOtherProcess;
+        }
 
-    if (!textEnabled || (!geminiEnabled && config.ai?.text?.provider === 'gemini')) {
-        console.log('ℹ️  AI文本生成功能已禁用 (或当前服务商已禁用)');
+        console.log('⚠️  等待晚安回复生成超时，跳过本次重复生成');
         return null;
     }
 
-    if (!configLoader.isGeminiConfigured()) {
-        console.log('⚠️  Gemini API未配置，使用本地回退生成晚安回复');
+    try {
+        const geminiConfig = config.ai?.text?.gemini || config.aiServices?.gemini || {};
+        const textEnabled = config.ai?.text?.enabled !== false;
+        const geminiEnabled = geminiConfig.enabled !== false;
 
-        // 本地回退：简单根据文本摘取亮点并生成一段固定模板的晚安回复，便于无API时验证流程
-        try {
-            const highlightContent = readHighlightFile(highlightPath);
-            const lines = highlightContent.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-            const picks = lines.slice(0, 5).map((l, i) => `${i+1}. ${l}`);
-            const fallback = `# 晚安（本地回退）\n\n今天的直播亮点:\n${picks.join('\n')}\n\n谢谢今天的陪伴，晚安~`;
-            const dir = path.dirname(highlightPath);
-            const baseName = path.basename(highlightPath, '_AI_HIGHLIGHT.txt');
-            const outputPath = path.join(dir, `${baseName}_晚安回复.md`);
-            saveGeneratedText(outputPath, fallback, highlightPath);
-            return outputPath;
-        } catch (e) {
-            console.error('⚠️ 本地回退生成失败:', e.message);
+        console.log(`🔍 检查AI文本生成配置...`);
+        console.log(`   总开关 (ai.text.enabled): ${textEnabled ? '启用' : '禁用'}`);
+        console.log(`   Gemini开关 (gemini.enabled): ${geminiEnabled ? '启用' : '禁用'}`);
+        console.log(`   当前服务商: ${config.ai?.text?.provider || 'gemini'}`);
+        console.log(`   isGeminiConfigured: ${configLoader.isGeminiConfigured()}`);
+        console.log(`   isTuZiConfigured: ${configLoader.isTuZiConfigured()}`);
+
+        if (!textEnabled || (!geminiEnabled && config.ai?.text?.provider === 'gemini')) {
+            console.log('ℹ️  AI文本生成功能已禁用 (或当前服务商已禁用)');
             return null;
         }
-    }
 
-    console.log(`📄 处理AI_HIGHLIGHT文件: ${path.basename(highlightPath)}`);
+        if (!configLoader.isGeminiConfigured()) {
+            console.log('⚠️  Gemini API未配置，使用本地回退生成晚安回复');
 
-    const maxRetries = 3;
-    let lastError = null;
+            // 本地回退：简单根据文本摘取亮点并生成一段固定模板的晚安回复，便于无API时验证流程
+            try {
+                const highlightContent = readHighlightFile(highlightPath);
+                const lines = highlightContent.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+                const picks = lines.slice(0, 5).map((l, i) => `${i+1}. ${l}`);
+                const fallback = `# 晚安（本地回退）\n\n今天的直播亮点:\n${picks.join('\n')}\n\n谢谢今天的陪伴，晚安~`;
+                return saveGeneratedText(outputPath, fallback, highlightPath);
+            } catch (e) {
+                console.error('⚠️ 本地回退生成失败:', e.message);
+                return null;
+            }
+        }
 
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
+        console.log(`📄 处理AI_HIGHLIGHT文件: ${path.basename(highlightPath)}`);
+
+        const maxRetries = 3;
+        let lastError = null;
+
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
             // 检查输入文件
             if (!fs.existsSync(highlightPath)) {
                 throw new Error(`AI_HIGHLIGHT文件不存在: ${highlightPath}`);
@@ -528,34 +644,33 @@ async function generateGoodnightReply(highlightPath, roomId = null) {
             console.log(`✅ 文本长度校验通过: ${generatedText.length} 字符 (wordLimit=${wordLimit})`);
 
             // 确定输出路径
-            const dir = path.dirname(highlightPath);
-            const baseName = path.basename(highlightPath, '_AI_HIGHLIGHT.txt');
-            const outputPath = path.join(dir, `${baseName}_晚安回复.md`);
-
             // 保存结果
             return saveGeneratedText(outputPath, generatedText, highlightPath);
 
-        } catch (error) {
-            lastError = error;
-            console.error(`❌ 生成晚安回复失败 (第 ${attempt}/${maxRetries} 次尝试): ${error.message}`);
-            
-            if (attempt < maxRetries) {
-                const waitTime = 2000 * attempt;
-                console.log(`⏳ 等待 ${waitTime/1000} 秒后重试...`);
-                await new Promise(resolve => setTimeout(resolve, waitTime));
+            } catch (error) {
+                lastError = error;
+                console.error(`❌ 生成晚安回复失败 (第 ${attempt}/${maxRetries} 次尝试): ${error.message}`);
+
+                if (attempt < maxRetries) {
+                    const waitTime = 2000 * attempt;
+                    console.log(`⏳ 等待 ${waitTime/1000} 秒后重试...`);
+                    await new Promise(resolve => setTimeout(resolve, waitTime));
+                }
             }
         }
-    }
 
-    console.error(`❌ 在 ${maxRetries} 次重试后仍然失败: ${lastError.message}`);
-    return null;
+        console.error(`❌ 在 ${maxRetries} 次重试后仍然失败: ${lastError.message}`);
+        return null;
+    } finally {
+        releaseGenerationLock(lockPath);
+    }
 }
 
 // 批量处理目录中的所有AI_HIGHLIGHT文件
 async function batchGenerateGoodnightReplies(directory) {
     try {
         const files = fs.readdirSync(directory);
-        const highlightFiles = files.filter(f => f.includes('_AI_HIGHLIGHT.txt'));
+        const highlightFiles = files.filter(f => f.endsWith('_AI_HIGHLIGHT.txt'));
 
         console.log(`🔍 在目录中发现 ${highlightFiles.length} 个AI_HIGHLIGHT文件`);
 
