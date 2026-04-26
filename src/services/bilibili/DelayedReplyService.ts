@@ -3,6 +3,7 @@
  */
 import * as crypto from 'crypto';
 import * as fs from 'fs';
+import * as path from 'path';
 import { getLogger } from '../../core/logging/LogManager';
 import { IDelayedReplyService } from './interfaces/IDelayedReplyService';
 import { IDelayedReplyStore } from './interfaces/IDelayedReplyStore';
@@ -29,6 +30,7 @@ export class DelayedReplyService implements IDelayedReplyService {
   private checkInterval: NodeJS.Timeout | null = null;
   private countdownInterval: NodeJS.Timeout | null = null;
   private notifier?: WeChatWorkNotifier;
+  private addTaskLocks: Map<string, Promise<string>> = new Map();
 
   constructor(
     private bilibiliAPI: IBilibiliAPIService,
@@ -106,6 +108,44 @@ export class DelayedReplyService implements IDelayedReplyService {
     liveStartTime?: Date,
     liveEndTime?: Date
   ): Promise<string> {
+    const dedupeKey = this.getTaskDedupeKey(roomId, goodnightTextPath, comicImagePath);
+    const inFlightTask = this.addTaskLocks.get(dedupeKey);
+    if (inFlightTask) {
+      this.logger.info('跳过添加任务：相同延迟回复任务正在创建中', {
+        roomId,
+        goodnightTextPath,
+        comicImagePath
+      });
+      return inFlightTask;
+    }
+
+    const createTaskPromise = this.addTaskInternal(
+      roomId,
+      goodnightTextPath,
+      comicImagePath,
+      delaySeconds,
+      liveStartTime,
+      liveEndTime
+    );
+    this.addTaskLocks.set(dedupeKey, createTaskPromise);
+
+    try {
+      return await createTaskPromise;
+    } finally {
+      if (this.addTaskLocks.get(dedupeKey) === createTaskPromise) {
+        this.addTaskLocks.delete(dedupeKey);
+      }
+    }
+  }
+
+  private async addTaskInternal(
+    roomId: string,
+    goodnightTextPath: string,
+    comicImagePath?: string,
+    delaySeconds?: number,
+    liveStartTime?: Date,
+    liveEndTime?: Date
+  ): Promise<string> {
     try {
       this.logger.info(`[延迟回复] 尝试添加任务: roomId=${roomId}, goodnightTextPath=${goodnightTextPath}, comicImagePath=${comicImagePath}`);
       
@@ -119,6 +159,21 @@ export class DelayedReplyService implements IDelayedReplyService {
 
       // 检查是否已有待处理或处理中的任务（去重逻辑）
       const now = new Date();
+      const exactExistingTask = Array.from(this.tasks.values()).find(
+        task => this.isSameDelayedReplyTask(task, roomId, goodnightTextPath, comicImagePath) &&
+                (task.status === 'pending' || task.status === 'processing')
+      );
+
+      if (exactExistingTask) {
+        this.logger.info('跳过添加任务：相同延迟回复任务已存在', {
+          roomId,
+          existingTaskId: exactExistingTask.taskId,
+          existingStatus: exactExistingTask.status,
+          scheduledTime: exactExistingTask.scheduledTime.toISOString()
+        });
+        return exactExistingTask.taskId;
+      }
+
       const existingTask = Array.from(this.tasks.values()).find(
         task => task.roomId === roomId &&
                 (task.status === 'pending' || task.status === 'processing')
@@ -280,19 +335,55 @@ export class DelayedReplyService implements IDelayedReplyService {
     return this.isRunningFlag;
   }
 
+  private getTaskDedupeKey(roomId: string, goodnightTextPath: string, comicImagePath?: string): string {
+    return [
+      String(roomId),
+      path.normalize(goodnightTextPath),
+      comicImagePath ? path.normalize(comicImagePath) : ''
+    ].join('|');
+  }
+
+  private isSameDelayedReplyTask(
+    task: DelayedReplyTask,
+    roomId: string,
+    goodnightTextPath: string,
+    comicImagePath?: string
+  ): boolean {
+    return this.getTaskDedupeKey(task.roomId, task.goodnightTextPath, task.comicImagePath) ===
+      this.getTaskDedupeKey(roomId, goodnightTextPath, comicImagePath);
+  }
+
   /**
    * 加载已保存的任务
    */
   private async loadTasks(): Promise<void> {
     try {
       const pendingTasks = await this.store.getPendingTasks();
+      const uniqueTasks: DelayedReplyTask[] = [];
+      const seenTaskKeys = new Set<string>();
 
       for (const task of pendingTasks) {
+        const dedupeKey = this.getTaskDedupeKey(task.roomId, task.goodnightTextPath, task.comicImagePath);
+        if (seenTaskKeys.has(dedupeKey)) {
+          await this.store.updateTask(task.taskId, {
+            status: 'failed',
+            error: 'duplicate delayed reply task suppressed on service startup'
+          });
+          this.logger.warn('启动时跳过重复延迟回复任务', {
+            taskId: task.taskId,
+            roomId: task.roomId,
+            goodnightTextPath: task.goodnightTextPath
+          });
+          continue;
+        }
+
+        seenTaskKeys.add(dedupeKey);
+        uniqueTasks.push(task);
         this.tasks.set(task.taskId, task);
         this.scheduleTask(task);
       }
 
-      this.logger.info(`加载了 ${pendingTasks.length} 个待处理任务`);
+      this.logger.info(`加载了 ${uniqueTasks.length} 个待处理任务，压制重复任务 ${pendingTasks.length - uniqueTasks.length} 个`);
     } catch (error) {
       this.logger.error('加载延迟任务失败', undefined, error instanceof Error ? error : new Error(String(error)));
     }
@@ -646,39 +737,16 @@ export class DelayedReplyService implements IDelayedReplyService {
         error: task.error
       });
 
-      // 发送企业微信通知
-      if (this.notifier) {
-        const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
-        const anchorName = anchorConfig?.name || '未知主播';
-        
-        // 使用新的通用错误通知方法
-        await this.notifier.notifyProcessError(
-          anchorName,
-          '延迟回复执行',
-          task.error || '未知错误',
-          task.roomId,
-          {
-            taskId: task.taskId,
-            uid: task.uid,
-            goodnightTextPath: task.goodnightTextPath,
-            comicImagePath: task.comicImagePath,
-            replyText,
-            error: error instanceof Error ? error.stack : String(error)
-          }
-        );
-      }
-
       // 重试逻辑
       const isBlacklistError = task.error?.includes('黑名单') || task.error?.includes('12035');
       if (isBlacklistError) {
         this.logger.warn(`检测到黑名单或禁言错误，不进行重试: ${task.taskId}`, { error: task.error });
-        return;
       }
 
       const delayedReplyConfig = BilibiliConfigHelper.getDelayedReplyConfig();
       const maxRetries = delayedReplyConfig.maxRetries;
 
-      if (task.retryCount < maxRetries) {
+      if (!isBlacklistError && task.retryCount < maxRetries) {
         task.retryCount++;
         task.status = 'pending';
         task.error = undefined;
@@ -697,6 +765,28 @@ export class DelayedReplyService implements IDelayedReplyService {
         this.scheduleTask(task);
 
         this.logger.info(`准备重试延迟回复: ${task.taskId} (${task.retryCount}/${maxRetries})`);
+        return;
+      }
+
+      // 只在最终失败时发送企业微信通知，避免重试过程制造通知风暴。
+      if (this.notifier) {
+        const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
+        const anchorName = anchorConfig?.name || '未知主播';
+        
+        await this.notifier.notifyProcessError(
+          anchorName,
+          '延迟回复执行',
+          task.error || '未知错误',
+          task.roomId,
+          {
+            taskId: task.taskId,
+            uid: task.uid,
+            goodnightTextPath: task.goodnightTextPath,
+            comicImagePath: task.comicImagePath,
+            replyText,
+            error: error instanceof Error ? error.stack : String(error)
+          }
+        );
       }
     }
   }
