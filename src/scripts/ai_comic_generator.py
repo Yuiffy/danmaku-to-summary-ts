@@ -1366,21 +1366,25 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
         dir_name = os.path.dirname(highlight_path)
         base_name = os.path.basename(highlight_path).replace('_AI_HIGHLIGHT.txt', '')
         output_path = os.path.join(dir_name, f"{base_name}_COMIC_FACTORY.png")
-        lock_path = output_path + ".lock"
         existing_output = get_existing_generated_file(output_path)
         if existing_output:
             print(f"[INFO]  漫画已存在，跳过重复生成: {os.path.basename(existing_output)}")
             return existing_output
 
-        lock_acquired = acquire_generation_lock(lock_path)
-        if not lock_acquired:
-            print(f"[WAIT] 漫画正在由其他进程生成，等待结果: {os.path.basename(output_path)}")
-            generated_by_other_process = wait_for_generated_file(output_path, lock_path)
-            if generated_by_other_process:
-                print(f"[OK] 复用其他进程生成的漫画: {os.path.basename(generated_by_other_process)}")
-                return generated_by_other_process
-            print("[WARNING] 等待漫画生成超时，跳过本次重复生成")
-            return None
+        output_lock_enabled = bool(config.get("ai", {}).get("comic", {}).get("outputLockEnabled", False))
+        if output_lock_enabled:
+            lock_path = output_path + ".lock"
+            lock_acquired = acquire_generation_lock(lock_path)
+            if not lock_acquired:
+                print(f"[WAIT] 漫画正在由其他进程生成，等待结果: {os.path.basename(output_path)}")
+                generated_by_other_process = wait_for_generated_file(output_path, lock_path)
+                if generated_by_other_process:
+                    print(f"[OK] 复用其他进程生成的漫画: {os.path.basename(generated_by_other_process)}")
+                    return generated_by_other_process
+                print("[WARNING] 等待漫画生成超时，跳过本次重复生成")
+                return None
+        else:
+            print("[INFO]  漫画输出锁已关闭，允许并发生成")
         
         # 提取房间ID（优先使用传入的 room_id，其次从文件名提取）
         if room_id is None:

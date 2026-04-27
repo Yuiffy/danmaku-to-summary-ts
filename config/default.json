@@ -63,6 +63,11 @@
     "comic": {
       "enabled": true,
       "provider": "python",
+      "outputLockEnabled": false,
+      "concurrency": {
+        "maxConcurrentGenerations": 0,
+        "lockTimeoutMinutes": 180
+      },
       "python": {
         "script": "ai_comic_generator.py"
       },

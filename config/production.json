@@ -80,6 +80,11 @@
         "comic": {
             "enabled": true,
             "provider": "python",
+            "outputLockEnabled": false,
+            "concurrency": {
+                "maxConcurrentGenerations": 0,
+                "lockTimeoutMinutes": 180
+            },
             "tuZi": {
                 "enabled": true,
                 "apiKey": "",
@@ -89,7 +94,7 @@
             },
             "defaults": {
                 "minDurationMinutes": 60,
-                "generationProbability": 0.2
+                "generationProbability": 1.0
             }
         },
         "defaultNames": {
@@ -281,7 +286,7 @@
             "1741667419": {
                 "audioOnly": true,
                 "referenceImage": "public/reference_images/十六萤Izayoi.png",
-                "characterDescription": "十六萤Izayoi（拥有浣熊耳朵和毛茸茸大尾巴的少女，面无表情的三无特工，穿着女仆装或异域服饰，气质清冷，经常用尾巴把自己裹住）。粉丝“照夜萤”是小浣熊形象",
+                "characterDescription": "十六萤Izayoi（拥有浅绿色浣熊耳朵和浅色毛茸茸大尾巴的浅发色黄瞳少女，设定是咖啡馆馆长，穿着女仆装，经常用尾巴把自己裹住）。粉丝“照夜萤”是小浣熊形象",
                 "anchorName": "十六萤Izayoi",
                 "fanName": "照夜萤",
                 "enableTextGeneration": true,

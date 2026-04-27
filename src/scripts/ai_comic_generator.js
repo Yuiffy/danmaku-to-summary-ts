@@ -1,11 +1,11 @@
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const configLoader = require('./config-loader');
 
 const GENERATION_LOCK_TIMEOUT_MS = 30 * 60 * 1000;
-const GENERATION_LOCK_WAIT_MS = 20 * 60 * 1000;
-const GENERATION_LOCK_POLL_MS = 3000;
+const DEFAULT_CONCURRENCY_LOCK_TIMEOUT_MS = 3 * 60 * 60 * 1000;
 
 // 检查配置是否有效
 function isComicGenerationEnabled() {
@@ -15,6 +15,22 @@ function isComicGenerationEnabled() {
 
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function getComicConcurrencyConfig() {
+    const config = configLoader.getConfig();
+    const concurrency = config.ai?.comic?.concurrency || {};
+    const maxConcurrentGenerations = Number(concurrency.maxConcurrentGenerations ?? 0);
+    const lockTimeoutMinutes = Number(concurrency.lockTimeoutMinutes ?? 180);
+
+    return {
+        maxConcurrentGenerations: Number.isFinite(maxConcurrentGenerations) && maxConcurrentGenerations > 0
+            ? Math.floor(maxConcurrentGenerations)
+            : 0,
+        lockTimeoutMs: Number.isFinite(lockTimeoutMinutes) && lockTimeoutMinutes > 0
+            ? lockTimeoutMinutes * 60 * 1000
+            : DEFAULT_CONCURRENCY_LOCK_TIMEOUT_MS
+    };
 }
 
 function getExistingGeneratedFile(basePath) {
@@ -46,7 +62,7 @@ function getExistingGeneratedFile(basePath) {
         })[0] || null;
 }
 
-function acquireGenerationLock(lockPath) {
+function acquireFileLock(lockPath, timeoutMs = GENERATION_LOCK_TIMEOUT_MS) {
     try {
         const fd = fs.openSync(lockPath, 'wx');
         fs.writeFileSync(fd, JSON.stringify({
@@ -62,13 +78,13 @@ function acquireGenerationLock(lockPath) {
 
         try {
             const age = Date.now() - fs.statSync(lockPath).mtimeMs;
-            if (age > GENERATION_LOCK_TIMEOUT_MS) {
+            if (age > timeoutMs) {
                 fs.unlinkSync(lockPath);
-                return acquireGenerationLock(lockPath);
+                return acquireFileLock(lockPath, timeoutMs);
             }
         } catch (statError) {
             if (statError.code === 'ENOENT') {
-                return acquireGenerationLock(lockPath);
+                return acquireFileLock(lockPath, timeoutMs);
             }
             throw statError;
         }
@@ -77,31 +93,63 @@ function acquireGenerationLock(lockPath) {
     }
 }
 
-async function waitForGeneratedFile(basePath, lockPath) {
-    const start = Date.now();
-    while (Date.now() - start < GENERATION_LOCK_WAIT_MS) {
-        const existing = getExistingGeneratedFile(basePath);
-        if (existing) {
-            return existing;
-        }
-
-        if (!fs.existsSync(lockPath)) {
-            return getExistingGeneratedFile(basePath);
-        }
-
-        await sleep(GENERATION_LOCK_POLL_MS);
-    }
-
-    return null;
-}
-
-function releaseGenerationLock(lockPath) {
+function releaseFileLock(lockPath) {
     try {
         fs.unlinkSync(lockPath);
     } catch (error) {
         if (error.code !== 'ENOENT') {
-            console.warn(`⚠️  删除漫画生成锁失败: ${error.message}`);
+            console.warn(`⚠️  删除漫画并发槽失败: ${error.message}`);
         }
+    }
+}
+
+function cleanupStaleConcurrencySlots(slotDir, timeoutMs) {
+    if (!fs.existsSync(slotDir)) {
+        return;
+    }
+
+    for (const fileName of fs.readdirSync(slotDir)) {
+        if (!fileName.endsWith('.lock')) {
+            continue;
+        }
+
+        const filePath = path.join(slotDir, fileName);
+        try {
+            const age = Date.now() - fs.statSync(filePath).mtimeMs;
+            if (age > timeoutMs) {
+                fs.unlinkSync(filePath);
+                console.warn(`⚠️  已清理陈旧漫画并发槽: ${fileName}`);
+            }
+        } catch (error) {
+            if (error.code !== 'ENOENT') {
+                console.warn(`⚠️  清理漫画并发槽失败: ${fileName}, ${error.message}`);
+            }
+        }
+    }
+}
+
+async function acquireComicConcurrencySlot() {
+    const { maxConcurrentGenerations, lockTimeoutMs } = getComicConcurrencyConfig();
+    if (maxConcurrentGenerations <= 0) {
+        return null;
+    }
+
+    const slotDir = path.join(os.tmpdir(), 'danmaku-to-summary-comic-slots');
+    fs.mkdirSync(slotDir, { recursive: true });
+
+    while (true) {
+        cleanupStaleConcurrencySlots(slotDir, lockTimeoutMs);
+
+        for (let i = 0; i < maxConcurrentGenerations; i += 1) {
+            const slotPath = path.join(slotDir, `slot-${i}.lock`);
+            if (acquireFileLock(slotPath, lockTimeoutMs)) {
+                console.log(`🎛️  获取漫画并发槽 ${i + 1}/${maxConcurrentGenerations}`);
+                return slotPath;
+            }
+        }
+
+        console.log(`⏳ 漫画并发已满 (${maxConcurrentGenerations})，等待空闲槽...`);
+        await sleep(5000);
     }
 }
 
@@ -206,7 +254,6 @@ async function generateComicFromHighlight(highlightPath, roomId = null) {
         const dir = path.dirname(highlightPath);
         const baseName = path.basename(highlightPath, '_AI_HIGHLIGHT.txt');
         const outputPath = path.join(dir, `${baseName}_COMIC_FACTORY.png`);
-        const lockPath = `${outputPath}.lock`;
         const existingOutput = getExistingGeneratedFile(outputPath);
 
         if (existingOutput) {
@@ -214,25 +261,15 @@ async function generateComicFromHighlight(highlightPath, roomId = null) {
             return existingOutput;
         }
 
-        const lockAcquired = acquireGenerationLock(lockPath);
-        if (!lockAcquired) {
-            console.log(`⏳ 漫画正在由其他进程生成，等待结果: ${path.basename(outputPath)}`);
-            const generatedByOtherProcess = await waitForGeneratedFile(outputPath, lockPath);
-            if (generatedByOtherProcess) {
-                console.log(`✅ 复用其他进程生成的漫画: ${path.basename(generatedByOtherProcess)}`);
-                return generatedByOtherProcess;
-            }
-
-            console.log('⚠️  等待漫画生成超时，跳过本次重复生成');
-            return null;
-        }
-
+        const slotPath = await acquireComicConcurrencySlot();
         let result = null;
         try {
             // 调用Python脚本
             result = await generateComicWithPython(highlightPath, roomId);
         } finally {
-            releaseGenerationLock(lockPath);
+            if (slotPath) {
+                releaseFileLock(slotPath);
+            }
         }
 
         if (result) {
