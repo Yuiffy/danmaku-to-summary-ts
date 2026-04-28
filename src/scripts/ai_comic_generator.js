@@ -154,7 +154,7 @@ async function acquireComicConcurrencySlot() {
 }
 
 // 调用Python脚本生成漫画
-async function generateComicWithPython(highlightPath, roomId = null) {
+async function generateComicWithPython(highlightPath, roomId = null, options = {}) {
     const pythonScript = path.join(__dirname, 'ai_comic_generator.py');
 
     if (!fs.existsSync(pythonScript)) {
@@ -176,7 +176,17 @@ async function generateComicWithPython(highlightPath, roomId = null) {
         const pythonProcess = spawn(pythonPath, args, {
             stdio: 'pipe',
             windowsHide: true,
-            env: { ...process.env, PYTHONUTF8: '1', PYTHONUNBUFFERED: '1' }
+            env: {
+                ...process.env,
+                PYTHONUTF8: '1',
+                PYTHONUNBUFFERED: '1',
+                ...(options.tuziRetryMaxAttempts
+                    ? { TUZI_RETRY_MAX_ATTEMPTS: String(options.tuziRetryMaxAttempts) }
+                    : {}),
+                ...(options.tuziBypassCooldown
+                    ? { TUZI_RETRY_BYPASS_COOLDOWN: 'true' }
+                    : {})
+            }
         });
 
         let stdout = '';
@@ -237,7 +247,7 @@ async function generateComicWithPython(highlightPath, roomId = null) {
 }
 
 // 生成漫画
-async function generateComicFromHighlight(highlightPath, roomId = null) {
+async function generateComicFromHighlight(highlightPath, roomId = null, options = {}) {
     if (!isComicGenerationEnabled()) {
         console.log('ℹ️  AI漫画生成功能已禁用');
         return null;
@@ -265,7 +275,7 @@ async function generateComicFromHighlight(highlightPath, roomId = null) {
         let result = null;
         try {
             // 调用Python脚本
-            result = await generateComicWithPython(highlightPath, roomId);
+            result = await generateComicWithPython(highlightPath, roomId, options);
         } finally {
             if (slotPath) {
                 releaseFileLock(slotPath);

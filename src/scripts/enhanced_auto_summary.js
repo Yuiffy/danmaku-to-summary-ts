@@ -101,6 +101,8 @@ const WHISPER_MAX_RETRIES = 24 * 60 * 6; // 最多重试 8640 次（24小时）
 const WHISPER_PROGRESS_LOG_INTERVAL = 30000; // 每30秒输出一次详细进度
 const WHISPER_QUEUE_TURN_RETRY_INTERVAL = 5000; // 5秒检查一次是否轮到当前任务
 const WHISPER_PHASE_DONE_SENTINEL = '[[WHISPER_PHASE_DONE]]';
+const DELAYED_REPLY_READY_SENTINEL = '[[DELAYED_REPLY_READY]]';
+const SUI_ROOM_ID = '25788785';
 let hasLoggedGpuDetectionConfig = false;
 let activeWhisperProcess = null;
 let whisperCleanupInProgress = null;
@@ -831,11 +833,11 @@ async function generateAiText(highlightPath, roomId = null) {
 }
 
 // AI漫画生成
-async function generateAiComic(highlightPath, roomId = null) {
+async function generateAiComic(highlightPath, roomId = null, options = {}) {
     console.log('\n🎨 开始AI漫画生成...');
     
     try {
-        const result = await aiComicGenerator.generateComicFromHighlight(highlightPath, roomId);
+        const result = await aiComicGenerator.generateComicFromHighlight(highlightPath, roomId, options);
         if (result) {
             console.log(`✅ AI漫画生成完成: ${path.basename(result)}`);
             return result;
@@ -1160,6 +1162,11 @@ const main = async () => {
             
             // AI漫画生成
             let comicImagePath = null;
+            const highlightDir = path.dirname(highlightPath);
+            const highlightBase = path.basename(highlightPath).replace('_AI_HIGHLIGHT.txt', '');
+            const expectedComicImagePath = aiSettings.comic
+                ? path.join(highlightDir, `${highlightBase}_COMIC_FACTORY.png`)
+                : null;
             if (aiSettings.comic) {
                 // --- 检查图片生成条件 ---
 
@@ -1188,16 +1195,32 @@ const main = async () => {
                     const prob = aiSettings.comicGenerationProbability;
                     const roll = Math.random();
                     if (roll > prob) {
-                        console.log(`🎲 概率抓取未命中 (${roll.toFixed(3)} > ${prob})，跳过图片生成`);
+                        console.log(`🎲 概率抓取未命中 (${roll.toFixed(3)} > ${prob})，但保留最低保障：仍尝试生成图片一次`);
                     } else {
                         console.log(`🎲 概率抓取命中 (${roll.toFixed(3)} ≤ ${prob})，开始生成图片`);
-                        console.log(`🎨 开始AI漫画生成...`);
-                        comicImagePath = await generateAiComic(highlightPath, finalRoomId);
-                        console.log(`🎨 AI漫画生成结果: ${comicImagePath || 'null'}`);
                     }
+                    console.log(`🎨 开始AI漫画生成...`);
+                    const isSuiRoom = String(finalRoomId) === SUI_ROOM_ID;
+                    const tuziRetryMaxAttempts = isSuiRoom ? 4 : 1;
+                    const tuziBypassCooldown = !isSuiRoom;
+                    console.log(`🎨 生图尝试策略: tuzi最多尝试 ${tuziRetryMaxAttempts} 次`);
+                    comicImagePath = await generateAiComic(highlightPath, finalRoomId, {
+                        tuziRetryMaxAttempts,
+                        tuziBypassCooldown
+                    });
+                    console.log(`🎨 AI漫画生成结果: ${comicImagePath || 'null'}`);
                 }
             } else {
                 console.log('ℹ️  跳过AI漫画生成（房间设置禁用）');
+            }
+
+            if (goodnightTextPath) {
+                console.log(`${DELAYED_REPLY_READY_SENTINEL} ${JSON.stringify({
+                    roomId: finalRoomId,
+                    goodnightTextPath,
+                    comicImagePath: expectedComicImagePath,
+                    mediaPath: processedFile
+                })}`);
             }
 
             // 触发延迟回复任务（现在由父进程 MikufansWebhookHandler 处理）

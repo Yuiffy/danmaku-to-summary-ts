@@ -60,6 +60,18 @@ def get_tuzi_retry_config() -> Dict[str, Any]:
     except Exception as config_error:
         print(f"[WARNING] 读取 tuZi 重试配置失败，使用默认值: {config_error}")
 
+    env_max_attempts = os.environ.get("TUZI_RETRY_MAX_ATTEMPTS")
+    if env_max_attempts:
+        try:
+            retry_config["maxAttempts"] = max(1, int(env_max_attempts))
+            print(f"[TUZI_RETRY] 使用环境变量覆盖最大尝试次数: {retry_config['maxAttempts']}")
+        except ValueError:
+            print(f"[WARNING] TUZI_RETRY_MAX_ATTEMPTS 无效，已忽略: {env_max_attempts}")
+
+    if str(os.environ.get("TUZI_RETRY_BYPASS_COOLDOWN", "")).lower() == "true":
+        retry_config["bypassCooldown"] = True
+        print("[TUZI_RETRY] 本次调用绕过全局冷却")
+
     return retry_config
 
 
@@ -187,11 +199,13 @@ def request_tuzi_with_retry(operation_name: str, request_func, retry_config: Opt
 
     for attempt in range(max_attempts):
         if attempt == 0:
-            wait_for_tuzi_cooldown_if_needed(operation_name, retry_config)
+            if not retry_config.get("bypassCooldown"):
+                wait_for_tuzi_cooldown_if_needed(operation_name, retry_config)
         else:
             delay_ms = base_delays_ms[min(attempt, len(base_delays_ms) - 1)] if base_delays_ms else 0
             delay_seconds = jitter_delay_seconds(float(delay_ms) / 1000, jitter_ratio)
-            wait_for_tuzi_cooldown_if_needed(operation_name, retry_config)
+            if not retry_config.get("bypassCooldown"):
+                wait_for_tuzi_cooldown_if_needed(operation_name, retry_config)
             if delay_seconds > 0:
                 print(f"[TUZI_RETRY] {operation_name} 第 {attempt + 1}/{max_attempts} 次尝试前等待 {int(delay_seconds)}s")
                 time.sleep(delay_seconds)

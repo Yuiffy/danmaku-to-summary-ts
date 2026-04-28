@@ -15,6 +15,7 @@ import { listRelevantProcesses, terminateProcessTree } from '../../../utils/proc
 
 const queueManager = require(path.join(process.cwd(), 'src', 'scripts', 'whisper_queue_manager'));
 const WHISPER_PHASE_DONE_SENTINEL = '[[WHISPER_PHASE_DONE]]';
+const DELAYED_REPLY_READY_SENTINEL = '[[DELAYED_REPLY_READY]]';
 
 interface QueuedSummaryTask {
   id: string;
@@ -977,6 +978,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         const output = data.toString().trim();
         if (output) {
           this.logger.info(`[Mikufans队列Worker] ${output}`);
+          void this.handleDelayedReplyReadyOutput(output, task.mediaPath);
           if (output.includes(WHISPER_PHASE_DONE_SENTINEL)) {
             this.logger.info(`Mikufans队列Worker已完成Whisper阶段，释放队列槽位，AI/漫画阶段继续后台执行: ${path.basename(task.mediaPath)}`);
             releaseWorkerSlot('whisper-phase-done');
@@ -1223,66 +1225,147 @@ export class MikufansWebhookHandler implements IWebhookHandler {
 
       // 只要有晚安回复就触发延迟回复（漫画可选）
       if (hasGoodnightText) {
-        // 获取会话信息以获取直播时间
-        const session = this.liveSessionManager.getSession(roomId);
-        let liveStartTime: Date | undefined;
-        let liveEndTime: Date | undefined;
-
-        if (session) {
-          liveStartTime = session.startTime;
-          liveEndTime = session.endTime || new Date(); // 如果没有结束时间，使用当前时间
-          this.logger.info(`📅 [时间来源: 会话] 开始=${liveStartTime.toISOString()}, 结束=${liveEndTime.toISOString()}`);
-        } else {
-          this.logger.warn(`⚠️  未找到会话信息，尝试从其他来源获取直播时间`);
-          
-          // 兜底方案：尝试从多个来源获取时间
-          const fallbackTimes = this.extractLiveTimeFallback(videoPath, roomId);
-          if (fallbackTimes) {
-            liveStartTime = fallbackTimes.startTime;
-            liveEndTime = fallbackTimes.endTime;
-            
-            // 构建日志信息
-            const startStr = liveStartTime ? liveStartTime.toISOString() : 'undefined';
-            const endStr = liveEndTime ? liveEndTime.toISOString() : 'undefined';
-            this.logger.info(`📅 [时间来源: ${fallbackTimes.source}] 开始=${startStr}, 结束=${endStr}`);
-          } else {
-            this.logger.warn(`⚠️  无法从任何来源获取直播时间，将使用 undefined`);
-          }
-        }
-
-        this.logger.info(`✅ 找到晚安回复文件，触发延迟回复任务`);
-        this.logger.info(`   房间ID: ${roomId}`);
-        this.logger.info(`   晚安回复: ${path.basename(goodnightTextPath)}`);
-        if (hasComicImage) {
-          this.logger.info(`   漫画: ${path.basename(comicImagePath)}`);
-        } else {
-          this.logger.info(`   漫画: 未生成（将只发送晚安回复）`);
-        }
-        if (liveStartTime && liveEndTime) {
-          this.logger.info(`   直播时间: ${liveStartTime.toISOString()} ~ ${liveEndTime.toISOString()}`);
-        } else {
-          this.logger.info(`   直播时间: 未知（将不显示直播时长信息）`);
-        }
-
-        const taskId = await this.delayedReplyService.addTask(
-          roomId, 
-          goodnightTextPath, 
-          hasComicImage ? comicImagePath : '',
-          undefined, // delaySeconds使用默认配置
-          liveStartTime,
-          liveEndTime
-        );
-
-        if (taskId) {
-          this.logger.info(`✅ 延迟回复任务已触发: ${taskId}`);
-        } else {
-          this.logger.info(`ℹ️  延迟回复任务未添加（可能配置未启用）`);
-        }
+        await this.triggerDelayedReplyFromPaths({
+          roomId,
+          goodnightTextPath,
+          comicImagePath,
+          mediaPath: videoPath,
+          source: hasComicImage ? 'process-close-with-comic' : 'process-close-with-expected-comic'
+        });
       } else {
         this.logger.info(`ℹ️  未找到晚安回复文件，跳过延迟回复`);
       }
     } catch (error: any) {
       this.logger.error(`❌ 检查并触发延迟回复失败: ${error.message}`, { error });
+    }
+  }
+
+  private async handleDelayedReplyReadyOutput(output: string, fallbackMediaPath: string): Promise<void> {
+    if (!output.includes(DELAYED_REPLY_READY_SENTINEL)) {
+      return;
+    }
+
+    for (const line of output.split(/\r?\n/)) {
+      const markerIndex = line.indexOf(DELAYED_REPLY_READY_SENTINEL);
+      if (markerIndex < 0) {
+        continue;
+      }
+
+      const jsonText = line.slice(markerIndex + DELAYED_REPLY_READY_SENTINEL.length).trim();
+      if (!jsonText) {
+        this.logger.warn('延迟回复提前触发事件缺少JSON载荷');
+        continue;
+      }
+
+      try {
+        const payload = JSON.parse(jsonText) as {
+          roomId?: string;
+          goodnightTextPath?: string;
+          comicImagePath?: string;
+          mediaPath?: string;
+        };
+
+        if (!payload.roomId || !payload.goodnightTextPath) {
+          this.logger.warn('延迟回复提前触发事件字段不完整', { payload });
+          continue;
+        }
+
+        await this.triggerDelayedReplyFromPaths({
+          roomId: String(payload.roomId),
+          goodnightTextPath: payload.goodnightTextPath,
+          comicImagePath: payload.comicImagePath,
+          mediaPath: payload.mediaPath || fallbackMediaPath,
+          source: 'text-ready'
+        });
+      } catch (error: any) {
+        this.logger.error(`解析延迟回复提前触发事件失败: ${error.message}`, { line, error });
+      }
+    }
+  }
+
+  private resolveLiveTimesForDelayedReply(mediaPath: string, roomId: string): {
+    liveStartTime?: Date;
+    liveEndTime?: Date;
+  } {
+    const session = this.liveSessionManager.getSession(roomId);
+    if (session) {
+      const liveStartTime = session.startTime;
+      const liveEndTime = session.endTime || new Date();
+      this.logger.info(`📅 [时间来源: 会话] 开始=${liveStartTime.toISOString()}, 结束=${liveEndTime.toISOString()}`);
+      return { liveStartTime, liveEndTime };
+    }
+
+    this.logger.warn(`⚠️  未找到会话信息，尝试从其他来源获取直播时间`);
+    const fallbackTimes = this.extractLiveTimeFallback(mediaPath, roomId);
+    if (fallbackTimes) {
+      const startStr = fallbackTimes.startTime ? fallbackTimes.startTime.toISOString() : 'undefined';
+      const endStr = fallbackTimes.endTime ? fallbackTimes.endTime.toISOString() : 'undefined';
+      this.logger.info(`📅 [时间来源: ${fallbackTimes.source}] 开始=${startStr}, 结束=${endStr}`);
+      return {
+        liveStartTime: fallbackTimes.startTime,
+        liveEndTime: fallbackTimes.endTime
+      };
+    }
+
+    this.logger.warn(`⚠️  无法从任何来源获取直播时间，将使用 undefined`);
+    return {};
+  }
+
+  private async triggerDelayedReplyFromPaths(params: {
+    roomId: string;
+    goodnightTextPath: string;
+    comicImagePath?: string | null;
+    mediaPath: string;
+    source: string;
+  }): Promise<void> {
+    if (!this.delayedReplyService) {
+      this.logger.warn('⚠️  延迟回复服务未设置，跳过触发');
+      return;
+    }
+
+    const { roomId, goodnightTextPath, mediaPath, source } = params;
+    const comicImagePath = params.comicImagePath || '';
+
+    if (!roomId || roomId === 'unknown') {
+      this.logger.warn(`⚠️  房间ID无效 (${roomId})，跳过触发延迟回复`);
+      return;
+    }
+
+    if (!fs.existsSync(goodnightTextPath)) {
+      this.logger.info(`ℹ️  晚安回复文件暂不存在，跳过延迟回复触发`, { goodnightTextPath, source });
+      return;
+    }
+
+    const hasComicImage = !!comicImagePath && fs.existsSync(comicImagePath);
+    const { liveStartTime, liveEndTime } = this.resolveLiveTimesForDelayedReply(mediaPath, roomId);
+
+    this.logger.info(`✅ 找到晚安回复文件，触发延迟回复任务`, { source });
+    this.logger.info(`   房间ID: ${roomId}`);
+    this.logger.info(`   晚安回复: ${path.basename(goodnightTextPath)}`);
+    if (comicImagePath) {
+      this.logger.info(`   漫画: ${hasComicImage ? path.basename(comicImagePath) : `${path.basename(comicImagePath)}（等待生成）`}`);
+    } else {
+      this.logger.info(`   漫画: 未计划生成（将只发送晚安回复）`);
+    }
+    if (liveStartTime && liveEndTime) {
+      this.logger.info(`   直播时间: ${liveStartTime.toISOString()} ~ ${liveEndTime.toISOString()}`);
+    } else {
+      this.logger.info(`   直播时间: 未知（将不显示直播时长信息）`);
+    }
+
+    const taskId = await this.delayedReplyService.addTask(
+      roomId,
+      goodnightTextPath,
+      comicImagePath,
+      undefined,
+      liveStartTime,
+      liveEndTime
+    );
+
+    if (taskId) {
+      this.logger.info(`✅ 延迟回复任务已触发: ${taskId}`, { source });
+    } else {
+      this.logger.info(`ℹ️  延迟回复任务未添加（可能配置未启用）`, { source });
     }
   }
 

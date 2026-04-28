@@ -174,6 +174,21 @@ export class DelayedReplyService implements IDelayedReplyService {
         return exactExistingTask.taskId;
       }
 
+      const recentCompletedExactTask = Array.from(this.tasks.values()).find(
+        task => this.isSameDelayedReplyTask(task, roomId, goodnightTextPath, comicImagePath) &&
+                task.status === 'completed' &&
+                now.getTime() - task.createTime.getTime() < 30 * 60 * 1000
+      );
+
+      if (recentCompletedExactTask) {
+        this.logger.info('跳过添加任务：相同延迟回复任务已在30分钟内完成', {
+          roomId,
+          existingTaskId: recentCompletedExactTask.taskId,
+          completedTaskCreatedAt: recentCompletedExactTask.createTime.toISOString()
+        });
+        return recentCompletedExactTask.taskId;
+      }
+
       const existingTask = Array.from(this.tasks.values()).find(
         task => task.roomId === roomId &&
                 (task.status === 'pending' || task.status === 'processing')
