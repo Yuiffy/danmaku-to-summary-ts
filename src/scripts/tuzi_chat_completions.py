@@ -11,6 +11,7 @@ import base64
 import time
 import re
 import mimetypes
+import random
 from typing import Optional, Dict, Any
 import traceback
 import tempfile
@@ -22,6 +23,203 @@ try:
 except ImportError:
     print("[WARNING] 无法导入 tuzi_gemini_async 模块，Gemini异步功能将不可用")
     call_tuzi_gemini_async = None
+
+try:
+    from config_loader import get_config
+except ImportError:
+    get_config = None
+
+
+DEFAULT_TUZI_RETRY_CONFIG = {
+    "maxAttempts": 4,
+    "baseDelaysMs": [0, 120000, 300000, 720000],
+    "jitterRatio": 0.3,
+    "globalWindowMs": 600000,
+    "globalFailureThreshold": 3,
+    "cooldownMs": 600000,
+    "maxCooldownMs": 2400000,
+    "retryableStatusCodes": [500, 502, 503, 504],
+    "retryableMessages": ["当前模型负载较高", "rate limit", "timeout", "timed out"],
+    "retryableExceptions": ["ReadTimeout", "SSLEOFError", "ConnectionError", "Timeout"],
+}
+
+TUZI_RETRY_STATE_FILE = os.path.join(tempfile.gettempdir(), "danmaku_tuzi_retry_state.json")
+
+
+def get_tuzi_retry_config() -> Dict[str, Any]:
+    """读取 tuZi 重试配置；缺失时使用保守默认值。"""
+    retry_config = dict(DEFAULT_TUZI_RETRY_CONFIG)
+    if get_config is None:
+        return retry_config
+
+    try:
+        config = get_config()
+        custom_config = config.get("ai", {}).get("tuziRetry", {})
+        if isinstance(custom_config, dict):
+            retry_config.update({k: v for k, v in custom_config.items() if v is not None})
+    except Exception as config_error:
+        print(f"[WARNING] 读取 tuZi 重试配置失败，使用默认值: {config_error}")
+
+    return retry_config
+
+
+def load_tuzi_retry_state() -> Dict[str, Any]:
+    try:
+        if os.path.exists(TUZI_RETRY_STATE_FILE):
+            with open(TUZI_RETRY_STATE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+    except Exception as state_error:
+        print(f"[WARNING] 读取 tuZi 冷却状态失败，将重建状态: {state_error}")
+    return {"failures": [], "cooldownUntil": 0, "cooldownLevel": 0}
+
+
+def save_tuzi_retry_state(state: Dict[str, Any]) -> None:
+    try:
+        with open(TUZI_RETRY_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except Exception as state_error:
+        print(f"[WARNING] 保存 tuZi 冷却状态失败: {state_error}")
+
+
+def classify_tuzi_response(response, retry_config: Dict[str, Any]) -> Dict[str, Any]:
+    status_code = getattr(response, "status_code", None)
+    body = getattr(response, "text", "") or ""
+    lowered_body = body.lower()
+
+    if status_code in (400, 401, 403):
+        return {"retryable": False, "reason": f"HTTP {status_code} 非重试错误"}
+
+    retryable_status_codes = set(retry_config.get("retryableStatusCodes", []))
+    retryable_messages = retry_config.get("retryableMessages", [])
+
+    if status_code in retryable_status_codes:
+        reason = f"HTTP {status_code}"
+        for marker in retryable_messages:
+            if marker and str(marker).lower() in lowered_body:
+                reason = f"{reason}: {marker}"
+                break
+        return {"retryable": True, "reason": reason}
+
+    for marker in retryable_messages:
+        if marker and str(marker).lower() in lowered_body:
+            return {"retryable": True, "reason": f"响应包含可重试标记: {marker}"}
+
+    return {"retryable": False, "reason": f"HTTP {status_code}"}
+
+
+def classify_tuzi_exception(error: Exception, retry_config: Dict[str, Any]) -> Dict[str, Any]:
+    error_text = f"{type(error).__name__}: {error}"
+    lowered_text = error_text.lower()
+    for marker in retry_config.get("retryableExceptions", []):
+        if marker and str(marker).lower() in lowered_text:
+            return {"retryable": True, "reason": error_text}
+    if any(marker in lowered_text for marker in ["timed out", "timeout", "ssl eof", "connection aborted"]):
+        return {"retryable": True, "reason": error_text}
+    return {"retryable": False, "reason": error_text}
+
+
+def jitter_delay_seconds(base_seconds: float, jitter_ratio: float) -> float:
+    if base_seconds <= 0:
+        return 0
+    jitter_ratio = max(0.0, float(jitter_ratio or 0))
+    low = max(0.0, 1 - jitter_ratio)
+    high = 1 + jitter_ratio
+    return base_seconds * random.uniform(low, high)
+
+
+def register_tuzi_retryable_failure(reason: str, retry_config: Dict[str, Any]) -> Dict[str, Any]:
+    now = time.time()
+    state = load_tuzi_retry_state()
+    window_seconds = float(retry_config.get("globalWindowMs", 600000)) / 1000
+    failures = [
+        item for item in state.get("failures", [])
+        if isinstance(item, dict) and now - float(item.get("time", 0)) <= window_seconds
+    ]
+    failures.append({"time": now, "reason": reason[:200]})
+    state["failures"] = failures
+
+    threshold = int(retry_config.get("globalFailureThreshold", 3))
+    if len(failures) >= threshold:
+        current_level = int(state.get("cooldownLevel", 0))
+        next_level = min(current_level + 1, 3)
+        base_cooldown = float(retry_config.get("cooldownMs", 600000)) / 1000
+        max_cooldown = float(retry_config.get("maxCooldownMs", 2400000)) / 1000
+        cooldown_seconds = min(base_cooldown * (2 ** max(0, next_level - 1)), max_cooldown)
+        cooldown_until = max(float(state.get("cooldownUntil", 0)), now + cooldown_seconds)
+        state["cooldownLevel"] = next_level
+        state["cooldownUntil"] = cooldown_until
+        print(f"[TUZI_RETRY] 进入/延长全局冷却: {int(cooldown_seconds)}s, level={next_level}, reason={reason}")
+
+    save_tuzi_retry_state(state)
+    return state
+
+
+def register_tuzi_success() -> None:
+    state = load_tuzi_retry_state()
+    if int(state.get("cooldownLevel", 0)) > 0 or state.get("failures"):
+        state["cooldownLevel"] = max(0, int(state.get("cooldownLevel", 0)) - 1)
+        state["cooldownUntil"] = 0
+        state["failures"] = []
+        save_tuzi_retry_state(state)
+        print("[TUZI_RETRY] tuZi 调用成功，已降低/清空全局冷却状态")
+
+
+def wait_for_tuzi_cooldown_if_needed(operation_name: str, retry_config: Dict[str, Any]) -> None:
+    state = load_tuzi_retry_state()
+    cooldown_until = float(state.get("cooldownUntil", 0) or 0)
+    wait_seconds = cooldown_until - time.time()
+    if wait_seconds > 0:
+        jitter_ratio = max(0.0, float(retry_config.get("jitterRatio", 0.3) or 0))
+        jittered = wait_seconds * (1 + random.uniform(0, jitter_ratio))
+        print(f"[TUZI_RETRY] {operation_name} 命中全局冷却，等待 {int(jittered)}s 后再调用 tuZi")
+        time.sleep(jittered)
+
+
+def request_tuzi_with_retry(operation_name: str, request_func, retry_config: Optional[Dict[str, Any]] = None):
+    """对 tuZi HTTP 请求做温和重试和跨进程冷却。"""
+    retry_config = retry_config or get_tuzi_retry_config()
+    max_attempts = max(1, int(retry_config.get("maxAttempts", 4)))
+    base_delays_ms = retry_config.get("baseDelaysMs", [0])
+    jitter_ratio = float(retry_config.get("jitterRatio", 0.3))
+    last_error = None
+
+    for attempt in range(max_attempts):
+        if attempt == 0:
+            wait_for_tuzi_cooldown_if_needed(operation_name, retry_config)
+        else:
+            delay_ms = base_delays_ms[min(attempt, len(base_delays_ms) - 1)] if base_delays_ms else 0
+            delay_seconds = jitter_delay_seconds(float(delay_ms) / 1000, jitter_ratio)
+            wait_for_tuzi_cooldown_if_needed(operation_name, retry_config)
+            if delay_seconds > 0:
+                print(f"[TUZI_RETRY] {operation_name} 第 {attempt + 1}/{max_attempts} 次尝试前等待 {int(delay_seconds)}s")
+                time.sleep(delay_seconds)
+
+        try:
+            response = request_func()
+            if getattr(response, "status_code", None) == 200:
+                register_tuzi_success()
+                return response
+
+            classification = classify_tuzi_response(response, retry_config)
+            last_error = classification["reason"]
+            if not classification["retryable"] or attempt >= max_attempts - 1:
+                return response
+
+            print(f"[TUZI_RETRY] {operation_name} 可重试失败 ({attempt + 1}/{max_attempts}): {last_error}")
+            register_tuzi_retryable_failure(last_error, retry_config)
+        except Exception as error:
+            classification = classify_tuzi_exception(error, retry_config)
+            last_error = classification["reason"]
+            if not classification["retryable"] or attempt >= max_attempts - 1:
+                raise
+
+            print(f"[TUZI_RETRY] {operation_name} 可重试异常 ({attempt + 1}/{max_attempts}): {last_error}")
+            register_tuzi_retryable_failure(last_error, retry_config)
+
+    print(f"[TUZI_RETRY] {operation_name} 重试耗尽: {last_error}")
+    return None
 
 
 def model_supports_chinese(model: str) -> bool:
@@ -338,7 +536,13 @@ def call_tuzi_chat_completions(
         }
 
         print(f"[TUZI_TEXT] 调用tuZi Chat Completions API...")
-        response = requests.post(api_url, headers=headers, json=payload, timeout=timeout, proxies=proxies)
+        response = request_tuzi_with_retry(
+            "chat/completions 文本生成",
+            lambda: requests.post(api_url, headers=headers, json=payload, timeout=timeout, proxies=proxies)
+        )
+        if response is None:
+            print("[ERROR]  tuZi Chat Completions API调用失败: 重试耗尽")
+            return None
 
         if response.status_code == 200:
             result = response.json()
@@ -455,22 +659,37 @@ def call_tuzi_images_edits(
             "output_format": output_format,
         }
 
-        opened_files = []
-        files = []
-        try:
+        logged_reference_files = False
+
+        def do_images_edits_request():
+            nonlocal logged_reference_files
+            opened_files = []
+            files = []
             for idx, img_path in enumerate(reference_paths, 1):
                 mime_type = mimetypes.guess_type(img_path)[0] or "application/octet-stream"
                 file_obj = open(img_path, "rb")
                 opened_files.append(file_obj)
                 files.append(("image[]", (os.path.basename(img_path), file_obj, mime_type)))
-                file_size = os.path.getsize(img_path)
-                print(f"[INFO]  已添加参考图 {idx}/{len(reference_paths)} 到 images/edits: {os.path.basename(img_path)}, {file_size} bytes, {mime_type}")
 
-            print(f"[INFO] [images/edits] 调用 {model}, size={data['size']}, quality={quality}, output_format={output_format}, prompt长度={len(prompt)}")
-            resp = requests.post(api_url, headers=headers, data=data, files=files, timeout=timeout, proxies=proxies)
-        finally:
-            for file_obj in opened_files:
-                file_obj.close()
+                if not logged_reference_files:
+                    file_size = os.path.getsize(img_path)
+                    print(f"[INFO]  已添加参考图 {idx}/{len(reference_paths)} 到 images/edits: {os.path.basename(img_path)}, {file_size} bytes, {mime_type}")
+
+            if not logged_reference_files:
+                logged_reference_files = True
+                print(f"[INFO] [images/edits] 调用 {model}, size={data['size']}, quality={quality}, output_format={output_format}, prompt长度={len(prompt)}")
+
+            try:
+                return requests.post(api_url, headers=headers, data=data, files=files, timeout=timeout, proxies=proxies)
+            finally:
+                for file_obj in opened_files:
+                    file_obj.close()
+
+        resp = request_tuzi_with_retry("images/edits 图像生成", do_images_edits_request)
+
+        if resp is None:
+            print("[ERROR] images/edits 失败: 重试耗尽")
+            return None
 
         print(f"[DEBUG] images/edits 响应状态码: {resp.status_code}, 用时: {resp.elapsed.total_seconds()}s")
 
@@ -572,7 +791,13 @@ def call_tuzi_images_generations(
         print(f"[INFO] [images/generations] 调用 {model}, size={payload['size']}, prompt长度={len(prompt)}")
         print(f"[DEBUG] payload: model={model}, size={payload['size']}, n={n}, response_format={response_format}, quality={quality}, output_format={output_format}")
 
-        resp = requests.post(api_url, headers=headers, json=payload, timeout=timeout, proxies=proxies)
+        resp = request_tuzi_with_retry(
+            "images/generations 图像生成",
+            lambda: requests.post(api_url, headers=headers, json=payload, timeout=timeout, proxies=proxies)
+        )
+        if resp is None:
+            print("[ERROR] images/generations 失败: 重试耗尽")
+            return None
         print(f"[DEBUG] 响应状态码: {resp.status_code}, 用时: {resp.elapsed.total_seconds()}s")
 
         if resp.status_code != 200:
@@ -712,20 +937,16 @@ def call_tuzi_chat_completions_for_image(
         fallback_async_model = "gemini-3-pro-image-preview-async"
         gpt_image_timeout = max(timeout, 1000) if primary_model in ("gpt-image-2", "gpt-image-1.5", "gpt-image-1") else timeout
         if str(room_id) == SUI_ROOM_ID:
-            # 岁己专属：所有重试都保留参考图，最后回退 async Gemini
-            print(f"[INFO] 房间 {room_id} (岁己) 使用专属策略：{primary_model}(参考图) x3 -> async {fallback_async_model}")
+            # 岁己专属：同步模型由通用 tuZi 重试器负责温和重试，最后保留 async Gemini 兜底
+            print(f"[INFO] 房间 {room_id} (岁己) 使用专属策略：{primary_model}(参考图, 温和重试) -> async {fallback_async_model}")
             retry_strategies = [
-                {"type": "sync", "model": primary_model, "use_reference_images": True, "timeout": gpt_image_timeout},
-                {"type": "sync", "model": primary_model, "use_reference_images": True, "timeout": gpt_image_timeout},
                 {"type": "sync", "model": primary_model, "use_reference_images": True, "timeout": gpt_image_timeout},
                 {"type": "async", "model": fallback_async_model},
             ]
         else:
-            # 其他主播：所有重试都保留参考图；若明确命中内容安全，再自动启用温和降级提示词
-            print(f"[INFO] 房间 {room_id} 使用轻量策略：{primary_model}(参考图) x3")
+            # 其他主播：同一模型只进入一次策略，具体重试节奏由通用 tuZi 重试器控制
+            print(f"[INFO] 房间 {room_id} 使用轻量策略：{primary_model}(参考图, 温和重试)")
             retry_strategies = [
-                {"type": "sync", "model": primary_model, "use_reference_images": True, "timeout": gpt_image_timeout},
-                {"type": "sync", "model": primary_model, "use_reference_images": True, "timeout": gpt_image_timeout},
                 {"type": "sync", "model": primary_model, "use_reference_images": True, "timeout": gpt_image_timeout},
             ]
             # {"type": "async", "model": fallback_async_model},  # 2026-04-23: gemini-3-pro-image-preview-async 临时涨价，注释掉
@@ -853,7 +1074,13 @@ def call_tuzi_chat_completions_for_image(
                     }
 
                     print(f"[DEBUG] 发起请求，内容：{json.dumps(payload)[:100]}..., 代理: {proxies}, 超时: {current_timeout}s")
-                    response = requests.post(api_url, headers=headers, json=payload, timeout=current_timeout, proxies=proxies)
+                    response = request_tuzi_with_retry(
+                        f"chat/completions 图像生成 {current_model}",
+                        lambda: requests.post(api_url, headers=headers, json=payload, timeout=current_timeout, proxies=proxies)
+                    )
+                    if response is None:
+                        print(f"[WARNING] tu-zi.com API调用失败 (尝试 {attempt + 1}/{len(retry_strategies)}): 重试耗尽")
+                        continue
                     print(f"[DEBUG] 收到响应，状态码: {response.status_code}, 用时: {response.elapsed.total_seconds()}s")
 
                 if response.status_code == 200:

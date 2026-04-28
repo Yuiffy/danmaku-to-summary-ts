@@ -97,6 +97,38 @@
                 "generationProbability": 1.0
             }
         },
+        "tuziRetry": {
+            "maxAttempts": 4,
+            "baseDelaysMs": [
+                0,
+                120000,
+                300000,
+                720000
+            ],
+            "jitterRatio": 0.3,
+            "globalWindowMs": 600000,
+            "globalFailureThreshold": 3,
+            "cooldownMs": 600000,
+            "maxCooldownMs": 2400000,
+            "retryableStatusCodes": [
+                500,
+                502,
+                503,
+                504
+            ],
+            "retryableMessages": [
+                "当前模型负载较高",
+                "rate limit",
+                "timeout",
+                "timed out"
+            ],
+            "retryableExceptions": [
+                "ReadTimeout",
+                "SSLEOFError",
+                "ConnectionError",
+                "Timeout"
+            ]
+        },
         "defaultNames": {
             "anchor": "主播",
             "fan": "粉丝"
