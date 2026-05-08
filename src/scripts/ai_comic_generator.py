@@ -259,7 +259,8 @@ def get_room_reference_image(room_id: str, highlight_path: Optional[str] = None)
     兜底策略：
     1. 优先使用 roomSettings 中配置的主播参考图
     2. 如果没有配置主播参考图，使用直播封面
-    3. 只有连封面都拿不到，才使用 defaultReferenceImage
+    3. 只有连封面都拿不到，且配置了 defaultReferenceImage，才使用默认参考图
+    4. 没有配置默认参考图时返回 None，让模型无参考图生成
     """
     config = load_config()
     
@@ -334,24 +335,7 @@ def get_room_reference_image(room_id: str, highlight_path: Optional[str] = None)
             print(f"[INFO]  使用默认参考图片（兜底）: {os.path.basename(script_relative)}")
             return script_relative
 
-    # 检查默认图片文件是否存在
-    # 先尝试 public/reference_images（新位置）
-    public_ref_dir = os.path.join(project_root, "public", "reference_images")
-    for ref_dir in [public_ref_dir, os.path.join(scripts_dir, "reference_images")]:
-        if os.path.exists(ref_dir):
-            default_files = [
-                os.path.join(ref_dir, "default.jpg"),
-                os.path.join(ref_dir, "default.jpeg"),
-                os.path.join(ref_dir, "default.png"),
-                os.path.join(ref_dir, "default.webp"),
-                os.path.join(ref_dir, "岁己小红帽立绘.png"),  # 特定文件名
-                os.path.join(ref_dir, "雪绘.png")  # 雪绘特定文件
-            ]
-            for file_path in default_files:
-                if os.path.exists(file_path):
-                    print(f"[INFO]  找到默认图片（兜底）: {os.path.basename(file_path)}")
-                    return file_path
-
+    print("[INFO]  未配置默认参考图，将无参考图生成")
     return None
 
 def collect_all_images(room_id: str, highlight_path: Optional[str] = None) -> list[str]:
@@ -361,7 +345,8 @@ def collect_all_images(room_id: str, highlight_path: Optional[str] = None) -> li
     1. 主播参考图（roomSettings中配置的referenceImage）
     2. 直播封面（.cover文件）
     3. 直播截图（_SCREENSHOTS.jpg）
-    4. 默认参考图（只有在没有主播参考图和封面时才使用）
+    4. 默认参考图（只有在没有主播参考图、封面、截图且配置了 defaultReferenceImage 时才使用）
+    5. 没有配置默认参考图时返回空列表，让模型无参考图生成
     """
     images = []
     config = load_config()
@@ -435,7 +420,7 @@ def collect_all_images(room_id: str, highlight_path: Optional[str] = None) -> li
     # 4. 只有在完全没有任何图片时，才使用默认参考图（兜底）
     # 检查是否已经收集到任何图片（主播参考图、封面、截图）
     if len(images) == 0:
-        print("[INFO]  未找到任何图片（主播参考图、封面、截图），尝试使用默认参考图作为兜底...")
+        print("[INFO]  未找到任何图片（主播参考图、封面、截图），检查是否配置默认参考图...")
         default_image = ""
         if "ai" in config:
             if config["ai"].get("defaultReferenceImage"):
@@ -458,6 +443,8 @@ def collect_all_images(room_id: str, highlight_path: Optional[str] = None) -> li
                 if os.path.exists(script_relative):
                     images.append(script_relative)
                     print(f"[INFO]  收集到默认参考图（兜底）: {os.path.basename(script_relative)}")
+        if not default_image:
+            print("[INFO]  未配置默认参考图，将无参考图生成")
     else:
         print(f"[INFO]  已有 {len(images)} 张图片，跳过默认参考图")
     

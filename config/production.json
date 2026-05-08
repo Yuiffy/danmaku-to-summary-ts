@@ -133,7 +133,7 @@
             "anchor": "主播",
             "fan": "粉丝"
         },
-        "defaultReferenceImage": "public/reference_images/岁己小红帽立绘.png",
+        "defaultReferenceImage": "",
         "defaultCharacterDescription": "主播（帅气/美丽的人类），粉丝（有细细四肢的小小的可爱生物）",
         "roomSettings": {
             "25788785": {
@@ -372,7 +372,8 @@
             },
             "27628030": {
                 "audioOnly": true,
-                "characterDescription": "未知夜Michiya（淡金长发金瞳御姐），受恶魔诅咒的不死贵族少女，自称黑心恶魔继承人，擅长杂谈与整蛊",
+                "referenceImage": "public/reference_images/未知夜全身立绘.webp",
+                "characterDescription": "未知夜Michiya（淡金长发金瞳御姐，身高较高），设定是受恶魔诅咒的不死贵族少女，擅长杂谈与整蛊",
                 "anchorName": "未知夜Michiya",
                 "fanName": "烛台人",
                 "enableTextGeneration": true,
