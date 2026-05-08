@@ -8,6 +8,7 @@ AI漫画生成模块
 import os
 import sys
 import io
+import re
 
 # 禁用输出缓冲，确保日志实时输出到Node.js
 # 保存原始的stdout/stderr，以便在包装失败时使用
@@ -611,6 +612,15 @@ def is_gemini_error(text: str) -> bool:
     return 'Gemini Error' in text
 
 
+def is_valid_comic_script(text: Optional[str]) -> bool:
+    """Return False for obviously truncated or non-story comic scripts."""
+    if not text:
+        return False
+
+    normalized = re.sub(r'\s+', '', text)
+    return len(normalized) >= 40
+
+
 def has_socks_proxy_support() -> bool:
     """检查当前 Python 环境是否具备 SOCKS 代理支持。"""
     return importlib.util.find_spec("socksio") is not None
@@ -641,11 +651,13 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                 )
                 if proc.returncode == 0 and proc.stdout:
                     text = proc.stdout.decode('utf-8').strip()
-                    if text and not is_gemini_error(text):
+                    if text and not is_gemini_error(text) and is_valid_comic_script(text):
                         print('[OK] 从 ai_text_generator 返回内容')
                         return text, True
                     elif is_gemini_error(text):
                         print('[WARNING] ai_text_generator 返回了错误内容，尝试其他方案')
+                    elif text:
+                        print(f"[WARNING] ai_text_generator 返回内容无效或疑似截断，长度: {len(text)} 字符，尝试其他方案")
                     else:
                         stderr = proc.stderr.decode('utf-8') if proc.stderr else ''
                         print(f"[INFO] node 脚本返回非零状态: {proc.returncode}, stderr: {stderr}")
@@ -719,6 +731,15 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                         else:
                             print("[ERROR] Gemini重试次数已用完，尝试备用方案")
                             break
+
+                    if not is_valid_comic_script(comic_content):
+                        print(f"[WARNING] Gemini返回内容无效或疑似截断 (尝试 {gemini_attempt + 1}/{max_gemini_retries})，长度: {len(comic_content)} 字符")
+                        if gemini_attempt < max_gemini_retries - 1:
+                            print("[RETRY] 2秒后重试...")
+                            time.sleep(2)
+                            continue
+                        print("[ERROR] Gemini重试次数已用完，尝试备用方案")
+                        break
                     
                     print("[OK] AI漫画内容生成完成")
                     print(f"生成内容长度: {len(comic_content)} 字符")
@@ -792,6 +813,11 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                     else:
                         print("[ERROR] tuZi API重试次数已用完，使用原始内容")
                         return highlight_content, False
+
+                if not is_valid_comic_script(comic_content):
+                    print(f"[ERROR] tuZi API返回的漫画脚本无效或疑似截断，长度: {len(comic_content)} 字符")
+                    print(f"[ERROR] 无效内容预览: {comic_content[:200]}...")
+                    return highlight_content, False
                 
                 print("[OK] tuZi API漫画文本生成成功")
                 print(f"生成内容长度: {len(comic_content)} 字符")
@@ -1419,7 +1445,11 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
             try:
                 with open(text_output_path, 'r', encoding='utf-8') as tf:
                     comic_text = tf.read()
-                print(f"[INFO]  已存在漫画脚本，复用: {os.path.basename(text_output_path)}")
+                if is_valid_comic_script(comic_text):
+                    print(f"[INFO]  已存在漫画脚本，复用: {os.path.basename(text_output_path)}")
+                else:
+                    print(f"[WARNING]  已存在漫画脚本无效或疑似截断，重新生成: {os.path.basename(text_output_path)}")
+                    comic_text = None
             except Exception as e:
                 print(f"[WARNING]  读取已存在漫画脚本失败，重新生成: {e}")
 
