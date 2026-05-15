@@ -99,7 +99,7 @@ def save_tuzi_retry_state(state: Dict[str, Any]) -> None:
 
 
 def get_image_rate_limit_config() -> Dict[str, Any]:
-    """图片 API 的跨进程硬限流配置。默认值偏保守，防止异常循环快速烧余额。"""
+    """图片 API 的跨进程硬限流配置。只按成功生成记账。"""
     config = {}
     if get_config is not None:
         try:
@@ -110,8 +110,8 @@ def get_image_rate_limit_config() -> Dict[str, Any]:
     custom = config.get("ai", {}).get("comic", {}).get("rateLimit", {}) if isinstance(config, dict) else {}
     rate_limit = {
         "enabled": custom.get("enabled", True),
-        "hourlyLimit": int(custom.get("hourlyLimit", 4)),
-        "dailyLimit": int(custom.get("dailyLimit", 12)),
+        "hourlyLimit": int(custom.get("hourlyLimit", 20)),
+        "dailyLimit": int(custom.get("dailyLimit", 200)),
         "alertCooldownMinutes": int(custom.get("alertCooldownMinutes", 30)),
         "stateFile": custom.get("stateFile", IMAGE_RATE_LIMIT_STATE_FILE),
         "webhookUrl": custom.get("webhookUrl")
@@ -204,8 +204,13 @@ def send_image_rate_limit_alert(rate_limit: Dict[str, Any], operation_name: str,
         print(f"[WARNING] 发送企业微信限流提醒失败: {alert_error}")
 
 
-def check_and_record_image_api_call(operation_name: str) -> bool:
-    """在真正请求图片 API 前记账；超出小时/天配额则拒绝本次调用。"""
+def _is_successful_image_rate_limit_call(item: Dict[str, Any]) -> bool:
+    """兼容旧状态文件：没有 status 的历史记录按成功计入，避免迁移丢账。"""
+    return item.get("status", "success") == "success"
+
+
+def check_image_api_rate_limit(operation_name: str) -> bool:
+    """在真正请求图片 API 前检查配额；失败请求不会在这里记账。"""
     rate_limit = get_image_rate_limit_config()
     if not rate_limit.get("enabled", True):
         return True
@@ -221,11 +226,12 @@ def check_and_record_image_api_call(operation_name: str) -> bool:
             item for item in state.get("calls", [])
             if isinstance(item, dict) and now - float(item.get("time", 0)) <= 24 * 60 * 60
         ]
-        hourly_count = sum(1 for item in calls if now - float(item.get("time", 0)) <= 60 * 60)
-        daily_count = len(calls)
+        successful_calls = [item for item in calls if _is_successful_image_rate_limit_call(item)]
+        hourly_count = sum(1 for item in successful_calls if now - float(item.get("time", 0)) <= 60 * 60)
+        daily_count = len(successful_calls)
 
-        hourly_limit = max(0, int(rate_limit.get("hourlyLimit", 4)))
-        daily_limit = max(0, int(rate_limit.get("dailyLimit", 12)))
+        hourly_limit = max(0, int(rate_limit.get("hourlyLimit", 20)))
+        daily_limit = max(0, int(rate_limit.get("dailyLimit", 200)))
         blocked_reason = None
         if hourly_limit and hourly_count >= hourly_limit:
             blocked_reason = "超过每小时图片生成上限"
@@ -245,11 +251,39 @@ def check_and_record_image_api_call(operation_name: str) -> bool:
             print(f"[RATE_LIMIT] {blocked_reason}，跳过 {operation_name}: hour={hourly_count}/{hourly_limit}, day={daily_count}/{daily_limit}")
             return False
 
-        calls.append({"time": now, "operation": operation_name})
         state["calls"] = calls
         save_image_rate_limit_state(state_file, state)
-        print(f"[RATE_LIMIT] 图片API调用记账: {operation_name}, hour={hourly_count + 1}/{hourly_limit}, day={daily_count + 1}/{daily_limit}")
+        print(f"[RATE_LIMIT] 图片API配额检查通过: {operation_name}, hour={hourly_count}/{hourly_limit}, day={daily_count}/{daily_limit}")
         return True
+
+
+def record_successful_image_api_call(operation_name: str) -> None:
+    """仅在成功拿到图片文件后写入图片 API 频控计数。"""
+    rate_limit = get_image_rate_limit_config()
+    if not rate_limit.get("enabled", True):
+        return
+
+    now = time.time()
+    state_file = rate_limit.get("stateFile") or IMAGE_RATE_LIMIT_STATE_FILE
+    lock_file = state_file + ".lock"
+    os.makedirs(os.path.dirname(state_file) or tempfile.gettempdir(), exist_ok=True)
+
+    with image_rate_limit_lock(lock_file):
+        state = load_image_rate_limit_state(state_file)
+        calls = [
+            item for item in state.get("calls", [])
+            if isinstance(item, dict) and now - float(item.get("time", 0)) <= 24 * 60 * 60
+        ]
+        calls.append({"time": now, "operation": operation_name, "status": "success"})
+        successful_calls = [item for item in calls if _is_successful_image_rate_limit_call(item)]
+        hourly_count = sum(1 for item in successful_calls if now - float(item.get("time", 0)) <= 60 * 60)
+        daily_count = len(successful_calls)
+        hourly_limit = max(0, int(rate_limit.get("hourlyLimit", 20)))
+        daily_limit = max(0, int(rate_limit.get("dailyLimit", 200)))
+
+        state["calls"] = calls
+        save_image_rate_limit_state(state_file, state)
+        print(f"[RATE_LIMIT] 图片API成功记账: {operation_name}, hour={hourly_count}/{hourly_limit}, day={daily_count}/{daily_limit}")
 
 
 def classify_tuzi_response(response, retry_config: Dict[str, Any]) -> Dict[str, Any]:
@@ -822,7 +856,8 @@ def call_tuzi_images_edits(
         headers = {
             "Authorization": f"Bearer {api_key}",
         }
-        if not check_and_record_image_api_call(f"images/edits {model}"):
+        operation_name = f"images/edits {model}"
+        if not check_image_api_rate_limit(operation_name):
             return None
 
         data = {
@@ -876,6 +911,7 @@ def call_tuzi_images_edits(
 
         extracted = try_extract_image_from_data_items(result.get("data"), proxies, prefix=f"comic_{model.replace('/', '_')}_edit")
         if extracted:
+            record_successful_image_api_call(operation_name)
             print(f"[OK] images/edits 成功，保存到: {extracted}")
             return extracted
 
@@ -952,7 +988,8 @@ def call_tuzi_images_generations(
                     output_format=output_format,
                 )
 
-        if not check_and_record_image_api_call(f"images/generations {model}"):
+        operation_name = f"images/generations {model}"
+        if not check_image_api_rate_limit(operation_name):
             return None
 
         payload = {
@@ -999,6 +1036,7 @@ def call_tuzi_images_generations(
             image_bytes = base64.b64decode(b64)
             output_path = save_image_bytes(image_bytes, prefix=f"comic_{model.replace('/', '_')}")
             if output_path:
+                record_successful_image_api_call(operation_name)
                 print(f"[OK] images/generations 成功，保存到: {output_path}")
                 return output_path
 
@@ -1007,6 +1045,7 @@ def call_tuzi_images_generations(
         if img_url:
             downloaded = download_image_to_temp(img_url, proxies, prefix=f"comic_{model.replace('/', '_')}")
             if downloaded:
+                record_successful_image_api_call(operation_name)
                 print(f"[OK] images/generations 成功（URL模式），保存到: {downloaded}")
                 return downloaded
 
@@ -1164,7 +1203,8 @@ def call_tuzi_chat_completions_for_image(
                 if strategy_type == "async" and call_tuzi_gemini_async is not None:
                     print("[INFO] 使用 Gemini 异步 API...")
                     try:
-                        if not check_and_record_image_api_call(f"gemini_async {current_model}"):
+                        operation_name = f"gemini_async {current_model}"
+                        if not check_image_api_rate_limit(operation_name):
                             continue
                         # 创建任务的 timeout 固定 60s（仅提交请求），
                         # max_poll_time 控制轮询最大等待时长，设为 1400s（约23分钟），
@@ -1184,6 +1224,7 @@ def call_tuzi_chat_completions_for_image(
                         )
                         
                         if gemini_result:
+                            record_successful_image_api_call(operation_name)
                             print("[OK] Gemini 异步 API 生成成功！")
                             return gemini_result
                         else:
@@ -1253,7 +1294,8 @@ def call_tuzi_chat_completions_for_image(
                     }
 
                     print(f"[DEBUG] 发起请求，内容：{json.dumps(payload)[:100]}..., 代理: {proxies}, 超时: {current_timeout}s")
-                    if not check_and_record_image_api_call(f"chat/completions {current_model}"):
+                    operation_name = f"chat/completions {current_model}"
+                    if not check_image_api_rate_limit(operation_name):
                         continue
                     response = request_tuzi_with_retry(
                         f"chat/completions 图像生成 {current_model}",
@@ -1273,6 +1315,7 @@ def call_tuzi_chat_completions_for_image(
 
                     direct_data_result = try_extract_image_from_data_items(result.get("data"), proxies)
                     if direct_data_result:
+                        record_successful_image_api_call(operation_name)
                         return direct_data_result
 
                     # 处理 /v1/chat/completions 响应格式
@@ -1283,6 +1326,7 @@ def call_tuzi_chat_completions_for_image(
 
                         extracted_from_content = try_extract_image_from_message_content(content, proxies, timeout)
                         if extracted_from_content:
+                            record_successful_image_api_call(operation_name)
                             return extracted_from_content
 
                         if is_content_policy_rejection(content):
@@ -1300,9 +1344,11 @@ def call_tuzi_chat_completions_for_image(
                                         if "image_url" in args_json:
                                             direct_tool_result = download_image_to_temp(args_json["image_url"], proxies)
                                             if direct_tool_result:
+                                                record_successful_image_api_call(operation_name)
                                                 return direct_tool_result
                                         data_tool_result = try_extract_image_from_data_items(args_json.get("data"), proxies)
                                         if data_tool_result:
+                                            record_successful_image_api_call(operation_name)
                                             return data_tool_result
                                     except Exception as json_error:
                                         print(f"[WARNING] 解析工具调用参数失败: {json_error}")

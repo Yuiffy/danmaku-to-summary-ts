@@ -85,6 +85,12 @@
                 "maxConcurrentGenerations": 10,
                 "lockTimeoutMinutes": 180
             },
+            "rateLimit": {
+                "enabled": true,
+                "hourlyLimit": 20,
+                "dailyLimit": 200,
+                "alertCooldownMinutes": 30
+            },
             "tuZi": {
                 "enabled": true,
                 "apiKey": "",
