@@ -57,6 +57,10 @@ export class DelayedReplyStore implements IDelayedReplyStore {
           if (task.lastCheckTime) {
             task.lastCheckTime = new Date(task.lastCheckTime);
           }
+
+          if (task.completedAt) {
+            task.completedAt = new Date(task.completedAt);
+          }
           
           this.tasks.set(task.taskId, task);
         }

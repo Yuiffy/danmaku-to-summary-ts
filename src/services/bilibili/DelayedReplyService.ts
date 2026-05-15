@@ -691,6 +691,30 @@ export class DelayedReplyService implements IDelayedReplyService {
         ? [task.comicImagePath]
         : undefined;
 
+      const duplicateReply = this.findRecentCompletedReply(task.roomId, String(finalDynamic.id), task.taskId);
+      if (duplicateReply) {
+        const skippedMessage = `跳过重复延迟回复：房间 ${task.roomId} 最近已回复动态 ${String(finalDynamic.id)}`;
+        this.logger.warn(skippedMessage, {
+          taskId: task.taskId,
+          existingTaskId: duplicateReply.taskId,
+          dynamicId: String(finalDynamic.id),
+          existingReplyId: duplicateReply.replyId,
+          existingCompletedAt: duplicateReply.completedAt?.toISOString()
+        });
+
+        task.status = 'completed';
+        task.error = skippedMessage;
+        task.repliedDynamicId = String(finalDynamic.id);
+        task.completedAt = new Date();
+        await this.store.updateTask(task.taskId, {
+          status: 'completed',
+          error: skippedMessage,
+          repliedDynamicId: task.repliedDynamicId,
+          completedAt: task.completedAt
+        });
+        return;
+      }
+
       // 发布评论
       let result;
       try {
@@ -728,7 +752,15 @@ export class DelayedReplyService implements IDelayedReplyService {
 
       // 更新任务状态
       task.status = 'completed';
-      await this.store.updateTask(task.taskId, { status: 'completed' });
+      task.repliedDynamicId = String(finalDynamic.id);
+      task.replyId = String(result.replyId);
+      task.completedAt = new Date();
+      await this.store.updateTask(task.taskId, {
+        status: 'completed',
+        repliedDynamicId: task.repliedDynamicId,
+        replyId: task.replyId,
+        completedAt: task.completedAt
+      });
 
       this.logger.info(`延迟回复完成: ${task.taskId}`, {
         dynamicId: String(finalDynamic.id)
@@ -804,6 +836,39 @@ export class DelayedReplyService implements IDelayedReplyService {
         );
       }
     }
+  }
+
+  /**
+   * 查找近期已完成的同房间回复，避免多段/续播任务重复回复同一条动态。
+   */
+  private findRecentCompletedReply(roomId: string, dynamicId: string, currentTaskId: string): DelayedReplyTask | null {
+    const now = Date.now();
+    const sameDynamicWindowMs = 24 * 60 * 60 * 1000;
+    const sameRoomWindowMs = 2 * 60 * 60 * 1000;
+
+    const completedTasks = Array.from(this.tasks.values())
+      .filter(task =>
+        task.taskId !== currentTaskId &&
+        task.roomId === roomId &&
+        task.status === 'completed'
+      )
+      .sort((a, b) => this.getTaskCompletionTime(b).getTime() - this.getTaskCompletionTime(a).getTime());
+
+    const sameDynamicTask = completedTasks.find(task =>
+      task.repliedDynamicId === dynamicId &&
+      now - this.getTaskCompletionTime(task).getTime() < sameDynamicWindowMs
+    );
+    if (sameDynamicTask) {
+      return sameDynamicTask;
+    }
+
+    return completedTasks.find(task =>
+      now - this.getTaskCompletionTime(task).getTime() < sameRoomWindowMs
+    ) || null;
+  }
+
+  private getTaskCompletionTime(task: DelayedReplyTask): Date {
+    return task.completedAt || task.scheduledTime || task.createTime;
   }
 
   /**

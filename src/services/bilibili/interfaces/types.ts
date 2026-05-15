@@ -191,6 +191,12 @@ export interface DelayedReplyTask {
   lastCheckTime?: Date;
   /** 检查次数 */
   checkCount?: number;
+  /** 已回复的动态ID */
+  repliedDynamicId?: string;
+  /** 已发布的回复ID */
+  replyId?: string;
+  /** 完成时间 */
+  completedAt?: Date;
 }
 
 /**
