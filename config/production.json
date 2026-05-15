@@ -82,7 +82,7 @@
             "provider": "python",
             "outputLockEnabled": false,
             "concurrency": {
-                "maxConcurrentGenerations": 0,
+                "maxConcurrentGenerations": 10,
                 "lockTimeoutMinutes": 180
             },
             "tuZi": {

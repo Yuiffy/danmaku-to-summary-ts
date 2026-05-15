@@ -843,8 +843,7 @@ export class DelayedReplyService implements IDelayedReplyService {
    */
   private findRecentCompletedReply(roomId: string, dynamicId: string, currentTaskId: string): DelayedReplyTask | null {
     const now = Date.now();
-    const sameDynamicWindowMs = 24 * 60 * 60 * 1000;
-    const sameRoomWindowMs = 2 * 60 * 60 * 1000;
+    const recentReplyWindowMs = 2 * 60 * 60 * 1000;
 
     const completedTasks = Array.from(this.tasks.values())
       .filter(task =>
@@ -856,14 +855,14 @@ export class DelayedReplyService implements IDelayedReplyService {
 
     const sameDynamicTask = completedTasks.find(task =>
       task.repliedDynamicId === dynamicId &&
-      now - this.getTaskCompletionTime(task).getTime() < sameDynamicWindowMs
+      now - this.getTaskCompletionTime(task).getTime() < recentReplyWindowMs
     );
     if (sameDynamicTask) {
       return sameDynamicTask;
     }
 
     return completedTasks.find(task =>
-      now - this.getTaskCompletionTime(task).getTime() < sameRoomWindowMs
+      now - this.getTaskCompletionTime(task).getTime() < recentReplyWindowMs
     ) || null;
   }
 
