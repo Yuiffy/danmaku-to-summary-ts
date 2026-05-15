@@ -170,6 +170,10 @@ def get_config(force_reload: bool = False) -> Dict[str, Any]:
         # bilibili -> bilibili
         if 'bilibili' in secrets:
             mapped_secrets['bilibili'] = secrets['bilibili']
+
+        # wechatWork -> wechatWork，用于 Python 侧图片限流告警
+        if 'wechatWork' in secrets:
+            mapped_secrets['wechatWork'] = secrets['wechatWork']
         
         # 合并映射后的secrets
         config = deep_merge(config, mapped_secrets)

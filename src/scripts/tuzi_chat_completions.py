@@ -16,6 +16,7 @@ from typing import Optional, Dict, Any
 import traceback
 import tempfile
 import uuid
+from contextlib import contextmanager
 
 # 导入 Gemini 异步 API 模块
 try:
@@ -44,6 +45,8 @@ DEFAULT_TUZI_RETRY_CONFIG = {
 }
 
 TUZI_RETRY_STATE_FILE = os.path.join(tempfile.gettempdir(), "danmaku_tuzi_retry_state.json")
+IMAGE_RATE_LIMIT_STATE_FILE = os.path.join(tempfile.gettempdir(), "danmaku_image_api_rate_limit.json")
+IMAGE_RATE_LIMIT_LOCK_FILE = IMAGE_RATE_LIMIT_STATE_FILE + ".lock"
 
 
 def get_tuzi_retry_config() -> Dict[str, Any]:
@@ -93,6 +96,160 @@ def save_tuzi_retry_state(state: Dict[str, Any]) -> None:
             json.dump(state, f, ensure_ascii=False, indent=2)
     except Exception as state_error:
         print(f"[WARNING] 保存 tuZi 冷却状态失败: {state_error}")
+
+
+def get_image_rate_limit_config() -> Dict[str, Any]:
+    """图片 API 的跨进程硬限流配置。默认值偏保守，防止异常循环快速烧余额。"""
+    config = {}
+    if get_config is not None:
+        try:
+            config = get_config()
+        except Exception as config_error:
+            print(f"[WARNING] 读取图片限流配置失败，使用默认值: {config_error}")
+
+    custom = config.get("ai", {}).get("comic", {}).get("rateLimit", {}) if isinstance(config, dict) else {}
+    rate_limit = {
+        "enabled": custom.get("enabled", True),
+        "hourlyLimit": int(custom.get("hourlyLimit", 4)),
+        "dailyLimit": int(custom.get("dailyLimit", 12)),
+        "alertCooldownMinutes": int(custom.get("alertCooldownMinutes", 30)),
+        "stateFile": custom.get("stateFile", IMAGE_RATE_LIMIT_STATE_FILE),
+        "webhookUrl": custom.get("webhookUrl")
+            or config.get("wechatWork", {}).get("webhookUrl", "")
+            or config.get("weChatWork", {}).get("webhookUrl", ""),
+    }
+
+    env_hourly = os.environ.get("IMAGE_API_HOURLY_LIMIT")
+    env_daily = os.environ.get("IMAGE_API_DAILY_LIMIT")
+    if env_hourly:
+        rate_limit["hourlyLimit"] = max(0, int(env_hourly))
+    if env_daily:
+        rate_limit["dailyLimit"] = max(0, int(env_daily))
+    return rate_limit
+
+
+@contextmanager
+def image_rate_limit_lock(lock_file: str = IMAGE_RATE_LIMIT_LOCK_FILE):
+    acquired = False
+    start = time.time()
+    while time.time() - start < 30:
+        try:
+            fd = os.open(lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode("utf-8"))
+            os.close(fd)
+            acquired = True
+            break
+        except FileExistsError:
+            try:
+                if time.time() - os.path.getmtime(lock_file) > 120:
+                    os.unlink(lock_file)
+                    continue
+            except FileNotFoundError:
+                continue
+            time.sleep(0.2)
+
+    if not acquired:
+        raise RuntimeError("获取图片限流锁超时")
+
+    try:
+        yield
+    finally:
+        try:
+            os.unlink(lock_file)
+        except FileNotFoundError:
+            pass
+
+
+def load_image_rate_limit_state(state_file: str) -> Dict[str, Any]:
+    try:
+        if os.path.exists(state_file):
+            with open(state_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+    except Exception as state_error:
+        print(f"[WARNING] 读取图片限流状态失败，将重建状态: {state_error}")
+    return {"calls": [], "lastAlertAt": 0}
+
+
+def save_image_rate_limit_state(state_file: str, state: Dict[str, Any]) -> None:
+    try:
+        with open(state_file, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except Exception as state_error:
+        print(f"[WARNING] 保存图片限流状态失败: {state_error}")
+
+
+def send_image_rate_limit_alert(rate_limit: Dict[str, Any], operation_name: str, reason: str, hourly_count: int, daily_count: int) -> None:
+    webhook_url = rate_limit.get("webhookUrl")
+    if not webhook_url:
+        return
+
+    content = (
+        "⚠️ 图片生成 API 已被限流拦截\n\n"
+        f"> 操作: {operation_name}\n"
+        f"> 原因: {reason}\n"
+        f"> 最近1小时: {hourly_count}/{rate_limit['hourlyLimit']}\n"
+        f"> 最近24小时: {daily_count}/{rate_limit['dailyLimit']}\n"
+        f"> 时间: {time.strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+    try:
+        requests.post(
+            webhook_url,
+            json={"msgtype": "markdown", "markdown": {"content": content}},
+            timeout=10,
+        )
+        print("[RATE_LIMIT] 已发送企业微信限流提醒")
+    except Exception as alert_error:
+        print(f"[WARNING] 发送企业微信限流提醒失败: {alert_error}")
+
+
+def check_and_record_image_api_call(operation_name: str) -> bool:
+    """在真正请求图片 API 前记账；超出小时/天配额则拒绝本次调用。"""
+    rate_limit = get_image_rate_limit_config()
+    if not rate_limit.get("enabled", True):
+        return True
+
+    now = time.time()
+    state_file = rate_limit.get("stateFile") or IMAGE_RATE_LIMIT_STATE_FILE
+    lock_file = state_file + ".lock"
+    os.makedirs(os.path.dirname(state_file) or tempfile.gettempdir(), exist_ok=True)
+
+    with image_rate_limit_lock(lock_file):
+        state = load_image_rate_limit_state(state_file)
+        calls = [
+            item for item in state.get("calls", [])
+            if isinstance(item, dict) and now - float(item.get("time", 0)) <= 24 * 60 * 60
+        ]
+        hourly_count = sum(1 for item in calls if now - float(item.get("time", 0)) <= 60 * 60)
+        daily_count = len(calls)
+
+        hourly_limit = max(0, int(rate_limit.get("hourlyLimit", 4)))
+        daily_limit = max(0, int(rate_limit.get("dailyLimit", 12)))
+        blocked_reason = None
+        if hourly_limit and hourly_count >= hourly_limit:
+            blocked_reason = "超过每小时图片生成上限"
+        elif daily_limit and daily_count >= daily_limit:
+            blocked_reason = "超过每日图片生成上限"
+
+        if blocked_reason:
+            state["calls"] = calls
+            alert_cooldown = max(1, int(rate_limit.get("alertCooldownMinutes", 30))) * 60
+            last_alert_at = float(state.get("lastAlertAt", 0) or 0)
+            if now - last_alert_at >= alert_cooldown:
+                state["lastAlertAt"] = now
+                save_image_rate_limit_state(state_file, state)
+                send_image_rate_limit_alert(rate_limit, operation_name, blocked_reason, hourly_count, daily_count)
+            else:
+                save_image_rate_limit_state(state_file, state)
+            print(f"[RATE_LIMIT] {blocked_reason}，跳过 {operation_name}: hour={hourly_count}/{hourly_limit}, day={daily_count}/{daily_limit}")
+            return False
+
+        calls.append({"time": now, "operation": operation_name})
+        state["calls"] = calls
+        save_image_rate_limit_state(state_file, state)
+        print(f"[RATE_LIMIT] 图片API调用记账: {operation_name}, hour={hourly_count + 1}/{hourly_limit}, day={daily_count + 1}/{daily_limit}")
+        return True
 
 
 def classify_tuzi_response(response, retry_config: Dict[str, Any]) -> Dict[str, Any]:
@@ -665,6 +822,9 @@ def call_tuzi_images_edits(
         headers = {
             "Authorization": f"Bearer {api_key}",
         }
+        if not check_and_record_image_api_call(f"images/edits {model}"):
+            return None
+
         data = {
             "model": model,
             "prompt": prompt,
@@ -791,6 +951,9 @@ def call_tuzi_images_generations(
                     quality=quality,
                     output_format=output_format,
                 )
+
+        if not check_and_record_image_api_call(f"images/generations {model}"):
+            return None
 
         payload = {
             "model": model,
@@ -1001,6 +1164,8 @@ def call_tuzi_chat_completions_for_image(
                 if strategy_type == "async" and call_tuzi_gemini_async is not None:
                     print("[INFO] 使用 Gemini 异步 API...")
                     try:
+                        if not check_and_record_image_api_call(f"gemini_async {current_model}"):
+                            continue
                         # 创建任务的 timeout 固定 60s（仅提交请求），
                         # max_poll_time 控制轮询最大等待时长，设为 1400s（约23分钟），
                         # 足以覆盖实测最长 864s 的生成耗时并留有余量
@@ -1088,6 +1253,8 @@ def call_tuzi_chat_completions_for_image(
                     }
 
                     print(f"[DEBUG] 发起请求，内容：{json.dumps(payload)[:100]}..., 代理: {proxies}, 超时: {current_timeout}s")
+                    if not check_and_record_image_api_call(f"chat/completions {current_model}"):
+                        continue
                     response = request_tuzi_with_retry(
                         f"chat/completions 图像生成 {current_model}",
                         lambda: requests.post(api_url, headers=headers, json=payload, timeout=current_timeout, proxies=proxies)

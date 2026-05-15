@@ -1384,7 +1384,9 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
             print(f"[INFO]  漫画已存在，跳过重复生成: {os.path.basename(existing_output)}")
             return existing_output
 
-        output_lock_enabled = bool(config.get("ai", {}).get("comic", {}).get("outputLockEnabled", False))
+        # 默认开启输出锁。同一高亮可能由多个后台进程同时处理，单靠“文件已存在”
+        # 检查挡不住竞态，必须在首次图片 API 调用前抢占同一个输出锁。
+        output_lock_enabled = bool(config.get("ai", {}).get("comic", {}).get("outputLockEnabled", True))
         if output_lock_enabled:
             lock_path = output_path + ".lock"
             lock_acquired = acquire_generation_lock(lock_path)

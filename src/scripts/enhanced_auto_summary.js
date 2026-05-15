@@ -1195,20 +1195,19 @@ const main = async () => {
                     const prob = aiSettings.comicGenerationProbability;
                     const roll = Math.random();
                     if (roll > prob) {
-                        console.log(`🎲 概率抓取未命中 (${roll.toFixed(3)} > ${prob})，但保留最低保障：仍尝试生成图片一次`);
+                        console.log(`🎲 概率抓取未命中 (${roll.toFixed(3)} > ${prob})，跳过图片生成`);
                     } else {
                         console.log(`🎲 概率抓取命中 (${roll.toFixed(3)} ≤ ${prob})，开始生成图片`);
+                        console.log(`🎨 开始AI漫画生成...`);
+                        const isSuiRoom = String(finalRoomId) === SUI_ROOM_ID;
+                        const tuziRetryMaxAttempts = isSuiRoom ? 4 : 1;
+                        console.log(`🎨 生图尝试策略: tuzi最多尝试 ${tuziRetryMaxAttempts} 次`);
+                        comicImagePath = await generateAiComic(highlightPath, finalRoomId, {
+                            tuziRetryMaxAttempts,
+                            tuziBypassCooldown: false
+                        });
+                        console.log(`🎨 AI漫画生成结果: ${comicImagePath || 'null'}`);
                     }
-                    console.log(`🎨 开始AI漫画生成...`);
-                    const isSuiRoom = String(finalRoomId) === SUI_ROOM_ID;
-                    const tuziRetryMaxAttempts = isSuiRoom ? 4 : 1;
-                    const tuziBypassCooldown = !isSuiRoom;
-                    console.log(`🎨 生图尝试策略: tuzi最多尝试 ${tuziRetryMaxAttempts} 次`);
-                    comicImagePath = await generateAiComic(highlightPath, finalRoomId, {
-                        tuziRetryMaxAttempts,
-                        tuziBypassCooldown
-                    });
-                    console.log(`🎨 AI漫画生成结果: ${comicImagePath || 'null'}`);
                 }
             } else {
                 console.log('ℹ️  跳过AI漫画生成（房间设置禁用）');
@@ -1219,7 +1218,7 @@ const main = async () => {
                     roomId: finalRoomId,
                     goodnightTextPath,
                     comicImagePath: expectedComicImagePath,
-                    mediaPath: processedFile
+                    mediaPath: processedMediaFiles.length > 0 ? processedMediaFiles[processedMediaFiles.length - 1] : undefined
                 })}`);
             }
 

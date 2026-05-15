@@ -9,6 +9,8 @@ const path = require('path');
 const configLoader = require('./config-loader');
 
 const QUEUE_FILE = path.join(__dirname, '.whisper_queue.json');
+const SUI_ROOM_ID = '25788785';
+const SUI_DEFAULT_WHISPER_PRIORITY = 100;
 const LOCK_FILE = path.join(__dirname, '.whisper_lock');
 const ACTIVE_TASK_HEARTBEAT_TIMEOUT = 2 * 60 * 1000;
 
@@ -248,7 +250,17 @@ class WhisperQueueManager {
         const roomConfig = config.ai?.roomSettings?.[roomKey]
             || config.roomSettings?.[roomKey];
         const priority = roomConfig?.whisperPriority;
-        return Number.isFinite(priority) ? priority : 0;
+        if (Number.isFinite(priority)) {
+            return priority;
+        }
+
+        // 岁己是核心房间：即使配置迁移时漏掉 whisperPriority，也不能退化成普通优先级。
+        // 如果以后要调整，优先在 config/production.json 的 roomSettings.25788785.whisperPriority 显式覆盖。
+        if (roomKey === SUI_ROOM_ID) {
+            return SUI_DEFAULT_WHISPER_PRIORITY;
+        }
+
+        return 0;
     }
 
     /**

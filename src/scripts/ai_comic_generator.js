@@ -20,13 +20,15 @@ function sleep(ms) {
 function getComicConcurrencyConfig() {
     const config = configLoader.getConfig();
     const concurrency = config.ai?.comic?.concurrency || {};
-    const maxConcurrentGenerations = Number(concurrency.maxConcurrentGenerations ?? 0);
+    const maxConcurrentGenerations = Number(concurrency.maxConcurrentGenerations ?? 1);
     const lockTimeoutMinutes = Number(concurrency.lockTimeoutMinutes ?? 180);
 
     return {
-        maxConcurrentGenerations: Number.isFinite(maxConcurrentGenerations) && maxConcurrentGenerations > 0
-            ? Math.floor(maxConcurrentGenerations)
-            : 0,
+        // AI 阶段会在 Whisper 槽位释放后继续后台执行。默认只允许 1 个漫画进程，
+        // 避免多个后台任务在同一分钟内同时打高价图片 API。
+        maxConcurrentGenerations: Number.isFinite(maxConcurrentGenerations)
+            ? Math.max(1, Math.floor(maxConcurrentGenerations))
+            : 1,
         lockTimeoutMs: Number.isFinite(lockTimeoutMinutes) && lockTimeoutMinutes > 0
             ? lockTimeoutMinutes * 60 * 1000
             : DEFAULT_CONCURRENCY_LOCK_TIMEOUT_MS
