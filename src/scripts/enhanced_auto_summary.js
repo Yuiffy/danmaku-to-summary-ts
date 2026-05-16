@@ -1200,7 +1200,7 @@ const main = async () => {
                         console.log(`🎲 概率抓取命中 (${roll.toFixed(3)} ≤ ${prob})，开始生成图片`);
                         console.log(`🎨 开始AI漫画生成...`);
                         const isSuiRoom = String(finalRoomId) === SUI_ROOM_ID;
-                        const tuziRetryMaxAttempts = isSuiRoom ? 4 : 1;
+                        const tuziRetryMaxAttempts = isSuiRoom ? 4 : 2;
                         console.log(`🎨 生图尝试策略: tuzi最多尝试 ${tuziRetryMaxAttempts} 次`);
                         comicImagePath = await generateAiComic(highlightPath, finalRoomId, {
                             tuziRetryMaxAttempts,
