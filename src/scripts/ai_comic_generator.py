@@ -94,7 +94,11 @@ from config_loader import (
 )
 
 # 导入tuZi API封装
-from tuzi_chat_completions import call_tuzi_chat_completions, call_tuzi_chat_completions_for_image
+from tuzi_chat_completions import (
+    call_tuzi_chat_completions,
+    call_tuzi_chat_completions_for_image,
+    get_last_image_generation_meta,
+)
 
 # 尝试导入 Google GenAI（可选依赖）
 try:
@@ -1358,6 +1362,28 @@ def save_comic_result(output_path: str, comic_data: Any) -> str:
         print(f"[ERROR] 保存漫画结果失败: {e}")
         raise
 
+
+def comic_meta_path(output_path: str) -> str:
+    root, _ = os.path.splitext(output_path)
+    return f"{root}_META.json"
+
+
+def write_comic_generation_meta(output_path: str, meta: Dict[str, Any]) -> None:
+    try:
+        payload = {
+            "status": meta.get("status") or "unknown",
+            "model": meta.get("model"),
+            "endpoint": meta.get("endpoint"),
+            "reason": meta.get("reason"),
+            "attempts": meta.get("attempts") or [],
+            "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        }
+        with open(comic_meta_path(output_path), "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        print(f"[INFO] 生图元数据已保存: {os.path.basename(comic_meta_path(output_path))}")
+    except Exception as e:
+        print(f"[WARNING] 保存生图元数据失败: {e}")
+
 def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = None) -> Optional[str]:
     """从AI_HIGHLIGHT文件生成漫画"""
     print(f"[FILE] 处理AI_HIGHLIGHT文件: {os.path.basename(highlight_path)}")
@@ -1496,6 +1522,16 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
 
         if not comic_result:
             print("[ERROR] 所有图像生成API都失败，无返回结果")
+            failure_meta = get_last_image_generation_meta()
+            if failure_meta.get("status") in (None, "not_started"):
+                failure_meta = {
+                    "status": "failure",
+                    "model": None,
+                    "endpoint": "all",
+                    "reason": "所有图像生成API都失败，无返回结果",
+                    "attempts": [],
+                }
+            write_comic_generation_meta(output_path, failure_meta)
             return None
         
         print(f"[DEBUG] comic_result类型: {type(comic_result)}, 内容: {comic_result}")
@@ -1504,11 +1540,34 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
         print(f"[DEBUG] 输出路径: {output_path}")
 
         # 保存结果
-        return save_comic_result(output_path, comic_result)
+        saved_path = save_comic_result(output_path, comic_result)
+        success_meta = get_last_image_generation_meta()
+        if success_meta.get("status") in (None, "not_started"):
+            success_meta = {
+                "status": "success",
+                "model": "googleImage" if use_google else None,
+                "endpoint": "googleImage" if use_google else None,
+                "reason": "生成成功",
+                "attempts": [],
+            }
+        write_comic_generation_meta(output_path, success_meta)
+        if saved_path != output_path:
+            write_comic_generation_meta(saved_path, success_meta)
+        return saved_path
         
     except Exception as e:
         print(f"[ERROR] 生成漫画失败: {e}")
         safe_print_exc()
+        try:
+            write_comic_generation_meta(output_path, {
+                "status": "failure",
+                "model": None,
+                "endpoint": "all",
+                "reason": str(e),
+                "attempts": get_last_image_generation_meta().get("attempts") or [],
+            })
+        except Exception:
+            pass
         return None
     finally:
         if lock_acquired and lock_path:

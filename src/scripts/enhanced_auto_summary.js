@@ -1201,10 +1201,18 @@ const main = async () => {
                         console.log(`🎨 开始AI漫画生成...`);
                         const isSuiRoom = String(finalRoomId) === SUI_ROOM_ID;
                         const tuziRetryMaxAttempts = isSuiRoom ? 4 : 2;
-                        console.log(`🎨 生图尝试策略: tuzi最多尝试 ${tuziRetryMaxAttempts} 次`);
+                        const suiImageOptions = isSuiRoom
+                            ? {
+                                tuziRetryMaxTotalSeconds: 1500,
+                                tuziRetryMaxCooldownWaitSeconds: 120,
+                                tuziSkipChatFallbackOnImageApiFailure: true
+                            }
+                            : {};
+                        console.log(`🎨 生图尝试策略: tuzi最多尝试 ${tuziRetryMaxAttempts} 次${isSuiRoom ? '，同步策略限时25分钟，冷却超过2分钟直接切换兜底' : ''}`);
                         comicImagePath = await generateAiComic(highlightPath, finalRoomId, {
                             tuziRetryMaxAttempts,
-                            tuziBypassCooldown: false
+                            tuziBypassCooldown: false,
+                            ...suiImageOptions
                         });
                         console.log(`🎨 AI漫画生成结果: ${comicImagePath || 'null'}`);
                     }

@@ -47,6 +47,46 @@ DEFAULT_TUZI_RETRY_CONFIG = {
 TUZI_RETRY_STATE_FILE = os.path.join(tempfile.gettempdir(), "danmaku_tuzi_retry_state.json")
 IMAGE_RATE_LIMIT_STATE_FILE = os.path.join(tempfile.gettempdir(), "danmaku_image_api_rate_limit.json")
 IMAGE_RATE_LIMIT_LOCK_FILE = IMAGE_RATE_LIMIT_STATE_FILE + ".lock"
+LAST_IMAGE_GENERATION_META = {
+    "status": "not_started",
+    "model": None,
+    "endpoint": None,
+    "reason": None,
+    "attempts": [],
+}
+
+
+class TuziRetryBudgetExceeded(Exception):
+    """Raised when a retry/cooldown wait would consume the current strategy budget."""
+
+
+def reset_last_image_generation_meta() -> None:
+    LAST_IMAGE_GENERATION_META.clear()
+    LAST_IMAGE_GENERATION_META.update({
+        "status": "not_started",
+        "model": None,
+        "endpoint": None,
+        "reason": None,
+        "attempts": [],
+    })
+
+
+def append_image_generation_attempt(model: str, endpoint: str, status: str, reason: str = "") -> None:
+    attempts = LAST_IMAGE_GENERATION_META.setdefault("attempts", [])
+    attempts.append({
+        "model": model,
+        "endpoint": endpoint,
+        "status": status,
+        "reason": str(reason)[:300],
+    })
+    LAST_IMAGE_GENERATION_META["status"] = status
+    LAST_IMAGE_GENERATION_META["model"] = model
+    LAST_IMAGE_GENERATION_META["endpoint"] = endpoint
+    LAST_IMAGE_GENERATION_META["reason"] = str(reason)[:500] if reason else None
+
+
+def get_last_image_generation_meta() -> Dict[str, Any]:
+    return dict(LAST_IMAGE_GENERATION_META)
 
 
 def get_tuzi_retry_config() -> Dict[str, Any]:
@@ -74,6 +114,22 @@ def get_tuzi_retry_config() -> Dict[str, Any]:
     if str(os.environ.get("TUZI_RETRY_BYPASS_COOLDOWN", "")).lower() == "true":
         retry_config["bypassCooldown"] = True
         print("[TUZI_RETRY] 本次调用绕过全局冷却")
+
+    env_max_total_seconds = os.environ.get("TUZI_RETRY_MAX_TOTAL_SECONDS")
+    if env_max_total_seconds:
+        try:
+            retry_config["maxTotalSeconds"] = max(1, float(env_max_total_seconds))
+            print(f"[TUZI_RETRY] 使用环境变量限制单次重试总预算: {retry_config['maxTotalSeconds']}s")
+        except ValueError:
+            print(f"[WARNING] TUZI_RETRY_MAX_TOTAL_SECONDS 无效，已忽略: {env_max_total_seconds}")
+
+    env_max_cooldown_wait_seconds = os.environ.get("TUZI_RETRY_MAX_COOLDOWN_WAIT_SECONDS")
+    if env_max_cooldown_wait_seconds:
+        try:
+            retry_config["maxCooldownWaitSeconds"] = max(0, float(env_max_cooldown_wait_seconds))
+            print(f"[TUZI_RETRY] 使用环境变量限制单次冷却等待: {retry_config['maxCooldownWaitSeconds']}s")
+        except ValueError:
+            print(f"[WARNING] TUZI_RETRY_MAX_COOLDOWN_WAIT_SECONDS 无效，已忽略: {env_max_cooldown_wait_seconds}")
 
     return retry_config
 
@@ -376,6 +432,11 @@ def wait_for_tuzi_cooldown_if_needed(operation_name: str, retry_config: Dict[str
     if wait_seconds > 0:
         jitter_ratio = max(0.0, float(retry_config.get("jitterRatio", 0.3) or 0))
         jittered = wait_seconds * (1 + random.uniform(0, jitter_ratio))
+        max_wait = retry_config.get("maxCooldownWaitSeconds")
+        if max_wait is not None and jittered > float(max_wait):
+            raise TuziRetryBudgetExceeded(
+                f"{operation_name} 全局冷却需等待 {int(jittered)}s，超过本次上限 {int(float(max_wait))}s"
+            )
         print(f"[TUZI_RETRY] {operation_name} 命中全局冷却，等待 {int(jittered)}s 后再调用 tuZi")
         time.sleep(jittered)
 
@@ -387,8 +448,15 @@ def request_tuzi_with_retry(operation_name: str, request_func, retry_config: Opt
     base_delays_ms = retry_config.get("baseDelaysMs", [0])
     jitter_ratio = float(retry_config.get("jitterRatio", 0.3))
     last_error = None
+    started_at = time.time()
+    max_total_seconds = retry_config.get("maxTotalSeconds")
 
     for attempt in range(max_attempts):
+        if max_total_seconds is not None and time.time() - started_at > float(max_total_seconds):
+            raise TuziRetryBudgetExceeded(
+                f"{operation_name} 重试总耗时超过 {int(float(max_total_seconds))}s，切换下一策略"
+            )
+
         if attempt == 0:
             if not retry_config.get("bypassCooldown"):
                 wait_for_tuzi_cooldown_if_needed(operation_name, retry_config)
@@ -398,6 +466,10 @@ def request_tuzi_with_retry(operation_name: str, request_func, retry_config: Opt
             if not retry_config.get("bypassCooldown"):
                 wait_for_tuzi_cooldown_if_needed(operation_name, retry_config)
             if delay_seconds > 0:
+                if max_total_seconds is not None and time.time() - started_at + delay_seconds > float(max_total_seconds):
+                    raise TuziRetryBudgetExceeded(
+                        f"{operation_name} 下次重试等待 {int(delay_seconds)}s 会超过 {int(float(max_total_seconds))}s 总预算"
+                    )
                 print(f"[TUZI_RETRY] {operation_name} 第 {attempt + 1}/{max_attempts} 次尝试前等待 {int(delay_seconds)}s")
                 time.sleep(delay_seconds)
 
@@ -1089,6 +1161,7 @@ def call_tuzi_chat_completions_for_image(
         生成的图像文件路径，如果失败返回None
     """
     try:
+        reset_last_image_generation_meta()
         # 设置代理
         proxies = {}
         if proxy_url:
@@ -1225,11 +1298,14 @@ def call_tuzi_chat_completions_for_image(
                         
                         if gemini_result:
                             record_successful_image_api_call(operation_name)
+                            append_image_generation_attempt(current_model, "gemini_async", "success", "生成成功")
                             print("[OK] Gemini 异步 API 生成成功！")
                             return gemini_result
                         else:
+                            append_image_generation_attempt(current_model, "gemini_async", "failure", "Gemini 异步 API 返回空结果")
                             print("[WARNING] Gemini 异步 API 失败，继续尝试下一个策略...")
                     except Exception as gemini_err:
+                        append_image_generation_attempt(current_model, "gemini_async", "failure", gemini_err)
                         print(f"[WARNING] Gemini 异步 API 调用异常: {gemini_err}")
                     
                     # 异步失败后继续下一个策略
@@ -1258,8 +1334,13 @@ def call_tuzi_chat_completions_for_image(
                             output_format="png"
                         )
                         if img_gen_result:
+                            append_image_generation_attempt(current_model, "images/generations", "success", "生成成功")
                             return img_gen_result
+                        append_image_generation_attempt(current_model, "images/generations", "failure", "images/generations 返回空结果")
                         print(f"[WARNING] images/generations 失败，回退到 chat/completions 格式")
+                        if str(room_id) == SUI_ROOM_ID and str(os.environ.get("TUZI_SKIP_CHAT_FALLBACK_ON_IMAGE_API_FAILURE", "")).lower() == "true":
+                            print("[INFO] 岁己策略已启用：images/generations 失败后跳过 chat/completions，直接切换下一策略")
+                            continue
 
                     # 回退：使用 /v1/chat/completions 格式（兼容旧模型）
                     # 重新构建消息列表，使用当前模型对应的 prompt
@@ -1302,6 +1383,7 @@ def call_tuzi_chat_completions_for_image(
                         lambda: requests.post(api_url, headers=headers, json=payload, timeout=current_timeout, proxies=proxies)
                     )
                     if response is None:
+                        append_image_generation_attempt(current_model, "chat/completions", "failure", "重试耗尽")
                         print(f"[WARNING] tu-zi.com API调用失败 (尝试 {attempt + 1}/{len(retry_strategies)}): 重试耗尽")
                         continue
                     print(f"[DEBUG] 收到响应，状态码: {response.status_code}, 用时: {response.elapsed.total_seconds()}s")
@@ -1316,6 +1398,7 @@ def call_tuzi_chat_completions_for_image(
                     direct_data_result = try_extract_image_from_data_items(result.get("data"), proxies)
                     if direct_data_result:
                         record_successful_image_api_call(operation_name)
+                        append_image_generation_attempt(current_model, "chat/completions", "success", "从 data 提取图片成功")
                         return direct_data_result
 
                     # 处理 /v1/chat/completions 响应格式
@@ -1327,6 +1410,7 @@ def call_tuzi_chat_completions_for_image(
                         extracted_from_content = try_extract_image_from_message_content(content, proxies, timeout)
                         if extracted_from_content:
                             record_successful_image_api_call(operation_name)
+                            append_image_generation_attempt(current_model, "chat/completions", "success", "从 message.content 提取图片成功")
                             return extracted_from_content
 
                         if is_content_policy_rejection(content):
@@ -1345,18 +1429,22 @@ def call_tuzi_chat_completions_for_image(
                                             direct_tool_result = download_image_to_temp(args_json["image_url"], proxies)
                                             if direct_tool_result:
                                                 record_successful_image_api_call(operation_name)
+                                                append_image_generation_attempt(current_model, "chat/completions", "success", "从 tool_call 图片链接下载成功")
                                                 return direct_tool_result
                                         data_tool_result = try_extract_image_from_data_items(args_json.get("data"), proxies)
                                         if data_tool_result:
                                             record_successful_image_api_call(operation_name)
+                                            append_image_generation_attempt(current_model, "chat/completions", "success", "从 tool_call data 提取图片成功")
                                             return data_tool_result
                                     except Exception as json_error:
                                         print(f"[WARNING] 解析工具调用参数失败: {json_error}")
 
                     # 如果到这里还没返回，说明响应格式不符合预期
                     print(f"[ERROR] 无法从响应中提取图像数据")
+                    append_image_generation_attempt(current_model, "chat/completions", "failure", "响应中未找到图片数据")
                     print(f"[DEBUG] 完整响应: {json.dumps(result, ensure_ascii=False, indent=2)[:1000]}")
                 else:
+                    append_image_generation_attempt(current_model, "chat/completions", "failure", f"HTTP {response.status_code}")
                     print(f"[WARNING] tu-zi.com API调用失败 (尝试 {attempt + 1}/{len(retry_strategies)}): HTTP {response.status_code} elapsed: {response.elapsed.total_seconds()}s")
                 
                 # 如果没成功且还有剩余策略，等待一下再试
@@ -1366,14 +1454,22 @@ def call_tuzi_chat_completions_for_image(
 
 
             except Exception as req_err:
+                try:
+                    endpoint = "gemini_async" if strategy.get("type") == "async" else "sync"
+                    append_image_generation_attempt(strategy.get("model", "unknown"), endpoint, "failure", req_err)
+                except Exception:
+                    pass
                 print(f"[ERROR] 请求异常 (尝试 {attempt + 1}/{len(retry_strategies)}): {req_err}")
                 if attempt < len(retry_strategies) - 1:
                     print("[RETRY] 2秒后尝试下一个策略...")
                     time.sleep(2)
         
+        if LAST_IMAGE_GENERATION_META.get("status") != "failure":
+            append_image_generation_attempt(primary_model, "all", "failure", "所有图像生成策略均未返回图片")
         return None
 
     except Exception as e:
+        append_image_generation_attempt(model or "unknown", "all", "failure", e)
         print(f"[ERROR] tu-zi.com图像生成失败: {e}")
         traceback.print_exc()
         return None

@@ -740,13 +740,15 @@ export class DelayedReplyService implements IDelayedReplyService {
       if (this.notifier) {
         const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
         const anchorName = anchorConfig?.name;
+        const imageGenerationInfo = this.getComicGenerationNotificationInfo(task.comicImagePath);
         await this.notifier.notifyReplySuccess(
           String(finalDynamic.id),
           String(result.replyId),
           anchorName,
           replyText,
           result.imageUrl,
-          imagePath ? imagePath[0] : undefined
+          imagePath ? imagePath[0] : undefined,
+          imageGenerationInfo
         );
       }
 
@@ -830,6 +832,7 @@ export class DelayedReplyService implements IDelayedReplyService {
             uid: task.uid,
             goodnightTextPath: task.goodnightTextPath,
             comicImagePath: task.comicImagePath,
+            imageGenerationInfo: this.getComicGenerationNotificationInfo(task.comicImagePath),
             replyText,
             error: error instanceof Error ? error.stack : String(error)
           }
@@ -918,6 +921,58 @@ export class DelayedReplyService implements IDelayedReplyService {
       };
       this.logger.error('读取晚安回复文本失败', errorInfo);
       throw error;
+    }
+  }
+
+  private getComicGenerationNotificationInfo(comicImagePath?: string): string | undefined {
+    if (!comicImagePath) {
+      return undefined;
+    }
+
+    const parsedPath = path.parse(comicImagePath);
+    const metaCandidates = [
+      path.join(parsedPath.dir, `${parsedPath.name}_META.json`),
+      path.join(parsedPath.dir, `${parsedPath.name.replace(/_COMIC_FACTORY$/i, '')}_COMIC_FACTORY_META.json`)
+    ];
+
+    const metaPath = metaCandidates.find(candidate => fs.existsSync(candidate));
+    if (!metaPath) {
+      return fs.existsSync(comicImagePath)
+        ? '图片已生成，未找到生图元数据'
+        : '图片未生成，未找到生图失败元数据';
+    }
+
+    try {
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+      const status = meta.status === 'success' ? '成功' : meta.status === 'failure' ? '失败' : String(meta.status || '未知');
+      const model = meta.model || '未知模型';
+      const endpoint = meta.endpoint || '未知接口';
+      const reason = meta.reason ? String(meta.reason) : '';
+      const attempts = Array.isArray(meta.attempts) ? meta.attempts : [];
+      const lastAttempts = attempts.slice(-3).map((attempt: any) => {
+        const attemptModel = attempt?.model || '未知模型';
+        const attemptEndpoint = attempt?.endpoint || '未知接口';
+        const attemptStatus = attempt?.status || 'unknown';
+        const attemptReason = attempt?.reason ? `: ${String(attempt.reason).slice(0, 120)}` : '';
+        return `- ${attemptModel} / ${attemptEndpoint} / ${attemptStatus}${attemptReason}`;
+      });
+
+      return [
+        `结果: ${status}`,
+        `模型: ${model}`,
+        `接口: ${endpoint}`,
+        reason ? `原因: ${reason}` : undefined,
+        lastAttempts.length > 0 ? `最近尝试:\n${lastAttempts.join('\n')}` : undefined
+      ].filter(Boolean).join('\n');
+    } catch (error) {
+      this.logger.warn('读取生图元数据失败', {
+        comicImagePath,
+        metaPath,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return fs.existsSync(comicImagePath)
+        ? '图片已生成，但生图元数据读取失败'
+        : '图片未生成，且生图元数据读取失败';
     }
   }
 

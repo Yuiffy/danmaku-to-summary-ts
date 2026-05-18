@@ -155,6 +155,36 @@ async function acquireComicConcurrencySlot() {
     }
 }
 
+function getComicOutputPathForHighlight(highlightPath) {
+    const dir = path.dirname(highlightPath);
+    const baseName = path.basename(highlightPath, '_AI_HIGHLIGHT.txt');
+    return path.join(dir, `${baseName}_COMIC_FACTORY.png`);
+}
+
+function getComicMetaPathForOutput(outputPath) {
+    const parsed = path.parse(outputPath);
+    return path.join(parsed.dir, `${parsed.name}_META.json`);
+}
+
+function writeComicGenerationFailureMeta(highlightPath, reason, attempts = []) {
+    try {
+        const outputPath = getComicOutputPathForHighlight(highlightPath);
+        const metaPath = getComicMetaPathForOutput(outputPath);
+        const payload = {
+            status: 'failure',
+            model: null,
+            endpoint: 'node-wrapper',
+            reason,
+            attempts,
+            updatedAt: new Date().toISOString()
+        };
+        fs.writeFileSync(metaPath, JSON.stringify(payload, null, 2), 'utf8');
+        console.log(`📝 生图失败元数据已保存: ${path.basename(metaPath)}`);
+    } catch (error) {
+        console.warn(`⚠️  保存生图失败元数据失败: ${error.message}`);
+    }
+}
+
 // 调用Python脚本生成漫画
 async function generateComicWithPython(highlightPath, roomId = null, options = {}) {
     const pythonScript = path.join(__dirname, 'ai_comic_generator.py');
@@ -187,12 +217,36 @@ async function generateComicWithPython(highlightPath, roomId = null, options = {
                     : {}),
                 ...(options.tuziBypassCooldown
                     ? { TUZI_RETRY_BYPASS_COOLDOWN: 'true' }
+                    : {}),
+                ...(options.tuziRetryMaxTotalSeconds
+                    ? { TUZI_RETRY_MAX_TOTAL_SECONDS: String(options.tuziRetryMaxTotalSeconds) }
+                    : {}),
+                ...(options.tuziRetryMaxCooldownWaitSeconds !== undefined
+                    ? { TUZI_RETRY_MAX_COOLDOWN_WAIT_SECONDS: String(options.tuziRetryMaxCooldownWaitSeconds) }
+                    : {}),
+                ...(options.tuziSkipChatFallbackOnImageApiFailure
+                    ? { TUZI_SKIP_CHAT_FALLBACK_ON_IMAGE_API_FAILURE: 'true' }
                     : {})
             }
         });
 
         let stdout = '';
         let stderr = '';
+        let settled = false;
+
+        const settleResolve = (value) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeoutId);
+            resolve(value);
+        };
+
+        const settleReject = (error) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeoutId);
+            reject(error);
+        };
 
         pythonProcess.stdout.on('data', (data) => {
             stdout += data.toString();
@@ -209,7 +263,7 @@ async function generateComicWithPython(highlightPath, roomId = null, options = {
                 // 从输出中提取生成的文件路径
                 const match = stdout.match(/输出文件:\s*(.+\.(png|jpg|jpeg|txt))/);
                 if (match) {
-                    resolve(match[1].trim());
+                    settleResolve(match[1].trim());
                 } else {
                     // 检查是否生成了_COMIC_FACTORY文件
                     const dir = path.dirname(highlightPath);
@@ -223,27 +277,33 @@ async function generateComicWithPython(highlightPath, roomId = null, options = {
 
                     for (const file of possibleFiles) {
                         if (fs.existsSync(file)) {
-                            resolve(file);
+                            settleResolve(file);
                             return;
                         }
                     }
 
-                    resolve(null);
+                    settleResolve(null);
                 }
             } else {
-                reject(new Error(`Python脚本执行失败，退出码: ${code}\n${stderr}`));
+                const reason = `Python脚本执行失败，退出码: ${code}${stderr ? `\n${stderr}` : ''}`;
+                writeComicGenerationFailureMeta(highlightPath, reason);
+                settleReject(new Error(reason));
             }
         });
 
         pythonProcess.on('error', (err) => {
-            reject(new Error(`启动Python进程失败: ${err.message}`));
+            const reason = `启动Python进程失败: ${err.message}`;
+            writeComicGenerationFailureMeta(highlightPath, reason);
+            settleReject(new Error(reason));
         });
 
         // 设置超时
         const pythonTimeoutMs = 1000 * 4 * 1000;
-        setTimeout(() => {
+        const timeoutId = setTimeout(() => {
             pythonProcess.kill('SIGTERM');
-            reject(new Error('Python脚本执行超时'));
+            const reason = `Python脚本执行超时 (${Math.round(pythonTimeoutMs / 1000)}s)`;
+            writeComicGenerationFailureMeta(highlightPath, reason);
+            settleReject(new Error(reason));
         }, pythonTimeoutMs); // 里面 gpt-image-2 单次可到 1000 秒，外层同步放宽
     });
 }
@@ -265,7 +325,7 @@ async function generateComicFromHighlight(highlightPath, roomId = null, options 
 
         const dir = path.dirname(highlightPath);
         const baseName = path.basename(highlightPath, '_AI_HIGHLIGHT.txt');
-        const outputPath = path.join(dir, `${baseName}_COMIC_FACTORY.png`);
+        const outputPath = getComicOutputPathForHighlight(highlightPath);
         const existingOutput = getExistingGeneratedFile(outputPath);
 
         if (existingOutput) {
