@@ -49,7 +49,7 @@ function isProcessAlive(pid) {
 class WhisperQueueManager {
     constructor() {
         this.queue = [];
-        this.loadQueue({ silent: false });
+        this.loadQueue({ silent: false, cleanupStale: false });
     }
 
     /**
@@ -136,36 +136,7 @@ class WhisperQueueManager {
                 continue;
             }
 
-            let staleReason = null;
-
-            if (Number.isInteger(task.ownerPid) && task.ownerPid > 0) {
-                if (typeof task.ownerBootTime === 'number') {
-                    const currentBootTime = getSystemBootTimestamp();
-                    const bootTimeDiff = Math.abs(currentBootTime - task.ownerBootTime);
-                    if (bootTimeDiff > 5 * 60 * 1000) {
-                        staleReason = 'owner_process_rebooted';
-                    }
-                }
-
-                if (!staleReason && !isProcessAlive(task.ownerPid)) {
-                    staleReason = `owner_process_missing:${task.ownerPid}`;
-                }
-            }
-
-            if (!staleReason && typeof task.lastHeartbeat === 'number') {
-                const heartbeatAge = now - task.lastHeartbeat;
-                if (heartbeatAge > ACTIVE_TASK_HEARTBEAT_TIMEOUT) {
-                    staleReason = `heartbeat_timeout:${Math.floor(heartbeatAge / 1000)}s`;
-                }
-            }
-
-            if (!staleReason && !task.ownerPid && !task.lastHeartbeat) {
-                const activeSince = task.startTime || task.addedTime || 0;
-                const activeAge = now - activeSince;
-                if (activeAge > legacyPendingTimeout) {
-                    staleReason = `legacy_timeout:${Math.floor(activeAge / 1000)}s`;
-                }
-            }
+            const staleReason = this.getProcessingTaskStaleReason(task, now, legacyPendingTimeout);
 
             if (!staleReason) {
                 continue;
@@ -189,6 +160,47 @@ class WhisperQueueManager {
                 }
             }
         }
+    }
+
+    getProcessingTaskStaleReason(task, now = Date.now(), legacyPendingTimeout = null) {
+        if (!task || task.status !== 'processing') {
+            return null;
+        }
+
+        if (Number.isInteger(task.ownerPid) && task.ownerPid > 0) {
+            if (typeof task.ownerBootTime === 'number') {
+                const currentBootTime = getSystemBootTimestamp();
+                const bootTimeDiff = Math.abs(currentBootTime - task.ownerBootTime);
+                if (bootTimeDiff > 5 * 60 * 1000) {
+                    return 'owner_process_rebooted';
+                }
+            }
+
+            if (!isProcessAlive(task.ownerPid)) {
+                return `owner_process_missing:${task.ownerPid}`;
+            }
+
+            return null;
+        }
+
+        if (typeof task.lastHeartbeat === 'number') {
+            const heartbeatAge = now - task.lastHeartbeat;
+            if (heartbeatAge > ACTIVE_TASK_HEARTBEAT_TIMEOUT) {
+                return `heartbeat_timeout:${Math.floor(heartbeatAge / 1000)}s`;
+            }
+
+            return null;
+        }
+
+        if (legacyPendingTimeout !== null) {
+            const activeSince = task.startTime || task.addedTime || 0;
+            const activeAge = now - activeSince;
+            if (activeAge > legacyPendingTimeout) {
+                return `legacy_timeout:${Math.floor(activeAge / 1000)}s`;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -602,20 +614,34 @@ class WhisperQueueManager {
     }
 
     /**
-     * 恢复中断的任务
-     * 将所有 'processing' 状态的任务重置为 'pending'
+     * 恢复中断的任务。
+     * 只恢复 owner 进程已不存在或心跳超时的任务；仍在 AI/漫画阶段运行的子进程
+     * 也会保持 processing，避免被新 worker 重新捞起重复生图。
      */
     recoverInterruptedTasks() {
-        this.reloadForMutation();
-        const interrupted = this.queue.filter(t => t.status === 'processing');
+        this.reloadForMutation({ cleanupStale: false });
+        const now = Date.now();
+        const config = configLoader.getConfig();
+        const configuredProcessTimeout = Number(config?.webhook?.timeouts?.processTimeout) || 30 * 60 * 1000;
+        const legacyPendingTimeout = Math.max(configuredProcessTimeout + (5 * 60 * 1000), 45 * 60 * 1000);
+        const interrupted = this.queue
+            .filter(t => t.status === 'processing')
+            .map(task => ({
+                task,
+                reason: this.getProcessingTaskStaleReason(task, now, legacyPendingTimeout)
+            }))
+            .filter(item => item.reason);
         
         if (interrupted.length > 0) {
             console.log(`🔄 检测到 ${interrupted.length} 个中断的任务，重置为待处理状态`);
             
-            interrupted.forEach(task => {
+            interrupted.forEach(({ task, reason }) => {
                 task.status = 'pending';
                 delete task.startTime;
-                console.log(`   - ${path.basename(task.mediaPath)}`);
+                delete task.ownerPid;
+                delete task.ownerBootTime;
+                delete task.lastHeartbeat;
+                console.log(`   - ${path.basename(task.mediaPath)} (${reason})`);
             });
             
             this.saveQueue();

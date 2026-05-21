@@ -105,6 +105,30 @@ function releaseFileLock(lockPath) {
     }
 }
 
+async function acquireComicOutputLock(outputPath) {
+    const { lockTimeoutMs } = getComicConcurrencyConfig();
+    const lockPath = `${outputPath}.lock`;
+    const waitStartedAt = Date.now();
+
+    while (true) {
+        const existingOutput = getExistingGeneratedFile(outputPath);
+        if (existingOutput) {
+            return { lockPath: null, existingOutput };
+        }
+
+        if (acquireFileLock(lockPath, lockTimeoutMs)) {
+            return { lockPath, existingOutput: null };
+        }
+
+        if (Date.now() - waitStartedAt > lockTimeoutMs) {
+            throw new Error(`等待同名漫画生成锁超时: ${path.basename(outputPath)}`);
+        }
+
+        console.log(`⏳ 同名漫画正在生成，等待完成: ${path.basename(outputPath)}`);
+        await sleep(5000);
+    }
+}
+
 function cleanupStaleConcurrencySlots(slotDir, timeoutMs) {
     if (!fs.existsSync(slotDir)) {
         return;
@@ -333,14 +357,30 @@ async function generateComicFromHighlight(highlightPath, roomId = null, options 
             return existingOutput;
         }
 
-        const slotPath = await acquireComicConcurrencySlot();
+        const outputLock = await acquireComicOutputLock(outputPath);
+        if (outputLock.existingOutput) {
+            console.log(`ℹ️  漫画已由其他进程生成，跳过重复生成: ${path.basename(outputLock.existingOutput)}`);
+            return outputLock.existingOutput;
+        }
+
+        let slotPath = null;
         let result = null;
         try {
+            const outputAfterLock = getExistingGeneratedFile(outputPath);
+            if (outputAfterLock) {
+                console.log(`ℹ️  漫画已由其他进程生成，跳过重复生成: ${path.basename(outputAfterLock)}`);
+                return outputAfterLock;
+            }
+
+            slotPath = await acquireComicConcurrencySlot();
             // 调用Python脚本
             result = await generateComicWithPython(highlightPath, roomId, options);
         } finally {
             if (slotPath) {
                 releaseFileLock(slotPath);
+            }
+            if (outputLock.lockPath) {
+                releaseFileLock(outputLock.lockPath);
             }
         }
 
