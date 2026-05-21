@@ -625,6 +625,63 @@ def is_valid_comic_script(text: Optional[str]) -> bool:
     return len(normalized) >= 40
 
 
+def is_comic_script_fallback_allowed(room_id: Optional[str] = None) -> bool:
+    """是否允许在AI脚本生成失败后使用本地兜底脚本继续生图。"""
+    if str(os.environ.get("ALLOW_COMIC_SCRIPT_FALLBACK", "")).lower() == "true":
+        return True
+    return str(room_id or "") == "25788785"
+
+
+def strip_srt_timestamps(text: str) -> str:
+    text = re.sub(r'\d{2}:\d{2}:\d{2}[,.]\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}[,.]\d{3}', ' ', text)
+    text = re.sub(r'^\s*\d+\s*$', ' ', text, flags=re.MULTILINE)
+    return text
+
+
+def build_local_fallback_comic_script(highlight_content: str, room_id: Optional[str] = None) -> str:
+    """用摘要内容生成一个短兜底分镜，避免脚本AI短暂故障时完全跳过图片。"""
+    cleaned = strip_srt_timestamps(highlight_content)
+    lines = []
+    for raw_line in cleaned.splitlines():
+        line = re.sub(r'\s+', ' ', raw_line).strip()
+        if len(line) < 8:
+            continue
+        if any(marker in line.lower() for marker in ["http://", "https://", "[error]", "traceback"]):
+            continue
+        lines.append(line)
+
+    if not lines:
+        compact = re.sub(r'\s+', ' ', cleaned).strip()
+        lines = [compact[i:i + 70] for i in range(0, min(len(compact), 280), 70) if compact[i:i + 70]]
+
+    while len(lines) < 4:
+        lines.append("主播和观众温柔互动，直播间氛围轻松热闹。")
+
+    selected = lines[:4]
+    anchor_name = "岁己" if str(room_id or "") == "25788785" else "主播"
+    panels = []
+    panel_styles = [
+        "开场",
+        "互动",
+        "名场面",
+        "晚安收束",
+    ]
+    for index, line in enumerate(selected, start=1):
+        panels.append(f"分镜{index}（{panel_styles[index - 1]}）：{anchor_name}在直播间里延续今晚的高光片段：{line[:120]}")
+
+    return "\n".join(panels)
+
+
+def return_comic_script_failure(highlight_content: str, room_id: Optional[str], reason: str) -> Tuple[str, bool]:
+    if is_comic_script_fallback_allowed(room_id):
+        fallback_script = build_local_fallback_comic_script(highlight_content, room_id)
+        print(f"[WARNING]  AI漫画脚本生成失败（{reason}），使用本地兜底分镜继续生图")
+        print(f"兜底脚本长度: {len(fallback_script)} 字符")
+        print(f"兜底内容预览: {fallback_script[:200]}...")
+        return fallback_script, True
+    return highlight_content, False
+
+
 def has_socks_proxy_support() -> bool:
     """检查当前 Python 环境是否具备 SOCKS 代理支持。"""
     return importlib.util.find_spec("socksio") is not None
@@ -685,7 +742,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
 
                 if not gemini_api_key:
                     print("[WARNING]  Gemini API密钥未配置，使用原始内容")
-                    return highlight_content, False
+                    break
 
                 # 加载配置获取其他参数
                 config = load_config()
@@ -750,7 +807,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                     return comic_content, True
                 else:
                     print("[WARNING]  AI返回空结果，使用原始内容")
-                    return highlight_content, False
+                    break
 
             except Exception as e:
                 error_msg = str(e)
@@ -783,7 +840,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
             
             if not is_tuzi_configured():
                 print("[WARNING]  tuZi API未配置，使用原始内容")
-                return highlight_content, False
+                return return_comic_script_failure(highlight_content, room_id, "tuZi API未配置")
             
             # 构建提示词（使用统一的prompt模板）
             character_desc = get_room_character_description(room_id)
@@ -816,12 +873,12 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                         continue
                     else:
                         print("[ERROR] tuZi API重试次数已用完，使用原始内容")
-                        return highlight_content, False
+                        return return_comic_script_failure(highlight_content, room_id, "tuZi 返回 Gemini 错误内容")
 
                 if not is_valid_comic_script(comic_content):
                     print(f"[ERROR] tuZi API返回的漫画脚本无效或疑似截断，长度: {len(comic_content)} 字符")
                     print(f"[ERROR] 无效内容预览: {comic_content[:200]}...")
-                    return highlight_content, False
+                    return return_comic_script_failure(highlight_content, room_id, "tuZi 返回无效脚本")
                 
                 print("[OK] tuZi API漫画文本生成成功")
                 print(f"生成内容长度: {len(comic_content)} 字符")
@@ -834,7 +891,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                     time.sleep(2)
                     continue
                 else:
-                    return highlight_content, False
+                    return return_comic_script_failure(highlight_content, room_id, "tuZi 返回空内容")
             
         except Exception as tuzi_error:
             print(f"[ERROR]  tuZi API备用方案失败 (尝试 {tuzi_attempt + 1}/{max_tuzi_retries}): {tuzi_error}")
@@ -844,10 +901,10 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                 continue
             else:
                 print("[WARNING]  所有API都失败，使用原始内容")
-                return highlight_content, False
+                return return_comic_script_failure(highlight_content, room_id, str(tuzi_error))
     
     # 确保函数在所有路径都返回有效值
-    return highlight_content, False
+    return return_comic_script_failure(highlight_content, room_id, "所有AI脚本通道失败")
 
 def encode_image_to_base64(image_path: str, with_data_uri: bool = False) -> str:
     """将图片编码为base64

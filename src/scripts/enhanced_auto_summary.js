@@ -1204,11 +1204,12 @@ const main = async () => {
                         const suiImageOptions = isSuiRoom
                             ? {
                                 tuziRetryMaxTotalSeconds: 1500,
-                                tuziRetryMaxCooldownWaitSeconds: 120,
-                                tuziSkipChatFallbackOnImageApiFailure: true
+                                tuziRetryMaxCooldownWaitSeconds: 300,
+                                tuziSkipChatFallbackOnImageApiFailure: true,
+                                allowComicScriptFallback: true
                             }
                             : {};
-                        console.log(`🎨 生图尝试策略: tuzi最多尝试 ${tuziRetryMaxAttempts} 次${isSuiRoom ? '，同步策略限时25分钟，冷却超过2分钟直接切换兜底' : ''}`);
+                        console.log(`🎨 生图尝试策略: tuzi最多尝试 ${tuziRetryMaxAttempts} 次${isSuiRoom ? '，同步策略限时25分钟，冷却最多等待5分钟，脚本失败启用本地兜底' : ''}`);
                         comicImagePath = await generateAiComic(highlightPath, finalRoomId, {
                             tuziRetryMaxAttempts,
                             tuziBypassCooldown: false,

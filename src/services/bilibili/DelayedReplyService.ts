@@ -24,6 +24,8 @@ function generateUUID(): string {
  */
 export class DelayedReplyService implements IDelayedReplyService {
   private logger = getLogger('DelayedReplyService');
+  private static readonly COMIC_WAIT_INTERVAL_MS = 2 * 60 * 1000;
+  private static readonly MAX_COMIC_WAIT_COUNT = 3;
   private tasks: Map<string, DelayedReplyTask> = new Map();
   private timers: Map<string, NodeJS.Timeout> = new Map();
   private isRunningFlag = false;
@@ -687,9 +689,43 @@ export class DelayedReplyService implements IDelayedReplyService {
         throw new Error(errorMsg);
       }
 
-      const imagePath = task.comicImagePath && await this.checkFileExists(task.comicImagePath)
-        ? [task.comicImagePath]
-        : undefined;
+      let imagePath: string[] | undefined;
+      if (task.comicImagePath) {
+        const hasComicImage = await this.checkFileExists(task.comicImagePath);
+        if (hasComicImage) {
+          imagePath = [task.comicImagePath];
+        } else if (this.shouldWaitForComicImage(task)) {
+          task.comicWaitCount = (task.comicWaitCount || 0) + 1;
+          task.status = 'pending';
+          task.scheduledTime = new Date(Date.now() + DelayedReplyService.COMIC_WAIT_INTERVAL_MS);
+          task.error = `等待漫画图片生成 (${task.comicWaitCount}/${DelayedReplyService.MAX_COMIC_WAIT_COUNT})`;
+
+          await this.store.updateTask(task.taskId, {
+            status: task.status,
+            scheduledTime: task.scheduledTime,
+            comicWaitCount: task.comicWaitCount,
+            error: task.error
+          });
+
+          this.logger.info(`漫画图片尚未生成，延后发布晚安回复`, {
+            taskId: task.taskId,
+            roomId: task.roomId,
+            comicImagePath: task.comicImagePath,
+            comicWaitCount: task.comicWaitCount,
+            scheduledTime: task.scheduledTime.toISOString()
+          });
+
+          this.scheduleTask(task);
+          return;
+        } else {
+          this.logger.warn(`漫画图片仍未生成，已达到等待上限，将发送纯文字晚安回复`, {
+            taskId: task.taskId,
+            roomId: task.roomId,
+            comicImagePath: task.comicImagePath,
+            comicWaitCount: task.comicWaitCount || 0
+          });
+        }
+      }
 
       const duplicateReply = this.findRecentCompletedReply(task.roomId, String(finalDynamic.id), task.taskId);
       if (duplicateReply) {
@@ -757,11 +793,13 @@ export class DelayedReplyService implements IDelayedReplyService {
       task.repliedDynamicId = String(finalDynamic.id);
       task.replyId = String(result.replyId);
       task.completedAt = new Date();
+      task.error = undefined;
       await this.store.updateTask(task.taskId, {
         status: 'completed',
         repliedDynamicId: task.repliedDynamicId,
         replyId: task.replyId,
-        completedAt: task.completedAt
+        completedAt: task.completedAt,
+        error: undefined
       });
 
       this.logger.info(`延迟回复完成: ${task.taskId}`, {
@@ -973,6 +1011,34 @@ export class DelayedReplyService implements IDelayedReplyService {
       return fs.existsSync(comicImagePath)
         ? '图片已生成，但生图元数据读取失败'
         : '图片未生成，且生图元数据读取失败';
+    }
+  }
+
+  private shouldWaitForComicImage(task: DelayedReplyTask): boolean {
+    if (!task.comicImagePath) {
+      return false;
+    }
+
+    const waitCount = task.comicWaitCount || 0;
+    if (waitCount >= DelayedReplyService.MAX_COMIC_WAIT_COUNT) {
+      return false;
+    }
+
+    const parsedPath = path.parse(task.comicImagePath);
+    const metaCandidates = [
+      path.join(parsedPath.dir, `${parsedPath.name}_META.json`),
+      path.join(parsedPath.dir, `${parsedPath.name.replace(/_COMIC_FACTORY$/i, '')}_COMIC_FACTORY_META.json`)
+    ];
+    const metaPath = metaCandidates.find(candidate => fs.existsSync(candidate));
+    if (!metaPath) {
+      return true;
+    }
+
+    try {
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+      return meta?.status !== 'success' && meta?.status !== 'failure';
+    } catch {
+      return true;
     }
   }
 

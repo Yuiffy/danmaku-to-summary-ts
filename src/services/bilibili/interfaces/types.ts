@@ -191,6 +191,8 @@ export interface DelayedReplyTask {
   lastCheckTime?: Date;
   /** 检查次数 */
   checkCount?: number;
+  /** 等待漫画图片次数 */
+  comicWaitCount?: number;
   /** 已回复的动态ID */
   repliedDynamicId?: string;
   /** 已发布的回复ID */

@@ -250,6 +250,9 @@ async function generateComicWithPython(highlightPath, roomId = null, options = {
                     : {}),
                 ...(options.tuziSkipChatFallbackOnImageApiFailure
                     ? { TUZI_SKIP_CHAT_FALLBACK_ON_IMAGE_API_FAILURE: 'true' }
+                    : {}),
+                ...(options.allowComicScriptFallback
+                    ? { ALLOW_COMIC_SCRIPT_FALLBACK: 'true' }
                     : {})
             }
         });
