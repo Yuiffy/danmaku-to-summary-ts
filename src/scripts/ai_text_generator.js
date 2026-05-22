@@ -335,8 +335,35 @@ function validateGeneratedReply(text, wordLimit) {
     return cleaned;
 }
 
+function createGenerationResult(text, meta) {
+    return {
+        text: text.trim(),
+        meta: {
+            provider: meta.provider || 'unknown',
+            model: meta.model || 'unknown',
+            fallback: Boolean(meta.fallback),
+            attempts: meta.attempts || []
+        }
+    };
+}
+
+function isUnsafeGeneratedReply(text) {
+    const unsafePatterns = [
+        /I'm Claude/i,
+        /Anthropic/i,
+        /I (?:can't|cannot) (?:complete|comply|help|assist)/i,
+        /我不能(?:完成|协助|帮助|满足)/,
+        /无法(?:完成|协助|满足)这个请求/,
+        /作为(?:一个)?AI(?:语言)?模型/,
+        /系统提示/,
+        /system prompt/i
+    ];
+
+    return unsafePatterns.some(pattern => pattern.test(text));
+}
+
 // 调用tuZi API生成文本（备用方案）
-async function generateTextWithTuZi(prompt) {
+async function generateTextWithTuZi(prompt, options = {}) {
     const config = configLoader.getConfig();
     // 优先使用 ai.text.tuZi 配置（文本生成专用），其次使用 ai.comic.tuZi（兼容旧配置）
     const tuziConfig = config.ai?.text?.tuZi || config.aiServices?.tuZi || {};
@@ -347,9 +374,16 @@ async function generateTextWithTuZi(prompt) {
 
     console.log('🤖 调用tuZi API生成文本（Gemini超频备用方案）...');
 
-    const maxRetries = 3;
+    const modelSequence = [
+        tuziConfig.model || 'gemini-3-flash-preview',
+        'gpt-5.4-mini',
+        'grok-4.1',
+        'qwen2.5-72b-instruct'
+    ].filter((model, index, models) => model && models.indexOf(model) === index);
     const baseUrl = tuziConfig.baseUrl || 'https://api.tu-zi.com';
     const apiUrl = `${baseUrl}/v1/chat/completions`;
+    const attempts = Array.isArray(options.attempts) ? [...options.attempts] : [];
+    const fallbackFromPrimary = Boolean(options.fallback);
 
     // 设置代理
     let agent = null;
@@ -359,20 +393,10 @@ async function generateTextWithTuZi(prompt) {
     }
 
     // 重试逻辑
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    for (let attempt = 0; attempt < modelSequence.length; attempt++) {
+        const textModel = modelSequence[attempt];
         try {
-            let textModel = tuziConfig.model || 'gemini-3-flash-preview';
-
-            // 根据重试次数切换模型
-            if (attempt === 1) {
-                textModel = 'o3-mini';
-            } else if (attempt === 2) {
-                textModel = 'gemini-3-pro';
-            } else if (attempt === 3) {
-                textModel = 'claude-haiku-4-5-20251001';
-            }
-
-            console.log(`[WAIT] 正在通过tu-zi.com API生成文本... (尝试 ${attempt + 1}/${maxRetries + 1} model: ${textModel}, 超时: 60s)`);
+            console.log(`[WAIT] 正在通过tu-zi.com API生成文本... (尝试 ${attempt + 1}/${modelSequence.length} model: ${textModel}, 超时: 60s)`);
 
             // 获取超时时间 (默认 60 秒)
             const timeoutMs = config.timeouts?.aiApiTimeout || 60000;
@@ -392,7 +416,7 @@ async function generateTextWithTuZi(prompt) {
                         }
                     ],
                     temperature: tuziConfig.temperature,
-                    max_tokens: tuziConfig.maxTokens
+                    max_tokens: Math.min(tuziConfig.maxTokens || 800, 800)
                 }),
                 agent: agent,
                 timeout: timeoutMs
@@ -410,13 +434,29 @@ async function generateTextWithTuZi(prompt) {
                 throw new Error('tuZi API返回空结果');
             }
 
+            if (isUnsafeGeneratedReply(text)) {
+                throw new Error('tuZi API返回疑似拒绝/身份自述内容，跳过该模型');
+            }
+
+            attempts.push({ provider: 'tuZi', model: textModel, status: 'success' });
             console.log('✅ tuZi API调用成功');
-            return text.trim();
+            return createGenerationResult(text, {
+                provider: 'tuZi',
+                model: textModel,
+                fallback: fallbackFromPrimary || attempt > 0,
+                attempts
+            });
         } catch (error) {
-            console.error(`❌ tuZi API调用失败 (尝试 ${attempt + 1}/${maxRetries + 1}): ${error.message}`);
+            attempts.push({
+                provider: 'tuZi',
+                model: textModel,
+                status: 'failure',
+                error: String(error.message || error).slice(0, 300)
+            });
+            console.error(`❌ tuZi API调用失败 (尝试 ${attempt + 1}/${modelSequence.length}): ${error.message}`);
 
             // 如果是最后一次尝试，抛出错误
-            if (attempt === maxRetries) {
+            if (attempt === modelSequence.length - 1) {
                 throw error;
             }
 
@@ -489,13 +529,22 @@ async function generateTextWithGemini(prompt) {
             throw new Error('Gemini API返回结果为空');
         }
 
+        if (isUnsafeGeneratedReply(text)) {
+            throw new Error('Gemini API返回疑似拒绝/身份自述内容');
+        }
+
         // 恢复原始 fetch（如果被覆盖了）
         if (originalFetch !== null) {
             global.fetch = originalFetch;
         }
 
         console.log('✅ Gemini API调用成功');
-        return text.trim();
+        return createGenerationResult(text, {
+            provider: 'gemini',
+            model: geminiConfig.model,
+            fallback: false,
+            attempts: [{ provider: 'gemini', model: geminiConfig.model, status: 'success' }]
+        });
     } catch (error) {
         // 恢复原始 fetch（如果被覆盖了）
         if (originalFetch !== null) {
@@ -506,7 +555,15 @@ async function generateTextWithGemini(prompt) {
         if (configLoader.isTuZiConfigured()) {
             console.warn(`⚠️  Gemini API调用失败 (${error.message})，尝试使用tuZi API作为备用方案...`);
             try {
-                return await generateTextWithTuZi(prompt);
+                return await generateTextWithTuZi(prompt, {
+                    fallback: true,
+                    attempts: [{
+                        provider: 'gemini',
+                        model: geminiConfig.model || 'unknown',
+                        status: 'failure',
+                        error: String(error.message || error).slice(0, 300)
+                    }]
+                });
             } catch (tuziError) {
                 console.error(`❌ tuZi API备用方案也失败: ${tuziError.message}`);
                 throw new Error(`Gemini和tuZi API都失败: Gemini - ${error.message}, tuZi - ${tuziError.message}`);
@@ -518,16 +575,47 @@ async function generateTextWithGemini(prompt) {
     }
 }
 
+function yamlQuote(value) {
+    return JSON.stringify(String(value ?? ''));
+}
+
+function buildTextFrontMatter(highlightPath, generationMeta = {}) {
+    const attempts = Array.isArray(generationMeta.attempts) ? generationMeta.attempts : [];
+    const lines = [
+        '---',
+        `generatedAt: ${yamlQuote(new Date().toISOString())}`,
+        `sourceHighlight: ${yamlQuote(path.basename(highlightPath))}`,
+        `provider: ${yamlQuote(generationMeta.provider || 'unknown')}`,
+        `model: ${yamlQuote(generationMeta.model || 'unknown')}`,
+        `fallback: ${generationMeta.fallback ? 'true' : 'false'}`,
+        'attempts:'
+    ];
+
+    if (attempts.length === 0) {
+        lines.push('  []');
+    } else {
+        for (const attempt of attempts) {
+            lines.push(`  - provider: ${yamlQuote(attempt.provider || 'unknown')}`);
+            lines.push(`    model: ${yamlQuote(attempt.model || 'unknown')}`);
+            lines.push(`    status: ${yamlQuote(attempt.status || 'unknown')}`);
+            if (attempt.error) {
+                lines.push(`    error: ${yamlQuote(attempt.error)}`);
+            }
+        }
+    }
+
+    lines.push('---', '');
+    return lines.join('\n');
+}
+
 // 保存生成的文本
-function saveGeneratedText(outputPath, text, highlightPath) {
+function saveGeneratedText(outputPath, text, highlightPath, generationMeta = {}) {
     try {
         // 生成不重复的文件名
         const uniquePath = generateUniqueFilename(outputPath);
 
         // 添加元信息
-        const highlightName = path.basename(highlightPath);
-        const timestamp = new Date().toLocaleString('zh-CN');
-        const metaInfo = ``;
+        const metaInfo = buildTextFrontMatter(highlightPath, generationMeta);
 
         const fullText = metaInfo + text;
         fs.writeFileSync(uniquePath, fullText, 'utf8');
@@ -592,7 +680,12 @@ async function generateGoodnightReply(highlightPath, roomId = null) {
                 const lines = highlightContent.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
                 const picks = lines.slice(0, 5).map((l, i) => `${i+1}. ${l}`);
                 const fallback = `# 晚安（本地回退）\n\n今天的直播亮点:\n${picks.join('\n')}\n\n谢谢今天的陪伴，晚安~`;
-                return saveGeneratedText(outputPath, fallback, highlightPath);
+                return saveGeneratedText(outputPath, fallback, highlightPath, {
+                    provider: 'local',
+                    model: 'local-template',
+                    fallback: true,
+                    attempts: [{ provider: 'local', model: 'local-template', status: 'success' }]
+                });
             } catch (e) {
                 console.error('⚠️ 本地回退生成失败:', e.message);
                 return null;
@@ -626,16 +719,17 @@ async function generateGoodnightReply(highlightPath, roomId = null) {
             const wordLimit = configLoader.getWordLimit(finalRoomId);
 
             // 调用API生成文本
-            let generatedText;
+            let generationResult;
             const provider = config.ai?.text?.provider || 'gemini';
 
             if (provider === 'tuZi') {
-                generatedText = await generateTextWithTuZi(prompt);
+                generationResult = await generateTextWithTuZi(prompt);
             } else {
                 // 默认使用 Gemini
-                generatedText = await generateTextWithGemini(prompt);
+                generationResult = await generateTextWithGemini(prompt);
             }
 
+            let generatedText = generationResult.text;
             if (!generatedText || generatedText.trim().length < 20) {
                 throw new Error(generatedText ? '生成的文本过短' : '生成的文本为空');
             }
@@ -645,7 +739,7 @@ async function generateGoodnightReply(highlightPath, roomId = null) {
 
             // 确定输出路径
             // 保存结果
-            return saveGeneratedText(outputPath, generatedText, highlightPath);
+            return saveGeneratedText(outputPath, generatedText, highlightPath, generationResult.meta);
 
             } catch (error) {
                 lastError = error;
@@ -754,7 +848,7 @@ if (require.main === module) {
 
                 const generated = await generateTextWithGemini(prompt);
                 // print raw generated text to stdout
-                process.stdout.write(generated + '\n');
+                process.stdout.write(generated.text + '\n');
             } else {
                 const result = await generateGoodnightReply(args[0]);
                 if (result) {
