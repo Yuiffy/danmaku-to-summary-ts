@@ -26,6 +26,7 @@ export class BilibiliAPIService implements IBilibiliAPIService {
   private csrf!: string;
   private baseUrl = 'https://api.bilibili.com';
   private webUrl = 'https://www.bilibili.com';
+  private secretConfigMtimeMs = 0;
 
   constructor() {
     this.loadConfig();
@@ -44,7 +45,11 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       }
 
       this.cookie = bilibiliSecret.cookie;
-      this.csrf = bilibiliSecret.csrf || this.extractCSRF(this.cookie);
+      this.csrf = this.extractCookieValue(this.cookie, 'bili_jct') || bilibiliSecret.csrf || '';
+
+      if (!this.csrf) {
+        throw new AppError('无法从Cookie中提取CSRF Token (bili_jct)', 'CONFIGURATION_ERROR', 400);
+      }
 
       this.logger.info('B站API服务配置加载完成');
     } catch (error) {
@@ -58,6 +63,7 @@ export class BilibiliAPIService implements IBilibiliAPIService {
    */
   async getUidByRoomId(roomId: string): Promise<string> {
     try {
+      await this.refreshConfigIfChanged();
       this.logger.debug(`根据直播间ID获取UID: ${roomId}`);
 
       // 解析 Cookie 获取必要的参数
@@ -111,13 +117,13 @@ export class BilibiliAPIService implements IBilibiliAPIService {
           
           if (code === 0) {
             resolve({ stdout, stderr });
-          } else {
-            // 输出 stdout 以便调试
-            if (stdout.trim()) {
-              this.logger.error(`Python stdout: ${stdout.trim()}`);
-            }
-            reject(new Error(`Python脚本退出码: ${code}`));
+            return;
           }
+
+          if (stdout.trim()) {
+            this.logger.error(`Python stdout: ${stdout.trim()}`);
+          }
+          reject(this.buildPythonFailureError(stdout, code, '获取直播间信息失败'));
         });
 
         pythonProcess.on('error', (err) => {
@@ -156,6 +162,7 @@ export class BilibiliAPIService implements IBilibiliAPIService {
    */
   async getDynamics(uid: string, offset?: string): Promise<BilibiliDynamic[]> {
     try {
+      await this.refreshConfigIfChanged();
       // 确保 offset 以字符串形式记录日志，避免大数精度丢失
       this.logger.debug(`获取主播动态: ${uid}`, { offset: String(offset || '') });
 
@@ -194,6 +201,13 @@ export class BilibiliAPIService implements IBilibiliAPIService {
           message: data.message,
           uid
         });
+        if (this.isCredentialErrorMessage(data.message, data.code)) {
+          throw new AppError(
+            `获取动态失败: ${data.message}${this.getCookieUpdateHint()}`,
+            'AUTHENTICATION_ERROR',
+            401
+          );
+        }
         throw new AppError(`获取动态失败: ${data.message}`, 'API_ERROR', data.code);
       }
 
@@ -255,6 +269,7 @@ export class BilibiliAPIService implements IBilibiliAPIService {
    */
   async publishComment(request: PublishCommentRequest): Promise<PublishCommentResponse> {
     try {
+      await this.refreshConfigIfChanged();
       // 确保 dynamicId 以字符串形式记录日志，避免大数精度丢失
       this.logger.info(`发布评论: ${request.dynamicId}`, {
         dynamicId: String(request.dynamicId),
@@ -329,13 +344,13 @@ export class BilibiliAPIService implements IBilibiliAPIService {
           
           if (code === 0) {
             resolve({ stdout, stderr });
-          } else {
-            // 输出 stdout 以便调试
-            if (stdout.trim()) {
-              this.logger.error(`Python stdout: ${stdout.trim()}`);
-            }
-            reject(new Error(`Python脚本退出码: ${code}`));
+            return;
           }
+
+          if (stdout.trim()) {
+            this.logger.error(`Python stdout: ${stdout.trim()}`);
+          }
+          reject(this.buildPythonFailureError(stdout, code, '发布评论失败'));
         });
 
         pythonProcess.on('error', (err) => {
@@ -349,8 +364,12 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       if (!jsonResult.success) {
         this.logger.error('Python脚本返回错误', { result: jsonResult });
         // 优先使用详细的 error 字段，它通常包含 B站 API 的具体报错信息
-        const detailedError = jsonResult.error || jsonResult.message || '未知错误';
-        throw new AppError(`发布评论失败: ${detailedError}`, 'API_ERROR', 500);
+        const detailedError = this.normalizePythonResultError(jsonResult);
+        const code = this.isCredentialErrorMessage(detailedError)
+          ? 'AUTHENTICATION_ERROR'
+          : 'API_ERROR';
+        const status = code === 'AUTHENTICATION_ERROR' ? 401 : 500;
+        throw new AppError(`发布评论失败: ${detailedError}`, code, status);
       }
 
       this.logger.info('评论发布成功', { replyId: jsonResult.reply_id, imageUrl: jsonResult.image_url });
@@ -518,6 +537,7 @@ export class BilibiliAPIService implements IBilibiliAPIService {
    */
   async isCookieValid(): Promise<boolean> {
     try {
+      await this.refreshConfigIfChanged();
       const url = `${this.baseUrl}/x/web-interface/nav`;
       const response = await fetch(url, {
         method: 'GET',
@@ -553,5 +573,86 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       throw new AppError('无法从Cookie中提取CSRF Token', 'CONFIGURATION_ERROR', 400);
     }
     return match[1];
+  }
+
+  private async refreshConfigIfChanged(): Promise<void> {
+    const secretPath = path.join(process.cwd(), 'config', 'secret.json');
+    try {
+      const stat = fs.statSync(secretPath);
+      if (stat.mtimeMs > this.secretConfigMtimeMs) {
+        this.secretConfigMtimeMs = stat.mtimeMs;
+        await ConfigProvider.reload();
+        this.loadConfig();
+        this.logger.info('检测到B站Secret配置变更，已重新加载Cookie配置');
+      }
+    } catch (error) {
+      this.logger.warn('检查B站Secret配置变更失败', {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  private parsePythonJsonResult(stdout: string): any | null {
+    const lines = stdout
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(Boolean);
+
+    for (let index = lines.length - 1; index >= 0; index--) {
+      const line = lines[index];
+      if (!line.startsWith('{') || !line.endsWith('}')) {
+        continue;
+      }
+
+      try {
+        return JSON.parse(line);
+      } catch {
+        continue;
+      }
+    }
+
+    return null;
+  }
+
+  private buildPythonFailureError(stdout: string, exitCode: number | null, fallbackPrefix: string): Error {
+    const jsonResult = this.parsePythonJsonResult(stdout);
+    if (jsonResult) {
+      const detailedError = this.normalizePythonResultError(jsonResult);
+      const code = this.isCredentialErrorMessage(detailedError)
+        ? 'AUTHENTICATION_ERROR'
+        : 'API_ERROR';
+      const status = code === 'AUTHENTICATION_ERROR' ? 401 : 500;
+      return new AppError(`${fallbackPrefix}: ${detailedError}`, code, status);
+    }
+
+    return new Error(`Python脚本退出码: ${exitCode}`);
+  }
+
+  private normalizePythonResultError(result: any): string {
+    const rawError = result?.error || result?.message || '未知错误';
+    const message = String(rawError);
+    return this.isCredentialErrorMessage(message)
+      ? `${message}${this.getCookieUpdateHint()}`
+      : message;
+  }
+
+  private isCredentialErrorMessage(message?: string, code?: number): boolean {
+    const normalized = String(message || '').toLowerCase();
+    return (
+      code === -101 ||
+      code === 401 ||
+      normalized.includes('sessdata') ||
+      normalized.includes('bili_jct') ||
+      normalized.includes('csrf') ||
+      normalized.includes('cookie') ||
+      normalized.includes('凭证无效') ||
+      normalized.includes('账号未登录') ||
+      normalized.includes('未登录') ||
+      normalized.includes('登录失效')
+    );
+  }
+
+  private getCookieUpdateHint(): string {
+    return '。请更新 config/secret.json 中 bilibili.cookie（bili_jct 会自动从 Cookie 提取），保存后服务会自动重新加载配置；也可以调用 GET /api/bilibili/check-cookie 验证。';
   }
 }

@@ -564,6 +564,9 @@ export class DelayedReplyService implements IDelayedReplyService {
       this.logger.info(`未找到符合条件的目标动态`);
       return null;
     } catch (error) {
+      if (this.isCredentialError(error)) {
+        throw error;
+      }
       this.logger.error(`查找目标动态失败: ${error}`, { taskId: task.taskId });
       return null;
     }
@@ -826,14 +829,18 @@ export class DelayedReplyService implements IDelayedReplyService {
 
       // 重试逻辑
       const isBlacklistError = task.error?.includes('黑名单') || task.error?.includes('12035');
+      const isCredentialError = this.isCredentialError(error);
       if (isBlacklistError) {
         this.logger.warn(`检测到黑名单或禁言错误，不进行重试: ${task.taskId}`, { error: task.error });
+      }
+      if (isCredentialError) {
+        this.logger.warn(`检测到B站Cookie或凭证失效，不进行重试: ${task.taskId}`, { error: task.error });
       }
 
       const delayedReplyConfig = BilibiliConfigHelper.getDelayedReplyConfig();
       const maxRetries = delayedReplyConfig.maxRetries;
 
-      if (!isBlacklistError && task.retryCount < maxRetries) {
+      if (!isBlacklistError && !isCredentialError && task.retryCount < maxRetries) {
         task.retryCount++;
         task.status = 'pending';
         task.error = undefined;
@@ -1089,9 +1096,31 @@ export class DelayedReplyService implements IDelayedReplyService {
       
       return validDynamics[0];
     } catch (error) {
+      if (this.isCredentialError(error)) {
+        throw error;
+      }
       this.logger.error('获取最新动态失败', { error, uid });
       return null;
     }
+  }
+
+  private isCredentialError(error: unknown): boolean {
+    const maybeError = error as any;
+    const message = error instanceof Error ? error.message : String(error);
+    const normalized = message.toLowerCase();
+
+    return (
+      maybeError?.code === 'AUTHENTICATION_ERROR' ||
+      maybeError?.statusCode === 401 ||
+      normalized.includes('sessdata') ||
+      normalized.includes('bili_jct') ||
+      normalized.includes('csrf') ||
+      normalized.includes('cookie') ||
+      normalized.includes('凭证无效') ||
+      normalized.includes('账号未登录') ||
+      normalized.includes('未登录') ||
+      normalized.includes('登录失效')
+    );
   }
 
   /**
