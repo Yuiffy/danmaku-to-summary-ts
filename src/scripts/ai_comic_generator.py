@@ -860,7 +860,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                 proxy_url=tuzi_config.get("proxy", ""),
                 timeout=120,
                 temperature=0.7,
-                max_tokens=100000
+                max_tokens=2000
             )
             
             if comic_content:
@@ -1544,6 +1544,13 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
         # 如果脚本生成失败（使用原文作为备选），则不生成图片
         if not is_comic_generated:
             print("[ERROR] 漫画脚本生成失败，跳过图像生成")
+            write_comic_generation_meta(output_path, {
+                "status": "failure",
+                "model": None,
+                "endpoint": "comic-script",
+                "reason": "漫画脚本生成失败，跳过图像生成",
+                "attempts": get_last_image_generation_meta().get("attempts") or [],
+            })
             return None
 
         # 图像生成成功，现在保存漫画脚本（只在真正生成脚本时保存，不保存原文备选）

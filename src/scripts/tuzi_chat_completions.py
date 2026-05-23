@@ -89,6 +89,27 @@ def get_last_image_generation_meta() -> Dict[str, Any]:
     return dict(LAST_IMAGE_GENERATION_META)
 
 
+def normalize_text_max_tokens(model: str, max_tokens: int) -> int:
+    """Clamp text-generation max_tokens to known upstream model limits."""
+    try:
+        requested = int(max_tokens)
+    except (TypeError, ValueError):
+        requested = 2000
+
+    requested = max(1, requested)
+    model_name = (model or "").lower()
+    if "gemini" in model_name:
+        # Gemini rejects maxOutputTokens >= 65537 on current tuZi routes.
+        limit = 65536
+    else:
+        limit = 100000
+
+    normalized = min(requested, limit)
+    if normalized != requested:
+        print(f"[WARNING] 文本 max_tokens 超过模型上限，已从 {requested} 限制为 {normalized} (model={model})")
+    return normalized
+
+
 def get_tuzi_retry_config() -> Dict[str, Any]:
     """读取 tuZi 重试配置；缺失时使用保守默认值。"""
     retry_config = dict(DEFAULT_TUZI_RETRY_CONFIG)
@@ -805,11 +826,12 @@ def call_tuzi_chat_completions(
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
+        normalized_max_tokens = normalize_text_max_tokens(model, max_tokens)
         payload = {
             "model": model,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": max_tokens,
+            "max_tokens": normalized_max_tokens,
         }
 
         print(f"[TUZI_TEXT] 调用tuZi Chat Completions API...")
