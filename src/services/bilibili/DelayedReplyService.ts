@@ -946,13 +946,13 @@ export class DelayedReplyService implements IDelayedReplyService {
         );
 
         if (endIndex > firstNonEmptyIndex) {
-          const result = lines.slice(endIndex + 1).join('\n').trim();
+          const result = this.sanitizeReplyText(lines.slice(endIndex + 1).join('\n'));
           this.logger.debug('提取正文成功（跳过 front matter 元数据）', { textPath, resultLength: result.length });
           return result;
         }
       }
 
-      const result = content.trim();
+      const result = this.sanitizeReplyText(content);
       this.logger.debug('提取正文成功（无元数据）', { textPath, resultLength: result.length });
       return result;
     } catch (error) {
@@ -967,6 +967,21 @@ export class DelayedReplyService implements IDelayedReplyService {
       this.logger.error('读取晚安回复文本失败', errorInfo);
       throw error;
     }
+  }
+
+  private sanitizeReplyText(text: string): string {
+    return text
+      .trim()
+      .replace(/^\s*>+\s*(?:🔍\s*)?$/gmu, '')
+      .replace(/^\s*>+\s*/gmu, '')
+      .replace(/^\s*🔍\s*\*\*[^*\r\n]{2,30}\*\*/gmu, '')
+      .replace(/^\s*🔍\s*/gmu, '')
+      .replace(/\*\*([^*\r\n]+)\*\*/g, '$1')
+      .replace(/^\s{0,3}#{1,6}\s+/gmu, '')
+      .replace(/^\s*[（(]\s*共\s*\d+\s*字\s*[）)]\s*$/gmu, '')
+      .replace(/[（(]\s*共\s*\d+\s*字\s*[）)]\s*$/u, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
   }
 
   private getComicGenerationNotificationInfo(comicImagePath?: string): string | undefined {

@@ -275,6 +275,16 @@ function cleanGeneratedReply(text) {
     
     // 移除 "I've ..." 开头的英文思考句子
     cleaned = cleaned.replace(/^(?:I've |I |Let me |First, |Now, |The |This ).+$/gim, '');
+
+    // 移除模型偶发输出的 Markdown 引用/标题/字数统计，避免直接发到评论区。
+    cleaned = cleaned.replace(/^\s*>+\s*(?:🔍\s*)?$/gmu, '');
+    cleaned = cleaned.replace(/^\s*>+\s*/gmu, '');
+    cleaned = cleaned.replace(/^\s*🔍\s*\*\*[^*\r\n]{2,30}\*\*/gmu, '');
+    cleaned = cleaned.replace(/^\s*🔍\s*/gmu, '');
+    cleaned = cleaned.replace(/\*\*([^*\r\n]+)\*\*/g, '$1');
+    cleaned = cleaned.replace(/^\s{0,3}#{1,6}\s+/gmu, '');
+    cleaned = cleaned.replace(/^\s*[（(]\s*共\s*\d+\s*字\s*[）)]\s*$/gmu, '');
+    cleaned = cleaned.replace(/[（(]\s*共\s*\d+\s*字\s*[）)]\s*$/u, '');
     
     // 移除连续空行
     cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
@@ -377,6 +387,7 @@ async function generateTextWithTuZi(prompt, options = {}) {
     const modelSequence = [
         tuziConfig.model || 'gemini-3-flash-preview',
         'gpt-5.4-mini',
+        'o4-mini',
         'grok-4.1',
         'qwen2.5-72b-instruct'
     ].filter((model, index, models) => model && models.indexOf(model) === index);
