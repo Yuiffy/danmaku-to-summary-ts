@@ -388,8 +388,8 @@ async function generateTextWithTuZi(prompt, options = {}) {
         tuziConfig.model || 'gemini-3-flash-preview',
         'gpt-5.4-mini',
         'o4-mini',
-        'grok-4.1',
-        'qwen2.5-72b-instruct'
+        'qwen2.5-72b-instruct',
+        'grok-4.1'
     ].filter((model, index, models) => model && models.indexOf(model) === index);
     const baseUrl = tuziConfig.baseUrl || 'https://api.tu-zi.com';
     const apiUrl = `${baseUrl}/v1/chat/completions`;
