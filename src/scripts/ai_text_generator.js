@@ -830,7 +830,7 @@ if (require.main === module) {
 
     if (args.length === 0) {
         console.log('用法:');
-        console.log('  1. 处理单个文件: node ai_text_generator.js <AI_HIGHLIGHT.txt路径>');
+        console.log('  1. 处理单个文件: node ai_text_generator.js <AI_HIGHLIGHT.txt路径> [--room-id <房间ID>]');
         console.log('  2. 批量处理目录: node ai_text_generator.js --batch <目录路径>');
         console.log('  3. 生成文本并输出原始内容: node ai_text_generator.js --generate-text [<promptFilePath>|-]');
         process.exit(1);
@@ -865,7 +865,9 @@ if (require.main === module) {
                 // print raw generated text to stdout
                 process.stdout.write(generated.text + '\n');
             } else {
-                const result = await generateGoodnightReply(args[0]);
+                const roomIdArgIndex = args.indexOf('--room-id');
+                const roomId = roomIdArgIndex >= 0 ? args[roomIdArgIndex + 1] : null;
+                const result = await generateGoodnightReply(args[0], roomId);
                 if (result) {
                     console.log(`\n🎉 处理完成，输出文件: ${result}`);
                 } else {
