@@ -382,11 +382,15 @@ async function generateTextWithTuZi(prompt, options = {}) {
         throw new Error('tuZi API未配置，请检查secrets.json中的apiKey');
     }
 
-    console.log('🤖 调用tuZi API生成文本（Gemini超频备用方案）...');
+    console.log('🤖 调用tuZi API生成文本...');
 
+    const configuredFallbackModels = Array.isArray(tuziConfig.fallbackModels)
+        ? tuziConfig.fallbackModels
+        : [];
     const modelSequence = [
-        tuziConfig.model || 'gemini-3-flash-preview',
-        'gpt-5.4-mini',
+        tuziConfig.model || 'gpt-5.4-mini',
+        ...configuredFallbackModels,
+        'gemini-3-flash-preview',
         'o4-mini',
         'qwen2.5-72b-instruct',
         'grok-4.1'

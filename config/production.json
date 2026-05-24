@@ -58,7 +58,7 @@
     "ai": {
         "text": {
             "enabled": true,
-            "provider": "gemini",
+            "provider": "tuZi",
             "gemini": {
                 "enabled": true,
                 "apiKey": "",
@@ -71,7 +71,10 @@
                 "enabled": true,
                 "apiKey": "",
                 "baseUrl": "https://api.tu-zi.com",
-                "model": "gemini-3-flash-preview",
+                "model": "gpt-5.4-mini",
+                "fallbackModels": [
+                    "gemini-3-flash-preview"
+                ],
                 "temperature": 0.7,
                 "maxTokens": 100000,
                 "proxy": null
