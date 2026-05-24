@@ -780,6 +780,7 @@ export class DelayedReplyService implements IDelayedReplyService {
         const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
         const anchorName = anchorConfig?.name;
         const imageGenerationInfo = this.getComicGenerationNotificationInfo(task.comicImagePath);
+        const textGenerationInfo = this.getTextGenerationNotificationInfo(task.goodnightTextPath, task.comicImagePath);
         await this.notifier.notifyReplySuccess(
           String(finalDynamic.id),
           String(result.replyId),
@@ -787,7 +788,8 @@ export class DelayedReplyService implements IDelayedReplyService {
           replyText,
           result.imageUrl,
           imagePath ? imagePath[0] : undefined,
-          imageGenerationInfo
+          imageGenerationInfo,
+          textGenerationInfo
         );
       }
 
@@ -947,12 +949,14 @@ export class DelayedReplyService implements IDelayedReplyService {
 
         if (endIndex > firstNonEmptyIndex) {
           const result = this.sanitizeReplyText(lines.slice(endIndex + 1).join('\n'));
+          this.assertReplyTextIsPublishable(result, textPath);
           this.logger.debug('提取正文成功（跳过 front matter 元数据）', { textPath, resultLength: result.length });
           return result;
         }
       }
 
       const result = this.sanitizeReplyText(content);
+      this.assertReplyTextIsPublishable(result, textPath);
       this.logger.debug('提取正文成功（无元数据）', { textPath, resultLength: result.length });
       return result;
     } catch (error) {
@@ -982,6 +986,105 @@ export class DelayedReplyService implements IDelayedReplyService {
       .replace(/[（(]\s*共\s*\d+\s*字\s*[）)]\s*$/u, '')
       .replace(/\n{3,}/g, '\n\n')
       .trim();
+  }
+
+  private assertReplyTextIsPublishable(text: string, textPath: string): void {
+    const suspiciousPatterns = [
+      /word\s*count\s*check/i,
+      /(?:[\p{Script=Han}A-Za-z0-9！!？?。，、：；:;,.~～🌙☀️]\(\d+\)\s*){2,}/u,
+      /字数\s*(?:检查|统计|校验)/u
+    ];
+
+    if (suspiciousPatterns.some(pattern => pattern.test(text))) {
+      throw new Error(`晚安回复疑似模型调试/字数校验输出，拒绝发布: ${textPath}`);
+    }
+  }
+
+  private getTextGenerationNotificationInfo(goodnightTextPath: string, comicImagePath?: string): string | undefined {
+    const goodnightInfo = this.getGoodnightTextGenerationInfo(goodnightTextPath);
+    const comicScriptInfo = this.getComicScriptGenerationInfo(comicImagePath);
+
+    return [
+      goodnightInfo ? `晚安文本: ${goodnightInfo}` : undefined,
+      comicScriptInfo ? `漫画脚本文本: ${comicScriptInfo}` : undefined
+    ].filter(Boolean).join('\n') || undefined;
+  }
+
+  private getGoodnightTextGenerationInfo(textPath: string): string | undefined {
+    try {
+      if (!fs.existsSync(textPath)) {
+        return undefined;
+      }
+
+      const content = fs.readFileSync(textPath, 'utf8');
+      const frontMatter = this.parseFrontMatter(content);
+      if (!frontMatter) {
+        return '模型: 未知（无元数据）';
+      }
+
+      const provider = frontMatter.provider || '未知服务';
+      const model = frontMatter.model || '未知模型';
+      const fallback = frontMatter.fallback === 'true' ? '，fallback: 是' : '';
+      return `模型: ${model}，服务: ${provider}${fallback}`;
+    } catch (error) {
+      this.logger.warn('读取晚安文本生成元数据失败', {
+        textPath,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return '模型: 未知（元数据读取失败）';
+    }
+  }
+
+  private getComicScriptGenerationInfo(comicImagePath?: string): string | undefined {
+    if (!comicImagePath) {
+      return undefined;
+    }
+
+    const parsedPath = path.parse(comicImagePath);
+    const scriptBaseName = parsedPath.name.replace(/_COMIC_FACTORY$/i, '_COMIC_SCRIPT');
+    const scriptPath = path.join(parsedPath.dir, `${scriptBaseName}.txt`);
+    const metaPath = path.join(parsedPath.dir, `${scriptBaseName}_META.json`);
+
+    try {
+      if (fs.existsSync(metaPath)) {
+        const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+        const provider = meta.provider || '未知服务';
+        const model = meta.model || '未知模型';
+        const fallback = meta.fallback ? '，fallback: 是' : '';
+        return `模型: ${model}，服务: ${provider}${fallback}`;
+      }
+
+      if (fs.existsSync(scriptPath)) {
+        return '模型: 未知（旧脚本未记录元数据）';
+      }
+
+      return '模型: 未知（未找到漫画脚本）';
+    } catch (error) {
+      this.logger.warn('读取漫画脚本文本生成元数据失败', {
+        comicImagePath,
+        metaPath,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return '模型: 未知（元数据读取失败）';
+    }
+  }
+
+  private parseFrontMatter(content: string): Record<string, string> | null {
+    const match = content.match(/^\s*---\r?\n([\s\S]*?)\r?\n---/);
+    if (!match) {
+      return null;
+    }
+
+    const result: Record<string, string> = {};
+    for (const line of match[1].split(/\r?\n/)) {
+      const item = line.match(/^\s*([A-Za-z0-9_-]+):\s*(.*?)\s*$/);
+      if (!item) {
+        continue;
+      }
+      result[item[1]] = item[2].replace(/^"|"$/g, '');
+    }
+
+    return result;
   }
 
   private getComicGenerationNotificationInfo(comicImagePath?: string): string | undefined {

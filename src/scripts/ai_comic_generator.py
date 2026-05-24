@@ -82,6 +82,27 @@ import traceback as tb
 import subprocess
 import shutil
 
+LAST_COMIC_SCRIPT_META = {
+    "provider": None,
+    "model": None,
+    "fallback": False,
+    "status": "not_started",
+    "reason": None,
+}
+
+def set_comic_script_meta(provider=None, model=None, fallback=False, status="unknown", reason=None):
+    LAST_COMIC_SCRIPT_META.update({
+        "provider": provider,
+        "model": model,
+        "fallback": bool(fallback),
+        "status": status,
+        "reason": reason,
+        "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    })
+
+def get_comic_script_meta():
+    return dict(LAST_COMIC_SCRIPT_META)
+
 # 导入统一配置加载器
 from config_loader import (
     get_config,
@@ -552,6 +573,7 @@ def build_comic_prompt(highlight_content: str, reference_image_path: Optional[st
     if existing_comic and existing_comic.strip() != "":
         comic_content = existing_comic
         is_generated = True  # 复用已有脚本也算成功，允许继续生成图像
+        set_comic_script_meta(provider="existing", model="existing-script", status="success", reason="复用已有漫画脚本")
     else:
         comic_content, is_generated = generate_comic_content_with_ai(highlight_content, room_id=room_id)
 
@@ -678,7 +700,9 @@ def return_comic_script_failure(highlight_content: str, room_id: Optional[str], 
         print(f"[WARNING]  AI漫画脚本生成失败（{reason}），使用本地兜底分镜继续生图")
         print(f"兜底脚本长度: {len(fallback_script)} 字符")
         print(f"兜底内容预览: {fallback_script[:200]}...")
+        set_comic_script_meta(provider="local", model="local-fallback", fallback=True, status="success", reason=reason)
         return fallback_script, True
+    set_comic_script_meta(provider=None, model=None, fallback=True, status="failure", reason=reason)
     return highlight_content, False
 
 
@@ -714,6 +738,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                     text = proc.stdout.decode('utf-8').strip()
                     if text and not is_gemini_error(text) and is_valid_comic_script(text):
                         print('[OK] 从 ai_text_generator 返回内容')
+                        set_comic_script_meta(provider="node", model="ai_text_generator", status="success")
                         return text, True
                     elif is_gemini_error(text):
                         print('[WARNING] ai_text_generator 返回了错误内容，尝试其他方案')
@@ -804,6 +829,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                     
                     print("[OK] AI漫画内容生成完成")
                     print(f"生成内容长度: {len(comic_content)} 字符")
+                    set_comic_script_meta(provider="gemini", model=model_name, status="success", fallback=False)
                     return comic_content, True
                 else:
                     print("[WARNING]  AI返回空结果，使用原始内容")
@@ -883,6 +909,12 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                 print("[OK] tuZi API漫画文本生成成功")
                 print(f"生成内容长度: {len(comic_content)} 字符")
                 print(f"内容预览: {comic_content[:200]}...")
+                set_comic_script_meta(
+                    provider="tuZi",
+                    model=tuzi_config.get("textModel", "gemini-3-flash-preview"),
+                    status="success",
+                    fallback=True
+                )
                 return comic_content, True
             else:
                 print("[WARNING]  tuZi API返回空内容")
@@ -1441,6 +1473,28 @@ def write_comic_generation_meta(output_path: str, meta: Dict[str, Any]) -> None:
     except Exception as e:
         print(f"[WARNING] 保存生图元数据失败: {e}")
 
+
+def comic_script_meta_path(text_output_path: str) -> str:
+    root, _ = os.path.splitext(text_output_path)
+    return f"{root}_META.json"
+
+
+def write_comic_script_meta(text_output_path: str, meta: Dict[str, Any]) -> None:
+    try:
+        payload = {
+            "status": meta.get("status") or "unknown",
+            "provider": meta.get("provider"),
+            "model": meta.get("model"),
+            "fallback": bool(meta.get("fallback")),
+            "reason": meta.get("reason"),
+            "updatedAt": meta.get("updatedAt") or time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        }
+        with open(comic_script_meta_path(text_output_path), "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        print(f"[INFO] 漫画脚本文本元数据已保存: {os.path.basename(comic_script_meta_path(text_output_path))}")
+    except Exception as e:
+        print(f"[WARNING] 保存漫画脚本文本元数据失败: {e}")
+
 def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = None) -> Optional[str]:
     """从AI_HIGHLIGHT文件生成漫画"""
     print(f"[FILE] 处理AI_HIGHLIGHT文件: {os.path.basename(highlight_path)}")
@@ -1559,6 +1613,9 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
                 with open(text_output_path, 'w', encoding='utf-8') as tf:
                     tf.write(comic_text)
                 print(f"[OK] 漫画脚本已保存: {os.path.basename(text_output_path)}")
+                write_comic_script_meta(text_output_path, get_comic_script_meta())
+            elif os.path.exists(text_output_path) and not os.path.exists(comic_script_meta_path(text_output_path)):
+                write_comic_script_meta(text_output_path, get_comic_script_meta())
         except Exception as e:
             print(f"[WARNING] 保存漫画脚本失败: {e}")
 
