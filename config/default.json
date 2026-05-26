@@ -126,7 +126,18 @@
         "SSLEOFError",
         "ConnectionError",
         "Timeout"
-      ]
+      ],
+      "text": {
+        "baseDelaysMs": [
+          0,
+          15000,
+          45000,
+          90000
+        ],
+        "globalFailureThreshold": 10,
+        "cooldownMs": 60000,
+        "maxCooldownMs": 300000
+      }
     },
     "defaultNames": {
       "anchor": "主播",

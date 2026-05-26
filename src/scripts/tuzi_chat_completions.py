@@ -45,6 +45,11 @@ DEFAULT_TUZI_RETRY_CONFIG = {
 }
 
 TUZI_RETRY_STATE_FILE = os.path.join(tempfile.gettempdir(), "danmaku_tuzi_retry_state.json")
+TUZI_RETRY_STATE_FILES = {
+    "global": TUZI_RETRY_STATE_FILE,
+    "text": os.path.join(tempfile.gettempdir(), "danmaku_tuzi_retry_state_text.json"),
+    "image": os.path.join(tempfile.gettempdir(), "danmaku_tuzi_retry_state_image.json"),
+}
 IMAGE_RATE_LIMIT_STATE_FILE = os.path.join(tempfile.gettempdir(), "danmaku_image_api_rate_limit.json")
 IMAGE_RATE_LIMIT_LOCK_FILE = IMAGE_RATE_LIMIT_STATE_FILE + ".lock"
 LAST_IMAGE_GENERATION_META = {
@@ -155,10 +160,57 @@ def get_tuzi_retry_config() -> Dict[str, Any]:
     return retry_config
 
 
-def load_tuzi_retry_state() -> Dict[str, Any]:
+def infer_tuzi_retry_scope(operation_name: str) -> str:
+    lowered = (operation_name or "").lower()
+    if "文本生成" in operation_name:
+        return "text"
+    if (
+        "图像生成" in operation_name
+        or "images/" in lowered
+        or "gemini_async" in lowered
+    ):
+        return "image"
+    return "global"
+
+
+def get_tuzi_retry_scope_label(retry_config: Dict[str, Any]) -> str:
+    scope = str(retry_config.get("stateScope", "global"))
+    return {
+        "text": "文本",
+        "image": "图像",
+        "global": "全局",
+    }.get(scope, scope)
+
+
+def apply_tuzi_retry_operation_overrides(retry_config: Dict[str, Any], operation_name: str) -> Dict[str, Any]:
+    scoped_config = dict(retry_config)
+    scope = scoped_config.get("stateScope") or infer_tuzi_retry_scope(operation_name)
+
+    overrides = {}
+    operation_configs = scoped_config.get("operationConfigs")
+    if isinstance(operation_configs, dict):
+        overrides.update(operation_configs.get(scope, {}) or {})
+    if isinstance(scoped_config.get(scope), dict):
+        overrides.update(scoped_config.get(scope) or {})
+
+    if overrides:
+        scoped_config.update({k: v for k, v in overrides.items() if v is not None})
+    scoped_config["stateScope"] = scope
+    return scoped_config
+
+
+def get_tuzi_retry_state_file(retry_config: Optional[Dict[str, Any]] = None) -> str:
+    if retry_config and retry_config.get("stateFile"):
+        return str(retry_config["stateFile"])
+    scope = (retry_config or {}).get("stateScope", "global")
+    return TUZI_RETRY_STATE_FILES.get(str(scope), TUZI_RETRY_STATE_FILE)
+
+
+def load_tuzi_retry_state(retry_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    state_file = get_tuzi_retry_state_file(retry_config)
     try:
-        if os.path.exists(TUZI_RETRY_STATE_FILE):
-            with open(TUZI_RETRY_STATE_FILE, "r", encoding="utf-8") as f:
+        if os.path.exists(state_file):
+            with open(state_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, dict):
                     return data
@@ -167,9 +219,10 @@ def load_tuzi_retry_state() -> Dict[str, Any]:
     return {"failures": [], "cooldownUntil": 0, "cooldownLevel": 0}
 
 
-def save_tuzi_retry_state(state: Dict[str, Any]) -> None:
+def save_tuzi_retry_state(state: Dict[str, Any], retry_config: Optional[Dict[str, Any]] = None) -> None:
+    state_file = get_tuzi_retry_state_file(retry_config)
     try:
-        with open(TUZI_RETRY_STATE_FILE, "w", encoding="utf-8") as f:
+        with open(state_file, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
     except Exception as state_error:
         print(f"[WARNING] 保存 tuZi 冷却状态失败: {state_error}")
@@ -411,7 +464,7 @@ def jitter_delay_seconds(base_seconds: float, jitter_ratio: float) -> float:
 
 def register_tuzi_retryable_failure(reason: str, retry_config: Dict[str, Any]) -> Dict[str, Any]:
     now = time.time()
-    state = load_tuzi_retry_state()
+    state = load_tuzi_retry_state(retry_config)
     window_seconds = float(retry_config.get("globalWindowMs", 600000)) / 1000
     failures = [
         item for item in state.get("failures", [])
@@ -430,41 +483,45 @@ def register_tuzi_retryable_failure(reason: str, retry_config: Dict[str, Any]) -
         cooldown_until = max(float(state.get("cooldownUntil", 0)), now + cooldown_seconds)
         state["cooldownLevel"] = next_level
         state["cooldownUntil"] = cooldown_until
-        print(f"[TUZI_RETRY] 进入/延长全局冷却: {int(cooldown_seconds)}s, level={next_level}, reason={reason}")
+        scope_label = get_tuzi_retry_scope_label(retry_config)
+        print(f"[TUZI_RETRY] 进入/延长{scope_label}冷却: {int(cooldown_seconds)}s, level={next_level}, reason={reason}")
 
-    save_tuzi_retry_state(state)
+    save_tuzi_retry_state(state, retry_config)
     return state
 
 
-def register_tuzi_success() -> None:
-    state = load_tuzi_retry_state()
+def register_tuzi_success(retry_config: Dict[str, Any]) -> None:
+    state = load_tuzi_retry_state(retry_config)
     if int(state.get("cooldownLevel", 0)) > 0 or state.get("failures"):
         state["cooldownLevel"] = max(0, int(state.get("cooldownLevel", 0)) - 1)
         state["cooldownUntil"] = 0
         state["failures"] = []
-        save_tuzi_retry_state(state)
-        print("[TUZI_RETRY] tuZi 调用成功，已降低/清空全局冷却状态")
+        save_tuzi_retry_state(state, retry_config)
+        scope_label = get_tuzi_retry_scope_label(retry_config)
+        print(f"[TUZI_RETRY] tuZi 调用成功，已降低/清空{scope_label}冷却状态")
 
 
 def wait_for_tuzi_cooldown_if_needed(operation_name: str, retry_config: Dict[str, Any]) -> None:
-    state = load_tuzi_retry_state()
+    state = load_tuzi_retry_state(retry_config)
     cooldown_until = float(state.get("cooldownUntil", 0) or 0)
     wait_seconds = cooldown_until - time.time()
     if wait_seconds > 0:
         jitter_ratio = max(0.0, float(retry_config.get("jitterRatio", 0.3) or 0))
         jittered = wait_seconds * (1 + random.uniform(0, jitter_ratio))
         max_wait = retry_config.get("maxCooldownWaitSeconds")
+        scope_label = get_tuzi_retry_scope_label(retry_config)
         if max_wait is not None and jittered > float(max_wait):
             raise TuziRetryBudgetExceeded(
-                f"{operation_name} 全局冷却需等待 {int(jittered)}s，超过本次上限 {int(float(max_wait))}s"
+                f"{operation_name} {scope_label}冷却需等待 {int(jittered)}s，超过本次上限 {int(float(max_wait))}s"
             )
-        print(f"[TUZI_RETRY] {operation_name} 命中全局冷却，等待 {int(jittered)}s 后再调用 tuZi")
+        print(f"[TUZI_RETRY] {operation_name} 命中{scope_label}冷却，等待 {int(jittered)}s 后再调用 tuZi")
         time.sleep(jittered)
 
 
 def request_tuzi_with_retry(operation_name: str, request_func, retry_config: Optional[Dict[str, Any]] = None):
     """对 tuZi HTTP 请求做温和重试和跨进程冷却。"""
     retry_config = retry_config or get_tuzi_retry_config()
+    retry_config = apply_tuzi_retry_operation_overrides(retry_config, operation_name)
     max_attempts = max(1, int(retry_config.get("maxAttempts", 4)))
     base_delays_ms = retry_config.get("baseDelaysMs", [0])
     jitter_ratio = float(retry_config.get("jitterRatio", 0.3))
@@ -497,7 +554,7 @@ def request_tuzi_with_retry(operation_name: str, request_func, retry_config: Opt
         try:
             response = request_func()
             if getattr(response, "status_code", None) == 200:
-                register_tuzi_success()
+                register_tuzi_success(retry_config)
                 return response
 
             classification = classify_tuzi_response(response, retry_config)
