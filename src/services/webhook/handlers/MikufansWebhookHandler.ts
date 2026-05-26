@@ -635,7 +635,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     const eventTimestamp = new Date();
 
     // 添加片段到会话
-    this.liveSessionManager.addSegment(
+    const added = this.liveSessionManager.addSegment(
       roomId,
       videoPath,
       xmlPath,
@@ -643,6 +643,11 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       fileCloseTime,
       eventTimestamp
     );
+
+    if (!added) {
+      this.logger.warn(`⚠️  片段未加入会话，跳过片段收集定时器: ${roomId} (${path.basename(videoPath)})`);
+      return;
+    }
 
     this.logger.info(`📦 收集片段: ${path.basename(videoPath)} (会话: ${roomId}, 片段数: ${session.segments.length})`);
 
