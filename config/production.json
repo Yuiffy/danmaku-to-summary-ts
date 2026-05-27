@@ -271,6 +271,15 @@
                 "enableComicGeneration": true,
                 "enableDelayedReply": true
             },
+            "1603600": {
+                "audioOnly": true,
+                "characterDescription": "星汐Seki（P-SP/PSPlive所属虚拟UP主，蓝发带粉色挑染、紫瞳、爆炸双马尾的网瘾少女，喜欢打游戏、唱歌、聊天和土味内容，也被称作七宝、山猪王）。粉丝“小山猪”是可爱的山猪系小生物",
+                "anchorName": "星汐Seki",
+                "fanName": "小山猪",
+                "enableTextGeneration": true,
+                "enableComicGeneration": true,
+                "enableDelayedReply": true
+            },
             "21756924": {
                 "audioOnly": true,
                 "referenceImage": "public/reference_images/雪绘.png",
