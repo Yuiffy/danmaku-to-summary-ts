@@ -538,7 +538,7 @@
         }
     },
     "asr": {
-        "default_backend": "whisper",
+        "default_backend": "sensevoice",
         "routing": [
             {
                 "match": {
