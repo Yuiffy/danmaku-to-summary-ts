@@ -14,7 +14,8 @@ import { VideoScreenshotService } from '../../video/VideoScreenshotService';
 import { listRelevantProcesses, terminateProcessTree } from '../../../utils/processCleanup';
 
 const queueManager = require(path.join(process.cwd(), 'src', 'scripts', 'whisper_queue_manager'));
-const WHISPER_PHASE_DONE_SENTINEL = '[[WHISPER_PHASE_DONE]]';
+const ASR_PHASE_DONE_SENTINEL = '[[ASR_PHASE_DONE]]';
+const LEGACY_WHISPER_PHASE_DONE_SENTINEL = '[[WHISPER_PHASE_DONE]]';
 const DELAYED_REPLY_READY_SENTINEL = '[[DELAYED_REPLY_READY]]';
 
 interface QueuedSummaryTask {
@@ -975,7 +976,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         if (this.queueWorkerProcess === ps) {
           this.queueWorkerProcess = null;
         }
-        this.logger.info(`Mikufans队列Worker释放Whisper槽位 (${reason}): ${path.basename(task.mediaPath)}`);
+        this.logger.info(`Mikufans队列Worker释放ASR槽位 (${reason}): ${path.basename(task.mediaPath)}`);
         resolve();
       };
 
@@ -984,9 +985,9 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         if (output) {
           this.logger.info(`[Mikufans队列Worker] ${output}`);
           void this.handleDelayedReplyReadyOutput(output, task.mediaPath);
-          if (output.includes(WHISPER_PHASE_DONE_SENTINEL)) {
-            this.logger.info(`Mikufans队列Worker已完成Whisper阶段，释放队列槽位，AI/漫画阶段继续后台执行: ${path.basename(task.mediaPath)}`);
-            releaseWorkerSlot('whisper-phase-done');
+          if (output.includes(ASR_PHASE_DONE_SENTINEL) || output.includes(LEGACY_WHISPER_PHASE_DONE_SENTINEL)) {
+            this.logger.info(`Mikufans队列Worker已完成ASR阶段，释放队列槽位，AI/漫画阶段继续后台执行: ${path.basename(task.mediaPath)}`);
+            releaseWorkerSlot('asr-phase-done');
           }
         }
       });

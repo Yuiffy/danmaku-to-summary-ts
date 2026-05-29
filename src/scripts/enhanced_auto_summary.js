@@ -94,14 +94,14 @@ async function getVideoDuration(filePath) {
     });
 }
 
-// Whisper 文件锁 - 防止并发调用导致 GPU 冲突
+// ASR 文件锁 - 防止并发调用导致 GPU 冲突
 const WHISPER_LOCK_FILE = path.join(__dirname, '.whisper_lock');
 const WHISPER_LOCK_TIMEOUT = 24 * 60 * 60 * 1000; // 24小时超时(锁文件过期时间)
 const WHISPER_LOCK_RETRY_INTERVAL = 10000; // 10秒重试间隔
 const WHISPER_MAX_RETRIES = 24 * 60 * 6; // 最多重试 8640 次（24小时）
 const WHISPER_PROGRESS_LOG_INTERVAL = 30000; // 每30秒输出一次详细进度
 const WHISPER_QUEUE_TURN_RETRY_INTERVAL = 5000; // 5秒检查一次是否轮到当前任务
-const WHISPER_PHASE_DONE_SENTINEL = '[[WHISPER_PHASE_DONE]]';
+const ASR_PHASE_DONE_SENTINEL = '[[ASR_PHASE_DONE]]';
 const DELAYED_REPLY_READY_SENTINEL = '[[DELAYED_REPLY_READY]]';
 const SUI_ROOM_ID = '25788785';
 let hasLoggedGpuDetectionConfig = false;
@@ -530,9 +530,9 @@ async function acquireWhisperLock(taskId = null, options = {}) {
             
             const waitTime = ((Date.now() - startTime) / 1000).toFixed(0);
             if (i > 0) {
-                console.log(`🔒 获取 Whisper 锁成功 (等待了 ${waitTime}秒)`);
+                console.log(`🔒 获取 ASR 锁成功 (等待了 ${waitTime}秒)`);
             } else {
-                console.log('🔒 获取 Whisper 锁成功');
+                console.log('🔒 获取 ASR 锁成功');
             }
 
             // ── GPU 负载检测：获取到锁后，检查 GPU 是否繁忙 ──
@@ -547,13 +547,13 @@ async function acquireWhisperLock(taskId = null, options = {}) {
                 const { busy, reason } = await isGpuBusy();
                 if (!busy) {
                     if (reason) {
-                        console.log(`✅ GPU 空闲 (${reason})，继续启动 Whisper`);
+                        console.log(`✅ GPU 空闲 (${reason})，继续启动 ASR`);
                     }
                     break; // GPU 空闲，跳出循环，继续执行
                 }
                 // GPU 繁忙：释放锁，等待后重试
                 releaseWhisperLock();
-                console.log(`🎮 GPU 繁忙 (${reason})，Whisper 等待 ${gpuCheckIntervalSec} 秒...`);
+                console.log(`🎮 GPU 繁忙 (${reason})，ASR 等待 ${gpuCheckIntervalSec} 秒...`);
                 await new Promise(r => setTimeout(r, gpuCheckIntervalMs));
                 shouldRetryLock = true;
                 break;
@@ -583,18 +583,18 @@ async function acquireWhisperLock(taskId = null, options = {}) {
                     const elapsedSeconds = (elapsed / 1000).toFixed(0);
                     
                     // 每10秒输出简短日志
-                    console.log(`⏳ 等待 Whisper 锁释放... (${elapsedSeconds}s)`);
+                    console.log(`⏳ 等待 ASR 锁释放... (${elapsedSeconds}s)`);
                     
                     // 每30秒输出详细进度
                     if (elapsed - lastProgressLog >= WHISPER_PROGRESS_LOG_INTERVAL) {
                         lastProgressLog = elapsed;
                         const lockAge = ((Date.now() - lock.timestamp) / 60000).toFixed(1);
-                        console.log(`📊 [Whisper队列状态]`);
+                        console.log(`📊 [ASR队列状态]`);
                         console.log(`   当前等待时间: ${elapsedMinutes} 分钟 (${elapsedSeconds}秒)`);
                         console.log(`   当前持锁进程: PID ${lock.pid} (已持有 ${lockAge} 分钟)`);
                         console.log(`   当前处理文件: ${lock.videoFile || '未知'}`);
                         console.log(`   剩余最大等待: ${((WHISPER_MAX_RETRIES - i) * WHISPER_LOCK_RETRY_INTERVAL / 60000).toFixed(1)} 分钟`);
-                        console.log(`   💡 提示: 如果您正在玩游戏或使用显存，Whisper会等待显存释放`);
+                        console.log(`   💡 提示: 如果您正在玩游戏或使用显存，ASR 会等待显存释放`);
                     }
                 } catch (readError) {
                     // 锁文件损坏，删除重试
@@ -615,17 +615,17 @@ async function acquireWhisperLock(taskId = null, options = {}) {
     }
     
     const totalWaitMinutes = (WHISPER_MAX_RETRIES * WHISPER_LOCK_RETRY_INTERVAL / 60000).toFixed(1);
-    throw new Error(`获取 Whisper 锁超时 (超过 ${totalWaitMinutes} 分钟)`);
+    throw new Error(`获取 ASR 锁超时 (超过 ${totalWaitMinutes} 分钟)`);
 }
 
 function releaseWhisperLock() {
     try {
         if (fs.existsSync(WHISPER_LOCK_FILE)) {
             fs.unlinkSync(WHISPER_LOCK_FILE);
-            console.log('🔓 释放 Whisper 锁');
+            console.log('🔓 释放 ASR 锁');
         }
     } catch (error) {
-        console.warn(`⚠️  释放 Whisper 锁时出错: ${error.message}`);
+        console.warn(`⚠️  释放 ASR 锁时出错: ${error.message}`);
     }
 }
 
@@ -1040,7 +1040,7 @@ const main = async () => {
     console.log('      (支持音频处理 + AI生成)             ');
     console.log('===========================================');
     if (bypassQueueTurn) {
-        console.log('⚡ 当前为手动单文件执行，跳过队列轮转检查，仅保留 Whisper 互斥锁');
+        console.log('⚡ 当前为手动单文件执行，跳过队列轮转检查，仅保留 ASR 互斥锁');
     }
     if (cliOptions.asrBackend) {
         console.log(`🎚️  ASR backend CLI override: ${cliOptions.asrBackend}`);
@@ -1129,7 +1129,7 @@ const main = async () => {
             mediaResult = cliOptions.asrCompare
                 ? await runAsrCompare(processedFile, task.id, asrOptions)
                 : await processMedia(processedFile, task.id, asrOptions);
-            console.log(`${WHISPER_PHASE_DONE_SENTINEL} taskId=${task.id} media=${path.basename(processedFile)}`);
+            console.log(`${ASR_PHASE_DONE_SENTINEL} taskId=${task.id} media=${path.basename(processedFile)}`);
         } catch (error) {
             if (task?.id) {
                 queueManager.markFailed(task.id, error.message);
