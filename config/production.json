@@ -273,9 +273,54 @@
             },
             "1603600": {
                 "audioOnly": true,
-                "characterDescription": "星汐Seki（P-SP/PSPlive所属虚拟UP主，蓝发带粉色挑染、紫瞳、爆炸双马尾的网瘾少女，喜欢打游戏、唱歌、聊天和土味内容，也被称作七宝、山猪王）。粉丝“小山猪”是可爱的山猪系小生物",
+                "characterDescription": "星汐Seki（PSPlive所属虚拟UP主，蓝发带粉色挑染、紫瞳、爆炸双马尾的网瘾少女，喜欢打游戏、唱歌、聊天和土味内容，也被称作七宝、山猪王）。粉丝“小山猪”是可爱的山猪系小生物",
                 "anchorName": "星汐Seki",
                 "fanName": "小山猪",
+                "enableTextGeneration": true,
+                "enableComicGeneration": true,
+                "enableDelayedReply": true
+            },
+            "21692711": {
+                "audioOnly": true,
+                "characterDescription": "东爱璃Lovely（棕发蓝瞳的事故系/种田系前偶像，常见外号“傻狍子/狍子/拉布里”，粉丝勋章“秧歌星”）。",
+                "anchorName": "东爱璃Lovely",
+                "fanName": "秧歌星",
+                "enableTextGeneration": true,
+                "enableComicGeneration": true,
+                "enableDelayedReply": true
+            },
+            "23222837": {
+                "audioOnly": true,
+                "characterDescription": "礼墨Sumi（psplive 所属“元气阴咖东方龙”，常见称呼“礼墨/Sumi”，粉丝侧常见“礼吸湖”）。",
+                "anchorName": "礼墨Sumi",
+                "fanName": "礼吸湖",
+                "enableTextGeneration": true,
+                "enableComicGeneration": true,
+                "enableDelayedReply": true
+            },
+            "573893": {
+                "audioOnly": true,
+                "characterDescription": "帅比笙歌超可爱OvO（西湖畔唱歌的中国风美少女，常见外号“塔宝/塔神”，粉丝常称“boba”）。",
+                "anchorName": "帅比笙歌超可爱OvO",
+                "fanName": "boba",
+                "enableTextGeneration": true,
+                "enableComicGeneration": true,
+                "enableDelayedReply": true
+            },
+            "25971921": {
+                "audioOnly": true,
+                "characterDescription": "伊索尔Sol（从天而降的恶龙少女，常见外号“索尔/辣辣龙/龙宝”，粉丝勋章“龙辣辣”）。",
+                "anchorName": "伊索尔Sol",
+                "fanName": "龙辣辣",
+                "enableTextGeneration": true,
+                "enableComicGeneration": true,
+                "enableDelayedReply": true
+            },
+            "24872476": {
+                "audioOnly": true,
+                "characterDescription": "南町Nightin（擅长多曲风的歌势系成员，常见外号“大N/大N老师”，粉丝勋章常见“卡啵恰”）。",
+                "anchorName": "南町Nightin",
+                "fanName": "卡啵恰",
                 "enableTextGeneration": true,
                 "enableComicGeneration": true,
                 "enableDelayedReply": true
@@ -365,7 +410,7 @@
             },
             "30655190": {
                 "audioOnly": true,
-                "characterDescription": "兔川弥月Mizuki（亚麻发异瞳（左红右紫）少女），有两个浮游炮机械兔耳，被称作小弥、老弥",
+                "characterDescription": "兔川弥月Mizuki（亚麻发异瞳（左红右紫）少女），有两个浮游炮机械兔耳，被称作小弥、老弥。喜欢玩米哈游的游戏和其他二游，常说“原神启动”",
                 "anchorName": "弥月Mizuki",
                 "fanName": "小博兔",
                 "enableTextGeneration": true,
