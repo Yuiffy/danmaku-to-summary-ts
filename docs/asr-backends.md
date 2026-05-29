@@ -138,12 +138,13 @@ video.compare.json
     "max_duration": 5.5,
     "gap_split_threshold": 0.45,
     "merge_short_segments": true,
-    "avoid_overlap": true
+    "avoid_overlap": true,
+    "strip_punctuation": true
   }
 }
 ```
 
-当前第一版已统一做 segment 清洗、长句切分、避免重叠和 SRT 写回。`gap_split_threshold` 与 `merge_short_segments` 已预留，后续可以继续增强合并策略。
+当前第一版已统一做 segment 清洗、长句切分、避免重叠和 SRT 写回。`strip_punctuation=true` 时只在 SRT 输出阶段去掉常见中英文标点，ASR 原始结果和内部切分仍保留标点信息。`gap_split_threshold` 与 `merge_short_segments` 已预留，后续可以继续增强合并策略。
 
 ## 说话人分离
 

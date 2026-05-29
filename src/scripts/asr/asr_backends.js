@@ -31,7 +31,8 @@ const DEFAULT_SUBTITLE_CONFIG = {
     max_duration: 5.5,
     gap_split_threshold: 0.45,
     merge_short_segments: true,
-    avoid_overlap: true
+    avoid_overlap: true,
+    strip_punctuation: false
 };
 
 function getAsrConfig(config = {}) {
@@ -193,15 +194,28 @@ function splitTextByLength(text, maxChars) {
     if (!text || text.length <= maxChars) return [text].filter(Boolean);
     const parts = [];
     let current = '';
-    for (const char of text) {
-        current += char;
-        if (current.length >= maxChars || /[，。？！,.?!]/.test(char)) {
+    const tokens = String(text).match(/[A-Za-z0-9]+|./gu) || [];
+    for (const token of tokens) {
+        if (current && current.length + token.length > maxChars) {
+            parts.push(current.trim());
+            current = token;
+        } else {
+            current += token;
+        }
+        if (/[，。？！,.?!]/.test(token)) {
             parts.push(current.trim());
             current = '';
         }
     }
     if (current.trim()) parts.push(current.trim());
     return parts;
+}
+
+function stripSubtitlePunctuation(text) {
+    return String(text || '')
+        .replace(/[，。！？；：、,.?!;:"“”‘’'`（）()【】\[\]《》<>…—\-~～]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
 }
 
 function normalizeAsrResult(result, subtitleConfig = {}) {
@@ -254,13 +268,19 @@ function normalizeAsrResult(result, subtitleConfig = {}) {
 function writeSrt(result, srtPath, subtitleConfig = {}) {
     const cfg = { ...DEFAULT_SUBTITLE_CONFIG, ...subtitleConfig };
     const lines = [];
-    result.segments.forEach((segment, index) => {
-        const text = segment.speaker ? `[${segment.speaker}] ${segment.text}` : segment.text;
+    let lineIndex = 1;
+    result.segments.forEach((segment) => {
+        const content = cfg.strip_punctuation ? stripSubtitlePunctuation(segment.text) : segment.text;
+        if (!content) {
+            return;
+        }
+        const text = segment.speaker ? `[${segment.speaker}] ${content}` : content;
         const wrapped = splitTextByLength(text, cfg.max_chars_per_line).join('\n');
-        lines.push(String(index + 1));
+        lines.push(String(lineIndex));
         lines.push(`${formatTimestamp(segment.start)} --> ${formatTimestamp(segment.end)}`);
         lines.push(wrapped);
         lines.push('');
+        lineIndex += 1;
     });
     fs.writeFileSync(srtPath, `${lines.join('\n').trim()}\n`, 'utf8');
 }
@@ -318,5 +338,6 @@ module.exports = {
     writeSrt,
     transcribeSenseVoice,
     formatTimestamp,
-    parseTimestamp
+    parseTimestamp,
+    stripSubtitlePunctuation
 };

@@ -138,6 +138,7 @@ export class ConfigValidator {
         gap_split_threshold: 0.45,
         merge_short_segments: true,
         avoid_overlap: true,
+        strip_punctuation: true,
       },
       ai: {
         text: {

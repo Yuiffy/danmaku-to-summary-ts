@@ -56,4 +56,21 @@ describe('asr_backends', () => {
     expect(result.segments[0].start).toBe(0);
     expect(result.segments.every((segment: any) => segment.end > segment.start)).toBe(true);
   });
+
+  test('strips subtitle punctuation for direct video subtitles', () => {
+    expect(asr.stripSubtitlePunctuation('大家晚上好！今晚，网络：很卡。')).toBe('大家晚上好今晚网络很卡');
+  });
+
+  test('does not split ascii words when wrapping subtitles', () => {
+    const result = {
+      backend: 'test',
+      segments: [{ start: 0, end: 1, text: '你要你把手机带过了我帮你连帮你连wifi' }]
+    };
+    const tmp = require('path').join(require('os').tmpdir(), `asr-wrap-${Date.now()}.srt`);
+    asr.writeSrt(result, tmp, { max_chars_per_line: 18, strip_punctuation: true });
+    const content = require('fs').readFileSync(tmp, 'utf8');
+    expect(content).toContain('wifi');
+    expect(content).not.toContain('wi\nfi');
+    require('fs').unlinkSync(tmp);
+  });
 });

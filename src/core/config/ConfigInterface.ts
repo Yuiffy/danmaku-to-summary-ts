@@ -85,6 +85,7 @@ export interface SubtitleConfig {
   gap_split_threshold: number;
   merge_short_segments: boolean;
   avoid_overlap: boolean;
+  strip_punctuation: boolean;
 }
 
 // Gemini配置

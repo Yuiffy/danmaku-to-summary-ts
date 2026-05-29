@@ -13,6 +13,7 @@ const audioProcessor = require('./audio_processor');
 const aiTextGenerator = require('./ai_text_generator');
 const aiComicGenerator = require('./ai_comic_generator');
 const queueManager = require('./whisper_queue_manager');
+const asrBackends = require('./asr/asr_backends');
 
 // 获取音频格式配置
 function getAudioFormats() {
@@ -709,10 +710,6 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
 
     const pythonScript = path.join(__dirname, 'python', 'batch_whisper.py');
 
-    if (!fs.existsSync(pythonScript)) {
-        throw new Error(`Python script not found at: ${pythonScript}`);
-    }
-
     if (!fs.existsSync(srtPath)) {
         // 检查媒体文件时长，小于30秒则跳过Whisper处理
         try {
@@ -738,24 +735,49 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
         } catch (error) {
             console.warn(`⚠️  获取媒体文件时长失败: ${error.message}，继续处理`);
         }
-        
+
+        const config = configLoader.getConfig();
+        const subtitleConfig = asrBackends.getSubtitleConfig(config);
+        const context = options.asrContext || {};
+        const selected = options.forceBackend
+            ? { backend: options.forceBackend, reason: options.forceReason || `实验模式指定 ${options.forceBackend}` }
+            : asrBackends.resolveAsrBackend(config, context, options.asrBackend);
         const fileType = isAudioFile(mediaPath) ? 'Audio' : 'Video';
-        console.log(`\n-> [ASR] Generating Subtitles (Whisper)...`);
+        console.log(`\n-> [ASR] Generating Subtitles (${selected.backend})...`);
         console.log(`   Target: ${path.basename(mediaPath)} (${fileType})`);
+        console.log(`   ASR backend: ${selected.backend} (${selected.reason})`);
         setActiveQueueTask(taskId, mediaPath);
 
         try {
-            // 获取 Whisper 锁，防止并发调用导致 GPU 冲突
+            // 获取 ASR 锁，防止 GPU 后端并发调用导致资源冲突。
             await acquireWhisperLock(taskId, options);
 
             let completedWithCleanupCrash = false;
             let completionWarning = null;
+            let asrResult = null;
 
             try {
-                await runWhisperWithLifecycle(pythonScript, mediaPath);
+                if (selected.backend === 'whisper') {
+                    if (!fs.existsSync(pythonScript)) {
+                        throw new Error(`Python script not found at: ${pythonScript}`);
+                    }
+                    await runWhisperWithLifecycle(pythonScript, mediaPath);
+                    if (!fs.existsSync(srtPath)) {
+                        throw new Error(`Whisper 完成后未找到字幕文件: ${srtPath}`);
+                    }
+                    asrResult = asrBackends.parseSrt(srtPath, 'whisper');
+                } else if (selected.backend === 'sensevoice') {
+                    asrResult = await asrBackends.transcribeSenseVoice(mediaPath, config);
+                } else {
+                    throw new Error(`未实现的 ASR backend: ${selected.backend}`);
+                }
+
+                const normalized = asrBackends.normalizeAsrResult(asrResult, subtitleConfig);
+                asrBackends.writeSrt(normalized, srtPath, subtitleConfig);
+                console.log(`✅ ASR完成: backend=${normalized.backend}, segments=${normalized.segments.length}, output=${path.basename(srtPath)}`);
             } catch (error) {
                 // 特殊处理：如果进程报错（比如 code 3221226505/0xC0000409），但文件确实生成了，视为可兼容完成
-                if (fs.existsSync(srtPath) && fs.statSync(srtPath).size > 100) {
+                if (selected.backend === 'whisper' && fs.existsSync(srtPath) && fs.statSync(srtPath).size > 100) {
                     completedWithCleanupCrash = true;
                     completionWarning = `Whisper 进程异常退出但产物有效: ${error.message}`;
                     console.log(`⚠️  Whisper 进程异常退出 (可能在资源释放阶段崩溃)，但检测到有效输出文件，继续后续流程。`);
@@ -915,6 +937,25 @@ function resolveRoomIdForFile(filePath, fallbackRoomId = null) {
     return null;
 }
 
+function buildAsrRoutingContext(filePath, roomId = null) {
+    const config = configLoader.getConfig();
+    const roomKey = roomId ? String(roomId) : null;
+    const roomConfig = roomKey
+        ? (config.ai?.roomSettings?.[roomKey] || config.roomSettings?.[roomKey] || null)
+        : null;
+    const anchor = roomKey
+        ? Object.values(config.bilibili?.anchors || {}).find(item => String(item.roomId || item.uid || '') === roomKey)
+        : null;
+
+    return {
+        room_id: roomKey,
+        channel_id: roomKey,
+        uid: anchor?.uid || null,
+        streamer_name: roomConfig?.anchorName || anchor?.name || null,
+        filename: path.basename(filePath)
+    };
+}
+
 function shouldBypassQueueTurn(inputPaths) {
     if (String(process.env.BYPASS_WHISPER_QUEUE || '').toLowerCase() === 'true') {
         return true;
@@ -927,8 +968,64 @@ function shouldBypassQueueTurn(inputPaths) {
     return inputPaths.length === 1;
 }
 
+async function runAsrCompare(mediaPath, taskId, options) {
+    const backends = options.asrCompare;
+    if (!backends || backends.length === 0) {
+        return null;
+    }
+
+    const dir = path.dirname(mediaPath);
+    const nameNoExt = path.basename(mediaPath, path.extname(mediaPath));
+    const originalSrtPath = path.join(dir, `${nameNoExt}.srt`);
+    const results = [];
+
+    console.log(`🧪 ASR compare mode: ${backends.join(', ')}`);
+    for (const backend of backends) {
+        const backendSrtPath = path.join(dir, `${nameNoExt}.${backend}.srt`);
+        if (fs.existsSync(originalSrtPath)) {
+            fs.renameSync(originalSrtPath, `${originalSrtPath}.compare-bak-${Date.now()}`);
+        }
+
+        const mediaResult = await processMedia(mediaPath, taskId, {
+            ...options,
+            forceBackend: backend,
+            forceReason: `compare 模式 backend=${backend}`
+        });
+
+        if (!mediaResult?.srtPath || !fs.existsSync(mediaResult.srtPath)) {
+            throw new Error(`compare 模式未生成字幕: backend=${backend}`);
+        }
+        if (fs.existsSync(backendSrtPath)) {
+            fs.unlinkSync(backendSrtPath);
+        }
+        fs.renameSync(mediaResult.srtPath, backendSrtPath);
+        const parsed = asrBackends.parseSrt(backendSrtPath, backend);
+        results.push({
+            backend,
+            srt_path: backendSrtPath,
+            segment_count: parsed.segments.length
+        });
+    }
+
+    const comparePath = path.join(dir, `${nameNoExt}.compare.json`);
+    fs.writeFileSync(comparePath, JSON.stringify({
+        input: mediaPath,
+        results
+    }, null, 2), 'utf8');
+
+    console.log(`🧪 compare 输出: ${path.basename(comparePath)}`);
+    return {
+        srtPath: results[0]?.srt_path || null,
+        completionOptions: {
+            warning: `ASR compare 模式已输出: ${path.basename(comparePath)}`
+        }
+    };
+}
+
 const main = async () => {
-    const inputPaths = process.argv.slice(2);
+    const parsedArgs = asrBackends.parseCliArgs(process.argv.slice(2));
+    const inputPaths = parsedArgs.inputPaths;
+    const cliOptions = parsedArgs.options;
 
     if (inputPaths.length === 0) {
         console.error('X Error: No files detected! Please drag files onto the icon.');
@@ -944,6 +1041,12 @@ const main = async () => {
     console.log('===========================================');
     if (bypassQueueTurn) {
         console.log('⚡ 当前为手动单文件执行，跳过队列轮转检查，仅保留 Whisper 互斥锁');
+    }
+    if (cliOptions.asrBackend) {
+        console.log(`🎚️  ASR backend CLI override: ${cliOptions.asrBackend}`);
+    }
+    if (cliOptions.asrCompare) {
+        console.log(`🧪 ASR compare enabled: ${cliOptions.asrCompare.join(', ')}`);
     }
 
     // 恢复中断的任务
@@ -1016,7 +1119,16 @@ const main = async () => {
         // 2. ASR生成字幕（传递 taskId）
         let mediaResult;
         try {
-            mediaResult = await processMedia(processedFile, task.id, { bypassQueueTurn });
+            const asrContext = buildAsrRoutingContext(processedFile, mediaRoomId);
+            const asrOptions = {
+                bypassQueueTurn,
+                asrBackend: cliOptions.asrBackend,
+                asrCompare: cliOptions.asrCompare,
+                asrContext
+            };
+            mediaResult = cliOptions.asrCompare
+                ? await runAsrCompare(processedFile, task.id, asrOptions)
+                : await processMedia(processedFile, task.id, asrOptions);
             console.log(`${WHISPER_PHASE_DONE_SENTINEL} taskId=${task.id} media=${path.basename(processedFile)}`);
         } catch (error) {
             if (task?.id) {
