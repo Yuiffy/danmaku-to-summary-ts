@@ -47,6 +47,46 @@ export interface AudioConfig {
   storage: AudioStorageConfig;
 }
 
+export interface AsrRoutingRule {
+  match: {
+    room_id?: string;
+    uid?: string;
+    streamer_name?: string;
+    channel_id?: string;
+  };
+  backend: 'whisper' | 'sensevoice';
+}
+
+export interface AsrConfig {
+  default_backend: 'whisper' | 'sensevoice';
+  backend?: 'whisper' | 'sensevoice';
+  routing: AsrRoutingRule[];
+  whisper: {
+    model: string;
+    language: string;
+  };
+  sensevoice: {
+    model: string;
+    vad_model: string;
+    punc_model: string;
+    spk_model?: string | null;
+    language: string;
+    device: 'cuda' | 'cpu' | string;
+    use_itn: boolean;
+    enable_speaker: boolean;
+  };
+}
+
+export interface SubtitleConfig {
+  max_chars_per_line: number;
+  max_chars_per_segment: number;
+  min_duration: number;
+  max_duration: number;
+  gap_split_threshold: number;
+  merge_short_segments: boolean;
+  avoid_overlap: boolean;
+}
+
 // Gemini配置
 export interface GeminiConfig {
   apiKey: string;
@@ -230,6 +270,8 @@ export interface AppConfig {
   };
   webhook: WebhookConfig;
   audio: AudioConfig;
+  asr: AsrConfig;
+  subtitle: SubtitleConfig;
   ai: AIConfig;
   fusion: FusionConfig;
   storage: StorageConfig;

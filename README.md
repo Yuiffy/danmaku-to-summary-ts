@@ -15,13 +15,25 @@
 - **Webhook 服务**：接收 DDTV / Mikufans 录播姬的事件并自动触发处理
 - **视频合并**：多分段自动合并为完整视频
 - **音频提取**：将视频转换为音频（ASMR / 仅需音频的房间）
-- **Whisper 语音识别**：基于 `faster-whisper` + GPU 加速生成 SRT 字幕
+- **多 ASR 后端语音识别**：默认 `faster-whisper` + GPU 加速生成 SRT 字幕，可选 SenseVoice/FunASR
 - **字幕与弹幕融合**：按弹幕热力密度提取高光时刻，生成 `_AI_HIGHLIGHT.txt`
 - **AI 晚安总结**：调用 Gemini/TuZi API 生成晚安回复 Markdown
 - **AI 图片生成**：调用 TuZi 图片 API 生成卡通漫画图
 - **B 站动态回复**：将晚安回复 + 图片发布到 B 站评论区
 
 ---
+
+## ASR 后端
+
+默认仍使用 Whisper；可通过配置或命令行切换 SenseVoice/FunASR：
+
+```bash
+node src/scripts/enhanced_auto_summary.js --asr-backend whisper "D:/path/to/video.flv"
+node src/scripts/enhanced_auto_summary.js --asr-backend sensevoice "D:/path/to/video.flv"
+node src/scripts/enhanced_auto_summary.js --asr-compare whisper,sensevoice "D:/path/to/video.flv"
+```
+
+按房间/主播灰度、SenseVoice 安装和常见问题见 [docs/asr-backends.md](docs/asr-backends.md)。
 
 ## 📁 项目结构
 
