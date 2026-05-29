@@ -129,8 +129,6 @@ def main():
             model_kwargs["trust_remote_code"] = True
             model_py = os.path.join(resolved_model, "model.py") if os.path.isdir(resolved_model) else "./model.py"
             model_kwargs["remote_code"] = model_py
-        if enable_speaker:
-            model_kwargs["spk_model"] = spk_model
 
         try:
             model = AutoModel(**model_kwargs)
@@ -157,11 +155,57 @@ def main():
             raw_result = []
             if vad_segments:
                 import librosa
+                import torch
                 audio, sample_rate = librosa.load(audio_path, sr=16000, mono=True)
                 batch_size_s = float(payload.get("batch_size_s", 60))
                 batch_audio = []
                 batch_meta = []
                 batch_duration = 0.0
+                speaker_labels = {}
+
+                if enable_speaker:
+                    try:
+                        spk_model_obj = AutoModel(
+                            model=spk_model,
+                            device="cuda:0" if device == "cuda" else device,
+                            disable_update=True,
+                        )
+                        from funasr.models.campplus.cluster_backend import ClusterBackend
+
+                        speaker_chunks = []
+                        speaker_chunk_to_segment = []
+                        for seg_index, (start_ms, end_ms) in enumerate(vad_segments):
+                            start = max(0.0, float(start_ms) / 1000.0)
+                            end = max(start, float(end_ms) / 1000.0)
+                            start_idx = max(0, int(start * sample_rate))
+                            end_idx = min(len(audio), int(end * sample_rate))
+                            if end_idx <= start_idx:
+                                continue
+                            speaker_chunks.append(audio[start_idx:end_idx])
+                            speaker_chunk_to_segment.append(seg_index)
+
+                        if speaker_chunks:
+                            spk_results = spk_model_obj.generate(
+                                input=speaker_chunks,
+                                cache={},
+                                is_final=True,
+                            )
+                            embeddings = torch.cat([r["spk_embedding"] for r in spk_results], dim=0)
+                            cluster = ClusterBackend(
+                                merge_thr=float(payload.get("speaker_merge_threshold", 0.78))
+                            ).to("cuda:0" if device == "cuda" else device)
+                            preset_spk_num = payload.get("preset_spk_num")
+                            labels = cluster(
+                                embeddings.cpu(),
+                                oracle_num=int(preset_spk_num) if preset_spk_num else None,
+                            )
+                            for seg_index, label in zip(speaker_chunk_to_segment, labels):
+                                speaker_labels[seg_index] = f"SPEAKER_{int(label):02d}"
+                    except Exception as exc:
+                        fail(
+                            "说话人分离失败",
+                            f"{exc}\n可先关闭 enable_speaker，或检查 spk_model/preset_spk_num/CAM++ 依赖。",
+                        )
 
                 def flush_batch():
                     nonlocal batch_audio, batch_meta, batch_duration, raw_result
@@ -182,12 +226,13 @@ def main():
                                 "end": meta["end"],
                                 "text": text,
                                 "time_unit": "seconds",
+                                "speaker": meta.get("speaker"),
                             })
                     batch_audio = []
                     batch_meta = []
                     batch_duration = 0.0
 
-                for start_ms, end_ms in vad_segments:
+                for seg_index, (start_ms, end_ms) in enumerate(vad_segments):
                     start = max(0.0, float(start_ms) / 1000.0)
                     end = max(start, float(end_ms) / 1000.0)
                     start_idx = max(0, int(start * sample_rate))
@@ -199,7 +244,11 @@ def main():
                     if batch_audio and batch_duration + duration > batch_size_s:
                         flush_batch()
                     batch_audio.append(chunk)
-                    batch_meta.append({"start": start, "end": end})
+                    batch_meta.append({
+                        "start": start,
+                        "end": end,
+                        "speaker": speaker_labels.get(seg_index),
+                    })
                     batch_duration += duration
                 flush_batch()
         except Exception as exc:

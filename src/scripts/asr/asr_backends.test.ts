@@ -57,6 +57,25 @@ describe('asr_backends', () => {
     expect(result.segments.every((segment: any) => segment.end > segment.start)).toBe(true);
   });
 
+  test('preserves speaker labels through normalize and srt output', () => {
+    const result = asr.normalizeAsrResult({
+      backend: 'sensevoice',
+      segments: [
+        { start: 0, end: 1.5, text: '大家晚上好', speaker: 'SPEAKER_00' },
+        { start: 2, end: 3.5, text: '我这边网络很卡', speaker: 'SPEAKER_01' }
+      ]
+    });
+
+    expect(result.segments.map((segment: any) => segment.speaker)).toEqual(['SPEAKER_00', 'SPEAKER_01']);
+
+    const tmp = require('path').join(require('os').tmpdir(), `asr-speaker-${Date.now()}.srt`);
+    asr.writeSrt(result, tmp, { max_chars_per_line: 30 });
+    const content = require('fs').readFileSync(tmp, 'utf8');
+    expect(content).toContain('[SPEAKER_00] 大家晚上好');
+    expect(content).toContain('[SPEAKER_01] 我这边网络很卡');
+    require('fs').unlinkSync(tmp);
+  });
+
   test('strips subtitle punctuation for direct video subtitles', () => {
     expect(asr.stripSubtitlePunctuation('大家晚上好！今晚，网络：很卡。')).toBe('大家晚上好今晚网络很卡');
   });

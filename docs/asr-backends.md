@@ -65,7 +65,9 @@ RTX 5080 正常时，`get_arch_list()` 应包含 `sm_120`。
       "language": "auto",
       "device": "cuda",
       "use_itn": true,
-      "enable_speaker": false
+      "enable_speaker": false,
+      "preset_spk_num": null,
+      "speaker_merge_threshold": 0.78
     }
   }
 }
@@ -148,7 +150,7 @@ video.compare.json
 
 ## 说话人分离
 
-说话人分离默认关闭：
+说话人分离默认关闭，不影响普通 SenseVoice + VAD + 标点流程：
 
 ```json
 {
@@ -168,13 +170,27 @@ video.compare.json
   "asr": {
     "sensevoice": {
       "enable_speaker": true,
-      "spk_model": "cam++"
+      "spk_model": "cam++",
+      "preset_spk_num": null,
+      "speaker_merge_threshold": 0.78
     }
   }
 }
 ```
 
-FunASR 可能需要额外模型下载。未配置 `spk_model` 时脚本会明确报错。
+当前实现使用 SenseVoice 手动 VAD 分段转写，再用 FunASR CAM++ 对同一批 VAD 段提取说话人 embedding 并聚类。输出会进入统一 `AsrResult`，最终 SRT 文本前缀为：
+
+```text
+[SPEAKER_00] 大家晚上好
+```
+
+参数说明：
+
+- `spk_model`: 建议先用 `"cam++"`。首次启用会下载 `iic/speech_campplus_sv_zh-cn_16k-common`。
+- `preset_spk_num`: 已知人数时可填数字，例如 `2` 或 `3`，用于减少自动聚类过分裂；不确定时保持 `null`。
+- `speaker_merge_threshold`: CAM++ 聚类合并阈值，默认 `0.78`。如果同一个人被拆成多个 `SPEAKER_xx`，可尝试调高或直接设置 `preset_spk_num`；如果不同人被合并，可尝试调低。
+
+这只是“按 VAD 语音段聚类”的第一版，不做逐词级别换人切分。多人同时说话、背景音、变声、距离麦克风差异大时可能会过分裂或合并，需要用小样本调参。FunASR 可能需要额外模型下载。未配置 `spk_model` 时脚本会明确报错。
 
 ## 常见问题
 

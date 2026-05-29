@@ -128,6 +128,8 @@ export class ConfigValidator {
           device: 'cuda',
           use_itn: true,
           enable_speaker: false,
+          preset_spk_num: null,
+          speaker_merge_threshold: 0.78,
         },
       },
       subtitle: {

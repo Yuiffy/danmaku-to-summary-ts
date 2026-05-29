@@ -74,6 +74,8 @@ export interface AsrConfig {
     device: 'cuda' | 'cpu' | string;
     use_itn: boolean;
     enable_speaker: boolean;
+    preset_spk_num?: number | null;
+    speaker_merge_threshold?: number;
   };
 }
 

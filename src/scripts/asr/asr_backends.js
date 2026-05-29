@@ -20,7 +20,9 @@ const DEFAULT_ASR_CONFIG = {
         language: 'auto',
         device: 'cuda',
         use_itn: true,
-        enable_speaker: false
+        enable_speaker: false,
+        preset_spk_num: null,
+        speaker_merge_threshold: 0.78
     }
 };
 
