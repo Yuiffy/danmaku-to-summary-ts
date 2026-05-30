@@ -78,6 +78,28 @@ def normalize_segments(raw_result):
     return segments
 
 
+HOTWORD_UNSUPPORTED_WARNED = False
+
+
+def generate_with_optional_hotword(model, payload, **kwargs):
+    global HOTWORD_UNSUPPORTED_WARNED
+    hotword = str(payload.get("hotword") or "").strip()
+    if not hotword:
+        return model.generate(**kwargs)
+
+    try:
+        return model.generate(**kwargs, hotword=hotword)
+    except Exception as exc:
+        if not HOTWORD_UNSUPPORTED_WARNED:
+            print(
+                f"⚠️ SenseVoice/FunASR 当前版本不支持或无法使用 hotword 参数，"
+                f"已降级为无 hotword 转写并保留后处理 corrections: {exc}",
+                file=sys.stderr,
+            )
+            HOTWORD_UNSUPPORTED_WARNED = True
+        return model.generate(**kwargs)
+
+
 def main():
     payload = load_payload()
     audio_path = payload.get("audio_path")
@@ -212,7 +234,9 @@ def main():
                     if not batch_audio:
                         return
                     for meta, chunk in zip(batch_meta, batch_audio):
-                        results = model.generate(
+                        results = generate_with_optional_hotword(
+                            model,
+                            payload,
                             input=chunk,
                             language=payload.get("language", "auto"),
                             use_itn=bool(payload.get("use_itn", True)),

@@ -7,6 +7,8 @@ const SUPPORTED_BACKENDS = new Set(['whisper', 'sensevoice']);
 const DEFAULT_ASR_CONFIG = {
     default_backend: 'whisper',
     backend: undefined,
+    common_hotwords: [],
+    corrections: [],
     routing: [],
     whisper: {
         model: 'deepdml/faster-whisper-large-v3-turbo-ct2',
@@ -50,6 +52,8 @@ function getAsrConfig(config = {}) {
             ...DEFAULT_ASR_CONFIG.sensevoice,
             ...(config.asr?.sensevoice || {})
         },
+        common_hotwords: Array.isArray(config.asr?.common_hotwords) ? config.asr.common_hotwords : [],
+        corrections: config.asr?.corrections || [],
         routing: Array.isArray(config.asr?.routing) ? config.asr.routing : []
     };
 }
@@ -117,6 +121,135 @@ function resolveAsrBackend(config, context = {}, cliBackend = null) {
     return {
         backend,
         reason: `未命中 routing，使用 default_backend=${backend}`
+    };
+}
+
+function normalizeHotwordEntry(entry) {
+    if (typeof entry === 'string') {
+        const word = entry.trim();
+        return word ? { word, weight: undefined, aliases: [] } : null;
+    }
+    if (!entry || typeof entry !== 'object') {
+        return null;
+    }
+    const word = String(entry.word || entry.text || '').trim();
+    if (!word) {
+        return null;
+    }
+    const aliases = Array.isArray(entry.aliases)
+        ? entry.aliases.map(alias => String(alias || '').trim()).filter(Boolean)
+        : [];
+    const weight = Number(entry.weight);
+    return {
+        word,
+        weight: Number.isFinite(weight) ? weight : undefined,
+        aliases
+    };
+}
+
+function addHotword(target, entry) {
+    const normalized = normalizeHotwordEntry(entry);
+    if (!normalized) {
+        return;
+    }
+    const existing = target.get(normalized.word);
+    if (!existing) {
+        target.set(normalized.word, normalized);
+        return;
+    }
+    if (normalized.weight !== undefined && (existing.weight === undefined || normalized.weight > existing.weight)) {
+        existing.weight = normalized.weight;
+    }
+    existing.aliases = Array.from(new Set([...(existing.aliases || []), ...normalized.aliases]));
+}
+
+function addCorrection(target, from, to) {
+    const source = String(from || '').trim();
+    const replacement = String(to || '').trim();
+    if (!source || !replacement || source === replacement) {
+        return;
+    }
+    target.set(source, replacement);
+}
+
+function addCorrections(target, corrections) {
+    if (!corrections) {
+        return;
+    }
+    if (Array.isArray(corrections)) {
+        corrections.forEach((item) => {
+            if (Array.isArray(item) && item.length >= 2) {
+                addCorrection(target, item[0], item[1]);
+            } else if (item && typeof item === 'object') {
+                addCorrection(target, item.from || item.alias || item.source || item.wrong, item.to || item.word || item.target || item.correct);
+            }
+        });
+        return;
+    }
+    if (typeof corrections === 'object') {
+        Object.entries(corrections).forEach(([from, to]) => addCorrection(target, from, to));
+    }
+}
+
+function resolveAsrHotwords(config, context = {}) {
+    const asrConfig = getAsrConfig(config);
+    const hotwordsByWord = new Map();
+    const corrections = new Map();
+
+    asrConfig.common_hotwords.forEach(entry => addHotword(hotwordsByWord, entry));
+    addCorrections(corrections, asrConfig.corrections);
+
+    for (const rule of asrConfig.routing) {
+        if (!rule || typeof rule !== 'object' || !rule.match || typeof rule.match !== 'object') {
+            continue;
+        }
+        if (!matchesRule(rule.match, context)) {
+            continue;
+        }
+        if (Array.isArray(rule.hotwords)) {
+            rule.hotwords.forEach(entry => addHotword(hotwordsByWord, entry));
+        }
+        addCorrections(corrections, rule.corrections);
+    }
+
+    const hotwords = Array.from(hotwordsByWord.values());
+    hotwords.forEach((entry) => {
+        (entry.aliases || []).forEach(alias => addCorrection(corrections, alias, entry.word));
+    });
+
+    return {
+        hotwords,
+        corrections: Array.from(corrections.entries()).map(([from, to]) => ({ from, to })),
+        hotwordText: hotwords.map(entry => entry.word).join(' ')
+    };
+}
+
+function escapeRegExp(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function applyCorrectionsToText(text, corrections = []) {
+    let output = String(text || '');
+    const normalized = Array.isArray(corrections) ? corrections : [];
+    const ordered = normalized
+        .filter(item => item && item.from && item.to)
+        .sort((a, b) => String(b.from).length - String(a.from).length);
+    for (const correction of ordered) {
+        output = output.replace(new RegExp(escapeRegExp(correction.from), 'g'), correction.to);
+    }
+    return output;
+}
+
+function applyCorrectionsToAsrResult(result, corrections = []) {
+    if (!corrections || corrections.length === 0) {
+        return result;
+    }
+    return {
+        ...result,
+        segments: (Array.isArray(result?.segments) ? result.segments : []).map(segment => ({
+            ...segment,
+            text: applyCorrectionsToText(segment.text, corrections)
+        }))
     };
 }
 
@@ -272,7 +405,8 @@ function writeSrt(result, srtPath, subtitleConfig = {}) {
     const lines = [];
     let lineIndex = 1;
     result.segments.forEach((segment) => {
-        const content = cfg.strip_punctuation ? stripSubtitlePunctuation(segment.text) : segment.text;
+        const correctedText = applyCorrectionsToText(segment.text, cfg.corrections);
+        const content = cfg.strip_punctuation ? stripSubtitlePunctuation(correctedText) : correctedText;
         if (!content) {
             return;
         }
@@ -314,7 +448,7 @@ function runJsonPython(scriptPath, payload) {
     });
 }
 
-async function transcribeSenseVoice(mediaPath, config = {}) {
+async function transcribeSenseVoice(mediaPath, config = {}, runtimeOptions = {}) {
     const asrConfig = getAsrConfig(config);
     const scriptPath = path.join(__dirname, '..', 'python', 'sensevoice_transcribe.py');
     if (!fs.existsSync(scriptPath)) {
@@ -322,7 +456,9 @@ async function transcribeSenseVoice(mediaPath, config = {}) {
     }
     const options = {
         ...asrConfig.sensevoice,
-        audio_path: mediaPath
+        audio_path: mediaPath,
+        hotwords: runtimeOptions.hotwords || [],
+        hotword: runtimeOptions.hotwordText || ''
     };
     return runJsonPython(scriptPath, options);
 }
@@ -334,6 +470,9 @@ module.exports = {
     getAsrConfig,
     getSubtitleConfig,
     resolveAsrBackend,
+    resolveAsrHotwords,
+    applyCorrectionsToText,
+    applyCorrectionsToAsrResult,
     parseCliArgs,
     parseSrt,
     normalizeAsrResult,

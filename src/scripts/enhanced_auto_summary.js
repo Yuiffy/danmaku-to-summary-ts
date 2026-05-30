@@ -742,10 +742,19 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
         const selected = options.forceBackend
             ? { backend: options.forceBackend, reason: options.forceReason || `实验模式指定 ${options.forceBackend}` }
             : asrBackends.resolveAsrBackend(config, context, options.asrBackend);
+        const asrRuntime = asrBackends.resolveAsrHotwords(config, context);
         const fileType = isAudioFile(mediaPath) ? 'Audio' : 'Video';
         console.log(`\n-> [ASR] Generating Subtitles (${selected.backend})...`);
         console.log(`   Target: ${path.basename(mediaPath)} (${fileType})`);
         console.log(`   ASR backend: ${selected.backend} (${selected.reason})`);
+        if (asrRuntime.hotwords.length > 0) {
+            const hotwordLog = asrRuntime.hotwords
+                .map(item => item.weight !== undefined ? `${item.word}(${item.weight})` : item.word)
+                .join(', ');
+            console.log(`   ASR hotwords: ${hotwordLog}`);
+        } else {
+            console.log('   ASR hotwords: none');
+        }
         setActiveQueueTask(taskId, mediaPath);
 
         try {
@@ -767,13 +776,16 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
                     }
                     asrResult = asrBackends.parseSrt(srtPath, 'whisper');
                 } else if (selected.backend === 'sensevoice') {
-                    asrResult = await asrBackends.transcribeSenseVoice(mediaPath, config);
+                    asrResult = await asrBackends.transcribeSenseVoice(mediaPath, config, asrRuntime);
                 } else {
                     throw new Error(`未实现的 ASR backend: ${selected.backend}`);
                 }
 
                 const normalized = asrBackends.normalizeAsrResult(asrResult, subtitleConfig);
-                asrBackends.writeSrt(normalized, srtPath, subtitleConfig);
+                asrBackends.writeSrt(normalized, srtPath, {
+                    ...subtitleConfig,
+                    corrections: asrRuntime.corrections
+                });
                 console.log(`✅ ASR完成: backend=${normalized.backend}, segments=${normalized.segments.length}, output=${path.basename(srtPath)}`);
             } catch (error) {
                 // 特殊处理：如果进程报错（比如 code 3221226505/0xC0000409），但文件确实生成了，视为可兼容完成

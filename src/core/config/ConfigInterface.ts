@@ -55,11 +55,26 @@ export interface AsrRoutingRule {
     channel_id?: string;
   };
   backend: 'whisper' | 'sensevoice';
+  hotwords?: AsrHotword[];
+  corrections?: AsrCorrection[] | Record<string, string>;
+}
+
+export interface AsrHotword {
+  word: string;
+  weight?: number;
+  aliases?: string[];
+}
+
+export interface AsrCorrection {
+  from: string;
+  to: string;
 }
 
 export interface AsrConfig {
   default_backend: 'whisper' | 'sensevoice';
   backend?: 'whisper' | 'sensevoice';
+  common_hotwords?: AsrHotword[];
+  corrections?: AsrCorrection[] | Record<string, string>;
   routing: AsrRoutingRule[];
   whisper: {
     model: string;

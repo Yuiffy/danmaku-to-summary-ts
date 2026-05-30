@@ -80,6 +80,58 @@ describe('asr_backends', () => {
     expect(asr.stripSubtitlePunctuation('大家晚上好！今晚，网络：很卡。')).toBe('大家晚上好今晚网络很卡');
   });
 
+  test('resolves common and routing hotwords with alias corrections', () => {
+    const result = asr.resolveAsrHotwords({
+      asr: {
+        common_hotwords: [
+          { word: '岁己', weight: 20, aliases: ['岁几', '随机'] },
+          { word: 'VirtuaReal', weight: 18, aliases: ['V R'] }
+        ],
+        corrections: { 微阿: 'VirtuaReal' },
+        routing: [
+          {
+            match: { streamer_name: '岁己SUI' },
+            backend: 'sensevoice',
+            hotwords: [
+              { word: '岁己SUI', weight: 20, aliases: ['岁己苏伊'] }
+            ],
+            corrections: [{ from: '岁己sui', to: '岁己SUI' }]
+          }
+        ]
+      }
+    }, { streamer_name: '岁己SUI' });
+
+    expect(result.hotwords.map((item: any) => item.word)).toEqual(['岁己', 'VirtuaReal', '岁己SUI']);
+    expect(result.hotwordText).toBe('岁己 VirtuaReal 岁己SUI');
+    expect(result.corrections).toEqual(expect.arrayContaining([
+      { from: '岁几', to: '岁己' },
+      { from: '随机', to: '岁己' },
+      { from: 'V R', to: 'VirtuaReal' },
+      { from: '微阿', to: 'VirtuaReal' },
+      { from: '岁己苏伊', to: '岁己SUI' },
+      { from: '岁己sui', to: '岁己SUI' }
+    ]));
+  });
+
+  test('applies corrections during srt output', () => {
+    const result = {
+      backend: 'test',
+      segments: [{ start: 0, end: 1, text: '随机和V R晚上好' }]
+    };
+    const tmp = require('path').join(require('os').tmpdir(), `asr-corrections-${Date.now()}.srt`);
+    asr.writeSrt(result, tmp, {
+      max_chars_per_line: 30,
+      corrections: [
+        { from: '随机', to: '岁己' },
+        { from: 'V R', to: 'VirtuaReal' }
+      ]
+    });
+    const content = require('fs').readFileSync(tmp, 'utf8');
+    expect(content).toContain('岁己和VirtuaReal晚上好');
+    expect(content).not.toContain('随机');
+    require('fs').unlinkSync(tmp);
+  });
+
   test('does not split ascii words when wrapping subtitles', () => {
     const result = {
       backend: 'test',

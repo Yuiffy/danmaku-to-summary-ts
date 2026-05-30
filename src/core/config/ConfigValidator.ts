@@ -114,6 +114,8 @@ export class ConfigValidator {
       },
       asr: {
         default_backend: 'whisper',
+        common_hotwords: [],
+        corrections: [],
         routing: [],
         whisper: {
           model: 'deepdml/faster-whisper-large-v3-turbo-ct2',

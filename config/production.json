@@ -539,6 +539,8 @@
     },
     "asr": {
         "default_backend": "sensevoice",
+        "common_hotwords": [],
+        "corrections": [],
         "routing": [
             {
                 "match": {
