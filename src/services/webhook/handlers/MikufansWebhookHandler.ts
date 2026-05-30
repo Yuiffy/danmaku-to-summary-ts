@@ -995,7 +995,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       ps.stderr?.on('data', (data: Buffer) => {
         const output = data.toString().trim();
         if (output) {
-          this.logger.error(`[Mikufans队列Worker错误] ${output}`);
+          this.logger.info(`[Mikufans队列Worker stderr] ${output}`);
         }
       });
 
