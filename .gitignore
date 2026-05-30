@@ -68,3 +68,4 @@ config/secrets.json
 config/secret.json
 data/delayed_reply_tasks.json
 src/scripts/.whisper_lock
+tmp/*

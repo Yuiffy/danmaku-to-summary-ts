@@ -2,8 +2,38 @@ import json
 import contextlib
 import os
 import re
+import signal
 import sys
 import traceback
+
+
+def log_progress(message):
+    print(f"[SenseVoice] {message}", file=sys.stderr, flush=True)
+
+
+class StageTimeout:
+    def __init__(self, seconds, label):
+        self.seconds = int(float(seconds or 0))
+        self.label = label
+        self.previous_handler = None
+
+    def __enter__(self):
+        if self.seconds <= 0 or not hasattr(signal, "SIGALRM"):
+            return self
+        self.previous_handler = signal.getsignal(signal.SIGALRM)
+
+        def _handler(_signum, _frame):
+            raise TimeoutError(f"{self.label} 超时 {self.seconds}s")
+
+        signal.signal(signal.SIGALRM, _handler)
+        signal.alarm(self.seconds)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if self.seconds > 0 and hasattr(signal, "SIGALRM"):
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, self.previous_handler)
+        return False
 
 
 def fail(message, detail=None, code=1):
@@ -16,7 +46,7 @@ def fail(message, detail=None, code=1):
 
 def load_payload():
     try:
-        raw = sys.stdin.read()
+        raw = sys.stdin.read().lstrip("\ufeff")
         if not raw.strip():
             fail("SenseVoice 输入为空，请通过 stdin 传入 JSON 配置")
         return json.loads(raw)
@@ -25,10 +55,38 @@ def load_payload():
 
 
 TAG_RE = re.compile(r"<\|[^|]+?\|>")
+MODELSCOPE_IIC_DIR = os.path.join(os.path.expanduser("~"), ".cache", "modelscope", "hub", "models", "iic")
+MODEL_ALIASES = {
+    "iic/SenseVoiceSmall": "SenseVoiceSmall",
+    "SenseVoiceSmall": "SenseVoiceSmall",
+    "fsmn-vad": "speech_fsmn_vad_zh-cn-16k-common-pytorch",
+    "ct-punc": "punc_ct-transformer_cn-en-common-vocab471067-large",
+    "cam++": "speech_campplus_sv_zh-cn_16k-common",
+}
 
 
 def clean_text(text):
     return TAG_RE.sub("", str(text or "")).strip()
+
+
+def resolve_cached_model_name(model_name):
+    if not model_name:
+        return model_name
+    model_text = str(model_name)
+    if os.path.exists(model_text):
+        return model_text
+    alias = MODEL_ALIASES.get(model_text)
+    if alias:
+        candidate = os.path.join(MODELSCOPE_IIC_DIR, alias)
+        if os.path.exists(candidate):
+            log_progress(f"使用本地模型缓存: {model_text} -> {candidate}")
+            return candidate
+    if model_text.startswith("iic/"):
+        candidate = os.path.join(MODELSCOPE_IIC_DIR, model_text.split("/", 1)[1])
+        if os.path.exists(candidate):
+            log_progress(f"使用本地模型缓存: {model_text} -> {candidate}")
+            return candidate
+    return model_name
 
 
 def normalize_segments(raw_result):
@@ -120,11 +178,12 @@ def generate_with_optional_hotword(model, payload, **kwargs):
 
 def load_punc_model(AutoModel, payload, device):
     global PUNC_MODEL_WARNED
-    punc_model_name = payload.get("punc_model")
+    punc_model_name = resolve_cached_model_name(payload.get("punc_model"))
     if not punc_model_name:
         return None
 
     try:
+        log_progress(f"加载标点模型: {punc_model_name}")
         return AutoModel(
             model=punc_model_name,
             device="cuda:0" if device == "cuda" else device,
@@ -229,13 +288,35 @@ def normalize_model_results_with_meta(results, meta, punc_model):
     return timed_segments
 
 
+def load_audio_16k_mono(audio_path):
+    try:
+        import soundfile as sf
+        audio, sample_rate = sf.read(audio_path, dtype="float32", always_2d=False)
+        if getattr(audio, "ndim", 1) > 1:
+            audio = audio.mean(axis=1)
+        if int(sample_rate) == 16000:
+            return audio, 16000
+        import librosa
+        return librosa.resample(audio, orig_sr=int(sample_rate), target_sr=16000), 16000
+    except Exception as exc:
+        print(
+            f"⚠️ soundfile 读取音频失败，降级使用 librosa.load: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+        import librosa
+        return librosa.load(audio_path, sr=16000, mono=True)
+
+
 def main():
     payload = load_payload()
     audio_path = payload.get("audio_path")
     if not audio_path or not os.path.exists(audio_path):
         fail("输入音频不存在", audio_path or "未提供 audio_path")
+    log_progress(f"输入音频: {audio_path}")
 
     try:
+        log_progress("导入 FunASR")
         from funasr import AutoModel
     except ImportError:
         fail(
@@ -260,9 +341,11 @@ def main():
     original_stdout = sys.stdout
     with contextlib.redirect_stdout(sys.stderr):
         model_name = payload.get("model", "iic/SenseVoiceSmall")
-        resolved_model = model_name
-        if isinstance(model_name, str) and model_name.startswith("iic/"):
+        resolved_model = resolve_cached_model_name(model_name)
+        log_progress(f"准备主模型: {model_name}")
+        if isinstance(resolved_model, str) and resolved_model == model_name and model_name.startswith("iic/"):
             try:
+                log_progress(f"下载/解析模型缓存: {model_name}")
                 from modelscope import snapshot_download
                 resolved_model = snapshot_download(model_name)
             except Exception as exc:
@@ -279,54 +362,74 @@ def main():
         if "SenseVoice" in model_name:
             model_kwargs["trust_remote_code"] = True
             model_py = os.path.join(resolved_model, "model.py") if os.path.isdir(resolved_model) else "./model.py"
-            model_kwargs["remote_code"] = model_py
+            if os.path.exists(model_py):
+                model_kwargs["remote_code"] = model_py
 
         try:
-            model = AutoModel(**model_kwargs)
+            log_progress(f"加载主模型: {resolved_model}")
+            with StageTimeout(payload.get("model_load_timeout_s", 180), "主模型加载"):
+                model = AutoModel(**model_kwargs)
+            log_progress("主模型加载完成")
         except Exception as exc:
             fail(
                 "SenseVoice/FunASR 模型加载失败",
                 f"{exc}\n可能是模型首次下载失败、网络不可用、模型名错误或 CUDA 环境异常。",
             )
         punc_model_obj = load_punc_model(AutoModel, payload, device)
+        if punc_model_obj:
+            log_progress("标点模型加载完成")
 
         try:
-            vad_model = AutoModel(
-                model=payload.get("vad_model", "fsmn-vad"),
-                device="cuda:0" if device == "cuda" else device,
-                disable_update=True,
-            )
-            vad_result = vad_model.generate(input=audio_path)
+            vad_model_name = resolve_cached_model_name(payload.get("vad_model", "fsmn-vad"))
+            log_progress(f"加载 VAD 模型: {vad_model_name}")
+            with StageTimeout(payload.get("model_load_timeout_s", 180), "VAD 模型加载"):
+                vad_model = AutoModel(
+                    model=vad_model_name,
+                    device="cuda:0" if device == "cuda" else device,
+                    disable_update=True,
+                )
+            log_progress("VAD 模型加载完成，开始 VAD")
+            with StageTimeout(payload.get("vad_timeout_s", 180), "VAD 处理"):
+                vad_result = vad_model.generate(input=audio_path)
             vad_segments = vad_result[0].get("value") if vad_result and isinstance(vad_result, list) else []
+            log_progress(f"VAD 完成: segments={len(vad_segments)}")
 
             from funasr.utils.vad_utils import merge_vad as merge_vad_segments
             merge_length_ms = int(float(payload.get("merge_length_s", 8)) * 1000)
             if merge_length_ms > 0:
                 vad_segments = merge_vad_segments(vad_segments, merge_length_ms)
             vad_segments = split_vad_segments(vad_segments, payload.get("max_vad_segment_s", 8))
+            log_progress(f"VAD 合并/切分后: segments={len(vad_segments)}, merge_length_s={payload.get('merge_length_s', 8)}, max_vad_segment_s={payload.get('max_vad_segment_s', 8)}")
 
             raw_result = []
             if vad_segments:
-                import librosa
                 import torch
-                audio, sample_rate = librosa.load(audio_path, sr=16000, mono=True)
+                log_progress("加载音频到内存")
+                audio, sample_rate = load_audio_16k_mono(audio_path)
+                log_progress(f"音频加载完成: duration={len(audio) / sample_rate:.1f}s, sample_rate={sample_rate}")
                 batch_size_s = float(payload.get("batch_size_s", 60))
                 batch_audio = []
                 batch_meta = []
                 batch_duration = 0.0
                 speaker_labels = {}
+                transcribed_segments = 0
+                total_segments = len(vad_segments)
 
                 if enable_speaker:
                     try:
-                        spk_model_obj = AutoModel(
-                            model=spk_model,
-                            device="cuda:0" if device == "cuda" else device,
-                            disable_update=True,
-                        )
+                        resolved_spk_model = resolve_cached_model_name(spk_model)
+                        log_progress(f"加载说话人模型: {resolved_spk_model}")
+                        with StageTimeout(payload.get("model_load_timeout_s", 180), "说话人模型加载"):
+                            spk_model_obj = AutoModel(
+                                model=resolved_spk_model,
+                                device="cuda:0" if device == "cuda" else device,
+                                disable_update=True,
+                            )
                         from funasr.models.campplus.cluster_backend import ClusterBackend
 
                         speaker_chunks = []
                         speaker_chunk_to_segment = []
+                        log_progress("提取说话人 embedding")
                         for seg_index, (start_ms, end_ms) in enumerate(vad_segments):
                             start = max(0.0, float(start_ms) / 1000.0)
                             end = max(start, float(end_ms) / 1000.0)
@@ -338,11 +441,12 @@ def main():
                             speaker_chunk_to_segment.append(seg_index)
 
                         if speaker_chunks:
-                            spk_results = spk_model_obj.generate(
-                                input=speaker_chunks,
-                                cache={},
-                                is_final=True,
-                            )
+                            with StageTimeout(payload.get("speaker_timeout_s", 300), "说话人 embedding"):
+                                spk_results = spk_model_obj.generate(
+                                    input=speaker_chunks,
+                                    cache={},
+                                    is_final=True,
+                                )
                             embeddings = torch.cat([r["spk_embedding"] for r in spk_results], dim=0)
                             cluster = ClusterBackend(
                                 merge_thr=float(payload.get("speaker_merge_threshold", 0.78))
@@ -354,6 +458,7 @@ def main():
                             )
                             for seg_index, label in zip(speaker_chunk_to_segment, labels):
                                 speaker_labels[seg_index] = f"SPEAKER_{int(label):02d}"
+                            log_progress(f"说话人聚类完成: labels={len(set(speaker_labels.values()))}, chunks={len(speaker_chunks)}")
                     except Exception as exc:
                         fail(
                             "说话人分离失败",
@@ -361,23 +466,32 @@ def main():
                         )
 
                 def flush_batch():
-                    nonlocal batch_audio, batch_meta, batch_duration, raw_result
+                    nonlocal batch_audio, batch_meta, batch_duration, raw_result, transcribed_segments
                     if not batch_audio:
                         return
                     for meta, chunk in zip(batch_meta, batch_audio):
-                        results = generate_with_optional_hotword(
-                            model,
-                            payload,
-                            input=chunk,
-                            language=payload.get("language", "auto"),
-                            use_itn=bool(payload.get("use_itn", True)),
-                            batch_size_s=batch_size_s,
-                        )
+                        transcribed_segments += 1
+                        if transcribed_segments == 1 or transcribed_segments % 5 == 0 or transcribed_segments == total_segments:
+                            pct = transcribed_segments / max(total_segments, 1) * 100
+                            log_progress(
+                                f"转写进度: {transcribed_segments}/{total_segments} ({pct:.1f}%) "
+                                f"{meta['start']:.1f}s-{meta['end']:.1f}s"
+                            )
+                        with StageTimeout(payload.get("segment_timeout_s", 90), "单段转写"):
+                            results = generate_with_optional_hotword(
+                                model,
+                                payload,
+                                input=chunk,
+                                language=payload.get("language", "auto"),
+                                use_itn=bool(payload.get("use_itn", True)),
+                                batch_size_s=batch_size_s,
+                            )
                         raw_result.extend(normalize_model_results_with_meta(results, meta, punc_model_obj))
                     batch_audio = []
                     batch_meta = []
                     batch_duration = 0.0
 
+                log_progress("开始分段转写")
                 for seg_index, (start_ms, end_ms) in enumerate(vad_segments):
                     start = max(0.0, float(start_ms) / 1000.0)
                     end = max(start, float(end_ms) / 1000.0)
@@ -397,6 +511,7 @@ def main():
                     })
                     batch_duration += duration
                 flush_batch()
+                log_progress(f"分段转写完成: output_segments={len(raw_result)}")
         except Exception as exc:
             fail("SenseVoice 转写失败", f"{exc}\n{traceback.format_exc()}")
 

@@ -104,6 +104,7 @@ export interface AsrConfig {
     use_itn: boolean;
     max_vad_segment_s?: number;
     merge_length_s?: number;
+    process_timeout_s?: number;
     enable_speaker: boolean;
     preset_spk_num?: number | null;
     speaker_merge_threshold?: number;

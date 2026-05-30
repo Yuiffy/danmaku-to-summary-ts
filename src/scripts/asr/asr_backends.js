@@ -24,6 +24,7 @@ const DEFAULT_ASR_CONFIG = {
         use_itn: true,
         max_vad_segment_s: 8,
         merge_length_s: 8,
+        process_timeout_s: 1800,
         enable_speaker: false,
         preset_spk_num: null,
         speaker_merge_threshold: 0.78
@@ -514,17 +515,49 @@ function writeSrt(result, srtPath, subtitleConfig = {}) {
 
 function runJsonPython(scriptPath, payload) {
     return new Promise((resolve, reject) => {
+        let settled = false;
         const child = spawn('python', [scriptPath], {
             stdio: ['pipe', 'pipe', 'pipe'],
             windowsHide: true,
             env: { ...process.env, PYTHONUTF8: '1' }
         });
+        const timeoutSeconds = Number(payload?.process_timeout_s || 0);
+        const timeout = timeoutSeconds > 0
+            ? setTimeout(() => {
+                if (settled) return;
+                settled = true;
+                try {
+                    child.kill('SIGTERM');
+                } catch {}
+                reject(new Error(`SenseVoice backend 超时: ${timeoutSeconds}s`));
+            }, timeoutSeconds * 1000)
+            : null;
         let stdout = '';
         let stderr = '';
         child.stdout.on('data', data => { stdout += data.toString(); });
-        child.stderr.on('data', data => { stderr += data.toString(); });
-        child.on('error', reject);
+        child.stderr.on('data', data => {
+            const chunk = data.toString();
+            stderr += chunk;
+            process.stderr.write(chunk);
+        });
+        child.on('error', (error) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            if (timeout) {
+                clearTimeout(timeout);
+            }
+            reject(error);
+        });
         child.on('close', (code) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            if (timeout) {
+                clearTimeout(timeout);
+            }
             if (code !== 0) {
                 reject(new Error(`SenseVoice backend failed with exit code ${code}: ${stderr || stdout}`));
                 return;
