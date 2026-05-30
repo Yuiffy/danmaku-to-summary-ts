@@ -264,6 +264,24 @@ export class AITextGenerator implements IAITextGenerator {
   }
 
   /**
+   * 获取字数限制
+   */
+  private getWordLimit(roomId?: string): number {
+    const defaultWordLimit = this.config.ai?.defaultWordLimit ?? 100;
+
+    if (!roomId) {
+      return defaultWordLimit;
+    }
+
+    const roomConfig = this.config.ai?.roomSettings?.[roomId] as RoomAIConfig | undefined;
+    if (roomConfig?.wordLimit !== undefined) {
+      return roomConfig.wordLimit;
+    }
+
+    return defaultWordLimit;
+  }
+
+  /**
    * 构建晚安回复提示词
    */
   private buildGoodnightPrompt(highlightContent: string, roomId?: string): string {
@@ -340,6 +358,122 @@ ${highlightContent}
   }
 
   /**
+   * 解析生成结果是否通过质量校验
+   */
+  private inspectGeneratedReply(text: string, wordLimit: number): {
+    ok: boolean;
+    reason?: string;
+    cleaned: string;
+    minLength: number;
+    sentenceCount: number;
+  } {
+    const cleaned = this.cleanGeneratedReply(text);
+    const minLength = this.getMinimumReplyLength(wordLimit);
+    const sentenceCount = this.countSentences(cleaned);
+
+    if (!cleaned) {
+      return {
+        ok: false,
+        reason: '生成的文本为空',
+        cleaned,
+        minLength,
+        sentenceCount
+      };
+    }
+
+    if (cleaned.length < minLength) {
+      return {
+        ok: false,
+        reason: `生成的文本过短（${cleaned.length} < ${minLength}）`,
+        cleaned,
+        minLength,
+        sentenceCount
+      };
+    }
+
+    if (wordLimit >= 250 && sentenceCount < 2) {
+      return {
+        ok: false,
+        reason: `生成的文本句子数过少（${sentenceCount} < 2）`,
+        cleaned,
+        minLength,
+        sentenceCount
+      };
+    }
+
+    return {
+      ok: true,
+      cleaned,
+      minLength,
+      sentenceCount
+    };
+  }
+
+  private cleanGeneratedReply(text: string): string {
+    let cleaned = String(text || '').trim();
+    cleaned = cleaned.replace(/^```(?:markdown|md)?\s*/i, '');
+    cleaned = cleaned.replace(/```$/i, '');
+    cleaned = cleaned.replace(/^.*?(?=^#|^[^\s#])/ms, match => {
+      const lines = match.split('\n').filter(line => line.trim() !== '');
+      return lines.length <= 1 ? match : '';
+    });
+    cleaned = cleaned.replace(/^\s*>\s*/gmu, '');
+    cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
+    return cleaned.trim();
+  }
+
+  private countSentences(text: string): number {
+    const normalized = String(text || '').trim();
+    if (!normalized) {
+      return 0;
+    }
+    const matches = normalized.match(/[。！？.!?]+/g);
+    return matches ? matches.length : 1;
+  }
+
+  private getMinimumReplyLength(wordLimit: number): number {
+    if (wordLimit >= 500) return 120;
+    if (wordLimit >= 250) return 80;
+    return 40;
+  }
+
+  private saveFailedGeneratedText(
+    outputPath: string,
+    text: string,
+    highlightPath: string,
+    generationMeta: any = {},
+    attemptInfo: { attempt?: number; maxRetries?: number; reason?: string; rawLength?: number; cleanedLength?: number } = {}
+  ): string | null {
+    try {
+      const highlightName = path.basename(highlightPath);
+      const basePath = outputPath.replace(/_晚安回复\.md$/i, '');
+      const safeReason = String(attemptInfo.reason || 'unknown').replace(/[\\/:*?"<>|]/g, '_').slice(0, 24);
+      const debugPath = `${basePath}_晚安回复_ATTEMPT${attemptInfo.attempt || 0}_${safeReason}.md`;
+      const uniquePath = this.generateUniqueFilename(debugPath);
+      const timestamp = new Date().toLocaleString('zh-CN');
+      const metaLines = [
+        `# 晚安回复诊断稿（未通过校验）`,
+        `基于: ${highlightName}`,
+        `尝试: ${attemptInfo.attempt || 0}/${attemptInfo.maxRetries || 0}`,
+        `失败原因: ${attemptInfo.reason || 'unknown'}`,
+        `原始字符数: ${String(attemptInfo.rawLength ?? String(text || '').length)}`,
+        `清理后字符数: ${String(attemptInfo.cleanedLength ?? 0)}`,
+        `生成时间: ${timestamp}`,
+        `---`,
+        ``
+      ].join('\n');
+
+      const fullText = metaLines + String(text || '');
+      fs.writeFileSync(uniquePath, fullText, 'utf8');
+      this.logger.info('诊断稿已保存', { outputPath: uniquePath, generationMeta });
+      return uniquePath;
+    } catch (error) {
+      this.logger.warn('保存诊断稿失败', { error: error instanceof Error ? error.message : error });
+      return null;
+    }
+  }
+
+  /**
    * 保存生成的文本
    */
   private saveGeneratedText(outputPath: string, text: string, highlightPath: string): string {
@@ -363,6 +497,23 @@ ${highlightContent}
         500
       );
     }
+  }
+
+  private generateUniqueFilename(outputPath: string): string {
+    if (!fs.existsSync(outputPath)) {
+      return outputPath;
+    }
+
+    const dir = path.dirname(outputPath);
+    const ext = path.extname(outputPath);
+    const base = path.basename(outputPath, ext);
+    let counter = 1;
+    let candidate = path.join(dir, `${base}_${counter}${ext}`);
+    while (fs.existsSync(candidate)) {
+      counter += 1;
+      candidate = path.join(dir, `${base}_${counter}${ext}`);
+    }
+    return candidate;
   }
 
   /**
@@ -507,22 +658,18 @@ ${highlightContent}
     this.logger.info('处理AI_HIGHLIGHT文件', { highlightPath, roomId });
 
     try {
-      // 检查输入文件
       if (!fs.existsSync(highlightPath)) {
         throw new AppError(`AI_HIGHLIGHT文件不存在: ${highlightPath}`, 'FILE_NOT_FOUND_ERROR', 404);
       }
 
-      // 读取内容
       const highlightContent = this.readHighlightFile(highlightPath);
       this.logger.debug('读取高亮内容完成', { contentLength: highlightContent.length });
 
-      // 检查高亮内容是否太短
       if (this.isHighlightTooShort(highlightContent)) {
         this.logger.info('AI_HIGHLIGHT内容太短（只有顶端固定的2行+0~1行），跳过晚安回复生成', { highlightPath });
         return null;
       }
 
-      // 如果没有提供roomId，尝试从文件名提取
       let actualRoomId: string | undefined = roomId;
       if (!actualRoomId) {
         const extractedRoomId = this.extractRoomIdFromFilename(path.basename(highlightPath));
@@ -531,59 +678,68 @@ ${highlightContent}
         }
       }
 
-      // 构建提示词
       const prompt = this.buildGoodnightPrompt(highlightContent, actualRoomId);
-      
-      // 调用API生成文本
-      const generatedText = await this.generateText(prompt);
-
-      // 确定输出路径
       const dir = path.dirname(highlightPath);
       const baseName = path.basename(highlightPath, '_AI_HIGHLIGHT.txt');
       const outputPath = path.join(dir, `${baseName}_晚安回复.md`);
+      const maxRetries = 3;
+      let lastError: unknown = null;
 
-      // 保存结果
-      return this.saveGeneratedText(outputPath, generatedText, highlightPath);
-    } catch (error) {
-      // 检查是否是429超频错误
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      const is429Error = errorMessage.includes('429') ||
-                        errorMessage.includes('Too Many Requests') ||
-                        errorMessage.includes('RESOURCE_EXHAUSTED') ||
-                        errorMessage.includes('quota');
-
-      if (is429Error && this.isTuZiConfigured()) {
-        this.logger.warn('生成晚安回复时Gemini API超频，尝试使用tuZi API作为备用方案');
+      for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
         try {
-          // 重新读取高亮内容并构建提示词
-          const highlightContent = this.readHighlightFile(highlightPath);
-          
-          // 如果没有提供roomId，尝试从文件名提取
-          let actualRoomId: string | undefined = roomId;
-          if (!actualRoomId) {
-            const extractedRoomId = this.extractRoomIdFromFilename(path.basename(highlightPath));
-            if (extractedRoomId !== null) {
-              actualRoomId = extractedRoomId;
+          let generatedText = await this.generateText(prompt);
+          const inspection = this.inspectGeneratedReply(generatedText, this.getWordLimit(actualRoomId));
+
+          if (!inspection.ok) {
+            if (generatedText.trim().length > 0) {
+              this.saveFailedGeneratedText(outputPath, generatedText, highlightPath, { provider: this.provider }, {
+                attempt,
+                maxRetries,
+                reason: inspection.reason,
+                rawLength: generatedText.length,
+                cleanedLength: inspection.cleaned.length
+              });
             }
+            throw new AppError(inspection.reason || '生成结果未通过校验', 'AI_SERVICE_ERROR', 422);
           }
 
-          const prompt = this.buildGoodnightPrompt(highlightContent, actualRoomId);
-          const generatedText = await this.generateWithTuZi(prompt);
-
-          // 保存结果
-          const dir = path.dirname(highlightPath);
-          const baseName = path.basename(highlightPath, '_AI_HIGHLIGHT.txt');
-          const outputPath = path.join(dir, `${baseName}_晚安回复.md`);
-
+          generatedText = inspection.cleaned;
+          this.logger.info('文本长度校验通过', { textLength: generatedText.length, wordLimit: this.getWordLimit(actualRoomId) });
           return this.saveGeneratedText(outputPath, generatedText, highlightPath);
-        } catch (tuziError) {
-          this.logger.error('tuZi API备用方案也失败', { error: tuziError instanceof Error ? tuziError.message : tuziError });
+        } catch (error) {
+          lastError = error;
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          this.logger.warn(`生成晚安回复失败 (第 ${attempt}/${maxRetries} 次尝试)`, { error: errorMessage });
+
+          const isRetriable = errorMessage.includes('过短') ||
+            errorMessage.includes('为空') ||
+            errorMessage.includes('句子数过少') ||
+            errorMessage.includes('429') ||
+            errorMessage.includes('Too Many Requests') ||
+            errorMessage.includes('RESOURCE_EXHAUSTED') ||
+            errorMessage.includes('quota');
+
+          if (!isRetriable || attempt === maxRetries) {
+            break;
+          }
+
+          const waitMs = 2000 * attempt;
+          this.logger.info(`等待 ${waitMs / 1000} 秒后重试...`);
+          await new Promise(resolve => setTimeout(resolve, waitMs));
         }
       }
 
+      if (lastError) {
+        this.logger.error('生成晚安回复失败', {
+          highlightPath,
+          error: lastError instanceof Error ? lastError.message : String(lastError)
+        });
+      }
+      return null;
+    } catch (error) {
       this.logger.error('生成晚安回复失败', {
         highlightPath,
-        error: errorMessage
+        error: error instanceof Error ? error.message : String(error)
       });
       return null;
     }

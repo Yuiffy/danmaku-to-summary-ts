@@ -294,21 +294,14 @@ function cleanGeneratedReply(text) {
 
 function validateGeneratedReply(text, wordLimit) {
     // 先清理思考过程
-    let cleaned = cleanGeneratedReply(text);
-    
-    const minLength = getMinimumReplyLength(wordLimit);
-    const sentenceCount = countSentences(cleaned);
-
-    if (cleaned.length < minLength) {
-        throw new Error(`生成的文本过短（${cleaned.length} < ${minLength}）`);
-    }
-
-    if (wordLimit >= 250 && sentenceCount < 2) {
-        throw new Error(`生成的文本句子数过少（${sentenceCount} < 2）`);
+    const inspection = inspectGeneratedReply(text, wordLimit);
+    if (!inspection.ok) {
+        throw new Error(inspection.reason);
     }
 
     // 硬性截断保护：B站评论最多1000字
     const bilibiliMaxChars = 1000;
+    let cleaned = inspection.cleaned;
     if (cleaned.length > bilibiliMaxChars) {
         console.warn(`⚠️  生成文本超长（${cleaned.length}字），截断到${bilibiliMaxChars}字`);
         // 尝试在句号处截断
@@ -343,6 +336,49 @@ function validateGeneratedReply(text, wordLimit) {
     }
 
     return cleaned;
+}
+
+function inspectGeneratedReply(text, wordLimit) {
+    const cleaned = cleanGeneratedReply(text);
+    const minLength = getMinimumReplyLength(wordLimit);
+    const sentenceCount = countSentences(cleaned);
+
+    if (!cleaned) {
+        return {
+            ok: false,
+            reason: '生成的文本为空',
+            cleaned,
+            minLength,
+            sentenceCount
+        };
+    }
+
+    if (cleaned.length < minLength) {
+        return {
+            ok: false,
+            reason: `生成的文本过短（${cleaned.length} < ${minLength}）`,
+            cleaned,
+            minLength,
+            sentenceCount
+        };
+    }
+
+    if (wordLimit >= 250 && sentenceCount < 2) {
+        return {
+            ok: false,
+            reason: `生成的文本句子数过少（${sentenceCount} < 2）`,
+            cleaned,
+            minLength,
+            sentenceCount
+        };
+    }
+
+    return {
+        ok: true,
+        cleaned,
+        minLength,
+        sentenceCount
+    };
 }
 
 function createGenerationResult(text, meta) {
@@ -744,12 +780,22 @@ async function generateGoodnightReply(highlightPath, roomId = null) {
                 generationResult = await generateTextWithGemini(prompt);
             }
 
-            let generatedText = generationResult.text;
-            if (!generatedText || generatedText.trim().length < 20) {
-                throw new Error(generatedText ? '生成的文本过短' : '生成的文本为空');
+            const rawGeneratedText = generationResult.text;
+            const inspection = inspectGeneratedReply(rawGeneratedText, wordLimit);
+            if (!inspection.ok) {
+                if (String(rawGeneratedText || '').trim()) {
+                    saveFailedGeneratedText(outputPath, rawGeneratedText, highlightPath, generationResult.meta, {
+                        attempt,
+                        maxRetries,
+                        reason: inspection.reason,
+                        rawLength: String(rawGeneratedText).length,
+                        cleanedLength: inspection.cleaned.length
+                    });
+                }
+                throw new Error(inspection.reason);
             }
 
-            generatedText = validateGeneratedReply(generatedText, wordLimit);
+            const generatedText = validateGeneratedReply(rawGeneratedText, wordLimit);
             console.log(`✅ 文本长度校验通过: ${generatedText.length} 字符 (wordLimit=${wordLimit})`);
 
             // 确定输出路径
@@ -772,6 +818,34 @@ async function generateGoodnightReply(highlightPath, roomId = null) {
         return null;
     } finally {
         releaseGenerationLock(lockPath);
+    }
+}
+
+function saveFailedGeneratedText(outputPath, text, highlightPath, generationMeta = {}, attemptInfo = {}) {
+    try {
+        const basePath = outputPath.replace(/_晚安回复\.md$/i, '');
+        const safeReason = String(attemptInfo.reason || 'unknown')
+            .replace(/[\\/:*?"<>|]/g, '_')
+            .slice(0, 24);
+        const debugPath = generateUniqueFilename(`${basePath}_晚安回复_ATTEMPT${attemptInfo.attempt || 0}_${safeReason}.md`);
+        const highlightName = path.basename(highlightPath);
+        const metaInfo = [
+            `# 晚安回复诊断稿（未通过校验）`,
+            `基于: ${highlightName}`,
+            `尝试: ${attemptInfo.attempt || 0}/${attemptInfo.maxRetries || 0}`,
+            `失败原因: ${attemptInfo.reason || 'unknown'}`,
+            `原始字符数: ${String(attemptInfo.rawLength ?? String(text || '').length)}`,
+            `清理后字符数: ${String(attemptInfo.cleanedLength ?? 0)}`,
+            `生成时间: ${new Date().toLocaleString('zh-CN')}`,
+            `---`,
+            ``
+        ].join('\n');
+        fs.writeFileSync(debugPath, `${metaInfo}${String(text || '')}`, 'utf8');
+        console.log(`🧪 诊断稿已保存: ${path.basename(debugPath)}`);
+        return debugPath;
+    } catch (error) {
+        console.warn(`⚠️ 保存诊断稿失败: ${error.message}`);
+        return null;
     }
 }
 
