@@ -1,4 +1,4 @@
-{
+﻿{
   "app": {
     "name": "danmaku-to-summary",
     "version": "0.2.0",
@@ -125,17 +125,36 @@
       "model": "iic/SenseVoiceSmall",
       "vad_model": "fsmn-vad",
       "punc_model": "ct-punc",
-      "spk_model": null,
+      "spk_model": "cam++",
       "language": "auto",
       "device": "cuda",
       "use_itn": true,
       "max_vad_segment_s": 8,
       "merge_length_s": 8,
       "process_timeout_s": 1800,
-      "enable_speaker": false,
-      "preset_spk_num": null,
+      "enable_speaker": true,
+      "preset_spk_num": 3,
       "speaker_merge_threshold": 0.78,
-      "speaker_references": [],
+      "speaker_references": [
+        {
+          "speaker": "岁己SUI",
+          "audio_path": "data/asr_speaker_refs/sui.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
+          "speaker": "瑞娅",
+          "audio_path": "data/asr_speaker_refs/rhea.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        }
+      ],
       "speaker_reference_threshold": 0.45
     }
   },
@@ -354,3 +373,4 @@
     "enabled": true
   }
 }
+

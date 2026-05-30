@@ -1,4 +1,4 @@
-const fs = require('fs');
+﻿const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 
@@ -18,7 +18,7 @@ const DEFAULT_ASR_CONFIG = {
         model: 'iic/SenseVoiceSmall',
         vad_model: 'fsmn-vad',
         punc_model: 'ct-punc',
-        spk_model: null,
+        spk_model: 'cam++', 
         language: 'auto',
         device: 'cuda',
         use_itn: true,
@@ -497,6 +497,12 @@ function normalizeAsrResult(result, subtitleConfig = {}) {
 function writeSrt(result, srtPath, subtitleConfig = {}) {
     const cfg = { ...DEFAULT_SUBTITLE_CONFIG, ...subtitleConfig };
     const lines = [];
+    const uniqueSpeakers = new Set(
+        Array.isArray(result.segments)
+            ? result.segments.map(segment => String(segment.speaker || '').trim()).filter(Boolean)
+            : []
+    );
+    const includeSpeakerLabels = uniqueSpeakers.size > 1;
     let lineIndex = 1;
     result.segments.forEach((segment) => {
         const correctedText = applyCorrectionsToText(segment.text, cfg.corrections);
@@ -504,7 +510,7 @@ function writeSrt(result, srtPath, subtitleConfig = {}) {
         if (!content) {
             return;
         }
-        const text = segment.speaker ? `[${segment.speaker}] ${content}` : content;
+        const text = includeSpeakerLabels && segment.speaker ? `[${segment.speaker}] ${content}` : content;
         const wrapped = splitTextByLength(text, cfg.max_chars_per_line).join('\n');
         lines.push(String(lineIndex));
         lines.push(`${formatTimestamp(segment.start)} --> ${formatTimestamp(segment.end)}`);
@@ -620,3 +626,4 @@ module.exports = {
     parseTimestamp,
     stripSubtitlePunctuation
 };
+

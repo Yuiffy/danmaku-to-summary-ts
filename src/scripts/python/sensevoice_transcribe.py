@@ -297,7 +297,7 @@ def get_safe_asr_segment_s(payload):
 
 def speaker_label_from_cluster(label):
     if isinstance(label, dict):
-        return label.get("label"), label
+        return label.get("label") or label.get("best_label") or "UNKNOWN", label.get("score")
     if isinstance(label, str):
         return label, None
     return f"SPEAKER_{int(label):02d}", None
@@ -477,6 +477,72 @@ def classify_speaker_embeddings(spk_results, references, threshold):
             "best_label": best_label,
         })
     return labels
+
+
+def smooth_speaker_timeline(speaker_timeline, fill_gap_s, max_unknown_duration_s):
+    if not speaker_timeline:
+        return speaker_timeline
+
+    items = sorted(speaker_timeline, key=lambda item: (float(item.get("start", 0.0)), float(item.get("end", 0.0))))
+
+    def nearest_known_left(index):
+        for left in range(index - 1, -1, -1):
+            if items[left].get("speaker") and items[left].get("speaker") != "UNKNOWN":
+                return items[left]
+        return None
+
+    def nearest_known_right(index):
+        for right in range(index + 1, len(items)):
+            if items[right].get("speaker") and items[right].get("speaker") != "UNKNOWN":
+                return items[right]
+        return None
+
+    for index, item in enumerate(items):
+        if item.get("speaker") != "UNKNOWN":
+            continue
+
+        start = float(item.get("start", 0.0))
+        end = float(item.get("end", start))
+        duration = max(0.0, end - start)
+        best_label = item.get("speaker_best_label")
+        best_score = item.get("speaker_best_score")
+        prev_item = nearest_known_left(index)
+        next_item = nearest_known_right(index)
+
+        if (
+            prev_item
+            and next_item
+            and prev_item.get("speaker") == next_item.get("speaker")
+        ):
+            left_gap = max(0.0, start - float(prev_item.get("end", start)))
+            right_gap = max(0.0, float(next_item.get("start", end)) - end)
+            if duration <= max_unknown_duration_s and left_gap <= fill_gap_s and right_gap <= fill_gap_s:
+                item["speaker"] = prev_item.get("speaker")
+                item["speaker_score"] = max(
+                    float(prev_item.get("speaker_score") or 0.0),
+                    float(next_item.get("speaker_score") or 0.0)
+                )
+                item["speaker_smooth_reason"] = "between_same_speaker"
+                continue
+
+        if best_label and best_label != "UNKNOWN" and best_score is not None and duration <= max_unknown_duration_s:
+            best_score = float(best_score)
+            if prev_item and prev_item.get("speaker") == best_label:
+                left_gap = max(0.0, start - float(prev_item.get("end", start)))
+                if left_gap <= fill_gap_s and best_score >= 0.30:
+                    item["speaker"] = best_label
+                    item["speaker_score"] = best_score
+                    item["speaker_smooth_reason"] = "left_neighbor_vote"
+                    continue
+            if next_item and next_item.get("speaker") == best_label:
+                right_gap = max(0.0, float(next_item.get("start", end)) - end)
+                if right_gap <= fill_gap_s and best_score >= 0.30:
+                    item["speaker"] = best_label
+                    item["speaker_score"] = best_score
+                    item["speaker_smooth_reason"] = "right_neighbor_vote"
+                    continue
+
+    return items
 
 
 def main():
@@ -668,12 +734,25 @@ def main():
                                 )
                             for meta, label in zip(speaker_chunk_meta, labels):
                                 speaker_label, speaker_score = speaker_label_from_cluster(label)
+                                if isinstance(label, dict):
+                                    best_label = label.get("best_label")
+                                    best_score = label.get("score")
+                                else:
+                                    best_label = None
+                                    best_score = None
                                 speaker_timeline.append({
                                     "start": meta["start"],
                                     "end": meta["end"],
                                     "speaker": speaker_label,
                                     "speaker_score": speaker_score,
+                                    "speaker_best_label": best_label,
+                                    "speaker_best_score": best_score,
                                 })
+                            speaker_timeline = smooth_speaker_timeline(
+                                speaker_timeline,
+                                float(payload.get("speaker_unknown_fill_gap_s", 10.0) or 10.0),
+                                float(payload.get("speaker_unknown_max_duration_s", 12.0) or 12.0),
+                            )
                             unique_speakers = {item["speaker"] for item in speaker_timeline if item.get("speaker")}
                             log_progress(f"说话人聚类完成: labels={len(unique_speakers)}, chunks={len(speaker_chunks)}")
                     except Exception as exc:
