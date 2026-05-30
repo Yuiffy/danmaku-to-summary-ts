@@ -230,7 +230,9 @@ export class WeChatWorkNotifier {
     anchorName?: string,
     replyContent?: string,
     imageUrl?: string,
-    imagePath?: string
+    imagePath?: string,
+    imageGenerationInfo?: string,
+    textGenerationInfo?: string
   ): Promise<boolean> {
     const replyUrl = `https://www.bilibili.com/opus/${dynamicId}#reply${replyId}`;
 
@@ -249,6 +251,14 @@ export class WeChatWorkNotifier {
           // const truncatedContent = replyContent.length > 200 ? replyContent.substring(0, 200) + '...' : replyContent;
           content += `\n\n回复内容:\n${replyContent}`;
         }
+
+        if (textGenerationInfo) {
+          content += `\n\n文本生成:\n${textGenerationInfo}`;
+        }
+
+        if (imageGenerationInfo) {
+          content += `\n\n生图状态:\n${imageGenerationInfo}`;
+        }
         
         content += `\n\n[查看回复](${replyUrl})`;
         return await this.sendMarkdown(content);
@@ -265,6 +275,14 @@ export class WeChatWorkNotifier {
     if (replyContent) {
       // const truncatedContent = replyContent.length > 200 ? replyContent.substring(0, 200) + '...' : replyContent;
       content += `\n\n回复内容:\n${replyContent}`;
+    }
+
+    if (textGenerationInfo) {
+      content += `\n\n文本生成:\n${textGenerationInfo}`;
+    }
+
+    if (imageGenerationInfo) {
+      content += `\n\n生图状态:\n${imageGenerationInfo}`;
     }
     
     // 添加图片信息
@@ -287,7 +305,9 @@ export class WeChatWorkNotifier {
     anchorName?: string,
     replyContent?: string,
     imageUrl?: string,
-    imagePath?: string
+    imagePath?: string,
+    imageGenerationInfo?: string,
+    textGenerationInfo?: string
   ): Promise<boolean> {
     // 如果提供了本地图片路径，先发送图片消息
     if (imagePath) {
@@ -301,6 +321,14 @@ export class WeChatWorkNotifier {
     // 添加回复内容
     if (replyContent) {
       content += `\n\n回复内容:\n${replyContent}`;
+    }
+
+    if (textGenerationInfo) {
+      content += `\n\n文本生成:\n${textGenerationInfo}`;
+    }
+
+    if (imageGenerationInfo) {
+      content += `\n\n生图状态:\n${imageGenerationInfo}`;
     }
 
     // 添加图片信息

@@ -1,4 +1,4 @@
-{
+﻿{
   "app": {
     "name": "danmaku-to-summary",
     "version": "0.2.0",
@@ -40,10 +40,138 @@
       "maxFileAgeDays": 30
     }
   },
+  "asr": {
+    "default_backend": "whisper",
+    "common_hotwords": [
+      {
+        "word": "东爱璃Lovely",
+        "weight": 20,
+        "aliases": ["东爱璃", "Lovely", "爱璃", "东爱丽", "爱丽", "东艾璃", "东艾丽"]
+      },
+      {
+        "word": "星汐Seki",
+        "weight": 20,
+        "aliases": ["星汐", "Seki", "seki", "星夕", "星西", "星希"]
+      },
+      {
+        "word": "礼墨Sumi",
+        "weight": 20,
+        "aliases": ["礼墨", "Sumi", "sumi", "里墨", "礼沫", "李墨"]
+      },
+      {
+        "word": "笙歌",
+        "weight": 20,
+        "aliases": ["帅比笙歌超可爱OvO", "笙歌OvO", "shengge", "生哥", "声歌", "升哥"]
+      },
+      {
+        "word": "伊索尔Sol",
+        "weight": 20,
+        "aliases": ["伊索尔", "Sol", "sol", "索尔", "伊索", "一索尔"]
+      },
+      {
+        "word": "南町Nightin",
+        "weight": 20,
+        "aliases": ["南町", "Nightin", "nightin", "南丁", "南町Night in", "南町奈汀"]
+      },
+      {
+        "word": "MIXUP2026",
+        "weight": 18,
+        "aliases": ["MIXUP", "mixup", "mix up", "Mixup2026", "MIXUP 2026"]
+      },
+      {
+        "word": "PSP",
+        "weight": 18,
+        "aliases": ["P S P", "psp"]
+      },
+      {
+        "word": "VirtuaReal",
+        "weight": 18,
+        "aliases": ["VR", "V R", "虚拟Real", "维阿", "微阿"]
+      },
+      {
+        "word": "岁己SUI",
+        "weight": 20,
+        "aliases": ["岁己", "岁几", "碎己"],
+        "contextual_aliases": ["随机", "随即"]
+      },
+      {
+        "word": "栞栞",
+        "weight": 20,
+        "aliases": ["堪堪", "栞", "Shiori"]
+      },
+      {
+        "word": "米汀",
+        "weight": 18,
+        "aliases": ["Miting", "米丁", "米婷"]
+      },
+      {
+        "word": "瑞娅",
+        "weight": 18,
+        "aliases": ["Rhea", "瑞亚", "蕊娅"]
+      },
+      {
+        "word": "时守星沙",
+        "weight": 18,
+        "aliases": ["星沙", "时守", "时守星砂", "星砂"]
+      }
+    ],
+    "corrections": [],
+    "routing": [],
+    "whisper": {
+      "model": "deepdml/faster-whisper-large-v3-turbo-ct2",
+      "language": "zh"
+    },
+    "sensevoice": {
+      "model": "iic/SenseVoiceSmall",
+      "vad_model": "fsmn-vad",
+      "punc_model": "ct-punc",
+      "spk_model": "cam++",
+      "language": "auto",
+      "device": "cuda",
+      "use_itn": true,
+      "max_vad_segment_s": 8,
+      "merge_length_s": 8,
+      "process_timeout_s": 1800,
+      "enable_speaker": true,
+      "preset_spk_num": 3,
+      "speaker_merge_threshold": 0.78,
+      "speaker_references": [
+        {
+          "speaker": "岁己SUI",
+          "audio_path": "data/asr_speaker_refs/sui.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
+          "speaker": "瑞娅",
+          "audio_path": "data/asr_speaker_refs/rhea.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        }
+      ],
+      "speaker_reference_threshold": 0.45
+    }
+  },
+  "subtitle": {
+    "max_chars_per_line": 18,
+    "max_chars_per_segment": 30,
+    "min_duration": 0.7,
+    "max_duration": 5.5,
+    "gap_split_threshold": 0.45,
+    "merge_short_segments": true,
+    "avoid_overlap": true,
+    "strip_punctuation": true
+  },
   "ai": {
     "text": {
       "enabled": true,
-      "provider": "gemini",
+      "provider": "tuZi",
       "gemini": {
         "enabled": true,
         "apiKey": "",
@@ -56,13 +184,29 @@
         "enabled": true,
         "apiKey": "",
         "baseUrl": "https://api.tu-zi.com",
-        "model": "gemini-3-flash-preview",
+        "model": "gpt-5.4-mini",
+        "fallbackModels": [
+          "gemini-3-flash-preview"
+        ],
+        "temperature": 0.7,
+        "maxTokens": 100000,
         "proxy": ""
       }
     },
     "comic": {
       "enabled": true,
       "provider": "python",
+      "outputLockEnabled": false,
+      "concurrency": {
+        "maxConcurrentGenerations": 10,
+        "lockTimeoutMinutes": 180
+      },
+      "rateLimit": {
+        "enabled": true,
+        "hourlyLimit": 20,
+        "dailyLimit": 200,
+        "alertCooldownMinutes": 30
+      },
       "python": {
         "script": "ai_comic_generator.py"
       },
@@ -76,13 +220,56 @@
         "enabled": true,
         "apiKey": "",
         "baseUrl": "https://api.tu-zi.com",
-        "model": "dall-e-3",
+        "model": "gpt-image-2",
         "proxy": ""
       }
     },
+    "tuziRetry": {
+      "maxAttempts": 4,
+      "baseDelaysMs": [
+        0,
+        120000,
+        300000,
+        720000
+      ],
+      "jitterRatio": 0.3,
+      "globalWindowMs": 600000,
+      "globalFailureThreshold": 3,
+      "cooldownMs": 600000,
+      "maxCooldownMs": 2400000,
+      "retryableStatusCodes": [
+        500,
+        502,
+        503,
+        504
+      ],
+      "retryableMessages": [
+        "当前模型负载较高",
+        "rate limit",
+        "timeout",
+        "timed out"
+      ],
+      "retryableExceptions": [
+        "ReadTimeout",
+        "SSLEOFError",
+        "ConnectionError",
+        "Timeout"
+      ],
+      "text": {
+        "baseDelaysMs": [
+          0,
+          15000,
+          45000,
+          90000
+        ],
+        "globalFailureThreshold": 10,
+        "cooldownMs": 60000,
+        "maxCooldownMs": 300000
+      }
+    },
     "defaultNames": {
-      "anchor": "岁己SUI",
-      "fan": "饼干岁"
+      "anchor": "主播",
+      "fan": "粉丝"
     },
     "defaultWordLimit": 100,
     "roomSettings": {
@@ -93,6 +280,19 @@
         "enableTextGeneration": true,
         "enableComicGeneration": true,
         "enableDelayedReply": true
+      },
+      "25788785": {
+        "audioOnly": false,
+        "referenceImage": "public/reference_images/岁己SUI小猫帽带饼干岁紫色外套双马尾.png",
+        "characterDescription": "岁己SUI（白发红瞳女生），饼干岁（有细细四肢的小小的饼干状生物）",
+        "anchorName": "小岁",
+        "fanName": "饼干岁",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true,
+        "wordLimit": 800,
+        "minComicDurationMinutes": 0,
+        "comicGenerationProbability": 1.0
       }
     }
   },
@@ -152,6 +352,20 @@
       "delayMinutes": 10,
       "maxRetries": 3,
       "retryDelayMinutes": 5
+    },
+    "danmuRiskControl": {
+      "enabled": false,
+      "intervalMs": 300000,
+      "roomIds": [],
+      "notifyCooldownMs": 1800000
+    }
+  },
+  "whisper": {
+    "gpuDetection": {
+      "enabled": false,
+      "gpuUtilizationThreshold": 40,
+      "vramUsageThreshold": 40,
+      "checkIntervalSeconds": 30
     }
   },
   "wechatWork": {
@@ -159,3 +373,4 @@
     "enabled": true
   }
 }
+

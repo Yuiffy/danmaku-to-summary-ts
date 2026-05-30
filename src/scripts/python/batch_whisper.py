@@ -11,7 +11,13 @@ import shutil
 import traceback
 import gc
 import subprocess
+import signal
 from faster_whisper import WhisperModel, BatchedInferencePipeline
+
+try:
+    import torch
+except Exception:
+    torch = None
 
 # ================= ❄️ RTX 5080 终极智能降级版 ❄️ =================
 # 模型路径
@@ -29,6 +35,14 @@ TOLERANCE_SECONDS = 60
 MAX_RETRIES = 3
 
 VIDEO_EXTS = {'.mp4', '.flv', '.mkv', '.avi', '.mov', '.webm', '.ts', '.m4v', '.m4a', '.mp3'}
+GPU_WAIT_TIMEOUT_SECONDS = 24 * 60 * 60
+ACTIVE_RESOURCES = {
+    "model": None,
+    "batched_model": None,
+    "segments": None,
+    "current_video_path": None,
+}
+SHUTDOWN_REQUESTED = False
 
 
 def get_duration_fast(file_path):
@@ -64,6 +78,75 @@ def format_timestamp(seconds):
     m = (seconds % 3600) // 60
     s = seconds % 60
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def release_whisper_resources(reason="unknown"):
+    cleanup_start = time.time()
+    print(
+        f"\n🧹 cleanup begin: reason={reason}, pid={os.getpid()}, "
+        f"video={os.path.basename(ACTIVE_RESOURCES.get('current_video_path') or 'unknown')}"
+    )
+
+    try:
+        for key in ("segments", "batched_model", "model"):
+            resource = ACTIVE_RESOURCES.get(key)
+            if resource is not None:
+                ACTIVE_RESOURCES[key] = None
+                del resource
+
+        gc.collect()
+
+        if torch is not None and torch.cuda.is_available():
+            try:
+                torch.cuda.empty_cache()
+                if hasattr(torch.cuda, "ipc_collect"):
+                    torch.cuda.ipc_collect()
+            except Exception as torch_error:
+                print(f"⚠️ CUDA cache 清理失败: {torch_error}")
+    except Exception as cleanup_error:
+        print(f"⚠️ Whisper 资源清理异常: {cleanup_error}")
+        traceback.print_exc()
+    finally:
+        print(f"🧹 cleanup end: reason={reason}, elapsed={time.time() - cleanup_start:.2f}s")
+
+
+def handle_shutdown_signal(signum, _frame):
+    global SHUTDOWN_REQUESTED
+    SHUTDOWN_REQUESTED = True
+    signal_name = signal.Signals(signum).name if signum in signal.Signals._value2member_map_ else str(signum)
+    print(f"\n⚠️ 收到退出信号: {signal_name}")
+    release_whisper_resources(f"signal-{signal_name}")
+    raise SystemExit(128 + int(signum))
+
+
+def should_retry_with_strict_mode(total_duration, last_segment_end, line_count, text_chars, attempt):
+    """
+    基于第一次识别结果判断是否需要切换到更严格的模式，而不是依赖文件名猜测。
+    """
+    if attempt >= MAX_RETRIES:
+        return False, ""
+
+    missing = max(0, total_duration - last_segment_end)
+    duration_minutes = max(total_duration / 60, 1)
+    line_density = line_count / duration_minutes
+    char_density = text_chars / duration_minutes
+
+    reasons = []
+    if total_duration > 120 and missing / total_duration >= 0.1 and missing > TOLERANCE_SECONDS:
+        reasons.append(f"尾部缺失 {missing:.1f} 秒")
+
+    if total_duration > 1800 and line_density < 2.0:
+        reasons.append(f"字幕过稀 ({line_density:.2f} 条/分钟)")
+
+    if total_duration > 1800 and text_chars < 400:
+        reasons.append(f"文本总量过少 ({text_chars} 字)")
+    elif total_duration > 600 and char_density < 12:
+        reasons.append(f"文本密度过低 ({char_density:.1f} 字/分钟)")
+
+    if line_count < 20 and total_duration > 600:
+        reasons.append(f"有效字幕太少 ({line_count} 条)")
+
+    return bool(reasons), "，".join(reasons)
 
 
 # --- ✂️ 真正的智能切分算法（按气口、标点、字数综合切分） ✂️ ---
@@ -142,10 +225,10 @@ def transcribe_with_strategy(model, video_path, srt_path, total_duration):
         use_batch = True
         use_vad = True
         strategy_name = "🚀 [策略1] 极速 Batch 模式"
-
         if attempt == 2:
             use_batch = False
-            strategy_name = "🐢 [策略2] 稳健 Sequential 模式 (ASMR专用)"
+            use_vad = False
+            strategy_name = "🌙 [策略2] 严格 Sequential 模式 (关闭VAD，优先完整转写)"
         elif attempt == 3:
             use_batch = False
             use_vad = False
@@ -163,14 +246,18 @@ def transcribe_with_strategy(model, video_path, srt_path, total_duration):
         start_time = time.time()
         last_segment_end = 0
         line_count = 0
+        text_chars = 0
 
         try:
             segments = None
             batched_model = None
+            ACTIVE_RESOURCES["batched_model"] = None
+            ACTIVE_RESOURCES["segments"] = None
 
             if use_batch:
                 # 策略1：Batch Pipeline
                 batched_model = BatchedInferencePipeline(model=model)
+                ACTIVE_RESOURCES["batched_model"] = batched_model
                 segments, _ = batched_model.transcribe(
                     video_path,
                     batch_size=BATCH_SIZE,
@@ -182,9 +269,13 @@ def transcribe_with_strategy(model, video_path, srt_path, total_duration):
                 )
             else:
                 # 策略2 & 3：原生串行模式 (不经过 Pipeline)
+                beam_size = 5
+                if attempt == 3:
+                    beam_size = 1
+
                 segments, _ = model.transcribe(
                     video_path,
-                    beam_size=5,
+                    beam_size=beam_size,
                     language="zh",
                     initial_prompt=prompt,
                     vad_filter=use_vad,
@@ -192,6 +283,8 @@ def transcribe_with_strategy(model, video_path, srt_path, total_duration):
                     word_timestamps=True,
                     condition_on_previous_text=False
                 )
+
+            ACTIVE_RESOURCES["segments"] = segments
 
             # 进度条
             term_width = shutil.get_terminal_size().columns
@@ -232,6 +325,8 @@ def transcribe_with_strategy(model, video_path, srt_path, total_duration):
                         # --- 🎯 幻听过滤 (Hallucination Filter) ---
                         if any(bad in text for bad in ["优优独播剧场", "字幕志愿者", "中文字幕志愿者", "感谢观看", "谢谢观看", "谢谢大家观看"]):
                             continue
+
+                        text_chars += len(text)
                             
                         f.write(f"{line_count}\n{start_s} --> {end_s}\n{text}\n\n")
 
@@ -242,16 +337,23 @@ def transcribe_with_strategy(model, video_path, srt_path, total_duration):
             # === 🛡️ 完整性检查 ===
             missing = total_duration - last_segment_end
 
-            # 如果缺失不到10%的话允许放过，否则检查缺失严重且视频不短
-            if missing / total_duration >= 0.1 and missing > TOLERANCE_SECONDS and total_duration > 120:
-                print(f"   ⚠️  警告: 缺失 {missing:.1f} 秒 (总长 {format_timestamp(total_duration)})")
-
-                if attempt < MAX_RETRIES:
-                    print(f"   🚫 当前策略不适合此视频 (ASMR音量过低)，准备切换策略重试...")
-                    time.sleep(2)
-                    continue  # 触发下一次循环(换策略)
-                else:
-                    print(f"   💀 所有策略耗尽，保留现有结果。")
+            needs_strict_retry, retry_reason = should_retry_with_strict_mode(
+                total_duration,
+                last_segment_end,
+                line_count,
+                text_chars,
+                attempt
+            )
+            if needs_strict_retry:
+                print(
+                    f"   ⚠️  当前结果偏稀疏: {retry_reason} "
+                    f"(字幕 {line_count} 条, 文本 {text_chars} 字, 缺失 {missing:.1f} 秒)"
+                )
+                print("   🚫 自动切换到更严格的 Whisper 模式重试...")
+                if os.path.exists(temp_srt):
+                    os.remove(temp_srt)
+                time.sleep(2)
+                continue
 
             # 成功：移动临时文件到目标路径
             if os.path.exists(srt_path): os.remove(srt_path)
@@ -259,11 +361,16 @@ def transcribe_with_strategy(model, video_path, srt_path, total_duration):
             print(f"   ✅ 成功生成！耗时: {time.time() - start_time:.1f}s")
 
             # 清理内存
-            if batched_model: del batched_model
+            ACTIVE_RESOURCES["segments"] = None
+            if batched_model:
+                ACTIVE_RESOURCES["batched_model"] = None
+                del batched_model
             gc.collect()
             return
 
         except Exception as e:
+            ACTIVE_RESOURCES["segments"] = None
+            ACTIVE_RESOURCES["batched_model"] = None
             print(f"\n   ❌ 出错: {e}")
             traceback.print_exc()
             time.sleep(2)
@@ -312,6 +419,8 @@ def process_one_video(model, video_path, file_idx, total_files):
 
 
 def main():
+    signal.signal(signal.SIGINT, handle_shutdown_signal)
+    signal.signal(signal.SIGTERM, handle_shutdown_signal)
     os.system('cls' if os.name == 'nt' else 'clear')
     if len(sys.argv) < 2:
         print("❌ 请拖拽文件！")
@@ -344,10 +453,10 @@ def main():
                 print("⚠️  显存不足,等待显存释放...")
                 print("💡 提示: 如果您正在玩游戏或使用显存,请稍等或关闭相关程序")
                 
-                # 等待显存释放(最多30分钟)
+                # 等待显存释放(最多24小时)
                 wait_result = subprocess.run(
-                    ['python', check_script, '--wait', '1800'],
-                    timeout=1900  # 比等待时间多100秒
+                    ['python', check_script, '--wait', str(GPU_WAIT_TIMEOUT_SECONDS)],
+                    timeout=GPU_WAIT_TIMEOUT_SECONDS + 100  # 比等待时间多100秒
                 )
                 
                 if wait_result.returncode != 0:
@@ -362,19 +471,27 @@ def main():
         print(f"⚠️  显存检测出错: {e},继续尝试加载模型...")
     
     try:
-        # 优先尝试GPU，如果失败则用CPU
-        model = WhisperModel(MODEL_SIZE, device="cuda", compute_type="float16")
-        print("   ✅ 使用GPU加速 (CUDA)")
-    except Exception as e:
-        print(f"   ⚠️ GPU不可用，回退到CPU: {e}")
-        model = WhisperModel(MODEL_SIZE, device="cpu", compute_type="float32")
-        print("   ✅ 使用CPU模式")
+        try:
+            # 优先尝试GPU，如果失败则用CPU
+            model = WhisperModel(MODEL_SIZE, device="cuda", compute_type="float16")
+            print("   ✅ 使用GPU加速 (CUDA)")
+        except Exception as e:
+            print(f"   ⚠️ GPU不可用，回退到CPU: {e}")
+            model = WhisperModel(MODEL_SIZE, device="cpu", compute_type="float32")
+            print("   ✅ 使用CPU模式")
 
-    for idx, video_path in enumerate(todo_list, start=1):
-        process_one_video(model, video_path, idx, len(todo_list))
-        gc.collect()
+        ACTIVE_RESOURCES["model"] = model
 
-    print(f"\n🏆 全部完成！")
+        for idx, video_path in enumerate(todo_list, start=1):
+            ACTIVE_RESOURCES["current_video_path"] = video_path
+            process_one_video(model, video_path, idx, len(todo_list))
+            ACTIVE_RESOURCES["segments"] = None
+            ACTIVE_RESOURCES["batched_model"] = None
+            gc.collect()
+
+        print(f"\n🏆 全部完成！")
+    finally:
+        release_whisper_resources("main-finally")
 
 
 

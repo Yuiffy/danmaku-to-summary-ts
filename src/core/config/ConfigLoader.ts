@@ -76,7 +76,8 @@ export class ConfigLoader {
    */
   private readJsonFile(filePath: string): any {
     try {
-      const content = fs.readFileSync(filePath, 'utf-8');
+      const rawContent = fs.readFileSync(filePath, 'utf-8');
+      const content = rawContent.replace(/^\uFEFF/, '');
       return JSON.parse(content);
     } catch (error) {
       throw new Error(`Failed to read JSON file ${filePath}: ${error}`);

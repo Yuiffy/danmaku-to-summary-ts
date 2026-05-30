@@ -7,6 +7,7 @@ import { getLogger } from '../../../core/logging/LogManager';
 import { ConfigProvider } from '../../../core/config/ConfigProvider';
 import { FileStabilityChecker } from '../FileStabilityChecker';
 import { DuplicateProcessorGuard } from '../DuplicateProcessorGuard';
+import { listRelevantProcesses, terminateProcessTree } from '../../../utils/processCleanup';
 
 /**
  * 音频文件处理器 - 处理m4a/mp3等音频文件
@@ -372,6 +373,7 @@ export class AudioFileHandler implements IWebhookHandler {
           ROOM_ID: extractedInfo.roomId
         }
       });
+      this.logger.info(`处理子进程已启动: pid=${ps.pid ?? 'unknown'}, file=${path.basename(audioPath)}`);
 
       // spawn 成功，子进程已启动，立即释放文件锁
       // 这样相同的文件可以再次被处理（用于重试场景）
@@ -380,10 +382,16 @@ export class AudioFileHandler implements IWebhookHandler {
 
       // 设置超时
       const processTimeout = config.webhook.timeouts.processTimeout || 30 * 60 * 1000; // 30分钟
-      const timeoutId = setTimeout(() => {
+      const timeoutId = setTimeout(async () => {
         this.logger.warn(`进程超时，强制终止: ${path.basename(audioPath)}`);
-        if (ps.pid) {
-          process.kill(ps.pid, 'SIGTERM');
+        await terminateProcessTree(ps, {
+          gracePeriodMs: 5000,
+          label: `Audio处理进程(${path.basename(audioPath)})`,
+          logger: this.logger
+        });
+        const processes = await listRelevantProcesses();
+        if (processes.length > 0) {
+          this.logger.warn(`超时清理后的相关进程快照: ${processes.join(' | ')}`);
         }
       }, processTimeout);
 

@@ -89,14 +89,43 @@ def call_tuzi_gemini_async(
         print(f"[DEBUG] 模型: {model}, 尺寸: {size}, 提示词长度: {len(prompt)}, 参考图数量: {len(files_to_upload)}")
         
         # 第一步：创建任务
-        create_response = requests.post(
-            create_api_url,
-            headers=headers,
-            data=data,
-            files=files_to_upload if files_to_upload else None,
-            timeout=timeout,
-            proxies=proxies
-        )
+        # 注意：即使没有参考图，也需要使用multipart/form-data格式
+        # 当files_to_upload为空时，requests不会自动设置Content-Type为multipart/form-data
+        # 所以我们需要手动处理
+        if files_to_upload:
+            # 有参考图，正常发送
+            create_response = requests.post(
+                create_api_url,
+                headers=headers,
+                data=data,
+                files=files_to_upload,
+                timeout=timeout,
+                proxies=proxies
+            )
+        else:
+            # 没有参考图，手动构建multipart/form-data
+            from requests_toolbelt.multipart.encoder import MultipartEncoder
+            
+            # 构建multipart数据
+            fields = {
+                'model': model,
+                'prompt': prompt,
+                'size': size
+            }
+            
+            # 创建MultipartEncoder
+            multipart_data = MultipartEncoder(fields=fields)
+            
+            # 更新headers，设置正确的Content-Type
+            headers['Content-Type'] = multipart_data.content_type
+            
+            create_response = requests.post(
+                create_api_url,
+                headers=headers,
+                data=multipart_data,
+                timeout=timeout,
+                proxies=proxies
+            )
 
         if create_response.status_code != 200:
             print(f"[ERROR] 创建任务失败: HTTP {create_response.status_code}")
@@ -119,10 +148,13 @@ def call_tuzi_gemini_async(
         query_api_url = f"{base_url}/v1/videos/{task_id}"
         start_time = time.time()
         poll_interval = 3  # 每3秒查询一次
+        progress_log_interval = 30
+        last_progress_log_time = 0
+        last_status_signature = None
         
         while time.time() - start_time < max_poll_time:
             try:
-                print(f"[WAIT] 查询任务状态... (已等待 {int(time.time() - start_time)}s)")
+                elapsed_seconds = int(time.time() - start_time)
                 
                 query_response = requests.get(
                     query_api_url,
@@ -139,8 +171,15 @@ def call_tuzi_gemini_async(
                 query_result = query_response.json()
                 current_status = query_result.get("status", "unknown")
                 progress = query_result.get("progress", 0)
-                
-                print(f"[INFO] 任务状态: {current_status}, 进度: {progress}%")
+                status_signature = f"{current_status}:{progress}"
+
+                if (
+                    status_signature != last_status_signature
+                    or elapsed_seconds - last_progress_log_time >= progress_log_interval
+                ):
+                    print(f"[WAIT] 任务状态: {current_status}, 进度: {progress}%, 已等待 {elapsed_seconds}s")
+                    last_status_signature = status_signature
+                    last_progress_log_time = elapsed_seconds
 
                 # 检查任务是否完成
                 if current_status == "completed" or current_status == "succeeded":
@@ -224,7 +263,6 @@ def call_tuzi_gemini_async(
 
                 # 任务仍在进行中
                 elif current_status in ["queued", "processing", "pending", "running", "in_progress"]:
-                    print(f"[WAIT] 任务进行中，{poll_interval}秒后再次查询...")
                     time.sleep(poll_interval)
                     continue
 

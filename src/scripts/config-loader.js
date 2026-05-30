@@ -23,7 +23,7 @@ const RoomSettingsSchema = Joi.object({
 const AISchema = Joi.object({
     text: Joi.object({
         enabled: Joi.boolean().default(true),
-        provider: Joi.string().default('gemini'),
+        provider: Joi.string().default('tuZi'),
         gemini: Joi.object({
             enabled: Joi.boolean().default(true),
             apiKey: Joi.string().allow('').default(''),
@@ -36,7 +36,10 @@ const AISchema = Joi.object({
             enabled: Joi.boolean().default(true),
             apiKey: Joi.string().allow('').default(''),
             baseUrl: Joi.string().default('https://api.tu-zi.com'),
-            model: Joi.string().default('gemini-3-flash-preview'),
+            model: Joi.string().default('gpt-5.4-mini'),
+            fallbackModels: Joi.array().items(Joi.string()).default(['gemini-3-flash-preview']),
+            temperature: Joi.number().default(0.7),
+            maxTokens: Joi.number().default(100000),
             proxy: Joi.string().allow('', null).default('')
         }).default()
     }).default(),
@@ -209,7 +212,7 @@ function findSecretsPath() {
  */
 function readAndValidateJson(filePath, schema) {
     try {
-        const content = fs.readFileSync(filePath, 'utf8');
+        const content = fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
         const data = JSON.parse(content);
         const { error, value } = schema.validate(data, { allowUnknown: true, stripUnknown: false });
         if (error) {

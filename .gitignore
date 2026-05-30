@@ -38,9 +38,35 @@ yarn-error.log*
 next-env.d.ts
 .idea
 
+# python cache/build artifacts
+__pycache__/
+*.py[cod]
+
+# local tool/runtime state
+.gemini/
+data/delayed_reply_tasks.*
+output
+src/temp/
+src/scripts/.whisper_queue.json
+nul
+
+# local one-off/manual processing scripts
+manual_process_0209.js
+merge_and_reply_0209.js
+process_remains_0209.js
+send_0209_reply.ts
+send_0404_suiji_reply.ts
+temp_cut_clips.bat
+test_config_room.js
+test_genai_import.py
+test_images_gen.py
+test_import.py
+trigger_reply_0209.js
+
 # 敏感配置文件
 src/scripts/config.secrets.json
 config/secrets.json
 config/secret.json
 data/delayed_reply_tasks.json
 src/scripts/.whisper_lock
+tmp/*

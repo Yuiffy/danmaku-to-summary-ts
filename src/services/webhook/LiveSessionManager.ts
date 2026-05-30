@@ -44,11 +44,12 @@ export class LiveSessionManager {
    */
   createOrGetSession(roomId: string, roomName: string, title: string): LiveSession {
     let session = this.sessions.get(roomId);
+    const previousStatus = session?.status;
     
-    // 如果会话不存在，或者已经标记为已完成（说明由于超时或手动结束已处理过一次），则重置
+    // 如果会话不存在，或者旧会话已经进入处理阶段，则重置为新直播会话。
     // 注意：WebhookHandler 会在 30 秒内的 handleSessionStarted 中取消结算定时器
-    // 因此，如果状态已变为 completed，说明已经超过 30s 的判定窗口，应当作为新直播开始
-    if (!session || session.status === 'completed') {
+    // 因此，如果状态已不再是 collecting，说明上一轮已经超过判定窗口或正在处理，应当作为新直播开始。
+    if (!session || session.status !== 'collecting') {
       session = {
         roomId,
         roomName,
@@ -58,10 +59,11 @@ export class LiveSessionManager {
         status: 'collecting'
       };
       this.sessions.set(roomId, session);
-      this.logger.info(`${session ? '重置' : '创建'}直播会话: ${roomId}`, {
+      this.logger.info(`${previousStatus ? '重置' : '创建'}直播会话: ${roomId}`, {
         roomId,
         roomName,
-        title
+        title,
+        previousStatus
       });
     } else {
       // 仍然在收集中的活跃会话：更新信息并继续使用现有片段（支持断线重连）
@@ -75,20 +77,20 @@ export class LiveSessionManager {
   /**
    * 添加片段（使用RoomId）
    */
-  addSegment(roomId: string, videoPath: string, xmlPath: string, fileOpenTime: Date, fileCloseTime: Date, eventTimestamp: Date): void {
+  addSegment(roomId: string, videoPath: string, xmlPath: string, fileOpenTime: Date, fileCloseTime: Date, eventTimestamp: Date): boolean {
     const session = this.sessions.get(roomId);
     if (!session) {
       this.logger.warn(`会话不存在: ${roomId}`);
-      return;
+      return false;
     }
 
-    // 检查是否正在合并，如果是则跳过添加
-    if (session.status === 'merging') {
-      this.logger.warn(`会话正在合并中，跳过添加片段: ${roomId}`, {
+    if (session.status !== 'collecting') {
+      this.logger.warn(`会话不在收集状态，跳过添加片段: ${roomId}`, {
         roomId,
+        status: session.status,
         videoPath: path.basename(videoPath)
       });
-      return;
+      return false;
     }
 
     const segment: LiveSegment = {
@@ -106,6 +108,7 @@ export class LiveSessionManager {
       videoPath: path.basename(videoPath),
       xmlPath: path.basename(xmlPath)
     });
+    return true;
   }
 
   /**

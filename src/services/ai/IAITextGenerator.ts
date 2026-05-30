@@ -119,6 +119,8 @@ export interface AIProviderConfig {
 export interface RoomAIConfig {
   /** 是否为音频专用房间 */
   audioOnly?: boolean;
+  /** 房间级字数限制 */
+  wordLimit?: number;
   /** 参考图片路径 */
   referenceImage?: string;
   /** 角色描述 */

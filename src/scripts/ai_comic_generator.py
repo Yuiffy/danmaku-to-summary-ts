@@ -8,6 +8,7 @@ AI漫画生成模块
 import os
 import sys
 import io
+import re
 
 # 禁用输出缓冲，确保日志实时输出到Node.js
 # 保存原始的stdout/stderr，以便在包装失败时使用
@@ -74,11 +75,33 @@ import json
 import time
 import base64
 import requests
+import importlib.util
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 import traceback as tb
 import subprocess
 import shutil
+
+LAST_COMIC_SCRIPT_META = {
+    "provider": None,
+    "model": None,
+    "fallback": False,
+    "status": "not_started",
+    "reason": None,
+}
+
+def set_comic_script_meta(provider=None, model=None, fallback=False, status="unknown", reason=None):
+    LAST_COMIC_SCRIPT_META.update({
+        "provider": provider,
+        "model": model,
+        "fallback": bool(fallback),
+        "status": status,
+        "reason": reason,
+        "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    })
+
+def get_comic_script_meta():
+    return dict(LAST_COMIC_SCRIPT_META)
 
 # 导入统一配置加载器
 from config_loader import (
@@ -92,7 +115,11 @@ from config_loader import (
 )
 
 # 导入tuZi API封装
-from tuzi_chat_completions import call_tuzi_chat_completions, call_tuzi_chat_completions_for_image
+from tuzi_chat_completions import (
+    call_tuzi_chat_completions,
+    call_tuzi_chat_completions_for_image,
+    get_last_image_generation_meta,
+)
 
 # 尝试导入 Google GenAI（可选依赖）
 try:
@@ -154,6 +181,78 @@ def generate_unique_filename(base_path: str) -> str:
             return new_path
         counter += 1
 
+def get_existing_generated_file(base_path: str) -> Optional[str]:
+    """返回同一高亮已生成过的文件，优先返回无后缀原始文件。"""
+    if os.path.exists(base_path):
+        return base_path
+
+    dir_name = os.path.dirname(base_path)
+    ext = os.path.splitext(base_path)[1]
+    name_without_ext = os.path.splitext(os.path.basename(base_path))[0]
+
+    if not os.path.isdir(dir_name):
+        return None
+
+    import re
+    pattern = re.compile(rf"^{re.escape(name_without_ext)}_(\d+){re.escape(ext)}$")
+    candidates = []
+    for file_name in os.listdir(dir_name):
+        if pattern.match(file_name):
+            file_path = os.path.join(dir_name, file_name)
+            try:
+                candidates.append((os.path.getmtime(file_path), file_path))
+            except OSError:
+                candidates.append((0, file_path))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: item[0])
+    return candidates[0][1]
+
+def acquire_generation_lock(lock_path: str, timeout_seconds: int = 30 * 60) -> bool:
+    """原子创建生成锁；陈旧锁会被清理。"""
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump({
+                "pid": os.getpid(),
+                "createdAt": time.strftime("%Y-%m-%dT%H:%M:%S%z")
+            }, f)
+        return True
+    except FileExistsError:
+        try:
+            age = time.time() - os.path.getmtime(lock_path)
+            if age > timeout_seconds:
+                os.remove(lock_path)
+                return acquire_generation_lock(lock_path, timeout_seconds)
+        except FileNotFoundError:
+            return acquire_generation_lock(lock_path, timeout_seconds)
+        return False
+
+def wait_for_generated_file(base_path: str, lock_path: str, wait_seconds: int = 20 * 60) -> Optional[str]:
+    """等待其他进程生成结果。"""
+    deadline = time.time() + wait_seconds
+    while time.time() < deadline:
+        existing = get_existing_generated_file(base_path)
+        if existing:
+            return existing
+
+        if not os.path.exists(lock_path):
+            return get_existing_generated_file(base_path)
+
+        time.sleep(3)
+
+    return None
+
+def release_generation_lock(lock_path: str) -> None:
+    try:
+        os.remove(lock_path)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        print(f"[WARNING] 删除漫画生成锁失败: {e}")
+
 def get_live_cover_image(highlight_path: str) -> Optional[str]:
     """从录制目录查找对应的直播封面图片"""
     try:
@@ -186,7 +285,8 @@ def get_room_reference_image(room_id: str, highlight_path: Optional[str] = None)
     兜底策略：
     1. 优先使用 roomSettings 中配置的主播参考图
     2. 如果没有配置主播参考图，使用直播封面
-    3. 只有连封面都拿不到，才使用 defaultReferenceImage
+    3. 只有连封面都拿不到，且配置了 defaultReferenceImage，才使用默认参考图
+    4. 没有配置默认参考图时返回 None，让模型无参考图生成
     """
     config = load_config()
     
@@ -261,24 +361,7 @@ def get_room_reference_image(room_id: str, highlight_path: Optional[str] = None)
             print(f"[INFO]  使用默认参考图片（兜底）: {os.path.basename(script_relative)}")
             return script_relative
 
-    # 检查默认图片文件是否存在
-    # 先尝试 public/reference_images（新位置）
-    public_ref_dir = os.path.join(project_root, "public", "reference_images")
-    for ref_dir in [public_ref_dir, os.path.join(scripts_dir, "reference_images")]:
-        if os.path.exists(ref_dir):
-            default_files = [
-                os.path.join(ref_dir, "default.jpg"),
-                os.path.join(ref_dir, "default.jpeg"),
-                os.path.join(ref_dir, "default.png"),
-                os.path.join(ref_dir, "default.webp"),
-                os.path.join(ref_dir, "岁己小红帽立绘.png"),  # 特定文件名
-                os.path.join(ref_dir, "雪绘.png")  # 雪绘特定文件
-            ]
-            for file_path in default_files:
-                if os.path.exists(file_path):
-                    print(f"[INFO]  找到默认图片（兜底）: {os.path.basename(file_path)}")
-                    return file_path
-
+    print("[INFO]  未配置默认参考图，将无参考图生成")
     return None
 
 def collect_all_images(room_id: str, highlight_path: Optional[str] = None) -> list[str]:
@@ -288,7 +371,8 @@ def collect_all_images(room_id: str, highlight_path: Optional[str] = None) -> li
     1. 主播参考图（roomSettings中配置的referenceImage）
     2. 直播封面（.cover文件）
     3. 直播截图（_SCREENSHOTS.jpg）
-    4. 默认参考图（只有在没有主播参考图和封面时才使用）
+    4. 默认参考图（只有在没有主播参考图、封面、截图且配置了 defaultReferenceImage 时才使用）
+    5. 没有配置默认参考图时返回空列表，让模型无参考图生成
     """
     images = []
     config = load_config()
@@ -362,7 +446,7 @@ def collect_all_images(room_id: str, highlight_path: Optional[str] = None) -> li
     # 4. 只有在完全没有任何图片时，才使用默认参考图（兜底）
     # 检查是否已经收集到任何图片（主播参考图、封面、截图）
     if len(images) == 0:
-        print("[INFO]  未找到任何图片（主播参考图、封面、截图），尝试使用默认参考图作为兜底...")
+        print("[INFO]  未找到任何图片（主播参考图、封面、截图），检查是否配置默认参考图...")
         default_image = ""
         if "ai" in config:
             if config["ai"].get("defaultReferenceImage"):
@@ -385,6 +469,8 @@ def collect_all_images(room_id: str, highlight_path: Optional[str] = None) -> li
                 if os.path.exists(script_relative):
                     images.append(script_relative)
                     print(f"[INFO]  收集到默认参考图（兜底）: {os.path.basename(script_relative)}")
+        if not default_image:
+            print("[INFO]  未配置默认参考图，将无参考图生成")
     else:
         print(f"[INFO]  已有 {len(images)} 张图片，跳过默认参考图")
     
@@ -453,6 +539,8 @@ def model_supports_chinese(model: Optional[str] = None) -> bool:
     
     # 高级模型列表（支持汉字）
     advanced_models = [
+        "gpt-image-2",
+        "gpt-image-1.5",
         "gemini-3-pro-image-preview-async",
         "gemini-3-pro-image-preview/nano-banana-2",
         "gemini-3-pro-image-preview-2k-async",
@@ -485,6 +573,7 @@ def build_comic_prompt(highlight_content: str, reference_image_path: Optional[st
     if existing_comic and existing_comic.strip() != "":
         comic_content = existing_comic
         is_generated = True  # 复用已有脚本也算成功，允许继续生成图像
+        set_comic_script_meta(provider="existing", model="existing-script", status="success", reason="复用已有漫画脚本")
     else:
         comic_content, is_generated = generate_comic_content_with_ai(highlight_content, room_id=room_id)
 
@@ -518,8 +607,8 @@ def build_comic_prompt(highlight_content: str, reference_image_path: Optional[st
 COMIC_ARTIST_PROMPT_TEMPLATE = """你作为虚拟主播二创画师大手子，根据直播内容，绘制直播总结插画。
 角色描述：{character_desc}。
 风格：多个剪贴画风格分镜（2~4个吧），每个是一个片段场景，
-不要有文字，纯默剧，用表情和动作、场景、图标来表现。
-下面是一场直播的语音+弹幕文本，请先构思图片并用文字给我，我再拿去绘制图片。整体600个字符以内。只返回各个分镜的文字描述，不要包含任何多余的说明、格式。
+默认以画面叙事为主，但如果有助于漫画效果，可以设计少量中文台词框、拟声词、标题字或路牌字，文字要自然、准确、排版清楚，不要过多。
+下面是一场直播的语音+弹幕文本，请先构思图片并用文字给我，我再拿去绘制图片。整体600个字符以内。只返回各个分镜的文字描述，不要包含任何多余的说明、格式。若适合带字，请明确写出这些字应该出现在什么位置、每处写什么，单处文字尽量控制在1到12个字。
 {highlight_content}
 """
 
@@ -548,6 +637,79 @@ def is_gemini_error(text: str) -> bool:
         return False
     return 'Gemini Error' in text
 
+
+def is_valid_comic_script(text: Optional[str]) -> bool:
+    """Return False for obviously truncated or non-story comic scripts."""
+    if not text:
+        return False
+
+    normalized = re.sub(r'\s+', '', text)
+    return len(normalized) >= 40
+
+
+def is_comic_script_fallback_allowed(room_id: Optional[str] = None) -> bool:
+    """是否允许在AI脚本生成失败后使用本地兜底脚本继续生图。"""
+    if str(os.environ.get("ALLOW_COMIC_SCRIPT_FALLBACK", "")).lower() == "true":
+        return True
+    return str(room_id or "") == "25788785"
+
+
+def strip_srt_timestamps(text: str) -> str:
+    text = re.sub(r'\d{2}:\d{2}:\d{2}[,.]\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}[,.]\d{3}', ' ', text)
+    text = re.sub(r'^\s*\d+\s*$', ' ', text, flags=re.MULTILINE)
+    return text
+
+
+def build_local_fallback_comic_script(highlight_content: str, room_id: Optional[str] = None) -> str:
+    """用摘要内容生成一个短兜底分镜，避免脚本AI短暂故障时完全跳过图片。"""
+    cleaned = strip_srt_timestamps(highlight_content)
+    lines = []
+    for raw_line in cleaned.splitlines():
+        line = re.sub(r'\s+', ' ', raw_line).strip()
+        if len(line) < 8:
+            continue
+        if any(marker in line.lower() for marker in ["http://", "https://", "[error]", "traceback"]):
+            continue
+        lines.append(line)
+
+    if not lines:
+        compact = re.sub(r'\s+', ' ', cleaned).strip()
+        lines = [compact[i:i + 70] for i in range(0, min(len(compact), 280), 70) if compact[i:i + 70]]
+
+    while len(lines) < 4:
+        lines.append("主播和观众温柔互动，直播间氛围轻松热闹。")
+
+    selected = lines[:4]
+    anchor_name = "岁己" if str(room_id or "") == "25788785" else "主播"
+    panels = []
+    panel_styles = [
+        "开场",
+        "互动",
+        "名场面",
+        "晚安收束",
+    ]
+    for index, line in enumerate(selected, start=1):
+        panels.append(f"分镜{index}（{panel_styles[index - 1]}）：{anchor_name}在直播间里延续今晚的高光片段：{line[:120]}")
+
+    return "\n".join(panels)
+
+
+def return_comic_script_failure(highlight_content: str, room_id: Optional[str], reason: str) -> Tuple[str, bool]:
+    if is_comic_script_fallback_allowed(room_id):
+        fallback_script = build_local_fallback_comic_script(highlight_content, room_id)
+        print(f"[WARNING]  AI漫画脚本生成失败（{reason}），使用本地兜底分镜继续生图")
+        print(f"兜底脚本长度: {len(fallback_script)} 字符")
+        print(f"兜底内容预览: {fallback_script[:200]}...")
+        set_comic_script_meta(provider="local", model="local-fallback", fallback=True, status="success", reason=reason)
+        return fallback_script, True
+    set_comic_script_meta(provider=None, model=None, fallback=True, status="failure", reason=reason)
+    return highlight_content, False
+
+
+def has_socks_proxy_support() -> bool:
+    """检查当前 Python 环境是否具备 SOCKS 代理支持。"""
+    return importlib.util.find_spec("socksio") is not None
+
 def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str] = None) -> Tuple[str, bool]:
     """使用AI生成漫画内容脚本
     
@@ -574,11 +736,14 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                 )
                 if proc.returncode == 0 and proc.stdout:
                     text = proc.stdout.decode('utf-8').strip()
-                    if text and not is_gemini_error(text):
+                    if text and not is_gemini_error(text) and is_valid_comic_script(text):
                         print('[OK] 从 ai_text_generator 返回内容')
+                        set_comic_script_meta(provider="node", model="ai_text_generator", status="success")
                         return text, True
                     elif is_gemini_error(text):
                         print('[WARNING] ai_text_generator 返回了错误内容，尝试其他方案')
+                    elif text:
+                        print(f"[WARNING] ai_text_generator 返回内容无效或疑似截断，长度: {len(text)} 字符，尝试其他方案")
                     else:
                         stderr = proc.stderr.decode('utf-8') if proc.stderr else ''
                         print(f"[INFO] node 脚本返回非零状态: {proc.returncode}, stderr: {stderr}")
@@ -602,21 +767,26 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
 
                 if not gemini_api_key:
                     print("[WARNING]  Gemini API密钥未配置，使用原始内容")
-                    return highlight_content, False
+                    break
 
                 # 加载配置获取其他参数
                 config = load_config()
                 gemini_config = config.get('aiServices', {}).get('gemini', {})
 
-                # 创建客户端（增加超时时间到120秒以应对SSL握手超时）
-                client = genai.Client(api_key=gemini_api_key, http_options=genai_types.HttpOptions(timeout=120))
-
                 # 设置代理 (如果需要)
                 proxy_url = gemini_config.get('proxy', '')
                 if proxy_url:
+                    if proxy_url.startswith('socks') and not has_socks_proxy_support():
+                        print("[WARNING] Gemini 配置了 SOCKS 代理，但当前环境缺少 socksio/httpx[socks]，跳过 Gemini 直连备用方案")
+                        break
                     import os
                     os.environ['http_proxy'] = proxy_url
                     os.environ['https_proxy'] = proxy_url
+                    os.environ['HTTP_PROXY'] = proxy_url
+                    os.environ['HTTPS_PROXY'] = proxy_url
+
+                # 创建客户端（增加超时时间到120秒以应对SSL握手超时）
+                client = genai.Client(api_key=gemini_api_key, http_options=genai_types.HttpOptions(timeout=120))
 
                 # 获取模型名称
                 model_name = gemini_config.get('model', 'gemini-2.0-flash')
@@ -647,13 +817,23 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                         else:
                             print("[ERROR] Gemini重试次数已用完，尝试备用方案")
                             break
+
+                    if not is_valid_comic_script(comic_content):
+                        print(f"[WARNING] Gemini返回内容无效或疑似截断 (尝试 {gemini_attempt + 1}/{max_gemini_retries})，长度: {len(comic_content)} 字符")
+                        if gemini_attempt < max_gemini_retries - 1:
+                            print("[RETRY] 2秒后重试...")
+                            time.sleep(2)
+                            continue
+                        print("[ERROR] Gemini重试次数已用完，尝试备用方案")
+                        break
                     
                     print("[OK] AI漫画内容生成完成")
                     print(f"生成内容长度: {len(comic_content)} 字符")
+                    set_comic_script_meta(provider="gemini", model=model_name, status="success", fallback=False)
                     return comic_content, True
                 else:
                     print("[WARNING]  AI返回空结果，使用原始内容")
-                    return highlight_content, False
+                    break
 
             except Exception as e:
                 error_msg = str(e)
@@ -675,8 +855,8 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
     # Gemini失败后，尝试使用tuZi API作为备用方案
     print("[TUZI] Google生成失败，尝试tu-zi.com生成文本...")
     
-    # 尝试使用tuZi API生成文本（带重试机制）
-    max_tuzi_retries = 3
+    # tuZi 调用封装层已经带温和重试和全局冷却；这里不再做快速外层重试，避免放大服务端拥塞。
+    max_tuzi_retries = 1
     for tuzi_attempt in range(max_tuzi_retries):
         try:
             from tuzi_chat_completions import call_tuzi_chat_completions
@@ -686,7 +866,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
             
             if not is_tuzi_configured():
                 print("[WARNING]  tuZi API未配置，使用原始内容")
-                return highlight_content, False
+                return return_comic_script_failure(highlight_content, room_id, "tuZi API未配置")
             
             # 构建提示词（使用统一的prompt模板）
             character_desc = get_room_character_description(room_id)
@@ -706,7 +886,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                 proxy_url=tuzi_config.get("proxy", ""),
                 timeout=120,
                 temperature=0.7,
-                max_tokens=100000
+                max_tokens=2000
             )
             
             if comic_content:
@@ -719,11 +899,22 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                         continue
                     else:
                         print("[ERROR] tuZi API重试次数已用完，使用原始内容")
-                        return highlight_content, False
+                        return return_comic_script_failure(highlight_content, room_id, "tuZi 返回 Gemini 错误内容")
+
+                if not is_valid_comic_script(comic_content):
+                    print(f"[ERROR] tuZi API返回的漫画脚本无效或疑似截断，长度: {len(comic_content)} 字符")
+                    print(f"[ERROR] 无效内容预览: {comic_content[:200]}...")
+                    return return_comic_script_failure(highlight_content, room_id, "tuZi 返回无效脚本")
                 
                 print("[OK] tuZi API漫画文本生成成功")
                 print(f"生成内容长度: {len(comic_content)} 字符")
                 print(f"内容预览: {comic_content[:200]}...")
+                set_comic_script_meta(
+                    provider="tuZi",
+                    model=tuzi_config.get("textModel", "gemini-3-flash-preview"),
+                    status="success",
+                    fallback=True
+                )
                 return comic_content, True
             else:
                 print("[WARNING]  tuZi API返回空内容")
@@ -732,7 +923,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                     time.sleep(2)
                     continue
                 else:
-                    return highlight_content, False
+                    return return_comic_script_failure(highlight_content, room_id, "tuZi 返回空内容")
             
         except Exception as tuzi_error:
             print(f"[ERROR]  tuZi API备用方案失败 (尝试 {tuzi_attempt + 1}/{max_tuzi_retries}): {tuzi_error}")
@@ -742,10 +933,10 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                 continue
             else:
                 print("[WARNING]  所有API都失败，使用原始内容")
-                return highlight_content, False
+                return return_comic_script_failure(highlight_content, room_id, str(tuzi_error))
     
     # 确保函数在所有路径都返回有效值
-    return highlight_content, False
+    return return_comic_script_failure(highlight_content, room_id, "所有AI脚本通道失败")
 
 def encode_image_to_base64(image_path: str, with_data_uri: bool = False) -> str:
     """将图片编码为base64
@@ -1054,15 +1245,17 @@ def call_tuzi_image_api(prompt: str, reference_image_path=None, room_id: Optiona
     else:
         print("[TUZI] 调用tu-zi.com图像生成API...")
 
-    # 获取超时设置 (默认为360秒)
+    # 获取超时设置；gpt-image-2 放宽到至少 1000 秒
     timeout_ms = config.get("timeouts", {}).get("aiApiTimeout", 360000)
+    if tuzi_config.get("model", "gpt-image-2") in ("gpt-image-2", "gpt-image-1.5", "gpt-image-1"):
+        timeout_ms = max(timeout_ms, 1000000)
     timeout_sec = timeout_ms / 1000
 
     # 调用tuZi API生成图像（重试和多模型切换现在由底层函数处理）
     return call_tuzi_chat_completions_for_image(
         prompt=prompt,
         reference_image_path=reference_image_path,
-        model=tuzi_config.get("model", "gpt-image-1.5"),
+        model=tuzi_config.get("model", "gpt-image-2"),
         base_url=tuzi_config.get("baseUrl", "https://api.tu-zi.com"),
         api_key=tuzi_config.get("apiKey", ""),
         proxy_url=tuzi_config.get("proxy", ""),
@@ -1258,6 +1451,50 @@ def save_comic_result(output_path: str, comic_data: Any) -> str:
         print(f"[ERROR] 保存漫画结果失败: {e}")
         raise
 
+
+def comic_meta_path(output_path: str) -> str:
+    root, _ = os.path.splitext(output_path)
+    return f"{root}_META.json"
+
+
+def write_comic_generation_meta(output_path: str, meta: Dict[str, Any]) -> None:
+    try:
+        payload = {
+            "status": meta.get("status") or "unknown",
+            "model": meta.get("model"),
+            "endpoint": meta.get("endpoint"),
+            "reason": meta.get("reason"),
+            "attempts": meta.get("attempts") or [],
+            "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        }
+        with open(comic_meta_path(output_path), "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        print(f"[INFO] 生图元数据已保存: {os.path.basename(comic_meta_path(output_path))}")
+    except Exception as e:
+        print(f"[WARNING] 保存生图元数据失败: {e}")
+
+
+def comic_script_meta_path(text_output_path: str) -> str:
+    root, _ = os.path.splitext(text_output_path)
+    return f"{root}_META.json"
+
+
+def write_comic_script_meta(text_output_path: str, meta: Dict[str, Any]) -> None:
+    try:
+        payload = {
+            "status": meta.get("status") or "unknown",
+            "provider": meta.get("provider"),
+            "model": meta.get("model"),
+            "fallback": bool(meta.get("fallback")),
+            "reason": meta.get("reason"),
+            "updatedAt": meta.get("updatedAt") or time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        }
+        with open(comic_script_meta_path(text_output_path), "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        print(f"[INFO] 漫画脚本文本元数据已保存: {os.path.basename(comic_script_meta_path(text_output_path))}")
+    except Exception as e:
+        print(f"[WARNING] 保存漫画脚本文本元数据失败: {e}")
+
 def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = None) -> Optional[str]:
     """从AI_HIGHLIGHT文件生成漫画"""
     print(f"[FILE] 处理AI_HIGHLIGHT文件: {os.path.basename(highlight_path)}")
@@ -1268,11 +1505,38 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
     # 注意：这里检查的是图像生成API的启用状态，不是文本生成API
     use_google = config["aiServices"].get("googleImage", {}).get("enabled", False)
     use_tuzi = config["aiServices"].get("tuZi", {}).get("enabled", False)
+    lock_path = None
+    lock_acquired = False
     
     try:
         # 检查输入文件
         if not os.path.exists(highlight_path):
             raise FileNotFoundError(f"AI_HIGHLIGHT文件不存在: {highlight_path}")
+
+        dir_name = os.path.dirname(highlight_path)
+        base_name = os.path.basename(highlight_path).replace('_AI_HIGHLIGHT.txt', '')
+        output_path = os.path.join(dir_name, f"{base_name}_COMIC_FACTORY.png")
+        existing_output = get_existing_generated_file(output_path)
+        if existing_output:
+            print(f"[INFO]  漫画已存在，跳过重复生成: {os.path.basename(existing_output)}")
+            return existing_output
+
+        # 默认开启输出锁。同一高亮可能由多个后台进程同时处理，单靠“文件已存在”
+        # 检查挡不住竞态，必须在首次图片 API 调用前抢占同一个输出锁。
+        output_lock_enabled = bool(config.get("ai", {}).get("comic", {}).get("outputLockEnabled", True))
+        if output_lock_enabled:
+            lock_path = output_path + ".lock"
+            lock_acquired = acquire_generation_lock(lock_path)
+            if not lock_acquired:
+                print(f"[WAIT] 漫画正在由其他进程生成，等待结果: {os.path.basename(output_path)}")
+                generated_by_other_process = wait_for_generated_file(output_path, lock_path)
+                if generated_by_other_process:
+                    print(f"[OK] 复用其他进程生成的漫画: {os.path.basename(generated_by_other_process)}")
+                    return generated_by_other_process
+                print("[WARNING] 等待漫画生成超时，跳过本次重复生成")
+                return None
+        else:
+            print("[INFO]  漫画输出锁已关闭，允许并发生成")
         
         # 提取房间ID（优先使用传入的 room_id，其次从文件名提取）
         if room_id is None:
@@ -1313,8 +1577,6 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
         print(f"[BOOK] 读取内容完成 ({len(highlight_content)} 字符)")
 
         # 确定脚本文件路径，优先复用已存在的脚本以避免重复AI调用
-        dir_name = os.path.dirname(highlight_path)
-        base_name = os.path.basename(highlight_path).replace('_AI_HIGHLIGHT.txt', '')
         text_output_path = os.path.join(dir_name, f"{base_name}_COMIC_SCRIPT.txt")
 
         comic_text = None
@@ -1322,7 +1584,11 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
             try:
                 with open(text_output_path, 'r', encoding='utf-8') as tf:
                     comic_text = tf.read()
-                print(f"[INFO]  已存在漫画脚本，复用: {os.path.basename(text_output_path)}")
+                if is_valid_comic_script(comic_text):
+                    print(f"[INFO]  已存在漫画脚本，复用: {os.path.basename(text_output_path)}")
+                else:
+                    print(f"[WARNING]  已存在漫画脚本无效或疑似截断，重新生成: {os.path.basename(text_output_path)}")
+                    comic_text = None
             except Exception as e:
                 print(f"[WARNING]  读取已存在漫画脚本失败，重新生成: {e}")
 
@@ -1332,6 +1598,13 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
         # 如果脚本生成失败（使用原文作为备选），则不生成图片
         if not is_comic_generated:
             print("[ERROR] 漫画脚本生成失败，跳过图像生成")
+            write_comic_generation_meta(output_path, {
+                "status": "failure",
+                "model": None,
+                "endpoint": "comic-script",
+                "reason": "漫画脚本生成失败，跳过图像生成",
+                "attempts": get_last_image_generation_meta().get("attempts") or [],
+            })
             return None
 
         # 图像生成成功，现在保存漫画脚本（只在真正生成脚本时保存，不保存原文备选）
@@ -1340,6 +1613,9 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
                 with open(text_output_path, 'w', encoding='utf-8') as tf:
                     tf.write(comic_text)
                 print(f"[OK] 漫画脚本已保存: {os.path.basename(text_output_path)}")
+                write_comic_script_meta(text_output_path, get_comic_script_meta())
+            elif os.path.exists(text_output_path) and not os.path.exists(comic_script_meta_path(text_output_path)):
+                write_comic_script_meta(text_output_path, get_comic_script_meta())
         except Exception as e:
             print(f"[WARNING] 保存漫画脚本失败: {e}")
 
@@ -1367,21 +1643,56 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
 
         if not comic_result:
             print("[ERROR] 所有图像生成API都失败，无返回结果")
+            failure_meta = get_last_image_generation_meta()
+            if failure_meta.get("status") in (None, "not_started"):
+                failure_meta = {
+                    "status": "failure",
+                    "model": None,
+                    "endpoint": "all",
+                    "reason": "所有图像生成API都失败，无返回结果",
+                    "attempts": [],
+                }
+            write_comic_generation_meta(output_path, failure_meta)
             return None
         
         print(f"[DEBUG] comic_result类型: {type(comic_result)}, 内容: {comic_result}")
         
         # 确定输出路径
-        output_path = os.path.join(dir_name, f"{base_name}_COMIC_FACTORY.png")
         print(f"[DEBUG] 输出路径: {output_path}")
 
         # 保存结果
-        return save_comic_result(output_path, comic_result)
+        saved_path = save_comic_result(output_path, comic_result)
+        success_meta = get_last_image_generation_meta()
+        if success_meta.get("status") in (None, "not_started"):
+            success_meta = {
+                "status": "success",
+                "model": "googleImage" if use_google else None,
+                "endpoint": "googleImage" if use_google else None,
+                "reason": "生成成功",
+                "attempts": [],
+            }
+        write_comic_generation_meta(output_path, success_meta)
+        if saved_path != output_path:
+            write_comic_generation_meta(saved_path, success_meta)
+        return saved_path
         
     except Exception as e:
         print(f"[ERROR] 生成漫画失败: {e}")
         safe_print_exc()
+        try:
+            write_comic_generation_meta(output_path, {
+                "status": "failure",
+                "model": None,
+                "endpoint": "all",
+                "reason": str(e),
+                "attempts": get_last_image_generation_meta().get("attempts") or [],
+            })
+        except Exception:
+            pass
         return None
+    finally:
+        if lock_acquired and lock_path:
+            release_generation_lock(lock_path)
 
 def main():
     """主函数"""
@@ -1427,7 +1738,7 @@ def main():
             highlight_files = []
             for root, dirs, files in os.walk(directory):
                 for file in files:
-                    if "_AI_HIGHLIGHT.txt" in file:
+                    if file.endswith("_AI_HIGHLIGHT.txt"):
                         highlight_files.append(os.path.join(root, file))
             
             print(f"找到 {len(highlight_files)} 个AI_HIGHLIGHT文件")

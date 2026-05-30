@@ -116,7 +116,8 @@ def deep_merge(target: Dict[str, Any], source: Dict[str, Any]) -> Dict[str, Any]
 def read_json_file(file_path: str) -> Dict[str, Any]:
     """读取JSON文件"""
     try:
-        with open(file_path, 'r', encoding='utf-8') as f:
+        # 兼容带 BOM 的 UTF-8 JSON 配置文件
+        with open(file_path, 'r', encoding='utf-8-sig') as f:
             return json.load(f)
     except Exception as e:
         raise Exception(f"Failed to read JSON file {file_path}: {e}")
@@ -169,6 +170,10 @@ def get_config(force_reload: bool = False) -> Dict[str, Any]:
         # bilibili -> bilibili
         if 'bilibili' in secrets:
             mapped_secrets['bilibili'] = secrets['bilibili']
+
+        # wechatWork -> wechatWork，用于 Python 侧图片限流告警
+        if 'wechatWork' in secrets:
+            mapped_secrets['wechatWork'] = secrets['wechatWork']
         
         # 合并映射后的secrets
         config = deep_merge(config, mapped_secrets)

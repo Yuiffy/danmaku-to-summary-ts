@@ -47,6 +47,92 @@ export interface AudioConfig {
   storage: AudioStorageConfig;
 }
 
+export interface AsrRoutingRule {
+  match: {
+    room_id?: string;
+    uid?: string;
+    streamer_name?: string;
+    channel_id?: string;
+  };
+  backend: 'whisper' | 'sensevoice';
+  hotwords?: AsrHotword[];
+  corrections?: AsrCorrectionsConfig;
+}
+
+export interface AsrHotword {
+  word: string;
+  weight?: number;
+  aliases?: string[];
+  contextual_aliases?: string[];
+  require_nearby?: string[];
+}
+
+export interface AsrCorrection {
+  from: string;
+  to: string;
+}
+
+export interface AsrContextualCorrection extends AsrCorrection {
+  require_nearby: string[];
+}
+
+export type AsrCorrectionsConfig =
+  | AsrCorrection[]
+  | Record<string, string>
+  | {
+      safe?: AsrCorrection[] | Record<string, string>;
+      contextual?: AsrContextualCorrection[];
+    };
+
+export interface AsrSpeakerReferenceConfig {
+  speaker: string;
+  audio_path: string;
+  start_s?: number;
+  end_s?: number;
+  chunk_s?: number;
+  max_chunks?: number;
+}
+
+export interface AsrConfig {
+  default_backend: 'whisper' | 'sensevoice';
+  backend?: 'whisper' | 'sensevoice';
+  common_hotwords?: AsrHotword[];
+  corrections?: AsrCorrectionsConfig;
+  routing: AsrRoutingRule[];
+  whisper: {
+    model: string;
+    language: string;
+  };
+  sensevoice: {
+    model: string;
+    vad_model: string;
+    punc_model: string;
+    spk_model?: string | null;
+    language: string;
+    device: 'cuda' | 'cpu' | string;
+    use_itn: boolean;
+    max_vad_segment_s?: number;
+    merge_length_s?: number;
+    process_timeout_s?: number;
+    enable_speaker: boolean;
+    preset_spk_num?: number | null;
+    speaker_merge_threshold?: number;
+    speaker_references?: AsrSpeakerReferenceConfig[];
+    speaker_reference_threshold?: number;
+  };
+}
+
+export interface SubtitleConfig {
+  max_chars_per_line: number;
+  max_chars_per_segment: number;
+  min_duration: number;
+  max_duration: number;
+  gap_split_threshold: number;
+  merge_short_segments: boolean;
+  avoid_overlap: boolean;
+  strip_punctuation: boolean;
+}
+
 // Gemini配置
 export interface GeminiConfig {
   apiKey: string;
@@ -124,6 +210,8 @@ export interface RoomAIConfig {
   characterDescription?: string;
   anchorName?: string;
   fanName?: string;
+  /** Whisper 排队优先级，数值越大越优先；同优先级按入队先后处理 */
+  whisperPriority?: number;
   enableTextGeneration?: boolean;
   enableComicGeneration?: boolean;
   /** 是否启用延迟回复 */
@@ -179,6 +267,18 @@ export interface DelayedReplyConfig {
   retryDelayMinutes: number;
 }
 
+// 弹幕风控监控配置
+export interface DanmuRiskControlConfig {
+  /** 是否启用弹幕风控监控 */
+  enabled: boolean;
+  /** 检查间隔（毫秒），默认 300000 (5分钟) */
+  intervalMs: number;
+  /** 要监控的房间ID列表 */
+  roomIds: string[];
+  /** 通知冷却时间（毫秒），同一房间在此时间内不重复通知，默认 1800000 (30分钟) */
+  notifyCooldownMs: number;
+}
+
 // B站配置
 export interface BilibiliConfig {
   enabled: boolean;
@@ -197,6 +297,7 @@ export interface BilibiliConfig {
     delayedReplyEnabled?: boolean;
   }>;
   delayedReply: DelayedReplyConfig;
+  danmuRiskControl?: DanmuRiskControlConfig;
 }
 
 // 企业微信配置
@@ -228,6 +329,8 @@ export interface AppConfig {
   };
   webhook: WebhookConfig;
   audio: AudioConfig;
+  asr: AsrConfig;
+  subtitle: SubtitleConfig;
   ai: AIConfig;
   fusion: FusionConfig;
   storage: StorageConfig;
