@@ -13,6 +13,7 @@ import { DelayedReplyStore } from './bilibili/DelayedReplyStore';
 import { IDelayedReplyService } from './bilibili/interfaces/IDelayedReplyService';
 import { IDelayedReplyStore } from './bilibili/interfaces/IDelayedReplyStore';
 import { WeChatWorkNotifier } from './notification/WeChatWorkNotifier';
+import { DanmuRiskControlMonitor } from './bilibili/DanmuRiskControlMonitor';
 
 /**
  * 服务状态
@@ -72,6 +73,7 @@ export class ServiceManager {
   private delayedReplyStore?: IDelayedReplyStore;
   private delayedReplyService?: IDelayedReplyService;
   private weChatWorkNotifier?: WeChatWorkNotifier;
+  private danmuRiskControlMonitor?: DanmuRiskControlMonitor;
 
   /**
    * 获取logger（安全方法）
@@ -130,6 +132,13 @@ export class ServiceManager {
       if (this.delayedReplyService && 'start' in this.delayedReplyService) {
         await this.startService('delayed-reply', () => (this.delayedReplyService as any).start());
       }
+
+      // 启动弹幕风控监控
+      if (this.danmuRiskControlMonitor) {
+        await this.startService('danmu-risk-control', async () => {
+          this.danmuRiskControlMonitor!.start();
+        });
+      }
       
       // 其他服务按需启动
       // 音频处理服务、AI生成服务等通常是按需使用，不需要常驻启动
@@ -151,6 +160,13 @@ export class ServiceManager {
       // 停止Webhook服务
       if (this.webhookService) {
         await this.stopService('webhook', () => this.webhookService!.stop());
+      }
+
+      // 停止弹幕风控监控
+      if (this.danmuRiskControlMonitor) {
+        await this.stopService('danmu-risk-control', async () => {
+          this.danmuRiskControlMonitor!.stop();
+        });
       }
       
       // 清理其他服务资源
@@ -550,6 +566,17 @@ export class ServiceManager {
       }
     });
 
+    // 弹幕风控监控
+    await this.initializeService('danmu-risk-control', async () => {
+      const config = ConfigProvider.getConfig();
+      const rkcConfig = config.bilibili?.danmuRiskControl;
+      if (rkcConfig?.enabled) {
+        this.danmuRiskControlMonitor = new DanmuRiskControlMonitor(this.weChatWorkNotifier);
+      } else {
+        this.getLogger().info('弹幕风控监控未启用，跳过初始化');
+      }
+    });
+
     // 将延迟回复服务注入到WebhookService
     if (this.webhookService && this.delayedReplyService) {
       this.webhookService.setDelayedReplyService(this.delayedReplyService);
@@ -629,6 +656,11 @@ export class ServiceManager {
     // 停止回复管理器
     if (this.replyManager) {
       await this.replyManager.stop();
+    }
+
+    // 停止弹幕风控监控
+    if (this.danmuRiskControlMonitor) {
+      this.danmuRiskControlMonitor.stop();
     }
 
     // 停止延迟回复服务

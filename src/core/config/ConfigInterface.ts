@@ -267,6 +267,18 @@ export interface DelayedReplyConfig {
   retryDelayMinutes: number;
 }
 
+// 弹幕风控监控配置
+export interface DanmuRiskControlConfig {
+  /** 是否启用弹幕风控监控 */
+  enabled: boolean;
+  /** 检查间隔（毫秒），默认 300000 (5分钟) */
+  intervalMs: number;
+  /** 要监控的房间ID列表 */
+  roomIds: string[];
+  /** 通知冷却时间（毫秒），同一房间在此时间内不重复通知，默认 1800000 (30分钟) */
+  notifyCooldownMs: number;
+}
+
 // B站配置
 export interface BilibiliConfig {
   enabled: boolean;
@@ -285,6 +297,7 @@ export interface BilibiliConfig {
     delayedReplyEnabled?: boolean;
   }>;
   delayedReply: DelayedReplyConfig;
+  danmuRiskControl?: DanmuRiskControlConfig;
 }
 
 // 企业微信配置

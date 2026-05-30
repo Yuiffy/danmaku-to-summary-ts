@@ -333,6 +333,12 @@
       "delayMinutes": 10,
       "maxRetries": 3,
       "retryDelayMinutes": 5
+    },
+    "danmuRiskControl": {
+      "enabled": false,
+      "intervalMs": 300000,
+      "roomIds": [],
+      "notifyCooldownMs": 1800000
     }
   },
   "whisper": {
