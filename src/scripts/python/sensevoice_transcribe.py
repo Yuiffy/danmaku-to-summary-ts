@@ -275,6 +275,17 @@ def split_vad_segments(vad_segments, max_segment_s):
     return split_segments
 
 
+def get_safe_asr_segment_s(payload):
+    requested = float(payload.get("max_vad_segment_s", 8) or 8)
+    cap = float(payload.get("asr_max_segment_s", 8) or 8)
+    if requested > cap:
+        log_progress(
+            f"ASR 转写块已限制为 {cap:g}s，避免 SenseVoice 长音频块漏字 "
+            f"(requested max_vad_segment_s={requested:g}s)"
+        )
+    return min(requested, cap)
+
+
 def has_timed_segments(raw_result):
     if isinstance(raw_result, dict):
         candidates = raw_result.get("sentence_info") or raw_result.get("segments") or raw_result.get("result")
@@ -504,8 +515,14 @@ def main():
             merge_length_ms = int(float(payload.get("merge_length_s", 8)) * 1000)
             if merge_length_ms > 0:
                 vad_segments = merge_vad_segments(vad_segments, merge_length_ms)
-            vad_segments = split_vad_segments(vad_segments, payload.get("max_vad_segment_s", 8))
-            log_progress(f"VAD 合并/切分后: segments={len(vad_segments)}, merge_length_s={payload.get('merge_length_s', 8)}, max_vad_segment_s={payload.get('max_vad_segment_s', 8)}")
+            asr_max_segment_s = get_safe_asr_segment_s(payload)
+            vad_segments = split_vad_segments(vad_segments, asr_max_segment_s)
+            log_progress(
+                f"VAD 合并/切分后: segments={len(vad_segments)}, "
+                f"merge_length_s={payload.get('merge_length_s', 8)}, "
+                f"max_vad_segment_s={payload.get('max_vad_segment_s', 8)}, "
+                f"asr_max_segment_s={asr_max_segment_s:g}"
+            )
 
             raw_result = []
             if vad_segments:
