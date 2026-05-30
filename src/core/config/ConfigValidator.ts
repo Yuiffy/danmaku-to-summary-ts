@@ -135,6 +135,8 @@ export class ConfigValidator {
           enable_speaker: false,
           preset_spk_num: null,
           speaker_merge_threshold: 0.78,
+          speaker_references: [],
+          speaker_reference_threshold: 0.45,
         },
       },
       subtitle: {

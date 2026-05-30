@@ -1,0 +1,51 @@
+[
+  {
+    "speaker": "岁己SUI",
+    "key": "sui",
+    "audio_path": "D:\\workspace\\myrepo\\danmaku-to-summary-ts\\data\\asr_speaker_refs\\sui.wav",
+    "seconds": 154.54,
+    "source_count": 1
+  },
+  {
+    "speaker": "栞栞",
+    "key": "shiori",
+    "audio_path": "D:\\workspace\\myrepo\\danmaku-to-summary-ts\\data\\asr_speaker_refs\\shiori.wav",
+    "seconds": 87.09,
+    "source_count": 4
+  },
+  {
+    "speaker": "星汐Seki",
+    "key": "seki",
+    "audio_path": "D:\\workspace\\myrepo\\danmaku-to-summary-ts\\data\\asr_speaker_refs\\seki.wav",
+    "seconds": 72.07,
+    "source_count": 2
+  },
+  {
+    "speaker": "弥月Mizuki",
+    "key": "mizuki",
+    "audio_path": "D:\\workspace\\myrepo\\danmaku-to-summary-ts\\data\\asr_speaker_refs\\mizuki.wav",
+    "seconds": 110.67,
+    "source_count": 3
+  },
+  {
+    "speaker": "瑞娅",
+    "key": "rhea",
+    "audio_path": "D:\\workspace\\myrepo\\danmaku-to-summary-ts\\data\\asr_speaker_refs\\rhea.wav",
+    "seconds": 68.45,
+    "source_count": 2
+  },
+  {
+    "speaker": "米汀",
+    "key": "miting",
+    "audio_path": "D:\\workspace\\myrepo\\danmaku-to-summary-ts\\data\\asr_speaker_refs\\miting.wav",
+    "seconds": 154.62,
+    "source_count": 2
+  },
+  {
+    "speaker": "花礼Harei",
+    "key": "harei",
+    "audio_path": "D:\\workspace\\myrepo\\danmaku-to-summary-ts\\data\\asr_speaker_refs\\harei.wav",
+    "seconds": 49.15,
+    "source_count": 2
+  }
+]

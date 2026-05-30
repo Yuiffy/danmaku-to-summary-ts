@@ -44,7 +44,7 @@ __pycache__/
 
 # local tool/runtime state
 .gemini/
-data/
+data/delayed_reply_tasks.*
 src/temp/
 src/scripts/.whisper_queue.json
 nul

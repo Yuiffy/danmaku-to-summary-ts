@@ -84,6 +84,15 @@ export type AsrCorrectionsConfig =
       contextual?: AsrContextualCorrection[];
     };
 
+export interface AsrSpeakerReferenceConfig {
+  speaker: string;
+  audio_path: string;
+  start_s?: number;
+  end_s?: number;
+  chunk_s?: number;
+  max_chunks?: number;
+}
+
 export interface AsrConfig {
   default_backend: 'whisper' | 'sensevoice';
   backend?: 'whisper' | 'sensevoice';
@@ -108,6 +117,8 @@ export interface AsrConfig {
     enable_speaker: boolean;
     preset_spk_num?: number | null;
     speaker_merge_threshold?: number;
+    speaker_references?: AsrSpeakerReferenceConfig[];
+    speaker_reference_threshold?: number;
   };
 }
 

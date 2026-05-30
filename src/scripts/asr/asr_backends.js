@@ -27,7 +27,9 @@ const DEFAULT_ASR_CONFIG = {
         process_timeout_s: 1800,
         enable_speaker: false,
         preset_spk_num: null,
-        speaker_merge_threshold: 0.78
+        speaker_merge_threshold: 0.78,
+        speaker_references: [],
+        speaker_reference_threshold: 0.45
     }
 };
 

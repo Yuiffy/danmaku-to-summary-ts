@@ -46,7 +46,8 @@ def fail(message, detail=None, code=1):
 
 def load_payload():
     try:
-        raw = sys.stdin.read().lstrip("\ufeff")
+        raw_bytes = sys.stdin.buffer.read()
+        raw = raw_bytes.decode("utf-8-sig").lstrip("\ufeff")
         if not raw.strip():
             fail("SenseVoice 输入为空，请通过 stdin 传入 JSON 配置")
         return json.loads(raw)
@@ -67,6 +68,37 @@ MODEL_ALIASES = {
 
 def clean_text(text):
     return TAG_RE.sub("", str(text or "")).strip()
+
+
+def clean_punctuation_text(text):
+    cleaned = clean_text(text)
+    punctuation = set("，。！？；：,.?!;:")
+    sentence_end = set("。！？.?!")
+    comma_like = set("，,")
+    result = []
+    for char in cleaned:
+        if result and char in punctuation and result[-1] in punctuation:
+            if result[-1] == char:
+                continue
+            if result[-1] in comma_like and char in sentence_end:
+                result[-1] = char
+                continue
+            if result[-1] in sentence_end:
+                continue
+        result.append(char)
+    return "".join(result).strip()
+
+
+def is_meaningless_asr_text(text):
+    cleaned = clean_text(text).strip()
+    if not cleaned:
+        return True
+    if re.fullmatch(r"[\s\W_.。，！？!?]+", cleaned):
+        return True
+    if cleaned.lower() in {"i", "i.", "yeah", "yeah.", "ok", "okay"}:
+        return True
+    meaningful = re.sub(r"[\s\W_.。，！？!?]+", "", cleaned)
+    return len(meaningful) <= 1
 
 
 def resolve_cached_model_name(model_name):
@@ -131,6 +163,8 @@ def normalize_segments(raw_result):
         segment = {"start": start, "end": end, "text": text}
         if speaker is not None:
             segment["speaker"] = str(speaker)
+        if item.get("speaker_score"):
+            segment["speaker_score"] = item.get("speaker_score")
         segments.append(segment)
 
     return segments
@@ -209,9 +243,9 @@ def restore_punctuation(punc_model, text):
         if isinstance(result, list) and result:
             item = result[0]
             if isinstance(item, dict):
-                return clean_text(item.get("text") or item.get("sentence") or cleaned)
+                return clean_punctuation_text(item.get("text") or item.get("sentence") or cleaned)
         if isinstance(result, dict):
-            return clean_text(result.get("text") or result.get("sentence") or cleaned)
+            return clean_punctuation_text(result.get("text") or result.get("sentence") or cleaned)
         return cleaned
     except Exception as exc:
         if not PUNC_GENERATE_WARNED:
@@ -268,6 +302,7 @@ def normalize_model_results_with_meta(results, meta, punc_model):
             "text": text,
             "time_unit": "seconds",
             "speaker": meta.get("speaker"),
+            "speaker_score": meta.get("speaker_score"),
         }]
 
     raw_segments = normalize_segments(results)
@@ -283,6 +318,8 @@ def normalize_model_results_with_meta(results, meta, punc_model):
         segment["text"] = restore_punctuation(punc_model, segment.get("text", ""))
         if meta.get("speaker") and not segment.get("speaker"):
             segment["speaker"] = meta.get("speaker")
+        if meta.get("speaker_score"):
+            segment["speaker_score"] = meta.get("speaker_score")
         timed_segments.append(segment)
 
     return timed_segments
@@ -306,6 +343,75 @@ def load_audio_16k_mono(audio_path):
         )
         import librosa
         return librosa.load(audio_path, sr=16000, mono=True)
+
+
+def build_speaker_reference_centroids(spk_model_obj, references, device):
+    if not isinstance(references, list) or not references:
+        return None
+
+    import torch
+
+    centroids = {}
+    max_chunks = 24
+    for ref in references:
+        if not isinstance(ref, dict):
+            continue
+        speaker = str(ref.get("speaker") or ref.get("label") or "").strip()
+        audio_path = ref.get("audio_path") or ref.get("path")
+        if not speaker or not audio_path or not os.path.exists(audio_path):
+            continue
+        log_progress(f"加载说话人参考音频: speaker={speaker}, path={audio_path}")
+        audio, sample_rate = load_audio_16k_mono(audio_path)
+        start_s = max(0.0, float(ref.get("start_s", 0) or 0))
+        end_s = float(ref.get("end_s", 0) or 0)
+        start_idx = min(len(audio), int(start_s * sample_rate))
+        end_idx = min(len(audio), int(end_s * sample_rate)) if end_s > start_s else len(audio)
+        audio = audio[start_idx:end_idx]
+        chunk_s = float(ref.get("chunk_s", 8) or 8)
+        max_chunks = int(ref.get("max_chunks", max_chunks) or max_chunks)
+        chunk_len = max(1, int(chunk_s * sample_rate))
+        chunks = []
+        for idx in range(0, len(audio), chunk_len):
+            chunk = audio[idx:idx + chunk_len]
+            if len(chunk) < sample_rate:
+                continue
+            chunks.append(chunk)
+            if len(chunks) >= max_chunks:
+                break
+        if not chunks:
+            continue
+        results = spk_model_obj.generate(input=chunks, cache={}, is_final=True)
+        embeddings = torch.cat([r["spk_embedding"] for r in results], dim=0)
+        centroid = embeddings.mean(dim=0, keepdim=True)
+        centroid = torch.nn.functional.normalize(centroid, dim=1)
+        centroids[speaker] = centroid.to("cpu")
+        log_progress(f"参考说话人完成: speaker={speaker}, chunks={len(chunks)}")
+    return centroids or None
+
+
+def classify_speaker_embeddings(spk_results, references, threshold):
+    if not references:
+        return None
+
+    import torch
+
+    labels = []
+    ref_items = list(references.items())
+    for result in spk_results:
+        embedding = torch.nn.functional.normalize(result["spk_embedding"].to("cpu"), dim=1)
+        best_label = None
+        best_score = -1.0
+        for label, centroid in ref_items:
+            score = float(torch.matmul(embedding, centroid.T).max().item())
+            if score > best_score:
+                best_label = label
+                best_score = score
+        labels.append({
+            "label": best_label if best_score >= threshold else "UNKNOWN",
+            "score": best_score,
+            "best_label": best_label,
+        })
+    return labels
 
 
 def main():
@@ -412,6 +518,7 @@ def main():
                 batch_meta = []
                 batch_duration = 0.0
                 speaker_labels = {}
+                speaker_scores = {}
                 transcribed_segments = 0
                 total_segments = len(vad_segments)
 
@@ -447,17 +554,34 @@ def main():
                                     cache={},
                                     is_final=True,
                                 )
-                            embeddings = torch.cat([r["spk_embedding"] for r in spk_results], dim=0)
-                            cluster = ClusterBackend(
-                                merge_thr=float(payload.get("speaker_merge_threshold", 0.78))
-                            ).to("cuda:0" if device == "cuda" else device)
-                            preset_spk_num = payload.get("preset_spk_num")
-                            labels = cluster(
-                                embeddings.cpu(),
-                                oracle_num=int(preset_spk_num) if preset_spk_num else None,
+                            reference_centroids = build_speaker_reference_centroids(
+                                spk_model_obj,
+                                payload.get("speaker_references"),
+                                device,
                             )
+                            labels = classify_speaker_embeddings(
+                                spk_results,
+                                reference_centroids,
+                                float(payload.get("speaker_reference_threshold", 0.45)),
+                            )
+                            if labels is None:
+                                embeddings = torch.cat([r["spk_embedding"] for r in spk_results], dim=0)
+                                cluster = ClusterBackend(
+                                    merge_thr=float(payload.get("speaker_merge_threshold", 0.78))
+                                ).to("cuda:0" if device == "cuda" else device)
+                                preset_spk_num = payload.get("preset_spk_num")
+                                labels = cluster(
+                                    embeddings.cpu(),
+                                    oracle_num=int(preset_spk_num) if preset_spk_num else None,
+                                )
                             for seg_index, label in zip(speaker_chunk_to_segment, labels):
-                                speaker_labels[seg_index] = f"SPEAKER_{int(label):02d}"
+                                if isinstance(label, dict):
+                                    speaker_labels[seg_index] = label.get("label")
+                                    speaker_scores[seg_index] = label
+                                elif isinstance(label, str):
+                                    speaker_labels[seg_index] = label
+                                else:
+                                    speaker_labels[seg_index] = f"SPEAKER_{int(label):02d}"
                             log_progress(f"说话人聚类完成: labels={len(set(speaker_labels.values()))}, chunks={len(speaker_chunks)}")
                     except Exception as exc:
                         fail(
@@ -486,7 +610,11 @@ def main():
                                 use_itn=bool(payload.get("use_itn", True)),
                                 batch_size_s=batch_size_s,
                             )
-                        raw_result.extend(normalize_model_results_with_meta(results, meta, punc_model_obj))
+                        normalized_items = normalize_model_results_with_meta(results, meta, punc_model_obj)
+                        for item in normalized_items:
+                            if is_meaningless_asr_text(item.get("text", "")):
+                                item["speaker"] = None
+                        raw_result.extend(normalized_items)
                     batch_audio = []
                     batch_meta = []
                     batch_duration = 0.0
@@ -508,6 +636,7 @@ def main():
                         "start": start,
                         "end": end,
                         "speaker": speaker_labels.get(seg_index),
+                        "speaker_score": speaker_scores.get(seg_index),
                     })
                     batch_duration += duration
                 flush_batch()
