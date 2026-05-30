@@ -56,13 +56,15 @@ export interface AsrRoutingRule {
   };
   backend: 'whisper' | 'sensevoice';
   hotwords?: AsrHotword[];
-  corrections?: AsrCorrection[] | Record<string, string>;
+  corrections?: AsrCorrectionsConfig;
 }
 
 export interface AsrHotword {
   word: string;
   weight?: number;
   aliases?: string[];
+  contextual_aliases?: string[];
+  require_nearby?: string[];
 }
 
 export interface AsrCorrection {
@@ -70,11 +72,23 @@ export interface AsrCorrection {
   to: string;
 }
 
+export interface AsrContextualCorrection extends AsrCorrection {
+  require_nearby: string[];
+}
+
+export type AsrCorrectionsConfig =
+  | AsrCorrection[]
+  | Record<string, string>
+  | {
+      safe?: AsrCorrection[] | Record<string, string>;
+      contextual?: AsrContextualCorrection[];
+    };
+
 export interface AsrConfig {
   default_backend: 'whisper' | 'sensevoice';
   backend?: 'whisper' | 'sensevoice';
   common_hotwords?: AsrHotword[];
-  corrections?: AsrCorrection[] | Record<string, string>;
+  corrections?: AsrCorrectionsConfig;
   routing: AsrRoutingRule[];
   whisper: {
     model: string;
@@ -88,6 +102,8 @@ export interface AsrConfig {
     language: string;
     device: 'cuda' | 'cpu' | string;
     use_itn: boolean;
+    max_vad_segment_s?: number;
+    merge_length_s?: number;
     enable_speaker: boolean;
     preset_spk_num?: number | null;
     speaker_merge_threshold?: number;

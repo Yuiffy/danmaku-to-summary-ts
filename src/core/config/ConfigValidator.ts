@@ -129,6 +129,8 @@ export class ConfigValidator {
           language: 'auto',
           device: 'cuda',
           use_itn: true,
+          max_vad_segment_s: 8,
+          merge_length_s: 8,
           enable_speaker: false,
           preset_spk_num: null,
           speaker_merge_threshold: 0.78,

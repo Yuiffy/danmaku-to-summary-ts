@@ -22,6 +22,8 @@ const DEFAULT_ASR_CONFIG = {
         language: 'auto',
         device: 'cuda',
         use_itn: true,
+        max_vad_segment_s: 8,
+        merge_length_s: 8,
         enable_speaker: false,
         preset_spk_num: null,
         speaker_merge_threshold: 0.78
@@ -139,11 +141,18 @@ function normalizeHotwordEntry(entry) {
     const aliases = Array.isArray(entry.aliases)
         ? entry.aliases.map(alias => String(alias || '').trim()).filter(Boolean)
         : [];
+    const contextualAliases = Array.isArray(entry.contextual_aliases)
+        ? entry.contextual_aliases.map(alias => String(alias || '').trim()).filter(Boolean)
+        : [];
     const weight = Number(entry.weight);
     return {
         word,
         weight: Number.isFinite(weight) ? weight : undefined,
-        aliases
+        aliases,
+        contextual_aliases: contextualAliases,
+        require_nearby: Array.isArray(entry.require_nearby)
+            ? entry.require_nearby.map(value => String(value || '').trim()).filter(Boolean)
+            : undefined
     };
 }
 
@@ -161,18 +170,26 @@ function addHotword(target, entry) {
         existing.weight = normalized.weight;
     }
     existing.aliases = Array.from(new Set([...(existing.aliases || []), ...normalized.aliases]));
+    existing.contextual_aliases = Array.from(new Set([...(existing.contextual_aliases || []), ...normalized.contextual_aliases]));
+    if (!existing.require_nearby && normalized.require_nearby) {
+        existing.require_nearby = normalized.require_nearby;
+    }
 }
 
-function addCorrection(target, from, to) {
+function addCorrection(target, from, to, extra = {}) {
     const source = String(from || '').trim();
     const replacement = String(to || '').trim();
     if (!source || !replacement || source === replacement) {
         return;
     }
-    target.set(source, replacement);
+    target.set(source, {
+        from: source,
+        to: replacement,
+        ...extra
+    });
 }
 
-function addCorrections(target, corrections) {
+function addSafeCorrections(target, corrections) {
     if (!corrections) {
         return;
     }
@@ -181,7 +198,11 @@ function addCorrections(target, corrections) {
             if (Array.isArray(item) && item.length >= 2) {
                 addCorrection(target, item[0], item[1]);
             } else if (item && typeof item === 'object') {
-                addCorrection(target, item.from || item.alias || item.source || item.wrong, item.to || item.word || item.target || item.correct);
+                addCorrection(
+                    target,
+                    item.from || item.alias || item.source || item.wrong,
+                    item.to || item.word || item.target || item.correct
+                );
             }
         });
         return;
@@ -191,10 +212,42 @@ function addCorrections(target, corrections) {
     }
 }
 
+function addContextualCorrections(target, corrections) {
+    if (!Array.isArray(corrections)) {
+        return;
+    }
+    corrections.forEach((item) => {
+        if (!item || typeof item !== 'object') {
+            return;
+        }
+        const requireNearby = Array.isArray(item.require_nearby)
+            ? item.require_nearby.map(value => String(value || '').trim()).filter(Boolean)
+            : [];
+        addCorrection(target, item.from || item.alias || item.source || item.wrong, item.to || item.word || item.target || item.correct, {
+            require_nearby: requireNearby
+        });
+    });
+}
+
+function addCorrections(targets, corrections) {
+    if (!corrections) {
+        return;
+    }
+    if (corrections.safe || corrections.contextual) {
+        addSafeCorrections(targets.safe, corrections.safe);
+        addContextualCorrections(targets.contextual, corrections.contextual);
+        return;
+    }
+    addSafeCorrections(targets.safe, corrections);
+}
+
 function resolveAsrHotwords(config, context = {}) {
     const asrConfig = getAsrConfig(config);
     const hotwordsByWord = new Map();
-    const corrections = new Map();
+    const corrections = {
+        safe: new Map(),
+        contextual: new Map()
+    };
 
     asrConfig.common_hotwords.forEach(entry => addHotword(hotwordsByWord, entry));
     addCorrections(corrections, asrConfig.corrections);
@@ -214,13 +267,22 @@ function resolveAsrHotwords(config, context = {}) {
 
     const hotwords = Array.from(hotwordsByWord.values());
     hotwords.forEach((entry) => {
-        (entry.aliases || []).forEach(alias => addCorrection(corrections, alias, entry.word));
+        (entry.aliases || []).forEach(alias => addCorrection(corrections.safe, alias, entry.word));
+        (entry.contextual_aliases || []).forEach(alias => addCorrection(corrections.contextual, alias, entry.word, {
+            require_nearby: entry.require_nearby || DEFAULT_CONTEXTUAL_NEARBY_WORDS
+        }));
     });
 
     return {
         hotwords,
-        corrections: Array.from(corrections.entries()).map(([from, to]) => ({ from, to })),
-        hotwordText: hotwords.map(entry => entry.word).join(' ')
+        corrections: {
+            safe: Array.from(corrections.safe.values()),
+            contextual: Array.from(corrections.contextual.values())
+        },
+        hotwordText: hotwords.map(entry => entry.word).join(' '),
+        hotwordTextWeighted: hotwords
+            .map(entry => entry.weight !== undefined ? `${entry.word} ${entry.weight}` : entry.word)
+            .join('\n')
     };
 }
 
@@ -228,7 +290,22 @@ function escapeRegExp(value) {
     return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function applyCorrectionsToText(text, corrections = []) {
+const DEFAULT_CONTEXTUAL_NEARBY_WORDS = ['主播', '直播', '开播', 'SUI', '岁己', '饼干岁', 'VR', 'VirtuaReal'];
+
+function normalizeCorrectionsForApply(corrections = []) {
+    if (Array.isArray(corrections)) {
+        return { safe: corrections, contextual: [] };
+    }
+    if (corrections && typeof corrections === 'object') {
+        return {
+            safe: Array.isArray(corrections.safe) ? corrections.safe : [],
+            contextual: Array.isArray(corrections.contextual) ? corrections.contextual : []
+        };
+    }
+    return { safe: [], contextual: [] };
+}
+
+function applyCorrectionList(text, corrections = []) {
     let output = String(text || '');
     const normalized = Array.isArray(corrections) ? corrections : [];
     const ordered = normalized
@@ -240,8 +317,22 @@ function applyCorrectionsToText(text, corrections = []) {
     return output;
 }
 
+function applyCorrectionsToText(text, corrections = []) {
+    const grouped = normalizeCorrectionsForApply(corrections);
+    let output = applyCorrectionList(text, grouped.safe);
+    const contextual = grouped.contextual.filter((item) => {
+        const nearby = Array.isArray(item.require_nearby)
+            ? item.require_nearby.map(value => String(value || '').trim()).filter(Boolean)
+            : [];
+        return nearby.length > 0 && nearby.some(keyword => output.includes(keyword));
+    });
+    output = applyCorrectionList(output, contextual);
+    return output;
+}
+
 function applyCorrectionsToAsrResult(result, corrections = []) {
-    if (!corrections || corrections.length === 0) {
+    const grouped = normalizeCorrectionsForApply(corrections);
+    if (grouped.safe.length === 0 && grouped.contextual.length === 0) {
         return result;
     }
     return {
@@ -458,7 +549,8 @@ async function transcribeSenseVoice(mediaPath, config = {}, runtimeOptions = {})
         ...asrConfig.sensevoice,
         audio_path: mediaPath,
         hotwords: runtimeOptions.hotwords || [],
-        hotword: runtimeOptions.hotwordText || ''
+        hotword: runtimeOptions.hotwordTextWeighted || runtimeOptions.hotwordText || '',
+        hotword_unweighted: runtimeOptions.hotwordText || ''
     };
     return runJsonPython(scriptPath, options);
 }

@@ -84,10 +84,15 @@ describe('asr_backends', () => {
     const result = asr.resolveAsrHotwords({
       asr: {
         common_hotwords: [
-          { word: '岁己', weight: 20, aliases: ['岁几', '随机'] },
+          { word: '岁己', weight: 20, aliases: ['岁几'], contextual_aliases: ['随机'] },
           { word: 'VirtuaReal', weight: 18, aliases: ['V R'] }
         ],
-        corrections: { 微阿: 'VirtuaReal' },
+        corrections: {
+          safe: { 微阿: 'VirtuaReal' },
+          contextual: [
+            { from: '随即', to: '岁己', require_nearby: ['主播'] }
+          ]
+        },
         routing: [
           {
             match: { streamer_name: '岁己SUI' },
@@ -103,13 +108,17 @@ describe('asr_backends', () => {
 
     expect(result.hotwords.map((item: any) => item.word)).toEqual(['岁己', 'VirtuaReal', '岁己SUI']);
     expect(result.hotwordText).toBe('岁己 VirtuaReal 岁己SUI');
-    expect(result.corrections).toEqual(expect.arrayContaining([
+    expect(result.hotwordTextWeighted).toBe('岁己 20\nVirtuaReal 18\n岁己SUI 20');
+    expect(result.corrections.safe).toEqual(expect.arrayContaining([
       { from: '岁几', to: '岁己' },
-      { from: '随机', to: '岁己' },
       { from: 'V R', to: 'VirtuaReal' },
       { from: '微阿', to: 'VirtuaReal' },
       { from: '岁己苏伊', to: '岁己SUI' },
       { from: '岁己sui', to: '岁己SUI' }
+    ]));
+    expect(result.corrections.contextual).toEqual(expect.arrayContaining([
+      { from: '随机', to: '岁己', require_nearby: expect.arrayContaining(['主播', '直播', '开播']) },
+      { from: '随即', to: '岁己', require_nearby: ['主播'] }
     ]));
   });
 
@@ -130,6 +139,44 @@ describe('asr_backends', () => {
     expect(content).toContain('岁己和VirtuaReal晚上好');
     expect(content).not.toContain('随机');
     require('fs').unlinkSync(tmp);
+  });
+
+  test('contextual aliases do not replace unrelated text', () => {
+    const corrections = {
+      safe: [{ from: '岁几', to: '岁己' }],
+      contextual: [
+        { from: '随机', to: '岁己', require_nearby: ['主播', '开播', '岁己'] }
+      ]
+    };
+
+    expect(asr.applyCorrectionsToText('随机匹配一个数字', corrections)).toBe('随机匹配一个数字');
+    expect(asr.applyCorrectionsToText('岁几晚上好', corrections)).toBe('岁己晚上好');
+    expect(asr.applyCorrectionsToText('主播随机开播了', corrections)).toBe('主播岁己开播了');
+    expect(asr.applyCorrectionsToText('岁己今天随机开播了', corrections)).toBe('岁己今天岁己开播了');
+  });
+
+  test('psp room routing can select sensevoice', () => {
+    const result = asr.resolveAsrBackend({
+      asr: {
+        default_backend: 'whisper',
+        routing: [
+          {
+            match: { room_id: '1603600' },
+            backend: 'sensevoice',
+            hotwords: [{ word: '星汐Seki', weight: 20 }]
+          }
+        ]
+      }
+    }, { room_id: '1603600' });
+
+    expect(result.backend).toBe('sensevoice');
+  });
+
+  test('compare cli keeps backend list for backend-specific srt naming', () => {
+    const parsed = asr.parseCliArgs(['--asr-compare', 'whisper,sensevoice', 'D:/video.flv']);
+
+    expect(parsed.options.asrCompare).toEqual(['whisper', 'sensevoice']);
+    expect(parsed.inputPaths).toEqual(['D:/video.flv']);
   });
 
   test('does not split ascii words when wrapping subtitles', () => {

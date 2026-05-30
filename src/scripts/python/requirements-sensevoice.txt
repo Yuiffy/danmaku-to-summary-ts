@@ -1,5 +1,7 @@
 funasr
+librosa
 modelscope
 numpy<2.4,>=2.2
+soundfile
 torch
 torchaudio

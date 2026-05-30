@@ -78,26 +78,155 @@ def normalize_segments(raw_result):
     return segments
 
 
-HOTWORD_UNSUPPORTED_WARNED = False
+HOTWORD_WEIGHTED_UNSUPPORTED_WARNED = False
+HOTWORD_UNWEIGHTED_UNSUPPORTED_WARNED = False
+PUNC_MODEL_WARNED = False
+PUNC_GENERATE_WARNED = False
 
 
 def generate_with_optional_hotword(model, payload, **kwargs):
-    global HOTWORD_UNSUPPORTED_WARNED
-    hotword = str(payload.get("hotword") or "").strip()
-    if not hotword:
+    global HOTWORD_WEIGHTED_UNSUPPORTED_WARNED, HOTWORD_UNWEIGHTED_UNSUPPORTED_WARNED
+    weighted_hotword = str(payload.get("hotword") or "").strip()
+    unweighted_hotword = str(payload.get("hotword_unweighted") or "").strip()
+    if not weighted_hotword and not unweighted_hotword:
         return model.generate(**kwargs)
 
+    if weighted_hotword:
+        try:
+            return model.generate(**kwargs, hotword=weighted_hotword)
+        except Exception as exc:
+            if not HOTWORD_WEIGHTED_UNSUPPORTED_WARNED:
+                print(
+                    f"⚠️ SenseVoice/FunASR 当前版本不支持或无法使用 weighted hotword 参数，"
+                    f"将降级为 unweighted hotword: {exc}",
+                    file=sys.stderr,
+                )
+                HOTWORD_WEIGHTED_UNSUPPORTED_WARNED = True
+
+    if unweighted_hotword:
+        try:
+            return model.generate(**kwargs, hotword=unweighted_hotword)
+        except Exception as exc:
+            if not HOTWORD_UNWEIGHTED_UNSUPPORTED_WARNED:
+                print(
+                    f"⚠️ SenseVoice/FunASR 当前版本不支持或无法使用 unweighted hotword 参数，"
+                    f"已降级为无 hotword 转写并保留后处理 corrections: {exc}",
+                    file=sys.stderr,
+                )
+                HOTWORD_UNWEIGHTED_UNSUPPORTED_WARNED = True
+
+    return model.generate(**kwargs)
+
+
+def load_punc_model(AutoModel, payload, device):
+    global PUNC_MODEL_WARNED
+    punc_model_name = payload.get("punc_model")
+    if not punc_model_name:
+        return None
+
     try:
-        return model.generate(**kwargs, hotword=hotword)
+        return AutoModel(
+            model=punc_model_name,
+            device="cuda:0" if device == "cuda" else device,
+            disable_update=True,
+        )
     except Exception as exc:
-        if not HOTWORD_UNSUPPORTED_WARNED:
+        if not PUNC_MODEL_WARNED:
             print(
-                f"⚠️ SenseVoice/FunASR 当前版本不支持或无法使用 hotword 参数，"
-                f"已降级为无 hotword 转写并保留后处理 corrections: {exc}",
+                f"⚠️ punc_model 加载失败，继续使用未恢复标点的原始文本: {exc}",
                 file=sys.stderr,
             )
-            HOTWORD_UNSUPPORTED_WARNED = True
-        return model.generate(**kwargs)
+            PUNC_MODEL_WARNED = True
+        return None
+
+
+def restore_punctuation(punc_model, text):
+    global PUNC_GENERATE_WARNED
+    cleaned = clean_text(text)
+    if not punc_model or not cleaned:
+        return cleaned
+    try:
+        result = punc_model.generate(input=cleaned)
+        if isinstance(result, list) and result:
+            item = result[0]
+            if isinstance(item, dict):
+                return clean_text(item.get("text") or item.get("sentence") or cleaned)
+        if isinstance(result, dict):
+            return clean_text(result.get("text") or result.get("sentence") or cleaned)
+        return cleaned
+    except Exception as exc:
+        if not PUNC_GENERATE_WARNED:
+            print(
+                f"⚠️ punc_model 调用失败，继续使用原始文本: {exc}",
+                file=sys.stderr,
+            )
+            PUNC_GENERATE_WARNED = True
+        return cleaned
+
+
+def split_vad_segments(vad_segments, max_segment_s):
+    max_ms = int(float(max_segment_s or 0) * 1000)
+    if max_ms <= 0:
+        return vad_segments
+
+    split_segments = []
+    for start_ms, end_ms in vad_segments:
+        start_ms = int(start_ms)
+        end_ms = int(end_ms)
+        cursor = start_ms
+        while end_ms - cursor > max_ms:
+            split_segments.append([cursor, cursor + max_ms])
+            cursor += max_ms
+        if end_ms > cursor:
+            split_segments.append([cursor, end_ms])
+    return split_segments
+
+
+def has_timed_segments(raw_result):
+    if isinstance(raw_result, dict):
+        candidates = raw_result.get("sentence_info") or raw_result.get("segments") or raw_result.get("result")
+        if isinstance(candidates, list):
+            return any(has_timed_segments(item) for item in candidates)
+        return any(key in raw_result for key in ("start", "end", "start_time", "end_time"))
+    if isinstance(raw_result, list):
+        return any(has_timed_segments(item) for item in raw_result)
+    return False
+
+
+def normalize_model_results_with_meta(results, meta, punc_model):
+    timed_segments = []
+    chunk_duration = max(0.0, float(meta["end"]) - float(meta["start"]))
+    has_explicit_timing = has_timed_segments(results)
+
+    if not has_explicit_timing:
+        item = results[0] if results and isinstance(results, list) else {}
+        text = restore_punctuation(punc_model, item.get("text", "") if isinstance(item, dict) else "")
+        if not text:
+            return []
+        return [{
+            "start": meta["start"],
+            "end": meta["end"],
+            "text": text,
+            "time_unit": "seconds",
+            "speaker": meta.get("speaker"),
+        }]
+
+    raw_segments = normalize_segments(results)
+    for segment in raw_segments:
+        start = float(segment.get("start", 0.0))
+        end = float(segment.get("end", start + 0.1))
+        # FunASR sentence_info inside chunk usually returns relative time.
+        if start >= 0 and end <= chunk_duration + 1.0:
+            start += float(meta["start"])
+            end += float(meta["start"])
+        segment["start"] = start
+        segment["end"] = max(end, start + 0.1)
+        segment["text"] = restore_punctuation(punc_model, segment.get("text", ""))
+        if meta.get("speaker") and not segment.get("speaker"):
+            segment["speaker"] = meta.get("speaker")
+        timed_segments.append(segment)
+
+    return timed_segments
 
 
 def main():
@@ -159,6 +288,7 @@ def main():
                 "SenseVoice/FunASR 模型加载失败",
                 f"{exc}\n可能是模型首次下载失败、网络不可用、模型名错误或 CUDA 环境异常。",
             )
+        punc_model_obj = load_punc_model(AutoModel, payload, device)
 
         try:
             vad_model = AutoModel(
@@ -170,9 +300,10 @@ def main():
             vad_segments = vad_result[0].get("value") if vad_result and isinstance(vad_result, list) else []
 
             from funasr.utils.vad_utils import merge_vad as merge_vad_segments
-            merge_length_ms = int(float(payload.get("merge_length_s", 15)) * 1000)
+            merge_length_ms = int(float(payload.get("merge_length_s", 8)) * 1000)
             if merge_length_ms > 0:
                 vad_segments = merge_vad_segments(vad_segments, merge_length_ms)
+            vad_segments = split_vad_segments(vad_segments, payload.get("max_vad_segment_s", 8))
 
             raw_result = []
             if vad_segments:
@@ -242,16 +373,7 @@ def main():
                             use_itn=bool(payload.get("use_itn", True)),
                             batch_size_s=batch_size_s,
                         )
-                        item = results[0] if results and isinstance(results, list) else {}
-                        text = clean_text(item.get("text", "") if isinstance(item, dict) else "")
-                        if text:
-                            raw_result.append({
-                                "start": meta["start"],
-                                "end": meta["end"],
-                                "text": text,
-                                "time_unit": "seconds",
-                                "speaker": meta.get("speaker"),
-                            })
+                        raw_result.extend(normalize_model_results_with_meta(results, meta, punc_model_obj))
                     batch_audio = []
                     batch_meta = []
                     batch_duration = 0.0

@@ -42,7 +42,79 @@
   },
   "asr": {
     "default_backend": "whisper",
-    "common_hotwords": [],
+    "common_hotwords": [
+      {
+        "word": "东爱璃Lovely",
+        "weight": 20,
+        "aliases": ["东爱璃", "Lovely", "爱璃", "东爱丽", "爱丽", "东艾璃", "东艾丽"]
+      },
+      {
+        "word": "星汐Seki",
+        "weight": 20,
+        "aliases": ["星汐", "Seki", "seki", "星夕", "星西", "星希"]
+      },
+      {
+        "word": "礼墨Sumi",
+        "weight": 20,
+        "aliases": ["礼墨", "Sumi", "sumi", "里墨", "礼沫", "李墨"]
+      },
+      {
+        "word": "笙歌",
+        "weight": 20,
+        "aliases": ["帅比笙歌超可爱OvO", "笙歌OvO", "shengge", "生哥", "声歌", "升哥"]
+      },
+      {
+        "word": "伊索尔Sol",
+        "weight": 20,
+        "aliases": ["伊索尔", "Sol", "sol", "索尔", "伊索", "一索尔"]
+      },
+      {
+        "word": "南町Nightin",
+        "weight": 20,
+        "aliases": ["南町", "Nightin", "nightin", "南丁", "南町Night in", "南町奈汀"]
+      },
+      {
+        "word": "MIXUP2026",
+        "weight": 18,
+        "aliases": ["MIXUP", "mixup", "mix up", "Mixup2026", "MIXUP 2026"]
+      },
+      {
+        "word": "PSP",
+        "weight": 18,
+        "aliases": ["P S P", "psp"]
+      },
+      {
+        "word": "VirtuaReal",
+        "weight": 18,
+        "aliases": ["VR", "V R", "虚拟Real", "维阿", "微阿"]
+      },
+      {
+        "word": "岁己SUI",
+        "weight": 20,
+        "aliases": ["岁己", "岁几", "碎己"],
+        "contextual_aliases": ["随机", "随即"]
+      },
+      {
+        "word": "栞栞",
+        "weight": 20,
+        "aliases": ["堪堪", "栞", "Shiori"]
+      },
+      {
+        "word": "米汀",
+        "weight": 18,
+        "aliases": ["Miting", "米丁", "米婷"]
+      },
+      {
+        "word": "瑞娅",
+        "weight": 18,
+        "aliases": ["Rhea", "瑞亚", "蕊娅"]
+      },
+      {
+        "word": "时守星沙",
+        "weight": 18,
+        "aliases": ["星沙", "时守", "时守星砂", "星砂"]
+      }
+    ],
     "corrections": [],
     "routing": [],
     "whisper": {
@@ -57,6 +129,8 @@
       "language": "auto",
       "device": "cuda",
       "use_itn": true,
+      "max_vad_segment_s": 8,
+      "merge_length_s": 8,
       "enable_speaker": false,
       "preset_spk_num": null,
       "speaker_merge_threshold": 0.78

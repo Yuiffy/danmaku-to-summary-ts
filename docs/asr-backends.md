@@ -65,6 +65,8 @@ RTX 5080 正常时，`get_arch_list()` 应包含 `sm_120`。
       "language": "auto",
       "device": "cuda",
       "use_itn": true,
+      "max_vad_segment_s": 8,
+      "merge_length_s": 8,
       "enable_speaker": false,
       "preset_spk_num": null,
       "speaker_merge_threshold": 0.78
@@ -111,42 +113,172 @@ SenseVoice 通过 `src/scripts/python/sensevoice_transcribe.py` 子进程运行�
 
 ## 热词与错识别修正
 
-ASR 配置支持全局热词、按 routing 命中的房间/主播热词，以及统一的后处理 corrections。`aliases` 会自动生成从错识别结果到标准写法的 corrections；也可以显式配置 `corrections`。
+ASR 配置支持全局热词、按 routing 命中的房间/主播热词，以及统一的后处理 corrections。
+
+- `aliases`: 旧格式兼容，作为 safe corrections，全局替换。
+- `contextual_aliases`: 只生成 contextual corrections，文本中命中 `require_nearby` 任一关键词时才替换，避免把“随机匹配”误改成“岁己匹配”。
+- `corrections.safe`: 显式安全替换，等价于旧的 corrections 对象/数组。
+- `corrections.contextual`: 显式上下文替换，必须配置 `require_nearby`，否则不会执行。
 
 ```json
 {
   "asr": {
     "common_hotwords": [
       {
-        "word": "岁己",
+        "word": "东爱璃Lovely",
         "weight": 20,
-        "aliases": ["岁几", "随机", "随即", "碎己"]
+        "aliases": ["东爱璃", "Lovely", "爱璃", "东爱丽", "爱丽", "东艾璃", "东艾丽"]
       },
       {
-        "word": "栞栞",
+        "word": "星汐Seki",
         "weight": 20,
-        "aliases": ["千千", "签签", "浅浅"]
+        "aliases": ["星汐", "Seki", "seki", "星夕", "星西", "星希"]
+      },
+      {
+        "word": "礼墨Sumi",
+        "weight": 20,
+        "aliases": ["礼墨", "Sumi", "sumi", "里墨", "礼沫", "李墨"]
+      },
+      {
+        "word": "笙歌",
+        "weight": 20,
+        "aliases": ["帅比笙歌超可爱OvO", "笙歌OvO", "shengge", "生哥", "声歌", "升哥"]
+      },
+      {
+        "word": "伊索尔Sol",
+        "weight": 20,
+        "aliases": ["伊索尔", "Sol", "sol", "索尔", "伊索", "一索尔"]
+      },
+      {
+        "word": "南町Nightin",
+        "weight": 20,
+        "aliases": ["南町", "Nightin", "nightin", "南丁", "南町Night in", "南町奈汀"]
+      },
+      {
+        "word": "MIXUP2026",
+        "weight": 18,
+        "aliases": ["MIXUP", "mixup", "mix up", "Mixup2026", "MIXUP 2026"]
+      },
+      {
+        "word": "PSP",
+        "weight": 18,
+        "aliases": ["P S P", "psp"]
       },
       {
         "word": "VirtuaReal",
         "weight": 18,
-        "aliases": ["VR", "V R", "维阿", "微阿"]
+        "aliases": ["VR", "V R", "虚拟Real", "维阿", "微阿"]
+      },
+      {
+        "word": "岁己SUI",
+        "weight": 20,
+        "aliases": ["岁己", "岁几", "碎己", "岁已"],
+        "contextual_aliases": ["随机", "随即"]
+      },
+      {
+        "word": "栞栞",
+        "weight": 20,
+        "aliases": ["签签", "千千", "浅浅", "栞", "Shiori"]
+      },
+      {
+        "word": "米汀",
+        "weight": 18,
+        "aliases": ["Miting", "米丁", "米婷"]
+      },
+      {
+        "word": "瑞娅",
+        "weight": 18,
+        "aliases": ["Rhea", "瑞亚", "蕊娅"]
+      },
+      {
+        "word": "时守星沙",
+        "weight": 18,
+        "aliases": ["星沙", "时守", "时守星砂", "星砂"]
       }
     ],
     "corrections": {
-      "维阿": "VirtuaReal"
+      "safe": {
+        "岁几": "岁己",
+        "碎己": "岁己"
+      },
+      "contextual": [
+        {
+          "from": "随机",
+          "to": "岁己",
+          "require_nearby": ["主播", "直播", "开播", "SUI", "岁己", "饼干岁", "VR", "VirtuaReal"]
+        }
+      ]
     },
     "routing": [
       {
         "match": {
-          "streamer_name": "岁己SUI"
+          "room_id": "21692711"
         },
         "backend": "sensevoice",
         "hotwords": [
           {
-            "word": "岁己SUI",
-            "weight": 20,
-            "aliases": ["岁己sui", "岁己苏伊"]
+            "word": "东爱璃Lovely",
+            "weight": 20
+          }
+        ]
+      },
+      {
+        "match": {
+          "room_id": "1603600"
+        },
+        "backend": "sensevoice",
+        "hotwords": [
+          {
+            "word": "星汐Seki",
+            "weight": 20
+          }
+        ]
+      },
+      {
+        "match": {
+          "room_id": "23222837"
+        },
+        "backend": "sensevoice",
+        "hotwords": [
+          {
+            "word": "礼墨Sumi",
+            "weight": 20
+          }
+        ]
+      },
+      {
+        "match": {
+          "room_id": "573893"
+        },
+        "backend": "sensevoice",
+        "hotwords": [
+          {
+            "word": "笙歌",
+            "weight": 20
+          }
+        ]
+      },
+      {
+        "match": {
+          "room_id": "25971921"
+        },
+        "backend": "sensevoice",
+        "hotwords": [
+          {
+            "word": "伊索尔Sol",
+            "weight": 20
+          }
+        ]
+      },
+      {
+        "match": {
+          "room_id": "24872476"
+        },
+        "backend": "sensevoice",
+        "hotwords": [
+          {
+            "word": "南町Nightin",
+            "weight": 20
           }
         ]
       }
@@ -155,7 +287,17 @@ ASR 配置支持全局热词、按 routing 命中的房间/主播热词，以及
 }
 ```
 
-FunASR/SenseVoice 调用会尝试把热词作为 `hotword` 参数传给 `model.generate`；如果当前 FunASR/SenseVoice 版本不支持，会打印 warning 并自动重试无 hotword 转写。Whisper 不传热词，但所有 backend 的 SRT 写出前都会应用 corrections。
+FunASR/SenseVoice 调用会优先把带权重热词传给 `model.generate`，格式类似：
+
+```text
+岁己SUI 20
+VirtuaReal 18
+PSP 18
+```
+
+如果当前 FunASR/SenseVoice 版本不支持 weighted hotword，会 warning 并降级为无权重 hotword；再失败才降级为无 hotword。Whisper 不传热词，但所有 backend 的 SRT 写出前都会应用 corrections。
+
+`punc_model` 是 best-effort：配置后会尝试加载 FunASR 标点模型并对 SenseVoice 输出文本恢复标点；加载或调用失败只会写 warning 到 stderr，不会中断 ASR。不同 FunASR/SenseVoice 版本对标点模型返回结构支持不完全一致，需要用真实音频验证。
 
 ## Compare 模式
 
@@ -195,6 +337,8 @@ video.compare.json
 ```
 
 当前第一版已统一做 segment 清洗、长句切分、避免重叠和 SRT 写回。`strip_punctuation=true` 时只在 SRT 输出阶段去掉常见中英文标点，ASR 原始结果和内部切分仍保留标点信息。`gap_split_threshold` 与 `merge_short_segments` 已预留，后续可以继续增强合并策略。
+
+SenseVoice 时间轴优先使用 FunASR 返回的 `sentence_info` / `segments` 中的 `start` / `end`；如果当前模型只返回整段文本，则退回到 VAD chunk 级近似时间。默认 `merge_length_s=8`、`max_vad_segment_s=8`，避免把 VAD chunk 合并到过长。SenseVoice 首版时间轴不一定比 Whisper 的 `word_timestamps` 更细，建议用 Compare 模式实测。
 
 ## 说话人分离
 
