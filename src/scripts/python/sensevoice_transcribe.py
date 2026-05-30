@@ -11,6 +11,14 @@ def log_progress(message):
     print(f"[SenseVoice] {message}", file=sys.stderr, flush=True)
 
 
+@contextlib.contextmanager
+def suppress_model_output():
+    """FunASR prints tqdm/rtf diagnostics to stdout/stderr for every generate call."""
+    with open(os.devnull, "w", encoding="utf-8") as devnull:
+        with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
+            yield
+
+
 class StageTimeout:
     def __init__(self, seconds, label):
         self.seconds = int(float(seconds or 0))
@@ -239,7 +247,8 @@ def restore_punctuation(punc_model, text):
     if not punc_model or not cleaned:
         return cleaned
     try:
-        result = punc_model.generate(input=cleaned)
+        with suppress_model_output():
+            result = punc_model.generate(input=cleaned)
         if isinstance(result, list) and result:
             item = result[0]
             if isinstance(item, dict):
@@ -284,6 +293,38 @@ def get_safe_asr_segment_s(payload):
             f"(requested max_vad_segment_s={requested:g}s)"
         )
     return min(requested, cap)
+
+
+def speaker_label_from_cluster(label):
+    if isinstance(label, dict):
+        return label.get("label"), label
+    if isinstance(label, str):
+        return label, None
+    return f"SPEAKER_{int(label):02d}", None
+
+
+def dominant_speaker_for_interval(start, end, speaker_timeline):
+    if not speaker_timeline:
+        return None, None
+
+    scores = {}
+    score_meta = {}
+    for item in speaker_timeline:
+        label = item.get("speaker")
+        if not label:
+            continue
+        overlap = min(float(end), float(item["end"])) - max(float(start), float(item["start"]))
+        if overlap <= 0:
+            continue
+        scores[label] = scores.get(label, 0.0) + overlap
+        if item.get("speaker_score") and label not in score_meta:
+            score_meta[label] = item.get("speaker_score")
+
+    if not scores:
+        return None, None
+
+    label = max(scores.items(), key=lambda kv: kv[1])[0]
+    return label, score_meta.get(label)
 
 
 def has_timed_segments(raw_result):
@@ -362,7 +403,7 @@ def build_speaker_reference_centroids(spk_model_obj, references, device):
 
     import torch
 
-    centroids = {}
+    embeddings_by_speaker = {}
     max_chunks = 24
     for ref in references:
         if not isinstance(ref, dict):
@@ -391,12 +432,25 @@ def build_speaker_reference_centroids(spk_model_obj, references, device):
                 break
         if not chunks:
             continue
-        results = spk_model_obj.generate(input=chunks, cache={}, is_final=True)
-        embeddings = torch.cat([r["spk_embedding"] for r in results], dim=0)
+        with suppress_model_output():
+            results = spk_model_obj.generate(input=chunks, cache={}, is_final=True)
+        valid_embeddings = [
+            r["spk_embedding"]
+            for r in results
+            if r.get("spk_embedding") is not None and torch.isfinite(r["spk_embedding"]).all()
+        ]
+        if not valid_embeddings:
+            continue
+        embeddings_by_speaker.setdefault(speaker, []).extend(valid_embeddings)
+        log_progress(f"参考说话人完成: speaker={speaker}, chunks={len(chunks)}")
+
+    centroids = {}
+    for speaker, speaker_embeddings in embeddings_by_speaker.items():
+        embeddings = torch.cat(speaker_embeddings, dim=0)
         centroid = embeddings.mean(dim=0, keepdim=True)
         centroid = torch.nn.functional.normalize(centroid, dim=1)
         centroids[speaker] = centroid.to("cpu")
-        log_progress(f"参考说话人完成: speaker={speaker}, chunks={len(chunks)}")
+        log_progress(f"参考说话人聚合完成: speaker={speaker}, embeddings={len(speaker_embeddings)}")
     return centroids or None
 
 
@@ -507,9 +561,11 @@ def main():
                 )
             log_progress("VAD 模型加载完成，开始 VAD")
             with StageTimeout(payload.get("vad_timeout_s", 180), "VAD 处理"):
-                vad_result = vad_model.generate(input=audio_path)
+                with suppress_model_output():
+                    vad_result = vad_model.generate(input=audio_path)
             vad_segments = vad_result[0].get("value") if vad_result and isinstance(vad_result, list) else []
             log_progress(f"VAD 完成: segments={len(vad_segments)}")
+            raw_vad_segments = list(vad_segments)
 
             from funasr.utils.vad_utils import merge_vad as merge_vad_segments
             merge_length_ms = int(float(payload.get("merge_length_s", 8)) * 1000)
@@ -534,8 +590,7 @@ def main():
                 batch_audio = []
                 batch_meta = []
                 batch_duration = 0.0
-                speaker_labels = {}
-                speaker_scores = {}
+                speaker_timeline = []
                 transcribed_segments = 0
                 total_segments = len(vad_segments)
 
@@ -552,25 +607,45 @@ def main():
                         from funasr.models.campplus.cluster_backend import ClusterBackend
 
                         speaker_chunks = []
-                        speaker_chunk_to_segment = []
+                        speaker_chunk_meta = []
+                        speaker_vad_segments = split_vad_segments(
+                            raw_vad_segments,
+                            payload.get("speaker_max_segment_s", 8),
+                        )
+                        min_speaker_segment_s = float(payload.get("speaker_min_segment_s", 0.8) or 0.8)
                         log_progress("提取说话人 embedding")
-                        for seg_index, (start_ms, end_ms) in enumerate(vad_segments):
+                        for start_ms, end_ms in speaker_vad_segments:
                             start = max(0.0, float(start_ms) / 1000.0)
                             end = max(start, float(end_ms) / 1000.0)
+                            if end - start < min_speaker_segment_s:
+                                continue
                             start_idx = max(0, int(start * sample_rate))
                             end_idx = min(len(audio), int(end * sample_rate))
                             if end_idx <= start_idx:
                                 continue
                             speaker_chunks.append(audio[start_idx:end_idx])
-                            speaker_chunk_to_segment.append(seg_index)
+                            speaker_chunk_meta.append({"start": start, "end": end})
 
                         if speaker_chunks:
                             with StageTimeout(payload.get("speaker_timeout_s", 300), "说话人 embedding"):
-                                spk_results = spk_model_obj.generate(
-                                    input=speaker_chunks,
-                                    cache={},
-                                    is_final=True,
-                                )
+                                with suppress_model_output():
+                                    spk_results = spk_model_obj.generate(
+                                        input=speaker_chunks,
+                                        cache={},
+                                        is_final=True,
+                                    )
+                            finite_spk_results = []
+                            finite_speaker_chunk_meta = []
+                            for result, meta in zip(spk_results, speaker_chunk_meta):
+                                embedding = result.get("spk_embedding")
+                                if embedding is None or not torch.isfinite(embedding).all():
+                                    continue
+                                finite_spk_results.append(result)
+                                finite_speaker_chunk_meta.append(meta)
+                            spk_results = finite_spk_results
+                            speaker_chunk_meta = finite_speaker_chunk_meta
+                            if not spk_results:
+                                raise RuntimeError("说话人 embedding 全部无效")
                             reference_centroids = build_speaker_reference_centroids(
                                 spk_model_obj,
                                 payload.get("speaker_references"),
@@ -591,15 +666,16 @@ def main():
                                     embeddings.cpu(),
                                     oracle_num=int(preset_spk_num) if preset_spk_num else None,
                                 )
-                            for seg_index, label in zip(speaker_chunk_to_segment, labels):
-                                if isinstance(label, dict):
-                                    speaker_labels[seg_index] = label.get("label")
-                                    speaker_scores[seg_index] = label
-                                elif isinstance(label, str):
-                                    speaker_labels[seg_index] = label
-                                else:
-                                    speaker_labels[seg_index] = f"SPEAKER_{int(label):02d}"
-                            log_progress(f"说话人聚类完成: labels={len(set(speaker_labels.values()))}, chunks={len(speaker_chunks)}")
+                            for meta, label in zip(speaker_chunk_meta, labels):
+                                speaker_label, speaker_score = speaker_label_from_cluster(label)
+                                speaker_timeline.append({
+                                    "start": meta["start"],
+                                    "end": meta["end"],
+                                    "speaker": speaker_label,
+                                    "speaker_score": speaker_score,
+                                })
+                            unique_speakers = {item["speaker"] for item in speaker_timeline if item.get("speaker")}
+                            log_progress(f"说话人聚类完成: labels={len(unique_speakers)}, chunks={len(speaker_chunks)}")
                     except Exception as exc:
                         fail(
                             "说话人分离失败",
@@ -614,23 +690,31 @@ def main():
                         transcribed_segments += 1
                         if transcribed_segments == 1 or transcribed_segments % 5 == 0 or transcribed_segments == total_segments:
                             pct = transcribed_segments / max(total_segments, 1) * 100
-                            log_progress(
-                                f"转写进度: {transcribed_segments}/{total_segments} ({pct:.1f}%) "
-                                f"{meta['start']:.1f}s-{meta['end']:.1f}s"
-                            )
+                            log_progress(f"转写进度: {pct:.1f}% ({transcribed_segments}/{total_segments})")
                         with StageTimeout(payload.get("segment_timeout_s", 90), "单段转写"):
-                            results = generate_with_optional_hotword(
-                                model,
-                                payload,
-                                input=chunk,
-                                language=payload.get("language", "auto"),
-                                use_itn=bool(payload.get("use_itn", True)),
-                                batch_size_s=batch_size_s,
-                            )
+                            with suppress_model_output():
+                                results = generate_with_optional_hotword(
+                                    model,
+                                    payload,
+                                    input=chunk,
+                                    language=payload.get("language", "auto"),
+                                    use_itn=bool(payload.get("use_itn", True)),
+                                    batch_size_s=batch_size_s,
+                                )
                         normalized_items = normalize_model_results_with_meta(results, meta, punc_model_obj)
                         for item in normalized_items:
                             if is_meaningless_asr_text(item.get("text", "")):
                                 item["speaker"] = None
+                                continue
+                            speaker, speaker_score = dominant_speaker_for_interval(
+                                item.get("start", meta["start"]),
+                                item.get("end", meta["end"]),
+                                speaker_timeline,
+                            )
+                            if speaker:
+                                item["speaker"] = speaker
+                            if speaker_score:
+                                item["speaker_score"] = speaker_score
                         raw_result.extend(normalized_items)
                     batch_audio = []
                     batch_meta = []
@@ -652,8 +736,6 @@ def main():
                     batch_meta.append({
                         "start": start,
                         "end": end,
-                        "speaker": speaker_labels.get(seg_index),
-                        "speaker_score": speaker_scores.get(seg_index),
                     })
                     batch_duration += duration
                 flush_batch()

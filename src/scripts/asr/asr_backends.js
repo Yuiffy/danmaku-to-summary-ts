@@ -536,11 +536,19 @@ function runJsonPython(scriptPath, payload) {
             : null;
         let stdout = '';
         let stderr = '';
+        let stderrLineBuffer = '';
         child.stdout.on('data', data => { stdout += data.toString(); });
         child.stderr.on('data', data => {
             const chunk = data.toString();
             stderr += chunk;
-            process.stderr.write(chunk);
+            stderrLineBuffer += chunk;
+            const lines = stderrLineBuffer.split(/\r?\n/);
+            stderrLineBuffer = lines.pop() || '';
+            for (const line of lines) {
+                if (line.startsWith('[SenseVoice]')) {
+                    process.stdout.write(`${line}\n`);
+                }
+            }
         });
         child.on('error', (error) => {
             if (settled) {
@@ -559,6 +567,9 @@ function runJsonPython(scriptPath, payload) {
             settled = true;
             if (timeout) {
                 clearTimeout(timeout);
+            }
+            if (stderrLineBuffer.startsWith('[SenseVoice]')) {
+                process.stdout.write(`${stderrLineBuffer}\n`);
             }
             if (code !== 0) {
                 reject(new Error(`SenseVoice backend failed with exit code ${code}: ${stderr || stdout}`));
