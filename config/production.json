@@ -524,6 +524,14 @@
             "delayMinutes": 2,
             "maxRetries": 3,
             "retryDelayMinutes": 5
+        },
+        "danmuRiskControl": {
+            "enabled": true,
+            "intervalMs": 300000,
+            "roomIds": [
+                "25788785"
+            ],
+            "notifyCooldownMs": 1800000
         }
     },
     "monitoring": {
