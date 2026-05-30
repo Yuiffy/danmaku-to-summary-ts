@@ -23,7 +23,7 @@ export class DanmuRiskControlMonitor {
     this.notifier = notifier || null;
   }
 
-  start(): void {
+  async start(): Promise<void> {
     const config = ConfigProvider.getConfig();
     const rkcConfig = config.bilibili?.danmuRiskControl;
 
@@ -49,7 +49,8 @@ export class DanmuRiskControlMonitor {
     const intervalMs = rkcConfig.intervalMs || 300000;
     this.logger.info(`弹幕风控监控启动，检查间隔: ${intervalMs}ms，监控房间: ${rkcConfig.roomIds.join(', ')}`);
 
-    this.check();
+    // 启动后立即执行一次检查，避免等待第一个轮询周期
+    await this.check();
     this.timer = setInterval(() => this.check(), intervalMs);
   }
 

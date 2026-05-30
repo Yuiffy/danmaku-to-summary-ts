@@ -136,7 +136,7 @@ export class ServiceManager {
       // 启动弹幕风控监控
       if (this.danmuRiskControlMonitor) {
         await this.startService('danmu-risk-control', async () => {
-          this.danmuRiskControlMonitor!.start();
+          await this.danmuRiskControlMonitor!.start();
         });
       }
       
