@@ -696,12 +696,6 @@ function writeAsrSpeakersSidecar(result, srtPath, config = {}, context = {}) {
 function writeSrt(result, srtPath, subtitleConfig = {}) {
     const cfg = { ...DEFAULT_SUBTITLE_CONFIG, ...subtitleConfig };
     const lines = [];
-    const uniqueSpeakers = new Set(
-        Array.isArray(result.segments)
-            ? result.segments.map(segment => String(segment.speaker || '').trim()).filter(Boolean)
-            : []
-    );
-    const includeSpeakerLabels = uniqueSpeakers.size > 1;
     let lineIndex = 1;
     result.segments.forEach((segment) => {
         const correctedText = applyCorrectionsToText(segment.text, cfg.corrections);
@@ -709,7 +703,7 @@ function writeSrt(result, srtPath, subtitleConfig = {}) {
         if (!content) {
             return;
         }
-        const text = includeSpeakerLabels && segment.speaker ? `[${segment.speaker}] ${content}` : content;
+        const text = content;
         const wrapped = splitTextByLength(text, cfg.max_chars_per_line).join('\n');
         lines.push(String(lineIndex));
         lines.push(`${formatTimestamp(segment.start)} --> ${formatTimestamp(segment.end)}`);
@@ -718,6 +712,19 @@ function writeSrt(result, srtPath, subtitleConfig = {}) {
         lineIndex += 1;
     });
     fs.writeFileSync(srtPath, `${lines.join('\n').trim()}\n`, 'utf8');
+}
+
+function wrapSpeakerReviewText(prefix, content, maxChars) {
+    const safeMax = Math.max(Number(maxChars) || 30, prefix.length + 4);
+    const contentMax = Math.max(4, safeMax - prefix.length);
+    const parts = splitTextByLength(content, contentMax);
+    if (parts.length === 0) {
+        return [prefix.trim()];
+    }
+    return [
+        `${prefix}${parts[0]}`,
+        ...parts.slice(1)
+    ];
 }
 
 function getUniqueSpeakerLabels(result) {
@@ -731,7 +738,7 @@ function getUniqueSpeakerLabels(result) {
 function writeSpeakerReviewSrt(result, srtPath, subtitleConfig = {}) {
     try {
         const uniqueSpeakers = getUniqueSpeakerLabels(result);
-        if (uniqueSpeakers.size <= 1 || !srtPath) {
+        if (uniqueSpeakers.size === 0 || !srtPath) {
             return null;
         }
 
@@ -751,8 +758,8 @@ function writeSpeakerReviewSrt(result, srtPath, subtitleConfig = {}) {
             const score = segment.speaker_score === undefined || segment.speaker_score === null || segment.speaker_score === ''
                 ? ''
                 : ` ${Number(segment.speaker_score).toFixed(2)}`;
-            const text = `[${speaker}${score}] ${content}`;
-            const wrapped = splitTextByLength(text, cfg.max_chars_per_line).join('\n');
+            const prefix = `[${speaker}${score}] `;
+            const wrapped = wrapSpeakerReviewText(prefix, content, cfg.max_chars_per_line).join('\n');
             lines.push(String(lineIndex));
             lines.push(`${formatTimestamp(segment.start)} --> ${formatTimestamp(segment.end)}`);
             lines.push(wrapped);

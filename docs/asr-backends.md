@@ -433,7 +433,7 @@ xxx.speaker.srt
 xxx.asr_speakers.json
 ```
 
-当 normalized ASR 结果里出现多个 speaker label 时，会额外写 `xxx.speaker.srt` 作为人工 review 用字幕。这个文件会强制在每条字幕前标注 `[speaker score]`，例如 `[栞栞 0.53]`；普通 `xxx.srt` 和后续生图逻辑不依赖人工 review 文件。
+普通 `xxx.srt` 始终不带说话人标签，适合原有融合/发布流程。只要 normalized ASR 结果里有 speaker label，就会额外写 `xxx.speaker.srt` 作为人工 review 用字幕。这个文件会强制在每条字幕前标注 `[speaker score]`，例如 `[栞栞 0.53]`；标签前缀不会被自动换行拆开。后续生图逻辑不依赖人工 review 文件。
 
 格式示例：
 

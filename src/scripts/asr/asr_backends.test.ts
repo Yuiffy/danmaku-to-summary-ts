@@ -57,7 +57,7 @@ describe('asr_backends', () => {
     expect(result.segments.every((segment: any) => segment.end > segment.start)).toBe(true);
   });
 
-  test('preserves speaker labels through normalize and srt output', () => {
+  test('preserves speaker metadata through normalize and plain srt output stays unlabelled', () => {
     const result = asr.normalizeAsrResult({
       backend: 'sensevoice',
       segments: [
@@ -71,12 +71,14 @@ describe('asr_backends', () => {
     const tmp = require('path').join(require('os').tmpdir(), `asr-speaker-${Date.now()}.srt`);
     asr.writeSrt(result, tmp, { max_chars_per_line: 30 });
     const content = require('fs').readFileSync(tmp, 'utf8');
-    expect(content).toContain('[SPEAKER_00] 大家晚上好');
-    expect(content).toContain('[SPEAKER_01] 我这边网络很卡');
+    expect(content).toContain('大家晚上好');
+    expect(content).toContain('我这边网络很卡');
+    expect(content).not.toContain('[SPEAKER_00]');
+    expect(content).not.toContain('[SPEAKER_01]');
     require('fs').unlinkSync(tmp);
   });
 
-  test('writes speaker review srt only for multiple speakers', () => {
+  test('writes speaker review srt with unbroken speaker prefix', () => {
     const path = require('path');
     const fs = require('fs');
     const tmp = path.join(require('os').tmpdir(), `asr-review-${Date.now()}.srt`);
@@ -89,17 +91,19 @@ describe('asr_backends', () => {
       ]
     };
 
-    const reviewPath = asr.writeSpeakerReviewSrt(result, tmp, { max_chars_per_line: 30 });
+    const reviewPath = asr.writeSpeakerReviewSrt(result, tmp, { max_chars_per_line: 12 });
     expect(reviewPath).toBe(tmp.replace(/\.srt$/, '.speaker.srt'));
     const content = fs.readFileSync(reviewPath, 'utf8');
-    expect(content).toContain('[岁己SUI 0.72] 大家晚上好');
+    expect(content).toContain('[岁己SUI 0.72] 大家晚上');
     expect(content).toContain('[栞栞 0.65] 晚上好');
+    expect(content).not.toContain('[岁己SUI 0.\n72]');
 
     const singlePath = asr.writeSpeakerReviewSrt({
       backend: 'sensevoice',
       segments: [{ start: 0, end: 1, text: '大家晚上好', speaker: '岁己SUI' }]
     }, singleTmp, { max_chars_per_line: 30 });
-    expect(singlePath).toBeNull();
+    expect(singlePath).toBe(singleTmp.replace(/\.srt$/, '.speaker.srt'));
+    fs.unlinkSync(singlePath);
 
     fs.unlinkSync(reviewPath);
   });
