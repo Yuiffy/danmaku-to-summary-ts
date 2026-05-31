@@ -45,6 +45,7 @@ __pycache__/
 # local tool/runtime state
 .gemini/
 data/delayed_reply_tasks.*
+data/asr_speaker_refs/backup*
 output
 src/temp/
 src/scripts/.whisper_queue.json

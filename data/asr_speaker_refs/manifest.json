@@ -3,15 +3,19 @@
     "speaker": "岁己SUI",
     "key": "sui",
     "audio_path": "data/asr_speaker_refs/sui.wav",
-    "seconds": 37.90,
-    "source_count": 1
+    "seconds": 160.0,
+    "source_count": 20,
+    "source_media": "D:\\files\\videos\\DDTV录播\\25788785_岁己SUI\\2026_05_26\\录制-25788785-20260526-202308-561-悠哉悠哉夜晚_merged.flv",
+    "source_srt": "D:\\files\\videos\\DDTV录播\\25788785_岁己SUI\\2026_05_26\\录制-25788785-20260526-202308-561-悠哉悠哉夜晚_merged.srt"
   },
   {
     "speaker": "栞栞",
     "key": "shiori",
     "audio_path": "data/asr_speaker_refs/shiori.wav",
-    "seconds": 101.00,
-    "source_count": 1
+    "seconds": 160.0,
+    "source_count": 20,
+    "source_media": "D:\\files\\videos\\DDTV录播\\26966466_栞栞Shiori\\2026_05_26\\录制-26966466-20260526-100634-093-早安獭獭栞！.m4a; D:\\files\\videos\\DDTV录播\\26966466_栞栞Shiori\\2026_05_26\\录制-26966466-20260526-214833-809-栞来！.m4a",
+    "source_srt": "D:\\files\\videos\\DDTV录播\\26966466_栞栞Shiori\\2026_05_26\\录制-26966466-20260526-100634-093-早安獭獭栞！.srt; D:\\files\\videos\\DDTV录播\\26966466_栞栞Shiori\\2026_05_26\\录制-26966466-20260526-214833-809-栞来！.srt"
   },
   {
     "speaker": "星汐Seki",
@@ -31,8 +35,10 @@
     "speaker": "瑞娅",
     "key": "rhea",
     "audio_path": "data/asr_speaker_refs/rhea.wav",
-    "seconds": 68.45,
-    "source_count": 2
+    "seconds": 160.0,
+    "source_count": 20,
+    "source_media": "D:\\files\\videos\\DDTV录播\\23260993_瑞娅_Rhea\\2026_05_26\\录制-23260993-20260526-211447-574-今天也拼尽全力来见面了_merged.m4a",
+    "source_srt": "D:\\files\\videos\\DDTV录播\\23260993_瑞娅_Rhea\\2026_05_26\\录制-23260993-20260526-211447-574-今天也拼尽全力来见面了_merged.srt"
   },
   {
     "speaker": "米汀",

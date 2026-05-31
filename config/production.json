@@ -84,6 +84,22 @@
             "enabled": true,
             "provider": "python",
             "outputLockEnabled": false,
+            "multiReferenceImages": {
+                "enabled": false,
+                "maxExtraCharacters": 2,
+                "minSpeakerScore": 0.5,
+                "minSpeechSeconds": 8,
+                "includeUnknownSpeakers": false,
+                "useMentionedOnlyAsContext": true,
+                "appendCharacterDescriptions": true,
+                "imageOrder": [
+                    "host",
+                    "appeared_streamers",
+                    "cover",
+                    "screenshots",
+                    "default"
+                ]
+            },
             "concurrency": {
                 "maxConcurrentGenerations": 10,
                 "lockTimeoutMinutes": 180
@@ -104,6 +120,142 @@
             "defaults": {
                 "minDurationMinutes": 60,
                 "generationProbability": 1.0
+            }
+        },
+        "streamerRegistry": {
+            "sui": {
+                "displayName": "岁己SUI",
+                "roomIds": [
+                    "25788785"
+                ],
+                "speakerLabels": [
+                    "岁己SUI",
+                    "sui",
+                    "SUI"
+                ],
+                "aliases": [
+                    "岁己",
+                    "SUI",
+                    "岁几",
+                    "碎己",
+                    "岁已"
+                ],
+                "referenceImages": [
+                    "public/reference_images/岁己SUI小猫帽带饼干岁紫色外套双马尾.png"
+                ],
+                "characterDescription": "岁己SUI，白发红瞳女生。"
+            },
+            "shiori": {
+                "displayName": "栞栞",
+                "roomIds": [
+                    "26966466"
+                ],
+                "speakerLabels": [
+                    "栞栞",
+                    "Shiori"
+                ],
+                "aliases": [
+                    "栞",
+                    "签签",
+                    "千千",
+                    "浅浅"
+                ],
+                "referenceImages": [
+                    "public/reference_images/栞栞制服加獭獭栞.png"
+                ],
+                "characterDescription": "栞栞Shiori，有兽耳的女生，浅黄色头发小孩。"
+            },
+            "rhea": {
+                "displayName": "瑞娅",
+                "roomIds": [
+                    "23260993"
+                ],
+                "speakerLabels": [
+                    "瑞娅",
+                    "Rhea"
+                ],
+                "aliases": [
+                    "瑞亚",
+                    "蕊娅"
+                ],
+                "referenceImages": [
+                    "public/reference_images/瑞娅.png"
+                ],
+                "characterDescription": "瑞娅_Rhea，白发紫瞳的北欧魔法学院少女。"
+            },
+            "seki": {
+                "displayName": "星汐Seki",
+                "roomIds": [
+                    "1603600"
+                ],
+                "speakerLabels": [
+                    "星汐Seki",
+                    "星汐",
+                    "Seki",
+                    "seki"
+                ],
+                "aliases": [
+                    "星夕",
+                    "星西",
+                    "星希"
+                ],
+                "referenceImages": [],
+                "characterDescription": "星汐Seki，蓝发带粉色挑染、紫瞳、爆炸双马尾的网瘾少女。"
+            },
+            "mizuki": {
+                "displayName": "弥月Mizuki",
+                "roomIds": [
+                    "30655190"
+                ],
+                "speakerLabels": [
+                    "弥月Mizuki",
+                    "弥月",
+                    "Mizuki"
+                ],
+                "aliases": [
+                    "兔川弥月",
+                    "小弥",
+                    "老弥"
+                ],
+                "referenceImages": [],
+                "characterDescription": "兔川弥月Mizuki，亚麻发异瞳少女，有两个浮游炮机械兔耳。"
+            },
+            "miting": {
+                "displayName": "米汀",
+                "roomIds": [
+                    "31368705"
+                ],
+                "speakerLabels": [
+                    "米汀",
+                    "Miting"
+                ],
+                "aliases": [
+                    "米丁",
+                    "米婷"
+                ],
+                "referenceImages": [
+                    "public/reference_images/米汀.png"
+                ],
+                "characterDescription": "米汀Nagisa，银发灰瞳，戴帽子的女性推理社社员。"
+            },
+            "harei": {
+                "displayName": "花礼Harei",
+                "roomIds": [
+                    "1820703922"
+                ],
+                "speakerLabels": [
+                    "花礼Harei",
+                    "花礼",
+                    "Harei"
+                ],
+                "aliases": [
+                    "礼礼",
+                    "小礼"
+                ],
+                "referenceImages": [
+                    "public/reference_images/花礼新衣抱小礼猫.png"
+                ],
+                "characterDescription": "花礼Harei，黑发蓝瞳鼠耳的女生。"
             }
         },
         "tuziRetry": {

@@ -471,6 +471,7 @@ function normalizeAsrResult(result, subtitleConfig = {}) {
                 end: Math.max(partEnd, partStart + cfg.min_duration),
                 text: part,
                 speaker: segment.speaker,
+                speaker_score: segment.speaker_score,
                 words: segment.words
             });
         });
@@ -492,6 +493,204 @@ function normalizeAsrResult(result, subtitleConfig = {}) {
         segments: normalized,
         raw: result?.raw
     };
+}
+
+function normalizeLabel(value) {
+    return String(value || '').trim().toLowerCase();
+}
+
+function isUnknownSpeakerLabel(label) {
+    const value = String(label || '').trim();
+    return !value || value === 'UNKNOWN' || /^SPEAKER_\d+$/i.test(value);
+}
+
+function resolveStreamerRegistry(config = {}) {
+    const raw = config.ai?.streamerRegistry || {};
+    const registry = {};
+    Object.entries(raw).forEach(([streamerId, entry]) => {
+        if (!entry || typeof entry !== 'object') {
+            return;
+        }
+        const displayName = String(entry.displayName || streamerId).trim();
+        const labels = new Set([
+            streamerId,
+            displayName,
+            ...(Array.isArray(entry.speakerLabels) ? entry.speakerLabels : []),
+            ...(Array.isArray(entry.aliases) ? entry.aliases : [])
+        ].map(value => String(value || '').trim()).filter(Boolean));
+        registry[streamerId] = {
+            id: streamerId,
+            ...entry,
+            displayName,
+            speakerLabels: Array.from(labels)
+        };
+    });
+    return registry;
+}
+
+function mapSpeakerLabelToStreamerId(label, registry = {}) {
+    const normalized = normalizeLabel(label);
+    if (!normalized || isUnknownSpeakerLabel(label)) {
+        return null;
+    }
+    for (const [streamerId, entry] of Object.entries(registry)) {
+        const labels = Array.isArray(entry.speakerLabels) ? entry.speakerLabels : [];
+        if (labels.some(candidate => normalizeLabel(candidate) === normalized)) {
+            return streamerId;
+        }
+    }
+    return null;
+}
+
+function getMultiReferenceConfig(config = {}, roomId = null) {
+    const globalConfig = config.ai?.comic?.multiReferenceImages || {};
+    const roomConfig = roomId
+        ? (config.ai?.roomSettings?.[String(roomId)]?.multiReferenceImages || {})
+        : {};
+    return {
+        enabled: false,
+        maxExtraCharacters: 2,
+        minSpeakerScore: 0.50,
+        minSpeechSeconds: 8,
+        includeUnknownSpeakers: false,
+        useMentionedOnlyAsContext: true,
+        appendCharacterDescriptions: true,
+        imageOrder: ['host', 'appeared_streamers', 'cover', 'screenshots', 'default'],
+        ...globalConfig,
+        ...roomConfig
+    };
+}
+
+function findHostStreamerId(roomId, registry = {}) {
+    const room = String(roomId || '').trim();
+    if (!room) {
+        return null;
+    }
+    for (const [streamerId, entry] of Object.entries(registry)) {
+        const roomIds = Array.isArray(entry.roomIds) ? entry.roomIds.map(value => String(value)) : [];
+        if (roomIds.includes(room)) {
+            return streamerId;
+        }
+    }
+    return null;
+}
+
+function summarizeAsrSpeakers(result, config = {}, context = {}) {
+    const registry = resolveStreamerRegistry(config);
+    const roomId = context.room_id || context.roomId || context.hostRoomId || null;
+    const multiConfig = getMultiReferenceConfig(config, roomId);
+    const stats = new Map();
+    const segments = Array.isArray(result?.segments) ? result.segments : [];
+
+    segments.forEach((segment) => {
+        const label = String(segment.speaker || '').trim() || 'UNKNOWN';
+        const start = Number(segment.start);
+        const end = Number(segment.end);
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+            return;
+        }
+        const duration = end - start;
+        const rawScore = segment.speaker_score;
+        const score = rawScore === undefined || rawScore === null || rawScore === ''
+            ? NaN
+            : Number(rawScore);
+        if (!stats.has(label)) {
+            stats.set(label, {
+                label,
+                totalSpeechSeconds: 0,
+                segmentCount: 0,
+                scoreSum: 0,
+                scoreCount: 0,
+                maxScore: null,
+                isUnknown: isUnknownSpeakerLabel(label)
+            });
+        }
+        const item = stats.get(label);
+        item.totalSpeechSeconds += duration;
+        item.segmentCount += 1;
+        if (Number.isFinite(score)) {
+            item.scoreSum += score;
+            item.scoreCount += 1;
+            item.maxScore = item.maxScore === null ? score : Math.max(item.maxScore, score);
+        }
+    });
+
+    const speakers = Array.from(stats.values())
+        .map(item => ({
+            label: item.label,
+            totalSpeechSeconds: Number(item.totalSpeechSeconds.toFixed(3)),
+            segmentCount: item.segmentCount,
+            avgScore: item.scoreCount > 0 ? Number((item.scoreSum / item.scoreCount).toFixed(4)) : null,
+            maxScore: item.maxScore === null ? null : Number(item.maxScore.toFixed(4)),
+            isUnknown: item.isUnknown
+        }))
+        .sort((a, b) => b.totalSpeechSeconds - a.totalSpeechSeconds);
+
+    const hostStreamerId = findHostStreamerId(roomId, registry);
+    const appearedStreamerIds = [];
+    speakers.forEach((speaker) => {
+        const streamerId = mapSpeakerLabelToStreamerId(speaker.label, registry);
+        if (!streamerId) {
+            if (speaker.isUnknown) {
+                console.log(`[ASR] speaker summary: 跳过未映射 speaker=${speaker.label}`);
+            } else {
+                console.log(`[ASR] speaker summary: speaker=${speaker.label} 未命中 streamerRegistry`);
+            }
+            return;
+        }
+        const enoughSpeech = speaker.totalSpeechSeconds >= Number(multiConfig.minSpeechSeconds || 0);
+        const scoreMissing = speaker.avgScore === null;
+        const enoughScore = scoreMissing || speaker.avgScore >= Number(multiConfig.minSpeakerScore || 0);
+        if (!enoughSpeech) {
+            console.log(`[ASR] speaker summary: 过滤 ${speaker.label} -> ${streamerId}，出声 ${speaker.totalSpeechSeconds.toFixed(1)}s < ${multiConfig.minSpeechSeconds}s`);
+            return;
+        }
+        if (!enoughScore) {
+            console.log(`[ASR] speaker summary: 过滤 ${speaker.label} -> ${streamerId}，avgScore ${speaker.avgScore} < ${multiConfig.minSpeakerScore}`);
+            return;
+        }
+        if (scoreMissing) {
+            console.log(`[ASR] speaker summary: ${speaker.label} -> ${streamerId} 无 speaker_score，仅按出声时长通过`);
+        } else {
+            console.log(`[ASR] speaker summary: ${speaker.label} -> ${streamerId} 通过，出声 ${speaker.totalSpeechSeconds.toFixed(1)}s, avgScore=${speaker.avgScore}`);
+        }
+        if (!appearedStreamerIds.includes(streamerId)) {
+            appearedStreamerIds.push(streamerId);
+        }
+    });
+
+    const extraAppearedStreamerIds = appearedStreamerIds
+        .filter(streamerId => streamerId !== hostStreamerId)
+        .slice(0, Math.max(0, Number(multiConfig.maxExtraCharacters || 0)));
+
+    return {
+        input: context.input || context.mediaPath || null,
+        backend: result?.backend || 'unknown',
+        hostRoomId: roomId ? String(roomId) : null,
+        speakers,
+        appearedStreamerIds,
+        extraAppearedStreamerIds
+    };
+}
+
+function writeAsrSpeakersSidecar(result, srtPath, config = {}, context = {}) {
+    try {
+        if (!srtPath) {
+            return null;
+        }
+        const summary = summarizeAsrSpeakers(result, config, {
+            ...context,
+            input: context.input || context.mediaPath
+        });
+        const parsed = path.parse(srtPath);
+        const sidecarPath = path.join(parsed.dir, `${parsed.name}.asr_speakers.json`);
+        fs.writeFileSync(sidecarPath, JSON.stringify(summary, null, 2), 'utf8');
+        console.log(`[ASR] speaker summary sidecar: ${path.basename(sidecarPath)} (extra=${summary.extraAppearedStreamerIds.join(', ') || 'none'})`);
+        return sidecarPath;
+    } catch (error) {
+        console.warn(`⚠️  写入 ASR speaker summary 失败，继续后续流程: ${error.message}`);
+        return null;
+    }
 }
 
 function writeSrt(result, srtPath, subtitleConfig = {}) {
@@ -519,6 +718,55 @@ function writeSrt(result, srtPath, subtitleConfig = {}) {
         lineIndex += 1;
     });
     fs.writeFileSync(srtPath, `${lines.join('\n').trim()}\n`, 'utf8');
+}
+
+function getUniqueSpeakerLabels(result) {
+    return new Set(
+        Array.isArray(result?.segments)
+            ? result.segments.map(segment => String(segment.speaker || '').trim()).filter(Boolean)
+            : []
+    );
+}
+
+function writeSpeakerReviewSrt(result, srtPath, subtitleConfig = {}) {
+    try {
+        const uniqueSpeakers = getUniqueSpeakerLabels(result);
+        if (uniqueSpeakers.size <= 1 || !srtPath) {
+            return null;
+        }
+
+        const parsed = path.parse(srtPath);
+        const reviewPath = path.join(parsed.dir, `${parsed.name}.speaker.srt`);
+        const cfg = { ...DEFAULT_SUBTITLE_CONFIG, ...subtitleConfig };
+        const lines = [];
+        let lineIndex = 1;
+
+        result.segments.forEach((segment) => {
+            const correctedText = applyCorrectionsToText(segment.text, cfg.corrections);
+            const content = cfg.strip_punctuation ? stripSubtitlePunctuation(correctedText) : correctedText;
+            if (!content) {
+                return;
+            }
+            const speaker = String(segment.speaker || 'UNKNOWN').trim() || 'UNKNOWN';
+            const score = segment.speaker_score === undefined || segment.speaker_score === null || segment.speaker_score === ''
+                ? ''
+                : ` ${Number(segment.speaker_score).toFixed(2)}`;
+            const text = `[${speaker}${score}] ${content}`;
+            const wrapped = splitTextByLength(text, cfg.max_chars_per_line).join('\n');
+            lines.push(String(lineIndex));
+            lines.push(`${formatTimestamp(segment.start)} --> ${formatTimestamp(segment.end)}`);
+            lines.push(wrapped);
+            lines.push('');
+            lineIndex += 1;
+        });
+
+        fs.writeFileSync(reviewPath, `${lines.join('\n').trim()}\n`, 'utf8');
+        console.log(`[ASR] speaker review SRT: ${path.basename(reviewPath)} (speakers=${Array.from(uniqueSpeakers).join(', ')})`);
+        return reviewPath;
+    } catch (error) {
+        console.warn(`⚠️  写入 speaker review SRT 失败，继续后续流程: ${error.message}`);
+        return null;
+    }
 }
 
 function runJsonPython(scriptPath, payload) {
@@ -620,6 +868,11 @@ module.exports = {
     parseCliArgs,
     parseSrt,
     normalizeAsrResult,
+    resolveStreamerRegistry,
+    mapSpeakerLabelToStreamerId,
+    summarizeAsrSpeakers,
+    writeAsrSpeakersSidecar,
+    writeSpeakerReviewSrt,
     writeSrt,
     transcribeSenseVoice,
     formatTimestamp,

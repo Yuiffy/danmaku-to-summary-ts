@@ -76,6 +76,34 @@ describe('asr_backends', () => {
     require('fs').unlinkSync(tmp);
   });
 
+  test('writes speaker review srt only for multiple speakers', () => {
+    const path = require('path');
+    const fs = require('fs');
+    const tmp = path.join(require('os').tmpdir(), `asr-review-${Date.now()}.srt`);
+    const singleTmp = path.join(require('os').tmpdir(), `asr-review-single-${Date.now()}.srt`);
+    const result = {
+      backend: 'sensevoice',
+      segments: [
+        { start: 0, end: 1, text: '大家晚上好', speaker: '岁己SUI', speaker_score: 0.72 },
+        { start: 2, end: 3, text: '晚上好', speaker: '栞栞', speaker_score: 0.65 }
+      ]
+    };
+
+    const reviewPath = asr.writeSpeakerReviewSrt(result, tmp, { max_chars_per_line: 30 });
+    expect(reviewPath).toBe(tmp.replace(/\.srt$/, '.speaker.srt'));
+    const content = fs.readFileSync(reviewPath, 'utf8');
+    expect(content).toContain('[岁己SUI 0.72] 大家晚上好');
+    expect(content).toContain('[栞栞 0.65] 晚上好');
+
+    const singlePath = asr.writeSpeakerReviewSrt({
+      backend: 'sensevoice',
+      segments: [{ start: 0, end: 1, text: '大家晚上好', speaker: '岁己SUI' }]
+    }, singleTmp, { max_chars_per_line: 30 });
+    expect(singlePath).toBeNull();
+
+    fs.unlinkSync(reviewPath);
+  });
+
   test('strips subtitle punctuation for direct video subtitles', () => {
     expect(asr.stripSubtitlePunctuation('大家晚上好！今晚，网络：很卡。')).toBe('大家晚上好今晚网络很卡');
   });
@@ -190,5 +218,90 @@ describe('asr_backends', () => {
     expect(content).toContain('wifi');
     expect(content).not.toContain('wi\nfi');
     require('fs').unlinkSync(tmp);
+  });
+
+  test('streamerRegistry speakerLabels map speaker label to streamer id', () => {
+    const registry = asr.resolveStreamerRegistry({
+      ai: {
+        streamerRegistry: {
+          shiori: {
+            displayName: '栞栞',
+            speakerLabels: ['栞栞', 'Shiori']
+          }
+        }
+      }
+    });
+
+    expect(asr.mapSpeakerLabelToStreamerId('Shiori', registry)).toBe('shiori');
+    expect(asr.mapSpeakerLabelToStreamerId('SPEAKER_00', registry)).toBeNull();
+    expect(asr.mapSpeakerLabelToStreamerId('UNKNOWN', registry)).toBeNull();
+  });
+
+  test('summarizes speakers with score, duration, host, unknown, and max extra filtering', () => {
+    const config = {
+      ai: {
+        comic: {
+          multiReferenceImages: {
+            enabled: true,
+            minSpeakerScore: 0.5,
+            minSpeechSeconds: 8,
+            maxExtraCharacters: 1
+          }
+        },
+        streamerRegistry: {
+          sui: {
+            displayName: '岁己SUI',
+            roomIds: ['25788785'],
+            speakerLabels: ['岁己SUI']
+          },
+          shiori: {
+            displayName: '栞栞',
+            speakerLabels: ['栞栞', 'Shiori']
+          },
+          rhea: {
+            displayName: '瑞娅',
+            speakerLabels: ['瑞娅']
+          }
+        }
+      }
+    };
+    const result = asr.summarizeAsrSpeakers({
+      backend: 'sensevoice',
+      segments: [
+        { start: 0, end: 10, text: 'host', speaker: '岁己SUI', speaker_score: 0.7 },
+        { start: 10, end: 20, text: 'extra', speaker: 'Shiori', speaker_score: 0.8 },
+        { start: 20, end: 30, text: 'limited', speaker: '瑞娅', speaker_score: 0.9 },
+        { start: 50, end: 70, text: 'unknown', speaker: 'UNKNOWN' },
+        { start: 70, end: 90, text: 'cluster', speaker: 'SPEAKER_00', speaker_score: 0.9 }
+      ]
+    }, config, { room_id: '25788785', mediaPath: 'x.m4a' });
+
+    expect(result.appearedStreamerIds).toEqual(['sui', 'shiori', 'rhea']);
+    expect(result.extraAppearedStreamerIds).toEqual(['shiori']);
+    expect(result.speakers.find((speaker: any) => speaker.label === 'UNKNOWN').isUnknown).toBe(true);
+  });
+
+  test('summarizes speakers allowing missing score when duration passes', () => {
+    const config = {
+      ai: {
+        comic: {
+          multiReferenceImages: {
+            enabled: true,
+            minSpeakerScore: 0.9,
+            minSpeechSeconds: 8
+          }
+        },
+        streamerRegistry: {
+          shiori: { displayName: '栞栞', speakerLabels: ['栞栞'] }
+        }
+      }
+    };
+    const result = asr.summarizeAsrSpeakers({
+      backend: 'sensevoice',
+      segments: [{ start: 0, end: 12, text: 'hello', speaker: '栞栞' }]
+    }, config, {});
+
+    expect(result.appearedStreamerIds).toEqual(['shiori']);
+    expect(result.speakers[0].avgScore).toBeNull();
   });
 });

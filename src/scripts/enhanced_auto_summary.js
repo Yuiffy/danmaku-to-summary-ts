@@ -786,6 +786,14 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
                     ...subtitleConfig,
                     corrections: asrRuntime.corrections
                 });
+                asrBackends.writeSpeakerReviewSrt(normalized, srtPath, {
+                    ...subtitleConfig,
+                    corrections: asrRuntime.corrections
+                });
+                asrBackends.writeAsrSpeakersSidecar(normalized, srtPath, config, {
+                    ...context,
+                    mediaPath
+                });
                 console.log(`✅ ASR完成: backend=${normalized.backend}, segments=${normalized.segments.length}, output=${path.basename(srtPath)}`);
             } catch (error) {
                 // 特殊处理：如果进程报错（比如 code 3221226505/0xC0000409），但文件确实生成了，视为可兼容完成

@@ -15,8 +15,10 @@ Current mapping:
 Notes:
 
 - `manifest.json` is the source of truth for clip metadata.
-- `sui.wav` is currently rebuilt from `D:\files\videos\剪映输出\岁己按钮音声输出\20240903找孩子们\自然而然的直播.MP3`.
-- `shiori.wav` is currently rebuilt from `D:\files\videos\DDTV录播\26966466_栞栞Shiori\2026_05_28\录制-26966466-20260528-225805-019-很卡的网络_merged.m4a`.
+- `sui.wav`, `shiori.wav`, and `rhea.wav` were rebuilt on 2026-05-31 from pre-hotel solo streams on 2026-05-26.
+- `shiori.wav` uses 10 clips from the 2026-05-26 morning stream plus 10 clips from the 2026-05-26 evening stream to reduce single-session bias.
+- Each rebuilt Mixup target reference uses 20 subtitle-aligned clips x 8 seconds, converted to 16 kHz mono WAV with light highpass/lowpass/loudness normalization.
+- Previous versions were backed up under `data/asr_speaker_refs/backup_20260531_before_rebuild/`.
 - Keep each reference clip as a clean single-speaker sample when possible.
 - For this repo, the main three-person mixup target is:
   - 岁己 -> `sui.wav`

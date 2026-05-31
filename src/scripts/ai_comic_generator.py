@@ -364,7 +364,142 @@ def get_room_reference_image(room_id: str, highlight_path: Optional[str] = None)
     print("[INFO]  未配置默认参考图，将无参考图生成")
     return None
 
-def collect_all_images(room_id: str, highlight_path: Optional[str] = None) -> list[str]:
+def resolve_configured_path(file_path: str) -> Optional[str]:
+    """Resolve a configured path against project root first, then script dir."""
+    if not file_path:
+        return None
+    scripts_dir = os.path.dirname(__file__)
+    project_root = get_project_root()
+    candidates = [
+        file_path if os.path.isabs(file_path) else os.path.join(project_root, file_path),
+        file_path if os.path.isabs(file_path) else os.path.join(scripts_dir, file_path),
+    ]
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return os.path.abspath(candidate)
+    return None
+
+def get_multi_reference_config(config: Dict[str, Any], room_id: Optional[str]) -> Dict[str, Any]:
+    """Return global multi-reference config with room overrides applied."""
+    ai_config = config.get("ai", {})
+    global_config = ai_config.get("comic", {}).get("multiReferenceImages", {})
+    room_config = {}
+    if room_id:
+        room_config = config.get("roomSettings", {}).get(str(room_id), {}).get("multiReferenceImages", {})
+    merged = {
+        "enabled": False,
+        "maxExtraCharacters": 2,
+        "minSpeakerScore": 0.50,
+        "minSpeechSeconds": 8,
+        "includeUnknownSpeakers": False,
+        "useMentionedOnlyAsContext": True,
+        "appendCharacterDescriptions": True,
+        "imageOrder": ["host", "appeared_streamers", "cover", "screenshots", "default"],
+    }
+    if isinstance(global_config, dict):
+        merged.update(global_config)
+    if isinstance(room_config, dict):
+        merged.update(room_config)
+    return merged
+
+def resolve_streamer_registry(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    registry = config.get("ai", {}).get("streamerRegistry", {})
+    if not isinstance(registry, dict):
+        return {}
+    resolved = {}
+    for streamer_id, entry in registry.items():
+        if not isinstance(entry, dict):
+            continue
+        display_name = str(entry.get("displayName") or streamer_id).strip()
+        labels = []
+        for value in [streamer_id, display_name] + entry.get("speakerLabels", []) + entry.get("aliases", []):
+            text = str(value or "").strip()
+            if text and text not in labels:
+                labels.append(text)
+        resolved[str(streamer_id)] = {
+            **entry,
+            "id": str(streamer_id),
+            "displayName": display_name,
+            "speakerLabels": labels,
+        }
+    return resolved
+
+def find_host_streamer_id(config: Dict[str, Any], room_id: Optional[str]) -> Optional[str]:
+    if not room_id:
+        return None
+    room_text = str(room_id)
+    for streamer_id, entry in resolve_streamer_registry(config).items():
+        room_ids = [str(value) for value in entry.get("roomIds", [])]
+        if room_text in room_ids:
+            return streamer_id
+    return None
+
+def load_asr_speakers_for_highlight(highlight_path: str) -> dict:
+    """Load xxx.asr_speakers.json for a highlight/SRT path if present."""
+    try:
+        if not highlight_path:
+            return {}
+        dir_path = os.path.dirname(highlight_path)
+        base_name = os.path.basename(highlight_path)
+        candidates = []
+        if base_name.endswith("_AI_HIGHLIGHT.txt"):
+            original_base = base_name.replace("_AI_HIGHLIGHT.txt", "")
+            candidates.append(os.path.join(dir_path, f"{original_base}.asr_speakers.json"))
+        else:
+            stem, _ = os.path.splitext(base_name)
+            candidates.append(os.path.join(dir_path, f"{stem}.asr_speakers.json"))
+
+        for candidate in candidates:
+            if os.path.exists(candidate):
+                with open(candidate, "r", encoding="utf-8-sig") as f:
+                    data = json.load(f)
+                print(f"[INFO]  读取 ASR speaker summary: {os.path.basename(candidate)}")
+                return data if isinstance(data, dict) else {}
+
+        print(f"[INFO]  未找到 ASR speaker summary，跳过多参考图: {', '.join(os.path.basename(p) for p in candidates)}")
+        return {}
+    except Exception as e:
+        print(f"[WARNING] 读取 ASR speaker summary 失败，跳过多参考图: {e}")
+        return {}
+
+def resolve_extra_appeared_streamers(config: Dict[str, Any], room_id: Optional[str], highlight_path: Optional[str]) -> list[dict]:
+    multi_config = get_multi_reference_config(config, room_id)
+    print(f"[INFO]  multiReferenceImages.enabled={bool(multi_config.get('enabled'))} room={room_id}")
+    if not multi_config.get("enabled"):
+        return []
+    if not highlight_path:
+        print("[INFO]  未提供 highlight_path，跳过多参考图")
+        return []
+
+    sidecar = load_asr_speakers_for_highlight(highlight_path)
+    if not sidecar:
+        return []
+
+    registry = resolve_streamer_registry(config)
+    host_streamer_id = find_host_streamer_id(config, room_id)
+    max_extra = max(0, int(multi_config.get("maxExtraCharacters") or 0))
+    extra_streamers = []
+    for streamer_id in sidecar.get("extraAppearedStreamerIds", []):
+        streamer_id = str(streamer_id)
+        if streamer_id == host_streamer_id:
+            print(f"[INFO]  跳过房间主人额外参考图: {streamer_id}")
+            continue
+        entry = registry.get(streamer_id)
+        if not entry:
+            print(f"[WARNING] ASR sidecar 中的主播未配置 streamerRegistry: {streamer_id}")
+            continue
+        if len(extra_streamers) >= max_extra:
+            print(f"[INFO]  额外主播达到上限 maxExtraCharacters={max_extra}，跳过 {streamer_id}")
+            continue
+        extra_streamers.append(entry)
+
+    if extra_streamers:
+        print("[INFO]  识别到实际出声额外主播: " + ", ".join(item.get("displayName", item["id"]) for item in extra_streamers))
+    else:
+        print("[INFO]  未识别到可用于多参考图的额外出声主播")
+    return extra_streamers
+
+def collect_all_images(room_id: str, highlight_path: Optional[str] = None, extra_streamers: Optional[list[dict]] = None) -> list[str]:
     """收集所有可用的图片（引用图、封面、截图）用于AI输入
     
     返回图片路径列表，按优先级排序：
@@ -375,9 +510,25 @@ def collect_all_images(room_id: str, highlight_path: Optional[str] = None) -> li
     5. 没有配置默认参考图时返回空列表，让模型无参考图生成
     """
     images = []
+    seen_images = set()
+
+    def add_image(image_path: str, log_message: str) -> bool:
+        real_path = os.path.abspath(image_path)
+        if real_path in seen_images:
+            print(f"[INFO]  跳过重复图片: {os.path.basename(real_path)}")
+            return False
+        images.append(real_path)
+        seen_images.add(real_path)
+        print(log_message)
+        return True
+
     config = load_config()
     scripts_dir = os.path.dirname(__file__)
     project_root = get_project_root()
+    multi_config = get_multi_reference_config(config, room_id)
+    if not multi_config.get("enabled"):
+        extra_streamers = []
+    max_total_images = int(multi_config.get("maxTotalImages") or 4)
     
     # 1. 尝试获取主播参考图（roomSettings中配置的）
     room_str = str(room_id)
@@ -389,16 +540,14 @@ def collect_all_images(room_id: str, highlight_path: Optional[str] = None) -> li
             # 尝试相对于项目根目录的路径
             absolute_path = os.path.join(project_root, ref_image) if not os.path.isabs(ref_image) else ref_image
             if os.path.exists(absolute_path):
-                images.append(absolute_path)
+                add_image(absolute_path, f"[INFO]  收集到主播参考图: {os.path.basename(absolute_path)}")
                 has_anchor_image = True
-                print(f"[INFO]  收集到主播参考图: {os.path.basename(absolute_path)}")
             else:
                 # 尝试相对于脚本目录的路径
                 script_relative = os.path.join(scripts_dir, ref_image) if not os.path.isabs(ref_image) else ref_image
                 if os.path.exists(script_relative):
-                    images.append(script_relative)
+                    add_image(script_relative, f"[INFO]  收集到主播参考图: {os.path.basename(script_relative)}")
                     has_anchor_image = True
-                    print(f"[INFO]  收集到主播参考图: {os.path.basename(script_relative)}")
                 else:
                     print(f"[WARNING] 配置的主播参考图不存在: {ref_image}")
     
@@ -414,34 +563,52 @@ def collect_all_images(room_id: str, highlight_path: Optional[str] = None) -> li
             ]
             for file_path in possible_files:
                 if os.path.exists(file_path):
-                    images.append(file_path)
+                    add_image(file_path, f"[INFO]  收集到主播参考图: {os.path.basename(file_path)}")
                     has_anchor_image = True
-                    print(f"[INFO]  收集到主播参考图: {os.path.basename(file_path)}")
                     break
+
+    # 1.5 额外实际出声主播参考图。只取每人第一张存在的图。
+    for streamer in (extra_streamers or []):
+        if len(images) >= max_total_images:
+            print(f"[INFO]  图片数量达到保守上限 {max_total_images}，停止加入额外主播参考图")
+            break
+        display_name = streamer.get("displayName") or streamer.get("id") or "unknown"
+        added = False
+        for ref_image in streamer.get("referenceImages", []) or []:
+            resolved = resolve_configured_path(ref_image)
+            if resolved:
+                added = add_image(resolved, f"[INFO]  收集到额外主播参考图: {display_name} -> {os.path.basename(resolved)}")
+                break
+            print(f"[WARNING] 额外主播参考图不存在: {display_name} -> {ref_image}")
+        if not added:
+            print(f"[WARNING] 额外主播没有可用参考图: {display_name}")
     
     # 2. 获取直播封面
     has_cover = False
     if highlight_path:
         cover_image = get_live_cover_image(highlight_path)
-        if cover_image and cover_image not in images:
-            images.append(cover_image)
+        if cover_image and len(images) < max_total_images:
+            add_image(cover_image, f"[INFO]  收集到直播封面: {os.path.basename(cover_image)}")
             has_cover = True
-            print(f"[INFO]  收集到直播封面: {os.path.basename(cover_image)}")
+        elif cover_image:
+            print(f"[INFO]  图片数量达到保守上限 {max_total_images}，跳过直播封面: {os.path.basename(cover_image)}")
     
     # 3. 获取直播截图（从环境变量）
     screenshot_path = os.environ.get('SCREENSHOT_PATH', '')
-    if screenshot_path and os.path.exists(screenshot_path) and screenshot_path not in images:
-        images.append(screenshot_path)
-        print(f"[INFO]  收集到直播截图: {os.path.basename(screenshot_path)}")
+    if screenshot_path and os.path.exists(screenshot_path) and len(images) < max_total_images:
+        add_image(screenshot_path, f"[INFO]  收集到直播截图: {os.path.basename(screenshot_path)}")
+    elif screenshot_path and os.path.exists(screenshot_path):
+        print(f"[INFO]  图片数量达到保守上限 {max_total_images}，跳过直播截图: {os.path.basename(screenshot_path)}")
     
     # 如果没有截图路径，尝试从highlight_path推断
     if not screenshot_path and highlight_path:
         dir_path = os.path.dirname(highlight_path)
         base_name = os.path.basename(highlight_path).replace('_AI_HIGHLIGHT.txt', '')
         inferred_screenshot = os.path.join(dir_path, f"{base_name}_SCREENSHOTS.jpg")
-        if os.path.exists(inferred_screenshot) and inferred_screenshot not in images:
-            images.append(inferred_screenshot)
-            print(f"[INFO]  收集到推断的直播截图: {os.path.basename(inferred_screenshot)}")
+        if os.path.exists(inferred_screenshot) and len(images) < max_total_images:
+            add_image(inferred_screenshot, f"[INFO]  收集到推断的直播截图: {os.path.basename(inferred_screenshot)}")
+        elif os.path.exists(inferred_screenshot):
+            print(f"[INFO]  图片数量达到保守上限 {max_total_images}，跳过推断的直播截图: {os.path.basename(inferred_screenshot)}")
     
     # 4. 只有在完全没有任何图片时，才使用默认参考图（兜底）
     # 检查是否已经收集到任何图片（主播参考图、封面、截图）
@@ -461,14 +628,12 @@ def collect_all_images(room_id: str, highlight_path: Optional[str] = None) -> li
             # 尝试相对于项目根目录的路径
             absolute_path = os.path.join(project_root, default_image) if not os.path.isabs(default_image) else default_image
             if os.path.exists(absolute_path):
-                images.append(absolute_path)
-                print(f"[INFO]  收集到默认参考图（兜底）: {os.path.basename(absolute_path)}")
+                add_image(absolute_path, f"[INFO]  收集到默认参考图（兜底）: {os.path.basename(absolute_path)}")
             else:
                 # 尝试相对于脚本目录的路径
                 script_relative = os.path.join(scripts_dir, default_image) if not os.path.isabs(default_image) else default_image
                 if os.path.exists(script_relative):
-                    images.append(script_relative)
-                    print(f"[INFO]  收集到默认参考图（兜底）: {os.path.basename(script_relative)}")
+                    add_image(script_relative, f"[INFO]  收集到默认参考图（兜底）: {os.path.basename(script_relative)}")
         if not default_image:
             print("[INFO]  未配置默认参考图，将无参考图生成")
     else:
@@ -525,6 +690,28 @@ def get_room_character_description(room_id: Optional[str] = None) -> str:
     except Exception:
         return "岁己SUI（白发红瞳女生），饼干岁（有细细四肢的小小的饼干状生物）"
 
+def get_multi_character_description(room_id: Optional[str] = None, extra_streamers: Optional[list[dict]] = None) -> str:
+    """Return host character description plus appeared extra streamer descriptions."""
+    base_desc = get_room_character_description(room_id)
+    try:
+        config = load_config()
+        multi_config = get_multi_reference_config(config, room_id)
+        if not multi_config.get("enabled") or not multi_config.get("appendCharacterDescriptions", True):
+            return base_desc
+        if not extra_streamers:
+            return base_desc
+
+        lines = [base_desc, "", "额外实际出声主播："]
+        for idx, streamer in enumerate(extra_streamers, 1):
+            display_name = streamer.get("displayName") or streamer.get("id") or f"主播{idx}"
+            desc = streamer.get("characterDescription") or display_name
+            desc = " ".join(str(desc).replace("<", "").replace(">", "").split())
+            lines.append(f"{idx}. {display_name}：{desc}")
+        return "\n".join(lines)
+    except Exception as e:
+        print(f"[WARNING] 构建多角色描述失败，使用房间角色描述: {e}")
+        return base_desc
+
 def model_supports_chinese(model: Optional[str] = None) -> bool:
     """判断模型是否支持在图像中生成汉字
     
@@ -554,7 +741,18 @@ def model_supports_chinese(model: Optional[str] = None) -> bool:
     
     return False
 
-def build_comic_prompt(highlight_content: str, reference_image_path: Optional[str] = None, room_id: Optional[str] = None, existing_comic: Optional[str] = None, model: Optional[str] = None) -> Tuple[str, str, bool]:
+def build_multi_character_constraints(extra_streamers: Optional[list[dict]] = None) -> str:
+    if not extra_streamers:
+        return ""
+    names = "、".join(streamer.get("displayName") or streamer.get("id") or "额外主播" for streamer in extra_streamers)
+    return f"""
+多角色参考图约束：
+- 参考图一对应房间主人；后续额外参考图分别对应识别出的连麦/实际出声主播：{names}。
+- 不要把不同角色的发色、服装、配饰混合。
+- 只有漫画脚本明确出现多人互动时才画多位主播。
+- 仅被提到但没有实际出声的人，不要默认画成现场角色。"""
+
+def build_comic_prompt(highlight_content: str, reference_image_path: Optional[str] = None, room_id: Optional[str] = None, existing_comic: Optional[str] = None, model: Optional[str] = None, extra_streamers: Optional[list[dict]] = None) -> Tuple[str, str, bool]:
     """构建漫画生成提示词并返回 (prompt, comic_content, is_generated)。
 
     如果提供 `existing_comic` 则复用已有脚本而不再调用AI生成。
@@ -575,10 +773,11 @@ def build_comic_prompt(highlight_content: str, reference_image_path: Optional[st
         is_generated = True  # 复用已有脚本也算成功，允许继续生成图像
         set_comic_script_meta(provider="existing", model="existing-script", status="success", reason="复用已有漫画脚本")
     else:
-        comic_content, is_generated = generate_comic_content_with_ai(highlight_content, room_id=room_id)
+        comic_content, is_generated = generate_comic_content_with_ai(highlight_content, room_id=room_id, extra_streamers=extra_streamers)
 
     # 获取角色描述并注入绘画提示词（优先房间配置、再全局默认、最后内置默认）
-    character_desc = get_room_character_description(room_id)
+    character_desc = get_multi_character_description(room_id, extra_streamers)
+    multi_constraints = build_multi_character_constraints(extra_streamers)
 
     # 尝试获取房间级别的自定义图片生成 prompt
     config = load_config()
@@ -589,11 +788,14 @@ def build_comic_prompt(highlight_content: str, reference_image_path: Optional[st
     if custom_image_prompt:
         # 使用自定义 prompt 模板
         base_prompt = custom_image_prompt.replace("{character_desc}", character_desc).replace("{comic_content}", comic_content)
+        if multi_constraints:
+            base_prompt = f"{base_prompt}\n{multi_constraints}"
     else:
         # 使用默认模板，包含 {chinese_instruction} 占位符
         # 这个占位符会在实际调用 API 时根据模型能力动态替换
         base_prompt = f"""<note>一定要按照给你的参考图还原形象，而不是自己乱画一个动漫角色</note>
 <character>{character_desc}</character>
+{multi_constraints}
 要画得精致，角色要画得帅气、美丽、可爱。
 {{chinese_instruction}}
 下面是根据直播内容生成的漫画脚本，请根据这个脚本绘制漫画：
@@ -710,7 +912,7 @@ def has_socks_proxy_support() -> bool:
     """检查当前 Python 环境是否具备 SOCKS 代理支持。"""
     return importlib.util.find_spec("socksio") is not None
 
-def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str] = None) -> Tuple[str, bool]:
+def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str] = None, extra_streamers: Optional[list[dict]] = None) -> Tuple[str, bool]:
     """使用AI生成漫画内容脚本
     
     返回值: (comic_content, is_generated)
@@ -792,7 +994,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                 model_name = gemini_config.get('model', 'gemini-2.0-flash')
 
                 # 生成漫画内容脚本（使用统一的prompt模板）
-                character_desc = get_room_character_description(room_id)
+                character_desc = get_multi_character_description(room_id, extra_streamers)
                 content_prompt = build_comic_generation_prompt(character_desc, highlight_content, room_id)
 
                 # 调用Gemini
@@ -869,7 +1071,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                 return return_comic_script_failure(highlight_content, room_id, "tuZi API未配置")
             
             # 构建提示词（使用统一的prompt模板）
-            character_desc = get_room_character_description(room_id)
+            character_desc = get_multi_character_description(room_id, extra_streamers)
             system_prompt = build_comic_generation_prompt(character_desc, highlight_content, room_id)
             user_prompt = f"直播内容：\n{highlight_content}\n\n请创作漫画故事脚本："
             
@@ -1550,8 +1752,9 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
 
         print(f"[ROOM] 房间ID: {room_id}")
         
-        # 收集所有可用的图片（主播参考图、封面、截图）
-        all_images = collect_all_images(room_id, highlight_path)
+        # 收集所有可用的图片（主播参考图、额外实际出声主播参考图、封面、截图）
+        extra_streamers = resolve_extra_appeared_streamers(config, room_id, highlight_path)
+        all_images = collect_all_images(room_id, highlight_path, extra_streamers=extra_streamers)
         
         # 打印传入AI的图片信息
         if all_images:
@@ -1593,7 +1796,13 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
                 print(f"[WARNING]  读取已存在漫画脚本失败，重新生成: {e}")
 
         # 构建提示词（包含漫画内容生成），如果已有脚本则复用
-        prompt, comic_text, is_comic_generated = build_comic_prompt(highlight_content, reference_image_path, room_id, existing_comic=comic_text)
+        prompt, comic_text, is_comic_generated = build_comic_prompt(
+            highlight_content,
+            reference_image_path,
+            room_id,
+            existing_comic=comic_text,
+            extra_streamers=extra_streamers
+        )
 
         # 如果脚本生成失败（使用原文作为备选），则不生成图片
         if not is_comic_generated:
