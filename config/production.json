@@ -178,6 +178,16 @@
                 "enableComicGeneration": true,
                 "enableDelayedReply": true
             },
+            "3473884": {
+                "audioOnly": true,
+                "referenceImage": "public/reference_images/菫時_杠杠_头像.jpg",
+                "characterDescription": "-菫時-（浅金发蓝瞳、带光环的天使系少女），昵称杠杠，粉丝是鸽总",
+                "anchorName": "杠杠",
+                "fanName": "鸽总",
+                "enableTextGeneration": true,
+                "enableComicGeneration": true,
+                "enableDelayedReply": true
+            },
             "21452505": {
                 "audioOnly": true,
                 "referenceImage": "public/reference_images/七海手办.png",
