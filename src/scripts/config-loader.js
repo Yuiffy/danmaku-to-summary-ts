@@ -68,6 +68,13 @@ const AISchema = Joi.object({
         fan: Joi.string().default('粉丝')
     }).default(),
     defaultWordLimit: Joi.number().default(100),
+    tuZiBalance: Joi.object({
+        enabled: Joi.boolean().default(true),
+        accessToken: Joi.string().allow('').default(''),
+        newApiUser: Joi.string().allow('').default(''),
+        lowBalanceThreshold: Joi.number().default(5),
+        notifyOnSuccess: Joi.boolean().default(true)
+    }).default(),
     roomSettings: Joi.object().pattern(Joi.string(), RoomSettingsSchema).default()
 }).default();
 
@@ -143,6 +150,10 @@ const ConfigSchema = Joi.object({
             endpoint: Joi.string().default('/health')
         }).default()
     }).default(),
+    wechatWork: Joi.object({
+        enabled: Joi.boolean().default(true),
+        webhookUrl: Joi.string().allow('').default('')
+    }).default(),
     bilibili: Joi.object({
         enabled: Joi.boolean().default(true),
         polling: Joi.object({
@@ -173,6 +184,13 @@ const SecretsSchema = Joi.object({
     bilibili: Joi.object({
         cookie: Joi.string().allow('').optional(),
         csrf: Joi.string().allow('').optional()
+    }).optional(),
+    wechatWork: Joi.object({
+        webhookUrl: Joi.string().allow('').optional()
+    }).optional(),
+    tuZiBalance: Joi.object({
+        accessToken: Joi.string().allow('').optional(),
+        newApiUser: Joi.string().allow('').optional()
     }).optional()
 }).default();
 
@@ -252,6 +270,15 @@ function transformSecrets(secrets) {
 
     if (secrets.bilibili) {
         transformed.bilibili = secrets.bilibili;
+    }
+
+    if (secrets.wechatWork) {
+        transformed.wechatWork = secrets.wechatWork;
+    }
+
+    if (secrets.tuZiBalance) {
+        transformed.ai = transformed.ai || {};
+        transformed.ai.tuZiBalance = secrets.tuZiBalance;
     }
 
     return transformed;

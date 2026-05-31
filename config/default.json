@@ -351,6 +351,13 @@
         "maxCooldownMs": 300000
       }
     },
+    "tuZiBalance": {
+      "enabled": true,
+      "accessToken": "",
+      "newApiUser": "",
+      "lowBalanceThreshold": 5,
+      "notifyOnSuccess": true
+    },
     "defaultNames": {
       "anchor": "主播",
       "fan": "粉丝"

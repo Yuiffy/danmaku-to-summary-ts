@@ -408,6 +408,19 @@ function isUnsafeGeneratedReply(text) {
     return unsafePatterns.some(pattern => pattern.test(text));
 }
 
+function normalizeTuZiTextMaxTokens(model, configuredMaxTokens, wordLimit = 100) {
+    const requested = Number.isFinite(Number(configuredMaxTokens))
+        ? Math.max(1, Math.floor(Number(configuredMaxTokens)))
+        : Math.max(800, Math.ceil(Number(wordLimit || 100) * 4));
+    const modelName = String(model || '').toLowerCase();
+    const upstreamLimit = modelName.includes('gemini') ? 65536 : 100000;
+    return Math.min(requested, upstreamLimit);
+}
+
+function getTuZiFinishReason(choice) {
+    return choice?.finish_reason || choice?.finishReason || choice?.native_finish_reason || null;
+}
+
 // 调用tuZi API生成文本（备用方案）
 async function generateTextWithTuZi(prompt, options = {}) {
     const config = configLoader.getConfig();
@@ -435,6 +448,7 @@ async function generateTextWithTuZi(prompt, options = {}) {
     const apiUrl = `${baseUrl}/v1/chat/completions`;
     const attempts = Array.isArray(options.attempts) ? [...options.attempts] : [];
     const fallbackFromPrimary = Boolean(options.fallback);
+    const wordLimit = Number(options.wordLimit || configLoader.getByPath('ai.defaultWordLimit', 100));
 
     // 设置代理
     let agent = null;
@@ -451,6 +465,8 @@ async function generateTextWithTuZi(prompt, options = {}) {
 
             // 获取超时时间 (默认 60 秒)
             const timeoutMs = config.timeouts?.aiApiTimeout || 60000;
+            const effectiveMaxTokens = normalizeTuZiTextMaxTokens(textModel, tuziConfig.maxTokens, wordLimit);
+            console.log(`   max_tokens: ${effectiveMaxTokens} (configured=${tuziConfig.maxTokens || 'default'}, wordLimit=${wordLimit})`);
 
             const response = await fetch(apiUrl, {
                 method: 'POST',
@@ -467,7 +483,7 @@ async function generateTextWithTuZi(prompt, options = {}) {
                         }
                     ],
                     temperature: tuziConfig.temperature,
-                    max_tokens: Math.min(tuziConfig.maxTokens || 800, 800)
+                    max_tokens: effectiveMaxTokens
                 }),
                 agent: agent,
                 timeout: timeoutMs
@@ -479,23 +495,42 @@ async function generateTextWithTuZi(prompt, options = {}) {
             }
 
             const data = await response.json();
-            const text = data.choices?.[0]?.message?.content;
+            const choice = data.choices?.[0];
+            const finishReason = getTuZiFinishReason(choice);
+            const usage = data.usage || null;
+            const text = choice?.message?.content;
+            console.log(`   finish_reason: ${finishReason || 'unknown'}, usage: ${usage ? JSON.stringify(usage) : 'unknown'}`);
 
             if (!text || text.trim().length === 0) {
                 throw new Error('tuZi API返回空结果');
+            }
+
+            if (finishReason && ['length', 'max_tokens', 'MAX_TOKENS'].includes(String(finishReason))) {
+                throw new Error(`tuZi API输出达到长度上限，疑似被截断 (finish_reason=${finishReason}, max_tokens=${effectiveMaxTokens})`);
             }
 
             if (isUnsafeGeneratedReply(text)) {
                 throw new Error('tuZi API返回疑似拒绝/身份自述内容，跳过该模型');
             }
 
-            attempts.push({ provider: 'tuZi', model: textModel, status: 'success' });
+            attempts.push({
+                provider: 'tuZi',
+                model: textModel,
+                status: 'success',
+                finishReason: finishReason || 'unknown',
+                completionTokens: usage?.completion_tokens ?? usage?.completionTokens,
+                totalTokens: usage?.total_tokens ?? usage?.totalTokens,
+                maxTokens: effectiveMaxTokens
+            });
             console.log('✅ tuZi API调用成功');
             return createGenerationResult(text, {
                 provider: 'tuZi',
                 model: textModel,
                 fallback: fallbackFromPrimary || attempt > 0,
-                attempts
+                attempts,
+                finishReason: finishReason || 'unknown',
+                usage,
+                maxTokens: effectiveMaxTokens
             });
         } catch (error) {
             attempts.push({
@@ -518,7 +553,7 @@ async function generateTextWithTuZi(prompt, options = {}) {
 }
 
 // 调用Gemini API生成文本
-async function generateTextWithGemini(prompt) {
+async function generateTextWithGemini(prompt, options = {}) {
     const config = configLoader.getConfig();
     const geminiConfig = config.aiServices?.gemini || config.ai?.text?.gemini || {};
 
@@ -608,6 +643,7 @@ async function generateTextWithGemini(prompt) {
             try {
                 return await generateTextWithTuZi(prompt, {
                     fallback: true,
+                    wordLimit: options.wordLimit,
                     attempts: [{
                         provider: 'gemini',
                         model: geminiConfig.model || 'unknown',
@@ -649,10 +685,29 @@ function buildTextFrontMatter(highlightPath, generationMeta = {}) {
             lines.push(`  - provider: ${yamlQuote(attempt.provider || 'unknown')}`);
             lines.push(`    model: ${yamlQuote(attempt.model || 'unknown')}`);
             lines.push(`    status: ${yamlQuote(attempt.status || 'unknown')}`);
+            if (attempt.finishReason) {
+                lines.push(`    finishReason: ${yamlQuote(attempt.finishReason)}`);
+            }
+            if (attempt.maxTokens !== undefined) {
+                lines.push(`    maxTokens: ${Number(attempt.maxTokens)}`);
+            }
+            if (attempt.completionTokens !== undefined) {
+                lines.push(`    completionTokens: ${Number(attempt.completionTokens)}`);
+            }
+            if (attempt.totalTokens !== undefined) {
+                lines.push(`    totalTokens: ${Number(attempt.totalTokens)}`);
+            }
             if (attempt.error) {
                 lines.push(`    error: ${yamlQuote(attempt.error)}`);
             }
         }
+    }
+
+    if (generationMeta.finishReason) {
+        lines.push(`finishReason: ${yamlQuote(generationMeta.finishReason)}`);
+    }
+    if (generationMeta.maxTokens !== undefined) {
+        lines.push(`maxTokens: ${Number(generationMeta.maxTokens)}`);
     }
 
     lines.push('---', '');
@@ -774,10 +829,10 @@ async function generateGoodnightReply(highlightPath, roomId = null) {
             const provider = config.ai?.text?.provider || 'gemini';
 
             if (provider === 'tuZi') {
-                generationResult = await generateTextWithTuZi(prompt);
+                generationResult = await generateTextWithTuZi(prompt, { wordLimit });
             } else {
                 // 默认使用 Gemini
-                generationResult = await generateTextWithGemini(prompt);
+                generationResult = await generateTextWithGemini(prompt, { wordLimit });
             }
 
             const rawGeneratedText = generationResult.text;

@@ -59,6 +59,23 @@ module.exports = {
       wait_ready: false,
       // 禁用自动重启计数（避免无限重启）
       exp_backoff_restart_delay: 100
+    },
+    {
+      name: 'tuzi-balance-daily',
+      script: 'src/scripts/tuzi_balance_check.js',
+      cwd: __dirname,
+      instances: 1,
+      exec_mode: 'fork',
+      autorestart: false,
+      watch: false,
+      cron_restart: '0 9 * * *',
+      env: {
+        NODE_ENV: 'production'
+      },
+      log_date_format: '',
+      error_file: path.join(__dirname, 'logs', 'tuzi-balance-error.log'),
+      out_file: path.join(__dirname, 'logs', 'tuzi-balance-out.log'),
+      time: false
     }
   ],
 
