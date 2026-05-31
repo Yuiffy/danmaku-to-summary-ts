@@ -1,5 +1,5 @@
-import fetch from 'node-fetch';
-import * as crypto from 'crypto';
+import { spawn } from 'child_process';
+import * as path from 'path';
 import { getLogger } from '../../core/logging/LogManager';
 import { ConfigProvider } from '../../core/config/ConfigProvider';
 import { WeChatWorkNotifier } from '../notification/WeChatWorkNotifier';
@@ -10,6 +10,12 @@ interface DanmuCheckResult {
   message: string;
   isRiskControl: boolean;
   timestamp: Date;
+}
+
+interface PythonResult {
+  success: boolean;
+  data?: unknown;
+  error?: string;
 }
 
 export class DanmuRiskControlMonitor {
@@ -110,49 +116,110 @@ export class DanmuRiskControlMonitor {
       throw new Error('未配置B站Cookie');
     }
 
-    const wts = Math.floor(Date.now() / 1000);
-    const w_rid = crypto.createHash('md5').update(`${wts}`).digest('hex');
+    const pythonScript = path.join(process.cwd(), 'src', 'scripts', 'bilibili_danmu_info.py');
+    const pythonResult = await this.runPythonScript(pythonScript, roomId, cookie);
 
-    const url = `https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo?id=${roomId}&type=0&web_location=444.8&w_rid=${w_rid}&wts=${wts}`;
-
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        'Accept': '*/*',
-        'Accept-Language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
-        'Cookie': cookie,
-        'Origin': 'https://live.bilibili.com',
-        'Referer': `https://live.bilibili.com/${roomId}?live_from=85001`,
-        'Sec-Ch-Ua': '"Chromium";v="148", "Google Chrome";v="148", "Not/A)Brand";v="99"',
-        'Sec-Ch-Ua-Mobile': '?0',
-        'Sec-Ch-Ua-Platform': '"Windows"',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-site',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36'
-      }
-    });
-
-    if (!response.ok) {
+    if (pythonResult.success) {
       return {
         roomId,
-        code: response.status,
-        message: `HTTP ${response.status}`,
+        code: 0,
+        message: 'OK',
         isRiskControl: false,
         timestamp: new Date()
       };
     }
 
-    const data = await response.json() as { code: number; message: string; ttl?: number; data?: any };
-    const isRiskControl = data.code === -352;
+    const errorMessage = pythonResult.error || '未知错误';
+    const isRiskControl = this.isRiskControlError(errorMessage);
 
     return {
       roomId,
-      code: data.code,
-      message: data.message || '',
+      code: isRiskControl ? -352 : -1,
+      message: errorMessage,
       isRiskControl,
       timestamp: new Date()
     };
+  }
+
+  private async runPythonScript(scriptPath: string, roomId: string, cookie: string): Promise<PythonResult> {
+    const sessdata = this.extractCookieValue(cookie, 'SESSDATA');
+    const biliJct = this.extractCookieValue(cookie, 'bili_jct');
+    const dedeUserId = this.extractCookieValue(cookie, 'DedeUserID');
+
+    if (!sessdata || !biliJct || !dedeUserId) {
+      throw new Error('Cookie中缺少必要的参数 (SESSDATA, bili_jct, DedeUserID)');
+    }
+
+    const args = [scriptPath, roomId, sessdata, biliJct, dedeUserId];
+
+    const result = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+      const pythonProcess = spawn('python', args, {
+        windowsHide: true
+      });
+
+      let stdout = '';
+      let stderr = '';
+
+      pythonProcess.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      pythonProcess.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+
+      pythonProcess.on('close', (code) => {
+        if (stderr) {
+          const logLines = stderr.trim().split('\n');
+          for (const line of logLines) {
+            if (line.includes('[ERROR]')) {
+              this.logger.error(`Python: ${line}`);
+            } else if (line.includes('[WARNING]')) {
+              this.logger.warn(`Python: ${line}`);
+            } else if (line.includes('[OK]') || line.includes('[INFO]')) {
+              this.logger.info(`Python: ${line}`);
+            } else if (line.trim()) {
+              this.logger.debug(`Python: ${line}`);
+            }
+          }
+        }
+
+        if (code === 0) {
+          resolve({ stdout, stderr });
+          return;
+        }
+
+        if (stdout.trim()) {
+          this.logger.error(`Python stdout: ${stdout.trim()}`);
+        }
+        reject(new Error(`Python脚本退出码: ${code}`));
+      });
+
+      pythonProcess.on('error', (err) => {
+        reject(err);
+      });
+    });
+
+    const jsonResult = JSON.parse(result.stdout) as PythonResult;
+    return jsonResult;
+  }
+
+  private isRiskControlError(message: string): boolean {
+    const normalized = message.toLowerCase();
+    return (
+      normalized.includes('-352') ||
+      normalized.includes('风控') ||
+      normalized.includes('captcha') ||
+      normalized.includes('risk control') ||
+      normalized.includes('too many requests') ||
+      normalized.includes('request blocked') ||
+      normalized.includes('访问频繁')
+    );
+  }
+
+  private extractCookieValue(cookie: string, name: string): string | null {
+    const match = cookie.match(new RegExp(`${name}=([^;]+)`));
+    return match ? match[1] : null;
   }
 
   private async notify(result: DanmuCheckResult): Promise<void> {
