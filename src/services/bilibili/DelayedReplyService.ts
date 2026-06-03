@@ -842,7 +842,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       const delayedReplyConfig = BilibiliConfigHelper.getDelayedReplyConfig();
       const maxRetries = delayedReplyConfig.maxRetries;
 
-      if (!isBlacklistError && !isCredentialError && task.retryCount < maxRetries) {
+      if (!isBlacklistError && !isCredentialError && !this.isPermanentReplyError(error) && task.retryCount < maxRetries) {
         task.retryCount++;
         task.status = 'pending';
         task.error = undefined;
@@ -1238,6 +1238,17 @@ export class DelayedReplyService implements IDelayedReplyService {
       normalized.includes('账号未登录') ||
       normalized.includes('未登录') ||
       normalized.includes('登录失效')
+    );
+  }
+
+  private isPermanentReplyError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    const normalized = message.toLowerCase();
+    return (
+      normalized.includes('晚安回复文件不存在') ||
+      normalized.includes('晚安回复文本为空') ||
+      normalized.includes('12051') ||
+      normalized.includes('重复评论，请勿刷屏')
     );
   }
 

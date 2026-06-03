@@ -1022,6 +1022,13 @@ export class MikufansWebhookHandler implements IWebhookHandler {
           }
         }
 
+        if (code === 0 || timedOut) {
+          const taskId = task.id;
+          if (taskId && queueManager.getTaskById(taskId, { reload: true })?.status !== 'completed') {
+            queueManager.markCompleted(taskId, { exitCode: code, reason: timedOut ? 'timeout' : 'success' });
+          }
+        }
+
         await this.checkAndTriggerDelayedReply(task.mediaPath, roomId);
         releaseWorkerSlot('process-close');
       });
