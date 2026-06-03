@@ -370,6 +370,182 @@ def has_timed_segments(raw_result):
     return False
 
 
+def paraformer_timestamp_to_sentences(results, meta, punc_model, max_subtitle_chars=18):
+    """
+    Paraformer returns character-level timestamps.
+    Split into subtitle-friendly sentences with precise timing.
+    
+    Args:
+        results: paraformer generate output (list of dicts with 'text' and 'timestamp')
+        meta: dict with 'start', 'end', 'speaker', etc.
+        punc_model: punctuation restoration model
+        max_subtitle_chars: max chars per subtitle line (default 18)
+    
+    Returns:
+        list of dicts with 'start', 'end', 'text', 'speaker', etc.
+    """
+    if not results or not isinstance(results, list):
+        return []
+
+    item = results[0] if isinstance(results, list) else results
+    if not isinstance(item, dict):
+        return []
+
+    raw_text = item.get("text", "")
+    timestamps = item.get("timestamp")  # [[start_ms, end_ms], ...]
+    
+    if not raw_text or not timestamps:
+        # Fallback to old behavior
+        text = restore_punctuation(punc_model, raw_text or "")
+        if not text:
+            return []
+        return [{
+            "start": meta["start"],
+            "end": meta["end"],
+            "text": text,
+            "time_unit": "seconds",
+            "speaker": meta.get("speaker"),
+            "speaker_score": meta.get("speaker_score"),
+        }]
+
+    # Step 1: Pair each char with its timestamp
+    # Paraformer text is space-separated characters
+    chars = raw_text.strip().split()
+    if len(chars) != len(timestamps):
+        # Mismatch - fall back to whole-chunk timing
+        text = restore_punctuation(punc_model, raw_text.replace(" ", ""))
+        if not text:
+            return []
+        return [{
+            "start": meta["start"],
+            "end": meta["end"],
+            "text": text,
+            "time_unit": "seconds",
+            "speaker": meta.get("speaker"),
+            "speaker_score": meta.get("speaker_score"),
+        }]
+
+    char_ts = []  # [(char, start_s, end_s), ...]
+    chunk_offset = float(meta["start"])
+    for ch, (start_ms, end_ms) in zip(chars, timestamps):
+        char_ts.append((
+            ch,
+            chunk_offset + float(start_ms) / 1000.0,
+            chunk_offset + float(end_ms) / 1000.0,
+        ))
+
+    # Step 2: Apply punctuation restoration on the raw joined text
+    joined_text = "".join(chars)
+    punctuated = restore_punctuation(punc_model, joined_text)
+
+    # Step 3: Re-align punctuated text to char timestamps
+    # The punctuated text has the same characters but with punctuation inserted.
+    # Build a map: for each char in punctuated, find its corresponding original char.
+    punctuated_chars = list(punctuated)
+    original_idx = 0
+    punct_to_char = {}  # punct_idx -> char_ts index
+    for pi, pc in enumerate(punctuated_chars):
+        if original_idx < len(char_ts) and pc == char_ts[original_idx][0]:
+            punct_to_char[pi] = original_idx
+            original_idx += 1
+
+    # Step 4: Split by sentence-ending punctuation
+    SENTENCE_ENDS = set('。！？；\n')
+    CLAUSE_ENDS = set('，、：…—')
+    
+    # First pass: split into sentences at sentence-ending punctuation
+    sentences = []  # [(start_punct_idx, end_punct_idx), ...]
+    sent_start = 0
+    for i, pc in enumerate(punctuated_chars):
+        if pc in SENTENCE_ENDS:
+            if i > sent_start:
+                sentences.append((sent_start, i + 1))
+                sent_start = i + 1
+    if sent_start < len(punctuated_chars):
+        sentences.append((sent_start, len(punctuated_chars)))
+
+    # Step 5: For long sentences, split at clause boundaries or by char count
+    final_segments = []
+    for sent_start_pi, sent_end_pi in sentences:
+        sent_text = punctuated_chars[sent_start_pi:sent_end_pi]
+        sent_text_str = "".join(sent_text).strip()
+        if not sent_text_str:
+            continue
+
+        # Find char_ts indices for this sentence
+        char_indices = []
+        for pi in range(sent_start_pi, sent_end_pi):
+            if pi in punct_to_char:
+                char_indices.append(punct_to_char[pi])
+        
+        if not char_indices:
+            continue
+
+        if len(sent_text_str) <= max_subtitle_chars:
+            # Short enough - emit as-is
+            final_segments.append({
+                "start": round(char_ts[char_indices[0]][1], 3),
+                "end": round(char_ts[char_indices[-1]][2], 3),
+                "text": sent_text_str,
+                "time_unit": "seconds",
+                "speaker": meta.get("speaker"),
+                "speaker_score": meta.get("speaker_score"),
+            })
+        else:
+            # Split into subtitle-length chunks at clause boundaries
+            sub_start = sent_start_pi
+            last_split = sent_start_pi
+            for pi in range(sent_start_pi, sent_end_pi):
+                pc = punctuated_chars[pi]
+                # Check if we should split here
+                current_len = len("".join(punctuated_chars[sub_start:pi+1]).strip())
+                should_split = False
+                if pc in CLAUSE_ENDS and current_len >= max_subtitle_chars * 0.6:
+                    should_split = True
+                elif current_len >= max_subtitle_chars and pc in CLAUSE_ENDS:
+                    should_split = True
+                elif current_len >= max_subtitle_chars * 1.3:
+                    # Force split even without clause boundary
+                    should_split = True
+
+                if should_split:
+                    sub_text = "".join(punctuated_chars[sub_start:pi+1]).strip()
+                    if sub_text:
+                        sub_char_indices = []
+                        for sj in range(sub_start, pi + 1):
+                            if sj in punct_to_char:
+                                sub_char_indices.append(punct_to_char[sj])
+                        if sub_char_indices:
+                            final_segments.append({
+                                "start": round(char_ts[sub_char_indices[0]][1], 3),
+                                "end": round(char_ts[sub_char_indices[-1]][2], 3),
+                                "text": sub_text,
+                                "time_unit": "seconds",
+                                "speaker": meta.get("speaker"),
+                                "speaker_score": meta.get("speaker_score"),
+                            })
+                    sub_start = pi + 1
+
+            # Remaining part
+            remaining = "".join(punctuated_chars[sub_start:sent_end_pi]).strip()
+            if remaining:
+                rem_char_indices = []
+                for sj in range(sub_start, sent_end_pi):
+                    if sj in punct_to_char:
+                        rem_char_indices.append(punct_to_char[sj])
+                if rem_char_indices:
+                    final_segments.append({
+                        "start": round(char_ts[rem_char_indices[0]][1], 3),
+                        "end": round(char_ts[rem_char_indices[-1]][2], 3),
+                        "text": remaining,
+                        "time_unit": "seconds",
+                        "speaker": meta.get("speaker"),
+                        "speaker_score": meta.get("speaker_score"),
+                    })
+
+    return final_segments
+
+
 def normalize_model_results_with_meta(results, meta, punc_model):
     timed_segments = []
     chunk_duration = max(0.0, float(meta["end"]) - float(meta["start"]))
@@ -917,7 +1093,14 @@ def main():
                                     use_itn=bool(payload.get("use_itn", True)),
                                     batch_size_s=batch_size_s,
                                 )
-                        normalized_items = normalize_model_results_with_meta(results, meta, punc_model_obj)
+                        # Paraformer backend: use char-level timestamps for sentence-level timing
+                        if backend_name == "paraformer":
+                            normalized_items = paraformer_timestamp_to_sentences(
+                                results, meta, punc_model_obj,
+                                max_subtitle_chars=int(payload.get("max_subtitle_chars", 18) or 18),
+                            )
+                        else:
+                            normalized_items = normalize_model_results_with_meta(results, meta, punc_model_obj)
                         for item in normalized_items:
                             if is_meaningless_asr_text(item.get("text", "")):
                                 item["speaker"] = None
