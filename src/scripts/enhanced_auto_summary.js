@@ -14,6 +14,7 @@ const aiTextGenerator = require('./ai_text_generator');
 const aiComicGenerator = require('./ai_comic_generator');
 const queueManager = require('./whisper_queue_manager');
 const asrBackends = require('./asr/asr_backends');
+const topicClipper = require('./topic_clipper');
 
 // 获取音频格式配置
 function getAudioFormats() {
@@ -885,6 +886,40 @@ async function generateAiText(highlightPath, roomId = null) {
     return null;
 }
 
+async function generateTopicClipsForMedia(originalMediaPath, processedMediaPath, srtPath, roomId = null, context = {}) {
+    const config = configLoader.getConfig();
+    const clipConfig = topicClipper.getClipTopicsConfig(config);
+    if (!clipConfig.enabled) {
+        return [];
+    }
+
+    console.log('\n✂️  开始话题切片检测...');
+    try {
+        const ffmpegPath = config.audio?.ffmpeg?.path || 'ffmpeg';
+        const results = await topicClipper.generateTopicClips({
+            config,
+            originalMediaPath,
+            processedMediaPath,
+            srtPath,
+            ffmpegPath,
+            context: {
+                ...context,
+                roomId: roomId ? String(roomId) : null
+            },
+            titleGenerator: aiTextGenerator.generateClipTitle
+        });
+        if (results.length > 0) {
+            console.log(`✅ 话题切片完成: ${results.length} 个本地 review 包`);
+        } else {
+            console.log('ℹ️  话题切片未生成候选');
+        }
+        return results;
+    } catch (error) {
+        console.warn(`⚠️  话题切片阶段失败，继续后续流程: ${error.message}`);
+        return [];
+    }
+}
+
 // AI漫画生成
 async function generateAiComic(highlightPath, roomId = null, options = {}) {
     console.log('\n🎨 开始AI漫画生成...');
@@ -1176,6 +1211,10 @@ const main = async () => {
         const srtPath = mediaResult?.srtPath || null;
         
         if (srtPath) {
+            await generateTopicClipsForMedia(mediaFile, processedFile, srtPath, mediaRoomId, {
+                ...(asrOptions.asrContext || {}),
+                streamerName: asrOptions.asrContext?.streamer_name || null
+            });
             processedMediaFiles.push(processedFile); // 记录处理后的文件
             filesToProcess.push(srtPath);
         }

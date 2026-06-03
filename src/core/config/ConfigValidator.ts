@@ -251,6 +251,21 @@ export class ConfigValidator {
         stopWords: ['晚上好', '晚安', '来了', '打call', '拜拜', '卡了', '嗯', '好', '草', '哈哈', '确实', '牛', '可爱'],
         fillerRegex: '^(呃|那个|就是|然后|哪怕|其实|我觉得|算是|哎呀|有点|怎么说呢|所以|这种|啊|哦)+',
       },
+      clipTopics: {
+        enabled: false,
+        mode: 'local_review',
+        keywords: ['岁己', '小岁', '小岁姐', '岁己姐', '饼干岁', 'SUI'],
+        prePaddingSeconds: 20,
+        postPaddingSeconds: 35,
+        maxClipSeconds: 180,
+        mergeGapSeconds: 45,
+        burnSubtitles: true,
+        outputDirName: 'topic_clips',
+        extraTags: [],
+        autoUpload: {
+          enabled: false,
+        },
+      },
       storage: {
         basePath: './output',
         tempPath: './temp',

@@ -320,6 +320,23 @@ export interface FusionConfig {
   fillerRegex: string;
 }
 
+export interface ClipTopicsConfig {
+  enabled: boolean;
+  mode: 'local_review' | string;
+  keywords: string[];
+  prePaddingSeconds: number;
+  postPaddingSeconds: number;
+  maxClipSeconds: number;
+  mergeGapSeconds: number;
+  burnSubtitles: boolean;
+  outputDirName: string;
+  tags?: string[];
+  extraTags: string[];
+  autoUpload: {
+    enabled: boolean;
+  };
+}
+
 // 存储配置
 export interface StorageConfig {
   basePath: string;
@@ -410,6 +427,7 @@ export interface AppConfig {
   subtitle: SubtitleConfig;
   ai: AIConfig;
   fusion: FusionConfig;
+  clipTopics: ClipTopicsConfig;
   storage: StorageConfig;
   monitoring: MonitoringConfig;
   bilibili: BilibiliConfig;

@@ -129,6 +129,22 @@ const ConfigSchema = Joi.object({
         stopWords: Joi.array().items(Joi.string()).default(['晚上好', '晚安', '来了', '打call', '拜拜', '卡了', '嗯', '好', '草', '哈哈', '确实', '牛', '可爱']),
         fillerRegex: Joi.string().default('^(呃|那个|就是|然后|哪怕|其实|我觉得|算是|哎呀|有点|怎么说呢|所以|这种|啊|哦)+')
     }).default(),
+    clipTopics: Joi.object({
+        enabled: Joi.boolean().default(false),
+        mode: Joi.string().default('local_review'),
+        keywords: Joi.array().items(Joi.string()).default(['岁己', '小岁', '小岁姐', '岁己姐', '饼干岁', 'SUI']),
+        prePaddingSeconds: Joi.number().default(20),
+        postPaddingSeconds: Joi.number().default(35),
+        maxClipSeconds: Joi.number().default(180),
+        mergeGapSeconds: Joi.number().default(45),
+        burnSubtitles: Joi.boolean().default(true),
+        outputDirName: Joi.string().default('topic_clips'),
+        tags: Joi.array().items(Joi.string()).optional(),
+        extraTags: Joi.array().items(Joi.string()).default([]),
+        autoUpload: Joi.object({
+            enabled: Joi.boolean().default(false)
+        }).default()
+    }).default(),
     storage: Joi.object({
         basePath: Joi.string().default('./output'),
         tempPath: Joi.string().default('./temp'),

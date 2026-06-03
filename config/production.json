@@ -685,6 +685,28 @@
         ],
         "fillerRegex": "^[\\s\\W]*$"
     },
+    "clipTopics": {
+        "enabled": true,
+        "mode": "local_review",
+        "keywords": [
+            "岁己",
+            "小岁",
+            "小岁姐",
+            "岁己姐",
+            "饼干岁",
+            "SUI"
+        ],
+        "prePaddingSeconds": 20,
+        "postPaddingSeconds": 35,
+        "maxClipSeconds": 180,
+        "mergeGapSeconds": 45,
+        "burnSubtitles": true,
+        "outputDirName": "topic_clips",
+        "extraTags": [],
+        "autoUpload": {
+            "enabled": false
+        }
+    },
     "storage": {
         "basePath": "D:/files/videos/DDTV录播",
         "tempPath": "D:\\files\\videos\\DDTV录播\\temp",

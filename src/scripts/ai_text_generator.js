@@ -876,6 +876,56 @@ async function generateGoodnightReply(highlightPath, roomId = null) {
     }
 }
 
+function cleanShortTitle(text, fallback) {
+    const cleaned = String(text || '')
+        .trim()
+        .replace(/^["“”'']+|["“”'']+$/g, '')
+        .replace(/^标题[:：]\s*/u, '')
+        .replace(/\s+/g, ' ');
+    if (!cleaned || cleaned.length > 60 || /\n/.test(cleaned)) {
+        return fallback;
+    }
+    return cleaned;
+}
+
+async function generateClipTitle(context = {}) {
+    const fallback = context.defaultTitle || '提到岁己的小片段';
+    const config = configLoader.getConfig();
+    const textEnabled = config.ai?.text?.enabled !== false;
+    if (!textEnabled) {
+        return fallback;
+    }
+
+    const prompt = [
+        '给一个B站直播切片生成短标题。',
+        '要求：',
+        '1. 只输出标题本身，不要解释，不要引号。',
+        '2. 30字以内，适合B站投稿标题。',
+        '3. 必须围绕字幕片段内容，不要编造未提供的信息。',
+        '4. 可以提到“岁己”或“小岁”。',
+        '',
+        `主播: ${context.streamerName || '主播'}`,
+        `原直播标题: ${context.streamTitle || '未知'}`,
+        `录制时间: ${context.recordedAt || '未知'}`,
+        `片段时间: ${context.startTime || ''}-${context.endTime || ''}`,
+        `命中关键词: ${(context.matchedKeywords || []).join('、') || '岁己'}`,
+        '',
+        '字幕片段:',
+        context.sampleText || ''
+    ].join('\n');
+
+    try {
+        const provider = config.ai?.text?.provider || 'gemini';
+        const result = provider === 'tuZi'
+            ? await generateTextWithTuZi(prompt, { wordLimit: 60 })
+            : await generateTextWithGemini(prompt, { wordLimit: 60 });
+        return cleanShortTitle(result.text, fallback);
+    } catch (error) {
+        console.warn(`⚠️  AI切片标题生成失败，使用模板标题: ${error.message}`);
+        return fallback;
+    }
+}
+
 function saveFailedGeneratedText(outputPath, text, highlightPath, generationMeta = {}, attemptInfo = {}) {
     try {
         const basePath = outputPath.replace(/_晚安回复\.md$/i, '');
@@ -948,6 +998,7 @@ async function batchGenerateGoodnightReplies(directory) {
 // 导出函数
 module.exports = {
     generateGoodnightReply,
+    generateClipTitle,
     generateTextWithGemini,
     generateTextWithTuZi,
     batchGenerateGoodnightReplies
