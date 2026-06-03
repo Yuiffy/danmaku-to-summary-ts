@@ -687,6 +687,7 @@
     },
     "clipTopics": {
         "enabled": true,
+        "aiVerify": false,
         "mode": "local_review",
         "keywords": [
             "岁己",
