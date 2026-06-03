@@ -1185,9 +1185,10 @@ const main = async () => {
         // 2. ASR生成字幕（传递 taskId）
         let mediaResult;
         let asrContext = null;
+        let asrOptions = null;
         try {
             asrContext = buildAsrRoutingContext(processedFile, mediaRoomId);
-            const asrOptions = {
+            asrOptions = {
                 bypassQueueTurn,
                 asrBackend: cliOptions.asrBackend,
                 asrCompare: cliOptions.asrCompare,
