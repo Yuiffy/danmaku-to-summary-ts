@@ -1121,10 +1121,10 @@ const main = async () => {
     // 显示队列状态
     queueManager.printStatus();
 
-    let mediaFiles = [];
-    let xmlFiles = [];
-    let filesToProcess = [];
-    let fileSnapshots = new Map();  // 用于记录文件快照
+    const mediaFiles = [];
+    const xmlFiles = [];
+    const filesToProcess = [];
+    const fileSnapshots = new Map();  // 用于记录文件快照
 
     console.log('-> Analyzing input files...');
 
