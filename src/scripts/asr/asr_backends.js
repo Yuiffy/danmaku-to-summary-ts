@@ -2,11 +2,12 @@
 const path = require('path');
 const { spawn } = require('child_process');
 
-const SUPPORTED_BACKENDS = new Set(['whisper', 'sensevoice', 'fun_asr_nano', 'fun_asr_nano_vllm']);
+const SUPPORTED_BACKENDS = new Set(['whisper', 'sensevoice', 'fun_asr_nano', 'fun_asr_nano_vllm', 'paraformer']);
 const BACKEND_ALIASES = new Map([
     ['fun-asr-nano', 'fun_asr_nano'],
     ['fun-asr-nano-vllm', 'fun_asr_nano_vllm'],
-    ['fun_asr_nano-vllm', 'fun_asr_nano_vllm']
+    ['fun_asr_nano-vllm', 'fun_asr_nano_vllm'],
+    ['paraformer-zh', 'paraformer']
 ]);
 
 const DEFAULT_ASR_CONFIG = {
@@ -84,6 +85,26 @@ const DEFAULT_ASR_CONFIG = {
         max_new_tokens: 512,
         batch_size_s: 300,
         enforce_eager: false
+    },
+    paraformer: {
+        model: 'paraformer-zh',
+        vad_model: 'fsmn-vad',
+        punc_model: 'ct-punc',
+        spk_model: 'cam++',
+        language: 'auto',
+        device: 'cuda',
+        python_executable: null,
+        python_args: [],
+        python_path_map: [],
+        use_itn: true,
+        max_vad_segment_s: 8,
+        merge_length_s: 8,
+        process_timeout_s: 1800,
+        enable_speaker: false,
+        preset_spk_num: null,
+        speaker_merge_threshold: 0.78,
+        speaker_references: [],
+        speaker_reference_threshold: 0.45
     }
 };
 
@@ -118,6 +139,10 @@ function getAsrConfig(config = {}) {
         fun_asr_nano_vllm: {
             ...DEFAULT_ASR_CONFIG.fun_asr_nano_vllm,
             ...(config.asr?.fun_asr_nano_vllm || {})
+        },
+        paraformer: {
+            ...DEFAULT_ASR_CONFIG.paraformer,
+            ...(config.asr?.paraformer || {})
         },
         common_hotwords: Array.isArray(config.asr?.common_hotwords) ? config.asr.common_hotwords : [],
         corrections: config.asr?.corrections || [],
@@ -1081,7 +1106,8 @@ async function transcribeFunAsrBackend(mediaPath, config = {}, runtimeOptions = 
             ? buildHotwordWords(runtimeOptions)
             : (runtimeOptions.hotwords || []),
         hotword: runtimeOptions.hotwordTextWeighted || runtimeOptions.hotwordText || '',
-        hotword_unweighted: runtimeOptions.hotwordText || ''
+        hotword_unweighted: runtimeOptions.hotwordText || '',
+        phoneme_correction: asrConfig.phoneme_correction || null
     };
     const label = backend === 'fun_asr_nano_vllm'
         ? 'Fun-ASR-Nano vLLM backend'
@@ -1099,6 +1125,10 @@ async function transcribeFunAsrNano(mediaPath, config = {}, runtimeOptions = {})
 
 async function transcribeFunAsrNanoVllm(mediaPath, config = {}, runtimeOptions = {}) {
     return transcribeFunAsrBackend(mediaPath, config, runtimeOptions, 'fun_asr_nano_vllm');
+}
+
+async function transcribeParaformer(mediaPath, config = {}, runtimeOptions = {}) {
+    return transcribeFunAsrBackend(mediaPath, config, runtimeOptions, 'paraformer');
 }
 
 module.exports = {
@@ -1126,6 +1156,7 @@ module.exports = {
     transcribeSenseVoice,
     transcribeFunAsrNano,
     transcribeFunAsrNanoVllm,
+    transcribeParaformer,
     formatTimestamp,
     parseTimestamp,
     stripSubtitlePunctuation

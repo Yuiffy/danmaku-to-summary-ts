@@ -363,6 +363,9 @@ async function runBackend(backend, clipPath, config, runtime) {
     if (backend === 'sensevoice') {
         return asrBackends.transcribeSenseVoice(clipPath, config, runtime);
     }
+    if (backend === 'paraformer') {
+        return asrBackends.transcribeParaformer(clipPath, config, runtime);
+    }
     throw new Error(`hotword benchmark 不支持 backend=${backend}`);
 }
 

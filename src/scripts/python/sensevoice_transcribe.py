@@ -80,6 +80,8 @@ BACKEND_ALIASES = {
     "fun_asr_nano-vllm": "fun_asr_nano_vllm",
     "fun_asr_nano_vllm": "fun_asr_nano_vllm",
     "sensevoice": "sensevoice",
+    "paraformer": "paraformer",
+    "paraformer-zh": "paraformer",
 }
 
 
@@ -706,7 +708,11 @@ def main():
             print(json.dumps(output, ensure_ascii=False, default=str), file=original_stdout)
             return
 
-        default_model = "FunAudioLLM/Fun-ASR-Nano-2512" if backend_name == "fun_asr_nano" else "iic/SenseVoiceSmall"
+        default_model = (
+            "FunAudioLLM/Fun-ASR-Nano-2512" if backend_name == "fun_asr_nano"
+            else "paraformer-zh" if backend_name == "paraformer"
+            else "iic/SenseVoiceSmall"
+        )
         model_name = payload.get("model", default_model)
         resolved_model = resolve_cached_model_name(model_name)
         log_progress(f"准备主模型: {model_name} (backend={backend_name})")
@@ -960,6 +966,58 @@ def main():
     }
     if payload.get("include_raw", False):
         output["raw"] = raw_result
+
+    # --- asr-hotword post-processing ---
+    hotword_config = payload.get("phoneme_correction")
+    if hotword_config and isinstance(hotword_config, dict) and hotword_config.get("enabled"):
+        try:
+            # Locate asr-hotword relative to project root
+            _script_dir = os.path.dirname(os.path.abspath(__file__))
+            _project_root = os.path.normpath(os.path.join(_script_dir, "..", "..", ".."))
+            _hotword_candidates = [
+                os.path.join(_project_root, "tmp", "asr-hotword"),
+                os.path.join(_project_root, "asr-hotword"),
+            ]
+            _hotword_path = None
+            for _cand in _hotword_candidates:
+                _cand = os.path.normpath(_cand)
+                if os.path.isfile(os.path.join(_cand, "hotword", "__init__.py")):
+                    _hotword_path = _cand
+                    break
+            if not _hotword_path:
+                raise ImportError(
+                    f"asr-hotword 未找到，搜索路径: {_hotword_candidates}。"
+                    f"请 clone asr-hotword 到 tmp/asr-hotword 目录。"
+                )
+            sys.path.insert(0, _hotword_path)
+            from hotword import PhonemeCorrector
+
+            threshold = float(hotword_config.get("threshold", 0.85) or 0.85)
+            pc = PhonemeCorrector(threshold=threshold)
+
+            hotword_text = hotword_config.get("hotwords", "")
+            if hotword_text:
+                pc.update_hotwords(hotword_text)
+
+            corrections_count = 0
+            for seg in output.get("segments", []):
+                text = seg.get("text", "")
+                if not text or len(text.strip()) <= 1:
+                    continue
+                result = pc.correct(text)
+                if result.text != text:
+                    corrections_count += 1
+                    seg["text"] = result.text
+                    seg["phoneme_corrections"] = [
+                        {"from": m[0], "to": m[1], "score": m[2]}
+                        for m in result.matches
+                    ]
+
+            if corrections_count > 0:
+                log_progress(f"asr-hotword 纠正: {corrections_count}/{len(output.get('segments', []))} 段")
+        except Exception as exc:
+            print(f"⚠️ asr-hotword 纠正失败，继续使用原始文本: {exc}", file=sys.stderr)
+
     print(json.dumps(output, ensure_ascii=False, default=str), file=original_stdout)
 
 

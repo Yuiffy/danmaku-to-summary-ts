@@ -65,7 +65,8 @@ export type AsrBackendName =
   | 'fun_asr_nano'
   | 'fun-asr-nano'
   | 'fun_asr_nano_vllm'
-  | 'fun-asr-nano-vllm';
+  | 'fun-asr-nano-vllm'
+  | 'paraformer';
 
 export interface AsrHotword {
   word: string;

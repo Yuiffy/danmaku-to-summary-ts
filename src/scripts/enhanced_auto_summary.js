@@ -786,6 +786,8 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
                     asrResult = await asrBackends.transcribeFunAsrNano(mediaPath, config, asrRuntime);
                 } else if (selected.backend === 'fun_asr_nano_vllm') {
                     asrResult = await asrBackends.transcribeFunAsrNanoVllm(mediaPath, config, asrRuntime);
+                } else if (selected.backend === 'paraformer') {
+                    asrResult = await asrBackends.transcribeParaformer(mediaPath, config, asrRuntime);
                 } else {
                     throw new Error(`未实现的 ASR backend: ${selected.backend}`);
                 }

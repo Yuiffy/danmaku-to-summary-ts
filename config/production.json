@@ -519,9 +519,9 @@
                 "enableComicGeneration": true,
                 "enableDelayedReply": true,
                 "customPrompts": {
-                    "goodnightReply": "# Role: 三国梗百科全书·折棒爷御前带刀侍卫\n\n## Profile\n你是一名重度《三国杀》玩家兼《新三国》电视剧十级学者，同时也是主播“折棒爷”的狂热死忠粉。你的大脑里装满了三国台词和武将技能语音。你将直播间视为风云变幻的“汉末乱世”，将主播视为割据一方的“主公”。\n\n## Goals\n根据提供的【直播内容摘要】，撰写一篇古风、中二、爆笑且充满“梗”的战报式回复。\n\n## Constraints \u0026 Rules (天条)\n1. **梗的精准匹配**：引用的台词必须与直播发生的情境在逻辑或情绪上契合，不能生搬硬套。\n2. **事实基于文档**：直播发生的事件（赢了、输了、玩了什么）必须基于提供的摘要，不可瞎编。\n## Knowledge Base (素材库 - 请根据情境灵活调用)\n* **顺风/超神时刻**：\n    * 新三国：“我二弟天下无敌！”、“天下英雄，唯使君与操耳！”、“这一拜，生死不改！”\n    * 三国杀：“无双！万军取首！”、“谁能挡我！”、“这便是大魏的黑科技！”\n* **逆风/翻车/被虐**：\n    * 新三国：“大意失荆州啊！”、“我看主公是飘了！”、“不可能！绝对不可能！”、“如果是我的话，根本不会败得这么惨！”、“我从未见过有如此厚颜无耻之人！”\n    * 三国杀：“这也是计划的一部分吗？”、“由于判断失误，我军败了。”\n* **整活/搞笑/无语**：\n    *“叉出去！”、“我部悍将刘三刀在此！”、“他总是因为太优秀而被记恨。”\n    * 三国杀：“观今夜天象，知天下大事。”、“挣扎吧，在血和暗的深渊里！”\n\n## Workflow (写作思考过程)\n1. **定调**：阅读摘要，判断今日直播的整体基调（大胜/惨败/综艺效果拉满）。\n2. **选角**：\n    * 大胜 -\u003e 扮演那个得意的曹操或狂妄的关羽。\n    * 惨败 -\u003e 扮演痛心疾首的诸葛亮或借口的一堆的袁绍。\n    * 搞笑 -\u003e 扮演邢道荣或许攸。\n3. **撰写**：\n    * **起势**：用一句符合今日情绪的“名台词”改写开场。\n    * **复盘**：将直播中的具体事件（游戏操作、聊天话题）转化为“战事”描述。\n    * **收尾**：用一句潇洒或意犹未尽的古风台词结尾。\n\n字数要求：{wordLimit}字以内。\n\n【直播内容摘要】\n{highlightContent}\n\n请根据以上直播内容，以“玩梗狂魔”的身份写一篇战报式回复。句句不离新三国，字字都是三国杀。",
+                    "goodnightReply": "# Role: 三国梗百科全书·折棒爷御前带刀侍卫\n\n## Profile\n你是一名重度《三国杀》玩家兼《新三国》电视剧十级学者，同时也是主播“折棒爷”的狂热死忠粉。你的大脑里装满了三国台词和武将技能语音。你将直播间视为风云变幻的“汉末乱世”，将主播视为割据一方的“主公”。\n\n## Goals\n根据提供的【直播内容摘要】，撰写一篇古风、中二、爆笑且充满“梗”的战报式回复。\n\n## Constraints & Rules (天条)\n1. **梗的精准匹配**：引用的台词必须与直播发生的情境在逻辑或情绪上契合，不能生搬硬套。\n2. **事实基于文档**：直播发生的事件（赢了、输了、玩了什么）必须基于提供的摘要，不可瞎编。\n## Knowledge Base (素材库 - 请根据情境灵活调用)\n* **顺风/超神时刻**：\n    * 新三国：“我二弟天下无敌！”、“天下英雄，唯使君与操耳！”、“这一拜，生死不改！”\n    * 三国杀：“无双！万军取首！”、“谁能挡我！”、“这便是大魏的黑科技！”\n* **逆风/翻车/被虐**：\n    * 新三国：“大意失荆州啊！”、“我看主公是飘了！”、“不可能！绝对不可能！”、“如果是我的话，根本不会败得这么惨！”、“我从未见过有如此厚颜无耻之人！”\n    * 三国杀：“这也是计划的一部分吗？”、“由于判断失误，我军败了。”\n* **整活/搞笑/无语**：\n    *“叉出去！”、“我部悍将刘三刀在此！”、“他总是因为太优秀而被记恨。”\n    * 三国杀：“观今夜天象，知天下大事。”、“挣扎吧，在血和暗的深渊里！”\n\n## Workflow (写作思考过程)\n1. **定调**：阅读摘要，判断今日直播的整体基调（大胜/惨败/综艺效果拉满）。\n2. **选角**：\n    * 大胜 -> 扮演那个得意的曹操或狂妄的关羽。\n    * 惨败 -> 扮演痛心疾首的诸葛亮或借口的一堆的袁绍。\n    * 搞笑 -> 扮演邢道荣或许攸。\n3. **撰写**：\n    * **起势**：用一句符合今日情绪的“名台词”改写开场。\n    * **复盘**：将直播中的具体事件（游戏操作、聊天话题）转化为“战事”描述。\n    * **收尾**：用一句潇洒或意犹未尽的古风台词结尾。\n\n字数要求：{wordLimit}字以内。\n\n【直播内容摘要】\n{highlightContent}\n\n请根据以上直播内容，以“玩梗狂魔”的身份写一篇战报式回复。句句不离新三国，字字都是三国杀。",
                     "comicScript": "你作为虚拟主播二创画师大手子，根据直播内容，绘制直播总结插画。\n角色描述：{character_desc}。\n风格：在直播内容中选择一个最经典的画面，画一幅能表现这个场景的插画，主体仍以表情、动作和场景来讲故事；但如果有助于漫画效果，可以加入少量中文台词框、标题字、拟声词或标签字，文字要自然准确、排版清楚，不要过多。\n\n特别注意：折棒爷喜欢三国杀和cosplay三国人物，如果直播内容涉及三国杀游戏，可以在画面中体现武将形象、卡牌、技能特效等元素；如果涉及她cosplay三国人物，要突出服装和造型特点。\n\n下面是一场直播的语音+弹幕文本，请先构思图片并用文字给我，我再拿去绘制图片。整体600个字符以内。只返回图片内容的文字描述，不要包含任何多余的说明、格式。如果设计带字，请明确写出文字出现的位置和具体内容，单处文字尽量控制在1到12个字。\n{highlight_content}",
-                    "comicImage": "\u003cnote\u003e一定要按照给你的参考图还原形象，而不是自己乱画一个动漫角色\u003c/note\u003e\n\u003ccharacter\u003e{character_desc}\u003c/character\u003e\n要画得精致，角色要画得帅气、美丽、可爱,画面精美，视角独特，角色动作符合人体、有张力，pixiv高分水平，下海漫画家上岸水平。\n可以加入适量、清晰、排版工整的中文文字来增强漫画叙事，比如短台词、吐槽、标题、小标签、拟声词；单处文字尽量简短，整张图的文字数量要克制但可以比以前稍多。\n\n如果漫画脚本中涉及三国杀元素，可以适当融入武将形象、卡牌、技能特效等视觉元素；\n\n下面是根据直播内容生成的漫画脚本，请根据这个脚本绘制漫画：\n{comic_content}"
+                    "comicImage": "<note>一定要按照给你的参考图还原形象，而不是自己乱画一个动漫角色</note>\n<character>{character_desc}</character>\n要画得精致，角色要画得帅气、美丽、可爱,画面精美，视角独特，角色动作符合人体、有张力，pixiv高分水平，下海漫画家上岸水平。\n可以加入适量、清晰、排版工整的中文文字来增强漫画叙事，比如短台词、吐槽、标题、小标签、拟声词；单处文字尽量简短，整张图的文字数量要克制但可以比以前稍多。\n\n如果漫画脚本中涉及三国杀元素，可以适当融入武将形象、卡牌、技能特效等视觉元素；\n\n下面是根据直播内容生成的漫画脚本，请根据这个脚本绘制漫画：\n{comic_content}"
                 }
             },
             "21696950": {
@@ -721,7 +721,7 @@
         }
     },
     "asr": {
-        "default_backend": "fun_asr_nano_vllm",
+        "default_backend": "paraformer",
         "common_hotwords": [
             {
                 "word": "东爱璃Lovely",
@@ -1041,7 +1041,7 @@
                 "match": {
                     "room_id": "21692711"
                 },
-                "backend": "fun_asr_nano_vllm",
+                "backend": "paraformer",
                 "hotwords": [
                     {
                         "word": "东爱璃Lovely",
@@ -1053,7 +1053,7 @@
                 "match": {
                     "room_id": "1603600"
                 },
-                "backend": "fun_asr_nano_vllm",
+                "backend": "paraformer",
                 "hotwords": [
                     {
                         "word": "星汐Seki",
@@ -1065,7 +1065,7 @@
                 "match": {
                     "room_id": "23222837"
                 },
-                "backend": "fun_asr_nano_vllm",
+                "backend": "paraformer",
                 "hotwords": [
                     {
                         "word": "礼墨Sumi",
@@ -1077,7 +1077,7 @@
                 "match": {
                     "room_id": "573893"
                 },
-                "backend": "fun_asr_nano_vllm",
+                "backend": "paraformer",
                 "hotwords": [
                     {
                         "word": "笙歌",
@@ -1089,7 +1089,7 @@
                 "match": {
                     "room_id": "25971921"
                 },
-                "backend": "fun_asr_nano_vllm",
+                "backend": "paraformer",
                 "hotwords": [
                     {
                         "word": "伊索尔Sol",
@@ -1101,7 +1101,7 @@
                 "match": {
                     "room_id": "24872476"
                 },
-                "backend": "fun_asr_nano_vllm",
+                "backend": "paraformer",
                 "hotwords": [
                     {
                         "word": "南町Nightin",
@@ -1113,7 +1113,7 @@
                 "match": {
                     "room_id": "25788785"
                 },
-                "backend": "fun_asr_nano_vllm",
+                "backend": "paraformer",
                 "hotwords": [
                     {
                         "word": "岁己",
@@ -1135,7 +1135,7 @@
                 "match": {
                     "room_id": "26966466"
                 },
-                "backend": "fun_asr_nano_vllm",
+                "backend": "paraformer",
                 "hotwords": [
                     {
                         "word": "栞栞",
@@ -1161,13 +1161,13 @@
                 "match": {
                     "room_id": "1820703922"
                 },
-                "backend": "fun_asr_nano_vllm"
+                "backend": "paraformer"
             },
             {
                 "match": {
                     "room_id": "1967216004"
                 },
-                "backend": "fun_asr_nano_vllm"
+                "backend": "paraformer"
             }
         ],
         "whisper": {
@@ -1234,6 +1234,28 @@
             "max_new_tokens": 512,
             "batch_size_s": 300,
             "enforce_eager": false
+        },
+        "paraformer": {
+            "model": "paraformer-zh",
+            "vad_model": "fsmn-vad",
+            "punc_model": "ct-punc",
+            "spk_model": "cam++",
+            "language": "auto",
+            "device": "cuda",
+            "use_itn": true,
+            "max_vad_segment_s": 8,
+            "merge_length_s": 8,
+            "process_timeout_s": 1800,
+            "enable_speaker": true,
+            "preset_spk_num": null,
+            "speaker_merge_threshold": 0.78,
+            "speaker_references": [],
+            "speaker_reference_threshold": 0.45
+        },
+        "phoneme_correction": {
+            "enabled": true,
+            "threshold": 0.85,
+            "hotwords": "\n东爱璃Lovely | 东爱理 | 东爱璃\n星汐Seki | 星夕 | 星溪 | Seki\n花礼Harei | 花梨 | 哈雷 | Harei\n弥月Mizuki | 迷月 | 米兹基 | Mizuki\n米汀Nagisa | 米亭 | 那吉萨 | Nagisa\n七海Nana7mi | 娜娜七米 | nanami | Nana7mi\n犬绒Mofu | 犬容 | 莫夫 | Mofu\n栞栞Shiori | 珊珊 | 诗织 | Shiori\n岁己SUI | 岁几 | 随意 | SUI\n十六萤Izayoi | 伊扎约伊 | Izayoi\n灰泽满Hazel | 海泽尔 | Hazel\n莉蔻Liko | 里库 | Liko\n克罗雅Kloa | 克洛阿 | Kloa\n飞天狙 | 飞天巨\n哔哩哔哩 | B站 | b站\n旁汀生 | 螃蟹\n阿萨 | 阿撒\n小孙 | 小笋\n饼干\n黄浦江\n戴维斯 | DEVIC\nVirtuaReal | VR\nMIXUP | mixup\n"
         }
     },
     "subtitle": {
