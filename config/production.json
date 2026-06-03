@@ -764,10 +764,6 @@
             "MIXUP2026",
             "PSP",
             "VirtuaReal",
-            "岁己",
-            "岁己SUI",
-            "小岁",
-            "饼干岁",
             "栞栞",
             "米汀",
             "瑞娅",
@@ -922,7 +918,9 @@
             "speaker_reference_threshold": 0.45
         },
         "phoneme_correction": {
-            "enabled": false
+            "enabled": true,
+            "threshold": 0.85,
+            "hotwords": "岁己 岁己SUI 小岁 饼干岁 栞栞Shiori 戴维斯 飞天狙 米汀Nagisa 瑞娅Ria 克罗雅Kloa 灰泽满Hazel 莉蔻Liko 十六萤Izayoi"
         }
     },
     "subtitle": {
