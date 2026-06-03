@@ -1017,6 +1017,30 @@
                     ]
                 },
                 {
+                    "from": "岁吉",
+                    "to": "岁己",
+                    "require_nearby": [
+                        "小岁",
+                        "岁岁",
+                        "SUI",
+                        "岁己",
+                        "饼干岁",
+                        "前辈",
+                        "姐"
+                    ]
+                },
+                {
+                    "from": "小碎",
+                    "to": "小岁",
+                    "require_nearby": [
+                        "岁己",
+                        "岁岁",
+                        "SUI",
+                        "饼干岁",
+                        "姐"
+                    ]
+                },
+                {
                     "from": "小穗姐",
                     "to": "小岁姐",
                     "require_nearby": [
@@ -1242,9 +1266,13 @@
             "spk_model": "cam++",
             "language": "auto",
             "device": "cuda",
+            "python_executable": null,
+            "python_args": [],
+            "python_path_map": [],
             "use_itn": true,
-            "max_vad_segment_s": 8,
-            "merge_length_s": 8,
+            "vad_max_single_segment_time_ms": 60000,
+            "batch_size_s": 300,
+            "batch_size_threshold_s": 60,
             "process_timeout_s": 1800,
             "enable_speaker": true,
             "preset_spk_num": null,

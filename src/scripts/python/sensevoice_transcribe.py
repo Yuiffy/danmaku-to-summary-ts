@@ -374,13 +374,13 @@ def paraformer_timestamp_to_sentences(results, meta, punc_model, max_subtitle_ch
     """
     Paraformer returns character-level timestamps.
     Split into subtitle-friendly sentences with precise timing.
-    
+
     Args:
         results: paraformer generate output (list of dicts with 'text' and 'timestamp')
         meta: dict with 'start', 'end', 'speaker', etc.
         punc_model: punctuation restoration model
         max_subtitle_chars: max chars per subtitle line (default 18)
-    
+
     Returns:
         list of dicts with 'start', 'end', 'text', 'speaker', etc.
     """
@@ -773,6 +773,235 @@ def classify_speaker_embeddings(spk_results, references, threshold):
     return labels
 
 
+def transcribe_paraformer_builtin(payload, audio_path, device):
+    """
+    Use FunASR's built-in pipeline for paraformer: pass vad_model/punc_model/spk_model
+    to AutoModel and let it handle everything internally.
+    This avoids manual VAD segmentation which can cut words mid-sentence,
+    and produces sentence_info with precise per-sentence timestamps + speaker labels.
+    """
+    from funasr import AutoModel
+
+    device_name = "cuda:0" if device == "cuda" else device
+    model_name = payload.get("model", "paraformer-zh")
+    resolved_model = resolve_cached_model_name(model_name)
+    log_progress(f"加载 paraformer 内建 pipeline: {resolved_model}")
+
+    model_kwargs = {
+        "model": resolved_model,
+        "device": device_name,
+        "disable_update": True,
+    }
+
+    # Attach VAD model
+    vad_model = payload.get("vad_model", "fsmn-vad")
+    if vad_model:
+        resolved_vad = resolve_cached_model_name(vad_model)
+        model_kwargs["vad_model"] = resolved_vad
+        model_kwargs["vad_kwargs"] = payload.get("vad_kwargs") or {
+            "max_single_segment_time": int(payload.get("vad_max_single_segment_time_ms", 60000) or 60000)
+        }
+        log_progress(f"  VAD: {resolved_vad}")
+
+    # Attach punc model
+    punc_model = payload.get("punc_model", "ct-punc")
+    if punc_model:
+        resolved_punc = resolve_cached_model_name(punc_model)
+        model_kwargs["punc_model"] = resolved_punc
+        log_progress(f"  Punc: {resolved_punc}")
+
+    # Attach speaker model
+    spk_model = payload.get("spk_model")
+    enable_speaker = bool(payload.get("enable_speaker", False))
+    if enable_speaker and spk_model:
+        resolved_spk = resolve_cached_model_name(spk_model)
+        model_kwargs["spk_model"] = resolved_spk
+        model_kwargs["spk_kwargs"] = payload.get("spk_kwargs") or {
+            "cb_kwargs": {
+                "merge_thr": float(payload.get("speaker_merge_threshold", 0.78))
+            }
+        }
+        log_progress(f"  SPK: {resolved_spk}")
+
+    # Speaker references for named speaker identification
+    speaker_references = payload.get("speaker_references")
+    if speaker_references and enable_speaker:
+        log_progress(f"  Speaker references: {len(speaker_references)} speakers")
+
+    try:
+        with StageTimeout(payload.get("model_load_timeout_s", 180), "paraformer pipeline 加载"):
+            model = AutoModel(**model_kwargs)
+        log_progress("paraformer pipeline 加载完成")
+    except Exception as exc:
+        fail("paraformer pipeline 加载失败", f"{exc}\n{traceback.format_exc()}")
+
+    try:
+        batch_size_s = float(payload.get("batch_size_s", 300) or 300)
+        generate_kwargs = {
+            "input": audio_path,
+            "batch_size_s": int(batch_size_s),
+        }
+        batch_size_threshold_s = payload.get("batch_size_threshold_s")
+        if batch_size_threshold_s is not None:
+            generate_kwargs["batch_size_threshold_s"] = int(float(batch_size_threshold_s))
+        hotword = str(payload.get("hotword") or payload.get("hotword_unweighted") or "").strip()
+        if hotword:
+            generate_kwargs["hotword"] = hotword
+        log_progress(
+            f"开始转写 (batch_size_s={batch_size_s}, "
+            f"batch_size_threshold_s={generate_kwargs.get('batch_size_threshold_s', 'default')}, "
+            f"hotword={'yes' if hotword else 'no'})"
+        )
+        with StageTimeout(payload.get("process_timeout_s", 1800), "paraformer 转写"):
+            with suppress_model_output():
+                results = model.generate(**generate_kwargs)
+        log_progress("paraformer 转写完成")
+    except Exception as exc:
+        fail("paraformer 转写失败", f"{exc}\n{traceback.format_exc()}")
+
+    if not results or not isinstance(results, list):
+        fail("paraformer 无输出", "generate() 返回空结果")
+
+    r = results[0]
+    sentence_info = r.get("sentence_info", [])
+    if not sentence_info:
+        log_progress("无 sentence_info，回退到普通处理")
+        return normalize_segments(results)
+
+    log_progress(f"sentence_info: {len(sentence_info)} 句")
+
+    # Build speaker reference centroids for named identification
+    reference_centroids = None
+    if enable_speaker and speaker_references and spk_model:
+        try:
+            # Need a separate spk_model object for reference extraction
+            spk_model_obj = AutoModel(
+                model=resolve_cached_model_name(spk_model),
+                device=device_name,
+                disable_update=True,
+            )
+            reference_centroids = build_speaker_reference_centroids(
+                spk_model_obj, speaker_references, device,
+            )
+        except Exception as exc:
+            log_progress(f"参考说话人加载失败，使用聚类结果: {exc}")
+
+    # Convert sentence_info to our output format
+    segments = []
+    max_subtitle_chars = int(payload.get("max_subtitle_chars", 18) or 18)
+
+    for sent in sentence_info:
+        text = sent.get("text", "").strip()
+        if not text:
+            continue
+
+        start_ms = float(sent.get("start", 0))
+        end_ms = float(sent.get("end", 0))
+        start_s = round(start_ms / 1000.0, 3)
+        end_s = round(max(end_ms, start_ms + 100) / 1000.0, 3)
+
+        spk = sent.get("spk")
+        speaker_label = None
+        speaker_score = None
+
+        if spk is not None:
+            if reference_centroids:
+                # Try to match against known speakers
+                import torch
+                spk_emb = sent.get("spk_embedding")
+                if spk_emb is not None and torch.is_tensor(spk_emb):
+                    emb = torch.nn.functional.normalize(spk_emb.to("cpu"), dim=1)
+                    best_label = None
+                    best_score = -1.0
+                    for label, centroid in reference_centroids.items():
+                        score = float(torch.matmul(emb, centroid.T).max().item())
+                        if score > best_score:
+                            best_label = label
+                            best_score = score
+                    threshold = float(payload.get("speaker_reference_threshold", 0.45))
+                    if best_score >= threshold:
+                        speaker_label = best_label
+                        speaker_score = best_score
+
+            if speaker_label is None:
+                speaker_label = f"SPEAKER_{int(spk):02d}"
+
+        # Split long sentences into subtitle-length chunks
+        if len(text) <= max_subtitle_chars:
+            seg = {
+                "start": start_s,
+                "end": end_s,
+                "text": text,
+                "time_unit": "seconds",
+            }
+            if speaker_label:
+                seg["speaker"] = speaker_label
+            if speaker_score:
+                seg["speaker_score"] = speaker_score
+            segments.append(seg)
+        else:
+            # Use char-level timestamps for precise splitting
+            timestamps = sent.get("timestamp", [])
+            chars = list(text.replace(",", "").replace(".", "").replace("?", "").replace("!", "").replace(" ", ""))
+            # Simple approach: split at comma/punctuation within the text
+            # Use the original punctuation from text
+            sub_texts = []
+            current = ""
+            for ch in text:
+                current += ch
+                if ch in ("，", "、", "？", "！", "；", ",", "?", "!", ";") and len(current) >= max_subtitle_chars * 0.5:
+                    sub_texts.append(current)
+                    current = ""
+                elif len(current) >= max_subtitle_chars and ch in ("，", "、", ",", "、"):
+                    sub_texts.append(current)
+                    current = ""
+                elif len(current) >= int(max_subtitle_chars * 1.3):
+                    # Force split
+                    sub_texts.append(current)
+                    current = ""
+            if current:
+                sub_texts.append(current)
+
+            if len(sub_texts) <= 1 or not timestamps:
+                seg = {
+                    "start": start_s,
+                    "end": end_s,
+                    "text": text,
+                    "time_unit": "seconds",
+                }
+                if speaker_label:
+                    seg["speaker"] = speaker_label
+                if speaker_score:
+                    seg["speaker_score"] = speaker_score
+                segments.append(seg)
+            else:
+                # Distribute time proportionally across sub-texts
+                total_chars = sum(len(t) for t in sub_texts)
+                total_duration = end_s - start_s
+                cursor = start_s
+                for i, st in enumerate(sub_texts):
+                    if i == len(sub_texts) - 1:
+                        seg_end = end_s
+                    else:
+                        duration_share = (len(st) / total_chars) * total_duration
+                        seg_end = round(cursor + duration_share, 3)
+                    seg = {
+                        "start": round(cursor, 3),
+                        "end": seg_end,
+                        "text": st,
+                        "time_unit": "seconds",
+                    }
+                    if speaker_label:
+                        seg["speaker"] = speaker_label
+                    if speaker_score:
+                        seg["speaker_score"] = speaker_score
+                    segments.append(seg)
+                    cursor = seg_end
+
+    log_progress(f"输出段数: {len(segments)}")
+    return segments
+
+
 def smooth_speaker_timeline(speaker_timeline, fill_gap_s, max_unknown_duration_s):
     if not speaker_timeline:
         return speaker_timeline
@@ -879,6 +1108,23 @@ def main():
                 "language": payload.get("language", "中文"),
                 "segments": normalize_segments(raw_result),
             }
+            if payload.get("include_raw", False):
+                output["raw"] = raw_result
+            print(json.dumps(output, ensure_ascii=False, default=str), file=original_stdout)
+            return
+
+        # Paraformer: use FunASR built-in pipeline (VAD+ASR+Punc+SPK in one call)
+        if backend_name == "paraformer":
+            raw_result = transcribe_paraformer_builtin(payload, audio_path, device)
+            output = {
+                "backend": backend_name,
+                "language": payload.get("language", "auto"),
+                "segments": raw_result,
+            }
+            # --- asr-hotword post-processing ---
+            hotword_config = payload.get("phoneme_correction")
+            if hotword_config and isinstance(hotword_config, dict) and hotword_config.get("enabled"):
+                _apply_hotword_correction(output, payload)
             if payload.get("include_raw", False):
                 output["raw"] = raw_result
             print(json.dumps(output, ensure_ascii=False, default=str), file=original_stdout)
@@ -1150,56 +1396,55 @@ def main():
     if payload.get("include_raw", False):
         output["raw"] = raw_result
 
-    # --- asr-hotword post-processing ---
-    hotword_config = payload.get("phoneme_correction")
-    if hotword_config and isinstance(hotword_config, dict) and hotword_config.get("enabled"):
-        try:
-            # Locate asr-hotword relative to project root
-            _script_dir = os.path.dirname(os.path.abspath(__file__))
-            _project_root = os.path.normpath(os.path.join(_script_dir, "..", "..", ".."))
-            _hotword_candidates = [
-                os.path.join(_project_root, "tmp", "asr-hotword"),
-                os.path.join(_project_root, "asr-hotword"),
-            ]
-            _hotword_path = None
-            for _cand in _hotword_candidates:
-                _cand = os.path.normpath(_cand)
-                if os.path.isfile(os.path.join(_cand, "hotword", "__init__.py")):
-                    _hotword_path = _cand
-                    break
-            if not _hotword_path:
-                raise ImportError(
-                    f"asr-hotword 未找到，搜索路径: {_hotword_candidates}。"
-                    f"请 clone asr-hotword 到 tmp/asr-hotword 目录。"
-                )
-            sys.path.insert(0, _hotword_path)
-            from hotword import PhonemeCorrector
+def _apply_hotword_correction(output, payload):
+    """Apply asr-hotword PhonemeCorrector to output segments."""
+    try:
+        _script_dir = os.path.dirname(os.path.abspath(__file__))
+        _project_root = os.path.normpath(os.path.join(_script_dir, "..", "..", ".."))
+        _hotword_candidates = [
+            os.path.join(_project_root, "tmp", "asr-hotword"),
+            os.path.join(_project_root, "asr-hotword"),
+        ]
+        _hotword_path = None
+        for _cand in _hotword_candidates:
+            _cand = os.path.normpath(_cand)
+            if os.path.isfile(os.path.join(_cand, "hotword", "__init__.py")):
+                _hotword_path = _cand
+                break
+        if not _hotword_path:
+            raise ImportError(
+                f"asr-hotword 未找到，搜索路径: {_hotword_candidates}。"
+                f"请 clone asr-hotword 到 tmp/asr-hotword 目录。"
+            )
+        sys.path.insert(0, _hotword_path)
+        from hotword import PhonemeCorrector
 
-            threshold = float(hotword_config.get("threshold", 0.85) or 0.85)
-            pc = PhonemeCorrector(threshold=threshold)
+        hotword_config = payload.get("phoneme_correction", {})
+        threshold = float(hotword_config.get("threshold", 0.85) or 0.85)
+        pc = PhonemeCorrector(threshold=threshold)
 
-            hotword_text = hotword_config.get("hotwords", "")
-            if hotword_text:
-                pc.update_hotwords(hotword_text)
+        hotword_text = hotword_config.get("hotwords", "")
+        if hotword_text:
+            pc.update_hotwords(hotword_text)
 
-            corrections_count = 0
-            for seg in output.get("segments", []):
-                text = seg.get("text", "")
-                if not text or len(text.strip()) <= 1:
-                    continue
-                result = pc.correct(text)
-                if result.text != text:
-                    corrections_count += 1
-                    seg["text"] = result.text
-                    seg["phoneme_corrections"] = [
-                        {"from": m[0], "to": m[1], "score": m[2]}
-                        for m in result.matches
-                    ]
+        corrections_count = 0
+        for seg in output.get("segments", []):
+            text = seg.get("text", "")
+            if not text or len(text.strip()) <= 1:
+                continue
+            result = pc.correct(text)
+            if result.text != text:
+                corrections_count += 1
+                seg["text"] = result.text
+                seg["phoneme_corrections"] = [
+                    {"from": m[0], "to": m[1], "score": m[2]}
+                    for m in result.matches
+                ]
 
-            if corrections_count > 0:
-                log_progress(f"asr-hotword 纠正: {corrections_count}/{len(output.get('segments', []))} 段")
-        except Exception as exc:
-            print(f"⚠️ asr-hotword 纠正失败，继续使用原始文本: {exc}", file=sys.stderr)
+        if corrections_count > 0:
+            log_progress(f"asr-hotword 纠正: {corrections_count}/{len(output.get('segments', []))} 段")
+    except Exception as exc:
+        print(f"⚠️ asr-hotword 纠正失败，继续使用原始文本: {exc}", file=sys.stderr)
 
     print(json.dumps(output, ensure_ascii=False, default=str), file=original_stdout)
 

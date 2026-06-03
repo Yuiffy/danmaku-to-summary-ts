@@ -34,6 +34,55 @@ node src/scripts/asr/hotword_benchmark.js --root "D:/files/videos/DDTV录播/214
 - 同段里 `碎几根看看` 保持未替换，没有被误改成 `岁己根看看`。
 - 汇总指标：baseline `suiTargetHitRate=0`，tuned `suiTargetHitRate=1`；baseline `xiaoSuiHits=0/1`，tuned `xiaoSuiHits=1/1`。
 
+## Paraformer + CAM++：内建 pipeline
+
+根据 FunASR 文档和 issue 2944 方向，当前 `paraformer` 后端改为 `AutoModel(model="paraformer-zh", vad_model="fsmn-vad", punc_model="ct-punc", spk_model="cam++")` 一次性串联，不再手动 VAD 切段。
+
+### 设备的问题样本
+
+来源：
+
+```text
+D:/files/videos/DDTV录播/1967216004_三理Mit3uri/2026_05_19/录制-1967216004-20260519-200319-782-3d后日谈！.m4a
+02:40:58 起 28s
+```
+
+命令：
+
+```bash
+ffmpeg -y -ss 02:40:58 -t 28 -i "...3d后日谈！.m4a" -ar 16000 -ac 1 tmp/asr-paraformer-device-clip.wav
+node -e "... asr.transcribeParaformer(...) ..."
+```
+
+结果：
+
+- 加载 `fsmn-vad`、`ct-punc`、`cam++`。
+- 返回 `sentence_info: 11 句`。
+- 关键句输出为：`我的家就是可能是设备的问题，`
+- 每句带 `speaker: SPEAKER_00`。
+- 没有再出现 `是 / 东北` 这种跨 VAD 边界误切。
+
+### 岁己 / 小岁样本
+
+命令：
+
+```bash
+node src/scripts/asr/hotword_benchmark.js --root "D:/files/videos/DDTV录播/21452505_七海Nana7mi/2026_06_01" --limit 1 --window 20 --backend paraformer --output tmp/asr-paraformer-positive-cross-segment
+```
+
+结果：
+
+| 版本 | 耗时 | RTF | 结果摘要 |
+| --- | ---: | ---: | --- |
+| baseline | 25.704s | 0.9740 | `岁吉...岁吉...小碎` |
+| tuned | 25.597s | 0.9699 | `岁己...岁己...小岁` |
+
+结论：
+
+- Paraformer + CAM++ 成功走 `sentence_info: 14 句`。
+- tuned 通过热词和全文上下文 corrections 修正 `岁吉 -> 岁己`、`小碎 -> 小岁`。
+- corrections 已改为先用全文判断上下文，再逐 segment 替换，避免 sentence_info 分句导致同一句语境丢失。
+
 ## 负样本：随机
 
 命令：
@@ -58,6 +107,21 @@ node src/scripts/asr/hotword_benchmark.js --root "D:/files/videos/DDTV录播/803
 
 - tuned 保留 `随机播放音乐`。
 - 没有出现 `随机/随即 -> 岁己` 的误替换。
+
+Paraformer + CAM++ 复测：
+
+```bash
+node src/scripts/asr/hotword_benchmark.js --root "D:/files/videos/DDTV录播/80397_阿梓从小就很可爱/2026_06_02" --limit 1 --window 20 --backend paraformer --output tmp/asr-paraformer-negative-final
+```
+
+结果：
+
+| 版本 | 耗时 | RTF | 结果摘要 |
+| --- | ---: | ---: | --- |
+| baseline | 27.971s | 1.0007 | `现在就从资料库随机播放音乐` |
+| tuned | 27.954s | 1.0001 | `现在就从资料库随机播放音乐` |
+
+结论：Paraformer tuned 也保留 `随机播放音乐`，没有误改成 `岁己`。
 
 ## vLLM 状态
 

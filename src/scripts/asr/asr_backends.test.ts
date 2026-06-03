@@ -222,13 +222,18 @@ describe('asr_backends', () => {
       contextual: [
         { from: '穗姐', to: '岁己', require_nearby: ['小穗', '穗穗', '小岁'] },
         { from: '穗穗', to: '岁岁', require_nearby: ['穗姐', '小穗'] },
-        { from: '小穗', to: '小岁', require_nearby: ['穗姐', '穗穗'] }
+        { from: '小穗', to: '小岁', require_nearby: ['穗姐', '穗穗'] },
+        { from: '岁吉', to: '岁己', require_nearby: ['小岁', '岁岁', '岁己'] },
+        { from: '小碎', to: '小岁', require_nearby: ['岁己', '岁岁'] }
       ]
     };
 
     expect(asr.applyCorrectionsToText('穗姐跟我说能不能叫他穗穗呀还是叫他小穗', corrections))
       .toBe('岁己跟我说能不能叫他岁岁呀还是叫他小岁');
+    expect(asr.applyCorrectionsToText('岁吉跟我说能不能叫他岁岁呀还是叫他小碎', corrections))
+      .toBe('岁己跟我说能不能叫他岁岁呀还是叫他小岁');
     expect(asr.applyCorrectionsToText('这株小穗长得很好', corrections)).toBe('这株小穗长得很好');
+    expect(asr.applyCorrectionsToText('这个小碎片很亮', corrections)).toBe('这个小碎片很亮');
   });
 
   test('ambiguous sui homophones need nearby sui context before correction', () => {
@@ -240,6 +245,25 @@ describe('asr_backends', () => {
 
     expect(asr.applyCorrectionsToText('感觉就是碎几根看看', corrections)).toBe('感觉就是碎几根看看');
     expect(asr.applyCorrectionsToText('碎几前辈今天来了', corrections)).toBe('岁己前辈今天来了');
+  });
+
+  test('contextual corrections can use transcript-wide context across asr segments', () => {
+    const result = {
+      backend: 'paraformer',
+      segments: [
+        { start: 0, end: 1, text: '岁吉跟我说能不能叫他岁岁呀，' },
+        { start: 1, end: 2, text: '还是叫他小碎？' }
+      ]
+    };
+    const corrected = asr.applyCorrectionsToAsrResult(result, {
+      contextual: [
+        { from: '岁吉', to: '岁己', require_nearby: ['岁岁', '小岁', '岁己'] },
+        { from: '小碎', to: '小岁', require_nearby: ['岁己', '岁岁'] }
+      ]
+    });
+
+    expect(corrected.segments.map((segment: any) => segment.text).join(''))
+      .toBe('岁己跟我说能不能叫他岁岁呀，还是叫他小岁？');
   });
 
   test('psp room routing can select sensevoice', () => {
@@ -291,6 +315,26 @@ describe('asr_backends', () => {
     expect(config.fun_asr_nano_vllm.enable_speaker).toBe(true);
     expect(config.fun_asr_nano_vllm.tensor_parallel_size).toBe(2);
     expect(config.fun_asr_nano_vllm.gpu_memory_utilization).toBe(0.72);
+  });
+
+  test('parses paraformer backend alias and defaults to native vad punc speaker pipeline', () => {
+    const parsed = asr.parseCliArgs(['--asr-backend', 'paraformer-zh', 'D:/video.flv']);
+    const config = asr.getAsrConfig({
+      asr: {
+        paraformer: {
+          batch_size_threshold_s: 45
+        }
+      }
+    });
+
+    expect(parsed.options.asrBackend).toBe('paraformer');
+    expect(config.paraformer.model).toBe('paraformer-zh');
+    expect(config.paraformer.vad_model).toBe('fsmn-vad');
+    expect(config.paraformer.punc_model).toBe('ct-punc');
+    expect(config.paraformer.spk_model).toBe('cam++');
+    expect(config.paraformer.enable_speaker).toBe(true);
+    expect(config.paraformer.vad_max_single_segment_time_ms).toBe(60000);
+    expect(config.paraformer.batch_size_threshold_s).toBe(45);
   });
 
   test('resolves backend-specific python command', () => {

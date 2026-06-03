@@ -179,6 +179,24 @@ export interface AsrConfig {
     batch_size_s?: number;
     enforce_eager?: boolean;
   };
+  paraformer: AsrPythonRuntimeConfig & {
+    model: string;
+    vad_model: string;
+    punc_model: string;
+    spk_model?: string | null;
+    language: string;
+    device: 'cuda' | 'cpu' | string;
+    use_itn: boolean;
+    vad_max_single_segment_time_ms?: number;
+    batch_size_s?: number;
+    batch_size_threshold_s?: number;
+    process_timeout_s?: number;
+    enable_speaker: boolean;
+    preset_spk_num?: number | null;
+    speaker_merge_threshold?: number;
+    speaker_references?: AsrSpeakerReferenceConfig[];
+    speaker_reference_threshold?: number;
+  };
 }
 
 export interface SubtitleConfig {

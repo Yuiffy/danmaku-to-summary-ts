@@ -117,6 +117,33 @@ node src/scripts/enhanced_auto_summary.js --asr-backend fun_asr_nano "D:/path/to
 
 Fun-ASR-Nano 走同一个 `src/scripts/python/sensevoice_transcribe.py` 入口，但会按 `backend=fun_asr_nano` 切到 `hotwords` 列表接口。
 
+## 启用 Paraformer + CAM++
+
+当前推荐的非 vLLM 路线是 FunASR 原生 pipeline：
+
+```python
+AutoModel(
+    model="paraformer-zh",
+    vad_model="fsmn-vad",
+    vad_kwargs={"max_single_segment_time": 60000},
+    punc_model="ct-punc",
+    spk_model="cam++",
+)
+```
+
+本项目的 `paraformer` backend 已按这个方式运行，不再手动 VAD 切段后逐段 ASR。`generate()` 会直接返回 `sentence_info`，每句带 `start/end/text/spk`，再转换成统一 ASR JSON。
+
+```bash
+node src/scripts/enhanced_auto_summary.js --asr-backend paraformer "D:/path/to/video.flv"
+```
+
+配置要点：
+
+- `enable_speaker: true` 时加载 CAM++，输出 `SPEAKER_00` 等聚类标签。
+- `vad_max_single_segment_time_ms: 60000` 交给 FunASR 内建 VAD，避免 8 秒手动切片切断词和句子上下文。
+- `batch_size_s: 300`、`batch_size_threshold_s: 60` 跟随 FunASR pipeline 批处理习惯。
+- 热词通过 `generate(hotword=...)` 传入；后处理 corrections 会用全文上下文筛选，再逐句修正，避免 paraformer `sentence_info` 分句导致 `小碎/岁吉` 漏修。
+
 ## 启用 Fun-ASR-Nano vLLM
 
 FunASR 官方 vLLM 文档推荐 `AutoModelVLLM` 做批量推理，也支持 `hotwords=["张三", "北京"]`；官方离线服务协议也支持 `spk` 说话人分离。本项目为了同时开启 VAD + CAM++ 说话人识别，当前使用同包内的 `FunASRNanoVLLMPipeline`，输出仍转换成统一 ASR JSON。

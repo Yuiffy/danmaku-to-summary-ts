@@ -31,10 +31,11 @@ const DEFAULT_ASR_CONFIG = {
         python_args: [],
         python_path_map: [],
         use_itn: true,
-        max_vad_segment_s: 8,
-        merge_length_s: 8,
+        vad_max_single_segment_time_ms: 60000,
+        batch_size_s: 300,
+        batch_size_threshold_s: 60,
         process_timeout_s: 1800,
-        enable_speaker: false,
+        enable_speaker: true,
         preset_spk_num: null,
         speaker_merge_threshold: 0.78,
         speaker_references: [],
@@ -51,10 +52,11 @@ const DEFAULT_ASR_CONFIG = {
         python_args: [],
         python_path_map: [],
         use_itn: true,
-        max_vad_segment_s: 8,
-        merge_length_s: 8,
+        vad_max_single_segment_time_ms: 60000,
+        batch_size_s: 300,
+        batch_size_threshold_s: 60,
         process_timeout_s: 1800,
-        enable_speaker: false,
+        enable_speaker: true,
         preset_spk_num: null,
         speaker_merge_threshold: 0.78,
         speaker_references: [],
@@ -97,10 +99,11 @@ const DEFAULT_ASR_CONFIG = {
         python_args: [],
         python_path_map: [],
         use_itn: true,
-        max_vad_segment_s: 8,
-        merge_length_s: 8,
+        vad_max_single_segment_time_ms: 60000,
+        batch_size_s: 300,
+        batch_size_threshold_s: 60,
         process_timeout_s: 1800,
-        enable_speaker: false,
+        enable_speaker: true,
         preset_spk_num: null,
         speaker_merge_threshold: 0.78,
         speaker_references: [],
@@ -476,16 +479,35 @@ function applyCorrectionsToText(text, corrections = []) {
     return output;
 }
 
+function resolveApplicableCorrections(sourceText, corrections = []) {
+    const grouped = normalizeCorrectionsForApply(corrections);
+    const safeText = applyCorrectionList(sourceText, grouped.safe);
+    const contextual = grouped.contextual.filter((item) => {
+        const nearby = Array.isArray(item.require_nearby)
+            ? item.require_nearby.map(value => String(value || '').trim()).filter(Boolean)
+            : [];
+        return nearby.length > 0 && nearby.some(keyword => safeText.includes(keyword));
+    });
+    return {
+        safe: grouped.safe,
+        contextual
+    };
+}
+
 function applyCorrectionsToAsrResult(result, corrections = []) {
     const grouped = normalizeCorrectionsForApply(corrections);
     if (grouped.safe.length === 0 && grouped.contextual.length === 0) {
         return result;
     }
+    const sourceText = (Array.isArray(result?.segments) ? result.segments : [])
+        .map(segment => String(segment.text || ''))
+        .join('');
+    const applicable = resolveApplicableCorrections(sourceText, corrections);
     return {
         ...result,
         segments: (Array.isArray(result?.segments) ? result.segments : []).map(segment => ({
             ...segment,
-            text: applyCorrectionsToText(segment.text, corrections)
+            text: applyCorrectionList(applyCorrectionList(segment.text, applicable.safe), applicable.contextual)
         }))
     };
 }
@@ -840,8 +862,15 @@ function writeSrt(result, srtPath, subtitleConfig = {}) {
     const cfg = { ...DEFAULT_SUBTITLE_CONFIG, ...subtitleConfig };
     const lines = [];
     let lineIndex = 1;
+    const sourceText = (Array.isArray(result?.segments) ? result.segments : [])
+        .map(segment => String(segment.text || ''))
+        .join('');
+    const applicableCorrections = resolveApplicableCorrections(sourceText, cfg.corrections);
     result.segments.forEach((segment) => {
-        const correctedText = applyCorrectionsToText(segment.text, cfg.corrections);
+        const correctedText = applyCorrectionList(
+            applyCorrectionList(segment.text, applicableCorrections.safe),
+            applicableCorrections.contextual
+        );
         const content = cfg.strip_punctuation ? stripSubtitlePunctuation(correctedText) : correctedText;
         if (!content) {
             return;
@@ -890,9 +919,16 @@ function writeSpeakerReviewSrt(result, srtPath, subtitleConfig = {}) {
         const cfg = { ...DEFAULT_SUBTITLE_CONFIG, ...subtitleConfig };
         const lines = [];
         let lineIndex = 1;
+        const sourceText = (Array.isArray(result?.segments) ? result.segments : [])
+            .map(segment => String(segment.text || ''))
+            .join('');
+        const applicableCorrections = resolveApplicableCorrections(sourceText, cfg.corrections);
 
         result.segments.forEach((segment) => {
-            const correctedText = applyCorrectionsToText(segment.text, cfg.corrections);
+            const correctedText = applyCorrectionList(
+                applyCorrectionList(segment.text, applicableCorrections.safe),
+                applicableCorrections.contextual
+            );
             const content = cfg.strip_punctuation ? stripSubtitlePunctuation(correctedText) : correctedText;
             if (!content) {
                 return;
@@ -1111,7 +1147,7 @@ async function transcribeFunAsrBackend(mediaPath, config = {}, runtimeOptions = 
     };
     const label = backend === 'fun_asr_nano_vllm'
         ? 'Fun-ASR-Nano vLLM backend'
-        : (backend === 'fun_asr_nano' ? 'Fun-ASR-Nano backend' : 'SenseVoice backend');
+        : (backend === 'fun_asr_nano' ? 'Fun-ASR-Nano backend' : (backend === 'paraformer' ? 'Paraformer backend' : 'SenseVoice backend'));
     return runJsonPython(scriptPath, options, label);
 }
 
@@ -1161,4 +1197,3 @@ module.exports = {
     parseTimestamp,
     stripSubtitlePunctuation
 };
-
