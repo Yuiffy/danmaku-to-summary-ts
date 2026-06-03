@@ -28,6 +28,7 @@ function getClipTopicsConfig(config = {}) {
         ...DEFAULT_CLIP_TOPICS_CONFIG,
         ...raw,
         keywords: Array.isArray(raw.keywords) ? raw.keywords : DEFAULT_CLIP_TOPICS_CONFIG.keywords,
+        ignoredRoomIds: Array.isArray(raw.ignoredRoomIds) ? raw.ignoredRoomIds.map(value => String(value)).filter(Boolean) : [],
         extraTags: Array.isArray(raw.extraTags) ? raw.extraTags : DEFAULT_CLIP_TOPICS_CONFIG.extraTags,
         autoUpload: {
             ...DEFAULT_CLIP_TOPICS_CONFIG.autoUpload,
@@ -262,6 +263,17 @@ function resolveStreamerName(config = {}, roomId = null, context = {}) {
     return '主播';
 }
 
+function isIgnoredRoom(roomId, config = {}) {
+    const roomKey = roomId ? String(roomId) : null;
+    if (!roomKey) {
+        return false;
+    }
+    const ignoredRoomIds = Array.isArray(config.ignoredRoomIds)
+        ? config.ignoredRoomIds.map(value => String(value)).filter(Boolean)
+        : [];
+    return ignoredRoomIds.includes(roomKey);
+}
+
 function formatClock(seconds) {
     const safe = Math.max(0, Number(seconds) || 0);
     const whole = Math.floor(safe);
@@ -489,6 +501,10 @@ async function generateTopicClips(options = {}) {
     }
 
     const info = parseRecordingInfo(source.mediaPath, options.context || {});
+    if (isIgnoredRoom(info.roomId, config)) {
+        console.log(`ℹ️  话题切片跳过: roomId=${info.roomId} 命中忽略名单`);
+        return [];
+    }
     const streamerName = resolveStreamerName(options.config || {}, info.roomId, options.context || {});
     const outputRoot = path.join(path.dirname(source.mediaPath), config.outputDirName);
     fs.mkdirSync(outputRoot, { recursive: true });
@@ -567,6 +583,7 @@ module.exports = {
     writeClipSrt,
     parseRecordingInfo,
     resolveStreamerName,
+    isIgnoredRoom,
     buildDefaultTitle,
     buildClipCopy,
     generateTopicClips,

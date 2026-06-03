@@ -123,6 +123,31 @@ describe('topic_clipper', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  test('ignored room id skips clip generation even when keywords match', async () => {
+    const dir = makeTempDir();
+    const mediaPath = path.join(dir, '录制-25788785-20260603-201530-001-聊天回.m4a');
+    const srtPath = path.join(dir, '录制-25788785-20260603-201530-001-聊天回.srt');
+    fs.writeFileSync(mediaPath, 'not real media');
+    writeSrt(srtPath);
+
+    const results = await topicClipper.generateTopicClips({
+      config: {
+        clipTopics: {
+          enabled: true,
+          ignoredRoomIds: ['25788785'],
+          keywords: ['岁己', '小岁']
+        }
+      },
+      originalMediaPath: mediaPath,
+      processedMediaPath: mediaPath,
+      srtPath
+    });
+
+    expect(results).toEqual([]);
+    expect(fs.existsSync(path.join(dir, 'topic_clips'))).toBe(false);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   test('audio-only input keeps review metadata and marks upload as not ready', async () => {
     const dir = makeTempDir();
     const mediaPath = path.join(dir, '录制-25788785-20260603-201530-001-聊天回.m4a');

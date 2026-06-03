@@ -324,6 +324,7 @@ export interface ClipTopicsConfig {
   enabled: boolean;
   mode: 'local_review' | string;
   keywords: string[];
+  ignoredRoomIds?: string[];
   prePaddingSeconds: number;
   postPaddingSeconds: number;
   maxClipSeconds: number;

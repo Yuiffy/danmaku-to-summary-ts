@@ -133,6 +133,7 @@ const ConfigSchema = Joi.object({
         enabled: Joi.boolean().default(false),
         mode: Joi.string().default('local_review'),
         keywords: Joi.array().items(Joi.string()).default(['岁己', '小岁', '小岁姐', '岁己姐', '饼干岁', 'SUI']),
+        ignoredRoomIds: Joi.array().items(Joi.alternatives(Joi.string(), Joi.number())).default([]),
         prePaddingSeconds: Joi.number().default(20),
         postPaddingSeconds: Joi.number().default(35),
         maxClipSeconds: Joi.number().default(180),

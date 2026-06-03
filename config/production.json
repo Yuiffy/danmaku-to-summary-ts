@@ -696,6 +696,9 @@
             "饼干岁",
             "SUI"
         ],
+        "ignoredRoomIds": [
+            "25788785"
+        ],
         "prePaddingSeconds": 20,
         "postPaddingSeconds": 35,
         "maxClipSeconds": 180,

@@ -255,6 +255,7 @@ export class ConfigValidator {
         enabled: false,
         mode: 'local_review',
         keywords: ['岁己', '小岁', '小岁姐', '岁己姐', '饼干岁', 'SUI'],
+        ignoredRoomIds: [],
         prePaddingSeconds: 20,
         postPaddingSeconds: 35,
         maxClipSeconds: 180,

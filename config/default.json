@@ -551,6 +551,7 @@
     "enabled": false,
     "mode": "local_review",
     "keywords": ["岁己", "小岁", "饼干岁", "岁岁", "SUI"],
+    "ignoredRoomIds": [],
     "prePaddingSeconds": 20,
     "postPaddingSeconds": 35,
     "maxClipSeconds": 180,
@@ -631,4 +632,3 @@
     "enabled": true
   }
 }
-
