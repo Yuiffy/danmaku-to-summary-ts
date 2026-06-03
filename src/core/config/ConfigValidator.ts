@@ -266,6 +266,9 @@ export class ConfigValidator {
         autoUpload: {
           enabled: false,
         },
+        notify: {
+          enabled: true,
+        },
       },
       storage: {
         basePath: './output',

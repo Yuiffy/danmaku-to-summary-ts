@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const fetch = require('node-fetch');
 const asrBackends = require('./asr/asr_backends');
 
 const DEFAULT_CLIP_TOPICS_CONFIG = {
@@ -16,6 +17,9 @@ const DEFAULT_CLIP_TOPICS_CONFIG = {
     extraTags: [],
     autoUpload: {
         enabled: false
+    },
+    notify: {
+        enabled: true
     }
 };
 
@@ -33,6 +37,10 @@ function getClipTopicsConfig(config = {}) {
         autoUpload: {
             ...DEFAULT_CLIP_TOPICS_CONFIG.autoUpload,
             ...(raw.autoUpload || {})
+        },
+        notify: {
+            ...DEFAULT_CLIP_TOPICS_CONFIG.notify,
+            ...(raw.notify || {})
         }
     };
 }
@@ -459,6 +467,82 @@ function writeCopyMarkdown(copy, metadata, outputPath) {
     fs.writeFileSync(outputPath, `${lines.join('\n')}\n`, 'utf8');
 }
 
+function getWeChatWebhookUrl(config = {}) {
+    return String(config.wechatWork?.webhookUrl || '').trim();
+}
+
+async function sendWeChatMarkdown(webhookUrl, content) {
+    if (!webhookUrl) {
+        return false;
+    }
+
+    const response = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            msgtype: 'markdown',
+            markdown: {
+                content
+            }
+        })
+    });
+
+    if (!response.ok) {
+        throw new Error(`企业微信请求失败: HTTP ${response.status}`);
+    }
+
+    const result = await response.json();
+    if (result.errcode !== 0) {
+        throw new Error(`企业微信返回错误: ${result.errcode} ${result.errmsg || ''}`.trim());
+    }
+
+    return true;
+}
+
+function buildTopicNotifyMarkdown(results = [], metadata = {}) {
+    const first = results[0] || {};
+    const info = metadata.copy || {};
+    const windowSummary = results
+        .map(result => `- ${formatClock(result.window?.start || 0)}-${formatClock(result.window?.end || 0)}: ${result.output?.mediaPath || ''}`)
+        .join('\n');
+
+    return [
+        '## 话题切片提醒',
+        '',
+        `在 **${metadata.streamerName || '主播'}** 的直播 **${metadata.streamTitle || metadata.sourceFileName || '未知直播'}** 结束后，`,
+        `找到其中 **${results.length}** 段提到岁己的地方，已分别切为切片。`,
+        '',
+        `- 直播间: ${metadata.roomId || '未知'}`,
+        `- 录制时间: ${metadata.recordedAt || '未知'}`,
+        `- 切片目录: ${metadata.outputRoot || '未知'}`,
+        `- 命中关键词: ${(first.window?.matchedKeywords || []).join('、') || '岁己'}`,
+        `- 投稿文案: ${first.output?.copyPath || '已生成'}`,
+        '',
+        '切片列表:',
+        windowSummary || '- 无',
+        '',
+        '请到上面的切片目录查看。'
+    ].join('\n');
+}
+
+async function notifyTopicClipResults(results = [], metadata = {}, config = {}) {
+    const notifyConfig = config.clipTopics?.notify || {};
+    if (!notifyConfig.enabled || results.length === 0) {
+        return false;
+    }
+
+    const webhookUrl = getWeChatWebhookUrl(config);
+    if (!webhookUrl) {
+        console.warn('⚠️  话题切片提醒已启用，但未配置企业微信 webhookUrl');
+        return false;
+    }
+
+    const markdown = buildTopicNotifyMarkdown(results, metadata);
+    return sendWeChatMarkdown(webhookUrl, markdown);
+}
+
 async function generateTopicClips(options = {}) {
     const config = getClipTopicsConfig(options.config || {});
     if (!config.enabled) {
@@ -571,6 +655,22 @@ async function generateTopicClips(options = {}) {
         console.log(`✅ 话题切片已生成: ${path.basename(mediaPath)} (${formatClock(window.start)}-${formatClock(window.end)})`);
     }
 
+    try {
+        await notifyTopicClipResults(results, {
+            streamerName,
+            streamTitle: info.streamTitle,
+            roomId: info.roomId,
+            recordedAt: info.recordedAt,
+            outputRoot,
+            sourceFileName: info.fileName
+        }, options.config || {});
+        if (results.length > 0) {
+            console.log(`📣 话题切片提醒已尝试发送: ${results.length} 段`);
+        }
+    } catch (error) {
+        console.warn(`⚠️  话题切片提醒发送失败，继续保留本地切片: ${error.message}`);
+    }
+
     return results;
 }
 
@@ -587,6 +687,8 @@ module.exports = {
     buildDefaultTitle,
     buildClipCopy,
     generateTopicClips,
+    notifyTopicClipResults,
+    buildTopicNotifyMarkdown,
     formatClock,
     sanitizeFileName
 };

@@ -144,6 +144,9 @@ const ConfigSchema = Joi.object({
         extraTags: Joi.array().items(Joi.string()).default([]),
         autoUpload: Joi.object({
             enabled: Joi.boolean().default(false)
+        }).default(),
+        notify: Joi.object({
+            enabled: Joi.boolean().default(true)
         }).default()
     }).default(),
     storage: Joi.object({

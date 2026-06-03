@@ -187,4 +187,33 @@ describe('topic_clipper', () => {
     expect(fs.existsSync(results[0].output.copyPath)).toBe(true);
     fs.rmSync(dir, { recursive: true, force: true });
   });
+
+  test('builds a readable topic notification markdown', () => {
+    const markdown = topicClipper.buildTopicNotifyMarkdown([
+      {
+        window: { start: 10, end: 42, matchedKeywords: ['岁己', '小岁'] },
+        output: { mediaPath: 'D:/clips/one.mp4', copyPath: 'D:/clips/one_投稿文案.md' }
+      },
+      {
+        window: { start: 100, end: 140, matchedKeywords: ['岁己'] },
+        output: { mediaPath: 'D:/clips/two.mp4', copyPath: 'D:/clips/two_投稿文案.md' }
+      }
+    ], {
+      streamerName: '岁己SUI',
+      streamTitle: '今天聊点什么',
+      roomId: '25788785',
+      recordedAt: '2026-06-03 20:15:30',
+      outputRoot: 'D:/clips',
+      sourceFileName: '录制-25788785-20260603-201530-001-聊天回.flv'
+    });
+
+    expect(markdown).toContain('话题切片提醒');
+    expect(markdown).toContain('岁己SUI');
+    expect(markdown).toContain('今天聊点什么');
+    expect(markdown).toContain('找到其中 **2** 段提到岁己的地方');
+    expect(markdown).toContain('D:/clips');
+    expect(markdown).toContain('D:/clips/one.mp4');
+    expect(markdown).toContain('D:/clips/two.mp4');
+    expect(markdown).toContain('D:/clips/one_投稿文案.md');
+  });
 });

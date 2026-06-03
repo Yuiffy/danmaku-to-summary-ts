@@ -336,6 +336,9 @@ export interface ClipTopicsConfig {
   autoUpload: {
     enabled: boolean;
   };
+  notify: {
+    enabled: boolean;
+  };
 }
 
 // 存储配置

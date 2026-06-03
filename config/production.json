@@ -757,463 +757,74 @@
     "asr": {
         "default_backend": "paraformer",
         "common_hotwords": [
-            {
-                "word": "东爱璃Lovely",
-                "weight": 20,
-                "aliases": [
-                    "东爱璃",
-                    "Lovely",
-                    "爱璃",
-                    "东爱丽",
-                    "爱丽",
-                    "东艾璃",
-                    "东艾丽"
-                ]
-            },
-            {
-                "word": "星汐Seki",
-                "weight": 20,
-                "aliases": [
-                    "星汐",
-                    "Seki",
-                    "seki",
-                    "星夕",
-                    "星西",
-                    "星希"
-                ]
-            },
-            {
-                "word": "礼墨Sumi",
-                "weight": 20,
-                "aliases": [
-                    "礼墨",
-                    "Sumi",
-                    "sumi",
-                    "里墨",
-                    "礼沫",
-                    "李墨"
-                ]
-            },
-            {
-                "word": "笙歌",
-                "weight": 20,
-                "aliases": [
-                    "帅比笙歌超可爱OvO",
-                    "笙歌OvO",
-                    "shengge",
-                    "生哥",
-                    "声歌",
-                    "升哥"
-                ]
-            },
-            {
-                "word": "伊索尔Sol",
-                "weight": 20,
-                "aliases": [
-                    "伊索尔",
-                    "Sol",
-                    "sol",
-                    "索尔",
-                    "伊索",
-                    "一索尔"
-                ]
-            },
-            {
-                "word": "南町Nightin",
-                "weight": 20,
-                "aliases": [
-                    "南町",
-                    "Nightin",
-                    "nightin",
-                    "南丁",
-                    "南町Night in",
-                    "南町奈汀"
-                ]
-            },
-            {
-                "word": "MIXUP2026",
-                "weight": 18,
-                "aliases": [
-                    "MIXUP",
-                    "mixup",
-                    "mix up",
-                    "Mixup2026",
-                    "MIXUP 2026"
-                ]
-            },
-            {
-                "word": "PSP",
-                "weight": 18,
-                "aliases": [
-                    "P S P",
-                    "psp"
-                ]
-            },
-            {
-                "word": "VirtuaReal",
-                "weight": 18,
-                "aliases": [
-                    "VR",
-                    "V R",
-                    "虚拟Real",
-                    "维阿",
-                    "微阿"
-                ]
-            },
-            {
-                "word": "岁己",
-                "weight": 20,
-                "aliases_as_hotwords": false,
-                "aliases": [
-                    "岁己SUI"
-                ],
-                "hotword_terms": [
-                    "岁己SUI",
-                    "小岁",
-                    "小岁姐",
-                    "岁己姐",
-                    "饼干岁"
-                ]
-            },
-            {
-                "word": "栞栞",
-                "weight": 20,
-                "aliases": [
-                    "签签",
-                    "千千",
-                    "浅浅",
-                    "栞",
-                    "Shiori"
-                ]
-            },
-            {
-                "word": "米汀",
-                "weight": 18,
-                "aliases": [
-                    "Miting",
-                    "米丁",
-                    "米婷"
-                ]
-            },
-            {
-                "word": "瑞娅",
-                "weight": 18,
-                "aliases": [
-                    "Rhea",
-                    "瑞亚",
-                    "蕊娅"
-                ]
-            },
-            {
-                "word": "时守星沙",
-                "weight": 18,
-                "aliases": [
-                    "星沙",
-                    "时守",
-                    "时守星砂",
-                    "星砂"
-                ]
-            }
+            "东爱璃Lovely",
+            "星汐Seki",
+            "礼墨Sumi",
+            "笙歌",
+            "伊索尔Sol",
+            "南町Nightin",
+            "MIXUP2026",
+            "PSP",
+            "VirtuaReal",
+            "岁己",
+            "岁己SUI",
+            "小岁",
+            "小岁姐",
+            "岁己姐",
+            "饼干岁",
+            "栞栞",
+            "米汀",
+            "瑞娅",
+            "时守星沙"
         ],
-        "corrections": {
-            "contextual": [
-                {
-                    "from": "穗姐",
-                    "to": "岁己",
-                    "require_nearby": [
-                        "跟我说",
-                        "叫他",
-                        "小穗",
-                        "穗穗",
-                        "小岁"
-                    ]
-                },
-                {
-                    "from": "穗穗",
-                    "to": "岁岁",
-                    "require_nearby": [
-                        "叫他",
-                        "穗姐",
-                        "小穗"
-                    ]
-                },
-                {
-                    "from": "小穗",
-                    "to": "小岁",
-                    "require_nearby": [
-                        "叫他",
-                        "穗姐",
-                        "穗穗"
-                    ]
-                },
-                {
-                    "from": "岁几",
-                    "to": "岁己",
-                    "require_nearby": [
-                        "小岁",
-                        "岁岁",
-                        "SUI",
-                        "岁己",
-                        "饼干岁",
-                        "前辈",
-                        "姐"
-                    ]
-                },
-                {
-                    "from": "碎己",
-                    "to": "岁己",
-                    "require_nearby": [
-                        "小岁",
-                        "岁岁",
-                        "SUI",
-                        "岁己",
-                        "饼干岁",
-                        "前辈",
-                        "姐"
-                    ]
-                },
-                {
-                    "from": "碎几",
-                    "to": "岁己",
-                    "require_nearby": [
-                        "小岁",
-                        "岁岁",
-                        "SUI",
-                        "岁己",
-                        "饼干岁",
-                        "前辈",
-                        "姐"
-                    ]
-                },
-                {
-                    "from": "碎机",
-                    "to": "岁己",
-                    "require_nearby": [
-                        "小岁",
-                        "岁岁",
-                        "SUI",
-                        "岁己",
-                        "饼干岁",
-                        "前辈",
-                        "姐"
-                    ]
-                },
-                {
-                    "from": "碎即",
-                    "to": "岁己",
-                    "require_nearby": [
-                        "小岁",
-                        "岁岁",
-                        "SUI",
-                        "岁己",
-                        "饼干岁",
-                        "前辈",
-                        "姐"
-                    ]
-                },
-                {
-                    "from": "穗即",
-                    "to": "岁己",
-                    "require_nearby": [
-                        "小岁",
-                        "岁岁",
-                        "SUI",
-                        "岁己",
-                        "饼干岁",
-                        "前辈",
-                        "姐"
-                    ]
-                },
-                {
-                    "from": "岁机",
-                    "to": "岁己",
-                    "require_nearby": [
-                        "小岁",
-                        "岁岁",
-                        "SUI",
-                        "岁己",
-                        "饼干岁",
-                        "前辈",
-                        "姐"
-                    ]
-                },
-                {
-                    "from": "岁已",
-                    "to": "岁己",
-                    "require_nearby": [
-                        "小岁",
-                        "岁岁",
-                        "SUI",
-                        "岁己",
-                        "饼干岁",
-                        "前辈",
-                        "姐"
-                    ]
-                },
-                {
-                    "from": "岁吉",
-                    "to": "岁己",
-                    "require_nearby": [
-                        "小岁",
-                        "岁岁",
-                        "SUI",
-                        "岁己",
-                        "饼干岁",
-                        "前辈",
-                        "姐"
-                    ]
-                },
-                {
-                    "from": "小碎",
-                    "to": "小岁",
-                    "require_nearby": [
-                        "岁己",
-                        "岁岁",
-                        "SUI",
-                        "饼干岁",
-                        "姐"
-                    ]
-                },
-                {
-                    "from": "小穗姐",
-                    "to": "小岁姐",
-                    "require_nearby": [
-                        "岁己",
-                        "小岁",
-                        "饼干岁"
-                    ]
-                },
-                {
-                    "from": "小碎姐",
-                    "to": "小岁姐",
-                    "require_nearby": [
-                        "岁己",
-                        "小岁",
-                        "饼干岁"
-                    ]
-                }
-            ]
-        },
         "routing": [
             {
                 "match": {
                     "room_id": "21692711"
                 },
-                "backend": "paraformer",
-                "hotwords": [
-                    {
-                        "word": "东爱璃Lovely",
-                        "weight": 20
-                    }
-                ]
+                "backend": "paraformer"
             },
             {
                 "match": {
                     "room_id": "1603600"
                 },
-                "backend": "paraformer",
-                "hotwords": [
-                    {
-                        "word": "星汐Seki",
-                        "weight": 20
-                    }
-                ]
+                "backend": "paraformer"
             },
             {
                 "match": {
                     "room_id": "23222837"
                 },
-                "backend": "paraformer",
-                "hotwords": [
-                    {
-                        "word": "礼墨Sumi",
-                        "weight": 20
-                    }
-                ]
+                "backend": "paraformer"
             },
             {
                 "match": {
                     "room_id": "573893"
                 },
-                "backend": "paraformer",
-                "hotwords": [
-                    {
-                        "word": "笙歌",
-                        "weight": 20
-                    }
-                ]
+                "backend": "paraformer"
             },
             {
                 "match": {
                     "room_id": "25971921"
                 },
-                "backend": "paraformer",
-                "hotwords": [
-                    {
-                        "word": "伊索尔Sol",
-                        "weight": 20
-                    }
-                ]
+                "backend": "paraformer"
             },
             {
                 "match": {
                     "room_id": "24872476"
                 },
-                "backend": "paraformer",
-                "hotwords": [
-                    {
-                        "word": "南町Nightin",
-                        "weight": 20
-                    }
-                ]
+                "backend": "paraformer"
             },
             {
                 "match": {
                     "room_id": "25788785"
                 },
-                "backend": "paraformer",
-                "hotwords": [
-                    {
-                        "word": "岁己",
-                        "weight": 24,
-                        "aliases_as_hotwords": false,
-                        "aliases": [
-                            "岁己SUI"
-                        ],
-                        "hotword_terms": [
-                            "岁己SUI",
-                            "小岁",
-                            "小岁姐",
-                            "岁己姐"
-                        ]
-                    }
-                ]
+                "backend": "paraformer"
             },
             {
                 "match": {
                     "room_id": "26966466"
                 },
-                "backend": "paraformer",
-                "hotwords": [
-                    {
-                        "word": "栞栞",
-                        "weight": 20
-                    },
-                    {
-                        "word": "岁己",
-                        "weight": 24,
-                        "aliases_as_hotwords": false,
-                        "aliases": [
-                            "岁己SUI"
-                        ],
-                        "hotword_terms": [
-                            "岁己SUI",
-                            "小岁",
-                            "小岁姐",
-                            "岁己姐"
-                        ]
-                    }
-                ]
+                "backend": "paraformer"
             },
             {
                 "match": {
@@ -1315,9 +926,7 @@
             "speaker_reference_threshold": 0.45
         },
         "phoneme_correction": {
-            "enabled": true,
-            "threshold": 0.85,
-            "hotwords": "\n东爱璃Lovely | 东爱理 | 东爱璃\n星汐Seki | 星夕 | 星溪 | Seki\n花礼Harei | 花梨 | 哈雷 | Harei\n弥月Mizuki | 迷月 | 米兹基 | Mizuki\n米汀Nagisa | 米亭 | 那吉萨 | Nagisa\n七海Nana7mi | 娜娜七米 | nanami | Nana7mi\n犬绒Mofu | 犬容 | 莫夫 | Mofu\n栞栞Shiori | 珊珊 | 诗织 | Shiori\n岁己SUI | 岁几 | 随意 | SUI\n十六萤Izayoi | 伊扎约伊 | Izayoi\n灰泽满Hazel | 海泽尔 | Hazel\n莉蔻Liko | 里库 | Liko\n克罗雅Kloa | 克洛阿 | Kloa\n飞天狙 | 飞天巨\n哔哩哔哩 | B站 | b站\n旁汀生 | 螃蟹\n阿萨 | 阿撒\n小孙 | 小笋\n饼干\n黄浦江\n戴维斯 | DEVIC\nVirtuaReal | VR\nMIXUP | mixup\n"
+            "enabled": false
         }
     },
     "subtitle": {
