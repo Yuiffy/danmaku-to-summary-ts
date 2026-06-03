@@ -8,6 +8,7 @@ const DEFAULT_CLIP_TOPICS_CONFIG = {
     enabled: false,
     mode: 'local_review',
     keywords: ['岁己', '小岁', '小岁姐', '岁己姐', '饼干岁', 'SUI'],
+    aiVerify: true,  // AI 验证：过滤唱歌/ASR误识别的假命中
     prePaddingSeconds: 20,
     postPaddingSeconds: 35,
     maxClipSeconds: 180,
@@ -25,6 +26,85 @@ const DEFAULT_CLIP_TOPICS_CONFIG = {
 
 const AUDIO_EXTENSIONS = new Set(['.m4a', '.aac', '.mp3', '.wav', '.ogg', '.flac']);
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.flv', '.mkv', '.ts', '.mov']);
+
+/**
+ * AI 验证：判断关键词匹配是否为真正的提到/谈论目标人物。
+ * 过滤掉唱歌、哼旋律、ASR 误识别等造成的假命中。
+ */
+async function verifyClipWithAI(window, keywords, config = {}) {
+    const aiEnabled = config.ai?.text?.enabled !== false;
+    const verifyEnabled = config.clipTopics?.aiVerify !== false; // default true
+    if (!aiEnabled || !verifyEnabled) {
+        return { verified: true, reason: 'AI验证未启用，默认通过' };
+    }
+
+    // Collect all segment texts in the window
+    const sampleText = window.matchSegments
+        ? window.matchSegments.map(m => m.text).join('\n')
+        : '';
+
+    // Also get broader context from all segments in the window
+    const fullText = (window.allSegmentTexts || []).join('\n');
+
+    if (!sampleText && !fullText) {
+        return { verified: false, reason: '无字幕内容' };
+    }
+
+    const keywordList = (keywords || []).join('、') || '岁己';
+
+    const prompt = [
+        '你是一个直播字幕审核助手。以下是一段直播字幕片段，其中 ASR（语音识别）在部分句子里检测到了关键词。',
+        '但 ASR 常常在以下情况产生误识别：',
+        '- 主播在唱歌或哼旋律时，歌词被误识别为包含关键词',
+        '- 日文/英文歌词被错误识别为中文并凑巧包含关键词',
+        '- 语速快或含糊时的发音被错误识别',
+        '- 感谢观众礼物时的乱码碰巧包含关键词',
+        '',
+        `关键词: ${keywordList}`,
+        '请判断：这段字幕是否真的在**提到或谈论**关键词所指的虚拟主播？',
+        '',
+        '判断标准：',
+        '- 主播明确说出该主播的名字（如"给你们看岁己"、"岁己今天直播了吗"）→ 是',
+        '- 主播在唱歌，歌词碰巧被识别为包含关键词 → 否',
+        '- 上下文完全不涉及该主播，只是发音相似 → 否',
+        '- 感谢礼物时的乱码碰巧包含关键词 → 否',
+        '',
+        '请只回复 JSON：{"verified": true/false, "reason": "一句话解释"}',
+        '不要输出其他内容。',
+        '',
+        '命中关键词的句子:',
+        sampleText || '（无）',
+        '',
+        '完整上下文:',
+        (fullText || sampleText).slice(0, 500)
+    ].join('\n');
+
+    try {
+        const provider = config.ai?.text?.provider || 'gemini';
+        const aiTextGenerator = require('./ai_text_generator');
+        // Use the existing AI infrastructure
+        const { generateTextWithTuZi, generateTextWithGemini } = require('./ai_text_generator');
+        const result = provider === 'tuZi'
+            ? await generateTextWithTuZi(prompt, { wordLimit: 100 })
+            : await generateTextWithGemini(prompt, { wordLimit: 100 });
+
+        const text = (result.text || '').trim();
+        // Parse JSON from response
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0]);
+            return {
+                verified: !!parsed.verified,
+                reason: parsed.reason || ''
+            };
+        }
+        // If can't parse, be conservative and keep the clip
+        return { verified: true, reason: 'AI响应解析失败，保留切片' };
+    } catch (error) {
+        console.warn(`⚠️  AI验证失败，保留切片: ${error.message}`);
+        return { verified: true, reason: `AI调用失败: ${error.message}` };
+    }
+}
 
 function getClipTopicsConfig(config = {}) {
     const raw = config.clipTopics || {};
@@ -584,6 +664,33 @@ async function generateTopicClips(options = {}) {
         return [];
     }
 
+    // AI 验证：过滤唱歌/哼旋律等 ASR 误识别的假命中
+    // 先给每个 window 附加上下文文本
+    for (const w of windows) {
+        w.allSegmentTexts = parsed.segments
+            .filter(s => Number(s.start) >= w.start - 5 && Number(s.end) <= w.end + 5)
+            .map(s => s.text);
+    }
+
+    const aiVerifiedWindows = [];
+    const aiConfig = options.config || {};
+    console.log(`\n🤖 AI 验证 ${windows.length} 个候选切片...`);
+    for (const w of windows) {
+        const verification = await verifyClipWithAI(w, config.keywords, aiConfig);
+        if (verification.verified) {
+            aiVerifiedWindows.push(w);
+            console.log(`  ✅ [${formatClock(w.start)}] 通过: ${verification.reason}`);
+        } else {
+            console.log(`  ❌ [${formatClock(w.start)}] 过滤: ${verification.reason}`);
+        }
+    }
+    console.log(`🤖 AI 验证完成: ${aiVerifiedWindows.length}/${windows.length} 通过\n`);
+
+    if (aiVerifiedWindows.length === 0) {
+        console.log('ℹ️  AI 验证后无有效切片');
+        return [];
+    }
+
     const info = parseRecordingInfo(source.mediaPath, options.context || {});
     if (isIgnoredRoom(info.roomId, config)) {
         console.log(`ℹ️  话题切片跳过: roomId=${info.roomId} 命中忽略名单`);
@@ -594,7 +701,7 @@ async function generateTopicClips(options = {}) {
     fs.mkdirSync(outputRoot, { recursive: true });
 
     const results = [];
-    for (const window of windows) {
+    for (const window of aiVerifiedWindows) {
         const base = sanitizeFileName(`${path.basename(source.mediaPath, path.extname(source.mediaPath))}_topic_${String(window.index).padStart(2, '0')}_${formatClock(window.start).replace(/:/g, '')}`);
         const mediaExt = source.kind === 'audio' ? path.extname(source.mediaPath).toLowerCase() : '.mp4';
         const mediaPath = path.join(outputRoot, `${base}${mediaExt || '.m4a'}`);
@@ -680,6 +787,7 @@ module.exports = {
     chooseClipSource,
     findKeywordMatches,
     buildClipWindows,
+    verifyClipWithAI,
     writeClipSrt,
     parseRecordingInfo,
     resolveStreamerName,
