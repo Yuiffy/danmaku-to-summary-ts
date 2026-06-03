@@ -1396,6 +1396,13 @@ def main():
     if payload.get("include_raw", False):
         output["raw"] = raw_result
 
+    hotword_config = payload.get("phoneme_correction")
+    if hotword_config and isinstance(hotword_config, dict) and hotword_config.get("enabled"):
+        _apply_hotword_correction(output, payload)
+
+    print(json.dumps(output, ensure_ascii=False, default=str), file=original_stdout)
+
+
 def _apply_hotword_correction(output, payload):
     """Apply asr-hotword PhonemeCorrector to output segments."""
     try:
@@ -1445,8 +1452,6 @@ def _apply_hotword_correction(output, payload):
             log_progress(f"asr-hotword 纠正: {corrections_count}/{len(output.get('segments', []))} 段")
     except Exception as exc:
         print(f"⚠️ asr-hotword 纠正失败，继续使用原始文本: {exc}", file=sys.stderr)
-
-    print(json.dumps(output, ensure_ascii=False, default=str), file=original_stdout)
 
 
 if __name__ == "__main__":
