@@ -89,10 +89,11 @@
         "aliases": ["VR", "V R", "虚拟Real", "维阿", "微阿"]
       },
       {
-        "word": "岁己SUI",
+        "word": "岁己",
         "weight": 20,
-        "aliases": ["岁己", "岁几", "碎己"],
-        "contextual_aliases": ["随机", "随即"]
+        "aliases_as_hotwords": false,
+        "aliases": ["岁己SUI"],
+        "hotword_terms": ["岁己SUI", "小岁", "小岁姐", "岁己姐", "饼干岁"]
       },
       {
         "word": "栞栞",
@@ -115,7 +116,75 @@
         "aliases": ["星沙", "时守", "时守星砂", "星砂"]
       }
     ],
-    "corrections": [],
+    "corrections": {
+      "contextual": [
+        {
+          "from": "穗姐",
+          "to": "岁己",
+          "require_nearby": ["跟我说", "叫他", "小穗", "穗穗", "小岁"]
+        },
+        {
+          "from": "穗穗",
+          "to": "岁岁",
+          "require_nearby": ["叫他", "穗姐", "小穗"]
+        },
+        {
+          "from": "小穗",
+          "to": "小岁",
+          "require_nearby": ["叫他", "穗姐", "穗穗"]
+        },
+        {
+          "from": "岁几",
+          "to": "岁己",
+          "require_nearby": ["小岁", "岁岁", "SUI", "岁己", "饼干岁", "前辈", "姐"]
+        },
+        {
+          "from": "碎己",
+          "to": "岁己",
+          "require_nearby": ["小岁", "岁岁", "SUI", "岁己", "饼干岁", "前辈", "姐"]
+        },
+        {
+          "from": "碎几",
+          "to": "岁己",
+          "require_nearby": ["小岁", "岁岁", "SUI", "岁己", "饼干岁", "前辈", "姐"]
+        },
+        {
+          "from": "碎机",
+          "to": "岁己",
+          "require_nearby": ["小岁", "岁岁", "SUI", "岁己", "饼干岁", "前辈", "姐"]
+        },
+        {
+          "from": "碎即",
+          "to": "岁己",
+          "require_nearby": ["小岁", "岁岁", "SUI", "岁己", "饼干岁", "前辈", "姐"]
+        },
+        {
+          "from": "穗即",
+          "to": "岁己",
+          "require_nearby": ["小岁", "岁岁", "SUI", "岁己", "饼干岁", "前辈", "姐"]
+        },
+        {
+          "from": "岁机",
+          "to": "岁己",
+          "require_nearby": ["小岁", "岁岁", "SUI", "岁己", "饼干岁", "前辈", "姐"]
+        },
+        {
+          "from": "岁已",
+          "to": "岁己",
+          "require_nearby": ["小岁", "岁岁", "SUI", "岁己", "饼干岁", "前辈", "姐"]
+        },
+        {
+          "from": "小穗姐",
+          "to": "小岁姐",
+          "require_nearby": ["岁己", "小岁", "饼干岁"]
+        },
+        {
+          "from": "小碎姐",
+          "to": "小岁姐",
+          "require_nearby": ["岁己", "小岁", "饼干岁"]
+        }
+      ]
+    },
     "routing": [],
     "whisper": {
       "model": "deepdml/faster-whisper-large-v3-turbo-ct2",
@@ -156,6 +225,52 @@
         }
       ],
       "speaker_reference_threshold": 0.45
+    },
+    "fun_asr_nano": {
+      "model": "FunAudioLLM/Fun-ASR-Nano-2512",
+      "vad_model": "fsmn-vad",
+      "punc_model": null,
+      "spk_model": null,
+      "language": "中文",
+      "device": "cuda",
+      "python_executable": null,
+      "python_args": [],
+      "python_path_map": [],
+      "use_itn": true,
+      "max_vad_segment_s": 8,
+      "merge_length_s": 8,
+      "process_timeout_s": 1800,
+      "enable_speaker": false,
+      "preset_spk_num": null,
+      "speaker_merge_threshold": 0.78,
+      "speaker_references": [],
+      "speaker_reference_threshold": 0.45
+    },
+    "fun_asr_nano_vllm": {
+      "model": "FunAudioLLM/Fun-ASR-Nano-2512",
+      "vad_model": "fsmn-vad",
+      "punc_model": null,
+      "spk_model": "cam++",
+      "language": "中文",
+      "device": "cuda",
+      "python_executable": null,
+      "python_args": [],
+      "python_path_map": [],
+      "use_itn": true,
+      "process_timeout_s": 3600,
+      "enable_speaker": true,
+      "preset_spk_num": null,
+      "speaker_merge_threshold": 0.78,
+      "speaker_references": [],
+      "speaker_reference_threshold": 0.45,
+      "hub": "ms",
+      "dtype": "bf16",
+      "tensor_parallel_size": 1,
+      "gpu_memory_utilization": 0.8,
+      "max_model_len": 4096,
+      "max_new_tokens": 512,
+      "batch_size_s": 300,
+      "enforce_eager": false
     }
   },
   "subtitle": {
@@ -245,7 +360,7 @@
         "displayName": "岁己SUI",
         "roomIds": ["25788785"],
         "speakerLabels": ["岁己SUI", "sui", "SUI"],
-        "aliases": ["岁己", "SUI", "岁几", "碎己", "岁已"],
+                "aliases": ["岁己", "SUI", "岁几", "碎己", "碎几", "碎机", "碎即", "穗即", "岁机", "岁已", "小岁"],
         "referenceImages": [
           "src/scripts/reference_images/25788785.png"
         ],

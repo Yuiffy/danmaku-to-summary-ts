@@ -54,15 +54,27 @@ export interface AsrRoutingRule {
     streamer_name?: string;
     channel_id?: string;
   };
-  backend: 'whisper' | 'sensevoice';
+  backend: AsrBackendName;
   hotwords?: AsrHotword[];
   corrections?: AsrCorrectionsConfig;
 }
+
+export type AsrBackendName =
+  | 'whisper'
+  | 'sensevoice'
+  | 'fun_asr_nano'
+  | 'fun-asr-nano'
+  | 'fun_asr_nano_vllm'
+  | 'fun-asr-nano-vllm';
 
 export interface AsrHotword {
   word: string;
   weight?: number;
   aliases?: string[];
+  aliases_as_hotwords?: boolean;
+  alias_hotwords?: boolean;
+  hotword_terms?: string[];
+  correction_to?: string;
   contextual_aliases?: string[];
   require_nearby?: string[];
 }
@@ -93,9 +105,15 @@ export interface AsrSpeakerReferenceConfig {
   max_chunks?: number;
 }
 
+export interface AsrPythonRuntimeConfig {
+  python_executable?: string | null;
+  python_args?: string[];
+  python_path_map?: Array<{ from: string; to: string }> | Record<string, string>;
+}
+
 export interface AsrConfig {
-  default_backend: 'whisper' | 'sensevoice';
-  backend?: 'whisper' | 'sensevoice';
+  default_backend: AsrBackendName;
+  backend?: AsrBackendName;
   common_hotwords?: AsrHotword[];
   corrections?: AsrCorrectionsConfig;
   routing: AsrRoutingRule[];
@@ -103,7 +121,7 @@ export interface AsrConfig {
     model: string;
     language: string;
   };
-  sensevoice: {
+  sensevoice: AsrPythonRuntimeConfig & {
     model: string;
     vad_model: string;
     punc_model: string;
@@ -119,6 +137,46 @@ export interface AsrConfig {
     speaker_merge_threshold?: number;
     speaker_references?: AsrSpeakerReferenceConfig[];
     speaker_reference_threshold?: number;
+  };
+  fun_asr_nano: AsrPythonRuntimeConfig & {
+    model: string;
+    vad_model: string;
+    punc_model?: string | null;
+    spk_model?: string | null;
+    language: string;
+    device: 'cuda' | 'cpu' | string;
+    use_itn: boolean;
+    max_vad_segment_s?: number;
+    merge_length_s?: number;
+    process_timeout_s?: number;
+    enable_speaker: boolean;
+    preset_spk_num?: number | null;
+    speaker_merge_threshold?: number;
+    speaker_references?: AsrSpeakerReferenceConfig[];
+    speaker_reference_threshold?: number;
+  };
+  fun_asr_nano_vllm: AsrPythonRuntimeConfig & {
+    model: string;
+    vad_model: string;
+    punc_model?: string | null;
+    spk_model?: string | null;
+    language: string;
+    device: 'cuda' | 'cpu' | string;
+    use_itn: boolean;
+    process_timeout_s?: number;
+    enable_speaker: boolean;
+    preset_spk_num?: number | null;
+    speaker_merge_threshold?: number;
+    speaker_references?: AsrSpeakerReferenceConfig[];
+    speaker_reference_threshold?: number;
+    hub?: 'ms' | 'hf' | 'modelscope' | 'huggingface' | string;
+    dtype?: 'bf16' | 'fp16' | 'fp32' | string;
+    tensor_parallel_size?: number;
+    gpu_memory_utilization?: number;
+    max_model_len?: number;
+    max_new_tokens?: number;
+    batch_size_s?: number;
+    enforce_eager?: boolean;
   };
 }
 

@@ -8,7 +8,7 @@ import traceback
 
 
 def log_progress(message):
-    print(f"[SenseVoice] {message}", file=sys.stderr, flush=True)
+    print(f"[ASR] {message}", file=sys.stderr, flush=True)
 
 
 @contextlib.contextmanager
@@ -57,10 +57,10 @@ def load_payload():
         raw_bytes = sys.stdin.buffer.read()
         raw = raw_bytes.decode("utf-8-sig").lstrip("\ufeff")
         if not raw.strip():
-            fail("SenseVoice 输入为空，请通过 stdin 传入 JSON 配置")
+            fail("ASR 输入为空，请通过 stdin 传入 JSON 配置")
         return json.loads(raw)
     except json.JSONDecodeError as exc:
-        fail("SenseVoice 输入不是有效 JSON", str(exc))
+        fail("ASR 输入不是有效 JSON", str(exc))
 
 
 TAG_RE = re.compile(r"<\|[^|]+?\|>")
@@ -72,6 +72,19 @@ MODEL_ALIASES = {
     "ct-punc": "punc_ct-transformer_cn-en-common-vocab471067-large",
     "cam++": "speech_campplus_sv_zh-cn_16k-common",
 }
+
+BACKEND_ALIASES = {
+    "fun-asr-nano": "fun_asr_nano",
+    "fun_asr_nano": "fun_asr_nano",
+    "fun-asr-nano-vllm": "fun_asr_nano_vllm",
+    "fun_asr_nano-vllm": "fun_asr_nano_vllm",
+    "fun_asr_nano_vllm": "fun_asr_nano_vllm",
+    "sensevoice": "sensevoice",
+}
+
+
+def normalize_backend_name(name):
+    return BACKEND_ALIASES.get(str(name or "").strip().lower(), str(name or "").strip().lower())
 
 
 def clean_text(text):
@@ -184,8 +197,25 @@ PUNC_MODEL_WARNED = False
 PUNC_GENERATE_WARNED = False
 
 
-def generate_with_optional_hotword(model, payload, **kwargs):
+def generate_with_optional_hotword(model, payload, backend_name, **kwargs):
     global HOTWORD_WEIGHTED_UNSUPPORTED_WARNED, HOTWORD_UNWEIGHTED_UNSUPPORTED_WARNED
+    if backend_name == "fun_asr_nano":
+        import torch
+
+        input_data = kwargs.get("input")
+        if not isinstance(input_data, (str, torch.Tensor)):
+            kwargs["input"] = torch.as_tensor(input_data, dtype=torch.float32)
+        hotwords = payload.get("hotwords") or []
+        if isinstance(hotwords, list) and hotwords:
+            try:
+                return model.generate(**kwargs, hotwords=hotwords)
+            except Exception as exc:
+                print(
+                    f"⚠️ Fun-ASR-Nano hotwords 参数调用失败，降级为无 hotwords 转写: {exc}",
+                    file=sys.stderr,
+                )
+        return model.generate(**kwargs)
+
     weighted_hotword = str(payload.get("hotword") or "").strip()
     unweighted_hotword = str(payload.get("hotword_unweighted") or "").strip()
     if not weighted_hotword and not unweighted_hotword:
@@ -197,7 +227,7 @@ def generate_with_optional_hotword(model, payload, **kwargs):
         except Exception as exc:
             if not HOTWORD_WEIGHTED_UNSUPPORTED_WARNED:
                 print(
-                    f"⚠️ SenseVoice/FunASR 当前版本不支持或无法使用 weighted hotword 参数，"
+                    f"⚠️ ASR 当前版本不支持或无法使用 weighted hotword 参数，"
                     f"将降级为 unweighted hotword: {exc}",
                     file=sys.stderr,
                 )
@@ -209,7 +239,7 @@ def generate_with_optional_hotword(model, payload, **kwargs):
         except Exception as exc:
             if not HOTWORD_UNWEIGHTED_UNSUPPORTED_WARNED:
                 print(
-                    f"⚠️ SenseVoice/FunASR 当前版本不支持或无法使用 unweighted hotword 参数，"
+                    f"⚠️ ASR 当前版本不支持或无法使用 unweighted hotword 参数，"
                     f"已降级为无 hotword 转写并保留后处理 corrections: {exc}",
                     file=sys.stderr,
                 )
@@ -289,7 +319,7 @@ def get_safe_asr_segment_s(payload):
     cap = float(payload.get("asr_max_segment_s", 8) or 8)
     if requested > cap:
         log_progress(
-            f"ASR 转写块已限制为 {cap:g}s，避免 SenseVoice 长音频块漏字 "
+            f"ASR 转写块已限制为 {cap:g}s，避免长音频块漏字 "
             f"(requested max_vad_segment_s={requested:g}s)"
         )
     return min(requested, cap)
@@ -375,6 +405,92 @@ def normalize_model_results_with_meta(results, meta, punc_model):
         timed_segments.append(segment)
 
     return timed_segments
+
+
+def import_vllm_pipeline():
+    try:
+        import vllm  # noqa: F401
+    except ImportError:
+        fail(
+            "vLLM 未安装，无法使用 fun_asr_nano_vllm",
+            "请在当前 Python 环境安装 vLLM 及匹配 CUDA/PyTorch 依赖；也可以临时改用 --asr-backend fun_asr_nano 或 sensevoice。",
+        )
+    try:
+        from funasr.models.fun_asr_nano.inference_vllm_pipeline import FunASRNanoVLLMPipeline
+        return FunASRNanoVLLMPipeline
+    except ImportError as exc:
+        fail(
+            "当前 FunASR 包缺少 Fun-ASR-Nano vLLM pipeline",
+            f"{exc}\n请升级 funasr，或使用 fun_asr_nano 非 vLLM 后端。",
+        )
+
+
+def transcribe_with_vllm_pipeline(payload, audio_path, device):
+    if device == "cuda":
+        try:
+            import torch
+            if not torch.cuda.is_available():
+                fail("CUDA 不可用", "fun_asr_nano_vllm 配置 device=cuda，但 torch.cuda.is_available() 为 False")
+        except ImportError:
+            fail("CUDA 检查失败", "未安装 torch，无法使用 fun_asr_nano_vllm")
+
+    FunASRNanoVLLMPipeline = import_vllm_pipeline()
+    resolved_model = resolve_cached_model_name(payload.get("model", "FunAudioLLM/Fun-ASR-Nano-2512"))
+    resolved_vad_model = resolve_cached_model_name(payload.get("vad_model", "fsmn-vad")) if payload.get("vad_model") else None
+    resolved_spk_model = resolve_cached_model_name(payload.get("spk_model")) if payload.get("enable_speaker") else None
+    if payload.get("enable_speaker") and not resolved_spk_model:
+        fail("说话人分离已启用但 spk_model 未配置", "例如 spk_model=cam++")
+
+    device_name = "cuda:0" if device == "cuda" else device
+    hotwords = payload.get("hotwords") if isinstance(payload.get("hotwords"), list) else []
+    log_progress(
+        "加载 Fun-ASR-Nano vLLM pipeline: "
+        f"model={resolved_model}, vad={resolved_vad_model}, spk={resolved_spk_model}, "
+        f"tp={payload.get('tensor_parallel_size', 1)}, dtype={payload.get('dtype', 'bf16')}"
+    )
+
+    try:
+        with StageTimeout(payload.get("model_load_timeout_s", 600), "Fun-ASR-Nano vLLM pipeline 加载"):
+            model = FunASRNanoVLLMPipeline(
+                model=resolved_model,
+                vad_model=resolved_vad_model,
+                vad_kwargs=payload.get("vad_kwargs") or None,
+                spk_model=resolved_spk_model,
+                spk_kwargs={
+                    "cb_kwargs": {
+                        "merge_thr": float(payload.get("speaker_merge_threshold", 0.78))
+                    }
+                } if resolved_spk_model else None,
+                hub=payload.get("hub", "ms"),
+                device=device_name,
+                dtype=payload.get("dtype", "bf16"),
+                tensor_parallel_size=int(payload.get("tensor_parallel_size", 1) or 1),
+                gpu_memory_utilization=float(payload.get("gpu_memory_utilization", 0.8) or 0.8),
+                max_model_len=int(payload.get("max_model_len", 4096) or 4096),
+                enforce_eager=bool(payload.get("enforce_eager", False)),
+            )
+        log_progress("Fun-ASR-Nano vLLM pipeline 加载完成，开始转写")
+        with StageTimeout(payload.get("asr_timeout_s", payload.get("process_timeout_s", 3600)), "Fun-ASR-Nano vLLM 转写"):
+            with suppress_model_output():
+                results = model.generate(
+                    audio_path,
+                    hotwords=hotwords,
+                    language=payload.get("language", "中文"),
+                    itn=bool(payload.get("use_itn", True)),
+                    max_new_tokens=int(payload.get("max_new_tokens", 512) or 512),
+                    batch_size_s=int(float(payload.get("batch_size_s", 300) or 300)),
+                    return_spk_res=bool(payload.get("enable_speaker", False)),
+                    preset_spk_num=payload.get("preset_spk_num"),
+                )
+        log_progress("Fun-ASR-Nano vLLM 转写完成")
+        return normalize_segments(results)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        fail(
+            "Fun-ASR-Nano vLLM 转写失败",
+            f"{exc}\n{traceback.format_exc()}\n可先改用 fun_asr_nano 非 vLLM 后端验证热词。",
+        )
 
 
 def load_audio_16k_mono(audio_path):
@@ -577,9 +693,23 @@ def main():
 
     original_stdout = sys.stdout
     with contextlib.redirect_stdout(sys.stderr):
-        model_name = payload.get("model", "iic/SenseVoiceSmall")
+        backend_name = normalize_backend_name(payload.get("backend") or "sensevoice")
+        if backend_name == "fun_asr_nano_vllm":
+            raw_result = transcribe_with_vllm_pipeline(payload, audio_path, device)
+            output = {
+                "backend": backend_name,
+                "language": payload.get("language", "中文"),
+                "segments": normalize_segments(raw_result),
+            }
+            if payload.get("include_raw", False):
+                output["raw"] = raw_result
+            print(json.dumps(output, ensure_ascii=False, default=str), file=original_stdout)
+            return
+
+        default_model = "FunAudioLLM/Fun-ASR-Nano-2512" if backend_name == "fun_asr_nano" else "iic/SenseVoiceSmall"
+        model_name = payload.get("model", default_model)
         resolved_model = resolve_cached_model_name(model_name)
-        log_progress(f"准备主模型: {model_name}")
+        log_progress(f"准备主模型: {model_name} (backend={backend_name})")
         if isinstance(resolved_model, str) and resolved_model == model_name and model_name.startswith("iic/"):
             try:
                 log_progress(f"下载/解析模型缓存: {model_name}")
@@ -587,7 +717,7 @@ def main():
                 resolved_model = snapshot_download(model_name)
             except Exception as exc:
                 fail(
-                    "SenseVoice 模型下载失败",
+                    "ASR 模型下载失败",
                     f"{model_name}: {exc}\n请检查网络、ModelScope 访问和缓存目录权限。",
                 )
 
@@ -596,7 +726,7 @@ def main():
             "device": "cuda:0" if device == "cuda" else device,
             "disable_update": True,
         }
-        if "SenseVoice" in model_name:
+        if backend_name == "fun_asr_nano" or "SenseVoice" in model_name or "Fun-ASR-Nano" in model_name:
             model_kwargs["trust_remote_code"] = True
             model_py = os.path.join(resolved_model, "model.py") if os.path.isdir(resolved_model) else "./model.py"
             if os.path.exists(model_py):
@@ -609,7 +739,7 @@ def main():
             log_progress("主模型加载完成")
         except Exception as exc:
             fail(
-                "SenseVoice/FunASR 模型加载失败",
+                "ASR 模型加载失败",
                 f"{exc}\n可能是模型首次下载失败、网络不可用、模型名错误或 CUDA 环境异常。",
             )
         punc_model_obj = load_punc_model(AutoModel, payload, device)
@@ -775,6 +905,7 @@ def main():
                                 results = generate_with_optional_hotword(
                                     model,
                                     payload,
+                                    backend_name,
                                     input=chunk,
                                     language=payload.get("language", "auto"),
                                     use_itn=bool(payload.get("use_itn", True)),
@@ -820,10 +951,10 @@ def main():
                 flush_batch()
                 log_progress(f"分段转写完成: output_segments={len(raw_result)}")
         except Exception as exc:
-            fail("SenseVoice 转写失败", f"{exc}\n{traceback.format_exc()}")
+            fail("ASR 转写失败", f"{exc}\n{traceback.format_exc()}")
 
     output = {
-        "backend": "sensevoice",
+        "backend": backend_name,
         "language": payload.get("language", "auto"),
         "segments": normalize_segments(raw_result),
     }

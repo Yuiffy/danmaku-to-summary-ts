@@ -2,7 +2,12 @@
 const path = require('path');
 const { spawn } = require('child_process');
 
-const SUPPORTED_BACKENDS = new Set(['whisper', 'sensevoice']);
+const SUPPORTED_BACKENDS = new Set(['whisper', 'sensevoice', 'fun_asr_nano', 'fun_asr_nano_vllm']);
+const BACKEND_ALIASES = new Map([
+    ['fun-asr-nano', 'fun_asr_nano'],
+    ['fun-asr-nano-vllm', 'fun_asr_nano_vllm'],
+    ['fun_asr_nano-vllm', 'fun_asr_nano_vllm']
+]);
 
 const DEFAULT_ASR_CONFIG = {
     default_backend: 'whisper',
@@ -21,6 +26,9 @@ const DEFAULT_ASR_CONFIG = {
         spk_model: 'cam++', 
         language: 'auto',
         device: 'cuda',
+        python_executable: null,
+        python_args: [],
+        python_path_map: [],
         use_itn: true,
         max_vad_segment_s: 8,
         merge_length_s: 8,
@@ -30,6 +38,52 @@ const DEFAULT_ASR_CONFIG = {
         speaker_merge_threshold: 0.78,
         speaker_references: [],
         speaker_reference_threshold: 0.45
+    },
+    fun_asr_nano: {
+        model: 'FunAudioLLM/Fun-ASR-Nano-2512',
+        vad_model: 'fsmn-vad',
+        punc_model: null,
+        spk_model: null,
+        language: '中文',
+        device: 'cuda',
+        python_executable: null,
+        python_args: [],
+        python_path_map: [],
+        use_itn: true,
+        max_vad_segment_s: 8,
+        merge_length_s: 8,
+        process_timeout_s: 1800,
+        enable_speaker: false,
+        preset_spk_num: null,
+        speaker_merge_threshold: 0.78,
+        speaker_references: [],
+        speaker_reference_threshold: 0.45
+    },
+    fun_asr_nano_vllm: {
+        model: 'FunAudioLLM/Fun-ASR-Nano-2512',
+        vad_model: 'fsmn-vad',
+        punc_model: null,
+        spk_model: 'cam++',
+        language: '中文',
+        device: 'cuda',
+        python_executable: null,
+        python_args: [],
+        python_path_map: [],
+        use_itn: true,
+        process_timeout_s: 3600,
+        enable_speaker: true,
+        preset_spk_num: null,
+        speaker_merge_threshold: 0.78,
+        speaker_references: [],
+        speaker_reference_threshold: 0.45,
+        hub: 'ms',
+        dtype: 'bf16',
+        tensor_parallel_size: 1,
+        gpu_memory_utilization: 0.8,
+        max_model_len: 4096,
+        max_new_tokens: 512,
+        batch_size_s: 300,
+        enforce_eager: false
     }
 };
 
@@ -57,6 +111,14 @@ function getAsrConfig(config = {}) {
             ...DEFAULT_ASR_CONFIG.sensevoice,
             ...(config.asr?.sensevoice || {})
         },
+        fun_asr_nano: {
+            ...DEFAULT_ASR_CONFIG.fun_asr_nano,
+            ...(config.asr?.fun_asr_nano || {})
+        },
+        fun_asr_nano_vllm: {
+            ...DEFAULT_ASR_CONFIG.fun_asr_nano_vllm,
+            ...(config.asr?.fun_asr_nano_vllm || {})
+        },
         common_hotwords: Array.isArray(config.asr?.common_hotwords) ? config.asr.common_hotwords : [],
         corrections: config.asr?.corrections || [],
         routing: Array.isArray(config.asr?.routing) ? config.asr.routing : []
@@ -75,11 +137,16 @@ function validateBackendName(backend, source) {
         throw new Error(`ASR backend 配置无效 (${source}): 必须是字符串`);
     }
 
-    const normalized = backend.toLowerCase();
+    const normalized = normalizeBackendName(backend);
     if (!SUPPORTED_BACKENDS.has(normalized)) {
         throw new Error(`ASR backend 配置无效 (${source}): ${backend}，支持: ${Array.from(SUPPORTED_BACKENDS).join(', ')}`);
     }
     return normalized;
+}
+
+function normalizeBackendName(backend) {
+    const normalized = String(backend || '').trim().toLowerCase();
+    return BACKEND_ALIASES.get(normalized) || normalized;
 }
 
 function matchesRule(match = {}, context = {}) {
@@ -132,7 +199,7 @@ function resolveAsrBackend(config, context = {}, cliBackend = null) {
 function normalizeHotwordEntry(entry) {
     if (typeof entry === 'string') {
         const word = entry.trim();
-        return word ? { word, weight: undefined, aliases: [] } : null;
+        return word ? { word, weight: undefined, aliases: [], hotword_terms: [], alias_hotwords: true, correction_to: word } : null;
     }
     if (!entry || typeof entry !== 'object') {
         return null;
@@ -147,12 +214,19 @@ function normalizeHotwordEntry(entry) {
     const contextualAliases = Array.isArray(entry.contextual_aliases)
         ? entry.contextual_aliases.map(alias => String(alias || '').trim()).filter(Boolean)
         : [];
+    const hotwordTerms = Array.isArray(entry.hotword_terms)
+        ? entry.hotword_terms.map(term => String(term || '').trim()).filter(Boolean)
+        : [];
     const weight = Number(entry.weight);
+    const correctionTo = String(entry.correction_to || entry.rewrite_to || entry.normalize_to || word).trim() || word;
     return {
         word,
         weight: Number.isFinite(weight) ? weight : undefined,
         aliases,
         contextual_aliases: contextualAliases,
+        hotword_terms: hotwordTerms,
+        alias_hotwords: entry.alias_hotwords !== false && entry.aliases_as_hotwords !== false,
+        correction_to: correctionTo,
         require_nearby: Array.isArray(entry.require_nearby)
             ? entry.require_nearby.map(value => String(value || '').trim()).filter(Boolean)
             : undefined
@@ -174,6 +248,11 @@ function addHotword(target, entry) {
     }
     existing.aliases = Array.from(new Set([...(existing.aliases || []), ...normalized.aliases]));
     existing.contextual_aliases = Array.from(new Set([...(existing.contextual_aliases || []), ...normalized.contextual_aliases]));
+    existing.hotword_terms = Array.from(new Set([...(existing.hotword_terms || []), ...normalized.hotword_terms]));
+    existing.alias_hotwords = existing.alias_hotwords !== false && normalized.alias_hotwords !== false;
+    if (!existing.correction_to && normalized.correction_to) {
+        existing.correction_to = normalized.correction_to;
+    }
     if (!existing.require_nearby && normalized.require_nearby) {
         existing.require_nearby = normalized.require_nearby;
     }
@@ -247,6 +326,8 @@ function addCorrections(targets, corrections) {
 function resolveAsrHotwords(config, context = {}) {
     const asrConfig = getAsrConfig(config);
     const hotwordsByWord = new Map();
+    const hotwordTokens = new Map();
+    const hotwordPromptTokens = new Map();
     const corrections = {
         safe: new Map(),
         contextual: new Map()
@@ -270,23 +351,60 @@ function resolveAsrHotwords(config, context = {}) {
 
     const hotwords = Array.from(hotwordsByWord.values());
     hotwords.forEach((entry) => {
-        (entry.aliases || []).forEach(alias => addCorrection(corrections.safe, alias, entry.word));
-        (entry.contextual_aliases || []).forEach(alias => addCorrection(corrections.contextual, alias, entry.word, {
+        const correctionTo = entry.correction_to || entry.word;
+        addHotwordToken(hotwordTokens, entry.word, entry.weight);
+        addHotwordToken(hotwordPromptTokens, entry.word, entry.weight);
+        (entry.aliases || []).forEach(alias => {
+            addHotwordToken(hotwordTokens, alias, entry.weight);
+            if (entry.alias_hotwords !== false) {
+                addHotwordToken(hotwordPromptTokens, alias, entry.weight);
+            }
+            addCorrection(corrections.safe, alias, correctionTo);
+        });
+        (entry.hotword_terms || []).forEach((term) => {
+            addHotwordToken(hotwordTokens, term, entry.weight);
+            addHotwordToken(hotwordPromptTokens, term, entry.weight);
+        });
+        (entry.contextual_aliases || []).forEach(alias => addCorrection(corrections.contextual, alias, correctionTo, {
             require_nearby: entry.require_nearby || DEFAULT_CONTEXTUAL_NEARBY_WORDS
         }));
     });
 
+    const hotwordTokenList = Array.from(hotwordTokens.values());
+    const hotwordPromptTokenList = Array.from(hotwordPromptTokens.values());
     return {
         hotwords,
+        hotwordTokens: hotwordTokenList,
+        hotwordPromptTokens: hotwordPromptTokenList,
+        hotwordWords: hotwordPromptTokenList.map(entry => entry.word),
         corrections: {
             safe: Array.from(corrections.safe.values()),
             contextual: Array.from(corrections.contextual.values())
         },
-        hotwordText: hotwords.map(entry => entry.word).join(' '),
-        hotwordTextWeighted: hotwords
+        hotwordText: hotwordTokenList.map(entry => entry.word).join(' '),
+        hotwordTextWeighted: hotwordTokenList
             .map(entry => entry.weight !== undefined ? `${entry.word} ${entry.weight}` : entry.word)
             .join('\n')
     };
+}
+
+function addHotwordToken(target, word, weight) {
+    const token = String(word || '').trim();
+    if (!token) {
+        return;
+    }
+    const existing = target.get(token);
+    if (!existing) {
+        target.set(token, {
+            word: token,
+            weight: Number.isFinite(Number(weight)) ? Number(weight) : undefined
+        });
+        return;
+    }
+    const nextWeight = Number(weight);
+    if (Number.isFinite(nextWeight) && (existing.weight === undefined || nextWeight > existing.weight)) {
+        existing.weight = nextWeight;
+    }
 }
 
 function escapeRegExp(value) {
@@ -776,10 +894,98 @@ function writeSpeakerReviewSrt(result, srtPath, subtitleConfig = {}) {
     }
 }
 
-function runJsonPython(scriptPath, payload) {
+function resolvePythonCommand(options = {}) {
+    const executable = String(
+        options.python_executable
+        || options.pythonPath
+        || options.python_path
+        || process.env.ASR_PYTHON
+        || 'python'
+    ).trim() || 'python';
+    const args = Array.isArray(options.python_args)
+        ? options.python_args.map(value => String(value || '').trim()).filter(Boolean)
+        : [];
+    return { executable, args };
+}
+
+function normalizePathForMap(value) {
+    return String(value || '').replace(/\\/g, '/');
+}
+
+function getPythonPathMap(options = {}) {
+    const raw = options.python_path_map || options.pythonPathMap || [];
+    if (Array.isArray(raw)) {
+        return raw
+            .map((item) => {
+                if (Array.isArray(item) && item.length >= 2) {
+                    return { from: item[0], to: item[1] };
+                }
+                if (item && typeof item === 'object') {
+                    return { from: item.from || item.source, to: item.to || item.target };
+                }
+                return null;
+            })
+            .filter(item => item && item.from && item.to)
+            .map(item => ({
+                from: normalizePathForMap(item.from),
+                to: normalizePathForMap(item.to)
+            }))
+            .sort((a, b) => b.from.length - a.from.length);
+    }
+    if (raw && typeof raw === 'object') {
+        return Object.entries(raw)
+            .map(([from, to]) => ({ from: normalizePathForMap(from), to: normalizePathForMap(to) }))
+            .sort((a, b) => b.from.length - a.from.length);
+    }
+    return [];
+}
+
+function translatePythonPath(value, options = {}) {
+    if (typeof value !== 'string' || !value.trim()) {
+        return value;
+    }
+    const normalized = normalizePathForMap(value);
+    const normalizedLower = normalized.toLowerCase();
+    for (const mapping of getPythonPathMap(options)) {
+        const from = mapping.from;
+        const fromLower = from.toLowerCase();
+        if (normalizedLower === fromLower || normalizedLower.startsWith(fromLower)) {
+            const suffix = normalized.slice(from.length).replace(/^\/+/, '');
+            const target = mapping.to.replace(/\/+$/, '');
+            return suffix ? `${target}/${suffix}` : target;
+        }
+    }
+    return value;
+}
+
+function shouldTranslatePayloadKey(key) {
+    return /(^|_)(path|file)$/i.test(String(key || '')) || /Path$|File$/i.test(String(key || ''));
+}
+
+function translatePythonPayloadPaths(value, options = {}, key = '') {
+    if (Array.isArray(value)) {
+        return value.map(item => translatePythonPayloadPaths(item, options, key));
+    }
+    if (value && typeof value === 'object') {
+        return Object.fromEntries(
+            Object.entries(value).map(([entryKey, entryValue]) => [
+                entryKey,
+                translatePythonPayloadPaths(entryValue, options, entryKey)
+            ])
+        );
+    }
+    if (typeof value === 'string' && shouldTranslatePayloadKey(key)) {
+        return translatePythonPath(value, options);
+    }
+    return value;
+}
+
+function runJsonPython(scriptPath, payload, label = 'ASR backend') {
     return new Promise((resolve, reject) => {
         let settled = false;
-        const child = spawn('python', [scriptPath], {
+        const pythonCommand = resolvePythonCommand(payload);
+        const pythonScriptPath = translatePythonPath(scriptPath, payload);
+        const child = spawn(pythonCommand.executable, [...pythonCommand.args, pythonScriptPath], {
             stdio: ['pipe', 'pipe', 'pipe'],
             windowsHide: true,
             env: { ...process.env, PYTHONUTF8: '1' }
@@ -792,7 +998,7 @@ function runJsonPython(scriptPath, payload) {
                 try {
                     child.kill('SIGTERM');
                 } catch {}
-                reject(new Error(`SenseVoice backend 超时: ${timeoutSeconds}s`));
+                reject(new Error(`${label} 超时: ${timeoutSeconds}s`));
             }, timeoutSeconds * 1000)
             : null;
         let stdout = '';
@@ -806,7 +1012,7 @@ function runJsonPython(scriptPath, payload) {
             const lines = stderrLineBuffer.split(/\r?\n/);
             stderrLineBuffer = lines.pop() || '';
             for (const line of lines) {
-                if (line.startsWith('[SenseVoice]')) {
+                if (line.startsWith('[ASR]')) {
                     process.stdout.write(`${line}\n`);
                 }
             }
@@ -829,37 +1035,70 @@ function runJsonPython(scriptPath, payload) {
             if (timeout) {
                 clearTimeout(timeout);
             }
-            if (stderrLineBuffer.startsWith('[SenseVoice]')) {
+            if (stderrLineBuffer.startsWith('[ASR]')) {
                 process.stdout.write(`${stderrLineBuffer}\n`);
             }
             if (code !== 0) {
-                reject(new Error(`SenseVoice backend failed with exit code ${code}: ${stderr || stdout}`));
+                reject(new Error(`${label} failed with exit code ${code}: ${stderr || stdout}`));
                 return;
             }
             try {
                 resolve(JSON.parse(stdout));
             } catch (error) {
-                reject(new Error(`SenseVoice backend 输出不是有效 JSON: ${error.message}\nstdout=${stdout}\nstderr=${stderr}`));
+                reject(new Error(`${label} 输出不是有效 JSON: ${error.message}\nstdout=${stdout}\nstderr=${stderr}`));
             }
         });
-        child.stdin.end(JSON.stringify(payload));
+        child.stdin.end(JSON.stringify(translatePythonPayloadPaths(payload, payload)));
     });
 }
 
-async function transcribeSenseVoice(mediaPath, config = {}, runtimeOptions = {}) {
+function buildHotwordWords(runtimeOptions = {}) {
+    if (Array.isArray(runtimeOptions.hotwordWords)) {
+        return runtimeOptions.hotwordWords.map(word => String(word || '').trim()).filter(Boolean);
+    }
+    if (Array.isArray(runtimeOptions.hotwordTokens)) {
+        return runtimeOptions.hotwordTokens.map(item => String(item?.word || '').trim()).filter(Boolean);
+    }
+    if (Array.isArray(runtimeOptions.hotwords)) {
+        return runtimeOptions.hotwords.map(item => String(item?.word || item || '').trim()).filter(Boolean);
+    }
+    return [];
+}
+
+async function transcribeFunAsrBackend(mediaPath, config = {}, runtimeOptions = {}, backend = 'sensevoice') {
     const asrConfig = getAsrConfig(config);
     const scriptPath = path.join(__dirname, '..', 'python', 'sensevoice_transcribe.py');
     if (!fs.existsSync(scriptPath)) {
-        throw new Error(`SenseVoice Python script not found at: ${scriptPath}`);
+        throw new Error(`ASR Python script not found at: ${scriptPath}`);
     }
+    const backendConfig = asrConfig[backend] || asrConfig.sensevoice;
+    const nanoLike = backend === 'fun_asr_nano' || backend === 'fun_asr_nano_vllm';
     const options = {
-        ...asrConfig.sensevoice,
+        ...backendConfig,
+        backend,
         audio_path: mediaPath,
-        hotwords: runtimeOptions.hotwords || [],
+        hotwords: nanoLike
+            ? buildHotwordWords(runtimeOptions)
+            : (runtimeOptions.hotwords || []),
         hotword: runtimeOptions.hotwordTextWeighted || runtimeOptions.hotwordText || '',
         hotword_unweighted: runtimeOptions.hotwordText || ''
     };
-    return runJsonPython(scriptPath, options);
+    const label = backend === 'fun_asr_nano_vllm'
+        ? 'Fun-ASR-Nano vLLM backend'
+        : (backend === 'fun_asr_nano' ? 'Fun-ASR-Nano backend' : 'SenseVoice backend');
+    return runJsonPython(scriptPath, options, label);
+}
+
+async function transcribeSenseVoice(mediaPath, config = {}, runtimeOptions = {}) {
+    return transcribeFunAsrBackend(mediaPath, config, runtimeOptions, 'sensevoice');
+}
+
+async function transcribeFunAsrNano(mediaPath, config = {}, runtimeOptions = {}) {
+    return transcribeFunAsrBackend(mediaPath, config, runtimeOptions, 'fun_asr_nano');
+}
+
+async function transcribeFunAsrNanoVllm(mediaPath, config = {}, runtimeOptions = {}) {
+    return transcribeFunAsrBackend(mediaPath, config, runtimeOptions, 'fun_asr_nano_vllm');
 }
 
 module.exports = {
@@ -881,7 +1120,12 @@ module.exports = {
     writeAsrSpeakersSidecar,
     writeSpeakerReviewSrt,
     writeSrt,
+    resolvePythonCommand,
+    translatePythonPath,
+    translatePythonPayloadPaths,
     transcribeSenseVoice,
+    transcribeFunAsrNano,
+    transcribeFunAsrNanoVllm,
     formatTimestamp,
     parseTimestamp,
     stripSubtitlePunctuation

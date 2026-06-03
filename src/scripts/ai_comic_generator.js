@@ -402,7 +402,7 @@ async function generateComicFromHighlight(highlightPath, roomId = null, options 
 }
 
 // 批量生成漫画
-async function batchGenerateComics(directory) {
+async function batchGenerateComics(directory, roomId = null, options = {}) {
     try {
         const files = fs.readdirSync(directory);
         const highlightFiles = files.filter(f => f.endsWith('_AI_HIGHLIGHT.txt'));
@@ -415,7 +415,7 @@ async function batchGenerateComics(directory) {
             console.log(`\n--- 处理: ${file} ---`);
 
             try {
-                const result = await generateComicFromHighlight(filePath);
+                const result = await generateComicFromHighlight(filePath, roomId, options);
                 if (result) {
                     results.push({ file, success: true, output: result });
                 } else {
@@ -449,23 +449,71 @@ module.exports = {
     batchGenerateComics
 };
 
+function parseCliArgs(rawArgs) {
+    const parsed = {
+        highlightPath: null,
+        batchDirectory: null,
+        roomId: null,
+        options: {}
+    };
+
+    for (let i = 0; i < rawArgs.length; i++) {
+        const arg = rawArgs[i];
+
+        if (arg === '--batch') {
+            parsed.batchDirectory = rawArgs[++i] || null;
+        } else if (arg === '--room-id') {
+            parsed.roomId = rawArgs[++i] || null;
+        } else if (arg === '--tuzi-retry-max-attempts') {
+            parsed.options.tuziRetryMaxAttempts = rawArgs[++i];
+        } else if (arg === '--tuzi-bypass-cooldown' || arg === '--bypass-cooldown') {
+            parsed.options.tuziBypassCooldown = true;
+        } else if (arg === '--tuzi-retry-max-total-seconds') {
+            parsed.options.tuziRetryMaxTotalSeconds = rawArgs[++i];
+        } else if (arg === '--tuzi-max-cooldown-wait-seconds') {
+            parsed.options.tuziRetryMaxCooldownWaitSeconds = rawArgs[++i];
+        } else if (arg === '--tuzi-skip-chat-fallback-on-image-api-failure') {
+            parsed.options.tuziSkipChatFallbackOnImageApiFailure = true;
+        } else if (arg === '--allow-comic-script-fallback') {
+            parsed.options.allowComicScriptFallback = true;
+        } else if (!arg.startsWith('-') && !parsed.highlightPath) {
+            parsed.highlightPath = arg;
+        } else {
+            throw new Error(`未知参数: ${arg}`);
+        }
+    }
+
+    return parsed;
+}
+
 // 命令行测试
 if (require.main === module) {
     const args = process.argv.slice(2);
 
     if (args.length === 0) {
         console.log('用法:');
-        console.log('  1. 处理单个文件: node ai_comic_generator.js <AI_HIGHLIGHT.txt路径>');
-        console.log('  2. 批量处理目录: node ai_comic_generator.js --batch <目录路径>');
+        console.log('  1. 处理单个文件: node ai_comic_generator.js <AI_HIGHLIGHT.txt路径> [--room-id <房间ID>]');
+        console.log('  2. 批量处理目录: node ai_comic_generator.js --batch <目录路径> [--room-id <房间ID>]');
+        console.log('可选:');
+        console.log('  --tuzi-bypass-cooldown                         本次绕过 tuZi 跨进程冷却');
+        console.log('  --tuzi-max-cooldown-wait-seconds <秒>          限制本次最多等待冷却秒数，0 表示不等');
+        console.log('  --tuzi-retry-max-attempts <次数>               覆盖 tuZi 单策略最大重试次数');
+        console.log('  --tuzi-retry-max-total-seconds <秒>            限制本次 tuZi 重试总预算');
         process.exit(1);
     }
 
     (async () => {
         try {
-            if (args[0] === '--batch' && args[1]) {
-                await batchGenerateComics(args[1]);
+            const cli = parseCliArgs(args);
+
+            if (cli.batchDirectory) {
+                await batchGenerateComics(cli.batchDirectory, cli.roomId, cli.options);
             } else {
-                const result = await generateComicFromHighlight(args[0]);
+                if (!cli.highlightPath) {
+                    throw new Error('缺少 AI_HIGHLIGHT.txt 路径');
+                }
+
+                const result = await generateComicFromHighlight(cli.highlightPath, cli.roomId, cli.options);
                 if (result) {
                     console.log(`\n🎉 处理完成，输出文件: ${result}`);
                 } else {

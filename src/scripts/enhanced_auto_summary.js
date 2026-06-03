@@ -747,7 +747,12 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
         console.log(`\n-> [ASR] Generating Subtitles (${selected.backend})...`);
         console.log(`   Target: ${path.basename(mediaPath)} (${fileType})`);
         console.log(`   ASR backend: ${selected.backend} (${selected.reason})`);
-        if (asrRuntime.hotwords.length > 0) {
+        if ((asrRuntime.hotwordTokens || []).length > 0) {
+            const hotwordLog = asrRuntime.hotwordTokens
+                .map(item => item.weight !== undefined ? `${item.word}(${item.weight})` : item.word)
+                .join(', ');
+            console.log(`   ASR hotwords: ${hotwordLog}`);
+        } else if (asrRuntime.hotwords.length > 0) {
             const hotwordLog = asrRuntime.hotwords
                 .map(item => item.weight !== undefined ? `${item.word}(${item.weight})` : item.word)
                 .join(', ');
@@ -777,6 +782,10 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
                     asrResult = asrBackends.parseSrt(srtPath, 'whisper');
                 } else if (selected.backend === 'sensevoice') {
                     asrResult = await asrBackends.transcribeSenseVoice(mediaPath, config, asrRuntime);
+                } else if (selected.backend === 'fun_asr_nano') {
+                    asrResult = await asrBackends.transcribeFunAsrNano(mediaPath, config, asrRuntime);
+                } else if (selected.backend === 'fun_asr_nano_vllm') {
+                    asrResult = await asrBackends.transcribeFunAsrNanoVllm(mediaPath, config, asrRuntime);
                 } else {
                     throw new Error(`未实现的 ASR backend: ${selected.backend}`);
                 }

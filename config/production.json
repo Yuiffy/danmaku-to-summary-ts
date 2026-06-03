@@ -1,4 +1,4 @@
-{
+﻿{
     "app": {
         "name": "danmaku-to-summary",
         "version": "2.0.0",
@@ -138,7 +138,13 @@
                     "SUI",
                     "岁几",
                     "碎己",
-                    "岁已"
+                    "碎几",
+                    "碎机",
+                    "碎即",
+                    "穗即",
+                    "岁机",
+                    "岁已",
+                    "小岁"
                 ],
                 "referenceImages": [
                     "public/reference_images/岁己SUI小猫帽带饼干岁紫色外套双马尾.png"
@@ -715,7 +721,7 @@
         }
     },
     "asr": {
-        "default_backend": "sensevoice",
+        "default_backend": "fun_asr_nano_vllm",
         "common_hotwords": [
             {
                 "word": "东爱璃Lovely",
@@ -821,17 +827,18 @@
                 ]
             },
             {
-                "word": "岁己SUI",
+                "word": "岁己",
                 "weight": 20,
+                "aliases_as_hotwords": false,
                 "aliases": [
-                    "岁己",
-                    "岁几",
-                    "碎己",
-                    "岁已"
+                    "岁己SUI"
                 ],
-                "contextual_aliases": [
-                    "随机",
-                    "随即"
+                "hotword_terms": [
+                    "岁己SUI",
+                    "小岁",
+                    "小岁姐",
+                    "岁己姐",
+                    "饼干岁"
                 ]
             },
             {
@@ -874,13 +881,167 @@
                 ]
             }
         ],
-        "corrections": [],
+        "corrections": {
+            "contextual": [
+                {
+                    "from": "穗姐",
+                    "to": "岁己",
+                    "require_nearby": [
+                        "跟我说",
+                        "叫他",
+                        "小穗",
+                        "穗穗",
+                        "小岁"
+                    ]
+                },
+                {
+                    "from": "穗穗",
+                    "to": "岁岁",
+                    "require_nearby": [
+                        "叫他",
+                        "穗姐",
+                        "小穗"
+                    ]
+                },
+                {
+                    "from": "小穗",
+                    "to": "小岁",
+                    "require_nearby": [
+                        "叫他",
+                        "穗姐",
+                        "穗穗"
+                    ]
+                },
+                {
+                    "from": "岁几",
+                    "to": "岁己",
+                    "require_nearby": [
+                        "小岁",
+                        "岁岁",
+                        "SUI",
+                        "岁己",
+                        "饼干岁",
+                        "前辈",
+                        "姐"
+                    ]
+                },
+                {
+                    "from": "碎己",
+                    "to": "岁己",
+                    "require_nearby": [
+                        "小岁",
+                        "岁岁",
+                        "SUI",
+                        "岁己",
+                        "饼干岁",
+                        "前辈",
+                        "姐"
+                    ]
+                },
+                {
+                    "from": "碎几",
+                    "to": "岁己",
+                    "require_nearby": [
+                        "小岁",
+                        "岁岁",
+                        "SUI",
+                        "岁己",
+                        "饼干岁",
+                        "前辈",
+                        "姐"
+                    ]
+                },
+                {
+                    "from": "碎机",
+                    "to": "岁己",
+                    "require_nearby": [
+                        "小岁",
+                        "岁岁",
+                        "SUI",
+                        "岁己",
+                        "饼干岁",
+                        "前辈",
+                        "姐"
+                    ]
+                },
+                {
+                    "from": "碎即",
+                    "to": "岁己",
+                    "require_nearby": [
+                        "小岁",
+                        "岁岁",
+                        "SUI",
+                        "岁己",
+                        "饼干岁",
+                        "前辈",
+                        "姐"
+                    ]
+                },
+                {
+                    "from": "穗即",
+                    "to": "岁己",
+                    "require_nearby": [
+                        "小岁",
+                        "岁岁",
+                        "SUI",
+                        "岁己",
+                        "饼干岁",
+                        "前辈",
+                        "姐"
+                    ]
+                },
+                {
+                    "from": "岁机",
+                    "to": "岁己",
+                    "require_nearby": [
+                        "小岁",
+                        "岁岁",
+                        "SUI",
+                        "岁己",
+                        "饼干岁",
+                        "前辈",
+                        "姐"
+                    ]
+                },
+                {
+                    "from": "岁已",
+                    "to": "岁己",
+                    "require_nearby": [
+                        "小岁",
+                        "岁岁",
+                        "SUI",
+                        "岁己",
+                        "饼干岁",
+                        "前辈",
+                        "姐"
+                    ]
+                },
+                {
+                    "from": "小穗姐",
+                    "to": "小岁姐",
+                    "require_nearby": [
+                        "岁己",
+                        "小岁",
+                        "饼干岁"
+                    ]
+                },
+                {
+                    "from": "小碎姐",
+                    "to": "小岁姐",
+                    "require_nearby": [
+                        "岁己",
+                        "小岁",
+                        "饼干岁"
+                    ]
+                }
+            ]
+        },
         "routing": [
             {
                 "match": {
                     "room_id": "21692711"
                 },
-                "backend": "sensevoice",
+                "backend": "fun_asr_nano_vllm",
                 "hotwords": [
                     {
                         "word": "东爱璃Lovely",
@@ -892,7 +1053,7 @@
                 "match": {
                     "room_id": "1603600"
                 },
-                "backend": "sensevoice",
+                "backend": "fun_asr_nano_vllm",
                 "hotwords": [
                     {
                         "word": "星汐Seki",
@@ -904,7 +1065,7 @@
                 "match": {
                     "room_id": "23222837"
                 },
-                "backend": "sensevoice",
+                "backend": "fun_asr_nano_vllm",
                 "hotwords": [
                     {
                         "word": "礼墨Sumi",
@@ -916,7 +1077,7 @@
                 "match": {
                     "room_id": "573893"
                 },
-                "backend": "sensevoice",
+                "backend": "fun_asr_nano_vllm",
                 "hotwords": [
                     {
                         "word": "笙歌",
@@ -928,7 +1089,7 @@
                 "match": {
                     "room_id": "25971921"
                 },
-                "backend": "sensevoice",
+                "backend": "fun_asr_nano_vllm",
                 "hotwords": [
                     {
                         "word": "伊索尔Sol",
@@ -940,7 +1101,7 @@
                 "match": {
                     "room_id": "24872476"
                 },
-                "backend": "sensevoice",
+                "backend": "fun_asr_nano_vllm",
                 "hotwords": [
                     {
                         "word": "南町Nightin",
@@ -952,11 +1113,21 @@
                 "match": {
                     "room_id": "25788785"
                 },
-                "backend": "sensevoice",
+                "backend": "fun_asr_nano_vllm",
                 "hotwords": [
                     {
-                        "word": "岁己SUI",
-                        "weight": 20
+                        "word": "岁己",
+                        "weight": 24,
+                        "aliases_as_hotwords": false,
+                        "aliases": [
+                            "岁己SUI"
+                        ],
+                        "hotword_terms": [
+                            "岁己SUI",
+                            "小岁",
+                            "小岁姐",
+                            "岁己姐"
+                        ]
                     }
                 ]
             },
@@ -964,15 +1135,25 @@
                 "match": {
                     "room_id": "26966466"
                 },
-                "backend": "sensevoice",
+                "backend": "fun_asr_nano_vllm",
                 "hotwords": [
                     {
                         "word": "栞栞",
                         "weight": 20
                     },
                     {
-                        "word": "岁己SUI",
-                        "weight": 20
+                        "word": "岁己",
+                        "weight": 24,
+                        "aliases_as_hotwords": false,
+                        "aliases": [
+                            "岁己SUI"
+                        ],
+                        "hotword_terms": [
+                            "岁己SUI",
+                            "小岁",
+                            "小岁姐",
+                            "岁己姐"
+                        ]
                     }
                 ]
             },
@@ -980,13 +1161,13 @@
                 "match": {
                     "room_id": "1820703922"
                 },
-                "backend": "sensevoice"
+                "backend": "fun_asr_nano_vllm"
             },
             {
                 "match": {
                     "room_id": "1967216004"
                 },
-                "backend": "sensevoice"
+                "backend": "fun_asr_nano_vllm"
             }
         ],
         "whisper": {
@@ -1007,6 +1188,52 @@
             "enable_speaker": false,
             "preset_spk_num": null,
             "speaker_merge_threshold": 0.78
+        },
+        "fun_asr_nano": {
+            "model": "FunAudioLLM/Fun-ASR-Nano-2512",
+            "vad_model": "fsmn-vad",
+            "punc_model": null,
+            "spk_model": null,
+            "language": "中文",
+            "device": "cuda",
+            "python_executable": null,
+            "python_args": [],
+            "python_path_map": [],
+            "use_itn": true,
+            "max_vad_segment_s": 8,
+            "merge_length_s": 8,
+            "process_timeout_s": 1800,
+            "enable_speaker": false,
+            "preset_spk_num": null,
+            "speaker_merge_threshold": 0.78,
+            "speaker_references": [],
+            "speaker_reference_threshold": 0.45
+        },
+        "fun_asr_nano_vllm": {
+            "model": "FunAudioLLM/Fun-ASR-Nano-2512",
+            "vad_model": "fsmn-vad",
+            "punc_model": null,
+            "spk_model": "cam++",
+            "language": "中文",
+            "device": "cuda",
+            "python_executable": null,
+            "python_args": [],
+            "python_path_map": [],
+            "use_itn": true,
+            "process_timeout_s": 3600,
+            "enable_speaker": true,
+            "preset_spk_num": null,
+            "speaker_merge_threshold": 0.78,
+            "speaker_references": [],
+            "speaker_reference_threshold": 0.45,
+            "hub": "ms",
+            "dtype": "bf16",
+            "tensor_parallel_size": 1,
+            "gpu_memory_utilization": 0.8,
+            "max_model_len": 4096,
+            "max_new_tokens": 512,
+            "batch_size_s": 300,
+            "enforce_eager": false
         }
     },
     "subtitle": {

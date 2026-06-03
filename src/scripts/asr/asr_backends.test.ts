@@ -112,11 +112,11 @@ describe('asr_backends', () => {
     expect(asr.stripSubtitlePunctuation('大家晚上好！今晚，网络：很卡。')).toBe('大家晚上好今晚网络很卡');
   });
 
-  test('resolves common and routing hotwords with alias corrections', () => {
+  test('resolves common and routing hotwords with alias corrections and extra hotword terms', () => {
     const result = asr.resolveAsrHotwords({
       asr: {
         common_hotwords: [
-          { word: '岁己', weight: 20, aliases: ['岁几'], contextual_aliases: ['随机'] },
+          { word: '岁己', weight: 20, aliases: ['岁几', '岁己SUI', '碎机', '碎即', '穗即', '岁机'], hotword_terms: ['小岁'] },
           { word: 'VirtuaReal', weight: 18, aliases: ['V R'] }
         ],
         corrections: {
@@ -130,27 +130,56 @@ describe('asr_backends', () => {
             match: { streamer_name: '岁己SUI' },
             backend: 'sensevoice',
             hotwords: [
-              { word: '岁己SUI', weight: 20, aliases: ['岁己苏伊'] }
+              { word: '岁己', weight: 24, aliases: ['岁己苏伊'], hotword_terms: ['饼干岁'] }
             ],
-            corrections: [{ from: '岁己sui', to: '岁己SUI' }]
+            corrections: [{ from: '岁己sui', to: '岁己' }]
           }
         ]
       }
     }, { streamer_name: '岁己SUI' });
 
-    expect(result.hotwords.map((item: any) => item.word)).toEqual(['岁己', 'VirtuaReal', '岁己SUI']);
-    expect(result.hotwordText).toBe('岁己 VirtuaReal 岁己SUI');
-    expect(result.hotwordTextWeighted).toBe('岁己 20\nVirtuaReal 18\n岁己SUI 20');
+    expect(result.hotwords.map((item: any) => item.word)).toEqual(['岁己', 'VirtuaReal']);
+    expect(result.hotwordTokens.map((item: any) => item.word)).toEqual(['岁己', '岁几', '岁己SUI', '碎机', '碎即', '穗即', '岁机', '岁己苏伊', '小岁', '饼干岁', 'VirtuaReal', 'V R']);
+    expect(result.hotwordWords).toEqual(['岁己', '岁几', '岁己SUI', '碎机', '碎即', '穗即', '岁机', '岁己苏伊', '小岁', '饼干岁', 'VirtuaReal', 'V R']);
+    expect(result.hotwordText).toBe('岁己 岁几 岁己SUI 碎机 碎即 穗即 岁机 岁己苏伊 小岁 饼干岁 VirtuaReal V R');
+    expect(result.hotwordTextWeighted).toBe('岁己 24\n岁几 24\n岁己SUI 24\n碎机 24\n碎即 24\n穗即 24\n岁机 24\n岁己苏伊 24\n小岁 24\n饼干岁 24\nVirtuaReal 18\nV R 18');
     expect(result.corrections.safe).toEqual(expect.arrayContaining([
       { from: '岁几', to: '岁己' },
+      { from: '岁己SUI', to: '岁己' },
+      { from: '碎机', to: '岁己' },
+      { from: '碎即', to: '岁己' },
+      { from: '穗即', to: '岁己' },
+      { from: '岁机', to: '岁己' },
       { from: 'V R', to: 'VirtuaReal' },
       { from: '微阿', to: 'VirtuaReal' },
-      { from: '岁己苏伊', to: '岁己SUI' },
-      { from: '岁己sui', to: '岁己SUI' }
+      { from: '岁己苏伊', to: '岁己' },
+      { from: '岁己sui', to: '岁己' }
     ]));
     expect(result.corrections.contextual).toEqual(expect.arrayContaining([
-      { from: '随机', to: '岁己', require_nearby: expect.arrayContaining(['主播', '直播', '开播']) },
       { from: '随即', to: '岁己', require_nearby: ['主播'] }
+    ]));
+  });
+
+  test('can keep correction aliases out of model prompt hotwords', () => {
+    const result = asr.resolveAsrHotwords({
+      asr: {
+        common_hotwords: [
+          {
+            word: '岁己',
+            weight: 20,
+            aliases_as_hotwords: false,
+            aliases: ['碎即', '岁几'],
+            hotword_terms: ['岁己SUI', '小岁']
+          }
+        ]
+      }
+    });
+
+    expect(result.hotwordTokens.map((item: any) => item.word)).toEqual(['岁己', '碎即', '岁几', '岁己SUI', '小岁']);
+    expect(result.hotwordWords).toEqual(['岁己', '岁己SUI', '小岁']);
+    expect(result.corrections.safe).toEqual(expect.arrayContaining([
+      { from: '碎即', to: '岁己' },
+      { from: '岁几', to: '岁己' }
     ]));
   });
 
@@ -173,18 +202,44 @@ describe('asr_backends', () => {
     require('fs').unlinkSync(tmp);
   });
 
-  test('contextual aliases do not replace unrelated text', () => {
+  test('contextual aliases do not replace unrelated text and random stays random', () => {
     const corrections = {
       safe: [{ from: '岁几', to: '岁己' }],
       contextual: [
-        { from: '随机', to: '岁己', require_nearby: ['主播', '开播', '岁己'] }
+        { from: '随即', to: '岁己', require_nearby: ['主播', '开播', '岁己'] }
       ]
     };
 
     expect(asr.applyCorrectionsToText('随机匹配一个数字', corrections)).toBe('随机匹配一个数字');
     expect(asr.applyCorrectionsToText('岁几晚上好', corrections)).toBe('岁己晚上好');
-    expect(asr.applyCorrectionsToText('主播随机开播了', corrections)).toBe('主播岁己开播了');
-    expect(asr.applyCorrectionsToText('岁己今天随机开播了', corrections)).toBe('岁己今天岁己开播了');
+    expect(asr.applyCorrectionsToText('主播随机开播了', corrections)).toBe('主播随机开播了');
+    expect(asr.applyCorrectionsToText('岁己今天随机开播了', corrections)).toBe('岁己今天随机开播了');
+    expect(asr.applyCorrectionsToText('主播随即开播了', corrections)).toBe('主播岁己开播了');
+  });
+
+  test('contextual corrections can fix clustered sui homophones without changing isolated grain words', () => {
+    const corrections = {
+      contextual: [
+        { from: '穗姐', to: '岁己', require_nearby: ['小穗', '穗穗', '小岁'] },
+        { from: '穗穗', to: '岁岁', require_nearby: ['穗姐', '小穗'] },
+        { from: '小穗', to: '小岁', require_nearby: ['穗姐', '穗穗'] }
+      ]
+    };
+
+    expect(asr.applyCorrectionsToText('穗姐跟我说能不能叫他穗穗呀还是叫他小穗', corrections))
+      .toBe('岁己跟我说能不能叫他岁岁呀还是叫他小岁');
+    expect(asr.applyCorrectionsToText('这株小穗长得很好', corrections)).toBe('这株小穗长得很好');
+  });
+
+  test('ambiguous sui homophones need nearby sui context before correction', () => {
+    const corrections = {
+      contextual: [
+        { from: '碎几', to: '岁己', require_nearby: ['小岁', '岁岁', 'SUI', '饼干岁', '前辈', '姐'] }
+      ]
+    };
+
+    expect(asr.applyCorrectionsToText('感觉就是碎几根看看', corrections)).toBe('感觉就是碎几根看看');
+    expect(asr.applyCorrectionsToText('碎几前辈今天来了', corrections)).toBe('岁己前辈今天来了');
   });
 
   test('psp room routing can select sensevoice', () => {
@@ -209,6 +264,70 @@ describe('asr_backends', () => {
 
     expect(parsed.options.asrCompare).toEqual(['whisper', 'sensevoice']);
     expect(parsed.inputPaths).toEqual(['D:/video.flv']);
+  });
+
+  test('parses fun-asr-nano backend alias from cli', () => {
+    const parsed = asr.parseCliArgs(['--asr-backend', 'fun-asr-nano', 'D:/video.flv']);
+
+    expect(parsed.options.asrBackend).toBe('fun_asr_nano');
+    expect(parsed.inputPaths).toEqual(['D:/video.flv']);
+  });
+
+  test('parses fun-asr-nano-vllm backend alias and merges config', () => {
+    const parsed = asr.parseCliArgs(['--asr-backend', 'fun-asr-nano-vllm', 'D:/video.flv']);
+    const config = asr.getAsrConfig({
+      asr: {
+        fun_asr_nano_vllm: {
+          tensor_parallel_size: 2,
+          gpu_memory_utilization: 0.72
+        }
+      }
+    });
+
+    expect(parsed.options.asrBackend).toBe('fun_asr_nano_vllm');
+    expect(parsed.inputPaths).toEqual(['D:/video.flv']);
+    expect(config.fun_asr_nano_vllm.model).toBe('FunAudioLLM/Fun-ASR-Nano-2512');
+    expect(config.fun_asr_nano_vllm.spk_model).toBe('cam++');
+    expect(config.fun_asr_nano_vllm.enable_speaker).toBe(true);
+    expect(config.fun_asr_nano_vllm.tensor_parallel_size).toBe(2);
+    expect(config.fun_asr_nano_vllm.gpu_memory_utilization).toBe(0.72);
+  });
+
+  test('resolves backend-specific python command', () => {
+    const command = asr.resolvePythonCommand({
+      python_executable: 'D:/venvs/asr/Scripts/python.exe',
+      python_args: ['-X', 'utf8', '']
+    });
+
+    expect(command).toEqual({
+      executable: 'D:/venvs/asr/Scripts/python.exe',
+      args: ['-X', 'utf8']
+    });
+  });
+
+  test('translates python paths for external runtimes like WSL', () => {
+    const runtime = {
+      python_path_map: [
+        { from: 'D:/', to: '/mnt/d/' },
+        { from: 'C:/Users/yuiffy', to: '/mnt/c/Users/yuiffy' }
+      ]
+    };
+
+    expect(asr.translatePythonPath('D:\\workspace\\repo\\audio.wav', runtime))
+      .toBe('/mnt/d/workspace/repo/audio.wav');
+    expect(asr.translatePythonPayloadPaths({
+      audio_path: 'D:/files/video.wav',
+      speaker_references: [
+        { audio_path: 'C:/Users/yuiffy/ref.wav' }
+      ],
+      model: 'FunAudioLLM/Fun-ASR-Nano-2512'
+    }, runtime)).toEqual({
+      audio_path: '/mnt/d/files/video.wav',
+      speaker_references: [
+        { audio_path: '/mnt/c/Users/yuiffy/ref.wav' }
+      ],
+      model: 'FunAudioLLM/Fun-ASR-Nano-2512'
+    });
   });
 
   test('does not split ascii words when wrapping subtitles', () => {
