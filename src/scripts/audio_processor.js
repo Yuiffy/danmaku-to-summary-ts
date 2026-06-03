@@ -180,25 +180,20 @@ async function processAudioOnlyRoom(videoPath, roomId = null) {
         // 转换视频为音频
         const audioPath = await convertVideoToAudio(videoPath, audioFormat);
         
-        // 只有在真正进行了转换（输出路径与输入路径不同）时才删除原始文件
+        // 记录是否需要延迟删除原始视频（在切片完成后删除，以便切片能使用视频源）
         const actuallyConverted = audioPath !== videoPath;
         const keepOriginal = config.audio?.storage?.keepOriginalVideo !== undefined ? config.audio.storage.keepOriginalVideo : config.audioProcessing?.keepOriginalVideo;
-        
-        if (actuallyConverted && keepOriginal === false) {
-            console.log(`🗑️  删除原始视频文件: ${path.basename(videoPath)}`);
-            try {
-                await unlink(videoPath);
-                console.log(`✅ 原始视频已删除`);
-            } catch (deleteError) {
-                console.error(`⚠️  删除原始视频失败: ${deleteError.message}`);
-            }
+        const shouldDeleteVideo = actuallyConverted && keepOriginal === false;
+
+        if (actuallyConverted && !shouldDeleteVideo) {
+            console.log(`💾 保留原始视频文件`);
         } else if (!actuallyConverted) {
             console.log(`💾 输入文件已是音频格式，无需删除`);
-        } else {
-            console.log(`💾 保留原始视频文件`);
+        } else if (shouldDeleteVideo) {
+            console.log(`📋 原始视频将在切片完成后删除: ${path.basename(videoPath)}`);
         }
-        
-        return audioPath;
+
+        return { audioPath, videoPathToDelete: shouldDeleteVideo ? videoPath : null };
     } catch (error) {
         console.error(`❌ 音频专用房间处理失败: ${error.message}`);
         return null;

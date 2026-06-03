@@ -859,14 +859,20 @@ async function processAudioIfNeeded(mediaPath, roomId = null) {
     try {
         const result = await audioProcessor.processVideoForAudio(mediaPath, roomId);
         if (result) {
-            console.log(`✅ 音频处理完成，使用音频文件: ${path.basename(result)}`);
-            return result; // 返回音频文件路径
+            // 新格式: { audioPath, videoPathToDelete }
+            const audioPath = result.audioPath || result;
+            const videoPathToDelete = result.videoPathToDelete || null;
+            console.log(`✅ 音频处理完成，使用音频文件: ${path.basename(audioPath)}`);
+            if (videoPathToDelete) {
+                console.log(`📋 将在切片完成后删除视频: ${path.basename(videoPathToDelete)}`);
+            }
+            return { audioPath, videoPathToDelete };
         }
     } catch (error) {
         console.error(`⚠️  音频处理失败: ${error.message}`);
     }
     
-    return mediaPath; // 返回原始文件路径
+    return { audioPath: mediaPath, videoPathToDelete: null };
 }
 
 // AI文本生成
@@ -1167,16 +1173,18 @@ const main = async () => {
             queueTaskRecords.push({ id: task.id, mediaPath: mediaFile });
         }
         
-        // 1. 音频处理（如果需要）
-        let processedFile;
+        // 1. 音频处理（如果需要）— 只转换不删除，切片后再删
+        let processedResult;
         try {
-            processedFile = await processAudioIfNeeded(mediaFile, mediaRoomId);
+            processedResult = await processAudioIfNeeded(mediaFile, mediaRoomId);
         } catch (error) {
             if (task?.id) {
                 queueManager.markFailed(task.id, error.message);
             }
             throw error;
         }
+        const processedFile = processedResult.audioPath;
+        const videoToDeleteAfterClips = processedResult.videoPathToDelete;
         queueManager.updateTaskMediaPath(task.id, processedFile);
         if (task?.id) {
             setActiveQueueTask(task.id, processedFile);
@@ -1219,6 +1227,17 @@ const main = async () => {
             });
             processedMediaFiles.push(processedFile); // 记录处理后的文件
             filesToProcess.push(srtPath);
+        }
+
+        // 切片完成后删除原始视频（音频专用房间 & keepOriginalVideo=false）
+        if (videoToDeleteAfterClips) {
+            try {
+                const { unlink: unlinkAsync } = require('fs/promises');
+                await unlinkAsync(videoToDeleteAfterClips);
+                console.log(`🗑️  切片完成，已删除原始视频: ${path.basename(videoToDeleteAfterClips)}`);
+            } catch (deleteError) {
+                console.error(`⚠️  删除原始视频失败: ${deleteError.message}`);
+            }
         }
     }
 
