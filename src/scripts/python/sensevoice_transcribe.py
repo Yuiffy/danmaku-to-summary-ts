@@ -1444,7 +1444,9 @@ def _apply_hotword_correction(output, payload):
         if corrections_count > 0:
             log_progress(f"asr-hotword 纠正: {corrections_count}/{len(output.get('segments', []))} 段")
     except Exception as exc:
-        print(f"⚠️ asr-hotword 纠正失败，继续使用原始文本: {exc}", file=sys.stderr)    print(json.dumps(output, ensure_ascii=False, default=str), file=original_stdout)
+        print(f"⚠️ asr-hotword 纠正失败，继续使用原始文本: {exc}", file=sys.stderr)
+
+    print(json.dumps(output, ensure_ascii=False, default=str), file=original_stdout)
 
 
 if __name__ == "__main__":
