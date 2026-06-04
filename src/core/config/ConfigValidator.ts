@@ -140,6 +140,7 @@ export class ConfigValidator {
           speaker_merge_threshold: 0.78,
           speaker_references: [],
           speaker_reference_threshold: 0.45,
+          speaker_reference_margin: 0.06,
         },
         fun_asr_nano: {
           model: 'FunAudioLLM/Fun-ASR-Nano-2512',
@@ -160,6 +161,7 @@ export class ConfigValidator {
           speaker_merge_threshold: 0.78,
           speaker_references: [],
           speaker_reference_threshold: 0.45,
+          speaker_reference_margin: 0.06,
         },
         fun_asr_nano_vllm: {
           model: 'FunAudioLLM/Fun-ASR-Nano-2512',
@@ -178,6 +180,7 @@ export class ConfigValidator {
           speaker_merge_threshold: 0.78,
           speaker_references: [],
           speaker_reference_threshold: 0.45,
+          speaker_reference_margin: 0.06,
           hub: 'ms',
           dtype: 'bf16',
           tensor_parallel_size: 1,
@@ -207,6 +210,7 @@ export class ConfigValidator {
           speaker_merge_threshold: 0.78,
           speaker_references: [],
           speaker_reference_threshold: 0.45,
+          speaker_reference_margin: 0.06,
         },
       },
       subtitle: {

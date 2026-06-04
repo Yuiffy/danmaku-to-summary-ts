@@ -138,6 +138,7 @@ export interface AsrConfig {
     speaker_merge_threshold?: number;
     speaker_references?: AsrSpeakerReferenceConfig[];
     speaker_reference_threshold?: number;
+    speaker_reference_margin?: number;
   };
   fun_asr_nano: AsrPythonRuntimeConfig & {
     model: string;
@@ -155,6 +156,7 @@ export interface AsrConfig {
     speaker_merge_threshold?: number;
     speaker_references?: AsrSpeakerReferenceConfig[];
     speaker_reference_threshold?: number;
+    speaker_reference_margin?: number;
   };
   fun_asr_nano_vllm: AsrPythonRuntimeConfig & {
     model: string;
@@ -170,6 +172,7 @@ export interface AsrConfig {
     speaker_merge_threshold?: number;
     speaker_references?: AsrSpeakerReferenceConfig[];
     speaker_reference_threshold?: number;
+    speaker_reference_margin?: number;
     hub?: 'ms' | 'hf' | 'modelscope' | 'huggingface' | string;
     dtype?: 'bf16' | 'fp16' | 'fp32' | string;
     tensor_parallel_size?: number;
@@ -196,6 +199,7 @@ export interface AsrConfig {
     speaker_merge_threshold?: number;
     speaker_references?: AsrSpeakerReferenceConfig[];
     speaker_reference_threshold?: number;
+    speaker_reference_margin?: number;
   };
 }
 

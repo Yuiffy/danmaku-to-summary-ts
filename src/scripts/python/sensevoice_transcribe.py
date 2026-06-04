@@ -741,14 +741,13 @@ def build_speaker_reference_centroids(spk_model_obj, references, device):
     centroids = {}
     for speaker, speaker_embeddings in embeddings_by_speaker.items():
         embeddings = torch.cat(speaker_embeddings, dim=0)
-        centroid = embeddings.mean(dim=0, keepdim=True)
-        centroid = torch.nn.functional.normalize(centroid, dim=1)
-        centroids[speaker] = centroid.to("cpu")
+        embeddings = torch.nn.functional.normalize(embeddings, dim=1)
+        centroids[speaker] = embeddings.to("cpu")
         log_progress(f"参考说话人聚合完成: speaker={speaker}, embeddings={len(speaker_embeddings)}")
     return centroids or None
 
 
-def classify_speaker_embeddings(spk_results, references, threshold):
+def classify_speaker_embeddings(spk_results, references, threshold, margin_threshold=0.0):
     if not references:
         return None
 
@@ -760,15 +759,22 @@ def classify_speaker_embeddings(spk_results, references, threshold):
         embedding = torch.nn.functional.normalize(result["spk_embedding"].to("cpu"), dim=1)
         best_label = None
         best_score = -1.0
+        second_score = -1.0
         for label, centroid in ref_items:
             score = float(torch.matmul(embedding, centroid.T).max().item())
             if score > best_score:
+                second_score = best_score
                 best_label = label
                 best_score = score
+            elif score > second_score:
+                second_score = score
+        margin = best_score - second_score if second_score > -1.0 else best_score
+        is_confident = best_score >= threshold and margin >= margin_threshold
         labels.append({
-            "label": best_label if best_score >= threshold else "UNKNOWN",
+            "label": best_label if is_confident else "UNKNOWN",
             "score": best_score,
             "best_label": best_label,
+            "margin": margin,
         })
     return labels
 
@@ -919,7 +925,15 @@ def transcribe_paraformer_builtin(payload, audio_path, device):
                             best_label = label
                             best_score = score
                     threshold = float(payload.get("speaker_reference_threshold", 0.45))
-                    if best_score >= threshold:
+                    margin_threshold = float(payload.get("speaker_reference_margin", 0.0) or 0.0)
+                    competing_scores = [
+                        float(torch.matmul(emb, centroid.T).max().item())
+                        for label, centroid in reference_centroids.items()
+                        if label != best_label
+                    ]
+                    second_score = max(competing_scores) if competing_scores else -1.0
+                    margin = best_score - second_score if second_score > -1.0 else best_score
+                    if best_score >= threshold and margin >= margin_threshold:
                         speaker_label = best_label
                         speaker_score = best_score
 
@@ -1279,6 +1293,7 @@ def main():
                                 spk_results,
                                 reference_centroids,
                                 float(payload.get("speaker_reference_threshold", 0.45)),
+                                float(payload.get("speaker_reference_margin", 0.0) or 0.0),
                             )
                             if labels is None:
                                 embeddings = torch.cat([r["spk_embedding"] for r in spk_results], dim=0)
