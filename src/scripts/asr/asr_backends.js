@@ -887,8 +887,9 @@ function writeSrt(result, srtPath, subtitleConfig = {}) {
 }
 
 function wrapSpeakerReviewText(prefix, content, maxChars) {
-    const safeMax = Math.max(Number(maxChars) || 30, prefix.length + 4);
-    const contentMax = Math.max(4, safeMax - prefix.length);
+    // Speaker review SRT is for readability, so the speaker tag should not
+    // consume the line width budget for the actual dialogue text.
+    const contentMax = Math.max(Number(maxChars) || 30, 12);
     const parts = splitTextByLength(content, contentMax);
     if (parts.length === 0) {
         return [prefix.trim()];

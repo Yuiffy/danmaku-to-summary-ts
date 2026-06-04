@@ -108,6 +108,23 @@ describe('asr_backends', () => {
     fs.unlinkSync(reviewPath);
   });
 
+  test('speaker review wrapping keeps Chinese content from being over-split by the prefix', () => {
+    const path = require('path');
+    const fs = require('fs');
+    const tmp = path.join(require('os').tmpdir(), `asr-review-wrap-${Date.now()}.srt`);
+    const reviewPath = asr.writeSpeakerReviewSrt({
+      backend: 'sensevoice',
+      segments: [
+        { start: 0, end: 2, text: '好鱼 OK好的小花仙', speaker: 'SPEAKER_00' }
+      ]
+    }, tmp, { max_chars_per_line: 18 });
+
+    const content = fs.readFileSync(reviewPath, 'utf8');
+    expect(content).toContain('[SPEAKER_00] 好鱼 OK好的小花仙');
+    expect(content).not.toContain('好鱼 OK\n好的小花\n仙');
+    fs.unlinkSync(reviewPath);
+  });
+
   test('strips subtitle punctuation for direct video subtitles', () => {
     expect(asr.stripSubtitlePunctuation('大家晚上好！今晚，网络：很卡。')).toBe('大家晚上好今晚网络很卡');
   });
