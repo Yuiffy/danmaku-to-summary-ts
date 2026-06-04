@@ -382,6 +382,8 @@ export interface BilibiliConfig {
   enabled: boolean;
   cookie?: string;
   csrf?: string;
+  ac_time_value?: string;
+  acTimeValue?: string;
   polling: {
     interval: number;
     maxRetries: number;

@@ -8,6 +8,7 @@ import { spawn } from 'child_process';
 import { getLogger } from '../../core/logging/LogManager';
 import { ConfigProvider } from '../../core/config/ConfigProvider';
 import { AppError } from '../../core/errors/AppError';
+import { WeChatWorkNotifier } from '../notification/WeChatWorkNotifier';
 import { IBilibiliAPIService } from './interfaces/IBilibiliAPIService';
 import {
   BilibiliDynamic,
@@ -24,11 +25,15 @@ export class BilibiliAPIService implements IBilibiliAPIService {
   private logger = getLogger('BilibiliAPIService');
   private cookie!: string;
   private csrf!: string;
+  private acTimeValue = '';
   private baseUrl = 'https://api.bilibili.com';
   private webUrl = 'https://www.bilibili.com';
   private secretConfigMtimeMs = 0;
+  private notifier?: WeChatWorkNotifier;
+  private lastCredentialAlertAt = 0;
 
-  constructor() {
+  constructor(notifier?: WeChatWorkNotifier) {
+    this.notifier = notifier;
     this.loadConfig();
   }
 
@@ -46,6 +51,7 @@ export class BilibiliAPIService implements IBilibiliAPIService {
 
       this.cookie = bilibiliSecret.cookie;
       this.csrf = this.extractCookieValue(this.cookie, 'bili_jct') || bilibiliSecret.csrf || '';
+      this.acTimeValue = bilibiliSecret.ac_time_value || bilibiliSecret.acTimeValue || this.extractCookieValue(this.cookie, 'ac_time_value') || '';
 
       if (!this.csrf) {
         throw new AppError('无法从Cookie中提取CSRF Token (bili_jct)', 'CONFIGURATION_ERROR', 400);
@@ -304,7 +310,10 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       // 如果有图片，添加图片路径参数
       if (request.images && request.images.length > 0) {
         args.push(request.images[0]);
+      } else {
+        args.push('');
       }
+      args.push(this.buildCredentialPayload());
 
       this.logger.info('调用Python脚本发布评论', { scriptPath, argsCount: args.length });
 
@@ -359,7 +368,11 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       });
 
       // 解析 Python 脚本的输出（stdout只包含JSON）
-      const jsonResult = JSON.parse(result.stdout);
+      const jsonResult = this.parsePythonJsonResult(result.stdout) || JSON.parse(result.stdout);
+
+      if (jsonResult.refreshed_credential) {
+        await this.persistRefreshedCredential(jsonResult.refreshed_credential);
+      }
 
       if (!jsonResult.success) {
         this.logger.error('Python脚本返回错误', { result: jsonResult });
@@ -369,6 +382,14 @@ export class BilibiliAPIService implements IBilibiliAPIService {
           ? 'AUTHENTICATION_ERROR'
           : 'API_ERROR';
         const status = code === 'AUTHENTICATION_ERROR' ? 401 : 500;
+        if (code === 'AUTHENTICATION_ERROR' || jsonResult.credential_invalid || jsonResult.credential_refresh_failed) {
+          await this.notifyCredentialIssue(detailedError, {
+            dynamicId: String(request.dynamicId),
+            credentialInvalid: !!jsonResult.credential_invalid,
+            credentialRefreshFailed: !!jsonResult.credential_refresh_failed,
+            credentialRefreshed: !!jsonResult.credential_refreshed
+          });
+        }
         throw new AppError(`发布评论失败: ${detailedError}`, code, status);
       }
 
@@ -381,6 +402,9 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       };
     } catch (error) {
       if (error instanceof AppError) {
+        if (error.code === 'AUTHENTICATION_ERROR') {
+          await this.notifyCredentialIssue(error.message, { dynamicId: String(request.dynamicId) });
+        }
         throw error;
       }
       this.logger.error('发布评论异常', undefined, error instanceof Error ? error : new Error(String(error)));
@@ -592,6 +616,94 @@ export class BilibiliAPIService implements IBilibiliAPIService {
     }
   }
 
+  private buildCredentialPayload(): string {
+    return Buffer.from(JSON.stringify({
+      buvid3: this.extractCookieValue(this.cookie, 'buvid3'),
+      buvid4: this.extractCookieValue(this.cookie, 'buvid4'),
+      ac_time_value: this.acTimeValue
+    }), 'utf-8').toString('base64');
+  }
+
+  private async persistRefreshedCredential(refreshed: any): Promise<void> {
+    const secretPath = path.join(process.cwd(), 'config', 'secret.json');
+    try {
+      if (!refreshed || !refreshed.sessdata || !refreshed.bili_jct || !refreshed.dedeuserid) {
+        this.logger.warn('Bilibili cookie refresh result is missing required fields; skip secret writeback');
+        return;
+      }
+
+      const secretConfig = JSON.parse(fs.readFileSync(secretPath, 'utf-8'));
+      secretConfig.bilibili = secretConfig.bilibili || {};
+
+      let nextCookie = String(secretConfig.bilibili.cookie || this.cookie);
+      nextCookie = this.upsertCookieValue(nextCookie, 'SESSDATA', refreshed.sessdata);
+      nextCookie = this.upsertCookieValue(nextCookie, 'bili_jct', refreshed.bili_jct);
+      nextCookie = this.upsertCookieValue(nextCookie, 'DedeUserID', refreshed.dedeuserid);
+      if (refreshed.buvid3) nextCookie = this.upsertCookieValue(nextCookie, 'buvid3', refreshed.buvid3);
+      if (refreshed.buvid4) nextCookie = this.upsertCookieValue(nextCookie, 'buvid4', refreshed.buvid4);
+
+      secretConfig.bilibili.cookie = nextCookie;
+      secretConfig.bilibili.csrf = refreshed.bili_jct;
+      if (refreshed.ac_time_value) {
+        secretConfig.bilibili.ac_time_value = refreshed.ac_time_value;
+      }
+
+      fs.writeFileSync(secretPath, `${JSON.stringify(secretConfig, null, 2)}\n`, 'utf-8');
+      this.secretConfigMtimeMs = fs.statSync(secretPath).mtimeMs;
+      await ConfigProvider.reload();
+      this.loadConfig();
+      this.logger.info('Bilibili cookie refreshed and written back to config/secret.json');
+    } catch (error) {
+      this.logger.error('Failed to write refreshed Bilibili cookie', undefined, error instanceof Error ? error : new Error(String(error)));
+      await this.notifyCredentialIssue(`Cookie refreshed but secret writeback failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private upsertCookieValue(cookie: string, name: string, value: string): string {
+    const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`(^|;\\s*)${escapedName}=[^;]*`);
+    if (pattern.test(cookie)) {
+      return cookie.replace(pattern, `$1${name}=${value}`);
+    }
+    return cookie ? `${cookie.replace(/;\s*$/, '')}; ${name}=${value}` : `${name}=${value}`;
+  }
+
+  private async notifyCredentialIssue(message: string, details?: Record<string, any>): Promise<void> {
+    const now = Date.now();
+    if (now - this.lastCredentialAlertAt < 30 * 60 * 1000) return;
+    this.lastCredentialAlertAt = now;
+
+    const notifier = this.getNotifier();
+    if (!notifier) return;
+
+    const lines = [
+      'Bilibili comment cookie needs attention',
+      '',
+      `Error: ${message}`,
+      `Time: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
+    ];
+
+    if (details) {
+      lines.push('', 'Context:');
+      for (const [key, value] of Object.entries(details)) {
+        lines.push(`${key}: ${String(value)}`);
+      }
+    }
+
+    lines.push('', 'Update config/secret.json bilibili.cookie and bilibili.ac_time_value from browser localStorage if refresh cannot recover it.');
+    await notifier.sendMarkdown(lines.join('\n'));
+  }
+
+  private getNotifier(): WeChatWorkNotifier | undefined {
+    if (this.notifier) return this.notifier;
+    try {
+      const webhookUrl = ConfigProvider.getConfig().wechatWork?.webhookUrl;
+      if (webhookUrl) this.notifier = new WeChatWorkNotifier(webhookUrl);
+    } catch {
+      return undefined;
+    }
+    return this.notifier;
+  }
   private parsePythonJsonResult(stdout: string): any | null {
     const lines = stdout
       .split(/\r?\n/)

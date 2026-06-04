@@ -529,7 +529,7 @@ export class ServiceManager {
 
     // B站API服务
     await this.initializeService('bilibili-api', async () => {
-      this.bilibiliAPIService = new BilibiliAPIService();
+      this.bilibiliAPIService = new BilibiliAPIService(this.weChatWorkNotifier);
     });
 
     // 回复历史存储

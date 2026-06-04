@@ -209,4 +209,6 @@ export interface BilibiliSecretConfig {
   cookie: string;
   /** CSRF Token */
   csrf: string;
+  /** Web cookie refresh token from localStorage.ac_time_value */
+  ac_time_value?: string;
 }

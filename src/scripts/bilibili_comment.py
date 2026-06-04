@@ -133,6 +133,50 @@ def log_print(*args, **kwargs):
 print = log_print
 
 
+def build_credential(
+    sessdata: str,
+    bili_jct: str,
+    dedeuserid: str,
+    credential_options: dict | None = None
+) -> Credential:
+    """Create a bilibili-api Credential with optional refresh fields."""
+    credential_options = credential_options or {}
+    return Credential(
+        sessdata=sessdata,
+        bili_jct=bili_jct,
+        dedeuserid=dedeuserid,
+        buvid3=credential_options.get('buvid3'),
+        buvid4=credential_options.get('buvid4'),
+        ac_time_value=credential_options.get('ac_time_value') or credential_options.get('acTimeValue')
+    )
+
+
+def refreshed_credential_payload(credential: Credential) -> dict:
+    return {
+        'sessdata': credential.sessdata,
+        'bili_jct': credential.bili_jct,
+        'dedeuserid': credential.dedeuserid,
+        'ac_time_value': credential.ac_time_value,
+        'buvid3': credential.buvid3,
+        'buvid4': credential.buvid4,
+    }
+
+
+async def refresh_credential_if_needed(credential: Credential) -> tuple[Credential, bool]:
+    if not credential.ac_time_value:
+        log('[INFO] 未提供 ac_time_value，跳过 Cookie 自动刷新检查')
+        return credential, False
+
+    needs_refresh = await credential.check_refresh()
+    log(f"[INFO] Cookie 刷新检查结果: {'需要刷新' if needs_refresh else '不需要刷新'}")
+    if not needs_refresh:
+        return credential, False
+
+    await credential.refresh()
+    log('[OK] Cookie 自动刷新成功')
+    return credential, True
+
+
 async def get_dynamic_comment_id(dynamic_id: str, credential: Credential) -> tuple[str, CommentResourceType]:
     """
     获取动态的comment_id和评论类型
@@ -181,7 +225,7 @@ async def get_dynamic_comment_id(dynamic_id: str, credential: Credential) -> tup
     return comment_id_str, comment_resource_type
 
 
-async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct: str, dedeuserid: str, image_path: str = None) -> dict:
+async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct: str, dedeuserid: str, image_path: str = None, credential_options: dict | None = None) -> dict:
     """
     发布动态评论
 
@@ -204,11 +248,19 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
     try:
         # 创建 Credential 对象
         log(f"[INFO] 创建凭证对象...")
-        credential = Credential(
-            sessdata=sessdata,
-            bili_jct=bili_jct,
-            dedeuserid=dedeuserid
-        )
+        credential = build_credential(sessdata, bili_jct, dedeuserid, credential_options)
+        credential_refreshed = False
+        try:
+            credential, credential_refreshed = await refresh_credential_if_needed(credential)
+        except Exception as e:
+            log(f"[ERROR] Cookie 自动刷新失败: {e}")
+            safe_print_exc()
+            return {
+                'success': False,
+                'error': f'Cookie 自动刷新失败: {e}',
+                'message': 'Cookie 自动刷新失败',
+                'credential_refresh_failed': True
+            }
 
         # 验证凭证是否有效
         log(f"[INFO] 验证凭证有效性...")
@@ -220,7 +272,9 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
             return {
                 'success': False,
                 'error': '凭证无效',
-                'message': 'SESSDATA或bili_jct无效，请检查Cookie'
+                'message': 'SESSDATA或bili_jct无效，请检查Cookie',
+                'credential_invalid': True,
+                'credential_refreshed': credential_refreshed
             }
 
         # 获取动态的comment_id和评论类型（使用bilibili-api的Dynamic类，自动处理wbi签名）
@@ -260,7 +314,9 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
             'success': True,
             'reply_id': reply_id,
             'image_url': image_url,
-            'message': '评论发布成功'
+            'message': '评论发布成功',
+            'credential_refreshed': credential_refreshed,
+            'refreshed_credential': refreshed_credential_payload(credential) if credential_refreshed else None
         }
 
     except Exception as e:
@@ -293,11 +349,21 @@ def main():
     bili_jct = sys.argv[4]
     dedeuserid = sys.argv[5]
     image_path = sys.argv[6] if len(sys.argv) > 6 else None
+    credential_options = {}
+    if len(sys.argv) > 7 and sys.argv[7]:
+        try:
+            credential_options = json.loads(base64.b64decode(sys.argv[7]).decode('utf-8'))
+        except Exception as e:
+            print(f"[WARNING] 凭证选项解析失败: {e}")
+            credential_options = {}
+
+    if image_path == '':
+        image_path = None
 
     print(f"[INFO] 接收到参数: dynamic_id={dynamic_id}, content_length={len(content)}, has_image={image_path is not None}")
 
     # 发布评论
-    result = asyncio.run(publish_comment(dynamic_id, content, sessdata, bili_jct, dedeuserid, image_path))
+    result = asyncio.run(publish_comment(dynamic_id, content, sessdata, bili_jct, dedeuserid, image_path, credential_options))
 
     # 输出JSON结果到stdout（仅JSON，不带日志前缀）
     print(f"[INFO] 输出结果: {json.dumps(result, ensure_ascii=False)}")
