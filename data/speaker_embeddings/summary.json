@@ -1,0 +1,136 @@
+{
+  "method": "VAD segmented + cam++ per-segment + L2-normalized centroid",
+  "sample_per_day": "00:05:00-00:08:00 (3min)",
+  "speakers": {
+    "灰泽满Hazel": {
+      "dim": 192,
+      "n_days": 2,
+      "n_embeddings": 42,
+      "intra_sim_mean": 0.6874611377716064
+    },
+    "莉蔻Liko": {
+      "dim": 192,
+      "n_days": 10,
+      "n_embeddings": 219,
+      "intra_sim_mean": 0.7079698443412781
+    },
+    "十六萤Izayoi": {
+      "dim": 192,
+      "n_days": 3,
+      "n_embeddings": 71,
+      "intra_sim_mean": 0.6944501996040344
+    },
+    "克罗雅Kloa": {
+      "dim": 192,
+      "n_days": 2,
+      "n_embeddings": 41,
+      "intra_sim_mean": 0.6780288219451904
+    },
+    "岁己SUI": {
+      "dim": 192,
+      "n_days": 25,
+      "n_embeddings": 555,
+      "intra_sim_mean": 0.6823699474334717
+    },
+    "栞栞Shiori": {
+      "dim": 192,
+      "n_days": 10,
+      "n_embeddings": 210,
+      "intra_sim_mean": 0.664156973361969
+    },
+    "米汀Nagisa": {
+      "dim": 192,
+      "n_days": 15,
+      "n_embeddings": 363,
+      "intra_sim_mean": 0.8216609954833984
+    },
+    "瑞娅Ria": {
+      "dim": 192,
+      "n_days": 10,
+      "n_embeddings": 240,
+      "intra_sim_mean": 0.7094619870185852
+    }
+  },
+  "similarity_matrix": {
+    "灰泽满Hazel": {
+      "灰泽满Hazel": 1.0,
+      "莉蔻Liko": 0.757,
+      "十六萤Izayoi": 0.762,
+      "克罗雅Kloa": 0.586,
+      "岁己SUI": 0.7,
+      "栞栞Shiori": 0.476,
+      "米汀Nagisa": 0.801,
+      "瑞娅Ria": 0.641
+    },
+    "莉蔻Liko": {
+      "灰泽满Hazel": 0.757,
+      "莉蔻Liko": 1.0,
+      "十六萤Izayoi": 0.739,
+      "克罗雅Kloa": 0.659,
+      "岁己SUI": 0.622,
+      "栞栞Shiori": 0.557,
+      "米汀Nagisa": 0.717,
+      "瑞娅Ria": 0.582
+    },
+    "十六萤Izayoi": {
+      "灰泽满Hazel": 0.762,
+      "莉蔻Liko": 0.739,
+      "十六萤Izayoi": 1.0,
+      "克罗雅Kloa": 0.66,
+      "岁己SUI": 0.617,
+      "栞栞Shiori": 0.584,
+      "米汀Nagisa": 0.663,
+      "瑞娅Ria": 0.699
+    },
+    "克罗雅Kloa": {
+      "灰泽满Hazel": 0.586,
+      "莉蔻Liko": 0.659,
+      "十六萤Izayoi": 0.66,
+      "克罗雅Kloa": 1.0,
+      "岁己SUI": 0.619,
+      "栞栞Shiori": 0.657,
+      "米汀Nagisa": 0.593,
+      "瑞娅Ria": 0.69
+    },
+    "岁己SUI": {
+      "灰泽满Hazel": 0.7,
+      "莉蔻Liko": 0.622,
+      "十六萤Izayoi": 0.617,
+      "克罗雅Kloa": 0.619,
+      "岁己SUI": 1.0,
+      "栞栞Shiori": 0.626,
+      "米汀Nagisa": 0.634,
+      "瑞娅Ria": 0.668
+    },
+    "栞栞Shiori": {
+      "灰泽满Hazel": 0.476,
+      "莉蔻Liko": 0.557,
+      "十六萤Izayoi": 0.584,
+      "克罗雅Kloa": 0.657,
+      "岁己SUI": 0.626,
+      "栞栞Shiori": 1.0,
+      "米汀Nagisa": 0.471,
+      "瑞娅Ria": 0.658
+    },
+    "米汀Nagisa": {
+      "灰泽满Hazel": 0.801,
+      "莉蔻Liko": 0.717,
+      "十六萤Izayoi": 0.663,
+      "克罗雅Kloa": 0.593,
+      "岁己SUI": 0.634,
+      "栞栞Shiori": 0.471,
+      "米汀Nagisa": 1.0,
+      "瑞娅Ria": 0.56
+    },
+    "瑞娅Ria": {
+      "灰泽满Hazel": 0.641,
+      "莉蔻Liko": 0.582,
+      "十六萤Izayoi": 0.699,
+      "克罗雅Kloa": 0.69,
+      "岁己SUI": 0.668,
+      "栞栞Shiori": 0.658,
+      "米汀Nagisa": 0.56,
+      "瑞娅Ria": 1.0
+    }
+  }
+}
