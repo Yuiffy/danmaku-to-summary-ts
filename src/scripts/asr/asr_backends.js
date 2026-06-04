@@ -1141,8 +1141,8 @@ async function transcribeFunAsrBackend(mediaPath, config = {}, runtimeOptions = 
         hotwords: nanoLike
             ? buildHotwordWords(runtimeOptions)
             : (runtimeOptions.hotwords || []),
-        hotword: runtimeOptions.hotwordTextWeighted || runtimeOptions.hotwordText || '',
-        hotword_unweighted: runtimeOptions.hotwordText || '',
+        hotword: '', // 不传热词给模型，全部走 phoneme_correction 后处理
+        hotword_unweighted: '',
         phoneme_correction: asrConfig.phoneme_correction || null
     };
     const label = backend === 'fun_asr_nano_vllm'
