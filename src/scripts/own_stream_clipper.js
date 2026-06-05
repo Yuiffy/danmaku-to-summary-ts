@@ -82,9 +82,14 @@ function formatClock(seconds) {
 }
 
 function buildClipDescription({ streamerName, streamTitle, recordedAt, start, end, reason }) {
+    const liveName = streamerName || '\u4e3b\u64ad';
+    const title = streamTitle || '\u672a\u77e5\u76f4\u64ad';
+    const time = recordedAt || '\u672a\u77e5';
+    const clipStart = formatClock(start);
+    const clipEnd = formatClock(end);
     const lines = [
-        `来自 ${streamerName || '主播'} 的直播《${streamTitle || '未知直播'}》，录制时间 ${recordedAt || '未知'}。`,
-        `片段时间 ${formatClock(start)}-${formatClock(end)}。`
+        '\u6765\u81ea ' + liveName + ' \u7684\u76f4\u64ad\u300a' + title + '\u300b\uff0c\u5f55\u5236\u65f6\u95f4 ' + time + '\u3002',
+        '\u7247\u6bb5\u65f6\u95f4 ' + clipStart + '-' + clipEnd + '\u3002'
     ];
 
     const extraReason = String(reason || '').trim();
