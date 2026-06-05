@@ -361,6 +361,7 @@
                 "enableDelayedReply": true
             },
             "21452505": {
+                "uid": "434334701",
                 "audioOnly": true,
                 "referenceImage": "public/reference_images/七海手办.png",
                 "characterDescription": "七海Nana7mi（棕发金瞳的鲨鱼系少女，穿着鲨鱼卫衣，身后有鲨鱼尾巴），粉丝是脆鲨（蓝色的Q版小鲨鱼，有时也戴着墨镜）",
@@ -446,6 +447,7 @@
                 "enableDelayedReply": true
             },
             "23260993": {
+                "uid": "690608698",
                 "audioOnly": true,
                 "referenceImage": "public/reference_images/瑞娅.png",
                 "characterDescription": "瑞娅_Rhea，白发紫瞳的北欧魔法学院少女。粉丝”瑞世糖“是她的魔法小助手，外形是个方形的瑞士糖",
@@ -457,6 +459,7 @@
                 "wordLimit": 300
             },
             "1967216004": {
+                "uid": "2030198123",
                 "audioOnly": true,
                 "characterDescription": "三理Mit3uri，淡紫发戴着挡风镜的实验室少女。粉丝是理电池，小电池生物，有时候会有可爱小猪的特征",
                 "anchorName": "三理",
@@ -489,6 +492,7 @@
                 }
             },
             "21692711": {
+                "uid": "3821157",
                 "audioOnly": true,
                 "characterDescription": "东爱璃Lovely（棕发蓝瞳的事故系/种田系前偶像，常见外号“傻狍子/狍子/拉布里”，粉丝勋章“秧歌星”）。",
                 "anchorName": "东爱璃Lovely",
