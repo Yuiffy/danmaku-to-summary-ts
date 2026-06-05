@@ -778,14 +778,7 @@
     },
     "asr": {
         "default_backend": "paraformer",
-        "common_hotwords": [
-            "岁己",
-            "岁己SUI",
-            "小岁",
-            "饼干岁",
-            "VirtuaReal",
-            "MIXUP2026"
-        ],
+        "common_hotwords": [],
         "routing": [
             {
                 "match": {
