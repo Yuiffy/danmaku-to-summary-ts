@@ -52,6 +52,7 @@ async def get_room_info(room_id: str, sessdata: str, bili_jct: str, dedeuserid: 
 
 if __name__ == '__main__':
     import asyncio
+    import sys
 
     if len(sys.argv) < 5:
         print(json.dumps({
@@ -65,5 +66,10 @@ if __name__ == '__main__':
     bili_jct = sys.argv[3]
     dedeuserid = sys.argv[4]
 
-    result = asyncio.run(get_room_info(room_id, sessdata, bili_jct, dedeuserid))
-    print(json.dumps(result, ensure_ascii=False))
+    try:
+        result = asyncio.run(get_room_info(room_id, sessdata, bili_jct, dedeuserid))
+        print(json.dumps(result, ensure_ascii=False))
+    except Exception as e:
+        # 顶层 catch：防止 asyncio/aiohttp 异常导致脚本直接 crash
+        print(json.dumps({'success': False, 'error': f'脚本异常: {str(e)}'}, ensure_ascii=False))
+        sys.exit(0)  # exit 0 让 Node.js 能读到 stdout 里的错误 JSON
