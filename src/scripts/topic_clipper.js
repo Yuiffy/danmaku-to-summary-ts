@@ -1120,6 +1120,7 @@ module.exports = {
     isIgnoredRoom,
     buildDefaultTitle,
     buildClipCopy,
+    cutClipMedia,
     generateTopicClips,
     notifyTopicClipResults,
     buildTopicNotifyMarkdown,
