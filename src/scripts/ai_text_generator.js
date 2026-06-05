@@ -138,8 +138,23 @@ function extractRoomIdFromFilename(filename) {
     return m ? m[1] : null;
 }
 
+// 从文件名提取录制开始时间（格式：录制-ROOMID-YYYYMMDD-HHMMSS-...）
+function extractRecordTime(filename) {
+    // 严格要求 20YYMMDD-HHMMSS 格式，避免误匹配 roomId
+    const m = String(filename || '').match(/20\d{2}(\d{2})(\d{2})-(\d{2})(\d{2})\d{2}/);
+    if (!m) return null;
+    return { year: 2000 + (+m[0].substring(2,4)), month: +m[1], day: +m[2], hour: +m[3], minute: +m[4] };
+}
+
+function getTimeSlotDesc(hour) {
+    if (hour >= 5 && hour < 11) return '早安';
+    if (hour >= 11 && hour < 14) return '午安';
+    if (hour >= 14 && hour < 18) return '下午好';
+    return '晚安';
+}
+
 // 构建提示词(支持传入 roomId 以使用房间级名称覆盖)
-function buildPrompt(highlightContent, roomId) {
+function buildPrompt(highlightContent, roomId, recordTime = null) {
     const names = configLoader.getNames(roomId);
     const anchor = names.anchor;
     const fan = names.fan;
@@ -195,7 +210,7 @@ function buildPrompt(highlightContent, roomId) {
 
 严格限定素材:只根据用户当前提供的文档/文本内容进行创作。绝对禁止混入该文档以外的任何已知信息、历史直播内容或互联网搜索结果(因为${anchor}的梗很多,AI容易串台,这一点必须强调)。
 
-时效性:根据文档内容判断是早播、午播还是晚播,分别对应"早安"、"午安"或"晚安"的场景。
+时效性:${recordTime ? `该直播录制于 ${recordTime.hour}:${String(recordTime.minute).padStart(2,'0')}，应使用"${getTimeSlotDesc(recordTime.hour)}"作为开场白。` : '根据文档内容判断是早播、午播还是晚播,分别对应"早安"、"午安"或"晚安"的场景。'}
 
 【写作结构与要素】
 
@@ -232,7 +247,7 @@ ${randomMainPrompt}
 【直播内容(主播语音转写+观众弹幕)】
 ${highlightContent}
 
-请根据直播内容,以${fan}的身份写一篇晚安回复。记住:只使用提供的直播内容,不要添加任何外部信息。直接输出回复内容,不要输出任何其他内容。`;
+请根据直播内容,以${fan}的身份写一篇${recordTime ? getTimeSlotDesc(recordTime.hour) : '晚安'}回复。记住:只使用提供的直播内容,不要添加任何外部信息。直接输出回复内容,不要输出任何其他内容。`;
 
     console.log('晚安动态prompt主要内容:', randomMainPrompt.substring(0, 100), '直播内容长度:', highlightContent.length);
     return result;
@@ -820,8 +835,9 @@ async function generateGoodnightReply(highlightPath, roomId = null) {
 
             // 构建提示词(优先使用传入的 roomId,其次从文件名提取)
             const finalRoomId = roomId || extractRoomIdFromFilename(path.basename(highlightPath));
+            const recordTime = extractRecordTime(path.basename(highlightPath));
             // 构建提示词
-            const prompt = buildPrompt(highlightContent, finalRoomId);
+            const prompt = buildPrompt(highlightContent, finalRoomId, recordTime);
             const wordLimit = configLoader.getWordLimit(finalRoomId);
 
             // 调用API生成文本
