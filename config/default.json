@@ -433,6 +433,29 @@
       "enabled": false
     }
   },
+  "ownStreamClips": {
+    "enabled": true,
+    "mode": "local_review",
+    "roomIds": ["25788785"],
+    "maxClips": 18,
+    "chunkSeconds": 2700,
+    "aiConcurrency": 3,
+    "burnSubtitles": true,
+    "outputDirName": "own_stream_fun_clips",
+    "alignBoundaries": true,
+    "boundaryStartBacktrackSeconds": 12,
+    "boundaryEndExtendSeconds": 45,
+    "boundarySilenceGapSeconds": 2.0,
+    "boundaryTrailingSilenceLookbackSeconds": 14,
+    "ai": {
+      "enabled": true,
+      "strategy": "chunked",
+      "maxCandidateLines": 32
+    },
+    "notify": {
+      "enabled": true
+    }
+  },
   "storage": {
     "basePath": "./output",
     "tempPath": "./temp",

@@ -15,6 +15,7 @@ const aiComicGenerator = require('./ai_comic_generator');
 const queueManager = require('./whisper_queue_manager');
 const asrBackends = require('./asr/asr_backends');
 const topicClipper = require('./topic_clipper');
+const ownStreamClipper = require('./own_stream_clipper');
 
 // 获取音频格式配置
 function getAudioFormats() {
@@ -930,6 +931,68 @@ async function generateTopicClipsForMedia(originalMediaPath, processedMediaPath,
     }
 }
 
+function findXmlForMedia(mediaPath, xmlFiles = []) {
+    if (!mediaPath || !Array.isArray(xmlFiles) || xmlFiles.length === 0) {
+        return null;
+    }
+    const mediaDir = path.dirname(mediaPath);
+    const mediaBase = path.basename(mediaPath, path.extname(mediaPath));
+    const exact = xmlFiles.find(file => (
+        path.dirname(file) === mediaDir &&
+        path.basename(file, path.extname(file)) === mediaBase
+    ));
+    if (exact) {
+        return exact;
+    }
+    return xmlFiles.find(file => path.dirname(file) === mediaDir) || null;
+}
+
+async function generateOwnStreamClipsForMedia(mediaPath, srtPath, xmlPath, roomId = null, context = {}) {
+    const config = configLoader.getConfig();
+    const clipConfig = ownStreamClipper.getOwnStreamClipsConfig(config);
+    if (!clipConfig.enabled) {
+        return [];
+    }
+
+    const roomKey = roomId ? String(roomId) : null;
+    const enabledRoomIds = Array.isArray(clipConfig.roomIds)
+        ? clipConfig.roomIds.map(value => String(value)).filter(Boolean)
+        : [];
+    if (enabledRoomIds.length > 0 && (!roomKey || !enabledRoomIds.includes(roomKey))) {
+        return [];
+    }
+
+    if (!xmlPath || !fs.existsSync(xmlPath)) {
+        console.warn('⚠️  ownStreamClips 已启用，但未找到 XML 弹幕文件，跳过岁己直播有趣切片');
+        return [];
+    }
+
+    console.log('\n🎞️  开始岁己直播有趣切片...');
+    try {
+        const results = await ownStreamClipper.generateOwnStreamClips({
+            config,
+            mediaPath,
+            srtPath,
+            xmlPath,
+            ffmpegPath: config.audio?.ffmpeg?.path || 'ffmpeg',
+            context: {
+                ...context,
+                roomId: roomKey
+            },
+            streamerName: context.streamerName || context.streamer_name || null
+        });
+        if (results.length > 0) {
+            console.log(`✅ 岁己直播有趣切片完成: ${results.length} 段`);
+        } else {
+            console.log('ℹ️  岁己直播有趣切片未生成候选');
+        }
+        return results;
+    } catch (error) {
+        console.warn(`⚠️  岁己直播有趣切片阶段失败，继续后续流程: ${error.message}`);
+        return [];
+    }
+}
+
 // AI漫画生成
 async function generateAiComic(highlightPath, roomId = null, options = {}) {
     console.log('\n🎨 开始AI漫画生成...');
@@ -1251,6 +1314,10 @@ const main = async () => {
         
         if (preferredSrtPath) {
             await generateTopicClipsForMedia(mediaFile, processedFile, preferredSrtPath, mediaRoomId, {
+                ...(asrOptions.asrContext || {}),
+                streamerName: asrOptions.asrContext?.streamer_name || null
+            });
+            await generateOwnStreamClipsForMedia(mediaFile, preferredSrtPath, findXmlForMedia(mediaFile, xmlFiles), mediaRoomId, {
                 ...(asrOptions.asrContext || {}),
                 streamerName: asrOptions.asrContext?.streamer_name || null
             });

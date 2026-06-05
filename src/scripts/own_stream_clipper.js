@@ -7,8 +7,9 @@ const configLoader = require('./config-loader');
 const topicClipper = require('./topic_clipper');
 
 const DEFAULT_OWN_STREAM_CLIPS_CONFIG = {
-    enabled: true,
+    enabled: false,
     mode: 'local_review',
+    roomIds: [],
     windowSeconds: 110,
     prePaddingSeconds: 18,
     postPaddingSeconds: 26,
@@ -62,6 +63,9 @@ function getOwnStreamClipsConfig(config = {}) {
         subtitleKeywords: Array.isArray(raw.subtitleKeywords)
             ? raw.subtitleKeywords
             : DEFAULT_OWN_STREAM_CLIPS_CONFIG.subtitleKeywords,
+        roomIds: Array.isArray(raw.roomIds)
+            ? raw.roomIds.map(value => String(value)).filter(Boolean)
+            : DEFAULT_OWN_STREAM_CLIPS_CONFIG.roomIds,
         ai: {
             ...DEFAULT_OWN_STREAM_CLIPS_CONFIG.ai,
             ...(raw.ai || {})

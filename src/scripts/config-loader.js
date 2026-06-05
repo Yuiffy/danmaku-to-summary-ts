@@ -149,6 +149,35 @@ const ConfigSchema = Joi.object({
             enabled: Joi.boolean().default(true)
         }).default()
     }).default(),
+    ownStreamClips: Joi.object({
+        enabled: Joi.boolean().default(false),
+        mode: Joi.string().default('local_review'),
+        roomIds: Joi.array().items(Joi.alternatives(Joi.string(), Joi.number())).default([]),
+        maxClips: Joi.number().default(12),
+        chunkSeconds: Joi.number().default(2700),
+        aiConcurrency: Joi.number().default(3),
+        maxSubtitleCharsPerChunk: Joi.number().default(14000),
+        maxDanmakuLinesPerChunk: Joi.number().default(220),
+        minClipSeconds: Joi.number().default(35),
+        maxClipSeconds: Joi.number().default(210),
+        burnSubtitles: Joi.boolean().default(true),
+        outputDirName: Joi.string().default('own_stream_fun_clips'),
+        alignBoundaries: Joi.boolean().default(true),
+        boundaryStartBacktrackSeconds: Joi.number().default(12),
+        boundaryEndExtendSeconds: Joi.number().default(35),
+        boundarySilenceGapSeconds: Joi.number().default(2),
+        boundaryTrailingSilenceLookbackSeconds: Joi.number().default(14),
+        reactionKeywords: Joi.array().items(Joi.string()).optional(),
+        subtitleKeywords: Joi.array().items(Joi.string()).optional(),
+        ai: Joi.object({
+            enabled: Joi.boolean().default(true),
+            strategy: Joi.string().default('chunked'),
+            maxCandidateLines: Joi.number().default(32)
+        }).default(),
+        notify: Joi.object({
+            enabled: Joi.boolean().default(true)
+        }).default()
+    }).default(),
     storage: Joi.object({
         basePath: Joi.string().default('./output'),
         tempPath: Joi.string().default('./temp'),
