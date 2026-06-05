@@ -95,7 +95,7 @@ export class BilibiliConfigHelper {
     const roomAIConfig = this.getRoomAIConfig(roomId);
     if (roomAIConfig) {
       return {
-        uid: roomAIConfig.uid || roomAIConfig.mid || '',
+        uid: roomAIConfig.uid || '',
         name: roomAIConfig.anchorName || '未知主播',
         roomId: normalizedRoomId,
         enabled: true,

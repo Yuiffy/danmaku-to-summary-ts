@@ -291,6 +291,8 @@ export interface RoomAIConfig {
   characterDescription?: string;
   anchorName?: string;
   fanName?: string;
+  /** 主播 B站 UID (mid)，配置后延迟回复不需调 API 查询 */
+  uid?: string;
   /** Whisper 排队优先级，数值越大越优先；同优先级按入队先后处理 */
   whisperPriority?: number;
   enableTextGeneration?: boolean;
