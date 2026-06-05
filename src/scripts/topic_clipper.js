@@ -583,6 +583,35 @@ function resolveStreamerName(config = {}, roomId = null, context = {}) {
     return '主播';
 }
 
+/**
+ * 根据 roomId 从 streamerRegistry 解析主播的正式标签（用于 B站投稿 tag）
+ * 返回 searchTags（如有）或 displayName + speakerLabels。
+ */
+function resolveStreamerTags(config = {}, roomId = null) {
+    const roomKey = roomId ? String(roomId) : null;
+    if (!roomKey) return [];
+
+    for (const entry of Object.values(config.ai?.streamerRegistry || {})) {
+        const roomIds = Array.isArray(entry.roomIds) ? entry.roomIds.map(value => String(value)) : [];
+        if (!roomIds.includes(roomKey)) continue;
+
+        // 优先使用显式配置的 searchTags
+        if (Array.isArray(entry.searchTags) && entry.searchTags.length > 0) {
+            return entry.searchTags.map(t => String(t).trim()).filter(Boolean);
+        }
+
+        // 退退：displayName + speakerLabels
+        const tags = new Set();
+        if (entry.displayName) tags.add(entry.displayName);
+        (entry.speakerLabels || []).forEach(label => {
+            const s = String(label).trim();
+            if (s && s.length >= 2) tags.add(s);
+        });
+        return Array.from(tags);
+    }
+    return [];
+}
+
 function isIgnoredRoom(roomId, config = {}) {
     const roomKey = roomId ? String(roomId) : null;
     if (!roomKey) {
@@ -628,7 +657,7 @@ function normalizeTitle(value, fallback) {
     return title;
 }
 
-async function buildClipCopy(window, info, streamerName, config, titleGenerator = null, descriptionGenerator = null) {
+async function buildClipCopy(window, info, streamerName, config, titleGenerator = null, descriptionGenerator = null, extraTagList = null) {
     const defaultTitle = buildDefaultTitle(window, info);
     let title = defaultTitle;
     let description = `来自 ${streamerName} 的直播间，录制时间 ${info.recordedAt || '未知'}，片段时间 ${formatClock(window.start)}-${formatClock(window.end)}。`;
@@ -687,7 +716,8 @@ async function buildClipCopy(window, info, streamerName, config, titleGenerator 
     const configuredTags = Array.isArray(config.tags) ? config.tags : null;
     const tags = Array.from(new Set([
         ...(configuredTags || [streamerName, '岁己', '小岁', '虚拟主播', '直播切片']),
-        ...(Array.isArray(config.extraTags) ? config.extraTags : [])
+        ...(Array.isArray(config.extraTags) ? config.extraTags : []),
+        ...(Array.isArray(extraTagList) ? extraTagList : [])
     ].map(tag => String(tag || '').trim()).filter(Boolean))).slice(0, 12);
 
     return {
@@ -1001,7 +1031,9 @@ async function generateTopicClips(options = {}) {
         const descGen = clip.aiDescription
             ? async () => clip.aiDescription
             : options.descriptionGenerator;
-        const copy = await buildClipCopy(window, info, streamerName, config, titleGen, descGen);
+        // 从 streamerRegistry 解析正式标签（如 米汀Nagisa）
+        const registryTags = resolveStreamerTags(options.config || {}, info.roomId);
+        const copy = await buildClipCopy(window, info, streamerName, config, titleGen, descGen, registryTags);
 
         let mediaResult = null;
         let error = null;
@@ -1084,6 +1116,7 @@ module.exports = {
     writeClipSrt,
     parseRecordingInfo,
     resolveStreamerName,
+    resolveStreamerTags,
     isIgnoredRoom,
     buildDefaultTitle,
     buildClipCopy,
