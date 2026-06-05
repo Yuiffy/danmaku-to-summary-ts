@@ -146,15 +146,53 @@ function extractRecordTime(filename) {
     return { year: 2000 + (+m[0].substring(2,4)), month: +m[1], day: +m[2], hour: +m[3], minute: +m[4] };
 }
 
-function getTimeSlotDesc(hour) {
-    if (hour >= 5 && hour < 11) return '早安';
-    if (hour >= 11 && hour < 14) return '午安';
-    if (hour >= 14 && hour < 18) return '下午好';
-    return '晚安';
+// 从 SRT 最后一行提取时长（返回秒数）
+function extractDurationFromSrt(highlightPath) {
+    try {
+        const dir = path.dirname(highlightPath);
+        const baseName = path.basename(highlightPath, '_AI_HIGHLIGHT.txt');
+        const srtPath = path.join(dir, `${baseName}.srt`);
+        if (!fs.existsSync(srtPath)) return null;
+        // 读最后 500 字节即可
+        const stat = fs.statSync(srtPath);
+        const fd = fs.openSync(srtPath, 'r');
+        const buf = Buffer.alloc(Math.min(500, stat.size));
+        fs.readSync(fd, buf, 0, buf.length, Math.max(0, stat.size - buf.length));
+        fs.closeSync(fd);
+        const tail = buf.toString('utf8');
+        // 匹配最后一个时间戳 HH:MM:SS,mmm --> HH:MM:SS,mmm
+        const matches = [...tail.matchAll(/(\d{2}):(\d{2}):(\d{2})[,.]\d{3}\s*-->\s*(\d{2}):(\d{2}):(\d{2})/g)];
+        if (matches.length === 0) return null;
+        const last = matches[matches.length - 1];
+        return (+last[4]) * 3600 + (+last[5]) * 60 + (+last[6]);
+    } catch {
+        return null;
+    }
+}
+
+function formatDuration(totalSeconds) {
+    const h = Math.floor(totalSeconds / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60);
+    if (h > 0) return `${h}小时${m}分钟`;
+    return `${m}分钟`;
+}
+
+function buildLiveTimeDesc(highlightPath) {
+    const recordTime = extractRecordTime(path.basename(highlightPath));
+    if (!recordTime) return null;
+    const dur = extractDurationFromSrt(highlightPath);
+    const startStr = `${recordTime.hour}:${String(recordTime.minute).padStart(2,'0')}`;
+    if (dur && dur > 60) {
+        const endHour = Math.floor((recordTime.hour * 3600 + recordTime.minute * 60 + dur) / 3600) % 24;
+        const endMin = Math.floor(((recordTime.hour * 3600 + recordTime.minute * 60 + dur) % 3600) / 60);
+        const endStr = `${endHour}:${String(endMin).padStart(2,'0')}`;
+        return `${startStr}~${endStr}（约${formatDuration(dur)}）`;
+    }
+    return `${startStr}左右开始`;
 }
 
 // 构建提示词(支持传入 roomId 以使用房间级名称覆盖)
-function buildPrompt(highlightContent, roomId, recordTime = null) {
+function buildPrompt(highlightContent, roomId, liveTimeDesc = null) {
     const names = configLoader.getNames(roomId);
     const anchor = names.anchor;
     const fan = names.fan;
@@ -210,7 +248,7 @@ function buildPrompt(highlightContent, roomId, recordTime = null) {
 
 严格限定素材:只根据用户当前提供的文档/文本内容进行创作。绝对禁止混入该文档以外的任何已知信息、历史直播内容或互联网搜索结果(因为${anchor}的梗很多,AI容易串台,这一点必须强调)。
 
-时效性:${recordTime ? `该直播时段为 ${recordTime.hour}:${String(recordTime.minute).padStart(2,'0')} 左右开始（北京时间）。请根据时段自然地选择开场白（如清晨/上午可用早安、下午可用下午好、晚上可用晚安等），不强制使用特定问候语。` : '根据文档内容判断是早播、午播还是晚播,自然地选择开场白。'}
+时效性:${liveTimeDesc ? `该直播时段为北京时间 ${liveTimeDesc}。请根据时段自然地选择开场白（如清晨/上午可用早安、下午可用下午好、晚上可用晚安等），不强制使用特定问候语。` : '根据文档内容判断是早播、午播还是晚播,自然地选择开场白。'}
 
 【写作结构与要素】
 
@@ -835,9 +873,9 @@ async function generateGoodnightReply(highlightPath, roomId = null) {
 
             // 构建提示词(优先使用传入的 roomId,其次从文件名提取)
             const finalRoomId = roomId || extractRoomIdFromFilename(path.basename(highlightPath));
-            const recordTime = extractRecordTime(path.basename(highlightPath));
+            const liveTimeDesc = buildLiveTimeDesc(highlightPath);
             // 构建提示词
-            const prompt = buildPrompt(highlightContent, finalRoomId, recordTime);
+            const prompt = buildPrompt(highlightContent, finalRoomId, liveTimeDesc);
             const wordLimit = configLoader.getWordLimit(finalRoomId);
 
             // 调用API生成文本

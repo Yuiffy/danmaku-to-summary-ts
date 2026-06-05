@@ -245,6 +245,47 @@ export class AITextGenerator implements IAITextGenerator {
   }
 
   /**
+   * 从 SRT 最后一行提取时长（秒）
+   */
+  private extractDurationFromSrt(highlightPath: string): number | null {
+    try {
+      const dir = path.dirname(highlightPath);
+      const baseName = path.basename(highlightPath, '_AI_HIGHLIGHT.txt');
+      const srtPath = path.join(dir, `${baseName}.srt`);
+      if (!fs.existsSync(srtPath)) return null;
+      const stat = fs.statSync(srtPath);
+      const fd = fs.openSync(srtPath, 'r');
+      const buf = Buffer.alloc(Math.min(500, stat.size));
+      fs.readSync(fd, buf, 0, buf.length, Math.max(0, stat.size - buf.length));
+      fs.closeSync(fd);
+      const tail = buf.toString('utf8');
+      const matches = [...tail.matchAll(/(\d{2}):(\d{2}):(\d{2})[,.]\d{3}\s*-->\s*(\d{2}):(\d{2}):(\d{2})/g)];
+      if (matches.length === 0) return null;
+      const last = matches[matches.length - 1];
+      return parseInt(last[4], 10) * 3600 + parseInt(last[5], 10) * 60 + parseInt(last[6], 10);
+    } catch {
+      return null;
+    }
+  }
+
+  private buildLiveTimeDesc(highlightPath: string): string | null {
+    const recordTime = this.extractRecordTime(path.basename(highlightPath));
+    if (!recordTime) return null;
+    const dur = this.extractDurationFromSrt(highlightPath);
+    const startStr = `${recordTime.hour}:${String(recordTime.minute).padStart(2,'0')}`;
+    if (dur && dur > 60) {
+      const totalStartSec = recordTime.hour * 3600 + recordTime.minute * 60 + dur;
+      const endHour = Math.floor(totalStartSec / 3600) % 24;
+      const endMin = Math.floor((totalStartSec % 3600) / 60);
+      const h = Math.floor(dur / 3600);
+      const m = Math.floor((dur % 3600) / 60);
+      const durStr = h > 0 ? `${h}小时${m}分钟` : `${m}分钟`;
+      return `${startStr}~${endHour}:${String(endMin).padStart(2,'0')}（约${durStr}）`;
+    }
+    return `${startStr}左右开始`;
+  }
+
+  /**
    * 从文件名提取房间ID
    */
   private extractRoomIdFromFilename(filename: string): string | null {
@@ -294,7 +335,7 @@ export class AITextGenerator implements IAITextGenerator {
   /**
    * 构建晚安回复提示词
    */
-  private buildGoodnightPrompt(highlightContent: string, roomId?: string, recordTime?: { hour: number; minute: number } | null): string {
+  private buildGoodnightPrompt(highlightContent: string, roomId?: string, liveTimeDesc?: string | null): string {
     const names = this.getNames(roomId);
     const anchor = names.anchor;
     const fan = names.fan;
@@ -311,7 +352,7 @@ export class AITextGenerator implements IAITextGenerator {
 
 严格限定素材：只根据用户当前提供的文档/文本内容进行创作。绝对禁止混入该文档以外的任何已知信息、历史直播内容或互联网搜索结果（因为${anchor}的梗很多，AI容易串台，这一点必须强调）。
 
-时效性：${recordTime ? `该直播时段为 ${recordTime.hour}:${String(recordTime.minute).padStart(2,'0')} 左右开始（北京时间）。请根据时段自然地选择开场白（如清晨/上午可用早安、下午可用下午好、晚上可用晚安等），不强制使用特定问候语。` : '根据文档内容判断是早播、午播还是晚播，自然地选择开场白。'}
+时效性：${liveTimeDesc ? `该直播时段为北京时间 ${liveTimeDesc}。请根据时段自然地选择开场白（如清晨/上午可用早安、下午可用下午好、晚上可用晚安等），不强制使用特定问候语。` : '根据文档内容判断是早播、午播还是晚播，自然地选择开场白。'}
 
 【写作结构与要素】
 
@@ -688,9 +729,8 @@ ${highlightContent}
         }
       }
 
-      // 从文件名提取录制时间
-      const recordTime = this.extractRecordTime(path.basename(highlightPath));
-      const prompt = this.buildGoodnightPrompt(highlightContent, actualRoomId, recordTime);
+      const liveTimeDesc = this.buildLiveTimeDesc(highlightPath);
+      const prompt = this.buildGoodnightPrompt(highlightContent, actualRoomId, liveTimeDesc);
       const dir = path.dirname(highlightPath);
       const baseName = path.basename(highlightPath, '_AI_HIGHLIGHT.txt');
       const outputPath = path.join(dir, `${baseName}_晚安回复.md`);
