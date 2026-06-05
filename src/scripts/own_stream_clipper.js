@@ -81,6 +81,21 @@ function formatClock(seconds) {
     return topicClipper.formatClock(seconds);
 }
 
+function buildClipDescription({ streamerName, streamTitle, recordedAt, start, end, reason }) {
+    const lines = [
+        `来自 ${streamerName || '主播'} 的直播《${streamTitle || '未知直播'}》，录制时间 ${recordedAt || '未知'}。`,
+        `片段时间 ${formatClock(start)}-${formatClock(end)}。`
+    ];
+
+    const extraReason = String(reason || '').trim();
+    if (extraReason) {
+        lines.push('');
+        lines.push(extraReason);
+    }
+
+    return lines.join('\n');
+}
+
 function timeStringToSeconds(value) {
     const match = String(value || '').trim().match(/^(\d{1,2}):(\d{2}):(\d{2})(?:\.\d+)?$/);
     if (!match) return NaN;
@@ -999,7 +1014,14 @@ async function generateOwnStreamClips(options = {}) {
         const srtResult = topicClipper.writeClipSrt(parsed.segments, window, srtPath);
         const copy = {
             title: clip.title,
-            description: clip.reason || `来自 ${streamerName} 的直播片段，时间 ${formatClock(window.start)}-${formatClock(window.end)}。`,
+            description: buildClipDescription({
+                streamerName,
+                streamTitle: info.streamTitle,
+                recordedAt: info.recordedAt,
+                start: window.start,
+                end: window.end,
+                reason: clip.reason
+            }),
             tags: [streamerName, '岁己', '小岁', '虚拟主播', '直播切片']
         };
         let mediaResult = null;
@@ -1124,6 +1146,7 @@ module.exports = {
     buildNotifyMarkdown,
     buildReviewMarkdown,
     buildPlanReviewMarkdown,
+    buildClipDescription,
     filterClipsBySelection,
     generateOwnStreamClips
 };

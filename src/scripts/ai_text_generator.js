@@ -493,7 +493,7 @@ async function generateTextWithTuZi(prompt, options = {}) {
         tuziConfig.model || 'gpt-5.4-mini',
         ...configuredFallbackModels,
         'gemini-3-flash-preview',
-        'o4-mini',
+        'gpt-5.4-mini',
         'qwen2.5-72b-instruct',
         'grok-4.1'
     ].filter((model, index, models) => model && models.indexOf(model) === index);

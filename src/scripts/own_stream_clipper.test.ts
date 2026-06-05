@@ -25,6 +25,21 @@ describe('own_stream_clipper', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  test('builds upload description with source live and clip time', () => {
+    const description = ownStreamClipper.buildClipDescription({
+      streamerName: '宀佸繁SUI',
+      streamTitle: '鎮犲搲鎮犲搲澶滄櫄锛?',
+      recordedAt: '2026-06-05 19:43:31',
+      start: 112.5,
+      end: 145.2,
+      reason: '宀佸繁鍏堣嚜鎴戞媿鎵嬪彨琛?'
+    });
+
+    expect(description).toContain('录制时间 2026-06-05 19:43:31');
+    expect(description).toContain('片段时间 00:01:52-00:02:25');
+    expect(description).toContain('宀佸繁鍏堣嚜鎴戞媿鎵嬪彨琛?');
+  });
+
   test('builds candidates from danmaku density and reaction keywords', () => {
     const parsed = {
       segments: [

@@ -5,6 +5,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { getLogger } from '../../core/logging/LogManager';
+import { ConfigProvider } from '../../core/config/ConfigProvider';
 import { IDelayedReplyService } from './interfaces/IDelayedReplyService';
 import { IDelayedReplyStore } from './interfaces/IDelayedReplyStore';
 import { IBilibiliAPIService } from './interfaces/IBilibiliAPIService';
@@ -110,6 +111,10 @@ export class DelayedReplyService implements IDelayedReplyService {
     liveStartTime?: Date,
     liveEndTime?: Date
   ): Promise<string> {
+    const resolvedPaths = this.resolveDelayedReplyPaths(roomId, goodnightTextPath, comicImagePath);
+    goodnightTextPath = resolvedPaths.goodnightTextPath;
+    comicImagePath = resolvedPaths.comicImagePath;
+
     const dedupeKey = this.getTaskDedupeKey(roomId, goodnightTextPath, comicImagePath);
     const inFlightTask = this.addTaskLocks.get(dedupeKey);
     if (inFlightTask) {
@@ -352,6 +357,136 @@ export class DelayedReplyService implements IDelayedReplyService {
     return this.isRunningFlag;
   }
 
+  private resolveDelayedReplyPaths(
+    roomId: string,
+    goodnightTextPath: string,
+    comicImagePath?: string
+  ): { goodnightTextPath: string; comicImagePath?: string } {
+    const normalizedTextPath = path.normalize(goodnightTextPath);
+    const normalizedComicPath = comicImagePath ? path.normalize(comicImagePath) : comicImagePath;
+
+    if (fs.existsSync(normalizedTextPath)) {
+      return {
+        goodnightTextPath: normalizedTextPath,
+        comicImagePath: normalizedComicPath
+      };
+    }
+
+    const repairedTextPath = this.findExistingGoodnightPath(roomId, normalizedTextPath);
+    if (!repairedTextPath) {
+      return {
+        goodnightTextPath: normalizedTextPath,
+        comicImagePath: normalizedComicPath
+      };
+    }
+
+    const repairedComicPath = this.deriveComicPathFromGoodnightPath(repairedTextPath);
+    const finalComicPath = repairedComicPath || normalizedComicPath;
+    this.logger.warn('修复延迟回复路径：传入路径不存在，已按房间/录制时间匹配真实文件', {
+      roomId,
+      originalGoodnightTextPath: goodnightTextPath,
+      repairedGoodnightTextPath: repairedTextPath,
+      originalComicImagePath: comicImagePath,
+      repairedComicImagePath: finalComicPath
+    });
+
+    return {
+      goodnightTextPath: repairedTextPath,
+      comicImagePath: finalComicPath
+    };
+  }
+
+  private findExistingGoodnightPath(roomId: string, badTextPath: string): string | undefined {
+    const recordingMatch = badTextPath.match(new RegExp(`${this.escapeRegExp(String(roomId))}-(\\d{8})-(\\d{6})-(\\d{3})`));
+    if (!recordingMatch) {
+      return undefined;
+    }
+
+    const [, yyyymmdd, hhmmss, sequence] = recordingMatch;
+    const fingerprint = `${roomId}-${yyyymmdd}-${hhmmss}-${sequence}`;
+    const dateDirName = `${yyyymmdd.slice(0, 4)}_${yyyymmdd.slice(4, 6)}_${yyyymmdd.slice(6, 8)}`;
+    const searchDirs = this.getDelayedReplySearchDirs(roomId, dateDirName, badTextPath);
+    const candidates: string[] = [];
+
+    for (const dir of searchDirs) {
+      try {
+        if (!fs.existsSync(dir)) {
+          continue;
+        }
+
+        for (const fileName of fs.readdirSync(dir)) {
+          if (fileName.includes(fingerprint) && fileName.endsWith('_晚安回复.md')) {
+            candidates.push(path.join(dir, fileName));
+          }
+        }
+      } catch (error) {
+        this.logger.warn('扫描晚安回复候选目录失败', {
+          roomId,
+          dir,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+
+    return candidates
+      .filter(candidate => fs.existsSync(candidate))
+      .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
+  }
+
+  private getDelayedReplySearchDirs(roomId: string, dateDirName: string, badTextPath: string): string[] {
+    const dirs = new Set<string>();
+    const parsedBadPath = path.parse(badTextPath);
+    if (parsedBadPath.dir && fs.existsSync(parsedBadPath.dir)) {
+      dirs.add(parsedBadPath.dir);
+    }
+
+    for (const basePath of this.getRecordingBasePathCandidates()) {
+      try {
+        if (!fs.existsSync(basePath)) {
+          continue;
+        }
+
+        for (const roomDirName of fs.readdirSync(basePath)) {
+          if (roomDirName.startsWith(`${roomId}_`)) {
+            dirs.add(path.join(basePath, roomDirName, dateDirName));
+          }
+        }
+      } catch (error) {
+        this.logger.warn('扫描录播根目录失败', {
+          roomId,
+          basePath,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+
+    return Array.from(dirs);
+  }
+
+  private getRecordingBasePathCandidates(): string[] {
+    const candidates = new Set<string>();
+    try {
+      const configBasePath = ConfigProvider.getConfig().webhook?.endpoints?.mikufans?.basePath;
+      if (configBasePath) {
+        candidates.add(path.normalize(configBasePath));
+      }
+    } catch {
+      // 配置不可用时继续使用兜底路径
+    }
+
+    candidates.add(path.normalize('D:/files/videos/DDTV录播'));
+    return Array.from(candidates);
+  }
+
+  private deriveComicPathFromGoodnightPath(goodnightTextPath: string): string | undefined {
+    const comicPath = goodnightTextPath.replace(/_晚安回复\.md$/u, '_COMIC_FACTORY.png');
+    return comicPath !== goodnightTextPath ? comicPath : undefined;
+  }
+
+  private escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
   private getTaskDedupeKey(roomId: string, goodnightTextPath: string, comicImagePath?: string): string {
     return [
       String(roomId),
@@ -380,6 +515,16 @@ export class DelayedReplyService implements IDelayedReplyService {
       const seenTaskKeys = new Set<string>();
 
       for (const task of pendingTasks) {
+        const resolvedPaths = this.resolveDelayedReplyPaths(task.roomId, task.goodnightTextPath, task.comicImagePath);
+        if (resolvedPaths.goodnightTextPath !== task.goodnightTextPath || resolvedPaths.comicImagePath !== task.comicImagePath) {
+          task.goodnightTextPath = resolvedPaths.goodnightTextPath;
+          task.comicImagePath = resolvedPaths.comicImagePath;
+          await this.store.updateTask(task.taskId, {
+            goodnightTextPath: task.goodnightTextPath,
+            comicImagePath: task.comicImagePath
+          });
+        }
+
         const dedupeKey = this.getTaskDedupeKey(task.roomId, task.goodnightTextPath, task.comicImagePath);
         if (seenTaskKeys.has(dedupeKey)) {
           await this.store.updateTask(task.taskId, {
@@ -592,6 +737,16 @@ export class DelayedReplyService implements IDelayedReplyService {
         roomId: task.roomId,
         uid: task.uid
       });
+
+      const resolvedPaths = this.resolveDelayedReplyPaths(task.roomId, task.goodnightTextPath, task.comicImagePath);
+      if (resolvedPaths.goodnightTextPath !== task.goodnightTextPath || resolvedPaths.comicImagePath !== task.comicImagePath) {
+        task.goodnightTextPath = resolvedPaths.goodnightTextPath;
+        task.comicImagePath = resolvedPaths.comicImagePath;
+        await this.store.updateTask(task.taskId, {
+          goodnightTextPath: task.goodnightTextPath,
+          comicImagePath: task.comicImagePath
+        });
+      }
 
       const uid = await this.ensureTaskUid(task);
 

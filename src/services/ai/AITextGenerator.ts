@@ -56,8 +56,8 @@ export class AITextGenerator implements IAITextGenerator {
             tuZi: {
               enabled: false,
               apiKey: '',
-              model: 'default',
-              textModel: 'gemini-3-flash-preview',
+              model: 'gpt-5.4-mini',
+              textModel: 'gpt-5.4-mini',
               baseUrl: 'https://api.tu-zi.com',
               temperature: 0.7,
               maxTokens: 2000
@@ -136,7 +136,7 @@ export class AITextGenerator implements IAITextGenerator {
 
     const temperature = options?.temperature ?? tuziConfig.temperature;
     const maxTokens = options?.maxTokens ?? tuziConfig.maxTokens;
-    const modelName = options?.model ?? tuziConfig.textModel ?? 'gemini-3-flash-preview';
+    const modelName = options?.model ?? tuziConfig.textModel ?? tuziConfig.model ?? 'gpt-5.4-mini';
     const proxy = options?.proxy ?? tuziConfig.proxy;
     const baseUrl = tuziConfig.baseUrl || 'https://api.tu-zi.com';
 
