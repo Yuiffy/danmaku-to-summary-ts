@@ -779,23 +779,12 @@
     "asr": {
         "default_backend": "paraformer",
         "common_hotwords": [
-            "东爱璃Lovely",
-            "星汐Seki",
-            "礼墨Sumi",
-            "笙歌",
-            "伊索尔Sol",
-            "南町Nightin",
-            "MIXUP2026",
-            "PSP",
-            "VirtuaReal",
             "岁己",
             "岁己SUI",
             "小岁",
             "饼干岁",
-            "栞栞",
-            "米汀",
-            "瑞娅",
-            "时守星沙"
+            "VirtuaReal",
+            "MIXUP2026"
         ],
         "routing": [
             {
