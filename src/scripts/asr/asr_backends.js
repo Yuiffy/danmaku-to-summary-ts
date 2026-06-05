@@ -368,6 +368,26 @@ function resolveAsrHotwords(config, context = {}) {
     asrConfig.common_hotwords.forEach(entry => addHotword(hotwordsByWord, entry));
     addCorrections(corrections, asrConfig.corrections);
 
+    // 自动将当前直播间的主播名及别名作为热词注入
+    const registry = resolveStreamerRegistry(config);
+    const roomId = String(context.room_id || context.roomId || '').trim();
+    if (roomId) {
+        for (const entry of Object.values(registry)) {
+            const roomIds = Array.isArray(entry.roomIds) ? entry.roomIds.map(r => String(r)) : [];
+            if (roomIds.includes(roomId)) {
+                // 主播 displayName 作为热词
+                addHotword(hotwordsByWord, { word: entry.displayName });
+                // 所有别名也作为热词
+                (entry.speakerLabels || []).forEach(label => {
+                    if (label !== entry.displayName) {
+                        addHotword(hotwordsByWord, { word: label });
+                    }
+                });
+                break;
+            }
+        }
+    }
+
     for (const rule of asrConfig.routing) {
         if (!rule || typeof rule !== 'object' || !rule.match || typeof rule.match !== 'object') {
             continue;
