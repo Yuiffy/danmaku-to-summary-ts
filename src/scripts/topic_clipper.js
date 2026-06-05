@@ -11,8 +11,11 @@ const DEFAULT_CLIP_TOPICS_CONFIG = {
     aiVerify: true,  // AI 验证：过滤唱歌/ASR误识别的假命中
     prePaddingSeconds: 20,
     postPaddingSeconds: 35,
-    maxClipSeconds: 180,
-    mergeGapSeconds: 45,
+    maxClipSeconds: 300,
+    mergeGapSeconds: 120,
+    contextPaddingSeconds: 300,  // AI 上下文窗口：关键词前后各拿5分钟
+    maxSegmentsPerBurst: 100,     // 每个 burst 最多取多少条 SRT
+    aiSegmentBurst: true,         // 让 AI 决定切在哪里（而不是固定 paddding）
     burnSubtitles: true,
     outputDirName: 'topic_clips',
     extraTags: [],
@@ -274,6 +277,235 @@ function getOverlappingSegments(segments = [], window) {
         const end = Number(segment.end);
         return Number.isFinite(start) && Number.isFinite(end) && end > window.start && start < window.end;
     });
+}
+
+/**
+ * 将关键词命中点聚合成"话题爆发段"(topic burst)，而非每个关键词切一个小窗口。
+ * 
+ * 1. 相邻命中点（gap <= mergeGapSeconds）聚合为一个 burst
+ * 2. 每个 burst 向两端扩展 contextPaddingSeconds（默认 5 分钟）
+ * 3. 取该范围内全部 SRT 字幕供 AI 理解完整上下文
+ */
+function buildTopicBursts(segments = [], matches = [], options = {}) {
+    const contextPadding = Math.max(0, Number(options.contextPaddingSeconds) || 300);
+    const mergeGap = Math.max(0, Number(options.mergeGapSeconds) || 120);
+    const maxSegments = Math.max(1, Number(options.maxSegmentsPerBurst) || 100);
+    const totalDuration = Number.isFinite(Number(options.totalDurationSeconds))
+        ? Math.max(0, Number(options.totalDurationSeconds))
+        : Number.POSITIVE_INFINITY;
+
+    if (matches.length === 0) return [];
+
+    // 1. 按时间排序，聚合相邻命中为 burst
+    const sorted = [...matches].sort((a, b) => 
+        Number(a.segment.start) - Number(b.segment.start));
+
+    const rawBursts = [];
+    for (const match of sorted) {
+        const mStart = Number(match.segment.start);
+        const mEnd = Number(match.segment.end);
+        
+        const last = rawBursts[rawBursts.length - 1];
+        if (last && mStart - last.matchEnd <= mergeGap) {
+            // 续到上一个 burst
+            last.matchEnd = Math.max(last.matchEnd, mEnd);
+            last.matches.push(match);
+            last.keywords.add(match.matchedKeywords);
+        } else {
+            rawBursts.push({
+                matchStart: mStart,
+                matchEnd: mEnd,
+                matches: [match],
+                keywords: new Set([match.matchedKeywords])
+            });
+        }
+    }
+
+    // 2. 每个 burst 向两端扩展，收集全部上下文
+    return rawBursts.map((b, idx) => {
+        const start = clamp(b.matchStart - contextPadding, 0, totalDuration);
+        const end = clamp(b.matchEnd + contextPadding, 0, totalDuration);
+
+        // 扩展范围内全部 SRT segment（受 maxSegments 上限）
+        const allSegs = segments
+            .filter(s => {
+                const sStart = Number(s.start);
+                const sEnd = Number(s.end);
+                return Number.isFinite(sStart) && Number.isFinite(sEnd)
+                    && sEnd > start && sStart < end;
+            })
+            .slice(0, maxSegments);
+
+        // 前/后额外上下文（供 AI 理解，超出扩展窗口的）
+        const preCtx = segments
+            .filter(s => Number(s.end) <= start && Number(s.end) >= start - 120)
+            .map(s => s.text)
+            .slice(-15);
+        const postCtx = segments
+            .filter(s => Number(s.start) >= end && Number(s.start) <= end + 120)
+            .map(s => s.text)
+            .slice(0, 15);
+
+        return {
+            index: idx + 1,
+            matchStart: b.matchStart,
+            matchEnd: b.matchEnd,
+            start,
+            end,
+            duration: end - start,
+            matchedKeywords: Array.from(b.keywords),
+            matchCount: b.matches.length,
+            matchSegments: b.matches.map(m => ({
+                index: m.index,
+                start: m.segment.start,
+                end: m.segment.end,
+                text: m.segment.text,
+                matchedKeywords: m.matchedKeywords
+            })),
+            allSegments: allSegs,
+            allSegmentTexts: allSegs.map(s => s.text),
+            preContext: preCtx,
+            postContext: postCtx
+        };
+    }).filter(b => b.duration > 0);
+}
+
+/**
+ * 把 burst 的全部字幕发给 AI，让 AI 自己决定切在哪。
+ * AI 可以切成 1-3 段，并根据上下文生成每段的标题和简介。
+ */
+async function segmentBurstWithAI(burst, parsed, streamerName, info, config = {}) {
+    const aiConfig = config;
+    const textEnabled = aiConfig.ai?.text?.enabled !== false;
+    const segmentEnabled = aiConfig.clipTopics?.aiSegmentBurst !== false;
+
+    if (!textEnabled || !segmentEnabled) {
+        // Fallback: 使用整个 burst 作为单个窗口
+        return [{
+            start: burst.matchStart,
+            end: burst.matchEnd,
+            // 用命中点附近 ±20s 作为 fallback
+        }];
+    }
+
+    // 格式化 SRT 给 AI
+    const srtLines = burst.allSegments.map(s => {
+        const t = formatClock(Number(s.start));
+        const txt = String(s.text || '').trim();
+        // 标记哪些包含关键词
+        const isHit = burst.matchSegments.some(
+            m => m.start === s.start && m.end === s.end
+        );
+        const prefix = isHit ? '★' : ' ';
+        return `${prefix} ${t} | ${txt}`;
+    }).join('\n');
+
+    const keywordStr = (burst.matchedKeywords || []).join('、');
+    const prompt = [
+        '你是一个直播切片编辑。下面是一段直播字幕（带时间戳），主播在聊的话题中提到了"岁己"（关键词：' + keywordStr + '）。',
+        '',
+        '标记 ★ 的行是 ASR 命中关键词的地方。请根据上下文理解对话内容，找出真正在讨论/提到岁己的连续段落。',
+        '',
+        '你需要决定切片的起止时间（HH:MM:SS 格式），精确到秒即可，要切在句子边界上。',
+        '注意：',
+        '- 选取的区间不要超过 3 分钟，太长观众看不完。',
+        '- 如果话题分成了几个明显独立的段落，可以切 2-3 段（每段分别给标题简介）。',
+        '- 如果整段都不超过 2 分钟且话题连贯，切 1 段就好。',
+        '- 如果命中的行实际是唱歌、哼旋律、ASR 误识别，返回空 clips: []。',
+        '- ASR 可能有同音错字（如"开开"≈"栞栞"），要根据语境推断正确含义。',
+        '',
+        '输出一个 JSON 对象（不要 Markdown 代码块，纯 JSON）：',
+        '{',
+        '  "clips": [',
+        '    { "startTime": "HH:MM:SS", "endTime": "HH:MM:SS", "title": "标题", "description": "简介" }',
+        '  ]',
+        '}',
+        '',
+        '标题要求：',
+        '- 主播名 + 冒号 + 一句话概括（30字内）',
+        '- 不要加引号、不要"【"开头',
+        '',
+        '简介要求：',
+        '- 一句话说清主播聊了什么（50字内）',
+        '- 口语化自然',
+        '',
+        `主播: ${streamerName || '主播'}`,
+        `直播标题: ${info.streamTitle || '未知'}`,
+        `录制日期: ${info.recordedAt || '未知'}`,
+        '',
+        '=== 字幕 ===',
+        srtLines.slice(0, 12000),  // 限制总字数
+    ].join('\n');
+
+    // 调用 AI
+    const generateText = require('./ai_text_generator');
+    const provider = aiConfig.ai?.text?.provider || 'gemini';
+    let result;
+    try {
+        result = provider === 'tuZi'
+            ? await generateText.generateTextWithTuZi(prompt, { wordLimit: 600 })
+            : await generateText.generateTextWithGemini(prompt, { wordLimit: 600 });
+    } catch (error) {
+        console.warn(`⚠️  AI burst 分段失败，退回整个 burst: ${error.message}`);
+        return [{
+            start: burst.matchStart,
+            end: burst.matchEnd
+        }];
+    }
+
+    // 解析 AI 返回的 JSON
+    try {
+        const text = (result.text || '').trim();
+        // 尝试提取 JSON（AI 有时用代码块包裹）
+        const jsonMatch = text.match(/\{[\s\S]*"clips"[\s\S]*\}/);
+        if (!jsonMatch) {
+            console.warn('⚠️  AI 未返回有效 JSON，退回整个 burst');
+            console.warn(`   原始返回: ${text.slice(0, 200)}`);
+            return [{ start: burst.matchStart, end: burst.matchEnd }];
+        }
+        
+        const parsed = JSON.parse(jsonMatch[0]);
+        const clips = (parsed.clips || []).filter(c => c.startTime && c.endTime);
+        
+        if (clips.length === 0) {
+            console.log(`  ℹ️   [${formatClock(burst.matchStart)}] AI 判定无需切片（可能是唱歌/误识别）`);
+            return [];
+        }
+        
+        // 转换时间戳 → 秒数，返回带标题/简介的信息
+        return clips.map((clip, ci) => {
+            const clipStart = timeStringToSeconds(clip.startTime);
+            const clipEnd = timeStringToSeconds(clip.endTime);
+            if (isNaN(clipStart) || isNaN(clipEnd) || clipEnd <= clipStart) {
+                return null;
+            }
+            return {
+                start: clamp(clipStart, burst.start, burst.end),
+                end: clamp(clipEnd, burst.start, burst.end),
+                aiTitle: clip.title || null,
+                aiDescription: clip.description || null,
+                sliceIndex: ci + 1
+            };
+        }).filter(Boolean);
+    } catch (parseError) {
+        console.warn(`⚠️  解析 AI 分段结果失败: ${parseError.message}`);
+        console.warn(`   原始返回: ${result.text?.slice(0, 200)}`);
+        return [{ start: burst.matchStart, end: burst.matchEnd }];
+    }
+}
+
+/**
+ * 将 HH:MM:SS 或 HH:MM:SS.MSC 转为秒数
+ */
+function timeStringToSeconds(ts) {
+    if (typeof ts !== 'string') return NaN;
+    const parts = ts.split(':');
+    if (parts.length !== 3) return NaN;
+    const h = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10);
+    const s = parseFloat(parts[2]);
+    if (isNaN(h) || isNaN(m) || isNaN(s)) return NaN;
+    return h * 3600 + m * 60 + s;
 }
 
 function formatSrtTimestamp(seconds) {
@@ -682,53 +914,20 @@ async function generateTopicClips(options = {}) {
         return [];
     }
 
-    const windows = buildClipWindows(parsed.segments, matches, {
-        prePaddingSeconds: config.prePaddingSeconds,
-        postPaddingSeconds: config.postPaddingSeconds,
-        maxClipSeconds: config.maxClipSeconds,
+    const aiConfig = options.config || {};
+
+    const bursts = buildTopicBursts(parsed.segments, matches, {
+        contextPaddingSeconds: config.contextPaddingSeconds,
         mergeGapSeconds: config.mergeGapSeconds,
+        maxSegmentsPerBurst: config.maxSegmentsPerBurst,
         totalDurationSeconds: options.totalDurationSeconds
     });
-    if (windows.length === 0) {
-        console.log('ℹ️  话题切片: 命中关键词但未形成有效窗口');
+    if (bursts.length === 0) {
+        console.log('ℹ️  话题切片: 命中关键词但未形成有效话题爆发段');
         return [];
     }
 
-    // AI 验证：过滤唱歌/哼旋律等 ASR 误识别的假命中
-    // 给每个 window 附加上下文文本（供 AI 理解用）
-    for (const w of windows) {
-        w.allSegmentTexts = parsed.segments
-            .filter(s => Number(s.start) >= w.start - 5 && Number(s.end) <= w.end + 5)
-            .map(s => s.text);
-        // 扩展上下文：切片之前/之后的句子，帮 AI 理解前因后果
-        w.preContext = parsed.segments
-            .filter(s => Number(s.end) <= w.start && Number(s.end) >= w.start - 60)
-            .map(s => s.text)
-            .slice(-10);
-        w.postContext = parsed.segments
-            .filter(s => Number(s.start) >= w.end && Number(s.start) <= w.end + 60)
-            .map(s => s.text)
-            .slice(0, 10);
-    }
-
-    const aiVerifiedWindows = [];
-    const aiConfig = options.config || {};
-    console.log(`\n🤖 AI 验证 ${windows.length} 个候选切片...`);
-    for (const w of windows) {
-        const verification = await verifyClipWithAI(w, config.keywords, aiConfig);
-        if (verification.verified) {
-            aiVerifiedWindows.push(w);
-            console.log(`  ✅ [${formatClock(w.start)}] 通过: ${verification.reason}`);
-        } else {
-            console.log(`  ❌ [${formatClock(w.start)}] 过滤: ${verification.reason}`);
-        }
-    }
-    console.log(`🤖 AI 验证完成: ${aiVerifiedWindows.length}/${windows.length} 通过\n`);
-
-    if (aiVerifiedWindows.length === 0) {
-        console.log('ℹ️  AI 验证后无有效切片');
-        return [];
-    }
+    console.log(`\n📦 ${bursts.length} 个话题爆发段 (burst)，调用 AI 决定切在哪...`);
 
     const info = parseRecordingInfo(source.mediaPath, options.context || {});
     if (isIgnoredRoom(info.roomId, config)) {
@@ -739,8 +938,54 @@ async function generateTopicClips(options = {}) {
     const outputRoot = path.join(path.dirname(source.mediaPath), config.outputDirName);
     fs.mkdirSync(outputRoot, { recursive: true });
 
+    // AI 分段：对每个 burst 决定切 1-3 段
+    const aiSegmentedClips = [];
+    for (const burst of bursts) {
+        console.log(`  🔍 [${formatClock(burst.matchStart)}] 命中 ${burst.matchCount} 次，上下文窗口 ${formatClock(burst.start)}-${formatClock(burst.end)} (${burst.allSegments.length} 条字幕)`);
+
+        const segments = await segmentBurstWithAI(burst, parsed, streamerName, info, aiConfig);
+        
+        if (segments.length === 0) {
+            console.log(`  ⏭️  AI 判定跳过（可能是唱歌/误识别）`);
+            continue;
+        }
+
+        for (const seg of segments) {
+            // 构造一个兼容旧代码的 window 对象
+            const w = {
+                index: `${burst.index}-${seg.sliceIndex || 1}`,
+                start: seg.start,
+                end: seg.end,
+                duration: seg.end - seg.start,
+                matchedKeywords: burst.matchedKeywords,
+                matchCount: burst.matchCount,
+                matchSegments: burst.matchSegments,
+                allSegmentTexts: parsed.segments
+                    .filter(s => Number(s.start) >= seg.start - 5 && Number(s.end) <= seg.end + 5)
+                    .map(s => s.text),
+                preContext: parsed.segments
+                    .filter(s => Number(s.end) <= seg.start && Number(s.end) >= seg.start - 60)
+                    .map(s => s.text).slice(-10),
+                postContext: parsed.segments
+                    .filter(s => Number(s.start) >= seg.end && Number(s.start) <= seg.end + 60)
+                    .map(s => s.text).slice(0, 10),
+            };
+            aiSegmentedClips.push({ window: w, burst, aiTitle: seg.aiTitle, aiDescription: seg.aiDescription });
+        }
+
+        console.log(`  ✅ 切出 ${segments.length} 段: ${segments.map(s => formatClock(s.start) + '-' + formatClock(s.end)).join(', ')}`);
+    }
+
+    if (aiSegmentedClips.length === 0) {
+        console.log('ℹ️  AI 分段后无有效切片');
+        return [];
+    }
+
+    console.log(`\n🎬 共 ${aiSegmentedClips.length} 段切片，开始生成视频...\n`);
+
     const results = [];
-    for (const window of aiVerifiedWindows) {
+    for (const clip of aiSegmentedClips) {
+        const window = clip.window;
         const base = sanitizeFileName(`${path.basename(source.mediaPath, path.extname(source.mediaPath))}_topic_${String(window.index).padStart(2, '0')}_${formatClock(window.start).replace(/:/g, '')}`);
         const mediaExt = source.kind === 'audio' ? path.extname(source.mediaPath).toLowerCase() : '.mp4';
         const mediaPath = path.join(outputRoot, `${base}${mediaExt || '.m4a'}`);
@@ -749,7 +994,14 @@ async function generateTopicClips(options = {}) {
         const copyPath = path.join(outputRoot, `${base}_投稿文案.md`);
 
         const srtResult = writeClipSrt(parsed.segments, window, srtPath);
-        const copy = await buildClipCopy(window, info, streamerName, config, options.titleGenerator, options.descriptionGenerator);
+        // 优先用 AI 分段时生成的标题/简介，其次调用独立的标题/简介生成器
+        const titleGen = clip.aiTitle
+            ? async () => clip.aiTitle
+            : options.titleGenerator;
+        const descGen = clip.aiDescription
+            ? async () => clip.aiDescription
+            : options.descriptionGenerator;
+        const copy = await buildClipCopy(window, info, streamerName, config, titleGen, descGen);
 
         let mediaResult = null;
         let error = null;
@@ -826,6 +1078,8 @@ module.exports = {
     chooseClipSource,
     findKeywordMatches,
     buildClipWindows,
+    buildTopicBursts,
+    segmentBurstWithAI,
     verifyClipWithAI,
     writeClipSrt,
     parseRecordingInfo,
