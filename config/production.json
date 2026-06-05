@@ -993,7 +993,7 @@
         "phoneme_correction": {
             "enabled": true,
             "threshold": 0.85,
-            "hotwords": "MIXUP2026 PSP VirtuaReal 东爱璃Lovely 伊索尔Sol 克罗雅Kloa 十六萤Izayoi 南町Nightin 小岁 岁己 岁己SUI 戴维斯 时守星沙 星汐Seki 栞栞 栞栞Shiori 灰泽满Hazel 瑞娅 瑞娅Ria 礼墨Sumi 笙歌 米汀 米汀Nagisa 莉蔻Liko 飞天狙 饼干岁"
+            "hotwords": "PSP VirtuaReal 东爱璃Lovely 伊索尔Sol 克罗雅Kloa 十六萤Izayoi 南町Nightin 小岁 岁己 岁己SUI 时守星沙 星汐Seki 栞栞 栞栞Shiori 灰泽满Hazel 瑞娅 瑞娅Rhea 礼墨Sumi 笙歌 米汀 米汀Nagisa 莉蔻Liko 饼干岁"
         }
     },
     "subtitle": {
