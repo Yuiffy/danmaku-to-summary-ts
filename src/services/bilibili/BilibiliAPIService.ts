@@ -96,6 +96,12 @@ export class BilibiliAPIService implements IBilibiliAPIService {
         let stdout = '';
         let stderr = '';
 
+        // 30秒超时：B站 API 偶尔卡住，不能无限等
+        const timeout = setTimeout(() => {
+          pythonProcess.kill();
+          reject(this.buildPythonFailureError('', -1, '获取直播间信息超时(30s)'));
+        }, 30000);
+
         pythonProcess.stdout.on('data', (data) => {
           stdout += data.toString();
         });
@@ -105,6 +111,7 @@ export class BilibiliAPIService implements IBilibiliAPIService {
         });
 
         pythonProcess.on('close', (code) => {
+          clearTimeout(timeout);
           // 无论成功还是失败,都先输出日志
           if (stderr) {
             const logLines = stderr.trim().split('\n');
@@ -126,13 +133,18 @@ export class BilibiliAPIService implements IBilibiliAPIService {
             return;
           }
 
+          // exit code != 0：记录 stdout 和 stderr 用于排查
           if (stdout.trim()) {
-            this.logger.error(`Python stdout: ${stdout.trim()}`);
+            this.logger.error(`Python stdout: ${stdout.trim().slice(0, 500)}`);
           }
-          reject(this.buildPythonFailureError(stdout, code, '获取直播间信息失败'));
+          if (stderr.trim()) {
+            this.logger.error(`Python stderr: ${stderr.trim().slice(0, 500)}`);
+          }
+          reject(this.buildPythonFailureError(stdout, code, '获取直播间信息失败', stderr));
         });
 
         pythonProcess.on('error', (err) => {
+          clearTimeout(timeout);
           reject(err);
         });
       });
@@ -726,7 +738,12 @@ export class BilibiliAPIService implements IBilibiliAPIService {
     return null;
   }
 
-  private buildPythonFailureError(stdout: string, exitCode: number | null, fallbackPrefix: string): Error {
+  private buildPythonFailureError(
+    stdout: string,
+    exitCode: number | null,
+    fallbackPrefix: string,
+    stderr?: string,
+  ): Error {
     const jsonResult = this.parsePythonJsonResult(stdout);
     if (jsonResult) {
       const detailedError = this.normalizePythonResultError(jsonResult);
@@ -737,7 +754,9 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       return new AppError(`${fallbackPrefix}: ${detailedError}`, code, status);
     }
 
-    return new Error(`Python脚本退出码: ${exitCode}`);
+    // stdout 解析不出 JSON：带上 stderr 帮助排查
+    const stderrInfo = stderr ? ` stderr=${stderr.trim().slice(0, 200)}` : '';
+    return new Error(`Python脚本退出码: ${exitCode}${stderrInfo}`);
   }
 
   private normalizePythonResultError(result: any): string {
