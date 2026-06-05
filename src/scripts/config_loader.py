@@ -67,28 +67,36 @@ def get_project_root() -> str:
     return os.path.dirname(os.path.dirname(scripts_dir))
 
 
-def find_config_path() -> str:
+def find_config_paths() -> list:
     """
-    查找配置文件路径
-    优先级: /config/production.json > /config/default.json
+    查找配置文件路径列表（按优先级递增）
+    先读 default.json 作为基础，再用 production.json 覆盖（如果存在）
     """
     env = os.environ.get('NODE_ENV', 'development')
     project_root = get_project_root()
     config_dir = os.path.join(project_root, 'config')
     
-    possible_paths = [
-        # 优先读取外部config目录中的环境特定配置
-        os.path.join(config_dir, 'production.json' if env == 'production' else 'default.json'),
-        # 其次读取外部config目录中的默认配置
-        os.path.join(config_dir, 'default.json'),
-    ]
+    default_path = os.path.join(config_dir, 'default.json')
+    prod_path = os.path.join(config_dir, 'production.json')
     
-    for config_path in possible_paths:
-        if os.path.exists(config_path):
-            return config_path
+    paths = []
+    if os.path.exists(default_path):
+        paths.append(default_path)
+    if os.path.exists(prod_path):
+        paths.append(prod_path)
     
-    # 默认返回 config/default.json
-    return os.path.join(config_dir, 'default.json')
+    if not paths:
+        paths = [prod_path if os.path.exists(prod_path) else default_path]
+    
+    return paths
+
+
+def find_config_path() -> str:
+    """
+    查找主配置文件路径（返回最后一个，即最高优先级）
+    """
+    paths = find_config_paths()
+    return paths[-1] if paths else os.path.join(get_project_root(), 'config', 'default.json')
 
 
 def find_secrets_path() -> str:
@@ -130,16 +138,18 @@ def get_config(force_reload: bool = False) -> Dict[str, Any]:
     Args:
         force_reload: 是否强制重新加载，忽略缓存
     """
-    config_path = find_config_path()
+    config_paths = find_config_paths()
     secrets_path = find_secrets_path()
     
-    # 读取主配置
+    # 读取并合并所有配置文件（按优先级递增）
     config = {}
-    if os.path.exists(config_path):
-        config = read_json_file(config_path)
-        # print(f"✓ 配置文件已加载: {config_path}")
-    else:
-        print(f"⚠ 配置文件不存在: {config_path}")
+    for config_path in config_paths:
+        if os.path.exists(config_path):
+            layer = read_json_file(config_path)
+            config = deep_merge(config, layer)
+    
+    if not config:
+        print(f"⚠ 未找到任何配置文件: {config_paths}")
     
     # 读取secrets并合并
     if os.path.exists(secrets_path):

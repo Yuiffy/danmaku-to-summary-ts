@@ -825,6 +825,7 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
 
             return {
                 srtPath: fs.existsSync(srtPath) ? srtPath : null,
+                speakerReviewSrtPath: fs.existsSync(srtPath) ? path.join(path.dirname(srtPath), `${path.parse(srtPath).name}.speaker.srt`) : null,
                 completionOptions
             };
         } catch (error) {
@@ -840,6 +841,7 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
         clearActiveQueueTask(taskId);
         return {
             srtPath,
+            speakerReviewSrtPath: path.join(path.dirname(srtPath), `${path.parse(srtPath).name}.speaker.srt`),
             completionOptions: {
                 warning: `字幕已存在，跳过Whisper: ${path.basename(srtPath)}`
             }
@@ -848,6 +850,7 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
 
     return {
         srtPath: fs.existsSync(srtPath) ? srtPath : null,
+        speakerReviewSrtPath: fs.existsSync(srtPath) ? path.join(path.dirname(srtPath), `${path.parse(srtPath).name}.speaker.srt`) : null,
         completionOptions: null
     };
 }
@@ -985,6 +988,27 @@ function shouldGenerateAiForRoom(roomId) {
         minComicDurationMinutes: defaultMinDuration,
         comicGenerationProbability: defaultProbability,
     };
+}
+
+function shouldPreferSpeakerReviewSrtForRoom(roomId, asrResult = null) {
+    const config = configLoader.getConfig();
+    const roomStr = String(roomId);
+    const roomConfig = (config.ai?.roomSettings && config.ai.roomSettings[roomStr])
+        || (config.roomSettings && config.roomSettings[roomStr])
+        || null;
+
+    if (!roomConfig || roomConfig.preferSpeakerReviewSrtWhenMultipleSpeakers !== true) {
+        return false;
+    }
+
+    const uniqueSpeakers = new Set(
+        Array.isArray(asrResult?.segments)
+            ? asrResult.segments
+                .map(segment => String(segment.speaker || '').trim())
+                .filter(label => label && label !== 'UNKNOWN' && !/^SPEAKER_\d+$/i.test(label))
+            : []
+    );
+    return uniqueSpeakers.size >= 2;
 }
 
 // 从文件名提取房间ID
@@ -1219,14 +1243,18 @@ const main = async () => {
         }
 
         const srtPath = mediaResult?.srtPath || null;
+        const speakerReviewSrtPath = mediaResult?.speakerReviewSrtPath || null;
+        const preferredSrtPath = shouldPreferSpeakerReviewSrtForRoom(mediaRoomId, mediaResult?.asrResult)
+            ? (speakerReviewSrtPath || srtPath)
+            : srtPath;
         
-        if (srtPath) {
-            await generateTopicClipsForMedia(mediaFile, processedFile, srtPath, mediaRoomId, {
+        if (preferredSrtPath) {
+            await generateTopicClipsForMedia(mediaFile, processedFile, preferredSrtPath, mediaRoomId, {
                 ...(asrOptions.asrContext || {}),
                 streamerName: asrOptions.asrContext?.streamer_name || null
             });
             processedMediaFiles.push(processedFile); // 记录处理后的文件
-            filesToProcess.push(srtPath);
+            filesToProcess.push(preferredSrtPath);
         }
 
         // 切片完成后删除原始视频（音频专用房间 & keepOriginalVideo=false）
@@ -1280,7 +1308,10 @@ const main = async () => {
             console.error(`X Error: Node.js script not found at: ${nodeScript}`);
         } else {
             // 获取输出目录和基础名称
-            const baseName = path.basename(filesToProcess[0]).replace(/\.(srt|xml|mp4|flv|mkv)$/i, '').replace(/_fix$/, '');
+            const baseName = path.basename(filesToProcess[0])
+                .replace(/\.speaker$/i, '')
+                .replace(/\.(srt|xml|mp4|flv|mkv)$/i, '')
+                .replace(/_fix$/, '');
             generatedHighlightFile = path.join(outputDir, `${baseName}_AI_HIGHLIGHT.txt`);
             
             try {
@@ -1320,7 +1351,14 @@ const main = async () => {
             }
             
             // 检查视频时长（从SRT文件获取）
-            const srtFile = filesToProcess.find(f => f.endsWith('.srt'));
+            // In single-file (webhook) path, mediaResult may not be defined;
+            // fall back to checking room config directly.
+            const preferSpeakerSrt = (typeof mediaResult !== 'undefined' && mediaResult?.asrResult)
+                ? shouldPreferSpeakerReviewSrtForRoom(finalRoomId, mediaResult.asrResult)
+                : shouldPreferSpeakerReviewSrtForRoom(finalRoomId, null);
+            const srtFile = preferSpeakerSrt
+                ? (filesToProcess.find(f => f.endsWith('.speaker.srt')) || filesToProcess.find(f => f.endsWith('.srt')))
+                : filesToProcess.find(f => f.endsWith('.srt'));
             if (srtFile && fs.existsSync(srtFile)) {
                 const srtContent = fs.readFileSync(srtFile, 'utf8');
                 const timeMatches = srtContent.match(/\d{2}:\d{2}:\d{2},\d{3}/g);
