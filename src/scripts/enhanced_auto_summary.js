@@ -915,7 +915,8 @@ async function generateTopicClipsForMedia(originalMediaPath, processedMediaPath,
                 ...context,
                 roomId: roomId ? String(roomId) : null
             },
-            titleGenerator: aiTextGenerator.generateClipTitle
+            titleGenerator: aiTextGenerator.generateClipTitle,
+            descriptionGenerator: aiTextGenerator.generateClipDescription
         });
         if (results.length > 0) {
             console.log(`✅ 话题切片完成: ${results.length} 个本地 review 包`);

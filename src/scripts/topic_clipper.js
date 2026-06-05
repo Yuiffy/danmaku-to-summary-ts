@@ -396,15 +396,21 @@ function normalizeTitle(value, fallback) {
     return title;
 }
 
-async function buildClipCopy(window, info, streamerName, config, titleGenerator = null) {
+async function buildClipCopy(window, info, streamerName, config, titleGenerator = null, descriptionGenerator = null) {
     const defaultTitle = buildDefaultTitle(window, info);
     let title = defaultTitle;
+    let description = `来自 ${streamerName} 的直播间，录制时间 ${info.recordedAt || '未知'}，片段时间 ${formatClock(window.start)}-${formatClock(window.end)}。`;
+
+    // 构建丰富的上下文供 AI 理解
+    const sampleText = window.matchSegments
+        .map(segment => segment.text)
+        .join('\n');
+    const fullClipText = (window.allSegmentTexts || []).join('\n');
+    const preContext = (window.preContext || []).join('\n');
+    const postContext = (window.postContext || []).join('\n');
+
     if (titleGenerator) {
         try {
-            const sampleText = window.matchSegments
-                .map(segment => segment.text)
-                .join(' ')
-                .slice(0, 500);
             title = normalizeTitle(await titleGenerator({
                 streamerName,
                 streamTitle: info.streamTitle,
@@ -413,15 +419,39 @@ async function buildClipCopy(window, info, streamerName, config, titleGenerator 
                 endTime: formatClock(window.end),
                 matchedKeywords: window.matchedKeywords,
                 sampleText,
+                fullClipText,
+                preContext,
+                postContext,
                 defaultTitle
             }), defaultTitle);
         } catch (error) {
             console.warn(`⚠️  话题切片标题生成失败，使用模板标题: ${error.message}`);
-            title = defaultTitle;
         }
     }
 
-    const description = `来自 ${streamerName} 的直播间，录制时间 ${info.recordedAt || '未知'}，片段时间 ${formatClock(window.start)}-${formatClock(window.end)}。`;
+    // AI 生成简介
+    if (descriptionGenerator) {
+        try {
+            const aiDesc = await descriptionGenerator({
+                streamerName,
+                streamTitle: info.streamTitle,
+                recordedAt: info.recordedAt,
+                startTime: formatClock(window.start),
+                endTime: formatClock(window.end),
+                matchedKeywords: window.matchedKeywords,
+                sampleText,
+                fullClipText,
+                preContext,
+                postContext
+            });
+            if (aiDesc && aiDesc.trim().length > 5) {
+                description = aiDesc.trim();
+            }
+        } catch (error) {
+            console.warn(`⚠️  话题切片简介生成失败，使用模板简介: ${error.message}`);
+        }
+    }
+
     const configuredTags = Array.isArray(config.tags) ? config.tags : null;
     const tags = Array.from(new Set([
         ...(configuredTags || [streamerName, '岁己', '小岁', '虚拟主播', '直播切片']),
@@ -665,11 +695,20 @@ async function generateTopicClips(options = {}) {
     }
 
     // AI 验证：过滤唱歌/哼旋律等 ASR 误识别的假命中
-    // 先给每个 window 附加上下文文本
+    // 给每个 window 附加上下文文本（供 AI 理解用）
     for (const w of windows) {
         w.allSegmentTexts = parsed.segments
             .filter(s => Number(s.start) >= w.start - 5 && Number(s.end) <= w.end + 5)
             .map(s => s.text);
+        // 扩展上下文：切片之前/之后的句子，帮 AI 理解前因后果
+        w.preContext = parsed.segments
+            .filter(s => Number(s.end) <= w.start && Number(s.end) >= w.start - 60)
+            .map(s => s.text)
+            .slice(-10);
+        w.postContext = parsed.segments
+            .filter(s => Number(s.start) >= w.end && Number(s.start) <= w.end + 60)
+            .map(s => s.text)
+            .slice(0, 10);
     }
 
     const aiVerifiedWindows = [];
@@ -710,7 +749,7 @@ async function generateTopicClips(options = {}) {
         const copyPath = path.join(outputRoot, `${base}_投稿文案.md`);
 
         const srtResult = writeClipSrt(parsed.segments, window, srtPath);
-        const copy = await buildClipCopy(window, info, streamerName, config, options.titleGenerator);
+        const copy = await buildClipCopy(window, info, streamerName, config, options.titleGenerator, options.descriptionGenerator);
 
         let mediaResult = null;
         let error = null;

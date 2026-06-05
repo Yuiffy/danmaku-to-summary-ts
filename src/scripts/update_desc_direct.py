@@ -18,7 +18,7 @@ HEAD = {
     'Content-Type': 'application/json;charset=UTF-8',
 }
 
-def update(bvid, new_desc, new_tag=None):
+def update(bvid, new_desc, new_tag=None, new_title=None):
     r = requests.get(
         'https://member.bilibili.com/x/vupre/web/archive/view',
         params={'bvid': bvid, 'topic_grey': 1}, headers=HEAD)
@@ -32,7 +32,7 @@ def update(bvid, new_desc, new_tag=None):
     
     payload = {
         'aid': archive.get('aid'),
-        'title': archive.get('title', ''),
+        'title': new_title or archive.get('title', ''),
         'tid': archive.get('tid', 21),
         'tag': new_tag or archive.get('tag', ''),
         'desc': new_desc,
@@ -78,11 +78,12 @@ if __name__ == '__main__':
     time.sleep(2)
     
     update('BV1xw7C6kE5U',
-        '南町聊MixUp庆功宴上东爱璃还在忙着安排开开和岁己的座位，'
+        '南町聊MixUp庆功宴上东爱璃还在忙着安排栞栞和岁己的座位，'
         '被大家拦下来"你就别管了吃你的吧"。\n'
         '\n'
         '直播日期：2026年6月5日\n'
         '场次：孩子们我终于回来了\n'
         '切片时间：第02:20:13 ~ 02:21:12\n'
         '现实时间：约15:30 ~ 15:31',
-        '南町Nightin,岁己,小岁,虚拟主播,直播切片')
+        '南町Nightin,岁己,栞栞,小岁,虚拟主播,直播切片',
+        '南町聊MixUp庆功宴：栞栞和岁己突然被安排座位！')
