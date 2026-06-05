@@ -210,12 +210,12 @@ function buildPrompt(highlightContent, roomId, recordTime = null) {
 
 严格限定素材:只根据用户当前提供的文档/文本内容进行创作。绝对禁止混入该文档以外的任何已知信息、历史直播内容或互联网搜索结果(因为${anchor}的梗很多,AI容易串台,这一点必须强调)。
 
-时效性:${recordTime ? `该直播录制于 ${recordTime.hour}:${String(recordTime.minute).padStart(2,'0')}，应使用"${getTimeSlotDesc(recordTime.hour)}"作为开场白。` : '根据文档内容判断是早播、午播还是晚播,分别对应"早安"、"午安"或"晚安"的场景。'}
+时效性:${recordTime ? `该直播时段为 ${recordTime.hour}:${String(recordTime.minute).padStart(2,'0')} 左右开始（北京时间）。请根据时段自然地选择开场白（如清晨/上午可用早安、下午可用下午好、晚上可用晚安等），不强制使用特定问候语。` : '根据文档内容判断是早播、午播还是晚播,自然地选择开场白。'}
 
 【写作结构与要素】
 
 开场白:
-格式:晚安/早安xx(用昵称)!🌙/☀️
+格式:xx(用昵称)!🌙/☀️
 内容:一句话总结今天直播的整体感受(如:含金量极高、含梗量爆炸、辛苦了、被治愈了等)。
 
 正文(核心内容回顾):
@@ -247,7 +247,7 @@ ${randomMainPrompt}
 【直播内容(主播语音转写+观众弹幕)】
 ${highlightContent}
 
-请根据直播内容,以${fan}的身份写一篇${recordTime ? getTimeSlotDesc(recordTime.hour) : '晚安'}回复。记住:只使用提供的直播内容,不要添加任何外部信息。直接输出回复内容,不要输出任何其他内容。`;
+请根据直播内容,以${fan}的身份写一篇动态回复。记住:只使用提供的直播内容,不要添加任何外部信息。直接输出回复内容,不要输出任何其他内容。`;
 
     console.log('晚安动态prompt主要内容:', randomMainPrompt.substring(0, 100), '直播内容长度:', highlightContent.length);
     return result;

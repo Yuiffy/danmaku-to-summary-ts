@@ -235,6 +235,16 @@ export class AITextGenerator implements IAITextGenerator {
   }
 
   /**
+   * 从文件名提取录制开始时间
+   * 格式：录制-ROOMID-YYYYMMDD-HHMMSS-...
+   */
+  private extractRecordTime(filename: string): { hour: number; minute: number } | null {
+    const m = String(filename || '').match(/20\d{2}(\d{2})(\d{2})-(\d{2})(\d{2})\d{2}/);
+    if (!m) return null;
+    return { hour: parseInt(m[3], 10), minute: parseInt(m[4], 10) };
+  }
+
+  /**
    * 从文件名提取房间ID
    */
   private extractRoomIdFromFilename(filename: string): string | null {
@@ -284,7 +294,7 @@ export class AITextGenerator implements IAITextGenerator {
   /**
    * 构建晚安回复提示词
    */
-  private buildGoodnightPrompt(highlightContent: string, roomId?: string): string {
+  private buildGoodnightPrompt(highlightContent: string, roomId?: string, recordTime?: { hour: number; minute: number } | null): string {
     const names = this.getNames(roomId);
     const anchor = names.anchor;
     const fan = names.fan;
@@ -301,12 +311,12 @@ export class AITextGenerator implements IAITextGenerator {
 
 严格限定素材：只根据用户当前提供的文档/文本内容进行创作。绝对禁止混入该文档以外的任何已知信息、历史直播内容或互联网搜索结果（因为${anchor}的梗很多，AI容易串台，这一点必须强调）。
 
-时效性：根据文档内容判断是早播、午播还是晚播，分别对应"早安"、"午安"或"晚安"的场景。
+时效性：${recordTime ? `该直播时段为 ${recordTime.hour}:${String(recordTime.minute).padStart(2,'0')} 左右开始（北京时间）。请根据时段自然地选择开场白（如清晨/上午可用早安、下午可用下午好、晚上可用晚安等），不强制使用特定问候语。` : '根据文档内容判断是早播、午播还是晚播，自然地选择开场白。'}
 
 【写作结构与要素】
 
 开场白：
-格式：晚安/早安${anchor}！🌙/☀️
+格式：xx（用昵称）！🌙/☀️
 内容：一句话总结今天直播的整体感受（如：含金量极高、含梗量爆炸、辛苦了、被治愈了等）。
 
 正文（核心内容回顾）：
@@ -327,7 +337,7 @@ export class AITextGenerator implements IAITextGenerator {
 【直播内容摘要】
 ${highlightContent}
 
-请根据以上直播内容，以${fan}的身份写一篇晚安回复。记住：只使用提供的直播内容，不要添加任何外部信息。`;
+请根据以上直播内容，以${fan}的身份写一篇动态回复。记住：只使用提供的直播内容，不要添加任何外部信息。`;
   }
 
   /**
@@ -678,7 +688,9 @@ ${highlightContent}
         }
       }
 
-      const prompt = this.buildGoodnightPrompt(highlightContent, actualRoomId);
+      // 从文件名提取录制时间
+      const recordTime = this.extractRecordTime(path.basename(highlightPath));
+      const prompt = this.buildGoodnightPrompt(highlightContent, actualRoomId, recordTime);
       const dir = path.dirname(highlightPath);
       const baseName = path.basename(highlightPath, '_AI_HIGHLIGHT.txt');
       const outputPath = path.join(dir, `${baseName}_晚安回复.md`);
