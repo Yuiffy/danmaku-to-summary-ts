@@ -368,21 +368,25 @@ function resolveAsrHotwords(config, context = {}) {
     asrConfig.common_hotwords.forEach(entry => addHotword(hotwordsByWord, entry));
     addCorrections(corrections, asrConfig.corrections);
 
-    // 自动将当前直播间的主播名及别名作为热词注入
-    const registry = resolveStreamerRegistry(config);
+    // 自动将当前直播间的主播正式名作为热词注入（不注入 aliases，那些是纠错用的）
+    const rawRegistry = config.ai?.streamerRegistry || {};
     const roomId = String(context.room_id || context.roomId || '').trim();
     if (roomId) {
-        for (const entry of Object.values(registry)) {
+        for (const entry of Object.values(rawRegistry)) {
             const roomIds = Array.isArray(entry.roomIds) ? entry.roomIds.map(r => String(r)) : [];
             if (roomIds.includes(roomId)) {
-                // 主播 displayName 作为热词
-                addHotword(hotwordsByWord, { word: entry.displayName });
-                // 所有别名也作为热词
-                (entry.speakerLabels || []).forEach(label => {
-                    if (label !== entry.displayName) {
-                        addHotword(hotwordsByWord, { word: label });
-                    }
-                });
+                if (entry.displayName) {
+                    addHotword(hotwordsByWord, { word: entry.displayName });
+                }
+                // 只加原始 speakerLabels（正式名），不加 aliases（纠错别名）
+                if (Array.isArray(entry.speakerLabels)) {
+                    entry.speakerLabels.forEach(label => {
+                        const s = String(label).trim();
+                        if (s && s !== entry.displayName) {
+                            addHotword(hotwordsByWord, { word: s });
+                        }
+                    });
+                }
                 break;
             }
         }
