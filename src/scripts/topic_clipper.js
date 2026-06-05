@@ -493,7 +493,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                 '-ss', start,
                 '-i', source.mediaPath,
                 '-t', duration,
-                '-vf', `subtitles='${escapeSubtitlePathForFfmpegFilter(srtPath)}'`,
+                '-vf', `subtitles='${escapeSubtitlePathForFfmpegFilter(srtPath)}':force_style='FontSize=28,FontName=Microsoft YaHei,Bold=1,Outline=2'`,
                 '-c:v', 'libx264',
                 '-preset', 'veryfast',
                 '-c:a', 'aac',

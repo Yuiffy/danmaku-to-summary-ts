@@ -43,7 +43,7 @@ async function processLiveData(inputFiles) {
      if (srtFiles.length === 0 && xmlFiles.length === 0) return;
 
      const baseDir = path.dirname(inputFiles[0]);
-     const baseName = path.basename(inputFiles[0]).replace(/\.(srt|xml|mp4|flv|mkv)$/i, '').replace(/_fix$/, '');
+     const baseName = path.basename(inputFiles[0]).replace(/\.speaker$/i, '').replace(/\.(srt|xml|mp4|flv|mkv)$/i, '').replace(/_fix$/, '');
      const outputFile = path.join(baseDir, `${baseName}_AI_HIGHLIGHT.txt`);
 
      console.log(`🔥 启动热力图采样模式...来源文件：${srtFiles.map(f => path.basename(f)).join(', ')} ${xmlFiles.map(f => path.basename(f)).join(', ')}`);

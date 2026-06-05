@@ -779,6 +779,87 @@ def classify_speaker_embeddings(spk_results, references, threshold, margin_thres
     return labels
 
 
+def collect_speaker_chunks_from_intervals(audio, sample_rate, intervals, min_segment_s=0.8, chunk_s=8.0, max_chunks=24):
+    chunks = []
+    if audio is None or sample_rate <= 0:
+        return chunks
+
+    chunk_len = max(1, int(float(chunk_s or 8.0) * sample_rate))
+    min_len = max(1, int(float(min_segment_s or 0.8) * sample_rate))
+
+    for interval in intervals:
+        if not isinstance(interval, dict):
+            continue
+        start = max(0.0, float(interval.get("start", 0.0) or 0.0))
+        end = max(start, float(interval.get("end", start) or start))
+        start_idx = max(0, int(start * sample_rate))
+        end_idx = min(len(audio), int(end * sample_rate))
+        if end_idx <= start_idx:
+            continue
+
+        segment = audio[start_idx:end_idx]
+        if len(segment) < min_len:
+            continue
+
+        for idx in range(0, len(segment), chunk_len):
+            chunk = segment[idx:idx + chunk_len]
+            if len(chunk) < min_len:
+                continue
+            chunks.append(chunk)
+            if len(chunks) >= max_chunks:
+                return chunks
+
+    return chunks
+
+
+def build_cluster_embeddings_from_sentence_info(spk_model_obj, audio, sample_rate, sentence_info, payload, device):
+    import torch
+
+    min_segment_s = float(payload.get("speaker_min_segment_s", 0.8) or 0.8)
+    chunk_s = float(payload.get("speaker_max_segment_s", 8) or 8)
+    max_chunks = int(payload.get("speaker_cluster_max_chunks", 24) or 24)
+
+    clusters = {}
+    cluster_order = []
+    for sent in sentence_info or []:
+        spk = sent.get("spk")
+        if spk is None:
+            continue
+        cluster_label = f"SPEAKER_{int(spk):02d}" if str(spk).isdigit() else str(spk)
+        if cluster_label not in clusters:
+            clusters[cluster_label] = []
+            cluster_order.append(cluster_label)
+        clusters[cluster_label].append(sent)
+
+    cluster_embeddings = {}
+    for cluster_label in cluster_order:
+        chunks = collect_speaker_chunks_from_intervals(
+            audio,
+            sample_rate,
+            clusters.get(cluster_label, []),
+            min_segment_s=min_segment_s,
+            chunk_s=chunk_s,
+            max_chunks=max_chunks,
+        )
+        if not chunks:
+            continue
+        with suppress_model_output():
+            results = spk_model_obj.generate(input=chunks, cache={}, is_final=True)
+        valid_embeddings = [
+            r["spk_embedding"]
+            for r in results
+            if r.get("spk_embedding") is not None and torch.isfinite(r["spk_embedding"]).all()
+        ]
+        if not valid_embeddings:
+            continue
+        embeddings = torch.cat(valid_embeddings, dim=0)
+        embeddings = torch.nn.functional.normalize(embeddings, dim=1)
+        cluster_embeddings[cluster_label] = embeddings.to("cpu")
+        log_progress(f"  簇 embedding 完成: cluster={cluster_label}, chunks={len(chunks)}")
+
+    return cluster_embeddings
+
+
 def transcribe_paraformer_builtin(payload, audio_path, device):
     """
     Use FunASR's built-in pipeline for paraformer: pass vad_model/punc_model/spk_model
@@ -834,6 +915,17 @@ def transcribe_paraformer_builtin(payload, audio_path, device):
     if speaker_references and enable_speaker:
         log_progress(f"  Speaker references: {len(speaker_references)} speakers")
 
+    spk_model_obj = None
+    if enable_speaker and spk_model:
+        try:
+            spk_model_obj = AutoModel(
+                model=resolve_cached_model_name(spk_model),
+                device=device_name,
+                disable_update=True,
+            )
+        except Exception as exc:
+            log_progress(f"  说话人模型加载失败，将退回匿名簇: {exc}")
+
     try:
         with StageTimeout(payload.get("model_load_timeout_s", 180), "paraformer pipeline 加载"):
             model = AutoModel(**model_kwargs)
@@ -878,19 +970,40 @@ def transcribe_paraformer_builtin(payload, audio_path, device):
 
     # Build speaker reference centroids for named identification
     reference_centroids = None
-    if enable_speaker and speaker_references and spk_model:
+    if enable_speaker and speaker_references and spk_model_obj:
         try:
-            # Need a separate spk_model object for reference extraction
-            spk_model_obj = AutoModel(
-                model=resolve_cached_model_name(spk_model),
-                device=device_name,
-                disable_update=True,
-            )
             reference_centroids = build_speaker_reference_centroids(
                 spk_model_obj, speaker_references, device,
             )
         except Exception as exc:
             log_progress(f"参考说话人加载失败，使用聚类结果: {exc}")
+
+    # If reference centroids exist but sentence_info lacks spk_embedding,
+    # re-extract embeddings per sentence using spk_model_obj
+    if reference_centroids and sentence_info:
+        has_spk_emb = any(s.get("spk_embedding") is not None for s in sentence_info[:10])
+        if not has_spk_emb:
+            log_progress("sentence_info 无 spk_embedding，用 spk_model 重新提取")
+            import torchaudio
+            try:
+                audio_data, sr = load_audio_16k_mono(audio_path)
+                for sent in sentence_info:
+                    start_ms = float(sent.get("start", 0))
+                    end_ms = float(sent.get("end", start_ms + 1000))
+                    start_idx = max(0, int(start_ms / 1000.0 * sr))
+                    end_idx = min(len(audio_data), int(end_ms / 1000.0 * sr))
+                    if end_idx - start_idx < sr:  # < 1s
+                        continue
+                    chunk = audio_data[start_idx:end_idx]
+                    with suppress_model_output():
+                        emb_results = spk_model_obj.generate(
+                            input=[chunk], cache={}, is_final=True
+                        )
+                    if emb_results and emb_results[0].get("spk_embedding") is not None:
+                        sent["spk_embedding"] = emb_results[0]["spk_embedding"]
+                log_progress(f"重新提取完成，{sum(1 for s in sentence_info if s.get('spk_embedding') is not None)}/{len(sentence_info)} 句有 embedding")
+            except Exception as exc:
+                log_progress(f"重新提取 embedding 失败: {exc}")
 
     # Convert sentence_info to our output format
     segments = []

@@ -395,7 +395,24 @@
                 "enableTextGeneration": true,
                 "enableComicGeneration": true,
                 "enableDelayedReply": true,
-                "wordLimit": 150
+                "wordLimit": 500,
+                "preferSpeakerReviewSrtWhenMultipleSpeakers": true,
+                "multiReferenceImages": {
+                    "enabled": true,
+                    "maxExtraCharacters": 2,
+                    "minSpeakerScore": 0.5,
+                    "minSpeechSeconds": 8,
+                    "includeUnknownSpeakers": false,
+                    "useMentionedOnlyAsContext": true,
+                    "appendCharacterDescriptions": true,
+                    "imageOrder": [
+                        "host",
+                        "appeared_streamers",
+                        "cover",
+                        "screenshots",
+                        "default"
+                    ]
+                }
             },
             "31368705": {
                 "audioOnly": true,
@@ -779,7 +796,7 @@
                 "match": {
                     "room_id": "21692711"
                 },
-                "backend": "paraformer"
+                "backend": "sensevoice"
             },
             {
                 "match": {
@@ -844,16 +861,38 @@
             "model": "iic/SenseVoiceSmall",
             "vad_model": "fsmn-vad",
             "punc_model": "ct-punc",
-            "spk_model": null,
+            "spk_model": "cam++",
             "language": "auto",
             "device": "cuda",
             "use_itn": true,
             "max_vad_segment_s": 8,
             "merge_length_s": 8,
             "process_timeout_s": 1800,
-            "enable_speaker": false,
+            "enable_speaker": true,
             "preset_spk_num": null,
-            "speaker_merge_threshold": 0.78
+            "speaker_merge_threshold": 0.78,
+            "speaker_references": [
+                {
+                    "speaker": "岁己SUI",
+                    "audio_path": "data/asr_speaker_refs/sui.wav",
+                    "chunk_s": 8,
+                    "max_chunks": 20
+                },
+                {
+                    "speaker": "栞栞",
+                    "audio_path": "data/asr_speaker_refs/shiori.wav",
+                    "chunk_s": 8,
+                    "max_chunks": 20
+                },
+                {
+                    "speaker": "瑞娅",
+                    "audio_path": "data/asr_speaker_refs/rhea.wav",
+                    "chunk_s": 8,
+                    "max_chunks": 20
+                }
+            ],
+            "speaker_reference_threshold": 0.45,
+            "speaker_reference_margin": 0.06
         },
         "fun_asr_nano": {
             "model": "FunAudioLLM/Fun-ASR-Nano-2512",

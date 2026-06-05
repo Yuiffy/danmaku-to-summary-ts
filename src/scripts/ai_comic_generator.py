@@ -385,7 +385,8 @@ def get_multi_reference_config(config: Dict[str, Any], room_id: Optional[str]) -
     global_config = ai_config.get("comic", {}).get("multiReferenceImages", {})
     room_config = {}
     if room_id:
-        room_config = config.get("roomSettings", {}).get(str(room_id), {}).get("multiReferenceImages", {})
+        room_config = (config.get("ai", {}).get("roomSettings", {}).get(str(room_id), {}).get("multiReferenceImages", {})
+                       or config.get("roomSettings", {}).get(str(room_id), {}).get("multiReferenceImages", {}))
     merged = {
         "enabled": False,
         "maxExtraCharacters": 2,
