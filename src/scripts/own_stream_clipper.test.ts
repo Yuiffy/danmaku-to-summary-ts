@@ -73,8 +73,9 @@ describe('own_stream_clipper', () => {
       outputRoot: 'D:/clips'
     });
 
-    expect(markdown).toContain('1. 岁己：弹幕觉得这里很有趣 | 00:01:15 | 00:01:30 | D:/clips/one.mp4');
-    expect(markdown).toContain('2. 岁己：很有岁己想法的一段 | 00:03:00 | 00:00:45 | D:/clips/two.mp4');
+    expect(markdown).toContain('1. 岁己：弹幕觉得这里很有趣 | 00:01:15 | 00:01:30');
+    expect(markdown).toContain('2. 岁己：很有岁己想法的一段 | 00:03:00 | 00:00:45');
+    expect(markdown).not.toContain('D:/clips/one.mp4');
   });
 
   test('filters planned clips by one-based selection', () => {

@@ -809,22 +809,39 @@ function buildPlanReviewMarkdown(clips, metadata) {
 
 function buildNotifyMarkdown(results, metadata) {
     const lines = [
-        '## 岁己直播有趣切片候选',
+        '## \u5c81\u5df1\u76f4\u64ad\u6709\u8da3\u5207\u7247\u5019\u9009',
         '',
         `直播: **${metadata.streamTitle || metadata.sourceFileName || '未知'}**`,
         `录制时间: ${metadata.recordedAt || '未知'}`,
         `切片目录: ${metadata.outputRoot}`,
+        metadata.reviewPath ? `Review: ${metadata.reviewPath}` : null,
         '',
-        '切片列表:'
-    ];
+        '\u5207\u7247\u5217\u8868:'
+    ].filter(line => line !== null);
     results.forEach((result, index) => {
         const title = result.copy.title;
         const start = formatClock(result.window.start);
         const duration = formatClock(result.window.duration);
-        const localPath = result.output.mediaPath;
-        lines.push(`${index + 1}. ${title} | ${start} | ${duration} | ${localPath}`);
+        lines.push(`${index + 1}. ${title} | ${start} | ${duration}`);
     });
-    return lines.join('\n');
+    let markdown = lines.join('\n');
+    if (markdown.length <= 3900) {
+        return markdown;
+    }
+
+    const compact = lines.slice(0, 7);
+    for (const [index, result] of results.entries()) {
+        const title = result.copy.title;
+        const start = formatClock(result.window.start);
+        const duration = formatClock(result.window.duration);
+        const line = `${index + 1}. ${title} | ${start} | ${duration}`;
+        if ((compact.join('\n').length + line.length + 24) > 3880) {
+            compact.push(`${index + 1}. ...还有 ${results.length - index} 段，请看 Review`);
+            break;
+        }
+        compact.push(line);
+    }
+    return compact.join('\n');
 }
 
 async function sendWeChatMarkdown(webhookUrl, content) {
@@ -911,6 +928,7 @@ async function generateOwnStreamClips(options = {}) {
     const reviewPath = inputPlanBase
         ? path.join(outputRoot, `REVIEW_${inputPlanBase}.md`)
         : path.join(outputRoot, 'REVIEW.md');
+    reviewMetadata.reviewPath = reviewPath;
     fs.writeFileSync(planPath, JSON.stringify({
         version: 1,
         generatedAt: new Date().toISOString(),

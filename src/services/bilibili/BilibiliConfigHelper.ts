@@ -95,10 +95,10 @@ export class BilibiliConfigHelper {
     const roomAIConfig = this.getRoomAIConfig(roomId);
     if (roomAIConfig) {
       return {
-        uid: '', // AI 配置中没有 UID，需要通过 API 获取
+        uid: roomAIConfig.uid || roomAIConfig.mid || '',
         name: roomAIConfig.anchorName || '未知主播',
         roomId: normalizedRoomId,
-        enabled: true, // AI 配置默认启用
+        enabled: true,
         delayedReplyEnabled: roomAIConfig.enableDelayedReply ?? false,
       };
     }

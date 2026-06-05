@@ -1328,7 +1328,8 @@ export class DelayedReplyService implements IDelayedReplyService {
         message.includes('econnreset') ||
         message.includes('etimedout') ||
         message.includes('信号灯超时时间已到') ||
-        message.includes('网络')
+        message.includes('网络') ||
+        message.includes('python脚本退出码')
       );
     }
 

@@ -328,6 +328,7 @@
         "defaultCharacterDescription": "主播（帅气/美丽的人类），粉丝（有细细四肢的小小的可爱生物）",
         "roomSettings": {
             "25788785": {
+                "uid": "1954091502",
                 "audioOnly": false,
                 "referenceImage": "public/reference_images/岁己SUI小猫帽带饼干岁紫色外套双马尾.png",
                 "characterDescription": "岁己SUI（白发红瞳女生），饼干岁（有细细四肢的小小的饼干状生物）",
@@ -393,6 +394,7 @@
                 "enableDelayedReply": true
             },
             "26966466": {
+                "uid": "1609526545",
                 "audioOnly": true,
                 "referenceImage": "public/reference_images/栞栞制服加獭獭栞.png",
                 "characterDescription": "栞栞Shiori（有兽耳的女生，浅黄色头发小孩），粉丝是獭獭栞（长条形短手短脚的海獭）",
@@ -421,6 +423,7 @@
                 }
             },
             "31368705": {
+                "uid": "2124647716",
                 "audioOnly": true,
                 "referenceImage": "public/reference_images/米汀.png",
                 "characterDescription": "米汀Nagisa，银发灰瞳，戴帽子的女性推理社社员。粉丝“旁汀生”是白色猫头鹰形象",
@@ -473,6 +476,7 @@
                 "enableDelayedReply": true
             },
             "1603600": {
+                "uid": "51030552",
                 "audioOnly": true,
                 "characterDescription": "星汐Seki（PSPlive所属虚拟UP主，蓝发带粉色挑染、紫瞳、爆炸双马尾的网瘾少女，喜欢打游戏、唱歌、聊天和土味内容，也被称作七宝、山猪王）。粉丝“小山猪”是可爱的山猪系小生物",
                 "anchorName": "星汐Seki",
@@ -503,6 +507,7 @@
                 "enableDelayedReply": true
             },
             "573893": {
+                "uid": "15641218",
                 "audioOnly": true,
                 "characterDescription": "帅比笙歌超可爱OvO（西湖畔唱歌的中国风美少女，常见外号“塔宝/塔神”，粉丝常称“boba”）。",
                 "anchorName": "帅比笙歌超可爱OvO",
@@ -616,6 +621,7 @@
                 "enableDelayedReply": false
             },
             "30655190": {
+                "uid": "1789460279",
                 "audioOnly": true,
                 "characterDescription": "兔川弥月Mizuki（亚麻发异瞳（左红右紫）少女），有两个浮游炮机械兔耳，被称作小弥、老弥。喜欢玩米哈游的游戏和其他二游，常说“原神启动”",
                 "anchorName": "弥月Mizuki",
