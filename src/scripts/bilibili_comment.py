@@ -253,14 +253,22 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
         try:
             credential, credential_refreshed = await refresh_credential_if_needed(credential)
         except Exception as e:
-            log(f"[ERROR] Cookie 自动刷新失败: {e}")
+            log(f"[WARNING] Cookie 自动刷新失败: {e}")
             safe_print_exc()
-            return {
-                'success': False,
-                'error': f'Cookie 自动刷新失败: {e}',
-                'message': 'Cookie 自动刷新失败',
-                'credential_refresh_failed': True
-            }
+            try:
+                current_valid = await credential.check_valid()
+            except Exception:
+                current_valid = False
+            if current_valid:
+                log('[WARNING] Cookie refresh failed, but current credential is still valid; continuing')
+                credential_refreshed = False
+            else:
+                return {
+                    'success': False,
+                    'error': f'Cookie 自动刷新失败: {e}',
+                    'message': 'Cookie 自动刷新失败',
+                    'credential_refresh_failed': True
+                }
 
         # 验证凭证是否有效
         log(f"[INFO] 验证凭证有效性...")
