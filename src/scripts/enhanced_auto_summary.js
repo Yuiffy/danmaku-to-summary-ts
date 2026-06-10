@@ -4,7 +4,6 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn, execFile } = require('child_process');
-const crypto = require('crypto');
 const http = require('http');
 
 // 导入新模块
@@ -16,6 +15,7 @@ const queueManager = require('./whisper_queue_manager');
 const asrBackends = require('./asr/asr_backends');
 const topicClipper = require('./topic_clipper');
 const ownStreamClipper = require('./own_stream_clipper');
+const backgroundClipRunner = require('./background_clip_runner');
 
 // 获取音频格式配置
 function getAudioFormats() {
@@ -1272,7 +1272,7 @@ const main = async () => {
             throw error;
         }
         const processedFile = processedResult.audioPath;
-        const videoToDeleteAfterClips = processedResult.videoPathToDelete;
+        let videoToDeleteAfterClips = processedResult.videoPathToDelete;
         queueManager.updateTaskMediaPath(task.id, processedFile);
         if (task?.id) {
             setActiveQueueTask(task.id, processedFile);
@@ -1313,14 +1313,27 @@ const main = async () => {
             : srtPath;
         
         if (preferredSrtPath) {
-            await generateTopicClipsForMedia(mediaFile, processedFile, preferredSrtPath, mediaRoomId, {
+            const clipContext = {
                 ...(asrOptions.asrContext || {}),
                 streamerName: asrOptions.asrContext?.streamer_name || null
-            });
-            await generateOwnStreamClipsForMedia(mediaFile, preferredSrtPath, findXmlForMedia(mediaFile, xmlFiles), mediaRoomId, {
-                ...(asrOptions.asrContext || {}),
-                streamerName: asrOptions.asrContext?.streamer_name || null
-            });
+            };
+            const xmlPathForMedia = findXmlForMedia(mediaFile, xmlFiles);
+            if (backgroundClipRunner.shouldRunAnyClipper(mediaRoomId, xmlPathForMedia)) {
+                try {
+                    backgroundClipRunner.spawnBackgroundClipProcess({
+                        originalMediaPath: mediaFile,
+                        processedMediaPath: processedFile,
+                        srtPath: preferredSrtPath,
+                        xmlPath: xmlPathForMedia,
+                        roomId: mediaRoomId ? String(mediaRoomId) : null,
+                        context: clipContext,
+                        videoPathToDelete: videoToDeleteAfterClips
+                    });
+                    videoToDeleteAfterClips = null;
+                } catch (clipSpawnError) {
+                    console.warn(`⚠️  启动后台自动切片失败，将跳过切片并继续晚安生成: ${clipSpawnError.message}`);
+                }
+            }
             processedMediaFiles.push(processedFile); // 记录处理后的文件
             filesToProcess.push(preferredSrtPath);
         }
