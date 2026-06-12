@@ -34,6 +34,10 @@ export interface FFmpegConfig {
 // 音频存储配置
 export interface AudioStorageConfig {
   keepOriginalVideo: boolean;
+  retentionEnabled?: boolean;
+  convertAfterDays?: number;
+  includeBak?: boolean;
+  scanIntervalHours?: number;
   maxFileAgeDays: number;
 }
 

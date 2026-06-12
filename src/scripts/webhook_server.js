@@ -6,6 +6,7 @@ const { promisify } = require('util');
 const stat = promisify(fs.stat);
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const configLoader = require('./config-loader');
+const audioProcessor = require('./audio_processor');
 
 function getRecorderConfig(recorderName) {
     const config = configLoader.getConfig();
@@ -606,4 +607,5 @@ app.listen(PORT, () => {
     console.log(`DDTV 端点: http://localhost:${PORT}/ddtv`);
     console.log(`mikufans 端点: http://localhost:${PORT}/mikufans`);
     console.log(`==================================================\n`);
+    audioProcessor.startOnlyAudioRetentionScheduler?.();
  });

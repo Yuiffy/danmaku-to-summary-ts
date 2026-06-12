@@ -394,7 +394,10 @@ export class BilibiliAPIService implements IBilibiliAPIService {
           ? 'AUTHENTICATION_ERROR'
           : 'API_ERROR';
         const status = code === 'AUTHENTICATION_ERROR' ? 401 : 500;
-        if (code === 'AUTHENTICATION_ERROR' || jsonResult.credential_invalid || jsonResult.credential_refresh_failed) {
+        if (
+          (code === 'AUTHENTICATION_ERROR' || jsonResult.credential_invalid || jsonResult.credential_refresh_failed) &&
+          !this.isTransientNetworkError(detailedError)
+        ) {
           await this.notifyCredentialIssue(detailedError, {
             dynamicId: String(request.dynamicId),
             credentialInvalid: !!jsonResult.credential_invalid,
@@ -414,7 +417,7 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       };
     } catch (error) {
       if (error instanceof AppError) {
-        if (error.code === 'AUTHENTICATION_ERROR') {
+        if (error.code === 'AUTHENTICATION_ERROR' && !this.isTransientNetworkError(error.message)) {
           await this.notifyCredentialIssue(error.message, { dynamicId: String(request.dynamicId) });
         }
         throw error;
@@ -644,7 +647,7 @@ export class BilibiliAPIService implements IBilibiliAPIService {
         return;
       }
 
-      const secretConfig = JSON.parse(fs.readFileSync(secretPath, 'utf-8'));
+      const secretConfig = JSON.parse(fs.readFileSync(secretPath, 'utf-8').replace(/^\uFEFF/u, ''));
       secretConfig.bilibili = secretConfig.bilibili || {};
 
       let nextCookie = String(secretConfig.bilibili.cookie || this.cookie);
@@ -769,6 +772,10 @@ export class BilibiliAPIService implements IBilibiliAPIService {
 
   private isCredentialErrorMessage(message?: string, code?: number): boolean {
     const normalized = String(message || '').toLowerCase();
+    if (this.isTransientNetworkError(normalized)) {
+      return false;
+    }
+
     return (
       code === -101 ||
       code === 401 ||
@@ -780,6 +787,22 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       normalized.includes('账号未登录') ||
       normalized.includes('未登录') ||
       normalized.includes('登录失效')
+    );
+  }
+
+  private isTransientNetworkError(message?: string): boolean {
+    const normalized = String(message || '').toLowerCase();
+    return (
+      normalized.includes('cannot connect') ||
+      normalized.includes('connect to host') ||
+      normalized.includes('timeout') ||
+      normalized.includes('timed out') ||
+      normalized.includes('etimedout') ||
+      normalized.includes('econnreset') ||
+      normalized.includes('enotfound') ||
+      normalized.includes('network') ||
+      normalized.includes('信号灯超时时间已到') ||
+      normalized.includes('淇″彿鐏秴鏃舵椂闂村凡鍒?')
     );
   }
 

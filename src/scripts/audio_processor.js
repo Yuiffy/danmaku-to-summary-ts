@@ -6,12 +6,40 @@ const configLoader = require('./config-loader');
 
 const stat = promisify(fs.stat);
 const unlink = promisify(fs.unlink);
+const readdir = promisify(fs.readdir);
+const utimes = promisify(fs.utimes);
+
+const DEFAULT_AUDIO_FORMATS = ['.m4a', '.aac', '.mp3', '.wav', '.ogg', '.flac'];
+const DEFAULT_VIDEO_FORMATS = ['.mp4', '.flv', '.mkv', '.ts', '.mov'];
+let retentionSchedulerTimer = null;
 
 // 获取音频格式配置
 function getAudioFormats() {
     const config = configLoader.getConfig();
-    const defaultAudioFormats = ['.m4a', '.aac', '.mp3', '.wav', '.ogg', '.flac'];
-    return config.audio?.formats || config.audioRecording?.audioFormats || defaultAudioFormats;
+    return config.audio?.formats || config.audioRecording?.audioFormats || DEFAULT_AUDIO_FORMATS;
+}
+
+function getVideoFormats() {
+    const config = configLoader.getConfig();
+    return config.audio?.videoFormats || DEFAULT_VIDEO_FORMATS;
+}
+
+function getAudioRetentionConfig() {
+    const config = configLoader.getConfig();
+    const storage = config.audio?.storage || {};
+    return {
+        enabled: storage.retentionEnabled !== false,
+        convertAfterDays: Number(storage.convertAfterDays ?? storage.videoRetentionDays ?? 3),
+        deleteAfterDays: Number(storage.maxFileAgeDays ?? storage.deleteAfterDays ?? 30),
+        includeBak: storage.includeBak !== false,
+        scanIntervalHours: Number(storage.scanIntervalHours ?? 24),
+        basePaths: Array.from(new Set([
+            storage.basePath,
+            config.storage?.basePath,
+            config.webhook?.endpoints?.mikufans?.basePath,
+            config.recorders?.mikufans?.basePath
+        ].filter(Boolean).map(p => path.resolve(p))))
+    };
 }
 
 // 检查是否为音频专用房间
@@ -44,10 +72,28 @@ function isAudioOnlyRoom(roomId) {
 }
 
 // 获取房间ID从文件名（从DDTV文件名中提取）
+function extractRoomIdFromMediaName(filename) {
+    const base = path.basename(filename);
+    const patterns = [
+        /^(\d+)_/,
+        /(?:^|[^\d])录制-(\d+)-\d{8}-\d{6}/,
+        /(?:^|[^\d])(\d+)-\d{8}-\d{6}/
+    ];
+
+    for (const pattern of patterns) {
+        const match = base.match(pattern);
+        if (match) {
+            return parseInt(match[1], 10);
+        }
+    }
+
+    return null;
+}
+
 function extractRoomIdFromFilename(filename) {
     // DDTV文件名格式通常包含房间ID，例如：26966466_20240101_120000.mp4
     const match = filename.match(/^(\d+)_/);
-    return match ? parseInt(match[1]) : null;
+    return match ? parseInt(match[1]) : extractRoomIdFromMediaName(filename);
 }
 
 // 执行ffmpeg命令
@@ -175,6 +221,11 @@ async function processAudioOnlyRoom(videoPath, roomId = null) {
     
     try {
         // 获取音频格式配置
+        const retention = getAudioRetentionConfig();
+        if (retention.enabled) {
+            console.log(`onlyAudio retention: convert after ${retention.convertAfterDays} days, delete after ${retention.deleteAfterDays} days`);
+        }
+        return { audioPath: videoPath, videoPathToDelete: null, delayedAudioRetention: true };
         const audioFormat = config.audio?.defaultFormat || config.audioRecording?.defaultFormat || '.m4a';
         
         // 转换视频为音频
@@ -201,6 +252,149 @@ async function processAudioOnlyRoom(videoPath, roomId = null) {
 }
 
 // 检查ffmpeg是否可用
+function isVideoFile(filePath) {
+    return getVideoFormats().includes(path.extname(filePath).toLowerCase());
+}
+
+function isAudioFilePath(filePath) {
+    return getAudioFormats().includes(path.extname(filePath).toLowerCase());
+}
+
+function getFileAgeDays(stats, now = Date.now()) {
+    return (now - stats.mtimeMs) / (24 * 60 * 60 * 1000);
+}
+
+async function collectMediaFiles(rootDir, options = {}) {
+    const includeBak = options.includeBak !== false;
+    const maxDepth = options.maxDepth ?? 16;
+    const results = [];
+
+    async function walk(dir, depth) {
+        if (depth > maxDepth) return;
+        let entries;
+        try {
+            entries = await readdir(dir, { withFileTypes: true });
+        } catch (error) {
+            console.warn(`scan directory failed: ${dir} (${error.message})`);
+            return;
+        }
+
+        for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+                if (!includeBak && entry.name.toLowerCase() === 'bak') continue;
+                await walk(fullPath, depth + 1);
+            } else if (entry.isFile() && (isVideoFile(fullPath) || isAudioFilePath(fullPath))) {
+                results.push(fullPath);
+            }
+        }
+    }
+
+    await walk(rootDir, 0);
+    return results;
+}
+
+async function applyOnlyAudioRetention(options = {}) {
+    const retention = getAudioRetentionConfig();
+    const dryRun = options.dryRun === true;
+    const now = options.now || Date.now();
+    const config = configLoader.getConfig();
+    const audioFormat = config.audio?.defaultFormat || config.audioRecording?.defaultFormat || '.m4a';
+    const summary = { scanned: 0, skipped: 0, converted: 0, deleted: 0, failed: 0, roots: retention.basePaths };
+
+    if (!retention.enabled) {
+        console.log('onlyAudio retention disabled');
+        return summary;
+    }
+
+    console.log(`onlyAudio retention scan: convertAfterDays=${retention.convertAfterDays}, deleteAfterDays=${retention.deleteAfterDays}, includeBak=${retention.includeBak}`);
+
+    for (const root of retention.basePaths) {
+        if (!fs.existsSync(root)) continue;
+        const mediaFiles = await collectMediaFiles(root, { includeBak: retention.includeBak });
+
+        for (const mediaPath of mediaFiles) {
+            summary.scanned++;
+            const roomId = extractRoomIdFromMediaName(mediaPath);
+            if (!roomId || !isAudioOnlyRoom(roomId)) {
+                summary.skipped++;
+                continue;
+            }
+
+            let stats;
+            try {
+                stats = await stat(mediaPath);
+            } catch (error) {
+                summary.failed++;
+                console.warn(`stat failed: ${mediaPath} (${error.message})`);
+                continue;
+            }
+
+            const ageDays = getFileAgeDays(stats, now);
+            try {
+                if (ageDays >= retention.deleteAfterDays) {
+                    if (dryRun) {
+                        console.log(`[dry-run] delete expired onlyAudio media: ${mediaPath} (${ageDays.toFixed(1)} days)`);
+                    } else {
+                        await unlink(mediaPath);
+                        console.log(`deleted expired onlyAudio media: ${mediaPath} (${ageDays.toFixed(1)} days)`);
+                    }
+                    summary.deleted++;
+                    continue;
+                }
+
+                if (isVideoFile(mediaPath) && ageDays >= retention.convertAfterDays) {
+                    const targetAudio = path.join(path.dirname(mediaPath), `${path.basename(mediaPath, path.extname(mediaPath))}${audioFormat}`);
+                    if (fs.existsSync(targetAudio)) {
+                        if (dryRun) {
+                            console.log(`[dry-run] delete video with existing audio: ${mediaPath}`);
+                        } else {
+                            await unlink(mediaPath);
+                            console.log(`deleted video with existing audio: ${mediaPath}`);
+                        }
+                        summary.deleted++;
+                        continue;
+                    }
+
+                    if (dryRun) {
+                        console.log(`[dry-run] convert and delete video: ${mediaPath} -> ${targetAudio}`);
+                    } else {
+                        const audioPath = await convertVideoToAudio(mediaPath, audioFormat);
+                        await utimes(audioPath, stats.atime, stats.mtime);
+                        await unlink(mediaPath);
+                        console.log(`converted onlyAudio video to audio and deleted source: ${mediaPath}`);
+                    }
+                    summary.converted++;
+                }
+            } catch (error) {
+                summary.failed++;
+                console.warn(`onlyAudio retention failed: ${mediaPath} (${error.message})`);
+            }
+        }
+    }
+
+    console.log(`onlyAudio retention done: scanned=${summary.scanned}, converted=${summary.converted}, deleted=${summary.deleted}, skipped=${summary.skipped}, failed=${summary.failed}`);
+    return summary;
+}
+
+function startOnlyAudioRetentionScheduler() {
+    if (retentionSchedulerTimer) return retentionSchedulerTimer;
+
+    const retention = getAudioRetentionConfig();
+    if (!retention.enabled) return null;
+
+    const intervalMs = Math.max(1, retention.scanIntervalHours) * 60 * 60 * 1000;
+    applyOnlyAudioRetention().catch(error => console.warn(`onlyAudio retention scan failed: ${error.message}`));
+    const timer = setInterval(() => {
+        applyOnlyAudioRetention().catch(error => console.warn(`onlyAudio retention scan failed: ${error.message}`));
+    }, intervalMs);
+
+    if (typeof timer.unref === 'function') timer.unref();
+    console.log(`onlyAudio retention scheduler started: every ${retention.scanIntervalHours} hours`);
+    retentionSchedulerTimer = timer;
+    return timer;
+}
+
 async function checkFfmpegAvailability() {
     try {
         await runFfmpegCommand(['-version'], 10000);
@@ -246,14 +440,29 @@ async function processVideoForAudio(videoPath, roomId = null) {
 module.exports = {
     isAudioOnlyRoom,
     extractRoomIdFromFilename,
+    extractRoomIdFromMediaName,
     convertVideoToAudio,
     processAudioOnlyRoom,
+    applyOnlyAudioRetention,
+    startOnlyAudioRetentionScheduler,
     checkFfmpegAvailability,
     processVideoForAudio
 };
 
 // 命令行测试
 if (require.main === module) {
+    if (process.argv.includes('--retention')) {
+        applyOnlyAudioRetention({ dryRun: process.argv.includes('--dry-run') })
+            .then(summary => {
+                console.log(JSON.stringify(summary, null, 2));
+            })
+            .catch(error => {
+                console.error(`retention scan failed: ${error.message}`);
+                process.exit(1);
+            });
+        return;
+    }
+
     const videoPath = process.argv[2];
     if (!videoPath) {
         console.log('用法: node audio_processor.js <视频文件路径>');

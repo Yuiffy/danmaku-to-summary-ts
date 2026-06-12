@@ -76,6 +76,13 @@ export class WebhookService implements IWebhookService {
       
       // 初始化logger
       this.logger = getLogger('WebhookService');
+
+      try {
+        const audioProcessor = require('../../../src/scripts/audio_processor');
+        audioProcessor.startOnlyAudioRetentionScheduler?.();
+      } catch (error: any) {
+        this.logger.warn(`onlyAudio retention scheduler failed to start: ${error.message}`);
+      }
       
       // 初始化企微通知器
       if (config.wechatWork?.webhookUrl) {

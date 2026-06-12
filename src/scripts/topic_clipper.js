@@ -422,8 +422,18 @@ async function segmentBurstWithAI(burst, parsed, streamerName, info, config = {}
         '}',
         '',
         '标题要求：',
-        '- 主播名 + 冒号 + 一句话概括（30字内）',
+        '- 像人工编辑过的 B 站切片标题，抓具体冲突、反应和节目效果，而不是平铺直叙摘要',
+        '- 18-42 字，最多 52 字；可以稍长一点换取信息量',
+        '- 优先使用主播原话、弹幕反应、游戏/事件名，形成“具体事件 + 反应/槽点”的结构',
+        '- 可以写主播名 + 冒号，但不要为了格式牺牲点击点',
         '- 不要加引号、不要"【"开头',
+        '- 不要用“提到岁己的小片段”“直播有趣片段”“聊到了XX”这种弱标题',
+        '人工标题参考风格：',
+        '- 第二次复活怎么还往回走，弹幕急死了，路痴实锤',
+        '- 蚊子式刮痧打剑盾大怪，怪都睡着了',
+        '- 妈妈突然进房间，赶紧把电脑画面切到桌面',
+        '- 弹幕突然聊戒色，岁己当场社死',
+        '- 三斤小龙虾算减肥？这逻辑没法反驳',
         '',
         '简介要求：',
         '- 一句话说清主播聊了什么（50字内）',
@@ -644,7 +654,7 @@ function buildDefaultTitle(window, info) {
     const datePart = info.recordedAt
         ? `${info.recordedAt.slice(5, 7)}-${info.recordedAt.slice(8, 10)} ${info.recordedAt.slice(11, 16)}`
         : formatClock(window.start);
-    return `提到岁己的小片段 ${datePart}`;
+    return `提到小岁的小片段 ${datePart}`;
 }
 
 function normalizeTitle(value, fallback) {

@@ -273,6 +273,11 @@ export class AudioProcessor implements IAudioProcessor {
 
     try {
       // 获取音频格式配置
+      this.logger.info('onlyAudio room keeps video for clipping; retention scan converts after 3 days and deletes after 30 days', {
+        roomId: actualRoomId,
+        file: path.basename(videoPath)
+      });
+      return videoPath;
       const audioFormat = this.config.defaultFormat || '.m4a';
       
       // 转换视频为音频
@@ -284,7 +289,7 @@ export class AudioProcessor implements IAudioProcessor {
         try {
           await unlink(videoPath);
           this.logger.info('原始视频已删除');
-        } catch (deleteError) {
+        } catch (deleteError: any) {
           this.logger.warn('删除原始视频失败', {
             error: deleteError instanceof Error ? deleteError.message : deleteError
           });

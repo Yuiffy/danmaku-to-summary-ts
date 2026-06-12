@@ -117,6 +117,10 @@ const ConfigSchema = Joi.object({
         }).default(),
         storage: Joi.object({
             keepOriginalVideo: Joi.boolean().default(false),
+            retentionEnabled: Joi.boolean().default(true),
+            convertAfterDays: Joi.number().default(3),
+            includeBak: Joi.boolean().default(true),
+            scanIntervalHours: Joi.number().default(24),
             maxFileAgeDays: Joi.number().default(30)
         }).default()
     }).default(),

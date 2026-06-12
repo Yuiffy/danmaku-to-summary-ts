@@ -109,6 +109,10 @@ export class ConfigValidator {
         },
         storage: {
           keepOriginalVideo: false,
+          retentionEnabled: true,
+          convertAfterDays: 3,
+          includeBak: true,
+          scanIntervalHours: 24,
           maxFileAgeDays: 30,
         },
       },

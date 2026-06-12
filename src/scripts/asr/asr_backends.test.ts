@@ -219,6 +219,46 @@ describe('asr_backends', () => {
     require('fs').unlinkSync(tmp);
   });
 
+  test('normalizes screenshot global replacement corrections', () => {
+    const configuredCorrections = {
+      safe: {
+        小随: '小岁',
+        吓头: '下头',
+        c级: '岁己',
+        拜血: '败犬',
+        婚姿板: '灰泽满',
+        灰色本: '灰泽满',
+        饼干脆: '饼干岁',
+        小碎: '小岁',
+        小c: '小岁',
+        小四: '小岁',
+        会在卖: '灰泽满',
+        会在买: '灰泽满',
+        灰色板: '灰泽满',
+        瑞评: '锐评',
+        贵子: '柜子',
+        黑家: '回家',
+        会这么: '灰泽满',
+        小睡: '小岁',
+        小咖: '小果',
+        叶子鸡: '椰子鸡',
+        小凯: '小琴',
+        灰精版: '灰泽满'
+      }
+    };
+    const resolved = asr.resolveAsrHotwords({ asr: { corrections: configuredCorrections } });
+
+    expect(resolved.corrections.safe).toEqual(expect.arrayContaining([
+      { from: '婚姿板', to: '灰泽满' },
+      { from: '灰色本', to: '灰泽满' },
+      { from: '灰精版', to: '灰泽满' },
+      { from: '小咖', to: '小果' },
+      { from: '叶子鸡', to: '椰子鸡' }
+    ]));
+    expect(asr.applyCorrectionsToText('婚姿板和灰色本在瑞评叶子鸡，小咖也来了', resolved.corrections))
+      .toBe('灰泽满和灰泽满在锐评椰子鸡，小果也来了');
+  });
+
   test('contextual aliases do not replace unrelated text and random stays random', () => {
     const corrections = {
       safe: [{ from: '岁几', to: '岁己' }],

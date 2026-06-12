@@ -147,6 +147,7 @@ def main():
     parser.add_argument('--tid', type=int, default=DEFAULT_TID, help='分区ID(默认21=日常)')
     parser.add_argument('--cover', default=None, help='封面图片路径')
     parser.add_argument('--dynamic', default=None, help='动态文案')
+    parser.add_argument('--source-desc', default=None, help='来源描述，如：栞栞Shiori 直播《小栞来！》2026-06-06。会自动拼接到简介末尾。')
     
     args = parser.parse_args()
     
@@ -155,10 +156,15 @@ def main():
     credential = build_credential()
     print("[INFO] 凭证已创建")
     
+    # 拼接来源信息到简介
+    final_desc = args.desc
+    if args.source_desc:
+        final_desc = final_desc.rstrip() + '\n\n来源：' + args.source_desc
+
     result = asyncio.run(upload_video(
         video_path=args.video,
         title=args.title,
-        desc=args.desc,
+        desc=final_desc,
         tags=tags,
         tid=args.tid,
         cover_path=args.cover,

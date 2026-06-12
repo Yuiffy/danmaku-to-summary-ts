@@ -604,7 +604,21 @@ async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, confi
             '- If the streamer continues explaining the same incident after a short pause, extend endTime until that explanation is complete.',
             '- Stop before a truly new topic, gift thanks, unrelated chat, or reading unrelated danmaku.',
             '- Prefer a natural silence after a complete sentence; never end in the middle of a sentence or continuous story.',
-            '{"clips":[{"startTime":"HH:MM:SS","endTime":"HH:MM:SS","title":"标题，24字内","reason":"一句话说明为什么值得看","score":1}]}',
+            '',
+            '标题风格很重要，要像人工改过的 B 站切片标题，抓冲突和节目效果，而不是写摘要。',
+            '标题要求：',
+            '- 18-42 字，最多 52 字；可以稍长一点换取信息量，不要写成空泛短句。',
+            '- 必须点出一个具体看点：反差、翻车、嘴硬、弹幕急眼/破防/炸锅、岁己锐评、离谱发言、操作失误、当场社死、越说越怪等。',
+            '- 优先使用主播原话、弹幕反应、游戏/事件名，形成“具体事件 + 反应/槽点”的结构。',
+            '- 不要用“直播有趣片段”“精彩瞬间”“很可爱的一段”“岁己聊到了XX”这种弱标题。',
+            '- 不要堆关键词，不要解释标题，不要加引号。标题可以不写“岁己：”，投稿阶段会另外处理前缀。',
+            '人工标题参考风格：',
+            '- 第二次复活怎么还往回走，弹幕急死了，路痴实锤',
+            '- 蚊子式刮痧打剑盾大怪，怪都睡着了',
+            '- 妈妈突然进房间，赶紧把电脑画面切到桌面',
+            '- 弹幕突然聊戒色，岁己当场社死',
+            '- 三斤小龙虾算减肥？这逻辑没法反驳',
+            '{"clips":[{"startTime":"HH:MM:SS","endTime":"HH:MM:SS","title":"人工风格标题，18-42字","reason":"一句话说明为什么值得看","score":1}]}',
             '',
             `直播标题: ${info.streamTitle || '未知'}`,
             `录制时间: ${info.recordedAt || '未知'}`,
@@ -632,7 +646,7 @@ async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, confi
                     start: clamp(start, chunk.start, chunk.end),
                     end: clamp(end, chunk.start, chunk.end),
                     duration,
-                    title: String(clip.title || '').trim() || '岁己：直播有趣片段',
+                    title: String(clip.title || '').trim() || '小岁：直播有趣片段',
                     reason: String(clip.reason || '').trim(),
                     score: Number(clip.score || 0) + 100 - index,
                     candidateIndex: `chunk-${chunk.index}-${index + 1}`,
@@ -654,10 +668,10 @@ async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, confi
 
 function buildFallbackTitle(candidate) {
     const reason = String(candidate.reason || '');
-    if (reason.includes('danmaku_density')) return '岁己：弹幕突然很在意的片段';
-    if (reason.includes('danmaku_keyword')) return '岁己：弹幕觉得这里很有趣';
-    if (reason.includes('subtitle_keyword')) return '岁己：很有岁己想法的一段';
-    return '岁己：直播有趣片段';
+    if (reason.includes('danmaku_density')) return '小岁：弹幕突然很在意的片段';
+    if (reason.includes('danmaku_keyword')) return '小岁：弹幕觉得这里很有趣';
+    if (reason.includes('subtitle_keyword')) return '小岁：很有小岁想法的一段';
+    return '小岁：直播有趣片段';
 }
 
 function parseRecordingInfo(mediaPath, context = {}) {
@@ -697,7 +711,7 @@ function normalizeAiClips(rawClips, candidates, totalDuration, config) {
                 start: clamp(start, 0, totalDuration),
                 end: clamp(end, 0, totalDuration),
                 duration,
-                title: String(clip.title || '').trim() || (base ? buildFallbackTitle(base) : '岁己：直播有趣片段'),
+                title: String(clip.title || '').trim() || (base ? buildFallbackTitle(base) : '小岁：直播有趣片段'),
                 reason: String(clip.reason || base?.reason || '').trim(),
                 candidateIndex: base?.index || clip.candidateIndex || index + 1,
                 score: Number(base?.score || 0),
@@ -736,7 +750,21 @@ async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config,
         '- If the streamer continues explaining the same incident after a short pause, extend endTime until that explanation is complete.',
         '- Stop before a truly new topic, gift thanks, unrelated chat, or reading unrelated danmaku.',
         '- Prefer a natural silence after a complete sentence; never end in the middle of a sentence or continuous story.',
-        '{"clips":[{"candidateIndex":1,"startTime":"HH:MM:SS","endTime":"HH:MM:SS","title":"标题，20字内","reason":"一句话说明为什么值得看"}]}',
+        '',
+        '标题风格很重要，要像人工改过的 B 站切片标题，抓冲突和节目效果，而不是写摘要。',
+        '标题要求：',
+        '- 18-42 字，最多 52 字；可以稍长一点换取信息量，不要写成空泛短句。',
+        '- 必须点出一个具体看点：反差、翻车、嘴硬、弹幕急眼/破防/炸锅、岁己锐评、离谱发言、操作失误、当场社死、越说越怪等。',
+        '- 优先使用主播原话、弹幕反应、游戏/事件名，形成“具体事件 + 反应/槽点”的结构。',
+        '- 不要用“直播有趣片段”“精彩瞬间”“很可爱的一段”“岁己聊到了XX”这种弱标题。',
+        '- 不要堆关键词，不要解释标题，不要加引号。标题可以不写“岁己：”，投稿阶段会另外处理前缀。',
+        '人工标题参考风格：',
+        '- 第二次复活怎么还往回走，弹幕急死了，路痴实锤',
+        '- 蚊子式刮痧打剑盾大怪，怪都睡着了',
+        '- 妈妈突然进房间，赶紧把电脑画面切到桌面',
+        '- 弹幕突然聊戒色，岁己当场社死',
+        '- 三斤小龙虾算减肥？这逻辑没法反驳',
+        '{"clips":[{"candidateIndex":1,"startTime":"HH:MM:SS","endTime":"HH:MM:SS","title":"人工风格标题，18-42字","reason":"一句话说明为什么值得看"}]}',
         '',
         `直播标题: ${info.streamTitle || '未知'}`,
         `录制时间: ${info.recordedAt || '未知'}`,
@@ -790,7 +818,7 @@ function filterClipsBySelection(clips, selectedIndices = null) {
 
 function buildReviewMarkdown(results, metadata) {
     const lines = [
-        '# 岁己直播有趣片段 review',
+        '# 小岁直播有趣切片 review',
         '',
         `直播: ${metadata.streamTitle || metadata.sourceFileName || '未知'}`,
         `录制时间: ${metadata.recordedAt || '未知'}`,
@@ -811,7 +839,7 @@ function buildReviewMarkdown(results, metadata) {
 
 function buildPlanReviewMarkdown(clips, metadata) {
     const lines = [
-        '# 岁己直播有趣片段计划',
+        '# 小岁直播有趣切片计划',
         '',
         `直播: ${metadata.streamTitle || metadata.sourceFileName || '未知'}`,
         `录制时间: ${metadata.recordedAt || '未知'}`,
@@ -1027,7 +1055,9 @@ async function generateOwnStreamClips(options = {}) {
                 end: window.end,
                 reason: clip.reason
             }),
-            tags: [streamerName, '岁己', '小岁', '虚拟主播', '直播切片']
+            tags: info.roomId === '25788785'
+                ? ['小岁', '虚拟主播', '直播切片', '岁AI切片']
+                : [streamerName, '虚拟主播', '直播切片']
         };
         let mediaResult = null;
         let mediaError = null;

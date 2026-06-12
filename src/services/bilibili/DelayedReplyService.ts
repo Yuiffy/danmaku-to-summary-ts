@@ -721,6 +721,12 @@ export class DelayedReplyService implements IDelayedReplyService {
    * 执行延迟回复
    */
   private async executeDelayedReply(task: DelayedReplyTask): Promise<void> {
+    let publishFailureContext: {
+      dynamicId: string;
+      replyText?: string;
+      imagePath?: string;
+    } | null = null;
+
     try {
       // 清除定时器
       const timer = this.timers.get(task.taskId);
@@ -918,6 +924,11 @@ export class DelayedReplyService implements IDelayedReplyService {
           images: imagePath
         });
       } catch (publishError) {
+        publishFailureContext = {
+          dynamicId: String(finalDynamic.id),
+          replyText,
+          imagePath: imagePath ? imagePath[0] : undefined
+        };
         // 不在这里发送通知，由外部 catch 统一处理
         throw publishError;
       }
@@ -1023,22 +1034,40 @@ export class DelayedReplyService implements IDelayedReplyService {
       if (this.notifier) {
         const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
         const anchorName = anchorConfig?.name || '未知主播';
-        
-        await this.notifier.notifyProcessError(
-          anchorName,
-          '延迟回复执行',
-          task.error || '未知错误',
-          task.roomId,
-          {
-            taskId: task.taskId,
-            uid: task.uid,
-            goodnightTextPath: task.goodnightTextPath,
-            comicImagePath: task.comicImagePath,
-            imageGenerationInfo: this.getComicGenerationNotificationInfo(task.comicImagePath),
-            replyText,
-            error: error instanceof Error ? error.stack : String(error)
-          }
-        );
+
+        if (publishFailureContext) {
+          const retryInfo = isBlacklistError || isCredentialError || this.isPermanentReplyError(error)
+            ? '不会自动重试'
+            : `已达到最大重试次数 ${task.retryCount}/${maxRetries}`;
+          const errorMessage = `${task.error || '未知错误'}\n\n房间ID: ${task.roomId}\n任务ID: ${task.taskId}\nUID: ${task.uid || '未知'}\n重试状态: ${retryInfo}`;
+
+          await this.notifier.notifyReplyFailure(
+            publishFailureContext.dynamicId,
+            errorMessage,
+            anchorName,
+            publishFailureContext.replyText || replyText,
+            undefined,
+            publishFailureContext.imagePath,
+            this.getComicGenerationNotificationInfo(task.comicImagePath),
+            this.getTextGenerationNotificationInfo(task.goodnightTextPath, task.comicImagePath)
+          );
+        } else {
+          await this.notifier.notifyProcessError(
+            anchorName,
+            '延迟回复执行',
+            task.error || '未知错误',
+            task.roomId,
+            {
+              taskId: task.taskId,
+              uid: task.uid,
+              goodnightTextPath: task.goodnightTextPath,
+              comicImagePath: task.comicImagePath,
+              imageGenerationInfo: this.getComicGenerationNotificationInfo(task.comicImagePath),
+              replyText,
+              error: error instanceof Error ? error.stack : String(error)
+            }
+          );
+        }
       }
     }
   }
@@ -1381,6 +1410,9 @@ export class DelayedReplyService implements IDelayedReplyService {
     const maybeError = error as any;
     const message = error instanceof Error ? error.message : String(error);
     const normalized = message.toLowerCase();
+    if (this.isTransientNetworkError(normalized)) {
+      return false;
+    }
 
     return (
       maybeError?.code === 'AUTHENTICATION_ERROR' ||
@@ -1393,6 +1425,22 @@ export class DelayedReplyService implements IDelayedReplyService {
       normalized.includes('账号未登录') ||
       normalized.includes('未登录') ||
       normalized.includes('登录失效')
+    );
+  }
+
+  private isTransientNetworkError(message?: string): boolean {
+    const normalized = String(message || '').toLowerCase();
+    return (
+      normalized.includes('cannot connect') ||
+      normalized.includes('connect to host') ||
+      normalized.includes('timeout') ||
+      normalized.includes('timed out') ||
+      normalized.includes('etimedout') ||
+      normalized.includes('econnreset') ||
+      normalized.includes('enotfound') ||
+      normalized.includes('network') ||
+      normalized.includes('信号灯超时时间已到') ||
+      normalized.includes('淇″彿鐏秴鏃舵椂闂村凡鍒?')
     );
   }
 
