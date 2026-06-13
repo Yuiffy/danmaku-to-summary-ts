@@ -408,7 +408,7 @@ async function segmentBurstWithAI(burst, parsed, streamerName, info, config = {}
         '',
         '你需要决定切片的起止时间（HH:MM:SS 格式），精确到秒即可，要切在句子边界上。',
         '注意：',
-        '- 选取的区间不要超过 3 分钟，太长观众看不完。',
+        '- 选取的区间不要超过 3 分钟，太长观众看不完。最短不少于 30 秒，太短的切片没有观看价值。',
         '- 如果话题分成了几个明显独立的段落，可以切 2-3 段（每段分别给标题简介）。',
         '- 如果整段都不超过 2 分钟且话题连贯，切 1 段就好。',
         '- 如果命中的行实际是唱歌、哼旋律、ASR 误识别，返回空 clips: []。',
@@ -766,6 +766,51 @@ function escapeSubtitlePathForFfmpegFilter(srtPath) {
         .replace(/'/g, "\\'");
 }
 
+/**
+ * 为切片生成封面图：从视频截取关键帧，添加居中描边标题文字
+ */
+async function generateClipCover(videoPath, title, outputDir, info = {}) {
+    const { spawn } = require('child_process');
+    const coverBase = path.basename(videoPath, path.extname(videoPath));
+    const coverPath = path.join(outputDir, `${coverBase}_cover.jpg`);
+
+    // 用 Python 调用 cover_generator.py 生成封面
+    const scriptPath = path.join(__dirname, 'cover_generator.py');
+    const subtitle = info.streamerName || '';
+
+    return new Promise((resolve, reject) => {
+        const args = ['python', scriptPath, videoPath,
+            '--title', title,
+            '--output', coverPath,
+            '--position', 'center',
+            '--key-frame',
+        ];
+        if (subtitle) {
+            args.push('--subtitle', subtitle);
+        }
+
+        // args[0] is 'python', rest are script + args
+        const child = spawn(args[0], args.slice(1), {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            windowsHide: true,
+        });
+
+        let stderr = '';
+        child.stdout.on('data', (d) => process.stdout.write(d));
+        child.stderr.on('data', (d) => { stderr += d.toString(); process.stderr.write(d); });
+
+        child.on('close', (code) => {
+            if (code === 0 && fs.existsSync(coverPath)) {
+                console.log(`🖼️  封面已生成: ${coverPath}`);
+                resolve(coverPath);
+            } else {
+                reject(new Error(`cover_generator 退出码 ${code}: ${stderr.slice(-300)}`));
+            }
+        });
+        child.on('error', reject);
+    });
+}
+
 async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
     const ffmpegPath = config.ffmpegPath || 'ffmpeg';
     const duration = String(Math.max(0.1, window.duration));
@@ -1057,6 +1102,16 @@ async function generateTopicClips(options = {}) {
             console.warn(`⚠️  话题切片媒体生成失败，保留字幕和元数据: ${clipError.message}`);
         }
 
+        // 生成封面（从切片视频截取关键帧 + 添加标题文字）
+        let coverPath = null;
+        if (mediaResult?.path && fs.existsSync(mediaResult.path)) {
+            try {
+                coverPath = await generateClipCover(mediaResult.path, copy.title, outputRoot, info);
+            } catch (coverErr) {
+                console.warn(`⚠️  封面生成失败，跳过: ${coverErr.message}`);
+            }
+        }
+
         const metadata = {
             version: 1,
             generatedAt: new Date().toISOString(),
@@ -1082,6 +1137,7 @@ async function generateTopicClips(options = {}) {
                 srtPath,
                 metadataPath,
                 copyPath,
+                coverPath,
                 burnedSubtitles: Boolean(mediaResult?.burnedSubtitles),
                 subtitleBurnFallbackUsed: Boolean(mediaResult?.fallbackUsed),
                 srtSegmentCount: srtResult.segmentCount,
