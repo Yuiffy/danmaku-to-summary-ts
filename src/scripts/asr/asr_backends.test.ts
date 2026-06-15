@@ -253,6 +253,55 @@ describe('asr_backends', () => {
     require('fs').unlinkSync(tmp);
   });
 
+  test('logs correction details with original matched text', () => {
+    const result = {
+      backend: 'test',
+      segments: [{ start: 0, end: 1, text: '早点睡几点睡' }]
+    };
+    const tmp = require('path').join(require('os').tmpdir(), `asr-correction-log-${Date.now()}.srt`);
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      asr.writeSrt(result, tmp, {
+        max_chars_per_line: 30,
+        corrections: [{ from: '睡几', to: '岁己' }]
+      });
+      const logText = logSpy.mock.calls.map(args => args.join(' ')).join('\n');
+      expect(logText).toContain('[ASR corrections] safe 睡几 -> 岁己 x1');
+      expect(logText).toContain('sample="早点睡几点睡" => "早点岁己点睡"');
+    } finally {
+      logSpy.mockRestore();
+      require('fs').unlinkSync(tmp);
+    }
+  });
+
+  test('applies configured sui name and fan-name ASR correction variants', () => {
+    const corrections = {
+      safe: {
+        c级: '岁己',
+        C级: '岁己',
+        'c 级': '岁己',
+        'C 级': '岁己',
+        'c 大叔': '岁大叔',
+        'C 大叔': '岁大叔',
+        饼干脆: '饼干岁',
+        饼干碎: '饼干岁',
+        碎戟: '岁己',
+        碎几: '岁己',
+        碎姐: '岁己'
+      }
+    };
+    const resolved = asr.resolveAsrHotwords({ asr: { corrections } });
+
+    expect(asr.applyCorrectionsToText('原来这个 c 级的天赋搁这呢', resolved.corrections))
+      .toBe('原来这个 岁己的天赋搁这呢');
+    expect(asr.applyCorrectionsToText('这个 c 大叔嗯嗯嗯儿娃娃哪儿啊啊炸', resolved.corrections))
+      .toBe('这个 岁大叔嗯嗯嗯儿娃娃哪儿啊啊炸');
+    expect(asr.applyCorrectionsToText('饼干碎和饼干脆都来了', resolved.corrections))
+      .toBe('饼干岁和饼干岁都来了');
+    expect(asr.applyCorrectionsToText('碎戟碎几碎姐今天都被识别错了', resolved.corrections))
+      .toBe('岁己岁己岁己今天都被识别错了');
+  });
+
   test('normalizes screenshot global replacement corrections', () => {
     const configuredCorrections = {
       safe: {

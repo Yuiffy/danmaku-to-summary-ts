@@ -482,14 +482,77 @@ function normalizeCorrectionsForApply(corrections = []) {
     return { safe: [], contextual: [] };
 }
 
-function applyCorrectionList(text, corrections = []) {
+function makeCorrectionStats() {
+    return new Map();
+}
+
+function countMatches(text, pattern) {
+    const matches = String(text || '').match(pattern);
+    return matches ? matches.length : 0;
+}
+
+function compactCorrectionSample(text) {
+    return String(text || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 90);
+}
+
+function recordCorrectionStats(stats, correction, type, count, before, after) {
+    if (!stats || count <= 0) {
+        return;
+    }
+    const key = `${type}\u0000${correction.from}\u0000${correction.to}`;
+    const existing = stats.get(key) || {
+        type,
+        from: correction.from,
+        to: correction.to,
+        count: 0,
+        examples: []
+    };
+    existing.count += count;
+    if (existing.examples.length < 3) {
+        existing.examples.push({
+            before: compactCorrectionSample(before),
+            after: compactCorrectionSample(after)
+        });
+    }
+    stats.set(key, existing);
+}
+
+function logCorrectionStats(stats, label = 'ASR corrections') {
+    if (!stats || stats.size === 0) {
+        return;
+    }
+    const entries = Array.from(stats.values()).sort((a, b) => b.count - a.count);
+    const total = entries.reduce((sum, item) => sum + item.count, 0);
+    console.log(`[${label}] applied ${total} replacements across ${entries.length} rules`);
+    entries.slice(0, 12).forEach((item) => {
+        const sample = item.examples[0]
+            ? ` sample="${item.examples[0].before}" => "${item.examples[0].after}"`
+            : '';
+        console.log(`[${label}] ${item.type} ${item.from} -> ${item.to} x${item.count}${sample}`);
+    });
+    if (entries.length > 12) {
+        console.log(`[${label}] ... ${entries.length - 12} more rules omitted`);
+    }
+}
+
+function applyCorrectionList(text, corrections = [], stats = null, type = 'safe') {
     let output = String(text || '');
     const normalized = Array.isArray(corrections) ? corrections : [];
     const ordered = normalized
         .filter(item => item && item.from && item.to)
         .sort((a, b) => String(b.from).length - String(a.from).length);
     for (const correction of ordered) {
-        output = output.replace(new RegExp(escapeRegExp(correction.from), 'g'), correction.to);
+        const pattern = new RegExp(escapeRegExp(correction.from), 'g');
+        const before = output;
+        const count = countMatches(before, pattern);
+        if (count === 0) {
+            continue;
+        }
+        output = before.replace(pattern, correction.to);
+        recordCorrectionStats(stats, correction, type, count, before, output);
     }
     return output;
 }
@@ -531,12 +594,20 @@ function applyCorrectionsToAsrResult(result, corrections = []) {
         .map(segment => String(segment.text || ''))
         .join('');
     const applicable = resolveApplicableCorrections(sourceText, corrections);
+    const stats = makeCorrectionStats();
+    const correctedSegments = (Array.isArray(result?.segments) ? result.segments : []).map(segment => ({
+        ...segment,
+        text: applyCorrectionList(
+            applyCorrectionList(segment.text, applicable.safe, stats, 'safe'),
+            applicable.contextual,
+            stats,
+            'contextual'
+        )
+    }));
+    logCorrectionStats(stats, 'ASR corrections');
     return {
         ...result,
-        segments: (Array.isArray(result?.segments) ? result.segments : []).map(segment => ({
-            ...segment,
-            text: applyCorrectionList(applyCorrectionList(segment.text, applicable.safe), applicable.contextual)
-        }))
+        segments: correctedSegments
     };
 }
 
@@ -894,10 +965,13 @@ function writeSrt(result, srtPath, subtitleConfig = {}) {
         .map(segment => String(segment.text || ''))
         .join('');
     const applicableCorrections = resolveApplicableCorrections(sourceText, cfg.corrections);
+    const correctionStats = makeCorrectionStats();
     result.segments.forEach((segment) => {
         const correctedText = applyCorrectionList(
-            applyCorrectionList(segment.text, applicableCorrections.safe),
-            applicableCorrections.contextual
+            applyCorrectionList(segment.text, applicableCorrections.safe, correctionStats, 'safe'),
+            applicableCorrections.contextual,
+            correctionStats,
+            'contextual'
         );
         const content = cfg.strip_punctuation ? stripSubtitlePunctuation(correctedText) : correctedText;
         if (!content) {
@@ -911,6 +985,7 @@ function writeSrt(result, srtPath, subtitleConfig = {}) {
         lines.push('');
         lineIndex += 1;
     });
+    logCorrectionStats(correctionStats, 'ASR corrections');
     fs.writeFileSync(srtPath, `${lines.join('\n').trim()}\n`, 'utf8');
 }
 
