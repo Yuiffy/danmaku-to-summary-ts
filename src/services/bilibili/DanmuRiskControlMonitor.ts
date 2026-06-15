@@ -1,8 +1,8 @@
-import { spawn } from 'child_process';
 import * as path from 'path';
 import { getLogger } from '../../core/logging/LogManager';
 import { ConfigProvider } from '../../core/config/ConfigProvider';
 import { WeChatWorkNotifier } from '../notification/WeChatWorkNotifier';
+import { spawnPython } from '../../utils/pythonProcess';
 
 interface DanmuCheckResult {
   roomId: string;
@@ -153,7 +153,7 @@ export class DanmuRiskControlMonitor {
     const args = [scriptPath, roomId, sessdata, biliJct, dedeUserId];
 
     const result = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-      const pythonProcess = spawn('python', args, {
+      const pythonProcess = spawnPython(args, {
         windowsHide: true
       });
 
@@ -161,11 +161,11 @@ export class DanmuRiskControlMonitor {
       let stderr = '';
 
       pythonProcess.stdout.on('data', (data) => {
-        stdout += data.toString();
+        stdout += data.toString('utf-8');
       });
 
       pythonProcess.stderr.on('data', (data) => {
-        stderr += data.toString();
+        stderr += data.toString('utf-8');
       });
 
       pythonProcess.on('close', (code) => {

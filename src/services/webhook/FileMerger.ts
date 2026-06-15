@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import { spawn } from 'child_process';
 import { getLogger } from '../../core/logging/LogManager';
 import { LiveSegment } from './LiveSessionManager';
+import { ProcessingAlertService } from '../monitoring/ProcessingAlertService';
 
 /**
  * 文件合并器
@@ -56,6 +57,8 @@ export class FileMerger {
       // 注意：视频流直接复制，音频流重新编码为AAC以确保不同片段间的音频格式一致性
       // 直接 -c copy 会因为空白片段（libx264+AAC）与原始FLV流参数不匹配导致音频流断裂
       this.logger.info(`开始执行ffmpeg合并: ${path.basename(outputPath)}`);
+      await ProcessingAlertService.notifyHighCpuAtMergeStart(outputPath);
+      const mergeStartedAt = Date.now();
       await this.runFfmpeg([
         '-f', 'concat',
         '-safe', '0',
@@ -70,6 +73,15 @@ export class FileMerger {
       ], `合并视频 ${path.basename(outputPath)}`);
 
       // 删除临时文件列表
+      const mergeElapsedSeconds = (Date.now() - mergeStartedAt) / 1000;
+      await ProcessingAlertService.notifyIfSlowStage(
+        '合并',
+        mergeElapsedSeconds,
+        ProcessingAlertService.getThresholds().mergeSlowSeconds,
+        outputPath,
+        { segments: segments.length }
+      );
+
       fs.unlinkSync(fileListPath);
 
       // 清理空白片段临时文件

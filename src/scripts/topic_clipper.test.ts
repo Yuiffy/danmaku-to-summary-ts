@@ -216,4 +216,22 @@ describe('topic_clipper', () => {
     expect(markdown).toContain('D:/clips/two.mp4');
     expect(markdown).toContain('D:/clips/one_投稿文案.md');
   });
+  test('normalizes Windows backslashes in topic notification paths', () => {
+    const markdown = topicClipper.buildTopicNotifyMarkdown([
+      {
+        window: { start: 10, end: 42, matchedKeywords: ['keyword'] },
+        output: {
+          mediaPath: 'D:\\files\\videos\\topic_clips\\one.mp4',
+          copyPath: 'D:\\files\\videos\\topic_clips\\one.md'
+        }
+      }
+    ], {
+      outputRoot: 'D:\\files\\videos\\topic_clips'
+    });
+
+    expect(markdown).toContain('D:/files/videos/topic_clips');
+    expect(markdown).toContain('D:/files/videos/topic_clips/one.mp4');
+    expect(markdown).toContain('D:/files/videos/topic_clips/one.md');
+    expect(markdown).not.toContain('D:\\files');
+  });
 });

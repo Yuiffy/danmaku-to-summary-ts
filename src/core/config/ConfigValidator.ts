@@ -290,6 +290,14 @@ export class ConfigValidator {
       },
       monitoring: {
         enabled: false,
+        processingAlerts: {
+          enabled: true,
+          cpuHighPercent: 85,
+          mergeSlowSeconds: 480,
+          screenshotSlowSeconds: 300,
+          asrSlowSeconds: 900,
+          cooldownMs: 1800000,
+        },
         metrics: {
           enabled: false,
           port: 9090,

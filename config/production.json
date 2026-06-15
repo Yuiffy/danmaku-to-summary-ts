@@ -35,7 +35,8 @@
       1741667419,
       1713546334,
       1713548468,
-      1986461465
+      1986461465,
+      25034104
     ],
     "formats": [
       ".m4a",
@@ -711,6 +712,17 @@
         "enableComicGeneration": true,
         "enableDelayedReply": true
       },
+      "25034104": {
+        "uid": "2132180406",
+        "audioOnly": true,
+        "referenceImage": "public/reference_images/明前奶绿.png",
+        "characterDescription": "明前奶绿，灰发绿瞳、带绿色挑染和心形呆毛的花店店员少女，喜欢百合。粉丝是奶糖花。",
+        "anchorName": "明前奶绿",
+        "fanName": "奶糖花",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true
+      },
       "129548": {
         "audioOnly": true,
         "characterDescription": "铝热剂手雷（昵称铝子），喜欢打FPS游戏的小伙，穿着蓝粉配色外套",
@@ -833,6 +845,14 @@
   },
   "monitoring": {
     "enabled": true,
+    "processingAlerts": {
+      "enabled": true,
+      "cpuHighPercent": 85,
+      "mergeSlowSeconds": 480,
+      "screenshotSlowSeconds": 300,
+      "asrSlowSeconds": 900,
+      "cooldownMs": 1800000
+    },
     "metrics": {
       "enabled": false,
       "port": 9090
@@ -849,7 +869,6 @@
         "word": "岁己",
         "weight": 15,
         "aliases": [
-          "岁几",
           "碎机",
           "碎即",
           "穗即",
@@ -857,6 +876,19 @@
           "岁吉",
           "岁己sui",
           "岁己苏伊"
+        ],
+        "contextual_aliases": [
+          "岁几"
+        ],
+        "require_nearby": [
+          "SUI",
+          "小岁",
+          "饼干岁",
+          "主播",
+          "直播",
+          "前辈",
+          "姐",
+          "晚上好"
         ],
         "hotword_terms": [
           "小岁",

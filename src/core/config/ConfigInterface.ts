@@ -419,6 +419,14 @@ export interface WeChatWorkConfig {
 // 监控配置
 export interface MonitoringConfig {
   enabled: boolean;
+  processingAlerts?: {
+    enabled: boolean;
+    cpuHighPercent: number;
+    mergeSlowSeconds: number;
+    screenshotSlowSeconds: number;
+    asrSlowSeconds: number;
+    cooldownMs: number;
+  };
   metrics: {
     enabled: boolean;
     port: number;

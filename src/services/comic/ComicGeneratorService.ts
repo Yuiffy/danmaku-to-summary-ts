@@ -4,6 +4,7 @@ import { spawn } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { WeChatWorkNotifier } from '../notification/WeChatWorkNotifier';
+import { spawnPython } from '../../utils/pythonProcess';
 
 /**
  * 漫画生成服务接口
@@ -92,8 +93,7 @@ export class ComicGeneratorService implements IComicGeneratorService {
  
       // 调用Python脚本
       return new Promise((resolve, reject) => {
-        const pythonProcess = spawn('python', args, {
-          env: process.env,
+        const pythonProcess = spawnPython(args, {
           cwd: path.dirname(this.pythonScriptPath),
           stdio: ['pipe', 'pipe', 'pipe'],
           windowsHide: true
@@ -103,12 +103,12 @@ export class ComicGeneratorService implements IComicGeneratorService {
         let errorOutput = '';
 
         pythonProcess.stdout.on('data', (data) => {
-          output += data.toString();
+          output += data.toString('utf-8');
           this.logger.debug(`Python输出: ${data.toString().trim()}`);
         });
 
         pythonProcess.stderr.on('data', (data) => {
-          errorOutput += data.toString();
+          errorOutput += data.toString('utf-8');
           this.logger.warn(`Python错误: ${data.toString().trim()}`);
         });
 
@@ -218,7 +218,7 @@ export class ComicGeneratorService implements IComicGeneratorService {
 
       // 调用Python脚本的批量模式
       return new Promise((resolve, reject) => {
-        const pythonProcess = spawn('python', [this.pythonScriptPath, '--batch', directory], {
+        const pythonProcess = spawnPython([this.pythonScriptPath, '--batch', directory], {
           cwd: path.dirname(this.pythonScriptPath),
           stdio: ['pipe', 'pipe', 'pipe'],
           windowsHide: true
@@ -228,12 +228,12 @@ export class ComicGeneratorService implements IComicGeneratorService {
         let errorOutput = '';
 
         pythonProcess.stdout.on('data', (data) => {
-          output += data.toString();
+          output += data.toString('utf-8');
           this.logger.debug(`Python批量输出: ${data.toString().trim()}`);
         });
 
         pythonProcess.stderr.on('data', (data) => {
-          errorOutput += data.toString();
+          errorOutput += data.toString('utf-8');
           this.logger.warn(`Python批量错误: ${data.toString().trim()}`);
         });
 

@@ -12,6 +12,7 @@ import { LiveSessionManager, LiveSegment } from '../LiveSessionManager';
 import { FileMerger } from '../FileMerger';
 import { VideoScreenshotService } from '../../video/VideoScreenshotService';
 import { listRelevantProcesses, terminateProcessTree } from '../../../utils/processCleanup';
+import { ProcessingAlertService } from '../../monitoring/ProcessingAlertService';
 
 const queueManager = require(path.join(process.cwd(), 'src', 'scripts', 'whisper_queue_manager'));
 const ASR_PHASE_DONE_SENTINEL = '[[ASR_PHASE_DONE]]';
@@ -949,6 +950,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     const config = ConfigProvider.getConfig();
     const processTimeout = config.webhook.timeouts.processTimeout || 30 * 60 * 1000;
     let timedOut = false;
+    let asrStartedAt: number | null = null;
 
     const timeoutId = setTimeout(async () => {
       timedOut = true;
@@ -984,8 +986,21 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         const output = data.toString().trim();
         if (output) {
           this.logger.info(`[Mikufans队列Worker] ${output}`);
+          if (!asrStartedAt && output.includes('-> [ASR]')) {
+            asrStartedAt = Date.now();
+          }
           void this.handleDelayedReplyReadyOutput(output, task.mediaPath);
           if (output.includes(ASR_PHASE_DONE_SENTINEL) || output.includes(LEGACY_WHISPER_PHASE_DONE_SENTINEL)) {
+            if (asrStartedAt) {
+              const asrElapsedSeconds = (Date.now() - asrStartedAt) / 1000;
+              void ProcessingAlertService.notifyIfSlowStage(
+                'ASR',
+                asrElapsedSeconds,
+                ProcessingAlertService.getThresholds().asrSlowSeconds,
+                task.mediaPath,
+                { taskId: task.id, roomId }
+              );
+            }
             this.logger.info(`Mikufans队列Worker已完成ASR阶段，释放队列槽位，AI/漫画阶段继续后台执行: ${path.basename(task.mediaPath)}`);
             releaseWorkerSlot('asr-phase-done');
           }

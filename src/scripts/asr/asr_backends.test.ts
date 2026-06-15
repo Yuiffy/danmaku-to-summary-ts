@@ -200,6 +200,40 @@ describe('asr_backends', () => {
     ]));
   });
 
+  test('keeps sleep-related sui homophones out of safe corrections', () => {
+    const result = asr.resolveAsrHotwords({
+      asr: {
+        common_hotwords: [
+          {
+            word: '岁己',
+            weight: 20,
+            aliases: ['碎机', '碎即'],
+            contextual_aliases: ['岁几'],
+            require_nearby: ['SUI', '小岁', '饼干岁', '主播', '直播', '前辈', '姐', '晚上好'],
+            hotword_terms: ['岁己SUI', '小岁']
+          }
+        ]
+      }
+    });
+
+    expect(result.hotwordWords).toEqual(['岁己', '碎机', '碎即', '岁己SUI', '小岁']);
+    expect(result.corrections.safe).toEqual(expect.not.arrayContaining([
+      { from: '岁几', to: '岁己' }
+    ]));
+    expect(result.corrections.contextual).toEqual(expect.arrayContaining([
+      {
+        from: '岁几',
+        to: '岁己',
+        require_nearby: ['SUI', '小岁', '饼干岁', '主播', '直播', '前辈', '姐', '晚上好']
+      }
+    ]));
+    expect(asr.applyCorrectionsToText('这个可能就是多一起岁几天', result.corrections))
+      .toBe('这个可能就是多一起岁几天');
+    expect(asr.applyCorrectionsToText('早点岁几点睡', result.corrections)).toBe('早点岁几点睡');
+    expect(asr.applyCorrectionsToText('岁几晚上好', result.corrections)).toBe('岁己晚上好');
+    expect(asr.applyCorrectionsToText('岁几前辈今天来了', result.corrections)).toBe('岁己前辈今天来了');
+  });
+
   test('applies corrections during srt output', () => {
     const result = {
       backend: 'test',

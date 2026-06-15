@@ -928,11 +928,15 @@ async function sendWeChatMarkdown(webhookUrl, content) {
     return true;
 }
 
+function toFwdSlash(s) {
+    return String(s || '').replace(/\\+/g, '/');
+}
+
 function buildTopicNotifyMarkdown(results = [], metadata = {}) {
     const first = results[0] || {};
     const info = metadata.copy || {};
     const windowSummary = results
-        .map(result => `- ${formatClock(result.window?.start || 0)}-${formatClock(result.window?.end || 0)}: ${result.output?.mediaPath || ''}`)
+        .map(result => `- ${formatClock(result.window?.start || 0)}-${formatClock(result.window?.end || 0)}: ${toFwdSlash(result.output?.mediaPath || '')}`)
         .join('\n');
 
     return [
@@ -943,9 +947,9 @@ function buildTopicNotifyMarkdown(results = [], metadata = {}) {
         '',
         `- 直播间: ${metadata.roomId || '未知'}`,
         `- 录制时间: ${metadata.recordedAt || '未知'}`,
-        `- 切片目录: ${metadata.outputRoot || '未知'}`,
+        `- 切片目录: ${toFwdSlash(metadata.outputRoot || '未知')}`,
         `- 命中关键词: ${(first.window?.matchedKeywords || []).join('、') || '岁己'}`,
-        `- 投稿文案: ${first.output?.copyPath || '已生成'}`,
+        `- 投稿文案: ${toFwdSlash(first.output?.copyPath || '已生成')}`,
         '',
         '切片列表:',
         windowSummary || '- 无',

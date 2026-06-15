@@ -4,12 +4,12 @@
 import fetch from 'node-fetch';
 import * as fs from 'fs';
 import * as path from 'path';
-import { spawn } from 'child_process';
 import { getLogger } from '../../core/logging/LogManager';
 import { ConfigProvider } from '../../core/config/ConfigProvider';
 import { AppError } from '../../core/errors/AppError';
 import { WeChatWorkNotifier } from '../notification/WeChatWorkNotifier';
 import { IBilibiliAPIService } from './interfaces/IBilibiliAPIService';
+import { spawnPython } from '../../utils/pythonProcess';
 import {
   BilibiliDynamic,
   PublishCommentRequest,
@@ -89,7 +89,7 @@ export class BilibiliAPIService implements IBilibiliAPIService {
 
       // 使用 spawn 替代 exec，避免弹出黑窗口
       const result = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-        const pythonProcess = spawn('python', args, {
+        const pythonProcess = spawnPython(args, {
           windowsHide: true
         });
 
@@ -103,11 +103,11 @@ export class BilibiliAPIService implements IBilibiliAPIService {
         }, 30000);
 
         pythonProcess.stdout.on('data', (data) => {
-          stdout += data.toString();
+          stdout += data.toString('utf-8');
         });
 
         pythonProcess.stderr.on('data', (data) => {
-          stderr += data.toString();
+          stderr += data.toString('utf-8');
         });
 
         pythonProcess.on('close', (code) => {
@@ -331,7 +331,7 @@ export class BilibiliAPIService implements IBilibiliAPIService {
 
       // 使用 Promise 包装 spawn
       const result = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-        const pythonProcess = spawn('python', args, {
+        const pythonProcess = spawnPython(args, {
           windowsHide: true
         });
 
@@ -339,11 +339,11 @@ export class BilibiliAPIService implements IBilibiliAPIService {
         let stderr = '';
 
         pythonProcess.stdout.on('data', (data) => {
-          stdout += data.toString();
+          stdout += data.toString('utf-8');
         });
 
         pythonProcess.stderr.on('data', (data) => {
-          stderr += data.toString();
+          stderr += data.toString('utf-8');
         });
 
         pythonProcess.on('close', (code) => {
