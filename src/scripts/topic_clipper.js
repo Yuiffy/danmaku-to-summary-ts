@@ -911,7 +911,7 @@ async function sendWeChatMarkdown(webhookUrl, content) {
         body: JSON.stringify({
             msgtype: 'markdown',
             markdown: {
-                content
+                content: toFwdSlash(content)
             }
         })
     });

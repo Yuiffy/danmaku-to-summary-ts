@@ -45,6 +45,10 @@ interface UploadMediaResponse {
   created_at: number;
 }
 
+export function normalizeWeChatWorkContent(content: string): string {
+  return String(content || '').replace(/\\+/g, '/');
+}
+
 /**
  * 企业微信通知服务
  */
@@ -382,13 +386,14 @@ export class WeChatWorkNotifier {
   private async sendMessage(message: WeChatWorkMessage): Promise<boolean> {
     try {
       this.logger.debug('发送企业微信消息', { msgtype: message.msgtype });
+      const normalizedMessage = this.normalizeMessage(message);
 
       const response = await fetch(this.webhookUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify(message)
+        body: JSON.stringify(normalizedMessage)
       });
 
       if (!response.ok) {
@@ -415,5 +420,29 @@ export class WeChatWorkNotifier {
       this.logger.error('发送企业微信消息异常', undefined, error instanceof Error ? error : new Error(String(error)));
       return false;
     }
+  }
+
+  private normalizeMessage(message: WeChatWorkMessage): WeChatWorkMessage {
+    if (message.msgtype === 'text' && message.text) {
+      return {
+        ...message,
+        text: {
+          ...message.text,
+          content: normalizeWeChatWorkContent(message.text.content)
+        }
+      };
+    }
+
+    if (message.msgtype === 'markdown' && message.markdown) {
+      return {
+        ...message,
+        markdown: {
+          ...message.markdown,
+          content: normalizeWeChatWorkContent(message.markdown.content)
+        }
+      };
+    }
+
+    return message;
   }
 }

@@ -25,6 +25,10 @@ function getBalanceConfig(config) {
     };
 }
 
+function toFwdSlash(s) {
+    return String(s || '').replace(/\\+/g, '/');
+}
+
 async function sendWeChatMarkdown(webhookUrl, content) {
     if (!webhookUrl) {
         console.warn('⚠️ 未配置企业微信 webhookUrl，跳过余额通知');
@@ -36,7 +40,7 @@ async function sendWeChatMarkdown(webhookUrl, content) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             msgtype: 'markdown',
-            markdown: { content }
+            markdown: { content: toFwdSlash(content) }
         }),
         timeout: 10000
     });

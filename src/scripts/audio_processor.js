@@ -13,6 +13,16 @@ const DEFAULT_AUDIO_FORMATS = ['.m4a', '.aac', '.mp3', '.wav', '.ogg', '.flac'];
 const DEFAULT_VIDEO_FORMATS = ['.mp4', '.flv', '.mkv', '.ts', '.mov'];
 let retentionSchedulerTimer = null;
 
+function isDebugLoggingEnabled() {
+    return String(process.env.LOG_LEVEL || '').toLowerCase() === 'debug';
+}
+
+function debugLog(message) {
+    if (isDebugLoggingEnabled()) {
+        console.debug(message);
+    }
+}
+
 // 获取音频格式配置
 function getAudioFormats() {
     const config = configLoader.getConfig();
@@ -42,18 +52,28 @@ function getAudioRetentionConfig() {
     };
 }
 
+function formatAudioOnlyDebugContext(context = {}) {
+    const parts = [];
+    if (context.mediaPath) {
+        parts.push(`file=${path.basename(context.mediaPath)}`);
+        parts.push(`path=${context.mediaPath}`);
+    }
+    return parts.length ? `, ${parts.join(', ')}` : '';
+}
+
 // 检查是否为音频专用房间
-function isAudioOnlyRoom(roomId) {
+function isAudioOnlyRoom(roomId, context = {}) {
     const config = configLoader.getConfig();
     const roomIdInt = parseInt(roomId);
     const roomIdStr = String(roomId);
+    const debugContext = formatAudioOnlyDebugContext(context);
     
     // 优先检查房间特定的audioOnly设置
     if (config.ai?.roomSettings && config.ai.roomSettings[roomIdStr]) {
         const roomConfig = config.ai.roomSettings[roomIdStr];
         if (roomConfig.audioOnly !== undefined) {
             const isAudioRoom = config.audio?.enabled && roomConfig.audioOnly;
-            console.log(`🔍 检查房间特定音频专用设置: roomId=${roomId}, isAudioRoom=${isAudioRoom}, roomAudioOnly=${roomConfig.audioOnly}`);
+            debugLog(`🔍 检查房间特定音频专用设置: roomId=${roomId}, isAudioRoom=${isAudioRoom}, roomAudioOnly=${roomConfig.audioOnly}${debugContext}`);
             return isAudioRoom;
         }
     }
@@ -62,12 +82,12 @@ function isAudioOnlyRoom(roomId) {
     // 新格式：audio.audioOnlyRooms
     if (config.audio?.enabled && config.audio.audioOnlyRooms) {
         const isAudioRoom = config.audio.audioOnlyRooms.includes(roomIdInt);
-        console.log(`🔍 检查全局音频专用房间: roomId=${roomId}, isAudioRoom=${isAudioRoom}`);
+        debugLog(`🔍 检查全局音频专用房间: roomId=${roomId}, isAudioRoom=${isAudioRoom}${debugContext}`);
         return isAudioRoom;
     }
     // 兼容旧格式：audioProcessing.audioOnlyRooms
     const isAudioRoom = config.audioProcessing?.enabled && config.audioProcessing.audioOnlyRooms?.includes(roomIdInt);
-    console.log(`🔍 检查旧格式音频专用房间: roomId=${roomId}, isAudioRoom=${isAudioRoom}`);
+    debugLog(`🔍 检查旧格式音频专用房间: roomId=${roomId}, isAudioRoom=${isAudioRoom}${debugContext}`);
     return isAudioRoom;
 }
 
@@ -307,7 +327,7 @@ async function applyOnlyAudioRetention(options = {}) {
         return summary;
     }
 
-    console.log(`onlyAudio retention scan: convertAfterDays=${retention.convertAfterDays}, deleteAfterDays=${retention.deleteAfterDays}, includeBak=${retention.includeBak}`);
+    debugLog(`onlyAudio retention scan started: convertAfterDays=${retention.convertAfterDays}, deleteAfterDays=${retention.deleteAfterDays}, includeBak=${retention.includeBak}, roots=${retention.basePaths.join(';')}`);
 
     for (const root of retention.basePaths) {
         if (!fs.existsSync(root)) continue;
@@ -316,7 +336,13 @@ async function applyOnlyAudioRetention(options = {}) {
         for (const mediaPath of mediaFiles) {
             summary.scanned++;
             const roomId = extractRoomIdFromMediaName(mediaPath);
-            if (!roomId || !isAudioOnlyRoom(roomId)) {
+            if (!roomId) {
+                debugLog(`onlyAudio retention skip: reason=noRoomId, file=${path.basename(mediaPath)}, path=${mediaPath}`);
+                summary.skipped++;
+                continue;
+            }
+
+            if (!isAudioOnlyRoom(roomId, { mediaPath })) {
                 summary.skipped++;
                 continue;
             }
@@ -334,10 +360,10 @@ async function applyOnlyAudioRetention(options = {}) {
             try {
                 if (ageDays >= retention.deleteAfterDays) {
                     if (dryRun) {
-                        console.log(`[dry-run] delete expired onlyAudio media: ${mediaPath} (${ageDays.toFixed(1)} days)`);
+                        debugLog(`[dry-run] delete expired onlyAudio media: ${mediaPath} (${ageDays.toFixed(1)} days)`);
                     } else {
                         await unlink(mediaPath);
-                        console.log(`deleted expired onlyAudio media: ${mediaPath} (${ageDays.toFixed(1)} days)`);
+                        debugLog(`deleted expired onlyAudio media: ${mediaPath} (${ageDays.toFixed(1)} days)`);
                     }
                     summary.deleted++;
                     continue;
@@ -347,22 +373,22 @@ async function applyOnlyAudioRetention(options = {}) {
                     const targetAudio = path.join(path.dirname(mediaPath), `${path.basename(mediaPath, path.extname(mediaPath))}${audioFormat}`);
                     if (fs.existsSync(targetAudio)) {
                         if (dryRun) {
-                            console.log(`[dry-run] delete video with existing audio: ${mediaPath}`);
+                            debugLog(`[dry-run] delete video with existing audio: ${mediaPath}`);
                         } else {
                             await unlink(mediaPath);
-                            console.log(`deleted video with existing audio: ${mediaPath}`);
+                            debugLog(`deleted video with existing audio: ${mediaPath}`);
                         }
                         summary.deleted++;
                         continue;
                     }
 
                     if (dryRun) {
-                        console.log(`[dry-run] convert and delete video: ${mediaPath} -> ${targetAudio}`);
+                        debugLog(`[dry-run] convert and delete video: ${mediaPath} -> ${targetAudio}`);
                     } else {
                         const audioPath = await convertVideoToAudio(mediaPath, audioFormat);
                         await utimes(audioPath, stats.atime, stats.mtime);
                         await unlink(mediaPath);
-                        console.log(`converted onlyAudio video to audio and deleted source: ${mediaPath}`);
+                        debugLog(`converted onlyAudio video to audio and deleted source: ${mediaPath}`);
                     }
                     summary.converted++;
                 }

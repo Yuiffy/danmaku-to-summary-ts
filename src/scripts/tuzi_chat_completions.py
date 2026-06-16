@@ -310,6 +310,10 @@ def save_image_rate_limit_state(state_file: str, state: Dict[str, Any]) -> None:
         print(f"[WARNING] 保存图片限流状态失败: {state_error}")
 
 
+def normalize_wechat_content(content: str) -> str:
+    return str(content or "").replace("\\", "/")
+
+
 def send_image_rate_limit_alert(rate_limit: Dict[str, Any], operation_name: str, reason: str, hourly_count: int, daily_count: int) -> None:
     webhook_url = rate_limit.get("webhookUrl")
     if not webhook_url:
@@ -326,7 +330,7 @@ def send_image_rate_limit_alert(rate_limit: Dict[str, Any], operation_name: str,
     try:
         requests.post(
             webhook_url,
-            json={"msgtype": "markdown", "markdown": {"content": content}},
+            json={"msgtype": "markdown", "markdown": {"content": normalize_wechat_content(content)}},
             timeout=10,
         )
         print("[RATE_LIMIT] 已发送企业微信限流提醒")

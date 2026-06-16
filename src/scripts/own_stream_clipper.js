@@ -855,14 +855,18 @@ function buildPlanReviewMarkdown(clips, metadata) {
     return `${lines.join('\n')}\n`;
 }
 
+function toFwdSlash(s) {
+    return String(s || '').replace(/\\+/g, '/');
+}
+
 function buildNotifyMarkdown(results, metadata) {
     const lines = [
         '## \u5c81\u5df1\u76f4\u64ad\u6709\u8da3\u5207\u7247\u5019\u9009',
         '',
         `直播: **${metadata.streamTitle || metadata.sourceFileName || '未知'}**`,
         `录制时间: ${metadata.recordedAt || '未知'}`,
-        `切片目录: ${metadata.outputRoot}`,
-        metadata.reviewPath ? `Review: ${metadata.reviewPath}` : null,
+        `切片目录: ${toFwdSlash(metadata.outputRoot)}`,
+        metadata.reviewPath ? `Review: ${toFwdSlash(metadata.reviewPath)}` : null,
         '',
         '\u5207\u7247\u5217\u8868:'
     ].filter(line => line !== null);
@@ -899,7 +903,7 @@ async function sendWeChatMarkdown(webhookUrl, content) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             msgtype: 'markdown',
-            markdown: { content }
+            markdown: { content: toFwdSlash(content) }
         })
     });
     if (!response.ok) {
@@ -1182,6 +1186,7 @@ module.exports = {
     buildReviewMarkdown,
     buildPlanReviewMarkdown,
     buildClipDescription,
+    toFwdSlash,
     filterClipsBySelection,
     generateOwnStreamClips
 };

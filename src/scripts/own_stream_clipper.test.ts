@@ -93,6 +93,25 @@ describe('own_stream_clipper', () => {
     expect(markdown).not.toContain('D:/clips/one.mp4');
   });
 
+  test('normalizes Windows backslashes in own-stream notification paths', () => {
+    const markdown = ownStreamClipper.buildNotifyMarkdown([
+      {
+        window: { start: 75, duration: 90 },
+        copy: { title: '岁己：弹幕觉得这里很有趣' },
+        output: { mediaPath: 'D:\\files\\videos\\DDTV录播\\25788785_岁己SUI\\clip.mp4' }
+      }
+    ], {
+      streamTitle: '悠哉悠哉夜晚！',
+      recordedAt: '2026-06-16 19:55:18',
+      outputRoot: 'D:\\files\\videos\\DDTV录播\\25788785_岁己SUI\\2026_06_16\\own_stream_fun_clips',
+      reviewPath: 'D:\\files\\videos\\DDTV录播\\25788785_岁己SUI\\2026_06_16\\own_stream_fun_clips\\REVIEW.md'
+    });
+
+    expect(markdown).toContain('切片目录: D:/files/videos/DDTV录播/25788785_岁己SUI/2026_06_16/own_stream_fun_clips');
+    expect(markdown).toContain('Review: D:/files/videos/DDTV录播/25788785_岁己SUI/2026_06_16/own_stream_fun_clips/REVIEW.md');
+    expect(markdown).not.toContain('D:\\files');
+  });
+
   test('filters planned clips by one-based selection', () => {
     const clips = [{ title: 'a' }, { title: 'b' }, { title: 'c' }];
 
