@@ -1,5 +1,31 @@
 # 视频剪辑经验 & 注意事项
 
+## ⚠️ 手动切片必查清单（每次都要过一遍！）
+
+| # | 检查项 | 说明 |
+|---|--------|------|
+| 1 | **封面必须压制大字** | 用 `cover_generator.py` 或 `make_clip.py --cover-text`，不能只截裸帧！|
+| 2 | **简介必须有时间信息** | 包含「切片时间：北京时间起-止（直播开始后第X分钟）」|
+| 3 | **字幕样式** | SRT + `force_style='FontSize=28,FontName=Microsoft YaHei,Bold=1,Outline=2'` |
+| 4 | **标题前缀** | 【小岁】，"岁己"→"小岁" |
+| 5 | **Tag** | 小岁, 虚拟主播, 直播切片, 岁AI切片 |
+
+**一键流程：用 `make_clip.py`（自动完成以上全部）**
+```bash
+python make_clip.py \
+  --flv "源视频.flv" --srt "源字幕.srt" \
+  --start 635 --end 686 \
+  --title "【小岁】标题" \
+  --cover-text "封面大字" \
+  --cover-time 14 \
+  --source-desc "岁己SUI 直播《xxx》2026-06-17" \
+  --live-start "15:03:05" \
+  --reason "切片内容一句话" \
+  --upload
+```
+
+---
+
 ## 0. B站上传防重复（关键！）
 
 - **遇到上传失败不要急着重试！** 先确认是否其实已经成功了（B站可能返回错误但实际投稿成功）
