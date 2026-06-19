@@ -9,6 +9,18 @@ import { getLogger } from '../../core/logging/LogManager';
 import { LiveSegment } from './LiveSessionManager';
 import { ProcessingAlertService } from '../monitoring/ProcessingAlertService';
 
+export interface MergeVideoOptions {
+  fillGaps?: boolean;
+}
+
+interface MediaProfile {
+  width: number;
+  height: number;
+  frameRate: string;
+  audioSampleRate: string;
+  audioChannelLayout: string;
+}
+
 /**
  * 文件合并器
  */
@@ -18,8 +30,10 @@ export class FileMerger {
   /**
    * 合并视频文件
    */
-  async mergeVideos(segments: LiveSegment[], outputPath: string, fillGaps: boolean = true): Promise<void> {
+  async mergeVideos(segments: LiveSegment[], outputPath: string, options: boolean | MergeVideoOptions = {}): Promise<void> {
     try {
+      const mergeOptions = typeof options === 'boolean' ? { fillGaps: options } : options;
+      const fillGaps = mergeOptions.fillGaps ?? true;
       this.logger.info(`开始合并视频文件: ${segments.length} 个片段`);
 
       const dir = path.dirname(outputPath);
@@ -41,7 +55,7 @@ export class FileMerger {
 
           if (gapTime > 0) {
             // 创建空白片段
-            const blankPath = await this.createBlankVideo(dir, gapTime);
+            const blankPath = await this.createBlankVideo(dir, gapTime, segment.videoPath);
             // 将路径中的反斜杠替换为正斜杠（ffmpeg concat协议要求）
             const normalizedBlankPath = blankPath.replace(/\\/g, '/');
             fileList.push(`file '${normalizedBlankPath}'`);
@@ -59,10 +73,27 @@ export class FileMerger {
       this.logger.info(`开始执行ffmpeg合并: ${path.basename(outputPath)}`);
       await ProcessingAlertService.notifyHighCpuAtMergeStart(outputPath);
       const mergeStartedAt = Date.now();
-      await this.runFfmpeg([
+      const copyMergeArgs = [
         '-f', 'concat',
         '-safe', '0',
         '-i', fileListPath,
+        '-c', 'copy',
+        '-avoid_negative_ts', 'make_zero',
+        '-fflags', '+genpts',
+        '-y',
+        outputPath
+      ];
+      if (!fillGaps) {
+        await this.runFfmpeg(copyMergeArgs, `merge video ${path.basename(outputPath)}`);
+      } else {
+        try {
+          await this.runFfmpeg(copyMergeArgs, `merge video ${path.basename(outputPath)}`);
+        } catch (error: any) {
+          this.logger.warn(`Stream-copy merge failed, retrying with audio transcode: ${error.message}`);
+          await this.runFfmpeg([
+            '-f', 'concat',
+            '-safe', '0',
+            '-i', fileListPath,
         '-c:v', 'copy',          // 视频流直接复制（无损）
         '-c:a', 'aac',           // 音频流重新编码为AAC（确保格式统一）
         '-ar', '44100',          // 统一采样率 44100Hz
@@ -70,7 +101,9 @@ export class FileMerger {
         '-avoid_negative_ts', 'make_zero', // 处理时间戳跳变
         '-y',
         outputPath
-      ], `合并视频 ${path.basename(outputPath)}`);
+        ], `merge video fallback ${path.basename(outputPath)}`);
+        }
+      }
 
       // 删除临时文件列表
       const mergeElapsedSeconds = (Date.now() - mergeStartedAt) / 1000;
@@ -202,23 +235,30 @@ export class FileMerger {
   /**
    * 创建空白视频片段
    */
-  async createBlankVideo(dir: string, durationMs: number): Promise<string> {
+  async createBlankVideo(dir: string, durationMs: number, referenceVideoPath?: string): Promise<string> {
     const durationSec = durationMs / 1000;
     const ext = path.extname(dir === '.' ? '' : 'video.flv'); // 默认flv，但在mergeVideos里会根据情况传参
     // 实际上我们在 mergeVideos 里动态决定后缀更好
     const blankPath = path.join(dir, `blank_${durationMs}_${Date.now()}.flv`);
+    const profile = referenceVideoPath
+      ? await this.getMediaProfile(referenceVideoPath)
+      : this.getDefaultMediaProfile();
 
     // 使用ffmpeg创建空白视频（黑屏，静音）
     // 对于FLV，我们需要确保编码参数兼容
     await this.runFfmpeg([
       '-f', 'lavfi',
-      '-i', `color=c=black:s=1920x1080:d=${durationSec}`,
+      '-i', `color=c=black:s=${profile.width}x${profile.height}:r=${profile.frameRate}:d=${durationSec}`,
       '-f', 'lavfi',
-      '-i', `anullsrc=r=48000:cl=stereo`,
+      '-i', `anullsrc=r=${profile.audioSampleRate}:cl=${profile.audioChannelLayout}`,
       '-c:v', 'libx264',
       '-preset', 'ultrafast',
-      '-r', '60',
+      '-crf', '35',
+      '-pix_fmt', 'yuv420p',
+      '-r', profile.frameRate,
       '-c:a', 'aac',
+      '-b:a', '64k',
+      '-threads', '1',
       '-t', String(durationSec),
       '-f', 'flv', // 明确指定格式
       '-y',
@@ -226,6 +266,74 @@ export class FileMerger {
     ], `创建空白片段 ${path.basename(blankPath)}`);
 
     return blankPath;
+  }
+
+  private getDefaultMediaProfile(): MediaProfile {
+    return {
+      width: 1920,
+      height: 1080,
+      frameRate: '60',
+      audioSampleRate: '48000',
+      audioChannelLayout: 'stereo'
+    };
+  }
+
+  private async getMediaProfile(videoPath: string): Promise<MediaProfile> {
+    return new Promise((resolve) => {
+      const ffprobe = spawn('ffprobe', [
+        '-v', 'error',
+        '-print_format', 'json',
+        '-show_streams',
+        videoPath
+      ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+
+      let output = '';
+      const fallback = this.getDefaultMediaProfile();
+
+      ffprobe.stdout.on('data', (data: Buffer) => {
+        output += data.toString();
+      });
+
+      ffprobe.on('close', (code: number | null) => {
+        if (code !== 0 || !output.trim()) {
+          resolve(fallback);
+          return;
+        }
+
+        try {
+          const parsed = JSON.parse(output);
+          const streams = Array.isArray(parsed.streams) ? parsed.streams : [];
+          const video = streams.find((stream: any) => stream.codec_type === 'video') || {};
+          const audio = streams.find((stream: any) => stream.codec_type === 'audio') || {};
+          resolve({
+            width: Number(video.width) || fallback.width,
+            height: Number(video.height) || fallback.height,
+            frameRate: this.normalizeFrameRate(video.avg_frame_rate || video.r_frame_rate),
+            audioSampleRate: String(audio.sample_rate || fallback.audioSampleRate),
+            audioChannelLayout: this.normalizeChannelLayout(audio.channel_layout, audio.channels)
+          });
+        } catch {
+          resolve(fallback);
+        }
+      });
+
+      ffprobe.on('error', () => resolve(fallback));
+    });
+  }
+
+  private normalizeFrameRate(frameRate?: string): string {
+    if (!frameRate || frameRate === '0/0') return '60';
+    const [num, den] = frameRate.split('/').map(Number);
+    if (!Number.isFinite(num) || !Number.isFinite(den) || den === 0) return '60';
+    const value = num / den;
+    if (!Number.isFinite(value) || value <= 0) return '60';
+    return frameRate;
+  }
+
+  private normalizeChannelLayout(channelLayout?: string, channels?: number): string {
+    if (channelLayout) return channelLayout;
+    if (Number(channels) === 1) return 'mono';
+    return 'stereo';
   }
 
   /**

@@ -25,6 +25,13 @@
       "fileStableCheck": 30000,
       "processTimeout": 5400000,
       "aiApiTimeout": 120000
+    },
+    "streamMerge": {
+      "enabled": true,
+      "maxSegments": 20,
+      "fillGaps": true,
+      "backupOriginals": true,
+      "copyCover": true
     }
   },
   "audio": {

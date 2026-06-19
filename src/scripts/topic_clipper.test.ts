@@ -37,6 +37,39 @@ describe('topic_clipper', () => {
     expect(matches[0].matchedKeywords).toEqual(['岁己', '小岁']);
   });
 
+  test('ignores embedded and low-signal topic keyword hits', () => {
+    const segments = [
+      { start: 0, end: 1, text: '今天晚上是瑞瑞和小小岁小康三里' },
+      { start: 2, end: 3, text: '谢谢小岁的灯牌' },
+      { start: 4, end: 5, text: '小岁今天直播了吗' }
+    ];
+
+    const matches = topicClipper.findKeywordMatches(segments, ['小岁']);
+
+    expect(matches).toHaveLength(1);
+    expect(matches[0].segment.text).toBe('小岁今天直播了吗');
+  });
+
+  test('AI clip selections must include the matched segment', () => {
+    const burst = {
+      start: 100,
+      end: 500,
+      matchSegments: [
+        { start: 300, end: 305, text: '小岁今天直播了吗', matchedKeywords: ['小岁'] }
+      ]
+    };
+
+    expect(topicClipper.normalizeAiClipSelection(
+      { startTime: '00:02:00', endTime: '00:02:40', title: 'unrelated' },
+      burst
+    )).toBeNull();
+
+    expect(topicClipper.normalizeAiClipSelection(
+      { startTime: '00:04:50', endTime: '00:05:20', title: 'related' },
+      burst
+    )).toMatchObject({ start: 290, end: 320 });
+  });
+
   test('merges nearby hit windows and respects max clip duration', () => {
     const segments = [
       { start: 10, end: 12, text: '岁己' },
@@ -159,6 +192,7 @@ describe('topic_clipper', () => {
       config: {
         clipTopics: {
           enabled: true,
+          aiSegmentBurst: false,
           burnSubtitles: true,
           keywords: ['岁己', '小岁'],
           prePaddingSeconds: 1,

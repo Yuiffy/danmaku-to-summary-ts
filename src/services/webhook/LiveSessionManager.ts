@@ -291,14 +291,20 @@ export class LiveSessionManager {
    * 获取合并配置
    */
   getMergeConfig(): { enabled: boolean; maxSegments: number; fillGaps: boolean; backupOriginals: boolean; copyCover: boolean } {
-    // TODO: 从配置文件读取合并配置
-    // 目前使用默认值
+    let config: any = {};
+    try {
+      config = ConfigProvider.getWebhookConfig().streamMerge || {};
+    } catch (error) {
+      config = {};
+    }
+
     return {
       enabled: true,
       maxSegments: 20,
       fillGaps: true,
       backupOriginals: true,
-      copyCover: true
+      copyCover: true,
+      ...config
     };
   }
 }

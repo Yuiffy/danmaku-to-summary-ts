@@ -97,6 +97,13 @@ export class ConfigValidator {
           fileStableCheck: 30000,
           processTimeout: 1800000,
         },
+        streamMerge: {
+          enabled: true,
+          maxSegments: 20,
+          fillGaps: true,
+          backupOriginals: true,
+          copyCover: true,
+        },
       },
       audio: {
         enabled: true,

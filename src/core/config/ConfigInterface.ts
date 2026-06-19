@@ -23,6 +23,13 @@ export interface WebhookConfig {
     fileStableCheck: number;
     processTimeout: number;
   };
+  streamMerge?: {
+    enabled?: boolean;
+    maxSegments?: number;
+    fillGaps?: boolean;
+    backupOriginals?: boolean;
+    copyCover?: boolean;
+  };
 }
 
 // FFmpeg配置

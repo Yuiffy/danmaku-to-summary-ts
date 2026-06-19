@@ -180,6 +180,47 @@ function normalizeKeywords(keywords = []) {
     ));
 }
 
+function isAsciiWordChar(char) {
+    return Boolean(char && /[A-Za-z0-9_]/.test(char));
+}
+
+function isKeywordOccurrenceAllowed(text, keyword, index) {
+    const before = text[index - 1] || '';
+    const after = text[index + keyword.length] || '';
+
+    // Avoid matching Latin keywords inside longer IDs/usernames, e.g. SUI in SUICA.
+    if (/^[A-Za-z0-9_]+$/.test(keyword)) {
+        return !isAsciiWordChar(before) && !isAsciiWordChar(after);
+    }
+
+    // "小岁" is often hit inside unrelated names like "小小岁"; require the
+    // occurrence not to be immediately prefixed by another "小".
+    if (keyword === '小岁' && before === '小') {
+        return false;
+    }
+
+    return true;
+}
+
+function containsTopicKeyword(text, keyword) {
+    let fromIndex = 0;
+    while (fromIndex <= text.length - keyword.length) {
+        const index = text.indexOf(keyword, fromIndex);
+        if (index === -1) {
+            return false;
+        }
+        if (isKeywordOccurrenceAllowed(text, keyword, index)) {
+            return true;
+        }
+        fromIndex = index + 1;
+    }
+    return false;
+}
+
+function isLowSignalTopicHit(text) {
+    return /谢谢|谢|感谢|灯牌|粉丝团|人气票|礼物|舰长|上舰|提督|总督|\bID\b|昵称/i.test(text);
+}
+
 function findKeywordMatches(segments = [], keywords = []) {
     const normalizedKeywords = normalizeKeywords(keywords);
     if (normalizedKeywords.length === 0) {
@@ -188,7 +229,10 @@ function findKeywordMatches(segments = [], keywords = []) {
     return segments
         .map((segment, index) => {
             const text = String(segment.text || '');
-            const matchedKeywords = normalizedKeywords.filter(keyword => text.includes(keyword));
+            if (isLowSignalTopicHit(text)) {
+                return null;
+            }
+            const matchedKeywords = normalizedKeywords.filter(keyword => containsTopicKeyword(text, keyword));
             if (matchedKeywords.length === 0) {
                 return null;
             }
@@ -310,13 +354,13 @@ function buildTopicBursts(segments = [], matches = [], options = {}) {
             // 续到上一个 burst
             last.matchEnd = Math.max(last.matchEnd, mEnd);
             last.matches.push(match);
-            last.keywords.add(match.matchedKeywords);
+            match.matchedKeywords.forEach(keyword => last.keywords.add(keyword));
         } else {
             rawBursts.push({
                 matchStart: mStart,
                 matchEnd: mEnd,
                 matches: [match],
-                keywords: new Set([match.matchedKeywords])
+                keywords: new Set(match.matchedKeywords)
             });
         }
     }
@@ -368,6 +412,41 @@ function buildTopicBursts(segments = [], matches = [], options = {}) {
             postContext: postCtx
         };
     }).filter(b => b.duration > 0);
+}
+
+function normalizeAiClipSelection(clip, burst, sliceIndex = 1) {
+    const clipStart = timeStringToSeconds(clip.startTime);
+    const clipEnd = timeStringToSeconds(clip.endTime);
+    if (isNaN(clipStart) || isNaN(clipEnd) || clipEnd <= clipStart) {
+        return null;
+    }
+
+    const start = clamp(clipStart, burst.start, burst.end);
+    const end = clamp(clipEnd, burst.start, burst.end);
+    if (end <= start) {
+        return null;
+    }
+
+    const containsMatchedSegment = (burst.matchSegments || []).some(match => {
+        const matchStart = Number(match.start);
+        const matchEnd = Number(match.end);
+        return Number.isFinite(matchStart)
+            && Number.isFinite(matchEnd)
+            && matchEnd >= start - 2
+            && matchStart <= end + 2;
+    });
+
+    if (!containsMatchedSegment) {
+        return null;
+    }
+
+    return {
+        start,
+        end,
+        aiTitle: clip.title || null,
+        aiDescription: clip.description || null,
+        sliceIndex
+    };
 }
 
 /**
@@ -482,21 +561,9 @@ async function segmentBurstWithAI(burst, parsed, streamerName, info, config = {}
             return [];
         }
         
-        // 转换时间戳 → 秒数，返回带标题/简介的信息
-        return clips.map((clip, ci) => {
-            const clipStart = timeStringToSeconds(clip.startTime);
-            const clipEnd = timeStringToSeconds(clip.endTime);
-            if (isNaN(clipStart) || isNaN(clipEnd) || clipEnd <= clipStart) {
-                return null;
-            }
-            return {
-                start: clamp(clipStart, burst.start, burst.end),
-                end: clamp(clipEnd, burst.start, burst.end),
-                aiTitle: clip.title || null,
-                aiDescription: clip.description || null,
-                sliceIndex: ci + 1
-            };
-        }).filter(Boolean);
+        // 转换时间戳 → 秒数，返回带标题/简介的信息。
+        // AI 拿到的是较大的上下文窗口，必须防止它切到不包含关键词命中的旁支内容。
+        return clips.map((clip, ci) => normalizeAiClipSelection(clip, burst, ci + 1)).filter(Boolean);
     } catch (parseError) {
         console.warn(`⚠️  解析 AI 分段结果失败: ${parseError.message}`);
         console.warn(`   原始返回: ${result.text?.slice(0, 200)}`);
@@ -654,7 +721,7 @@ function buildDefaultTitle(window, info) {
     const datePart = info.recordedAt
         ? `${info.recordedAt.slice(5, 7)}-${info.recordedAt.slice(8, 10)} ${info.recordedAt.slice(11, 16)}`
         : formatClock(window.start);
-    return `提到小岁的小片段 ${datePart}`;
+    return `提到岁己的小片段 ${datePart}`;
 }
 
 function normalizeTitle(value, fallback) {
@@ -1182,6 +1249,7 @@ module.exports = {
     buildClipWindows,
     buildTopicBursts,
     segmentBurstWithAI,
+    normalizeAiClipSelection,
     verifyClipWithAI,
     writeClipSrt,
     parseRecordingInfo,
