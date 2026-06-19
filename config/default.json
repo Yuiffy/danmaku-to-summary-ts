@@ -124,7 +124,7 @@
       "merge_length_s": 8,
       "process_timeout_s": 1800,
       "enable_speaker": true,
-      "preset_spk_num": 3,
+      "preset_spk_num": 5,
       "speaker_merge_threshold": 0.78,
       "speaker_references": [
         {
@@ -142,6 +142,18 @@
         {
           "speaker": "瑞娅",
           "audio_path": "data/asr_speaker_refs/rhea.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
+          "speaker": "三理",
+          "audio_path": "data/asr_speaker_refs/mit3uri.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
+          "speaker": "弥月Mizuki",
+          "audio_path": "data/asr_speaker_refs/mizuki.wav",
           "chunk_s": 8,
           "max_chunks": 20
         }
@@ -183,9 +195,40 @@
       "use_itn": true,
       "process_timeout_s": 3600,
       "enable_speaker": true,
-      "preset_spk_num": null,
+      "preset_spk_num": 5,
       "speaker_merge_threshold": 0.78,
-      "speaker_references": [],
+      "speaker_references": [
+        {
+          "speaker": "岁己SUI",
+          "audio_path": "data/asr_speaker_refs/sui.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
+          "speaker": "瑞娅",
+          "audio_path": "data/asr_speaker_refs/rhea.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
+          "speaker": "三理",
+          "audio_path": "data/asr_speaker_refs/mit3uri.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
+          "speaker": "弥月Mizuki",
+          "audio_path": "data/asr_speaker_refs/mizuki.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        }
+      ],
       "speaker_reference_threshold": 0.45,
       "speaker_reference_margin": 0.06,
       "hub": "ms",
@@ -213,9 +256,40 @@
       "batch_size_threshold_s": 60,
       "process_timeout_s": 1800,
       "enable_speaker": true,
-      "preset_spk_num": null,
+      "preset_spk_num": 5,
       "speaker_merge_threshold": 0.78,
-      "speaker_references": [],
+      "speaker_references": [
+        {
+          "speaker": "岁己SUI",
+          "audio_path": "data/asr_speaker_refs/sui.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
+          "speaker": "瑞娅",
+          "audio_path": "data/asr_speaker_refs/rhea.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
+          "speaker": "三理",
+          "audio_path": "data/asr_speaker_refs/mit3uri.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
+          "speaker": "弥月Mizuki",
+          "audio_path": "data/asr_speaker_refs/mizuki.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        }
+      ],
       "speaker_reference_threshold": 0.45,
       "speaker_reference_margin": 0.06
     }

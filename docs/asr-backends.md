@@ -590,11 +590,13 @@ SenseVoice 时间轴优先使用 FunASR 返回的 `sentence_info` / `segments` �
 }
 ```
 
-仓库内的默认参考音频登记在 `data/asr_speaker_refs/manifest.json`，对应目录说明见 `data/asr_speaker_refs/README.md`。当前三人混合场景优先使用：
+仓库内的默认参考音频登记在 `data/asr_speaker_refs/manifest.json`，对应目录说明见 `data/asr_speaker_refs/README.md`。当前五人语言联动场景优先使用：
 
 - 岁己 -> `data/asr_speaker_refs/sui.wav`
 - 栞栞 -> `data/asr_speaker_refs/shiori.wav`
 - 瑞娅 -> `data/asr_speaker_refs/rhea.wav`
+- 三理 -> `data/asr_speaker_refs/mit3uri.wav`
+- 弥月 -> `data/asr_speaker_refs/mizuki.wav`
 
 参数说明：
 
