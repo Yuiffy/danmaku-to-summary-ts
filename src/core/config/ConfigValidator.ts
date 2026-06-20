@@ -113,6 +113,8 @@ export class ConfigValidator {
         ffmpeg: {
           path: 'ffmpeg',
           timeout: 300000,
+          threads: 2,
+          priority: 'belowNormal',
         },
         storage: {
           keepOriginalVideo: false,

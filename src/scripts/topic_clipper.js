@@ -3,6 +3,12 @@ const path = require('path');
 const { spawn } = require('child_process');
 const fetch = require('node-fetch');
 const asrBackends = require('./asr/asr_backends');
+const configLoader = require('./config-loader');
+const {
+    applyFfmpegProcessPriority,
+    getFfmpegResourceConfig,
+    withFfmpegResourceLimits
+} = require('./ffmpeg_resource');
 
 const DEFAULT_CLIP_TOPICS_CONFIG = {
     enabled: false,
@@ -807,10 +813,13 @@ async function buildClipCopy(window, info, streamerName, config, titleGenerator 
 function runFfmpeg(args, options = {}) {
     return new Promise((resolve, reject) => {
         const ffmpegPath = options.ffmpegPath || 'ffmpeg';
-        const child = spawn(ffmpegPath, args, {
+        const resourceConfig = options.resourceConfig || getFfmpegResourceConfig(configLoader.getConfig());
+        const commandArgs = withFfmpegResourceLimits(args, resourceConfig);
+        const child = spawn(ffmpegPath, commandArgs, {
             stdio: ['ignore', 'pipe', 'pipe'],
             windowsHide: true
         });
+        applyFfmpegProcessPriority(child.pid, resourceConfig.priority);
         let stderr = '';
         child.stderr.on('data', chunk => {
             stderr += chunk.toString();

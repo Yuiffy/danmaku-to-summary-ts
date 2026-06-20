@@ -36,6 +36,8 @@ export interface WebhookConfig {
 export interface FFmpegConfig {
   path: string;
   timeout: number;
+  threads?: number;
+  priority?: 'idle' | 'belowNormal' | 'normal' | 'aboveNormal' | 'high' | string;
 }
 
 // 音频存储配置

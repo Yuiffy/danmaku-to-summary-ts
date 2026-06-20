@@ -113,7 +113,9 @@ const ConfigSchema = Joi.object({
         defaultFormat: Joi.string().default('.m4a'),
         ffmpeg: Joi.object({
             path: Joi.string().default('ffmpeg'),
-            timeout: Joi.number().default(300000)
+            timeout: Joi.number().default(300000),
+            threads: Joi.number().integer().min(0).default(2),
+            priority: Joi.string().valid('idle', 'belowNormal', 'normal', 'aboveNormal', 'high').default('belowNormal')
         }).default(),
         storage: Joi.object({
             keepOriginalVideo: Joi.boolean().default(false),

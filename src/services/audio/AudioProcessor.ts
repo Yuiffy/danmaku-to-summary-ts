@@ -5,6 +5,7 @@ import { promisify } from 'util';
 import { getLogger } from '../../core/logging/LogManager';
 import { ConfigProvider } from '../../core/config/ConfigProvider';
 import { AppError, TimeoutError } from '../../core/errors/AppError';
+import { applyFfmpegProcessPriority, getFfmpegResourceConfig, withFfmpegResourceLimits } from '../../utils/ffmpegResource';
 import {
   IAudioProcessor,
   AudioProcessingConfig,
@@ -105,17 +106,20 @@ export class AudioProcessor implements IAudioProcessor {
   private async runFfmpegCommand(args: string[], timeout?: number): Promise<FfmpegResult> {
     const ffmpegPath = this.config.ffmpegPath || 'ffmpeg';
     const timeoutMs = timeout || this.config.timeouts.ffmpegTimeout;
+    const resourceConfig = getFfmpegResourceConfig();
+    const commandArgs = args.includes('-version') ? [...args] : withFfmpegResourceLimits(args, resourceConfig);
     
     this.logger.info('执行FFmpeg命令', { 
-      command: `${ffmpegPath} ${args.join(' ')}`,
+      command: `${ffmpegPath} ${commandArgs.join(' ')}`,
       timeout: timeoutMs 
     });
 
     return new Promise((resolve, reject) => {
-      const child = spawn(ffmpegPath, args, {
+      const child = spawn(ffmpegPath, commandArgs, {
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true
       });
+      applyFfmpegProcessPriority(child.pid, resourceConfig.priority);
 
       let stdout = '';
       let stderr = '';

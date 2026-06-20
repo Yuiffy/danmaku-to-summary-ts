@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import { getLogger } from '../../core/logging/LogManager';
 import { IVideoScreenshotService } from './IVideoScreenshotService';
 import { ProcessingAlertService } from '../monitoring/ProcessingAlertService';
+import { applyFfmpegProcessPriority, getFfmpegResourceConfig, withFfmpegResourceLimits } from '../../utils/ffmpegResource';
 
 export class VideoScreenshotService implements IVideoScreenshotService {
   private logger = getLogger('VideoScreenshotService');
@@ -126,7 +127,10 @@ export class VideoScreenshotService implements IVideoScreenshotService {
 
   private async runFFmpeg(args: string[]): Promise<void> {
     return new Promise((resolve, reject) => {
-      const ffmpeg = spawn('ffmpeg', args, { windowsHide: true });
+      const resourceConfig = getFfmpegResourceConfig();
+      const limitedArgs = withFfmpegResourceLimits(args, resourceConfig);
+      const ffmpeg = spawn('ffmpeg', limitedArgs, { windowsHide: true });
+      applyFfmpegProcessPriority(ffmpeg.pid, resourceConfig.priority);
 
       let errorMsg = '';
       ffmpeg.stderr?.on('data', (data: Buffer) => {
@@ -139,7 +143,7 @@ export class VideoScreenshotService implements IVideoScreenshotService {
         } else {
           this.logger.error('ffmpeg执行失败', {
             code,
-            args: args.join(' '),
+            args: limitedArgs.join(' '),
             error: errorMsg.substring(0, 500)
           });
           reject(new Error(`ffmpeg exited with code ${code}: ${errorMsg.substring(0, 200)}`));

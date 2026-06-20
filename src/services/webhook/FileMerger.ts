@@ -8,6 +8,7 @@ import { spawn } from 'child_process';
 import { getLogger } from '../../core/logging/LogManager';
 import { LiveSegment } from './LiveSessionManager';
 import { ProcessingAlertService } from '../monitoring/ProcessingAlertService';
+import { applyFfmpegProcessPriority, getFfmpegResourceConfig, withFfmpegResourceLimits } from '../../utils/ffmpegResource';
 
 export interface MergeVideoOptions {
   fillGaps?: boolean;
@@ -490,14 +491,18 @@ export class FileMerger {
     return new Promise((resolve, reject) => {
       const label = operationLabel || 'ffmpeg任务';
       const startedAt = Date.now();
-      const ffmpeg = spawn('ffmpeg', args, { windowsHide: true });
+      const resourceConfig = getFfmpegResourceConfig();
+      const limitedArgs = withFfmpegResourceLimits(args, resourceConfig);
+      const ffmpeg = spawn('ffmpeg', limitedArgs, { windowsHide: true });
+      applyFfmpegProcessPriority(ffmpeg.pid, resourceConfig.priority);
 
       let stderrOutput = '';
       let lastProgressLogAt = 0;
       let latestTimestamp = '';
 
       this.logger.info(`启动ffmpeg: ${label}`, {
-        args: args.join(' ')
+        args: limitedArgs.join(' '),
+        resourceLimits: resourceConfig
       });
 
       const heartbeatTimer = setInterval(() => {
@@ -532,7 +537,7 @@ export class FileMerger {
           const errorMsg = stderrOutput || `Unknown error`;
           this.logger.error(`ffmpeg执行失败`, {
             code,
-            args: args.join(' '),
+            args: limitedArgs.join(' '),
             stderr: errorMsg.substring(0, 500) // 只记录前500字符
           });
           reject(new Error(`ffmpeg exited with code ${code}: ${errorMsg.substring(0, 200)}`));

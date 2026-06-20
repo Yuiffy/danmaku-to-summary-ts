@@ -7,6 +7,10 @@ const configLoader = require('./config-loader');
 const aiTextGenerator = require('./ai_text_generator');
 const topicClipper = require('./topic_clipper');
 const ownStreamClipper = require('./own_stream_clipper');
+const {
+    applyFfmpegProcessPriority,
+    getFfmpegResourceConfig
+} = require('./ffmpeg_resource');
 
 const BACKGROUND_CLIPS_ARG = '--payload';
 
@@ -155,6 +159,8 @@ function writeBackgroundClipPayload(payload) {
 }
 
 function spawnBackgroundClipProcess(payload) {
+    const config = configLoader.getConfig();
+    const resourceConfig = getFfmpegResourceConfig(config);
     const { payloadPath, logPath } = writeBackgroundClipPayload(payload);
     const child = spawn(process.execPath, [__filename, BACKGROUND_CLIPS_ARG, payloadPath], {
         cwd: process.cwd(),
@@ -165,9 +171,12 @@ function spawnBackgroundClipProcess(payload) {
             ...process.env,
             NODE_ENV: process.env.NODE_ENV || 'production',
             AUTOMATION: 'true',
-            BACKGROUND_CLIPS: 'true'
+            BACKGROUND_CLIPS: 'true',
+            FFMPEG_THREADS: String(resourceConfig.threads),
+            FFMPEG_PRIORITY: resourceConfig.priority
         }
     });
+    applyFfmpegProcessPriority(child.pid, resourceConfig.priority);
     child.unref();
     console.log(`🎬 自动切片已转入后台子进程: pid=${child.pid || 'unknown'}, log=${logPath}`);
     return { payloadPath, logPath, pid: child.pid };

@@ -3,6 +3,11 @@ const path = require('path');
 const fs = require('fs');
 const { promisify } = require('util');
 const configLoader = require('./config-loader');
+const {
+    applyFfmpegProcessPriority,
+    getFfmpegResourceConfig,
+    withFfmpegResourceLimits
+} = require('./ffmpeg_resource');
 
 const stat = promisify(fs.stat);
 const unlink = promisify(fs.unlink);
@@ -121,13 +126,16 @@ function runFfmpegCommand(args, timeout = 300000) {
     return new Promise((resolve, reject) => {
         const config = configLoader.getConfig();
         const ffmpegPath = config.audio?.ffmpeg?.path || config.audioProcessing?.ffmpegPath || 'ffmpeg';
+        const resourceConfig = getFfmpegResourceConfig(config);
+        const commandArgs = args.includes('-version') ? [...args] : withFfmpegResourceLimits(args, resourceConfig);
         
-        console.log(`🎵 执行ffmpeg命令: ${ffmpegPath} ${args.join(' ')}`);
+        console.log(`🎵 执行ffmpeg命令: ${ffmpegPath} ${commandArgs.join(' ')}`);
         
-        const child = spawn(ffmpegPath, args, {
+        const child = spawn(ffmpegPath, commandArgs, {
             stdio: ['ignore', 'pipe', 'pipe'],
             windowsHide: true
         });
+        applyFfmpegProcessPriority(child.pid, resourceConfig.priority);
 
         let stdout = '';
         let stderr = '';
