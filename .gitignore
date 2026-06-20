@@ -44,6 +44,9 @@ __pycache__/
 
 # local tool/runtime state
 .gemini/
+data/runtime/
+local-scripts/*
+!local-scripts/README.md
 data/delayed_reply_tasks.*
 data/asr_speaker_refs/backup*
 output
@@ -68,6 +71,7 @@ trigger_reply_0209.js
 src/scripts/config.secrets.json
 config/secrets.json
 config/secret.json
+config/cookies*.txt
 data/delayed_reply_tasks.json
 src/scripts/.whisper_lock
 tmp/*

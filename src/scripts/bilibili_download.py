@@ -34,7 +34,7 @@ from pathlib import Path
 SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = Path(SCRIPTS_DIR).parent.parent
 SECRET_PATH = PROJECT_ROOT / 'config' / 'secret.json'
-COOKIE_TXT_PATH = PROJECT_ROOT / 'config' / 'cookies_ytdlp.txt'
+COOKIE_TXT_PATH = PROJECT_ROOT / 'data' / 'runtime' / 'bilibili' / 'cookies.txt'
 
 
 def extract_cookie_from_secret():
@@ -66,6 +66,7 @@ def extract_cookie_from_secret():
         name, val = part.split('=', 1)
         lines.append(f'.bilibili.com\tTRUE\t/\tFALSE\t0\t{name.strip()}\t{val.strip()}')
 
+    COOKIE_TXT_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(COOKIE_TXT_PATH, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines) + '\n')
 

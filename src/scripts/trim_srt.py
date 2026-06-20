@@ -20,7 +20,7 @@ output_path = sys.argv[4]
 with open(srt_path, 'r', encoding='utf-8-sig') as f:
     content = f.read()
 
-# Project standard ASS style from clip_sui_shiori.js
+# Project standard ASS style for generated review clips.
 ass_header = """[Script Info]
 ScriptType: v4.00+
 WrapStyle: 0

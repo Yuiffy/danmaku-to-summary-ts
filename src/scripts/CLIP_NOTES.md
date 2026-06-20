@@ -34,7 +34,7 @@ python make_clip.py \
 - 也可以直接传已上传的 URL：`--cover-url "https://archive.biliimg.com/..."`
 - **URL 规范化坑**：`upload_cover()` 返回的 `hive.biliimg.com` 必须替换成 `archive.biliimg.com`，否则 edit 接口判为外链报 `21001 参数错误`
 - edit 提交时必须补齐 `videos` 列表（从 `archive/view` 拿），缺了也会 `21001`
-- 简介更新也可以走 `update_desc_direct.py`（同一个 edit 接口，改 desc 字段）
+- 简介/标题/tag 更新走通用脚本 `scripts/edit_video_meta.py`，不要再把具体 BV/文案写进 `src/scripts`。
 
 ---
 
@@ -102,7 +102,7 @@ B站上传接口可能返回 406/206 等错误码，但**视频实际已经成�
   - 支持 `--skip 1,2,3` / `--only 5,6,7` / `--dry-run`
 - 单个上传仍可用 `bilibili_upload.py`
 - 切片已经由 own_stream_clipper 自动压制好 mp4 + srt，上传时不需要再裁剪/编码
-- 投稿时一次性设好 title/tags/desc，不需要后续编辑（用 update_desc_direct.py 可改）
+- 投稿时一次性设好 title/tags/desc，不需要后续编辑；确实要改时用 `scripts/edit_video_meta.py`。
 
 ## 1. 字幕时间轴偏移问题（关键！）
 
@@ -156,7 +156,7 @@ force_style 参数：
 - **不要用 ASS 文件烧录**！ASS 里的 FontSize=52 在 PlayResX=1920 下实际渲染很小
 - **不要用 `ffmpeg -i xxx.srt -f ass xxx.ass` 转换**，生成的样式字号极小
 - **不要用 BorderStyle=3**，会有黑色底框。BorderStyle=1 是纯描边无底框
-- clip_sui_shiori.js 里的 FontSize=52 是给那个脚本特定用的，不适用于直接 ffmpeg 烧录
+- 历史 ASS 专用脚本里的 FontSize=52 是按 PlayResX/PlayResY 设计的，不适用于直接 ffmpeg 烧录
 
 ## 3. PowerShell 路径转义问题
 
