@@ -168,7 +168,7 @@ def upload_clip(video_path, cover_path, title, desc, tags, tid=21):
             tid=tid, title=title, desc=desc, cover=cover,
             tags=tags, original=False, source='直播切片'
         )
-        uploader = video_uploader.VideoUploader(pages=[page], meta=meta, credential=***
+        uploader = video_uploader.VideoUploader(pages=[page], meta=meta, credential=cred)
         result = await uploader.start()
         return result
 
