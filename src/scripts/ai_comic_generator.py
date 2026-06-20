@@ -1808,6 +1808,7 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
         # 如果脚本生成失败（使用原文作为备选），则不生成图片
         if not is_comic_generated:
             print("[ERROR] 漫画脚本生成失败，跳过图像生成")
+            print("[[COMIC_SCRIPT_READY]] status=failure")
             write_comic_generation_meta(output_path, {
                 "status": "failure",
                 "model": None,
@@ -1828,6 +1829,8 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
                 write_comic_script_meta(text_output_path, get_comic_script_meta())
         except Exception as e:
             print(f"[WARNING] 保存漫画脚本失败: {e}")
+
+        print(f"[[COMIC_SCRIPT_READY]] path={text_output_path}")
 
         # 调用API生成漫画（按优先级顺序）
         comic_result = None

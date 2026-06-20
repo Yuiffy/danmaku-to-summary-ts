@@ -586,7 +586,7 @@ function alignClipsToSubtitleBoundaries(clips = [], segments = [], config = {}, 
     return clips.map(clip => alignClipToSubtitleBoundaries(clip, segments, config, totalDuration));
 }
 
-async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, config, rootConfig = {}) {
+async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, config, rootConfig = {}, diagnostics = null) {
     if (!config.ai?.enabled || rootConfig.ai?.text?.enabled === false) return [];
     const provider = rootConfig.ai?.text?.provider || 'gemini';
     const generator = require('./ai_text_generator');
@@ -632,6 +632,7 @@ async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, confi
             const text = String(result.text || '').trim();
             const match = text.match(/\{[\s\S]*"clips"[\s\S]*\}/);
             if (!match) {
+                recordAiDiagnostic(diagnostics, `chunk-${chunk.index}`, new Error('AI did not return clips JSON'));
                 console.warn(`AI chunk #${chunk.index} did not return clips JSON: ${text.slice(0, 160)}`);
                 return [];
             }
@@ -658,12 +659,48 @@ async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, confi
                 };
             }).filter(Boolean);
         } catch (error) {
+            recordAiDiagnostic(diagnostics, `chunk-${chunk.index}`, error);
             console.warn(`AI chunk #${chunk.index} failed: ${error.message}`);
             return [];
         }
     };
     const nested = await runPool(chunks, config.aiConcurrency, worker);
     return dedupePlannedClips(nested.flat(), config);
+}
+
+function classifyAiFallbackReason(errors = []) {
+    const text = errors
+        .map(error => String(error?.message || error || ''))
+        .join('\n');
+    if (!text.trim()) {
+        return '\u672a\u8fd4\u56de\u6709\u6548 AI \u5207\u7247\u89c4\u5212';
+    }
+    if (/insufficient_user_quota|\u9884\u6263\u8d39\u989d\u5ea6\u5931\u8d25|\u5269\u4f59\u989d\u5ea6|\u4f59\u989d\u4e0d\u8db3/.test(text)) {
+        return 'TuZi \u4f59\u989d\u4e0d\u8db3';
+    }
+    if (/timeout|ETIMEDOUT|\u8d85\u65f6/i.test(text)) {
+        return 'AI \u8bf7\u6c42\u8d85\u65f6';
+    }
+    if (/did not return clips JSON|JSON/.test(text)) {
+        return 'AI \u672a\u8fd4\u56de\u53ef\u89e3\u6790\u7684\u5207\u7247 JSON';
+    }
+    const first = String(errors[0]?.message || errors[0] || '').replace(/\s+/g, ' ').trim();
+    return first ? first.slice(0, 120) : 'AI \u8c03\u7528\u5931\u8d25';
+}
+
+function recordAiDiagnostic(diagnostics, phase, error) {
+    if (!diagnostics) return;
+    diagnostics.errors = diagnostics.errors || [];
+    diagnostics.errors.push({
+        phase,
+        message: String(error?.message || error || '').trim()
+    });
+}
+
+function buildAiStatusLine(aiStatus = {}) {
+    if (!aiStatus || !aiStatus.usedFallback) return null;
+    const reason = aiStatus.fallbackReason || classifyAiFallbackReason(aiStatus.errors || []);
+    return `AI\u72b6\u6001: AI \u89c4\u5212\u672a\u6210\u529f\uff08${reason}\uff09\uff0c\u5df2\u56de\u9000\u5230\u672c\u5730\u5f39\u5e55\u89c4\u5219\u5019\u9009\uff0c\u6807\u9898\u53ef\u80fd\u504f\u6cdb\u3002`;
 }
 
 function buildFallbackTitle(candidate) {
@@ -723,7 +760,7 @@ function normalizeAiClips(rawClips, candidates, totalDuration, config) {
         .slice(0, Math.max(1, Number(config.maxClips) || 12));
 }
 
-async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config, rootConfig = {}) {
+async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config, rootConfig = {}, diagnostics = null) {
     if (!config.ai?.enabled || rootConfig.ai?.text?.enabled === false || candidates.length === 0) {
         return [];
     }
@@ -780,12 +817,14 @@ async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config,
         const text = String(result.text || '').trim();
         const match = text.match(/\{[\s\S]*"clips"[\s\S]*\}/);
         if (!match) {
+            recordAiDiagnostic(diagnostics, 'candidate_refine', new Error('AI did not return clips JSON'));
             console.warn(`AI did not return clips JSON: ${text.slice(0, 180)}`);
             return [];
         }
         const parsedJson = JSON.parse(match[0]);
         return normalizeAiClips(parsedJson.clips, candidates, parsed.segments.at(-1)?.end || 0, config);
     } catch (error) {
+        recordAiDiagnostic(diagnostics, 'candidate_refine', error);
         console.warn(`AI clip refinement failed, using local candidates: ${error.message}`);
         return [];
     }
@@ -817,16 +856,18 @@ function filterClipsBySelection(clips, selectedIndices = null) {
 }
 
 function buildReviewMarkdown(results, metadata) {
+    const aiStatusLine = buildAiStatusLine(metadata.aiStatus);
     const lines = [
         '# 小岁直播有趣切片 review',
         '',
         `直播: ${metadata.streamTitle || metadata.sourceFileName || '未知'}`,
         `录制时间: ${metadata.recordedAt || '未知'}`,
         `输出目录: ${metadata.outputRoot}`,
+        aiStatusLine,
         '',
         '## 切片列表',
         ''
-    ];
+    ].filter(line => line !== null);
     results.forEach((result, index) => {
         const start = formatClock(result.window.start);
         const duration = formatClock(result.window.duration);
@@ -838,16 +879,18 @@ function buildReviewMarkdown(results, metadata) {
 }
 
 function buildPlanReviewMarkdown(clips, metadata) {
+    const aiStatusLine = buildAiStatusLine(metadata.aiStatus);
     const lines = [
         '# 小岁直播有趣切片计划',
         '',
         `直播: ${metadata.streamTitle || metadata.sourceFileName || '未知'}`,
         `录制时间: ${metadata.recordedAt || '未知'}`,
         `输出目录: ${metadata.outputRoot}`,
+        aiStatusLine,
         '',
         '## 候选列表',
         ''
-    ];
+    ].filter(line => line !== null);
     clips.forEach((clip, index) => {
         lines.push(`${index + 1}. ${clip.title} | ${formatClock(clip.start)} | ${formatClock(clip.duration)} | ${clip.reason || ''}`);
     });
@@ -860,6 +903,7 @@ function toFwdSlash(s) {
 }
 
 function buildNotifyMarkdown(results, metadata) {
+    const aiStatusLine = buildAiStatusLine(metadata.aiStatus);
     const lines = [
         '## \u5c81\u5df1\u76f4\u64ad\u6709\u8da3\u5207\u7247\u5019\u9009',
         '',
@@ -867,6 +911,7 @@ function buildNotifyMarkdown(results, metadata) {
         `录制时间: ${metadata.recordedAt || '未知'}`,
         `切片目录: ${toFwdSlash(metadata.outputRoot)}`,
         metadata.reviewPath ? `Review: ${toFwdSlash(metadata.reviewPath)}` : null,
+        aiStatusLine,
         '',
         '\u5207\u7247\u5217\u8868:'
     ].filter(line => line !== null);
@@ -951,6 +996,13 @@ async function generateOwnStreamClips(options = {}) {
         outputRoot,
         sourceFileName: info.fileName
     };
+    const aiDiagnostics = {
+        strategy: config.ai?.strategy || null,
+        usedFallback: false,
+        fallbackReason: null,
+        selectedSource: null,
+        errors: []
+    };
     if (candidates.length === 0 && danmaku.length === 0) {
         console.log('No own-stream clip candidates found.');
         return [];
@@ -962,13 +1014,33 @@ async function generateOwnStreamClips(options = {}) {
         clips = Array.isArray(plan.clips) ? plan.clips : [];
     } else {
         if (config.ai?.enabled && config.ai?.strategy !== 'candidate_only') {
-            clips = await planClipsWithAIChunks(parsed, danmaku, info, totalDuration, config, rootConfig);
+            clips = await planClipsWithAIChunks(parsed, danmaku, info, totalDuration, config, rootConfig, aiDiagnostics);
+            if (clips.length > 0) {
+                aiDiagnostics.selectedSource = 'chunked_ai';
+            }
         }
         if (clips.length === 0) {
-            const clipsFromAi = await refineCandidatesWithAI(candidates, parsed, danmaku, info, config, rootConfig);
-            clips = clipsFromAi.length > 0 ? clipsFromAi : fallbackClipsFromCandidates(candidates, config);
+            const clipsFromAi = await refineCandidatesWithAI(candidates, parsed, danmaku, info, config, rootConfig, aiDiagnostics);
+            if (clipsFromAi.length > 0) {
+                clips = clipsFromAi;
+                aiDiagnostics.selectedSource = 'candidate_ai';
+            } else {
+                clips = fallbackClipsFromCandidates(candidates, config);
+                aiDiagnostics.usedFallback = true;
+                aiDiagnostics.fallbackReason = (!config.ai?.enabled || rootConfig.ai?.text?.enabled === false)
+                    ? 'AI \u5df2\u7981\u7528'
+                    : classifyAiFallbackReason(aiDiagnostics.errors);
+                aiDiagnostics.selectedSource = 'local_rules';
+            }
         }
     }
+    reviewMetadata.aiStatus = {
+        strategy: aiDiagnostics.strategy,
+        usedFallback: aiDiagnostics.usedFallback,
+        fallbackReason: aiDiagnostics.fallbackReason,
+        selectedSource: aiDiagnostics.selectedSource,
+        errorCount: aiDiagnostics.errors.length
+    };
     clips = filterClipsBySelection(clips, options.selectedIndices);
     clips = alignClipsToSubtitleBoundaries(clips, parsed.segments, config, totalDuration);
     const inputPlanBase = options.planPath
@@ -995,6 +1067,7 @@ async function generateOwnStreamClips(options = {}) {
             aiConcurrency: config.aiConcurrency,
             aiStrategy: config.ai?.strategy || null
         },
+        aiStatus: reviewMetadata.aiStatus,
         clips
     }, null, 2), 'utf8');
     if (options.planOnly) {

@@ -13,6 +13,7 @@ import { FileMerger } from '../FileMerger';
 import { VideoScreenshotService } from '../../video/VideoScreenshotService';
 import { listRelevantProcesses, terminateProcessTree } from '../../../utils/processCleanup';
 import { ProcessingAlertService } from '../../monitoring/ProcessingAlertService';
+import { applyFfmpegProcessPriority, getFfmpegResourceConfig } from '../../../utils/ffmpegResource';
 
 const queueManager = require(path.join(process.cwd(), 'src', 'scripts', 'whisper_queue_manager'));
 const ASR_PHASE_DONE_SENTINEL = '[[ASR_PHASE_DONE]]';
@@ -929,6 +930,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     }
 
     const roomId = task.roomId ? String(task.roomId) : 'unknown';
+    const resourceConfig = getFfmpegResourceConfig();
     this.logger.info(`Mikufans队列Worker开始执行: ${path.basename(task.mediaPath)} (taskId=${task.id})`);
 
     const ps: ChildProcess = spawn('node', args, {
@@ -940,9 +942,12 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         ROOM_ID: roomId,
         AUTOMATION: 'true',
         BYPASS_WHISPER_QUEUE: 'true',
-        SCREENSHOT_PATH: task.screenshotPath || ''
+        SCREENSHOT_PATH: task.screenshotPath || '',
+        FFMPEG_THREADS: String(resourceConfig.threads),
+        FFMPEG_PRIORITY: resourceConfig.priority
       }
     });
+    applyFfmpegProcessPriority(ps.pid, resourceConfig.priority);
 
     this.queueWorkerProcess = ps;
     this.logger.info(`Mikufans队列Worker子进程已启动: pid=${ps.pid ?? 'unknown'}, file=${path.basename(task.mediaPath)}`);

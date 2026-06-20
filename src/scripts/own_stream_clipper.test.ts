@@ -112,6 +112,27 @@ describe('own_stream_clipper', () => {
     expect(markdown).not.toContain('D:\\files');
   });
 
+  test('includes AI fallback status in own-stream notification markdown', () => {
+    const markdown = ownStreamClipper.buildNotifyMarkdown([
+      {
+        window: { start: 75, duration: 90 },
+        copy: { title: '岁己：弹幕突然很在意的片段' },
+        output: { mediaPath: 'D:/clips/one.mp4' }
+      }
+    ], {
+      streamTitle: '悠哉悠哉夜晚！',
+      recordedAt: '2026-06-20 19:56:59',
+      outputRoot: 'D:/clips',
+      aiStatus: {
+        usedFallback: true,
+        fallbackReason: 'TuZi 余额不足'
+      }
+    });
+
+    expect(markdown).toContain('AI状态: AI 规划未成功（TuZi 余额不足）');
+    expect(markdown).toContain('已回退到本地弹幕规则候选');
+  });
+
   test('filters planned clips by one-based selection', () => {
     const clips = [{ title: 'a' }, { title: 'b' }, { title: 'c' }];
 

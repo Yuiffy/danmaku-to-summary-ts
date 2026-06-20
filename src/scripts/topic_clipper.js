@@ -910,26 +910,95 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
     }
 
     if (config.burnSubtitles !== false) {
+        const useTwoStageBurn = config.twoStageSubtitleBurn !== false && process.env.FFMPEG_TWO_STAGE_BURN !== 'false';
         try {
-            await runFfmpeg([
-                '-y',
-                '-ss', start,
-                '-i', source.mediaPath,
-                '-t', duration,
-                '-vf', `subtitles='${escapeSubtitlePathForFfmpegFilter(srtPath)}':force_style='FontSize=28,FontName=Microsoft YaHei,Bold=1,Outline=2'`,
-                '-c:v', 'libx264',
-                '-preset', 'veryfast',
-                '-c:a', 'aac',
-                '-movflags', '+faststart',
-                outputPath
-            ], { ffmpegPath });
+            if (useTwoStageBurn) {
+                const preRollSeconds = Math.max(0, Number(config.twoStagePreRollSeconds ?? process.env.FFMPEG_TWO_STAGE_PREROLL ?? 8));
+                const postRollSeconds = Math.max(0, Number(config.twoStagePostRollSeconds ?? process.env.FFMPEG_TWO_STAGE_POSTROLL ?? 2));
+                const roughStart = Math.max(0, Number(window.start) - preRollSeconds);
+                const offsetInRoughClip = Math.max(0, Number(window.start) - roughStart);
+                const roughDuration = Math.max(0.1, Number(window.duration) + offsetInRoughClip + postRollSeconds);
+                const parsedOutput = path.parse(outputPath);
+                const tempPath = path.join(parsedOutput.dir, `${parsedOutput.name}.source.tmp${parsedOutput.ext || '.mp4'}`);
+                try {
+                    await runFfmpeg([
+                        '-y',
+                        '-ss', String(roughStart),
+                        '-i', source.mediaPath,
+                        '-t', String(roughDuration),
+                        '-map', '0:v:0',
+                        '-map', '0:a?',
+                        '-c', 'copy',
+                        '-avoid_negative_ts', 'make_zero',
+                        tempPath
+                    ], { ffmpegPath });
+                    await runFfmpeg([
+                        '-y',
+                        '-ss', String(offsetInRoughClip),
+                        '-i', tempPath,
+                        '-t', duration,
+                        '-vf', `subtitles='${escapeSubtitlePathForFfmpegFilter(srtPath)}':force_style='FontSize=28,FontName=Microsoft YaHei,Bold=1,Outline=2'`,
+                        '-c:v', 'libx264',
+                        '-preset', 'veryfast',
+                        '-c:a', 'aac',
+                        '-movflags', '+faststart',
+                        outputPath
+                    ], { ffmpegPath });
+                } finally {
+                    try {
+                        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+                    } catch {
+                        // Best-effort cleanup; the final clip is already written or fallback will run.
+                    }
+                }
+            } else {
+                await runFfmpeg([
+                    '-y',
+                    '-ss', start,
+                    '-i', source.mediaPath,
+                    '-t', duration,
+                    '-vf', `subtitles='${escapeSubtitlePathForFfmpegFilter(srtPath)}':force_style='FontSize=28,FontName=Microsoft YaHei,Bold=1,Outline=2'`,
+                    '-c:v', 'libx264',
+                    '-preset', 'veryfast',
+                    '-c:a', 'aac',
+                    '-movflags', '+faststart',
+                    outputPath
+                ], { ffmpegPath });
+            }
             return {
                 path: outputPath,
                 burnedSubtitles: true,
-                fallbackUsed: false
+                fallbackUsed: false,
+                twoStageSubtitleBurn: useTwoStageBurn
             };
         } catch (error) {
-            console.warn(`⚠️  字幕烧录失败，改为生成无烧录切片: ${error.message}`);
+            if (useTwoStageBurn) {
+                console.warn(`⚠️  两段式字幕烧录失败，退回原始源直接烧录: ${error.message}`);
+                try {
+                    await runFfmpeg([
+                        '-y',
+                        '-ss', start,
+                        '-i', source.mediaPath,
+                        '-t', duration,
+                        '-vf', `subtitles='${escapeSubtitlePathForFfmpegFilter(srtPath)}':force_style='FontSize=28,FontName=Microsoft YaHei,Bold=1,Outline=2'`,
+                        '-c:v', 'libx264',
+                        '-preset', 'veryfast',
+                        '-c:a', 'aac',
+                        '-movflags', '+faststart',
+                        outputPath
+                    ], { ffmpegPath });
+                    return {
+                        path: outputPath,
+                        burnedSubtitles: true,
+                        fallbackUsed: false,
+                        twoStageSubtitleBurn: false
+                    };
+                } catch (directError) {
+                    console.warn(`⚠️  字幕烧录失败，改为生成无烧录切片: ${directError.message}`);
+                }
+            } else {
+                console.warn(`⚠️  字幕烧录失败，改为生成无烧录切片: ${error.message}`);
+            }
         }
     }
 

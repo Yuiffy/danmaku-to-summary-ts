@@ -6,6 +6,7 @@ const configLoader = require('./config-loader');
 
 const GENERATION_LOCK_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_CONCURRENCY_LOCK_TIMEOUT_MS = 3 * 60 * 60 * 1000;
+const COMIC_SCRIPT_READY_SENTINEL = '[[COMIC_SCRIPT_READY]]';
 
 // 检查配置是否有效
 function isComicGenerationEnabled() {
@@ -260,6 +261,19 @@ async function generateComicWithPython(highlightPath, roomId = null, options = {
         let stdout = '';
         let stderr = '';
         let settled = false;
+        let comicScriptReadyNotified = false;
+
+        const notifyComicScriptReady = (line = '') => {
+            if (comicScriptReadyNotified) {
+                return;
+            }
+            comicScriptReadyNotified = true;
+            if (typeof options.onComicScriptReady === 'function') {
+                Promise.resolve(options.onComicScriptReady(line)).catch(error => {
+                    console.warn(`⚠️  漫画脚本文本完成回调失败: ${error.message}`);
+                });
+            }
+        };
 
         const settleResolve = (value) => {
             if (settled) return;
@@ -276,8 +290,13 @@ async function generateComicWithPython(highlightPath, roomId = null, options = {
         };
 
         pythonProcess.stdout.on('data', (data) => {
-            stdout += data.toString();
-            process.stdout.write(data.toString());
+            const text = data.toString();
+            stdout += text;
+            process.stdout.write(text);
+            if (text.includes(COMIC_SCRIPT_READY_SENTINEL)) {
+                const line = text.split(/\r?\n/).find(item => item.includes(COMIC_SCRIPT_READY_SENTINEL)) || text.trim();
+                notifyComicScriptReady(line);
+            }
         });
 
         pythonProcess.stderr.on('data', (data) => {
@@ -286,6 +305,10 @@ async function generateComicWithPython(highlightPath, roomId = null, options = {
         });
 
         pythonProcess.on('close', (code) => {
+            if (stdout.includes(COMIC_SCRIPT_READY_SENTINEL)) {
+                const line = stdout.split(/\r?\n/).find(item => item.includes(COMIC_SCRIPT_READY_SENTINEL)) || '';
+                notifyComicScriptReady(line);
+            }
             if (code === 0) {
                 // 从输出中提取生成的文件路径
                 const match = stdout.match(/输出文件:\s*(.+\.(png|jpg|jpeg|txt))/);

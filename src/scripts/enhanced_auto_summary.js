@@ -993,6 +993,38 @@ async function generateOwnStreamClipsForMedia(mediaPath, srtPath, xmlPath, roomI
     }
 }
 
+async function deleteVideoAfterSkippedBackgroundClips(videoPathToDelete) {
+    if (!videoPathToDelete) {
+        return;
+    }
+
+    try {
+        const { unlink: unlinkAsync } = require('fs/promises');
+        if (fs.existsSync(videoPathToDelete)) {
+            await unlinkAsync(videoPathToDelete);
+            console.log(`Deleted original video after skipped background clips: ${path.basename(videoPathToDelete)}`);
+        }
+    } catch (deleteError) {
+        console.error(`Failed to delete original video after skipped background clips: ${deleteError.message}`);
+    }
+}
+
+async function startPendingBackgroundClips(pendingPayloads, reason = 'goodnight-text-ready') {
+    if (!Array.isArray(pendingPayloads) || pendingPayloads.length === 0) {
+        return;
+    }
+
+    console.log(`\nStarting deferred background clips (${pendingPayloads.length}) after ${reason}...`);
+    for (const payload of pendingPayloads) {
+        try {
+            backgroundClipRunner.spawnBackgroundClipProcess(payload);
+        } catch (clipSpawnError) {
+            console.warn(`Failed to start deferred background clips, skipping clips and continuing: ${clipSpawnError.message}`);
+            await deleteVideoAfterSkippedBackgroundClips(payload.videoPathToDelete);
+        }
+    }
+}
+
 // AI漫画生成
 async function generateAiComic(highlightPath, roomId = null, options = {}) {
     console.log('\n🎨 开始AI漫画生成...');
@@ -1246,6 +1278,15 @@ const main = async () => {
     const processedMediaFiles = [];
     const queueTaskRecords = [];
     const completionOptionsByTaskId = new Map();
+    const pendingBackgroundClipPayloads = [];
+    let backgroundClipsStarted = false;
+    const startBackgroundClipsOnce = async (reason) => {
+        if (backgroundClipsStarted) {
+            return;
+        }
+        backgroundClipsStarted = true;
+        await startPendingBackgroundClips(pendingBackgroundClipPayloads, reason);
+    };
     for (const mediaFile of mediaFiles) {
         console.log(`\n--- 处理媒体文件: ${path.basename(mediaFile)} ---`);
         const mediaRoomId = resolveRoomIdForFile(mediaFile, envRoomId);
@@ -1319,20 +1360,17 @@ const main = async () => {
             };
             const xmlPathForMedia = findXmlForMedia(mediaFile, xmlFiles);
             if (backgroundClipRunner.shouldRunAnyClipper(mediaRoomId, xmlPathForMedia)) {
-                try {
-                    backgroundClipRunner.spawnBackgroundClipProcess({
-                        originalMediaPath: mediaFile,
-                        processedMediaPath: processedFile,
-                        srtPath: preferredSrtPath,
-                        xmlPath: xmlPathForMedia,
-                        roomId: mediaRoomId ? String(mediaRoomId) : null,
-                        context: clipContext,
-                        videoPathToDelete: videoToDeleteAfterClips
-                    });
-                    videoToDeleteAfterClips = null;
-                } catch (clipSpawnError) {
-                    console.warn(`⚠️  启动后台自动切片失败，将跳过切片并继续晚安生成: ${clipSpawnError.message}`);
-                }
+                pendingBackgroundClipPayloads.push({
+                    originalMediaPath: mediaFile,
+                    processedMediaPath: processedFile,
+                    srtPath: preferredSrtPath,
+                    xmlPath: xmlPathForMedia,
+                    roomId: mediaRoomId ? String(mediaRoomId) : null,
+                    context: clipContext,
+                    videoPathToDelete: videoToDeleteAfterClips
+                });
+                videoToDeleteAfterClips = null;
+                console.log(`Deferred background clips until goodnight text is ready: ${path.basename(preferredSrtPath)}`);
             }
             processedMediaFiles.push(processedFile); // 记录处理后的文件
             filesToProcess.push(preferredSrtPath);
@@ -1428,6 +1466,7 @@ const main = async () => {
             
             if (highlightSizeKB < minHighlightSizeKB) {
                 console.log(`⏭️  AI_HIGHLIGHT文件过小 (${highlightSizeKB.toFixed(2)}KB < ${minHighlightSizeKB}KB)，跳过AI生成`);
+                await startBackgroundClipsOnce('highlight-too-small');
                 return;
             }
             
@@ -1454,6 +1493,7 @@ const main = async () => {
                     
                     if (totalSeconds < minDurationSeconds) {
                         console.log(`⏭️  视频时长过短 (${totalSeconds}秒 < ${minDurationSeconds}秒)，跳过AI生成`);
+                        await startBackgroundClipsOnce('media-too-short');
                         return;
                     }
                 }
@@ -1489,6 +1529,14 @@ const main = async () => {
             const expectedComicImagePath = aiSettings.comic
                 ? path.join(highlightDir, `${highlightBase}_COMIC_FACTORY.png`)
                 : null;
+            if (goodnightTextPath) {
+                console.log(`${DELAYED_REPLY_READY_SENTINEL} ${JSON.stringify({
+                    roomId: finalRoomId,
+                    goodnightTextPath,
+                    comicImagePath: expectedComicImagePath,
+                    mediaPath: processedMediaFiles.length > 0 ? processedMediaFiles[processedMediaFiles.length - 1] : undefined
+                })}`);
+            }
             if (aiSettings.comic) {
                 // --- 检查图片生成条件 ---
 
@@ -1535,6 +1583,7 @@ const main = async () => {
                         comicImagePath = await generateAiComic(highlightPath, finalRoomId, {
                             tuziRetryMaxAttempts,
                             tuziBypassCooldown: false,
+                            onComicScriptReady: () => startBackgroundClipsOnce('comic-script-ready'),
                             ...suiImageOptions
                         });
                         console.log(`🎨 AI漫画生成结果: ${comicImagePath || 'null'}`);
@@ -1544,14 +1593,7 @@ const main = async () => {
                 console.log('ℹ️  跳过AI漫画生成（房间设置禁用）');
             }
 
-            if (goodnightTextPath) {
-                console.log(`${DELAYED_REPLY_READY_SENTINEL} ${JSON.stringify({
-                    roomId: finalRoomId,
-                    goodnightTextPath,
-                    comicImagePath: expectedComicImagePath,
-                    mediaPath: processedMediaFiles.length > 0 ? processedMediaFiles[processedMediaFiles.length - 1] : undefined
-                })}`);
-            }
+            await startBackgroundClipsOnce(aiSettings.comic ? 'comic-generation-finished' : 'comic-disabled');
 
             // 触发延迟回复任务（现在由父进程 MikufansWebhookHandler 处理）
             console.log(`🔍 延迟回复将由父进程处理: roomId=${finalRoomId}, goodnightTextPath=${goodnightTextPath}, comicImagePath=${comicImagePath}`);
@@ -1564,6 +1606,8 @@ const main = async () => {
         console.error(`⚠️  AI生成阶段出错: ${error.message}`);
         console.error(error.stack);
     }
+
+    await startBackgroundClipsOnce('ai-generation-finished');
 
     console.log('');
     console.log('===========================================');

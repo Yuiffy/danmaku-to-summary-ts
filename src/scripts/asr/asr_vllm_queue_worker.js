@@ -5,6 +5,10 @@ const path = require('path');
 const { spawn } = require('child_process');
 const configLoader = require('../config-loader');
 const asrBackends = require('./asr_backends');
+const {
+    applyFfmpegProcessPriority,
+    getFfmpegResourceConfig
+} = require('../ffmpeg_resource');
 
 const QUEUE_DIR = path.join(process.cwd(), 'tmp', 'asr-vllm-queue');
 const TASKS_FILE = path.join(QUEUE_DIR, 'tasks.json');
@@ -302,11 +306,13 @@ function recoverInterruptedTasks() {
 function createPythonWorker(config) {
     const pythonCommand = asrBackends.resolvePythonCommand(config);
     const workerScript = asrBackends.translatePythonPath(PYTHON_WORKER, config);
+    const resourceConfig = getFfmpegResourceConfig(config);
     const child = spawn(pythonCommand.executable, [...pythonCommand.args, workerScript], {
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
         env: { ...process.env, PYTHONUTF8: '1' }
     });
+    applyFfmpegProcessPriority(child.pid, resourceConfig.priority);
     let buffer = '';
     const pending = new Map();
     let nextId = 1;

@@ -1,6 +1,10 @@
 ﻿const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const {
+    applyFfmpegProcessPriority,
+    getFfmpegResourceConfig
+} = require('../ffmpeg_resource');
 
 const SUPPORTED_BACKENDS = new Set(['whisper', 'sensevoice', 'fun_asr_nano', 'fun_asr_nano_vllm', 'paraformer']);
 const BACKEND_ALIASES = new Map([
@@ -1150,11 +1154,13 @@ function runJsonPython(scriptPath, payload, label = 'ASR backend') {
         let settled = false;
         const pythonCommand = resolvePythonCommand(payload);
         const pythonScriptPath = translatePythonPath(scriptPath, payload);
+        const resourceConfig = getFfmpegResourceConfig(payload);
         const child = spawn(pythonCommand.executable, [...pythonCommand.args, pythonScriptPath], {
             stdio: ['pipe', 'pipe', 'pipe'],
             windowsHide: true,
             env: { ...process.env, PYTHONUTF8: '1' }
         });
+        applyFfmpegProcessPriority(child.pid, resourceConfig.priority);
         const timeoutSeconds = Number(payload?.process_timeout_s || 0);
         const timeout = timeoutSeconds > 0
             ? setTimeout(() => {

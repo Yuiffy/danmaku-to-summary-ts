@@ -9,6 +9,7 @@ import { FileStabilityChecker } from '../FileStabilityChecker';
 import { DuplicateProcessorGuard } from '../DuplicateProcessorGuard';
 import { WeChatWorkNotifier } from '../../notification/WeChatWorkNotifier';
 import { listRelevantProcesses, terminateProcessTree } from '../../../utils/processCleanup';
+import { applyFfmpegProcessPriority, getFfmpegResourceConfig } from '../../../utils/ffmpegResource';
 
 /**
  * DDTV Webhook处理器
@@ -360,6 +361,7 @@ export class DDTVWebhookHandler implements IWebhookHandler {
       if (xmlPath) args.push(xmlPath);
 
       this.logger.info(`启动处理流程: ${path.basename(videoPath)}`);
+      const resourceConfig = getFfmpegResourceConfig();
       
       // 启动子进程
       const ps: ChildProcess = spawn('node', args, {
@@ -368,9 +370,12 @@ export class DDTVWebhookHandler implements IWebhookHandler {
         env: { 
           ...process.env, 
           NODE_ENV: 'production', // 使用production而不是automation
-          ROOM_ID: String(roomId) 
+          ROOM_ID: String(roomId),
+          FFMPEG_THREADS: String(resourceConfig.threads),
+          FFMPEG_PRIORITY: resourceConfig.priority
         }
       });
+      applyFfmpegProcessPriority(ps.pid, resourceConfig.priority);
       this.logger.info(`处理子进程已启动: pid=${ps.pid ?? 'unknown'}, file=${path.basename(videoPath)}`);
 
       // 设置超时

@@ -8,6 +8,7 @@ import { ConfigProvider } from '../../../core/config/ConfigProvider';
 import { FileStabilityChecker } from '../FileStabilityChecker';
 import { DuplicateProcessorGuard } from '../DuplicateProcessorGuard';
 import { listRelevantProcesses, terminateProcessTree } from '../../../utils/processCleanup';
+import { applyFfmpegProcessPriority, getFfmpegResourceConfig } from '../../../utils/ffmpegResource';
 
 /**
  * 音频文件处理器 - 处理m4a/mp3等音频文件
@@ -362,6 +363,7 @@ export class AudioFileHandler implements IWebhookHandler {
       }
 
       this.logger.info(`启动处理流程: ${path.basename(audioPath)}`);
+      const resourceConfig = getFfmpegResourceConfig();
 
       // 启动子进程
       const ps: ChildProcess = spawn('node', args, {
@@ -370,9 +372,12 @@ export class AudioFileHandler implements IWebhookHandler {
         env: {
           ...process.env,
           NODE_ENV: 'production',
-          ROOM_ID: extractedInfo.roomId
+          ROOM_ID: extractedInfo.roomId,
+          FFMPEG_THREADS: String(resourceConfig.threads),
+          FFMPEG_PRIORITY: resourceConfig.priority
         }
       });
+      applyFfmpegProcessPriority(ps.pid, resourceConfig.priority);
       this.logger.info(`处理子进程已启动: pid=${ps.pid ?? 'unknown'}, file=${path.basename(audioPath)}`);
 
       // spawn 成功，子进程已启动，立即释放文件锁
