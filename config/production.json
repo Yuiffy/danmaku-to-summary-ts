@@ -350,7 +350,8 @@
       "accessToken": "",
       "newApiUser": "",
       "lowBalanceThreshold": 5,
-      "notifyOnSuccess": true
+      "notifyOnSuccess": true,
+      "alertCooldownMinutes": 30
     },
     "defaultNames": {
       "anchor": "主播",
@@ -792,6 +793,14 @@
     "extraTags": [],
     "autoUpload": {
       "enabled": false
+    },
+    "notify": {
+      "enabled": true,
+      "includeSubtitleContext": true,
+      "subtitleContextLines": 3,
+      "includeDanmakuContext": true,
+      "maxDanmakuLines": 6,
+      "danmakuContextSeconds": 45
     }
   },
   "ownStreamClips": {

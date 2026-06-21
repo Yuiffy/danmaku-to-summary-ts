@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const xml2js = require('xml2js');
 const fetch = require('node-fetch');
 const asrBackends = require('./asr/asr_backends');
 const configLoader = require('./config-loader');
@@ -29,7 +30,12 @@ const DEFAULT_CLIP_TOPICS_CONFIG = {
         enabled: false
     },
     notify: {
-        enabled: true
+        enabled: true,
+        includeSubtitleContext: true,
+        subtitleContextLines: 3,
+        includeDanmakuContext: true,
+        maxDanmakuLines: 6,
+        danmakuContextSeconds: 45
     }
 };
 
@@ -913,6 +919,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
         const useTwoStageBurn = config.twoStageSubtitleBurn !== false && process.env.FFMPEG_TWO_STAGE_BURN !== 'false';
         try {
             if (useTwoStageBurn) {
+                const twoStageMode = String(config.twoStageMode || process.env.FFMPEG_TWO_STAGE_MODE || 'transcode').toLowerCase();
                 const preRollSeconds = Math.max(0, Number(config.twoStagePreRollSeconds ?? process.env.FFMPEG_TWO_STAGE_PREROLL ?? 8));
                 const postRollSeconds = Math.max(0, Number(config.twoStagePostRollSeconds ?? process.env.FFMPEG_TWO_STAGE_POSTROLL ?? 2));
                 const roughStart = Math.max(0, Number(window.start) - preRollSeconds);
@@ -921,17 +928,34 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                 const parsedOutput = path.parse(outputPath);
                 const tempPath = path.join(parsedOutput.dir, `${parsedOutput.name}.source.tmp${parsedOutput.ext || '.mp4'}`);
                 try {
-                    await runFfmpeg([
-                        '-y',
-                        '-ss', String(roughStart),
-                        '-i', source.mediaPath,
-                        '-t', String(roughDuration),
-                        '-map', '0:v:0',
-                        '-map', '0:a?',
-                        '-c', 'copy',
-                        '-avoid_negative_ts', 'make_zero',
-                        tempPath
-                    ], { ffmpegPath });
+                    if (twoStageMode === 'copy') {
+                        await runFfmpeg([
+                            '-y',
+                            '-ss', String(roughStart),
+                            '-i', source.mediaPath,
+                            '-t', String(roughDuration),
+                            '-map', '0:v:0',
+                            '-map', '0:a?',
+                            '-c', 'copy',
+                            '-avoid_negative_ts', 'make_zero',
+                            tempPath
+                        ], { ffmpegPath });
+                    } else {
+                        await runFfmpeg([
+                            '-y',
+                            '-ss', String(roughStart),
+                            '-i', source.mediaPath,
+                            '-t', String(roughDuration),
+                            '-map', '0:v:0',
+                            '-map', '0:a?',
+                            '-c:v', 'libx264',
+                            '-preset', 'ultrafast',
+                            '-crf', '18',
+                            '-c:a', 'copy',
+                            '-movflags', '+faststart',
+                            tempPath
+                        ], { ffmpegPath });
+                    }
                     await runFfmpeg([
                         '-y',
                         '-ss', String(offsetInRoughClip),
@@ -969,7 +993,10 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                 path: outputPath,
                 burnedSubtitles: true,
                 fallbackUsed: false,
-                twoStageSubtitleBurn: useTwoStageBurn
+                twoStageSubtitleBurn: useTwoStageBurn,
+                twoStageMode: useTwoStageBurn
+                    ? String(config.twoStageMode || process.env.FFMPEG_TWO_STAGE_MODE || 'transcode').toLowerCase()
+                    : null
             };
         } catch (error) {
             if (useTwoStageBurn) {
@@ -1077,11 +1104,151 @@ function toFwdSlash(s) {
     return String(s || '').replace(/\\+/g, '/');
 }
 
+function compactNotifyText(text, maxLength = 80) {
+    const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!normalized) return '';
+    return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1)}…` : normalized;
+}
+
+function segmentKey(segment = {}) {
+    return `${Number(segment.start).toFixed(3)}-${Number(segment.end).toFixed(3)}`;
+}
+
+function formatContextSegment(segment = {}) {
+    const text = compactNotifyText(segment.text || '', 100);
+    if (!text) return null;
+    const marker = segment.hit ? '★ ' : '';
+    return `${marker}[${formatClock(Number(segment.start) || 0)}] ${text}`;
+}
+
+function buildSubtitleContextLines(window = {}, maxLines = 3) {
+    const limit = Math.max(1, Number(maxLines) || 3);
+    const matchSegments = Array.isArray(window.matchSegments) ? window.matchSegments : [];
+    const contextSegments = Array.isArray(window.contextSegments) ? window.contextSegments : [];
+    const firstMatch = matchSegments[0] || null;
+
+    if (contextSegments.length > 0) {
+        const matchKeys = new Set(matchSegments.map(segmentKey));
+        const hitIndex = firstMatch
+            ? contextSegments.findIndex(segment => segment.index === firstMatch.index || segmentKey(segment) === segmentKey(firstMatch))
+            : contextSegments.findIndex(segment => matchKeys.has(segmentKey(segment)));
+        const center = hitIndex >= 0 ? hitIndex : Math.floor(contextSegments.length / 2);
+        const before = Math.floor((limit - 1) / 2);
+        let start = Math.max(0, center - before);
+        let end = Math.min(contextSegments.length, start + limit);
+        start = Math.max(0, end - limit);
+        return contextSegments
+            .slice(start, end)
+            .map(segment => ({
+                ...segment,
+                hit: segment.hit || matchKeys.has(segmentKey(segment))
+            }))
+            .map(formatContextSegment)
+            .filter(Boolean);
+    }
+
+    const fallback = [];
+    const pre = Array.isArray(window.preContext) ? window.preContext.slice(-1) : [];
+    const post = Array.isArray(window.postContext) ? window.postContext.slice(0, 1) : [];
+    for (const text of pre) {
+        fallback.push({ start: window.start || 0, text });
+    }
+    for (const match of matchSegments.slice(0, 1)) {
+        fallback.push({ ...match, hit: true });
+    }
+    for (const text of post) {
+        fallback.push({ start: window.end || 0, text });
+    }
+    return fallback.slice(0, limit).map(formatContextSegment).filter(Boolean);
+}
+
+async function parseDanmakuXml(xmlPath) {
+    if (!xmlPath || !fs.existsSync(xmlPath)) return [];
+    const parser = new xml2js.Parser({
+        strict: false,
+        normalize: true,
+        trim: true,
+        mergeAttrs: false,
+        attrValueProcessors: [
+            value => typeof value === 'string'
+                ? value.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
+                : value
+        ]
+    });
+    const data = fs.readFileSync(xmlPath, 'utf8');
+    const parsed = await parser.parseStringPromise(data);
+    const list = parsed?.i?.d || parsed?.I?.D || [];
+    const rows = [];
+    for (const item of list) {
+        const attrsRaw = item?.$?.p || item?.$?.P;
+        if (!attrsRaw) continue;
+        const attrs = String(attrsRaw).split(',');
+        const time = Number(attrs[0]);
+        const text = compactNotifyText(item._ || '', 80);
+        if (!Number.isFinite(time) || time < 0 || !text) continue;
+        rows.push({ time, text });
+    }
+    return rows.sort((a, b) => a.time - b.time);
+}
+
+function buildDanmakuContextLines(danmaku = [], window = {}, notifyConfig = {}) {
+    if (!Array.isArray(danmaku) || danmaku.length === 0) return [];
+    const maxLines = Math.max(0, Number(notifyConfig.maxDanmakuLines) || 0);
+    if (maxLines === 0) return [];
+
+    const padding = Math.max(5, Number(notifyConfig.danmakuContextSeconds) || 45);
+    const match = Array.isArray(window.matchSegments) ? window.matchSegments[0] : null;
+    const focusStart = Number(match?.start ?? window.start ?? 0);
+    const focusEnd = Number(match?.end ?? window.end ?? focusStart);
+    const start = Math.max(Number(window.start || 0), focusStart - padding);
+    const end = Math.min(Number(window.end || focusEnd + padding), focusEnd + padding);
+    const seen = new Set();
+    const samples = danmaku
+        .filter(item => item.time >= start && item.time <= end)
+        .filter(item => {
+            if (seen.has(item.text)) return false;
+            seen.add(item.text);
+            return true;
+        })
+        .slice(0, maxLines);
+
+    return samples.map(item => `[${formatClock(item.time)}] ${item.text}`);
+}
+
+function buildClipNotifyBlock(result = {}, notifyConfig = {}) {
+    const window = result.window || {};
+    const lines = [
+        `- ${formatClock(window.start || 0)}-${formatClock(window.end || 0)}: ${toFwdSlash(result.output?.mediaPath || '')}`
+    ];
+
+    if (notifyConfig.includeSubtitleContext !== false) {
+        const subtitles = buildSubtitleContextLines(window, notifyConfig.subtitleContextLines);
+        if (subtitles.length > 0) {
+            lines.push('  - 字幕上下文:');
+            subtitles.forEach(line => lines.push(`    - ${line}`));
+        }
+    }
+
+    if (notifyConfig.includeDanmakuContext !== false) {
+        const danmaku = Array.isArray(window.danmakuContext) ? window.danmakuContext : [];
+        if (danmaku.length > 0) {
+            lines.push('  - 附近弹幕:');
+            danmaku.forEach(line => lines.push(`    - ${line}`));
+        }
+    }
+
+    return lines.join('\n');
+}
+
 function buildTopicNotifyMarkdown(results = [], metadata = {}) {
     const first = results[0] || {};
     const info = metadata.copy || {};
+    const notifyConfig = {
+        ...DEFAULT_CLIP_TOPICS_CONFIG.notify,
+        ...(metadata.notify || {})
+    };
     const windowSummary = results
-        .map(result => `- ${formatClock(result.window?.start || 0)}-${formatClock(result.window?.end || 0)}: ${toFwdSlash(result.output?.mediaPath || '')}`)
+        .map(result => buildClipNotifyBlock(result, notifyConfig))
         .join('\n');
 
     return [
@@ -1115,7 +1282,10 @@ async function notifyTopicClipResults(results = [], metadata = {}, config = {}) 
         return false;
     }
 
-    const markdown = buildTopicNotifyMarkdown(results, metadata);
+    const markdown = buildTopicNotifyMarkdown(results, {
+        ...metadata,
+        notify: notifyConfig
+    });
     return sendWeChatMarkdown(webhookUrl, markdown);
 }
 
@@ -1161,6 +1331,15 @@ async function generateTopicClips(options = {}) {
         return [];
     }
 
+    let danmaku = [];
+    if (config.notify?.includeDanmakuContext !== false && options.xmlPath) {
+        try {
+            danmaku = await parseDanmakuXml(options.xmlPath);
+        } catch (error) {
+            console.warn(`⚠️  解析弹幕 XML 失败，企微提醒将不带弹幕上下文: ${error.message}`);
+        }
+    }
+
     console.log(`\n📦 ${bursts.length} 个话题爆发段 (burst)，调用 AI 决定切在哪...`);
 
     const info = parseRecordingInfo(source.mediaPath, options.context || {});
@@ -1185,6 +1364,16 @@ async function generateTopicClips(options = {}) {
         }
 
         for (const seg of segments) {
+            const matchKeys = new Set((burst.matchSegments || []).map(segmentKey));
+            const contextSegments = parsed.segments
+                .map((s, index) => ({
+                    index,
+                    start: s.start,
+                    end: s.end,
+                    text: s.text,
+                    hit: matchKeys.has(segmentKey(s))
+                }))
+                .filter(s => Number(s.end) >= seg.start - 20 && Number(s.start) <= seg.end + 20);
             // 构造一个兼容旧代码的 window 对象
             const w = {
                 index: `${burst.index}-${seg.sliceIndex || 1}`,
@@ -1194,6 +1383,7 @@ async function generateTopicClips(options = {}) {
                 matchedKeywords: burst.matchedKeywords,
                 matchCount: burst.matchCount,
                 matchSegments: burst.matchSegments,
+                contextSegments,
                 allSegmentTexts: parsed.segments
                     .filter(s => Number(s.start) >= seg.start - 5 && Number(s.end) <= seg.end + 5)
                     .map(s => s.text),
@@ -1204,6 +1394,7 @@ async function generateTopicClips(options = {}) {
                     .filter(s => Number(s.start) >= seg.end && Number(s.start) <= seg.end + 60)
                     .map(s => s.text).slice(0, 10),
             };
+            w.danmakuContext = buildDanmakuContextLines(danmaku, w, config.notify || {});
             aiSegmentedClips.push({ window: w, burst, aiTitle: seg.aiTitle, aiDescription: seg.aiDescription });
         }
 
@@ -1337,6 +1528,7 @@ module.exports = {
     buildDefaultTitle,
     buildClipCopy,
     cutClipMedia,
+    generateClipCover,
     generateTopicClips,
     notifyTopicClipResults,
     buildTopicNotifyMarkdown,

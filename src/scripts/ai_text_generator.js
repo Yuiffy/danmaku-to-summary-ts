@@ -4,10 +4,42 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const fetch = require('node-fetch');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 const configLoader = require('./config-loader');
+const { notifyLowBalanceIfNeeded } = require('./tuzi_balance_check');
 
 const GENERATION_LOCK_TIMEOUT_MS = 30 * 60 * 1000;
 const GENERATION_LOCK_WAIT_MS = 10 * 60 * 1000;
 const GENERATION_LOCK_POLL_MS = 2000;
+const TUZI_BALANCE_ERROR_MARKERS = [
+    '余额不足',
+    '余额不够',
+    '余额已用尽',
+    '额度不足',
+    '额度已用尽',
+    'quota exceeded',
+    'insufficient balance',
+    'insufficient quota',
+    'not enough balance',
+    'not enough quota',
+    'credit exhausted',
+    'billing'
+];
+
+function isTuZiBalanceError(text) {
+    const lowered = String(text || '').toLowerCase();
+    return TUZI_BALANCE_ERROR_MARKERS.some(marker => lowered.includes(marker.toLowerCase()));
+}
+
+async function maybeNotifyTuZiBalanceError(error, context) {
+    const message = error instanceof Error ? error.message : String(error || '');
+    if (!isTuZiBalanceError(message)) {
+        return;
+    }
+    try {
+        await notifyLowBalanceIfNeeded(`${context}: ${message}`.slice(0, 500));
+    } catch (notifyError) {
+        console.warn(`⚠️  tuZi低余额告警检查失败: ${notifyError.message}`);
+    }
+}
 
 // 生成不重复的文件名(如果文件已存在,添加 _1, _2 等后缀)
 function generateUniqueFilename(basePath) {
@@ -593,6 +625,7 @@ async function generateTextWithTuZi(prompt, options = {}) {
                 error: String(error.message || error).slice(0, 300)
             });
             console.error(`❌ tuZi API调用失败 (尝试 ${attempt + 1}/${modelSequence.length}): ${error.message}`);
+            await maybeNotifyTuZiBalanceError(error, `文本生成 ${textModel}`);
 
             // 如果是最后一次尝试,抛出错误
             if (attempt === modelSequence.length - 1) {

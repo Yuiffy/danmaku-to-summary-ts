@@ -2,7 +2,12 @@
 
 const fetch = require('node-fetch');
 const { HttpsProxyAgent } = require('https-proxy-agent');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const configLoader = require('./config-loader');
+
+const DEFAULT_STATE_FILE = path.join(os.tmpdir(), 'danmaku_tuzi_balance_alert_state.json');
 
 function formatNumber(value, digits = 2) {
     if (!Number.isFinite(value)) {
@@ -21,8 +26,25 @@ function getBalanceConfig(config) {
         accessToken: process.env.TUZI_BALANCE_TOKEN || config.ai?.tuZiBalance?.accessToken || '',
         newApiUser: process.env.TUZI_NEW_API_USER || config.ai?.tuZiBalance?.newApiUser || '',
         lowBalanceThreshold: Number(config.ai?.tuZiBalance?.lowBalanceThreshold ?? 5),
-        notifyOnSuccess: config.ai?.tuZiBalance?.notifyOnSuccess !== false
+        notifyOnSuccess: config.ai?.tuZiBalance?.notifyOnSuccess !== false,
+        alertCooldownMinutes: Number(config.ai?.tuZiBalance?.alertCooldownMinutes ?? 30),
+        stateFile: config.ai?.tuZiBalance?.stateFile || DEFAULT_STATE_FILE
     };
+}
+
+function parseArgs(argv) {
+    const options = {
+        dryRun: argv.includes('--dry-run'),
+        lowOnly: argv.includes('--low-only'),
+        force: argv.includes('--force'),
+        reason: ''
+    };
+
+    const reasonIndex = argv.indexOf('--reason');
+    if (reasonIndex >= 0 && reasonIndex < argv.length - 1) {
+        options.reason = String(argv[reasonIndex + 1] || '').trim();
+    }
+    return options;
 }
 
 function toFwdSlash(s) {
@@ -54,6 +76,49 @@ async function sendWeChatMarkdown(webhookUrl, content) {
         throw new Error(`企业微信返回错误: ${result.errcode} ${result.errmsg || ''}`.trim());
     }
     return true;
+}
+
+function readState(stateFile) {
+    try {
+        if (stateFile && fs.existsSync(stateFile)) {
+            return JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+        }
+    } catch (error) {
+        console.warn(`⚠️ 读取tuZi余额告警状态失败，将重建: ${error.message}`);
+    }
+    return {};
+}
+
+function writeState(stateFile, state) {
+    try {
+        fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+        fs.writeFileSync(stateFile, JSON.stringify(state, null, 2), 'utf8');
+    } catch (error) {
+        console.warn(`⚠️ 保存tuZi余额告警状态失败: ${error.message}`);
+    }
+}
+
+function shouldSendLowAlert(balanceConfig, options) {
+    if (options.force || options.dryRun) {
+        return true;
+    }
+
+    const cooldownMs = Math.max(1, Number(balanceConfig.alertCooldownMinutes) || 30) * 60 * 1000;
+    const state = readState(balanceConfig.stateFile);
+    const lastLowAlertAt = Number(state.lastLowAlertAt || 0);
+    const now = Date.now();
+    if (lastLowAlertAt && now - lastLowAlertAt < cooldownMs) {
+        const remainingMinutes = Math.ceil((cooldownMs - (now - lastLowAlertAt)) / 60000);
+        console.log(`ℹ️ tuZi低余额告警仍在冷却中，剩余约 ${remainingMinutes} 分钟`);
+        return false;
+    }
+    return true;
+}
+
+function recordLowAlert(balanceConfig) {
+    const state = readState(balanceConfig.stateFile);
+    state.lastLowAlertAt = Date.now();
+    writeState(balanceConfig.stateFile, state);
 }
 
 async function fetchTuZiSelf(tuziConfig, balanceConfig) {
@@ -111,54 +176,122 @@ function pickUserPayload(data) {
     return data;
 }
 
-async function main() {
-    const dryRun = process.argv.includes('--dry-run');
+function pickFirstFiniteNumber(payload, keys) {
+    for (const key of keys) {
+        const value = payload?.[key];
+        const numberValue = Number(value);
+        if (Number.isFinite(numberValue)) {
+            return numberValue;
+        }
+    }
+    return NaN;
+}
+
+function extractBalance(userPayload) {
+    const quota = pickFirstFiniteNumber(userPayload, ['quota', 'remain_quota', 'remaining_quota']);
+    const balance = pickFirstFiniteNumber(userPayload, ['balance', 'money', 'amount', 'credit', 'remain_balance']);
+
+    if (Number.isFinite(balance)) {
+        return { quota: Number.isFinite(quota) ? quota : NaN, balance };
+    }
+
+    if (Number.isFinite(quota)) {
+        return { quota, balance: quota / 500000 };
+    }
+
+    return { quota: NaN, balance: NaN };
+}
+
+async function runBalanceCheck(options = {}) {
+    const mergedOptions = {
+        dryRun: false,
+        lowOnly: false,
+        force: false,
+        reason: '',
+        ...options
+    };
+
     const config = configLoader.getConfig();
     const balanceConfig = getBalanceConfig(config);
     if (!balanceConfig.enabled) {
         console.log('ℹ️ tuZi余额检查已禁用');
-        return;
+        return { notified: false, skipped: true };
     }
 
     const tuziConfig = getTuZiConfig(config);
     const webhookUrl = config.wechatWork?.webhookUrl || '';
     const userPayload = pickUserPayload(await fetchTuZiSelf(tuziConfig, balanceConfig));
-    const quota = Number(userPayload?.quota);
-    const balance = quota / 500000;
+    const { quota, balance } = extractBalance(userPayload);
     const threshold = Number.isFinite(balanceConfig.lowBalanceThreshold)
         ? balanceConfig.lowBalanceThreshold
         : 5;
-    const isLow = Number.isFinite(balance) && balance < threshold;
+    const isLow = Number.isFinite(balance) && balance <= threshold;
     const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
 
-    console.log(`tuZi quota=${Number.isFinite(quota) ? quota : 'unknown'}, balance=${formatNumber(balance)}, threshold=${threshold}`);
+    console.log(`tuZi checkedAt=${now}, quota=${Number.isFinite(quota) ? quota : 'unknown'}, balance=${formatNumber(balance)}, threshold=${threshold}`);
+
+    if (mergedOptions.lowOnly && !isLow) {
+        console.log('ℹ️ 余额未低于阈值，跳过低余额告警');
+        return { notified: false, isLow, balance, quota, threshold };
+    }
 
     if (!balanceConfig.notifyOnSuccess && !isLow) {
         console.log('ℹ️ 余额未低于阈值，且 notifyOnSuccess=false，跳过企微通知');
-        return;
+        return { notified: false, isLow, balance, quota, threshold };
     }
 
-    const title = isLow ? '⚠️ tuZi API余额不足' : '✅ tuZi API余额日报';
     const content = [
-        title,
+        isLow ? '⚠️ tuZi API余额不足' : '✅ tuZi API余额日报',
         '',
         `> 余额: ${formatNumber(balance)} 元`,
         `> quota: ${Number.isFinite(quota) ? quota : 'unknown'}`,
         `> 告警阈值: ${formatNumber(threshold)} 元`,
+        mergedOptions.reason ? `> 触发原因: ${String(mergedOptions.reason).slice(0, 500)}` : undefined,
         `> 时间: ${now}`
-    ].join('\n');
+    ].filter(Boolean).join('\n');
 
-    if (dryRun) {
-        console.log('--- dry-run notification ---');
-        console.log(content);
-        return;
+    if (isLow && !shouldSendLowAlert(balanceConfig, mergedOptions)) {
+        return { notified: false, isLow, balance, quota, threshold, skippedByCooldown: true };
     }
 
-    await sendWeChatMarkdown(webhookUrl, content);
-    console.log('✅ tuZi余额通知已发送');
+    if (mergedOptions.dryRun) {
+        console.log('--- dry-run notification ---');
+        console.log(content);
+        return { notified: false, isLow, balance, quota, threshold, dryRun: true };
+    }
+
+    const sent = await sendWeChatMarkdown(webhookUrl, content);
+    if (sent && isLow) {
+        recordLowAlert(balanceConfig);
+    }
+    console.log(sent ? '✅ tuZi余额通知已发送' : 'ℹ️ tuZi余额通知未发送');
+    return { notified: sent, isLow, balance, quota, threshold };
 }
 
-main().catch(error => {
-    console.error(`❌ tuZi余额检查失败: ${error.message}`);
-    process.exit(1);
-});
+async function notifyLowBalanceIfNeeded(reason = '') {
+    return runBalanceCheck({
+        lowOnly: true,
+        reason
+    });
+}
+
+async function main() {
+    const options = parseArgs(process.argv.slice(2));
+    await runBalanceCheck(options);
+}
+
+if (require.main === module) {
+    main().catch(error => {
+        console.error(`❌ tuZi余额检查失败: ${error.message}`);
+        process.exit(1);
+    });
+}
+
+module.exports = {
+    extractBalance,
+    formatNumber,
+    getBalanceConfig,
+    notifyLowBalanceIfNeeded,
+    parseArgs,
+    runBalanceCheck
+};

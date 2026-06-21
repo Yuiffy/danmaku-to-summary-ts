@@ -73,7 +73,9 @@ const AISchema = Joi.object({
         accessToken: Joi.string().allow('').default(''),
         newApiUser: Joi.string().allow('').default(''),
         lowBalanceThreshold: Joi.number().default(5),
-        notifyOnSuccess: Joi.boolean().default(true)
+        notifyOnSuccess: Joi.boolean().default(true),
+        alertCooldownMinutes: Joi.number().default(30),
+        stateFile: Joi.string().allow('').optional()
     }).default(),
     roomSettings: Joi.object().pattern(Joi.string(), RoomSettingsSchema).default()
 }).default();
@@ -152,7 +154,12 @@ const ConfigSchema = Joi.object({
             enabled: Joi.boolean().default(false)
         }).default(),
         notify: Joi.object({
-            enabled: Joi.boolean().default(true)
+            enabled: Joi.boolean().default(true),
+            includeSubtitleContext: Joi.boolean().default(true),
+            subtitleContextLines: Joi.number().default(3),
+            includeDanmakuContext: Joi.boolean().default(true),
+            maxDanmakuLines: Joi.number().default(6),
+            danmakuContextSeconds: Joi.number().default(45)
         }).default()
     }).default(),
     ownStreamClips: Joi.object({

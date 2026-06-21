@@ -225,7 +225,21 @@ describe('topic_clipper', () => {
   test('builds a readable topic notification markdown', () => {
     const markdown = topicClipper.buildTopicNotifyMarkdown([
       {
-        window: { start: 10, end: 42, matchedKeywords: ['岁己', '小岁'] },
+        window: {
+          start: 10,
+          end: 42,
+          matchedKeywords: ['岁己', '小岁'],
+          matchSegments: [{ index: 1, start: 20, end: 22, text: '这里提到了小岁', matchedKeywords: ['小岁'] }],
+          contextSegments: [
+            { index: 0, start: 18, end: 20, text: '前一句解释背景' },
+            { index: 1, start: 20, end: 22, text: '这里提到了小岁', hit: true },
+            { index: 2, start: 22, end: 24, text: '后一句继续补充' }
+          ],
+          danmakuContext: [
+            '[00:00:21] 原来是在说小岁',
+            '[00:00:23] 这段可以切'
+          ]
+        },
         output: { mediaPath: 'D:/clips/one.mp4', copyPath: 'D:/clips/one_投稿文案.md' }
       },
       {
@@ -249,6 +263,12 @@ describe('topic_clipper', () => {
     expect(markdown).toContain('D:/clips/one.mp4');
     expect(markdown).toContain('D:/clips/two.mp4');
     expect(markdown).toContain('D:/clips/one_投稿文案.md');
+    expect(markdown).toContain('字幕上下文');
+    expect(markdown).toContain('★ [00:00:20] 这里提到了小岁');
+    expect(markdown).toContain('[00:00:18] 前一句解释背景');
+    expect(markdown).toContain('[00:00:22] 后一句继续补充');
+    expect(markdown).toContain('附近弹幕');
+    expect(markdown).toContain('[00:00:21] 原来是在说小岁');
   });
   test('normalizes Windows backslashes in topic notification paths', () => {
     const markdown = topicClipper.buildTopicNotifyMarkdown([

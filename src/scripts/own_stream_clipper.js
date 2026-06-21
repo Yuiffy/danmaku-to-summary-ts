@@ -855,6 +855,14 @@ function filterClipsBySelection(clips, selectedIndices = null) {
     return clips.filter((_, index) => wanted.has(index + 1));
 }
 
+function buildCoverTitle(title, maxChars = 16) {
+    const cleaned = String(title || '')
+        .replace(/^【[^】]+】/, '')
+        .replace(/^[\s:：-]+/, '')
+        .trim();
+    return cleaned.length > maxChars ? cleaned.slice(0, maxChars) : cleaned;
+}
+
 function buildReviewMarkdown(results, metadata) {
     const aiStatusLine = buildAiStatusLine(metadata.aiStatus);
     const lines = [
@@ -873,6 +881,9 @@ function buildReviewMarkdown(results, metadata) {
         const duration = formatClock(result.window.duration);
         const filePath = result.output.mediaPath;
         lines.push(`${index + 1}. ${result.copy.title} | ${start} | ${duration} | ${filePath}`);
+        if (result.output.coverPath) {
+            lines.push(`   封面: ${result.output.coverPath}`);
+        }
     });
     lines.push('');
     return `${lines.join('\n')}\n`;
@@ -1147,6 +1158,21 @@ async function generateOwnStreamClips(options = {}) {
             mediaError = error.message;
             console.warn(`clip media generation failed, metadata kept: ${error.message}`);
         }
+        let coverPath = null;
+        let coverError = null;
+        if (mediaResult?.path && source.kind !== 'audio') {
+            try {
+                coverPath = await topicClipper.generateClipCover(
+                    mediaResult.path,
+                    buildCoverTitle(copy.title),
+                    outputRoot,
+                    { streamerName }
+                );
+            } catch (error) {
+                coverError = error.message;
+                console.warn(`clip cover generation failed, metadata kept: ${error.message}`);
+            }
+        }
         const metadata = {
             version: 1,
             generatedAt: new Date().toISOString(),
@@ -1170,8 +1196,12 @@ async function generateOwnStreamClips(options = {}) {
                 metadataPath,
                 burnedSubtitles: Boolean(mediaResult?.burnedSubtitles),
                 subtitleBurnFallbackUsed: Boolean(mediaResult?.fallbackUsed),
+                twoStageSubtitleBurn: mediaResult?.twoStageSubtitleBurn ?? null,
+                twoStageMode: mediaResult?.twoStageMode ?? null,
                 srtSegmentCount: srtResult.segmentCount,
-                mediaError
+                mediaError,
+                coverPath,
+                coverError
             }
         };
         fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2), 'utf8');
@@ -1259,6 +1289,7 @@ module.exports = {
     buildReviewMarkdown,
     buildPlanReviewMarkdown,
     buildClipDescription,
+    buildCoverTitle,
     toFwdSlash,
     filterClipsBySelection,
     generateOwnStreamClips

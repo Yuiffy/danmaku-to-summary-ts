@@ -12,6 +12,7 @@ import time
 import re
 import mimetypes
 import random
+import subprocess
 from typing import Optional, Dict, Any
 import traceback
 import tempfile
@@ -314,6 +315,57 @@ def normalize_wechat_content(content: str) -> str:
     return str(content or "").replace("\\", "/")
 
 
+TUZI_BALANCE_ERROR_MARKERS = [
+    "余额不足",
+    "余额不够",
+    "余额已用尽",
+    "额度不足",
+    "额度已用尽",
+    "quota exceeded",
+    "insufficient balance",
+    "insufficient quota",
+    "not enough balance",
+    "not enough quota",
+    "credit exhausted",
+    "billing",
+]
+
+
+def is_tuzi_balance_error_text(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return any(marker.lower() in lowered for marker in TUZI_BALANCE_ERROR_MARKERS)
+
+
+def trigger_tuzi_balance_alert(reason: str, operation_name: str = "") -> None:
+    if str(os.environ.get("TUZI_BALANCE_ALERT_ON_ERROR", "true")).lower() == "false":
+        return
+
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    script_path = os.path.join(project_root, "src", "scripts", "tuzi_balance_check.js")
+    if not os.path.exists(script_path):
+        print(f"[WARNING] tuZi余额检查脚本不存在，跳过余额告警: {script_path}")
+        return
+
+    alert_reason = f"{operation_name}: {reason}" if operation_name else str(reason)
+    try:
+        result = subprocess.run(
+            ["node", script_path, "--low-only", "--reason", alert_reason[:500]],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=45,
+        )
+        output = "\n".join(part for part in [(result.stdout or "").strip(), (result.stderr or "").strip()] if part)
+        if output:
+            print(f"[TUZI_BALANCE] {output[-1200:]}")
+        if result.returncode != 0:
+            print(f"[WARNING] tuZi余额告警检查失败，exit={result.returncode}")
+    except Exception as alert_error:
+        print(f"[WARNING] 触发tuZi余额告警失败: {alert_error}")
+
+
 def send_image_rate_limit_alert(rate_limit: Dict[str, Any], operation_name: str, reason: str, hourly_count: int, daily_count: int) -> None:
     webhook_url = rate_limit.get("webhookUrl")
     if not webhook_url:
@@ -424,6 +476,14 @@ def classify_tuzi_response(response, retry_config: Dict[str, Any]) -> Dict[str, 
     status_code = getattr(response, "status_code", None)
     body = getattr(response, "text", "") or ""
     lowered_body = body.lower()
+    body_excerpt = body[:300]
+
+    if is_tuzi_balance_error_text(body):
+        return {
+            "retryable": False,
+            "reason": f"HTTP {status_code} 疑似余额不足: {body_excerpt}",
+            "balanceAlert": True,
+        }
 
     if status_code in (400, 401, 403):
         return {"retryable": False, "reason": f"HTTP {status_code} 非重试错误"}
@@ -449,6 +509,8 @@ def classify_tuzi_response(response, retry_config: Dict[str, Any]) -> Dict[str, 
 def classify_tuzi_exception(error: Exception, retry_config: Dict[str, Any]) -> Dict[str, Any]:
     error_text = f"{type(error).__name__}: {error}"
     lowered_text = error_text.lower()
+    if is_tuzi_balance_error_text(error_text):
+        return {"retryable": False, "reason": error_text, "balanceAlert": True}
     for marker in retry_config.get("retryableExceptions", []):
         if marker and str(marker).lower() in lowered_text:
             return {"retryable": True, "reason": error_text}
@@ -564,6 +626,8 @@ def request_tuzi_with_retry(operation_name: str, request_func, retry_config: Opt
             classification = classify_tuzi_response(response, retry_config)
             last_error = classification["reason"]
             if not classification["retryable"] or attempt >= max_attempts - 1:
+                if classification.get("balanceAlert"):
+                    trigger_tuzi_balance_alert(last_error, operation_name)
                 return response
 
             print(f"[TUZI_RETRY] {operation_name} 可重试失败 ({attempt + 1}/{max_attempts}): {last_error}")
@@ -572,6 +636,8 @@ def request_tuzi_with_retry(operation_name: str, request_func, retry_config: Opt
             classification = classify_tuzi_exception(error, retry_config)
             last_error = classification["reason"]
             if not classification["retryable"] or attempt >= max_attempts - 1:
+                if classification.get("balanceAlert"):
+                    trigger_tuzi_balance_alert(last_error, operation_name)
                 raise
 
             print(f"[TUZI_RETRY] {operation_name} 可重试异常 ({attempt + 1}/{max_attempts}): {last_error}")

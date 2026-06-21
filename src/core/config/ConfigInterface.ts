@@ -357,6 +357,11 @@ export interface ClipTopicsConfig {
   };
   notify: {
     enabled: boolean;
+    includeSubtitleContext?: boolean;
+    subtitleContextLines?: number;
+    includeDanmakuContext?: boolean;
+    maxDanmakuLines?: number;
+    danmakuContextSeconds?: number;
   };
 }
 

@@ -896,7 +896,7 @@ async function generateAiText(highlightPath, roomId = null) {
     return null;
 }
 
-async function generateTopicClipsForMedia(originalMediaPath, processedMediaPath, srtPath, roomId = null, context = {}) {
+async function generateTopicClipsForMedia(originalMediaPath, processedMediaPath, srtPath, roomId = null, context = {}, xmlPath = null) {
     const config = configLoader.getConfig();
     const clipConfig = topicClipper.getClipTopicsConfig(config);
     if (!clipConfig.enabled) {
@@ -911,6 +911,7 @@ async function generateTopicClipsForMedia(originalMediaPath, processedMediaPath,
             originalMediaPath,
             processedMediaPath,
             srtPath,
+            xmlPath,
             ffmpegPath,
             context: {
                 ...context,

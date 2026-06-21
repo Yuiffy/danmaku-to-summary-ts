@@ -285,6 +285,11 @@ export class ConfigValidator {
         },
         notify: {
           enabled: true,
+          includeSubtitleContext: true,
+          subtitleContextLines: 3,
+          includeDanmakuContext: true,
+          maxDanmakuLines: 6,
+          danmakuContextSeconds: 45,
         },
       },
       storage: {

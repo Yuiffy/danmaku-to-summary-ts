@@ -128,8 +128,40 @@ def parse_review(review_path):
                     'start': start,
                     'duration': dur,
                     'path': path,
+                    'cover': '',
                 })
     return clips
+
+
+def find_existing_cover(clip):
+    """Prefer generated title covers over a plain frame grab."""
+    explicit = (clip.get('cover') or '').strip()
+    if explicit and os.path.exists(explicit):
+        return explicit
+
+    filepath = clip.get('path') or ''
+    if filepath:
+        base, _ = os.path.splitext(filepath)
+        candidates = [
+            f'{base}_cover.jpg',
+            f'{base}_cover.png',
+            os.path.join(os.path.dirname(filepath), f'cover_{clip["idx"]:02d}_sui.jpg'),
+            os.path.join(os.path.dirname(filepath), f'cover_{clip["idx"]:02d}.jpg'),
+        ]
+        metadata_path = f'{base}.json'
+        if os.path.exists(metadata_path):
+            try:
+                with open(metadata_path, 'r', encoding='utf-8') as f:
+                    metadata = json.load(f)
+                cover_path = ((metadata.get('output') or {}).get('coverPath') or '').strip()
+                if cover_path:
+                    candidates.insert(0, cover_path)
+            except Exception:
+                pass
+        for candidate in candidates:
+            if candidate and os.path.exists(candidate):
+                return candidate
+    return None
 
 
 def build_desc(clip_title, source_desc, start_str, dur_str):
@@ -165,15 +197,24 @@ async def upload_one(clip, credential, prefix, tags, tid, source_desc):
     size_mb = os.path.getsize(filepath) / (1024 * 1024)
     print(f"  文件: {os.path.basename(filepath)} ({size_mb:.1f}MB)")
 
-    # 截取封面
+    # 优先使用标准流程生成的标题封面；没有时才临时截第一帧兜底。
     cover_tmp = os.path.join(os.path.dirname(filepath), f'_tmp_cover_{clip["idx"]}.jpg')
+    cover_path = find_existing_cover(clip)
+    cleanup_cover_tmp = False
     try:
-        import subprocess
-        subprocess.run([
-            'ffmpeg', '-i', filepath, '-vframes', '1',
-            '-q:v', '2', cover_tmp, '-y', '-loglevel', 'error'
-        ], check=True, timeout=30)
-        cover = Picture.from_file(cover_tmp)
+        if cover_path:
+            print(f"  封面: {os.path.basename(cover_path)}")
+            cover = Picture.from_file(cover_path)
+        else:
+            import subprocess
+            subprocess.run([
+                'ffmpeg', '-i', filepath, '-vframes', '1',
+                '-q:v', '2', cover_tmp, '-y', '-loglevel', 'error'
+            ], check=True, timeout=30)
+            cover_path = cover_tmp
+            cleanup_cover_tmp = True
+            print(f"  [WARN] 未找到标题封面，临时截取第一帧")
+            cover = Picture.from_file(cover_tmp)
     except Exception as e:
         print(f"  [WARN] 截取封面失败: {e}")
         cover = None
@@ -200,18 +241,21 @@ async def upload_one(clip, credential, prefix, tags, tid, source_desc):
             bvid = result['bvid']
             print(f"  ✅ 成功: {bvid}")
             # 清理临时封面
-            try: os.remove(cover_tmp)
-            except: pass
-            return {'idx': clip['idx'], 'title': full_title, 'status': 'ok', 'bvid': bvid}
+            if cleanup_cover_tmp:
+                try: os.remove(cover_tmp)
+                except: pass
+            return {'idx': clip['idx'], 'title': full_title, 'status': 'ok', 'bvid': bvid, 'cover': cover_path}
         else:
             print(f"  ❌ 上传返回无效结果: {result}")
-            try: os.remove(cover_tmp)
-            except: pass
+            if cleanup_cover_tmp:
+                try: os.remove(cover_tmp)
+                except: pass
             return {'idx': clip['idx'], 'title': full_title, 'status': 'fail'}
     except Exception as e:
         err = str(e)
-        try: os.remove(cover_tmp)
-        except: pass
+        if cleanup_cover_tmp:
+            try: os.remove(cover_tmp)
+            except: pass
         if '406' in err:
             print(f"  ❌ 406 错误（可能已上传成功，需查搜索确认）")
             return {'idx': clip['idx'], 'title': full_title, 'status': 'got_406'}
@@ -334,7 +378,8 @@ async def main():
         # 记录到状态
         if result['status'] == 'ok':
             state.setdefault('done', {})[str(clip['idx'])] = {
-                'title': full_title, 'bvid': result['bvid'], 'source': 'upload'
+                'title': full_title, 'bvid': result['bvid'], 'source': 'upload',
+                'cover': result.get('cover') or find_existing_cover(clip) or ''
             }
 
         # === 406 特殊处理：不盲目重试，查搜索确认 ===
