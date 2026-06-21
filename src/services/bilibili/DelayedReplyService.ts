@@ -36,6 +36,7 @@ export class DelayedReplyService implements IDelayedReplyService {
   private countdownInterval: NodeJS.Timeout | null = null;
   private notifier?: WeChatWorkNotifier;
   private addTaskLocks: Map<string, Promise<string>> = new Map();
+  private executingTaskIds: Set<string> = new Set();
   private restoredTaskIds: Set<string> = new Set();
 
   constructor(
@@ -852,6 +853,24 @@ export class DelayedReplyService implements IDelayedReplyService {
   }
 
   private async executeDelayedReply(task: DelayedReplyTask): Promise<void> {
+    if (this.executingTaskIds.has(task.taskId)) {
+      this.logger.warn('Skip duplicate delayed reply execution because task is already running', {
+        taskId: task.taskId,
+        roomId: task.roomId,
+        status: task.status
+      });
+      return;
+    }
+
+    this.executingTaskIds.add(task.taskId);
+    try {
+      await this.executeDelayedReplyLocked(task);
+    } finally {
+      this.executingTaskIds.delete(task.taskId);
+    }
+  }
+
+  private async executeDelayedReplyLocked(task: DelayedReplyTask): Promise<void> {
     let publishFailureContext: {
       dynamicId: string;
       replyText?: string;
