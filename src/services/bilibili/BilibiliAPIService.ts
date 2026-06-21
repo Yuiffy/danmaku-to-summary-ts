@@ -14,7 +14,8 @@ import {
   BilibiliDynamic,
   PublishCommentRequest,
   PublishCommentResponse,
-  BilibiliAPIResponse
+  BilibiliAPIResponse,
+  RoomLiveStatus
 } from './interfaces/types';
 import { parseDynamicItems } from './DynamicParser';
 
@@ -178,6 +179,77 @@ export class BilibiliAPIService implements IBilibiliAPIService {
   /**
    * 获取主播动态列表
    */
+  async getRoomLiveStatus(roomId: string): Promise<RoomLiveStatus> {
+    try {
+      await this.refreshConfigIfChanged();
+
+      const url = 'https://api.live.bilibili.com/xlive/web-room/v1/index/getInfoByRoom';
+      const params = new URLSearchParams({ room_id: roomId });
+      const response = await fetch(`${url}?${params}`, {
+        method: 'GET',
+        headers: {
+          'Cookie': this.cookie,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Referer': `${this.webUrl}/`
+        }
+      });
+
+      if (!response.ok) {
+        throw new AppError(`Failed to get room live status: HTTP ${response.status}`, 'API_ERROR', response.status);
+      }
+
+      const data: BilibiliAPIResponse = await response.json();
+      if (data.code !== 0) {
+        throw new AppError(`Failed to get room live status: ${data.message}`, 'API_ERROR', data.code);
+      }
+
+      const roomInfo = data.data?.room_info || {};
+      const liveStatus = Number(roomInfo.live_status ?? 0);
+
+      return {
+        roomId: String(roomInfo.room_id || roomInfo.short_id || roomId),
+        uid: roomInfo.uid !== undefined ? String(roomInfo.uid) : undefined,
+        liveStatus,
+        isLive: liveStatus === 1,
+        title: roomInfo.title,
+        liveStartTime: this.parseBilibiliLiveStartTime(roomInfo.live_start_time),
+        rawData: data.data
+      };
+    } catch (error) {
+      if (error instanceof AppError) {
+        throw error;
+      }
+      throw new AppError(
+        `Failed to get room live status: ${error instanceof Error ? error.message : error}`,
+        'API_ERROR',
+        500
+      );
+    }
+  }
+
+  private parseBilibiliLiveStartTime(value: unknown): Date | undefined {
+    if (value === undefined || value === null || value === '' || value === 0 || value === '0') {
+      return undefined;
+    }
+
+    if (typeof value === 'number') {
+      const millis = value > 1000000000000 ? value : value * 1000;
+      const parsed = new Date(millis);
+      return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+    }
+
+    const text = String(value).trim();
+    const numeric = Number(text);
+    if (!Number.isNaN(numeric)) {
+      const millis = numeric > 1000000000000 ? numeric : numeric * 1000;
+      const parsed = new Date(millis);
+      return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+    }
+
+    const parsed = new Date(text.replace(' ', 'T'));
+    return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+  }
+
   async getDynamics(uid: string, offset?: string): Promise<BilibiliDynamic[]> {
     try {
       await this.refreshConfigIfChanged();

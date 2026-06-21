@@ -20,6 +20,16 @@ export interface AnchorConfig {
   lastCheckTime?: Date;
 }
 
+export interface RoomLiveStatus {
+  roomId: string;
+  uid?: string;
+  liveStatus: number;
+  isLive: boolean;
+  title?: string;
+  liveStartTime?: Date;
+  rawData?: any;
+}
+
 /**
  * B站动态类型
  */
@@ -199,6 +209,10 @@ export interface DelayedReplyTask {
   replyId?: string;
   /** 完成时间 */
   completedAt?: Date;
+  /** Task was delayed because the same live was still active after restart. */
+  deferredForActiveLive?: boolean;
+  /** Number of checks while waiting for a final recording task to replace it. */
+  liveContinuationWaitCount?: number;
 }
 
 /**

@@ -9,7 +9,7 @@ import { ConfigProvider } from '../../core/config/ConfigProvider';
 import { IDelayedReplyService } from './interfaces/IDelayedReplyService';
 import { IDelayedReplyStore } from './interfaces/IDelayedReplyStore';
 import { IBilibiliAPIService } from './interfaces/IBilibiliAPIService';
-import { DelayedReplyTask, BilibiliDynamic } from './interfaces/types';
+import { DelayedReplyTask, BilibiliDynamic, RoomLiveStatus } from './interfaces/types';
 import { BilibiliConfigHelper } from './BilibiliConfigHelper';
 import { WeChatWorkNotifier } from '../notification/WeChatWorkNotifier';
 
@@ -27,6 +27,8 @@ export class DelayedReplyService implements IDelayedReplyService {
   private logger = getLogger('DelayedReplyService');
   private static readonly COMIC_WAIT_INTERVAL_MS = 2 * 60 * 1000;
   private static readonly MAX_COMIC_WAIT_COUNT = 3;
+  private static readonly LIVE_RECHECK_INTERVAL_MS = 2 * 60 * 1000;
+  private static readonly LIVE_CONTINUATION_REPLACEMENT_MAX_WAIT_COUNT = 180;
   private tasks: Map<string, DelayedReplyTask> = new Map();
   private timers: Map<string, NodeJS.Timeout> = new Map();
   private isRunningFlag = false;
@@ -34,6 +36,7 @@ export class DelayedReplyService implements IDelayedReplyService {
   private countdownInterval: NodeJS.Timeout | null = null;
   private notifier?: WeChatWorkNotifier;
   private addTaskLocks: Map<string, Promise<string>> = new Map();
+  private restoredTaskIds: Set<string> = new Set();
 
   constructor(
     private bilibiliAPI: IBilibiliAPIService,
@@ -202,6 +205,18 @@ export class DelayedReplyService implements IDelayedReplyService {
       );
 
       if (existingTask) {
+        if (
+          existingTask.deferredForActiveLive &&
+          !this.isSameDelayedReplyTask(existingTask, roomId, goodnightTextPath, comicImagePath)
+        ) {
+          this.logger.info('Replacing stale delayed reply task that was waiting for the continued live recording', {
+            roomId,
+            existingTaskId: existingTask.taskId,
+            newGoodnightTextPath: goodnightTextPath,
+            existingGoodnightTextPath: existingTask.goodnightTextPath
+          });
+          await this.removeTask(existingTask.taskId);
+        } else {
         // 检查是否在30分钟CD内
         const timeSinceCreation = now.getTime() - existingTask.createTime.getTime();
         const cooldownMs = 30 * 60 * 1000; // 30分钟CD
@@ -220,6 +235,7 @@ export class DelayedReplyService implements IDelayedReplyService {
         // 如果CD已过，删除旧任务
         this.logger.info(`CD已过，删除旧任务: ${existingTask.taskId}`, { roomId });
         await this.removeTask(existingTask.taskId);
+        }
       }
 
       // 计算延迟时间（优先使用传入的 delaySeconds，否则使用配置的 delayMinutes）
@@ -334,6 +350,7 @@ export class DelayedReplyService implements IDelayedReplyService {
 
       // 删除任务
       this.tasks.delete(taskId);
+      this.restoredTaskIds.delete(taskId);
       await this.store.removeTask(taskId);
 
       this.logger.info(`移除延迟回复任务: ${taskId}`);
@@ -541,6 +558,7 @@ export class DelayedReplyService implements IDelayedReplyService {
 
         seenTaskKeys.add(dedupeKey);
         uniqueTasks.push(task);
+        this.restoredTaskIds.add(task.taskId);
         this.tasks.set(task.taskId, task);
         this.scheduleTask(task);
       }
@@ -720,6 +738,119 @@ export class DelayedReplyService implements IDelayedReplyService {
   /**
    * 执行延迟回复
    */
+  private async getRoomLiveStatusSafely(roomId: string): Promise<RoomLiveStatus | null> {
+    if (!this.bilibiliAPI.getRoomLiveStatus) {
+      return null;
+    }
+
+    try {
+      return await this.bilibiliAPI.getRoomLiveStatus(roomId);
+    } catch (error) {
+      this.logger.warn('Failed to check room live status; continuing delayed reply flow', {
+        roomId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return null;
+    }
+  }
+
+  private isSameActiveLiveForTask(task: DelayedReplyTask, liveStatus: RoomLiveStatus | null): boolean {
+    if (!liveStatus?.isLive) {
+      return false;
+    }
+
+    const liveStart = liveStatus.liveStartTime?.getTime();
+    if (!liveStart || Number.isNaN(liveStart)) {
+      return true;
+    }
+
+    const toleranceMs = 5 * 60 * 1000;
+    const taskCreateTime = task.createTime.getTime();
+    const taskLiveStart = task.liveStartTime?.getTime();
+    const taskLiveEnd = task.liveEndTime?.getTime();
+
+    if (taskLiveStart && liveStart >= taskLiveStart - toleranceMs && liveStart <= taskCreateTime + toleranceMs) {
+      return true;
+    }
+
+    if (taskLiveEnd && liveStart <= taskLiveEnd + toleranceMs) {
+      return true;
+    }
+
+    return liveStart <= taskCreateTime + toleranceMs;
+  }
+
+  private async deferTaskForActiveLive(task: DelayedReplyTask, liveStatus: RoomLiveStatus): Promise<void> {
+    task.status = 'pending';
+    task.scheduledTime = new Date(Date.now() + DelayedReplyService.LIVE_RECHECK_INTERVAL_MS);
+    task.deferredForActiveLive = true;
+    task.liveContinuationWaitCount = 0;
+    task.lastCheckTime = new Date();
+
+    await this.store.updateTask(task.taskId, {
+      status: 'pending',
+      scheduledTime: task.scheduledTime,
+      deferredForActiveLive: true,
+      liveContinuationWaitCount: 0,
+      lastCheckTime: task.lastCheckTime
+    });
+
+    this.logger.info('Delayed reply task deferred because the same live is still active', {
+      taskId: task.taskId,
+      roomId: task.roomId,
+      liveStatus: liveStatus.liveStatus,
+      liveStartTime: liveStatus.liveStartTime?.toISOString(),
+      nextCheckTime: task.scheduledTime.toISOString()
+    });
+
+    this.scheduleTask(task);
+  }
+
+  private async deferTaskWaitingForReplacement(task: DelayedReplyTask): Promise<boolean> {
+    if (!task.deferredForActiveLive) {
+      return false;
+    }
+
+    const waitCount = task.liveContinuationWaitCount || 0;
+    if (waitCount >= DelayedReplyService.LIVE_CONTINUATION_REPLACEMENT_MAX_WAIT_COUNT) {
+      task.status = 'failed';
+      task.error = 'stale delayed reply suppressed after live continuation; waiting replacement task timed out';
+      await this.store.updateTask(task.taskId, {
+        status: 'failed',
+        error: task.error,
+        liveContinuationWaitCount: waitCount
+      });
+      this.logger.warn('Suppressed stale delayed reply task after waiting for final recording replacement', {
+        taskId: task.taskId,
+        roomId: task.roomId,
+        waitCount
+      });
+      return true;
+    }
+
+    task.status = 'pending';
+    task.scheduledTime = new Date(Date.now() + DelayedReplyService.LIVE_RECHECK_INTERVAL_MS);
+    task.liveContinuationWaitCount = waitCount + 1;
+    task.lastCheckTime = new Date();
+
+    await this.store.updateTask(task.taskId, {
+      status: 'pending',
+      scheduledTime: task.scheduledTime,
+      liveContinuationWaitCount: task.liveContinuationWaitCount,
+      lastCheckTime: task.lastCheckTime
+    });
+
+    this.logger.info('Delayed reply task is waiting for the final recording task to replace it', {
+      taskId: task.taskId,
+      roomId: task.roomId,
+      waitCount: task.liveContinuationWaitCount,
+      nextCheckTime: task.scheduledTime.toISOString()
+    });
+
+    this.scheduleTask(task);
+    return true;
+  }
+
   private async executeDelayedReply(task: DelayedReplyTask): Promise<void> {
     let publishFailureContext: {
       dynamicId: string;
@@ -729,6 +860,15 @@ export class DelayedReplyService implements IDelayedReplyService {
 
     try {
       // 清除定时器
+      if (task.status !== 'pending') {
+        this.logger.info('Skip delayed reply execution because task is no longer pending', {
+          taskId: task.taskId,
+          roomId: task.roomId,
+          status: task.status
+        });
+        return;
+      }
+
       const timer = this.timers.get(task.taskId);
       if (timer) {
         clearTimeout(timer);
@@ -736,6 +876,17 @@ export class DelayedReplyService implements IDelayedReplyService {
       }
 
       // 更新任务状态
+      const liveStatus = await this.getRoomLiveStatusSafely(task.roomId);
+      const canDeferForLiveContinuation = this.restoredTaskIds.has(task.taskId) || !!task.deferredForActiveLive;
+      if (canDeferForLiveContinuation && this.isSameActiveLiveForTask(task, liveStatus)) {
+        await this.deferTaskForActiveLive(task, liveStatus!);
+        return;
+      }
+
+      if (await this.deferTaskWaitingForReplacement(task)) {
+        return;
+      }
+
       task.status = 'processing';
       await this.store.updateTask(task.taskId, { status: 'processing' });
 
@@ -1035,19 +1186,25 @@ export class DelayedReplyService implements IDelayedReplyService {
         const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
         const anchorName = anchorConfig?.name || '未知主播';
 
-        if (publishFailureContext) {
+        const failureContext = publishFailureContext as {
+          dynamicId: string;
+          replyText?: string;
+          imagePath?: string;
+        } | null;
+
+        if (failureContext) {
           const retryInfo = isBlacklistError || isCredentialError || this.isPermanentReplyError(error)
             ? '不会自动重试'
             : `已达到最大重试次数 ${task.retryCount}/${maxRetries}`;
           const errorMessage = `${task.error || '未知错误'}\n\n房间ID: ${task.roomId}\n任务ID: ${task.taskId}\nUID: ${task.uid || '未知'}\n重试状态: ${retryInfo}`;
 
           await this.notifier.notifyReplyFailure(
-            publishFailureContext.dynamicId,
+            failureContext.dynamicId,
             errorMessage,
             anchorName,
-            publishFailureContext.replyText || replyText,
+            failureContext.replyText || replyText,
             undefined,
-            publishFailureContext.imagePath,
+            failureContext.imagePath,
             this.getComicGenerationNotificationInfo(task.comicImagePath),
             this.getTextGenerationNotificationInfo(task.goodnightTextPath, task.comicImagePath)
           );
