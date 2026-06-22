@@ -61,6 +61,9 @@ export class DelayedReplyStore implements IDelayedReplyStore {
           if (task.completedAt) {
             task.completedAt = new Date(task.completedAt);
           }
+          if (task.supplementalCompletedAt) {
+            task.supplementalCompletedAt = new Date(task.supplementalCompletedAt);
+          }
           
           this.tasks.set(task.taskId, task);
         }
@@ -101,11 +104,17 @@ export class DelayedReplyStore implements IDelayedReplyStore {
    */
   async getPendingTasks(): Promise<DelayedReplyTask[]> {
     const now = new Date();
-    return Array.from(this.tasks.values()).filter(
-      task => task.status === 'pending' && 
-      // 预计发送时间没有过期太久（24小时）
-      task.scheduledTime >= new Date(now.getTime() - 24 * 60 * 60 * 1000)
-    );
+    return Array.from(this.tasks.values()).filter(task => {
+      if (task.status !== 'pending' && task.status !== 'waiting_comic') {
+        return false;
+      }
+
+      const maxAgeMs = task.status === 'waiting_comic'
+        ? 7 * 24 * 60 * 60 * 1000
+        : 24 * 60 * 60 * 1000;
+
+      return task.scheduledTime >= new Date(now.getTime() - maxAgeMs);
+    });
   }
 
   /**

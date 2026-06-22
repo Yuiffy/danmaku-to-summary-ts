@@ -188,7 +188,7 @@ export interface DelayedReplyTask {
   /** 计划执行时间 */
   scheduledTime: Date;
   /** 任务状态 */
-  status: 'pending' | 'processing' | 'completed' | 'failed';
+  status: 'pending' | 'processing' | 'waiting_comic' | 'completed' | 'failed';
   /** 重试次数 */
   retryCount: number;
   /** 错误信息 */
@@ -207,6 +207,10 @@ export interface DelayedReplyTask {
   repliedDynamicId?: string;
   /** 已发布的回复ID */
   replyId?: string;
+  /** 补图回复ID */
+  supplementalReplyId?: string;
+  /** 补图回复完成时间 */
+  supplementalCompletedAt?: Date;
   /** 完成时间 */
   completedAt?: Date;
   /** Task was delayed because the same live was still active after restart. */

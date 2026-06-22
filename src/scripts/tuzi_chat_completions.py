@@ -186,6 +186,7 @@ def get_tuzi_retry_scope_label(retry_config: Dict[str, Any]) -> str:
 def apply_tuzi_retry_operation_overrides(retry_config: Dict[str, Any], operation_name: str) -> Dict[str, Any]:
     scoped_config = dict(retry_config)
     scope = scoped_config.get("stateScope") or infer_tuzi_retry_scope(operation_name)
+    lowered_operation = (operation_name or "").lower()
 
     overrides = {}
     operation_configs = scoped_config.get("operationConfigs")
@@ -196,6 +197,21 @@ def apply_tuzi_retry_operation_overrides(retry_config: Dict[str, Any], operation
 
     if overrides:
         scoped_config.update({k: v for k, v in overrides.items() if v is not None})
+
+    if scope == "image" and "gpt-image-" in lowered_operation:
+        max_attempts_override = os.environ.get("TUZI_GPT_IMAGE_RETRY_MAX_ATTEMPTS")
+        if max_attempts_override:
+            try:
+                scoped_config["maxAttempts"] = max(1, int(max_attempts_override))
+            except ValueError:
+                print(f"[WARNING] TUZI_GPT_IMAGE_RETRY_MAX_ATTEMPTS 无效，已忽略: {max_attempts_override}")
+        else:
+            scoped_config["maxAttempts"] = 1
+            scoped_config["baseDelaysMs"] = [0]
+            scoped_config["retryableExceptions"] = []
+            scoped_config["retryableStatusCodes"] = []
+            print(f"[TUZI_RETRY] {operation_name} 是高成本长耗时生图请求，默认不做立即重试")
+
     scoped_config["stateScope"] = scope
     return scoped_config
 
@@ -1115,7 +1131,7 @@ def call_tuzi_images_edits(
                 for file_obj in opened_files:
                     file_obj.close()
 
-        resp = request_tuzi_with_retry("images/edits 图像生成", do_images_edits_request)
+        resp = request_tuzi_with_retry(f"images/edits 图像生成 {model}", do_images_edits_request)
 
         if resp is None:
             print("[ERROR] images/edits 失败: 重试耗尽")
@@ -1227,7 +1243,7 @@ def call_tuzi_images_generations(
         print(f"[DEBUG] payload: model={model}, size={payload['size']}, n={n}, response_format={response_format}, quality={quality}, output_format={output_format}")
 
         resp = request_tuzi_with_retry(
-            "images/generations 图像生成",
+            f"images/generations 图像生成 {model}",
             lambda: requests.post(api_url, headers=headers, json=payload, timeout=timeout, proxies=proxies)
         )
         if resp is None:
@@ -1486,10 +1502,11 @@ def call_tuzi_chat_completions_for_image(
                             append_image_generation_attempt(current_model, "images/generations", "success", "生成成功")
                             return img_gen_result
                         append_image_generation_attempt(current_model, "images/generations", "failure", "images/generations 返回空结果")
-                        print(f"[WARNING] images/generations 失败，回退到 chat/completions 格式")
-                        if str(room_id) == SUI_ROOM_ID and str(os.environ.get("TUZI_SKIP_CHAT_FALLBACK_ON_IMAGE_API_FAILURE", "")).lower() == "true":
-                            print("[INFO] 岁己策略已启用：images/generations 失败后跳过 chat/completions，直接切换下一策略")
+                        enable_chat_fallback = str(os.environ.get("TUZI_ENABLE_CHAT_FALLBACK_AFTER_GPT_IMAGE_FAILURE", "")).lower() == "true"
+                        if not enable_chat_fallback:
+                            print("[INFO] images/generations/images_edits 未返回图片；为避免高成本重复扣费，跳过 chat/completions 即时回退")
                             continue
+                        print(f"[WARNING] images/generations 失败，按环境变量允许回退到 chat/completions 格式")
 
                     # 回退：使用 /v1/chat/completions 格式（兼容旧模型）
                     # 重新构建消息列表，使用当前模型对应的 prompt
