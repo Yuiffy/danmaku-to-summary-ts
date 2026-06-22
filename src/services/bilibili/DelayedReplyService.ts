@@ -9,7 +9,7 @@ import { ConfigProvider } from '../../core/config/ConfigProvider';
 import { IDelayedReplyService } from './interfaces/IDelayedReplyService';
 import { IDelayedReplyStore } from './interfaces/IDelayedReplyStore';
 import { IBilibiliAPIService } from './interfaces/IBilibiliAPIService';
-import { DelayedReplyTask, BilibiliDynamic, RoomLiveStatus } from './interfaces/types';
+import { DelayedReplyTask, BilibiliDynamic, RoomLiveStatus, PublishCommentResponse } from './interfaces/types';
 import { BilibiliConfigHelper } from './BilibiliConfigHelper';
 import { WeChatWorkNotifier } from '../notification/WeChatWorkNotifier';
 
@@ -893,6 +893,72 @@ export class DelayedReplyService implements IDelayedReplyService {
     }
   }
 
+  private async notifySupplementalComicReplySuccess(
+    task: DelayedReplyTask,
+    comicImagePath: string,
+    result: PublishCommentResponse
+  ): Promise<void> {
+    if (!this.notifier || !task.repliedDynamicId || !task.supplementalReplyId) {
+      return;
+    }
+
+    const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
+    const replyUrl = `https://www.bilibili.com/opus/${task.repliedDynamicId}#reply${task.supplementalReplyId}`;
+    const imageGenerationInfo = this.getComicGenerationNotificationInfo(comicImagePath);
+    const textGenerationInfo = this.getTextGenerationNotificationInfo(task.goodnightTextPath, comicImagePath);
+    const lines = [
+      '✅ 补直播图片总结已发送',
+      '',
+      anchorConfig?.name ? `主播: ${anchorConfig.name}` : undefined,
+      `动态ID: ${task.repliedDynamicId}`,
+      task.replyId ? `主回复ID: ${task.replyId}` : undefined,
+      `补图回复ID: ${task.supplementalReplyId}`,
+      `回复内容: ${DelayedReplyService.SUPPLEMENTAL_COMIC_REPLY_TEXT}`,
+      '',
+      result.imageUrl ? `[B站附图](${result.imageUrl})` : undefined,
+      `[查看补图回复](${replyUrl})`,
+      textGenerationInfo ? `\n文本生成:\n${textGenerationInfo}` : undefined,
+      imageGenerationInfo ? `\n生图状态:\n${imageGenerationInfo}` : undefined
+    ].filter((line): line is string => Boolean(line));
+
+    try {
+      const imageSent = await this.notifier.sendImage(comicImagePath);
+      if (!imageSent) {
+        this.logger.warn('补图回复已发布，但企微图片消息发送失败，将继续发送文字通知', {
+          taskId: task.taskId,
+          dynamicId: task.repliedDynamicId,
+          supplementalReplyId: task.supplementalReplyId,
+          comicImagePath
+        });
+      }
+    } catch (notifyImageError) {
+      this.logger.warn('补图回复已发布，但企微图片消息发送异常，将继续发送文字通知', {
+        taskId: task.taskId,
+        dynamicId: task.repliedDynamicId,
+        supplementalReplyId: task.supplementalReplyId,
+        error: notifyImageError instanceof Error ? notifyImageError.message : String(notifyImageError)
+      });
+    }
+
+    try {
+      const markdownSent = await this.notifier.sendMarkdown(lines.join('\n'));
+      if (!markdownSent) {
+        this.logger.warn('补图回复已发布，但企微文字通知发送失败；不会重试补图避免重复评论', {
+          taskId: task.taskId,
+          dynamicId: task.repliedDynamicId,
+          supplementalReplyId: task.supplementalReplyId
+        });
+      }
+    } catch (notifyMarkdownError) {
+      this.logger.warn('补图回复已发布，但企微文字通知发送异常；不会重试补图避免重复评论', {
+        taskId: task.taskId,
+        dynamicId: task.repliedDynamicId,
+        supplementalReplyId: task.supplementalReplyId,
+        error: notifyMarkdownError instanceof Error ? notifyMarkdownError.message : String(notifyMarkdownError)
+      });
+    }
+  }
+
   private async executeSupplementalComicReply(task: DelayedReplyTask): Promise<void> {
     if (task.supplementalReplyId || task.supplementalCompletedAt) {
       task.status = 'completed';
@@ -1017,26 +1083,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       });
 
       if (this.notifier) {
-        try {
-          const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
-          await this.notifier.notifyReplySuccess(
-            task.repliedDynamicId,
-            task.supplementalReplyId,
-            anchorConfig?.name,
-            DelayedReplyService.SUPPLEMENTAL_COMIC_REPLY_TEXT,
-            result.imageUrl,
-            comicImagePath,
-            this.getComicGenerationNotificationInfo(comicImagePath),
-            this.getTextGenerationNotificationInfo(task.goodnightTextPath, comicImagePath)
-          );
-        } catch (notifyError) {
-          this.logger.warn('补图回复已发布，但成功通知发送失败；不会重试补图避免重复评论', {
-            taskId: task.taskId,
-            dynamicId: task.repliedDynamicId,
-            supplementalReplyId: task.supplementalReplyId,
-            error: notifyError instanceof Error ? notifyError.message : String(notifyError)
-          });
-        }
+        await this.notifySupplementalComicReplySuccess(task, comicImagePath, result);
       }
     } catch (error) {
       const delayedReplyConfig = BilibiliConfigHelper.getDelayedReplyConfig();
