@@ -58,6 +58,9 @@ LAST_IMAGE_GENERATION_META = {
     "model": None,
     "endpoint": None,
     "reason": None,
+    "requestIds": [],
+    "lastRequestId": None,
+    "lastResponseId": None,
     "attempts": [],
 }
 
@@ -73,26 +76,106 @@ def reset_last_image_generation_meta() -> None:
         "model": None,
         "endpoint": None,
         "reason": None,
+        "requestIds": [],
+        "lastRequestId": None,
+        "lastResponseId": None,
         "attempts": [],
     })
 
 
-def append_image_generation_attempt(model: str, endpoint: str, status: str, reason: str = "") -> None:
+def append_image_generation_attempt(
+    model: str,
+    endpoint: str,
+    status: str,
+    reason: str = "",
+    request_id: Optional[str] = None,
+    response_id: Optional[str] = None,
+) -> None:
     attempts = LAST_IMAGE_GENERATION_META.setdefault("attempts", [])
-    attempts.append({
+    attempt = {
         "model": model,
         "endpoint": endpoint,
         "status": status,
         "reason": str(reason)[:300],
-    })
+    }
+    if request_id:
+        attempt["requestId"] = request_id
+    if response_id:
+        attempt["responseId"] = response_id
+    attempts.append(attempt)
     LAST_IMAGE_GENERATION_META["status"] = status
     LAST_IMAGE_GENERATION_META["model"] = model
     LAST_IMAGE_GENERATION_META["endpoint"] = endpoint
     LAST_IMAGE_GENERATION_META["reason"] = str(reason)[:500] if reason else None
+    if request_id:
+        request_ids = LAST_IMAGE_GENERATION_META.setdefault("requestIds", [])
+        if request_id not in request_ids:
+            request_ids.append(request_id)
+        LAST_IMAGE_GENERATION_META["lastRequestId"] = request_id
+    if response_id:
+        LAST_IMAGE_GENERATION_META["lastResponseId"] = response_id
 
 
 def get_last_image_generation_meta() -> Dict[str, Any]:
     return dict(LAST_IMAGE_GENERATION_META)
+
+
+def extract_tuzi_response_identifiers(response=None, body: Optional[Dict[str, Any]] = None) -> Dict[str, Optional[str]]:
+    """Best-effort extraction of Tuzi/OpenAI-compatible request identifiers."""
+    headers = getattr(response, "headers", {}) or {}
+    header_candidates = [
+        "x-request-id",
+        "x-requestid",
+        "request-id",
+        "request_id",
+        "tuzi-request-id",
+        "x-tuzi-request-id",
+        "cf-ray",
+    ]
+
+    request_id = None
+    for key in header_candidates:
+        try:
+            value = headers.get(key) or headers.get(key.title()) or headers.get(key.upper())
+        except AttributeError:
+            value = None
+        if value:
+            request_id = str(value)
+            break
+
+    response_id = None
+    if isinstance(body, dict):
+        body_request_id = (
+            body.get("request_id")
+            or body.get("requestId")
+            or body.get("requestID")
+            or body.get("Request ID")
+        )
+        if body_request_id and not request_id:
+            request_id = str(body_request_id)
+
+        body_response_id = (
+            body.get("id")
+            or body.get("response_id")
+            or body.get("responseId")
+            or body.get("Response ID")
+        )
+        if body_response_id:
+            response_id = str(body_response_id)
+
+    return {"requestId": request_id, "responseId": response_id}
+
+
+def log_tuzi_response_identifiers(operation_name: str, response=None, body: Optional[Dict[str, Any]] = None) -> Dict[str, Optional[str]]:
+    ids = extract_tuzi_response_identifiers(response, body)
+    status_code = getattr(response, "status_code", None)
+    elapsed = getattr(getattr(response, "elapsed", None), "total_seconds", lambda: None)()
+    print(
+        "[TUZI_REQUEST] "
+        f"operation={operation_name}, status={status_code}, elapsed={elapsed}, "
+        f"request_id={ids.get('requestId') or ''}, response_id={ids.get('responseId') or ''}"
+    )
+    return ids
 
 
 def normalize_text_max_tokens(model: str, max_tokens: int) -> int:
@@ -635,6 +718,7 @@ def request_tuzi_with_retry(operation_name: str, request_func, retry_config: Opt
 
         try:
             response = request_func()
+            log_tuzi_response_identifiers(operation_name, response)
             if getattr(response, "status_code", None) == 200:
                 register_tuzi_success(retry_config)
                 return response
@@ -988,6 +1072,7 @@ def call_tuzi_chat_completions(
 
         if response.status_code == 200:
             result = response.json()
+            log_tuzi_response_identifiers(f"chat/completions 文本生成 {model}", response, result)
             if "choices" in result and len(result["choices"]) > 0:
                 content = result["choices"][0].get("message", {}).get("content", "")
                 if content and content.strip():
@@ -1144,15 +1229,32 @@ def call_tuzi_images_edits(
             return None
 
         result = resp.json()
+        ids = log_tuzi_response_identifiers(operation_name, resp, result)
         print(f"[DEBUG] images/edits 响应结构: {list(result.keys())}")
 
         extracted = try_extract_image_from_data_items(result.get("data"), proxies, prefix=f"comic_{model.replace('/', '_')}_edit")
         if extracted:
             record_successful_image_api_call(operation_name)
+            append_image_generation_attempt(
+                model,
+                "images/edits",
+                "success",
+                "生成成功",
+                ids.get("requestId"),
+                ids.get("responseId"),
+            )
             print(f"[OK] images/edits 成功，保存到: {extracted}")
             return extracted
 
         print(f"[ERROR] images/edits 响应中未找到图片数据: {json.dumps(result, ensure_ascii=False)[:500]}")
+        append_image_generation_attempt(
+            model,
+            "images/edits",
+            "failure",
+            "响应中未找到图片数据",
+            ids.get("requestId"),
+            ids.get("responseId"),
+        )
         return None
 
     except Exception as e:
@@ -1256,12 +1358,21 @@ def call_tuzi_images_generations(
             return None
 
         result = resp.json()
+        ids = log_tuzi_response_identifiers(operation_name, resp, result)
         print(f"[DEBUG] 响应结构: {list(result.keys())}")
 
         # 标准返回格式: { "data": [ { "b64_json": "...", "url": "..." } ] }
         data_list = result.get("data", [])
         if not data_list:
             print(f"[ERROR] 响应中无 data 字段: {json.dumps(result, ensure_ascii=False)[:500]}")
+            append_image_generation_attempt(
+                model,
+                "images/generations",
+                "failure",
+                "响应中无 data 字段",
+                ids.get("requestId"),
+                ids.get("responseId"),
+            )
             return None
 
         first = data_list[0]
@@ -1274,6 +1385,14 @@ def call_tuzi_images_generations(
             output_path = save_image_bytes(image_bytes, prefix=f"comic_{model.replace('/', '_')}")
             if output_path:
                 record_successful_image_api_call(operation_name)
+                append_image_generation_attempt(
+                    model,
+                    "images/generations",
+                    "success",
+                    "生成成功",
+                    ids.get("requestId"),
+                    ids.get("responseId"),
+                )
                 print(f"[OK] images/generations 成功，保存到: {output_path}")
                 return output_path
 
@@ -1283,10 +1402,26 @@ def call_tuzi_images_generations(
             downloaded = download_image_to_temp(img_url, proxies, prefix=f"comic_{model.replace('/', '_')}")
             if downloaded:
                 record_successful_image_api_call(operation_name)
+                append_image_generation_attempt(
+                    model,
+                    "images/generations",
+                    "success",
+                    "生成成功（URL模式）",
+                    ids.get("requestId"),
+                    ids.get("responseId"),
+                )
                 print(f"[OK] images/generations 成功（URL模式），保存到: {downloaded}")
                 return downloaded
 
         print(f"[ERROR] data[0] 中无 b64_json 也无 url: {json.dumps(first, ensure_ascii=False)[:500]}")
+        append_image_generation_attempt(
+            model,
+            "images/generations",
+            "failure",
+            "data[0] 中无 b64_json 也无 url",
+            ids.get("requestId"),
+            ids.get("responseId"),
+        )
         return None
 
     except Exception as e:
@@ -1499,7 +1634,6 @@ def call_tuzi_chat_completions_for_image(
                             output_format="png"
                         )
                         if img_gen_result:
-                            append_image_generation_attempt(current_model, "images/generations", "success", "生成成功")
                             return img_gen_result
                         append_image_generation_attempt(current_model, "images/generations", "failure", "images/generations 返回空结果")
                         enable_chat_fallback = str(os.environ.get("TUZI_ENABLE_CHAT_FALLBACK_AFTER_GPT_IMAGE_FAILURE", "")).lower() == "true"
@@ -1557,6 +1691,7 @@ def call_tuzi_chat_completions_for_image(
                 if response.status_code == 200:
                     # 尝试解析响应
                     result = response.json()
+                    ids = log_tuzi_response_identifiers(operation_name, response, result)
 
                     # 打印响应结构以便调试
                     print(f"[DEBUG] 响应结构: {list(result.keys())}")
@@ -1564,7 +1699,14 @@ def call_tuzi_chat_completions_for_image(
                     direct_data_result = try_extract_image_from_data_items(result.get("data"), proxies)
                     if direct_data_result:
                         record_successful_image_api_call(operation_name)
-                        append_image_generation_attempt(current_model, "chat/completions", "success", "从 data 提取图片成功")
+                        append_image_generation_attempt(
+                            current_model,
+                            "chat/completions",
+                            "success",
+                            "从 data 提取图片成功",
+                            ids.get("requestId"),
+                            ids.get("responseId"),
+                        )
                         return direct_data_result
 
                     # 处理 /v1/chat/completions 响应格式
@@ -1576,7 +1718,14 @@ def call_tuzi_chat_completions_for_image(
                         extracted_from_content = try_extract_image_from_message_content(content, proxies, timeout)
                         if extracted_from_content:
                             record_successful_image_api_call(operation_name)
-                            append_image_generation_attempt(current_model, "chat/completions", "success", "从 message.content 提取图片成功")
+                            append_image_generation_attempt(
+                                current_model,
+                                "chat/completions",
+                                "success",
+                                "从 message.content 提取图片成功",
+                                ids.get("requestId"),
+                                ids.get("responseId"),
+                            )
                             return extracted_from_content
 
                         if is_content_policy_rejection(content):
@@ -1595,22 +1744,51 @@ def call_tuzi_chat_completions_for_image(
                                             direct_tool_result = download_image_to_temp(args_json["image_url"], proxies)
                                             if direct_tool_result:
                                                 record_successful_image_api_call(operation_name)
-                                                append_image_generation_attempt(current_model, "chat/completions", "success", "从 tool_call 图片链接下载成功")
+                                                append_image_generation_attempt(
+                                                    current_model,
+                                                    "chat/completions",
+                                                    "success",
+                                                    "从 tool_call 图片链接下载成功",
+                                                    ids.get("requestId"),
+                                                    ids.get("responseId"),
+                                                )
                                                 return direct_tool_result
                                         data_tool_result = try_extract_image_from_data_items(args_json.get("data"), proxies)
                                         if data_tool_result:
                                             record_successful_image_api_call(operation_name)
-                                            append_image_generation_attempt(current_model, "chat/completions", "success", "从 tool_call data 提取图片成功")
+                                            append_image_generation_attempt(
+                                                current_model,
+                                                "chat/completions",
+                                                "success",
+                                                "从 tool_call data 提取图片成功",
+                                                ids.get("requestId"),
+                                                ids.get("responseId"),
+                                            )
                                             return data_tool_result
                                     except Exception as json_error:
                                         print(f"[WARNING] 解析工具调用参数失败: {json_error}")
 
                     # 如果到这里还没返回，说明响应格式不符合预期
                     print(f"[ERROR] 无法从响应中提取图像数据")
-                    append_image_generation_attempt(current_model, "chat/completions", "failure", "响应中未找到图片数据")
+                    append_image_generation_attempt(
+                        current_model,
+                        "chat/completions",
+                        "failure",
+                        "响应中未找到图片数据",
+                        ids.get("requestId"),
+                        ids.get("responseId"),
+                    )
                     print(f"[DEBUG] 完整响应: {json.dumps(result, ensure_ascii=False, indent=2)[:1000]}")
                 else:
-                    append_image_generation_attempt(current_model, "chat/completions", "failure", f"HTTP {response.status_code}")
+                    ids = log_tuzi_response_identifiers(operation_name, response)
+                    append_image_generation_attempt(
+                        current_model,
+                        "chat/completions",
+                        "failure",
+                        f"HTTP {response.status_code}",
+                        ids.get("requestId"),
+                        ids.get("responseId"),
+                    )
                     print(f"[WARNING] tu-zi.com API调用失败 (尝试 {attempt + 1}/{len(retry_strategies)}): HTTP {response.status_code} elapsed: {response.elapsed.total_seconds()}s")
                 
                 # 如果没成功且还有剩余策略，等待一下再试

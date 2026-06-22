@@ -13,6 +13,41 @@ from typing import Optional, Dict, Any, List
 import traceback
 
 
+def extract_tuzi_response_identifiers(response=None, body: Optional[Dict[str, Any]] = None) -> Dict[str, Optional[str]]:
+    headers = getattr(response, "headers", {}) or {}
+    request_id = None
+    for key in ("x-request-id", "x-requestid", "request-id", "request_id", "tuzi-request-id", "x-tuzi-request-id", "cf-ray"):
+        try:
+            value = headers.get(key) or headers.get(key.title()) or headers.get(key.upper())
+        except AttributeError:
+            value = None
+        if value:
+            request_id = str(value)
+            break
+
+    response_id = None
+    if isinstance(body, dict):
+        body_request_id = body.get("request_id") or body.get("requestId") or body.get("requestID") or body.get("Request ID")
+        if body_request_id and not request_id:
+            request_id = str(body_request_id)
+        body_response_id = body.get("id") or body.get("response_id") or body.get("responseId") or body.get("Response ID")
+        if body_response_id:
+            response_id = str(body_response_id)
+
+    return {"requestId": request_id, "responseId": response_id}
+
+
+def log_tuzi_response_identifiers(operation_name: str, response=None, body: Optional[Dict[str, Any]] = None) -> None:
+    ids = extract_tuzi_response_identifiers(response, body)
+    status_code = getattr(response, "status_code", None)
+    elapsed = getattr(getattr(response, "elapsed", None), "total_seconds", lambda: None)()
+    print(
+        "[TUZI_REQUEST] "
+        f"operation={operation_name}, status={status_code}, elapsed={elapsed}, "
+        f"request_id={ids.get('requestId') or ''}, response_id={ids.get('responseId') or ''}"
+    )
+
+
 def call_tuzi_gemini_async(
     prompt: str,
     reference_image_paths: Optional[List[str]] = None,
@@ -128,11 +163,13 @@ def call_tuzi_gemini_async(
             )
 
         if create_response.status_code != 200:
+            log_tuzi_response_identifiers(f"gemini_async create {model}", create_response)
             print(f"[ERROR] 创建任务失败: HTTP {create_response.status_code}")
             print(f"[DEBUG] 响应内容: {create_response.text[:500]}")
             return None
 
         create_result = create_response.json()
+        log_tuzi_response_identifiers(f"gemini_async create {model}", create_response, create_result)
         print(f"[DEBUG] 创建任务响应: {json.dumps(create_result, ensure_ascii=False, indent=2)}")
 
         # 提取任务ID
@@ -164,6 +201,7 @@ def call_tuzi_gemini_async(
                 )
 
                 if query_response.status_code != 200:
+                    log_tuzi_response_identifiers(f"gemini_async query {model}", query_response)
                     print(f"[WARNING] 查询任务状态失败: HTTP {query_response.status_code}")
                     time.sleep(poll_interval)
                     continue
@@ -183,6 +221,7 @@ def call_tuzi_gemini_async(
 
                 # 检查任务是否完成
                 if current_status == "completed" or current_status == "succeeded":
+                    log_tuzi_response_identifiers(f"gemini_async completed {model}", query_response, query_result)
                     print(f"[OK] 任务完成！")
                     
                     # 尝试从响应中提取图像URL

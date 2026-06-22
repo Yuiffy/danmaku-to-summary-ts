@@ -1667,6 +1667,9 @@ def write_comic_generation_meta(output_path: str, meta: Dict[str, Any]) -> None:
             "model": meta.get("model"),
             "endpoint": meta.get("endpoint"),
             "reason": meta.get("reason"),
+            "requestIds": meta.get("requestIds") or [],
+            "lastRequestId": meta.get("lastRequestId"),
+            "lastResponseId": meta.get("lastResponseId"),
             "attempts": meta.get("attempts") or [],
             "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
