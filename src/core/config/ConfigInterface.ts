@@ -419,6 +419,8 @@ export interface DelayedReplyConfig {
   maxRetries: number;
   /** 重试延迟（分钟） */
   retryDelayMinutes: number;
+  maxTaskAgeHours?: number;
+  maxSupplementalComicWaitMinutes?: number;
 }
 
 // 弹幕风控监控配置

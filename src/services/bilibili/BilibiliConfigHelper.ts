@@ -37,6 +37,8 @@ export interface DelayedReplySettings {
   maxRetries: number;
   /** 重试延迟（分钟） */
   retryDelayMinutes: number;
+  maxTaskAgeHours?: number;
+  maxSupplementalComicWaitMinutes?: number;
 }
 
 /**
@@ -133,6 +135,8 @@ export class BilibiliConfigHelper {
       delayMinutes: 10,
       maxRetries: 3,
       retryDelayMinutes: 5,
+      maxTaskAgeHours: 24,
+      maxSupplementalComicWaitMinutes: 20,
     };
   }
 
@@ -180,6 +184,8 @@ export class BilibiliConfigHelper {
       delayMinutes: globalConfig.delayMinutes,
       maxRetries: globalConfig.maxRetries,
       retryDelayMinutes: globalConfig.retryDelayMinutes,
+      maxTaskAgeHours: globalConfig.maxTaskAgeHours,
+      maxSupplementalComicWaitMinutes: globalConfig.maxSupplementalComicWaitMinutes,
     };
   }
 

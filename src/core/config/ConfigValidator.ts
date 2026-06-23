@@ -337,6 +337,8 @@ export class ConfigValidator {
           delayMinutes: 10,
           maxRetries: 3,
           retryDelayMinutes: 5,
+          maxTaskAgeHours: 24,
+          maxSupplementalComicWaitMinutes: 20,
         },
       },
       wechatWork: {

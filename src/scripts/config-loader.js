@@ -257,7 +257,15 @@ const ConfigSchema = Joi.object({
             uid: Joi.string(),
             name: Joi.string(),
             enabled: Joi.boolean()
-        })).default()
+        })).default(),
+        delayedReply: Joi.object({
+            enabled: Joi.boolean().default(false),
+            delayMinutes: Joi.number().default(10),
+            maxRetries: Joi.number().default(3),
+            retryDelayMinutes: Joi.number().default(5),
+            maxTaskAgeHours: Joi.number().default(24),
+            maxSupplementalComicWaitMinutes: Joi.number().default(20)
+        }).default()
     }).default(),
     // 兼容旧格式
     aiServices: Joi.object({
