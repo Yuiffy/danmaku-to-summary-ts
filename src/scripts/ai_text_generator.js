@@ -506,6 +506,18 @@ function getTuZiFinishReason(choice) {
     return choice?.finish_reason || choice?.finishReason || choice?.native_finish_reason || null;
 }
 
+function buildTuZiTextModelFailureError(attempts) {
+    const failures = attempts
+        .filter(attempt => attempt.provider === 'tuZi' && attempt.status === 'failure')
+        .map(attempt => `${attempt.model}: ${attempt.error || 'unknown error'}`);
+
+    if (failures.length === 0) {
+        return new Error('tuZi API全部候选模型失败');
+    }
+
+    return new Error(`tuZi API全部候选模型失败: ${failures.join(' | ')}`);
+}
+
 // 调用tuZi API生成文本(备用方案)
 async function generateTextWithTuZi(prompt, options = {}) {
     const config = configLoader.getConfig();
@@ -521,13 +533,15 @@ async function generateTextWithTuZi(prompt, options = {}) {
     const configuredFallbackModels = Array.isArray(tuziConfig.fallbackModels)
         ? tuziConfig.fallbackModels
         : [];
+    const builtInFallbackModels = tuziConfig.includeBuiltInFallbackModels === true
+        ? ['qwen2.5-72b-instruct', 'grok-4.1']
+        : [];
     const modelSequence = [
         tuziConfig.model || 'gpt-5.4-mini',
         ...configuredFallbackModels,
         'gemini-3-flash-preview',
         'gpt-5.4-mini',
-        'qwen2.5-72b-instruct',
-        'grok-4.1'
+        ...builtInFallbackModels
     ].filter((model, index, models) => model && models.indexOf(model) === index);
     const baseUrl = tuziConfig.baseUrl || 'https://api.tu-zi.com';
     const apiUrl = `${baseUrl}/v1/chat/completions`;
@@ -627,9 +641,9 @@ async function generateTextWithTuZi(prompt, options = {}) {
             console.error(`❌ tuZi API调用失败 (尝试 ${attempt + 1}/${modelSequence.length}): ${error.message}`);
             await maybeNotifyTuZiBalanceError(error, `文本生成 ${textModel}`);
 
-            // 如果是最后一次尝试,抛出错误
+            // 如果是最后一次尝试,抛出包含所有候选模型失败原因的错误
             if (attempt === modelSequence.length - 1) {
-                throw error;
+                throw buildTuZiTextModelFailureError(attempts);
             }
 
             // 等待一小段时间后重试
