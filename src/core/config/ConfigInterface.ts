@@ -45,6 +45,7 @@ export interface AudioStorageConfig {
   keepOriginalVideo: boolean;
   retentionEnabled?: boolean;
   convertAfterDays?: number;
+  maxProcessAgeDays?: number | null | false;
   includeBak?: boolean;
   scanIntervalHours?: number;
   maxFileAgeDays: number;
@@ -255,6 +256,35 @@ export interface OpenAIConfig {
 }
 
 // 文本AI配置
+export interface AIProviderConfig {
+  type: 'openai' | 'openai-compatible' | string;
+  displayName?: string;
+  apiKey?: string;
+  baseUrl?: string;
+  baseURL?: string;
+  proxy?: string;
+  options?: Record<string, any>;
+}
+
+export interface ImageGenerationRouteConfig {
+  enabled?: boolean;
+  provider: string;
+  model: string;
+  flow?: 'openaiImages' | 'tuZiCompatible' | 'tuziCompatible' | 'tuzi' | string;
+  maxAttempts?: number;
+  timeoutMs?: number;
+  timeoutSec?: number;
+  size?: string;
+  quality?: string;
+  outputFormat?: string;
+  responseFormat?: string;
+  useTuziRetry?: boolean;
+}
+
+export interface ImageGenerationConfig {
+  enabled: boolean;
+  routes: ImageGenerationRouteConfig[];
+}
 export interface TextAIConfig {
   enabled: boolean;
   provider: 'gemini' | 'openai' | 'claude';
@@ -281,6 +311,7 @@ export interface ComicAIConfig {
   };
   googleImage?: GoogleImageConfig;
   tuZi?: TuZiConfig;
+  imageGeneration?: ImageGenerationConfig;
   huggingface?: {
     apiToken: string;
     model: string;
@@ -320,6 +351,7 @@ export interface RoomAIConfig {
 
 // AI配置
 export interface AIConfig {
+  providers?: Record<string, AIProviderConfig>;
   text: TextAIConfig;
   comic: ComicAIConfig;
   defaultNames: {

@@ -64,12 +64,29 @@
       "keepOriginalVideo": false,
       "retentionEnabled": true,
       "convertAfterDays": 3,
+      "maxProcessAgeDays": 1,
       "includeBak": true,
       "scanIntervalHours": 24,
       "maxFileAgeDays": 30
     }
   },
   "ai": {
+    "providers": {
+      "daiYu": {
+        "type": "openai",
+        "displayName": "带鱼",
+        "baseURL": "http://localhost:8080/v1",
+        "apiKey": "",
+        "proxy": null
+      },
+      "tuZi": {
+        "type": "openai",
+        "displayName": "tuZi",
+        "baseUrl": "https://api.tu-zi.com",
+        "apiKey": "",
+        "proxy": null
+      }
+    },
     "text": {
       "enabled": true,
       "provider": "tuZi",
@@ -130,6 +147,35 @@
         "baseUrl": "https://api.tu-zi.com",
         "model": "gpt-image-2",
         "proxy": null
+      },
+      "imageGeneration": {
+        "enabled": true,
+        "routes": [
+          {
+            "provider": "daiYu",
+            "model": "gpt-image-2",
+            "flow": "openaiImages",
+            "maxAttempts": 1,
+            "timeoutMs": 1000000,
+            "size": "1:1",
+            "quality": "high",
+            "outputFormat": "png",
+            "responseFormat": "b64_json",
+            "useTuziRetry": false
+          },
+          {
+            "provider": "tuZi",
+            "model": "gpt-image-2",
+            "flow": "tuZiCompatible",
+            "maxAttempts": 1,
+            "timeoutMs": 1000000,
+            "size": "1:1",
+            "quality": "high",
+            "outputFormat": "png",
+            "responseFormat": "b64_json",
+            "useTuziRetry": true
+          }
+        ]
       },
       "defaults": {
         "minDurationMinutes": 60,

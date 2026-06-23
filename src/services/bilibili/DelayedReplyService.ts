@@ -1756,28 +1756,33 @@ export class DelayedReplyService implements IDelayedReplyService {
         ? '图片已生成，未找到生图元数据'
         : '图片未生成，未找到生图失败元数据';
     }
-
     try {
       const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
       const status = meta.status === 'success' ? '成功' : meta.status === 'failure' ? '失败' : String(meta.status || '未知');
-      const model = meta.model || '未知模型';
+      const routeAttempts = Array.isArray(meta.routeAttempts) ? meta.routeAttempts : [];
+      const successfulRoute = routeAttempts.find((attempt: any) => attempt?.status === 'success');
+      const provider = meta.provider || successfulRoute?.provider || '未知服务';
+      const model = meta.model || successfulRoute?.model || '未知模型';
       const endpoint = meta.endpoint || '未知接口';
       const reason = meta.reason ? String(meta.reason) : '';
       const attempts = Array.isArray(meta.attempts) ? meta.attempts : [];
-      const lastAttempts = attempts.slice(-3).map((attempt: any) => {
+      const combinedAttempts = routeAttempts.length > 0 ? routeAttempts : attempts;
+      const formatRoute = (routeProvider: string, routeModel: string, routeEndpoint: string) =>
+        `${routeProvider}/${routeModel}${routeEndpoint !== '未知接口' && routeEndpoint !== 'unknown' ? ` (${routeEndpoint})` : ''}`;
+      const lastAttempts = combinedAttempts.slice(-3).map((attempt: any) => {
+        const attemptProvider = attempt?.provider || provider || '未知服务';
         const attemptModel = attempt?.model || '未知模型';
         const attemptEndpoint = attempt?.endpoint || '未知接口';
         const attemptStatus = attempt?.status || 'unknown';
         const attemptReason = attempt?.reason ? `: ${String(attempt.reason).slice(0, 120)}` : '';
-        return `- ${attemptModel} / ${attemptEndpoint} / ${attemptStatus}${attemptReason}`;
+        return `- ${formatRoute(attemptProvider, attemptModel, attemptEndpoint)} / ${attemptStatus}${attemptReason}`;
       });
+      const summary = `${formatRoute(provider, model, endpoint)}: ${status}`;
 
       return [
-        `结果: ${status}`,
-        `模型: ${model}`,
-        `接口: ${endpoint}`,
+        `模型: ${summary}`,
         reason ? `原因: ${reason}` : undefined,
-        lastAttempts.length > 0 ? `最近尝试:\n${lastAttempts.join('\n')}` : undefined
+        lastAttempts.length > 1 || status !== '成功' ? `尝试:\n${lastAttempts.join('\n')}` : undefined
       ].filter(Boolean).join('\n');
     } catch (error) {
       this.logger.warn('读取生图元数据失败', {

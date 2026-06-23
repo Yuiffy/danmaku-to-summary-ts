@@ -21,6 +21,18 @@ const RoomSettingsSchema = Joi.object({
 }).pattern(Joi.string(), Joi.any());
 
 const AISchema = Joi.object({
+    providers: Joi.object().pattern(
+        Joi.string(),
+        Joi.object({
+            type: Joi.string().default('openai'),
+            displayName: Joi.string().optional(),
+            apiKey: Joi.string().allow('').default(''),
+            baseUrl: Joi.string().allow('').optional(),
+            baseURL: Joi.string().allow('').optional(),
+            proxy: Joi.string().allow('', null).default(''),
+            options: Joi.object().unknown(true).optional()
+        }).unknown(true)
+    ).default({}),
     text: Joi.object({
         enabled: Joi.boolean().default(true),
         provider: Joi.string().default('tuZi'),
@@ -61,6 +73,23 @@ const AISchema = Joi.object({
             baseUrl: Joi.string().default('https://api.tu-zi.com'),
             model: Joi.string().default('dall-e-3'),
             proxy: Joi.string().allow('', null).default('')
+        }).default(),
+        imageGeneration: Joi.object({
+            enabled: Joi.boolean().default(true),
+            routes: Joi.array().items(Joi.object({
+                enabled: Joi.boolean().default(true),
+                provider: Joi.string().required(),
+                model: Joi.string().default('gpt-image-2'),
+                flow: Joi.string().valid('openaiImages', 'tuZiCompatible', 'tuziCompatible', 'tuzi').default('openaiImages'),
+                maxAttempts: Joi.number().integer().min(1).default(1),
+                timeoutMs: Joi.number().integer().min(1).optional(),
+                timeoutSec: Joi.number().integer().min(1).optional(),
+                size: Joi.string().default('1:1'),
+                quality: Joi.string().default('high'),
+                outputFormat: Joi.string().default('png'),
+                responseFormat: Joi.string().default('b64_json'),
+                useTuziRetry: Joi.boolean().default(false)
+            }).unknown(true)).default([])
         }).default()
     }).default(),
     defaultNames: Joi.object({
@@ -123,6 +152,7 @@ const ConfigSchema = Joi.object({
             keepOriginalVideo: Joi.boolean().default(false),
             retentionEnabled: Joi.boolean().default(true),
             convertAfterDays: Joi.number().default(3),
+            maxProcessAgeDays: Joi.number().allow(null, false).default(1),
             includeBak: Joi.boolean().default(true),
             scanIntervalHours: Joi.number().default(24),
             maxFileAgeDays: Joi.number().default(30)
@@ -253,7 +283,11 @@ const SecretsSchema = Joi.object({
     tuZiBalance: Joi.object({
         accessToken: Joi.string().allow('').optional(),
         newApiUser: Joi.string().allow('').optional()
-    }).optional()
+    }).optional(),
+    providers: Joi.object().pattern(Joi.string(), Joi.object().unknown(true)).optional(),
+    ai: Joi.object({
+        providers: Joi.object().pattern(Joi.string(), Joi.object().unknown(true)).optional()
+    }).unknown(true).optional()
 }).default();
 
 // ============================================================================
@@ -341,6 +375,16 @@ function transformSecrets(secrets) {
     if (secrets.tuZiBalance) {
         transformed.ai = transformed.ai || {};
         transformed.ai.tuZiBalance = secrets.tuZiBalance;
+    }
+
+    if (secrets.providers) {
+        transformed.ai = transformed.ai || {};
+        transformed.ai.providers = deepMerge(transformed.ai.providers || {}, secrets.providers);
+    }
+
+    if (secrets.ai?.providers) {
+        transformed.ai = transformed.ai || {};
+        transformed.ai.providers = deepMerge(transformed.ai.providers || {}, secrets.ai.providers);
     }
 
     return transformed;

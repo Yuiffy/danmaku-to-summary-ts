@@ -31,7 +31,7 @@ class CoverGenerator:
         'stroke_width': 7,  # 描边宽度（像素）
         'subtitle_stroke_width': 4,  # 副标题描边宽度
         'padding': 40,  # 文字边距
-        'output_size': (1920, 1200),  # B站推荐封面尺寸 16:10
+        'output_size': (1920, 1080),  # B站更常用的16:9封面尺寸
     }
     
     def __init__(self, config: Optional[dict] = None):
@@ -211,11 +211,26 @@ class CoverGenerator:
         # 打开图片
         img = Image.open(image_path).convert('RGB')
         
-        # 调整尺寸为推荐封面尺寸
+        # 调整尺寸为推荐封面尺寸：先按比例裁剪，再缩放，避免拉伸变形：先按比例裁剪，再缩放，避免拉伸变形
         target_size = self.config['output_size']
+        target_w, target_h = target_size
+        src_w, src_h = img.size
+        target_ratio = target_w / target_h
+        src_ratio = src_w / src_h
+        
+        if abs(src_ratio - target_ratio) > 0.01:
+            if src_ratio > target_ratio:
+                new_w = int(src_h * target_ratio)
+                left = max(0, (src_w - new_w) // 2)
+                img = img.crop((left, 0, left + new_w, src_h))
+            else:
+                new_h = int(src_w / target_ratio)
+                top = max(0, (src_h - new_h) // 2)
+                img = img.crop((0, top, src_w, top + new_h))
+        
         img = img.resize(target_size, Image.Resampling.LANCZOS)
         
-        # 创建绘图层
+        # 文字层单独叠加，不参与缩放
         draw = ImageDraw.Draw(img)
         
         # 加载字体

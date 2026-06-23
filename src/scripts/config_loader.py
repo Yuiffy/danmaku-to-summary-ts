@@ -176,6 +176,25 @@ def get_config(force_reload: bool = False) -> Dict[str, Any]:
             if 'tuZi' not in mapped_secrets['ai']['comic']:
                 mapped_secrets['ai']['comic']['tuZi'] = {}
             mapped_secrets['ai']['comic']['tuZi']['apiKey'] = secrets['tuZi']['apiKey']
+
+        # providers -> ai.providers
+        if 'providers' in secrets and isinstance(secrets['providers'], dict):
+            if 'ai' not in mapped_secrets:
+                mapped_secrets['ai'] = {}
+            mapped_secrets['ai']['providers'] = secrets['providers']
+
+        # ai.providers can also be written directly in secret.json
+        if (
+            'ai' in secrets
+            and isinstance(secrets['ai'], dict)
+            and isinstance(secrets['ai'].get('providers'), dict)
+        ):
+            if 'ai' not in mapped_secrets:
+                mapped_secrets['ai'] = {}
+            mapped_secrets['ai']['providers'] = deep_merge(
+                mapped_secrets['ai'].get('providers', {}),
+                secrets['ai']['providers']
+            )
         
         # bilibili -> bilibili
         if 'bilibili' in secrets:

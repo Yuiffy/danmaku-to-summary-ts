@@ -46,6 +46,9 @@ function getAudioRetentionConfig() {
         enabled: storage.retentionEnabled !== false,
         convertAfterDays: Number(storage.convertAfterDays ?? storage.videoRetentionDays ?? 3),
         deleteAfterDays: Number(storage.maxFileAgeDays ?? storage.deleteAfterDays ?? 30),
+        maxProcessAgeDays: storage.maxProcessAgeDays === null || storage.maxProcessAgeDays === false
+            ? null
+            : Number(storage.maxProcessAgeDays ?? 1),
         includeBak: storage.includeBak !== false,
         scanIntervalHours: Number(storage.scanIntervalHours ?? 24),
         basePaths: Array.from(new Set([
@@ -328,14 +331,14 @@ async function applyOnlyAudioRetention(options = {}) {
     const now = options.now || Date.now();
     const config = configLoader.getConfig();
     const audioFormat = config.audio?.defaultFormat || config.audioRecording?.defaultFormat || '.m4a';
-    const summary = { scanned: 0, skipped: 0, converted: 0, deleted: 0, failed: 0, roots: retention.basePaths };
+    const summary = { scanned: 0, skipped: 0, skippedOld: 0, converted: 0, deleted: 0, failed: 0, roots: retention.basePaths };
 
     if (!retention.enabled) {
         console.log('onlyAudio retention disabled');
         return summary;
     }
 
-    debugLog(`onlyAudio retention scan started: convertAfterDays=${retention.convertAfterDays}, deleteAfterDays=${retention.deleteAfterDays}, includeBak=${retention.includeBak}, roots=${retention.basePaths.join(';')}`);
+    debugLog(`onlyAudio retention scan started: convertAfterDays=${retention.convertAfterDays}, deleteAfterDays=${retention.deleteAfterDays}, maxProcessAgeDays=${retention.maxProcessAgeDays ?? 'disabled'}, includeBak=${retention.includeBak}, roots=${retention.basePaths.join(';')}`);
 
     for (const root of retention.basePaths) {
         if (!fs.existsSync(root)) continue;
@@ -377,6 +380,13 @@ async function applyOnlyAudioRetention(options = {}) {
                     continue;
                 }
 
+                if (retention.maxProcessAgeDays !== null && ageDays > retention.maxProcessAgeDays) {
+                    debugLog(`onlyAudio retention skip old media: ${mediaPath} (${ageDays.toFixed(1)} days > ${retention.maxProcessAgeDays} days)`);
+                    summary.skipped++;
+                    summary.skippedOld++;
+                    continue;
+                }
+
                 if (isVideoFile(mediaPath) && ageDays >= retention.convertAfterDays) {
                     const targetAudio = path.join(path.dirname(mediaPath), `${path.basename(mediaPath, path.extname(mediaPath))}${audioFormat}`);
                     if (fs.existsSync(targetAudio)) {
@@ -407,7 +417,7 @@ async function applyOnlyAudioRetention(options = {}) {
         }
     }
 
-    console.log(`onlyAudio retention done: scanned=${summary.scanned}, converted=${summary.converted}, deleted=${summary.deleted}, skipped=${summary.skipped}, failed=${summary.failed}`);
+    console.log(`onlyAudio retention done: scanned=${summary.scanned}, converted=${summary.converted}, deleted=${summary.deleted}, skipped=${summary.skipped}, skippedOld=${summary.skippedOld}, failed=${summary.failed}`);
     return summary;
 }
 

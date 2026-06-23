@@ -120,6 +120,17 @@ def get_last_image_generation_meta() -> Dict[str, Any]:
     return dict(LAST_IMAGE_GENERATION_META)
 
 
+def annotate_last_image_generation_meta(**fields) -> None:
+    LAST_IMAGE_GENERATION_META.update({k: v for k, v in fields.items() if v is not None})
+
+
+def normalize_openai_base_url(base_url: str) -> str:
+    normalized = (base_url or "").rstrip("/")
+    if normalized.endswith("/v1"):
+        normalized = normalized[:-3].rstrip("/")
+    return normalized
+
+
 def extract_tuzi_response_identifiers(response=None, body: Optional[Dict[str, Any]] = None) -> Dict[str, Optional[str]]:
     """Best-effort extraction of Tuzi/OpenAI-compatible request identifiers."""
     headers = getattr(response, "headers", {}) or {}
@@ -1040,7 +1051,7 @@ def call_tuzi_chat_completions(
             print(f"[PROXY] 使用代理: {proxy_url}")
 
         # 构建API请求
-        api_url = f"{base_url}/v1/chat/completions"
+        api_url = f"{normalize_openai_base_url(base_url)}/v1/chat/completions"
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -1149,6 +1160,8 @@ def call_tuzi_images_edits(
     size: str = "1024x1024",
     quality: str = "high",
     output_format: str = "png",
+    use_tuzi_retry: bool = True,
+    provider_label: str = "tuZi",
 ) -> Optional[str]:
     """
     调用 /v1/images/edits 端点生成参考图编辑/多图融合结果。
@@ -1174,11 +1187,11 @@ def call_tuzi_images_edits(
             print(f"[WARNING] gpt-image-2 edits 最多支持 5 张参考图，当前 {len(reference_paths)} 张，仅使用前 5 张")
             reference_paths = reference_paths[:5]
 
-        api_url = f"{base_url}/v1/images/edits"
+        api_url = f"{normalize_openai_base_url(base_url)}/v1/images/edits"
         headers = {
             "Authorization": f"Bearer {api_key}",
         }
-        operation_name = f"images/edits {model}"
+        operation_name = f"{provider_label} images/edits {model}"
         if not check_image_api_rate_limit(operation_name):
             return None
 
@@ -1216,7 +1229,10 @@ def call_tuzi_images_edits(
                 for file_obj in opened_files:
                     file_obj.close()
 
-        resp = request_tuzi_with_retry(f"images/edits 图像生成 {model}", do_images_edits_request)
+        if use_tuzi_retry:
+            resp = request_tuzi_with_retry(f"images/edits 图像生成 {model}", do_images_edits_request)
+        else:
+            resp = do_images_edits_request()
 
         if resp is None:
             print("[ERROR] images/edits 失败: 重试耗尽")
@@ -1275,7 +1291,9 @@ def call_tuzi_images_generations(
     n: int = 1,
     response_format: str = "b64_json",
     quality: str = "high",
-    output_format: str = "png"
+    output_format: str = "png",
+    use_tuzi_retry: bool = True,
+    provider_label: str = "tuZi",
 ) -> Optional[str]:
     """
     调用 /v1/images/generations 端点生成图像（OpenAI DALL-E 兼容格式）
@@ -1302,7 +1320,7 @@ def call_tuzi_images_generations(
             proxies = {"http": proxy_url, "https": proxy_url}
             print(f"[PROXY] 使用代理: {proxy_url}")
 
-        api_url = f"{base_url}/v1/images/generations"
+        api_url = f"{normalize_openai_base_url(base_url)}/v1/images/generations"
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
@@ -1325,9 +1343,11 @@ def call_tuzi_images_generations(
                     size=size,
                     quality=quality,
                     output_format=output_format,
+                    use_tuzi_retry=use_tuzi_retry,
+                    provider_label=provider_label,
                 )
 
-        operation_name = f"images/generations {model}"
+        operation_name = f"{provider_label} images/generations {model}"
         if not check_image_api_rate_limit(operation_name):
             return None
 
@@ -1344,10 +1364,13 @@ def call_tuzi_images_generations(
         print(f"[INFO] [images/generations] 调用 {model}, size={payload['size']}, prompt长度={len(prompt)}")
         print(f"[DEBUG] payload: model={model}, size={payload['size']}, n={n}, response_format={response_format}, quality={quality}, output_format={output_format}")
 
-        resp = request_tuzi_with_retry(
-            f"images/generations 图像生成 {model}",
-            lambda: requests.post(api_url, headers=headers, json=payload, timeout=timeout, proxies=proxies)
-        )
+        if use_tuzi_retry:
+            resp = request_tuzi_with_retry(
+                f"images/generations 图像生成 {model}",
+                lambda: requests.post(api_url, headers=headers, json=payload, timeout=timeout, proxies=proxies)
+            )
+        else:
+            resp = requests.post(api_url, headers=headers, json=payload, timeout=timeout, proxies=proxies)
         if resp is None:
             print("[ERROR] images/generations 失败: 重试耗尽")
             return None
@@ -1472,7 +1495,7 @@ def call_tuzi_chat_completions_for_image(
             print(f"[PROXY] 使用代理: {proxy_url}")
 
         # 构建API请求
-        api_url = f"{base_url}/v1/chat/completions"
+        api_url = f"{normalize_openai_base_url(base_url)}/v1/chat/completions"
 
         headers = {
             "Authorization": f"Bearer {api_key}",

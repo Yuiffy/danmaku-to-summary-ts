@@ -120,6 +120,7 @@ export class ConfigValidator {
           keepOriginalVideo: false,
           retentionEnabled: true,
           convertAfterDays: 3,
+          maxProcessAgeDays: 1,
           includeBak: true,
           scanIntervalHours: 24,
           maxFileAgeDays: 30,
