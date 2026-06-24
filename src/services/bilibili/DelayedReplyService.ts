@@ -27,6 +27,7 @@ export class DelayedReplyService implements IDelayedReplyService {
   private logger = getLogger('DelayedReplyService');
   private static readonly COMIC_WAIT_INTERVAL_MS = 2 * 60 * 1000;
   private static readonly MAX_COMIC_WAIT_COUNT = 0;
+  private static readonly MAX_SUPPLEMENTAL_COMIC_WAIT_COUNT = 30;
   private static readonly DEFAULT_MAX_TASK_AGE_HOURS = 24;
   private static readonly SUPPLEMENTAL_COMIC_REPLY_TEXT = '补直播图片总结';
   private static readonly LIVE_RECHECK_INTERVAL_MS = 2 * 60 * 1000;
@@ -1083,6 +1084,32 @@ export class DelayedReplyService implements IDelayedReplyService {
         return;
       }
 
+      if (task.comicWaitCount >= DelayedReplyService.MAX_SUPPLEMENTAL_COMIC_WAIT_COUNT) {
+        task.status = 'completed';
+        task.error = `补图等待达到上限 (${task.comicWaitCount}/${DelayedReplyService.MAX_SUPPLEMENTAL_COMIC_WAIT_COUNT})，停止等待`;
+        this.writeComicGenerationFailureMeta(
+          comicImagePath,
+          task.error,
+          task.taskId,
+          task.roomId,
+          task.repliedDynamicId
+        );
+        await this.store.updateTask(task.taskId, {
+          status: task.status,
+          error: task.error,
+          comicWaitCount: task.comicWaitCount
+        });
+        this.logger.warn('补图等待达到上限，停止等待漫画图片生成', {
+          taskId: task.taskId,
+          roomId: task.roomId,
+          dynamicId: task.repliedDynamicId,
+          comicImagePath,
+          comicWaitCount: task.comicWaitCount,
+          maxComicWaitCount: DelayedReplyService.MAX_SUPPLEMENTAL_COMIC_WAIT_COUNT
+        });
+        return;
+      }
+
       task.status = 'waiting_comic';
       task.scheduledTime = new Date(Date.now() + DelayedReplyService.COMIC_WAIT_INTERVAL_MS);
       task.error = `等待漫画图片生成后补图 (${task.comicWaitCount})`;
@@ -1902,6 +1929,38 @@ export class DelayedReplyService implements IDelayedReplyService {
   /**
    * 检查文件是否存在
    */
+  private writeComicGenerationFailureMeta(
+    comicImagePath: string,
+    reason: string,
+    taskId: string,
+    roomId: string,
+    dynamicId?: string
+  ): void {
+    try {
+      const parsedPath = path.parse(comicImagePath);
+      const metaPath = path.join(parsedPath.dir, `${parsedPath.name}_META.json`);
+      const payload = {
+        status: 'failure',
+        provider: null,
+        model: null,
+        endpoint: 'delayed-reply-supplemental-wait',
+        reason,
+        taskId,
+        roomId,
+        dynamicId,
+        updatedAt: new Date().toISOString()
+      };
+      fs.writeFileSync(metaPath, JSON.stringify(payload, null, 2), 'utf8');
+    } catch (error) {
+      this.logger.warn('保存补图失败元数据失败', {
+        taskId,
+        roomId,
+        comicImagePath,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
   private async checkFileExists(filePath: string): Promise<boolean> {
     try {
       return fs.existsSync(filePath);

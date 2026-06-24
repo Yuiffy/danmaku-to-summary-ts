@@ -1892,6 +1892,13 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
                     print(f"[OK] 复用其他进程生成的漫画: {os.path.basename(generated_by_other_process)}")
                     return generated_by_other_process
                 print("[WARNING] 等待漫画生成超时，跳过本次重复生成")
+                write_comic_generation_meta(output_path, {
+                    "status": "failure",
+                    "model": None,
+                    "endpoint": "output-lock",
+                    "reason": "waiting for another comic generation process timed out",
+                    "attempts": [],
+                })
                 return None
         else:
             print("[INFO]  漫画输出锁已关闭，允许并发生成")
@@ -1929,6 +1936,13 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
         if room_str in config["roomSettings"]:
             if not config["roomSettings"][room_str].get("enableComicGeneration", True):
                 print(f"[INFO]  房间 {room_id} 的漫画生成功能已禁用")
+                write_comic_generation_meta(output_path, {
+                    "status": "failure",
+                    "model": None,
+                    "endpoint": "room-settings",
+                    "reason": f"comic generation disabled for room {room_id}",
+                    "attempts": [],
+                })
                 return None
         
         # 读取内容
