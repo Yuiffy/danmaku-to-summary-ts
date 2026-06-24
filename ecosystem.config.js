@@ -76,6 +76,28 @@ module.exports = {
       error_file: path.join(__dirname, 'logs', 'tuzi-balance-error.log'),
       out_file: path.join(__dirname, 'logs', 'tuzi-balance-out.log'),
       time: false
+    },
+    {
+      name: 'seedance-queue-runner',
+      script: 'scripts/seedance_queue_runner.js',
+      cwd: __dirname,
+      args: '--loop --adaptive --interval 300 --error-interval 300',
+      instances: 1,
+      exec_mode: 'fork',
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '512M',
+      env: {
+        NODE_ENV: 'production',
+        PYTHONIOENCODING: 'utf-8'
+      },
+      log_date_format: '',
+      error_file: path.join(__dirname, 'logs', 'seedance-queue-error.log'),
+      out_file: path.join(__dirname, 'logs', 'seedance-queue-out.log'),
+      log_file: path.join(__dirname, 'logs', 'seedance-queue-combined.log'),
+      time: false,
+      min_uptime: '10s',
+      restart_delay: 10000
     }
   ],
 

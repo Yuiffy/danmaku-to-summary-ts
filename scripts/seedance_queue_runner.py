@@ -6,6 +6,8 @@ import json
 import re
 import subprocess
 import sys
+import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -14,8 +16,17 @@ DREAMINA = "dreamina"
 MODEL = "seedance2.0"
 SESSION = "14778786782988"
 DURATION = "15"
-RATIO = "3:4"
+RATIO = "9:16"
 POLL = "30"
+DEFAULT_INTERVAL = 300
+ERROR_INTERVAL = 300
+MIN_INTERVAL = 60
+MAX_INTERVAL = 1800
+
+
+@dataclass
+class RunResult:
+    next_interval: int = DEFAULT_INTERVAL
 
 
 def load_queue() -> Dict[str, Any]:
@@ -50,10 +61,87 @@ def run(cmd: List[str], timeout: int) -> subprocess.CompletedProcess[str]:
 
 
 def tail_json(text: str) -> Dict[str, Any]:
-    m = re.findall(r"\{.*?\}", text, re.S)
-    if not m:
+    decoder = json.JSONDecoder()
+    found: List[Dict[str, Any]] = []
+    for m in re.finditer(r"\{", text):
+        try:
+            data, _ = decoder.raw_decode(text[m.start():])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            found.append(data)
+    if not found:
         raise RuntimeError(text.strip() or "no json found")
-    return json.loads(m[-1])
+    return found[-1]
+
+
+def int_or_none(value: Any) -> Optional[int]:
+    try:
+        if value is None:
+            return None
+        return int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return None
+
+
+def queue_wait_seconds(queue_info: Dict[str, Any]) -> Optional[int]:
+    keys = (
+        "wait_seconds",
+        "estimated_wait_seconds",
+        "estimate_wait_seconds",
+        "expected_wait_seconds",
+        "eta_seconds",
+        "remain_seconds",
+        "remaining_seconds",
+    )
+    for key in keys:
+        seconds = int_or_none(queue_info.get(key))
+        if seconds is not None:
+            return max(0, seconds)
+
+    minute_keys = (
+        "wait_minutes",
+        "estimated_wait_minutes",
+        "estimate_wait_minutes",
+        "expected_wait_minutes",
+        "eta_minutes",
+        "remain_minutes",
+        "remaining_minutes",
+    )
+    for key in minute_keys:
+        minutes = int_or_none(queue_info.get(key))
+        if minutes is not None:
+            return max(0, minutes * 60)
+
+    return None
+
+
+def next_query_interval(queue_info: Dict[str, Any]) -> int:
+    wait_seconds = queue_wait_seconds(queue_info)
+    if wait_seconds is not None:
+        if wait_seconds > 3600:
+            return MAX_INTERVAL
+        if wait_seconds > 900:
+            return 300
+        if wait_seconds > 180:
+            return 120
+        return MIN_INTERVAL
+
+    queue_idx = int_or_none(queue_info.get("queue_idx"))
+    if queue_idx is None:
+        queue_idx = int_or_none(queue_info.get("queue_index"))
+    if queue_idx is None:
+        queue_idx = int_or_none(queue_info.get("position"))
+
+    if queue_idx is None:
+        return DEFAULT_INTERVAL
+    if queue_idx > 20:
+        return MAX_INTERVAL
+    if queue_idx > 5:
+        return 300
+    if queue_idx > 1:
+        return 120
+    return MIN_INTERVAL
 
 
 def submit(task: Dict[str, Any]) -> str:
@@ -92,21 +180,17 @@ def notify(kind: str, task: Dict[str, Any], sid: str, info: str) -> None:
     pass
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--dry-run", action="store_true")
-    args = ap.parse_args()
-
+def run_once(dry_run: bool = False) -> RunResult:
     data = load_queue()
     task = active_task(data.get("tasks", []))
     if not task:
         print("NO_REPLY")
-        return 0
+        return RunResult(DEFAULT_INTERVAL)
 
     if task.get("status") == "pending":
-        if args.dry_run:
+        if dry_run:
             print(f"would submit {task.get('id')} remaining={remaining(task)}")
-            return 0
+            return RunResult(DEFAULT_INTERVAL)
         sid = submit(task)
         ids = task.setdefault("submit_ids", [])
         if not isinstance(ids, list):
@@ -117,7 +201,7 @@ def main() -> int:
         task["note"] = f"submitted {sid}"
         save_queue(data)
         print(f"submitted {sid}")
-        return 0
+        return RunResult(DEFAULT_INTERVAL)
 
     sid = last_submit_id(task)
     if not sid:
@@ -127,8 +211,11 @@ def main() -> int:
     gs = result.get("gen_status")
     if gs == "querying":
         q = result.get("queue_info", {})
-        print(f"queueing {q.get('queue_idx', '?')}/{q.get('queue_length', '?')}")
-        return 0
+        if not isinstance(q, dict):
+            q = {}
+        interval = next_query_interval(q)
+        print(f"queueing {q.get('queue_idx', '?')}/{q.get('queue_length', '?')} next_check={interval}s")
+        return RunResult(interval)
 
     if gs == "success":
         download(sid)
@@ -139,7 +226,7 @@ def main() -> int:
         save_queue(data)
         notify("success", task, sid, "done")
         print(f"done {sid}")
-        return 0
+        return RunResult(MIN_INTERVAL if task["remaining"] > 0 else DEFAULT_INTERVAL)
 
     if gs == "fail":
         task["completed"] = int(task.get("completed") or 0) + 1
@@ -149,9 +236,35 @@ def main() -> int:
         save_queue(data)
         notify("fail", task, sid, "failed")
         print(f"fail {sid}")
-        return 0
+        return RunResult(MIN_INTERVAL if task["remaining"] > 0 else DEFAULT_INTERVAL)
 
     raise RuntimeError(f"unknown gen_status: {gs}")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--loop", action="store_true", help="run continuously instead of one pass")
+    ap.add_argument("--interval", type=int, default=DEFAULT_INTERVAL, help="default seconds between successful passes in loop mode")
+    ap.add_argument("--error-interval", type=int, default=ERROR_INTERVAL, help="seconds to wait after an error in loop mode")
+    ap.add_argument("--adaptive", action="store_true", help="adjust submitted-task query interval from queue info")
+    args = ap.parse_args()
+
+    if not args.loop:
+        run_once(args.dry_run)
+        return 0
+
+    while True:
+        try:
+            result = run_once(args.dry_run)
+            interval = result.next_interval if args.adaptive else args.interval
+            print(f"sleep {interval}s", flush=True)
+            time.sleep(max(1, interval))
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            print(str(e), file=sys.stderr, flush=True)
+            time.sleep(max(1, args.error_interval))
 
 
 if __name__ == "__main__":
