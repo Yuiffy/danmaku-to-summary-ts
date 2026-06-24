@@ -156,7 +156,7 @@
             "model": "gpt-image-2",
             "flow": "openaiImages",
             "maxAttempts": 1,
-            "timeoutMs": 1000000,
+            "timeoutMs": 1200000,
             "size": "1:1",
             "quality": "high",
             "outputFormat": "png",
@@ -168,7 +168,7 @@
             "model": "gpt-image-2",
             "flow": "tuZiCompatible",
             "maxAttempts": 1,
-            "timeoutMs": 1000000,
+            "timeoutMs": 1200000,
             "size": "1:1",
             "quality": "high",
             "outputFormat": "png",
@@ -897,8 +897,7 @@
       "delayMinutes": 2,
       "maxRetries": 3,
       "retryDelayMinutes": 5,
-      "maxTaskAgeHours": 24,
-      "maxSupplementalComicWaitMinutes": 20
+      "maxTaskAgeHours": 24
     },
     "danmuRiskControl": {
       "enabled": true,

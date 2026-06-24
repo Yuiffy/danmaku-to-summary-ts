@@ -28,7 +28,6 @@ export class DelayedReplyService implements IDelayedReplyService {
   private static readonly COMIC_WAIT_INTERVAL_MS = 2 * 60 * 1000;
   private static readonly MAX_COMIC_WAIT_COUNT = 0;
   private static readonly DEFAULT_MAX_TASK_AGE_HOURS = 24;
-  private static readonly DEFAULT_MAX_SUPPLEMENTAL_COMIC_WAIT_MINUTES = 20;
   private static readonly SUPPLEMENTAL_COMIC_REPLY_TEXT = '补直播图片总结';
   private static readonly LIVE_RECHECK_INTERVAL_MS = 2 * 60 * 1000;
   private static readonly LIVE_CONTINUATION_REPLACEMENT_MAX_WAIT_COUNT = 180;
@@ -539,8 +538,7 @@ export class DelayedReplyService implements IDelayedReplyService {
   private getDelayedReplyLimitConfig() {
     const config = BilibiliConfigHelper.getDelayedReplyConfig() as any;
     return {
-      maxTaskAgeHours: Number(config.maxTaskAgeHours ?? DelayedReplyService.DEFAULT_MAX_TASK_AGE_HOURS),
-      maxSupplementalComicWaitMinutes: Number(config.maxSupplementalComicWaitMinutes ?? DelayedReplyService.DEFAULT_MAX_SUPPLEMENTAL_COMIC_WAIT_MINUTES)
+      maxTaskAgeHours: Number(config.maxTaskAgeHours ?? DelayedReplyService.DEFAULT_MAX_TASK_AGE_HOURS)
     };
   }
 
@@ -554,10 +552,8 @@ export class DelayedReplyService implements IDelayedReplyService {
     return maxTaskAgeHours >= 0 && this.getTaskAgeMs(task, now) > maxTaskAgeHours * 60 * 60 * 1000;
   }
 
-  private isSupplementalComicWaitExpired(task: DelayedReplyTask, now = Date.now()): boolean {
-    const { maxSupplementalComicWaitMinutes } = this.getDelayedReplyLimitConfig();
-    return maxSupplementalComicWaitMinutes >= 0 &&
-      this.getTaskAgeMs(task, now) > maxSupplementalComicWaitMinutes * 60 * 1000;
+  private isTaskExpiredForCurrentStatus(task: DelayedReplyTask, now = Date.now()): boolean {
+    return this.isDelayedReplyTaskExpired(task, now);
   }
 
   private async suppressStaleTask(task: DelayedReplyTask, reason: string): Promise<void> {
@@ -589,7 +585,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       const seenTaskKeys = new Set<string>();
 
       for (const task of pendingTasks) {
-        if (this.isDelayedReplyTaskExpired(task) || this.isSupplementalComicWaitExpired(task)) {
+        if (this.isTaskExpiredForCurrentStatus(task)) {
           await this.suppressStaleTask(task, 'stale delayed reply suppressed on service startup');
           continue;
         }
@@ -1202,7 +1198,7 @@ export class DelayedReplyService implements IDelayedReplyService {
         this.timers.delete(task.taskId);
       }
 
-      if (this.isDelayedReplyTaskExpired(task) || this.isSupplementalComicWaitExpired(task)) {
+      if (this.isTaskExpiredForCurrentStatus(task)) {
         await this.suppressStaleTask(task, 'stale delayed reply suppressed before execution');
         return;
       }
@@ -1606,7 +1602,8 @@ export class DelayedReplyService implements IDelayedReplyService {
       .filter(task =>
         task.taskId !== currentTaskId &&
         task.roomId === roomId &&
-        task.status === 'completed'
+        task.status === 'completed' &&
+        !!task.replyId
       )
       .sort((a, b) => this.getTaskCompletionTime(b).getTime() - this.getTaskCompletionTime(a).getTime());
 
