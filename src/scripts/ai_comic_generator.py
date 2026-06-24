@@ -1181,7 +1181,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                     break
     
     # Gemini失败后，尝试使用tuZi API作为备用方案
-    print("[TUZI] Google生成失败，尝试tu-zi.com生成文本...")
+    print("[COMIC_SCRIPT] Google文本生成失败，尝试tu-zi.com生成漫画脚本...")
     
     # tuZi 调用封装层已经带温和重试和全局冷却；这里不再做快速外层重试，避免放大服务端拥塞。
     max_tuzi_retries = 1
