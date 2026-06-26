@@ -137,6 +137,21 @@ describe('topic_clipper', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  test('selects the input-side seek keyframe at or before the rough cut target', () => {
+    expect(topicClipper.selectInputSeekKeyframe([
+      354.199,
+      358.366,
+      362.532,
+      366.699
+    ], 357.819)).toBe(354.199);
+
+    expect(topicClipper.selectInputSeekKeyframe([
+      354.199,
+      358.366,
+      362.532
+    ], 358.366)).toBe(358.366);
+  });
+
   test('disabled config does not generate topic clips', async () => {
     const dir = makeTempDir();
     const mediaPath = path.join(dir, '录制-25788785-20260603-201530-001-聊天回.m4a');

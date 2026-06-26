@@ -19,6 +19,25 @@ export interface LiveSegment {
   eventTimestamp: Date;
 }
 
+export interface NearbySegmentRecoveryOptions {
+  enabled?: boolean;
+  maxGapSeconds?: number;
+  maxSegments?: number;
+  minSizeBytes?: number;
+  includeBak?: boolean;
+  supportedExtensions?: string[];
+}
+
+interface RecordingFileInfo {
+  roomId: string;
+  startTime: Date;
+}
+
+interface SegmentCandidate extends LiveSegment {
+  startMs: number;
+  endMs: number;
+}
+
 /**
  * 直播会话信息（使用RoomId作为主键）
  */
@@ -109,6 +128,141 @@ export class LiveSessionManager {
       xmlPath: path.basename(xmlPath)
     });
     return true;
+  }
+
+  /**
+   * Recover same-stream segments that were missed by in-memory session tracking.
+   * This covers process restarts, recorder restarts, and title changes.
+   */
+  augmentSessionWithNearbySegments(roomId: string, options: NearbySegmentRecoveryOptions = {}): number {
+    const session = this.sessions.get(roomId);
+    if (!session || session.segments.length === 0) {
+      return 0;
+    }
+
+    if (options.enabled === false) {
+      return 0;
+    }
+
+    const maxGapSeconds = Number.isFinite(options.maxGapSeconds)
+      ? Number(options.maxGapSeconds)
+      : 1800;
+    const maxGapMs = Math.max(0, maxGapSeconds) * 1000;
+    const maxSegments = Math.max(1, Number(options.maxSegments) || 20);
+    const minSizeBytes = Number.isFinite(options.minSizeBytes)
+      ? Math.max(0, Number(options.minSizeBytes))
+      : 1024 * 1024;
+    const supportedExtensions = (options.supportedExtensions || ['.mp4', '.flv', '.mkv', '.ts', '.mov', '.m4a', '.aac', '.mp3', '.wav'])
+      .map(ext => ext.toLowerCase());
+
+    const originalKeys = new Set(session.segments.map(segment => this.normalizePathKey(segment.videoPath)));
+    const candidatesByPath = new Map<string, SegmentCandidate>();
+
+    for (const segment of session.segments) {
+      const key = this.normalizePathKey(segment.videoPath);
+      candidatesByPath.set(key, this.toSegmentCandidate(segment));
+    }
+
+    for (const dir of this.getNearbySegmentScanDirs(session.segments, options.includeBak !== false)) {
+      let entries: string[] = [];
+      try {
+        entries = fs.readdirSync(dir);
+      } catch {
+        continue;
+      }
+
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry);
+        const ext = path.extname(fullPath).toLowerCase();
+        if (!supportedExtensions.includes(ext)) {
+          continue;
+        }
+
+        const baseName = path.basename(fullPath, ext);
+        if (baseName.includes('_merged') || baseName.startsWith('blank_')) {
+          continue;
+        }
+
+        const info = this.parseRecordingFileName(path.basename(fullPath));
+        if (!info || info.roomId !== roomId) {
+          continue;
+        }
+
+        const xmlPath = path.join(dir, `${baseName}.xml`);
+        if (!fs.existsSync(xmlPath)) {
+          continue;
+        }
+
+        let stats: fs.Stats;
+        try {
+          stats = fs.statSync(fullPath);
+        } catch {
+          continue;
+        }
+
+        if (!stats.isFile() || stats.size < minSizeBytes) {
+          continue;
+        }
+
+        const key = this.normalizePathKey(fullPath);
+        if (candidatesByPath.has(key)) {
+          continue;
+        }
+
+        const closeTime = stats.mtime > info.startTime ? stats.mtime : info.startTime;
+        candidatesByPath.set(key, this.toSegmentCandidate({
+          videoPath: fullPath,
+          xmlPath,
+          fileOpenTime: info.startTime,
+          fileCloseTime: closeTime,
+          eventTimestamp: closeTime
+        }));
+      }
+    }
+
+    const allCandidates = Array.from(candidatesByPath.entries());
+    const selectedKeys = new Set(originalKeys);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      const selected = allCandidates
+        .filter(([key]) => selectedKeys.has(key))
+        .map(([, candidate]) => candidate);
+
+      for (const [key, candidate] of allCandidates) {
+        if (selectedKeys.has(key)) {
+          continue;
+        }
+
+        if (selected.some(selectedCandidate => this.isWithinGap(candidate, selectedCandidate, maxGapMs))) {
+          selectedKeys.add(key);
+          changed = true;
+        }
+      }
+    }
+
+    let recoveredSegments = allCandidates
+      .filter(([key]) => selectedKeys.has(key))
+      .map(([, candidate]) => candidate)
+      .sort((a, b) => a.fileOpenTime.getTime() - b.fileOpenTime.getTime())
+      .slice(0, maxSegments)
+      .map(({ startMs, endMs, ...segment }) => segment);
+
+    const addedCount = recoveredSegments.filter(segment => !originalKeys.has(this.normalizePathKey(segment.videoPath))).length;
+    if (addedCount === 0) {
+      return 0;
+    }
+
+    session.segments = recoveredSegments;
+    this.logger.info(`Recovered nearby same-stream segments: ${roomId}`, {
+      roomId,
+      addedCount,
+      segmentCount: session.segments.length,
+      maxGapSeconds,
+      segments: session.segments.map(segment => path.basename(segment.videoPath))
+    });
+
+    return addedCount;
   }
 
   /**
@@ -290,7 +444,7 @@ export class LiveSessionManager {
   /**
    * 获取合并配置
    */
-  getMergeConfig(): { enabled: boolean; maxSegments: number; fillGaps: boolean; backupOriginals: boolean; copyCover: boolean } {
+  getMergeConfig(): { enabled: boolean; maxSegments: number; fillGaps: boolean; backupOriginals: boolean; copyCover: boolean; nearbySegmentRecovery: boolean; nearbySegmentMaxGapSeconds: number } {
     let config: any = {};
     try {
       config = ConfigProvider.getWebhookConfig().streamMerge || {};
@@ -304,7 +458,70 @@ export class LiveSessionManager {
       fillGaps: true,
       backupOriginals: true,
       copyCover: true,
+      nearbySegmentRecovery: true,
+      nearbySegmentMaxGapSeconds: 1800,
       ...config
     };
+  }
+
+  private getNearbySegmentScanDirs(segments: LiveSegment[], includeBak: boolean): string[] {
+    const dirs = new Set<string>();
+
+    for (const segment of segments) {
+      const dir = path.dirname(segment.videoPath);
+      const base = path.basename(dir).toLowerCase() === 'bak'
+        ? path.dirname(dir)
+        : dir;
+
+      dirs.add(base);
+      if (includeBak) {
+        dirs.add(path.join(base, 'bak'));
+      }
+    }
+
+    return Array.from(dirs);
+  }
+
+  private parseRecordingFileName(fileName: string): RecordingFileInfo | null {
+    const match = fileName.match(/^录制-(\d+)-(\d{8})-(\d{6})-\d+-.+\.[^.]+$/);
+    if (!match) {
+      return null;
+    }
+
+    const [, roomId, date, time] = match;
+    const startTime = new Date(
+      Number(date.slice(0, 4)),
+      Number(date.slice(4, 6)) - 1,
+      Number(date.slice(6, 8)),
+      Number(time.slice(0, 2)),
+      Number(time.slice(2, 4)),
+      Number(time.slice(4, 6))
+    );
+
+    if (Number.isNaN(startTime.getTime())) {
+      return null;
+    }
+
+    return { roomId, startTime };
+  }
+
+  private toSegmentCandidate(segment: LiveSegment): SegmentCandidate {
+    const startMs = segment.fileOpenTime.getTime();
+    const closeMs = segment.fileCloseTime.getTime();
+    const endMs = Number.isFinite(closeMs) && closeMs >= startMs ? closeMs : startMs;
+    return {
+      ...segment,
+      startMs,
+      endMs
+    };
+  }
+
+  private isWithinGap(a: SegmentCandidate, b: SegmentCandidate, maxGapMs: number): boolean {
+    const gap = Math.max(a.startMs - b.endMs, b.startMs - a.endMs, 0);
+    return gap <= maxGapMs;
+  }
+
+  private normalizePathKey(filePath: string): string {
+    return path.resolve(filePath).toLowerCase();
   }
 }

@@ -103,6 +103,8 @@ export class ConfigValidator {
           fillGaps: true,
           backupOriginals: true,
           copyCover: true,
+          nearbySegmentRecovery: true,
+          nearbySegmentMaxGapSeconds: 1800,
         },
       },
       audio: {

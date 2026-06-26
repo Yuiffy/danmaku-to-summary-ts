@@ -1,0 +1,123 @@
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { LiveSessionManager } from './LiveSessionManager';
+
+const RECORD_PREFIX = '\u5f55\u5236';
+
+function writeRecording(dir: string, fileName: string, mtime: Date): string {
+  fs.mkdirSync(dir, { recursive: true });
+  const videoPath = path.join(dir, fileName);
+  const xmlPath = videoPath.replace(/\.flv$/, '.xml');
+  fs.writeFileSync(videoPath, 'video');
+  fs.writeFileSync(xmlPath, '<i></i>');
+  fs.utimesSync(videoPath, mtime, mtime);
+  fs.utimesSync(xmlPath, mtime, mtime);
+  return videoPath;
+}
+
+function addCurrentSegment(manager: LiveSessionManager, roomId: string, videoPath: string, start: Date, end: Date): void {
+  const xmlPath = videoPath.replace(/\.flv$/, '.xml');
+  manager.addSegment(roomId, videoPath, xmlPath, start, end, end);
+}
+
+describe('LiveSessionManager nearby segment recovery', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'live-session-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  test('recovers same-room adjacent recordings despite title changes and bak location', () => {
+    const manager = new LiveSessionManager();
+    const roomId = '25788785';
+    const bakDir = path.join(tempDir, 'bak');
+
+    writeRecording(
+      tempDir,
+      `${RECORD_PREFIX}-25788785-20260625-002240-499-other-stream.flv`,
+      new Date(2026, 5, 25, 0, 23, 0)
+    );
+    const first = writeRecording(
+      tempDir,
+      `${RECORD_PREFIX}-25788785-20260625-200256-086-night.flv`,
+      new Date(2026, 5, 25, 21, 55, 46)
+    );
+    const middle = writeRecording(
+      bakDir,
+      `${RECORD_PREFIX}-25788785-20260625-215843-042-five-centimeters.flv`,
+      new Date(2026, 5, 25, 23, 12, 0)
+    );
+    const current = writeRecording(
+      tempDir,
+      `${RECORD_PREFIX}-25788785-20260625-231349-652-five-centimeters-renamed.flv`,
+      new Date(2026, 5, 25, 23, 38, 16)
+    );
+    writeRecording(
+      tempDir,
+      `${RECORD_PREFIX}-25788785-20260625-215843-042-five-centimeters_merged.flv`,
+      new Date(2026, 5, 25, 23, 15, 58)
+    );
+
+    manager.createOrGetSession(roomId, 'SUI', 'changed title');
+    addCurrentSegment(
+      manager,
+      roomId,
+      current,
+      new Date(2026, 5, 25, 23, 13, 49),
+      new Date(2026, 5, 25, 23, 38, 16)
+    );
+
+    const recovered = manager.augmentSessionWithNearbySegments(roomId, {
+      maxGapSeconds: 1800,
+      minSizeBytes: 0,
+      maxSegments: 20
+    });
+
+    expect(recovered).toBe(2);
+    expect(manager.getSession(roomId)?.segments.map(segment => path.basename(segment.videoPath))).toEqual([
+      path.basename(first),
+      path.basename(middle),
+      path.basename(current)
+    ]);
+  });
+
+  test('does not recover recordings outside the configured gap window', () => {
+    const manager = new LiveSessionManager();
+    const roomId = '25788785';
+    const previous = writeRecording(
+      tempDir,
+      `${RECORD_PREFIX}-25788785-20260625-200256-086-night.flv`,
+      new Date(2026, 5, 25, 21, 55, 46)
+    );
+    const current = writeRecording(
+      tempDir,
+      `${RECORD_PREFIX}-25788785-20260625-231349-652-late.flv`,
+      new Date(2026, 5, 25, 23, 38, 16)
+    );
+
+    manager.createOrGetSession(roomId, 'SUI', 'late');
+    addCurrentSegment(
+      manager,
+      roomId,
+      current,
+      new Date(2026, 5, 25, 23, 13, 49),
+      new Date(2026, 5, 25, 23, 38, 16)
+    );
+
+    const recovered = manager.augmentSessionWithNearbySegments(roomId, {
+      maxGapSeconds: 300,
+      minSizeBytes: 0
+    });
+
+    expect(recovered).toBe(0);
+    expect(manager.getSession(roomId)?.segments.map(segment => path.basename(segment.videoPath))).toEqual([
+      path.basename(current)
+    ]);
+    expect(path.basename(previous)).toContain('200256');
+  });
+});

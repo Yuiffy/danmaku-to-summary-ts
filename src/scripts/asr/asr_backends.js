@@ -15,7 +15,7 @@ const BACKEND_ALIASES = new Map([
 ]);
 
 const DEFAULT_ASR_CONFIG = {
-    default_backend: 'whisper',
+    default_backend: 'paraformer',
     backend: undefined,
     common_hotwords: [],
     corrections: [],

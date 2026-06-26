@@ -29,6 +29,8 @@ export interface WebhookConfig {
     fillGaps?: boolean;
     backupOriginals?: boolean;
     copyCover?: boolean;
+    nearbySegmentRecovery?: boolean;
+    nearbySegmentMaxGapSeconds?: number;
   };
 }
 

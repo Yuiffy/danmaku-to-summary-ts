@@ -610,14 +610,18 @@ export class FileMerger {
 
       // 移动视频文件
       if (fs.existsSync(segment.videoPath)) {
-        fs.renameSync(segment.videoPath, videoDest);
-        this.logger.info(`备份视频文件: ${videoBasename}`);
+        if (path.resolve(segment.videoPath).toLowerCase() !== path.resolve(videoDest).toLowerCase()) {
+          fs.renameSync(segment.videoPath, videoDest);
+          this.logger.info(`备份视频文件: ${videoBasename}`);
+        }
       }
 
       // 移动XML文件
       if (fs.existsSync(segment.xmlPath)) {
-        fs.renameSync(segment.xmlPath, xmlDest);
-        this.logger.info(`备份XML文件: ${xmlBasename}`);
+        if (path.resolve(segment.xmlPath).toLowerCase() !== path.resolve(xmlDest).toLowerCase()) {
+          fs.renameSync(segment.xmlPath, xmlDest);
+          this.logger.info(`备份XML文件: ${xmlBasename}`);
+        }
       }
     }
   }

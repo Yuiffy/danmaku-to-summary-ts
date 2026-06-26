@@ -816,10 +816,78 @@ async function buildClipCopy(window, info, streamerName, config, titleGenerator 
     };
 }
 
+/**
+ * Pick the keyframe ffmpeg will use as the input-side seek point.
+ * With `-ss` before `-i` and stream copy, ffmpeg usually seeks backward to
+ * the closest keyframe at or before targetTime. The stage-2 trim offset must
+ * be based on that timestamp, otherwise burned subtitles drift from audio.
+ */
+function selectInputSeekKeyframe(keyframes, targetTime) {
+    const sorted = Array.from(new Set((keyframes || [])
+        .map(t => Number(t))
+        .filter(t => Number.isFinite(t) && t >= 0)))
+        .sort((a, b) => a - b);
+    if (sorted.length === 0) {
+        return targetTime;
+    }
+
+    const epsilon = 0.001;
+    const atOrBefore = sorted.filter(kf => kf <= targetTime + epsilon);
+    if (atOrBefore.length > 0) {
+        return atOrBefore[atOrBefore.length - 1];
+    }
+    return sorted[0];
+}
+
+/**
+ * Probe the actual keyframe ffmpeg will use for an input-side seek.
+ */
+function probeNearestKeyframe(ffmpegPath, mediaPath, targetTime) {
+    return new Promise((resolve, reject) => {
+        const ffprobePath = (ffmpegPath || 'ffmpeg').replace(/ffmpeg(\.exe)?$/i, 'ffprobe$1');
+        const searchStart = Math.max(0, targetTime - 10);
+        const searchDur = 20;
+        const child = spawn(ffprobePath, [
+            '-skip_frame', 'nokey',
+            '-select_streams', 'v:0',
+            '-show_entries', 'frame=pts_time',
+            '-of', 'csv=p=0',
+            '-read_intervals', `${searchStart}%+${searchDur}`,
+            mediaPath
+        ], {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            windowsHide: true
+        });
+        let stdout = '';
+        let stderr = '';
+        child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+        child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+        child.on('error', reject);
+        child.on('close', code => {
+            if (code !== 0) {
+                reject(new Error(`ffprobe exited with code ${code}: ${stderr.slice(-300)}`));
+                return;
+            }
+            const keyframes = stdout
+                .split('\n')
+                .map(line => parseFloat(line.trim()))
+                .filter(t => !isNaN(t) && t >= 0);
+            if (keyframes.length === 0) {
+                resolve(targetTime);
+                return;
+            }
+            resolve(selectInputSeekKeyframe(keyframes, targetTime));
+        });
+    });
+}
+
 function runFfmpeg(args, options = {}) {
     return new Promise((resolve, reject) => {
         const ffmpegPath = options.ffmpegPath || 'ffmpeg';
-        const resourceConfig = options.resourceConfig || getFfmpegResourceConfig(configLoader.getConfig());
+        const resourceConfig = {
+            ...(options.resourceConfig || getFfmpegResourceConfig(configLoader.getConfig())),
+            ...(Number.isFinite(Number(options.threads)) ? { threads: Number(options.threads) } : {})
+        };
         const commandArgs = withFfmpegResourceLimits(args, resourceConfig);
         const child = spawn(ffmpegPath, commandArgs, {
             stdio: ['ignore', 'pipe', 'pipe'],
@@ -893,8 +961,27 @@ async function generateClipCover(videoPath, title, outputDir, info = {}) {
     });
 }
 
+function buildSubtitleBurnVideoArgs(config = {}) {
+    const encoder = String(process.env.FFMPEG_SUBTITLE_VIDEO_ENCODER || config.subtitleVideoEncoder || 'libx264').trim();
+    const cq = String(config.subtitleVideoCq ?? process.env.FFMPEG_SUBTITLE_VIDEO_CQ ?? 23);
+    const crf = String(config.subtitleVideoCrf ?? process.env.FFMPEG_SUBTITLE_VIDEO_CRF ?? 23);
+
+    if (encoder === 'h264_nvenc' || encoder === 'hevc_nvenc') {
+        const rawPreset = String(process.env.FFMPEG_SUBTITLE_VIDEO_PRESET || config.subtitleVideoPreset || 'p4').trim();
+        const preset = rawPreset === 'ultrafast' ? 'p4' : rawPreset;
+        return ['-c:v', encoder, '-preset', preset || 'p4', '-cq', cq];
+    }
+
+    const preset = String(process.env.FFMPEG_SUBTITLE_VIDEO_PRESET || config.subtitleVideoPreset || 'ultrafast').trim();
+    return ['-c:v', encoder || 'libx264', '-preset', preset || 'ultrafast', '-crf', crf];
+}
+
 async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
     const ffmpegPath = config.ffmpegPath || 'ffmpeg';
+    const ffmpegOptions = {
+        ffmpegPath,
+        threads: config.ffmpegThreads ?? config.clipFfmpegThreads
+    };
     const duration = String(Math.max(0.1, window.duration));
     const start = String(Math.max(0, window.start));
 
@@ -907,7 +994,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
             '-vn',
             '-c:a', 'copy',
             outputPath
-        ], { ffmpegPath });
+        ], ffmpegOptions);
         return {
             path: outputPath,
             burnedSubtitles: false,
@@ -923,7 +1010,10 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                 const preRollSeconds = Math.max(0, Number(config.twoStagePreRollSeconds ?? process.env.FFMPEG_TWO_STAGE_PREROLL ?? 8));
                 const postRollSeconds = Math.max(0, Number(config.twoStagePostRollSeconds ?? process.env.FFMPEG_TWO_STAGE_POSTROLL ?? 2));
                 const roughStart = Math.max(0, Number(window.start) - preRollSeconds);
-                const offsetInRoughClip = Math.max(0, Number(window.start) - roughStart);
+                const actualRoughStart = twoStageMode === 'copy'
+                    ? await probeNearestKeyframe(ffmpegPath, source.mediaPath, roughStart)
+                    : roughStart;
+                const offsetInRoughClip = Math.max(0, Number(window.start) - actualRoughStart);
                 const roughDuration = Math.max(0.1, Number(window.duration) + offsetInRoughClip + postRollSeconds);
                 const parsedOutput = path.parse(outputPath);
                 const tempPath = path.join(parsedOutput.dir, `${parsedOutput.name}.source.tmp${parsedOutput.ext || '.mp4'}`);
@@ -939,7 +1029,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                             '-c', 'copy',
                             '-avoid_negative_ts', 'make_zero',
                             tempPath
-                        ], { ffmpegPath });
+                        ], ffmpegOptions);
                     } else {
                         await runFfmpeg([
                             '-y',
@@ -954,20 +1044,23 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                             '-c:a', 'copy',
                             '-movflags', '+faststart',
                             tempPath
-                        ], { ffmpegPath });
+                        ], ffmpegOptions);
                     }
+                    // Use filter-based trim instead of -ss for frame-exact precision.
+                    // -ss on the input side is keyframe-aligned (especially with copy-mode
+                    // rough clips), causing subtitle misalignment. trim+setpts is sample-accurate.
+                    const trimStart = String(offsetInRoughClip);
+                    const trimEnd = String(Number(offsetInRoughClip) + Number(duration));
                     await runFfmpeg([
                         '-y',
-                        '-ss', String(offsetInRoughClip),
                         '-i', tempPath,
-                        '-t', duration,
-                        '-vf', `subtitles='${escapeSubtitlePathForFfmpegFilter(srtPath)}':force_style='FontSize=28,FontName=Microsoft YaHei,Bold=1,Outline=2'`,
-                        '-c:v', 'libx264',
-                        '-preset', 'veryfast',
-                        '-c:a', 'aac',
+                        '-filter_complex', `[0:v]trim=start=${trimStart}:end=${trimEnd},setpts=PTS-STARTPTS[sub_v];[0:a]atrim=start=${trimStart}:end=${trimEnd},asetpts=PTS-STARTPTS[sub_a];[sub_v]subtitles='${escapeSubtitlePathForFfmpegFilter(srtPath)}':force_style='FontSize=28,FontName=Microsoft YaHei,Bold=1,Outline=2'[vout]`,
+                        '-map', '[vout]',
+                        '-map', '[sub_a]',
+                        ...buildSubtitleBurnVideoArgs(config),
                         '-movflags', '+faststart',
                         outputPath
-                    ], { ffmpegPath });
+                    ], ffmpegOptions);
                 } finally {
                     try {
                         if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
@@ -982,12 +1075,11 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                     '-i', source.mediaPath,
                     '-t', duration,
                     '-vf', `subtitles='${escapeSubtitlePathForFfmpegFilter(srtPath)}':force_style='FontSize=28,FontName=Microsoft YaHei,Bold=1,Outline=2'`,
-                    '-c:v', 'libx264',
-                    '-preset', 'veryfast',
-                    '-c:a', 'aac',
+                    ...buildSubtitleBurnVideoArgs(config),
+                    '-c:a', 'copy',
                     '-movflags', '+faststart',
                     outputPath
-                ], { ffmpegPath });
+                ], ffmpegOptions);
             }
             return {
                 path: outputPath,
@@ -1008,12 +1100,11 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                         '-i', source.mediaPath,
                         '-t', duration,
                         '-vf', `subtitles='${escapeSubtitlePathForFfmpegFilter(srtPath)}':force_style='FontSize=28,FontName=Microsoft YaHei,Bold=1,Outline=2'`,
-                        '-c:v', 'libx264',
-                        '-preset', 'veryfast',
-                        '-c:a', 'aac',
+                        ...buildSubtitleBurnVideoArgs(config),
+                        '-c:a', 'copy',
                         '-movflags', '+faststart',
                         outputPath
-                    ], { ffmpegPath });
+                    ], ffmpegOptions);
                     return {
                         path: outputPath,
                         burnedSubtitles: true,
@@ -1036,7 +1127,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
         '-t', duration,
         '-c', 'copy',
         outputPath
-    ], { ffmpegPath });
+    ], ffmpegOptions);
     return {
         path: outputPath,
         burnedSubtitles: false,
@@ -1527,6 +1618,7 @@ module.exports = {
     isIgnoredRoom,
     buildDefaultTitle,
     buildClipCopy,
+    selectInputSeekKeyframe,
     cutClipMedia,
     generateClipCover,
     generateTopicClips,

@@ -20,6 +20,8 @@ const DEFAULT_OWN_STREAM_CLIPS_CONFIG = {
     maxClips: 12,
     chunkSeconds: 2700,
     aiConcurrency: 3,
+    clipConcurrency: 3,
+    clipFfmpegThreads: 4,
     maxSubtitleCharsPerChunk: 14000,
     maxDanmakuLinesPerChunk: 220,
     alignBoundaries: true,
@@ -31,6 +33,14 @@ const DEFAULT_OWN_STREAM_CLIPS_CONFIG = {
     densityPercentile: 0.2,
     minDanmakuCount: 12,
     burnSubtitles: true,
+    twoStageSubtitleBurn: true,
+    twoStageMode: 'copy',
+    twoStagePreRollSeconds: 8,
+    twoStagePostRollSeconds: 2,
+    subtitleVideoEncoder: 'libx264',
+    subtitleVideoPreset: 'ultrafast',
+    subtitleVideoCrf: 23,
+    subtitleVideoCq: 23,
     outputDirName: 'own_stream_fun_clips',
     ai: {
         enabled: true,
@@ -74,6 +84,22 @@ function getOwnStreamClipsConfig(config = {}) {
             ...DEFAULT_OWN_STREAM_CLIPS_CONFIG.notify,
             ...(raw.notify || {})
         }
+    };
+}
+
+function buildCutClipMediaConfig(config = {}, options = {}) {
+    return {
+        burnSubtitles: config.burnSubtitles,
+        twoStageSubtitleBurn: config.twoStageSubtitleBurn,
+        twoStageMode: config.twoStageMode,
+        twoStagePreRollSeconds: config.twoStagePreRollSeconds,
+        twoStagePostRollSeconds: config.twoStagePostRollSeconds,
+        subtitleVideoEncoder: config.subtitleVideoEncoder,
+        subtitleVideoPreset: config.subtitleVideoPreset,
+        subtitleVideoCrf: config.subtitleVideoCrf,
+        subtitleVideoCq: config.subtitleVideoCq,
+        ffmpegThreads: config.clipFfmpegThreads,
+        ffmpegPath: options.ffmpegPath
     };
 }
 
@@ -586,6 +612,24 @@ function alignClipsToSubtitleBoundaries(clips = [], segments = [], config = {}, 
     return clips.map(clip => alignClipToSubtitleBoundaries(clip, segments, config, totalDuration));
 }
 
+async function runJobsWithConcurrency(jobs = [], concurrency = 1) {
+    const limit = Math.max(1, Math.floor(Number(concurrency) || 1));
+    const results = new Array(jobs.length);
+    let cursor = 0;
+
+    async function worker() {
+        while (cursor < jobs.length) {
+            const index = cursor;
+            cursor += 1;
+            results[index] = await jobs[index]();
+        }
+    }
+
+    const workers = Array.from({ length: Math.min(limit, jobs.length) }, () => worker());
+    await Promise.all(workers);
+    return results;
+}
+
 async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, config, rootConfig = {}, diagnostics = null) {
     if (!config.ai?.enabled || rootConfig.ai?.text?.enabled === false) return [];
     const provider = rootConfig.ai?.text?.provider || 'gemini';
@@ -981,6 +1025,123 @@ async function notifyResults(results, metadata, rootConfig) {
     return sendWeChatMarkdown(webhookUrl, buildNotifyMarkdown(results, metadata));
 }
 
+async function generateOwnStreamClipJob({
+    clip,
+    index,
+    parsed,
+    options,
+    outputRoot,
+    source,
+    streamerName,
+    info,
+    config
+}) {
+    const window = {
+        index: index + 1,
+        start: clip.start,
+        end: clip.end,
+        duration: clip.end - clip.start,
+        originalStart: clip.originalStart ?? null,
+        originalEnd: clip.originalEnd ?? null,
+        boundaryAligned: Boolean(clip.boundaryAligned),
+        boundaryTrimmedAtTrailingSilence: Boolean(clip.boundaryTrimmedAtTrailingSilence),
+        matchedKeywords: clip.base?.matchedKeywords || [],
+        matchCount: clip.base?.reactionCount || 0,
+        matchSegments: [],
+        allSegmentTexts: parsed.segments
+            .filter(segment => Number(segment.end) > clip.start && Number(segment.start) < clip.end)
+            .map(segment => segment.text),
+        preContext: parsed.segments
+            .filter(segment => Number(segment.end) <= clip.start && Number(segment.end) >= clip.start - 60)
+            .map(segment => segment.text)
+            .slice(-10),
+        postContext: parsed.segments
+            .filter(segment => Number(segment.start) >= clip.end && Number(segment.start) <= clip.end + 60)
+            .map(segment => segment.text)
+            .slice(0, 10)
+    };
+    const baseName = topicClipper.sanitizeFileName(
+        `${path.basename(options.mediaPath, path.extname(options.mediaPath))}_fun_${String(index + 1).padStart(2, '0')}_${formatClock(window.start).replace(/:/g, '')}`
+    );
+    const mediaPath = path.join(outputRoot, `${baseName}.mp4`);
+    const srtPath = path.join(outputRoot, `${baseName}.srt`);
+    const metadataPath = path.join(outputRoot, `${baseName}.json`);
+    const srtResult = topicClipper.writeClipSrt(parsed.segments, window, srtPath);
+    const copy = {
+        title: clip.title,
+        description: buildClipDescription({
+            streamerName,
+            streamTitle: info.streamTitle,
+            recordedAt: info.recordedAt,
+            start: window.start,
+            end: window.end,
+            reason: clip.reason
+        }),
+        tags: info.roomId === '25788785'
+            ? ['小岁', '虚拟主播', '直播切片', '岁AI切片']
+            : [streamerName, '虚拟主播', '直播切片']
+    };
+    let mediaResult = null;
+    let mediaError = null;
+    try {
+        mediaResult = await topicClipper.cutClipMedia(source, window, srtPath, mediaPath, {
+            ...buildCutClipMediaConfig(config, options)
+        });
+    } catch (error) {
+        mediaError = error.message;
+        console.warn(`clip media generation failed, metadata kept: ${error.message}`);
+    }
+    let coverPath = null;
+    let coverError = null;
+    if (mediaResult?.path && source.kind !== 'audio') {
+        try {
+            coverPath = await topicClipper.generateClipCover(
+                mediaResult.path,
+                buildCoverTitle(copy.title),
+                outputRoot,
+                { streamerName }
+            );
+        } catch (error) {
+            coverError = error.message;
+            console.warn(`clip cover generation failed, metadata kept: ${error.message}`);
+        }
+    }
+    const metadata = {
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        mode: 'own_stream_fun_review',
+        source: {
+            mediaPath: options.mediaPath,
+            srtPath: options.srtPath,
+            xmlPath: options.xmlPath || null
+        },
+        roomId: info.roomId,
+        streamerName,
+        recordedAt: info.recordedAt,
+        streamTitle: info.streamTitle,
+        window,
+        candidate: clip.base || null,
+        copy,
+        uploadReady: Boolean(mediaResult?.path),
+        output: {
+            mediaPath: mediaResult?.path || mediaPath,
+            srtPath,
+            metadataPath,
+            burnedSubtitles: Boolean(mediaResult?.burnedSubtitles),
+            subtitleBurnFallbackUsed: Boolean(mediaResult?.fallbackUsed),
+            twoStageSubtitleBurn: mediaResult?.twoStageSubtitleBurn ?? null,
+            twoStageMode: mediaResult?.twoStageMode ?? null,
+            srtSegmentCount: srtResult.segmentCount,
+            mediaError,
+            coverPath,
+            coverError
+        }
+    };
+    fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2), 'utf8');
+    console.log(`${index + 1}. ${copy.title} ${formatClock(window.start)} ${formatClock(window.duration)} ${metadata.output.mediaPath}`);
+    return metadata;
+}
+
 async function generateOwnStreamClips(options = {}) {
     const rootConfig = options.config || {};
     const config = getOwnStreamClipsConfig(rootConfig);
@@ -1076,6 +1237,7 @@ async function generateOwnStreamClips(options = {}) {
             maxClips: config.maxClips,
             chunkSeconds: config.chunkSeconds,
             aiConcurrency: config.aiConcurrency,
+            clipConcurrency: config.clipConcurrency,
             aiStrategy: config.ai?.strategy || null
         },
         aiStatus: reviewMetadata.aiStatus,
@@ -1100,6 +1262,30 @@ async function generateOwnStreamClips(options = {}) {
     const streamerName = topicClipper.resolveStreamerName(rootConfig, info.roomId, {
         streamerName: options.streamerName || '岁己SUI'
     });
+    const clipConcurrency = Math.max(1, Math.floor(Number(config.clipConcurrency) || 1));
+    if (clipConcurrency > 1) {
+        console.log(`Clip media concurrency: ${clipConcurrency}`);
+        const jobs = clips.map((clip, index) => () => generateOwnStreamClipJob({
+            clip,
+            index,
+            parsed,
+            options,
+            outputRoot,
+            source,
+            streamerName,
+            info,
+            config
+        }));
+        const results = await runJobsWithConcurrency(jobs, clipConcurrency);
+        fs.writeFileSync(reviewPath, buildReviewMarkdown(results, reviewMetadata), 'utf8');
+        try {
+            await notifyResults(results, reviewMetadata, { ...rootConfig, ownStreamClips: config });
+        } catch (error) {
+            console.warn(`WeChat Work notification failed, local review kept: ${error.message}`);
+        }
+        console.log(`Review list: ${reviewPath}`);
+        return results;
+    }
     const results = [];
     for (const [index, clip] of clips.entries()) {
         const window = {
@@ -1151,8 +1337,7 @@ async function generateOwnStreamClips(options = {}) {
         let mediaError = null;
         try {
             mediaResult = await topicClipper.cutClipMedia(source, window, srtPath, mediaPath, {
-                burnSubtitles: config.burnSubtitles,
-                ffmpegPath: options.ffmpegPath
+                ...buildCutClipMediaConfig(config, options)
             });
         } catch (error) {
             mediaError = error.message;
@@ -1243,6 +1428,7 @@ function parseCliArgs(argv) {
         else if (arg === '--max-clips') options.maxClips = Number(argv[++i]);
         else if (arg === '--chunk-seconds') options.chunkSeconds = Number(argv[++i]);
         else if (arg === '--ai-concurrency') options.aiConcurrency = Number(argv[++i]);
+        else if (arg === '--clip-concurrency') options.clipConcurrency = Number(argv[++i]);
     }
     return options;
 }
@@ -1257,7 +1443,8 @@ if (require.main === module) {
             ...(cli.noNotify ? { notify: { ...(config.ownStreamClips?.notify || {}), enabled: false } } : {}),
             ...(Number.isFinite(cli.maxClips) ? { maxClips: cli.maxClips } : {}),
             ...(Number.isFinite(cli.chunkSeconds) ? { chunkSeconds: cli.chunkSeconds } : {}),
-            ...(Number.isFinite(cli.aiConcurrency) ? { aiConcurrency: cli.aiConcurrency } : {})
+            ...(Number.isFinite(cli.aiConcurrency) ? { aiConcurrency: cli.aiConcurrency } : {}),
+            ...(Number.isFinite(cli.clipConcurrency) ? { clipConcurrency: cli.clipConcurrency } : {})
         };
         await generateOwnStreamClips({
             config,
@@ -1278,6 +1465,7 @@ if (require.main === module) {
 module.exports = {
     DEFAULT_OWN_STREAM_CLIPS_CONFIG,
     getOwnStreamClipsConfig,
+    buildCutClipMediaConfig,
     parseDanmakuXml,
     buildDanmakuDensity,
     buildCandidateWindows,

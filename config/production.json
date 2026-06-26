@@ -31,7 +31,9 @@
       "maxSegments": 20,
       "fillGaps": true,
       "backupOriginals": true,
-      "copyCover": true
+      "copyCover": true,
+      "nearbySegmentRecovery": true,
+      "nearbySegmentMaxGapSeconds": 1800
     }
   },
   "audio": {
@@ -858,7 +860,12 @@
     "maxClips": 18,
     "chunkSeconds": 2700,
     "aiConcurrency": 3,
+    "clipConcurrency": 3,
+    "clipFfmpegThreads": 4,
     "burnSubtitles": true,
+    "subtitleVideoEncoder": "libx264",
+    "subtitleVideoPreset": "ultrafast",
+    "subtitleVideoCrf": 23,
     "outputDirName": "own_stream_fun_clips",
     "alignBoundaries": true,
     "boundaryStartBacktrackSeconds": 12,

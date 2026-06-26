@@ -504,6 +504,18 @@ export class MikufansWebhookHandler implements IWebhookHandler {
 
     this.logger.info(`🏁 直播结束 (延迟处理): ${session.roomName} (Room: ${roomId}, 最终片段数: ${session.segments.length})`);
 
+    const mergeConfig = this.liveSessionManager.getMergeConfig();
+    if (mergeConfig.nearbySegmentRecovery) {
+      const recoveredCount = this.liveSessionManager.augmentSessionWithNearbySegments(roomId, {
+        enabled: mergeConfig.nearbySegmentRecovery,
+        maxGapSeconds: mergeConfig.nearbySegmentMaxGapSeconds,
+        maxSegments: mergeConfig.maxSegments
+      });
+      if (recoveredCount > 0) {
+        this.logger.info(`🔄 已补收同场直播的邻近片段: ${roomId} (+${recoveredCount})`);
+      }
+    }
+
     // ⚠️ 关键修复: 移除过期片段(超过18小时的片段)
     const removedCount = this.liveSessionManager.removeExpiredSegments(roomId, 18);
     if (removedCount > 0) {
@@ -1423,7 +1435,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
 
       // 确定输出文件路径
       const firstSegment = session.segments[0];
-      const outputDir = path.dirname(firstSegment.videoPath);
+      const outputDir = this.resolveMergedOutputDir(session.segments);
       const outputBaseName = path.basename(firstSegment.videoPath, path.extname(firstSegment.videoPath));
       const mergedVideoPath = path.join(outputDir, `${outputBaseName}_merged.flv`);
       const mergedXmlPath = path.join(outputDir, `${outputBaseName}_merged.xml`);
@@ -1526,6 +1538,13 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   /**
    * 根据视频路径查找会话
    */
+  private resolveMergedOutputDir(segments: LiveSegment[]): string {
+    const segment = segments.find(item => path.basename(path.dirname(item.videoPath)).toLowerCase() !== 'bak')
+      || segments[0];
+    const dir = path.dirname(segment.videoPath);
+    return path.basename(dir).toLowerCase() === 'bak' ? path.dirname(dir) : dir;
+  }
+
   private findSessionByVideoPath(videoPath: string) {
     const allSessions = this.liveSessionManager.getAllSessions();
     for (const [roomId, session] of allSessions.entries()) {

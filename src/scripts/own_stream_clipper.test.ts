@@ -70,6 +70,23 @@ describe('own_stream_clipper', () => {
     expect(candidates.some(candidate => String(candidate.reason).includes('danmaku'))).toBe(true);
   });
 
+  test('passes copy-mode two-stage burn settings to media cutter by default', () => {
+    const config = ownStreamClipper.getOwnStreamClipsConfig({
+      ownStreamClips: {
+        burnSubtitles: true
+      }
+    });
+
+    expect(ownStreamClipper.buildCutClipMediaConfig(config, { ffmpegPath: 'ffmpeg-test' })).toMatchObject({
+      burnSubtitles: true,
+      twoStageSubtitleBurn: true,
+      twoStageMode: 'copy',
+      twoStagePreRollSeconds: 8,
+      twoStagePostRollSeconds: 2,
+      ffmpegPath: 'ffmpeg-test'
+    });
+  });
+
   test('builds numbered review notification markdown', () => {
     const markdown = ownStreamClipper.buildNotifyMarkdown([
       {
