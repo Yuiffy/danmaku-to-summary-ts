@@ -124,6 +124,7 @@
         "minSpeechSeconds": 8,
         "includeUnknownSpeakers": false,
         "useMentionedOnlyAsContext": true,
+        "filterMentionedImagesByComicScript": true,
         "appendCharacterDescriptions": true,
         "imageOrder": [
           "host",

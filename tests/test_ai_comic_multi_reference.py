@@ -144,6 +144,43 @@ class MultiReferenceComicTests(unittest.TestCase):
         self.assertIn("Mizuki, heterochromia", desc)
         self.assertIn("文本提到", desc)
 
+    def test_mentioned_streamer_reference_is_filtered_when_absent_from_comic_script(self):
+        mentioned = self.config["ai"]["streamerRegistry"]["mizuki"] | {
+            "id": "mizuki",
+            "_comicReferenceReason": "mentioned",
+            "_matchedMentionLabel": "Mizuki",
+        }
+        appeared = self.config["ai"]["streamerRegistry"]["shiori"] | {
+            "id": "shiori",
+            "_comicReferenceReason": "appeared",
+        }
+
+        filtered = comic.filter_extra_streamers_for_image_prompt(
+            [appeared, mentioned],
+            "Panel 1: Shiori talks with the host.",
+            self.config,
+            "25788785",
+        )
+
+        self.assertEqual([item["id"] for item in filtered], ["shiori"])
+
+    def test_mentioned_streamer_reference_is_kept_when_present_in_comic_script(self):
+        mentioned = self.config["ai"]["streamerRegistry"]["mizuki"] | {
+            "id": "mizuki",
+            "_comicReferenceReason": "mentioned",
+            "_matchedMentionLabel": "Mizuki",
+        }
+
+        filtered = comic.filter_extra_streamers_for_image_prompt(
+            [mentioned],
+            "Panel 1: Mizuki appears beside the host.",
+            self.config,
+            "25788785",
+        )
+
+        self.assertEqual([item["id"] for item in filtered], ["mizuki"])
+        self.assertEqual(filtered[0]["_matchedComicLabel"], "Mizuki")
+
     def test_max_extra_characters_applies(self):
         second = self.root / "rhea.png"
         second.write_bytes(b"x")

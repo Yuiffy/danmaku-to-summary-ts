@@ -533,6 +533,7 @@ def get_multi_reference_config(config: Dict[str, Any], room_id: Optional[str]) -
         "includeMentionedStreamers": True,
         "includeMentionedStreamerImages": True,
         "useMentionedOnlyAsContext": True,
+        "filterMentionedImagesByComicScript": True,
         "appendCharacterDescriptions": True,
         "imageOrder": ["host", "appeared_streamers", "cover", "screenshots", "default"],
     }
@@ -639,6 +640,52 @@ def find_mention_label(highlight_text: str, streamer: Dict[str, Any]) -> Optiona
         if normalize_mention_text(label_text) in normalized_text:
             return label_text
     return None
+
+def find_streamer_label_in_text(text: str, streamer: Dict[str, Any]) -> Optional[str]:
+    normalized_text = normalize_mention_text(text)
+    labels = []
+    for value in [
+        streamer.get("displayName"),
+        *(streamer.get("mentionLabels", []) or []),
+        *(streamer.get("speakerLabels", []) or []),
+        *(streamer.get("aliases", []) or []),
+    ]:
+        label = str(value or "").strip()
+        if label and label not in labels:
+            labels.append(label)
+    for label in labels:
+        if not is_safe_mention_label(label):
+            continue
+        if normalize_mention_text(label) in normalized_text:
+            return label
+    return None
+
+def filter_extra_streamers_for_image_prompt(
+    extra_streamers: Optional[list[dict]],
+    comic_text: str,
+    config: Dict[str, Any],
+    room_id: Optional[str],
+) -> list[dict]:
+    if not extra_streamers:
+        return []
+    multi_config = get_multi_reference_config(config, room_id)
+    if not multi_config.get("filterMentionedImagesByComicScript", True):
+        return list(extra_streamers)
+
+    filtered = []
+    for streamer in extra_streamers:
+        reason = streamer.get("_comicReferenceReason") or "appeared"
+        if reason != "mentioned":
+            filtered.append(streamer)
+            continue
+        matched_label = find_streamer_label_in_text(comic_text or "", streamer)
+        if matched_label:
+            filtered.append({**streamer, "_matchedComicLabel": matched_label})
+        else:
+            display_name = streamer.get("displayName") or streamer.get("id") or "unknown"
+            matched_mention = streamer.get("_matchedMentionLabel") or ""
+            print(f"[INFO]  文本提到主播未出现在漫画脚本中，跳过其参考图: {display_name} (highlight命中: {matched_mention})")
+    return filtered
 
 def resolve_mentioned_streamers(
     config: Dict[str, Any],
@@ -2104,6 +2151,30 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
                 "attempts": get_last_image_generation_meta().get("attempts") or [],
             })
             return None
+
+        image_extra_streamers = filter_extra_streamers_for_image_prompt(
+            extra_streamers,
+            comic_text,
+            config,
+            room_id,
+        )
+        if [item.get("id") for item in image_extra_streamers] != [item.get("id") for item in extra_streamers]:
+            all_images = collect_all_images(room_id, highlight_path, extra_streamers=image_extra_streamers)
+            reference_image_path = all_images if all_images else None
+            prompt, comic_text, is_comic_generated = build_comic_prompt(
+                highlight_content,
+                reference_image_path,
+                room_id,
+                existing_comic=comic_text,
+                extra_streamers=image_extra_streamers
+            )
+            if all_images:
+                print(f"[IMAGE] 过滤文本提到参考图后保留 {len(all_images)} 张图片:")
+                for idx, img_path in enumerate(all_images, 1):
+                    img_name = os.path.basename(img_path)
+                    print(f"  ✓ {idx}. {img_name}")
+            else:
+                print("[WARNING] 过滤文本提到参考图后未找到任何可用图片，将仅使用提示词生成")
 
         # 图像生成成功，现在保存漫画脚本（只在真正生成脚本时保存，不保存原文备选）
         try:
