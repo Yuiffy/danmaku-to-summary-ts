@@ -1,70 +1,124 @@
-import sys, os, json, requests
-sys.stdout.reconfigure(line_buffering=True)
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""Find duplicate Bilibili uploads by exact title.
 
-PROJECT = r'D:\workspace\myrepo\danmaku-to-summary-ts'
-sys.path.insert(0, os.path.join(PROJECT, 'src', 'scripts'))
-os.chdir(PROJECT)
-from config_loader import find_secrets_path
+This is a lightweight pre/post-upload diagnostic. It searches the public
+Bilibili video search endpoint for the current account and groups results by
+exact title after removing search-result highlight markup.
+"""
 
-secrets_path = find_secrets_path()
-with open(secrets_path, 'r', encoding='utf-8-sig') as f:
-    secrets = json.load(f)
-cookie_str = secrets.get('bilibili', {}).get('cookie', '')
+import argparse
+import json
+import os
+import re
+import sys
+import time
+from collections import defaultdict
 
-headers = {
-    'User-Agent': 'Mozilla/5.0',
-    'Cookie': cookie_str,
-    'Referer': 'https://member.bilibili.com'
-}
+import requests
 
-# Try multiple status values and pages
-all_archives = []
-for status in ['pubed', 'is_pubed', 'not_pubed', 'all']:
-    for pn in range(1, 6):
-        try:
-            r = requests.get('https://member.bilibili.com/x/web/archives',
-                params={'status': status, 'pn': pn, 'ps': 50},
-                headers=headers, timeout=15)
-            data = r.json()
-            archives = (data.get('data') or {}).get('archives')
-            if not archives:
-                break
-            all_archives.extend(archives)
-            print(f'status={status} pn={pn}: got {len(archives)} archives')
-        except Exception as e:
-            print(f'status={status} pn={pn}: {e}')
 
-# Deduplicate by bvid
-seen = {}
-for a in all_archives:
-    bvid = a.get('bvid', '')
-    if bvid and bvid not in seen:
-        seen[bvid] = a
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(PROJECT_ROOT, "src", "scripts"))
 
-print(f'\nTotal unique archives: {len(seen)}')
+from config_loader import find_secrets_path  # noqa: E402
 
-# Find duplicates by title
-from collections import Counter
-title_counts = Counter()
-title_bvids = {}
-for a in seen.values():
-    t = a.get('title', '')
-    title_counts[t] += 1
-    title_bvids.setdefault(t, []).append(a.get('bvid', ''))
 
-dupes = {t: bvids for t, bvids in title_bvids.items() if len(bvids) > 1}
-if dupes:
-    print(f'\n=== DUPLICATES FOUND ({len(dupes)} titles) ===')
-    for t, bvids in dupes.items():
-        print(f'  {t}')
-        for b in bvids:
-            print(f'    {b}')
-else:
-    print('\nNo duplicates found.')
+DEFAULT_ACCOUNT_MID = 412141275
 
-# Show recent 小岁 uploads
-print(f'\n=== Recent 【小岁】 uploads ===')
-sui_clips = [(a.get('bvid',''), a.get('title',''), a.get('pubdate',0)) for a in seen.values() if '小岁' in a.get('title','')]
-sui_clips.sort(key=lambda x: x[2], reverse=True)
-for bvid, title, ts in sui_clips[:30]:
-    print(f'  {bvid} | {title}')
+
+def load_cookie():
+    secrets_path = find_secrets_path()
+    with open(secrets_path, "r", encoding="utf-8-sig") as f:
+        secrets = json.load(f)
+    cookie = secrets.get("bilibili", {}).get("cookie", "")
+    if not cookie:
+        raise RuntimeError("Missing bilibili.cookie in secrets config")
+    return cookie
+
+
+def strip_search_markup(title):
+    return re.sub(r"<[^>]+>", "", title or "").strip()
+
+
+def search_account_titles(cookie, keyword, account_mid, pages, delay):
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Cookie": cookie,
+        "Referer": "https://search.bilibili.com",
+    }
+    found = defaultdict(list)
+    for page in range(1, pages + 1):
+        response = requests.get(
+            "https://api.bilibili.com/x/web-interface/search/type",
+            params={
+                "search_type": "video",
+                "keyword": keyword,
+                "order": "pubdate",
+                "page": page,
+            },
+            headers=headers,
+            timeout=15,
+        )
+        data = response.json()
+        if data.get("code") != 0:
+            print("search page %d failed: %s" % (page, data.get("message", "")))
+            break
+        results = (data.get("data") or {}).get("result") or []
+        if not results:
+            break
+        for item in results:
+            if int(item.get("mid") or 0) != account_mid:
+                continue
+            title = strip_search_markup(item.get("title", ""))
+            found[title].append(
+                {
+                    "bvid": item.get("bvid", ""),
+                    "pubdate": item.get("pubdate", 0),
+                }
+            )
+        time.sleep(delay)
+    return found
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Check duplicate Bilibili uploads by title")
+    parser.add_argument("--keyword", default="小岁", help="Search keyword, e.g. 小岁 空洞骑士")
+    parser.add_argument("--pages", type=int, default=5, help="Search result pages to scan")
+    parser.add_argument("--account-mid", type=int, default=DEFAULT_ACCOUNT_MID, help="Uploader mid")
+    parser.add_argument("--delay", type=float, default=1.0, help="Delay between search pages")
+    parser.add_argument("--show-recent", type=int, default=30, help="How many recent matched uploads to print")
+    args = parser.parse_args()
+
+    found = search_account_titles(
+        cookie=load_cookie(),
+        keyword=args.keyword,
+        account_mid=args.account_mid,
+        pages=max(1, args.pages),
+        delay=max(0, args.delay),
+    )
+    duplicates = {title: rows for title, rows in found.items() if len(rows) > 1}
+
+    print("Search keyword: %s" % args.keyword)
+    print("Unique titles: %d" % len(found))
+    print("Duplicate titles: %d" % len(duplicates))
+    if duplicates:
+        print("\n=== Duplicates ===")
+        for title, rows in sorted(duplicates.items()):
+            print("  %s" % title[:100])
+            for row in sorted(rows, key=lambda item: item.get("pubdate", 0), reverse=True):
+                print("    %s  pubdate=%s" % (row.get("bvid", ""), row.get("pubdate", 0)))
+
+    if args.show_recent > 0:
+        recent = []
+        for title, rows in found.items():
+            for row in rows:
+                recent.append((row.get("pubdate", 0), row.get("bvid", ""), title))
+        recent.sort(reverse=True)
+        print("\n=== Recent Matches ===")
+        for pubdate, bvid, title in recent[: args.show_recent]:
+            print("  %s | %s | %s" % (bvid, pubdate, title[:100]))
+
+
+if __name__ == "__main__":
+    main()
