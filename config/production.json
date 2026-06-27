@@ -350,6 +350,102 @@
           "public/reference_images/花礼新衣抱小礼猫.png"
         ],
         "characterDescription": "花礼Harei，黑发蓝瞳鼠耳的女生。"
+      },
+      "hazel": {
+        "displayName": "灰泽满Hazel",
+        "roomIds": [
+          "1713546334"
+        ],
+        "searchTags": [
+          "灰泽满Hazel",
+          "灰泽满"
+        ],
+        "speakerLabels": [
+          "灰泽满Hazel",
+          "灰泽满",
+          "Hazel"
+        ],
+        "aliases": [
+          "满满",
+          "满神",
+          "会在卖",
+          "会在买"
+        ],
+        "referenceImages": [
+          "public/reference_images/Hazel_灰泽满_立绘.png"
+        ],
+        "characterDescription": "灰泽满Hazel，灰色短发、绿瞳，带绿色线条的螺旋马尾，风纪委员，常带果冻饰品。"
+      },
+      "liko": {
+        "displayName": "莉蔻Liko",
+        "roomIds": [
+          "1713548468"
+        ],
+        "searchTags": [
+          "莉蔻Liko",
+          "莉蔻"
+        ],
+        "speakerLabels": [
+          "莉蔻Liko",
+          "莉蔻",
+          "Liko"
+        ],
+        "aliases": [
+          "莉可",
+          "莉蔻酱"
+        ],
+        "referenceImages": [
+          "public/reference_images/Liko_莉蔻_立绘.png"
+        ],
+        "characterDescription": "莉蔻Liko，长着兔耳的深棕发少女，手里常拿胡萝卜棒冰，背着胡萝卜包。"
+      },
+      "kloa": {
+        "displayName": "克罗雅Kloa",
+        "roomIds": [
+          "1986461465"
+        ],
+        "searchTags": [
+          "克罗雅Kloa",
+          "克罗雅"
+        ],
+        "speakerLabels": [
+          "克罗雅Kloa",
+          "克罗雅",
+          "Kloa"
+        ],
+        "aliases": [
+          "克莱雅",
+          "柯莱雅",
+          "克洛雅",
+          "克罗娅"
+        ],
+        "referenceImages": [
+          "public/reference_images/克罗雅无头罩3.jpg"
+        ],
+        "characterDescription": "克罗雅Kloa，粉色头发、恶魔角，头顶天使光环，背后是黑色恶魔翅膀。"
+      },
+      "izayoi": {
+        "displayName": "十六萤Izayoi",
+        "roomIds": [
+          "1741667419"
+        ],
+        "searchTags": [
+          "十六萤Izayoi",
+          "十六萤"
+        ],
+        "speakerLabels": [
+          "十六萤Izayoi",
+          "十六萤",
+          "Izayoi"
+        ],
+        "aliases": [
+          "萤萤",
+          "16萤"
+        ],
+        "referenceImages": [
+          "public/reference_images/十六萤Izayoi.png"
+        ],
+        "characterDescription": "十六萤Izayoi，浅绿色浣熊耳朵和浅色毛茸茸大尾巴，浅发色黄瞳少女，咖啡馆馆长。"
       }
     },
     "tuziRetry": {
@@ -664,6 +760,14 @@
         "enableTextGeneration": true,
         "enableComicGeneration": true,
         "enableDelayedReply": true,
+        "multiReferenceImages": {
+          "enabled": true,
+          "maxExtraCharacters": 3,
+          "maxMentionedContextCharacters": 3,
+          "includeMentionedStreamers": true,
+          "includeMentionedStreamerImages": true,
+          "appendCharacterDescriptions": true
+        },
         "customPrompts": {
           "goodnightReply": "你要给{anchor}的下播动态写一条评论区晚安回复。回复对象是{anchor}本人。\n\n你的身份是{fan}，但不要自称“作为{fan}”。你熟悉满区的说话方式：短句、接梗、复读、轻微阴阳、熟人拌嘴；关心可以有，但要藏在吐槽里，不要写成甜腻安慰或直播总结小作文。\n\n满区常见气质参考：懂你意思、爆了、还真是、大明星、劳累、语气对了、喜欢你喜欢你、耍满牌、大大方方。可以借这种感觉写，但不要机械堆词。\n\n写作要求：\n1. 开头对{anchor}本人说晚安，可以叫“满满”“灰泽满”“满神”，不要对粉丝说晚安。\n2. 最多抓2-3个本场具体梗，像评论区顺手一回，不要完整复盘直播。\n3. 句子要短，口语化，可以有一点骂醒式关心，但不能真攻击主播。\n4. 如果直播里出现累、吃饭、睡觉、身体不舒服、赶场、下播等信息，结尾自然催她吃饭/休息/睡觉。\n5. 禁止使用“甜甜的梦”“揉掉疲惫”“太乖了捏”“被戳到了”这类通用萌系词。\n6. 不要标题、列表、落款、解释、Markdown，不要输出思考过程。\n7. 只根据直播摘要写，不要串历史梗或外部信息。\n8. 字数控制在{wordLimit}字以内，建议60-140字，像真实B站动态评论。\n\n【直播内容摘要】\n{highlightContent}\n\n直接输出评论。"
         }
@@ -676,7 +780,15 @@
         "fanName": "蔻萝特",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
-        "enableDelayedReply": true
+        "enableDelayedReply": true,
+        "multiReferenceImages": {
+          "enabled": true,
+          "maxExtraCharacters": 3,
+          "maxMentionedContextCharacters": 3,
+          "includeMentionedStreamers": true,
+          "includeMentionedStreamerImages": true,
+          "appendCharacterDescriptions": true
+        }
       },
       "1986461465": {
         "audioOnly": true,
@@ -686,7 +798,15 @@
         "fanName": "雅团子",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
-        "enableDelayedReply": true
+        "enableDelayedReply": true,
+        "multiReferenceImages": {
+          "enabled": true,
+          "maxExtraCharacters": 3,
+          "maxMentionedContextCharacters": 3,
+          "includeMentionedStreamers": true,
+          "includeMentionedStreamerImages": true,
+          "appendCharacterDescriptions": true
+        }
       },
       "1741667419": {
         "audioOnly": true,
@@ -696,7 +816,15 @@
         "fanName": "照夜萤",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
-        "enableDelayedReply": true
+        "enableDelayedReply": true,
+        "multiReferenceImages": {
+          "enabled": true,
+          "maxExtraCharacters": 3,
+          "maxMentionedContextCharacters": 3,
+          "includeMentionedStreamers": true,
+          "includeMentionedStreamerImages": true,
+          "appendCharacterDescriptions": true
+        }
       },
       "1967215387": {
         "audioOnly": false,

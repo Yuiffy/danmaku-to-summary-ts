@@ -494,6 +494,46 @@
           "public/reference_images/花礼新衣抱小礼猫.png"
         ],
         "characterDescription": "花礼Harei，黑发蓝瞳鼠耳的女生。粉丝是戴帽子的小猫（小礼猫、猫们）。"
+      },
+      "hazel": {
+        "displayName": "灰泽满Hazel",
+        "roomIds": ["1713546334"],
+        "speakerLabels": ["灰泽满Hazel", "灰泽满", "Hazel"],
+        "aliases": ["满满", "满神", "会在卖", "会在买"],
+        "referenceImages": [
+          "public/reference_images/Hazel_灰泽满_立绘.png"
+        ],
+        "characterDescription": "灰泽满Hazel，灰色短发、绿瞳，带绿色线条的螺旋马尾，风纪委员，常带果冻饰品。"
+      },
+      "liko": {
+        "displayName": "莉蔻Liko",
+        "roomIds": ["1713548468"],
+        "speakerLabels": ["莉蔻Liko", "莉蔻", "Liko"],
+        "aliases": ["莉可", "莉蔻酱"],
+        "referenceImages": [
+          "public/reference_images/Liko_莉蔻_立绘.png"
+        ],
+        "characterDescription": "莉蔻Liko，长着兔耳的深棕发少女，手里常拿胡萝卜棒冰，背着胡萝卜包。"
+      },
+      "kloa": {
+        "displayName": "克罗雅Kloa",
+        "roomIds": ["1986461465"],
+        "speakerLabels": ["克罗雅Kloa", "克罗雅", "Kloa"],
+        "aliases": ["克莱雅", "柯莱雅", "克洛雅", "克罗娅"],
+        "referenceImages": [
+          "public/reference_images/克罗雅无头罩3.jpg"
+        ],
+        "characterDescription": "克罗雅Kloa，粉色头发、恶魔角，头顶天使光环，背后是黑色恶魔翅膀。"
+      },
+      "izayoi": {
+        "displayName": "十六萤Izayoi",
+        "roomIds": ["1741667419"],
+        "speakerLabels": ["十六萤Izayoi", "十六萤", "Izayoi"],
+        "aliases": ["萤萤", "16萤"],
+        "referenceImages": [
+          "public/reference_images/十六萤Izayoi.png"
+        ],
+        "characterDescription": "十六萤Izayoi，浅绿色浣熊耳朵和浅色毛茸茸大尾巴，浅发色黄瞳少女，咖啡馆馆长。"
       }
     },
     "tuziRetry": {
