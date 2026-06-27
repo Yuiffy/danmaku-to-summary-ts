@@ -87,11 +87,11 @@ class MultiReferenceComicTests(unittest.TestCase):
         comic.get_project_root = self.original_project_root
         self.tmp.cleanup()
 
-    def write_sidecar(self, extra_ids):
+    def write_sidecar(self, extra_ids, speakers=None):
         sidecar = self.root / "25788785_20260101_120000.asr_speakers.json"
         sidecar.write_text(json.dumps({
             "hostRoomId": "25788785",
-            "speakers": [],
+            "speakers": speakers or [],
             "appearedStreamerIds": ["sui", *extra_ids],
             "extraAppearedStreamerIds": extra_ids,
         }, ensure_ascii=False), encoding="utf-8")
@@ -121,6 +121,20 @@ class MultiReferenceComicTests(unittest.TestCase):
         images = comic.collect_all_images("25788785", str(self.highlight), extra_streamers=extras)
 
         self.assertEqual([Path(item).name for item in images[:2]], ["host.png", "shiori.png"])
+
+    def test_low_confidence_short_asr_extra_streamer_is_filtered(self):
+        self.write_sidecar(["shiori"], speakers=[{
+            "label": "Shiori",
+            "totalSpeechSeconds": 78.46,
+            "segmentCount": 15,
+            "avgScore": 0.5336,
+            "maxScore": 0.6439,
+            "isUnknown": False,
+        }])
+
+        extras = comic.resolve_extra_appeared_streamers(self.config, "25788785", str(self.highlight))
+
+        self.assertEqual(extras, [])
 
     def test_host_streamer_registry_reference_image_fills_missing_room_image(self):
         self.config["roomSettings"].pop("25788785")
@@ -164,6 +178,21 @@ class MultiReferenceComicTests(unittest.TestCase):
 
         self.assertEqual([item["id"] for item in filtered], ["shiori"])
 
+    def test_appeared_streamer_reference_is_filtered_when_absent_from_comic_script(self):
+        appeared = self.config["ai"]["streamerRegistry"]["shiori"] | {
+            "id": "shiori",
+            "_comicReferenceReason": "appeared",
+        }
+
+        filtered = comic.filter_extra_streamers_for_image_prompt(
+            [appeared],
+            "Panel 1: The host talks alone.",
+            self.config,
+            "25788785",
+        )
+
+        self.assertEqual(filtered, [])
+
     def test_mentioned_streamer_reference_is_kept_when_present_in_comic_script(self):
         mentioned = self.config["ai"]["streamerRegistry"]["mizuki"] | {
             "id": "mizuki",
@@ -180,6 +209,18 @@ class MultiReferenceComicTests(unittest.TestCase):
 
         self.assertEqual([item["id"] for item in filtered], ["mizuki"])
         self.assertEqual(filtered[0]["_matchedComicLabel"], "Mizuki")
+
+    def test_existing_script_detects_unallowed_extra_streamer(self):
+        allowed = self.config["ai"]["streamerRegistry"]["shiori"] | {"id": "shiori"}
+
+        blocked = comic.find_unallowed_extra_streamers_in_comic(
+            self.config,
+            "25788785",
+            "Panel 1: Mizuki appears beside the host.",
+            [allowed],
+        )
+
+        self.assertEqual([item["id"] for item in blocked], ["mizuki"])
 
     def test_max_extra_characters_applies(self):
         second = self.root / "rhea.png"

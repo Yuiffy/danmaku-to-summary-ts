@@ -588,6 +588,43 @@ describe('asr_backends', () => {
     expect(result.speakers.find((speaker: any) => speaker.label === 'UNKNOWN').isUnknown).toBe(true);
   });
 
+  test('filters low max-score short extra speakers from appeared streamer ids', () => {
+    const config = {
+      ai: {
+        comic: {
+          multiReferenceImages: {
+            enabled: true,
+            minSpeakerScore: 0.5,
+            minSpeechSeconds: 8,
+            minSpeakerMaxScore: 0.7,
+            minSpeakerSecondsWhenLowScore: 180
+          }
+        },
+        streamerRegistry: {
+          shiori: {
+            displayName: '栞栞',
+            roomIds: ['26966466'],
+            speakerLabels: ['栞栞']
+          },
+          mizuki: {
+            displayName: '弥月Mizuki',
+            speakerLabels: ['弥月Mizuki']
+          }
+        }
+      }
+    };
+    const result = asr.summarizeAsrSpeakers({
+      backend: 'sensevoice',
+      segments: [
+        { start: 0, end: 120, text: 'host', speaker: '栞栞', speaker_score: 0.82 },
+        { start: 120, end: 198.46, text: 'low confidence extra', speaker: '弥月Mizuki', speaker_score: 0.6439 }
+      ]
+    }, config, { room_id: '26966466', mediaPath: 'x.m4a' });
+
+    expect(result.appearedStreamerIds).toEqual(['shiori']);
+    expect(result.extraAppearedStreamerIds).toEqual([]);
+  });
+
   test('summarizes speakers allowing missing score when duration passes', () => {
     const config = {
       ai: {

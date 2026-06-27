@@ -529,10 +529,13 @@ def get_multi_reference_config(config: Dict[str, Any], room_id: Optional[str]) -
         "maxMentionedContextCharacters": 2,
         "minSpeakerScore": 0.50,
         "minSpeechSeconds": 8,
+        "minSpeakerMaxScore": 0.70,
+        "minSpeakerSecondsWhenLowScore": 180,
         "includeUnknownSpeakers": False,
         "includeMentionedStreamers": True,
         "includeMentionedStreamerImages": True,
         "useMentionedOnlyAsContext": True,
+        "filterExtraImagesByComicScript": True,
         "filterMentionedImagesByComicScript": True,
         "appendCharacterDescriptions": True,
         "imageOrder": ["host", "appeared_streamers", "cover", "screenshots", "default"],
@@ -669,13 +672,16 @@ def filter_extra_streamers_for_image_prompt(
     if not extra_streamers:
         return []
     multi_config = get_multi_reference_config(config, room_id)
-    if not multi_config.get("filterMentionedImagesByComicScript", True):
+    filter_all_extra = multi_config.get("filterExtraImagesByComicScript", True)
+    filter_mentioned = multi_config.get("filterMentionedImagesByComicScript", True)
+    if not filter_all_extra and not filter_mentioned:
         return list(extra_streamers)
 
     filtered = []
     for streamer in extra_streamers:
         reason = streamer.get("_comicReferenceReason") or "appeared"
-        if reason != "mentioned":
+        should_filter = filter_all_extra or (reason == "mentioned" and filter_mentioned)
+        if not should_filter:
             filtered.append(streamer)
             continue
         matched_label = find_streamer_label_in_text(comic_text or "", streamer)
@@ -684,8 +690,90 @@ def filter_extra_streamers_for_image_prompt(
         else:
             display_name = streamer.get("displayName") or streamer.get("id") or "unknown"
             matched_mention = streamer.get("_matchedMentionLabel") or ""
-            print(f"[INFO]  文本提到主播未出现在漫画脚本中，跳过其参考图: {display_name} (highlight命中: {matched_mention})")
+            source_label = "文本提到" if reason == "mentioned" else "ASR出声"
+            source_detail = f"，highlight命中: {matched_mention}" if matched_mention else ""
+            print(f"[INFO]  额外主播未出现在漫画脚本中，跳过其参考图: {display_name} (来源: {source_label}{source_detail})")
     return filtered
+
+def to_optional_float(value: Any) -> Optional[float]:
+    try:
+        if value is None or value == "":
+            return None
+        parsed = float(value)
+        return parsed if parsed == parsed else None
+    except (TypeError, ValueError):
+        return None
+
+def find_sidecar_speaker_for_streamer(sidecar: dict, streamer: Dict[str, Any]) -> Optional[dict]:
+    speakers = sidecar.get("speakers", []) if isinstance(sidecar, dict) else []
+    labels = []
+    for value in [
+        streamer.get("displayName"),
+        *(streamer.get("speakerLabels", []) or []),
+        *(streamer.get("aliases", []) or []),
+    ]:
+        label = str(value or "").strip()
+        if label and label not in labels:
+            labels.append(label)
+    normalized_labels = {normalize_mention_text(label) for label in labels}
+    for speaker in speakers:
+        speaker_label = normalize_mention_text(str(speaker.get("label") or "").strip())
+        if speaker_label in normalized_labels:
+            return speaker
+    return None
+
+def sidecar_speaker_passes_reference_thresholds(
+    speaker: Optional[dict],
+    streamer: Dict[str, Any],
+    multi_config: Dict[str, Any],
+) -> bool:
+    if not speaker:
+        return True
+
+    display_name = streamer.get("displayName") or streamer.get("id") or speaker.get("label") or "unknown"
+    total_seconds = to_optional_float(speaker.get("totalSpeechSeconds")) or 0.0
+    avg_score = to_optional_float(speaker.get("avgScore"))
+    max_score = to_optional_float(speaker.get("maxScore"))
+    min_seconds = float(multi_config.get("minSpeechSeconds") or 0)
+    min_avg_score = float(multi_config.get("minSpeakerScore") or 0)
+    min_max_score = float(multi_config.get("minSpeakerMaxScore") or 0)
+    low_score_seconds = float(multi_config.get("minSpeakerSecondsWhenLowScore") or 0)
+
+    if total_seconds < min_seconds:
+        print(f"[INFO]  过滤额外出声主播参考图: {display_name} 出声 {total_seconds:.1f}s < {min_seconds:.1f}s")
+        return False
+    if avg_score is not None and avg_score < min_avg_score:
+        print(f"[INFO]  过滤额外出声主播参考图: {display_name} avgScore {avg_score:.4f} < {min_avg_score:.4f}")
+        return False
+    if max_score is not None and min_max_score > 0 and max_score < min_max_score and total_seconds < low_score_seconds:
+        print(
+            f"[INFO]  过滤低置信额外出声主播参考图: {display_name} "
+            f"maxScore {max_score:.4f} < {min_max_score:.4f} 且出声 {total_seconds:.1f}s < {low_score_seconds:.1f}s"
+        )
+        return False
+    return True
+
+def find_unallowed_extra_streamers_in_comic(
+    config: Dict[str, Any],
+    room_id: Optional[str],
+    comic_text: str,
+    allowed_extra_streamers: Optional[list[dict]] = None,
+) -> list[dict]:
+    if not comic_text:
+        return []
+    registry = resolve_streamer_registry(config)
+    host_streamer_id = find_host_streamer_id(config, room_id)
+    allowed_ids = {host_streamer_id} if host_streamer_id else set()
+    allowed_ids.update(streamer.get("id") for streamer in allowed_extra_streamers or [] if streamer.get("id"))
+
+    blocked = []
+    for streamer_id, entry in registry.items():
+        if streamer_id in allowed_ids:
+            continue
+        matched_label = find_streamer_label_in_text(comic_text, entry)
+        if matched_label:
+            blocked.append({**entry, "_matchedComicLabel": matched_label})
+    return blocked
 
 def resolve_mentioned_streamers(
     config: Dict[str, Any],
@@ -752,6 +840,9 @@ def resolve_extra_appeared_streamers(config: Dict[str, Any], room_id: Optional[s
         entry = registry.get(streamer_id)
         if not entry:
             print(f"[WARNING] ASR sidecar 中的主播未配置 streamerRegistry: {streamer_id}")
+            continue
+        speaker = find_sidecar_speaker_for_streamer(sidecar, entry)
+        if not sidecar_speaker_passes_reference_thresholds(speaker, entry, multi_config):
             continue
         if len(extra_streamers) >= max_extra:
             print(f"[INFO]  额外主播达到上限 maxExtraCharacters={max_extra}，跳过 {streamer_id}")
@@ -2118,15 +2209,32 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
         text_output_path = os.path.join(dir_name, f"{base_name}_COMIC_SCRIPT.txt")
 
         comic_text = None
+        existing_comic_invalidated = False
         if os.path.exists(text_output_path):
             try:
                 with open(text_output_path, 'r', encoding='utf-8') as tf:
                     comic_text = tf.read()
                 if is_valid_comic_script(comic_text):
-                    print(f"[INFO]  已存在漫画脚本，复用: {os.path.basename(text_output_path)}")
+                    blocked_script_streamers = find_unallowed_extra_streamers_in_comic(
+                        config,
+                        room_id,
+                        comic_text,
+                        extra_streamers,
+                    )
+                    if blocked_script_streamers:
+                        names = "、".join(
+                            f"{item.get('displayName') or item.get('id')}({item.get('_matchedComicLabel')})"
+                            for item in blocked_script_streamers[:5]
+                        )
+                        print(f"[WARNING]  已存在漫画脚本包含当前未允许的额外角色，重新生成: {names}")
+                        comic_text = None
+                        existing_comic_invalidated = True
+                    else:
+                        print(f"[INFO]  已存在漫画脚本，复用: {os.path.basename(text_output_path)}")
                 else:
                     print(f"[WARNING]  已存在漫画脚本无效或疑似截断，重新生成: {os.path.basename(text_output_path)}")
                     comic_text = None
+                    existing_comic_invalidated = True
             except Exception as e:
                 print(f"[WARNING]  读取已存在漫画脚本失败，重新生成: {e}")
 
@@ -2178,7 +2286,7 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
 
         # 图像生成成功，现在保存漫画脚本（只在真正生成脚本时保存，不保存原文备选）
         try:
-            if not os.path.exists(text_output_path) and comic_text and is_comic_generated:
+            if (not os.path.exists(text_output_path) or existing_comic_invalidated) and comic_text and is_comic_generated:
                 with open(text_output_path, 'w', encoding='utf-8') as tf:
                     tf.write(comic_text)
                 print(f"[OK] 漫画脚本已保存: {os.path.basename(text_output_path)}")

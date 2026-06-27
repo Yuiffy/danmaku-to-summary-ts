@@ -122,8 +122,11 @@
         "maxExtraCharacters": 2,
         "minSpeakerScore": 0.5,
         "minSpeechSeconds": 8,
+        "minSpeakerMaxScore": 0.7,
+        "minSpeakerSecondsWhenLowScore": 180,
         "includeUnknownSpeakers": false,
         "useMentionedOnlyAsContext": true,
+        "filterExtraImagesByComicScript": true,
         "filterMentionedImagesByComicScript": true,
         "appendCharacterDescriptions": true,
         "imageOrder": [

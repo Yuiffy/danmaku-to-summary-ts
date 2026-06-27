@@ -820,6 +820,8 @@ function getMultiReferenceConfig(config = {}, roomId = null) {
         maxExtraCharacters: 2,
         minSpeakerScore: 0.50,
         minSpeechSeconds: 8,
+        minSpeakerMaxScore: 0.70,
+        minSpeakerSecondsWhenLowScore: 180,
         includeUnknownSpeakers: false,
         useMentionedOnlyAsContext: true,
         appendCharacterDescriptions: true,
@@ -909,12 +911,20 @@ function summarizeAsrSpeakers(result, config = {}, context = {}) {
         const enoughSpeech = speaker.totalSpeechSeconds >= Number(multiConfig.minSpeechSeconds || 0);
         const scoreMissing = speaker.avgScore === null;
         const enoughScore = scoreMissing || speaker.avgScore >= Number(multiConfig.minSpeakerScore || 0);
+        const minSpeakerMaxScore = Number(multiConfig.minSpeakerMaxScore || 0);
+        const lowScoreSeconds = Number(multiConfig.minSpeakerSecondsWhenLowScore || 0);
+        const lowMaxScore = speaker.maxScore !== null && minSpeakerMaxScore > 0 && speaker.maxScore < minSpeakerMaxScore;
+        const enoughDurationForLowScore = speaker.totalSpeechSeconds >= lowScoreSeconds;
         if (!enoughSpeech) {
             console.log(`[ASR] speaker summary: 过滤 ${speaker.label} -> ${streamerId}，出声 ${speaker.totalSpeechSeconds.toFixed(1)}s < ${multiConfig.minSpeechSeconds}s`);
             return;
         }
         if (!enoughScore) {
             console.log(`[ASR] speaker summary: 过滤 ${speaker.label} -> ${streamerId}，avgScore ${speaker.avgScore} < ${multiConfig.minSpeakerScore}`);
+            return;
+        }
+        if (lowMaxScore && !enoughDurationForLowScore) {
+            console.log(`[ASR] speaker summary: 过滤低置信 ${speaker.label} -> ${streamerId}，maxScore ${speaker.maxScore} < ${minSpeakerMaxScore} 且出声 ${speaker.totalSpeechSeconds.toFixed(1)}s < ${lowScoreSeconds}s`);
             return;
         }
         if (scoreMissing) {
