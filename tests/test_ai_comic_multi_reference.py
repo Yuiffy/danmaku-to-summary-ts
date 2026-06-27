@@ -24,9 +24,10 @@ class MultiReferenceComicTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.host = self.root / "host.png"
         self.extra = self.root / "shiori.png"
+        self.mentioned = self.root / "mizuki.png"
         self.cover = self.root / "25788785_20260101_120000.cover.jpg"
         self.highlight = self.root / "25788785_20260101_120000_AI_HIGHLIGHT.txt"
-        for file_path in [self.host, self.extra, self.cover, self.highlight]:
+        for file_path in [self.host, self.extra, self.mentioned, self.cover, self.highlight]:
             file_path.write_bytes(b"x")
 
         self.config = {
@@ -52,6 +53,13 @@ class MultiReferenceComicTests(unittest.TestCase):
                         "speakerLabels": ["栞栞", "Shiori"],
                         "referenceImages": [str(self.extra)],
                         "characterDescription": "栞栞，浅黄色头发。",
+                    },
+                    "mizuki": {
+                        "displayName": "Mizuki",
+                        "speakerLabels": ["Mizuki"],
+                        "aliases": ["Mizuki-chan"],
+                        "referenceImages": [str(self.mentioned)],
+                        "characterDescription": "Mizuki, heterochromia and mechanical rabbit ears.",
                     },
                 },
                 "roomSettings": {
@@ -114,6 +122,28 @@ class MultiReferenceComicTests(unittest.TestCase):
 
         self.assertEqual([Path(item).name for item in images[:2]], ["host.png", "shiori.png"])
 
+    def test_host_streamer_registry_reference_image_fills_missing_room_image(self):
+        self.config["roomSettings"].pop("25788785")
+
+        image = comic.get_room_reference_image("25788785", str(self.highlight))
+        images = comic.collect_all_images("25788785", str(self.highlight))
+
+        self.assertEqual(Path(image).name, "host.png")
+        self.assertEqual(Path(images[0]).name, "host.png")
+
+    def test_mentioned_streamer_adds_description_and_reference_image_without_sidecar(self):
+        self.highlight.write_text("Tonight the host mentioned Mizuki during the stream.", encoding="utf-8")
+
+        extras = comic.resolve_extra_appeared_streamers(self.config, "25788785", str(self.highlight))
+        images = comic.collect_all_images("25788785", str(self.highlight), extra_streamers=extras)
+        desc = comic.get_multi_character_description("25788785", extras)
+
+        self.assertEqual([item["id"] for item in extras], ["mizuki"])
+        self.assertEqual(extras[0]["_comicReferenceReason"], "mentioned")
+        self.assertEqual([Path(item).name for item in images[:2]], ["host.png", "mizuki.png"])
+        self.assertIn("Mizuki, heterochromia", desc)
+        self.assertIn("文本提到", desc)
+
     def test_max_extra_characters_applies(self):
         second = self.root / "rhea.png"
         second.write_bytes(b"x")
@@ -134,7 +164,7 @@ class MultiReferenceComicTests(unittest.TestCase):
         ])
 
         self.assertIn("房间主人描述", desc)
-        self.assertIn("额外实际出声主播", desc)
+        self.assertIn("额外实际出声/文本提到主播", desc)
         self.assertIn("栞栞，浅黄色头发", desc)
 
 

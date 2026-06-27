@@ -470,7 +470,9 @@
         "roomIds": ["30655190"],
         "speakerLabels": ["弥月Mizuki", "弥月", "Mizuki"],
         "aliases": ["兔川弥月", "小弥", "老弥"],
-        "referenceImages": [],
+        "referenceImages": [
+          "public/reference_images/弥月Mizuki参考图.png"
+        ],
         "characterDescription": "兔川弥月Mizuki，亚麻发异瞳少女，有两个浮游炮机械兔耳，喜欢玩米哈游游戏和其他二游。"
       },
       "miting": {

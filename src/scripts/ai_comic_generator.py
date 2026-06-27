@@ -456,6 +456,17 @@ def get_room_reference_image(room_id: str, highlight_path: Optional[str] = None)
                         return file_path
 
     # 第二优先级：如果没有配置主播参考图，尝试使用直播封面
+    if not room_has_config:
+        host_streamer_id = find_host_streamer_id(config, room_id)
+        if host_streamer_id:
+            host_streamer = resolve_streamer_registry(config).get(host_streamer_id)
+            for ref_image in (host_streamer or {}).get("referenceImages", []) or []:
+                resolved = resolve_configured_path(ref_image)
+                if resolved:
+                    print(f"[INFO]  使用 streamerRegistry 主播参考图: {os.path.basename(resolved)}")
+                    return resolved
+                print(f"[WARNING] streamerRegistry 主播参考图不存在: {host_streamer_id} -> {ref_image}")
+
     if not room_has_config and highlight_path:
         live_cover = get_live_cover_image(highlight_path)
         if live_cover:
@@ -515,9 +526,12 @@ def get_multi_reference_config(config: Dict[str, Any], room_id: Optional[str]) -
     merged = {
         "enabled": False,
         "maxExtraCharacters": 2,
+        "maxMentionedContextCharacters": 2,
         "minSpeakerScore": 0.50,
         "minSpeechSeconds": 8,
         "includeUnknownSpeakers": False,
+        "includeMentionedStreamers": True,
+        "includeMentionedStreamerImages": True,
         "useMentionedOnlyAsContext": True,
         "appendCharacterDescriptions": True,
         "imageOrder": ["host", "appeared_streamers", "cover", "screenshots", "default"],
@@ -542,11 +556,17 @@ def resolve_streamer_registry(config: Dict[str, Any]) -> Dict[str, Dict[str, Any
             text = str(value or "").strip()
             if text and text not in labels:
                 labels.append(text)
+        mention_labels = []
+        for value in [display_name] + entry.get("searchTags", []) + entry.get("speakerLabels", []) + entry.get("aliases", []):
+            text = str(value or "").strip()
+            if text and text not in mention_labels:
+                mention_labels.append(text)
         resolved[str(streamer_id)] = {
             **entry,
             "id": str(streamer_id),
             "displayName": display_name,
             "speakerLabels": labels,
+            "mentionLabels": mention_labels,
         }
     return resolved
 
@@ -588,6 +608,81 @@ def load_asr_speakers_for_highlight(highlight_path: str) -> dict:
         print(f"[WARNING] 读取 ASR speaker summary 失败，跳过多参考图: {e}")
         return {}
 
+def read_highlight_text_for_mentions(highlight_path: Optional[str]) -> str:
+    if not highlight_path or not os.path.exists(highlight_path):
+        return ""
+    try:
+        with open(highlight_path, "r", encoding="utf-8-sig") as f:
+            return f.read()
+    except Exception as e:
+        print(f"[WARNING] 读取 highlight 文本失败，跳过提到主播解析: {e}")
+        return ""
+
+def normalize_mention_text(value: str) -> str:
+    return str(value or "").casefold()
+
+def is_safe_mention_label(label: str) -> bool:
+    text = str(label or "").strip()
+    if not text:
+        return False
+    # Avoid matching very short ASCII fragments such as IDs or initials in normal text.
+    if text.isascii() and len(text) < 3:
+        return False
+    return True
+
+def find_mention_label(highlight_text: str, streamer: Dict[str, Any]) -> Optional[str]:
+    normalized_text = normalize_mention_text(highlight_text)
+    for label in streamer.get("mentionLabels", []) or []:
+        label_text = str(label or "").strip()
+        if not is_safe_mention_label(label_text):
+            continue
+        if normalize_mention_text(label_text) in normalized_text:
+            return label_text
+    return None
+
+def resolve_mentioned_streamers(
+    config: Dict[str, Any],
+    room_id: Optional[str],
+    highlight_path: Optional[str],
+    already_streamer_ids: Optional[set[str]] = None,
+) -> list[dict]:
+    multi_config = get_multi_reference_config(config, room_id)
+    include_mentions = multi_config.get("includeMentionedStreamers", multi_config.get("useMentionedOnlyAsContext", True))
+    if not include_mentions:
+        return []
+
+    highlight_text = read_highlight_text_for_mentions(highlight_path)
+    if not highlight_text:
+        return []
+
+    registry = resolve_streamer_registry(config)
+    host_streamer_id = find_host_streamer_id(config, room_id)
+    already = set(already_streamer_ids or set())
+    max_mentioned = max(0, int(multi_config.get("maxMentionedContextCharacters") or multi_config.get("maxExtraCharacters") or 0))
+    mentioned_streamers = []
+
+    for streamer_id, entry in registry.items():
+        if streamer_id == host_streamer_id or streamer_id in already:
+            continue
+        matched_label = find_mention_label(highlight_text, entry)
+        if not matched_label:
+            continue
+        if len(mentioned_streamers) >= max_mentioned:
+            print(f"[INFO]  文本提到主播达到上限 maxMentionedContextCharacters={max_mentioned}，跳过 {streamer_id}")
+            continue
+        mentioned_streamers.append({
+            **entry,
+            "_comicReferenceReason": "mentioned",
+            "_matchedMentionLabel": matched_label,
+        })
+
+    if mentioned_streamers:
+        print("[INFO]  识别到文本提到的额外主播: " + ", ".join(
+            f"{item.get('displayName', item['id'])}({item.get('_matchedMentionLabel')})"
+            for item in mentioned_streamers
+        ))
+    return mentioned_streamers
+
 def resolve_extra_appeared_streamers(config: Dict[str, Any], room_id: Optional[str], highlight_path: Optional[str]) -> list[dict]:
     multi_config = get_multi_reference_config(config, room_id)
     print(f"[INFO]  multiReferenceImages.enabled={bool(multi_config.get('enabled'))} room={room_id}")
@@ -598,14 +693,11 @@ def resolve_extra_appeared_streamers(config: Dict[str, Any], room_id: Optional[s
         return []
 
     sidecar = load_asr_speakers_for_highlight(highlight_path)
-    if not sidecar:
-        return []
-
     registry = resolve_streamer_registry(config)
     host_streamer_id = find_host_streamer_id(config, room_id)
     max_extra = max(0, int(multi_config.get("maxExtraCharacters") or 0))
     extra_streamers = []
-    for streamer_id in sidecar.get("extraAppearedStreamerIds", []):
+    for streamer_id in sidecar.get("extraAppearedStreamerIds", []) if sidecar else []:
         streamer_id = str(streamer_id)
         if streamer_id == host_streamer_id:
             print(f"[INFO]  跳过房间主人额外参考图: {streamer_id}")
@@ -617,10 +709,17 @@ def resolve_extra_appeared_streamers(config: Dict[str, Any], room_id: Optional[s
         if len(extra_streamers) >= max_extra:
             print(f"[INFO]  额外主播达到上限 maxExtraCharacters={max_extra}，跳过 {streamer_id}")
             continue
-        extra_streamers.append(entry)
+        extra_streamers.append({**entry, "_comicReferenceReason": "appeared"})
+
+    already_ids = {streamer.get("id") for streamer in extra_streamers if streamer.get("id")}
+    for streamer in resolve_mentioned_streamers(config, room_id, highlight_path, already_ids):
+        if len(extra_streamers) >= max_extra:
+            print(f"[INFO]  额外主播达到上限 maxExtraCharacters={max_extra}，跳过文本提到主播 {streamer.get('id')}")
+            continue
+        extra_streamers.append(streamer)
 
     if extra_streamers:
-        print("[INFO]  识别到实际出声额外主播: " + ", ".join(item.get("displayName", item["id"]) for item in extra_streamers))
+        print("[INFO]  识别到可用于多参考图的额外主播: " + ", ".join(item.get("displayName", item["id"]) for item in extra_streamers))
     else:
         print("[INFO]  未识别到可用于多参考图的额外出声主播")
     return extra_streamers
@@ -693,17 +792,34 @@ def collect_all_images(room_id: str, highlight_path: Optional[str] = None, extra
                     has_anchor_image = True
                     break
 
-    # 1.5 额外实际出声主播参考图。只取每人第一张存在的图。
+    if not has_anchor_image:
+        host_streamer_id = find_host_streamer_id(config, room_id)
+        if host_streamer_id:
+            host_streamer = resolve_streamer_registry(config).get(host_streamer_id)
+            for ref_image in (host_streamer or {}).get("referenceImages", []) or []:
+                resolved = resolve_configured_path(ref_image)
+                if resolved:
+                    add_image(resolved, f"[INFO]  收集到 streamerRegistry 主播参考图: {os.path.basename(resolved)}")
+                    has_anchor_image = True
+                    break
+                print(f"[WARNING] streamerRegistry 主播参考图不存在: {host_streamer_id} -> {ref_image}")
+
+    # 1.5 额外实际出声/文本提到主播参考图。只取每人第一张存在的图。
     for streamer in (extra_streamers or []):
         if len(images) >= max_total_images:
             print(f"[INFO]  图片数量达到保守上限 {max_total_images}，停止加入额外主播参考图")
             break
         display_name = streamer.get("displayName") or streamer.get("id") or "unknown"
+        reason = streamer.get("_comicReferenceReason") or "appeared"
+        if reason == "mentioned" and not multi_config.get("includeMentionedStreamerImages", True):
+            print(f"[INFO]  已识别文本提到主播但配置为不上传参考图: {display_name}")
+            continue
         added = False
         for ref_image in streamer.get("referenceImages", []) or []:
             resolved = resolve_configured_path(ref_image)
             if resolved:
-                added = add_image(resolved, f"[INFO]  收集到额外主播参考图: {display_name} -> {os.path.basename(resolved)}")
+                reason_label = "文本提到主播" if reason == "mentioned" else "实际出声主播"
+                added = add_image(resolved, f"[INFO]  收集到额外{reason_label}参考图: {display_name} -> {os.path.basename(resolved)}")
                 break
             print(f"[WARNING] 额外主播参考图不存在: {display_name} -> {ref_image}")
         if not added:
@@ -827,12 +943,14 @@ def get_multi_character_description(room_id: Optional[str] = None, extra_streame
         if not extra_streamers:
             return base_desc
 
-        lines = [base_desc, "", "额外实际出声主播："]
+        lines = [base_desc, "", "额外实际出声/文本提到主播："]
         for idx, streamer in enumerate(extra_streamers, 1):
             display_name = streamer.get("displayName") or streamer.get("id") or f"主播{idx}"
             desc = streamer.get("characterDescription") or display_name
             desc = " ".join(str(desc).replace("<", "").replace(">", "").split())
-            lines.append(f"{idx}. {display_name}：{desc}")
+            reason = streamer.get("_comicReferenceReason") or "appeared"
+            reason_label = "文本提到" if reason == "mentioned" else "实际出声"
+            lines.append(f"{idx}. {display_name}（{reason_label}）：{desc}")
         return "\n".join(lines)
     except Exception as e:
         print(f"[WARNING] 构建多角色描述失败，使用房间角色描述: {e}")
@@ -873,10 +991,10 @@ def build_multi_character_constraints(extra_streamers: Optional[list[dict]] = No
     names = "、".join(streamer.get("displayName") or streamer.get("id") or "额外主播" for streamer in extra_streamers)
     return f"""
 多角色参考图约束：
-- 参考图一对应房间主人；后续额外参考图分别对应识别出的连麦/实际出声主播：{names}。
+- 参考图一对应房间主人；后续额外参考图分别对应识别出的连麦/实际出声/文本提到主播：{names}。
 - 不要把不同角色的发色、服装、配饰混合。
-- 只有漫画脚本明确出现多人互动时才画多位主播。
-- 仅被提到但没有实际出声的人，不要默认画成现场角色。"""
+- 只有漫画脚本明确出现多人互动或明确需要画到被提到的人时才画多位主播。
+- 仅被提到但没有实际出声的人，可以使用其参考图保持形象准确，但不要默认画成现场连麦角色。"""
 
 def build_comic_prompt(highlight_content: str, reference_image_path: Optional[str] = None, room_id: Optional[str] = None, existing_comic: Optional[str] = None, model: Optional[str] = None, extra_streamers: Optional[list[dict]] = None) -> Tuple[str, str, bool]:
     """构建漫画生成提示词并返回 (prompt, comic_content, is_generated)。
