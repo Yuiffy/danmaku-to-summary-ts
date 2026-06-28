@@ -158,6 +158,77 @@ class MultiReferenceComicTests(unittest.TestCase):
         self.assertIn("Mizuki, heterochromia", desc)
         self.assertIn("文本提到", desc)
 
+    def test_alias_only_label_does_not_trigger_mentioned_streamer(self):
+        self.config["ai"]["streamerRegistry"]["alias_only"] = {
+            "displayName": "AliasOnly",
+            "aliases": ["小岁"],
+            "referenceImages": [str(self.mentioned)],
+        }
+        self.highlight.write_text("The transcript contains 小岁 from noisy ASR.", encoding="utf-8")
+
+        extras = comic.resolve_extra_appeared_streamers(self.config, "25788785", str(self.highlight))
+
+        self.assertEqual(extras, [])
+
+    def test_explicit_mention_label_triggers_mentioned_streamer(self):
+        self.config["ai"]["streamerRegistry"]["izayoi"] = {
+            "displayName": "十六萤Izayoi",
+            "mentionLabels": ["十六"],
+            "referenceImages": [str(self.extra)],
+        }
+        self.highlight.write_text("Today Liko talked about 十六 during the stream.", encoding="utf-8")
+
+        extras = comic.resolve_extra_appeared_streamers(self.config, "25788785", str(self.highlight))
+
+        self.assertEqual([item["id"] for item in extras], ["izayoi"])
+        self.assertEqual(extras[0]["_matchedMentionLabel"], "十六")
+
+    def test_allowed_extra_streamers_skip_asr_mislabels_and_keep_mentions(self):
+        kloa_highlight = self.root / "1986461465_20260101_AI_HIGHLIGHT.txt"
+        kloa_highlight.write_text("克罗雅提到了莉蔻和十六。", encoding="utf-8")
+        sidecar = self.root / "1986461465_20260101.asr_speakers.json"
+        sidecar.write_text(json.dumps({
+            "hostRoomId": "1986461465",
+            "speakers": [
+                {"label": "栞栞", "totalSpeechSeconds": 300, "avgScore": 0.8, "maxScore": 0.9},
+                {"label": "瑞娅", "totalSpeechSeconds": 300, "avgScore": 0.8, "maxScore": 0.9},
+            ],
+            "appearedStreamerIds": ["kloa", "shiori", "rhea"],
+            "extraAppearedStreamerIds": ["shiori", "rhea"],
+        }, ensure_ascii=False), encoding="utf-8")
+        self.config["ai"]["streamerRegistry"]["kloa"] = {
+            "displayName": "克罗雅Kloa",
+            "roomIds": ["1986461465"],
+            "mentionLabels": ["克罗雅"],
+        }
+        self.config["ai"]["streamerRegistry"]["liko"] = {
+            "displayName": "莉蔻Liko",
+            "mentionLabels": ["莉蔻"],
+            "referenceImages": [str(self.mentioned)],
+        }
+        self.config["ai"]["streamerRegistry"]["izayoi"] = {
+            "displayName": "十六萤Izayoi",
+            "mentionLabels": ["十六"],
+            "referenceImages": [str(self.extra)],
+        }
+        self.config["ai"]["streamerRegistry"]["rhea"] = {
+            "displayName": "瑞娅",
+            "speakerLabels": ["瑞娅"],
+            "referenceImages": [str(self.extra)],
+        }
+        self.config["roomSettings"]["1986461465"] = {
+            "multiReferenceImages": {
+                "enabled": True,
+                "maxExtraCharacters": 3,
+                "maxMentionedContextCharacters": 3,
+                "allowedExtraStreamerIds": ["hazel", "liko", "kloa", "izayoi"],
+            }
+        }
+
+        extras = comic.resolve_extra_appeared_streamers(self.config, "1986461465", str(kloa_highlight))
+
+        self.assertEqual([item["id"] for item in extras], ["liko", "izayoi"])
+
     def test_mentioned_streamer_reference_is_filtered_when_absent_from_comic_script(self):
         mentioned = self.config["ai"]["streamerRegistry"]["mizuki"] | {
             "id": "mizuki",
@@ -193,6 +264,29 @@ class MultiReferenceComicTests(unittest.TestCase):
 
         self.assertEqual(filtered, [])
 
+    def test_room_can_disable_extra_image_script_filter(self):
+        self.config["roomSettings"]["1986461465"] = {
+            "multiReferenceImages": {
+                "enabled": True,
+                "filterExtraImagesByComicScript": False,
+                "filterMentionedImagesByComicScript": False,
+            }
+        }
+        mentioned = self.config["ai"]["streamerRegistry"]["mizuki"] | {
+            "id": "mizuki",
+            "_comicReferenceReason": "mentioned",
+            "_matchedMentionLabel": "Mizuki",
+        }
+
+        filtered = comic.filter_extra_streamers_for_image_prompt(
+            [mentioned],
+            "Panel 1: The host talks alone.",
+            self.config,
+            "1986461465",
+        )
+
+        self.assertEqual([item["id"] for item in filtered], ["mizuki"])
+
     def test_mentioned_streamer_reference_is_kept_when_present_in_comic_script(self):
         mentioned = self.config["ai"]["streamerRegistry"]["mizuki"] | {
             "id": "mizuki",
@@ -209,18 +303,6 @@ class MultiReferenceComicTests(unittest.TestCase):
 
         self.assertEqual([item["id"] for item in filtered], ["mizuki"])
         self.assertEqual(filtered[0]["_matchedComicLabel"], "Mizuki")
-
-    def test_existing_script_detects_unallowed_extra_streamer(self):
-        allowed = self.config["ai"]["streamerRegistry"]["shiori"] | {"id": "shiori"}
-
-        blocked = comic.find_unallowed_extra_streamers_in_comic(
-            self.config,
-            "25788785",
-            "Panel 1: Mizuki appears beside the host.",
-            [allowed],
-        )
-
-        self.assertEqual([item["id"] for item in blocked], ["mizuki"])
 
     def test_max_extra_characters_applies(self):
         second = self.root / "rhea.png"

@@ -253,6 +253,30 @@ describe('asr_backends', () => {
     require('fs').unlinkSync(tmp);
   });
 
+  test('routing corrections normalize 277 nickname ASR variants', () => {
+    const resolved = asr.resolveAsrHotwords({
+      asr: {
+        default_backend: 'paraformer',
+        routing: [
+          {
+            match: { room_id: '1713548468' },
+            backend: 'paraformer',
+            corrections: {
+              safe: {
+                '石榴': '十六',
+                '十六姨': '十六',
+                '克罗亚': '克罗雅'
+              }
+            }
+          }
+        ]
+      }
+    }, { room_id: '1713548468' });
+
+    expect(asr.applyCorrectionsToText('石榴和克罗亚都在，十六姨也来了', resolved.corrections))
+      .toBe('十六和克罗雅都在，十六也来了');
+  });
+
   test('logs correction details with original matched text', () => {
     const result = {
       backend: 'test',

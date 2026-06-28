@@ -25,11 +25,19 @@ MAX_INTERVAL = 1800
 QUERY_TIMEOUT_INTERVAL = 60
 SCRIPT_VERSION = "2026-06-25-seedance-debug-1"
 STALE_QUERYING_SECONDS = 6 * 60 * 60
+MAX_QUERYING_WITHOUT_QUEUE_INFO_CHECKS = 5
 
 
 @dataclass
 class RunResult:
     next_interval: int = DEFAULT_INTERVAL
+
+
+class SubmitRejected(RuntimeError):
+    def __init__(self, submit_id: Optional[str], reason: str):
+        super().__init__(reason)
+        self.submit_id = submit_id
+        self.reason = reason
 
 
 def load_queue() -> Dict[str, Any]:
@@ -217,6 +225,9 @@ def submit(task: Dict[str, Any]) -> str:
     data = tail_json(out)
     print("submit parsed:", json.dumps(data, ensure_ascii=False))
     sid = data.get("submit_id")
+    if data.get("gen_status") == "fail":
+        reason = str(data.get("fail_reason") or "submit rejected")
+        raise SubmitRejected(str(sid) if sid else None, reason)
     if not sid:
         raise RuntimeError(f"submit_id missing:\n{out}")
     return str(sid)
@@ -269,8 +280,16 @@ def submit_next_pending(data: Dict[str, Any], skip_task_id: Optional[str] = None
     if dry_run:
         print(f"would submit {next_task.get('id')} remaining={remaining(next_task)}")
         return None, next_task
-    sid = submit(next_task)
-    ids = next_task.setdefault("submit_ids", [])
+    try:
+        sid = submit(next_task)
+    except SubmitRejected as e:
+        if e.submit_id:
+            ids = next_task.setdefault("submit_ids", [])
+            if isinstance(ids, list):
+                ids.append(e.submit_id)
+        finish_attempt(data, next_task, f"submit rejected ({e.reason})")
+        print(f"submit rejected {next_task.get('id')}: {e.reason}")
+        return None, next_task
     remember_submission(next_task, sid)
     save_queue(data)
     print(f"submitted {sid}")
@@ -296,8 +315,17 @@ def query_submitted_task(data: Dict[str, Any], task: Dict[str, Any], dry_run: bo
                 task["querying_without_queue_info_checks"] = checks
                 submitted_at = int_or_none(task.get("submitted_at"))
                 age = int(time.time()) - submitted_at if submitted_at is not None else None
-                if submitted_at is None or age >= STALE_QUERYING_SECONDS:
-                    reason = "legacy submitted task" if submitted_at is None else f"submitted {age}s ago"
+                if (
+                    submitted_at is None
+                    or age >= STALE_QUERYING_SECONDS
+                    or checks >= MAX_QUERYING_WITHOUT_QUEUE_INFO_CHECKS
+                ):
+                    if submitted_at is None:
+                        reason = "legacy submitted task"
+                    elif checks >= MAX_QUERYING_WITHOUT_QUEUE_INFO_CHECKS:
+                        reason = f"no queue_info after {checks} checks"
+                    else:
+                        reason = f"submitted {age}s ago"
                     finish_attempt(data, task, f"stale querying without queue_info ({reason})")
                     print(f"stale querying without queue_info {sid}; released task for retry")
                     return RunResult(MIN_INTERVAL)
@@ -343,7 +371,8 @@ def run_once(dry_run: bool = False) -> RunResult:
     if submitted_tasks:
         intervals = [query_submitted_task(data, task, dry_run).next_interval for task in submitted_tasks]
         interval = min(intervals) if intervals else DEFAULT_INTERVAL
-        return RunResult(interval)
+        if any(t.get("status") == "submitted" for t in tasks):
+            return RunResult(interval)
 
     # No task currently submitted — submit the next pending one.
     pending_task = next_pending_task(tasks)
@@ -355,7 +384,16 @@ def run_once(dry_run: bool = False) -> RunResult:
     if dry_run:
         print(f"would submit {pending_task.get('id')} remaining={remaining(pending_task)}")
         return RunResult(DEFAULT_INTERVAL)
-    sid = submit(pending_task)
+    try:
+        sid = submit(pending_task)
+    except SubmitRejected as e:
+        if e.submit_id:
+            ids = pending_task.setdefault("submit_ids", [])
+            if isinstance(ids, list):
+                ids.append(e.submit_id)
+        finish_attempt(data, pending_task, f"submit rejected ({e.reason})")
+        print(f"submit rejected {pending_task.get('id')}: {e.reason}")
+        return RunResult(MIN_INTERVAL)
     remember_submission(pending_task, sid)
     save_queue(data)
     print(f"submitted {sid}")

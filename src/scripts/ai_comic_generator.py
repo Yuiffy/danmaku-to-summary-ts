@@ -546,6 +546,12 @@ def get_multi_reference_config(config: Dict[str, Any], room_id: Optional[str]) -
         merged.update(room_config)
     return merged
 
+def get_allowed_extra_streamer_ids(multi_config: Dict[str, Any]) -> set[str]:
+    allowed = multi_config.get("allowedExtraStreamerIds") or multi_config.get("allowedExtraStreamers") or []
+    if not isinstance(allowed, list):
+        return set()
+    return {str(item).strip() for item in allowed if str(item or "").strip()}
+
 def resolve_streamer_registry(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     registry = config.get("ai", {}).get("streamerRegistry", {})
     if not isinstance(registry, dict):
@@ -561,7 +567,7 @@ def resolve_streamer_registry(config: Dict[str, Any]) -> Dict[str, Dict[str, Any
             if text and text not in labels:
                 labels.append(text)
         mention_labels = []
-        for value in [display_name] + entry.get("searchTags", []) + entry.get("speakerLabels", []) + entry.get("aliases", []):
+        for value in [display_name] + entry.get("searchTags", []) + entry.get("mentionLabels", []):
             text = str(value or "").strip()
             if text and text not in mention_labels:
                 mention_labels.append(text)
@@ -753,28 +759,6 @@ def sidecar_speaker_passes_reference_thresholds(
         return False
     return True
 
-def find_unallowed_extra_streamers_in_comic(
-    config: Dict[str, Any],
-    room_id: Optional[str],
-    comic_text: str,
-    allowed_extra_streamers: Optional[list[dict]] = None,
-) -> list[dict]:
-    if not comic_text:
-        return []
-    registry = resolve_streamer_registry(config)
-    host_streamer_id = find_host_streamer_id(config, room_id)
-    allowed_ids = {host_streamer_id} if host_streamer_id else set()
-    allowed_ids.update(streamer.get("id") for streamer in allowed_extra_streamers or [] if streamer.get("id"))
-
-    blocked = []
-    for streamer_id, entry in registry.items():
-        if streamer_id in allowed_ids:
-            continue
-        matched_label = find_streamer_label_in_text(comic_text, entry)
-        if matched_label:
-            blocked.append({**entry, "_matchedComicLabel": matched_label})
-    return blocked
-
 def resolve_mentioned_streamers(
     config: Dict[str, Any],
     room_id: Optional[str],
@@ -793,11 +777,14 @@ def resolve_mentioned_streamers(
     registry = resolve_streamer_registry(config)
     host_streamer_id = find_host_streamer_id(config, room_id)
     already = set(already_streamer_ids or set())
+    allowed_extra_ids = get_allowed_extra_streamer_ids(multi_config)
     max_mentioned = max(0, int(multi_config.get("maxMentionedContextCharacters") or multi_config.get("maxExtraCharacters") or 0))
     mentioned_streamers = []
 
     for streamer_id, entry in registry.items():
         if streamer_id == host_streamer_id or streamer_id in already:
+            continue
+        if allowed_extra_ids and streamer_id not in allowed_extra_ids:
             continue
         matched_label = find_mention_label(highlight_text, entry)
         if not matched_label:
@@ -831,11 +818,15 @@ def resolve_extra_appeared_streamers(config: Dict[str, Any], room_id: Optional[s
     registry = resolve_streamer_registry(config)
     host_streamer_id = find_host_streamer_id(config, room_id)
     max_extra = max(0, int(multi_config.get("maxExtraCharacters") or 0))
+    allowed_extra_ids = get_allowed_extra_streamer_ids(multi_config)
     extra_streamers = []
     for streamer_id in sidecar.get("extraAppearedStreamerIds", []) if sidecar else []:
         streamer_id = str(streamer_id)
         if streamer_id == host_streamer_id:
             print(f"[INFO]  跳过房间主人额外参考图: {streamer_id}")
+            continue
+        if allowed_extra_ids and streamer_id not in allowed_extra_ids:
+            print(f"[INFO]  跳过未在 allowedExtraStreamerIds 中的额外参考图: {streamer_id}")
             continue
         entry = registry.get(streamer_id)
         if not entry:
@@ -1410,7 +1401,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                             continue
                         print("[ERROR] Gemini重试次数已用完，尝试备用方案")
                         break
-                    
+
                     print("[OK] AI漫画内容生成完成")
                     print(f"生成内容长度: {len(comic_content)} 字符")
                     set_comic_script_meta(provider="gemini", model=model_name, status="success", fallback=False)
@@ -1488,8 +1479,12 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                 if not is_valid_comic_script(comic_content):
                     print(f"[ERROR] tuZi API返回的漫画脚本无效或疑似截断，长度: {len(comic_content)} 字符")
                     print(f"[ERROR] 无效内容预览: {comic_content[:200]}...")
+                    if tuzi_attempt < max_tuzi_retries - 1:
+                        print("[RETRY] 2秒后重试...")
+                        time.sleep(2)
+                        continue
                     return return_comic_script_failure(highlight_content, room_id, "tuZi 返回无效脚本")
-                
+
                 print("[OK] tuZi API漫画文本生成成功")
                 print(f"生成内容长度: {len(comic_content)} 字符")
                 print(f"内容预览: {comic_content[:200]}...")
@@ -2215,22 +2210,7 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
                 with open(text_output_path, 'r', encoding='utf-8') as tf:
                     comic_text = tf.read()
                 if is_valid_comic_script(comic_text):
-                    blocked_script_streamers = find_unallowed_extra_streamers_in_comic(
-                        config,
-                        room_id,
-                        comic_text,
-                        extra_streamers,
-                    )
-                    if blocked_script_streamers:
-                        names = "、".join(
-                            f"{item.get('displayName') or item.get('id')}({item.get('_matchedComicLabel')})"
-                            for item in blocked_script_streamers[:5]
-                        )
-                        print(f"[WARNING]  已存在漫画脚本包含当前未允许的额外角色，重新生成: {names}")
-                        comic_text = None
-                        existing_comic_invalidated = True
-                    else:
-                        print(f"[INFO]  已存在漫画脚本，复用: {os.path.basename(text_output_path)}")
+                    print(f"[INFO]  已存在漫画脚本，复用: {os.path.basename(text_output_path)}")
                 else:
                     print(f"[WARNING]  已存在漫画脚本无效或疑似截断，重新生成: {os.path.basename(text_output_path)}")
                     comic_text = None

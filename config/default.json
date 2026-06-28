@@ -112,7 +112,80 @@
         "灰精版": "灰泽满"
       }
     },
-    "routing": [],
+    "routing": [
+      {
+        "match": {
+          "room_id": "1713546334"
+        },
+        "backend": "paraformer",
+        "corrections": {
+          "safe": {
+            "克罗亚": "克罗雅",
+            "克罗娅": "克罗雅",
+            "克洛雅": "克罗雅",
+            "克莱雅": "克罗雅",
+            "柯莱雅": "克罗雅",
+            "石榴": "十六",
+            "十六营": "十六",
+            "十六姨": "十六"
+          }
+        }
+      },
+      {
+        "match": {
+          "room_id": "1713548468"
+        },
+        "backend": "paraformer",
+        "corrections": {
+          "safe": {
+            "克罗亚": "克罗雅",
+            "克罗娅": "克罗雅",
+            "克洛雅": "克罗雅",
+            "克莱雅": "克罗雅",
+            "柯莱雅": "克罗雅",
+            "石榴": "十六",
+            "十六营": "十六",
+            "十六姨": "十六"
+          }
+        }
+      },
+      {
+        "match": {
+          "room_id": "1986461465"
+        },
+        "backend": "paraformer",
+        "corrections": {
+          "safe": {
+            "克罗亚": "克罗雅",
+            "克罗娅": "克罗雅",
+            "克洛雅": "克罗雅",
+            "克莱雅": "克罗雅",
+            "柯莱雅": "克罗雅",
+            "石榴": "十六",
+            "十六营": "十六",
+            "十六姨": "十六"
+          }
+        }
+      },
+      {
+        "match": {
+          "room_id": "1741667419"
+        },
+        "backend": "paraformer",
+        "corrections": {
+          "safe": {
+            "克罗亚": "克罗雅",
+            "克罗娅": "克罗雅",
+            "克洛雅": "克罗雅",
+            "克莱雅": "克罗雅",
+            "柯莱雅": "克罗雅",
+            "石榴": "十六",
+            "十六营": "十六",
+            "十六姨": "十六"
+          }
+        }
+      }
+    ],
     "whisper": {
       "model": "deepdml/faster-whisper-large-v3-turbo-ct2",
       "language": "zh"
@@ -434,6 +507,8 @@
       "sui": {
         "displayName": "岁己SUI",
         "roomIds": ["25788785"],
+        "searchTags": ["岁己", "岁己SUI"],
+        "mentionLabels": ["岁己", "岁己SUI"],
         "speakerLabels": ["岁己SUI", "sui", "SUI"],
                 "aliases": ["岁己", "SUI", "岁几", "碎己", "碎几", "碎机", "碎即", "穗即", "岁机", "岁已", "小岁"],
         "referenceImages": [
@@ -454,6 +529,7 @@
       "rhea": {
         "displayName": "瑞娅",
         "roomIds": ["23260993"],
+        "mentionLabels": ["瑞娅", "瑞亚", "蕊娅", "Rhea"],
         "speakerLabels": ["瑞娅", "Rhea"],
         "aliases": ["瑞亚", "蕊娅"],
         "referenceImages": [
@@ -472,6 +548,8 @@
       "mizuki": {
         "displayName": "弥月Mizuki",
         "roomIds": ["30655190"],
+        "searchTags": ["弥月Mizuki", "弥月"],
+        "mentionLabels": ["弥月Mizuki", "弥月", "Mizuki"],
         "speakerLabels": ["弥月Mizuki", "弥月", "Mizuki"],
         "aliases": ["兔川弥月", "小弥", "老弥"],
         "referenceImages": [
@@ -502,6 +580,8 @@
       "hazel": {
         "displayName": "灰泽满Hazel",
         "roomIds": ["1713546334"],
+        "searchTags": ["灰泽满Hazel", "灰泽满"],
+        "mentionLabels": ["灰泽满Hazel", "灰泽满", "满满", "满神", "Hazel"],
         "speakerLabels": ["灰泽满Hazel", "灰泽满", "Hazel"],
         "aliases": ["满满", "满神", "会在卖", "会在买"],
         "referenceImages": [
@@ -512,6 +592,8 @@
       "liko": {
         "displayName": "莉蔻Liko",
         "roomIds": ["1713548468"],
+        "searchTags": ["莉蔻Liko", "莉蔻"],
+        "mentionLabels": ["莉蔻Liko", "莉蔻", "莉可", "Liko"],
         "speakerLabels": ["莉蔻Liko", "莉蔻", "Liko"],
         "aliases": ["莉可", "莉蔻酱"],
         "referenceImages": [
@@ -522,6 +604,8 @@
       "kloa": {
         "displayName": "克罗雅Kloa",
         "roomIds": ["1986461465"],
+        "searchTags": ["克罗雅Kloa", "克罗雅"],
+        "mentionLabels": ["克罗雅Kloa", "克罗雅", "Kloa"],
         "speakerLabels": ["克罗雅Kloa", "克罗雅", "Kloa"],
         "aliases": ["克莱雅", "柯莱雅", "克洛雅", "克罗娅"],
         "referenceImages": [
@@ -532,6 +616,8 @@
       "izayoi": {
         "displayName": "十六萤Izayoi",
         "roomIds": ["1741667419"],
+        "searchTags": ["十六萤Izayoi", "十六萤"],
+        "mentionLabels": ["十六萤Izayoi", "十六萤", "十六", "Izayoi"],
         "speakerLabels": ["十六萤Izayoi", "十六萤", "Izayoi"],
         "aliases": ["萤萤", "16萤"],
         "referenceImages": [
