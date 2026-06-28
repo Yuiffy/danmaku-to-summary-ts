@@ -18,10 +18,11 @@ B站批量切片投稿脚本（防重复版）
   --state      状态文件路径（默认：同目录下 upload_state.json）
 
 核心防重复逻辑:
-  1. 上传前：通过搜索 API 查同名稿件是否已存在
+  1. 上传前：通过搜索 API + member archives 实时列表双重查同名稿件
   2. 上传后：等待确认 BV 号
-  3. 406 错误：不盲目重试，先查搜索确认是否已上传成功
-  4. 状态持久化：记录每次上传结果到 state 文件
+  3. 406 错误：不盲目重试，查 member archives 实时列表确认是否已上传成功
+  4. 状态持久化：每传完一个立即写 state，中途 kill 也能保留记录
+  5. member archives 是实时的（不走搜索索引），作为查重主力的可靠来源
 """
 
 import sys
@@ -65,6 +66,42 @@ def build_credential():
         dedeuserid=cookies.get('DedeUserID', str(ACCOUNT_MID)),
         ac_time_value=cookies.get('ac_time_value', ''),
     )
+
+
+def fetch_member_archives(cookie_str, mid=ACCOUNT_MID, pages=3):
+    """通过 member API 实时查询已上传稿件列表（零延迟，不走搜索索引）。
+    返回 {title: bvid} 字典。"""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Cookie': cookie_str,
+        'Referer': 'https://member.bilibili.com/'
+    }
+    existing = {}
+    for pn in range(1, pages + 1):
+        try:
+            r = requests.get(
+                'https://member.bilibili.com/x/web/archives',
+                params={'mid': mid, 'pn': pn, 'ps': 30, 'typeid': 0, 'status': -1},
+                headers=headers,
+                timeout=15,
+            )
+            data = r.json()
+            if data.get('code') != 0:
+                print(f"  [WARN] member archives API 返回 code={data.get('code')}: {data.get('message', '')}")
+                break
+            audits = (data.get('data') or {}).get('arc_audits') or []
+            if not audits:
+                break
+            for a in audits:
+                arc = a.get('Archive', {})
+                title = arc.get('title', '')
+                bvid = arc.get('bvid', '')
+                if title and bvid:
+                    existing[title] = bvid
+        except Exception as e:
+            print(f"  [WARN] member archives 第{pn}页失败: {e}")
+            break
+    return existing
 
 
 def search_existing_titles(cookie_str, keyword="小岁"):
@@ -307,11 +344,19 @@ async def main():
         secrets = json.load(f)
     cookie_str = secrets.get('bilibili', {}).get('cookie', '')
 
-    # === 第1步：查重 ===
-    print(f"\n=== 第1步：搜索查重 ===")
+    # === 第1步：查重（member archives 实时列表 + 搜索 API 双重查）===
+    print(f"\n=== 第1步：查重 ===")
+    # member archives 是实时的，不走搜索索引，作为主力查重来源
+    existing = fetch_member_archives(cookie_str)
+    print(f"[INFO] member archives 查到 {len(existing)} 个稿件")
+    # 搜索 API 作为补充（能查到更早的历史稿件）
     search_keyword = args.prefix.strip('【】')
-    existing = search_existing_titles(cookie_str, search_keyword)
-    print(f"[INFO] 搜索到本账号 {len(existing)} 个已上传视频")
+    search_existing = search_existing_titles(cookie_str, search_keyword)
+    print(f"[INFO] 搜索 API 查到本账号 {len(search_existing)} 个视频")
+    # 合并：member archives 优先（实时）
+    search_existing.update(existing)
+    existing = search_existing
+    print(f"[INFO] 合并后共 {len(existing)} 个已知稿件")
 
     # 过滤要上传的切片
     to_upload = []
@@ -384,11 +429,11 @@ async def main():
 
         # === 406 特殊处理：不盲目重试，查搜索确认 ===
         if result['status'] == 'got_406':
-            print(f"  [406处理] 等待 15 秒后查搜索确认...")
+            print(f"  [406处理] 等待 15 秒后查 member archives 确认...")
             await asyncio.sleep(15)
-            # 重新搜索
-            re_search = search_existing_titles(cookie_str, full_title[:10])
-            if full_title in re_search:
+            # 用 member archives 实时查（搜索索引有延迟不可靠）
+            archives_now = fetch_member_archives(cookie_str)
+            if full_title in archives_now:
                 bvid = re_search[full_title]
                 print(f"  ✅ 406 实际已上传成功: {bvid}")
                 result['status'] = 'ok_after_406'
