@@ -199,6 +199,21 @@ def clear_submission_tracking(task: Dict[str, Any]) -> None:
     task.pop("querying_without_queue_info_checks", None)
 
 
+def is_moderation_rejection(reason: str) -> bool:
+    text = reason.lower()
+    return "pre-tns check did not pass" in text or "tns check did not pass" in text
+
+
+def pause_task(data: Dict[str, Any], task: Dict[str, Any], reason: str) -> None:
+    task["remaining"] = remaining(task)
+    task["status"] = "paused"
+    task["paused_at"] = int(time.time())
+    task["paused_reason"] = reason
+    task["note"] = f"{task.get('id')} paused ({reason}); completed={task.get('completed')} remaining={task['remaining']}"
+    clear_submission_tracking(task)
+    save_queue(data)
+
+
 def finish_attempt(data: Dict[str, Any], task: Dict[str, Any], outcome: str) -> None:
     task["completed"] = int(task.get("completed") or 0) + 1
     task["remaining"] = remaining(task)
@@ -287,7 +302,10 @@ def submit_next_pending(data: Dict[str, Any], skip_task_id: Optional[str] = None
             ids = next_task.setdefault("submit_ids", [])
             if isinstance(ids, list):
                 ids.append(e.submit_id)
-        finish_attempt(data, next_task, f"submit rejected ({e.reason})")
+        if is_moderation_rejection(e.reason):
+            pause_task(data, next_task, f"submit rejected: {e.reason}")
+        else:
+            finish_attempt(data, next_task, f"submit rejected ({e.reason})")
         print(f"submit rejected {next_task.get('id')}: {e.reason}")
         return None, next_task
     remember_submission(next_task, sid)
@@ -342,10 +360,14 @@ def query_submitted_task(data: Dict[str, Any], task: Dict[str, Any], dry_run: bo
             return RunResult(MIN_INTERVAL if task["remaining"] > 0 else DEFAULT_INTERVAL)
 
         if gs == "fail":
-            finish_attempt(data, task, "failed attempt")
+            reason = str(result.get("fail_reason") or "failed attempt")
+            if is_moderation_rejection(reason):
+                pause_task(data, task, f"generation rejected: {reason}")
+            else:
+                finish_attempt(data, task, "failed attempt")
             notify("fail", task, sid, "failed")
             print(f"fail {sid}")
-            return RunResult(MIN_INTERVAL if task["remaining"] > 0 else DEFAULT_INTERVAL)
+            return RunResult(MIN_INTERVAL if task.get("status") != "paused" and task["remaining"] > 0 else DEFAULT_INTERVAL)
 
         raise RuntimeError(f"unknown gen_status: {gs}")
     except Exception as e:
@@ -391,8 +413,15 @@ def run_once(dry_run: bool = False) -> RunResult:
             ids = pending_task.setdefault("submit_ids", [])
             if isinstance(ids, list):
                 ids.append(e.submit_id)
-        finish_attempt(data, pending_task, f"submit rejected ({e.reason})")
+        if is_moderation_rejection(e.reason):
+            pause_task(data, pending_task, f"submit rejected: {e.reason}")
+        else:
+            finish_attempt(data, pending_task, f"submit rejected ({e.reason})")
         print(f"submit rejected {pending_task.get('id')}: {e.reason}")
+        if is_moderation_rejection(e.reason):
+            sid2, fallback = submit_next_pending(data, skip_task_id=pending_task.get("id"), dry_run=dry_run)
+            if sid2 or fallback:
+                return RunResult(MIN_INTERVAL)
         return RunResult(MIN_INTERVAL)
     remember_submission(pending_task, sid)
     save_queue(data)
