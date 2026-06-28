@@ -350,7 +350,8 @@ describe('asr_backends', () => {
         小咖: '小果',
         叶子鸡: '椰子鸡',
         小凯: '小琴',
-        灰精版: '灰泽满'
+        灰精版: '灰泽满',
+        芈月: '弥月'
       }
     };
     const resolved = asr.resolveAsrHotwords({ asr: { corrections: configuredCorrections } });
@@ -360,10 +361,11 @@ describe('asr_backends', () => {
       { from: '灰色本', to: '灰泽满' },
       { from: '灰精版', to: '灰泽满' },
       { from: '小咖', to: '小果' },
-      { from: '叶子鸡', to: '椰子鸡' }
+      { from: '叶子鸡', to: '椰子鸡' },
+      { from: '芈月', to: '弥月' }
     ]));
-    expect(asr.applyCorrectionsToText('婚姿板和灰色本在瑞评叶子鸡，小咖也来了', resolved.corrections))
-      .toBe('灰泽满和灰泽满在锐评椰子鸡，小果也来了');
+    expect(asr.applyCorrectionsToText('婚姿板和灰色本在瑞评叶子鸡，小咖也来了，芈月启动', resolved.corrections))
+      .toBe('灰泽满和灰泽满在锐评椰子鸡，小果也来了，弥月启动');
   });
 
   test('contextual aliases do not replace unrelated text and random stays random', () => {

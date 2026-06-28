@@ -176,16 +176,32 @@ class MultiReferenceComicTests(unittest.TestCase):
             "mentionLabels": ["十六"],
             "referenceImages": [str(self.extra)],
         }
-        self.highlight.write_text("Today Liko talked about 十六 during the stream.", encoding="utf-8")
+        self.highlight.write_text("Today Liko talked about 十六, and 十六 was part of the story.", encoding="utf-8")
 
         extras = comic.resolve_extra_appeared_streamers(self.config, "25788785", str(self.highlight))
 
         self.assertEqual([item["id"] for item in extras], ["izayoi"])
         self.assertEqual(extras[0]["_matchedMentionLabel"], "十六")
 
+    def test_short_danmaku_noise_does_not_trigger_mentioned_streamer(self):
+        self.config["ai"]["streamerRegistry"]["sui_other_room"] = {
+            "displayName": "岁己SUI",
+            "mentionLabels": ["岁己"],
+            "referenceImages": [str(self.mentioned)],
+        }
+        self.highlight.write_text(
+            "[19m] Host talks about waiting. (💬 岁己吧(x5) / 岁己(x3))\n"
+            "[107m] Host says one noisy ASR line with 岁己 once.",
+            encoding="utf-8",
+        )
+
+        extras = comic.resolve_extra_appeared_streamers(self.config, "25788785", str(self.highlight))
+
+        self.assertEqual(extras, [])
+
     def test_allowed_extra_streamers_skip_asr_mislabels_and_keep_mentions(self):
         kloa_highlight = self.root / "1986461465_20260101_AI_HIGHLIGHT.txt"
-        kloa_highlight.write_text("克罗雅提到了莉蔻和十六。", encoding="utf-8")
+        kloa_highlight.write_text("克罗雅提到了莉蔻莉蔻和十六，十六也在故事里。", encoding="utf-8")
         sidecar = self.root / "1986461465_20260101.asr_speakers.json"
         sidecar.write_text(json.dumps({
             "hostRoomId": "1986461465",

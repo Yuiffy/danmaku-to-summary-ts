@@ -641,13 +641,49 @@ def is_safe_mention_label(label: str) -> bool:
     return True
 
 def find_mention_label(highlight_text: str, streamer: Dict[str, Any]) -> Optional[str]:
-    normalized_text = normalize_mention_text(highlight_text)
+    match = find_mention_match(highlight_text, streamer, {})
+    return match[0] if match else None
+
+def strip_highlight_chat_comments(highlight_text: str) -> str:
+    return re.sub(r"\s*\(💬[^\n]*\)", "", highlight_text or "")
+
+def count_normalized_occurrences(text: str, label: str) -> int:
+    normalized_text = normalize_mention_text(text)
+    normalized_label = normalize_mention_text(label)
+    if not normalized_label:
+        return 0
+    return normalized_text.count(normalized_label)
+
+def is_short_cjk_mention_label(label: str) -> bool:
+    text = str(label or "").strip()
+    if len(text) > 2:
+        return False
+    return any("\u4e00" <= char <= "\u9fff" for char in text)
+
+def find_mention_match(
+    highlight_text: str,
+    streamer: Dict[str, Any],
+    multi_config: Optional[Dict[str, Any]] = None,
+) -> Optional[tuple[str, int, int]]:
+    multi_config = multi_config or {}
+    spoken_text = strip_highlight_chat_comments(highlight_text)
+    min_short_spoken = int(multi_config.get("minShortMentionSpokenOccurrences") or 2)
+    min_short_total = int(multi_config.get("minShortMentionTotalOccurrences") or 8)
+    min_danmaku_only = int(multi_config.get("minDanmakuOnlyMentionOccurrences") or 3)
     for label in streamer.get("mentionLabels", []) or []:
         label_text = str(label or "").strip()
         if not is_safe_mention_label(label_text):
             continue
-        if normalize_mention_text(label_text) in normalized_text:
-            return label_text
+        total_count = count_normalized_occurrences(highlight_text, label_text)
+        if total_count <= 0:
+            continue
+        spoken_count = count_normalized_occurrences(spoken_text, label_text)
+        if spoken_count <= 0 and total_count < min_danmaku_only:
+            continue
+        if is_short_cjk_mention_label(label_text):
+            if spoken_count < min_short_spoken and total_count < min_short_total:
+                continue
+        return label_text, spoken_count, total_count
     return None
 
 def find_streamer_label_in_text(text: str, streamer: Dict[str, Any]) -> Optional[str]:
@@ -786,9 +822,10 @@ def resolve_mentioned_streamers(
             continue
         if allowed_extra_ids and streamer_id not in allowed_extra_ids:
             continue
-        matched_label = find_mention_label(highlight_text, entry)
-        if not matched_label:
+        mention_match = find_mention_match(highlight_text, entry, multi_config)
+        if not mention_match:
             continue
+        matched_label, spoken_count, total_count = mention_match
         if len(mentioned_streamers) >= max_mentioned:
             print(f"[INFO]  文本提到主播达到上限 maxMentionedContextCharacters={max_mentioned}，跳过 {streamer_id}")
             continue
@@ -796,6 +833,8 @@ def resolve_mentioned_streamers(
             **entry,
             "_comicReferenceReason": "mentioned",
             "_matchedMentionLabel": matched_label,
+            "_matchedMentionSpokenCount": spoken_count,
+            "_matchedMentionTotalCount": total_count,
         })
 
     if mentioned_streamers:
