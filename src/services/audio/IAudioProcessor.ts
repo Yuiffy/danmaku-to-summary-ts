@@ -57,6 +57,16 @@ export interface AudioProcessingConfig {
   keepOriginalVideo: boolean;
   ffmpegPath: string;
   defaultFormat: string;
+  defaultProfile?: string;
+  outputProfiles?: Record<string, {
+    format?: string;
+    extension?: string;
+    outputSuffix?: string;
+    codec?: string;
+    audioCodec?: string;
+    bitrate?: string;
+    ffmpegArgs?: string[];
+  }>;
   timeouts: {
     ffmpegTimeout: number;
   };

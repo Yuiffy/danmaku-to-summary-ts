@@ -140,8 +140,28 @@ const ConfigSchema = Joi.object({
     audio: Joi.object({
         enabled: Joi.boolean().default(true),
         audioOnlyRooms: Joi.array().items(Joi.number()).default([]),
-        formats: Joi.array().items(Joi.string()).default(['.m4a', '.aac', '.mp3', '.wav', '.ogg', '.flac']),
-        defaultFormat: Joi.string().default('.m4a'),
+        formats: Joi.array().items(Joi.string()).default(['.m4a', '.aac', '.mp3', '.wav', '.ogg', '.flac', '.opus']),
+        defaultFormat: Joi.string().default('.opus'),
+        defaultProfile: Joi.string().default('opus48k'),
+        outputProfiles: Joi.object().pattern(Joi.string(), Joi.object({
+            format: Joi.string().optional(),
+            extension: Joi.string().optional(),
+            outputSuffix: Joi.string().allow('').optional(),
+            codec: Joi.string().optional(),
+            audioCodec: Joi.string().optional(),
+            bitrate: Joi.string().optional(),
+            ffmpegArgs: Joi.array().items(Joi.string()).optional()
+        }).unknown(true)).default({
+            opus48k: {
+                format: '.opus',
+                ffmpegArgs: ['-c:a', 'libopus', '-b:a', '48k']
+            },
+            aac64k: {
+                format: '.m4a',
+                outputSuffix: '_64k',
+                ffmpegArgs: ['-c:a', 'aac', '-b:a', '64k']
+            }
+        }),
         ffmpeg: Joi.object({
             path: Joi.string().default('ffmpeg'),
             timeout: Joi.number().default(300000),
@@ -152,10 +172,15 @@ const ConfigSchema = Joi.object({
             keepOriginalVideo: Joi.boolean().default(false),
             retentionEnabled: Joi.boolean().default(true),
             convertAfterDays: Joi.number().default(3),
-            maxProcessAgeDays: Joi.number().allow(null, false).default(1),
-            includeBak: Joi.boolean().default(true),
+            maxProcessAgeDays: Joi.number().allow(null, false).default(null),
+            includeBak: Joi.boolean().default(false),
             scanIntervalHours: Joi.number().default(24),
-            maxFileAgeDays: Joi.number().default(30)
+            maxFileAgeDays: Joi.number().allow(null, false).default(null),
+            archiveEnabled: Joi.boolean().default(true),
+            archiveAfterDays: Joi.number().allow(null, false).default(33),
+            archiveExtraDays: Joi.number().allow(null, false).default(30),
+            archiveTargetBasePath: Joi.string().default('E:/EFiles/Evideo/DDTV录播-E'),
+            deleteBakBeforeArchive: Joi.boolean().default(true)
         }).default()
     }).default(),
     ai: AISchema,

@@ -110,8 +110,20 @@ export class ConfigValidator {
       audio: {
         enabled: true,
         audioOnlyRooms: [],
-        formats: ['.m4a', '.aac', '.mp3', '.wav', '.ogg', '.flac'],
-        defaultFormat: '.m4a',
+        formats: ['.m4a', '.aac', '.mp3', '.wav', '.ogg', '.flac', '.opus'],
+        defaultFormat: '.opus',
+        defaultProfile: 'opus48k',
+        outputProfiles: {
+          opus48k: {
+            format: '.opus',
+            ffmpegArgs: ['-c:a', 'libopus', '-b:a', '48k'],
+          },
+          aac64k: {
+            format: '.m4a',
+            outputSuffix: '_64k',
+            ffmpegArgs: ['-c:a', 'aac', '-b:a', '64k'],
+          },
+        },
         ffmpeg: {
           path: 'ffmpeg',
           timeout: 300000,
@@ -122,10 +134,15 @@ export class ConfigValidator {
           keepOriginalVideo: false,
           retentionEnabled: true,
           convertAfterDays: 3,
-          maxProcessAgeDays: 1,
-          includeBak: true,
+          maxProcessAgeDays: null,
+          includeBak: false,
           scanIntervalHours: 24,
-          maxFileAgeDays: 30,
+          maxFileAgeDays: null,
+          archiveEnabled: true,
+          archiveAfterDays: 33,
+          archiveExtraDays: 30,
+          archiveTargetBasePath: 'E:/EFiles/Evideo/DDTV录播-E',
+          deleteBakBeforeArchive: true,
         },
       },
       asr: {

@@ -37,7 +37,19 @@ export class AudioProcessor implements IAudioProcessor {
       audioOnlyRooms: [],
       keepOriginalVideo: false,
       ffmpegPath: 'ffmpeg',
-      defaultFormat: '.m4a',
+      defaultFormat: '.opus',
+      defaultProfile: 'opus48k',
+      outputProfiles: {
+        opus48k: {
+          format: '.opus',
+          ffmpegArgs: ['-c:a', 'libopus', '-b:a', '48k']
+        },
+        aac64k: {
+          format: '.m4a',
+          outputSuffix: '_64k',
+          ffmpegArgs: ['-c:a', 'aac', '-b:a', '64k']
+        }
+      },
       timeouts: {
         ffmpegTimeout: 300000 // 5分钟
       }
@@ -55,6 +67,8 @@ export class AudioProcessor implements IAudioProcessor {
         keepOriginalVideo: audioConfig.storage?.keepOriginalVideo ?? defaultConfig.keepOriginalVideo,
         ffmpegPath: audioConfig.ffmpeg?.path ?? defaultConfig.ffmpegPath,
         defaultFormat: audioConfig.defaultFormat ?? defaultConfig.defaultFormat,
+        defaultProfile: audioConfig.defaultProfile ?? defaultConfig.defaultProfile,
+        outputProfiles: audioConfig.outputProfiles ?? defaultConfig.outputProfiles,
         timeouts: {
           ffmpegTimeout: audioConfig.ffmpeg?.timeout ?? defaultConfig.timeouts.ffmpegTimeout
         }
@@ -73,7 +87,7 @@ export class AudioProcessor implements IAudioProcessor {
    */
   isAudioOnlyRoom(roomId: number): boolean {
     // 优先检查房间特定的audioOnly设置
-    const roomConfig = ConfigProvider.getRoomAIConfig(roomId.toString());
+    const roomConfig = (ConfigProvider.getRoomAIConfig(roomId.toString()) || {}) as { audioOnly?: boolean };
     if (roomConfig.audioOnly !== undefined) {
       const isAudioRoom = this.config.enabled && roomConfig.audioOnly;
       this.logger.debug('检查房间特定音频专用设置', { roomId, isAudioRoom, roomAudioOnly: roomConfig.audioOnly });
@@ -203,15 +217,52 @@ export class AudioProcessor implements IAudioProcessor {
   /**
    * 转换视频为音频
    */
-  async convertVideoToAudio(videoPath: string, audioFormat: string = '.m4a'): Promise<string> {
+  private normalizeExt(ext: string | undefined, fallback = '.m4a'): string {
+    const value = String(ext || fallback).trim();
+    if (!value) return fallback;
+    return (value.startsWith('.') ? value : `.${value}`).toLowerCase();
+  }
+
+  private getAudioOutputConfig(profileOrFormat?: string): {
+    profileName: string;
+    format: string;
+    outputSuffix: string;
+    ffmpegArgs: string[];
+  } {
+    const profiles = this.config.outputProfiles || {};
+    const selector = profileOrFormat || this.config.defaultProfile || this.config.defaultFormat || '.m4a';
+    const selectedProfile = profiles[selector];
+    const profileName = selectedProfile ? selector : selector;
+    const profile = selectedProfile || { format: selector, ffmpegArgs: ['-c:a', 'copy'] };
+    const format = this.normalizeExt(profile.format || profile.extension || selector);
+    let ffmpegArgs = profile.ffmpegArgs ? [...profile.ffmpegArgs] : undefined;
+
+    if (!ffmpegArgs) {
+      ffmpegArgs = ['-c:a', profile.codec || profile.audioCodec || 'copy'];
+      if (profile.bitrate) {
+        ffmpegArgs.push('-b:a', profile.bitrate);
+      }
+    }
+
+    return {
+      profileName,
+      format,
+      outputSuffix: profile.outputSuffix || '',
+      ffmpegArgs
+    };
+  }
+
+  async convertVideoToAudio(videoPath: string, audioFormat: string = this.config.defaultProfile || this.config.defaultFormat): Promise<string> {
+    const outputConfig = this.getAudioOutputConfig(audioFormat);
     const videoDir = path.dirname(videoPath);
     const videoName = path.basename(videoPath, path.extname(videoPath));
-    const audioPath = path.join(videoDir, `${videoName}${audioFormat}`);
+    const audioPath = path.join(videoDir, `${videoName}${outputConfig.outputSuffix}${outputConfig.format}`);
     
     this.logger.info('开始转换视频为音频', {
       input: path.basename(videoPath),
       output: path.basename(audioPath),
-      format: audioFormat
+      format: outputConfig.format,
+      profile: outputConfig.profileName
     });
 
     try {
@@ -224,6 +275,7 @@ export class AudioProcessor implements IAudioProcessor {
         '-vn',                    // 禁用视频流
         '-c:a', 'copy',           // 复制音频流，不重新编码
         '-y',                     // 覆盖输出文件
+        ...outputConfig.ffmpegArgs,
         audioPath
       ];
 

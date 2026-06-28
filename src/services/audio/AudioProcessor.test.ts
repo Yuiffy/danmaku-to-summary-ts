@@ -136,7 +136,7 @@ describe('AudioProcessor', () => {
       
       // 应该使用默认值
       expect(processor.getStats().ffmpegPath).toBe('ffmpeg');
-      expect(processor.getStats().defaultFormat).toBe('.m4a');
+      expect(processor.getStats().defaultFormat).toBe('.opus');
     });
 
     it('当配置加载失败时应该使用默认配置', () => {

@@ -50,7 +50,22 @@ export interface AudioStorageConfig {
   maxProcessAgeDays?: number | null | false;
   includeBak?: boolean;
   scanIntervalHours?: number;
-  maxFileAgeDays: number;
+  maxFileAgeDays?: number | null | false;
+  archiveEnabled?: boolean;
+  archiveAfterDays?: number | null | false;
+  archiveExtraDays?: number | null | false;
+  archiveTargetBasePath?: string;
+  deleteBakBeforeArchive?: boolean;
+}
+
+export interface AudioOutputProfileConfig {
+  format?: string;
+  extension?: string;
+  outputSuffix?: string;
+  codec?: string;
+  audioCodec?: string;
+  bitrate?: string;
+  ffmpegArgs?: string[];
 }
 
 // 音频配置
@@ -59,6 +74,8 @@ export interface AudioConfig {
   audioOnlyRooms: number[];
   formats: string[];
   defaultFormat: string;
+  defaultProfile?: string;
+  outputProfiles?: Record<string, AudioOutputProfileConfig>;
   ffmpeg: FFmpegConfig;
   storage: AudioStorageConfig;
 }
