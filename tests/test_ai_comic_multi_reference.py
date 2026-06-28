@@ -245,6 +245,51 @@ class MultiReferenceComicTests(unittest.TestCase):
 
         self.assertEqual([item["id"] for item in extras], ["liko", "izayoi"])
 
+    def test_277_allowlist_skips_sui_asr_mislabel_for_izayoi_room(self):
+        izayoi_highlight = self.root / "1741667419_20260101_AI_HIGHLIGHT.txt"
+        izayoi_highlight.write_text(
+            "十六萤在讲线下时光。 (💬 莉蔻莉蔻莉蔻莉蔻莉蔻莉蔻莉蔻莉蔻 / 克罗雅克罗雅克罗雅克罗雅克罗雅克罗雅克罗雅克罗雅)",
+            encoding="utf-8",
+        )
+        sidecar = self.root / "1741667419_20260101.asr_speakers.json"
+        sidecar.write_text(json.dumps({
+            "hostRoomId": "1741667419",
+            "speakers": [
+                {"label": "岁己SUI", "totalSpeechSeconds": 594, "avgScore": 0.506, "maxScore": 0.6234},
+            ],
+            "appearedStreamerIds": ["sui"],
+            "extraAppearedStreamerIds": ["sui"],
+        }, ensure_ascii=False), encoding="utf-8")
+        self.config["ai"]["streamerRegistry"]["izayoi"] = {
+            "displayName": "十六萤Izayoi",
+            "roomIds": ["1741667419"],
+            "mentionLabels": ["十六"],
+        }
+        self.config["ai"]["streamerRegistry"]["liko"] = {
+            "displayName": "莉蔻Liko",
+            "mentionLabels": ["莉蔻"],
+            "referenceImages": [str(self.mentioned)],
+        }
+        self.config["ai"]["streamerRegistry"]["kloa"] = {
+            "displayName": "克罗雅Kloa",
+            "mentionLabels": ["克罗雅"],
+            "referenceImages": [str(self.extra)],
+        }
+        self.config["roomSettings"]["1741667419"] = {
+            "multiReferenceImages": {
+                "enabled": True,
+                "maxExtraCharacters": 3,
+                "maxMentionedContextCharacters": 3,
+                "allowedExtraStreamerIds": ["hazel", "liko", "kloa", "izayoi"],
+                "filterExtraImagesByComicScript": False,
+                "filterMentionedImagesByComicScript": False,
+            }
+        }
+
+        extras = comic.resolve_extra_appeared_streamers(self.config, "1741667419", str(izayoi_highlight))
+
+        self.assertEqual([item["id"] for item in extras], ["liko", "kloa"])
+
     def test_mentioned_streamer_reference_is_filtered_when_absent_from_comic_script(self):
         mentioned = self.config["ai"]["streamerRegistry"]["mizuki"] | {
             "id": "mizuki",
