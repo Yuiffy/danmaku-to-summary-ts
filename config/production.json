@@ -94,8 +94,7 @@
       "scanIntervalHours": 24,
       "maxFileAgeDays": null,
       "archiveEnabled": true,
-      "archiveAfterDays": 33,
-      "archiveExtraDays": 30,
+      "moveToArchiveAfterDays": 33,
       "archiveTargetBasePath": "E:/EFiles/Evideo/DDTV录播-E",
       "deleteBakBeforeArchive": true
     }

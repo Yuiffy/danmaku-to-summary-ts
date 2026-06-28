@@ -52,6 +52,7 @@ export interface AudioStorageConfig {
   scanIntervalHours?: number;
   maxFileAgeDays?: number | null | false;
   archiveEnabled?: boolean;
+  moveToArchiveAfterDays?: number | null | false;
   archiveAfterDays?: number | null | false;
   archiveExtraDays?: number | null | false;
   archiveTargetBasePath?: string;

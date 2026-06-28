@@ -177,6 +177,7 @@ const ConfigSchema = Joi.object({
             scanIntervalHours: Joi.number().default(24),
             maxFileAgeDays: Joi.number().allow(null, false).default(null),
             archiveEnabled: Joi.boolean().default(true),
+            moveToArchiveAfterDays: Joi.number().allow(null, false).default(33),
             archiveAfterDays: Joi.number().allow(null, false).default(33),
             archiveExtraDays: Joi.number().allow(null, false).default(30),
             archiveTargetBasePath: Joi.string().default('E:/EFiles/Evideo/DDTV录播-E'),

@@ -129,7 +129,7 @@ function getAudioRetentionConfig() {
         includeBak: storage.includeBak !== false,
         scanIntervalHours: Number(storage.scanIntervalHours ?? 24),
         archiveEnabled: storage.archiveEnabled === true || Boolean(storage.archiveTargetBasePath || storage.archiveBasePath),
-        archiveAfterDays: toOptionalDays(storage.archiveAfterDays ?? storage.moveToArchiveAfterDays, defaultArchiveAfterDays),
+        archiveAfterDays: toOptionalDays(storage.moveToArchiveAfterDays ?? storage.archiveAfterDays, defaultArchiveAfterDays),
         archiveTargetBasePath: path.resolve(archiveTargetBasePath),
         deleteBakBeforeArchive: storage.deleteBakBeforeArchive !== false,
         basePaths: Array.from(new Set([
@@ -322,6 +322,61 @@ function runFfprobeDuration(filePath, timeout = 30000) {
     });
 }
 
+function runFfprobeAudioStreamCount(filePath, timeout = 30000) {
+    return new Promise((resolve, reject) => {
+        const child = spawn(getFfprobePath(), [
+            '-v', 'error',
+            '-select_streams', 'a',
+            '-show_entries', 'stream=index',
+            '-of', 'csv=p=0',
+            filePath
+        ], {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            windowsHide: true
+        });
+
+        let stdout = '';
+        let stderr = '';
+        const timeoutId = setTimeout(() => {
+            child.kill('SIGTERM');
+            reject(new Error(`ffprobe audio stream timeout (${timeout}ms): ${filePath}`));
+        }, timeout);
+
+        child.stdout.on('data', data => { stdout += data.toString(); });
+        child.stderr.on('data', data => { stderr += data.toString(); });
+        child.on('close', code => {
+            clearTimeout(timeoutId);
+            if (code !== 0) {
+                reject(new Error(`ffprobe audio stream failed (${code}): ${stderr}`));
+                return;
+            }
+            const count = String(stdout)
+                .split(/\r?\n/)
+                .map(line => line.trim())
+                .filter(Boolean).length;
+            resolve(count);
+        });
+        child.on('error', error => {
+            clearTimeout(timeoutId);
+            reject(error);
+        });
+    });
+}
+
+async function hasAudioStream(filePath) {
+    return (await runFfprobeAudioStreamCount(filePath)) > 0;
+}
+
+function createNoAudioStreamError(filePath) {
+    const error = new Error(`input has no audio stream: ${filePath}`);
+    error.code = 'NO_AUDIO_STREAM';
+    return error;
+}
+
+function isNoAudioStreamError(error) {
+    return error?.code === 'NO_AUDIO_STREAM' || /Output file does not contain any stream|has no audio stream/i.test(error?.message || '');
+}
+
 async function verifyConvertedAudio(sourcePath, targetPath) {
     const [sourceDuration, targetDuration] = await Promise.all([
         runFfprobeDuration(sourcePath),
@@ -407,6 +462,9 @@ convertVideoToAudio = async function convertMediaToConfiguredAudio(mediaPath, au
 
     try {
         await stat(mediaPath);
+        if (!(await hasAudioStream(mediaPath))) {
+            throw createNoAudioStreamError(mediaPath);
+        }
         await rm(tempAudioPath, { force: true }).catch(() => {});
         const args = [
             '-i', mediaPath,
@@ -509,6 +567,19 @@ function getArchiveCandidateDir(mediaPath, sourceRoot) {
         return path.join(sourceRoot, parts[0], parts[1]);
     }
     return path.dirname(mediaPath);
+}
+
+function isDayDirectoryName(name) {
+    return /^\d{4}_\d{2}_\d{2}$/.test(name);
+}
+
+function isTemporaryAudioOutput(filePath) {
+    return /\.tmp-\d+-\d+\.opus$/i.test(path.basename(filePath));
+}
+
+function needsConfiguredAudioConversion(mediaPath, outputConfig) {
+    return isVideoFile(mediaPath) ||
+        (isAudioFilePath(mediaPath) && path.extname(mediaPath).toLowerCase() !== outputConfig.format);
 }
 
 async function getNewestFileMtimeMs(dir, options = {}) {
@@ -651,6 +722,106 @@ async function archiveDayDirectory(dayDir, sourceRoot, retention) {
     await cleanupEmptyParents(dayDir, sourceRoot);
     debugLog(`archived onlyAudio day directory: ${dayDir} -> ${targetDir}`);
     return targetDir;
+}
+
+async function collectAudioOnlyDayDirectories(rootDir) {
+    const dayDirs = [];
+    let roomEntries;
+    try {
+        roomEntries = await readdir(rootDir, { withFileTypes: true });
+    } catch (error) {
+        console.warn(`scan archive root failed: ${rootDir} (${error.message})`);
+        return dayDirs;
+    }
+
+    for (const roomEntry of roomEntries) {
+        if (!roomEntry.isDirectory()) continue;
+
+        const roomDir = path.join(rootDir, roomEntry.name);
+        const roomId = extractRoomIdFromMediaName(roomEntry.name);
+        if (!roomId || !isAudioOnlyRoom(roomId, { mediaPath: roomDir })) continue;
+
+        let dateEntries;
+        try {
+            dateEntries = await readdir(roomDir, { withFileTypes: true });
+        } catch (error) {
+            console.warn(`scan archive room directory failed: ${roomDir} (${error.message})`);
+            continue;
+        }
+
+        for (const dateEntry of dateEntries) {
+            if (dateEntry.isDirectory() && isDayDirectoryName(dateEntry.name)) {
+                dayDirs.push(path.join(roomDir, dateEntry.name));
+            }
+        }
+    }
+
+    return dayDirs;
+}
+
+async function hasPendingAudioConversionInDirectory(dayDir, retention, outputConfig, now, unconvertibleMediaPaths = new Set()) {
+    const mediaFiles = await collectMediaFiles(dayDir, { includeBak: retention.includeBak });
+
+    for (const mediaPath of mediaFiles) {
+        if (isTemporaryAudioOutput(mediaPath)) return true;
+        if (!needsConfiguredAudioConversion(mediaPath, outputConfig)) continue;
+        if (unconvertibleMediaPaths.has(path.resolve(mediaPath))) continue;
+
+        let stats;
+        try {
+            stats = await stat(mediaPath);
+        } catch {
+            return true;
+        }
+
+        const ageDays = getFileAgeDays(stats, now);
+        if (retention.maxProcessAgeDays !== null && ageDays > retention.maxProcessAgeDays) {
+            continue;
+        }
+        if (retention.convertAfterDays !== null && ageDays >= retention.convertAfterDays) {
+            if (!(await hasAudioStream(mediaPath))) {
+                unconvertibleMediaPaths.add(path.resolve(mediaPath));
+                debugLog(`archive ignores media without audio stream: ${mediaPath}`);
+                continue;
+            }
+            return true;
+        }
+    }
+
+    return false;
+}
+
+async function archiveEligibleDayDirectories(root, retention, outputConfig, context) {
+    const { dryRun, now, summary, archivedDirs, isLimitReached, unconvertibleMediaPaths } = context;
+    if (!retention.archiveEnabled || retention.archiveAfterDays === null) return;
+
+    const dayDirs = await collectAudioOnlyDayDirectories(root);
+    for (const dayDir of dayDirs) {
+        if (isLimitReached()) break;
+        if (archivedDirs.has(dayDir) || !fs.existsSync(dayDir)) continue;
+
+        const newestMtime = await getNewestFileMtimeMs(dayDir, { excludeBak: retention.deleteBakBeforeArchive });
+        if (newestMtime <= 0) continue;
+
+        const dirAgeDays = (now - newestMtime) / (24 * 60 * 60 * 1000);
+        if (dirAgeDays < retention.archiveAfterDays) continue;
+
+        if (await hasPendingAudioConversionInDirectory(dayDir, retention, outputConfig, now, unconvertibleMediaPaths)) {
+            debugLog(`archive skip pending conversion: ${dayDir}`);
+            summary.skipped++;
+            continue;
+        }
+
+        if (dryRun) {
+            const targetDir = path.join(retention.archiveTargetBasePath, path.relative(root, dayDir));
+            debugLog(`[dry-run] archive day directory: ${dayDir} -> ${targetDir} (${dirAgeDays.toFixed(1)} days)`);
+        } else {
+            await archiveDayDirectory(dayDir, root, retention);
+        }
+        archivedDirs.add(dayDir);
+        summary.archived++;
+        context.incrementAction();
+    }
 }
 
 async function collectMediaFiles(rootDir, options = {}) {
@@ -802,6 +973,7 @@ applyOnlyAudioRetention = async function applyConfiguredOnlyAudioRetention(optio
         archiveTargetBasePath: retention.archiveEnabled ? retention.archiveTargetBasePath : null
     };
     const archivedDirs = new Set();
+    const unconvertibleMediaPaths = new Set();
     const isLimitReached = () => maxActions !== null && actionCount >= maxActions;
 
     if (!retention.enabled) {
@@ -854,8 +1026,7 @@ applyOnlyAudioRetention = async function applyConfiguredOnlyAudioRetention(optio
                     continue;
                 }
 
-                const needsAudioConversion = isVideoFile(mediaPath) ||
-                    (isAudioFilePath(mediaPath) && path.extname(mediaPath).toLowerCase() !== outputConfig.format);
+                const needsAudioConversion = needsConfiguredAudioConversion(mediaPath, outputConfig);
 
                 if (needsAudioConversion && retention.convertAfterDays !== null && ageDays >= retention.convertAfterDays) {
                     const targetAudio = getOutputAudioPath(mediaPath, outputConfig);
@@ -912,26 +1083,6 @@ applyOnlyAudioRetention = async function applyConfiguredOnlyAudioRetention(optio
                     }
                 }
 
-                if (retention.archiveEnabled && retention.archiveAfterDays !== null) {
-                    const dayDir = getArchiveCandidateDir(mediaPath, root);
-                    if (!archivedDirs.has(dayDir) && fs.existsSync(dayDir)) {
-                        const newestMtime = await getNewestFileMtimeMs(dayDir, { excludeBak: retention.deleteBakBeforeArchive });
-                        const dirAgeDays = newestMtime > 0 ? (now - newestMtime) / (24 * 60 * 60 * 1000) : ageDays;
-                        if (dirAgeDays >= retention.archiveAfterDays) {
-                            if (dryRun) {
-                                const targetDir = path.join(retention.archiveTargetBasePath, path.relative(root, dayDir));
-                                debugLog(`[dry-run] archive day directory: ${dayDir} -> ${targetDir} (${dirAgeDays.toFixed(1)} days)`);
-                            } else {
-                                await archiveDayDirectory(dayDir, root, retention);
-                            }
-                            archivedDirs.add(dayDir);
-                            summary.archived++;
-                            actionCount++;
-                            continue;
-                        }
-                    }
-                }
-
                 if (retention.deleteAfterDays !== null && ageDays >= retention.deleteAfterDays) {
                     if (dryRun) {
                         debugLog(`[dry-run] delete expired onlyAudio media: ${mediaPath} (${ageDays.toFixed(1)} days)`);
@@ -943,10 +1094,26 @@ applyOnlyAudioRetention = async function applyConfiguredOnlyAudioRetention(optio
                     actionCount++;
                 }
             } catch (error) {
-                summary.failed++;
-                console.warn(`onlyAudio retention failed: ${mediaPath} (${error.message})`);
+                if (isNoAudioStreamError(error)) {
+                    unconvertibleMediaPaths.add(path.resolve(mediaPath));
+                    summary.skipped++;
+                    console.warn(`onlyAudio retention skipped media without audio stream: ${mediaPath} (${error.message})`);
+                } else {
+                    summary.failed++;
+                    console.warn(`onlyAudio retention failed: ${mediaPath} (${error.message})`);
+                }
             }
         }
+
+        await archiveEligibleDayDirectories(root, retention, outputConfig, {
+            dryRun,
+            now,
+            summary,
+            archivedDirs,
+            unconvertibleMediaPaths,
+            isLimitReached,
+            incrementAction: () => { actionCount++; }
+        });
     }
 
     summary.actionLimit = maxActions;
