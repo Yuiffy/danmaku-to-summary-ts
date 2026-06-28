@@ -29,7 +29,7 @@ export class DelayedReplyService implements IDelayedReplyService {
   private static readonly MAX_COMIC_WAIT_COUNT = 0;
   private static readonly MAX_SUPPLEMENTAL_COMIC_WAIT_COUNT = 30;
   private static readonly DEFAULT_MAX_TASK_AGE_HOURS = 24;
-  private static readonly SUPPLEMENTAL_COMIC_REPLY_TEXT = '补直播图片总结';
+  private static readonly SUPPLEMENTAL_COMIC_REPLY_PREFIX = '（补图）';
   private static readonly LIVE_RECHECK_INTERVAL_MS = 2 * 60 * 1000;
   private static readonly LIVE_CONTINUATION_REPLACEMENT_MAX_WAIT_COUNT = 180;
   private tasks: Map<string, DelayedReplyTask> = new Map();
@@ -943,7 +943,8 @@ export class DelayedReplyService implements IDelayedReplyService {
   private async notifySupplementalComicReplySuccess(
     task: DelayedReplyTask,
     comicImagePath: string,
-    result: PublishCommentResponse
+    result: PublishCommentResponse,
+    replyText: string
   ): Promise<void> {
     if (!this.notifier || !task.repliedDynamicId || !task.supplementalReplyId) {
       return;
@@ -960,7 +961,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       `动态ID: ${task.repliedDynamicId}`,
       task.replyId ? `主回复ID: ${task.replyId}` : undefined,
       `补图回复ID: ${task.supplementalReplyId}`,
-      `回复内容: ${DelayedReplyService.SUPPLEMENTAL_COMIC_REPLY_TEXT}`,
+      `回复内容: ${replyText}`,
       '',
       result.imageUrl ? `[B站附图](${result.imageUrl})` : undefined,
       `[查看补图回复](${replyUrl})`,
@@ -1131,9 +1132,10 @@ export class DelayedReplyService implements IDelayedReplyService {
     }
 
     try {
+      const replyText = this.buildSupplementalComicReplyText(await this.readReplyText(task.goodnightTextPath));
       const result = await this.bilibiliAPI.publishComment({
         dynamicId: task.repliedDynamicId,
-        content: DelayedReplyService.SUPPLEMENTAL_COMIC_REPLY_TEXT,
+        content: replyText,
         images: [comicImagePath]
       });
 
@@ -1156,7 +1158,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       });
 
       if (this.notifier) {
-        await this.notifySupplementalComicReplySuccess(task, comicImagePath, result);
+        await this.notifySupplementalComicReplySuccess(task, comicImagePath, result, replyText);
       }
     } catch (error) {
       const delayedReplyConfig = BilibiliConfigHelper.getDelayedReplyConfig();
@@ -1717,6 +1719,10 @@ export class DelayedReplyService implements IDelayedReplyService {
       .replace(/[（(]\s*共\s*\d+\s*字\s*[）)]\s*$/u, '')
       .replace(/\n{3,}/g, '\n\n')
       .trim();
+  }
+
+  private buildSupplementalComicReplyText(replyText: string): string {
+    return `${DelayedReplyService.SUPPLEMENTAL_COMIC_REPLY_PREFIX}${replyText}`;
   }
 
   private assertReplyTextIsPublishable(text: string, textPath: string): void {
