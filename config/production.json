@@ -589,7 +589,17 @@
         "enableDelayedReply": true,
         "wordLimit": 800,
         "minComicDurationMinutes": 0,
-        "comicGenerationProbability": 1.0
+        "comicGenerationProbability": 1.0,
+        "multiReferenceImages": {
+          "enabled": true,
+          "maxExtraCharacters": 2,
+          "allowedExtraStreamerIds": ["shiori", "nagisa"],
+          "includeMentionedStreamers": true,
+          "includeMentionedStreamerImages": true,
+          "filterExtraImagesByComicScript": false,
+          "filterMentionedImagesByComicScript": false,
+          "appendCharacterDescriptions": true
+        }
       },
       "628684": {
         "audioOnly": false,
@@ -683,7 +693,17 @@
         "enableComicGeneration": true,
         "enableDelayedReply": true,
         "wordLimit": 200,
-        "comicGenerationProbability": 0.8
+        "comicGenerationProbability": 0.8,
+        "multiReferenceImages": {
+          "enabled": true,
+          "maxExtraCharacters": 2,
+          "allowedExtraStreamerIds": ["sui", "shiori"],
+          "includeMentionedStreamers": true,
+          "includeMentionedStreamerImages": true,
+          "filterExtraImagesByComicScript": false,
+          "filterMentionedImagesByComicScript": false,
+          "appendCharacterDescriptions": true
+        }
       },
       "1820703922": {
         "audioOnly": true,
