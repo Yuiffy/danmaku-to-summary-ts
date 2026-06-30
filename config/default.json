@@ -262,6 +262,12 @@
           "max_chunks": 20
         },
         {
+          "speaker": "米汀",
+          "audio_path": "data/asr_speaker_refs/miting.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
           "speaker": "弥月Mizuki",
           "audio_path": "data/asr_speaker_refs/mizuki.wav",
           "chunk_s": 8,
@@ -333,6 +339,12 @@
           "max_chunks": 20
         },
         {
+          "speaker": "米汀",
+          "audio_path": "data/asr_speaker_refs/miting.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
           "speaker": "弥月Mizuki",
           "audio_path": "data/asr_speaker_refs/mizuki.wav",
           "chunk_s": 8,
@@ -390,6 +402,12 @@
         {
           "speaker": "三理",
           "audio_path": "data/asr_speaker_refs/mit3uri.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
+          "speaker": "米汀",
+          "audio_path": "data/asr_speaker_refs/miting.wav",
           "chunk_s": 8,
           "max_chunks": 20
         },
@@ -551,6 +569,7 @@
       "shiori": {
         "displayName": "栞栞",
         "roomIds": ["26966466"],
+        "mentionLabels": ["栞栞", "栞栞Shiori", "小栞", "Shiori"],
         "speakerLabels": ["栞栞", "Shiori"],
         "aliases": ["栞", "签签", "千千", "浅浅"],
         "referenceImages": [

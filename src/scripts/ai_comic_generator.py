@@ -153,6 +153,7 @@ def load_config() -> Dict[str, Any]:
             "defaultNames": config.get('ai', {}).get('defaultNames', {})
         },
         "ai": config.get('ai', {}),
+        "asr": config.get('asr', {}),
         "roomSettings": config.get('ai', {}).get('roomSettings', {}),
         "timeouts": config.get('timeouts', {})
     }
@@ -590,6 +591,68 @@ def find_host_streamer_id(config: Dict[str, Any], room_id: Optional[str]) -> Opt
             return streamer_id
     return None
 
+def resolve_audio_path_for_reference(audio_path: str) -> str:
+    text = str(audio_path or "").strip()
+    if not text:
+        return ""
+    if os.path.isabs(text):
+        return text
+    return os.path.join(get_project_root(), text)
+
+def collect_asr_speaker_references(config: Dict[str, Any]) -> list[dict]:
+    asr_config = config.get("asr", {})
+    if not isinstance(asr_config, dict):
+        return []
+
+    refs = []
+    for backend_config in asr_config.values():
+        if not isinstance(backend_config, dict):
+            continue
+        for ref in backend_config.get("speaker_references", []) or []:
+            if isinstance(ref, dict):
+                refs.append(ref)
+    return refs
+
+def host_has_asr_speaker_reference(config: Dict[str, Any], room_id: Optional[str]) -> tuple[bool, str]:
+    registry = resolve_streamer_registry(config)
+    host_streamer_id = find_host_streamer_id(config, room_id)
+    if not host_streamer_id:
+        return False, f"room={room_id} 未在 streamerRegistry.roomIds 中匹配到房间主人"
+
+    host = registry.get(host_streamer_id)
+    if not host:
+        return False, f"房间主人 {host_streamer_id} 未配置 streamerRegistry"
+
+    labels = []
+    for value in [
+        host.get("displayName"),
+        *(host.get("speakerLabels", []) or []),
+        *(host.get("aliases", []) or []),
+    ]:
+        text = str(value or "").strip()
+        if text and text not in labels:
+            labels.append(text)
+
+    normalized_labels = {normalize_mention_text(label) for label in labels}
+    references = collect_asr_speaker_references(config)
+    if not references:
+        return False, f"房间主人 {host.get('displayName') or host_streamer_id} 未配置 ASR speaker_references"
+
+    matched_missing_paths = []
+    for ref in references:
+        speaker = str(ref.get("speaker") or "").strip()
+        if not speaker or normalize_mention_text(speaker) not in normalized_labels:
+            continue
+        audio_path = resolve_audio_path_for_reference(str(ref.get("audio_path") or ""))
+        if audio_path and os.path.exists(audio_path):
+            return True, ""
+        matched_missing_paths.append(str(ref.get("audio_path") or "").strip() or "(empty audio_path)")
+
+    display_name = host.get("displayName") or host_streamer_id
+    if matched_missing_paths:
+        return False, f"房间主人 {display_name} 的 ASR speaker reference 音频不存在: {', '.join(matched_missing_paths)}"
+    return False, f"房间主人 {display_name} 未配置可匹配的 ASR speaker reference"
+
 def load_asr_speakers_for_highlight(highlight_path: str) -> dict:
     """Load xxx.asr_speakers.json for a highlight/SRT path if present."""
     try:
@@ -853,12 +916,22 @@ def resolve_extra_appeared_streamers(config: Dict[str, Any], room_id: Optional[s
         print("[INFO]  未提供 highlight_path，跳过多参考图")
         return []
 
-    sidecar = load_asr_speakers_for_highlight(highlight_path)
     registry = resolve_streamer_registry(config)
     host_streamer_id = find_host_streamer_id(config, room_id)
     max_extra = max(0, int(multi_config.get("maxExtraCharacters") or 0))
     allowed_extra_ids = get_allowed_extra_streamer_ids(multi_config)
     extra_streamers = []
+
+    host_has_reference, host_reference_skip_reason = host_has_asr_speaker_reference(config, room_id)
+    sidecar = {}
+    if host_has_reference:
+        sidecar = load_asr_speakers_for_highlight(highlight_path)
+    else:
+        print(
+            "[INFO]  跳过 ASR 出声触发漫画参考图: "
+            f"{host_reference_skip_reason}；无法可靠区分房间主人和其他说话人"
+        )
+
     for streamer_id in sidecar.get("extraAppearedStreamerIds", []) if sidecar else []:
         streamer_id = str(streamer_id)
         if streamer_id == host_streamer_id:

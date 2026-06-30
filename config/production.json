@@ -261,6 +261,13 @@
           "栞栞",
           "栞栞Shiori"
         ],
+        "mentionLabels": [
+          "栞栞",
+          "栞栞Shiori",
+          "小栞",
+          "岁栞",
+          "Shiori"
+        ],
         "speakerLabels": [
           "栞栞",
           "Shiori"
@@ -1486,6 +1493,12 @@
           "max_chunks": 20
         },
         {
+          "speaker": "米汀",
+          "audio_path": "data/asr_speaker_refs/miting.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
           "speaker": "弥月Mizuki",
           "audio_path": "data/asr_speaker_refs/mizuki.wav",
           "chunk_s": 8,
@@ -1557,6 +1570,12 @@
           "max_chunks": 20
         },
         {
+          "speaker": "米汀",
+          "audio_path": "data/asr_speaker_refs/miting.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
           "speaker": "弥月Mizuki",
           "audio_path": "data/asr_speaker_refs/mizuki.wav",
           "chunk_s": 8,
@@ -1614,6 +1633,12 @@
         {
           "speaker": "三理",
           "audio_path": "data/asr_speaker_refs/mit3uri.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
+          "speaker": "米汀",
+          "audio_path": "data/asr_speaker_refs/miting.wav",
           "chunk_s": 8,
           "max_chunks": 20
         },

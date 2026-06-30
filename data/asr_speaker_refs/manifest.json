@@ -53,8 +53,10 @@
     "speaker": "米汀",
     "key": "miting",
     "audio_path": "data/asr_speaker_refs/miting.wav",
-    "seconds": 154.62,
-    "source_count": 2
+    "seconds": 160.0,
+    "source_count": 8,
+    "source_media": "D:\\files\\videos\\DDTV录播\\31368705_米汀Nagisa\\2026_06_30\\录制-31368705-20260630-080607-561-早安一会儿.flv",
+    "source_segments": "00:08:05-00:08:25; 00:10:05-00:10:25; 00:11:10-00:11:30; 00:13:05-00:13:25; 01:01:05-01:01:25; 01:05:05-01:05:25; 01:06:05-01:06:25; 01:07:05-01:07:25"
   },
   {
     "speaker": "花礼Harei",

@@ -25,12 +25,23 @@ class MultiReferenceComicTests(unittest.TestCase):
         self.host = self.root / "host.png"
         self.extra = self.root / "shiori.png"
         self.mentioned = self.root / "mizuki.png"
+        self.host_voice = self.root / "sui.wav"
         self.cover = self.root / "25788785_20260101_120000.cover.jpg"
         self.highlight = self.root / "25788785_20260101_120000_AI_HIGHLIGHT.txt"
-        for file_path in [self.host, self.extra, self.mentioned, self.cover, self.highlight]:
+        for file_path in [self.host, self.extra, self.mentioned, self.host_voice, self.cover, self.highlight]:
             file_path.write_bytes(b"x")
 
         self.config = {
+            "asr": {
+                "paraformer": {
+                    "speaker_references": [
+                        {
+                            "speaker": "岁己SUI",
+                            "audio_path": str(self.host_voice),
+                        }
+                    ]
+                }
+            },
             "ai": {
                 "comic": {
                     "multiReferenceImages": {
@@ -121,6 +132,25 @@ class MultiReferenceComicTests(unittest.TestCase):
         images = comic.collect_all_images("25788785", str(self.highlight), extra_streamers=extras)
 
         self.assertEqual([Path(item).name for item in images[:2]], ["host.png", "shiori.png"])
+
+    def test_missing_host_speaker_reference_skips_asr_appeared_but_keeps_mentions(self):
+        self.config["asr"]["paraformer"]["speaker_references"] = []
+        self.highlight.write_text("Tonight the host mentioned Mizuki during the stream.", encoding="utf-8")
+        self.write_sidecar(["shiori"])
+
+        log_lines = []
+        original_print = comic.print
+        comic.print = lambda *args, **kwargs: log_lines.append(" ".join(str(arg) for arg in args))
+        try:
+            extras = comic.resolve_extra_appeared_streamers(self.config, "25788785", str(self.highlight))
+        finally:
+            comic.print = original_print
+
+        self.assertEqual([item["id"] for item in extras], ["mizuki"])
+        self.assertEqual(extras[0]["_comicReferenceReason"], "mentioned")
+        output = "\n".join(log_lines)
+        self.assertIn("跳过 ASR 出声触发漫画参考图", output)
+        self.assertIn("未配置 ASR speaker_references", output)
 
     def test_low_confidence_short_asr_extra_streamer_is_filtered(self):
         self.write_sidecar(["shiori"], speakers=[{
