@@ -16,6 +16,15 @@ export interface ProcessingAlertThresholds {
   asrSlowSeconds: number;
 }
 
+export interface MissingFileCloseAlertDetails {
+  roomId: string;
+  roomName?: string;
+  title?: string;
+  sessionId?: string;
+  eventTimestamp?: string;
+  reason?: string;
+}
+
 export class ProcessingAlertService {
   private static logger = getLogger('ProcessingAlertService');
   private static notifier?: WeChatWorkNotifier;
@@ -95,6 +104,23 @@ export class ProcessingAlertService {
         `**耗时**: ${elapsedSeconds.toFixed(1)} 秒`,
         `**阈值**: ${thresholdSeconds} 秒`,
         ...Object.entries(details).map(([key, value]) => `**${key}**: ${String(value)}`)
+      ]
+    );
+  }
+
+  static async notifyMissingFileCloseAfterStreamEnd(details: MissingFileCloseAlertDetails): Promise<void> {
+    if (!this.isEnabled()) return;
+
+    await this.notifyOnce(
+      `missing-fileclose:${details.roomId}`,
+      'Mikufans StreamEnded without FileClosed',
+      [
+        `**Room**: ${details.roomName || 'unknown'} (${details.roomId})`,
+        details.title ? `**Title**: ${details.title}` : undefined,
+        details.sessionId ? `**SessionId**: ${details.sessionId}` : undefined,
+        details.eventTimestamp ? `**StreamEnded**: ${details.eventTimestamp}` : undefined,
+        details.reason ? `**Reason**: ${details.reason}` : undefined,
+        '**Action**: Check recorder status manually. No file recovery was attempted.'
       ]
     );
   }

@@ -528,6 +528,7 @@ Webhook 会自动查找与视频同名的 `.xml` 文件（同目录）。确认 
 
 - [Webhook 详细说明](src/scripts/WEBHOOK_README.md)
 - [B站 API 说明](src/scripts/BILIBILI_API_README.md)
+- [B站视频补下载回填流程](docs/bilibili-recovery-flow.md)
 - [Whisper 队列说明](src/scripts/QUEUE_README.md)
 - [增强功能说明](src/scripts/ENHANCED_FEATURES_README.md)
 - [自定义 AI Prompts 说明](自定义AI_Prompts说明.md)

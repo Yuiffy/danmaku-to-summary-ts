@@ -601,7 +601,7 @@ describe('asr_backends', () => {
     const result = asr.summarizeAsrSpeakers({
       backend: 'sensevoice',
       segments: [
-        { start: 0, end: 10, text: 'host', speaker: '岁己SUI', speaker_score: 0.7 },
+        { start: 0, end: 10, text: 'host', speaker: '岁己SUI', speaker_score: 0.85 },
         { start: 10, end: 20, text: 'extra', speaker: 'Shiori', speaker_score: 0.8 },
         { start: 20, end: 30, text: 'limited', speaker: '瑞娅', speaker_score: 0.9 },
         { start: 50, end: 70, text: 'unknown', speaker: 'UNKNOWN' },

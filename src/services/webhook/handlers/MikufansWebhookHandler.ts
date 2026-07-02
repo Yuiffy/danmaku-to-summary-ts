@@ -38,7 +38,8 @@ enum DelayedActionType {
   STREAM_ENDED = 'stream_ended',           // StreamEnded后等待更多片段
   SESSION_ENDED = 'session_ended',         // SessionEnded后等待SessionStart
   FILE_WITHOUT_SESSION = 'file_no_session', // FileClosed但会话不存在
-  SEGMENT_COLLECTION = 'segment_collection' // 收集片段后等待更多片段或结算
+  SEGMENT_COLLECTION = 'segment_collection', // 收集片段后等待更多片段或结算
+  FILE_CLOSE_ALERT = 'file_close_alert'
 }
 
 /**
@@ -66,6 +67,8 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   private pendingFiles: Map<string, Array<{videoPath: string, payload: any}>> = new Map();
   // Stream事件时间戳记录(roomId -> {startTime?, endTime?})
   private streamTimestamps: Map<string, {startTime?: Date, endTime?: Date}> = new Map();
+  private fileOpeningTimestamps: Map<string, Date> = new Map();
+  private readonly FILE_CLOSE_ALERT_DELAY_MS = 60 * 1000;
   // 最大等待时间(毫秒)
   private readonly MAX_DELAY_MS = 120000; // 120秒 (2分钟)
 
@@ -159,18 +162,19 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     roomId: string,
     actionType: DelayedActionType,
     action: () => Promise<void>,
-    description: string
+    description: string,
+    delayMs = this.MAX_DELAY_MS
   ): void {
     // 清除已有的同类型定时器
     this.cancelDelayedAction(roomId, actionType);
 
-    this.logger.info(`⏳ 启动延迟处理: ${description} (等待 ${this.MAX_DELAY_MS / 1000} 秒)`);
+    this.logger.info(`⏳ 启动延迟处理: ${description} (等待 ${delayMs / 1000} 秒)`);
 
     const timer = setTimeout(async () => {
       this.logger.info(`⏰ 延迟处理超时触发: ${description}`);
       await action();
       this.removeDelayedAction(roomId, actionType);
-    }, this.MAX_DELAY_MS);
+    }, delayMs);
 
     // 保存定时器
     if (!this.delayedActions.has(roomId)) {
@@ -270,6 +274,8 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       this.logger.warn(`StreamStarted事件缺少RoomId`);
       return;
     }
+    const roomKey = String(roomId);
+    this.fileOpeningTimestamps.delete(roomKey);
 
     // 从 EventTimestamp 提取时间
     const eventTimestamp = payload.EventTimestamp;
@@ -277,8 +283,8 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       const startTime = new Date(eventTimestamp);
       
       // 记录或更新时间戳
-      const existing = this.streamTimestamps.get(roomId) || {};
-      this.streamTimestamps.set(roomId, {
+      const existing = this.streamTimestamps.get(roomKey) || {};
+      this.streamTimestamps.set(roomKey, {
         ...existing,
         startTime
       });
@@ -323,11 +329,19 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       this.logger.warn(`FileOpening事件缺少RoomId`);
       return;
     }
+    const roomKey = String(roomId);
+
+    const eventTime = payload.EventData?.FileOpenTime || payload.EventTimestamp;
+    const openTime = eventTime ? new Date(eventTime) : new Date();
+    if (!Number.isNaN(openTime.getTime())) {
+      this.fileOpeningTimestamps.set(roomKey, openTime);
+    }
 
     // 取消所有相关的延迟处理(说明有新文件开始录制了)
-    this.cancelDelayedAction(roomId, DelayedActionType.SESSION_ENDED);
-    this.cancelDelayedAction(roomId, DelayedActionType.FILE_WITHOUT_SESSION);
-    this.cancelDelayedAction(roomId, DelayedActionType.SEGMENT_COLLECTION);
+    this.cancelDelayedAction(roomKey, DelayedActionType.SESSION_ENDED);
+    this.cancelDelayedAction(roomKey, DelayedActionType.FILE_WITHOUT_SESSION);
+    this.cancelDelayedAction(roomKey, DelayedActionType.SEGMENT_COLLECTION);
+    this.cancelDelayedAction(roomKey, DelayedActionType.FILE_CLOSE_ALERT);
 
     this.logger.info(`📂 FileOpening: ${roomId} (已取消相关延迟处理)`);
   }
@@ -452,6 +466,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       this.logger.warn(`StreamEnded事件缺少RoomId`);
       return;
     }
+    const roomKey = String(roomId);
 
     // 从 EventTimestamp 提取时间并记录
     const eventTimestamp = payload.EventTimestamp;
@@ -459,8 +474,8 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       const endTime = new Date(eventTimestamp);
       
       // 记录或更新时间戳
-      const existing = this.streamTimestamps.get(roomId) || {};
-      this.streamTimestamps.set(roomId, {
+      const existing = this.streamTimestamps.get(roomKey) || {};
+      this.streamTimestamps.set(roomKey, {
         ...existing,
         endTime
       });
@@ -471,10 +486,12 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     const session = this.liveSessionManager.getSession(roomId);
     if (!session) {
       this.logger.warn(`会话不存在: ${roomId}`);
+      this.startMissingFileCloseAlert(roomKey, payload, 'StreamEnded(no session)');
       return;
     }
 
     this.logger.info(`🏁 直播结束 (收到事件): ${session.roomName} (Room: ${roomId}, 当前片段数: ${session.segments.length})`);
+    this.startMissingFileCloseAlert(roomKey, payload, 'StreamEnded');
 
     // 启动动态延迟等待
     this.startDelayedAction(
@@ -484,6 +501,32 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         await this.processStreamEnded(roomId);
       },
       `StreamEnded: ${roomId}`
+    );
+  }
+
+  private startMissingFileCloseAlert(roomId: string, payload: any, reason: string): void {
+    const roomKey = String(roomId);
+    const openedAt = this.fileOpeningTimestamps.get(roomKey);
+    if (!openedAt) {
+      this.logger.info(`跳过FileClose缺失提醒: ${roomKey} 本轮直播未观察到FileOpening`);
+      return;
+    }
+
+    this.startDelayedAction(
+      roomKey,
+      DelayedActionType.FILE_CLOSE_ALERT,
+      async () => {
+        await ProcessingAlertService.notifyMissingFileCloseAfterStreamEnd({
+          roomId: roomKey,
+          roomName: payload.EventData?.Name,
+          title: payload.EventData?.Title,
+          sessionId: payload.EventData?.SessionId,
+          eventTimestamp: payload.EventTimestamp,
+          reason
+        });
+      },
+      `FileCloseMissingAlert: ${roomKey}`,
+      this.FILE_CLOSE_ALERT_DELAY_MS
     );
   }
 
@@ -572,6 +615,13 @@ export class MikufansWebhookHandler implements IWebhookHandler {
 
     this.logger.info(`📁 文件路径: ${normalizedPath}`);
 
+    const roomId = payload.EventData?.RoomId;
+    if (roomId) {
+      const roomKey = String(roomId);
+      this.cancelDelayedAction(roomKey, DelayedActionType.FILE_CLOSE_ALERT);
+      this.fileOpeningTimestamps.delete(roomKey);
+    }
+
     // 检查文件扩展名
     const ext = path.extname(normalizedPath).toLowerCase();
     const supportedExtensions = ['.mp4', '.flv', '.mkv', '.ts', '.mov', '.m4a', '.aac', '.mp3', '.wav'];
@@ -598,7 +648,6 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     }
 
     // 收集片段到会话
-    const roomId = payload.EventData?.RoomId;
     if (roomId) {
       await this.collectSegment(roomId, normalizedPath, payload);
     } else {

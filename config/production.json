@@ -147,10 +147,10 @@
       "multiReferenceImages": {
         "enabled": false,
         "maxExtraCharacters": 2,
-        "minSpeakerScore": 0.5,
+        "minSpeakerScore": 0.64,
         "minSpeechSeconds": 8,
-        "minSpeakerMaxScore": 0.7,
-        "minSpeakerSecondsWhenLowScore": 180,
+        "minSpeakerMaxScore": 0.8,
+        "minSpeakerSecondsWhenLowScore": 900,
         "includeUnknownSpeakers": false,
         "useMentionedOnlyAsContext": true,
         "filterExtraImagesByComicScript": true,
@@ -675,7 +675,7 @@
         "multiReferenceImages": {
           "enabled": true,
           "maxExtraCharacters": 2,
-          "minSpeakerScore": 0.5,
+          "minSpeakerScore": 0.64,
           "minSpeechSeconds": 8,
           "includeUnknownSpeakers": false,
           "useMentionedOnlyAsContext": true,

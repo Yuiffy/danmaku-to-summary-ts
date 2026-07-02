@@ -166,6 +166,20 @@ class MultiReferenceComicTests(unittest.TestCase):
 
         self.assertEqual(extras, [])
 
+    def test_moderate_confidence_short_asr_mislabel_is_filtered(self):
+        self.write_sidecar(["shiori"], speakers=[{
+            "label": "Shiori",
+            "totalSpeechSeconds": 556.905,
+            "segmentCount": 65,
+            "avgScore": 0.5911,
+            "maxScore": 0.7451,
+            "isUnknown": False,
+        }])
+
+        extras = comic.resolve_extra_appeared_streamers(self.config, "25788785", str(self.highlight))
+
+        self.assertEqual(extras, [])
+
     def test_host_streamer_registry_reference_image_fills_missing_room_image(self):
         self.config["roomSettings"].pop("25788785")
 

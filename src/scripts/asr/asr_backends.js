@@ -818,10 +818,10 @@ function getMultiReferenceConfig(config = {}, roomId = null) {
     return {
         enabled: false,
         maxExtraCharacters: 2,
-        minSpeakerScore: 0.50,
+        minSpeakerScore: 0.64,
         minSpeechSeconds: 8,
-        minSpeakerMaxScore: 0.70,
-        minSpeakerSecondsWhenLowScore: 180,
+        minSpeakerMaxScore: 0.80,
+        minSpeakerSecondsWhenLowScore: 900,
         includeUnknownSpeakers: false,
         useMentionedOnlyAsContext: true,
         appendCharacterDescriptions: true,

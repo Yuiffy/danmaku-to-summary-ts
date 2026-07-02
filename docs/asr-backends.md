@@ -653,8 +653,10 @@ xxx.asr_speakers.json
       "multiReferenceImages": {
         "enabled": false,
         "maxExtraCharacters": 2,
-        "minSpeakerScore": 0.5,
+        "minSpeakerScore": 0.64,
         "minSpeechSeconds": 8,
+        "minSpeakerMaxScore": 0.8,
+        "minSpeakerSecondsWhenLowScore": 900,
         "includeUnknownSpeakers": false,
         "useMentionedOnlyAsContext": true,
         "appendCharacterDescriptions": true,
@@ -681,8 +683,10 @@ xxx.asr_speakers.json
         "multiReferenceImages": {
           "enabled": true,
           "maxExtraCharacters": 2,
-          "minSpeakerScore": 0.5,
-          "minSpeechSeconds": 8
+          "minSpeakerScore": 0.64,
+          "minSpeechSeconds": 8,
+          "minSpeakerMaxScore": 0.8,
+          "minSpeakerSecondsWhenLowScore": 900
         }
       }
     }
@@ -708,7 +712,7 @@ xxx.asr_speakers.json
 
 - 只有 `SPEAKER_00` / `SPEAKER_01`：不会触发多参考图。
 - `UNKNOWN`：不会触发。
-- `avgScore` 低于 `minSpeakerScore` 或出声时长低于 `minSpeechSeconds`：不会触发。
+- `avgScore` 低于 `minSpeakerScore`、出声时长低于 `minSpeechSeconds`，或 `maxScore` 低于 `minSpeakerMaxScore` 且出声时长短于 `minSpeakerSecondsWhenLowScore`：不会触发。
 - 没有 `speaker_score`：允许按 `minSpeechSeconds` 过滤通过，日志会说明分数缺失。
 - sidecar 缺失：生图阶段打印 INFO 并保持原逻辑。
 - 多参考图可能串角色：prompt 已约束不要混合发色、服装、配饰，但图像模型不能保证完美。
