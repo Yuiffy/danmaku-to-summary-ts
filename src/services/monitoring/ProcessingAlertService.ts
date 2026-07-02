@@ -21,6 +21,7 @@ export interface MissingFileCloseAlertDetails {
   roomName?: string;
   title?: string;
   sessionId?: string;
+  fileOpenedAt?: string;
   eventTimestamp?: string;
   reason?: string;
 }
@@ -118,6 +119,7 @@ export class ProcessingAlertService {
         `**Room**: ${details.roomName || 'unknown'} (${details.roomId})`,
         details.title ? `**Title**: ${details.title}` : undefined,
         details.sessionId ? `**SessionId**: ${details.sessionId}` : undefined,
+        details.fileOpenedAt ? `**FileOpening**: ${details.fileOpenedAt}` : undefined,
         details.eventTimestamp ? `**StreamEnded**: ${details.eventTimestamp}` : undefined,
         details.reason ? `**Reason**: ${details.reason}` : undefined,
         '**Action**: Check recorder status manually. No file recovery was attempted.'

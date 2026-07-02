@@ -67,6 +67,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   private pendingFiles: Map<string, Array<{videoPath: string, payload: any}>> = new Map();
   // Stream事件时间戳记录(roomId -> {startTime?, endTime?})
   private streamTimestamps: Map<string, {startTime?: Date, endTime?: Date}> = new Map();
+  // 只对本进程实际观察到 FileOpening 的直播报警，避免服务重启后误报历史 StreamEnded。
   private fileOpeningTimestamps: Map<string, Date> = new Map();
   private readonly FILE_CLOSE_ALERT_DELAY_MS = 60 * 1000;
   // 最大等待时间(毫秒)
@@ -521,6 +522,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
           roomName: payload.EventData?.Name,
           title: payload.EventData?.Title,
           sessionId: payload.EventData?.SessionId,
+          fileOpenedAt: openedAt.toISOString(),
           eventTimestamp: payload.EventTimestamp,
           reason
         });
