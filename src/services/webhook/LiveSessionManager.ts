@@ -57,6 +57,7 @@ export interface LiveSession {
 export class LiveSessionManager {
   private logger = getLogger('LiveSessionManager');
   private sessions: Map<string, LiveSession> = new Map();
+  private readonly reconnectGraceMs = 5 * 60 * 1000;
 
   /**
    * 创建或获取会话（使用RoomId）
@@ -64,11 +65,34 @@ export class LiveSessionManager {
   createOrGetSession(roomId: string, roomName: string, title: string): LiveSession {
     let session = this.sessions.get(roomId);
     const previousStatus = session?.status;
+    const lastSegment = session?.segments[session.segments.length - 1];
+    const now = Date.now();
+    const canResumeRecentSession = !!session &&
+      session.status !== 'collecting' &&
+      !!lastSegment &&
+      now - lastSegment.fileCloseTime.getTime() >= 0 &&
+      now - lastSegment.fileCloseTime.getTime() <= this.reconnectGraceMs;
     
     // 如果会话不存在，或者旧会话已经进入处理阶段，则重置为新直播会话。
-    // 注意：WebhookHandler 会在 30 秒内的 handleSessionStarted 中取消结算定时器
-    // 因此，如果状态已不再是 collecting，说明上一轮已经超过判定窗口或正在处理，应当作为新直播开始。
-    if (!session || session.status !== 'collecting') {
+    // 注意：WebhookHandler 会在短时间内的 handleSessionStarted 中取消结算定时器；
+    // 如果结算已经启动但又很快开播，仍应当恢复原会话，避免几秒断流被拆成两场。
+    if (canResumeRecentSession) {
+      const resumedSession = session!;
+      const resumedSegment = lastSegment!;
+      resumedSession.status = 'collecting';
+      resumedSession.roomName = roomName;
+      resumedSession.title = title;
+      resumedSession.endTime = undefined;
+      this.logger.info(`恢复最近直播会话: ${roomId}`, {
+        roomId,
+        roomName,
+        title,
+        previousStatus,
+        lastSegment: path.basename(resumedSegment.videoPath),
+        gapMs: now - resumedSegment.fileCloseTime.getTime()
+      });
+      session = resumedSession;
+    } else if (!session || session.status !== 'collecting') {
       session = {
         roomId,
         roomName,
@@ -104,12 +128,30 @@ export class LiveSessionManager {
     }
 
     if (session.status !== 'collecting') {
-      this.logger.warn(`会话不在收集状态，跳过添加片段: ${roomId}`, {
-        roomId,
-        status: session.status,
-        videoPath: path.basename(videoPath)
-      });
-      return false;
+      const lastSegment = session.segments[session.segments.length - 1];
+      const reconnectGapMs = lastSegment
+        ? fileOpenTime.getTime() - lastSegment.fileCloseTime.getTime()
+        : Number.POSITIVE_INFINITY;
+
+      if (lastSegment && reconnectGapMs >= 0 && reconnectGapMs <= this.reconnectGraceMs) {
+        const previousStatus = session.status;
+        session.status = 'collecting';
+        session.endTime = undefined;
+        this.logger.info(`恢复最近直播会话以收集续播片段: ${roomId}`, {
+          roomId,
+          previousStatus,
+          reconnectGapMs,
+          previousSegment: path.basename(lastSegment.videoPath),
+          videoPath: path.basename(videoPath)
+        });
+      } else {
+        this.logger.warn(`会话不在收集状态，跳过添加片段: ${roomId}`, {
+          roomId,
+          status: session.status,
+          videoPath: path.basename(videoPath)
+        });
+        return false;
+      }
     }
 
     const segment: LiveSegment = {

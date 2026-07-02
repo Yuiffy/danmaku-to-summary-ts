@@ -1227,25 +1227,29 @@ export class DelayedReplyService implements IDelayedReplyService {
         this.timers.delete(task.taskId);
       }
 
-      if (this.isTaskExpiredForCurrentStatus(task)) {
-        await this.suppressStaleTask(task, 'stale delayed reply suppressed before execution');
-        return;
-      }
-
       if (task.status === 'waiting_comic') {
+        if (this.isTaskExpiredForCurrentStatus(task)) {
+          await this.suppressStaleTask(task, 'stale delayed reply suppressed before execution');
+          return;
+        }
+
         await this.executeSupplementalComicReply(task);
         return;
       }
 
       // 更新任务状态
       const liveStatus = await this.getRoomLiveStatusSafely(task.roomId);
-      const canDeferForLiveContinuation = this.restoredTaskIds.has(task.taskId) || !!task.deferredForActiveLive;
-      if (canDeferForLiveContinuation && this.isSameActiveLiveForTask(task, liveStatus)) {
+      if (this.isSameActiveLiveForTask(task, liveStatus)) {
         await this.deferTaskForActiveLive(task, liveStatus!);
         return;
       }
 
       if (await this.deferTaskWaitingForReplacement(task)) {
+        return;
+      }
+
+      if (this.isTaskExpiredForCurrentStatus(task)) {
+        await this.suppressStaleTask(task, 'stale delayed reply suppressed before execution');
         return;
       }
 

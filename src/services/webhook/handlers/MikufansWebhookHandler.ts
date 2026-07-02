@@ -1200,18 +1200,63 @@ export class MikufansWebhookHandler implements IWebhookHandler {
    */
   private extractLiveTimeFallback(videoPath: string, roomId: string): { startTime?: Date; endTime?: Date; source: string } | null {
     try {
+      const fileName = path.basename(videoPath, path.extname(videoPath));
+      const recordingTimeMatch = fileName.match(/(?:录制-)?\d+-(\d{8})-(\d{6})-(\d{3})-/);
+      let recordingStartTime: Date | undefined;
+      if (recordingTimeMatch) {
+        const dateStr = recordingTimeMatch[1];
+        const timeStr = recordingTimeMatch[2];
+        const year = parseInt(dateStr.substring(0, 4));
+        const month = parseInt(dateStr.substring(4, 6)) - 1;
+        const day = parseInt(dateStr.substring(6, 8));
+        const hour = parseInt(timeStr.substring(0, 2));
+        const minute = parseInt(timeStr.substring(2, 4));
+        const second = parseInt(timeStr.substring(4, 6));
+        const parsedStart = new Date(year, month, day, hour, minute, second);
+        if (!Number.isNaN(parsedStart.getTime()) && year >= 2020 && year <= 2100) {
+          recordingStartTime = parsedStart;
+        }
+      }
+
+      let fileMtime: Date | undefined;
+      try {
+        fileMtime = fs.statSync(videoPath).mtime;
+      } catch {
+        fileMtime = undefined;
+      }
+
       // 方案1（最优先）: 从 streamTimestamps 获取（来自 StreamStarted/StreamEnded 事件）
       const timestamps = this.streamTimestamps.get(roomId);
       if (timestamps && (timestamps.startTime || timestamps.endTime)) {
-        this.logger.info(`🎯 从Stream事件记录中找到时间: start=${timestamps.startTime?.toISOString() || 'undefined'}, end=${timestamps.endTime?.toISOString() || 'undefined'}`);
+        let startTime = timestamps.startTime;
+        let endTime = timestamps.endTime;
+        const toleranceMs = 10 * 60 * 1000;
+
+        if (recordingStartTime) {
+          const recordingStartMs = recordingStartTime.getTime();
+          if (startTime && Math.abs(startTime.getTime() - recordingStartMs) > toleranceMs) {
+            this.logger.warn(`Stream开始时间与当前文件名不匹配，改用文件名时间: stream=${startTime.toISOString()}, file=${recordingStartTime.toISOString()}, fileName=${fileName}`);
+            startTime = recordingStartTime;
+          }
+
+          if (endTime && endTime.getTime() < recordingStartMs - toleranceMs) {
+            this.logger.warn(`Stream结束时间早于当前文件开始时间，丢弃旧结束时间: streamEnd=${endTime.toISOString()}, fileStart=${recordingStartTime.toISOString()}, fileName=${fileName}`);
+            endTime = fileMtime && fileMtime.getTime() >= recordingStartMs ? fileMtime : undefined;
+          }
+        }
+
+        if (startTime && endTime && endTime.getTime() < startTime.getTime()) {
+          this.logger.warn(`Stream时间范围异常，使用文件修改时间兜底: start=${startTime.toISOString()}, end=${endTime.toISOString()}, fileName=${fileName}`);
+          endTime = fileMtime && fileMtime.getTime() >= startTime.getTime() ? fileMtime : undefined;
+        }
+
+        this.logger.info(`🎯 从Stream事件记录中找到时间: start=${startTime?.toISOString() || 'undefined'}, end=${endTime?.toISOString() || 'undefined'}`);
         return {
-          startTime: timestamps.startTime,
-          endTime: timestamps.endTime,
+          startTime,
+          endTime,
           source: 'Stream事件记录'
         };
       }
-      
-      const fileName = path.basename(videoPath, path.extname(videoPath));
       
       // 方案2: 从文件名解析时间戳
       // 格式: 录制-1820703922-20260123-180036-344-鼠继续过鸣潮1.0

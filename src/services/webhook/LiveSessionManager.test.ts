@@ -30,6 +30,79 @@ describe('LiveSessionManager nearby segment recovery', () => {
 
   afterEach(() => {
     fs.rmSync(tempDir, { recursive: true, force: true });
+    jest.useRealTimers();
+  });
+
+  test('resumes a recently processing session as the same live after a short reconnect', () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date(2026, 6, 3, 1, 12, 55));
+
+    const manager = new LiveSessionManager();
+    const roomId = '25788785';
+    const first = writeRecording(
+      tempDir,
+      `${RECORD_PREFIX}-25788785-20260703-011248-481-live.flv`,
+      new Date(2026, 6, 3, 1, 12, 52)
+    );
+
+    manager.createOrGetSession(roomId, 'SUI', 'live');
+    addCurrentSegment(
+      manager,
+      roomId,
+      first,
+      new Date(2026, 6, 3, 1, 12, 48),
+      new Date(2026, 6, 3, 1, 12, 52)
+    );
+    manager.markAsProcessing(roomId);
+
+    const session = manager.createOrGetSession(roomId, 'SUI', 'live continued');
+
+    expect(session.status).toBe('collecting');
+    expect(session.title).toBe('live continued');
+    expect(session.segments.map(segment => path.basename(segment.videoPath))).toEqual([
+      path.basename(first)
+    ]);
+  });
+
+  test('accepts a continuation segment while previous session is already processing', () => {
+    const manager = new LiveSessionManager();
+    const roomId = '25788785';
+    const first = writeRecording(
+      tempDir,
+      `${RECORD_PREFIX}-25788785-20260703-011240-591-live.flv`,
+      new Date(2026, 6, 3, 1, 12, 47)
+    );
+    const continuation = writeRecording(
+      tempDir,
+      `${RECORD_PREFIX}-25788785-20260703-011248-481-live.flv`,
+      new Date(2026, 6, 3, 1, 52, 52)
+    );
+
+    manager.createOrGetSession(roomId, 'SUI', 'live');
+    addCurrentSegment(
+      manager,
+      roomId,
+      first,
+      new Date(2026, 6, 3, 1, 12, 40),
+      new Date(2026, 6, 3, 1, 12, 47)
+    );
+    manager.markAsProcessing(roomId);
+
+    const added = manager.addSegment(
+      roomId,
+      continuation,
+      continuation.replace(/\.flv$/, '.xml'),
+      new Date(2026, 6, 3, 1, 12, 48),
+      new Date(2026, 6, 3, 1, 52, 52),
+      new Date(2026, 6, 3, 1, 52, 52)
+    );
+
+    expect(added).toBe(true);
+    expect(manager.getSession(roomId)?.status).toBe('collecting');
+    expect(manager.getSession(roomId)?.segments.map(segment => path.basename(segment.videoPath))).toEqual([
+      path.basename(first),
+      path.basename(continuation)
+    ]);
   });
 
   test('recovers same-room adjacent recordings despite title changes and bak location', () => {
