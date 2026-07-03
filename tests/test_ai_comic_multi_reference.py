@@ -409,6 +409,28 @@ class MultiReferenceComicTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in filtered], ["mizuki"])
         self.assertEqual(filtered[0]["_matchedComicLabel"], "Mizuki")
 
+    def test_kloa_common_nickname_triggers_and_survives_script_filter(self):
+        self.config["ai"]["streamerRegistry"]["kloa"] = {
+            "displayName": "克罗雅Kloa",
+            "mentionLabels": ["克罗雅", "雅小妹", "牙小妹儿"],
+            "aliases": ["雅小妹", "牙小妹儿"],
+            "referenceImages": [str(self.extra)],
+        }
+        self.highlight.write_text("今天十六在雅小妹电脑前直播，还翻了雅小妹的文件夹。", encoding="utf-8")
+
+        extras = comic.resolve_extra_appeared_streamers(self.config, "25788785", str(self.highlight))
+        filtered = comic.filter_extra_streamers_for_image_prompt(
+            extras,
+            "分镜一：十六萤坐在雅小妹的电脑前。",
+            self.config,
+            "25788785",
+        )
+
+        self.assertEqual([item["id"] for item in extras], ["kloa"])
+        self.assertEqual(extras[0]["_matchedMentionLabel"], "雅小妹")
+        self.assertEqual([item["id"] for item in filtered], ["kloa"])
+        self.assertEqual(filtered[0]["_matchedComicLabel"], "雅小妹")
+
     def test_max_extra_characters_applies(self):
         second = self.root / "rhea.png"
         second.write_bytes(b"x")
