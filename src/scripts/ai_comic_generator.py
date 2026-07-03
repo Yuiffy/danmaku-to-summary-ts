@@ -727,6 +727,7 @@ def find_mention_match(
     highlight_text: str,
     streamer: Dict[str, Any],
     multi_config: Optional[Dict[str, Any]] = None,
+    strict_short_mentions: bool = True,
 ) -> Optional[tuple[str, int, int]]:
     multi_config = multi_config or {}
     spoken_text = strip_highlight_chat_comments(highlight_text)
@@ -743,7 +744,7 @@ def find_mention_match(
         spoken_count = count_normalized_occurrences(spoken_text, label_text)
         if spoken_count <= 0 and total_count < min_danmaku_only:
             continue
-        if is_short_cjk_mention_label(label_text):
+        if strict_short_mentions and is_short_cjk_mention_label(label_text):
             if spoken_count < min_short_spoken and total_count < min_short_total:
                 continue
         return label_text, spoken_count, total_count
@@ -864,6 +865,7 @@ def resolve_mentioned_streamers(
     highlight_path: Optional[str],
     already_streamer_ids: Optional[set[str]] = None,
     highlight_text: Optional[str] = None,
+    strict_short_mentions: bool = True,
 ) -> list[dict]:
     multi_config = get_multi_reference_config(config, room_id)
     include_mentions = multi_config.get("includeMentionedStreamers", multi_config.get("useMentionedOnlyAsContext", True))
@@ -887,7 +889,12 @@ def resolve_mentioned_streamers(
             continue
         if allowed_extra_ids and streamer_id not in allowed_extra_ids:
             continue
-        mention_match = find_mention_match(highlight_text, entry, multi_config)
+        mention_match = find_mention_match(
+            highlight_text,
+            entry,
+            multi_config,
+            strict_short_mentions=strict_short_mentions,
+        )
         if not mention_match:
             continue
         matched_label, spoken_count, total_count = mention_match
@@ -2349,7 +2356,9 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
             None,
             {streamer.get("id") for streamer in extra_streamers if streamer.get("id")},
             highlight_text=comic_text,
+            strict_short_mentions=False,
         )
+        comic_text_added_streamers = False
         if comic_text_mentioned_streamers:
             added_streamers = []
             for streamer in comic_text_mentioned_streamers:
@@ -2362,6 +2371,7 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
                 extra_streamers.append(streamer)
                 added_streamers.append(streamer)
             if added_streamers:
+                comic_text_added_streamers = True
                 print("[INFO]  从漫画脚本补充到额外主播: " + ", ".join(
                     f"{item.get('displayName', item['id'])}({item.get('_matchedMentionLabel')})"
                     for item in added_streamers
@@ -2386,7 +2396,7 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
             config,
             room_id,
         )
-        if [item.get("id") for item in image_extra_streamers] != [item.get("id") for item in extra_streamers]:
+        if comic_text_added_streamers or [item.get("id") for item in image_extra_streamers] != [item.get("id") for item in extra_streamers]:
             all_images = collect_all_images(room_id, highlight_path, extra_streamers=image_extra_streamers)
             reference_image_path = all_images if all_images else None
             prompt, comic_text, is_comic_generated = build_comic_prompt(

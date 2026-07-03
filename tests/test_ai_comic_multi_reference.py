@@ -438,7 +438,7 @@ class MultiReferenceComicTests(unittest.TestCase):
         }
         self.config["ai"]["streamerRegistry"]["liko"] = {
             "displayName": "莉蔻Liko",
-            "mentionLabels": ["Liko", "侏儒兔"],
+            "mentionLabels": ["莉蔻", "Liko", "侏儒兔"],
             "referenceImages": [str(self.mentioned)],
         }
         self.config["roomSettings"]["25788785"] = {
@@ -450,17 +450,18 @@ class MultiReferenceComicTests(unittest.TestCase):
             }
         }
 
-        comic_text = "Panel 1: TenSix talks with YaXiaomei. Panel 2: 侏儒兔 is sitting nearby with a carrot popsicle."
+        comic_text = "分镜1：十六萤把莉蔻按在桌上，同时和雅小妹掰手腕。"
         mentioned = comic.resolve_mentioned_streamers(
             self.config,
             "25788785",
             None,
             {"kloa"},
             highlight_text=comic_text,
+            strict_short_mentions=False,
         )
 
         self.assertEqual([item["id"] for item in mentioned], ["liko"])
-        self.assertEqual(mentioned[0]["_matchedMentionLabel"], "侏儒兔")
+        self.assertEqual(mentioned[0]["_matchedMentionLabel"], "莉蔻")
 
     def test_max_extra_characters_applies(self):
         second = self.root / "rhea.png"
