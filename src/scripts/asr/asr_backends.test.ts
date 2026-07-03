@@ -277,6 +277,65 @@ describe('asr_backends', () => {
       .toBe('十六和克罗雅都在，十六也来了');
   });
 
+  test('routing corrections normalize 1741667419 kloa and liko nickname variants', () => {
+    const resolved = asr.resolveAsrHotwords({
+      asr: {
+        default_backend: 'paraformer',
+        routing: [
+          {
+            match: { room_id: '1741667419' },
+            backend: 'paraformer',
+            corrections: {
+              safe: {
+                '牙小妹': '雅小妹',
+                '牙小妹儿': '雅小妹',
+                '兔小妹': '莉蔻',
+                '兔小妹儿': '莉蔻',
+                '牙牙': '雅雅',
+                '雅牙': '雅雅'
+              }
+            }
+          }
+        ]
+      }
+    }, { room_id: '1741667419' });
+
+    expect(asr.applyCorrectionsToText('今天牙小妹儿就是坐她今天晚上第一次坐在后排。左手摸我右手摸这个兔小妹儿。大家不是这个兔兔三。我跟我跟牙小妹是一个五五开的趋势。牙牙也没有吃那么贵的呀。', resolved.corrections))
+      .toBe('今天雅小妹就是坐她今天晚上第一次坐在后排。左手摸我右手摸这个莉蔻。大家不是这个兔兔三。我跟我跟雅小妹是一个五五开的趋势。雅雅也没有吃那么贵的呀。');
+  });
+
+  test('routing corrections normalize 1986461465 kloa and liko nickname variants', () => {
+    const resolved = asr.resolveAsrHotwords({
+      asr: {
+        default_backend: 'paraformer',
+        routing: [
+          {
+            match: { room_id: '1986461465' },
+            backend: 'paraformer',
+            corrections: {
+              safe: {
+                '克罗亚': '克罗雅',
+                '克罗娅': '克罗雅',
+                '克洛雅': '克罗雅',
+                '克莱雅': '克罗雅',
+                '柯莱雅': '克罗雅',
+                '妮蔻': '莉蔻',
+                '妮口': '莉蔻',
+                '妮狗': '莉蔻',
+                '石榴': '十六',
+                '十六营': '十六',
+                '十六姨': '十六'
+              }
+            }
+          }
+        ]
+      }
+    }, { room_id: '1986461465' });
+
+    expect(asr.applyCorrectionsToText('今天妮蔻妮口妮狗都在，克罗亚和石榴也来了，十六姨还在麦克风前。', resolved.corrections))
+      .toBe('今天莉蔻莉蔻莉蔻都在，克罗雅和十六也来了，十六还在麦克风前。');
+  });
+
   test('logs correction details with original matched text', () => {
     const result = {
       backend: 'test',

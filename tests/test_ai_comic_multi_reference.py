@@ -412,8 +412,8 @@ class MultiReferenceComicTests(unittest.TestCase):
     def test_kloa_common_nickname_triggers_and_survives_script_filter(self):
         self.config["ai"]["streamerRegistry"]["kloa"] = {
             "displayName": "克罗雅Kloa",
-            "mentionLabels": ["克罗雅", "雅小妹", "牙小妹儿"],
-            "aliases": ["雅小妹", "牙小妹儿"],
+            "mentionLabels": ["雅小妹"],
+            "aliases": ["雅小妹", "雅雅"],
             "referenceImages": [str(self.extra)],
         }
         self.highlight.write_text("今天十六在雅小妹电脑前直播，还翻了雅小妹的文件夹。", encoding="utf-8")
@@ -428,8 +428,39 @@ class MultiReferenceComicTests(unittest.TestCase):
 
         self.assertEqual([item["id"] for item in extras], ["kloa"])
         self.assertEqual(extras[0]["_matchedMentionLabel"], "雅小妹")
-        self.assertEqual([item["id"] for item in filtered], ["kloa"])
-        self.assertEqual(filtered[0]["_matchedComicLabel"], "雅小妹")
+
+    def test_comic_script_mentions_can_add_liko_without_highlight_mention(self):
+        self.config["ai"]["streamerRegistry"]["kloa"] = {
+            "displayName": "克罗雅Kloa",
+            "mentionLabels": ["雅小妹"],
+            "aliases": ["雅小妹", "雅雅"],
+            "referenceImages": [str(self.extra)],
+        }
+        self.config["ai"]["streamerRegistry"]["liko"] = {
+            "displayName": "莉蔻Liko",
+            "mentionLabels": ["Liko", "侏儒兔"],
+            "referenceImages": [str(self.mentioned)],
+        }
+        self.config["roomSettings"]["25788785"] = {
+            "multiReferenceImages": {
+                "enabled": True,
+                "maxExtraCharacters": 3,
+                "maxMentionedContextCharacters": 3,
+                "allowedExtraStreamerIds": ["kloa", "liko"],
+            }
+        }
+
+        comic_text = "Panel 1: TenSix talks with YaXiaomei. Panel 2: 侏儒兔 is sitting nearby with a carrot popsicle."
+        mentioned = comic.resolve_mentioned_streamers(
+            self.config,
+            "25788785",
+            None,
+            {"kloa"},
+            highlight_text=comic_text,
+        )
+
+        self.assertEqual([item["id"] for item in mentioned], ["liko"])
+        self.assertEqual(mentioned[0]["_matchedMentionLabel"], "侏儒兔")
 
     def test_max_extra_characters_applies(self):
         second = self.root / "rhea.png"

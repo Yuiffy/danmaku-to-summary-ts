@@ -863,13 +863,15 @@ def resolve_mentioned_streamers(
     room_id: Optional[str],
     highlight_path: Optional[str],
     already_streamer_ids: Optional[set[str]] = None,
+    highlight_text: Optional[str] = None,
 ) -> list[dict]:
     multi_config = get_multi_reference_config(config, room_id)
     include_mentions = multi_config.get("includeMentionedStreamers", multi_config.get("useMentionedOnlyAsContext", True))
     if not include_mentions:
         return []
 
-    highlight_text = read_highlight_text_for_mentions(highlight_path)
+    if highlight_text is None:
+        highlight_text = read_highlight_text_for_mentions(highlight_path)
     if not highlight_text:
         return []
 
@@ -2226,6 +2228,8 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
     # 注意：这里检查的是图像生成API的启用状态，不是文本生成API
     use_google = config["aiServices"].get("googleImage", {}).get("enabled", False)
     use_tuzi = config["aiServices"].get("tuZi", {}).get("enabled", False)
+    multi_config = get_multi_reference_config(config, room_id)
+    max_extra = max(0, int(multi_config.get("maxExtraCharacters") or 0))
     lock_path = None
     lock_acquired = False
     
@@ -2338,6 +2342,30 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
             existing_comic=comic_text,
             extra_streamers=extra_streamers
         )
+
+        comic_text_mentioned_streamers = resolve_mentioned_streamers(
+            config,
+            room_id,
+            None,
+            {streamer.get("id") for streamer in extra_streamers if streamer.get("id")},
+            highlight_text=comic_text,
+        )
+        if comic_text_mentioned_streamers:
+            added_streamers = []
+            for streamer in comic_text_mentioned_streamers:
+                streamer_id = streamer.get("id")
+                if streamer_id and any(existing.get("id") == streamer_id for existing in extra_streamers):
+                    continue
+                if len(extra_streamers) >= max_extra:
+                    print(f"[INFO]  额外主播达到上限 maxExtraCharacters={max_extra}，跳过漫画脚本提到主播 {streamer_id}")
+                    continue
+                extra_streamers.append(streamer)
+                added_streamers.append(streamer)
+            if added_streamers:
+                print("[INFO]  从漫画脚本补充到额外主播: " + ", ".join(
+                    f"{item.get('displayName', item['id'])}({item.get('_matchedMentionLabel')})"
+                    for item in added_streamers
+                ))
 
         # 如果脚本生成失败（使用原文作为备选），则不生成图片
         if not is_comic_generated:
