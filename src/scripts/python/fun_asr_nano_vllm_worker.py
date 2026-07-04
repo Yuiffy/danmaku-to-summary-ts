@@ -5,7 +5,9 @@ import sys
 import traceback
 
 from sensevoice_transcribe import (
+    GpuThrottle,
     StageTimeout,
+    log_progress,
     normalize_segments,
     resolve_cached_model_name,
     suppress_model_output,
@@ -52,6 +54,15 @@ def build_pipeline(config):
     resolved_vad_model = resolve_cached_model_name(config.get("vad_model", "fsmn-vad")) if config.get("vad_model") else None
     resolved_spk_model = resolve_cached_model_name(config.get("spk_model")) if config.get("enable_speaker") else None
     device_name = "cuda:0" if device == "cuda" else device
+    gpu_throttle = GpuThrottle(config, device)
+    if gpu_throttle.enabled:
+        log_progress(
+            "GPU 自适应节流已启用: "
+            f"busy_sm_threshold={gpu_throttle.busy_sm_threshold:g}%, "
+            f"busy_mem_threshold={gpu_throttle.busy_mem_threshold:g}%, "
+            f"check_interval_s={gpu_throttle.check_interval_s:g}, "
+            f"wait_s={gpu_throttle.wait_s:g}"
+        )
 
     spk_kwargs = None
     if resolved_spk_model:
@@ -61,8 +72,9 @@ def build_pipeline(config):
             }
         }
 
+    gpu_throttle.wait_if_busy("Fun-ASR-Nano vLLM worker 加载")
     with StageTimeout(config.get("model_load_timeout_s", 600), "Fun-ASR-Nano vLLM worker 加载"):
-        return FunASRNanoVLLMPipeline(
+        model = FunASRNanoVLLMPipeline(
             model=resolved_model,
             vad_model=resolved_vad_model,
             vad_kwargs=config.get("vad_kwargs") or None,
@@ -76,13 +88,16 @@ def build_pipeline(config):
             max_model_len=int(config.get("max_model_len", 4096) or 4096),
             enforce_eager=bool(config.get("enforce_eager", False)),
         )
+    return model, gpu_throttle
 
 
-def transcribe(model, config, job):
+def transcribe(model, config, job, gpu_throttle=None):
     audio_path = job.get("audio_path")
     if not audio_path or not os.path.exists(audio_path):
         raise FileNotFoundError(f"输入音频不存在: {audio_path or '未提供 audio_path'}")
 
+    if gpu_throttle:
+        gpu_throttle.wait_if_busy("Fun-ASR-Nano vLLM worker 转写")
     with StageTimeout(job.get("asr_timeout_s", config.get("process_timeout_s", 3600)), "Fun-ASR-Nano vLLM worker 转写"):
         with suppress_model_output():
             results = model.generate(
@@ -106,6 +121,7 @@ def transcribe(model, config, job):
 def main():
     config = None
     model = None
+    gpu_throttle = None
     original_stdout = sys.stdout
 
     for message in read_messages():
@@ -120,7 +136,7 @@ def main():
             try:
                 config = message.get("config") or {}
                 with contextlib.redirect_stdout(sys.stderr):
-                    model = build_pipeline(config)
+                    model, gpu_throttle = build_pipeline(config)
                 write_message({"type": "ready", "id": msg_id, "backend": "fun_asr_nano_vllm"})
             except SystemExit:
                 raise
@@ -139,7 +155,7 @@ def main():
                 continue
             try:
                 with contextlib.redirect_stdout(sys.stderr):
-                    result = transcribe(model, config, message)
+                    result = transcribe(model, config, message, gpu_throttle)
                 write_message({"type": "result", "id": msg_id, "result": result})
             except Exception as exc:
                 write_message({

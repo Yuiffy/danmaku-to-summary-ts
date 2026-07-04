@@ -14,6 +14,18 @@ const BACKEND_ALIASES = new Map([
     ['paraformer-zh', 'paraformer']
 ]);
 
+const DEFAULT_GPU_THROTTLE = {
+    enabled: true,
+    busy_sm_threshold: 25,
+    busy_mem_threshold: 25,
+    busy_fb_threshold_mb: 512,
+    check_interval_s: 10,
+    wait_s: 20,
+    max_wait_s: 0,
+    pmon_sample_count: 2,
+    segment_paraformer: true
+};
+
 const DEFAULT_ASR_CONFIG = {
     default_backend: 'paraformer',
     backend: undefined,
@@ -38,7 +50,8 @@ const DEFAULT_ASR_CONFIG = {
         vad_max_single_segment_time_ms: 60000,
         batch_size_s: 300,
         batch_size_threshold_s: 60,
-        process_timeout_s: 1800,
+        process_timeout_s: 7200,
+        gpu_throttle: DEFAULT_GPU_THROTTLE,
         enable_speaker: true,
         preset_spk_num: null,
         speaker_merge_threshold: 0.78,
@@ -60,7 +73,8 @@ const DEFAULT_ASR_CONFIG = {
         vad_max_single_segment_time_ms: 60000,
         batch_size_s: 300,
         batch_size_threshold_s: 60,
-        process_timeout_s: 1800,
+        process_timeout_s: 7200,
+        gpu_throttle: DEFAULT_GPU_THROTTLE,
         enable_speaker: true,
         preset_spk_num: null,
         speaker_merge_threshold: 0.78,
@@ -79,7 +93,8 @@ const DEFAULT_ASR_CONFIG = {
         python_args: [],
         python_path_map: [],
         use_itn: true,
-        process_timeout_s: 3600,
+        process_timeout_s: 10800,
+        gpu_throttle: DEFAULT_GPU_THROTTLE,
         enable_speaker: true,
         preset_spk_num: null,
         speaker_merge_threshold: 0.78,
@@ -109,7 +124,8 @@ const DEFAULT_ASR_CONFIG = {
         vad_max_single_segment_time_ms: 60000,
         batch_size_s: 300,
         batch_size_threshold_s: 60,
-        process_timeout_s: 1800,
+        process_timeout_s: 7200,
+        gpu_throttle: DEFAULT_GPU_THROTTLE,
         enable_speaker: true,
         preset_spk_num: null,
         speaker_merge_threshold: 0.78,

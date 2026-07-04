@@ -146,6 +146,18 @@ export interface AsrPythonRuntimeConfig {
   python_path_map?: Array<{ from: string; to: string }> | Record<string, string>;
 }
 
+export interface AsrGpuThrottleConfig {
+  enabled?: boolean;
+  busy_sm_threshold?: number;
+  busy_mem_threshold?: number;
+  busy_fb_threshold_mb?: number;
+  check_interval_s?: number;
+  wait_s?: number;
+  max_wait_s?: number;
+  pmon_sample_count?: number;
+  segment_paraformer?: boolean;
+}
+
 export interface AsrConfig {
   default_backend: AsrBackendName;
   backend?: AsrBackendName;
@@ -167,6 +179,7 @@ export interface AsrConfig {
     max_vad_segment_s?: number;
     merge_length_s?: number;
     process_timeout_s?: number;
+    gpu_throttle?: boolean | AsrGpuThrottleConfig;
     enable_speaker: boolean;
     preset_spk_num?: number | null;
     speaker_merge_threshold?: number;
@@ -185,6 +198,7 @@ export interface AsrConfig {
     max_vad_segment_s?: number;
     merge_length_s?: number;
     process_timeout_s?: number;
+    gpu_throttle?: boolean | AsrGpuThrottleConfig;
     enable_speaker: boolean;
     preset_spk_num?: number | null;
     speaker_merge_threshold?: number;
@@ -201,6 +215,7 @@ export interface AsrConfig {
     device: 'cuda' | 'cpu' | string;
     use_itn: boolean;
     process_timeout_s?: number;
+    gpu_throttle?: boolean | AsrGpuThrottleConfig;
     enable_speaker: boolean;
     preset_spk_num?: number | null;
     speaker_merge_threshold?: number;
@@ -228,6 +243,7 @@ export interface AsrConfig {
     batch_size_s?: number;
     batch_size_threshold_s?: number;
     process_timeout_s?: number;
+    gpu_throttle?: boolean | AsrGpuThrottleConfig;
     enable_speaker: boolean;
     preset_spk_num?: number | null;
     speaker_merge_threshold?: number;

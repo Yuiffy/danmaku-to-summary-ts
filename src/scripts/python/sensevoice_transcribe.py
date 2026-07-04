@@ -3,7 +3,9 @@ import contextlib
 import os
 import re
 import signal
+import subprocess
 import sys
+import time
 import traceback
 
 
@@ -42,6 +44,162 @@ class StageTimeout:
             signal.alarm(0)
             signal.signal(signal.SIGALRM, self.previous_handler)
         return False
+
+
+def coerce_bool(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+class GpuThrottle:
+    def __init__(self, payload, device):
+        config = payload.get("gpu_throttle")
+        if isinstance(config, bool):
+            config = {"enabled": config}
+        if not isinstance(config, dict):
+            config = {}
+
+        self.enabled = coerce_bool(config.get("enabled"), False) and str(device).startswith("cuda")
+        self.nvidia_smi = str(config.get("nvidia_smi") or "nvidia-smi")
+        self.busy_sm_threshold = float(config.get("busy_sm_threshold", 25) or 25)
+        self.busy_mem_threshold = float(config.get("busy_mem_threshold", 25) or 25)
+        self.busy_fb_threshold_mb = float(config.get("busy_fb_threshold_mb", 512) or 512)
+        self.check_interval_s = max(1.0, float(config.get("check_interval_s", 10) or 10))
+        self.wait_s = max(1.0, float(config.get("wait_s", 20) or 20))
+        self.max_wait_s = max(0.0, float(config.get("max_wait_s", 0) or 0))
+        self.sample_count = max(1, int(float(config.get("pmon_sample_count", 2) or 2)))
+        self.command_timeout_s = max(2.0, float(config.get("command_timeout_s", 8) or 8))
+        self.segment_paraformer = coerce_bool(config.get("segment_paraformer"), True)
+        self.last_check_at = 0.0
+        self.last_busy = False
+        self.failure_warned = False
+        self.self_pids = {os.getpid()}
+        if coerce_bool(config.get("ignore_parent_pid"), True):
+            try:
+                self.self_pids.add(os.getppid())
+            except Exception:
+                pass
+        for pid in config.get("ignore_pids") or []:
+            try:
+                self.self_pids.add(int(pid))
+            except Exception:
+                pass
+
+    @staticmethod
+    def _parse_metric(value):
+        text = str(value or "").strip()
+        if not text or text == "-":
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            return None
+
+    def _sample_gpu_processes(self):
+        cmd = [self.nvidia_smi, "pmon", "-c", str(self.sample_count), "-s", "um"]
+        kwargs = {
+            "capture_output": True,
+            "text": True,
+            "timeout": self.command_timeout_s,
+        }
+        if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        proc = subprocess.run(cmd, **kwargs)
+        if proc.returncode != 0:
+            raise RuntimeError((proc.stderr or proc.stdout or "nvidia-smi pmon failed").strip())
+
+        processes = []
+        for line in proc.stdout.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if len(parts) < 11:
+                continue
+            try:
+                pid = int(parts[1])
+            except ValueError:
+                continue
+            processes.append({
+                "pid": pid,
+                "type": parts[2],
+                "sm": self._parse_metric(parts[3]),
+                "mem": self._parse_metric(parts[4]),
+                "fb_mb": self._parse_metric(parts[9]),
+                "name": parts[11] if len(parts) > 11 else "unknown",
+            })
+        return processes
+
+    def _is_gpu_busy(self):
+        busy = []
+        for item in self._sample_gpu_processes():
+            if item["pid"] in self.self_pids:
+                continue
+            sm = item.get("sm")
+            mem = item.get("mem")
+            fb_mb = item.get("fb_mb")
+            if (
+                (sm is not None and sm >= self.busy_sm_threshold)
+                or (mem is not None and mem >= self.busy_mem_threshold)
+                or (fb_mb is not None and fb_mb >= self.busy_fb_threshold_mb)
+            ):
+                busy.append(item)
+        if not busy:
+            return False, ""
+        busy.sort(key=lambda item: max(item.get("sm") or 0, item.get("mem") or 0), reverse=True)
+        item = busy[0]
+        return True, (
+            f"pid={item['pid']} name={item['name']} "
+            f"sm={item.get('sm')}% mem={item.get('mem')}% fb={item.get('fb_mb')}MB"
+        )
+
+    def wait_if_busy(self, stage):
+        if not self.enabled:
+            return
+        now = time.monotonic()
+        if not self.last_busy and now - self.last_check_at < self.check_interval_s:
+            return
+
+        waited = 0.0
+        while True:
+            try:
+                busy, reason = self._is_gpu_busy()
+            except Exception as exc:
+                if not self.failure_warned:
+                    log_progress(f"GPU 节流检测不可用，继续 ASR: {exc}")
+                    self.failure_warned = True
+                self.last_busy = False
+                self.last_check_at = time.monotonic()
+                return
+
+            self.last_busy = busy
+            self.last_check_at = time.monotonic()
+            if not busy:
+                if waited > 0:
+                    log_progress(f"GPU 已空闲，继续 {stage}，已等待 {waited:.0f}s")
+                return
+
+            if waited <= 0:
+                log_progress(f"检测到其他 GPU 进程繁忙，暂停 {stage}: {reason}")
+            if self.max_wait_s > 0 and waited >= self.max_wait_s:
+                log_progress(f"GPU 节流等待达到上限 {self.max_wait_s:.0f}s，继续 {stage}")
+                return
+
+            sleep_s = self.wait_s
+            if self.max_wait_s > 0:
+                sleep_s = min(sleep_s, max(1.0, self.max_wait_s - waited))
+            time.sleep(sleep_s)
+            waited += sleep_s
 
 
 def fail(message, detail=None, code=1):
@@ -250,7 +408,7 @@ def generate_with_optional_hotword(model, payload, backend_name, **kwargs):
     return model.generate(**kwargs)
 
 
-def load_punc_model(AutoModel, payload, device):
+def load_punc_model(AutoModel, payload, device, gpu_throttle=None):
     global PUNC_MODEL_WARNED
     punc_model_name = resolve_cached_model_name(payload.get("punc_model"))
     if not punc_model_name:
@@ -258,6 +416,8 @@ def load_punc_model(AutoModel, payload, device):
 
     try:
         log_progress(f"加载标点模型: {punc_model_name}")
+        if gpu_throttle:
+            gpu_throttle.wait_if_busy("标点模型加载")
         return AutoModel(
             model=punc_model_name,
             device="cuda:0" if device == "cuda" else device,
@@ -603,7 +763,7 @@ def import_vllm_pipeline():
         )
 
 
-def transcribe_with_vllm_pipeline(payload, audio_path, device):
+def transcribe_with_vllm_pipeline(payload, audio_path, device, gpu_throttle=None):
     if device == "cuda":
         try:
             import torch
@@ -628,6 +788,8 @@ def transcribe_with_vllm_pipeline(payload, audio_path, device):
     )
 
     try:
+        if gpu_throttle:
+            gpu_throttle.wait_if_busy("Fun-ASR-Nano vLLM pipeline 加载")
         with StageTimeout(payload.get("model_load_timeout_s", 600), "Fun-ASR-Nano vLLM pipeline 加载"):
             model = FunASRNanoVLLMPipeline(
                 model=resolved_model,
@@ -648,6 +810,8 @@ def transcribe_with_vllm_pipeline(payload, audio_path, device):
                 enforce_eager=bool(payload.get("enforce_eager", False)),
             )
         log_progress("Fun-ASR-Nano vLLM pipeline 加载完成，开始转写")
+        if gpu_throttle:
+            gpu_throttle.wait_if_busy("Fun-ASR-Nano vLLM 转写")
         with StageTimeout(payload.get("asr_timeout_s", payload.get("process_timeout_s", 3600)), "Fun-ASR-Nano vLLM 转写"):
             with suppress_model_output():
                 results = model.generate(
@@ -860,7 +1024,7 @@ def build_cluster_embeddings_from_sentence_info(spk_model_obj, audio, sample_rat
     return cluster_embeddings
 
 
-def transcribe_paraformer_builtin(payload, audio_path, device):
+def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None):
     """
     Use FunASR's built-in pipeline for paraformer: pass vad_model/punc_model/spk_model
     to AutoModel and let it handle everything internally.
@@ -927,6 +1091,8 @@ def transcribe_paraformer_builtin(payload, audio_path, device):
             log_progress(f"  说话人模型加载失败，将退回匿名簇: {exc}")
 
     try:
+        if gpu_throttle:
+            gpu_throttle.wait_if_busy("paraformer pipeline 加载")
         with StageTimeout(payload.get("model_load_timeout_s", 180), "paraformer pipeline 加载"):
             model = AutoModel(**model_kwargs)
         log_progress("paraformer pipeline 加载完成")
@@ -950,6 +1116,8 @@ def transcribe_paraformer_builtin(payload, audio_path, device):
             f"batch_size_threshold_s={generate_kwargs.get('batch_size_threshold_s', 'default')}, "
             f"hotword={'yes' if hotword else 'no'})"
         )
+        if gpu_throttle:
+            gpu_throttle.wait_if_busy("paraformer 转写")
         with StageTimeout(payload.get("process_timeout_s", 1800), "paraformer 转写"):
             with suppress_model_output():
                 results = model.generate(**generate_kwargs)
@@ -1219,6 +1387,15 @@ def main():
                 fail("CUDA 不可用", "配置 device=cuda，但 torch.cuda.is_available() 为 False")
         except ImportError:
             fail("CUDA 检查失败", "未安装 torch，无法使用 device=cuda")
+    gpu_throttle = GpuThrottle(payload, device)
+    if gpu_throttle.enabled:
+        log_progress(
+            "GPU 自适应节流已启用: "
+            f"busy_sm_threshold={gpu_throttle.busy_sm_threshold:g}%, "
+            f"busy_mem_threshold={gpu_throttle.busy_mem_threshold:g}%, "
+            f"check_interval_s={gpu_throttle.check_interval_s:g}, "
+            f"wait_s={gpu_throttle.wait_s:g}"
+        )
 
     enable_speaker = bool(payload.get("enable_speaker", False))
     spk_model = payload.get("spk_model")
@@ -1229,7 +1406,7 @@ def main():
     with contextlib.redirect_stdout(sys.stderr):
         backend_name = normalize_backend_name(payload.get("backend") or "sensevoice")
         if backend_name == "fun_asr_nano_vllm":
-            raw_result = transcribe_with_vllm_pipeline(payload, audio_path, device)
+            raw_result = transcribe_with_vllm_pipeline(payload, audio_path, device, gpu_throttle)
             output = {
                 "backend": backend_name,
                 "language": payload.get("language", "中文"),
@@ -1241,8 +1418,9 @@ def main():
             return
 
         # Paraformer: use FunASR built-in pipeline (VAD+ASR+Punc+SPK in one call)
-        if backend_name == "paraformer":
-            raw_result = transcribe_paraformer_builtin(payload, audio_path, device)
+        use_segmented_paraformer = gpu_throttle.enabled and gpu_throttle.segment_paraformer
+        if backend_name == "paraformer" and not use_segmented_paraformer:
+            raw_result = transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle)
             output = {
                 "backend": backend_name,
                 "language": payload.get("language", "auto"),
@@ -1289,6 +1467,7 @@ def main():
 
         try:
             log_progress(f"加载主模型: {resolved_model}")
+            gpu_throttle.wait_if_busy("主模型加载")
             with StageTimeout(payload.get("model_load_timeout_s", 180), "主模型加载"):
                 model = AutoModel(**model_kwargs)
             log_progress("主模型加载完成")
@@ -1297,13 +1476,14 @@ def main():
                 "ASR 模型加载失败",
                 f"{exc}\n可能是模型首次下载失败、网络不可用、模型名错误或 CUDA 环境异常。",
             )
-        punc_model_obj = load_punc_model(AutoModel, payload, device)
+        punc_model_obj = load_punc_model(AutoModel, payload, device, gpu_throttle)
         if punc_model_obj:
             log_progress("标点模型加载完成")
 
         try:
             vad_model_name = resolve_cached_model_name(payload.get("vad_model", "fsmn-vad"))
             log_progress(f"加载 VAD 模型: {vad_model_name}")
+            gpu_throttle.wait_if_busy("VAD 模型加载")
             with StageTimeout(payload.get("model_load_timeout_s", 180), "VAD 模型加载"):
                 vad_model = AutoModel(
                     model=vad_model_name,
@@ -1311,6 +1491,7 @@ def main():
                     disable_update=True,
                 )
             log_progress("VAD 模型加载完成，开始 VAD")
+            gpu_throttle.wait_if_busy("VAD 处理")
             with StageTimeout(payload.get("vad_timeout_s", 180), "VAD 处理"):
                 with suppress_model_output():
                     vad_result = vad_model.generate(input=audio_path)
@@ -1349,6 +1530,7 @@ def main():
                     try:
                         resolved_spk_model = resolve_cached_model_name(spk_model)
                         log_progress(f"加载说话人模型: {resolved_spk_model}")
+                        gpu_throttle.wait_if_busy("说话人模型加载")
                         with StageTimeout(payload.get("model_load_timeout_s", 180), "说话人模型加载"):
                             spk_model_obj = AutoModel(
                                 model=resolved_spk_model,
@@ -1378,6 +1560,7 @@ def main():
                             speaker_chunk_meta.append({"start": start, "end": end})
 
                         if speaker_chunks:
+                            gpu_throttle.wait_if_busy("说话人 embedding")
                             with StageTimeout(payload.get("speaker_timeout_s", 300), "说话人 embedding"):
                                 with suppress_model_output():
                                     spk_results = spk_model_obj.generate(
@@ -1456,6 +1639,7 @@ def main():
                         if transcribed_segments == 1 or transcribed_segments % 5 == 0 or transcribed_segments == total_segments:
                             pct = transcribed_segments / max(total_segments, 1) * 100
                             log_progress(f"转写进度: {pct:.1f}% ({transcribed_segments}/{total_segments})")
+                        gpu_throttle.wait_if_busy("单段转写")
                         with StageTimeout(payload.get("segment_timeout_s", 90), "单段转写"):
                             with suppress_model_output():
                                 results = generate_with_optional_hotword(
