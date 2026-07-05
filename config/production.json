@@ -342,6 +342,7 @@
         "mentionLabels": [
           "弥月Mizuki",
           "弥月",
+          "老弥",
           "Mizuki"
         ],
         "speakerLabels": [
@@ -1267,7 +1268,9 @@
         "黑家": "回家",
         "小睡": "小岁",
         "叶子鸡": "椰子鸡",
-        "芈月": "弥月"
+        "芈月": "弥月",
+        "老民": "老弥",
+        "老明": "老弥"
       }
     },
     "routing": [
@@ -1337,6 +1340,7 @@
             "雀帮": "粤帮",
             "投户": "投沪",
             "投护": "投沪",
+            "费姐": "岁己",
             "克洛亚": "克罗雅",
             "克利亚": "克罗雅"
           }
@@ -1707,7 +1711,7 @@
     "phoneme_correction": {
       "enabled": true,
       "threshold": 0.85,
-      "hotwords": "PSP\nVirtuaReal\n东爱璃Lovely\n伊索尔Sol\n克罗雅Kloa\n十六萤Izayoi\n南町Nightin\n小岁\n岁己\n岁己SUI\n时守星沙\n星汐Seki\n栞栞\n栞栞Shiori\n灰泽满Hazel\n瑞娅\n瑞娅Rhea\n礼墨Sumi\n笙歌\n米汀\n米汀Nagisa\n莉蔻Liko\n饼干岁"
+      "hotwords": "PSP\nVirtuaReal\n东爱璃Lovely\n伊索尔Sol\n克罗雅Kloa\n十六萤Izayoi\n南町Nightin\n小岁\n岁己\n岁己SUI\n时守星沙\n星汐Seki\n栞栞\n栞栞Shiori\n弥月Mizuki\n弥月\n老弥\n灰泽满Hazel\n瑞娅\n瑞娅Rhea\n礼墨Sumi\n笙歌\n米汀\n米汀Nagisa\n莉蔻Liko\n饼干岁"
     }
   },
   "subtitle": {

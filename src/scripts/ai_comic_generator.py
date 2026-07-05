@@ -710,6 +710,19 @@ def find_mention_label(highlight_text: str, streamer: Dict[str, Any]) -> Optiona
 def strip_highlight_chat_comments(highlight_text: str) -> str:
     return re.sub(r"\s*\(💬[^\n]*\)", "", highlight_text or "")
 
+def strip_danmaku_sticker_tokens(text: str) -> str:
+    """Remove sticker pack labels that look like streamer names but are not story actors."""
+    if not text:
+        return ""
+    # Examples: [花礼Harei收藏集表情包_哈气], [栞栞收藏集表情包_啊？]
+    return re.sub(r"\[[^\]\n]*(?:收藏集表情包|表情包)[^\]\n]*\]", "表情包", text)
+
+def sanitize_highlight_for_comic_script(highlight_content: str) -> str:
+    """Keep useful danmaku text but remove sticker-pack names before script generation."""
+    cleaned = strip_danmaku_sticker_tokens(highlight_content or "")
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in cleaned.splitlines()]
+    return "\n".join(line for line in lines if line).strip()
+
 def count_normalized_occurrences(text: str, label: str) -> int:
     normalized_text = normalize_mention_text(text)
     normalized_label = normalize_mention_text(label)
@@ -723,6 +736,11 @@ def is_short_cjk_mention_label(label: str) -> bool:
         return False
     return any("\u4e00" <= char <= "\u9fff" for char in text)
 
+def is_configured_alias_label(label: str, streamer: Dict[str, Any]) -> bool:
+    normalized_label = normalize_mention_text(label)
+    aliases = streamer.get("aliases", []) or []
+    return any(normalize_mention_text(str(alias or "").strip()) == normalized_label for alias in aliases)
+
 def find_mention_match(
     highlight_text: str,
     streamer: Dict[str, Any],
@@ -730,7 +748,8 @@ def find_mention_match(
     strict_short_mentions: bool = True,
 ) -> Optional[tuple[str, int, int]]:
     multi_config = multi_config or {}
-    spoken_text = strip_highlight_chat_comments(highlight_text)
+    mention_text = strip_danmaku_sticker_tokens(highlight_text)
+    spoken_text = strip_highlight_chat_comments(mention_text)
     min_short_spoken = int(multi_config.get("minShortMentionSpokenOccurrences") or 2)
     min_short_total = int(multi_config.get("minShortMentionTotalOccurrences") or 8)
     min_danmaku_only = int(multi_config.get("minDanmakuOnlyMentionOccurrences") or 3)
@@ -738,13 +757,15 @@ def find_mention_match(
         label_text = str(label or "").strip()
         if not is_safe_mention_label(label_text):
             continue
-        total_count = count_normalized_occurrences(highlight_text, label_text)
+        total_count = count_normalized_occurrences(mention_text, label_text)
         if total_count <= 0:
             continue
         spoken_count = count_normalized_occurrences(spoken_text, label_text)
         if spoken_count <= 0 and total_count < min_danmaku_only:
             continue
         if strict_short_mentions and is_short_cjk_mention_label(label_text):
+            if spoken_count >= 1 and is_configured_alias_label(label_text, streamer):
+                return label_text, spoken_count, total_count
             if spoken_count < min_short_spoken and total_count < min_short_total:
                 continue
         return label_text, spoken_count, total_count
@@ -1304,6 +1325,8 @@ COMIC_ARTIST_PROMPT_TEMPLATE = """你作为虚拟主播二创画师大手子，�
 角色描述：{character_desc}。
 风格：多个剪贴画风格分镜（2~4个吧），每个是一个片段场景，
 默认以画面叙事为主，但如果有助于漫画效果，可以设计少量中文台词框、拟声词、标题字或路牌字，文字要自然、准确、排版清楚，不要过多。
+注意：弹幕里的“[某某收藏集表情包_xxx]”或“[某某表情包_xxx]”只是观众发的表情包名称，不代表这个主播出场、连麦或参与对话；不要把表情包名称当成漫画角色。
+只画语音正文、摘要事件或明确提到的真实人物；不确定时画房间主人、观众小人、道具或屏幕内容，不要凭表情包名新增主播。
 下面是一场直播的语音+弹幕文本，请先构思图片并用文字给我，我再拿去绘制图片。整体600个字符以内。只返回各个分镜的文字描述，不要包含任何多余的说明、格式。若适合带字，请明确写出这些字应该出现在什么位置、每处写什么，单处文字尽量控制在1到12个字。
 {highlight_content}
 """
@@ -1389,6 +1412,35 @@ def build_local_fallback_comic_script(highlight_content: str, room_id: Optional[
 
     return "\n".join(panels)
 
+def postprocess_generated_comic_script(comic_content: str, source_highlight: str) -> str:
+    """Guard against models turning danmaku sticker names into real characters."""
+    if not comic_content:
+        return comic_content
+
+    cleaned_source = sanitize_highlight_for_comic_script(source_highlight)
+    output = strip_danmaku_sticker_tokens(comic_content)
+
+    # If 花礼 only appeared through stripped sticker tokens, do not let it become an invented actor.
+    if not re.search(r"花礼|Harei", cleaned_source) and re.search(r"花礼|Harei", output):
+        fixed_lines = []
+        for line in output.splitlines():
+            if re.search(r"花礼|Harei", line):
+                if re.search(r"乳贴|贴纸|安利|推荐", line) and re.search(r"岁己|费姐", cleaned_source):
+                    line = re.sub(r"花礼Harei|花礼|Harei", "岁己SUI", line)
+                    line = re.sub(r"（黑发蓝瞳鼠耳）", "（白发红瞳）", line)
+                elif re.search(r"睡|下播|关播|直播设备|呼呼", line) and re.search(r"弥月|老弥|老民|老明", cleaned_source):
+                    line = re.sub(r"花礼Harei|花礼|Harei", "弥月Mizuki", line)
+                    line = re.sub(r"（黑发蓝瞳鼠耳）", "（亚麻发异瞳）", line)
+                else:
+                    line = re.sub(r"花礼Harei|花礼|Harei", "被提到的主播", line)
+            fixed_lines.append(line)
+        next_output = "\n".join(fixed_lines)
+        if next_output != output:
+            print("[INFO]  漫画脚本后处理：移除由弹幕表情包名误引入的花礼角色")
+        output = next_output
+
+    return output
+
 
 def return_comic_script_failure(highlight_content: str, room_id: Optional[str], reason: str) -> Tuple[str, bool]:
     if is_comic_script_fallback_allowed(room_id):
@@ -1414,6 +1466,10 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
     """
     print("[AI] 使用AI生成漫画内容脚本...")
 
+    script_highlight_content = sanitize_highlight_for_comic_script(highlight_content)
+    character_desc = get_multi_character_description(room_id, extra_streamers)
+    content_prompt = build_comic_generation_prompt(character_desc, script_highlight_content, room_id)
+
     # 首先尝试复用已有的 Node 文本生成器（ai_text_generator.js），避免在 Python 中重复实现 Gemini 调用
     try:
         node_bin = shutil.which('node')
@@ -1423,7 +1479,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                 print(f"[AI] 调用 node 脚本生成文本: {script_path}")
                 proc = subprocess.run(
                     [node_bin, script_path, '--generate-text'],
-                    input=highlight_content.encode('utf-8'),
+                    input=content_prompt.encode('utf-8'),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     cwd=os.path.dirname(__file__),
@@ -1435,7 +1491,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                     if text and not is_gemini_error(text) and is_valid_comic_script(text):
                         print('[OK] 从 ai_text_generator 返回内容')
                         set_comic_script_meta(provider="node", model="ai_text_generator", status="success")
-                        return text, True
+                        return postprocess_generated_comic_script(text, script_highlight_content), True
                     elif is_gemini_error(text):
                         print('[WARNING] ai_text_generator 返回了错误内容，尝试其他方案')
                     elif text:
@@ -1487,10 +1543,6 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                 # 获取模型名称
                 model_name = gemini_config.get('model', 'gemini-2.0-flash')
 
-                # 生成漫画内容脚本（使用统一的prompt模板）
-                character_desc = get_multi_character_description(room_id, extra_streamers)
-                content_prompt = build_comic_generation_prompt(character_desc, highlight_content, room_id)
-
                 # 调用Gemini
                 if gemini_attempt > 0:
                     print(f"[RETRY] 第 {gemini_attempt + 1} 次重试 Gemini...")
@@ -1526,7 +1578,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                     print("[OK] AI漫画内容生成完成")
                     print(f"生成内容长度: {len(comic_content)} 字符")
                     set_comic_script_meta(provider="gemini", model=model_name, status="success", fallback=False)
-                    return comic_content, True
+                    return postprocess_generated_comic_script(comic_content, script_highlight_content), True
                 else:
                     print("[WARNING]  AI返回空结果，使用原始内容")
                     break
@@ -1565,9 +1617,8 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                 return return_comic_script_failure(highlight_content, room_id, "tuZi API未配置")
             
             # 构建提示词（使用统一的prompt模板）
-            character_desc = get_multi_character_description(room_id, extra_streamers)
-            system_prompt = build_comic_generation_prompt(character_desc, highlight_content, room_id)
-            user_prompt = f"直播内容：\n{highlight_content}\n\n请创作漫画故事脚本："
+            system_prompt = content_prompt
+            user_prompt = f"直播内容：\n{script_highlight_content}\n\n请创作漫画故事脚本："
             
             if tuzi_attempt > 0:
                 print(f"[RETRY] 第 {tuzi_attempt + 1} 次重试 tuZi API...")
@@ -1615,7 +1666,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                     status="success",
                     fallback=True
                 )
-                return comic_content, True
+                return postprocess_generated_comic_script(comic_content, script_highlight_content), True
             else:
                 print("[WARNING]  tuZi API返回空内容")
                 if tuzi_attempt < max_tuzi_retries - 1:

@@ -461,6 +461,45 @@ function normalizeAiClipSelection(clip, burst, sliceIndex = 1) {
     };
 }
 
+function dedupeClipsByStart(clips = []) {
+    const byStart = new Map();
+    const passthrough = [];
+
+    for (const clip of clips) {
+        const start = Number(clip.window?.start);
+        const end = Number(clip.window?.end);
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+            passthrough.push(clip);
+            continue;
+        }
+
+        const key = start.toFixed(3);
+        const existing = byStart.get(key);
+        if (!existing) {
+            byStart.set(key, clip);
+            continue;
+        }
+
+        const existingEnd = Number(existing.window?.end);
+        const existingStart = Number(existing.window?.start);
+        const duration = end - start;
+        const existingDuration = existingEnd - existingStart;
+        if (end > existingEnd || (end === existingEnd && duration > existingDuration)) {
+            byStart.set(key, clip);
+        }
+    }
+
+    return [...passthrough, ...byStart.values()]
+        .sort((a, b) => {
+            const startA = Number(a.window?.start);
+            const startB = Number(b.window?.start);
+            const endA = Number(a.window?.end);
+            const endB = Number(b.window?.end);
+            return (Number.isFinite(startA) ? startA : 0) - (Number.isFinite(startB) ? startB : 0)
+                || (Number.isFinite(endA) ? endA : 0) - (Number.isFinite(endB) ? endB : 0);
+        });
+}
+
 /**
  * 把 burst 的全部字幕发给 AI，让 AI 自己决定切在哪。
  * AI 可以切成 1-3 段，并根据上下文生成每段的标题和简介。
@@ -1497,10 +1536,15 @@ async function generateTopicClips(options = {}) {
         return [];
     }
 
-    console.log(`\n🎬 共 ${aiSegmentedClips.length} 段切片，开始生成视频...\n`);
+    const clipsToGenerate = dedupeClipsByStart(aiSegmentedClips);
+    if (clipsToGenerate.length < aiSegmentedClips.length) {
+        console.log(`ℹ️  已合并 ${aiSegmentedClips.length - clipsToGenerate.length} 段同起点重复切片`);
+    }
+
+    console.log(`\n🎬 共 ${clipsToGenerate.length} 段切片，开始生成视频...\n`);
 
     const results = [];
-    for (const clip of aiSegmentedClips) {
+    for (const clip of clipsToGenerate) {
         const window = clip.window;
         const base = sanitizeFileName(`${path.basename(source.mediaPath, path.extname(source.mediaPath))}_topic_${String(window.index).padStart(2, '0')}_${formatClock(window.start).replace(/:/g, '')}`);
         const mediaExt = source.kind === 'audio' ? path.extname(source.mediaPath).toLowerCase() : '.mp4';
@@ -1610,6 +1654,7 @@ module.exports = {
     buildTopicBursts,
     segmentBurstWithAI,
     normalizeAiClipSelection,
+    dedupeClipsByStart,
     verifyClipWithAI,
     writeClipSrt,
     parseRecordingInfo,

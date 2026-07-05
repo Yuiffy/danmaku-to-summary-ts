@@ -70,6 +70,20 @@ describe('topic_clipper', () => {
     )).toMatchObject({ start: 290, end: 320 });
   });
 
+  test('dedupes AI clips with the same start and keeps the longer range', () => {
+    const clips = [
+      { window: { index: '1-1', start: 3044, end: 3114 } },
+      { window: { index: '1-2', start: 3044, end: 3130 } },
+      { window: { index: '2-1', start: 3300, end: 3360 } }
+    ];
+
+    const deduped = topicClipper.dedupeClipsByStart(clips);
+
+    expect(deduped).toHaveLength(2);
+    expect(deduped[0].window).toMatchObject({ index: '1-2', start: 3044, end: 3130 });
+    expect(deduped[1].window).toMatchObject({ index: '2-1', start: 3300, end: 3360 });
+  });
+
   test('merges nearby hit windows and respects max clip duration', () => {
     const segments = [
       { start: 10, end: 12, text: '岁己' },

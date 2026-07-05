@@ -126,7 +126,9 @@
         "叶子鸡": "椰子鸡",
         "小凯": "小琴",
         "灰精版": "灰泽满",
-        "芈月": "弥月"
+        "芈月": "弥月",
+        "老民": "老弥",
+        "老明": "老弥"
       }
     },
     "routing": [
@@ -140,6 +142,7 @@
             "雀帮": "粤帮",
             "投户": "投沪",
             "投护": "投沪",
+            "费姐": "岁己",
             "克洛亚": "克罗雅",
             "克利亚": "克罗雅"
           }
@@ -653,7 +656,7 @@
         "displayName": "弥月Mizuki",
         "roomIds": ["30655190"],
         "searchTags": ["弥月Mizuki", "弥月"],
-        "mentionLabels": ["弥月Mizuki", "弥月", "Mizuki"],
+        "mentionLabels": ["弥月Mizuki", "弥月", "老弥", "Mizuki"],
         "speakerLabels": ["弥月Mizuki", "弥月", "Mizuki"],
         "aliases": ["兔川弥月", "小弥", "老弥"],
         "referenceImages": [
