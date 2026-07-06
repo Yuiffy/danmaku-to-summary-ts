@@ -245,7 +245,8 @@ const ConfigSchema = Joi.object({
         ai: Joi.object({
             enabled: Joi.boolean().default(true),
             strategy: Joi.string().default('chunked'),
-            maxCandidateLines: Joi.number().default(32)
+            maxCandidateLines: Joi.number().default(32),
+            fallbackToLocalRules: Joi.boolean().default(true)
         }).default(),
         notify: Joi.object({
             enabled: Joi.boolean().default(true)

@@ -701,6 +701,9 @@ def is_safe_mention_label(label: str) -> bool:
     # Avoid matching very short ASCII fragments such as IDs or initials in normal text.
     if text.isascii() and len(text) < 3:
         return False
+    # Pure Chinese numerals such as "十六" are too ambiguous in ASR summaries/counting text.
+    if re.fullmatch(r"[零一二三四五六七八九十百千万两]+", text):
+        return False
     return True
 
 def find_mention_label(highlight_text: str, streamer: Dict[str, Any]) -> Optional[str]:
@@ -717,9 +720,68 @@ def strip_danmaku_sticker_tokens(text: str) -> str:
     # Examples: [花礼Harei收藏集表情包_哈气], [栞栞收藏集表情包_啊？]
     return re.sub(r"\[[^\]\n]*(?:收藏集表情包|表情包)[^\]\n]*\]", "表情包", text)
 
-def sanitize_highlight_for_comic_script(highlight_content: str) -> str:
+def correction_to_pair(item: Any) -> Optional[tuple[str, str]]:
+    if isinstance(item, (list, tuple)) and len(item) >= 2:
+        source = str(item[0] or "").strip()
+        target = str(item[1] or "").strip()
+    elif isinstance(item, dict):
+        source = str(item.get("from") or item.get("alias") or item.get("source") or item.get("wrong") or "").strip()
+        target = str(item.get("to") or item.get("word") or item.get("target") or item.get("correct") or "").strip()
+    else:
+        return None
+    if not source or not target:
+        return None
+    return source, target
+
+def collect_safe_correction_pairs(corrections: Any) -> list[tuple[str, str]]:
+    if not corrections:
+        return []
+    if isinstance(corrections, dict) and ("safe" in corrections or "contextual" in corrections):
+        return collect_safe_correction_pairs(corrections.get("safe"))
+    if isinstance(corrections, dict):
+        return [(str(source), str(target)) for source, target in corrections.items() if str(source or "").strip() and str(target or "").strip()]
+    if isinstance(corrections, list):
+        pairs = []
+        for item in corrections:
+            pair = correction_to_pair(item)
+            if pair:
+                pairs.append(pair)
+        return pairs
+    return []
+
+def route_matches_room(match: Any, room_id: Optional[str]) -> bool:
+    if not isinstance(match, dict):
+        return False
+    room_text = str(room_id or "").strip()
+    for key, expected in match.items():
+        if key not in ("room_id", "roomId", "room"):
+            continue
+        if isinstance(expected, list):
+            return room_text in {str(item) for item in expected}
+        return room_text == str(expected)
+    return False
+
+def collect_configured_asr_safe_corrections(room_id: Optional[str] = None, config: Optional[Dict[str, Any]] = None) -> list[tuple[str, str]]:
+    cfg = config or load_config()
+    asr_config = cfg.get("asr", {}) if isinstance(cfg, dict) else {}
+    pairs = collect_safe_correction_pairs(asr_config.get("corrections"))
+    for rule in asr_config.get("routing", []) or []:
+        if not isinstance(rule, dict) or not route_matches_room(rule.get("match"), room_id):
+            continue
+        pairs.extend(collect_safe_correction_pairs(rule.get("corrections")))
+    return pairs
+
+def apply_configured_asr_corrections_for_comic(text: str, room_id: Optional[str] = None, config: Optional[Dict[str, Any]] = None) -> str:
+    """Reuse configured ASR safe corrections when old highlight text is fed to comic generation."""
+    output = text or ""
+    pairs = collect_configured_asr_safe_corrections(room_id, config)
+    for source, target in sorted(pairs, key=lambda pair: len(pair[0]), reverse=True):
+        output = output.replace(source, target)
+    return output
+
+def sanitize_highlight_for_comic_script(highlight_content: str, room_id: Optional[str] = None, config: Optional[Dict[str, Any]] = None) -> str:
     """Keep useful danmaku text but remove sticker-pack names before script generation."""
-    cleaned = strip_danmaku_sticker_tokens(highlight_content or "")
+    cleaned = apply_configured_asr_corrections_for_comic(strip_danmaku_sticker_tokens(highlight_content or ""), room_id, config)
     lines = [re.sub(r"[ \t]+", " ", line).strip() for line in cleaned.splitlines()]
     return "\n".join(line for line in lines if line).strip()
 
@@ -746,9 +808,11 @@ def find_mention_match(
     streamer: Dict[str, Any],
     multi_config: Optional[Dict[str, Any]] = None,
     strict_short_mentions: bool = True,
+    room_id: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None,
 ) -> Optional[tuple[str, int, int]]:
     multi_config = multi_config or {}
-    mention_text = strip_danmaku_sticker_tokens(highlight_text)
+    mention_text = apply_configured_asr_corrections_for_comic(strip_danmaku_sticker_tokens(highlight_text), room_id, config)
     spoken_text = strip_highlight_chat_comments(mention_text)
     min_short_spoken = int(multi_config.get("minShortMentionSpokenOccurrences") or 2)
     min_short_total = int(multi_config.get("minShortMentionTotalOccurrences") or 8)
@@ -915,6 +979,8 @@ def resolve_mentioned_streamers(
             entry,
             multi_config,
             strict_short_mentions=strict_short_mentions,
+            room_id=room_id,
+            config=config,
         )
         if not mention_match:
             continue
@@ -1260,9 +1326,19 @@ def build_multi_character_constraints(extra_streamers: Optional[list[dict]] = No
     if not extra_streamers:
         return ""
     names = "、".join(streamer.get("displayName") or streamer.get("id") or "额外主播" for streamer in extra_streamers)
+    mapping_lines = ["- 参考图1 = 房间主人。"]
+    for index, streamer in enumerate(extra_streamers, start=2):
+        display_name = streamer.get("displayName") or streamer.get("id") or f"额外主播{index - 1}"
+        desc = " ".join(str(streamer.get("characterDescription") or display_name).replace("<", "").replace(">", "").split())
+        mapping_lines.append(f"- 参考图{index} = {display_name}：{desc}")
+    mapping_text = "\n".join(mapping_lines)
     return f"""
 多角色参考图约束：
-- 参考图一对应房间主人；后续额外参考图分别对应识别出的连麦/实际出声/文本提到主播：{names}。
+- 识别出的连麦/实际出声/文本提到主播：{names}。
+- 参考图编号映射如下，必须逐一遵守，不要混淆角色：
+{mapping_text}
+- 漫画脚本中只要出现上述额外主播，必须优先按对应编号的参考图还原外观，而不是只根据文字描述脑补。
+- 后续直播封面、截图只用于直播间/背景/道具参考，不要当作额外主播的角色参考图。
 - 不要把不同角色的发色、服装、配饰混合。
 - 只有漫画脚本明确出现多人互动或明确需要画到被提到的人时才画多位主播。
 - 仅被提到但没有实际出声的人，可以使用其参考图保持形象准确，但不要默认画成现场连麦角色。"""
@@ -1425,10 +1501,10 @@ def postprocess_generated_comic_script(comic_content: str, source_highlight: str
         fixed_lines = []
         for line in output.splitlines():
             if re.search(r"花礼|Harei", line):
-                if re.search(r"乳贴|贴纸|安利|推荐", line) and re.search(r"岁己|费姐", cleaned_source):
+                if re.search(r"乳贴|贴纸|安利|推荐", line) and re.search(r"岁己", cleaned_source):
                     line = re.sub(r"花礼Harei|花礼|Harei", "岁己SUI", line)
                     line = re.sub(r"（黑发蓝瞳鼠耳）", "（白发红瞳）", line)
-                elif re.search(r"睡|下播|关播|直播设备|呼呼", line) and re.search(r"弥月|老弥|老民|老明", cleaned_source):
+                elif re.search(r"睡|下播|关播|直播设备|呼呼", line) and re.search(r"弥月|老弥", cleaned_source):
                     line = re.sub(r"花礼Harei|花礼|Harei", "弥月Mizuki", line)
                     line = re.sub(r"（黑发蓝瞳鼠耳）", "（亚麻发异瞳）", line)
                 else:
@@ -1466,7 +1542,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
     """
     print("[AI] 使用AI生成漫画内容脚本...")
 
-    script_highlight_content = sanitize_highlight_for_comic_script(highlight_content)
+    script_highlight_content = sanitize_highlight_for_comic_script(highlight_content, room_id=room_id)
     character_desc = get_multi_character_description(room_id, extra_streamers)
     content_prompt = build_comic_generation_prompt(character_desc, script_highlight_content, room_id)
 

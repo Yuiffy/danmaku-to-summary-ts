@@ -1369,9 +1369,9 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         await this.triggerDelayedReplyFromPaths({
           roomId,
           goodnightTextPath,
-          comicImagePath,
+          comicImagePath: hasComicImage ? comicImagePath : undefined,
           mediaPath: videoPath,
-          source: hasComicImage ? 'process-close-with-comic' : 'process-close-with-expected-comic'
+          source: hasComicImage ? 'process-close-with-comic' : 'process-close-text-only'
         });
       } else {
         this.logger.info(`ℹ️  未找到晚安回复文件，跳过延迟回复`);

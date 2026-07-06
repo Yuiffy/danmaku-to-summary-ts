@@ -1523,21 +1523,29 @@ const main = async () => {
                 console.log('ℹ️  跳过AI文本生成（房间设置禁用）');
             }
             
-            // AI漫画生成
-            let comicImagePath = null;
-            const highlightDir = path.dirname(highlightPath);
-            const highlightBase = path.basename(highlightPath).replace('_AI_HIGHLIGHT.txt', '');
-            const expectedComicImagePath = aiSettings.comic
-                ? path.join(highlightDir, `${highlightBase}_COMIC_FACTORY.png`)
-                : null;
-            if (goodnightTextPath) {
-                console.log(`${DELAYED_REPLY_READY_SENTINEL} ${JSON.stringify({
+            const emitDelayedReplyReady = (comicImagePathForReply = null) => {
+                if (!goodnightTextPath) {
+                    return;
+                }
+
+                const payload = {
                     roomId: finalRoomId,
                     goodnightTextPath,
-                    comicImagePath: expectedComicImagePath,
                     mediaPath: processedMediaFiles.length > 0 ? processedMediaFiles[processedMediaFiles.length - 1] : undefined
-                })}`);
-            }
+                };
+                if (comicImagePathForReply) {
+                    payload.comicImagePath = comicImagePathForReply;
+                }
+
+                console.log(`${DELAYED_REPLY_READY_SENTINEL} ${JSON.stringify(payload)}`);
+            };
+
+            // AI漫画生成
+            let comicImagePath = null;
+            let delayedReplyReadyEmitted = false;
+            const highlightDir = path.dirname(highlightPath);
+            const highlightBase = path.basename(highlightPath).replace('_AI_HIGHLIGHT.txt', '');
+            const expectedComicImagePath = path.join(highlightDir, `${highlightBase}_COMIC_FACTORY.png`);
             if (aiSettings.comic) {
                 // --- 检查图片生成条件 ---
 
@@ -1568,6 +1576,8 @@ const main = async () => {
                     if (roll > prob) {
                         console.log(`🎲 概率抓取未命中 (${roll.toFixed(3)} > ${prob})，跳过图片生成`);
                     } else {
+                        emitDelayedReplyReady(expectedComicImagePath);
+                        delayedReplyReadyEmitted = true;
                         console.log(`🎲 概率抓取命中 (${roll.toFixed(3)} ≤ ${prob})，开始生成图片`);
                         console.log(`🎨 开始AI漫画生成...`);
                         const isSuiRoom = String(finalRoomId) === SUI_ROOM_ID;
@@ -1592,6 +1602,10 @@ const main = async () => {
                 }
             } else {
                 console.log('ℹ️  跳过AI漫画生成（房间设置禁用）');
+            }
+
+            if (goodnightTextPath && !delayedReplyReadyEmitted) {
+                emitDelayedReplyReady();
             }
 
             await startBackgroundClipsOnce(aiSettings.comic ? 'comic-generation-finished' : 'comic-disabled');

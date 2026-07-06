@@ -45,7 +45,8 @@ const DEFAULT_OWN_STREAM_CLIPS_CONFIG = {
     ai: {
         enabled: true,
         strategy: 'chunked',
-        maxCandidateLines: 32
+        maxCandidateLines: 32,
+        fallbackToLocalRules: true
     },
     notify: {
         enabled: true
@@ -1173,6 +1174,7 @@ async function generateOwnStreamClips(options = {}) {
         usedFallback: false,
         fallbackReason: null,
         selectedSource: null,
+        localFallbackEnabled: config.ai?.fallbackToLocalRules !== false,
         errors: []
     };
     if (candidates.length === 0 && danmaku.length === 0) {
@@ -1196,13 +1198,18 @@ async function generateOwnStreamClips(options = {}) {
             if (clipsFromAi.length > 0) {
                 clips = clipsFromAi;
                 aiDiagnostics.selectedSource = 'candidate_ai';
-            } else {
+            } else if (aiDiagnostics.localFallbackEnabled) {
                 clips = fallbackClipsFromCandidates(candidates, config);
                 aiDiagnostics.usedFallback = true;
                 aiDiagnostics.fallbackReason = (!config.ai?.enabled || rootConfig.ai?.text?.enabled === false)
                     ? 'AI \u5df2\u7981\u7528'
                     : classifyAiFallbackReason(aiDiagnostics.errors);
                 aiDiagnostics.selectedSource = 'local_rules';
+            } else {
+                const failureReason = (!config.ai?.enabled || rootConfig.ai?.text?.enabled === false)
+                    ? 'AI 已禁用'
+                    : classifyAiFallbackReason(aiDiagnostics.errors);
+                throw new Error(`own_stream_clipper AI 规划失败且已禁用本地回退: ${failureReason}`);
             }
         }
     }
