@@ -619,6 +619,12 @@ async def main():
     print(f"\n=== 第2步：开始上传（间隔 {args.delay}s）===")
     print("[INFO] 凭证已创建\n")
 
+    collection_series_id = None
+    try:
+        collection_series_id = get_collection_series_id(args.source)
+    except Exception as e:
+        print(f"[WARN] 获取合集 series_id 失败，跳过合集：{e}")
+
     results = []
     for i, clip in enumerate(to_upload):
         full_title = f"{args.prefix}{clip['title']}"
