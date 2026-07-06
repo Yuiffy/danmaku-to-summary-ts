@@ -32,6 +32,11 @@ Useful options:
 - `--state <path>`: keep upload state separate for supplemental batches whose
   review indices overlap with an earlier batch.
 
+To auto-attach uploads to a Bilibili合集/series after success, set:
+
+- `bilibili.upload.collectionSeriesId`: the collection `series_id` to add each
+  successful upload to.
+
 The script reads `config/secret.json` through `config_loader.find_secrets_path`
 and uses `bilibili.cookie`.
 

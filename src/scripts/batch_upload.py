@@ -407,10 +407,10 @@ async def upload_one_guarded(
     tags,
     tid,
     source_desc,
-    collection_series_id=None,
     cookie_str,
     rate_limit_wait,
     rate_limit_retries,
+    collection_series_id=None,
 ):
     full_title = f"{prefix}{clip['title']}"
 
@@ -449,6 +449,11 @@ async def upload_one_guarded(
             print(f"  ✅ 406 实际已上传成功: {bvid}")
             result['status'] = 'ok_after_406'
             result['bvid'] = bvid
+            rows_now = fetch_member_archive_rows(cookie_str)
+            row_now = next((row for row in rows_now if row.get('bvid') == bvid), None)
+            if row_now and row_now.get('aid'):
+                result['aid'] = row_now.get('aid')
+                await attach_video_to_collection(result, credential, collection_series_id=collection_series_id)
             return result
 
         available, message = await probe_upload_available(credential)
@@ -466,7 +471,13 @@ async def upload_one_guarded(
         if full_title in archives_after_wait:
             bvid = archives_after_wait[full_title]
             print(f"  ✅ 等待后确认已入库: {bvid}")
-            return {'idx': clip['idx'], 'title': full_title, 'status': 'ok_after_406', 'bvid': bvid}
+            result = {'idx': clip['idx'], 'title': full_title, 'status': 'ok_after_406', 'bvid': bvid}
+            rows_after_wait = fetch_member_archive_rows(cookie_str)
+            row_after_wait = next((row for row in rows_after_wait if row.get('bvid') == bvid), None)
+            if row_after_wait and row_after_wait.get('aid'):
+                result['aid'] = row_after_wait.get('aid')
+                await attach_video_to_collection(result, credential, collection_series_id=collection_series_id)
+            return result
 
     return {'idx': clip['idx'], 'title': full_title, 'status': 'rate_limited'}
 
@@ -620,10 +631,10 @@ async def main():
             tags,
             args.tid,
             args.source,
-            collection_series_id,
             cookie_str,
             max(30, args.rate_limit_wait),
             max(0, args.rate_limit_retries),
+            collection_series_id,
         )
         results.append(result)
 

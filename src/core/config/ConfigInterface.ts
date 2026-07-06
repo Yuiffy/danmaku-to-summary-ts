@@ -477,6 +477,9 @@ export interface BilibiliConfig {
   csrf?: string;
   ac_time_value?: string;
   acTimeValue?: string;
+  upload?: {
+    collectionSeriesId?: number | null;
+  };
   polling: {
     interval: number;
     maxRetries: number;

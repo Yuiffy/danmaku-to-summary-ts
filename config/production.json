@@ -1161,6 +1161,9 @@
       "retryDelay": 5000
     },
     "anchors": {},
+    "upload": {
+      "collectionSeriesId": 8513688
+    },
     "delayedReply": {
       "enabled": true,
       "delayMinutes": 2,

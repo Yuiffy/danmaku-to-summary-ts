@@ -388,6 +388,9 @@ export class ConfigValidator {
         enabled: false,
         cookie: '',
         csrf: '',
+        upload: {
+          collectionSeriesId: null,
+        },
         polling: {
           interval: 60000,
           maxRetries: 3,

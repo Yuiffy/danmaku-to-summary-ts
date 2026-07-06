@@ -279,6 +279,9 @@ const ConfigSchema = Joi.object({
     }).default(),
     bilibili: Joi.object({
         enabled: Joi.boolean().default(true),
+        upload: Joi.object({
+            collectionSeriesId: Joi.number().integer().positive().allow(null).default(null)
+        }).default(),
         polling: Joi.object({
             interval: Joi.number().default(60000),
             maxRetries: Joi.number().default(3),
