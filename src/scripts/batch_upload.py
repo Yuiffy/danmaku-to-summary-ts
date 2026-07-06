@@ -41,6 +41,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src', 'scripts'))
 
 from config_loader import get_config, find_secrets_path
+from bilibili_upload import attach_video_to_collection, get_collection_series_id
 from bilibili_api import Credential, video_uploader, Picture, video, get_client
 import requests
 
@@ -54,6 +55,10 @@ def build_credential():
     with open(secrets_path, 'r', encoding='utf-8-sig') as f:
         secrets = json.load(f)
     cookie_str = secrets.get('bilibili', {}).get('cookie', '')
+    config = get_config()
+    collection_series_id = get_collection_series_id(config)
+    if collection_series_id:
+        print(f"[INFO] 自动加入合集 series_id={collection_series_id}")
     if not cookie_str:
         print("[ERROR] 未找到B站Cookie")
         sys.exit(1)
@@ -313,7 +318,7 @@ def build_desc(clip_title, source_desc, start_str, dur_str):
     )
 
 
-async def upload_one(clip, credential, prefix, tags, tid, source_desc):
+async def upload_one(clip, credential, prefix, tags, tid, source_desc, collection_series_id=None):
     """上传单个切片，返回结果 dict"""
     full_title = f"{prefix}{clip['title']}"
     filepath = clip['path']
@@ -365,6 +370,8 @@ async def upload_one(clip, credential, prefix, tags, tid, source_desc):
         )
         print(f"  开始上传...")
         result = await uploader.start()
+        if result and isinstance(result, dict) and result.get('bvid'):
+            await attach_video_to_collection(result, credential, collection_series_id=collection_series_id)
 
         if result and isinstance(result, dict) and result.get('bvid'):
             bvid = result['bvid']
@@ -400,6 +407,7 @@ async def upload_one_guarded(
     tags,
     tid,
     source_desc,
+    collection_series_id=None,
     cookie_str,
     rate_limit_wait,
     rate_limit_retries,
@@ -421,7 +429,15 @@ async def upload_one_guarded(
         if attempt > 0:
             print(f"  [retry] 第 {attempt + 1} 次尝试上传")
 
-        result = await upload_one(clip, credential, prefix, tags, tid, source_desc)
+        result = await upload_one(
+            clip,
+            credential,
+            prefix,
+            tags,
+            tid,
+            source_desc,
+            collection_series_id=collection_series_id,
+        )
         if result['status'] != 'got_406':
             return result
 
@@ -604,6 +620,7 @@ async def main():
             tags,
             args.tid,
             args.source,
+            collection_series_id,
             cookie_str,
             max(30, args.rate_limit_wait),
             max(0, args.rate_limit_retries),
@@ -614,7 +631,9 @@ async def main():
         if result['status'] in ('ok', 'ok_after_406', 'already_exists'):
             state.setdefault('done', {})[str(clip['idx'])] = {
                 'title': full_title, 'bvid': result['bvid'], 'source': result['status'],
-                'cover': result.get('cover') or find_existing_cover(clip) or ''
+                'cover': result.get('cover') or find_existing_cover(clip) or '',
+                'collectionSeriesId': result.get('collectionSeriesId'),
+                'collectionStatus': result.get('collectionStatus'),
             }
             state.get('got_406', {}).pop(str(clip['idx']), None)
         elif result['status'] in ('got_406', 'rate_limited'):

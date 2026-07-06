@@ -1444,6 +1444,8 @@ def is_valid_comic_script(text: Optional[str]) -> bool:
 
 def is_comic_script_fallback_allowed(room_id: Optional[str] = None) -> bool:
     """是否允许在AI脚本生成失败后使用本地兜底脚本继续生图。"""
+    if str(os.environ.get("DISABLE_COMIC_SCRIPT_FALLBACK", "")).lower() == "true":
+        return False
     if str(os.environ.get("ALLOW_COMIC_SCRIPT_FALLBACK", "")).lower() == "true":
         return True
     return str(room_id or "") == "25788785"

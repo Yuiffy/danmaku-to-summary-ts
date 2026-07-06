@@ -932,6 +932,9 @@
         "delayedReplyEnabled": true
       }
     },
+    "upload": {
+      "collectionSeriesId": null
+    },
     "delayedReply": {
       "enabled": true,
       "delayMinutes": 10,

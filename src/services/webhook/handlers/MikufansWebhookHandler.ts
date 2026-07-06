@@ -72,6 +72,10 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   private readonly FILE_CLOSE_ALERT_DELAY_MS = 60 * 1000;
   // 最大等待时间(毫秒)
   private readonly MAX_DELAY_MS = 120000; // 120秒 (2分钟)
+  private readonly DELAYED_REPLY_FILE_RETRY_INITIAL_MS = 30 * 1000;
+  private readonly DELAYED_REPLY_FILE_RETRY_INTERVAL_MS = 5 * 60 * 1000;
+  private readonly DELAYED_REPLY_FILE_RETRY_MAX_MS = 2 * 60 * 60 * 1000;
+  private pendingDelayedReplyFileTimers: Map<string, NodeJS.Timeout> = new Map();
 
 
   /**
@@ -1375,6 +1379,13 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         });
       } else {
         this.logger.info(`ℹ️  未找到晚安回复文件，跳过延迟回复`);
+        this.scheduleDelayedReplyFileRetry({
+          roomId,
+          goodnightTextPath,
+          comicImagePath,
+          mediaPath: videoPath,
+          source: 'process-close-missing-text'
+        });
       }
     } catch (error: any) {
       this.logger.error(`❌ 检查并触发延迟回复失败: ${error.message}`, { error });
@@ -1474,6 +1485,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
 
     if (!fs.existsSync(goodnightTextPath)) {
       this.logger.info(`ℹ️  晚安回复文件暂不存在，跳过延迟回复触发`, { goodnightTextPath, source });
+      this.scheduleDelayedReplyFileRetry(params);
       return;
     }
 
@@ -1508,6 +1520,85 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     } else {
       this.logger.info(`ℹ️  延迟回复任务未添加（可能配置未启用）`, { source });
     }
+  }
+
+  private scheduleDelayedReplyFileRetry(params: {
+    roomId: string;
+    goodnightTextPath: string;
+    comicImagePath?: string | null;
+    mediaPath: string;
+    source: string;
+  }): void {
+    if (!this.delayedReplyService) {
+      return;
+    }
+
+    const key = `${params.roomId}:${path.normalize(params.goodnightTextPath)}`;
+    if (this.pendingDelayedReplyFileTimers.has(key)) {
+      this.logger.info('Delayed reply file wait is already scheduled', {
+        roomId: params.roomId,
+        goodnightTextPath: params.goodnightTextPath,
+        source: params.source
+      });
+      return;
+    }
+
+    const startedAt = Date.now();
+    const scheduleNext = (delayMs: number) => {
+      const timer = setTimeout(() => {
+        void checkOnce();
+      }, delayMs);
+      timer.unref?.();
+      this.pendingDelayedReplyFileTimers.set(key, timer);
+    };
+
+    const checkOnce = async () => {
+      try {
+        if (fs.existsSync(params.goodnightTextPath)) {
+          this.pendingDelayedReplyFileTimers.delete(key);
+          this.logger.info('Delayed reply file appeared after wait; triggering task', {
+            roomId: params.roomId,
+            goodnightTextPath: params.goodnightTextPath,
+            source: params.source
+          });
+          await this.triggerDelayedReplyFromPaths({
+            ...params,
+            source: `${params.source}-file-ready`
+          });
+          return;
+        }
+
+        const elapsedMs = Date.now() - startedAt;
+        if (elapsedMs >= this.DELAYED_REPLY_FILE_RETRY_MAX_MS) {
+          this.pendingDelayedReplyFileTimers.delete(key);
+          this.logger.warn('Delayed reply file did not appear before wait timeout', {
+            roomId: params.roomId,
+            goodnightTextPath: params.goodnightTextPath,
+            elapsedMs,
+            source: params.source
+          });
+          return;
+        }
+
+        scheduleNext(this.DELAYED_REPLY_FILE_RETRY_INTERVAL_MS);
+      } catch (error: any) {
+        this.pendingDelayedReplyFileTimers.delete(key);
+        this.logger.error(`Delayed reply file wait failed: ${error.message}`, {
+          roomId: params.roomId,
+          goodnightTextPath: params.goodnightTextPath,
+          source: params.source,
+          error
+        });
+      }
+    };
+
+    this.logger.info('Scheduled delayed reply file wait', {
+      roomId: params.roomId,
+      goodnightTextPath: params.goodnightTextPath,
+      maxWaitMs: this.DELAYED_REPLY_FILE_RETRY_MAX_MS,
+      source: params.source
+    });
+    scheduleNext(this.DELAYED_REPLY_FILE_RETRY_INITIAL_MS);
   }
 
   /**
