@@ -381,10 +381,74 @@ def query_submitted_task(data: Dict[str, Any], task: Dict[str, Any], dry_run: bo
         raise
 
 
+def sync_inflight_tasks(data: Dict[str, Any], dry_run: bool = False) -> bool:
+    tasks = data.get('tasks', [])
+    submitted_tasks = [t for t in tasks if t.get('status') == 'submitted']
+    if not submitted_tasks:
+        return False
+
+    changed = False
+    for task in submitted_tasks:
+        sid = last_submit_id(task)
+        if not sid:
+            task['status'] = 'pending'
+            clear_submission_tracking(task)
+            task['note'] = f"{task.get('id')} recovered from submitted-without-submit_id"
+            changed = True
+            continue
+        try:
+            result = query(sid)
+        except Exception as e:
+            if is_transient_query_error(e):
+                print(f"sync query transient on {task.get('id')} ({sid}): {e}")
+                continue
+            print(f"sync query treat as cleared on {task.get('id')} ({sid}): {e}")
+            task['status'] = 'pending' if remaining(task) > 0 else 'completed'
+            clear_submission_tracking(task)
+            task['note'] = f"{task.get('id')} cleared after sync query error"
+            changed = True
+            continue
+
+        gs = result.get('gen_status')
+        print(f"sync submitted task {task.get('id')} ({sid}) gen_status={gs}")
+        if gs == 'querying':
+            continue
+        if gs == 'success':
+            if not dry_run:
+                try:
+                    download(sid)
+                except Exception as e:
+                    print(f"sync download error on {task.get('id')} ({sid}): {e}")
+                    continue
+            finish_attempt(data, task, 'completed (sync)')
+            changed = True
+            continue
+        if gs == 'fail':
+            reason = str(result.get('fail_reason') or 'failed attempt')
+            if is_moderation_rejection(reason):
+                pause_task(data, task, f"generation rejected: {reason}")
+            else:
+                finish_attempt(data, task, f"failed attempt (sync): {reason}")
+            changed = True
+            continue
+
+        task['status'] = 'pending' if remaining(task) > 0 else 'completed'
+        clear_submission_tracking(task)
+        task['note'] = f"{task.get('id')} normalized after sync from {gs}"
+        changed = True
+
+    if changed:
+        save_queue(data)
+    return changed
+
+
 def run_once(dry_run: bool = False) -> RunResult:
     data = load_queue()
     tasks = data.get("tasks", [])
     print(f"queue loaded version={SCRIPT_VERSION} tasks={len(tasks)}")
+
+    sync_inflight_tasks(data, dry_run=dry_run)
+    tasks = data.get("tasks", [])
 
     # Strict sequential mode: if any task is currently submitted (in-flight),
     # only query it. Never submit a new task while another is still pending.

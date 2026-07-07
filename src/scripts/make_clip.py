@@ -97,11 +97,12 @@ def cut_video(flv_path, start_sec, end_sec, srt_path, out_path):
         '-y', out_path
     ]
     print(f"[FFMPEG] 切片 + 烧字幕...")
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, encoding='utf-8', errors='replace')
     if result.returncode != 0:
         # ffmpeg 有时 exit code=1 但实际成功，检查输出文件
         if not os.path.exists(out_path) or os.path.getsize(out_path) < 10000:
-            print(f"[ERROR] ffmpeg 失败:\n{result.stderr[-2000:]}")
+            stderr_text = result.stderr or ''
+            print(f"[ERROR] ffmpeg 失败:\n{stderr_text[-2000:]}")
             sys.exit(1)
     size_mb = os.path.getsize(out_path) / 1024 / 1024
     print(f"[VIDEO] 切片完成: {out_path} ({size_mb:.1f} MB)")
@@ -186,12 +187,12 @@ def main():
     parser.add_argument('--srt', required=True, help='源 SRT 字幕文件路径')
     parser.add_argument('--start', type=float, required=True, help='切片开始秒数')
     parser.add_argument('--end', type=float, required=True, help='切片结束秒数')
-    parser.add_argument('--title', required=True, help='稿件标题（【小岁】前缀）')
+    parser.add_argument('--title', required=True, help='稿件标题')
     parser.add_argument('--cover-text', required=True, help='封面大字（可用 \\n 换行）')
     parser.add_argument('--cover-time', type=float, default=None, help='封面截帧时间（切片内秒数），默认取 20% 处')
     parser.add_argument('--cover-subtitle', default=None, help='封面副标题文字')
     parser.add_argument('--reason', default='直播切片', help='切片理由/简介第一行')
-    parser.add_argument('--source-desc', required=True, help='来源描述，如：岁己SUI 直播《xxx》2026-06-17')
+    parser.add_argument('--source-desc', required=True, help='来源描述')
     parser.add_argument('--live-start', required=True, help='直播开始时间 HH:MM:SS（从文件名解析）')
     parser.add_argument('--out-dir', default=None, help='输出目录（默认与 FLV 同目录下的 own_stream_fun_clips/）')
     parser.add_argument('--upload', action='store_true', help='制作完成后自动上传')
@@ -209,6 +210,11 @@ def main():
     clip_path = out_dir / f'{base_name}_manual_clip.mp4'
     srt_path = out_dir / f'{base_name}_manual_clip.srt'
     cover_path = out_dir / f'cover_manual.jpg'
+
+    pad_before = getattr(args, 'pad_before', 0.0)
+    pad_after = getattr(args, 'pad_after', 0.0)
+    start_sec = max(0, args.start - pad_before)
+    end_sec = args.end + pad_after
 
     # 1. 裁剪字幕
     print('\n=== Step 1: 裁剪字幕 ===')
@@ -234,11 +240,9 @@ def main():
     print(f"[DESC]\n{desc}")
 
     # 标题处理
-    title = args.title.replace('岁己', '小岁')
-    if not title.startswith('【小岁】'):
-        title = '【小岁】' + title
+    title = args.title
 
-    tags = ['小岁', '虚拟主播', '直播切片', '岁AI切片']
+    tags = ['犬绒mofu', '虚拟主播', '直播切片', '犬绒Mofu']
 
     # 5. 上传
     if args.upload:

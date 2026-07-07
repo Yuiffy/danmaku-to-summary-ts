@@ -15,7 +15,7 @@ import { listRelevantProcesses, terminateProcessTree } from '../../../utils/proc
 import { ProcessingAlertService } from '../../monitoring/ProcessingAlertService';
 import { applyFfmpegProcessPriority, getFfmpegResourceConfig } from '../../../utils/ffmpegResource';
 
-const queueManager = require(path.join(process.cwd(), 'src', 'scripts', 'whisper_queue_manager'));
+const queueManager = require(path.join(process.cwd(), 'src', 'scripts', 'whisper_queue_manager.js'));
 const ASR_PHASE_DONE_SENTINEL = '[[ASR_PHASE_DONE]]';
 const LEGACY_WHISPER_PHASE_DONE_SENTINEL = '[[WHISPER_PHASE_DONE]]';
 const DELAYED_REPLY_READY_SENTINEL = '[[DELAYED_REPLY_READY]]';
@@ -328,6 +328,13 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   /**
    * 处理文件打开事件
    */
+  private ensureSessionFromPayload(roomId: string, payload: any, reason: string): void {
+    const roomName = payload.EventData?.Name || 'unknown';
+    const title = payload.EventData?.Title || 'live';
+    this.liveSessionManager.createOrGetSession(roomId, roomName, title);
+    this.logger.info(`Rebuilt live session from webhook event: ${roomId} (${reason})`);
+  }
+
   private async handleFileOpening(payload: any): Promise<void> {
     const roomId = payload.EventData?.RoomId;
     if (!roomId) {
@@ -400,10 +407,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       return;
     }
 
-    this.logger.info(`📝 SessionEnded延迟结束(会话存在): ${roomId} (开始结算)`);
-    
-    // 触发结算流程
-    await this.processStreamEnded(roomId);
+    this.logger.info(`SessionEnded delay elapsed for ${roomId}; waiting for StreamEnded before final processing`);
   }
 
   /**
@@ -424,11 +428,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     // 处理延迟期间收到的文件
     const pendingFiles = this.pendingFiles.get(roomId);
     if (pendingFiles && pendingFiles.length > 0) {
-      this.logger.info(`📦 处理 ${pendingFiles.length} 个待处理文件`);
-      for (const {videoPath, payload} of pendingFiles) {
-        await this.processMikufansFile(videoPath, payload);
-      }
-      this.pendingFiles.delete(roomId);
+      this.logger.info(`Keeping ${pendingFiles.length} pending files for ${roomId}; waiting for StreamEnded`);
     } else {
       this.logger.info(`ℹ️  没有待处理的文件`);
     }
@@ -452,11 +452,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     // 处理延迟期间收到的文件
     const pendingFiles = this.pendingFiles.get(roomId);
     if (pendingFiles && pendingFiles.length > 0) {
-      this.logger.info(`📦 处理 ${pendingFiles.length} 个待处理文件`);
-      for (const {videoPath, payload} of pendingFiles) {
-        await this.processMikufansFile(videoPath, payload);
-      }
-      this.pendingFiles.delete(roomId);
+      this.logger.info(`Keeping ${pendingFiles.length} pending files for ${roomId}; waiting for StreamEnded`);
     } else {
       this.logger.info(`ℹ️  没有待处理的文件`);
     }
@@ -666,26 +662,30 @@ export class MikufansWebhookHandler implements IWebhookHandler {
    * 收集片段到会话
    */
   private async collectSegment(roomId: string, videoPath: string, payload: any): Promise<void> {
-    const session = this.liveSessionManager.getSession(roomId);
+    let session = this.liveSessionManager.getSession(roomId);
     if (!session) {
-      // 会话不存在，将文件加入待处理队列
-      if (!this.pendingFiles.has(roomId)) {
-        this.pendingFiles.set(roomId, []);
+      this.ensureSessionFromPayload(roomId, payload, 'FileClosed without active session');
+      session = this.liveSessionManager.getSession(roomId);
+      if (!session) {
+        // 会话不存在，将文件加入待处理队列
+        if (!this.pendingFiles.has(roomId)) {
+          this.pendingFiles.set(roomId, []);
+        }
+        this.pendingFiles.get(roomId)!.push({videoPath, payload});
+
+        // 启动延迟处理
+        this.startDelayedAction(
+          roomId,
+          DelayedActionType.FILE_WITHOUT_SESSION,
+          async () => {
+            await this.processFilesWithoutSession(roomId);
+          },
+          `FileClosed(会话不存在): ${roomId}`
+        );
+
+        this.logger.info(`📝 会话不存在，文件加入待处理队列: ${roomId} (${path.basename(videoPath)})`);
+        return;
       }
-      this.pendingFiles.get(roomId)!.push({videoPath, payload});
-      
-      // 启动延迟处理
-      this.startDelayedAction(
-        roomId,
-        DelayedActionType.FILE_WITHOUT_SESSION,
-        async () => {
-          await this.processFilesWithoutSession(roomId);
-        },
-        `FileClosed(会话不存在): ${roomId}`
-      );
-      
-      this.logger.info(`📝 会话不存在，文件加入待处理队列: ${roomId} (${path.basename(videoPath)})`);
-      return;
     }
 
     // 查找对应的xml文件
@@ -742,10 +742,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       return;
     }
 
-    this.logger.info(`📝 片段收集超时: ${roomId} (开始结算)`);
-    
-    // 触发结算流程
-    await this.processStreamEnded(roomId);
+    this.logger.info(`Segment collection timeout for ${roomId}; waiting for StreamEnded before final processing`);
   }
 
   /**
