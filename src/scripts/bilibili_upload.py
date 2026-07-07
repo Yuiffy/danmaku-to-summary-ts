@@ -133,7 +133,37 @@ async def attach_video_to_collection(
 
     aid = upload_result.get('aid')
     cid = upload_result.get('cid')
+    bvid = upload_result.get('bvid')
     title = upload_result.get('title') or upload_result.get('video_title') or ''
+
+    # 如果缺少 aid 或 cid，用 bvid 查 view API 补全
+    if (aid in (None, '') or cid in (None, '')) and bvid:
+        try:
+            print(f'[INFO] 补全 aid/cid: 查询 {bvid} ...')
+            view_url = f'https://api.bilibili.com/x/web-interface/view?bvid={bvid}'
+            cookie_str = _build_cookie_str(credential)
+            view_headers = {
+                'accept': 'application/json, text/plain, */*',
+                'cookie': cookie_str,
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0',
+            }
+            view_resp = requests.get(view_url, headers=view_headers, timeout=15)
+            view_data = view_resp.json()
+            if view_data.get('code') == 0:
+                info = view_data['data']
+                if aid in (None, ''):
+                    aid = info.get('aid')
+                    upload_result['aid'] = aid
+                if cid in (None, ''):
+                    cid = info.get('cid')
+                    upload_result['cid'] = cid
+                if not title:
+                    title = info.get('title', '')
+                print(f'[INFO] 补全成功: aid={aid}, cid={cid}')
+            else:
+                print(f'[WARN] 查询失败: {view_data}')
+        except Exception as e:
+            print(f'[WARN] 补全 aid/cid 异常: {e}')
 
     if aid in (None, ''):
         print(f'[WARN] 已上传但没有 aid，跳过合集关联 section_id={section_id}')

@@ -621,7 +621,7 @@ async def main():
 
     collection_section_id = None
     try:
-        collection_section_id = get_collection_section_id(args.source)
+        collection_section_id = get_collection_section_id()
     except Exception as e:
         print(f"[WARN] 获取合集 section_id 失败，跳过合集：{e}")
 
