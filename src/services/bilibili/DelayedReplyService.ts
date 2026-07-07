@@ -40,6 +40,7 @@ export class DelayedReplyService implements IDelayedReplyService {
   private notifier?: WeChatWorkNotifier;
   private addTaskLocks: Map<string, Promise<string>> = new Map();
   private executingTaskIds: Set<string> = new Set();
+  private publishingDynamicReplyKeys: Set<string> = new Set();
   private restoredTaskIds: Set<string> = new Set();
 
   constructor(
@@ -215,10 +216,25 @@ export class DelayedReplyService implements IDelayedReplyService {
 
       const existingTask = Array.from(this.tasks.values()).find(
         task => task.roomId === roomId &&
-                (task.status === 'pending' || task.status === 'processing')
+                (
+                  task.status === 'pending' ||
+                  task.status === 'processing' ||
+                  (task.status === 'waiting_comic' && path.normalize(task.goodnightTextPath) === path.normalize(goodnightTextPath))
+                )
       );
 
       if (existingTask) {
+        if (existingTask.replyId) {
+          this.logger.info('跳过添加任务：房间已有任务发布过主回复，避免重复评论', {
+            roomId,
+            existingTaskId: existingTask.taskId,
+            existingStatus: existingTask.status,
+            existingDynamicId: existingTask.repliedDynamicId,
+            existingReplyId: existingTask.replyId
+          });
+          return existingTask.taskId;
+        }
+
         if (
           existingTask.deferredForActiveLive &&
           !this.isSameDelayedReplyTask(existingTask, roomId, goodnightTextPath, comicImagePath)
@@ -524,6 +540,10 @@ export class DelayedReplyService implements IDelayedReplyService {
       path.normalize(goodnightTextPath),
       comicImagePath ? path.normalize(comicImagePath) : ''
     ].join('|');
+  }
+
+  private getDynamicReplyDedupeKey(roomId: string, dynamicId: string): string {
+    return [String(roomId), String(dynamicId)].join('|');
   }
 
   private isSameDelayedReplyTask(
@@ -1410,6 +1430,26 @@ export class DelayedReplyService implements IDelayedReplyService {
         }
       }
 
+      const dynamicReplyDedupeKey = this.getDynamicReplyDedupeKey(task.roomId, String(finalDynamic.id));
+      if (this.publishingDynamicReplyKeys.has(dynamicReplyDedupeKey)) {
+        task.status = 'pending';
+        task.scheduledTime = new Date(Date.now() + 15 * 1000);
+        task.error = `同房间动态 ${String(finalDynamic.id)} 正在发布回复，稍后复查避免重复评论`;
+        await this.store.updateTask(task.taskId, {
+          status: task.status,
+          scheduledTime: task.scheduledTime,
+          error: task.error
+        });
+        this.scheduleTask(task);
+        this.logger.warn('Skip concurrent delayed reply publish for the same dynamic', {
+          taskId: task.taskId,
+          roomId: task.roomId,
+          dynamicId: String(finalDynamic.id),
+          nextCheckTime: task.scheduledTime.toISOString()
+        });
+        return;
+      }
+
       const duplicateReply = this.findRecentCompletedReply(task.roomId, String(finalDynamic.id), task.taskId);
       if (duplicateReply) {
         const skippedMessage = `跳过重复延迟回复：房间 ${task.roomId} 最近已回复动态 ${String(finalDynamic.id)}`;
@@ -1436,6 +1476,7 @@ export class DelayedReplyService implements IDelayedReplyService {
 
       // 发布评论
       let result;
+      this.publishingDynamicReplyKeys.add(dynamicReplyDedupeKey);
       try {
         result = await this.bilibiliAPI.publishComment({
           dynamicId: finalDynamic.id,
@@ -1450,6 +1491,8 @@ export class DelayedReplyService implements IDelayedReplyService {
         };
         // 不在这里发送通知，由外部 catch 统一处理
         throw publishError;
+      } finally {
+        this.publishingDynamicReplyKeys.delete(dynamicReplyDedupeKey);
       }
 
       this.logger.info(`延迟回复评论发布成功: ${task.taskId}`, {
@@ -1459,24 +1502,6 @@ export class DelayedReplyService implements IDelayedReplyService {
       // 输出回复链接
       const replyUrl = `https://www.bilibili.com/opus/${String(finalDynamic.id)}#reply${String(result.replyId)}`;
       this.logger.info(`回复链接: ${replyUrl}`);
-
-      // 发送企业微信通知
-      if (this.notifier) {
-        const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
-        const anchorName = anchorConfig?.name;
-        const imageGenerationInfo = this.getComicGenerationNotificationInfo(task.comicImagePath);
-        const textGenerationInfo = this.getTextGenerationNotificationInfo(task.goodnightTextPath, task.comicImagePath);
-        await this.notifier.notifyReplySuccess(
-          String(finalDynamic.id),
-          String(result.replyId),
-          anchorName,
-          replyText,
-          result.imageUrl,
-          imagePath ? imagePath[0] : undefined,
-          imageGenerationInfo,
-          textGenerationInfo
-        );
-      }
 
       task.repliedDynamicId = String(finalDynamic.id);
       task.replyId = String(result.replyId);
@@ -1506,22 +1531,52 @@ export class DelayedReplyService implements IDelayedReplyService {
         });
 
         this.scheduleTask(task);
-        return;
+      } else {
+        // 更新任务状态
+        task.status = 'completed';
+        await this.store.updateTask(task.taskId, {
+          status: 'completed',
+          repliedDynamicId: task.repliedDynamicId,
+          replyId: task.replyId,
+          completedAt: task.completedAt,
+          error: undefined
+        });
+
+        this.logger.info(`延迟回复完成: ${task.taskId}`, {
+          dynamicId: String(finalDynamic.id)
+        });
       }
 
-      // 更新任务状态
-      task.status = 'completed';
-      await this.store.updateTask(task.taskId, {
-        status: 'completed',
-        repliedDynamicId: task.repliedDynamicId,
-        replyId: task.replyId,
-        completedAt: task.completedAt,
-        error: undefined
-      });
+      // B站评论已经成功发布并持久化，通知失败不能触发重试，否则会重复评论。
+      if (this.notifier) {
+        try {
+          const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
+          const anchorName = anchorConfig?.name;
+          const imageGenerationInfo = this.getComicGenerationNotificationInfo(task.comicImagePath);
+          const textGenerationInfo = this.getTextGenerationNotificationInfo(task.goodnightTextPath, task.comicImagePath);
+          await this.notifier.notifyReplySuccess(
+            String(finalDynamic.id),
+            String(result.replyId),
+            anchorName,
+            replyText,
+            result.imageUrl,
+            imagePath ? imagePath[0] : undefined,
+            imageGenerationInfo,
+            textGenerationInfo
+          );
+        } catch (notifyError) {
+          this.logger.warn('动态回复已发布，但成功通知发送异常；不会重试评论避免重复回复', {
+            taskId: task.taskId,
+            dynamicId: String(finalDynamic.id),
+            replyId: String(result.replyId),
+            error: notifyError instanceof Error ? notifyError.message : String(notifyError)
+          });
+        }
+      }
 
-      this.logger.info(`延迟回复完成: ${task.taskId}`, {
-        dynamicId: String(finalDynamic.id)
-      });
+      if (shouldWaitForSupplementalComic) {
+        return;
+      }
     } catch (error) {
       this.logger.error(`执行延迟回复失败: ${task.taskId}`, undefined, error instanceof Error ? error : new Error(String(error)));
 
@@ -1625,22 +1680,21 @@ export class DelayedReplyService implements IDelayedReplyService {
   }
 
   /**
-   * 查找近期已完成的同房间回复，避免多段/续播任务重复回复同一条动态。
+   * 查找近期已发布主回复的同房间任务，避免多段/续播任务重复回复同一条动态。
    */
   private findRecentCompletedReply(roomId: string, dynamicId: string, currentTaskId: string): DelayedReplyTask | null {
     const now = Date.now();
     const recentReplyWindowMs = 2 * 60 * 60 * 1000;
 
-    const completedTasks = Array.from(this.tasks.values())
+    const repliedTasks = Array.from(this.tasks.values())
       .filter(task =>
         task.taskId !== currentTaskId &&
         task.roomId === roomId &&
-        task.status === 'completed' &&
         !!task.replyId
       )
       .sort((a, b) => this.getTaskCompletionTime(b).getTime() - this.getTaskCompletionTime(a).getTime());
 
-    const sameDynamicTask = completedTasks.find(task =>
+    const sameDynamicTask = repliedTasks.find(task =>
       task.repliedDynamicId === dynamicId &&
       now - this.getTaskCompletionTime(task).getTime() < recentReplyWindowMs
     );
@@ -1648,7 +1702,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       return sameDynamicTask;
     }
 
-    return completedTasks.find(task =>
+    return repliedTasks.find(task =>
       now - this.getTaskCompletionTime(task).getTime() < recentReplyWindowMs
     ) || null;
   }
