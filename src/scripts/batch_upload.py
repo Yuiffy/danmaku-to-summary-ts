@@ -41,7 +41,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src', 'scripts'))
 
 from config_loader import get_config, find_secrets_path
-from bilibili_upload import attach_video_to_collection, get_collection_series_id
+from bilibili_upload import attach_video_to_collection, get_collection_section_id
 from bilibili_api import Credential, video_uploader, Picture, video, get_client
 import requests
 
@@ -56,9 +56,9 @@ def build_credential():
         secrets = json.load(f)
     cookie_str = secrets.get('bilibili', {}).get('cookie', '')
     config = get_config()
-    collection_series_id = get_collection_series_id(config)
-    if collection_series_id:
-        print(f"[INFO] 自动加入合集 series_id={collection_series_id}")
+    collection_section_id = get_collection_section_id(config)
+    if collection_section_id:
+        print(f"[INFO] 自动加入合集 section_id={collection_section_id}")
     if not cookie_str:
         print("[ERROR] 未找到B站Cookie")
         sys.exit(1)
@@ -318,7 +318,7 @@ def build_desc(clip_title, source_desc, start_str, dur_str):
     )
 
 
-async def upload_one(clip, credential, prefix, tags, tid, source_desc, collection_series_id=None):
+async def upload_one(clip, credential, prefix, tags, tid, source_desc, collection_section_id=None):
     """上传单个切片，返回结果 dict"""
     full_title = f"{prefix}{clip['title']}"
     filepath = clip['path']
@@ -371,7 +371,7 @@ async def upload_one(clip, credential, prefix, tags, tid, source_desc, collectio
         print(f"  开始上传...")
         result = await uploader.start()
         if result and isinstance(result, dict) and result.get('bvid'):
-            await attach_video_to_collection(result, credential, collection_series_id=collection_series_id)
+            await attach_video_to_collection(result, credential, collection_section_id=collection_section_id)
 
         if result and isinstance(result, dict) and result.get('bvid'):
             bvid = result['bvid']
@@ -410,7 +410,7 @@ async def upload_one_guarded(
     cookie_str,
     rate_limit_wait,
     rate_limit_retries,
-    collection_series_id=None,
+    collection_section_id=None,
 ):
     full_title = f"{prefix}{clip['title']}"
 
@@ -436,7 +436,7 @@ async def upload_one_guarded(
             tags,
             tid,
             source_desc,
-            collection_series_id=collection_series_id,
+            collection_section_id=collection_section_id,
         )
         if result['status'] != 'got_406':
             return result
@@ -453,7 +453,7 @@ async def upload_one_guarded(
             row_now = next((row for row in rows_now if row.get('bvid') == bvid), None)
             if row_now and row_now.get('aid'):
                 result['aid'] = row_now.get('aid')
-                await attach_video_to_collection(result, credential, collection_series_id=collection_series_id)
+                await attach_video_to_collection(result, credential, collection_section_id=collection_section_id)
             return result
 
         available, message = await probe_upload_available(credential)
@@ -476,7 +476,7 @@ async def upload_one_guarded(
             row_after_wait = next((row for row in rows_after_wait if row.get('bvid') == bvid), None)
             if row_after_wait and row_after_wait.get('aid'):
                 result['aid'] = row_after_wait.get('aid')
-                await attach_video_to_collection(result, credential, collection_series_id=collection_series_id)
+                await attach_video_to_collection(result, credential, collection_section_id=collection_section_id)
             return result
 
     return {'idx': clip['idx'], 'title': full_title, 'status': 'rate_limited'}
@@ -619,11 +619,11 @@ async def main():
     print(f"\n=== 第2步：开始上传（间隔 {args.delay}s）===")
     print("[INFO] 凭证已创建\n")
 
-    collection_series_id = None
+    collection_section_id = None
     try:
-        collection_series_id = get_collection_series_id(args.source)
+        collection_section_id = get_collection_section_id(args.source)
     except Exception as e:
-        print(f"[WARN] 获取合集 series_id 失败，跳过合集：{e}")
+        print(f"[WARN] 获取合集 section_id 失败，跳过合集：{e}")
 
     results = []
     for i, clip in enumerate(to_upload):
@@ -640,7 +640,7 @@ async def main():
             cookie_str,
             max(30, args.rate_limit_wait),
             max(0, args.rate_limit_retries),
-            collection_series_id,
+            collection_section_id,
         )
         results.append(result)
 

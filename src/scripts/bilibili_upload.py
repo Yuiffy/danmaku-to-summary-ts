@@ -11,13 +11,15 @@ import asyncio
 import json
 import os
 import sys
+import time
 from typing import Optional
 
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(project_root, 'src', 'scripts'))
 
 from config_loader import get_config, find_secrets_path
-from bilibili_api import Credential, Picture, channel_series, video_uploader
+from bilibili_api import Credential, Picture, video_uploader
+import requests
 
 DEFAULT_TID = 21
 ACCOUNT_MID = 412141275
@@ -50,51 +52,118 @@ def build_credential() -> Credential:
     )
 
 
-def get_collection_series_id(config: Optional[dict] = None) -> Optional[int]:
-    """从配置中读取要自动加入的合集 series_id。"""
+def get_collection_section_id(config: Optional[dict] = None) -> Optional[int]:
+    """从配置中读取要自动加入的合集 section_id。
+
+    优先读 collectionSectionId；如果没有则回退到旧的 collectionSeriesId。
+    """
     config = config or get_config()
     upload_cfg = (config.get('bilibili') or {}).get('upload') or {}
-    series_id = upload_cfg.get('collectionSeriesId')
-    if series_id in (None, '', 0):
+    section_id = upload_cfg.get('collectionSectionId') or upload_cfg.get('collectionSeriesId')
+    if section_id in (None, '', 0):
         return None
     try:
-        return int(series_id)
+        return int(section_id)
     except (TypeError, ValueError):
-        print(f'[WARN] 无效的合集 series_id: {series_id}')
+        print(f'[WARN] 无效的合集 section_id: {section_id}')
         return None
+
+
+# 向后兼容别名
+get_collection_series_id = get_collection_section_id
+
+
+def _build_cookie_str(credential: Credential) -> str:
+    """从 Credential 对象拼出 cookie 字符串。"""
+    parts = []
+    if getattr(credential, 'sessdata', ''):
+        parts.append(f'SESSDATA={credential.sessdata}')
+    if getattr(credential, 'bili_jct', ''):
+        parts.append(f'bili_jct={credential.bili_jct}')
+    if getattr(credential, 'buvid3', ''):
+        parts.append(f'buvid3={credential.buvid3}')
+    if getattr(credential, 'dedeuserid', ''):
+        parts.append(f'DedeUserID={credential.dedeuserid}')
+    return '; '.join(parts)
+
+
+def add_episode_to_section(
+    section_id: int,
+    aid: int,
+    cid: int,
+    title: str,
+    credential: Credential,
+) -> dict:
+    """通过创作中心接口把视频作为 episode 加入合集 section。
+
+    接口: POST /x2/creative/web/season/section/episodes/add
+    """
+    csrf = getattr(credential, 'bili_jct', '')
+    url = 'https://member.bilibili.com/x2/creative/web/season/section/episodes/add'
+    params = {'t': str(int(time.time() * 1000)), 'csrf': csrf}
+    payload = {
+        'sectionId': int(section_id),
+        'episodes': [{'title': title, 'cid': int(cid), 'aid': int(aid)}],
+    }
+    headers = {
+        'accept': 'application/json, text/plain, */*',
+        'content-type': 'application/json',
+        'origin': 'https://member.bilibili.com',
+        'referer': 'https://member.bilibili.com/platform/upload/video/frame?type=edit',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0',
+        'cookie': _build_cookie_str(credential),
+    }
+    resp = requests.post(url, params=params, json=payload, headers=headers, timeout=20)
+    return resp.json()
 
 
 async def attach_video_to_collection(
     upload_result,
     credential: Credential,
-    collection_series_id: Optional[int] = None,
+    collection_section_id: Optional[int] = None,
     config: Optional[dict] = None,
 ):
-    """把已上传的视频加入合集。"""
+    """把已上传的视频加入合集（创作中心 episodes/add 接口）。"""
     if not isinstance(upload_result, dict):
         return None
 
-    series_id = collection_series_id if collection_series_id is not None else get_collection_series_id(config)
-    if not series_id:
+    section_id = collection_section_id if collection_section_id is not None else get_collection_section_id(config)
+    if not section_id:
         return None
 
     aid = upload_result.get('aid')
+    cid = upload_result.get('cid')
+    title = upload_result.get('title') or upload_result.get('video_title') or ''
+
     if aid in (None, ''):
-        print(f'[WARN] 已上传但没有 aid，跳过合集关联 series_id={series_id}')
-        upload_result['collectionSeriesId'] = int(series_id)
+        print(f'[WARN] 已上传但没有 aid，跳过合集关联 section_id={section_id}')
+        upload_result['collectionSectionId'] = int(section_id)
         upload_result['collectionStatus'] = 'skipped_no_aid'
         return None
 
+    if cid in (None, ''):
+        print(f'[WARN] 已上传但没有 cid，跳过合集关联 section_id={section_id}')
+        upload_result['collectionSectionId'] = int(section_id)
+        upload_result['collectionStatus'] = 'skipped_no_cid'
+        return None
+
     try:
-        await channel_series.add_aids_to_series(int(series_id), [int(aid)], credential)
-        upload_result['collectionSeriesId'] = int(series_id)
-        upload_result['collectionStatus'] = 'ok'
-        print(f'[INFO] 已加入合集 series_id={series_id}, aid={aid}')
+        data = add_episode_to_section(int(section_id), int(aid), int(cid), title, credential)
+        if data.get('code') == 0:
+            upload_result['collectionSectionId'] = int(section_id)
+            upload_result['collectionStatus'] = 'ok'
+            print(f'[INFO] 已加入合集 section_id={section_id}, aid={aid}, cid={cid}')
+        else:
+            upload_result['collectionSectionId'] = int(section_id)
+            upload_result['collectionStatus'] = 'failed'
+            upload_result['collectionError'] = f"code={data.get('code')}, message={data.get('message', '')}"
+            upload_result['collectionApiResponse'] = data
+            print(f'[WARN] 加入合集失败 section_id={section_id}: code={data.get("code")}, message={data.get("message", "")}')
     except Exception as e:
-        upload_result['collectionSeriesId'] = int(series_id)
+        upload_result['collectionSectionId'] = int(section_id)
         upload_result['collectionStatus'] = 'failed'
         upload_result['collectionError'] = str(e)[:200]
-        print(f'[WARN] 加入合集失败 series_id={series_id}, aid={aid}: {e}')
+        print(f'[WARN] 加入合集异常 section_id={section_id}, aid={aid}: {e}')
 
     return upload_result
 
@@ -108,7 +177,7 @@ async def upload_video(
     cover_path: str = None,
     dynamic: str = None,
     credential: Credential = None,
-    collection_series_id: Optional[int] = None,
+    collection_section_id: Optional[int] = None,
 ):
     """上传视频到 B 站。"""
     if not os.path.exists(video_path):
@@ -190,15 +259,15 @@ async def upload_video(
         await attach_video_to_collection(
             result,
             credential,
-            collection_series_id=collection_series_id,
+            collection_section_id=collection_section_id,
         )
         print('\n✅ 投稿成功!')
         if isinstance(result, dict):
             print(f"  bvid: {result.get('bvid', 'N/A')}")
             print(f"  aid: {result.get('aid', 'N/A')}")
-            if result.get('collectionSeriesId'):
+            if result.get('collectionSectionId'):
                 print(
-                    f"  合集: {result.get('collectionSeriesId')} "
+                    f"  合集: {result.get('collectionSectionId')} "
                     f"({result.get('collectionStatus', 'unknown')})"
                 )
             if result.get('bvid'):
@@ -230,9 +299,9 @@ def main():
     if args.source_desc:
         final_desc = final_desc.rstrip() + '\n\n来源：' + args.source_desc
 
-    collection_series_id = args.collection_series_id
-    if collection_series_id is None:
-        collection_series_id = get_collection_series_id()
+    collection_section_id = args.collection_series_id
+    if collection_section_id is None:
+        collection_section_id = get_collection_section_id()
 
     result = asyncio.run(
         upload_video(
@@ -244,7 +313,7 @@ def main():
             cover_path=args.cover,
             dynamic=args.dynamic,
             credential=credential,
-            collection_series_id=collection_series_id,
+            collection_section_id=collection_section_id,
         )
     )
 

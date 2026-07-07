@@ -67,6 +67,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   private pendingFiles: Map<string, Array<{videoPath: string, payload: any}>> = new Map();
   // Stream事件时间戳记录(roomId -> {startTime?, endTime?})
   private streamTimestamps: Map<string, {startTime?: Date, endTime?: Date}> = new Map();
+  private finalFileClosedRooms: Map<string, Date> = new Map();
   // 只对本进程实际观察到 FileOpening 的直播报警，避免服务重启后误报历史 StreamEnded。
   private fileOpeningTimestamps: Map<string, Date> = new Map();
   private readonly FILE_CLOSE_ALERT_DELAY_MS = 60 * 1000;
@@ -348,6 +349,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     if (!Number.isNaN(openTime.getTime())) {
       this.fileOpeningTimestamps.set(roomKey, openTime);
     }
+    this.finalFileClosedRooms.delete(roomKey);
 
     // 取消所有相关的延迟处理(说明有新文件开始录制了)
     this.cancelDelayedAction(roomKey, DelayedActionType.SESSION_ENDED);
@@ -540,6 +542,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     this.cancelDelayedAction(roomId, DelayedActionType.STREAM_ENDED);
     this.cancelDelayedAction(roomId, DelayedActionType.SESSION_ENDED);
     this.cancelDelayedAction(roomId, DelayedActionType.SEGMENT_COLLECTION);
+    this.finalFileClosedRooms.delete(String(roomId));
 
     const session = this.liveSessionManager.getSession(roomId);
     if (!session) {
@@ -622,6 +625,11 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       const roomKey = String(roomId);
       this.cancelDelayedAction(roomKey, DelayedActionType.FILE_CLOSE_ALERT);
       this.fileOpeningTimestamps.delete(roomKey);
+      if (payload.EventData?.Streaming === false) {
+        const closeTime = new Date(payload.EventData?.FileCloseTime || payload.EventTimestamp || Date.now());
+        this.finalFileClosedRooms.set(roomKey, Number.isNaN(closeTime.getTime()) ? new Date() : closeTime);
+        this.logger.info(`FileClosed indicates stream is offline; will finalize after segment collection timeout: ${roomKey}`);
+      }
     }
 
     // 检查文件扩展名
@@ -739,6 +747,13 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     const session = this.liveSessionManager.getSession(roomId);
     if (!session) {
       this.logger.info(`📝 片段收集超时，但会话已不存在: ${roomId}`);
+      return;
+    }
+
+    const finalFileClosedAt = this.finalFileClosedRooms.get(String(roomId));
+    if (finalFileClosedAt) {
+      this.logger.info(`Segment collection timeout for ${roomId}; final FileClosed observed at ${finalFileClosedAt.toISOString()}, processing stream end`);
+      await this.processStreamEnded(roomId);
       return;
     }
 

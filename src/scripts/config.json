@@ -2,12 +2,21 @@
   "audioRecording": {
     "enabled": true,
     "audioOnlyRooms": [],
-    "audioFormats": [".m4a", ".aac", ".mp3", ".wav", ".ogg", ".flac"],
+    "audioFormats": [
+      ".m4a",
+      ".aac",
+      ".mp3",
+      ".wav",
+      ".ogg",
+      ".flac"
+    ],
     "defaultFormat": ".m4a"
   },
   "audioProcessing": {
     "enabled": true,
-    "audioOnlyRooms": [26966466],
+    "audioOnlyRooms": [
+      26966466
+    ],
     "keepOriginalVideo": false,
     "ffmpegPath": "ffmpeg"
   },
@@ -120,6 +129,11 @@
       "gpuUtilizationThreshold": 60,
       "vramUsageThreshold": 70,
       "checkIntervalSeconds": 30
+    }
+  },
+  "bilibili": {
+    "upload": {
+      "collectionSectionId": 9482593
     }
   }
 }

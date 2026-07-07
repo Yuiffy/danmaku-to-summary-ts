@@ -706,6 +706,14 @@ def paraformer_timestamp_to_sentences(results, meta, punc_model, max_subtitle_ch
     return final_segments
 
 
+def pick_batched_result(results, index):
+    if not isinstance(results, list):
+        return results
+    if index < len(results) and isinstance(results[index], dict):
+        return [results[index]]
+    return results
+
+
 def normalize_model_results_with_meta(results, meta, punc_model):
     timed_segments = []
     chunk_duration = max(0.0, float(meta["end"]) - float(meta["start"]))
@@ -1633,6 +1641,53 @@ def main():
                 def flush_batch():
                     nonlocal batch_audio, batch_meta, batch_duration, raw_result, transcribed_segments
                     if not batch_audio:
+                        return
+                    if backend_name == "paraformer" and len(batch_audio) > 1:
+                        transcribed_segments += len(batch_audio)
+                        pct = transcribed_segments / max(total_segments, 1) * 100
+                        log_progress(
+                            f"转写进度: {pct:.1f}% ({transcribed_segments}/{total_segments}, "
+                            f"batch={len(batch_audio)}, audio={batch_duration:.1f}s)"
+                        )
+                        gpu_throttle.wait_if_busy("paraformer batch 转写")
+                        batch_timeout_s = payload.get(
+                            "batch_timeout_s",
+                            payload.get("segment_timeout_s", 90) * len(batch_audio),
+                        )
+                        with StageTimeout(batch_timeout_s, "paraformer batch 转写"):
+                            with suppress_model_output():
+                                batch_results = generate_with_optional_hotword(
+                                    model,
+                                    payload,
+                                    backend_name,
+                                    input=batch_audio,
+                                    language=payload.get("language", "auto"),
+                                    use_itn=bool(payload.get("use_itn", True)),
+                                    batch_size_s=batch_size_s,
+                                )
+                        for index, meta in enumerate(batch_meta):
+                            results = pick_batched_result(batch_results, index)
+                            normalized_items = paraformer_timestamp_to_sentences(
+                                results, meta, punc_model_obj,
+                                max_subtitle_chars=int(payload.get("max_subtitle_chars", 18) or 18),
+                            )
+                            for item in normalized_items:
+                                if is_meaningless_asr_text(item.get("text", "")):
+                                    item["speaker"] = None
+                                    continue
+                                speaker, speaker_score = dominant_speaker_for_interval(
+                                    item.get("start", meta["start"]),
+                                    item.get("end", meta["end"]),
+                                    speaker_timeline,
+                                )
+                                if speaker:
+                                    item["speaker"] = speaker
+                                if speaker_score:
+                                    item["speaker_score"] = speaker_score
+                            raw_result.extend(normalized_items)
+                        batch_audio = []
+                        batch_meta = []
+                        batch_duration = 0.0
                         return
                     for meta, chunk in zip(batch_meta, batch_audio):
                         transcribed_segments += 1
