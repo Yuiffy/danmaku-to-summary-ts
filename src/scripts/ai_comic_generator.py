@@ -121,6 +121,7 @@ from tuzi_chat_completions import (
     call_tuzi_images_generations,
     annotate_last_image_generation_meta,
     get_last_image_generation_meta,
+    reset_last_image_generation_meta,
 )
 
 # 尝试导入 Google GenAI（可选依赖）
@@ -226,18 +227,52 @@ def _route_timeout_seconds(route: Dict[str, Any], default_timeout_sec: float) ->
         return float(_int_config(route.get("timeoutSec"), int(default_timeout_sec), 1))
     return default_timeout_sec
 
-def _get_image_generation_routes(config: Dict[str, Any], tuzi_config: Dict[str, Any]) -> list[Dict[str, Any]]:
+def _summarize_image_generation_failure(meta: Dict[str, Any], fallback_reason: str) -> str:
+    reason = meta.get("reason")
+    if reason:
+        return str(reason)
+
+    attempts = meta.get("attempts")
+    if isinstance(attempts, list):
+        for attempt in reversed(attempts):
+            if isinstance(attempt, dict) and attempt.get("reason"):
+                endpoint = attempt.get("endpoint") or "unknown"
+                return f"{endpoint}: {attempt.get('reason')}"
+
+    status = meta.get("status")
+    endpoint = meta.get("endpoint")
+    if status and endpoint:
+        return f"{endpoint}: {status}"
+    if status and status != "not_started":
+        return str(status)
+    return fallback_reason
+
+def _get_image_generation_routes(config: Dict[str, Any], tuzi_config: Dict[str, Any], room_id: Optional[str] = None) -> list[Dict[str, Any]]:
     image_generation = config.get("ai", {}).get("comic", {}).get("imageGeneration", {}) or {}
     configured_routes = image_generation.get("routes")
     if image_generation.get("enabled", True) and isinstance(configured_routes, list) and configured_routes:
-        return [route for route in configured_routes if isinstance(route, dict) and route.get("enabled", True)]
+        routes = [route for route in configured_routes if isinstance(route, dict) and route.get("enabled", True)]
+    else:
+        routes = [{
+            "provider": "tuZi",
+            "model": tuzi_config.get("model", "gpt-image-2"),
+            "flow": "tuZiCompatible",
+            "maxAttempts": 1,
+        }]
 
-    return [{
-        "provider": "tuZi",
-        "model": tuzi_config.get("model", "gpt-image-2"),
-        "flow": "tuZiCompatible",
-        "maxAttempts": 1,
-    }]
+    room_config = {}
+    if room_id is not None:
+        room_key = str(room_id)
+        room_config = (
+            config.get("ai", {}).get("roomSettings", {}).get(room_key, {})
+            or config.get("roomSettings", {}).get(room_key, {})
+        )
+    room_image_generation = room_config.get("imageGeneration", {}) if isinstance(room_config, dict) else {}
+    room_routes = room_image_generation.get("routes") if isinstance(room_image_generation, dict) else None
+    if room_image_generation.get("enabled", True) and isinstance(room_routes, list) and room_routes:
+        return [route for route in room_routes if isinstance(route, dict) and route.get("enabled", True)]
+
+    return routes[:1]
 
 def _call_image_generation_route(
     route: Dict[str, Any],
@@ -272,6 +307,9 @@ def _call_image_generation_route(
             temperature=route.get("temperature", 0.7),
             max_tokens=route.get("maxTokens", 100000),
             room_id=room_id,
+            strategy_mode=route.get("strategyMode"),
+            include_async_fallback=bool(route.get("includeAsyncFallback", True)),
+            async_fallback_model=route.get("asyncFallbackModel", "gemini-3-pro-image-preview-async"),
         )
 
     return call_tuzi_images_generations(
@@ -2070,7 +2108,7 @@ def call_tuzi_image_api(prompt: str, reference_image_path=None, room_id: Optiona
         timeout_ms = max(timeout_ms, 1000000)
     timeout_sec = timeout_ms / 1000
 
-    routes = _get_image_generation_routes(config, tuzi_config)
+    routes = _get_image_generation_routes(config, tuzi_config, room_id)
     route_labels = [f"{route.get('provider', 'tuZi')}:{route.get('model', 'gpt-image-2')}" for route in routes]
     route_attempts = []
     print(f"[IMAGE_PROVIDER] Image generation routes: {route_labels}")
@@ -2087,6 +2125,7 @@ def call_tuzi_image_api(prompt: str, reference_image_path=None, room_id: Optiona
                 f"[IMAGE_PROVIDER] Route {index}/{len(routes)} attempt {attempt + 1}/{attempts}: "
                 f"{provider_name}:{model}, flow={route.get('flow', 'openaiImages')}, timeout={route_timeout_sec}s"
             )
+            reset_last_image_generation_meta()
             result = _call_image_generation_route(
                 route=route,
                 provider=provider,
@@ -2096,12 +2135,18 @@ def call_tuzi_image_api(prompt: str, reference_image_path=None, room_id: Optiona
                 timeout_sec=route_timeout_sec,
             )
             last_meta = get_last_image_generation_meta()
+            failure_reason = None if result else _summarize_image_generation_failure(
+                last_meta,
+                f"{provider_name}:{model} returned no image",
+            )
+            if failure_reason:
+                print(f"[IMAGE_PROVIDER] Route failed: {provider_name}:{model} attempt {attempt + 1}/{attempts}: {failure_reason}")
             route_attempts.append({
                 "provider": provider_name,
                 "model": model,
                 "attempt": attempt + 1,
                 "status": "success" if result else "failure",
-                "reason": last_meta.get("reason"),
+                "reason": failure_reason,
             })
             if result:
                 annotate_last_image_generation_meta(

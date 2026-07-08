@@ -1236,12 +1236,22 @@ def call_tuzi_images_edits(
 
         if resp is None:
             print("[ERROR] images/edits 失败: 重试耗尽")
+            append_image_generation_attempt(model, "images/edits", "failure", "重试耗尽")
             return None
 
         print(f"[DEBUG] images/edits 响应状态码: {resp.status_code}, 用时: {resp.elapsed.total_seconds()}s")
 
         if resp.status_code != 200:
             print(f"[ERROR] images/edits 失败: HTTP {resp.status_code}, body: {resp.text[:500]}")
+            ids = log_tuzi_response_identifiers(operation_name, resp)
+            append_image_generation_attempt(
+                model,
+                "images/edits",
+                "failure",
+                f"HTTP {resp.status_code}: {resp.text[:500]}",
+                ids.get("requestId"),
+                ids.get("responseId"),
+            )
             return None
 
         result = resp.json()
@@ -1275,6 +1285,7 @@ def call_tuzi_images_edits(
 
     except Exception as e:
         print(f"[ERROR] images/edits 异常: {e}")
+        append_image_generation_attempt(model or "unknown", "images/edits", "failure", e)
         traceback.print_exc()
         return None
 
@@ -1373,11 +1384,21 @@ def call_tuzi_images_generations(
             resp = requests.post(api_url, headers=headers, json=payload, timeout=timeout, proxies=proxies)
         if resp is None:
             print("[ERROR] images/generations 失败: 重试耗尽")
+            append_image_generation_attempt(model, "images/generations", "failure", "重试耗尽")
             return None
         print(f"[DEBUG] 响应状态码: {resp.status_code}, 用时: {resp.elapsed.total_seconds()}s")
 
         if resp.status_code != 200:
             print(f"[ERROR] images/generations 失败: HTTP {resp.status_code}, body: {resp.text[:500]}")
+            ids = log_tuzi_response_identifiers(operation_name, resp)
+            append_image_generation_attempt(
+                model,
+                "images/generations",
+                "failure",
+                f"HTTP {resp.status_code}: {resp.text[:500]}",
+                ids.get("requestId"),
+                ids.get("responseId"),
+            )
             return None
 
         result = resp.json()
@@ -1449,6 +1470,7 @@ def call_tuzi_images_generations(
 
     except Exception as e:
         print(f"[ERROR] images/generations 异常: {e}")
+        append_image_generation_attempt(model or "unknown", "images/generations", "failure", e)
         traceback.print_exc()
         return None
 
@@ -1463,7 +1485,10 @@ def call_tuzi_chat_completions_for_image(
     timeout: float = 360,
     temperature: float = 0.7,
     max_tokens: int = 100000,
-    room_id: Optional[str] = None
+    room_id: Optional[str] = None,
+    strategy_mode: Optional[str] = None,
+    include_async_fallback: bool = False,
+    async_fallback_model: str = "gemini-3-pro-image-preview-async",
 ) -> Optional[str]:
     """
     调用tuZi的/v1/chat/completions端点生成图像
@@ -1544,23 +1569,23 @@ def call_tuzi_chat_completions_for_image(
         # 第一优先级：gpt-image-2（更适合汉字与排版）
         # 第二优先级：当前 tuZi Gemini async 方案
         # 注：gemini-3-pro-image-preview-async 即 nano-banana-pro 的异步版本
-        SUI_ROOM_ID = "25788785"
         primary_model = model or "gpt-image-2"
-        fallback_async_model = "gemini-3-pro-image-preview-async"
+        fallback_async_model = async_fallback_model or "gemini-3-pro-image-preview-async"
         gpt_image_timeout = max(timeout, 1000) if primary_model in ("gpt-image-2", "gpt-image-1.5", "gpt-image-1") else timeout
-        if str(room_id) == SUI_ROOM_ID:
-            # 岁己专属：同步模型由通用 tuZi 重试器负责温和重试，最后保留 async Gemini 兜底
-            print(f"[INFO] 房间 {room_id} (岁己) 使用专属策略：{primary_model}(参考图, 温和重试) -> async {fallback_async_model}")
+        normalized_strategy_mode = str(strategy_mode or "").strip().lower()
+        if normalized_strategy_mode in ("async", "asynconly", "async_only"):
+            print(f"[INFO] 房间 {room_id} 使用 async-only 图片策略：{fallback_async_model}")
             retry_strategies = [
-                {"type": "sync", "model": primary_model, "use_reference_images": True, "timeout": gpt_image_timeout},
                 {"type": "async", "model": fallback_async_model},
             ]
         else:
-            # 其他主播：同一模型只进入一次策略，具体重试节奏由通用 tuZi 重试器控制
-            print(f"[INFO] 房间 {room_id} 使用轻量策略：{primary_model}(参考图, 温和重试)")
+            suffix = f" -> async {fallback_async_model}" if include_async_fallback else ""
+            print(f"[INFO] 房间 {room_id} 使用图片策略：{primary_model}(参考图, 温和重试){suffix}")
             retry_strategies = [
                 {"type": "sync", "model": primary_model, "use_reference_images": True, "timeout": gpt_image_timeout},
             ]
+            if include_async_fallback:
+                retry_strategies.append({"type": "async", "model": fallback_async_model})
             # {"type": "async", "model": fallback_async_model},  # 2026-04-23: gemini-3-pro-image-preview-async 临时涨价，注释掉
             # --- 旧的多模型降级策略（已停用，保留备查） ---
             # retry_strategies = [
