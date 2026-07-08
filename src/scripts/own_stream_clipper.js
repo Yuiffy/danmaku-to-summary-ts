@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const xml2js = require('xml2js');
 const fetch = require('node-fetch');
+const { spawnSync } = require('child_process');
 const asrBackends = require('./asr/asr_backends');
 const configLoader = require('./config-loader');
 const topicClipper = require('./topic_clipper');
@@ -910,12 +911,16 @@ function buildCoverTitle(title, maxChars = 16) {
 
 function buildReviewMarkdown(results, metadata) {
     const aiStatusLine = buildAiStatusLine(metadata.aiStatus);
+    const uploadIds = Array.isArray(metadata.uploadRegistry?.clipIds)
+        ? metadata.uploadRegistry.clipIds
+        : [];
     const lines = [
         '# 小岁直播有趣切片 review',
         '',
         `直播: ${metadata.streamTitle || metadata.sourceFileName || '未知'}`,
         `录制时间: ${metadata.recordedAt || '未知'}`,
         `输出目录: ${metadata.outputRoot}`,
+        uploadIds.length ? `上传短ID: ${uploadIds.join(',')}` : null,
         aiStatusLine,
         '',
         '## 切片列表',
@@ -926,6 +931,9 @@ function buildReviewMarkdown(results, metadata) {
         const duration = formatClock(result.window.duration);
         const filePath = result.output.mediaPath;
         lines.push(`${index + 1}. ${result.copy.title} | ${start} | ${duration} | ${filePath}`);
+        if (uploadIds[index]) {
+            lines.push(`   上传ID: ${uploadIds[index]}`);
+        }
         if (result.output.coverPath) {
             lines.push(`   封面: ${result.output.coverPath}`);
         }
@@ -960,6 +968,9 @@ function toFwdSlash(s) {
 
 function buildNotifyMarkdown(results, metadata) {
     const aiStatusLine = buildAiStatusLine(metadata.aiStatus);
+    const uploadIds = Array.isArray(metadata.uploadRegistry?.clipIds)
+        ? metadata.uploadRegistry.clipIds
+        : [];
     const lines = [
         '## \u5c81\u5df1\u76f4\u64ad\u6709\u8da3\u5207\u7247\u5019\u9009',
         '',
@@ -967,6 +978,7 @@ function buildNotifyMarkdown(results, metadata) {
         `录制时间: ${metadata.recordedAt || '未知'}`,
         `切片目录: ${toFwdSlash(metadata.outputRoot)}`,
         metadata.reviewPath ? `Review: ${toFwdSlash(metadata.reviewPath)}` : null,
+        uploadIds.length ? `上传短ID: ${uploadIds.join(',')}` : null,
         aiStatusLine,
         '',
         '\u5207\u7247\u5217\u8868:'
@@ -975,7 +987,8 @@ function buildNotifyMarkdown(results, metadata) {
         const title = result.copy.title;
         const start = formatClock(result.window.start);
         const duration = formatClock(result.window.duration);
-        lines.push(`${index + 1}. ${title} | ${start} | ${duration}`);
+        const uploadId = uploadIds[index] ? `ID ${uploadIds[index]} | ` : '';
+        lines.push(`${index + 1}. ${uploadId}${title} | ${start} | ${duration}`);
     });
     let markdown = lines.join('\n');
     if (markdown.length <= 3900) {
@@ -987,7 +1000,8 @@ function buildNotifyMarkdown(results, metadata) {
         const title = result.copy.title;
         const start = formatClock(result.window.start);
         const duration = formatClock(result.window.duration);
-        const line = `${index + 1}. ${title} | ${start} | ${duration}`;
+        const uploadId = uploadIds[index] ? `ID ${uploadIds[index]} | ` : '';
+        const line = `${index + 1}. ${uploadId}${title} | ${start} | ${duration}`;
         if ((compact.join('\n').length + line.length + 24) > 3880) {
             compact.push(`${index + 1}. ...还有 ${results.length - index} 段，请看 Review`);
             break;
@@ -995,6 +1009,52 @@ function buildNotifyMarkdown(results, metadata) {
         compact.push(line);
     }
     return compact.join('\n');
+}
+
+function parseUploadRegistryOutput(output) {
+    const match = String(output || '').match(/^IDs:\s*([0-9,\s]+)$/m);
+    if (!match) {
+        return null;
+    }
+    const clipIds = match[1]
+        .split(',')
+        .map(value => Number(value.trim()))
+        .filter(Number.isFinite);
+    return clipIds.length ? { clipIds } : null;
+}
+
+function registerReviewForUpload(reviewPath, results, metadata) {
+    if (!reviewPath || !results.length) return null;
+    const source = `${metadata.streamerName || '主播'} 直播《${metadata.streamTitle || metadata.sourceFileName || '未知直播'}》${metadata.recordedAt || ''}`.trim();
+    const tags = Array.isArray(results[0]?.copy?.tags) && results[0].copy.tags.length
+        ? results[0].copy.tags.join(',')
+        : '小岁,虚拟主播,直播切片,岁AI切片';
+    const prefix = metadata.roomId === '25788785' ? '【小岁】' : `【${metadata.streamerName || '切片'}】`;
+    const scriptPath = path.join(__dirname, 'clip_upload_registry.py');
+    const args = [
+        scriptPath,
+        'import-review',
+        '--review', reviewPath,
+        '--source', source,
+        '--tags', tags,
+        '--prefix', prefix,
+        '--tid', '21',
+        '--label', `${metadata.streamerName || '主播'} ${metadata.recordedAt || ''}`.trim()
+    ];
+    const result = spawnSync('python', args, {
+        cwd: path.dirname(path.dirname(__dirname)),
+        encoding: 'utf8',
+        windowsHide: true
+    });
+    const output = `${result.stdout || ''}${result.stderr || ''}`.trim();
+    if (result.status !== 0) {
+        console.warn(`Upload registry import failed: ${output}`);
+        return null;
+    }
+    if (output) {
+        console.log(output);
+    }
+    return parseUploadRegistryOutput(output);
 }
 
 async function sendWeChatMarkdown(webhookUrl, content) {
@@ -1285,6 +1345,11 @@ async function generateOwnStreamClips(options = {}) {
         }));
         const results = await runJobsWithConcurrency(jobs, clipConcurrency);
         fs.writeFileSync(reviewPath, buildReviewMarkdown(results, reviewMetadata), 'utf8');
+        const uploadRegistry = registerReviewForUpload(reviewPath, results, reviewMetadata);
+        if (uploadRegistry) {
+            reviewMetadata.uploadRegistry = uploadRegistry;
+            fs.writeFileSync(reviewPath, buildReviewMarkdown(results, reviewMetadata), 'utf8');
+        }
         try {
             await notifyResults(results, reviewMetadata, { ...rootConfig, ownStreamClips: config });
         } catch (error) {
@@ -1402,6 +1467,11 @@ async function generateOwnStreamClips(options = {}) {
     }
 
     fs.writeFileSync(reviewPath, buildReviewMarkdown(results, reviewMetadata), 'utf8');
+    const uploadRegistry = registerReviewForUpload(reviewPath, results, reviewMetadata);
+    if (uploadRegistry) {
+        reviewMetadata.uploadRegistry = uploadRegistry;
+        fs.writeFileSync(reviewPath, buildReviewMarkdown(results, reviewMetadata), 'utf8');
+    }
     try {
         await notifyResults(results, reviewMetadata, { ...rootConfig, ownStreamClips: config });
     } catch (error) {

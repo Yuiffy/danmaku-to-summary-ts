@@ -98,6 +98,28 @@ module.exports = {
       time: false,
       min_uptime: '10s',
       restart_delay: 10000
+    },
+    {
+      name: 'clip-upload-queue-runner',
+      script: 'scripts/clip_upload_queue_runner.js',
+      cwd: __dirname,
+      args: '--loop --interval 30 --idle-interval 30',
+      instances: 1,
+      exec_mode: 'fork',
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '512M',
+      env: {
+        NODE_ENV: 'production',
+        PYTHONIOENCODING: 'utf-8'
+      },
+      log_date_format: '',
+      error_file: path.join(__dirname, 'logs', 'clip-upload-queue-error.log'),
+      out_file: path.join(__dirname, 'logs', 'clip-upload-queue-out.log'),
+      log_file: path.join(__dirname, 'logs', 'clip-upload-queue-combined.log'),
+      time: false,
+      min_uptime: '10s',
+      restart_delay: 10000
     }
   ],
 

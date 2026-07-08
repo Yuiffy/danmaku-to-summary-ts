@@ -40,6 +40,64 @@ To auto-attach uploads to a Bilibili合集/series after success, set:
 The script reads `config/secret.json` through `config_loader.find_secrets_path`
 and uses `bilibili.cookie`.
 
+## Reviewed Clip Short IDs and Upload Queue
+
+Reviewed clips can be addressed by short numeric IDs instead of passing long
+local paths to agents.
+
+Automatic `own_stream_clipper.js` runs now import their `REVIEW.md` into:
+
+```text
+data/runtime/clip_upload_registry.json
+```
+
+That file is local runtime state and is ignored by Git because it contains
+machine paths. The upload queue is stored next to it:
+
+```text
+data/runtime/clip_upload_queue.json
+```
+
+After import, `own_stream_clipper.js` rewrites the generated `REVIEW.md` with:
+
+- a header line like `上传短ID: 17,18`;
+- per-clip lines like `上传ID: 17`.
+
+The WeChat review notification also includes those short IDs, so a human can
+tell an agent to upload `17,18` without passing the long review or media paths.
+
+Useful commands:
+
+```powershell
+npm run upload:clips:list
+python src\scripts\clip_upload_registry.py show 1,3,4
+python src\scripts\clip_upload_registry.py enqueue --ids 1,3,4
+npm run upload:clips:queue
+```
+
+To import an older `REVIEW.md` manually:
+
+```powershell
+python src\scripts\clip_upload_registry.py import-review `
+  --review "D:\...\own_stream_fun_clips\REVIEW.md" `
+  --source "岁己SUI 直播《标题》2026-06-26" `
+  --tags "小岁,虚拟主播,直播切片,岁AI切片" `
+  --prefix "【小岁】" `
+  --tid 21
+```
+
+Queue processing is single-worker and calls `batch_upload.py` with grouped
+review indices. Existing duplicate checks, upload state, 406 recovery, and
+preupload rate-limit waiting stay inside `batch_upload.py`.
+
+For persistent operation:
+
+```powershell
+npm run pm2:clip-upload:start
+npm run pm2:logs:clip-upload
+npm run pm2:status:clip-upload
+```
+
 ## Check Public Duplicates
 
 Use root `check_dupes.py` to search public Bilibili results for the current

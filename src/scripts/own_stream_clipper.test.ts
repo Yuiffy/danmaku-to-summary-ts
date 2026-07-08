@@ -110,6 +110,38 @@ describe('own_stream_clipper', () => {
     expect(markdown).not.toContain('D:/clips/one.mp4');
   });
 
+  test('includes upload registry short ids in review and notification markdown', () => {
+    const results = [
+      {
+        window: { start: 75, duration: 90 },
+        copy: { title: '岁己：弹幕觉得这里很有趣' },
+        output: { mediaPath: 'D:/clips/one.mp4', coverPath: 'D:/clips/one_cover.jpg' }
+      },
+      {
+        window: { start: 180, duration: 45 },
+        copy: { title: '岁己：很有岁己想法的一段' },
+        output: { mediaPath: 'D:/clips/two.mp4' }
+      }
+    ];
+    const metadata = {
+      streamTitle: '悠哉悠哉夜晚！',
+      recordedAt: '2026-06-05 19:43:31',
+      outputRoot: 'D:/clips',
+      uploadRegistry: { clipIds: [17, 18] }
+    };
+
+    const review = ownStreamClipper.buildReviewMarkdown(results, metadata);
+    const notify = ownStreamClipper.buildNotifyMarkdown(results, metadata);
+
+    expect(review).toContain('上传短ID: 17,18');
+    expect(review).toContain('1. 岁己：弹幕觉得这里很有趣 | 00:01:15 | 00:01:30 | D:/clips/one.mp4');
+    expect(review).toContain('   上传ID: 17');
+    expect(review).toContain('   上传ID: 18');
+    expect(notify).toContain('上传短ID: 17,18');
+    expect(notify).toContain('1. ID 17 | 岁己：弹幕觉得这里很有趣 | 00:01:15 | 00:01:30');
+    expect(notify).toContain('2. ID 18 | 岁己：很有岁己想法的一段 | 00:03:00 | 00:00:45');
+  });
+
   test('normalizes Windows backslashes in own-stream notification paths', () => {
     const markdown = ownStreamClipper.buildNotifyMarkdown([
       {
