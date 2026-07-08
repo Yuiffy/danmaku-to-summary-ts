@@ -220,8 +220,64 @@ def is_rate_limit_message(message):
     return '上传视频过快' in text or '稍作休息' in text or 'too fast' in text.lower()
 
 
-def state_record_matches_title(record, full_title):
-    return isinstance(record, dict) and record.get('title') == full_title
+def same_path(a, b):
+    if not a or not b:
+        return False
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def state_record_matches_upload(record, full_title, media_path=''):
+    if not isinstance(record, dict):
+        return False
+    if record.get('bvid') or record.get('aid') or record.get('cid'):
+        recorded_path = record.get('mediaPath') or ''
+        return not recorded_path or same_path(recorded_path, media_path)
+    return record.get('title') == full_title
+
+
+def fetch_archive_detail(cookie_str, bvid):
+    """Fetch stable archive identifiers and current online title for an uploaded video."""
+    if not bvid:
+        return {}
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Cookie': cookie_str,
+        'Referer': 'https://member.bilibili.com/'
+    }
+    try:
+        r = requests.get(
+            'https://member.bilibili.com/x/vupre/web/archive/view',
+            params={'bvid': bvid, 'topic_grey': 1},
+            headers=headers,
+            timeout=15,
+        )
+        data = r.json()
+        if data.get('code') != 0:
+            print(f"  [WARN] archive detail 返回 code={data.get('code')}: {data.get('message', '')}")
+            return {}
+        payload = data.get('data') or {}
+        archive = payload.get('archive') or {}
+        videos = payload.get('videos') or []
+        first_video = videos[0] if videos else {}
+        return {
+            'bvid': archive.get('bvid') or bvid,
+            'aid': archive.get('aid'),
+            'cid': first_video.get('cid'),
+            'onlineTitle': archive.get('title') or '',
+        }
+    except Exception as e:
+        print(f"  [WARN] 查询稿件详情失败 {bvid}: {e}")
+        return {}
+
+
+def enrich_upload_result(result, cookie_str):
+    if not isinstance(result, dict) or not result.get('bvid'):
+        return result
+    detail = fetch_archive_detail(cookie_str, result.get('bvid'))
+    for key in ('bvid', 'aid', 'cid', 'onlineTitle'):
+        if detail.get(key):
+            result[key] = detail[key]
+    return result
 
 
 async def wait_for_upload_available(credential, wait_seconds, max_retries):
@@ -442,6 +498,8 @@ async def upload_one_guarded(
             source_desc,
             collection_section_id=collection_section_id,
         )
+        if result.get('status') in ('ok', 'already_exists') and result.get('bvid'):
+            result = enrich_upload_result(result, cookie_str)
         if result['status'] != 'got_406':
             return result
 
@@ -453,10 +511,8 @@ async def upload_one_guarded(
             print(f"  ✅ 406 实际已上传成功: {bvid}")
             result['status'] = 'ok_after_406'
             result['bvid'] = bvid
-            rows_now = fetch_member_archive_rows(cookie_str)
-            row_now = next((row for row in rows_now if row.get('bvid') == bvid), None)
-            if row_now and row_now.get('aid'):
-                result['aid'] = row_now.get('aid')
+            result = enrich_upload_result(result, cookie_str)
+            if result.get('aid'):
                 await attach_video_to_collection(result, credential, collection_section_id=collection_section_id)
             return result
 
@@ -476,10 +532,8 @@ async def upload_one_guarded(
             bvid = archives_after_wait[full_title]
             print(f"  ✅ 等待后确认已入库: {bvid}")
             result = {'idx': clip['idx'], 'title': full_title, 'status': 'ok_after_406', 'bvid': bvid}
-            rows_after_wait = fetch_member_archive_rows(cookie_str)
-            row_after_wait = next((row for row in rows_after_wait if row.get('bvid') == bvid), None)
-            if row_after_wait and row_after_wait.get('aid'):
-                result['aid'] = row_after_wait.get('aid')
+            result = enrich_upload_result(result, cookie_str)
+            if result.get('aid'):
                 await attach_video_to_collection(result, credential, collection_section_id=collection_section_id)
             return result
 
@@ -567,7 +621,7 @@ async def main():
         # 状态文件查重
         done_record = state.get('done', {}).get(str(clip['idx']))
         if done_record is not None:
-            if state_record_matches_title(done_record, full_title):
+            if state_record_matches_upload(done_record, full_title, clip.get('path') or ''):
                 skipped_state.append(clip)
                 continue
             old_title = done_record.get('title') if isinstance(done_record, dict) else ''
@@ -581,10 +635,20 @@ async def main():
         # 搜索查重
         if full_title in existing:
             bvid = existing[full_title]
+            existing_result = enrich_upload_result(
+                {'idx': clip['idx'], 'title': full_title, 'status': 'search_dup', 'bvid': bvid},
+                cookie_str,
+            )
             print(f"  [{clip['idx']}] SKIP (搜索已存在): {full_title} -> {bvid}")
             skipped_dup.append(clip)
             state.setdefault('done', {})[str(clip['idx'])] = {
-                'title': full_title, 'bvid': bvid, 'source': 'search_dup',
+                'title': full_title,
+                'submittedTitle': full_title,
+                'onlineTitle': existing_result.get('onlineTitle') or '',
+                'bvid': existing_result.get('bvid') or bvid,
+                'aid': existing_result.get('aid'),
+                'cid': existing_result.get('cid'),
+                'source': 'search_dup',
                 'reviewPath': args.review, 'mediaPath': clip.get('path') or '',
             }
             continue
@@ -656,7 +720,13 @@ async def main():
         # 记录到状态
         if result['status'] in ('ok', 'ok_after_406', 'already_exists'):
             state.setdefault('done', {})[str(clip['idx'])] = {
-                'title': full_title, 'bvid': result['bvid'], 'source': result['status'],
+                'title': full_title,
+                'submittedTitle': full_title,
+                'onlineTitle': result.get('onlineTitle') or '',
+                'bvid': result['bvid'],
+                'aid': result.get('aid'),
+                'cid': result.get('cid'),
+                'source': result['status'],
                 'cover': result.get('cover') or find_existing_cover(clip) or '',
                 'reviewPath': args.review,
                 'mediaPath': clip.get('path') or '',

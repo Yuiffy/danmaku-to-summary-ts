@@ -126,9 +126,20 @@ def full_title(clip: Dict[str, Any]) -> str:
     return f"{clip.get('prefix', '')}{clip.get('title', '')}"
 
 
+def paths_match(a: str, b: str) -> bool:
+    if not a or not b:
+        return False
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
 def state_record_matches_clip(clip: Dict[str, Any], record: Any) -> bool:
     if not isinstance(record, dict):
         return False
+    if record.get("bvid") or record.get("aid") or record.get("cid"):
+        record_path = record.get("mediaPath") or ""
+        if record_path and not paths_match(record_path, clip.get("mediaPath") or ""):
+            return False
+        return True
     return record.get("title") == full_title(clip)
 
 
@@ -258,6 +269,8 @@ def clear_mismatched_upload_state(clip: Dict[str, Any]) -> bool:
         return False
     upload_state = clip.get("uploadState")
     if not isinstance(upload_state, dict):
+        return False
+    if upload_state.get("bvid") or upload_state.get("aid") or upload_state.get("cid"):
         return False
     state_title = upload_state.get("title")
     if not state_title or state_title == full_title(clip):
