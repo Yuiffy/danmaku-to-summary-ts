@@ -41,9 +41,22 @@ def load_json(path: Path, default: Dict[str, Any]) -> Dict[str, Any]:
 
 def save_json(path: Path, data: Dict[str, Any]) -> None:
     ensure_runtime_dir()
+    payload = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    tmp.write_text(payload, encoding="utf-8")
+    for attempt in range(5):
+        try:
+            tmp.replace(path)
+            return
+        except PermissionError:
+            if attempt == 4:
+                path.write_text(payload, encoding="utf-8")
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+                return
+            time.sleep(0.2)
 
 
 def default_registry() -> Dict[str, Any]:
@@ -107,6 +120,16 @@ def parse_review(review_path: Path) -> List[Dict[str, Any]]:
         if cover:
             clip["coverPath"] = cover
     return clips
+
+
+def full_title(clip: Dict[str, Any]) -> str:
+    return f"{clip.get('prefix', '')}{clip.get('title', '')}"
+
+
+def state_record_matches_clip(clip: Dict[str, Any], record: Any) -> bool:
+    if not isinstance(record, dict):
+        return False
+    return record.get("title") == full_title(clip)
 
 
 def batch_key(review_path: str, source: str, prefix: str, tags: List[str], tid: int, state_path: str) -> str:
@@ -222,12 +245,27 @@ def clip_status_from_state(clip: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     state = load_json(state_path, {})
     idx = str(clip.get("reviewIndex"))
     done = state.get("done", {})
-    if idx in done:
+    if idx in done and state_record_matches_clip(clip, done[idx]):
         return {"status": "uploaded", **done[idx]}
     got_406 = state.get("got_406", {})
-    if idx in got_406:
+    if idx in got_406 and state_record_matches_clip(clip, got_406[idx]):
         return {"status": "needs_retry", **got_406[idx]}
     return None
+
+
+def clear_mismatched_upload_state(clip: Dict[str, Any]) -> bool:
+    if clip.get("status") not in ("uploaded", "needs_retry"):
+        return False
+    upload_state = clip.get("uploadState")
+    if not isinstance(upload_state, dict):
+        return False
+    state_title = upload_state.get("title")
+    if not state_title or state_title == full_title(clip):
+        return False
+    clip["status"] = "review"
+    clip.pop("uploadState", None)
+    clip["updatedAt"] = now_iso()
+    return True
 
 
 def sync_clip_statuses(registry: Dict[str, Any], ids: Iterable[int]) -> None:
@@ -237,6 +275,7 @@ def sync_clip_statuses(registry: Dict[str, Any], ids: Iterable[int]) -> None:
             continue
         status = clip_status_from_state(clip)
         if not status:
+            clear_mismatched_upload_state(clip)
             continue
         clip["status"] = status.pop("status")
         clip["uploadState"] = status

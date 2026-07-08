@@ -220,6 +220,10 @@ def is_rate_limit_message(message):
     return '上传视频过快' in text or '稍作休息' in text or 'too fast' in text.lower()
 
 
+def state_record_matches_title(record, full_title):
+    return isinstance(record, dict) and record.get('title') == full_title
+
+
 async def wait_for_upload_available(credential, wait_seconds, max_retries):
     for attempt in range(max_retries + 1):
         available, message = await probe_upload_available(credential)
@@ -561,9 +565,13 @@ async def main():
             continue
 
         # 状态文件查重
-        if str(clip['idx']) in state.get('done', {}):
-            skipped_state.append(clip)
-            continue
+        done_record = state.get('done', {}).get(str(clip['idx']))
+        if done_record is not None:
+            if state_record_matches_title(done_record, full_title):
+                skipped_state.append(clip)
+                continue
+            old_title = done_record.get('title') if isinstance(done_record, dict) else ''
+            print(f"  [{clip['idx']}] WARN 忽略标题不匹配的旧状态: {old_title} != {full_title}")
 
         if full_title in planned_titles:
             print(f"  [{clip['idx']}] SKIP (REVIEW 内同标题重复): {full_title}")
@@ -576,7 +584,8 @@ async def main():
             print(f"  [{clip['idx']}] SKIP (搜索已存在): {full_title} -> {bvid}")
             skipped_dup.append(clip)
             state.setdefault('done', {})[str(clip['idx'])] = {
-                'title': full_title, 'bvid': bvid, 'source': 'search_dup'
+                'title': full_title, 'bvid': bvid, 'source': 'search_dup',
+                'reviewPath': args.review, 'mediaPath': clip.get('path') or '',
             }
             continue
 
@@ -649,6 +658,8 @@ async def main():
             state.setdefault('done', {})[str(clip['idx'])] = {
                 'title': full_title, 'bvid': result['bvid'], 'source': result['status'],
                 'cover': result.get('cover') or find_existing_cover(clip) or '',
+                'reviewPath': args.review,
+                'mediaPath': clip.get('path') or '',
                 'collectionSeriesId': result.get('collectionSeriesId'),
                 'collectionStatus': result.get('collectionStatus'),
             }
@@ -658,6 +669,8 @@ async def main():
                 'title': full_title,
                 'needs_retry': True,
                 'reason': result.get('error') or result['status'],
+                'reviewPath': args.review,
+                'mediaPath': clip.get('path') or '',
             }
 
         # 保存状态
