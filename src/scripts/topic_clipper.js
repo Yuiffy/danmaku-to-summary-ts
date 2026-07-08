@@ -1347,8 +1347,10 @@ function buildDanmakuContextLines(danmaku = [], window = {}, notifyConfig = {}) 
 
 function buildClipNotifyBlock(result = {}, notifyConfig = {}) {
     const window = result.window || {};
+    const uploadId = Number.isFinite(Number(result.uploadId)) ? Number(result.uploadId) : null;
+    const idPrefix = uploadId ? `ID ${uploadId} | ` : '';
     const lines = [
-        `- ${formatClock(window.start || 0)}-${formatClock(window.end || 0)}: ${toFwdSlash(result.output?.mediaPath || '')}`
+        `- ${idPrefix}${formatClock(window.start || 0)}-${formatClock(window.end || 0)}: ${toFwdSlash(result.output?.mediaPath || '')}`
     ];
 
     if (notifyConfig.includeSubtitleContext !== false) {
@@ -1391,13 +1393,91 @@ function buildTopicNotifyMarkdown(results = [], metadata = {}) {
         `- 录制时间: ${metadata.recordedAt || '未知'}`,
         `- 切片目录: ${toFwdSlash(metadata.outputRoot || '未知')}`,
         `- 命中关键词: ${(first.window?.matchedKeywords || []).join('、') || '岁己'}`,
+        metadata.uploadRegistry?.clipIds?.length ? `- 投稿短id: ${metadata.uploadRegistry.clipIds.join(',')}` : null,
         `- 投稿文案: ${toFwdSlash(first.output?.copyPath || '已生成')}`,
         '',
         '切片列表:',
         windowSummary || '- 无',
         '',
         '请到上面的切片目录查看。'
-    ].join('\n');
+    ].filter(Boolean).join('\n');
+}
+
+function buildTopicReviewMarkdown(results = [], metadata = {}) {
+    const uploadIds = Array.isArray(metadata.uploadRegistry?.clipIds)
+        ? metadata.uploadRegistry.clipIds
+        : [];
+    const lines = [
+        '# 话题切片 review',
+        '',
+        `直播: ${metadata.streamTitle || metadata.sourceFileName || '未知'}`,
+        `录制时间: ${metadata.recordedAt || '未知'}`,
+        `输出目录: ${metadata.outputRoot || ''}`,
+        uploadIds.length ? `上传短ID: ${uploadIds.join(',')}` : null,
+        '',
+        '## 切片列表',
+        ''
+    ].filter(line => line !== null);
+
+    results.forEach((result, index) => {
+        const start = formatClock(result.window?.start || 0);
+        const duration = formatClock(result.window?.duration || ((result.window?.end || 0) - (result.window?.start || 0)));
+        lines.push(`${index + 1}. ${result.copy?.title || '话题切片'} | ${start} | ${duration} | ${result.output?.mediaPath || ''}`);
+        if (uploadIds[index]) {
+            lines.push(`   上传ID: ${uploadIds[index]}`);
+        }
+        if (result.output?.coverPath) {
+            lines.push(`   封面: ${result.output.coverPath}`);
+        }
+    });
+    lines.push('');
+    return `${lines.join('\n')}\n`;
+}
+
+function parseUploadRegistryOutput(output) {
+    const match = String(output || '').match(/^IDs:\s*([0-9,\s]+)$/m);
+    if (!match) {
+        return null;
+    }
+    const clipIds = match[1]
+        .split(',')
+        .map(value => Number(value.trim()))
+        .filter(Number.isFinite);
+    return clipIds.length ? { clipIds } : null;
+}
+
+function registerReviewForUpload(reviewPath, results, metadata) {
+    if (!reviewPath || !results.length) return null;
+    const source = `${metadata.streamerName || '主播'} 直播《${metadata.streamTitle || metadata.sourceFileName || '未知直播'}》${metadata.recordedAt || ''}`.trim();
+    const tags = Array.isArray(results[0]?.copy?.tags) && results[0].copy.tags.length
+        ? results[0].copy.tags.join(',')
+        : '岁己,虚拟主播,直播切片';
+    const prefix = metadata.roomId === '25788785' ? '【小岁】' : `【${metadata.streamerName || '切片'}】`;
+    const scriptPath = path.join(__dirname, 'clip_upload_registry.py');
+    const args = [
+        scriptPath,
+        'import-review',
+        '--review', reviewPath,
+        '--source', source,
+        '--tags', tags,
+        '--prefix', prefix,
+        '--tid', '21',
+        '--label', `${metadata.streamerName || '主播'} ${metadata.recordedAt || ''}`.trim()
+    ];
+    const result = require('child_process').spawnSync('python', args, {
+        cwd: path.dirname(path.dirname(__dirname)),
+        encoding: 'utf8',
+        windowsHide: true
+    });
+    const output = `${result.stdout || ''}${result.stderr || ''}`.trim();
+    if (result.status !== 0) {
+        console.warn(`Upload registry import failed: ${output}`);
+        return null;
+    }
+    if (output) {
+        console.log(output);
+    }
+    return parseUploadRegistryOutput(output);
 }
 
 async function notifyTopicClipResults(results = [], metadata = {}, config = {}) {
@@ -1626,14 +1706,29 @@ async function generateTopicClips(options = {}) {
         console.log(`✅ 话题切片已生成: ${path.basename(mediaPath)} (${formatClock(window.start)}-${formatClock(window.end)})`);
     }
 
+    const reviewPath = path.join(outputRoot, 'REVIEW.md');
+    const reviewMetadata = {
+        streamerName,
+        streamTitle: info.streamTitle,
+        roomId: info.roomId,
+        recordedAt: info.recordedAt,
+        outputRoot,
+        sourceFileName: info.fileName
+    };
+    fs.writeFileSync(reviewPath, buildTopicReviewMarkdown(results, reviewMetadata), 'utf8');
+    const uploadRegistry = registerReviewForUpload(reviewPath, results, reviewMetadata);
+    if (uploadRegistry) {
+        results.forEach((result, index) => {
+            result.uploadId = uploadRegistry.clipIds[index];
+        });
+        reviewMetadata.uploadRegistry = uploadRegistry;
+        fs.writeFileSync(reviewPath, buildTopicReviewMarkdown(results, reviewMetadata), 'utf8');
+    }
+
     try {
         await notifyTopicClipResults(results, {
-            streamerName,
-            streamTitle: info.streamTitle,
-            roomId: info.roomId,
-            recordedAt: info.recordedAt,
-            outputRoot,
-            sourceFileName: info.fileName
+            ...reviewMetadata,
+            uploadRegistry
         }, options.config || {});
         if (results.length > 0) {
             console.log(`📣 话题切片提醒已尝试发送: ${results.length} 段`);

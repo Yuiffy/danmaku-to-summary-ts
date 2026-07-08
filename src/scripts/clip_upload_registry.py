@@ -441,6 +441,26 @@ def mark_job(job: Dict[str, Any], status: str, **extra: Any) -> None:
     job.update(extra)
 
 
+def pid_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        if os.name == "nt":
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            return str(pid) in (result.stdout or "")
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
 def acquire_lock(stale_seconds: int = 12 * 60 * 60) -> bool:
     ensure_runtime_dir()
     lock_payload = json.dumps({"pid": os.getpid(), "time": time.time()})
@@ -455,6 +475,10 @@ def acquire_lock(stale_seconds: int = 12 * 60 * 60) -> bool:
 
         try:
             existing = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+            pid = int(existing.get("pid") or 0)
+            if pid and not pid_is_alive(pid):
+                LOCK_PATH.unlink()
+                continue
             age = time.time() - float(existing.get("time") or 0)
             if age < stale_seconds:
                 print(f"[worker] another worker lock exists: {LOCK_PATH}", file=sys.stderr)
