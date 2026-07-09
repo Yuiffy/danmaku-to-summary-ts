@@ -175,7 +175,7 @@ function extractRecordTime(filename) {
     // 严格要求 20YYMMDD-HHMMSS 格式，避免误匹配 roomId
     const m = String(filename || '').match(/20\d{2}(\d{2})(\d{2})-(\d{2})(\d{2})\d{2}/);
     if (!m) return null;
-    return { year: 2000 + (+m[0].substring(2,4)), month: +m[1], day: +m[2], hour: +m[3], minute: +m[4] };
+    return { year: 2000 + (+m[0].substring(2, 4)), month: +m[1], day: +m[2], hour: +m[3], minute: +m[4] };
 }
 
 // 从 SRT 最后一行提取时长（返回秒数）
@@ -213,11 +213,11 @@ function buildLiveTimeDesc(highlightPath) {
     const recordTime = extractRecordTime(path.basename(highlightPath));
     if (!recordTime) return null;
     const dur = extractDurationFromSrt(highlightPath);
-    const startStr = `${recordTime.hour}:${String(recordTime.minute).padStart(2,'0')}`;
+    const startStr = `${recordTime.hour}:${String(recordTime.minute).padStart(2, '0')}`;
     if (dur && dur > 60) {
         const endHour = Math.floor((recordTime.hour * 3600 + recordTime.minute * 60 + dur) / 3600) % 24;
         const endMin = Math.floor(((recordTime.hour * 3600 + recordTime.minute * 60 + dur) % 3600) / 60);
-        const endStr = `${endHour}:${String(endMin).padStart(2,'0')}`;
+        const endStr = `${endHour}:${String(endMin).padStart(2, '0')}`;
         return `${startStr}~${endStr}（约${formatDuration(dur)}）`;
     }
     return `${startStr}左右开始`;
@@ -270,7 +270,7 @@ function buildPrompt(highlightContent, roomId, liveTimeDesc = null) {
 2. **要有画面感**:如果文档里提到了具体的梗,一定要提一句,证明你真的看了。
 3. **情感浓度**:虽然禁止了某些词,但"喜欢"和"支持"的情绪要给足。如果主播今天很累,就多安慰;如果很开心,就跟着一起傻乐。
 `,
-`
+    `
 
 性格:喜欢调侃、宠溺主播,有点话痨,对主播的生活琐事和梗如数家珍。
 
@@ -299,7 +299,7 @@ function buildPrompt(highlightContent, roomId, liveTimeDesc = null) {
 结尾(情感升华):
 关怀:叮嘱主播注意身体(嗓子、睡眠、吃饭),不要太累。
 期待:确认下一次直播的时间(如果文档里提到了)。`
-];
+    ];
 
     const randomMainPrompt = mainPrompts[Math.floor(Math.random() * mainPrompts.length)];
 
@@ -885,7 +885,7 @@ async function generateGoodnightReply(highlightPath, roomId = null) {
             try {
                 const highlightContent = readHighlightFile(highlightPath);
                 const lines = highlightContent.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-                const picks = lines.slice(0, 5).map((l, i) => `${i+1}. ${l}`);
+                const picks = lines.slice(0, 5).map((l, i) => `${i + 1}. ${l}`);
                 const fallback = `# 晚安(本地回退)\n\n今天的直播亮点:\n${picks.join('\n')}\n\n谢谢今天的陪伴,晚安~`;
                 return saveGeneratedText(outputPath, fallback, highlightPath, {
                     provider: 'local',
@@ -906,58 +906,58 @@ async function generateGoodnightReply(highlightPath, roomId = null) {
 
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
-            // 检查输入文件
-            if (!fs.existsSync(highlightPath)) {
-                throw new Error(`AI_HIGHLIGHT文件不存在: ${highlightPath}`);
-            }
-
-            // 读取内容
-            const highlightContent = readHighlightFile(highlightPath);
-            if (!highlightContent || highlightContent.trim().length < 10) {
-                 console.log(`⚠️  AI_HIGHLIGHT内容过短 (${highlightContent?.length || 0} 字符),跳过AI生成`);
-                 return null;
-            }
-            console.log(`📖 读取内容完成 (${highlightContent.length} 字符)`);
-
-            // 构建提示词(优先使用传入的 roomId,其次从文件名提取)
-            const finalRoomId = roomId || extractRoomIdFromFilename(path.basename(highlightPath));
-            const liveTimeDesc = buildLiveTimeDesc(highlightPath);
-            // 构建提示词
-            const prompt = buildPrompt(highlightContent, finalRoomId, liveTimeDesc);
-            const wordLimit = configLoader.getWordLimit(finalRoomId);
-
-            // 调用API生成文本
-            let generationResult;
-            const provider = config.ai?.text?.provider || 'gemini';
-
-            if (provider === 'tuZi') {
-                generationResult = await generateTextWithTuZi(prompt, { wordLimit });
-            } else {
-                // 默认使用 Gemini
-                generationResult = await generateTextWithGemini(prompt, { wordLimit });
-            }
-
-            const rawGeneratedText = generationResult.text;
-            const inspection = inspectGeneratedReply(rawGeneratedText, wordLimit);
-            if (!inspection.ok) {
-                if (String(rawGeneratedText || '').trim()) {
-                    saveFailedGeneratedText(outputPath, rawGeneratedText, highlightPath, generationResult.meta, {
-                        attempt,
-                        maxRetries,
-                        reason: inspection.reason,
-                        rawLength: String(rawGeneratedText).length,
-                        cleanedLength: inspection.cleaned.length
-                    });
+                // 检查输入文件
+                if (!fs.existsSync(highlightPath)) {
+                    throw new Error(`AI_HIGHLIGHT文件不存在: ${highlightPath}`);
                 }
-                throw new Error(inspection.reason);
-            }
 
-            const generatedText = validateGeneratedReply(rawGeneratedText, wordLimit);
-            console.log(`✅ 文本长度校验通过: ${generatedText.length} 字符 (wordLimit=${wordLimit})`);
+                // 读取内容
+                const highlightContent = readHighlightFile(highlightPath);
+                if (!highlightContent || highlightContent.trim().length < 10) {
+                    console.log(`⚠️  AI_HIGHLIGHT内容过短 (${highlightContent?.length || 0} 字符),跳过AI生成`);
+                    return null;
+                }
+                console.log(`📖 读取内容完成 (${highlightContent.length} 字符)`);
 
-            // 确定输出路径
-            // 保存结果
-            return saveGeneratedText(outputPath, generatedText, highlightPath, generationResult.meta);
+                // 构建提示词(优先使用传入的 roomId,其次从文件名提取)
+                const finalRoomId = roomId || extractRoomIdFromFilename(path.basename(highlightPath));
+                const liveTimeDesc = buildLiveTimeDesc(highlightPath);
+                // 构建提示词
+                const prompt = buildPrompt(highlightContent, finalRoomId, liveTimeDesc);
+                const wordLimit = configLoader.getWordLimit(finalRoomId);
+
+                // 调用API生成文本
+                let generationResult;
+                const provider = config.ai?.text?.provider || 'gemini';
+
+                if (provider === 'tuZi') {
+                    generationResult = await generateTextWithTuZi(prompt, { wordLimit });
+                } else {
+                    // 默认使用 Gemini
+                    generationResult = await generateTextWithGemini(prompt, { wordLimit });
+                }
+
+                const rawGeneratedText = generationResult.text;
+                const inspection = inspectGeneratedReply(rawGeneratedText, wordLimit);
+                if (!inspection.ok) {
+                    if (String(rawGeneratedText || '').trim()) {
+                        saveFailedGeneratedText(outputPath, rawGeneratedText, highlightPath, generationResult.meta, {
+                            attempt,
+                            maxRetries,
+                            reason: inspection.reason,
+                            rawLength: String(rawGeneratedText).length,
+                            cleanedLength: inspection.cleaned.length
+                        });
+                    }
+                    throw new Error(inspection.reason);
+                }
+
+                const generatedText = validateGeneratedReply(rawGeneratedText, wordLimit);
+                console.log(`✅ 文本长度校验通过: ${generatedText.length} 字符 (wordLimit=${wordLimit})`);
+
+                // 确定输出路径
+                // 保存结果
+                return saveGeneratedText(outputPath, generatedText, highlightPath, generationResult.meta);
 
             } catch (error) {
                 lastError = error;
@@ -965,7 +965,7 @@ async function generateGoodnightReply(highlightPath, roomId = null) {
 
                 if (attempt < maxRetries) {
                     const waitTime = 2000 * attempt;
-                    console.log(`⏳ 等待 ${waitTime/1000} 秒后重试...`);
+                    console.log(`⏳ 等待 ${waitTime / 1000} 秒后重试...`);
                     await new Promise(resolve => setTimeout(resolve, waitTime));
                 }
             }
@@ -1003,25 +1003,23 @@ async function generateClipTitle(context = {}) {
     const fullCtx = context.fullClipText || context.sampleText || '';
 
     const prompt = [
-        '给一个B站直播切片生成投稿标题。标题要像人工编辑过的 B 站切片标题，抓住让人想点开的冲突和节目效果，而不是写平铺直叙的摘要。',
-         '要求：',
-         '1. 只输出标题本身，不要解释，不要引号，不要以“【”开头。',
-         '2. 18-42字，最多52字；可以稍长一点换取信息量，不要写成空泛短句。',
-         '3. 只抓一个最值得点开的具体看点：画面、疑问、误会、原话、反差、翻车或操作结果；不要平铺整段内容。',
-         '4. 优先使用主播原话、弹幕反应、游戏/事件名，形成“具体事件/疑问 + 原话/反差/结果”的结构；可以用问句、冒号或感叹句。',
-         '5. 标题中的事实、人物关系和结果必须能被切片字幕或弹幕逐句验证，不要编造或夸大。',
-         '6. “炸锅、破防、社死、急眼、离谱、锐评”等情绪词只有在内容明确支持时才能使用，不能当万能后缀。',
-         '7. 要结合上下文理解字幕——ASR可能有同音错字，要根据语境推断正确意思。',
-         '8. 如果是岁己自播切片，正文默认用“小岁”；其他主播或确有语境需要时再用“岁己”。如果提到其他主播，用对应昵称，不要加引号。',
-         '9. 不要用“直播有趣片段”“精彩瞬间”“很可爱的一段”“聊到了XX”或“锐评XX引发炸锅”这种弱标题。',
+        '给一个B站直播切片生成投稿标题，风格要像人工编辑挑出来的切片标题——一眼能看出"发生了什么好玩/离谱的事"，让人想点进去看，而不是平铺直叙的内容摘要。',
+        '',
+        '核心写法：找这段切片里最值得点开的那一个具体看点（一个疑问、一句原话、一个反差、一个翻车或结果），用"具体事件/疑问 + 原话/反差/结果"的结构写成一句话，可以用问句、冒号或感叹句。只抓一个点，不要试图概括整段内容。',
+        '',
+        '真实性要求：标题里的事实、人物关系、结果，必须能被下面的字幕或弹幕内容逐句对应，不能编造或夸大。ASR可能有同音错字，要结合上下文推断说话人真实的意思。"炸锅""破防""社死""离谱"这类情绪词，只有内容明确支持时才用，不要当万能后缀套上去；也不要写成"聊到了XX""锐评XX引发热议"这种谁都能套用的弱标题。',
+        '',
+        '称呼：岁己自播切片正文默认写"小岁"；其他主播出场或语境明确需要时才写"岁己"或对方昵称小X，不加引号。',
+        '',
+        '输出格式：只输出标题本身，不要解释、不要引号、不要以"【"开头。18-42字为宜，最多52字，宁可稍长换信息量，也不要写成空泛短句。',
         '',
         '人工标题参考风格：',
         '- 第二次复活怎么还往回走，弹幕急死了，路痴实锤',
         '- 如果我捡到死亡笔记，比夜神月用得好！和AI辩论，被骂生气了',
         '- 妈妈突然进房间，赶紧把电脑画面切到桌面',
         '- 主播每天受长文回复感动，今天才发现竟然是AI！观看米米识破AI视频，问是哪个饼干岁做的，出来一脚踩死你',
-         '- 两个男的在阳台是什么动画？原来是格里菲斯，弹幕怎么不知道',
-         '- 岁己读打抛猪猪包，烫嘴，谁想的名字。然后开麦当劳会员',
+        '- 两个男的在阳台是什么动画？原来是格里菲斯，弹幕怎么不知道',
+        '- 读打抛猪猪包，烫嘴，谁想的名字。然后开麦当劳会员',
         '',
         `主播: ${context.streamerName || '主播'}`,
         `原直播标题: ${context.streamTitle || '未知'}`,
