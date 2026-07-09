@@ -14,3 +14,11 @@ const child = spawn('python', ['-u', script, 'worker', ...process.argv.slice(2)]
 });
 
 child.on('exit', code => process.exit(code ?? 0));
+
+// PM2 stops the Node wrapper, not Python directly.  Forward termination so a
+// restart cannot leave an orphan worker holding the registry lock.
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(signal, () => {
+    if (!child.killed) child.kill(signal);
+  });
+}

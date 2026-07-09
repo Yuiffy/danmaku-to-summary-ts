@@ -8,6 +8,7 @@ import datetime as dt
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import time
@@ -23,6 +24,9 @@ DEFAULT_DELAY = 60
 DEFAULT_RATE_LIMIT_WAIT = 120
 DEFAULT_RATE_LIMIT_RETRIES = 5
 DEFAULT_JOB_TIMEOUT_SECONDS = 45 * 60
+DEFAULT_RETRY_DELAY_SECONDS = 10 * 60
+MAX_AUTOMATIC_JOB_RETRIES = 8
+LOCK_OWNER_TOKEN: Optional[str] = None
 
 
 def now_iso() -> str:
@@ -461,9 +465,19 @@ def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.Co
 
 
 def next_pending_job(queue: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    now = dt.datetime.now(dt.timezone.utc)
     for job in queue.get("jobs", []):
         if job.get("status") == "pending":
             return job
+        if job.get("status") == "retry_wait":
+            retry_at = job.get("retryAt")
+            try:
+                if retry_at and dt.datetime.fromisoformat(str(retry_at)) <= now:
+                    return job
+            except ValueError:
+                # A malformed timestamp must not leave an otherwise retryable
+                # upload blocked forever.
+                return job
     return None
 
 
@@ -494,13 +508,16 @@ def pid_is_alive(pid: int) -> bool:
 
 
 def acquire_lock(stale_seconds: int = 12 * 60 * 60) -> bool:
+    global LOCK_OWNER_TOKEN
     ensure_runtime_dir()
-    lock_payload = json.dumps({"pid": os.getpid(), "time": time.time()})
+    owner_token = secrets.token_hex(16)
+    lock_payload = json.dumps({"pid": os.getpid(), "time": time.time(), "token": owner_token})
     while True:
         try:
             fd = os.open(str(LOCK_PATH), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(lock_payload)
+            LOCK_OWNER_TOKEN = owner_token
             return True
         except FileExistsError:
             pass
@@ -524,11 +541,78 @@ def acquire_lock(stale_seconds: int = 12 * 60 * 60) -> bool:
 
 
 def release_lock() -> None:
+    """Release only the lock acquired by this worker.
+
+    A stale worker must never remove a newer worker's lock after its own lock
+    was reclaimed.  The random token also protects against PID reuse.
+    """
     try:
         if LOCK_PATH.exists():
+            existing = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+            if (
+                int(existing.get("pid") or 0) != os.getpid()
+                or existing.get("token") != LOCK_OWNER_TOKEN
+            ):
+                return
             LOCK_PATH.unlink()
-    except OSError:
+    except (OSError, ValueError, json.JSONDecodeError):
         pass
+
+
+def validate_groups(groups: List[List[Dict[str, Any]]]) -> List[str]:
+    """Return registry/review mismatches before invoking the uploader.
+
+    ``batch_upload.py --only`` exits successfully when none of the requested
+    review rows exist.  Without this check the queue labelled such a job as
+    blocked and left the clip permanently in ``uploading``.
+    """
+    errors: List[str] = []
+    for group in groups:
+        review_path = Path(group[0]["reviewPath"])
+        try:
+            available = {int(item["reviewIndex"]) for item in parse_review(review_path)}
+        except (OSError, UnicodeError) as exc:
+            errors.append(f"cannot read REVIEW.md {review_path}: {exc}")
+            continue
+        requested = [int(clip["reviewIndex"]) for clip in group]
+        missing = sorted(set(requested) - available)
+        if missing:
+            errors.append(f"REVIEW.md {review_path} has no rows: {missing}")
+    return errors
+
+
+def retry_delay_seconds(attempt: int) -> int:
+    """Back off retries after Bilibili/network transient stops."""
+    return min(DEFAULT_RETRY_DELAY_SECONDS * (2 ** max(attempt - 1, 0)), 2 * 60 * 60)
+
+
+def recover_interrupted_jobs() -> bool:
+    """Make unfinished jobs from a previous worker run eligible again.
+
+    Older versions used ``blocked`` as a terminal status after a transient
+    rate-limit/network stop.  On every restart they therefore stayed stuck
+    even though their state file makes a retry idempotent.
+    """
+    registry = load_json(REGISTRY_PATH, default_registry())
+    queue = load_json(QUEUE_PATH, default_queue())
+    changed = False
+    for job in queue.get("jobs", []):
+        if job.get("status") not in ("running", "blocked"):
+            continue
+        ids = [int(i) for i in job.get("clipIds", [])]
+        known_ids = [clip_id for clip_id in ids if str(clip_id) in registry.get("clips", {})]
+        if not known_ids:
+            continue
+        sync_clip_statuses(registry, known_ids)
+        if all(registry["clips"][str(clip_id)].get("status") == "uploaded" for clip_id in known_ids):
+            mark_job(job, "done", result="all ids already uploaded")
+        else:
+            mark_job(job, "pending", recoveredAt=now_iso())
+        changed = True
+    if changed:
+        save_json(REGISTRY_PATH, registry)
+        save_json(QUEUE_PATH, queue)
+    return changed
 
 
 def run_one_job() -> bool:
@@ -553,6 +637,19 @@ def run_one_job() -> bool:
         save_json(QUEUE_PATH, queue)
         return True
 
+    groups = grouped_clips(registry, pending_ids)
+    validation_errors = validate_groups(groups)
+    if validation_errors:
+        for clip_id in pending_ids:
+            clip = registry["clips"][str(clip_id)]
+            clip["status"] = "failed"
+            clip["updatedAt"] = now_iso()
+        mark_job(job, "failed", error="; ".join(validation_errors))
+        save_json(REGISTRY_PATH, registry)
+        save_json(QUEUE_PATH, queue)
+        print(f"[worker] invalid upload job: {job.get('error')}", file=sys.stderr)
+        return True
+
     mark_job(job, "running", startedAt=now_iso())
     for clip_id in pending_ids:
         registry["clips"][str(clip_id)]["status"] = "uploading"
@@ -562,7 +659,7 @@ def run_one_job() -> bool:
 
     all_outputs: List[str] = []
     failed = False
-    for group in grouped_clips(registry, pending_ids):
+    for group in groups:
         cp = run_batch(group, job)
         output = cp.stdout or ""
         all_outputs.append(output[-8000:])
@@ -585,7 +682,26 @@ def run_one_job() -> bool:
     elif all(status == "uploaded" for status in statuses.values()):
         mark_job(current, "done", clipStatuses=statuses, lastOutput="\n".join(all_outputs)[-12000:])
     else:
-        mark_job(current, "blocked", clipStatuses=statuses, lastOutput="\n".join(all_outputs)[-12000:])
+        attempt = int(current.get("attempts") or 0) + 1
+        if attempt >= MAX_AUTOMATIC_JOB_RETRIES:
+            mark_job(
+                current,
+                "blocked",
+                attempts=attempt,
+                clipStatuses=statuses,
+                lastOutput="\n".join(all_outputs)[-12000:],
+                error="automatic retry limit reached; inspect and re-enqueue the affected IDs",
+            )
+        else:
+            retry_at = dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=retry_delay_seconds(attempt))
+            mark_job(
+                current,
+                "retry_wait",
+                attempts=attempt,
+                retryAt=retry_at.isoformat(),
+                clipStatuses=statuses,
+                lastOutput="\n".join(all_outputs)[-12000:],
+            )
     save_json(QUEUE_PATH, queue)
     return True
 
@@ -594,6 +710,7 @@ def worker(args: argparse.Namespace) -> int:
     if not acquire_lock():
         return 3
     try:
+        recover_interrupted_jobs()
         while True:
             did_work = run_one_job()
             if not args.loop:
