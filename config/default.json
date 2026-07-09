@@ -639,6 +639,7 @@
       "rhea": {
         "displayName": "瑞娅",
         "roomIds": ["23260993"],
+        "uploadTags": ["瑞瑞"],
         "mentionLabels": ["瑞娅", "瑞亚", "蕊娅", "Rhea"],
         "speakerLabels": ["瑞娅", "Rhea"],
         "aliases": ["瑞亚", "蕊娅"],

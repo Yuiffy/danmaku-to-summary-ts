@@ -723,6 +723,12 @@ function resolveStreamerTags(config = {}, roomId = null) {
         const roomIds = Array.isArray(entry.roomIds) ? entry.roomIds.map(value => String(value)) : [];
         if (!roomIds.includes(roomKey)) continue;
 
+        // 投稿标签使用主播在 B 站的投稿名/标签，不要把 ASR 说话人别名
+        // （例如“瑞娅”“Rhea”）直接带入真人切片投稿。
+        if (Array.isArray(entry.uploadTags) && entry.uploadTags.length > 0) {
+            return entry.uploadTags.map(t => String(t).trim()).filter(Boolean);
+        }
+
         // 优先使用显式配置的 searchTags
         if (Array.isArray(entry.searchTags) && entry.searchTags.length > 0) {
             return entry.searchTags.map(t => String(t).trim()).filter(Boolean);
@@ -1403,6 +1409,27 @@ function buildTopicNotifyMarkdown(results = [], metadata = {}) {
     ].filter(Boolean).join('\n');
 }
 
+function deriveUploadPrefix(streamerName = null) {
+    const name = String(streamerName || '').trim();
+    if (!name) return '【小切片】';
+    if (name.startsWith('小')) return `【${name}】`;
+    // 优先取主播名中的第一个中文字符，例如“瑞瑞”→“小瑞”、
+    // “岁己SUI”→“小岁”、“米汀Nagisa”→“小米”。
+    const cjk = name.match(/[\u3400-\u9fff]/);
+    const initial = cjk ? cjk[0] : name.match(/[A-Za-z0-9]/)?.[0];
+    return initial ? `【小${initial}】` : `【小${name.slice(0, 1)}】`;
+}
+
+function resolveUploadPrefix(config = {}, roomId = null, streamerName = null) {
+    const roomKey = roomId ? String(roomId) : null;
+    const roomSettings = roomKey
+        ? (config.ai?.roomSettings?.[roomKey] || config.roomSettings?.[roomKey] || null)
+        : null;
+    const configured = String(roomSettings?.clipTitlePrefix || '').trim();
+    if (configured) return `【${configured.replace(/^【|】$/g, '')}】`;
+    return deriveUploadPrefix(streamerName);
+}
+
 function buildTopicReviewMarkdown(results = [], metadata = {}) {
     const uploadIds = Array.isArray(metadata.uploadRegistry?.clipIds)
         ? metadata.uploadRegistry.clipIds
@@ -1452,7 +1479,7 @@ function registerReviewForUpload(reviewPath, results, metadata) {
     const tags = Array.isArray(results[0]?.copy?.tags) && results[0].copy.tags.length
         ? results[0].copy.tags.join(',')
         : '岁己,虚拟主播,直播切片';
-    const prefix = metadata.roomId === '25788785' ? '【小岁】' : `【${metadata.streamerName || '切片'}】`;
+    const prefix = resolveUploadPrefix(metadata.config || {}, metadata.roomId, metadata.streamerName);
     const scriptPath = path.join(__dirname, 'clip_upload_registry.py');
     const args = [
         scriptPath,
@@ -1712,6 +1739,7 @@ async function generateTopicClips(options = {}) {
         streamTitle: info.streamTitle,
         roomId: info.roomId,
         recordedAt: info.recordedAt,
+        config: options.config || {},
         outputRoot,
         sourceFileName: info.fileName
     };
@@ -1755,6 +1783,8 @@ module.exports = {
     parseRecordingInfo,
     resolveStreamerName,
     resolveStreamerTags,
+    deriveUploadPrefix,
+    resolveUploadPrefix,
     isIgnoredRoom,
     buildDefaultTitle,
     buildClipCopy,

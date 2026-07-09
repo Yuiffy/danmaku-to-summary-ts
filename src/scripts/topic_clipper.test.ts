@@ -25,6 +25,31 @@ function writeSrt(filePath: string) {
 }
 
 describe('topic_clipper', () => {
+  test('uses configured upload prefix and upload tags for a room', () => {
+    const config = {
+      ai: {
+        roomSettings: { '23260993': { clipTitlePrefix: '小瑞' } },
+        streamerRegistry: {
+          rhea: {
+            roomIds: ['23260993'],
+            displayName: '瑞娅',
+            speakerLabels: ['瑞娅', 'Rhea'],
+            uploadTags: ['瑞瑞']
+          }
+        }
+      }
+    };
+    expect(topicClipper.resolveUploadPrefix(config, '23260993', '瑞瑞')).toBe('【小瑞】');
+    expect(topicClipper.resolveStreamerTags(config, '23260993')).toEqual(['瑞瑞']);
+  });
+
+  test('derives 小X upload prefixes by default for every streamer', () => {
+    expect(topicClipper.deriveUploadPrefix('瑞瑞')).toBe('【小瑞】');
+    expect(topicClipper.deriveUploadPrefix('岁己SUI')).toBe('【小岁】');
+    expect(topicClipper.deriveUploadPrefix('米汀Nagisa')).toBe('【小米】');
+    expect(topicClipper.deriveUploadPrefix('小栞')).toBe('【小栞】');
+  });
+
   test('finds keyword matches and ignores unrelated segments', () => {
     const segments = [
       { start: 0, end: 1, text: '普通内容' },
