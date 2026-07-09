@@ -22,6 +22,7 @@ LOCK_PATH = RUNTIME_DIR / "clip_upload_worker.lock"
 DEFAULT_DELAY = 60
 DEFAULT_RATE_LIMIT_WAIT = 120
 DEFAULT_RATE_LIMIT_RETRIES = 5
+DEFAULT_JOB_TIMEOUT_SECONDS = 45 * 60
 
 
 def now_iso() -> str:
@@ -42,12 +43,21 @@ def load_json(path: Path, default: Dict[str, Any]) -> Dict[str, Any]:
 def save_json(path: Path, data: Dict[str, Any]) -> None:
     ensure_runtime_dir()
     payload = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(payload, encoding="utf-8")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
     for attempt in range(5):
         try:
+            tmp.write_text(payload, encoding="utf-8")
             tmp.replace(path)
             return
+        except FileNotFoundError:
+            if attempt == 4:
+                path.write_text(payload, encoding="utf-8")
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+                return
+            time.sleep(0.2)
         except PermissionError:
             if attempt == 4:
                 path.write_text(payload, encoding="utf-8")
@@ -430,15 +440,24 @@ def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.Co
         str(int(job.get("rateLimitRetries") or DEFAULT_RATE_LIMIT_RETRIES)),
     ]
     print("[worker] run:", " ".join(f'"{c}"' if " " in c else c for c in cmd), flush=True)
-    return subprocess.run(
-        cmd,
-        cwd=str(PROJECT_ROOT),
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
+    timeout_seconds = int(job.get("timeoutSeconds") or DEFAULT_JOB_TIMEOUT_SECONDS)
+    try:
+        return subprocess.run(
+            cmd,
+            cwd=str(PROJECT_ROOT),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        output = exc.stdout or ""
+        if isinstance(output, bytes):
+            output = output.decode("utf-8", errors="replace")
+        output += f"\n[worker] batch timed out after {timeout_seconds}s\n"
+        return subprocess.CompletedProcess(cmd, 124, stdout=output)
 
 
 def next_pending_job(queue: Dict[str, Any]) -> Optional[Dict[str, Any]]:
