@@ -1003,23 +1003,7 @@ async function generateClipTitle(context = {}) {
     const fullCtx = context.fullClipText || context.sampleText || '';
 
     const prompt = [
-        '给一个B站直播切片生成投稿标题，风格要像人工编辑挑出来的切片标题——一眼能看出"发生了什么好玩/离谱的事"，让人想点进去看，而不是平铺直叙的内容摘要。',
-        '',
-        '核心写法：找这段切片里最值得点开的那一个具体看点（一个疑问、一句原话、一个反差、一个翻车或结果），用"具体事件/疑问 + 原话/反差/结果"的结构写成一句话，可以用问句、冒号或感叹句。只抓一个点，不要试图概括整段内容。',
-        '',
-        '真实性要求：标题里的事实、人物关系、结果，必须能被下面的字幕或弹幕内容逐句对应，不能编造或夸大。ASR可能有同音错字，要结合上下文推断说话人真实的意思。"炸锅""破防""社死""离谱"这类情绪词，只有内容明确支持时才用，不要当万能后缀套上去；也不要写成"聊到了XX""锐评XX引发热议"这种谁都能套用的弱标题。',
-        '',
-        '称呼：岁己自播切片正文默认写"小岁"；其他主播出场或语境明确需要时才写"岁己"或对方昵称小X，不加引号。',
-        '',
-        '输出格式：只输出标题本身，不要解释、不要引号、不要以"【"开头。18-42字为宜，最多52字，宁可稍长换信息量，也不要写成空泛短句。',
-        '',
-        '人工标题参考风格：',
-        '- 第二次复活怎么还往回走，弹幕急死了，路痴实锤',
-        '- 如果我捡到死亡笔记，比夜神月用得好！和AI辩论，被骂生气了',
-        '- 妈妈突然进房间，赶紧把电脑画面切到桌面',
-        '- 主播每天受长文回复感动，今天才发现竟然是AI！观看米米识破AI视频，问是哪个饼干岁做的，出来一脚踩死你',
-        '- 两个男的在阳台是什么动画？原来是格里菲斯，弹幕怎么不知道',
-        '- 读打抛猪猪包，烫嘴，谁想的名字。然后开麦当劳会员',
+        ...buildClipTitlePromptLines(),
         '',
         `主播: ${context.streamerName || '主播'}`,
         `原直播标题: ${context.streamTitle || '未知'}`,
@@ -1046,6 +1030,37 @@ async function generateClipTitle(context = {}) {
         console.warn(`⚠️  AI切片标题生成失败，使用模板标题: ${error.message}`);
         return fallback;
     }
+}
+
+/**
+ * Shared title-writing instructions for every clip workflow.
+ * Keep this as the single source of truth: callers only provide their output
+ * contract (plain title vs. a JSON title field) and their clip-specific context.
+ */
+function buildClipTitlePromptLines(options = {}) {
+    const outputFormat = options.outputMode === 'jsonTitle'
+        ? '输出格式：每个 clips 元素的 title 字段只写标题本身，不要解释、不要引号、不要以"【"开头。18-42字为宜，最多52字，宁可稍长换信息量，也不要写成空泛短句。'
+        : '输出格式：只输出标题本身，不要解释、不要引号、不要以"【"开头。18-42字为宜，最多52字，宁可稍长换信息量，也不要写成空泛短句。';
+
+    return [
+        '给一个B站直播切片生成投稿标题，风格要像人工编辑挑出来的切片标题——一眼能看出"发生了什么好玩/离谱的事"，让人想点进去看，而不是平铺直叙的内容摘要。',
+        '',
+        '核心写法：找这段切片里最值得点开的那一个具体看点（一个疑问、一句原话、一个反差、一个翻车或结果），用"具体事件/疑问 + 原话/反差/结果"的结构写成一句话，可以用问句、冒号或感叹句。只抓一个点，不要试图概括整段内容。',
+        '',
+        '真实性要求：标题里的事实、人物关系、结果，必须能被下面的字幕或弹幕内容逐句对应，不能编造或夸大。ASR可能有同音错字，要结合上下文推断说话人真实的意思。"炸锅""破防""社死""离谱"这类情绪词，只有内容明确支持时才用，不要当万能后缀套上去；也不要写成"聊到了XX""锐评XX引发热议"这种谁都能套用的弱标题。',
+        '',
+        '称呼：岁己自播切片正文默认写"小岁"；其他主播出场或语境明确需要时才写"岁己"或对方昵称小X，不加引号。',
+        '',
+        outputFormat,
+        '',
+        '人工标题参考风格：',
+        '- 第二次复活怎么还往回走，弹幕急死了，路痴实锤',
+        '- 如果我捡到死亡笔记，比夜神月用得好！和AI辩论，被骂生气了',
+        '- 妈妈突然进房间，赶紧把电脑画面切到桌面',
+        '- 主播每天受长文回复感动，今天才发现竟然是AI！观看米米识破AI视频，问是哪个饼干岁做的，出来一脚踩死你',
+        '- 两个男的在阳台是什么动画？原来是格里菲斯，弹幕怎么不知道',
+        '- 读打抛猪猪包，烫嘴，谁想的名字。然后开麦当劳会员',
+    ];
 }
 
 async function generateClipDescription(context = {}) {
@@ -1170,6 +1185,7 @@ module.exports = {
     generateGoodnightReply,
     generateClipTitle,
     generateClipDescription,
+    buildClipTitlePromptLines,
     generateTextWithGemini,
     generateTextWithTuZi,
     batchGenerateGoodnightReplies
