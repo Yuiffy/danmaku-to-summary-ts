@@ -215,11 +215,34 @@ def pause_task(data: Dict[str, Any], task: Dict[str, Any], reason: str) -> None:
 
 
 def finish_attempt(data: Dict[str, Any], task: Dict[str, Any], outcome: str) -> None:
+    """Record a *successful* attempt."""
     task["completed"] = int(task.get("completed") or 0) + 1
     task["remaining"] = remaining(task)
     task["status"] = "completed" if task["remaining"] <= 0 else "pending"
+    task["fail_count"] = 0
     task["note"] = f"{task.get('id')} {outcome}; completed={task['completed']} remaining={task['remaining']}"
     clear_submission_tracking(task)
+    save_queue(data)
+
+
+MAX_FAIL_RETRIES = 3
+
+
+def record_failure(data: Dict[str, Any], task: Dict[str, Any], reason: str) -> None:
+    """Record a *failed* attempt. Does NOT consume a repeat.
+    Resets task to pending for retry, or pauses after MAX_FAIL_RETRIES consecutive failures."""
+    fail_count = int(task.get("fail_count") or 0) + 1
+    task["fail_count"] = fail_count
+    clear_submission_tracking(task)
+    if fail_count >= MAX_FAIL_RETRIES:
+        task["remaining"] = remaining(task)
+        task["status"] = "paused"
+        task["paused_at"] = int(time.time())
+        task["paused_reason"] = f"{MAX_FAIL_RETRIES} consecutive failures: {reason}"
+        task["note"] = f"{task.get('id')} paused after {fail_count} failures ({reason}); completed={task.get('completed')} remaining={task['remaining']}"
+    else:
+        task["status"] = "pending"
+        task["note"] = f"{task.get('id')} failed attempt #{fail_count}/{MAX_FAIL_RETRIES} ({reason}); will retry; completed={task.get('completed')} remaining={remaining(task)}"
     save_queue(data)
 
 
@@ -305,7 +328,7 @@ def submit_next_pending(data: Dict[str, Any], skip_task_id: Optional[str] = None
         if is_moderation_rejection(e.reason):
             pause_task(data, next_task, f"submit rejected: {e.reason}")
         else:
-            finish_attempt(data, next_task, f"submit rejected ({e.reason})")
+            record_failure(data, next_task, f"submit rejected ({e.reason})")
         print(f"submit rejected {next_task.get('id')}: {e.reason}")
         return None, next_task
     remember_submission(next_task, sid)
@@ -344,7 +367,7 @@ def query_submitted_task(data: Dict[str, Any], task: Dict[str, Any], dry_run: bo
                         reason = f"no queue_info after {checks} checks"
                     else:
                         reason = f"submitted {age}s ago"
-                    finish_attempt(data, task, f"stale querying without queue_info ({reason})")
+                    record_failure(data, task, f"stale querying without queue_info ({reason})")
                     print(f"stale querying without queue_info {sid}; released task for retry")
                     return RunResult(MIN_INTERVAL)
                 save_queue(data)
@@ -364,7 +387,7 @@ def query_submitted_task(data: Dict[str, Any], task: Dict[str, Any], dry_run: bo
             if is_moderation_rejection(reason):
                 pause_task(data, task, f"generation rejected: {reason}")
             else:
-                finish_attempt(data, task, "failed attempt")
+                record_failure(data, task, "failed attempt")
             notify("fail", task, sid, "failed")
             print(f"fail {sid}")
             return RunResult(MIN_INTERVAL if task.get("status") != "paused" and task["remaining"] > 0 else DEFAULT_INTERVAL)
@@ -428,7 +451,7 @@ def sync_inflight_tasks(data: Dict[str, Any], dry_run: bool = False) -> bool:
             if is_moderation_rejection(reason):
                 pause_task(data, task, f"generation rejected: {reason}")
             else:
-                finish_attempt(data, task, f"failed attempt (sync): {reason}")
+                record_failure(data, task, f"failed attempt (sync): {reason}")
             changed = True
             continue
 
@@ -480,7 +503,7 @@ def run_once(dry_run: bool = False) -> RunResult:
         if is_moderation_rejection(e.reason):
             pause_task(data, pending_task, f"submit rejected: {e.reason}")
         else:
-            finish_attempt(data, pending_task, f"submit rejected ({e.reason})")
+            record_failure(data, pending_task, f"submit rejected ({e.reason})")
         print(f"submit rejected {pending_task.get('id')}: {e.reason}")
         if is_moderation_rejection(e.reason):
             sid2, fallback = submit_next_pending(data, skip_task_id=pending_task.get("id"), dry_run=dry_run)
