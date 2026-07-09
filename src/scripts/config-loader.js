@@ -314,7 +314,10 @@ const ConfigSchema = Joi.object({
 // Secrets Schema - 扁平结构，将转换为嵌套
 const SecretsSchema = Joi.object({
     gemini: Joi.object({ apiKey: Joi.string().allow('') }).optional(),
-    tuZi: Joi.object({ apiKey: Joi.string().allow('') }).optional(),
+    tuZi: Joi.object({
+        apiKey: Joi.string().allow('').optional(),
+        textApiKey: Joi.string().allow('').optional()
+    }).optional(),
     bilibili: Joi.object({
         cookie: Joi.string().allow('').optional(),
         csrf: Joi.string().allow('').optional()
@@ -394,16 +397,18 @@ function transformSecrets(secrets) {
         transformed.ai.text.gemini.apiKey = secrets.gemini.apiKey;
     }
 
-    if (secrets.tuZi?.apiKey) {
+    if (secrets.tuZi?.apiKey || secrets.tuZi?.textApiKey) {
         transformed.ai = transformed.ai || {};
         // tuZi API Key 用于文本生成（备用方案）
         transformed.ai.text = transformed.ai.text || {};
         transformed.ai.text.tuZi = transformed.ai.text.tuZi || {};
-        transformed.ai.text.tuZi.apiKey = secrets.tuZi.apiKey;
+        transformed.ai.text.tuZi.apiKey = secrets.tuZi.textApiKey || secrets.tuZi.apiKey || '';
         // tuZi API Key 也用于漫画生成
         transformed.ai.comic = transformed.ai.comic || {};
         transformed.ai.comic.tuZi = transformed.ai.comic.tuZi || {};
-        transformed.ai.comic.tuZi.apiKey = secrets.tuZi.apiKey;
+        if (secrets.tuZi.apiKey) {
+            transformed.ai.comic.tuZi.apiKey = secrets.tuZi.apiKey;
+        }
     }
 
     if (secrets.bilibili) {
@@ -552,6 +557,13 @@ function getTuZiApiKey() {
            '';
 }
 
+function getTuZiTextApiKey() {
+    return getByPath('ai.text.tuZi.apiKey') ||
+           getByPath('aiServices.tuZi.textApiKey') ||
+           getByPath('aiServices.tuZi.apiKey') ||
+           '';
+}
+
 /**
  * 检查Gemini是否配置
  */
@@ -565,6 +577,11 @@ function isGeminiConfigured() {
  */
 function isTuZiConfigured() {
     const apiKey = getTuZiApiKey();
+    return apiKey && apiKey.trim() !== '';
+}
+
+function isTuZiTextConfigured() {
+    const apiKey = getTuZiTextApiKey();
     return apiKey && apiKey.trim() !== '';
 }
 
@@ -630,8 +647,10 @@ module.exports = {
     getConfig,
     getGeminiApiKey,
     getTuZiApiKey,
+    getTuZiTextApiKey,
     isGeminiConfigured,
     isTuZiConfigured,
+    isTuZiTextConfigured,
     getNames,
     getWordLimit,
     clearCache,

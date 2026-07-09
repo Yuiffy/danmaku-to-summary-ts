@@ -524,7 +524,8 @@ async function generateTextWithTuZi(prompt, options = {}) {
     // 优先使用 ai.text.tuZi 配置(文本生成专用),其次使用 ai.comic.tuZi(兼容旧配置)
     const tuziConfig = config.ai?.text?.tuZi || config.aiServices?.tuZi || {};
 
-    if (!configLoader.isTuZiConfigured()) {
+    const textApiKey = configLoader.getTuZiTextApiKey();
+    if (!configLoader.isTuZiTextConfigured()) {
         throw new Error('tuZi API未配置,请检查secrets.json中的apiKey');
     }
 
@@ -570,7 +571,7 @@ async function generateTextWithTuZi(prompt, options = {}) {
             const response = await fetch(apiUrl, {
                 method: 'POST',
                 headers: {
-                    'Authorization': `Bearer ${tuziConfig.apiKey}`,
+                    'Authorization': `Bearer ${textApiKey}`,
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({

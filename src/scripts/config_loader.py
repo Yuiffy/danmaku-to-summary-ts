@@ -168,7 +168,7 @@ def get_config(force_reload: bool = False) -> Dict[str, Any]:
             mapped_secrets['ai']['text']['gemini']['apiKey'] = secrets['gemini']['apiKey']
         
         # tuZi.apiKey -> ai.comic.tuZi.apiKey
-        if 'tuZi' in secrets and 'apiKey' in secrets['tuZi']:
+        if 'tuZi' in secrets and isinstance(secrets['tuZi'], dict) and secrets['tuZi'].get('apiKey'):
             if 'ai' not in mapped_secrets:
                 mapped_secrets['ai'] = {}
             if 'comic' not in mapped_secrets['ai']:
@@ -176,6 +176,17 @@ def get_config(force_reload: bool = False) -> Dict[str, Any]:
             if 'tuZi' not in mapped_secrets['ai']['comic']:
                 mapped_secrets['ai']['comic']['tuZi'] = {}
             mapped_secrets['ai']['comic']['tuZi']['apiKey'] = secrets['tuZi']['apiKey']
+
+        if 'tuZi' in secrets and isinstance(secrets['tuZi'], dict):
+            text_api_key = secrets['tuZi'].get('textApiKey') or secrets['tuZi'].get('apiKey', '')
+            if text_api_key:
+                if 'ai' not in mapped_secrets:
+                    mapped_secrets['ai'] = {}
+                if 'text' not in mapped_secrets['ai']:
+                    mapped_secrets['ai']['text'] = {}
+                if 'tuZi' not in mapped_secrets['ai']['text']:
+                    mapped_secrets['ai']['text']['tuZi'] = {}
+                mapped_secrets['ai']['text']['tuZi']['apiKey'] = text_api_key
 
         # providers -> ai.providers
         if 'providers' in secrets and isinstance(secrets['providers'], dict):
@@ -223,6 +234,18 @@ def get_tuzi_api_key() -> str:
     """获取tuZi API Key"""
     config = get_config()
     return config.get('ai', {}).get('comic', {}).get('tuZi', {}).get('apiKey', '')
+
+
+def get_tuzi_text_api_key() -> str:
+    """获取 tuZi 文本生成 API Key"""
+    config = get_config()
+    text_config = config.get('ai', {}).get('text', {}).get('tuZi', {})
+    return text_config.get('apiKey', '') or get_tuzi_api_key()
+
+
+def is_tuzi_text_configured() -> bool:
+    api_key = get_tuzi_text_api_key()
+    return bool(api_key and api_key.strip())
 
 
 def is_gemini_configured() -> bool:

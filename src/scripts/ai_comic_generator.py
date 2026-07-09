@@ -110,6 +110,8 @@ from config_loader import (
     is_tuzi_configured,
     get_gemini_api_key,
     get_tuzi_api_key,
+    get_tuzi_text_api_key,
+    is_tuzi_text_configured,
     get_room_names,
     get_project_root
 )
@@ -1726,9 +1728,9 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
             from tuzi_chat_completions import call_tuzi_chat_completions
             
             config = load_config()
-            tuzi_config = config.get("aiServices", {}).get("tuZi", {})
+            tuzi_config = config.get("ai", {}).get("text", {}).get("tuZi", {})
             
-            if not is_tuzi_configured():
+            if not is_tuzi_text_configured():
                 print("[WARNING]  tuZi API未配置，使用原始内容")
                 return return_comic_script_failure(highlight_content, room_id, "tuZi API未配置")
             
@@ -1743,9 +1745,9 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
             comic_content = call_tuzi_chat_completions(
                 prompt=user_prompt,
                 system_prompt=system_prompt,
-                model=tuzi_config.get("textModel", "gemini-3-flash-preview"),
+                model=tuzi_config.get("model", tuzi_config.get("textModel", "gpt-5.4-mini")),
                 base_url=tuzi_config.get("baseUrl", "https://api.tu-zi.com"),
-                api_key=tuzi_config.get("apiKey", ""),
+                api_key=get_tuzi_text_api_key(),
                 proxy_url=tuzi_config.get("proxy", ""),
                 timeout=120,
                 temperature=0.7,
@@ -1778,7 +1780,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                 print(f"内容预览: {comic_content[:200]}...")
                 set_comic_script_meta(
                     provider="tuZi",
-                    model=tuzi_config.get("textModel", "gemini-3-flash-preview"),
+                    model=tuzi_config.get("model", tuzi_config.get("textModel", "gpt-5.4-mini")),
                     status="success",
                     fallback=True
                 )
