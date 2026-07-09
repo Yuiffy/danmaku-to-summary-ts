@@ -1351,42 +1351,18 @@ function buildDanmakuContextLines(danmaku = [], window = {}, notifyConfig = {}) 
     return samples.map(item => `[${formatClock(item.time)}] ${item.text}`);
 }
 
-function buildClipNotifyBlock(result = {}, notifyConfig = {}) {
+function buildClipNotifyBlock(result = {}) {
     const window = result.window || {};
     const uploadId = Number.isFinite(Number(result.uploadId)) ? Number(result.uploadId) : null;
     const idPrefix = uploadId ? `ID ${uploadId} | ` : '';
-    const lines = [
-        `- ${idPrefix}${formatClock(window.start || 0)}-${formatClock(window.end || 0)}: ${toFwdSlash(result.output?.mediaPath || '')}`
-    ];
-
-    if (notifyConfig.includeSubtitleContext !== false) {
-        const subtitles = buildSubtitleContextLines(window, notifyConfig.subtitleContextLines);
-        if (subtitles.length > 0) {
-            lines.push('  - 字幕上下文:');
-            subtitles.forEach(line => lines.push(`    - ${line}`));
-        }
-    }
-
-    if (notifyConfig.includeDanmakuContext !== false) {
-        const danmaku = Array.isArray(window.danmakuContext) ? window.danmakuContext : [];
-        if (danmaku.length > 0) {
-            lines.push('  - 附近弹幕:');
-            danmaku.forEach(line => lines.push(`    - ${line}`));
-        }
-    }
-
-    return lines.join('\n');
+    const mediaPath = toFwdSlash(result.output?.mediaPath || '');
+    const fileName = mediaPath ? path.basename(mediaPath) : '文件未生成';
+    return `- ${idPrefix}${formatClock(window.start || 0)}-${formatClock(window.end || 0)} | ${fileName}`;
 }
 
 function buildTopicNotifyMarkdown(results = [], metadata = {}) {
-    const first = results[0] || {};
-    const info = metadata.copy || {};
-    const notifyConfig = {
-        ...DEFAULT_CLIP_TOPICS_CONFIG.notify,
-        ...(metadata.notify || {})
-    };
     const windowSummary = results
-        .map(result => buildClipNotifyBlock(result, notifyConfig))
+        .map(result => buildClipNotifyBlock(result))
         .join('\n');
 
     return [
@@ -1398,15 +1374,41 @@ function buildTopicNotifyMarkdown(results = [], metadata = {}) {
         `- 直播间: ${metadata.roomId || '未知'}`,
         `- 录制时间: ${metadata.recordedAt || '未知'}`,
         `- 切片目录: ${toFwdSlash(metadata.outputRoot || '未知')}`,
-        `- 命中关键词: ${(first.window?.matchedKeywords || []).join('、') || '岁己'}`,
         metadata.uploadRegistry?.clipIds?.length ? `- 投稿短id: ${metadata.uploadRegistry.clipIds.join(',')}` : null,
-        `- 投稿文案: ${toFwdSlash(first.output?.copyPath || '已生成')}`,
         '',
         '切片列表:',
-        windowSummary || '- 无',
-        '',
-        '请到上面的切片目录查看。'
+        windowSummary || '- 无'
     ].filter(Boolean).join('\n');
+}
+
+function splitWeChatMarkdown(content, maxLength = 4096) {
+    const limit = Math.max(1, Math.floor(Number(maxLength) || 4096));
+    const lines = String(content || '').split('\n');
+    const chunks = [];
+    let current = '';
+
+    const flush = () => {
+        if (current) {
+            chunks.push(current);
+            current = '';
+        }
+    };
+
+    for (let line of lines) {
+        while (line.length > limit) {
+            flush();
+            chunks.push(line.slice(0, limit));
+            line = line.slice(limit);
+        }
+
+        const next = current ? `${current}\n${line}` : line;
+        if (next.length > limit) {
+            flush();
+        }
+        current = current ? `${current}\n${line}` : line;
+    }
+    flush();
+    return chunks.length ? chunks : [''];
 }
 
 function deriveUploadPrefix(streamerName = null) {
@@ -1523,7 +1525,11 @@ async function notifyTopicClipResults(results = [], metadata = {}, config = {}) 
         ...metadata,
         notify: notifyConfig
     });
-    return sendWeChatMarkdown(webhookUrl, markdown);
+    const messages = splitWeChatMarkdown(markdown);
+    for (const message of messages) {
+        await sendWeChatMarkdown(webhookUrl, message);
+    }
+    return true;
 }
 
 async function generateTopicClips(options = {}) {
@@ -1794,6 +1800,7 @@ module.exports = {
     generateTopicClips,
     notifyTopicClipResults,
     buildTopicNotifyMarkdown,
+    splitWeChatMarkdown,
     formatClock,
     sanitizeFileName
 };

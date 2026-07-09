@@ -276,7 +276,7 @@ describe('topic_clipper', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  test('builds a readable topic notification markdown', () => {
+  test('builds a compact topic notification markdown', () => {
     const markdown = topicClipper.buildTopicNotifyMarkdown([
       {
         window: {
@@ -314,15 +314,12 @@ describe('topic_clipper', () => {
     expect(markdown).toContain('今天聊点什么');
     expect(markdown).toContain('找到其中 **2** 段提到岁己的地方');
     expect(markdown).toContain('D:/clips');
-    expect(markdown).toContain('D:/clips/one.mp4');
-    expect(markdown).toContain('D:/clips/two.mp4');
-    expect(markdown).toContain('D:/clips/one_投稿文案.md');
-    expect(markdown).toContain('字幕上下文');
-    expect(markdown).toContain('★ [00:00:20] 这里提到了小岁');
-    expect(markdown).toContain('[00:00:18] 前一句解释背景');
-    expect(markdown).toContain('[00:00:22] 后一句继续补充');
-    expect(markdown).toContain('附近弹幕');
-    expect(markdown).toContain('[00:00:21] 原来是在说小岁');
+    expect(markdown).toContain('one.mp4');
+    expect(markdown).toContain('two.mp4');
+    expect(markdown).not.toContain('D:/clips/one.mp4');
+    expect(markdown).not.toContain('投稿文案');
+    expect(markdown).not.toContain('字幕上下文');
+    expect(markdown).not.toContain('附近弹幕');
   });
   test('normalizes Windows backslashes in topic notification paths', () => {
     const markdown = topicClipper.buildTopicNotifyMarkdown([
@@ -338,8 +335,24 @@ describe('topic_clipper', () => {
     });
 
     expect(markdown).toContain('D:/files/videos/topic_clips');
-    expect(markdown).toContain('D:/files/videos/topic_clips/one.mp4');
-    expect(markdown).toContain('D:/files/videos/topic_clips/one.md');
+    expect(markdown).toContain('one.mp4');
+    expect(markdown).not.toContain('D:/files/videos/topic_clips/one.mp4');
+    expect(markdown).not.toContain('one.md');
     expect(markdown).not.toContain('D:\\files');
+  });
+
+  test('splits long WeChat markdown without exceeding the content limit', () => {
+    const content = [
+      '## 话题切片提醒',
+      '- 第一段',
+      '- 第二段',
+      '- 第三段'
+    ].join('\n');
+
+    const messages = topicClipper.splitWeChatMarkdown(content, 16);
+
+    expect(messages.length).toBeGreaterThan(1);
+    expect(messages.every((message: string) => message.length <= 16)).toBe(true);
+    expect(messages.join('\n')).toBe(content);
   });
 });
