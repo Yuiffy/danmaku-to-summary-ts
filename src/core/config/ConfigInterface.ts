@@ -478,6 +478,9 @@ export interface BilibiliConfig {
   ac_time_value?: string;
   acTimeValue?: string;
   upload?: {
+    /** 创作中心合集分区 ID（用于投稿后加入合集）。 */
+    collectionSectionId?: number | null;
+    /** @deprecated Use collectionSectionId. */
     collectionSeriesId?: number | null;
   };
   polling: {

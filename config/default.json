@@ -936,6 +936,7 @@
       }
     },
     "upload": {
+      "collectionSectionId": null,
       "collectionSeriesId": null
     },
     "delayedReply": {

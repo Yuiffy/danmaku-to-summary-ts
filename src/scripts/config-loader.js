@@ -280,6 +280,7 @@ const ConfigSchema = Joi.object({
     bilibili: Joi.object({
         enabled: Joi.boolean().default(true),
         upload: Joi.object({
+            collectionSectionId: Joi.number().integer().positive().allow(null).default(null),
             collectionSeriesId: Joi.number().integer().positive().allow(null).default(null)
         }).default(),
         polling: Joi.object({

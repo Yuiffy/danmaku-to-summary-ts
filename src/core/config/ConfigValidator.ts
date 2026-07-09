@@ -389,6 +389,7 @@ export class ConfigValidator {
         cookie: '',
         csrf: '',
         upload: {
+          collectionSectionId: null,
           collectionSeriesId: null,
         },
         polling: {

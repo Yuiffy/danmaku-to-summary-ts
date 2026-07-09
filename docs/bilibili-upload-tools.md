@@ -34,8 +34,9 @@ Useful options:
 
 To auto-attach uploads to a Bilibili合集/series after success, set:
 
-- `bilibili.upload.collectionSeriesId`: the collection `series_id` to add each
-  successful upload to.
+- `bilibili.upload.collectionSectionId`: the collection section `section_id` to
+  add each successful upload to. (`collectionSeriesId` remains supported only
+  for legacy configurations.)
 
 The script reads `config/secret.json` through `config_loader.find_secrets_path`
 and uses `bilibili.cookie`.

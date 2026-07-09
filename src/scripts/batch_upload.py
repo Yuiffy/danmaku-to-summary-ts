@@ -430,8 +430,6 @@ async def upload_one(clip, credential, prefix, tags, tid, source_desc, collectio
         )
         print(f"  开始上传...")
         result = await uploader.start()
-        if result and isinstance(result, dict) and result.get('bvid'):
-            await attach_video_to_collection(result, credential, collection_section_id=collection_section_id)
 
         if result and isinstance(result, dict) and result.get('bvid'):
             bvid = result['bvid']
@@ -440,7 +438,21 @@ async def upload_one(clip, credential, prefix, tags, tid, source_desc, collectio
             if cleanup_cover_tmp:
                 try: os.remove(cover_tmp)
                 except: pass
-            return {'idx': clip['idx'], 'title': full_title, 'status': 'ok', 'bvid': bvid, 'cover': cover_path}
+            # VideoUploader commonly returns only a bvid.  Do not attach the
+            # collection here: aid/cid are frequently unavailable until the
+            # archive detail endpoint catches up.  upload_one_guarded enriches
+            # this result first, then attaches it.
+            upload_result = {
+                'idx': clip['idx'],
+                'title': full_title,
+                'status': 'ok',
+                'bvid': bvid,
+                'cover': cover_path,
+            }
+            for key in ('aid', 'cid', 'collectionSectionId', 'collectionStatus', 'collectionError'):
+                if key in result:
+                    upload_result[key] = result[key]
+            return upload_result
         else:
             print(f"  ❌ 上传返回无效结果: {result}")
             if cleanup_cover_tmp:
@@ -474,12 +486,31 @@ async def upload_one_guarded(
 ):
     full_title = f"{prefix}{clip['title']}"
 
+    async def enrich_and_attach(result):
+        """Resolve archive ids before attaching to a collection.
+
+        A newly submitted archive often has no ``aid``/``cid`` in the uploader
+        response, even though the member archive detail endpoint is ready a few
+        moments later.  Attaching before this step silently skipped every such
+        upload.
+        """
+        result = enrich_upload_result(result, cookie_str)
+        if result.get('bvid'):
+            await attach_video_to_collection(
+                result,
+                credential,
+                collection_section_id=collection_section_id,
+            )
+        return result
+
     for attempt in range(rate_limit_retries + 1):
         archives_before = fetch_member_archives(cookie_str, warn_duplicate_titles={full_title})
         if full_title in archives_before:
             bvid = archives_before[full_title]
             print(f"  [SKIP] 上传前发现同标题已存在: {bvid}")
-            return {'idx': clip['idx'], 'title': full_title, 'status': 'already_exists', 'bvid': bvid}
+            return await enrich_and_attach({
+                'idx': clip['idx'], 'title': full_title, 'status': 'already_exists', 'bvid': bvid,
+            })
 
         available, message = await wait_for_upload_available(credential, rate_limit_wait, rate_limit_retries)
         if not available:
@@ -499,7 +530,7 @@ async def upload_one_guarded(
             collection_section_id=collection_section_id,
         )
         if result.get('status') in ('ok', 'already_exists') and result.get('bvid'):
-            result = enrich_upload_result(result, cookie_str)
+            result = await enrich_and_attach(result)
         if result['status'] != 'got_406':
             return result
 
@@ -511,10 +542,7 @@ async def upload_one_guarded(
             print(f"  ✅ 406 实际已上传成功: {bvid}")
             result['status'] = 'ok_after_406'
             result['bvid'] = bvid
-            result = enrich_upload_result(result, cookie_str)
-            if result.get('aid'):
-                await attach_video_to_collection(result, credential, collection_section_id=collection_section_id)
-            return result
+            return await enrich_and_attach(result)
 
         available, message = await probe_upload_available(credential)
         if not is_rate_limit_message(message):
@@ -532,10 +560,7 @@ async def upload_one_guarded(
             bvid = archives_after_wait[full_title]
             print(f"  ✅ 等待后确认已入库: {bvid}")
             result = {'idx': clip['idx'], 'title': full_title, 'status': 'ok_after_406', 'bvid': bvid}
-            result = enrich_upload_result(result, cookie_str)
-            if result.get('aid'):
-                await attach_video_to_collection(result, credential, collection_section_id=collection_section_id)
-            return result
+            return await enrich_and_attach(result)
 
     return {'idx': clip['idx'], 'title': full_title, 'status': 'rate_limited'}
 
@@ -730,8 +755,9 @@ async def main():
                 'cover': result.get('cover') or find_existing_cover(clip) or '',
                 'reviewPath': args.review,
                 'mediaPath': clip.get('path') or '',
-                'collectionSeriesId': result.get('collectionSeriesId'),
+                'collectionSectionId': result.get('collectionSectionId'),
                 'collectionStatus': result.get('collectionStatus'),
+                'collectionError': result.get('collectionError'),
             }
             state.get('got_406', {}).pop(str(clip['idx']), None)
         elif result['status'] in ('got_406', 'rate_limited'):
