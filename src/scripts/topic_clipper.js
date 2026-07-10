@@ -15,14 +15,14 @@ const DEFAULT_CLIP_TOPICS_CONFIG = {
     enabled: false,
     mode: 'local_review',
     keywords: ['岁己', '小岁', '小岁姐', '岁己姐', '饼干岁', 'SUI'],
-    aiVerify: true,  // AI 验证：过滤唱歌/ASR误识别的假命中
+    aiVerify: true,  // AI 验证:过滤唱歌/ASR误识别的假命中
     prePaddingSeconds: 20,
     postPaddingSeconds: 35,
     maxClipSeconds: 300,
     mergeGapSeconds: 120,
-    contextPaddingSeconds: 300,  // AI 上下文窗口：关键词前后各拿5分钟
+    contextPaddingSeconds: 300,  // AI 上下文窗口:关键词前后各拿5分钟
     maxSegmentsPerBurst: 100,     // 每个 burst 最多取多少条 SRT
-    aiSegmentBurst: true,         // 让 AI 决定切在哪里（而不是固定 paddding）
+    aiSegmentBurst: true,         // 让 AI 决定切在哪里(而不是固定 paddding)
     burnSubtitles: true,
     outputDirName: 'topic_clips',
     extraTags: [],
@@ -43,14 +43,14 @@ const AUDIO_EXTENSIONS = new Set(['.m4a', '.aac', '.mp3', '.wav', '.ogg', '.flac
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.flv', '.mkv', '.ts', '.mov']);
 
 /**
- * AI 验证：判断关键词匹配是否为真正的提到/谈论目标人物。
+ * AI 验证:判断关键词匹配是否为真正的提到/谈论目标人物。
  * 过滤掉唱歌、哼旋律、ASR 误识别等造成的假命中。
  */
 async function verifyClipWithAI(window, keywords, config = {}) {
     const aiEnabled = config.ai?.text?.enabled !== false;
     const verifyEnabled = config.clipTopics?.aiVerify !== false; // default true
     if (!aiEnabled || !verifyEnabled) {
-        return { verified: true, reason: 'AI验证未启用，默认通过' };
+        return { verified: true, reason: 'AI验证未启用,默认通过' };
     }
 
     // Collect all segment texts in the window
@@ -68,27 +68,27 @@ async function verifyClipWithAI(window, keywords, config = {}) {
     const keywordList = (keywords || []).join('、') || '岁己';
 
     const prompt = [
-        '你是一个直播字幕审核助手。以下是一段直播字幕片段，其中 ASR（语音识别）在部分句子里检测到了关键词。',
-        '但 ASR 常常在以下情况产生误识别：',
-        '- 主播在唱歌或哼旋律时，歌词被误识别为包含关键词',
+        '你是一个直播字幕审核助手。以下是一段直播字幕片段,其中 ASR(语音识别)在部分句子里检测到了关键词。',
+        '但 ASR 常常在以下情况产生误识别:',
+        '- 主播在唱歌或哼旋律时,歌词被误识别为包含关键词',
         '- 日文/英文歌词被错误识别为中文并凑巧包含关键词',
         '- 语速快或含糊时的发音被错误识别',
         '- 感谢观众礼物时的乱码碰巧包含关键词',
         '',
         `关键词: ${keywordList}`,
-        '请判断：这段字幕是否真的在**提到或谈论**关键词所指的虚拟主播？',
+        '请判断:这段字幕是否真的在**提到或谈论**关键词所指的虚拟主播?',
         '',
-        '判断标准：',
-        '- 主播明确说出该主播的名字（如"给你们看岁己"、"岁己今天直播了吗"）→ 是',
-        '- 主播在唱歌，歌词碰巧被识别为包含关键词 → 否',
-        '- 上下文完全不涉及该主播，只是发音相似 → 否',
+        '判断标准:',
+        '- 主播明确说出该主播的名字(如"给你们看岁己"、"岁己今天直播了吗")→ 是',
+        '- 主播在唱歌,歌词碰巧被识别为包含关键词 → 否',
+        '- 上下文完全不涉及该主播,只是发音相似 → 否',
         '- 感谢礼物时的乱码碰巧包含关键词 → 否',
         '',
-        '请只回复 JSON：{"verified": true/false, "reason": "一句话解释"}',
+        '请只回复 JSON:{"verified": true/false, "reason": "一句话解释"}',
         '不要输出其他内容。',
         '',
         '命中关键词的句子:',
-        sampleText || '（无）',
+        sampleText || '(无)',
         '',
         '完整上下文:',
         (fullText || sampleText).slice(0, 500)
@@ -114,9 +114,9 @@ async function verifyClipWithAI(window, keywords, config = {}) {
             };
         }
         // If can't parse, be conservative and keep the clip
-        return { verified: true, reason: 'AI响应解析失败，保留切片' };
+        return { verified: true, reason: 'AI响应解析失败,保留切片' };
     } catch (error) {
-        console.warn(`⚠️  AI验证失败，保留切片: ${error.message}`);
+        console.warn(`⚠️  AI验证失败,保留切片: ${error.message}`);
         return { verified: true, reason: `AI调用失败: ${error.message}` };
     }
 }
@@ -336,10 +336,10 @@ function getOverlappingSegments(segments = [], window) {
 }
 
 /**
- * 将关键词命中点聚合成"话题爆发段"(topic burst)，而非每个关键词切一个小窗口。
- * 
- * 1. 相邻命中点（gap <= mergeGapSeconds）聚合为一个 burst
- * 2. 每个 burst 向两端扩展 contextPaddingSeconds（默认 5 分钟）
+ * 将关键词命中点聚合成"话题爆发段"(topic burst),而非每个关键词切一个小窗口。
+ *
+ * 1. 相邻命中点(gap <= mergeGapSeconds)聚合为一个 burst
+ * 2. 每个 burst 向两端扩展 contextPaddingSeconds(默认 5 分钟)
  * 3. 取该范围内全部 SRT 字幕供 AI 理解完整上下文
  */
 function buildTopicBursts(segments = [], matches = [], options = {}) {
@@ -352,15 +352,15 @@ function buildTopicBursts(segments = [], matches = [], options = {}) {
 
     if (matches.length === 0) return [];
 
-    // 1. 按时间排序，聚合相邻命中为 burst
-    const sorted = [...matches].sort((a, b) => 
+    // 1. 按时间排序,聚合相邻命中为 burst
+    const sorted = [...matches].sort((a, b) =>
         Number(a.segment.start) - Number(b.segment.start));
 
     const rawBursts = [];
     for (const match of sorted) {
         const mStart = Number(match.segment.start);
         const mEnd = Number(match.segment.end);
-        
+
         const last = rawBursts[rawBursts.length - 1];
         if (last && mStart - last.matchEnd <= mergeGap) {
             // 续到上一个 burst
@@ -377,12 +377,12 @@ function buildTopicBursts(segments = [], matches = [], options = {}) {
         }
     }
 
-    // 2. 每个 burst 向两端扩展，收集全部上下文
+    // 2. 每个 burst 向两端扩展,收集全部上下文
     return rawBursts.map((b, idx) => {
         const start = clamp(b.matchStart - contextPadding, 0, totalDuration);
         const end = clamp(b.matchEnd + contextPadding, 0, totalDuration);
 
-        // 扩展范围内全部 SRT segment（受 maxSegments 上限）
+        // 扩展范围内全部 SRT segment(受 maxSegments 上限)
         const allSegs = segments
             .filter(s => {
                 const sStart = Number(s.start);
@@ -392,7 +392,7 @@ function buildTopicBursts(segments = [], matches = [], options = {}) {
             })
             .slice(0, maxSegments);
 
-        // 前/后额外上下文（供 AI 理解，超出扩展窗口的）
+        // 前/后额外上下文(供 AI 理解,超出扩展窗口的)
         const preCtx = segments
             .filter(s => Number(s.end) <= start && Number(s.end) >= start - 120)
             .map(s => s.text)
@@ -501,8 +501,8 @@ function dedupeClipsByStart(clips = []) {
 }
 
 /**
- * 把 burst 的全部字幕发给 AI，让 AI 自己决定切在哪。
- * AI 可以切成 1-3 段，并根据上下文生成每段的标题和简介。
+ * 把 burst 的全部字幕发给 AI,让 AI 自己决定切在哪。
+ * AI 可以切成 1-3 段,并根据上下文生成每段的标题和简介。
  */
 async function segmentBurstWithAI(burst, parsed, streamerName, info, config = {}) {
     const aiConfig = config;
@@ -533,19 +533,19 @@ async function segmentBurstWithAI(burst, parsed, streamerName, info, config = {}
     const keywordStr = (burst.matchedKeywords || []).join('、');
     const generateText = require('./ai_text_generator');
     const prompt = [
-        '你是一个直播切片编辑。下面是一段直播字幕（带时间戳），主播在聊的话题中提到了"岁己"（关键词：' + keywordStr + '）。',
+        '你是一个直播切片编辑。下面是一段直播字幕(带时间戳),主播在聊的话题中提到了"岁己"(关键词:' + keywordStr + ')。',
         '',
-        '标记 ★ 的行是 ASR 命中关键词的地方。请根据上下文理解对话内容，找出真正在讨论/提到岁己的连续段落。',
+        '标记 ★ 的行是 ASR 命中关键词的地方。请根据上下文理解对话内容,找出真正在讨论/提到岁己的连续段落。',
         '',
-        '你需要决定切片的起止时间（HH:MM:SS 格式），精确到秒即可，要切在句子边界上。',
-        '注意：',
-        '- 选取的区间不要超过 3 分钟，太长观众看不完。最短不少于 30 秒，太短的切片没有观看价值。',
-        '- 如果话题分成了几个明显独立的段落，可以切 2-3 段（每段分别给标题简介）。',
-        '- 如果整段都不超过 2 分钟且话题连贯，切 1 段就好。',
-        '- 如果命中的行实际是唱歌、哼旋律、ASR 误识别，返回空 clips: []。',
-        '- ASR 可能有同音错字（如"开开"≈"栞栞"），要根据语境推断正确含义。',
+        '你需要决定切片的起止时间(HH:MM:SS 格式),精确到秒即可,要切在句子边界上。',
+        '注意:',
+        '- 选取的区间不要超过 3 分钟,太长观众看不完。最短不少于 30 秒,太短的切片没有观看价值。',
+        '- 如果话题分成了几个明显独立的段落,可以切 2-3 段(每段分别给标题简介)。',
+        '- 如果整段都不超过 2 分钟且话题连贯,切 1 段就好。',
+        '- 如果命中的行实际是唱歌、哼旋律、ASR 误识别,返回空 clips: []。',
+        '- ASR 可能有同音错字(如"开开"≈"栞栞"),要根据语境推断正确含义。',
         '',
-        '输出一个 JSON 对象（不要 Markdown 代码块，纯 JSON）：',
+        '输出一个 JSON 对象(不要 Markdown 代码块,纯 JSON):',
         '{',
         '  "clips": [',
         '    { "startTime": "HH:MM:SS", "endTime": "HH:MM:SS", "title": "标题", "description": "简介" }',
@@ -554,8 +554,8 @@ async function segmentBurstWithAI(burst, parsed, streamerName, info, config = {}
         '',
         ...generateText.buildClipTitlePromptLines({ outputMode: 'jsonTitle' }),
         '',
-        '简介要求：',
-        '- 一句话说清主播聊了什么（50字内）',
+        '简介要求:',
+        '- 一句话说清主播聊了什么(50字内)',
         '- 口语化自然',
         '',
         `主播: ${streamerName || '主播'}`,
@@ -574,7 +574,7 @@ async function segmentBurstWithAI(burst, parsed, streamerName, info, config = {}
             ? await generateText.generateTextWithTuZi(prompt, { wordLimit: 600 })
             : await generateText.generateTextWithGemini(prompt, { wordLimit: 600 });
     } catch (error) {
-        console.warn(`⚠️  AI burst 分段失败，退回整个 burst: ${error.message}`);
+        console.warn(`⚠️  AI burst 分段失败,退回整个 burst: ${error.message}`);
         return [{
             start: burst.matchStart,
             end: burst.matchEnd
@@ -584,24 +584,24 @@ async function segmentBurstWithAI(burst, parsed, streamerName, info, config = {}
     // 解析 AI 返回的 JSON
     try {
         const text = (result.text || '').trim();
-        // 尝试提取 JSON（AI 有时用代码块包裹）
+        // 尝试提取 JSON(AI 有时用代码块包裹)
         const jsonMatch = text.match(/\{[\s\S]*"clips"[\s\S]*\}/);
         if (!jsonMatch) {
-            console.warn('⚠️  AI 未返回有效 JSON，退回整个 burst');
+            console.warn('⚠️  AI 未返回有效 JSON,退回整个 burst');
             console.warn(`   原始返回: ${text.slice(0, 200)}`);
             return [{ start: burst.matchStart, end: burst.matchEnd }];
         }
-        
+
         const parsed = JSON.parse(jsonMatch[0]);
         const clips = (parsed.clips || []).filter(c => c.startTime && c.endTime);
-        
+
         if (clips.length === 0) {
-            console.log(`  ℹ️   [${formatClock(burst.matchStart)}] AI 判定无需切片（可能是唱歌/误识别）`);
+            console.log(`  i️   [${formatClock(burst.matchStart)}] AI 判定无需切片(可能是唱歌/误识别)`);
             return [];
         }
-        
-        // 转换时间戳 → 秒数，返回带标题/简介的信息。
-        // AI 拿到的是较大的上下文窗口，必须防止它切到不包含关键词命中的旁支内容。
+
+        // 转换时间戳 → 秒数,返回带标题/简介的信息。
+        // AI 拿到的是较大的上下文窗口,必须防止它切到不包含关键词命中的旁支内容。
         return clips.map((clip, ci) => normalizeAiClipSelection(clip, burst, ci + 1)).filter(Boolean);
     } catch (parseError) {
         console.warn(`⚠️  解析 AI 分段结果失败: ${parseError.message}`);
@@ -700,8 +700,8 @@ function resolveStreamerName(config = {}, roomId = null, context = {}) {
 }
 
 /**
- * 根据 roomId 从 streamerRegistry 解析主播的正式标签（用于 B站投稿 tag）
- * 返回 searchTags（如有）或 displayName + speakerLabels。
+ * 根据 roomId 从 streamerRegistry 解析主播的正式标签(用于 B站投稿 tag)
+ * 返回 searchTags(如有)或 displayName + speakerLabels。
  */
 function resolveStreamerTags(config = {}, roomId = null) {
     const roomKey = roomId ? String(roomId) : null;
@@ -711,8 +711,8 @@ function resolveStreamerTags(config = {}, roomId = null) {
         const roomIds = Array.isArray(entry.roomIds) ? entry.roomIds.map(value => String(value)) : [];
         if (!roomIds.includes(roomKey)) continue;
 
-        // 投稿标签使用主播在 B 站的投稿名/标签，不要把 ASR 说话人别名
-        // （例如“瑞娅”“Rhea”）直接带入真人切片投稿。
+        // 投稿标签使用主播在 B 站的投稿名/标签,不要把 ASR 说话人别名
+        // (例如"瑞娅""Rhea")直接带入真人切片投稿。
         if (Array.isArray(entry.uploadTags) && entry.uploadTags.length > 0) {
             return entry.uploadTags.map(t => String(t).trim()).filter(Boolean);
         }
@@ -722,7 +722,7 @@ function resolveStreamerTags(config = {}, roomId = null) {
             return entry.searchTags.map(t => String(t).trim()).filter(Boolean);
         }
 
-        // 退退：displayName + speakerLabels
+        // 退退:displayName + speakerLabels
         const tags = new Set();
         if (entry.displayName) tags.add(entry.displayName);
         (entry.speakerLabels || []).forEach(label => {
@@ -771,7 +771,7 @@ function buildDefaultTitle(window, info) {
 
 function normalizeTitle(value, fallback) {
     const title = String(value || '').trim()
-        .replace(/^["“”'']+|["“”'']+$/g, '')
+        .replace(/^["""'']+|["""'']+$/g, '')
         .replace(/\s+/g, ' ');
     if (!title || title.length > 60) {
         return fallback;
@@ -782,7 +782,7 @@ function normalizeTitle(value, fallback) {
 async function buildClipCopy(window, info, streamerName, config, titleGenerator = null, descriptionGenerator = null, extraTagList = null) {
     const defaultTitle = buildDefaultTitle(window, info);
     let title = defaultTitle;
-    let description = `来自 ${streamerName} 的直播间，录制时间 ${info.recordedAt || '未知'}，片段时间 ${formatClock(window.start)}-${formatClock(window.end)}。`;
+    let description = `来自 ${streamerName} 的直播间,录制时间 ${info.recordedAt || '未知'},片段时间 ${formatClock(window.start)}-${formatClock(window.end)}。`;
 
     // 构建丰富的上下文供 AI 理解
     const sampleText = window.matchSegments
@@ -808,7 +808,7 @@ async function buildClipCopy(window, info, streamerName, config, titleGenerator 
                 defaultTitle
             }), defaultTitle);
         } catch (error) {
-            console.warn(`⚠️  话题切片标题生成失败，使用模板标题: ${error.message}`);
+            console.warn(`⚠️  话题切片标题生成失败,使用模板标题: ${error.message}`);
         }
     }
 
@@ -831,7 +831,7 @@ async function buildClipCopy(window, info, streamerName, config, titleGenerator 
                 description = aiDesc.trim();
             }
         } catch (error) {
-            console.warn(`⚠️  话题切片简介生成失败，使用模板简介: ${error.message}`);
+            console.warn(`⚠️  话题切片简介生成失败,使用模板简介: ${error.message}`);
         }
     }
 
@@ -950,7 +950,7 @@ function escapeSubtitlePathForFfmpegFilter(srtPath) {
 }
 
 /**
- * 为切片生成封面图：从视频截取关键帧，添加居中描边标题文字
+ * 为切片生成封面图:从视频截取关键帧,添加居中描边标题文字
  */
 async function generateClipCover(videoPath, title, outputDir, info = {}) {
     const { spawn } = require('child_process');
@@ -1009,6 +1009,40 @@ function buildSubtitleBurnVideoArgs(config = {}) {
     return ['-c:v', encoder || 'libx264', '-preset', preset || 'ultrafast', '-crf', crf];
 }
 
+/**
+ * 根据视频分辨率动态计算字幕样式
+ * @param {number} width - 视频宽度
+ * @param {number} height - 视频高度
+ * @returns {{ forceStyle: string, maxCharsPerLine: number }}
+ */
+function calculateSubtitleStyle(width, height) {
+    const fontSize = Math.min(48, Math.max(24, Math.round(height * 0.033)));
+    const outline = Math.max(2, Math.round(fontSize * 0.08));
+    const maxCharsPerLine = Math.round(width / (fontSize * 0.6));
+    const forceStyle = `FontSize=${fontSize},FontName=Microsoft YaHei,Bold=1,Outline=${outline}`;
+    return { forceStyle, maxCharsPerLine, fontSize };
+}
+
+/**
+ * 获取视频分辨率
+ * @param {string} mediaPath
+ * @returns {Promise<{width: number, height: number}>}
+ */
+async function getVideoResolution(mediaPath) {
+    try {
+        const { execSync } = require('child_process');
+        const result = execSync(
+            `ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "${mediaPath}"`,
+            { encoding: 'utf8', timeout: 10000 }
+        ).trim();
+        const [width, height] = result.split(',').map(Number);
+        if (width > 0 && height > 0) return { width, height };
+    } catch {
+        // fallback
+    }
+    return { width: 1920, height: 1080 };
+}
+
 async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
     const ffmpegPath = config.ffmpegPath || 'ffmpeg';
     const ffmpegOptions = {
@@ -1036,6 +1070,9 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
     }
 
     if (config.burnSubtitles !== false) {
+        // 获取视频分辨率,动态计算字幕样式
+        const videoRes = await getVideoResolution(source.mediaPath);
+        const subtitleStyle = calculateSubtitleStyle(videoRes.width, videoRes.height);
         const useTwoStageBurn = config.twoStageSubtitleBurn !== false && process.env.FFMPEG_TWO_STAGE_BURN !== 'false';
         try {
             if (useTwoStageBurn) {
@@ -1087,7 +1124,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                     await runFfmpeg([
                         '-y',
                         '-i', tempPath,
-                        '-filter_complex', `[0:v]trim=start=${trimStart}:end=${trimEnd},setpts=PTS-STARTPTS[sub_v];[0:a]atrim=start=${trimStart}:end=${trimEnd},asetpts=PTS-STARTPTS[sub_a];[sub_v]subtitles='${escapeSubtitlePathForFfmpegFilter(srtPath)}':force_style='FontSize=28,FontName=Microsoft YaHei,Bold=1,Outline=2'[vout]`,
+                        '-filter_complex', `[0:v]trim=start=${trimStart}:end=${trimEnd},setpts=PTS-STARTPTS[sub_v];[0:a]atrim=start=${trimStart}:end=${trimEnd},asetpts=PTS-STARTPTS[sub_a];[sub_v]subtitles='${escapeSubtitlePathForFfmpegFilter(srtPath)}':force_style='${subtitleStyle.forceStyle}'[vout]`,
                         '-map', '[vout]',
                         '-map', '[sub_a]',
                         ...buildSubtitleBurnVideoArgs(config),
@@ -1107,7 +1144,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                     '-ss', start,
                     '-i', source.mediaPath,
                     '-t', duration,
-                    '-vf', `subtitles='${escapeSubtitlePathForFfmpegFilter(srtPath)}':force_style='FontSize=28,FontName=Microsoft YaHei,Bold=1,Outline=2'`,
+                    '-vf', `subtitles='${escapeSubtitlePathForFfmpegFilter(srtPath)}':force_style='${subtitleStyle.forceStyle}'`,
                     ...buildSubtitleBurnVideoArgs(config),
                     '-c:a', 'copy',
                     '-movflags', '+faststart',
@@ -1125,14 +1162,14 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
             };
         } catch (error) {
             if (useTwoStageBurn) {
-                console.warn(`⚠️  两段式字幕烧录失败，退回原始源直接烧录: ${error.message}`);
+                console.warn(`⚠️  两段式字幕烧录失败,退回原始源直接烧录: ${error.message}`);
                 try {
                     await runFfmpeg([
                         '-y',
                         '-ss', start,
                         '-i', source.mediaPath,
                         '-t', duration,
-                        '-vf', `subtitles='${escapeSubtitlePathForFfmpegFilter(srtPath)}':force_style='FontSize=28,FontName=Microsoft YaHei,Bold=1,Outline=2'`,
+                        '-vf', `subtitles='${escapeSubtitlePathForFfmpegFilter(srtPath)}':force_style='${subtitleStyle.forceStyle}'`,
                         ...buildSubtitleBurnVideoArgs(config),
                         '-c:a', 'copy',
                         '-movflags', '+faststart',
@@ -1145,10 +1182,10 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                         twoStageSubtitleBurn: false
                     };
                 } catch (directError) {
-                    console.warn(`⚠️  字幕烧录失败，改为生成无烧录切片: ${directError.message}`);
+                    console.warn(`⚠️  字幕烧录失败,改为生成无烧录切片: ${directError.message}`);
                 }
             } else {
-                console.warn(`⚠️  字幕烧录失败，改为生成无烧录切片: ${error.message}`);
+                console.warn(`⚠️  字幕烧录失败,改为生成无烧录切片: ${error.message}`);
             }
         }
     }
@@ -1231,7 +1268,7 @@ function toFwdSlash(s) {
 function compactNotifyText(text, maxLength = 80) {
     const normalized = String(text || '').replace(/\s+/g, ' ').trim();
     if (!normalized) return '';
-    return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1)}…` : normalized;
+    return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1)}...` : normalized;
 }
 
 function segmentKey(segment = {}) {
@@ -1356,8 +1393,8 @@ function buildTopicNotifyMarkdown(results = [], metadata = {}) {
     return [
         '## 话题切片提醒',
         '',
-        `在 **${metadata.streamerName || '主播'}** 的直播 **${metadata.streamTitle || metadata.sourceFileName || '未知直播'}** 结束后，`,
-        `找到其中 **${results.length}** 段提到岁己的地方，已分别切为切片。`,
+        `在 **${metadata.streamerName || '主播'}** 的直播 **${metadata.streamTitle || metadata.sourceFileName || '未知直播'}** 结束后,`,
+        `找到其中 **${results.length}** 段提到岁己的地方,已分别切为切片。`,
         '',
         `- 直播间: ${metadata.roomId || '未知'}`,
         `- 录制时间: ${metadata.recordedAt || '未知'}`,
@@ -1403,8 +1440,8 @@ function deriveUploadPrefix(streamerName = null) {
     const name = String(streamerName || '').trim();
     if (!name) return '【小切片】';
     if (name.startsWith('小')) return `【${name}】`;
-    // 优先取主播名中的第一个中文字符，例如“瑞瑞”→“小瑞”、
-    // “岁己SUI”→“小岁”、“米汀Nagisa”→“小米”。
+    // 优先取主播名中的第一个中文字符,例如"瑞瑞"→"小瑞"、
+    // "岁己SUI"→"小岁"、"米汀Nagisa"→"小米"。
     const cjk = name.match(/[\u3400-\u9fff]/);
     const initial = cjk ? cjk[0] : name.match(/[A-Za-z0-9]/)?.[0];
     return initial ? `【小${initial}】` : `【小${name.slice(0, 1)}】`;
@@ -1505,7 +1542,7 @@ async function notifyTopicClipResults(results = [], metadata = {}, config = {}) 
 
     const webhookUrl = getWeChatWebhookUrl(config);
     if (!webhookUrl) {
-        console.warn('⚠️  话题切片提醒已启用，但未配置企业微信 webhookUrl');
+        console.warn('⚠️  话题切片提醒已启用,但未配置企业微信 webhookUrl');
         return false;
     }
 
@@ -1526,10 +1563,10 @@ async function generateTopicClips(options = {}) {
         return [];
     }
     if (config.mode !== 'local_review') {
-        console.warn(`⚠️  clipTopics.mode=${config.mode} 暂未实现，按 local_review 处理`);
+        console.warn(`⚠️  clipTopics.mode=${config.mode} 暂未实现,按 local_review 处理`);
     }
     if (config.autoUpload?.enabled) {
-        console.warn('⚠️  clipTopics.autoUpload.enabled=true 但 v1 不执行自动投稿，仅生成本地 review 包');
+        console.warn('⚠️  clipTopics.autoUpload.enabled=true 但 v1 不执行自动投稿,仅生成本地 review 包');
     }
 
     const source = chooseClipSource(options.originalMediaPath, options.processedMediaPath);
@@ -1545,7 +1582,7 @@ async function generateTopicClips(options = {}) {
     const parsed = asrBackends.parseSrt(options.srtPath, 'topic_clip');
     const matches = findKeywordMatches(parsed.segments, config.keywords);
     if (matches.length === 0) {
-        console.log('ℹ️  话题切片: 未命中关键词');
+        console.log('i️  话题切片: 未命中关键词');
         return [];
     }
 
@@ -1558,7 +1595,7 @@ async function generateTopicClips(options = {}) {
         totalDurationSeconds: options.totalDurationSeconds
     });
     if (bursts.length === 0) {
-        console.log('ℹ️  话题切片: 命中关键词但未形成有效话题爆发段');
+        console.log('i️  话题切片: 命中关键词但未形成有效话题爆发段');
         return [];
     }
 
@@ -1567,30 +1604,30 @@ async function generateTopicClips(options = {}) {
         try {
             danmaku = await parseDanmakuXml(options.xmlPath);
         } catch (error) {
-            console.warn(`⚠️  解析弹幕 XML 失败，企微提醒将不带弹幕上下文: ${error.message}`);
+            console.warn(`⚠️  解析弹幕 XML 失败,企微提醒将不带弹幕上下文: ${error.message}`);
         }
     }
 
-    console.log(`\n📦 ${bursts.length} 个话题爆发段 (burst)，调用 AI 决定切在哪...`);
+    console.log(`\n📦 ${bursts.length} 个话题爆发段 (burst),调用 AI 决定切在哪...`);
 
     const info = parseRecordingInfo(source.mediaPath, options.context || {});
     if (isIgnoredRoom(info.roomId, config)) {
-        console.log(`ℹ️  话题切片跳过: roomId=${info.roomId} 命中忽略名单`);
+        console.log(`i️  话题切片跳过: roomId=${info.roomId} 命中忽略名单`);
         return [];
     }
     const streamerName = resolveStreamerName(options.config || {}, info.roomId, options.context || {});
     const outputRoot = path.join(path.dirname(source.mediaPath), config.outputDirName);
     fs.mkdirSync(outputRoot, { recursive: true });
 
-    // AI 分段：对每个 burst 决定切 1-3 段
+    // AI 分段:对每个 burst 决定切 1-3 段
     const aiSegmentedClips = [];
     for (const burst of bursts) {
-        console.log(`  🔍 [${formatClock(burst.matchStart)}] 命中 ${burst.matchCount} 次，上下文窗口 ${formatClock(burst.start)}-${formatClock(burst.end)} (${burst.allSegments.length} 条字幕)`);
+        console.log(`  🔍 [${formatClock(burst.matchStart)}] 命中 ${burst.matchCount} 次,上下文窗口 ${formatClock(burst.start)}-${formatClock(burst.end)} (${burst.allSegments.length} 条字幕)`);
 
         const segments = await segmentBurstWithAI(burst, parsed, streamerName, info, aiConfig);
-        
+
         if (segments.length === 0) {
-            console.log(`  ⏭️  AI 判定跳过（可能是唱歌/误识别）`);
+            console.log(`  ⏭️  AI 判定跳过(可能是唱歌/误识别)`);
             continue;
         }
 
@@ -1633,16 +1670,16 @@ async function generateTopicClips(options = {}) {
     }
 
     if (aiSegmentedClips.length === 0) {
-        console.log('ℹ️  AI 分段后无有效切片');
+        console.log('i️  AI 分段后无有效切片');
         return [];
     }
 
     const clipsToGenerate = dedupeClipsByStart(aiSegmentedClips);
     if (clipsToGenerate.length < aiSegmentedClips.length) {
-        console.log(`ℹ️  已合并 ${aiSegmentedClips.length - clipsToGenerate.length} 段同起点重复切片`);
+        console.log(`i️  已合并 ${aiSegmentedClips.length - clipsToGenerate.length} 段同起点重复切片`);
     }
 
-    console.log(`\n🎬 共 ${clipsToGenerate.length} 段切片，开始生成视频...\n`);
+    console.log(`\n🎬 共 ${clipsToGenerate.length} 段切片,开始生成视频...\n`);
 
     const results = [];
     for (const clip of clipsToGenerate) {
@@ -1655,14 +1692,14 @@ async function generateTopicClips(options = {}) {
         const copyPath = path.join(outputRoot, `${base}_投稿文案.md`);
 
         const srtResult = writeClipSrt(parsed.segments, window, srtPath);
-        // 优先用 AI 分段时生成的标题/简介，其次调用独立的标题/简介生成器
+        // 优先用 AI 分段时生成的标题/简介,其次调用独立的标题/简介生成器
         const titleGen = clip.aiTitle
             ? async () => clip.aiTitle
             : options.titleGenerator;
         const descGen = clip.aiDescription
             ? async () => clip.aiDescription
             : options.descriptionGenerator;
-        // 从 streamerRegistry 解析正式标签（如 米汀Nagisa）
+        // 从 streamerRegistry 解析正式标签(如 米汀Nagisa)
         const registryTags = resolveStreamerTags(options.config || {}, info.roomId);
         const copy = await buildClipCopy(window, info, streamerName, config, titleGen, descGen, registryTags);
 
@@ -1675,16 +1712,16 @@ async function generateTopicClips(options = {}) {
             });
         } catch (clipError) {
             error = clipError.message;
-            console.warn(`⚠️  话题切片媒体生成失败，保留字幕和元数据: ${clipError.message}`);
+            console.warn(`⚠️  话题切片媒体生成失败,保留字幕和元数据: ${clipError.message}`);
         }
 
-        // 生成封面（从切片视频截取关键帧 + 添加标题文字）
+        // 生成封面(从切片视频截取关键帧 + 添加标题文字)
         let coverPath = null;
         if (mediaResult?.path && fs.existsSync(mediaResult.path)) {
             try {
                 coverPath = await generateClipCover(mediaResult.path, copy.title, outputRoot, info);
             } catch (coverErr) {
-                console.warn(`⚠️  封面生成失败，跳过: ${coverErr.message}`);
+                console.warn(`⚠️  封面生成失败,跳过: ${coverErr.message}`);
             }
         }
 
@@ -1756,7 +1793,7 @@ async function generateTopicClips(options = {}) {
             console.log(`📣 话题切片提醒已尝试发送: ${results.length} 段`);
         }
     } catch (error) {
-        console.warn(`⚠️  话题切片提醒发送失败，继续保留本地切片: ${error.message}`);
+        console.warn(`⚠️  话题切片提醒发送失败,继续保留本地切片: ${error.message}`);
     }
 
     return results;

@@ -35,6 +35,7 @@ import argparse
 import re
 import time
 import datetime
+import subprocess
 
 # 添加项目路径
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -48,6 +49,33 @@ import requests
 ACCOUNT_MID = 412141275
 DEFAULT_RATE_LIMIT_WAIT = 120
 DEFAULT_RATE_LIMIT_RETRIES = 5
+
+
+def validate_video_stream(filepath):
+    """Reject media where the container duration is carried by audio only."""
+    try:
+        probe = subprocess.run(
+            [
+                'ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                '-show_entries', 'stream=duration,nb_frames',
+                '-of', 'json', filepath,
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+        streams = (json.loads(probe.stdout).get('streams') or [])
+        if not streams:
+            return False, 'no video stream'
+        stream = streams[0]
+        video_duration = float(stream.get('duration') or 0)
+        frames = int(stream.get('nb_frames') or 0)
+        if video_duration < 3 or frames < 10:
+            return False, f'video too short ({video_duration:.2f}s, {frames} frames)'
+        return True, ''
+    except Exception as error:
+        return False, f'video validation failed: {error}'
 
 
 def build_credential():
@@ -387,6 +415,11 @@ async def upload_one(clip, credential, prefix, tags, tid, source_desc, collectio
         print(f"  [SKIP] 文件不存在: {filepath}")
         return {'idx': clip['idx'], 'title': full_title, 'status': 'no_file'}
 
+    video_ok, video_error = validate_video_stream(filepath)
+    if not video_ok:
+        print(f"  [ERROR] 拒绝上传异常视频: {video_error}")
+        return {'idx': clip['idx'], 'title': full_title, 'status': 'invalid_video', 'error': video_error}
+
     desc = build_desc(clip['title'], source_desc, clip['start'], clip['duration'])
     size_mb = os.path.getsize(filepath) / (1024 * 1024)
     print(f"  文件: {os.path.basename(filepath)} ({size_mb:.1f}MB)")
@@ -400,7 +433,6 @@ async def upload_one(clip, credential, prefix, tags, tid, source_desc, collectio
             print(f"  封面: {os.path.basename(cover_path)}")
             cover = Picture.from_file(cover_path)
         else:
-            import subprocess
             subprocess.run([
                 'ffmpeg', '-i', filepath, '-vframes', '1',
                 '-q:v', '2', cover_tmp, '-y', '-loglevel', 'error'

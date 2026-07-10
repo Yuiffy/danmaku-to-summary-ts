@@ -417,51 +417,156 @@ def grouped_clips(registry: Dict[str, Any], ids: List[int]) -> List[List[Dict[st
 
 
 def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.CompletedProcess[str]:
+    """Upload a group of clips.
+
+    Clips found in REVIEW.md go through batch_upload.py as before.
+    Self-contained clips NOT in REVIEW.md (manually created) go through
+    bilibili_upload.py individually, then their results are merged into the
+    group's state file so sync_clip_statuses picks them up.
+    """
     first = group[0]
-    only = ",".join(str(int(clip["reviewIndex"])) for clip in group)
-    cmd = [
-        sys.executable,
-        str(PROJECT_ROOT / "src" / "scripts" / "batch_upload.py"),
-        "--review",
-        first["reviewPath"],
-        "--source",
-        first["source"],
-        "--tags",
-        ",".join(first["tags"]),
-        "--prefix",
-        first["prefix"],
-        "--tid",
-        str(int(first["tid"])),
-        "--delay",
-        str(int(job.get("delay") or DEFAULT_DELAY)),
-        "--only",
-        only,
-        "--state",
-        first["statePath"],
-        "--rate-limit-wait",
-        str(int(job.get("rateLimitWait") or DEFAULT_RATE_LIMIT_WAIT)),
-        "--rate-limit-retries",
-        str(int(job.get("rateLimitRetries") or DEFAULT_RATE_LIMIT_RETRIES)),
-    ]
-    print("[worker] run:", " ".join(f'"{c}"' if " " in c else c for c in cmd), flush=True)
+    review_clips = [c for c in group if _clip_in_review(c)]
+    manual_clips = [c for c in group if not _clip_in_review(c)]
+
+    outputs: List[str] = []
+    returncode = 0
     timeout_seconds = int(job.get("timeoutSeconds") or DEFAULT_JOB_TIMEOUT_SECONDS)
+
+    # --- REVIEW.md-backed clips: use batch_upload.py ---
+    if review_clips:
+        only = ",".join(str(int(clip["reviewIndex"])) for clip in review_clips)
+        cmd = [
+            sys.executable,
+            str(PROJECT_ROOT / "src" / "scripts" / "batch_upload.py"),
+            "--review",
+            first["reviewPath"],
+            "--source",
+            first["source"],
+            "--tags",
+            ",".join(first["tags"]),
+            "--prefix",
+            first["prefix"],
+            "--tid",
+            str(int(first["tid"])),
+            "--delay",
+            str(int(job.get("delay") or DEFAULT_DELAY)),
+            "--only",
+            only,
+            "--state",
+            first["statePath"],
+            "--rate-limit-wait",
+            str(int(job.get("rateLimitWait") or DEFAULT_RATE_LIMIT_WAIT)),
+            "--rate-limit-retries",
+            str(int(job.get("rateLimitRetries") or DEFAULT_RATE_LIMIT_RETRIES)),
+        ]
+        print("[worker] run:", " ".join(f'"{c}"' if " " in c else c for c in cmd), flush=True)
+        try:
+            cp = subprocess.run(
+                cmd,
+                cwd=str(PROJECT_ROOT),
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=timeout_seconds,
+            )
+            outputs.append(cp.stdout or "")
+            returncode = cp.returncode
+        except subprocess.TimeoutExpired as exc:
+            output = exc.stdout or ""
+            if isinstance(output, bytes):
+                output = output.decode("utf-8", errors="replace")
+            output += f"\n[worker] batch timed out after {timeout_seconds}s\n"
+            outputs.append(output)
+            returncode = 124
+
+    # --- Manual clips: use bilibili_upload.py one by one ---
+    if manual_clips and returncode == 0:
+        state_path = Path(first["statePath"])
+        for clip in manual_clips:
+            clip_id = clip["id"]
+            title = f"{clip.get('prefix', '')}{clip.get('title', '')}"
+            media = clip.get("mediaPath", "")
+            cover = clip.get("coverPath", "")
+            tags = ",".join(clip.get("tags", []))
+            source_desc = clip.get("source", "")
+            cmd2 = [
+                sys.executable,
+                str(PROJECT_ROOT / "src" / "scripts" / "bilibili_upload.py"),
+                media,
+                "--title", title,
+                "--tags", tags,
+                "--tid", str(int(clip.get("tid", 21))),
+                "--source-desc", source_desc,
+            ]
+            if cover:
+                cmd2 += ["--cover", cover]
+            print(f"[worker] manual upload #{clip_id}:", " ".join(f'"{c}"' if " " in c else c for c in cmd2), flush=True)
+            try:
+                cp2 = subprocess.run(
+                    cmd2,
+                    cwd=str(PROJECT_ROOT),
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    timeout=timeout_seconds,
+                )
+                out2 = cp2.stdout or ""
+                outputs.append(out2)
+                if cp2.returncode != 0:
+                    returncode = cp2.returncode
+                    break
+                # Write result into state file so sync_clip_statuses picks it up
+                _write_manual_state(state_path, clip_id, clip, out2)
+            except subprocess.TimeoutExpired as exc:
+                output = exc.stdout or ""
+                if isinstance(output, bytes):
+                    output = output.decode("utf-8", errors="replace")
+                outputs.append(output + f"\n[worker] manual upload timed out after {timeout_seconds}s\n")
+                returncode = 124
+                break
+
+    combined = "\n".join(outputs)
+    return subprocess.CompletedProcess(["mixed"], returncode, stdout=combined)
+
+
+def _write_manual_state(state_path: Path, clip_id: Any, clip: Dict[str, Any], output: str) -> None:
+    """Parse bilibili_upload.py output and write result into the state file.
+
+    Uses reviewIndex as the key (same as batch_upload.py does) so that
+    sync_clip_statuses -> clip_status_from_state can find it.
+    """
+    import re
+    bvid_match = re.search(r"bvid:\s*(BV\w+)", output)
+    aid_match = re.search(r"aid:\s*(\d+)", output)
+    if not bvid_match:
+        return
+    bvid = bvid_match.group(1)
+    aid = aid_match.group(1) if aid_match else ""
+    title = f"{clip.get('prefix', '')}{clip.get('title', '')}"
+    entry = {
+        "title": title,
+        "submittedTitle": title,
+        "onlineTitle": title,
+        "bvid": bvid,
+        "aid": int(aid) if aid.isdigit() else 0,
+        "cid": 0,
+        "source": "ok",
+        "cover": clip.get("coverPath", ""),
+        "reviewPath": clip.get("reviewPath", ""),
+        "mediaPath": clip.get("mediaPath", ""),
+    }
     try:
-        return subprocess.run(
-            cmd,
-            cwd=str(PROJECT_ROOT),
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=timeout_seconds,
-        )
-    except subprocess.TimeoutExpired as exc:
-        output = exc.stdout or ""
-        if isinstance(output, bytes):
-            output = output.decode("utf-8", errors="replace")
-        output += f"\n[worker] batch timed out after {timeout_seconds}s\n"
-        return subprocess.CompletedProcess(cmd, 124, stdout=output)
+        state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {"done": {}, "got_406": {}}
+    except (OSError, json.JSONDecodeError):
+        state = {"done": {}, "got_406": {}}
+    # Use reviewIndex as key (consistent with batch_upload.py state format)
+    idx_key = str(clip.get("reviewIndex", clip_id))
+    state.setdefault("done", {})[idx_key] = entry
+    state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def next_pending_job(queue: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -559,26 +664,63 @@ def release_lock() -> None:
         pass
 
 
+def clip_is_self_contained(clip: Dict[str, Any]) -> bool:
+    """Check if a registry clip has all fields needed to upload without REVIEW.md."""
+    return all(
+        clip.get(k)
+        for k in ("title", "mediaPath", "tags", "prefix", "tid", "source")
+    ) and bool(clip.get("mediaPath"))
+
+
 def validate_groups(groups: List[List[Dict[str, Any]]]) -> List[str]:
     """Return registry/review mismatches before invoking the uploader.
 
     ``batch_upload.py --only`` exits successfully when none of the requested
     review rows exist.  Without this check the queue labelled such a job as
     blocked and left the clip permanently in ``uploading``.
+
+    Clips that are self-contained (have mediaPath, title, tags, etc. directly
+    in the registry) are allowed to bypass the REVIEW.md check — this supports
+    manually created clips that were never part of a REVIEW.md.
     """
     errors: List[str] = []
     for group in groups:
+        # Split into REVIEW.md-backed and self-contained clips
+        review_clips = [c for c in group if not clip_is_self_contained(c) or _clip_in_review(c)]
+        manual_clips = [c for c in group if clip_is_self_contained(c) and not _clip_in_review(c)]
+        if not review_clips and not manual_clips:
+            # All clips are self-contained and not in REVIEW.md — that's fine
+            continue
+        if not review_clips:
+            # All clips are manual — no REVIEW.md needed
+            continue
+        # Only validate clips that need REVIEW.md
         review_path = Path(group[0]["reviewPath"])
         try:
             available = {int(item["reviewIndex"]) for item in parse_review(review_path)}
         except (OSError, UnicodeError) as exc:
+            # If REVIEW.md can't be read but all clips are self-contained, allow it
+            if manual_clips and not review_clips:
+                continue
             errors.append(f"cannot read REVIEW.md {review_path}: {exc}")
             continue
-        requested = [int(clip["reviewIndex"]) for clip in group]
+        requested = [int(c["reviewIndex"]) for c in review_clips]
         missing = sorted(set(requested) - available)
         if missing:
             errors.append(f"REVIEW.md {review_path} has no rows: {missing}")
     return errors
+
+
+def _clip_in_review(clip: Dict[str, Any]) -> bool:
+    """Best-effort check: is this clip's reviewIndex present in its REVIEW.md?"""
+    review_path = Path(clip.get("reviewPath", ""))
+    if not review_path.exists():
+        return False
+    try:
+        available = {int(item["reviewIndex"]) for item in parse_review(review_path)}
+        return int(clip.get("reviewIndex", -1)) in available
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return False
 
 
 def retry_delay_seconds(attempt: int) -> int:

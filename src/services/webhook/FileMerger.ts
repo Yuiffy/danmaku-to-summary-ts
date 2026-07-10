@@ -134,8 +134,109 @@ export class FileMerger {
       }
 
       this.logger.info(`视频合并完成: ${path.basename(outputPath)}`);
+
+      // 合并后视频流健康检测：检测黑屏，如有问题则自动转码修复
+      await this.verifyAndFixIfNeeded(outputPath);
     } catch (error) {
       this.logger.error('合并视频文件失败', { error });
+      throw error;
+    }
+  }
+
+  /**
+   * 验证合并后视频流健康度，如果黑屏比例过高则重新编码修复
+   */
+  private async verifyAndFixIfNeeded(outputPath: string): Promise<void> {
+    try {
+      // 获取音视频流各自的时长，检测不一致
+      const durations = await this.getStreamDurations(outputPath);
+      if (!durations.video || !durations.audio) {
+        this.logger.warn(`无法获取音视频流时长，跳过健康检测`);
+        return;
+      }
+
+      const diff = Math.abs(durations.video - durations.audio);
+      const maxDuration = Math.max(durations.video, durations.audio);
+      const diffRatio = maxDuration > 0 ? diff / maxDuration : 0;
+
+      this.logger.info(`
+        合并后音视频流检测: ${path.basename(outputPath)}\n` +
+        `  视频: ${durations.video.toFixed(1)}s\n` +
+        `  音频: ${durations.audio.toFixed(1)}s\n` +
+        `  差值: ${diff.toFixed(1)}s (${(diffRatio * 100).toFixed(1)}%)
+      `.replace(/^\s+/gm, '').trim());
+
+      // 阈值：音视频时长差超过 2 秒（或占比超过 0.5%）则触发重编码
+      const thresholdSeconds = 2;
+      const thresholdRatio = 0.005;
+      if (diff > thresholdSeconds && diffRatio > thresholdRatio) {
+        this.logger.warn(`音视频流时长差异 ${diff.toFixed(1)}s 超过阈值，触发重新编码修复`);
+        await this.reencodeVideo(outputPath);
+        this.logger.info(`重新编码修复完成: ${path.basename(outputPath)}`);
+      } else {
+        this.logger.info(`音视频流时长一致（差值 ${diff.toFixed(1)}s），无需转码`);
+      }
+    } catch (error) {
+      this.logger.warn(`合并后健康检测失败，跳过（不影响合并结果）: ${error}`);
+    }
+  }
+
+  /**
+   * 获取音视频流各自时长（分别查询）
+   */
+  private async getStreamDurations(videoPath: string): Promise<{ video: number; audio: number }> {
+    const getDuration = (streamType: string): Promise<number> => {
+      return new Promise((resolve) => {
+        const ffprobe = spawn('ffprobe', [
+          '-v', 'error',
+          '-select_streams', streamType,
+          '-show_entries', 'stream=duration',
+          '-of', 'csv=p=0',
+          videoPath
+        ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+
+        let output = '';
+        ffprobe.stdout.on('data', (data: Buffer) => { output += data.toString(); });
+        ffprobe.on('close', () => {
+          const val = parseFloat(output.trim());
+          resolve(Number.isFinite(val) ? val : 0);
+        });
+        ffprobe.on('error', () => resolve(0));
+      });
+    };
+
+    const [video, audio] = await Promise.all([
+      getDuration('v:0'),
+      getDuration('a:0')
+    ]);
+    return { video, audio };
+  }
+
+  /**
+   * 重新编码视频以修复视频流问题
+   */
+  private async reencodeVideo(videoPath: string): Promise<void> {
+    const tempPath = videoPath + '.reencoding.tmp';
+    try {
+      await this.runFfmpeg([
+        '-i', videoPath,
+        '-c:v', 'libx264',
+        '-crf', '23',
+        '-preset', 'fast',
+        '-c:a', 'copy',
+        '-movflags', '+faststart',
+        '-y',
+        tempPath
+      ], `reencode fix ${path.basename(videoPath)}`);
+
+      // 用重新编码的文件替换原文件
+      fs.unlinkSync(videoPath);
+      fs.renameSync(tempPath, videoPath);
+    } catch (error) {
+      // 清理临时文件
+      if (fs.existsSync(tempPath)) {
+        try { fs.unlinkSync(tempPath); } catch { /* ignore */ }
+      }
       throw error;
     }
   }
