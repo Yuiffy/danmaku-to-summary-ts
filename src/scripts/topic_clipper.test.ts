@@ -176,6 +176,18 @@ describe('topic_clipper', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  test('wraps long subtitle lines for enlarged burned-in subtitles', () => {
+    const dir = makeTempDir();
+    const srtPath = path.join(dir, 'wrapped.srt');
+
+    topicClipper.writeClipSrt([
+      { start: 0, end: 2, text: '123456789012345678901' }
+    ], { start: 0, end: 2, duration: 2 }, srtPath, { maxCharsPerLine: 20 });
+
+    expect(fs.readFileSync(srtPath, 'utf8')).toContain('12345678901234567890\n1');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   test('selects the input-side seek keyframe at or before the rough cut target', () => {
     expect(topicClipper.selectInputSeekKeyframe([
       354.199,

@@ -861,6 +861,10 @@
     "maxClipSeconds": 180,
     "mergeGapSeconds": 45,
     "burnSubtitles": true,
+    "subtitleFontSizeRatio": 0.039,
+    "subtitleMinFontSize": 26,
+    "subtitleMaxFontSize": 60,
+    "subtitleMaxCharsPerLine": 18,
     "outputDirName": "topic_clips",
     "extraTags": [],
     "autoUpload": {
