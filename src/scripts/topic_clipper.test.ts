@@ -318,8 +318,34 @@ describe('topic_clipper', () => {
     expect(markdown).toContain('two.mp4');
     expect(markdown).not.toContain('D:/clips/one.mp4');
     expect(markdown).not.toContain('投稿文案');
+    expect(markdown).toContain('字幕上下文');
+    expect(markdown).toContain('[00:00:18] 前一句解释背景');
+    expect(markdown).toContain('★ [00:00:20] 这里提到了小岁');
+    expect(markdown).toContain('附近弹幕');
+    expect(markdown).toContain('[00:00:21] 原来是在说小岁');
+  });
+  test('respects disabled topic notification context options', () => {
+    const markdown = topicClipper.buildTopicNotifyMarkdown([
+      {
+        window: {
+          start: 10,
+          end: 42,
+          matchSegments: [{ start: 20, end: 22, text: '这里提到了小岁' }],
+          danmakuContext: ['[00:00:21] 原来是在说小岁']
+        },
+        output: { mediaPath: 'D:/clips/one.mp4' }
+      }
+    ], {
+      notify: {
+        includeSubtitleContext: false,
+        includeDanmakuContext: false
+      }
+    });
+
     expect(markdown).not.toContain('字幕上下文');
     expect(markdown).not.toContain('附近弹幕');
+    expect(markdown).not.toContain('这里提到了小岁');
+    expect(markdown).not.toContain('原来是在说小岁');
   });
   test('normalizes Windows backslashes in topic notification paths', () => {
     const markdown = topicClipper.buildTopicNotifyMarkdown([

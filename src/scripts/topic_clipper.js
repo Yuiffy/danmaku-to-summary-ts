@@ -1376,18 +1376,44 @@ function buildDanmakuContextLines(danmaku = [], window = {}, notifyConfig = {}) 
     return samples.map(item => `[${formatClock(item.time)}] ${item.text}`);
 }
 
-function buildClipNotifyBlock(result = {}) {
+function buildClipNotifyBlock(result = {}, notifyConfig = {}) {
     const window = result.window || {};
     const uploadId = Number.isFinite(Number(result.uploadId)) ? Number(result.uploadId) : null;
     const idPrefix = uploadId ? `ID ${uploadId} | ` : '';
     const mediaPath = toFwdSlash(result.output?.mediaPath || '');
     const fileName = mediaPath ? path.basename(mediaPath) : '文件未生成';
-    return `- ${idPrefix}${formatClock(window.start || 0)}-${formatClock(window.end || 0)} | ${fileName}`;
+    const lines = [
+        `- ${idPrefix}${formatClock(window.start || 0)}-${formatClock(window.end || 0)} | ${fileName}`
+    ];
+
+    if (notifyConfig.includeSubtitleContext !== false) {
+        const subtitleContext = buildSubtitleContextLines(
+            window,
+            notifyConfig.subtitleContextLines
+        );
+        if (subtitleContext.length > 0) {
+            lines.push('  - 字幕上下文:');
+            lines.push(...subtitleContext.map(line => `    ${line}`));
+        }
+    }
+
+    if (notifyConfig.includeDanmakuContext !== false) {
+        const danmakuContext = Array.isArray(window.danmakuContext)
+            ? window.danmakuContext.filter(Boolean)
+            : [];
+        if (danmakuContext.length > 0) {
+            lines.push('  - 附近弹幕:');
+            lines.push(...danmakuContext.map(line => `    ${line}`));
+        }
+    }
+
+    return lines.join('\n');
 }
 
 function buildTopicNotifyMarkdown(results = [], metadata = {}) {
+    const notifyConfig = metadata.notify || {};
     const windowSummary = results
-        .map(result => buildClipNotifyBlock(result))
+        .map(result => buildClipNotifyBlock(result, notifyConfig))
         .join('\n');
 
     return [
