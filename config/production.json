@@ -395,6 +395,11 @@
           "花礼Harei",
           "花礼"
         ],
+        "mentionLabels": [
+          "花礼Harei",
+          "花礼",
+          "Harei"
+        ],
         "speakerLabels": [
           "花礼Harei",
           "花礼",
@@ -408,6 +413,36 @@
           "public/reference_images/花礼新衣抱小礼猫.png"
         ],
         "characterDescription": "花礼Harei，黑发蓝瞳鼠耳的女生。"
+      },
+      "nightin": {
+        "displayName": "南町Nightin",
+        "roomIds": [
+          "24872476"
+        ],
+        "searchTags": [
+          "南町Nightin",
+          "南町"
+        ],
+        "mentionLabels": [
+          "南町Nightin",
+          "南町",
+          "Nightin",
+          "大N",
+          "大N老师"
+        ],
+        "speakerLabels": [
+          "南町Nightin",
+          "南町",
+          "Nightin"
+        ],
+        "aliases": [
+          "大N",
+          "大N老师"
+        ],
+        "referenceImages": [
+          "public/reference_images/Nightin_南町_赛车自拍.jpg"
+        ],
+        "characterDescription": "南町Nightin，青绿色头发，黄瞳，歌势主播。"
       },
       "hazel": {
         "displayName": "灰泽满Hazel",
@@ -954,7 +989,9 @@
             "hazel",
             "liko",
             "kloa",
-            "izayoi"
+            "izayoi",
+            "harei",
+            "nightin"
           ],
           "includeMentionedStreamers": true,
           "includeMentionedStreamerImages": true,
@@ -1318,6 +1355,13 @@
         "c 大叔": "岁大叔",
         "C 大叔": "岁大叔",
         "拜血": "败犬",
+        "花脸": "花礼",
+        "花里": "花礼",
+        "花梨": "花礼",
+        "南天起": "南町",
+        "难亭": "南町",
+        "南亭": "南町",
+        "男你": "南町你",
         "饼干脆": "饼干岁",
         "饼干碎": "饼干岁",
         "碎戟": "岁己",

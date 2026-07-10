@@ -463,6 +463,84 @@ class MultiReferenceComicTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in mentioned], ["liko"])
         self.assertEqual(mentioned[0]["_matchedMentionLabel"], "莉蔻")
 
+    def test_storyboard_members_choose_their_own_references_not_other_highlight_mentions(self):
+        self.config["asr"]["corrections"] = {
+            "safe": {
+                "花里": "花礼",
+                "难亭": "南町",
+            }
+        }
+        self.config["ai"]["streamerRegistry"].update({
+            "harei": {
+                "displayName": "花礼Harei",
+                "mentionLabels": ["花礼"],
+                "referenceImages": [str(self.extra)],
+                "characterDescription": "花礼，黑发蓝瞳鼠耳。",
+            },
+            "nightin": {
+                "displayName": "南町Nightin",
+                "mentionLabels": ["南町"],
+                "referenceImages": [],
+                "characterDescription": "南町，歌势主播。",
+            },
+            "kloa": {
+                "displayName": "克罗雅Kloa",
+                "mentionLabels": ["克罗雅"],
+                "referenceImages": [str(self.mentioned)],
+            },
+            "hazel": {
+                "displayName": "灰泽满Hazel",
+                "mentionLabels": ["灰泽满"],
+                "referenceImages": [str(self.mentioned)],
+            },
+        })
+        self.config["roomSettings"]["25788785"] = {
+            "multiReferenceImages": {
+                "enabled": True,
+                "maxExtraCharacters": 3,
+                "maxMentionedContextCharacters": 3,
+                "allowedExtraStreamerIds": ["harei", "nightin", "kloa", "hazel"],
+            }
+        }
+        self.highlight.write_text(
+            "矮人帮成员是花里和难亭。顺便说，克罗雅和灰泽满的动态也很好笑。",
+            encoding="utf-8",
+        )
+        storyboard = "分镜二：矮人帮名单上写着花礼和南町，莉蔻与两人分工合作。"
+
+        selected = comic.resolve_image_prompt_extra_streamers(
+            self.config,
+            "25788785",
+            str(self.highlight),
+            storyboard,
+        )
+        prompt, _, _ = comic.build_comic_prompt(
+            "",
+            room_id="25788785",
+            existing_comic=storyboard,
+            extra_streamers=selected,
+        )
+
+        self.assertEqual([item["id"] for item in selected], ["harei", "nightin"])
+        self.assertIn("花礼", prompt)
+        self.assertIn("南町", prompt)
+        self.assertNotIn("克罗雅Kloa", prompt)
+        self.assertNotIn("灰泽满Hazel", prompt)
+        self.assertIn("不要套用任一已有参考图的外观", prompt)
+
+    def test_asr_confirmed_speaker_remains_an_image_candidate_after_storyboard_generation(self):
+        self.write_sidecar(["shiori"])
+
+        selected = comic.resolve_image_prompt_extra_streamers(
+            self.config,
+            "25788785",
+            str(self.highlight),
+            "分镜一：房间主人独自聊天。",
+        )
+
+        self.assertEqual([item["id"] for item in selected], ["shiori"])
+        self.assertEqual(selected[0]["_comicReferenceReason"], "appeared")
+
     def test_max_extra_characters_applies(self):
         second = self.root / "rhea.png"
         second.write_bytes(b"x")

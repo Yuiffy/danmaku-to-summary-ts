@@ -1043,7 +1043,12 @@ def resolve_mentioned_streamers(
         ))
     return mentioned_streamers
 
-def resolve_extra_appeared_streamers(config: Dict[str, Any], room_id: Optional[str], highlight_path: Optional[str]) -> list[dict]:
+def resolve_extra_appeared_streamers(
+    config: Dict[str, Any],
+    room_id: Optional[str],
+    highlight_path: Optional[str],
+    include_mentioned_streamers: bool = True,
+) -> list[dict]:
     multi_config = get_multi_reference_config(config, room_id)
     print(f"[INFO]  multiReferenceImages.enabled={bool(multi_config.get('enabled'))} room={room_id}")
     if not multi_config.get("enabled"):
@@ -1088,18 +1093,79 @@ def resolve_extra_appeared_streamers(config: Dict[str, Any], room_id: Optional[s
             continue
         extra_streamers.append({**entry, "_comicReferenceReason": "appeared"})
 
-    already_ids = {streamer.get("id") for streamer in extra_streamers if streamer.get("id")}
-    for streamer in resolve_mentioned_streamers(config, room_id, highlight_path, already_ids):
-        if len(extra_streamers) >= max_extra:
-            print(f"[INFO]  额外主播达到上限 maxExtraCharacters={max_extra}，跳过文本提到主播 {streamer.get('id')}")
-            continue
-        extra_streamers.append(streamer)
+    if include_mentioned_streamers:
+        already_ids = {streamer.get("id") for streamer in extra_streamers if streamer.get("id")}
+        for streamer in resolve_mentioned_streamers(config, room_id, highlight_path, already_ids):
+            if len(extra_streamers) >= max_extra:
+                print(f"[INFO]  额外主播达到上限 maxExtraCharacters={max_extra}，跳过文本提到主播 {streamer.get('id')}")
+                continue
+            extra_streamers.append(streamer)
 
     if extra_streamers:
         print("[INFO]  识别到可用于多参考图的额外主播: " + ", ".join(item.get("displayName", item["id"]) for item in extra_streamers))
     else:
         print("[INFO]  未识别到可用于多参考图的额外出声主播")
     return extra_streamers
+
+def resolve_image_prompt_extra_streamers(
+    config: Dict[str, Any],
+    room_id: Optional[str],
+    highlight_path: Optional[str],
+    comic_text: str,
+) -> list[dict]:
+    """Choose extra character references only after the storyboard is available.
+
+    ASR-confirmed speakers remain eligible directly. Text-only candidates are
+    resolved from the completed storyboard rather than the whole highlight, so
+    an unrelated mention cannot be promoted into a different scene merely
+    because its reference image was available first.
+    """
+    multi_config = get_multi_reference_config(config, room_id)
+    max_extra = max(0, int(multi_config.get("maxExtraCharacters") or 0))
+    detected_streamers = resolve_extra_appeared_streamers(
+        config,
+        room_id,
+        highlight_path,
+        include_mentioned_streamers=False,
+    )
+
+    selected: list[dict] = []
+    selected_ids: set[str] = set()
+    for streamer in detected_streamers:
+        if streamer.get("_comicReferenceReason") == "mentioned":
+            continue
+        if len(selected) >= max_extra:
+            break
+        streamer_id = str(streamer.get("id") or "")
+        if streamer_id and streamer_id in selected_ids:
+            continue
+        selected.append(streamer)
+        if streamer_id:
+            selected_ids.add(streamer_id)
+
+    for streamer in resolve_mentioned_streamers(
+        config,
+        room_id,
+        None,
+        selected_ids,
+        highlight_text=comic_text,
+        strict_short_mentions=False,
+    ):
+        if len(selected) >= max_extra:
+            print(f"[INFO]  额外主播达到上限 maxExtraCharacters={max_extra}，跳过漫画脚本提到主播 {streamer.get('id')}")
+            continue
+        streamer_id = str(streamer.get("id") or "")
+        if streamer_id and streamer_id in selected_ids:
+            continue
+        selected.append(streamer)
+        if streamer_id:
+            selected_ids.add(streamer_id)
+
+    if selected:
+        print("[INFO]  根据漫画脚本确定额外主播参考图: " + ", ".join(
+            item.get("displayName", item["id"]) for item in selected
+        ))
+    return selected
 
 def collect_all_images(room_id: str, highlight_path: Optional[str] = None, extra_streamers: Optional[list[dict]] = None) -> list[str]:
     """收集所有可用的图片（引用图、封面、截图）用于AI输入
@@ -1191,8 +1257,12 @@ def collect_all_images(room_id: str, highlight_path: Optional[str] = None, extra
         if reason == "mentioned" and not multi_config.get("includeMentionedStreamerImages", True):
             print(f"[INFO]  已识别文本提到主播但配置为不上传参考图: {display_name}")
             continue
+        reference_images = streamer.get("referenceImages", []) or []
+        if not reference_images:
+            print(f"[INFO]  额外主播未配置参考图，将按文字描述生成: {display_name}")
+            continue
         added = False
-        for ref_image in streamer.get("referenceImages", []) or []:
+        for ref_image in reference_images:
             resolved = resolve_configured_path(ref_image)
             if resolved:
                 reason_label = "文本提到主播" if reason == "mentioned" else "实际出声主播"
@@ -1367,16 +1437,29 @@ def build_multi_character_constraints(extra_streamers: Optional[list[dict]] = No
         return ""
     names = "、".join(streamer.get("displayName") or streamer.get("id") or "额外主播" for streamer in extra_streamers)
     mapping_lines = ["- 参考图1 = 房间主人。"]
-    for index, streamer in enumerate(extra_streamers, start=2):
+    referenced_streamers = []
+    unreferenced_streamers = []
+    for streamer in extra_streamers:
+        has_reference = any(resolve_configured_path(ref_image) for ref_image in (streamer.get("referenceImages", []) or []))
+        (referenced_streamers if has_reference else unreferenced_streamers).append(streamer)
+    for index, streamer in enumerate(referenced_streamers, start=2):
         display_name = streamer.get("displayName") or streamer.get("id") or f"额外主播{index - 1}"
         desc = " ".join(str(streamer.get("characterDescription") or display_name).replace("<", "").replace(">", "").split())
         mapping_lines.append(f"- 参考图{index} = {display_name}：{desc}")
     mapping_text = "\n".join(mapping_lines)
+    no_reference_text = ""
+    if unreferenced_streamers:
+        no_reference_names = "、".join(
+            streamer.get("displayName") or streamer.get("id") or "额外主播"
+            for streamer in unreferenced_streamers
+        )
+        no_reference_text = f"\n- {no_reference_names} 没有参考图，只能依据文字描述单独绘制；不要套用任一已有参考图的外观。"
     return f"""
 多角色参考图约束：
 - 识别出的连麦/实际出声/文本提到主播：{names}。
 - 参考图编号映射如下，必须逐一遵守，不要混淆角色：
 {mapping_text}
+- 不要把没有对应编号的角色误画成任一参考图人物。{no_reference_text}
 - 漫画脚本中只要出现上述额外主播，必须优先按对应编号的参考图还原外观，而不是只根据文字描述脑补。
 - 后续直播封面、截图只用于直播间/背景/道具参考，不要当作额外主播的角色参考图。
 - 不要把不同角色的发色、服装、配饰混合。
@@ -1443,6 +1526,7 @@ COMIC_ARTIST_PROMPT_TEMPLATE = """你作为虚拟主播二创画师大手子，�
 默认以画面叙事为主，但如果有助于漫画效果，可以设计少量中文台词框、拟声词、标题字或路牌字，文字要自然、准确、排版清楚，不要过多。
 注意：弹幕里的“[某某收藏集表情包_xxx]”或“[某某表情包_xxx]”只是观众发的表情包名称，不代表这个主播出场、连麦或参与对话；不要把表情包名称当成漫画角色。
 只画语音正文、摘要事件或明确提到的真实人物；不确定时画房间主人、观众小人、道具或屏幕内容，不要凭表情包名新增主播。
+如果语音正文给出团体、名单或成员关系，只能按该关系附近的正文确定成员；不能把本场其它段落提到的主播替换进这个团体。
 下面是一场直播的语音+弹幕文本，请先构思图片并用文字给我，我再拿去绘制图片。整体600个字符以内。只返回各个分镜的文字描述，不要包含任何多余的说明、格式。若适合带字，请明确写出这些字应该出现在什么位置、每处写什么，单处文字尽量控制在1到12个字。
 {highlight_content}
 """
@@ -2411,8 +2495,6 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
     # 注意：这里检查的是图像生成API的启用状态，不是文本生成API
     use_google = config["aiServices"].get("googleImage", {}).get("enabled", False)
     use_tuzi = config["aiServices"].get("tuZi", {}).get("enabled", False)
-    multi_config = get_multi_reference_config(config, room_id)
-    max_extra = max(0, int(multi_config.get("maxExtraCharacters") or 0))
     lock_path = None
     lock_acquired = False
     
@@ -2465,22 +2547,6 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
 
         print(f"[ROOM] 房间ID: {room_id}")
         
-        # 收集所有可用的图片（主播参考图、额外实际出声主播参考图、封面、截图）
-        extra_streamers = resolve_extra_appeared_streamers(config, room_id, highlight_path)
-        all_images = collect_all_images(room_id, highlight_path, extra_streamers=extra_streamers)
-        
-        # 打印传入AI的图片信息
-        if all_images:
-            print(f"[IMAGE] 共收集到 {len(all_images)} 张图片，将全部传入AI:")
-            for idx, img_path in enumerate(all_images, 1):
-                img_name = os.path.basename(img_path)
-                print(f"  ✅ {idx}. {img_name}")
-        else:
-            print("[WARNING] 未找到任何可用图片，将仅使用提示词生成")
-        
-        # 将所有图片传给AI（tuZi API支持多张参考图）
-        reference_image_path = all_images if all_images else None
-        
         # 检查房间是否启用漫画生成
         room_str = str(room_id)
         if room_str in config["roomSettings"]:
@@ -2520,38 +2586,11 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
         # 构建提示词（包含漫画内容生成），如果已有脚本则复用
         prompt, comic_text, is_comic_generated = build_comic_prompt(
             highlight_content,
-            reference_image_path,
+            None,
             room_id,
             existing_comic=comic_text,
-            extra_streamers=extra_streamers
+            extra_streamers=None
         )
-
-        comic_text_mentioned_streamers = resolve_mentioned_streamers(
-            config,
-            room_id,
-            None,
-            {streamer.get("id") for streamer in extra_streamers if streamer.get("id")},
-            highlight_text=comic_text,
-            strict_short_mentions=False,
-        )
-        comic_text_added_streamers = False
-        if comic_text_mentioned_streamers:
-            added_streamers = []
-            for streamer in comic_text_mentioned_streamers:
-                streamer_id = streamer.get("id")
-                if streamer_id and any(existing.get("id") == streamer_id for existing in extra_streamers):
-                    continue
-                if len(extra_streamers) >= max_extra:
-                    print(f"[INFO]  额外主播达到上限 maxExtraCharacters={max_extra}，跳过漫画脚本提到主播 {streamer_id}")
-                    continue
-                extra_streamers.append(streamer)
-                added_streamers.append(streamer)
-            if added_streamers:
-                comic_text_added_streamers = True
-                print("[INFO]  从漫画脚本补充到额外主播: " + ", ".join(
-                    f"{item.get('displayName', item['id'])}({item.get('_matchedMentionLabel')})"
-                    for item in added_streamers
-                ))
 
         # 如果脚本生成失败（使用原文作为备选），则不生成图片
         if not is_comic_generated:
@@ -2566,29 +2605,28 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
             })
             return None
 
-        image_extra_streamers = filter_extra_streamers_for_image_prompt(
-            extra_streamers,
-            comic_text,
+        image_extra_streamers = resolve_image_prompt_extra_streamers(
             config,
             room_id,
+            highlight_path,
+            comic_text,
         )
-        if comic_text_added_streamers or [item.get("id") for item in image_extra_streamers] != [item.get("id") for item in extra_streamers]:
-            all_images = collect_all_images(room_id, highlight_path, extra_streamers=image_extra_streamers)
-            reference_image_path = all_images if all_images else None
-            prompt, comic_text, is_comic_generated = build_comic_prompt(
-                highlight_content,
-                reference_image_path,
-                room_id,
-                existing_comic=comic_text,
-                extra_streamers=image_extra_streamers
-            )
-            if all_images:
-                print(f"[IMAGE] 过滤文本提到参考图后保留 {len(all_images)} 张图片:")
-                for idx, img_path in enumerate(all_images, 1):
-                    img_name = os.path.basename(img_path)
-                    print(f"  ✓ {idx}. {img_name}")
-            else:
-                print("[WARNING] 过滤文本提到参考图后未找到任何可用图片，将仅使用提示词生成")
+        all_images = collect_all_images(room_id, highlight_path, extra_streamers=image_extra_streamers)
+        reference_image_path = all_images if all_images else None
+        prompt, comic_text, is_comic_generated = build_comic_prompt(
+            highlight_content,
+            reference_image_path,
+            room_id,
+            existing_comic=comic_text,
+            extra_streamers=image_extra_streamers,
+        )
+        if all_images:
+            print(f"[IMAGE] 根据漫画脚本收集到 {len(all_images)} 张图片，将全部传入AI:")
+            for idx, img_path in enumerate(all_images, 1):
+                img_name = os.path.basename(img_path)
+                print(f"  ✓ {idx}. {img_name}")
+        else:
+            print("[WARNING] 未找到任何可用图片，将仅使用提示词生成")
 
         # 图像生成成功，现在保存漫画脚本（只在真正生成脚本时保存，不保存原文备选）
         try:

@@ -104,6 +104,13 @@
         "c 大叔": "岁大叔",
         "C 大叔": "岁大叔",
         "拜血": "败犬",
+        "花脸": "花礼",
+        "花里": "花礼",
+        "花梨": "花礼",
+        "南天起": "南町",
+        "难亭": "南町",
+        "南亭": "南町",
+        "男你": "南町你",
         "婚姿板": "灰泽满",
         "灰色本": "灰泽满",
         "饼干脆": "饼干岁",
@@ -681,12 +688,25 @@
       "harei": {
         "displayName": "花礼Harei",
         "roomIds": ["1820703922"],
+        "mentionLabels": ["花礼Harei", "花礼", "Harei"],
         "speakerLabels": ["花礼Harei", "花礼", "Harei"],
         "aliases": ["礼礼", "小礼"],
         "referenceImages": [
           "public/reference_images/花礼新衣抱小礼猫.png"
         ],
         "characterDescription": "花礼Harei，黑发蓝瞳鼠耳的女生。粉丝是戴帽子的小猫（小礼猫、猫们）。"
+      },
+      "nightin": {
+        "displayName": "南町Nightin",
+        "roomIds": ["24872476"],
+        "searchTags": ["南町Nightin", "南町"],
+        "mentionLabels": ["南町Nightin", "南町", "Nightin", "大N", "大N老师"],
+        "speakerLabels": ["南町Nightin", "南町", "Nightin"],
+        "aliases": ["大N", "大N老师"],
+        "referenceImages": [
+          "public/reference_images/Nightin_南町_赛车自拍.jpg"
+        ],
+        "characterDescription": "南町Nightin，青绿色双马尾，黄瞳，赛车服饰与护目镜造型的歌势主播。"
       },
       "hazel": {
         "displayName": "灰泽满Hazel",
