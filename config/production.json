@@ -815,7 +815,19 @@
         "fanName": "小礼猫（猫们）",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
-        "enableDelayedReply": true
+        "enableDelayedReply": true,
+        "multiReferenceImages": {
+          "enabled": true,
+          "maxExtraCharacters": 2,
+          "maxMentionedContextCharacters": 2,
+          "allowedExtraStreamerIds": [
+            "liko",
+            "nightin"
+          ],
+          "includeMentionedStreamers": true,
+          "includeMentionedStreamerImages": true,
+          "appendCharacterDescriptions": true
+        }
       },
       "23260993": {
         "uid": "690608698",
