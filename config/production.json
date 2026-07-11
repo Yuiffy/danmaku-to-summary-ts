@@ -219,6 +219,7 @@
     "streamerRegistry": {
       "sui": {
         "displayName": "岁己SUI",
+        "aiClipName": "小岁",
         "roomIds": [
           "25788785"
         ],
@@ -255,6 +256,7 @@
       },
       "shiori": {
         "displayName": "栞栞",
+        "aiClipName": "小栞",
         "roomIds": [
           "26966466"
         ],

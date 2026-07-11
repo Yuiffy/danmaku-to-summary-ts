@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { postProcessAiClipMetadata } = require('./ai_clip_metadata');
 const { spawn } = require('child_process');
 const xml2js = require('xml2js');
 const fetch = require('node-fetch');
@@ -867,11 +868,12 @@ async function buildClipCopy(window, info, streamerName, config, titleGenerator 
         ...(Array.isArray(extraTagList) ? extraTagList : [])
     ].map(tag => String(tag || '').trim()).filter(Boolean))).slice(0, 12);
 
+    const processed = postProcessAiClipMetadata({ title, tags }, config);
     return {
-        title,
+        title: processed.title,
         coverText: normalizeCoverText(coverText),
         description,
-        tags
+        tags: processed.tags
     };
 }
 
@@ -1851,7 +1853,8 @@ async function generateTopicClips(options = {}) {
             : options.descriptionGenerator;
         // 从 streamerRegistry 解析正式标签(如 米汀Nagisa)
         const registryTags = resolveStreamerTags(options.config || {}, info.roomId);
-        const copy = await buildClipCopy(window, info, streamerName, config, titleGen, descGen, registryTags, clip.aiCoverText);
+        const metadataConfig = { ...config, ai: options.config?.ai };
+        const copy = await buildClipCopy(window, info, streamerName, metadataConfig, titleGen, descGen, registryTags, clip.aiCoverText);
 
         let mediaResult = null;
         let error = null;

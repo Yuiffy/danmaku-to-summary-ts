@@ -6,6 +6,7 @@ const { spawnSync } = require('child_process');
 const asrBackends = require('./asr/asr_backends');
 const configLoader = require('./config-loader');
 const topicClipper = require('./topic_clipper');
+const { postProcessAiClipMetadata } = require('./ai_clip_metadata');
 
 const DEFAULT_OWN_STREAM_CLIPS_CONFIG = {
     enabled: false,
@@ -1111,7 +1112,7 @@ async function generateOwnStreamClipJob({
     const srtPath = path.join(outputRoot, `${baseName}.srt`);
     const metadataPath = path.join(outputRoot, `${baseName}.json`);
     const srtResult = topicClipper.writeClipSrt(parsed.segments, window, srtPath);
-    const copy = {
+    const rawCopy = {
         title: clip.title,
         coverText: topicClipper.normalizeCoverText(clip.coverText),
         description: buildClipDescription({
@@ -1126,6 +1127,8 @@ async function generateOwnStreamClipJob({
             ? ['小岁', '虚拟主播', '直播切片', '岁AI切片']
             : [streamerName, '虚拟主播', '直播切片']
     };
+    const processedCopy = postProcessAiClipMetadata(rawCopy, options.config || {});
+    const copy = { ...rawCopy, ...processedCopy };
     let mediaResult = null;
     let mediaError = null;
     try {

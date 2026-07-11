@@ -637,6 +637,7 @@
     "streamerRegistry": {
       "sui": {
         "displayName": "岁己SUI",
+        "aiClipName": "小岁",
         "roomIds": ["25788785"],
         "searchTags": ["岁己", "岁己SUI"],
         "mentionLabels": ["岁己", "岁己SUI"],
@@ -649,6 +650,7 @@
       },
       "shiori": {
         "displayName": "栞栞",
+        "aiClipName": "小栞",
         "roomIds": ["26966466"],
         "mentionLabels": ["栞栞", "栞栞Shiori", "小栞", "Shiori"],
         "speakerLabels": ["栞栞", "Shiori"],
