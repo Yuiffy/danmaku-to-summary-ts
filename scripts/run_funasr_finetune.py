@@ -25,6 +25,8 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--freeze-param", default="encoder")
+    parser.add_argument("--keep-nbest-models", type=int, default=5)
+    parser.add_argument("--log-interval", type=int, default=20)
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -43,8 +45,9 @@ def main() -> None:
         "+dataset_conf.num_workers=0",
         f"+train_conf.max_epoch={args.max_epoch}",
         "+train_conf.accum_grad=1",
-        "+train_conf.log_interval=20",
+        f"+train_conf.log_interval={args.log_interval}",
         "+train_conf.resume=false",
+        f"+train_conf.keep_nbest_models={args.keep_nbest_models}",
         f"+optim_conf.lr={args.lr}",
         "+scheduler_conf.warmup_steps=1000",
         f"+freeze_param={args.freeze_param}",

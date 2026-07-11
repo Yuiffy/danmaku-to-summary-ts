@@ -190,8 +190,8 @@ describe('topic_clipper', () => {
 
   test('uses a smaller default burned subtitle size while preserving overrides', () => {
     expect(topicClipper.calculateSubtitleStyle(1920, 1080)).toMatchObject({
-      fontSize: 38,
-      maxCharsPerLine: 53
+      fontSize: 23,
+      maxCharsPerLine: 87
     });
 
     expect(topicClipper.calculateSubtitleStyle(1920, 1080, {

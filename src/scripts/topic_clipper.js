@@ -1101,14 +1101,15 @@ function buildSubtitleBurnVideoArgs(config = {}) {
  */
 function calculateSubtitleStyle(width, height, config = {}) {
     // 保持清晰度，同时再收一档默认字号，减少对画面的遮挡。
-    const fontSizeRatio = Number(config.subtitleFontSizeRatio ?? process.env.FFMPEG_SUBTITLE_FONT_SIZE_RATIO ?? 0.035);
-    const minFontSize = Number(config.subtitleMinFontSize ?? process.env.FFMPEG_SUBTITLE_MIN_FONT_SIZE ?? 26);
+    const fontSizeRatio = Number(config.subtitleFontSizeRatio ?? process.env.FFMPEG_SUBTITLE_FONT_SIZE_RATIO ?? 0.021);
+    const minFontSize = Number(config.subtitleMinFontSize ?? process.env.FFMPEG_SUBTITLE_MIN_FONT_SIZE ?? 18);
     const maxFontSize = Number(config.subtitleMaxFontSize ?? process.env.FFMPEG_SUBTITLE_MAX_FONT_SIZE ?? 60);
+    const fontName = String(config.subtitleFontName ?? process.env.FFMPEG_SUBTITLE_FONT_NAME ?? '汉仪有圆 85简').trim() || '汉仪有圆 85简';
     const fontSize = Math.min(maxFontSize, Math.max(minFontSize, Math.round(height * fontSizeRatio)));
-    const outline = Math.max(2, Math.round(fontSize * 0.08));
+    const outline = Math.max(2, Math.round(fontSize * 0.09));
     // 汉字接近全角宽度；按 0.95em 估算并预留描边空间，避免放大后左右被裁切。
     const maxCharsPerLine = Math.max(12, Math.floor(width / (fontSize * 0.95)));
-    const forceStyle = `FontSize=${fontSize},FontName=Microsoft YaHei,Bold=1,Outline=${outline}`;
+    const forceStyle = `FontSize=${fontSize},FontName=${fontName},Bold=1,Outline=${outline}`;
     return { forceStyle, maxCharsPerLine, fontSize };
 }
 
