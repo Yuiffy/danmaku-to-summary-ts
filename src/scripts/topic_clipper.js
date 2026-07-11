@@ -554,7 +554,7 @@ async function segmentBurstWithAI(burst, parsed, streamerName, info, config = {}
         '  ]',
         '}',
         '',
-        ...generateText.buildClipTitlePromptLines({ outputMode: 'jsonTitle' }),
+        ...generateText.buildClipTitlePromptLines({ outputMode: 'jsonTitle', streamerName }),
         ...generateText.buildCoverTextPromptLines(),
         '',
         '简介要求:',

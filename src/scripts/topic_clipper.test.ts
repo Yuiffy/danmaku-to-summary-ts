@@ -2,6 +2,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const topicClipper = require('./topic_clipper');
+const aiTextGenerator = require('./ai_text_generator');
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'topic-clipper-'));
@@ -25,6 +26,18 @@ function writeSrt(filePath: string) {
 }
 
 describe('topic_clipper', () => {
+  test('keeps a mentioned streamer separate from the current streamer in title prompts', () => {
+    const prompt = aiTextGenerator.buildClipTitlePromptLines({
+      outputMode: 'jsonTitle',
+      streamerName: '瑞娅'
+    }).join('\n');
+
+    expect(prompt).toContain('本段录播的主播是“瑞娅”');
+    expect(prompt).toContain('不能改写为本段主播、其粉丝团体或其发言');
+    expect(prompt).not.toContain('小岁');
+    expect(prompt).not.toContain('饼干岁');
+  });
+
   test('uses configured upload prefix and upload tags for a room', () => {
     const config = {
       ai: {
