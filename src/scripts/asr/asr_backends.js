@@ -111,7 +111,10 @@ const DEFAULT_ASR_CONFIG = {
         enforce_eager: false
     },
     paraformer: {
+        model_profile: 'default',
         model: 'paraformer-zh',
+        base_model: 'paraformer-zh',
+        finetuned_model: null,
         vad_model: 'fsmn-vad',
         punc_model: 'ct-punc',
         spk_model: 'cam++',
@@ -1309,6 +1312,17 @@ function buildHotwordWords(runtimeOptions = {}) {
     return [];
 }
 
+function resolveParaformerModelOption(options = {}) {
+    const profile = String(options.model_profile || '').trim().toLowerCase();
+    if (profile === 'default') {
+        return options.base_model || options.model || 'paraformer-zh';
+    }
+    if (profile === 'finetuned') {
+        return options.finetuned_model || options.model || options.base_model || 'paraformer-zh';
+    }
+    return options.model || options.finetuned_model || options.base_model || 'paraformer-zh';
+}
+
 async function transcribeFunAsrBackend(mediaPath, config = {}, runtimeOptions = {}, backend = 'sensevoice') {
     const asrConfig = getAsrConfig(config);
     const scriptPath = path.join(__dirname, '..', 'python', 'sensevoice_transcribe.py');
@@ -1328,6 +1342,9 @@ async function transcribeFunAsrBackend(mediaPath, config = {}, runtimeOptions = 
         hotword_unweighted: '',
         phoneme_correction: asrConfig.phoneme_correction || null
     };
+    if (backend === 'paraformer') {
+        options.model = resolveParaformerModelOption(options);
+    }
     const label = backend === 'fun_asr_nano_vllm'
         ? 'Fun-ASR-Nano vLLM backend'
         : (backend === 'fun_asr_nano' ? 'Fun-ASR-Nano backend' : (backend === 'paraformer' ? 'Paraformer backend' : 'SenseVoice backend'));

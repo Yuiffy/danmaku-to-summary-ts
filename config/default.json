@@ -430,7 +430,10 @@
       "enforce_eager": false
     },
     "paraformer": {
+      "model_profile": "default",
       "model": "paraformer-zh",
+      "base_model": "paraformer-zh",
+      "finetuned_model": "D:/files/videos/asr_finetune_runs/paraformer_standard_20260712_official_example",
       "vad_model": "fsmn-vad",
       "punc_model": "ct-punc",
       "spk_model": "cam++",

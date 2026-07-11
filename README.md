@@ -35,6 +35,25 @@ node src/scripts/enhanced_auto_summary.js --asr-compare whisper,sensevoice "D:/p
 
 按房间/主播灰度、SenseVoice 安装和常见问题见 [docs/asr-backends.md](docs/asr-backends.md)。
 
+### Paraformer fine-tuned model
+
+The project Paraformer backend now supports both the stock model and a local
+fine-tuned model. Repository defaults stay on the stock model so a fresh clone
+can run without local fine-tune artifacts. Local or production deployments can
+switch to the fine-tuned model when the trained directory exists:
+
+`D:/files/videos/asr_finetune_runs/paraformer_standard_20260712_official_example`
+
+Relevant config keys:
+
+- `asr.paraformer.model_profile`: `finetuned` or `default`
+- `asr.paraformer.base_model`: stock model alias, usually `paraformer-zh`
+- `asr.paraformer.finetuned_model`: local trained model directory
+
+Detailed training notes and workflow are documented in:
+
+`docs/funasr-finetune.md`
+
 ## 📁 项目结构
 
 ```

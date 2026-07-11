@@ -6,6 +6,25 @@ import argparse
 import json
 from pathlib import Path
 
+import soundfile as sf
+
+
+FRAME_SHIFT_MS = 10
+
+
+def compute_source_len(wav_path: str) -> int:
+    info = sf.info(wav_path)
+    duration_s = info.frames / float(info.samplerate)
+    # FunASR docs define source_len in fbank frames, where 1 frame = 10ms.
+    return max(1, int(round(duration_s * 1000 / FRAME_SHIFT_MS)))
+
+
+def compute_target_len(text: str) -> int:
+    # Paraformer uses CharTokenizer for this model family. Remove spaces to better
+    # approximate the effective character token count used during training.
+    normalized = text.replace(" ", "")
+    return max(1, len(normalized))
+
 
 def convert_file(src: Path, dst: Path) -> int:
     count = 0
@@ -23,8 +42,8 @@ def convert_file(src: Path, dst: Path) -> int:
                 "source": wav,
                 "target": text,
                 "prompt": "<ASR>",
-                "source_len": 1,
-                "target_len": max(1, len(text)),
+                "source_len": compute_source_len(wav),
+                "target_len": compute_target_len(text),
             }
             fout.write(json.dumps(record, ensure_ascii=False) + "\n")
             count += 1

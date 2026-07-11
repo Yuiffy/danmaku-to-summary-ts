@@ -50,6 +50,7 @@ local-scripts/*
 data/delayed_reply_tasks.*
 data/asr_speaker_refs/backup*
 output
+outputs/
 src/temp/
 src/scripts/.whisper_queue.json
 nul
