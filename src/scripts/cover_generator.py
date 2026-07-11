@@ -29,9 +29,9 @@ class CoverGenerator:
 
     DEFAULT_CONFIG = {
         "font_path": None,
-        "kicker_font_size": 94,
-        "headline_font_size": 136,
-        "text_max_width": 1120,
+        "kicker_font_size": 104,
+        "headline_font_size": 154,
+        "text_max_width": 1320,
         "padding": 62,
         "output_size": (1920, 1080),
     }
@@ -352,12 +352,12 @@ class CoverGenerator:
         # hierarchy: white setup, yellow hook, heavy black outline, no panel.
         self._draw_outlined_text(
             draw, (62, kicker_y), kicker, kicker_font,
-            fill=(255, 255, 255), stroke_width=9,
+            fill=(255, 255, 255), stroke_width=10,
         )
         self._draw_outlined_text(
             draw, (88, headline_y), headline, headline_font,
-            fill=(255, 222, 52), stroke_width=12,
-            shadow_offset=(9, 10),
+            fill=(255, 222, 52), stroke_width=14,
+            shadow_offset=(10, 11),
         )
 
         if output_path is None:

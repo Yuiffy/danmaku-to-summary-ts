@@ -188,6 +188,20 @@ describe('topic_clipper', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  test('uses a smaller default burned subtitle size while preserving overrides', () => {
+    expect(topicClipper.calculateSubtitleStyle(1920, 1080)).toMatchObject({
+      fontSize: 38,
+      maxCharsPerLine: 53
+    });
+
+    expect(topicClipper.calculateSubtitleStyle(1920, 1080, {
+      subtitleFontSizeRatio: 0.039
+    })).toMatchObject({
+      fontSize: 42,
+      maxCharsPerLine: 48
+    });
+  });
+
   test('selects the input-side seek keyframe at or before the rough cut target', () => {
     expect(topicClipper.selectInputSeekKeyframe([
       354.199,

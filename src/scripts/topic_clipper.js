@@ -1100,8 +1100,8 @@ function buildSubtitleBurnVideoArgs(config = {}) {
  * @returns {{ forceStyle: string, maxCharsPerLine: number }}
  */
 function calculateSubtitleStyle(width, height, config = {}) {
-    // 比旧版更易读，同时避免 720p 切片被过大的字幕遮挡。
-    const fontSizeRatio = Number(config.subtitleFontSizeRatio ?? process.env.FFMPEG_SUBTITLE_FONT_SIZE_RATIO ?? 0.039);
+    // 保持清晰度，同时再收一档默认字号，减少对画面的遮挡。
+    const fontSizeRatio = Number(config.subtitleFontSizeRatio ?? process.env.FFMPEG_SUBTITLE_FONT_SIZE_RATIO ?? 0.035);
     const minFontSize = Number(config.subtitleMinFontSize ?? process.env.FFMPEG_SUBTITLE_MIN_FONT_SIZE ?? 26);
     const maxFontSize = Number(config.subtitleMaxFontSize ?? process.env.FFMPEG_SUBTITLE_MAX_FONT_SIZE ?? 60);
     const fontSize = Math.min(maxFontSize, Math.max(minFontSize, Math.round(height * fontSizeRatio)));
@@ -1993,5 +1993,6 @@ module.exports = {
     buildTopicNotifyMarkdown,
     splitWeChatMarkdown,
     formatClock,
+    calculateSubtitleStyle,
     sanitizeFileName
 };
