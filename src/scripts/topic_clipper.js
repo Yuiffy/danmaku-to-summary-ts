@@ -1100,10 +1100,10 @@ function buildSubtitleBurnVideoArgs(config = {}) {
  * @returns {{ forceStyle: string, maxCharsPerLine: number }}
  */
 function calculateSubtitleStyle(width, height, config = {}) {
-    // 保持清晰度，同时再收一档默认字号，减少对画面的遮挡。
-    const fontSizeRatio = Number(config.subtitleFontSizeRatio ?? process.env.FFMPEG_SUBTITLE_FONT_SIZE_RATIO ?? 0.021);
-    const minFontSize = Number(config.subtitleMinFontSize ?? process.env.FFMPEG_SUBTITLE_MIN_FONT_SIZE ?? 18);
-    const maxFontSize = Number(config.subtitleMaxFontSize ?? process.env.FFMPEG_SUBTITLE_MAX_FONT_SIZE ?? 60);
+    // 按画面高度的 5% 缩放：1080p 为 54px、720p 为 36px，网页播放器缩小后仍易读。
+    const fontSizeRatio = Number(config.subtitleFontSizeRatio ?? process.env.FFMPEG_SUBTITLE_FONT_SIZE_RATIO ?? 0.05);
+    const minFontSize = Number(config.subtitleMinFontSize ?? process.env.FFMPEG_SUBTITLE_MIN_FONT_SIZE ?? 32);
+    const maxFontSize = Number(config.subtitleMaxFontSize ?? process.env.FFMPEG_SUBTITLE_MAX_FONT_SIZE ?? 72);
     const fontName = String(config.subtitleFontName ?? process.env.FFMPEG_SUBTITLE_FONT_NAME ?? '汉仪有圆 85简').trim() || '汉仪有圆 85简';
     const fontSize = Math.min(maxFontSize, Math.max(minFontSize, Math.round(height * fontSizeRatio)));
     const outline = Math.max(2, Math.round(fontSize * 0.09));

@@ -188,10 +188,15 @@ describe('topic_clipper', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  test('uses a smaller default burned subtitle size while preserving overrides', () => {
+  test('uses a readable burned subtitle size across common resolutions while preserving overrides', () => {
     expect(topicClipper.calculateSubtitleStyle(1920, 1080)).toMatchObject({
-      fontSize: 23,
-      maxCharsPerLine: 87
+      fontSize: 54,
+      maxCharsPerLine: 37
+    });
+
+    expect(topicClipper.calculateSubtitleStyle(1280, 720)).toMatchObject({
+      fontSize: 36,
+      maxCharsPerLine: 37
     });
 
     expect(topicClipper.calculateSubtitleStyle(1920, 1080, {
