@@ -50,6 +50,20 @@ class CoverGeneratorTests(unittest.TestCase):
                 actual = rendered.getpixel((1000, 700))
                 self.assertTrue(all(abs(a - b) <= 4 for a, b in zip(actual, untouched_pixel)))
 
+    def test_visual_score_prefers_a_detailed_frame_over_a_flat_frame(self):
+        flat = Image.new("RGB", (320, 180), (120, 120, 120))
+        detailed = Image.new("RGB", (320, 180), (30, 30, 30))
+        pixels = detailed.load()
+        for y in range(180):
+            for x in range(320):
+                if (x // 12 + y // 12) % 2:
+                    pixels[x, y] = (235, 180, 75)
+
+        self.assertGreater(
+            CoverGenerator._score_frame(detailed),
+            CoverGenerator._score_frame(flat),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -96,6 +96,7 @@ function buildCutClipMediaConfig(config = {}, options = {}) {
         twoStageMode: config.twoStageMode,
         twoStagePreRollSeconds: config.twoStagePreRollSeconds,
         twoStagePostRollSeconds: config.twoStagePostRollSeconds,
+        preserveCoverSource: true,
         subtitleVideoEncoder: config.subtitleVideoEncoder,
         subtitleVideoPreset: config.subtitleVideoPreset,
         subtitleVideoCrf: config.subtitleVideoCrf,
@@ -1071,6 +1072,7 @@ async function generateOwnStreamClipJob({
     clip,
     index,
     parsed,
+    danmaku,
     options,
     outputRoot,
     source,
@@ -1142,11 +1144,30 @@ async function generateOwnStreamClipJob({
                 mediaResult.path,
                 buildCoverTitle(copy.title, copy.coverText),
                 outputRoot,
-                { streamerName }
+                {
+                    streamerName,
+                    coverSourcePath: mediaResult.coverSourcePath || source.mediaPath,
+                    clipStart: Number.isFinite(Number(mediaResult.coverClipStart))
+                        ? Number(mediaResult.coverClipStart)
+                        : window.start,
+                    clipDuration: window.duration,
+                    preferredTime: (() => {
+                        const absolutePeak = topicClipper.selectCoverPreferredTime(
+                            danmaku,
+                            window,
+                            config.reactionKeywords || []
+                        );
+                        return Number.isFinite(Number(mediaResult.coverTimeOrigin)) && Number.isFinite(Number(absolutePeak))
+                            ? Number(absolutePeak) - Number(mediaResult.coverTimeOrigin)
+                            : absolutePeak;
+                    })()
+                }
             );
         } catch (error) {
             coverError = error.message;
             console.warn(`clip cover generation failed, metadata kept: ${error.message}`);
+        } finally {
+            topicClipper.cleanupTemporaryCoverSource(mediaResult);
         }
     }
     const metadata = {
@@ -1318,6 +1339,7 @@ async function generateOwnStreamClips(options = {}) {
             clip,
             index,
             parsed,
+            danmaku,
             options,
             outputRoot,
             source,
@@ -1406,11 +1428,30 @@ async function generateOwnStreamClips(options = {}) {
                     mediaResult.path,
                     buildCoverTitle(copy.title, copy.coverText),
                     outputRoot,
-                    { streamerName }
+                    {
+                        streamerName,
+                        coverSourcePath: mediaResult.coverSourcePath || source.mediaPath,
+                        clipStart: Number.isFinite(Number(mediaResult.coverClipStart))
+                            ? Number(mediaResult.coverClipStart)
+                            : window.start,
+                        clipDuration: window.duration,
+                        preferredTime: (() => {
+                            const absolutePeak = topicClipper.selectCoverPreferredTime(
+                                danmaku,
+                                window,
+                                config.reactionKeywords || []
+                            );
+                            return Number.isFinite(Number(mediaResult.coverTimeOrigin)) && Number.isFinite(Number(absolutePeak))
+                                ? Number(absolutePeak) - Number(mediaResult.coverTimeOrigin)
+                                : absolutePeak;
+                        })()
+                    }
                 );
             } catch (error) {
                 coverError = error.message;
                 console.warn(`clip cover generation failed, metadata kept: ${error.message}`);
+            } finally {
+                topicClipper.cleanupTemporaryCoverSource(mediaResult);
             }
         }
         const metadata = {
@@ -1538,6 +1579,7 @@ module.exports = {
     buildPlanReviewMarkdown,
     buildClipDescription,
     buildCoverTitle,
+    selectCoverPreferredTime: topicClipper.selectCoverPreferredTime,
     toFwdSlash,
     filterClipsBySelection,
     generateOwnStreamClips

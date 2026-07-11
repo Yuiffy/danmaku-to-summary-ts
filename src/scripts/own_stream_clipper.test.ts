@@ -90,8 +90,28 @@ describe('own_stream_clipper', () => {
       twoStageMode: 'copy',
       twoStagePreRollSeconds: 8,
       twoStagePostRollSeconds: 2,
+      preserveCoverSource: true,
       ffmpegPath: 'ffmpeg-test'
     });
+  });
+
+  test('selects the densest reaction burst as the preferred cover time', () => {
+    const danmaku = [
+      { time: 12, text: '普通' },
+      { time: 40, text: '哈哈' },
+      { time: 41, text: '哈哈好可爱' },
+      { time: 42, text: '绷不住了' },
+      { time: 43, text: '啊？' },
+      { time: 75, text: '普通收尾' }
+    ];
+    const peak = ownStreamClipper.selectCoverPreferredTime(
+      danmaku,
+      { start: 10, end: 80 },
+      ['哈哈', '绷不住']
+    );
+
+    expect(peak).toBeGreaterThanOrEqual(40);
+    expect(peak).toBeLessThanOrEqual(43);
   });
 
   test('builds numbered review notification markdown', () => {

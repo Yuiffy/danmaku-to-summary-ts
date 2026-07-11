@@ -976,7 +976,50 @@ function escapeSubtitlePathForFfmpegFilter(srtPath) {
 }
 
 /**
- * 为切片生成封面图:从视频截取关键帧,添加居中描边标题文字
+ * Pick the semantic high point used to bias visual frame selection.
+ */
+function selectCoverPreferredTime(danmaku = [], window = {}, reactionKeywords = [], radiusSeconds = 6) {
+    const start = Number(window.start);
+    const end = Number(window.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+    const items = (Array.isArray(danmaku) ? danmaku : [])
+        .filter(item => Number.isFinite(Number(item.time)) && Number(item.time) >= start && Number(item.time) <= end)
+        .map(item => ({
+            time: Number(item.time),
+            reaction: reactionKeywords.some(keyword => String(item.text || '').includes(keyword)) ? 1 : 0
+        }))
+        .sort((a, b) => a.time - b.time);
+    if (items.length === 0) {
+        const match = (window.matchSegments || [])
+            .find(segment => Number(segment.start) >= start && Number(segment.start) <= end);
+        return match ? (Number(match.start) + Number(match.end || match.start)) / 2 : null;
+    }
+
+    const radius = Math.max(2, Number(radiusSeconds) || 6);
+    const reactionPrefix = [0];
+    items.forEach(item => reactionPrefix.push(reactionPrefix.at(-1) + item.reaction));
+    let left = 0;
+    let right = 0;
+    let best = items[0];
+    let bestScore = -Infinity;
+    const ideal = start + (end - start) * 0.55;
+    for (let index = 0; index < items.length; index += 1) {
+        const time = items[index].time;
+        while (left < items.length && items[left].time < time - radius) left += 1;
+        while (right < items.length && items[right].time <= time + radius) right += 1;
+        const count = right - left;
+        const reactions = reactionPrefix[right] - reactionPrefix[left];
+        const score = count + reactions * 3 - Math.abs(time - ideal) * 0.002;
+        if (score > bestScore) {
+            bestScore = score;
+            best = items[index];
+        }
+    }
+    return best.time;
+}
+
+/**
+ * 为切片生成封面图:优先从无字幕原始录播的切片区间多帧选优。
  */
 async function generateClipCover(videoPath, title, outputDir, info = {}) {
     const { spawn } = require('child_process');
@@ -986,14 +1029,29 @@ async function generateClipCover(videoPath, title, outputDir, info = {}) {
     // 用 Python 调用 cover_generator.py 生成封面
     const scriptPath = path.join(__dirname, 'cover_generator.py');
     const subtitle = info.streamerName || '';
+    const coverSourcePath = info.coverSourcePath && fs.existsSync(info.coverSourcePath)
+        ? info.coverSourcePath
+        : videoPath;
 
     return new Promise((resolve, reject) => {
-        const args = ['python', scriptPath, videoPath,
+        const args = ['python', scriptPath, coverSourcePath,
             '--title', title,
             '--output', coverPath,
             '--position', 'center',
             '--key-frame',
         ];
+        if (Number.isFinite(Number(info.clipStart))) {
+            args.push('--clip-start', String(Number(info.clipStart)));
+        }
+        if (Number.isFinite(Number(info.clipDuration)) && Number(info.clipDuration) > 0) {
+            args.push('--clip-duration', String(Number(info.clipDuration)));
+        }
+        if (Number.isFinite(Number(info.preferredTime))) {
+            args.push('--preferred-time', String(Number(info.preferredTime)));
+        }
+        if (Number.isFinite(Number(info.sampleCount))) {
+            args.push('--sample-count', String(Number(info.sampleCount)));
+        }
         if (subtitle) {
             args.push('--subtitle', subtitle);
         }
@@ -1082,6 +1140,9 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
     };
     const duration = String(Math.max(0.1, window.duration));
     const start = String(Math.max(0, window.start));
+    let coverSourcePath = null;
+    let coverClipStart = null;
+    let coverTimeOrigin = null;
 
     if (source.kind === 'audio') {
         await runFfmpeg([
@@ -1118,6 +1179,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                 const roughDuration = Math.max(0.1, Number(window.duration) + offsetInRoughClip + postRollSeconds);
                 const parsedOutput = path.parse(outputPath);
                 const tempPath = path.join(parsedOutput.dir, `${parsedOutput.name}.source.tmp${parsedOutput.ext || '.mp4'}`);
+                let keepTempForCover = false;
                 try {
                     if (twoStageMode === 'copy') {
                         await runFfmpeg([
@@ -1162,9 +1224,15 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                         '-movflags', '+faststart',
                         outputPath
                     ], ffmpegOptions);
+                    if (config.preserveCoverSource === true) {
+                        keepTempForCover = true;
+                        coverSourcePath = tempPath;
+                        coverClipStart = offsetInRoughClip;
+                        coverTimeOrigin = actualRoughStart;
+                    }
                 } finally {
                     try {
-                        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+                        if (!keepTempForCover && fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
                     } catch {
                         // Best-effort cleanup; the final clip is already written or fallback will run.
                     }
@@ -1186,6 +1254,10 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                 path: outputPath,
                 burnedSubtitles: true,
                 fallbackUsed: false,
+                coverSourcePath,
+                coverSourceTemporary: Boolean(coverSourcePath),
+                coverClipStart,
+                coverTimeOrigin,
                 twoStageSubtitleBurn: useTwoStageBurn,
                 twoStageMode: useTwoStageBurn
                     ? String(config.twoStageMode || process.env.FFMPEG_TWO_STAGE_MODE || 'transcode').toLowerCase()
@@ -1439,6 +1511,18 @@ function buildClipNotifyBlock(result = {}, notifyConfig = {}) {
     }
 
     return lines.join('\n');
+}
+
+function cleanupTemporaryCoverSource(mediaResult = {}) {
+    const tempPath = mediaResult?.coverSourceTemporary ? mediaResult.coverSourcePath : null;
+    if (!tempPath) return false;
+    try {
+        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+        return true;
+    } catch (error) {
+        console.warn(`⚠️  清理封面临时无字幕切片失败: ${error.message}`);
+        return false;
+    }
 }
 
 function buildTopicNotifyMarkdown(results = [], metadata = {}) {
@@ -1773,6 +1857,7 @@ async function generateTopicClips(options = {}) {
         try {
             mediaResult = await cutClipMedia(source, window, srtPath, mediaPath, {
                 burnSubtitles: config.burnSubtitles,
+                preserveCoverSource: true,
                 ffmpegPath: options.ffmpegPath
             });
         } catch (clipError) {
@@ -1784,9 +1869,22 @@ async function generateTopicClips(options = {}) {
         let coverPath = null;
         if (mediaResult?.path && fs.existsSync(mediaResult.path)) {
             try {
-                coverPath = await generateClipCover(mediaResult.path, copy.coverText || copy.title, outputRoot, info);
+                const preferredTime = selectCoverPreferredTime(danmaku, window, config.reactionKeywords || []);
+                coverPath = await generateClipCover(mediaResult.path, copy.coverText || copy.title, outputRoot, {
+                    ...info,
+                    coverSourcePath: mediaResult.coverSourcePath || source.mediaPath,
+                    clipStart: Number.isFinite(Number(mediaResult.coverClipStart))
+                        ? Number(mediaResult.coverClipStart)
+                        : window.start,
+                    clipDuration: window.duration,
+                    preferredTime: Number.isFinite(Number(mediaResult.coverTimeOrigin)) && Number.isFinite(Number(preferredTime))
+                        ? Number(preferredTime) - Number(mediaResult.coverTimeOrigin)
+                        : preferredTime
+                });
             } catch (coverErr) {
                 console.warn(`⚠️  封面生成失败,跳过: ${coverErr.message}`);
+            } finally {
+                cleanupTemporaryCoverSource(mediaResult);
             }
         }
 
@@ -1886,6 +1984,8 @@ module.exports = {
     normalizeCoverText,
     buildClipCopy,
     selectInputSeekKeyframe,
+    selectCoverPreferredTime,
+    cleanupTemporaryCoverSource,
     cutClipMedia,
     generateClipCover,
     generateTopicClips,

@@ -13,22 +13,22 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Optional, Tuple
 
 try:
-    from PIL import Image, ImageDraw, ImageEnhance, ImageFont
+    from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageStat
 except ImportError:
     print("[ERROR] 请安装 Pillow: pip install Pillow")
     sys.exit(1)
 
 
 class CoverGenerator:
-    """Create covers with a stable brand label and two typographic text levels."""
+    """Create covers with two direct-on-image typographic text levels."""
 
     DEFAULT_CONFIG = {
         "font_path": None,
-        "label_font_size": 40,
         "kicker_font_size": 94,
         "headline_font_size": 136,
         "text_max_width": 1120,
@@ -37,13 +37,6 @@ class CoverGenerator:
     }
 
     FONT_CANDIDATES = {
-        # A rounded face makes the small brand label feel intentionally different
-        # from the headline instead of looking like a resized copy of it.
-        "label": [
-            "C:/Windows/Fonts/HYYouYuan-85J.ttf",
-            "C:/Windows/Fonts/Dengb.ttf",
-            "C:/Windows/Fonts/msyhbd.ttc",
-        ],
         # Deng is slightly more relaxed than a system sans for the setup line.
         "kicker": [
             "C:/Windows/Fonts/Dengb.ttf",
@@ -194,6 +187,86 @@ class CoverGenerator:
             print(f"[WARN] 获取视频时长失败: {error}，使用第一帧")
             return 0.0
 
+    @staticmethod
+    def _score_frame(image: Image.Image) -> float:
+        """Prefer a clear, colourful, normally exposed frame over fades/blur."""
+        preview = image.convert("RGB")
+        preview.thumbnail((384, 216), Image.Resampling.BILINEAR)
+        gray = preview.convert("L")
+        gray_stat = ImageStat.Stat(gray)
+        brightness = gray_stat.mean[0]
+        contrast = gray_stat.stddev[0]
+        edge_mean = ImageStat.Stat(gray.filter(ImageFilter.FIND_EDGES)).mean[0]
+        saturation = ImageStat.Stat(preview.convert("HSV")).mean[1]
+        exposure_penalty = abs(brightness - 138.0) * 0.18
+        return contrast * 1.15 + edge_mean * 1.8 + saturation * 0.22 - exposure_penalty
+
+    def select_best_frame(
+        self,
+        video_path: str,
+        clip_start: float = 0.0,
+        clip_duration: Optional[float] = None,
+        preferred_time: Optional[float] = None,
+        sample_count: int = 7,
+        output_path: Optional[str] = None,
+    ) -> Tuple[str, float]:
+        """Sample a clip range and materialise its best-looking candidate.
+
+        Times are absolute in ``video_path``.  ``preferred_time`` normally comes
+        from the danmaku peak and receives a modest bonus; visual scoring can
+        still reject a fade, blur or badly exposed peak frame.
+        """
+        start = max(0.0, float(clip_start or 0.0))
+        if clip_duration is None or float(clip_duration) <= 0:
+            duration = max(0.1, self.find_key_frame(video_path, 1.0) - start)
+        else:
+            duration = max(0.1, float(clip_duration))
+        count = max(3, min(12, int(sample_count or 7)))
+        low = start + min(1.0, duration * 0.08)
+        high = start + duration - min(0.6, duration * 0.05)
+        if high <= low:
+            low, high = start, start + duration
+
+        timestamps = [low + (high - low) * index / (count - 1) for index in range(count)]
+        preferred = float(preferred_time) if preferred_time is not None else None
+        if preferred is not None and low <= preferred <= high:
+            timestamps.extend([
+                max(low, preferred - 1.5),
+                preferred,
+                min(high, preferred + 1.5),
+            ])
+        timestamps = sorted({round(timestamp, 3) for timestamp in timestamps})
+
+        best_image = None
+        best_timestamp = timestamps[0]
+        best_score = float("-inf")
+        with tempfile.TemporaryDirectory(prefix="cover_candidates_") as directory:
+            for index, timestamp in enumerate(timestamps):
+                candidate_path = os.path.join(directory, f"candidate_{index:02d}.jpg")
+                try:
+                    self.extract_frame(video_path, timestamp, candidate_path)
+                    with Image.open(candidate_path) as candidate:
+                        score = self._score_frame(candidate)
+                        if preferred is not None:
+                            distance = abs(timestamp - preferred)
+                            score += max(0.0, 20.0 - distance * 3.0)
+                        if score > best_score:
+                            best_score = score
+                            best_timestamp = timestamp
+                            best_image = candidate.convert("RGB").copy()
+                except Exception as error:
+                    print(f"[WARN] 候选帧 {timestamp:.2f}s 读取失败: {error}")
+
+        if best_image is None:
+            raise RuntimeError("未能从切片范围提取任何候选封面帧")
+        if output_path is None:
+            handle = tempfile.NamedTemporaryFile(prefix="cover_best_", suffix=".jpg", delete=False)
+            output_path = handle.name
+            handle.close()
+        best_image.save(output_path, "JPEG", quality=95, subsampling=0)
+        print(f"[INFO] 最佳封面帧: {best_timestamp:.2f}s (候选 {len(timestamps)} 帧, score={best_score:.1f})")
+        return output_path, best_timestamp
+
     def _prepare_canvas(self, image_path: str) -> Image.Image:
         img = Image.open(image_path).convert("RGB")
         target_w, target_h = self.config["output_size"]
@@ -256,7 +329,7 @@ class CoverGenerator:
         with_shadow: bool = False,
         with_bg_bar: bool = False,
     ) -> str:
-        """Add three direct-on-image text levels with no panel or backing bar."""
+        """Add two direct-on-image text levels with no panel or backing bar."""
         if not os.path.exists(image_path):
             raise FileNotFoundError(f"图片不存在: {image_path}")
 
@@ -302,9 +375,21 @@ class CoverGenerator:
         subtitle: Optional[str] = None,
         output_path: Optional[str] = None,
         use_key_frame: bool = True,
+        clip_start: float = 0.0,
+        clip_duration: Optional[float] = None,
+        preferred_time: Optional[float] = None,
+        sample_count: int = 7,
     ) -> str:
-        timestamp = self.find_key_frame(video_path) if use_key_frame else 0.0
-        frame_path = self.extract_frame(video_path, timestamp)
+        if use_key_frame:
+            frame_path, _ = self.select_best_frame(
+                video_path,
+                clip_start=clip_start,
+                clip_duration=clip_duration,
+                preferred_time=preferred_time,
+                sample_count=sample_count,
+            )
+        else:
+            frame_path = self.extract_frame(video_path, max(0.0, clip_start))
         try:
             return self.add_text_to_cover(frame_path, title, subtitle, output_path=output_path)
         finally:
@@ -319,13 +404,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Bilibili 切片封面生成器")
     parser.add_argument("video", help="视频文件路径")
     parser.add_argument("--title", required=True, help="封面文案；两行时用换行分隔，否则从投稿标题降级生成")
-    parser.add_argument("--subtitle", default=None, help="左上品牌文字，通常是主播名")
+    parser.add_argument("--subtitle", default=None, help="兼容旧参数；当前样式不绘制固定品牌字")
     parser.add_argument("--output", default=None, help="输出 JPG 路径")
     parser.add_argument("--font-size", type=int, default=None, help="兼容旧参数：主钩子字体大小")
     parser.add_argument("--position", default="center", choices=["top", "center", "bottom"], help="兼容旧调用；默认使用左下排版")
     parser.add_argument("--no-shadow", action="store_true", help="兼容旧参数")
     parser.add_argument("--no-bg", action="store_true", help="兼容旧参数")
-    parser.add_argument("--key-frame", action="store_true", help="使用切片前 10% 位置作为封面帧")
+    parser.add_argument("--key-frame", action="store_true", help="在切片范围内多帧采样并自动选优")
+    parser.add_argument("--clip-start", type=float, default=0.0, help="在输入视频中的切片绝对起点（秒）")
+    parser.add_argument("--clip-duration", type=float, default=None, help="切片持续时间（秒）")
+    parser.add_argument("--preferred-time", type=float, default=None, help="弹幕/事件峰值的绝对时间（秒）")
+    parser.add_argument("--sample-count", type=int, default=7, help="全段均匀采样候选帧数量")
     args = parser.parse_args()
 
     config = {"headline_font_size": args.font_size} if args.font_size else {}
@@ -336,6 +425,10 @@ def main() -> int:
         subtitle=args.subtitle,
         output_path=args.output,
         use_key_frame=args.key_frame,
+        clip_start=args.clip_start,
+        clip_duration=args.clip_duration,
+        preferred_time=args.preferred_time,
+        sample_count=args.sample_count,
     )
     print(f"\n✅ 封面生成成功: {output}")
     return 0
