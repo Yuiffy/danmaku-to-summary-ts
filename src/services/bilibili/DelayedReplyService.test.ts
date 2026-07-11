@@ -1,5 +1,9 @@
 import { DelayedReplyService } from './DelayedReplyService';
 import { DelayedReplyTask } from './interfaces/types';
+import { BilibiliConfigHelper } from './BilibiliConfigHelper';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
 describe('DelayedReplyService duplicate reply detection', () => {
   function createService(): DelayedReplyService {
@@ -39,5 +43,40 @@ describe('DelayedReplyService duplicate reply detection', () => {
     );
 
     expect(duplicate).toBe(repliedTask);
+  });
+
+  it('notifies WeChat Work with persisted async image failure details once', async () => {
+    const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'delayed-reply-comic-failure-'));
+    const comicImagePath = path.join(outputDir, 'stream_COMIC_FACTORY.png');
+    const metaPath = path.join(outputDir, 'stream_COMIC_FACTORY_META.json');
+    fs.writeFileSync(metaPath, JSON.stringify({
+      status: 'failure',
+      provider: 'tuzi',
+      model: 'gemini-async',
+      endpoint: 'gemini_async',
+      reason: '异步任务返回 safety_block',
+      attempts: [{ provider: 'tuzi', model: 'gemini-async', endpoint: 'gemini_async', status: 'failure', reason: 'safety_block' }]
+    }), 'utf8');
+
+    const notifier = { notifyProcessError: jest.fn().mockResolvedValue(true) };
+    const store = { updateTask: jest.fn().mockResolvedValue(undefined) };
+    const service = new DelayedReplyService({} as any, store as any, notifier as any) as any;
+    const task = createTask({ comicImagePath, comicGenerationFailureNotifiedAt: undefined });
+    const anchorConfigSpy = jest.spyOn(BilibiliConfigHelper, 'getAnchorConfig').mockReturnValue(undefined);
+
+    try {
+      await service.notifyComicGenerationFailure(task);
+      await service.notifyComicGenerationFailure(task);
+
+      expect(notifier.notifyProcessError).toHaveBeenCalledTimes(1);
+      expect(notifier.notifyProcessError.mock.calls[0][1]).toBe('异步漫画生图');
+      expect(notifier.notifyProcessError.mock.calls[0][4].imageGenerationInfo).toContain('异步任务返回 safety_block');
+      expect(store.updateTask).toHaveBeenCalledWith(task.taskId, expect.objectContaining({
+        comicGenerationFailureNotifiedAt: expect.any(Date)
+      }));
+    } finally {
+      anchorConfigSpy.mockRestore();
+      fs.rmSync(outputDir, { recursive: true, force: true });
+    }
   });
 });

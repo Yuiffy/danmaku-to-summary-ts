@@ -1426,7 +1426,11 @@ export class DelayedReplyService implements IDelayedReplyService {
             comicImagePath: task.comicImagePath,
             comicWaitCount: task.comicWaitCount || 0
           });
-          shouldWaitForSupplementalComic = !this.isComicGenerationTerminalFailure(task.comicImagePath);
+          const comicGenerationFailed = this.isComicGenerationTerminalFailure(task.comicImagePath);
+          if (comicGenerationFailed) {
+            await this.notifyComicGenerationFailure(task);
+          }
+          shouldWaitForSupplementalComic = !comicGenerationFailed;
         }
       }
 
@@ -1936,6 +1940,54 @@ export class DelayedReplyService implements IDelayedReplyService {
       return fs.existsSync(comicImagePath)
         ? '图片已生成，但生图元数据读取失败'
         : '图片未生成，且生图元数据读取失败';
+    }
+  }
+
+  /**
+   * 生图已经明确失败时单独告警。成功回复通知里的“生图状态”只是附带信息，
+   * 容易被“回复成功”掩盖；这里确保原因会以失败告警的形式送达企微。
+   */
+  private async notifyComicGenerationFailure(task: DelayedReplyTask): Promise<void> {
+    if (!this.notifier || task.comicGenerationFailureNotifiedAt) {
+      return;
+    }
+
+    const anchorName = BilibiliConfigHelper.getAnchorConfig(task.roomId)?.name || '未知主播';
+    const imageGenerationInfo = this.getComicGenerationNotificationInfo(task.comicImagePath)
+      || '图片未生成，未找到生图失败元数据';
+
+    try {
+      const notified = await this.notifier.notifyProcessError(
+        anchorName,
+        '异步漫画生图',
+        '图片生成失败，本次晚安将仅发送文字回复',
+        task.roomId,
+        {
+          taskId: task.taskId,
+          comicImagePath: task.comicImagePath,
+          imageGenerationInfo
+        }
+      );
+
+      if (!notified) {
+        this.logger.warn('漫画生图失败企微通知发送失败，将保留未通知状态', {
+          taskId: task.taskId,
+          roomId: task.roomId
+        });
+        return;
+      }
+
+      task.comicGenerationFailureNotifiedAt = new Date();
+      await this.store.updateTask(task.taskId, {
+        comicGenerationFailureNotifiedAt: task.comicGenerationFailureNotifiedAt
+      });
+    } catch (error) {
+      // 通知异常不能阻断正常的纯文字晚安回复。
+      this.logger.warn('发送漫画生图失败企微通知异常', {
+        taskId: task.taskId,
+        roomId: task.roomId,
+        error: error instanceof Error ? error.message : String(error)
+      });
     }
   }
 
