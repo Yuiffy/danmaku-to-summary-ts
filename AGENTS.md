@@ -1,13 +1,6 @@
-# AGENTS.md
+## Windows shell
 
-## Windows PowerShell
-
-Kilo's host shell on Windows may be legacy Windows PowerShell 5.1.
-
-- For PowerShell operations, explicitly invoke PowerShell 7 with `pwsh.exe`.
-- Do not invoke `powershell.exe`.
-- For simple commands, use:
-  `pwsh -NoLogo -NoProfile -Command '<command>'`
-- For multiline or complex scripts, create a `.ps1` file and run:
-  `pwsh -NoLogo -NoProfile -File <script.ps1>`
-- Treat project text files as UTF-8.
+- Use the shell already provided by the Codex runtime.
+- Do not launch a new `pwsh.exe` or `powershell.exe` process for every command.
+- Prefer commands compatible with the current Windows shell.
+- Treat text files as UTF-8.
