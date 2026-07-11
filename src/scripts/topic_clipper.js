@@ -456,6 +456,7 @@ function normalizeAiClipSelection(clip, burst, sliceIndex = 1) {
         start,
         end,
         aiTitle: clip.title || null,
+        aiCoverText: clip.coverText || null,
         aiDescription: clip.description || null,
         sliceIndex
     };
@@ -548,11 +549,12 @@ async function segmentBurstWithAI(burst, parsed, streamerName, info, config = {}
         '输出一个 JSON 对象(不要 Markdown 代码块,纯 JSON):',
         '{',
         '  "clips": [',
-        '    { "startTime": "HH:MM:SS", "endTime": "HH:MM:SS", "title": "标题", "description": "简介" }',
+        '    { "startTime": "HH:MM:SS", "endTime": "HH:MM:SS", "title": "标题", "coverText": "第一行\\n第二行", "description": "简介" }',
         '  ]',
         '}',
         '',
         ...generateText.buildClipTitlePromptLines({ outputMode: 'jsonTitle' }),
+        ...generateText.buildCoverTextPromptLines(),
         '',
         '简介要求:',
         '- 一句话说清主播聊了什么(50字内)',
@@ -792,7 +794,17 @@ function normalizeTitle(value, fallback) {
     return title;
 }
 
-async function buildClipCopy(window, info, streamerName, config, titleGenerator = null, descriptionGenerator = null, extraTagList = null) {
+function normalizeCoverText(value) {
+    const lines = String(value || '')
+        .replace(/\\n/g, '\n')
+        .split(/\r?\n/)
+        .map(line => line.replace(/[【】]/g, '').replace(/\s+/g, '').trim())
+        .filter(Boolean)
+        .slice(0, 2);
+    return lines.length >= 2 ? lines.join('\n') : '';
+}
+
+async function buildClipCopy(window, info, streamerName, config, titleGenerator = null, descriptionGenerator = null, extraTagList = null, coverText = null) {
     const defaultTitle = buildDefaultTitle(window, info);
     let title = defaultTitle;
     let description = `来自 ${streamerName} 的直播间,录制时间 ${info.recordedAt || '未知'},片段时间 ${formatClock(window.start)}-${formatClock(window.end)}。`;
@@ -857,6 +869,7 @@ async function buildClipCopy(window, info, streamerName, config, titleGenerator 
 
     return {
         title,
+        coverText: normalizeCoverText(coverText),
         description,
         tags
     };
@@ -1707,7 +1720,13 @@ async function generateTopicClips(options = {}) {
                     .map(s => s.text).slice(0, 10),
             };
             w.danmakuContext = buildDanmakuContextLines(danmaku, w, config.notify || {});
-            aiSegmentedClips.push({ window: w, burst, aiTitle: seg.aiTitle, aiDescription: seg.aiDescription });
+            aiSegmentedClips.push({
+                window: w,
+                burst,
+                aiTitle: seg.aiTitle,
+                aiCoverText: seg.aiCoverText,
+                aiDescription: seg.aiDescription
+            });
         }
 
         console.log(`  ✅ 切出 ${segments.length} 段: ${segments.map(s => formatClock(s.start) + '-' + formatClock(s.end)).join(', ')}`);
@@ -1747,7 +1766,7 @@ async function generateTopicClips(options = {}) {
             : options.descriptionGenerator;
         // 从 streamerRegistry 解析正式标签(如 米汀Nagisa)
         const registryTags = resolveStreamerTags(options.config || {}, info.roomId);
-        const copy = await buildClipCopy(window, info, streamerName, config, titleGen, descGen, registryTags);
+        const copy = await buildClipCopy(window, info, streamerName, config, titleGen, descGen, registryTags, clip.aiCoverText);
 
         let mediaResult = null;
         let error = null;
@@ -1765,7 +1784,7 @@ async function generateTopicClips(options = {}) {
         let coverPath = null;
         if (mediaResult?.path && fs.existsSync(mediaResult.path)) {
             try {
-                coverPath = await generateClipCover(mediaResult.path, copy.title, outputRoot, info);
+                coverPath = await generateClipCover(mediaResult.path, copy.coverText || copy.title, outputRoot, info);
             } catch (coverErr) {
                 console.warn(`⚠️  封面生成失败,跳过: ${coverErr.message}`);
             }
@@ -1864,6 +1883,7 @@ module.exports = {
     resolveUploadPrefix,
     isIgnoredRoom,
     buildDefaultTitle,
+    normalizeCoverText,
     buildClipCopy,
     selectInputSeekKeyframe,
     cutClipMedia,

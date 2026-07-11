@@ -1063,6 +1063,21 @@ function buildClipTitlePromptLines(options = {}) {
     ];
 }
 
+/**
+ * Instructions for a second, deliberately short piece of copy used only on
+ * the cover.  Upload titles carry context; cover text has to work as a
+ * thumbnail and therefore needs a different length and hierarchy.
+ */
+function buildCoverTextPromptLines() {
+    return [
+        '同时为每段切片提供 coverText（封面文案）。它不是投稿标题的截断版，而是给 16:9 缩略图看的两行大字：第一行给铺垫，第二行给最想点开的结果/原话/反差。',
+        'coverText 格式：必须恰好两行，在 JSON 字符串中用 \\n 表示换行；第一行 4-9 个汉字（可含很短数字），第二行 5-11 个汉字，总字数尽量不超过 18。',
+        '封面文案只抓一个可验证的钩子，保留原话、疑问或结果，不要复述整段；不要写“小岁/岁己”、直播切片、tag、表情、书名号、括号或营销套话。',
+        '示例：投稿标题“提建议被当成找茬？小岁委屈控诉：你们不宠我了，只会从我身上找问题！” → coverText “你们不宠我了\\n只会找我问题！”',
+        '示例：投稿标题“充电一小时电量仅剩22%？蓝色充电头终于寿终正寝” → coverText “充一小时只剩22%\\n蓝头寿终正寝”',
+    ];
+}
+
 async function generateClipDescription(context = {}) {
     const config = configLoader.getConfig();
     const textEnabled = config.ai?.text?.enabled !== false;
@@ -1186,6 +1201,7 @@ module.exports = {
     generateClipTitle,
     generateClipDescription,
     buildClipTitlePromptLines,
+    buildCoverTextPromptLines,
     generateTextWithGemini,
     generateTextWithTuZi,
     batchGenerateGoodnightReplies

@@ -70,6 +70,13 @@ describe('own_stream_clipper', () => {
     expect(candidates.some(candidate => String(candidate.reason).includes('danmaku'))).toBe(true);
   });
 
+  test('prefers the AI two-line cover copy over the longer upload title', () => {
+    expect(ownStreamClipper.buildCoverTitle(
+      '提建议被当成找茬？小岁委屈控诉：你们不宠我了，只会从我身上找问题！',
+      '你们不宠我了\\n只会找我问题！'
+    )).toBe('你们不宠我了\n只会找我问题！');
+  });
+
   test('passes copy-mode two-stage burn settings to media cutter by default', () => {
     const config = ownStreamClipper.getOwnStreamClipsConfig({
       ownStreamClips: {

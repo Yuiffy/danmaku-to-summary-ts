@@ -1,223 +1,205 @@
 #!/usr/bin/env python
+"""Generate readable, editorial-style Bilibili clip covers from a video frame.
+
+The public upload title can be 18-42 Chinese characters long.  A cover cannot:
+it needs one short setup line and one large punchline.  New clip planners should
+pass ``--title`` as two lines (``coverText``); older callers can keep passing the
+full upload title and this module will derive a conservative two-line fallback.
 """
-封面生成器 - 支持添加关键文字、标题等元素
-"""
-import os
-import sys
-import subprocess
-from pathlib import Path
-from typing import Optional, Tuple, List
+
+import argparse
 import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Optional, Tuple
 
 try:
-    from PIL import Image, ImageDraw, ImageFont, ImageFilter
+    from PIL import Image, ImageDraw, ImageEnhance, ImageFont
 except ImportError:
     print("[ERROR] 请安装 Pillow: pip install Pillow")
     sys.exit(1)
 
 
 class CoverGenerator:
-    """封面生成器"""
-    
-    # 默认配置
+    """Create covers with a stable brand label and two typographic text levels."""
+
     DEFAULT_CONFIG = {
-        'font_path': None,  # 会自动查找系统中文字体（优先粗体）
-        'title_font_size': 110,
-        'subtitle_font_size': 52,
-        'title_max_chars_per_line': 16,  # 每行最大字符数（自动换行）
-        'title_line_spacing': 16,  # 行间距
-        'text_color': (255, 255, 255),  # 白色
-        'stroke_color': (0, 0, 0),  # 描边颜色（纯黑）
-        'stroke_width': 7,  # 描边宽度（像素）
-        'subtitle_stroke_width': 4,  # 副标题描边宽度
-        'padding': 40,  # 文字边距
-        'output_size': (1920, 1080),  # B站更常用的16:9封面尺寸
+        "font_path": None,
+        "label_font_size": 40,
+        "kicker_font_size": 94,
+        "headline_font_size": 136,
+        "text_max_width": 1120,
+        "padding": 62,
+        "output_size": (1920, 1080),
     }
-    
+
+    FONT_CANDIDATES = {
+        # A rounded face makes the small brand label feel intentionally different
+        # from the headline instead of looking like a resized copy of it.
+        "label": [
+            "C:/Windows/Fonts/HYYouYuan-85J.ttf",
+            "C:/Windows/Fonts/Dengb.ttf",
+            "C:/Windows/Fonts/msyhbd.ttc",
+        ],
+        # Deng is slightly more relaxed than a system sans for the setup line.
+        "kicker": [
+            "C:/Windows/Fonts/Dengb.ttf",
+            "C:/Windows/Fonts/NotoSansSC-VF.ttf",
+            "C:/Windows/Fonts/msyhbd.ttc",
+        ],
+        # The final hook needs the most legible, high-weight face available.
+        "headline": [
+            "C:/Windows/Fonts/msyhbd.ttc",
+            "C:/Windows/Fonts/NotoSansSC-VF.ttf",
+            "C:/Windows/Fonts/simhei.ttf",
+        ],
+    }
+
     def __init__(self, config: Optional[dict] = None):
         self.config = {**self.DEFAULT_CONFIG, **(config or {})}
-        self.font_path = self._find_font()
-    
-    def _find_font(self) -> str:
-        """查找系统中的中文字体"""
-        if self.config.get('font_path') and os.path.exists(self.config['font_path']):
-            return self.config['font_path']
-        
-        # Windows 常见中文字体路径
-        font_candidates = [
-            # 粗体优先（封面文字需要醒目）
-            'C:/Windows/Fonts/msyhbd.ttc',  # 微软雅黑粗体
-            'C:/Windows/Fonts/msyhl.ttc',   # 微软雅黑细体
-            'C:/Windows/Fonts/msyh.ttc',    # 微软雅黑常规
-            # 思源黑体
-            'C:/Windows/Fonts/NotoSansCJK-Bold.ttc',
-            'C:/Windows/Fonts/NotoSansCJK-Regular.ttc',
-            'C:/Windows/Fonts/SourceHanSans-Bold.ttc',
-            'C:/Windows/Fonts/SourceHanSans-Regular.ttc',
-            # 黑体
-            'C:/Windows/Fonts/simhei.ttf',
-            # 用户目录字体
-            os.path.expanduser('~/AppData/Local/Microsoft/Windows/Fonts/msyhbd.ttc'),
-            os.path.expanduser('~/AppData/Local/Microsoft/Windows/Fonts/msyh.ttc'),
-        ]
-        
-        for font_path in font_candidates:
-            if os.path.exists(font_path):
-                print(f"[INFO] 使用字体: {font_path}")
-                return font_path
-        
-        print("[WARN] 未找到中文字体，使用默认字体")
-        return None
-    
-    def _load_font(self, size: int):
-        """加载字体"""
+        self.font_paths = self._find_fonts()
+        # Keep the old public attribute for scripts which may inspect it.
+        self.font_path = self.font_paths["headline"]
+
+    def _find_fonts(self) -> dict[str, Optional[str]]:
+        """Find a readable local Chinese font for each text role."""
+        fonts: dict[str, Optional[str]] = {}
+        custom_font = self.config.get("font_path")
+        for role, candidates in self.FONT_CANDIDATES.items():
+            role_candidates = ([custom_font] if custom_font and role == "headline" else []) + candidates
+            fonts[role] = next((path for path in role_candidates if path and os.path.exists(path)), None)
+            if fonts[role]:
+                print(f"[INFO] {role} 字体: {fonts[role]}")
+            else:
+                print(f"[WARN] 未找到 {role} 中文字体，使用 Pillow 默认字体")
+        return fonts
+
+    def _load_font(self, role: str, size: int):
         try:
-            if self.font_path:
-                return ImageFont.truetype(self.font_path, size)
-            else:
-                return ImageFont.load_default()
-        except Exception as e:
-            print(f"[WARN] 加载字体失败: {e}，使用默认字体")
+            path = self.font_paths.get(role) or self.font_path
+            return ImageFont.truetype(path, size) if path else ImageFont.load_default()
+        except Exception as error:
+            print(f"[WARN] 加载 {role} 字体失败: {error}，使用默认字体")
             return ImageFont.load_default()
-    
+
     @staticmethod
-    def _wrap_text(text: str, max_chars: int) -> list:
+    def _clean_line(value: str) -> str:
+        return re.sub(r"\s+", "", str(value or "")).strip(" \t\r\n\"'“”‘’【】")
+
+    @classmethod
+    def _shorten_line(cls, value: str, limit: int) -> str:
+        """Shorten only expendable connective words; do not invent new copy."""
+        text = cls._clean_line(value)
+        if len(text) <= limit:
+            return text
+        for pattern in ("身残志坚的", "终于还是", "从我身上", "这个", "这种", "直接", "当场"):
+            candidate = text.replace(pattern, "")
+            if len(candidate) >= 4:
+                text = candidate
+            if len(text) <= limit:
+                return text
+        return text[: max(1, limit - 1)].rstrip("，、：:；;") + "…"
+
+    @classmethod
+    def build_cover_lines(cls, title: str) -> Tuple[str, str]:
+        """Return a setup and punchline for the cover.
+
+        ``title`` may already contain a deliberate newline from the AI planner.
+        Explicit copy is respected (with only hard display limits); otherwise the
+        fallback prefers the two clauses after a colon, then the first/last
+        sentence.  This keeps legacy jobs usable without silently making up text.
         """
-        将文本按最大字符数自动换行。
-        支持中文（按字符分割）和英文（尽量按空格分割）。
-        """
-        if len(text) <= max_chars:
-            return [text]
-        
-        lines = []
-        current = ''
-        for char in text:
-            # 中文字符或当前行加一个字符仍在限制内
-            if len(current) + 1 <= max_chars:
-                current += char
+        raw = str(title or "").replace("\\n", "\n")
+        supplied = [cls._clean_line(line) for line in raw.splitlines()]
+        supplied = [line for line in supplied if line]
+        if len(supplied) >= 2:
+            return cls._shorten_line(supplied[0], 11), cls._shorten_line(supplied[1], 12)
+
+        source = cls._clean_line(raw)
+        source = re.sub(r"^【[^】]+】", "", source)
+        source = re.sub(r"^(?:小岁|岁己SUI|岁己)[：:，,\s]*", "", source)
+        if not source:
+            return "直播里发生了什么", "点进来看看"
+
+        before_colon, separator, after_colon = source.rpartition("：")
+        if not separator:
+            before_colon, separator, after_colon = source.rpartition(":")
+
+        if separator and after_colon:
+            tail_parts = [cls._clean_line(part) for part in re.split(r"[，,。！!?？；;]", after_colon)]
+            tail_parts = [part for part in tail_parts if part]
+            if len(tail_parts) >= 2:
+                kicker, headline = tail_parts[-2], tail_parts[-1]
             else:
-                # 如果是英文，尝试在最近的空格处断行
-                if ' ' in current:
-                    # 找最后一个空格
-                    last_space = current.rfind(' ')
-                    lines.append(current[:last_space])
-                    current = current[last_space + 1:] + char
-                else:
-                    lines.append(current)
-                    current = char
-        if current:
-            lines.append(current)
-        return lines
-    
+                prefix_parts = [cls._clean_line(part) for part in re.split(r"[，,。！!?？；;]", before_colon)]
+                kicker = next((part for part in reversed(prefix_parts) if part), before_colon)
+                headline = tail_parts[0] if tail_parts else after_colon
+        else:
+            parts = [cls._clean_line(part) for part in re.split(r"(?<=[，,。！!?？；;])", source)]
+            parts = [part for part in parts if part]
+            if len(parts) >= 2:
+                kicker, headline = parts[0], parts[-1]
+            else:
+                pivot = max(4, len(source) // 2)
+                kicker, headline = source[:pivot], source[pivot:]
+
+        kicker = re.sub(r"^(?:小岁|岁己SUI|岁己)[：:，,\s]*", "", kicker)
+        headline = re.sub(r"^(?:小岁|岁己SUI|岁己)[：:，,\s]*", "", headline)
+        if not headline:
+            headline = kicker
+        if not kicker or kicker == headline:
+            kicker = cls._shorten_line(source, 11)
+        return cls._shorten_line(kicker, 11), cls._shorten_line(headline, 12)
+
+    @staticmethod
+    def _fit_font(draw: ImageDraw.ImageDraw, text: str, font_loader, size: int, max_width: int):
+        """Reduce type size only when necessary; never crop a headline."""
+        for candidate_size in range(size, 47, -4):
+            font = font_loader(candidate_size)
+            bbox = draw.textbbox((0, 0), text, font=font, stroke_width=0)
+            if bbox[2] - bbox[0] <= max_width:
+                return font
+        return font_loader(48)
+
     def extract_frame(self, video_path: str, timestamp: float = 0.0, output_path: str = None) -> str:
-        """
-        从视频截取关键帧
-        
-        Args:
-            video_path: 视频路径
-            timestamp: 截取时间戳（秒），0表示第一帧
-            output_path: 输出图片路径，None则自动生成
-        
-        Returns:
-            截取的图片路径
-        """
         if not os.path.exists(video_path):
             raise FileNotFoundError(f"视频文件不存在: {video_path}")
-        
         if output_path is None:
-            base_dir = os.path.dirname(video_path)
-            output_path = os.path.join(base_dir, f'_cover_frame_{int(timestamp)}.jpg')
-        
-        # 使用 ffmpeg 截取指定时间戳的画面
-        cmd = [
-            'ffmpeg',
-            '-i', video_path,
-            '-ss', str(timestamp),  # 定位到指定时间
-            '-vframes', '1',
-            '-q:v', '2',  # 高质量
-            '-loglevel', 'error',
-            output_path,
-            '-y'
-        ]
-        
+            output_path = os.path.join(os.path.dirname(video_path), f"_cover_frame_{int(timestamp)}.jpg")
+        cmd = ["ffmpeg", "-i", video_path, "-ss", str(timestamp), "-vframes", "1", "-q:v", "2", "-loglevel", "error", output_path, "-y"]
         try:
             subprocess.run(cmd, check=True, timeout=30)
             print(f"[INFO] 已截取视频帧: {output_path} (time={timestamp}s)")
             return output_path
-        except Exception as e:
-            raise RuntimeError(f"截取视频帧失败: {e}")
-    
+        except Exception as error:
+            raise RuntimeError(f"截取视频帧失败: {error}") from error
+
     def find_key_frame(self, video_path: str, duration_ratio: float = 0.1) -> float:
-        """
-        查找关键帧（简单策略：取视频前10%位置）
-        可扩展为：检测场景变化、检测人脸、检测高光时刻等
-        
-        Args:
-            video_path: 视频路径
-            duration_ratio: 关键帧位置占视频时长的比例
-        
-        Returns:
-            关键帧时间戳（秒）
-        """
         try:
-            # 使用 ffprobe 获取视频时长
-            cmd = [
-                'ffprobe',
-                '-v', 'error',
-                '-show_entries', 'format=duration',
-                '-of', 'json',
-                video_path
-            ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-            data = json.loads(result.stdout)
-            duration = float(data['format']['duration'])
-            
-            # 取视频前10%位置（避免黑屏开头）
+            result = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", video_path],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=True,
+            )
+            duration = float(json.loads(result.stdout)["format"]["duration"])
             timestamp = duration * duration_ratio
             print(f"[INFO] 视频时长: {duration:.1f}s, 关键帧位置: {timestamp:.1f}s")
             return timestamp
-        except Exception as e:
-            print(f"[WARN] 获取视频时长失败: {e}，使用第一帧")
+        except Exception as error:
+            print(f"[WARN] 获取视频时长失败: {error}，使用第一帧")
             return 0.0
-    
-    def add_text_to_cover(
-        self,
-        image_path: str,
-        title: str,
-        subtitle: Optional[str] = None,
-        output_path: Optional[str] = None,
-        text_position: str = 'center',  # 'top', 'bottom', 'center'
-        with_shadow: bool = False,  # 保留参数但默认关闭（用描边替代）
-        with_bg_bar: bool = False,  # 保留参数但默认关闭
-    ) -> str:
-        """
-        在封面上添加文字（居中、描边样式，无背景条）
-        
-        Args:
-            image_path: 原始图片路径
-            title: 主标题（必填）
-            subtitle: 副标题（可选）
-            output_path: 输出路径，None则自动生成
-            text_position: 文字位置（默认居中）
-            with_shadow: 已弃用（用描边替代）
-            with_bg_bar: 已弃用（无背景条）
-        
-        Returns:
-            生成的封面路径
-        """
-        if not os.path.exists(image_path):
-            raise FileNotFoundError(f"图片不存在: {image_path}")
-        
-        # 打开图片
-        img = Image.open(image_path).convert('RGB')
-        
-        # 调整尺寸为推荐封面尺寸：先按比例裁剪，再缩放，避免拉伸变形：先按比例裁剪，再缩放，避免拉伸变形
-        target_size = self.config['output_size']
-        target_w, target_h = target_size
+
+    def _prepare_canvas(self, image_path: str) -> Image.Image:
+        img = Image.open(image_path).convert("RGB")
+        target_w, target_h = self.config["output_size"]
         src_w, src_h = img.size
         target_ratio = target_w / target_h
         src_ratio = src_w / src_h
-        
         if abs(src_ratio - target_ratio) > 0.01:
             if src_ratio > target_ratio:
                 new_w = int(src_h * target_ratio)
@@ -227,139 +209,92 @@ class CoverGenerator:
                 new_h = int(src_w / target_ratio)
                 top = max(0, (src_h - new_h) // 2)
                 img = img.crop((0, top, src_w, top + new_h))
-        
-        img = img.resize(target_size, Image.Resampling.LANCZOS)
-        
-        # 文字层单独叠加，不参与缩放
+        img = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
+        img = ImageEnhance.Contrast(img).enhance(1.06)
+        img = ImageEnhance.Color(img).enhance(1.08)
+        return ImageEnhance.Sharpness(img).enhance(1.04)
+
+    @staticmethod
+    def _draw_outlined_text(
+        draw: ImageDraw.ImageDraw,
+        position: tuple[int, int],
+        text: str,
+        font,
+        fill: tuple[int, int, int],
+        stroke_width: int,
+        shadow_offset: tuple[int, int] = (7, 8),
+    ) -> None:
+        """Draw the direct-on-image outlined type used by clip channels."""
+        x, y = position
+        shadow_x, shadow_y = shadow_offset
+        draw.text(
+            (x + shadow_x, y + shadow_y),
+            text,
+            font=font,
+            fill=(12, 8, 18),
+            stroke_width=stroke_width + 5,
+            stroke_fill=(12, 8, 18),
+            anchor="lm",
+        )
+        draw.text(
+            (x, y),
+            text,
+            font=font,
+            fill=fill,
+            stroke_width=stroke_width,
+            stroke_fill=(16, 12, 20),
+            anchor="lm",
+        )
+
+    def add_text_to_cover(
+        self,
+        image_path: str,
+        title: str,
+        subtitle: Optional[str] = None,
+        output_path: Optional[str] = None,
+        text_position: str = "center",
+        with_shadow: bool = False,
+        with_bg_bar: bool = False,
+    ) -> str:
+        """Add three direct-on-image text levels with no panel or backing bar."""
+        if not os.path.exists(image_path):
+            raise FileNotFoundError(f"图片不存在: {image_path}")
+
+        img = self._prepare_canvas(image_path).convert("RGB")
+        width, height = img.size
         draw = ImageDraw.Draw(img)
-        
-        # 加载字体
-        title_font = self._load_font(self.config['title_font_size'])
-        subtitle_font = self._load_font(self.config['subtitle_font_size'])
-        
-        text_color = self.config['text_color']
-        stroke_color = self.config['stroke_color']
-        stroke_width = self.config['stroke_width']
-        subtitle_stroke_width = self.config['subtitle_stroke_width']
-        
-        # 使用 textbbox + anchor='mm' 精确测量
-        # 计算主标题尺寸（用 mm anchor 更准确）
-        title_bbox = draw.textbbox((0, 0), title, font=title_font, anchor='mm')
-        title_width = title_bbox[2] - title_bbox[0]
-        title_height = title_bbox[3] - title_bbox[1]
-        
-        # 计算副标题尺寸
-        if subtitle:
-            subtitle_bbox = draw.textbbox((0, 0), subtitle, font=subtitle_font, anchor='mm')
-            subtitle_width = subtitle_bbox[2] - subtitle_bbox[0]
-            subtitle_height = subtitle_bbox[3] - subtitle_bbox[1]
-        else:
-            subtitle_width = 0
-            subtitle_height = 0
-        
-        # 总文字高度（标题 + 间距 + 副标题）
-        title_subtitle_gap = 20
-        total_text_height = title_height + (subtitle_height + title_subtitle_gap if subtitle else 0)
-        
-        # 确定文字中心 Y 坐标
-        img_width, img_height = target_size
-        padding = self.config['padding']
-        
-        if text_position == 'top':
-            center_y = padding + total_text_height // 2
-        elif text_position == 'center':
-            center_y = int(img_height * 0.72)  # 偏下，避免挡住人脸
-        else:  # bottom
-            center_y = img_height - padding - total_text_height // 2
-        
-        # 计算标题和副标题的基线 Y
-        if subtitle:
-            title_center_y = center_y - (subtitle_height + title_subtitle_gap) // 2
-            subtitle_center_y = center_y + (title_height + title_subtitle_gap) // 2
-        else:
-            title_center_y = center_y
-            subtitle_center_y = center_y
-        
-        # 自动换行：将标题按最大字符数分行
-        max_chars = self.config.get('title_max_chars_per_line', 16)
-        title_lines = self._wrap_text(title, max_chars)
-        line_spacing = self.config.get('title_line_spacing', 16)
-        
-        # 重新计算多行标题的总高度
-        single_title_height = title_height
-        if len(title_lines) > 1:
-            title_total_height = title_height * len(title_lines) + line_spacing * (len(title_lines) - 1)
-        else:
-            title_total_height = title_height
-        
-        # 重新计算位置（因为多行高度变了）
-        total_text_height = title_total_height + (subtitle_height + title_subtitle_gap if subtitle else 0)
-        
-        if text_position == 'top':
-            center_y = padding + total_text_height // 2
-        elif text_position == 'center':
-            center_y = int(img_height * 0.72)
-        else:
-            center_y = img_height - padding - total_text_height // 2
-        
-        if subtitle:
-            title_center_y = center_y - (subtitle_height + title_subtitle_gap) // 2
-            subtitle_center_y = center_y + (title_total_height + title_subtitle_gap) // 2
-        else:
-            title_center_y = center_y
-            subtitle_center_y = center_y
-        
-        # 绘制主标题（逐行绘制，居中 + 描边）
-        title_x = img_width // 2
-        if len(title_lines) == 1:
-            draw.text(
-                (title_x, title_center_y),
-                title,
-                font=title_font,
-                fill=text_color,
-                stroke_width=stroke_width,
-                stroke_fill=stroke_color,
-                anchor='mm',
-            )
-        else:
-            # 多行：从 title_center_y 向上下展开
-            block_height = title_height * len(title_lines) + line_spacing * (len(title_lines) - 1)
-            first_line_y = title_center_y - block_height // 2 + title_height // 2
-            for i, line in enumerate(title_lines):
-                line_y = first_line_y + i * (title_height + line_spacing)
-                draw.text(
-                    (title_x, line_y),
-                    line,
-                    font=title_font,
-                    fill=text_color,
-                    stroke_width=stroke_width,
-                    stroke_fill=stroke_color,
-                    anchor='mm',
-                )
-        
-        # 绘制副标题
-        if subtitle:
-            subtitle_x = img_width // 2
-            draw.text(
-                (subtitle_x, subtitle_center_y),
-                subtitle,
-                font=subtitle_font,
-                fill=text_color,
-                stroke_width=subtitle_stroke_width,
-                stroke_fill=stroke_color,
-                anchor='mm',
-            )
-        
-        # 保存结果
+
+        kicker, headline = self.build_cover_lines(title)
+        max_width = min(self.config["text_max_width"], width - 150)
+        kicker_font = self._fit_font(
+            draw, kicker, lambda size: self._load_font("kicker", size), self.config["kicker_font_size"], max_width
+        )
+        headline_font = self._fit_font(
+            draw, headline, lambda size: self._load_font("headline", size), self.config["headline_font_size"], max_width
+        )
+
+        kicker_y = 106 if text_position != "bottom" else 570
+        headline_y = kicker_y + 146
+        # High-performing clip covers in the supplied references use a simple
+        # hierarchy: white setup, yellow hook, heavy black outline, no panel.
+        self._draw_outlined_text(
+            draw, (62, kicker_y), kicker, kicker_font,
+            fill=(255, 255, 255), stroke_width=9,
+        )
+        self._draw_outlined_text(
+            draw, (88, headline_y), headline, headline_font,
+            fill=(255, 222, 52), stroke_width=12,
+            shadow_offset=(9, 10),
+        )
+
         if output_path is None:
-            base_dir = os.path.dirname(image_path)
-            output_path = os.path.join(base_dir, '_cover_with_text.jpg')
-        
-        img.save(output_path, 'JPEG', quality=95)
+            output_path = os.path.join(os.path.dirname(image_path), "_cover_with_text.jpg")
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        img.save(output_path, "JPEG", quality=95, subsampling=0)
+        print(f"[INFO] 封面文案: {kicker} / {headline}")
         print(f"[INFO] 封面已生成: {output_path}")
-        
         return output_path
-    
+
     def generate_cover(
         self,
         video_path: str,
@@ -368,69 +303,33 @@ class CoverGenerator:
         output_path: Optional[str] = None,
         use_key_frame: bool = True,
     ) -> str:
-        """
-        完整封面生成流程：截取帧 -> 添加文字
-        
-        Args:
-            video_path: 视频路径
-            title: 主标题
-            subtitle: 副标题
-            output_path: 输出路径
-            use_key_frame: 是否使用关键帧（否则用第一帧）
-        
-        Returns:
-            生成的封面路径
-        """
-        # 1. 截取视频帧
-        if use_key_frame:
-            timestamp = self.find_key_frame(video_path)
-        else:
-            timestamp = 0.0
-        
+        timestamp = self.find_key_frame(video_path) if use_key_frame else 0.0
         frame_path = self.extract_frame(video_path, timestamp)
-        
-        # 2. 添加文字
-        final_path = self.add_text_to_cover(
-            image_path=frame_path,
-            title=title,
-            subtitle=subtitle,
-            output_path=output_path,
-        )
-        
-        # 3. 清理临时帧文件（可选）
-        if frame_path != final_path and os.path.exists(frame_path):
-            try:
-                os.remove(frame_path)
-            except:
-                pass
-        
-        return final_path
+        try:
+            return self.add_text_to_cover(frame_path, title, subtitle, output_path=output_path)
+        finally:
+            if os.path.exists(frame_path):
+                try:
+                    os.remove(frame_path)
+                except OSError:
+                    pass
 
 
-def main():
-    """命令行测试"""
-    import argparse
-    
-    parser = argparse.ArgumentParser(description='封面生成器')
-    parser.add_argument('video', help='视频文件路径')
-    parser.add_argument('--title', required=True, help='主标题')
-    parser.add_argument('--subtitle', default=None, help='副标题')
-    parser.add_argument('--output', default=None, help='输出路径')
-    parser.add_argument('--font-size', type=int, default=110, help='标题字体大小 (默认110)')
-    parser.add_argument('--position', default='center', choices=['top', 'center', 'bottom'], help='文字位置 (默认居中)')
-    parser.add_argument('--no-shadow', action='store_true', help='(已弃用) 兼容旧参数')
-    parser.add_argument('--no-bg', action='store_true', help='(已弃用) 兼容旧参数')
-    parser.add_argument('--key-frame', action='store_true', help='使用关键帧（而非第一帧）')
-    
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Bilibili 切片封面生成器")
+    parser.add_argument("video", help="视频文件路径")
+    parser.add_argument("--title", required=True, help="封面文案；两行时用换行分隔，否则从投稿标题降级生成")
+    parser.add_argument("--subtitle", default=None, help="左上品牌文字，通常是主播名")
+    parser.add_argument("--output", default=None, help="输出 JPG 路径")
+    parser.add_argument("--font-size", type=int, default=None, help="兼容旧参数：主钩子字体大小")
+    parser.add_argument("--position", default="center", choices=["top", "center", "bottom"], help="兼容旧调用；默认使用左下排版")
+    parser.add_argument("--no-shadow", action="store_true", help="兼容旧参数")
+    parser.add_argument("--no-bg", action="store_true", help="兼容旧参数")
+    parser.add_argument("--key-frame", action="store_true", help="使用切片前 10% 位置作为封面帧")
     args = parser.parse_args()
-    
-    # 创建生成器
-    config = {
-        'title_font_size': args.font_size,
-    }
+
+    config = {"headline_font_size": args.font_size} if args.font_size else {}
     generator = CoverGenerator(config)
-    
-    # 生成封面
     output = generator.generate_cover(
         video_path=args.video,
         title=args.title,
@@ -438,10 +337,9 @@ def main():
         output_path=args.output,
         use_key_frame=args.key_frame,
     )
-    
     print(f"\n✅ 封面生成成功: {output}")
     return 0
 
 
-if __name__ == '__main__':
-    sys.exit(main() or 0)
+if __name__ == "__main__":
+    sys.exit(main())

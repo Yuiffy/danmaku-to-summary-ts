@@ -1,0 +1,55 @@
+"""Regression tests for the editorial clip-cover generator."""
+
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+from PIL import Image
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src" / "scripts"))
+
+from cover_generator import CoverGenerator  # noqa: E402
+
+
+class CoverGeneratorTests(unittest.TestCase):
+    def test_preserves_explicit_two_line_cover_copy(self):
+        self.assertEqual(
+            CoverGenerator.build_cover_lines("你们不宠我了\\n只会找我问题！"),
+            ("你们不宠我了", "只会找我问题！"),
+        )
+
+    def test_derives_a_readable_fallback_from_a_long_upload_title(self):
+        kicker, headline = CoverGenerator.build_cover_lines(
+            "提建议被当成找茬？岁己委屈控诉：你们不宠我了，只会从我身上找问题！"
+        )
+        self.assertEqual(kicker, "你们不宠我了")
+        self.assertIn("找问题", headline)
+        self.assertLessEqual(len(kicker), 11)
+        self.assertLessEqual(len(headline), 12)
+
+    def test_renders_a_1920_by_1080_jpeg(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "frame.png"
+            output = Path(directory) / "cover.jpg"
+            Image.new("RGB", (1280, 720), (93, 75, 140)).save(source)
+
+            generator = CoverGenerator()
+            untouched_pixel = generator._prepare_canvas(str(source)).getpixel((1000, 700))
+            generator.add_text_to_cover(
+                str(source), "充一小时只剩22%\\n蓝头寿终正寝", subtitle="小岁", output_path=str(output)
+            )
+
+            self.assertTrue(output.exists())
+            with Image.open(output) as rendered:
+                self.assertEqual(rendered.size, (1920, 1080))
+                # The previous design darkened this whole area with a translucent
+                # panel.  JPEG encoding may shift a channel slightly, but the
+                # frame should now remain visually untouched away from the text.
+                actual = rendered.getpixel((1000, 700))
+                self.assertTrue(all(abs(a - b) <= 4 for a, b in zip(actual, untouched_pixel)))
+
+
+if __name__ == "__main__":
+    unittest.main()

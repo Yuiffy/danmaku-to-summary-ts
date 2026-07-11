@@ -652,7 +652,8 @@ async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, confi
             '- Prefer a natural silence after a complete sentence; never end in the middle of a sentence or continuous story.',
             '',
             ...generator.buildClipTitlePromptLines({ outputMode: 'jsonTitle' }),
-            '{"clips":[{"startTime":"HH:MM:SS","endTime":"HH:MM:SS","title":"人工风格标题，18-42字","reason":"一句话说明为什么值得看","score":1}]}',
+            ...generator.buildCoverTextPromptLines(),
+            '{"clips":[{"startTime":"HH:MM:SS","endTime":"HH:MM:SS","title":"人工风格标题，18-42字","coverText":"第一行\\n第二行","reason":"一句话说明为什么值得看","score":1}]}',
             '',
             `直播标题: ${info.streamTitle || '未知'}`,
             `录制时间: ${info.recordedAt || '未知'}`,
@@ -682,6 +683,7 @@ async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, confi
                     end: clamp(end, chunk.start, chunk.end),
                     duration,
                     title: String(clip.title || '').trim() || '小岁：直播有趣片段',
+                    coverText: topicClipper.normalizeCoverText(clip.coverText),
                     reason: String(clip.reason || '').trim(),
                     score: Number(clip.score || 0) + 100 - index,
                     candidateIndex: `chunk-${chunk.index}-${index + 1}`,
@@ -783,6 +785,7 @@ function normalizeAiClips(rawClips, candidates, totalDuration, config) {
                 end: clamp(end, 0, totalDuration),
                 duration,
                 title: String(clip.title || '').trim() || (base ? buildFallbackTitle(base) : '小岁：直播有趣片段'),
+                coverText: topicClipper.normalizeCoverText(clip.coverText),
                 reason: String(clip.reason || base?.reason || '').trim(),
                 candidateIndex: base?.index || clip.candidateIndex || index + 1,
                 score: Number(base?.score || 0),
@@ -823,7 +826,8 @@ async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config,
         '- Prefer a natural silence after a complete sentence; never end in the middle of a sentence or continuous story.',
         '',
         ...generator.buildClipTitlePromptLines({ outputMode: 'jsonTitle' }),
-        '{"clips":[{"candidateIndex":1,"startTime":"HH:MM:SS","endTime":"HH:MM:SS","title":"人工风格标题，18-42字","reason":"一句话说明为什么值得看"}]}',
+        ...generator.buildCoverTextPromptLines(),
+        '{"clips":[{"candidateIndex":1,"startTime":"HH:MM:SS","endTime":"HH:MM:SS","title":"人工风格标题，18-42字","coverText":"第一行\\n第二行","reason":"一句话说明为什么值得看"}]}',
         '',
         `直播标题: ${info.streamTitle || '未知'}`,
         `录制时间: ${info.recordedAt || '未知'}`,
@@ -877,12 +881,13 @@ function filterClipsBySelection(clips, selectedIndices = null) {
     return clips.filter((_, index) => wanted.has(index + 1));
 }
 
-function buildCoverTitle(title, maxChars = 16) {
-    const cleaned = String(title || '')
+function buildCoverTitle(title, coverText = '') {
+    const preferred = topicClipper.normalizeCoverText(coverText);
+    if (preferred) return preferred;
+    return String(title || '')
         .replace(/^【[^】]+】/, '')
         .replace(/^[\s:：-]+/, '')
         .trim();
-    return cleaned.length > maxChars ? cleaned.slice(0, maxChars) : cleaned;
 }
 
 function buildReviewMarkdown(results, metadata) {
@@ -1106,6 +1111,7 @@ async function generateOwnStreamClipJob({
     const srtResult = topicClipper.writeClipSrt(parsed.segments, window, srtPath);
     const copy = {
         title: clip.title,
+        coverText: topicClipper.normalizeCoverText(clip.coverText),
         description: buildClipDescription({
             streamerName,
             streamTitle: info.streamTitle,
@@ -1134,7 +1140,7 @@ async function generateOwnStreamClipJob({
         try {
             coverPath = await topicClipper.generateClipCover(
                 mediaResult.path,
-                buildCoverTitle(copy.title),
+                buildCoverTitle(copy.title, copy.coverText),
                 outputRoot,
                 { streamerName }
             );
@@ -1369,6 +1375,7 @@ async function generateOwnStreamClips(options = {}) {
         const srtResult = topicClipper.writeClipSrt(parsed.segments, window, srtPath);
         const copy = {
             title: clip.title,
+            coverText: topicClipper.normalizeCoverText(clip.coverText),
             description: buildClipDescription({
                 streamerName,
                 streamTitle: info.streamTitle,
@@ -1397,7 +1404,7 @@ async function generateOwnStreamClips(options = {}) {
             try {
                 coverPath = await topicClipper.generateClipCover(
                     mediaResult.path,
-                    buildCoverTitle(copy.title),
+                    buildCoverTitle(copy.title, copy.coverText),
                     outputRoot,
                     { streamerName }
                 );
