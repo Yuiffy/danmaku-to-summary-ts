@@ -461,6 +461,16 @@ describe('asr_backends', () => {
     expect(asr.applyCorrectionsToText('这个小碎片很亮', corrections)).toBe('这个小碎片很亮');
   });
 
+  test('correction exclusions preserve protected words containing an alias', () => {
+    const corrections = {
+      safe: [{ from: '小碎', to: '小岁' }],
+      exclude_when: { '小碎': ['小碎步', '小碎片', '小碎石', '小碎花', '小碎块', '小碎屑', '小碎发', '小碎钻'] }
+    };
+
+    expect(asr.applyCorrectionsToText('小碎步、小碎片、小碎石、小碎花、小碎块、小碎屑、小碎发和小碎钻，叫小碎过来', corrections))
+      .toBe('小碎步、小碎片、小碎石、小碎花、小碎块、小碎屑、小碎发和小碎钻，叫小岁过来');
+  });
+
   test('ambiguous sui homophones need nearby sui context before correction', () => {
     const corrections = {
       contextual: [

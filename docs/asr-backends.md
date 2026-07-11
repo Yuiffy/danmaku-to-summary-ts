@@ -298,6 +298,7 @@ ASR 配置支持全局热词、按 routing 命中的房间/主播热词，以及
 - `contextual_aliases`: 只生成 contextual corrections，文本中命中 `require_nearby` 任一关键词时才替换。
 - `corrections.safe`: 显式安全替换，等价于旧的 corrections 对象/数组。
 - `corrections.contextual`: 显式上下文替换，必须配置 `require_nearby`，否则不会执行。
+- `corrections.exclude_when`: 为指定来源词配置保护短语；来源词出现在这些短语中时不替换。比如 `{ "小碎": ["小碎步"] }` 可保留“小碎步”，但仍会把独立的“小碎”改成“小岁”。
 
 对于 `fun_asr_nano` 和 `fun_asr_nano_vllm`，模型提示词会整理成 `hotwords: ["岁己", "岁己SUI", "小岁", ...]` 直接喂给模型；`aliases_as_hotwords: false` 的错误别名只进入后处理修正。对于 `sensevoice`，仍会保留字符串热词兼容和后处理修正。
 

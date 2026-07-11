@@ -316,37 +316,65 @@ function addCorrection(target, from, to, extra = {}) {
     if (!source || !replacement || source === replacement) {
         return;
     }
-    target.set(source, {
+    const excludeWhen = Array.isArray(extra.exclude_when)
+        ? extra.exclude_when.map(value => String(value || '').trim()).filter(Boolean)
+        : [];
+    const existing = target.get(source);
+    const mergedExcludeWhen = Array.from(new Set([...(existing?.exclude_when || []), ...excludeWhen]));
+    const next = {
         from: source,
         to: replacement,
+        ...existing,
         ...extra
-    });
+    };
+    // A correction can come from both the global dictionary and hotword
+    // aliases. Preserve exclusions contributed by either source.
+    if (mergedExcludeWhen.length > 0) {
+        next.exclude_when = mergedExcludeWhen;
+    } else {
+        delete next.exclude_when;
+    }
+    target.set(source, next);
 }
 
-function addSafeCorrections(target, corrections) {
+function getCorrectionExclusions(exclusions, from) {
+    if (!exclusions || typeof exclusions !== 'object' || Array.isArray(exclusions)) {
+        return [];
+    }
+    const values = exclusions[from];
+    return Array.isArray(values)
+        ? values.map(value => String(value || '').trim()).filter(Boolean)
+        : [];
+}
+
+function addSafeCorrections(target, corrections, exclusions = {}) {
     if (!corrections) {
         return;
     }
     if (Array.isArray(corrections)) {
         corrections.forEach((item) => {
             if (Array.isArray(item) && item.length >= 2) {
-                addCorrection(target, item[0], item[1]);
+                addCorrection(target, item[0], item[1], { exclude_when: getCorrectionExclusions(exclusions, item[0]) });
             } else if (item && typeof item === 'object') {
+                const from = item.from || item.alias || item.source || item.wrong;
                 addCorrection(
                     target,
-                    item.from || item.alias || item.source || item.wrong,
-                    item.to || item.word || item.target || item.correct
+                    from,
+                    item.to || item.word || item.target || item.correct,
+                    { exclude_when: item.exclude_when || getCorrectionExclusions(exclusions, from) }
                 );
             }
         });
         return;
     }
     if (typeof corrections === 'object') {
-        Object.entries(corrections).forEach(([from, to]) => addCorrection(target, from, to));
+        Object.entries(corrections).forEach(([from, to]) => addCorrection(target, from, to, {
+            exclude_when: getCorrectionExclusions(exclusions, from)
+        }));
     }
 }
 
-function addContextualCorrections(target, corrections) {
+function addContextualCorrections(target, corrections, exclusions = {}) {
     if (!Array.isArray(corrections)) {
         return;
     }
@@ -357,8 +385,10 @@ function addContextualCorrections(target, corrections) {
         const requireNearby = Array.isArray(item.require_nearby)
             ? item.require_nearby.map(value => String(value || '').trim()).filter(Boolean)
             : [];
-        addCorrection(target, item.from || item.alias || item.source || item.wrong, item.to || item.word || item.target || item.correct, {
-            require_nearby: requireNearby
+        const from = item.from || item.alias || item.source || item.wrong;
+        addCorrection(target, from, item.to || item.word || item.target || item.correct, {
+            require_nearby: requireNearby,
+            exclude_when: item.exclude_when || getCorrectionExclusions(exclusions, from)
         });
     });
 }
@@ -368,8 +398,8 @@ function addCorrections(targets, corrections) {
         return;
     }
     if (corrections.safe || corrections.contextual) {
-        addSafeCorrections(targets.safe, corrections.safe);
-        addContextualCorrections(targets.contextual, corrections.contextual);
+        addSafeCorrections(targets.safe, corrections.safe, corrections.exclude_when);
+        addContextualCorrections(targets.contextual, corrections.contextual, corrections.exclude_when);
         return;
     }
     addSafeCorrections(targets.safe, corrections);
@@ -494,9 +524,13 @@ function normalizeCorrectionsForApply(corrections = []) {
         return { safe: corrections, contextual: [] };
     }
     if (corrections && typeof corrections === 'object') {
+        const safe = new Map();
+        const contextual = new Map();
+        addSafeCorrections(safe, corrections.safe, corrections.exclude_when);
+        addContextualCorrections(contextual, corrections.contextual, corrections.exclude_when);
         return {
-            safe: Array.isArray(corrections.safe) ? corrections.safe : [],
-            contextual: Array.isArray(corrections.contextual) ? corrections.contextual : []
+            safe: Array.from(safe.values()),
+            contextual: Array.from(contextual.values())
         };
     }
     return { safe: [], contextual: [] };
@@ -567,11 +601,24 @@ function applyCorrectionList(text, corrections = [], stats = null, type = 'safe'
     for (const correction of ordered) {
         const pattern = new RegExp(escapeRegExp(correction.from), 'g');
         const before = output;
-        const count = countMatches(before, pattern);
+        const excludedTerms = Array.isArray(correction.exclude_when)
+            ? correction.exclude_when.map(value => String(value || '').trim()).filter(Boolean)
+            : [];
+        let count = 0;
+        output = before.replace(pattern, (matched, offset, wholeText) => {
+            const isProtected = excludedTerms.some((term) => {
+                const start = wholeText.lastIndexOf(term, offset);
+                return start !== -1 && start <= offset && offset < start + term.length;
+            });
+            if (isProtected) {
+                return matched;
+            }
+            count += 1;
+            return correction.to;
+        });
         if (count === 0) {
             continue;
         }
-        output = before.replace(pattern, correction.to);
         recordCorrectionStats(stats, correction, type, count, before, output);
     }
     return output;
