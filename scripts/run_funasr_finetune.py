@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 
 
-DEFAULT_BASE_MODEL = "iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch"
+DEFAULT_BASE_MODEL = "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch"
 
 
 def hydra_path(value: str) -> str:

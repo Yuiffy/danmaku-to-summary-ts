@@ -23,6 +23,7 @@ import {
  */
 export class AITextGenerator implements IAITextGenerator {
   private logger = getLogger('AITextGenerator');
+  private static readonly GOODNIGHT_TUZI_EXPERIMENT_MODELS = ['gpt-5.6-luna', 'gpt-5.4-mini'] as const;
   private config: any;
   private provider: AIProvider;
   private providerConfig: AIProviderConfig | null = null;
@@ -123,6 +124,50 @@ export class AITextGenerator implements IAITextGenerator {
     return tuziConfig?.enabled && 
            tuziConfig?.apiKey && 
            tuziConfig.apiKey.trim() !== '';
+  }
+
+  private pickGoodnightTuZiModel(): string {
+    const candidates = AITextGenerator.GOODNIGHT_TUZI_EXPERIMENT_MODELS;
+    const randomIndex = Math.floor(Math.random() * candidates.length);
+    return candidates[randomIndex];
+  }
+
+  private async generateGoodnightText(prompt: string): Promise<{ text: string; model: string; route: string }> {
+    if (!this.isTuZiConfigured()) {
+      const text = await this.generateText(prompt);
+      return {
+        text,
+        model: this.providerConfig?.model || 'unknown',
+        route: this.provider
+      };
+    }
+
+    const selectedModel = this.pickGoodnightTuZiModel();
+    this.logger.info('晚安回复命中 tuZi 文本模型实验分流', {
+      selectedModel,
+      candidates: AITextGenerator.GOODNIGHT_TUZI_EXPERIMENT_MODELS
+    });
+
+    try {
+      const text = await this.generateWithTuZi(prompt, { model: selectedModel });
+      return {
+        text,
+        model: selectedModel,
+        route: 'tuZi-primary'
+      };
+    } catch (error) {
+      this.logger.warn('tuZi 晚安回复主链路失败，回退到常规文本生成链路', {
+        selectedModel,
+        error: error instanceof Error ? error.message : String(error)
+      });
+
+      const text = await this.generateText(prompt);
+      return {
+        text,
+        model: this.providerConfig?.model || 'unknown',
+        route: `${this.provider}-fallback`
+      };
+    }
   }
 
   /**
@@ -527,11 +572,26 @@ ${highlightContent}
   /**
    * 保存生成的文本
    */
-  private saveGeneratedText(outputPath: string, text: string, highlightPath: string): string {
+  private saveGeneratedText(
+    outputPath: string,
+    text: string,
+    highlightPath: string,
+    generationMeta: { provider?: string; model?: string; route?: string; fallback?: boolean } = {}
+  ): string {
     try {
       const highlightName = path.basename(highlightPath);
       const timestamp = new Date().toLocaleString('zh-CN');
-      const metaInfo = `# 晚安回复（基于${highlightName}）
+      const frontMatter = [
+        '---',
+        `provider: ${generationMeta.provider || 'unknown'}`,
+        `model: ${generationMeta.model || 'unknown'}`,
+        `route: ${generationMeta.route || 'unknown'}`,
+        `fallback: ${generationMeta.fallback ? 'true' : 'false'}`,
+        `generatedAt: ${new Date().toISOString()}`,
+        '---',
+        ''
+      ].join('\n');
+      const metaInfo = `${frontMatter}\n# 晚安回复（基于${highlightName}）
 生成时间: ${timestamp}
 ---
         
@@ -539,7 +599,7 @@ ${highlightContent}
 
       const fullText = metaInfo + text;
       fs.writeFileSync(outputPath, fullText, 'utf8');
-      this.logger.info('晚安回复已保存', { outputPath });
+      this.logger.info('晚安回复已保存', { outputPath, generationMeta });
       return outputPath;
     } catch (error) {
       throw new AppError(
@@ -739,12 +799,18 @@ ${highlightContent}
 
       for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
         try {
-          let generatedText = await this.generateText(prompt);
+          const generation = await this.generateGoodnightText(prompt);
+          let generatedText = generation.text;
           const inspection = this.inspectGeneratedReply(generatedText, this.getWordLimit(actualRoomId));
 
           if (!inspection.ok) {
             if (generatedText.trim().length > 0) {
-              this.saveFailedGeneratedText(outputPath, generatedText, highlightPath, { provider: this.provider }, {
+              this.saveFailedGeneratedText(outputPath, generatedText, highlightPath, {
+                provider: generation.route.startsWith('tuZi') ? 'tuZi' : this.provider,
+                route: generation.route,
+                model: generation.model,
+                fallback: generation.route.includes('fallback')
+              }, {
                 attempt,
                 maxRetries,
                 reason: inspection.reason,
@@ -756,8 +822,18 @@ ${highlightContent}
           }
 
           generatedText = inspection.cleaned;
-          this.logger.info('文本长度校验通过', { textLength: generatedText.length, wordLimit: this.getWordLimit(actualRoomId) });
-          return this.saveGeneratedText(outputPath, generatedText, highlightPath);
+          this.logger.info('文本长度校验通过', {
+            textLength: generatedText.length,
+            wordLimit: this.getWordLimit(actualRoomId),
+            route: generation.route,
+            model: generation.model
+          });
+          return this.saveGeneratedText(outputPath, generatedText, highlightPath, {
+            provider: generation.route.startsWith('tuZi') ? 'tuZi' : this.provider,
+            model: generation.model,
+            route: generation.route,
+            fallback: generation.route.includes('fallback')
+          });
         } catch (error) {
           lastError = error;
           const errorMessage = error instanceof Error ? error.message : String(error);
