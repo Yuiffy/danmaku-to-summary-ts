@@ -517,7 +517,9 @@
           "克罗雅Kloa",
           "克罗雅"
         ],
-        "mentionLabels": ["雅小妹"],
+        "mentionLabels": [
+          "雅小妹"
+        ],
         "speakerLabels": [
           "克罗雅Kloa",
           "克罗雅",
@@ -641,7 +643,10 @@
         "multiReferenceImages": {
           "enabled": true,
           "maxExtraCharacters": 2,
-          "allowedExtraStreamerIds": ["shiori", "nagisa"],
+          "allowedExtraStreamerIds": [
+            "shiori",
+            "nagisa"
+          ],
           "includeMentionedStreamers": true,
           "includeMentionedStreamerImages": true,
           "filterExtraImagesByComicScript": false,
@@ -801,7 +806,10 @@
         "multiReferenceImages": {
           "enabled": true,
           "maxExtraCharacters": 2,
-          "allowedExtraStreamerIds": ["sui", "shiori"],
+          "allowedExtraStreamerIds": [
+            "sui",
+            "shiori"
+          ],
           "includeMentionedStreamers": true,
           "includeMentionedStreamerImages": true,
           "filterExtraImagesByComicScript": false,
@@ -1398,7 +1406,8 @@
         "老民": "老弥",
         "老明": "老弥",
         "康刚": "栞栞",
-        "碎糠": "岁栞"
+        "碎糠": "岁栞",
+        "栞栞小李": "栞栞Shiori"
       },
       "exclude_when": {
         "小碎": [

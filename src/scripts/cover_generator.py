@@ -157,6 +157,29 @@ class CoverGenerator:
                 return font
         return font_loader(48)
 
+    def _text_layout(self, width: int, height: int, text_position: str = "center") -> dict:
+        """Place all copy inside the centered 4:3 crop of a 16:9 cover."""
+        safe_width = min(width, int(round(height * 4 / 3)))
+        safe_left = (width - safe_width) // 2
+        safe_right = safe_left + safe_width
+        inner_margin = max(32, int(round(width * 0.025)))
+        kicker_x = safe_left + inner_margin
+        headline_x = kicker_x + max(20, int(round(width * 0.014)))
+        max_width = min(
+            self.config["text_max_width"],
+            safe_right - headline_x - inner_margin,
+        )
+        kicker_y = 106 if text_position != "bottom" else 570
+        return {
+            "safe_left": safe_left,
+            "safe_right": safe_right,
+            "kicker_x": kicker_x,
+            "headline_x": headline_x,
+            "max_width": max_width,
+            "kicker_y": kicker_y,
+            "headline_y": kicker_y + 146,
+        }
+
     def extract_frame(self, video_path: str, timestamp: float = 0.0, output_path: str = None) -> str:
         if not os.path.exists(video_path):
             raise FileNotFoundError(f"视频文件不存在: {video_path}")
@@ -338,7 +361,8 @@ class CoverGenerator:
         draw = ImageDraw.Draw(img)
 
         kicker, headline = self.build_cover_lines(title)
-        max_width = min(self.config["text_max_width"], width - 150)
+        layout = self._text_layout(width, height, text_position)
+        max_width = layout["max_width"]
         kicker_font = self._fit_font(
             draw, kicker, lambda size: self._load_font("kicker", size), self.config["kicker_font_size"], max_width
         )
@@ -346,16 +370,16 @@ class CoverGenerator:
             draw, headline, lambda size: self._load_font("headline", size), self.config["headline_font_size"], max_width
         )
 
-        kicker_y = 106 if text_position != "bottom" else 570
-        headline_y = kicker_y + 146
+        kicker_y = layout["kicker_y"]
+        headline_y = layout["headline_y"]
         # High-performing clip covers in the supplied references use a simple
         # hierarchy: white setup, yellow hook, heavy black outline, no panel.
         self._draw_outlined_text(
-            draw, (62, kicker_y), kicker, kicker_font,
+            draw, (layout["kicker_x"], kicker_y), kicker, kicker_font,
             fill=(255, 255, 255), stroke_width=10,
         )
         self._draw_outlined_text(
-            draw, (88, headline_y), headline, headline_font,
+            draw, (layout["headline_x"], headline_y), headline, headline_font,
             fill=(255, 222, 52), stroke_width=14,
             shadow_offset=(10, 11),
         )

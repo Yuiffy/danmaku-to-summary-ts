@@ -50,6 +50,19 @@ class CoverGeneratorTests(unittest.TestCase):
                 actual = rendered.getpixel((1000, 700))
                 self.assertTrue(all(abs(a - b) <= 4 for a, b in zip(actual, untouched_pixel)))
 
+    def test_text_layout_stays_inside_centered_four_by_three_crop(self):
+        generator = CoverGenerator()
+        layout = generator._text_layout(1920, 1080)
+
+        self.assertEqual(layout["safe_left"], 240)
+        self.assertEqual(layout["safe_right"], 1680)
+        self.assertGreater(layout["kicker_x"], layout["safe_left"])
+        self.assertGreater(layout["headline_x"], layout["safe_left"])
+        self.assertLessEqual(
+            layout["headline_x"] + layout["max_width"],
+            layout["safe_right"],
+        )
+
     def test_visual_score_prefers_a_detailed_frame_over_a_flat_frame(self):
         flat = Image.new("RGB", (320, 180), (120, 120, 120))
         detailed = Image.new("RGB", (320, 180), (30, 30, 30))
