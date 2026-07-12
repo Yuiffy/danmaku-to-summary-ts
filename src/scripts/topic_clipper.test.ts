@@ -189,6 +189,30 @@ describe('topic_clipper', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  test('builds temporary burn ass from srt without changing subtitle content format', () => {
+    const dir = makeTempDir();
+    const srtPath = path.join(dir, 'clip.srt');
+    const assPath = path.join(dir, 'clip.burn.ass');
+    writeSrt(srtPath);
+
+    topicClipper.writeTemporaryBurnAssFromSrt(srtPath, assPath, {
+      fontName: '汉仪有圆 85简',
+      fontSize: 31,
+      outline: 2,
+      playResX: 1280,
+      playResY: 720,
+      marginV: 24
+    });
+
+    const content = fs.readFileSync(assPath, 'utf8');
+    expect(content).toContain('PlayResX: 1280');
+    expect(content).toContain('PlayResY: 720');
+    expect(content).toContain('Style: Default,汉仪有圆 85简,31');
+    expect(content).toContain('Dialogue: 0,0:00:10.00,0:00:12.00,Default,,0,0,0,,今天提到了岁己');
+    expect(fs.readFileSync(srtPath, 'utf8')).toContain('00:00:10,000 --> 00:00:12,000');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   test('wraps long subtitle lines for enlarged burned-in subtitles', () => {
     const dir = makeTempDir();
     const srtPath = path.join(dir, 'wrapped.srt');
@@ -201,22 +225,26 @@ describe('topic_clipper', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  test('uses a readable burned subtitle size across common resolutions while preserving overrides', () => {
+  test('uses similar burned subtitle proportions across common resolutions while preserving overrides', () => {
     expect(topicClipper.calculateSubtitleStyle(1920, 1080)).toMatchObject({
-      fontSize: 54,
-      maxCharsPerLine: 37
+      fontSize: 40,
+      maxCharsPerLine: 50,
+      playResX: 1280,
+      playResY: 720
     });
 
     expect(topicClipper.calculateSubtitleStyle(1280, 720)).toMatchObject({
-      fontSize: 36,
-      maxCharsPerLine: 37
+      fontSize: 31,
+      maxCharsPerLine: 43,
+      playResX: 1280,
+      playResY: 720
     });
 
     expect(topicClipper.calculateSubtitleStyle(1920, 1080, {
       subtitleFontSizeRatio: 0.039
     })).toMatchObject({
-      fontSize: 42,
-      maxCharsPerLine: 48
+      fontSize: 40,
+      maxCharsPerLine: 50
     });
   });
 

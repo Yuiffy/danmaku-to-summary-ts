@@ -670,6 +670,76 @@ function writeClipSrt(segments = [], window, outputPath, options = {}) {
     };
 }
 
+function srtTimestampToAss(value) {
+    const match = String(value || '').match(/^(\d{2}):(\d{2}):(\d{2}),(\d{3})$/);
+    if (!match) return '0:00:00.00';
+    const hours = String(Number(match[1]));
+    const minutes = match[2];
+    const seconds = match[3];
+    const centiseconds = String(Math.floor(Number(match[4]) / 10)).padStart(2, '0');
+    return `${hours}:${minutes}:${seconds}.${centiseconds}`;
+}
+
+function assEscapeText(text) {
+    return String(text || '')
+        .replace(/\\/g, '\\\\')
+        .replace(/\r?\n/g, '\\N')
+        .replace(/\{/g, '\\{')
+        .replace(/\}/g, '\\}')
+        .replace(/\u007f/g, '');
+}
+
+function buildBurnAssContentFromSrt(srtContent, style = {}) {
+    const playResX = Number(style.playResX) || 1280;
+    const playResY = Number(style.playResY) || 720;
+    const fontName = String(style.fontName || '汉仪有圆 85简');
+    const fontSize = Number(style.fontSize) || 31;
+    const outline = Number(style.outline) || 2;
+    const marginV = Number(style.marginV) || 24;
+    const alignment = Number(style.alignment) || 2;
+    const bold = Number(style.bold) || 1;
+    const shadow = Number(style.shadow) || 0;
+    const wrapStyle = Number(style.wrapStyle) || 2;
+    const blocks = String(srtContent || '').trim().split(/\r?\n\r?\n+/).filter(Boolean);
+    const events = [];
+
+    for (const block of blocks) {
+        const lines = block.split(/\r?\n/);
+        if (lines.length < 3) continue;
+        const timeLine = lines[1].trim();
+        const match = timeLine.match(/^(\d{2}:\d{2}:\d{2},\d{3})\s+-->\s+(\d{2}:\d{2}:\d{2},\d{3})$/);
+        if (!match) continue;
+        const text = lines.slice(2).join('\n').trim();
+        if (!text) continue;
+        events.push(`Dialogue: 0,${srtTimestampToAss(match[1])},${srtTimestampToAss(match[2])},Default,,0,0,0,,${assEscapeText(text)}`);
+    }
+
+    return [
+        '[Script Info]',
+        'ScriptType: v4.00+',
+        'ScaledBorderAndShadow: yes',
+        `PlayResX: ${playResX}`,
+        `PlayResY: ${playResY}`,
+        'WrapStyle: 2',
+        '',
+        '[V4+ Styles]',
+        'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
+        `Style: Default,${fontName},${fontSize},&H00FFFFFF,&H000000FF,&H00000000,&H00000000,${bold},0,0,0,100,100,0,0,1,${outline},${shadow},${alignment},32,32,${marginV},1`,
+        '',
+        '[Events]',
+        'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+        ...events,
+        ''
+    ].join('\n');
+}
+
+function writeTemporaryBurnAssFromSrt(srtPath, assPath, style = {}) {
+    const srtContent = fs.readFileSync(srtPath, 'utf8');
+    const assContent = buildBurnAssContentFromSrt(srtContent, style);
+    fs.writeFileSync(assPath, assContent, 'utf8');
+    return assPath;
+}
+
 function parseRecordingInfo(mediaPath, context = {}) {
     const fileName = path.basename(mediaPath || '');
     const nameNoExt = fileName.replace(/\.[^.]+$/, '');
@@ -1102,17 +1172,24 @@ function buildSubtitleBurnVideoArgs(config = {}) {
  * @returns {{ forceStyle: string, maxCharsPerLine: number }}
  */
 function calculateSubtitleStyle(width, height, config = {}) {
-    // 按画面高度的 5% 缩放：1080p 为 54px、720p 为 36px，网页播放器缩小后仍易读。
-    const fontSizeRatio = Number(config.subtitleFontSizeRatio ?? process.env.FFMPEG_SUBTITLE_FONT_SIZE_RATIO ?? 0.05);
-    const minFontSize = Number(config.subtitleMinFontSize ?? process.env.FFMPEG_SUBTITLE_MIN_FONT_SIZE ?? 32);
+    // 以 720p 为视觉基准做缓增缩放，避免 1080p 在线性放大后显得过大。
+    const fontSizeRatio = Number(config.subtitleFontSizeRatio ?? process.env.FFMPEG_SUBTITLE_FONT_SIZE_RATIO ?? 0.043);
+    const minFontSize = Number(config.subtitleMinFontSize ?? process.env.FFMPEG_SUBTITLE_MIN_FONT_SIZE ?? 30);
     const maxFontSize = Number(config.subtitleMaxFontSize ?? process.env.FFMPEG_SUBTITLE_MAX_FONT_SIZE ?? 72);
     const fontName = String(config.subtitleFontName ?? process.env.FFMPEG_SUBTITLE_FONT_NAME ?? '汉仪有圆 85简').trim() || '汉仪有圆 85简';
-    const fontSize = Math.min(maxFontSize, Math.max(minFontSize, Math.round(height * fontSizeRatio)));
+    const heightScale = Math.pow(Math.max(1, height) / 720, 0.65);
+    const baseFontSize = 31;
+    const scaledFontSize = Math.round(baseFontSize * heightScale);
+    const ratioFontSize = Math.round(height * fontSizeRatio);
+    const fontSize = Math.min(maxFontSize, Math.max(minFontSize, Math.min(scaledFontSize, ratioFontSize)));
     const outline = Math.max(2, Math.round(fontSize * 0.09));
+    const playResX = Number(config.subtitlePlayResX ?? process.env.FFMPEG_SUBTITLE_PLAYRES_X ?? 1280);
+    const playResY = Number(config.subtitlePlayResY ?? process.env.FFMPEG_SUBTITLE_PLAYRES_Y ?? 720);
+    const marginV = Number(config.subtitleMarginV ?? process.env.FFMPEG_SUBTITLE_MARGIN_V ?? 24);
     // 汉字接近全角宽度；按 0.95em 估算并预留描边空间，避免放大后左右被裁切。
     const maxCharsPerLine = Math.max(12, Math.floor(width / (fontSize * 0.95)));
     const forceStyle = `FontSize=${fontSize},FontName=${fontName},Bold=1,Outline=${outline}`;
-    return { forceStyle, maxCharsPerLine, fontSize };
+    return { forceStyle, maxCharsPerLine, fontSize, outline, fontName, playResX, playResY, marginV };
 }
 
 /**
@@ -1146,6 +1223,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
     let coverSourcePath = null;
     let coverClipStart = null;
     let coverTimeOrigin = null;
+    let burnAssPath = null;
 
     if (source.kind === 'audio') {
         await runFfmpeg([
@@ -1168,6 +1246,9 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
         // 获取视频分辨率,动态计算字幕样式
         const videoRes = await getVideoResolution(source.mediaPath);
         const subtitleStyle = calculateSubtitleStyle(videoRes.width, videoRes.height, config);
+        const parsedOutput = path.parse(outputPath);
+        burnAssPath = path.join(parsedOutput.dir, `${parsedOutput.name}.burn.ass`);
+        writeTemporaryBurnAssFromSrt(srtPath, burnAssPath, subtitleStyle);
         const useTwoStageBurn = config.twoStageSubtitleBurn !== false && process.env.FFMPEG_TWO_STAGE_BURN !== 'false';
         try {
             if (useTwoStageBurn) {
@@ -1180,7 +1261,6 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                     : roughStart;
                 const offsetInRoughClip = Math.max(0, Number(window.start) - actualRoughStart);
                 const roughDuration = Math.max(0.1, Number(window.duration) + offsetInRoughClip + postRollSeconds);
-                const parsedOutput = path.parse(outputPath);
                 const tempPath = path.join(parsedOutput.dir, `${parsedOutput.name}.source.tmp${parsedOutput.ext || '.mp4'}`);
                 let keepTempForCover = false;
                 try {
@@ -1220,7 +1300,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                     await runFfmpeg([
                         '-y',
                         '-i', tempPath,
-                        '-filter_complex', `[0:v]trim=start=${trimStart}:end=${trimEnd},setpts=PTS-STARTPTS[sub_v];[0:a]atrim=start=${trimStart}:end=${trimEnd},asetpts=PTS-STARTPTS[sub_a];[sub_v]subtitles='${escapeSubtitlePathForFfmpegFilter(srtPath)}':force_style='${subtitleStyle.forceStyle}'[vout]`,
+                        '-filter_complex', `[0:v]trim=start=${trimStart}:end=${trimEnd},setpts=PTS-STARTPTS[sub_v];[0:a]atrim=start=${trimStart}:end=${trimEnd},asetpts=PTS-STARTPTS[sub_a];[sub_v]subtitles='${escapeSubtitlePathForFfmpegFilter(burnAssPath)}'[vout]`,
                         '-map', '[vout]',
                         '-map', '[sub_a]',
                         ...buildSubtitleBurnVideoArgs(config),
@@ -1246,7 +1326,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                     '-ss', start,
                     '-i', source.mediaPath,
                     '-t', duration,
-                    '-vf', `subtitles='${escapeSubtitlePathForFfmpegFilter(srtPath)}':force_style='${subtitleStyle.forceStyle}'`,
+                    '-vf', `subtitles='${escapeSubtitlePathForFfmpegFilter(burnAssPath)}'`,
                     ...buildSubtitleBurnVideoArgs(config),
                     '-c:a', 'copy',
                     '-movflags', '+faststart',
@@ -1275,7 +1355,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                         '-ss', start,
                         '-i', source.mediaPath,
                         '-t', duration,
-                        '-vf', `subtitles='${escapeSubtitlePathForFfmpegFilter(srtPath)}':force_style='${subtitleStyle.forceStyle}'`,
+                        '-vf', `subtitles='${escapeSubtitlePathForFfmpegFilter(burnAssPath)}'`,
                         ...buildSubtitleBurnVideoArgs(config),
                         '-c:a', 'copy',
                         '-movflags', '+faststart',
@@ -1292,6 +1372,12 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                 }
             } else {
                 console.warn(`⚠️  字幕烧录失败,改为生成无烧录切片: ${error.message}`);
+            }
+        } finally {
+            try {
+                if (burnAssPath && fs.existsSync(burnAssPath)) fs.unlinkSync(burnAssPath);
+            } catch {
+                // Best-effort cleanup for temporary ASS files.
             }
         }
     }
@@ -1978,6 +2064,7 @@ module.exports = {
     dedupeClipsByStart,
     verifyClipWithAI,
     writeClipSrt,
+    writeTemporaryBurnAssFromSrt,
     parseRecordingInfo,
     resolveStreamerName,
     resolveStreamerTags,
