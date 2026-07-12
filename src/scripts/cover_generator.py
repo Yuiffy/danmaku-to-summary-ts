@@ -24,6 +24,13 @@ except ImportError:
     sys.exit(1)
 
 
+def hidden_subprocess_kwargs() -> dict:
+    """Prevent console subprocesses from flashing a window on Windows."""
+    if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return {}
+
+
 class CoverGenerator:
     """Create covers with two direct-on-image typographic text levels."""
 
@@ -187,7 +194,7 @@ class CoverGenerator:
             output_path = os.path.join(os.path.dirname(video_path), f"_cover_frame_{int(timestamp)}.jpg")
         cmd = ["ffmpeg", "-i", video_path, "-ss", str(timestamp), "-vframes", "1", "-q:v", "2", "-loglevel", "error", output_path, "-y"]
         try:
-            subprocess.run(cmd, check=True, timeout=30)
+            subprocess.run(cmd, check=True, timeout=30, **hidden_subprocess_kwargs())
             print(f"[INFO] 已截取视频帧: {output_path} (time={timestamp}s)")
             return output_path
         except Exception as error:
@@ -201,6 +208,7 @@ class CoverGenerator:
                 text=True,
                 timeout=10,
                 check=True,
+                **hidden_subprocess_kwargs(),
             )
             duration = float(json.loads(result.stdout)["format"]["duration"])
             timestamp = duration * duration_ratio

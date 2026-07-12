@@ -13,6 +13,7 @@ export function spawnPython(
   options: SpawnOptionsWithoutStdio = {}
 ): ChildProcessWithoutNullStreams {
   return spawn('python', args, {
+    windowsHide: true,
     ...options,
     env: buildPythonEnv(options.env)
   });

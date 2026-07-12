@@ -48,6 +48,11 @@ export class ConfigLoader {
    * 优先级: /config/production.json > /config/default.json
    */
   private findConfigPath(): string {
+    const explicitPath = process.env.CONFIG_PATH;
+    if (explicitPath && fs.existsSync(explicitPath)) {
+      console.log(`✓ 配置路径优先级: ${explicitPath}`);
+      return explicitPath;
+    }
     const env = process.env.NODE_ENV || 'development';
     const projectRoot = this.getProjectRoot();
     

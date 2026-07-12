@@ -345,6 +345,10 @@ const SecretsSchema = Joi.object({
  * 优先级: /config/production.json > /config/default.json
  */
 function findConfigPath() {
+    const explicitPath = process.env.CONFIG_PATH;
+    if (explicitPath && fs.existsSync(explicitPath)) {
+        return explicitPath;
+    }
     const env = process.env.NODE_ENV || 'development';
     const possiblePaths = [
         path.join(process.cwd(), 'config', env === 'production' ? 'production.json' : 'default.json'),

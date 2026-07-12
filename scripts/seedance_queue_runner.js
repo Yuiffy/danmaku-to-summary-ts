@@ -7,6 +7,7 @@ const child = spawn('python', ['-u', script, ...process.argv.slice(2)], {
   cwd: path.dirname(__dirname),
   shell: false,
   env: process.env,
+  windowsHide: true,
 });
 
 child.on('exit', code => process.exit(code ?? 0));

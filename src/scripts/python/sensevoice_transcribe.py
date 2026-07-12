@@ -1425,8 +1425,23 @@ def main():
             print(json.dumps(output, ensure_ascii=False, default=str), file=original_stdout)
             return
 
-        # Paraformer: use FunASR built-in pipeline (VAD+ASR+Punc+SPK in one call)
-        use_segmented_paraformer = gpu_throttle.enabled and gpu_throttle.segment_paraformer
+        # Paraformer: default profile keeps the existing segmented pipeline.
+        # Finetuned/local-directory models are routed to the builtin FunASR
+        # pipeline because some checkpoints are unstable in the custom segmented
+        # predictor path.
+        paraformer_profile = str(payload.get("model_profile") or "").strip().lower()
+        paraformer_model_value = str(payload.get("model") or "").strip()
+        is_finetuned_paraformer = (
+            backend_name == "paraformer"
+            and (
+                paraformer_profile == "finetuned"
+                or bool(payload.get("finetuned_model"))
+                or os.path.isdir(paraformer_model_value)
+            )
+        )
+        use_segmented_paraformer = (
+            gpu_throttle.enabled and gpu_throttle.segment_paraformer and not is_finetuned_paraformer
+        )
         if backend_name == "paraformer" and not use_segmented_paraformer:
             raw_result = transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle)
             output = {
@@ -1638,11 +1653,22 @@ def main():
                             f"{exc}\n可先关闭 enable_speaker，或检查 spk_model/preset_spk_num/CAM++ 依赖。",
                         )
 
+                paraformer_profile = str(payload.get("model_profile") or "").strip().lower()
+                paraformer_model_value = str(payload.get("model") or "").strip()
+                is_finetuned_paraformer = (
+                    backend_name == "paraformer"
+                    and (
+                        paraformer_profile == "finetuned"
+                        or bool(payload.get("finetuned_model"))
+                        or os.path.isdir(paraformer_model_value)
+                    )
+                )
+
                 def flush_batch():
                     nonlocal batch_audio, batch_meta, batch_duration, raw_result, transcribed_segments
                     if not batch_audio:
                         return
-                    if backend_name == "paraformer" and len(batch_audio) > 1:
+                    if backend_name == "paraformer" and len(batch_audio) > 1 and not is_finetuned_paraformer:
                         transcribed_segments += len(batch_audio)
                         pct = transcribed_segments / max(total_segments, 1) * 100
                         log_progress(
@@ -1689,6 +1715,10 @@ def main():
                         batch_meta = []
                         batch_duration = 0.0
                         return
+                    if backend_name == "paraformer" and is_finetuned_paraformer and len(batch_audio) > 1:
+                        log_progress(
+                            f"finetuned paraformer 使用保守单段模式: batch={len(batch_audio)}, audio={batch_duration:.1f}s"
+                        )
                     for meta, chunk in zip(batch_meta, batch_audio):
                         transcribed_segments += 1
                         if transcribed_segments == 1 or transcribed_segments % 5 == 0 or transcribed_segments == total_segments:

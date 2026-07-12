@@ -10,6 +10,10 @@ Recommended checkpoint inside that directory:
 
 `model.pt.avg10`
 
+For production inference, use the prepared inference-ready directory:
+
+`D:/files/videos/asr_eval/models/paraformer_official_avg10`
+
 This directory already contains the full inference assets required by FunASR:
 
 - `configuration.json`
@@ -36,7 +40,9 @@ Repository-safe default:
 
 Machine-local or deployment override:
 
-- `config/production.json` can use `model_profile = finetuned` when the trained model directory exists on that machine
+- `config/production.json` can use `model_profile = finetuned` when the prepared local inference directory exists on that machine
+- current repository state keeps production on `default` again until the finetuned route is fully validated end-to-end
+- when you want to retry the finetuned route locally, point `model_profile = finetuned` and use `D:/files/videos/asr_eval/models/paraformer_official_avg10`
 
 Config entry:
 
@@ -97,3 +103,28 @@ Reusable fine-tuning helpers are stored in:
 
 These scripts are intended for future dataset rebuilds, official-format conversion,
 training launches, and evaluation reruns.
+
+## Timestamp-capable retrain route
+
+The previous fine-tuned route improved text quality but did not integrate cleanly with
+the current production timestamp/speaker pipeline.
+
+To address that, a new retrain route is started from the timestamp-capable base model:
+
+`iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch`
+
+This model ships with:
+
+- built-in VAD compatibility
+- built-in punctuation compatibility
+- timestamp-oriented production compatibility direction
+
+Current retraining output directory:
+
+`D:/files/videos/asr_finetune_runs/paraformer_timestamp_base_20260712_longrun`
+
+Important:
+
+- this retrain is still experimental
+- production remains on the stable stock paraformer path for now
+- the timestamp-base retrain is the next candidate for future finetuned rollout once checkpoints are validated end-to-end
