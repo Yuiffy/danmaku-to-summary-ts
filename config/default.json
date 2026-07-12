@@ -881,7 +881,7 @@
     "maxClipSeconds": 180,
     "mergeGapSeconds": 45,
     "burnSubtitles": true,
-    "subtitleFontSizeRatio": 0.06,
+    "subtitleFontSizeRatio": 0.044,
     "subtitleMinFontSize": 30,
     "subtitleMaxFontSize": 72,
     "subtitleMaxCharsPerLine": 18,
