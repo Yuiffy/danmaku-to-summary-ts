@@ -1172,22 +1172,19 @@ function buildSubtitleBurnVideoArgs(config = {}) {
  * @returns {{ forceStyle: string, maxCharsPerLine: number }}
  */
 function calculateSubtitleStyle(width, height, config = {}) {
-    // 以 720p 为视觉基准做缓增缩放，避免 1080p 在线性放大后显得过大。
-    const fontSizeRatio = Number(config.subtitleFontSizeRatio ?? process.env.FFMPEG_SUBTITLE_FONT_SIZE_RATIO ?? 0.043);
+    // ASS 会把 PlayRes 坐标系自动缩放到输出画面。字号必须只按 PlayRes 计算，
+    // 如果再按源视频高度缩放，720p 和 1080p 就会得到不同的画面占比。
+    const fontSizeRatio = Number(config.subtitleFontSizeRatio ?? process.env.FFMPEG_SUBTITLE_FONT_SIZE_RATIO ?? 0.06);
     const minFontSize = Number(config.subtitleMinFontSize ?? process.env.FFMPEG_SUBTITLE_MIN_FONT_SIZE ?? 30);
     const maxFontSize = Number(config.subtitleMaxFontSize ?? process.env.FFMPEG_SUBTITLE_MAX_FONT_SIZE ?? 72);
     const fontName = String(config.subtitleFontName ?? process.env.FFMPEG_SUBTITLE_FONT_NAME ?? '汉仪有圆 85简').trim() || '汉仪有圆 85简';
-    const heightScale = Math.pow(Math.max(1, height) / 720, 0.65);
-    const baseFontSize = 31;
-    const scaledFontSize = Math.round(baseFontSize * heightScale);
-    const ratioFontSize = Math.round(height * fontSizeRatio);
-    const fontSize = Math.min(maxFontSize, Math.max(minFontSize, Math.min(scaledFontSize, ratioFontSize)));
-    const outline = Math.max(2, Math.round(fontSize * 0.09));
     const playResX = Number(config.subtitlePlayResX ?? process.env.FFMPEG_SUBTITLE_PLAYRES_X ?? 1280);
     const playResY = Number(config.subtitlePlayResY ?? process.env.FFMPEG_SUBTITLE_PLAYRES_Y ?? 720);
+    const fontSize = Math.min(maxFontSize, Math.max(minFontSize, Math.round(playResY * fontSizeRatio)));
+    const outline = Math.max(2, Math.round(fontSize * 0.09));
     const marginV = Number(config.subtitleMarginV ?? process.env.FFMPEG_SUBTITLE_MARGIN_V ?? 24);
     // 汉字接近全角宽度；按 0.95em 估算并预留描边空间，避免放大后左右被裁切。
-    const maxCharsPerLine = Math.max(12, Math.floor(width / (fontSize * 0.95)));
+    const maxCharsPerLine = Math.max(12, Math.floor(playResX / (fontSize * 0.95)));
     const forceStyle = `FontSize=${fontSize},FontName=${fontName},Bold=1,Outline=${outline}`;
     return { forceStyle, maxCharsPerLine, fontSize, outline, fontName, playResX, playResY, marginV };
 }

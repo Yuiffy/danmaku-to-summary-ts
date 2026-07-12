@@ -227,15 +227,15 @@ describe('topic_clipper', () => {
 
   test('uses similar burned subtitle proportions across common resolutions while preserving overrides', () => {
     expect(topicClipper.calculateSubtitleStyle(1920, 1080)).toMatchObject({
-      fontSize: 40,
-      maxCharsPerLine: 50,
+      fontSize: 43,
+      maxCharsPerLine: 31,
       playResX: 1280,
       playResY: 720
     });
 
     expect(topicClipper.calculateSubtitleStyle(1280, 720)).toMatchObject({
-      fontSize: 31,
-      maxCharsPerLine: 43,
+      fontSize: 43,
+      maxCharsPerLine: 31,
       playResX: 1280,
       playResY: 720
     });
@@ -243,8 +243,8 @@ describe('topic_clipper', () => {
     expect(topicClipper.calculateSubtitleStyle(1920, 1080, {
       subtitleFontSizeRatio: 0.039
     })).toMatchObject({
-      fontSize: 40,
-      maxCharsPerLine: 50
+      fontSize: 30,
+      maxCharsPerLine: 44
     });
   });
 

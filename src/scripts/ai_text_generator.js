@@ -23,6 +23,7 @@ const TUZI_BALANCE_ERROR_MARKERS = [
     'credit exhausted',
     'billing'
 ];
+const GOODNIGHT_TUZI_EXPERIMENT_MODELS = ['gpt-5.6-luna', 'gpt-5.4-mini'];
 
 function isTuZiBalanceError(text) {
     const lowered = String(text || '').toLowerCase();
@@ -518,6 +519,11 @@ function buildTuZiTextModelFailureError(attempts) {
     return new Error(`tuZi API全部候选模型失败: ${failures.join(' | ')}`);
 }
 
+function pickGoodnightTuZiPrimaryModel() {
+    const randomIndex = Math.floor(Math.random() * GOODNIGHT_TUZI_EXPERIMENT_MODELS.length);
+    return GOODNIGHT_TUZI_EXPERIMENT_MODELS[randomIndex];
+}
+
 // 调用tuZi API生成文本(备用方案)
 async function generateTextWithTuZi(prompt, options = {}) {
     const config = configLoader.getConfig();
@@ -530,6 +536,7 @@ async function generateTextWithTuZi(prompt, options = {}) {
     }
 
     console.log('🤖 调用tuZi API生成文本...');
+    const primaryModel = options.primaryModel || pickGoodnightTuZiPrimaryModel();
 
     const configuredFallbackModels = Array.isArray(tuziConfig.fallbackModels)
         ? tuziConfig.fallbackModels
@@ -538,12 +545,16 @@ async function generateTextWithTuZi(prompt, options = {}) {
         ? ['qwen2.5-72b-instruct', 'grok-4.1']
         : [];
     const modelSequence = [
-        tuziConfig.model || 'gpt-5.4-mini',
+        primaryModel,
+        tuziConfig.textModel,
+        tuziConfig.model,
         ...configuredFallbackModels,
         'gemini-3-flash-preview',
         'gpt-5.4-mini',
         ...builtInFallbackModels
     ].filter((model, index, models) => model && models.indexOf(model) === index);
+    console.log(`   晚安主模型随机命中: ${primaryModel}`);
+    console.log(`   候选序列: ${modelSequence.join(' -> ')}`);
     const baseUrl = tuziConfig.baseUrl || 'https://api.tu-zi.com';
     const apiUrl = `${baseUrl}/v1/chat/completions`;
     const attempts = Array.isArray(options.attempts) ? [...options.attempts] : [];
