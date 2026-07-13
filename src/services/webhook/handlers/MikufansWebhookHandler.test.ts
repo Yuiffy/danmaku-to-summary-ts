@@ -23,6 +23,24 @@ function writeRecording(dir: string, fileName: string, mtime: Date, sizeBytes = 
   return videoPath;
 }
 
+function formatRecordingStamp(date: Date): { datePart: string; timePart: string } {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  const ss = String(date.getSeconds()).padStart(2, '0');
+  return {
+    datePart: `${y}${m}${d}`,
+    timePart: `${hh}${mm}${ss}`
+  };
+}
+
+function makeRecordingName(roomId: string, date: Date, suffix: string): string {
+  const stamp = formatRecordingStamp(date);
+  return `录制-${roomId}-${stamp.datePart}-${stamp.timePart}-${suffix}-陪陪你这个猪度过周2！.flv`;
+}
+
 describe('MikufansWebhookHandler segment collection finalization', () => {
   let tempDir: string;
   let handlers: any[];
@@ -40,6 +58,10 @@ describe('MikufansWebhookHandler segment collection finalization', () => {
         }
       }
       handler.delayedActions.clear();
+      for (const timer of handler.pendingDelayedReplyFileTimers.values()) {
+        clearTimeout(timer);
+      }
+      handler.pendingDelayedReplyFileTimers.clear();
     }
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
@@ -97,26 +119,23 @@ describe('MikufansWebhookHandler segment collection finalization', () => {
     handlers.push(handler);
     const roomId = '25788785';
     const bakDir = path.join(tempDir, 'bak');
-    writeRecording(
-      bakDir,
-      '录制-25788785-20260707-195340-757-陪陪你这个猪度过周2！.flv',
-      new Date(2026, 6, 7, 20, 6, 28)
-    );
-    writeRecording(
-      tempDir,
-      '录制-25788785-20260707-200832-682-陪陪你这个猪度过周2！.flv',
-      new Date(2026, 6, 7, 21, 17, 41)
-    );
-    writeRecording(
-      tempDir,
-      '录制-25788785-20260707-211743-539-陪陪你这个猪度过周2！.flv',
-      new Date(2026, 6, 7, 21, 56, 6)
-    );
-    const current = writeRecording(
-      tempDir,
-      '录制-25788785-20260707-215707-348-陪陪你这个猪度过周2！.flv',
-      new Date(2026, 6, 8, 0, 49, 17)
-    );
+    const now = Date.now();
+    const open1 = new Date(now - 95 * 60 * 1000);
+    const close1 = new Date(now - 85 * 60 * 1000);
+    const open2 = new Date(now - 80 * 60 * 1000);
+    const close2 = new Date(now - 70 * 60 * 1000);
+    const open3 = new Date(now - 65 * 60 * 1000);
+    const close3 = new Date(now - 55 * 60 * 1000);
+    const open4 = new Date(now - 50 * 60 * 1000);
+    const close4 = new Date(now - 10 * 60 * 1000);
+    const name1 = makeRecordingName(roomId, open1, '757');
+    const name2 = makeRecordingName(roomId, open2, '682');
+    const name3 = makeRecordingName(roomId, open3, '539');
+    const name4 = makeRecordingName(roomId, open4, '348');
+    writeRecording(bakDir, name1, close1);
+    writeRecording(tempDir, name2, close2);
+    writeRecording(tempDir, name3, close3);
+    const current = writeRecording(tempDir, name4, close4);
     const mergeVideos = jest.fn().mockResolvedValue(undefined);
     handler.fileMerger.mergeVideos = mergeVideos;
     handler.fileMerger.mergeXmlFiles = jest.fn().mockResolvedValue(undefined);
@@ -129,20 +148,20 @@ describe('MikufansWebhookHandler segment collection finalization', () => {
         RoomId: Number(roomId),
         Name: 'SUI',
         Title: '陪陪你这个猪度过周2！',
-        FileOpenTime: new Date(2026, 6, 7, 21, 57, 7).toISOString(),
-        FileCloseTime: new Date(2026, 6, 8, 0, 49, 17).toISOString()
+        FileOpenTime: open4.toISOString(),
+        FileCloseTime: close4.toISOString()
       }
     });
-    handler.finalFileClosedRooms.set(roomId, new Date(2026, 6, 8, 0, 49, 17));
+    handler.finalFileClosedRooms.set(roomId, close4);
 
     await handler.processSegmentCollectionTimeout(roomId);
 
     expect(mergeVideos).toHaveBeenCalledTimes(1);
     expect(mergeVideos.mock.calls[0][0].map((segment: { videoPath: string }) => path.basename(segment.videoPath))).toEqual([
-      '录制-25788785-20260707-195340-757-陪陪你这个猪度过周2！.flv',
-      '录制-25788785-20260707-200832-682-陪陪你这个猪度过周2！.flv',
-      '录制-25788785-20260707-211743-539-陪陪你这个猪度过周2！.flv',
-      '录制-25788785-20260707-215707-348-陪陪你这个猪度过周2！.flv'
+      name1,
+      name2,
+      name3,
+      name4
     ]);
   });
 });

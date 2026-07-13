@@ -2,6 +2,12 @@ import { WebhookService } from './WebhookService';
 import { FileStabilityChecker } from './FileStabilityChecker';
 import { DuplicateProcessorGuard } from './DuplicateProcessorGuard';
 import { ConfigProvider } from '../../core/config/ConfigProvider';
+import { getLogger } from '../../core/logging/LogManager';
+
+jest.mock('../../../src/scripts/audio_processor', () => ({
+  startOnlyAudioRetentionScheduler: jest.fn(),
+  processVideoForAudio: jest.fn()
+}));
 
 // Mock dependencies
 jest.mock('../../core/logging/LogManager');
@@ -10,15 +16,33 @@ jest.mock('./FileStabilityChecker');
 jest.mock('./DuplicateProcessorGuard');
 jest.mock('./handlers/DDTVWebhookHandler');
 jest.mock('./handlers/MikufansWebhookHandler');
+jest.mock('./handlers/AudioFileHandler');
+jest.mock('./handlers/BilibiliAPIHandler');
+jest.mock('./handlers/DelayedReplyHandler');
 
 describe('WebhookService', () => {
   let webhookService: WebhookService;
   let mockConfig: any;
 
+  let mockLogger: any;
+
   beforeEach(() => {
     // Reset mocks
     jest.clearAllMocks();
-    
+
+    mockLogger = {
+      info: jest.fn(),
+      error: jest.fn(),
+      warn: jest.fn(),
+      debug: jest.fn(),
+      trace: jest.fn(),
+      verbose: jest.fn(),
+      child: jest.fn().mockReturnThis(),
+      flush: jest.fn().mockResolvedValue(undefined),
+      close: jest.fn().mockResolvedValue(undefined)
+    };
+    (getLogger as jest.Mock).mockReturnValue(mockLogger);
+
     // Setup mock config
     mockConfig = {
       app: {

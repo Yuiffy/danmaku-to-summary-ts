@@ -11,7 +11,9 @@ describe('ConfigProvider', () => {
   beforeEach(() => {
     // Reset module state
     jest.resetModules();
-    
+    (ConfigProvider as any).config = null;
+    (ConfigProvider as any).loader = undefined;
+
     // Setup mock config
     mockConfig = {
       app: {
@@ -219,8 +221,8 @@ describe('ConfigProvider', () => {
         characterDescription: undefined,
         anchorName: '测试主播',
         fanName: '测试粉丝',
-        enableTextGeneration: undefined,
-        enableComicGeneration: undefined
+        enableTextGeneration: true,
+        enableComicGeneration: false
       });
     });
 
