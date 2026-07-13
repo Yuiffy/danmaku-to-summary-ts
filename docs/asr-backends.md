@@ -139,13 +139,13 @@ node src/scripts/enhanced_auto_summary.js --asr-backend paraformer "D:/path/to/v
 
 配置要点：
 
-- `enable_speaker: true` 时加载 CAM++，输出 `SPEAKER_00` 等聚类标签。
+- 生产默认关闭 CAM++（`enable_speaker: false`, `spk_model: null`）；说话人标签不是摘要主流程的必需输入，需要时可对明确任务显式开启。
 - `vad_max_single_segment_time_ms: 60000` 交给 FunASR 内建 VAD，避免 8 秒手动切片切断词和句子上下文。
 - `batch_size_s` 是一个动态批次允许容纳的总音频秒数；RTX 5080 生产配置从 450 提升到 600，`batch_size_threshold_s: 60` 仍会把超长 VAD 段降为单条，避免显存峰值失控。
-- `vad_device: "cpu"` 只把 FSMN-VAD 放在 CPU；生产机同一段 10 分钟音频的独立基准为 CPU 2.86s、CUDA 5.86s。Paraformer、标点和 CAM++ 仍在 CUDA，避免把更适合 GPU 的部分降速。
+- `vad_device: "cpu"` 只把 FSMN-VAD 放在 CPU；生产机同一段 10 分钟音频的独立基准为 CPU 2.86s、CUDA 5.86s。Paraformer 和标点仍在 CUDA；CAM++ 默认不加载。
 - 热词通过 `generate(hotword=...)` 传入；后处理 corrections 会用全文上下文筛选，再逐句修正，避免 paraformer `sentence_info` 分句导致 `小碎/岁吉` 漏修。
 
-集中队列会启动一个仅监听 `127.0.0.1`、带随机令牌的 Paraformer 常驻 worker。队列中连续任务复用主模型、CAM++ 和参考说话人 embedding；队列清空或父队列检测到 GPU 繁忙时终止 worker，释放显存。单独运行 `enhanced_auto_summary.js` 时仍会自动降级为一次性 Python 进程。
+集中队列会启动一个仅监听 `127.0.0.1`、带随机令牌的 Paraformer 常驻 worker。队列中连续任务复用主模型和标点模型；显式启用说话人识别时也会复用 CAM++ 与参考 embedding。队列清空或父队列检测到 GPU 繁忙时终止 worker，释放显存。单独运行 `enhanced_auto_summary.js` 时仍会自动降级为一次性 Python 进程。
 
 每个任务都会在日志和同名 `.asr_meta.json` 中记录 `model_load`、VAD、真正的 ASR inference、标点、FunASR 内建 CAM++、实名聚类 embedding、说话人匹配和后处理耗时。慢 ASR 企微提醒也会附带这些分项。实名映射按 FunASR 已完成的说话人聚类抽样批量计算，不再为几千句字幕逐句调用 CAM++。
 
@@ -298,6 +298,7 @@ npm run asr:vllm-doctor
 ASR 配置支持全局热词、按 routing 命中的房间/主播热词，以及统一的后处理 corrections。
 
 - `aliases`: 旧格式兼容，作为 safe corrections；默认也会一起送进 ASR 作为热词提示。
+- `protect: false`: `safe` 规则/alias 的可选逃生口；默认 `safe` 替换会做词保护，只有显式设为 `false` 才恢复旧的子串替换行为。
 - `aliases_as_hotwords: false`: 只把 `aliases` 用作后处理修正，不送进模型热词。适合 `碎机`、`碎即`、`岁几` 这类“错误识别形态”，避免模型被错误词反向提示。
 - `hotword_terms`: 只送进 ASR，不会自动改写字幕文本，适合 `小岁`、`岁己姐` 这类希望识别出来但不强制归一的词。
 - `contextual_aliases`: 只生成 contextual corrections，文本中命中 `require_nearby` 任一关键词时才替换。
@@ -313,7 +314,7 @@ ASR 配置支持全局热词、按 routing 命中的房间/主播热词，以及
 
 对于 `fun_asr_nano` 和 `fun_asr_nano_vllm`，模型提示词会整理成 `hotwords: ["岁己", "岁己SUI", "小岁", ...]` 直接喂给模型；`aliases_as_hotwords: false` 的错误别名只进入后处理修正。对于 `sensevoice`，仍会保留字符串热词兼容和后处理修正。
 
-后处理会先执行 `safe`，再执行 `contextual`，最后执行 `ambiguous`。其中 `ambiguous` 默认优先按局部 token 上下文判断；如果环境安装了 `@node-rs/jieba`，会优先用它做中文分词，否则回退到内置轻量 token 切分，行为保持可用但会更保守。
+后处理会先执行 `safe`，再执行 `contextual`，最后执行 `ambiguous`。其中 `safe` 默认会做词保护，避免把命中的 alias 嵌在更大的词里时也直接改写；如果环境安装了 `@node-rs/jieba`，会优先用它做中文分词来判断词边界，否则回退到内置轻量 token 切分。`ambiguous` 则继续优先按局部 token 上下文判断。
 
 ```json
 {

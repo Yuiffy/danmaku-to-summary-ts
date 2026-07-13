@@ -112,11 +112,13 @@ export interface AsrHotword {
   correction_to?: string;
   contextual_aliases?: string[];
   require_nearby?: string[];
+  protect?: boolean;
 }
 
 export interface AsrCorrection {
   from: string;
   to: string;
+  protect?: boolean;
 }
 
 export interface AsrContextualCorrection extends AsrCorrection {

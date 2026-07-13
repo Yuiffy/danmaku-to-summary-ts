@@ -215,6 +215,10 @@ describe('asr_backends', () => {
       { from: '岁己苏伊', to: '岁己' },
       { from: '岁己sui', to: '岁己' }
     ]));
+    expect(result.corrections.safe).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: '碎机', to: '岁己' }),
+      expect.objectContaining({ from: 'V R', to: 'VirtuaReal' })
+    ]));
     expect(result.corrections.contextual).toEqual(expect.arrayContaining([
       { from: '随即', to: '岁己', require_nearby: ['主播'] }
     ]));
@@ -531,6 +535,41 @@ describe('asr_backends', () => {
       .toBe('岁己跟我说能不能叫他岁岁呀还是叫他小岁');
     expect(asr.applyCorrectionsToText('这株小穗长得很好', corrections)).toBe('这株小穗长得很好');
     expect(asr.applyCorrectionsToText('这个小碎片很亮', corrections)).toBe('这个小碎片很亮');
+  });
+
+  test('safe corrections protect embedded terms by default and allow per-rule opt-out', () => {
+    const protectedCorrections = {
+      safe: [{ from: '碎机', to: '岁己' }]
+    };
+    const unprotectedCorrections = {
+      safe: [{ from: '碎机', to: '岁己', protect: false }]
+    };
+
+    expect(asr.applyCorrectionsToText('碎机前辈今天来了', protectedCorrections)).toBe('岁己前辈今天来了');
+    expect(asr.applyCorrectionsToText('这个粉碎机打得挺细的', protectedCorrections)).toBe('这个粉碎机打得挺细的');
+    expect(asr.applyCorrectionsToText('这个粉碎机打得挺细的', unprotectedCorrections)).toBe('这个粉岁己打得挺细的');
+  });
+
+  test('safe alias-derived corrections inherit default protection', () => {
+    const resolved = asr.resolveAsrHotwords({
+      asr: {
+        common_hotwords: [
+          { word: '岁己', aliases: ['碎机'] }
+        ]
+      }
+    });
+
+    expect(asr.applyCorrectionsToText('碎机前辈今天来了', resolved.corrections)).toBe('岁己前辈今天来了');
+    expect(asr.applyCorrectionsToText('这个粉碎机打得挺细的', resolved.corrections)).toBe('这个粉碎机打得挺细的');
+  });
+
+  test('safe ascii corrections protect embedded latin terms by default', () => {
+    const corrections = {
+      safe: [{ from: 'VR', to: 'VirtuaReal' }]
+    };
+
+    expect(asr.applyCorrectionsToText('VR晚上好', corrections)).toBe('VirtuaReal晚上好');
+    expect(asr.applyCorrectionsToText('AVR设备今晚开机', corrections)).toBe('AVR设备今晚开机');
   });
 
   test('correction exclusions preserve protected words containing an alias', () => {

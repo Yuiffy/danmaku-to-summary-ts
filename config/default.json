@@ -440,7 +440,7 @@
       "finetuned_model": "D:/files/videos/asr_finetune_runs/paraformer_standard_20260712_official_example",
       "vad_model": "fsmn-vad",
       "punc_model": "ct-punc",
-      "spk_model": "cam++",
+      "spk_model": null,
       "language": "auto",
       "device": "cuda",
       "vad_device": "cpu",
@@ -469,7 +469,7 @@
         "pmon_sample_count": 2,
         "segment_paraformer": true
       },
-      "enable_speaker": true,
+      "enable_speaker": false,
       "preset_spk_num": 5,
       "speaker_merge_threshold": 0.78,
       "speaker_references": [

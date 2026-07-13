@@ -1257,6 +1257,11 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
             "input": audio_path,
             "batch_size_s": int(batch_size_s),
         }
+        if punc_model:
+            # Speaker diarization used to request sentence_info implicitly. Keep
+            # sentence-level timestamps after CAM++ is disabled so punctuation
+            # can still provide natural SRT boundaries.
+            generate_kwargs["sentence_timestamp"] = True
         batch_size_threshold_s = payload.get("batch_size_threshold_s")
         if batch_size_threshold_s is not None:
             generate_kwargs["batch_size_threshold_s"] = int(float(batch_size_threshold_s))
@@ -1299,10 +1304,29 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
     r = results[0]
     sentence_info = r.get("sentence_info", [])
     if not sentence_info:
-        log_progress("无 sentence_info，回退到普通处理")
-        set_timing(payload, "postprocess_s", 0)
+        # With speaker diarization and punctuation disabled FunASR intentionally
+        # returns text + character timestamps, but no sentence_info. Preserve
+        # accurate SRT timing by splitting those timestamps directly instead of
+        # collapsing the whole recording into one segment.
+        log_progress("无 sentence_info，使用 Paraformer 字符时间戳切分字幕")
+        postprocess_started = time.perf_counter()
+        timestamps = r.get("timestamp") or []
+        fallback_end_s = float(timestamps[-1][1]) / 1000.0 if timestamps else 0.1
+        segments = paraformer_timestamp_to_sentences(
+            results,
+            {"start": 0.0, "end": max(0.1, fallback_end_s)},
+            None,
+            max_subtitle_chars=int(payload.get("max_subtitle_chars", 18) or 18),
+        )
+        set_timing(payload, "speaker_cluster_embedding_s", 0)
+        set_timing(payload, "speaker_matching_s", 0)
+        set_timing(payload, "postprocess_s", time.perf_counter() - postprocess_started)
         set_timing(payload, "backend_total_s", time.perf_counter() - backend_started)
-        return normalize_segments(results)
+        log_progress(
+            f"字符时间戳切分完成: 输出段数={len(segments)}, "
+            f"postprocess={payload['_timings']['postprocess_s']:.3f}s"
+        )
+        return segments
 
     log_progress(f"sentence_info: {len(sentence_info)} 句")
 

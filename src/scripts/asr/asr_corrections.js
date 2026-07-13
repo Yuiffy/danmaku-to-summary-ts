@@ -14,6 +14,11 @@ const DEFAULT_AMBIGUOUS_NEARBY_WORDS = DEFAULT_CONTEXTUAL_NEARBY_WORDS;
 const WHITESPACE_PATTERN = /\s/;
 const PUNCTUATION_PATTERN = /^[\p{P}\p{S}]+$/u;
 const WORDLIKE_CHAR_PATTERN = /[\p{L}\p{N}]/u;
+const ASCII_WORDLIKE_CHAR_PATTERN = /[A-Za-z0-9]/;
+const NON_ASCII_PATTERN = /[^\x00-\x7F]/;
+const fallbackSegmenter = typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function'
+    ? new Intl.Segmenter('zh', { granularity: 'word' })
+    : null;
 const jiebaInstances = new Map();
 
 function normalizeHotwordEntry(entry) {
@@ -63,6 +68,7 @@ function normalizeHotwordEntry(entry) {
         hotword_terms: hotwordTerms,
         alias_hotwords: entry.alias_hotwords !== false && entry.aliases_as_hotwords !== false,
         correction_to: correctionTo,
+        protect: entry.protect === false ? false : undefined,
         require_nearby: Array.isArray(entry.require_nearby)
             ? entry.require_nearby.map(value => String(value || '').trim()).filter(Boolean)
             : undefined,
@@ -96,6 +102,9 @@ function addHotword(target, entry) {
     if (!existing.require_nearby && normalized.require_nearby) {
         existing.require_nearby = normalized.require_nearby;
     }
+    if (existing.protect !== false && normalized.protect === false) {
+        existing.protect = false;
+    }
     if (!existing.context_window_tokens && normalized.context_window_tokens) {
         existing.context_window_tokens = normalized.context_window_tokens;
     }
@@ -119,6 +128,7 @@ function addCorrection(target, from, to, extra = {}) {
     const excludePattern = Array.isArray(extra.exclude_pattern)
         ? extra.exclude_pattern.map(value => String(value || '').trim()).filter(Boolean)
         : [];
+    const protect = extra.protect === false ? false : undefined;
     const existing = target.get(source);
     const mergedExcludeWhen = Array.from(new Set([...(existing?.exclude_when || []), ...excludeWhen]));
     const mergedExcludePattern = Array.from(new Set([...(existing?.exclude_pattern || []), ...excludePattern]));
@@ -126,7 +136,8 @@ function addCorrection(target, from, to, extra = {}) {
         from: source,
         to: replacement,
         ...existing,
-        ...extra
+        ...extra,
+        protect: existing?.protect === false || protect === false ? false : undefined
     };
     if (mergedExcludeWhen.length > 0) {
         next.exclude_when = mergedExcludeWhen;
@@ -180,7 +191,8 @@ function addSafeCorrections(target, corrections, exclusions = {}, excludePattern
                     item.to || item.word || item.target || item.correct,
                     {
                         exclude_when: item.exclude_when || getCorrectionExclusions(exclusions, from),
-                        exclude_pattern: item.exclude_pattern || getCorrectionExcludePatterns(excludePatterns, from)
+                        exclude_pattern: item.exclude_pattern || getCorrectionExcludePatterns(excludePatterns, from),
+                        protect: item.protect
                     }
                 );
             }
@@ -343,7 +355,7 @@ function resolveAsrHotwords(config, context = {}, helpers = {}) {
             if (entry.alias_hotwords !== false) {
                 addHotwordToken(hotwordPromptTokens, alias, entry.weight);
             }
-            addCorrection(corrections.safe, alias, correctionTo);
+            addCorrection(corrections.safe, alias, correctionTo, { protect: entry.protect });
         });
         (entry.hotword_terms || []).forEach((term) => {
             addHotwordToken(hotwordTokens, term, entry.weight);
@@ -507,6 +519,54 @@ function isProtectedByExcludePattern(text, matched, offset, excludePatterns = []
     });
 }
 
+function isProtectedByTokenBoundary(context, start, end) {
+    if (!context || !Array.isArray(context.tokens) || !Array.isArray(context.tokenIndexByChar)) {
+        return false;
+    }
+    const safeStart = Math.max(0, Number(start) || 0);
+    const safeEnd = Math.max(safeStart + 1, Number(end) || 0);
+    if (safeStart >= context.tokenIndexByChar.length) {
+        return false;
+    }
+    const firstTokenIndex = context.tokenIndexByChar[safeStart];
+    const lastTokenIndex = context.tokenIndexByChar[Math.min(safeEnd - 1, context.tokenIndexByChar.length - 1)];
+    if (firstTokenIndex < 0 || lastTokenIndex < 0) {
+        return false;
+    }
+    if (firstTokenIndex !== lastTokenIndex) {
+        return true;
+    }
+    const token = context.tokens[firstTokenIndex];
+    if (!token || token.isWhitespace || token.isPunctuation) {
+        return false;
+    }
+    return safeStart > token.start || safeEnd < token.end;
+}
+
+function hasAsciiWordlikeNeighbor(text, start, end) {
+    const source = String(text || '');
+    const previousChar = start > 0 ? source[start - 1] : '';
+    const nextChar = end < source.length ? source[end] : '';
+    return ASCII_WORDLIKE_CHAR_PATTERN.test(previousChar) || ASCII_WORDLIKE_CHAR_PATTERN.test(nextChar);
+}
+
+function shouldProtectSafeCorrection(text, start, end, correction, context = null) {
+    if (correction?.protect === false) {
+        return false;
+    }
+    const matched = String(text || '').slice(start, end);
+    if (!matched) {
+        return false;
+    }
+    if (isProtectedByTokenBoundary(context, start, end)) {
+        return true;
+    }
+    if (NON_ASCII_PATTERN.test(matched)) {
+        return hasWordlikeNeighborsOnBothSides(text, start, end);
+    }
+    return hasAsciiWordlikeNeighbor(text, start, end);
+}
+
 function applyCorrectionList(text, corrections = [], stats = null, type = 'safe') {
     let output = String(text || '');
     const normalized = Array.isArray(corrections) ? corrections : [];
@@ -522,12 +582,18 @@ function applyCorrectionList(text, corrections = [], stats = null, type = 'safe'
         const excludePatterns = Array.isArray(correction.exclude_pattern)
             ? correction.exclude_pattern.map(value => String(value || '').trim()).filter(Boolean)
             : [];
+        const boundaryContext = correction.protect === false ? null : createTranscriptContext(before);
         let count = 0;
         output = before.replace(pattern, (matched, offset, wholeText) => {
+            const start = Number(offset) || 0;
+            const end = start + String(matched || '').length;
             if (isProtectedByExcludedTerm(wholeText, matched, offset, excludedTerms)) {
                 return matched;
             }
             if (excludePatterns.length > 0 && isProtectedByExcludePattern(wholeText, matched, offset, excludePatterns)) {
+                return matched;
+            }
+            if (type === 'safe' && shouldProtectSafeCorrection(wholeText, start, end, correction, boundaryContext)) {
                 return matched;
             }
             count += 1;
@@ -577,6 +643,18 @@ function createToken(text, start, end) {
 function buildFallbackTokens(text) {
     const tokens = [];
     const source = String(text || '');
+    if (fallbackSegmenter) {
+        for (const part of fallbackSegmenter.segment(source)) {
+            const tokenText = String(part.segment || '');
+            if (!tokenText) {
+                continue;
+            }
+            const start = Number(part.index) || 0;
+            const end = start + tokenText.length;
+            tokens.push(createToken(source, start, end));
+        }
+        return tokens;
+    }
     const pattern = /[A-Za-z0-9]+|\s+|./gu;
     let match;
     while ((match = pattern.exec(source)) !== null) {
