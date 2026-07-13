@@ -1804,9 +1804,40 @@ export class DelayedReplyService implements IDelayedReplyService {
     const comicScriptInfo = this.getComicScriptGenerationInfo(comicImagePath);
 
     return [
+      this.getAsrNotificationInfo(goodnightTextPath),
       goodnightInfo ? `晚安文本: ${goodnightInfo}` : undefined,
       comicScriptInfo ? `漫画脚本文本: ${comicScriptInfo}` : undefined
     ].filter(Boolean).join('\n') || undefined;
+  }
+
+  private getAsrNotificationInfo(goodnightTextPath: string): string | undefined {
+    try {
+      const asrMetaPath = goodnightTextPath.replace(/_晚安回复\.md$/u, '.asr_meta.json');
+      if (!fs.existsSync(asrMetaPath)) {
+        return undefined;
+      }
+      const meta = JSON.parse(fs.readFileSync(asrMetaPath, 'utf8'));
+      const backend = meta.backend || 'unknown';
+      const profile = meta.modelProfile || 'default';
+      const elapsed = Number(meta.elapsedSeconds || 0);
+      const duration = Number(meta.mediaDurationSeconds || 0);
+      const speed = elapsed > 0 && duration > 0 ? (duration / elapsed) : null;
+      const modelLabel = profile === 'finetuned'
+        ? `微调(${path.basename(String(meta.finetunedModel || meta.model || 'unknown'))})`
+        : `原版(${meta.model || 'paraformer-zh'})`;
+      return [
+        `ASR: ${backend} / ${modelLabel}`,
+        elapsed > 0 ? `耗时: ${elapsed.toFixed(1)}s` : undefined,
+        speed ? `速度: ${speed.toFixed(2)}x` : undefined,
+        meta.realtimeFactor !== null && meta.realtimeFactor !== undefined ? `RTF: ${Number(meta.realtimeFactor).toFixed(3)}` : undefined
+      ].filter(Boolean).join('，');
+    } catch (error) {
+      this.logger.warn('读取 ASR 元数据失败', {
+        goodnightTextPath,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return 'ASR: 元数据读取失败';
+    }
   }
 
   private getGoodnightTextGenerationInfo(textPath: string): string | undefined {

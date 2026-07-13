@@ -176,6 +176,35 @@ describe('asr_backends', () => {
     expect(result.corrections.contextual).toEqual(expect.arrayContaining([
       { from: '随即', to: '岁己', require_nearby: ['主播'] }
     ]));
+    expect(result.corrections.ambiguous).toEqual([]);
+  });
+
+  test('resolves ambiguous aliases into dedicated ambiguous corrections', () => {
+    const result = asr.resolveAsrHotwords({
+      asr: {
+        common_hotwords: [
+          {
+            word: '岁己',
+            ambiguous_aliases: ['岁吉'],
+            require_nearby: ['小岁', '前辈'],
+            context_window_tokens: 2,
+            match_mode: 'token',
+            boundary_sensitive: true
+          }
+        ]
+      }
+    });
+
+    expect(result.corrections.ambiguous).toEqual(expect.arrayContaining([
+      {
+        from: '岁吉',
+        to: '岁己',
+        require_nearby: ['小岁', '前辈'],
+        context_window_tokens: 2,
+        match_mode: 'token',
+        boundary_sensitive: true
+      }
+    ]));
   });
 
   test('can keep correction aliases out of model prompt hotwords', () => {
@@ -531,13 +560,40 @@ describe('asr_backends', () => {
 
   test('ambiguous sui homophones need nearby sui context before correction', () => {
     const corrections = {
-      contextual: [
+      ambiguous: [
         { from: '碎几', to: '岁己', require_nearby: ['小岁', '岁岁', 'SUI', '饼干岁', '前辈', '姐'] }
       ]
     };
 
     expect(asr.applyCorrectionsToText('感觉就是碎几根看看', corrections)).toBe('感觉就是碎几根看看');
     expect(asr.applyCorrectionsToText('碎几前辈今天来了', corrections)).toBe('岁己前辈今天来了');
+  });
+
+  test('ambiguous corrections only apply to nearby occurrences within the token window', () => {
+    const corrections = {
+      ambiguous: [
+        { from: '岁吉', to: '岁己', require_nearby: ['前辈'], context_window_tokens: 2 }
+      ]
+    };
+
+    expect(asr.applyCorrectionsToText('岁吉前辈来了，岁吉在远处也来了', corrections))
+      .toBe('岁己前辈来了，岁吉在远处也来了');
+  });
+
+  test('ambiguous corrections can relax boundary sensitivity when explicitly disabled', () => {
+    const strictCorrections = {
+      ambiguous: [
+        { from: '碎几', to: '岁己', require_nearby: ['前辈'], context_window_tokens: 1, boundary_sensitive: true }
+      ]
+    };
+    const looseCorrections = {
+      ambiguous: [
+        { from: '碎几', to: '岁己', require_nearby: ['前辈'], context_window_tokens: 1, boundary_sensitive: false }
+      ]
+    };
+
+    expect(asr.applyCorrectionsToText('阿碎几前辈今天来了', strictCorrections)).toBe('阿碎几前辈今天来了');
+    expect(asr.applyCorrectionsToText('阿碎几前辈今天来了', looseCorrections)).toBe('阿岁己前辈今天来了');
   });
 
   test('contextual corrections can use transcript-wide context across asr segments', () => {
@@ -549,14 +605,33 @@ describe('asr_backends', () => {
       ]
     };
     const corrected = asr.applyCorrectionsToAsrResult(result, {
-      contextual: [
-        { from: '岁吉', to: '岁己', require_nearby: ['岁岁', '小岁', '岁己'] },
-        { from: '小碎', to: '小岁', require_nearby: ['岁己', '岁岁'] }
+      ambiguous: [
+        { from: '岁吉', to: '岁己', require_nearby: ['岁岁', '小岁', '小碎'], match_mode: 'transcript', context_window_tokens: 8 },
+        { from: '小碎', to: '小岁', require_nearby: ['岁吉', '岁己', '岁岁'], context_window_tokens: 8 }
       ]
     });
 
     expect(corrected.segments.map((segment: any) => segment.text).join(''))
       .toBe('岁己跟我说能不能叫他岁岁呀，还是叫他小岁？');
+  });
+
+  test('ambiguous corrections apply during srt output with local context checks', () => {
+    const result = {
+      backend: 'test',
+      segments: [{ start: 0, end: 1, text: '岁吉前辈今天来了，岁吉在远处。' }]
+    };
+    const tmp = require('path').join(require('os').tmpdir(), `asr-ambiguous-${Date.now()}.srt`);
+    asr.writeSrt(result, tmp, {
+      max_chars_per_line: 30,
+      corrections: {
+        ambiguous: [
+          { from: '岁吉', to: '岁己', require_nearby: ['前辈'], context_window_tokens: 2 }
+        ]
+      }
+    });
+    const content = require('fs').readFileSync(tmp, 'utf8');
+    expect(content).toContain('岁己前辈今天来了，岁吉在远处。');
+    require('fs').unlinkSync(tmp);
   });
 
   test('psp room routing can select sensevoice', () => {

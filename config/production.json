@@ -1323,6 +1323,15 @@
   },
   "asr": {
     "default_backend": "paraformer",
+    "gray_rollout": {
+      "enabled": true,
+      "finetuned_ratio": 0.1,
+      "finetuned_room_ids": [
+        "26966466"
+      ],
+      "finetuned_model": "D:/files/videos/asr_eval/models/paraformer_timestamp_avg10",
+      "base_model": "paraformer-zh"
+    },
     "common_hotwords": [
       {
         "word": "岁己",

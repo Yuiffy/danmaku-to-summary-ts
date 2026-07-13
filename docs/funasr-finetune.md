@@ -123,8 +123,15 @@ Current retraining output directory:
 
 `D:/files/videos/asr_finetune_runs/paraformer_timestamp_base_20260712_longrun`
 
+Prepared inference directory currently used for gray rollout experiments:
+
+`D:/files/videos/asr_eval/models/paraformer_timestamp_avg10`
+
 Important:
 
 - this retrain is still experimental
-- production remains on the stable stock paraformer path for now
-- the timestamp-base retrain is the next candidate for future finetuned rollout once checkpoints are validated end-to-end
+- production default remains on the stable stock paraformer path
+- gray rollout is enabled separately:
+  - room `26966466` (栞栞) -> 100% timestamp finetuned model
+  - other rooms -> 10% timestamp finetuned sampling
+- the older non-timestamp finetuned route should no longer be used for production rollout decisions

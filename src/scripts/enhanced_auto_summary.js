@@ -106,6 +106,19 @@ const WHISPER_QUEUE_TURN_RETRY_INTERVAL = 5000; // 5秒检查一次是否轮到�
 const ASR_PHASE_DONE_SENTINEL = '[[ASR_PHASE_DONE]]';
 const DELAYED_REPLY_READY_SENTINEL = '[[DELAYED_REPLY_READY]]';
 const SUI_ROOM_ID = '25788785';
+
+function writeAsrMetaSidecar(srtPath, data) {
+    try {
+        if (!srtPath || !data) return null;
+        const parsed = path.parse(srtPath);
+        const metaPath = path.join(parsed.dir, `${parsed.name}.asr_meta.json`);
+        fs.writeFileSync(metaPath, JSON.stringify(data, null, 2), 'utf8');
+        return metaPath;
+    } catch (error) {
+        console.warn(`⚠️  写入 ASR meta sidecar 失败: ${error.message}`);
+        return null;
+    }
+}
 let hasLoggedGpuDetectionConfig = false;
 let activeWhisperProcess = null;
 let whisperCleanupInProgress = null;
@@ -806,6 +819,25 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
                 asrBackends.writeAsrSpeakersSidecar(normalized, srtPath, config, {
                     ...context,
                     mediaPath
+                });
+                const asrElapsedSeconds = (Date.now() - startTime) / 1000;
+                const selectedModelProfile = String(asrRuntime.model_profile || config.asr?.paraformer?.model_profile || 'default');
+                const selectedFinetunedModel = String(asrRuntime.finetuned_model || config.asr?.gray_rollout?.finetuned_model || config.asr?.paraformer?.finetuned_model || '');
+                const selectedModel = selectedModelProfile === 'finetuned'
+                    ? (selectedFinetunedModel || config.asr?.paraformer?.model || 'paraformer-zh')
+                    : String(config.asr?.paraformer?.base_model || config.asr?.paraformer?.model || 'paraformer-zh');
+                const realtimeFactor = duration > 0 ? (asrElapsedSeconds / duration) : null;
+                writeAsrMetaSidecar(srtPath, {
+                    backend: normalized.backend,
+                    routingReason: selected.reason,
+                    modelProfile: selectedModelProfile,
+                    model: selectedModel,
+                    finetunedModel: selectedFinetunedModel || null,
+                    elapsedSeconds: Number(asrElapsedSeconds.toFixed(3)),
+                    mediaDurationSeconds: Number(duration.toFixed(3)),
+                    realtimeFactor: realtimeFactor === null ? null : Number(realtimeFactor.toFixed(4)),
+                    segments: normalized.segments.length,
+                    generatedAt: new Date().toISOString()
                 });
                 console.log(`✅ ASR完成: backend=${normalized.backend}, segments=${normalized.segments.length}, output=${path.basename(srtPath)}`);
             } catch (error) {

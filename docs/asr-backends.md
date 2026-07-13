@@ -296,11 +296,19 @@ ASR 配置支持全局热词、按 routing 命中的房间/主播热词，以及
 - `aliases_as_hotwords: false`: 只把 `aliases` 用作后处理修正，不送进模型热词。适合 `碎机`、`碎即`、`岁几` 这类“错误识别形态”，避免模型被错误词反向提示。
 - `hotword_terms`: 只送进 ASR，不会自动改写字幕文本，适合 `小岁`、`岁己姐` 这类希望识别出来但不强制归一的词。
 - `contextual_aliases`: 只生成 contextual corrections，文本中命中 `require_nearby` 任一关键词时才替换。
+- `ambiguous_aliases`: 只生成 ambiguous corrections，适合 `岁吉`、`碎几` 这类高歧义同音词；默认要求附近存在 `require_nearby` 提示词，并按局部 token 窗口判断，避免误伤普通词语。
 - `corrections.safe`: 显式安全替换，等价于旧的 corrections 对象/数组。
 - `corrections.contextual`: 显式上下文替换，必须配置 `require_nearby`，否则不会执行。
+- `corrections.ambiguous`: 显式高歧义替换；默认按局部 token 上下文生效，适合需要“只改靠近主播语境的那一次出现”的情况。
+- `context_window_tokens`: `contextual/ambiguous` 可选字段；限制 nearby 关键词与待替换词之间允许相隔多少个 token，默认 6。
+- `match_mode`: `ambiguous` 可选字段；`token` 表示按局部 token 窗口判断，`transcript` 表示只要全文存在 nearby 关键词就允许替换。
+- `boundary_sensitive`: `ambiguous` 可选字段；默认 `true`，避免把命中的别名嵌在更大词片段中时也替换掉。
 - `corrections.exclude_when`: 为指定来源词配置保护短语；来源词出现在这些短语中时不替换。比如 `{ "小碎": ["小碎步"] }` 可保留“小碎步”，但仍会把独立的“小碎”改成“小岁”。
+- `corrections.exclude_pattern`: 用正则模式保护指定上下文；当来源词与这些模式有重叠时不替换，适合比 `exclude_when` 更宽的片段保护。
 
 对于 `fun_asr_nano` 和 `fun_asr_nano_vllm`，模型提示词会整理成 `hotwords: ["岁己", "岁己SUI", "小岁", ...]` 直接喂给模型；`aliases_as_hotwords: false` 的错误别名只进入后处理修正。对于 `sensevoice`，仍会保留字符串热词兼容和后处理修正。
+
+后处理会先执行 `safe`，再执行 `contextual`，最后执行 `ambiguous`。其中 `ambiguous` 默认优先按局部 token 上下文判断；如果环境安装了 `@node-rs/jieba`，会优先用它做中文分词，否则回退到内置轻量 token 切分，行为保持可用但会更保守。
 
 ```json
 {
@@ -388,6 +396,16 @@ ASR 配置支持全局热词、按 routing 命中的房间/主播热词，以及
         { "from": "穗穗", "to": "岁岁", "require_nearby": ["叫他", "穗姐", "小穗"] },
         { "from": "小穗", "to": "小岁", "require_nearby": ["叫他", "穗姐", "穗穗"] },
         { "from": "碎几", "to": "岁己", "require_nearby": ["小岁", "岁岁", "SUI", "饼干岁", "前辈", "姐"] }
+      ],
+      "ambiguous": [
+        {
+          "from": "岁吉",
+          "to": "岁己",
+          "require_nearby": ["岁岁", "小岁", "前辈"],
+          "context_window_tokens": 6,
+          "match_mode": "token",
+          "boundary_sensitive": true
+        }
       ]
     },
     "routing": [

@@ -5,6 +5,15 @@ const {
     applyFfmpegProcessPriority,
     getFfmpegResourceConfig
 } = require('../ffmpeg_resource');
+const {
+    resolveAsrHotwords: resolveAsrHotwordsImpl,
+    resolveApplicableCorrections,
+    applyCorrectionsToText,
+    applyCorrectionsToSegments,
+    applyCorrectionsToAsrResult,
+    makeCorrectionStats,
+    logCorrectionStats
+} = require('./asr_corrections');
 
 const SUPPORTED_BACKENDS = new Set(['whisper', 'sensevoice', 'fun_asr_nano', 'fun_asr_nano_vllm', 'paraformer']);
 const BACKEND_ALIASES = new Map([
@@ -32,6 +41,13 @@ const DEFAULT_ASR_CONFIG = {
     common_hotwords: [],
     corrections: [],
     routing: [],
+    gray_rollout: {
+        enabled: false,
+        finetuned_ratio: 0.1,
+        finetuned_room_ids: [],
+        finetuned_model: null,
+        base_model: 'paraformer-zh'
+    },
     whisper: {
         model: 'deepdml/faster-whisper-large-v3-turbo-ct2',
         language: 'zh'
@@ -174,9 +190,59 @@ function getAsrConfig(config = {}) {
             ...DEFAULT_ASR_CONFIG.paraformer,
             ...(config.asr?.paraformer || {})
         },
+        gray_rollout: {
+            ...DEFAULT_ASR_CONFIG.gray_rollout,
+            ...(config.asr?.gray_rollout || {})
+        },
         common_hotwords: Array.isArray(config.asr?.common_hotwords) ? config.asr.common_hotwords : [],
         corrections: config.asr?.corrections || [],
         routing: Array.isArray(config.asr?.routing) ? config.asr.routing : []
+    };
+}
+
+function stableHashString(input) {
+    const text = String(input || '');
+    let hash = 2166136261;
+    for (let i = 0; i < text.length; i += 1) {
+        hash ^= text.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+    }
+    return hash >>> 0;
+}
+
+function applyParaformerGrayRollout(asrConfig, context = {}, resolved) {
+    if (!resolved || resolved.backend !== 'paraformer') {
+        return resolved;
+    }
+    const rollout = asrConfig.gray_rollout || {};
+    if (!rollout.enabled) {
+        return resolved;
+    }
+    const finetunedModel = String(rollout.finetuned_model || '').trim();
+    if (!finetunedModel) {
+        return resolved;
+    }
+    const roomId = String(context.room_id || context.roomId || '').trim();
+    const fileKey = String(context.filename || context.input || '').trim();
+    const forcedRooms = new Set((Array.isArray(rollout.finetuned_room_ids) ? rollout.finetuned_room_ids : []).map(v => String(v)));
+    const ratio = Math.max(0, Math.min(1, Number(rollout.finetuned_ratio ?? 0)));
+    const sampled = ratio > 0 && (stableHashString(`${roomId}|${fileKey}`) % 10000) < Math.floor(ratio * 10000);
+    const forceFinetuned = roomId && forcedRooms.has(roomId);
+    if (!forceFinetuned && !sampled) {
+        return resolved;
+    }
+    return {
+        ...resolved,
+        backendOptionsOverride: {
+            paraformer: {
+                model_profile: 'finetuned',
+                base_model: String(rollout.base_model || 'paraformer-zh').trim() || 'paraformer-zh',
+                finetuned_model: finetunedModel
+            }
+        },
+        reason: forceFinetuned
+            ? `${resolved.reason}; gray_rollout=finetuned(room=100%)`
+            : `${resolved.reason}; gray_rollout=finetuned(sample=${ratio})`
     };
 }
 
@@ -236,529 +302,26 @@ function resolveAsrBackend(config, context = {}, cliBackend = null) {
         }
         const backend = validateBackendName(rule.backend, `asr.routing[${index}].backend`);
         if (matchesRule(rule.match, context)) {
-            return {
+            return applyParaformerGrayRollout(asrConfig, context, {
                 backend,
                 reason: `routing[${index}] 命中 ${JSON.stringify(rule.match)}`
-            };
+            });
         }
     }
 
     const fallback = asrConfig.default_backend || asrConfig.backend || 'whisper';
     const backend = validateBackendName(fallback, 'asr.default_backend');
-    return {
+    return applyParaformerGrayRollout(asrConfig, context, {
         backend,
         reason: `未命中 routing，使用 default_backend=${backend}`
-    };
-}
-
-function normalizeHotwordEntry(entry) {
-    if (typeof entry === 'string') {
-        const word = entry.trim();
-        return word ? { word, weight: undefined, aliases: [], hotword_terms: [], alias_hotwords: true, correction_to: word } : null;
-    }
-    if (!entry || typeof entry !== 'object') {
-        return null;
-    }
-    const word = String(entry.word || entry.text || '').trim();
-    if (!word) {
-        return null;
-    }
-    const aliases = Array.isArray(entry.aliases)
-        ? entry.aliases.map(alias => String(alias || '').trim()).filter(Boolean)
-        : [];
-    const contextualAliases = Array.isArray(entry.contextual_aliases)
-        ? entry.contextual_aliases.map(alias => String(alias || '').trim()).filter(Boolean)
-        : [];
-    const hotwordTerms = Array.isArray(entry.hotword_terms)
-        ? entry.hotword_terms.map(term => String(term || '').trim()).filter(Boolean)
-        : [];
-    const weight = Number(entry.weight);
-    const correctionTo = String(entry.correction_to || entry.rewrite_to || entry.normalize_to || word).trim() || word;
-    return {
-        word,
-        weight: Number.isFinite(weight) ? weight : undefined,
-        aliases,
-        contextual_aliases: contextualAliases,
-        hotword_terms: hotwordTerms,
-        alias_hotwords: entry.alias_hotwords !== false && entry.aliases_as_hotwords !== false,
-        correction_to: correctionTo,
-        require_nearby: Array.isArray(entry.require_nearby)
-            ? entry.require_nearby.map(value => String(value || '').trim()).filter(Boolean)
-            : undefined
-    };
-}
-
-function addHotword(target, entry) {
-    const normalized = normalizeHotwordEntry(entry);
-    if (!normalized) {
-        return;
-    }
-    const existing = target.get(normalized.word);
-    if (!existing) {
-        target.set(normalized.word, normalized);
-        return;
-    }
-    if (normalized.weight !== undefined && (existing.weight === undefined || normalized.weight > existing.weight)) {
-        existing.weight = normalized.weight;
-    }
-    existing.aliases = Array.from(new Set([...(existing.aliases || []), ...normalized.aliases]));
-    existing.contextual_aliases = Array.from(new Set([...(existing.contextual_aliases || []), ...normalized.contextual_aliases]));
-    existing.hotword_terms = Array.from(new Set([...(existing.hotword_terms || []), ...normalized.hotword_terms]));
-    existing.alias_hotwords = existing.alias_hotwords !== false && normalized.alias_hotwords !== false;
-    if (!existing.correction_to && normalized.correction_to) {
-        existing.correction_to = normalized.correction_to;
-    }
-    if (!existing.require_nearby && normalized.require_nearby) {
-        existing.require_nearby = normalized.require_nearby;
-    }
-}
-
-function addCorrection(target, from, to, extra = {}) {
-    const source = String(from || '').trim();
-    const replacement = String(to || '').trim();
-    if (!source || !replacement || source === replacement) {
-        return;
-    }
-    const excludeWhen = Array.isArray(extra.exclude_when)
-        ? extra.exclude_when.map(value => String(value || '').trim()).filter(Boolean)
-        : [];
-    const excludePattern = Array.isArray(extra.exclude_pattern)
-        ? extra.exclude_pattern.map(value => String(value || '').trim()).filter(Boolean)
-        : [];
-    const existing = target.get(source);
-    const mergedExcludeWhen = Array.from(new Set([...(existing?.exclude_when || []), ...excludeWhen]));
-    const mergedExcludePattern = Array.from(new Set([...(existing?.exclude_pattern || []), ...excludePattern]));
-    const next = {
-        from: source,
-        to: replacement,
-        ...existing,
-        ...extra
-    };
-    // A correction can come from both the global dictionary and hotword
-    // aliases. Preserve exclusions contributed by either source.
-    if (mergedExcludeWhen.length > 0) {
-        next.exclude_when = mergedExcludeWhen;
-    } else {
-        delete next.exclude_when;
-    }
-    if (mergedExcludePattern.length > 0) {
-        next.exclude_pattern = mergedExcludePattern;
-    } else {
-        delete next.exclude_pattern;
-    }
-    target.set(source, next);
-}
-
-function getCorrectionExclusions(exclusions, from) {
-    if (!exclusions || typeof exclusions !== 'object' || Array.isArray(exclusions)) {
-        return [];
-    }
-    const values = exclusions[from];
-    return Array.isArray(values)
-        ? values.map(value => String(value || '').trim()).filter(Boolean)
-        : [];
-}
-
-function getCorrectionExcludePatterns(excludePatterns, from) {
-    if (!excludePatterns || typeof excludePatterns !== 'object' || Array.isArray(excludePatterns)) {
-        return [];
-    }
-    const values = excludePatterns[from];
-    return Array.isArray(values)
-        ? values.map(value => String(value || '').trim()).filter(Boolean)
-        : [];
-}
-
-function addSafeCorrections(target, corrections, exclusions = {}, excludePatterns = {}) {
-    if (!corrections) {
-        return;
-    }
-    if (Array.isArray(corrections)) {
-        corrections.forEach((item) => {
-            if (Array.isArray(item) && item.length >= 2) {
-                addCorrection(target, item[0], item[1], { 
-                    exclude_when: getCorrectionExclusions(exclusions, item[0]),
-                    exclude_pattern: getCorrectionExcludePatterns(excludePatterns, item[0])
-                });
-            } else if (item && typeof item === 'object') {
-                const from = item.from || item.alias || item.source || item.wrong;
-                addCorrection(
-                    target,
-                    from,
-                    item.to || item.word || item.target || item.correct,
-                    { 
-                        exclude_when: item.exclude_when || getCorrectionExclusions(exclusions, from),
-                        exclude_pattern: item.exclude_pattern || getCorrectionExcludePatterns(excludePatterns, from)
-                    }
-                );
-            }
-        });
-        return;
-    }
-    if (typeof corrections === 'object') {
-        Object.entries(corrections).forEach(([from, to]) => addCorrection(target, from, to, {
-            exclude_when: getCorrectionExclusions(exclusions, from),
-            exclude_pattern: getCorrectionExcludePatterns(excludePatterns, from)
-        }));
-    }
-}
-
-function addContextualCorrections(target, corrections, exclusions = {}) {
-    if (!Array.isArray(corrections)) {
-        return;
-    }
-    corrections.forEach((item) => {
-        if (!item || typeof item !== 'object') {
-            return;
-        }
-        const requireNearby = Array.isArray(item.require_nearby)
-            ? item.require_nearby.map(value => String(value || '').trim()).filter(Boolean)
-            : [];
-        const from = item.from || item.alias || item.source || item.wrong;
-        addCorrection(target, from, item.to || item.word || item.target || item.correct, {
-            require_nearby: requireNearby,
-            exclude_when: item.exclude_when || getCorrectionExclusions(exclusions, from)
-        });
     });
-}
-
-function addCorrections(targets, corrections) {
-    if (!corrections) {
-        return;
-    }
-    if (corrections.safe || corrections.contextual) {
-        addSafeCorrections(targets.safe, corrections.safe, corrections.exclude_when, corrections.exclude_pattern);
-        addContextualCorrections(targets.contextual, corrections.contextual, corrections.exclude_when);
-        return;
-    }
-    addSafeCorrections(targets.safe, corrections);
 }
 
 function resolveAsrHotwords(config, context = {}) {
-    const asrConfig = getAsrConfig(config);
-    const hotwordsByWord = new Map();
-    const hotwordTokens = new Map();
-    const hotwordPromptTokens = new Map();
-    const corrections = {
-        safe: new Map(),
-        contextual: new Map()
-    };
-
-    asrConfig.common_hotwords.forEach(entry => addHotword(hotwordsByWord, entry));
-    addCorrections(corrections, asrConfig.corrections);
-
-    // 自动将当前直播间的主播正式名作为热词注入（不注入 aliases，那些是纠错用的）
-    const rawRegistry = config.ai?.streamerRegistry || {};
-    const roomId = String(context.room_id || context.roomId || '').trim();
-    if (roomId) {
-        for (const entry of Object.values(rawRegistry)) {
-            const roomIds = Array.isArray(entry.roomIds) ? entry.roomIds.map(r => String(r)) : [];
-            if (roomIds.includes(roomId)) {
-                if (entry.displayName) {
-                    addHotword(hotwordsByWord, { word: entry.displayName });
-                }
-                // 只加原始 speakerLabels（正式名），不加 aliases（纠错别名）
-                if (Array.isArray(entry.speakerLabels)) {
-                    entry.speakerLabels.forEach(label => {
-                        const s = String(label).trim();
-                        if (s && s !== entry.displayName) {
-                            addHotword(hotwordsByWord, { word: s });
-                        }
-                    });
-                }
-                break;
-            }
-        }
-    }
-
-    for (const rule of asrConfig.routing) {
-        if (!rule || typeof rule !== 'object' || !rule.match || typeof rule.match !== 'object') {
-            continue;
-        }
-        if (!matchesRule(rule.match, context)) {
-            continue;
-        }
-        if (Array.isArray(rule.hotwords)) {
-            rule.hotwords.forEach(entry => addHotword(hotwordsByWord, entry));
-        }
-        addCorrections(corrections, rule.corrections);
-    }
-
-    const hotwords = Array.from(hotwordsByWord.values());
-    hotwords.forEach((entry) => {
-        const correctionTo = entry.correction_to || entry.word;
-        addHotwordToken(hotwordTokens, entry.word, entry.weight);
-        addHotwordToken(hotwordPromptTokens, entry.word, entry.weight);
-        (entry.aliases || []).forEach(alias => {
-            addHotwordToken(hotwordTokens, alias, entry.weight);
-            if (entry.alias_hotwords !== false) {
-                addHotwordToken(hotwordPromptTokens, alias, entry.weight);
-            }
-            addCorrection(corrections.safe, alias, correctionTo);
-        });
-        (entry.hotword_terms || []).forEach((term) => {
-            addHotwordToken(hotwordTokens, term, entry.weight);
-            addHotwordToken(hotwordPromptTokens, term, entry.weight);
-        });
-        (entry.contextual_aliases || []).forEach(alias => addCorrection(corrections.contextual, alias, correctionTo, {
-            require_nearby: entry.require_nearby || DEFAULT_CONTEXTUAL_NEARBY_WORDS
-        }));
+    return resolveAsrHotwordsImpl(config, context, {
+        getAsrConfig,
+        matchesRule
     });
-
-    const hotwordTokenList = Array.from(hotwordTokens.values());
-    const hotwordPromptTokenList = Array.from(hotwordPromptTokens.values());
-    return {
-        hotwords,
-        hotwordTokens: hotwordTokenList,
-        hotwordPromptTokens: hotwordPromptTokenList,
-        hotwordWords: hotwordPromptTokenList.map(entry => entry.word),
-        corrections: {
-            safe: Array.from(corrections.safe.values()),
-            contextual: Array.from(corrections.contextual.values())
-        },
-        hotwordText: hotwordTokenList.map(entry => entry.word).join(' '),
-        hotwordTextWeighted: hotwordTokenList
-            .map(entry => entry.weight !== undefined ? `${entry.word} ${entry.weight}` : entry.word)
-            .join('\n')
-    };
-}
-
-function addHotwordToken(target, word, weight) {
-    const token = String(word || '').trim();
-    if (!token) {
-        return;
-    }
-    const existing = target.get(token);
-    if (!existing) {
-        target.set(token, {
-            word: token,
-            weight: Number.isFinite(Number(weight)) ? Number(weight) : undefined
-        });
-        return;
-    }
-    const nextWeight = Number(weight);
-    if (Number.isFinite(nextWeight) && (existing.weight === undefined || nextWeight > existing.weight)) {
-        existing.weight = nextWeight;
-    }
-}
-
-function escapeRegExp(value) {
-    return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-const DEFAULT_CONTEXTUAL_NEARBY_WORDS = ['主播', '直播', '开播', 'SUI', '岁己', '饼干岁', 'VR', 'VirtuaReal'];
-
-function normalizeCorrectionsForApply(corrections = []) {
-    if (Array.isArray(corrections)) {
-        return { safe: corrections, contextual: [] };
-    }
-    if (corrections && typeof corrections === 'object') {
-        const safe = new Map();
-        const contextual = new Map();
-        addSafeCorrections(safe, corrections.safe, corrections.exclude_when, corrections.exclude_pattern);
-        addContextualCorrections(contextual, corrections.contextual, corrections.exclude_when);
-        return {
-            safe: Array.from(safe.values()),
-            contextual: Array.from(contextual.values())
-        };
-    }
-    return { safe: [], contextual: [] };
-}
-
-function makeCorrectionStats() {
-    return new Map();
-}
-
-function countMatches(text, pattern) {
-    const matches = String(text || '').match(pattern);
-    return matches ? matches.length : 0;
-}
-
-function compactCorrectionSample(text) {
-    return String(text || '')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 90);
-}
-
-function recordCorrectionStats(stats, correction, type, count, before, after) {
-    if (!stats || count <= 0) {
-        return;
-    }
-    const key = `${type}\u0000${correction.from}\u0000${correction.to}`;
-    const existing = stats.get(key) || {
-        type,
-        from: correction.from,
-        to: correction.to,
-        count: 0,
-        examples: []
-    };
-    existing.count += count;
-    if (existing.examples.length < 3) {
-        existing.examples.push({
-            before: compactCorrectionSample(before),
-            after: compactCorrectionSample(after)
-        });
-    }
-    stats.set(key, existing);
-}
-
-function logCorrectionStats(stats, label = 'ASR corrections') {
-    if (!stats || stats.size === 0) {
-        return;
-    }
-    const entries = Array.from(stats.values()).sort((a, b) => b.count - a.count);
-    const total = entries.reduce((sum, item) => sum + item.count, 0);
-    console.log(`[${label}] applied ${total} replacements across ${entries.length} rules`);
-    entries.slice(0, 12).forEach((item) => {
-        const sample = item.examples[0]
-            ? ` sample="${item.examples[0].before}" => "${item.examples[0].after}"`
-            : '';
-        console.log(`[${label}] ${item.type} ${item.from} -> ${item.to} x${item.count}${sample}`);
-    });
-    if (entries.length > 12) {
-        console.log(`[${label}] ... ${entries.length - 12} more rules omitted`);
-    }
-}
-
-function isProtectedByExcludedTerm(text, matched, offset, excludedTerms = []) {
-    const sourceText = String(text || '');
-    const matchStart = Number(offset) || 0;
-    const matchEnd = matchStart + String(matched || '').length;
-    return excludedTerms.some((term) => {
-        const protectedText = String(term || '');
-        if (!protectedText) {
-            return false;
-        }
-        let searchStart = 0;
-        while (searchStart <= sourceText.length) {
-            const protectedStart = sourceText.indexOf(protectedText, searchStart);
-            if (protectedStart === -1) {
-                return false;
-            }
-            const protectedEnd = protectedStart + protectedText.length;
-            if (protectedStart < matchEnd && matchStart < protectedEnd) {
-                return true;
-            }
-            searchStart = protectedStart + 1;
-        }
-        return false;
-    });
-}
-
-function isProtectedByExcludePattern(text, matched, offset, excludePatterns = []) {
-    const matchStart = Number(offset) || 0;
-    const matchEnd = matchStart + String(matched || '').length;
-    return excludePatterns.some((patternText) => {
-        let pattern;
-        try {
-            pattern = new RegExp(patternText, 'g');
-        } catch {
-            return false;
-        }
-        let protectedMatch;
-        while ((protectedMatch = pattern.exec(text)) !== null) {
-            const protectedText = String(protectedMatch[0] || '');
-            const protectedStart = protectedMatch.index;
-            const protectedEnd = protectedStart + protectedText.length;
-            if (protectedStart < matchEnd && matchStart < protectedEnd) {
-                return true;
-            }
-            if (protectedText.length === 0) {
-                pattern.lastIndex += 1;
-            }
-        }
-        return false;
-    });
-}
-
-function applyCorrectionList(text, corrections = [], stats = null, type = 'safe') {
-    let output = String(text || '');
-    const normalized = Array.isArray(corrections) ? corrections : [];
-    const ordered = normalized
-        .filter(item => item && item.from && item.to)
-        .sort((a, b) => String(b.from).length - String(a.from).length);
-    for (const correction of ordered) {
-        const pattern = new RegExp(escapeRegExp(correction.from), 'g');
-        const before = output;
-        const excludedTerms = Array.isArray(correction.exclude_when)
-            ? correction.exclude_when.map(value => String(value || '').trim()).filter(Boolean)
-            : [];
-        const excludePatterns = Array.isArray(correction.exclude_pattern)
-            ? correction.exclude_pattern.map(value => String(value || '').trim()).filter(Boolean)
-            : [];
-        let count = 0;
-        output = before.replace(pattern, (matched, offset, wholeText) => {
-            const isProtected = isProtectedByExcludedTerm(wholeText, matched, offset, excludedTerms);
-            if (isProtected) {
-                return matched;
-            }
-            if (excludePatterns.length > 0 && isProtectedByExcludePattern(wholeText, matched, offset, excludePatterns)) {
-                return matched;
-            }
-            count += 1;
-            return correction.to;
-        });
-        if (count === 0) {
-            continue;
-        }
-        recordCorrectionStats(stats, correction, type, count, before, output);
-    }
-    return output;
-}
-
-function applyCorrectionsToText(text, corrections = []) {
-    const grouped = normalizeCorrectionsForApply(corrections);
-    let output = applyCorrectionList(text, grouped.safe);
-    const contextual = grouped.contextual.filter((item) => {
-        const nearby = Array.isArray(item.require_nearby)
-            ? item.require_nearby.map(value => String(value || '').trim()).filter(Boolean)
-            : [];
-        return nearby.length > 0 && nearby.some(keyword => output.includes(keyword));
-    });
-    output = applyCorrectionList(output, contextual);
-    return output;
-}
-
-function resolveApplicableCorrections(sourceText, corrections = []) {
-    const grouped = normalizeCorrectionsForApply(corrections);
-    const safeText = applyCorrectionList(sourceText, grouped.safe);
-    const contextual = grouped.contextual.filter((item) => {
-        const nearby = Array.isArray(item.require_nearby)
-            ? item.require_nearby.map(value => String(value || '').trim()).filter(Boolean)
-            : [];
-        return nearby.length > 0 && nearby.some(keyword => safeText.includes(keyword));
-    });
-    return {
-        safe: grouped.safe,
-        contextual
-    };
-}
-
-function applyCorrectionsToAsrResult(result, corrections = []) {
-    const grouped = normalizeCorrectionsForApply(corrections);
-    if (grouped.safe.length === 0 && grouped.contextual.length === 0) {
-        return result;
-    }
-    const sourceText = (Array.isArray(result?.segments) ? result.segments : [])
-        .map(segment => String(segment.text || ''))
-        .join('');
-    const applicable = resolveApplicableCorrections(sourceText, corrections);
-    const stats = makeCorrectionStats();
-    const correctedSegments = (Array.isArray(result?.segments) ? result.segments : []).map(segment => ({
-        ...segment,
-        text: applyCorrectionList(
-            applyCorrectionList(segment.text, applicable.safe, stats, 'safe'),
-            applicable.contextual,
-            stats,
-            'contextual'
-        )
-    }));
-    logCorrectionStats(stats, 'ASR corrections');
-    return {
-        ...result,
-        segments: correctedSegments
-    };
 }
 
 function parseCliArgs(args) {
@@ -1121,18 +684,11 @@ function writeSrt(result, srtPath, subtitleConfig = {}) {
     const cfg = { ...DEFAULT_SUBTITLE_CONFIG, ...subtitleConfig };
     const lines = [];
     let lineIndex = 1;
-    const sourceText = (Array.isArray(result?.segments) ? result.segments : [])
-        .map(segment => String(segment.text || ''))
-        .join('');
-    const applicableCorrections = resolveApplicableCorrections(sourceText, cfg.corrections);
+    const segments = Array.isArray(result?.segments) ? result.segments : [];
     const correctionStats = makeCorrectionStats();
-    result.segments.forEach((segment) => {
-        const correctedText = applyCorrectionList(
-            applyCorrectionList(segment.text, applicableCorrections.safe, correctionStats, 'safe'),
-            applicableCorrections.contextual,
-            correctionStats,
-            'contextual'
-        );
+    const correctedTexts = applyCorrectionsToSegments(segments, cfg.corrections, correctionStats);
+    segments.forEach((segment, index) => {
+        const correctedText = correctedTexts[index] || '';
         const content = cfg.strip_punctuation ? stripSubtitlePunctuation(correctedText) : correctedText;
         if (!content) {
             return;
@@ -1183,16 +739,11 @@ function writeSpeakerReviewSrt(result, srtPath, subtitleConfig = {}) {
         const cfg = { ...DEFAULT_SUBTITLE_CONFIG, ...subtitleConfig };
         const lines = [];
         let lineIndex = 1;
-        const sourceText = (Array.isArray(result?.segments) ? result.segments : [])
-            .map(segment => String(segment.text || ''))
-            .join('');
-        const applicableCorrections = resolveApplicableCorrections(sourceText, cfg.corrections);
+        const segments = Array.isArray(result?.segments) ? result.segments : [];
+        const correctedTexts = applyCorrectionsToSegments(segments, cfg.corrections);
 
-        result.segments.forEach((segment) => {
-            const correctedText = applyCorrectionList(
-                applyCorrectionList(segment.text, applicableCorrections.safe),
-                applicableCorrections.contextual
-            );
+        segments.forEach((segment, index) => {
+            const correctedText = correctedTexts[index] || '';
             const content = cfg.strip_punctuation ? stripSubtitlePunctuation(correctedText) : correctedText;
             if (!content) {
                 return;
@@ -1405,6 +956,10 @@ function resolveParaformerModelOption(options = {}) {
 
 async function transcribeFunAsrBackend(mediaPath, config = {}, runtimeOptions = {}, backend = 'sensevoice') {
     const asrConfig = getAsrConfig(config);
+    const context = runtimeOptions.routingContext || {};
+    const resolved = backend === 'paraformer'
+        ? resolveAsrBackend(config, context, 'paraformer')
+        : { backend, reason: runtimeOptions.forceReason || `direct backend=${backend}` };
     const scriptPath = path.join(__dirname, '..', 'python', 'sensevoice_transcribe.py');
     if (!fs.existsSync(scriptPath)) {
         throw new Error(`ASR Python script not found at: ${scriptPath}`);
@@ -1413,6 +968,7 @@ async function transcribeFunAsrBackend(mediaPath, config = {}, runtimeOptions = 
     const nanoLike = backend === 'fun_asr_nano' || backend === 'fun_asr_nano_vllm';
     const options = {
         ...backendConfig,
+        ...((resolved.backendOptionsOverride && resolved.backendOptionsOverride[backend]) || {}),
         backend,
         audio_path: mediaPath,
         hotwords: nanoLike
@@ -1420,7 +976,9 @@ async function transcribeFunAsrBackend(mediaPath, config = {}, runtimeOptions = 
             : (runtimeOptions.hotwords || []),
         hotword: '', // 不传热词给模型，全部走 phoneme_correction 后处理
         hotword_unweighted: '',
-        phoneme_correction: asrConfig.phoneme_correction || null
+        phoneme_correction: asrConfig.phoneme_correction || null,
+        model_profile: ((resolved.backendOptionsOverride && resolved.backendOptionsOverride[backend]?.model_profile) || backendConfig.model_profile || null),
+        finetuned_model: ((resolved.backendOptionsOverride && resolved.backendOptionsOverride[backend]?.finetuned_model) || backendConfig.finetuned_model || null)
     };
     if (backend === 'paraformer') {
         options.model = resolveParaformerModelOption(options);
