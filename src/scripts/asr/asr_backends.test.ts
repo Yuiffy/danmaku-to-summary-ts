@@ -1,7 +1,49 @@
 const asr = require('./asr_backends');
 const productionConfig = require('../../../config/production.json');
+const net = require('net');
 
 describe('asr_backends', () => {
+  test('uses the persistent paraformer worker when configured', async () => {
+    const server = net.createServer((socket: any) => {
+      let buffer = '';
+      socket.on('data', (data: Buffer) => {
+        buffer += data.toString();
+        if (!buffer.includes('\n')) return;
+        const request = JSON.parse(buffer.split('\n', 1)[0]);
+        expect(request.type).toBe('transcribe');
+        expect(request.token).toBe('test-token');
+        expect(request.payload.backend).toBe('paraformer');
+        socket.end(JSON.stringify({
+          ok: true,
+          result: {
+            backend: 'paraformer',
+            segments: [],
+            timings: { model_cache_hit: 1 }
+          }
+        }) + '\n');
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    const previousPort = process.env.ASR_PERSISTENT_WORKER_PORT;
+    const previousToken = process.env.ASR_PERSISTENT_WORKER_TOKEN;
+    process.env.ASR_PERSISTENT_WORKER_PORT = String(address.port);
+    process.env.ASR_PERSISTENT_WORKER_TOKEN = 'test-token';
+
+    try {
+      const result = await asr.transcribeParaformer('smoke.wav', {
+        asr: { paraformer: { model: 'paraformer-zh', process_timeout_s: 30 } }
+      });
+      expect(result.timings.model_cache_hit).toBe(1);
+    } finally {
+      if (previousPort === undefined) delete process.env.ASR_PERSISTENT_WORKER_PORT;
+      else process.env.ASR_PERSISTENT_WORKER_PORT = previousPort;
+      if (previousToken === undefined) delete process.env.ASR_PERSISTENT_WORKER_TOKEN;
+      else process.env.ASR_PERSISTENT_WORKER_TOKEN = previousToken;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   test('uses default backend when no route matches', () => {
     const result = asr.resolveAsrBackend({
       asr: {

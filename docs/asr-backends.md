@@ -141,8 +141,13 @@ node src/scripts/enhanced_auto_summary.js --asr-backend paraformer "D:/path/to/v
 
 - `enable_speaker: true` 时加载 CAM++，输出 `SPEAKER_00` 等聚类标签。
 - `vad_max_single_segment_time_ms: 60000` 交给 FunASR 内建 VAD，避免 8 秒手动切片切断词和句子上下文。
-- `batch_size_s: 300`、`batch_size_threshold_s: 60` 跟随 FunASR pipeline 批处理习惯。
+- `batch_size_s` 是一个动态批次允许容纳的总音频秒数；RTX 5080 生产配置从 450 提升到 600，`batch_size_threshold_s: 60` 仍会把超长 VAD 段降为单条，避免显存峰值失控。
+- `vad_device: "cpu"` 只把 FSMN-VAD 放在 CPU；生产机同一段 10 分钟音频的独立基准为 CPU 2.86s、CUDA 5.86s。Paraformer、标点和 CAM++ 仍在 CUDA，避免把更适合 GPU 的部分降速。
 - 热词通过 `generate(hotword=...)` 传入；后处理 corrections 会用全文上下文筛选，再逐句修正，避免 paraformer `sentence_info` 分句导致 `小碎/岁吉` 漏修。
+
+集中队列会启动一个仅监听 `127.0.0.1`、带随机令牌的 Paraformer 常驻 worker。队列中连续任务复用主模型、CAM++ 和参考说话人 embedding；队列清空或父队列检测到 GPU 繁忙时终止 worker，释放显存。单独运行 `enhanced_auto_summary.js` 时仍会自动降级为一次性 Python 进程。
+
+每个任务都会在日志和同名 `.asr_meta.json` 中记录 `model_load`、VAD、真正的 ASR inference、标点、FunASR 内建 CAM++、实名聚类 embedding、说话人匹配和后处理耗时。慢 ASR 企微提醒也会附带这些分项。实名映射按 FunASR 已完成的说话人聚类抽样批量计算，不再为几千句字幕逐句调用 CAM++。
 
 ## 启用 Fun-ASR-Nano vLLM
 

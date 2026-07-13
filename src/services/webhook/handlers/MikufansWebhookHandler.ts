@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as crypto from 'crypto';
 import { spawn, ChildProcess } from 'child_process';
 import { IWebhookHandler } from '../IWebhookService';
 import { getLogger } from '../../../core/logging/LogManager';
@@ -60,6 +61,10 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   private queueWorkerPromise: Promise<void> | null = null;
   private queueWorkerProcess: ChildProcess | null = null;
   private queueWorkerShouldStop = false;
+  private asrPersistentWorkerProcess: ChildProcess | null = null;
+  private asrPersistentWorkerPort: number | null = null;
+  private asrPersistentWorkerToken: string | null = null;
+  private asrPersistentWorkerStarting: Promise<void> | null = null;
 
   // 延迟处理定时器管理器(roomId -> Map<actionType, timer>)
   private delayedActions: Map<string, Map<DelayedActionType, NodeJS.Timeout>> = new Map();
@@ -915,6 +920,132 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   }
 
   /**
+   * 启动由队列父进程持有的 Paraformer worker。子任务通过本机回环端口复用模型；
+   * worker 本身不预加载，第一条 Paraformer 请求到达时才占用显存。
+   */
+  private async ensurePersistentAsrWorker(): Promise<void> {
+    const config: any = ConfigProvider.getConfig();
+    const paraformerConfig = config.asr?.paraformer || {};
+    if (paraformerConfig.persistent_worker?.enabled === false) {
+      return;
+    }
+    if (this.asrPersistentWorkerProcess && this.asrPersistentWorkerPort) {
+      return;
+    }
+    if (this.asrPersistentWorkerStarting) {
+      return this.asrPersistentWorkerStarting;
+    }
+
+    this.asrPersistentWorkerStarting = new Promise<void>((resolve, reject) => {
+      const executable = String(
+        paraformerConfig.python_executable || process.env.ASR_PYTHON || 'python'
+      );
+      const pythonArgs = Array.isArray(paraformerConfig.python_args)
+        ? paraformerConfig.python_args.map((value: unknown) => String(value)).filter(Boolean)
+        : [];
+      const workerScript = path.join(
+        process.cwd(),
+        'src',
+        'scripts',
+        'python',
+        'asr_persistent_worker.py'
+      );
+      const token = crypto.randomBytes(24).toString('hex');
+      const args = [...pythonArgs, workerScript, '--port', '0', '--token', token];
+      const resourceConfig = getFfmpegResourceConfig();
+      const child = spawn(executable, args, {
+        cwd: process.cwd(),
+        windowsHide: true,
+        env: { ...process.env, PYTHONUTF8: '1' }
+      });
+      applyFfmpegProcessPriority(child.pid, resourceConfig.priority);
+
+      this.asrPersistentWorkerProcess = child;
+      this.asrPersistentWorkerToken = token;
+      let stdoutBuffer = '';
+      let ready = false;
+      const readyTimeoutMs = Number(paraformerConfig.persistent_worker?.startup_timeout_s || 60) * 1000;
+      const readyTimeout = setTimeout(() => {
+        if (!ready) {
+          reject(new Error(`ASR 常驻 worker 启动超时: ${readyTimeoutMs / 1000}s`));
+          void terminateProcessTree(child, {
+            gracePeriodMs: 1000,
+            label: 'ASR常驻Worker启动超时',
+            logger: this.logger
+          });
+        }
+      }, readyTimeoutMs);
+
+      child.stdout?.on('data', (data: Buffer) => {
+        stdoutBuffer += data.toString();
+        const lines = stdoutBuffer.split(/\r?\n/);
+        stdoutBuffer = lines.pop() || '';
+        for (const line of lines) {
+          const readyMatch = line.match(/^\[ASR_WORKER_READY\]\s+(.+)$/);
+          if (readyMatch && !ready) {
+            try {
+              const payload = JSON.parse(readyMatch[1]);
+              this.asrPersistentWorkerPort = Number(payload.port);
+              ready = true;
+              clearTimeout(readyTimeout);
+              this.logger.info(
+                `ASR 常驻 worker 已就绪: pid=${child.pid ?? payload.pid}, port=${this.asrPersistentWorkerPort}`
+              );
+              resolve();
+            } catch (error: any) {
+              reject(new Error(`ASR 常驻 worker ready 消息无效: ${error.message}`));
+            }
+          } else if (line.trim()) {
+            this.logger.info(`[ASR常驻Worker] ${line}`);
+          }
+        }
+      });
+      child.stderr?.on('data', (data: Buffer) => {
+        const output = data.toString().trim();
+        if (output) {
+          this.logger.info(`[ASR常驻Worker] ${output}`);
+        }
+      });
+      child.on('error', (error: Error) => {
+        clearTimeout(readyTimeout);
+        if (!ready) reject(error);
+      });
+      child.on('close', (code: number | null) => {
+        clearTimeout(readyTimeout);
+        if (!ready) {
+          reject(new Error(`ASR 常驻 worker 提前退出: code=${code}`));
+        }
+        if (this.asrPersistentWorkerProcess === child) {
+          this.asrPersistentWorkerProcess = null;
+          this.asrPersistentWorkerPort = null;
+          this.asrPersistentWorkerToken = null;
+        }
+        this.logger.info(`ASR 常驻 worker 已退出: code=${code}`);
+      });
+    }).finally(() => {
+      this.asrPersistentWorkerStarting = null;
+    });
+
+    return this.asrPersistentWorkerStarting;
+  }
+
+  private async stopPersistentAsrWorker(reason: string): Promise<void> {
+    const child = this.asrPersistentWorkerProcess;
+    if (!child) {
+      return;
+    }
+    this.asrPersistentWorkerProcess = null;
+    this.asrPersistentWorkerPort = null;
+    this.asrPersistentWorkerToken = null;
+    this.logger.info(`释放 ASR 常驻模型与显存: ${reason}, pid=${child.pid ?? 'unknown'}`);
+    await terminateProcessTree(child, {
+      gracePeriodMs: 3000,
+      label: `ASR常驻Worker(${reason})`,
+      logger: this.logger
+    });
+  }
+
+  /**
    * 确保集中队列 worker 在运行
    */
   private ensureQueueWorkerRunning(): void {
@@ -927,9 +1058,15 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       .catch((error: any) => {
         this.logger.error(`Mikufans队列Worker异常退出: ${error.message}`, { error });
       })
-      .finally(() => {
+      .finally(async () => {
+        await this.stopPersistentAsrWorker('队列 worker 退出');
         this.queueWorkerPromise = null;
         this.queueWorkerProcess = null;
+        const pendingTask = queueManager.getNextPendingTask({ reload: true }) as QueuedSummaryTask | null;
+        if (pendingTask) {
+          this.logger.info('队列 worker 清理期间收到新任务，立即重新唤醒');
+          this.ensureQueueWorkerRunning();
+        }
       });
   }
 
@@ -954,17 +1091,20 @@ export class MikufansWebhookHandler implements IWebhookHandler {
 
       const nextTask = queueManager.getNextPendingTask({ reload: true }) as QueuedSummaryTask | null;
       if (!nextTask) {
+        await this.stopPersistentAsrWorker('ASR 队列已清空');
         this.logger.info('Mikufans队列Worker空闲，退出等待下次唤醒');
         return;
       }
 
       const gpuStatus = await this.isGpuBusyForWhisper();
       if (gpuStatus.busy) {
+        await this.stopPersistentAsrWorker(`GPU 繁忙: ${gpuStatus.reason}`);
         this.logger.info(`GPU 当前繁忙，队列Worker继续等待: ${gpuStatus.reason}`);
         await this.sleep(idleWaitMs);
         continue;
       }
 
+      await this.ensurePersistentAsrWorker();
       await this.executeQueuedTask(nextTask);
     }
   }
@@ -1023,7 +1163,11 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         BYPASS_WHISPER_QUEUE: 'true',
         SCREENSHOT_PATH: task.screenshotPath || '',
         FFMPEG_THREADS: String(resourceConfig.threads),
-        FFMPEG_PRIORITY: resourceConfig.priority
+        FFMPEG_PRIORITY: resourceConfig.priority,
+        ASR_PERSISTENT_WORKER_PORT: this.asrPersistentWorkerPort
+          ? String(this.asrPersistentWorkerPort)
+          : '',
+        ASR_PERSISTENT_WORKER_TOKEN: this.asrPersistentWorkerToken || ''
       }
     });
     applyFfmpegProcessPriority(ps.pid, resourceConfig.priority);
@@ -1035,6 +1179,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     const processTimeout = config.webhook.timeouts.processTimeout || 30 * 60 * 1000;
     let timedOut = false;
     let asrStartedAt: number | null = null;
+    let asrTimingSummary: Record<string, any> | null = null;
 
     const timeoutId = setTimeout(async () => {
       timedOut = true;
@@ -1073,6 +1218,14 @@ export class MikufansWebhookHandler implements IWebhookHandler {
           if (!asrStartedAt && output.includes('-> [ASR]')) {
             asrStartedAt = Date.now();
           }
+          const timingMatch = output.match(/\[\[ASR_TIMING\]\]\s+({[^\r\n]+})/);
+          if (timingMatch) {
+            try {
+              asrTimingSummary = JSON.parse(timingMatch[1]);
+            } catch (error: any) {
+              this.logger.warn(`解析 ASR 阶段耗时失败: ${error.message}`);
+            }
+          }
           void this.handleDelayedReplyReadyOutput(output, task.mediaPath);
           if (output.includes(ASR_PHASE_DONE_SENTINEL) || output.includes(LEGACY_WHISPER_PHASE_DONE_SENTINEL)) {
             if (asrStartedAt) {
@@ -1082,7 +1235,24 @@ export class MikufansWebhookHandler implements IWebhookHandler {
                 asrElapsedSeconds,
                 ProcessingAlertService.getThresholds().asrSlowSeconds,
                 task.mediaPath,
-                { taskId: task.id, roomId }
+                {
+                  taskId: task.id,
+                  roomId,
+                  ...(asrTimingSummary ? {
+                    模型缓存: asrTimingSummary.cacheHit ? '命中' : '未命中',
+                    模型加载秒: asrTimingSummary.modelLoadSeconds,
+                    真正转写秒: asrTimingSummary.transcriptionSeconds,
+                    真正转写速度: asrTimingSummary.trueAsrSpeed
+                      ? `${asrTimingSummary.trueAsrSpeed}x`
+                      : 'N/A',
+                    VAD秒: asrTimingSummary.vadSeconds,
+                    说话人Embedding秒: (
+                      Number(asrTimingSummary.builtinSpeakerEmbeddingSeconds || 0) +
+                      Number(asrTimingSummary.speakerClusterEmbeddingSeconds || 0)
+                    ).toFixed(1),
+                    说话人匹配秒: asrTimingSummary.speakerMatchingSeconds
+                  } : {})
+                }
               );
             }
             this.logger.info(`Mikufans队列Worker已完成ASR阶段，释放队列槽位，AI/漫画阶段继续后台执行: ${path.basename(task.mediaPath)}`);

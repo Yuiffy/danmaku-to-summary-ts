@@ -238,11 +238,16 @@ export interface AsrConfig {
     spk_model?: string | null;
     language: string;
     device: 'cuda' | 'cpu' | string;
+    vad_device?: 'cuda' | 'cpu' | string;
     use_itn: boolean;
     vad_max_single_segment_time_ms?: number;
     batch_size_s?: number;
     batch_size_threshold_s?: number;
     process_timeout_s?: number;
+    persistent_worker?: {
+      enabled?: boolean;
+      startup_timeout_s?: number;
+    };
     gpu_throttle?: boolean | AsrGpuThrottleConfig;
     enable_speaker: boolean;
     preset_spk_num?: number | null;

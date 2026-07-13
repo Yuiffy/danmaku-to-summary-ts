@@ -1,5 +1,6 @@
 ﻿const fs = require('fs');
 const path = require('path');
+const net = require('net');
 const { spawn } = require('child_process');
 const {
     applyFfmpegProcessPriority,
@@ -856,7 +857,84 @@ function translatePythonPayloadPaths(value, options = {}, key = '') {
     return value;
 }
 
+function runPersistentAsrWorker(payload, label = 'ASR backend') {
+    const port = Number(process.env.ASR_PERSISTENT_WORKER_PORT || 0);
+    const token = String(process.env.ASR_PERSISTENT_WORKER_TOKEN || '');
+    if (!Number.isInteger(port) || port <= 0 || !token) {
+        return null;
+    }
+
+    return new Promise((resolve, reject) => {
+        const socket = net.createConnection({ host: '127.0.0.1', port });
+        const timeoutSeconds = Number(payload?.process_timeout_s || 0);
+        const timeoutMs = Math.max(30_000, (timeoutSeconds > 0 ? timeoutSeconds : 7200) * 1000);
+        let buffer = '';
+        let settled = false;
+
+        const finishReject = (error) => {
+            if (settled) return;
+            settled = true;
+            socket.destroy();
+            reject(error);
+        };
+
+        socket.setTimeout(timeoutMs, () => {
+            finishReject(new Error(`${label} 常驻 worker 超时: ${timeoutMs / 1000}s`));
+        });
+        socket.on('error', finishReject);
+        socket.on('connect', () => {
+            socket.write(`${JSON.stringify({
+                type: 'transcribe',
+                token,
+                payload: translatePythonPayloadPaths(payload, payload)
+            })}\n`, 'utf8');
+        });
+        socket.on('data', (data) => {
+            buffer += data.toString();
+            const newlineIndex = buffer.indexOf('\n');
+            if (newlineIndex < 0 || settled) return;
+            let message;
+            try {
+                message = JSON.parse(buffer.slice(0, newlineIndex));
+            } catch (error) {
+                finishReject(new Error(`${label} 常驻 worker 输出不是有效 JSON: ${error.message}`));
+                return;
+            }
+            settled = true;
+            socket.end();
+            if (!message.ok) {
+                const error = new Error(`${label} 常驻 worker 失败: ${message.error || 'unknown'}\n${message.detail || ''}`);
+                error.persistentWorkerResponse = true;
+                reject(error);
+                return;
+            }
+            resolve(message.result);
+        });
+        socket.on('close', () => {
+            if (!settled) {
+                finishReject(new Error(`${label} 常驻 worker 在返回结果前断开`));
+            }
+        });
+    });
+}
+
 function runJsonPython(scriptPath, payload, label = 'ASR backend') {
+    if (payload?.backend === 'paraformer') {
+        const persistentRequest = runPersistentAsrWorker(payload, label);
+        if (persistentRequest) {
+            return persistentRequest.catch((error) => {
+                if (error?.persistentWorkerResponse) {
+                    throw error;
+                }
+                console.warn(`⚠️  ${label} 常驻 worker 不可用，降级为单次 Python 进程: ${error.message}`);
+                return runJsonPythonProcess(scriptPath, payload, label);
+            });
+        }
+    }
+    return runJsonPythonProcess(scriptPath, payload, label);
+}
+
+function runJsonPythonProcess(scriptPath, payload, label = 'ASR backend') {
     return new Promise((resolve, reject) => {
         let settled = false;
         const pythonCommand = resolvePythonCommand(payload);

@@ -104,6 +104,7 @@ const WHISPER_MAX_RETRIES = 24 * 60 * 6; // 最多重试 8640 次（24小时）
 const WHISPER_PROGRESS_LOG_INTERVAL = 30000; // 每30秒输出一次详细进度
 const WHISPER_QUEUE_TURN_RETRY_INTERVAL = 5000; // 5秒检查一次是否轮到当前任务
 const ASR_PHASE_DONE_SENTINEL = '[[ASR_PHASE_DONE]]';
+const ASR_TIMING_SENTINEL = '[[ASR_TIMING]]';
 const DELAYED_REPLY_READY_SENTINEL = '[[DELAYED_REPLY_READY]]';
 const SUI_ROOM_ID = '25788785';
 
@@ -118,6 +119,44 @@ function writeAsrMetaSidecar(srtPath, data) {
         console.warn(`⚠️  写入 ASR meta sidecar 失败: ${error.message}`);
         return null;
     }
+}
+
+function logAsrTimings(timings, mediaDurationSeconds) {
+    if (!timings || typeof timings !== 'object' || Object.keys(timings).length === 0) {
+        return;
+    }
+    const seconds = (key) => Number(timings[key] || 0);
+    const trueAsrSeconds = seconds('asr_inference_s');
+    const trueAsrSpeed = trueAsrSeconds > 0 && mediaDurationSeconds > 0
+        ? mediaDurationSeconds / trueAsrSeconds
+        : null;
+    const summary = {
+        cacheHit: Boolean(Number(timings.model_cache_hit || 0)),
+        modelLoadSeconds: seconds('model_load_s'),
+        referenceEmbeddingSeconds: seconds('reference_embedding_s'),
+        vadSeconds: seconds('vad_s'),
+        transcriptionSeconds: trueAsrSeconds,
+        punctuationSeconds: seconds('punc_s'),
+        builtinSpeakerEmbeddingSeconds: seconds('builtin_speaker_embedding_s'),
+        speakerClusterEmbeddingSeconds: seconds('speaker_cluster_embedding_s'),
+        speakerMatchingSeconds: seconds('speaker_matching_s'),
+        pipelineOverheadSeconds: seconds('pipeline_overhead_s'),
+        postprocessSeconds: seconds('postprocess_s'),
+        backendTotalSeconds: seconds('backend_total_s'),
+        trueAsrSpeed: trueAsrSpeed === null ? null : Number(trueAsrSpeed.toFixed(2))
+    };
+    console.log(
+        `⏱️  ASR阶段耗时: cache=${summary.cacheHit ? 'hit' : 'miss'}, ` +
+        `加载=${summary.modelLoadSeconds.toFixed(1)}s, 参考embedding=${summary.referenceEmbeddingSeconds.toFixed(1)}s, ` +
+        `VAD=${summary.vadSeconds.toFixed(1)}s, 真正转写=${summary.transcriptionSeconds.toFixed(1)}s` +
+        `${summary.trueAsrSpeed ? ` (${summary.trueAsrSpeed.toFixed(1)}x)` : ''}, ` +
+        `标点=${summary.punctuationSeconds.toFixed(1)}s, 内建说话人embedding=${summary.builtinSpeakerEmbeddingSeconds.toFixed(1)}s, ` +
+        `实名聚类embedding=${summary.speakerClusterEmbeddingSeconds.toFixed(1)}s, 匹配=${summary.speakerMatchingSeconds.toFixed(1)}s, ` +
+        `pipeline其他=${summary.pipelineOverheadSeconds.toFixed(1)}s, 后处理=${summary.postprocessSeconds.toFixed(1)}s, ` +
+        `backend总计=${summary.backendTotalSeconds.toFixed(1)}s`
+    );
+    console.log(`${ASR_TIMING_SENTINEL} ${JSON.stringify(summary)}`);
+    return summary;
 }
 let hasLoggedGpuDetectionConfig = false;
 let activeWhisperProcess = null;
@@ -811,6 +850,7 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
                     throw new Error(`未实现的 ASR backend: ${selected.backend}`);
                 }
 
+                const asrTimingSummary = logAsrTimings(asrResult?.timings, mediaDurationSeconds);
                 const normalized = asrBackends.normalizeAsrResult(asrResult, subtitleConfig);
                 asrBackends.writeSrt(normalized, srtPath, {
                     ...subtitleConfig,
@@ -840,6 +880,8 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
                     elapsedSeconds: Number(asrElapsedSeconds.toFixed(3)),
                     mediaDurationSeconds: mediaDurationSeconds > 0 ? Number(mediaDurationSeconds.toFixed(3)) : null,
                     realtimeFactor: realtimeFactor === null ? null : Number(realtimeFactor.toFixed(4)),
+                    stageTimings: asrResult?.timings || null,
+                    timingSummary: asrTimingSummary || null,
                     segments: normalized.segments.length,
                     generatedAt: new Date().toISOString()
                 });
