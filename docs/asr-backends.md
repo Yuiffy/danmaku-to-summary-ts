@@ -147,6 +147,20 @@ node src/scripts/enhanced_auto_summary.js --asr-backend paraformer "D:/path/to/v
 
 集中队列会启动一个仅监听 `127.0.0.1`、带随机令牌的 Paraformer 常驻 worker。队列中连续任务复用主模型和标点模型；显式启用说话人识别时也会复用 CAM++ 与参考 embedding。队列清空或父队列检测到 GPU 繁忙时终止 worker，释放显存。单独运行 `enhanced_auto_summary.js` 时仍会自动降级为一次性 Python 进程。
 
+### 下一场直播一次性开启说话人识别
+
+生产默认关闭说话人识别。发现多人联动时，可以按房间号或 `ai.streamerRegistry` 中的主播名，为该直播间下一个尚未开始的 ASR 任务开启一次：
+
+```powershell
+npm run asr:speaker-once -- enable "栞栞" --requested-by openclaw --reason "多人联动"
+npm run asr:speaker-once -- status
+npm run asr:speaker-once -- cancel "栞栞" --requested-by openclaw
+```
+
+开关默认 24 小时过期，也可以用 `--expires-hours 48` 修改。任务执行前会认领开关并把结果固化到队列任务；本场强制使用 Paraformer + CAM++，标点保持开启，完成后自动恢复全局默认关闭。已经开始 ASR 的任务不能中途切换，此时开关会留给该房间的下一条任务。
+
+运行时状态保存在忽略版本控制的 `data/runtime/asr-speaker-once.json`。OpenClaw 已安装 `arm-asr-speaker-once` skill，应通过上述 CLI 操作，不应为单场任务编辑生产配置或重启服务。
+
 每个任务都会在日志和同名 `.asr_meta.json` 中记录 `model_load`、VAD、真正的 ASR inference、标点、FunASR 内建 CAM++、实名聚类 embedding、说话人匹配和后处理耗时。慢 ASR 企微提醒也会附带这些分项。实名映射按 FunASR 已完成的说话人聚类抽样批量计算，不再为几千句字幕逐句调用 CAM++。
 
 ## 启用 Fun-ASR-Nano vLLM

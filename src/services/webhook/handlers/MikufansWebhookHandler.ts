@@ -17,6 +17,7 @@ import { ProcessingAlertService } from '../../monitoring/ProcessingAlertService'
 import { applyFfmpegProcessPriority, getFfmpegResourceConfig } from '../../../utils/ffmpegResource';
 
 const queueManager = require(path.join(process.cwd(), 'src', 'scripts', 'whisper_queue_manager.js'));
+const speakerOnceRegistry = require(path.join(process.cwd(), 'src', 'scripts', 'asr', 'speaker_once_registry.js'));
 const ASR_PHASE_DONE_SENTINEL = '[[ASR_PHASE_DONE]]';
 const LEGACY_WHISPER_PHASE_DONE_SENTINEL = '[[WHISPER_PHASE_DONE]]';
 const DELAYED_REPLY_READY_SENTINEL = '[[DELAYED_REPLY_READY]]';
@@ -30,6 +31,8 @@ interface QueuedSummaryTask {
   status: string;
   xmlPath?: string | null;
   screenshotPath?: string | null;
+  enableSpeakerRecognition?: boolean;
+  speakerRecognitionRequest?: Record<string, unknown> | null;
 }
 
 /**
@@ -1149,6 +1152,20 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     }
 
     const roomId = task.roomId ? String(task.roomId) : 'unknown';
+    if (!task.enableSpeakerRecognition && roomId !== 'unknown') {
+      const oneShotRequest = speakerOnceRegistry.consume(roomId, {
+        taskId: task.id,
+        mediaPath: task.mediaPath
+      });
+      if (oneShotRequest) {
+        queueManager.setTaskSpeakerRecognition(task.id, oneShotRequest);
+        task.enableSpeakerRecognition = true;
+        task.speakerRecognitionRequest = oneShotRequest;
+        this.logger.info(
+          `本场启用一次性说话人识别: roomId=${roomId}, taskId=${task.id}, requestId=${oneShotRequest.id}`
+        );
+      }
+    }
     const resourceConfig = getFfmpegResourceConfig();
     this.logger.info(`Mikufans队列Worker开始执行: ${path.basename(task.mediaPath)} (taskId=${task.id})`);
 
@@ -1167,7 +1184,8 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         ASR_PERSISTENT_WORKER_PORT: this.asrPersistentWorkerPort
           ? String(this.asrPersistentWorkerPort)
           : '',
-        ASR_PERSISTENT_WORKER_TOKEN: this.asrPersistentWorkerToken || ''
+        ASR_PERSISTENT_WORKER_TOKEN: this.asrPersistentWorkerToken || '',
+        ASR_ENABLE_SPEAKER_ONCE: task.enableSpeakerRecognition ? 'true' : ''
       }
     });
     applyFfmpegProcessPriority(ps.pid, resourceConfig.priority);

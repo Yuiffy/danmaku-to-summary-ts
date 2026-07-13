@@ -539,7 +539,7 @@ describe('asr_backends', () => {
 
   test('safe corrections protect embedded terms by default and allow per-rule opt-out', () => {
     const protectedCorrections = {
-      safe: [{ from: '碎机', to: '岁己' }]
+      safe: [{ from: '碎机', to: '岁己', exclude_when: ['粉碎机'] }]
     };
     const unprotectedCorrections = {
       safe: [{ from: '碎机', to: '岁己', protect: false }]
@@ -550,15 +550,23 @@ describe('asr_backends', () => {
     expect(asr.applyCorrectionsToText('这个粉碎机打得挺细的', unprotectedCorrections)).toBe('这个粉岁己打得挺细的');
   });
 
-  test('safe alias-derived corrections inherit default protection', () => {
+  test('safe alias-derived corrections can opt into explicit protected terms while keeping default safe metadata', () => {
     const resolved = asr.resolveAsrHotwords({
       asr: {
         common_hotwords: [
           { word: '岁己', aliases: ['碎机'] }
-        ]
+        ],
+        corrections: {
+          safe: [
+            { from: '碎机', to: '岁己', exclude_when: ['粉碎机'] }
+          ]
+        }
       }
     });
 
+    expect(resolved.corrections.safe).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: '碎机', to: '岁己' })
+    ]));
     expect(asr.applyCorrectionsToText('碎机前辈今天来了', resolved.corrections)).toBe('岁己前辈今天来了');
     expect(asr.applyCorrectionsToText('这个粉碎机打得挺细的', resolved.corrections)).toBe('这个粉碎机打得挺细的');
   });

@@ -16,9 +16,6 @@ const PUNCTUATION_PATTERN = /^[\p{P}\p{S}]+$/u;
 const WORDLIKE_CHAR_PATTERN = /[\p{L}\p{N}]/u;
 const ASCII_WORDLIKE_CHAR_PATTERN = /[A-Za-z0-9]/;
 const NON_ASCII_PATTERN = /[^\x00-\x7F]/;
-const fallbackSegmenter = typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function'
-    ? new Intl.Segmenter('zh', { granularity: 'word' })
-    : null;
 const jiebaInstances = new Map();
 
 function normalizeHotwordEntry(entry) {
@@ -530,11 +527,8 @@ function isProtectedByTokenBoundary(context, start, end) {
     }
     const firstTokenIndex = context.tokenIndexByChar[safeStart];
     const lastTokenIndex = context.tokenIndexByChar[Math.min(safeEnd - 1, context.tokenIndexByChar.length - 1)];
-    if (firstTokenIndex < 0 || lastTokenIndex < 0) {
+    if (firstTokenIndex < 0 || lastTokenIndex < 0 || firstTokenIndex !== lastTokenIndex) {
         return false;
-    }
-    if (firstTokenIndex !== lastTokenIndex) {
-        return true;
     }
     const token = context.tokens[firstTokenIndex];
     if (!token || token.isWhitespace || token.isPunctuation) {
@@ -543,7 +537,7 @@ function isProtectedByTokenBoundary(context, start, end) {
     return safeStart > token.start || safeEnd < token.end;
 }
 
-function hasAsciiWordlikeNeighbor(text, start, end) {
+function isEmbeddedInLargerLatinTerm(text, start, end) {
     const source = String(text || '');
     const previousChar = start > 0 ? source[start - 1] : '';
     const nextChar = end < source.length ? source[end] : '';
@@ -558,13 +552,10 @@ function shouldProtectSafeCorrection(text, start, end, correction, context = nul
     if (!matched) {
         return false;
     }
-    if (isProtectedByTokenBoundary(context, start, end)) {
-        return true;
+    if (!NON_ASCII_PATTERN.test(matched)) {
+        return isEmbeddedInLargerLatinTerm(text, start, end);
     }
-    if (NON_ASCII_PATTERN.test(matched)) {
-        return hasWordlikeNeighborsOnBothSides(text, start, end);
-    }
-    return hasAsciiWordlikeNeighbor(text, start, end);
+    return isProtectedByTokenBoundary(context, start, end);
 }
 
 function applyCorrectionList(text, corrections = [], stats = null, type = 'safe') {
@@ -643,18 +634,6 @@ function createToken(text, start, end) {
 function buildFallbackTokens(text) {
     const tokens = [];
     const source = String(text || '');
-    if (fallbackSegmenter) {
-        for (const part of fallbackSegmenter.segment(source)) {
-            const tokenText = String(part.segment || '');
-            if (!tokenText) {
-                continue;
-            }
-            const start = Number(part.index) || 0;
-            const end = start + tokenText.length;
-            tokens.push(createToken(source, start, end));
-        }
-        return tokens;
-    }
     const pattern = /[A-Za-z0-9]+|\s+|./gu;
     let match;
     while ((match = pattern.exec(source)) !== null) {

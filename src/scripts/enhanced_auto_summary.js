@@ -794,9 +794,21 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
         }
 
         const config = configLoader.getConfig();
+        const enableSpeakerOnce = String(process.env.ASR_ENABLE_SPEAKER_ONCE || '').toLowerCase() === 'true';
+        if (enableSpeakerOnce) {
+            config.asr = config.asr || {};
+            config.asr.paraformer = {
+                ...(config.asr.paraformer || {}),
+                enable_speaker: true,
+                spk_model: config.asr.paraformer?.spk_model || 'cam++'
+            };
+            console.log('🎙️  本任务已启用一次性说话人识别（Paraformer + CAM++）');
+        }
         const subtitleConfig = asrBackends.getSubtitleConfig(config);
         const context = options.asrContext || {};
-        const selected = options.forceBackend
+        const selected = enableSpeakerOnce
+            ? { backend: 'paraformer', reason: '一次性说话人识别开关' }
+            : options.forceBackend
             ? { backend: options.forceBackend, reason: options.forceReason || `实验模式指定 ${options.forceBackend}` }
             : asrBackends.resolveAsrBackend(config, context, options.asrBackend);
         const asrRuntime = asrBackends.resolveAsrHotwords(config, context);

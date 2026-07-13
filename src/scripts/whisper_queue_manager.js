@@ -471,6 +471,27 @@ class WhisperQueueManager {
     }
 
     /**
+     * 将一次性说话人识别请求固化到队列任务。请求在写入任务后即使服务重启也不会串场。
+     */
+    setTaskSpeakerRecognition(taskId, request) {
+        this.reloadForMutation({ cleanupInvalid: false });
+        const task = this.queue.find(t => t.id === taskId);
+        if (!task) {
+            return null;
+        }
+        task.enableSpeakerRecognition = true;
+        task.speakerRecognitionRequest = request ? {
+            id: request.id || null,
+            requestedBy: request.requestedBy || null,
+            reason: request.reason || null,
+            createdAt: request.createdAt || null,
+            consumedAt: request.finishedAt || new Date().toISOString()
+        } : null;
+        this.saveQueue();
+        return task;
+    }
+
+    /**
      * 标记任务为已完成
      * @param {string} taskId - 任务ID
      */
