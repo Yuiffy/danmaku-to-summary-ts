@@ -153,11 +153,12 @@ node src/scripts/enhanced_auto_summary.js --asr-backend paraformer "D:/path/to/v
 
 ```powershell
 npm run asr:speaker-once -- enable "栞栞" --requested-by openclaw --reason "多人联动"
+npm run asr:speaker-once -- enable "栞栞" --start-at "2026-07-16T20:00:00+08:00" --window-hours 24 --requested-by openclaw --reason "多人联动预告"
 npm run asr:speaker-once -- status
 npm run asr:speaker-once -- cancel "栞栞" --requested-by openclaw
 ```
 
-开关默认 24 小时过期，也可以用 `--expires-hours 48` 修改。任务执行前会认领开关并把结果固化到队列任务；本场强制使用 Paraformer + CAM++，标点保持开启，完成后自动恢复全局默认关闭。已经开始 ASR 的任务不能中途切换，此时开关会留给该房间的下一条任务。
+不带时间时，开关默认 24 小时过期，也可以用 `--expires-hours 48` 修改。带 `--start-at` 时，匹配直播结束入队时间位于 `--start-at` 起 `--window-hours`（默认 24）小时内的第一场直播；窗口前结束的直播不会消耗开关，窗口内入队但因队列积压而较晚执行的任务仍能正确匹配。任务执行前会认领开关并把结果固化到队列任务；本场强制使用 Paraformer + CAM++，标点保持开启，完成后自动恢复全局默认关闭。已经开始 ASR 的任务不能中途切换。
 
 运行时状态保存在忽略版本控制的 `data/runtime/asr-speaker-once.json`。OpenClaw 已安装 `arm-asr-speaker-once` skill，应通过上述 CLI 操作，不应为单场任务编辑生产配置或重启服务。
 
@@ -311,7 +312,7 @@ npm run asr:vllm-doctor
 
 ASR 配置支持全局热词、按 routing 命中的房间/主播热词，以及统一的后处理 corrections。
 
-- `aliases`: 旧格式兼容，作为 safe corrections；默认也会一起送进 ASR 作为热词提示。
+- `aliases`: 旧格式兼容，作为 safe corrections；默认也会一起送进 ASR 作为热词提示。现在 `safe` 默认会做词保护：如果来源词被识别成更长中文词条的一部分（例如 `粉碎机` 里的 `碎机`），会优先保留整词，不再需要先手工把这类保护词一条条补全。
 - `protect: false`: `safe` 规则/alias 的可选逃生口；默认 `safe` 替换会做词保护，只有显式设为 `false` 才恢复旧的子串替换行为。
 - `aliases_as_hotwords: false`: 只把 `aliases` 用作后处理修正，不送进模型热词。适合 `碎机`、`碎即`、`岁几` 这类“错误识别形态”，避免模型被错误词反向提示。
 - `hotword_terms`: 只送进 ASR，不会自动改写字幕文本，适合 `小岁`、`岁己姐` 这类希望识别出来但不强制归一的词。

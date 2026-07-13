@@ -1155,7 +1155,8 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     if (!task.enableSpeakerRecognition && roomId !== 'unknown') {
       const oneShotRequest = speakerOnceRegistry.consume(roomId, {
         taskId: task.id,
-        mediaPath: task.mediaPath
+        mediaPath: task.mediaPath,
+        addedTime: task.addedTime
       });
       if (oneShotRequest) {
         queueManager.setTaskSpeakerRecognition(task.id, oneShotRequest);

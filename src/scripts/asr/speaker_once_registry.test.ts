@@ -3,7 +3,7 @@ const os = require('os');
 const path = require('path');
 
 const { SpeakerOnceRegistry } = require('./speaker_once_registry');
-const { resolveRoom } = require('./speaker_once_cli');
+const { parseStartAt, resolveRoom } = require('./speaker_once_cli');
 
 describe('speaker_once_registry', () => {
   let tempDir: string;
@@ -48,6 +48,70 @@ describe('speaker_once_registry', () => {
     state.requests['23260993'].expiresAt = new Date(Date.now() - 1000).toISOString();
     fs.writeFileSync(path.join(tempDir, 'state.json'), JSON.stringify(state), 'utf8');
     expect(registry.consume('23260993', { taskId: 'late' })).toBeNull();
+  });
+
+  test('keeps a scheduled request when a stream ends before its window', () => {
+    const startAt = Date.now() + 60 * 60 * 1000;
+    registry.arm('26966466', {
+      startAt: new Date(startAt).toISOString(),
+      windowHours: 24
+    });
+
+    expect(registry.consume('26966466', {
+      taskId: 'too-early',
+      addedTime: startAt - 1
+    })).toBeNull();
+    expect(registry.list()).toHaveLength(1);
+  });
+
+  test('consumes the first stream ending inside a scheduled window', () => {
+    const startAt = Date.now() + 60 * 60 * 1000;
+    registry.arm('26966466', {
+      startAt: new Date(startAt).toISOString(),
+      windowHours: 24
+    });
+
+    expect(registry.consume('26966466', {
+      taskId: 'in-window',
+      addedTime: startAt + 30 * 60 * 1000
+    })).toMatchObject({
+      status: 'consumed',
+      taskId: 'in-window',
+      matchedTaskEndedAt: new Date(startAt + 30 * 60 * 1000).toISOString()
+    });
+    expect(registry.list()).toEqual([]);
+  });
+
+  test('expires a scheduled request when the next stream ends after its window', () => {
+    const startAt = Date.now() + 60 * 60 * 1000;
+    registry.arm('26966466', {
+      startAt: new Date(startAt).toISOString(),
+      windowHours: 2
+    });
+
+    expect(registry.consume('26966466', {
+      taskId: 'too-late',
+      addedTime: startAt + 2 * 60 * 60 * 1000 + 1
+    })).toBeNull();
+    expect(registry.list()).toEqual([]);
+  });
+
+  test('uses queue addedTime so an in-window stream still matches after backlog delay', () => {
+    const startAt = Date.now() - 2 * 60 * 60 * 1000;
+    registry.arm('26966466', {
+      startAt: new Date(startAt).toISOString(),
+      windowHours: 1
+    });
+
+    expect(registry.consume('26966466', {
+      taskId: 'backlogged',
+      addedTime: startAt + 30 * 60 * 1000
+    })).toMatchObject({ status: 'consumed', taskId: 'backlogged' });
+  });
+
+  test('parses an explicit scheduled time with timezone', () => {
+    expect(parseStartAt('2026-07-16T20:00:00+08:00')).toBe('2026-07-16T12:00:00.000Z');
+    expect(() => parseStartAt('7月16日晚8点')).toThrow('预约开始时间无效');
   });
 
   test('resolves a configured streamer name to room id', () => {

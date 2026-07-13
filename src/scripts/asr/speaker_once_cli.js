@@ -61,9 +61,22 @@ function parseArgs(argv) {
     return { positional, flags };
 }
 
+function parseStartAt(value) {
+    const raw = String(value || '').trim();
+    const localMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/);
+    const parsed = localMatch
+        ? new Date(
+            Number(localMatch[1]), Number(localMatch[2]) - 1, Number(localMatch[3]),
+            Number(localMatch[4]), Number(localMatch[5]), Number(localMatch[6] || 0)
+        )
+        : new Date(raw);
+    if (!raw || Number.isNaN(parsed.getTime())) throw new Error(`预约开始时间无效: ${value}`);
+    return parsed.toISOString();
+}
+
 function printUsage() {
     console.log('用法:');
-    console.log('  npm run asr:speaker-once -- enable <直播间ID|主播名> [--expires-hours 24] [--reason 文本] [--requested-by openclaw]');
+    console.log('  npm run asr:speaker-once -- enable <直播间ID|主播名> [--start-at ISO时间] [--window-hours 24] [--expires-hours 24] [--reason 文本] [--requested-by openclaw]');
     console.log('  npm run asr:speaker-once -- cancel <直播间ID|主播名>');
     console.log('  npm run asr:speaker-once -- status [直播间ID|主播名] [--json]');
 }
@@ -75,15 +88,23 @@ function main(argv = process.argv.slice(2)) {
 
     if (action === 'enable' || action === 'arm') {
         const resolved = resolveRoom(target);
+        const startAt = flags['start-at'] === undefined ? null : parseStartAt(flags['start-at']);
         const request = registry.arm(resolved.roomId, {
             roomName: resolved.roomName,
             requestedBy: flags['requested-by'] || 'cli',
             reason: flags.reason,
+            startAt,
+            windowHours: flags['window-hours'] === undefined ? 24 : Number(flags['window-hours']),
             expiresHours: flags['expires-hours'] === undefined ? 24 : Number(flags['expires-hours'])
         });
         console.log(`✅ 已开启一次性说话人识别: ${resolved.roomName || 'room'} (${resolved.roomId})`);
-        console.log(`   生效范围: 该直播间下一个尚未开始的 ASR 任务`);
-        console.log(`   过期时间: ${request.expiresAt || '不过期'}`);
+        if (request.scheduledAt) {
+            console.log(`   生效范围: 结束时间位于预约窗口内的第一场直播`);
+            console.log(`   预约窗口: ${request.scheduledAt} ~ ${request.expiresAt}`);
+        } else {
+            console.log(`   生效范围: 该直播间下一个尚未开始的 ASR 任务`);
+            console.log(`   过期时间: ${request.expiresAt || '不过期'}`);
+        }
         return request;
     }
 
@@ -110,7 +131,10 @@ function main(argv = process.argv.slice(2)) {
         } else {
             console.log('📋 待生效的一次性说话人识别开关:');
             filtered.forEach(item => {
-                console.log(`   - ${item.roomName || 'room'} (${item.roomId}), expires=${item.expiresAt || 'never'}, by=${item.requestedBy}`);
+                const scope = item.scheduledAt
+                    ? `window=${item.scheduledAt}..${item.expiresAt}`
+                    : `expires=${item.expiresAt || 'never'}`;
+                console.log(`   - ${item.roomName || 'room'} (${item.roomId}), ${scope}, by=${item.requestedBy}`);
             });
         }
         return filtered;
@@ -129,4 +153,4 @@ if (require.main === module) {
     }
 }
 
-module.exports = { main, parseArgs, resolveRoom, normalizeLookup };
+module.exports = { main, parseArgs, parseStartAt, resolveRoom, normalizeLookup };

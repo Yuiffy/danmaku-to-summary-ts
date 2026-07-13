@@ -10,6 +10,7 @@ const DEFAULT_STATE_FILE = path.join(
 const LOCK_WAIT_MS = 25;
 const LOCK_TIMEOUT_MS = 5000;
 const STALE_LOCK_MS = 30000;
+const SCHEDULED_CLEANUP_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 
 function sleepSync(ms) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -99,7 +100,8 @@ class SpeakerOnceRegistry {
     cleanupExpired(state, now = Date.now()) {
         let changed = false;
         for (const [roomId, request] of Object.entries(state.requests || {})) {
-            if (request.expiresAt && Date.parse(request.expiresAt) <= now) {
+            const cleanupAt = request.cleanupAfter || request.expiresAt;
+            if (cleanupAt && Date.parse(cleanupAt) <= now) {
                 delete state.requests[roomId];
                 state.history.push({
                     ...request,
@@ -120,6 +122,19 @@ class SpeakerOnceRegistry {
             this.cleanupExpired(state);
             const now = Date.now();
             const expiresHours = Number(options.expiresHours ?? 24);
+            const scheduledAt = options.startAt ? Date.parse(options.startAt) : null;
+            const windowHours = Number(options.windowHours ?? 24);
+            if (options.startAt && !Number.isFinite(scheduledAt)) {
+                throw new Error(`预约开始时间无效: ${options.startAt}`);
+            }
+            if (scheduledAt !== null && (!Number.isFinite(windowHours) || windowHours <= 0)) {
+                throw new Error(`预约窗口时长无效: ${options.windowHours}`);
+            }
+            const expiresAt = scheduledAt !== null
+                ? scheduledAt + windowHours * 60 * 60 * 1000
+                : (Number.isFinite(expiresHours) && expiresHours > 0
+                    ? now + expiresHours * 60 * 60 * 1000
+                    : null);
             const request = {
                 id: `${now}-${normalizedRoomId}`,
                 roomId: normalizedRoomId,
@@ -127,8 +142,11 @@ class SpeakerOnceRegistry {
                 requestedBy: options.requestedBy ? String(options.requestedBy) : 'cli',
                 reason: options.reason ? String(options.reason) : '下一场直播启用说话人识别',
                 createdAt: new Date(now).toISOString(),
-                expiresAt: Number.isFinite(expiresHours) && expiresHours > 0
-                    ? new Date(now + expiresHours * 60 * 60 * 1000).toISOString()
+                scheduledAt: scheduledAt !== null ? new Date(scheduledAt).toISOString() : null,
+                windowHours: scheduledAt !== null ? windowHours : null,
+                expiresAt: expiresAt !== null ? new Date(expiresAt).toISOString() : null,
+                cleanupAfter: scheduledAt !== null
+                    ? new Date(expiresAt + SCHEDULED_CLEANUP_GRACE_MS).toISOString()
                     : null
             };
             state.requests[normalizedRoomId] = request;
@@ -161,10 +179,33 @@ class SpeakerOnceRegistry {
         const normalizedRoomId = normalizeRoomId(roomId);
         return this.withLock(() => {
             const state = this.readState();
-            const expired = this.cleanupExpired(state);
             const request = state.requests[normalizedRoomId] || null;
             if (!request) {
+                const expired = this.cleanupExpired(state);
                 if (expired) this.writeState(state);
+                return null;
+            }
+            const now = Date.now();
+            const taskEndedAt = Number.isFinite(Number(task.addedTime))
+                ? Number(task.addedTime)
+                : now;
+            const scheduledAt = request.scheduledAt ? Date.parse(request.scheduledAt) : null;
+            const expiresAt = request.expiresAt ? Date.parse(request.expiresAt) : null;
+
+            if (scheduledAt !== null && taskEndedAt < scheduledAt) {
+                return null;
+            }
+            if (expiresAt !== null && (scheduledAt !== null ? taskEndedAt : now) > expiresAt) {
+                delete state.requests[normalizedRoomId];
+                state.history.push({
+                    ...request,
+                    status: 'expired',
+                    expiredReason: scheduledAt !== null ? 'task-ended-after-window' : 'request-expired',
+                    matchedTaskEndedAt: new Date(taskEndedAt).toISOString(),
+                    finishedAt: new Date(now).toISOString()
+                });
+                this.cleanupExpired(state, now);
+                this.writeState(state);
                 return null;
             }
             delete state.requests[normalizedRoomId];
@@ -173,9 +214,11 @@ class SpeakerOnceRegistry {
                 status: 'consumed',
                 taskId: task.taskId ? String(task.taskId) : null,
                 mediaPath: task.mediaPath ? String(task.mediaPath) : null,
+                matchedTaskEndedAt: new Date(taskEndedAt).toISOString(),
                 finishedAt: new Date().toISOString()
             };
             state.history.push(consumed);
+            this.cleanupExpired(state, now);
             this.writeState(state);
             return consumed;
         });
