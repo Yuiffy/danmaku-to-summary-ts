@@ -1,27 +1,16 @@
 # FunASR Paraformer Fine-tune Notes
 
-## Current trained model
+## Current timestamp-capable fine-tuned model
 
-The current usable fine-tuned Paraformer model is:
+Current training output directory:
 
-`D:/files/videos/asr_finetune_runs/paraformer_standard_20260712_official_example`
+`D:/files/videos/asr_finetune_runs/paraformer_timestamp_base_20260712_longrun`
 
-Recommended checkpoint inside that directory:
+Prepared inference-ready directory currently used by gray rollout:
 
-`model.pt.avg10`
+`D:/files/videos/asr_eval/models/paraformer_timestamp_avg10`
 
-For production inference, use the prepared inference-ready directory:
-
-`D:/files/videos/asr_eval/models/paraformer_official_avg10`
-
-This directory already contains the full inference assets required by FunASR:
-
-- `configuration.json`
-- `config.yaml`
-- `model.pt`
-- `model.pt.best`
-- `model.pt.avg10`
-- `model.pt.ep*`
+This inference-ready directory contains the assets required by FunASR for rollout.
 
 ## Project model selection behavior
 
@@ -40,9 +29,8 @@ Repository-safe default:
 
 Machine-local or deployment override:
 
-- `config/production.json` can use `model_profile = finetuned` when the prepared local inference directory exists on that machine
-- current repository state keeps production on `default` again until the finetuned route is fully validated end-to-end
-- when you want to retry the finetuned route locally, point `model_profile = finetuned` and use `D:/files/videos/asr_eval/models/paraformer_official_avg10`
+- `config/production.json` keeps `model_profile = default` and applies finetuned rollout through `asr.gray_rollout`
+- gray rollout currently uses `D:/files/videos/asr_eval/models/paraformer_timestamp_avg10`
 
 Config entry:
 
@@ -52,9 +40,9 @@ Config entry:
 {
   "asr": {
     "paraformer": {
-      "model_profile": "finetuned",
+      "model_profile": "default",
       "base_model": "paraformer-zh",
-      "finetuned_model": "D:/files/videos/asr_finetune_runs/paraformer_standard_20260712_official_example"
+      "finetuned_model": "D:/files/videos/asr_eval/models/paraformer_timestamp_avg10"
     }
   }
 }
@@ -81,9 +69,7 @@ The successful path was:
 3. Normalize generated `jsonl` back to UTF-8 on Windows
 4. Train with the official Paraformer example-style parameters
 
-The final successful run was:
-
-`D:/files/videos/asr_finetune_runs/paraformer_standard_20260712_official_example`
+The timestamp-capable retrain route is now the only recommended production candidate.
 
 ## Known improvements from this model
 

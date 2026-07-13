@@ -1341,11 +1341,11 @@
           "碎即",
           "穗即",
           "岁机",
-          "岁吉",
           "岁己sui",
           "岁己苏伊"
         ],
-        "contextual_aliases": [
+        "ambiguous_aliases": [
+          "岁吉",
           "岁几"
         ],
         "require_nearby": [
@@ -1371,7 +1371,9 @@
           "小资",
           "小姿",
           "小紫",
-          "小sei",
+          "小sei"
+        ],
+        "ambiguous_aliases": [
           "小碎"
         ],
         "hotword_terms": [
@@ -1401,9 +1403,7 @@
         "饼干碎": "饼干岁",
         "碎戟": "岁己",
         "碎即": "岁己",
-        "碎几": "岁己",
         "碎姐": "岁己",
-        "小碎": "小岁",
         "小c": "小岁",
         "小 c": "小岁",
         "小四": "小岁",
@@ -1419,6 +1419,16 @@
         "碎糠": "岁栞",
         "栞栞小李": "栞栞Shiori"
       },
+      "ambiguous": [
+        {
+          "from": "碎几",
+          "to": "岁己",
+          "require_nearby": ["SUI", "小岁", "饼干岁", "主播", "直播", "前辈", "姐", "晚上好"],
+          "context_window_tokens": 6,
+          "match_mode": "token",
+          "boundary_sensitive": true
+        }
+      ],
       "exclude_when": {
         "小碎": [
           "小碎步",
@@ -1852,7 +1862,7 @@
       "model_profile": "default",
       "model": "paraformer-zh",
       "base_model": "paraformer-zh",
-      "finetuned_model": "D:/files/videos/asr_eval/models/paraformer_official_avg10",
+      "finetuned_model": "D:/files/videos/asr_eval/models/paraformer_timestamp_avg10",
       "vad_model": "fsmn-vad",
       "punc_model": "ct-punc",
       "spk_model": "cam++",

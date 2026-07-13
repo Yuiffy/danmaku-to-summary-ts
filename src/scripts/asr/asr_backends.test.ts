@@ -549,13 +549,25 @@ describe('asr_backends', () => {
       .toBe('击碎几岁己前辈今天来了');
   });
 
-  test('production sui corrections keep phrase-internal smash text while fixing standalone alias', () => {
+  test('production config moves risky sui homophones into ambiguous rules', () => {
     const resolved = asr.resolveAsrHotwords(productionConfig, { room_id: '25788785' });
 
     expect(asr.applyCorrectionsToText('它会投掷闪耀光芒的回旋镖莱击碎即将撞上这个星球', resolved.corrections))
       .toBe('它会投掷闪耀光芒的回旋镖莱击碎即将撞上这个星球');
     expect(asr.applyCorrectionsToText('碎即前辈今天来了', resolved.corrections))
       .toBe('岁己前辈今天来了');
+    expect(resolved.corrections.safe).toEqual(expect.not.arrayContaining([
+      { from: '岁吉', to: '岁己' },
+      { from: '岁几', to: '岁己' },
+      { from: '小碎', to: '小岁' },
+      { from: '碎几', to: '岁己' }
+    ]));
+    expect(resolved.corrections.ambiguous).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: '岁吉', to: '岁己' }),
+      expect.objectContaining({ from: '岁几', to: '岁己' }),
+      expect.objectContaining({ from: '小碎', to: '小岁' }),
+      expect.objectContaining({ from: '碎几', to: '岁己' })
+    ]));
   });
 
   test('ambiguous sui homophones need nearby sui context before correction', () => {
