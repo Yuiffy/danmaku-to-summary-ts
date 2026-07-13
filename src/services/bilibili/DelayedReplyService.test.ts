@@ -65,12 +65,14 @@ describe('DelayedReplyService duplicate reply detection', () => {
     const anchorConfigSpy = jest.spyOn(BilibiliConfigHelper, 'getAnchorConfig').mockReturnValue(undefined);
 
     try {
-      await service.notifyComicGenerationFailure(task);
-      await service.notifyComicGenerationFailure(task);
+      await service.executeSupplementalComicReply(task);
+      await service.executeSupplementalComicReply(task);
 
       expect(notifier.notifyProcessError).toHaveBeenCalledTimes(1);
       expect(notifier.notifyProcessError.mock.calls[0][1]).toBe('异步漫画生图');
       expect(notifier.notifyProcessError.mock.calls[0][4].imageGenerationInfo).toContain('异步任务返回 safety_block');
+      expect(task.status).toBe('completed');
+      expect(task.error).toBe('漫画图片生成已失败，补图停止');
       expect(store.updateTask).toHaveBeenCalledWith(task.taskId, expect.objectContaining({
         comicGenerationFailureNotifiedAt: expect.any(Date)
       }));

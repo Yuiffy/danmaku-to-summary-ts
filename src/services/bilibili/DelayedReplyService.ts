@@ -1089,6 +1089,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       task.comicWaitCount = (task.comicWaitCount || 0) + 1;
 
       if (this.isComicGenerationTerminalFailure(comicImagePath)) {
+        await this.notifyComicGenerationFailure(task);
         task.status = 'completed';
         task.error = '漫画图片生成已失败，补图停止';
         await this.store.updateTask(task.taskId, {
