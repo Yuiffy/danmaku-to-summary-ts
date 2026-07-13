@@ -554,6 +554,8 @@ describe('asr_backends', () => {
 
     expect(asr.applyCorrectionsToText('它会投掷闪耀光芒的回旋镖莱击碎即将撞上这个星球', resolved.corrections))
       .toBe('它会投掷闪耀光芒的回旋镖莱击碎即将撞上这个星球');
+    expect(asr.applyCorrectionsToText('这个粉碎机打得挺细的', resolved.corrections))
+      .toBe('这个粉碎机打得挺细的');
     expect(asr.applyCorrectionsToText('碎即前辈今天来了', resolved.corrections))
       .toBe('岁己前辈今天来了');
     expect(resolved.corrections.safe).toEqual(expect.not.arrayContaining([
