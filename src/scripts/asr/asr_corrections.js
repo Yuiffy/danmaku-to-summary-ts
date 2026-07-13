@@ -564,6 +564,7 @@ function applyCorrectionList(text, corrections = [], stats = null, type = 'safe'
     const ordered = normalized
         .filter(item => item && item.from && item.to)
         .sort((a, b) => String(b.from).length - String(a.from).length);
+    const protectedTerms = type === 'safe' ? collectSafeProtectionTerms(ordered) : [];
     for (const correction of ordered) {
         const pattern = new RegExp(escapeRegExp(correction.from), 'g');
         const before = output;
@@ -573,7 +574,9 @@ function applyCorrectionList(text, corrections = [], stats = null, type = 'safe'
         const excludePatterns = Array.isArray(correction.exclude_pattern)
             ? correction.exclude_pattern.map(value => String(value || '').trim()).filter(Boolean)
             : [];
-        const boundaryContext = correction.protect === false ? null : createTranscriptContext(before);
+        const boundaryContext = correction.protect === false
+            ? null
+            : createTranscriptContext(before, { protectedTerms });
         let count = 0;
         output = before.replace(pattern, (matched, offset, wholeText) => {
             const start = Number(offset) || 0;
@@ -598,16 +601,60 @@ function applyCorrectionList(text, corrections = [], stats = null, type = 'safe'
     return output;
 }
 
-function getJiebaInstance() {
+function collectSafeProtectionTerms(corrections = []) {
+    const protectedTerms = new Set();
+    const normalized = Array.isArray(corrections) ? corrections : [];
+    normalized.forEach((correction) => {
+        if (!correction || correction.protect === false) {
+            return;
+        }
+        const source = String(correction.from || '').trim();
+        if (!source || !NON_ASCII_PATTERN.test(source)) {
+            return;
+        }
+        protectedTerms.add(source);
+    });
+    return Array.from(protectedTerms).sort((a, b) => b.length - a.length);
+}
+
+function buildSafeProtectionJieba(text, protectedTerms = []) {
     if (!Jieba || !bundledJiebaDict) {
         return null;
     }
-    const cacheKey = bundledJiebaDict;
+    const source = String(text || '');
+    const extraTerms = Array.isArray(protectedTerms)
+        ? protectedTerms.map(term => String(term || '').trim()).filter(term => term && NON_ASCII_PATTERN.test(term))
+        : [];
+    const cacheKey = extraTerms.join(' ') || '__base__';
     if (jiebaInstances.has(cacheKey)) {
         return jiebaInstances.get(cacheKey);
     }
     try {
-        const instance = new Jieba(bundledJiebaDict);
+        const customDict = extraTerms.length > 0
+            ? Buffer.from(`\n${extraTerms.map(term => `${term} 100000 n`).join('\n')}\n`, 'utf8')
+            : Buffer.alloc(0);
+        const dictBuffer = customDict.length > 0
+            ? Buffer.concat([Buffer.from(bundledJiebaDict), customDict])
+            : bundledJiebaDict;
+        const instance = Jieba.withDict(dictBuffer);
+        jiebaInstances.set(cacheKey, instance);
+        return instance;
+    } catch {
+        jiebaInstances.set(cacheKey, null);
+        return null;
+    }
+}
+
+function getJiebaInstance() {
+    if (!Jieba || !bundledJiebaDict) {
+        return null;
+    }
+    const cacheKey = '__base__';
+    if (jiebaInstances.has(cacheKey)) {
+        return jiebaInstances.get(cacheKey);
+    }
+    try {
+        const instance = Jieba.withDict(bundledJiebaDict);
         jiebaInstances.set(cacheKey, instance);
         return instance;
     } catch {
@@ -691,9 +738,11 @@ function buildJiebaTokens(text, instance) {
     return tokens;
 }
 
-function createTranscriptContext(text) {
+function createTranscriptContext(text, options = {}) {
     const source = String(text || '');
-    const jieba = getJiebaInstance();
+    const explicitJieba = options.jiebaInstance || null;
+    const protectedTerms = Array.isArray(options.protectedTerms) ? options.protectedTerms : [];
+    const jieba = explicitJieba || buildSafeProtectionJieba(source, protectedTerms) || getJiebaInstance();
     const tokens = (jieba ? buildJiebaTokens(source, jieba) : []).filter(token => token.end > token.start);
     const effectiveTokens = tokens.length > 0 ? tokens : buildFallbackTokens(source);
     const tokenIndexByChar = new Array(source.length).fill(-1);
