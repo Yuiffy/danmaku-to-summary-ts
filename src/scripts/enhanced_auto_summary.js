@@ -726,10 +726,13 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
     const pythonScript = path.join(__dirname, 'python', 'batch_whisper.py');
 
     if (!fs.existsSync(srtPath)) {
+        let mediaDurationSeconds = 0;
+
         // 检查媒体文件时长，小于30秒则跳过Whisper处理
         try {
             console.log(`🔍 分析媒体文件时长...`);
             const duration = await getVideoDuration(mediaPath);
+            mediaDurationSeconds = duration;
             const minDurationSeconds = 30; // 最小媒体文件时长：30秒
             
             if (duration < minDurationSeconds) {
@@ -780,6 +783,7 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
         try {
             // 获取 ASR 锁，防止 GPU 后端并发调用导致资源冲突。
             await acquireWhisperLock(taskId, options);
+            const asrStartTime = Date.now();
 
             let completedWithCleanupCrash = false;
             let completionWarning = null;
@@ -820,13 +824,13 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
                     ...context,
                     mediaPath
                 });
-                const asrElapsedSeconds = (Date.now() - startTime) / 1000;
+                const asrElapsedSeconds = (Date.now() - asrStartTime) / 1000;
                 const selectedModelProfile = String(asrRuntime.model_profile || config.asr?.paraformer?.model_profile || 'default');
                 const selectedFinetunedModel = String(asrRuntime.finetuned_model || config.asr?.gray_rollout?.finetuned_model || config.asr?.paraformer?.finetuned_model || '');
                 const selectedModel = selectedModelProfile === 'finetuned'
                     ? (selectedFinetunedModel || config.asr?.paraformer?.model || 'paraformer-zh')
                     : String(config.asr?.paraformer?.base_model || config.asr?.paraformer?.model || 'paraformer-zh');
-                const realtimeFactor = duration > 0 ? (asrElapsedSeconds / duration) : null;
+                const realtimeFactor = mediaDurationSeconds > 0 ? (asrElapsedSeconds / mediaDurationSeconds) : null;
                 writeAsrMetaSidecar(srtPath, {
                     backend: normalized.backend,
                     routingReason: selected.reason,
@@ -834,7 +838,7 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
                     model: selectedModel,
                     finetunedModel: selectedFinetunedModel || null,
                     elapsedSeconds: Number(asrElapsedSeconds.toFixed(3)),
-                    mediaDurationSeconds: Number(duration.toFixed(3)),
+                    mediaDurationSeconds: mediaDurationSeconds > 0 ? Number(mediaDurationSeconds.toFixed(3)) : null,
                     realtimeFactor: realtimeFactor === null ? null : Number(realtimeFactor.toFixed(4)),
                     segments: normalized.segments.length,
                     generatedAt: new Date().toISOString()
