@@ -1,4 +1,5 @@
 const asr = require('./asr_backends');
+const productionConfig = require('../../../config/production.json');
 
 describe('asr_backends', () => {
   test('uses default backend when no route matches', () => {
@@ -477,6 +478,55 @@ describe('asr_backends', () => {
       .toBe('小碎步、小碎片、小碎石、小碎花、小碎块、小碎屑、小碎发和小碎钻，叫小岁过来');
     expect(asr.applyCorrectionsToText('他这个小四历确实更老一点，先别叫小四过来', corrections))
       .toBe('他这个小四历确实更老一点，先别叫小岁过来');
+  });
+
+  test('exclude_when protects any overlap with a normal word fragment', () => {
+    const corrections = {
+      safe: [{ from: '碎即', to: '岁己' }],
+      exclude_when: {
+        '碎即': ['击碎', '即将']
+      }
+    };
+
+    expect(asr.applyCorrectionsToText('它会击碎目标', corrections)).toBe('它会击碎目标');
+    expect(asr.applyCorrectionsToText('它会碎即将撞上这个星球', corrections)).toBe('它会碎即将撞上这个星球');
+    expect(asr.applyCorrectionsToText('碎即前辈今天来了', corrections)).toBe('岁己前辈今天来了');
+  });
+
+  test('exclude_pattern applies through direct correction objects', () => {
+    const corrections = {
+      safe: [{ from: '碎即', to: '岁己' }],
+      exclude_pattern: {
+        '碎即': ['即将']
+      }
+    };
+
+    expect(asr.applyCorrectionsToText('碎即将撞上这个星球，碎即前辈快看', corrections))
+      .toBe('碎即将撞上这个星球，岁己前辈快看');
+  });
+
+  test('exclude_pattern only protects the overlapping occurrence', () => {
+    const corrections = {
+      safe: [
+        {
+          from: '碎几',
+          to: '岁己',
+          exclude_pattern: ['击碎几']
+        }
+      ]
+    };
+
+    expect(asr.applyCorrectionsToText('击碎几碎几前辈今天来了', corrections))
+      .toBe('击碎几岁己前辈今天来了');
+  });
+
+  test('production sui corrections keep phrase-internal smash text while fixing standalone alias', () => {
+    const resolved = asr.resolveAsrHotwords(productionConfig, { room_id: '25788785' });
+
+    expect(asr.applyCorrectionsToText('它会投掷闪耀光芒的回旋镖莱击碎即将撞上这个星球', resolved.corrections))
+      .toBe('它会投掷闪耀光芒的回旋镖莱击碎即将撞上这个星球');
+    expect(asr.applyCorrectionsToText('碎即前辈今天来了', resolved.corrections))
+      .toBe('岁己前辈今天来了');
   });
 
   test('ambiguous sui homophones need nearby sui context before correction', () => {

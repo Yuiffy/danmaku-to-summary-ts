@@ -322,8 +322,12 @@ function addCorrection(target, from, to, extra = {}) {
     const excludeWhen = Array.isArray(extra.exclude_when)
         ? extra.exclude_when.map(value => String(value || '').trim()).filter(Boolean)
         : [];
+    const excludePattern = Array.isArray(extra.exclude_pattern)
+        ? extra.exclude_pattern.map(value => String(value || '').trim()).filter(Boolean)
+        : [];
     const existing = target.get(source);
     const mergedExcludeWhen = Array.from(new Set([...(existing?.exclude_when || []), ...excludeWhen]));
+    const mergedExcludePattern = Array.from(new Set([...(existing?.exclude_pattern || []), ...excludePattern]));
     const next = {
         from: source,
         to: replacement,
@@ -336,6 +340,11 @@ function addCorrection(target, from, to, extra = {}) {
         next.exclude_when = mergedExcludeWhen;
     } else {
         delete next.exclude_when;
+    }
+    if (mergedExcludePattern.length > 0) {
+        next.exclude_pattern = mergedExcludePattern;
+    } else {
+        delete next.exclude_pattern;
     }
     target.set(source, next);
 }
@@ -350,21 +359,37 @@ function getCorrectionExclusions(exclusions, from) {
         : [];
 }
 
-function addSafeCorrections(target, corrections, exclusions = {}) {
+function getCorrectionExcludePatterns(excludePatterns, from) {
+    if (!excludePatterns || typeof excludePatterns !== 'object' || Array.isArray(excludePatterns)) {
+        return [];
+    }
+    const values = excludePatterns[from];
+    return Array.isArray(values)
+        ? values.map(value => String(value || '').trim()).filter(Boolean)
+        : [];
+}
+
+function addSafeCorrections(target, corrections, exclusions = {}, excludePatterns = {}) {
     if (!corrections) {
         return;
     }
     if (Array.isArray(corrections)) {
         corrections.forEach((item) => {
             if (Array.isArray(item) && item.length >= 2) {
-                addCorrection(target, item[0], item[1], { exclude_when: getCorrectionExclusions(exclusions, item[0]) });
+                addCorrection(target, item[0], item[1], { 
+                    exclude_when: getCorrectionExclusions(exclusions, item[0]),
+                    exclude_pattern: getCorrectionExcludePatterns(excludePatterns, item[0])
+                });
             } else if (item && typeof item === 'object') {
                 const from = item.from || item.alias || item.source || item.wrong;
                 addCorrection(
                     target,
                     from,
                     item.to || item.word || item.target || item.correct,
-                    { exclude_when: item.exclude_when || getCorrectionExclusions(exclusions, from) }
+                    { 
+                        exclude_when: item.exclude_when || getCorrectionExclusions(exclusions, from),
+                        exclude_pattern: item.exclude_pattern || getCorrectionExcludePatterns(excludePatterns, from)
+                    }
                 );
             }
         });
@@ -372,7 +397,8 @@ function addSafeCorrections(target, corrections, exclusions = {}) {
     }
     if (typeof corrections === 'object') {
         Object.entries(corrections).forEach(([from, to]) => addCorrection(target, from, to, {
-            exclude_when: getCorrectionExclusions(exclusions, from)
+            exclude_when: getCorrectionExclusions(exclusions, from),
+            exclude_pattern: getCorrectionExcludePatterns(excludePatterns, from)
         }));
     }
 }
@@ -401,7 +427,7 @@ function addCorrections(targets, corrections) {
         return;
     }
     if (corrections.safe || corrections.contextual) {
-        addSafeCorrections(targets.safe, corrections.safe, corrections.exclude_when);
+        addSafeCorrections(targets.safe, corrections.safe, corrections.exclude_when, corrections.exclude_pattern);
         addContextualCorrections(targets.contextual, corrections.contextual, corrections.exclude_when);
         return;
     }
@@ -529,7 +555,7 @@ function normalizeCorrectionsForApply(corrections = []) {
     if (corrections && typeof corrections === 'object') {
         const safe = new Map();
         const contextual = new Map();
-        addSafeCorrections(safe, corrections.safe, corrections.exclude_when);
+        addSafeCorrections(safe, corrections.safe, corrections.exclude_when, corrections.exclude_pattern);
         addContextualCorrections(contextual, corrections.contextual, corrections.exclude_when);
         return {
             safe: Array.from(safe.values()),
@@ -595,6 +621,57 @@ function logCorrectionStats(stats, label = 'ASR corrections') {
     }
 }
 
+function isProtectedByExcludedTerm(text, matched, offset, excludedTerms = []) {
+    const sourceText = String(text || '');
+    const matchStart = Number(offset) || 0;
+    const matchEnd = matchStart + String(matched || '').length;
+    return excludedTerms.some((term) => {
+        const protectedText = String(term || '');
+        if (!protectedText) {
+            return false;
+        }
+        let searchStart = 0;
+        while (searchStart <= sourceText.length) {
+            const protectedStart = sourceText.indexOf(protectedText, searchStart);
+            if (protectedStart === -1) {
+                return false;
+            }
+            const protectedEnd = protectedStart + protectedText.length;
+            if (protectedStart < matchEnd && matchStart < protectedEnd) {
+                return true;
+            }
+            searchStart = protectedStart + 1;
+        }
+        return false;
+    });
+}
+
+function isProtectedByExcludePattern(text, matched, offset, excludePatterns = []) {
+    const matchStart = Number(offset) || 0;
+    const matchEnd = matchStart + String(matched || '').length;
+    return excludePatterns.some((patternText) => {
+        let pattern;
+        try {
+            pattern = new RegExp(patternText, 'g');
+        } catch {
+            return false;
+        }
+        let protectedMatch;
+        while ((protectedMatch = pattern.exec(text)) !== null) {
+            const protectedText = String(protectedMatch[0] || '');
+            const protectedStart = protectedMatch.index;
+            const protectedEnd = protectedStart + protectedText.length;
+            if (protectedStart < matchEnd && matchStart < protectedEnd) {
+                return true;
+            }
+            if (protectedText.length === 0) {
+                pattern.lastIndex += 1;
+            }
+        }
+        return false;
+    });
+}
+
 function applyCorrectionList(text, corrections = [], stats = null, type = 'safe') {
     let output = String(text || '');
     const normalized = Array.isArray(corrections) ? corrections : [];
@@ -607,13 +684,16 @@ function applyCorrectionList(text, corrections = [], stats = null, type = 'safe'
         const excludedTerms = Array.isArray(correction.exclude_when)
             ? correction.exclude_when.map(value => String(value || '').trim()).filter(Boolean)
             : [];
+        const excludePatterns = Array.isArray(correction.exclude_pattern)
+            ? correction.exclude_pattern.map(value => String(value || '').trim()).filter(Boolean)
+            : [];
         let count = 0;
         output = before.replace(pattern, (matched, offset, wholeText) => {
-            const isProtected = excludedTerms.some((term) => {
-                const start = wholeText.lastIndexOf(term, offset);
-                return start !== -1 && start <= offset && offset < start + term.length;
-            });
+            const isProtected = isProtectedByExcludedTerm(wholeText, matched, offset, excludedTerms);
             if (isProtected) {
+                return matched;
+            }
+            if (excludePatterns.length > 0 && isProtectedByExcludePattern(wholeText, matched, offset, excludePatterns)) {
                 return matched;
             }
             count += 1;
