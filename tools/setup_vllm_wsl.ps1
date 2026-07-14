@@ -73,7 +73,7 @@ if ($InstallPythonEnv) {
             apt-get install -y python3 python3-venv python3-pip build-essential git ffmpeg libsndfile1
             python3 -m venv '$VenvPath'
             '$VenvPath/bin/python' -m pip install -U pip setuptools wheel
-            '$VenvPath/bin/python' -m pip install 'vllm>=0.12.0' 'funasr>=1.3.7' modelscope soundfile librosa
+            '$VenvPath/bin/python' -m pip install 'vllm>=0.12.0' 'funasr>=1.3.14' modelscope soundfile librosa
             '$VenvPath/bin/python' - <<'PY'
 import importlib.util
 import torch
