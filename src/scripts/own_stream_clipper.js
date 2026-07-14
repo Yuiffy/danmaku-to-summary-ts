@@ -26,6 +26,9 @@ const DEFAULT_OWN_STREAM_CLIPS_CONFIG = {
     clipFfmpegThreads: 4,
     maxSubtitleCharsPerChunk: 14000,
     maxDanmakuLinesPerChunk: 220,
+    fullContextDanmakuMergeWindowSeconds: 30,
+    avoidOverlappingClips: true,
+    finalOverlapToleranceSeconds: 0,
     alignBoundaries: true,
     boundaryStartBacktrackSeconds: 12,
     boundaryEndExtendSeconds: 35,
@@ -47,8 +50,18 @@ const DEFAULT_OWN_STREAM_CLIPS_CONFIG = {
     ai: {
         enabled: true,
         strategy: 'chunked',
+        model: null,
+        timeoutMs: 600000,
         maxCandidateLines: 32,
         fallbackToLocalRules: true
+    },
+    parallel: {
+        enabled: false,
+        danmakuHeatClips: 6,
+        modelClips: 12,
+        dedupeAcrossSources: true,
+        overlapToleranceSeconds: 12,
+        preferModelOnOverlap: true
     },
     notify: {
         enabled: true
@@ -82,6 +95,10 @@ function getOwnStreamClipsConfig(config = {}) {
         ai: {
             ...DEFAULT_OWN_STREAM_CLIPS_CONFIG.ai,
             ...(raw.ai || {})
+        },
+        parallel: {
+            ...DEFAULT_OWN_STREAM_CLIPS_CONFIG.parallel,
+            ...(raw.parallel || {})
         },
         notify: {
             ...DEFAULT_OWN_STREAM_CLIPS_CONFIG.notify,
@@ -369,6 +386,85 @@ function topDanmakuTexts(items, max = 8) {
         .map(([text, count]) => count > 1 ? `${text}(x${count})` : text);
 }
 
+function aggregateDanmakuForFullContext(danmaku = [], mergeWindowSeconds = 30) {
+    const windowSeconds = Math.max(1, Number(mergeWindowSeconds) || 30);
+    const groups = new Map();
+    for (const item of danmaku) {
+        const time = Number(item.time);
+        const text = String(item.text || '').replace(/\s+/g, ' ').trim();
+        if (!Number.isFinite(time) || time < 0 || !text) continue;
+        const bucket = Math.floor(time / windowSeconds);
+        const key = `${bucket}\u0000${text}`;
+        const existing = groups.get(key);
+        if (existing) {
+            existing.count += 1;
+            existing.lastTime = time;
+        } else {
+            groups.set(key, {
+                text,
+                count: 1,
+                firstTime: time,
+                lastTime: time
+            });
+        }
+    }
+    return Array.from(groups.values()).sort((a, b) => a.firstTime - b.firstTime);
+}
+
+function buildFullContextHeatLines(danmaku = [], totalDuration = 0, config = {}) {
+    const density = buildDanmakuDensity(danmaku, totalDuration, config);
+    const nonZeroCounts = density.buckets.map(bucket => bucket.count).filter(count => count > 0);
+    const baseline = Math.max(1, median(nonZeroCounts));
+    return density.buckets.map(bucket => {
+        const items = danmaku.filter(item => item.time >= bucket.start && item.time < bucket.end);
+        const repeated = topDanmakuTexts(items, 5).join(' / ');
+        const ratio = Number((bucket.count / baseline).toFixed(2));
+        const level = bucket.count >= density.threshold
+            ? 'HIGH'
+            : bucket.keywords > 0
+                ? 'REACTION'
+                : 'NORMAL';
+        return `${formatClock(bucket.start)}-${formatClock(Math.min(bucket.end, totalDuration))} count=${bucket.count} reaction=${bucket.keywords} baselineRatio=${ratio} level=${level}${repeated ? ` | ${repeated}` : ''}`;
+    });
+}
+
+function buildFullContextSource(parsed, danmaku, config = {}) {
+    const subtitleLines = (parsed.segments || []).map(segment =>
+        `${formatClock(Number(segment.start))}-${formatClock(Number(segment.end))} ${String(segment.text || '').replace(/\s+/g, ' ').trim()}`
+    );
+    const aggregatedDanmaku = aggregateDanmakuForFullContext(
+        danmaku,
+        config.fullContextDanmakuMergeWindowSeconds
+    );
+    const danmakuLines = aggregatedDanmaku.map(item => {
+        const time = item.lastTime > item.firstTime
+            ? `${formatClock(item.firstTime)}-${formatClock(item.lastTime)}`
+            : formatClock(item.firstTime);
+        return `${time} ${item.text}${item.count > 1 ? ` (x${item.count})` : ''}`;
+    });
+    const lastSubtitleEnd = Number((parsed.segments || []).at(-1)?.end || 0);
+    const lastDanmakuTime = Number(danmaku.at(-1)?.time || 0);
+    const totalDuration = Math.max(lastSubtitleEnd, lastDanmakuTime);
+    const heatLines = buildFullContextHeatLines(danmaku, totalDuration, config);
+    return {
+        subtitleLines,
+        danmakuLines,
+        heatLines,
+        aggregatedDanmaku,
+        sourceText: [
+            '=== 30秒弹幕热度表 ===',
+            'count=弹幕总数；reaction=命中强反应词的弹幕数；baselineRatio=相对本场非空窗口中位数；HIGH=达到程序热度阈值。',
+            heatLines.join('\n') || '无',
+            '',
+            '=== 全量字幕（时间均相对直播开头） ===',
+            subtitleLines.join('\n') || '无',
+            '',
+            '=== 全量弹幕（相同文本在短时间窗口内合并，xN 为重复次数） ===',
+            danmakuLines.join('\n') || '无'
+        ].join('\n')
+    };
+}
+
 function buildChunkSources(parsed, danmaku, totalDuration, config) {
     const chunkSeconds = Math.max(600, Number(config.chunkSeconds) || 2700);
     const density = buildDanmakuDensity(danmaku, totalDuration, config);
@@ -616,6 +712,22 @@ function alignClipsToSubtitleBoundaries(clips = [], segments = [], config = {}, 
     return clips.map(clip => alignClipToSubtitleBoundaries(clip, segments, config, totalDuration));
 }
 
+function removeOverlappingClips(clips = [], toleranceSeconds = 0) {
+    const tolerance = Math.max(0, Number(toleranceSeconds) || 0);
+    const ranked = clips
+        .map((clip, order) => ({ clip, order }))
+        .sort((a, b) => Number(b.clip.score || 0) - Number(a.clip.score || 0) || a.order - b.order);
+    const selected = [];
+    for (const entry of ranked) {
+        const overlaps = selected.some(existing =>
+            Number(entry.clip.start) < Number(existing.end) + tolerance
+            && Number(existing.start) < Number(entry.clip.end) + tolerance
+        );
+        if (!overlaps) selected.push(entry.clip);
+    }
+    return selected.sort((a, b) => Number(a.start) - Number(b.start));
+}
+
 async function runJobsWithConcurrency(jobs = [], concurrency = 1) {
     const limit = Math.max(1, Math.floor(Number(concurrency) || 1));
     const results = new Array(jobs.length);
@@ -704,6 +816,87 @@ async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, confi
     };
     const nested = await runPool(chunks, config.aiConcurrency, worker);
     return dedupePlannedClips(nested.flat(), config);
+}
+
+async function planClipsWithAIFullContext(parsed, danmaku, info, totalDuration, config, rootConfig = {}, diagnostics = null) {
+    if (!config.ai?.enabled || rootConfig.ai?.text?.enabled === false) return [];
+    const provider = rootConfig.ai?.text?.provider || 'gemini';
+    const generator = require('./ai_text_generator');
+    const fullContext = buildFullContextSource(parsed, danmaku, config);
+    const maxClips = Math.max(1, Number(config.maxClips) || 12);
+    const prompt = [
+        '你是资深直播切片主编。下面提供岁己SUI本场直播的全量带时间戳字幕和全量弹幕。',
+        `请通读整场，从全局比较后选出最多 ${maxClips} 个最有趣、最适合独立发布的片段。数量不必凑满，质量优先。`,
+        '模型必须同时评估内容质量和弹幕热度：先根据字幕判断事件是否完整、有趣、适合独立发布，再结合30秒热度表、反应弹幕数、重复刷屏和全量弹幕判断观众反应强度。',
+        '热度是重要证据但不是唯一标准：高热度但没有明确内容看点的片段不要选；低热度但故事完整、观点独特、反差强或特别可爱的内容仍可选。',
+        '优先：完整有起承转合的趣事；岁己独特/离谱/可爱的想法；口误或操作事故及后续反应；弹幕明显在意且字幕能说明原因的内容。',
+        '排除：普通问好、普通礼物感谢、纯唱歌、长时间无明确事件、只有弹幕热闹但字幕看不出原因、彼此高度重复的话题。',
+        `每段 ${config.minClipSeconds}-${config.maxClipSeconds} 秒。时间必须取自输入，不能编造。`,
+        '边界要求：startTime 包含铺垫；endTime 包含解释、弹幕后续反应和收尾句；不要从笑点中间开始，也不要在句子或故事中间结束。',
+        '所有输出片段必须互不重叠；如果两个看点时间范围相交，保留全场价值更高的一段，或调整到自然且不相交的句子边界。',
+        '请给每段 1-100 的全场相对分数，并按 score 从高到低输出。',
+        '输出纯 JSON，不要 Markdown，不要解释：',
+        ...generator.buildClipTitlePromptLines({ outputMode: 'jsonTitle', streamerName: '岁己SUI' }),
+        ...generator.buildCoverTextPromptLines(),
+        '{"clips":[{"startTime":"HH:MM:SS","endTime":"HH:MM:SS","title":"人工风格标题，18-42字","coverText":"第一行\\n第二行","reason":"一句话说明全场比较后为什么值得切","score":95}]}',
+        '',
+        `直播标题: ${info.streamTitle || '未知'}`,
+        `录制时间: ${info.recordedAt || '未知'}`,
+        `直播总时长: ${formatClock(totalDuration)}`,
+        `字幕条数: ${fullContext.subtitleLines.length}`,
+        `原始弹幕条数: ${danmaku.length}`,
+        `合并后弹幕条数: ${fullContext.danmakuLines.length}`,
+        '',
+        fullContext.sourceText
+    ].join('\n');
+
+    try {
+        console.log(`Full-context AI input: ${prompt.length} chars, subtitles=${fullContext.subtitleLines.length}, danmaku=${danmaku.length}->${fullContext.danmakuLines.length}`);
+        const result = provider === 'tuZi'
+            ? await generator.generateTextWithTuZi(prompt, {
+                wordLimit: Math.max(2400, maxClips * 140),
+                primaryModel: config.ai?.model || undefined,
+                timeoutMs: config.ai?.timeoutMs
+            })
+            : await generator.generateTextWithGemini(prompt, { wordLimit: Math.max(2400, maxClips * 140) });
+        const text = String(result.text || '').trim();
+        const match = text.match(/\{[\s\S]*"clips"[\s\S]*\}/);
+        if (!match) {
+            throw new Error(`AI did not return clips JSON: ${text.slice(0, 180)}`);
+        }
+        const parsedJson = JSON.parse(match[0]);
+        const clips = (Array.isArray(parsedJson.clips) ? parsedJson.clips : []).map((clip, index) => {
+            const start = timeStringToSeconds(clip.startTime);
+            const end = timeStringToSeconds(clip.endTime);
+            if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+            const boundedStart = clamp(start, 0, totalDuration);
+            const boundedEnd = clamp(end, 0, totalDuration);
+            const duration = boundedEnd - boundedStart;
+            if (duration < config.minClipSeconds || duration > config.maxClipSeconds + 5) return null;
+            return {
+                start: boundedStart,
+                end: boundedEnd,
+                duration,
+                title: String(clip.title || '').trim() || '小岁：直播有趣片段',
+                coverText: topicClipper.normalizeCoverText(clip.coverText),
+                reason: String(clip.reason || '').trim(),
+                score: Number(clip.score || (100 - index)),
+                selectionSource: 'model_full_context',
+                candidateIndex: `full-context-${index + 1}`,
+                base: {
+                    reason: 'model_full_context',
+                    selectionSource: 'model_full_context',
+                    model: result.meta?.model || config.ai?.model || null,
+                    score: Number(clip.score || 0)
+                }
+            };
+        }).filter(Boolean);
+        return dedupePlannedClips(clips, config);
+    } catch (error) {
+        recordAiDiagnostic(diagnostics, 'full_context', error);
+        console.warn(`AI full-context planning failed: ${error.message}`);
+        return [];
+    }
 }
 
 function classifyAiFallbackReason(errors = []) {
@@ -875,6 +1068,98 @@ function fallbackClipsFromCandidates(candidates, config) {
         .sort((a, b) => a.start - b.start);
 }
 
+function buildDanmakuHeatClips(candidates = [], count = 0) {
+    const limit = Math.max(0, Math.floor(Number(count) || 0));
+    if (limit === 0) return [];
+    return candidates
+        .filter(candidate => String(candidate.reason || '').split('+').some(reason => reason.startsWith('danmaku_')))
+        .map(candidate => ({
+            candidate,
+            heatScore: Number(candidate.danmakuCount || 0) + Number(candidate.reactionCount || 0) * 8
+        }))
+        .sort((a, b) => b.heatScore - a.heatScore)
+        .slice(0, limit)
+        .map(({ candidate, heatScore }) => ({
+            start: candidate.start,
+            end: candidate.end,
+            duration: candidate.duration,
+            title: buildFallbackTitle(candidate),
+            reason: candidate.reason,
+            candidateIndex: candidate.index,
+            score: heatScore,
+            selectionSource: 'danmaku_heat',
+            base: {
+                ...candidate,
+                heatScore,
+                selectionSource: 'danmaku_heat'
+            }
+        }));
+}
+
+function clipsConflict(first, second, toleranceSeconds = 12) {
+    const tolerance = Math.max(0, Number(toleranceSeconds) || 0);
+    return Number(first.start) <= Number(second.end) + tolerance
+        && Number(second.start) <= Number(first.end) + tolerance;
+}
+
+function combineParallelClipPlans(danmakuHeatCandidates = [], modelCandidates = [], parallelConfig = {}) {
+    const heatLimit = Math.max(0, Math.floor(Number(parallelConfig.danmakuHeatClips) || 0));
+    const modelLimit = Math.max(0, Math.floor(Number(parallelConfig.modelClips) || 0));
+    const dedupe = parallelConfig.dedupeAcrossSources !== false;
+    const tolerance = Math.max(0, Number(parallelConfig.overlapToleranceSeconds) || 0);
+    const heat = danmakuHeatCandidates.slice().sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
+    const model = modelCandidates.slice().sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
+    let selectedHeat = [];
+    let selectedModel = [];
+
+    if (!dedupe) {
+        selectedHeat = heat.slice(0, heatLimit);
+        selectedModel = model.slice(0, modelLimit);
+    } else if (parallelConfig.preferModelOnOverlap !== false) {
+        selectedModel = model.slice(0, modelLimit);
+        selectedHeat = heat
+            .filter(clip => !selectedModel.some(modelClip => clipsConflict(clip, modelClip, tolerance)))
+            .slice(0, heatLimit);
+    } else {
+        selectedHeat = heat.slice(0, heatLimit);
+        selectedModel = model
+            .filter(clip => !selectedHeat.some(heatClip => clipsConflict(clip, heatClip, tolerance)))
+            .slice(0, modelLimit);
+    }
+
+    return [...selectedHeat, ...selectedModel].sort((a, b) => Number(a.start) - Number(b.start));
+}
+
+function getSelectionSource(value = {}) {
+    return value.selectionSource
+        || value.base?.selectionSource
+        || value.candidate?.selectionSource
+        || null;
+}
+
+function getSelectionSourceLabel(value = {}) {
+    const source = getSelectionSource(value);
+    if (source === 'model_full_context') return '模型全量';
+    if (source === 'danmaku_heat') return '弹幕热度';
+    if (value.base?.reason === 'ai_chunked_plan' || value.candidate?.reason === 'ai_chunked_plan') return '模型分块';
+    return '本地规则';
+}
+
+function countSelectionSources(items = []) {
+    const counts = {};
+    for (const item of items) {
+        const label = getSelectionSourceLabel(item);
+        counts[label] = (counts[label] || 0) + 1;
+    }
+    return counts;
+}
+
+function formatSelectionSourceCounts(items = []) {
+    return Object.entries(countSelectionSources(items))
+        .map(([label, count]) => `${label} ${count}`)
+        .join('，');
+}
+
 function filterClipsBySelection(clips, selectedIndices = null) {
     if (!Array.isArray(selectedIndices) || selectedIndices.length === 0) {
         return clips;
@@ -903,6 +1188,7 @@ function buildReviewMarkdown(results, metadata) {
         `直播: ${metadata.streamTitle || metadata.sourceFileName || '未知'}`,
         `录制时间: ${metadata.recordedAt || '未知'}`,
         `输出目录: ${metadata.outputRoot}`,
+        results.length ? `来源统计: ${formatSelectionSourceCounts(results)}` : null,
         uploadIds.length ? `上传短ID: ${uploadIds.join(',')}` : null,
         aiStatusLine,
         '',
@@ -913,7 +1199,7 @@ function buildReviewMarkdown(results, metadata) {
         const start = formatClock(result.window.start);
         const duration = formatClock(result.window.duration);
         const filePath = result.output.mediaPath;
-        lines.push(`${index + 1}. ${result.copy.title} | ${start} | ${duration} | ${filePath}`);
+        lines.push(`${index + 1}. [${getSelectionSourceLabel(result)}] ${result.copy.title} | ${start} | ${duration} | ${filePath}`);
         if (uploadIds[index]) {
             lines.push(`   上传ID: ${uploadIds[index]}`);
         }
@@ -933,13 +1219,15 @@ function buildPlanReviewMarkdown(clips, metadata) {
         `直播: ${metadata.streamTitle || metadata.sourceFileName || '未知'}`,
         `录制时间: ${metadata.recordedAt || '未知'}`,
         `输出目录: ${metadata.outputRoot}`,
+        clips.length ? `来源统计: ${formatSelectionSourceCounts(clips)}` : null,
         aiStatusLine,
         '',
         '## 候选列表',
         ''
     ].filter(line => line !== null);
     clips.forEach((clip, index) => {
-        lines.push(`${index + 1}. ${clip.title} | ${formatClock(clip.start)} | ${formatClock(clip.duration)} | ${clip.reason || ''}`);
+        const sourceLabel = getSelectionSourceLabel(clip);
+        lines.push(`${index + 1}. [${sourceLabel}] ${clip.title} | ${formatClock(clip.start)}-${formatClock(clip.end)} | ${formatClock(clip.duration)} | ${clip.reason || ''}`);
     });
     lines.push('');
     return `${lines.join('\n')}\n`;
@@ -961,6 +1249,7 @@ function buildNotifyMarkdown(results, metadata) {
         `录制时间: ${metadata.recordedAt || '未知'}`,
         `切片目录: ${toFwdSlash(metadata.outputRoot)}`,
         metadata.reviewPath ? `Review: ${toFwdSlash(metadata.reviewPath)}` : null,
+        results.length ? `来源统计: ${formatSelectionSourceCounts(results)}` : null,
         uploadIds.length ? `上传短ID: ${uploadIds.join(',')}` : null,
         aiStatusLine,
         '',
@@ -971,7 +1260,7 @@ function buildNotifyMarkdown(results, metadata) {
         const start = formatClock(result.window.start);
         const duration = formatClock(result.window.duration);
         const uploadId = uploadIds[index] ? `ID ${uploadIds[index]} | ` : '';
-        lines.push(`${index + 1}. ${uploadId}${title} | ${start} | ${duration}`);
+        lines.push(`${index + 1}. [${getSelectionSourceLabel(result)}] ${uploadId}${title} | ${start} | ${duration}`);
     });
     let markdown = lines.join('\n');
     if (markdown.length <= 3900) {
@@ -984,7 +1273,7 @@ function buildNotifyMarkdown(results, metadata) {
         const start = formatClock(result.window.start);
         const duration = formatClock(result.window.duration);
         const uploadId = uploadIds[index] ? `ID ${uploadIds[index]} | ` : '';
-        const line = `${index + 1}. ${uploadId}${title} | ${start} | ${duration}`;
+        const line = `${index + 1}. [${getSelectionSourceLabel(result)}] ${uploadId}${title} | ${start} | ${duration}`;
         if ((compact.join('\n').length + line.length + 24) > 3880) {
             compact.push(`${index + 1}. ...还有 ${results.length - index} 段，请看 Review`);
             break;
@@ -1243,7 +1532,7 @@ async function generateOwnStreamClips(options = {}) {
         localFallbackEnabled: config.ai?.fallbackToLocalRules !== false,
         errors: []
     };
-    if (candidates.length === 0 && danmaku.length === 0) {
+    if ((parsed.segments || []).length === 0 && danmaku.length === 0) {
         console.log('No own-stream clip candidates found.');
         return [];
     }
@@ -1253,13 +1542,34 @@ async function generateOwnStreamClips(options = {}) {
         const plan = JSON.parse(fs.readFileSync(options.planPath, 'utf8'));
         clips = Array.isArray(plan.clips) ? plan.clips : [];
     } else {
-        if (config.ai?.enabled && config.ai?.strategy !== 'candidate_only') {
+        if (config.parallel?.enabled) {
+            const heatCandidates = buildDanmakuHeatClips(candidates, candidates.length);
+            const modelLimit = Math.max(0, Math.floor(Number(config.parallel.modelClips) || 0));
+            const modelConfig = {
+                ...config,
+                maxClips: modelLimit
+            };
+            const modelClips = modelLimit > 0
+                ? await planClipsWithAIFullContext(parsed, danmaku, info, totalDuration, modelConfig, rootConfig, aiDiagnostics)
+                : [];
+            clips = combineParallelClipPlans(heatCandidates, modelClips, config.parallel);
+            aiDiagnostics.selectedSource = 'parallel';
+            if (modelLimit > 0 && modelClips.length === 0) {
+                aiDiagnostics.usedFallback = true;
+                aiDiagnostics.fallbackReason = classifyAiFallbackReason(aiDiagnostics.errors);
+            }
+        } else if (config.ai?.enabled && config.ai?.strategy === 'full_context') {
+            clips = await planClipsWithAIFullContext(parsed, danmaku, info, totalDuration, config, rootConfig, aiDiagnostics);
+            if (clips.length > 0) {
+                aiDiagnostics.selectedSource = 'full_context_ai';
+            }
+        } else if (config.ai?.enabled && config.ai?.strategy !== 'candidate_only') {
             clips = await planClipsWithAIChunks(parsed, danmaku, info, totalDuration, config, rootConfig, aiDiagnostics);
             if (clips.length > 0) {
                 aiDiagnostics.selectedSource = 'chunked_ai';
             }
         }
-        if (clips.length === 0) {
+        if (clips.length === 0 && !config.parallel?.enabled) {
             const clipsFromAi = await refineCandidatesWithAI(candidates, parsed, danmaku, info, config, rootConfig, aiDiagnostics);
             if (clipsFromAi.length > 0) {
                 clips = clipsFromAi;
@@ -1277,6 +1587,9 @@ async function generateOwnStreamClips(options = {}) {
                     : classifyAiFallbackReason(aiDiagnostics.errors);
                 throw new Error(`own_stream_clipper AI 规划失败且已禁用本地回退: ${failureReason}`);
             }
+        } else if (clips.length === 0 && config.parallel?.enabled) {
+            const failureReason = classifyAiFallbackReason(aiDiagnostics.errors);
+            throw new Error(`own_stream_clipper 双路规划没有生成候选: ${failureReason}`);
         }
     }
     reviewMetadata.aiStatus = {
@@ -1288,6 +1601,13 @@ async function generateOwnStreamClips(options = {}) {
     };
     clips = filterClipsBySelection(clips, options.selectedIndices);
     clips = alignClipsToSubtitleBoundaries(clips, parsed.segments, config, totalDuration);
+    if (config.avoidOverlappingClips !== false) {
+        const beforeOverlapFilter = clips.length;
+        clips = removeOverlappingClips(clips, config.finalOverlapToleranceSeconds);
+        if (clips.length < beforeOverlapFilter) {
+            console.log(`Removed ${beforeOverlapFilter - clips.length} overlapping clip candidate(s) after subtitle boundary alignment.`);
+        }
+    }
     const inputPlanBase = options.planPath
         ? topicClipper.sanitizeFileName(path.basename(options.planPath, path.extname(options.planPath)))
         : null;
@@ -1311,7 +1631,9 @@ async function generateOwnStreamClips(options = {}) {
             chunkSeconds: config.chunkSeconds,
             aiConcurrency: config.aiConcurrency,
             clipConcurrency: config.clipConcurrency,
-            aiStrategy: config.ai?.strategy || null
+            aiStrategy: config.ai?.strategy || null,
+            aiModel: config.ai?.model || null,
+            parallel: config.parallel
         },
         aiStatus: reviewMetadata.aiStatus,
         clips
@@ -1529,6 +1851,18 @@ function parseCliArgs(argv) {
         else if (arg === '--no-ai') options.noAi = true;
         else if (arg === '--no-notify') options.noNotify = true;
         else if (arg === '--plan-only') options.planOnly = true;
+        else if (arg === '--parallel') options.parallel = true;
+        else if (arg === '--danmaku-heat-clips') options.danmakuHeatClips = Number(argv[++i]);
+        else if (arg.startsWith('--danmaku-heat-clips=')) options.danmakuHeatClips = Number(arg.slice('--danmaku-heat-clips='.length));
+        else if (arg === '--model-clips') options.modelClips = Number(argv[++i]);
+        else if (arg.startsWith('--model-clips=')) options.modelClips = Number(arg.slice('--model-clips='.length));
+        else if (arg === '--prefer-heat-on-overlap') options.preferHeatOnOverlap = true;
+        else if (arg === '--ai-strategy') options.aiStrategy = argv[++i];
+        else if (arg.startsWith('--ai-strategy=')) options.aiStrategy = arg.slice('--ai-strategy='.length);
+        else if (arg === '--ai-model') options.aiModel = argv[++i];
+        else if (arg.startsWith('--ai-model=')) options.aiModel = arg.slice('--ai-model='.length);
+        else if (arg === '--output-dir-name') options.outputDirName = argv[++i];
+        else if (arg.startsWith('--output-dir-name=')) options.outputDirName = arg.slice('--output-dir-name='.length);
         else if (arg === '--max-clips') options.maxClips = Number(argv[++i]);
         else if (arg === '--chunk-seconds') options.chunkSeconds = Number(argv[++i]);
         else if (arg === '--ai-concurrency') options.aiConcurrency = Number(argv[++i]);
@@ -1548,7 +1882,19 @@ if (require.main === module) {
             ...(Number.isFinite(cli.maxClips) ? { maxClips: cli.maxClips } : {}),
             ...(Number.isFinite(cli.chunkSeconds) ? { chunkSeconds: cli.chunkSeconds } : {}),
             ...(Number.isFinite(cli.aiConcurrency) ? { aiConcurrency: cli.aiConcurrency } : {}),
-            ...(Number.isFinite(cli.clipConcurrency) ? { clipConcurrency: cli.clipConcurrency } : {})
+            ...(Number.isFinite(cli.clipConcurrency) ? { clipConcurrency: cli.clipConcurrency } : {}),
+            ...(cli.aiStrategy ? { ai: { ...(config.ownStreamClips?.ai || {}), strategy: cli.aiStrategy } } : {}),
+            ...(cli.aiModel ? { ai: { ...(config.ownStreamClips?.ai || {}), ...(cli.aiStrategy ? { strategy: cli.aiStrategy } : {}), model: cli.aiModel } } : {}),
+            ...(cli.outputDirName ? { outputDirName: cli.outputDirName } : {}),
+            ...(cli.parallel || Number.isFinite(cli.danmakuHeatClips) || Number.isFinite(cli.modelClips) || cli.preferHeatOnOverlap ? {
+                parallel: {
+                    ...(config.ownStreamClips?.parallel || {}),
+                    ...(cli.parallel ? { enabled: true } : {}),
+                    ...(Number.isFinite(cli.danmakuHeatClips) ? { danmakuHeatClips: cli.danmakuHeatClips } : {}),
+                    ...(Number.isFinite(cli.modelClips) ? { modelClips: cli.modelClips } : {}),
+                    ...(cli.preferHeatOnOverlap ? { preferModelOnOverlap: false } : {})
+                }
+            } : {})
         };
         await generateOwnStreamClips({
             config,
@@ -1574,9 +1920,18 @@ module.exports = {
     buildDanmakuDensity,
     buildCandidateWindows,
     buildChunkSources,
+    aggregateDanmakuForFullContext,
+    buildFullContextHeatLines,
+    buildFullContextSource,
+    buildDanmakuHeatClips,
+    combineParallelClipPlans,
+    getSelectionSourceLabel,
+    countSelectionSources,
     planClipsWithAIChunks,
+    planClipsWithAIFullContext,
     alignClipToSubtitleBoundaries,
     alignClipsToSubtitleBoundaries,
+    removeOverlappingClips,
     buildNotifyMarkdown,
     buildReviewMarkdown,
     buildPlanReviewMarkdown,

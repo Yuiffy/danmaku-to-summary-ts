@@ -227,6 +227,9 @@ const ConfigSchema = Joi.object({
         aiConcurrency: Joi.number().default(3),
         maxSubtitleCharsPerChunk: Joi.number().default(14000),
         maxDanmakuLinesPerChunk: Joi.number().default(220),
+        fullContextDanmakuMergeWindowSeconds: Joi.number().min(1).default(30),
+        avoidOverlappingClips: Joi.boolean().default(true),
+        finalOverlapToleranceSeconds: Joi.number().min(0).default(0),
         minClipSeconds: Joi.number().default(35),
         maxClipSeconds: Joi.number().default(210),
         burnSubtitles: Joi.boolean().default(true),
@@ -244,9 +247,19 @@ const ConfigSchema = Joi.object({
         subtitleKeywords: Joi.array().items(Joi.string()).optional(),
         ai: Joi.object({
             enabled: Joi.boolean().default(true),
-            strategy: Joi.string().default('chunked'),
+            strategy: Joi.string().valid('chunked', 'candidate_only', 'full_context').default('chunked'),
+            model: Joi.string().allow('', null).default(null),
+            timeoutMs: Joi.number().min(1000).default(600000),
             maxCandidateLines: Joi.number().default(32),
             fallbackToLocalRules: Joi.boolean().default(true)
+        }).default(),
+        parallel: Joi.object({
+            enabled: Joi.boolean().default(false),
+            danmakuHeatClips: Joi.number().integer().min(0).default(6),
+            modelClips: Joi.number().integer().min(0).default(12),
+            dedupeAcrossSources: Joi.boolean().default(true),
+            overlapToleranceSeconds: Joi.number().min(0).default(12),
+            preferModelOnOverlap: Joi.boolean().default(true)
         }).default(),
         notify: Joi.object({
             enabled: Joi.boolean().default(true)

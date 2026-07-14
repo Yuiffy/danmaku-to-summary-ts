@@ -572,10 +572,9 @@ async function generateTextWithTuZi(prompt, options = {}) {
     for (let attempt = 0; attempt < modelSequence.length; attempt++) {
         const textModel = modelSequence[attempt];
         try {
-            console.log(`[WAIT] 正在通过tu-zi.com API生成文本... (尝试 ${attempt + 1}/${modelSequence.length} model: ${textModel}, 超时: 60s)`);
-
             // 获取超时时间 (默认 60 秒)
-            const timeoutMs = config.timeouts?.aiApiTimeout || 60000;
+            const timeoutMs = Number(options.timeoutMs) || config.timeouts?.aiApiTimeout || 60000;
+            console.log(`[WAIT] 正在通过tu-zi.com API生成文本... (尝试 ${attempt + 1}/${modelSequence.length} model: ${textModel}, 超时: ${Math.round(timeoutMs / 1000)}s)`);
             const effectiveMaxTokens = normalizeTuZiTextMaxTokens(textModel, tuziConfig.maxTokens, wordLimit);
             console.log(`   max_tokens: ${effectiveMaxTokens} (configured=${tuziConfig.maxTokens || 'default'}, wordLimit=${wordLimit})`);
 

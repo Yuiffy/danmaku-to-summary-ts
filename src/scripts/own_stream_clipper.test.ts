@@ -132,8 +132,8 @@ describe('own_stream_clipper', () => {
       outputRoot: 'D:/clips'
     });
 
-    expect(markdown).toContain('1. 岁己：弹幕觉得这里很有趣 | 00:01:15 | 00:01:30');
-    expect(markdown).toContain('2. 岁己：很有岁己想法的一段 | 00:03:00 | 00:00:45');
+    expect(markdown).toContain('1. [本地规则] 岁己：弹幕觉得这里很有趣 | 00:01:15 | 00:01:30');
+    expect(markdown).toContain('2. [本地规则] 岁己：很有岁己想法的一段 | 00:03:00 | 00:00:45');
     expect(markdown).not.toContain('D:/clips/one.mp4');
   });
 
@@ -161,12 +161,12 @@ describe('own_stream_clipper', () => {
     const notify = ownStreamClipper.buildNotifyMarkdown(results, metadata);
 
     expect(review).toContain('上传短ID: 17,18');
-    expect(review).toContain('1. 岁己：弹幕觉得这里很有趣 | 00:01:15 | 00:01:30 | D:/clips/one.mp4');
+    expect(review).toContain('1. [本地规则] 岁己：弹幕觉得这里很有趣 | 00:01:15 | 00:01:30 | D:/clips/one.mp4');
     expect(review).toContain('   上传ID: 17');
     expect(review).toContain('   上传ID: 18');
     expect(notify).toContain('上传短ID: 17,18');
-    expect(notify).toContain('1. ID 17 | 岁己：弹幕觉得这里很有趣 | 00:01:15 | 00:01:30');
-    expect(notify).toContain('2. ID 18 | 岁己：很有岁己想法的一段 | 00:03:00 | 00:00:45');
+    expect(notify).toContain('1. [本地规则] ID 17 | 岁己：弹幕觉得这里很有趣 | 00:01:15 | 00:01:30');
+    expect(notify).toContain('2. [本地规则] ID 18 | 岁己：很有岁己想法的一段 | 00:03:00 | 00:00:45');
   });
 
   test('normalizes Windows backslashes in own-stream notification paths', () => {
@@ -317,5 +317,125 @@ describe('own_stream_clipper', () => {
 
     expect(aligned.start).toBe(3552.929);
     expect(aligned.end).toBe(3631.875);
+  });
+
+  test('merges identical nearby danmaku while preserving distant repeats', () => {
+    const aggregated = ownStreamClipper.aggregateDanmakuForFullContext([
+      { time: 10, text: '哈哈' },
+      { time: 12, text: ' 哈哈 ' },
+      { time: 41, text: '哈哈' },
+      { time: 15, text: '太可爱了' }
+    ], 30);
+
+    expect(aggregated).toEqual([
+      { text: '哈哈', count: 2, firstTime: 10, lastTime: 12 },
+      { text: '太可爱了', count: 1, firstTime: 15, lastTime: 15 },
+      { text: '哈哈', count: 1, firstTime: 41, lastTime: 41 }
+    ]);
+  });
+
+  test('builds full context without truncating subtitles or aggregated danmaku', () => {
+    const source = ownStreamClipper.buildFullContextSource({
+      segments: [
+        { start: 1, end: 2, text: '第一句' },
+        { start: 61, end: 63, text: '最后一句' }
+      ]
+    }, [
+      { time: 1.2, text: '笑死' },
+      { time: 1.8, text: '笑死' }
+    ], { fullContextDanmakuMergeWindowSeconds: 30 });
+
+    expect(source.sourceText).toContain('00:00:01-00:00:02 第一句');
+    expect(source.sourceText).toContain('00:01:01-00:01:03 最后一句');
+    expect(source.sourceText).toContain('笑死 (x2)');
+    expect(source.sourceText).toContain('=== 30秒弹幕热度表 ===');
+    expect(source.heatLines[0]).toContain('count=2');
+    expect(source.heatLines[0]).toContain('baselineRatio=1');
+    expect(source.subtitleLines).toHaveLength(2);
+    expect(source.danmakuLines).toHaveLength(1);
+  });
+
+  test('removes overlaps after subtitle alignment and keeps the higher-scored clip', () => {
+    const clips = ownStreamClipper.removeOverlappingClips([
+      { start: 100, end: 180, score: 80, title: 'lower' },
+      { start: 170, end: 240, score: 95, title: 'higher' },
+      { start: 240, end: 300, score: 70, title: 'touching is allowed' }
+    ]);
+
+    expect(clips.map((clip: any) => clip.title)).toEqual(['higher', 'touching is allowed']);
+  });
+
+  test('production full-context own-stream clipping is scoped only to Sui room', () => {
+    const production = require('../../config/production.json');
+
+    expect(production.ownStreamClips.enabled).toBe(true);
+    expect(production.ownStreamClips.roomIds).toEqual(['25788785']);
+    expect(production.ownStreamClips.ai.strategy).toBe('full_context');
+    expect(production.ownStreamClips.ai.model).toBe('gpt-5.6-luna');
+    expect(production.ownStreamClips.parallel.enabled).toBe(false);
+  });
+
+  test('combines separately configured heat and model routes and prefers model on overlap', () => {
+    const heat = [
+      { start: 100, end: 180, score: 90, selectionSource: 'danmaku_heat' },
+      { start: 300, end: 380, score: 80, selectionSource: 'danmaku_heat' },
+      { start: 500, end: 580, score: 70, selectionSource: 'danmaku_heat' }
+    ];
+    const model = [
+      { start: 110, end: 175, score: 95, selectionSource: 'model_full_context' },
+      { start: 700, end: 790, score: 85, selectionSource: 'model_full_context' }
+    ];
+
+    const combined = ownStreamClipper.combineParallelClipPlans(heat, model, {
+      danmakuHeatClips: 2,
+      modelClips: 2,
+      dedupeAcrossSources: true,
+      overlapToleranceSeconds: 12,
+      preferModelOnOverlap: true
+    });
+
+    expect(combined.map((clip: any) => [clip.start, clip.selectionSource])).toEqual([
+      [110, 'model_full_context'],
+      [300, 'danmaku_heat'],
+      [500, 'danmaku_heat'],
+      [700, 'model_full_context']
+    ]);
+  });
+
+  test('ranks the heat route from danmaku signals instead of subtitle-inflated total score', () => {
+    const heat = ownStreamClipper.buildDanmakuHeatClips([
+      { index: 1, start: 10, end: 60, duration: 50, reason: 'subtitle_keyword+danmaku_density', score: 999, danmakuCount: 3, reactionCount: 0 },
+      { index: 2, start: 100, end: 160, duration: 60, reason: 'danmaku_density', score: 20, danmakuCount: 15, reactionCount: 3 }
+    ], 1);
+
+    expect(heat).toHaveLength(1);
+    expect(heat[0].candidateIndex).toBe(2);
+    expect(heat[0].score).toBe(39);
+    expect(heat[0].selectionSource).toBe('danmaku_heat');
+  });
+
+  test('shows heat/model source counts and per-item labels in WeChat markdown', () => {
+    const markdown = ownStreamClipper.buildNotifyMarkdown([
+      {
+        window: { start: 75, duration: 90 },
+        copy: { title: '弹幕热度片段' },
+        candidate: { selectionSource: 'danmaku_heat' },
+        output: { mediaPath: 'D:/clips/one.mp4' }
+      },
+      {
+        window: { start: 180, duration: 45 },
+        copy: { title: '模型决定片段' },
+        candidate: { selectionSource: 'model_full_context' },
+        output: { mediaPath: 'D:/clips/two.mp4' }
+      }
+    ], {
+      streamTitle: '双路实验',
+      recordedAt: '2026-07-14 12:00:00',
+      outputRoot: 'D:/clips'
+    });
+
+    expect(markdown).toContain('来源统计: 弹幕热度 1，模型全量 1');
+    expect(markdown).toContain('1. [弹幕热度] 弹幕热度片段');
+    expect(markdown).toContain('2. [模型全量] 模型决定片段');
   });
 });

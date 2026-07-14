@@ -32,6 +32,8 @@ export class DelayedReplyService implements IDelayedReplyService {
   private static readonly SUPPLEMENTAL_COMIC_REPLY_PREFIX = '（补图）';
   private static readonly LIVE_RECHECK_INTERVAL_MS = 2 * 60 * 1000;
   private static readonly LIVE_CONTINUATION_REPLACEMENT_MAX_WAIT_COUNT = 180;
+  /** Max times to defer for active live before forcing through (2h = 60 * 2min). */
+  private static readonly MAX_ACTIVE_LIVE_DEFER_COUNT = 60;
   private tasks: Map<string, DelayedReplyTask> = new Map();
   private timers: Map<string, NodeJS.Timeout> = new Map();
   private isRunningFlag = false;
@@ -872,9 +874,35 @@ export class DelayedReplyService implements IDelayedReplyService {
   }
 
   private async deferTaskForActiveLive(task: DelayedReplyTask, liveStatus: RoomLiveStatus): Promise<void> {
+    const deferCount = (task.activeLiveDeferCount || 0) + 1;
+
+    if (deferCount > DelayedReplyService.MAX_ACTIVE_LIVE_DEFER_COUNT) {
+      const maxMinutes = DelayedReplyService.MAX_ACTIVE_LIVE_DEFER_COUNT * (DelayedReplyService.LIVE_RECHECK_INTERVAL_MS / 60000);
+      this.logger.warn(
+        `Active live defer count exceeded limit (${deferCount}/${DelayedReplyService.MAX_ACTIVE_LIVE_DEFER_COUNT}, ~${maxMinutes} min). ` +
+        `Assuming live has ended or API is stale, proceeding with delayed reply.`,
+        {
+          taskId: task.taskId,
+          roomId: task.roomId,
+          activeLiveDeferCount: deferCount,
+          liveStatus: liveStatus.liveStatus,
+          liveStartTime: liveStatus.liveStartTime?.toISOString()
+        }
+      );
+      // Clear deferred state so we don't re-enter this loop
+      task.deferredForActiveLive = false;
+      task.activeLiveDeferCount = deferCount;
+      await this.store.updateTask(task.taskId, {
+        deferredForActiveLive: false,
+        activeLiveDeferCount: deferCount
+      });
+      return; // caller will continue normal execution flow
+    }
+
     task.status = 'pending';
     task.scheduledTime = new Date(Date.now() + DelayedReplyService.LIVE_RECHECK_INTERVAL_MS);
     task.deferredForActiveLive = true;
+    task.activeLiveDeferCount = deferCount;
     task.liveContinuationWaitCount = 0;
     task.lastCheckTime = new Date();
 
@@ -882,6 +910,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       status: 'pending',
       scheduledTime: task.scheduledTime,
       deferredForActiveLive: true,
+      activeLiveDeferCount: deferCount,
       liveContinuationWaitCount: 0,
       lastCheckTime: task.lastCheckTime
     });

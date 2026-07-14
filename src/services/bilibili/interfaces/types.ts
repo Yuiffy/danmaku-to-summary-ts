@@ -219,6 +219,8 @@ export interface DelayedReplyTask {
   deferredForActiveLive?: boolean;
   /** Number of checks while waiting for a final recording task to replace it. */
   liveContinuationWaitCount?: number;
+  /** Total number of times this task was deferred because the live was still active. */
+  activeLiveDeferCount?: number;
 }
 
 /**

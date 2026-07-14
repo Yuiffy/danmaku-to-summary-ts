@@ -927,11 +927,23 @@
     "boundaryEndExtendSeconds": 45,
     "boundarySilenceGapSeconds": 2.0,
     "boundaryTrailingSilenceLookbackSeconds": 14,
+    "avoidOverlappingClips": true,
+    "finalOverlapToleranceSeconds": 0,
     "ai": {
       "enabled": true,
-      "strategy": "chunked",
+      "strategy": "full_context",
+      "model": "gpt-5.6-luna",
+      "timeoutMs": 600000,
       "maxCandidateLines": 32,
-      "fallbackToLocalRules": false
+      "fallbackToLocalRules": true
+    },
+    "parallel": {
+      "enabled": false,
+      "danmakuHeatClips": 6,
+      "modelClips": 12,
+      "dedupeAcrossSources": true,
+      "overlapToleranceSeconds": 12,
+      "preferModelOnOverlap": true
     },
     "notify": {
       "enabled": true

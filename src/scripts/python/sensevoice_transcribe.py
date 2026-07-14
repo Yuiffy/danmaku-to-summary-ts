@@ -1286,13 +1286,15 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
         measured_pipeline = sum(inference_timings.values())
         set_timing(payload, "pipeline_overhead_s", max(0.0, pipeline_elapsed - measured_pipeline))
         model._danmaku_timing_collector = None
+        overhead_s = max(0.0, pipeline_elapsed - measured_pipeline)
         log_progress(
             "paraformer 转写完成: "
             f"pipeline={pipeline_elapsed:.3f}s, "
             f"vad={inference_timings.get('vad_s', 0.0):.3f}s, "
             f"asr={inference_timings.get('asr_inference_s', 0.0):.3f}s, "
             f"punc={inference_timings.get('punc_s', 0.0):.3f}s, "
-            f"spk={inference_timings.get('builtin_speaker_embedding_s', 0.0):.3f}s"
+            f"spk={inference_timings.get('builtin_speaker_embedding_s', 0.0):.3f}s, "
+            f"overhead(decode+merge+prep)={overhead_s:.3f}s"
         )
     except Exception as exc:
         model._danmaku_timing_collector = None
