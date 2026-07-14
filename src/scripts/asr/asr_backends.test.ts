@@ -656,6 +656,17 @@ describe('asr_backends', () => {
     ]));
   });
 
+  test('production config does not rewrite 小资 as 小岁', () => {
+    const resolved = asr.resolveAsrHotwords(productionConfig, { room_id: '1967216004' });
+
+    expect(resolved.hotwordTokens.map((item: any) => item.word)).not.toContain('小资');
+    expect(resolved.corrections.safe).not.toEqual(expect.arrayContaining([
+      { from: '小资', to: '小岁' }
+    ]));
+    expect(asr.applyCorrectionsToText('然后多听小资说话啊', resolved.corrections))
+      .toBe('然后多听小资说话啊');
+  });
+
   test('ambiguous sui homophones need nearby sui context before correction', () => {
     const corrections = {
       ambiguous: [
