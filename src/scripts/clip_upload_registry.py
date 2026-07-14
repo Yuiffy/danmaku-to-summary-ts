@@ -27,6 +27,7 @@ DEFAULT_JOB_TIMEOUT_SECONDS = 45 * 60
 DEFAULT_RETRY_DELAY_SECONDS = 10 * 60
 MAX_AUTOMATIC_JOB_RETRIES = 8
 LOCK_OWNER_TOKEN: Optional[str] = None
+INTERNAL_REVIEW_LABEL_RE = re.compile(r"^\[(?:模型全量|模型分块|弹幕热度|本地规则)\]\s*")
 
 
 def now_iso() -> str:
@@ -102,6 +103,11 @@ def parse_tags(value: str | Iterable[str]) -> List[str]:
     return [str(tag).strip() for tag in raw if str(tag).strip()]
 
 
+def strip_internal_review_label(title: str) -> str:
+    """Remove the source label used for local REVIEW.md display, not upload titles."""
+    return INTERNAL_REVIEW_LABEL_RE.sub("", str(title or "").strip(), count=1)
+
+
 def parse_review(review_path: Path) -> List[Dict[str, Any]]:
     clips: List[Dict[str, Any]] = []
     cover_by_idx: Dict[int, str] = {}
@@ -118,7 +124,7 @@ def parse_review(review_path: Path) -> List[Dict[str, Any]]:
                 clips.append(
                     {
                         "reviewIndex": previous_idx,
-                        "title": m.group(2).strip(),
+                        "title": strip_internal_review_label(m.group(2)),
                         "start": m.group(3).strip(),
                         "duration": m.group(4).strip(),
                         "mediaPath": (m.group(5) or "").strip(),

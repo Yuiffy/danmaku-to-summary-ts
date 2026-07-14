@@ -37,6 +37,8 @@ import time
 import datetime
 import subprocess
 
+INTERNAL_REVIEW_LABEL_RE = re.compile(r'^\[(?:模型全量|模型分块|弹幕热度|本地规则)\]\s*')
+
 # 添加项目路径
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src', 'scripts'))
@@ -340,7 +342,7 @@ def parse_review(review_path):
             m = re.match(r'^(\d+)\.\s*(.+?)\s*\|\s*(\d{2}:\d{2}:\d{2})\s*\|\s*(\d{2}:\d{2}:\d{2})\s*\|?\s*(.+)?$', line)
             if m:
                 idx = int(m.group(1))
-                title = m.group(2).strip()
+                title = INTERNAL_REVIEW_LABEL_RE.sub('', m.group(2).strip(), count=1)
                 start = m.group(3).strip()
                 dur = m.group(4).strip()
                 path = m.group(5).strip() if m.group(5) else ''
