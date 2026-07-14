@@ -1199,7 +1199,8 @@ function buildReviewMarkdown(results, metadata) {
         const start = formatClock(result.window.start);
         const duration = formatClock(result.window.duration);
         const filePath = result.output.mediaPath;
-        lines.push(`${index + 1}. [${getSelectionSourceLabel(result)}] ${result.copy.title} | ${start} | ${duration} | ${filePath}`);
+        lines.push(`${index + 1}. ${result.copy.title} | ${start} | ${duration} | ${filePath}`);
+        lines.push(`   来源: ${getSelectionSourceLabel(result)}`);
         if (uploadIds[index]) {
             lines.push(`   上传ID: ${uploadIds[index]}`);
         }
@@ -1227,7 +1228,8 @@ function buildPlanReviewMarkdown(clips, metadata) {
     ].filter(line => line !== null);
     clips.forEach((clip, index) => {
         const sourceLabel = getSelectionSourceLabel(clip);
-        lines.push(`${index + 1}. [${sourceLabel}] ${clip.title} | ${formatClock(clip.start)}-${formatClock(clip.end)} | ${formatClock(clip.duration)} | ${clip.reason || ''}`);
+        lines.push(`${index + 1}. ${clip.title} | ${formatClock(clip.start)}-${formatClock(clip.end)} | ${formatClock(clip.duration)} | ${clip.reason || ''}`);
+        lines.push(`   来源: ${sourceLabel}`);
     });
     lines.push('');
     return `${lines.join('\n')}\n`;

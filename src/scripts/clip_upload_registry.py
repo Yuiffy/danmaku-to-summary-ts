@@ -111,6 +111,7 @@ def strip_internal_review_label(title: str) -> str:
 def parse_review(review_path: Path) -> List[Dict[str, Any]]:
     clips: List[Dict[str, Any]] = []
     cover_by_idx: Dict[int, str] = {}
+    selection_source_by_idx: Dict[int, str] = {}
     previous_idx: Optional[int] = None
     with review_path.open("r", encoding="utf-8") as f:
         for raw_line in f:
@@ -131,11 +132,16 @@ def parse_review(review_path: Path) -> List[Dict[str, Any]]:
                     }
                 )
                 continue
+            source_match = re.match(r"^\s*来源:\s*(.+?)\s*$", line)
+            if source_match and previous_idx is not None:
+                selection_source_by_idx[previous_idx] = source_match.group(1).strip()
+                continue
             cm = re.match(r"^\s*封面:\s*(.+?)\s*$", line)
             if cm and previous_idx is not None:
                 cover_by_idx[previous_idx] = cm.group(1).strip()
 
     for clip in clips:
+        clip["selectionSource"] = selection_source_by_idx.get(clip["reviewIndex"], "")
         cover = cover_by_idx.get(clip["reviewIndex"])
         if cover:
             clip["coverPath"] = cover

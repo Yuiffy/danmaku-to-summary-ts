@@ -332,9 +332,10 @@ async def wait_for_upload_available(credential, wait_seconds, max_retries):
 
 def parse_review(review_path):
     """解析 REVIEW.md，提取切片列表。
-    预期格式: 序号. 标题 | 开始时间 | 时长 | 文件路径
+    预期格式: 序号. 标题 | 开始时间 | 时长 | 文件路径，来源单独占一行
     """
     clips = []
+    selection_source_by_idx = {}
     with open(review_path, 'r', encoding='utf-8') as f:
         for line in f:
             line = line.strip()
@@ -354,6 +355,13 @@ def parse_review(review_path):
                     'path': path,
                     'cover': '',
                 })
+                continue
+            source_match = re.match(r'^\s*来源:\s*(.+?)\s*$', line)
+            if source_match and clips:
+                selection_source_by_idx[clips[-1]['idx']] = source_match.group(1).strip()
+
+    for clip in clips:
+        clip['selectionSource'] = selection_source_by_idx.get(clip['idx'], '')
     return clips
 
 
