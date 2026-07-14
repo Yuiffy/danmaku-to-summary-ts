@@ -1106,6 +1106,90 @@ def install_paraformer_timing_probe(model):
     model._danmaku_timing_probe_installed = True
 
 
+def _canonical_paraformer_device(device):
+    """Normalize the device names used by FunASR and torch module checks."""
+    normalized = str(device or "").strip().lower()
+    if normalized == "cuda":
+        return "cuda:0"
+    return normalized
+
+
+def _module_device_names(module):
+    """Return all parameter/buffer devices for a torch module."""
+    if module is None:
+        return []
+
+    tensors = []
+    parameters = getattr(module, "parameters", None)
+    if callable(parameters):
+        tensors.extend(list(parameters()))
+    buffers = getattr(module, "buffers", None)
+    if callable(buffers):
+        tensors.extend(list(buffers()))
+
+    return sorted({str(tensor.device) for tensor in tensors if getattr(tensor, "device", None) is not None})
+
+
+def configure_paraformer_devices(model, main_device, vad_device):
+    """Keep ASR/punctuation on main_device and VAD on vad_device.
+
+    FunASR restores the dictionaries captured by _store_base_configs() before
+    generate(). Therefore changing only vad_model.to(...) is not persistent.
+    This helper updates both the live kwargs and FunASR's saved baseline, then
+    validates the actual module placement before inference starts.
+    """
+    main_device = _canonical_paraformer_device(main_device)
+    vad_device = _canonical_paraformer_device(vad_device)
+    vad_model = getattr(model, "vad_model", None)
+    if vad_model is None:
+        log_progress(f"设备检查: ASR={main_device}，未启用 VAD")
+        return
+
+    vad_kwargs = getattr(model, "vad_kwargs", None)
+    model_kwargs = getattr(model, "kwargs", None)
+    if not isinstance(vad_kwargs, dict):
+        raise RuntimeError("FunASR VAD kwargs 不可用，无法稳定切换 VAD device")
+    if not isinstance(model_kwargs, dict):
+        raise RuntimeError("FunASR ASR kwargs 不可用，无法稳定设置 ASR device")
+    if not hasattr(model, "_store_base_configs"):
+        raise RuntimeError("当前 FunASR AutoModel 缺少 _store_base_configs，拒绝使用不稳定的设备迁移")
+
+    vad_model.to(vad_device)
+    vad_kwargs["device"] = vad_device
+    model_kwargs["device"] = main_device
+    model._store_base_configs()
+
+    expected_main = {main_device}
+    expected_vad = {vad_device}
+    module_devices = {
+        "ASR": set(_module_device_names(getattr(model, "model", None))),
+        "VAD": set(_module_device_names(vad_model)),
+        "PUNC": set(_module_device_names(getattr(model, "punc_model", None))),
+        "SPK": set(_module_device_names(getattr(model, "spk_model", None))),
+    }
+    if module_devices["ASR"] and module_devices["ASR"] != expected_main:
+        raise RuntimeError(f"ASR 模型设备异常: 实际={sorted(module_devices['ASR'])}，期望={main_device}")
+    if module_devices["VAD"] and module_devices["VAD"] != expected_vad:
+        raise RuntimeError(f"VAD 模型设备异常: 实际={sorted(module_devices['VAD'])}，期望={vad_device}")
+    for name in ("PUNC", "SPK"):
+        if module_devices[name] and module_devices[name] != expected_main:
+            raise RuntimeError(
+                f"{name} 模型设备异常: 实际={sorted(module_devices[name])}，期望={main_device}"
+            )
+
+    baseline_vad_kwargs = getattr(model, "_base_kwargs_map", {}).get("vad_kwargs", {})
+    log_progress(
+        "设备检查: "
+        f"ASR module={sorted(module_devices['ASR']) or ['unknown']}, "
+        f"ASR kwargs={model_kwargs.get('device')}, "
+        f"VAD module={sorted(module_devices['VAD']) or ['unknown']}, "
+        f"VAD kwargs={vad_kwargs.get('device')}, "
+        f"VAD baseline={baseline_vad_kwargs.get('device') if isinstance(baseline_vad_kwargs, dict) else 'unknown'}, "
+        f"PUNC module={sorted(module_devices['PUNC']) or ['none']}, "
+        f"SPK module={sorted(module_devices['SPK']) or ['none']}"
+    )
+
+
 def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None, runtime_cache=None):
     """
     Use FunASR's built-in pipeline for paraformer: pass vad_model/punc_model/spk_model
@@ -1134,9 +1218,16 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
     if vad_model:
         resolved_vad = resolve_cached_model_name(vad_model)
         model_kwargs["vad_model"] = resolved_vad
-        model_kwargs["vad_kwargs"] = payload.get("vad_kwargs") or {
-            "max_single_segment_time": int(payload.get("vad_max_single_segment_time_ms", 60000) or 60000)
-        }
+        vad_kwargs = dict(payload.get("vad_kwargs") or {})
+        vad_kwargs.setdefault(
+            "max_single_segment_time",
+            int(payload.get("vad_max_single_segment_time_ms", 60000) or 60000),
+        )
+        vad_kwargs.setdefault(
+            "chunk_size",
+            int(payload.get("vad_chunk_size_ms", 60000) or 60000),
+        )
+        model_kwargs["vad_kwargs"] = vad_kwargs
         log_progress(f"  VAD: {resolved_vad}")
 
     # Attach punc model
@@ -1167,7 +1258,7 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
     # FSMN-VAD is faster on CPU than CUDA on the production host, while keeping
     # Paraformer/punctuation/speaker inference on CUDA. AutoModel constructs all
     # submodels on the main device, so move only VAD after construction.
-    vad_device = str(payload.get("vad_device") or "").strip()
+    vad_device = _canonical_paraformer_device(payload.get("vad_device") or device_name)
 
     cache_key = json.dumps(
         {
@@ -1219,12 +1310,6 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
                 )
             with StageTimeout(payload.get("model_load_timeout_s", 180), "paraformer pipeline 加载"):
                 model = AutoModel(**model_kwargs)
-            if vad_device and getattr(model, "vad_model", None) is not None:
-                model.vad_model.to(vad_device)
-                if isinstance(getattr(model, "vad_kwargs", None), dict):
-                    model.vad_kwargs["device"] = vad_device
-                log_progress(f"VAD 已迁移到 {vad_device}，其余 pipeline 保持 {device_name}")
-            install_paraformer_timing_probe(model)
             set_timing(payload, "model_load_s", time.perf_counter() - model_load_started)
             log_progress(f"paraformer pipeline 加载完成: {payload['_timings']['model_load_s']:.3f}s")
         except Exception as exc:
@@ -1247,7 +1332,12 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
             "reference_centroids": reference_centroids,
         }
 
-    install_paraformer_timing_probe(model)
+    try:
+        configure_paraformer_devices(model, main_device=device_name, vad_device=vad_device)
+        install_paraformer_timing_probe(model)
+    except Exception as exc:
+        fail("paraformer pipeline 设备配置失败", f"{exc}\n{traceback.format_exc()}")
+
     inference_timings = {}
     model._danmaku_timing_collector = inference_timings
 

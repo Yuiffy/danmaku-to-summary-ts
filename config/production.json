@@ -1883,7 +1883,11 @@
       "spk_model": null,
       "language": "auto",
       "device": "cuda",
-      "vad_device": "cuda",
+      "vad_device": "cpu",
+      "vad_kwargs": {
+        "chunk_size": 60000,
+        "max_single_segment_time": 60000
+      },
       "python_executable": null,
       "python_args": [],
       "python_path_map": [],
