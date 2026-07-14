@@ -44,6 +44,53 @@ describe('asr_backends', () => {
     }
   });
 
+  test('reuses the resolved finetuned paraformer profile for a forced room', async () => {
+    const server = net.createServer((socket: any) => {
+      let buffer = '';
+      socket.on('data', (data: Buffer) => {
+        buffer += data.toString();
+        if (!buffer.includes('\n')) return;
+        const request = JSON.parse(buffer.split('\n', 1)[0]);
+        expect(request.payload.backend).toBe('paraformer');
+        expect(request.payload.model_profile).toBe('finetuned');
+        expect(request.payload.model).toBe('D:/files/videos/asr_eval/models/paraformer_timestamp_avg10');
+        expect(request.payload.finetuned_model).toBe('D:/files/videos/asr_eval/models/paraformer_timestamp_avg10');
+        socket.end(JSON.stringify({
+          ok: true,
+          result: {
+            backend: 'paraformer',
+            segments: []
+          }
+        }) + '\n');
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    const previousPort = process.env.ASR_PERSISTENT_WORKER_PORT;
+    const previousToken = process.env.ASR_PERSISTENT_WORKER_TOKEN;
+    process.env.ASR_PERSISTENT_WORKER_PORT = String((address as any).port);
+    process.env.ASR_PERSISTENT_WORKER_TOKEN = 'test-token';
+
+    const context = {
+      room_id: '26966466',
+      filename: '录制-26966466-20260715-000000-000-测试.m4a'
+    };
+    const resolved = asr.resolveAsrBackend(productionConfig, context);
+
+    try {
+      await asr.transcribeParaformer('smoke.wav', productionConfig, {
+        routingContext: context,
+        resolvedBackend: resolved
+      });
+    } finally {
+      if (previousPort === undefined) delete process.env.ASR_PERSISTENT_WORKER_PORT;
+      else process.env.ASR_PERSISTENT_WORKER_PORT = previousPort;
+      if (previousToken === undefined) delete process.env.ASR_PERSISTENT_WORKER_TOKEN;
+      else process.env.ASR_PERSISTENT_WORKER_TOKEN = previousToken;
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    }
+  });
+
   test('uses default backend when no route matches', () => {
     const result = asr.resolveAsrBackend({
       asr: {

@@ -1036,7 +1036,11 @@ async function transcribeFunAsrBackend(mediaPath, config = {}, runtimeOptions = 
     const asrConfig = getAsrConfig(config);
     const context = runtimeOptions.routingContext || {};
     const resolved = backend === 'paraformer'
-        ? resolveAsrBackend(config, context, 'paraformer')
+        ? (
+            runtimeOptions.resolvedBackend?.backend === backend
+                ? runtimeOptions.resolvedBackend
+                : resolveAsrBackend(config, context, 'paraformer')
+        )
         : { backend, reason: runtimeOptions.forceReason || `direct backend=${backend}` };
     const scriptPath = path.join(__dirname, '..', 'python', 'sensevoice_transcribe.py');
     if (!fs.existsSync(scriptPath)) {

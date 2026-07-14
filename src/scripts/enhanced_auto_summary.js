@@ -811,7 +811,13 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
             : options.forceBackend
             ? { backend: options.forceBackend, reason: options.forceReason || `实验模式指定 ${options.forceBackend}` }
             : asrBackends.resolveAsrBackend(config, context, options.asrBackend);
-        const asrRuntime = asrBackends.resolveAsrHotwords(config, context);
+        const asrRuntime = {
+            ...asrBackends.resolveAsrHotwords(config, context),
+            // 让具体 ASR backend 复用这里已经完成灰度/房间路由的结果，
+            // 避免 transcribeParaformer 再次按“直接指定 backend”解析并丢失微调模型覆盖。
+            routingContext: context,
+            resolvedBackend: selected
+        };
         const fileType = isAudioFile(mediaPath) ? 'Audio' : 'Video';
         console.log(`\n-> [ASR] Generating Subtitles (${selected.backend})...`);
         console.log(`   Target: ${path.basename(mediaPath)} (${fileType})`);
@@ -877,8 +883,9 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
                     mediaPath
                 });
                 const asrElapsedSeconds = (Date.now() - asrStartTime) / 1000;
-                const selectedModelProfile = String(asrRuntime.model_profile || config.asr?.paraformer?.model_profile || 'default');
-                const selectedFinetunedModel = String(asrRuntime.finetuned_model || config.asr?.gray_rollout?.finetuned_model || config.asr?.paraformer?.finetuned_model || '');
+                const selectedBackendOptions = selected.backendOptionsOverride?.[selected.backend] || {};
+                const selectedModelProfile = String(selectedBackendOptions.model_profile || config.asr?.paraformer?.model_profile || 'default');
+                const selectedFinetunedModel = String(selectedBackendOptions.finetuned_model || config.asr?.gray_rollout?.finetuned_model || config.asr?.paraformer?.finetuned_model || '');
                 const selectedModel = selectedModelProfile === 'finetuned'
                     ? (selectedFinetunedModel || config.asr?.paraformer?.model || 'paraformer-zh')
                     : String(config.asr?.paraformer?.base_model || config.asr?.paraformer?.model || 'paraformer-zh');
