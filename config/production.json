@@ -1965,7 +1965,7 @@
   },
   "subtitle": {
     "max_chars_per_line": 18,
-    "max_chars_per_segment": 30,
+    "max_chars_per_segment": 18,
     "min_duration": 0.7,
     "max_duration": 5.5,
     "gap_split_threshold": 0.45,
