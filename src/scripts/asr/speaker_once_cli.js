@@ -2,6 +2,8 @@
 
 const configLoader = require('../config-loader');
 const registry = require('./speaker_once_registry');
+const rosterResolver = require('./speaker_roster_resolver');
+const referenceCatalog = require('./speaker_reference_catalog');
 
 function normalizeLookup(value) {
     return String(value || '').trim().toLocaleLowerCase('zh-CN');
@@ -74,9 +76,38 @@ function parseStartAt(value) {
     return parsed.toISOString();
 }
 
+function printRosterPrecheck(roomId, roster) {
+    console.log(`🎯 固定参与者 roster: room=${roomId}`);
+    roster.participants.forEach((participant) => {
+        const roleLabel = participant.role === 'host' ? 'host' : 'guest';
+        console.log(`   - ${participant.displayName || participant.streamerId} (${participant.streamerId}, ${roleLabel})`);
+    });
+    const prep = roster.referencePreparation || { status: 'unchecked', participants: [] };
+    console.log(`📌 Speaker reference 预检查: ${prep.status}`);
+    (prep.participants || []).forEach((item) => {
+        const status = item.status || 'unknown';
+        const suffix = item.reference?.audio_path ? ` -> ${item.reference.audio_path}` : '';
+        const message = item.message ? ` (${item.message})` : '';
+        console.log(`   - ${item.displayName || item.streamerId}: ${status}${suffix}${message}`);
+    });
+}
+
+function buildRosterForTarget(target, flags, config = configLoader.getConfig()) {
+    const resolved = resolveRoom(target, config);
+    const roster = rosterResolver.resolvePlannedRoster({
+        roomId: resolved.roomId,
+        hostStreamerId: flags['host-streamer-id'],
+        participants: flags.participants,
+        constrainToRoster: flags['constrain-to-roster'] !== 'false'
+    }, config);
+    return { resolved, roster };
+}
+
 function printUsage() {
     console.log('用法:');
-    console.log('  npm run asr:speaker-once -- enable <直播间ID|主播名> [--start-at ISO时间] [--window-hours 24] [--expires-hours 24] [--reason 文本] [--requested-by openclaw]');
+    console.log('  npm run asr:speaker-once -- enable <直播间ID|主播名> [--participants 名字1,名字2] [--start-at ISO时间] [--window-hours 24] [--expires-hours 24] [--reason 文本] [--requested-by openclaw]');
+    console.log('  npm run asr:speaker-once -- precheck <直播间ID|主播名> --participants 名字1,名字2');
+    console.log('  npm run asr:speaker-once -- prepare --speaker 名字 --audio-path 文件路径 [--key speaker_key]');
     console.log('  npm run asr:speaker-once -- cancel <直播间ID|主播名>');
     console.log('  npm run asr:speaker-once -- status [直播间ID|主播名] [--json]');
 }
@@ -87,7 +118,15 @@ function main(argv = process.argv.slice(2)) {
     const target = positional[1];
 
     if (action === 'enable' || action === 'arm') {
-        const resolved = resolveRoom(target);
+        const config = configLoader.getConfig();
+        const { resolved, roster } = buildRosterForTarget(target, flags, config);
+        if (flags.participants) {
+            printRosterPrecheck(resolved.roomId, roster);
+            const failOnMissing = flags['fail-on-missing-references'] !== 'false';
+            if (failOnMissing && roster.referencePreparation.status !== 'ready') {
+                throw new Error('固定参与者 roster 存在缺失 speaker reference，请先补齐或显式关闭 --fail-on-missing-references');
+            }
+        }
         const startAt = flags['start-at'] === undefined ? null : parseStartAt(flags['start-at']);
         const request = registry.arm(resolved.roomId, {
             roomName: resolved.roomName,
@@ -95,9 +134,19 @@ function main(argv = process.argv.slice(2)) {
             reason: flags.reason,
             startAt,
             windowHours: flags['window-hours'] === undefined ? 24 : Number(flags['window-hours']),
-            expiresHours: flags['expires-hours'] === undefined ? 24 : Number(flags['expires-hours'])
+            expiresHours: flags['expires-hours'] === undefined ? 24 : Number(flags['expires-hours']),
+            mode: flags.participants ? 'planned_roster' : 'speaker_once',
+            hostStreamerId: roster.hostStreamerId,
+            plannedParticipantIds: roster.plannedParticipantIds,
+            rosterStreamerIds: roster.rosterStreamerIds,
+            participants: roster.participants,
+            constrainToRoster: roster.constrainToRoster,
+            referencePreparation: roster.referencePreparation
         });
         console.log(`✅ 已开启一次性说话人识别: ${resolved.roomName || 'room'} (${resolved.roomId})`);
+        if (request.plannedParticipantIds?.length) {
+            console.log(`   固定参与者: ${request.rosterStreamerIds.join(', ')}`);
+        }
         if (request.scheduledAt) {
             console.log(`   生效范围: 结束时间位于预约窗口内的第一场直播`);
             console.log(`   预约窗口: ${request.scheduledAt} ~ ${request.expiresAt}`);
@@ -106,6 +155,31 @@ function main(argv = process.argv.slice(2)) {
             console.log(`   过期时间: ${request.expiresAt || '不过期'}`);
         }
         return request;
+    }
+
+    if (action === 'precheck') {
+        const { resolved, roster } = buildRosterForTarget(target, flags);
+        printRosterPrecheck(resolved.roomId, roster);
+        return roster;
+    }
+
+    if (action === 'prepare') {
+        const speaker = flags.speaker;
+        const audioPath = flags['audio-path'];
+        const key = flags.key;
+        if (!speaker || !audioPath) {
+            throw new Error('prepare 需要同时提供 --speaker 和 --audio-path');
+        }
+        const prepared = referenceCatalog.registerCanonicalReference({
+            speaker,
+            audioPath,
+            key,
+            sourceMedia: flags['source-media'],
+            sourceSrt: flags['source-srt'],
+            sourceCount: flags['source-count']
+        });
+        console.log(`✅ 已登记 speaker reference: ${prepared.speaker} -> ${prepared.audio_path}`);
+        return prepared;
     }
 
     if (action === 'cancel' || action === 'disable') {
@@ -134,7 +208,10 @@ function main(argv = process.argv.slice(2)) {
                 const scope = item.scheduledAt
                     ? `window=${item.scheduledAt}..${item.expiresAt}`
                     : `expires=${item.expiresAt || 'never'}`;
-                console.log(`   - ${item.roomName || 'room'} (${item.roomId}), ${scope}, by=${item.requestedBy}`);
+                const rosterText = Array.isArray(item.rosterStreamerIds) && item.rosterStreamerIds.length > 0
+                    ? ` roster=${item.rosterStreamerIds.join(',')}`
+                    : '';
+                console.log(`   - ${item.roomName || 'room'} (${item.roomId}), ${scope}, by=${item.requestedBy}${rosterText}`);
             });
         }
         return filtered;
@@ -153,4 +230,4 @@ if (require.main === module) {
     }
 }
 
-module.exports = { main, parseArgs, parseStartAt, resolveRoom, normalizeLookup };
+module.exports = { main, parseArgs, parseStartAt, resolveRoom, normalizeLookup, buildRosterForTarget, printRosterPrecheck };

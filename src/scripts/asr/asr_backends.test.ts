@@ -91,6 +91,115 @@ describe('asr_backends', () => {
     }
   });
 
+  test('applies planned roster speaker references only for constrained tasks', async () => {
+    const server = net.createServer((socket: any) => {
+      let buffer = '';
+      socket.on('data', (data: Buffer) => {
+        buffer += data.toString();
+        if (!buffer.includes('\n')) return;
+        const request = JSON.parse(buffer.split('\n', 1)[0]);
+        expect(request.payload.backend).toBe('paraformer');
+        expect(request.payload.speaker_constrain_to_references).toBe(true);
+        expect(request.payload.speaker_references).toEqual([
+          { speaker: '岁己SUI', audio_path: 'data/asr_speaker_refs/sui.wav' },
+          { speaker: '栞栞', audio_path: 'data/asr_speaker_refs/shiori.wav' }
+        ]);
+        socket.end(JSON.stringify({ ok: true, result: { backend: 'paraformer', segments: [] } }) + '\n');
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address() as any;
+    const previousPort = process.env.ASR_PERSISTENT_WORKER_PORT;
+    const previousToken = process.env.ASR_PERSISTENT_WORKER_TOKEN;
+    process.env.ASR_PERSISTENT_WORKER_PORT = String(address.port);
+    process.env.ASR_PERSISTENT_WORKER_TOKEN = 'test-token';
+
+    try {
+      await asr.transcribeParaformer('smoke.wav', {
+        asr: {
+          paraformer: {
+            model: 'paraformer-zh',
+            process_timeout_s: 30,
+            speaker_references: [{ speaker: '不该使用', audio_path: 'data/asr_speaker_refs/other.wav' }]
+          }
+        }
+      }, {
+        routingContext: {
+          room_id: '25788785',
+          speakerRequest: {
+            mode: 'planned_roster',
+            hostStreamerId: 'sui',
+            plannedParticipantIds: ['shiori'],
+            rosterStreamerIds: ['sui', 'shiori'],
+            participants: [
+              { streamerId: 'sui', displayName: '岁己SUI', speakerLabels: ['岁己SUI'] },
+              { streamerId: 'shiori', displayName: '栞栞', speakerLabels: ['栞栞'] }
+            ],
+            constrainToRoster: true,
+            constrainedSpeakerReferences: [
+              { speaker: '岁己SUI', audio_path: 'data/asr_speaker_refs/sui.wav' },
+              { speaker: '栞栞', audio_path: 'data/asr_speaker_refs/shiori.wav' }
+            ]
+          }
+        }
+      });
+    } finally {
+      if (previousPort === undefined) delete process.env.ASR_PERSISTENT_WORKER_PORT;
+      else process.env.ASR_PERSISTENT_WORKER_PORT = previousPort;
+      if (previousToken === undefined) delete process.env.ASR_PERSISTENT_WORKER_TOKEN;
+      else process.env.ASR_PERSISTENT_WORKER_TOKEN = previousToken;
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    }
+  });
+
+  test('writes planned participant info into ASR speaker summary sidecar', () => {
+    const tmpDir = require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'asr-sidecar-'));
+    const srtPath = require('path').join(tmpDir, 'sample.srt');
+    const result = {
+      backend: 'sensevoice',
+      segments: [
+        { start: 0, end: 15, text: '你好', speaker: '岁己SUI', speaker_score: 0.9 },
+        { start: 16, end: 32, text: '晚上好', speaker: '栞栞', speaker_score: 0.82 }
+      ]
+    };
+
+    const sidecarPath = asr.writeAsrSpeakersSidecar(result, srtPath, {
+      ai: {
+        streamerRegistry: {
+          sui: { displayName: '岁己SUI', roomIds: ['25788785'], speakerLabels: ['岁己SUI'] },
+          shiori: { displayName: '栞栞', roomIds: ['26966466'], speakerLabels: ['栞栞'] }
+        }
+      }
+    }, {
+      room_id: '25788785',
+      speakerRequest: {
+        hostStreamerId: 'sui',
+        plannedParticipantIds: ['shiori'],
+        rosterStreamerIds: ['sui', 'shiori'],
+        participants: [
+          { streamerId: 'sui', displayName: '岁己SUI', role: 'host', planned: true },
+          { streamerId: 'shiori', displayName: '栞栞', role: 'participant', planned: true }
+        ],
+        constrainToRoster: true
+      }
+    });
+
+    const sidecar = require('fs').readFileSync(sidecarPath, 'utf8');
+    const parsed = JSON.parse(sidecar);
+    expect(parsed).toMatchObject({
+      version: 2,
+      hostStreamerId: 'sui',
+      plannedParticipantIds: ['shiori'],
+      rosterStreamerIds: ['sui', 'shiori'],
+      constrainedToRoster: true
+    });
+    expect(parsed.participants).toEqual(expect.arrayContaining([
+      expect.objectContaining({ streamerId: 'sui', appeared: true, role: 'host' }),
+      expect.objectContaining({ streamerId: 'shiori', appeared: true, role: 'participant' })
+    ]));
+    require('fs').rmSync(tmpDir, { recursive: true, force: true });
+  });
+
   test('uses default backend when no route matches', () => {
     const result = asr.resolveAsrBackend({
       asr: {

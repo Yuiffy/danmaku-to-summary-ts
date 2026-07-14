@@ -567,6 +567,7 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
                 reference_centroids,
                 float(payload.get("speaker_reference_threshold", 0.45)),
                 float(payload.get("speaker_reference_margin", 0.0) or 0.0),
+                bool(payload.get("speaker_constrain_to_references", False)),
             )
             set_timing(payload, "speaker_matching_s", time.perf_counter() - matching_started)
             named_count = sum(1 for key, value in cluster_matches.items() if value.get("label") != key)

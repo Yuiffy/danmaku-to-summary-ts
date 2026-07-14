@@ -142,6 +142,17 @@ export interface AsrSpeakerReferenceConfig {
   max_chunks?: number;
 }
 
+export interface PlannedSpeakerParticipantConfig {
+  streamerId: string;
+  displayName?: string | null;
+  role?: 'host' | 'participant' | string;
+  planned?: boolean;
+  roomIds?: string[];
+  speakerLabels?: string[];
+  aliases?: string[];
+  mentionLabels?: string[];
+}
+
 export interface AsrPythonRuntimeConfig {
   python_executable?: string | null;
   python_args?: string[];

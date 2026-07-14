@@ -16,6 +16,7 @@ const asrBackends = require('./asr/asr_backends');
 const topicClipper = require('./topic_clipper');
 const ownStreamClipper = require('./own_stream_clipper');
 const backgroundClipRunner = require('./background_clip_runner');
+const speakerReferenceCatalog = require('./asr/speaker_reference_catalog');
 
 // 获取音频格式配置
 function getAudioFormats() {
@@ -108,17 +109,66 @@ const ASR_TIMING_SENTINEL = '[[ASR_TIMING]]';
 const DELAYED_REPLY_READY_SENTINEL = '[[DELAYED_REPLY_READY]]';
 const SUI_ROOM_ID = '25788785';
 
-function writeAsrMetaSidecar(srtPath, data) {
-    try {
-        if (!srtPath || !data) return null;
-        const parsed = path.parse(srtPath);
-        const metaPath = path.join(parsed.dir, `${parsed.name}.asr_meta.json`);
-        fs.writeFileSync(metaPath, JSON.stringify(data, null, 2), 'utf8');
-        return metaPath;
-    } catch (error) {
-        console.warn(`⚠️  写入 ASR meta sidecar 失败: ${error.message}`);
+function parseSpeakerRequestFromEnv() {
+    const encoded = String(process.env.ASR_SPEAKER_REQUEST_JSON || '').trim();
+    if (!encoded) {
         return null;
     }
+    try {
+        const raw = Buffer.from(encoded, 'base64').toString('utf8');
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch (error) {
+        console.warn(`⚠️  解析 ASR_SPEAKER_REQUEST_JSON 失败: ${error.message}`);
+        return null;
+    }
+}
+
+function enrichAsrContextWithSpeakerRequest(context = {}, request = null, config = configLoader.getConfig()) {
+    if (!request || typeof request !== 'object') {
+        return context;
+    }
+    const participants = Array.isArray(request.participants) ? request.participants : [];
+    const referencePreparation = request.referencePreparation && typeof request.referencePreparation === 'object'
+        ? request.referencePreparation
+        : null;
+    const resolvedParticipants = participants.map((participant) => ({
+        streamerId: participant.streamerId ? String(participant.streamerId) : null,
+        displayName: participant.displayName ? String(participant.displayName) : null,
+        role: participant.role ? String(participant.role) : 'participant',
+        planned: participant.planned !== false,
+        roomIds: Array.isArray(participant.roomIds) ? participant.roomIds.map(value => String(value)).filter(Boolean) : [],
+        speakerLabels: Array.isArray(participant.speakerLabels) ? participant.speakerLabels.map(value => String(value)).filter(Boolean) : [],
+        aliases: Array.isArray(participant.aliases) ? participant.aliases.map(value => String(value)).filter(Boolean) : [],
+        mentionLabels: Array.isArray(participant.mentionLabels) ? participant.mentionLabels.map(value => String(value)).filter(Boolean) : []
+    })).filter((participant) => participant.streamerId);
+    const constrainedSpeakerReferences = speakerReferenceCatalog.buildSpeakerReferencesForParticipants(
+        resolvedParticipants.map((participant) => ({
+            id: participant.streamerId,
+            displayName: participant.displayName,
+            speakerLabels: participant.speakerLabels,
+            aliases: participant.aliases
+        })),
+        config
+    );
+
+    return {
+        ...context,
+        speakerRequest: {
+            ...request,
+            hostStreamerId: request.hostStreamerId ? String(request.hostStreamerId) : null,
+            plannedParticipantIds: Array.isArray(request.plannedParticipantIds)
+                ? request.plannedParticipantIds.map(value => String(value)).filter(Boolean)
+                : [],
+            rosterStreamerIds: Array.isArray(request.rosterStreamerIds)
+                ? request.rosterStreamerIds.map(value => String(value)).filter(Boolean)
+                : [],
+            participants: resolvedParticipants,
+            constrainToRoster: request.constrainToRoster !== false,
+            referencePreparation,
+            constrainedSpeakerReferences
+        }
+    };
 }
 
 function logAsrTimings(timings, mediaDurationSeconds) {
@@ -795,6 +845,7 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
 
         const config = configLoader.getConfig();
         const enableSpeakerOnce = String(process.env.ASR_ENABLE_SPEAKER_ONCE || '').toLowerCase() === 'true';
+        const speakerRequest = parseSpeakerRequestFromEnv();
         if (enableSpeakerOnce) {
             config.asr = config.asr || {};
             config.asr.paraformer = {
@@ -805,7 +856,7 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
             console.log('🎙️  本任务已启用一次性说话人识别（Paraformer + CAM++）');
         }
         const subtitleConfig = asrBackends.getSubtitleConfig(config);
-        const context = options.asrContext || {};
+        const context = enrichAsrContextWithSpeakerRequest(options.asrContext || {}, speakerRequest, config);
         const selected = enableSpeakerOnce
             ? { backend: 'paraformer', reason: '一次性说话人识别开关' }
             : options.forceBackend
@@ -845,6 +896,7 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
             let completedWithCleanupCrash = false;
             let completionWarning = null;
             let asrResult = null;
+            let normalized = null;
 
             try {
                 if (selected.backend === 'whisper') {
@@ -869,7 +921,7 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
                 }
 
                 const asrTimingSummary = logAsrTimings(asrResult?.timings, mediaDurationSeconds);
-                const normalized = asrBackends.normalizeAsrResult(asrResult, subtitleConfig);
+                normalized = asrBackends.normalizeAsrResult(asrResult, subtitleConfig);
                 asrBackends.writeSrt(normalized, srtPath, {
                     ...subtitleConfig,
                     corrections: asrRuntime.corrections
@@ -924,6 +976,8 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
             return {
                 srtPath: fs.existsSync(srtPath) ? srtPath : null,
                 speakerReviewSrtPath: fs.existsSync(srtPath) ? path.join(path.dirname(srtPath), `${path.parse(srtPath).name}.speaker.srt`) : null,
+                asrResult,
+                normalized,
                 completionOptions
             };
         } catch (error) {
@@ -940,6 +994,8 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
         return {
             srtPath,
             speakerReviewSrtPath: path.join(path.dirname(srtPath), `${path.parse(srtPath).name}.speaker.srt`),
+            asrResult: null,
+            normalized: null,
             completionOptions: {
                 warning: `字幕已存在，跳过Whisper: ${path.basename(srtPath)}`
             }
@@ -949,6 +1005,8 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
     return {
         srtPath: fs.existsSync(srtPath) ? srtPath : null,
         speakerReviewSrtPath: fs.existsSync(srtPath) ? path.join(path.dirname(srtPath), `${path.parse(srtPath).name}.speaker.srt`) : null,
+        asrResult: null,
+        normalized: null,
         completionOptions: null
     };
 }

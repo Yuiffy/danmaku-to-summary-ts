@@ -3,7 +3,7 @@ const os = require('os');
 const path = require('path');
 
 const { SpeakerOnceRegistry } = require('./speaker_once_registry');
-const { parseStartAt, resolveRoom } = require('./speaker_once_cli');
+const { parseStartAt, resolveRoom, buildRosterForTarget } = require('./speaker_once_cli');
 
 describe('speaker_once_registry', () => {
   let tempDir: string;
@@ -36,10 +36,36 @@ describe('speaker_once_registry', () => {
     expect(registry.list()).toEqual([]);
   });
 
-  test('cancels an armed request', () => {
-    registry.arm('26966466', { roomName: '栞栞', expiresHours: 1 });
-    expect(registry.cancel('26966466')).toMatchObject({ roomId: '26966466' });
-    expect(registry.list()).toEqual([]);
+  test('persists planned roster fields in armed requests', () => {
+    const armed = registry.arm('25788785', {
+      roomName: '岁己SUI',
+      mode: 'planned_roster',
+      hostStreamerId: 'sui',
+      plannedParticipantIds: ['shiori'],
+      rosterStreamerIds: ['sui', 'shiori'],
+      participants: [
+        { streamerId: 'sui', displayName: '岁己SUI', role: 'host', speakerLabels: ['岁己SUI'] },
+        { streamerId: 'shiori', displayName: '栞栞', role: 'participant', speakerLabels: ['栞栞'] }
+      ],
+      referencePreparation: {
+        status: 'ready',
+        missingStreamerIds: [],
+        readyStreamerIds: ['sui', 'shiori']
+      }
+    });
+
+    expect(armed).toMatchObject({
+      mode: 'planned_roster',
+      hostStreamerId: 'sui',
+      plannedParticipantIds: ['shiori'],
+      rosterStreamerIds: ['sui', 'shiori']
+    });
+    expect(armed.participants).toHaveLength(2);
+    expect(registry.consume('25788785', { taskId: 'task-roster' })).toMatchObject({
+      taskId: 'task-roster',
+      rosterStreamerIds: ['sui', 'shiori'],
+      plannedParticipantIds: ['shiori']
+    });
   });
 
   test('drops expired requests before consumption', () => {
@@ -114,19 +140,37 @@ describe('speaker_once_registry', () => {
     expect(() => parseStartAt('7月16日晚8点')).toThrow('预约开始时间无效');
   });
 
-  test('resolves a configured streamer name to room id', () => {
+  test('builds a fixed participant roster from streamer registry labels', () => {
     const config = {
       ai: {
         streamerRegistry: {
+          sui: {
+            displayName: '岁己SUI',
+            roomIds: ['25788785'],
+            speakerLabels: ['岁己SUI', '小岁']
+          },
           shiori: {
             displayName: '栞栞',
             roomIds: ['26966466'],
-            mentionLabels: ['小栞']
+            speakerLabels: ['栞栞', '小栞']
           }
+        }
+      },
+      asr: {
+        paraformer: {
+          speaker_references: [
+            { speaker: '岁己SUI', audio_path: 'data/asr_speaker_refs/sui.wav' },
+            { speaker: '栞栞', audio_path: 'data/asr_speaker_refs/shiori.wav' }
+          ]
         }
       }
     };
-    expect(resolveRoom('小栞', config)).toMatchObject({ roomId: '26966466', roomName: '栞栞' });
-    expect(resolveRoom('123', config)).toMatchObject({ roomId: '123' });
+    const built = buildRosterForTarget('25788785', { participants: '栞栞' }, config);
+    expect(built.roster).toMatchObject({
+      hostStreamerId: 'sui',
+      plannedParticipantIds: ['shiori'],
+      rosterStreamerIds: ['sui', 'shiori']
+    });
+    expect(built.roster.participants.map((item: any) => item.streamerId)).toEqual(['sui', 'shiori']);
   });
 });

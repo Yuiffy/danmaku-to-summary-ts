@@ -137,6 +137,34 @@ describe('own_stream_clipper', () => {
     expect(markdown).not.toContain('D:/clips/one.mp4');
   });
 
+  test('review and notify markdown remain compatible when participant info is present', () => {
+    const results = [
+      {
+        window: { start: 75, duration: 90 },
+        copy: { title: '岁己：弹幕觉得这里很有趣' },
+        output: { mediaPath: 'D:/clips/one.mp4' },
+        participantInfo: {
+          rosterStreamerIds: ['sui', 'shiori'],
+          appearedDisplayNames: ['岁己SUI']
+        }
+      }
+    ];
+    const metadata = {
+      streamTitle: '悠哉悠哉夜晚！',
+      recordedAt: '2026-06-05 19:43:31',
+      outputRoot: 'D:/clips',
+      participantInfo: {
+        rosterStreamerIds: ['sui', 'shiori'],
+        appearedDisplayNames: ['岁己SUI']
+      }
+    };
+
+    const review = ownStreamClipper.buildReviewMarkdown(results, metadata);
+    const notify = ownStreamClipper.buildNotifyMarkdown(results, metadata);
+    expect(review).toContain('岁己：弹幕觉得这里很有趣');
+    expect(notify).toContain('岁己：弹幕觉得这里很有趣');
+  });
+
   test('includes upload registry short ids in review and notification markdown', () => {
     const results = [
       {
@@ -161,7 +189,7 @@ describe('own_stream_clipper', () => {
     const notify = ownStreamClipper.buildNotifyMarkdown(results, metadata);
 
     expect(review).toContain('上传短ID: 17,18');
-    expect(review).toContain('1. [本地规则] 岁己：弹幕觉得这里很有趣 | 00:01:15 | 00:01:30 | D:/clips/one.mp4');
+    expect(review).toContain('1. 岁己：弹幕觉得这里很有趣 | 00:01:15 | 00:01:30 | D:/clips/one.mp4');
     expect(review).toContain('   上传ID: 17');
     expect(review).toContain('   上传ID: 18');
     expect(notify).toContain('上传短ID: 17,18');

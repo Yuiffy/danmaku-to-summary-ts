@@ -935,6 +935,15 @@ def to_optional_float(value: Any) -> Optional[float]:
     except (TypeError, ValueError):
         return None
 
+def find_sidecar_participant_for_streamer(sidecar: dict, streamer: Dict[str, Any]) -> Optional[dict]:
+    participants = sidecar.get("participants", []) if isinstance(sidecar, dict) else []
+    streamer_id = str(streamer.get("id") or "")
+    for participant in participants:
+        if str(participant.get("streamerId") or "") == streamer_id:
+            return participant
+    return None
+
+
 def find_sidecar_speaker_for_streamer(sidecar: dict, streamer: Dict[str, Any]) -> Optional[dict]:
     speakers = sidecar.get("speakers", []) if isinstance(sidecar, dict) else []
     labels = []
@@ -1085,6 +1094,10 @@ def resolve_extra_appeared_streamers(
         if not entry:
             print(f"[WARNING] ASR sidecar 中的主播未配置 streamerRegistry: {streamer_id}")
             continue
+        participant = find_sidecar_participant_for_streamer(sidecar, entry)
+        if participant and participant.get("appeared") is False:
+            print(f"[INFO]  跳过未实际出声的参与者: {streamer_id}")
+            continue
         speaker = find_sidecar_speaker_for_streamer(sidecar, entry)
         if not sidecar_speaker_passes_reference_thresholds(speaker, entry, multi_config):
             continue
@@ -1092,6 +1105,27 @@ def resolve_extra_appeared_streamers(
             print(f"[INFO]  额外主播达到上限 maxExtraCharacters={max_extra}，跳过 {streamer_id}")
             continue
         extra_streamers.append({**entry, "_comicReferenceReason": "appeared"})
+
+    if sidecar and not extra_streamers:
+        for participant in sidecar.get("participants", []) or []:
+            if participant.get("appeared") is not True:
+                continue
+            streamer_id = str(participant.get("streamerId") or "")
+            if not streamer_id or streamer_id == host_streamer_id:
+                continue
+            if any(str(item.get("id") or "") == streamer_id for item in extra_streamers):
+                continue
+            if allowed_extra_ids and streamer_id not in allowed_extra_ids:
+                continue
+            entry = registry.get(streamer_id)
+            if not entry:
+                continue
+            speaker = find_sidecar_speaker_for_streamer(sidecar, entry)
+            if not sidecar_speaker_passes_reference_thresholds(speaker, entry, multi_config):
+                continue
+            if len(extra_streamers) >= max_extra:
+                break
+            extra_streamers.append({**entry, "_comicReferenceReason": "planned_appeared"})
 
     if include_mentioned_streamers:
         already_ids = {streamer.get("id") for streamer in extra_streamers if streamer.get("id")}

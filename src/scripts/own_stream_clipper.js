@@ -1475,6 +1475,7 @@ async function generateOwnStreamClipJob({
         },
         roomId: info.roomId,
         streamerName,
+        participantInfo: participantMetadata,
         recordedAt: info.recordedAt,
         streamTitle: info.streamTitle,
         window,
@@ -1516,6 +1517,7 @@ async function generateOwnStreamClips(options = {}) {
     const danmaku = await parseDanmakuXml(options.xmlPath);
     const candidates = buildCandidateWindows(parsed, danmaku, config, totalDuration);
     const info = parseRecordingInfo(options.mediaPath, options.context || {});
+    const participantMetadata = topicClipper.buildParticipantMetadata(topicClipper.loadAsrSpeakerSidecarForMediaPath(options.srtPath || options.mediaPath));
     const outputRoot = path.join(path.dirname(options.mediaPath), config.outputDirName);
     fs.mkdirSync(outputRoot, { recursive: true });
     const reviewMetadata = {

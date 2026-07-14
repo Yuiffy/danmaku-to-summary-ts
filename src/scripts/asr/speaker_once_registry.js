@@ -24,6 +24,73 @@ function normalizeRoomId(roomId) {
     return normalized;
 }
 
+function normalizeStringArray(values) {
+    if (!Array.isArray(values)) {
+        return [];
+    }
+    return values.map((value) => String(value || '').trim()).filter(Boolean);
+}
+
+function normalizeParticipants(values) {
+    if (!Array.isArray(values)) {
+        return [];
+    }
+    return values
+        .filter((item) => item && typeof item === 'object')
+        .map((item) => ({
+            streamerId: item.streamerId ? String(item.streamerId).trim() : null,
+            displayName: item.displayName ? String(item.displayName).trim() : null,
+            role: item.role ? String(item.role).trim() : 'participant',
+            planned: item.planned !== false,
+            roomIds: normalizeStringArray(item.roomIds),
+            speakerLabels: normalizeStringArray(item.speakerLabels),
+            aliases: normalizeStringArray(item.aliases),
+            mentionLabels: normalizeStringArray(item.mentionLabels)
+        }))
+        .filter((item) => item.streamerId);
+}
+
+function normalizeReferencePreparation(value) {
+    if (!value || typeof value !== 'object') {
+        return {
+            status: 'unchecked',
+            missingStreamerIds: [],
+            readyStreamerIds: [],
+            participants: []
+        };
+    }
+    return {
+        status: value.status ? String(value.status) : 'unchecked',
+        missingStreamerIds: normalizeStringArray(value.missingStreamerIds),
+        readyStreamerIds: normalizeStringArray(value.readyStreamerIds),
+        participants: Array.isArray(value.participants) ? value.participants : []
+    };
+}
+
+function normalizeSpeakerRequest(roomId, options = {}, now = Date.now()) {
+    const normalizedRoomId = normalizeRoomId(roomId);
+    const base = {
+        id: options.id ? String(options.id) : `${now}-${normalizedRoomId}`,
+        roomId: normalizedRoomId,
+        roomName: options.roomName ? String(options.roomName) : null,
+        requestedBy: options.requestedBy ? String(options.requestedBy) : 'cli',
+        reason: options.reason ? String(options.reason) : '下一场直播启用说话人识别',
+        createdAt: options.createdAt ? String(options.createdAt) : new Date(now).toISOString(),
+        scheduledAt: options.scheduledAt ? String(options.scheduledAt) : null,
+        windowHours: options.windowHours ?? null,
+        expiresAt: options.expiresAt ? String(options.expiresAt) : null,
+        cleanupAfter: options.cleanupAfter ? String(options.cleanupAfter) : null,
+        mode: options.mode ? String(options.mode) : 'speaker_once',
+        hostStreamerId: options.hostStreamerId ? String(options.hostStreamerId) : null,
+        plannedParticipantIds: normalizeStringArray(options.plannedParticipantIds),
+        rosterStreamerIds: normalizeStringArray(options.rosterStreamerIds),
+        participants: normalizeParticipants(options.participants),
+        constrainToRoster: options.constrainToRoster !== false,
+        referencePreparation: normalizeReferencePreparation(options.referencePreparation)
+    };
+    return base;
+}
+
 class SpeakerOnceRegistry {
     constructor(stateFile = process.env.ASR_SPEAKER_ONCE_STATE_FILE || DEFAULT_STATE_FILE) {
         this.stateFile = path.resolve(stateFile);
@@ -36,14 +103,25 @@ class SpeakerOnceRegistry {
 
     readState() {
         if (!fs.existsSync(this.stateFile)) {
-            return { version: 1, requests: {}, history: [] };
+            return { version: 2, requests: {}, history: [] };
         }
         try {
             const parsed = JSON.parse(fs.readFileSync(this.stateFile, 'utf8'));
+            const normalizeRequestMap = (requests) => {
+                const output = {};
+                Object.entries(requests && typeof requests === 'object' ? requests : {}).forEach(([roomId, request]) => {
+                    output[roomId] = normalizeSpeakerRequest(roomId, request || {});
+                });
+                return output;
+            };
             return {
-                version: 1,
-                requests: parsed && typeof parsed.requests === 'object' ? parsed.requests : {},
-                history: Array.isArray(parsed?.history) ? parsed.history : []
+                version: 2,
+                requests: normalizeRequestMap(parsed?.requests),
+                history: Array.isArray(parsed?.history)
+                    ? parsed.history
+                        .filter((item) => item && typeof item === 'object')
+                        .map((item) => normalizeSpeakerRequest(item.roomId, item))
+                    : []
             };
         } catch (error) {
             throw new Error(`读取一次性说话人开关失败: ${error.message}`);
@@ -53,7 +131,7 @@ class SpeakerOnceRegistry {
     writeState(state) {
         this.ensureParentDirectory();
         const normalized = {
-            version: 1,
+            version: 2,
             updatedAt: new Date().toISOString(),
             requests: state.requests || {},
             history: (state.history || []).slice(-100)
@@ -135,12 +213,10 @@ class SpeakerOnceRegistry {
                 : (Number.isFinite(expiresHours) && expiresHours > 0
                     ? now + expiresHours * 60 * 60 * 1000
                     : null);
-            const request = {
+            const request = normalizeSpeakerRequest(normalizedRoomId, {
+                ...options,
                 id: `${now}-${normalizedRoomId}`,
                 roomId: normalizedRoomId,
-                roomName: options.roomName ? String(options.roomName) : null,
-                requestedBy: options.requestedBy ? String(options.requestedBy) : 'cli',
-                reason: options.reason ? String(options.reason) : '下一场直播启用说话人识别',
                 createdAt: new Date(now).toISOString(),
                 scheduledAt: scheduledAt !== null ? new Date(scheduledAt).toISOString() : null,
                 windowHours: scheduledAt !== null ? windowHours : null,
@@ -148,7 +224,7 @@ class SpeakerOnceRegistry {
                 cleanupAfter: scheduledAt !== null
                     ? new Date(expiresAt + SCHEDULED_CLEANUP_GRACE_MS).toISOString()
                     : null
-            };
+            }, now);
             state.requests[normalizedRoomId] = request;
             this.writeState(state);
             return request;

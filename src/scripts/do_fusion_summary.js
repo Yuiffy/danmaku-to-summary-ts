@@ -19,6 +19,40 @@ const STOP_WORDS = new Set(['晚上好', '晚安', '来了', '打call', '拜拜'
 const FILLER_REGEX = /^(呃|那个|就是|然后|哪怕|其实|我觉得|算是|哎呀|有点|怎么说呢|所以|这种|啊|哦)+/g;
 const HALLUCINATION_REGEX = /字幕志愿者|中文字幕志愿者|优优独播剧场|感谢观看|谢谢观看|谢谢大家观看/;
 
+function loadAsrSpeakerSidecarForSrt(srtPath) {
+    try {
+        if (!srtPath) return {};
+        const parsed = path.parse(srtPath);
+        const baseName = parsed.name.replace(/\.speaker$/i, '');
+        const candidates = [
+            path.join(parsed.dir, `${baseName}.asr_speakers.json`),
+            path.join(parsed.dir, `${parsed.name}.asr_speakers.json`)
+        ];
+        const sidecarPath = candidates.find((candidate) => fs.existsSync(candidate));
+        if (!sidecarPath) return {};
+        const data = JSON.parse(fs.readFileSync(sidecarPath, 'utf8'));
+        return data && typeof data === 'object' ? data : {};
+    } catch (error) {
+        console.warn(`读取 ASR speaker sidecar 失败: ${error.message}`);
+        return {};
+    }
+}
+
+function buildParticipantSummaryLines(sidecar) {
+    if (!sidecar || typeof sidecar !== 'object') return [];
+    const participants = Array.isArray(sidecar.participants) ? sidecar.participants : [];
+    if (participants.length === 0) return [];
+    const planned = participants.filter((item) => item.planned !== false);
+    const appeared = participants.filter((item) => item.appeared === true);
+    const plannedText = planned.map((item) => item.displayName || item.streamerId).filter(Boolean).join('、') || '无';
+    const appearedText = appeared.map((item) => item.displayName || item.streamerId).filter(Boolean).join('、') || '无';
+    return [
+        `【参与者】计划参与: ${plannedText}`,
+        `【参与者】实际出声: ${appearedText}`,
+        '---'
+    ];
+}
+
 // =======================================
 
 function parseSrtTimestamp(timeStr) {
@@ -113,8 +147,13 @@ async function processLiveData(inputFiles) {
 
     // --- 3. 解析并过滤字幕 (核心逻辑) ---
     let subtitles = [];
+    const participantSummaryLines = [];
     for (const srtPath of srtFiles) {
         try {
+            const sidecar = loadAsrSpeakerSidecarForSrt(srtPath);
+            if (participantSummaryLines.length === 0) {
+                participantSummaryLines.push(...buildParticipantSummaryLines(sidecar));
+            }
             const content = fs.readFileSync(srtPath, 'utf8');
             const blocks = content.split(/\n\s*\n/);
 
@@ -163,6 +202,9 @@ async function processLiveData(inputFiles) {
     const output = [];
     output.push(`【摘要】(保留率: 前${DENSITY_PERCENTILE*100}%热度 + ${LOW_ENERGY_SAMPLE_RATE*100}%随机)`);
     output.push(`---`);
+    if (participantSummaryLines.length > 0) {
+        output.push(...participantSummaryLines);
+    }
 
     let currentBlock = { startTime: -1, lines: [], isHighlight: false };
 

@@ -12,6 +12,50 @@ const {
     withFfmpegResourceLimits
 } = require('./ffmpeg_resource');
 
+function loadAsrSpeakerSidecarForMediaPath(mediaPath) {
+    if (!mediaPath) return {};
+    try {
+        const parsed = path.parse(String(mediaPath));
+        const baseName = parsed.name.replace(/\.speaker$/i, '');
+        const candidates = [
+            path.join(parsed.dir, `${baseName}.asr_speakers.json`),
+            path.join(parsed.dir, `${parsed.name}.asr_speakers.json`)
+        ];
+        const sidecarPath = candidates.find((candidate) => fs.existsSync(candidate));
+        if (!sidecarPath) {
+            return {};
+        }
+        const data = JSON.parse(fs.readFileSync(sidecarPath, 'utf8'));
+        return data && typeof data === 'object' ? data : {};
+    } catch (error) {
+        console.warn(`⚠️  读取 ASR speaker sidecar 失败: ${error.message}`);
+        return {};
+    }
+}
+
+function buildParticipantMetadata(sidecar = {}) {
+    const participants = Array.isArray(sidecar?.participants) ? sidecar.participants : [];
+    if (participants.length === 0) {
+        return {
+            hostStreamerId: sidecar?.hostStreamerId || null,
+            plannedParticipantIds: Array.isArray(sidecar?.plannedParticipantIds) ? sidecar.plannedParticipantIds : [],
+            rosterStreamerIds: Array.isArray(sidecar?.rosterStreamerIds) ? sidecar.rosterStreamerIds : [],
+            participants: [],
+            appearedDisplayNames: []
+        };
+    }
+    return {
+        hostStreamerId: sidecar.hostStreamerId || null,
+        plannedParticipantIds: Array.isArray(sidecar.plannedParticipantIds) ? sidecar.plannedParticipantIds : [],
+        rosterStreamerIds: Array.isArray(sidecar.rosterStreamerIds) ? sidecar.rosterStreamerIds : [],
+        participants,
+        appearedDisplayNames: participants
+            .filter((item) => item && item.appeared)
+            .map((item) => item.displayName || item.streamerId)
+            .filter(Boolean)
+    };
+}
+
 const DEFAULT_CLIP_TOPICS_CONFIG = {
     enabled: false,
     mode: 'local_review',
@@ -1843,6 +1887,7 @@ async function generateTopicClips(options = {}) {
         return [];
     }
     const streamerName = resolveStreamerName(options.config || {}, info.roomId, options.context || {});
+    const participantMetadata = buildParticipantMetadata(loadAsrSpeakerSidecarForMediaPath(options.srtPath || source.mediaPath));
     const outputRoot = path.join(path.dirname(source.mediaPath), config.outputDirName);
     fs.mkdirSync(outputRoot, { recursive: true });
 
@@ -1989,6 +2034,7 @@ async function generateTopicClips(options = {}) {
             },
             roomId: info.roomId,
             streamerName,
+            participantInfo: participantMetadata,
             recordedAt: info.recordedAt,
             streamTitle: info.streamTitle,
             window,
@@ -2082,5 +2128,7 @@ module.exports = {
     splitWeChatMarkdown,
     formatClock,
     calculateSubtitleStyle,
-    sanitizeFileName
+    sanitizeFileName,
+    loadAsrSpeakerSidecarForMediaPath,
+    buildParticipantMetadata
 };

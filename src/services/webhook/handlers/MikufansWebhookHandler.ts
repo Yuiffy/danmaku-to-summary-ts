@@ -35,6 +35,17 @@ interface QueuedSummaryTask {
   speakerRecognitionRequest?: Record<string, unknown> | null;
 }
 
+function encodeSpeakerRequestEnv(request: Record<string, unknown> | null | undefined): string {
+  if (!request || typeof request !== 'object') {
+    return '';
+  }
+  try {
+    return Buffer.from(JSON.stringify(request), 'utf8').toString('base64');
+  } catch {
+    return '';
+  }
+}
+
 /**
  * 延迟动作类型
  */
@@ -1167,6 +1178,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         );
       }
     }
+    const encodedSpeakerRequest = encodeSpeakerRequestEnv(task.speakerRecognitionRequest || null);
     const resourceConfig = getFfmpegResourceConfig();
     this.logger.info(`Mikufans队列Worker开始执行: ${path.basename(task.mediaPath)} (taskId=${task.id})`);
 
@@ -1186,7 +1198,8 @@ export class MikufansWebhookHandler implements IWebhookHandler {
           ? String(this.asrPersistentWorkerPort)
           : '',
         ASR_PERSISTENT_WORKER_TOKEN: this.asrPersistentWorkerToken || '',
-        ASR_ENABLE_SPEAKER_ONCE: task.enableSpeakerRecognition ? 'true' : ''
+        ASR_ENABLE_SPEAKER_ONCE: task.enableSpeakerRecognition ? 'true' : '',
+        ASR_SPEAKER_REQUEST_JSON: encodedSpeakerRequest
       }
     });
     applyFfmpegProcessPriority(ps.pid, resourceConfig.priority);

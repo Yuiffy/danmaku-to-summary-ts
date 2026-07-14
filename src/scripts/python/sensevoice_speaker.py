@@ -231,7 +231,7 @@ def build_cluster_embeddings_from_sentence_info(spk_model_obj, audio, sample_rat
     return cluster_embeddings
 
 
-def classify_speaker_clusters(cluster_embeddings, references, threshold, margin_threshold=0.0):
+def classify_speaker_clusters(cluster_embeddings, references, threshold, margin_threshold=0.0, constrain_to_references=False):
     if not cluster_embeddings or not references:
         return {}
 
@@ -259,7 +259,7 @@ def classify_speaker_clusters(cluster_embeddings, references, threshold, margin_
             }
         else:
             matches[cluster_label] = {
-                "label": cluster_label,
+                "label": "UNKNOWN" if constrain_to_references else cluster_label,
                 "score": best_score,
                 "margin": margin,
             }

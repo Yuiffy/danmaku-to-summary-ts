@@ -481,6 +481,42 @@ class WhisperQueueManager {
         }
         task.enableSpeakerRecognition = true;
         task.speakerRecognitionRequest = request ? {
+            ...request,
+            plannedParticipantIds: Array.isArray(request.plannedParticipantIds)
+                ? request.plannedParticipantIds.map(value => String(value)).filter(Boolean)
+                : [],
+            rosterStreamerIds: Array.isArray(request.rosterStreamerIds)
+                ? request.rosterStreamerIds.map(value => String(value)).filter(Boolean)
+                : [],
+            participants: Array.isArray(request.participants)
+                ? request.participants
+                    .filter(item => item && typeof item === 'object')
+                    .map(item => ({
+                        streamerId: item.streamerId ? String(item.streamerId) : null,
+                        displayName: item.displayName ? String(item.displayName) : null,
+                        role: item.role ? String(item.role) : 'participant',
+                        planned: item.planned !== false,
+                        roomIds: Array.isArray(item.roomIds) ? item.roomIds.map(value => String(value)).filter(Boolean) : [],
+                        speakerLabels: Array.isArray(item.speakerLabels) ? item.speakerLabels.map(value => String(value)).filter(Boolean) : [],
+                        aliases: Array.isArray(item.aliases) ? item.aliases.map(value => String(value)).filter(Boolean) : [],
+                        mentionLabels: Array.isArray(item.mentionLabels) ? item.mentionLabels.map(value => String(value)).filter(Boolean) : []
+                    }))
+                    .filter(item => item.streamerId)
+                : [],
+            referencePreparation: request.referencePreparation && typeof request.referencePreparation === 'object'
+                ? {
+                    status: request.referencePreparation.status ? String(request.referencePreparation.status) : 'unchecked',
+                    missingStreamerIds: Array.isArray(request.referencePreparation.missingStreamerIds)
+                        ? request.referencePreparation.missingStreamerIds.map(value => String(value)).filter(Boolean)
+                        : [],
+                    readyStreamerIds: Array.isArray(request.referencePreparation.readyStreamerIds)
+                        ? request.referencePreparation.readyStreamerIds.map(value => String(value)).filter(Boolean)
+                        : [],
+                    participants: Array.isArray(request.referencePreparation.participants)
+                        ? request.referencePreparation.participants
+                        : []
+                }
+                : null,
             id: request.id || null,
             requestedBy: request.requestedBy || null,
             reason: request.reason || null,

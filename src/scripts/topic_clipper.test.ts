@@ -26,6 +26,25 @@ function writeSrt(filePath: string) {
 }
 
 describe('topic_clipper', () => {
+  test('builds participant metadata from ASR speaker sidecar', () => {
+    const participantInfo = topicClipper.buildParticipantMetadata({
+      hostStreamerId: 'sui',
+      plannedParticipantIds: ['shiori'],
+      rosterStreamerIds: ['sui', 'shiori'],
+      participants: [
+        { streamerId: 'sui', displayName: '岁己SUI', appeared: true },
+        { streamerId: 'shiori', displayName: '栞栞', appeared: false }
+      ]
+    });
+
+    expect(participantInfo).toMatchObject({
+      hostStreamerId: 'sui',
+      plannedParticipantIds: ['shiori'],
+      rosterStreamerIds: ['sui', 'shiori'],
+      appearedDisplayNames: ['岁己SUI']
+    });
+  });
+
   test('keeps a mentioned streamer separate from the current streamer in title prompts', () => {
     const prompt = aiTextGenerator.buildClipTitlePromptLines({
       outputMode: 'jsonTitle',
