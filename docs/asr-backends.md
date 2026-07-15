@@ -1,30 +1,29 @@
 # ASR Backend 配置
 
-项目现在支持多 ASR backend。默认仍然使用原来的 Whisper 流程，可以按配置或命令行切换到 SenseVoice、Fun-ASR-Nano 或 Fun-ASR-Nano vLLM。Nano 的热词接口是官方 `hotwords: list[str]`，更适合做“岁己 / 小岁”这种词的真实热词测试。
+> **当前状态（2026-07-16）**：默认 backend 是 `paraformer`，生产 Paraformer 已启用 post-ASR adaptive speaker（`enable_speaker: true`、`speaker_detection_mode: "auto"`）。本页是 ASR 当前架构和验证的权威文档；具体部署值仍以 `config/default.json`、`config/production.json` 与 `DEFAULT_ASR_CONFIG` 为准。
 
-## 继续使用 Whisper
+项目支持 Paraformer、Whisper、SenseVoice、Fun-ASR-Nano 和 Fun-ASR-Nano vLLM。Nano 的热词接口是官方 `hotwords: list[str]`，更适合做“岁己 / 小岁”这种词的真实热词测试。
 
-默认配置：
+## 默认 Paraformer 与显式 Whisper
+
+当前默认配置的核心形状：
 
 ```json
 {
   "asr": {
-    "default_backend": "whisper",
-    "whisper": {
-      "model": "deepdml/faster-whisper-large-v3-turbo-ct2",
-      "language": "zh"
-    }
+    "default_backend": "paraformer"
   }
 }
 ```
 
-命令行临时指定：
+命令行显式指定：
 
-```bash
-node src/scripts/enhanced_auto_summary.js --asr-backend whisper "D:/path/to/video.flv"
+```powershell
+node src/scripts/enhanced_auto_summary.js "D:/path/to/video.flv" --asr-backend paraformer
+node src/scripts/enhanced_auto_summary.js "D:/path/to/video.flv" --asr-backend whisper
 ```
 
-Whisper 仍然调用 `src/scripts/python/batch_whisper.py`，保留原有 GPU 等待、重试和 SRT 生成逻辑。主程序会把生成的 SRT 解析为统一 ASR 结果，再走统一字幕 normalize/write 流程。
+Whisper 仍调用 `src/scripts/python/batch_whisper.py`，保留原有 GPU 等待、重试和 SRT 生成逻辑。主程序会把生成的 SRT 解析为统一 ASR 结果，再走统一字幕 normalize/write 流程。
 
 ## 安装 SenseVoice/FunASR
 
@@ -51,7 +50,9 @@ RTX 5080 正常时，`get_arch_list()` 应包含 `sm_120`。
 
 首次运行会下载模型，网络或 ModelScope 缓存异常会导致第一次失败。可以先用一小段音频测试。
 
-## 启用 SenseVoice
+## 启用 SenseVoice（显式关闭 speaker 的最小示例）
+
+下面用于展示一个主动关闭 speaker 的独立 SenseVoice 配置。若省略 `spk_model` / `enable_speaker`，脚本侧 `DEFAULT_ASR_CONFIG` 当前会补入 `"cam++"` / `true`；最终值必须检查 live config 与默认合并结果。
 
 ```json
 {
@@ -117,39 +118,60 @@ node src/scripts/enhanced_auto_summary.js --asr-backend fun_asr_nano "D:/path/to
 
 Fun-ASR-Nano 走同一个 `src/scripts/python/sensevoice_transcribe.py` 入口，但会按 `backend=fun_asr_nano` 切到 `hotwords` 列表接口。
 
-## 启用 Paraformer + CAM++
+## Paraformer + post-ASR CAM++
 
-当前推荐的非 vLLM 路线是 FunASR 原生 pipeline：
+当前推荐生产路线是两阶段 pipeline：
 
-```python
-AutoModel(
-    model="paraformer-zh",
-    vad_model="fsmn-vad",
-    vad_kwargs={"max_single_segment_time": 60000},
-    punc_model="ct-punc",
-    spk_model="cam++",
-)
+1. `sensevoice_paraformer.py::transcribe_paraformer_builtin` 构造 Paraformer + FSMN-VAD + punctuation 的主 `AutoModel`，故意不把 `spk_model` 放入主 `generate()`。
+2. 主 pipeline 先完整生成文本、时间戳和 `sentence_info`。
+3. 启用 speaker 时，单独缓存的 CAM++ 模型再调用 `sensevoice_speaker.py::run_adaptive_speaker_engine`，把时间线标签投影回句子和切分后的字幕。
+
+因此正常运行时，主 Paraformer timing 中内建 `spk` 应为 `0.000s`，自适应 speaker 的 probe/full/reference timing 会在后续阶段单独记录。
+
+```powershell
+node src/scripts/enhanced_auto_summary.js "D:/path/to/video.flv" --asr-backend paraformer
 ```
 
-本项目的 `paraformer` backend 已按这个方式运行，不再手动 VAD 切段后逐段 ASR。`generate()` 会直接返回 `sentence_info`，每句带 `start/end/text/spk`，再转换成统一 ASR JSON。
+当前生产要点：
 
-```bash
-node src/scripts/enhanced_auto_summary.js --asr-backend paraformer "D:/path/to/video.flv"
-```
-
-配置要点：
-
-- 生产默认关闭 CAM++（`enable_speaker: false`, `spk_model: null`）；说话人标签不是摘要主流程的必需输入，需要时可对明确任务显式开启。
+- `default_backend: "paraformer"`。
+- `enable_speaker: true`、`speaker_detection_mode: "auto"`；普通单人直播先做低成本 probe，不再默认完整跑 CAM++ 聚类。
 - `vad_max_single_segment_time_ms: 60000` 交给 FunASR 内建 VAD，避免 8 秒手动切片切断词和句子上下文。
-- `batch_size_s` 是一个动态批次允许容纳的总音频秒数；RTX 5080 生产配置从 450 提升到 600，`batch_size_threshold_s: 60` 仍会把超长 VAD 段降为单条，避免显存峰值失控。
-- `vad_device: "cpu"` 只把 FSMN-VAD 放在 CPU；生产机同一段 10 分钟音频的独立基准为 CPU 2.86s、CUDA 5.86s。Paraformer 和标点仍在 CUDA；CAM++ 默认不加载。
-- 热词通过 `generate(hotword=...)` 传入；后处理 corrections 会用全文上下文筛选，再逐句修正，避免 paraformer `sentence_info` 分句导致 `小碎/岁吉` 漏修。
+- `batch_size_s` 是动态批次允许容纳的总音频秒数；`batch_size_threshold_s` 会把超长 VAD 段降为单条，控制显存峰值。
+- `vad_device: "cpu"` 只把 FSMN-VAD 放在 CPU；Paraformer 和标点仍在主 CUDA device，CAM++ 是独立模型。
+- 当前 JS adapter 不向 Paraformer `generate()` 传入 `hotword`；配置词条由 `phoneme_correction` 和统一 corrections 处理。Fun-ASR-Nano / vLLM 路径当前才会在推理时传入 `hotwords`。
 
-集中队列会启动一个仅监听 `127.0.0.1`、带随机令牌的 Paraformer 常驻 worker。队列中连续任务复用主模型和标点模型；显式启用说话人识别时也会复用 CAM++ 与参考 embedding。队列清空或父队列检测到 GPU 繁忙时终止 worker，释放显存。单独运行 `enhanced_auto_summary.js` 时仍会自动降级为一次性 Python 进程。
+中央 Mikufans 队列会启动一个仅监听 `127.0.0.1`、带随机令牌的 Paraformer 常驻 worker。连续任务复用主模型、标点和独立 CAM++ cache；队列清空或父队列检测到 GPU 繁忙时终止 worker并释放显存。单独运行 `enhanced_auto_summary.js` 时会先尝试 worker，连接不可用则回退到一次性 Python 进程。
 
-### 下一场直播一次性开启说话人识别
+### Adaptive speaker 状态机
 
-生产默认关闭说话人识别。发现多人联动时，可以按房间号或 `ai.streamerRegistry` 中的主播名，为该直播间下一个尚未开始的 ASR 任务开启一次：
+当前 FunASR-family 路径最终复用 `run_adaptive_speaker_engine` 的 probe/full 聚类决策。各 backend 的模型加载、speech interval 构造、结果投影和错误处理仍分别位于 `sensevoice_paraformer.py`、`sensevoice_pipeline.py` 和 vLLM worker；backend integration 任务必须继续检查对应适配层。
+
+`auto` 模式遵守这些稳定规则：
+
+1. 从 VAD speech intervals 生成按时间排列、互不重叠的候选 chunks，并在**累计有效语音时长**上做确定性分位采样，而不是按录播墙钟时间随机抽样。
+2. 对同一批 probe embeddings 用主阈值和确认阈值各聚类一次；不传 `preset_spk_num`，避免用预设人数充当答案。
+3. 结果为 `single`、`multiple` 或 `inconclusive`。只有满足最小有效 chunk、语音时长和双阈值稳定性的可信 `single` 会设置 `status=skipped_single_speaker` 并跳过完整处理。
+4. `multiple` 和 `inconclusive` 都进入完整处理；probe 报错时默认 `speaker_probe_fail_open=true`，同样进入完整处理，宁可多算也不把未知误判成单人。
+5. 完整处理复用 probe embeddings，只计算剩余 chunks；reference centroids 仅在完整聚类后需要实名匹配时延迟加载。
+6. 完整成功为 `status=full_completed`。speaker 阶段失败返回空 speaker timeline 与 `status=failed`，但保留已经完成的 ASR 文本。
+
+`always` 模式跳过 probe，直接完整聚类和 reference matching；speaker-once 请求会强制使用该模式。planned roster 任务只加载名单内 references，并开启 constrained matching；不满足分数与 runner-up margin 的 cluster 会标为 `UNKNOWN`。普通非 constrained 任务可保留匿名 `SPEAKER_nn`。
+
+关键 `speaker_processing` 字段：
+
+- `mode`、`status`、`decision`、`reason`、`full_run`
+- probe sampled/valid chunk 数、sampled speech、检测/支持 cluster 数
+- `probe_embeddings_reused`
+- `speaker_processing.timings` 中的 probe/full embedding、clustering、reference matching、reference embedding 和 `total_s`
+
+ASR 结果顶层 `timings.postprocess_s` 是统一字幕后处理阶段，不属于 `speaker_processing.timings`。
+
+真实 vLLM adaptive speaker 路径目前仍未在本机完成端到端实测；代码与错误路径可测试，但不要把它写成已验证的运行能力。
+
+### 下一场直播强制完整说话人识别
+
+生产普通任务使用 adaptive `auto`。发现明确多人联动时，可以按房间号或 `ai.streamerRegistry` 中的主播名，为该直播间下一个尚未开始的 ASR 任务强制 `always` 完整处理：
 
 ```powershell
 npm run asr:speaker-once -- enable "栞栞" --requested-by openclaw --reason "多人联动"
@@ -158,15 +180,15 @@ npm run asr:speaker-once -- status
 npm run asr:speaker-once -- cancel "栞栞" --requested-by openclaw
 ```
 
-不带时间时，开关默认 24 小时过期，也可以用 `--expires-hours 48` 修改。带 `--start-at` 时，匹配直播结束入队时间位于 `--start-at` 起 `--window-hours`（默认 24）小时内的第一场直播；窗口前结束的直播不会消耗开关，窗口内入队但因队列积压而较晚执行的任务仍能正确匹配。任务执行前会认领开关并把结果固化到队列任务；本场强制使用 Paraformer + CAM++，标点保持开启，完成后自动恢复全局默认关闭。已经开始 ASR 的任务不能中途切换。
+不带时间时，请求默认 24 小时过期，也可以用 `--expires-hours 48` 修改。带 `--start-at` 时，匹配直播结束入队时间位于 `--start-at` 起 `--window-hours`（默认 24）小时内的第一场直播；窗口前结束的直播不会消耗请求，窗口内入队但因队列积压而较晚执行的任务仍能正确匹配。任务执行前会认领请求并把结果固化到队列任务；本场强制使用 Paraformer + CAM++、`speaker_detection_mode=always`，标点保持开启，完成后后续任务恢复全局 `auto`。已经开始 ASR 的任务不能中途切换。
 
-运行时状态保存在忽略版本控制的 `data/runtime/asr-speaker-once.json`。OpenClaw 已安装 `arm-asr-speaker-once` skill，应通过上述 CLI 操作，不应为单场任务编辑生产配置或重启服务。
+运行时状态保存在忽略版本控制的 `data/runtime/asr-speaker-once.json`。应通过上述 CLI 操作，不要为单场任务编辑生产配置或重启服务。
 
-每个任务都会在日志和同名 `.asr_meta.json` 中记录 `model_load`、VAD、真正的 ASR inference、标点、FunASR 内建 CAM++、实名聚类 embedding、说话人匹配和后处理耗时。慢 ASR 企微提醒也会附带这些分项。实名映射按 FunASR 已完成的说话人聚类抽样批量计算，不再为几千句字幕逐句调用 CAM++。
+Paraformer/SenseVoice/Nano 任务会在日志和同名 `.asr_meta.json` 中记录可用的模型、VAD、ASR、标点和 adaptive speaker 状态/耗时，慢 ASR 企微提醒也会附带解析到的分项。Whisper 不提供同等阶段 timing；若已有 `.srt` 被复用，主流程会跳过 ASR，也不会为这次复用新写完整 ASR metadata。reference matching 按完整聚类抽样批量计算，不为几千句字幕逐句调用 CAM++。
 
 ## 启用 Fun-ASR-Nano vLLM
 
-FunASR 官方 vLLM 文档推荐 `AutoModelVLLM` 做批量推理，也支持 `hotwords=["张三", "北京"]`；官方离线服务协议也支持 `spk` 说话人分离。本项目为了同时开启 VAD + CAM++ 说话人识别，当前使用同包内的 `FunASRNanoVLLMPipeline`，输出仍转换成统一 ASR JSON。
+FunASR 官方 vLLM 文档推荐 `AutoModelVLLM` 做批量推理，也支持 `hotwords=["张三", "北京"]`。本项目使用同包内的 `FunASRNanoVLLMPipeline` 完成转写，但显式关闭其内建 speaker 返回，再调用共享的 post-ASR adaptive CAM++ engine；输出仍转换成统一 ASR JSON。
 
 参考：
 
@@ -256,8 +278,8 @@ powershell -ExecutionPolicy Bypass -File tools/setup_vllm_wsl.ps1 -InstallDistro
 
 也可以临时用环境变量覆盖：
 
-```bash
-set ASR_PYTHON=D:\venvs\asr-vllm\Scripts\python.exe
+```powershell
+$env:ASR_PYTHON = 'D:\venvs\asr-vllm\Scripts\python.exe'
 npm run asr:vllm-doctor
 ```
 
@@ -285,7 +307,7 @@ npm run asr:vllm-doctor
 ```json
 {
   "asr": {
-    "default_backend": "whisper",
+    "default_backend": "paraformer",
     "routing": [
       {
         "match": { "room_id": "23222837" },
@@ -312,10 +334,10 @@ npm run asr:vllm-doctor
 
 ASR 配置支持全局热词、按 routing 命中的房间/主播热词，以及统一的后处理 corrections。
 
-- `aliases`: 旧格式兼容，作为 safe corrections；默认也会一起送进 ASR 作为热词提示。现在 `safe` 默认会做词保护：如果来源词被识别成更长中文词条的一部分（例如 `粉碎机` 里的 `碎机`），会优先保留整词，不再需要先手工把这类保护词一条条补全。
+- `aliases`: 旧格式兼容，作为 safe corrections；在接收模型热词的 Nano/vLLM backend 也会作为 prompt 候选。`safe` 默认做词保护：如果来源词被识别成更长中文词条的一部分（例如 `粉碎机` 里的 `碎机`），会优先保留整词。
 - `protect: false`: `safe` 规则/alias 的可选逃生口；默认 `safe` 替换会做词保护，只有显式设为 `false` 才恢复旧的子串替换行为。
 - `aliases_as_hotwords: false`: 只把 `aliases` 用作后处理修正，不送进模型热词。适合 `碎机`、`碎即`、`岁几` 这类“错误识别形态”，避免模型被错误词反向提示。
-- `hotword_terms`: 只送进 ASR，不会自动改写字幕文本，适合 `小岁`、`岁己姐` 这类希望识别出来但不强制归一的词。
+- `hotword_terms`: 作为模型 prompt 候选但不会自动改写字幕；当前只有接收 `hotwords` 的 Nano/vLLM backend 会在 inference 使用，其他 backend 仍可通过 corrections/phoneme correction 处理。
 - `contextual_aliases`: 只生成 contextual corrections，文本中命中 `require_nearby` 任一关键词时才替换。
 - `ambiguous_aliases`: 只生成 ambiguous corrections，适合 `岁吉`、`碎几` 这类高歧义同音词；默认要求附近存在 `require_nearby` 提示词，并按局部 token 窗口判断，避免误伤普通词语。
 - `corrections.safe`: 显式安全替换，等价于旧的 corrections 对象/数组。
@@ -327,102 +349,36 @@ ASR 配置支持全局热词、按 routing 命中的房间/主播热词，以及
 - `corrections.exclude_when`: 为指定来源词配置保护短语；来源词出现在这些短语中时不替换。比如 `{ "小碎": ["小碎步"] }` 可保留“小碎步”，但仍会把独立的“小碎”改成“小岁”。
 - `corrections.exclude_pattern`: 用正则模式保护指定上下文；当来源词与这些模式有重叠时不替换，适合比 `exclude_when` 更宽的片段保护。
 
-对于 `fun_asr_nano` 和 `fun_asr_nano_vllm`，模型提示词会整理成 `hotwords: ["岁己", "岁己SUI", "小岁", ...]` 直接喂给模型；`aliases_as_hotwords: false` 的错误别名只进入后处理修正。对于 `sensevoice`，仍会保留字符串热词兼容和后处理修正。
+对于 `fun_asr_nano` 和 `fun_asr_nano_vllm`，模型提示词会整理成 `hotwords: ["岁己", "岁己SUI", "小岁", ...]` 直接喂给模型；`aliases_as_hotwords: false` 的错误别名只进入后处理修正。当前 JS adapter 对 Paraformer/SenseVoice 留空模型 hotword 字段，依赖 `phoneme_correction` 与统一 corrections。
 
 后处理会先执行 `safe`，再执行 `contextual`，最后执行 `ambiguous`。其中 `safe` 默认会做词保护，避免把命中的 alias 嵌在更大的词里时也直接改写；如果环境安装了 `@node-rs/jieba`，会优先用它做中文分词来判断词边界，否则回退到内置轻量 token 切分。`ambiguous` 则继续优先按局部 token 上下文判断。
+
+下例只展示字段形状，不是生产词表或 routing 快照。实际 `common_hotwords`、corrections 和房间 route 只以当前 `config/default.json` / `config/production.json` 为准。
 
 ```json
 {
   "asr": {
     "common_hotwords": [
       {
-        "word": "东爱璃Lovely",
-        "weight": 20,
-        "aliases": ["东爱璃", "Lovely", "爱璃", "东爱丽", "爱丽", "东艾璃", "东艾丽"]
-      },
-      {
-        "word": "星汐Seki",
-        "weight": 20,
-        "aliases": ["星汐", "Seki", "seki", "星夕", "星西", "星希"]
-      },
-      {
-        "word": "礼墨Sumi",
-        "weight": 20,
-        "aliases": ["礼墨", "Sumi", "sumi", "里墨", "礼沫", "李墨"]
-      },
-      {
-        "word": "笙歌",
-        "weight": 20,
-        "aliases": ["帅比笙歌超可爱OvO", "笙歌OvO", "shengge", "生哥", "声歌", "升哥"]
-      },
-      {
-        "word": "伊索尔Sol",
-        "weight": 20,
-        "aliases": ["伊索尔", "Sol", "sol", "索尔", "伊索", "一索尔"]
-      },
-      {
-        "word": "南町Nightin",
-        "weight": 20,
-        "aliases": ["南町", "Nightin", "nightin", "南丁", "南町Night in", "南町奈汀"]
-      },
-      {
-        "word": "MIXUP2026",
-        "weight": 18,
-        "aliases": ["MIXUP", "mixup", "mix up", "Mixup2026", "MIXUP 2026"]
-      },
-      {
-        "word": "PSP",
-        "weight": 18,
-        "aliases": ["P S P", "psp"]
-      },
-      {
-        "word": "VirtuaReal",
-        "weight": 18,
-        "aliases": ["VR", "V R", "虚拟Real", "维阿", "微阿"]
-      },
-      {
         "word": "岁己",
         "weight": 20,
         "aliases_as_hotwords": false,
         "aliases": ["岁己SUI"],
-        "hotword_terms": ["岁己SUI", "小岁", "小岁姐", "岁己姐", "饼干岁"]
-      },
-      {
-        "word": "栞栞",
-        "weight": 20,
-        "aliases": ["签签", "千千", "浅浅", "栞", "Shiori"]
-      },
-      {
-        "word": "米汀",
-        "weight": 18,
-        "aliases": ["Miting", "米丁", "米婷"]
-      },
-      {
-        "word": "瑞娅",
-        "weight": 18,
-        "aliases": ["Rhea", "瑞亚", "蕊娅"]
-      },
-      {
-        "word": "时守星沙",
-        "weight": 18,
-        "aliases": ["星沙", "时守", "时守星砂", "星砂"]
+        "hotword_terms": ["小岁", "岁己姐"]
       }
     ],
     "corrections": {
-      "safe": {
-        "岁己SUI": "岁己"
-      },
+      "safe": [
+        { "from": "岁己SUI", "to": "岁己" }
+      ],
       "contextual": [
-        { "from": "穗姐", "to": "岁己", "require_nearby": ["跟我说", "叫他", "小穗", "穗穗", "小岁"] },
-        { "from": "穗穗", "to": "岁岁", "require_nearby": ["叫他", "穗姐", "小穗"] },
-        { "from": "小穗", "to": "小岁", "require_nearby": ["叫他", "穗姐", "穗穗"] },
-        { "from": "碎几", "to": "岁己", "require_nearby": ["小岁", "岁岁", "SUI", "饼干岁", "前辈", "姐"] }
+        { "from": "穗姐", "to": "岁己", "require_nearby": ["小岁", "前辈"] }
       ],
       "ambiguous": [
         {
           "from": "岁吉",
           "to": "岁己",
-          "require_nearby": ["岁岁", "小岁", "前辈"],
+          "require_nearby": ["小岁", "前辈"],
           "context_window_tokens": 6,
           "match_mode": "token",
           "boundary_sensitive": true
@@ -431,75 +387,10 @@ ASR 配置支持全局热词、按 routing 命中的房间/主播热词，以及
     },
     "routing": [
       {
-        "match": {
-          "room_id": "21692711"
-        },
-        "backend": "sensevoice",
+        "match": { "room_id": "example-room-id" },
+        "backend": "paraformer",
         "hotwords": [
-          {
-            "word": "东爱璃Lovely",
-            "weight": 20
-          }
-        ]
-      },
-      {
-        "match": {
-          "room_id": "1603600"
-        },
-        "backend": "sensevoice",
-        "hotwords": [
-          {
-            "word": "星汐Seki",
-            "weight": 20
-          }
-        ]
-      },
-      {
-        "match": {
-          "room_id": "23222837"
-        },
-        "backend": "sensevoice",
-        "hotwords": [
-          {
-            "word": "礼墨Sumi",
-            "weight": 20
-          }
-        ]
-      },
-      {
-        "match": {
-          "room_id": "573893"
-        },
-        "backend": "sensevoice",
-        "hotwords": [
-          {
-            "word": "笙歌",
-            "weight": 20
-          }
-        ]
-      },
-      {
-        "match": {
-          "room_id": "25971921"
-        },
-        "backend": "sensevoice",
-        "hotwords": [
-          {
-            "word": "伊索尔Sol",
-            "weight": 20
-          }
-        ]
-      },
-      {
-        "match": {
-          "room_id": "24872476"
-        },
-        "backend": "sensevoice",
-        "hotwords": [
-          {
-            "word": "南町Nightin",
-            "weight": 20
-          }
+          { "word": "示例专名", "weight": 20 }
         ]
       }
     ]
@@ -507,18 +398,7 @@ ASR 配置支持全局热词、按 routing 命中的房间/主播热词，以及
 }
 ```
 
-FunASR/SenseVoice 调用会优先把带权重热词传给 `model.generate`，格式类似：
-
-```text
-岁己 20
-岁己SUI 20
-小岁 20
-饼干岁 20
-VirtuaReal 18
-PSP 18
-```
-
-如果当前 FunASR/SenseVoice 版本不支持 weighted hotword，会 warning 并降级为无权重 hotword；再失败才降级为无 hotword。Whisper 不传热词，但所有 backend 的 SRT 写出前都会应用 corrections。
+当前 dispatch 行为：Fun-ASR-Nano / vLLM 会在推理时接收 `hotwords` 数组；Paraformer/SenseVoice 的 `hotword` 字符串当前由 JS adapter 留空，依赖 `phoneme_correction` 与统一 corrections。所有 backend 的 SRT 写出前都会应用 corrections。
 
 `punc_model` 是 best-effort：配置后会尝试加载 FunASR 标点模型并对 SenseVoice 输出文本恢复标点；加载或调用失败只会写 warning 到 stderr，不会中断 ASR。不同 FunASR/SenseVoice 版本对标点模型返回结构支持不完全一致，需要用真实音频验证。
 
@@ -563,44 +443,9 @@ video.compare.json
 
 SenseVoice 时间轴优先使用 FunASR 返回的 `sentence_info` / `segments` 中的 `start` / `end`；如果当前模型只返回整段文本，则退回到 VAD chunk 级近似时间。默认 `merge_length_s=8`、`max_vad_segment_s=8`，避免把 VAD chunk 合并到过长。SenseVoice 首版时间轴不一定比 Whisper 的 `word_timestamps` 更细，建议用 Compare 模式实测。
 
-## 说话人分离
+## 说话人处理配置与输出
 
-说话人分离默认关闭，不影响普通 SenseVoice + VAD + 标点流程：
-
-```json
-{
-  "asr": {
-    "sensevoice": {
-      "enable_speaker": false,
-      "spk_model": null
-    }
-  }
-}
-```
-
-如果要尝试：
-
-```json
-{
-  "asr": {
-    "sensevoice": {
-      "enable_speaker": true,
-      "spk_model": "cam++",
-      "preset_spk_num": null,
-      "speaker_merge_threshold": 0.78,
-      "speaker_references": [],
-      "speaker_reference_threshold": 0.45
-    }
-  }
-}
-```
-
-当前实现使用 SenseVoice 手动 VAD 分段转写，再用 FunASR CAM++ 对同一批 VAD 段提取说话人 embedding。未配置 `speaker_references` 时会走无监督聚类，输出 `SPEAKER_00` / `SPEAKER_01`。如果配置了单人直播参考音频，会优先按参考声纹打标签，低于 `speaker_reference_threshold` 的片段标为 `UNKNOWN`。输出会进入统一 `AsrResult`，最终 SRT 文本前缀为：
-
-```text
-[SPEAKER_00] 大家晚上好
-[栞栞] 大家晚上好
-```
+所有 FunASR-family backend 共用上一节的 post-ASR adaptive engine；各 backend 可分别决定是否启用。生产主路径是 Paraformer `enable_speaker=true` + `speaker_detection_mode=auto`。SenseVoice/Nano 也可配置同一组 CAM++、阈值和 references，但不等于生产默认 route。
 
 参考声纹示例：
 
@@ -640,13 +485,45 @@ SenseVoice 时间轴优先使用 FunASR 返回的 `sentence_info` / `segments` �
 
 参数说明：
 
-- `spk_model`: 建议先用 `"cam++"`。首次启用会下载 `iic/speech_campplus_sv_zh-cn_16k-common`。
-- `preset_spk_num`: 已知人数时可填数字，例如 `2` 或 `3`，用于减少自动聚类过分裂；不确定时保持 `null`。
-- `speaker_merge_threshold`: CAM++ 聚类合并阈值，默认 `0.78`。如果同一个人被拆成多个 `SPEAKER_xx`，可尝试调高或直接设置 `preset_spk_num`；如果不同人被合并，可尝试调低。
-- `speaker_references`: 可选。每项是一段已知单人音频，`speaker` 会直接用于 SRT 前缀。建议使用干净单人直播或剪辑，避免多人同说。
-- `speaker_reference_threshold`: 参考声纹匹配阈值，默认 `0.45`。阈值越高越保守，更多片段会变成 `UNKNOWN`；当前样本中 `0.45` 到 `0.50` 比较稳，`0.55` 会明显漏掉短句。
+- `enable_speaker`: backend 的 master switch。
+- `speaker_detection_mode`: `auto` 先 probe；`always` 强制完整处理。
+- `spk_model`: 当前使用 `"cam++"`；模型与主 Paraformer 分开缓存。
+- `preset_spk_num`: 保留兼容字段，但当前 adaptive probe/full clustering 不把它作为 oracle speaker count。
+- `speaker_merge_threshold`: 聚类合并阈值，当前默认 `0.78`；具体生产值以 config 为准。
+- `speaker_references`: 可选已知单人音频；完整处理选中后才延迟构建 centroid。
+- `speaker_reference_threshold` 与 `speaker_reference_margin`: 同时约束最佳分数和相对第二名的 margin。
+- `speaker_constrain_to_references`: planned roster 任务使用；未通过实名匹配的 cluster 输出 `UNKNOWN`。
 
-这只是“按 VAD 语音段聚类”的第一版，不做逐词级别换人切分。多人同时说话、背景音、变声、距离麦克风差异大时可能会过分裂或合并，需要用小样本调参。FunASR 可能需要额外模型下载。未配置 `spk_model` 时脚本会明确报错。
+这是 speech-chunk 级聚类和句子级 dominant-overlap 投影，不做逐词级重叠说话分离。多人同时说话、背景音、变声、距离麦克风差异大时仍可能过分裂、合并或变为 `UNKNOWN`；应通过 metadata 和 review SRT 复核。
+
+## ASR 输出与通知契约
+
+统一数据链：
+
+```text
+Python speaker_processing
+  -> asr_backends.normalizeAsrResult()
+  -> enhanced_auto_summary.js: [[ASR_TIMING]] + .asr_meta.json
+  -> MikufansWebhookHandler 慢 ASR 监控
+  -> DelayedReplyService 完成通知
+```
+
+操作证据与下游语义用途不同：
+
+- `<base>.asr_meta.json`：backend/model、总耗时、各阶段 timing 和完整 `speakerProcessing` 决策；完成通知从这里读取。
+- `[[ASR_TIMING]]`：父队列解析的机器可读日志；慢 ASR 提醒从这里读取。
+- `<base>.asr_speakers.json`：按 speaker 汇总的时长、分数、planned/actual participants 和 streamer IDs；融合、clip 与漫画使用它。
+- `<base>.srt`：始终不带 speaker 前缀，保持旧融合/发布流程兼容。
+- `<base>.speaker.srt`：单独的人工 review 字幕；有 label 时写 `[speaker score]` 前缀。
+
+判断是否完整跑过 speaker 必须看 `speakerProcessing.status` / `full_run`，不能只用某个 timing 是否非零推断。常见 status：
+
+- `disabled`：backend 未启用 speaker。
+- `skipped_single_speaker`：auto probe 可信单人，未跑完整聚类和 reference matching。
+- `full_completed`：完整处理成功。
+- `failed`：speaker 阶段失败，ASR 文本仍保留。
+
+`enhanced_auto_summary.js` 在 ASR 结束后发出 `[[ASR_PHASE_DONE]]`；父队列此时可释放 ASR 槽位，但融合、AI、clip、漫画和回复仍可能继续运行。
 
 ## ASR speaker summary 与多参考图
 
@@ -756,6 +633,41 @@ xxx.asr_speakers.json
 - 没有 `speaker_score`：允许按 `minSpeechSeconds` 过滤通过，日志会说明分数缺失。
 - sidecar 缺失：生图阶段打印 INFO 并保持原逻辑。
 - 多参考图可能串角色：prompt 已约束不要混合发色、服装、配饰，但图像模型不能保证完美。
+
+## 验证当前 Paraformer / adaptive speaker
+
+### 静态与单元测试
+
+```powershell
+python -m unittest tests.test_sensevoice_speaker -v
+npm test -- --runInBand src/scripts/asr/asr_backends.test.ts src/scripts/asr/speaker_once_registry.test.ts src/services/bilibili/DelayedReplyService.test.ts
+npm run type-check
+npm run build
+```
+
+Python adaptive tests 不在 Jest 的 TypeScript `testMatch` 内，必须单独运行。测试可验证 probe 决策、fail-open、embedding reuse、reference margin、路由和 metadata 契约，但不能替代真实 FunASR/CUDA 运行。
+
+### 真实样本
+
+1. 使用 `tmp/` 下的 disposable/ignored 音频副本。若同名 `.srt` 已存在，先改名或删除，否则 `enhanced_auto_summary.js` 会直接复用字幕并跳过 ASR。
+2. 在 PowerShell 设置 production 环境后运行真实入口：
+
+   ```powershell
+   $env:NODE_ENV = 'production'
+   node src/scripts/enhanced_auto_summary.js "D:/path/to/sample.wav" --asr-backend paraformer
+   ```
+
+3. 日志应先显示主 Paraformer pipeline 的 `spk=0.000s`，产生 `sentence_info` 后才进入 adaptive speaker。
+4. 对照 `[[ASR_TIMING]]` 和同名 `.asr_meta.json`，检查 `speakerProcessing.status`、`decision`、`full_run`、counts 和 timings 一致。
+5. 验证 forced-full 时另用 disposable 副本并设置：
+
+   ```powershell
+   $env:ASR_ENABLE_SPEAKER_ONCE = 'true'
+   ```
+
+   结果应为 `mode=always`、`full_run=true`。手工验证看到 `[[ASR_PHASE_DONE]]` 后应停止进程，避免继续执行 AI、发布、回复或其他外部副作用。
+
+首次模型下载和 CUDA cache 可能耗时；真实运行会在样本旁写 SRT/sidecar。单元测试和 type-check 不是 model loading、device placement、pipeline ordering 与 metadata wiring 的运行证据。
 
 ## 常见问题
 

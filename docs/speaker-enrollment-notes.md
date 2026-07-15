@@ -1,5 +1,7 @@
 # 说话人识别 Reference Enrollment 经验笔记
 
+> **历史实验记录**：本页保留早期 reference enrollment 的样本、相似度和素材质量结论，不代表当前运行架构。当前实现与验证见 [ASR Backend 配置](asr-backends.md)：reference matching 已集成到 post-ASR adaptive speaker engine，不再要求修改 FunASR site-packages。
+
 ## 背景
 单视角多人联动录播（如十六萤4人联动），cam++ 无监督聚类几乎无法区分说话人（SPEAKER_00 占 98.7%）。
 
@@ -28,9 +30,9 @@
 
 ### 关键发现
 
-1. **FunASR auto_model.py 第896行会 `del result["spk_embedding"]`**
-   - 解决：注释掉该行（修改了 FunASR 源码 `D:\develop\Python\Lib\site-packages\funasr\auto\auto_model.py`）
-   - `return_spk_res=False` 会跳过整个 spk 处理块，不可用
+1. **当时 FunASR 内建 speaker 返回会删除 `spk_embedding`**
+   - 当时实验通过修改本机 site-packages 暴露 embedding；这不是当前部署要求。
+   - 当前主 Paraformer 故意不走内建 speaker block，而是在 ASR 后调用独立 CAM++。
 
 2. **embedding 与 sentence 数量不对齐**
    - sentence_info: 6558 条（按标点切句）
@@ -49,13 +51,19 @@
    - 单视角录播的物理限制，所有声音都经过同一个麦克风
    - 但 reference enrollment 已经显著优于无监督聚类
 
-## 代码位置
-- `sensevoice_transcribe.py` 里已有 `build_speaker_reference_centroids`（行694）和 `classify_speaker_embeddings`
-- 测试脚本：`tmp/paraformer_test/test_enrollment_v4.py`（最佳版本）和 `test_enrollment_v6.py`
+## 当前代码位置
 
-## 待优化
-- [ ] 尝试更长的参考音频（5-10 分钟），提高 centroid 质量
-- [ ] 对十六萤↔莉蔻高相似度问题，尝试用 per-chunk matching 代替 centroid matching
-- [ ] 换克罗雅的参考素材（选聊天直播而非游戏直播）
-- [ ] 将 reference enrollment 集成到 `transcribe_paraformer_builtin()` 流程中
-- [ ] 参考 centroid 持久化存储（避免每次重新提取）
+- Adaptive speaker、reference centroid、聚类与 matching：`src/scripts/python/sensevoice_speaker.py`
+- 原生 Paraformer 的 post-ASR 集成与 CAM++ cache：`src/scripts/python/sensevoice_paraformer.py`
+- 当前单元测试：`tests/test_sensevoice_speaker.py`
+- Canonical reference manifest：`data/asr_speaker_refs/manifest.json`
+
+## 当前状态与历史待优化
+
+- [x] Reference enrollment 已集成到 `transcribe_paraformer_builtin()` 的 post-ASR 流程。
+- [x] 已支持 adaptive probe、probe embedding reuse、lazy reference centroid 和 score/runner-up margin。
+- [x] 已有 batching、single/multiple/inconclusive、fail-open、forced mode 和 reference matching 单元测试。
+- [ ] 尝试更长的参考音频（5-10 分钟），提高 centroid 质量。
+- [ ] 对十六萤↔莉蔻高相似度问题，尝试更好的 reference 素材或 per-chunk 评估。
+- [ ] 换克罗雅的参考素材（选聊天直播而非游戏直播）。
+- [ ] 如模型加载成本仍显著，再评估 centroid 持久化；当前常驻 worker 会在进程内复用 reference centroid/cache。

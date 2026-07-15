@@ -51,3 +51,23 @@ Final response:
 - remaining issues
 
 No tutorial-style explanation unless requested.
+
+## Repository navigation
+
+Use a docs-first approach before broad code search. If prose conflicts with the current runtime, code and live config win.
+
+- Project/runtime overview: `README.md`, then `docs/runtime-notes.md`.
+- ASR routing, backends, adaptive speaker processing, sidecars, and verification: `docs/asr-backends.md`.
+- Paraformer fine-tuning: `docs/funasr-finetune.md`.
+- Independent vLLM queue: `docs/asr-vllm-queue.md`.
+- Canonical speaker references: `data/asr_speaker_refs/README.md` and `manifest.json`.
+- Mikufans event lifecycle, segment finalization, central queue, and persistent ASR worker: `src/services/webhook/handlers/MikufansWebhookHandler.ts`.
+
+For an ASR/speaker task, verify the current config first, then start from these symbols instead of scanning the whole repository:
+
+- `DEFAULT_ASR_CONFIG` / `normalizeAsrResult` in `src/scripts/asr/asr_backends.js`
+- `transcribe_paraformer_builtin` in `src/scripts/python/sensevoice_paraformer.py`
+- `run_adaptive_speaker_engine` in `src/scripts/python/sensevoice_speaker.py`
+- `logAsrTimings` and `.asr_meta.json` writes in `src/scripts/enhanced_auto_summary.js`
+
+Inspect `MikufansWebhookHandler.ts` whenever recorder events, stream finalization, the central queue, persistent worker lifecycle, or slow-ASR monitoring are in scope; inspect `DelayedReplyService.ts` when completion replies are in scope. Expand every secondary backend only when backend parity is explicitly required. Plan around contracts first: routing -> normalized result -> sidecars/timing -> downstream consumers.

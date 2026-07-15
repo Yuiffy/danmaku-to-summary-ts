@@ -1,5 +1,7 @@
 # ASR 热词实验记录
 
+> **历史实验快照（2026-06-03）**：本页保留当时的命令、样本和 benchmark 结果。其“Paraformer + CAM++ 内建 pipeline”描述已被当前 post-ASR adaptive speaker 架构取代；当前行为和验证见 [ASR Backend 配置](asr-backends.md)，运行值以 `config/default.json` / `config/production.json` 为准。
+
 日期：2026-06-03
 
 ## 环境
@@ -34,9 +36,11 @@ node src/scripts/asr/hotword_benchmark.js --root "D:/files/videos/DDTV录播/214
 - 同段里 `碎几根看看` 保持未替换，没有被误改成 `岁己根看看`。
 - 汇总指标：baseline `suiTargetHitRate=0`，tuned `suiTargetHitRate=1`；baseline `xiaoSuiHits=0/1`，tuned `xiaoSuiHits=1/1`。
 
-## Paraformer + CAM++：内建 pipeline
+## Paraformer + CAM++：当时的内建 pipeline 实验
 
-根据 FunASR 文档和 issue 2944 方向，当前 `paraformer` 后端改为 `AutoModel(model="paraformer-zh", vad_model="fsmn-vad", punc_model="ct-punc", spk_model="cam++")` 一次性串联，不再手动 VAD 切段。
+以下记录描述 2026-06-03 的实现。当前 Paraformer 已改为先完成 ASR/VAD/标点，再单独运行 adaptive CAM++；不要据此段恢复内建 `spk_model`。
+
+当时根据 FunASR 文档和 issue 2944 方向，将 `paraformer` 后端改为 `AutoModel(model="paraformer-zh", vad_model="fsmn-vad", punc_model="ct-punc", spk_model="cam++")` 一次性串联，不再手动 VAD 切段。
 
 ### 设备的问题样本
 

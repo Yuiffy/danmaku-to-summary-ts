@@ -1,5 +1,7 @@
 # 录播姬自动化 Webhook 服务
 
+> **历史文档：旧 `src/scripts/webhook_server.js` 时代**。当前服务入口是 `src/app/main.ts`（构建后 `dist/app/main.js`），当前配置、端口和启动命令见根 [README](../../README.md) 与 [runtime notes](../../docs/runtime-notes.md)。下方命令和 `src/scripts/config.json` 示例只用于理解旧实现，不应直接用于现网运维。
+
 ## 概述
 
 这个 Node.js Webhook 服务用于监听 DDTV 和 mikufans录播姬的录制完成事件，自动触发弹幕转摘要的处理流水线。支持音频文件处理和可配置的超时参数。

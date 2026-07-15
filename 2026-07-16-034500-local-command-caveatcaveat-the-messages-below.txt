@@ -1,0 +1,3614 @@
+ ▐▛███▜▌   Claude Code v2.1.209
+▝▜█████▛▘  gpt-5.6-terra · API Usage Billing
+  ▘▘ ▝▝    D:\workspace\myrepo\danmaku-to-summary-ts
+
+
+❯ /clear                                                                        
+
+❯ 我合并了speaker分支改动，具体改了啥帮我看看，简要介绍给我                     
+
+  Thought for 16s (ctrl+o to expand)
+
+● PowerShell(git show --stat --summary --find-renames a66e1a4)
+  ⎿  commit a66e1a4ea8c4f8bbb45ec2c0f7f3c16a3c56bfd4
+     Merge: 62e0e24 40355f9
+     Author: 带鱼Yuiffy <yuiffy@qq.com>
+     … +17 lines (ctrl+o to expand)
+
+● PowerShell(git diff --stat a66e1a4^1 a66e1a4)
+  ⎿   config/default.json                         |   9 +-
+      src/core/config/ConfigInterface.ts          |   3 +
+      src/core/config/ConfigValidator.ts          |   3 +
+     … +8 lines (ctrl+o to expand)
+
+● PowerShell(git log --oneline --decorate --graph --max-count=12 --all
+            --simplify-by-decoration --branches="*speaker*" --branches="*asr*")
+  ⎿  * a66e1a4 (HEAD -> feature/use-sense-voice, origin/feature/use-sense-v
+     oice) Merge remote-tracking branch 'origin/bugfix/speaker-asr-optimize
+     ' into feature/use-sense-voice
+     … +12 lines (ctrl+o to expand)
+
+  Thought for 15s (ctrl+o to expand)
+
+● PowerShell(git diff a66e1a4^1 a66e1a4 --
+            "src/scripts/python/sensevoice_speaker.py")
+  ⎿  diff --git a/src/scripts/python/sensevoice_speaker.py b/src/scripts/py
+     thon/sensevoice_speaker.py
+     index 5dc9aa3..0c376cf 100644
+     … +223 lines (ctrl+o to expand)
+
+● PowerShell(git diff a66e1a4^1 a66e1a4 -- "tests/test_sensevoice_speaker.py")
+  ⎿  diff --git a/tests/test_sensevoice_speaker.py b/tests/test_sensevoice_
+     speaker.py
+     new file mode 100644
+     … +167 lines (ctrl+o to expand)
+
+● PowerShell(git diff a66e1a4^1 a66e1a4 -- "config/default.json"
+            "src/core/config/ConfigInterface.ts"
+            "src/core/config/ConfigValidator.ts"
+            "src/scripts/asr/asr_backends.js"…)
+  ⎿  diff --git a/config/default.json b/config/default.json
+     index f00d967..3f29a3a 100644
+     --- a/config/default.json
+     … +182 lines (ctrl+o to expand)
+
+  Thought for 11s (ctrl+o to expand)
+
+● Completed
+
+  合并提交 a66e1a4 相对合并前的 feature 分支，主要改了说话人识别性能和诊断能力：
+
+  - 批量提取说话人 embedding
+    - 参考音频和聚类片段从“逐个调用模型”改为“一次批量调用”。
+    - 新增 speaker_embedding_batch_size 配置，默认 64，可按显存调整。
+    - 主要目的是减少模型调用次数、加快说话人识别。
+  - 增强匹配诊断日志
+    - 现在会输出候选 top1/top2、各自相似度、分差 margin 和最终判定。
+    - 新增 accepted 字段，明确表示是否通过阈值。
+    - 实名说话人数量统计也改为只统计真正通过阈值的结果。
+  - 修复参考音频切片配置串值
+    - 之前某个说话人的 max_chunks 可能影响下一个说话人。
+    - 现在每条参考音频都独立使用自己的配置，默认仍是 24。
+  - 补充自动化测试
+    - 验证参考音频批处理。
+    - 验证聚类片段批处理和结果归组。
+    - 验证 top1/top2、margin 以及判为 UNKNOWN 的逻辑。
+
+  涉及文件： 8 个，新增约 303 行、删除 41 行。核心文件是
+  src/scripts/python/sensevoice_speaker.py，其余主要是配置透传和测试。
+
+  测试： 本次只查看了合并差异，未实际运行测试。
+
+✻ Brewed for 1m 0s
+
+❯ 那是否启用说话人识别 有改吗这次                                               
+
+  Thought for 4s, searched for 1 pattern (ctrl+o to expand)
+
+● PowerShell(git diff a66e1a4^1 a66e1a4 --unified=0 | Select-String -Pattern
+            'enable_speaker|speaker_constrain_to_references')
+  ⎿  (No output)
+
+● 没有改。
+
+  这次合并没有修改 enable_speaker 或说话人识别的启用条件，仍然通过：
+
+  "enable_speaker": true
+
+  控制是否启用说话人识别。当前几个 ASR 后端的默认配置仍是开启状态。
+
+  这次只是在已经启用说话人识别后：
+
+  - 批量提取 embedding，提升速度
+  - 新增批大小配置 speaker_embedding_batch_size
+  - 增加 top1/top2 相似度和判定日志
+  - 修复参考音频 max_chunks 配置串值
+  - 补充测试
+
+  所以启用/关闭行为与合并前一致。
+
+✻ Sautéed for 17s
+
+※ recap: 我们检查了 speaker 分支合并内容，确认本次没有改变说话人识别的启用条件，仍由 enable_speaker 控制。下一步无需操作，除非你想调整默认启用状态。
+
+❯ 那我们来做一个高端的，在vad/asr之后，抽取部分来做speaker，如果发现确实有多个  
+  说话人，则继续把speaker跑完。如果没有，就不用跑全量speaker了。如果做了speaker 
+  ，企微消息里要说明做了。并且企微消息要带speaker相关耗时。                     
+
+  Thought for 6s (ctrl+o to expand)
+
+● Entered plan mode
+  Claude is now exploring and designing an implementation approach.
+
+  Thought for 19s (ctrl+o to expand)
+
+● 3 background agents launched (↓ to manage)
+   ├ Trace speaker pipelines
+   ├ Trace WeCom notifications
+   └ Find configs and tests
+
+● 正在梳理 VAD/ASR、说话人处理和企微通知链路，完成后会给出具体实施方案。
+
+✻ Brewed for 33s
+
+● Agent "Trace speaker pipelines" finished · 4m 16s
+
+● 已完成第一部分链路梳理，正在等待企微通知和配置/测试两部分的探索结果。
+
+✻ Churned for 3s
+● Agent "Find configs and tests" finished · 9m 6s
+
+● 配置和测试链路也已梳理完；还在等待企微消息链路结果，之后会统一设计方案。
+
+✻ Brewed for 6s
+
+● Agent "Trace WeCom notifications" finished · 15m 48s
+
+  Thought for 7s (ctrl+o to expand)
+
+● Plan(Design adaptive speaker gate)
+  ⎿  Agent "a5ca5d6da1455df82" could not be resumed: No transcript found 
+     for agent ID: a5ca5d6da1455df82
+
+  Thought for 6m 51s, read 11 files (ctrl+o to expand)
+
+● Updated plan
+  ⎿  /plan to preview
+
+● User approved Claude's plan
+  ⎿  Plan saved to: C:\Users\yuiffy\.claude\plans\calm-leaping-hejlsberg.md · 
+     /plan to edit
+     Context
+
+     当前 enable_speaker 是静态开关：部分后端在 ASR 前或与 ASR
+     同一次调用中对整段音频执行 CAM++，即使录制中实际只有一人也会付出全量说话人
+     处理成本。目标是把说话人处理改成统一的 ASR 后自适应二阶段流程：先利用
+     VAD/ASR 已产出的时间区间，均匀抽样少量语音判断是否存在稳定的第二说话人；只
+     有确认多人（或探测结论不足、显式强制）时才继续全量处理。最终结果要持久化明
+     确的执行状态和分阶段耗时，并在企微完成消息中展示。
+
+     1. 建立统一的自适应 Speaker 二阶段引擎
+
+     在 src/scripts/python/sensevoice_speaker.py 中复用现有音频加载、批量
+     embedding、参考声纹匹配和 timeline
+     平滑能力，补充一个后端无关的后处理入口：输入完整音频、VAD/ASR
+     时间区间、CAM++ 模型和配置，返回 speaker_timeline、结构化决策及 timings。
+
+     - 将 ASR/VAD 时间区间切成固定候选块（默认 4 秒，最短 1
+     秒），按累计有效语音时长的分位点从全程均匀选择最多 20 块，而不是取开头 N
+     块；覆盖开头、中段、结尾，也避免长静音影响采样。
+     - 一次批量提取样本 embedding，归一化后使用现有 ClusterBackend
+     聚类，探测阶段禁止传入 preset_spk_num，避免配置值强行制造多人结果。
+     - 只有满足以下稳定性证据才判定“确认多人”：至少两个有效簇；每个有效簇至少 2
+     个样本且累计至少 6 秒；簇内平均余弦相似度不低于 0.70；前两簇中心相似度低于
+     speaker_merge_threshold - 0.03。已配置参考声纹时，可把两个分别通过现有
+     threshold/margin
+     的实名标签作为额外多人证据，但不能只依赖参考库，以免漏掉未知嘉宾。
+     - 只有样本不少于 6 块、有效语音不少于 20 秒、且不存在受支持的第二簇时，才确
+     认单人并跳过全量；空音频、短音频、embedding 不足或边界模糊均视为
+     inconclusive。
+     - 默认采用 fail-open：探测失败或结论不足时执行全量
+     speaker，宁可多花时间也不静默漏掉多人；自动模式下全量处理自身失败则保留 ASR
+     结果并记录 failed，显式一次性 speaker 请求仍保持严格失败语义。
+     - 确认多人或强制执行时，对全部候选语音块提取
+     embedding；复用探测阶段已经算过的 embedding，只计算剩余块。随后无 oracle
+     聚类、按区间生成 timeline、延迟构建参考声纹中心并进行实名匹配，最后复用
+     dominant_speaker_for_interval() 和 smooth_speaker_timeline() 回填 ASR
+     句子。
+     - 修正 src/scripts/python/sensevoice_text.py 中数值 speaker 0 被 or
+     丢失的问题，确保外部后处理后的 SPEAKER_00 可正常透传。
+
+     2. 将各 Python ASR 路径改为“先 ASR，后自适应 Speaker”
+
+     所有非 Whisper Python 后端使用同一决策和结果协议，避免生产常驻
+     worker、单次进程和 vLLM 队列行为不一致。
+
+     - src/scripts/python/sensevoice_paraformer.py
+       - 主 AutoModel 只挂 VAD/ASR/标点，不再把 CAM++ 塞进同一个 opaque
+     generate()；先取得 sentence_info，再调用统一 speaker 引擎。
+       - 用 sentence_info 的时间区间抽样及全量聚类，并把 timeline
+     标签应用到最终字幕段。
+       - 将常驻缓存拆成稳定的 Paraformer 模型缓存、独立 CAM++ 缓存、按参考清单
+     key 的 centroid 缓存，避免 auto/always 或参考名单变化导致 ASR
+     模型反复卸载。
+     - src/scripts/python/sensevoice_pipeline.py
+       - 保留现有独立 VAD 和 ASR，但删除 ASR 前的全量 speaker block；先生成
+     raw_result，再以 ASR 区间做探测、以原始 VAD 区间做全量细粒度
+     timeline，最后统一回填标签。
+     - src/scripts/python/sensevoice_pipeline.py 的 vLLM 直接路径及
+     src/scripts/python/fun_asr_nano_vllm_worker.py
+       - 首次生成固定 return_spk_res=False，避免集成 pipeline 提前跑全量
+     speaker；利用返回的带时间 ASR 段调用相同的外部 CAM++ 引擎。
+       - vLLM 常驻 worker 缓存独立 CAM++/参考中心，并返回与 Paraformer 相同的
+     timings 和 speaker 元数据。
+     - src/scripts/python/sensevoice_transcribe.py、src/scripts/python/asr_persi
+     stent_worker.py
+       - 所有路径统一返回 timings 和 speaker_processing；无
+     speaker、跳过、完整执行、失败均有明确状态，而不是通过耗时是否大于零推断。
+     - src/scripts/asr/asr_vllm_queue_worker.js 补齐 adaptive
+     配置、参考声纹和结果字段透传；src/scripts/asr/asr_backends.js 保留
+     speaker_processing 并使常驻/子进程结果契约一致。
+
+     显式 ASR_ENABLE_SPEAKER_ONCE 的优先级不变：在
+     src/scripts/enhanced_auto_summary.js 中除设置 enable_speaker=true
+     外，同时强制 speaker_detection_mode='always'，跳过探测决策并直接执行全量。
+
+     3. 配置与默认策略
+
+     在
+     config/default.json、config/production.json、src/scripts/asr/asr_backends.j
+     s、src/core/config/ConfigInterface.ts、src/core/config/ConfigValidator.ts
+     同步以下字段及类型：
+
+     - enable_speaker: 继续作为总开关。
+     - speaker_detection_mode: auto | always，正常开启的后端默认 auto。
+     - speaker_probe_chunk_s: 4。
+     - speaker_probe_max_chunks: 20。
+     - speaker_probe_min_valid_chunks: 6。
+     - speaker_probe_min_speech_s: 20。
+     - speaker_probe_min_cluster_chunks: 2。
+     - speaker_probe_min_cluster_s: 6。
+     - speaker_probe_min_cohesion: 0.70。
+     - speaker_probe_separation_margin: 0.03。
+     - speaker_probe_fail_open: true。
+
+     生产默认 Paraformer 从当前 enable_speaker=false / spk_model=null 调整为
+     enable_speaker=true / spk_model='cam++' / speaker_detection_mode='auto'，这
+     样普通任务都会做轻量探测，但单人录制不会做全量 speaker。当前关闭 speaker
+     的后端仍保持关闭；当前已开启的 SenseVoice/vLLM 改用 auto。always
+     仅用于明确配置或一次性请求。
+
+     4. 统一状态、耗时和持久化协议
+
+     Python 结果增加结构化 speaker_processing：
+
+     - mode: disabled | auto | always
+     - status: disabled | skipped_single_speaker | full_completed | failed
+     - decision: single | multiple | inconclusive | forced
+     - reason、full_run
+     - sampled_chunks、valid_chunks、detected_clusters、supported_clusters、samp
+     led_speech_s
+     - timings: speaker 模型加载、probe embedding、probe clustering、剩余全量
+     embedding、全量 clustering、参考 embedding、实名 matching、speaker total。
+
+     同时在统一 _timings 中提供 speaker_model_load_s、speaker_probe_embedding_s
+     、speaker_probe_clustering_s、speaker_full_embedding_s、speaker_full_cluste
+     ring_s、reference_embedding_s、speaker_matching_s、speaker_total_s；旧
+     timing 字段保留兼容映射，避免现有日志/告警失效。
+
+     在 src/scripts/enhanced_auto_summary.js：
+
+     - 扩展 logAsrTimings() 和 [[ASR_TIMING]] 摘要，输出探测决策、是否全量以及各
+     speaker 阶段耗时。
+     - 将权威的 speakerProcessing 写入 .asr_meta.json，不要根据非零 timing
+     猜测；旧后端/旧元数据缺字段时保持兼容。
+     - .asr_speakers.json 仍负责实际 speaker 汇总，只有 full_completed 才把
+     speaker 标记视为完整处理结果。
+
+     5. 企微消息展示
+
+     扩展 src/services/bilibili/DelayedReplyService.ts 的
+     getAsrNotificationInfo()，在现有 ASR
+     行后追加紧凑信息；该方法会自动覆盖正常回复成功、失败和补发图片完成消息。
+
+     - 完整执行：说话人: 已完整处理（探测到 2 个稳定说话人）
+     - 单人跳过：说话人: 抽样判定单人，已跳过全量
+     - 失败：说话人: 处理失败（ASR 已保留）
+     - 耗时：说话人耗时: 探测 3.2s，全量 18.6s，聚类 0.4s，匹配 0.2s，合计 22.4s
+
+     其中只要 full_run=true，必须明确展示“已完整处理”；auto
+     模式即使跳过，也显示探测耗时，便于确认优化是否生效。读取老 .asr_meta.json
+     时只保留原 ASR 文案。
+
+     同时扩展 src/services/webhook/handlers/MikufansWebhookHandler.ts 的慢 ASR
+     告警详情，显示相同的决策及拆分耗时；顺手把 stdout sentinel 解析改为已有
+     socket 风格的行缓冲，避免 [[ASR_TIMING]] 跨 chunk
+     时丢失，但不改通知通道或其它消息格式。
+
+     6. 测试
+
+     - 扩展 tests/test_sensevoice_speaker.py：
+       - 按累计语音分位点取样，覆盖首/中/尾且结果确定；
+       -
+     单一稳定簇跳过；两个稳定簇触发全量；单个离群点不误触发；未知嘉宾也能触发；
+       - 短语音/无效 embedding/inconclusive 走 fail-open；
+       - full pass 复用 probe embedding；参考匹配与 timeline 回填正确；speaker 0
+     不丢失。
+     - 扩展 src/scripts/asr/asr_backends.test.ts：配置字段和常驻 worker
+     payload/response 透传，auto 与 always 行为，一次性请求强制
+     always，旧结果兼容。
+     - 为 DelayedReplyService.getAsrNotificationInfo()
+     增加针对性测试：完整执行、单人跳过、失败、旧元数据、各阶段耗时格式。
+     - 扩展 Mikufans handler/提取纯解析辅助函数的测试：跨 stdout chunk 的 timing
+     sentinel 仍能解析，慢告警包含 speaker 决策和耗时。
+     - 若现有 vLLM queue 测试可复用，增加 adaptive payload 和 speaker_processing
+     回传断言。
+
+     7. 验证
+
+     1. 运行 Python 单元测试：python -m unittest tests.test_sensevoice_speaker。
+     2. 运行相关 Jest 测试：ASR backend、DelayedReplyService、Mikufans
+     handler/vLLM queue，并运行项目 TypeScript build/typecheck。
+     3. 用一段已知单主播长音频端到端运行生产 Paraformer：确认只生成 probe
+     timing、字幕无 speaker 标签、.asr_meta.json 为
+     skipped_single_speaker、企微显示“抽样判定单人，已跳过全量”。
+     4. 用一段已知多人音频运行：确认 probe 触发、全量 timeline/实名 sidecar
+     正常、.asr_meta.json 为 full_completed，企微明确“已完整处理”且各项 speaker
+     耗时之和合理。
+     5. 用同一多人音频触发一次性 speaker：确认无论 probe 结果如何均
+     forced/full_completed。
+     6. 模拟 probe embedding 异常：auto 模式应 fail-open 尝试全量；模拟全量
+     speaker 异常应保留 ASR 并在元数据/企微标明失败。
+     7. 运行项目 /verify，实际驱动受影响流程并检查
+     SRT、.asr_meta.json、.asr_speakers.json 和最终企微格式。
+
+  Thought for 15s (ctrl+o to expand)
+
+  Thought for 52s, read 4 files (ctrl+o to expand)
+
+● 2 background agents launched (↓ to manage)
+   ├ Build speaker core
+   └ Implement WeCom display
+
+  Thought for 30s, searched for 1 pattern, read 5 files (ctrl+o to expand)
+
+● Update(src\scripts\asr\asr_backends.js)
+  ⎿  Added 13 lines
+      37      segment_paraformer: true
+      38  };
+      39  
+      40 +const DEFAULT_ADAPTIVE_SPEAKER_CONFIG = {                      
+      41 +    speaker_detection_mode: 'auto',                            
+      42 +    speaker_probe_chunk_s: 4,                                  
+      43 +    speaker_probe_max_chunks: 20,                              
+      44 +    speaker_probe_min_valid_chunks: 6,                         
+      45 +    speaker_probe_min_speech_s: 20,                            
+      46 +    speaker_probe_min_cluster_chunks: 2,                       
+      47 +    speaker_probe_min_cluster_s: 6,                            
+      48 +    speaker_probe_min_cohesion: 0.70,                          
+      49 +    speaker_probe_separation_margin: 0.03,                     
+      50 +    speaker_probe_fail_open: true                              
+      51 +};                                                             
+      52 +                                                               
+      53  const DEFAULT_ASR_CONFIG = {
+      54      default_backend: 'paraformer',
+      55      backend: undefined,
+
+● Update(src\scripts\asr\asr_backends.js)
+  ⎿  Added 6 lines, removed 3 lines
+      89          speaker_references: [],
+      90          speaker_reference_threshold: 0.45,
+      91          speaker_reference_margin: 0.06,
+      92 -        speaker_embedding_batch_size: 64                       
+      92 +        speaker_embedding_batch_size: 64,                      
+      93 +        ...DEFAULT_ADAPTIVE_SPEAKER_CONFIG                     
+      94      },
+      95      fun_asr_nano: {
+      96          model: 'FunAudioLLM/Fun-ASR-Nano-2512',
+     ...
+      114          speaker_references: [],
+      115          speaker_reference_threshold: 0.45,
+      116          speaker_reference_margin: 0.06,
+      116 -        speaker_embedding_batch_size: 64                      
+      117 +        speaker_embedding_batch_size: 64,                     
+      118 +        ...DEFAULT_ADAPTIVE_SPEAKER_CONFIG                    
+      119      },
+      120      fun_asr_nano_vllm: {
+      121          model: 'FunAudioLLM/Fun-ASR-Nano-2512',
+     ...
+      170          speaker_references: [],
+      171          speaker_reference_threshold: 0.45,
+      172          speaker_reference_margin: 0.06,
+      171 -        speaker_embedding_batch_size: 64                      
+      173 +        speaker_embedding_batch_size: 64,                     
+      174 +        ...DEFAULT_ADAPTIVE_SPEAKER_CONFIG                    
+      175      }
+      176  };
+      177  
+
+  Thought for 7s (ctrl+o to expand)
+
+● Update(src\scripts\asr\asr_backends.js)
+  ⎿  Added 1 line
+      136          speaker_references: [],
+      137          speaker_reference_threshold: 0.45,
+      138          speaker_reference_margin: 0.06,
+      139 +        ...DEFAULT_ADAPTIVE_SPEAKER_CONFIG,                   
+      140          hub: 'ms',
+      141          dtype: 'bf16',
+      142          tensor_parallel_size: 1,
+
+● Update(src\scripts\asr\asr_backends.js)  ⎿  Added 3 lines, removed 1 line
+      490          backend: result?.backend || 'unknown',
+      491          language: result?.language,
+      492          segments: normalized,
+      493 -        raw: result?.raw                                      
+      493 +        raw: result?.raw,                                     
+      494 +        timings: result?.timings,                             
+      495 +        speaker_processing: result?.speaker_processing || resu
+          +lt?.speakerProcessing                                         
+      496      };
+      497  }
+      498  
+
+  Thought for 13s (ctrl+o to expand)
+
+● Update(config\default.json)
+  ⎿  Added 33 lines, removed 3 lines
+      325        ],
+      326        "speaker_reference_threshold": 0.45,
+      327        "speaker_reference_margin": 0.06,
+      328 -      "speaker_embedding_batch_size": 64                      
+      328 +      "speaker_embedding_batch_size": 64,                     
+      329 +      "speaker_detection_mode": "auto",                       
+      330 +      "speaker_probe_chunk_s": 4,                             
+      331 +      "speaker_probe_max_chunks": 20,                         
+      332 +      "speaker_probe_min_valid_chunks": 6,                    
+      333 +      "speaker_probe_min_speech_s": 20,                       
+      334 +      "speaker_probe_min_cluster_chunks": 2,                  
+      335 +      "speaker_probe_min_cluster_s": 6,                       
+      336 +      "speaker_probe_min_cohesion": 0.7,                      
+      337 +      "speaker_probe_separation_margin": 0.03,                
+      338 +      "speaker_probe_fail_open": true                         
+      339      },
+      340      "fun_asr_nano": {
+      341        "model": "FunAudioLLM/Fun-ASR-Nano-2512",
+     ...
+      368        "speaker_references": [],
+      369        "speaker_reference_threshold": 0.45,
+      370        "speaker_reference_margin": 0.06,
+      361 -      "speaker_embedding_batch_size": 64                      
+      371 +      "speaker_embedding_batch_size": 64,                     
+      372 +      "speaker_detection_mode": "auto",                       
+      373 +      "speaker_probe_chunk_s": 4,                             
+      374 +      "speaker_probe_max_chunks": 20,                         
+      375 +      "speaker_probe_min_valid_chunks": 6,                    
+      376 +      "speaker_probe_min_speech_s": 20,                       
+      377 +      "speaker_probe_min_cluster_chunks": 2,                  
+      378 +      "speaker_probe_min_cluster_s": 6,                       
+      379 +      "speaker_probe_min_cohesion": 0.7,                      
+      380 +      "speaker_probe_separation_margin": 0.03,                
+      381 +      "speaker_probe_fail_open": true                         
+      382      },
+      383      "fun_asr_nano_vllm": {
+      384        "model": "FunAudioLLM/Fun-ASR-Nano-2512",
+     ...
+      534        ],
+      535        "speaker_reference_threshold": 0.45,
+      536        "speaker_reference_margin": 0.06,
+      517 -      "speaker_embedding_batch_size": 64                      
+      537 +      "speaker_embedding_batch_size": 64,                     
+      538 +      "speaker_detection_mode": "auto",                       
+      539 +      "speaker_probe_chunk_s": 4,                             
+      540 +      "speaker_probe_max_chunks": 20,                         
+      541 +      "speaker_probe_min_valid_chunks": 6,                    
+      542 +      "speaker_probe_min_speech_s": 20,                       
+      543 +      "speaker_probe_min_cluster_chunks": 2,                  
+      544 +      "speaker_probe_min_cluster_s": 6,                       
+      545 +      "speaker_probe_min_cohesion": 0.7,                      
+      546 +      "speaker_probe_separation_margin": 0.03,                
+      547 +      "speaker_probe_fail_open": true                         
+      548      }
+      549    },
+      550    "subtitle": {
+
+● Update(config\default.json)
+  ⎿  Added 10 lines
+      446        ],
+      447        "speaker_reference_threshold": 0.45,
+      448        "speaker_reference_margin": 0.06,
+      449 +      "speaker_detection_mode": "auto",                       
+      450 +      "speaker_probe_chunk_s": 4,                             
+      451 +      "speaker_probe_max_chunks": 20,                         
+      452 +      "speaker_probe_min_valid_chunks": 6,                    
+      453 +      "speaker_probe_min_speech_s": 20,                       
+      454 +      "speaker_probe_min_cluster_chunks": 2,                  
+      455 +      "speaker_probe_min_cluster_s": 6,                       
+      456 +      "speaker_probe_min_cohesion": 0.7,                      
+      457 +      "speaker_probe_separation_margin": 0.03,                
+      458 +      "speaker_probe_fail_open": true,                        
+      459        "hub": "ms",
+      460        "dtype": "bf16",
+      461        "tensor_parallel_size": 1,
+
+● Update(config\default.json)
+  ⎿  Added 1 line, removed 1 line
+      472        "finetuned_model": "D:/files/videos/asr_finetune_runs/pa
+           raformer_standard_20260712_official_example",
+      473        "vad_model": "fsmn-vad",
+      474        "punc_model": "ct-punc",
+      475 -      "spk_model": null,                                      
+      475 +      "spk_model": "cam++",                                   
+      476        "language": "auto",
+      477        "device": "cuda",
+      478        "vad_device": "cpu",
+
+● Update(config\default.json)
+  ⎿  Added 1 line, removed 1 line
+      501          "pmon_sample_count": 2,
+      502          "segment_paraformer": true
+      503        },
+      504 -      "enable_speaker": false,                                
+      504 +      "enable_speaker": true,                                 
+      505        "preset_spk_num": 5,
+      506        "speaker_merge_threshold": 0.78,
+      507        "speaker_references": [
+
+  Thought for 7s (ctrl+o to expand)
+
+● Update(config\production.json)
+  ⎿  Added 47 lines, removed 3 lines
+      1764          }
+      1765        ],
+      1766        "speaker_reference_threshold": 0.45,
+      1767 -      "speaker_reference_margin": 0.06                       
+      1767 +      "speaker_reference_margin": 0.06,                      
+      1768 +      "speaker_embedding_batch_size": 64,                    
+      1769 +      "speaker_detection_mode": "auto",                      
+      1770 +      "speaker_probe_chunk_s": 4,                            
+      1771 +      "speaker_probe_max_chunks": 20,                        
+      1772 +      "speaker_probe_min_valid_chunks": 6,                   
+      1773 +      "speaker_probe_min_speech_s": 20,                      
+      1774 +      "speaker_probe_min_cluster_chunks": 2,                 
+      1775 +      "speaker_probe_min_cluster_s": 6,                      
+      1776 +      "speaker_probe_min_cohesion": 0.7,                     
+      1777 +      "speaker_probe_separation_margin": 0.03,               
+      1778 +      "speaker_probe_fail_open": true                        
+      1779      },
+      1780      "fun_asr_nano": {
+      1781        "model": "FunAudioLLM/Fun-ASR-Nano-2512",
+     ...
+      1807        "speaker_merge_threshold": 0.78,
+      1808        "speaker_references": [],
+      1809        "speaker_reference_threshold": 0.45,
+      1799 -      "speaker_reference_margin": 0.06                       
+      1810 +      "speaker_reference_margin": 0.06,                      
+      1811 +      "speaker_embedding_batch_size": 64,                    
+      1812 +      "speaker_detection_mode": "auto",                      
+      1813 +      "speaker_probe_chunk_s": 4,                            
+      1814 +      "speaker_probe_max_chunks": 20,                        
+      1815 +      "speaker_probe_min_valid_chunks": 6,                   
+      1816 +      "speaker_probe_min_speech_s": 20,                      
+      1817 +      "speaker_probe_min_cluster_chunks": 2,                 
+      1818 +      "speaker_probe_min_cluster_s": 6,                      
+      1819 +      "speaker_probe_min_cohesion": 0.7,                     
+      1820 +      "speaker_probe_separation_margin": 0.03,               
+      1821 +      "speaker_probe_fail_open": true                        
+      1822      },
+      1823      "fun_asr_nano_vllm": {
+      1824        "model": "FunAudioLLM/Fun-ASR-Nano-2512",
+     ...
+      1886        ],
+      1887        "speaker_reference_threshold": 0.45,
+      1888        "speaker_reference_margin": 0.06,
+      1889 +      "speaker_embedding_batch_size": 64,                    
+      1890 +      "speaker_detection_mode": "auto",                      
+      1891 +      "speaker_probe_chunk_s": 4,                            
+      1892 +      "speaker_probe_max_chunks": 20,                        
+      1893 +      "speaker_probe_min_valid_chunks": 6,                   
+      1894 +      "speaker_probe_min_speech_s": 20,                      
+      1895 +      "speaker_probe_min_cluster_chunks": 2,                 
+      1896 +      "speaker_probe_min_cluster_s": 6,                      
+      1897 +      "speaker_probe_min_cohesion": 0.7,                     
+      1898 +      "speaker_probe_separation_margin": 0.03,               
+      1899 +      "speaker_probe_fail_open": true,                       
+      1900        "hub": "ms",
+      1901        "dtype": "bf16",
+      1902        "tensor_parallel_size": 1,
+     ...
+      1988          }
+      1989        ],
+      1990        "speaker_reference_threshold": 0.45,
+      1958 -      "speaker_reference_margin": 0.06                       
+      1991 +      "speaker_reference_margin": 0.06,                      
+      1992 +      "speaker_embedding_batch_size": 64,                    
+      1993 +      "speaker_detection_mode": "auto",                      
+      1994 +      "speaker_probe_chunk_s": 4,                            
+      1995 +      "speaker_probe_max_chunks": 20,                        
+      1996 +      "speaker_probe_min_valid_chunks": 6,                   
+      1997 +      "speaker_probe_min_speech_s": 20,                      
+      1998 +      "speaker_probe_min_cluster_chunks": 2,                 
+      1999 +      "speaker_probe_min_cluster_s": 6,                      
+      2000 +      "speaker_probe_min_cohesion": 0.7,                     
+      2001 +      "speaker_probe_separation_margin": 0.03,               
+      2002 +      "speaker_probe_fail_open": true                        
+      2003      },
+      2004      "phoneme_correction": {
+      2005        "enabled": true,
+
+  Thought for 18s (ctrl+o to expand)
+
+● Update(config\production.json)
+  ⎿  Error editing file
+
+  Thought for 10s, read 1 file (ctrl+o to expand)
+
+● Update(config\production.json)
+  ⎿  Added 1 line, removed 1 line
+      1913        "finetuned_model": "D:/files/videos/asr_eval/models/par
+            aformer_timestamp_avg10",
+      1914        "vad_model": "fsmn-vad",
+      1915        "punc_model": "ct-punc",
+      1916 -      "spk_model": null,                                     
+      1916 +      "spk_model": "cam++",                                  
+      1917        "language": "auto",
+      1918        "device": "cuda",
+      1919        "vad_device": "cpu",
+
+● Update(config\production.json)
+  ⎿  Added 1 line, removed 1 line
+      1946          "pmon_sample_count": 2,
+      1947          "segment_paraformer": true
+      1948        },
+      1949 -      "enable_speaker": false,                               
+      1949 +      "enable_speaker": true,                                
+      1950        "preset_spk_num": 5,
+      1951        "speaker_merge_threshold": 0.78,
+      1952        "speaker_references": [
+
+● Update(src\core\config\ConfigInterface.ts)
+  ⎿  Added 13 lines
+      171    segment_paraformer?: boolean;
+      172  }
+      173  
+      174 +export interface AsrAdaptiveSpeakerConfig {                   
+      175 +  speaker_detection_mode?: 'auto' | 'always';                 
+      176 +  speaker_probe_chunk_s?: number;                             
+      177 +  speaker_probe_max_chunks?: number;                          
+      178 +  speaker_probe_min_valid_chunks?: number;                    
+      179 +  speaker_probe_min_speech_s?: number;                        
+      180 +  speaker_probe_min_cluster_chunks?: number;                  
+      181 +  speaker_probe_min_cluster_s?: number;                       
+      182 +  speaker_probe_min_cohesion?: number;                        
+      183 +  speaker_probe_separation_margin?: number;                   
+      184 +  speaker_probe_fail_open?: boolean;                          
+      185 +}                                                             
+      186 +                                                              
+      187  export interface AsrConfig {
+      188    default_backend: AsrBackendName;
+      189    backend?: AsrBackendName;
+
+● Update(src\core\config\ConfigInterface.ts)
+  ⎿  Added 1 line, removed 1 line
+      194      model: string;
+      195      language: string;
+      196    };
+      197 -  sensevoice: AsrPythonRuntimeConfig & {                      
+      197 +  sensevoice: AsrPythonRuntimeConfig & AsrAdaptiveSpeakerConfi
+          +g & {                                                         
+      198      model: string;
+      199      vad_model: string;
+      200      punc_model: string;
+
+● Update(src\core\config\ConfigInterface.ts)
+  ⎿  Added 1 line, removed 1 line
+      214      speaker_reference_margin?: number;
+      215      speaker_embedding_batch_size?: number;
+      216    };
+      217 -  fun_asr_nano: AsrPythonRuntimeConfig & {                    
+      217 +  fun_asr_nano: AsrPythonRuntimeConfig & AsrAdaptiveSpeakerCon
+          +fig & {                                                       
+      218      model: string;
+      219      vad_model: string;
+      220      punc_model?: string | null;
+
+● Update(src\core\config\ConfigInterface.ts)
+  ⎿  Added 1 line, removed 1 line
+      234      speaker_reference_margin?: number;
+      235      speaker_embedding_batch_size?: number;
+      236    };
+      237 -  fun_asr_nano_vllm: AsrPythonRuntimeConfig & {               
+      237 +  fun_asr_nano_vllm: AsrPythonRuntimeConfig & AsrAdaptiveSpeak
+          +erConfig & {                                                  
+      238      model: string;
+      239      vad_model: string;
+      240      punc_model?: string | null;
+
+● Update(src\core\config\ConfigInterface.ts)
+  ⎿  Added 1 line, removed 1 line
+      259      batch_size_s?: number;
+      260      enforce_eager?: boolean;
+      261    };
+      262 -  paraformer: AsrPythonRuntimeConfig & {                      
+      262 +  paraformer: AsrPythonRuntimeConfig & AsrAdaptiveSpeakerConfi
+          +g & {                                                         
+      263      model: string;
+      264      vad_model: string;
+      265      punc_model: string;
+
+● Update(src\core\config\ConfigValidator.ts)
+  ⎿  Added 30 lines
+      185            speaker_reference_threshold: 0.45,
+      186            speaker_reference_margin: 0.06,
+      187            speaker_embedding_batch_size: 64,
+      188 +          speaker_detection_mode: 'auto',                     
+      189 +          speaker_probe_chunk_s: 4,                           
+      190 +          speaker_probe_max_chunks: 20,                       
+      191 +          speaker_probe_min_valid_chunks: 6,                  
+      192 +          speaker_probe_min_speech_s: 20,                     
+      193 +          speaker_probe_min_cluster_chunks: 2,                
+      194 +          speaker_probe_min_cluster_s: 6,                     
+      195 +          speaker_probe_min_cohesion: 0.7,                    
+      196 +          speaker_probe_separation_margin: 0.03,              
+      197 +          speaker_probe_fail_open: true,                      
+      198          },
+      199          fun_asr_nano: {
+      200            model: 'FunAudioLLM/Fun-ASR-Nano-2512',
+     ...
+      228            speaker_reference_threshold: 0.45,
+      229            speaker_reference_margin: 0.06,
+      230            speaker_embedding_batch_size: 64,
+      231 +          speaker_detection_mode: 'auto',                     
+      232 +          speaker_probe_chunk_s: 4,                           
+      233 +          speaker_probe_max_chunks: 20,                       
+      234 +          speaker_probe_min_valid_chunks: 6,                  
+      235 +          speaker_probe_min_speech_s: 20,                     
+      236 +          speaker_probe_min_cluster_chunks: 2,                
+      237 +          speaker_probe_min_cluster_s: 6,                     
+      238 +          speaker_probe_min_cohesion: 0.7,                    
+      239 +          speaker_probe_separation_margin: 0.03,              
+      240 +          speaker_probe_fail_open: true,                      
+      241          },
+      242          fun_asr_nano_vllm: {
+      243            model: 'FunAudioLLM/Fun-ASR-Nano-2512',
+     ...
+      315            speaker_reference_threshold: 0.45,
+      316            speaker_reference_margin: 0.06,
+      317            speaker_embedding_batch_size: 64,
+      318 +          speaker_detection_mode: 'auto',                     
+      319 +          speaker_probe_chunk_s: 4,                           
+      320 +          speaker_probe_max_chunks: 20,                       
+      321 +          speaker_probe_min_valid_chunks: 6,                  
+      322 +          speaker_probe_min_speech_s: 20,                     
+      323 +          speaker_probe_min_cluster_chunks: 2,                
+      324 +          speaker_probe_min_cluster_s: 6,                     
+      325 +          speaker_probe_min_cohesion: 0.7,                    
+      326 +          speaker_probe_separation_margin: 0.03,              
+      327 +          speaker_probe_fail_open: true,                      
+      328          },
+      329        },
+      330        subtitle: {
+
+● Update(src\core\config\ConfigValidator.ts)
+  ⎿  Added 10 lines
+      268            speaker_references: [],
+      269            speaker_reference_threshold: 0.45,
+      270            speaker_reference_margin: 0.06,
+      271 +          speaker_detection_mode: 'auto',                     
+      272 +          speaker_probe_chunk_s: 4,                           
+      273 +          speaker_probe_max_chunks: 20,                       
+      274 +          speaker_probe_min_valid_chunks: 6,                  
+      275 +          speaker_probe_min_speech_s: 20,                     
+      276 +          speaker_probe_min_cluster_chunks: 2,                
+      277 +          speaker_probe_min_cluster_s: 6,                     
+      278 +          speaker_probe_min_cohesion: 0.7,                    
+      279 +          speaker_probe_separation_margin: 0.03,              
+      280 +          speaker_probe_fail_open: true,                      
+      281            hub: 'ms',
+      282            dtype: 'bf16',
+      283            tensor_parallel_size: 1,
+
+● Update(src\core\config\ConfigValidator.ts)
+  ⎿  Error editing file
+
+  Thought for 6s (ctrl+o to expand)
+
+● Update(src\core\config\ConfigValidator.ts)
+  ⎿  Added 1 line, removed 1 line
+      291            model: 'paraformer-zh',
+      292            vad_model: 'fsmn-vad',
+      293            punc_model: 'ct-punc',
+      294 -          spk_model: null,                                    
+      294 +          spk_model: 'cam++',                                 
+      295            language: 'auto',
+      296            device: 'cuda',
+      297            vad_device: 'cpu',
+● Update(src\core\config\ConfigValidator.ts)
+  ⎿  Error editing file
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(src\core\config\ConfigValidator.ts)
+  ⎿  Error editing file
+
+● Update(src\core\config\ConfigValidator.ts)
+  ⎿  Error editing file
+
+● Update(src\core\config\ConfigValidator.ts)
+  ⎿  Added 1 line, removed 1 line
+      318              pmon_sample_count: 2,
+      319              segment_paraformer: true,
+      320            },
+      321 -          enable_speaker: false,                              
+      321 +          enable_speaker: true,                               
+      322            preset_spk_num: null,
+      323            speaker_merge_threshold: 0.78,
+      324            speaker_references: [],
+
+● Update(src\scripts\enhanced_auto_summary.js)
+  ⎿  Added 2 lines, removed 1 line
+      864              config.asr.paraformer = {
+      865                  ...(config.asr.paraformer || {}),
+      866                  enable_speaker: true,
+      867 -                spk_model: config.asr.paraformer?.spk_model ||
+          - 'cam++'                                                      
+      867 +                spk_model: config.asr.paraformer?.spk_model ||
+          + 'cam++',                                                     
+      868 +                speaker_detection_mode: 'always'              
+      869              };
+      870              console.log('🎙️  本任务已启用一次性说话人识别（Para
+           former + CAM++）');
+      871          }
+
+● Update(src\scripts\enhanced_auto_summary.js)
+  ⎿  Added 1 line, removed 1 line
+      184      };
+      185  }
+      186  
+      187 -function logAsrTimings(timings, mediaDurationSeconds) {       
+      187 +function logAsrTimings(timings, mediaDurationSeconds, speakerP
+          +rocessing = null) {                                           
+      188      if (!timings || typeof timings !== 'object' || Object.keys
+           (timings).length === 0) {
+      189          return;
+      190      }
+
+● Update(src\scripts\enhanced_auto_summary.js)
+  ⎿  Added 7 lines
+      202          punctuationSeconds: seconds('punc_s'),
+      203          builtinSpeakerEmbeddingSeconds: seconds('builtin_speak
+           er_embedding_s'),
+      204          speakerClusterEmbeddingSeconds: seconds('speaker_clust
+           er_embedding_s'),
+      205 +        speakerModelLoadSeconds: seconds('speaker_model_load_s
+          +'),                                                           
+      206 +        speakerProbeEmbeddingSeconds: seconds('speaker_probe_e
+          +mbedding_s'),                                                 
+      207 +        speakerProbeClusteringSeconds: seconds('speaker_probe_
+          +clustering_s'),                                               
+      208 +        speakerFullEmbeddingSeconds: seconds('speaker_full_emb
+          +edding_s'),                                                   
+      209 +        speakerFullClusteringSeconds: seconds('speaker_full_cl
+          +ustering_s'),                                                 
+      210          speakerMatchingSeconds: seconds('speaker_matching_s'),
+      211 +        speakerTotalSeconds: seconds('speaker_total_s'),      
+      212 +        speakerProcessing: speakerProcessing || null,         
+      213          pipelineOverheadSeconds: seconds('pipeline_overhead_s'
+           ),
+      214          postprocessSeconds: seconds('postprocess_s'),
+      215          backendTotalSeconds: seconds('backend_total_s'),
+
+● Update(src\scripts\enhanced_auto_summary.js)
+  ⎿  Added 5 lines, removed 1 line
+      941                      throw new Error(`未实现的 ASR backend: ${s
+           elected.backend}`);
+      942                  }
+      943  
+      944 -                const asrTimingSummary = logAsrTimings(asrResu
+          -lt?.timings, mediaDurationSeconds);                           
+      944 +                const asrTimingSummary = logAsrTimings(       
+      945 +                    asrResult?.timings,                       
+      946 +                    mediaDurationSeconds,                     
+      947 +                    asrResult?.speaker_processing || asrResult
+          +?.speakerProcessing || null                                   
+      948 +                );                                            
+      949                  normalized = asrBackends.normalizeAsrResult(as
+           rResult, subtitleConfig);
+      950                  asrBackends.writeSrt(normalized, srtPath, {
+      951                      ...subtitleConfig,
+
+● Update(src\scripts\enhanced_auto_summary.js)
+  ⎿  Added 1 line
+      978                      realtimeFactor: realtimeFactor === null ? 
+           null : Number(realtimeFactor.toFixed(4)),
+      979                      stageTimings: asrResult?.timings || null,
+      980                      timingSummary: asrTimingSummary || null,
+      981 +                    speakerProcessing: asrResult?.speaker_proc
+          +essing || asrResult?.speakerProcessing || null,               
+      982                      segments: normalized.segments.length,
+      983                      generatedAt: new Date().toISOString()
+      984                  });
+
+● Update(src\scripts\python\sensevoice_text.py)
+  ⎿  Added 3 lines, removed 1 line
+      128          if end <= start:
+      129              end = start + 0.1
+      130  
+      131 -        speaker = item.get("spk") or item.get("speaker")      
+      131 +        speaker = item.get("spk")                             
+      132 +        if speaker is None:                                   
+      133 +            speaker = item.get("speaker")                     
+      134          segment = {"start": start, "end": end, "text": text}
+      135          if speaker is not None:
+      136              segment["speaker"] = str(speaker)
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Update(src\scripts\asr\asr_vllm_queue_worker.js)
+  ⎿  Added 17 lines
+      403          language: backendConfig.language || '中文',
+      404          use_itn: backendConfig.use_itn !== false,
+      405          enable_speaker: Boolean(backendConfig.enable_speaker),
+      406 +        speaker_detection_mode: backendConfig.speaker_detectio
+          +n_mode,                                                       
+      407 +        speaker_probe_chunk_s: backendConfig.speaker_probe_chu
+          +nk_s,                                                         
+      408 +        speaker_probe_max_chunks: backendConfig.speaker_probe_
+          +max_chunks,                                                   
+      409 +        speaker_probe_min_valid_chunks: backendConfig.speaker_
+          +probe_min_valid_chunks,                                       
+      410 +        speaker_probe_min_speech_s: backendConfig.speaker_prob
+          +e_min_speech_s,                                               
+      411 +        speaker_probe_min_cluster_chunks: backendConfig.speake
+          +r_probe_min_cluster_chunks,                                   
+      412 +        speaker_probe_min_cluster_s: backendConfig.speaker_pro
+          +be_min_cluster_s,                                             
+      413 +        speaker_probe_min_cohesion: backendConfig.speaker_prob
+          +e_min_cohesion,                                               
+      414 +        speaker_probe_separation_margin: backendConfig.speaker
+          +_probe_separation_margin,                                     
+      415 +        speaker_probe_fail_open: backendConfig.speaker_probe_f
+          +ail_open,                                                     
+      416 +        speaker_embedding_batch_size: backendConfig.speaker_em
+          +bedding_batch_size,                                           
+      417 +        speaker_merge_threshold: backendConfig.speaker_merge_t
+          +hreshold,                                                     
+      418 +        speaker_references: backendConfig.speaker_references, 
+      419 +        speaker_reference_threshold: backendConfig.speaker_ref
+          +erence_threshold,                                             
+      420 +        speaker_reference_margin: backendConfig.speaker_refere
+          +nce_margin,                                                   
+      421 +        spk_model: backendConfig.spk_model,                   
+      422 +        device: backendConfig.device,                         
+      423          preset_spk_num: backendConfig.preset_spk_num,
+      424          max_new_tokens: backendConfig.max_new_tokens,
+      425          batch_size_s: backendConfig.batch_size_s,
+
+  Thought for 9s (ctrl+o to expand)
+
+● PowerShell(node -e "JSON.parse(require('fs').readFileSync('config/default.json
+            ','utf8')); JSON.parse(require('fs').readFileSync('config/production
+            .json','utf8')); console.…)
+  ⎿  json ok
+
+● PowerShell(git diff --check)
+  ⎿  warning: in the working copy of 'config/production.json', LF will be r
+     eplaced by CRLF the next time Git touches it
+     warning: in the working copy of 'src/scripts/asr/asr_vllm_queue_worker
+     … +6 lines (ctrl+o to expand)
+
+● PowerShell(git status --short)
+  ⎿   M config/default.json
+      M config/production.json
+      M src/core/config/ConfigInterface.ts
+     … +9 lines (ctrl+o to expand)
+
+  Thought for 37s, searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Update(src\services\webhook\handlers\MikufansWebhookHandler.ts)
+  ⎿  Added 1 line
+      1212      let timedOut = false;
+      1213      let asrStartedAt: number | null = null;
+      1214      let asrTimingSummary: Record<string, any> | null = null;
+      1215 +    let stdoutLineBuffer = '';                               
+      1216  
+      1217      const timeoutId = setTimeout(async () => {
+      1218        timedOut = true;
+
+● Update(src\services\webhook\handlers\MikufansWebhookHandler.ts)
+  ⎿  Added 67 lines, removed 45 lines
+      1244          resolve();
+      1245        };
+      1246  
+      1247 -      ps.stdout?.on('data', (data: Buffer) => {              
+      1248 -        const output = data.toString().trim();               
+      1249 -        if (output) {                                        
+      1250 -          this.logger.info(`[Mikufans队列Worker] ${output}`);
+      1251 -          if (!asrStartedAt && output.includes('-> [ASR]')) {
+      1252 -            asrStartedAt = Date.now();                       
+      1247 +      const handleWorkerOutput = (output: string) => {       
+      1248 +        const line = output.trim();                          
+      1249 +        if (!line) {                                         
+      1250 +          return;                                            
+      1251 +        }                                                    
+      1252 +        this.logger.info(`[Mikufans队列Worker] ${line}`);    
+      1253 +        if (!asrStartedAt && line.includes('-> [ASR]')) {    
+      1254 +          asrStartedAt = Date.now();                         
+      1255 +        }                                                    
+      1256 +        const timingMatch = line.match(/\[\[ASR_TIMING\]\]\s+
+           +({[^\r\n]+})/);                                              
+      1257 +        if (timingMatch) {                                   
+      1258 +          try {                                              
+      1259 +            asrTimingSummary = JSON.parse(timingMatch[1]);   
+      1260 +          } catch (error: any) {                             
+      1261 +            this.logger.warn(`解析 ASR 阶段耗时失败: ${error.
+           +message}`);                                                  
+      1262            }
+      1254 -          const timingMatch = output.match(/\[\[ASR_TIMING\]\
+           -]\s+({[^\r\n]+})/);                                          
+      1255 -          if (timingMatch) {                                 
+      1256 -            try {                                            
+      1257 -              asrTimingSummary = JSON.parse(timingMatch[1]); 
+      1258 -            } catch (error: any) {                           
+      1259 -              this.logger.warn(`解析 ASR 阶段耗时失败: ${erro
+           -r.message}`);                                                
+      1260 -            }                                                
+      1263 +        }                                                    
+      1264 +        void this.handleDelayedReplyReadyOutput(line, task.me
+           +diaPath);                                                    
+      1265 +        if (line.includes(ASR_PHASE_DONE_SENTINEL) || line.in
+           +cludes(LEGACY_WHISPER_PHASE_DONE_SENTINEL)) {                
+      1266 +          if (asrStartedAt) {                                
+      1267 +            const asrElapsedSeconds = (Date.now() - asrStarte
+           +dAt) / 1000;                                                 
+      1268 +            const speakerProcessing = asrTimingSummary?.speak
+           +erProcessing;                                                
+      1269 +            void ProcessingAlertService.notifyIfSlowStage(   
+      1270 +              'ASR',                                         
+      1271 +              asrElapsedSeconds,                             
+      1272 +              ProcessingAlertService.getThresholds().asrSlowS
+           +econds,                                                      
+      1273 +              task.mediaPath,                                
+      1274 +              {                                              
+      1275 +                taskId: task.id,                             
+      1276 +                roomId,                                      
+      1277 +                ...(asrTimingSummary ? {                     
+      1278 +                  模型缓存: asrTimingSummary.cacheHit ? '命中
+           +' : '未命中',                                                
+      1279 +                  模型加载秒: asrTimingSummary.modelLoadSecon
+           +ds,                                                          
+      1280 +                  真正转写秒: asrTimingSummary.transcriptionS
+           +econds,                                                      
+      1281 +                  真正转写速度: asrTimingSummary.trueAsrSpeed
+      1282 +                    ? `${asrTimingSummary.trueAsrSpeed}x`    
+      1283 +                    : 'N/A',                                 
+      1284 +                  VAD秒: asrTimingSummary.vadSeconds,        
+      1285 +                  说话人状态: speakerProcessing?.status || ' 
+           +未知',                                                       
+      1286 +                  说话人探测秒: (                            
+      1287 +                    Number(asrTimingSummary.speakerProbeEmbed
+           +dingSeconds || 0) +                                          
+      1288 +                    Number(asrTimingSummary.speakerProbeClust
+           +eringSeconds || 0)                                           
+      1289 +                  ).toFixed(1),                              
+      1290 +                  说话人全量秒: Number(asrTimingSummary.speak
+           +erFullEmbeddingSeconds || 0).toFixed(1),                     
+      1291 +                  说话人聚类秒: Number(asrTimingSummary.speak
+           +erFullClusteringSeconds || 0).toFixed(1),                    
+      1292 +                  说话人匹配秒: asrTimingSummary.speakerMatch
+           +ingSeconds,                                                  
+      1293 +                  说话人总计秒: asrTimingSummary.speakerTotal
+           +Seconds                                                      
+      1294 +                } : {})                                      
+      1295 +              }                                              
+      1296 +            );                                               
+      1297            }
+      1262 -          void this.handleDelayedReplyReadyOutput(output, tas
+           -k.mediaPath);                                                
+      1263 -          if (output.includes(ASR_PHASE_DONE_SENTINEL) || out
+           -put.includes(LEGACY_WHISPER_PHASE_DONE_SENTINEL)) {          
+      1264 -            if (asrStartedAt) {                              
+      1265 -              const asrElapsedSeconds = (Date.now() - asrStar
+           -tedAt) / 1000;                                               
+      1266 -              void ProcessingAlertService.notifyIfSlowStage( 
+      1267 -                'ASR',                                       
+      1268 -                asrElapsedSeconds,                           
+      1269 -                ProcessingAlertService.getThresholds().asrSlo
+           -wSeconds,                                                    
+      1270 -                task.mediaPath,                              
+      1271 -                {                                            
+      1272 -                  taskId: task.id,                           
+      1273 -                  roomId,                                    
+      1274 -                  ...(asrTimingSummary ? {                   
+      1275 -                    模型缓存: asrTimingSummary.cacheHit ? '命
+           -中' : '未命中',                                              
+      1276 -                    模型加载秒: asrTimingSummary.modelLoadSec
+           -onds,                                                        
+      1277 -                    真正转写秒: asrTimingSummary.transcriptio
+           -nSeconds,                                                    
+      1278 -                    真正转写速度: asrTimingSummary.trueAsrSpe
+           -ed                                                           
+      1279 -                      ? `${asrTimingSummary.trueAsrSpeed}x`  
+      1280 -                      : 'N/A',                               
+      1281 -                    VAD秒: asrTimingSummary.vadSeconds,      
+      1282 -                    说话人Embedding秒: (                     
+      1283 -                      Number(asrTimingSummary.builtinSpeakerE
+           -mbeddingSeconds || 0) +                                      
+      1284 -                      Number(asrTimingSummary.speakerClusterE
+           -mbeddingSeconds || 0)                                        
+      1285 -                    ).toFixed(1),                            
+      1286 -                    说话人匹配秒: asrTimingSummary.speakerMat
+           -chingSeconds                                                 
+      1287 -                  } : {})                                    
+      1288 -                }                                            
+      1289 -              );                                             
+      1290 -            }                                                
+      1291 -            this.logger.info(`Mikufans队列Worker已完成ASR阶段
+           -，释放队列槽位，AI/漫画阶段继续后台执行: ${path.basename(task
+           -.mediaPath)}`);                                              
+      1292 -            releaseWorkerSlot('asr-phase-done');             
+      1293 -          }                                                  
+      1298 +          this.logger.info(`Mikufans队列Worker已完成ASR阶段，
+           +释放队列槽位，AI/漫画阶段继续后台执行: ${path.basename(task.m
+           +ediaPath)}`);                                                
+      1299 +          releaseWorkerSlot('asr-phase-done');               
+      1300          }
+      1301 +      };                                                     
+      1302 +                                                             
+      1303 +      ps.stdout?.on('data', (data: Buffer) => {              
+      1304 +        stdoutLineBuffer += data.toString();                 
+      1305 +        const lines = stdoutLineBuffer.split(/\r?\n/);       
+      1306 +        stdoutLineBuffer = lines.pop() || '';                
+      1307 +        for (const line of lines) {                          
+      1308 +          handleWorkerOutput(line);                          
+      1309 +        }                                                    
+      1310        });
+      1311  
+      1312 +      ps.stdout?.on('end', () => {                           
+      1313 +        if (stdoutLineBuffer) {                              
+      1314 +          handleWorkerOutput(stdoutLineBuffer);              
+      1315 +          stdoutLineBuffer = '';                             
+      1316 +        }                                                    
+      1317 +      });                                                    
+      1318 +                                                             
+      1319        ps.stderr?.on('data', (data: Buffer) => {
+      1320          const output = data.toString().trim();
+      1321          if (output) {
+
+  Thought for 31s, searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Update(src\core\config\ConfigInterface.ts)
+  ⎿  Added 1 line
+      250      speaker_references?: AsrSpeakerReferenceConfig[];
+      251      speaker_reference_threshold?: number;
+      252      speaker_reference_margin?: number;
+      253 +    speaker_embedding_batch_size?: number;                    
+      254      hub?: 'ms' | 'hf' | 'modelscope' | 'huggingface' | string;
+      255      dtype?: 'bf16' | 'fp16' | 'fp32' | string;
+      256      tensor_parallel_size?: number;
+
+  Thought for 5s (ctrl+o to expand)  ⎿  Message queued for delivery to ab37ee3d70f62ac6f at its next tool 
+     round.
+
+● Agent "Implement WeCom display" finished · 9m 53s
+
+  Thought for 41s (ctrl+o to expand)
+
+● Update(src\scripts\python\sensevoice_paraformer.py)
+  ⎿  Added 3 lines, removed 2 lines
+       6  
+       7  from sensevoice_runtime import StageTimeout, log_progress, set_
+          timing, suppress_model_output
+       8  from sensevoice_speaker import (
+       9 -    build_cluster_embeddings_from_sentence_info,               
+       9      build_speaker_reference_centroids,
+      11 -    classify_speaker_clusters,                                 
+      10 +    dominant_speaker_for_interval,                             
+      11      load_audio_16k_mono,
+      12 +    run_adaptive_speaker_engine,                               
+      13 +    smooth_speaker_timeline,                                   
+      14  )
+      15  from sensevoice_text import normalize_segments, resolve_cached_
+          model_name, restore_punctuation
+      16  
+
+● Update(src\scripts\python\sensevoice_paraformer.py)
+  ⎿  Added 1 line, removed 8 lines
+      377      spk_model = payload.get("spk_model")
+      378      enable_speaker = bool(payload.get("enable_speaker", False)
+           )
+      379      if enable_speaker and spk_model:
+      380 -        resolved_spk = resolve_cached_model_name(spk_model)   
+      381 -        model_kwargs["spk_model"] = resolved_spk              
+      382 -        model_kwargs["spk_kwargs"] = payload.get("spk_kwargs")
+          - or {                                                         
+      383 -            "cb_kwargs": {                                    
+      384 -                "merge_thr": float(payload.get("speaker_merge_
+          -threshold", 0.78))                                            
+      385 -            }                                                 
+      386 -        }                                                     
+      387 -        log_progress(f"  SPK: {resolved_spk}")                
+      380 +        log_progress(f"  SPK: {resolve_cached_model_name(spk_m
+          +odel)} (ASR 后自适应)")                                       
+      381  
+      382      speaker_references = payload.get("speaker_references")
+      383      if speaker_references and enable_speaker:
+
+● Update(src\scripts\python\sensevoice_paraformer.py)
+  ⎿  Removed 3 lines
+      388          {
+      389              "model_kwargs": model_kwargs,
+      390              "vad_device": vad_device or None,
+      391 -            "speaker_references": speaker_references if enable
+          -_speaker else None,                                           
+      392 -            "speaker_reference_threshold": payload.get("speake
+          -r_reference_threshold"),                                      
+      393 -            "speaker_reference_margin": payload.get("speaker_r
+          -eference_margin"),                                            
+      391          },
+      392          ensure_ascii=False,
+      393          sort_keys=True,
+
+› Message from general-purpose (ctrl+o to expand)
+
+● Update(src\scripts\python\sensevoice_paraformer.py)
+  ⎿  Added 3 lines, removed 3 lines
+      400  
+      401      if cache_hit:
+      402          model = cache_entry["model"]
+      403 -        spk_model_obj = cache_entry.get("spk_model_obj")      
+      404 -        reference_centroids = cache_entry.get("reference_centr
+          -oids")                                                        
+      405 -        log_progress("paraformer pipeline 命中常驻缓存，跳过模
+          -型与参考说话人加载")                                          
+      403 +        spk_model_obj = cache.get("speaker_model")            
+      404 +        reference_centroids = None                            
+      405 +        log_progress("paraformer pipeline 命中常驻缓存，跳过 A
+          +SR 模型加载")                                                 
+      406          set_timing(payload, "model_load_s", 0)
+      407          set_timing(payload, "reference_embedding_s", 0)
+      408      else:
+
+● Update(src\scripts\python\sensevoice_paraformer.py)
+  ⎿  Added 10 lines, removed 5 lines
+      424              if gpu_throttle:
+      425                  gpu_throttle.wait_if_busy("paraformer pipeline
+            加载")
+      426              if enable_speaker and spk_model:
+      427 -                spk_model_obj = AutoModel(                    
+      428 -                    model=resolve_cached_model_name(spk_model)
+          -,                                                             
+      429 -                    device=device_name,                       
+      430 -                    disable_update=True,                      
+      431 -                )                                             
+      427 +                spk_model_obj = cache.get("speaker_model")    
+      428 +                if spk_model_obj is None:                     
+      429 +                    speaker_load_started = time.perf_counter()
+      430 +                    spk_model_obj = AutoModel(                
+      431 +                        model=resolve_cached_model_name(spk_mo
+          +del),                                                         
+      432 +                        device=device_name,                   
+      433 +                        disable_update=True,                  
+      434 +                    )                                         
+      435 +                    cache["speaker_model"] = spk_model_obj    
+      436 +                    set_timing(payload, "speaker_model_load_s"
+          +, time.perf_counter() - speaker_load_started)                 
+      437              with StageTimeout(payload.get("model_load_timeout_
+           s", 180), "paraformer pipeline 加载"):
+      438                  model = AutoModel(**model_kwargs)
+      439              set_timing(payload, "model_load_s", time.perf_coun
+           ter() - model_load_started)
+
+● Update(src\scripts\python\sensevoice_paraformer.py)
+  ⎿  Added 1 line, removed 14 lines
+      442              _fail(fail_fn, "paraformer pipeline 加载失败", f"{
+           exc}\n{traceback.format_exc()}")
+      443  
+      444          reference_centroids = None
+      445 -        reference_started = time.perf_counter()               
+      446 -        if enable_speaker and speaker_references and spk_model
+          -_obj:                                                         
+      447 -            try:                                              
+      448 -                reference_centroids = build_speaker_reference_
+          -centroids(                                                    
+      449 -                    spk_model_obj,                            
+      450 -                    speaker_references,                       
+      451 -                    device,                                   
+      452 -                    batch_size=int(payload.get("speaker_embedd
+          -ing_batch_size", 64) or 64),                                  
+      453 -                )                                             
+      454 -            except Exception as exc:                          
+      455 -                log_progress(f"参考说话人加载失败，使用聚类结 
+          -果: {exc}")                                                   
+      456 -        set_timing(payload, "reference_embedding_s", time.perf
+          -_counter() - reference_started)                               
+      445 +        set_timing(payload, "reference_embedding_s", 0)       
+      446          cache["paraformer"] = {
+      447              "key": cache_key,
+      448              "model": model,
+      460 -            "spk_model_obj": spk_model_obj,                   
+      461 -            "reference_centroids": reference_centroids,       
+      449          }
+      450  
+      451      try:
+
+● Update(src\scripts\python\sensevoice_paraformer.py)
+  ⎿  Added 15 lines
+      448              "model": model,
+      449          }
+      450  
+      451 +    if enable_speaker and spk_model and spk_model_obj is None:
+      452 +        try:                                                  
+      453 +            speaker_load_started = time.perf_counter()        
+      454 +            spk_model_obj = AutoModel(                        
+      455 +                model=resolve_cached_model_name(spk_model),   
+      456 +                device=device_name,                           
+      457 +                disable_update=True,                          
+      458 +            )                                                 
+      459 +            cache["speaker_model"] = spk_model_obj            
+      460 +            set_timing(payload, "speaker_model_load_s", time.p
+          +erf_counter() - speaker_load_started)                         
+      461 +        except Exception as exc:                              
+      462 +            log_progress(f"说话人模型加载失败，保留 ASR 结果: 
+          +{exc}")                                                       
+      463 +    else:                                                     
+      464 +        set_timing(payload, "speaker_model_load_s", payload.ge
+          +t("_timings", {}).get("speaker_model_load_s", 0))             
+      465 +                                                              
+      466      try:
+      467          configure_paraformer_devices(model, main_device=device
+           _name, vad_device=vad_device)
+      468          install_paraformer_timing_probe(model)
+
+● Update(src\scripts\python\sensevoice_paraformer.py)
+  ⎿  Added 59 lines, removed 38 lines
+      546  
+      547      log_progress(f"sentence_info: {len(sentence_info)} 句")
+      548  
+      549 -    cluster_matches = {}                                      
+      550 -    cluster_embedding_started = time.perf_counter()           
+      551 -    if reference_centroids and sentence_info and spk_model_obj
+          -:                                                             
+      549 +    speaker_timeline = []                                     
+      550 +    if enable_speaker and spk_model_obj and sentence_info:    
+      551          try:
+      552              audio_data, sample_rate = load_audio_16k_mono(audi
+           o_path)
+      554 -            cluster_embeddings = build_cluster_embeddings_from
+          -_sentence_info(                                               
+      553 +            speaker_intervals = [                             
+      554 +                {                                             
+      555 +                    "start": float(item.get("start", 0) or 0) 
+          +/ 1000.0,                                                     
+      556 +                    "end": float(item.get("end", item.get("sta
+          +rt", 0)) or 0) / 1000.0,                                      
+      557 +                }                                             
+      558 +                for item in sentence_info                     
+      559 +                if float(item.get("end", 0) or 0) > float(item
+          +.get("start", 0) or 0)                                        
+      560 +            ]                                                 
+      561 +            reference_started = time.perf_counter()           
+      562 +            reference_centroids = build_speaker_reference_cent
+          +roids(                                                        
+      563                  spk_model_obj,
+      564 +                speaker_references,                           
+      565 +                device,                                       
+      566 +                batch_size=int(payload.get("speaker_embedding_
+          +batch_size", 64) or 64),                                      
+      567 +            )                                                 
+      568 +            set_timing(payload, "reference_embedding_s", time.
+          +perf_counter() - reference_started)                           
+      569 +            adaptive = run_adaptive_speaker_engine(           
+      570 +                spk_model_obj,                                
+      571                  audio_data,
+      572                  sample_rate,
+      558 -                sentence_info,                                
+      559 -                payload,                                      
+      560 -                device,                                       
+      573 +                speaker_intervals,                            
+      574 +                payload=payload,                              
+      575 +                references=reference_centroids,               
+      576              )
+      562 -            set_timing(payload, "speaker_cluster_embedding_s",
+          - time.perf_counter() - cluster_embedding_started)             
+      563 -            matching_started = time.perf_counter()            
+      564 -            cluster_matches = classify_speaker_clusters(      
+      565 -                cluster_embeddings,                           
+      566 -                reference_centroids,                          
+      567 -                float(payload.get("speaker_reference_threshold
+          -", 0.45)),                                                    
+      568 -                float(payload.get("speaker_reference_margin", 
+          -0.0) or 0.0),                                                 
+      569 -                bool(payload.get("speaker_constrain_to_referen
+          -ces", False)),                                                
+      577 +            speaker_timeline = smooth_speaker_timeline(       
+      578 +                adaptive.get("timeline", []),                 
+      579 +                float(payload.get("speaker_unknown_fill_gap_s"
+          +, 10.0) or 10.0),                                             
+      580 +                float(payload.get("speaker_unknown_max_duratio
+          +n_s", 12.0) or 12.0),                                         
+      581              )
+      571 -            set_timing(payload, "speaker_matching_s", time.per
+          -f_counter() - matching_started)                               
+      572 -            named_count = sum(                                
+      573 -                1 for value in cluster_matches.values() if val
+          -ue.get("accepted")                                            
+      574 -            )                                                 
+      575 -            log_progress(                                     
+      576 -                f"说话人实名映射完成: clusters={len(cluster_ma
+          -tches)}, named={named_count}, "                               
+      577 -                f"embedding={payload['_timings'].get('speaker_
+          -cluster_embedding_s', 0):.3f}s, "                             
+      578 -                f"matching={payload['_timings'].get('speaker_m
+          -atching_s', 0):.3f}s"                                         
+      579 -            )                                                 
+      580 -            for cluster_label, match in cluster_matches.items(
+          -):                                                            
+      581 -                log_progress(                                 
+      582 -                    "  说话人匹配: "                          
+      583 -                    f"cluster={cluster_label}, top1={match.get
+          -('best_label')}, "                                            
+      584 -                    f"top1_score={float(match.get('score', -1.
+          -0)):.4f}, "                                                   
+      585 -                    f"top2={match.get('second_label')}, "     
+      586 -                    f"top2_score={float(match.get('second_scor
+          -e', -1.0)):.4f}, "                                            
+      587 -                    f"margin={float(match.get('margin', -1.0))
+          -:.4f}, "                                                      
+      588 -                    f"decision={match.get('label')}"          
+      589 -                )                                             
+      582 +            payload["_speaker_processing"] = adaptive.get("pro
+          +cessing", {})                                                 
+      583 +            adaptive_timings = payload["_speaker_processing"].
+          +get("timings", {})                                            
+      584 +            set_timing(payload, "speaker_probe_embedding_s", a
+          +daptive_timings.get("probe_embedding_s", 0))                  
+      585 +            set_timing(payload, "speaker_probe_clustering_s", 
+          +adaptive_timings.get("probe_clustering_s", 0))                
+      586 +            set_timing(payload, "speaker_full_embedding_s", ad
+          +aptive_timings.get("full_embedding_s", 0))                    
+      587 +            set_timing(payload, "speaker_full_clustering_s", a
+          +daptive_timings.get("full_clustering_s", 0))                  
+      588 +            set_timing(payload, "speaker_matching_s", adaptive
+          +_timings.get("reference_matching_s", 0))                      
+      589 +            set_timing(payload, "speaker_total_s", adaptive_ti
+          +mings.get("total_s", 0))                                      
+      590 +            set_timing(payload, "speaker_cluster_embedding_s",
+          + adaptive_timings.get("full_embedding_s", 0))                 
+      591          except Exception as exc:
+      591 -            set_timing(payload, "speaker_cluster_embedding_s",
+          - time.perf_counter() - cluster_embedding_started)             
+      592 -            log_progress(f"说话人实名映射失败，使用聚类结果: {
+          -exc}")                                                        
+      592 +            log_progress(f"自适应说话人处理失败，保留 ASR 结果
+          +: {exc}")                                                     
+      593 +            payload["_speaker_processing"] = {                
+      594 +                "mode": str(payload.get("speaker_detection_mod
+          +e") or "auto"),                                               
+      595 +                "status": "failed",                           
+      596 +                "decision": "inconclusive",                   
+      597 +                "reason": "speaker_processing_error",         
+      598 +                "full_run": False,                            
+      599 +                "error": str(exc),                            
+      600 +            }                                                 
+      601 +    elif enable_speaker:                                      
+      602 +        payload["_speaker_processing"] = {                    
+      603 +            "mode": str(payload.get("speaker_detection_mode") 
+          +or "auto"),                                                   
+      604 +            "status": "failed",                               
+      605 +            "decision": "inconclusive",                       
+      606 +            "reason": "speaker_model_unavailable",            
+      607 +            "full_run": False,                                
+      608 +        }                                                     
+      609      else:
+      594 -        set_timing(payload, "speaker_cluster_embedding_s", 0) 
+      595 -        set_timing(payload, "speaker_matching_s", 0)          
+      610 +        payload["_speaker_processing"] = {                    
+      611 +            "mode": "disabled",                               
+      612 +            "status": "disabled",                             
+      613 +            "decision": "disabled",                           
+      614 +            "reason": "speaker_disabled",                     
+      615 +            "full_run": False,                                
+      616 +        }                                                     
+      617  
+      618      postprocess_started = time.perf_counter()
+      619      segments = []
+
+● Update(src\scripts\python\sensevoice_paraformer.py)
+  ⎿  Added 5 lines, removed 6 lines
+      632          spk = sent.get("spk")
+      633          speaker_label = None
+      634          speaker_score = None
+      635 +        speaker_label, speaker_score = dominant_speaker_for_in
+          +terval(                                                       
+      636 +            start_s,                                          
+      637 +            end_s,                                            
+      638 +            speaker_timeline,                                 
+      639 +        )                                                     
+      640  
+      636 -        if spk is not None:                                   
+      637 -            cluster_label = f"SPEAKER_{int(spk):02d}" if str(s
+          -pk).isdigit() else str(spk)                                   
+      638 -            match = cluster_matches.get(cluster_label)        
+      639 -            speaker_label = match.get("label") if match else c
+          -luster_label                                                  
+      640 -            speaker_score = match.get("score") if match else N
+          -one                                                           
+      641 -                                                              
+      641          if len(text) <= max_subtitle_chars:
+      642              segment = {
+      643                  "start": start_s,
+
+● Update(src\scripts\python\sensevoice_paraformer.py)
+  ⎿  Removed 1 line
+      629          start_s = round(start_ms / 1000.0, 3)
+      630          end_s = round(max(end_ms, start_ms + 100) / 1000.0, 3)
+      631  
+      632 -        spk = sent.get("spk")                                 
+      632          speaker_label = None
+      633          speaker_score = None
+      634          speaker_label, speaker_score = dominant_speaker_for_in
+           terval(
+
+● Update(src\scripts\python\asr_persistent_worker.py)
+  ⎿  Added 1 line
+      82          "language": payload.get("language", "auto"),
+      83          "segments": raw_result,
+      84          "timings": payload.get("_timings", {}),
+      85 +        "speaker_processing": payload.get("_speaker_processing"
+         +),                                                             
+      86      }
+      87      hotword_config = payload.get("phoneme_correction")
+      88      if isinstance(hotword_config, dict) and coerce_bool(hotword
+          _config.get("enabled"), False):
+
+● Update(src\scripts\python\sensevoice_transcribe.py)
+  ⎿  Added 1 line
+      141                  "language": payload.get("language", "auto"),
+      142                  "segments": raw_result,
+      143                  "timings": payload.get("_timings", {}),
+      144 +                "speaker_processing": payload.get("_speaker_pr
+          +ocessing"),                                                   
+      145              }
+      146              hotword_config = payload.get("phoneme_correction")
+      147              if hotword_config and isinstance(hotword_config, d
+           ict) and hotword_config.get("enabled"):
+
+● Update(src\scripts\python\sensevoice_transcribe.py)
+  ⎿  Added 2 lines, removed 2 lines
+      165          "backend": backend_name,
+      166          "language": payload.get("language", "auto"),
+      167          "segments": normalize_segments(raw_result),
+      168 -    }                                                         
+      169 -    if payload.get("include_raw", False):                     
+      168 +        "timings": payload.get("_timings", {}),               
+      169 +        "speaker_processing": payload.get("_speaker_processing
+          +"),                                                           
+      170          output["raw"] = raw_result
+      171  
+      172      hotword_config = payload.get("phoneme_correction")
+
+  Thought for 14s, read 1 file (ctrl+o to expand)
+
+● Update(src\scripts\python\sensevoice_transcribe.py)
+  ⎿  Added 2 lines
+      167          "segments": normalize_segments(raw_result),
+      168          "timings": payload.get("_timings", {}),
+      169          "speaker_processing": payload.get("_speaker_processing
+           "),
+      170 +    }                                                         
+      171 +    if payload.get("include_raw", False):                     
+      172          output["raw"] = raw_result
+      173  
+      174      hotword_config = payload.get("phoneme_correction")
+
+● PowerShell(python -m py_compile "src/scripts/python/sensevoice_speaker.py"
+            "src/scripts/python/sensevoice_paraformer.py"
+            "src/scripts/python/sensevoice_pipeline.py" "src/s…)
+  ⎿  (No output)
+
+● PowerShell(npm run type-check)
+  ⎿  Running in the background (↓ to manage)
+
+● PowerShell(git diff --check)
+  ⎿  warning: in the working copy of 'config/production.json', LF will be r
+     eplaced by CRLF the next time Git touches it
+     warning: in the working copy of 'src/scripts/asr/asr_vllm_queue_worker
+     … +10 lines (ctrl+o to expand)  ⎿  Message queued for delivery to ab37ee3d70f62ac6f at its next tool 
+     round.
+
+● Background command "Type-check TypeScript changes" completed (exit code 0)
+
+● Update(src\scripts\python\sensevoice_pipeline.py)
+  ⎿  Added 1 line, removed 1 line
+       7      paraformer_timestamp_to_sentences,
+       8      pick_batched_result,
+       9  )
+      10 -from sensevoice_runtime import StageTimeout, log_progress, supp
+         -ress_model_output                                              
+      10 +from sensevoice_runtime import StageTimeout, log_progress, set_
+         +timing, suppress_model_output                                  
+      11  from sensevoice_speaker import (
+      12      build_speaker_reference_centroids,
+      13      classify_speaker_embeddings,
+
+● Update(src\scripts\python\sensevoice_pipeline.py)
+  ⎿  Added 1 line, removed 2 lines
+      10  from sensevoice_runtime import StageTimeout, log_progress, set_
+          timing, suppress_model_output
+      11  from sensevoice_speaker import (
+      12      build_speaker_reference_centroids,
+      13 -    classify_speaker_embeddings,                               
+      13      dominant_speaker_for_interval,
+      14      load_audio_16k_mono,
+      15 +    run_adaptive_speaker_engine,                               
+      16      smooth_speaker_timeline,
+      17 -    speaker_label_from_cluster,                                
+      17  )
+      18  from sensevoice_text import (
+      19      generate_with_optional_hotword,
+
+● Update(src\scripts\python\sensevoice_pipeline.py)
+  ⎿  Added 2 lines
+      157  
+      158  
+      159  def transcribe_segmented_backend(payload, audio_path, device, 
+           backend_name, AutoModel, gpu_throttle=None, fail_fn=None):
+      160 +    backend_started = time.perf_counter()                     
+      161 +    payload["_timings"] = {}                                  
+      162      default_model = (
+      163          "FunAudioLLM/Fun-ASR-Nano-2512" if backend_name == "fu
+           n_asr_nano"
+      164          else "paraformer-zh" if backend_name == "paraformer"
+
+● Update(src\scripts\python\sensevoice_pipeline.py)
+  ⎿  Error editing file
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(src\scripts\python\sensevoice_pipeline.py)
+  ⎿  Added 2 lines
+      195          log_progress(f"加载主模型: {resolved_model}")
+      196          if gpu_throttle:
+      197              gpu_throttle.wait_if_busy("主模型加载")
+      198 +        model_started = time.perf_counter()                   
+      199          with StageTimeout(payload.get("model_load_timeout_s", 
+           180), "主模型加载"):
+      200              model = AutoModel(**model_kwargs)
+      201 +        set_timing(payload, "model_load_s", time.perf_counter(
+          +) - model_started)                                            
+      202          log_progress("主模型加载完成")
+      203      except Exception as exc:
+      204          _fail(
+
+● Update(src\scripts\python\sensevoice_pipeline.py)
+  ⎿  Added 2 lines
+      225          log_progress("VAD 模型加载完成，开始 VAD")
+      226          if gpu_throttle:
+      227              gpu_throttle.wait_if_busy("VAD 处理")
+      228 +        vad_started = time.perf_counter()                     
+      229          with StageTimeout(payload.get("vad_timeout_s", 180), "
+           VAD 处理"):
+      230              with suppress_model_output():
+      231                  vad_result = vad_model.generate(input=audio_pa
+           th)
+      232 +        set_timing(payload, "vad_s", time.perf_counter() - vad
+          +_started)                                                     
+      233          vad_segments = vad_result[0].get("value") if vad_resul
+           t and isinstance(vad_result, list) else []
+      234          log_progress(f"VAD 完成: segments={len(vad_segments)}"
+           )
+      235          raw_vad_segments = list(vad_segments)
+
+  Thought for 9s, read 1 file (ctrl+o to expand)
+
+● Update(src\scripts\python\sensevoice_pipeline.py)
+  ⎿  Added 20 lines, removed 99 lines
+      267          enable_speaker = bool(payload.get("enable_speaker", Fa
+           lse))
+      268          spk_model = payload.get("spk_model")
+      269  
+      270 +        spk_model_obj = None                                  
+      271          if enable_speaker:
+      272              try:
+      273                  resolved_spk_model = resolve_cached_model_name
+           (spk_model)
+      273 -                log_progress(f"加载说话人模型: {resolved_spk_m
+          -odel}")                                                       
+      274 +                log_progress(f"准备 ASR 后自适应说话人处理: {r
+          +esolved_spk_model}")                                          
+      275                  if gpu_throttle:
+      276                      gpu_throttle.wait_if_busy("说话人模型加载"
+           )
+      277 +                speaker_load_started = time.perf_counter()    
+      278                  with StageTimeout(payload.get("model_load_time
+           out_s", 180), "说话人模型加载"):
+      279                      spk_model_obj = AutoModel(
+      280                          model=resolved_spk_model,
+      281                          device="cuda:0" if device == "cuda" el
+           se device,
+      282                          disable_update=True,
+      283                      )
+      282 -                from funasr.models.campplus.cluster_backend im
+          -port ClusterBackend                                           
+      283 -                                                              
+      284 -                speaker_chunks = []                           
+      285 -                speaker_chunk_meta = []                       
+      286 -                speaker_vad_segments = split_vad_segments(    
+      287 -                    raw_vad_segments,                         
+      288 -                    payload.get("speaker_max_segment_s", 8),  
+      289 -                )                                             
+      290 -                min_speaker_segment_s = float(payload.get("spe
+          -aker_min_segment_s", 0.8) or 0.8)                             
+      291 -                log_progress("提取说话人 embedding")          
+      292 -                for start_ms, end_ms in speaker_vad_segments: 
+      293 -                    start = max(0.0, float(start_ms) / 1000.0)
+      294 -                    end = max(start, float(end_ms) / 1000.0)  
+      295 -                    if end - start < min_speaker_segment_s:   
+      296 -                        continue                              
+      297 -                    start_idx = max(0, int(start * sample_rate
+          -))                                                            
+      298 -                    end_idx = min(len(audio), int(end * sample
+          -_rate))                                                       
+      299 -                    if end_idx <= start_idx:                  
+      300 -                        continue                              
+      301 -                    speaker_chunks.append(audio[start_idx:end_
+          -idx])                                                         
+      302 -                    speaker_chunk_meta.append({"start": start,
+          - "end": end})                                                 
+      303 -                                                              
+      304 -                if speaker_chunks:                            
+      305 -                    if gpu_throttle:                          
+      306 -                        gpu_throttle.wait_if_busy("说话人 embe
+          -dding")                                                       
+      307 -                    with StageTimeout(payload.get("speaker_tim
+          -eout_s", 300), "说话人 embedding"):                           
+      308 -                        with suppress_model_output():         
+      309 -                            spk_results = spk_model_obj.genera
+          -te(                                                           
+      310 -                                input=speaker_chunks,         
+      311 -                                cache={},                     
+      312 -                                is_final=True,                
+      313 -                                batch_size=max(               
+      314 -                                    1,                        
+      315 -                                    int(payload.get("speaker_e
+          -mbedding_batch_size", 64) or 64),                             
+      316 -                                ),                            
+      317 -                            )                                 
+      318 -                    finite_spk_results = []                   
+      319 -                    finite_speaker_chunk_meta = []            
+      320 -                    for result, meta in zip(spk_results, speak
+          -er_chunk_meta):                                               
+      321 -                        embedding = result.get("spk_embedding"
+          -)                                                             
+      322 -                        if embedding is None or not torch.isfi
+          -nite(embedding).all():                                        
+      323 -                            continue                          
+      324 -                        finite_spk_results.append(result)     
+      325 -                        finite_speaker_chunk_meta.append(meta)
+      326 -                    spk_results = finite_spk_results          
+      327 -                    speaker_chunk_meta = finite_speaker_chunk_
+          -meta                                                          
+      328 -                    if not spk_results:                       
+      329 -                        raise RuntimeError("说话人 embedding  
+          -全部无效")                                                    
+      330 -                    reference_centroids = build_speaker_refere
+          -nce_centroids(                                                
+      331 -                        spk_model_obj,                        
+      332 -                        payload.get("speaker_references"),    
+      333 -                        device,                               
+      334 -                        batch_size=int(payload.get("speaker_em
+          -bedding_batch_size", 64) or 64),                              
+      335 -                    )                                         
+      336 -                    labels = classify_speaker_embeddings(     
+      337 -                        spk_results,                          
+      338 -                        reference_centroids,                  
+      339 -                        float(payload.get("speaker_reference_t
+          -hreshold", 0.45)),                                            
+      340 -                        float(payload.get("speaker_reference_m
+          -argin", 0.0) or 0.0),                                         
+      341 -                    )                                         
+      342 -                    if labels is None:                        
+      343 -                        embeddings = torch.cat([result["spk_em
+          -bedding"] for result in spk_results], dim=0)                  
+      344 -                        cluster = ClusterBackend(             
+      345 -                            merge_thr=float(payload.get("speak
+          -er_merge_threshold", 0.78))                                   
+      346 -                        ).to("cuda:0" if device == "cuda" else
+          - device)                                                      
+      347 -                        preset_spk_num = payload.get("preset_s
+          -pk_num")                                                      
+      348 -                        labels = cluster(                     
+      349 -                            embeddings.cpu(),                 
+      350 -                            oracle_num=int(preset_spk_num) if 
+          -preset_spk_num else None,                                     
+      351 -                        )                                     
+      352 -                    for meta, label in zip(speaker_chunk_meta,
+          - labels):                                                     
+      353 -                        speaker_label, speaker_score = speaker
+          -_label_from_cluster(label)                                    
+      354 -                        if isinstance(label, dict):           
+      355 -                            best_label = label.get("best_label
+          -")                                                            
+      356 -                            best_score = label.get("score")   
+      357 -                        else:                                 
+      358 -                            best_label = None                 
+      359 -                            best_score = None                 
+      360 -                        speaker_timeline.append({             
+      361 -                            "start": meta["start"],           
+      362 -                            "end": meta["end"],               
+      363 -                            "speaker": speaker_label,         
+      364 -                            "speaker_score": speaker_score,   
+      365 -                            "speaker_best_label": best_label, 
+      366 -                            "speaker_best_score": best_score, 
+      367 -                        })                                    
+      368 -                    speaker_timeline = smooth_speaker_timeline
+          -(                                                             
+      369 -                        speaker_timeline,                     
+      370 -                        float(payload.get("speaker_unknown_fil
+          -l_gap_s", 10.0) or 10.0),                                     
+      371 -                        float(payload.get("speaker_unknown_max
+          -_duration_s", 12.0) or 12.0),                                 
+      372 -                    )                                         
+      373 -                    unique_speakers = {item["speaker"] for ite
+          -m in speaker_timeline if item.get("speaker")}                 
+      374 -                    log_progress(f"说话人聚类完成: labels={len
+          -(unique_speakers)}, chunks={len(speaker_chunks)}")            
+      284 +                set_timing(payload, "speaker_model_load_s", ti
+          +me.perf_counter() - speaker_load_started)                     
+      285              except Exception as exc:
+      376 -                _fail(                                        
+      377 -                    fail_fn,                                  
+      378 -                    "说话人分离失败",                         
+      379 -                    f"{exc}\n可先关闭 enable_speaker，或检查 s
+          -pk_model/preset_spk_num/CAM++ 依赖。",                        
+      380 -                )                                             
+      286 +                log_progress(f"说话人模型加载失败，保留 ASR 结
+          +果: {exc}")                                                   
+      287 +                payload["_speaker_processing"] = {            
+      288 +                    "mode": str(payload.get("speaker_detection
+          +_mode") or "auto"),                                           
+      289 +                    "status": "failed",                       
+      290 +                    "decision": "inconclusive",               
+      291 +                    "reason": "speaker_model_unavailable",    
+      292 +                    "full_run": False,                        
+      293 +                }                                             
+      294 +        else:                                                 
+      295 +            payload["_speaker_processing"] = {                
+      296 +                "mode": "disabled",                           
+      297 +                "status": "disabled",                         
+      298 +                "decision": "disabled",                       
+      299 +                "reason": "speaker_disabled",                 
+      300 +                "full_run": False,                            
+      301 +            }                                                 
+      302  
+      303          paraformer_profile = str(payload.get("model_profile") 
+           or "").strip().lower()
+      304          paraformer_model_value = str(payload.get("model") or "
+           ").strip()
+
+● Update(src\scripts\python\sensevoice_pipeline.py)
+  ⎿  Added 63 lines
+      434              })
+      435              batch_duration += duration
+      436          flush_batch()
+      437 +        if enable_speaker and spk_model_obj and raw_result:   
+      438 +            try:                                              
+      439 +                reference_started = time.perf_counter()       
+      440 +                reference_centroids = build_speaker_reference_
+          +centroids(                                                    
+      441 +                    spk_model_obj,                            
+      442 +                    payload.get("speaker_references"),        
+      443 +                    device,                                   
+      444 +                    batch_size=int(payload.get("speaker_embedd
+          +ing_batch_size", 64) or 64),                                  
+      445 +                )                                             
+      446 +                set_timing(payload, "reference_embedding_s", t
+          +ime.perf_counter() - reference_started)                       
+      447 +                probe_intervals = [                           
+      448 +                    {"start": item.get("start", 0), "end": ite
+          +m.get("end", 0)}                                              
+      449 +                    for item in raw_result                    
+      450 +                    if float(item.get("end", 0) or 0) > float(
+          +item.get("start", 0) or 0)                                    
+      451 +                ]                                             
+      452 +                full_intervals = [                            
+      453 +                    {"start": float(start) / 1000.0, "end": fl
+          +oat(end) / 1000.0}                                            
+      454 +                    for start, end in raw_vad_segments        
+      455 +                ]                                             
+      456 +                adaptive = run_adaptive_speaker_engine(       
+      457 +                    spk_model_obj,                            
+      458 +                    audio,                                    
+      459 +                    sample_rate,                              
+      460 +                    probe_intervals or full_intervals,        
+      461 +                    payload=payload,                          
+      462 +                    references=reference_centroids,           
+      463 +                )                                             
+      464 +                speaker_timeline = smooth_speaker_timeline(   
+      465 +                    adaptive.get("timeline", []),             
+      466 +                    float(payload.get("speaker_unknown_fill_ga
+          +p_s", 10.0) or 10.0),                                         
+      467 +                    float(payload.get("speaker_unknown_max_dur
+          +ation_s", 12.0) or 12.0),                                     
+      468 +                )                                             
+      469 +                for item in raw_result:                       
+      470 +                    if is_meaningless_asr_text(item.get("text"
+          +, "")):                                                       
+      471 +                        item["speaker"] = None                
+      472 +                        continue                              
+      473 +                    speaker, speaker_score = dominant_speaker_
+          +for_interval(                                                 
+      474 +                        item.get("start", 0), item.get("end", 
+          +0), speaker_timeline                                          
+      475 +                    )                                         
+      476 +                    if speaker:                               
+      477 +                        item["speaker"] = speaker             
+      478 +                    if speaker_score:                         
+      479 +                        item["speaker_score"] = speaker_score 
+      480 +                payload["_speaker_processing"] = adaptive.get(
+          +"processing", {})                                             
+      481 +                adaptive_timings = payload["_speaker_processin
+          +g"].get("timings", {})                                        
+      482 +                set_timing(payload, "speaker_probe_embedding_s
+          +", adaptive_timings.get("probe_embedding_s", 0))              
+      483 +                set_timing(payload, "speaker_probe_clustering_
+          +s", adaptive_timings.get("probe_clustering_s", 0))            
+      484 +                set_timing(payload, "speaker_full_embedding_s"
+          +, adaptive_timings.get("full_embedding_s", 0))                
+      485 +                set_timing(payload, "speaker_full_clustering_s
+          +", adaptive_timings.get("full_clustering_s", 0))              
+      486 +                set_timing(payload, "speaker_matching_s", adap
+          +tive_timings.get("reference_matching_s", 0))                  
+      487 +                set_timing(payload, "speaker_total_s", adaptiv
+          +e_timings.get("total_s", 0))                                  
+      488 +                set_timing(payload, "speaker_cluster_embedding
+          +_s", adaptive_timings.get("full_embedding_s", 0))             
+      489 +            except Exception as exc:                          
+      490 +                log_progress(f"自适应说话人处理失败，保留 ASR 
+          +结果: {exc}")                                                 
+      491 +                payload["_speaker_processing"] = {            
+      492 +                    "mode": str(payload.get("speaker_detection
+          +_mode") or "auto"),                                           
+      493 +                    "status": "failed",                       
+      494 +                    "decision": "inconclusive",               
+      495 +                    "reason": "speaker_processing_error",     
+      496 +                    "full_run": False,                        
+      497 +                    "error": str(exc),                        
+      498 +                }                                             
+      499 +        set_timing(payload, "backend_total_s", time.perf_count
+          +er() - backend_started)                                       
+      500          log_progress(f"分段转写完成: output_segments={len(raw_
+           result)}")
+      501          return raw_result
+      502      except SystemExit:
+
+● Update(src\scripts\python\sensevoice_pipeline.py)
+  ⎿  Added 1 line
+      415              batch_meta = []
+      416              batch_duration = 0.0
+      417  
+      418 +        asr_started = time.perf_counter()                     
+      419          log_progress("开始分段转写")
+      420          for start_ms, end_ms in vad_segments:
+      421              start = max(0.0, float(start_ms) / 1000.0)
+
+● Update(src\scripts\python\sensevoice_pipeline.py)
+  ⎿  Added 1 line
+      435              })
+      436              batch_duration += duration
+      437          flush_batch()
+      438 +        set_timing(payload, "asr_inference_s", time.perf_count
+          +er() - asr_started)                                           
+      439          if enable_speaker and spk_model_obj and raw_result:
+      440              try:
+      441                  reference_started = time.perf_counter()
+
+● Update(src\scripts\python\sensevoice_paraformer.py)
+  ⎿  Added 7 lines
+      538          set_timing(payload, "speaker_matching_s", 0)
+      539          set_timing(payload, "postprocess_s", time.perf_counter
+           () - postprocess_started)
+      540          set_timing(payload, "backend_total_s", time.perf_count
+           er() - backend_started)
+      541 +        payload["_speaker_processing"] = {                    
+      542 +            "mode": "disabled" if not enable_speaker else str(
+          +payload.get("speaker_detection_mode") or "auto"),             
+      543 +            "status": "disabled" if not enable_speaker else "f
+          +ailed",                                                       
+      544 +            "decision": "disabled" if not enable_speaker else 
+          +"inconclusive",                                               
+      545 +            "reason": "speaker_disabled" if not enable_speaker
+          + else "missing_sentence_info",                                
+      546 +            "full_run": False,                                
+      547 +        }                                                     
+      548          log_progress(
+      549              f"字符时间戳切分完成: 输出段数={len(segments)}, "
+      550              f"postprocess={payload['_timings']['postprocess_s'
+           ]:.3f}s"
+
+● Update(src\scripts\python\sensevoice_paraformer.py)
+  ⎿  Error editing file
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(src\scripts\python\sensevoice_paraformer.py)
+  ⎿  Added 1 line
+      404          reference_centroids = None
+      405          log_progress("paraformer pipeline 命中常驻缓存，跳过 A
+           SR 模型加载")
+      406          set_timing(payload, "model_load_s", 0)
+      407 +        set_timing(payload, "speaker_model_load_s", 0)        
+      408          set_timing(payload, "reference_embedding_s", 0)
+      409      else:
+      410          if cache_entry:
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Update(src\scripts\python\sensevoice_pipeline.py)
+  ⎿  Added 1 line, removed 1 line
+       95      FunASRNanoVLLMPipeline = import_vllm_pipeline(fail_fn=fail
+           _fn)
+       96      resolved_model = resolve_cached_model_name(payload.get("mo
+           del", "FunAudioLLM/Fun-ASR-Nano-2512"))
+       97      resolved_vad_model = resolve_cached_model_name(payload.get
+           ("vad_model", "fsmn-vad")) if payload.get("vad_model") else No
+           ne
+       98 -    resolved_spk_model = resolve_cached_model_name(payload.get
+          -("spk_model")) if payload.get("enable_speaker") else None     
+       98 +    resolved_spk_model = None                                 
+       99      if payload.get("enable_speaker") and not resolved_spk_mode
+           l:
+      100          _fail(fail_fn, "说话人分离已启用但 spk_model 未配置", 
+           "例如 spk_model=cam++")
+      101  
+
+● Update(src\scripts\python\sensevoice_pipeline.py)
+  ⎿  Added 2 lines, removed 6 lines
+      115                  model=resolved_model,
+      116                  vad_model=resolved_vad_model,
+      117                  vad_kwargs=payload.get("vad_kwargs") or None,
+      118 -                spk_model=resolved_spk_model,                 
+      119 -                spk_kwargs={                                  
+      120 -                    "cb_kwargs": {                            
+      121 -                        "merge_thr": float(payload.get("speake
+          -r_merge_threshold", 0.78))                                    
+      122 -                    }                                         
+      123 -                } if resolved_spk_model else None,            
+      118 +                spk_model=None,                               
+      119 +                spk_kwargs=None,                              
+      120                  hub=payload.get("hub", "ms"),
+      121                  device=device_name,
+      122                  dtype=payload.get("dtype", "bf16"),
+
+● Update(src\scripts\python\sensevoice_pipeline.py)
+  ⎿  Added 2 lines, removed 2 lines
+      137                      itn=bool(payload.get("use_itn", True)),
+      138                      max_new_tokens=int(payload.get("max_new_to
+           kens", 512) or 512),
+      139                      batch_size_s=int(float(payload.get("batch_
+           size_s", 300) or 300)),
+      140 -                    return_spk_res=bool(payload.get("enable_sp
+          -eaker", False)),                                              
+      141 -                    preset_spk_num=payload.get("preset_spk_num
+          -"),                                                           
+      140 +                    return_spk_res=False,                     
+      141 +                    preset_spk_num=None,                      
+      142                  )
+      143          log_progress("Fun-ASR-Nano vLLM 转写完成")
+      144          return normalize_segments(results)
+
+● Update(src\scripts\python\sensevoice_pipeline.py)  ⎿  Added 60 lines, removed 1 line
+      140                      return_spk_res=False,
+      141                      preset_spk_num=None,
+      142                  )
+      143 +        normalized = normalize_segments(results)              
+      144 +        if payload.get("enable_speaker"):                     
+      145 +            try:                                              
+      146 +                from funasr import AutoModel                  
+      147 +                                                              
+      148 +                speaker_load_started = time.perf_counter()    
+      149 +                spk_model_obj = AutoModel(                    
+      150 +                    model=resolve_cached_model_name(payload.ge
+          +t("spk_model")),                                              
+      151 +                    device=device_name,                       
+      152 +                    disable_update=True,                      
+      153 +                )                                             
+      154 +                set_timing(payload, "speaker_model_load_s", ti
+          +me.perf_counter() - speaker_load_started)                     
+      155 +                audio, sample_rate = load_audio_16k_mono(audio
+          +_path)                                                        
+      156 +                intervals = [                                 
+      157 +                    {"start": item.get("start", 0), "end": ite
+          +m.get("end", 0)}                                              
+      158 +                    for item in normalized                    
+      159 +                    if float(item.get("end", 0) or 0) > float(
+          +item.get("start", 0) or 0)                                    
+      160 +                ]                                             
+      161 +                references = build_speaker_reference_centroids
+          +(                                                             
+      162 +                    spk_model_obj,                            
+      163 +                    payload.get("speaker_references"),        
+      164 +                    device,                                   
+      165 +                    batch_size=int(payload.get("speaker_embedd
+          +ing_batch_size", 64) or 64),                                  
+      166 +                )                                             
+      167 +                adaptive = run_adaptive_speaker_engine(       
+      168 +                    spk_model_obj, audio, sample_rate, interva
+          +ls, payload=payload, references=references                    
+      169 +                )                                             
+      170 +                timeline = adaptive.get("timeline", [])       
+      171 +                for item in normalized:                       
+      172 +                    speaker, score = dominant_speaker_for_inte
+          +rval(                                                         
+      173 +                        item.get("start", 0), item.get("end", 
+          +0), timeline                                                  
+      174 +                    )                                         
+      175 +                    if speaker:                               
+      176 +                        item["speaker"] = speaker             
+      177 +                    if score:                                 
+      178 +                        item["speaker_score"] = score         
+      179 +                payload["_speaker_processing"] = adaptive.get(
+          +"processing", {})                                             
+      180 +                adaptive_timings = payload["_speaker_processin
+          +g"].get("timings", {})                                        
+      181 +                set_timing(payload, "speaker_probe_embedding_s
+          +", adaptive_timings.get("probe_embedding_s", 0))              
+      182 +                set_timing(payload, "speaker_probe_clustering_
+          +s", adaptive_timings.get("probe_clustering_s", 0))            
+      183 +                set_timing(payload, "speaker_full_embedding_s"
+          +, adaptive_timings.get("full_embedding_s", 0))                
+      184 +                set_timing(payload, "speaker_full_clustering_s
+          +", adaptive_timings.get("full_clustering_s", 0))              
+      185 +                set_timing(payload, "speaker_matching_s", adap
+          +tive_timings.get("reference_matching_s", 0))                  
+      186 +                set_timing(payload, "speaker_total_s", adaptiv
+          +e_timings.get("total_s", 0))                                  
+      187 +            except Exception as exc:                          
+      188 +                log_progress(f"vLLM 自适应说话人处理失败，保留
+          + ASR 结果: {exc}")                                            
+      189 +                payload["_speaker_processing"] = {            
+      190 +                    "mode": str(payload.get("speaker_detection
+          +_mode") or "auto"),                                           
+      191 +                    "status": "failed",                       
+      192 +                    "decision": "inconclusive",               
+      193 +                    "reason": "speaker_processing_error",     
+      194 +                    "full_run": False,                        
+      195 +                    "error": str(exc),                        
+      196 +                }                                             
+      197 +        else:                                                 
+      198 +            payload["_speaker_processing"] = {                
+      199 +                "mode": "disabled", "status": "disabled", "dec
+          +ision": "disabled",                                           
+      200 +                "reason": "speaker_disabled", "full_run": Fals
+          +e,                                                            
+      201 +            }                                                 
+      202          log_progress("Fun-ASR-Nano vLLM 转写完成")
+      144 -        return normalize_segments(results)                    
+      203 +        return normalized                                     
+      204      except SystemExit:
+      205          raise
+      206      except Exception as exc:
+
+● Update(src\scripts\python\sensevoice_pipeline.py)
+  ⎿  Added 2 lines, removed 1 line
+      82          )
+      83  
+      84  
+      85 -def transcribe_with_vllm_pipeline(payload, audio_path, device, 
+         -gpu_throttle=None, fail_fn=None):                              
+      85 +    backend_started = time.perf_counter()                      
+      86 +    payload["_timings"] = {}                                   
+      87      if device == "cuda":
+      88          try:
+      89              import torch
+
+  Thought for 14s, read 1 file (ctrl+o to expand)
+
+● Update(src\scripts\python\sensevoice_pipeline.py)
+  ⎿  Added 1 line
+      82          )
+      83  
+      84  
+      85 +def transcribe_with_vllm_pipeline(payload, audio_path, device, 
+         +gpu_throttle=None, fail_fn=None):                              
+      86      backend_started = time.perf_counter()
+      87      payload["_timings"] = {}
+      88      if device == "cuda":
+
+● Update(src\scripts\python\sensevoice_pipeline.py)
+  ⎿  Added 1 line, removed 1 line
+       98      resolved_model = resolve_cached_model_name(payload.get("mo
+           del", "FunAudioLLM/Fun-ASR-Nano-2512"))
+       99      resolved_vad_model = resolve_cached_model_name(payload.get
+           ("vad_model", "fsmn-vad")) if payload.get("vad_model") else No
+           ne
+      100      resolved_spk_model = None
+      101 -    if payload.get("enable_speaker") and not resolved_spk_mode
+          -l:                                                            
+      101 +    if payload.get("enable_speaker") and not payload.get("spk_
+          +model"):                                                      
+      102          _fail(fail_fn, "说话人分离已启用但 spk_model 未配置", 
+           "例如 spk_model=cam++")
+      103  
+      104      device_name = "cuda:0" if device == "cuda" else device
+
+● Update(src\scripts\python\sensevoice_pipeline.py)
+  ⎿  Added 1 line, removed 1 line
+      201                  "mode": "disabled", "status": "disabled", "dec
+           ision": "disabled",
+      202                  "reason": "speaker_disabled", "full_run": Fals
+           e,
+      203              }
+      204 +        set_timing(payload, "backend_total_s", time.perf_count
+          +er() - backend_started)                                       
+      205          log_progress("Fun-ASR-Nano vLLM 转写完成")
+      205 -        return normalized                                     
+      206      except SystemExit:
+      207          raise
+      208      except Exception as exc:
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(src\scripts\python\sensevoice_pipeline.py)
+  ⎿  Added 1 line
+      203              }
+      204          set_timing(payload, "backend_total_s", time.perf_count
+           er() - backend_started)
+      205          log_progress("Fun-ASR-Nano vLLM 转写完成")
+      206 +        return normalized                                     
+      207      except SystemExit:
+      208          raise
+      209      except Exception as exc:
+
+● PowerShell(python -m py_compile "src/scripts/python/sensevoice_speaker.py"
+            "src/scripts/python/sensevoice_paraformer.py"
+            "src/scripts/python/sensevoice_pipeline.py" "src/s…)
+  ⎿  (No output)
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Update(src\scripts\python\sensevoice_pipeline.py)
+  ⎿  Removed 2 lines
+      310          if not vad_segments:
+      311              return raw_result
+      312  
+      313 -        import torch                                          
+      314 -                                                              
+      313          log_progress("加载音频到内存")
+      314          audio, sample_rate = load_audio_16k_mono(audio_path)
+      315          log_progress(f"音频加载完成: duration={len(audio) / sa
+           mple_rate:.1f}s, sample_rate={sample_rate}")
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(src\scripts\python\fun_asr_nano_vllm_worker.py)
+  ⎿  Added 7 lines
+      12      resolve_cached_model_name,
+      13      suppress_model_output,
+      14  )
+      15 +from sensevoice_runtime import set_timing                      
+      16 +from sensevoice_speaker import (                               
+      17 +    build_speaker_reference_centroids,                         
+      18 +    dominant_speaker_for_interval,                             
+      19 +    load_audio_16k_mono,                                       
+      20 +    run_adaptive_speaker_engine,                               
+      21 +)                                                              
+      22  
+      23  
+      24  def write_message(payload):
+
+● Update(src\scripts\python\fun_asr_nano_vllm_worker.py)
+  ⎿  Added 1 line, removed 1 line
+      59          raise RuntimeError("当前 FunASR 包缺少 Fun-ASR-Nano vLL
+          M pipeline，请升级 funasr。") from exc
+      60      resolved_model = resolve_cached_model_name(config.get("mode
+          l", "FunAudioLLM/Fun-ASR-Nano-2512"))
+      61      resolved_vad_model = resolve_cached_model_name(config.get("
+          vad_model", "fsmn-vad")) if config.get("vad_model") else None
+      62 -    resolved_spk_model = resolve_cached_model_name(config.get("
+         -spk_model")) if config.get("enable_speaker") else None         
+      62 +    resolved_spk_model = None                                  
+      63      device_name = "cuda:0" if device == "cuda" else device
+      64      gpu_throttle = GpuThrottle(config, device)
+      65      if gpu_throttle.enabled:
+
+● Update(src\scripts\python\fun_asr_nano_vllm_worker.py)
+  ⎿  Added 2 lines, removed 2 lines
+      114                  itn=bool(job.get("use_itn", config.get("use_it
+           n", True))),
+      115                  max_new_tokens=int(job.get("max_new_tokens", c
+           onfig.get("max_new_tokens", 512)) or 512),
+      116                  batch_size_s=int(float(job.get("batch_size_s",
+            config.get("batch_size_s", 300)) or 300)),
+      117 -                return_spk_res=bool(job.get("enable_speaker", 
+          -config.get("enable_speaker", False))),                        
+      118 -                preset_spk_num=job.get("preset_spk_num", confi
+          -g.get("preset_spk_num")),                                     
+      117 +                return_spk_res=False,                         
+      118 +                preset_spk_num=None,                          
+      119              )
+      120  
+      121      return {
+
+› Message from general-purpose (ctrl+o to expand)
+
+● Agent "Build speaker core" finished · 22m 40s
+
+● Update(src\scripts\python\fun_asr_nano_vllm_worker.py)
+  ⎿  Added 63 lines, removed 1 line
+      118                  preset_spk_num=None,
+      119              )
+      120  
+      121 +    normalized = normalize_segments(results)                  
+      122 +    payload = {**config, **job, "_timings": {}}               
+      123 +    enable_speaker = bool(payload.get("enable_speaker", False)
+          +)                                                             
+      124 +    if enable_speaker:                                        
+      125 +        try:                                                  
+      126 +            from funasr import AutoModel                      
+      127 +                                                              
+      128 +            device = payload.get("device", config.get("device"
+          +, "cuda"))                                                    
+      129 +            device_name = "cuda:0" if device == "cuda" else de
+          +vice                                                          
+      130 +            model_started = time.perf_counter()               
+      131 +            spk_model_obj = AutoModel(                        
+      132 +                model=resolve_cached_model_name(payload.get("s
+          +pk_model")),                                                  
+      133 +                device=device_name,                           
+      134 +                disable_update=True,                          
+      135 +            )                                                 
+      136 +            set_timing(payload, "speaker_model_load_s", time.p
+          +erf_counter() - model_started)                                
+      137 +            audio, sample_rate = load_audio_16k_mono(audio_pat
+          +h)                                                            
+      138 +            intervals = [                                     
+      139 +                {"start": item.get("start", 0), "end": item.ge
+          +t("end", 0)}                                                  
+      140 +                for item in normalized                        
+      141 +                if float(item.get("end", 0) or 0) > float(item
+          +.get("start", 0) or 0)                                        
+      142 +            ]                                                 
+      143 +            references = build_speaker_reference_centroids(   
+      144 +                spk_model_obj,                                
+      145 +                payload.get("speaker_references"),            
+      146 +                device,                                       
+      147 +                batch_size=int(payload.get("speaker_embedding_
+          +batch_size", 64) or 64),                                      
+      148 +            )                                                 
+      149 +            adaptive = run_adaptive_speaker_engine(           
+      150 +                spk_model_obj, audio, sample_rate, intervals, 
+          +payload=payload, references=references                        
+      151 +            )                                                 
+      152 +            for item in normalized:                           
+      153 +                speaker, score = dominant_speaker_for_interval
+          +(                                                             
+      154 +                    item.get("start", 0), item.get("end", 0), 
+          +adaptive.get("timeline", [])                                  
+      155 +                )                                             
+      156 +                if speaker:                                   
+      157 +                    item["speaker"] = speaker                 
+      158 +                if score:                                     
+      159 +                    item["speaker_score"] = score             
+      160 +            payload["_speaker_processing"] = adaptive.get("pro
+          +cessing", {})                                                 
+      161 +            timing = payload["_speaker_processing"].get("timin
+          +gs", {})                                                      
+      162 +            set_timing(payload, "speaker_probe_embedding_s", t
+          +iming.get("probe_embedding_s", 0))                            
+      163 +            set_timing(payload, "speaker_probe_clustering_s", 
+          +timing.get("probe_clustering_s", 0))                          
+      164 +            set_timing(payload, "speaker_full_embedding_s", ti
+          +ming.get("full_embedding_s", 0))                              
+      165 +            set_timing(payload, "speaker_full_clustering_s", t
+          +iming.get("full_clustering_s", 0))                            
+      166 +            set_timing(payload, "speaker_matching_s", timing.g
+          +et("reference_matching_s", 0))                                
+      167 +            set_timing(payload, "speaker_total_s", timing.get(
+          +"total_s", 0))                                                
+      168 +        except Exception as exc:                              
+      169 +            payload["_speaker_processing"] = {                
+      170 +                "mode": str(payload.get("speaker_detection_mod
+          +e") or "auto"),                                               
+      171 +                "status": "failed", "decision": "inconclusive"
+          +,                                                             
+      172 +                "reason": "speaker_processing_error", "full_ru
+          +n": False,                                                    
+      173 +                "error": str(exc),                            
+      174 +            }                                                 
+      175 +    else:                                                     
+      176 +        payload["_speaker_processing"] = {                    
+      177 +            "mode": "disabled", "status": "disabled", "decisio
+          +n": "disabled",                                               
+      178 +            "reason": "speaker_disabled", "full_run": False,  
+      179 +        }                                                     
+      180 +                                                              
+      181      return {
+      182          "backend": "fun_asr_nano_vllm",
+      183          "language": job.get("language", config.get("language",
+            "中文")),
+      124 -        "segments": normalize_segments(results),              
+      184 +        "segments": normalized,                               
+      185 +        "timings": payload.get("_timings", {}),               
+      186 +        "speaker_processing": payload.get("_speaker_processing
+          +"),                                                           
+      187      }
+      188  
+      189  
+
+● Update(src\scripts\python\fun_asr_nano_vllm_worker.py)
+  ⎿  Error editing file
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(src\scripts\python\fun_asr_nano_vllm_worker.py)
+  ⎿  Added 1 line
+      2  import json
+      3  import os
+      4  import sys
+      5 +import time                                                     
+      6  import traceback
+      7  
+      8  from sensevoice_transcribe import (
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(src\scripts\python\sensevoice_transcribe.py)
+  ⎿  Added 2 lines
+      109                  "backend": backend_name,
+      110                  "language": payload.get("language", "中文"),
+      111                  "segments": normalize_segments(raw_result),
+      112 +                "timings": payload.get("_timings", {}),       
+      113 +                "speaker_processing": payload.get("_speaker_pr
+          +ocessing"),                                                   
+      114              }
+      115              if payload.get("include_raw", False):
+      116                  output["raw"] = raw_result
+
+● PowerShell(python -m py_compile "src/scripts/python/sensevoice_speaker.py"
+            "src/scripts/python/sensevoice_paraformer.py"
+            "src/scripts/python/sensevoice_pipeline.py" "src/s…)
+  ⎿  (No output)
+
+● PowerShell(node -e "JSON.parse(require('fs').readFileSync('config/default.json
+            ','utf8')); JSON.parse(require('fs').readFileSync('config/production
+            .json','utf8')); console.…)  ⎿  json ok
+
+  Searched for 3 patterns (ctrl+o to expand)
+
+  Searched for 5 patterns, read 2 files (ctrl+o to expand)
+
+● PowerShell(python -m unittest tests.test_sensevoice_speaker -v)
+  ⎿  test_always_mode_bypasses_probe_and_runs_full_clustering (tests.test_s
+     ensevoice_speaker.SenseVoiceAdaptiveSpeakerTests.test_always_mode_bypa
+     sses_probe_and_runs_full_clustering) ... ok
+     … +38 lines (ctrl+o to expand)
+
+● PowerShell(npx jest "src/services/bilibili/DelayedReplyService.test.ts"
+            --runInBand)
+  ⎿    console.warn
+         [WARN] DelayedReplyService: 漫画图片生成已失败，停止补图等待 {
+           taskId: 'task-1',
+     … +69 lines (ctrl+o to expand)
+
+● PowerShell(npx jest "src/scripts/asr/asr_backends.test.ts" --runInBand)
+  ⎿    console.log
+         [ASR] speaker summary: 栞栞 -> shiori 通过，出声 16.0s, avgScore=0
+     .82
+     … +181 lines (ctrl+o to expand)
+
+  Thought for 27s, read 1 file (ctrl+o to expand)
+  ⎿  Agent "ab37ee3d70f62ac6f" had no active task; resumed from transcript 
+     in the background with your message. You'll be notified when it 
+     finishes. Output: C:\Users\yuiffy\AppData\Local\Temp\claude\D--workspa
+     ce-myrepo-danmaku-to-summary-ts\2b3f9b7b-6e0d-4ef3-93bf-d1803d2fb874\t
+     asks\ab37ee3d70f62ac6f.output
+
+● Update(src\scripts\python\sensevoice_paraformer.py)
+  ⎿  Added 11 lines, removed 8 lines
+      566                  for item in sentence_info
+      567                  if float(item.get("end", 0) or 0) > float(item
+           .get("start", 0) or 0)
+      568              ]
+      569 -            reference_started = time.perf_counter()           
+      570 -            reference_centroids = build_speaker_reference_cent
+          -roids(                                                        
+      571 -                spk_model_obj,                                
+      572 -                speaker_references,                           
+      573 -                device,                                       
+      574 -                batch_size=int(payload.get("speaker_embedding_
+          -batch_size", 64) or 64),                                      
+      575 -            )                                                 
+      576 -            set_timing(payload, "reference_embedding_s", time.
+          -perf_counter() - reference_started)                           
+      569 +            def load_references():                            
+      570 +                reference_started = time.perf_counter()       
+      571 +                centroids = build_speaker_reference_centroids(
+      572 +                    spk_model_obj,                            
+      573 +                    speaker_references,                       
+      574 +                    device,                                   
+      575 +                    batch_size=int(payload.get("speaker_embedd
+          +ing_batch_size", 64) or 64),                                  
+      576 +                )                                             
+      577 +                set_timing(payload, "reference_embedding_s", t
+          +ime.perf_counter() - reference_started)                       
+      578 +                return centroids                              
+      579 +                                                              
+      580              adaptive = run_adaptive_speaker_engine(
+      581                  spk_model_obj,
+      582                  audio_data,
+
+● Update(src\scripts\python\sensevoice_paraformer.py)
+  ⎿  Added 1 line, removed 1 line
+      583                  sample_rate,
+      584                  speaker_intervals,
+      585                  payload=payload,
+      586 -                references=reference_centroids,               
+      586 +                references=load_references if speaker_referenc
+          +es else None,                                                 
+      587              )
+      588              speaker_timeline = smooth_speaker_timeline(
+      589                  adaptive.get("timeline", []),
+
+● Update(src\scripts\python\sensevoice_pipeline.py)
+  ⎿  Added 11 lines, removed 8 lines
+      494          set_timing(payload, "asr_inference_s", time.perf_count
+           er() - asr_started)
+      495          if enable_speaker and spk_model_obj and raw_result:
+      496              try:
+      497 -                reference_started = time.perf_counter()       
+      498 -                reference_centroids = build_speaker_reference_
+          -centroids(                                                    
+      499 -                    spk_model_obj,                            
+      500 -                    payload.get("speaker_references"),        
+      501 -                    device,                                   
+      502 -                    batch_size=int(payload.get("speaker_embedd
+          -ing_batch_size", 64) or 64),                                  
+      503 -                )                                             
+      504 -                set_timing(payload, "reference_embedding_s", t
+          -ime.perf_counter() - reference_started)                       
+      497 +                def load_references():                        
+      498 +                    reference_started = time.perf_counter()   
+      499 +                    centroids = build_speaker_reference_centro
+          +ids(                                                          
+      500 +                        spk_model_obj,                        
+      501 +                        payload.get("speaker_references"),    
+      502 +                        device,                               
+      503 +                        batch_size=int(payload.get("speaker_em
+          +bedding_batch_size", 64) or 64),                              
+      504 +                    )                                         
+      505 +                    set_timing(payload, "reference_embedding_s
+          +", time.perf_counter() - reference_started)                   
+      506 +                    return centroids                          
+      507 +                                                              
+      508                  probe_intervals = [
+      509                      {"start": item.get("start", 0), "end": ite
+           m.get("end", 0)}
+      510                      for item in raw_result
+
+● Update(src\scripts\python\sensevoice_pipeline.py)
+  ⎿  Added 1 line, removed 1 line
+      520                      sample_rate,
+      521                      probe_intervals or full_intervals,
+      522                      payload=payload,
+      523 -                    references=reference_centroids,           
+      523 +                    references=load_references if payload.get(
+          +"speaker_references") else None,                              
+      524                  )
+      525                  speaker_timeline = smooth_speaker_timeline(
+      526                      adaptive.get("timeline", []),
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Update(src\scripts\python\sensevoice_pipeline.py)
+  ⎿  Added 14 lines, removed 7 lines
+      160                      for item in normalized
+      161                      if float(item.get("end", 0) or 0) > float(
+           item.get("start", 0) or 0)
+      162                  ]
+      163 -                references = build_speaker_reference_centroids
+          -(                                                             
+      163 +                def load_references():                        
+      164 +                    return build_speaker_reference_centroids( 
+      165 +                        spk_model_obj,                        
+      166 +                        payload.get("speaker_references"),    
+      167 +                        device,                               
+      168 +                        batch_size=int(payload.get("speaker_em
+          +bedding_batch_size", 64) or 64),                              
+      169 +                    )                                         
+      170 +                                                              
+      171 +                adaptive = run_adaptive_speaker_engine(       
+      172                      spk_model_obj,
+      165 -                    payload.get("speaker_references"),        
+      166 -                    device,                                   
+      167 -                    batch_size=int(payload.get("speaker_embedd
+          -ing_batch_size", 64) or 64),                                  
+      173 +                    audio,                                    
+      174 +                    sample_rate,                              
+      175 +                    intervals,                                
+      176 +                    payload=payload,                          
+      177 +                    references=load_references if payload.get(
+          +"speaker_references") else None,                              
+      178                  )
+      169 -                adaptive = run_adaptive_speaker_engine(       
+      170 -                    spk_model_obj, audio, sample_rate, interva
+          -ls, payload=payload, references=references                    
+      171 -                )                                             
+      179                  timeline = adaptive.get("timeline", [])
+      180                  for item in normalized:
+      181                      speaker, score = dominant_speaker_for_inte
+           rval(
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Update(src\scripts\python\fun_asr_nano_vllm_worker.py)
+  ⎿  Added 14 lines, removed 7 lines
+      141                  for item in normalized
+      142                  if float(item.get("end", 0) or 0) > float(item
+           .get("start", 0) or 0)
+      143              ]
+      144 -            references = build_speaker_reference_centroids(   
+      144 +            def load_references():                            
+      145 +                return build_speaker_reference_centroids(     
+      146 +                    spk_model_obj,                            
+      147 +                    payload.get("speaker_references"),        
+      148 +                    device,                                   
+      149 +                    batch_size=int(payload.get("speaker_embedd
+          +ing_batch_size", 64) or 64),                                  
+      150 +                )                                             
+      151 +                                                              
+      152 +            adaptive = run_adaptive_speaker_engine(           
+      153                  spk_model_obj,
+      146 -                payload.get("speaker_references"),            
+      147 -                device,                                       
+      148 -                batch_size=int(payload.get("speaker_embedding_
+          -batch_size", 64) or 64),                                      
+      154 +                audio,                                        
+      155 +                sample_rate,                                  
+      156 +                intervals,                                    
+      157 +                payload=payload,                              
+      158 +                references=load_references if payload.get("spe
+          +aker_references") else None,                                  
+      159              )
+      150 -            adaptive = run_adaptive_speaker_engine(           
+      151 -                spk_model_obj, audio, sample_rate, intervals, 
+          -payload=payload, references=references                        
+      152 -            )                                                 
+      160              for item in normalized:
+      161                  speaker, score = dominant_speaker_for_interval
+           (
+      162                      item.get("start", 0), item.get("end", 0), 
+           adaptive.get("timeline", [])
+
+› Message from general-purpose (ctrl+o to expand)
+
+● Agent "Build speaker core" finished · 1m 45s
+● PowerShell(npm run type-check)
+  ⎿  > danmaku-to-summary-ts@0.2.0 type-check
+     > tsc --noEmit
+
+  Thought for 7s, searched for 1 pattern (ctrl+o to expand)
+
+● Update(src\services\bilibili\DelayedReplyService.ts)
+  ⎿  Added 2 lines, removed 2 lines
+      1942        return undefined;
+      1943      }
+      1944  
+      1945 -    const probeEmbedding = this.getFiniteNumber(timings.probe
+           -Embedding);                                                  
+      1946 -    const probeClustering = this.getFiniteNumber(timings.prob
+           -eClustering);                                                
+      1945 +    const probeEmbedding = this.getFirstFiniteNumber(timings.
+           +probeEmbedding, timings.probe_embedding_s);                  
+      1946 +    const probeClustering = this.getFirstFiniteNumber(timings
+           +.probeClustering, timings.probe_clustering_s);               
+      1947      const probeParts = [probeEmbedding, probeClustering].filt
+            er((value): value is number => value !== undefined);
+      1948      const probe = probeParts.length > 0
+      1949        ? probeParts.reduce((sum, value) => sum + value, 0)
+
+● Update(src\services\bilibili\DelayedReplyService.ts)
+  ⎿  Added 5 lines, removed 5 lines
+      1948      const probe = probeParts.length > 0
+      1949        ? probeParts.reduce((sum, value) => sum + value, 0)
+      1950        : undefined;
+      1951 -    const full = this.getFiniteNumber(timings.fullEmbedding);
+      1952 -    const clustering = this.getFiniteNumber(timings.fullClust
+           -ering);                                                      
+      1953 -    const reference = this.getFirstFiniteNumber(timings.refer
+           -ence, timings.referenceEmbedding);                           
+      1954 -    const matching = this.getFirstFiniteNumber(timings.matchi
+           -ng, timings.speakerMatching);                                
+      1955 -    const total = this.getFiniteNumber(timings.total);       
+      1951 +    const full = this.getFirstFiniteNumber(timings.fullEmbedd
+           +ing, timings.full_embedding_s);                              
+      1952 +    const clustering = this.getFirstFiniteNumber(timings.full
+           +Clustering, timings.full_clustering_s);                      
+      1953 +    const reference = this.getFirstFiniteNumber(timings.refer
+           +ence, timings.referenceEmbedding, timings.reference_embedding
+           +_s);                                                         
+      1954 +    const matching = this.getFirstFiniteNumber(timings.matchi
+           +ng, timings.speakerMatching, timings.reference_matching_s);  
+      1955 +    const total = this.getFirstFiniteNumber(timings.total, ti
+           +mings.total_s);                                              
+      1956  
+      1957      const parts = [
+      1958        this.formatSpeakerTiming(probe, '探测'),
+
+● Update(src\scripts\enhanced_auto_summary.js)
+  ⎿  Added 8 lines, removed 1 line
+      941                      throw new Error(`未实现的 ASR backend: ${s
+           elected.backend}`);
+      942                  }
+      943  
+      944 +                const speakerProcessing = asrResult?.speaker_p
+          +rocessing || asrResult?.speakerProcessing || null;            
+      945 +                if (speakerProcessing?.timings && asrResult?.t
+          +imings) {                                                     
+      946 +                    speakerProcessing.timings = {             
+      947 +                        ...speakerProcessing.timings,         
+      948 +                        reference_embedding_s: Number(asrResul
+          +t.timings.reference_embedding_s || 0)                         
+      949 +                    };                                        
+      950 +                }                                             
+      951                  const asrTimingSummary = logAsrTimings(
+      952                      asrResult?.timings,
+      953                      mediaDurationSeconds,
+      947 -                    asrResult?.speaker_processing || asrResult
+          -?.speakerProcessing || null                                   
+      954 +                    speakerProcessing                         
+      955                  );
+      956                  normalized = asrBackends.normalizeAsrResult(as
+           rResult, subtitleConfig);
+      957                  asrBackends.writeSrt(normalized, srtPath, {
+
+● Update(src\scripts\enhanced_auto_summary.js)
+  ⎿  Added 1 line, removed 1 line
+      985                      realtimeFactor: realtimeFactor === null ? 
+           null : Number(realtimeFactor.toFixed(4)),
+      986                      stageTimings: asrResult?.timings || null,
+      987                      timingSummary: asrTimingSummary || null,
+      988 -                    speakerProcessing: asrResult?.speaker_proc
+          -essing || asrResult?.speakerProcessing || null,               
+      988 +                    speakerProcessing,                        
+      989                      segments: normalized.segments.length,
+      990                      generatedAt: new Date().toISOString()
+      991                  });
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Update(src\scripts\python\sensevoice_paraformer.py)
+  ⎿  Error editing file
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(src\scripts\enhanced_auto_summary.js)
+  ⎿  Added 4 lines, removed 2 lines
+      220          `加载=${summary.modelLoadSeconds.toFixed(1)}s, 参考emb
+           edding=${summary.referenceEmbeddingSeconds.toFixed(1)}s, ` +
+      221          `VAD=${summary.vadSeconds.toFixed(1)}s, 真正转写=${sum
+           mary.transcriptionSeconds.toFixed(1)}s` +
+      222          `${summary.trueAsrSpeed ? ` (${summary.trueAsrSpeed.to
+           Fixed(1)}x)` : ''}, ` +
+      223 -        `标点=${summary.punctuationSeconds.toFixed(1)}s, 内建 
+          -说话人embedding=${summary.builtinSpeakerEmbeddingSeconds.toFix
+          -ed(1)}s, ` +                                                  
+      224 -        `实名聚类embedding=${summary.speakerClusterEmbeddingSe
+          -conds.toFixed(1)}s, 匹配=${summary.speakerMatchingSeconds.toFi
+          -xed(1)}s, ` +                                                 
+      223 +        `标点=${summary.punctuationSeconds.toFixed(1)}s, speak
+          +er探测=${(                                                    
+      224 +            summary.speakerProbeEmbeddingSeconds + summary.spe
+          +akerProbeClusteringSeconds                                    
+      225 +        ).toFixed(1)}s, speaker全量=${summary.speakerFullEmbed
+          +dingSeconds.toFixed(1)}s, ` +                                 
+      226 +        `speaker聚类=${summary.speakerFullClusteringSeconds.to
+          +Fixed(1)}s, 匹配=${summary.speakerMatchingSeconds.toFixed(1)}s
+          +, ` +                                                         
+      227          `pipeline其他=${summary.pipelineOverheadSeconds.toFixe
+           d(1)}s, 后处理=${summary.postprocessSeconds.toFixed(1)}s, ` +
+      228          `backend总计=${summary.backendTotalSeconds.toFixed(1)}
+           s`
+      229      );
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Update(src\scripts\python\sensevoice_paraformer.py)
+  ⎿  Added 2 lines
+      435                      )
+      436                      cache["speaker_model"] = spk_model_obj
+      437                      set_timing(payload, "speaker_model_load_s"
+           , time.perf_counter() - speaker_load_started)
+      438 +                else:                                         
+      439 +                    set_timing(payload, "speaker_model_load_s"
+          +, 0)                                                          
+      440              with StageTimeout(payload.get("model_load_timeout_
+           s", 180), "paraformer pipeline 加载"):
+      441                  model = AutoModel(**model_kwargs)
+      442              set_timing(payload, "model_load_s", time.perf_coun
+           ter() - model_load_started)
+
+● PowerShell(git diff --stat)
+  ⎿  warning: in the working copy of 'config/production.json', LF will be r
+     eplaced by CRLF the next time Git touches it
+     warning: in the working copy of 'src/scripts/asr/asr_vllm_queue_worker
+     … +28 lines (ctrl+o to expand)
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Update(src\scripts\python\sensevoice_pipeline.py)
+  ⎿  Removed 10 lines
+      413                      for item in normalized_items:
+      414                          if is_meaningless_asr_text(item.get("t
+           ext", "")):
+      415                              item["speaker"] = None
+      416 -                            continue                          
+      417 -                        speaker, speaker_score = dominant_spea
+          -ker_for_interval(                                             
+      418 -                            item.get("start", meta["start"]), 
+      419 -                            item.get("end", meta["end"]),     
+      420 -                            speaker_timeline,                 
+      421 -                        )                                     
+      422 -                        if speaker:                           
+      423 -                            item["speaker"] = speaker         
+      424 -                        if speaker_score:                     
+      425 -                            item["speaker_score"] = speaker_sc
+          -ore                                                           
+      416                      raw_result.extend(normalized_items)
+      417                  batch_audio = []
+      418                  batch_meta = []
+
+● Update(src\scripts\python\sensevoice_pipeline.py)
+  ⎿  Removed 10 lines
+      453                  for item in normalized_items:
+      454                      if is_meaningless_asr_text(item.get("text"
+           , "")):
+      455                          item["speaker"] = None
+      456 -                        continue                              
+      457 -                    speaker, speaker_score = dominant_speaker_
+          -for_interval(                                                 
+      458 -                        item.get("start", meta["start"]),     
+      459 -                        item.get("end", meta["end"]),         
+      460 -                        speaker_timeline,                     
+      461 -                    )                                         
+      462 -                    if speaker:                               
+      463 -                        item["speaker"] = speaker             
+      464 -                    if speaker_score:                         
+      465 -                        item["speaker_score"] = speaker_score 
+      456                  raw_result.extend(normalized_items)
+      457              batch_audio = []
+      458              batch_meta = []
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Update(src\scripts\python\sensevoice_pipeline.py)
+  ⎿  Removed 1 line
+      324          batch_audio = []
+      325          batch_meta = []
+      326          batch_duration = 0.0
+      327 -        speaker_timeline = []                                 
+      327          transcribed_segments = 0
+      328          total_segments = len(vad_segments)
+      329          enable_speaker = bool(payload.get("enable_speaker", Fa
+           lse))
+
+● PowerShell(python -m py_compile "src/scripts/python/sensevoice_speaker.py"
+            "src/scripts/python/sensevoice_paraformer.py"
+            "src/scripts/python/sensevoice_pipeline.py" "src/s…)
+  ⎿  (No output)
+
+  Searched for 7 patterns, read 1 file (ctrl+o to expand)
+
+● PowerShell(python -m unittest discover -s tests -p "test_sensevoice*.py" -v)
+  ⎿  test_always_mode_bypasses_probe_and_runs_full_clustering (test_sensevo
+     ice_speaker.SenseVoiceAdaptiveSpeakerTests.test_always_mode_bypasses_p
+     robe_and_runs_full_clustering) ... ok
+     … +37 lines (ctrl+o to expand)
+
+● PowerShell(npm test -- --runInBand)
+  ⎿  Running in the background (↓ to manage)
+
+● PowerShell(git diff --check)
+  ⎿  warning: in the working copy of 'config/production.json', LF will be r
+     eplaced by CRLF the next time Git touches it
+     warning: in the working copy of 'src/scripts/asr/asr_vllm_queue_worker
+     … +11 lines (ctrl+o to expand)
+
+● Skill(verify)  ⎿  Successfully loaded skill
+
+  Searched for 2 patterns (ctrl+o to expand)
+
+● PowerShell(git diff HEAD --stat && git log --oneline @{u}..)
+  ⎿  Error: Exit code 1
+     ParserError: 
+     Line |
+        1 |  git diff HEAD --stat && git log --oneline @{u}..
+          |                                               ~
+          | Missing '=' operator after key in hash literal.
+
+● PowerShell(git diff HEAD --stat && git log --oneline '@{u}..')
+  ⎿  warning: in the working copy of 'config/production.json', LF will be r
+     eplaced by CRLF the next time Git touches it
+     warning: in the working copy of 'src/scripts/asr/asr_vllm_queue_worker
+     … +28 lines (ctrl+o to expand)
+
+  Thought for 13s, searched for 3 patterns, read 1 file (ctrl+o to expand)
+
+● Background command "Run complete Jest test suite" completed (exit code 0)
+
+● PowerShell($env:NODE_ENV='production'; node
+            "src/scripts/enhanced_auto_summary.js"
+            "tmp/asr_sensevoice_26966466_20260530/sample_60s.wav" --asr-backend
+            paraformer)
+  ⎿  📋 加载队列: 100 个任务
+        待处理: 0, 处理中: 0, 已完成: 78, 失败: 22
+     ✓ 配置文件已加载: D:\workspace\myrepo\danmaku-to-summary-ts\config\pro
+     … +308 lines (ctrl+o to expand)
+
+  Thought for 44s, read 1 file (ctrl+o to expand)
+  ⎿  Agent "ab37ee3d70f62ac6f" had no active task; resumed from transcript 
+     in the background with your message. You'll be notified when it 
+     finishes. Output: C:\Users\yuiffy\AppData\Local\Temp\claude\D--workspa
+     ce-myrepo-danmaku-to-summary-ts\2b3f9b7b-6e0d-4ef3-93bf-d1803d2fb874\t
+     asks\ab37ee3d70f62ac6f.output
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● PowerShell(git status --short)
+  ⎿   M config/default.json
+      M config/production.json
+      M src/core/config/ConfigInterface.ts
+     … +15 lines (ctrl+o to expand)
+
+● Write(.claude\skills\verify\SKILL.md)
+  ⎿  Wrote 19 lines to .claude\skills\verify\SKILL.md
+       2 name: verify
+       3 summary: Drive the real ASR CLI on local sample audio and inspec
+       4 ---daptive speaker metadata.
+       5 
+       7 # Verify adaptive ASR/speaker flow
+       8 1. Use an existing real sample under `tmp/asr_sensevoice_2696646
+         xisting `.srt` first because the CLI skips ASR when an SRT alrea
+         dy exists.
+      10    `NODE_ENV=production node src/scripts/enhanced_auto_summary.j
+         s <audio> --asr-backend paraformer`
+     … +24 lines (ctrl+o to expand)
+
+● PowerShell(git check-ignore -v ".claude/skills/verify/SKILL.md")
+  ⎿  .gitignore:47:.claude/     .claude/skills/verify/SKILL.md
+
+  Thought for 11s (ctrl+o to expand)
+
+● 核心功能已实现并进入真实音频验证；首次运行发现 CAM++
+  批量返回形状兼容问题，正在修复后重跑。
+
+✻ Baked for 1h 13m 5s
+
+› Message from general-purpose (ctrl+o to expand)
+
+● PowerShell(python -m unittest tests.test_sensevoice_speaker -v)
+  ⎿  test_always_mode_bypasses_probe_and_runs_full_clustering (tests.test_s
+     ensevoice_speaker.SenseVoiceAdaptiveSpeakerTests.test_always_mode_bypa
+     sses_probe_and_runs_full_clustering) ... ok
+     … +41 lines (ctrl+o to expand)
+
+● PowerShell(python -m py_compile "src/scripts/python/sensevoice_speaker.py"
+            "src/scripts/python/sensevoice_paraformer.py"
+            "src/scripts/python/sensevoice_pipeline.py" "src/s…)
+  ⎿  (No output)
+
+● PowerShell(git diff --check)
+  ⎿  warning: in the working copy of 'config/production.json', LF will be r
+     eplaced by CRLF the next time Git touches it
+     warning: in the working copy of 'src/scripts/asr/asr_vllm_queue_worker
+     … +11 lines (ctrl+o to expand)
+
+● Agent "Build speaker core" finished · 2m 37s
+
+● PowerShell(if (Test-Path
+            "tmp/asr_sensevoice_26966466_20260530/sample_60s.srt") { Remove-Item
+            "tmp/asr_sensevoice_26966466_20260530/sample_60s.srt" -Force
+            -Confirm:$false…)
+  ⎿  📋 加载队列: 101 个任务
+        待处理: 0, 处理中: 1, 已完成: 78, 失败: 22
+     ✓ 配置文件已加载: D:\workspace\myrepo\danmaku-to-summary-ts\config\pro
+     … +307 lines (ctrl+o to expand)
+
+  Thought for 16s (ctrl+o to expand)
+
+● PowerShell(if (Test-Path
+            "tmp/asr_sensevoice_26966466_20260530/sample_60s.srt") { Remove-Item
+            "tmp/asr_sensevoice_26966466_20260530/sample_60s.srt" -Force
+            -Confirm:$false…)
+  ⎿  📋 加载队列: 101 个任务
+        待处理: 0, 处理中: 1, 已完成: 78, 失败: 22
+     ✓ 配置文件已加载: D:\workspace\myrepo\danmaku-to-summary-ts\config\pro
+     … +326 lines (ctrl+o to expand)
+
+  Thought for 17s (ctrl+o to expand)
+
+● Update(src\scripts\python\sensevoice_speaker.py)  ⎿  Added 4 lines, removed 1 line
+      727              )
+      728              grouped.setdefault(cluster_label, []).append(embed
+           ding)
+      729          cluster_embeddings = {
+      730 -            label: torch.cat(embeddings, dim=0)               
+      730 +            label: torch.nn.functional.normalize(             
+      731 +                torch.cat(embeddings, dim=0).to("cpu"),       
+      732 +                dim=1,                                        
+      733 +            )                                                 
+      734              for label, embeddings in grouped.items()
+      735          }
+      736          reference_matches = {}
+
+● PowerShell(if (Test-Path
+            "tmp/asr_sensevoice_26966466_20260530/sample_60s.srt") { Remove-Item
+            "tmp/asr_sensevoice_26966466_20260530/sample_60s.srt" -Force
+            -Confirm:$false…)
+  ⎿  📋 加载队列: 101 个任务
+        待处理: 0, 处理中: 1, 已完成: 78, 失败: 22
+     ✓ 配置文件已加载: D:\workspace\myrepo\danmaku-to-summary-ts\config\pro
+     … +284 lines (ctrl+o to expand)
+
+  Thought for 17s (ctrl+o to expand)
+
+● PowerShell(if (Test-Path "output/mixup_probe_005300_005830.srt") { Remove-Item
+            "output/mixup_probe_005300_005830.srt" -Force -Confirm:$false };
+            $env:NODE_ENV='production';…)
+  ⎿  📋 加载队列: 101 个任务
+        待处理: 0, 处理中: 1, 已完成: 78, 失败: 22
+     ✓ 配置文件已加载: D:\workspace\myrepo\danmaku-to-summary-ts\config\pro
+     … +297 lines (ctrl+o to expand)
+
+  Thought for 17s, read 1 file (ctrl+o to expand)
+
+● PowerShell(npm run type-check)
+  ⎿  > danmaku-to-summary-ts@0.2.0 type-check
+     > tsc --noEmit
+
+● PowerShell(npx jest "src/services/bilibili/DelayedReplyService.test.ts"
+            "src/scripts/asr/asr_backends.test.ts" --runInBand)
+  ⎿  PASS src/scripts/asr/asr_backends.test.ts
+       ● Console
+     … +174 lines (ctrl+o to expand)
+
+● PowerShell(python -m unittest tests.test_sensevoice_speaker -v && python -m
+            py_compile "src/scripts/python/sensevoice_speaker.py"
+            "src/scripts/python/sensevoice_paraformer…)
+  ⎿  test_always_mode_bypasses_probe_and_runs_full_clustering (tests.test_s
+     ensevoice_speaker.SenseVoiceAdaptiveSpeakerTests.test_always_mode_bypa
+     sses_probe_and_runs_full_clustering) ... ok
+     … +41 lines (ctrl+o to expand)
+
+● PowerShell(git status --short && git diff --check)
+  ⎿   M config/default.json
+      M config/production.json
+      M src/core/config/ConfigInterface.ts
+     … +22 lines (ctrl+o to expand)
+
+  Thought for 11s (ctrl+o to expand)
+
+● Completed
+
+  - 实现 ASR 后自适应说话人识别：
+    - 按整段有效语音均匀抽样，默认最多 20 个 4 秒片段。
+    - 确认单人时跳过全量 speaker。
+    - 确认多人时继续全量聚类、参考声纹匹配和字幕标签回填。
+    - 证据不足或探测失败默认 fail-open，继续全量处理。
+    - 一次性 speaker 请求强制 always，不受抽样结果影响。
+    - 探测阶段的 embedding 会在全量阶段复用。
+  - Paraformer、分段式 SenseVoice/Fun-ASR 和 vLLM 路径已接入统一结果协议。
+  - 新增 speakerProcessing
+  元数据，包括执行状态、判断依据、抽样统计和各阶段耗时。
+  - 生产 Paraformer 默认改为 enable_speaker=true + auto。
+  - 企微完成消息现在会显示：
+    - 已完整处理
+    - 抽样判定单人，已跳过全量
+    - 处理失败（ASR 已保留）
+    - 探测、全量 embedding、聚类、参考匹配和总耗时。
+  - 慢 ASR 告警同步增加 speaker 状态和耗时，并修复 stdout 消息跨 chunk
+  解析问题。
+  - 修复 CAM++ 批量返回 [N,D] embedding 的兼容问题及 CPU/GPU 匹配问题。
+
+  实际运行验证
+
+  - 60 秒单人音频：
+    - 抽样 15 段、有效 15 段。
+    - 判定 single。
+    - 成功跳过全量，speaker 总耗时约 0.133s。
+  - 5 分 30 秒多人音频：
+    - 抽样检测到 3 个稳定簇。
+    - 自动执行全量 speaker。
+    - 状态 full_completed，speaker 总耗时约 2.08s。
+  - 强制模式：
+    - 成功绕过探测并完整执行 speaker 和参考匹配。
+
+  Files changed
+
+  - 18 个配置、Python ASR、消息通知及测试文件。
+  - 未创建提交。
+
+  Tests run
+
+  - Python speaker 测试：13 passed
+  - 完整 Jest：17 suites / 201 tests passed
+  - 最终相关 Jest：57 tests passed
+  - TypeScript type-check：通过
+  - Python py_compile：通过
+  - git diff --check：通过，仅有 Windows 换行提示
+
+  Remaining issues
+
+  - vLLM 自适应路径未使用真实 vLLM 环境端到端运行。
+  - 为避免向外部服务发送消息，没有实际推送企微 webhook；消息生成格式已通过测试。
+
+✻ Worked for 1h 53m 10s
+✻ Claude resuming /loop wakeup (Jul 15 10:23pm)
+
+  Thought for 22s (ctrl+o to expand)
+
+● Skill(code-review)
+  ⎿  Successfully loaded skill
+
+  Thought for 13s (ctrl+o to expand)
+
+● PowerShell(git diff '@{upstream}...HEAD' --stat; git diff HEAD --stat)
+  ⎿  warning: in the working copy of 'config/production.json', LF will be r
+     eplaced by CRLF the next time Git touches it
+     warning: in the working copy of 'src/scripts/asr/asr_vllm_queue_worker
+     … +28 lines (ctrl+o to expand)
+
+  Searched for 2 patterns, read 1 file (ctrl+o to expand)
+
+● PowerShell(git diff HEAD > "$env:TEMP\adaptive-speaker.diff"; (Get-Item
+            "$env:TEMP\adaptive-speaker.diff").Length)
+  ⎿  warning: in the working copy of 'config/production.json', LF will be r
+     eplaced by CRLF the next time Git touches it
+     warning: in the working copy of 'src/scripts/asr/asr_vllm_queue_worker
+     … +11 lines (ctrl+o to expand)
+
+  Thought for 1m 26s, read 1 file (ctrl+o to expand)
+
+● Update(src\services\bilibili\DelayedReplyService.ts)
+  ⎿  Added 4 lines
+      1892        : '';
+      1893      const fullRunValue = speakerProcessing.fullRun ?? speaker
+            Processing.full_run;
+      1894  
+      1895 +    if (status === 'disabled' || normalizedDecision === 'disa
+           +bled' || mode === 'disabled') {                              
+      1896 +      return undefined;                                      
+      1897 +    }                                                        
+      1898 +                                                             
+      1899      let statusLabel: string;
+      1900      if (status.includes('fail') || status.includes('error')) 
+            {
+      1901        statusLabel = '处理失败（ASR 已保留）';
+
+● Update(src\services\bilibili\DelayedReplyService.ts)
+  ⎿  Added 22 lines, removed 5 lines
+      1926      ].filter(Boolean).join('，');
+      1927  
+      1928      const sampleParts = [
+      1929 -      this.formatSpeakerCount(speakerProcessing.sampledChunks
+           -, '段'),                                                     
+      1930 -      this.formatSpeakerCount(speakerProcessing.validChunks, 
+           -'段有效'),                                                   
+      1931 -      this.formatSpeakerCount(speakerProcessing.detectedClust
+           -ers, '个检测簇'),                                            
+      1932 -      this.formatSpeakerCount(speakerProcessing.supportedClus
+           -ters, '个支持簇'),                                           
+      1933 -      this.formatSpeakerSeconds(speakerProcessing.sampledSpee
+           -chSeconds, '语音')                                           
+      1929 +      this.formatSpeakerCount(                               
+      1930 +        speakerProcessing.sampledChunks ?? speakerProcessing.
+           +sampled_chunks,                                              
+      1931 +        '段'                                                 
+      1932 +      ),                                                     
+      1933 +      this.formatSpeakerCount(                               
+      1934 +        speakerProcessing.validChunks ?? speakerProcessing.va
+           +lid_chunks,                                                  
+      1935 +        '段有效'                                             
+      1936 +      ),                                                     
+      1937 +      this.formatSpeakerCount(                               
+      1938 +        speakerProcessing.detectedClusters ?? speakerProcessi
+           +ng.detected_clusters,                                        
+      1939 +        '个检测簇'                                           
+      1940 +      ),                                                     
+      1941 +      this.formatSpeakerCount(                               
+      1942 +        speakerProcessing.supportedClusters ?? speakerProcess
+           +ing.supported_clusters,                                      
+      1943 +        '个支持簇'                                           
+      1944 +      ),                                                     
+      1945 +      this.formatSpeakerSeconds(                             
+      1946 +        speakerProcessing.sampledSpeechSeconds ??            
+      1947 +          speakerProcessing.sampled_speech_seconds ??        
+      1948 +          speakerProcessing.sampled_speech_s,                
+      1949 +        '语音'                                               
+      1950 +      )                                                      
+      1951      ].filter(Boolean);
+      1952  
+      1953      const timingInfo = this.getSpeakerTimingNotificationInfo(
+            speakerProcessing.timings);
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(src\scripts\python\sensevoice_pipeline.py)
+  ⎿  Added 8 lines
+      224  def transcribe_segmented_backend(payload, audio_path, device, 
+           backend_name, AutoModel, gpu_throttle=None, fail_fn=None):
+      225      backend_started = time.perf_counter()
+      226      payload["_timings"] = {}
+      227 +    enable_speaker = bool(payload.get("enable_speaker", False)
+          +)                                                             
+      228 +    payload["_speaker_processing"] = {                        
+      229 +        "mode": "disabled" if not enable_speaker else str(payl
+          +oad.get("speaker_detection_mode") or "auto"),                 
+      230 +        "status": "disabled" if not enable_speaker else "faile
+          +d",                                                           
+      231 +        "decision": "disabled" if not enable_speaker else "inc
+          +onclusive",                                                   
+      232 +        "reason": "speaker_disabled" if not enable_speaker els
+          +e "not_processed",                                            
+      233 +        "full_run": False,                                    
+      234 +    }                                                         
+      235      default_model = (
+      236          "FunAudioLLM/Fun-ASR-Nano-2512" if backend_name == "fu
+           n_asr_nano"
+      237          else "paraformer-zh" if backend_name == "paraformer"
+
+● Update(src\scripts\python\sensevoice_pipeline.py)
+  ⎿  Removed 1 line
+      334          batch_duration = 0.0
+      335          transcribed_segments = 0
+      336          total_segments = len(vad_segments)
+      337 -        enable_speaker = bool(payload.get("enable_speaker", Fa
+          -lse))                                                         
+      337          spk_model = payload.get("spk_model")
+      338  
+      339          spk_model_obj = None
+
+● Update(src\scripts\python\sensevoice_pipeline.py)
+  ⎿  Added 7 lines
+      323  
+      324          raw_result = []
+      325          if not vad_segments:
+      326 +            set_timing(payload, "backend_total_s", time.perf_c
+          +ounter() - backend_started)                                   
+      327 +            if enable_speaker:                                
+      328 +                payload["_speaker_processing"].update({       
+      329 +                    "status": "skipped_single_speaker",       
+      330 +                    "decision": "single",                     
+      331 +                    "reason": "no_speech",                    
+      332 +                })                                            
+      333              return raw_result
+      334  
+      335          log_progress("加载音频到内存")
+
+● Update(src\scripts\python\sensevoice_speaker.py)
+  ⎿  Added 5 lines, removed 1 line
+      564          mark_failed(exc, "candidate_generation_failed")
+      565          return finish([], {})
+      566      if not candidates:
+      567 -        mark_failed(RuntimeError("no usable speech chunks"), "
+          -no_usable_speech")                                            
+      567 +        processing.update({                                   
+      568 +            "status": "skipped_single_speaker",               
+      569 +            "decision": "single",                             
+      570 +            "reason": "no_usable_speech",                     
+      571 +        })                                                    
+      572          return finish([], {})
+      573  
+      574      import torch
+
+  Searched for 2 patterns (ctrl+o to expand)
+
+● Update(src\scripts\python\fun_asr_nano_vllm_worker.py)
+  ⎿  Error editing file
+
+● Update(src\scripts\python\fun_asr_nano_vllm_worker.py)
+  ⎿  Added 14 lines, removed 1 line
+       99      return model, gpu_throttle
+      100  
+      101  
+      102 -def transcribe(model, config, job, gpu_throttle=None):        
+      102 +def build_speaker_model(config):                              
+      103 +    if not config.get("enable_speaker"):                      
+      104 +        return None                                           
+      105 +    from funasr import AutoModel                              
+      106 +                                                              
+      107 +    device = config.get("device", "cuda")                     
+      108 +    return AutoModel(                                         
+      109 +        model=resolve_cached_model_name(config.get("spk_model"
+          +)),                                                           
+      110 +        device="cuda:0" if device == "cuda" else device,      
+      111 +        disable_update=True,                                  
+      112 +    )                                                         
+      113 +                                                              
+      114 +                                                              
+      115 +def transcribe(model, config, job, gpu_throttle=None, spk_mode
+          +l_obj=None):                                                  
+      116      audio_path = job.get("audio_path")
+      117      if not audio_path or not os.path.exists(audio_path):
+      118          raise FileNotFoundError(f"输入音频不存在: {audio_path 
+           or '未提供 audio_path'}")
+
+● Update(src\scripts\python\fun_asr_nano_vllm_worker.py)
+  ⎿  Added 6 lines, removed 10 lines
+      137      enable_speaker = bool(payload.get("enable_speaker", False)
+           )
+      138      if enable_speaker:
+      139          try:
+      140 -            from funasr import AutoModel                      
+      141 -                                                              
+      140              device = payload.get("device", config.get("device"
+           , "cuda"))
+      143 -            device_name = "cuda:0" if device == "cuda" else de
+          -vice                                                          
+      144 -            model_started = time.perf_counter()               
+      145 -            spk_model_obj = AutoModel(                        
+      146 -                model=resolve_cached_model_name(payload.get("s
+          -pk_model")),                                                  
+      147 -                device=device_name,                           
+      148 -                disable_update=True,                          
+      149 -            )                                                 
+      150 -            set_timing(payload, "speaker_model_load_s", time.p
+          -erf_counter() - model_started)                                
+      141 +            if spk_model_obj is None:                         
+      142 +                model_started = time.perf_counter()           
+      143 +                spk_model_obj = build_speaker_model(payload)  
+      144 +                set_timing(payload, "speaker_model_load_s", ti
+          +me.perf_counter() - model_started)                            
+      145 +            else:                                             
+      146 +                set_timing(payload, "speaker_model_load_s", 0)
+      147              audio, sample_rate = load_audio_16k_mono(audio_pat
+           h)
+      148              intervals = [
+      149                  {"start": item.get("start", 0), "end": item.ge
+           t("end", 0)}
+
+● Update(src\scripts\python\fun_asr_nano_vllm_worker.py)
+  ⎿  Added 1 line
+      208      config = None
+      209      model = None
+      210      gpu_throttle = None
+      211 +    spk_model_obj = None                                      
+      212      original_stdout = sys.stdout
+      213  
+      214      for message in read_messages():
+
+● Update(src\scripts\python\fun_asr_nano_vllm_worker.py)
+  ⎿  Added 1 line
+      224                  config = message.get("config") or {}
+      225                  with contextlib.redirect_stdout(sys.stderr):
+      226                      model, gpu_throttle = build_pipeline(confi
+           g)
+      227 +                    spk_model_obj = build_speaker_model(config
+          +)                                                             
+      228                  write_message({"type": "ready", "id": msg_id, 
+           "backend": "fun_asr_nano_vllm"})
+      229              except SystemExit:
+      230                  raise
+
+● Update(src\scripts\python\fun_asr_nano_vllm_worker.py)
+  ⎿  Added 1 line, removed 1 line
+      243                  continue
+      244              try:
+      245                  with contextlib.redirect_stdout(sys.stderr):
+      246 -                    result = transcribe(model, config, message
+          -, gpu_throttle)                                               
+      246 +                    result = transcribe(model, config, message
+          +, gpu_throttle, spk_model_obj)                                
+      247                  write_message({"type": "result", "id": msg_id,
+            "result": result})
+      248              except Exception as exc:
+      249                  write_message({
+
+  Thought for 40s, searched for 2 patterns, read 1 file (ctrl+o to expand)
+
+● Update(src\scripts\asr\asr_backends.js)
+  ⎿  Error editing file
+  Thought for 1m 14s, searched for 1 pattern, called ide (ctrl+o to expand)
+
+● PowerShell(git diff --check && git status --short)
+  ⎿  warning: in the working copy of 'config/production.json', LF will be r
+     eplaced by CRLF the next time Git touches it
+     warning: in the working copy of 'src/scripts/asr/asr_vllm_queue_worker
+     … +22 lines (ctrl+o to expand)
+
+● PowerShell(python -m py_compile "src/scripts/python/sensevoice_speaker.py"
+            "src/scripts/python/sensevoice_paraformer.py"
+            "src/scripts/python/sensevoice_pipeline.py" "src/s…)
+  ⎿  > danmaku-to-summary-ts@0.2.0 type-check
+     > tsc --noEmit
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Update(src\scripts\python\sensevoice_paraformer.py)
+  ⎿  Added 1 line, removed 1 line
+      414              try:
+      415                  import torch
+      416  
+      417 -                if torch.cuda.is_available():                 
+      417 +                if torch.cuda.is_available() and not cache.get
+          +("speaker_model"):                                            
+      418                      torch.cuda.empty_cache()
+      419              except Exception:
+      420                  pass
+
+  Searched for 2 patterns (ctrl+o to expand)
+
+● PowerShell(python -m unittest tests.test_sensevoice_speaker -v && npx jest
+            "src/services/bilibili/DelayedReplyService.test.ts"
+            "src/scripts/asr/asr_backends.test.ts" --run…)
+  ⎿  test_always_mode_bypasses_probe_and_runs_full_clustering (tests.test_s
+     ensevoice_speaker.SenseVoiceAdaptiveSpeakerTests.test_always_mode_bypa
+     sses_probe_and_runs_full_clustering) ... ok
+     … +200 lines (ctrl+o to expand)
+
+● PowerShell(git diff --check && git status --short)
+  ⎿  warning: in the working copy of 'config/production.json', LF will be r
+     eplaced by CRLF the next time Git touches it
+     warning: in the working copy of 'src/scripts/asr/asr_vllm_queue_worker
+     … +22 lines (ctrl+o to expand)
+
+  Thought for 20s (ctrl+o to expand)
+
+● PowerShell(python -m py_compile "src/scripts/python/sensevoice_speaker.py"
+            "src/scripts/python/sensevoice_paraformer.py"
+            "src/scripts/python/sensevoice_pipeline.py" "src/s…)
+  ⎿  (No output)
+
+  Thought for 15s (ctrl+o to expand)
+
+● Completed
+
+  - 完成 VAD/ASR 后的自适应 speaker gate：
+    - 单人样本跳过全量 speaker。
+    - 多人样本自动继续全量聚类、声纹匹配及字幕回填。
+    - 不确定或探测失败默认 fail-open。
+    - 一次性 speaker 请求强制完整处理。
+  - 修复真实 CAM++ 批量 [N,D] embedding 返回兼容问题。
+  - 修复参考声纹匹配时 CPU/GPU device 不一致问题。
+  - 优化常驻 worker，复用 CAM++ 模型，避免每个 vLLM 任务重新加载。
+  - 补齐空语音状态、snake_case 元数据兼容、禁用状态企微隐藏及模型缓存处理。
+  - 企微消息支持完整处理、单人跳过、失败状态及 speaker 分阶段耗时。
+
+  Runtime verification
+
+  - 60 秒单人音频
+    - 抽样 15 段，15 段有效。
+    - 判定 single / skipped_single_speaker。
+    - 全量耗时 0s，speaker 总耗时约 0.133s。
+  - 5 分 30 秒多人音频
+    - 抽样检测到 3 个稳定说话人簇。
+    - 判定 multiple / full_completed。
+    - 自动完成全量 speaker，总耗时约 2.08s。
+  - 强制模式
+    - always / full_completed。
+    - 成功执行全量聚类及参考声纹匹配，无 reference error。
+
+  Files changed
+
+  - 18 个配置、ASR Python/JavaScript、企微通知和测试文件。
+  - 未创建提交。
+
+  Tests run
+
+  - Python speaker：13 passed
+  - 完整 Jest：17 suites / 201 tests passed
+  - 最终相关 Jest：57 tests passed
+  - TypeScript type-check：通过
+  - Python py_compile：通过
+  - IDE diagnostics：改动文件无诊断
+  - git diff --check：通过，仅有 Windows 换行提示
+
+  Remaining issues
+
+  - vLLM 自适应路径未在真实 vLLM 环境端到端运行。
+  - 为避免向外部服务实际发消息，未调用企微 webhook；消息生成和格式测试已通过。
+
+✻ Worked for 10m 47s
+
+※ recap: 目标是实现 ASR 后自适应说话人识别并在企微展示状态与耗时；功能、真实单人/多人验证及测试均已完成。下一步是检查最终差异后提交改动。
+
+● Background command "Re-run the full summary pipeline on the failed Mizuki
+recording after restoring writeAsrMetaSidecar" was stopped
+
+  Thought for 49s, read 1 file (ctrl+o to expand)
+
+● Completed
+
+  - 后台重跑任务虽然被标记为 killed，但实际业务流程已运行完成；它停在最后的“按
+  Enter 关闭”等待，因此才被终止。
+  - 该任务使用的是旧版内建 speaker 路径：
+    - builtin speaker embedding: 81.607s
+    - 总 speaker 相关处理超过 106 秒
+  - 因此这份后台日志不能作为当前自适应实现的验证依据，应该是较早启动或来自另一会
+  话的旧进程。
+
+  当前工作树的新版流程已经单独完成真实验证：
+
+  - 单人 60 秒音频：skipped_single_speaker，全量 speaker 未运行。
+  - 多人 5 分 30 秒音频：检测到 3 个稳定簇，自动 full_completed。
+  - 强制模式：成功完整执行聚类和参考声纹匹配。
+  - CAM++ [N,D] 批量返回问题及 CPU/GPU device 问题均已修复。
+
+  测试结果：
+
+  - 完整 Jest：17 suites / 201 tests passed
+  - Python speaker：13 tests passed
+  - TypeScript type-check：通过
+  - Python 编译检查：通过
+  - git diff --check：通过
+
+  剩余事项：真实 vLLM 环境尚未端到端验证；当前改动未提交。
+
+✻ Worked for 1m 3s
+
+※ recap: 目标是 ASR 后抽样判断多人，按需执行全量 speaker，并在企微展示状态和耗时；实现与真实音频验证已完成。下一步只需确认改动并提交。
+
+❯ 本机就是服务器，编译和pm2 restart它就能正式启用                               
+
+  Thought for 17s (ctrl+o to expand)
+
+● 我现在编译并重启 PM2 服务，随后检查进程状态和启动日志。
+
+● PowerShell(npm run build && npm run pm2:restart && pm2 status danmaku-webhook)
+  ⎿  > danmaku-to-summary-ts@0.2.0 prebuild
+     > npm run clean
+     … +78 lines (ctrl+o to expand)
+
+● PowerShell(pm2 logs danmaku-webhook --lines 80 --nostream)
+  ⎿  [TAILING] Tailing last 80 lines for [danmaku-webhook] process (change 
+     the value with --lines option)
+     D:\workspace\myrepo\danmaku-to-summary-ts\logs\pm2-error-0.log last 80
+     … +347 lines (ctrl+o to expand)
+
+  Thought for 8s (ctrl+o to expand)
+
+● Completed
+
+  - 执行 npm run build：编译成功。
+  - 执行 PM2 重启：danmaku-webhook 已正式加载最新代码。
+  - 当前状态：
+    - danmaku-webhook: online
+    - PID: 50632
+    - 环境: production
+    - Webhook 地址: http://0.0.0.0:12523
+  - 启动日志确认所有核心服务加载完成，应用已开始等待 Webhook 事件。
+
+  自适应 speaker gate
+  现已正式启用。日志中的音频转换警告来自历史损坏媒体扫描，不影响本次部署。
+
+  注意：项目的 pm2:restart 会重启整个 ecosystem.config.js，因此
+  seedance、clip-upload 和余额任务也被一并重启，当前均为
+  online；sync-livers-cron 仍维持原来的 stopped 状态。
+
+✻ Crunched for 1m 1s
+
+❯ 这次我们plan阶段花的时间太久了，其实我们的项目代码很多都在各个md里面有介绍。  
+  我们来想办法减少后续plan环节时间花费，你可以看看各个md里是不是有需要的信息，  
+  不够的话把你本次读到的总结的信息写进去。Claude.md也可以改。                   
+
+  Thought for 15s (ctrl+o to expand)
+
+● Entered plan mode
+  Claude is now exploring and designing an implementation approach.
+
+● 2 background agents launched (↓ to manage)
+   ├ Audit repository docs
+   └ Audit agent guidance
+● API Error: 502 Your input exceeds the context window of this model. 
+  Please adjust your input and try again. This is a server-side issue, 
+  usually temporary — try again in a moment. If it persists, check your 
+  inference gateway (127.0.0.1:15721).
+
+✻ Cogitated for 4m 33s
+
+❯ 继续                                                                          
+
+● API Error: 502 Your input exceeds the context window of this model. 
+  Please adjust your input and try again. This is a server-side issue, 
+  usually temporary — try again in a moment. If it persists, check your 
+  inference gateway (127.0.0.1:15721).
+
+✻ Cogitated for 9m 31s
+
+❯ /compact                                                                      
+
+❯ /compact                                                                      
+  ⎿  Error during compaction: API Error: 502 Your input exceeds the context window of this model. Please adjust your input and try again. This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721).
+
+● Agent "Audit repository docs" finished · 6m 55s
+
+● Agent "Audit agent guidance" finished · 7m 31s
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ /compact                                                                      
+
+❯ /compact                                                                      
+  ⎿  Error during compaction: API Error: 502 Your input exceeds the context window of this model. Please adjust your input and try again. This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:15721).
+
+❯ 继续                                                                          
