@@ -109,6 +109,19 @@ const ASR_TIMING_SENTINEL = '[[ASR_TIMING]]';
 const DELAYED_REPLY_READY_SENTINEL = '[[DELAYED_REPLY_READY]]';
 const SUI_ROOM_ID = '25788785';
 
+function writeAsrMetaSidecar(srtPath, data) {
+    try {
+        if (!srtPath || !data) return null;
+        const parsed = path.parse(srtPath);
+        const metaPath = path.join(parsed.dir, `${parsed.name}.asr_meta.json`);
+        fs.writeFileSync(metaPath, JSON.stringify(data, null, 2), 'utf8');
+        return metaPath;
+    } catch (error) {
+        console.warn(`⚠️  写入 ASR meta sidecar 失败: ${error.message}`);
+        return null;
+    }
+}
+
 function parseSpeakerRequestFromEnv() {
     const encoded = String(process.env.ASR_SPEAKER_REQUEST_JSON || '').trim();
     if (!encoded) {
