@@ -59,14 +59,47 @@ def dominant_speaker_for_interval(start, end, speaker_timeline):
     return label, score_meta.get(label)
 
 
-def build_speaker_reference_centroids(spk_model_obj, references, device):
+def _generate_speaker_embeddings(spk_model_obj, chunks, batch_size=64):
+    """Extract embeddings for many clips with one FunASR generate call."""
+    if not chunks:
+        return []
+
+    import torch
+
+    with suppress_model_output():
+        results = spk_model_obj.generate(
+            input=chunks,
+            cache={},
+            is_final=True,
+            batch_size=max(1, int(batch_size or 64)),
+        )
+    if not isinstance(results, list):
+        results = [results]
+
+    embeddings = []
+    for result in results:
+        embedding = result.get("spk_embedding") if isinstance(result, dict) else None
+        embeddings.append(
+            embedding
+            if embedding is not None and torch.isfinite(embedding).all()
+            else None
+        )
+    if len(embeddings) < len(chunks):
+        embeddings.extend([None] * (len(chunks) - len(embeddings)))
+    return embeddings[:len(chunks)]
+
+
+def build_speaker_reference_centroids(spk_model_obj, references, device, batch_size=64):
     if not isinstance(references, list) or not references:
         return None
 
     import torch
 
     embeddings_by_speaker = {}
-    max_chunks = 24
+    batched_chunks = []
+    chunk_speakers = []
+    chunk_counts = {}
+    default_max_chunks = 24
     for ref in references:
         if not isinstance(ref, dict):
             continue
@@ -82,7 +115,7 @@ def build_speaker_reference_centroids(spk_model_obj, references, device):
         end_idx = min(len(audio), int(end_s * sample_rate)) if end_s > start_s else len(audio)
         audio = audio[start_idx:end_idx]
         chunk_s = float(ref.get("chunk_s", 8) or 8)
-        max_chunks = int(ref.get("max_chunks", max_chunks) or max_chunks)
+        max_chunks = int(ref.get("max_chunks", default_max_chunks) or default_max_chunks)
         chunk_len = max(1, int(chunk_s * sample_rate))
         chunks = []
         for idx in range(0, len(audio), chunk_len):
@@ -94,17 +127,24 @@ def build_speaker_reference_centroids(spk_model_obj, references, device):
                 break
         if not chunks:
             continue
-        with suppress_model_output():
-            results = spk_model_obj.generate(input=chunks, cache={}, is_final=True)
-        valid_embeddings = [
-            result["spk_embedding"]
-            for result in results
-            if result.get("spk_embedding") is not None and torch.isfinite(result["spk_embedding"]).all()
-        ]
-        if not valid_embeddings:
-            continue
-        embeddings_by_speaker.setdefault(speaker, []).extend(valid_embeddings)
-        log_progress(f"参考说话人完成: speaker={speaker}, chunks={len(chunks)}")
+        batched_chunks.extend(chunks)
+        chunk_speakers.extend([speaker] * len(chunks))
+        chunk_counts[speaker] = chunk_counts.get(speaker, 0) + len(chunks)
+
+    embeddings = _generate_speaker_embeddings(
+        spk_model_obj,
+        batched_chunks,
+        batch_size=batch_size,
+    )
+    for speaker, embedding in zip(chunk_speakers, embeddings):
+        if embedding is not None:
+            embeddings_by_speaker.setdefault(speaker, []).append(embedding)
+
+    for speaker, count in chunk_counts.items():
+        valid_count = len(embeddings_by_speaker.get(speaker, []))
+        log_progress(
+            f"参考说话人完成: speaker={speaker}, chunks={count}, valid_embeddings={valid_count}"
+        )
 
     centroids = {}
     for speaker, speaker_embeddings in embeddings_by_speaker.items():
@@ -126,15 +166,18 @@ def classify_speaker_embeddings(spk_results, references, threshold, margin_thres
     for result in spk_results:
         embedding = torch.nn.functional.normalize(result["spk_embedding"].to("cpu"), dim=1)
         best_label = None
+        second_label = None
         best_score = -1.0
         second_score = -1.0
         for label, centroid in ref_items:
             score = float(torch.matmul(embedding, centroid.T).max().item())
             if score > best_score:
+                second_label = best_label
                 second_score = best_score
                 best_label = label
                 best_score = score
             elif score > second_score:
+                second_label = label
                 second_score = score
         margin = best_score - second_score if second_score > -1.0 else best_score
         is_confident = best_score >= threshold and margin >= margin_threshold
@@ -142,7 +185,10 @@ def classify_speaker_embeddings(spk_results, references, threshold, margin_thres
             "label": best_label if is_confident else "UNKNOWN",
             "score": best_score,
             "best_label": best_label,
+            "second_label": second_label,
+            "second_score": second_score,
             "margin": margin,
+            "accepted": is_confident,
         })
     return labels
 
@@ -203,6 +249,9 @@ def build_cluster_embeddings_from_sentence_info(spk_model_obj, audio, sample_rat
         clusters[cluster_label].append(normalized_interval)
 
     cluster_embeddings = {}
+    batched_chunks = []
+    chunk_clusters = []
+    chunk_counts = {}
     for cluster_label in cluster_order:
         chunks = collect_speaker_chunks_from_intervals(
             audio,
@@ -214,19 +263,31 @@ def build_cluster_embeddings_from_sentence_info(spk_model_obj, audio, sample_rat
         )
         if not chunks:
             continue
-        with suppress_model_output():
-            results = spk_model_obj.generate(input=chunks, cache={}, is_final=True)
-        valid_embeddings = [
-            result["spk_embedding"]
-            for result in results
-            if result.get("spk_embedding") is not None and torch.isfinite(result["spk_embedding"]).all()
-        ]
+        batched_chunks.extend(chunks)
+        chunk_clusters.extend([cluster_label] * len(chunks))
+        chunk_counts[cluster_label] = len(chunks)
+
+    grouped_embeddings = {}
+    embeddings = _generate_speaker_embeddings(
+        spk_model_obj,
+        batched_chunks,
+        batch_size=int(payload.get("speaker_embedding_batch_size", 64) or 64),
+    )
+    for cluster_label, embedding in zip(chunk_clusters, embeddings):
+        if embedding is not None:
+            grouped_embeddings.setdefault(cluster_label, []).append(embedding)
+
+    for cluster_label in cluster_order:
+        valid_embeddings = grouped_embeddings.get(cluster_label, [])
         if not valid_embeddings:
             continue
         embeddings = torch.cat(valid_embeddings, dim=0)
         embeddings = torch.nn.functional.normalize(embeddings, dim=1)
         cluster_embeddings[cluster_label] = embeddings.to("cpu")
-        log_progress(f"  簇 embedding 完成: cluster={cluster_label}, chunks={len(chunks)}")
+        log_progress(
+            f"  簇 embedding 完成: cluster={cluster_label}, "
+            f"chunks={chunk_counts.get(cluster_label, 0)}, valid_embeddings={len(valid_embeddings)}"
+        )
 
     return cluster_embeddings
 
@@ -240,29 +301,36 @@ def classify_speaker_clusters(cluster_embeddings, references, threshold, margin_
     matches = {}
     for cluster_label, embeddings in cluster_embeddings.items():
         best_label = None
+        second_label = None
         best_score = -1.0
         second_score = -1.0
         for label, centroid in references.items():
             score = float(torch.matmul(embeddings, centroid.T).max().item())
             if score > best_score:
+                second_label = best_label
                 second_score = best_score
                 best_label = label
                 best_score = score
             elif score > second_score:
+                second_label = label
                 second_score = score
         margin = best_score - second_score if second_score > -1.0 else best_score
-        if best_label and best_score >= threshold and margin >= margin_threshold:
-            matches[cluster_label] = {
-                "label": best_label,
-                "score": best_score,
-                "margin": margin,
-            }
-        else:
-            matches[cluster_label] = {
-                "label": "UNKNOWN" if constrain_to_references else cluster_label,
-                "score": best_score,
-                "margin": margin,
-            }
+        is_confident = bool(
+            best_label and best_score >= threshold and margin >= margin_threshold
+        )
+        matches[cluster_label] = {
+            "label": (
+                best_label
+                if is_confident
+                else ("UNKNOWN" if constrain_to_references else cluster_label)
+            ),
+            "score": best_score,
+            "best_label": best_label,
+            "second_label": second_label,
+            "second_score": second_score,
+            "margin": margin,
+            "accepted": is_confident,
+        }
     return matches
 
 

@@ -75,7 +75,8 @@ const DEFAULT_ASR_CONFIG = {
         speaker_merge_threshold: 0.78,
         speaker_references: [],
         speaker_reference_threshold: 0.45,
-        speaker_reference_margin: 0.06
+        speaker_reference_margin: 0.06,
+        speaker_embedding_batch_size: 64
     },
     fun_asr_nano: {
         model: 'FunAudioLLM/Fun-ASR-Nano-2512',
@@ -98,7 +99,8 @@ const DEFAULT_ASR_CONFIG = {
         speaker_merge_threshold: 0.78,
         speaker_references: [],
         speaker_reference_threshold: 0.45,
-        speaker_reference_margin: 0.06
+        speaker_reference_margin: 0.06,
+        speaker_embedding_batch_size: 64
     },
     fun_asr_nano_vllm: {
         model: 'FunAudioLLM/Fun-ASR-Nano-2512',
@@ -152,7 +154,8 @@ const DEFAULT_ASR_CONFIG = {
         speaker_merge_threshold: 0.78,
         speaker_references: [],
         speaker_reference_threshold: 0.45,
-        speaker_reference_margin: 0.06
+        speaker_reference_margin: 0.06,
+        speaker_embedding_batch_size: 64
     }
 };
 

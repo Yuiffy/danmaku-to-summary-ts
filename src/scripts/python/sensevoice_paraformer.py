@@ -453,6 +453,7 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
                     spk_model_obj,
                     speaker_references,
                     device,
+                    batch_size=int(payload.get("speaker_embedding_batch_size", 64) or 64),
                 )
             except Exception as exc:
                 log_progress(f"参考说话人加载失败，使用聚类结果: {exc}")
@@ -570,12 +571,24 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
                 bool(payload.get("speaker_constrain_to_references", False)),
             )
             set_timing(payload, "speaker_matching_s", time.perf_counter() - matching_started)
-            named_count = sum(1 for key, value in cluster_matches.items() if value.get("label") != key)
+            named_count = sum(
+                1 for value in cluster_matches.values() if value.get("accepted")
+            )
             log_progress(
                 f"说话人实名映射完成: clusters={len(cluster_matches)}, named={named_count}, "
                 f"embedding={payload['_timings'].get('speaker_cluster_embedding_s', 0):.3f}s, "
                 f"matching={payload['_timings'].get('speaker_matching_s', 0):.3f}s"
             )
+            for cluster_label, match in cluster_matches.items():
+                log_progress(
+                    "  说话人匹配: "
+                    f"cluster={cluster_label}, top1={match.get('best_label')}, "
+                    f"top1_score={float(match.get('score', -1.0)):.4f}, "
+                    f"top2={match.get('second_label')}, "
+                    f"top2_score={float(match.get('second_score', -1.0)):.4f}, "
+                    f"margin={float(match.get('margin', -1.0)):.4f}, "
+                    f"decision={match.get('label')}"
+                )
         except Exception as exc:
             set_timing(payload, "speaker_cluster_embedding_s", time.perf_counter() - cluster_embedding_started)
             log_progress(f"说话人实名映射失败，使用聚类结果: {exc}")

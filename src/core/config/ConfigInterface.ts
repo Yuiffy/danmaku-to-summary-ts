@@ -199,6 +199,7 @@ export interface AsrConfig {
     speaker_references?: AsrSpeakerReferenceConfig[];
     speaker_reference_threshold?: number;
     speaker_reference_margin?: number;
+    speaker_embedding_batch_size?: number;
   };
   fun_asr_nano: AsrPythonRuntimeConfig & {
     model: string;
@@ -218,6 +219,7 @@ export interface AsrConfig {
     speaker_references?: AsrSpeakerReferenceConfig[];
     speaker_reference_threshold?: number;
     speaker_reference_margin?: number;
+    speaker_embedding_batch_size?: number;
   };
   fun_asr_nano_vllm: AsrPythonRuntimeConfig & {
     model: string;
@@ -268,6 +270,7 @@ export interface AsrConfig {
     speaker_references?: AsrSpeakerReferenceConfig[];
     speaker_reference_threshold?: number;
     speaker_reference_margin?: number;
+    speaker_embedding_batch_size?: number;
   };
 }
 
