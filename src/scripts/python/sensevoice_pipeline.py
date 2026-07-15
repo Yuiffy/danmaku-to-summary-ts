@@ -305,6 +305,10 @@ def transcribe_segmented_backend(payload, audio_path, device, backend_name, Auto
                                 input=speaker_chunks,
                                 cache={},
                                 is_final=True,
+                                batch_size=max(
+                                    1,
+                                    int(payload.get("speaker_embedding_batch_size", 64) or 64),
+                                ),
                             )
                     finite_spk_results = []
                     finite_speaker_chunk_meta = []
@@ -322,6 +326,7 @@ def transcribe_segmented_backend(payload, audio_path, device, backend_name, Auto
                         spk_model_obj,
                         payload.get("speaker_references"),
                         device,
+                        batch_size=int(payload.get("speaker_embedding_batch_size", 64) or 64),
                     )
                     labels = classify_speaker_embeddings(
                         spk_results,
