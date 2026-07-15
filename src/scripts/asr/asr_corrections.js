@@ -558,13 +558,19 @@ function shouldProtectSafeCorrection(text, start, end, correction, context = nul
     return isProtectedByTokenBoundary(context, start, end);
 }
 
-function applyCorrectionList(text, corrections = [], stats = null, type = 'safe') {
+function applyCorrectionList(text, corrections = [], stats = null, type = 'safe', options = {}) {
     let output = String(text || '');
     const normalized = Array.isArray(corrections) ? corrections : [];
     const ordered = normalized
         .filter(item => item && item.from && item.to)
         .sort((a, b) => String(b.from).length - String(a.from).length);
     const protectedTerms = type === 'safe' ? collectSafeProtectionTerms(ordered) : [];
+    const sharedContextText = options.contextText === undefined || options.contextText === null
+        ? null
+        : String(options.contextText || '');
+    const sharedBaseOffset = sharedContextText === null
+        ? 0
+        : Math.max(0, Number(options.baseOffset) || 0);
     for (const correction of ordered) {
         const pattern = new RegExp(escapeRegExp(correction.from), 'g');
         const before = output;
@@ -576,18 +582,26 @@ function applyCorrectionList(text, corrections = [], stats = null, type = 'safe'
             : [];
         const boundaryContext = correction.protect === false
             ? null
-            : createTranscriptContext(before, { protectedTerms });
+            : options.boundaryContext || createTranscriptContext(sharedContextText ?? before, { protectedTerms });
         let count = 0;
         output = before.replace(pattern, (matched, offset, wholeText) => {
             const start = Number(offset) || 0;
             const end = start + String(matched || '').length;
-            if (isProtectedByExcludedTerm(wholeText, matched, offset, excludedTerms)) {
+            const protectionText = sharedContextText ?? wholeText;
+            const protectionStart = sharedContextText === null ? start : sharedBaseOffset + start;
+            if (isProtectedByExcludedTerm(protectionText, matched, protectionStart, excludedTerms)) {
                 return matched;
             }
-            if (excludePatterns.length > 0 && isProtectedByExcludePattern(wholeText, matched, offset, excludePatterns)) {
+            if (excludePatterns.length > 0 && isProtectedByExcludePattern(protectionText, matched, protectionStart, excludePatterns)) {
                 return matched;
             }
-            if (type === 'safe' && shouldProtectSafeCorrection(wholeText, start, end, correction, boundaryContext)) {
+            if (type === 'safe' && shouldProtectSafeCorrection(
+                protectionText,
+                protectionStart,
+                protectionStart + (end - start),
+                correction,
+                boundaryContext
+            )) {
                 return matched;
             }
             count += 1;
@@ -599,6 +613,38 @@ function applyCorrectionList(text, corrections = [], stats = null, type = 'safe'
         recordCorrectionStats(stats, correction, type, count, before, output);
     }
     return output;
+}
+
+function applyCorrectionListToSegments(texts = [], corrections = [], stats = null, type = 'safe') {
+    const normalized = Array.isArray(corrections) ? corrections : [];
+    const ordered = normalized
+        .filter(item => item && item.from && item.to)
+        .sort((a, b) => String(b.from).length - String(a.from).length);
+    let outputTexts = Array.isArray(texts)
+        ? texts.map(text => String(text || ''))
+        : [];
+    if (ordered.length === 0 || outputTexts.length === 0) {
+        return outputTexts;
+    }
+
+    const protectedTerms = type === 'safe' ? collectSafeProtectionTerms(ordered) : [];
+    for (const correction of ordered) {
+        const sharedContextText = outputTexts.join('');
+        const boundaryContext = type === 'safe' && correction.protect !== false
+            ? createTranscriptContext(sharedContextText, { protectedTerms })
+            : null;
+        let baseOffset = 0;
+        outputTexts = outputTexts.map((text) => {
+            const currentOffset = baseOffset;
+            baseOffset += text.length;
+            return applyCorrectionList(text, [correction], stats, type, {
+                contextText: sharedContextText,
+                baseOffset: currentOffset,
+                boundaryContext
+            });
+        });
+    }
+    return outputTexts;
 }
 
 function collectSafeProtectionTerms(corrections = []) {
@@ -1044,12 +1090,8 @@ function applyCorrectionsToSegments(segments = [], corrections = [], stats = nul
     if (applicable.safe.length === 0 && applicable.contextual.length === 0 && applicable.ambiguous.length === 0) {
         return texts;
     }
-    const preAmbiguousTexts = texts.map(text => applyCorrectionList(
-        applyCorrectionList(text, applicable.safe, stats, 'safe'),
-        applicable.contextual,
-        stats,
-        'contextual'
-    ));
+    const safeTexts = applyCorrectionListToSegments(texts, applicable.safe, stats, 'safe');
+    const preAmbiguousTexts = applyCorrectionListToSegments(safeTexts, applicable.contextual, stats, 'contextual');
     if (applicable.ambiguous.length === 0) {
         return preAmbiguousTexts;
     }

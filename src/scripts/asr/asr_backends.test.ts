@@ -722,6 +722,28 @@ describe('asr_backends', () => {
     expect(asr.applyCorrectionsToText('这个粉碎机打得挺细的', resolved.corrections)).toBe('这个粉碎机打得挺细的');
   });
 
+  test('safe correction exclusions survive ASR segment boundaries', () => {
+    const resolved = asr.resolveAsrHotwords(productionConfig, { room_id: '24872476' });
+    const result = asr.applyCorrectionsToAsrResult({
+      backend: 'paraformer',
+      segments: [
+        { start: 0, end: 1, text: '这粉' },
+        { start: 1, end: 2, text: '碎机采石场点一下' }
+      ]
+    }, resolved.corrections);
+
+    expect(result.segments.map((segment: any) => segment.text).join(''))
+      .toBe('这粉碎机采石场点一下');
+    expect(asr.applyCorrectionsToAsrResult({
+      backend: 'paraformer',
+      segments: [
+        { start: 0, end: 1, text: '找个' },
+        { start: 1, end: 2, text: '碎机' }
+      ]
+    }, resolved.corrections).segments.map((segment: any) => segment.text).join(''))
+      .toBe('找个岁己');
+  });
+
   test('safe ascii corrections protect embedded latin terms by default', () => {
     const corrections = {
       safe: [{ from: 'VR', to: 'VirtuaReal' }]
