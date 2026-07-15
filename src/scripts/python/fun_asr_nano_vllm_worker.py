@@ -2,6 +2,7 @@ import contextlib
 import json
 import os
 import sys
+import time
 import traceback
 
 from sensevoice_transcribe import (
@@ -11,6 +12,13 @@ from sensevoice_transcribe import (
     normalize_segments,
     resolve_cached_model_name,
     suppress_model_output,
+)
+from sensevoice_runtime import set_timing
+from sensevoice_speaker import (
+    build_speaker_reference_centroids,
+    dominant_speaker_for_interval,
+    load_audio_16k_mono,
+    run_adaptive_speaker_engine,
 )
 
 
@@ -52,7 +60,7 @@ def build_pipeline(config):
         raise RuntimeError("当前 FunASR 包缺少 Fun-ASR-Nano vLLM pipeline，请升级 funasr。") from exc
     resolved_model = resolve_cached_model_name(config.get("model", "FunAudioLLM/Fun-ASR-Nano-2512"))
     resolved_vad_model = resolve_cached_model_name(config.get("vad_model", "fsmn-vad")) if config.get("vad_model") else None
-    resolved_spk_model = resolve_cached_model_name(config.get("spk_model")) if config.get("enable_speaker") else None
+    resolved_spk_model = None
     device_name = "cuda:0" if device == "cuda" else device
     gpu_throttle = GpuThrottle(config, device)
     if gpu_throttle.enabled:
@@ -91,7 +99,20 @@ def build_pipeline(config):
     return model, gpu_throttle
 
 
-def transcribe(model, config, job, gpu_throttle=None):
+def build_speaker_model(config):
+    if not config.get("enable_speaker"):
+        return None
+    from funasr import AutoModel
+
+    device = config.get("device", "cuda")
+    return AutoModel(
+        model=resolve_cached_model_name(config.get("spk_model")),
+        device="cuda:0" if device == "cuda" else device,
+        disable_update=True,
+    )
+
+
+def transcribe(model, config, job, gpu_throttle=None, spk_model_obj=None):
     audio_path = job.get("audio_path")
     if not audio_path or not os.path.exists(audio_path):
         raise FileNotFoundError(f"输入音频不存在: {audio_path or '未提供 audio_path'}")
@@ -107,14 +128,79 @@ def transcribe(model, config, job, gpu_throttle=None):
                 itn=bool(job.get("use_itn", config.get("use_itn", True))),
                 max_new_tokens=int(job.get("max_new_tokens", config.get("max_new_tokens", 512)) or 512),
                 batch_size_s=int(float(job.get("batch_size_s", config.get("batch_size_s", 300)) or 300)),
-                return_spk_res=bool(job.get("enable_speaker", config.get("enable_speaker", False))),
-                preset_spk_num=job.get("preset_spk_num", config.get("preset_spk_num")),
+                return_spk_res=False,
+                preset_spk_num=None,
             )
+
+    normalized = normalize_segments(results)
+    payload = {**config, **job, "_timings": {}}
+    enable_speaker = bool(payload.get("enable_speaker", False))
+    if enable_speaker:
+        try:
+            device = payload.get("device", config.get("device", "cuda"))
+            if spk_model_obj is None:
+                model_started = time.perf_counter()
+                spk_model_obj = build_speaker_model(payload)
+                set_timing(payload, "speaker_model_load_s", time.perf_counter() - model_started)
+            else:
+                set_timing(payload, "speaker_model_load_s", 0)
+            audio, sample_rate = load_audio_16k_mono(audio_path)
+            intervals = [
+                {"start": item.get("start", 0), "end": item.get("end", 0)}
+                for item in normalized
+                if float(item.get("end", 0) or 0) > float(item.get("start", 0) or 0)
+            ]
+            def load_references():
+                return build_speaker_reference_centroids(
+                    spk_model_obj,
+                    payload.get("speaker_references"),
+                    device,
+                    batch_size=int(payload.get("speaker_embedding_batch_size", 64) or 64),
+                )
+
+            adaptive = run_adaptive_speaker_engine(
+                spk_model_obj,
+                audio,
+                sample_rate,
+                intervals,
+                payload=payload,
+                references=load_references if payload.get("speaker_references") else None,
+            )
+            for item in normalized:
+                speaker, score = dominant_speaker_for_interval(
+                    item.get("start", 0), item.get("end", 0), adaptive.get("timeline", [])
+                )
+                if speaker:
+                    item["speaker"] = speaker
+                if score:
+                    item["speaker_score"] = score
+            payload["_speaker_processing"] = adaptive.get("processing", {})
+            timing = payload["_speaker_processing"].get("timings", {})
+            set_timing(payload, "speaker_probe_embedding_s", timing.get("probe_embedding_s", 0))
+            set_timing(payload, "speaker_probe_clustering_s", timing.get("probe_clustering_s", 0))
+            set_timing(payload, "speaker_full_embedding_s", timing.get("full_embedding_s", 0))
+            set_timing(payload, "speaker_full_clustering_s", timing.get("full_clustering_s", 0))
+            set_timing(payload, "speaker_matching_s", timing.get("reference_matching_s", 0))
+            set_timing(payload, "speaker_total_s", timing.get("total_s", 0))
+        except Exception as exc:
+            payload["_speaker_processing"] = {
+                "mode": str(payload.get("speaker_detection_mode") or "auto"),
+                "status": "failed", "decision": "inconclusive",
+                "reason": "speaker_processing_error", "full_run": False,
+                "error": str(exc),
+            }
+    else:
+        payload["_speaker_processing"] = {
+            "mode": "disabled", "status": "disabled", "decision": "disabled",
+            "reason": "speaker_disabled", "full_run": False,
+        }
 
     return {
         "backend": "fun_asr_nano_vllm",
         "language": job.get("language", config.get("language", "中文")),
-        "segments": normalize_segments(results),
+        "segments": normalized,
+        "timings": payload.get("_timings", {}),
+        "speaker_processing": payload.get("_speaker_processing"),
     }
 
 
@@ -122,6 +208,7 @@ def main():
     config = None
     model = None
     gpu_throttle = None
+    spk_model_obj = None
     original_stdout = sys.stdout
 
     for message in read_messages():
@@ -137,6 +224,7 @@ def main():
                 config = message.get("config") or {}
                 with contextlib.redirect_stdout(sys.stderr):
                     model, gpu_throttle = build_pipeline(config)
+                    spk_model_obj = build_speaker_model(config)
                 write_message({"type": "ready", "id": msg_id, "backend": "fun_asr_nano_vllm"})
             except SystemExit:
                 raise
@@ -155,7 +243,7 @@ def main():
                 continue
             try:
                 with contextlib.redirect_stdout(sys.stderr):
-                    result = transcribe(model, config, message, gpu_throttle)
+                    result = transcribe(model, config, message, gpu_throttle, spk_model_obj)
                 write_message({"type": "result", "id": msg_id, "result": result})
             except Exception as exc:
                 write_message({

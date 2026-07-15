@@ -82,3 +82,110 @@ describe('DelayedReplyService duplicate reply detection', () => {
     }
   });
 });
+
+describe('DelayedReplyService ASR speaker notification info', () => {
+  let outputDir: string;
+  let service: any;
+
+  beforeEach(() => {
+    outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'delayed-reply-asr-meta-'));
+    service = new DelayedReplyService({} as any, {} as any) as any;
+  });
+
+  afterEach(() => {
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  });
+
+  function getNotificationInfo(meta: Record<string, unknown>): string | undefined {
+    const goodnightTextPath = path.join(outputDir, 'recording_晚安回复.md');
+    const asrMetaPath = path.join(outputDir, 'recording.asr_meta.json');
+    fs.writeFileSync(asrMetaPath, JSON.stringify(meta), 'utf8');
+    return service.getAsrNotificationInfo(goodnightTextPath);
+  }
+
+  it('keeps legacy ASR metadata output unchanged', () => {
+    expect(getNotificationInfo({
+      backend: 'funasr',
+      modelProfile: 'default',
+      model: 'paraformer-zh',
+      elapsedSeconds: 20,
+      mediaDurationSeconds: 100,
+      realtimeFactor: 0.2
+    })).toBe('ASR: funasr / 原版(paraformer-zh)，耗时: 20.0s，速度: 5.00x，RTF: 0.200');
+  });
+
+  it('shows full speaker processing details and compact timings', () => {
+    const info = getNotificationInfo({
+      backend: 'sensevoice',
+      modelProfile: 'default',
+      model: 'SenseVoiceSmall',
+      speakerProcessing: {
+        mode: 'auto',
+        status: 'completed',
+        decision: 'multiple_speakers',
+        reason: 'probe detected multiple speakers',
+        fullRun: true,
+        sampledChunks: 6,
+        validChunks: 5,
+        detectedClusters: 3,
+        supportedClusters: 2,
+        sampledSpeechSeconds: 42.25,
+        timings: {
+          modelLoad: 99,
+          probeEmbedding: 1.2,
+          probeClustering: 0.3,
+          fullEmbedding: 8.4,
+          fullClustering: 0.6,
+          reference: 0.4,
+          matching: 0.2,
+          total: 11.1
+        }
+      }
+    });
+
+    expect(info).toContain('说话人: 已完整处理');
+    expect(info).toContain('模式: auto');
+    expect(info).toContain('判定: multiple_speakers');
+    expect(info).toContain('原因: probe detected multiple speakers');
+    expect(info).toContain('抽样: 6段/5段有效/3个检测簇/2个支持簇/42.3s语音');
+    expect(info).toContain('说话人耗时: 探测 1.5s / 全量 8.4s / 聚类 0.6s / 参考 0.4s / 匹配 0.2s / 总计 11.1s');
+    expect(info).not.toContain('99.0s');
+  });
+
+  it('shows the explicit skipped message for snake-case full_run metadata', () => {
+    const info = getNotificationInfo({
+      speakerProcessing: {
+        mode: 'auto',
+        status: 'skipped',
+        decision: 'single_speaker',
+        full_run: false,
+        sampledChunks: [1, 2, 3],
+        validChunks: 3,
+        timings: {
+          probeEmbedding: 0.8,
+          probeClustering: 0.2,
+          total: 1.4
+        }
+      }
+    });
+
+    expect(info).toContain('说话人: 抽样判定单人，已跳过全量');
+    expect(info).toContain('抽样: 3段/3段有效');
+    expect(info).toContain('说话人耗时: 探测 1.0s / 总计 1.4s');
+  });
+
+  it('shows speaker failure without implying ASR failure', () => {
+    const info = getNotificationInfo({
+      speakerProcessing: {
+        status: 'failed',
+        reason: 'clustering crashed',
+        fullRun: true,
+        timings: { total: 2.5 }
+      }
+    });
+
+    expect(info).toContain('说话人: 处理失败（ASR 已保留）');
+    expect(info).toContain('原因: clustering crashed');
+    expect(info).toContain('说话人耗时: 总计 2.5s');
+  });
+});

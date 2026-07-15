@@ -171,6 +171,19 @@ export interface AsrGpuThrottleConfig {
   segment_paraformer?: boolean;
 }
 
+export interface AsrAdaptiveSpeakerConfig {
+  speaker_detection_mode?: 'auto' | 'always';
+  speaker_probe_chunk_s?: number;
+  speaker_probe_max_chunks?: number;
+  speaker_probe_min_valid_chunks?: number;
+  speaker_probe_min_speech_s?: number;
+  speaker_probe_min_cluster_chunks?: number;
+  speaker_probe_min_cluster_s?: number;
+  speaker_probe_min_cohesion?: number;
+  speaker_probe_separation_margin?: number;
+  speaker_probe_fail_open?: boolean;
+}
+
 export interface AsrConfig {
   default_backend: AsrBackendName;
   backend?: AsrBackendName;
@@ -181,7 +194,7 @@ export interface AsrConfig {
     model: string;
     language: string;
   };
-  sensevoice: AsrPythonRuntimeConfig & {
+  sensevoice: AsrPythonRuntimeConfig & AsrAdaptiveSpeakerConfig & {
     model: string;
     vad_model: string;
     punc_model: string;
@@ -201,7 +214,7 @@ export interface AsrConfig {
     speaker_reference_margin?: number;
     speaker_embedding_batch_size?: number;
   };
-  fun_asr_nano: AsrPythonRuntimeConfig & {
+  fun_asr_nano: AsrPythonRuntimeConfig & AsrAdaptiveSpeakerConfig & {
     model: string;
     vad_model: string;
     punc_model?: string | null;
@@ -221,7 +234,7 @@ export interface AsrConfig {
     speaker_reference_margin?: number;
     speaker_embedding_batch_size?: number;
   };
-  fun_asr_nano_vllm: AsrPythonRuntimeConfig & {
+  fun_asr_nano_vllm: AsrPythonRuntimeConfig & AsrAdaptiveSpeakerConfig & {
     model: string;
     vad_model: string;
     punc_model?: string | null;
@@ -237,6 +250,7 @@ export interface AsrConfig {
     speaker_references?: AsrSpeakerReferenceConfig[];
     speaker_reference_threshold?: number;
     speaker_reference_margin?: number;
+    speaker_embedding_batch_size?: number;
     hub?: 'ms' | 'hf' | 'modelscope' | 'huggingface' | string;
     dtype?: 'bf16' | 'fp16' | 'fp32' | string;
     tensor_parallel_size?: number;
@@ -246,7 +260,7 @@ export interface AsrConfig {
     batch_size_s?: number;
     enforce_eager?: boolean;
   };
-  paraformer: AsrPythonRuntimeConfig & {
+  paraformer: AsrPythonRuntimeConfig & AsrAdaptiveSpeakerConfig & {
     model: string;
     vad_model: string;
     punc_model: string;

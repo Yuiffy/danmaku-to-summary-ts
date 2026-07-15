@@ -82,6 +82,7 @@ def transcribe(payload, runtime_cache):
         "language": payload.get("language", "auto"),
         "segments": raw_result,
         "timings": payload.get("_timings", {}),
+        "speaker_processing": payload.get("_speaker_processing"),
     }
     hotword_config = payload.get("phoneme_correction")
     if isinstance(hotword_config, dict) and coerce_bool(hotword_config.get("enabled"), False):

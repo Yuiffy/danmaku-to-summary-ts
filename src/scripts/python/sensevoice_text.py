@@ -128,7 +128,9 @@ def normalize_segments(raw_result):
         if end <= start:
             end = start + 0.1
 
-        speaker = item.get("spk") or item.get("speaker")
+        speaker = item.get("spk")
+        if speaker is None:
+            speaker = item.get("speaker")
         segment = {"start": start, "end": end, "text": text}
         if speaker is not None:
             segment["speaker"] = str(speaker)

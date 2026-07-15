@@ -1859,7 +1859,8 @@ export class DelayedReplyService implements IDelayedReplyService {
         `ASR: ${backend} / ${modelLabel}`,
         elapsed > 0 ? `耗时: ${elapsed.toFixed(1)}s` : undefined,
         speed ? `速度: ${speed.toFixed(2)}x` : undefined,
-        meta.realtimeFactor !== null && meta.realtimeFactor !== undefined ? `RTF: ${Number(meta.realtimeFactor).toFixed(3)}` : undefined
+        meta.realtimeFactor !== null && meta.realtimeFactor !== undefined ? `RTF: ${Number(meta.realtimeFactor).toFixed(3)}` : undefined,
+        this.getSpeakerProcessingNotificationInfo(meta.speakerProcessing)
       ].filter(Boolean).join('，');
     } catch (error) {
       this.logger.warn('读取 ASR 元数据失败', {
@@ -1868,6 +1869,154 @@ export class DelayedReplyService implements IDelayedReplyService {
       });
       return 'ASR: 元数据读取失败';
     }
+  }
+
+  private getSpeakerProcessingNotificationInfo(speakerProcessing: any): string | undefined {
+    if (!speakerProcessing || typeof speakerProcessing !== 'object') {
+      return undefined;
+    }
+
+    const rawStatus = speakerProcessing.status !== null && speakerProcessing.status !== undefined
+      ? String(speakerProcessing.status)
+      : '';
+    const status = rawStatus.trim().toLowerCase();
+    const decision = speakerProcessing.decision !== null && speakerProcessing.decision !== undefined
+      ? String(speakerProcessing.decision)
+      : '';
+    const normalizedDecision = decision.trim().toLowerCase();
+    const mode = speakerProcessing.mode !== null && speakerProcessing.mode !== undefined
+      ? String(speakerProcessing.mode)
+      : '';
+    const reason = speakerProcessing.reason !== null && speakerProcessing.reason !== undefined
+      ? String(speakerProcessing.reason)
+      : '';
+    const fullRunValue = speakerProcessing.fullRun ?? speakerProcessing.full_run;
+
+    if (status === 'disabled' || normalizedDecision === 'disabled' || mode === 'disabled') {
+      return undefined;
+    }
+
+    let statusLabel: string;
+    if (status.includes('fail') || status.includes('error')) {
+      statusLabel = '处理失败（ASR 已保留）';
+    } else if (fullRunValue === true) {
+      statusLabel = '已完整处理';
+    } else if (
+      fullRunValue === false ||
+      status.includes('skip') ||
+      normalizedDecision.includes('single')
+    ) {
+      statusLabel = '抽样判定单人，已跳过全量';
+    } else if (
+      status === 'completed' ||
+      status === 'complete' ||
+      status === 'success' ||
+      normalizedDecision.includes('multi') ||
+      normalizedDecision.includes('multiple')
+    ) {
+      statusLabel = '已完整处理';
+    } else {
+      statusLabel = rawStatus ? `状态: ${rawStatus}` : '状态未知';
+    }
+
+    const context = [
+      mode ? `模式: ${mode}` : undefined,
+      decision ? `判定: ${decision}` : undefined,
+      reason ? `原因: ${reason}` : undefined
+    ].filter(Boolean).join('，');
+
+    const sampleParts = [
+      this.formatSpeakerCount(
+        speakerProcessing.sampledChunks ?? speakerProcessing.sampled_chunks,
+        '段'
+      ),
+      this.formatSpeakerCount(
+        speakerProcessing.validChunks ?? speakerProcessing.valid_chunks,
+        '段有效'
+      ),
+      this.formatSpeakerCount(
+        speakerProcessing.detectedClusters ?? speakerProcessing.detected_clusters,
+        '个检测簇'
+      ),
+      this.formatSpeakerCount(
+        speakerProcessing.supportedClusters ?? speakerProcessing.supported_clusters,
+        '个支持簇'
+      ),
+      this.formatSpeakerSeconds(
+        speakerProcessing.sampledSpeechSeconds ??
+          speakerProcessing.sampled_speech_seconds ??
+          speakerProcessing.sampled_speech_s,
+        '语音'
+      )
+    ].filter(Boolean);
+
+    const timingInfo = this.getSpeakerTimingNotificationInfo(speakerProcessing.timings);
+    return [
+      `说话人: ${statusLabel}${context ? `（${context}）` : ''}`,
+      sampleParts.length > 0 ? `抽样: ${sampleParts.join('/')}` : undefined,
+      timingInfo
+    ].filter(Boolean).join('；');
+  }
+
+  private getSpeakerTimingNotificationInfo(timings: any): string | undefined {
+    if (!timings || typeof timings !== 'object') {
+      return undefined;
+    }
+
+    const probeEmbedding = this.getFirstFiniteNumber(timings.probeEmbedding, timings.probe_embedding_s);
+    const probeClustering = this.getFirstFiniteNumber(timings.probeClustering, timings.probe_clustering_s);
+    const probeParts = [probeEmbedding, probeClustering].filter((value): value is number => value !== undefined);
+    const probe = probeParts.length > 0
+      ? probeParts.reduce((sum, value) => sum + value, 0)
+      : undefined;
+    const full = this.getFirstFiniteNumber(timings.fullEmbedding, timings.full_embedding_s);
+    const clustering = this.getFirstFiniteNumber(timings.fullClustering, timings.full_clustering_s);
+    const reference = this.getFirstFiniteNumber(timings.reference, timings.referenceEmbedding, timings.reference_embedding_s);
+    const matching = this.getFirstFiniteNumber(timings.matching, timings.speakerMatching, timings.reference_matching_s);
+    const total = this.getFirstFiniteNumber(timings.total, timings.total_s);
+
+    const parts = [
+      this.formatSpeakerTiming(probe, '探测'),
+      this.formatSpeakerTiming(full, '全量'),
+      this.formatSpeakerTiming(clustering, '聚类'),
+      this.formatSpeakerTiming(reference, '参考'),
+      this.formatSpeakerTiming(matching, '匹配'),
+      this.formatSpeakerTiming(total, '总计')
+    ].filter(Boolean);
+
+    return parts.length > 0 ? `说话人耗时: ${parts.join(' / ')}` : undefined;
+  }
+
+  private getFirstFiniteNumber(...values: unknown[]): number | undefined {
+    for (const value of values) {
+      const number = this.getFiniteNumber(value);
+      if (number !== undefined) {
+        return number;
+      }
+    }
+    return undefined;
+  }
+
+  private getFiniteNumber(value: unknown): number | undefined {
+    if (value === null || value === undefined || value === '') {
+      return undefined;
+    }
+    const number = Number(value);
+    return Number.isFinite(number) ? number : undefined;
+  }
+
+  private formatSpeakerCount(value: unknown, suffix: string): string | undefined {
+    const number = Array.isArray(value) ? value.length : this.getFiniteNumber(value);
+    return number !== undefined ? `${number}${suffix}` : undefined;
+  }
+
+  private formatSpeakerSeconds(value: unknown, label: string): string | undefined {
+    const seconds = this.getFiniteNumber(value);
+    return seconds !== undefined ? `${seconds.toFixed(1)}s${label}` : undefined;
+  }
+
+  private formatSpeakerTiming(value: number | undefined, label: string): string | undefined {
+    return value !== undefined ? `${label} ${value.toFixed(1)}s` : undefined;
   }
 
   private getGoodnightTextGenerationInfo(textPath: string): string | undefined {

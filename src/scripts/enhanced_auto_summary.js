@@ -184,7 +184,7 @@ function enrichAsrContextWithSpeakerRequest(context = {}, request = null, config
     };
 }
 
-function logAsrTimings(timings, mediaDurationSeconds) {
+function logAsrTimings(timings, mediaDurationSeconds, speakerProcessing = null) {
     if (!timings || typeof timings !== 'object' || Object.keys(timings).length === 0) {
         return;
     }
@@ -202,7 +202,14 @@ function logAsrTimings(timings, mediaDurationSeconds) {
         punctuationSeconds: seconds('punc_s'),
         builtinSpeakerEmbeddingSeconds: seconds('builtin_speaker_embedding_s'),
         speakerClusterEmbeddingSeconds: seconds('speaker_cluster_embedding_s'),
+        speakerModelLoadSeconds: seconds('speaker_model_load_s'),
+        speakerProbeEmbeddingSeconds: seconds('speaker_probe_embedding_s'),
+        speakerProbeClusteringSeconds: seconds('speaker_probe_clustering_s'),
+        speakerFullEmbeddingSeconds: seconds('speaker_full_embedding_s'),
+        speakerFullClusteringSeconds: seconds('speaker_full_clustering_s'),
         speakerMatchingSeconds: seconds('speaker_matching_s'),
+        speakerTotalSeconds: seconds('speaker_total_s'),
+        speakerProcessing: speakerProcessing || null,
         pipelineOverheadSeconds: seconds('pipeline_overhead_s'),
         postprocessSeconds: seconds('postprocess_s'),
         backendTotalSeconds: seconds('backend_total_s'),
@@ -213,8 +220,10 @@ function logAsrTimings(timings, mediaDurationSeconds) {
         `加载=${summary.modelLoadSeconds.toFixed(1)}s, 参考embedding=${summary.referenceEmbeddingSeconds.toFixed(1)}s, ` +
         `VAD=${summary.vadSeconds.toFixed(1)}s, 真正转写=${summary.transcriptionSeconds.toFixed(1)}s` +
         `${summary.trueAsrSpeed ? ` (${summary.trueAsrSpeed.toFixed(1)}x)` : ''}, ` +
-        `标点=${summary.punctuationSeconds.toFixed(1)}s, 内建说话人embedding=${summary.builtinSpeakerEmbeddingSeconds.toFixed(1)}s, ` +
-        `实名聚类embedding=${summary.speakerClusterEmbeddingSeconds.toFixed(1)}s, 匹配=${summary.speakerMatchingSeconds.toFixed(1)}s, ` +
+        `标点=${summary.punctuationSeconds.toFixed(1)}s, speaker探测=${(
+            summary.speakerProbeEmbeddingSeconds + summary.speakerProbeClusteringSeconds
+        ).toFixed(1)}s, speaker全量=${summary.speakerFullEmbeddingSeconds.toFixed(1)}s, ` +
+        `speaker聚类=${summary.speakerFullClusteringSeconds.toFixed(1)}s, 匹配=${summary.speakerMatchingSeconds.toFixed(1)}s, ` +
         `pipeline其他=${summary.pipelineOverheadSeconds.toFixed(1)}s, 后处理=${summary.postprocessSeconds.toFixed(1)}s, ` +
         `backend总计=${summary.backendTotalSeconds.toFixed(1)}s`
     );
@@ -864,7 +873,8 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
             config.asr.paraformer = {
                 ...(config.asr.paraformer || {}),
                 enable_speaker: true,
-                spk_model: config.asr.paraformer?.spk_model || 'cam++'
+                spk_model: config.asr.paraformer?.spk_model || 'cam++',
+                speaker_detection_mode: 'always'
             };
             console.log('🎙️  本任务已启用一次性说话人识别（Paraformer + CAM++）');
         }
@@ -933,7 +943,18 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
                     throw new Error(`未实现的 ASR backend: ${selected.backend}`);
                 }
 
-                const asrTimingSummary = logAsrTimings(asrResult?.timings, mediaDurationSeconds);
+                const speakerProcessing = asrResult?.speaker_processing || asrResult?.speakerProcessing || null;
+                if (speakerProcessing?.timings && asrResult?.timings) {
+                    speakerProcessing.timings = {
+                        ...speakerProcessing.timings,
+                        reference_embedding_s: Number(asrResult.timings.reference_embedding_s || 0)
+                    };
+                }
+                const asrTimingSummary = logAsrTimings(
+                    asrResult?.timings,
+                    mediaDurationSeconds,
+                    speakerProcessing
+                );
                 normalized = asrBackends.normalizeAsrResult(asrResult, subtitleConfig);
                 asrBackends.writeSrt(normalized, srtPath, {
                     ...subtitleConfig,
@@ -966,6 +987,7 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
                     realtimeFactor: realtimeFactor === null ? null : Number(realtimeFactor.toFixed(4)),
                     stageTimings: asrResult?.timings || null,
                     timingSummary: asrTimingSummary || null,
+                    speakerProcessing,
                     segments: normalized.segments.length,
                     generatedAt: new Date().toISOString()
                 });

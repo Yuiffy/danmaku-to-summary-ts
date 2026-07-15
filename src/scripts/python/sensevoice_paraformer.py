@@ -6,10 +6,11 @@ import traceback
 
 from sensevoice_runtime import StageTimeout, log_progress, set_timing, suppress_model_output
 from sensevoice_speaker import (
-    build_cluster_embeddings_from_sentence_info,
     build_speaker_reference_centroids,
-    classify_speaker_clusters,
+    dominant_speaker_for_interval,
     load_audio_16k_mono,
+    run_adaptive_speaker_engine,
+    smooth_speaker_timeline,
 )
 from sensevoice_text import normalize_segments, resolve_cached_model_name, restore_punctuation
 
@@ -376,14 +377,7 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
     spk_model = payload.get("spk_model")
     enable_speaker = bool(payload.get("enable_speaker", False))
     if enable_speaker and spk_model:
-        resolved_spk = resolve_cached_model_name(spk_model)
-        model_kwargs["spk_model"] = resolved_spk
-        model_kwargs["spk_kwargs"] = payload.get("spk_kwargs") or {
-            "cb_kwargs": {
-                "merge_thr": float(payload.get("speaker_merge_threshold", 0.78))
-            }
-        }
-        log_progress(f"  SPK: {resolved_spk}")
+        log_progress(f"  SPK: {resolve_cached_model_name(spk_model)} (ASR 后自适应)")
 
     speaker_references = payload.get("speaker_references")
     if speaker_references and enable_speaker:
@@ -394,9 +388,6 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
         {
             "model_kwargs": model_kwargs,
             "vad_device": vad_device or None,
-            "speaker_references": speaker_references if enable_speaker else None,
-            "speaker_reference_threshold": payload.get("speaker_reference_threshold"),
-            "speaker_reference_margin": payload.get("speaker_reference_margin"),
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -409,10 +400,11 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
 
     if cache_hit:
         model = cache_entry["model"]
-        spk_model_obj = cache_entry.get("spk_model_obj")
-        reference_centroids = cache_entry.get("reference_centroids")
-        log_progress("paraformer pipeline 命中常驻缓存，跳过模型与参考说话人加载")
+        spk_model_obj = cache.get("speaker_model")
+        reference_centroids = None
+        log_progress("paraformer pipeline 命中常驻缓存，跳过 ASR 模型加载")
         set_timing(payload, "model_load_s", 0)
+        set_timing(payload, "speaker_model_load_s", 0)
         set_timing(payload, "reference_embedding_s", 0)
     else:
         if cache_entry:
@@ -422,7 +414,7 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
             try:
                 import torch
 
-                if torch.cuda.is_available():
+                if torch.cuda.is_available() and not cache.get("speaker_model"):
                     torch.cuda.empty_cache()
             except Exception:
                 pass
@@ -433,11 +425,18 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
             if gpu_throttle:
                 gpu_throttle.wait_if_busy("paraformer pipeline 加载")
             if enable_speaker and spk_model:
-                spk_model_obj = AutoModel(
-                    model=resolve_cached_model_name(spk_model),
-                    device=device_name,
-                    disable_update=True,
-                )
+                spk_model_obj = cache.get("speaker_model")
+                if spk_model_obj is None:
+                    speaker_load_started = time.perf_counter()
+                    spk_model_obj = AutoModel(
+                        model=resolve_cached_model_name(spk_model),
+                        device=device_name,
+                        disable_update=True,
+                    )
+                    cache["speaker_model"] = spk_model_obj
+                    set_timing(payload, "speaker_model_load_s", time.perf_counter() - speaker_load_started)
+                else:
+                    set_timing(payload, "speaker_model_load_s", 0)
             with StageTimeout(payload.get("model_load_timeout_s", 180), "paraformer pipeline 加载"):
                 model = AutoModel(**model_kwargs)
             set_timing(payload, "model_load_s", time.perf_counter() - model_load_started)
@@ -446,24 +445,26 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
             _fail(fail_fn, "paraformer pipeline 加载失败", f"{exc}\n{traceback.format_exc()}")
 
         reference_centroids = None
-        reference_started = time.perf_counter()
-        if enable_speaker and speaker_references and spk_model_obj:
-            try:
-                reference_centroids = build_speaker_reference_centroids(
-                    spk_model_obj,
-                    speaker_references,
-                    device,
-                    batch_size=int(payload.get("speaker_embedding_batch_size", 64) or 64),
-                )
-            except Exception as exc:
-                log_progress(f"参考说话人加载失败，使用聚类结果: {exc}")
-        set_timing(payload, "reference_embedding_s", time.perf_counter() - reference_started)
+        set_timing(payload, "reference_embedding_s", 0)
         cache["paraformer"] = {
             "key": cache_key,
             "model": model,
-            "spk_model_obj": spk_model_obj,
-            "reference_centroids": reference_centroids,
         }
+
+    if enable_speaker and spk_model and spk_model_obj is None:
+        try:
+            speaker_load_started = time.perf_counter()
+            spk_model_obj = AutoModel(
+                model=resolve_cached_model_name(spk_model),
+                device=device_name,
+                disable_update=True,
+            )
+            cache["speaker_model"] = spk_model_obj
+            set_timing(payload, "speaker_model_load_s", time.perf_counter() - speaker_load_started)
+        except Exception as exc:
+            log_progress(f"说话人模型加载失败，保留 ASR 结果: {exc}")
+    else:
+        set_timing(payload, "speaker_model_load_s", payload.get("_timings", {}).get("speaker_model_load_s", 0))
 
     try:
         configure_paraformer_devices(model, main_device=device_name, vad_device=vad_device)
@@ -540,6 +541,13 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
         set_timing(payload, "speaker_matching_s", 0)
         set_timing(payload, "postprocess_s", time.perf_counter() - postprocess_started)
         set_timing(payload, "backend_total_s", time.perf_counter() - backend_started)
+        payload["_speaker_processing"] = {
+            "mode": "disabled" if not enable_speaker else str(payload.get("speaker_detection_mode") or "auto"),
+            "status": "disabled" if not enable_speaker else "failed",
+            "decision": "disabled" if not enable_speaker else "inconclusive",
+            "reason": "speaker_disabled" if not enable_speaker else "missing_sentence_info",
+            "full_run": False,
+        }
         log_progress(
             f"字符时间戳切分完成: 输出段数={len(segments)}, "
             f"postprocess={payload['_timings']['postprocess_s']:.3f}s"
@@ -548,53 +556,77 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
 
     log_progress(f"sentence_info: {len(sentence_info)} 句")
 
-    cluster_matches = {}
-    cluster_embedding_started = time.perf_counter()
-    if reference_centroids and sentence_info and spk_model_obj:
+    speaker_timeline = []
+    if enable_speaker and spk_model_obj and sentence_info:
         try:
             audio_data, sample_rate = load_audio_16k_mono(audio_path)
-            cluster_embeddings = build_cluster_embeddings_from_sentence_info(
+            speaker_intervals = [
+                {
+                    "start": float(item.get("start", 0) or 0) / 1000.0,
+                    "end": float(item.get("end", item.get("start", 0)) or 0) / 1000.0,
+                }
+                for item in sentence_info
+                if float(item.get("end", 0) or 0) > float(item.get("start", 0) or 0)
+            ]
+            def load_references():
+                reference_started = time.perf_counter()
+                centroids = build_speaker_reference_centroids(
+                    spk_model_obj,
+                    speaker_references,
+                    device,
+                    batch_size=int(payload.get("speaker_embedding_batch_size", 64) or 64),
+                )
+                set_timing(payload, "reference_embedding_s", time.perf_counter() - reference_started)
+                return centroids
+
+            adaptive = run_adaptive_speaker_engine(
                 spk_model_obj,
                 audio_data,
                 sample_rate,
-                sentence_info,
-                payload,
-                device,
+                speaker_intervals,
+                payload=payload,
+                references=load_references if speaker_references else None,
             )
-            set_timing(payload, "speaker_cluster_embedding_s", time.perf_counter() - cluster_embedding_started)
-            matching_started = time.perf_counter()
-            cluster_matches = classify_speaker_clusters(
-                cluster_embeddings,
-                reference_centroids,
-                float(payload.get("speaker_reference_threshold", 0.45)),
-                float(payload.get("speaker_reference_margin", 0.0) or 0.0),
-                bool(payload.get("speaker_constrain_to_references", False)),
+            speaker_timeline = smooth_speaker_timeline(
+                adaptive.get("timeline", []),
+                float(payload.get("speaker_unknown_fill_gap_s", 10.0) or 10.0),
+                float(payload.get("speaker_unknown_max_duration_s", 12.0) or 12.0),
             )
-            set_timing(payload, "speaker_matching_s", time.perf_counter() - matching_started)
-            named_count = sum(
-                1 for value in cluster_matches.values() if value.get("accepted")
-            )
-            log_progress(
-                f"说话人实名映射完成: clusters={len(cluster_matches)}, named={named_count}, "
-                f"embedding={payload['_timings'].get('speaker_cluster_embedding_s', 0):.3f}s, "
-                f"matching={payload['_timings'].get('speaker_matching_s', 0):.3f}s"
-            )
-            for cluster_label, match in cluster_matches.items():
-                log_progress(
-                    "  说话人匹配: "
-                    f"cluster={cluster_label}, top1={match.get('best_label')}, "
-                    f"top1_score={float(match.get('score', -1.0)):.4f}, "
-                    f"top2={match.get('second_label')}, "
-                    f"top2_score={float(match.get('second_score', -1.0)):.4f}, "
-                    f"margin={float(match.get('margin', -1.0)):.4f}, "
-                    f"decision={match.get('label')}"
-                )
+            payload["_speaker_processing"] = adaptive.get("processing", {})
+            adaptive_timings = payload["_speaker_processing"].get("timings", {})
+            set_timing(payload, "speaker_probe_embedding_s", adaptive_timings.get("probe_embedding_s", 0))
+            set_timing(payload, "speaker_probe_clustering_s", adaptive_timings.get("probe_clustering_s", 0))
+            set_timing(payload, "speaker_full_embedding_s", adaptive_timings.get("full_embedding_s", 0))
+            set_timing(payload, "speaker_full_clustering_s", adaptive_timings.get("full_clustering_s", 0))
+            set_timing(payload, "speaker_matching_s", adaptive_timings.get("reference_matching_s", 0))
+            set_timing(payload, "speaker_total_s", adaptive_timings.get("total_s", 0))
+            set_timing(payload, "speaker_cluster_embedding_s", adaptive_timings.get("full_embedding_s", 0))
         except Exception as exc:
-            set_timing(payload, "speaker_cluster_embedding_s", time.perf_counter() - cluster_embedding_started)
-            log_progress(f"说话人实名映射失败，使用聚类结果: {exc}")
+            log_progress(f"自适应说话人处理失败，保留 ASR 结果: {exc}")
+            payload["_speaker_processing"] = {
+                "mode": str(payload.get("speaker_detection_mode") or "auto"),
+                "status": "failed",
+                "decision": "inconclusive",
+                "reason": "speaker_processing_error",
+                "full_run": False,
+                "error": str(exc),
+            }
+    elif enable_speaker:
+        payload["_speaker_processing"] = {
+            "mode": str(payload.get("speaker_detection_mode") or "auto"),
+            "status": "failed",
+            "decision": "inconclusive",
+            "reason": "speaker_model_unavailable",
+            "full_run": False,
+        }
     else:
-        set_timing(payload, "speaker_cluster_embedding_s", 0)
-        set_timing(payload, "speaker_matching_s", 0)
+        payload["_speaker_processing"] = {
+            "mode": "disabled",
+            "status": "disabled",
+            "decision": "disabled",
+            "reason": "speaker_disabled",
+            "full_run": False,
+        }
 
     postprocess_started = time.perf_counter()
     segments = []
@@ -610,15 +642,13 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
         start_s = round(start_ms / 1000.0, 3)
         end_s = round(max(end_ms, start_ms + 100) / 1000.0, 3)
 
-        spk = sent.get("spk")
         speaker_label = None
         speaker_score = None
-
-        if spk is not None:
-            cluster_label = f"SPEAKER_{int(spk):02d}" if str(spk).isdigit() else str(spk)
-            match = cluster_matches.get(cluster_label)
-            speaker_label = match.get("label") if match else cluster_label
-            speaker_score = match.get("score") if match else None
+        speaker_label, speaker_score = dominant_speaker_for_interval(
+            start_s,
+            end_s,
+            speaker_timeline,
+        )
 
         if len(text) <= max_subtitle_chars:
             segment = {

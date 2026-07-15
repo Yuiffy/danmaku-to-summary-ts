@@ -1212,6 +1212,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     let timedOut = false;
     let asrStartedAt: number | null = null;
     let asrTimingSummary: Record<string, any> | null = null;
+    let stdoutLineBuffer = '';
 
     const timeoutId = setTimeout(async () => {
       timedOut = true;
@@ -1243,53 +1244,75 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         resolve();
       };
 
+      const handleWorkerOutput = (output: string) => {
+        const line = output.trim();
+        if (!line) {
+          return;
+        }
+        this.logger.info(`[Mikufans队列Worker] ${line}`);
+        if (!asrStartedAt && line.includes('-> [ASR]')) {
+          asrStartedAt = Date.now();
+        }
+        const timingMatch = line.match(/\[\[ASR_TIMING\]\]\s+({[^\r\n]+})/);
+        if (timingMatch) {
+          try {
+            asrTimingSummary = JSON.parse(timingMatch[1]);
+          } catch (error: any) {
+            this.logger.warn(`解析 ASR 阶段耗时失败: ${error.message}`);
+          }
+        }
+        void this.handleDelayedReplyReadyOutput(line, task.mediaPath);
+        if (line.includes(ASR_PHASE_DONE_SENTINEL) || line.includes(LEGACY_WHISPER_PHASE_DONE_SENTINEL)) {
+          if (asrStartedAt) {
+            const asrElapsedSeconds = (Date.now() - asrStartedAt) / 1000;
+            const speakerProcessing = asrTimingSummary?.speakerProcessing;
+            void ProcessingAlertService.notifyIfSlowStage(
+              'ASR',
+              asrElapsedSeconds,
+              ProcessingAlertService.getThresholds().asrSlowSeconds,
+              task.mediaPath,
+              {
+                taskId: task.id,
+                roomId,
+                ...(asrTimingSummary ? {
+                  模型缓存: asrTimingSummary.cacheHit ? '命中' : '未命中',
+                  模型加载秒: asrTimingSummary.modelLoadSeconds,
+                  真正转写秒: asrTimingSummary.transcriptionSeconds,
+                  真正转写速度: asrTimingSummary.trueAsrSpeed
+                    ? `${asrTimingSummary.trueAsrSpeed}x`
+                    : 'N/A',
+                  VAD秒: asrTimingSummary.vadSeconds,
+                  说话人状态: speakerProcessing?.status || '未知',
+                  说话人探测秒: (
+                    Number(asrTimingSummary.speakerProbeEmbeddingSeconds || 0) +
+                    Number(asrTimingSummary.speakerProbeClusteringSeconds || 0)
+                  ).toFixed(1),
+                  说话人全量秒: Number(asrTimingSummary.speakerFullEmbeddingSeconds || 0).toFixed(1),
+                  说话人聚类秒: Number(asrTimingSummary.speakerFullClusteringSeconds || 0).toFixed(1),
+                  说话人匹配秒: asrTimingSummary.speakerMatchingSeconds,
+                  说话人总计秒: asrTimingSummary.speakerTotalSeconds
+                } : {})
+              }
+            );
+          }
+          this.logger.info(`Mikufans队列Worker已完成ASR阶段，释放队列槽位，AI/漫画阶段继续后台执行: ${path.basename(task.mediaPath)}`);
+          releaseWorkerSlot('asr-phase-done');
+        }
+      };
+
       ps.stdout?.on('data', (data: Buffer) => {
-        const output = data.toString().trim();
-        if (output) {
-          this.logger.info(`[Mikufans队列Worker] ${output}`);
-          if (!asrStartedAt && output.includes('-> [ASR]')) {
-            asrStartedAt = Date.now();
-          }
-          const timingMatch = output.match(/\[\[ASR_TIMING\]\]\s+({[^\r\n]+})/);
-          if (timingMatch) {
-            try {
-              asrTimingSummary = JSON.parse(timingMatch[1]);
-            } catch (error: any) {
-              this.logger.warn(`解析 ASR 阶段耗时失败: ${error.message}`);
-            }
-          }
-          void this.handleDelayedReplyReadyOutput(output, task.mediaPath);
-          if (output.includes(ASR_PHASE_DONE_SENTINEL) || output.includes(LEGACY_WHISPER_PHASE_DONE_SENTINEL)) {
-            if (asrStartedAt) {
-              const asrElapsedSeconds = (Date.now() - asrStartedAt) / 1000;
-              void ProcessingAlertService.notifyIfSlowStage(
-                'ASR',
-                asrElapsedSeconds,
-                ProcessingAlertService.getThresholds().asrSlowSeconds,
-                task.mediaPath,
-                {
-                  taskId: task.id,
-                  roomId,
-                  ...(asrTimingSummary ? {
-                    模型缓存: asrTimingSummary.cacheHit ? '命中' : '未命中',
-                    模型加载秒: asrTimingSummary.modelLoadSeconds,
-                    真正转写秒: asrTimingSummary.transcriptionSeconds,
-                    真正转写速度: asrTimingSummary.trueAsrSpeed
-                      ? `${asrTimingSummary.trueAsrSpeed}x`
-                      : 'N/A',
-                    VAD秒: asrTimingSummary.vadSeconds,
-                    说话人Embedding秒: (
-                      Number(asrTimingSummary.builtinSpeakerEmbeddingSeconds || 0) +
-                      Number(asrTimingSummary.speakerClusterEmbeddingSeconds || 0)
-                    ).toFixed(1),
-                    说话人匹配秒: asrTimingSummary.speakerMatchingSeconds
-                  } : {})
-                }
-              );
-            }
-            this.logger.info(`Mikufans队列Worker已完成ASR阶段，释放队列槽位，AI/漫画阶段继续后台执行: ${path.basename(task.mediaPath)}`);
-            releaseWorkerSlot('asr-phase-done');
-          }
+        stdoutLineBuffer += data.toString();
+        const lines = stdoutLineBuffer.split(/\r?\n/);
+        stdoutLineBuffer = lines.pop() || '';
+        for (const line of lines) {
+          handleWorkerOutput(line);
+        }
+      });
+
+      ps.stdout?.on('end', () => {
+        if (stdoutLineBuffer) {
+          handleWorkerOutput(stdoutLineBuffer);
+          stdoutLineBuffer = '';
         }
       });
 

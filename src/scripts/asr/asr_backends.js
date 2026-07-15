@@ -37,6 +37,19 @@ const DEFAULT_GPU_THROTTLE = {
     segment_paraformer: true
 };
 
+const DEFAULT_ADAPTIVE_SPEAKER_CONFIG = {
+    speaker_detection_mode: 'auto',
+    speaker_probe_chunk_s: 4,
+    speaker_probe_max_chunks: 20,
+    speaker_probe_min_valid_chunks: 6,
+    speaker_probe_min_speech_s: 20,
+    speaker_probe_min_cluster_chunks: 2,
+    speaker_probe_min_cluster_s: 6,
+    speaker_probe_min_cohesion: 0.70,
+    speaker_probe_separation_margin: 0.03,
+    speaker_probe_fail_open: true
+};
+
 const DEFAULT_ASR_CONFIG = {
     default_backend: 'paraformer',
     backend: undefined,
@@ -76,7 +89,8 @@ const DEFAULT_ASR_CONFIG = {
         speaker_references: [],
         speaker_reference_threshold: 0.45,
         speaker_reference_margin: 0.06,
-        speaker_embedding_batch_size: 64
+        speaker_embedding_batch_size: 64,
+        ...DEFAULT_ADAPTIVE_SPEAKER_CONFIG
     },
     fun_asr_nano: {
         model: 'FunAudioLLM/Fun-ASR-Nano-2512',
@@ -100,7 +114,8 @@ const DEFAULT_ASR_CONFIG = {
         speaker_references: [],
         speaker_reference_threshold: 0.45,
         speaker_reference_margin: 0.06,
-        speaker_embedding_batch_size: 64
+        speaker_embedding_batch_size: 64,
+        ...DEFAULT_ADAPTIVE_SPEAKER_CONFIG
     },
     fun_asr_nano_vllm: {
         model: 'FunAudioLLM/Fun-ASR-Nano-2512',
@@ -121,6 +136,7 @@ const DEFAULT_ASR_CONFIG = {
         speaker_references: [],
         speaker_reference_threshold: 0.45,
         speaker_reference_margin: 0.06,
+        ...DEFAULT_ADAPTIVE_SPEAKER_CONFIG,
         hub: 'ms',
         dtype: 'bf16',
         tensor_parallel_size: 1,
@@ -155,7 +171,8 @@ const DEFAULT_ASR_CONFIG = {
         speaker_references: [],
         speaker_reference_threshold: 0.45,
         speaker_reference_margin: 0.06,
-        speaker_embedding_batch_size: 64
+        speaker_embedding_batch_size: 64,
+        ...DEFAULT_ADAPTIVE_SPEAKER_CONFIG
     }
 };
 
@@ -473,7 +490,9 @@ function normalizeAsrResult(result, subtitleConfig = {}) {
         backend: result?.backend || 'unknown',
         language: result?.language,
         segments: normalized,
-        raw: result?.raw
+        raw: result?.raw,
+        timings: result?.timings,
+        speaker_processing: result?.speaker_processing || result?.speakerProcessing
     };
 }
 
