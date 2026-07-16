@@ -60,9 +60,13 @@ const DEFAULT_CLIP_TOPICS_CONFIG = {
     enabled: false,
     mode: 'local_review',
     keywords: ['岁己', '小岁', '小岁姐', '岁己姐', '饼干岁', 'SUI'],
+    aiModel: 'gpt-5.6-luna',
     aiVerify: true,  // AI 验证:过滤唱歌/ASR误识别的假命中
     prePaddingSeconds: 20,
     postPaddingSeconds: 35,
+    minClipSeconds: 30,
+    boundaryEndExtensionSeconds: 60,
+    boundarySilenceGapSeconds: 2,
     maxClipSeconds: 300,
     mergeGapSeconds: 120,
     contextPaddingSeconds: 300,  // AI 上下文窗口:关键词前后各拿5分钟
@@ -145,7 +149,10 @@ async function verifyClipWithAI(window, keywords, config = {}) {
         // Use the existing AI infrastructure
         const { generateTextWithTuZi, generateTextWithGemini } = require('./ai_text_generator');
         const result = provider === 'tuZi'
-            ? await generateTextWithTuZi(prompt, { wordLimit: 100 })
+            ? await generateTextWithTuZi(prompt, {
+                wordLimit: 100,
+                primaryModel: getTopicClipAiModel(config)
+            })
             : await generateTextWithGemini(prompt, { wordLimit: 100 });
 
         const text = (result.text || '').trim();
@@ -155,14 +162,19 @@ async function verifyClipWithAI(window, keywords, config = {}) {
             const parsed = JSON.parse(jsonMatch[0]);
             return {
                 verified: !!parsed.verified,
-                reason: parsed.reason || ''
+                reason: parsed.reason || '',
+                model: result.meta?.model || getTopicClipAiModel(config)
             };
         }
         // If can't parse, be conservative and keep the clip
-        return { verified: true, reason: 'AI响应解析失败,保留切片' };
+        return {
+            verified: true,
+            reason: 'AI响应解析失败,保留切片',
+            model: result.meta?.model || getTopicClipAiModel(config)
+        };
     } catch (error) {
         console.warn(`⚠️  AI验证失败,保留切片: ${error.message}`);
-        return { verified: true, reason: `AI调用失败: ${error.message}` };
+        return { verified: true, reason: `AI调用失败: ${error.message}`, model: getTopicClipAiModel(config) };
     }
 }
 
@@ -172,6 +184,7 @@ function getClipTopicsConfig(config = {}) {
         ...DEFAULT_CLIP_TOPICS_CONFIG,
         ...raw,
         keywords: Array.isArray(raw.keywords) ? raw.keywords : DEFAULT_CLIP_TOPICS_CONFIG.keywords,
+        aiModel: String(raw.aiModel || DEFAULT_CLIP_TOPICS_CONFIG.aiModel),
         ignoredRoomIds: Array.isArray(raw.ignoredRoomIds) ? raw.ignoredRoomIds.map(value => String(value)).filter(Boolean) : [],
         extraTags: Array.isArray(raw.extraTags) ? raw.extraTags : DEFAULT_CLIP_TOPICS_CONFIG.extraTags,
         autoUpload: {
@@ -183,6 +196,11 @@ function getClipTopicsConfig(config = {}) {
             ...(raw.notify || {})
         }
     };
+}
+
+function getTopicClipAiModel(config = {}) {
+    return String(config.clipTopics?.aiModel || DEFAULT_CLIP_TOPICS_CONFIG.aiModel).trim()
+        || DEFAULT_CLIP_TOPICS_CONFIG.aiModel;
 }
 
 function isVideoFile(filePath) {
@@ -391,6 +409,10 @@ function buildTopicBursts(segments = [], matches = [], options = {}) {
     const contextPadding = Math.max(0, Number(options.contextPaddingSeconds) || 300);
     const mergeGap = Math.max(0, Number(options.mergeGapSeconds) || 120);
     const maxSegments = Math.max(1, Number(options.maxSegmentsPerBurst) || 100);
+    const minClipSeconds = Math.max(0, Number(options.minClipSeconds) || DEFAULT_CLIP_TOPICS_CONFIG.minClipSeconds);
+    const boundaryEndExtensionSeconds = Math.max(0, Number(options.boundaryEndExtensionSeconds) || DEFAULT_CLIP_TOPICS_CONFIG.boundaryEndExtensionSeconds);
+    const boundarySilenceGapSeconds = Math.max(0, Number(options.boundarySilenceGapSeconds) || DEFAULT_CLIP_TOPICS_CONFIG.boundarySilenceGapSeconds);
+    const maxClipSeconds = Math.max(1, Number(options.maxClipSeconds) || DEFAULT_CLIP_TOPICS_CONFIG.maxClipSeconds);
     const totalDuration = Number.isFinite(Number(options.totalDurationSeconds))
         ? Math.max(0, Number(options.totalDurationSeconds))
         : Number.POSITIVE_INFINITY;
@@ -454,6 +476,10 @@ function buildTopicBursts(segments = [], matches = [], options = {}) {
             start,
             end,
             duration: end - start,
+            minClipSeconds,
+            boundaryEndExtensionSeconds,
+            boundarySilenceGapSeconds,
+            maxClipSeconds,
             matchedKeywords: Array.from(b.keywords),
             matchCount: b.matches.length,
             matchSegments: b.matches.map(m => ({
@@ -471,7 +497,108 @@ function buildTopicBursts(segments = [], matches = [], options = {}) {
     }).filter(b => b.duration > 0);
 }
 
-function normalizeAiClipSelection(clip, burst, sliceIndex = 1) {
+function normalizeBoundarySegment(segment) {
+    const start = Number(segment?.start);
+    const end = Number(segment?.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+        return null;
+    }
+    return {
+        start,
+        end,
+        text: String(segment?.text || '').trim()
+    };
+}
+
+function isLikelyIncompleteSubtitle(text) {
+    const normalized = String(text || '').replace(/\s+/g, '').trim();
+    if (!normalized) return true;
+
+    // ASR 经常把一句话拆成“里面 / 然后呢 / 要不要”这样的片段。
+    // 这些词即使带了“呢”，也通常不是故事的真正收束点。
+    if (/(?:然后(?:呢)?|就是|里面|因为|所以|但是|可是|如果|以及|还有|要不要|要是|在|跟|和|把|从|到|等)$/.test(normalized)) {
+        return true;
+    }
+
+    return !/[。！？!?；;…]$/.test(normalized)
+        && !/[吗呢呀吧呗哦喔啊啦嘛]$/.test(normalized);
+}
+
+function extendAiClipEndToBoundary(start, end, burst, options = {}) {
+    const boundarySegments = (Array.isArray(burst?.allSegments) ? burst.allSegments : [])
+        .map(normalizeBoundarySegment)
+        .filter(Boolean)
+        .sort((a, b) => a.start - b.start);
+    if (boundarySegments.length === 0) {
+        return end;
+    }
+
+    const minimumDuration = Math.max(0, Number(
+        options.minClipSeconds ?? burst.minClipSeconds ?? DEFAULT_CLIP_TOPICS_CONFIG.minClipSeconds
+    ) || 0);
+    const maxExtension = Math.max(0, Number(
+        options.boundaryEndExtensionSeconds
+            ?? burst.boundaryEndExtensionSeconds
+            ?? DEFAULT_CLIP_TOPICS_CONFIG.boundaryEndExtensionSeconds
+    ) || 0);
+    const silenceGap = Math.max(0, Number(
+        options.boundarySilenceGapSeconds
+            ?? burst.boundarySilenceGapSeconds
+            ?? DEFAULT_CLIP_TOPICS_CONFIG.boundarySilenceGapSeconds
+    ) || 0);
+    const maxClipSeconds = Math.max(1, Number(
+        options.maxClipSeconds ?? burst.maxClipSeconds ?? DEFAULT_CLIP_TOPICS_CONFIG.maxClipSeconds
+    ) || DEFAULT_CLIP_TOPICS_CONFIG.maxClipSeconds);
+    const burstEnd = Number.isFinite(Number(burst.end)) ? Number(burst.end) : end;
+    const maxEnd = Math.min(
+        burstEnd,
+        start + maxClipSeconds,
+        end + maxExtension
+    );
+
+    let adjustedEnd = Math.min(end, maxEnd);
+    let tailIndex = -1;
+    for (let index = 0; index < boundarySegments.length; index += 1) {
+        const segment = boundarySegments[index];
+        if (segment.start <= adjustedEnd + 0.25 && segment.end >= adjustedEnd - 0.25) {
+            adjustedEnd = Math.max(adjustedEnd, Math.min(segment.end, maxEnd));
+            tailIndex = index;
+        } else if (segment.end <= adjustedEnd + 0.25) {
+            tailIndex = index;
+        }
+    }
+
+    let tail = tailIndex >= 0 ? boundarySegments[tailIndex] : null;
+    let nextIndex = tailIndex + 1;
+    while (nextIndex < boundarySegments.length && boundarySegments[nextIndex].start <= adjustedEnd + 0.25) {
+        nextIndex += 1;
+    }
+
+    // 先保证不会出现提示词要求的“不到 30 秒”短片；再处理落在半句话上的结尾。
+    while (nextIndex < boundarySegments.length) {
+        const needsMinimumDuration = adjustedEnd - start < minimumDuration;
+        const needsSentenceCompletion = tail ? isLikelyIncompleteSubtitle(tail.text) : true;
+        if (!needsMinimumDuration && !needsSentenceCompletion) {
+            break;
+        }
+
+        const next = boundarySegments[nextIndex];
+        const gap = Math.max(0, next.start - adjustedEnd);
+        const withinExtension = next.end <= maxEnd + 0.25;
+        if (!withinExtension) break;
+        // 已经达到最低时长后，明显的停顿视为话题边界；最低时长阶段允许跨过一次短停顿，
+        // 以免把连续故事截在 ASR 的分段空隙上。
+        if (!needsMinimumDuration && gap > silenceGap) break;
+
+        adjustedEnd = Math.min(next.end, maxEnd);
+        tail = next;
+        nextIndex += 1;
+    }
+
+    return Number(adjustedEnd.toFixed(3));
+}
+
+function normalizeAiClipSelection(clip, burst, sliceIndex = 1, options = {}) {
     const clipStart = timeStringToSeconds(clip.startTime);
     const clipEnd = timeStringToSeconds(clip.endTime);
     if (isNaN(clipStart) || isNaN(clipEnd) || clipEnd <= clipStart) {
@@ -479,7 +606,8 @@ function normalizeAiClipSelection(clip, burst, sliceIndex = 1) {
     }
 
     const start = clamp(clipStart, burst.start, burst.end);
-    const end = clamp(clipEnd, burst.start, burst.end);
+    const normalizedEnd = clamp(clipEnd, burst.start, burst.end);
+    const end = extendAiClipEndToBoundary(start, normalizedEnd, burst, options);
     if (end <= start) {
         return null;
     }
@@ -503,6 +631,8 @@ function normalizeAiClipSelection(clip, burst, sliceIndex = 1) {
         aiTitle: clip.title || null,
         aiCoverText: clip.coverText || null,
         aiDescription: clip.description || null,
+        aiModel: clip.aiModel || null,
+        boundaryAdjusted: end > normalizedEnd,
         sliceIndex
     };
 }
@@ -546,6 +676,18 @@ function dedupeClipsByStart(clips = []) {
         });
 }
 
+function buildFallbackAiClipSelection(burst) {
+    const clip = normalizeAiClipSelection({
+        startTime: formatClock(Number(burst.matchStart) || Number(burst.start) || 0),
+        endTime: formatClock(Number(burst.matchEnd) || Number(burst.end) || 0)
+    }, burst, 1);
+    return clip ? [clip] : [{
+        start: burst.matchStart,
+        end: burst.matchEnd,
+        aiModel: null
+    }];
+}
+
 /**
  * 把 burst 的全部字幕发给 AI,让 AI 自己决定切在哪。
  * AI 可以切成 1-3 段,并根据上下文生成每段的标题和简介。
@@ -554,14 +696,11 @@ async function segmentBurstWithAI(burst, parsed, streamerName, info, config = {}
     const aiConfig = config;
     const textEnabled = aiConfig.ai?.text?.enabled !== false;
     const segmentEnabled = aiConfig.clipTopics?.aiSegmentBurst !== false;
+    const requestedModel = getTopicClipAiModel(aiConfig);
 
     if (!textEnabled || !segmentEnabled) {
-        // Fallback: 使用整个 burst 作为单个窗口
-        return [{
-            start: burst.matchStart,
-            end: burst.matchEnd,
-            // 用命中点附近 ±20s 作为 fallback
-        }];
+        // Fallback: 使用命中段并按字幕边界补全,避免关闭 AI 时也产生半句话短片。
+        return buildFallbackAiClipSelection(burst);
     }
 
     // 格式化 SRT 给 AI
@@ -585,9 +724,13 @@ async function segmentBurstWithAI(burst, parsed, streamerName, info, config = {}
         '',
         '你需要决定切片的起止时间(HH:MM:SS 格式),精确到秒即可,要切在句子边界上。',
         '注意:',
-        '- 选取的区间不要超过 3 分钟,太长观众看不完。最短不少于 30 秒,太短的切片没有观看价值。',
+        `- 选取的区间不要超过 ${Math.round(Number(burst.maxClipSeconds || DEFAULT_CLIP_TOPICS_CONFIG.maxClipSeconds) / 60)} 分钟,太长观众看不完。最短不少于 ${burst.minClipSeconds || DEFAULT_CLIP_TOPICS_CONFIG.minClipSeconds} 秒,太短的切片没有观看价值。`,
         '- 如果话题分成了几个明显独立的段落,可以切 2-3 段(每段分别给标题简介)。',
         '- 如果整段都不超过 2 分钟且话题连贯,切 1 段就好。',
+        '- 关键词命中行只是话题锚点,不是切片终点。必须把命中前后的完整叙述、提问和回应一起保留。',
+        '- 绝对不要在“然后/然后呢/里面/就是/因为/但是/要不要”等明显未完的词后结束。',
+        '- 如果最后一行像半句话,继续查看后面的字幕,直到一句话或一轮对话自然收束；宁可多保留几秒,也不要截断。',
+        '- 起止时间要覆盖实际字幕行,结束时间至少落在最后一句字幕的 end 之后。',
         '- 如果命中的行实际是唱歌、哼旋律、ASR 误识别,返回空 clips: []。',
         '- ASR 可能有同音错字(如"开开"≈"栞栞"),要根据语境推断正确含义。',
         '',
@@ -618,14 +761,14 @@ async function segmentBurstWithAI(burst, parsed, streamerName, info, config = {}
     let result;
     try {
         result = provider === 'tuZi'
-            ? await generateText.generateTextWithTuZi(prompt, { wordLimit: 600 })
+            ? await generateText.generateTextWithTuZi(prompt, {
+                wordLimit: 600,
+                primaryModel: requestedModel
+            })
             : await generateText.generateTextWithGemini(prompt, { wordLimit: 600 });
     } catch (error) {
         console.warn(`⚠️  AI burst 分段失败,退回整个 burst: ${error.message}`);
-        return [{
-            start: burst.matchStart,
-            end: burst.matchEnd
-        }];
+        return buildFallbackAiClipSelection(burst);
     }
 
     // 解析 AI 返回的 JSON
@@ -636,7 +779,7 @@ async function segmentBurstWithAI(burst, parsed, streamerName, info, config = {}
         if (!jsonMatch) {
             console.warn('⚠️  AI 未返回有效 JSON,退回整个 burst');
             console.warn(`   原始返回: ${text.slice(0, 200)}`);
-            return [{ start: burst.matchStart, end: burst.matchEnd }];
+            return buildFallbackAiClipSelection(burst);
         }
 
         const parsed = JSON.parse(jsonMatch[0]);
@@ -649,11 +792,18 @@ async function segmentBurstWithAI(burst, parsed, streamerName, info, config = {}
 
         // 转换时间戳 → 秒数,返回带标题/简介的信息。
         // AI 拿到的是较大的上下文窗口,必须防止它切到不包含关键词命中的旁支内容。
-        return clips.map((clip, ci) => normalizeAiClipSelection(clip, burst, ci + 1)).filter(Boolean);
+        const actualModel = result.meta?.model || requestedModel;
+        return clips
+            .map((clip, ci) => normalizeAiClipSelection(
+                { ...clip, aiModel: actualModel },
+                burst,
+                ci + 1
+            ))
+            .filter(Boolean);
     } catch (parseError) {
         console.warn(`⚠️  解析 AI 分段结果失败: ${parseError.message}`);
         console.warn(`   原始返回: ${result.text?.slice(0, 200)}`);
-        return [{ start: burst.matchStart, end: burst.matchEnd }];
+        return buildFallbackAiClipSelection(burst);
     }
 }
 
@@ -1657,6 +1807,9 @@ function cleanupTemporaryCoverSource(mediaResult = {}) {
 
 function buildTopicNotifyMarkdown(results = [], metadata = {}) {
     const notifyConfig = metadata.notify || {};
+    const aiModels = Array.isArray(metadata.aiModels) && metadata.aiModels.length > 0
+        ? metadata.aiModels.join(', ')
+        : '规则兜底（未调用 AI）';
     const windowSummary = results
         .map(result => buildClipNotifyBlock(result, notifyConfig))
         .join('\n');
@@ -1669,6 +1822,7 @@ function buildTopicNotifyMarkdown(results = [], metadata = {}) {
         '',
         `- 直播间: ${metadata.roomId || '未知'}`,
         `- 录制时间: ${metadata.recordedAt || '未知'}`,
+        `- AI模型: ${aiModels}`,
         `- 切片目录: ${toFwdSlash(metadata.outputRoot || '未知')}`,
         metadata.uploadRegistry?.clipIds?.length ? `- 投稿短id: ${metadata.uploadRegistry.clipIds.join(',')}` : null,
         '',
@@ -1863,6 +2017,10 @@ async function generateTopicClips(options = {}) {
         contextPaddingSeconds: config.contextPaddingSeconds,
         mergeGapSeconds: config.mergeGapSeconds,
         maxSegmentsPerBurst: config.maxSegmentsPerBurst,
+        minClipSeconds: config.minClipSeconds,
+        boundaryEndExtensionSeconds: config.boundaryEndExtensionSeconds,
+        boundarySilenceGapSeconds: config.boundarySilenceGapSeconds,
+        maxClipSeconds: config.maxClipSeconds,
         totalDurationSeconds: options.totalDurationSeconds
     });
     if (bursts.length === 0) {
@@ -1893,6 +2051,7 @@ async function generateTopicClips(options = {}) {
 
     // AI 分段:对每个 burst 决定切 1-3 段
     const aiSegmentedClips = [];
+    const aiModelsUsed = new Set();
     for (const burst of bursts) {
         console.log(`  🔍 [${formatClock(burst.matchStart)}] 命中 ${burst.matchCount} 次,上下文窗口 ${formatClock(burst.start)}-${formatClock(burst.end)} (${burst.allSegments.length} 条字幕)`);
 
@@ -1904,6 +2063,9 @@ async function generateTopicClips(options = {}) {
         }
 
         for (const seg of segments) {
+            if (seg.aiModel) {
+                aiModelsUsed.add(seg.aiModel);
+            }
             const matchKeys = new Set((burst.matchSegments || []).map(segmentKey));
             const contextSegments = parsed.segments
                 .map((s, index) => ({
@@ -1940,7 +2102,9 @@ async function generateTopicClips(options = {}) {
                 burst,
                 aiTitle: seg.aiTitle,
                 aiCoverText: seg.aiCoverText,
-                aiDescription: seg.aiDescription
+                aiDescription: seg.aiDescription,
+                aiModel: seg.aiModel || null,
+                boundaryAdjusted: Boolean(seg.boundaryAdjusted)
             });
         }
 
@@ -2039,6 +2203,11 @@ async function generateTopicClips(options = {}) {
             streamTitle: info.streamTitle,
             window,
             copy,
+            ai: {
+                segmentationModel: clip.aiModel || null,
+                boundaryAdjusted: Boolean(clip.boundaryAdjusted),
+                requestedModel: getTopicClipAiModel(options.config || {})
+            },
             uploadReady: source.uploadReady && Boolean(mediaResult?.path),
             autoUploadEnabled: false,
             output: {
@@ -2067,6 +2236,7 @@ async function generateTopicClips(options = {}) {
         roomId: info.roomId,
         recordedAt: info.recordedAt,
         config: options.config || {},
+        aiModels: Array.from(aiModelsUsed),
         outputRoot,
         sourceFileName: info.fileName
     };

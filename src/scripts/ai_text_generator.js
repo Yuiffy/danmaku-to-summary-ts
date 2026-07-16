@@ -550,7 +550,7 @@ async function generateTextWithTuZi(prompt, options = {}) {
         tuziConfig.model,
         ...configuredFallbackModels,
         'gemini-3-flash-preview',
-        'gpt-5.4-mini',
+        'gpt-5.6-luna',
         ...builtInFallbackModels
     ].filter((model, index, models) => model && models.indexOf(model) === index);
     console.log(`   晚安主模型随机命中: ${primaryModel}`);

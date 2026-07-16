@@ -737,13 +737,20 @@ async function runJobsWithConcurrency(jobs = [], concurrency = 1) {
         while (cursor < jobs.length) {
             const index = cursor;
             cursor += 1;
-            results[index] = await jobs[index]();
+            try {
+                results[index] = await jobs[index]();
+            } catch (error) {
+                // 一个切片失败不应终止同一场直播的其余切片；保留已完成结果，
+                // 让 review/企微通知至少覆盖成功生成的部分。
+                console.warn(`clip job ${index + 1} failed, continuing remaining jobs: ${error.message}`);
+                results[index] = null;
+            }
         }
     }
 
     const workers = Array.from({ length: Math.min(limit, jobs.length) }, () => worker());
     await Promise.all(workers);
-    return results;
+    return results.filter(Boolean);
 }
 
 async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, config, rootConfig = {}, diagnostics = null) {
@@ -1370,7 +1377,8 @@ async function generateOwnStreamClipJob({
     source,
     streamerName,
     info,
-    config
+    config,
+    participantMetadata
 }) {
     const window = {
         index: index + 1,
@@ -1526,7 +1534,8 @@ async function generateOwnStreamClips(options = {}) {
         roomId: info.roomId,
         recordedAt: info.recordedAt,
         outputRoot,
-        sourceFileName: info.fileName
+        sourceFileName: info.fileName,
+        participantInfo: participantMetadata
     };
     const aiDiagnostics = {
         strategy: config.ai?.strategy || null,
@@ -1674,7 +1683,8 @@ async function generateOwnStreamClips(options = {}) {
             source,
             streamerName,
             info,
-            config
+            config,
+            participantMetadata
         }));
         const results = await runJobsWithConcurrency(jobs, clipConcurrency);
         fs.writeFileSync(reviewPath, buildReviewMarkdown(results, reviewMetadata), 'utf8');
@@ -1794,6 +1804,7 @@ async function generateOwnStreamClips(options = {}) {
             },
             roomId: info.roomId,
             streamerName,
+            participantInfo: participantMetadata,
             recordedAt: info.recordedAt,
             streamTitle: info.streamTitle,
             window,
@@ -1936,6 +1947,7 @@ module.exports = {
     alignClipToSubtitleBoundaries,
     alignClipsToSubtitleBoundaries,
     removeOverlappingClips,
+    runJobsWithConcurrency,
     buildNotifyMarkdown,
     buildReviewMarkdown,
     buildPlanReviewMarkdown,

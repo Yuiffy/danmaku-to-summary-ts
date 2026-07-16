@@ -244,6 +244,21 @@ describe('own_stream_clipper', () => {
     expect(ownStreamClipper.filterClipsBySelection(clips, [])).toEqual(clips);
   });
 
+  test('continues remaining clip jobs when one concurrent job fails', async () => {
+    const results = await ownStreamClipper.runJobsWithConcurrency([
+      async () => ({ index: 1 }),
+      async () => { throw new Error('simulated clip failure'); },
+      async () => ({ index: 3 }),
+      async () => ({ index: 4 })
+    ], 3);
+
+    expect(results).toEqual([
+      { index: 1 },
+      { index: 3 },
+      { index: 4 }
+    ]);
+  });
+
   test('aligns clip end forward to the next subtitle silence gap', () => {
     const aligned = ownStreamClipper.alignClipToSubtitleBoundaries(
       { start: 100, end: 115, title: 'airport story' },

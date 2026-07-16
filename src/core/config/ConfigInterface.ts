@@ -446,9 +446,13 @@ export interface ClipTopicsConfig {
   enabled: boolean;
   mode: 'local_review' | string;
   keywords: string[];
+  aiModel?: string;
   ignoredRoomIds?: string[];
   prePaddingSeconds: number;
   postPaddingSeconds: number;
+  minClipSeconds?: number;
+  boundaryEndExtensionSeconds?: number;
+  boundarySilenceGapSeconds?: number;
   maxClipSeconds: number;
   mergeGapSeconds: number;
   burnSubtitles: boolean;
