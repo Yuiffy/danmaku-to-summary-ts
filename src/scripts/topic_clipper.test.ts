@@ -127,6 +127,43 @@ describe('topic_clipper', () => {
     )).toMatchObject({ start: 290, end: 320 });
   });
 
+  test('extends an AI end past unfinished ASR lines and the minimum clip duration', () => {
+    const burst = {
+      start: 5760,
+      end: 6060,
+      minClipSeconds: 30,
+      boundaryEndExtensionSeconds: 60,
+      boundarySilenceGapSeconds: 3,
+      maxClipSeconds: 180,
+      matchSegments: [
+        { start: 5770.699, end: 5773.212, text: '我和小康还有小岁三个人在睡在那个频道', matchedKeywords: ['小岁'] },
+        { start: 5779.84, end: 5782.6, text: '小岁就说那我我没接话', matchedKeywords: ['小岁'] }
+      ],
+      allSegments: [
+        { start: 5770.699, end: 5773.212, text: '我和小康还有小岁三个人在睡在那个频道' },
+        { start: 5773.212, end: 5775.725, text: '里面' },
+        { start: 5776.25, end: 5778.954, text: '然后他说你今晚播什么' },
+        { start: 5779.399, end: 5779.829, text: '然后呢' },
+        { start: 5779.84, end: 5782.6, text: '小岁就说那我我没接话' },
+        { start: 5782.8, end: 5783.309, text: '然后呢' },
+        { start: 5783.319, end: 5786.234, text: '小翠就说你在跟谁说话呀' },
+        { start: 5786.579, end: 5789.845, text: '然后那个小康就说你呀这好' },
+        { start: 5792.43, end: 5794.199, text: '夏天因为我太尴尬啊' }
+      ]
+    };
+
+    const selection = topicClipper.normalizeAiClipSelection(
+      { startTime: '01:36:01', endTime: '01:36:23.309', title: '完整对话' },
+      burst
+    );
+
+    expect(selection).toMatchObject({
+      start: 5761,
+      end: 5794.199,
+      boundaryAdjusted: true
+    });
+  });
+
   test('dedupes AI clips with the same start and keeps the longer range', () => {
     const clips = [
       { window: { index: '1-1', start: 3044, end: 3114 } },
@@ -178,6 +215,26 @@ describe('topic_clipper', () => {
 
     expect(windows[0].start).toBe(0);
     expect(windows[0].end).toBe(25);
+  });
+
+  test('centers oversized burst context around the keyword and keeps following subtitles', () => {
+    const segments = Array.from({ length: 260 }, (_, index) => ({
+      start: index * 2,
+      end: index * 2 + 1,
+      text: index === 150 ? '这里提到小岁然后继续说' : `普通内容${index}`
+    }));
+    const matches = topicClipper.findKeywordMatches(segments, ['小岁']);
+    const bursts = topicClipper.buildTopicBursts(segments, matches, {
+      contextPaddingSeconds: 200,
+      mergeGapSeconds: 10,
+      maxSegmentsPerBurst: 100
+    });
+
+    expect(bursts).toHaveLength(1);
+    expect(bursts[0].allSegments).toHaveLength(100);
+    expect(bursts[0].allSegments[0].text).toBe('普通内容110');
+    expect(bursts[0].allSegments.some(segment => segment.text === '普通内容200')).toBe(true);
+    expect(bursts[0].allSegments.some(segment => segment.text === '这里提到小岁然后继续说')).toBe(true);
   });
 
   test('parses recording metadata and falls back to template title', () => {
@@ -396,6 +453,7 @@ describe('topic_clipper', () => {
       streamTitle: '今天聊点什么',
       roomId: '25788785',
       recordedAt: '2026-06-03 20:15:30',
+      aiModels: ['gpt-5.6-luna'],
       outputRoot: 'D:/clips',
       sourceFileName: '录制-25788785-20260603-201530-001-聊天回.flv'
     });
@@ -403,6 +461,7 @@ describe('topic_clipper', () => {
     expect(markdown).toContain('话题切片提醒');
     expect(markdown).toContain('岁己SUI');
     expect(markdown).toContain('今天聊点什么');
+    expect(markdown).toContain('AI模型: gpt-5.6-luna');
     expect(markdown).toContain('找到其中 **2** 段提到岁己的地方');
     expect(markdown).toContain('D:/clips');
     expect(markdown).toContain('one.mp4');

@@ -449,15 +449,29 @@ function buildTopicBursts(segments = [], matches = [], options = {}) {
         const start = clamp(b.matchStart - contextPadding, 0, totalDuration);
         const end = clamp(b.matchEnd + contextPadding, 0, totalDuration);
 
-        // 扩展范围内全部 SRT segment(受 maxSegments 上限)
-        const allSegs = segments
+        // 扩展范围内全部 SRT segment。超过上限时围绕命中点取样，不能只取窗口开头，
+        // 否则关键词靠近上下文尾部时，AI 会根本看不到话题后半段。
+        const candidateSegments = segments
             .filter(s => {
                 const sStart = Number(s.start);
                 const sEnd = Number(s.end);
                 return Number.isFinite(sStart) && Number.isFinite(sEnd)
                     && sEnd > start && sStart < end;
-            })
-            .slice(0, maxSegments);
+            });
+        let allSegs = candidateSegments;
+        if (candidateSegments.length > maxSegments) {
+            const matchKeys = new Set(b.matches.map(match => segmentKey(match.segment)));
+            const hitIndexes = candidateSegments
+                .map((segment, segmentIndex) => matchKeys.has(segmentKey(segment)) ? segmentIndex : -1)
+                .filter(segmentIndex => segmentIndex >= 0);
+            const firstHit = hitIndexes[0] ?? Math.floor(candidateSegments.length / 2);
+            const lastHit = hitIndexes[hitIndexes.length - 1] ?? firstHit;
+            const focusIndex = Math.floor((firstHit + lastHit) / 2);
+            const preBudget = Math.floor(maxSegments * 0.4);
+            const maxStart = candidateSegments.length - maxSegments;
+            const sliceStart = clamp(focusIndex - preBudget, 0, maxStart);
+            allSegs = candidateSegments.slice(sliceStart, sliceStart + maxSegments);
+        }
 
         // 前/后额外上下文(供 AI 理解,超出扩展窗口的)
         const preCtx = segments
