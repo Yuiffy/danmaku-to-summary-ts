@@ -450,6 +450,9 @@ export interface ClipTopicsConfig {
   ignoredRoomIds?: string[];
   prePaddingSeconds: number;
   postPaddingSeconds: number;
+  contextPrePaddingSeconds?: number;
+  contextPostPaddingSeconds?: number;
+  maxSegmentsPerBurst?: number;
   minClipSeconds?: number;
   boundaryEndExtensionSeconds?: number;
   boundarySilenceGapSeconds?: number;

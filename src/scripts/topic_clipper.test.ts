@@ -232,8 +232,10 @@ describe('topic_clipper', () => {
 
     expect(bursts).toHaveLength(1);
     expect(bursts[0].allSegments).toHaveLength(100);
-    expect(bursts[0].allSegments[0].text).toBe('普通内容110');
-    expect(bursts[0].allSegments.some(segment => segment.text === '普通内容200')).toBe(true);
+    expect(bursts[0].boundarySegments).toHaveLength(201);
+    expect(bursts[0].contextSampled).toBe(true);
+    expect(bursts[0].contextCandidateCount).toBe(201);
+    expect(bursts[0].allSegments.some(segment => /^普通内容2[0-9]{2}$/.test(segment.text))).toBe(true);
     expect(bursts[0].allSegments.some(segment => segment.text === '这里提到小岁然后继续说')).toBe(true);
   });
 

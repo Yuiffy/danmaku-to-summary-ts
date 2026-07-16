@@ -69,8 +69,10 @@ const DEFAULT_CLIP_TOPICS_CONFIG = {
     boundarySilenceGapSeconds: 2,
     maxClipSeconds: 300,
     mergeGapSeconds: 120,
-    contextPaddingSeconds: 300,  // AI 上下文窗口:关键词前后各拿5分钟
-    maxSegmentsPerBurst: 100,     // 每个 burst 最多取多少条 SRT
+    contextPaddingSeconds: 300,  // 旧版兼容:未配置不对称窗口时前后各取5分钟
+    contextPrePaddingSeconds: 180,
+    contextPostPaddingSeconds: 300,
+    maxSegmentsPerBurst: 200,     // 每个 burst 最多取多少条 SRT
     aiSegmentBurst: true,         // 让 AI 决定切在哪里(而不是固定 paddding)
     burnSubtitles: true,
     outputDirName: 'topic_clips',
@@ -402,13 +404,111 @@ function getOverlappingSegments(segments = [], window) {
  * 将关键词命中点聚合成"话题爆发段"(topic burst),而非每个关键词切一个小窗口。
  *
  * 1. 相邻命中点(gap <= mergeGapSeconds)聚合为一个 burst
- * 2. 每个 burst 向两端扩展 contextPaddingSeconds(默认 5 分钟)
- * 3. 取该范围内全部 SRT 字幕供 AI 理解完整上下文
+ * 2. 每个 burst 向前 3 分钟、向后 5 分钟扩展上下文(旧版 contextPaddingSeconds 仍兼容)
+ * 3. 不密集时全部发送;过密时保留命中附近连续字幕,其余按时间均匀抽样
  */
+function takeEvenly(items = [], count = 0) {
+    if (count >= items.length) return [...items];
+    if (count <= 0 || items.length === 0) return [];
+    if (count === 1) return [items[Math.floor(items.length / 2)]];
+    return Array.from({ length: count }, (_, index) => {
+        const position = Math.min(
+            items.length - 1,
+            Math.floor(((index + 0.5) * items.length) / count)
+        );
+        return items[position];
+    });
+}
+
+function selectBurstContextSegments(candidateSegments = [], matches = [], maxSegments = 200, focusPaddingSeconds = 45) {
+    if (candidateSegments.length <= maxSegments) {
+        return {
+            segments: candidateSegments,
+            sampled: false,
+            candidateCount: candidateSegments.length
+        };
+    }
+
+    const matchKeys = new Set(matches.map(match => segmentKey(match.segment)));
+    const hitIndexes = candidateSegments
+        .map((segment, segmentIndex) => matchKeys.has(segmentKey(segment)) ? segmentIndex : -1)
+        .filter(segmentIndex => segmentIndex >= 0);
+    const matchedSegments = matches
+        .map(match => normalizeBoundarySegment(match.segment))
+        .filter(Boolean);
+    const firstMatchStart = matchedSegments.length > 0
+        ? Math.min(...matchedSegments.map(segment => segment.start))
+        : Number(candidateSegments[Math.floor(candidateSegments.length / 2)]?.start || 0);
+    const lastMatchEnd = matchedSegments.length > 0
+        ? Math.max(...matchedSegments.map(segment => segment.end))
+        : firstMatchStart;
+    const focusStart = firstMatchStart - focusPaddingSeconds;
+    const focusEnd = lastMatchEnd + focusPaddingSeconds;
+    const focusIndexes = candidateSegments
+        .map((segment, segmentIndex) => {
+            const start = Number(segment.start);
+            const end = Number(segment.end);
+            return end > focusStart && start < focusEnd ? segmentIndex : -1;
+        })
+        .filter(segmentIndex => segmentIndex >= 0);
+
+    // 保留命中行和命中点附近的连续字幕，剩余名额从整个 8 分钟范围均匀抽样。
+    const mustKeep = new Set([...hitIndexes, ...focusIndexes]);
+    const selected = new Set();
+    hitIndexes.forEach(index => selected.add(index));
+
+    const focusNonHitIndexes = focusIndexes.filter(index => !selected.has(index));
+    const focusSlots = Math.max(0, Math.min(
+        maxSegments - selected.size,
+        focusNonHitIndexes.length
+    ));
+    takeEvenly(focusNonHitIndexes, focusSlots).forEach(segment => {
+        const index = candidateSegments.indexOf(segment);
+        if (index >= 0) selected.add(index);
+    });
+
+    const remainingSlots = Math.max(0, maxSegments - selected.size);
+    const remainingIndexes = candidateSegments
+        .map((_, segmentIndex) => segmentIndex)
+        .filter(segmentIndex => !mustKeep.has(segmentIndex) && !selected.has(segmentIndex));
+    takeEvenly(remainingIndexes, remainingSlots).forEach(segmentIndex => selected.add(segmentIndex));
+
+    // 极端情况下 mustKeep 本身超过上限，仍保证所有命中点优先，并从焦点区均匀截取。
+    if (selected.size > maxSegments) {
+        const priorityIndexes = [...new Set([...hitIndexes, ...focusIndexes])];
+        const limited = new Set(hitIndexes);
+        takeEvenly(priorityIndexes.filter(index => !limited.has(index)), maxSegments - limited.size)
+            .forEach(index => limited.add(index));
+        return {
+            segments: candidateSegments.filter((_, index) => limited.has(index)),
+            sampled: true,
+            candidateCount: candidateSegments.length
+        };
+    }
+
+    return {
+        segments: candidateSegments.filter((_, index) => selected.has(index)),
+        sampled: true,
+        candidateCount: candidateSegments.length
+    };
+}
+
 function buildTopicBursts(segments = [], matches = [], options = {}) {
-    const contextPadding = Math.max(0, Number(options.contextPaddingSeconds) || 300);
+    const legacyPadding = Number.isFinite(Number(options.contextPaddingSeconds))
+        ? Math.max(0, Number(options.contextPaddingSeconds))
+        : null;
+    const contextPrePadding = Math.max(0, Number(
+        options.contextPrePaddingSeconds
+            ?? legacyPadding
+            ?? DEFAULT_CLIP_TOPICS_CONFIG.contextPrePaddingSeconds
+    ) || 0);
+    const contextPostPadding = Math.max(0, Number(
+        options.contextPostPaddingSeconds
+            ?? legacyPadding
+            ?? DEFAULT_CLIP_TOPICS_CONFIG.contextPostPaddingSeconds
+    ) || 0);
     const mergeGap = Math.max(0, Number(options.mergeGapSeconds) || 120);
-    const maxSegments = Math.max(1, Number(options.maxSegmentsPerBurst) || 100);
+    const maxSegments = Math.max(1, Number(options.maxSegmentsPerBurst) || DEFAULT_CLIP_TOPICS_CONFIG.maxSegmentsPerBurst);
     const minClipSeconds = Math.max(0, Number(options.minClipSeconds) || DEFAULT_CLIP_TOPICS_CONFIG.minClipSeconds);
     const boundaryEndExtensionSeconds = Math.max(0, Number(options.boundaryEndExtensionSeconds) || DEFAULT_CLIP_TOPICS_CONFIG.boundaryEndExtensionSeconds);
     const boundarySilenceGapSeconds = Math.max(0, Number(options.boundarySilenceGapSeconds) || DEFAULT_CLIP_TOPICS_CONFIG.boundarySilenceGapSeconds);
@@ -446,8 +546,8 @@ function buildTopicBursts(segments = [], matches = [], options = {}) {
 
     // 2. 每个 burst 向两端扩展,收集全部上下文
     return rawBursts.map((b, idx) => {
-        const start = clamp(b.matchStart - contextPadding, 0, totalDuration);
-        const end = clamp(b.matchEnd + contextPadding, 0, totalDuration);
+        const start = clamp(b.matchStart - contextPrePadding, 0, totalDuration);
+        const end = clamp(b.matchEnd + contextPostPadding, 0, totalDuration);
 
         // 扩展范围内全部 SRT segment。超过上限时围绕命中点取样，不能只取窗口开头，
         // 否则关键词靠近上下文尾部时，AI 会根本看不到话题后半段。
@@ -458,20 +558,12 @@ function buildTopicBursts(segments = [], matches = [], options = {}) {
                 return Number.isFinite(sStart) && Number.isFinite(sEnd)
                     && sEnd > start && sStart < end;
             });
-        let allSegs = candidateSegments;
-        if (candidateSegments.length > maxSegments) {
-            const matchKeys = new Set(b.matches.map(match => segmentKey(match.segment)));
-            const hitIndexes = candidateSegments
-                .map((segment, segmentIndex) => matchKeys.has(segmentKey(segment)) ? segmentIndex : -1)
-                .filter(segmentIndex => segmentIndex >= 0);
-            const firstHit = hitIndexes[0] ?? Math.floor(candidateSegments.length / 2);
-            const lastHit = hitIndexes[hitIndexes.length - 1] ?? firstHit;
-            const focusIndex = Math.floor((firstHit + lastHit) / 2);
-            const preBudget = Math.floor(maxSegments * 0.4);
-            const maxStart = candidateSegments.length - maxSegments;
-            const sliceStart = clamp(focusIndex - preBudget, 0, maxStart);
-            allSegs = candidateSegments.slice(sliceStart, sliceStart + maxSegments);
-        }
+        const selectedContext = selectBurstContextSegments(
+            candidateSegments,
+            b.matches,
+            maxSegments
+        );
+        const allSegs = selectedContext.segments;
 
         // 前/后额外上下文(供 AI 理解,超出扩展窗口的)
         const preCtx = segments
@@ -490,6 +582,10 @@ function buildTopicBursts(segments = [], matches = [], options = {}) {
             start,
             end,
             duration: end - start,
+            contextPrePaddingSeconds: contextPrePadding,
+            contextPostPaddingSeconds: contextPostPadding,
+            contextSampled: selectedContext.sampled,
+            contextCandidateCount: selectedContext.candidateCount,
             minClipSeconds,
             boundaryEndExtensionSeconds,
             boundarySilenceGapSeconds,
@@ -503,6 +599,7 @@ function buildTopicBursts(segments = [], matches = [], options = {}) {
                 text: m.segment.text,
                 matchedKeywords: m.matchedKeywords
             })),
+            boundarySegments: candidateSegments,
             allSegments: allSegs,
             allSegmentTexts: allSegs.map(s => s.text),
             preContext: preCtx,
@@ -539,7 +636,10 @@ function isLikelyIncompleteSubtitle(text) {
 }
 
 function extendAiClipEndToBoundary(start, end, burst, options = {}) {
-    const boundarySegments = (Array.isArray(burst?.allSegments) ? burst.allSegments : [])
+    const sourceSegments = Array.isArray(burst?.boundarySegments)
+        ? burst.boundarySegments
+        : (Array.isArray(burst?.allSegments) ? burst.allSegments : []);
+    const boundarySegments = sourceSegments
         .map(normalizeBoundarySegment)
         .filter(Boolean)
         .sort((a, b) => a.start - b.start);
@@ -731,8 +831,12 @@ async function segmentBurstWithAI(burst, parsed, streamerName, info, config = {}
 
     const keywordStr = (burst.matchedKeywords || []).join('、');
     const generateText = require('./ai_text_generator');
+    const contextNotice = burst.contextSampled
+        ? `候选范围原本有 ${burst.contextCandidateCount} 条字幕,下面保留命中附近连续字幕,其余按时间均匀抽样到 ${burst.allSegments.length} 条;时间戳仍是原始时间,中间可能省略了字幕。`
+        : `候选范围共有 ${burst.contextCandidateCount || burst.allSegments.length} 条字幕,下面全部列出。`;
     const prompt = [
         '你是一个直播切片编辑。下面是一段直播字幕(带时间戳),主播在聊的话题中提到了"岁己"(关键词:' + keywordStr + ')。',
+        contextNotice,
         '',
         '标记 ★ 的行是 ASR 命中关键词的地方。请根据上下文理解对话内容,找出真正在讨论/提到岁己的连续段落。',
         '',
@@ -767,7 +871,7 @@ async function segmentBurstWithAI(burst, parsed, streamerName, info, config = {}
         `录制日期: ${info.recordedAt || '未知'}`,
         '',
         '=== 字幕 ===',
-        srtLines.slice(0, 12000),  // 限制总字数
+        srtLines.slice(0, 30000),  // 200句抽样后通常远低于此上限,防止异常 ASR 文本失控
     ].join('\n');
 
     // 调用 AI
@@ -2029,6 +2133,8 @@ async function generateTopicClips(options = {}) {
 
     const bursts = buildTopicBursts(parsed.segments, matches, {
         contextPaddingSeconds: config.contextPaddingSeconds,
+        contextPrePaddingSeconds: config.contextPrePaddingSeconds,
+        contextPostPaddingSeconds: config.contextPostPaddingSeconds,
         mergeGapSeconds: config.mergeGapSeconds,
         maxSegmentsPerBurst: config.maxSegmentsPerBurst,
         minClipSeconds: config.minClipSeconds,
@@ -2067,7 +2173,7 @@ async function generateTopicClips(options = {}) {
     const aiSegmentedClips = [];
     const aiModelsUsed = new Set();
     for (const burst of bursts) {
-        console.log(`  🔍 [${formatClock(burst.matchStart)}] 命中 ${burst.matchCount} 次,上下文窗口 ${formatClock(burst.start)}-${formatClock(burst.end)} (${burst.allSegments.length} 条字幕)`);
+        console.log(`  🔍 [${formatClock(burst.matchStart)}] 命中 ${burst.matchCount} 次,上下文窗口 ${formatClock(burst.start)}-${formatClock(burst.end)} (${burst.allSegments.length}/${burst.contextCandidateCount} 条字幕${burst.contextSampled ? ',均匀抽样' : ''})`);
 
         const segments = await segmentBurstWithAI(burst, parsed, streamerName, info, aiConfig);
 
