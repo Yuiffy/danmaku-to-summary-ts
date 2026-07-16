@@ -40,7 +40,7 @@ const DEFAULT_GPU_THROTTLE = {
 const DEFAULT_ADAPTIVE_SPEAKER_CONFIG = {
     speaker_detection_mode: 'auto',
     speaker_probe_chunk_s: 4,
-    speaker_probe_max_chunks: 20,
+    speaker_probe_max_chunks: 2000,
     speaker_probe_min_valid_chunks: 6,
     speaker_probe_min_speech_s: 20,
     speaker_probe_min_cluster_chunks: 2,

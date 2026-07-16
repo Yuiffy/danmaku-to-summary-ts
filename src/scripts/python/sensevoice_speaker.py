@@ -304,7 +304,7 @@ def build_speaker_chunk_candidates(
     return candidates
 
 
-def select_cumulative_speech_quantiles(candidates, max_chunks=20):
+def select_cumulative_speech_quantiles(candidates, max_chunks=2000):
     """Select deterministic quantiles over cumulative usable speech, not wall time."""
     candidates = list(candidates or [])
     limit = max(0, int(max_chunks or 0))
@@ -592,7 +592,7 @@ def run_adaptive_speaker_engine(
     if mode == "auto":
         probe_candidates = select_cumulative_speech_quantiles(
             candidates,
-            max_chunks=int(payload.get("speaker_probe_max_chunks", 20) or 20),
+            max_chunks=int(payload.get("speaker_probe_max_chunks", 2000) or 2000),
         )
         processing["sampledChunks"] = len(probe_candidates)
         processing["sampledSpeechSeconds"] = sum(
