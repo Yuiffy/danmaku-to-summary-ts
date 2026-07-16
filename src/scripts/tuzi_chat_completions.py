@@ -1210,7 +1210,22 @@ def call_tuzi_images_edits(
             opened_files = []
             files = []
             for idx, img_path in enumerate(reference_paths, 1):
-                mime_type = mimetypes.guess_type(img_path)[0] or "application/octet-stream"
+                # Windows Python 的 mimetypes 数据库可能不认识 .webp，
+                # 不能让图片回退成 application/octet-stream；Sub2API 会把该 MIME
+                # 转成 data URL 后再交给上游，而上游会拒绝非 image/* 类型。
+                image_mime_types = {
+                    ".png": "image/png",
+                    ".jpg": "image/jpeg",
+                    ".jpeg": "image/jpeg",
+                    ".webp": "image/webp",
+                    ".gif": "image/gif",
+                }
+                extension = os.path.splitext(img_path)[1].lower()
+                mime_type = (
+                    image_mime_types.get(extension)
+                    or mimetypes.guess_type(img_path)[0]
+                    or "application/octet-stream"
+                )
                 file_obj = open(img_path, "rb")
                 opened_files.append(file_obj)
                 files.append(("image[]", (os.path.basename(img_path), file_obj, mime_type)))
