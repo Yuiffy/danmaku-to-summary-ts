@@ -247,9 +247,13 @@ function applyParaformerGrayRollout(asrConfig, context = {}, resolved) {
     const roomId = String(context.room_id || context.roomId || '').trim();
     const fileKey = String(context.filename || context.input || '').trim();
     const forcedRooms = new Set((Array.isArray(rollout.finetuned_room_ids) ? rollout.finetuned_room_ids : []).map(v => String(v)));
+    const roomRatios = rollout.finetuned_room_ratios || {};
+    const roomRatioOverride = roomId && roomRatios[roomId] != null ? Math.max(0, Math.min(1, Number(roomRatios[roomId]))) : null;
     const ratio = Math.max(0, Math.min(1, Number(rollout.finetuned_ratio ?? 0)));
-    const sampled = ratio > 0 && (stableHashString(`${roomId}|${fileKey}`) % 10000) < Math.floor(ratio * 10000);
-    const forceFinetuned = roomId && forcedRooms.has(roomId);
+    const effectiveRatio = roomRatioOverride != null ? roomRatioOverride : ratio;
+    const sampled = effectiveRatio > 0 && (stableHashString(`${roomId}|${fileKey}`) % 10000) < Math.floor(effectiveRatio * 10000);
+    // Room in forcedRooms with a ratio override uses the override instead of 100%
+    const forceFinetuned = roomId && forcedRooms.has(roomId) && roomRatioOverride == null;
     if (!forceFinetuned && !sampled) {
         return resolved;
     }
@@ -264,7 +268,7 @@ function applyParaformerGrayRollout(asrConfig, context = {}, resolved) {
         },
         reason: forceFinetuned
             ? `${resolved.reason}; gray_rollout=finetuned(room=100%)`
-            : `${resolved.reason}; gray_rollout=finetuned(sample=${ratio})`
+            : `${resolved.reason}; gray_rollout=finetuned(sample=${effectiveRatio}${roomRatioOverride != null ? `,room=${roomId}` : ''})`
     };
 }
 

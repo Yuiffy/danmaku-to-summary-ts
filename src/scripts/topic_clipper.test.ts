@@ -57,6 +57,21 @@ describe('topic_clipper', () => {
     expect(prompt).not.toContain('饼干岁');
   });
 
+  test('topic burst prompt asks AI for independent, non-overlapping events only', () => {
+    const prompt = topicClipper.buildTopicBurstPrompt({
+      allSegments: [{ start: 10, end: 12, text: '小岁让我来救你' }],
+      matchSegments: [{ start: 10, end: 12, text: '小岁让我来救你' }],
+      matchedKeywords: ['小岁'],
+      minClipSeconds: 30,
+      maxClipSeconds: 180
+    }, '栞栞', { streamTitle: '测试直播', recordedAt: '2026-07-17' }, aiTextGenerator);
+
+    expect(prompt).toContain('默认只返回 1 段');
+    expect(prompt).toContain('时间区间必须互不重叠');
+    expect(prompt).toContain('不能只是同一事件的不同起止时间');
+    expect(prompt).toContain('没有重复/嵌套切片');
+  });
+
   test('uses configured upload prefix and upload tags for a room', () => {
     const config = {
       ai: {
@@ -164,10 +179,11 @@ describe('topic_clipper', () => {
     });
   });
 
-  test('dedupes AI clips with the same start and keeps the longer range', () => {
+  test('dedupes same-start and highly overlapping AI clips, keeping the longer range', () => {
     const clips = [
       { window: { index: '1-1', start: 3044, end: 3114 } },
       { window: { index: '1-2', start: 3044, end: 3130 } },
+      { window: { index: '1-3', start: 3058, end: 3120 } },
       { window: { index: '2-1', start: 3300, end: 3360 } }
     ];
 
@@ -176,6 +192,44 @@ describe('topic_clipper', () => {
     expect(deduped).toHaveLength(2);
     expect(deduped[0].window).toMatchObject({ index: '1-2', start: 3044, end: 3130 });
     expect(deduped[1].window).toMatchObject({ index: '2-1', start: 3300, end: 3360 });
+  });
+
+  test('dedupes repeated identical keyword hits within the same burst', () => {
+    const clips = [
+      {
+        burst: { index: 4 },
+        window: {
+          index: '4-1',
+          start: 100,
+          end: 160,
+          matchSegments: [{ start: 110, end: 112, text: '小岁让我来救你' }]
+        }
+      },
+      {
+        burst: { index: 4 },
+        window: {
+          index: '4-2',
+          start: 220,
+          end: 300,
+          matchSegments: [{ start: 230, end: 232, text: '小岁让我来救你！' }]
+        }
+      },
+      {
+        burst: { index: 4 },
+        window: {
+          index: '4-3',
+          start: 320,
+          end: 380,
+          matchSegments: [{ start: 330, end: 332, text: '小岁去救你' }]
+        }
+      }
+    ];
+
+    const deduped = topicClipper.dedupeClipsByStart(clips);
+
+    expect(deduped).toHaveLength(2);
+    expect(deduped[0].window.index).toBe('4-2');
+    expect(deduped[1].window.index).toBe('4-3');
   });
 
   test('merges nearby hit windows and respects max clip duration', () => {
@@ -264,6 +318,50 @@ describe('topic_clipper', () => {
     expect(result.segmentCount).toBe(1);
     expect(content).toContain('00:00:02,000 --> 00:00:04,000');
     expect(content).toContain('提到岁己');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('removes speaker review prefixes and colors speakers in burned ASS', () => {
+    const dir = makeTempDir();
+    const inputSrtPath = path.join(dir, 'source.speaker.srt');
+    const outputSrtPath = path.join(dir, 'clip.srt');
+    const assPath = path.join(dir, 'clip.burn.ass');
+    fs.writeFileSync(inputSrtPath, [
+      '1',
+      '00:00:01,000 --> 00:00:02,000',
+      '[栞栞 0.86] 你好',
+      '',
+      '2',
+      '00:00:03,000 --> 00:00:04,000',
+      '[UNKNOWN] 对呀',
+      ''
+    ].join('\n'), 'utf8');
+
+    const parsed = topicClipper.parseTopicSrt(inputSrtPath);
+    expect(parsed.segments).toMatchObject([
+      { text: '你好', speaker: '栞栞', speaker_score: 0.86 },
+      { text: '对呀', speaker: 'UNKNOWN' }
+    ]);
+
+    const srtResult = topicClipper.writeClipSrt(
+      parsed.segments,
+      { start: 0, end: 5, duration: 5 },
+      outputSrtPath
+    );
+    const srtContent = fs.readFileSync(outputSrtPath, 'utf8');
+    expect(srtContent).toContain('你好');
+    expect(srtContent).toContain('对呀');
+    expect(srtContent).not.toContain('[栞栞 0.86]');
+    expect(srtContent).not.toContain('[UNKNOWN]');
+
+    topicClipper.writeTemporaryBurnAssFromSrt(outputSrtPath, assPath, {
+      speakerSegments: srtResult.segments
+    });
+    const assContent = fs.readFileSync(assPath, 'utf8');
+    expect(assContent).not.toContain('[栞栞 0.86]');
+    expect(assContent).toContain('Style: Speaker_');
+    expect(assContent).toMatch(/Dialogue: 0,0:00:01\.00,0:00:02\.00,Speaker_/);
+    expect(assContent).toContain('Dialogue: 0,0:00:03.00,0:00:04.00,Speaker_UNKNOWN');
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
@@ -521,16 +619,25 @@ describe('topic_clipper', () => {
 
   test('splits long WeChat markdown without exceeding the content limit', () => {
     const content = [
-      '## 话题切片提醒',
-      '- 第一段',
-      '- 第二段',
-      '- 第三段'
+      '## topic clips',
+      '- first',
+      '- second',
+      '- third'
     ].join('\n');
 
     const messages = topicClipper.splitWeChatMarkdown(content, 16);
 
     expect(messages.length).toBeGreaterThan(1);
-    expect(messages.every((message: string) => message.length <= 16)).toBe(true);
+    expect(messages.every((message: string) => Buffer.byteLength(message, 'utf8') <= 16)).toBe(true);
     expect(messages.join('\n')).toBe(content);
+  });
+
+  test('splits WeChat markdown by UTF-8 bytes rather than JavaScript characters', () => {
+    const content = `字幕上下文：${'栞'.repeat(2000)}`;
+    const messages = topicClipper.splitWeChatMarkdown(content, 4096);
+
+    expect(messages.length).toBeGreaterThan(1);
+    expect(messages.every((message: string) => Buffer.byteLength(message, 'utf8') <= 4096)).toBe(true);
+    expect(messages.join('')).toBe(content);
   });
 });

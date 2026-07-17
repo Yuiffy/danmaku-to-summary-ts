@@ -1349,7 +1349,10 @@
         "26966466"
       ],
       "finetuned_model": "D:/files/videos/asr_eval/models/paraformer_timestamp_avg10",
-      "base_model": "paraformer-zh"
+      "base_model": "paraformer-zh",
+      "finetuned_room_ratios": {
+        "26966466": 0.5
+      }
     },
     "common_hotwords": [
       {
@@ -1443,7 +1446,16 @@
         {
           "from": "碎几",
           "to": "岁己",
-          "require_nearby": ["SUI", "小岁", "饼干岁", "主播", "直播", "前辈", "姐", "晚上好"],
+          "require_nearby": [
+            "SUI",
+            "小岁",
+            "饼干岁",
+            "主播",
+            "直播",
+            "前辈",
+            "姐",
+            "晚上好"
+          ],
           "context_window_tokens": 6,
           "match_mode": "token",
           "boundary_sensitive": true

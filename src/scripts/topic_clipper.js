@@ -751,35 +751,104 @@ function normalizeAiClipSelection(clip, burst, sliceIndex = 1, options = {}) {
     };
 }
 
-function dedupeClipsByStart(clips = []) {
-    const byStart = new Map();
+function getClipWindowBounds(clip) {
+    const start = Number(clip?.window?.start);
+    const end = Number(clip?.window?.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+        return null;
+    }
+    return { start, end, duration: end - start };
+}
+
+function normalizeTopicMatchText(text) {
+    return String(text || '')
+        .toLowerCase()
+        .replace(/[\s，。！？!?；;、,.：:“”‘’「」『』（）()【】\[\]…]+/g, '')
+        .trim();
+}
+
+function getClipBurstIndex(clip) {
+    const burstIndex = clip?.burst?.index;
+    return burstIndex === undefined || burstIndex === null ? null : String(burstIndex);
+}
+
+function hasSameTopicMatchText(first, second) {
+    const firstTexts = new Set((first?.window?.matchSegments || [])
+        .map(segment => normalizeTopicMatchText(segment?.text))
+        .filter(Boolean));
+    if (firstTexts.size === 0) return false;
+    return (second?.window?.matchSegments || [])
+        .some(segment => firstTexts.has(normalizeTopicMatchText(segment?.text)));
+}
+
+function areDuplicateClipWindows(first, second, options = {}) {
+    const firstBounds = getClipWindowBounds(first);
+    const secondBounds = getClipWindowBounds(second);
+    if (!firstBounds || !secondBounds) {
+        return false;
+    }
+
+    const sameStartTolerance = Math.max(0, Number(options.sameStartToleranceSeconds ?? 1));
+    if (Math.abs(firstBounds.start - secondBounds.start) <= sameStartTolerance) {
+        return true;
+    }
+
+    // 同一 burst 内同一句关键词命中被 AI 拆成多个不重叠区间时，仍视为同一事件。
+    const firstBurstIndex = getClipBurstIndex(first);
+    const secondBurstIndex = getClipBurstIndex(second);
+    if (firstBurstIndex !== null
+        && firstBurstIndex === secondBurstIndex
+        && hasSameTopicMatchText(first, second)) {
+        return true;
+    }
+
+    const overlap = Math.max(
+        0,
+        Math.min(firstBounds.end, secondBounds.end) - Math.max(firstBounds.start, secondBounds.start)
+    );
+    const shorterDuration = Math.min(firstBounds.duration, secondBounds.duration);
+    const overlapRatio = shorterDuration > 0 ? overlap / shorterDuration : 0;
+    const duplicateOverlapRatio = Math.min(1, Math.max(0, Number(
+        options.duplicateOverlapRatio ?? 0.5
+    )));
+    return overlapRatio >= duplicateOverlapRatio;
+}
+
+function compareClipQuality(first, second) {
+    const firstBounds = getClipWindowBounds(first);
+    const secondBounds = getClipWindowBounds(second);
+    if (!firstBounds || !secondBounds) return 0;
+
+    // 重叠切片中保留覆盖更完整的一段；同样长时保留先进入候选列表的那段。
+    return firstBounds.duration - secondBounds.duration;
+}
+
+function dedupeClipsByStart(clips = [], options = {}) {
+    const groups = [];
     const passthrough = [];
 
     for (const clip of clips) {
-        const start = Number(clip.window?.start);
-        const end = Number(clip.window?.end);
-        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+        if (!getClipWindowBounds(clip)) {
             passthrough.push(clip);
             continue;
         }
 
-        const key = start.toFixed(3);
-        const existing = byStart.get(key);
-        if (!existing) {
-            byStart.set(key, clip);
-            continue;
-        }
-
-        const existingEnd = Number(existing.window?.end);
-        const existingStart = Number(existing.window?.start);
-        const duration = end - start;
-        const existingDuration = existingEnd - existingStart;
-        if (end > existingEnd || (end === existingEnd && duration > existingDuration)) {
-            byStart.set(key, clip);
+        // AI 可能从同一事件返回不同起点的嵌套/高度重叠区间，不能只按 start 去重。
+        const group = groups.find(candidate => candidate.some(existing =>
+            areDuplicateClipWindows(existing, clip, options)
+        ));
+        if (group) {
+            group.push(clip);
+        } else {
+            groups.push([clip]);
         }
     }
 
-    return [...passthrough, ...byStart.values()]
+    const deduped = groups.map(group => group.reduce((best, candidate) =>
+        compareClipQuality(candidate, best) > 0 ? candidate : best
+    ));
+
+    return [...passthrough, ...deduped]
         .sort((a, b) => {
             const startA = Number(a.window?.start);
             const startB = Number(b.window?.start);
@@ -802,27 +871,12 @@ function buildFallbackAiClipSelection(burst) {
     }];
 }
 
-/**
- * 把 burst 的全部字幕发给 AI,让 AI 自己决定切在哪。
- * AI 可以切成 1-3 段,并根据上下文生成每段的标题和简介。
- */
-async function segmentBurstWithAI(burst, parsed, streamerName, info, config = {}) {
-    const aiConfig = config;
-    const textEnabled = aiConfig.ai?.text?.enabled !== false;
-    const segmentEnabled = aiConfig.clipTopics?.aiSegmentBurst !== false;
-    const requestedModel = getTopicClipAiModel(aiConfig);
-
-    if (!textEnabled || !segmentEnabled) {
-        // Fallback: 使用命中段并按字幕边界补全,避免关闭 AI 时也产生半句话短片。
-        return buildFallbackAiClipSelection(burst);
-    }
-
-    // 格式化 SRT 给 AI
-    const srtLines = burst.allSegments.map(s => {
+function buildTopicBurstPrompt(burst, streamerName, info = {}, generateText) {
+    const srtLines = (burst.allSegments || []).map(s => {
         const t = formatClock(Number(s.start));
         const txt = String(s.text || '').trim();
         // 标记哪些包含关键词
-        const isHit = burst.matchSegments.some(
+        const isHit = (burst.matchSegments || []).some(
             m => m.start === s.start && m.end === s.end
         );
         const prefix = isHit ? '★' : ' ';
@@ -830,11 +884,17 @@ async function segmentBurstWithAI(burst, parsed, streamerName, info, config = {}
     }).join('\n');
 
     const keywordStr = (burst.matchedKeywords || []).join('、');
-    const generateText = require('./ai_text_generator');
     const contextNotice = burst.contextSampled
         ? `候选范围原本有 ${burst.contextCandidateCount} 条字幕,下面保留命中附近连续字幕,其余按时间均匀抽样到 ${burst.allSegments.length} 条;时间戳仍是原始时间,中间可能省略了字幕。`
         : `候选范围共有 ${burst.contextCandidateCount || burst.allSegments.length} 条字幕,下面全部列出。`;
-    const prompt = [
+    const titlePromptLines = typeof generateText?.buildClipTitlePromptLines === 'function'
+        ? generateText.buildClipTitlePromptLines({ outputMode: 'jsonTitle', streamerName })
+        : [];
+    const coverPromptLines = typeof generateText?.buildCoverTextPromptLines === 'function'
+        ? generateText.buildCoverTextPromptLines()
+        : [];
+
+    return [
         '你是一个直播切片编辑。下面是一段直播字幕(带时间戳),主播在聊的话题中提到了"岁己"(关键词:' + keywordStr + ')。',
         contextNotice,
         '',
@@ -843,8 +903,10 @@ async function segmentBurstWithAI(burst, parsed, streamerName, info, config = {}
         '你需要决定切片的起止时间(HH:MM:SS 格式),精确到秒即可,要切在句子边界上。',
         '注意:',
         `- 选取的区间不要超过 ${Math.round(Number(burst.maxClipSeconds || DEFAULT_CLIP_TOPICS_CONFIG.maxClipSeconds) / 60)} 分钟,太长观众看不完。最短不少于 ${burst.minClipSeconds || DEFAULT_CLIP_TOPICS_CONFIG.minClipSeconds} 秒,太短的切片没有观看价值。`,
-        '- 如果话题分成了几个明显独立的段落,可以切 2-3 段(每段分别给标题简介)。',
-        '- 如果整段都不超过 2 分钟且话题连贯,切 1 段就好。',
+        '- 默认只返回 1 段。只有存在 2-3 个完全独立、各自完整且有独立命中锚点的事件时才返回多段。',
+        '- 多段切片的时间区间必须互不重叠，不能一段包含另一段，也不能只是同一事件的不同起止时间。',
+        '- 如果同一件事被重复提到，或多个命中行属于同一轮对话，只返回覆盖完整事件的 1 段。',
+        '- 如果整段不超过 2 分钟或话题连贯，只返回 1 段。不要为了凑数拆分。',
         '- 关键词命中行只是话题锚点,不是切片终点。必须把命中前后的完整叙述、提问和回应一起保留。',
         '- 绝对不要在“然后/然后呢/里面/就是/因为/但是/要不要”等明显未完的词后结束。',
         '- 如果最后一行像半句话,继续查看后面的字幕,直到一句话或一轮对话自然收束；宁可多保留几秒,也不要截断。',
@@ -852,15 +914,15 @@ async function segmentBurstWithAI(burst, parsed, streamerName, info, config = {}
         '- 如果命中的行实际是唱歌、哼旋律、ASR 误识别,返回空 clips: []。',
         '- ASR 可能有同音错字(如"开开"≈"栞栞"),要根据语境推断正确含义。',
         '',
-        '输出一个 JSON 对象(不要 Markdown 代码块,纯 JSON):',
+        '输出一个 JSON 对象(不要 Markdown 代码块,纯 JSON)。输出前再次检查：每段都是独立事件、区间不重叠、没有重复/嵌套切片。',
         '{',
         '  "clips": [',
         '    { "startTime": "HH:MM:SS", "endTime": "HH:MM:SS", "title": "标题", "coverText": "第一行\\n第二行", "description": "简介" }',
         '  ]',
         '}',
         '',
-        ...generateText.buildClipTitlePromptLines({ outputMode: 'jsonTitle', streamerName }),
-        ...generateText.buildCoverTextPromptLines(),
+        ...titlePromptLines,
+        ...coverPromptLines,
         '',
         '简介要求:',
         '- 一句话说清主播聊了什么(50字内)',
@@ -873,6 +935,25 @@ async function segmentBurstWithAI(burst, parsed, streamerName, info, config = {}
         '=== 字幕 ===',
         srtLines.slice(0, 30000),  // 200句抽样后通常远低于此上限,防止异常 ASR 文本失控
     ].join('\n');
+}
+
+/**
+ * 把 burst 的全部字幕发给 AI,让 AI 自己决定切在哪。
+ * AI 最多切成 1-3 段,并根据上下文生成每段的标题和简介。
+ */
+async function segmentBurstWithAI(burst, parsed, streamerName, info, config = {}) {
+    const aiConfig = config;
+    const textEnabled = aiConfig.ai?.text?.enabled !== false;
+    const segmentEnabled = aiConfig.clipTopics?.aiSegmentBurst !== false;
+    const requestedModel = getTopicClipAiModel(aiConfig);
+
+    if (!textEnabled || !segmentEnabled) {
+        // Fallback: 使用命中段并按字幕边界补全,避免关闭 AI 时也产生半句话短片。
+        return buildFallbackAiClipSelection(burst);
+    }
+
+    const generateText = require('./ai_text_generator');
+    const prompt = buildTopicBurstPrompt(burst, streamerName, info, generateText);
 
     // 调用 AI
     const provider = aiConfig.ai?.text?.provider || 'gemini';
@@ -956,9 +1037,44 @@ function wrapSubtitleText(text, maxCharsPerLine = 20) {
     }).join('\n');
 }
 
+function parseSpeakerReviewText(text) {
+    const value = String(text || '').trim();
+    const match = value.match(/^\[([^\]]+)\]\s*([\s\S]*)$/);
+    if (!match) {
+        return { text: value };
+    }
+
+    const label = match[1].trim();
+    const scoreMatch = label.match(/^(.*?)\s+([+-]?(?:\d+(?:\.\d*)?|\.\d+))$/);
+    const speaker = (scoreMatch ? scoreMatch[1] : label).trim();
+    const score = scoreMatch ? Number(scoreMatch[2]) : null;
+    return {
+        text: match[2].trim(),
+        speaker: speaker || 'UNKNOWN',
+        ...(Number.isFinite(score) ? { speaker_score: score } : {})
+    };
+}
+
+function parseTopicSrt(srtPath) {
+    const parsed = asrBackends.parseSrt(srtPath, 'topic_clip');
+    const isSpeakerReviewSrt = /\.speaker\.srt$/i.test(String(srtPath || ''));
+    if (!isSpeakerReviewSrt) {
+        return parsed;
+    }
+
+    return {
+        ...parsed,
+        segments: parsed.segments.map(segment => ({
+            ...segment,
+            ...parseSpeakerReviewText(segment.text)
+        }))
+    };
+}
+
 function writeClipSrt(segments = [], window, outputPath, options = {}) {
     const lines = [];
     const clipSegments = getOverlappingSegments(segments, window);
+    const writtenSegments = [];
     let lineIndex = 1;
 
     for (const segment of clipSegments) {
@@ -968,17 +1084,25 @@ function writeClipSrt(segments = [], window, outputPath, options = {}) {
         if (!text || end <= start) {
             continue;
         }
+        const wrappedText = wrapSubtitleText(text, options.maxCharsPerLine);
         lines.push(String(lineIndex));
         lines.push(`${formatSrtTimestamp(start)} --> ${formatSrtTimestamp(end)}`);
-        lines.push(wrapSubtitleText(text, options.maxCharsPerLine));
+        lines.push(wrappedText);
         lines.push('');
+        writtenSegments.push({
+            ...segment,
+            start,
+            end,
+            text: wrappedText
+        });
         lineIndex += 1;
     }
 
     fs.writeFileSync(outputPath, `${lines.join('\n').trim()}\n`, 'utf8');
     return {
         path: outputPath,
-        segmentCount: lineIndex - 1
+        segmentCount: lineIndex - 1,
+        segments: writtenSegments
     };
 }
 
@@ -1001,6 +1125,51 @@ function assEscapeText(text) {
         .replace(/\u007f/g, '');
 }
 
+const SPEAKER_OUTLINE_COLORS = [
+    '#ff66cc',
+    '#66ccff',
+    '#66e6a3',
+    '#ffcc66',
+    '#b388ff',
+    '#ff7777',
+    '#66d9ff',
+    '#d9d966'
+];
+
+function rgbHexToAssColor(value) {
+    const match = String(value || '').trim().match(/^#?([0-9a-f]{6})$/i);
+    if (!match) return '&H00000000';
+    const rgb = match[1].toUpperCase();
+    return `&H00${rgb.slice(4, 6)}${rgb.slice(2, 4)}${rgb.slice(0, 2)}`;
+}
+
+function buildSpeakerStyleName(speaker, index) {
+    const safe = String(speaker || '').replace(/[^A-Za-z0-9_]/g, '_').replace(/^\d+/, '');
+    return `Speaker_${safe || index + 1}`;
+}
+
+function buildSpeakerStyles(speakerSegments = []) {
+    const speakers = Array.from(new Set(
+        speakerSegments
+            .map(segment => String(segment?.speaker || '').trim())
+            .filter(Boolean)
+    )).sort((a, b) => a.localeCompare(b));
+    const styles = new Map();
+    const usedNames = new Set(['Default']);
+    speakers.forEach((speaker, index) => {
+        let name = buildSpeakerStyleName(speaker, index);
+        if (usedNames.has(name)) {
+            name = `${name}_${index + 1}`;
+        }
+        usedNames.add(name);
+        styles.set(speaker, {
+            name,
+            outlineColour: rgbHexToAssColor(SPEAKER_OUTLINE_COLORS[index % SPEAKER_OUTLINE_COLORS.length])
+        });
+    });
+    return styles;
+}
+
 function buildBurnAssContentFromSrt(srtContent, style = {}) {
     const playResX = Number(style.playResX) || 1280;
     const playResY = Number(style.playResY) || 720;
@@ -1012,19 +1181,28 @@ function buildBurnAssContentFromSrt(srtContent, style = {}) {
     const bold = Number(style.bold) || 1;
     const shadow = Number(style.shadow) || 0;
     const wrapStyle = Number(style.wrapStyle) || 2;
+    const speakerSegments = Array.isArray(style.speakerSegments) ? style.speakerSegments : [];
+    const speakerStyles = buildSpeakerStyles(speakerSegments);
     const blocks = String(srtContent || '').trim().split(/\r?\n\r?\n+/).filter(Boolean);
     const events = [];
 
-    for (const block of blocks) {
+    blocks.forEach((block, blockIndex) => {
         const lines = block.split(/\r?\n/);
-        if (lines.length < 3) continue;
+        if (lines.length < 3) return;
         const timeLine = lines[1].trim();
         const match = timeLine.match(/^(\d{2}:\d{2}:\d{2},\d{3})\s+-->\s+(\d{2}:\d{2}:\d{2},\d{3})$/);
-        if (!match) continue;
+        if (!match) return;
         const text = lines.slice(2).join('\n').trim();
-        if (!text) continue;
-        events.push(`Dialogue: 0,${srtTimestampToAss(match[1])},${srtTimestampToAss(match[2])},Default,,0,0,0,,${assEscapeText(text)}`);
-    }
+        if (!text) return;
+        const speaker = String(speakerSegments[blockIndex]?.speaker || '').trim();
+        const speakerStyle = speakerStyles.get(speaker);
+        events.push(`Dialogue: 0,${srtTimestampToAss(match[1])},${srtTimestampToAss(match[2])},${speakerStyle?.name || 'Default'},,0,0,0,,${assEscapeText(text)}`);
+    });
+
+    const defaultStyle = `Style: Default,${fontName},${fontSize},&H00FFFFFF,&H000000FF,&H00000000,&H00000000,${bold},0,0,0,100,100,0,0,1,${outline},${shadow},${alignment},32,32,${marginV},1`;
+    const speakerStyleLines = Array.from(speakerStyles.values()).map(speakerStyle =>
+        `Style: ${speakerStyle.name},${fontName},${fontSize},&H00FFFFFF,&H000000FF,${speakerStyle.outlineColour},&H00000000,${bold},0,0,0,100,100,0,0,1,${outline},${shadow},${alignment},32,32,${marginV},1`
+    );
 
     return [
         '[Script Info]',
@@ -1036,7 +1214,8 @@ function buildBurnAssContentFromSrt(srtContent, style = {}) {
         '',
         '[V4+ Styles]',
         'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
-        `Style: Default,${fontName},${fontSize},&H00FFFFFF,&H000000FF,&H00000000,&H00000000,${bold},0,0,0,100,100,0,0,1,${outline},${shadow},${alignment},32,32,${marginV},1`,
+        defaultStyle,
+        ...speakerStyleLines,
         '',
         '[Events]',
         'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
@@ -1557,7 +1736,10 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
         const subtitleStyle = calculateSubtitleStyle(videoRes.width, videoRes.height, config);
         const parsedOutput = path.parse(outputPath);
         burnAssPath = path.join(parsedOutput.dir, `${parsedOutput.name}.burn.ass`);
-        writeTemporaryBurnAssFromSrt(srtPath, burnAssPath, subtitleStyle);
+        writeTemporaryBurnAssFromSrt(srtPath, burnAssPath, {
+            ...subtitleStyle,
+            speakerSegments: config.subtitleSegments
+        });
         const useTwoStageBurn = config.twoStageSubtitleBurn !== false && process.env.FFMPEG_TWO_STAGE_BURN !== 'false';
         try {
             if (useTwoStageBurn) {
@@ -1955,6 +2137,22 @@ function splitWeChatMarkdown(content, maxLength = 4096) {
     const chunks = [];
     let current = '';
 
+    const byteLength = value => Buffer.byteLength(String(value || ''), 'utf8');
+    const takeByBytes = value => {
+        const text = String(value || '');
+        let bytes = 0;
+        let index = 0;
+        while (index < text.length) {
+            const codePoint = text.codePointAt(index);
+            const char = String.fromCodePoint(codePoint);
+            const charBytes = Buffer.byteLength(char, 'utf8');
+            if (bytes + charBytes > limit) break;
+            bytes += charBytes;
+            index += char.length;
+        }
+        return [text.slice(0, index), text.slice(index)];
+    };
+
     const flush = () => {
         if (current) {
             chunks.push(current);
@@ -1963,14 +2161,18 @@ function splitWeChatMarkdown(content, maxLength = 4096) {
     };
 
     for (let line of lines) {
-        while (line.length > limit) {
+        while (byteLength(line) > limit) {
+            const [head, tail] = takeByBytes(line);
             flush();
-            chunks.push(line.slice(0, limit));
-            line = line.slice(limit);
+            if (!head) {
+                throw new Error(`企微 Markdown 单字符超过 ${limit} bytes 限制`);
+            }
+            chunks.push(head);
+            line = tail;
         }
 
         const next = current ? `${current}\n${line}` : line;
-        if (next.length > limit) {
+        if (byteLength(next) > limit) {
             flush();
         }
         current = current ? `${current}\n${line}` : line;
@@ -2122,7 +2324,7 @@ async function generateTopicClips(options = {}) {
         return [];
     }
 
-    const parsed = asrBackends.parseSrt(options.srtPath, 'topic_clip');
+    const parsed = parseTopicSrt(options.srtPath);
     const matches = findKeywordMatches(parsed.segments, config.keywords);
     if (matches.length === 0) {
         console.log('i️  话题切片: 未命中关键词');
@@ -2196,6 +2398,9 @@ async function generateTopicClips(options = {}) {
                     hit: matchKeys.has(segmentKey(s))
                 }))
                 .filter(s => Number(s.end) >= seg.start - 20 && Number(s.start) <= seg.end + 20);
+            const clipMatchSegments = (burst.matchSegments || []).filter(match =>
+                Number(match.end) >= seg.start && Number(match.start) <= seg.end
+            );
             // 构造一个兼容旧代码的 window 对象
             const w = {
                 index: `${burst.index}-${seg.sliceIndex || 1}`,
@@ -2204,7 +2409,7 @@ async function generateTopicClips(options = {}) {
                 duration: seg.end - seg.start,
                 matchedKeywords: burst.matchedKeywords,
                 matchCount: burst.matchCount,
-                matchSegments: burst.matchSegments,
+                matchSegments: clipMatchSegments.length > 0 ? clipMatchSegments : burst.matchSegments,
                 contextSegments,
                 allSegmentTexts: parsed.segments
                     .filter(s => Number(s.start) >= seg.start - 5 && Number(s.end) <= seg.end + 5)
@@ -2238,7 +2443,7 @@ async function generateTopicClips(options = {}) {
 
     const clipsToGenerate = dedupeClipsByStart(aiSegmentedClips);
     if (clipsToGenerate.length < aiSegmentedClips.length) {
-        console.log(`i️  已合并 ${aiSegmentedClips.length - clipsToGenerate.length} 段同起点重复切片`);
+        console.log(`i️  已过滤 ${aiSegmentedClips.length - clipsToGenerate.length} 段重复/重叠切片`);
     }
 
     console.log(`\n🎬 共 ${clipsToGenerate.length} 段切片,开始生成视频...\n`);
@@ -2273,6 +2478,7 @@ async function generateTopicClips(options = {}) {
         try {
             mediaResult = await cutClipMedia(source, window, srtPath, mediaPath, {
                 burnSubtitles: config.burnSubtitles,
+                subtitleSegments: srtResult.segments,
                 preserveCoverSource: true,
                 ffmpegPath: options.ffmpegPath
             });
@@ -2392,11 +2598,14 @@ module.exports = {
     findKeywordMatches,
     buildClipWindows,
     buildTopicBursts,
+    buildTopicBurstPrompt,
     segmentBurstWithAI,
     normalizeAiClipSelection,
     dedupeClipsByStart,
     verifyClipWithAI,
+    parseTopicSrt,
     writeClipSrt,
+    buildBurnAssContentFromSrt,
     writeTemporaryBurnAssFromSrt,
     parseRecordingInfo,
     resolveStreamerName,
