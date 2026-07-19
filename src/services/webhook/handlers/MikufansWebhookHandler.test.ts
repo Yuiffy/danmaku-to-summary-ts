@@ -114,6 +114,35 @@ describe('MikufansWebhookHandler segment collection finalization', () => {
     expect(startProcessing).not.toHaveBeenCalled();
   });
 
+  test('waits through the reconnect grace window before finalizing a final FileClosed segment', async () => {
+    jest.useFakeTimers();
+    const handler = new MikufansWebhookHandler() as any;
+    handlers.push(handler);
+    const roomId = '25788787';
+    const { videoPath } = writeSegment(tempDir, roomId);
+    const startProcessing = jest.fn().mockResolvedValue(true);
+    handler.startProcessing = startProcessing;
+
+    await handler.collectSegment(roomId, videoPath, {
+      EventData: {
+        RoomId: Number(roomId),
+        Name: 'SUI',
+        Title: 'live',
+        FileOpenTime: new Date(Date.now() - 60_000).toISOString(),
+        FileCloseTime: new Date().toISOString()
+      }
+    });
+    handler.finalFileClosedRooms.set(roomId, new Date());
+
+    expect(handler.MAX_DELAY_MS).toBe(5 * 60 * 1000);
+    await jest.advanceTimersByTimeAsync(5 * 60 * 1000 - 1);
+    expect(startProcessing).not.toHaveBeenCalled();
+
+    await jest.advanceTimersByTimeAsync(1);
+    expect(startProcessing).toHaveBeenCalledTimes(1);
+    expect(startProcessing.mock.calls[0][0]).toBe(videoPath);
+  });
+
   test('recovers nearby disk segments before merging when session state was lost', async () => {
     const handler = new MikufansWebhookHandler() as any;
     handlers.push(handler);

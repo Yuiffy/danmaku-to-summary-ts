@@ -9,7 +9,7 @@ import { ConfigProvider } from '../../../core/config/ConfigProvider';
 import { FileStabilityChecker } from '../FileStabilityChecker';
 import { DuplicateProcessorGuard } from '../DuplicateProcessorGuard';
 import { IDelayedReplyService } from '../../../services/bilibili/interfaces/IDelayedReplyService';
-import { LiveSessionManager, LiveSegment } from '../LiveSessionManager';
+import { LIVE_RECONNECT_GRACE_MS, LiveSessionManager, LiveSegment } from '../LiveSessionManager';
 import { FileMerger } from '../FileMerger';
 import { VideoScreenshotService } from '../../video/VideoScreenshotService';
 import { listRelevantProcesses, terminateProcessTree } from '../../../utils/processCleanup';
@@ -91,7 +91,8 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   private fileOpeningTimestamps: Map<string, Date> = new Map();
   private readonly FILE_CLOSE_ALERT_DELAY_MS = 60 * 1000;
   // 最大等待时间(毫秒)
-  private readonly MAX_DELAY_MS = 120000; // 120秒 (2分钟)
+  // 断流重连可恢复最近会话；在此窗口内不能把单个分段结算，避免原文件与后续 _merged 文件各处理一次。
+  private readonly MAX_DELAY_MS = LIVE_RECONNECT_GRACE_MS;
   private readonly DELAYED_REPLY_FILE_RETRY_INITIAL_MS = 30 * 1000;
   private readonly DELAYED_REPLY_FILE_RETRY_INTERVAL_MS = 5 * 60 * 1000;
   private readonly DELAYED_REPLY_FILE_RETRY_MAX_MS = 2 * 60 * 60 * 1000;

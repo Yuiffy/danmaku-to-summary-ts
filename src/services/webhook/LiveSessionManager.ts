@@ -8,6 +8,8 @@ import * as fs from 'fs';
 import { getLogger } from '../../core/logging/LogManager';
 import { ConfigProvider } from '../../core/config/ConfigProvider';
 
+export const LIVE_RECONNECT_GRACE_MS = 5 * 60 * 1000;
+
 /**
  * 直播片段信息
  */
@@ -57,7 +59,7 @@ export interface LiveSession {
 export class LiveSessionManager {
   private logger = getLogger('LiveSessionManager');
   private sessions: Map<string, LiveSession> = new Map();
-  private readonly reconnectGraceMs = 5 * 60 * 1000;
+  private readonly reconnectGraceMs = LIVE_RECONNECT_GRACE_MS;
 
   /**
    * 创建或获取会话（使用RoomId）
