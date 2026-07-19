@@ -1201,6 +1201,39 @@
           "filterMentionedImagesByComicScript": false,
           "appendCharacterDescriptions": true
         }
+      },
+      "5332": {
+        "audioOnly": false,
+        "anchorName": "萤火虫官方",
+        "fanName": "萤火虫",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true,
+        "multiReferenceImages": {
+          "enabled": true,
+          "maxExtraCharacters": 12,
+          "maxMentionedContextCharacters": 12,
+          "maxTotalImages": 5,
+          "allowedExtraStreamerIds": [
+            "sui",
+            "shiori",
+            "rhea",
+            "seki",
+            "mizuki",
+            "miting",
+            "harei",
+            "nightin",
+            "hazel",
+            "liko",
+            "kloa",
+            "izayoi"
+          ],
+          "includeMentionedStreamers": true,
+          "includeMentionedStreamerImages": true,
+          "filterExtraImagesByComicScript": true,
+          "filterMentionedImagesByComicScript": true,
+          "appendCharacterDescriptions": true
+        }
       }
     }
   },
