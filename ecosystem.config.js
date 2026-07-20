@@ -81,7 +81,7 @@ module.exports = {
       name: 'seedance-queue-runner',
       script: 'scripts/seedance_queue_runner.js',
       cwd: __dirname,
-      args: '--loop --adaptive --interval 300 --error-interval 300',
+      args: '--loop --max-vip-inflight 24 --max-normal-inflight 1 --max-submissions-per-pass 24 --submit-delay 2 --submit-interval 15 --error-interval 300',
       instances: 1,
       exec_mode: 'fork',
       autorestart: true,

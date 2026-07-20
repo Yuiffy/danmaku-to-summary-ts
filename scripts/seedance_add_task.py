@@ -20,12 +20,15 @@ seedance_add_task.py — 向 seedance_queue.json 安全添加任务
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
+from seedance_queue_store import DEFAULT_QUEUE_PATH, QueueStore
+
 # ── 队列文件路径 ──
-QUEUE_PATH = Path(r"D:\files\Pictures\AI图保存\seedance\近期岁己居家下载\seedance_queue.json")
+QUEUE_PATH = DEFAULT_QUEUE_PATH
+VALID_MODELS = {"seedance2.0", "seedance2.0mini", "seedance2.0_vip", "seedance2.0fast_vip"}
+VALID_RESOLUTIONS = {"720p", "1080p", "4k"}
 
 # ── 素材根目录 ──
 XIAOHUAMA = Path(r"D:\files\Pictures\保存素材\小花帽")
@@ -118,14 +121,11 @@ def next_task_id(tasks: list) -> str:
     return f"task_{max_num + 1:03d}"
 
 
-def add_task(name: str, prompt: str, refs: list[str], repeat: int, ratio: str = "16:9"):
-    """添加任务到队列"""
-    if not QUEUE_PATH.exists():
-        print(f"✗ 队列文件不存在: {QUEUE_PATH}", file=sys.stderr)
+def add_task(name: str, prompt: str, refs: list[str], repeat: int, ratio: str = "16:9", model_version: str = "seedance2.0", resolution: str = "720p", queue_path: Path = QUEUE_PATH):
+    """添加任务到队列。模型决定进入普通或 VIP 线上通道。"""
+    if not queue_path.exists():
+        print(f"✗ 队列文件不存在: {queue_path}", file=sys.stderr)
         sys.exit(1)
-
-    with open(QUEUE_PATH, "r", encoding="utf-8") as f:
-        q = json.load(f)
 
     # 验证参数
     if not name.strip():
@@ -138,38 +138,45 @@ def add_task(name: str, prompt: str, refs: list[str], repeat: int, ratio: str = 
     if ratio not in valid_ratios:
         print(f"✗ ratio 无效: '{ratio}'，可选: {', '.join(sorted(valid_ratios))}", file=sys.stderr)
         sys.exit(1)
-    if repeat < 1 or repeat > 20:
-        print(f"✗ repeat 应在 1-20 之间，当前: {repeat}", file=sys.stderr)
+    if repeat < 1 or repeat > 200:
+        print(f"✗ repeat 应在 1-200 之间，当前: {repeat}", file=sys.stderr)
+        sys.exit(1)
+    if model_version not in VALID_MODELS:
+        print(f"✗ model-version 无效: '{model_version}'，可选: {', '.join(sorted(VALID_MODELS))}", file=sys.stderr)
+        sys.exit(1)
+    if resolution not in VALID_RESOLUTIONS or (not model_version.endswith("_vip") and resolution != "720p"):
+        print(f"✗ {model_version} 不支持分辨率: '{resolution}'", file=sys.stderr)
         sys.exit(1)
     if not refs:
         print("✗ 至少需要一个参考图", file=sys.stderr)
         sys.exit(1)
 
-    # 解析参考图
     ref_paths = resolve_refs(refs)
+    store = QueueStore(queue_path)
+    with store.transaction() as q:
+        task_id = next_task_id(q["tasks"])
+        task = {
+            "id": task_id,
+            "name": name,
+            "prompt": prompt,
+            "reference_images": ref_paths,
+            "ratio": ratio,
+            "model_version": model_version,
+            "video_resolution": resolution,
+            "repeat": repeat,
+            "completed": 0,
+            "status": "pending",
+            "submit_ids": [],
+            "inflight": [],
+        }
+        q["tasks"].append(task)
+        store.save(q)
+        task_count = len(q["tasks"])
 
-    # 生成新 task
-    task_id = next_task_id(q["tasks"])
-    task = {
-        "id": task_id,
-        "name": name,
-        "prompt": prompt,
-        "reference_images": ref_paths,
-        "ratio": ratio,
-        "repeat": repeat,
-        "completed": 0,
-        "status": "pending",
-        "submit_ids": [],
-    }
-
-    q["tasks"].append(task)
-
-    with open(QUEUE_PATH, "w", encoding="utf-8") as f:
-        json.dump(q, f, ensure_ascii=False, indent=2)
-
+    lane = "VIP" if model_version.endswith("_vip") else "普通"
     print(f"✅ 已添加 {task_id}: {name}")
-    print(f"   repeat={repeat}, refs={refs}")
-    print(f"   总任务数: {len(q['tasks'])}")
+    print(f"   repeat={repeat}, refs={refs}, model={model_version}, resolution={resolution}, 通道={lane}")
+    print(f"   总任务数: {task_count}")
 
 
 def list_refs():
@@ -198,8 +205,11 @@ def main():
     p_add.add_argument("--name", required=True, help="任务名称")
     p_add.add_argument("--prompt", required=True, help="生成 prompt")
     p_add.add_argument("--refs", required=True, help="参考图短名称，逗号分隔 (如 sport,binggan)")
-    p_add.add_argument("--repeat", type=int, default=3, help="重复次数 (默认3)")
+    p_add.add_argument("--repeat", type=int, default=3, help="重复次数 (默认3，最多200)")
     p_add.add_argument("--ratio", default="16:9", help="视频比例 (默认16:9): 1:1, 3:4, 16:9, 4:3, 9:16, 21:9")
+    p_add.add_argument("--model-version", default="seedance2.0", choices=sorted(VALID_MODELS), help="生成模型；*_vip 自动进入 VIP 通道")
+    p_add.add_argument("--resolution", default="720p", choices=sorted(VALID_RESOLUTIONS), help="视频分辨率 (非 VIP 模型仅支持 720p)")
+    p_add.add_argument("--queue", type=Path, default=QUEUE_PATH, help="队列文件路径（测试/维护覆盖）")
 
     # list-refs 子命令
     sub.add_parser("list-refs", help="列出所有可用参考图短名称")
@@ -210,12 +220,13 @@ def main():
     # list-tasks 子命令
     p_list = sub.add_parser("list-tasks", help="列出任务状态")
     p_list.add_argument("--status", default=None, help="按状态过滤 (pending/completed/paused)")
+    p_list.add_argument("--queue", type=Path, default=QUEUE_PATH, help="队列文件路径（测试/维护覆盖）")
 
     args = parser.parse_args()
 
     if args.command == "add":
         refs = [r.strip() for r in args.refs.split(",") if r.strip()]
-        add_task(args.name, args.prompt, refs, args.repeat, args.ratio)
+        add_task(args.name, args.prompt, refs, args.repeat, args.ratio, args.model_version, args.resolution, args.queue)
 
     elif args.command == "list-refs":
         list_refs()
@@ -224,13 +235,16 @@ def main():
         list_refs_json()
 
     elif args.command == "list-tasks":
-        with open(QUEUE_PATH, "r", encoding="utf-8") as f:
-            q = json.load(f)
+        q = QueueStore(args.queue).load()
         tasks = q["tasks"]
         if args.status:
             tasks = [t for t in tasks if t.get("status") == args.status]
         for t in tasks:
-            print(f"{t['id']}: [{t.get('status','?'):>8}] repeat={t.get('repeat',0)} done={t.get('completed',0)}  {t['name']}")
+            model = str(t.get("model_version") or "seedance2.0")
+            lane = "vip" if model.endswith("_vip") else "normal"
+            active = len(t.get("inflight") or []) + len(t.get("submission_reservations") or [])
+            remaining = max(0, int(t.get("repeat") or 0) - int(t.get("completed") or 0))
+            print(f"{t['id']}: [{t.get('status','?'):>8}] lane={lane:<6} model={model:<22} repeat={t.get('repeat',0)} done={t.get('completed',0)} active={active} remaining={remaining}  {t['name']}")
 
     else:
         parser.print_help()
