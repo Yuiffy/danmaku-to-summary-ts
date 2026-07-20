@@ -13,7 +13,8 @@ const {
     applyCorrectionsToSegments,
     applyCorrectionsToAsrResult,
     makeCorrectionStats,
-    logCorrectionStats
+    logCorrectionStats,
+    buildPhonemeCorrectionPayload
 } = require('./asr_corrections');
 const speakerReferenceCatalog = require('./speaker_reference_catalog');
 
@@ -1160,7 +1161,11 @@ async function transcribeFunAsrBackend(mediaPath, config = {}, runtimeOptions = 
             : (runtimeOptions.hotwords || []),
         hotword: '', // 不传热词给模型，全部走 phoneme_correction 后处理
         hotword_unweighted: '',
-        phoneme_correction: asrConfig.phoneme_correction || null,
+        phoneme_correction: buildPhonemeCorrectionPayload(
+            asrConfig.phoneme_correction || null,
+            runtimeOptions.corrections || {},
+            asrConfig.corrections || null
+        ),
         model_profile: ((resolved.backendOptionsOverride && resolved.backendOptionsOverride[backend]?.model_profile) || backendConfig.model_profile || null),
         finetuned_model: ((resolved.backendOptionsOverride && resolved.backendOptionsOverride[backend]?.finetuned_model) || backendConfig.finetuned_model || null)
     };
@@ -1217,5 +1222,6 @@ module.exports = {
     transcribeParaformer,
     formatTimestamp,
     parseTimestamp,
+    buildPhonemeCorrectionPayload,
     stripSubtitlePunctuation
 };

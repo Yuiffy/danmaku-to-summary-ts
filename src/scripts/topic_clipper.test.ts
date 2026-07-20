@@ -122,6 +122,33 @@ describe('topic_clipper', () => {
     expect(matches[0].segment.text).toBe('小岁今天直播了吗');
   });
 
+  test('ignores phoneme-corrupted 粉碎机 as 粉岁己', () => {
+    const segments = [
+      { start: 0, end: 1, text: '我已经做了会个粉岁己升一下级' },
+      { start: 2, end: 3, text: 'ok ok 粉粉岁己你有了是吧' },
+      { start: 4, end: 5, text: '用石头去把这个粉岁己在这个粉岁己里研' },
+      { start: 6, end: 7, text: '岁己今天直播了吗' }
+    ];
+
+    const matches = topicClipper.findKeywordMatches(segments, ['岁己']);
+
+    expect(matches).toHaveLength(1);
+    expect(matches[0].segment.text).toBe('岁己今天直播了吗');
+  });
+
+  test('topic burst prompt calls out 粉碎机 ASR false positives', () => {
+    const prompt = topicClipper.buildTopicBurstPrompt({
+      allSegments: [{ start: 10, end: 12, text: '粉岁己升一下级' }],
+      matchSegments: [{ start: 10, end: 12, text: '粉岁己升一下级' }],
+      matchedKeywords: ['岁己'],
+      minClipSeconds: 30,
+      maxClipSeconds: 180
+    }, '南町Nightin', { streamTitle: '测试直播', recordedAt: '2026-07-20' }, aiTextGenerator);
+
+    expect(prompt).toContain('粉碎机');
+    expect(prompt).toContain('粉岁己');
+  });
+
   test('AI clip selections must include the matched segment', () => {
     const burst = {
       start: 100,

@@ -133,6 +133,7 @@ async function verifyClipWithAI(window, keywords, config = {}) {
         '- 主播明确说出该主播的名字(如"给你们看岁己"、"岁己今天直播了吗")→ 是',
         '- 主播在唱歌,歌词碰巧被识别为包含关键词 → 否',
         '- 上下文完全不涉及该主播,只是发音相似 → 否',
+        '- 游戏道具"粉碎机"被音素纠正写成"粉岁己/粉粉岁己"(采石场/升级/石头/研磨等语境) → 否',
         '- 感谢礼物时的乱码碰巧包含关键词 → 否',
         '',
         '请只回复 JSON:{"verified": true/false, "reason": "一句话解释"}',
@@ -273,6 +274,12 @@ function isKeywordOccurrenceAllowed(text, keyword, index) {
     // "小岁" is often hit inside unrelated names like "小小岁"; require the
     // occurrence not to be immediately prefixed by another "小".
     if (keyword === '小岁' && before === '小') {
+        return false;
+    }
+
+    // PhonemeCorrector can rewrite game item "粉碎机" -> "粉岁己" / "粉粉岁己".
+    // Block "岁己" when immediately preceded by "粉".
+    if (keyword === '岁己' && before === '粉') {
         return false;
     }
 
@@ -912,6 +919,7 @@ function buildTopicBurstPrompt(burst, streamerName, info = {}, generateText) {
         '- 如果最后一行像半句话,继续查看后面的字幕,直到一句话或一轮对话自然收束；宁可多保留几秒,也不要截断。',
         '- 起止时间要覆盖实际字幕行,结束时间至少落在最后一句字幕的 end 之后。',
         '- 如果命中的行实际是唱歌、哼旋律、ASR 误识别,返回空 clips: []。',
+        '- 特别注意:游戏里的"粉碎机"常被音素纠正错写成"粉岁己/粉粉岁己"。若上下文是采石场、升级、石头、研磨、木材等建造/生产内容,而不是在谈论虚拟主播岁己,视为误识别,返回空 clips: []。',
         '- ASR 可能有同音错字(如"开开"≈"栞栞"),要根据语境推断正确含义。',
         '',
         '输出一个 JSON 对象(不要 Markdown 代码块,纯 JSON)。输出前再次检查：每段都是独立事件、区间不重叠、没有重复/嵌套切片。',

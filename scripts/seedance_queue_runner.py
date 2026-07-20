@@ -16,7 +16,8 @@ DREAMINA = "dreamina"
 MODEL = "seedance2.0"
 SESSION = "14778786782988"
 DURATION = "15"
-RATIO = "9:16"
+DEFAULT_RATIO = "16:9"
+RESOLUTION = "720p"
 POLL = "30"
 DEFAULT_INTERVAL = 300
 ERROR_INTERVAL = 300
@@ -247,7 +248,8 @@ def record_failure(data: Dict[str, Any], task: Dict[str, Any], reason: str) -> N
 
 
 def submit(task: Dict[str, Any]) -> str:
-    cmd = [DREAMINA, "multimodal2video", "--model_version", MODEL, "--duration", DURATION, "--ratio", RATIO, "--session", SESSION, "--poll", POLL]
+    ratio = task.get("ratio") or DEFAULT_RATIO
+    cmd = [DREAMINA, "multimodal2video", "--model_version", MODEL, "--duration", DURATION, "--ratio", ratio, "--video_resolution", RESOLUTION, "--session", SESSION, "--poll", POLL]
     for img in task.get("reference_images", []):
         cmd += ["--image", img]
     cmd += ["--prompt", task["prompt"]]

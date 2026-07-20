@@ -348,6 +348,7 @@ ASR 配置支持全局热词、按 routing 命中的房间/主播热词，以及
 - `boundary_sensitive`: `ambiguous` 可选字段；默认 `true`，避免把命中的别名嵌在更大词片段中时也替换掉。
 - `corrections.exclude_when`: 为指定来源词配置保护短语；来源词出现在这些短语中时不替换。比如 `{ "小碎": ["小碎步"] }` 可保留“小碎步”，但仍会把独立的“小碎”改成“小岁”。
 - `corrections.exclude_pattern`: 用正则模式保护指定上下文；当来源词与这些模式有重叠时不替换，适合比 `exclude_when` 更宽的片段保护。
+- `phoneme_correction`: Paraformer/SenseVoice 的音素热词纠错。下发给 Python 时会自动带上当前 `corrections.exclude_when` / `exclude_pattern`（例如 `碎机 -> [粉碎机]`），并默认开启与 JS `safe` 相同的 jieba 分词边界保护（`boundary_protect`，可设 `false` 关闭）。保护词只维护在 `exclude_when`，不另外配一套白名单。
 
 对于 `fun_asr_nano` 和 `fun_asr_nano_vllm`，模型提示词会整理成 `hotwords: ["岁己", "岁己SUI", "小岁", ...]` 直接喂给模型；`aliases_as_hotwords: false` 的错误别名只进入后处理修正。当前 JS adapter 对 Paraformer/SenseVoice 留空模型 hotword 字段，依赖 `phoneme_correction` 与统一 corrections。
 

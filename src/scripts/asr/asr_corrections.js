@@ -1123,6 +1123,96 @@ function applyCorrectionsToAsrResult(result, corrections = []) {
     };
 }
 
+function collectPhonemeProtectionConfig(corrections = {}, phonemeConfig = {}) {
+    const protectTerms = new Set();
+    const excludePatterns = new Set();
+    const base = phonemeConfig && typeof phonemeConfig === 'object' ? phonemeConfig : {};
+
+    const addTerms = (values) => {
+        if (typeof values === 'string') {
+            values.split(/[\n,]/).forEach((item) => {
+                const term = String(item || '').trim();
+                if (term) {
+                    protectTerms.add(term);
+                }
+            });
+            return;
+        }
+        if (!Array.isArray(values)) {
+            return;
+        }
+        values.forEach((item) => {
+            const term = String(item || '').trim();
+            if (term) {
+                protectTerms.add(term);
+            }
+        });
+    };
+
+    addTerms(base.protect_terms);
+
+    const buckets = []
+        .concat(Array.isArray(corrections?.safe) ? corrections.safe : [])
+        .concat(Array.isArray(corrections?.contextual) ? corrections.contextual : [])
+        .concat(Array.isArray(corrections?.ambiguous) ? corrections.ambiguous : []);
+
+    buckets.forEach((correction) => {
+        if (!correction || typeof correction !== 'object') {
+            return;
+        }
+        addTerms(correction.exclude_when);
+        if (Array.isArray(correction.exclude_pattern)) {
+            correction.exclude_pattern.forEach((pattern) => {
+                const value = String(pattern || '').trim();
+                if (value) {
+                    excludePatterns.add(value);
+                }
+            });
+        }
+    });
+
+    // Also accept unresolved object-form exclude maps when callers pass raw config.
+    if (corrections?.exclude_when && typeof corrections.exclude_when === 'object' && !Array.isArray(corrections.exclude_when)) {
+        Object.values(corrections.exclude_when).forEach((values) => addTerms(values));
+    }
+    if (corrections?.exclude_pattern && typeof corrections.exclude_pattern === 'object' && !Array.isArray(corrections.exclude_pattern)) {
+        Object.values(corrections.exclude_pattern).forEach((values) => {
+            if (Array.isArray(values)) {
+                values.forEach((pattern) => {
+                    const value = String(pattern || '').trim();
+                    if (value) {
+                        excludePatterns.add(value);
+                    }
+                });
+            }
+        });
+    }
+
+    return {
+        protect_terms: Array.from(protectTerms).sort((a, b) => b.length - a.length),
+        exclude_patterns: Array.from(excludePatterns),
+        boundary_protect: base.boundary_protect !== false
+    };
+}
+
+function buildPhonemeCorrectionPayload(phonemeConfig = null, corrections = {}, rawCorrectionsConfig = null) {
+    if (!phonemeConfig || phonemeConfig.enabled === false) {
+        return phonemeConfig || null;
+    }
+    const mergedCorrections = {
+        ...(corrections && typeof corrections === 'object' ? corrections : {}),
+        exclude_when: rawCorrectionsConfig?.exclude_when,
+        exclude_pattern: rawCorrectionsConfig?.exclude_pattern
+    };
+    const protection = collectPhonemeProtectionConfig(mergedCorrections, phonemeConfig);
+    return {
+        ...phonemeConfig,
+        protect_terms: protection.protect_terms,
+        exclude_patterns: protection.exclude_patterns,
+        boundary_protect: protection.boundary_protect
+    };
+}
+
 module.exports = {
     DEFAULT_CONTEXTUAL_NEARBY_WORDS,
     DEFAULT_CONTEXT_WINDOW_TOKENS,
@@ -1135,5 +1225,7 @@ module.exports = {
     applyCorrectionsToSegments,
     applyCorrectionsToAsrResult,
     makeCorrectionStats,
-    logCorrectionStats
+    logCorrectionStats,
+    collectPhonemeProtectionConfig,
+    buildPhonemeCorrectionPayload
 };

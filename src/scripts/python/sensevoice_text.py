@@ -31,9 +31,192 @@ HOTWORD_UNWEIGHTED_UNSUPPORTED_WARNED = False
 PUNC_MODEL_WARNED = False
 PUNC_GENERATE_WARNED = False
 
+# protect_terms are forwarded from JS corrections.exclude_when (e.g. 碎机 -> [粉碎机]).
+_JIEBA = None
+_JIEBA_LOAD_ATTEMPTED = False
+
 
 def normalize_backend_name(name):
     return BACKEND_ALIASES.get(str(name or "").strip().lower(), str(name or "").strip().lower())
+
+
+def _load_jieba():
+    global _JIEBA, _JIEBA_LOAD_ATTEMPTED
+    if _JIEBA_LOAD_ATTEMPTED:
+        return _JIEBA
+    _JIEBA_LOAD_ATTEMPTED = True
+    try:
+        import jieba as jieba_mod
+        _JIEBA = jieba_mod
+    except Exception:
+        _JIEBA = None
+    return _JIEBA
+
+
+def _normalize_string_list(raw):
+    if isinstance(raw, str):
+        return [part.strip() for part in raw.replace("\n", ",").split(",") if part.strip()]
+    if isinstance(raw, (list, tuple)):
+        return [str(item or "").strip() for item in raw if str(item or "").strip()]
+    return []
+
+
+def _resolve_phoneme_protect_terms(hotword_config=None):
+    if not isinstance(hotword_config, dict):
+        return []
+    configured = _normalize_string_list(hotword_config.get("protect_terms"))
+    seen = set()
+    merged = []
+    for term in sorted(configured, key=len, reverse=True):
+        if not term or term in seen:
+            continue
+        seen.add(term)
+        merged.append(term)
+    return merged
+
+
+def _resolve_phoneme_exclude_patterns(hotword_config=None):
+    if not isinstance(hotword_config, dict):
+        return []
+    return _normalize_string_list(hotword_config.get("exclude_patterns"))
+
+
+def _is_boundary_protect_enabled(hotword_config=None):
+    if not isinstance(hotword_config, dict):
+        return True
+    return hotword_config.get("boundary_protect") is not False
+
+
+def _mask_phoneme_protect_terms(text, protect_terms):
+    masked = str(text or "")
+    placeholders = []
+    for index, term in enumerate(protect_terms or []):
+        if not term or term not in masked:
+            continue
+        token = f"\uE000{index}\uE001"
+        masked = masked.replace(term, token)
+        placeholders.append((token, term))
+    return masked, placeholders
+
+
+def _restore_phoneme_protect_terms(text, placeholders):
+    restored = str(text or "")
+    for token, term in placeholders or []:
+        restored = restored.replace(token, term)
+    return restored
+
+
+def _overlap(a_start, a_end, b_start, b_end):
+    return a_start < b_end and b_start < a_end
+
+
+def _is_protected_by_terms(text, start, end, protect_terms):
+    source = str(text or "")
+    for term in protect_terms or []:
+        if not term:
+            continue
+        search_start = 0
+        while search_start <= len(source):
+            idx = source.find(term, search_start)
+            if idx < 0:
+                break
+            if _overlap(start, end, idx, idx + len(term)):
+                return True
+            search_start = idx + 1
+    return False
+
+
+def _is_protected_by_patterns(text, start, end, exclude_patterns):
+    source = str(text or "")
+    for pattern_text in exclude_patterns or []:
+        try:
+            pattern = re.compile(pattern_text)
+        except re.error:
+            continue
+        for match in pattern.finditer(source):
+            if _overlap(start, end, match.start(), match.end()):
+                return True
+    return False
+
+
+def _build_jieba_token_spans(text, protect_terms=None):
+    jieba_mod = _load_jieba()
+    source = str(text or "")
+    if not jieba_mod or not source:
+        return []
+    for term in protect_terms or []:
+        if term:
+            try:
+                jieba_mod.add_word(term, freq=100000)
+            except Exception:
+                pass
+    tokens = []
+    offset = 0
+    for token in jieba_mod.cut(source, cut_all=False):
+        token_text = str(token or "")
+        if not token_text:
+            continue
+        idx = source.find(token_text, offset)
+        if idx < 0:
+            idx = offset
+        start = idx
+        end = idx + len(token_text)
+        tokens.append((token_text, start, end))
+        offset = end
+    return tokens
+
+
+def _is_protected_by_token_boundary(token_spans, start, end):
+    for token_text, token_start, token_end in token_spans or []:
+        if token_end <= start or token_start >= end:
+            continue
+        # Same rule as JS: match sits strictly inside a larger non-trivial token.
+        if start >= token_start and end <= token_end and (start > token_start or end < token_end):
+            if token_text and not re.fullmatch(r"[\s\W_]+", token_text):
+                return True
+    return False
+
+
+def _correct_text_with_protections(pc, text, hotword_config=None):
+    """Run PhonemeCorrector while honoring exclude_when / patterns / jieba boundaries."""
+    from hotword.algo_phoneme import get_phoneme_info
+    from hotword.hot_phoneme import CorrectionResult
+
+    source = str(text or "")
+    if not source or not getattr(pc, "hotwords", None):
+        return CorrectionResult(text=source, matches=[], similars=[])
+
+    protect_terms = _resolve_phoneme_protect_terms(hotword_config)
+    exclude_patterns = _resolve_phoneme_exclude_patterns(hotword_config)
+    boundary_protect = _is_boundary_protect_enabled(hotword_config)
+
+    # Explicit whitelist compounds are masked first so phoneme search cannot see them.
+    masked_text, placeholders = _mask_phoneme_protect_terms(source, protect_terms)
+    working_text = masked_text
+
+    input_phonemes = get_phoneme_info(working_text)
+    if not input_phonemes:
+        return CorrectionResult(text=source, matches=[], similars=[])
+
+    with pc._lock:
+        fast_results = pc.fast_rag.search(input_phonemes, top_k=0)
+        input_processed = [p.info for p in input_phonemes]
+        matches, similars = pc._find_matches(working_text, fast_results, input_processed)
+
+    token_spans = _build_jieba_token_spans(working_text, protect_terms) if boundary_protect else []
+    filtered_matches = []
+    for match in matches:
+        if _is_protected_by_terms(working_text, match.start, match.end, protect_terms):
+            continue
+        if _is_protected_by_patterns(working_text, match.start, match.end, exclude_patterns):
+            continue
+        if boundary_protect and _is_protected_by_token_boundary(token_spans, match.start, match.end):
+            continue
+        filtered_matches.append(match)
+
+    new_text, final_hw_info, _all_hw_info = pc._resolve_and_replace(working_text, filtered_matches)
+    restored = _restore_phoneme_protect_terms(new_text, placeholders)
+    return CorrectionResult(text=restored, matches=final_hw_info, similars=similars)
 
 
 def clean_text(text):
@@ -265,7 +448,7 @@ def _apply_hotword_correction(output, payload):
         sys.path.insert(0, hotword_path)
         from hotword import PhonemeCorrector
 
-        hotword_config = payload.get("phoneme_correction", {})
+        hotword_config = payload.get("phoneme_correction", {}) or {}
         threshold = float(hotword_config.get("threshold", 0.85) or 0.85)
         pc = PhonemeCorrector(threshold=threshold)
 
@@ -278,7 +461,7 @@ def _apply_hotword_correction(output, payload):
             text = seg.get("text", "")
             if not text or len(text.strip()) <= 1:
                 continue
-            result = pc.correct(text)
+            result = _correct_text_with_protections(pc, text, hotword_config)
             if result.text != text:
                 corrections_count += 1
                 seg["text"] = result.text

@@ -821,6 +821,10 @@ describe('asr_backends', () => {
     expect(asr.applyCorrectionsToText('碎即前辈今天来了', resolved.corrections))
       .toBe('岁己前辈今天来了');
     expect(resolved.corrections.safe).toEqual(expect.not.arrayContaining([
+      expect.objectContaining({ from: '粉岁己', to: '粉碎机' }),
+      expect.objectContaining({ from: '粉粉岁己', to: '粉碎机' })
+    ]));
+    expect(resolved.corrections.safe).toEqual(expect.not.arrayContaining([
       { from: '岁吉', to: '岁己' },
       { from: '岁几', to: '岁己' },
       { from: '小碎', to: '小岁' },
@@ -843,6 +847,26 @@ describe('asr_backends', () => {
     ]));
     expect(asr.applyCorrectionsToText('然后多听小资说话啊', resolved.corrections))
       .toBe('然后多听小资说话啊');
+  });
+
+  test('phoneme correction payload inherits exclude_when and exclude_pattern protections', () => {
+    const resolved = asr.resolveAsrHotwords(productionConfig, { room_id: '24872476' });
+    const payload = asr.buildPhonemeCorrectionPayload(
+      productionConfig.asr.phoneme_correction,
+      resolved.corrections,
+      productionConfig.asr.corrections
+    );
+
+    expect(payload.boundary_protect).not.toBe(false);
+    expect(payload.protect_terms).toEqual(expect.arrayContaining([
+      '粉碎机',
+      '小碎步',
+      '小碎片',
+      '击碎',
+      '即将'
+    ]));
+    expect(payload.exclude_patterns.length).toBeGreaterThan(0);
+    expect(payload.exclude_patterns.some((pattern: string) => pattern.includes('碎即'))).toBe(true);
   });
 
   test('ambiguous sui homophones need nearby sui context before correction', () => {
