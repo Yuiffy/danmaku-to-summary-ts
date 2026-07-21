@@ -83,6 +83,22 @@ REF_MAP = {
     # === 电车场景 GPT 图 ===
     "tram_gpt":          GPT_DIR / "ChatGPT Image 2026年6月26日 01_18_54.png",  # 电车上运动岁己+脸红小饼
 
+    # === 便利店夜班连续剧情（API 生图资产） ===
+    "nightshift_sui":    Path(r"D:\files\Pictures\AI图保存\api生成\nightshift_sui_clerk_v2.png"),
+    "nightshift_binggan": Path(r"D:\files\Pictures\AI图保存\api生成\nightshift_binggan_courier_v1.png"),
+    "nightshift_store":  Path(r"D:\files\Pictures\AI图保存\api生成\nightshift_store_interior_v1.png"),
+    "nightshift_duo":    Path(r"D:\files\Pictures\AI图保存\api生成\nightshift_duo_counter_v1.png"),
+    "nightshift_offduty": Path(r"D:\files\Pictures\AI图保存\api生成\nightshift_sui_offduty_v1.png"),
+
+    # === 武侠系 ===
+    "wuxia_sui_3view":   XIAOHUAMA / "AI素材" / "武侠岁己三视图.png",       # 武侠岁己三视图
+    "wuxia_binggan_3view": XIAOHUAMA / "AI素材" / "武侠饼干岁三视图.png",    # 武侠饼干岁三视图
+
+    # === 其他角色 ===
+    "shiori":            Path(r"D:\files\Pictures\保存素材\VirtuaReal和PSP同事\栞栞Shiori\栞栞立绘.webp"),
+    "yua_glasses":       Path(r"D:\files\Pictures\保存素材\悠亚外套眼镜.png"),
+    "yua_head":          Path(r"D:\files\Pictures\保存素材\Yua头图.webp"),
+
     # === 项目内参考图 ===
     "maohao_pb_ref":     PROJECT_REFS / "岁己SUI小猫帽带饼干岁紫色外套双马尾.png",
 }
@@ -173,7 +189,7 @@ def add_task(name: str, prompt: str, refs: list[str], repeat: int, ratio: str = 
         store.save(q)
         task_count = len(q["tasks"])
 
-    lane = "VIP" if model_version.endswith("_vip") else "普通"
+    lane = "普通" if model_version == "seedance2.0" else "VIP"
     print(f"✅ 已添加 {task_id}: {name}")
     print(f"   repeat={repeat}, refs={refs}, model={model_version}, resolution={resolution}, 通道={lane}")
     print(f"   总任务数: {task_count}")
@@ -207,7 +223,7 @@ def main():
     p_add.add_argument("--refs", required=True, help="参考图短名称，逗号分隔 (如 sport,binggan)")
     p_add.add_argument("--repeat", type=int, default=3, help="重复次数 (默认3，最多200)")
     p_add.add_argument("--ratio", default="16:9", help="视频比例 (默认16:9): 1:1, 3:4, 16:9, 4:3, 9:16, 21:9")
-    p_add.add_argument("--model-version", default="seedance2.0", choices=sorted(VALID_MODELS), help="生成模型；*_vip 自动进入 VIP 通道")
+    p_add.add_argument("--model-version", default="seedance2.0", choices=sorted(VALID_MODELS), help="生成模型；seedance2.0 走普通通道，其余模型走 VIP 通道")
     p_add.add_argument("--resolution", default="720p", choices=sorted(VALID_RESOLUTIONS), help="视频分辨率 (非 VIP 模型仅支持 720p)")
     p_add.add_argument("--queue", type=Path, default=QUEUE_PATH, help="队列文件路径（测试/维护覆盖）")
 
@@ -241,7 +257,7 @@ def main():
             tasks = [t for t in tasks if t.get("status") == args.status]
         for t in tasks:
             model = str(t.get("model_version") or "seedance2.0")
-            lane = "vip" if model.endswith("_vip") else "normal"
+            lane = "normal" if model == "seedance2.0" else "vip"
             active = len(t.get("inflight") or []) + len(t.get("submission_reservations") or [])
             remaining = max(0, int(t.get("repeat") or 0) - int(t.get("completed") or 0))
             print(f"{t['id']}: [{t.get('status','?'):>8}] lane={lane:<6} model={model:<22} repeat={t.get('repeat',0)} done={t.get('completed',0)} active={active} remaining={remaining}  {t['name']}")

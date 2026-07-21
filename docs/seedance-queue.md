@@ -2,8 +2,8 @@
 
 `scripts/seedance_queue_runner.py` 将任务按模型分为两条互不阻塞的线上通道：
 
-- **普通通道**：`seedance2.0`、`seedance2.0mini`。默认最多 1 个远端任务，保持原有任务在 JSON 内的稳定顺序。
-- **VIP 通道**：`seedance2.0_vip`、`seedance2.0fast_vip`。默认最多 24 个远端任务；无视普通任务在 JSON 中的位置，但在 VIP 任务之间保持稳定、轮转的顺序。
+- **普通通道**：`seedance2.0`。默认最多 1 个远端任务，保持原有任务在 JSON 内的稳定顺序。
+- **VIP 通道**：`seedance2.0mini`、`seedance2.0_vip`、`seedance2.0fast_vip`。默认最多 24 个远端任务；无视普通任务在 JSON 中的位置，但在 VIP 任务之间保持稳定、轮转的顺序。
 
 本地 JSON 不会为了优先级而重排。任务的 `model_version` 决定线上通道，避免“标了 VIP 但实际提交普通模型”的不一致。
 

@@ -72,7 +72,8 @@ def resolved_resolution(task: Dict[str, Any]) -> str:
 
 
 def task_lane(task: Dict[str, Any]) -> str:
-    return "vip" if resolved_model(task).endswith("_vip") else "normal"
+    """Dreamina treats mini and *_vip models as VIP-capacity work."""
+    return "normal" if resolved_model(task) == "seedance2.0" else "vip"
 
 
 def inflight(task: Dict[str, Any]) -> List[Dict[str, Any]]:
