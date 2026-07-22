@@ -1,0 +1,14 @@
+{
+  "speaker": "栞栞",
+  "key": "shiori_v2",
+  "clips": [
+    {"source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_07_21/录制-26966466-20260721-101225-974-早安獭獭栞！.flv", "startSeconds": 120, "durationSeconds": 8, "kind": "speech", "reviewed": false},
+    {"source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_07_21/录制-26966466-20260721-101225-974-早安獭獭栞！.flv", "startSeconds": 300, "durationSeconds": 8, "kind": "speech", "reviewed": false},
+    {"source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_07_21/录制-26966466-20260721-101225-974-早安獭獭栞！.flv", "startSeconds": 540, "durationSeconds": 8, "kind": "speech", "reviewed": false},
+    {"source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_07_21/录制-26966466-20260721-101225-974-早安獭獭栞！.flv", "startSeconds": 780, "durationSeconds": 8, "kind": "speech", "reviewed": false},
+    {"source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_07_20/录制-26966466-20260720-230255-236-困困小栞QWQ.flv", "startSeconds": 120, "durationSeconds": 8, "kind": "speech", "reviewed": false},
+    {"source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_07_20/录制-26966466-20260720-230255-236-困困小栞QWQ.flv", "startSeconds": 360, "durationSeconds": 8, "kind": "speech", "reviewed": false},
+    {"source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_07_20/录制-26966466-20260720-230255-236-困困小栞QWQ.flv", "startSeconds": 600, "durationSeconds": 8, "kind": "speech", "reviewed": false},
+    {"source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_07_20/录制-26966466-20260720-230255-236-困困小栞QWQ.flv", "startSeconds": 900, "durationSeconds": 8, "kind": "speech", "reviewed": false}
+  ]
+}

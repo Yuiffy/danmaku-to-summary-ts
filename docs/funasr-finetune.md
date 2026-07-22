@@ -118,6 +118,6 @@ Important:
 - this retrain is still experimental
 - production default remains on the stable stock paraformer path
 - gray rollout is enabled separately:
-  - room `26966466` (栞栞) -> 100% timestamp finetuned model
-  - other rooms -> 10% timestamp finetuned sampling
+  - room `26966466` (栞栞) -> 2% timestamp finetuned sampling
+  - other rooms -> 1% timestamp finetuned sampling
 - the older non-timestamp finetuned route should no longer be used for production rollout decisions

@@ -2165,6 +2165,8 @@ export class DelayedReplyService implements IDelayedReplyService {
     const anchorName = BilibiliConfigHelper.getAnchorConfig(task.roomId)?.name || '未知主播';
     const imageGenerationInfo = this.getComicGenerationNotificationInfo(task.comicImagePath)
       || '图片未生成，未找到生图失败元数据';
+    const comicScriptGenerationInfo = this.getComicScriptGenerationInfo(task.comicImagePath)
+      || '模型: 未知（未找到漫画脚本元数据）';
 
     try {
       const notified = await this.notifier.notifyProcessError(
@@ -2175,6 +2177,7 @@ export class DelayedReplyService implements IDelayedReplyService {
         {
           taskId: task.taskId,
           comicImagePath: task.comicImagePath,
+          comicScriptGenerationInfo,
           imageGenerationInfo
         }
       );

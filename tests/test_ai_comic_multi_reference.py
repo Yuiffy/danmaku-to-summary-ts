@@ -564,6 +564,75 @@ class MultiReferenceComicTests(unittest.TestCase):
         self.assertIn("额外实际出声/文本提到主播", desc)
         self.assertIn("栞栞，浅黄色头发", desc)
 
+    def configure_shiori_incident(self):
+        self.config["ai"]["streamerRegistry"]["shiori"]["roomIds"] = ["26966466"]
+        self.config["ai"]["streamerRegistry"]["mizuki"]["displayName"] = "弥月Mizuki"
+        self.config["ai"]["streamerRegistry"]["mizuki"]["mentionLabels"] = ["弥月"]
+        self.config["ai"]["streamerRegistry"]["mizuki"]["aliases"] = ["弥月"]
+        self.config["ai"]["streamerRegistry"]["miting"] = {
+            "displayName": "米汀",
+            "speakerLabels": ["米汀"],
+            "mentionLabels": ["米汀"],
+            "referenceImages": [str(self.extra)],
+        }
+        self.config["ai"]["roomSettings"]["26966466"] = {
+            "referenceImage": str(self.host),
+            "characterDescription": "栞栞Shiori，浅黄色头发兽耳女生。",
+            "multiReferenceImages": {
+                "enabled": True,
+                "maxExtraCharacters": 2,
+                "requirePlannedRosterForAppearedCharacters": True,
+            },
+        }
+
+    def test_shiori_mention_is_context_not_live_guest(self):
+        self.configure_shiori_incident()
+        source = "小栞今天下午带弥月打第五人格，把任务过了。"
+
+        prompt = comic.build_comic_generation_prompt("小栞", source, "26966466")
+        script = comic.postprocess_generated_comic_script(
+            "分镜一：主播 诗璃(Shiori)和嘉宾 瑞姬Mizuki 连麦合唱。\n"
+            "分镜二：小栞带弥月通关第五人格任务。",
+            source,
+            "26966466",
+        )
+
+        self.assertIn("弥月Mizuki", prompt)
+        self.assertIn("不是本场嘉宾、连麦者或合唱者", prompt)
+        self.assertNotIn("诗璃", script)
+        self.assertNotIn("嘉宾", script)
+        self.assertNotIn("连麦", script)
+        self.assertIn("小栞带弥月通关第五人格任务", script)
+
+    def test_second_prompt_build_preserves_fresh_script_provenance(self):
+        comic.reset_comic_script_meta()
+        comic.set_comic_script_meta(provider="tuZi", model="gpt-5.6-luna", status="success")
+
+        comic.build_comic_prompt(
+            "",
+            room_id="25788785",
+            existing_comic="分镜一：房间主人独自聊天，观众在旁边欢呼。",
+        )
+
+        meta = comic.get_comic_script_meta()
+        self.assertEqual(meta["provider"], "tuZi")
+        self.assertEqual(meta["model"], "gpt-5.6-luna")
+
+    def test_shiori_unconstrained_asr_miting_cannot_select_image_reference(self):
+        self.configure_shiori_incident()
+        incident_highlight = self.root / "26966466_incident_AI_HIGHLIGHT.txt"
+        incident_highlight.write_text("小栞今天下午带弥月打第五人格。", encoding="utf-8")
+        (self.root / "26966466_incident.asr_speakers.json").write_text(json.dumps({
+            "constrainedToRoster": False,
+            "extraAppearedStreamerIds": ["miting"],
+            "speakers": [{"label": "米汀", "totalSpeechSeconds": 1600, "avgScore": 0.74, "maxScore": 0.74}],
+        }, ensure_ascii=False), encoding="utf-8")
+
+        extras = comic.resolve_extra_appeared_streamers(self.config, "26966466", str(incident_highlight))
+
+        self.assertEqual([item["id"] for item in extras], ["mizuki"])
+        self.assertNotIn("miting", [item["id"] for item in extras])
+
 
 if __name__ == "__main__":
     unittest.main()

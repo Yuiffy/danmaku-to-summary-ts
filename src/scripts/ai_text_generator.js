@@ -1258,9 +1258,20 @@ if (require.main === module) {
                     prompt = fs.readFileSync(promptSource, 'utf8');
                 }
 
-                const generated = await generateTextWithGemini(prompt);
-                // print raw generated text to stdout
+                const config = configLoader.getConfig();
+                const provider = config.ai?.text?.provider || 'gemini';
+                const generated = provider === 'tuZi'
+                    ? await generateTextWithTuZi(prompt, { wordLimit: 600 })
+                    : await generateTextWithGemini(prompt, { wordLimit: 600 });
+                // Keep stdout script-only for the Python caller; provenance is
+                // emitted as a terminal stderr sentinel for machine parsing.
                 process.stdout.write(generated.text + '\n');
+                process.stderr.write(`[[TEXT_GENERATION_META]] ${JSON.stringify({
+                    provider: generated.provider,
+                    model: generated.model,
+                    fallback: Boolean(generated.fallback),
+                    attempts: generated.attempts || []
+                })}\n`);
             } else {
                 const roomIdArgIndex = args.indexOf('--room-id');
                 const roomId = roomIdArgIndex >= 0 ? args[roomIdArgIndex + 1] : null;
