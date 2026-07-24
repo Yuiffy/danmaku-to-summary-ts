@@ -548,7 +548,7 @@ async function runQueue(options) {
                 asrBackends.writeSpeakerReviewSrt(normalized, srtPath, {
                     ...asrBackends.getSubtitleConfig(config),
                     corrections: runtime.corrections
-                });
+                }, config, context);
                 asrBackends.writeAsrSpeakersSidecar(normalized, srtPath, config, context);
                 updateTask(task.id, {
                     status: 'completed',

@@ -1953,6 +1953,11 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
     # Gemini失败后，尝试使用tuZi API作为备用方案
     print("[COMIC_SCRIPT] Google文本生成失败，尝试tu-zi.com生成漫画脚本...")
     
+    # 构建提示词（使用统一的prompt模板）
+    system_prompt = content_prompt
+    user_prompt = f"直播内容：\n{script_highlight_content}\n\n请创作漫画故事脚本："
+    tuzi_failure_reason = None
+
     # tuZi 调用封装层已经带温和重试和全局冷却；这里不再做快速外层重试，避免放大服务端拥塞。
     max_tuzi_retries = 1
     for tuzi_attempt in range(max_tuzi_retries):
@@ -1963,12 +1968,9 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
             tuzi_config = config.get("ai", {}).get("text", {}).get("tuZi", {})
             
             if not is_tuzi_text_configured():
-                print("[WARNING]  tuZi API未配置，使用原始内容")
-                return return_comic_script_failure(highlight_content, room_id, "tuZi API未配置")
-            
-            # 构建提示词（使用统一的prompt模板）
-            system_prompt = content_prompt
-            user_prompt = f"直播内容：\n{script_highlight_content}\n\n请创作漫画故事脚本："
+                print("[WARNING]  tuZi API未配置，尝试下一个provider")
+                tuzi_failure_reason = "tuZi API未配置"
+                break
             
             if tuzi_attempt > 0:
                 print(f"[RETRY] 第 {tuzi_attempt + 1} 次重试 tuZi API...")
@@ -1995,8 +1997,9 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                         time.sleep(2)
                         continue
                     else:
-                        print("[ERROR] tuZi API重试次数已用完，使用原始内容")
-                        return return_comic_script_failure(highlight_content, room_id, "tuZi 返回 Gemini 错误内容")
+                        print("[ERROR] tuZi API重试次数已用完，尝试下一个provider")
+                        tuzi_failure_reason = "tuZi 返回 Gemini 错误内容"
+                        break
 
                 if not is_valid_comic_script(comic_content):
                     print(f"[ERROR] tuZi API返回的漫画脚本无效或疑似截断，长度: {len(comic_content)} 字符")
@@ -2005,7 +2008,8 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                         print("[RETRY] 2秒后重试...")
                         time.sleep(2)
                         continue
-                    return return_comic_script_failure(highlight_content, room_id, "tuZi 返回无效脚本")
+                    tuzi_failure_reason = "tuZi 返回无效脚本"
+                    break
 
                 print("[OK] tuZi API漫画文本生成成功")
                 print(f"生成内容长度: {len(comic_content)} 字符")
@@ -2024,7 +2028,8 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                     time.sleep(2)
                     continue
                 else:
-                    return return_comic_script_failure(highlight_content, room_id, "tuZi 返回空内容")
+                    tuzi_failure_reason = "tuZi 返回空内容"
+                    break
             
         except Exception as tuzi_error:
             print(f"[ERROR]  tuZi API备用方案失败 (尝试 {tuzi_attempt + 1}/{max_tuzi_retries}): {tuzi_error}")
@@ -2033,8 +2038,64 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                 time.sleep(2)
                 continue
             else:
-                print("[WARNING]  所有API都失败，使用原始内容")
-                return return_comic_script_failure(highlight_content, room_id, str(tuzi_error))
+                print("[WARNING]  tuZi API异常，尝试 daiYu provider 重试...")
+                tuzi_failure_reason = str(tuzi_error)
+                # 落入下方的 daiYu fallback
+                break
+    
+    # daiYu provider fallback（tuZi 全部失败后）
+    if tuzi_failure_reason:
+        print(f"[COMIC_SCRIPT] tuZi 失败原因: {tuzi_failure_reason}，尝试 daiYu provider fallback...")
+    try:
+        config = load_config()
+        providers = config.get('ai', {}).get('providers', {}) or {}
+        # 也检查 secret.json 中的 providers
+        secret_path = os.path.join(get_project_root(), 'config', 'secret.json')
+        if os.path.exists(secret_path):
+            with open(secret_path, 'r', encoding='utf-8') as sf:
+                secret_data = json.load(sf)
+            providers = {**providers, **(secret_data.get('providers') or {})}
+        
+        daiyu_cfg = providers.get('daiYu', {})
+        daiyu_base_url = daiyu_cfg.get('baseURL', '') or daiyu_cfg.get('baseUrl', '')
+        daiyu_api_key = daiyu_cfg.get('apiKey', '')
+        daiyu_model = 'gpt-5.6-luna'
+        
+        if daiyu_base_url and daiyu_api_key:
+            print(f"[COMIC_SCRIPT] 尝试 daiYu provider 生成漫画脚本 (model: {daiyu_model})...")
+            comic_content = call_tuzi_chat_completions(
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                model=daiyu_model,
+                base_url=daiyu_base_url,
+                api_key=daiyu_api_key,
+                proxy_url=daiyu_cfg.get('proxy', '') or '',
+                timeout=120,
+                temperature=0.7,
+                max_tokens=2000
+            )
+            
+            if comic_content and is_valid_comic_script(comic_content) and not is_gemini_error(comic_content):
+                print("[OK] daiYu provider 漫画文本生成成功")
+                print(f"生成内容长度: {len(comic_content)} 字符")
+                set_comic_script_meta(
+                    provider="daiYu",
+                    model=daiyu_model,
+                    status="success",
+                    fallback=True
+                )
+                return postprocess_generated_comic_script(comic_content, script_highlight_content, room_id), True
+            else:
+                reason = "daiYu 返回空内容" if not comic_content else ("daiYu 返回 Gemini 错误内容" if is_gemini_error(comic_content) else "daiYu 返回无效脚本")
+                print(f"[WARNING]  daiYu provider 也失败: {reason}")
+                combined_reason = f"tuZi({tuzi_failure_reason}) + daiYu({reason})"
+                return return_comic_script_failure(highlight_content, room_id, combined_reason)
+        else:
+            print("[WARNING]  daiYu provider 未配置，跳过")
+            return return_comic_script_failure(highlight_content, room_id, f"tuZi失败({tuzi_failure_reason})，daiYu未配置")
+    except Exception as daiyu_error:
+        print(f"[ERROR]  daiYu provider 异常: {daiyu_error}")
+        return return_comic_script_failure(highlight_content, room_id, f"tuZi失败({tuzi_failure_reason}) + daiYu异常({daiyu_error})")
     
     # 确保函数在所有路径都返回有效值
     return return_comic_script_failure(highlight_content, room_id, "所有AI脚本通道失败")
@@ -2764,13 +2825,17 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
 
         # 如果脚本生成失败（使用原文作为备选），则不生成图片
         if not is_comic_generated:
-            print("[ERROR] 漫画脚本生成失败，跳过图像生成")
+            script_meta = get_comic_script_meta()
+            script_reason = script_meta.get("reason") or "漫画脚本生成失败"
+            script_provider = script_meta.get("provider")
+            script_model = script_meta.get("model")
+            print(f"[ERROR] 漫画脚本生成失败，跳过图像生成 (原因: {script_reason})")
             print("[[COMIC_SCRIPT_READY]] status=failure")
             write_comic_generation_meta(output_path, {
                 "status": "failure",
-                "model": None,
+                "model": script_model,
                 "endpoint": "comic-script",
-                "reason": "漫画脚本生成失败，跳过图像生成",
+                "reason": script_reason,
                 "attempts": get_last_image_generation_meta().get("attempts") or [],
             })
             return None

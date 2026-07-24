@@ -963,7 +963,7 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
                 asrBackends.writeSpeakerReviewSrt(normalized, srtPath, {
                     ...subtitleConfig,
                     corrections: asrRuntime.corrections
-                });
+                }, config, { ...context, mediaPath });
                 asrBackends.writeAsrSpeakersSidecar(normalized, srtPath, config, {
                     ...context,
                     mediaPath

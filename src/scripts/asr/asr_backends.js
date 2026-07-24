@@ -797,11 +797,44 @@ function getUniqueSpeakerLabels(result) {
     );
 }
 
-function writeSpeakerReviewSrt(result, srtPath, subtitleConfig = {}) {
+function writeSpeakerReviewSrt(result, srtPath, subtitleConfig = {}, asrConfig = {}, context = {}) {
     try {
         const uniqueSpeakers = getUniqueSpeakerLabels(result);
         if (uniqueSpeakers.size === 0 || !srtPath) {
             return null;
+        }
+
+        // Compute speaker summary to determine which named speakers should be filtered.
+        // If summarizeAsrSpeakers filters a speaker (doesn't appear in appearedStreamerIds),
+        // relabel their segments as UNKNOWN in the SRT so downstream consumers (fusion summary, LLM) don't see false-positive names.
+        const summary = summarizeAsrSpeakers(result, asrConfig, {
+            ...context,
+            input: context.input || context.mediaPath
+        });
+        const appearedLabels = new Set();
+        for (const spk of summary.speakers) {
+            const streamerId = spk.streamerId;
+            if (streamerId && summary.appearedStreamerIds.includes(streamerId)) {
+                appearedLabels.add(spk.label);
+            }
+        }
+        const filteredLabels = new Map(); // label -> { streamerId, segmentCount, totalSpeechSeconds, maxScore }
+        for (const spk of summary.speakers) {
+            const streamerId = spk.streamerId;
+            if (streamerId && !summary.appearedStreamerIds.includes(streamerId) && !spk.isUnknown) {
+                filteredLabels.set(spk.label, {
+                    streamerId,
+                    segmentCount: spk.segmentCount,
+                    totalSpeechSeconds: spk.totalSpeechSeconds,
+                    maxScore: spk.maxScore
+                });
+            }
+        }
+        if (filteredLabels.size > 0) {
+            const details = Array.from(filteredLabels.entries()).map(([label, info]) =>
+                `${label}->UNKNOWN (${info.segmentCount}段, ${info.totalSpeechSeconds.toFixed(1)}s, maxScore=${info.maxScore})`
+            );
+            console.log(`[ASR] speaker review SRT: 低置信说话人标签替换为 UNKNOWN: ${details.join('; ')}`);
         }
 
         const parsed = path.parse(srtPath);
@@ -818,7 +851,11 @@ function writeSpeakerReviewSrt(result, srtPath, subtitleConfig = {}) {
             if (!content) {
                 return;
             }
-            const speaker = String(segment.speaker || 'UNKNOWN').trim() || 'UNKNOWN';
+            let speaker = String(segment.speaker || 'UNKNOWN').trim() || 'UNKNOWN';
+            // Relabel filtered speakers to UNKNOWN
+            if (filteredLabels.has(speaker)) {
+                speaker = 'UNKNOWN';
+            }
             const score = segment.speaker_score === undefined || segment.speaker_score === null || segment.speaker_score === ''
                 ? ''
                 : ` ${Number(segment.speaker_score).toFixed(2)}`;

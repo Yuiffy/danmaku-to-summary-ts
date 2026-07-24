@@ -2060,7 +2060,9 @@ export class DelayedReplyService implements IDelayedReplyService {
         const provider = meta.provider || '未知服务';
         const model = meta.model || '未知模型';
         const fallback = meta.fallback ? '，fallback: 是' : '';
-        return `模型: ${model}，服务: ${provider}${fallback}`;
+        const reason = meta.reason ? `，原因: ${String(meta.reason).slice(0, 200)}` : '';
+        const status = meta.status === 'success' ? '成功' : meta.status === 'failure' ? '失败' : String(meta.status || '未知');
+        return `模型: ${model}，服务: ${provider}，状态: ${status}${fallback}${reason}`;
       }
 
       if (fs.existsSync(scriptPath)) {
