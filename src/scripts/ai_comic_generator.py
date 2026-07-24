@@ -1881,7 +1881,6 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                     if proxy_url.startswith('socks') and not has_socks_proxy_support():
                         print("[WARNING] Gemini 配置了 SOCKS 代理，但当前环境缺少 socksio/httpx[socks]，跳过 Gemini 直连备用方案")
                         break
-                    import os
                     os.environ['http_proxy'] = proxy_url
                     os.environ['https_proxy'] = proxy_url
                     os.environ['HTTP_PROXY'] = proxy_url
@@ -1953,9 +1952,9 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
     # Gemini失败后，尝试使用tuZi API作为备用方案
     print("[COMIC_SCRIPT] Google文本生成失败，尝试tu-zi.com生成漫画脚本...")
     
-    # 构建提示词（使用统一的prompt模板）
-    system_prompt = content_prompt
-    user_prompt = f"直播内容：\n{script_highlight_content}\n\n请创作漫画故事脚本："
+    # content_prompt 已经包含完整直播高光；不要在 user/system 两个角色里重复发送。
+    system_prompt = "你是直播总结漫画编剧。请严格依据用户提供的直播内容，只输出完整、可绘制的分镜脚本。"
+    user_prompt = content_prompt
     tuzi_failure_reason = None
 
     # tuZi 调用封装层已经带温和重试和全局冷却；这里不再做快速外层重试，避免放大服务端拥塞。
@@ -1984,8 +1983,8 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                 api_key=get_tuzi_text_api_key(),
                 proxy_url=tuzi_config.get("proxy", ""),
                 timeout=120,
-                temperature=0.7,
-                max_tokens=2000
+                temperature=tuzi_config.get("temperature", 0.7),
+                max_tokens=tuzi_config.get("maxTokens", 100000)
             )
             
             if comic_content:
@@ -2071,8 +2070,8 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                 api_key=daiyu_api_key,
                 proxy_url=daiyu_cfg.get('proxy', '') or '',
                 timeout=120,
-                temperature=0.7,
-                max_tokens=2000
+                temperature=daiyu_cfg.get('textTemperature', tuzi_config.get("temperature", 0.7)),
+                max_tokens=daiyu_cfg.get('textMaxTokens', tuzi_config.get("maxTokens", 100000))
             )
             
             if comic_content and is_valid_comic_script(comic_content) and not is_gemini_error(comic_content):

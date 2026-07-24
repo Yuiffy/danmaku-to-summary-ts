@@ -210,6 +210,78 @@ def normalize_text_max_tokens(model: str, max_tokens: int) -> int:
     return normalized
 
 
+def _extract_text_parts(value: Any) -> list[str]:
+    """Extract final text from OpenAI-compatible string or content-part values."""
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+
+    if isinstance(value, list):
+        parts = []
+        for item in value:
+            parts.extend(_extract_text_parts(item))
+        return parts
+
+    if not isinstance(value, dict):
+        return []
+
+    item_type = str(value.get("type") or "").lower()
+    if item_type in ("text", "output_text"):
+        text = value.get("text")
+        if isinstance(text, dict):
+            text = text.get("value")
+        if isinstance(text, str) and text.strip():
+            return [text]
+
+    content = value.get("content")
+    if isinstance(content, (str, list, dict)):
+        return _extract_text_parts(content)
+
+    return []
+
+
+def extract_tuzi_text_content(result: Any) -> str:
+    """Extract final assistant text from Chat Completions or Responses-style bodies."""
+    if not isinstance(result, dict):
+        return ""
+
+    choices = result.get("choices")
+    if isinstance(choices, list) and choices:
+        choice = choices[0] if isinstance(choices[0], dict) else {}
+        message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+        parts = _extract_text_parts(message.get("content"))
+        if not parts:
+            parts = _extract_text_parts(choice.get("text"))
+        if parts:
+            return "\n".join(part.strip() for part in parts if part.strip()).strip()
+
+    parts = _extract_text_parts(result.get("output_text"))
+    if not parts:
+        parts = _extract_text_parts(result.get("output"))
+    return "\n".join(part.strip() for part in parts if part.strip()).strip()
+
+
+def summarize_tuzi_text_response(result: Any) -> str:
+    """Return a prompt-free diagnostic summary for empty text responses."""
+    if not isinstance(result, dict):
+        return f"body_type={type(result).__name__}"
+
+    choices = result.get("choices")
+    choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+    message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+    content = message.get("content")
+    reasoning_content = message.get("reasoning_content")
+    usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+    summary = {
+        "object": result.get("object"),
+        "finish_reason": choice.get("finish_reason"),
+        "content_type": type(content).__name__,
+        "content_length": len(content) if isinstance(content, (str, list, dict)) else None,
+        "reasoning_content_length": len(reasoning_content) if isinstance(reasoning_content, str) else None,
+        "usage": usage,
+    }
+    return json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
+
+
 def get_tuzi_retry_config() -> Dict[str, Any]:
     """读取 tuZi 重试配置；缺失时使用保守默认值。"""
     retry_config = dict(DEFAULT_TUZI_RETRY_CONFIG)
@@ -1055,7 +1127,8 @@ def call_tuzi_chat_completions(
 
         headers = {
             "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Accept": "application/json",
         }
 
         # 构建消息列表
@@ -1070,6 +1143,7 @@ def call_tuzi_chat_completions(
             "messages": messages,
             "temperature": temperature,
             "max_tokens": normalized_max_tokens,
+            "stream": False,
         }
 
         print(f"[TUZI_TEXT] 调用tuZi Chat Completions API...")
@@ -1084,18 +1158,14 @@ def call_tuzi_chat_completions(
         if response.status_code == 200:
             result = response.json()
             log_tuzi_response_identifiers(f"chat/completions 文本生成 {model}", response, result)
-            if "choices" in result and len(result["choices"]) > 0:
-                content = result["choices"][0].get("message", {}).get("content", "")
-                if content and content.strip():
-                    print("[OK] tuZi Chat Completions 文本生成成功")
-                    print(f"生成内容长度: {len(content)} 字符")
-                    return content.strip()
-                else:
-                    print("[WARNING]  tuZi API返回空内容")
-                    return None
-            else:
-                print(f"[WARNING]  tuZi API响应格式异常: {result}")
-                return None
+            content = extract_tuzi_text_content(result)
+            if content:
+                print("[OK] tuZi Chat Completions 文本生成成功")
+                print(f"生成内容长度: {len(content)} 字符")
+                return content
+
+            print(f"[WARNING]  tuZi API返回空内容: {summarize_tuzi_text_response(result)}")
+            return None
         else:
             print(f"[WARNING]  tuZi Chat Completions API调用失败: HTTP {response.status_code}")
             print(f"响应内容: {response.text[:500]}")

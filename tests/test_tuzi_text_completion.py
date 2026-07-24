@@ -1,0 +1,115 @@
+import importlib.util
+import sys
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_DIR = ROOT / "src" / "scripts"
+MODULE_PATH = SCRIPT_DIR / "tuzi_chat_completions.py"
+
+sys.path.insert(0, str(SCRIPT_DIR))
+spec = importlib.util.spec_from_file_location("tuzi_chat_completions_under_test", MODULE_PATH)
+tuzi = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(tuzi)
+
+
+class FakeResponse:
+    status_code = 200
+    headers = {}
+    text = ""
+    elapsed = None
+
+    def __init__(self, body):
+        self.body = body
+
+    def json(self):
+        return self.body
+
+
+class TuziTextCompletionTests(unittest.TestCase):
+    def test_extracts_standard_chat_completion_text(self):
+        result = {
+            "choices": [{
+                "message": {"role": "assistant", "content": "  漫画脚本  "},
+                "finish_reason": "stop",
+            }]
+        }
+
+        self.assertEqual(tuzi.extract_tuzi_text_content(result), "漫画脚本")
+
+    def test_extracts_content_parts_and_responses_output(self):
+        chat_result = {
+            "choices": [{
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "第一段"},
+                        {"type": "output_text", "text": {"value": "第二段"}},
+                    ]
+                }
+            }]
+        }
+        responses_result = {
+            "output": [{
+                "type": "message",
+                "content": [{"type": "output_text", "text": "兜底文本"}],
+            }]
+        }
+
+        self.assertEqual(tuzi.extract_tuzi_text_content(chat_result), "第一段\n第二段")
+        self.assertEqual(tuzi.extract_tuzi_text_content(responses_result), "兜底文本")
+
+    def test_chat_request_matches_documented_non_streaming_shape(self):
+        response = FakeResponse({
+            "id": "resp_test",
+            "object": "chat.completion",
+            "choices": [{
+                "message": {"role": "assistant", "content": "TUZI_OK"},
+                "finish_reason": "stop",
+            }],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+        })
+
+        with (
+            patch.object(tuzi, "request_tuzi_with_retry", side_effect=lambda _, request: request()),
+            patch.object(tuzi.requests, "post", return_value=response) as post,
+        ):
+            content = tuzi.call_tuzi_chat_completions(
+                prompt="只回复 TUZI_OK",
+                system_prompt="接口测试",
+                model="gpt-5.6-luna",
+                base_url="https://api.tu-zi.com/v1",
+                api_key="secret",
+                temperature=0,
+                max_tokens=4096,
+            )
+
+        self.assertEqual(content, "TUZI_OK")
+        args, kwargs = post.call_args
+        self.assertEqual(args[0], "https://api.tu-zi.com/v1/chat/completions")
+        self.assertEqual(kwargs["headers"]["Accept"], "application/json")
+        self.assertFalse(kwargs["json"]["stream"])
+        self.assertEqual(kwargs["json"]["max_tokens"], 4096)
+        self.assertEqual(kwargs["json"]["messages"][0]["role"], "system")
+        self.assertEqual(kwargs["json"]["messages"][1]["role"], "user")
+
+    def test_empty_response_summary_is_prompt_free(self):
+        result = {
+            "object": "chat.completion",
+            "choices": [{
+                "message": {"content": "", "reasoning_content": "hidden"},
+                "finish_reason": "length",
+            }],
+            "usage": {"completion_tokens": 2000},
+        }
+
+        summary = tuzi.summarize_tuzi_text_response(result)
+
+        self.assertIn('"finish_reason":"length"', summary)
+        self.assertIn('"completion_tokens":2000', summary)
+        self.assertNotIn("hidden", summary)
+
+
+if __name__ == "__main__":
+    unittest.main()
