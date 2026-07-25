@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -14,6 +15,17 @@ from cover_generator import CoverGenerator  # noqa: E402
 
 
 class CoverGeneratorTests(unittest.TestCase):
+    def test_extract_frame_uses_fast_input_seek(self):
+        generator = CoverGenerator()
+        with (
+            patch("cover_generator.os.path.exists", return_value=True),
+            patch("cover_generator.subprocess.run") as run,
+        ):
+            generator.extract_frame("input.mp4", 116.95, "output.jpg")
+
+        command = run.call_args.args[0]
+        self.assertEqual(command[:5], ["ffmpeg", "-ss", "116.95", "-i", "input.mp4"])
+
     def test_preserves_explicit_two_line_cover_copy(self):
         self.assertEqual(
             CoverGenerator.build_cover_lines("你们不宠我了\\n只会找我问题！"),

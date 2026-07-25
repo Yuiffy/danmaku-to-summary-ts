@@ -192,7 +192,21 @@ class CoverGenerator:
             raise FileNotFoundError(f"视频文件不存在: {video_path}")
         if output_path is None:
             output_path = os.path.join(os.path.dirname(video_path), f"_cover_frame_{int(timestamp)}.jpg")
-        cmd = ["ffmpeg", "-i", video_path, "-ss", str(timestamp), "-vframes", "1", "-q:v", "2", "-loglevel", "error", output_path, "-y"]
+        cmd = [
+            "ffmpeg",
+            "-ss",
+            str(timestamp),
+            "-i",
+            video_path,
+            "-vframes",
+            "1",
+            "-q:v",
+            "2",
+            "-loglevel",
+            "error",
+            output_path,
+            "-y",
+        ]
         try:
             subprocess.run(cmd, check=True, timeout=30, **hidden_subprocess_kwargs())
             print(f"[INFO] 已截取视频帧: {output_path} (time={timestamp}s)")
