@@ -1890,6 +1890,15 @@ export class DelayedReplyService implements IDelayedReplyService {
     const reason = speakerProcessing.reason !== null && speakerProcessing.reason !== undefined
       ? String(speakerProcessing.reason)
       : '';
+    const rawStrategy = speakerProcessing.fullClusteringStrategy
+      ?? speakerProcessing.full_clustering_strategy;
+    const strategy = rawStrategy === 'probe_centroid_assignment'
+      ? '探测簇中心分配'
+      : rawStrategy === 'full_clustering_fallback'
+        ? '全量聚类回退'
+        : rawStrategy === 'full_clustering'
+          ? '全量聚类'
+          : undefined;
     const fullRunValue = speakerProcessing.fullRun ?? speakerProcessing.full_run;
 
     if (status === 'disabled' || normalizedDecision === 'disabled' || mode === 'disabled') {
@@ -1922,7 +1931,8 @@ export class DelayedReplyService implements IDelayedReplyService {
     const context = [
       mode ? `模式: ${mode}` : undefined,
       decision ? `判定: ${decision}` : undefined,
-      reason ? `原因: ${reason}` : undefined
+      reason ? `原因: ${reason}` : undefined,
+      strategy ? `策略: ${strategy}` : undefined
     ].filter(Boolean).join('，');
 
     const sampleParts = [

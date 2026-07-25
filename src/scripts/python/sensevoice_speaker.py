@@ -365,6 +365,51 @@ def _cluster_embeddings(clusterer, embeddings, merge_threshold):
             return clusterer(embeddings)
 
 
+def _should_assign_from_probe_centroids(mode, evidence):
+    """Use stable two-cluster probes as anchors instead of reclustering the full stream."""
+    evidence = evidence if isinstance(evidence, dict) else {}
+    return (
+        mode == "auto"
+        and evidence.get("decision") == "multiple"
+        and int(evidence.get("detected_clusters", 0) or 0) == 2
+        and int(evidence.get("supported_clusters", 0) or 0) == 2
+    )
+
+
+def assign_embeddings_to_probe_centroids(full_matrix, probe_embeddings, probe_labels):
+    """Assign every full-stream embedding to the nearest normalized probe centroid."""
+    import torch
+
+    labels = _cluster_label_values(probe_labels)
+    if len(labels) != len(probe_embeddings) or not labels:
+        raise ValueError("probe embedding and label counts do not match")
+
+    cluster_labels = list(dict.fromkeys(labels))
+    if len(cluster_labels) < 2:
+        raise ValueError("at least two probe clusters are required")
+
+    probe_matrix = torch.nn.functional.normalize(
+        torch.cat(probe_embeddings, dim=0).to("cpu"),
+        dim=1,
+    )
+    centroids = []
+    for cluster_label in cluster_labels:
+        indices = [
+            index for index, label in enumerate(labels)
+            if label == cluster_label
+        ]
+        centroid = probe_matrix[indices].mean(dim=0, keepdim=True)
+        centroids.append(torch.nn.functional.normalize(centroid, dim=1))
+
+    normalized_full = torch.nn.functional.normalize(full_matrix.to("cpu"), dim=1)
+    centroid_matrix = torch.cat(centroids, dim=0)
+    assignments = torch.argmax(
+        torch.matmul(normalized_full, centroid_matrix.T),
+        dim=1,
+    ).tolist()
+    return [cluster_labels[int(index)] for index in assignments]
+
+
 def _cluster_partition_agreement(left_labels, right_labels):
     """Compare cluster partitions without depending on backend label numbering."""
     left = _cluster_label_values(left_labels)
@@ -525,6 +570,7 @@ def run_adaptive_speaker_engine(
         "supportedClusters": 0,
         "sampledSpeechSeconds": 0.0,
         "probe_embeddings_reused": 0,
+        "fullClusteringStrategy": "not_run",
         "timings": timings,
     }
 
@@ -536,6 +582,7 @@ def run_adaptive_speaker_engine(
             "supported_clusters": processing["supportedClusters"],
             "sampled_speech_s": processing["sampledSpeechSeconds"],
             "sampled_speech_seconds": processing["sampledSpeechSeconds"],
+            "full_clustering_strategy": processing["fullClusteringStrategy"],
         })
         timings["total_s"] = time.perf_counter() - started
         return {
@@ -587,6 +634,8 @@ def run_adaptive_speaker_engine(
         payload.get("speaker_probe_separation_margin", 0.03) or 0.03
     ))
     probe_by_index = {}
+    probe_assignment_embeddings = []
+    probe_assignment_labels = []
     should_run_full = mode == "always"
 
     if mode == "auto":
@@ -662,6 +711,11 @@ def run_adaptive_speaker_engine(
                 "cluster_sizes": evidence["cluster_sizes"],
                 "cluster_speech_s": evidence["cluster_speech_s"],
             })
+            if _should_assign_from_probe_centroids(mode, evidence):
+                probe_assignment_embeddings = [
+                    embedding for _candidate, embedding in valid_probe
+                ]
+                probe_assignment_labels = _cluster_label_values(primary_labels)
             if evidence["decision"] == "single":
                 processing["status"] = "skipped_single_speaker"
                 return finish([], {})
@@ -715,9 +769,30 @@ def run_adaptive_speaker_engine(
         if hasattr(full_matrix, "to"):
             full_matrix = full_matrix.to("cpu")
         stage_started = time.perf_counter()
-        full_labels = _cluster_label_values(
-            _cluster_embeddings(clusterer, full_matrix, merge_threshold)
-        )
+        if probe_assignment_labels:
+            try:
+                full_labels = assign_embeddings_to_probe_centroids(
+                    full_matrix,
+                    probe_assignment_embeddings,
+                    probe_assignment_labels,
+                )
+                processing["fullClusteringStrategy"] = "probe_centroid_assignment"
+                processing["probeAssignmentClusters"] = len(
+                    set(probe_assignment_labels)
+                )
+            except Exception as exc:
+                processing["probe_assignment_error"] = {
+                    "type": type(exc).__name__, "message": str(exc)
+                }
+                full_labels = _cluster_label_values(
+                    _cluster_embeddings(clusterer, full_matrix, merge_threshold)
+                )
+                processing["fullClusteringStrategy"] = "full_clustering_fallback"
+        else:
+            full_labels = _cluster_label_values(
+                _cluster_embeddings(clusterer, full_matrix, merge_threshold)
+            )
+            processing["fullClusteringStrategy"] = "full_clustering"
         timings["full_clustering_s"] = time.perf_counter() - stage_started
         if len(full_labels) != len(valid_full):
             raise RuntimeError("speaker clustering label count mismatch")

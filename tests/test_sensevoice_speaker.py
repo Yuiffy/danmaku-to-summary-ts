@@ -250,6 +250,52 @@ class SenseVoiceAdaptiveSpeakerTests(unittest.TestCase):
         self.assertEqual(multiple["decision"], "multiple")
         self.assertEqual(inconclusive["decision"], "inconclusive")
 
+    def test_probe_centroid_assignment_requires_exactly_two_stable_clusters(self):
+        stable_two = {
+            "decision": "multiple",
+            "detected_clusters": 2,
+            "supported_clusters": 2,
+        }
+        stable_three = {
+            "decision": "multiple",
+            "detected_clusters": 3,
+            "supported_clusters": 3,
+        }
+
+        self.assertTrue(sensevoice_speaker._should_assign_from_probe_centroids(
+            "auto", stable_two
+        ))
+        self.assertFalse(sensevoice_speaker._should_assign_from_probe_centroids(
+            "auto", stable_three
+        ))
+        self.assertFalse(sensevoice_speaker._should_assign_from_probe_centroids(
+            "always", stable_two
+        ))
+
+    def test_assigns_full_embeddings_to_nearest_probe_centroids(self):
+        import torch
+
+        probe_embeddings = [
+            torch.tensor([[1.0, 0.0]]),
+            torch.tensor([[0.9, 0.1]]),
+            torch.tensor([[0.0, 1.0]]),
+            torch.tensor([[0.1, 0.9]]),
+        ]
+        full_matrix = torch.tensor([
+            [0.8, 0.2],
+            [0.2, 0.8],
+            [1.0, 0.0],
+            [0.0, 1.0],
+        ])
+
+        labels = sensevoice_speaker.assign_embeddings_to_probe_centroids(
+            full_matrix,
+            probe_embeddings,
+            [7, 7, 3, 3],
+        )
+
+        self.assertEqual(labels, [7, 3, 7, 3])
+
     def test_single_decision_skips_full_clustering_and_returns_empty_timeline(self):
         model = FakeSpeakerModel()
         cluster_calls = []
@@ -297,7 +343,10 @@ class SenseVoiceAdaptiveSpeakerTests(unittest.TestCase):
             size = len(embeddings.rows)
             return [0, 0, 1, 1] if size == 4 else [0, 0, 0, 1, 1, 1]
 
-        with patch.dict(sys.modules, {"torch": make_fake_torch()}):
+        with patch.dict(sys.modules, {"torch": make_fake_torch()}), patch(
+            "sensevoice_speaker.assign_embeddings_to_probe_centroids",
+            return_value=[0, 0, 0, 1, 1, 1],
+        ) as assign_from_probe:
             result = sensevoice_speaker.run_adaptive_speaker_engine(
                 model,
                 [0.0] * 240,
@@ -321,8 +370,18 @@ class SenseVoiceAdaptiveSpeakerTests(unittest.TestCase):
         self.assertEqual(processing["probe_embeddings_reused"], 4)
         self.assertEqual(len(model.calls), 2)
         self.assertEqual([len(call["input"]) for call in model.calls], [4, 2])
-        self.assertEqual(len(cluster_calls), 3)
+        self.assertEqual(len(cluster_calls), 2)
         self.assertTrue(all(call["oracle_num"] is None for call in cluster_calls))
+        assign_from_probe.assert_called_once()
+        self.assertEqual(
+            processing["fullClusteringStrategy"],
+            "probe_centroid_assignment",
+        )
+        self.assertEqual(
+            processing["full_clustering_strategy"],
+            "probe_centroid_assignment",
+        )
+        self.assertEqual(processing["probeAssignmentClusters"], 2)
         self.assertEqual(len(result["timeline"]), 6)
         self.assertEqual(set(result["reference_matches"]), {"SPEAKER_00", "SPEAKER_01"})
         self.assertTrue(all(item["speaker"] == "Alice" for item in result["timeline"]))
@@ -360,6 +419,10 @@ class SenseVoiceAdaptiveSpeakerTests(unittest.TestCase):
         self.assertEqual(len(result["timeline"]), 4)
         self.assertEqual(len(model.calls), 1)
         self.assertEqual(result["processing"]["probe_embeddings_reused"], 4)
+        self.assertEqual(
+            result["processing"]["fullClusteringStrategy"],
+            "full_clustering",
+        )
 
     def test_always_mode_bypasses_probe_and_runs_full_clustering(self):
         model = FakeSpeakerModel()
@@ -396,6 +459,7 @@ class SenseVoiceAdaptiveSpeakerTests(unittest.TestCase):
         self.assertEqual(reference_calls, [True])
         self.assertEqual(len(result["timeline"]), 4)
         self.assertEqual(set(result["reference_matches"]), {"SPEAKER_00", "SPEAKER_01"})
+        self.assertEqual(processing["fullClusteringStrategy"], "full_clustering")
 
     def test_probe_error_fail_open_continues_to_full_clustering(self):
         class FailFirstModel(FakeSpeakerModel):

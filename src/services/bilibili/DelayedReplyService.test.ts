@@ -130,6 +130,7 @@ describe('DelayedReplyService ASR speaker notification info', () => {
         detectedClusters: 3,
         supportedClusters: 2,
         sampledSpeechSeconds: 42.25,
+        fullClusteringStrategy: 'probe_centroid_assignment',
         timings: {
           modelLoad: 99,
           probeEmbedding: 1.2,
@@ -147,6 +148,7 @@ describe('DelayedReplyService ASR speaker notification info', () => {
     expect(info).toContain('模式: auto');
     expect(info).toContain('判定: multiple_speakers');
     expect(info).toContain('原因: probe detected multiple speakers');
+    expect(info).toContain('策略: 探测簇中心分配');
     expect(info).toContain('抽样: 6段/5段有效/3个检测簇/2个支持簇/42.3s语音');
     expect(info).toContain('说话人耗时: 探测 1.5s / 全量 8.4s / 聚类 0.6s / 参考 0.4s / 匹配 0.2s / 总计 11.1s');
     expect(info).not.toContain('99.0s');
