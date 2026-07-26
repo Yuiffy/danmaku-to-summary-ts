@@ -365,14 +365,16 @@ def _cluster_embeddings(clusterer, embeddings, merge_threshold):
             return clusterer(embeddings)
 
 
-def _should_assign_from_probe_centroids(mode, evidence):
-    """Use stable two-cluster probes as anchors instead of reclustering the full stream."""
+def _should_assign_from_probe_centroids(mode, evidence, max_clusters=6):
+    """Use a bounded stable probe partition as full-stream acoustic anchors."""
     evidence = evidence if isinstance(evidence, dict) else {}
+    detected_clusters = int(evidence.get("detected_clusters", 0) or 0)
+    supported_clusters = int(evidence.get("supported_clusters", 0) or 0)
     return (
         mode == "auto"
         and evidence.get("decision") == "multiple"
-        and int(evidence.get("detected_clusters", 0) or 0) == 2
-        and int(evidence.get("supported_clusters", 0) or 0) == 2
+        and detected_clusters == supported_clusters
+        and 2 <= supported_clusters <= max(2, int(max_clusters or 2))
     )
 
 
@@ -711,7 +713,13 @@ def run_adaptive_speaker_engine(
                 "cluster_sizes": evidence["cluster_sizes"],
                 "cluster_speech_s": evidence["cluster_speech_s"],
             })
-            if _should_assign_from_probe_centroids(mode, evidence):
+            if _should_assign_from_probe_centroids(
+                mode,
+                evidence,
+                max_clusters=int(
+                    payload.get("speaker_probe_max_assignment_clusters", 6) or 6
+                ),
+            ):
                 probe_assignment_embeddings = [
                     embedding for _candidate, embedding in valid_probe
                 ]
@@ -824,7 +832,15 @@ def run_adaptive_speaker_engine(
                         float(payload.get("speaker_reference_threshold", 0.45) or 0.45),
                         float(payload.get("speaker_reference_margin", 0.0) or 0.0),
                         bool(payload.get("speaker_constrain_to_references", False)),
+                        max_sample_chunks=int(
+                            payload.get("speaker_reference_max_sample_chunks", 24) or 24
+                        ),
+                        min_support_chunks=int(
+                            payload.get("speaker_reference_min_support_chunks", 2) or 2
+                        ),
                     )
+                    processing["referenceMatches"] = reference_matches
+                    processing["reference_matches"] = reference_matches
             except Exception as exc:
                 processing["reference_error"] = {
                     "type": type(exc).__name__, "message": str(exc)
@@ -916,7 +932,30 @@ def build_cluster_embeddings_from_sentence_info(spk_model_obj, audio, sample_rat
     return cluster_embeddings
 
 
-def classify_speaker_clusters(cluster_embeddings, references, threshold, margin_threshold=0.0, constrain_to_references=False):
+def _sample_embedding_rows(embeddings, max_chunks):
+    """Select deterministic quantiles so match confidence is independent of stream length."""
+    import torch
+
+    row_count = int(embeddings.shape[0])
+    limit = max(1, int(max_chunks or 1))
+    if row_count <= limit:
+        return embeddings
+    indices = [
+        min(row_count - 1, int((rank + 0.5) * row_count / limit))
+        for rank in range(limit)
+    ]
+    return embeddings[torch.tensor(indices, dtype=torch.long)]
+
+
+def classify_speaker_clusters(
+    cluster_embeddings,
+    references,
+    threshold,
+    margin_threshold=0.0,
+    constrain_to_references=False,
+    max_sample_chunks=24,
+    min_support_chunks=2,
+):
     if not cluster_embeddings or not references:
         return {}
 
@@ -924,23 +963,71 @@ def classify_speaker_clusters(cluster_embeddings, references, threshold, margin_
 
     matches = {}
     for cluster_label, embeddings in cluster_embeddings.items():
-        best_label = None
-        second_label = None
-        best_score = -1.0
-        second_score = -1.0
-        for label, centroid in references.items():
-            score = float(torch.matmul(embeddings, centroid.T).max().item())
-            if score > best_score:
-                second_label = best_label
-                second_score = best_score
-                best_label = label
-                best_score = score
-            elif score > second_score:
-                second_label = label
-                second_score = score
-        margin = best_score - second_score if second_score > -1.0 else best_score
+        sampled = _sample_embedding_rows(embeddings, max_sample_chunks)
+        labels = list(references)
+        per_label_scores = []
+        for label in labels:
+            similarities = torch.matmul(sampled, references[label].T)
+            per_label_scores.append(torch.max(similarities, dim=1).values)
+        score_matrix = torch.stack(per_label_scores, dim=1)
+        row_best_scores, row_best_indices = torch.max(score_matrix, dim=1)
+
+        if len(labels) > 1:
+            top_two = torch.topk(score_matrix, k=2, dim=1)
+            row_second_scores = top_two.values[:, 1]
+        else:
+            row_second_scores = torch.full_like(row_best_scores, -1.0)
+
+        candidates = []
+        eligible_rows = row_best_scores >= float(threshold)
+        for label_index, label in enumerate(labels):
+            support_mask = eligible_rows & (row_best_indices == label_index)
+            support_count = int(support_mask.sum().item())
+            if support_count:
+                winning_scores = row_best_scores[support_mask]
+                winning_second_scores = row_second_scores[support_mask]
+                score = float(winning_scores.max().item())
+                support_mean_score = float(winning_scores.mean().item())
+                if len(labels) > 1:
+                    margin = float(
+                        (winning_scores - winning_second_scores).mean().item()
+                    )
+                else:
+                    margin = support_mean_score
+            else:
+                score = float(score_matrix[:, label_index].max().item())
+                support_mean_score = -1.0
+                margin = -1.0
+            candidates.append({
+                "label": label,
+                "support_count": support_count,
+                "score": score,
+                "support_mean_score": support_mean_score,
+                "margin": margin,
+            })
+
+        candidates.sort(
+            key=lambda item: (
+                item["support_count"],
+                item["support_mean_score"],
+                item["margin"],
+                item["score"],
+            ),
+            reverse=True,
+        )
+        best = candidates[0]
+        second = candidates[1] if len(candidates) > 1 else None
+        best_label = best["label"]
+        second_label = second["label"] if second else None
+        best_score = best["score"]
+        second_score = second["score"] if second else -1.0
+        margin = best["margin"]
+        required_support = max(1, int(min_support_chunks or 1))
         is_confident = bool(
-            best_label and best_score >= threshold and margin >= margin_threshold
+            best_label
+            and best["support_count"] >= required_support
+            and best["support_mean_score"] >= threshold
+            and margin >= margin_threshold
         )
         matches[cluster_label] = {
             "label": (
@@ -954,6 +1041,16 @@ def classify_speaker_clusters(cluster_embeddings, references, threshold, margin_
             "second_score": second_score,
             "margin": margin,
             "accepted": is_confident,
+            "support_chunks": best["support_count"],
+            "required_support_chunks": required_support,
+            "sampled_chunks": int(sampled.shape[0]),
+            "support_mean_score": best["support_mean_score"],
+            "support_ratio": (
+                best["support_count"] / int(sampled.shape[0])
+                if int(sampled.shape[0]) > 0
+                else 0.0
+            ),
+            "scoring_strategy": "bounded_repeated_chunk_votes",
         }
     return matches
 

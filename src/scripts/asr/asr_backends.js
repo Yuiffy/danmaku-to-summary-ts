@@ -42,13 +42,16 @@ const DEFAULT_ADAPTIVE_SPEAKER_CONFIG = {
     speaker_detection_mode: 'auto',
     speaker_probe_chunk_s: 4,
     speaker_probe_max_chunks: 256,
+    speaker_probe_max_assignment_clusters: 6,
     speaker_probe_min_valid_chunks: 6,
     speaker_probe_min_speech_s: 20,
     speaker_probe_min_cluster_chunks: 2,
     speaker_probe_min_cluster_s: 6,
     speaker_probe_min_cohesion: 0.70,
     speaker_probe_separation_margin: 0.03,
-    speaker_probe_fail_open: true
+    speaker_probe_fail_open: true,
+    speaker_reference_max_sample_chunks: 24,
+    speaker_reference_min_support_chunks: 2
 };
 
 const DEFAULT_ASR_CONFIG = {
@@ -507,7 +510,7 @@ function normalizeLabel(value) {
 
 function isUnknownSpeakerLabel(label) {
     const value = String(label || '').trim();
-    return !value || value === 'UNKNOWN' || /^SPEAKER_\d+$/i.test(value);
+    return !value || value === 'UNKNOWN' || value === '-1' || /^SPEAKER_\d+$/i.test(value);
 }
 
 function resolveStreamerRegistry(config = {}) {

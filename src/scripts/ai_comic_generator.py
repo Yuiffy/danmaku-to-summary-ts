@@ -83,7 +83,7 @@ import traceback as tb
 import subprocess
 import shutil
 
-COMIC_SCRIPT_POLICY_VERSION = 2
+COMIC_SCRIPT_POLICY_VERSION = 3
 
 LAST_COMIC_SCRIPT_META = {
     "provider": None,
@@ -1580,21 +1580,34 @@ def build_comic_prompt(highlight_content: str, reference_image_path: Optional[st
     return base_prompt, comic_content, is_generated
 
 
-def build_comic_identity_context(highlight_content: str, room_id: Optional[str], config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Resolve host and source-backed mentions before asking a model to storyboard."""
+def build_comic_identity_context(
+    highlight_content: str,
+    room_id: Optional[str],
+    config: Optional[Dict[str, Any]] = None,
+    appeared_streamers: Optional[list[dict]] = None,
+) -> Dict[str, Any]:
+    """Resolve host, ASR-confirmed participants, and text-only mentions."""
     cfg = config or load_config()
     registry = resolve_streamer_registry(cfg)
     host_id = find_host_streamer_id(cfg, room_id)
     host = registry.get(host_id) if host_id else None
+    appeared = list(appeared_streamers or [])
+    appeared_ids = {
+        str(item.get("id") or "")
+        for item in appeared
+        if str(item.get("id") or "")
+    }
     mentions = resolve_mentioned_streamers(
         cfg,
         room_id,
         None,
+        already_streamer_ids=appeared_ids,
         highlight_text=highlight_content,
         strict_short_mentions=True,
     )
     return {
         "host": host,
+        "appeared": appeared,
         "mentions": mentions,
     }
 
@@ -1602,6 +1615,13 @@ def build_comic_identity_context(highlight_content: str, room_id: Optional[str],
 def format_comic_identity_context(context: Dict[str, Any]) -> str:
     host = context.get("host") or {}
     host_name = host.get("displayName") or "房间主人"
+    appeared_lines = []
+    for item in context.get("appeared") or []:
+        name = item.get("displayName") or item.get("id")
+        appeared_lines.append(
+            f"- {name}：ASR 已确认在本场直播中实际出声，是现场互动角色。"
+        )
+    appeared = "\n".join(appeared_lines) if appeared_lines else "- 无其他已确认出声角色。"
     mention_lines = []
     for item in context.get("mentions") or []:
         name = item.get("displayName") or item.get("id")
@@ -1610,8 +1630,11 @@ def format_comic_identity_context(context: Dict[str, Any]) -> str:
     mentions = "\n".join(mention_lines) if mention_lines else "- 无其他已验证人物提及。"
     return f"""人物事实边界（必须遵守）：
 - 本场直播主人唯一是：{host_name}。不要把 ASR、弹幕或模型记忆里的其他名字改写成主播。
+- 已确认在本场实际出声的互动角色：
+{appeared}
 - 已验证的文字提及：
 {mentions}
+- 已确认出声的互动角色应按正文中的共同事件参与画面，不要用粉丝吉祥物或路人替代。
 - 被提到的人只能按照原文明确的事件画成回忆/游戏画面/屏幕内容；绝不能自动成为嘉宾、连麦者、合唱者或本场直播角色。
 - 不要在画面中生成“主播”“嘉宾”“主持”“连麦”等身份牌，也不要生成或翻译人名（包括中文名、英文名、拼音）。人名不是必要画面文字时一律省略。"""
 
@@ -1630,7 +1653,12 @@ COMIC_ARTIST_PROMPT_TEMPLATE = """你作为虚拟主播二创画师大手子，�
 {highlight_content}
 """
 
-def build_comic_generation_prompt(character_desc: str, highlight_content: str, room_id: Optional[str] = None) -> str:
+def build_comic_generation_prompt(
+    character_desc: str,
+    highlight_content: str,
+    room_id: Optional[str] = None,
+    appeared_streamers: Optional[list[dict]] = None,
+) -> str:
     """使用COMIC_ARTIST_PROMPT_TEMPLATE构建完整的prompt（用于Gemini等调用）"""
     # 尝试获取房间级别的自定义漫画脚本 prompt
     config = load_config()
@@ -1645,7 +1673,12 @@ def build_comic_generation_prompt(character_desc: str, highlight_content: str, r
         template = COMIC_ARTIST_PROMPT_TEMPLATE.strip()
     
     identity_context = format_comic_identity_context(
-        build_comic_identity_context(highlight_content, room_id, config)
+        build_comic_identity_context(
+            highlight_content,
+            room_id,
+            config,
+            appeared_streamers=appeared_streamers,
+        )
     )
     base = template.replace("{character_desc}", character_desc)
     base = base.replace("{identity_context}", identity_context)
@@ -1717,20 +1750,34 @@ def build_local_fallback_comic_script(highlight_content: str, room_id: Optional[
 
     return "\n".join(panels)
 
-def postprocess_generated_comic_script(comic_content: str, source_highlight: str, room_id: Optional[str] = None) -> str:
+def postprocess_generated_comic_script(
+    comic_content: str,
+    source_highlight: str,
+    room_id: Optional[str] = None,
+    appeared_streamers: Optional[list[dict]] = None,
+) -> str:
     """Remove unsupported identities and roles before the image model sees a script."""
     if not comic_content:
         return comic_content
 
     config = load_config()
     cleaned_source = sanitize_highlight_for_comic_script(source_highlight, room_id, config)
-    identity_context = build_comic_identity_context(cleaned_source, room_id, config)
+    identity_context = build_comic_identity_context(
+        cleaned_source,
+        room_id,
+        config,
+        appeared_streamers=appeared_streamers,
+    )
     allowed_names = {
         normalize_mention_text(str((identity_context.get("host") or {}).get("displayName") or ""))
     }
     allowed_names.update(
         normalize_mention_text(str(item.get("displayName") or ""))
         for item in identity_context.get("mentions") or []
+    )
+    allowed_names.update(
+        normalize_mention_text(str(item.get("displayName") or ""))
+        for item in identity_context.get("appeared") or []
     )
     output = strip_danmaku_sticker_tokens(comic_content)
 
@@ -1771,8 +1818,14 @@ def postprocess_generated_comic_script(comic_content: str, source_highlight: str
         if has_untrusted_name and has_unsupported_role:
             print(f"[INFO]  漫画脚本后处理：移除无来源人物关系: {line[:100]}")
             continue
-        # Identity cards are not source facts and image models frequently corrupt them.
-        line = re.sub(r"(?:主播|嘉宾|主持|连麦)\s*[:：]?[\s\w一-鿿（）()]*", "", line)
+        # Remove explicit identity-card names, then remove the role word itself.
+        # A confirmed participant name in ordinary prose remains intact.
+        line = re.sub(
+            r"(?:主播|嘉宾|主持|连麦)(?:\s+|[:：]\s*)[^\s，,；;。]+",
+            "",
+            line,
+        )
+        line = re.sub(r"主播|嘉宾|主持|连麦", "", line)
         filtered_lines.append(line.strip())
 
     return "\n".join(line for line in filtered_lines if line)
@@ -1804,7 +1857,12 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
 
     script_highlight_content = sanitize_highlight_for_comic_script(highlight_content, room_id=room_id)
     character_desc = get_multi_character_description(room_id, extra_streamers)
-    content_prompt = build_comic_generation_prompt(character_desc, script_highlight_content, room_id)
+    content_prompt = build_comic_generation_prompt(
+        character_desc,
+        script_highlight_content,
+        room_id,
+        appeared_streamers=extra_streamers,
+    )
 
     # 首先尝试复用已有的 Node 文本生成器（ai_text_generator.js），避免在 Python 中重复实现 Gemini 调用
     try:
@@ -1841,7 +1899,12 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                             fallback=bool(generation_meta.get("fallback")),
                             status="success",
                         )
-                        return postprocess_generated_comic_script(text, script_highlight_content, room_id), True
+                        return postprocess_generated_comic_script(
+                            text,
+                            script_highlight_content,
+                            room_id,
+                            appeared_streamers=extra_streamers,
+                        ), True
                     elif is_gemini_error(text):
                         print('[WARNING] ai_text_generator 返回了错误内容，尝试其他方案')
                     elif text:
@@ -1927,7 +1990,12 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                     print("[OK] AI漫画内容生成完成")
                     print(f"生成内容长度: {len(comic_content)} 字符")
                     set_comic_script_meta(provider="gemini", model=model_name, status="success", fallback=False)
-                    return postprocess_generated_comic_script(comic_content, script_highlight_content, room_id), True
+                    return postprocess_generated_comic_script(
+                        comic_content,
+                        script_highlight_content,
+                        room_id,
+                        appeared_streamers=extra_streamers,
+                    ), True
                 else:
                     print("[WARNING]  AI返回空结果，使用原始内容")
                     break
@@ -2019,7 +2087,12 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                     status="success",
                     fallback=True
                 )
-                return postprocess_generated_comic_script(comic_content, script_highlight_content, room_id), True
+                return postprocess_generated_comic_script(
+                    comic_content,
+                    script_highlight_content,
+                    room_id,
+                    appeared_streamers=extra_streamers,
+                ), True
             else:
                 print("[WARNING]  tuZi API返回空内容")
                 if tuzi_attempt < max_tuzi_retries - 1:
@@ -2083,7 +2156,12 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                     status="success",
                     fallback=True
                 )
-                return postprocess_generated_comic_script(comic_content, script_highlight_content, room_id), True
+                return postprocess_generated_comic_script(
+                    comic_content,
+                    script_highlight_content,
+                    room_id,
+                    appeared_streamers=extra_streamers,
+                ), True
             else:
                 reason = "daiYu 返回空内容" if not comic_content else ("daiYu 返回 Gemini 错误内容" if is_gemini_error(comic_content) else "daiYu 返回无效脚本")
                 print(f"[WARNING]  daiYu provider 也失败: {reason}")
@@ -2682,10 +2760,11 @@ def write_comic_script_meta(
     meta: Dict[str, Any],
     room_id: Optional[str] = None,
     highlight_content: Optional[str] = None,
+    appeared_streamer_ids: Optional[list[str]] = None,
 ) -> None:
     try:
         payload = {
-            "schemaVersion": 2,
+            "schemaVersion": 3,
             "policyVersion": COMIC_SCRIPT_POLICY_VERSION,
             "status": meta.get("status") or "unknown",
             "provider": meta.get("provider"),
@@ -2694,6 +2773,11 @@ def write_comic_script_meta(
             "reason": meta.get("reason"),
             "roomId": str(room_id) if room_id is not None else None,
             "highlightSha256": hashlib.sha256((highlight_content or "").encode("utf-8")).hexdigest() if highlight_content is not None else None,
+            "appearedStreamerIds": sorted({
+                str(streamer_id)
+                for streamer_id in (appeared_streamer_ids or [])
+                if str(streamer_id)
+            }),
             "updatedAt": meta.get("updatedAt") or time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
         with open(comic_script_meta_path(text_output_path), "w", encoding="utf-8") as f:
@@ -2782,6 +2866,17 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
         highlight_content = read_highlight_file(highlight_path)
         script_highlight_content = sanitize_highlight_for_comic_script(highlight_content, room_id, config)
         script_highlight_hash = hashlib.sha256(script_highlight_content.encode("utf-8")).hexdigest()
+        script_extra_streamers = resolve_extra_appeared_streamers(
+            config,
+            room_id,
+            highlight_path,
+            include_mentioned_streamers=False,
+        )
+        script_appeared_ids = sorted({
+            str(item.get("id") or "")
+            for item in script_extra_streamers
+            if str(item.get("id") or "")
+        })
         print(f"[BOOK] 读取内容完成 ({len(highlight_content)} 字符)")
 
         # 确定脚本文件路径，优先复用已存在的脚本以避免重复AI调用
@@ -2799,10 +2894,11 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
                     with open(meta_path, 'r', encoding='utf-8') as mf:
                         meta = json.load(mf)
                 metadata_matches = (
-                    meta.get("schemaVersion") == 2
+                    meta.get("schemaVersion") == 3
                     and meta.get("policyVersion") == COMIC_SCRIPT_POLICY_VERSION
                     and meta.get("roomId") == str(room_id)
                     and meta.get("highlightSha256") == script_highlight_hash
+                    and sorted(meta.get("appearedStreamerIds") or []) == script_appeared_ids
                 )
                 if is_valid_comic_script(comic_text) and metadata_matches:
                     print(f"[INFO]  已存在漫画脚本，复用: {os.path.basename(text_output_path)}")
@@ -2819,7 +2915,7 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
             None,
             room_id,
             existing_comic=comic_text,
-            extra_streamers=None
+            extra_streamers=script_extra_streamers,
         )
 
         # 如果脚本生成失败（使用原文作为备选），则不生成图片
@@ -2873,6 +2969,7 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
                     get_comic_script_meta(),
                     room_id,
                     script_highlight_content,
+                    script_appeared_ids,
                 )
             elif os.path.exists(text_output_path) and not os.path.exists(comic_script_meta_path(text_output_path)):
                 write_comic_script_meta(
@@ -2880,6 +2977,7 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
                     get_comic_script_meta(),
                     room_id,
                     script_highlight_content,
+                    script_appeared_ids,
                 )
         except Exception as e:
             print(f"[WARNING] 保存漫画脚本失败: {e}")

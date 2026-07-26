@@ -541,6 +541,54 @@ class MultiReferenceComicTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in selected], ["shiori"])
         self.assertEqual(selected[0]["_comicReferenceReason"], "appeared")
 
+    def test_asr_confirmed_speaker_is_injected_into_first_storyboard_prompt(self):
+        self.highlight.write_text(
+            "岁己和栞栞一起玩双人自行车，互相提醒左右方向。",
+            encoding="utf-8",
+        )
+        self.write_sidecar(["shiori"])
+        appeared = comic.resolve_extra_appeared_streamers(
+            self.config,
+            "25788785",
+            str(self.highlight),
+            include_mentioned_streamers=False,
+        )
+
+        prompt = comic.build_comic_generation_prompt(
+            "房间主人描述",
+            self.highlight.read_text(encoding="utf-8"),
+            "25788785",
+            appeared_streamers=appeared,
+        )
+        script = comic.postprocess_generated_comic_script(
+            "分镜一：岁己与嘉宾栞栞一起骑双人自行车，互相提醒方向。",
+            self.highlight.read_text(encoding="utf-8"),
+            "25788785",
+            appeared_streamers=appeared,
+        )
+
+        self.assertIn("栞栞：ASR 已确认在本场直播中实际出声", prompt)
+        self.assertNotIn("栞栞：仅在原文中被提到", prompt)
+        self.assertIn("栞栞", script)
+
+    def test_comic_script_meta_records_appeared_streamers(self):
+        output = self.root / "story_COMIC_SCRIPT.txt"
+
+        comic.write_comic_script_meta(
+            str(output),
+            {"status": "success", "provider": "test", "model": "test"},
+            "25788785",
+            "highlight",
+            ["shiori", "shiori"],
+        )
+        meta = json.loads(
+            Path(comic.comic_script_meta_path(str(output))).read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(meta["schemaVersion"], 3)
+        self.assertEqual(meta["policyVersion"], comic.COMIC_SCRIPT_POLICY_VERSION)
+        self.assertEqual(meta["appearedStreamerIds"], ["shiori"])
+
     def test_max_extra_characters_applies(self):
         second = self.root / "rhea.png"
         second.write_bytes(b"x")

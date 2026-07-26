@@ -170,17 +170,18 @@ class SenseVoiceSpeakerBatchingTests(unittest.TestCase):
         self.assertEqual(len(embeddings["SPEAKER_01"].rows), 2)
 
     def test_cluster_match_reports_top_two_scores_and_unknown_decision(self):
-        with patch.dict(sys.modules, {"torch": make_fake_torch()}):
-            matches = sensevoice_speaker.classify_speaker_clusters(
-                {"SPEAKER_00": FakeTensor([[1.0]])},
-                {
-                    "A": FakeReference(0.80),
-                    "B": FakeReference(0.76),
-                },
-                threshold=0.45,
-                margin_threshold=0.06,
-                constrain_to_references=True,
-            )
+        import torch
+
+        matches = sensevoice_speaker.classify_speaker_clusters(
+            {"SPEAKER_00": torch.tensor([[1.0, 0.0], [1.0, 0.0]])},
+            {
+                "A": torch.tensor([[0.80, 0.0]]),
+                "B": torch.tensor([[0.76, 0.0]]),
+            },
+            threshold=0.45,
+            margin_threshold=0.06,
+            constrain_to_references=True,
+        )
 
         match = matches["SPEAKER_00"]
         self.assertEqual(match["label"], "UNKNOWN")
@@ -188,6 +189,84 @@ class SenseVoiceSpeakerBatchingTests(unittest.TestCase):
         self.assertEqual(match["second_label"], "B")
         self.assertAlmostEqual(match["margin"], 0.04)
         self.assertFalse(match["accepted"])
+        self.assertEqual(match["support_chunks"], 2)
+        self.assertEqual(match["sampled_chunks"], 2)
+
+    def test_cluster_match_rejects_a_single_outlier_hit(self):
+        import torch
+
+        matches = sensevoice_speaker.classify_speaker_clusters(
+            {
+                "SPEAKER_00": torch.tensor([
+                    [1.0, 0.0],
+                    [0.0, 1.0],
+                    [0.0, 1.0],
+                ])
+            },
+            {"A": torch.tensor([[0.9, 0.0]])},
+            threshold=0.45,
+            margin_threshold=0.06,
+            constrain_to_references=True,
+            min_support_chunks=2,
+        )
+
+        match = matches["SPEAKER_00"]
+        self.assertEqual(match["label"], "UNKNOWN")
+        self.assertEqual(match["best_label"], "A")
+        self.assertEqual(match["support_chunks"], 1)
+        self.assertFalse(match["accepted"])
+
+    def test_cluster_match_accepts_repeated_chunk_evidence(self):
+        import torch
+
+        matches = sensevoice_speaker.classify_speaker_clusters(
+            {
+                "SPEAKER_00": torch.tensor([
+                    [1.0, 0.0],
+                    [0.9, 0.1],
+                    [0.0, 1.0],
+                ])
+            },
+            {
+                "A": torch.tensor([[0.9, 0.0]]),
+                "B": torch.tensor([[0.0, 0.8]]),
+            },
+            threshold=0.45,
+            margin_threshold=0.06,
+            constrain_to_references=True,
+            min_support_chunks=2,
+        )
+
+        match = matches["SPEAKER_00"]
+        self.assertEqual(match["label"], "A")
+        self.assertEqual(match["support_chunks"], 2)
+        self.assertTrue(match["accepted"])
+
+    def test_cluster_match_keeps_peak_score_for_downstream_compatibility(self):
+        import torch
+
+        matches = sensevoice_speaker.classify_speaker_clusters(
+            {
+                "SPEAKER_00": torch.tensor([
+                    [1.0, 0.0],
+                    [0.7, 0.3],
+                    [0.0, 1.0],
+                ])
+            },
+            {
+                "A": torch.tensor([[0.9, 0.0]]),
+                "B": torch.tensor([[0.0, 0.8]]),
+            },
+            threshold=0.45,
+            margin_threshold=0.06,
+            constrain_to_references=True,
+            min_support_chunks=2,
+        )
+
+        match = matches["SPEAKER_00"]
+        self.assertTrue(match["accepted"])
+        self.assertAlmostEqual(match["score"], 0.9)
+        self.assertAlmostEqual(match["support_mean_score"], 0.765)
 
 
 class SenseVoiceAdaptiveSpeakerTests(unittest.TestCase):
@@ -250,23 +329,39 @@ class SenseVoiceAdaptiveSpeakerTests(unittest.TestCase):
         self.assertEqual(multiple["decision"], "multiple")
         self.assertEqual(inconclusive["decision"], "inconclusive")
 
-    def test_probe_centroid_assignment_requires_exactly_two_stable_clusters(self):
+    def test_probe_centroid_assignment_accepts_bounded_stable_partitions(self):
         stable_two = {
             "decision": "multiple",
             "detected_clusters": 2,
             "supported_clusters": 2,
         }
-        stable_three = {
+        stable_four = {
             "decision": "multiple",
-            "detected_clusters": 3,
+            "detected_clusters": 4,
+            "supported_clusters": 4,
+        }
+        unsupported_noise = {
+            "decision": "multiple",
+            "detected_clusters": 4,
             "supported_clusters": 3,
+        }
+        too_many = {
+            "decision": "multiple",
+            "detected_clusters": 7,
+            "supported_clusters": 7,
         }
 
         self.assertTrue(sensevoice_speaker._should_assign_from_probe_centroids(
             "auto", stable_two
         ))
+        self.assertTrue(sensevoice_speaker._should_assign_from_probe_centroids(
+            "auto", stable_four
+        ))
         self.assertFalse(sensevoice_speaker._should_assign_from_probe_centroids(
-            "auto", stable_three
+            "auto", unsupported_noise
+        ))
+        self.assertFalse(sensevoice_speaker._should_assign_from_probe_centroids(
+            "auto", too_many
         ))
         self.assertFalse(sensevoice_speaker._should_assign_from_probe_centroids(
             "always", stable_two
@@ -343,10 +438,17 @@ class SenseVoiceAdaptiveSpeakerTests(unittest.TestCase):
             size = len(embeddings.rows)
             return [0, 0, 1, 1] if size == 4 else [0, 0, 0, 1, 1, 1]
 
+        reference_matches = {
+            "SPEAKER_00": {"label": "Alice", "score": 0.8},
+            "SPEAKER_01": {"label": "Alice", "score": 0.8},
+        }
         with patch.dict(sys.modules, {"torch": make_fake_torch()}), patch(
             "sensevoice_speaker.assign_embeddings_to_probe_centroids",
             return_value=[0, 0, 0, 1, 1, 1],
-        ) as assign_from_probe:
+        ) as assign_from_probe, patch(
+            "sensevoice_speaker.classify_speaker_clusters",
+            return_value=reference_matches,
+        ):
             result = sensevoice_speaker.run_adaptive_speaker_engine(
                 model,
                 [0.0] * 240,
@@ -385,6 +487,43 @@ class SenseVoiceAdaptiveSpeakerTests(unittest.TestCase):
         self.assertEqual(len(result["timeline"]), 6)
         self.assertEqual(set(result["reference_matches"]), {"SPEAKER_00", "SPEAKER_01"})
         self.assertTrue(all(item["speaker"] == "Alice" for item in result["timeline"]))
+
+    def test_stable_four_cluster_probe_avoids_full_reclustering(self):
+        model = FakeSpeakerModel()
+        cluster_calls = []
+        stable_labels = [0, 0, 1, 1, 2, 2, 3, 3]
+
+        def clusterer(_embeddings, **kwargs):
+            cluster_calls.append(kwargs)
+            return stable_labels
+
+        with patch.dict(sys.modules, {"torch": make_fake_torch()}), patch(
+            "sensevoice_speaker.assign_embeddings_to_probe_centroids",
+            return_value=stable_labels,
+        ) as assign_from_probe:
+            result = sensevoice_speaker.run_adaptive_speaker_engine(
+                model,
+                [0.0] * 320,
+                10,
+                [{"start": 0, "end": 32}],
+                payload={
+                    "speaker_probe_max_chunks": 8,
+                    "speaker_probe_min_valid_chunks": 8,
+                    "speaker_probe_min_speech_s": 20,
+                    "speaker_probe_min_cluster_s": 8,
+                    "speaker_probe_max_assignment_clusters": 6,
+                },
+                clusterer=clusterer,
+            )
+
+        self.assertEqual(result["processing"]["decision"], "multiple")
+        self.assertEqual(
+            result["processing"]["fullClusteringStrategy"],
+            "probe_centroid_assignment",
+        )
+        self.assertEqual(result["processing"]["probeAssignmentClusters"], 4)
+        self.assertEqual(len(cluster_calls), 2)
+        assign_from_probe.assert_called_once()
 
     def test_inconclusive_decision_continues_to_full_clustering(self):
         model = FakeSpeakerModel()
@@ -438,7 +577,14 @@ class SenseVoiceAdaptiveSpeakerTests(unittest.TestCase):
             reference_calls.append(True)
             return {"Alice": FakeReference(0.8)}
 
-        with patch.dict(sys.modules, {"torch": make_fake_torch()}):
+        reference_matches = {
+            "SPEAKER_00": {"label": "Alice", "score": 0.8},
+            "SPEAKER_01": {"label": "Alice", "score": 0.8},
+        }
+        with patch.dict(sys.modules, {"torch": make_fake_torch()}), patch(
+            "sensevoice_speaker.classify_speaker_clusters",
+            return_value=reference_matches,
+        ):
             result = sensevoice_speaker.run_adaptive_speaker_engine(
                 model,
                 [0.0] * 160,

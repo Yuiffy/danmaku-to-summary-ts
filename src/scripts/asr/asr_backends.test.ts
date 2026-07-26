@@ -1118,13 +1118,15 @@ describe('asr_backends', () => {
         { start: 10, end: 20, text: 'extra', speaker: 'Shiori', speaker_score: 0.8 },
         { start: 20, end: 30, text: 'limited', speaker: '瑞娅', speaker_score: 0.9 },
         { start: 50, end: 70, text: 'unknown', speaker: 'UNKNOWN' },
-        { start: 70, end: 90, text: 'cluster', speaker: 'SPEAKER_00', speaker_score: 0.9 }
+        { start: 70, end: 90, text: 'cluster', speaker: 'SPEAKER_00', speaker_score: 0.9 },
+        { start: 90, end: 95, text: 'noise', speaker: '-1', speaker_score: 0.9 }
       ]
     }, config, { room_id: '25788785', mediaPath: 'x.m4a' });
 
     expect(result.appearedStreamerIds).toEqual(['sui', 'shiori', 'rhea']);
     expect(result.extraAppearedStreamerIds).toEqual(['shiori']);
     expect(result.speakers.find((speaker: any) => speaker.label === 'UNKNOWN').isUnknown).toBe(true);
+    expect(result.speakers.find((speaker: any) => speaker.label === '-1').isUnknown).toBe(true);
   });
 
   test('filters low max-score short extra speakers from appeared streamer ids', () => {
