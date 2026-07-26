@@ -34,6 +34,9 @@ PUNC_GENERATE_WARNED = False
 # protect_terms are forwarded from JS corrections.exclude_when (e.g. 碎机 -> [粉碎机]).
 _JIEBA = None
 _JIEBA_LOAD_ATTEMPTED = False
+_CROSS_SEGMENT_PROTECTION_SEPARATOR_RE = re.compile(r"[\s\W_]+", re.UNICODE)
+_CROSS_SEGMENT_PROTECTION_SEPARATOR_PATTERN = r"[\s\W_]*"
+_DEFAULT_CROSS_SEGMENT_PROTECT_MAX_GAP_S = 0.3
 
 
 def normalize_backend_name(name):
@@ -85,6 +88,85 @@ def _is_boundary_protect_enabled(hotword_config=None):
     if not isinstance(hotword_config, dict):
         return True
     return hotword_config.get("boundary_protect") is not False
+
+
+def _compact_cross_segment_protection_text(text):
+    return _CROSS_SEGMENT_PROTECTION_SEPARATOR_RE.sub("", str(text or ""))
+
+
+def _is_stable_speaker_label(value):
+    speaker = str(value or "").strip()
+    return bool(
+        speaker
+        and speaker.upper() != "UNKNOWN"
+        and not re.fullmatch(r"SPEAKER_\d+", speaker, re.IGNORECASE)
+    )
+
+
+def _resolve_cross_segment_exclude_patterns(segments, index, hotword_config=None):
+    if (
+        not isinstance(segments, list)
+        or not (0 <= index < len(segments) - 1)
+        or not isinstance(hotword_config, dict)
+    ):
+        return []
+
+    configured = hotword_config.get("cross_segment_protect_when_next")
+    if not isinstance(configured, dict) or not configured:
+        return []
+
+    current = segments[index]
+    following = segments[index + 1]
+    try:
+        max_gap_s = max(
+            0.0,
+            float(
+                hotword_config.get(
+                    "cross_segment_protect_max_gap_s",
+                    _DEFAULT_CROSS_SEGMENT_PROTECT_MAX_GAP_S,
+                )
+            ),
+        )
+        gap_s = float(following.get("start")) - float(current.get("end"))
+    except (AttributeError, TypeError, ValueError):
+        return []
+    if gap_s < -max_gap_s or gap_s > max_gap_s:
+        return []
+
+    current_speaker = str(current.get("speaker") or current.get("spk") or "").strip()
+    following_speaker = str(following.get("speaker") or following.get("spk") or "").strip()
+    if (
+        _is_stable_speaker_label(current_speaker)
+        and _is_stable_speaker_label(following_speaker)
+        and current_speaker != following_speaker
+    ):
+        return []
+
+    current_text = _compact_cross_segment_protection_text(current.get("text", ""))
+    following_text = _compact_cross_segment_protection_text(following.get("text", ""))
+    if not current_text or not following_text:
+        return []
+
+    patterns = []
+    for source, next_prefixes in configured.items():
+        source_text = _compact_cross_segment_protection_text(source)
+        prefixes = [
+            _compact_cross_segment_protection_text(prefix)
+            for prefix in _normalize_string_list(next_prefixes)
+        ]
+        if (
+            not source_text
+            or not current_text.endswith(source_text)
+            or not any(prefix and following_text.startswith(prefix) for prefix in prefixes)
+        ):
+            continue
+        flexible = _CROSS_SEGMENT_PROTECTION_SEPARATOR_PATTERN.join(
+            re.escape(char) for char in source_text
+        )
+        patterns.append(
+            f"{flexible}{_CROSS_SEGMENT_PROTECTION_SEPARATOR_PATTERN}$"
+        )
+    return patterns
 
 
 def _mask_phoneme_protect_terms(text, protect_terms):
@@ -457,11 +539,26 @@ def _apply_hotword_correction(output, payload):
             pc.update_hotwords(hotword_text)
 
         corrections_count = 0
-        for seg in output.get("segments", []):
+        segments = output.get("segments", [])
+        for index, seg in enumerate(segments):
             text = seg.get("text", "")
             if not text or len(text.strip()) <= 1:
                 continue
-            result = _correct_text_with_protections(pc, text, hotword_config)
+            cross_segment_patterns = _resolve_cross_segment_exclude_patterns(
+                segments,
+                index,
+                hotword_config,
+            )
+            segment_hotword_config = hotword_config
+            if cross_segment_patterns:
+                segment_hotword_config = {
+                    **hotword_config,
+                    "exclude_patterns": [
+                        *_resolve_phoneme_exclude_patterns(hotword_config),
+                        *cross_segment_patterns,
+                    ],
+                }
+            result = _correct_text_with_protections(pc, text, segment_hotword_config)
             if result.text != text:
                 corrections_count += 1
                 seg["text"] = result.text
