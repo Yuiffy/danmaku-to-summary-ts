@@ -2073,9 +2073,14 @@ function buildClipNotifyBlock(result = {}, notifyConfig = {}) {
     const idPrefix = uploadId ? `ID ${uploadId} | ` : '';
     const mediaPath = toFwdSlash(result.output?.mediaPath || '');
     const fileName = mediaPath ? path.basename(mediaPath) : '文件未生成';
+    const title = compactNotifyText(result.copy?.title || '', 120);
     const lines = [
         `- ${idPrefix}${formatClock(window.start || 0)}-${formatClock(window.end || 0)} | ${fileName}`
     ];
+
+    if (title) {
+        lines.push(`  - 标题: ${title}`);
+    }
 
     if (notifyConfig.includeSubtitleContext !== false) {
         const subtitleContext = buildSubtitleContextLines(

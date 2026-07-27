@@ -569,6 +569,7 @@ describe('topic_clipper', () => {
             '[00:00:23] 这段可以切'
           ]
         },
+        copy: { title: '小岁原来变成饼干了？' },
         output: { mediaPath: 'D:/clips/one.mp4', copyPath: 'D:/clips/one_投稿文案.md' }
       },
       {
@@ -593,6 +594,7 @@ describe('topic_clipper', () => {
     expect(markdown).toContain('D:/clips');
     expect(markdown).toContain('one.mp4');
     expect(markdown).toContain('two.mp4');
+    expect(markdown).toContain('标题: 小岁原来变成饼干了？');
     expect(markdown).not.toContain('D:/clips/one.mp4');
     expect(markdown).not.toContain('投稿文案');
     expect(markdown).toContain('字幕上下文');
