@@ -460,7 +460,7 @@ Webhook 会自动查找与视频同名的 `.xml` 文件（同目录）。确认 
 - [ASR backend / adaptive speaker 架构与验证](docs/asr-backends.md)
 - [Paraformer 微调](docs/funasr-finetune.md)
 - [vLLM 独立队列](docs/asr-vllm-queue.md)
-- [B站视频补下载回填流程](docs/bilibili-recovery-flow.md)
+- [录播补下载与回填流程](docs/bilibili-recovery-flow.md)
 - [B站上传工具](docs/bilibili-upload-tools.md)
 - [自定义 AI Prompts 说明](自定义AI_Prompts说明.md)
 
