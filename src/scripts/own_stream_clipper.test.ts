@@ -132,8 +132,9 @@ describe('own_stream_clipper', () => {
       outputRoot: 'D:/clips'
     });
 
-    expect(markdown).toContain('1. [本地规则] 岁己：弹幕觉得这里很有趣 | 00:01:15 | 00:01:30');
-    expect(markdown).toContain('2. [本地规则] 岁己：很有岁己想法的一段 | 00:03:00 | 00:00:45');
+    expect(markdown).toContain('来源统计: 本地规则 2');
+    expect(markdown).toContain('1. 岁己：弹幕觉得这里很有趣 | 00:01:15 | 00:01:30');
+    expect(markdown).toContain('2. 岁己：很有岁己想法的一段 | 00:03:00 | 00:00:45');
     expect(markdown).not.toContain('D:/clips/one.mp4');
   });
 
@@ -193,8 +194,8 @@ describe('own_stream_clipper', () => {
     expect(review).toContain('   上传ID: 17');
     expect(review).toContain('   上传ID: 18');
     expect(notify).toContain('上传短ID: 17,18');
-    expect(notify).toContain('1. [本地规则] ID 17 | 岁己：弹幕觉得这里很有趣 | 00:01:15 | 00:01:30');
-    expect(notify).toContain('2. [本地规则] ID 18 | 岁己：很有岁己想法的一段 | 00:03:00 | 00:00:45');
+    expect(notify).toContain('1. ID 17 | 岁己：弹幕觉得这里很有趣 | 00:01:15 | 00:01:30');
+    expect(notify).toContain('2. ID 18 | 岁己：很有岁己想法的一段 | 00:03:00 | 00:00:45');
   });
 
   test('normalizes Windows backslashes in own-stream notification paths', () => {
@@ -457,7 +458,7 @@ describe('own_stream_clipper', () => {
     expect(heat[0].selectionSource).toBe('danmaku_heat');
   });
 
-  test('shows heat/model source counts and per-item labels in WeChat markdown', () => {
+  test('shows heat/model source counts once above the WeChat clip list', () => {
     const markdown = ownStreamClipper.buildNotifyMarkdown([
       {
         window: { start: 75, duration: 90 },
@@ -478,7 +479,29 @@ describe('own_stream_clipper', () => {
     });
 
     expect(markdown).toContain('来源统计: 弹幕热度 1，模型全量 1');
-    expect(markdown).toContain('1. [弹幕热度] 弹幕热度片段');
-    expect(markdown).toContain('2. [模型全量] 模型决定片段');
+    expect(markdown).toContain('1. 弹幕热度片段');
+    expect(markdown).toContain('2. 模型决定片段');
+    expect(markdown).not.toContain('[弹幕热度]');
+    expect(markdown).not.toContain('[模型全量]');
+  });
+
+  test('keeps source labels out of compacted WeChat clip lists', () => {
+    const results = Array.from({ length: 30 }, (_, index) => ({
+      window: { start: index * 90, duration: 60 },
+      copy: { title: `模型片段 ${index + 1} ${'很有趣'.repeat(60)}` },
+      candidate: { selectionSource: 'model_full_context' },
+      output: { mediaPath: `D:/clips/${index + 1}.mp4` }
+    }));
+
+    const markdown = ownStreamClipper.buildNotifyMarkdown(results, {
+      streamTitle: '超长通知测试',
+      recordedAt: '2026-07-29 12:00:00',
+      outputRoot: 'D:/clips'
+    });
+
+    expect(markdown).toContain('来源统计: 模型全量 30');
+    expect(markdown).toContain('1. 模型片段 1');
+    expect(markdown).toContain('请看 Review');
+    expect(markdown).not.toContain('[模型全量]');
   });
 });

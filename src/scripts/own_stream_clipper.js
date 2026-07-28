@@ -1269,7 +1269,7 @@ function buildNotifyMarkdown(results, metadata) {
         const start = formatClock(result.window.start);
         const duration = formatClock(result.window.duration);
         const uploadId = uploadIds[index] ? `ID ${uploadIds[index]} | ` : '';
-        lines.push(`${index + 1}. [${getSelectionSourceLabel(result)}] ${uploadId}${title} | ${start} | ${duration}`);
+        lines.push(`${index + 1}. ${uploadId}${title} | ${start} | ${duration}`);
     });
     let markdown = lines.join('\n');
     if (markdown.length <= 3900) {
@@ -1282,7 +1282,7 @@ function buildNotifyMarkdown(results, metadata) {
         const start = formatClock(result.window.start);
         const duration = formatClock(result.window.duration);
         const uploadId = uploadIds[index] ? `ID ${uploadIds[index]} | ` : '';
-        const line = `${index + 1}. [${getSelectionSourceLabel(result)}] ${uploadId}${title} | ${start} | ${duration}`;
+        const line = `${index + 1}. ${uploadId}${title} | ${start} | ${duration}`;
         if ((compact.join('\n').length + line.length + 24) > 3880) {
             compact.push(`${index + 1}. ...还有 ${results.length - index} 段，请看 Review`);
             break;
