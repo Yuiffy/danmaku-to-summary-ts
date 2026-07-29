@@ -111,6 +111,7 @@ def main():
                 "segments": normalize_segments(raw_result),
                 "timings": payload.get("_timings", {}),
                 "speaker_processing": payload.get("_speaker_processing"),
+                "emotion_analysis": payload.get("_emotion_analysis"),
             }
             if payload.get("include_raw", False):
                 output["raw"] = raw_result
@@ -144,6 +145,7 @@ def main():
                 "segments": raw_result,
                 "timings": payload.get("_timings", {}),
                 "speaker_processing": payload.get("_speaker_processing"),
+                "emotion_analysis": payload.get("_emotion_analysis"),
             }
             hotword_config = payload.get("phoneme_correction")
             if hotword_config and isinstance(hotword_config, dict) and hotword_config.get("enabled"):
@@ -169,6 +171,7 @@ def main():
         "segments": normalize_segments(raw_result),
         "timings": payload.get("_timings", {}),
         "speaker_processing": payload.get("_speaker_processing"),
+        "emotion_analysis": payload.get("_emotion_analysis"),
     }
     if payload.get("include_raw", False):
         output["raw"] = raw_result

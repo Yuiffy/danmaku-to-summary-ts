@@ -212,6 +212,9 @@ function logAsrTimings(timings, mediaDurationSeconds, speakerProcessing = null) 
         speakerProcessing: speakerProcessing || null,
         pipelineOverheadSeconds: seconds('pipeline_overhead_s'),
         postprocessSeconds: seconds('postprocess_s'),
+        emotionModelLoadSeconds: seconds('emotion_model_load_s'),
+        emotionInferenceSeconds: seconds('emotion_inference_s'),
+        emotionTotalSeconds: seconds('emotion_total_s'),
         backendTotalSeconds: seconds('backend_total_s'),
         trueAsrSpeed: trueAsrSpeed === null ? null : Number(trueAsrSpeed.toFixed(2))
     };
@@ -225,6 +228,8 @@ function logAsrTimings(timings, mediaDurationSeconds, speakerProcessing = null) 
         ).toFixed(1)}s, speaker全量=${summary.speakerFullEmbeddingSeconds.toFixed(1)}s, ` +
         `speaker聚类=${summary.speakerFullClusteringSeconds.toFixed(1)}s, 匹配=${summary.speakerMatchingSeconds.toFixed(1)}s, ` +
         `pipeline其他=${summary.pipelineOverheadSeconds.toFixed(1)}s, 后处理=${summary.postprocessSeconds.toFixed(1)}s, ` +
+        `情感加载=${summary.emotionModelLoadSeconds.toFixed(1)}s, 情感推理=${summary.emotionInferenceSeconds.toFixed(1)}s, ` +
+        `情感总计=${summary.emotionTotalSeconds.toFixed(1)}s, ` +
         `backend总计=${summary.backendTotalSeconds.toFixed(1)}s`
     );
     console.log(`${ASR_TIMING_SENTINEL} ${JSON.stringify(summary)}`);
@@ -988,6 +993,7 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
                     stageTimings: asrResult?.timings || null,
                     timingSummary: asrTimingSummary || null,
                     speakerProcessing,
+                    emotionAnalysis: normalized.emotion_analysis || asrResult?.emotion_analysis || asrResult?.emotionAnalysis || null,
                     segments: normalized.segments.length,
                     generatedAt: new Date().toISOString()
                 });

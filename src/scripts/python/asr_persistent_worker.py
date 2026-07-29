@@ -83,6 +83,7 @@ def transcribe(payload, runtime_cache):
         "segments": raw_result,
         "timings": payload.get("_timings", {}),
         "speaker_processing": payload.get("_speaker_processing"),
+        "emotion_analysis": payload.get("_emotion_analysis"),
     }
     hotword_config = payload.get("phoneme_correction")
     if isinstance(hotword_config, dict) and coerce_bool(hotword_config.get("enabled"), False):
@@ -122,6 +123,7 @@ def main():
                         "ok": True,
                         "pid": os.getpid(),
                         "model_loaded": bool(runtime_cache.get("paraformer")),
+                        "emotion_model_loaded": bool(runtime_cache.get("emotion_model")),
                     })
                 elif request_type == "shutdown":
                     release_cache(runtime_cache)

@@ -63,6 +63,30 @@ const DEFAULT_OWN_STREAM_CLIPS_CONFIG = {
         overlapToleranceSeconds: 12,
         preferModelOnOverlap: true
     },
+    emotionScoring: {
+        enabled: true,
+        minCandidateScore: 20,
+        transitionScore: 20,
+        maxContextLines: 160,
+        emotionScores: {
+            SURPRISE: 38,
+            FEAR: 36,
+            SAD: 32,
+            DISGUST: 32,
+            CONTEMPT: 26,
+            ANGRY: 14,
+            HAPPY: 6,
+            NEUTRAL: 0
+        },
+        eventScores: {
+            Cry: 44,
+            Laughter: 34,
+            Applause: 28,
+            Sneeze: 8,
+            BGM: 0,
+            Speech: 0
+        }
+    },
     notify: {
         enabled: true
     },
@@ -77,6 +101,12 @@ const DEFAULT_OWN_STREAM_CLIPS_CONFIG = {
         '怎么办', '不是', '等一下', '等下'
     ]
 };
+
+const NOISY_EMOTION_EVENTS = new Set(['Speech', 'BGM', 'Event_UNK']);
+
+function notableEmotionEvents(events = []) {
+    return Array.from(new Set(events || [])).filter(event => !NOISY_EMOTION_EVENTS.has(event));
+}
 
 function getOwnStreamClipsConfig(config = {}) {
     const raw = config.ownStreamClips || {};
@@ -99,6 +129,18 @@ function getOwnStreamClipsConfig(config = {}) {
         parallel: {
             ...DEFAULT_OWN_STREAM_CLIPS_CONFIG.parallel,
             ...(raw.parallel || {})
+        },
+        emotionScoring: {
+            ...DEFAULT_OWN_STREAM_CLIPS_CONFIG.emotionScoring,
+            ...(raw.emotionScoring || {}),
+            emotionScores: {
+                ...DEFAULT_OWN_STREAM_CLIPS_CONFIG.emotionScoring.emotionScores,
+                ...(raw.emotionScoring?.emotionScores || {})
+            },
+            eventScores: {
+                ...DEFAULT_OWN_STREAM_CLIPS_CONFIG.emotionScoring.eventScores,
+                ...(raw.emotionScoring?.eventScores || {})
+            }
         },
         notify: {
             ...DEFAULT_OWN_STREAM_CLIPS_CONFIG.notify,
@@ -257,10 +299,178 @@ function makeCandidate(start, end, reason, score, extra = {}) {
     };
 }
 
-function buildCandidateWindows(parsed, danmaku, config, totalDuration) {
+function loadEmotionAnalysisForSrt(srtPath) {
+    try {
+        if (!srtPath) return {};
+        const parsed = path.parse(srtPath);
+        const baseName = parsed.name.replace(/\.speaker$/i, '');
+        const candidates = [
+            path.join(parsed.dir, `${baseName}.asr_meta.json`),
+            path.join(parsed.dir, `${parsed.name}.asr_meta.json`)
+        ];
+        const metaPath = candidates.find(candidate => fs.existsSync(candidate));
+        if (!metaPath) return {};
+        const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+        const analysis = meta?.emotionAnalysis || meta?.emotion_analysis || {};
+        return analysis && typeof analysis === 'object' ? analysis : {};
+    } catch (error) {
+        console.warn(`Failed to read ASR emotion metadata: ${error.message}`);
+        return {};
+    }
+}
+
+function emotionMomentScore(item, config = {}) {
+    const emotionScore = Number(config.emotionScores?.[item?.emotion] || 0);
+    const eventScore = Math.max(0, ...(item?.events || []).map(event => Number(config.eventScores?.[event] || 0)));
+    return emotionScore + eventScore;
+}
+
+function buildEmotionContextLines(analysis, config = {}, start = 0, end = Number.POSITIVE_INFINITY, maxLines = null) {
+    if (analysis?.status !== 'completed' || !Array.isArray(analysis.timeline)) return [];
+    const source = analysis.timeline
+        .filter(item => Number(item.end) > start && Number(item.start) < end)
+        .sort((a, b) => Number(a.start) - Number(b.start));
+    const collapsed = [];
+    for (const item of source) {
+        const emotion = String(item.emotion || '');
+        const events = notableEmotionEvents(item.events).sort();
+        const last = collapsed.at(-1);
+        if (
+            last
+            && last.emotion === emotion
+            && JSON.stringify(last.events) === JSON.stringify(events)
+            && Number(item.start) - Number(last.end) <= 5
+        ) {
+            last.end = Number(item.end);
+            if (!last.text && item.text) last.text = item.text;
+            continue;
+        }
+        collapsed.push({
+            start: Number(item.start),
+            end: Number(item.end),
+            emotion,
+            events,
+            text: String(item.text || '').replace(/\s+/g, ' ').trim()
+        });
+    }
+    const limit = Math.max(1, Number(maxLines || config.maxContextLines) || 160);
+    let selected = collapsed;
+    if (collapsed.length > limit) {
+        selected = collapsed
+            .map((item, index) => ({
+                item,
+                index,
+                score: emotionMomentScore(item, config)
+                    + (index > 0 && collapsed[index - 1].emotion !== item.emotion ? Number(config.transitionScore || 0) : 0)
+            }))
+            .sort((a, b) => b.score - a.score || a.index - b.index)
+            .slice(0, limit)
+            .sort((a, b) => a.index - b.index)
+            .map(entry => entry.item);
+    }
+    return selected.map(item => {
+        const fields = [
+            item.emotion ? `emotion=${item.emotion}` : '',
+            item.events.length > 0 ? `events=${item.events.join(',')}` : ''
+        ].filter(Boolean).join(' ');
+        return `${formatClock(item.start)}-${formatClock(item.end)} ${fields || 'unlabeled'}${item.text ? ` | ${item.text.slice(0, 100)}` : ''}`;
+    });
+}
+
+function getEmotionEvidenceForWindow(analysis, window, config = {}) {
+    const timeline = Array.isArray(analysis?.timeline) ? analysis.timeline : [];
+    const items = timeline
+        .filter(item => Number(item.end) > Number(window.start) && Number(item.start) < Number(window.end))
+        .map(item => ({
+            start: Number(item.start),
+            end: Number(item.end),
+            emotion: item.emotion || null,
+            events: notableEmotionEvents(item.events),
+            score: emotionMomentScore(item, config),
+            text: String(item.text || '').trim()
+        }));
+    return {
+        items,
+        emotions: Array.from(new Set(items.map(item => item.emotion).filter(Boolean))),
+        events: Array.from(new Set(items.flatMap(item => item.events))),
+        maxScore: Math.max(0, ...items.map(item => item.score))
+    };
+}
+
+function buildEmotionCandidates(analysis, config, totalDuration) {
+    if (
+        config?.enabled === false
+        || analysis?.status !== 'completed'
+        || !Array.isArray(analysis.timeline)
+    ) {
+        return [];
+    }
+    const minimum = Number(config.minCandidateScore || 20);
+    const candidates = [];
+    const timeline = [...analysis.timeline].sort((a, b) => Number(a.start) - Number(b.start));
+    timeline.forEach((item, index) => {
+        const score = emotionMomentScore(item, config);
+        const previous = timeline[index - 1];
+        const transition = previous?.emotion
+            && item.emotion
+            && previous.emotion !== item.emotion
+            && item.emotion !== 'NEUTRAL';
+        const transitionScore = transition ? Number(config.transitionScore || 0) : 0;
+        const candidateScore = Math.max(score, transitionScore);
+        if (candidateScore < minimum) return;
+        const reason = score >= minimum ? 'emotion_signal' : 'emotion_transition';
+        const start = Number(item.start);
+        const end = Number(item.end);
+        candidates.push(makeCandidate(
+            start - Number(config.prePaddingSeconds || 18),
+            end + Number(config.windowSeconds || 110),
+            reason,
+            candidateScore,
+            {
+                emotions: item.emotion ? [item.emotion] : [],
+                events: notableEmotionEvents(item.events),
+                emotionEvidence: [{
+                    start,
+                    end,
+                    emotion: item.emotion || null,
+                    events: notableEmotionEvents(item.events),
+                    score,
+                    text: String(item.text || '').trim()
+                }]
+            }
+        ));
+    });
+    return candidates.filter(candidate => candidate.start < totalDuration && candidate.end > 0);
+}
+
+function attachEmotionEvidenceToClips(clips, analysis, config) {
+    return (clips || []).map(clip => {
+        const evidence = getEmotionEvidenceForWindow(analysis, clip, config);
+        if (evidence.items.length === 0) return clip;
+        return {
+            ...clip,
+            emotions: evidence.emotions,
+            events: evidence.events,
+            emotionEvidence: evidence.items,
+            base: {
+                ...(clip.base || {}),
+                emotions: evidence.emotions,
+                events: evidence.events,
+                emotionEvidence: evidence.items
+            }
+        };
+    });
+}
+
+function buildCandidateWindows(parsed, danmaku, config, totalDuration, emotionAnalysis = null) {
     const segments = parsed.segments || [];
     const density = buildDanmakuDensity(danmaku, totalDuration, config);
     const raw = [];
+    raw.push(...buildEmotionCandidates(emotionAnalysis, {
+        ...(config.emotionScoring || {}),
+        prePaddingSeconds: config.prePaddingSeconds,
+        windowSeconds: config.windowSeconds
+    }, totalDuration));
 
     for (const bucket of density.buckets) {
         if (bucket.count >= density.threshold || bucket.keywords > 0) {
@@ -342,6 +552,9 @@ function buildCandidateWindows(parsed, danmaku, config, totalDuration) {
                 ...(last.danmakuSamples || []).map(text => ({ text })),
                 ...(candidate.danmakuSamples || []).map(text => ({ text }))
             ], 10);
+            last.emotions = Array.from(new Set([...(last.emotions || []), ...(candidate.emotions || [])]));
+            last.events = Array.from(new Set([...(last.events || []), ...(candidate.events || [])]));
+            last.emotionEvidence = [...(last.emotionEvidence || []), ...(candidate.emotionEvidence || [])];
             continue;
         }
         merged.push({ ...candidate });
@@ -428,7 +641,7 @@ function buildFullContextHeatLines(danmaku = [], totalDuration = 0, config = {})
     });
 }
 
-function buildFullContextSource(parsed, danmaku, config = {}) {
+function buildFullContextSource(parsed, danmaku, config = {}, emotionAnalysis = null) {
     const subtitleLines = (parsed.segments || []).map(segment =>
         `${formatClock(Number(segment.start))}-${formatClock(Number(segment.end))} ${String(segment.text || '').replace(/\s+/g, ' ').trim()}`
     );
@@ -446,15 +659,25 @@ function buildFullContextSource(parsed, danmaku, config = {}) {
     const lastDanmakuTime = Number(danmaku.at(-1)?.time || 0);
     const totalDuration = Math.max(lastSubtitleEnd, lastDanmakuTime);
     const heatLines = buildFullContextHeatLines(danmaku, totalDuration, config);
+    const emotionLines = buildEmotionContextLines(
+        emotionAnalysis,
+        config.emotionScoring || {},
+        0,
+        totalDuration
+    );
     return {
         subtitleLines,
         danmakuLines,
         heatLines,
+        emotionLines,
         aggregatedDanmaku,
         sourceText: [
             '=== 30秒弹幕热度表 ===',
             'count=弹幕总数；reaction=命中强反应词的弹幕数；baselineRatio=相对本场非空窗口中位数；HIGH=达到程序热度阈值。',
             heatLines.join('\n') || '无',
+            '',
+            '=== SenseVoice 情感/声音事件（辅助线索，不作为事实） ===',
+            emotionLines.join('\n') || '无',
             '',
             '=== 全量字幕（时间均相对直播开头） ===',
             subtitleLines.join('\n') || '无',
@@ -465,7 +688,7 @@ function buildFullContextSource(parsed, danmaku, config = {}) {
     };
 }
 
-function buildChunkSources(parsed, danmaku, totalDuration, config) {
+function buildChunkSources(parsed, danmaku, totalDuration, config, emotionAnalysis = null) {
     const chunkSeconds = Math.max(600, Number(config.chunkSeconds) || 2700);
     const density = buildDanmakuDensity(danmaku, totalDuration, config);
     const chunks = [];
@@ -492,12 +715,20 @@ function buildChunkSources(parsed, danmaku, totalDuration, config) {
         if (subtitleText.length > maxSubtitleChars) {
             subtitleText = subtitleText.slice(0, maxSubtitleChars) + '\n...(字幕过长已截断)';
         }
+        const emotionLines = buildEmotionContextLines(
+            emotionAnalysis,
+            config.emotionScoring || {},
+            start,
+            end,
+            Math.min(80, Number(config.emotionScoring?.maxContextLines) || 80)
+        );
         chunks.push({
             index,
             start,
             end,
             segments: chunkSegments,
             danmaku: chunkDanmaku,
+            emotionLines,
             sourceText: [
                 `分段 #${index} ${formatClock(start)}-${formatClock(end)}`,
                 `弹幕总数: ${chunkDanmaku.length}`,
@@ -507,6 +738,9 @@ function buildChunkSources(parsed, danmaku, totalDuration, config) {
                 '',
                 '反应弹幕样例:',
                 reactionLines.slice(0, Number(config.maxDanmakuLinesPerChunk) || 220).join('\n') || '无',
+                '',
+                'SenseVoice 情感/声音事件（辅助线索，不作为事实）:',
+                emotionLines.join('\n') || '无',
                 '',
                 '字幕:',
                 subtitleText || '无'
@@ -753,16 +987,17 @@ async function runJobsWithConcurrency(jobs = [], concurrency = 1) {
     return results.filter(Boolean);
 }
 
-async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, config, rootConfig = {}, diagnostics = null) {
+async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, config, rootConfig = {}, diagnostics = null, emotionAnalysis = null) {
     if (!config.ai?.enabled || rootConfig.ai?.text?.enabled === false) return [];
     const provider = rootConfig.ai?.text?.provider || 'gemini';
     const generator = require('./ai_text_generator');
-    const chunks = buildChunkSources(parsed, danmaku, totalDuration, config);
+    const chunks = buildChunkSources(parsed, danmaku, totalDuration, config, emotionAnalysis);
     const worker = async (chunk) => {
         const prompt = [
             '你是直播切片编辑。下面是一段岁己SUI自己直播的字幕和弹幕摘要。',
             '请直接找这个分段里所有可能值得本地 review 的切片：有趣、弹幕很多、弹幕很在意、体现岁己想法与众不同、岁己傻事，或弹幕觉得她傻/特别/有趣/可爱。',
             '不要只看关键词；弹幕密度、弹幕反应和上下文都要考虑。不要选普通问好、普通感谢礼物、纯唱歌、无明确看点的片段。',
+            'SenseVoice 情感和声音事件只能作为寻找反差、爆笑、惊讶、委屈等时刻的辅助线索；必须结合字幕确认具体内容，不能仅凭标签下结论。',
             '每段 35 秒到 3 分半，尽量切在句子边界。一个分段最多返回 8 段，没有就返回空数组。',
             '输出纯 JSON，不要 Markdown：',
             'Boundary rules are critical:',
@@ -825,17 +1060,18 @@ async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, confi
     return dedupePlannedClips(nested.flat(), config);
 }
 
-async function planClipsWithAIFullContext(parsed, danmaku, info, totalDuration, config, rootConfig = {}, diagnostics = null) {
+async function planClipsWithAIFullContext(parsed, danmaku, info, totalDuration, config, rootConfig = {}, diagnostics = null, emotionAnalysis = null) {
     if (!config.ai?.enabled || rootConfig.ai?.text?.enabled === false) return [];
     const provider = rootConfig.ai?.text?.provider || 'gemini';
     const generator = require('./ai_text_generator');
-    const fullContext = buildFullContextSource(parsed, danmaku, config);
+    const fullContext = buildFullContextSource(parsed, danmaku, config, emotionAnalysis);
     const maxClips = Math.max(1, Number(config.maxClips) || 12);
     const prompt = [
         '你是资深直播切片主编。下面提供岁己SUI本场直播的全量带时间戳字幕和全量弹幕。',
         `请通读整场，从全局比较后选出最多 ${maxClips} 个最有趣、最适合独立发布的片段。数量不必凑满，质量优先。`,
         '模型必须同时评估内容质量和弹幕热度：先根据字幕判断事件是否完整、有趣、适合独立发布，再结合30秒热度表、反应弹幕数、重复刷屏和全量弹幕判断观众反应强度。',
         '热度是重要证据但不是唯一标准：高热度但没有明确内容看点的片段不要选；低热度但故事完整、观点独特、反差强或特别可爱的内容仍可选。',
+        'SenseVoice 情感和笑声/哭声等事件是辅助证据，可用于定位反差或强反应；必须结合字幕和弹幕验证，不能只凭标签选段或描述事实。',
         '优先：完整有起承转合的趣事；岁己独特/离谱/可爱的想法；口误或操作事故及后续反应；弹幕明显在意且字幕能说明原因的内容。',
         '排除：普通问好、普通礼物感谢、纯唱歌、长时间无明确事件、只有弹幕热闹但字幕看不出原因、彼此高度重复的话题。',
         `每段 ${config.minClipSeconds}-${config.maxClipSeconds} 秒。时间必须取自输入，不能编造。`,
@@ -1009,6 +1245,7 @@ async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config,
         .slice(0, config.ai.maxCandidateLines)
         .map(candidate => [
             `#${candidate.index} ${formatClock(candidate.start)}-${formatClock(candidate.end)} score=${candidate.score} reason=${candidate.reason}`,
+            `情感线索: emotions=${(candidate.emotions || []).join(',') || '无'} events=${(candidate.events || []).join(',') || '无'}`,
             `弹幕样例: ${getWindowDanmaku(danmaku, candidate, 8).join(' / ') || '无'}`,
             `字幕: ${getWindowText(parsed.segments, candidate, 520) || '无'}`
         ].join('\n'))
@@ -1523,7 +1760,8 @@ async function generateOwnStreamClips(options = {}) {
     const parsed = asrBackends.parseSrt(options.srtPath, 'own_stream_clip');
     const totalDuration = Number(options.totalDurationSeconds) || Number(parsed.segments.at(-1)?.end || 0);
     const danmaku = await parseDanmakuXml(options.xmlPath);
-    const candidates = buildCandidateWindows(parsed, danmaku, config, totalDuration);
+    const emotionAnalysis = loadEmotionAnalysisForSrt(options.srtPath);
+    const candidates = buildCandidateWindows(parsed, danmaku, config, totalDuration, emotionAnalysis);
     const info = parseRecordingInfo(options.mediaPath, options.context || {});
     const participantMetadata = topicClipper.buildParticipantMetadata(topicClipper.loadAsrSpeakerSidecarForMediaPath(options.srtPath || options.mediaPath));
     const outputRoot = path.join(path.dirname(options.mediaPath), config.outputDirName);
@@ -1537,6 +1775,15 @@ async function generateOwnStreamClips(options = {}) {
         sourceFileName: info.fileName,
         participantInfo: participantMetadata
     };
+    if (emotionAnalysis.status === 'completed') {
+        reviewMetadata.emotionAnalysis = {
+            status: emotionAnalysis.status,
+            model: emotionAnalysis.model || null,
+            emotionCounts: emotionAnalysis.emotionCounts || {},
+            eventCounts: emotionAnalysis.eventCounts || {},
+            chunks: Number(emotionAnalysis.chunks || 0)
+        };
+    }
     const aiDiagnostics = {
         strategy: config.ai?.strategy || null,
         usedFallback: false,
@@ -1563,7 +1810,7 @@ async function generateOwnStreamClips(options = {}) {
                 maxClips: modelLimit
             };
             const modelClips = modelLimit > 0
-                ? await planClipsWithAIFullContext(parsed, danmaku, info, totalDuration, modelConfig, rootConfig, aiDiagnostics)
+                ? await planClipsWithAIFullContext(parsed, danmaku, info, totalDuration, modelConfig, rootConfig, aiDiagnostics, emotionAnalysis)
                 : [];
             clips = combineParallelClipPlans(heatCandidates, modelClips, config.parallel);
             aiDiagnostics.selectedSource = 'parallel';
@@ -1572,12 +1819,12 @@ async function generateOwnStreamClips(options = {}) {
                 aiDiagnostics.fallbackReason = classifyAiFallbackReason(aiDiagnostics.errors);
             }
         } else if (config.ai?.enabled && config.ai?.strategy === 'full_context') {
-            clips = await planClipsWithAIFullContext(parsed, danmaku, info, totalDuration, config, rootConfig, aiDiagnostics);
+            clips = await planClipsWithAIFullContext(parsed, danmaku, info, totalDuration, config, rootConfig, aiDiagnostics, emotionAnalysis);
             if (clips.length > 0) {
                 aiDiagnostics.selectedSource = 'full_context_ai';
             }
         } else if (config.ai?.enabled && config.ai?.strategy !== 'candidate_only') {
-            clips = await planClipsWithAIChunks(parsed, danmaku, info, totalDuration, config, rootConfig, aiDiagnostics);
+            clips = await planClipsWithAIChunks(parsed, danmaku, info, totalDuration, config, rootConfig, aiDiagnostics, emotionAnalysis);
             if (clips.length > 0) {
                 aiDiagnostics.selectedSource = 'chunked_ai';
             }
@@ -1613,6 +1860,7 @@ async function generateOwnStreamClips(options = {}) {
         errorCount: aiDiagnostics.errors.length
     };
     clips = filterClipsBySelection(clips, options.selectedIndices);
+    clips = attachEmotionEvidenceToClips(clips, emotionAnalysis, config.emotionScoring || {});
     clips = alignClipsToSubtitleBoundaries(clips, parsed.segments, config, totalDuration);
     if (config.avoidOverlappingClips !== false) {
         const beforeOverlapFilter = clips.length;
@@ -1934,6 +2182,12 @@ module.exports = {
     parseDanmakuXml,
     buildDanmakuDensity,
     buildCandidateWindows,
+    loadEmotionAnalysisForSrt,
+    emotionMomentScore,
+    buildEmotionContextLines,
+    getEmotionEvidenceForWindow,
+    buildEmotionCandidates,
+    attachEmotionEvidenceToClips,
     buildChunkSources,
     aggregateDanmakuForFullContext,
     buildFullContextHeatLines,

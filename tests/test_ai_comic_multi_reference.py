@@ -633,6 +633,20 @@ class MultiReferenceComicTests(unittest.TestCase):
             },
         }
 
+    def test_emotion_summary_and_annotations_survive_comic_sanitizing(self):
+        source = (
+            "【情感概览】开心12段、惊讶2段；明显声音事件: 笑声3次\n"
+            "[12m] 突然笑起来了  [情感: 惊讶；声音: 笑声]"
+        )
+        cleaned = comic.sanitize_highlight_for_comic_script(
+            source,
+            room_id="25788785",
+            config=self.config,
+        )
+        self.assertIn("【情感概览】", cleaned)
+        self.assertIn("情感: 惊讶", cleaned)
+        self.assertIn("声音: 笑声", cleaned)
+
     def test_shiori_mention_is_context_not_live_guest(self):
         self.configure_shiori_incident()
         source = "小栞今天下午带弥月打第五人格，把任务过了。"

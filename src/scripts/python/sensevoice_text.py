@@ -6,6 +6,32 @@ from sensevoice_runtime import log_progress, suppress_model_output
 
 
 TAG_RE = re.compile(r"<\|[^|]+?\|>")
+SENSEVOICE_EMOTION_ALIASES = {
+    "ANGRY": "ANGRY",
+    "CONTEMPT": "CONTEMPT",
+    "DISGUST": "DISGUST",
+    "DISGUSTED": "DISGUST",
+    "EMO_UNKNOWN": None,
+    "FEAR": "FEAR",
+    "FEARFUL": "FEAR",
+    "HAPPY": "HAPPY",
+    "NEUTRAL": "NEUTRAL",
+    "SAD": "SAD",
+    "SURPRISE": "SURPRISE",
+    "SURPRISED": "SURPRISE",
+}
+SENSEVOICE_CONTROL_TAGS = {
+    "auto",
+    "en",
+    "event_unk",
+    "ja",
+    "ko",
+    "nospeech",
+    "withitn",
+    "woitn",
+    "yue",
+    "zh",
+}
 MODELSCOPE_IIC_DIR = os.path.join(os.path.expanduser("~"), ".cache", "modelscope", "hub", "models", "iic")
 MODEL_ALIASES = {
     "iic/SenseVoiceSmall": "SenseVoiceSmall",
@@ -305,6 +331,43 @@ def clean_text(text):
     return TAG_RE.sub("", str(text or "")).strip()
 
 
+def extract_sensevoice_metadata(text):
+    tags = [
+        match.group(0)[2:-2].strip()
+        for match in TAG_RE.finditer(str(text or ""))
+    ]
+    emotion = next((
+        SENSEVOICE_EMOTION_ALIASES[tag.upper()]
+        for tag in tags
+        if tag.upper() in SENSEVOICE_EMOTION_ALIASES
+        and SENSEVOICE_EMOTION_ALIASES[tag.upper()]
+    ), None)
+    events = []
+    for tag in tags:
+        if (
+            tag.upper() in SENSEVOICE_EMOTION_ALIASES
+            or tag.lower() in SENSEVOICE_CONTROL_TAGS
+            or tag in events
+        ):
+            continue
+        events.append(tag)
+    metadata = {}
+    if emotion:
+        metadata["emotion"] = emotion
+    if events:
+        metadata["events"] = events
+    return metadata
+
+
+def sensevoice_metadata_from_item(item, raw_text):
+    metadata = extract_sensevoice_metadata(raw_text)
+    if item.get("emotion"):
+        metadata["emotion"] = str(item["emotion"])
+    if isinstance(item.get("events"), list) and item["events"]:
+        metadata["events"] = [str(event) for event in item["events"]]
+    return metadata
+
+
 def clean_punctuation_text(text):
     cleaned = clean_text(text)
     punctuation = set("，。！？；：,.?!;:")
@@ -361,9 +424,15 @@ def normalize_segments(raw_result):
         candidates = raw_result.get("sentence_info") or raw_result.get("segments") or raw_result.get("result")
         if isinstance(candidates, list):
             return normalize_segments(candidates)
-        text = clean_text(raw_result.get("text"))
+        raw_text = raw_result.get("text")
+        text = clean_text(raw_text)
         if text:
-            return [{"start": 0.0, "end": 0.1, "text": text}]
+            return [{
+                "start": 0.0,
+                "end": 0.1,
+                "text": text,
+                **sensevoice_metadata_from_item(raw_result, raw_text),
+            }]
         return []
 
     if not isinstance(raw_result, list):
@@ -378,7 +447,8 @@ def normalize_segments(raw_result):
         if not isinstance(item, dict):
             continue
 
-        text = clean_text(item.get("text") or item.get("sentence") or "")
+        raw_text = item.get("text") or item.get("sentence") or ""
+        text = clean_text(raw_text)
         if not text:
             continue
 
@@ -396,7 +466,12 @@ def normalize_segments(raw_result):
         speaker = item.get("spk")
         if speaker is None:
             speaker = item.get("speaker")
-        segment = {"start": start, "end": end, "text": text}
+        segment = {
+            "start": start,
+            "end": end,
+            "text": text,
+            **sensevoice_metadata_from_item(item, raw_text),
+        }
         if speaker is not None:
             segment["speaker"] = str(speaker)
         if item.get("speaker_score"):

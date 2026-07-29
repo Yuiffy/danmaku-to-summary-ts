@@ -44,7 +44,7 @@ describe('asr_backends', () => {
     }
   });
 
-  test('reuses the resolved finetuned paraformer profile for a forced room', async () => {
+  test('reuses the resolved finetuned paraformer profile for a sampled room task', async () => {
     const server = net.createServer((socket: any) => {
       let buffer = '';
       socket.on('data', (data: Buffer) => {
@@ -55,6 +55,7 @@ describe('asr_backends', () => {
         expect(request.payload.model_profile).toBe('finetuned');
         expect(request.payload.model).toBe('D:/files/videos/asr_eval/models/paraformer_timestamp_avg10');
         expect(request.payload.finetuned_model).toBe('D:/files/videos/asr_eval/models/paraformer_timestamp_avg10');
+        expect(request.payload.emotion_analysis.enabled).toBe(false);
         socket.end(JSON.stringify({
           ok: true,
           result: {
@@ -73,7 +74,7 @@ describe('asr_backends', () => {
 
     const context = {
       room_id: '26966466',
-      filename: '录制-26966466-20260715-000000-000-测试.m4a'
+      filename: '录制-26966466-20260715-000007-测试.m4a'
     };
     const resolved = asr.resolveAsrBackend(productionConfig, context);
 
@@ -104,6 +105,8 @@ describe('asr_backends', () => {
           { speaker: '岁己SUI', audio_path: 'data/asr_speaker_refs/sui.wav' },
           { speaker: '栞栞', audio_path: 'data/asr_speaker_refs/shiori.wav' }
         ]);
+        expect(request.payload.room_id).toBe('25788785');
+        expect(request.payload.emotion_analysis.enabled).toBe(true);
         socket.end(JSON.stringify({ ok: true, result: { backend: 'paraformer', segments: [] } }) + '\n');
       });
     });
@@ -120,6 +123,10 @@ describe('asr_backends', () => {
           paraformer: {
             model: 'paraformer-zh',
             process_timeout_s: 30,
+            emotion_analysis: {
+              enabled: true,
+              room_ids: ['25788785']
+            },
             speaker_references: [{ speaker: '不该使用', audio_path: 'data/asr_speaker_refs/other.wav' }]
           }
         }
@@ -254,6 +261,42 @@ describe('asr_backends', () => {
     expect(result.segments.length).toBeGreaterThan(1);
     expect(result.segments[0].start).toBe(0);
     expect(result.segments.every((segment: any) => segment.end > segment.start)).toBe(true);
+  });
+
+  test('preserves emotion metadata and room-scoped emotion analysis through normalization', () => {
+    const result = asr.normalizeAsrResult({
+      backend: 'paraformer',
+      segments: [
+        {
+          start: 0,
+          end: 4,
+          text: '大家晚上好今天我们测试情感信息',
+          emotion: 'HAPPY',
+          events: ['Laughter']
+        }
+      ],
+      emotion_analysis: {
+        status: 'completed',
+        emotionCounts: { HAPPY: 1 },
+        timeline: [{ start: 0, end: 4, emotion: 'HAPPY', events: ['Laughter'] }]
+      }
+    }, { max_chars_per_segment: 8 });
+
+    expect(result.segments.length).toBeGreaterThan(1);
+    expect(result.segments.every((segment: any) => segment.emotion === 'HAPPY')).toBe(true);
+    expect(result.segments.every((segment: any) => (
+      JSON.stringify(segment.events) === JSON.stringify(['Laughter'])
+    ))).toBe(true);
+    expect(result.emotion_analysis.status).toBe('completed');
+
+    expect(asr.resolveEmotionAnalysisOptions({
+      enabled: true,
+      room_ids: ['25788785']
+    }, { room_id: '25788785' }).enabled).toBe(true);
+    expect(asr.resolveEmotionAnalysisOptions({
+      enabled: true,
+      room_ids: ['25788785']
+    }, { room_id: '26966466' }).enabled).toBe(false);
   });
 
   test('preserves speaker metadata through normalize and plain srt output stays unlabelled', () => {

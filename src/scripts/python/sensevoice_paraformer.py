@@ -1,10 +1,13 @@
 import gc
 import json
 import os
+import re
 import time
 import traceback
+import unicodedata
 
 from sensevoice_runtime import StageTimeout, log_progress, set_timing, suppress_model_output
+from sensevoice_emotion import analyze_paraformer_emotions
 from sensevoice_speaker import (
     build_speaker_reference_centroids,
     dominant_speaker_for_interval,
@@ -12,7 +15,12 @@ from sensevoice_speaker import (
     run_adaptive_speaker_engine,
     smooth_speaker_timeline,
 )
-from sensevoice_text import normalize_segments, resolve_cached_model_name, restore_punctuation
+from sensevoice_text import (
+    extract_sensevoice_metadata,
+    normalize_segments,
+    resolve_cached_model_name,
+    restore_punctuation,
+)
 
 
 def _fail(fail_fn, message, detail=None):
@@ -32,6 +40,84 @@ def has_timed_segments(raw_result):
     if isinstance(raw_result, list):
         return any(has_timed_segments(item) for item in raw_result)
     return False
+
+
+ASCII_WORD_RE = re.compile(r"[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*")
+SENTENCE_ENDS = set("。！？；.!?;\n")
+CLAUSE_ENDS = set("，、：…—,:")
+
+
+def _paraformer_text_units(text):
+    units = []
+    index = 0
+    text = str(text or "")
+    while index < len(text):
+        char = text[index]
+        if char.isspace():
+            index += 1
+            continue
+        ascii_word = ASCII_WORD_RE.match(text, index)
+        if ascii_word:
+            units.append({"text": ascii_word.group(0), "timed": True})
+            index = ascii_word.end()
+            continue
+        units.append({
+            "text": char,
+            "timed": not unicodedata.category(char).startswith("P"),
+        })
+        index += 1
+    return units
+
+
+def paraformer_full_text_to_segments(result, max_subtitle_chars=18):
+    text = result.get("text", "") if isinstance(result, dict) else ""
+    timestamps = result.get("timestamp") if isinstance(result, dict) else None
+    if not text or not isinstance(timestamps, list) or not timestamps:
+        return []
+
+    units = _paraformer_text_units(text)
+    timed_units = [unit for unit in units if unit["timed"]]
+    if len(timed_units) != len(timestamps):
+        return []
+
+    timestamp_index = 0
+    for unit in units:
+        if not unit["timed"]:
+            continue
+        start_ms, end_ms = timestamps[timestamp_index]
+        unit["start"] = float(start_ms) / 1000.0
+        unit["end"] = float(end_ms) / 1000.0
+        timestamp_index += 1
+
+    segments = []
+    current = []
+
+    def flush():
+        nonlocal current
+        timed = [unit for unit in current if unit["timed"]]
+        text_value = "".join(unit["text"] for unit in current).strip()
+        if timed and text_value:
+            segments.append({
+                "start": round(timed[0]["start"], 3),
+                "end": round(max(timed[-1]["end"], timed[0]["start"] + 0.1), 3),
+                "text": text_value,
+                "time_unit": "seconds",
+            })
+        current = []
+
+    for unit in units:
+        current.append(unit)
+        visible_length = len("".join(item["text"] for item in current).strip())
+        unit_text = unit["text"]
+        should_flush = unit_text in SENTENCE_ENDS
+        if unit_text in CLAUSE_ENDS and visible_length >= max_subtitle_chars * 0.6:
+            should_flush = True
+        elif visible_length >= max_subtitle_chars * 1.3:
+            should_flush = True
+        if should_flush:
+            flush()
+    flush()
+    return segments
 
 
 def paraformer_timestamp_to_sentences(results, meta, punc_model, max_subtitle_chars=18):
@@ -201,7 +287,8 @@ def normalize_model_results_with_meta(results, meta, punc_model):
 
     if not has_explicit_timing:
         item = results[0] if results and isinstance(results, list) else {}
-        text = restore_punctuation(punc_model, item.get("text", "") if isinstance(item, dict) else "")
+        raw_text = item.get("text", "") if isinstance(item, dict) else ""
+        text = restore_punctuation(punc_model, raw_text)
         if not text:
             return []
         return [{
@@ -211,6 +298,7 @@ def normalize_model_results_with_meta(results, meta, punc_model):
             "time_unit": "seconds",
             "speaker": meta.get("speaker"),
             "speaker_score": meta.get("speaker_score"),
+            **extract_sensevoice_metadata(raw_text),
         }]
 
     raw_segments = normalize_segments(results)
@@ -537,6 +625,18 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
             None,
             max_subtitle_chars=int(payload.get("max_subtitle_chars", 18) or 18),
         )
+        emotion_analysis = analyze_paraformer_emotions(
+            payload,
+            audio_path,
+            segments,
+            device,
+            runtime_cache=cache,
+            gpu_throttle=gpu_throttle,
+        )
+        emotion_timings = (emotion_analysis or {}).get("timings", {})
+        set_timing(payload, "emotion_model_load_s", emotion_timings.get("model_load_s", 0))
+        set_timing(payload, "emotion_inference_s", emotion_timings.get("inference_s", 0))
+        set_timing(payload, "emotion_total_s", emotion_timings.get("total_s", 0))
         set_timing(payload, "speaker_cluster_embedding_s", 0)
         set_timing(payload, "speaker_matching_s", 0)
         set_timing(payload, "postprocess_s", time.perf_counter() - postprocess_started)
@@ -557,6 +657,8 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
     log_progress(f"sentence_info: {len(sentence_info)} 句")
 
     speaker_timeline = []
+    audio_data = None
+    sample_rate = None
     if enable_speaker and spk_model_obj and sentence_info:
         try:
             audio_data, sample_rate = load_audio_16k_mono(audio_path)
@@ -629,10 +731,25 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
         }
 
     postprocess_started = time.perf_counter()
-    segments = []
     max_subtitle_chars = int(payload.get("max_subtitle_chars", 18) or 18)
+    segments = paraformer_full_text_to_segments(result, max_subtitle_chars)
+    if segments:
+        log_progress(
+            "使用完整 Paraformer 文本与字符时间戳重建字幕，"
+            f"避开 sentence_info 对齐漂移: segments={len(segments)}"
+        )
+        for segment in segments:
+            speaker_label, speaker_score = dominant_speaker_for_interval(
+                segment["start"],
+                segment["end"],
+                speaker_timeline,
+            )
+            if speaker_label:
+                segment["speaker"] = speaker_label
+            if speaker_score:
+                segment["speaker_score"] = speaker_score
 
-    for sent in sentence_info:
+    for sent in sentence_info if not segments else []:
         text = sent.get("text", "").strip()
         if not text:
             continue
@@ -718,6 +835,20 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
             cursor = seg_end
 
     set_timing(payload, "postprocess_s", time.perf_counter() - postprocess_started)
+    emotion_analysis = analyze_paraformer_emotions(
+        payload,
+        audio_path,
+        segments,
+        device,
+        runtime_cache=cache,
+        gpu_throttle=gpu_throttle,
+        audio_data=audio_data,
+        sample_rate=sample_rate,
+    )
+    emotion_timings = (emotion_analysis or {}).get("timings", {})
+    set_timing(payload, "emotion_model_load_s", emotion_timings.get("model_load_s", 0))
+    set_timing(payload, "emotion_inference_s", emotion_timings.get("inference_s", 0))
+    set_timing(payload, "emotion_total_s", emotion_timings.get("total_s", 0))
     set_timing(payload, "backend_total_s", time.perf_counter() - backend_started)
     log_progress(
         f"输出段数: {len(segments)}; backend_total={payload['_timings']['backend_total_s']:.3f}s; "

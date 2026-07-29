@@ -1346,6 +1346,30 @@
       "overlapToleranceSeconds": 12,
       "preferModelOnOverlap": true
     },
+    "emotionScoring": {
+      "enabled": true,
+      "minCandidateScore": 20,
+      "transitionScore": 20,
+      "maxContextLines": 160,
+      "emotionScores": {
+        "SURPRISE": 38,
+        "FEAR": 36,
+        "SAD": 32,
+        "DISGUST": 32,
+        "CONTEMPT": 26,
+        "ANGRY": 14,
+        "HAPPY": 6,
+        "NEUTRAL": 0
+      },
+      "eventScores": {
+        "Cry": 44,
+        "Laughter": 34,
+        "Applause": 28,
+        "Sneeze": 8,
+        "BGM": 0,
+        "Speech": 0
+      }
+    },
     "notify": {
       "enabled": true
     }
@@ -2026,6 +2050,20 @@
       "batch_size_s": 600,
       "batch_size_threshold_s": 60,
       "process_timeout_s": 7200,
+      "emotion_analysis": {
+        "enabled": true,
+        "room_ids": [
+          "25788785"
+        ],
+        "model": "iic/SenseVoiceSmall",
+        "device": "cuda",
+        "chunk_s": 12,
+        "max_gap_s": 1.5,
+        "batch_size_s": 300,
+        "max_batch_chunks": 64,
+        "include_events": true,
+        "fail_open": true
+      },
       "persistent_worker": {
         "enabled": true,
         "startup_timeout_s": 60

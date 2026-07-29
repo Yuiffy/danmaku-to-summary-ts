@@ -70,6 +70,65 @@ describe('own_stream_clipper', () => {
     expect(candidates.some(candidate => String(candidate.reason).includes('danmaku'))).toBe(true);
   });
 
+  test('adds strong emotion candidates without turning common happy labels into candidates', () => {
+    const config = ownStreamClipper.getOwnStreamClipsConfig({
+      ownStreamClips: {
+        minClipSeconds: 20,
+        maxCandidates: 10,
+        prePaddingSeconds: 10,
+        windowSeconds: 60
+      }
+    });
+    const analysis = {
+      status: 'completed',
+      timeline: [
+        { start: 20, end: 30, emotion: 'HAPPY', events: [] },
+        { start: 90, end: 100, emotion: 'SURPRISE', events: ['Laughter'], text: '怎么会这样' }
+      ]
+    };
+
+    const candidates = ownStreamClipper.buildCandidateWindows(
+      { segments: [] },
+      [],
+      config,
+      180,
+      analysis
+    );
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].reason).toContain('emotion_signal');
+    expect(candidates[0].emotions).toContain('SURPRISE');
+    expect(candidates[0].events).toContain('Laughter');
+    expect(candidates[0].score).toBeGreaterThanOrEqual(34);
+  });
+
+  test('adds compact emotion evidence to AI context and final clip metadata', () => {
+    const config = ownStreamClipper.getOwnStreamClipsConfig({ ownStreamClips: {} });
+    const analysis = {
+      status: 'completed',
+      timeline: [
+        { start: 30, end: 40, emotion: 'SURPRISE', events: ['Laughter'], text: '突然笑了' },
+        { start: 40, end: 50, emotion: 'SURPRISE', events: ['Laughter'], text: '继续笑' }
+      ]
+    };
+    const source = ownStreamClipper.buildFullContextSource(
+      { segments: [{ start: 0, end: 60, text: '字幕' }] },
+      [],
+      config,
+      analysis
+    );
+    const clips = ownStreamClipper.attachEmotionEvidenceToClips(
+      [{ start: 20, end: 55, base: { reason: 'test' } }],
+      analysis,
+      config.emotionScoring
+    );
+
+    expect(source.sourceText).toContain('SenseVoice 情感/声音事件');
+    expect(source.sourceText).toContain('emotion=SURPRISE');
+    expect(clips[0].base.emotions).toEqual(['SURPRISE']);
+    expect(clips[0].base.events).toEqual(['Laughter']);
+  });
+
   test('prefers the AI two-line cover copy over the longer upload title', () => {
     expect(ownStreamClipper.buildCoverTitle(
       '提建议被当成找茬？小岁委屈控诉：你们不宠我了，只会从我身上找问题！',

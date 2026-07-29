@@ -268,6 +268,14 @@ const ConfigSchema = Joi.object({
             overlapToleranceSeconds: Joi.number().min(0).default(12),
             preferModelOnOverlap: Joi.boolean().default(true)
         }).default(),
+        emotionScoring: Joi.object({
+            enabled: Joi.boolean().default(true),
+            minCandidateScore: Joi.number().min(0).default(20),
+            transitionScore: Joi.number().min(0).default(20),
+            maxContextLines: Joi.number().integer().min(1).default(160),
+            emotionScores: Joi.object().pattern(Joi.string(), Joi.number()).default(),
+            eventScores: Joi.object().pattern(Joi.string(), Joi.number()).default()
+        }).default(),
         notify: Joi.object({
             enabled: Joi.boolean().default(true)
         }).default()

@@ -38,6 +38,142 @@ function loadAsrSpeakerSidecarForSrt(srtPath) {
     }
 }
 
+function loadAsrMetaSidecarForSrt(srtPath) {
+    try {
+        if (!srtPath) return {};
+        const parsed = path.parse(srtPath);
+        const baseName = parsed.name.replace(/\.speaker$/i, '');
+        const candidates = [
+            path.join(parsed.dir, `${baseName}.asr_meta.json`),
+            path.join(parsed.dir, `${parsed.name}.asr_meta.json`)
+        ];
+        const sidecarPath = candidates.find(candidate => fs.existsSync(candidate));
+        if (!sidecarPath) return {};
+        const data = JSON.parse(fs.readFileSync(sidecarPath, 'utf8'));
+        return data && typeof data === 'object' ? data : {};
+    } catch (error) {
+        console.warn(`读取 ASR meta sidecar 失败: ${error.message}`);
+        return {};
+    }
+}
+
+const EMOTION_LABELS = {
+    ANGRY: '生气/激动',
+    CONTEMPT: '轻蔑',
+    DISGUST: '厌恶',
+    FEAR: '害怕',
+    HAPPY: '开心',
+    NEUTRAL: '平静',
+    SAD: '难过',
+    SURPRISE: '惊讶'
+};
+
+const EVENT_LABELS = {
+    Applause: '掌声',
+    BGM: '背景音乐',
+    Cry: '哭声',
+    Laughter: '笑声',
+    Sneeze: '喷嚏',
+    Speech: '说话'
+};
+
+function getEmotionAnalysis(meta) {
+    const analysis = meta?.emotionAnalysis || meta?.emotion_analysis || {};
+    return analysis && typeof analysis === 'object' ? analysis : {};
+}
+
+function getEmotionEvidenceForInterval(analysis, start, end) {
+    const timeline = Array.isArray(analysis?.timeline) ? analysis.timeline : [];
+    const overlaps = timeline
+        .map(item => ({
+            item,
+            overlap: Math.max(0, Math.min(Number(end), Number(item.end)) - Math.max(Number(start), Number(item.start)))
+        }))
+        .filter(entry => entry.overlap > 0);
+    if (overlaps.length === 0) return null;
+    const emotionScores = {};
+    const events = [];
+    for (const { item, overlap } of overlaps) {
+        if (item.emotion) {
+            emotionScores[item.emotion] = (emotionScores[item.emotion] || 0) + overlap;
+        }
+        for (const event of item.events || []) {
+            if (!events.includes(event)) events.push(event);
+        }
+    }
+    const emotion = Object.entries(emotionScores).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+    return emotion || events.length > 0 ? { emotion, events } : null;
+}
+
+function formatEmotionEvidence(evidence) {
+    if (!evidence) return '';
+    const parts = [];
+    if (evidence.emotion) {
+        parts.push(`情感: ${EMOTION_LABELS[evidence.emotion] || evidence.emotion}`);
+    }
+    const notableEvents = (evidence.events || []).filter(event => !['Speech', 'BGM'].includes(event));
+    if (notableEvents.length > 0) {
+        parts.push(`声音: ${notableEvents.map(event => EVENT_LABELS[event] || event).join('、')}`);
+    }
+    return parts.length > 0 ? `  [${parts.join('；')}]` : '';
+}
+
+function buildEmotionSummaryLines(analysis) {
+    if (!analysis || analysis.status !== 'completed') return [];
+    const emotionEntries = Object.entries(analysis.emotionCounts || {}).sort((a, b) => b[1] - a[1]);
+    const eventEntries = Object.entries(analysis.eventCounts || {})
+        .filter(([event]) => !['Speech', 'BGM'].includes(event))
+        .sort((a, b) => b[1] - a[1]);
+    if (emotionEntries.length === 0 && eventEntries.length === 0) return [];
+    const emotionText = emotionEntries
+        .slice(0, 5)
+        .map(([emotion, count]) => `${EMOTION_LABELS[emotion] || emotion}${count}段`)
+        .join('、');
+    const eventText = eventEntries
+        .slice(0, 5)
+        .map(([event, count]) => `${EVENT_LABELS[event] || event}${count}次`)
+        .join('、');
+    return [
+        `【情感概览】${emotionText || '无明确情感标签'}${eventText ? `；明显声音事件: ${eventText}` : ''}`,
+        '【情感说明】标签来自 SenseVoiceSmall，仅作语气和选段线索，具体事实仍以字幕内容为准。',
+        '---'
+    ];
+}
+
+function buildStrongEmotionMomentLines(analysis, maxMoments = 8) {
+    if (!analysis || analysis.status !== 'completed') return [];
+    const emotionScores = { SURPRISE: 40, FEAR: 38, SAD: 34, DISGUST: 34, CONTEMPT: 28 };
+    const eventScores = { Cry: 45, Laughter: 38, Applause: 30 };
+    const ranked = (analysis.timeline || [])
+        .map(item => ({
+            ...item,
+            score: (emotionScores[item.emotion] || 0)
+                + Math.max(0, ...(item.events || []).map(event => eventScores[event] || 0))
+        }))
+        .filter(item => item.score > 0)
+        .sort((a, b) => b.score - a.score || a.start - b.start);
+    const selected = [];
+    for (const item of ranked) {
+        if (selected.some(existing => Math.abs(Number(existing.start) - Number(item.start)) < 20)) continue;
+        selected.push(item);
+        if (selected.length >= maxMoments) break;
+    }
+    if (selected.length === 0) return [];
+    return [
+        '【显著情感时刻】',
+        ...selected
+            .sort((a, b) => a.start - b.start)
+            .map(item => {
+                const minute = Math.floor(Number(item.start) / 60);
+                const second = Math.floor(Number(item.start) % 60);
+                const evidence = formatEmotionEvidence(item);
+                const text = String(item.text || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+                return `[${minute}m${String(second).padStart(2, '0')}s]${evidence}${text ? ` ${text}` : ''}`;
+            }),
+        '---'
+    ];
+}
+
 function buildParticipantSummaryLines(sidecar) {
     if (!sidecar || typeof sidecar !== 'object') return [];
     const participants = Array.isArray(sidecar.participants) ? sidecar.participants : [];
@@ -148,9 +284,15 @@ async function processLiveData(inputFiles) {
     // --- 3. 解析并过滤字幕 (核心逻辑) ---
     let subtitles = [];
     const participantSummaryLines = [];
+    let primaryEmotionAnalysis = null;
     for (const srtPath of srtFiles) {
         try {
             const sidecar = loadAsrSpeakerSidecarForSrt(srtPath);
+            const asrMeta = loadAsrMetaSidecarForSrt(srtPath);
+            const emotionAnalysis = getEmotionAnalysis(asrMeta);
+            if (!primaryEmotionAnalysis && emotionAnalysis.status === 'completed') {
+                primaryEmotionAnalysis = emotionAnalysis;
+            }
             if (participantSummaryLines.length === 0) {
                 participantSummaryLines.push(...buildParticipantSummaryLines(sidecar));
             }
@@ -186,7 +328,8 @@ async function processLiveData(inputFiles) {
                     subtitles.push({
                         ms,
                         text: text,
-                        isHighEnergy // 标记一下，方便后面排版
+                        isHighEnergy, // 标记一下，方便后面排版
+                        emotionAnalysis
                     });
                 }
             }
@@ -205,8 +348,10 @@ async function processLiveData(inputFiles) {
     if (participantSummaryLines.length > 0) {
         output.push(...participantSummaryLines);
     }
+    output.push(...buildEmotionSummaryLines(primaryEmotionAnalysis));
+    output.push(...buildStrongEmotionMomentLines(primaryEmotionAnalysis));
 
-    let currentBlock = { startTime: -1, lines: [], isHighlight: false };
+    let currentBlock = { startTime: -1, lines: [], isHighlight: false, emotionAnalysis: null };
 
     // 辅助函数：写入一个块
     const flushBlock = () => {
@@ -239,11 +384,17 @@ async function processLiveData(inputFiles) {
 
         let finalLine = `${timeLabel} ${icon} ${body}`;
         if (topDm) finalLine += `  (💬 ${topDm})`;
+        const evidence = getEmotionEvidenceForInterval(
+            currentBlock.emotionAnalysis,
+            currentBlock.startTime / 1000,
+            (currentBlock.lastMs + 5000) / 1000
+        );
+        finalLine += formatEmotionEvidence(evidence);
 
         output.push(finalLine);
 
         // 重置
-        currentBlock = { startTime: -1, lines: [], isHighlight: false };
+        currentBlock = { startTime: -1, lines: [], isHighlight: false, emotionAnalysis: null };
     };
 
     for (const sub of subtitles) {
@@ -255,6 +406,7 @@ async function processLiveData(inputFiles) {
         if (currentBlock.startTime === -1) {
             currentBlock.startTime = sub.ms;
             currentBlock.isHighlight = sub.isHighEnergy; // 以段首定性
+            currentBlock.emotionAnalysis = sub.emotionAnalysis;
         }
 
         currentBlock.lines.push(sub.text);
@@ -279,4 +431,11 @@ if (require.main === module) {
     if (files.length > 0) processLiveData(files);
 }
 
-module.exports = { processLiveData };
+module.exports = {
+    processLiveData,
+    loadAsrMetaSidecarForSrt,
+    getEmotionEvidenceForInterval,
+    formatEmotionEvidence,
+    buildEmotionSummaryLines,
+    buildStrongEmotionMomentLines
+};

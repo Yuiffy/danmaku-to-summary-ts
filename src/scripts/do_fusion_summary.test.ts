@@ -8,7 +8,7 @@ jest.mock('xml2js', () => ({
   }))
 }));
 
-const { processLiveData } = require('./do_fusion_summary');
+const fusion = require('./do_fusion_summary');
 
 describe('do_fusion_summary speaker sidecar support', () => {
   test('includes participant summary when speaker sidecar exists', async () => {
@@ -32,11 +32,45 @@ describe('do_fusion_summary speaker sidecar support', () => {
       ]
     }, null, 2), 'utf8');
 
-    await processLiveData([srtPath, xmlPath]);
+    await fusion.processLiveData([srtPath, xmlPath]);
 
     const content = fs.readFileSync(highlightPath, 'utf8');
     expect(content).toContain('【参与者】计划参与: 岁己SUI、栞栞');
     expect(content).toContain('【参与者】实际出声: 岁己SUI');
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('do_fusion_summary emotion metadata', () => {
+  const analysis = {
+    status: 'completed',
+    emotionCounts: { HAPPY: 3, SURPRISE: 1 },
+    eventCounts: { Speech: 4, Laughter: 2 },
+    timeline: [
+      { start: 10, end: 20, emotion: 'HAPPY', events: ['Speech'], text: '普通聊天' },
+      { start: 45, end: 55, emotion: 'SURPRISE', events: ['Laughter'], text: '怎么突然这样' }
+    ]
+  };
+
+  test('builds compact overall summary and notable moments for shared goodnight input', () => {
+    const summary = fusion.buildEmotionSummaryLines(analysis).join('\n');
+    const moments = fusion.buildStrongEmotionMomentLines(analysis).join('\n');
+
+    expect(summary).toContain('情感概览');
+    expect(summary).toContain('开心3段');
+    expect(summary).toContain('笑声2次');
+    expect(summary).not.toContain('说话4次');
+    expect(moments).toContain('显著情感时刻');
+    expect(moments).toContain('怎么突然这样');
+  });
+
+  test('maps timeline overlap to an annotation while hiding noisy Speech/BGM events', () => {
+    const evidence = fusion.getEmotionEvidenceForInterval(analysis, 44, 58);
+    expect(evidence).toMatchObject({ emotion: 'SURPRISE', events: ['Laughter'] });
+    expect(fusion.formatEmotionEvidence(evidence)).toContain('情感: 惊讶');
+    expect(fusion.formatEmotionEvidence({
+      emotion: 'HAPPY',
+      events: ['Speech', 'BGM']
+    })).toBe('  [情感: 开心]');
   });
 });

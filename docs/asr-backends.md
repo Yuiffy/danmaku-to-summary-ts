@@ -4,6 +4,8 @@
 
 项目支持 Paraformer、Whisper、SenseVoice、Fun-ASR-Nano 和 Fun-ASR-Nano vLLM。Nano 的热词接口是官方 `hotwords: list[str]`，更适合做“岁己 / 小岁”这种词的真实热词测试。
 
+岁己房间的生产 Paraformer 流程还支持后置 SenseVoiceSmall 情感分析。它复用 Paraformer 时间轴，不重复 VAD/标点，并把结果提供给晚安回复、漫画脚本和自动切片。配置、输出契约与评分规则见 [sui-emotion-analysis.md](./sui-emotion-analysis.md)。
+
 ## 默认 Paraformer 与显式 Whisper
 
 当前默认配置的核心形状：

@@ -176,6 +176,18 @@ const DEFAULT_ASR_CONFIG = {
         speaker_reference_threshold: 0.45,
         speaker_reference_margin: 0.06,
         speaker_embedding_batch_size: 64,
+        emotion_analysis: {
+            enabled: false,
+            room_ids: [],
+            model: 'iic/SenseVoiceSmall',
+            device: 'cuda',
+            chunk_s: 12,
+            max_gap_s: 1.5,
+            batch_size_s: 300,
+            max_batch_chunks: 64,
+            include_events: true,
+            fail_open: true
+        },
         ...DEFAULT_ADAPTIVE_SPEAKER_CONFIG
     }
 };
@@ -479,7 +491,9 @@ function normalizeAsrResult(result, subtitleConfig = {}) {
                 text: part,
                 speaker: segment.speaker,
                 speaker_score: segment.speaker_score,
-                words: segment.words
+                words: segment.words,
+                emotion: segment.emotion,
+                events: Array.isArray(segment.events) ? [...segment.events] : undefined
             });
         });
     }
@@ -500,7 +514,22 @@ function normalizeAsrResult(result, subtitleConfig = {}) {
         segments: normalized,
         raw: result?.raw,
         timings: result?.timings,
-        speaker_processing: result?.speaker_processing || result?.speakerProcessing
+        speaker_processing: result?.speaker_processing || result?.speakerProcessing,
+        emotion_analysis: result?.emotion_analysis || result?.emotionAnalysis
+    };
+}
+
+function resolveEmotionAnalysisOptions(rawConfig, context = {}) {
+    const config = rawConfig && typeof rawConfig === 'object' ? rawConfig : {};
+    const roomId = String(context.room_id || context.roomId || '').trim();
+    const roomIds = Array.isArray(config.room_ids)
+        ? config.room_ids.map(value => String(value)).filter(Boolean)
+        : [];
+    const roomAllowed = roomIds.length === 0 || (roomId && roomIds.includes(roomId));
+    return {
+        ...config,
+        enabled: config.enabled === true && Boolean(roomAllowed),
+        room_id: roomId || null
     };
 }
 
@@ -1211,6 +1240,8 @@ async function transcribeFunAsrBackend(mediaPath, config = {}, runtimeOptions = 
     };
     if (backend === 'paraformer') {
         options.model = resolveParaformerModelOption(options);
+        options.room_id = String(context.room_id || context.roomId || '').trim() || null;
+        options.emotion_analysis = resolveEmotionAnalysisOptions(options.emotion_analysis, context);
     }
     const label = backend === 'fun_asr_nano_vllm'
         ? 'Fun-ASR-Nano vLLM backend'
@@ -1263,5 +1294,6 @@ module.exports = {
     formatTimestamp,
     parseTimestamp,
     buildPhonemeCorrectionPayload,
+    resolveEmotionAnalysisOptions,
     stripSubtitlePunctuation
 };
