@@ -40,6 +40,11 @@ export interface DelayedReplySettings {
   maxTaskAgeHours?: number;
 }
 
+export interface SummaryDynamicSettings {
+  enabled: boolean;
+  dynamicId: string;
+}
+
 /**
  * Bilibili 配置读取工具类
  */
@@ -135,6 +140,18 @@ export class BilibiliConfigHelper {
       maxRetries: 3,
       retryDelayMinutes: 5,
       maxTaskAgeHours: 24,
+    };
+  }
+
+  static getSummaryDynamicSettings(): SummaryDynamicSettings | null {
+    const summaryDynamic = this.getDelayedReplyConfig().summaryDynamic;
+    if (!summaryDynamic?.enabled || !String(summaryDynamic.dynamicId || '').trim()) {
+      return null;
+    }
+
+    return {
+      enabled: true,
+      dynamicId: String(summaryDynamic.dynamicId).trim(),
     };
   }
 

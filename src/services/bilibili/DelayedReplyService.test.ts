@@ -63,6 +63,7 @@ describe('DelayedReplyService duplicate reply detection', () => {
     const service = new DelayedReplyService({} as any, store as any, notifier as any) as any;
     const task = createTask({ comicImagePath, comicGenerationFailureNotifiedAt: undefined });
     const anchorConfigSpy = jest.spyOn(BilibiliConfigHelper, 'getAnchorConfig').mockReturnValue(undefined);
+    const summarySettingsSpy = jest.spyOn(BilibiliConfigHelper, 'getSummaryDynamicSettings').mockReturnValue(null);
 
     try {
       await service.executeSupplementalComicReply(task);
@@ -77,8 +78,154 @@ describe('DelayedReplyService duplicate reply detection', () => {
         comicGenerationFailureNotifiedAt: expect.any(Date)
       }));
     } finally {
+      summarySettingsSpy.mockRestore();
       anchorConfigSpy.mockRestore();
       fs.rmSync(outputDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('DelayedReplyService summary dynamic reply', () => {
+  let outputDir: string;
+  let summarySettingsSpy: jest.SpyInstance;
+  let anchorConfigSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'delayed-reply-summary-'));
+    summarySettingsSpy = jest.spyOn(BilibiliConfigHelper, 'getSummaryDynamicSettings').mockReturnValue({
+      enabled: true,
+      dynamicId: '1230474195813531666'
+    });
+    anchorConfigSpy = jest.spyOn(BilibiliConfigHelper, 'getAnchorConfig').mockReturnValue({
+      uid: '1',
+      name: '测试主播',
+      roomId: '27628030',
+      enabled: true,
+      delayedReplyEnabled: true
+    });
+  });
+
+  afterEach(() => {
+    summarySettingsSpy.mockRestore();
+    anchorConfigSpy.mockRestore();
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  });
+
+  function createSummaryTask(overrides: Partial<DelayedReplyTask> = {}): DelayedReplyTask {
+    const goodnightTextPath = path.join(outputDir, '27628030-20260729-200000-001_晚安回复.md');
+    fs.writeFileSync(goodnightTextPath, '晚安正文', 'utf8');
+    return {
+      taskId: 'summary-task',
+      roomId: '27628030',
+      goodnightTextPath,
+      createTime: new Date('2026-07-29T16:00:00.000Z'),
+      scheduledTime: new Date(),
+      status: 'waiting_summary',
+      retryCount: 0,
+      liveStartTime: new Date('2026-07-29T12:00:00.000Z'),
+      liveEndTime: new Date('2026-07-29T15:00:00.000Z'),
+      repliedDynamicId: 'owner-dynamic',
+      replyId: 'owner-reply',
+      ...overrides
+    };
+  }
+
+  it('publishes one combined text and image reply with the requested prefix', async () => {
+    const comicImagePath = path.join(outputDir, 'stream_COMIC_FACTORY.png');
+    fs.writeFileSync(comicImagePath, 'image', 'utf8');
+    const publishComment = jest.fn().mockResolvedValue({
+      replyId: 'summary-reply',
+      replyTime: Date.now(),
+      imageUrl: 'https://example.com/image.png'
+    });
+    const store = { updateTask: jest.fn().mockResolvedValue(undefined) };
+    const service = new DelayedReplyService({ publishComment } as any, store as any) as any;
+    const task = createSummaryTask({ comicImagePath });
+
+    await service.executeSummaryDynamicReply(task, '晚安正文', comicImagePath);
+
+    expect(publishComment).toHaveBeenCalledTimes(1);
+    expect(publishComment).toHaveBeenCalledWith({
+      dynamicId: '1230474195813531666',
+      content: 'to 测试主播 7月29日20点~23点的直播。\n晚安正文',
+      images: [comicImagePath]
+    });
+    expect(task.status).toBe('completed');
+    expect(task.summaryReplyId).toBe('summary-reply');
+    expect(store.updateTask).toHaveBeenCalledWith(task.taskId, expect.objectContaining({
+      status: 'completed',
+      summaryReplyId: 'summary-reply',
+      summaryCompletedAt: expect.any(Date)
+    }));
+  });
+
+  it('publishes text only after image generation declares terminal failure', async () => {
+    const comicImagePath = path.join(outputDir, 'stream_COMIC_FACTORY.png');
+    const metaPath = path.join(outputDir, 'stream_COMIC_FACTORY_META.json');
+    fs.writeFileSync(metaPath, JSON.stringify({
+      status: 'failure',
+      reason: 'image provider failed'
+    }), 'utf8');
+    const publishComment = jest.fn().mockResolvedValue({
+      replyId: 'summary-text-reply',
+      replyTime: Date.now()
+    });
+    const store = { updateTask: jest.fn().mockResolvedValue(undefined) };
+    const service = new DelayedReplyService({ publishComment } as any, store as any) as any;
+    const task = createSummaryTask({
+      status: 'waiting_comic',
+      comicImagePath,
+      comicWaitCount: 0
+    });
+
+    await service.executeSupplementalComicReply(task);
+
+    expect(publishComment).toHaveBeenCalledTimes(1);
+    expect(publishComment).toHaveBeenCalledWith({
+      dynamicId: '1230474195813531666',
+      content: 'to 测试主播 7月29日20点~23点的直播。\n晚安正文',
+      images: undefined
+    });
+    expect(task.status).toBe('completed');
+    expect(task.summaryReplyId).toBe('summary-text-reply');
+    expect(task.supplementalReplyId).toBeUndefined();
+  });
+
+  it('retries only the summary reply without returning to the owner dynamic flow', async () => {
+    const publishComment = jest.fn()
+      .mockRejectedValueOnce(new Error('temporary network failure'))
+      .mockResolvedValueOnce({
+        replyId: 'summary-retry-reply',
+        replyTime: Date.now()
+      });
+    const store = { updateTask: jest.fn().mockResolvedValue(undefined) };
+    const service = new DelayedReplyService({ publishComment } as any, store as any) as any;
+    jest.spyOn(service, 'scheduleTask').mockImplementation(() => undefined);
+    const delayedReplyConfigSpy = jest.spyOn(BilibiliConfigHelper, 'getDelayedReplyConfig').mockReturnValue({
+      enabled: true,
+      delayMinutes: 2,
+      maxRetries: 3,
+      retryDelayMinutes: 5,
+      maxTaskAgeHours: 24
+    });
+    const task = createSummaryTask();
+
+    try {
+      await service.executeSummaryDynamicReply(task, '晚安正文');
+
+      expect(task.status).toBe('waiting_summary');
+      expect(task.summaryRetryCount).toBe(1);
+
+      await service.executeDelayedReplyLocked(task);
+
+      expect(publishComment).toHaveBeenCalledTimes(2);
+      expect(publishComment.mock.calls.every(
+        ([request]) => request.dynamicId === '1230474195813531666'
+      )).toBe(true);
+      expect(task.status).toBe('completed');
+      expect(task.summaryReplyId).toBe('summary-retry-reply');
+    } finally {
+      delayedReplyConfigSpy.mockRestore();
     }
   });
 });

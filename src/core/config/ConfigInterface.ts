@@ -501,6 +501,11 @@ export interface DelayedReplyConfig {
   /** 重试延迟（分钟） */
   retryDelayMinutes: number;
   maxTaskAgeHours?: number;
+  /** 将每条晚安回复集中发布到一个固定动态，便于统一查看 */
+  summaryDynamic?: {
+    enabled: boolean;
+    dynamicId: string;
+  };
 }
 
 // 弹幕风控监控配置

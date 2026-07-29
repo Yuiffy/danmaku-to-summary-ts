@@ -1110,7 +1110,11 @@
       "delayMinutes": 10,
       "maxRetries": 3,
       "retryDelayMinutes": 5,
-      "maxTaskAgeHours": 24
+      "maxTaskAgeHours": 24,
+      "summaryDynamic": {
+        "enabled": false,
+        "dynamicId": "1230474195813531666"
+      }
     },
     "danmuRiskControl": {
       "enabled": false,

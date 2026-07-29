@@ -471,6 +471,10 @@ export class ConfigValidator {
           maxRetries: 3,
           retryDelayMinutes: 5,
           maxTaskAgeHours: 24,
+          summaryDynamic: {
+            enabled: false,
+            dynamicId: '',
+          },
         },
       },
       wechatWork: {
