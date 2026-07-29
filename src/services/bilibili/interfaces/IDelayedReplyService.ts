@@ -41,6 +41,11 @@ export interface IDelayedReplyService {
   removeTask(taskId: string): Promise<void>;
 
   /**
+   * 为已成功发布的历史晚安回复补发汇总动态评论。
+   */
+  publishSummaryForTask(taskId: string): Promise<DelayedReplyTask>;
+
+  /**
    * 获取所有任务
    */
   getTasks(): DelayedReplyTask[];

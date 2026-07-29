@@ -228,6 +228,31 @@ describe('DelayedReplyService summary dynamic reply', () => {
       delayedReplyConfigSpy.mockRestore();
     }
   });
+
+  it('backfills a completed task through the persisted task store', async () => {
+    const publishComment = jest.fn().mockResolvedValue({
+      replyId: 'summary-backfill-reply',
+      replyTime: Date.now()
+    });
+    const task = createSummaryTask({ status: 'completed' });
+    const store = {
+      getTask: jest.fn().mockResolvedValue(task),
+      updateTask: jest.fn().mockResolvedValue(undefined)
+    };
+    const service = new DelayedReplyService({ publishComment } as any, store as any);
+
+    const result = await service.publishSummaryForTask(task.taskId);
+
+    expect(result.summaryReplyId).toBe('summary-backfill-reply');
+    expect(publishComment).toHaveBeenCalledTimes(1);
+    expect(store.updateTask).toHaveBeenCalledWith(task.taskId, expect.objectContaining({
+      status: 'waiting_summary'
+    }));
+    expect(store.updateTask).toHaveBeenCalledWith(task.taskId, expect.objectContaining({
+      status: 'completed',
+      summaryReplyId: 'summary-backfill-reply'
+    }));
+  });
 });
 
 describe('DelayedReplyService ASR speaker notification info', () => {

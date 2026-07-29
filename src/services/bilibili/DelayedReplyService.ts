@@ -400,6 +400,40 @@ export class DelayedReplyService implements IDelayedReplyService {
     }
   }
 
+  async publishSummaryForTask(taskId: string): Promise<DelayedReplyTask> {
+    if (this.executingTaskIds.has(taskId)) {
+      throw new Error(`任务正在执行中，不能重复补发汇总: ${taskId}`);
+    }
+
+    const task = await this.store.getTask(taskId);
+    if (!task) {
+      throw new Error(`延迟回复任务不存在: ${taskId}`);
+    }
+    if (!task.replyId || !task.repliedDynamicId) {
+      throw new Error(`延迟回复任务尚未成功发布主回复: ${taskId}`);
+    }
+    if (task.summaryReplyId || task.summaryCompletedAt) {
+      return task;
+    }
+
+    this.executingTaskIds.add(taskId);
+    this.tasks.set(taskId, task);
+    try {
+      task.status = 'waiting_summary';
+      task.scheduledTime = new Date();
+      task.error = undefined;
+      await this.store.updateTask(taskId, {
+        status: task.status,
+        scheduledTime: task.scheduledTime,
+        error: undefined
+      });
+      await this.executeSummaryDynamicReply(task);
+      return task;
+    } finally {
+      this.executingTaskIds.delete(taskId);
+    }
+  }
+
   /**
    * 获取所有任务
    */
