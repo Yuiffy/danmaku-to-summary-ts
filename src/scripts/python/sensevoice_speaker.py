@@ -121,25 +121,101 @@ def _generate_speaker_embeddings(spk_model_obj, chunks, batch_size=64):
     return embeddings[:len(chunks)]
 
 
-def build_speaker_reference_centroids(spk_model_obj, references, device, batch_size=64):
+def build_speaker_reference_prototypes(
+    embeddings,
+    merge_threshold=0.72,
+    max_prototypes=6,
+    min_support_chunks=2,
+):
+    """Compress one speaker's reference chunks into supported acoustic modes."""
+    if embeddings is None or hasattr(embeddings, "rows"):
+        return embeddings, []
+
+    import torch
+
+    matrix = torch.nn.functional.normalize(embeddings.to("cpu"), dim=1)
+    row_count = int(matrix.shape[0])
+    if row_count <= 1:
+        return matrix, [row_count] if row_count else []
+
+    clusters = [[index] for index in range(row_count)]
+    threshold = max(-1.0, min(1.0, float(merge_threshold or 0.0)))
+    limit = max(1, int(max_prototypes or 1))
+    minimum_support = max(1, int(min_support_chunks or 1))
+
+    def centroid(indices):
+        value = matrix[indices].mean(dim=0, keepdim=True)
+        return torch.nn.functional.normalize(value, dim=1)
+
+    while len(clusters) > 1:
+        centroids = [centroid(indices) for indices in clusters]
+        best_pair = None
+        best_score = -2.0
+        for left in range(len(centroids)):
+            for right in range(left + 1, len(centroids)):
+                score = float(
+                    torch.matmul(
+                        centroids[left],
+                        centroids[right].T,
+                    ).item()
+                )
+                if score > best_score:
+                    best_score = score
+                    best_pair = (left, right)
+        if best_pair is None:
+            break
+        if len(clusters) <= limit and best_score < threshold:
+            break
+        left, right = best_pair
+        clusters[left] = clusters[left] + clusters[right]
+        del clusters[right]
+
+    supported_clusters = [
+        indices for indices in clusters
+        if len(indices) >= minimum_support
+    ]
+    if not supported_clusters:
+        supported_clusters = [max(clusters, key=len)]
+
+    prototypes = torch.cat(
+        [centroid(indices) for indices in supported_clusters],
+        dim=0,
+    )
+    return prototypes.to("cpu"), [len(indices) for indices in supported_clusters]
+
+
+def build_speaker_reference_centroids(
+    spk_model_obj,
+    references,
+    device,
+    batch_size=64,
+    prototype_merge_threshold=0.72,
+    max_prototypes=6,
+    prototype_min_support_chunks=2,
+):
     if not isinstance(references, list) or not references:
         return None
 
     import torch
 
-    embeddings_by_speaker = {}
+    embeddings_by_speaker_state = {}
     batched_chunks = []
-    chunk_speakers = []
+    chunk_identities = []
     chunk_counts = {}
+    state_chunk_counts = {}
     default_max_chunks = 24
     for ref in references:
         if not isinstance(ref, dict):
             continue
         speaker = str(ref.get("speaker") or ref.get("label") or "").strip()
+        state = str(ref.get("state") or "default").strip() or "default"
         audio_path = ref.get("audio_path") or ref.get("path")
         if not speaker or not audio_path or not os.path.exists(audio_path):
             continue
-        log_progress(f"加载说话人参考音频: speaker={speaker}, path={audio_path}")
+        log_progress(
+            f"加载说话人参考音频: speaker={speaker}, "
+            f"state={state}, path={audio_path}"
+        )
         audio, sample_rate = load_audio_16k_mono(audio_path)
         start_s = max(0.0, float(ref.get("start_s", 0) or 0))
         end_s = float(ref.get("end_s", 0) or 0)
@@ -160,30 +236,139 @@ def build_speaker_reference_centroids(spk_model_obj, references, device, batch_s
         if not chunks:
             continue
         batched_chunks.extend(chunks)
-        chunk_speakers.extend([speaker] * len(chunks))
+        chunk_identities.extend([(speaker, state)] * len(chunks))
         chunk_counts[speaker] = chunk_counts.get(speaker, 0) + len(chunks)
+        state_key = (speaker, state)
+        state_chunk_counts[state_key] = (
+            state_chunk_counts.get(state_key, 0) + len(chunks)
+        )
 
     embeddings = _generate_speaker_embeddings(
         spk_model_obj,
         batched_chunks,
         batch_size=batch_size,
     )
-    for speaker, embedding in zip(chunk_speakers, embeddings):
+    for (speaker, state), embedding in zip(chunk_identities, embeddings):
         if embedding is not None:
-            embeddings_by_speaker.setdefault(speaker, []).append(embedding)
+            embeddings_by_speaker_state.setdefault(speaker, {}).setdefault(
+                state,
+                [],
+            ).append(embedding)
 
     for speaker, count in chunk_counts.items():
-        valid_count = len(embeddings_by_speaker.get(speaker, []))
+        valid_count = sum(
+            len(state_embeddings)
+            for state_embeddings in embeddings_by_speaker_state.get(
+                speaker,
+                {},
+            ).values()
+        )
         log_progress(
             f"参考说话人完成: speaker={speaker}, chunks={count}, valid_embeddings={valid_count}"
         )
 
     centroids = {}
-    for speaker, speaker_embeddings in embeddings_by_speaker.items():
-        embeddings = torch.cat(speaker_embeddings, dim=0)
-        embeddings = torch.nn.functional.normalize(embeddings, dim=1)
-        centroids[speaker] = embeddings.to("cpu")
-        log_progress(f"参考说话人聚合完成: speaker={speaker}, embeddings={len(speaker_embeddings)}")
+    minimum_support = max(1, int(prototype_min_support_chunks or 1))
+    prototype_limit = max(1, int(max_prototypes or 1))
+    for speaker, embeddings_by_state in embeddings_by_speaker_state.items():
+        all_speaker_embeddings = [
+            embedding
+            for state_embeddings in embeddings_by_state.values()
+            for embedding in state_embeddings
+        ]
+        state_prototypes = []
+        state_summaries = {}
+        for state, state_embeddings in embeddings_by_state.items():
+            if len(state_embeddings) < minimum_support:
+                state_summaries[state] = {
+                    "chunks": len(state_embeddings),
+                    "prototype_sizes": [],
+                    "dropped": True,
+                }
+                continue
+            embeddings = torch.cat(state_embeddings, dim=0)
+            embeddings = torch.nn.functional.normalize(embeddings, dim=1)
+            prototypes, prototype_sizes = build_speaker_reference_prototypes(
+                embeddings,
+                merge_threshold=prototype_merge_threshold,
+                max_prototypes=prototype_limit,
+                min_support_chunks=minimum_support,
+            )
+            state_summaries[state] = {
+                "chunks": len(state_embeddings),
+                "prototype_sizes": prototype_sizes,
+                "dropped": False,
+            }
+            for index, size in enumerate(prototype_sizes):
+                state_prototypes.append({
+                    "state": state,
+                    "size": int(size),
+                    "embedding": prototypes[index:index + 1],
+                })
+
+        if not state_prototypes and all_speaker_embeddings:
+            embeddings = torch.cat(all_speaker_embeddings, dim=0)
+            embeddings = torch.nn.functional.normalize(embeddings, dim=1)
+            prototypes, prototype_sizes = build_speaker_reference_prototypes(
+                embeddings,
+                merge_threshold=prototype_merge_threshold,
+                max_prototypes=prototype_limit,
+                min_support_chunks=minimum_support,
+            )
+            if prototypes is not None and not prototype_sizes:
+                centroids[speaker] = prototypes
+                log_progress(
+                    f"参考说话人聚合完成: speaker={speaker}, "
+                    f"embeddings={len(all_speaker_embeddings)}, "
+                    "prototypes=passthrough"
+                )
+                continue
+            state_prototypes = [
+                {
+                    "state": "fallback",
+                    "size": int(size),
+                    "embedding": prototypes[index:index + 1],
+                }
+                for index, size in enumerate(prototype_sizes)
+            ]
+
+        if not state_prototypes:
+            continue
+
+        if len(state_prototypes) > prototype_limit:
+            largest_per_state = {}
+            for prototype in state_prototypes:
+                state = prototype["state"]
+                current = largest_per_state.get(state)
+                if current is None or prototype["size"] > current["size"]:
+                    largest_per_state[state] = prototype
+            selected = sorted(
+                largest_per_state.values(),
+                key=lambda item: item["size"],
+                reverse=True,
+            )[:prototype_limit]
+            selected_ids = {id(item) for item in selected}
+            remaining = sorted(
+                (
+                    item for item in state_prototypes
+                    if id(item) not in selected_ids
+                ),
+                key=lambda item: item["size"],
+                reverse=True,
+            )
+            selected.extend(remaining[:prototype_limit - len(selected)])
+            state_prototypes = selected
+
+        centroids[speaker] = torch.cat(
+            [item["embedding"] for item in state_prototypes],
+            dim=0,
+        ).to("cpu")
+        log_progress(
+            f"参考说话人聚合完成: speaker={speaker}, "
+            f"embeddings={len(all_speaker_embeddings)}, "
+            f"prototypes={len(state_prototypes)}, "
+            f"states={state_summaries}"
+        )
     return centroids or None
 
 
@@ -262,15 +447,17 @@ def build_speaker_chunk_candidates(
     audio,
     sample_rate,
     intervals,
-    chunk_s=4.0,
-    min_chunk_s=1.0,
+    max_chunk_s=8.0,
+    min_chunk_s=0.8,
+    boundary_intervals=None,
 ):
-    """Build chronological, non-overlapping chunks with cumulative-speech offsets."""
+    """Build speaker chunks from ASR/VAD boundaries, splitting only overlong spans."""
     if audio is None or sample_rate <= 0:
         return []
 
-    chunk_len = max(1, int(float(chunk_s or 4.0) * sample_rate))
-    min_len = max(1, int(float(min_chunk_s or 1.0) * sample_rate))
+    max_duration = max(0.0, float(max_chunk_s or 0.0))
+    min_duration = max(0.0, float(min_chunk_s or 0.0))
+    min_len = max(1, int(min_duration * sample_rate))
     candidates = []
     speech_offset = 0.0
     normalized_intervals = []
@@ -279,22 +466,73 @@ def build_speaker_chunk_candidates(
             continue
         start = max(0.0, float(interval.get("start", 0.0) or 0.0))
         end = max(start, float(interval.get("end", start) or start))
-        normalized_intervals.append((start, end))
+        if end > start:
+            normalized_intervals.append((start, end))
 
-    for start, end in sorted(normalized_intervals):
-        start_idx = max(0, int(start * sample_rate))
-        end_idx = min(len(audio), int(end * sample_rate))
-        for chunk_start_idx in range(start_idx, end_idx, chunk_len):
-            chunk_end_idx = min(end_idx, chunk_start_idx + chunk_len)
+    boundary_points = []
+    for interval in boundary_intervals or []:
+        if not isinstance(interval, dict):
+            continue
+        start = max(0.0, float(interval.get("start", 0.0) or 0.0))
+        end = max(start, float(interval.get("end", start) or start))
+        if end > start:
+            boundary_points.extend((start, end))
+    boundary_points = sorted(set(boundary_points))
+
+    for interval_start, interval_end in sorted(normalized_intervals):
+        split_points = [interval_start]
+        split_points.extend(
+            point
+            for point in boundary_points
+            if interval_start + min_duration <= point <= interval_end - min_duration
+        )
+        split_points.append(interval_end)
+
+        boundary_chunks = []
+        for start, end in zip(split_points, split_points[1:]):
+            if end - start < min_duration:
+                if boundary_chunks:
+                    previous_start, _previous_end = boundary_chunks[-1]
+                    boundary_chunks[-1] = (previous_start, end)
+                continue
+            boundary_chunks.append((start, end))
+        if (
+            boundary_chunks
+            and interval_end - boundary_chunks[-1][1] > 0
+        ):
+            previous_start, _previous_end = boundary_chunks[-1]
+            boundary_chunks[-1] = (previous_start, interval_end)
+
+        capped_chunks = []
+        for start, end in boundary_chunks:
+            duration = end - start
+            part_count = (
+                max(1, int(math.ceil(duration / max_duration)))
+                if max_duration > 0
+                else 1
+            )
+            part_duration = duration / part_count
+            for part_index in range(part_count):
+                chunk_start = start + part_index * part_duration
+                chunk_end = (
+                    end
+                    if part_index + 1 == part_count
+                    else start + (part_index + 1) * part_duration
+                )
+                capped_chunks.append((chunk_start, chunk_end))
+
+        for chunk_start, chunk_end in capped_chunks:
+            chunk_start_idx = max(0, int(chunk_start * sample_rate))
+            chunk_end_idx = min(len(audio), int(chunk_end * sample_rate))
             if chunk_end_idx - chunk_start_idx < min_len:
                 continue
-            chunk_start = float(chunk_start_idx) / sample_rate
-            chunk_end = float(chunk_end_idx) / sample_rate
-            duration = chunk_end - chunk_start
+            actual_start = float(chunk_start_idx) / sample_rate
+            actual_end = float(chunk_end_idx) / sample_rate
+            duration = actual_end - actual_start
             candidates.append({
                 "index": len(candidates),
-                "start": chunk_start,
-                "end": chunk_end,
+                "start": actual_start,
+                "end": actual_end,
                 "duration": duration,
                 "speech_start": speech_offset,
                 "speech_end": speech_offset + duration,
@@ -365,16 +603,17 @@ def _cluster_embeddings(clusterer, embeddings, merge_threshold):
             return clusterer(embeddings)
 
 
-def _should_assign_from_probe_centroids(mode, evidence, max_clusters=6):
-    """Use a bounded stable probe partition as full-stream acoustic anchors."""
+def _should_assign_from_probe_centroids(mode, evidence, max_clusters=12):
+    """Use supported stable probe clusters as full-stream acoustic anchors."""
     evidence = evidence if isinstance(evidence, dict) else {}
     detected_clusters = int(evidence.get("detected_clusters", 0) or 0)
     supported_clusters = int(evidence.get("supported_clusters", 0) or 0)
+    unsupported_clusters = max(0, detected_clusters - supported_clusters)
     return (
         mode == "auto"
         and evidence.get("decision") == "multiple"
-        and detected_clusters == supported_clusters
         and 2 <= supported_clusters <= max(2, int(max_clusters or 2))
+        and unsupported_clusters <= 1
     )
 
 
@@ -410,6 +649,214 @@ def assign_embeddings_to_probe_centroids(full_matrix, probe_embeddings, probe_la
         dim=1,
     ).tolist()
     return [cluster_labels[int(index)] for index in assignments]
+
+
+def refine_embeddings_from_probe_centroids(
+    full_matrix,
+    probe_embeddings,
+    probe_labels,
+    max_iterations=8,
+):
+    """Refine a probe partition over the full stream with fixed-K spherical k-means."""
+    import torch
+
+    labels = _cluster_label_values(probe_labels)
+    if len(labels) != len(probe_embeddings) or not labels:
+        raise ValueError("probe embedding and label counts do not match")
+
+    cluster_labels = list(dict.fromkeys(labels))
+    if len(cluster_labels) < 2:
+        raise ValueError("at least two probe clusters are required")
+
+    probe_matrix = torch.nn.functional.normalize(
+        torch.cat(probe_embeddings, dim=0).to("cpu"),
+        dim=1,
+    )
+    normalized_full = torch.nn.functional.normalize(full_matrix.to("cpu"), dim=1)
+    centroids = []
+    for cluster_label in cluster_labels:
+        indices = [
+            index for index, label in enumerate(labels)
+            if label == cluster_label
+        ]
+        centroid = probe_matrix[indices].mean(dim=0, keepdim=True)
+        centroids.append(torch.nn.functional.normalize(centroid, dim=1))
+    centroid_matrix = torch.cat(centroids, dim=0)
+
+    assignments = torch.argmax(
+        torch.matmul(normalized_full, centroid_matrix.T),
+        dim=1,
+    )
+    iterations = 0
+    for iterations in range(1, max(1, int(max_iterations or 1)) + 1):
+        updated_centroids = []
+        for cluster_index in range(len(cluster_labels)):
+            members = normalized_full[assignments == cluster_index]
+            if int(members.shape[0]) == 0:
+                updated_centroids.append(
+                    centroid_matrix[cluster_index:cluster_index + 1]
+                )
+                continue
+            centroid = members.mean(dim=0, keepdim=True)
+            updated_centroids.append(
+                torch.nn.functional.normalize(centroid, dim=1)
+            )
+        next_centroids = torch.cat(updated_centroids, dim=0)
+        next_assignments = torch.argmax(
+            torch.matmul(normalized_full, next_centroids.T),
+            dim=1,
+        )
+        centroid_matrix = next_centroids
+        if torch.equal(next_assignments, assignments):
+            assignments = next_assignments
+            break
+        assignments = next_assignments
+
+    assigned_labels = [
+        cluster_labels[int(index)]
+        for index in assignments.tolist()
+    ]
+    return assigned_labels, {
+        "iterations": iterations,
+        "clusters": len(cluster_labels),
+    }
+
+
+def merge_speaker_clusters_by_centroid_similarity(
+    embeddings,
+    labels,
+    merge_threshold,
+):
+    """Merge refined clusters only when their full-stream centroids are close."""
+    import torch
+
+    values = _cluster_label_values(labels)
+    if embeddings is None or len(values) != int(embeddings.shape[0]):
+        raise ValueError("embedding and label counts do not match")
+    if not values:
+        return values, {
+            "clusters_before": 0,
+            "clusters_after": 0,
+            "merges": [],
+        }
+
+    matrix = torch.nn.functional.normalize(embeddings.to("cpu"), dim=1)
+    threshold = max(-1.0, min(1.0, float(merge_threshold)))
+    merged_labels = list(values)
+    clusters_before = len(set(merged_labels))
+    merges = []
+
+    while True:
+        cluster_labels = list(dict.fromkeys(merged_labels))
+        if len(cluster_labels) < 2:
+            break
+        centroids = {}
+        for cluster_label in cluster_labels:
+            indices = [
+                index for index, label in enumerate(merged_labels)
+                if label == cluster_label
+            ]
+            centroid = matrix[indices].mean(dim=0, keepdim=True)
+            centroids[cluster_label] = torch.nn.functional.normalize(
+                centroid,
+                dim=1,
+            )
+
+        best_pair = None
+        best_score = -2.0
+        for left_index, left_label in enumerate(cluster_labels):
+            for right_label in cluster_labels[left_index + 1:]:
+                score = float(
+                    torch.matmul(
+                        centroids[left_label],
+                        centroids[right_label].T,
+                    ).item()
+                )
+                if score > best_score:
+                    best_score = score
+                    best_pair = (left_label, right_label)
+        if best_pair is None or best_score < threshold:
+            break
+
+        left_label, right_label = best_pair
+        merged_labels = [
+            left_label if label == right_label else label
+            for label in merged_labels
+        ]
+        merges.append({
+            "kept": left_label,
+            "merged": right_label,
+            "score": best_score,
+        })
+
+    return merged_labels, {
+        "clusters_before": clusters_before,
+        "clusters_after": len(set(merged_labels)),
+        "merges": merges,
+    }
+
+
+def classify_speaker_rows(
+    embeddings,
+    references,
+    threshold,
+    margin_threshold=0.0,
+    top_k=3,
+):
+    """Classify individual acoustic rows using robust top-k reference similarity."""
+    if embeddings is None or not references:
+        return []
+
+    import torch
+
+    matrix = torch.nn.functional.normalize(embeddings.to("cpu"), dim=1)
+    labels = list(references)
+    if not labels:
+        return []
+    per_label_scores = []
+    requested_top_k = max(1, int(top_k or 1))
+    for label in labels:
+        reference_rows = torch.nn.functional.normalize(
+            references[label].to("cpu"),
+            dim=1,
+        )
+        similarities = torch.matmul(matrix, reference_rows.T)
+        score_k = min(requested_top_k, int(reference_rows.shape[0]))
+        per_label_scores.append(
+            torch.topk(similarities, k=score_k, dim=1).values.mean(dim=1)
+        )
+    score_matrix = torch.stack(per_label_scores, dim=1)
+    best_scores, best_indices = torch.max(score_matrix, dim=1)
+    if len(labels) > 1:
+        second_scores = torch.topk(score_matrix, k=2, dim=1).values[:, 1]
+    else:
+        second_scores = torch.full_like(best_scores, -1.0)
+
+    results = []
+    for row_index in range(int(matrix.shape[0])):
+        label_index = int(best_indices[row_index].item())
+        best_label = labels[label_index]
+        best_score = float(best_scores[row_index].item())
+        second_score = float(second_scores[row_index].item())
+        margin = (
+            best_score - second_score
+            if len(labels) > 1
+            else best_score
+        )
+        accepted = bool(
+            best_score >= float(threshold)
+            and margin >= float(margin_threshold)
+        )
+        results.append({
+            "label": best_label if accepted else "UNKNOWN",
+            "best_label": best_label,
+            "score": best_score,
+            "second_score": second_score,
+            "margin": margin,
+            "accepted": accepted,
+            "scoring_strategy": f"row_top_{requested_top_k}_reference_mean",
+        })
+    return results
 
 
 def _cluster_partition_agreement(left_labels, right_labels):
@@ -477,6 +924,7 @@ def decide_adaptive_speaker_mode(
     common = {
         "detected_clusters": len(primary_counts),
         "supported_clusters": len(primary_supported),
+        "supported_cluster_labels": list(primary_supported),
         "cluster_sizes": cluster_sizes,
         "cluster_speech_s": cluster_speech,
     }
@@ -516,21 +964,103 @@ def decide_adaptive_speaker_mode(
     )
 
 
-def _timeline_from_chunk_labels(candidates, labels, reference_matches=None):
+def _timeline_from_chunk_labels(
+    candidates,
+    labels,
+    reference_matches=None,
+    row_reference_matches=None,
+    strict_row_reference_labels=None,
+    row_reference_cluster_min_support_chunks=2,
+    row_reference_cluster_inherit_threshold=0.45,
+):
     timeline = []
     matches = reference_matches or {}
-    for candidate, raw_label in zip(candidates, _cluster_label_values(labels)):
+    row_matches = list(row_reference_matches or [])
+    strict_labels = {
+        str(label)
+        for label in (strict_row_reference_labels or [])
+        if str(label)
+    }
+    for index, (candidate, raw_label) in enumerate(
+        zip(candidates, _cluster_label_values(labels))
+    ):
         cluster_label = f"SPEAKER_{int(raw_label):02d}" if str(raw_label).isdigit() else str(raw_label)
         match = matches.get(cluster_label, {})
-        speaker = match.get("label", cluster_label)
+        row_match = row_matches[index] if index < len(row_matches) else {}
+        direct_match = row_match if row_match.get("accepted") else {}
+        direct_match_rejected = False
+        direct_label = str(direct_match.get("label") or "")
+        direct_support = (
+            match.get("reference_support", {}).get(direct_label, {})
+            if direct_label
+            else {}
+        )
+        if (
+            direct_match
+            and direct_label in strict_labels
+            and int(direct_support.get("support_count", 0) or 0)
+            < max(1, int(row_reference_cluster_min_support_chunks or 1))
+        ):
+            direct_match = {}
+            direct_match_rejected = True
+        cluster_match_label = match.get("label", cluster_label)
+        cluster_has_reference_identity = bool(
+            match.get("accepted")
+            and str(cluster_match_label) in strict_labels
+        )
+        if (
+            direct_match
+            and cluster_has_reference_identity
+            and str(direct_match.get("label")) != str(cluster_match_label)
+        ):
+            direct_match = {}
+            direct_match_rejected = True
+        requires_row_match = str(cluster_match_label) in strict_labels
+        cluster_row_match = bool(
+            cluster_has_reference_identity
+            and str(row_match.get("best_label") or "") == str(cluster_match_label)
+            and float(row_match.get("score", -1.0) or -1.0)
+            >= float(row_reference_cluster_inherit_threshold)
+        )
+        speaker = (
+            direct_match.get("label")
+            or (cluster_match_label if cluster_row_match else None)
+            or (cluster_label if requires_row_match else cluster_match_label)
+        )
+        speaker_score = (
+            direct_match.get("score")
+            if direct_match
+            else row_match.get("score")
+            if cluster_row_match
+            else row_match.get("score")
+            if requires_row_match
+            else match.get("score")
+        )
         timeline.append({
             "start": candidate["start"],
             "end": candidate["end"],
             "speaker": speaker,
-            "speaker_score": match.get("score"),
+            "speaker_score": speaker_score,
             "speaker_cluster": cluster_label,
-            "speaker_best_label": match.get("best_label"),
-            "speaker_best_score": match.get("score"),
+            "speaker_best_label": (
+                direct_match.get("best_label")
+                or (
+                    row_match.get("best_label")
+                    if requires_row_match
+                    else None
+                )
+                or match.get("best_label")
+            ),
+            "speaker_best_score": speaker_score,
+            "speaker_match_scope": (
+                "row"
+                if direct_match
+                else "cluster_with_row_corroboration"
+                if cluster_row_match
+                else "cluster_rejected_by_row"
+                if requires_row_match or direct_match_rejected
+                else "cluster"
+            ),
         })
     return timeline
 
@@ -540,6 +1070,7 @@ def run_adaptive_speaker_engine(
     audio,
     sample_rate,
     intervals,
+    boundary_intervals=None,
     payload=None,
     references=None,
     clusterer=None,
@@ -573,6 +1104,9 @@ def run_adaptive_speaker_engine(
         "sampledSpeechSeconds": 0.0,
         "probe_embeddings_reused": 0,
         "fullClusteringStrategy": "not_run",
+        "intervalSource": str(
+            payload.get("speaker_interval_source") or "asr_intervals"
+        ),
         "timings": timings,
     }
 
@@ -606,8 +1140,13 @@ def run_adaptive_speaker_engine(
             audio,
             sample_rate,
             intervals,
-            chunk_s=float(payload.get("speaker_probe_chunk_s", 4.0) or 4.0),
-            min_chunk_s=1.0,
+            max_chunk_s=float(
+                payload.get("speaker_max_segment_s", 8.0) or 8.0
+            ),
+            min_chunk_s=float(
+                payload.get("speaker_min_segment_s", 0.8) or 0.8
+            ),
+            boundary_intervals=boundary_intervals,
         )
     except Exception as exc:
         mark_failed(exc, "candidate_generation_failed")
@@ -717,13 +1256,32 @@ def run_adaptive_speaker_engine(
                 mode,
                 evidence,
                 max_clusters=int(
-                    payload.get("speaker_probe_max_assignment_clusters", 6) or 6
+                    payload.get("speaker_probe_max_assignment_clusters", 12) or 12
                 ),
             ):
-                probe_assignment_embeddings = [
-                    embedding for _candidate, embedding in valid_probe
+                supported_labels = set(
+                    evidence.get("supported_cluster_labels") or []
+                )
+                primary_label_values = _cluster_label_values(primary_labels)
+                supported_probe_rows = [
+                    (embedding, label)
+                    for (_candidate, embedding), label in zip(
+                        valid_probe,
+                        primary_label_values,
+                    )
+                    if label in supported_labels
                 ]
-                probe_assignment_labels = _cluster_label_values(primary_labels)
+                probe_assignment_embeddings = [
+                    embedding for embedding, _label in supported_probe_rows
+                ]
+                probe_assignment_labels = [
+                    label for _embedding, label in supported_probe_rows
+                ]
+                processing["ignoredUnsupportedProbeClusters"] = max(
+                    0,
+                    int(evidence.get("detected_clusters", 0) or 0)
+                    - int(evidence.get("supported_clusters", 0) or 0),
+                )
             if evidence["decision"] == "single":
                 processing["status"] = "skipped_single_speaker"
                 return finish([], {})
@@ -779,12 +1337,42 @@ def run_adaptive_speaker_engine(
         stage_started = time.perf_counter()
         if probe_assignment_labels:
             try:
-                full_labels = assign_embeddings_to_probe_centroids(
-                    full_matrix,
-                    probe_assignment_embeddings,
-                    probe_assignment_labels,
-                )
-                processing["fullClusteringStrategy"] = "probe_centroid_assignment"
+                if bool(payload.get("speaker_full_refine_enabled", True)):
+                    full_labels, refinement = (
+                        refine_embeddings_from_probe_centroids(
+                            full_matrix,
+                            probe_assignment_embeddings,
+                            probe_assignment_labels,
+                            max_iterations=int(
+                                payload.get(
+                                    "speaker_full_refine_iterations",
+                                    8,
+                                )
+                                or 8
+                            ),
+                        )
+                    )
+                    processing["fullClusteringStrategy"] = (
+                        "probe_spherical_kmeans"
+                    )
+                    full_labels, post_merge = (
+                        merge_speaker_clusters_by_centroid_similarity(
+                            full_matrix,
+                            full_labels,
+                            merge_threshold,
+                        )
+                    )
+                    refinement["post_merge"] = post_merge
+                    processing["fullRefinement"] = refinement
+                else:
+                    full_labels = assign_embeddings_to_probe_centroids(
+                        full_matrix,
+                        probe_assignment_embeddings,
+                        probe_assignment_labels,
+                    )
+                    processing["fullClusteringStrategy"] = (
+                        "probe_centroid_assignment"
+                    )
                 processing["probeAssignmentClusters"] = len(
                     set(probe_assignment_labels)
                 )
@@ -821,26 +1409,85 @@ def run_adaptive_speaker_engine(
             for label, embeddings in grouped.items()
         }
         reference_matches = {}
+        row_reference_matches = []
+        strict_reference_labels = []
         if references:
             stage_started = time.perf_counter()
             try:
                 resolved_references = references() if callable(references) else references
                 if resolved_references:
+                    host_label = str(
+                        payload.get("speaker_host_label") or ""
+                    ).strip()
+                    constrain_to_references = bool(
+                        payload.get("speaker_constrain_to_references", False)
+                    )
                     reference_matches = classify_speaker_clusters(
                         cluster_embeddings,
                         resolved_references,
                         float(payload.get("speaker_reference_threshold", 0.45) or 0.45),
                         float(payload.get("speaker_reference_margin", 0.0) or 0.0),
-                        bool(payload.get("speaker_constrain_to_references", False)),
+                        constrain_to_references,
                         max_sample_chunks=int(
                             payload.get("speaker_reference_max_sample_chunks", 24) or 24
                         ),
                         min_support_chunks=int(
                             payload.get("speaker_reference_min_support_chunks", 2) or 2
                         ),
+                        min_support_ratio=float(
+                            payload.get(
+                                "speaker_reference_min_support_ratio",
+                                0.0,
+                            )
+                            or 0.0
+                        ),
                     )
                     processing["referenceMatches"] = reference_matches
                     processing["reference_matches"] = reference_matches
+                    strict_reference_labels = list(resolved_references)
+                    processing["referenceLabels"] = strict_reference_labels
+                    row_reference_matches = classify_speaker_rows(
+                        full_matrix,
+                        resolved_references,
+                        float(
+                            payload.get(
+                                "speaker_row_reference_threshold",
+                                0.55,
+                            )
+                            or 0.55
+                        ),
+                        float(
+                            payload.get(
+                                "speaker_row_reference_margin",
+                                0.08,
+                            )
+                            or 0.08
+                        ),
+                        top_k=int(
+                            payload.get(
+                                "speaker_row_reference_top_k",
+                                2,
+                            )
+                            or 2
+                        ),
+                    )
+                    processing["rowReferenceMatches"] = {
+                        label: sum(
+                            1
+                            for match in row_reference_matches
+                            if match.get("accepted")
+                            and match.get("label") == label
+                        )
+                        for label in strict_reference_labels
+                    }
+                    if host_label and host_label in resolved_references:
+                        processing["hostLabel"] = host_label
+                        processing["hostRowMatches"] = sum(
+                            1
+                            for match in row_reference_matches
+                            if match.get("accepted")
+                            and match.get("label") == host_label
+                        )
             except Exception as exc:
                 processing["reference_error"] = {
                     "type": type(exc).__name__, "message": str(exc)
@@ -851,6 +1498,14 @@ def run_adaptive_speaker_engine(
             [candidate for candidate, _embedding in valid_full],
             full_labels,
             reference_matches,
+            row_reference_matches,
+            strict_row_reference_labels=strict_reference_labels,
+            row_reference_cluster_min_support_chunks=int(
+                payload.get("speaker_reference_min_support_chunks", 2) or 2
+            ),
+            row_reference_cluster_inherit_threshold=float(
+                payload.get("speaker_reference_threshold", 0.45) or 0.45
+            ),
         )
         processing["status"] = "full_completed"
         if mode == "always":
@@ -955,6 +1610,7 @@ def classify_speaker_clusters(
     constrain_to_references=False,
     max_sample_chunks=24,
     min_support_chunks=2,
+    min_support_ratio=0.0,
 ):
     if not cluster_embeddings or not references:
         return {}
@@ -1023,9 +1679,19 @@ def classify_speaker_clusters(
         second_score = second["score"] if second else -1.0
         margin = best["margin"]
         required_support = max(1, int(min_support_chunks or 1))
+        required_support_ratio = max(
+            0.0,
+            min(1.0, float(min_support_ratio or 0.0)),
+        )
+        support_ratio = (
+            best["support_count"] / int(sampled.shape[0])
+            if int(sampled.shape[0]) > 0
+            else 0.0
+        )
         is_confident = bool(
             best_label
             and best["support_count"] >= required_support
+            and support_ratio >= required_support_ratio
             and best["support_mean_score"] >= threshold
             and margin >= margin_threshold
         )
@@ -1043,14 +1709,20 @@ def classify_speaker_clusters(
             "accepted": is_confident,
             "support_chunks": best["support_count"],
             "required_support_chunks": required_support,
+            "required_support_ratio": required_support_ratio,
             "sampled_chunks": int(sampled.shape[0]),
             "support_mean_score": best["support_mean_score"],
-            "support_ratio": (
-                best["support_count"] / int(sampled.shape[0])
-                if int(sampled.shape[0]) > 0
-                else 0.0
-            ),
+            "support_ratio": support_ratio,
             "scoring_strategy": "bounded_repeated_chunk_votes",
+            "reference_support": {
+                candidate["label"]: {
+                    "support_count": candidate["support_count"],
+                    "support_mean_score": candidate["support_mean_score"],
+                    "margin": candidate["margin"],
+                    "score": candidate["score"],
+                }
+                for candidate in candidates
+            },
         }
     return matches
 

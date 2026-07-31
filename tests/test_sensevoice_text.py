@@ -9,8 +9,10 @@ if PYTHON_SCRIPT_DIR not in sys.path:
     sys.path.insert(0, PYTHON_SCRIPT_DIR)
 
 from sensevoice_paraformer import (
+    extract_vad_speaker_intervals,
     normalize_model_results_with_meta,
     paraformer_full_text_to_segments,
+    select_paraformer_speaker_intervals,
 )
 from sensevoice_text import extract_sensevoice_metadata, normalize_segments
 
@@ -116,6 +118,57 @@ class ParaformerTimestampTests(unittest.TestCase):
             "timestamp": [[0, 100]],
         }), [])
 
+    def test_speaker_intervals_use_vad_with_paraformer_sentence_boundaries(self):
+        result = {
+            "text": "你好。我是露露。",
+            "timestamp": [
+                [0, 200],
+                [200, 400],
+                [500, 700],
+                [700, 900],
+                [900, 1100],
+                [1100, 1300],
+            ],
+        }
+        sentence_info = [
+            {"start": 0, "end": 5000, "text": "你好。我是露露。"},
+        ]
+
+        intervals, boundaries, source = select_paraformer_speaker_intervals(
+            result,
+            sentence_info,
+            vad_intervals=[
+                {"start": 0.1, "end": 1.4},
+                {"start": 2.0, "end": 4.8},
+            ],
+            max_subtitle_chars=4,
+        )
+
+        self.assertEqual(
+            source,
+            "funasr_vad+paraformer_subtitle_timestamps",
+        )
+        self.assertEqual(intervals, [
+            {"start": 0.1, "end": 1.4},
+            {"start": 2.0, "end": 4.8},
+        ])
+        self.assertEqual(boundaries, [
+            {"start": 0.0, "end": 0.4},
+            {"start": 0.5, "end": 1.3},
+        ])
+
+    def test_extracts_fun_asr_vad_output_in_seconds(self):
+        intervals = extract_vad_speaker_intervals([
+            {
+                "key": "recording",
+                "value": [[100, 1400], [2000, 4800]],
+            }
+        ])
+
+        self.assertEqual(intervals, [
+            {"start": 0.1, "end": 1.4},
+            {"start": 2.0, "end": 4.8},
+        ])
 
 if __name__ == "__main__":
     unittest.main()

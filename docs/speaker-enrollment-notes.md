@@ -53,7 +53,7 @@
 
 ## 当前代码位置
 
-- Adaptive speaker、reference centroid、聚类与 matching：`src/scripts/python/sensevoice_speaker.py`
+- Adaptive speaker、reference prototypes、聚类与 matching：`src/scripts/python/sensevoice_speaker.py`
 - 原生 Paraformer 的 post-ASR 集成与 CAM++ cache：`src/scripts/python/sensevoice_paraformer.py`
 - 当前单元测试：`tests/test_sensevoice_speaker.py`
 - Canonical reference manifest：`data/asr_speaker_refs/manifest.json`
@@ -61,9 +61,13 @@
 ## 当前状态与历史待优化
 
 - [x] Reference enrollment 已集成到 `transcribe_paraformer_builtin()` 的 post-ASR 流程。
-- [x] 已支持 adaptive probe、probe embedding reuse、lazy reference centroid 和 score/runner-up margin。
+- [x] 已支持 adaptive probe、probe embedding reuse、lazy reference prototypes 和 score/runner-up margin。
+- [x] 说话人候选段使用 FSMN-VAD 外层区间与 Paraformer 字幕时间戳边界；`speaker_probe_max_chunks` 只限制均匀探测样本数，不是固定时长切块。
+- [x] 同一主播支持按 `state` 登记多份参考，各状态独立构建受支持原型；已用栞栞的 `calm_chat` 与 `excited_game` 两个状态验证。
+- [x] planned roster 仅作为评估元数据；所有合格参考始终参与开放集竞争，陌生声音证据不足时保留匿名标签。
+- [x] cluster 实名需要重复 chunk 支持，逐句实名还需要该句自身与同一主播一致，避免游戏内语音随整个簇被批量实名。
 - [x] 已有 batching、single/multiple/inconclusive、fail-open、forced mode 和 reference matching 单元测试。
-- [ ] 尝试更长的参考音频（5-10 分钟），提高 centroid 质量。
+- [ ] 继续为已有主播补充经过人工复核、覆盖稳定声学状态的参考素材；不把未经跨场验证的候选音频直接加入参考库。
 - [ ] 对十六萤↔莉蔻高相似度问题，尝试更好的 reference 素材或 per-chunk 评估。
 - [ ] 换克罗雅的参考素材（选聊天直播而非游戏直播）。
-- [ ] 如模型加载成本仍显著，再评估 centroid 持久化；当前常驻 worker 会在进程内复用 reference centroid/cache。
+- [ ] 如模型加载成本仍显著，再评估 prototype 持久化；当前常驻 worker 会在进程内复用 reference/cache。

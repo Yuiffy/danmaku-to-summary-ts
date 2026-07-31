@@ -120,6 +120,78 @@ def paraformer_full_text_to_segments(result, max_subtitle_chars=18):
     return segments
 
 
+def select_paraformer_speaker_intervals(
+    result,
+    sentence_info,
+    vad_intervals=None,
+    max_subtitle_chars=18,
+):
+    """Use VAD spans with the same timestamped segments emitted as subtitles."""
+    precise_segments = paraformer_full_text_to_segments(
+        result,
+        max_subtitle_chars=max_subtitle_chars,
+    )
+    sentence_intervals = [
+        {
+            "start": float(item["start"]),
+            "end": float(item["end"]),
+        }
+        for item in precise_segments
+        if float(item.get("end", 0)) > float(item.get("start", 0))
+    ]
+    sentence_source = "paraformer_subtitle_timestamps"
+    if not sentence_intervals:
+        sentence_intervals = [
+            {
+                "start": float(item.get("start", 0) or 0) / 1000.0,
+                "end": float(
+                    item.get("end", item.get("start", 0)) or 0
+                ) / 1000.0,
+            }
+            for item in sentence_info or []
+            if float(item.get("end", 0) or 0)
+            > float(item.get("start", 0) or 0)
+        ]
+        sentence_source = "paraformer_sentence_info_fallback"
+
+    normalized_vad = [
+        {
+            "start": max(0.0, float(item.get("start", 0) or 0)),
+            "end": max(
+                0.0,
+                float(item.get("end", item.get("start", 0)) or 0),
+            ),
+        }
+        for item in vad_intervals or []
+        if isinstance(item, dict)
+        and float(item.get("end", 0) or 0)
+        > float(item.get("start", 0) or 0)
+    ]
+    if normalized_vad:
+        return (
+            normalized_vad,
+            sentence_intervals,
+            f"funasr_vad+{sentence_source}",
+        )
+    return sentence_intervals, [], sentence_source
+
+
+def extract_vad_speaker_intervals(raw_result):
+    """Normalize FunASR VAD inference output from milliseconds to seconds."""
+    intervals = []
+    for result in raw_result or []:
+        if not isinstance(result, dict):
+            continue
+        for value in result.get("value") or []:
+            if not isinstance(value, (list, tuple)) or len(value) < 2:
+                continue
+            start = max(0.0, float(value[0]) / 1000.0)
+            end = max(start, float(value[1]) / 1000.0)
+            if end > start:
+                intervals.append({"start": start, "end": end})
+    return intervals
+
+
 def paraformer_timestamp_to_sentences(results, meta, punc_model, max_subtitle_chars=18):
     """
     Paraformer returns character-level timestamps.
@@ -338,7 +410,12 @@ def install_paraformer_timing_probe(model):
             stage = "asr_inference_s"
         started = time.perf_counter()
         try:
-            return original_inference(*args, **kwargs)
+            result = original_inference(*args, **kwargs)
+            if stage == "vad_s":
+                model._danmaku_vad_intervals = (
+                    extract_vad_speaker_intervals(result)
+                )
+            return result
         finally:
             collector = getattr(model, "_danmaku_timing_collector", None)
             if isinstance(collector, dict):
@@ -562,6 +639,7 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
 
     inference_timings = {}
     model._danmaku_timing_collector = inference_timings
+    model._danmaku_vad_intervals = []
 
     try:
         batch_size_s = float(payload.get("batch_size_s", 300) or 300)
@@ -662,14 +740,28 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
     if enable_speaker and spk_model_obj and sentence_info:
         try:
             audio_data, sample_rate = load_audio_16k_mono(audio_path)
-            speaker_intervals = [
-                {
-                    "start": float(item.get("start", 0) or 0) / 1000.0,
-                    "end": float(item.get("end", item.get("start", 0)) or 0) / 1000.0,
-                }
-                for item in sentence_info
-                if float(item.get("end", 0) or 0) > float(item.get("start", 0) or 0)
-            ]
+            (
+                speaker_intervals,
+                speaker_boundary_intervals,
+                speaker_interval_source,
+            ) = (
+                select_paraformer_speaker_intervals(
+                    result,
+                    sentence_info,
+                    vad_intervals=getattr(
+                        model,
+                        "_danmaku_vad_intervals",
+                        [],
+                    ),
+                    max_subtitle_chars=int(
+                        payload.get("max_subtitle_chars", 18) or 18
+                    ),
+                )
+            )
+            speaker_payload = dict(payload)
+            speaker_payload["speaker_interval_source"] = (
+                speaker_interval_source
+            )
             def load_references():
                 reference_started = time.perf_counter()
                 centroids = build_speaker_reference_centroids(
@@ -677,6 +769,27 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
                     speaker_references,
                     device,
                     batch_size=int(payload.get("speaker_embedding_batch_size", 64) or 64),
+                    prototype_merge_threshold=float(
+                        payload.get(
+                            "speaker_reference_prototype_merge_threshold",
+                            0.72,
+                        )
+                        or 0.72
+                    ),
+                    max_prototypes=int(
+                        payload.get(
+                            "speaker_reference_max_prototypes",
+                            6,
+                        )
+                        or 6
+                    ),
+                    prototype_min_support_chunks=int(
+                        payload.get(
+                            "speaker_reference_prototype_min_support_chunks",
+                            2,
+                        )
+                        or 2
+                    ),
                 )
                 set_timing(payload, "reference_embedding_s", time.perf_counter() - reference_started)
                 return centroids
@@ -686,7 +799,8 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
                 audio_data,
                 sample_rate,
                 speaker_intervals,
-                payload=payload,
+                boundary_intervals=speaker_boundary_intervals,
+                payload=speaker_payload,
                 references=load_references if speaker_references else None,
             )
             speaker_timeline = smooth_speaker_timeline(

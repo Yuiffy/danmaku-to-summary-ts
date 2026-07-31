@@ -156,6 +156,27 @@ def transcribe(model, config, job, gpu_throttle=None, spk_model_obj=None):
                     payload.get("speaker_references"),
                     device,
                     batch_size=int(payload.get("speaker_embedding_batch_size", 64) or 64),
+                    prototype_merge_threshold=float(
+                        payload.get(
+                            "speaker_reference_prototype_merge_threshold",
+                            0.72,
+                        )
+                        or 0.72
+                    ),
+                    max_prototypes=int(
+                        payload.get(
+                            "speaker_reference_max_prototypes",
+                            6,
+                        )
+                        or 6
+                    ),
+                    prototype_min_support_chunks=int(
+                        payload.get(
+                            "speaker_reference_prototype_min_support_chunks",
+                            2,
+                        )
+                        or 2
+                    ),
                 )
 
             adaptive = run_adaptive_speaker_engine(

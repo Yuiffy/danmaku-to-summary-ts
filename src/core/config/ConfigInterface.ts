@@ -140,6 +140,7 @@ export interface AsrSpeakerReferenceConfig {
   end_s?: number;
   chunk_s?: number;
   max_chunks?: number;
+  state?: string;
 }
 
 export interface PlannedSpeakerParticipantConfig {
@@ -173,7 +174,8 @@ export interface AsrGpuThrottleConfig {
 
 export interface AsrAdaptiveSpeakerConfig {
   speaker_detection_mode?: 'auto' | 'always';
-  speaker_probe_chunk_s?: number;
+  speaker_min_segment_s?: number;
+  speaker_max_segment_s?: number;
   speaker_probe_max_chunks?: number;
   speaker_probe_max_assignment_clusters?: number;
   speaker_probe_min_valid_chunks?: number;
@@ -183,8 +185,17 @@ export interface AsrAdaptiveSpeakerConfig {
   speaker_probe_min_cohesion?: number;
   speaker_probe_separation_margin?: number;
   speaker_probe_fail_open?: boolean;
+  speaker_full_refine_enabled?: boolean;
+  speaker_full_refine_iterations?: number;
   speaker_reference_max_sample_chunks?: number;
   speaker_reference_min_support_chunks?: number;
+  speaker_reference_min_support_ratio?: number;
+  speaker_reference_prototype_merge_threshold?: number;
+  speaker_reference_max_prototypes?: number;
+  speaker_reference_prototype_min_support_chunks?: number;
+  speaker_row_reference_threshold?: number;
+  speaker_row_reference_margin?: number;
+  speaker_row_reference_top_k?: number;
 }
 
 export interface AsrConfig {

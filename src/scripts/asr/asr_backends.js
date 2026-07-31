@@ -40,9 +40,10 @@ const DEFAULT_GPU_THROTTLE = {
 
 const DEFAULT_ADAPTIVE_SPEAKER_CONFIG = {
     speaker_detection_mode: 'auto',
-    speaker_probe_chunk_s: 4,
+    speaker_min_segment_s: 0.8,
+    speaker_max_segment_s: 8,
     speaker_probe_max_chunks: 256,
-    speaker_probe_max_assignment_clusters: 6,
+    speaker_probe_max_assignment_clusters: 12,
     speaker_probe_min_valid_chunks: 6,
     speaker_probe_min_speech_s: 20,
     speaker_probe_min_cluster_chunks: 2,
@@ -50,8 +51,17 @@ const DEFAULT_ADAPTIVE_SPEAKER_CONFIG = {
     speaker_probe_min_cohesion: 0.70,
     speaker_probe_separation_margin: 0.03,
     speaker_probe_fail_open: true,
+    speaker_full_refine_enabled: true,
+    speaker_full_refine_iterations: 8,
     speaker_reference_max_sample_chunks: 24,
-    speaker_reference_min_support_chunks: 2
+    speaker_reference_min_support_chunks: 2,
+    speaker_reference_min_support_ratio: 0.5,
+    speaker_reference_prototype_merge_threshold: 0.72,
+    speaker_reference_max_prototypes: 6,
+    speaker_reference_prototype_min_support_chunks: 2,
+    speaker_row_reference_threshold: 0.55,
+    speaker_row_reference_margin: 0.08,
+    speaker_row_reference_top_k: 2
 };
 
 const DEFAULT_ASR_CONFIG = {
@@ -540,6 +550,15 @@ function normalizeLabel(value) {
 function isUnknownSpeakerLabel(label) {
     const value = String(label || '').trim();
     return !value || value === 'UNKNOWN' || value === '-1' || /^SPEAKER_\d+$/i.test(value);
+}
+
+function hasMultipleSpeakerLabels(result) {
+    const labels = new Set(
+        (Array.isArray(result?.segments) ? result.segments : [])
+            .map(segment => String(segment?.speaker || '').trim())
+            .filter(label => label && !/^(?:UNKNOWN|-1)$/i.test(label))
+    );
+    return labels.size >= 2;
 }
 
 function resolveStreamerRegistry(config = {}) {
@@ -1172,27 +1191,44 @@ function resolveParaformerModelOption(options = {}) {
 
 function buildRuntimeSpeakerOverrides(config = {}, context = {}) {
     const speakerRequest = getSpeakerRequest(context);
-    if (!speakerRequest || speakerRequest.constrainToRoster !== true) {
-        return {};
-    }
-    const participants = Array.isArray(speakerRequest.participants) ? speakerRequest.participants : [];
-    const references = Array.isArray(speakerRequest.constrainedSpeakerReferences) && speakerRequest.constrainedSpeakerReferences.length > 0
+    const registry = resolveStreamerRegistry(config);
+    const roomId = context.room_id || context.roomId || context.hostRoomId || null;
+    const hostStreamerId = speakerRequest?.hostStreamerId || findHostStreamerId(roomId, registry);
+    const requestedParticipants = Array.isArray(speakerRequest?.participants)
+        ? speakerRequest.participants
+        : [];
+    const hostParticipant = requestedParticipants.find(
+        participant => String(participant?.streamerId || participant?.id || '') === String(hostStreamerId || '')
+    );
+    const hostStreamer = hostStreamerId
+        ? (registry[hostStreamerId] || hostParticipant || null)
+        : null;
+    const hostLabels = speakerReferenceCatalog.collectSpeakerLabels(hostStreamer || {});
+    const constrainedReferences = Array.isArray(speakerRequest?.constrainedSpeakerReferences)
         ? speakerRequest.constrainedSpeakerReferences
-        : speakerReferenceCatalog.buildSpeakerReferencesForParticipants(
-            participants.map((participant) => ({
-                id: participant.streamerId,
-                displayName: participant.displayName,
-                speakerLabels: participant.speakerLabels,
-                aliases: participant.aliases
-            })),
-            config
-        );
-    if (references.length === 0) {
-        return {};
+        : [];
+    const constrainedHostReference = constrainedReferences.find(
+        reference => hostLabels.some(
+            label => speakerReferenceCatalog.normalizeLabel(label)
+                === speakerReferenceCatalog.normalizeLabel(reference?.speaker)
+        )
+    );
+    const catalogHostReference = hostStreamer
+        ? speakerReferenceCatalog.getStreamerReferenceStatus(hostStreamer, config).reference
+        : null;
+    const hostReference = constrainedHostReference || catalogHostReference;
+    const hostOverride = hostReference?.speaker
+        ? { speaker_host_label: String(hostReference.speaker) }
+        : {};
+    if (!speakerRequest) {
+        return hostOverride;
     }
+
+    // Roster data is evaluation context, not a speaker-recognition whitelist.
+    // Keep every reference configured on the selected ASR backend in competition.
     return {
-        speaker_references: references,
-        speaker_constrain_to_references: true,
+        ...hostOverride,
+        speaker_constrain_to_references: false,
         speaker_request_mode: speakerRequest.mode || 'planned_roster',
         planned_participant_ids: Array.isArray(speakerRequest.plannedParticipantIds)
             ? speakerRequest.plannedParticipantIds.map(value => String(value)).filter(Boolean)
@@ -1278,6 +1314,7 @@ module.exports = {
     parseCliArgs,
     parseSrt,
     normalizeAsrResult,
+    hasMultipleSpeakerLabels,
     resolveStreamerRegistry,
     mapSpeakerLabelToStreamerId,
     summarizeAsrSpeakers,

@@ -44,7 +44,7 @@ describe('asr_backends', () => {
     }
   });
 
-  test('reuses the resolved finetuned paraformer profile for a sampled room task', async () => {
+  test('keeps the global speaker reference library for an unconstrained room task', async () => {
     const server = net.createServer((socket: any) => {
       let buffer = '';
       socket.on('data', (data: Buffer) => {
@@ -56,6 +56,10 @@ describe('asr_backends', () => {
         expect(request.payload.model).toBe('D:/files/videos/asr_eval/models/paraformer_timestamp_avg10');
         expect(request.payload.finetuned_model).toBe('D:/files/videos/asr_eval/models/paraformer_timestamp_avg10');
         expect(request.payload.emotion_analysis.enabled).toBe(false);
+        expect(request.payload.speaker_host_label).toBe('栞栞');
+        expect(request.payload.speaker_constrain_to_references).not.toBe(true);
+        expect(request.payload.speaker_references.map((reference: any) => reference.speaker))
+          .toEqual(expect.arrayContaining(['栞栞', '米汀']));
         socket.end(JSON.stringify({
           ok: true,
           result: {
@@ -92,7 +96,7 @@ describe('asr_backends', () => {
     }
   });
 
-  test('applies planned roster speaker references only for constrained tasks', async () => {
+  test('keeps the global speaker reference library for planned roster tasks', async () => {
     const server = net.createServer((socket: any) => {
       let buffer = '';
       socket.on('data', (data: Buffer) => {
@@ -100,11 +104,13 @@ describe('asr_backends', () => {
         if (!buffer.includes('\n')) return;
         const request = JSON.parse(buffer.split('\n', 1)[0]);
         expect(request.payload.backend).toBe('paraformer');
-        expect(request.payload.speaker_constrain_to_references).toBe(true);
+        expect(request.payload.speaker_constrain_to_references).toBe(false);
         expect(request.payload.speaker_references).toEqual([
           { speaker: '岁己SUI', audio_path: 'data/asr_speaker_refs/sui.wav' },
-          { speaker: '栞栞', audio_path: 'data/asr_speaker_refs/shiori.wav' }
+          { speaker: '栞栞', audio_path: 'data/asr_speaker_refs/shiori.wav' },
+          { speaker: '米汀', audio_path: 'data/asr_speaker_refs/mintin.wav' }
         ]);
+        expect(request.payload.speaker_host_label).toBe('岁己SUI');
         expect(request.payload.room_id).toBe('25788785');
         expect(request.payload.emotion_analysis.enabled).toBe(true);
         socket.end(JSON.stringify({ ok: true, result: { backend: 'paraformer', segments: [] } }) + '\n');
@@ -127,7 +133,11 @@ describe('asr_backends', () => {
               enabled: true,
               room_ids: ['25788785']
             },
-            speaker_references: [{ speaker: '不该使用', audio_path: 'data/asr_speaker_refs/other.wav' }]
+            speaker_references: [
+              { speaker: '岁己SUI', audio_path: 'data/asr_speaker_refs/sui.wav' },
+              { speaker: '栞栞', audio_path: 'data/asr_speaker_refs/shiori.wav' },
+              { speaker: '米汀', audio_path: 'data/asr_speaker_refs/mintin.wav' }
+            ]
           }
         }
       }, {
@@ -157,6 +167,23 @@ describe('asr_backends', () => {
       else process.env.ASR_PERSISTENT_WORKER_TOKEN = previousToken;
       await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
     }
+  });
+
+  test('treats anonymous acoustic clusters as speakers for downstream summaries', () => {
+    expect(asr.hasMultipleSpeakerLabels({
+      segments: [
+        { speaker: '栞栞' },
+        { speaker: 'SPEAKER_04' },
+        { speaker: 'UNKNOWN' }
+      ]
+    })).toBe(true);
+    expect(asr.hasMultipleSpeakerLabels({
+      segments: [
+        { speaker: '栞栞' },
+        { speaker: '栞栞' },
+        { speaker: 'UNKNOWN' }
+      ]
+    })).toBe(false);
   });
 
   test('writes planned participant info into ASR speaker summary sidecar', () => {

@@ -12,10 +12,21 @@
     "speaker": "栞栞",
     "key": "shiori",
     "audio_path": "data/asr_speaker_refs/shiori.wav",
+    "state": "calm_chat",
     "seconds": 160.0,
     "source_count": 20,
     "source_media": "D:\\files\\videos\\DDTV录播\\26966466_栞栞Shiori\\2026_05_26\\录制-26966466-20260526-100634-093-早安獭獭栞！.m4a; D:\\files\\videos\\DDTV录播\\26966466_栞栞Shiori\\2026_05_26\\录制-26966466-20260526-214833-809-栞来！.m4a",
     "source_srt": "D:\\files\\videos\\DDTV录播\\26966466_栞栞Shiori\\2026_05_26\\录制-26966466-20260526-100634-093-早安獭獭栞！.srt; D:\\files\\videos\\DDTV录播\\26966466_栞栞Shiori\\2026_05_26\\录制-26966466-20260526-214833-809-栞来！.srt"
+  },
+  {
+    "speaker": "栞栞",
+    "key": "shiori_excited_game",
+    "audio_path": "data/asr_speaker_refs/shiori_excited_game.wav",
+    "state": "excited_game",
+    "seconds": 104.25,
+    "source_count": 12,
+    "source_media": "D:\\files\\videos\\DDTV录播\\26966466_栞栞Shiori\\2026_07_30\\录制-26966466-20260730-154902-305-栞瓦！_merged.flv",
+    "source_srt": "D:\\files\\videos\\DDTV录播\\26966466_栞栞Shiori\\2026_07_30\\录制-26966466-20260730-154902-305-栞瓦！_merged.speaker.srt"
   },
   {
     "speaker": "星汐Seki",

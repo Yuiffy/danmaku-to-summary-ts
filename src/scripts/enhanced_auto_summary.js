@@ -1294,14 +1294,10 @@ function shouldPreferSpeakerReviewSrtForRoom(roomId, asrResult = null) {
         return false;
     }
 
-    const uniqueSpeakers = new Set(
-        Array.isArray(asrResult?.segments)
-            ? asrResult.segments
-                .map(segment => String(segment.speaker || '').trim())
-                .filter(label => label && label !== 'UNKNOWN' && !/^SPEAKER_\d+$/i.test(label))
-            : []
-    );
-    return uniqueSpeakers.size >= 2;
+    // Anonymous acoustic clusters are still distinct speakers. Keeping their
+    // labels lets the summary model distinguish a guest self-introduction from
+    // the room owner without forcing an unreliable real-name match.
+    return asrBackends.hasMultipleSpeakerLabels(asrResult);
 }
 
 // 从文件名提取房间ID

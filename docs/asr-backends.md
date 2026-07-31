@@ -151,14 +151,18 @@ node src/scripts/enhanced_auto_summary.js "D:/path/to/video.flv" --asr-backend p
 
 `auto` 模式遵守这些稳定规则：
 
-1. 从 VAD speech intervals 生成按时间排列、互不重叠的候选 chunks，并在**累计有效语音时长**上做确定性分位采样，而不是按录播墙钟时间随机抽样。
-2. 对同一批 probe embeddings 用主阈值和确认阈值各聚类一次；不传 `preset_spk_num`，避免用预设人数充当答案。
-3. 结果为 `single`、`multiple` 或 `inconclusive`。只有满足最小有效 chunk、语音时长和双阈值稳定性的可信 `single` 会设置 `status=skipped_single_speaker` 并跳过完整处理。
-4. `multiple` 和 `inconclusive` 都进入完整处理；probe 报错时默认 `speaker_probe_fail_open=true`，同样进入完整处理，宁可多算也不把未知误判成单人。
-5. 完整处理复用 probe embeddings，只计算剩余 chunks；reference centroids 仅在完整聚类后需要实名匹配时延迟加载。
-6. 完整成功为 `status=full_completed`。speaker 阶段失败返回空 speaker timeline 与 `status=failed`，但保留已经完成的 ASR 文本。
+1. 以 FSMN-VAD speech intervals 为外层语音区间，再使用 Paraformer 最终字幕/字符时间戳作为区间内边界，生成按时间排列、互不重叠的真实候选句段。正常句段保留原边界；只有超过 `speaker_max_segment_s` 的异常长段才做兜底拆分，因此这里不是固定 2 秒或 4 秒滑窗。
+2. probe 在**累计有效语音时长**上做确定性分位采样，而不是按录播墙钟时间随机抽样。`speaker_probe_max_chunks=256` 是最多均匀抽取 256 个真实候选句段，不是把整场切成 256 段，也不是固定时长。
+3. 对同一批 probe embeddings 用主阈值和确认阈值各聚类一次；不传 `preset_spk_num`，避免用预设人数充当答案。
+4. 结果为 `single`、`multiple` 或 `inconclusive`。只有满足最小有效 chunk、语音时长和双阈值稳定性的可信 `single` 会设置 `status=skipped_single_speaker` 并跳过完整处理。
+5. `multiple` 和 `inconclusive` 都进入完整处理；probe 报错时默认 `speaker_probe_fail_open=true`，同样进入完整处理，宁可多算也不把未知误判成单人。
+6. 稳定的多人 probe 可将受支持的探测簇作为固定 K 初值，并在全量 embeddings 上迭代更新中心；probe embeddings 会被复用，只计算剩余句段。证据不足时仍回退到完整聚类。
+7. reference prototypes 仅在完整聚类后需要实名匹配时延迟加载。同一主播可登记多个 `state`，各状态先独立过滤离群样本并构建一个或多个受支持原型，最终由同一主播名共同参与匹配。
+8. 完整成功为 `status=full_completed`。speaker 阶段失败返回空 speaker timeline 与 `status=failed`，但保留已经完成的 ASR 文本。
 
-`always` 模式跳过 probe，直接完整聚类和 reference matching；speaker-once 请求会强制使用该模式。planned roster 任务只加载名单内 references，并开启 constrained matching；不满足分数与 runner-up margin 的 cluster 会标为 `UNKNOWN`。普通非 constrained 任务可保留匿名 `SPEAKER_nn`。
+`always` 模式跳过 probe，直接完整聚类和 reference matching；speaker-once 请求会强制使用该模式。所有任务都让当前 backend 配置的完整参考库参与竞争，planned roster 只保留为预期参与者和回归评估元数据，不过滤参考库，也不把房主设为唯一可接受实名。cluster 和逐句匹配必须同时满足绝对分数、runner-up margin、最小重复支持数及支持率；证据不足时保留匿名 `SPEAKER_nn`，不会硬套成 roster、房主或最接近的已知主播。
+
+启用了 `preferSpeakerReviewSrtWhenMultipleSpeakers` 的房间，只要最终字幕中出现至少两个不同的有效 speaker label，就把 `.speaker.srt` 交给 fusion summary 和晚安生成。匿名 `SPEAKER_nn` 也算独立说话人，因此“房主 + 未实名嘉宾”的自我介绍会以不同标签进入 AI；这不会把匿名标签加入实际出声主播名单，也不会触发多参考图。
 
 关键 `speaker_processing` 字段：
 
@@ -470,7 +474,15 @@ SenseVoice 时间轴优先使用 FunASR 返回的 `sentence_info` / `segments` �
           "speaker": "栞栞",
           "audio_path": "D:/path/to/shiori_single.wav",
           "chunk_s": 8,
-          "max_chunks": 20
+          "max_chunks": 20,
+          "state": "calm_chat"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "D:/path/to/shiori_excited_game.wav",
+          "chunk_s": 8,
+          "max_chunks": 20,
+          "state": "excited_game"
         }
       ],
       "speaker_reference_threshold": 0.45
@@ -479,12 +491,14 @@ SenseVoice 时间轴优先使用 FunASR 返回的 `sentence_info` / `segments` �
 }
 ```
 
-仓库内的默认参考音频登记在 `data/asr_speaker_refs/manifest.json`，对应目录说明见 `data/asr_speaker_refs/README.md`。当前五人语言联动场景优先使用：
+仓库内的默认参考音频登记在 `data/asr_speaker_refs/manifest.json`，对应目录说明见 `data/asr_speaker_refs/README.md`。参考库不是某场联动的白名单；已登记且满足质量要求的主播始终共同参与开放集匹配。当前生产参考包括：
 
 - 岁己 -> `data/asr_speaker_refs/sui.wav`
-- 栞栞 -> `data/asr_speaker_refs/shiori.wav`
+- 栞栞平静聊天 -> `data/asr_speaker_refs/shiori.wav`
+- 栞栞激动游戏 -> `data/asr_speaker_refs/shiori_excited_game.wav`
 - 瑞娅 -> `data/asr_speaker_refs/rhea.wav`
 - 三理 -> `data/asr_speaker_refs/mit3uri.wav`
+- 米汀 -> `data/asr_speaker_refs/miting.wav`
 - 弥月 -> `data/asr_speaker_refs/mizuki.wav`
 
 参数说明：
@@ -494,9 +508,11 @@ SenseVoice 时间轴优先使用 FunASR 返回的 `sentence_info` / `segments` �
 - `spk_model`: 当前使用 `"cam++"`；模型与主 Paraformer 分开缓存。
 - `preset_spk_num`: 保留兼容字段，但当前 adaptive probe/full clustering 不把它作为 oracle speaker count。
 - `speaker_merge_threshold`: 聚类合并阈值，当前默认 `0.78`；具体生产值以 config 为准。
-- `speaker_references`: 可选已知单人音频；完整处理选中后才延迟构建 centroid。
-- `speaker_reference_threshold` 与 `speaker_reference_margin`: 同时约束最佳分数和相对第二名的 margin。
-- `speaker_constrain_to_references`: planned roster 任务使用；未通过实名匹配的 cluster 输出 `UNKNOWN`。
+- `speaker_references`: 可选已知单人音频；完整处理选中后才延迟构建 prototypes。同一 `speaker` 可用不同 `state` 登记多份参考，以覆盖平静、激动、游戏麦等稳定声学状态。
+- `speaker_reference_threshold` 与 `speaker_reference_margin`: 约束 cluster 最佳分数和相对第二名的 margin；`speaker_reference_min_support_chunks` 与 `speaker_reference_min_support_ratio` 进一步要求多句重复证据。
+- `speaker_reference_prototype_*`: 控制每个状态内的离群过滤、原型合并和最大原型数。单个状态只有一条样本时不会独立形成受支持原型；仅有一条参考的旧配置仍保留兼容回退。
+- `speaker_row_reference_threshold` 与 `speaker_row_reference_margin`: 逐句实名门槛。已实名 cluster 也不会无条件覆盖内部所有短句，避免混说、游戏语音或聚类污染被批量实名。
+- `speaker_constrain_to_references`: 保留兼容字段；当前 JS adapter 明确传 `false`。未知声音保留 `SPEAKER_nn`，planned roster 不改变这一开放集行为。
 
 这是 speech-chunk 级聚类和句子级 dominant-overlap 投影，不做逐词级重叠说话分离。多人同时说话、背景音、变声、距离麦克风差异大时仍可能过分裂、合并或变为 `UNKNOWN`；应通过 metadata 和 review SRT 复核。
 

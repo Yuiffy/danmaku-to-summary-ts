@@ -76,8 +76,9 @@ function collectSpeakerLabels(streamer = {}) {
     ]);
 }
 
-function buildReferenceIndex(config = configLoader.getConfig(), manifestPath = DEFAULT_MANIFEST_PATH) {
+function buildReferenceCollectionIndex(config = configLoader.getConfig(), manifestPath = DEFAULT_MANIFEST_PATH) {
     const index = new Map();
+    const seen = new Set();
     const add = (entry, source) => {
         if (!entry || typeof entry !== 'object') return;
         const speaker = String(entry.speaker || entry.label || '').trim();
@@ -96,14 +97,24 @@ function buildReferenceIndex(config = configLoader.getConfig(), manifestPath = D
             chunk_s: entry.chunk_s,
             max_chunks: entry.max_chunks,
             seconds: entry.seconds,
-            source_count: entry.source_count
+            source_count: entry.source_count,
+            state: entry.state ? String(entry.state).trim() : null
         };
+        const identity = [
+            normalizeLabel(speaker),
+            String(resolvedAudioPath || audioPath).toLocaleLowerCase('en-US'),
+            entry.start_s ?? '',
+            entry.end_s ?? ''
+        ].join('|');
+        if (seen.has(identity)) return;
+        seen.add(identity);
         const labels = dedupeStrings([speaker]);
         labels.forEach((label) => {
             const key = normalizeLabel(label);
             if (!index.has(key)) {
-                index.set(key, normalizedEntry);
+                index.set(key, []);
             }
+            index.get(key).push(normalizedEntry);
         });
     };
 
@@ -112,38 +123,64 @@ function buildReferenceIndex(config = configLoader.getConfig(), manifestPath = D
     return index;
 }
 
-function findReferenceForLabels(labels = [], config = configLoader.getConfig(), manifestPath = DEFAULT_MANIFEST_PATH) {
-    const index = buildReferenceIndex(config, manifestPath);
+function buildReferenceIndex(config = configLoader.getConfig(), manifestPath = DEFAULT_MANIFEST_PATH) {
+    const collections = buildReferenceCollectionIndex(config, manifestPath);
+    return new Map(
+        [...collections.entries()]
+            .filter(([, entries]) => entries.length > 0)
+            .map(([label, entries]) => [label, entries[0]])
+    );
+}
+
+function findReferencesForLabels(labels = [], config = configLoader.getConfig(), manifestPath = DEFAULT_MANIFEST_PATH) {
+    const index = buildReferenceCollectionIndex(config, manifestPath);
+    const references = [];
+    const seen = new Set();
     for (const label of labels) {
-        const match = index.get(normalizeLabel(label));
-        if (match) {
-            return match;
+        const matches = index.get(normalizeLabel(label)) || [];
+        for (const match of matches) {
+            const identity = [
+                normalizeLabel(match.speaker),
+                String(match.resolvedAudioPath || match.audio_path).toLocaleLowerCase('en-US'),
+                match.start_s ?? '',
+                match.end_s ?? ''
+            ].join('|');
+            if (seen.has(identity)) continue;
+            seen.add(identity);
+            references.push(match);
         }
     }
-    return null;
+    return references;
+}
+
+function findReferenceForLabels(labels = [], config = configLoader.getConfig(), manifestPath = DEFAULT_MANIFEST_PATH) {
+    return findReferencesForLabels(labels, config, manifestPath)[0] || null;
 }
 
 function getStreamerReferenceStatus(streamer = {}, config = configLoader.getConfig(), manifestPath = DEFAULT_MANIFEST_PATH) {
     const labels = collectSpeakerLabels(streamer);
-    const reference = findReferenceForLabels(labels, config, manifestPath);
-    if (!reference) {
+    const references = findReferencesForLabels(labels, config, manifestPath);
+    if (references.length === 0) {
         return {
             streamerId: streamer.id || null,
             displayName: streamer.displayName || streamer.id || 'unknown',
             labels,
             status: 'missing_manifest',
             reference: null,
+            references: [],
             message: `未找到 ${streamer.displayName || streamer.id || 'unknown'} 的 speaker reference`
         };
     }
-    if (!reference.exists) {
+    const readyReferences = references.filter((reference) => reference.exists);
+    if (readyReferences.length === 0) {
         return {
             streamerId: streamer.id || null,
             displayName: streamer.displayName || streamer.id || 'unknown',
             labels,
             status: 'missing_audio',
-            reference,
-            message: `speaker reference 音频不存在: ${reference.audio_path}`
+            reference: references[0],
+            references,
+            message: `speaker reference 音频不存在: ${references[0].audio_path}`
         };
     }
     return {
@@ -151,7 +188,8 @@ function getStreamerReferenceStatus(streamer = {}, config = configLoader.getConf
         displayName: streamer.displayName || streamer.id || 'unknown',
         labels,
         status: 'ready',
-        reference,
+        reference: readyReferences[0],
+        references: readyReferences,
         message: ''
     };
 }
@@ -171,22 +209,30 @@ function buildSpeakerReferencesForParticipants(participants = [], config = confi
     const statuses = participants
         .map((participant) => ({ participant, status: getStreamerReferenceStatus(participant, config, manifestPath) }))
         .filter((item) => item.status.reference && item.status.status === 'ready');
-    const usedAudioPaths = new Set();
+    const usedReferences = new Set();
     const references = [];
     for (const item of statuses) {
-        const ref = item.status.reference;
-        if (!ref || usedAudioPaths.has(ref.audio_path)) {
-            continue;
+        const speakerReferences = item.status.references || [item.status.reference];
+        for (const ref of speakerReferences) {
+            if (!ref) continue;
+            const identity = [
+                normalizeLabel(ref.speaker),
+                String(ref.audio_path).toLocaleLowerCase('en-US'),
+                ref.start_s ?? '',
+                ref.end_s ?? ''
+            ].join('|');
+            if (usedReferences.has(identity)) continue;
+            usedReferences.add(identity);
+            references.push({
+                speaker: ref.speaker,
+                audio_path: ref.audio_path,
+                ...(ref.start_s !== undefined ? { start_s: ref.start_s } : {}),
+                ...(ref.end_s !== undefined ? { end_s: ref.end_s } : {}),
+                ...(ref.chunk_s !== undefined ? { chunk_s: ref.chunk_s } : {}),
+                ...(ref.max_chunks !== undefined ? { max_chunks: ref.max_chunks } : {}),
+                ...(ref.state ? { state: ref.state } : {})
+            });
         }
-        usedAudioPaths.add(ref.audio_path);
-        references.push({
-            speaker: ref.speaker,
-            audio_path: ref.audio_path,
-            ...(ref.start_s !== undefined ? { start_s: ref.start_s } : {}),
-            ...(ref.end_s !== undefined ? { end_s: ref.end_s } : {}),
-            ...(ref.chunk_s !== undefined ? { chunk_s: ref.chunk_s } : {}),
-            ...(ref.max_chunks !== undefined ? { max_chunks: ref.max_chunks } : {})
-        });
     }
     return references;
 }
@@ -230,8 +276,7 @@ function registerCanonicalReference(options = {}, manifestPath = DEFAULT_MANIFES
         source_srt: options.sourceSrt ? String(options.sourceSrt) : undefined
     };
 
-    const normalizedSpeaker = normalizeLabel(speaker);
-    const index = entries.findIndex((entry) => normalizeLabel(entry?.speaker) === normalizedSpeaker || String(entry?.key || '').trim() === key);
+    const index = entries.findIndex((entry) => String(entry?.key || '').trim() === key);
     if (index >= 0) {
         entries[index] = { ...entries[index], ...nextEntry };
     } else {
@@ -254,6 +299,7 @@ module.exports = {
     loadManifest,
     saveManifest,
     buildReferenceIndex,
+    findReferencesForLabels,
     findReferenceForLabels,
     getStreamerReferenceStatus,
     getRosterReferenceStatus,

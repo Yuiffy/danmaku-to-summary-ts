@@ -166,6 +166,27 @@ def transcribe_with_vllm_pipeline(payload, audio_path, device, gpu_throttle=None
                         payload.get("speaker_references"),
                         device,
                         batch_size=int(payload.get("speaker_embedding_batch_size", 64) or 64),
+                        prototype_merge_threshold=float(
+                            payload.get(
+                                "speaker_reference_prototype_merge_threshold",
+                                0.72,
+                            )
+                            or 0.72
+                        ),
+                        max_prototypes=int(
+                            payload.get(
+                                "speaker_reference_max_prototypes",
+                                6,
+                            )
+                            or 6
+                        ),
+                        prototype_min_support_chunks=int(
+                            payload.get(
+                                "speaker_reference_prototype_min_support_chunks",
+                                2,
+                            )
+                            or 2
+                        ),
                     )
 
                 adaptive = run_adaptive_speaker_engine(
@@ -501,6 +522,27 @@ def transcribe_segmented_backend(payload, audio_path, device, backend_name, Auto
                         payload.get("speaker_references"),
                         device,
                         batch_size=int(payload.get("speaker_embedding_batch_size", 64) or 64),
+                        prototype_merge_threshold=float(
+                            payload.get(
+                                "speaker_reference_prototype_merge_threshold",
+                                0.72,
+                            )
+                            or 0.72
+                        ),
+                        max_prototypes=int(
+                            payload.get(
+                                "speaker_reference_max_prototypes",
+                                6,
+                            )
+                            or 6
+                        ),
+                        prototype_min_support_chunks=int(
+                            payload.get(
+                                "speaker_reference_prototype_min_support_chunks",
+                                2,
+                            )
+                            or 2
+                        ),
                     )
                     set_timing(payload, "reference_embedding_s", time.perf_counter() - reference_started)
                     return centroids
@@ -514,12 +556,23 @@ def transcribe_segmented_backend(payload, audio_path, device, backend_name, Auto
                     {"start": float(start) / 1000.0, "end": float(end) / 1000.0}
                     for start, end in raw_vad_segments
                 ]
+                speaker_payload = dict(payload)
+                speaker_payload["speaker_interval_source"] = (
+                    "fsmn_vad+paraformer_segments"
+                    if full_intervals and probe_intervals
+                    else "fsmn_vad"
+                    if full_intervals
+                    else "paraformer_segments"
+                )
                 adaptive = run_adaptive_speaker_engine(
                     spk_model_obj,
                     audio,
                     sample_rate,
-                    probe_intervals or full_intervals,
-                    payload=payload,
+                    full_intervals or probe_intervals,
+                    boundary_intervals=(
+                        probe_intervals if full_intervals else None
+                    ),
+                    payload=speaker_payload,
                     references=load_references if payload.get("speaker_references") else None,
                 )
                 speaker_timeline = smooth_speaker_timeline(

@@ -237,13 +237,16 @@ function buildPrompt(highlightContent, roomId, liveTimeDesc = null) {
     const roomSettings = config?.ai?.roomSettings || {};
     const roomConfig = roomId ? roomSettings[String(roomId)] : null;
     const customPrompt = roomConfig?.customPrompts?.goodnightReply;
+    const speakerGuidance = `【说话人标签规则】
+直播摘要可能带有“[说话人标签 分数]”前缀。不同标签代表不同的声学说话人；回复对象始终是房主${anchor}。其他标签说“我是XX”时，只能据此理解该标签的身份，不能把房主改叫XX，也不能把该标签的经历或台词归给${anchor}。“SPEAKER_nn”表示尚未实名的嘉宾或外部声音，不要擅自猜实名。`;
 
     if (customPrompt) {
-        return customPrompt
+        const renderedPrompt = customPrompt
             .replace(/{anchor}/g, anchor)
             .replace(/{fan}/g, fan)
             .replace(/{wordLimit}/g, wordLimit)
             .replace(/{highlightContent}/g, highlightContent);
+        return `${speakerGuidance}\n\n${renderedPrompt}`;
     }
 
     // --- 核心修改:全肯定萌萌人 2.0 ---
@@ -306,6 +309,8 @@ function buildPrompt(highlightContent, roomId, liveTimeDesc = null) {
 
     const result = `【角色设定】
 身份:${anchor}的铁粉(自称"${fan}")。
+
+${speakerGuidance}
 
 ${randomMainPrompt}
 
@@ -1212,6 +1217,7 @@ async function batchGenerateGoodnightReplies(directory) {
 // 导出函数
 module.exports = {
     generateGoodnightReply,
+    buildPrompt,
     generateClipTitle,
     generateClipDescription,
     buildClipTitlePromptLines,

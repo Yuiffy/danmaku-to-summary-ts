@@ -21,7 +21,7 @@ describe('do_fusion_summary speaker sidecar support', () => {
     fs.writeFileSync(srtPath, [
       '1',
       '00:00:00,000 --> 00:00:03,000',
-      '[岁己SUI 0.90] 今天晚上好',
+      '[SPEAKER_04 0.57] 大家好我是露露，明天继续',
       ''
     ].join('\n'), 'utf8');
     fs.writeFileSync(xmlPath, '<i></i>', 'utf8');
@@ -37,6 +37,7 @@ describe('do_fusion_summary speaker sidecar support', () => {
     const content = fs.readFileSync(highlightPath, 'utf8');
     expect(content).toContain('【参与者】计划参与: 岁己SUI、栞栞');
     expect(content).toContain('【参与者】实际出声: 岁己SUI');
+    expect(content).toContain('[SPEAKER_04 0.57] 大家好我是露露');
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });
