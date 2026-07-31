@@ -1065,6 +1065,64 @@ def _timeline_from_chunk_labels(
     return timeline
 
 
+def _is_anonymous_speaker_label(label):
+    value = str(label or "").strip()
+    return (
+        not value
+        or value.upper() in {"UNKNOWN", "-1"}
+        or (value.upper().startswith("SPEAKER_") and value[8:].isdigit())
+    )
+
+
+def apply_single_host_speaker_fallback(timeline, reference_matches, processing, payload):
+    """Merge weak anonymous clusters into a confirmed host-only stream.
+
+    This is intentionally gated by the caller. A confirmed non-host reference
+    match always wins and prevents the fallback from hiding a real guest.
+    """
+    payload = payload if isinstance(payload, dict) else {}
+    if not bool(payload.get("speaker_single_host_fallback", False)):
+        return timeline
+
+    host_label = str(payload.get("speaker_host_label") or "").strip()
+    if not host_label or not isinstance(reference_matches, dict):
+        return timeline
+
+    matches = [
+        match for match in reference_matches.values()
+        if isinstance(match, dict)
+    ]
+    accepted_host = any(
+        match.get("accepted") is True
+        and str(match.get("label") or match.get("best_label") or "").strip() == host_label
+        for match in matches
+    )
+    accepted_non_host = any(
+        match.get("accepted") is True
+        and str(match.get("label") or match.get("best_label") or "").strip() != host_label
+        for match in matches
+    )
+    if not accepted_host or accepted_non_host:
+        return timeline
+
+    changed = 0
+    for item in timeline or []:
+        if not _is_anonymous_speaker_label(item.get("speaker")):
+            continue
+        item["speaker"] = host_label
+        item["speaker_fallback_reason"] = "confirmed_single_host"
+        changed += 1
+
+    if changed:
+        processing["singleHostFallback"] = {
+            "applied": True,
+            "hostLabel": host_label,
+            "changedIntervals": changed,
+            "reason": "confirmed_host_only",
+        }
+    return timeline
+
+
 def run_adaptive_speaker_engine(
     spk_model_obj,
     audio,
@@ -1515,6 +1573,12 @@ def run_adaptive_speaker_engine(
                 "detectedClusters": len(grouped),
                 "supportedClusters": len(grouped),
             })
+        timeline = apply_single_host_speaker_fallback(
+            timeline,
+            reference_matches,
+            processing,
+            payload,
+        )
         return finish(timeline, reference_matches)
     except Exception as exc:
         mark_failed(exc, "full_clustering_failed")

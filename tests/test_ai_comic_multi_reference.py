@@ -668,7 +668,7 @@ class MultiReferenceComicTests(unittest.TestCase):
 
     def test_second_prompt_build_preserves_fresh_script_provenance(self):
         comic.reset_comic_script_meta()
-        comic.set_comic_script_meta(provider="tuZi", model="gpt-5.6-luna", status="success")
+        comic.set_comic_script_meta(provider="daiYu", model="gpt-5.6-luna", status="success")
 
         comic.build_comic_prompt(
             "",
@@ -677,7 +677,7 @@ class MultiReferenceComicTests(unittest.TestCase):
         )
 
         meta = comic.get_comic_script_meta()
-        self.assertEqual(meta["provider"], "tuZi")
+        self.assertEqual(meta["provider"], "daiYu")
         self.assertEqual(meta["model"], "gpt-5.6-luna")
 
     def test_shiori_unconstrained_asr_miting_cannot_select_image_reference(self):

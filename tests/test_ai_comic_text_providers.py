@@ -15,11 +15,8 @@ spec = importlib.util.spec_from_file_location("ai_comic_generator_text_test", MO
 comic = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(comic)
 
-import tuzi_chat_completions
-
-
 class ComicTextProviderTests(unittest.TestCase):
-    def test_tuzi_failure_reaches_daiyu_without_duplicate_highlight_or_os_error(self):
+    def test_daiyu_fallback_uses_gpt56_and_thinking_without_duplicate_highlight(self):
         highlight = (
             "[2m] UNIQUE_HIGHLIGHT 主播检查画质。\n"
             "[90m] 主播挑战游戏关卡。\n"
@@ -35,23 +32,20 @@ class ComicTextProviderTests(unittest.TestCase):
             "aiServices": {"gemini": {}},
             "ai": {
                 "text": {
-                    "tuZi": {
+                    "daiYu": {
                         "enabled": True,
-                        "apiKey": "tuzi-key",
-                        "baseUrl": "https://api.tu-zi.com",
+                        "apiKey": "daiyu-key",
+                        "baseUrl": "https://daiyu.example/v1",
                         "model": "gpt-5.6-luna",
                         "temperature": 0.25,
                         "maxTokens": 12345,
+                        "thinking": {
+                            "enabled": True,
+                            "budgetTokens": 8192,
+                        },
                     }
                 },
-                "providers": {
-                    "daiYu": {
-                        "baseURL": "https://daiyu.example/v1",
-                        "apiKey": "daiyu-key",
-                        "textTemperature": 0.4,
-                        "textMaxTokens": 23456,
-                    }
-                },
+                "providers": {},
                 "streamerRegistry": {},
                 "roomSettings": {},
             },
@@ -63,14 +57,12 @@ class ComicTextProviderTests(unittest.TestCase):
             with (
                 patch.object(comic, "load_config", return_value=config),
                 patch.object(comic, "get_project_root", return_value=temp_dir),
-                patch.object(comic, "is_tuzi_text_configured", return_value=True),
-                patch.object(comic, "get_tuzi_text_api_key", return_value="tuzi-key"),
                 patch.object(comic.shutil, "which", return_value=None),
                 patch.object(comic, "HAS_GOOGLE_GENAI", False),
                 patch.object(
-                    tuzi_chat_completions,
-                    "call_tuzi_chat_completions",
-                    side_effect=[None, daiyu_script],
+                    comic,
+                    "call_daiyu_chat_completions",
+                    return_value=daiyu_script,
                 ) as call_text,
             ):
                 result, generated = comic.generate_comic_content_with_ai(
@@ -80,16 +72,16 @@ class ComicTextProviderTests(unittest.TestCase):
 
         self.assertTrue(generated)
         self.assertIn("观众发送鼓励弹幕", result)
-        self.assertEqual(call_text.call_count, 2)
+        self.assertEqual(call_text.call_count, 1)
 
-        tuzi_call = call_text.call_args_list[0].kwargs
-        daiyu_call = call_text.call_args_list[1].kwargs
-        self.assertEqual(tuzi_call["max_tokens"], 12345)
-        self.assertEqual(daiyu_call["max_tokens"], 23456)
-        self.assertEqual(tuzi_call["temperature"], 0.25)
-        self.assertEqual(daiyu_call["temperature"], 0.4)
-        self.assertEqual(tuzi_call["prompt"].count("UNIQUE_HIGHLIGHT"), 1)
-        self.assertNotIn("UNIQUE_HIGHLIGHT", tuzi_call["system_prompt"])
+        daiyu_call = call_text.call_args.kwargs
+        self.assertEqual(daiyu_call["model"], "gpt-5.6-luna")
+        self.assertEqual(daiyu_call["max_tokens"], 12345)
+        self.assertEqual(daiyu_call["temperature"], 0.25)
+        self.assertTrue(daiyu_call["thinking"])
+        self.assertEqual(daiyu_call["thinking_budget_tokens"], 8192)
+        self.assertEqual(daiyu_call["prompt"].count("UNIQUE_HIGHLIGHT"), 1)
+        self.assertNotIn("UNIQUE_HIGHLIGHT", daiyu_call["system_prompt"])
         self.assertEqual(daiyu_call["base_url"], "https://daiyu.example/v1")
         self.assertEqual(comic.get_comic_script_meta()["provider"], "daiYu")
 

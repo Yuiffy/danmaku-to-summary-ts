@@ -372,9 +372,15 @@ export interface ImageGenerationConfig {
 }
 export interface TextAIConfig {
   enabled: boolean;
-  provider: 'gemini' | 'openai' | 'claude';
+  provider: 'gemini' | 'openai' | 'claude' | 'daiYu';
   gemini?: GeminiConfig;
   tuZi?: TuZiConfig;
+  daiYu?: TuZiConfig & {
+    thinking?: {
+      enabled?: boolean;
+      budgetTokens?: number;
+    };
+  };
   openai?: OpenAIConfig;
   claude?: any; // 可根据需要具体化
 }

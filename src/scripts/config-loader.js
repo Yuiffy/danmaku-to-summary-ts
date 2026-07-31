@@ -35,7 +35,7 @@ const AISchema = Joi.object({
     ).default({}),
     text: Joi.object({
         enabled: Joi.boolean().default(true),
-        provider: Joi.string().default('tuZi'),
+        provider: Joi.string().default('daiYu'),
         gemini: Joi.object({
             enabled: Joi.boolean().default(true),
             apiKey: Joi.string().allow('').default(''),
@@ -48,8 +48,22 @@ const AISchema = Joi.object({
             enabled: Joi.boolean().default(true),
             apiKey: Joi.string().allow('').default(''),
             baseUrl: Joi.string().default('https://api.tu-zi.com'),
+            model: Joi.string().default('gemini-3-flash-preview'),
+            fallbackModels: Joi.array().items(Joi.string()).default(['gemini-3-flash-preview']),
+            temperature: Joi.number().default(0.7),
+            maxTokens: Joi.number().default(100000),
+            proxy: Joi.string().allow('', null).default('')
+        }).default(),
+        daiYu: Joi.object({
+            enabled: Joi.boolean().default(true),
+            apiKey: Joi.string().allow('').default(''),
+            baseUrl: Joi.string().default('http://localhost:8080'),
             model: Joi.string().default('gpt-5.6-luna'),
             fallbackModels: Joi.array().items(Joi.string()).default(['gemini-3-flash-preview']),
+            thinking: Joi.object({
+                enabled: Joi.boolean().default(true),
+                budgetTokens: Joi.number().integer().min(1024).default(10000)
+            }).default(),
             temperature: Joi.number().default(0.7),
             maxTokens: Joi.number().default(100000),
             proxy: Joi.string().allow('', null).default('')
@@ -460,6 +474,15 @@ function transformSecrets(secrets) {
     if (secrets.providers) {
         transformed.ai = transformed.ai || {};
         transformed.ai.providers = deepMerge(transformed.ai.providers || {}, secrets.providers);
+        // 从 providers.daiYu 注入 text.daiYu.apiKey
+        if (secrets.providers.daiYu?.apiKey) {
+            transformed.ai.text = transformed.ai.text || {};
+            transformed.ai.text.daiYu = transformed.ai.text.daiYu || {};
+            transformed.ai.text.daiYu.apiKey = secrets.providers.daiYu.apiKey;
+            transformed.ai.text.daiYu.baseUrl = secrets.providers.daiYu.baseURL
+                ? secrets.providers.daiYu.baseURL.replace(/\/v1$/, '')
+                : (secrets.providers.daiYu.baseUrl || 'http://localhost:8080');
+        }
     }
 
     if (secrets.ai?.providers) {
@@ -619,6 +642,20 @@ function isTuZiTextConfigured() {
 }
 
 /**
+ * 获取daiYu API Key
+ */
+function getDaiYuApiKey() {
+    return getByPath('ai.text.daiYu.apiKey') ||
+           getByPath('ai.providers.daiYu.apiKey') ||
+           '';
+}
+
+function isDaiYuTextConfigured() {
+    const apiKey = getDaiYuApiKey();
+    return apiKey && apiKey.trim() !== '';
+}
+
+/**
  * 获取主播和粉丝名称
  */
 function getNames(roomId) {
@@ -681,9 +718,11 @@ module.exports = {
     getGeminiApiKey,
     getTuZiApiKey,
     getTuZiTextApiKey,
+    getDaiYuApiKey,
     isGeminiConfigured,
     isTuZiConfigured,
     isTuZiTextConfigured,
+    isDaiYuTextConfigured,
     getNames,
     getWordLimit,
     clearCache,

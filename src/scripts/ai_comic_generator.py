@@ -121,17 +121,14 @@ def get_comic_script_meta():
 from config_loader import (
     get_config,
     is_gemini_configured,
-    is_tuzi_configured,
     get_gemini_api_key,
-    get_tuzi_api_key,
-    get_tuzi_text_api_key,
-    is_tuzi_text_configured,
     get_room_names,
     get_project_root
 )
 
 # 导入tuZi API封装
 from tuzi_chat_completions import (
+    call_daiyu_chat_completions,
     call_tuzi_chat_completions,
     call_tuzi_chat_completions_for_image,
     call_tuzi_images_generations,
@@ -1922,8 +1919,8 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
     
     # 首先检查 google-genai 是否可用
     if not HAS_GOOGLE_GENAI:
-        print("[INFO] google-genai 库未安装，跳过 Gemini 文本生成，直接使用 tuZi API")
-        # 直接跳到 tuZi API 备用方案
+        print("[INFO] google-genai 库未安装，跳过 Gemini 文本生成，直接使用 daiYu API")
+        # 直接跳到 daiYu API 备用方案
     else:
         for gemini_attempt in range(max_gemini_retries):
             try:
@@ -2017,162 +2014,78 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
                     print("[ERROR] Gemini重试次数已用完，尝试备用方案")
                     break
     
-    # Gemini失败后，尝试使用tuZi API作为备用方案
-    print("[COMIC_SCRIPT] Google文本生成失败，尝试tu-zi.com生成漫画脚本...")
-    
+    # Gemini失败后，使用 daiYu/gpt-5.6-luna 作为备用方案，并开启思考。
+    print("[COMIC_SCRIPT] Google文本生成失败，尝试 daiYu/gpt-5.6-luna 生成漫画脚本...")
+
     # content_prompt 已经包含完整直播高光；不要在 user/system 两个角色里重复发送。
     system_prompt = "你是直播总结漫画编剧。请严格依据用户提供的直播内容，只输出完整、可绘制的分镜脚本。"
     user_prompt = content_prompt
-    tuzi_failure_reason = None
-
-    # tuZi 调用封装层已经带温和重试和全局冷却；这里不再做快速外层重试，避免放大服务端拥塞。
-    max_tuzi_retries = 1
-    for tuzi_attempt in range(max_tuzi_retries):
-        try:
-            from tuzi_chat_completions import call_tuzi_chat_completions
-            
-            config = load_config()
-            tuzi_config = config.get("ai", {}).get("text", {}).get("tuZi", {})
-            
-            if not is_tuzi_text_configured():
-                print("[WARNING]  tuZi API未配置，尝试下一个provider")
-                tuzi_failure_reason = "tuZi API未配置"
-                break
-            
-            if tuzi_attempt > 0:
-                print(f"[RETRY] 第 {tuzi_attempt + 1} 次重试 tuZi API...")
-            
-            # 调用tuZi Chat Completions API
-            comic_content = call_tuzi_chat_completions(
-                prompt=user_prompt,
-                system_prompt=system_prompt,
-                model=tuzi_config.get("model", tuzi_config.get("textModel", "gpt-5.4-mini")),
-                base_url=tuzi_config.get("baseUrl", "https://api.tu-zi.com"),
-                api_key=get_tuzi_text_api_key(),
-                proxy_url=tuzi_config.get("proxy", ""),
-                timeout=120,
-                temperature=tuzi_config.get("temperature", 0.7),
-                max_tokens=tuzi_config.get("maxTokens", 100000)
-            )
-            
-            if comic_content:
-                # 检测是否包含Gemini错误信息
-                if is_gemini_error(comic_content):
-                    print(f"[WARNING] tuZi API返回了Gemini错误内容 (尝试 {tuzi_attempt + 1}/{max_tuzi_retries})")
-                    if tuzi_attempt < max_tuzi_retries - 1:
-                        print("[RETRY] 2秒后重试...")
-                        time.sleep(2)
-                        continue
-                    else:
-                        print("[ERROR] tuZi API重试次数已用完，尝试下一个provider")
-                        tuzi_failure_reason = "tuZi 返回 Gemini 错误内容"
-                        break
-
-                if not is_valid_comic_script(comic_content):
-                    print(f"[ERROR] tuZi API返回的漫画脚本无效或疑似截断，长度: {len(comic_content)} 字符")
-                    print(f"[ERROR] 无效内容预览: {comic_content[:200]}...")
-                    if tuzi_attempt < max_tuzi_retries - 1:
-                        print("[RETRY] 2秒后重试...")
-                        time.sleep(2)
-                        continue
-                    tuzi_failure_reason = "tuZi 返回无效脚本"
-                    break
-
-                print("[OK] tuZi API漫画文本生成成功")
-                print(f"生成内容长度: {len(comic_content)} 字符")
-                print(f"内容预览: {comic_content[:200]}...")
-                set_comic_script_meta(
-                    provider="tuZi",
-                    model=tuzi_config.get("model", tuzi_config.get("textModel", "gpt-5.4-mini")),
-                    status="success",
-                    fallback=True
-                )
-                return postprocess_generated_comic_script(
-                    comic_content,
-                    script_highlight_content,
-                    room_id,
-                    appeared_streamers=extra_streamers,
-                ), True
-            else:
-                print("[WARNING]  tuZi API返回空内容")
-                if tuzi_attempt < max_tuzi_retries - 1:
-                    print("[RETRY] 2秒后重试...")
-                    time.sleep(2)
-                    continue
-                else:
-                    tuzi_failure_reason = "tuZi 返回空内容"
-                    break
-            
-        except Exception as tuzi_error:
-            print(f"[ERROR]  tuZi API备用方案失败 (尝试 {tuzi_attempt + 1}/{max_tuzi_retries}): {tuzi_error}")
-            if tuzi_attempt < max_tuzi_retries - 1:
-                print("[RETRY] 2秒后重试...")
-                time.sleep(2)
-                continue
-            else:
-                print("[WARNING]  tuZi API异常，尝试 daiYu provider 重试...")
-                tuzi_failure_reason = str(tuzi_error)
-                # 落入下方的 daiYu fallback
-                break
-    
-    # daiYu provider fallback（tuZi 全部失败后）
-    if tuzi_failure_reason:
-        print(f"[COMIC_SCRIPT] tuZi 失败原因: {tuzi_failure_reason}，尝试 daiYu provider fallback...")
     try:
         config = load_config()
-        providers = config.get('ai', {}).get('providers', {}) or {}
-        # 也检查 secret.json 中的 providers
-        secret_path = os.path.join(get_project_root(), 'config', 'secret.json')
-        if os.path.exists(secret_path):
-            with open(secret_path, 'r', encoding='utf-8') as sf:
-                secret_data = json.load(sf)
-            providers = {**providers, **(secret_data.get('providers') or {})}
-        
-        daiyu_cfg = providers.get('daiYu', {})
-        daiyu_base_url = daiyu_cfg.get('baseURL', '') or daiyu_cfg.get('baseUrl', '')
-        daiyu_api_key = daiyu_cfg.get('apiKey', '')
-        daiyu_model = 'gpt-5.6-luna'
-        
-        if daiyu_base_url and daiyu_api_key:
-            print(f"[COMIC_SCRIPT] 尝试 daiYu provider 生成漫画脚本 (model: {daiyu_model})...")
-            comic_content = call_tuzi_chat_completions(
-                prompt=user_prompt,
-                system_prompt=system_prompt,
+        ai_config = config.get("ai", {}) or {}
+        text_config = ai_config.get("text", {}) or {}
+        daiyu_config = text_config.get("daiYu", {}) or {}
+        provider_config = (ai_config.get("providers", {}) or {}).get("daiYu", {}) or {}
+        daiyu_api_key = daiyu_config.get("apiKey") or provider_config.get("apiKey", "")
+        daiyu_base_url = (
+            daiyu_config.get("baseUrl")
+            or daiyu_config.get("baseURL")
+            or provider_config.get("baseURL")
+            or provider_config.get("baseUrl")
+            or "http://localhost:8080"
+        )
+        daiyu_model = daiyu_config.get("model", "gpt-5.6-luna")
+        daiyu_thinking = daiyu_config.get("thinking", {}) or {}
+        thinking_enabled = daiyu_thinking.get("enabled", True) is not False
+        thinking_budget_tokens = daiyu_thinking.get("budgetTokens", 10000)
+        temperature = daiyu_config.get("temperature", provider_config.get("textTemperature", 0.7))
+        max_tokens = daiyu_config.get("maxTokens", provider_config.get("textMaxTokens", 100000))
+
+        if not daiyu_api_key:
+            print("[WARNING] daiYu provider 未配置，跳过")
+            return return_comic_script_failure(highlight_content, room_id, "daiYu未配置")
+
+        print(f"[COMIC_SCRIPT] 尝试 daiYu provider 生成漫画脚本 (model: {daiyu_model}, thinking: {thinking_enabled})...")
+        comic_content = call_daiyu_chat_completions(
+            prompt=user_prompt,
+            system_prompt=system_prompt,
+            model=daiyu_model,
+            base_url=daiyu_base_url,
+            api_key=daiyu_api_key,
+            proxy_url=daiyu_config.get("proxy", provider_config.get("proxy", "")) or "",
+            timeout=120,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            thinking=thinking_enabled,
+            thinking_budget_tokens=thinking_budget_tokens,
+        )
+
+        if comic_content and is_valid_comic_script(comic_content) and not is_gemini_error(comic_content):
+            print("[OK] daiYu provider 漫画文本生成成功")
+            print(f"生成内容长度: {len(comic_content)} 字符")
+            set_comic_script_meta(
+                provider="daiYu",
                 model=daiyu_model,
-                base_url=daiyu_base_url,
-                api_key=daiyu_api_key,
-                proxy_url=daiyu_cfg.get('proxy', '') or '',
-                timeout=120,
-                temperature=daiyu_cfg.get('textTemperature', tuzi_config.get("temperature", 0.7)),
-                max_tokens=daiyu_cfg.get('textMaxTokens', tuzi_config.get("maxTokens", 100000))
+                status="success",
+                fallback=True,
             )
-            
-            if comic_content and is_valid_comic_script(comic_content) and not is_gemini_error(comic_content):
-                print("[OK] daiYu provider 漫画文本生成成功")
-                print(f"生成内容长度: {len(comic_content)} 字符")
-                set_comic_script_meta(
-                    provider="daiYu",
-                    model=daiyu_model,
-                    status="success",
-                    fallback=True
-                )
-                return postprocess_generated_comic_script(
-                    comic_content,
-                    script_highlight_content,
-                    room_id,
-                    appeared_streamers=extra_streamers,
-                ), True
-            else:
-                reason = "daiYu 返回空内容" if not comic_content else ("daiYu 返回 Gemini 错误内容" if is_gemini_error(comic_content) else "daiYu 返回无效脚本")
-                print(f"[WARNING]  daiYu provider 也失败: {reason}")
-                combined_reason = f"tuZi({tuzi_failure_reason}) + daiYu({reason})"
-                return return_comic_script_failure(highlight_content, room_id, combined_reason)
-        else:
-            print("[WARNING]  daiYu provider 未配置，跳过")
-            return return_comic_script_failure(highlight_content, room_id, f"tuZi失败({tuzi_failure_reason})，daiYu未配置")
+            return postprocess_generated_comic_script(
+                comic_content,
+                script_highlight_content,
+                room_id,
+                appeared_streamers=extra_streamers,
+            ), True
+
+        reason = "daiYu 返回空内容" if not comic_content else (
+            "daiYu 返回 Gemini 错误内容"
+            if is_gemini_error(comic_content)
+            else "daiYu 返回无效脚本"
+        )
+        print(f"[WARNING] daiYu provider 失败: {reason}")
+        return return_comic_script_failure(highlight_content, room_id, reason)
     except Exception as daiyu_error:
         print(f"[ERROR]  daiYu provider 异常: {daiyu_error}")
-        return return_comic_script_failure(highlight_content, room_id, f"tuZi失败({tuzi_failure_reason}) + daiYu异常({daiyu_error})")
+        return return_comic_script_failure(highlight_content, room_id, f"daiYu异常({daiyu_error})")
     
     # 确保函数在所有路径都返回有效值
     return return_comic_script_failure(highlight_content, room_id, "所有AI脚本通道失败")

@@ -93,7 +93,7 @@ export interface AITextGeneratorStats {
 /**
  * AI提供者类型
  */
-export type AIProvider = 'gemini' | 'openai' | 'claude';
+export type AIProvider = 'gemini' | 'openai' | 'claude' | 'daiYu';
 
 /**
  * AI提供者配置

@@ -309,6 +309,64 @@ class SenseVoiceSpeakerBatchingTests(unittest.TestCase):
         self.assertEqual(match["support_chunks"], 2)
         self.assertTrue(match["accepted"])
 
+    def test_single_host_fallback_merges_anonymous_clusters_after_host_confirmation(self):
+        timeline = [
+            {"start": 0, "end": 2, "speaker": "SPEAKER_00", "speaker_score": 0.49},
+            {"start": 2, "end": 4, "speaker": "栞栞", "speaker_score": 0.79},
+            {"start": 4, "end": 6, "speaker": "UNKNOWN", "speaker_score": None},
+        ]
+        processing = {}
+        matches = {
+            "SPEAKER_01": {
+                "label": "栞栞",
+                "accepted": True,
+                "score": 0.79,
+            },
+            "SPEAKER_00": {
+                "label": "SPEAKER_00",
+                "best_label": "弥月Mizuki",
+                "accepted": False,
+                "score": 0.495,
+            },
+        }
+
+        result = sensevoice_speaker.apply_single_host_speaker_fallback(
+            timeline,
+            matches,
+            processing,
+            {
+                "speaker_host_label": "栞栞",
+                "speaker_single_host_fallback": True,
+            },
+        )
+
+        self.assertEqual(
+            [item["speaker"] for item in result],
+            ["栞栞", "栞栞", "栞栞"],
+        )
+        self.assertEqual(processing["singleHostFallback"]["changedIntervals"], 2)
+
+    def test_single_host_fallback_does_not_hide_confirmed_non_host(self):
+        timeline = [{"start": 0, "end": 2, "speaker": "SPEAKER_00"}]
+        processing = {}
+        matches = {
+            "SPEAKER_00": {"label": "栞栞", "accepted": True},
+            "SPEAKER_01": {"label": "弥月Mizuki", "accepted": True},
+        }
+
+        result = sensevoice_speaker.apply_single_host_speaker_fallback(
+            timeline,
+            matches,
+            processing,
+            {
+                "speaker_host_label": "栞栞",
+                "speaker_single_host_fallback": True,
+            },
+        )
+
+        self.assertEqual(result[0]["speaker"], "SPEAKER_00")
+        self.assertNotIn("singleHostFallback", processing)
+
     def test_cluster_match_requires_configured_support_ratio(self):
         import torch
 

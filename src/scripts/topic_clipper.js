@@ -150,9 +150,14 @@ async function verifyClipWithAI(window, keywords, config = {}) {
         const provider = config.ai?.text?.provider || 'gemini';
         const aiTextGenerator = require('./ai_text_generator');
         // Use the existing AI infrastructure
-        const { generateTextWithTuZi, generateTextWithGemini } = require('./ai_text_generator');
+        const { generateTextWithTuZi, generateTextWithGemini, generateTextWithDaiYu } = require('./ai_text_generator');
         const result = provider === 'tuZi'
             ? await generateTextWithTuZi(prompt, {
+                wordLimit: 100,
+                primaryModel: getTopicClipAiModel(config)
+            })
+            : provider === 'daiYu'
+            ? await generateTextWithDaiYu(prompt, {
                 wordLimit: 100,
                 primaryModel: getTopicClipAiModel(config)
             })
@@ -921,6 +926,9 @@ function buildTopicBurstPrompt(burst, streamerName, info = {}, generateText) {
         '- 如果命中的行实际是唱歌、哼旋律、ASR 误识别,返回空 clips: []。',
         '- 特别注意:游戏里的"粉碎机"常被音素纠正错写成"粉岁己/粉粉岁己"。若上下文是采石场、升级、石头、研磨、木材等建造/生产内容,而不是在谈论虚拟主播岁己,视为误识别,返回空 clips: []。',
         '- ASR 可能有同音错字(如"开开"≈"栞栞"),要根据语境推断正确含义。',
+        '- 前后扩展上下文只用于理解语境和决定切片边界,不属于最终切片内容。',
+        '- 标题、封面文案、简介必须只根据最终选中的 startTime-endTime 区间内实际字幕生成;最多参考前后各 10 秒来补全指代,不得把区间外的事件、弹幕或说法写进文案。',
+        '- 输出前逐项核对标题、封面文案和简介中的每个具体事实都能在最终区间字幕中找到;找不到就删除或改写。',
         '',
         '输出一个 JSON 对象(不要 Markdown 代码块,纯 JSON)。输出前再次检查：每段都是独立事件、区间不重叠、没有重复/嵌套切片。',
         '{',
@@ -969,6 +977,11 @@ async function segmentBurstWithAI(burst, parsed, streamerName, info, config = {}
     try {
         result = provider === 'tuZi'
             ? await generateText.generateTextWithTuZi(prompt, {
+                wordLimit: 600,
+                primaryModel: requestedModel
+            })
+            : provider === 'daiYu'
+            ? await generateText.generateTextWithDaiYu(prompt, {
                 wordLimit: 600,
                 primaryModel: requestedModel
             })

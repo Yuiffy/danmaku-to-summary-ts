@@ -78,7 +78,7 @@ class TuziTextCompletionTests(unittest.TestCase):
             content = tuzi.call_tuzi_chat_completions(
                 prompt="只回复 TUZI_OK",
                 system_prompt="接口测试",
-                model="gpt-5.6-luna",
+                model="test-model",
                 base_url="https://api.tu-zi.com/v1",
                 api_key="secret",
                 temperature=0,
@@ -109,6 +109,34 @@ class TuziTextCompletionTests(unittest.TestCase):
         self.assertIn('"finish_reason":"length"', summary)
         self.assertIn('"completion_tokens":2000', summary)
         self.assertNotIn("hidden", summary)
+
+    def test_daiyu_chat_request_enables_thinking(self):
+        response = FakeResponse({
+            "choices": [{
+                "message": {"role": "assistant", "content": "DAIYU_OK"},
+                "finish_reason": "stop",
+            }],
+        })
+
+        with (
+            patch.object(tuzi, "request_tuzi_with_retry", side_effect=lambda _, request: request()),
+            patch.object(tuzi.requests, "post", return_value=response) as post,
+        ):
+            content = tuzi.call_daiyu_chat_completions(
+                prompt="只回复 DAIYU_OK",
+                model="gpt-5.6-luna",
+                base_url="https://daiyu.example/v1",
+                api_key="secret",
+                thinking=True,
+                thinking_budget_tokens=8192,
+            )
+
+        self.assertEqual(content, "DAIYU_OK")
+        self.assertEqual(post.call_args.kwargs["json"]["model"], "gpt-5.6-luna")
+        self.assertEqual(
+            post.call_args.kwargs["json"]["thinking"],
+            {"type": "enabled", "budget_tokens": 8192},
+        )
 
 
 if __name__ == "__main__":

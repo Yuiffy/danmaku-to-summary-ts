@@ -581,6 +581,8 @@ xxx.asr_speakers.json
 
 `appearedStreamerIds` 只来自 ASR segment 中真实识别到的 known speaker。字幕文本里提到某个主播名字，不会自动加入参考图；mentioned streamers 可以作为后续上下文能力预留，但默认不参与生图。
 
+单主播 fallback 默认关闭。只有任务上下文显式设置 `speakerSingleHostFallback=true`、speaker request 设置 `singleHostFallback=true`，或房间配置 `ai.roomSettings[roomId].speakerSingleHostFallback=true` 时才会考虑启用；即使启用，也要求 speaker reference 已确认房主、没有计划 roster 嘉宾、没有已知非房主标签或已确认的非房主匹配，并且结果中只有匿名 `SPEAKER_nn`/`UNKNOWN` 簇。fallback 只处理说话人标签，不会把字幕文本中提到的人名当成说话人。
+
 开启多参考图需要配置全局开关、房间开关和主播实体库：
 
 ```json
@@ -649,7 +651,7 @@ xxx.asr_speakers.json
 
 - 只有 `SPEAKER_00` / `SPEAKER_01`：不会触发多参考图。
 - `UNKNOWN`：不会触发。
-- `avgScore` 低于 `minSpeakerScore`、出声时长低于 `minSpeechSeconds`，或 `maxScore` 低于 `minSpeakerMaxScore` 且出声时长短于 `minSpeakerSecondsWhenLowScore`：不会触发。
+- `avgScore` 低于 `minSpeakerScore`、出声时长低于 `minSpeechSeconds`，或 `maxScore` 低于 `minSpeakerMaxScore` 且出声时长短于 `minSpeakerSecondsWhenLowScore`：不会触发多参考图；这不会把 review SRT 中原本的 known speaker 标签改成 `UNKNOWN`。
 - 没有 `speaker_score`：允许按 `minSpeechSeconds` 过滤通过，日志会说明分数缺失。
 - sidecar 缺失：生图阶段打印 INFO 并保持原逻辑。
 - 多参考图可能串角色：prompt 已约束不要混合发色、服装、配饰，但图像模型不能保证完美。

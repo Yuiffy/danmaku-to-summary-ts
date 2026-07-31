@@ -660,6 +660,115 @@ function findHostStreamerId(roomId, registry = {}) {
     return null;
 }
 
+function getSpeakerProcessing(result) {
+    return result?.speaker_processing || result?.speakerProcessing || {};
+}
+
+function getCanonicalStreamerSpeakerLabel(streamerId, registry = {}) {
+    const entry = registry[streamerId] || {};
+    return String(
+        entry.displayName
+        || (Array.isArray(entry.speakerLabels) ? entry.speakerLabels[0] : '')
+        || streamerId
+    ).trim();
+}
+
+function resolveSingleHostSpeakerFallback(result, config, context, registry, roomId, speakerRequest, speakers) {
+    const hostStreamerId = speakerRequest?.hostStreamerId || findHostStreamerId(roomId, registry);
+    if (!hostStreamerId || !registry[hostStreamerId]) {
+        return { applied: false, labelOverrides: {}, reason: 'host_not_known' };
+    }
+    const roomSettings = roomId
+        ? config?.ai?.roomSettings?.[String(roomId)] || {}
+        : {};
+    const fallbackEnabled = context?.speakerSingleHostFallback === true
+        || speakerRequest?.singleHostFallback === true
+        || roomSettings.speakerSingleHostFallback === true;
+    if (!fallbackEnabled) {
+        return { applied: false, labelOverrides: {}, reason: 'explicit_opt_in_required' };
+    }
+
+    const plannedParticipantIds = Array.isArray(speakerRequest?.plannedParticipantIds)
+        ? speakerRequest.plannedParticipantIds.map(value => String(value)).filter(Boolean)
+        : [];
+    const rosterStreamerIds = Array.isArray(speakerRequest?.rosterStreamerIds)
+        ? speakerRequest.rosterStreamerIds.map(value => String(value)).filter(Boolean)
+        : [];
+    const hasRosterGuest = speakerRequest?.constrainToRoster === true
+        && rosterStreamerIds.some(streamerId => streamerId !== hostStreamerId);
+    if (plannedParticipantIds.length > 0 || hasRosterGuest) {
+        return { applied: false, labelOverrides: {}, reason: 'planned_or_roster_guest' };
+    }
+
+    const segments = Array.isArray(result?.segments) ? result.segments : [];
+    const labels = new Set(
+        segments
+            .map(segment => String(segment?.speaker || '').trim())
+            .filter(Boolean)
+    );
+    const knownNonHostLabels = Array.from(labels).filter((label) => {
+        const streamerId = mapSpeakerLabelToStreamerId(label, registry);
+        return streamerId && streamerId !== hostStreamerId;
+    });
+    if (knownNonHostLabels.length > 0) {
+        return { applied: false, labelOverrides: {}, reason: 'known_non_host_label' };
+    }
+
+    const hostLabels = new Set(
+        (registry[hostStreamerId].speakerLabels || [])
+            .map(value => normalizeLabel(value))
+            .filter(Boolean)
+    );
+    const referenceMatches = getSpeakerProcessing(result).referenceMatches
+        || getSpeakerProcessing(result).reference_matches
+        || {};
+    const matchValues = Object.values(referenceMatches).filter(match => match && typeof match === 'object');
+    const acceptedHostMatch = matchValues.some((match) => {
+        if (match.accepted !== true) {
+            return false;
+        }
+        const label = String(match.label || match.best_label || '').trim();
+        return hostLabels.has(normalizeLabel(label)) || mapSpeakerLabelToStreamerId(label, registry) === hostStreamerId;
+    });
+    const acceptedNonHostMatch = matchValues.some((match) => {
+        if (match.accepted !== true) {
+            return false;
+        }
+        const label = String(match.label || match.best_label || '').trim();
+        const streamerId = mapSpeakerLabelToStreamerId(label, registry);
+        return streamerId && streamerId !== hostStreamerId;
+    });
+    if (acceptedNonHostMatch) {
+        return { applied: false, labelOverrides: {}, reason: 'accepted_non_host_match' };
+    }
+
+    const hostStats = (Array.isArray(speakers) ? speakers : [])
+        .filter(speaker => speaker.streamerId === hostStreamerId);
+    const hostHasStrongMappedStats = hostStats.some((speaker) => (
+        speaker.totalSpeechSeconds >= 20
+        && (speaker.maxScore === null || speaker.maxScore >= 0.70)
+    ));
+    if (!acceptedHostMatch && !hostHasStrongMappedStats) {
+        return { applied: false, labelOverrides: {}, reason: 'host_evidence_too_weak' };
+    }
+
+    const anonymousLabels = Array.from(labels).filter(isUnknownSpeakerLabel);
+    if (anonymousLabels.length === 0) {
+        return { applied: false, labelOverrides: {}, reason: 'no_anonymous_label' };
+    }
+    const hostLabel = getCanonicalStreamerSpeakerLabel(hostStreamerId, registry);
+    const labelOverrides = Object.fromEntries(
+        anonymousLabels.map(label => [label, hostLabel])
+    );
+    return {
+        applied: true,
+        hostStreamerId,
+        hostLabel,
+        labelOverrides,
+        reason: acceptedHostMatch ? 'confirmed_host_only' : 'strong_mapped_host_only'
+    };
+}
+
 function summarizeAsrSpeakers(result, config = {}, context = {}) {
     const registry = resolveStreamerRegistry(config);
     const roomId = context.room_id || context.roomId || context.hostRoomId || null;
@@ -714,6 +823,15 @@ function summarizeAsrSpeakers(result, config = {}, context = {}) {
         .sort((a, b) => b.totalSpeechSeconds - a.totalSpeechSeconds);
 
     const hostStreamerId = speakerRequest?.hostStreamerId || findHostStreamerId(roomId, registry);
+    const speakerFallback = resolveSingleHostSpeakerFallback(
+        result,
+        config,
+        context,
+        registry,
+        roomId,
+        speakerRequest,
+        speakers
+    );
     const appearedStreamerIds = [];
     const speakersByStreamerId = new Map();
     speakers.forEach((speaker) => {
@@ -757,6 +875,29 @@ function summarizeAsrSpeakers(result, config = {}, context = {}) {
         speakersByStreamerId.set(streamerId, speaker);
     });
 
+    if (speakerFallback.applied && hostStreamerId) {
+        if (!appearedStreamerIds.includes(hostStreamerId)) {
+            appearedStreamerIds.unshift(hostStreamerId);
+            console.log(
+                `[ASR] speaker summary: 单主播房主 fallback ${speakerFallback.labelOverrides
+                    ? Object.keys(speakerFallback.labelOverrides).join(', ')
+                    : 'anonymous'} -> ${speakerFallback.hostLabel}`
+            );
+        }
+        if (!speakersByStreamerId.has(hostStreamerId)) {
+            const hostSpeaker = speakers.find(speaker => speaker.streamerId === hostStreamerId);
+            speakersByStreamerId.set(hostStreamerId, hostSpeaker || {
+                label: speakerFallback.hostLabel,
+                totalSpeechSeconds: 0,
+                segmentCount: 0,
+                avgScore: null,
+                maxScore: null,
+                isUnknown: false,
+                streamerId: hostStreamerId
+            });
+        }
+    }
+
     const extraAppearedStreamerIds = appearedStreamerIds
         .filter(streamerId => streamerId !== hostStreamerId)
         .slice(0, Math.max(0, Number(multiConfig.maxExtraCharacters || 0)));
@@ -774,6 +915,13 @@ function summarizeAsrSpeakers(result, config = {}, context = {}) {
             ? speakerRequest.rosterStreamerIds.map(value => String(value)).filter(Boolean)
             : [],
         constrainedToRoster: speakerRequest?.constrainToRoster === true,
+        speakerLabelOverrides: speakerFallback.labelOverrides || {},
+        speakerFallback: {
+            applied: speakerFallback.applied === true,
+            hostStreamerId: speakerFallback.hostStreamerId || null,
+            hostLabel: speakerFallback.hostLabel || null,
+            reason: speakerFallback.reason || null
+        },
         speakers,
         appearedStreamerIds,
         extraAppearedStreamerIds,
@@ -855,38 +1003,21 @@ function writeSpeakerReviewSrt(result, srtPath, subtitleConfig = {}, asrConfig =
             return null;
         }
 
-        // Compute speaker summary to determine which named speakers should be filtered.
-        // If summarizeAsrSpeakers filters a speaker (doesn't appear in appearedStreamerIds),
-        // relabel their segments as UNKNOWN in the SRT so downstream consumers (fusion summary, LLM) don't see false-positive names.
+        // Summary qualification controls which labels are safe for downstream
+        // consumers. An explicit single-host fallback may override this.
         const summary = summarizeAsrSpeakers(result, asrConfig, {
             ...context,
             input: context.input || context.mediaPath
         });
-        const appearedLabels = new Set();
-        for (const spk of summary.speakers) {
-            const streamerId = spk.streamerId;
-            if (streamerId && summary.appearedStreamerIds.includes(streamerId)) {
-                appearedLabels.add(spk.label);
-            }
-        }
-        const filteredLabels = new Map(); // label -> { streamerId, segmentCount, totalSpeechSeconds, maxScore }
-        for (const spk of summary.speakers) {
-            const streamerId = spk.streamerId;
-            if (streamerId && !summary.appearedStreamerIds.includes(streamerId) && !spk.isUnknown) {
-                filteredLabels.set(spk.label, {
-                    streamerId,
-                    segmentCount: spk.segmentCount,
-                    totalSpeechSeconds: spk.totalSpeechSeconds,
-                    maxScore: spk.maxScore
-                });
-            }
-        }
-        if (filteredLabels.size > 0) {
-            const details = Array.from(filteredLabels.entries()).map(([label, info]) =>
-                `${label}->UNKNOWN (${info.segmentCount}段, ${info.totalSpeechSeconds.toFixed(1)}s, maxScore=${info.maxScore})`
-            );
-            console.log(`[ASR] speaker review SRT: 低置信说话人标签替换为 UNKNOWN: ${details.join('; ')}`);
-        }
+        const filteredLabels = new Set(
+            summary.speakers
+                .filter((speaker) => (
+                    speaker.streamerId
+                    && !summary.appearedStreamerIds.includes(speaker.streamerId)
+                    && !speaker.isUnknown
+                ))
+                .map(speaker => speaker.label)
+        );
 
         const parsed = path.parse(srtPath);
         const reviewPath = path.join(parsed.dir, `${parsed.name}.speaker.srt`);
@@ -903,8 +1034,9 @@ function writeSpeakerReviewSrt(result, srtPath, subtitleConfig = {}, asrConfig =
                 return;
             }
             let speaker = String(segment.speaker || 'UNKNOWN').trim() || 'UNKNOWN';
-            // Relabel filtered speakers to UNKNOWN
-            if (filteredLabels.has(speaker)) {
+            if (Object.prototype.hasOwnProperty.call(summary.speakerLabelOverrides || {}, speaker)) {
+                speaker = summary.speakerLabelOverrides[speaker];
+            } else if (filteredLabels.has(speaker)) {
                 speaker = 'UNKNOWN';
             }
             const score = segment.speaker_score === undefined || segment.speaker_score === null || segment.speaker_score === ''
@@ -1220,22 +1352,39 @@ function buildRuntimeSpeakerOverrides(config = {}, context = {}) {
     const hostOverride = hostReference?.speaker
         ? { speaker_host_label: String(hostReference.speaker) }
         : {};
+    const plannedParticipantIds = Array.isArray(speakerRequest?.plannedParticipantIds)
+        ? speakerRequest.plannedParticipantIds.map(value => String(value)).filter(Boolean)
+        : [];
+    const rosterStreamerIds = Array.isArray(speakerRequest?.rosterStreamerIds)
+        ? speakerRequest.rosterStreamerIds.map(value => String(value)).filter(Boolean)
+        : [];
+    const hasRosterGuest = speakerRequest?.constrainToRoster === true
+        && rosterStreamerIds.some(streamerId => streamerId !== hostStreamerId);
+    const roomSingleHostFallback = roomId
+        ? config?.ai?.roomSettings?.[String(roomId)]?.speakerSingleHostFallback === true
+        : false;
+    const singleHostFallback = Boolean(hostReference?.speaker)
+        && (context?.speakerSingleHostFallback === true
+            || speakerRequest?.singleHostFallback === true
+            || roomSingleHostFallback)
+        && plannedParticipantIds.length === 0
+        && !hasRosterGuest;
     if (!speakerRequest) {
-        return hostOverride;
+        return {
+            ...hostOverride,
+            speaker_single_host_fallback: singleHostFallback
+        };
     }
 
     // Roster data is evaluation context, not a speaker-recognition whitelist.
     // Keep every reference configured on the selected ASR backend in competition.
     return {
         ...hostOverride,
+        speaker_single_host_fallback: singleHostFallback,
         speaker_constrain_to_references: false,
         speaker_request_mode: speakerRequest.mode || 'planned_roster',
-        planned_participant_ids: Array.isArray(speakerRequest.plannedParticipantIds)
-            ? speakerRequest.plannedParticipantIds.map(value => String(value)).filter(Boolean)
-            : [],
-        roster_streamer_ids: Array.isArray(speakerRequest.rosterStreamerIds)
-            ? speakerRequest.rosterStreamerIds.map(value => String(value)).filter(Boolean)
-            : []
+        planned_participant_ids: plannedParticipantIds,
+        roster_streamer_ids: rosterStreamerIds
     };
 }
 

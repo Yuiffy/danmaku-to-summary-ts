@@ -70,6 +70,9 @@ describe('topic_clipper', () => {
     expect(prompt).toContain('时间区间必须互不重叠');
     expect(prompt).toContain('不能只是同一事件的不同起止时间');
     expect(prompt).toContain('没有重复/嵌套切片');
+    expect(prompt).toContain('前后扩展上下文只用于理解语境和决定切片边界');
+    expect(prompt).toContain('不得把区间外的事件、弹幕或说法写进文案');
+    expect(prompt).toContain('每个具体事实都能在最终区间字幕中找到');
   });
 
   test('uses configured upload prefix and upload tags for a room', () => {

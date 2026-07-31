@@ -118,7 +118,7 @@
     },
     "text": {
       "enabled": true,
-      "provider": "tuZi",
+      "provider": "daiYu",
       "gemini": {
         "enabled": true,
         "apiKey": "",
@@ -131,11 +131,27 @@
         "enabled": true,
         "apiKey": "",
         "baseUrl": "https://api.tu-zi.com",
+        "model": "gemini-3-flash-preview",
+        "fallbackModels": [
+          "gemini-3-flash-preview"
+        ],
+        "includeBuiltInFallbackModels": true,
+        "temperature": 0.7,
+        "maxTokens": 100000,
+        "proxy": null
+      },
+      "daiYu": {
+        "enabled": true,
+        "baseUrl": "http://localhost:8080",
         "model": "gpt-5.6-luna",
         "fallbackModels": [
           "gemini-3-flash-preview"
         ],
         "includeBuiltInFallbackModels": true,
+        "thinking": {
+          "enabled": true,
+          "budgetTokens": 10000
+        },
         "temperature": 0.7,
         "maxTokens": 100000,
         "proxy": null

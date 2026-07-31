@@ -23,7 +23,8 @@ const TUZI_BALANCE_ERROR_MARKERS = [
     'credit exhausted',
     'billing'
 ];
-const GOODNIGHT_TUZI_EXPERIMENT_MODELS = ['gpt-5.6-luna', 'gpt-5.4-mini'];
+const LEGACY_TUZI_TEXT_MODELS = ['gemini-3-flash-preview'];
+const DAIYU_MIGRATED_TEXT_MODELS = new Set(['gpt-5.6-luna', 'gpt-5.4-mini']);
 
 function isTuZiBalanceError(text) {
     const lowered = String(text || '').toLowerCase();
@@ -508,6 +509,10 @@ function normalizeTuZiTextMaxTokens(model, configuredMaxTokens, wordLimit = 100)
     return Math.min(requested, upstreamLimit);
 }
 
+function isDaiYuMigratedTextModel(model) {
+    return DAIYU_MIGRATED_TEXT_MODELS.has(String(model || '').trim());
+}
+
 function getTuZiFinishReason(choice) {
     return choice?.finish_reason || choice?.finishReason || choice?.native_finish_reason || null;
 }
@@ -525,8 +530,8 @@ function buildTuZiTextModelFailureError(attempts) {
 }
 
 function pickGoodnightTuZiPrimaryModel() {
-    const randomIndex = Math.floor(Math.random() * GOODNIGHT_TUZI_EXPERIMENT_MODELS.length);
-    return GOODNIGHT_TUZI_EXPERIMENT_MODELS[randomIndex];
+    const randomIndex = Math.floor(Math.random() * LEGACY_TUZI_TEXT_MODELS.length);
+    return LEGACY_TUZI_TEXT_MODELS[randomIndex];
 }
 
 // 调用tuZi API生成文本(备用方案)
@@ -534,6 +539,16 @@ async function generateTextWithTuZi(prompt, options = {}) {
     const config = configLoader.getConfig();
     // 优先使用 ai.text.tuZi 配置(文本生成专用),其次使用 ai.comic.tuZi(兼容旧配置)
     const tuziConfig = config.ai?.text?.tuZi || config.aiServices?.tuZi || {};
+    const primaryModel = options.primaryModel || pickGoodnightTuZiPrimaryModel();
+
+    // 先判断迁移模型，避免旧入口在路由前要求 Tuzi key。
+    if (isDaiYuMigratedTextModel(primaryModel)) {
+        console.warn(`⚠️  ${primaryModel} 已迁移到 daiYu，改走 daiYu/gpt-5.6-luna thinking 链路`);
+        return generateTextWithDaiYu(prompt, {
+            ...options,
+            primaryModel: 'gpt-5.6-luna'
+        });
+    }
 
     const textApiKey = configLoader.getTuZiTextApiKey();
     if (!configLoader.isTuZiTextConfigured()) {
@@ -541,7 +556,6 @@ async function generateTextWithTuZi(prompt, options = {}) {
     }
 
     console.log('🤖 调用tuZi API生成文本...');
-    const primaryModel = options.primaryModel || pickGoodnightTuZiPrimaryModel();
 
     const configuredFallbackModels = Array.isArray(tuziConfig.fallbackModels)
         ? tuziConfig.fallbackModels
@@ -555,9 +569,8 @@ async function generateTextWithTuZi(prompt, options = {}) {
         tuziConfig.model,
         ...configuredFallbackModels,
         'gemini-3-flash-preview',
-        'gpt-5.6-luna',
         ...builtInFallbackModels
-    ].filter((model, index, models) => model && models.indexOf(model) === index);
+    ].filter((model, index, models) => model && !isDaiYuMigratedTextModel(model) && models.indexOf(model) === index);
     console.log(`   晚安主模型随机命中: ${primaryModel}`);
     console.log(`   候选序列: ${modelSequence.join(' -> ')}`);
     const baseUrl = tuziConfig.baseUrl || 'https://api.tu-zi.com';
@@ -668,6 +681,154 @@ async function generateTextWithTuZi(prompt, options = {}) {
     }
 }
 
+// 调用daiYu API生成文本（OpenAI兼容，支持thinking）
+async function generateTextWithDaiYu(prompt, options = {}) {
+    const config = configLoader.getConfig();
+    const daiYuConfig = config.ai?.text?.daiYu || {};
+
+    const apiKey = configLoader.getDaiYuApiKey();
+    if (!configLoader.isDaiYuTextConfigured()) {
+        throw new Error('daiYu API未配置,请检查secret.json中的providers.daiYu.apiKey');
+    }
+
+    console.log('🤖 调用daiYu API生成文本...');
+    const primaryModel = options.primaryModel || daiYuConfig.model || 'gpt-5.6-luna';
+
+    const configuredFallbackModels = Array.isArray(daiYuConfig.fallbackModels)
+        ? daiYuConfig.fallbackModels
+        : [];
+    const builtInFallbackModels = daiYuConfig.includeBuiltInFallbackModels === true
+        ? ['qwen2.5-72b-instruct', 'grok-4.1']
+        : [];
+    const modelSequence = [
+        primaryModel,
+        daiYuConfig.textModel,
+        daiYuConfig.model,
+        ...configuredFallbackModels,
+        'gpt-5.6-luna',
+        ...builtInFallbackModels
+    ].filter((model, index, models) => model && models.indexOf(model) === index);
+    console.log(`   晚安主模型: ${primaryModel}`);
+    console.log(`   候选序列: ${modelSequence.join(' -> ')}`);
+    const baseUrl = (daiYuConfig.baseUrl || 'http://localhost:8080').replace(/\/v1$/, '');
+    const apiUrl = `${baseUrl}/v1/chat/completions`;
+    const attempts = Array.isArray(options.attempts) ? [...options.attempts] : [];
+    const fallbackFromPrimary = Boolean(options.fallback);
+    const wordLimit = Number(options.wordLimit || configLoader.getByPath('ai.defaultWordLimit', 100));
+
+    // 设置代理
+    let agent = null;
+    if (daiYuConfig.proxy) {
+        console.log(`   使用代理: ${daiYuConfig.proxy}`);
+        agent = new HttpsProxyAgent(daiYuConfig.proxy);
+    }
+
+    // thinking 配置
+    const thinkingEnabled = daiYuConfig.thinking?.enabled !== false;
+    const thinkingBudgetTokens = daiYuConfig.thinking?.budgetTokens || 10000;
+
+    // 重试逻辑
+    for (let attempt = 0; attempt < modelSequence.length; attempt++) {
+        const textModel = modelSequence[attempt];
+        try {
+            const timeoutMs = Number(options.timeoutMs) || config.timeouts?.aiApiTimeout || 60000;
+            console.log(`[WAIT] 正在通过daiYu API生成文本... (尝试 ${attempt + 1}/${modelSequence.length} model: ${textModel}, 超时: ${Math.round(timeoutMs / 1000)}s)`);
+            const effectiveMaxTokens = normalizeTuZiTextMaxTokens(textModel, daiYuConfig.maxTokens, wordLimit);
+            console.log(`   max_tokens: ${effectiveMaxTokens} (configured=${daiYuConfig.maxTokens || 'default'}, wordLimit=${wordLimit})`);
+
+            const requestBody = {
+                model: textModel,
+                messages: [
+                    {
+                        role: 'user',
+                        content: prompt
+                    }
+                ],
+                temperature: daiYuConfig.temperature,
+                max_tokens: effectiveMaxTokens
+            };
+
+            if (thinkingEnabled) {
+                requestBody.thinking = {
+                    type: 'enabled',
+                    budget_tokens: thinkingBudgetTokens
+                };
+                console.log(`   thinking: enabled (budget=${thinkingBudgetTokens})`);
+            }
+
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${apiKey}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(requestBody),
+                agent: agent,
+                timeout: timeoutMs
+            });
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`daiYu API返回错误 ${response.status}: ${errorText}`);
+            }
+
+            const data = await response.json();
+            const choice = data.choices?.[0];
+            const finishReason = getTuZiFinishReason(choice);
+            const usage = data.usage || null;
+            const text = choice?.message?.content;
+            console.log(`   finish_reason: ${finishReason || 'unknown'}, usage: ${usage ? JSON.stringify(usage) : 'unknown'}`);
+
+            if (!text || text.trim().length === 0) {
+                throw new Error('daiYu API返回空结果');
+            }
+
+            if (finishReason && ['length', 'max_tokens', 'MAX_TOKENS'].includes(String(finishReason))) {
+                throw new Error(`daiYu API输出达到长度上限,疑似被截断 (finish_reason=${finishReason}, max_tokens=${effectiveMaxTokens})`);
+            }
+
+            if (isUnsafeGeneratedReply(text)) {
+                throw new Error('daiYu API返回疑似拒绝/身份自述内容,跳过该模型');
+            }
+
+            attempts.push({
+                provider: 'daiYu',
+                model: textModel,
+                status: 'success',
+                finishReason: finishReason || 'unknown',
+                completionTokens: usage?.completion_tokens ?? usage?.completionTokens,
+                reasoningTokens: usage?.completion_tokens_details?.reasoning_tokens,
+                totalTokens: usage?.total_tokens ?? usage?.totalTokens,
+                maxTokens: effectiveMaxTokens
+            });
+            console.log('✅ daiYu API调用成功');
+            return createGenerationResult(text, {
+                provider: 'daiYu',
+                model: textModel,
+                fallback: fallbackFromPrimary || attempt > 0,
+                attempts,
+                finishReason: finishReason || 'unknown',
+                usage,
+                maxTokens: effectiveMaxTokens
+            });
+        } catch (error) {
+            attempts.push({
+                provider: 'daiYu',
+                model: textModel,
+                status: 'failure',
+                error: String(error.message || error).slice(0, 300)
+            });
+            console.error(`❌ daiYu API调用失败 (尝试 ${attempt + 1}/${modelSequence.length}): ${error.message}`);
+
+            if (attempt === modelSequence.length - 1) {
+                throw buildTuZiTextModelFailureError(attempts);
+            }
+
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+    }
+}
+
 // 调用Gemini API生成文本
 async function generateTextWithGemini(prompt, options = {}) {
     const config = configLoader.getConfig();
@@ -753,9 +914,28 @@ async function generateTextWithGemini(prompt, options = {}) {
             global.fetch = originalFetch;
         }
 
-        // 不管什么 Gemini 错误,都尝试使用 tuZi API 重试
+        // Gemini 失败时优先回退到 daiYu，避免再走旧的 Tuzi 文本模型。
+        if (configLoader.isDaiYuTextConfigured()) {
+            console.warn(`⚠️  Gemini API调用失败 (${error.message}),尝试使用daiYu API作为备用方案...`);
+            try {
+                return await generateTextWithDaiYu(prompt, {
+                    fallback: true,
+                    wordLimit: options.wordLimit,
+                    attempts: [{
+                        provider: 'gemini',
+                        model: geminiConfig.model || 'unknown',
+                        status: 'failure',
+                        error: String(error.message || error).slice(0, 300)
+                    }]
+                });
+            } catch (daiyuError) {
+                console.error(`❌ daiYu API备用方案也失败: ${daiyuError.message}`);
+                throw new Error(`Gemini和daiYu API都失败: Gemini - ${error.message}, daiYu - ${daiyuError.message}`);
+            }
+        }
+
         if (configLoader.isTuZiConfigured()) {
-            console.warn(`⚠️  Gemini API调用失败 (${error.message}),尝试使用tuZi API作为备用方案...`);
+            console.warn(`⚠️  daiYu未配置，Gemini失败后尝试旧tuZi备用方案...`);
             try {
                 return await generateTextWithTuZi(prompt, {
                     fallback: true,
@@ -947,6 +1127,8 @@ async function generateGoodnightReply(highlightPath, roomId = null) {
 
                 if (provider === 'tuZi') {
                     generationResult = await generateTextWithTuZi(prompt, { wordLimit });
+                } else if (provider === 'daiYu') {
+                    generationResult = await generateTextWithDaiYu(prompt, { wordLimit });
                 } else {
                     // 默认使用 Gemini
                     generationResult = await generateTextWithGemini(prompt, { wordLimit });
@@ -1039,6 +1221,8 @@ async function generateClipTitle(context = {}) {
         const provider = config.ai?.text?.provider || 'gemini';
         const result = provider === 'tuZi'
             ? await generateTextWithTuZi(prompt, { wordLimit: 80 })
+            : provider === 'daiYu'
+            ? await generateTextWithDaiYu(prompt, { wordLimit: 80 })
             : await generateTextWithGemini(prompt, { wordLimit: 80 });
         return cleanShortTitle(result.text, fallback);
     } catch (error) {
@@ -1133,6 +1317,8 @@ async function generateClipDescription(context = {}) {
         const provider = config.ai?.text?.provider || 'gemini';
         const result = provider === 'tuZi'
             ? await generateTextWithTuZi(prompt, { wordLimit: 80 })
+            : provider === 'daiYu'
+            ? await generateTextWithDaiYu(prompt, { wordLimit: 80 })
             : await generateTextWithGemini(prompt, { wordLimit: 80 });
         const text = (result.text || '').trim();
         if (text && text.length > 5 && text.length < 100) {
@@ -1224,6 +1410,7 @@ module.exports = {
     buildCoverTextPromptLines,
     generateTextWithGemini,
     generateTextWithTuZi,
+    generateTextWithDaiYu,
     batchGenerateGoodnightReplies
 };
 
@@ -1268,6 +1455,8 @@ if (require.main === module) {
                 const provider = config.ai?.text?.provider || 'gemini';
                 const generated = provider === 'tuZi'
                     ? await generateTextWithTuZi(prompt, { wordLimit: 600 })
+                    : provider === 'daiYu'
+                    ? await generateTextWithDaiYu(prompt, { wordLimit: 600 })
                     : await generateTextWithGemini(prompt, { wordLimit: 600 });
                 // Keep stdout script-only for the Python caller; provenance is
                 // emitted as a terminal stderr sentinel for machine parsing.

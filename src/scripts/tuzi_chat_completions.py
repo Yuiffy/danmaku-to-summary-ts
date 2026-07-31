@@ -1093,7 +1093,9 @@ def call_tuzi_chat_completions(
     proxy_url: str = "",
     timeout: float = 120,
     temperature: float = 0.7,
-    max_tokens: int = 100000
+    max_tokens: int = 100000,
+    thinking: bool = False,
+    thinking_budget_tokens: int = 10000,
 ) -> Optional[str]:
     """
     调用tuZi的/v1/chat/completions端点生成文本
@@ -1108,6 +1110,8 @@ def call_tuzi_chat_completions(
         timeout: 超时时间（秒）
         temperature: 温度参数
         max_tokens: 最大生成令牌数
+        thinking: 是否启用思考模式
+        thinking_budget_tokens: 思考令牌预算
         
     Returns:
         生成的文本内容，如果失败返回None
@@ -1145,6 +1149,11 @@ def call_tuzi_chat_completions(
             "max_tokens": normalized_max_tokens,
             "stream": False,
         }
+        if thinking:
+            payload["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": max(1, int(thinking_budget_tokens)),
+            }
 
         print(f"[TUZI_TEXT] 调用tuZi Chat Completions API...")
         response = request_tuzi_with_retry(
@@ -1175,6 +1184,35 @@ def call_tuzi_chat_completions(
         print(f"[ERROR]  tuZi Chat Completions API调用失败: {e}")
         traceback.print_exc()
         return None
+
+
+def call_daiyu_chat_completions(
+    prompt: str,
+    system_prompt: Optional[str] = None,
+    model: str = "gpt-5.6-luna",
+    base_url: str = "http://localhost:8080",
+    api_key: str = "",
+    proxy_url: str = "",
+    timeout: float = 120,
+    temperature: float = 0.7,
+    max_tokens: int = 100000,
+    thinking: bool = True,
+    thinking_budget_tokens: int = 10000,
+) -> Optional[str]:
+    """调用带鱼的 OpenAI-compatible 文本接口，并默认开启思考。"""
+    return call_tuzi_chat_completions(
+        prompt=prompt,
+        system_prompt=system_prompt,
+        model=model,
+        base_url=base_url,
+        api_key=api_key,
+        proxy_url=proxy_url,
+        timeout=timeout,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        thinking=thinking,
+        thinking_budget_tokens=thinking_budget_tokens,
+    )
 
 
 def encode_image_to_base64(image_path: str, with_data_uri: bool = False) -> str:

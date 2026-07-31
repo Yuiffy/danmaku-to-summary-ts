@@ -1019,6 +1019,8 @@ async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, confi
         try {
             const result = provider === 'tuZi'
                 ? await generator.generateTextWithTuZi(prompt, { wordLimit: 1000 })
+                : provider === 'daiYu'
+                ? await generator.generateTextWithDaiYu(prompt, { wordLimit: 1000 })
                 : await generator.generateTextWithGemini(prompt, { wordLimit: 1000 });
             const text = String(result.text || '').trim();
             const match = text.match(/\{[\s\S]*"clips"[\s\S]*\}/);
@@ -1097,6 +1099,12 @@ async function planClipsWithAIFullContext(parsed, danmaku, info, totalDuration, 
         console.log(`Full-context AI input: ${prompt.length} chars, subtitles=${fullContext.subtitleLines.length}, danmaku=${danmaku.length}->${fullContext.danmakuLines.length}`);
         const result = provider === 'tuZi'
             ? await generator.generateTextWithTuZi(prompt, {
+                wordLimit: Math.max(2400, maxClips * 140),
+                primaryModel: config.ai?.model || undefined,
+                timeoutMs: config.ai?.timeoutMs
+            })
+            : provider === 'daiYu'
+            ? await generator.generateTextWithDaiYu(prompt, {
                 wordLimit: Math.max(2400, maxClips * 140),
                 primaryModel: config.ai?.model || undefined,
                 timeoutMs: config.ai?.timeoutMs
@@ -1278,6 +1286,8 @@ async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config,
     try {
         const result = provider === 'tuZi'
             ? await generator.generateTextWithTuZi(prompt, { wordLimit: 1200 })
+            : provider === 'daiYu'
+            ? await generator.generateTextWithDaiYu(prompt, { wordLimit: 1200 })
             : await generator.generateTextWithGemini(prompt, { wordLimit: 1200 });
         const text = String(result.text || '').trim();
         const match = text.match(/\{[\s\S]*"clips"[\s\S]*\}/);
