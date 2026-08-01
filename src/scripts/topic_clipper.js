@@ -9,6 +9,7 @@ const configLoader = require('./config-loader');
 const {
     applyFfmpegProcessPriority,
     getFfmpegResourceConfig,
+    waitForCpuAvailability,
     withFfmpegResourceLimits
 } = require('./ffmpeg_resource');
 
@@ -1524,13 +1525,14 @@ function probeNearestKeyframe(ffmpegPath, mediaPath, targetTime) {
     });
 }
 
-function runFfmpeg(args, options = {}) {
+async function runFfmpeg(args, options = {}) {
+    const resourceConfig = {
+        ...(options.resourceConfig || getFfmpegResourceConfig(configLoader.getConfig())),
+        ...(Number.isFinite(Number(options.threads)) ? { threads: Number(options.threads) } : {})
+    };
+    await waitForCpuAvailability(options.stage || '话题切片 ffmpeg', resourceConfig);
     return new Promise((resolve, reject) => {
         const ffmpegPath = options.ffmpegPath || 'ffmpeg';
-        const resourceConfig = {
-            ...(options.resourceConfig || getFfmpegResourceConfig(configLoader.getConfig())),
-            ...(Number.isFinite(Number(options.threads)) ? { threads: Number(options.threads) } : {})
-        };
         const commandArgs = withFfmpegResourceLimits(args, resourceConfig);
         const child = spawn(ffmpegPath, commandArgs, {
             stdio: ['ignore', 'pipe', 'pipe'],
@@ -1616,6 +1618,8 @@ async function generateClipCover(videoPath, title, outputDir, info = {}) {
     const coverSourcePath = info.coverSourcePath && fs.existsSync(info.coverSourcePath)
         ? info.coverSourcePath
         : videoPath;
+    const resourceConfig = info.resourceConfig || getFfmpegResourceConfig(configLoader.getConfig());
+    await waitForCpuAvailability('话题切片封面生成', resourceConfig);
 
     return new Promise((resolve, reject) => {
         const args = ['python', scriptPath, coverSourcePath,
@@ -1645,6 +1649,7 @@ async function generateClipCover(videoPath, title, outputDir, info = {}) {
             stdio: ['ignore', 'pipe', 'pipe'],
             windowsHide: true,
         });
+        applyFfmpegProcessPriority(child.pid, resourceConfig.priority);
 
         let stderr = '';
         child.stdout.on('data', (d) => process.stdout.write(d));
@@ -1725,7 +1730,8 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
     const ffmpegPath = config.ffmpegPath || 'ffmpeg';
     const ffmpegOptions = {
         ffmpegPath,
-        threads: config.ffmpegThreads ?? config.clipFfmpegThreads
+        threads: config.ffmpegThreads ?? config.clipFfmpegThreads,
+        resourceConfig: config.resourceConfig
     };
     const duration = String(Math.max(0.1, window.duration));
     const start = String(Math.max(0, window.start));
@@ -2475,6 +2481,7 @@ async function generateTopicClips(options = {}) {
     console.log(`\n🎬 共 ${clipsToGenerate.length} 段切片,开始生成视频...\n`);
 
     const results = [];
+    const clipResourceConfig = getFfmpegResourceConfig(options.config || configLoader.getConfig());
     for (const clip of clipsToGenerate) {
         const window = clip.window;
         const base = sanitizeFileName(`${path.basename(source.mediaPath, path.extname(source.mediaPath))}_topic_${String(window.index).padStart(2, '0')}_${formatClock(window.start).replace(/:/g, '')}`);
@@ -2506,7 +2513,8 @@ async function generateTopicClips(options = {}) {
                 burnSubtitles: config.burnSubtitles,
                 subtitleSegments: srtResult.segments,
                 preserveCoverSource: true,
-                ffmpegPath: options.ffmpegPath
+                ffmpegPath: options.ffmpegPath,
+                resourceConfig: clipResourceConfig
             });
         } catch (clipError) {
             error = clipError.message;
@@ -2527,7 +2535,8 @@ async function generateTopicClips(options = {}) {
                     clipDuration: window.duration,
                     preferredTime: Number.isFinite(Number(mediaResult.coverTimeOrigin)) && Number.isFinite(Number(preferredTime))
                         ? Number(preferredTime) - Number(mediaResult.coverTimeOrigin)
-                        : preferredTime
+                        : preferredTime,
+                    resourceConfig: clipResourceConfig
                 });
             } catch (coverErr) {
                 console.warn(`⚠️  封面生成失败,跳过: ${coverErr.message}`);

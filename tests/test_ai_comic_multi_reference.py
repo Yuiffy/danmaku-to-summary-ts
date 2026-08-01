@@ -589,6 +589,65 @@ class MultiReferenceComicTests(unittest.TestCase):
         self.assertEqual(meta["policyVersion"], comic.COMIC_SCRIPT_POLICY_VERSION)
         self.assertEqual(meta["appearedStreamerIds"], ["shiori"])
 
+    def test_live_context_constrains_storyboard_and_final_image_prompt(self):
+        live_context = {
+            "schemaVersion": 1,
+            "liveTitle": "明日方舟代抽⭐",
+            "recordingStartTime": "2026-08-01T03:57:16.000Z",
+            "recordingStartLocalTime": "2026-08-01 11:57:16 UTC+8",
+            "recentDynamics": [{
+                "id": "1231444441815842852",
+                "publishTime": "2026-08-01T03:53:22.000Z",
+                "content": "来了来了来了！代抽明日方舟咯！",
+            }],
+            "contentHints": [
+                "孤立的“启动”在没有冲突证据时可理解为“原神启动”，但不能据此判断本场游戏。"
+            ],
+        }
+
+        storyboard_prompt = comic.build_comic_generation_prompt(
+            "兔耳亚麻发异瞳少女",
+            "主播说今天来代抽，正文多次出现明日方舟。",
+            "30655190",
+            live_context=live_context,
+        )
+        image_prompt, _, _ = comic.build_comic_prompt(
+            "正文多次出现明日方舟。",
+            room_id="30655190",
+            existing_comic="分镜一：电脑上写着原神启动。",
+            live_context=live_context,
+        )
+
+        self.assertIn("直播标题：明日方舟代抽⭐", storyboard_prompt)
+        self.assertIn("开播时间（北京时间）：2026-08-01 11:57:16 UTC+8", storyboard_prompt)
+        self.assertIn("代抽明日方舟咯", storyboard_prompt)
+        self.assertIn("直播标题与明确语音 > 同场弹幕", storyboard_prompt)
+        self.assertIn("至少两类证据一致确认具体游戏/活动", storyboard_prompt)
+        self.assertIn("若下方漫画脚本与 live_facts 冲突", image_prompt)
+        self.assertIn("不要绘制错误的游戏界面", image_prompt)
+
+    def test_comic_script_meta_hashes_live_context(self):
+        output = self.root / "context_story_COMIC_SCRIPT.txt"
+        live_context = {
+            "liveTitle": "明日方舟代抽⭐",
+            "recentDynamics": [],
+            "contentHints": [],
+        }
+
+        comic.write_comic_script_meta(
+            str(output),
+            {"status": "success", "provider": "test", "model": "test"},
+            "30655190",
+            "highlight",
+            [],
+            live_context,
+        )
+        meta = json.loads(
+            Path(comic.comic_script_meta_path(str(output))).read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(meta["liveContextSha256"], comic.hash_live_generation_context(live_context))
+
     def test_max_extra_characters_applies(self):
         second = self.root / "rhea.png"
         second.write_bytes(b"x")

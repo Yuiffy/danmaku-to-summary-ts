@@ -17,6 +17,7 @@ const topicClipper = require('./topic_clipper');
 const ownStreamClipper = require('./own_stream_clipper');
 const backgroundClipRunner = require('./background_clip_runner');
 const speakerReferenceCatalog = require('./asr/speaker_reference_catalog');
+const liveGenerationContext = require('./live_generation_context');
 
 // 获取音频格式配置
 function getAudioFormats() {
@@ -1704,6 +1705,23 @@ const main = async () => {
             console.log(`   AI漫画生成: ${aiSettings.comic ? '启用' : '禁用'}`);
             console.log(`   图片最短时长: ${aiSettings.minComicDurationMinutes} 分钟`);
             console.log(`   图片生成概率: ${(aiSettings.comicGenerationProbability * 100).toFixed(0)}%`);
+
+            try {
+                const preparedContext = await liveGenerationContext.prepareLiveGenerationContext(
+                    highlightPath,
+                    finalRoomId,
+                    configLoader.getConfig()
+                );
+                const liveContext = preparedContext.context;
+                console.log(`🧭 本场事实上下文已保存: ${path.basename(preparedContext.outputPath)}`);
+                console.log(`   直播标题: ${liveContext.liveTitle || '未取得'}`);
+                console.log(`   开播前近期动态: ${liveContext.recentDynamics.length} 条 (${liveContext.sources.recentDynamics})`);
+                if (liveContext.recentDynamicsError) {
+                    console.warn(`   ⚠️ 近期动态获取失败，已降级为标题上下文: ${liveContext.recentDynamicsError}`);
+                }
+            } catch (error) {
+                console.warn(`⚠️  准备本场事实上下文失败，将由生成器从文件名降级解析: ${error.message}`);
+            }
             
             // AI文本生成
             let goodnightTextPath = null;

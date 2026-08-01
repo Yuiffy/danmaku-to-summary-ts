@@ -83,7 +83,7 @@ import traceback as tb
 import subprocess
 import shutil
 
-COMIC_SCRIPT_POLICY_VERSION = 3
+COMIC_SCRIPT_POLICY_VERSION = 4
 
 LAST_COMIC_SCRIPT_META = {
     "provider": None,
@@ -837,6 +837,122 @@ def sanitize_highlight_for_comic_script(highlight_content: str, room_id: Optiona
     lines = [re.sub(r"[ \t]+", " ", line).strip() for line in cleaned.splitlines()]
     return "\n".join(line for line in lines if line).strip()
 
+
+def live_generation_context_path(highlight_path: str) -> str:
+    base_name = os.path.basename(highlight_path).replace("_AI_HIGHLIGHT.txt", "")
+    return os.path.join(os.path.dirname(highlight_path), f"{base_name}_LIVE_CONTEXT.json")
+
+
+def parse_recording_live_context(highlight_path: str, room_id: Optional[str] = None) -> Dict[str, Any]:
+    base_name = os.path.basename(highlight_path).replace("_AI_HIGHLIGHT.txt", "")
+    match = re.match(r"^录制-(\d+)-(\d{8})-(\d{6})-([^-]+)-(.+)$", base_name)
+    parsed_room_id = str(room_id) if room_id is not None else None
+    live_title = None
+    recording_start_local_time = None
+    if match:
+        parsed_room_id = parsed_room_id or match.group(1)
+        live_title = re.sub(r"_merged(?:_\d+)?$", "", match.group(5)).strip() or None
+        date_part = match.group(2)
+        time_part = match.group(3)
+        recording_start_local_time = (
+            f"{date_part[0:4]}-{date_part[4:6]}-{date_part[6:8]} "
+            f"{time_part[0:2]}:{time_part[2:4]}:{time_part[4:6]} UTC+8"
+        )
+    return {
+        "schemaVersion": 1,
+        "roomId": parsed_room_id,
+        "liveTitle": live_title,
+        "recordingStartTime": None,
+        "recordingStartLocalTime": recording_start_local_time,
+        "contentHints": [],
+        "recentDynamics": [],
+        "sources": {
+            "liveTitle": "recording-filename" if live_title else None,
+            "recentDynamics": "not-requested",
+        },
+    }
+
+
+def get_room_content_hints(config: Dict[str, Any], room_id: Optional[str]) -> list[str]:
+    room_key = str(room_id or "")
+    room_settings = (
+        config.get("ai", {}).get("roomSettings", {}).get(room_key)
+        or config.get("roomSettings", {}).get(room_key)
+        or {}
+    )
+    raw_hints = room_settings.get("contentHints")
+    if raw_hints is None:
+        host_id = find_host_streamer_id(config, room_id)
+        host = resolve_streamer_registry(config).get(host_id, {}) if host_id else {}
+        raw_hints = host.get("contentHints")
+    if isinstance(raw_hints, list):
+        return [re.sub(r"\s+", " ", str(item)).strip() for item in raw_hints if str(item).strip()]
+    hint = re.sub(r"\s+", " ", str(raw_hints or "")).strip()
+    return [hint] if hint else []
+
+
+def load_live_generation_context(
+    highlight_path: str,
+    room_id: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    context_path = live_generation_context_path(highlight_path)
+    if os.path.exists(context_path):
+        try:
+            with open(context_path, "r", encoding="utf-8") as context_file:
+                context = json.load(context_file)
+            if isinstance(context, dict) and context.get("schemaVersion") == 1:
+                return context
+        except Exception as error:
+            print(f"[WARNING] 读取直播事实上下文失败，将仅使用文件名: {error}")
+
+    context = parse_recording_live_context(highlight_path, room_id)
+    context["contentHints"] = get_room_content_hints(config or load_config(), context.get("roomId"))
+    return context
+
+
+def format_live_generation_context(context: Optional[Dict[str, Any]]) -> str:
+    if not context:
+        return ""
+    lines = [
+        "【本场事实上下文（高优先级约束）】",
+        f"- 直播标题：{context.get('liveTitle') or '未取得'}",
+        f"- 开播时间（北京时间）：{context.get('recordingStartLocalTime') or '未取得'}。判断早/午/晚必须以此为准，不能因主播说“刚起床”等作息描述改写客观时段。",
+    ]
+    recent_dynamics = context.get("recentDynamics") or []
+    if recent_dynamics:
+        lines.append("- 开播前近期动态（仅用于确认本场主题/预告，不得把动态里未在本场发生的事写成直播内容）：")
+        for item in recent_dynamics:
+            publish_time = str(item.get("publishTime") or "时间未知")
+            content = re.sub(r"\s+", " ", str(item.get("content") or "")).strip()
+            if content:
+                lines.append(f"  - [{publish_time}] {content}")
+    content_hints = context.get("contentHints") or []
+    if content_hints:
+        lines.append("- 主播内容歧义提示（只用于解释本场已经出现的词句，不得主动补写）：")
+        lines.extend(f"  - {hint}" for hint in content_hints)
+    lines.extend([
+        "【事实证据优先级】直播标题与明确语音 > 同场弹幕 > 开播前近期动态 > 稳定人设、兴趣、口头禅与模型常识。",
+        "稳定人设、兴趣和口头禅不是本场发生的事实，只能消解正文中确实存在且没有冲突证据的歧义；一旦高优先级证据指向其他游戏、活动或人物，必须服从高优先级证据。",
+        "当直播标题、明确语音或开播前动态中至少两类证据一致确认具体游戏/活动时，回复和画面应自然点明该名称，不要退化成泛化的“某游戏”“抽卡界面”；只有证据不足或互相冲突时才使用中性描述。",
+        "不得因为人物设定中的某款游戏或口头禅，擅自给本场添加对应游戏界面、角色、Logo或台词。游戏/活动无法确认时使用中性描述，不猜具体作品。",
+    ])
+    return "\n".join(lines)
+
+
+def hash_live_generation_context(context: Optional[Dict[str, Any]]) -> Optional[str]:
+    if context is None:
+        return None
+    relevant = {
+        "liveTitle": context.get("liveTitle"),
+        "recordingStartTime": context.get("recordingStartTime"),
+        "recordingStartLocalTime": context.get("recordingStartLocalTime"),
+        "contentHints": context.get("contentHints") or [],
+        "recentDynamics": context.get("recentDynamics") or [],
+    }
+    serialized = json.dumps(relevant, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
 def count_normalized_occurrences(text: str, label: str) -> int:
     normalized_text = normalize_mention_text(text)
     normalized_label = normalize_mention_text(label)
@@ -1522,7 +1638,15 @@ def build_multi_character_constraints(extra_streamers: Optional[list[dict]] = No
 - 只有漫画脚本明确出现多人互动或明确需要画到被提到的人时才画多位主播。
 - 仅被提到但没有实际出声的人，可以使用其参考图保持形象准确，但不要默认画成现场连麦角色。"""
 
-def build_comic_prompt(highlight_content: str, reference_image_path: Optional[str] = None, room_id: Optional[str] = None, existing_comic: Optional[str] = None, model: Optional[str] = None, extra_streamers: Optional[list[dict]] = None) -> Tuple[str, str, bool]:
+def build_comic_prompt(
+    highlight_content: str,
+    reference_image_path: Optional[str] = None,
+    room_id: Optional[str] = None,
+    existing_comic: Optional[str] = None,
+    model: Optional[str] = None,
+    extra_streamers: Optional[list[dict]] = None,
+    live_context: Optional[Dict[str, Any]] = None,
+) -> Tuple[str, str, bool]:
     """构建漫画生成提示词并返回 (prompt, comic_content, is_generated)。
 
     如果提供 `existing_comic` 则复用已有脚本而不再调用AI生成。
@@ -1546,7 +1670,12 @@ def build_comic_prompt(highlight_content: str, reference_image_path: Optional[st
         if get_comic_script_meta().get("status") != "success":
             set_comic_script_meta(provider="existing", model="existing-script", status="success", reason="复用已有漫画脚本")
     else:
-        comic_content, is_generated = generate_comic_content_with_ai(highlight_content, room_id=room_id, extra_streamers=extra_streamers)
+        comic_content, is_generated = generate_comic_content_with_ai(
+            highlight_content,
+            room_id=room_id,
+            extra_streamers=extra_streamers,
+            live_context=live_context,
+        )
 
     # 获取角色描述并注入绘画提示词（优先房间配置、再全局默认、最后内置默认）
     character_desc = get_multi_character_description(room_id, extra_streamers)
@@ -1556,11 +1685,16 @@ def build_comic_prompt(highlight_content: str, reference_image_path: Optional[st
     config = load_config()
     room_config = config.get("roomSettings", {}).get(str(room_id), {}) if room_id else {}
     custom_image_prompt = room_config.get("customPrompts", {}).get("comicImage")
+    live_context_block = format_live_generation_context(live_context)
 
     # 第二步：基于漫画内容构建绘画提示词（包含角色设定，便于图像生成一致）
     if custom_image_prompt:
         # 使用自定义 prompt 模板
+        has_live_context_placeholder = "{live_context}" in custom_image_prompt
         base_prompt = custom_image_prompt.replace("{character_desc}", character_desc).replace("{comic_content}", comic_content)
+        base_prompt = base_prompt.replace("{live_context}", live_context_block)
+        if live_context_block and not has_live_context_placeholder:
+            base_prompt = f"{live_context_block}\n\n{base_prompt}"
         if multi_constraints:
             base_prompt = f"{base_prompt}\n{multi_constraints}"
     else:
@@ -1568,6 +1702,8 @@ def build_comic_prompt(highlight_content: str, reference_image_path: Optional[st
         # 这个占位符会在实际调用 API 时根据模型能力动态替换
         base_prompt = f"""<note>一定要按照给你的参考图还原形象，而不是自己乱画一个动漫角色</note>
 <character>{character_desc}</character>
+<live_facts>{live_context_block}</live_facts>
+若下方漫画脚本与 live_facts 冲突，以 live_facts 为准并修正画面，不要绘制错误的游戏界面、角色、Logo或台词。
 {multi_constraints}
 要画得精致，角色要画得帅气、美丽、可爱。
 {{chinese_instruction}}
@@ -1641,6 +1777,7 @@ def format_comic_identity_context(context: Dict[str, Any]) -> str:
 COMIC_ARTIST_PROMPT_TEMPLATE = """你作为虚拟主播二创画师大手子，根据直播内容，绘制直播总结插画。
 角色描述：{character_desc}。
 {identity_context}。
+{live_context}
 风格：多个剪贴画风格分镜（2~4个吧），每个是一个片段场景，
 默认以画面叙事为主，但如果有助于漫画效果，可以设计少量中文台词框、拟声词、标题字或路牌字，文字要自然、准确、排版清楚，不要过多。
 注意：弹幕里的“[某某收藏集表情包_xxx]”或“[某某表情包_xxx]”只是观众发的表情包名称，不代表这个主播出场、连麦或参与对话；不要把表情包名称当成漫画角色。
@@ -1655,6 +1792,7 @@ def build_comic_generation_prompt(
     highlight_content: str,
     room_id: Optional[str] = None,
     appeared_streamers: Optional[list[dict]] = None,
+    live_context: Optional[Dict[str, Any]] = None,
 ) -> str:
     """使用COMIC_ARTIST_PROMPT_TEMPLATE构建完整的prompt（用于Gemini等调用）"""
     # 尝试获取房间级别的自定义漫画脚本 prompt
@@ -1677,9 +1815,14 @@ def build_comic_generation_prompt(
             appeared_streamers=appeared_streamers,
         )
     )
+    live_context_block = format_live_generation_context(live_context)
+    has_live_context_placeholder = "{live_context}" in template
     base = template.replace("{character_desc}", character_desc)
     base = base.replace("{identity_context}", identity_context)
+    base = base.replace("{live_context}", live_context_block)
     base = base.replace("{highlight_content}", highlight_content)
+    if live_context_block and not has_live_context_placeholder:
+        base = f"{live_context_block}\n\n{base}"
     return base
 
 
@@ -1844,7 +1987,12 @@ def has_socks_proxy_support() -> bool:
     """检查当前 Python 环境是否具备 SOCKS 代理支持。"""
     return importlib.util.find_spec("socksio") is not None
 
-def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str] = None, extra_streamers: Optional[list[dict]] = None) -> Tuple[str, bool]:
+def generate_comic_content_with_ai(
+    highlight_content: str,
+    room_id: Optional[str] = None,
+    extra_streamers: Optional[list[dict]] = None,
+    live_context: Optional[Dict[str, Any]] = None,
+) -> Tuple[str, bool]:
     """使用AI生成漫画内容脚本
     
     返回值: (comic_content, is_generated)
@@ -1859,6 +2007,7 @@ def generate_comic_content_with_ai(highlight_content: str, room_id: Optional[str
         script_highlight_content,
         room_id,
         appeared_streamers=extra_streamers,
+        live_context=live_context,
     )
 
     # 首先尝试复用已有的 Node 文本生成器（ai_text_generator.js），避免在 Python 中重复实现 Gemini 调用
@@ -2674,6 +2823,7 @@ def write_comic_script_meta(
     room_id: Optional[str] = None,
     highlight_content: Optional[str] = None,
     appeared_streamer_ids: Optional[list[str]] = None,
+    live_context: Optional[Dict[str, Any]] = None,
 ) -> None:
     try:
         payload = {
@@ -2686,6 +2836,7 @@ def write_comic_script_meta(
             "reason": meta.get("reason"),
             "roomId": str(room_id) if room_id is not None else None,
             "highlightSha256": hashlib.sha256((highlight_content or "").encode("utf-8")).hexdigest() if highlight_content is not None else None,
+            "liveContextSha256": hash_live_generation_context(live_context),
             "appearedStreamerIds": sorted({
                 str(streamer_id)
                 for streamer_id in (appeared_streamer_ids or [])
@@ -2777,6 +2928,12 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
         
         # 读取内容
         highlight_content = read_highlight_file(highlight_path)
+        live_context = load_live_generation_context(highlight_path, room_id, config)
+        live_context_hash = hash_live_generation_context(live_context)
+        print(
+            f"[CONTEXT] 漫画采用本场事实上下文: 标题={live_context.get('liveTitle') or '未取得'}, "
+            f"近期动态={len(live_context.get('recentDynamics') or [])}条"
+        )
         script_highlight_content = sanitize_highlight_for_comic_script(highlight_content, room_id, config)
         script_highlight_hash = hashlib.sha256(script_highlight_content.encode("utf-8")).hexdigest()
         script_extra_streamers = resolve_extra_appeared_streamers(
@@ -2811,6 +2968,7 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
                     and meta.get("policyVersion") == COMIC_SCRIPT_POLICY_VERSION
                     and meta.get("roomId") == str(room_id)
                     and meta.get("highlightSha256") == script_highlight_hash
+                    and meta.get("liveContextSha256") == live_context_hash
                     and sorted(meta.get("appearedStreamerIds") or []) == script_appeared_ids
                 )
                 if is_valid_comic_script(comic_text) and metadata_matches:
@@ -2829,6 +2987,7 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
             room_id,
             existing_comic=comic_text,
             extra_streamers=script_extra_streamers,
+            live_context=live_context,
         )
 
         # 如果脚本生成失败（使用原文作为备选），则不生成图片
@@ -2862,6 +3021,7 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
             room_id,
             existing_comic=comic_text,
             extra_streamers=image_extra_streamers,
+            live_context=live_context,
         )
         if all_images:
             print(f"[IMAGE] 根据漫画脚本收集到 {len(all_images)} 张图片，将全部传入AI:")
@@ -2883,6 +3043,7 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
                     room_id,
                     script_highlight_content,
                     script_appeared_ids,
+                    live_context,
                 )
             elif os.path.exists(text_output_path) and not os.path.exists(comic_script_meta_path(text_output_path)):
                 write_comic_script_meta(
@@ -2891,6 +3052,7 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
                     room_id,
                     script_highlight_content,
                     script_appeared_ids,
+                    live_context,
                 )
         except Exception as e:
             print(f"[WARNING] 保存漫画脚本失败: {e}")

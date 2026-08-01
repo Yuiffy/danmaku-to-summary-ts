@@ -83,7 +83,17 @@
       "path": "ffmpeg",
       "timeout": 30000,
       "threads": 1,
-      "priority": "idle"
+      "priority": "idle",
+      "cpuGuard": {
+        "enabled": true,
+        "busyPercentThreshold": 80,
+        "resumePercentThreshold": 60,
+        "sampleIntervalMs": 750,
+        "waitMs": 5000,
+        "maxWaitMs": 0,
+        "consecutiveBusySamples": 2,
+        "consecutiveIdleSamples": 2
+      }
     },
     "storage": {
       "keepOriginalVideo": false,
@@ -354,6 +364,7 @@
       },
       "mizuki": {
         "displayName": "弥月Mizuki",
+        "uid": "1789460279",
         "roomIds": [
           "30655190"
         ],
@@ -380,7 +391,10 @@
         "referenceImages": [
           "public/reference_images/弥月Mizuki参考图.png"
         ],
-        "characterDescription": "兔川弥月Mizuki，亚麻发异瞳少女，有两个浮游炮机械兔耳。"
+        "characterDescription": "兔川弥月Mizuki，亚麻发异瞳少女，有两个浮游炮机械兔耳。",
+        "contentHints": [
+          "当本场正文只出现孤立的“启动”且直播标题、明确语音、开播前动态均未指向其他游戏时，可将其理解为“原神启动”梗。它不是本场正在玩原神的证据；任何更强证据指向其他游戏时，都禁止据此写成或画成原神。"
+        ]
       },
       "miting": {
         "displayName": "米汀",
@@ -1008,7 +1022,10 @@
         "uid": "1789460279",
         "audioOnly": true,
         "referenceImage": "public/reference_images/弥月Mizuki参考图.png",
-        "characterDescription": "兔川弥月Mizuki（亚麻发异瞳（左红右紫）少女），一般戴着兔耳，被称作小弥、老弥。喜欢玩米哈游的游戏和其他二游，常说“原神启动”",
+        "characterDescription": "兔川弥月Mizuki（亚麻发异瞳（左红右紫）少女），一般戴着兔耳，被称作小弥、老弥。",
+        "contentHints": [
+          "当本场正文只出现孤立的“启动”且直播标题、明确语音、开播前动态均未指向其他游戏时，可将其理解为“原神启动”梗。它不是本场正在玩原神的证据；任何更强证据指向其他游戏时，都禁止据此写成或画成原神。"
+        ],
         "anchorName": "弥月Mizuki",
         "fanName": "小博兔",
         "enableTextGeneration": true,
@@ -2114,6 +2131,7 @@
       "max_vad_segment_s": 15,
       "asr_max_segment_s": 15,
       "batch_size_s": 600,
+      "interactive_batch_size_s": 180,
       "batch_size_threshold_s": 60,
       "process_timeout_s": 7200,
       "emotion_analysis": {
@@ -2144,6 +2162,17 @@
         "max_wait_s": 0,
         "pmon_sample_count": 2,
         "segment_paraformer": true
+      },
+      "cpu_throttle": {
+        "enabled": true,
+        "busy_percent_threshold": 80,
+        "resume_percent_threshold": 60,
+        "sample_interval_s": 0.5,
+        "check_interval_s": 5,
+        "wait_s": 5,
+        "max_wait_s": 0,
+        "consecutive_busy_samples": 2,
+        "consecutive_idle_samples": 2
       },
       "enable_speaker": true,
       "preset_spk_num": 5,

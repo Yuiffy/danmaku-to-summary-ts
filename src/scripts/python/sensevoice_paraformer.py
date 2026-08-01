@@ -6,7 +6,7 @@ import time
 import traceback
 import unicodedata
 
-from sensevoice_runtime import StageTimeout, log_progress, set_timing, suppress_model_output
+from sensevoice_runtime import CpuThrottle, StageTimeout, log_progress, set_timing, suppress_model_output
 from sensevoice_emotion import analyze_paraformer_emotions
 from sensevoice_speaker import (
     build_speaker_reference_centroids,
@@ -392,7 +392,9 @@ def normalize_model_results_with_meta(results, meta, punc_model):
     return timed_segments
 
 
-def install_paraformer_timing_probe(model):
+def install_paraformer_timing_probe(model, gpu_throttle=None, cpu_throttle=None):
+    model._danmaku_gpu_throttle = gpu_throttle
+    model._danmaku_cpu_throttle = cpu_throttle
     if getattr(model, "_danmaku_timing_probe_installed", False):
         return
 
@@ -402,12 +404,36 @@ def install_paraformer_timing_probe(model):
         target = kwargs.get("model") or model.model
         if target is getattr(model, "vad_model", None):
             stage = "vad_s"
+            stage_label = "VAD (CPU)"
+            throttle = getattr(model, "_danmaku_cpu_throttle", None)
+            wait_key = "vad_cpu_wait_s"
         elif target is getattr(model, "punc_model", None):
             stage = "punc_s"
+            stage_label = "标点恢复 (CUDA)"
+            throttle = getattr(model, "_danmaku_gpu_throttle", None)
+            wait_key = "punc_gpu_wait_s"
         elif target is getattr(model, "spk_model", None):
             stage = "builtin_speaker_embedding_s"
+            stage_label = "说话人嵌入 (CUDA)"
+            throttle = getattr(model, "_danmaku_gpu_throttle", None)
+            wait_key = "speaker_gpu_wait_s"
         else:
             stage = "asr_inference_s"
+            stage_label = "ASR batch (CUDA)"
+            throttle = getattr(model, "_danmaku_gpu_throttle", None)
+            wait_key = "asr_gpu_wait_s"
+
+        counts = getattr(model, "_danmaku_stage_counts", None)
+        if not isinstance(counts, dict):
+            counts = {}
+            model._danmaku_stage_counts = counts
+        counts[stage] = counts.get(stage, 0) + 1
+        stage_instance = f"{stage_label} #{counts[stage]}"
+        waited = float(throttle.wait_if_busy(stage_instance) or 0.0) if throttle else 0.0
+        collector = getattr(model, "_danmaku_timing_collector", None)
+        if isinstance(collector, dict) and waited > 0:
+            collector[wait_key] = collector.get(wait_key, 0.0) + waited
+        log_progress(f"开始 {stage_instance}，资源等待={waited:.1f}s")
         started = time.perf_counter()
         try:
             result = original_inference(*args, **kwargs)
@@ -505,6 +531,7 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
 
     backend_started = time.perf_counter()
     payload["_timings"] = {}
+    cpu_throttle = CpuThrottle(payload)
 
     device_name = "cuda:0" if device == "cuda" else device
     model_name = payload.get("model", "paraformer-zh")
@@ -633,7 +660,11 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
 
     try:
         configure_paraformer_devices(model, main_device=device_name, vad_device=vad_device)
-        install_paraformer_timing_probe(model)
+        install_paraformer_timing_probe(
+            model,
+            gpu_throttle=gpu_throttle,
+            cpu_throttle=cpu_throttle,
+        )
     except Exception as exc:
         _fail(fail_fn, "paraformer pipeline 设备配置失败", f"{exc}\n{traceback.format_exc()}")
 
@@ -642,7 +673,11 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
     model._danmaku_vad_intervals = []
 
     try:
-        batch_size_s = float(payload.get("batch_size_s", 300) or 300)
+        configured_batch_size_s = float(payload.get("batch_size_s", 300) or 300)
+        interactive_batch_size_s = float(payload.get("interactive_batch_size_s", 0) or 0)
+        batch_size_s = configured_batch_size_s
+        if gpu_throttle and gpu_throttle.enabled and interactive_batch_size_s > 0:
+            batch_size_s = min(batch_size_s, interactive_batch_size_s)
         generate_kwargs = {
             "input": audio_path,
             "batch_size_s": int(batch_size_s),
@@ -657,11 +692,11 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
             generate_kwargs["hotword"] = hotword
         log_progress(
             f"开始转写 (batch_size_s={batch_size_s}, "
+            f"configured_batch_size_s={configured_batch_size_s}, "
             f"batch_size_threshold_s={generate_kwargs.get('batch_size_threshold_s', 'default')}, "
             f"hotword={'yes' if hotword else 'no'})"
         )
-        if gpu_throttle:
-            gpu_throttle.wait_if_busy("paraformer 转写")
+        model._danmaku_stage_counts = {}
         pipeline_started = time.perf_counter()
         with StageTimeout(payload.get("process_timeout_s", 1800), "paraformer 转写"):
             with suppress_model_output():
@@ -670,6 +705,10 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
         set_timing(payload, "pipeline_total_s", pipeline_elapsed)
         for timing_key, timing_value in inference_timings.items():
             set_timing(payload, timing_key, timing_value)
+        resource_wait_s = sum(
+            value for key, value in inference_timings.items() if key.endswith("_wait_s")
+        )
+        set_timing(payload, "resource_wait_s", resource_wait_s)
         measured_pipeline = sum(inference_timings.values())
         set_timing(payload, "pipeline_overhead_s", max(0.0, pipeline_elapsed - measured_pipeline))
         model._danmaku_timing_collector = None
@@ -679,8 +718,10 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
             f"pipeline={pipeline_elapsed:.3f}s, "
             f"vad={inference_timings.get('vad_s', 0.0):.3f}s, "
             f"asr={inference_timings.get('asr_inference_s', 0.0):.3f}s, "
+            f"asr_batches={model._danmaku_stage_counts.get('asr_inference_s', 0)}, "
             f"punc={inference_timings.get('punc_s', 0.0):.3f}s, "
             f"spk={inference_timings.get('builtin_speaker_embedding_s', 0.0):.3f}s, "
+            f"resource_wait={resource_wait_s:.3f}s, "
             f"overhead(decode+merge+prep)={overhead_s:.3f}s"
         )
     except Exception as exc:

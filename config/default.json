@@ -844,6 +844,7 @@
       },
       "mizuki": {
         "displayName": "弥月Mizuki",
+        "uid": "1789460279",
         "roomIds": ["30655190"],
         "searchTags": ["弥月Mizuki", "弥月"],
         "mentionLabels": ["弥月Mizuki", "弥月", "老弥", "Mizuki"],
@@ -852,7 +853,10 @@
         "referenceImages": [
           "public/reference_images/弥月Mizuki参考图.png"
         ],
-        "characterDescription": "兔川弥月Mizuki，亚麻发异瞳少女，有两个浮游炮机械兔耳，喜欢玩米哈游游戏和其他二游。"
+        "characterDescription": "兔川弥月Mizuki，亚麻发异瞳少女，有两个浮游炮机械兔耳。",
+        "contentHints": [
+          "当本场正文只出现孤立的“启动”且直播标题、明确语音、开播前动态均未指向其他游戏时，可将其理解为“原神启动”梗。它不是本场正在玩原神的证据；任何更强证据指向其他游戏时，都禁止据此写成或画成原神。"
+        ]
       },
       "miting": {
         "displayName": "米汀",

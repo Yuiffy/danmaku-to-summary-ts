@@ -1,4 +1,5 @@
 import contextlib
+import ctypes
 import os
 import signal
 import subprocess
@@ -7,7 +8,7 @@ import time
 
 
 def log_progress(message):
-    print(f"[ASR] {message}", file=sys.stderr, flush=True)
+    print(f"[ASR] {message}", file=sys.__stderr__ or sys.stderr, flush=True)
 
 
 def set_timing(payload, key, seconds):
@@ -167,10 +168,10 @@ class GpuThrottle:
 
     def wait_if_busy(self, stage):
         if not self.enabled:
-            return
+            return 0.0
         now = time.monotonic()
         if not self.last_busy and now - self.last_check_at < self.check_interval_s:
-            return
+            return 0.0
 
         waited = 0.0
         while True:
@@ -182,23 +183,147 @@ class GpuThrottle:
                     self.failure_warned = True
                 self.last_busy = False
                 self.last_check_at = time.monotonic()
-                return
+                return waited
 
             self.last_busy = busy
             self.last_check_at = time.monotonic()
             if not busy:
                 if waited > 0:
                     log_progress(f"GPU 已空闲，继续 {stage}，已等待 {waited:.0f}s")
-                return
+                return waited
 
             if waited <= 0:
                 log_progress(f"检测到其他 GPU 进程繁忙，暂停 {stage}: {reason}")
             if self.max_wait_s > 0 and waited >= self.max_wait_s:
                 log_progress(f"GPU 节流等待达到上限 {self.max_wait_s:.0f}s，继续 {stage}")
-                return
+                return waited
 
             sleep_s = self.wait_s
             if self.max_wait_s > 0:
                 sleep_s = min(sleep_s, max(1.0, self.max_wait_s - waited))
             time.sleep(sleep_s)
+            waited += sleep_s
+
+
+def _windows_cpu_times():
+    class FileTime(ctypes.Structure):
+        _fields_ = [("low", ctypes.c_uint32), ("high", ctypes.c_uint32)]
+
+    idle = FileTime()
+    kernel = FileTime()
+    user = FileTime()
+    if not ctypes.windll.kernel32.GetSystemTimes(
+        ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)
+    ):
+        raise OSError("GetSystemTimes failed")
+
+    def _value(item):
+        return (int(item.high) << 32) | int(item.low)
+
+    return _value(idle), _value(kernel), _value(user)
+
+
+def sample_cpu_percent(sample_interval_s=0.5):
+    """Sample total host CPU usage using only the Python standard library."""
+    interval = max(0.05, float(sample_interval_s or 0.5))
+    if os.name == "nt":
+        before = _windows_cpu_times()
+        time.sleep(interval)
+        after = _windows_cpu_times()
+        idle_delta = after[0] - before[0]
+        total_delta = (after[1] - before[1]) + (after[2] - before[2])
+        if total_delta <= 0:
+            return 0.0
+        return max(0.0, min(100.0, (1.0 - idle_delta / total_delta) * 100.0))
+
+    load_1m = os.getloadavg()[0]
+    return max(0.0, min(100.0, load_1m / max(1, os.cpu_count() or 1) * 100.0))
+
+
+class CpuThrottle:
+    def __init__(self, payload, sample_fn=None, sleep_fn=None, monotonic_fn=None):
+        config = payload.get("cpu_throttle")
+        if isinstance(config, bool):
+            config = {"enabled": config}
+        if not isinstance(config, dict):
+            config = {}
+
+        self.enabled = coerce_bool(config.get("enabled"), False)
+        self.busy_threshold = float(config.get("busy_percent_threshold", 80) or 80)
+        self.resume_threshold = float(config.get("resume_percent_threshold", 60) or 60)
+        self.sample_interval_s = max(0.05, float(config.get("sample_interval_s", 0.5) or 0.5))
+        self.check_interval_s = max(0.0, float(config.get("check_interval_s", 5) or 5))
+        self.wait_s = max(0.05, float(config.get("wait_s", 5) or 5))
+        self.max_wait_s = max(0.0, float(config.get("max_wait_s", 0) or 0))
+        self.busy_samples = max(1, int(float(config.get("consecutive_busy_samples", 2) or 2)))
+        self.idle_samples = max(1, int(float(config.get("consecutive_idle_samples", 2) or 2)))
+        self._sample = sample_fn or (lambda: sample_cpu_percent(self.sample_interval_s))
+        self._sleep = sleep_fn or time.sleep
+        self._monotonic = monotonic_fn or time.monotonic
+        self.last_check_at = 0.0
+        self.last_busy = False
+        self.failure_warned = False
+
+    def wait_if_busy(self, stage):
+        if not self.enabled:
+            return 0.0
+        now = self._monotonic()
+        if not self.last_busy and now - self.last_check_at < self.check_interval_s:
+            return 0.0
+
+        waited = 0.0
+        consecutive_busy = 0
+        consecutive_idle = 0
+        announced = False
+        while True:
+            try:
+                cpu_percent = float(self._sample())
+            except Exception as exc:
+                if not self.failure_warned:
+                    log_progress(f"CPU 节流检测不可用，继续 {stage}: {exc}")
+                    self.failure_warned = True
+                self.last_busy = False
+                self.last_check_at = self._monotonic()
+                return waited
+
+            self.last_check_at = self._monotonic()
+            threshold = self.resume_threshold if announced else self.busy_threshold
+            if cpu_percent >= threshold:
+                consecutive_busy += 1
+                consecutive_idle = 0
+            else:
+                consecutive_idle += 1
+                consecutive_busy = 0
+
+            if not announced and consecutive_busy < self.busy_samples:
+                if consecutive_idle > 0:
+                    self.last_busy = False
+                    return waited
+                continue
+
+            if announced and consecutive_idle >= self.idle_samples:
+                self.last_busy = False
+                log_progress(
+                    f"CPU 已恢复，继续 {stage}，当前={cpu_percent:.0f}%，已等待 {waited:.1f}s"
+                )
+                return waited
+            if announced and consecutive_idle > 0:
+                continue
+
+            if not announced:
+                announced = True
+                self.last_busy = True
+                log_progress(
+                    f"检测到 CPU 繁忙，暂停 {stage}: 当前={cpu_percent:.0f}%，"
+                    f"阈值={self.busy_threshold:.0f}%"
+                )
+
+            if self.max_wait_s > 0 and waited >= self.max_wait_s:
+                log_progress(f"CPU 节流等待达到上限 {self.max_wait_s:.0f}s，继续 {stage}")
+                return waited
+
+            sleep_s = self.wait_s
+            if self.max_wait_s > 0:
+                sleep_s = min(sleep_s, max(0.05, self.max_wait_s - waited))
+            self._sleep(sleep_s)
             waited += sleep_s

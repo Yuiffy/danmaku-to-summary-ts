@@ -4,6 +4,7 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const fetch = require('node-fetch');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 const configLoader = require('./config-loader');
+const liveGenerationContext = require('./live_generation_context');
 const { notifyLowBalanceIfNeeded } = require('./tuzi_balance_check');
 
 const GENERATION_LOCK_TIMEOUT_MS = 30 * 60 * 1000;
@@ -226,7 +227,7 @@ function buildLiveTimeDesc(highlightPath) {
 }
 
 // 构建提示词(支持传入 roomId 以使用房间级名称覆盖)
-function buildPrompt(highlightContent, roomId, liveTimeDesc = null) {
+function buildPrompt(highlightContent, roomId, liveTimeDesc = null, liveContext = null) {
     const names = configLoader.getNames(roomId);
     const anchor = names.anchor;
     const fan = names.fan;
@@ -238,16 +239,22 @@ function buildPrompt(highlightContent, roomId, liveTimeDesc = null) {
     const roomSettings = config?.ai?.roomSettings || {};
     const roomConfig = roomId ? roomSettings[String(roomId)] : null;
     const customPrompt = roomConfig?.customPrompts?.goodnightReply;
+    const liveContextBlock = liveGenerationContext.formatLiveGenerationContext(liveContext);
     const speakerGuidance = `【说话人标签规则】
 直播摘要可能带有“[说话人标签 分数]”前缀。不同标签代表不同的声学说话人；回复对象始终是房主${anchor}。其他标签说“我是XX”时，只能据此理解该标签的身份，不能把房主改叫XX，也不能把该标签的经历或台词归给${anchor}。“SPEAKER_nn”表示尚未实名的嘉宾或外部声音，不要擅自猜实名。`;
 
     if (customPrompt) {
+        const hasLiveContextPlaceholder = customPrompt.includes('{liveContext}');
         const renderedPrompt = customPrompt
             .replace(/{anchor}/g, anchor)
             .replace(/{fan}/g, fan)
             .replace(/{wordLimit}/g, wordLimit)
+            .replace(/{liveContext}/g, liveContextBlock)
             .replace(/{highlightContent}/g, highlightContent);
-        return `${speakerGuidance}\n\n${renderedPrompt}`;
+        const contextPrefix = !hasLiveContextPlaceholder && liveContextBlock
+            ? `${liveContextBlock}\n\n`
+            : '';
+        return `${speakerGuidance}\n\n${contextPrefix}${renderedPrompt}`;
     }
 
     // --- 核心修改:全肯定萌萌人 2.0 ---
@@ -312,6 +319,8 @@ function buildPrompt(highlightContent, roomId, liveTimeDesc = null) {
 身份:${anchor}的铁粉(自称"${fan}")。
 
 ${speakerGuidance}
+
+${liveContextBlock}
 
 ${randomMainPrompt}
 
@@ -1117,8 +1126,14 @@ async function generateGoodnightReply(highlightPath, roomId = null) {
                 // 构建提示词(优先使用传入的 roomId,其次从文件名提取)
                 const finalRoomId = roomId || extractRoomIdFromFilename(path.basename(highlightPath));
                 const liveTimeDesc = buildLiveTimeDesc(highlightPath);
+                const liveContext = liveGenerationContext.loadLiveGenerationContext(
+                    highlightPath,
+                    finalRoomId,
+                    config
+                );
+                console.log(`🧭 晚安回复采用本场事实上下文: 标题=${liveContext.liveTitle || '未取得'}, 近期动态=${liveContext.recentDynamics?.length || 0}条`);
                 // 构建提示词
-                const prompt = buildPrompt(highlightContent, finalRoomId, liveTimeDesc);
+                const prompt = buildPrompt(highlightContent, finalRoomId, liveTimeDesc, liveContext);
                 const wordLimit = configLoader.getWordLimit(finalRoomId);
 
                 // 调用API生成文本
