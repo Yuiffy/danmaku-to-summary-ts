@@ -393,10 +393,33 @@ export interface GoogleImageConfig {
   proxy?: string;
 }
 
+export interface ComicStorytellingExperimentConfig {
+  enabled: boolean;
+  immersivePercent: number;
+  salt?: string;
+  directedScreenshots?: {
+    enabled?: boolean;
+    maxImages?: number;
+    maxRequests?: number;
+    maxFramesPerRequest?: number;
+    maxTotalReferenceImages?: number;
+    coverageSheetsEnabled?: boolean;
+    coverageSheetMaxCandidates?: number;
+    coverageSheetWidth?: number;
+    maxWidth?: number;
+    jpegQuality?: number;
+    useVisualSelection?: boolean;
+    sampleWindowSeconds?: number;
+    sampleCount?: number;
+  };
+}
+
 // 漫画AI配置
 export interface ComicAIConfig {
   enabled: boolean;
   provider: 'python' | 'huggingface' | 'local';
+  outputLockEnabled?: boolean;
+  storytellingExperiment?: ComicStorytellingExperimentConfig;
   python?: {
     script: string;
   };
@@ -438,6 +461,7 @@ export interface RoomAIConfig {
   minComicDurationMinutes?: number;
   /** 生成图片的概率（0.0~1.0），不设置则使用全局默认值 */
   comicGenerationProbability?: number;
+  storytellingExperiment?: Partial<ComicStorytellingExperimentConfig>;
 }
 
 // AI配置

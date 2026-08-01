@@ -83,7 +83,10 @@ import traceback as tb
 import subprocess
 import shutil
 
-COMIC_SCRIPT_POLICY_VERSION = 4
+COMIC_SCRIPT_POLICY_VERSION = 8
+COMIC_SCRIPT_META_SCHEMA_VERSION = 5
+COMIC_STORYTELLING_VARIANTS = {"control", "immersive_v1"}
+DEFAULT_COMIC_STORYTELLING_SALT = "comic-immersive-v1"
 
 LAST_COMIC_SCRIPT_META = {
     "provider": None,
@@ -173,6 +176,103 @@ def load_config() -> Dict[str, Any]:
     }
     
     return legacy_config
+
+
+def get_comic_storytelling_config(config: Dict[str, Any], room_id: Optional[str] = None) -> Dict[str, Any]:
+    """Return the global storytelling experiment config with room overrides."""
+    global_config = config.get("ai", {}).get("comic", {}).get("storytellingExperiment", {})
+    room_config = config.get("roomSettings", {}).get(str(room_id or ""), {})
+    room_override = room_config.get("storytellingExperiment", {})
+    merged = {
+        "enabled": False,
+        "immersivePercent": 0,
+        "salt": DEFAULT_COMIC_STORYTELLING_SALT,
+        "directedScreenshots": {
+            "enabled": True,
+            "maxImages": 4,
+            "maxRequests": 4,
+            "maxFramesPerRequest": 2,
+            "maxTotalReferenceImages": 5,
+            "coverageSheetsEnabled": True,
+            "coverageSheetMaxCandidates": 12,
+            "coverageSheetWidth": 1600,
+            "maxWidth": 960,
+            "jpegQuality": 2,
+            "useVisualSelection": True,
+            "sampleWindowSeconds": 60,
+            "sampleCount": 5,
+        },
+    }
+    if isinstance(global_config, dict):
+        merged.update({key: value for key, value in global_config.items() if key != "directedScreenshots"})
+        if isinstance(global_config.get("directedScreenshots"), dict):
+            merged["directedScreenshots"].update(global_config["directedScreenshots"])
+    if isinstance(room_override, dict):
+        merged.update({key: value for key, value in room_override.items() if key != "directedScreenshots"})
+        if isinstance(room_override.get("directedScreenshots"), dict):
+            merged["directedScreenshots"].update(room_override["directedScreenshots"])
+
+    try:
+        immersive_percent = float(merged.get("immersivePercent", 0))
+    except (TypeError, ValueError):
+        immersive_percent = 0
+    merged["immersivePercent"] = max(0.0, min(100.0, immersive_percent))
+    merged["salt"] = str(merged.get("salt") or DEFAULT_COMIC_STORYTELLING_SALT)
+    return merged
+
+
+def select_comic_storytelling_variant(
+    config: Dict[str, Any],
+    room_id: Optional[str],
+    highlight_content: str,
+    override: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Assign a reproducible control/immersive variant for one recording."""
+    experiment = get_comic_storytelling_config(config, room_id)
+    highlight_hash = hashlib.sha256((highlight_content or "").encode("utf-8")).hexdigest()
+    assignment_key = f"{experiment['salt']}:{room_id or 'unknown'}:{highlight_hash}"
+    assignment_hash = hashlib.sha256(assignment_key.encode("utf-8")).hexdigest()
+    bucket = int(assignment_hash[:8], 16) % 10000
+    threshold = int(round(experiment["immersivePercent"] * 100))
+
+    forced_variant = str(
+        override or os.environ.get("COMIC_STORYTELLING_VARIANT") or ""
+    ).strip().lower()
+    if forced_variant not in COMIC_STORYTELLING_VARIANTS:
+        forced_variant = ""
+
+    if forced_variant:
+        variant = forced_variant
+        assignment_reason = "forced"
+    elif experiment.get("enabled") and bucket < threshold:
+        variant = "immersive_v1"
+        assignment_reason = "stable-rollout"
+    else:
+        variant = "control"
+        assignment_reason = "stable-rollout" if experiment.get("enabled") else "experiment-disabled"
+
+    return {
+        "variant": variant,
+        "bucket": bucket,
+        "immersivePercent": experiment["immersivePercent"],
+        "assignmentHash": assignment_hash,
+        "assignmentReason": assignment_reason,
+        "screenshotMode": "individual" if variant == "immersive_v1" else "contact_sheet",
+        "directedScreenshots": dict(experiment.get("directedScreenshots") or {}),
+    }
+
+
+def comic_storytelling_meta(storytelling: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not storytelling:
+        return {}
+    return {
+        "storytellingVariant": storytelling.get("variant") or "control",
+        "storytellingBucket": storytelling.get("bucket"),
+        "storytellingImmersivePercent": storytelling.get("immersivePercent"),
+        "storytellingAssignmentHash": storytelling.get("assignmentHash"),
+        "storytellingAssignmentReason": storytelling.get("assignmentReason"),
+        "screenshotMode": storytelling.get("screenshotMode") or "contact_sheet",
+    }
 
 def is_huggingface_configured() -> bool:
     """检查Hugging Face配置是否有效（已禁用）"""
@@ -1339,26 +1439,38 @@ def resolve_image_prompt_extra_streamers(
         ))
     return selected
 
-def collect_all_images(room_id: str, highlight_path: Optional[str] = None, extra_streamers: Optional[list[dict]] = None) -> list[str]:
+def collect_all_images(
+    room_id: str,
+    highlight_path: Optional[str] = None,
+    extra_streamers: Optional[list[dict]] = None,
+    directed_screenshots: Optional[list[dict]] = None,
+    screenshot_mode: str = "contact_sheet",
+    image_manifest: Optional[list[dict]] = None,
+    max_total_images: Optional[int] = None,
+) -> list[str]:
     """收集所有可用的图片（引用图、封面、截图）用于AI输入
     
     返回图片路径列表，按优先级排序：
     1. 主播参考图（roomSettings中配置的referenceImage）
-    2. 直播封面（.cover文件）
-    3. 直播截图（_SCREENSHOTS.jpg）
-    4. 默认参考图（只有在没有主播参考图、封面、截图且配置了 defaultReferenceImage 时才使用）
-    5. 没有配置默认参考图时返回空列表，让模型无参考图生成
+    2. 额外人物参考图，但不能占用抽取目标/结果证据的保留额度
+    3. 沉浸版定向直播证据；目标/结果覆盖拼图优先于单帧和剧情上下文
+    4. 直播封面（.cover文件）
+    5. 旧版固定时间截图拼图（_SCREENSHOTS.jpg，或独立关键帧失败时兜底）
+    6. 默认参考图（只有在没有主播参考图、封面、截图且配置了 defaultReferenceImage 时才使用）
+    7. 没有配置默认参考图时返回空列表，让模型无参考图生成
     """
     images = []
     seen_images = set()
 
-    def add_image(image_path: str, log_message: str) -> bool:
+    def add_image(image_path: str, log_message: str, **metadata: Any) -> bool:
         real_path = os.path.abspath(image_path)
         if real_path in seen_images:
             print(f"[INFO]  跳过重复图片: {os.path.basename(real_path)}")
             return False
         images.append(real_path)
         seen_images.add(real_path)
+        if image_manifest is not None:
+            image_manifest.append({"path": real_path, **metadata})
         print(log_message)
         return True
 
@@ -1368,7 +1480,37 @@ def collect_all_images(room_id: str, highlight_path: Optional[str] = None, extra
     multi_config = get_multi_reference_config(config, room_id)
     if not multi_config.get("enabled"):
         extra_streamers = []
-    max_total_images = int(multi_config.get("maxTotalImages") or 4)
+    if max_total_images is None:
+        max_total_images = int(multi_config.get("maxTotalImages") or 4)
+    else:
+        try:
+            max_total_images = max(1, min(12, int(max_total_images)))
+        except (TypeError, ValueError):
+            max_total_images = int(multi_config.get("maxTotalImages") or 4)
+
+    directed_candidates = [
+        screenshot for screenshot in (directed_screenshots or [])
+        if isinstance(screenshot, dict)
+    ]
+
+    def directed_priority(indexed_screenshot: tuple[int, dict]) -> tuple[int, int]:
+        index, screenshot = indexed_screenshot
+        evidence_role = str(screenshot.get("evidenceRole") or "")
+        is_critical = evidence_role in {"target_identity", "result"}
+        is_coverage = screenshot.get("requestSource") == "highlight_coverage_sheet"
+        if is_critical and is_coverage:
+            return (0, index)
+        if is_critical:
+            return (1, index)
+        return (2, index)
+
+    directed_candidates = [
+        screenshot
+        for _, screenshot in sorted(
+            enumerate(directed_candidates),
+            key=directed_priority,
+        )
+    ]
     
     # 1. 尝试获取主播参考图（roomSettings中配置的）
     room_str = str(room_id)
@@ -1380,13 +1522,13 @@ def collect_all_images(room_id: str, highlight_path: Optional[str] = None, extra
             # 尝试相对于项目根目录的路径
             absolute_path = os.path.join(project_root, ref_image) if not os.path.isabs(ref_image) else ref_image
             if os.path.exists(absolute_path):
-                add_image(absolute_path, f"[INFO]  收集到主播参考图: {os.path.basename(absolute_path)}")
+                add_image(absolute_path, f"[INFO]  收集到主播参考图: {os.path.basename(absolute_path)}", role="host")
                 has_anchor_image = True
             else:
                 # 尝试相对于脚本目录的路径
                 script_relative = os.path.join(scripts_dir, ref_image) if not os.path.isabs(ref_image) else ref_image
                 if os.path.exists(script_relative):
-                    add_image(script_relative, f"[INFO]  收集到主播参考图: {os.path.basename(script_relative)}")
+                    add_image(script_relative, f"[INFO]  收集到主播参考图: {os.path.basename(script_relative)}", role="host")
                     has_anchor_image = True
                 else:
                     print(f"[WARNING] 配置的主播参考图不存在: {ref_image}")
@@ -1403,7 +1545,7 @@ def collect_all_images(room_id: str, highlight_path: Optional[str] = None, extra
             ]
             for file_path in possible_files:
                 if os.path.exists(file_path):
-                    add_image(file_path, f"[INFO]  收集到主播参考图: {os.path.basename(file_path)}")
+                    add_image(file_path, f"[INFO]  收集到主播参考图: {os.path.basename(file_path)}", role="host")
                     has_anchor_image = True
                     break
 
@@ -1414,15 +1556,31 @@ def collect_all_images(room_id: str, highlight_path: Optional[str] = None, extra
             for ref_image in (host_streamer or {}).get("referenceImages", []) or []:
                 resolved = resolve_configured_path(ref_image)
                 if resolved:
-                    add_image(resolved, f"[INFO]  收集到 streamerRegistry 主播参考图: {os.path.basename(resolved)}")
+                    add_image(resolved, f"[INFO]  收集到 streamerRegistry 主播参考图: {os.path.basename(resolved)}", role="host")
                     has_anchor_image = True
                     break
                 print(f"[WARNING] streamerRegistry 主播参考图不存在: {host_streamer_id} -> {ref_image}")
 
     # 1.5 额外实际出声/文本提到主播参考图。只取每人第一张存在的图。
+    # 抽取目标与结果是本场事实证据，必须先为其保留接口额度。
+    critical_directed_paths = {
+        os.path.abspath(str(screenshot.get("path") or ""))
+        for screenshot in directed_candidates
+        if screenshot.get("evidenceRole") in {"target_identity", "result"}
+        and screenshot.get("path")
+        and os.path.exists(str(screenshot.get("path")))
+    }
+    reserved_critical_slots = min(
+        len(critical_directed_paths - seen_images),
+        max(0, max_total_images - len(images)),
+    )
+    extra_character_limit = max_total_images - reserved_critical_slots
     for streamer in (extra_streamers or []):
-        if len(images) >= max_total_images:
-            print(f"[INFO]  图片数量达到保守上限 {max_total_images}，停止加入额外主播参考图")
+        if len(images) >= extra_character_limit:
+            print(
+                f"[INFO]  为 {reserved_critical_slots} 张抽取目标/结果证据保留额度，"
+                "停止加入额外主播参考图"
+            )
             break
         display_name = streamer.get("displayName") or streamer.get("id") or "unknown"
         reason = streamer.get("_comicReferenceReason") or "appeared"
@@ -1438,36 +1596,87 @@ def collect_all_images(room_id: str, highlight_path: Optional[str] = None, extra
             resolved = resolve_configured_path(ref_image)
             if resolved:
                 reason_label = "文本提到主播" if reason == "mentioned" else "实际出声主播"
-                added = add_image(resolved, f"[INFO]  收集到额外{reason_label}参考图: {display_name} -> {os.path.basename(resolved)}")
+                added = add_image(
+                    resolved,
+                    f"[INFO]  收集到额外{reason_label}参考图: {display_name} -> {os.path.basename(resolved)}",
+                    role="mentioned_streamer" if reason == "mentioned" else "appeared_streamer",
+                    displayName=display_name,
+                    streamerId=str(streamer.get("id") or "") or None,
+                )
                 break
             print(f"[WARNING] 额外主播参考图不存在: {display_name} -> {ref_image}")
         if not added:
             print(f"[WARNING] 额外主播没有可用参考图: {display_name}")
     
-    # 2. 获取直播封面
+    # 2. 沉浸版优先加入脚本时间点对应的独立关键帧。
+    directed_added = False
+    if screenshot_mode == "individual":
+        for screenshot in directed_candidates:
+            screenshot_path = str(screenshot.get("path") or "")
+            if not screenshot_path or not os.path.exists(screenshot_path):
+                continue
+            if len(images) >= max_total_images:
+                print(f"[INFO]  图片数量达到保守上限 {max_total_images}，停止加入定向直播关键帧")
+                break
+            directed_added = add_image(
+                screenshot_path,
+                f"[INFO]  收集到定向直播关键帧: {os.path.basename(screenshot_path)}",
+                role="directed_screenshot",
+                timestampSeconds=screenshot.get("timestampSeconds"),
+                selectedTimestampSeconds=screenshot.get("selectedTimestampSeconds"),
+                scene=screenshot.get("scene"),
+                visualIntent=screenshot.get("visualIntent"),
+                referenceUsage=screenshot.get("referenceUsage"),
+                referenceRequestId=screenshot.get("referenceRequestId"),
+                requestSource=screenshot.get("requestSource"),
+                evidenceRole=screenshot.get("evidenceRole"),
+                mustShow=screenshot.get("mustShow"),
+                captureMode=screenshot.get("captureMode"),
+                windowStartSeconds=screenshot.get("windowStartSeconds"),
+                windowEndSeconds=screenshot.get("windowEndSeconds"),
+                candidateIndex=screenshot.get("candidateIndex"),
+                candidateCount=screenshot.get("candidateCount"),
+                selectionMode=screenshot.get("selectionMode"),
+                coverageCandidateTimestampsSeconds=screenshot.get("coverageCandidateTimestampsSeconds"),
+            ) or directed_added
+
+    # 3. 独立关键帧优先于封面；旧版仍保持“角色图 -> 封面 -> 拼图”的顺序。
     has_cover = False
-    if highlight_path:
+    if highlight_path and (screenshot_mode != "individual" or not directed_added or len(images) < max_total_images):
         cover_image = get_live_cover_image(highlight_path)
         if cover_image and len(images) < max_total_images:
-            add_image(cover_image, f"[INFO]  收集到直播封面: {os.path.basename(cover_image)}")
+            add_image(
+                cover_image,
+                f"[INFO]  收集到直播封面: {os.path.basename(cover_image)}",
+                role="cover",
+            )
             has_cover = True
         elif cover_image:
             print(f"[INFO]  图片数量达到保守上限 {max_total_images}，跳过直播封面: {os.path.basename(cover_image)}")
-    
-    # 3. 获取直播截图（从环境变量）
+
+    # 4. 旧版使用固定时间截图拼图；沉浸版只在独立关键帧全部失败时降级使用。
     screenshot_path = os.environ.get('SCREENSHOT_PATH', '')
-    if screenshot_path and os.path.exists(screenshot_path) and len(images) < max_total_images:
-        add_image(screenshot_path, f"[INFO]  收集到直播截图: {os.path.basename(screenshot_path)}")
-    elif screenshot_path and os.path.exists(screenshot_path):
+    should_use_contact_sheet = screenshot_mode != "individual" or not directed_added
+    if should_use_contact_sheet and screenshot_path and os.path.exists(screenshot_path) and len(images) < max_total_images:
+        add_image(
+            screenshot_path,
+            f"[INFO]  收集到直播截图拼图: {os.path.basename(screenshot_path)}",
+            role="contact_sheet",
+        )
+    elif should_use_contact_sheet and screenshot_path and os.path.exists(screenshot_path):
         print(f"[INFO]  图片数量达到保守上限 {max_total_images}，跳过直播截图: {os.path.basename(screenshot_path)}")
     
     # 如果没有截图路径，尝试从highlight_path推断
-    if not screenshot_path and highlight_path:
+    if should_use_contact_sheet and not screenshot_path and highlight_path:
         dir_path = os.path.dirname(highlight_path)
         base_name = os.path.basename(highlight_path).replace('_AI_HIGHLIGHT.txt', '')
         inferred_screenshot = os.path.join(dir_path, f"{base_name}_SCREENSHOTS.jpg")
         if os.path.exists(inferred_screenshot) and len(images) < max_total_images:
-            add_image(inferred_screenshot, f"[INFO]  收集到推断的直播截图: {os.path.basename(inferred_screenshot)}")
+            add_image(
+                inferred_screenshot,
+                f"[INFO]  收集到推断的直播截图拼图: {os.path.basename(inferred_screenshot)}",
+                role="contact_sheet",
+            )
         elif os.path.exists(inferred_screenshot):
             print(f"[INFO]  图片数量达到保守上限 {max_total_images}，跳过推断的直播截图: {os.path.basename(inferred_screenshot)}")
     
@@ -1489,12 +1698,20 @@ def collect_all_images(room_id: str, highlight_path: Optional[str] = None, extra
             # 尝试相对于项目根目录的路径
             absolute_path = os.path.join(project_root, default_image) if not os.path.isabs(default_image) else default_image
             if os.path.exists(absolute_path):
-                add_image(absolute_path, f"[INFO]  收集到默认参考图（兜底）: {os.path.basename(absolute_path)}")
+                add_image(
+                    absolute_path,
+                    f"[INFO]  收集到默认参考图（兜底）: {os.path.basename(absolute_path)}",
+                    role="default",
+                )
             else:
                 # 尝试相对于脚本目录的路径
                 script_relative = os.path.join(scripts_dir, default_image) if not os.path.isabs(default_image) else default_image
                 if os.path.exists(script_relative):
-                    add_image(script_relative, f"[INFO]  收集到默认参考图（兜底）: {os.path.basename(script_relative)}")
+                    add_image(
+                        script_relative,
+                        f"[INFO]  收集到默认参考图（兜底）: {os.path.basename(script_relative)}",
+                        role="default",
+                    )
         if not default_image:
             print("[INFO]  未配置默认参考图，将无参考图生成")
     else:
@@ -1502,6 +1719,748 @@ def collect_all_images(room_id: str, highlight_path: Optional[str] = None, extra
     
     print(f"[INFO]  共收集到 {len(images)} 张图片用于AI输入")
     return images
+
+
+VIDEO_EXTENSIONS = (".flv", ".mp4", ".mkv", ".webm", ".mov", ".ts")
+
+
+def _coerce_timestamp_seconds(value: Any) -> Optional[float]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value) if float(value) >= 0 else None
+    text = str(value or "").strip()
+    if re.fullmatch(r"\d+(?:\.\d+)?", text):
+        return float(text)
+    match = re.fullmatch(r"(?:(\d+):)?(\d{1,2}):(\d{1,2}(?:\.\d+)?)", text)
+    if match:
+        hours = int(match.group(1) or 0)
+        return hours * 3600 + int(match.group(2)) * 60 + float(match.group(3))
+    return None
+
+
+def _extract_comic_json_objects(comic_text: str) -> list[dict]:
+    """Return structured records from either JSON, a JSON array, or JSON Lines."""
+    text = re.sub(r"^\s*```(?:json|jsonl)?\s*|\s*```\s*$", "", comic_text or "", flags=re.IGNORECASE)
+    candidates: list[Any] = []
+    try:
+        payload = json.loads(text)
+        if isinstance(payload, dict):
+            nested = []
+            for key in ("shots", "beats", "references"):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    nested.extend(value)
+            candidates.extend(nested or [payload])
+        elif isinstance(payload, list):
+            candidates.extend(payload)
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    if not candidates:
+        for line in text.splitlines():
+            stripped = line.strip().rstrip(",")
+            if not (stripped.startswith("{") and stripped.endswith("}")):
+                continue
+            try:
+                item = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(item, dict):
+                candidates.append(item)
+    return [item for item in candidates if isinstance(item, dict)]
+
+
+def _clean_prompt_text(value: Any, default: str = "") -> str:
+    return re.sub(r"\s+", " ", str(value or default)).strip()
+
+
+def extract_storyboard_shots(comic_text: str, max_shots: int = 3) -> list[dict]:
+    """Parse narrative beats while excluding independent visual-evidence records."""
+    candidates = _extract_comic_json_objects(comic_text)
+
+    normalized = []
+    seen_timestamps = set()
+    for item in candidates:
+        if str(item.get("kind") or "").strip().lower() == "reference":
+            continue
+        timestamp = _coerce_timestamp_seconds(item.get("timestampSeconds"))
+        scene = _clean_prompt_text(item.get("scene"))
+        if timestamp is None or not scene:
+            continue
+        timestamp_key = round(timestamp, 1)
+        if timestamp_key in seen_timestamps:
+            continue
+        seen_timestamps.add(timestamp_key)
+        normalized.append({
+            "timestampSeconds": timestamp,
+            "scene": scene,
+            "visualIntent": _clean_prompt_text(item.get("visualIntent"), "核对构图、动作和情绪"),
+            "referenceUsage": _clean_prompt_text(
+                item.get("referenceUsage"), "核对该时刻的场景、界面和道具"
+            ),
+        })
+        if len(normalized) >= max(1, int(max_shots)):
+            break
+    return normalized
+
+
+def extract_reference_requests(comic_text: str, max_requests: int = 4) -> list[dict]:
+    """Parse visual-evidence requests, deriving legacy requests from beats when absent."""
+    try:
+        request_limit = max(1, min(8, int(max_requests)))
+    except (TypeError, ValueError):
+        request_limit = 4
+
+    explicit_requests = []
+    seen_requests = set()
+    for item in _extract_comic_json_objects(comic_text):
+        if str(item.get("kind") or "").strip().lower() != "reference":
+            continue
+        timestamp = _coerce_timestamp_seconds(item.get("timestampSeconds"))
+        evidence_role = _clean_prompt_text(item.get("evidenceRole"), "story_context").lower()
+        must_show = _clean_prompt_text(item.get("mustShow"))
+        reference_usage = _clean_prompt_text(item.get("referenceUsage"), must_show)
+        if timestamp is None or not must_show:
+            continue
+
+        capture_mode = _clean_prompt_text(item.get("captureMode"), "single").lower()
+        if capture_mode not in {"single", "sequence"}:
+            capture_mode = "single"
+        window_start = _coerce_timestamp_seconds(
+            item.get("windowStartSeconds", item.get("startSeconds"))
+        )
+        window_end = _coerce_timestamp_seconds(
+            item.get("windowEndSeconds", item.get("endSeconds"))
+        )
+        if window_start is None or window_end is None or window_end <= window_start:
+            window_start = None
+            window_end = None
+
+        request_key = (round(timestamp, 1), evidence_role, must_show)
+        if request_key in seen_requests:
+            continue
+        seen_requests.add(request_key)
+        explicit_requests.append({
+            "requestSource": "script_reference",
+            "timestampSeconds": timestamp,
+            "evidenceRole": evidence_role,
+            "mustShow": must_show,
+            "referenceUsage": reference_usage or must_show,
+            "captureMode": capture_mode,
+            "windowStartSeconds": window_start,
+            "windowEndSeconds": window_end,
+        })
+        if len(explicit_requests) >= 8:
+            break
+
+    if explicit_requests:
+        role_priority = {
+            "target_identity": 0,
+            "result": 1,
+            "interface": 2,
+            "story_context": 9,
+        }
+        indexed_requests = list(enumerate(explicit_requests))
+        critical_requests = [
+            item for item in indexed_requests
+            if item[1].get("evidenceRole") != "story_context"
+        ]
+        context_requests = [
+            item for item in indexed_requests
+            if item[1].get("evidenceRole") == "story_context"
+        ]
+        critical_requests.sort(key=lambda item: (
+            role_priority.get(str(item[1].get("evidenceRole") or ""), 3),
+            item[0],
+        ))
+        selected = [item[1] for item in critical_requests[:request_limit]]
+
+        # A text-only planner cannot always know which return-to-interface moment
+        # visibly contains the requested identity or result. Add up to two
+        # diverse storyboard timestamps outside the explicit search windows
+        # before spending the scarce image budget on low-priority context.
+        if selected and len(selected) < request_limit:
+            occupied_windows = []
+            for request in selected:
+                timestamp = float(request["timestampSeconds"])
+                window_start = request.get("windowStartSeconds")
+                window_end = request.get("windowEndSeconds")
+                if not isinstance(window_start, (int, float)) or not isinstance(window_end, (int, float)):
+                    window_start, window_end = max(0.0, timestamp - 60.0), timestamp + 60.0
+                occupied_windows.append((float(window_start), float(window_end)))
+
+            supplemental_count = 0
+            for shot in extract_storyboard_shots(comic_text, max(8, request_limit * 2)):
+                shot_timestamp = float(shot["timestampSeconds"])
+                if any(start <= shot_timestamp <= end for start, end in occupied_windows):
+                    continue
+                usage = shot.get("referenceUsage") or "核对该叙事节拍的实际界面与场景"
+                selected.append({
+                    "requestSource": "storyboard_supplement",
+                    "timestampSeconds": shot_timestamp,
+                    "evidenceRole": "story_context",
+                    "mustShow": f"补充搜索帧：{usage}",
+                    "referenceUsage": f"补充核对不同时间段的实际画面；{usage}",
+                    "captureMode": "single",
+                    "windowStartSeconds": None,
+                    "windowEndSeconds": None,
+                    "scene": shot.get("scene"),
+                    "visualIntent": shot.get("visualIntent"),
+                })
+                occupied_windows.append((max(0.0, shot_timestamp - 60.0), shot_timestamp + 60.0))
+                supplemental_count += 1
+                if len(selected) >= request_limit or supplemental_count >= 2:
+                    break
+
+        for _, request in context_requests:
+            if len(selected) >= request_limit:
+                break
+            selected.append(request)
+
+        for index, request in enumerate(selected, start=1):
+            request["referenceRequestId"] = f"E{index}"
+        return selected
+
+    # Policy v6 and older scripts only contain narrative beats. Treat their
+    # referenceUsage fields as soft, single-frame evidence for compatibility.
+    normalized = []
+    for shot in extract_storyboard_shots(comic_text, request_limit):
+        usage = shot.get("referenceUsage") or "核对该时刻的场景、界面和道具"
+        normalized.append({
+            "referenceRequestId": f"E{len(normalized) + 1}",
+            "requestSource": "storyboard_fallback",
+            "timestampSeconds": shot["timestampSeconds"],
+            "evidenceRole": "story_context",
+            "mustShow": usage,
+            "referenceUsage": usage,
+            "captureMode": "single",
+            "windowStartSeconds": None,
+            "windowEndSeconds": None,
+            "scene": shot.get("scene"),
+            "visualIntent": shot.get("visualIntent"),
+        })
+    return normalized
+
+
+EVIDENCE_COVERAGE_KEYWORDS = {
+    "target_identity": {
+        "卡池": 10, "十连": 7, "招募": 7, "开抽": 8, "下一位": 5,
+        "继续": 3, "抽": 2, "歪": 2, "六星": 3, "目标": 4,
+        "账号": 3, "限定": 4,
+    },
+    "result": {
+        "两个都到了": 20, "都到了": 15, "抽到了": 12, "拿下": 10,
+        "双黄": 9, "六星": 6, "抽完": 7, "结果": 8, "歪": 3,
+        "出": 1,
+    },
+}
+
+
+def select_evidence_coverage_candidates(
+    highlight_content: str,
+    evidence_role: str,
+    max_candidates: int = 12,
+) -> list[dict]:
+    """Choose diverse transcript markers for a compact visual search sheet."""
+    weights = EVIDENCE_COVERAGE_KEYWORDS.get(str(evidence_role or ""))
+    if not weights:
+        return []
+    try:
+        candidate_limit = max(1, min(16, int(max_candidates)))
+    except (TypeError, ValueError):
+        candidate_limit = 12
+
+    offset_seconds = 1.0 if evidence_role == "target_identity" else 15.0
+    candidates = []
+    marker_pattern = re.compile(r"^\[(?:(\d+)h)?\s*(\d+(?:\.\d+)?)m\]\s*(.*)$", re.IGNORECASE)
+    for line in (highlight_content or "").splitlines():
+        match = marker_pattern.match(line.strip())
+        if not match:
+            continue
+        hours = int(match.group(1) or 0)
+        minutes = float(match.group(2))
+        body = match.group(3)
+        score = sum(min(body.count(keyword), 3) * weight for keyword, weight in weights.items())
+        if "🔥" in body:
+            score += 1
+        if score <= 0:
+            continue
+        marker_seconds = hours * 3600 + minutes * 60
+        candidates.append({
+            "markerSeconds": marker_seconds,
+            "timestampSeconds": marker_seconds + offset_seconds,
+            "offsetSeconds": offset_seconds,
+            "score": score,
+            "label": f"{hours * 60 + minutes:g}m +{offset_seconds:g}s",
+        })
+
+    candidates.sort(key=lambda item: (-item["score"], item["markerSeconds"]))
+    selected = candidates[:candidate_limit]
+    selected.sort(key=lambda item: item["timestampSeconds"])
+    return selected
+
+
+def generate_evidence_coverage_sheets(
+    highlight_path: str,
+    video_path: str,
+    output_dir: str,
+    base_name: str,
+    reference_requests: list[dict],
+    screenshot_config: Dict[str, Any],
+    ffmpeg: str,
+    duration: Optional[float],
+    max_sheets: int = 2,
+) -> list[dict]:
+    """Pack many likely UI moments into provider-budget-friendly search sheets."""
+    if screenshot_config.get("coverageSheetsEnabled", True) is False or max_sheets <= 0:
+        return []
+    try:
+        from PIL import Image, ImageDraw
+        import tempfile
+    except (ImportError, OSError, RuntimeError, SystemExit) as error:
+        print(f"[WARNING] 无法生成视觉证据覆盖拼图，将继续使用独立关键帧: {error}")
+        return []
+
+    try:
+        max_candidates = max(4, min(16, int(screenshot_config.get("coverageSheetMaxCandidates") or 12)))
+        sheet_width = max(960, min(2560, int(screenshot_config.get("coverageSheetWidth") or 1600)))
+    except (TypeError, ValueError):
+        max_candidates, sheet_width = 12, 1600
+
+    try:
+        with open(highlight_path, "r", encoding="utf-8") as highlight_file:
+            highlight_content = highlight_file.read()
+    except OSError as error:
+        print(f"[WARNING] 读取高亮文本失败，无法生成覆盖拼图: {error}")
+        return []
+
+    sheets = []
+    for evidence_role in ("target_identity", "result"):
+        if len(sheets) >= max_sheets:
+            break
+        role_requests = [
+            request for request in reference_requests
+            if request.get("evidenceRole") == evidence_role
+        ]
+        if not role_requests:
+            continue
+        candidates = select_evidence_coverage_candidates(
+            highlight_content, evidence_role, max_candidates
+        )
+        if not candidates:
+            continue
+
+        columns = 4 if len(candidates) > 6 else 3
+        tile_width = sheet_width // columns
+        tile_height = max(180, int(round(tile_width * 9 / 16)))
+        label_height = max(24, int(round(tile_width * 0.065)))
+        rows = (len(candidates) + columns - 1) // columns
+        canvas = Image.new("RGB", (tile_width * columns, rows * (tile_height + label_height)), (16, 18, 22))
+        draw = ImageDraw.Draw(canvas)
+        captured_candidates = []
+
+        with tempfile.TemporaryDirectory(prefix=f"comic_{evidence_role}_coverage_") as temp_dir:
+            for candidate_index, candidate in enumerate(candidates):
+                timestamp = float(candidate["timestampSeconds"])
+                if duration is not None:
+                    timestamp = min(timestamp, max(0.0, duration - 0.1))
+                frame_path = os.path.join(temp_dir, f"candidate_{candidate_index:02d}.jpg")
+                args = [
+                    ffmpeg,
+                    "-y",
+                    "-loglevel", "error",
+                    "-ss", f"{timestamp:.3f}",
+                    "-i", video_path,
+                    "-frames:v", "1",
+                    "-an",
+                    "-vf", f"scale={tile_width}:-2:force_original_aspect_ratio=decrease",
+                    "-q:v", "2",
+                ]
+                ffmpeg_threads = str(os.environ.get("FFMPEG_THREADS") or "").strip()
+                if ffmpeg_threads.isdigit() and int(ffmpeg_threads) > 0:
+                    args.extend(["-threads", ffmpeg_threads])
+                args.append(frame_path)
+                try:
+                    result = subprocess.run(
+                        args,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        timeout=120,
+                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                    )
+                    if result.returncode != 0 or not os.path.exists(frame_path):
+                        continue
+                    with Image.open(frame_path) as frame_image:
+                        frame = frame_image.convert("RGB")
+                        frame.thumbnail((tile_width, tile_height))
+                        column = len(captured_candidates) % columns
+                        row = len(captured_candidates) // columns
+                        left = column * tile_width + (tile_width - frame.width) // 2
+                        top = row * (tile_height + label_height) + (tile_height - frame.height) // 2
+                        canvas.paste(frame, (left, top))
+                        label_top = row * (tile_height + label_height) + tile_height
+                        draw.rectangle(
+                            (column * tile_width, label_top, (column + 1) * tile_width, label_top + label_height),
+                            fill=(10, 12, 16),
+                        )
+                        draw.text(
+                            (column * tile_width + 8, label_top + 4),
+                            str(candidate["label"]),
+                            fill=(245, 245, 245),
+                        )
+                    captured_candidates.append({**candidate, "timestampSeconds": timestamp})
+                except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+                    continue
+
+        if not captured_candidates:
+            continue
+        used_rows = (len(captured_candidates) + columns - 1) // columns
+        if used_rows < rows:
+            canvas = canvas.crop((0, 0, canvas.width, used_rows * (tile_height + label_height)))
+        output_path = os.path.join(
+            output_dir,
+            f"{base_name}_EVIDENCE_COVERAGE_{evidence_role.upper()}.jpg",
+        )
+        canvas.save(output_path, "JPEG", quality=92, subsampling=0)
+        must_show = "；".join(dict.fromkeys(
+            request.get("mustShow") or ""
+            for request in role_requests
+            if request.get("mustShow")
+        ))
+        sheets.append({
+            "path": output_path,
+            "referenceRequestId": f"C_{evidence_role.upper()}",
+            "requestSource": "highlight_coverage_sheet",
+            "timestampSeconds": None,
+            "selectedTimestampSeconds": None,
+            "evidenceRole": evidence_role,
+            "mustShow": must_show,
+            "referenceUsage": (
+                f"跨直播高相关时间点搜索{evidence_role}；逐格检查时间标签，"
+                "采用真正显示mustShow的格子，忽略无关格子"
+            ),
+            "captureMode": "coverage_sheet",
+            "candidateIndex": None,
+            "candidateCount": len(captured_candidates),
+            "selectionMode": "coverage_sheet",
+            "coverageCandidateTimestampsSeconds": [
+                item["timestampSeconds"] for item in captured_candidates
+            ],
+        })
+        print(
+            f"[OK] 视觉证据覆盖拼图: role={evidence_role}, "
+            f"候选={len(captured_candidates)} -> {os.path.basename(output_path)}"
+        )
+    return sheets
+
+
+def infer_source_video_path(highlight_path: str, explicit_path: Optional[str] = None) -> Optional[str]:
+    candidates = [explicit_path, os.environ.get("SOURCE_VIDEO_PATH")]
+    base_name = os.path.basename(highlight_path).replace("_AI_HIGHLIGHT.txt", "")
+    directory = os.path.dirname(highlight_path)
+    candidates.extend(os.path.join(directory, f"{base_name}{extension}") for extension in VIDEO_EXTENSIONS)
+
+    if base_name.endswith("_merged"):
+        unmerged_base = re.sub(r"_merged(?:_\d+)?$", "", base_name)
+        candidates.extend(os.path.join(directory, f"{unmerged_base}{extension}") for extension in VIDEO_EXTENSIONS)
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        candidate = os.path.abspath(str(candidate))
+        if os.path.isfile(candidate) and os.path.splitext(candidate)[1].lower() in VIDEO_EXTENSIONS:
+            return candidate
+    return None
+
+
+def probe_video_duration_seconds(video_path: str) -> Optional[float]:
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return None
+    try:
+        result = subprocess.run(
+            [ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        if result.returncode == 0:
+            duration = float(result.stdout.decode("utf-8", errors="replace").strip())
+            return duration if duration > 0 else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    return None
+
+
+def generate_directed_storyboard_screenshots(
+    highlight_path: str,
+    comic_text: str,
+    storytelling: Optional[Dict[str, Any]],
+    source_video_path: Optional[str] = None,
+) -> list[dict]:
+    """Extract independent visual-evidence frames requested by the immersive script."""
+    if (storytelling or {}).get("variant") != "immersive_v1":
+        return []
+    screenshot_config = (storytelling or {}).get("directedScreenshots") or {}
+    if screenshot_config.get("enabled", True) is False:
+        return []
+    try:
+        max_images = max(1, min(8, int(screenshot_config.get("maxImages") or 4)))
+        max_requests = max(1, min(8, int(screenshot_config.get("maxRequests") or 4)))
+        max_frames_per_request = max(1, min(3, int(screenshot_config.get("maxFramesPerRequest") or 2)))
+        max_width = max(320, min(1920, int(screenshot_config.get("maxWidth") or 960)))
+        jpeg_quality = max(2, min(31, int(screenshot_config.get("jpegQuality") or 2)))
+        sample_window = max(5.0, min(180.0, float(screenshot_config.get("sampleWindowSeconds") or 60)))
+        sample_count = max(3, min(12, int(screenshot_config.get("sampleCount") or 5)))
+    except (TypeError, ValueError):
+        max_images, max_requests, max_frames_per_request = 4, 4, 2
+        max_width, jpeg_quality, sample_window, sample_count = 960, 2, 60.0, 5
+
+    reference_requests = extract_reference_requests(comic_text, max_requests)
+    if not reference_requests:
+        print("[WARNING] 沉浸版漫画脚本未解析出有效视觉证据请求，降级使用原截图拼图")
+        return []
+
+    video_path = infer_source_video_path(highlight_path, source_video_path)
+    ffmpeg = shutil.which("ffmpeg")
+    if not video_path or not ffmpeg:
+        print("[WARNING] 未找到原始视频或 ffmpeg，定向关键帧降级使用原截图拼图")
+        return []
+
+    duration = probe_video_duration_seconds(video_path)
+    output_dir = os.path.dirname(highlight_path)
+    base_name = os.path.basename(highlight_path).replace("_AI_HIGHLIGHT.txt", "")
+    extracted: list[dict] = []
+    frame_selector = None
+    pillow_image = None
+    if screenshot_config.get("useVisualSelection", True):
+        try:
+            from cover_generator import CoverGenerator
+            from PIL import Image
+            frame_selector = CoverGenerator()
+            pillow_image = Image
+        except (ImportError, OSError, RuntimeError, SystemExit) as error:
+            print(f"[WARNING] 无法加载候选帧评分器，将按脚本时间点直接截图: {error}")
+
+    critical_coverage_roles = {
+        request.get("evidenceRole")
+        for request in reference_requests
+        if request.get("evidenceRole") in {"target_identity", "result"}
+    }
+    coverage_sheets = generate_evidence_coverage_sheets(
+        highlight_path,
+        video_path,
+        output_dir,
+        base_name,
+        reference_requests,
+        screenshot_config,
+        ffmpeg,
+        duration,
+        max_sheets=min(2, max(0, max_images - len(critical_coverage_roles))),
+    )
+    individual_image_limit = max(0, max_images - len(coverage_sheets))
+
+    request_jobs: list[dict] = []
+    jobs_by_request: list[list[dict]] = []
+    for request in reference_requests:
+        timestamp = float(request["timestampSeconds"])
+        if duration is not None:
+            timestamp = min(timestamp, max(0.0, duration - 0.1))
+        is_storyboard_search = request.get("requestSource") in {
+            "storyboard_fallback", "storyboard_supplement"
+        }
+
+        window_start = request.get("windowStartSeconds")
+        window_end = request.get("windowEndSeconds")
+        if not isinstance(window_start, (int, float)) or not isinstance(window_end, (int, float)):
+            if is_storyboard_search:
+                window_start = timestamp
+                window_end = timestamp + sample_window
+            else:
+                window_start = max(0.0, timestamp - sample_window / 2)
+                window_end = timestamp + sample_window / 2
+        else:
+            window_start = max(0.0, float(window_start))
+            window_end = float(window_end)
+        if duration is not None:
+            window_start = min(window_start, max(0.0, duration - 0.1))
+            window_end = min(window_end, duration)
+        if window_end <= window_start:
+            window_end = window_start + 0.1
+
+        frame_count = max_frames_per_request if request.get("captureMode") == "sequence" else 1
+        request_payload = {**request, "timestampSeconds": timestamp}
+        request_segments = [{
+            "request": request_payload,
+            "segmentStartSeconds": window_start if is_storyboard_search else timestamp,
+            "segmentEndSeconds": window_end if is_storyboard_search else timestamp,
+            "preferredTimestampSeconds": timestamp,
+            "candidateIndex": 1,
+            "isAnchorCandidate": True,
+        }]
+
+        complement_count = frame_count - 1
+        if complement_count > 0:
+            split_point = min(max(timestamp, window_start), window_end)
+            complement_ranges = []
+            if split_point - window_start >= 0.1:
+                complement_ranges.append((window_start, split_point))
+            if window_end - split_point >= 0.1:
+                complement_ranges.append((split_point, window_end))
+            complement_ranges.sort(key=lambda span: (-(span[1] - span[0]), span[0]))
+            if len(complement_ranges) == 1 and complement_count > 1:
+                range_start, range_end = complement_ranges[0]
+                complement_ranges = [
+                    (
+                        range_start + (range_end - range_start) * part / complement_count,
+                        range_start + (range_end - range_start) * (part + 1) / complement_count,
+                    )
+                    for part in range(complement_count)
+                ]
+
+            for candidate_index, (segment_start, segment_end) in enumerate(
+                complement_ranges[:complement_count], start=2
+            ):
+                request_segments.append({
+                    "request": request_payload,
+                    "segmentStartSeconds": segment_start,
+                    "segmentEndSeconds": segment_end,
+                    "preferredTimestampSeconds": (segment_start + segment_end) / 2,
+                    "candidateIndex": candidate_index,
+                    "isAnchorCandidate": False,
+                })
+        jobs_by_request.append(request_segments)
+
+    critical_jobs = [
+        segments for segments in jobs_by_request
+        if segments[0]["request"].get("evidenceRole") != "story_context"
+    ]
+    supplemental_jobs = [
+        segments for segments in jobs_by_request
+        if segments[0]["request"].get("requestSource") == "storyboard_supplement"
+    ]
+    context_jobs = [
+        segments for segments in jobs_by_request
+        if segments[0]["request"].get("evidenceRole") == "story_context"
+        and segments[0]["request"].get("requestSource") != "storyboard_supplement"
+    ]
+
+    def allocate_jobs(groups: list[list[dict]], rounds: range) -> None:
+        for candidate_round in rounds:
+            for request_segments in groups:
+                if candidate_round < len(request_segments) and len(request_jobs) < individual_image_limit:
+                    request_jobs.append(request_segments[candidate_round])
+
+    # Preserve every target/result anchor, then diversify across narrative
+    # timestamps. Sequence complements and low-value context use remaining slots.
+    allocate_jobs(critical_jobs, range(1))
+    allocate_jobs(supplemental_jobs, range(1))
+    allocate_jobs(critical_jobs, range(1, max_frames_per_request))
+    allocate_jobs(context_jobs, range(max_frames_per_request))
+
+    candidate_counts: dict[str, int] = {}
+    for job in request_jobs:
+        request_id = str(job["request"].get("referenceRequestId") or "")
+        candidate_counts[request_id] = candidate_counts.get(request_id, 0) + 1
+
+    for index, job in enumerate(request_jobs, start=1):
+        request = job["request"]
+        timestamp = float(request["timestampSeconds"])
+        capture_timestamp = float(job["preferredTimestampSeconds"])
+        output_path = os.path.join(
+            output_dir,
+            f"{base_name}_EVIDENCE_FRAME_{index:02d}_{int(round(capture_timestamp)):06d}s.jpg",
+        )
+        selected_timestamp = capture_timestamp
+        frame_ready = False
+        should_use_visual_selection = (
+            frame_selector is not None
+            and (
+                request.get("requestSource") in {"storyboard_fallback", "storyboard_supplement"}
+                or not job.get("isAnchorCandidate")
+            )
+        )
+        if should_use_visual_selection:
+            segment_start = float(job["segmentStartSeconds"])
+            available_window = max(0.1, float(job["segmentEndSeconds"]) - segment_start)
+            try:
+                _, selected_timestamp = frame_selector.select_best_frame(
+                    video_path,
+                    clip_start=segment_start,
+                    clip_duration=available_window,
+                    preferred_time=None if request.get("requestSource") in {
+                        "storyboard_fallback", "storyboard_supplement"
+                    } else capture_timestamp,
+                    sample_count=sample_count,
+                    output_path=output_path,
+                )
+                if pillow_image is not None:
+                    with pillow_image.open(output_path) as selected_image:
+                        selected_image = selected_image.convert("RGB")
+                        selected_image.thumbnail((max_width, max_width * 4))
+                        selected_image.save(output_path, "JPEG", quality=max(70, 100 - jpeg_quality * 2))
+                frame_ready = os.path.exists(output_path) and os.path.getsize(output_path) > 0
+            except (OSError, RuntimeError, ValueError) as error:
+                print(f"[WARNING] 视觉证据帧 {index} 候选筛选失败，按请求时间点直接截图: {error}")
+
+        if not frame_ready:
+            selected_timestamp = capture_timestamp
+            args = [
+                ffmpeg,
+                "-y",
+                "-loglevel", "error",
+                "-ss", f"{capture_timestamp:.3f}",
+                "-i", video_path,
+                "-frames:v", "1",
+                "-an",
+                "-vf", f"scale={max_width}:-2:force_original_aspect_ratio=decrease",
+                "-q:v", str(jpeg_quality),
+            ]
+            ffmpeg_threads = str(os.environ.get("FFMPEG_THREADS") or "").strip()
+            if ffmpeg_threads.isdigit() and int(ffmpeg_threads) > 0:
+                args.extend(["-threads", ffmpeg_threads])
+            args.append(output_path)
+            try:
+                result = subprocess.run(
+                    args,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=120,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                )
+                if result.returncode != 0:
+                    error = result.stderr.decode("utf-8", errors="replace")[:300]
+                    print(f"[WARNING] 视觉证据帧 {index} 提取失败: {error}")
+                    continue
+            except (OSError, subprocess.SubprocessError) as error:
+                print(f"[WARNING] 视觉证据帧 {index} 提取失败: {error}")
+                continue
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            request_id = str(request.get("referenceRequestId") or "")
+            extracted.append({
+                **request,
+                "timestampSeconds": timestamp,
+                "selectedTimestampSeconds": selected_timestamp,
+                "windowStartSeconds": job["segmentStartSeconds"],
+                "windowEndSeconds": job["segmentEndSeconds"],
+                "candidateIndex": job["candidateIndex"],
+                "candidateCount": candidate_counts.get(request_id, 1),
+                "selectionMode": (
+                    "visual_best"
+                    if should_use_visual_selection
+                    else "exact_timestamp" if job.get("isAnchorCandidate") else "window_midpoint"
+                ),
+                "path": output_path,
+            })
+            print(
+                f"[OK] 视觉证据帧 {index}/{len(request_jobs)}: 请求={request_id}, "
+                f"角色={request.get('evidenceRole')}, 目标={timestamp:.1f}s, "
+                f"选帧={selected_timestamp:.1f}s -> {os.path.basename(output_path)}"
+            )
+    extracted.extend(coverage_sheets[:max(0, max_images - len(extracted))])
+    return extracted
 
 def read_highlight_file(highlight_path: str) -> str:
     """读取AI_HIGHLIGHT.txt内容"""
@@ -1604,18 +2563,53 @@ def model_supports_chinese(model: Optional[str] = None) -> bool:
     
     return False
 
-def build_multi_character_constraints(extra_streamers: Optional[list[dict]] = None) -> str:
+def build_multi_character_constraints(
+    extra_streamers: Optional[list[dict]] = None,
+    image_manifest: Optional[list[dict]] = None,
+) -> str:
     if not extra_streamers:
         return ""
     names = "、".join(streamer.get("displayName") or streamer.get("id") or "额外主播" for streamer in extra_streamers)
-    mapping_lines = ["- 参考图1 = 房间主人。"]
+    mapping_lines = []
     referenced_streamers = []
     unreferenced_streamers = []
-    for streamer in extra_streamers:
-        has_reference = any(resolve_configured_path(ref_image) for ref_image in (streamer.get("referenceImages", []) or []))
-        (referenced_streamers if has_reference else unreferenced_streamers).append(streamer)
-    for index, streamer in enumerate(referenced_streamers, start=2):
-        display_name = streamer.get("displayName") or streamer.get("id") or f"额外主播{index - 1}"
+
+    if image_manifest is None:
+        mapping_lines.append("- 参考图1 = 房间主人。")
+        for streamer in extra_streamers:
+            has_reference = any(
+                resolve_configured_path(ref_image)
+                for ref_image in (streamer.get("referenceImages", []) or [])
+            )
+            if has_reference:
+                referenced_streamers.append((len(referenced_streamers) + 2, streamer))
+            else:
+                unreferenced_streamers.append(streamer)
+    else:
+        for index, item in enumerate(image_manifest, start=1):
+            if item.get("role") == "host":
+                mapping_lines.append(f"- 参考图{index} = 房间主人。")
+        for streamer in extra_streamers:
+            streamer_id = str(streamer.get("id") or "")
+            display_name = streamer.get("displayName") or streamer_id or "额外主播"
+            matched_index = next((
+                index
+                for index, item in enumerate(image_manifest, start=1)
+                if item.get("role") in {"appeared_streamer", "mentioned_streamer"}
+                and (
+                    (streamer_id and str(item.get("streamerId") or "") == streamer_id)
+                    or str(item.get("displayName") or "") == display_name
+                )
+            ), None)
+            if matched_index is None:
+                unreferenced_streamers.append(streamer)
+            else:
+                referenced_streamers.append((matched_index, streamer))
+
+    if not mapping_lines and not referenced_streamers:
+        mapping_lines.append("- 本次上传清单中没有人物外观参考图。")
+    for index, streamer in referenced_streamers:
+        display_name = streamer.get("displayName") or streamer.get("id") or "额外主播"
         desc = " ".join(str(streamer.get("characterDescription") or display_name).replace("<", "").replace(">", "").split())
         mapping_lines.append(f"- 参考图{index} = {display_name}：{desc}")
     mapping_text = "\n".join(mapping_lines)
@@ -1638,6 +2632,100 @@ def build_multi_character_constraints(extra_streamers: Optional[list[dict]] = No
 - 只有漫画脚本明确出现多人互动或明确需要画到被提到的人时才画多位主播。
 - 仅被提到但没有实际出声的人，可以使用其参考图保持形象准确，但不要默认画成现场连麦角色。"""
 
+
+IMMERSIVE_IMAGE_PROMPT_RULES = """【沉浸式画面策略（必须执行）】
+- 不要画成规则的2x2四宫格、编号面板或四块等大的直播截图复述。优先一张有主次关系的电影感主画面；需要多个事件时，用不对称蒙太奇、前中后景或连续动作自然串联。
+- 让房间主人主动进入本场明确出现的游戏、电影、歌曲、故事或想象场景，成为动作中的角色，而不是始终坐在电脑桌前观看屏幕。整张图最多允许一个小区域出现直播桌面，且只有正文确有必要时才出现。
+- 对正文确实出现的游戏、影视、歌曲或故事，可以采用作品氛围启发的角色造型、舞台和环境，让主播参与其中；仍须保留主播身份特征，不得直接替换成作品角色。
+- 未来计划、假设、脑补、梦境或转述故事不是本场已经发生的事实。必须用想象气泡、幻想小剧场、Q版分身、梦境边框等视觉语法明确区分，不能画成主播当场真的抵达或经历了该事件。
+- 保留主播参考图中的脸、发色、瞳色、兔耳/配饰等身份特征；“进入作品世界”只改变环境、动作与合适的服装，不要把主播直接替换成作品角色。
+- 用动作、表情、景别、光线和道具表现情绪转折。文字只是点睛，最多保留少量短台词/拟声词，不要把摘要逐句抄到画面上。
+- 参考图清单中每条“必须呈现（mustShow）”都是画面事实硬约束，不是可选灵感。先逐条核对，再设计构图；不得用常识、角色描述或其它游戏内容替换。
+- 同一视觉证据请求的多张候选图组成一个搜索组：先找出真正看得见mustShow内容的候选，再合并这些候选中互相一致的细节。加载页、黑屏、半揭晓或相邻事件只用于定位，不得被误当成额外目标或结果；不要把每张候选机械画成独立分格。
+- requestSource=storyboard_supplement 是跨时间段补充搜索帧。若原target_identity/result请求的候选没有真正显示mustShow，必须继续检查这些补充帧；以实际可见的卡池页或完整结果页为准，不能因为请求编号不同而忽略更直接的证据。
+- requestSource=highlight_coverage_sheet 是带时间标签的多帧覆盖搜索拼图。必须逐格检查，找到真正显示目标卡池/对象或完整结果的格子；拼图中的其它时间点不是要同时画出的内容，也不能混合成虚构角色阵容。
+- evidenceRole=target_identity 时，按证据图还原抽取/选择前界面中所有关键目标，尤其是可见UP、高稀有度角色的发型、服装、配色、轮廓和人数；不得换成别的角色。
+- evidenceRole=result 时，按证据图保留抽取/揭晓后的关键结果、角色身份、数量与稀有度；可以艺术化界面，但不能虚构或替换结果。
+- 事实冲突时：本场标题和明确语音决定作品/游戏；视觉证据决定本场目标与结果；主播人物参考图只决定主播外观。
+- 直播关键帧既是事实证据也是构图素材，但不是最终构图模板；不要照抄直播软件边框、弹幕瀑布或主播坐姿。"""
+
+
+def format_image_reference_manifest(image_manifest: Optional[list[dict]]) -> str:
+    if not image_manifest:
+        return ""
+    lines = [
+        "【参考图编号与用途】",
+        "每张参考图只能按下面用途使用；角色参考图决定人物外观，直播证据决定本场目标、界面与结果。",
+        "凡标注“必须呈现”的内容都是请求级硬约束；同一请求的候选是搜索组，先采用真正显示mustShow的帧，再合并互相一致的细节，忽略加载、黑屏、半揭晓和无关转场。",
+    ]
+    for index, item in enumerate(image_manifest, start=1):
+        role = item.get("role") or "reference"
+        if role == "host":
+            description = "房间主人外观参考；严格还原人物身份特征，不代表本场场景。"
+        elif role in {"appeared_streamer", "mentioned_streamer"}:
+            display_name = item.get("displayName") or "额外人物"
+            description = f"{display_name}的外观参考；仅在漫画脚本明确需要该人物时使用。"
+        elif role == "directed_screenshot":
+            timestamp = item.get("timestampSeconds")
+            selected_timestamp = item.get("selectedTimestampSeconds")
+            usage = item.get("referenceUsage") or "核对该时刻的场景、界面和道具"
+            evidence_role = item.get("evidenceRole")
+            must_show = item.get("mustShow")
+            request_id = item.get("referenceRequestId")
+            if evidence_role or must_show or request_id:
+                role_labels = {
+                    "target_identity": "抽取/选择前的目标身份",
+                    "result": "抽取/揭晓后的真实结果",
+                    "interface": "关键界面状态",
+                    "story_context": "剧情场景上下文",
+                }
+                role_label = role_labels.get(str(evidence_role or ""), str(evidence_role or "视觉事实"))
+                candidate_index = item.get("candidateIndex")
+                candidate_count = item.get("candidateCount")
+                candidate_text = ""
+                if item.get("requestSource") == "highlight_coverage_sheet" and isinstance(candidate_count, int):
+                    candidate_text = f"，覆盖搜索拼图（{candidate_count}个带时间标签的候选格）"
+                elif isinstance(candidate_index, int) and isinstance(candidate_count, int):
+                    candidate_text = f"，候选{candidate_index}/{candidate_count}"
+                selection_mode = item.get("selectionMode")
+                if selection_mode == "exact_timestamp":
+                    candidate_text += "（请求时刻锚点帧）"
+                elif selection_mode in {"visual_best", "window_midpoint"}:
+                    candidate_text += "（相邻窗口互补帧）"
+                if item.get("requestSource") == "storyboard_supplement":
+                    candidate_text += "（跨时间段补充搜索帧）"
+                timing_text = ""
+                if isinstance(timestamp, (int, float)) and isinstance(selected_timestamp, (int, float)):
+                    timing_text = (
+                        f"；脚本事件约在直播 {timestamp:g} 秒，"
+                        f"参考图从同一事件窗口 {selected_timestamp:g} 秒选取"
+                    )
+                elif isinstance(timestamp, (int, float)):
+                    timing_text = f"；脚本事件约在直播 {timestamp:g} 秒"
+                description = (
+                    f"视觉证据请求{request_id or '?'}{candidate_text}；evidenceRole={evidence_role or 'story_context'}"
+                    f"（{role_label}）{timing_text}；用途：{usage}；必须呈现：{must_show or usage}。"
+                    f"“必须呈现”是请求{request_id or '?'}整体的硬约束；本帧若为转场，只用于定位，"
+                    "应采用组内真正显示目标的候选并合并一致细节，不要照搬直播界面布局。"
+                )
+            elif isinstance(timestamp, (int, float)) and isinstance(selected_timestamp, (int, float)):
+                description = (
+                    f"脚本事件约在直播 {timestamp:g} 秒，参考图从同一事件窗口 {selected_timestamp:g} 秒选取；"
+                    f"用途：{usage}。不要把截图布局照搬成直播桌面。"
+                )
+            elif isinstance(timestamp, (int, float)):
+                description = f"直播 {timestamp:g} 秒关键帧；用途：{usage}。不要把截图布局照搬成直播桌面。"
+            else:
+                description = f"直播关键帧；用途：{usage}。"
+        elif role == "contact_sheet":
+            description = "固定时间点的直播截图拼图，只用于核对直播内容，不要求逐格复刻。"
+        elif role == "cover":
+            description = "直播封面，只用于主题、色彩或场景线索，不作为人物外观依据。"
+        else:
+            description = item.get("description") or "辅助参考图。"
+        lines.append(f"- 参考图{index}：{description}")
+    return "\n".join(lines)
+
 def build_comic_prompt(
     highlight_content: str,
     reference_image_path: Optional[str] = None,
@@ -1646,6 +2734,8 @@ def build_comic_prompt(
     model: Optional[str] = None,
     extra_streamers: Optional[list[dict]] = None,
     live_context: Optional[Dict[str, Any]] = None,
+    storytelling: Optional[Dict[str, Any]] = None,
+    image_manifest: Optional[list[dict]] = None,
 ) -> Tuple[str, str, bool]:
     """构建漫画生成提示词并返回 (prompt, comic_content, is_generated)。
 
@@ -1675,17 +2765,21 @@ def build_comic_prompt(
             room_id=room_id,
             extra_streamers=extra_streamers,
             live_context=live_context,
+            storytelling=storytelling,
         )
 
     # 获取角色描述并注入绘画提示词（优先房间配置、再全局默认、最后内置默认）
     character_desc = get_multi_character_description(room_id, extra_streamers)
-    multi_constraints = build_multi_character_constraints(extra_streamers)
+    multi_constraints = build_multi_character_constraints(extra_streamers, image_manifest)
 
     # 尝试获取房间级别的自定义图片生成 prompt
     config = load_config()
     room_config = config.get("roomSettings", {}).get(str(room_id), {}) if room_id else {}
     custom_image_prompt = room_config.get("customPrompts", {}).get("comicImage")
     live_context_block = format_live_generation_context(live_context)
+    storytelling_variant = (storytelling or {}).get("variant") or "control"
+    reference_manifest_block = format_image_reference_manifest(image_manifest)
+    immersive_image_rules = IMMERSIVE_IMAGE_PROMPT_RULES if storytelling_variant == "immersive_v1" else ""
 
     # 第二步：基于漫画内容构建绘画提示词（包含角色设定，便于图像生成一致）
     if custom_image_prompt:
@@ -1697,6 +2791,10 @@ def build_comic_prompt(
             base_prompt = f"{live_context_block}\n\n{base_prompt}"
         if multi_constraints:
             base_prompt = f"{base_prompt}\n{multi_constraints}"
+        if reference_manifest_block:
+            base_prompt = f"{base_prompt}\n\n{reference_manifest_block}"
+        if immersive_image_rules:
+            base_prompt = f"{base_prompt}\n\n{immersive_image_rules}"
     else:
         # 使用默认模板，包含 {chinese_instruction} 占位符
         # 这个占位符会在实际调用 API 时根据模型能力动态替换
@@ -1705,6 +2803,8 @@ def build_comic_prompt(
 <live_facts>{live_context_block}</live_facts>
 若下方漫画脚本与 live_facts 冲突，以 live_facts 为准并修正画面，不要绘制错误的游戏界面、角色、Logo或台词。
 {multi_constraints}
+{reference_manifest_block}
+{immersive_image_rules}
 要画得精致，角色要画得帅气、美丽、可爱。
 {{chinese_instruction}}
 下面是根据直播内容生成的漫画脚本，请根据这个脚本绘制漫画：
@@ -1787,12 +2887,48 @@ COMIC_ARTIST_PROMPT_TEMPLATE = """你作为虚拟主播二创画师大手子，�
 {highlight_content}
 """
 
+IMMERSIVE_COMIC_ARTIST_PROMPT_TEMPLATE = """你作为虚拟主播二创画师与电影分镜师，根据直播内容设计一张沉浸式直播总结插画。
+角色描述：{character_desc}。
+{identity_context}。
+{live_context}
+
+叙事要求：
+1. 从直播中选择2~4个真正不同的高光节拍，形成清楚的起因、转折和收束；不要按时间平均切段，也不要把同一种“坐在电脑前说话”重复多次。
+2. 主播应主动进入本场明确出现的游戏、电影、歌曲、故事或想象世界：奔跑、战斗、表演、探索、变身、与道具互动。不要只画她隔着屏幕观看这些内容。
+3. 对正文确实出现的游戏、影视、歌曲或故事，可以设计作品氛围启发的角色造型、舞台和环境，让主播进入其中；必须保留主播身份特征，不要直接替换成作品角色。
+4. 严格保留事件的语气层级：未来计划、假设、脑补、梦境或转述故事不是已经发生的事实。用想象气泡、幻想小剧场、Q版分身、梦境边框等方式明确表示想象层，例如聊未来旅行时可让Q版小头像在气泡里演出预想遭遇，不能画成主播当场真的抵达。
+5. 最终构图优先一张有明确视觉中心的电影感主画面，或不对称蒙太奇、连续动作、前中后景叙事；禁止默认规则2x2四宫格、四块等大面板和编号格。
+6. 整张图最多允许一个小区域出现直播桌面，且只有正文确有必要时才出现。用动作、表情、镜头距离、光线、环境和视觉隐喻表达情绪，不要靠大量文字复述摘要。
+7. 可以有少量中文短台词、拟声词或环境字，单处1~8字、总量克制；不要写长段总结，不要生成身份牌或无来源的人名。
+8. 弹幕里的“[某某收藏集表情包_xxx]”或“[某某表情包_xxx]”只是观众表情包名称，不代表该主播出场；只画语音正文、摘要事件或明确提到的真实人物。
+9. 时间标记如“[12m]”表示录制后第12分钟。每个节拍必须选择对应事件的时间点，并换算为数值型 timestampSeconds。
+10. 叙事节拍不等于视觉证据。另行规划最能确认作品、关键角色/物品外观、界面状态和事件结果的参考帧；不要只因为某个时间点剧情重要，就假定它也能看清需要还原的视觉事实。
+
+输出格式必须可解析：只输出JSON Lines，不要Markdown代码块、解释或额外文字。
+第一行输出总体构图：{"format":"immersive_v1","composition":"单一电影感主画面或不对称蒙太奇的具体方案","narrativeArc":"起因-转折-收束"}
+随后每行输出一个叙事节拍，且字段缺一不可：{"kind":"beat","timestampSeconds":数值,"scene":"人物、动作、环境与必要短字","visualIntent":"景别、构图、光线、情绪和动态","referenceUsage":"该节拍在叙事中的用途"}
+最后输出1~4个独立视觉证据请求：{"kind":"reference","timestampSeconds":数值,"evidenceRole":"target_identity/result/interface/story_context之一","mustShow":"这组参考图必须看清且最终画面必须准确保留的具体对象、身份、数量或结果","referenceUsage":"参考图具体用于核对什么","captureMode":"single或sequence","windowStartSeconds":数值或null,"windowEndSeconds":数值或null}
+
+视觉证据规划规则：
+- 遇到抽卡、招募、开包、抽奖或角色揭晓，必须至少输出两类证据：抽取前的target_identity，以及抽取/揭晓后的result。target_identity应对准能同时看清卡池/活动主视觉和所有关键UP或高稀有目标的界面；mustShow逐一写明可见目标及必须保留的外观特征和人数。result应对准完整结果页或揭晓画面；mustShow写明实际角色、数量、稀有度和关键结果，不得用预期结果代替。
+- target_identity与result应尽量来自同一轮卡池、账号或目标链路。result优先选正文明确说“目标到了/两个都到了/抽到了”前后的完整结果页，不要只因为直播尾声较晚就默认取最后一次无关抽卡。
+- 不要把开场口头宣布主题的时刻默认当作target_identity。应优先选择“准备十连、切换账号、暂停确认、回到卡池、继续下一抽”等抽卡节拍附近真正可能返回卡池页的时刻；证据时间最好复用一个相关叙事beat并给出紧凑窗口。
+- 对其它题材，也要优先请求能决定“画谁、画什么、结果是什么”的证据，而不只是主播桌面或普通主页。
+- 能明确定位到稳定画面时使用single。时间点粗略、界面会切换、一个画面无法同时看清关键对象，或不确定究竟应截抽取前还是抽取后时，使用sequence并给出紧凑的windowStartSeconds/windowEndSeconds；也可以在相隔较远的两个相关抽卡节拍各输出一个同类reference。系统会保留请求时刻锚点并补充搜索帧。
+- 同一请求的多张sequence候选共同描述同一事实，不应被设计成不同剧情节拍。reference记录不计入2~4个叙事节拍。
+共2~4个叙事节拍、1~4个视觉证据请求，整体不超过1600个中文字符。
+
+下面是一场直播的语音+弹幕文本：
+{highlight_content}
+"""
+
 def build_comic_generation_prompt(
     character_desc: str,
     highlight_content: str,
     room_id: Optional[str] = None,
     appeared_streamers: Optional[list[dict]] = None,
     live_context: Optional[Dict[str, Any]] = None,
+    storytelling: Optional[Dict[str, Any]] = None,
 ) -> str:
     """使用COMIC_ARTIST_PROMPT_TEMPLATE构建完整的prompt（用于Gemini等调用）"""
     # 尝试获取房间级别的自定义漫画脚本 prompt
@@ -1801,11 +2937,15 @@ def build_comic_generation_prompt(
     custom_prompt = room_config.get("customPrompts", {}).get("comicScript")
     
     # 如果有自定义 prompt，使用它
+    storytelling_variant = (storytelling or {}).get("variant") or "control"
     if custom_prompt:
         template = custom_prompt.strip()
     else:
-        # 否则使用默认模板
-        template = COMIC_ARTIST_PROMPT_TEMPLATE.strip()
+        template = (
+            IMMERSIVE_COMIC_ARTIST_PROMPT_TEMPLATE
+            if storytelling_variant == "immersive_v1"
+            else COMIC_ARTIST_PROMPT_TEMPLATE
+        ).strip()
     
     identity_context = format_comic_identity_context(
         build_comic_identity_context(
@@ -1823,6 +2963,14 @@ def build_comic_generation_prompt(
     base = base.replace("{highlight_content}", highlight_content)
     if live_context_block and not has_live_context_placeholder:
         base = f"{live_context_block}\n\n{base}"
+    if custom_prompt and storytelling_variant == "immersive_v1":
+        immersive_appendix = IMMERSIVE_COMIC_ARTIST_PROMPT_TEMPLATE.split(
+            "下面是一场直播的语音+弹幕文本：", 1
+        )[0]
+        immersive_appendix = immersive_appendix.replace("{character_desc}", character_desc)
+        immersive_appendix = immersive_appendix.replace("{identity_context}", identity_context)
+        immersive_appendix = immersive_appendix.replace("{live_context}", live_context_block)
+        base = f"{base}\n\n{immersive_appendix.strip()}"
     return base
 
 
@@ -1992,6 +3140,7 @@ def generate_comic_content_with_ai(
     room_id: Optional[str] = None,
     extra_streamers: Optional[list[dict]] = None,
     live_context: Optional[Dict[str, Any]] = None,
+    storytelling: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, bool]:
     """使用AI生成漫画内容脚本
     
@@ -2008,6 +3157,7 @@ def generate_comic_content_with_ai(
         room_id,
         appeared_streamers=extra_streamers,
         live_context=live_context,
+        storytelling=storytelling,
     )
 
     # 首先尝试复用已有的 Node 文本生成器（ai_text_generator.js），避免在 Python 中重复实现 Gemini 调用
@@ -2803,6 +3953,15 @@ def write_comic_generation_meta(output_path: str, meta: Dict[str, Any]) -> None:
             "lastResponseId": meta.get("lastResponseId"),
             "attempts": meta.get("attempts") or [],
             "routeAttempts": meta.get("routeAttempts") or [],
+            "storytellingVariant": meta.get("storytellingVariant"),
+            "storytellingBucket": meta.get("storytellingBucket"),
+            "storytellingImmersivePercent": meta.get("storytellingImmersivePercent"),
+            "storytellingAssignmentHash": meta.get("storytellingAssignmentHash"),
+            "storytellingAssignmentReason": meta.get("storytellingAssignmentReason"),
+            "screenshotMode": meta.get("screenshotMode"),
+            "storyboardShots": meta.get("storyboardShots") or [],
+            "referenceRequests": meta.get("referenceRequests") or [],
+            "referenceImages": meta.get("referenceImages") or [],
             "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
         with open(comic_meta_path(output_path), "w", encoding="utf-8") as f:
@@ -2824,10 +3983,13 @@ def write_comic_script_meta(
     highlight_content: Optional[str] = None,
     appeared_streamer_ids: Optional[list[str]] = None,
     live_context: Optional[Dict[str, Any]] = None,
+    storytelling: Optional[Dict[str, Any]] = None,
+    storyboard_shots: Optional[list[dict]] = None,
+    reference_requests: Optional[list[dict]] = None,
 ) -> None:
     try:
         payload = {
-            "schemaVersion": 3,
+            "schemaVersion": COMIC_SCRIPT_META_SCHEMA_VERSION,
             "policyVersion": COMIC_SCRIPT_POLICY_VERSION,
             "status": meta.get("status") or "unknown",
             "provider": meta.get("provider"),
@@ -2842,6 +4004,9 @@ def write_comic_script_meta(
                 for streamer_id in (appeared_streamer_ids or [])
                 if str(streamer_id)
             }),
+            **comic_storytelling_meta(storytelling),
+            "storyboardShots": storyboard_shots or [],
+            "referenceRequests": reference_requests or [],
             "updatedAt": meta.get("updatedAt") or time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
         with open(comic_script_meta_path(text_output_path), "w", encoding="utf-8") as f:
@@ -2928,13 +4093,24 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
         
         # 读取内容
         highlight_content = read_highlight_file(highlight_path)
+        script_highlight_content = sanitize_highlight_for_comic_script(highlight_content, room_id, config)
+        storytelling = select_comic_storytelling_variant(
+            config,
+            room_id,
+            script_highlight_content,
+        )
+        print(
+            f"[EXPERIMENT] 漫画叙事变体={storytelling['variant']}, "
+            f"bucket={storytelling['bucket'] / 100:.2f}, "
+            f"immersiveRollout={storytelling['immersivePercent']:.1f}%, "
+            f"screenshots={storytelling['screenshotMode']}"
+        )
         live_context = load_live_generation_context(highlight_path, room_id, config)
         live_context_hash = hash_live_generation_context(live_context)
         print(
             f"[CONTEXT] 漫画采用本场事实上下文: 标题={live_context.get('liveTitle') or '未取得'}, "
             f"近期动态={len(live_context.get('recentDynamics') or [])}条"
         )
-        script_highlight_content = sanitize_highlight_for_comic_script(highlight_content, room_id, config)
         script_highlight_hash = hashlib.sha256(script_highlight_content.encode("utf-8")).hexdigest()
         script_extra_streamers = resolve_extra_appeared_streamers(
             config,
@@ -2964,11 +4140,13 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
                     with open(meta_path, 'r', encoding='utf-8') as mf:
                         meta = json.load(mf)
                 metadata_matches = (
-                    meta.get("schemaVersion") == 3
+                    meta.get("schemaVersion") == COMIC_SCRIPT_META_SCHEMA_VERSION
                     and meta.get("policyVersion") == COMIC_SCRIPT_POLICY_VERSION
                     and meta.get("roomId") == str(room_id)
                     and meta.get("highlightSha256") == script_highlight_hash
                     and meta.get("liveContextSha256") == live_context_hash
+                    and meta.get("storytellingVariant") == storytelling["variant"]
+                    and meta.get("storytellingAssignmentHash") == storytelling["assignmentHash"]
                     and sorted(meta.get("appearedStreamerIds") or []) == script_appeared_ids
                 )
                 if is_valid_comic_script(comic_text) and metadata_matches:
@@ -2988,6 +4166,7 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
             existing_comic=comic_text,
             extra_streamers=script_extra_streamers,
             live_context=live_context,
+            storytelling=storytelling,
         )
 
         # 如果脚本生成失败（使用原文作为备选），则不生成图片
@@ -3004,16 +4183,42 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
                 "endpoint": "comic-script",
                 "reason": script_reason,
                 "attempts": get_last_image_generation_meta().get("attempts") or [],
+                **comic_storytelling_meta(storytelling),
             })
             return None
 
+        directed_screenshot_config = storytelling.get("directedScreenshots") or {}
+        storyboard_shots = extract_storyboard_shots(comic_text, 4)
+        reference_requests = extract_reference_requests(
+            comic_text,
+            int(directed_screenshot_config.get("maxRequests") or 4),
+        )
+        directed_screenshots = generate_directed_storyboard_screenshots(
+            highlight_path,
+            comic_text,
+            storytelling,
+            source_video_path=os.environ.get("SOURCE_VIDEO_PATH"),
+        )
         image_extra_streamers = resolve_image_prompt_extra_streamers(
             config,
             room_id,
             highlight_path,
             comic_text,
         )
-        all_images = collect_all_images(room_id, highlight_path, extra_streamers=image_extra_streamers)
+        image_manifest: list[dict] = []
+        all_images = collect_all_images(
+            room_id,
+            highlight_path,
+            extra_streamers=image_extra_streamers,
+            directed_screenshots=directed_screenshots,
+            screenshot_mode=storytelling["screenshotMode"],
+            image_manifest=image_manifest,
+            max_total_images=(
+                directed_screenshot_config.get("maxTotalReferenceImages") or 5
+                if storytelling.get("variant") == "immersive_v1"
+                else None
+            ),
+        )
         reference_image_path = all_images if all_images else None
         prompt, comic_text, is_comic_generated = build_comic_prompt(
             highlight_content,
@@ -3022,6 +4227,8 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
             existing_comic=comic_text,
             extra_streamers=image_extra_streamers,
             live_context=live_context,
+            storytelling=storytelling,
+            image_manifest=image_manifest,
         )
         if all_images:
             print(f"[IMAGE] 根据漫画脚本收集到 {len(all_images)} 张图片，将全部传入AI:")
@@ -3044,6 +4251,9 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
                     script_highlight_content,
                     script_appeared_ids,
                     live_context,
+                    storytelling,
+                    storyboard_shots,
+                    reference_requests,
                 )
             elif os.path.exists(text_output_path) and not os.path.exists(comic_script_meta_path(text_output_path)):
                 write_comic_script_meta(
@@ -3053,6 +4263,9 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
                     script_highlight_content,
                     script_appeared_ids,
                     live_context,
+                    storytelling,
+                    storyboard_shots,
+                    reference_requests,
                 )
         except Exception as e:
             print(f"[WARNING] 保存漫画脚本失败: {e}")
@@ -3092,6 +4305,10 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
                     "reason": "所有图像生成API都失败，无返回结果",
                     "attempts": [],
                 }
+            failure_meta.update(comic_storytelling_meta(storytelling))
+            failure_meta["storyboardShots"] = storyboard_shots
+            failure_meta["referenceRequests"] = reference_requests
+            failure_meta["referenceImages"] = image_manifest
             write_comic_generation_meta(output_path, failure_meta)
             return None
         
@@ -3111,6 +4328,10 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
                 "reason": "生成成功",
                 "attempts": [],
             }
+        success_meta.update(comic_storytelling_meta(storytelling))
+        success_meta["storyboardShots"] = storyboard_shots
+        success_meta["referenceRequests"] = reference_requests
+        success_meta["referenceImages"] = image_manifest
         write_comic_generation_meta(output_path, success_meta)
         if saved_path != output_path:
             write_comic_generation_meta(saved_path, success_meta)
@@ -3120,13 +4341,22 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
         print(f"[ERROR] 生成漫画失败: {e}")
         safe_print_exc()
         try:
-            write_comic_generation_meta(output_path, {
+            exception_meta = {
                 "status": "failure",
                 "model": None,
                 "endpoint": "all",
                 "reason": str(e),
                 "attempts": get_last_image_generation_meta().get("attempts") or [],
-            })
+            }
+            if "storytelling" in locals():
+                exception_meta.update(comic_storytelling_meta(storytelling))
+            if "storyboard_shots" in locals():
+                exception_meta["storyboardShots"] = storyboard_shots
+            if "reference_requests" in locals():
+                exception_meta["referenceRequests"] = reference_requests
+            if "image_manifest" in locals():
+                exception_meta["referenceImages"] = image_manifest
+            write_comic_generation_meta(output_path, exception_meta)
         except Exception:
             pass
         return None

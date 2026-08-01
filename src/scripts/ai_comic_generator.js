@@ -254,6 +254,12 @@ async function generateComicWithPython(highlightPath, roomId = null, options = {
                     : {}),
                 ...(options.allowComicScriptFallback
                     ? { ALLOW_COMIC_SCRIPT_FALLBACK: 'true' }
+                    : {}),
+                ...(options.sourceVideoPath
+                    ? { SOURCE_VIDEO_PATH: path.resolve(options.sourceVideoPath) }
+                    : {}),
+                ...(options.storytellingVariant
+                    ? { COMIC_STORYTELLING_VARIANT: String(options.storytellingVariant) }
                     : {})
             }
         });

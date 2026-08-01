@@ -720,6 +720,26 @@
       "enabled": true,
       "provider": "python",
       "outputLockEnabled": false,
+      "storytellingExperiment": {
+        "enabled": true,
+        "immersivePercent": 30,
+        "salt": "comic-immersive-v1",
+        "directedScreenshots": {
+          "enabled": true,
+          "maxImages": 4,
+          "maxRequests": 4,
+          "maxFramesPerRequest": 2,
+          "maxTotalReferenceImages": 5,
+          "coverageSheetsEnabled": true,
+          "coverageSheetMaxCandidates": 12,
+          "coverageSheetWidth": 1600,
+          "maxWidth": 960,
+          "jpegQuality": 2,
+          "useVisualSelection": true,
+          "sampleWindowSeconds": 60,
+          "sampleCount": 5
+        }
+      },
       "multiReferenceImages": {
         "enabled": false,
         "maxExtraCharacters": 2,

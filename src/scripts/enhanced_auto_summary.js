@@ -1801,9 +1801,19 @@ const main = async () => {
                             }
                             : {};
                         console.log(`🎨 生图路由: 使用 ai.comic.imageGeneration.routes；文本/兜底重试最多 ${tuziRetryMaxAttempts} 次${isSuiRoom ? '，同步策略限时25分钟，冷却最多等待5分钟，脚本失败启用本地兜底' : ''}`);
+                        const sourceVideos = mediaFiles.filter(file => !isAudioFile(file));
+                        const normalizedHighlightBase = highlightBase
+                            .replace(/\.speaker$/iu, '')
+                            .replace(/_fix$/iu, '');
+                        const sourceVideoPath = sourceVideos.find(file =>
+                            path.basename(file, path.extname(file))
+                                .replace(/\.speaker$/iu, '')
+                                .replace(/_fix$/iu, '') === normalizedHighlightBase
+                        ) || (sourceVideos.length === 1 ? sourceVideos[0] : null);
                         comicImagePath = await generateAiComic(highlightPath, finalRoomId, {
                             tuziRetryMaxAttempts,
                             tuziBypassCooldown: false,
+                            sourceVideoPath,
                             onComicScriptReady: () => startBackgroundClipsOnce('comic-script-ready'),
                             ...suiImageOptions
                         });

@@ -37,6 +37,7 @@ XIAOMAOHAO = Path(r"D:\files\Pictures\保存素材\小猫帽")
 XIAOHONGMAO = Path(r"D:\files\Pictures\保存素材\VirtuaReal和PSP同事\岁己SUI")
 GPT_DIR = Path(r"D:\files\Pictures\AI图保存\gpt")
 PROJECT_REFS = Path(r"D:\workspace\myrepo\danmaku-to-summary-ts\public\reference_images")
+PROJECT_IMAGEGEN = Path(r"D:\workspace\myrepo\danmaku-to-summary-ts\output\imagegen")
 
 # ── 参考图短名称 → 绝对路径映射 ──
 REF_MAP = {
@@ -63,6 +64,7 @@ REF_MAP = {
     "lanmao_2":          XIAOLANMAO / "5a2bcc519c33a2213134bdc196799d041954091502.png",
     "lanmao_3":          XIAOLANMAO / "ffafa81afd68e22166a93dfd806f9af81954091502.png",
     "lanmao_3view":      XIAOHUAMA / "AI素材" / "小蓝帽三视图.png",
+    "lanmao_shopping_3view": PROJECT_IMAGEGEN / "sui_lanmao_shopping_3view_v1.png",  # 日常逛街服三视图
     "lanmao_twin":       XIAOLANMAO / "岁己_20231216形象_双马尾有外套.webp",
     "lanmao_short":      XIAOLANMAO / "岁己_20231216形象_短发无外套.webp",
 
@@ -101,6 +103,7 @@ REF_MAP = {
 
     # === 项目内参考图 ===
     "maohao_pb_ref":     PROJECT_REFS / "岁己SUI小猫帽带饼干岁紫色外套双马尾.png",
+    "villain_boss":      PROJECT_IMAGEGEN / "convenience_store_villain_boss_v1.png",  # 无眼匿名便利店老板
 }
 
 
@@ -137,7 +140,7 @@ def next_task_id(tasks: list) -> str:
     return f"task_{max_num + 1:03d}"
 
 
-def add_task(name: str, prompt: str, refs: list[str], repeat: int, ratio: str = "16:9", model_version: str = "seedance2.0", resolution: str = "720p", queue_path: Path = QUEUE_PATH):
+def add_task(name: str, prompt: str, refs: list[str], repeat: int, ratio: str = "16:9", model_version: str = "seedance2.0", resolution: str = "720p", queue_path: Path = QUEUE_PATH, task_id: str | None = None):
     """添加任务到队列。模型决定进入普通或 VIP 线上通道。"""
     if not queue_path.exists():
         print(f"✗ 队列文件不存在: {queue_path}", file=sys.stderr)
@@ -170,7 +173,11 @@ def add_task(name: str, prompt: str, refs: list[str], repeat: int, ratio: str = 
     ref_paths = resolve_refs(refs)
     store = QueueStore(queue_path)
     with store.transaction() as q:
-        task_id = next_task_id(q["tasks"])
+        if task_id is None:
+            task_id = next_task_id(q["tasks"])
+        elif any(str(task.get("id")) == task_id for task in q["tasks"]):
+            print(f"✗ task ID 已存在: '{task_id}'", file=sys.stderr)
+            sys.exit(1)
         task = {
             "id": task_id,
             "name": name,
@@ -225,6 +232,7 @@ def main():
     p_add.add_argument("--ratio", default="16:9", help="视频比例 (默认16:9): 1:1, 3:4, 16:9, 4:3, 9:16, 21:9")
     p_add.add_argument("--model-version", default="seedance2.0", choices=sorted(VALID_MODELS), help="生成模型；seedance2.0 走普通通道，其余模型走 VIP 通道")
     p_add.add_argument("--resolution", default="720p", choices=sorted(VALID_RESOLUTIONS), help="视频分辨率 (非 VIP 模型仅支持 720p)")
+    p_add.add_argument("--task-id", default=None, help="显式任务 ID，例如 task_153；用于保持删除任务后的编号连续性")
     p_add.add_argument("--queue", type=Path, default=QUEUE_PATH, help="队列文件路径（测试/维护覆盖）")
 
     # list-refs 子命令
@@ -242,7 +250,7 @@ def main():
 
     if args.command == "add":
         refs = [r.strip() for r in args.refs.split(",") if r.strip()]
-        add_task(args.name, args.prompt, refs, args.repeat, args.ratio, args.model_version, args.resolution, args.queue)
+        add_task(args.name, args.prompt, refs, args.repeat, args.ratio, args.model_version, args.resolution, args.queue, args.task_id)
 
     elif args.command == "list-refs":
         list_refs()
