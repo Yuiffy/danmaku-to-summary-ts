@@ -373,6 +373,10 @@ export interface ImageGenerationConfig {
 export interface TextAIConfig {
   enabled: boolean;
   provider: 'gemini' | 'openai' | 'claude' | 'daiYu';
+  /** Reuse one exact live-facts prefix across goodnight and comic-script requests. */
+  sharedPromptCache?: {
+    enabled?: boolean;
+  };
   gemini?: GeminiConfig;
   tuZi?: TuZiConfig;
   daiYu?: TuZiConfig & {
@@ -408,9 +412,6 @@ export interface ComicStorytellingExperimentConfig {
     coverageSheetWidth?: number;
     maxWidth?: number;
     jpegQuality?: number;
-    useVisualSelection?: boolean;
-    sampleWindowSeconds?: number;
-    sampleCount?: number;
   };
 }
 

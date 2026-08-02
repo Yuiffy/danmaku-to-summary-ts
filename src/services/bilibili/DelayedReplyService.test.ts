@@ -83,6 +83,76 @@ describe('DelayedReplyService duplicate reply detection', () => {
       fs.rmSync(outputDir, { recursive: true, force: true });
     }
   });
+
+  it('reports the final immersive or control comic mode from generation metadata', () => {
+    const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'delayed-reply-comic-mode-'));
+    const service = createService() as any;
+    const immersiveImagePath = path.join(outputDir, 'immersive_COMIC_FACTORY.png');
+    const controlImagePath = path.join(outputDir, 'control_COMIC_FACTORY.png');
+    fs.writeFileSync(immersiveImagePath, 'image', 'utf8');
+    fs.writeFileSync(controlImagePath, 'image', 'utf8');
+    fs.writeFileSync(path.join(outputDir, 'immersive_COMIC_FACTORY_META.json'), JSON.stringify({
+      status: 'success',
+      storytellingVariant: 'immersive_v1',
+      storytellingAssignmentReason: 'stable-rollout',
+      storytellingImmersivePercent: 30,
+      storytellingBucket: 419
+    }), 'utf8');
+    fs.writeFileSync(path.join(outputDir, 'control_COMIC_FACTORY_META.json'), JSON.stringify({
+      status: 'success',
+      storytellingVariant: 'control',
+      storytellingAssignmentReason: 'forced',
+      storytellingImmersivePercent: 30,
+      storytellingBucket: 8100
+    }), 'utf8');
+
+    try {
+      const immersiveInfo = service.getComicGenerationNotificationInfo(immersiveImagePath);
+      const controlInfo = service.getComicGenerationNotificationInfo(controlImagePath);
+
+      expect(immersiveInfo).toContain('漫画模式: 新版沉浸式（灰度组 immersive_v1）');
+      expect(immersiveInfo).toContain('分配: 稳定灰度');
+      expect(immersiveInfo).toContain('新版比例: 30%');
+      expect(immersiveInfo).toContain('桶: 4.19');
+      expect(controlInfo).toContain('漫画模式: 旧版对照组（control）');
+      expect(controlInfo).toContain('分配: 强制指定');
+    } finally {
+      fs.rmSync(outputDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports provider prompt-cache token usage for both text requests', () => {
+    const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'delayed-reply-text-cache-'));
+    const service = createService() as any;
+    const goodnightTextPath = path.join(outputDir, 'stream_晚安回复.md');
+    const comicImagePath = path.join(outputDir, 'stream_COMIC_FACTORY.png');
+    fs.writeFileSync(goodnightTextPath, [
+      '---',
+      'provider: "daiYu"',
+      'model: "gpt-5.6-luna"',
+      'fallback: false',
+      'attempts:',
+      '  - status: "success"',
+      '    promptTokens: 5600',
+      '    cachedTokens: 4608',
+      '---',
+      '晚安正文'
+    ].join('\n'), 'utf8');
+    fs.writeFileSync(path.join(outputDir, 'stream_COMIC_SCRIPT_META.json'), JSON.stringify({
+      status: 'success',
+      provider: 'daiYu',
+      model: 'gpt-5.6-luna',
+      attempts: [{ status: 'success', promptTokens: 7200, cachedTokens: 5120 }]
+    }), 'utf8');
+
+    try {
+      const info = service.getTextGenerationNotificationInfo(goodnightTextPath, comicImagePath);
+      expect(info).toContain('晚安文本: 模型: gpt-5.6-luna，服务: daiYu，输入缓存: 4608/5600 tokens');
+      expect(info).toContain('漫画脚本文本: 模型: gpt-5.6-luna，服务: daiYu，状态: 成功，输入缓存: 5120/7200 tokens');
+    } finally {
+      fs.rmSync(outputDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('DelayedReplyService summary dynamic reply', () => {
@@ -192,6 +262,9 @@ describe('DelayedReplyService summary dynamic reply', () => {
   });
 
   it('retries only the summary reply without returning to the owner dynamic flow', async () => {
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(
+      new Date('2026-07-29T16:30:00.000Z').getTime()
+    );
     const publishComment = jest.fn()
       .mockRejectedValueOnce(new Error('temporary network failure'))
       .mockResolvedValueOnce({
@@ -225,6 +298,7 @@ describe('DelayedReplyService summary dynamic reply', () => {
       expect(task.status).toBe('completed');
       expect(task.summaryReplyId).toBe('summary-retry-reply');
     } finally {
+      nowSpy.mockRestore();
       delayedReplyConfigSpy.mockRestore();
     }
   });

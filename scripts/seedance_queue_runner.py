@@ -8,6 +8,7 @@ import re
 import subprocess
 import sys
 import time
+import urllib.request
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,7 +21,7 @@ DEFAULT_MODEL = "seedance2.0"
 DEFAULT_RESOLUTION = "720p"
 VALID_MODELS = {"seedance2.0", "seedance2.0mini", "seedance2.0_vip", "seedance2.0fast_vip"}
 VALID_RESOLUTIONS = {"720p", "1080p", "4k"}
-SESSION = "14778786782988"
+SESSION = "15001602620940"
 DURATION = "15"
 DEFAULT_RATIO = "16:9"
 POLL = "30"
@@ -30,6 +31,10 @@ MIN_QUERY_INTERVAL = 60
 MAX_QUERY_INTERVAL = 1800
 MAX_FAIL_RETRIES = 3
 SCRIPT_VERSION = "2026-07-21-vip-two-lane-1"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+WECHAT_SECRET_PATH = PROJECT_ROOT / "config" / "secret.json"
+EMPTY_QUEUE_NOTIFIED_KEY = "seedance_queue_empty_notified"
+EMPTY_QUEUE_NOTIFIED_AT_KEY = "seedance_queue_empty_notified_at"
 
 
 @dataclass
@@ -61,6 +66,126 @@ def now() -> int:
 
 def remaining(task: Dict[str, Any]) -> int:
     return max(0, int(task.get("repeat") or 0) - int(task.get("completed") or 0))
+
+
+def queue_meta(data: Dict[str, Any]) -> Dict[str, Any]:
+    meta = data.get("_meta")
+    if not isinstance(meta, dict):
+        meta = {}
+        data["_meta"] = meta
+    return meta
+
+
+def waiting_task_count(data: Dict[str, Any]) -> int:
+    return sum(
+        1
+        for task in data.get("tasks", [])
+        if isinstance(task, dict)
+        and task.get("status") == "pending"
+        and remaining(task) > active_attempt_count(task)
+    )
+
+
+def submitted_task_count(data: Dict[str, Any]) -> int:
+    return sum(
+        1
+        for task in data.get("tasks", [])
+        if isinstance(task, dict) and task.get("status") == "submitted"
+    )
+
+
+def load_wechat_webhook_url() -> Optional[str]:
+    try:
+        config = json.loads(WECHAT_SECRET_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"empty queue reminder skipped: cannot read {WECHAT_SECRET_PATH}: {exc}")
+        return None
+    wechat_work = config.get("wechatWork") if isinstance(config, dict) else None
+    webhook_url = wechat_work.get("webhookUrl") if isinstance(wechat_work, dict) else None
+    return str(webhook_url).strip() if webhook_url else None
+
+
+def send_wechat_markdown(webhook_url: str, content: str) -> None:
+    payload = json.dumps(
+        {"msgtype": "markdown", "markdown": {"content": content}},
+        ensure_ascii=False,
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        webhook_url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=15) as response:
+        raw = response.read().decode("utf-8", errors="replace")
+    result = json.loads(raw) if raw else {}
+    if isinstance(result, dict) and result.get("errcode") not in (None, 0, "0"):
+        raise RuntimeError(f"WeCom returned errcode={result.get('errcode')}: {result.get('errmsg', '')}")
+
+
+def clear_empty_queue_notification_if_needed(store: QueueStore) -> bool:
+    snapshot = store.load()
+    if waiting_task_count(snapshot) == 0:
+        return False
+    meta = snapshot.get("_meta")
+    if not isinstance(meta, dict) or not meta.get(EMPTY_QUEUE_NOTIFIED_KEY):
+        return False
+    with store.transaction() as data:
+        if waiting_task_count(data) == 0:
+            return False
+        locked_meta = queue_meta(data)
+        if not locked_meta.get(EMPTY_QUEUE_NOTIFIED_KEY):
+            return False
+        locked_meta[EMPTY_QUEUE_NOTIFIED_KEY] = False
+        locked_meta.pop(EMPTY_QUEUE_NOTIFIED_AT_KEY, None)
+        store.save(data)
+    return True
+
+
+def maybe_notify_empty_queue(store: QueueStore, dry_run: bool = False) -> bool:
+    if dry_run:
+        return False
+    snapshot = store.load()
+    if waiting_task_count(snapshot) > 0:
+        clear_empty_queue_notification_if_needed(store)
+        return False
+    snapshot_meta = snapshot.get("_meta")
+    if isinstance(snapshot_meta, dict) and snapshot_meta.get(EMPTY_QUEUE_NOTIFIED_KEY):
+        return False
+    webhook_url = load_wechat_webhook_url()
+    if not webhook_url:
+        print("empty queue reminder skipped: config/secret.json has no wechatWork.webhookUrl")
+        return False
+
+    meta = snapshot_meta if isinstance(snapshot_meta, dict) else {}
+    session_id = str(meta.get("dreamina_session_id") or SESSION)
+    session_name = str(meta.get("dreamina_session_name") or "未命名合集")
+    submitted = submitted_task_count(snapshot)
+    paused = sum(1 for task in snapshot.get("tasks", []) if isinstance(task, dict) and task.get("status") == "paused")
+    content = (
+        "**Seedance 队列提醒**\n\n"
+        f"合集：{session_name}（{session_id}）\n"
+        "所有待提交任务已送出，目前没有排队中的 prompt。\n"
+        f"已提交/生成中任务：{submitted} 个；暂停任务：{paused} 个。\n"
+        "请准备新的 prompt。"
+    )
+    try:
+        send_wechat_markdown(webhook_url, content)
+    except Exception as exc:
+        print(f"empty queue reminder failed: {exc}")
+        return False
+
+    with store.transaction() as data:
+        if waiting_task_count(data) > 0:
+            return False
+        locked_meta = queue_meta(data)
+        if locked_meta.get(EMPTY_QUEUE_NOTIFIED_KEY):
+            return False
+        locked_meta[EMPTY_QUEUE_NOTIFIED_KEY] = True
+        locked_meta[EMPTY_QUEUE_NOTIFIED_AT_KEY] = now()
+        store.save(data)
+    print("empty queue reminder sent")
+    return True
 
 
 def resolved_model(task: Dict[str, Any]) -> str:
@@ -139,7 +264,11 @@ def normalize_task(task: Dict[str, Any]) -> bool:
             task["status"] = "pending" if remaining(task) else "completed"
             task["note"] = f"{task.get('id')} recovered from submitted-without-submit_id"
             changed = True
+    previous_status = task.get("status")
+    previous_remaining = task.get("remaining")
     update_status(task)
+    if task.get("status") != previous_status or task.get("remaining") != previous_remaining:
+        changed = True
     return changed
 
 
@@ -495,6 +624,7 @@ def run_once(store: QueueStore, options: RunnerOptions) -> RunResult:
         if normalize_data(locked):
             store.save(locked)
     sync_due_attempts(store, dry_run=False)
+    clear_empty_queue_notification_if_needed(store)
     data = store.load()
     selected = select_submission_tasks(data, options)
     submitted = 0
@@ -524,6 +654,7 @@ def run_once(store: QueueStore, options: RunnerOptions) -> RunResult:
             print(f"submitted {sid} lane={task_lane(snapshot)}")
         if options.submit_delay > 0 and submitted < len(selected):
             time.sleep(options.submit_delay)
+    maybe_notify_empty_queue(store)
     return RunResult(options.submit_interval, submitted)
 
 

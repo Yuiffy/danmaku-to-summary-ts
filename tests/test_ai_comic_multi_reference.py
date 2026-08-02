@@ -2,6 +2,8 @@ import builtins
 import importlib.util
 import json
 import os
+import shutil
+import subprocess
 import tempfile
 import types
 import unittest
@@ -579,7 +581,17 @@ class MultiReferenceComicTests(unittest.TestCase):
 
         comic.write_comic_script_meta(
             str(output),
-            {"status": "success", "provider": "test", "model": "test"},
+            {
+                "status": "success",
+                "provider": "test",
+                "model": "test",
+                "attempts": [{
+                    "status": "success",
+                    "promptTokens": 7200,
+                    "cachedTokens": 5120,
+                    "sharedPromptCacheKey": "a" * 64,
+                }],
+            },
             "25788785",
             "highlight",
             ["shiori", "shiori"],
@@ -812,6 +824,107 @@ class MultiReferenceComicTests(unittest.TestCase):
         self.assertIn("不要画成规则的2x2四宫格", image_prompt)
         self.assertIn("整张图最多允许一个小区域出现直播桌面", image_prompt)
 
+    def test_shared_prompt_prefix_is_byte_identical_between_node_and_python(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is unavailable")
+
+        self.config["ai"]["text"] = {"sharedPromptCache": {"enabled": True}}
+        self.config["asr"]["corrections"] = {
+            "safe": {"小随": "小岁"}
+        }
+        raw_highlight = (
+            "[弥月Mizuki 0.91] [12m] 小随说启动   明日方舟\r\n"
+            "[花礼Harei收藏集表情包_哈气]  十连结果"
+        )
+        live_context = {
+            "liveTitle": "明日方舟代抽",
+            "recordingStartLocalTime": "2026-08-01 11:57:16 UTC+8",
+            "recentDynamics": [{
+                "publishTime": "2026-08-01T03:00:00.000Z",
+                "content": "中午明日方舟代抽",
+            }],
+            "contentHints": [],
+        }
+        python_prefix = comic.build_shared_live_source_prefix(
+            raw_highlight,
+            "30655190",
+            self.config,
+            live_context,
+        )
+        node_script = """
+const fs = require('fs');
+const context = require(process.argv[1]);
+const payload = JSON.parse(fs.readFileSync(0, 'utf8'));
+process.stdout.write(context.buildSharedLiveSourcePrefix(
+  payload.highlight,
+  payload.roomId,
+  payload.config,
+  payload.liveContext
+));
+"""
+        completed = subprocess.run(
+            [node, "-e", node_script, str(SCRIPT_DIR / "live_generation_context.js")],
+            input=json.dumps({
+                "highlight": raw_highlight,
+                "roomId": "30655190",
+                "config": self.config,
+                "liveContext": live_context,
+            }, ensure_ascii=False),
+            text=True,
+            encoding="utf-8",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+
+        self.assertEqual(completed.stdout, python_prefix)
+        self.assertTrue(python_prefix.startswith(comic.SHARED_PROMPT_CACHE_START))
+        self.assertIn("[弥月Mizuki 0.91]", python_prefix)
+        self.assertIn("小岁说启动 明日方舟", python_prefix)
+        self.assertIn("声学分离元数据", python_prefix)
+        self.assertNotIn("收藏集表情包", python_prefix)
+
+    def test_comic_script_prompt_puts_shared_facts_before_task_instructions(self):
+        self.config["ai"]["text"] = {"sharedPromptCache": {"enabled": True}}
+        raw_highlight = "[弥月Mizuki 0.91] [12m] 明日方舟代抽十连。"
+        normalized = comic.sanitize_highlight_for_comic_script(
+            raw_highlight, "30655190", self.config
+        )
+        prompt = comic.build_comic_generation_prompt(
+            "亚麻发异瞳兔耳少女",
+            normalized,
+            "30655190",
+            storytelling={"variant": "immersive_v1"},
+            shared_source_content=raw_highlight,
+        )
+
+        self.assertTrue(prompt.startswith(comic.SHARED_PROMPT_CACHE_START))
+        self.assertLess(prompt.index(comic.SHARED_PROMPT_CACHE_END), prompt.index("【漫画脚本任务】"))
+        self.assertEqual(prompt.count("明日方舟代抽十连"), 1)
+
+    def test_custom_comic_script_prompt_reuses_shared_facts_prefix(self):
+        self.config["ai"]["text"] = {"sharedPromptCache": {"enabled": True}}
+        self.config["roomSettings"]["25788785"]["customPrompts"] = {
+            "comicScript": "自定义漫画规则：只画一个主场景。\n{highlight_content}"
+        }
+        raw_highlight = "[岁己SUI 0.93] [8m] 自定义漫画模板的共享正文。"
+        normalized = comic.sanitize_highlight_for_comic_script(
+            raw_highlight, "25788785", self.config
+        )
+
+        prompt = comic.build_comic_generation_prompt(
+            "房间主人描述",
+            normalized,
+            "25788785",
+            shared_source_content=raw_highlight,
+        )
+
+        self.assertTrue(prompt.startswith(comic.SHARED_PROMPT_CACHE_START))
+        self.assertLess(prompt.index(comic.SHARED_PROMPT_CACHE_END), prompt.index("【漫画脚本任务】"))
+        self.assertEqual(prompt.count("自定义漫画模板的共享正文"), 1)
+        self.assertIn("自定义漫画规则：只画一个主场景", prompt)
+
     def test_control_and_immersive_prompts_stay_separate(self):
         control_script_prompt = comic.build_comic_generation_prompt(
             "亚麻发异瞳兔耳少女",
@@ -885,62 +998,47 @@ class MultiReferenceComicTests(unittest.TestCase):
         self.assertEqual(shots[0]["scene"], "冲入战场")
         self.assertEqual(shots[1]["referenceUsage"], "核对结果页")
 
-    def test_reference_requests_are_independent_from_storyboard_beats(self):
+    def test_reference_requests_parse_generic_multi_timestamp_protocol(self):
         script = "\n".join([
             '{"format":"immersive_v1","composition":"电影感主画面"}',
-            '{"kind":"beat","timestampSeconds":125,"scene":"拉下十连机关",'
+            '{"kind":"beat","timestampSeconds":125,"scene":"拉下机关",'
             '"visualIntent":"广角逆光","referenceUsage":"叙事起点"}',
-            '{"kind":"reference","timestampSeconds":720,"evidenceRole":"target_identity",'
-            '"mustShow":"卡池页两位UP六星角色的完整外观",'
-            '"referenceUsage":"核对全部UP目标","captureMode":"sequence",'
-            '"windowStartSeconds":700,"windowEndSeconds":740}',
-            '{"kind":"reference","timestampSeconds":"46:15","evidenceRole":"result",'
-            '"mustShow":"十连结果中的实际角色和稀有度",'
-            '"referenceUsage":"核对最终结果","captureMode":"single",'
-            '"windowStartSeconds":null,"windowEndSeconds":null}',
+            '{"kind":"reference","timestampsSeconds":[720,"12:15",720],'
+            '"referenceUsage":"核对关键人物的发型、服装、武器和人数",'
+            '"captureMode":"sheet"}',
+            '{"kind":"reference","timestampsSeconds":["46:15"],'
+            '"referenceUsage":"核对事件结束时实际可见的结果和数量",'
+            '"captureMode":"individual"}',
         ])
 
         shots = comic.extract_storyboard_shots(script, max_shots=4)
         requests = comic.extract_reference_requests(script, max_requests=2)
 
         self.assertEqual(len(shots), 1)
-        self.assertEqual(shots[0]["scene"], "拉下十连机关")
-        self.assertEqual([item["evidenceRole"] for item in requests], ["target_identity", "result"])
-        self.assertEqual(requests[0]["captureMode"], "sequence")
-        self.assertEqual(requests[0]["windowStartSeconds"], 700.0)
-        self.assertEqual(requests[1]["timestampSeconds"], 2775.0)
+        self.assertEqual(shots[0]["scene"], "拉下机关")
+        self.assertEqual(requests[0]["timestampsSeconds"], [720.0, 735.0])
+        self.assertEqual(requests[0]["captureMode"], "sheet")
+        self.assertEqual(requests[1]["timestampsSeconds"], [2775.0])
+        self.assertEqual(requests[1]["captureMode"], "individual")
+        self.assertTrue(all(item["evidenceRole"] is None for item in requests))
+        self.assertTrue(all(item["mustShow"] is None for item in requests))
 
-    def test_reference_planner_adds_diverse_storyboard_search_before_low_priority_context(self):
+    def test_reference_requests_preserve_planner_importance_order(self):
         script = "\n".join([
-            '{"kind":"beat","timestampSeconds":0,"scene":"宣布开抽",'
-            '"visualIntent":"开场","referenceUsage":"开场口播"}',
-            '{"kind":"beat","timestampSeconds":720,"scene":"继续十连",'
-            '"visualIntent":"转折","referenceUsage":"核对中段抽卡界面"}',
-            '{"kind":"beat","timestampSeconds":2220,"scene":"双黄全歪",'
-            '"visualIntent":"低谷","referenceUsage":"核对双黄结果"}',
-            '{"kind":"beat","timestampSeconds":5460,"scene":"尾声",'
-            '"visualIntent":"收束","referenceUsage":"核对结束画面"}',
-            '{"kind":"reference","timestampSeconds":60,"evidenceRole":"target_identity",'
-            '"mustShow":"全部UP目标","referenceUsage":"核对卡池",'
-            '"captureMode":"sequence","windowStartSeconds":0,"windowEndSeconds":120}',
-            '{"kind":"reference","timestampSeconds":5280,"evidenceRole":"result",'
-            '"mustShow":"完整十连结果","referenceUsage":"核对结果",'
-            '"captureMode":"sequence","windowStartSeconds":5280,"windowEndSeconds":5460}',
-            '{"kind":"reference","timestampSeconds":5520,"evidenceRole":"story_context",'
-            '"mustShow":"结尾预告","referenceUsage":"核对预告",'
-            '"captureMode":"single"}',
+            '{"kind":"reference","timestampsSeconds":[600],'
+            '"referenceUsage":"核对舞台服装和手持道具","captureMode":"individual"}',
+            '{"kind":"reference","timestampsSeconds":[1200,1210],'
+            '"referenceUsage":"核对比赛计分变化","captureMode":"sheet"}',
+            '{"kind":"reference","timestampsSeconds":[1800],'
+            '"referenceUsage":"核对结尾场景","captureMode":"individual"}',
         ])
 
-        requests = comic.extract_reference_requests(script, max_requests=4)
+        requests = comic.extract_reference_requests(script, max_requests=2)
 
-        self.assertEqual([item["timestampSeconds"] for item in requests], [
-            60.0, 5280.0, 720.0, 2220.0
+        self.assertEqual([item["referenceUsage"] for item in requests], [
+            "核对舞台服装和手持道具", "核对比赛计分变化"
         ])
-        self.assertEqual([item["requestSource"] for item in requests], [
-            "script_reference", "script_reference",
-            "storyboard_supplement", "storyboard_supplement",
-        ])
-        self.assertNotIn(5520.0, [item["timestampSeconds"] for item in requests])
+        self.assertEqual([item["referenceRequestId"] for item in requests], ["E1", "E2"])
 
     def test_legacy_storyboard_beats_derive_soft_reference_requests(self):
         script = (
@@ -951,44 +1049,40 @@ class MultiReferenceComicTests(unittest.TestCase):
         requests = comic.extract_reference_requests(script, max_requests=2)
 
         self.assertEqual(len(requests), 1)
-        self.assertEqual(requests[0]["evidenceRole"], "story_context")
-        self.assertEqual(requests[0]["mustShow"], "核对游戏主页")
-        self.assertEqual(requests[0]["captureMode"], "single")
+        self.assertIsNone(requests[0]["evidenceRole"])
+        self.assertIsNone(requests[0]["mustShow"])
+        self.assertEqual(requests[0]["timestampsSeconds"], [120.0])
+        self.assertEqual(requests[0]["captureMode"], "individual")
 
-    def test_immersive_gacha_prompt_requires_target_and_result_evidence(self):
+    def test_immersive_prompt_delegates_generic_reference_planning_to_script_ai(self):
         prompt = comic.build_comic_generation_prompt(
             "异色瞳机械兔耳少女",
-            "[12m] 主播打开卡池准备代抽。[46m] 十连结果揭晓。",
+            "[12m] 主播进入游戏活动。[46m] 事件结果揭晓。",
             "30655190",
             storytelling={"variant": "immersive_v1"},
         )
 
         self.assertIn('"kind":"reference"', prompt)
-        self.assertIn("抽取前的target_identity", prompt)
-        self.assertIn("抽取/揭晓后的result", prompt)
-        self.assertIn("所有关键UP或高稀有目标", prompt)
-        self.assertIn("使用sequence", prompt)
-        self.assertIn("系统会保留请求时刻锚点并补充搜索帧", prompt)
+        self.assertIn('"timestampsSeconds":[数值1,数值2]', prompt)
+        self.assertIn('"captureMode":"individual或sheet"', prompt)
+        self.assertIn("不使用固定题材分类", prompt)
+        self.assertIn("最终生图应从这些输入图中读取什么", prompt)
+        self.assertNotIn("target_identity", prompt)
+        self.assertNotIn("mustShow", prompt)
+        self.assertNotIn("视觉审核", prompt)
 
-    def test_coverage_candidate_search_includes_banner_and_result_offsets(self):
-        highlight = "\n".join([
-            "[2m] 十连开始，继续抽卡。",
-            "[12m] 卡池招募后继续十连，限定目标一直歪。",
-            "[46m] 两个都到了，抽到了两个角色。",
-            "[84m] 后面又抽到一个普通结果。",
-        ])
-
-        target_candidates = comic.select_evidence_coverage_candidates(
-            highlight, "target_identity", max_candidates=4
-        )
-        result_candidates = comic.select_evidence_coverage_candidates(
-            highlight, "result", max_candidates=4
+    def test_legacy_reference_fields_are_read_only_compatibility(self):
+        script = (
+            '{"kind":"reference","timestampSeconds":120,"mustShow":"旧缓存视觉事实",'
+            '"captureMode":"sequence","referenceUsage":""}'
         )
 
-        self.assertIn(721.0, [item["timestampSeconds"] for item in target_candidates])
-        self.assertIn(2775.0, [item["timestampSeconds"] for item in result_candidates])
-        result_46m = next(item for item in result_candidates if item["timestampSeconds"] == 2775.0)
-        self.assertEqual(result_46m["label"], "46m +15s")
+        requests = comic.extract_reference_requests(script, max_requests=1)
+
+        self.assertEqual(requests[0]["timestampsSeconds"], [120.0])
+        self.assertEqual(requests[0]["referenceUsage"], "旧缓存视觉事实")
+        self.assertEqual(requests[0]["captureMode"], "individual")
+        self.assertFalse(hasattr(comic, "select_evidence_coverage_candidate_with_vision"))
 
     def test_immersive_image_collection_prefers_individual_frames_over_contact_sheet(self):
         contact_sheet = self.root / "contact.jpg"
@@ -1055,27 +1149,26 @@ class MultiReferenceComicTests(unittest.TestCase):
         self.assertEqual(len(immersive_images), 5)
         self.assertEqual(Path(immersive_images[-1]).name, "evidence-4.jpg")
 
-    def test_critical_evidence_is_reserved_and_manifest_mapping_uses_actual_uploads(self):
+    def test_script_requested_references_are_reserved_before_extra_characters(self):
         extra_streamer = self.config["ai"]["streamerRegistry"]["shiori"]
         directed = []
         evidence_specs = [
-            ("target-coverage.jpg", "target_identity", "highlight_coverage_sheet"),
-            ("result-coverage.jpg", "result", "highlight_coverage_sheet"),
-            ("target-anchor.jpg", "target_identity", "script_reference"),
-            ("result-anchor.jpg", "result", "script_reference"),
+            ("stage-sheet.jpg", "script_reference_sheet", "script_requested_sheet"),
+            ("score-sheet.jpg", "script_reference_sheet", "script_requested_sheet"),
+            ("costume-frame.jpg", "script_reference", "script_requested"),
+            ("prop-frame.jpg", "script_reference", "script_requested"),
         ]
-        for filename, evidence_role, request_source in evidence_specs:
+        for index, (filename, request_source, selection_mode) in enumerate(evidence_specs, start=1):
             frame = self.root / filename
             frame.write_bytes(b"frame")
             directed.append({
                 "path": str(frame),
                 "timestampSeconds": 120,
-                "evidenceRole": evidence_role,
                 "requestSource": request_source,
-                "mustShow": filename,
+                "referenceRequestId": f"E{index}",
+                "referenceUsage": f"核对{filename}",
+                "selectionMode": selection_mode,
             })
-        # Put anchors first to prove collection reorders high-coverage evidence.
-        directed = [directed[2], directed[3], directed[0], directed[1]]
         manifest = []
 
         images = comic.collect_all_images(
@@ -1093,87 +1186,87 @@ class MultiReferenceComicTests(unittest.TestCase):
 
         self.assertEqual([Path(item).name for item in images], [
             "host.png",
-            "target-coverage.jpg",
-            "result-coverage.jpg",
-            "target-anchor.jpg",
-            "result-anchor.jpg",
+            "costume-frame.jpg",
+            "prop-frame.jpg",
+            "stage-sheet.jpg",
+            "score-sheet.jpg",
         ])
         self.assertNotIn("shiori.png", [Path(item).name for item in images])
         self.assertIn("栞栞 没有参考图", constraints)
         self.assertNotIn("参考图2 = 栞栞", constraints)
 
-    def test_reference_manifest_marks_must_show_as_hard_constraint(self):
+    def test_reference_manifest_explains_individual_frames_by_usage(self):
         manifest = [
             {"path": str(self.host), "role": "host"},
             {
-                "path": str(self.root / "pool-a.jpg"),
+                "path": str(self.root / "costume-a.jpg"),
                 "role": "directed_screenshot",
                 "referenceRequestId": "E1",
-                "evidenceRole": "target_identity",
-                "mustShow": "两位UP六星角色的发型、服装、配色和人数",
-                "referenceUsage": "核对抽前卡池页",
+                "referenceUsage": "核对舞台服装的剪裁、配色和手持道具",
                 "timestampSeconds": 720,
                 "selectedTimestampSeconds": 711.5,
                 "candidateIndex": 1,
                 "candidateCount": 2,
+                "selectionMode": "script_requested",
             },
             {
-                "path": str(self.root / "pool-b.jpg"),
+                "path": str(self.root / "costume-b.jpg"),
                 "role": "directed_screenshot",
                 "referenceRequestId": "E1",
-                "evidenceRole": "target_identity",
-                "mustShow": "两位UP六星角色的发型、服装、配色和人数",
-                "referenceUsage": "核对抽前卡池页",
+                "referenceUsage": "核对舞台服装的剪裁、配色和手持道具",
                 "timestampSeconds": 720,
                 "selectedTimestampSeconds": 729.0,
                 "candidateIndex": 2,
                 "candidateCount": 2,
+                "selectionMode": "script_requested",
             },
         ]
 
         reference_prompt = comic.format_image_reference_manifest(manifest)
         image_prompt, _, _ = comic.build_comic_prompt(
-            "抽卡后结果揭晓。",
+            "舞台表演结束。",
             room_id="30655190",
             existing_comic='{"format":"immersive_v1","composition":"电影感主画面"}',
             storytelling={"variant": "immersive_v1"},
             image_manifest=manifest,
         )
 
-        self.assertIn("视觉证据请求E1，候选1/2", reference_prompt)
-        self.assertIn("必须呈现：两位UP六星角色的发型、服装、配色和人数", reference_prompt)
-        self.assertIn("“必须呈现”是请求E1整体的硬约束", reference_prompt)
-        self.assertIn("同一视觉证据请求的多张候选图组成一个搜索组", image_prompt)
-        self.assertIn("加载页、黑屏、半揭晓或相邻事件只用于定位", image_prompt)
-        self.assertIn("evidenceRole=target_identity", image_prompt)
-        self.assertIn("不得换成别的角色", image_prompt)
+        self.assertIn("脚本参考请求E1的高清独立帧，同用途独立帧1/2", reference_prompt)
+        self.assertIn("截图时间为直播711.5秒", reference_prompt)
+        self.assertIn("用途：核对舞台服装的剪裁、配色和手持道具", reference_prompt)
+        self.assertIn("selectionMode=script_requested", image_prompt)
+        self.assertIn("共同服务于同一个用途", image_prompt)
+        self.assertIn("只采用图片中真正可见", image_prompt)
+        self.assertNotIn("target_identity", image_prompt)
+        self.assertNotIn("mustShow", image_prompt)
 
-    def test_reference_manifest_explains_coverage_search_sheet(self):
+    def test_reference_manifest_explains_script_requested_sheet(self):
         manifest = [{
-            "path": str(self.root / "coverage.jpg"),
+            "path": str(self.root / "process-sheet.jpg"),
             "role": "directed_screenshot",
-            "referenceRequestId": "C_TARGET_IDENTITY",
-            "requestSource": "highlight_coverage_sheet",
-            "evidenceRole": "target_identity",
-            "mustShow": "全部UP目标角色",
-            "referenceUsage": "跨直播搜索卡池页",
-            "captureMode": "coverage_sheet",
-            "candidateCount": 12,
-            "selectionMode": "coverage_sheet",
+            "referenceRequestId": "E2",
+            "requestSource": "script_reference_sheet",
+            "timestampsSeconds": [600.0, 610.0, 620.0],
+            "referenceUsage": "核对机关启动前后的结构和动作变化",
+            "captureMode": "sheet",
+            "candidateCount": 3,
+            "selectionMode": "script_requested_sheet",
         }]
 
         reference_prompt = comic.format_image_reference_manifest(manifest)
         image_prompt, _, _ = comic.build_comic_prompt(
-            "抽卡直播。",
+            "机关启动演示。",
             room_id="30655190",
             existing_comic='{"format":"immersive_v1","composition":"电影感"}',
             storytelling={"variant": "immersive_v1"},
             image_manifest=manifest,
         )
 
-        self.assertIn("覆盖搜索拼图（12个带时间标签的候选格）", reference_prompt)
-        self.assertIn("requestSource=highlight_coverage_sheet", image_prompt)
-        self.assertIn("拼图中的其它时间点不是要同时画出的内容", image_prompt)
+        self.assertIn("脚本参考请求E2的多时间点宫格，共3格", reference_prompt)
+        self.assertIn("截图时间为600秒、610秒、620秒", reference_prompt)
+        self.assertIn("用途：核对机关启动前后的结构和动作变化", reference_prompt)
+        self.assertIn("selectionMode=script_requested_sheet", image_prompt)
+        self.assertIn("候选画面、不同角度或事件过程", image_prompt)
 
     def test_directed_screenshot_generation_uses_storyboard_timestamps(self):
         source_video = self.root / "source.flv"
@@ -1214,19 +1307,136 @@ class MultiReferenceComicTests(unittest.TestCase):
         self.assertTrue(all("scale=960" in item[item.index("-vf") + 1] for item in ffmpeg_calls))
         self.assertEqual([item["selectedTimestampSeconds"] for item in frames], [60.0, 180.0])
 
-    def test_sequence_reference_splits_window_without_crowding_out_result(self):
+    def test_sheet_reference_uses_script_timestamps_without_visual_ai(self):
+        from PIL import Image
+
+        source_video = self.root / "source.flv"
+        source_video.write_bytes(b"video")
+        script = (
+            '{"kind":"reference","timestampsSeconds":[60,75,90],'
+            '"referenceUsage":"核对舞台机关展开过程和各阶段结构","captureMode":"sheet"}'
+        )
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            if "ffprobe" in str(args[0]):
+                return comic.subprocess.CompletedProcess(args, 0, stdout=b"600\n", stderr=b"")
+            Image.new("RGB", (640, 360), (30, 40, 50)).save(args[-1], "JPEG")
+            return comic.subprocess.CompletedProcess(args, 0, stdout=b"", stderr=b"")
+
+        with mock.patch.object(comic.shutil, "which", side_effect=lambda name: name), \
+                mock.patch.object(comic.subprocess, "run", side_effect=fake_run), \
+                mock.patch.object(comic, "call_daiyu_chat_completions") as vision_ai:
+            frames = comic.generate_directed_storyboard_screenshots(
+                str(self.highlight),
+                script,
+                {
+                    "variant": "immersive_v1",
+                    "directedScreenshots": {"enabled": True, "maxImages": 2},
+                },
+                source_video_path=str(source_video),
+            )
+
+        ffmpeg_calls = [item for item in calls if "ffmpeg" in str(item[0])]
+        self.assertEqual([item[item.index("-ss") + 1] for item in ffmpeg_calls], [
+            "60.000", "75.000", "90.000"
+        ])
+        self.assertEqual(len(frames), 1)
+        self.assertEqual(frames[0]["timestampsSeconds"], [60.0, 75.0, 90.0])
+        self.assertEqual(frames[0]["selectionMode"], "script_requested_sheet")
+        self.assertEqual(frames[0]["referenceUsage"], "核对舞台机关展开过程和各阶段结构")
+        vision_ai.assert_not_called()
+
+    def test_prebuilt_sheets_do_not_override_script_requested_individual_timestamps(self):
+        source_video = self.root / "source.flv"
+        source_video.write_bytes(b"video")
+        target_sheet = self.root / "target-coverage.jpg"
+        result_sheet = self.root / "result-coverage.jpg"
+        target_sheet.write_bytes(b"sheet")
+        result_sheet.write_bytes(b"sheet")
+        script = "\n".join([
+            '{"kind":"reference","timestampSeconds":2700,"evidenceRole":"target_identity",'
+            '"mustShow":"两位UP六星","referenceUsage":"核对UP外观","captureMode":"single"}',
+            '{"kind":"reference","timestampSeconds":2760,"evidenceRole":"result",'
+            '"mustShow":"完整十连结果","referenceUsage":"核对结果","captureMode":"single"}',
+        ])
+        coverage_sheets = [{
+            "path": str(target_sheet),
+            "requestSource": "highlight_coverage_sheet",
+            "referenceRequestId": "C_TARGET_IDENTITY",
+            "evidenceRole": "target_identity",
+            "bestCandidateTimestampSeconds": 721.0,
+            "bestCandidateLabel": "12m +1s",
+            "bestCandidateScore": 42,
+            "bestCandidateSelectionMode": "vision",
+        }, {
+            "path": str(result_sheet),
+            "requestSource": "highlight_coverage_sheet",
+            "referenceRequestId": "C_RESULT",
+            "evidenceRole": "result",
+            "bestCandidateTimestampSeconds": 2775.0,
+            "bestCandidateLabel": "46m +15s",
+            "bestCandidateScore": 55,
+            "bestCandidateSelectionMode": "vision",
+        }]
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            if "ffprobe" in str(args[0]):
+                return comic.subprocess.CompletedProcess(args, 0, stdout=b"6000\n", stderr=b"")
+            Path(args[-1]).write_bytes(b"jpg")
+            return comic.subprocess.CompletedProcess(args, 0, stdout=b"", stderr=b"")
+
+        with mock.patch.object(comic.shutil, "which", side_effect=lambda name: name), \
+                mock.patch.object(comic.subprocess, "run", side_effect=fake_run), \
+                mock.patch.object(
+                    comic,
+                    "generate_evidence_coverage_sheets",
+                    return_value=coverage_sheets,
+                ):
+            frames = comic.generate_directed_storyboard_screenshots(
+                str(self.highlight),
+                script,
+                {
+                    "variant": "immersive_v1",
+                    "directedScreenshots": {
+                        "enabled": True,
+                        "maxImages": 4,
+                        "maxRequests": 2,
+                        "maxWidth": 1600,
+                        "useVisualSelection": False,
+                    },
+                },
+                source_video_path=str(source_video),
+            )
+
+        ffmpeg_calls = [item for item in calls if "ffmpeg" in str(item[0])]
+        self.assertEqual([item[item.index("-ss") + 1] for item in ffmpeg_calls], [
+            "2700.000", "2760.000"
+        ])
+        self.assertEqual([item["timestampSeconds"] for item in frames[:2]], [2700.0, 2760.0])
+        self.assertEqual([item["selectedTimestampSeconds"] for item in frames[:2]], [2700.0, 2760.0])
+        self.assertEqual([item["selectionMode"] for item in frames[:2]], [
+            "script_requested", "script_requested"
+        ])
+        self.assertTrue(all(
+            "scale=1600" in item[item.index("-vf") + 1]
+            for item in ffmpeg_calls
+        ))
+
+    def test_individual_reference_timestamps_use_round_robin_budget(self):
         source_video = self.root / "source.flv"
         source_video.write_bytes(b"video")
         script = "\n".join([
             '{"format":"immersive_v1","composition":"长卷"}',
             '{"kind":"beat","timestampSeconds":100,"scene":"启动十连",'
             '"visualIntent":"广角","referenceUsage":"叙事"}',
-            '{"kind":"reference","timestampSeconds":120,"evidenceRole":"target_identity",'
-            '"mustShow":"两位UP六星","referenceUsage":"核对UP外观",'
-            '"captureMode":"sequence","windowStartSeconds":100,"windowEndSeconds":140}',
-            '{"kind":"reference","timestampSeconds":200,"evidenceRole":"result",'
-            '"mustShow":"实际十连结果","referenceUsage":"核对结果",'
-            '"captureMode":"single","windowStartSeconds":190,"windowEndSeconds":210}',
+            '{"kind":"reference","timestampsSeconds":[120,110],'
+            '"referenceUsage":"核对机关前后结构","captureMode":"individual"}',
+            '{"kind":"reference","timestampsSeconds":[200],'
+            '"referenceUsage":"核对结束状态","captureMode":"individual"}',
         ])
         calls = []
 
@@ -1259,16 +1469,16 @@ class MultiReferenceComicTests(unittest.TestCase):
         self.assertEqual([item[item.index("-ss") + 1] for item in ffmpeg_calls], [
             "120.000", "200.000", "110.000"
         ])
-        self.assertEqual([item["evidenceRole"] for item in frames], [
-            "target_identity", "result", "target_identity"
+        self.assertEqual([item["referenceUsage"] for item in frames], [
+            "核对机关前后结构", "核对结束状态", "核对机关前后结构"
         ])
         self.assertEqual([item["candidateIndex"] for item in frames], [1, 1, 2])
         self.assertEqual([item["candidateCount"] for item in frames], [2, 1, 2])
         self.assertEqual([item["selectionMode"] for item in frames], [
-            "exact_timestamp", "exact_timestamp", "window_midpoint"
+            "script_requested", "script_requested", "script_requested"
         ])
 
-    def test_explicit_sequence_keeps_exact_anchor_before_visual_complement(self):
+    def test_legacy_single_timestamp_sequence_does_not_invoke_frame_selector(self):
         source_video = self.root / "source.flv"
         source_video.write_bytes(b"video")
         script = (
@@ -1340,14 +1550,11 @@ class MultiReferenceComicTests(unittest.TestCase):
         ffmpeg_calls = [item for item in calls if "ffmpeg" in str(item[0])]
         self.assertEqual(len(ffmpeg_calls), 1)
         self.assertEqual(ffmpeg_calls[0][ffmpeg_calls[0].index("-ss") + 1], "120.000")
-        self.assertEqual(len(selector_calls), 1)
-        self.assertEqual(selector_calls[0]["clip_start"], 100.0)
-        self.assertEqual([item["selectedTimestampSeconds"] for item in frames], [120.0, 110.0])
-        self.assertEqual([item["selectionMode"] for item in frames], [
-            "exact_timestamp", "visual_best"
-        ])
+        self.assertEqual(len(selector_calls), 0)
+        self.assertEqual([item["selectedTimestampSeconds"] for item in frames], [120.0])
+        self.assertEqual([item["selectionMode"] for item in frames], ["script_requested"])
 
-    def test_visual_frame_selection_records_actual_timestamp_in_reference_manifest(self):
+    def test_script_timestamp_is_recorded_in_reference_manifest_without_ai_selection(self):
         source_video = self.root / "source.flv"
         source_video.write_bytes(b"video")
         script = "\n".join([
@@ -1360,7 +1567,8 @@ class MultiReferenceComicTests(unittest.TestCase):
             calls.append(args)
             if "ffprobe" in str(args[0]):
                 return comic.subprocess.CompletedProcess(args, 0, stdout=b"600\n", stderr=b"")
-            raise AssertionError("视觉候选帧成功后不应再调用 ffmpeg 直接截图")
+            Path(args[-1]).write_bytes(b"jpeg")
+            return comic.subprocess.CompletedProcess(args, 0, stdout=b"", stderr=b"")
 
         class FakeSelectedImage:
             def __enter__(self):
@@ -1413,8 +1621,8 @@ class MultiReferenceComicTests(unittest.TestCase):
 
         self.assertEqual(len(frames), 1)
         self.assertEqual(frames[0]["timestampSeconds"], 120.0)
-        self.assertEqual(frames[0]["selectedTimestampSeconds"], 179.4)
-        self.assertEqual(len([item for item in calls if "ffmpeg" in str(item[0])]), 0)
+        self.assertEqual(frames[0]["selectedTimestampSeconds"], 120.0)
+        self.assertEqual(len([item for item in calls if "ffmpeg" in str(item[0])]), 1)
 
         manifest = []
         comic.collect_all_images(
@@ -1424,10 +1632,10 @@ class MultiReferenceComicTests(unittest.TestCase):
             screenshot_mode="individual",
             image_manifest=manifest,
         )
-        self.assertEqual(manifest[1]["selectedTimestampSeconds"], 179.4)
+        self.assertEqual(manifest[1]["selectedTimestampSeconds"], 120.0)
         reference_prompt = comic.format_image_reference_manifest(manifest)
-        self.assertIn("脚本事件约在直播 120 秒", reference_prompt)
-        self.assertIn("同一事件窗口 179.4 秒选取", reference_prompt)
+        self.assertIn("脚本参考请求E1的高清独立帧", reference_prompt)
+        self.assertIn("截图时间为直播120秒", reference_prompt)
 
     def test_visual_frame_selector_system_exit_falls_back_to_ffmpeg(self):
         source_video = self.root / "source.flv"

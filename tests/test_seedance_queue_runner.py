@@ -79,6 +79,12 @@ class SeedanceQueueRunnerTests(unittest.TestCase):
         self.assertEqual(legacy["inflight"][0]["submit_id"], "remote-1")
         self.assertEqual(legacy["status"], "submitted")
 
+    def test_normalize_persists_status_when_repeat_is_already_complete(self):
+        finished = self.task("finished", repeat=2, completed=2)
+        self.assertTrue(runner.normalize_task(finished))
+        self.assertEqual(finished["remaining"], 0)
+        self.assertEqual(finished["status"], "completed")
+
     def test_submit_uses_task_level_vip_profile(self):
         task = self.task("vip", "seedance2.0_vip")
         task["video_resolution"] = "1080p"
@@ -127,6 +133,49 @@ class SeedanceQueueRunnerTests(unittest.TestCase):
         saved = store.load()["tasks"][0]
         self.assertEqual(saved["completed"], 0)
         self.assertEqual(len(saved["inflight"]), 1)
+
+    def test_empty_queue_notifier_waits_for_pending_tasks(self):
+        self.write_queue(
+            [self.task("pending")],
+            _meta={"dreamina_session_id": "session-1", "dreamina_session_name": "validation"},
+        )
+        store = store_module.QueueStore(self.queue_path)
+        with patch.object(runner, "load_wechat_webhook_url", return_value="https://example.invalid"), patch.object(runner, "send_wechat_markdown") as send:
+            self.assertFalse(runner.maybe_notify_empty_queue(store))
+        send.assert_not_called()
+
+    def test_empty_queue_notifier_sends_once_and_rearms_for_new_tasks(self):
+        submitted = self.task(
+            "submitted",
+            status="submitted",
+            repeat=2,
+            inflight=[{"submit_id": "remote-1"}],
+        )
+        self.write_queue(
+            [submitted],
+            _meta={"dreamina_session_id": "session-1", "dreamina_session_name": "validation"},
+        )
+        store = store_module.QueueStore(self.queue_path)
+        with patch.object(runner, "load_wechat_webhook_url", return_value="https://example.invalid"), patch.object(runner, "send_wechat_markdown") as send:
+            self.assertTrue(runner.maybe_notify_empty_queue(store))
+            self.assertFalse(runner.maybe_notify_empty_queue(store))
+            self.assertEqual(send.call_count, 1)
+            self.assertIn("validation", send.call_args.args[1])
+
+            with store.transaction() as data:
+                data["tasks"].append(self.task("new-pending"))
+                store.save(data)
+            self.assertFalse(runner.maybe_notify_empty_queue(store))
+            self.assertFalse(store.load()["_meta"][runner.EMPTY_QUEUE_NOTIFIED_KEY])
+
+            with store.transaction() as data:
+                new_task = runner.task_by_id(data, "new-pending")
+                assert new_task is not None
+                new_task["status"] = "submitted"
+                new_task["inflight"] = [{"submit_id": "remote-2"}]
+                store.save(data)
+            self.assertTrue(runner.maybe_notify_empty_queue(store))
+            self.assertEqual(send.call_count, 2)
 
     def test_reset_clears_inflight_and_reservations(self):
         task = self.task("vip", "seedance2.0_vip", status="paused", completed=1, inflight=[{"submit_id": "remote-1"}], submission_reservations=[{"token": "token"}], fail_count=3)

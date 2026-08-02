@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const fetch = require('node-fetch');
 const { HttpsProxyAgent } = require('https-proxy-agent');
@@ -240,21 +241,37 @@ function buildPrompt(highlightContent, roomId, liveTimeDesc = null, liveContext 
     const roomConfig = roomId ? roomSettings[String(roomId)] : null;
     const customPrompt = roomConfig?.customPrompts?.goodnightReply;
     const liveContextBlock = liveGenerationContext.formatLiveGenerationContext(liveContext);
+    const sharedCacheEnabled = liveGenerationContext.isSharedPromptCacheEnabled(config);
+    const sharedSourcePrefix = sharedCacheEnabled
+        ? liveGenerationContext.buildSharedLiveSourcePrefix(
+            highlightContent,
+            roomId,
+            config,
+            liveContext
+        )
+        : '';
     const speakerGuidance = `【说话人标签规则】
 直播摘要可能带有“[说话人标签 分数]”前缀。不同标签代表不同的声学说话人；回复对象始终是房主${anchor}。其他标签说“我是XX”时，只能据此理解该标签的身份，不能把房主改叫XX，也不能把该标签的经历或台词归给${anchor}。“SPEAKER_nn”表示尚未实名的嘉宾或外部声音，不要擅自猜实名。`;
 
     if (customPrompt) {
+        const renderedLiveContext = sharedCacheEnabled ? '' : liveContextBlock;
+        const renderedHighlight = sharedCacheEnabled
+            ? '（直播事实已在本提示最前方的共享事实输入中给出。）'
+            : highlightContent;
         const hasLiveContextPlaceholder = customPrompt.includes('{liveContext}');
         const renderedPrompt = customPrompt
             .replace(/{anchor}/g, anchor)
             .replace(/{fan}/g, fan)
             .replace(/{wordLimit}/g, wordLimit)
-            .replace(/{liveContext}/g, liveContextBlock)
-            .replace(/{highlightContent}/g, highlightContent);
-        const contextPrefix = !hasLiveContextPlaceholder && liveContextBlock
+            .replace(/{liveContext}/g, renderedLiveContext)
+            .replace(/{highlightContent}/g, renderedHighlight);
+        const contextPrefix = !sharedCacheEnabled && !hasLiveContextPlaceholder && liveContextBlock
             ? `${liveContextBlock}\n\n`
             : '';
-        return `${speakerGuidance}\n\n${contextPrefix}${renderedPrompt}`;
+        const sourcePrefix = sharedCacheEnabled
+            ? `${sharedSourcePrefix}\n\n【晚安回复任务】\n只使用上方共享事实输入完成本任务。\n\n`
+            : '';
+        return `${sourcePrefix}${speakerGuidance}\n\n${contextPrefix}${renderedPrompt}`;
     }
 
     // --- 核心修改:全肯定萌萌人 2.0 ---
@@ -314,13 +331,16 @@ function buildPrompt(highlightContent, roomId, liveTimeDesc = null, liveContext 
     ];
 
     const randomMainPrompt = mainPrompts[Math.floor(Math.random() * mainPrompts.length)];
+    const sourceContext = sharedCacheEnabled
+        ? `${sharedSourcePrefix}\n\n【晚安回复任务】\n只使用上方共享事实输入完成本任务。`
+        : `${liveContextBlock}\n\n【直播内容(主播语音转写+观众弹幕)】\n${highlightContent}`;
 
-    const result = `【角色设定】
+    const result = `${sourceContext}
+
+【角色设定】
 身份:${anchor}的铁粉(自称"${fan}")。
 
 ${speakerGuidance}
-
-${liveContextBlock}
 
 ${randomMainPrompt}
 
@@ -329,9 +349,6 @@ ${randomMainPrompt}
 建议长度:至少 ${minLengthHint} 字,不能只写一句话、不能只写一个问句。
 格式:一段完整的自然文字回复,适合手机阅读。不要使用markdown格式,不要使用加粗、标题、列表等。
 禁止输出思考过程:直接输出最终的回复内容,不要输出任何分析、推理、计划等中间过程。
-
-【直播内容(主播语音转写+观众弹幕)】
-${highlightContent}
 
 请根据直播内容,以${fan}的身份写一篇动态回复。记住:只使用提供的直播内容,不要添加任何外部信息。直接输出回复内容,不要输出任何其他内容。`;
 
@@ -526,6 +543,44 @@ function getTuZiFinishReason(choice) {
     return choice?.finish_reason || choice?.finishReason || choice?.native_finish_reason || null;
 }
 
+function getPromptTokenUsage(usage) {
+    if (!usage || typeof usage !== 'object') {
+        return { promptTokens: undefined, cachedTokens: undefined };
+    }
+    const promptTokens = usage.prompt_tokens ?? usage.promptTokens ?? usage.input_tokens ?? usage.inputTokens;
+    const cachedTokens = usage.prompt_tokens_details?.cached_tokens
+        ?? usage.promptTokensDetails?.cachedTokens
+        ?? usage.input_tokens_details?.cached_tokens
+        ?? usage.inputTokensDetails?.cachedTokens
+        ?? usage.cached_prompt_tokens
+        ?? usage.cachedPromptTokens
+        ?? usage.cache_read_input_tokens
+        ?? usage.cacheReadInputTokens;
+    return {
+        promptTokens: promptTokens !== undefined ? Number(promptTokens) : undefined,
+        cachedTokens: cachedTokens !== undefined ? Number(cachedTokens) : undefined
+    };
+}
+
+function getSharedPromptCacheInfo(prompt) {
+    const text = String(prompt || '');
+    if (!text.startsWith(liveGenerationContext.SHARED_PROMPT_CACHE_START)) {
+        return {};
+    }
+    const endIndex = text.indexOf(liveGenerationContext.SHARED_PROMPT_CACHE_END);
+    if (endIndex < 0) {
+        return {};
+    }
+    const prefix = text.slice(
+        0,
+        endIndex + liveGenerationContext.SHARED_PROMPT_CACHE_END.length
+    );
+    return {
+        sharedPromptCacheKey: crypto.createHash('sha256').update(prefix, 'utf8').digest('hex'),
+        sharedPromptPrefixChars: Array.from(prefix).length
+    };
+}
+
 function buildTuZiTextModelFailureError(attempts) {
     const failures = attempts
         .filter(attempt => attempt.provider === 'tuZi' && attempt.status === 'failure')
@@ -585,6 +640,7 @@ async function generateTextWithTuZi(prompt, options = {}) {
     const baseUrl = tuziConfig.baseUrl || 'https://api.tu-zi.com';
     const apiUrl = `${baseUrl}/v1/chat/completions`;
     const attempts = Array.isArray(options.attempts) ? [...options.attempts] : [];
+    const sharedPromptCacheInfo = getSharedPromptCacheInfo(prompt);
     const fallbackFromPrimary = Boolean(options.fallback);
     const wordLimit = Number(options.wordLimit || configLoader.getByPath('ai.defaultWordLimit', 100));
 
@@ -635,6 +691,7 @@ async function generateTextWithTuZi(prompt, options = {}) {
             const choice = data.choices?.[0];
             const finishReason = getTuZiFinishReason(choice);
             const usage = data.usage || null;
+            const promptUsage = getPromptTokenUsage(usage);
             const text = choice?.message?.content;
             console.log(`   finish_reason: ${finishReason || 'unknown'}, usage: ${usage ? JSON.stringify(usage) : 'unknown'}`);
 
@@ -655,6 +712,9 @@ async function generateTextWithTuZi(prompt, options = {}) {
                 model: textModel,
                 status: 'success',
                 finishReason: finishReason || 'unknown',
+                promptTokens: promptUsage.promptTokens,
+                cachedTokens: promptUsage.cachedTokens,
+                ...sharedPromptCacheInfo,
                 completionTokens: usage?.completion_tokens ?? usage?.completionTokens,
                 totalTokens: usage?.total_tokens ?? usage?.totalTokens,
                 maxTokens: effectiveMaxTokens
@@ -722,6 +782,7 @@ async function generateTextWithDaiYu(prompt, options = {}) {
     const baseUrl = (daiYuConfig.baseUrl || 'http://localhost:8080').replace(/\/v1$/, '');
     const apiUrl = `${baseUrl}/v1/chat/completions`;
     const attempts = Array.isArray(options.attempts) ? [...options.attempts] : [];
+    const sharedPromptCacheInfo = getSharedPromptCacheInfo(prompt);
     const fallbackFromPrimary = Boolean(options.fallback);
     const wordLimit = Number(options.wordLimit || configLoader.getByPath('ai.defaultWordLimit', 100));
 
@@ -785,6 +846,7 @@ async function generateTextWithDaiYu(prompt, options = {}) {
             const choice = data.choices?.[0];
             const finishReason = getTuZiFinishReason(choice);
             const usage = data.usage || null;
+            const promptUsage = getPromptTokenUsage(usage);
             const text = choice?.message?.content;
             console.log(`   finish_reason: ${finishReason || 'unknown'}, usage: ${usage ? JSON.stringify(usage) : 'unknown'}`);
 
@@ -805,6 +867,9 @@ async function generateTextWithDaiYu(prompt, options = {}) {
                 model: textModel,
                 status: 'success',
                 finishReason: finishReason || 'unknown',
+                promptTokens: promptUsage.promptTokens,
+                cachedTokens: promptUsage.cachedTokens,
+                ...sharedPromptCacheInfo,
                 completionTokens: usage?.completion_tokens ?? usage?.completionTokens,
                 reasoningTokens: usage?.completion_tokens_details?.reasoning_tokens,
                 totalTokens: usage?.total_tokens ?? usage?.totalTokens,
@@ -998,6 +1063,21 @@ function buildTextFrontMatter(highlightPath, generationMeta = {}) {
             }
             if (attempt.completionTokens !== undefined) {
                 lines.push(`    completionTokens: ${Number(attempt.completionTokens)}`);
+            }
+            if (attempt.promptTokens !== undefined) {
+                lines.push(`    promptTokens: ${Number(attempt.promptTokens)}`);
+            }
+            if (attempt.cachedTokens !== undefined) {
+                lines.push(`    cachedTokens: ${Number(attempt.cachedTokens)}`);
+            }
+            if (attempt.reasoningTokens !== undefined) {
+                lines.push(`    reasoningTokens: ${Number(attempt.reasoningTokens)}`);
+            }
+            if (attempt.sharedPromptCacheKey) {
+                lines.push(`    sharedPromptCacheKey: ${yamlQuote(attempt.sharedPromptCacheKey)}`);
+            }
+            if (attempt.sharedPromptPrefixChars !== undefined) {
+                lines.push(`    sharedPromptPrefixChars: ${Number(attempt.sharedPromptPrefixChars)}`);
             }
             if (attempt.totalTokens !== undefined) {
                 lines.push(`    totalTokens: ${Number(attempt.totalTokens)}`);
@@ -1426,6 +1506,9 @@ module.exports = {
     generateTextWithGemini,
     generateTextWithTuZi,
     generateTextWithDaiYu,
+    getPromptTokenUsage,
+    getSharedPromptCacheInfo,
+    buildTextFrontMatter,
     batchGenerateGoodnightReplies
 };
 

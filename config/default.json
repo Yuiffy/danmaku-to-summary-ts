@@ -678,6 +678,9 @@
     "text": {
       "enabled": true,
       "provider": "daiYu",
+      "sharedPromptCache": {
+        "enabled": true
+      },
       "gemini": {
         "enabled": true,
         "apiKey": "",
@@ -722,22 +725,19 @@
       "outputLockEnabled": false,
       "storytellingExperiment": {
         "enabled": true,
-        "immersivePercent": 30,
+        "immersivePercent": 60,
         "salt": "comic-immersive-v1",
         "directedScreenshots": {
           "enabled": true,
           "maxImages": 4,
           "maxRequests": 4,
-          "maxFramesPerRequest": 2,
+          "maxFramesPerRequest": 4,
           "maxTotalReferenceImages": 5,
           "coverageSheetsEnabled": true,
-          "coverageSheetMaxCandidates": 12,
+          "coverageSheetMaxCandidates": 4,
           "coverageSheetWidth": 1600,
-          "maxWidth": 960,
-          "jpegQuality": 2,
-          "useVisualSelection": true,
-          "sampleWindowSeconds": 60,
-          "sampleCount": 5
+          "maxWidth": 1600,
+          "jpegQuality": 2
         }
       },
       "multiReferenceImages": {

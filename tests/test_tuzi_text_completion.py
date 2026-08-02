@@ -94,6 +94,39 @@ class TuziTextCompletionTests(unittest.TestCase):
         self.assertEqual(kwargs["json"]["messages"][0]["role"], "system")
         self.assertEqual(kwargs["json"]["messages"][1]["role"], "user")
 
+    def test_chat_request_supports_local_multimodal_images(self):
+        response = FakeResponse({
+            "choices": [{
+                "message": {"role": "assistant", "content": '{"candidateIndex":5}'},
+                "finish_reason": "stop",
+            }],
+        })
+        image_path = ROOT / "tests" / "fixtures" / "vision-candidate.jpg"
+
+        with (
+            patch.object(tuzi, "request_tuzi_with_retry", side_effect=lambda _, request: request()),
+            patch.object(tuzi.requests, "post", return_value=response) as post,
+            patch.object(tuzi.os.path, "isfile", return_value=True),
+            patch.object(tuzi, "encode_image_to_base64", return_value="data:image/jpeg;base64,AA=="),
+        ):
+            content = tuzi.call_tuzi_chat_completions(
+                prompt="选择候选",
+                image_paths=[str(image_path)],
+                model="vision-model",
+                base_url="https://api.example/v1",
+                api_key="secret",
+            )
+
+        self.assertEqual(content, '{"candidateIndex":5}')
+        user_content = post.call_args.kwargs["json"]["messages"][-1]["content"]
+        self.assertEqual(user_content[0], {"type": "text", "text": "选择候选"})
+        self.assertEqual(user_content[1]["type"], "image_url")
+        self.assertEqual(user_content[1]["image_url"]["detail"], "high")
+        self.assertEqual(
+            user_content[1]["image_url"]["url"],
+            "data:image/jpeg;base64,AA==",
+        )
+
     def test_empty_response_summary_is_prompt_free(self):
         result = {
             "object": "chat.completion",

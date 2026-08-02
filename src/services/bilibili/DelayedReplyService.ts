@@ -2291,7 +2291,14 @@ export class DelayedReplyService implements IDelayedReplyService {
       const provider = frontMatter.provider || '未知服务';
       const model = frontMatter.model || '未知模型';
       const fallback = frontMatter.fallback === 'true' ? '，fallback: 是' : '';
-      return `模型: ${model}，服务: ${provider}${fallback}`;
+      const promptTokens = this.getFiniteNumber(frontMatter.promptTokens);
+      const cachedTokens = this.getFiniteNumber(frontMatter.cachedTokens);
+      const cacheInfo = promptTokens !== undefined
+        ? cachedTokens !== undefined
+          ? `，输入缓存: ${cachedTokens}/${promptTokens} tokens`
+          : `，输入: ${promptTokens} tokens（缓存命中量未报告）`
+        : '';
+      return `模型: ${model}，服务: ${provider}${fallback}${cacheInfo}`;
     } catch (error) {
       this.logger.warn('读取晚安文本生成元数据失败', {
         textPath,
@@ -2319,7 +2326,16 @@ export class DelayedReplyService implements IDelayedReplyService {
         const fallback = meta.fallback ? '，fallback: 是' : '';
         const reason = meta.reason ? `，原因: ${String(meta.reason).slice(0, 200)}` : '';
         const status = meta.status === 'success' ? '成功' : meta.status === 'failure' ? '失败' : String(meta.status || '未知');
-        return `模型: ${model}，服务: ${provider}，状态: ${status}${fallback}${reason}`;
+        const attempts = Array.isArray(meta.attempts) ? meta.attempts : [];
+        const successfulAttempt = attempts.find((attempt: any) => attempt?.status === 'success');
+        const promptTokens = this.getFiniteNumber(successfulAttempt?.promptTokens);
+        const cachedTokens = this.getFiniteNumber(successfulAttempt?.cachedTokens);
+        const cacheInfo = promptTokens !== undefined
+          ? cachedTokens !== undefined
+            ? `，输入缓存: ${cachedTokens}/${promptTokens} tokens`
+            : `，输入: ${promptTokens} tokens（缓存命中量未报告）`
+          : '';
+        return `模型: ${model}，服务: ${provider}，状态: ${status}${fallback}${cacheInfo}${reason}`;
       }
 
       if (fs.existsSync(scriptPath)) {
@@ -2368,12 +2384,15 @@ export class DelayedReplyService implements IDelayedReplyService {
 
     const metaPath = metaCandidates.find(candidate => fs.existsSync(candidate));
     if (!metaPath) {
-      return fs.existsSync(comicImagePath)
+      const modeInfo = '漫画模式: 未记录（无法判定新版/旧版）';
+      const imageInfo = fs.existsSync(comicImagePath)
         ? '图片已生成，未找到生图元数据'
         : '图片未生成，未找到生图失败元数据';
+      return `${modeInfo}\n${imageInfo}`;
     }
     try {
       const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+      const modeInfo = this.formatComicStorytellingMode(meta);
       const status = meta.status === 'success' ? '成功' : meta.status === 'failure' ? '失败' : String(meta.status || '未知');
       const routeAttempts = Array.isArray(meta.routeAttempts) ? meta.routeAttempts : [];
       const successfulRoute = routeAttempts.find((attempt: any) => attempt?.status === 'success');
@@ -2396,6 +2415,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       const summary = `${formatRoute(provider, model, endpoint)}: ${status}`;
 
       return [
+        modeInfo,
         `模型: ${summary}`,
         reason ? `原因: ${reason}` : undefined,
         lastAttempts.length > 1 || status !== '成功' ? `尝试:\n${lastAttempts.join('\n')}` : undefined
@@ -2406,10 +2426,39 @@ export class DelayedReplyService implements IDelayedReplyService {
         metaPath,
         error: error instanceof Error ? error.message : String(error)
       });
-      return fs.existsSync(comicImagePath)
+      const modeInfo = '漫画模式: 未知（生图元数据读取失败）';
+      const imageInfo = fs.existsSync(comicImagePath)
         ? '图片已生成，但生图元数据读取失败'
         : '图片未生成，且生图元数据读取失败';
+      return `${modeInfo}\n${imageInfo}`;
     }
+  }
+
+  private formatComicStorytellingMode(meta: any): string {
+    const variant = String(meta?.storytellingVariant || '').trim();
+    const mode = variant === 'immersive_v1'
+      ? '新版沉浸式（灰度组 immersive_v1）'
+      : variant === 'control'
+        ? '旧版对照组（control）'
+        : variant
+          ? `未知变体（${variant}）`
+          : '未记录（无法判定新版/旧版）';
+    const reasonLabels: Record<string, string> = {
+      forced: '强制指定',
+      'stable-rollout': '稳定灰度',
+      'experiment-disabled': '实验关闭'
+    };
+    const assignmentReason = String(meta?.storytellingAssignmentReason || '').trim();
+    const assignment = reasonLabels[assignmentReason] || assignmentReason;
+    const rollout = this.getFiniteNumber(meta?.storytellingImmersivePercent);
+    const bucket = this.getFiniteNumber(meta?.storytellingBucket);
+    const details = [
+      assignment ? `分配: ${assignment}` : undefined,
+      rollout !== undefined ? `新版比例: ${rollout}%` : undefined,
+      bucket !== undefined ? `桶: ${(bucket / 100).toFixed(2)}` : undefined
+    ].filter(Boolean);
+
+    return `漫画模式: ${mode}${details.length > 0 ? `；${details.join('；')}` : ''}`;
   }
 
   /**

@@ -1087,6 +1087,7 @@ def try_extract_image_from_message_content(content, proxies: Dict[str, str], tim
 def call_tuzi_chat_completions(
     prompt: str,
     system_prompt: Optional[str] = None,
+    image_paths: Optional[list[str]] = None,
     model: str = "gemini-3-flash-preview",
     base_url: str = "https://api.tu-zi.com",
     api_key: str = "",
@@ -1103,6 +1104,7 @@ def call_tuzi_chat_completions(
     Args:
         prompt: 用户提示词
         system_prompt: 系统提示词
+        image_paths: 可选本地图片；存在时使用 OpenAI-compatible 多模态消息格式
         model: 模型名称
         base_url: API基础URL
         api_key: API密钥
@@ -1139,7 +1141,23 @@ def call_tuzi_chat_completions(
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
+        valid_image_paths = [
+            str(path) for path in (image_paths or [])
+            if path and os.path.isfile(str(path))
+        ]
+        if valid_image_paths:
+            user_content = [{"type": "text", "text": prompt}]
+            for image_path in valid_image_paths:
+                user_content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": encode_image_to_base64(image_path, with_data_uri=True),
+                        "detail": "high",
+                    },
+                })
+            messages.append({"role": "user", "content": user_content})
+        else:
+            messages.append({"role": "user", "content": prompt})
 
         normalized_max_tokens = normalize_text_max_tokens(model, max_tokens)
         payload = {
@@ -1189,6 +1207,7 @@ def call_tuzi_chat_completions(
 def call_daiyu_chat_completions(
     prompt: str,
     system_prompt: Optional[str] = None,
+    image_paths: Optional[list[str]] = None,
     model: str = "gpt-5.6-luna",
     base_url: str = "http://localhost:8080",
     api_key: str = "",
@@ -1203,6 +1222,7 @@ def call_daiyu_chat_completions(
     return call_tuzi_chat_completions(
         prompt=prompt,
         system_prompt=system_prompt,
+        image_paths=image_paths,
         model=model,
         base_url=base_url,
         api_key=api_key,

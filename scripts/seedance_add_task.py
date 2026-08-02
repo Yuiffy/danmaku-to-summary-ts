@@ -7,7 +7,7 @@ seedance_add_task.py — 向 seedance_queue.json 安全添加任务
     --name "深夜厨房煮泡面" \
     --prompt "16:9横屏，高质量二次元动画..." \
     --refs sport,binggan,sport_illust \
-    --repeat 3
+    --repeat 2
 
   python seedance_add_task.py list-refs
 
@@ -64,7 +64,13 @@ REF_MAP = {
     "lanmao_2":          XIAOLANMAO / "5a2bcc519c33a2213134bdc196799d041954091502.png",
     "lanmao_3":          XIAOLANMAO / "ffafa81afd68e22166a93dfd806f9af81954091502.png",
     "lanmao_3view":      XIAOHUAMA / "AI素材" / "小蓝帽三视图.png",
+    "lanmao_strengthened_2_daxiong": XIAOHUAMA / "AI素材" / "小蓝帽三视图加强版2_大熊.png",  # 用户精修版小蓝帽三视图
     "lanmao_shopping_3view": PROJECT_IMAGEGEN / "sui_lanmao_shopping_3view_v1.png",  # 日常逛街服三视图
+    "lanmao_body_detail_3view": PROJECT_IMAGEGEN / "sui_lanmao_body_detail_3view_v1.png",  # 身材细节加强版三视图
+    "lanmao_summer_body_detail_3view": PROJECT_IMAGEGEN / "sui_lanmao_summer_body_detail_3view_v1.png",  # 夏日身材细节加强版三视图
+    "lanmao_original_outfit_detail_3view": PROJECT_IMAGEGEN / "sui_lanmao_original_outfit_detail_3view_v2.png",  # 原版大胆穿搭身材细节加强版三视图
+    "lanmao_summer_nojacket_flatshoe_3view": PROJECT_IMAGEGEN / "sui_lanmao_summer_nojacket_flatshoe_3view_v3.png",  # 夏日脱外套平底鞋三视图
+    "lanmao_summer_nojacket_flatshoe_realistic_3view": PROJECT_IMAGEGEN / "sui_lanmao_summer_nojacket_flatshoe_realistic_3view_v4.png",  # 夏日脱外套平底鞋自然写实三视图
     "lanmao_twin":       XIAOLANMAO / "岁己_20231216形象_双马尾有外套.webp",
     "lanmao_short":      XIAOLANMAO / "岁己_20231216形象_短发无外套.webp",
 
@@ -104,6 +110,8 @@ REF_MAP = {
     # === 项目内参考图 ===
     "maohao_pb_ref":     PROJECT_REFS / "岁己SUI小猫帽带饼干岁紫色外套双马尾.png",
     "villain_boss":      PROJECT_IMAGEGEN / "convenience_store_villain_boss_v1.png",  # 无眼匿名便利店老板
+    "convenience_store_boss_store": PROJECT_IMAGEGEN / "convenience_store_boss_store_reference_v1.png",  # 用户提供的老板与小卖部参考图1
+    "convenience_store_basement": PROJECT_IMAGEGEN / "convenience_store_basement_reference_v1.png",  # 用户提供的地下室参考图2
 }
 
 
@@ -228,7 +236,7 @@ def main():
     p_add.add_argument("--name", required=True, help="任务名称")
     p_add.add_argument("--prompt", required=True, help="生成 prompt")
     p_add.add_argument("--refs", required=True, help="参考图短名称，逗号分隔 (如 sport,binggan)")
-    p_add.add_argument("--repeat", type=int, default=3, help="重复次数 (默认3，最多200)")
+    p_add.add_argument("--repeat", type=int, default=2, help="重复次数 (默认2，最多200)")
     p_add.add_argument("--ratio", default="16:9", help="视频比例 (默认16:9): 1:1, 3:4, 16:9, 4:3, 9:16, 21:9")
     p_add.add_argument("--model-version", default="seedance2.0", choices=sorted(VALID_MODELS), help="生成模型；seedance2.0 走普通通道，其余模型走 VIP 通道")
     p_add.add_argument("--resolution", default="720p", choices=sorted(VALID_RESOLUTIONS), help="视频分辨率 (非 VIP 模型仅支持 720p)")
