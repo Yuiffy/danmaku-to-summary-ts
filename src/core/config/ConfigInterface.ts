@@ -449,6 +449,8 @@ export interface RoomAIConfig {
   referenceImage?: string;
   characterDescription?: string;
   anchorName?: string;
+  /** 可用于称呼主播的昵称/正式名 */
+  anchorNicknames?: string[];
   fanName?: string;
   /** 主播 B站 UID (mid)，配置后延迟回复不需调 API 查询 */
   uid?: string;

@@ -1025,6 +1025,16 @@
         "enableComicGeneration": true,
         "enableDelayedReply": true
       },
+      "26966466": {
+        "audioOnly": true,
+        "anchorName": "小栞",
+        "anchorNicknames": ["栞栞", "栞栞Shiori", "Shiori"],
+        "fanName": "獭獭栞",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true,
+        "wordLimit": 250
+      },
       "25788785": {
         "audioOnly": false,
         "referenceImage": "public/reference_images/岁己SUI小猫帽带饼干岁紫色外套双马尾.png",

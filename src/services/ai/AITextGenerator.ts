@@ -499,8 +499,33 @@ export class AITextGenerator implements IAITextGenerator {
 
     return {
       anchor: roomConfig.anchorName || defaultNames.anchor,
+      anchorNicknames: Array.isArray(roomConfig.anchorNicknames)
+        ? roomConfig.anchorNicknames
+        : undefined,
       fan: roomConfig.fanName || defaultNames.fan
     };
+  }
+
+  private getAnchorNames(roomId?: string): string[] {
+    const names = this.getNames(roomId);
+    return Array.from(new Set([
+      names.anchor,
+      ...(names.anchorNicknames || [])
+    ].map(name => String(name || '').trim()).filter(Boolean)));
+  }
+
+  private buildNamingGuidance(roomId?: string): string {
+    const names = this.getNames(roomId);
+    const anchorNameList = this.getAnchorNames(roomId)
+      .map(name => `“${name}”`)
+      .join('、');
+
+    return `【主播与粉丝称谓边界（最高优先级）】
+- 回复对象是主播“${names.anchor}”。主播可用称呼只有：${anchorNameList}。
+- 粉丝昵称是“${names.fan}”，它表示粉丝/评论者所属的粉丝群体，不是主播名字。
+- 绝对不能用“${names.fan}”称呼主播，不能写“${names.fan}！”、“晚安${names.fan}”或让“${names.fan}”出现在开头称呼位置。
+- 开头必须对主播说话，优先使用“${names.anchor}”或上面的主播称呼之一；如果直接从直播梗开始，也不能用“${names.fan}”开头。
+- 如需表达评论者身份，“${names.fan}”只能作为粉丝自称/群体名自然出现，也可以完全不提。`;
   }
 
   /**
@@ -528,10 +553,17 @@ export class AITextGenerator implements IAITextGenerator {
     const names = this.getNames(roomId);
     const anchor = names.anchor;
     const fan = names.fan;
+    const anchorNameList = this.getAnchorNames(roomId)
+      .map(name => `“${name}”`)
+      .join('、');
+    const namingGuidance = this.buildNamingGuidance(roomId);
+    const wordLimit = this.getWordLimit(roomId);
 
-    return `【角色设定】
+    return `${namingGuidance}
 
-身份：${anchor}的铁粉（自称"${fan}"或"${fan.replace(/岁$/, '')}"）。
+【角色设定】
+
+身份：${anchor}的粉丝，属于“${fan}”粉丝群体；“${fan}”是评论者身份，不是主播称呼。
 
 性格：喜欢调侃、宠溺主播，有点话痨，对主播的生活琐事和梗如数家珍。
 
@@ -548,7 +580,8 @@ export class AITextGenerator implements IAITextGenerator {
 【写作结构与要素】
 
 开场白：
-格式：xx（用昵称）！🌙/☀️
+- 必须先对主播说话，称呼从${anchorNameList}中选择一个；不要把粉丝昵称当作称呼。
+- 可以使用“${anchor}！🌙”这类开头，也可以自然地接入第一句直播梗。
 内容：一句话总结今天直播的整体感受（如：含金量极高、含梗量爆炸、辛苦了、被治愈了等）。
 
 正文（核心内容回顾）：
@@ -562,14 +595,14 @@ export class AITextGenerator implements IAITextGenerator {
 结尾（情感升华）：
 关怀：叮嘱主播注意身体（嗓子、睡眠、吃饭），不要太累。
 期待：确认下一次直播的时间（如果文档里提到了）。
-落款：—— 永远爱你的/支持你的/陪着你的${fan} 🍪
+如果需要落款或自称，只能把“${fan}”当作粉丝身份使用，不要把它写成主播称呼；也可以不写落款。
 
-字数要求：800字以内。
+字数要求：${wordLimit}字以内。
 
 【直播内容摘要】
 ${highlightContent}
 
-请根据以上直播内容，以${fan}的身份写一篇动态回复。记住：只使用提供的直播内容，不要添加任何外部信息。`;
+请根据以上直播内容，从“${fan}”粉丝的视角写一篇动态回复。记住：只使用提供的直播内容，不要添加任何外部信息。`;
   }
 
   /**
@@ -602,7 +635,7 @@ ${highlightContent}
   /**
    * 解析生成结果是否通过质量校验
    */
-  private inspectGeneratedReply(text: string, wordLimit: number): {
+  private inspectGeneratedReply(text: string, wordLimit: number, roomId?: string): {
     ok: boolean;
     reason?: string;
     cleaned: string;
@@ -617,6 +650,17 @@ ${highlightContent}
       return {
         ok: false,
         reason: '生成的文本为空',
+        cleaned,
+        minLength,
+        sentenceCount
+      };
+    }
+
+    const fanNameOpeningIssue = this.getFanNameOpeningIssue(cleaned, roomId);
+    if (fanNameOpeningIssue) {
+      return {
+        ok: false,
+        reason: fanNameOpeningIssue,
         cleaned,
         minLength,
         sentenceCount
@@ -662,6 +706,22 @@ ${highlightContent}
     cleaned = cleaned.replace(/^\s*>\s*/gmu, '');
     cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
     return cleaned.trim();
+  }
+
+  private getFanNameOpeningIssue(text: string, roomId?: string): string | undefined {
+    const fan = this.getNames(roomId).fan.trim();
+    const fanNames = Array.from(new Set([fan, fan.replace(/岁$/u, '')].filter(Boolean)));
+    const startsWithFanName = fanNames.some(name => {
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(
+        `^(?:晚安|早安|午安|下午好|晚上好)?\\s*${escaped}(?=\\s|[!！?？,，。:：、~～🌙☀️]|$)`,
+        'u'
+      ).test(text);
+    });
+
+    return startsWithFanName
+      ? `开头误把粉丝昵称“${fan}”当成主播称呼`
+      : undefined;
   }
 
   private countSentences(text: string): number {
@@ -962,9 +1022,18 @@ ${highlightContent}
 
       for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
         try {
-          const generation = await this.generateGoodnightText(prompt);
+          const attemptPrompt = attempt === 1
+            ? prompt
+            : `${prompt}
+
+【失败重试纠错】上一版未通过发布前校验。再次生成时，开头称呼必须是主播（${this.getAnchorNames(actualRoomId).join('、')}）之一，绝不能以粉丝昵称“${this.getNames(actualRoomId).fan}”开头；只输出最终评论。`;
+          const generation = await this.generateGoodnightText(attemptPrompt);
           let generatedText = generation.text;
-          const inspection = this.inspectGeneratedReply(generatedText, this.getWordLimit(actualRoomId));
+          const inspection = this.inspectGeneratedReply(
+            generatedText,
+            this.getWordLimit(actualRoomId),
+            actualRoomId
+          );
 
           if (!inspection.ok) {
             if (generatedText.trim().length > 0) {
@@ -1005,6 +1074,7 @@ ${highlightContent}
           const isRetriable = errorMessage.includes('过短') ||
             errorMessage.includes('为空') ||
             errorMessage.includes('句子数过少') ||
+            errorMessage.includes('粉丝昵称') ||
             errorMessage.includes('429') ||
             errorMessage.includes('Too Many Requests') ||
             errorMessage.includes('RESOURCE_EXHAUSTED') ||

@@ -240,6 +240,11 @@ function buildPrompt(highlightContent, roomId, liveTimeDesc = null, liveContext 
     const roomSettings = config?.ai?.roomSettings || {};
     const roomConfig = roomId ? roomSettings[String(roomId)] : null;
     const customPrompt = roomConfig?.customPrompts?.goodnightReply;
+    const anchorNames = Array.from(new Set([
+        anchor,
+        ...(Array.isArray(roomConfig?.anchorNicknames) ? roomConfig.anchorNicknames : [])
+    ].map(name => String(name || '').trim()).filter(Boolean)));
+    const anchorNameList = anchorNames.map(name => `“${name}”`).join('、');
     const liveContextBlock = liveGenerationContext.formatLiveGenerationContext(liveContext);
     const sharedCacheEnabled = liveGenerationContext.isSharedPromptCacheEnabled(config);
     const sharedSourcePrefix = sharedCacheEnabled
@@ -252,6 +257,12 @@ function buildPrompt(highlightContent, roomId, liveTimeDesc = null, liveContext 
         : '';
     const speakerGuidance = `【说话人标签规则】
 直播摘要可能带有“[说话人标签 分数]”前缀。不同标签代表不同的声学说话人；回复对象始终是房主${anchor}。其他标签说“我是XX”时，只能据此理解该标签的身份，不能把房主改叫XX，也不能把该标签的经历或台词归给${anchor}。“SPEAKER_nn”表示尚未实名的嘉宾或外部声音，不要擅自猜实名。`;
+    const namingGuidance = `【主播与粉丝称谓边界（最高优先级）】
+- 回复对象是主播“${anchor}”。主播可用称呼只有：${anchorNameList}。
+- 粉丝昵称是“${fan}”，它表示粉丝/评论者所属的粉丝群体，不是主播名字。
+- 绝对不能用“${fan}”称呼主播，不能写“${fan}！”、“晚安${fan}”或让“${fan}”出现在开头称呼位置。
+- 开头必须对主播说话，优先使用“${anchor}”或上面的主播称呼之一；如果直接从直播梗开始，也不能用“${fan}”开头。
+- 如需表达评论者身份，“${fan}”只能作为粉丝自称/群体名自然出现，也可以完全不提。`;
 
     if (customPrompt) {
         const renderedLiveContext = sharedCacheEnabled ? '' : liveContextBlock;
@@ -271,7 +282,7 @@ function buildPrompt(highlightContent, roomId, liveTimeDesc = null, liveContext 
         const sourcePrefix = sharedCacheEnabled
             ? `${sharedSourcePrefix}\n\n【晚安回复任务】\n只使用上方共享事实输入完成本任务。\n\n`
             : '';
-        return `${sourcePrefix}${speakerGuidance}\n\n${contextPrefix}${renderedPrompt}`;
+        return `${sourcePrefix}${namingGuidance}\n\n${speakerGuidance}\n\n${contextPrefix}${renderedPrompt}`;
     }
 
     // --- 核心修改:全肯定萌萌人 2.0 ---
@@ -314,7 +325,8 @@ function buildPrompt(highlightContent, roomId, liveTimeDesc = null, liveContext 
 【写作结构与要素】
 
 开场白:
-格式:xx(用昵称)!🌙/☀️
+- 必须先对主播说话,称呼从${anchorNameList}中选择一个；不要把粉丝昵称当作称呼。
+- 可以使用“${anchor}!🌙”这类开头,也可以自然地接入第一句直播梗。
 内容:一句话总结今天直播的整体感受(如:含金量极高、含梗量爆炸、辛苦了、被治愈了等)。
 
 正文(核心内容回顾):
@@ -327,7 +339,8 @@ function buildPrompt(highlightContent, roomId, liveTimeDesc = null, liveContext 
 
 结尾(情感升华):
 关怀:叮嘱主播注意身体(嗓子、睡眠、吃饭),不要太累。
-期待:确认下一次直播的时间(如果文档里提到了)。`
+期待:确认下一次直播的时间(如果文档里提到了)。
+如果需要落款或自称,只能把“${fan}”当作粉丝身份使用,不要把它写成主播称呼；也可以不写落款。`
     ];
 
     const randomMainPrompt = mainPrompts[Math.floor(Math.random() * mainPrompts.length)];
@@ -338,7 +351,9 @@ function buildPrompt(highlightContent, roomId, liveTimeDesc = null, liveContext 
     const result = `${sourceContext}
 
 【角色设定】
-身份:${anchor}的铁粉(自称"${fan}")。
+${namingGuidance}
+
+身份:${anchor}的粉丝,属于“${fan}”粉丝群体；“${fan}”是评论者身份,不是主播称呼。
 
 ${speakerGuidance}
 
@@ -350,7 +365,7 @@ ${randomMainPrompt}
 格式:一段完整的自然文字回复,适合手机阅读。不要使用markdown格式,不要使用加粗、标题、列表等。
 禁止输出思考过程:直接输出最终的回复内容,不要输出任何分析、推理、计划等中间过程。
 
-请根据直播内容,以${fan}的身份写一篇动态回复。记住:只使用提供的直播内容,不要添加任何外部信息。直接输出回复内容,不要输出任何其他内容。`;
+请根据直播内容,从“${fan}”粉丝的视角写一篇动态回复。记住:只使用提供的直播内容,不要添加任何外部信息。直接输出回复内容,不要输出任何其他内容。`;
 
     console.log('晚安动态prompt主要内容:', randomMainPrompt.substring(0, 100), '直播内容长度:', highlightContent.length);
     return result;
@@ -410,9 +425,9 @@ function cleanGeneratedReply(text) {
     return cleaned.trim();
 }
 
-function validateGeneratedReply(text, wordLimit) {
+function validateGeneratedReply(text, wordLimit, roomId = null) {
     // 先清理思考过程
-    const inspection = inspectGeneratedReply(text, wordLimit);
+    const inspection = inspectGeneratedReply(text, wordLimit, roomId);
     if (!inspection.ok) {
         throw new Error(inspection.reason);
     }
@@ -456,7 +471,7 @@ function validateGeneratedReply(text, wordLimit) {
     return cleaned;
 }
 
-function inspectGeneratedReply(text, wordLimit) {
+function inspectGeneratedReply(text, wordLimit, roomId = null) {
     const cleaned = cleanGeneratedReply(text);
     const minLength = getMinimumReplyLength(wordLimit);
     const sentenceCount = countSentences(cleaned);
@@ -465,6 +480,25 @@ function inspectGeneratedReply(text, wordLimit) {
         return {
             ok: false,
             reason: '生成的文本为空',
+            cleaned,
+            minLength,
+            sentenceCount
+        };
+    }
+
+    const fan = String(configLoader.getNames(roomId).fan || '').trim();
+    const fanNames = Array.from(new Set([fan, fan.replace(/岁$/u, '')].filter(Boolean)));
+    const startsWithFanName = fanNames.some(name => {
+        const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return new RegExp(
+            `^(?:晚安|早安|午安|下午好|晚上好)?\\s*${escaped}(?=\\s|[!！?？,，。:：、~～🌙☀️]|$)`,
+            'u'
+        ).test(cleaned);
+    });
+    if (startsWithFanName) {
+        return {
+            ok: false,
+            reason: `开头误把粉丝昵称“${fan}”当成主播称呼`,
             cleaned,
             minLength,
             sentenceCount
@@ -1215,22 +1249,32 @@ async function generateGoodnightReply(highlightPath, roomId = null) {
                 // 构建提示词
                 const prompt = buildPrompt(highlightContent, finalRoomId, liveTimeDesc, liveContext);
                 const wordLimit = configLoader.getWordLimit(finalRoomId);
+                const finalRoomConfig = finalRoomId ? config?.ai?.roomSettings?.[String(finalRoomId)] : null;
+                const retryAnchorNameList = Array.from(new Set([
+                    configLoader.getNames(finalRoomId).anchor,
+                    ...(Array.isArray(finalRoomConfig?.anchorNicknames) ? finalRoomConfig.anchorNicknames : [])
+                ].map(name => String(name || '').trim()).filter(Boolean))).join('、');
 
                 // 调用API生成文本
                 let generationResult;
                 const provider = config.ai?.text?.provider || 'gemini';
+                const attemptPrompt = attempt === 1
+                    ? prompt
+                    : `${prompt}
+
+【失败重试纠错】上一版未通过发布前校验。再次生成时，开头称呼必须是主播（${retryAnchorNameList}）之一，绝不能以粉丝昵称“${configLoader.getNames(finalRoomId).fan}”开头；只输出最终评论。`;
 
                 if (provider === 'tuZi') {
-                    generationResult = await generateTextWithTuZi(prompt, { wordLimit });
+                    generationResult = await generateTextWithTuZi(attemptPrompt, { wordLimit });
                 } else if (provider === 'daiYu') {
-                    generationResult = await generateTextWithDaiYu(prompt, { wordLimit });
+                    generationResult = await generateTextWithDaiYu(attemptPrompt, { wordLimit });
                 } else {
                     // 默认使用 Gemini
-                    generationResult = await generateTextWithGemini(prompt, { wordLimit });
+                    generationResult = await generateTextWithGemini(attemptPrompt, { wordLimit });
                 }
 
                 const rawGeneratedText = generationResult.text;
-                const inspection = inspectGeneratedReply(rawGeneratedText, wordLimit);
+                const inspection = inspectGeneratedReply(rawGeneratedText, wordLimit, finalRoomId);
                 if (!inspection.ok) {
                     if (String(rawGeneratedText || '').trim()) {
                         saveFailedGeneratedText(outputPath, rawGeneratedText, highlightPath, generationResult.meta, {
@@ -1244,7 +1288,7 @@ async function generateGoodnightReply(highlightPath, roomId = null) {
                     throw new Error(inspection.reason);
                 }
 
-                const generatedText = validateGeneratedReply(rawGeneratedText, wordLimit);
+                const generatedText = validateGeneratedReply(rawGeneratedText, wordLimit, finalRoomId);
                 console.log(`✅ 文本长度校验通过: ${generatedText.length} 字符 (wordLimit=${wordLimit})`);
 
                 // 确定输出路径
@@ -1503,6 +1547,7 @@ module.exports = {
     generateClipDescription,
     buildClipTitlePromptLines,
     buildCoverTextPromptLines,
+    inspectGeneratedReply,
     generateTextWithGemini,
     generateTextWithTuZi,
     generateTextWithDaiYu,

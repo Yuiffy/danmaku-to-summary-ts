@@ -34,4 +34,36 @@ describe('ai_text_generator speaker guidance', () => {
     expect(prompt).toContain('不得因为人物设定中的某款游戏或口头禅');
     expect(prompt).toContain('字幕多次出现明日方舟');
   });
+
+  test('keeps Shiori address names separate from her fan name', () => {
+    const prompt = aiTextGenerator.buildPrompt(
+      '主播玩了第五人格，和观众连麦聊天，最后提醒明天下午去诊所。',
+      '26966466',
+      '21:00~23:00'
+    );
+
+    expect(prompt).toContain('主播可用称呼只有：“小栞”、“栞栞”、“栞栞Shiori”、“Shiori”');
+    expect(prompt).toContain('粉丝昵称是“獭獭栞”');
+    expect(prompt).toContain('不能写“獭獭栞！”');
+    expect(prompt).toContain('优先使用“小栞”或上面的主播称呼之一');
+  });
+
+  test('rejects a reply that opens with the fan name', () => {
+    const invalid = aiTextGenerator.inspectGeneratedReply(
+      `獭獭栞！🌙${'今晚含梗量爆表，记得早点休息。'.repeat(12)}`,
+      250,
+      '26966466'
+    );
+
+    expect(invalid.ok).toBe(false);
+    expect(invalid.reason).toContain('粉丝昵称');
+
+    const valid = aiTextGenerator.inspectGeneratedReply(
+      '小栞！🌙今晚第五人格摸金节目效果拉满，加载、迷路和没人进房间全成了梗。连麦聊天也很有意思，潮汕牛肉火锅和恐怖片的话题也聊得很开心。明天下午记得去诊所看看牙，不要硬撑，早点休息晚安捏。',
+      250,
+      '26966466'
+    );
+
+    expect(valid.ok).toBe(true);
+  });
 });

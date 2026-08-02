@@ -127,6 +127,8 @@ export interface RoomAIConfig {
   characterDescription?: string;
   /** 主播名称 */
   anchorName?: string;
+  /** 可用于称呼主播的昵称/正式名，首项不必重复 anchorName */
+  anchorNicknames?: string[];
   /** 粉丝名称 */
   fanName?: string;
   /** 是否启用文本生成 */
@@ -141,6 +143,8 @@ export interface RoomAIConfig {
 export interface NamesConfig {
   /** 主播名称 */
   anchor: string;
+  /** 可用于称呼主播的昵称/正式名 */
+  anchorNicknames?: string[];
   /** 粉丝名称 */
   fan: string;
 }

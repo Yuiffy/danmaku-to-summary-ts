@@ -1010,6 +1010,7 @@
         "enableComicGeneration": true,
         "enableDelayedReply": true,
         "wordLimit": 250,
+        "anchorNicknames": ["栞栞", "栞栞Shiori", "Shiori"],
         "preferSpeakerReviewSrtWhenMultipleSpeakers": true,
         "multiReferenceImages": {
           "enabled": true,
