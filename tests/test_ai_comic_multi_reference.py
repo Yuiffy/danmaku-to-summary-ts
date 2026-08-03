@@ -819,10 +819,16 @@ class MultiReferenceComicTests(unittest.TestCase):
         self.assertIn('"timestampSeconds":数值', prompt)
         self.assertIn('"visualIntent"', prompt)
         self.assertIn('"referenceUsage"', prompt)
+        self.assertIn('"textPlan"', prompt)
+        self.assertIn("textPlan必须有4~6项", prompt)
+        self.assertIn("至少一处选用正文中最有辨识度的原话、吐槽或梗", prompt)
         self.assertIn("禁止默认规则2x2四宫格", prompt)
         self.assertIn("主动进入本场明确出现的游戏", prompt)
         self.assertIn("不要画成规则的2x2四宫格", image_prompt)
         self.assertIn("整张图最多允许一个小区域出现直播桌面", image_prompt)
+        self.assertIn("清晰绘制4~6处中文“回忆锚点”", image_prompt)
+        self.assertIn("不要把全部文字堆成底部摘要", image_prompt)
+        self.assertIn("不遮挡脸、手、关键角色或关键道具", image_prompt)
 
     def test_shared_prompt_prefix_is_byte_identical_between_node_and_python(self):
         node = shutil.which("node")
@@ -957,7 +963,9 @@ process.stdout.write(context.buildSharedLiveSourcePrefix(
 
         self.assertIn("多个剪贴画风格分镜", control_script_prompt)
         self.assertNotIn('"timestampSeconds":数值', control_script_prompt)
+        self.assertNotIn('"textPlan"', control_script_prompt)
         self.assertIn('"timestampSeconds":数值', immersive_script_prompt)
+        self.assertIn('"textPlan"', immersive_script_prompt)
         self.assertNotIn("沉浸式画面策略", control_image_prompt)
         self.assertIn("沉浸式画面策略", immersive_image_prompt)
 

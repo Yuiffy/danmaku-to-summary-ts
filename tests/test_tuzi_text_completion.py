@@ -171,6 +171,29 @@ class TuziTextCompletionTests(unittest.TestCase):
             {"type": "enabled", "budget_tokens": 8192},
         )
 
+    def test_daiyu_legacy_gpt5_model_is_normalized_to_luna(self):
+        response = FakeResponse({
+            "choices": [{
+                "message": {"role": "assistant", "content": "LUNA_OK"},
+                "finish_reason": "stop",
+            }],
+        })
+        legacy_model = "gpt-5.4-" + "mini"
+
+        with (
+            patch.object(tuzi, "request_tuzi_with_retry", side_effect=lambda _, request: request()),
+            patch.object(tuzi.requests, "post", return_value=response) as post,
+        ):
+            content = tuzi.call_daiyu_chat_completions(
+                prompt="只回复 LUNA_OK",
+                model=legacy_model,
+                base_url="https://daiyu.example/v1",
+                api_key="secret",
+            )
+
+        self.assertEqual(content, "LUNA_OK")
+        self.assertEqual(post.call_args.kwargs["json"]["model"], "gpt-5.6-luna")
+
 
 if __name__ == "__main__":
     unittest.main()

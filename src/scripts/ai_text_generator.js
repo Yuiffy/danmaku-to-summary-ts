@@ -26,7 +26,17 @@ const TUZI_BALANCE_ERROR_MARKERS = [
     'billing'
 ];
 const LEGACY_TUZI_TEXT_MODELS = ['gemini-3-flash-preview'];
-const DAIYU_MIGRATED_TEXT_MODELS = new Set(['gpt-5.6-luna', 'gpt-5.4-mini']);
+const DAIYU_PRIMARY_MODEL = 'gpt-5.6-luna';
+const DAIYU_MODEL_PATTERN = /^gpt-5(?:[.-]|$)/i;
+
+function isDaiYuTextModel(model) {
+    return DAIYU_MODEL_PATTERN.test(String(model || '').trim());
+}
+
+function normalizeDaiYuTextModel(model) {
+    const normalized = String(model || '').trim();
+    return isDaiYuTextModel(normalized) ? DAIYU_PRIMARY_MODEL : normalized;
+}
 
 function isTuZiBalanceError(text) {
     const lowered = String(text || '').toLowerCase();
@@ -569,10 +579,6 @@ function normalizeTuZiTextMaxTokens(model, configuredMaxTokens, wordLimit = 100)
     return Math.min(requested, upstreamLimit);
 }
 
-function isDaiYuMigratedTextModel(model) {
-    return DAIYU_MIGRATED_TEXT_MODELS.has(String(model || '').trim());
-}
-
 function getTuZiFinishReason(choice) {
     return choice?.finish_reason || choice?.finishReason || choice?.native_finish_reason || null;
 }
@@ -640,11 +646,11 @@ async function generateTextWithTuZi(prompt, options = {}) {
     const primaryModel = options.primaryModel || pickGoodnightTuZiPrimaryModel();
 
     // 先判断迁移模型，避免旧入口在路由前要求 Tuzi key。
-    if (isDaiYuMigratedTextModel(primaryModel)) {
-        console.warn(`⚠️  ${primaryModel} 已迁移到 daiYu，改走 daiYu/gpt-5.6-luna thinking 链路`);
+    if (isDaiYuTextModel(primaryModel)) {
+        console.warn(`⚠️  ${primaryModel} 已迁移到 daiYu，改走 daiYu/${DAIYU_PRIMARY_MODEL} thinking 链路`);
         return generateTextWithDaiYu(prompt, {
             ...options,
-            primaryModel: 'gpt-5.6-luna'
+            primaryModel: DAIYU_PRIMARY_MODEL
         });
     }
 
@@ -668,7 +674,7 @@ async function generateTextWithTuZi(prompt, options = {}) {
         ...configuredFallbackModels,
         'gemini-3-flash-preview',
         ...builtInFallbackModels
-    ].filter((model, index, models) => model && !isDaiYuMigratedTextModel(model) && models.indexOf(model) === index);
+    ].filter((model, index, models) => model && !isDaiYuTextModel(model) && models.indexOf(model) === index);
     console.log(`   晚安主模型随机命中: ${primaryModel}`);
     console.log(`   候选序列: ${modelSequence.join(' -> ')}`);
     const baseUrl = tuziConfig.baseUrl || 'https://api.tu-zi.com';
@@ -795,7 +801,9 @@ async function generateTextWithDaiYu(prompt, options = {}) {
     }
 
     console.log('🤖 调用daiYu API生成文本...');
-    const primaryModel = options.primaryModel || daiYuConfig.model || 'gpt-5.6-luna';
+    const primaryModel = normalizeDaiYuTextModel(
+        options.primaryModel || daiYuConfig.model || DAIYU_PRIMARY_MODEL
+    );
 
     const configuredFallbackModels = Array.isArray(daiYuConfig.fallbackModels)
         ? daiYuConfig.fallbackModels
@@ -808,9 +816,10 @@ async function generateTextWithDaiYu(prompt, options = {}) {
         daiYuConfig.textModel,
         daiYuConfig.model,
         ...configuredFallbackModels,
-        'gpt-5.6-luna',
+        DAIYU_PRIMARY_MODEL,
         ...builtInFallbackModels
-    ].filter((model, index, models) => model && models.indexOf(model) === index);
+    ].map(normalizeDaiYuTextModel)
+        .filter((model, index, models) => model && models.indexOf(model) === index);
     console.log(`   晚安主模型: ${primaryModel}`);
     console.log(`   候选序列: ${modelSequence.join(' -> ')}`);
     const baseUrl = (daiYuConfig.baseUrl || 'http://localhost:8080').replace(/\/v1$/, '');

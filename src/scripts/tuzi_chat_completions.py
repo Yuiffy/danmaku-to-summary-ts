@@ -64,6 +64,15 @@ LAST_IMAGE_GENERATION_META = {
     "attempts": [],
 }
 
+DAIYU_PRIMARY_MODEL = "gpt-5.6-luna"
+DAIYU_MODEL_PATTERN = re.compile(r"^gpt-5(?:[.-]|$)", re.IGNORECASE)
+
+
+def normalize_daiyu_model(model: Optional[str]) -> str:
+    """Keep every GPT-5 daiYu request on the current Luna model."""
+    normalized = str(model or "").strip()
+    return DAIYU_PRIMARY_MODEL if DAIYU_MODEL_PATTERN.match(normalized) else (normalized or DAIYU_PRIMARY_MODEL)
+
 
 class TuziRetryBudgetExceeded(Exception):
     """Raised when a retry/cooldown wait would consume the current strategy budget."""
@@ -1223,7 +1232,7 @@ def call_daiyu_chat_completions(
         prompt=prompt,
         system_prompt=system_prompt,
         image_paths=image_paths,
-        model=model,
+        model=normalize_daiyu_model(model),
         base_url=base_url,
         api_key=api_key,
         proxy_url=proxy_url,

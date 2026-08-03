@@ -24,7 +24,8 @@ import {
 export class AITextGenerator implements IAITextGenerator {
   private logger = getLogger('AITextGenerator');
   private static readonly GOODNIGHT_DAIYU_MODELS = ['gpt-5.6-luna'] as const;
-  private static readonly DAIYU_MIGRATED_MODELS = new Set(['gpt-5.6-luna', 'gpt-5.4-mini']);
+  private static readonly DAIYU_PRIMARY_MODEL = 'gpt-5.6-luna';
+  private static readonly DAIYU_MODEL_PATTERN = /^gpt-5(?:[.-]|$)/i;
   private config: any;
   private provider: AIProvider;
   private providerConfig: AIProviderConfig | null = null;
@@ -162,6 +163,17 @@ export class AITextGenerator implements IAITextGenerator {
            String(daiYuConfig?.apiKey || providerApiKey || '').trim() !== '';
   }
 
+  private static isDaiYuModel(model: unknown): boolean {
+    return AITextGenerator.DAIYU_MODEL_PATTERN.test(String(model || '').trim());
+  }
+
+  private static normalizeDaiYuModel(model: unknown): string {
+    const normalized = String(model || '').trim();
+    return AITextGenerator.isDaiYuModel(normalized)
+      ? AITextGenerator.DAIYU_PRIMARY_MODEL
+      : normalized;
+  }
+
   private pickGoodnightDaiYuModel(): string {
     const candidates = AITextGenerator.GOODNIGHT_DAIYU_MODELS;
     const randomIndex = Math.floor(Math.random() * candidates.length);
@@ -219,7 +231,9 @@ export class AITextGenerator implements IAITextGenerator {
 
     const temperature = options?.temperature ?? daiYuConfig.temperature;
     const maxTokens = options?.maxTokens ?? daiYuConfig.maxTokens;
-    const modelName = options?.model ?? daiYuConfig.model ?? 'gpt-5.6-luna';
+    const modelName = AITextGenerator.normalizeDaiYuModel(
+      options?.model ?? daiYuConfig.model ?? AITextGenerator.DAIYU_PRIMARY_MODEL
+    );
     const proxy = options?.proxy ?? daiYuConfig.proxy;
     const baseUrlRaw = daiYuConfig.baseUrl || (providerConfig.baseURL || 'http://localhost:8080');
     const baseUrl = baseUrlRaw.replace(/\/v1$/, '');
@@ -312,10 +326,10 @@ export class AITextGenerator implements IAITextGenerator {
     const tuziConfig = this.config.ai?.text?.tuZi;
     const configuredModel = options?.model ?? tuziConfig?.textModel ?? tuziConfig?.model ?? 'gemini-3-flash-preview';
 
-    if (AITextGenerator.DAIYU_MIGRATED_MODELS.has(configuredModel)) {
+    if (AITextGenerator.isDaiYuModel(configuredModel)) {
       return this.generateWithDaiYu(prompt, {
         ...options,
-        model: 'gpt-5.6-luna'
+        model: AITextGenerator.DAIYU_PRIMARY_MODEL
       });
     }
 
