@@ -8,10 +8,10 @@ const os = require('os');
 const path = require('path');
 const configLoader = require('./config-loader');
 
-const QUEUE_FILE = path.join(__dirname, '.whisper_queue.json');
+const QUEUE_FILE = process.env.WHISPER_QUEUE_FILE || path.join(__dirname, '.whisper_queue.json');
 const SUI_ROOM_ID = '25788785';
 const SUI_DEFAULT_WHISPER_PRIORITY = 100;
-const LOCK_FILE = path.join(__dirname, '.whisper_lock');
+const LOCK_FILE = process.env.WHISPER_LOCK_FILE || path.join(__dirname, '.whisper_lock');
 const ACTIVE_TASK_HEARTBEAT_TIMEOUT = 2 * 60 * 1000;
 
 function getSystemBootTimestamp() {
@@ -47,7 +47,12 @@ function isProcessAlive(pid) {
  */
 
 class WhisperQueueManager {
-    constructor() {
+    constructor(options = {}) {
+        this.queueFile = options.queueFile || QUEUE_FILE;
+        this.lockFile = options.lockFile || LOCK_FILE;
+        this.configLoader = options.configLoader || configLoader;
+        this.getSystemBootTimestamp = options.getSystemBootTimestamp || getSystemBootTimestamp;
+        this.isProcessAlive = options.isProcessAlive || isProcessAlive;
         this.queue = [];
         this.loadQueue({ silent: false, cleanupStale: false });
     }
@@ -126,7 +131,7 @@ class WhisperQueueManager {
     cleanupStaleActiveTasks(options = {}) {
         const { silent = true } = options;
         const now = Date.now();
-        const config = configLoader.getConfig();
+        const config = this.configLoader.getConfig();
         const configuredProcessTimeout = Number(config?.webhook?.timeouts?.processTimeout) || 30 * 60 * 1000;
         const legacyPendingTimeout = Math.max(configuredProcessTimeout + (5 * 60 * 1000), 45 * 60 * 1000);
         const removedTasks = [];
@@ -169,14 +174,14 @@ class WhisperQueueManager {
 
         if (Number.isInteger(task.ownerPid) && task.ownerPid > 0) {
             if (typeof task.ownerBootTime === 'number') {
-                const currentBootTime = getSystemBootTimestamp();
+                const currentBootTime = this.getSystemBootTimestamp();
                 const bootTimeDiff = Math.abs(currentBootTime - task.ownerBootTime);
                 if (bootTimeDiff > 5 * 60 * 1000) {
                     return 'owner_process_rebooted';
                 }
             }
 
-            if (!isProcessAlive(task.ownerPid)) {
+            if (!this.isProcessAlive(task.ownerPid)) {
                 return `owner_process_missing:${task.ownerPid}`;
             }
 
@@ -207,10 +212,10 @@ class WhisperQueueManager {
      * 从文件加载队列
      */
     loadQueue(options = {}) {
-        const { silent = true, cleanupInvalid = true, cleanupStale = true } = options;
+        const { silent = true, cleanupInvalid = true, cleanupStale = false } = options;
         try {
-            if (fs.existsSync(QUEUE_FILE)) {
-                const content = fs.readFileSync(QUEUE_FILE, 'utf8');
+            if (fs.existsSync(this.queueFile)) {
+                const content = fs.readFileSync(this.queueFile, 'utf8');
                 const data = JSON.parse(content);
                 this.queue = (data.tasks || []).map(task => ({
                     ...task,
@@ -257,7 +262,7 @@ class WhisperQueueManager {
             return 0;
         }
 
-        const config = configLoader.getConfig();
+        const config = this.configLoader.getConfig();
         const roomKey = String(roomId);
         const roomConfig = config.ai?.roomSettings?.[roomKey]
             || config.roomSettings?.[roomKey];
@@ -319,7 +324,7 @@ class WhisperQueueManager {
                 lastUpdate: new Date().toISOString(),
                 tasks: this.queue
             };
-            fs.writeFileSync(QUEUE_FILE, JSON.stringify(data, null, 2), 'utf8');
+            fs.writeFileSync(this.queueFile, JSON.stringify(data, null, 2), 'utf8');
         } catch (error) {
             console.error(`❌ 保存队列失败: ${error.message}`);
         }
@@ -371,7 +376,7 @@ class WhisperQueueManager {
             }
             if (trackOwnershipWhilePending) {
                 existing.ownerPid = process.pid;
-                existing.ownerBootTime = getSystemBootTimestamp();
+                existing.ownerBootTime = this.getSystemBootTimestamp();
                 existing.lastHeartbeat = Date.now();
                 updated = true;
             }
@@ -401,7 +406,7 @@ class WhisperQueueManager {
 
         if (trackOwnershipWhilePending) {
             task.ownerPid = process.pid;
-            task.ownerBootTime = getSystemBootTimestamp();
+            task.ownerBootTime = this.getSystemBootTimestamp();
             task.lastHeartbeat = Date.now();
         }
 
@@ -427,7 +432,7 @@ class WhisperQueueManager {
             task.status = 'processing';
             task.startTime = Date.now();
             task.ownerPid = process.pid;
-            task.ownerBootTime = getSystemBootTimestamp();
+            task.ownerBootTime = this.getSystemBootTimestamp();
             task.lastHeartbeat = Date.now();
             this.saveQueue();
             console.log(`🔄 任务开始处理: ${path.basename(task.mediaPath)}`);
@@ -442,7 +447,7 @@ class WhisperQueueManager {
         }
 
         task.ownerPid = process.pid;
-        task.ownerBootTime = getSystemBootTimestamp();
+        task.ownerBootTime = this.getSystemBootTimestamp();
         task.lastHeartbeat = Date.now();
         this.saveQueue();
     }
@@ -648,13 +653,13 @@ class WhisperQueueManager {
      */
     hasActiveProcessing() {
         try {
-            if (fs.existsSync(LOCK_FILE)) {
-                const lockContent = fs.readFileSync(LOCK_FILE, 'utf8');
+            if (fs.existsSync(this.lockFile)) {
+                const lockContent = fs.readFileSync(this.lockFile, 'utf8');
                 const lock = JSON.parse(lockContent);
-                const currentBootTime = getSystemBootTimestamp();
+                const currentBootTime = this.getSystemBootTimestamp();
                 const hasSameBootTime = typeof lock.bootTime !== 'number'
                     || Math.abs(currentBootTime - lock.bootTime) <= 5 * 60 * 1000;
-                const hasLiveProcess = isProcessAlive(lock.pid);
+                const hasLiveProcess = this.isProcessAlive(lock.pid);
                 const age = typeof lock.timestamp === 'number'
                     ? Date.now() - lock.timestamp
                     : Number.POSITIVE_INFINITY;
@@ -678,9 +683,10 @@ class WhisperQueueManager {
     recoverInterruptedTasks() {
         this.reloadForMutation({ cleanupStale: false });
         const now = Date.now();
-        const config = configLoader.getConfig();
+        const config = this.configLoader.getConfig();
         const configuredProcessTimeout = Number(config?.webhook?.timeouts?.processTimeout) || 30 * 60 * 1000;
         const legacyPendingTimeout = Math.max(configuredProcessTimeout + (5 * 60 * 1000), 45 * 60 * 1000);
+        const maxRecoveryAttempts = Math.max(1, Number(config?.webhook?.queue?.maxRecoveryAttempts) || 3);
         const interrupted = this.queue
             .filter(t => t.status === 'processing')
             .map(task => ({
@@ -690,19 +696,73 @@ class WhisperQueueManager {
             .filter(item => item.reason);
         
         if (interrupted.length > 0) {
-            console.log(`🔄 检测到 ${interrupted.length} 个中断的任务，重置为待处理状态`);
+            console.log(`🔄 检测到 ${interrupted.length} 个中断的任务，执行有界恢复`);
             
             interrupted.forEach(({ task, reason }) => {
-                task.status = 'pending';
-                delete task.startTime;
+                task.recoveryCount = (Number(task.recoveryCount) || 0) + 1;
+                task.lastRecoveryAt = now;
+                task.lastRecoveryReason = reason;
                 delete task.ownerPid;
                 delete task.ownerBootTime;
                 delete task.lastHeartbeat;
-                console.log(`   - ${path.basename(task.mediaPath)} (${reason})`);
+
+                if (task.recoveryCount > maxRecoveryAttempts) {
+                    task.status = 'failed';
+                    task.completedTime = now;
+                    task.error = `interrupted_recovery_exhausted:${reason}`;
+                    console.log(`   - ${path.basename(task.mediaPath)} (${reason}, 已超过恢复上限 ${maxRecoveryAttempts})`);
+                    return;
+                }
+
+                task.status = 'pending';
+                delete task.startTime;
+                delete task.completedTime;
+                delete task.error;
+                console.log(`   - ${path.basename(task.mediaPath)} (${reason}, 恢复 ${task.recoveryCount}/${maxRecoveryAttempts})`);
             });
             
             this.saveQueue();
         }
+
+        return interrupted.length;
+    }
+
+    /**
+     * 子进程异常退出后将任务重新入队。超过上限才永久失败，避免任务长期停在 processing。
+     */
+    requeueAfterWorkerFailure(taskId, error, options = {}) {
+        this.reloadForMutation({ cleanupStale: false });
+        const task = this.queue.find(t => t.id === taskId);
+        if (!task || task.status === 'completed' || task.status === 'completed_with_cleanup_crash') {
+            return false;
+        }
+
+        const config = this.configLoader.getConfig();
+        const maxRetries = Math.max(0, Number(options.maxRetries ?? config?.webhook?.queue?.maxWorkerRetries ?? 2));
+        const retryCount = (Number(task.workerRetryCount) || 0) + 1;
+        task.workerRetryCount = retryCount;
+        task.lastWorkerError = String(error || 'unknown worker failure');
+        task.lastWorkerFailureAt = Date.now();
+        delete task.ownerPid;
+        delete task.ownerBootTime;
+        delete task.lastHeartbeat;
+
+        if (retryCount > maxRetries) {
+            task.status = 'failed';
+            task.completedTime = Date.now();
+            task.error = `worker_retry_exhausted:${task.lastWorkerError}`;
+            this.saveQueue();
+            console.error(`❌ 任务重试耗尽: ${path.basename(task.mediaPath)} (${maxRetries}/${maxRetries})`);
+            return false;
+        }
+
+        task.status = 'pending';
+        delete task.startTime;
+        delete task.completedTime;
+        delete task.error;
+        this.saveQueue();
+        console.warn(`🔁 Worker异常退出，任务重新入队: ${path.basename(task.mediaPath)} (${retryCount}/${maxRetries})`);
+        return true;
     }
 
     /**
@@ -766,5 +826,7 @@ class WhisperQueueManager {
     }
 }
 
-// 导出单例
-module.exports = new WhisperQueueManager();
+// 导出单例；同时暴露类供隔离测试使用。
+const queueManager = new WhisperQueueManager();
+module.exports = queueManager;
+module.exports.WhisperQueueManager = WhisperQueueManager;

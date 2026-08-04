@@ -1641,6 +1641,7 @@ def call_tuzi_chat_completions_for_image(
     strategy_mode: Optional[str] = None,
     include_async_fallback: bool = False,
     async_fallback_model: str = "gemini-3-pro-image-preview-async",
+    recovery_state_path: Optional[str] = None,
 ) -> Optional[str]:
     """
     调用tuZi的/v1/chat/completions端点生成图像
@@ -1793,7 +1794,8 @@ def call_tuzi_chat_completions_for_image(
                             proxy_url=proxy_url,
                             timeout=ASYNC_CREATE_TIMEOUT,
                             size="9:16",
-                            max_poll_time=ASYNC_MAX_POLL_TIME
+                            max_poll_time=ASYNC_MAX_POLL_TIME,
+                            state_path=recovery_state_path,
                         )
                         
                         if gemini_result:

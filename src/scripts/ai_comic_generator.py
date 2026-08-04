@@ -82,6 +82,7 @@ from typing import Optional, Dict, Any, Tuple
 import traceback as tb
 import subprocess
 import shutil
+import uuid
 
 COMIC_SCRIPT_POLICY_VERSION = 11
 COMIC_SCRIPT_META_SCHEMA_VERSION = 7
@@ -405,6 +406,7 @@ def _call_image_generation_route(
     reference_image_path,
     room_id: Optional[str],
     timeout_sec: float,
+    recovery_state_path: Optional[str] = None,
 ) -> Optional[str]:
     provider_name = provider.get("name") or route.get("provider") or "unknown"
     model = route.get("model") or "gpt-image-2"
@@ -434,6 +436,7 @@ def _call_image_generation_route(
             strategy_mode=route.get("strategyMode"),
             include_async_fallback=bool(route.get("includeAsyncFallback", True)),
             async_fallback_model=route.get("asyncFallbackModel", "gemini-3-pro-image-preview-async"),
+            recovery_state_path=recovery_state_path,
         )
 
     return call_tuzi_images_generations(
@@ -505,13 +508,34 @@ def acquire_generation_lock(lock_path: str, timeout_seconds: int = 30 * 60) -> b
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             json.dump({
                 "pid": os.getpid(),
+                "bootTime": time.time() - time.monotonic(),
                 "createdAt": time.strftime("%Y-%m-%dT%H:%M:%S%z")
             }, f)
         return True
     except FileExistsError:
         try:
             age = time.time() - os.path.getmtime(lock_path)
-            if age > timeout_seconds:
+            owner_missing = False
+            owner_rebooted = False
+            try:
+                with open(lock_path, "r", encoding="utf-8") as lock_file:
+                    lock = json.load(lock_file)
+                owner_pid = int(lock.get("pid") or 0)
+                owner_boot_time = lock.get("bootTime")
+                if isinstance(owner_boot_time, (int, float)):
+                    current_boot_time = time.time() - time.monotonic()
+                    owner_rebooted = abs(current_boot_time - float(owner_boot_time)) > 5 * 60
+                if owner_pid > 0 and not owner_rebooted:
+                    try:
+                        os.kill(owner_pid, 0)
+                    except (OSError, ProcessLookupError):
+                        owner_missing = True
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                pass
+
+            if owner_rebooted or owner_missing or age > timeout_seconds:
+                reason = "system rebooted" if owner_rebooted else "owner process missing" if owner_missing else "lock timed out"
+                print(f"[RECOVERY] 清理陈旧漫画生成锁: {os.path.basename(lock_path)} ({reason})")
                 os.remove(lock_path)
                 return acquire_generation_lock(lock_path, timeout_seconds)
         except FileNotFoundError:
@@ -3560,7 +3584,12 @@ def call_google_image_api(prompt: str, reference_image_path: Optional[str] = Non
 
     return None
 
-def call_tuzi_image_api(prompt: str, reference_image_path=None, room_id: Optional[str] = None) -> Optional[str]:
+def call_tuzi_image_api(
+    prompt: str,
+    reference_image_path=None,
+    room_id: Optional[str] = None,
+    recovery_state_path: Optional[str] = None,
+) -> Optional[str]:
     """
     Generate comic images through configured OpenAI-compatible image routes.
     The legacy tuZi config is still used when no route list is configured.
@@ -3614,6 +3643,7 @@ def call_tuzi_image_api(prompt: str, reference_image_path=None, room_id: Optiona
                 reference_image_path=reference_image_path,
                 room_id=str(room_id) if room_id else None,
                 timeout_sec=route_timeout_sec,
+                recovery_state_path=recovery_state_path,
             )
             last_meta = get_last_image_generation_meta()
             failure_reason = None if result else _summarize_image_generation_failure(
@@ -3837,6 +3867,11 @@ def comic_meta_path(output_path: str) -> str:
     return f"{root}_META.json"
 
 
+def comic_request_state_path(output_path: str) -> str:
+    root, _ = os.path.splitext(output_path)
+    return f"{root}_REQUEST.json"
+
+
 def write_comic_generation_meta(output_path: str, meta: Dict[str, Any]) -> None:
     try:
         payload = {
@@ -3849,6 +3884,10 @@ def write_comic_generation_meta(output_path: str, meta: Dict[str, Any]) -> None:
             "requestIds": meta.get("requestIds") or [],
             "lastRequestId": meta.get("lastRequestId"),
             "lastResponseId": meta.get("lastResponseId"),
+            "localAttemptId": meta.get("localAttemptId"),
+            "requestStartedAt": meta.get("requestStartedAt"),
+            "requestStatePath": meta.get("requestStatePath"),
+            "unknownOutcomeAttempts": meta.get("unknownOutcomeAttempts") or [],
             "routeAttempts": meta.get("routeAttempts") or [],
             "storytellingVariant": meta.get("storytellingVariant"),
             "storytellingBucket": meta.get("storytellingBucket"),
@@ -4172,6 +4211,53 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
 
         # 调用API生成漫画（按优先级顺序）
         comic_result = None
+        request_state_path = comic_request_state_path(output_path)
+        unknown_outcome_attempts = []
+        existing_generation_meta_path = comic_meta_path(output_path)
+        if os.path.exists(existing_generation_meta_path):
+            try:
+                with open(existing_generation_meta_path, "r", encoding="utf-8") as meta_file:
+                    previous_generation_meta = json.load(meta_file)
+                unknown_outcome_attempts = list(previous_generation_meta.get("unknownOutcomeAttempts") or [])
+                if previous_generation_meta.get("status") == "in_progress":
+                    unknown_outcome_attempts.append({
+                        "localAttemptId": previous_generation_meta.get("localAttemptId"),
+                        "requestStartedAt": previous_generation_meta.get("requestStartedAt"),
+                        "provider": previous_generation_meta.get("provider"),
+                        "model": previous_generation_meta.get("model"),
+                        "endpoint": previous_generation_meta.get("endpoint"),
+                        "status": "unknown_outcome",
+                        "reason": "local process stopped before the synchronous response was persisted",
+                        "detectedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                    })
+                    print(
+                        "[WARNING] 检测到上次同步生图请求结果未知；request_id 未必已返回，"
+                        "无法通过同步 images API 自动捞回，将保留审计记录后执行有界恢复"
+                    )
+            except Exception as meta_error:
+                print(f"[WARNING] 读取上次生图请求状态失败: {meta_error}")
+
+        configured_routes = _get_image_generation_routes(
+            config,
+            config["aiServices"].get("tuZi", {}),
+            str(room_id) if room_id else None,
+        )
+        first_route = configured_routes[0] if configured_routes else {}
+        local_attempt_id = f"comic_{uuid.uuid4().hex}"
+        request_started_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        write_comic_generation_meta(output_path, {
+            "status": "in_progress",
+            "provider": first_route.get("provider"),
+            "model": first_route.get("model"),
+            "endpoint": first_route.get("flow") or "openaiImages",
+            "reason": "image request submitted; interruption before response persistence has unknown outcome",
+            "attempts": [],
+            "localAttemptId": local_attempt_id,
+            "requestStartedAt": request_started_at,
+            "requestStatePath": request_state_path,
+            "unknownOutcomeAttempts": unknown_outcome_attempts,
+            **comic_storytelling_meta(storytelling),
+        })
 
         # 1. 优先尝试Google图像生成（带重试）
         if use_google:
@@ -4186,7 +4272,12 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
         if not comic_result and use_tuzi:
             print("[TUZI] Google生成失败，尝试tu-zi.com...")
             # 传入所有收集到的图片和房间ID（用于差异化重试策略）
-            comic_result = call_tuzi_image_api(prompt, all_images if all_images else None, room_id=str(room_id) if room_id else None)
+            comic_result = call_tuzi_image_api(
+                prompt,
+                all_images if all_images else None,
+                room_id=str(room_id) if room_id else None,
+                recovery_state_path=request_state_path,
+            )
             if comic_result:
                 print(f"[DEBUG] tu-zi.com返回结果: {comic_result}")
             else:
@@ -4207,6 +4298,10 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
             failure_meta["storyboardShots"] = storyboard_shots
             failure_meta["referenceRequests"] = reference_requests
             failure_meta["referenceImages"] = image_manifest
+            failure_meta["localAttemptId"] = local_attempt_id
+            failure_meta["requestStartedAt"] = request_started_at
+            failure_meta["requestStatePath"] = request_state_path
+            failure_meta["unknownOutcomeAttempts"] = unknown_outcome_attempts
             write_comic_generation_meta(output_path, failure_meta)
             return None
         
@@ -4230,6 +4325,10 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
         success_meta["storyboardShots"] = storyboard_shots
         success_meta["referenceRequests"] = reference_requests
         success_meta["referenceImages"] = image_manifest
+        success_meta["localAttemptId"] = local_attempt_id
+        success_meta["requestStartedAt"] = request_started_at
+        success_meta["requestStatePath"] = request_state_path
+        success_meta["unknownOutcomeAttempts"] = unknown_outcome_attempts
         write_comic_generation_meta(output_path, success_meta)
         if saved_path != output_path:
             write_comic_generation_meta(saved_path, success_meta)

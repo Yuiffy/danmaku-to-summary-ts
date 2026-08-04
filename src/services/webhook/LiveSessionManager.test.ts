@@ -159,6 +159,51 @@ describe('LiveSessionManager nearby segment recovery', () => {
     ]);
   });
 
+  test('recovers adjacent recordings from the previous date directory across midnight', () => {
+    const manager = new LiveSessionManager();
+    const roomId = '1967216004';
+    const previousDateDir = path.join(tempDir, '2026_08_03');
+    const currentDateDir = path.join(tempDir, '2026_08_04');
+
+    const first = writeRecording(
+      previousDateDir,
+      `${RECORD_PREFIX}-${roomId}-20260803-222453-001-night.flv`,
+      new Date(2026, 7, 4, 0, 48, 57)
+    );
+    const middle = writeRecording(
+      currentDateDir,
+      `${RECORD_PREFIX}-${roomId}-20260804-005248-002-night.flv`,
+      new Date(2026, 7, 4, 0, 59, 5)
+    );
+    const current = writeRecording(
+      currentDateDir,
+      `${RECORD_PREFIX}-${roomId}-20260804-010729-003-night.flv`,
+      new Date(2026, 7, 4, 1, 56, 12)
+    );
+
+    manager.createOrGetSession(roomId, '三理', 'night');
+    addCurrentSegment(
+      manager,
+      roomId,
+      current,
+      new Date(2026, 7, 4, 1, 7, 29),
+      new Date(2026, 7, 4, 1, 56, 12)
+    );
+
+    const recovered = manager.augmentSessionWithNearbySegments(roomId, {
+      maxGapSeconds: 1800,
+      minSizeBytes: 0,
+      maxSegments: 20
+    });
+
+    expect(recovered).toBe(2);
+    expect(manager.getSession(roomId)?.segments.map(segment => path.basename(segment.videoPath))).toEqual([
+      path.basename(first),
+      path.basename(middle),
+      path.basename(current)
+    ]);
+  });
+
   test('does not recover recordings outside the configured gap window', () => {
     const manager = new LiveSessionManager();
     const roomId = '25788785';

@@ -37,7 +37,7 @@ def extract_tuzi_response_identifiers(response=None, body: Optional[Dict[str, An
     return {"requestId": request_id, "responseId": response_id}
 
 
-def log_tuzi_response_identifiers(operation_name: str, response=None, body: Optional[Dict[str, Any]] = None) -> None:
+def log_tuzi_response_identifiers(operation_name: str, response=None, body: Optional[Dict[str, Any]] = None) -> Dict[str, Optional[str]]:
     ids = extract_tuzi_response_identifiers(response, body)
     status_code = getattr(response, "status_code", None)
     elapsed = getattr(getattr(response, "elapsed", None), "total_seconds", lambda: None)()
@@ -46,6 +46,36 @@ def log_tuzi_response_identifiers(operation_name: str, response=None, body: Opti
         f"operation={operation_name}, status={status_code}, elapsed={elapsed}, "
         f"request_id={ids.get('requestId') or ''}, response_id={ids.get('responseId') or ''}"
     )
+    return ids
+
+
+def _load_async_task_state(state_path: Optional[str]) -> Dict[str, Any]:
+    if not state_path or not os.path.exists(state_path):
+        return {}
+    try:
+        with open(state_path, "r", encoding="utf-8") as state_file:
+            value = json.load(state_file)
+        return value if isinstance(value, dict) else {}
+    except Exception as error:
+        print(f"[WARNING] 读取异步生图恢复状态失败: {error}")
+        return {}
+
+
+def _write_async_task_state(state_path: Optional[str], **updates: Any) -> None:
+    if not state_path:
+        return
+    try:
+        state = _load_async_task_state(state_path)
+        state.update({key: value for key, value in updates.items() if value is not None})
+        state["updatedAt"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        temp_path = f"{state_path}.{os.getpid()}.tmp"
+        with open(temp_path, "w", encoding="utf-8") as state_file:
+            json.dump(state, state_file, ensure_ascii=False, indent=2)
+            state_file.flush()
+            os.fsync(state_file.fileno())
+        os.replace(temp_path, state_path)
+    except Exception as error:
+        print(f"[WARNING] 保存异步生图恢复状态失败: {error}")
 
 
 def call_tuzi_gemini_async(
@@ -57,7 +87,8 @@ def call_tuzi_gemini_async(
     proxy_url: str = "",
     timeout: float = 360,
     size: str = "9:16",
-    max_poll_time: float = 300
+    max_poll_time: float = 300,
+    state_path: Optional[str] = None,
 ) -> Optional[str]:
     """
     调用tuZi的 Gemini 异步图像生成 API
@@ -123,11 +154,34 @@ def call_tuzi_gemini_async(
         print(f"[GEMINI_ASYNC] 创建异步图像生成任务...")
         print(f"[DEBUG] 模型: {model}, 尺寸: {size}, 提示词长度: {len(prompt)}, 参考图数量: {len(files_to_upload)}")
         
-        # 第一步：创建任务
+        existing_state = _load_async_task_state(state_path)
+        if (
+            existing_state.get("status") == "downloaded"
+            and existing_state.get("tempPath")
+            and os.path.exists(str(existing_state.get("tempPath")))
+        ):
+            print(f"[RESUME] 复用已下载的异步生图结果: {existing_state.get('tempPath')}")
+            return str(existing_state.get("tempPath"))
+
+        task_id = None
+        if (
+            existing_state.get("provider") == "tuZi"
+            and existing_state.get("model") == model
+            and existing_state.get("baseUrl") == base_url.rstrip("/")
+            and existing_state.get("status") in ("processing", "completed")
+        ):
+            task_id = str(existing_state.get("taskId") or "").strip() or None
+            if task_id:
+                print(f"[RESUME] 发现未完成的异步生图任务，继续轮询: {task_id}")
+
+        # 第一步：创建任务（已有持久化 task_id 时跳过提交）
         # 注意：即使没有参考图，也需要使用multipart/form-data格式
         # 当files_to_upload为空时，requests不会自动设置Content-Type为multipart/form-data
         # 所以我们需要手动处理
-        if files_to_upload:
+        create_response = None
+        if task_id:
+            pass
+        elif files_to_upload:
             # 有参考图，正常发送
             create_response = requests.post(
                 create_api_url,
@@ -162,24 +216,37 @@ def call_tuzi_gemini_async(
                 proxies=proxies
             )
 
-        if create_response.status_code != 200:
+        if create_response is not None and create_response.status_code != 200:
             log_tuzi_response_identifiers(f"gemini_async create {model}", create_response)
             print(f"[ERROR] 创建任务失败: HTTP {create_response.status_code}")
             print(f"[DEBUG] 响应内容: {create_response.text[:500]}")
             return None
 
-        create_result = create_response.json()
-        log_tuzi_response_identifiers(f"gemini_async create {model}", create_response, create_result)
-        print(f"[DEBUG] 创建任务响应: {json.dumps(create_result, ensure_ascii=False, indent=2)}")
+        if create_response is not None:
+            create_result = create_response.json()
+            create_ids = log_tuzi_response_identifiers(f"gemini_async create {model}", create_response, create_result)
+            print(f"[DEBUG] 创建任务响应: {json.dumps(create_result, ensure_ascii=False, indent=2)}")
 
-        # 提取任务ID
-        task_id = create_result.get("id")
-        if not task_id:
-            print(f"[ERROR] 响应中未找到任务ID")
-            return None
+            task_id = create_result.get("id")
+            if not task_id:
+                print(f"[ERROR] 响应中未找到任务ID")
+                return None
 
-        task_status = create_result.get("status", "unknown")
-        print(f"[OK] 任务创建成功，ID: {task_id}, 初始状态: {task_status}")
+            task_status = create_result.get("status", "unknown")
+            _write_async_task_state(
+                state_path,
+                schemaVersion=1,
+                provider="tuZi",
+                model=model,
+                baseUrl=base_url.rstrip("/"),
+                status="processing",
+                taskId=str(task_id),
+                pollUrl=f"{base_url}/v1/videos/{task_id}",
+                requestId=create_ids.get("requestId"),
+                responseId=create_ids.get("responseId"),
+                createdAt=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            )
+            print(f"[OK] 任务创建成功，ID: {task_id}, 初始状态: {task_status}")
 
         # 第二步：轮询任务状态
         query_api_url = f"{base_url}/v1/videos/{task_id}"
@@ -218,6 +285,13 @@ def call_tuzi_gemini_async(
                     print(f"[WAIT] 任务状态: {current_status}, 进度: {progress}%, 已等待 {elapsed_seconds}s")
                     last_status_signature = status_signature
                     last_progress_log_time = elapsed_seconds
+                    _write_async_task_state(
+                        state_path,
+                        status="processing",
+                        taskId=str(task_id),
+                        remoteStatus=current_status,
+                        progress=progress,
+                    )
 
                 # 检查任务是否完成
                 if current_status == "completed" or current_status == "succeeded":
@@ -265,6 +339,15 @@ def call_tuzi_gemini_async(
                         print(f"[DEBUG] 完整响应: {json.dumps(query_result, ensure_ascii=False, indent=2)}")
                         return None
 
+                    _write_async_task_state(
+                        state_path,
+                        status="completed",
+                        taskId=str(task_id),
+                        remoteStatus=current_status,
+                        imageUrl=image_url,
+                        completedAt=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                    )
+
                     print(f"[DOWNLOAD] 下载生成的图像: {image_url}")
                     
                     # 下载图像
@@ -283,6 +366,13 @@ def call_tuzi_gemini_async(
                             
                             print(f"[OK] Gemini异步图像生成成功")
                             print(f"[SAVE] 图像已保存到临时文件: {temp_file}")
+                            _write_async_task_state(
+                                state_path,
+                                status="downloaded",
+                                taskId=str(task_id),
+                                imageUrl=image_url,
+                                tempPath=temp_file,
+                            )
                             return temp_file
                         else:
                             print(f"[ERROR] 图像下载失败: HTTP {image_response.status_code}")
@@ -296,6 +386,14 @@ def call_tuzi_gemini_async(
                 # 检查任务是否失败
                 elif current_status == "failed" or current_status == "error":
                     error_msg = query_result.get("error", query_result.get("message", "未知错误"))
+                    _write_async_task_state(
+                        state_path,
+                        status="failed",
+                        taskId=str(task_id),
+                        remoteStatus=current_status,
+                        error=error_msg,
+                        completedAt=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                    )
                     print(f"[ERROR] 任务失败: {error_msg}")
                     print(f"[DEBUG] 完整响应: {json.dumps(query_result, ensure_ascii=False, indent=2)}")
                     return None
@@ -319,6 +417,12 @@ def call_tuzi_gemini_async(
 
         # 轮询超时
         print(f"[ERROR] 任务轮询超时 ({max_poll_time}s)")
+        _write_async_task_state(
+            state_path,
+            status="processing",
+            taskId=str(task_id),
+            error=f"poll timeout after {max_poll_time}s",
+        )
         return None
 
     except Exception as e:

@@ -1095,8 +1095,13 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       ? config.whisper.gpuDetection.checkIntervalSeconds * 1000
       : 30000;
 
+    const recoveredCount = queueManager.recoverInterruptedTasks();
+    if (recoveredCount > 0) {
+      this.logger.info(`Mikufans队列Worker已恢复 ${recoveredCount} 个中断任务`);
+    }
+
     while (!this.queueWorkerShouldStop) {
-      queueManager.loadQueue({ silent: true });
+      queueManager.loadQueue({ silent: true, cleanupStale: false });
 
       if (!this.queueWorkerProcess && queueManager.hasActiveProcessing()) {
         this.logger.info('检测到已有Whisper任务在处理，队列Worker等待当前任务结束');
@@ -1347,11 +1352,17 @@ export class MikufansWebhookHandler implements IWebhookHandler {
           }
         }
 
-        if (code === 0 || timedOut) {
+        if (code === 0) {
           const taskId = task.id;
           if (taskId && queueManager.getTaskById(taskId, { reload: true })?.status !== 'completed') {
-            queueManager.markCompleted(taskId, { exitCode: code, reason: timedOut ? 'timeout' : 'success' });
+            queueManager.markCompleted(taskId, { exitCode: code, reason: 'success' });
           }
+        } else if (!timedOut) {
+          const reason = `队列Worker异常退出: exitCode=${code ?? 'null'}, file=${path.basename(task.mediaPath)}`;
+          const requeued = queueManager.requeueAfterWorkerFailure(task.id, reason);
+          this.logger[requeued ? 'warn' : 'error'](
+            requeued ? `${reason}，已重新入队` : `${reason}，重试已耗尽`
+          );
         }
 
         await this.checkAndTriggerDelayedReply(task.mediaPath, roomId);

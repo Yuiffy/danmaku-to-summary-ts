@@ -206,6 +206,41 @@ export class DelayedReplyService implements IDelayedReplyService {
         return exactExistingTask.taskId;
       }
 
+      const completedTextTaskAwaitingRecoveredComic = comicImagePath
+        ? Array.from(this.tasks.values()).find(task =>
+            task.status === 'completed' &&
+            this.isSameDelayedReplyTextTask(task, roomId, goodnightTextPath) &&
+            !!task.replyId &&
+            !!task.repliedDynamicId &&
+            !task.supplementalReplyId &&
+            !task.supplementalCompletedAt
+          )
+        : undefined;
+
+      if (completedTextTaskAwaitingRecoveredComic) {
+        completedTextTaskAwaitingRecoveredComic.comicImagePath = comicImagePath;
+        completedTextTaskAwaitingRecoveredComic.comicWaitCount = 0;
+        completedTextTaskAwaitingRecoveredComic.status = 'waiting_comic';
+        completedTextTaskAwaitingRecoveredComic.scheduledTime = now;
+        completedTextTaskAwaitingRecoveredComic.error = undefined;
+        await this.store.updateTask(completedTextTaskAwaitingRecoveredComic.taskId, {
+          comicImagePath,
+          comicWaitCount: 0,
+          status: 'waiting_comic',
+          scheduledTime: now,
+          error: undefined
+        });
+        this.scheduleTask(completedTextTaskAwaitingRecoveredComic);
+        this.logger.info('复用已完成的文本回复任务并立即补图', {
+          roomId,
+          existingTaskId: completedTextTaskAwaitingRecoveredComic.taskId,
+          repliedDynamicId: completedTextTaskAwaitingRecoveredComic.repliedDynamicId,
+          replyId: completedTextTaskAwaitingRecoveredComic.replyId,
+          comicImagePath
+        });
+        return completedTextTaskAwaitingRecoveredComic.taskId;
+      }
+
       const recentCompletedExactTask = Array.from(this.tasks.values()).find(
         task => this.isSameDelayedReplyTask(task, roomId, goodnightTextPath, comicImagePath) &&
                 task.status === 'completed' &&
@@ -434,6 +469,51 @@ export class DelayedReplyService implements IDelayedReplyService {
     }
   }
 
+  async recoverComicForTask(taskId: string, comicImagePath: string): Promise<DelayedReplyTask> {
+    if (this.executingTaskIds.has(taskId)) {
+      throw new Error(`任务正在执行中，不能重复补图: ${taskId}`);
+    }
+
+    const task = await this.store.getTask(taskId);
+    if (!task) {
+      throw new Error(`延迟回复任务不存在: ${taskId}`);
+    }
+    if (!task.replyId || !task.repliedDynamicId) {
+      throw new Error(`延迟回复任务尚未成功发布主回复: ${taskId}`);
+    }
+    if (task.supplementalReplyId || task.supplementalCompletedAt) {
+      return task;
+    }
+
+    const normalizedComicImagePath = path.normalize(comicImagePath);
+    if (!fs.existsSync(normalizedComicImagePath)) {
+      throw new Error(`补图文件不存在: ${normalizedComicImagePath}`);
+    }
+
+    this.executingTaskIds.add(taskId);
+    this.tasks.set(taskId, task);
+    try {
+      task.comicImagePath = normalizedComicImagePath;
+      task.comicWaitCount = 0;
+      task.retryCount = 0;
+      task.status = 'waiting_comic';
+      task.scheduledTime = new Date();
+      task.error = undefined;
+      await this.store.updateTask(taskId, {
+        comicImagePath: task.comicImagePath,
+        comicWaitCount: task.comicWaitCount,
+        retryCount: task.retryCount,
+        status: task.status,
+        scheduledTime: task.scheduledTime,
+        error: undefined
+      });
+      await this.executeSupplementalComicReply(task);
+      return task;
+    } finally {
+      this.executingTaskIds.delete(taskId);
+    }
+  }
+
   /**
    * 获取所有任务
    */
@@ -598,6 +678,15 @@ export class DelayedReplyService implements IDelayedReplyService {
   ): boolean {
     return this.getTaskDedupeKey(task.roomId, task.goodnightTextPath, task.comicImagePath) ===
       this.getTaskDedupeKey(roomId, goodnightTextPath, comicImagePath);
+  }
+
+  private isSameDelayedReplyTextTask(
+    task: DelayedReplyTask,
+    roomId: string,
+    goodnightTextPath: string
+  ): boolean {
+    return task.roomId === roomId &&
+      path.normalize(task.goodnightTextPath) === path.normalize(goodnightTextPath);
   }
 
   private getDelayedReplyLimitConfig() {

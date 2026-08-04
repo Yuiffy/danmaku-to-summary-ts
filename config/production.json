@@ -258,7 +258,7 @@
         ]
       },
       "defaults": {
-        "minDurationMinutes": 60,
+        "minDurationMinutes": 0,
         "generationProbability": 1
       }
     },

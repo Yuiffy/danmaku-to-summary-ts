@@ -517,13 +517,45 @@ export class LiveSessionManager {
         ? path.dirname(dir)
         : dir;
 
-      dirs.add(base);
-      if (includeBak) {
-        dirs.add(path.join(base, 'bak'));
+      for (const scanBase of this.getAdjacentDateDirs(base)) {
+        dirs.add(scanBase);
+        if (includeBak) {
+          dirs.add(path.join(scanBase, 'bak'));
+        }
       }
     }
 
     return Array.from(dirs);
+  }
+
+  private getAdjacentDateDirs(dir: string): string[] {
+    const dirName = path.basename(dir);
+    const match = dirName.match(/^(\d{4})([_-]?)(\d{2})\2(\d{2})$/);
+    if (!match) {
+      return [dir];
+    }
+
+    const [, year, separator, month, day] = match;
+    const parsed = new Date(Number(year), Number(month) - 1, Number(day));
+    if (
+      parsed.getFullYear() !== Number(year)
+      || parsed.getMonth() !== Number(month) - 1
+      || parsed.getDate() !== Number(day)
+    ) {
+      return [dir];
+    }
+
+    const parent = path.dirname(dir);
+    return [-1, 0, 1].map(offset => {
+      const date = new Date(parsed);
+      date.setDate(date.getDate() + offset);
+      const dateName = [
+        String(date.getFullYear()).padStart(4, '0'),
+        String(date.getMonth() + 1).padStart(2, '0'),
+        String(date.getDate()).padStart(2, '0')
+      ].join(separator);
+      return path.join(parent, dateName);
+    });
   }
 
   private parseRecordingFileName(fileName: string): RecordingFileInfo | null {

@@ -1255,7 +1255,7 @@ function shouldGenerateAiForRoom(roomId) {
 
     // 获取全局默认图片生成配置
     const comicDefaults = config.ai?.comic?.defaults || {};
-    const defaultMinDuration = comicDefaults.minDurationMinutes ?? 60;      // 默认 60 分钟
+    const defaultMinDuration = comicDefaults.minDurationMinutes ?? 0;       // 晚安文本生成时默认也生成配图
     const defaultProbability = comicDefaults.generationProbability ?? 1.0;  // 默认 100%
 
     let roomConfig = null;

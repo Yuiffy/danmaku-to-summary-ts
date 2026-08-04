@@ -45,6 +45,113 @@ describe('DelayedReplyService duplicate reply detection', () => {
     expect(duplicate).toBe(repliedTask);
   });
 
+  it('reattaches a recovered comic to a completed text task without creating another reply task', async () => {
+    const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'delayed-reply-recovered-comic-'));
+    const goodnightTextPath = path.join(outputDir, 'stream_晚安回复.md');
+    const comicImagePath = path.join(outputDir, 'stream_COMIC_FACTORY.png');
+    fs.writeFileSync(goodnightTextPath, '晚安正文', 'utf8');
+    fs.writeFileSync(comicImagePath, 'image', 'utf8');
+
+    const store = {
+      updateTask: jest.fn().mockResolvedValue(undefined),
+      addTask: jest.fn().mockResolvedValue(undefined)
+    };
+    const service = new DelayedReplyService({} as any, store as any) as any;
+    const scheduleTask = jest.spyOn(service, 'scheduleTask').mockImplementation(() => undefined);
+    const delayedReplySettingsSpy = jest.spyOn(BilibiliConfigHelper, 'getDelayedReplySettings').mockReturnValue({
+      enabled: true,
+      anchorEnabled: true,
+      delayMinutes: 2
+    } as any);
+    const completedTask = createTask({
+      taskId: 'completed-text-task',
+      goodnightTextPath,
+      comicImagePath: '',
+      status: 'completed',
+      comicWaitCount: 30,
+      error: '补图等待达到上限'
+    });
+    service.tasks.set(completedTask.taskId, completedTask);
+
+    try {
+      const taskId = await service.addTask(completedTask.roomId, goodnightTextPath, comicImagePath);
+
+      expect(taskId).toBe(completedTask.taskId);
+      expect(completedTask.status).toBe('waiting_comic');
+      expect(completedTask.comicImagePath).toBe(comicImagePath);
+      expect(completedTask.comicWaitCount).toBe(0);
+      expect(completedTask.error).toBeUndefined();
+      expect(store.addTask).not.toHaveBeenCalled();
+      expect(store.updateTask).toHaveBeenCalledWith(completedTask.taskId, expect.objectContaining({
+        status: 'waiting_comic',
+        comicImagePath,
+        comicWaitCount: 0,
+        error: undefined
+      }));
+      expect(scheduleTask).toHaveBeenCalledWith(completedTask);
+    } finally {
+      delayedReplySettingsSpy.mockRestore();
+      fs.rmSync(outputDir, { recursive: true, force: true });
+    }
+  });
+
+  it('recovers a persisted completed task by id and publishes only the supplemental comic reply', async () => {
+    const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'delayed-reply-recovered-by-id-'));
+    const goodnightTextPath = path.join(outputDir, 'stream_晚安回复.md');
+    const comicImagePath = path.join(outputDir, 'stream_COMIC_FACTORY.png');
+    fs.writeFileSync(goodnightTextPath, '晚安正文', 'utf8');
+    fs.writeFileSync(comicImagePath, 'image', 'utf8');
+
+    const completedTask = createTask({
+      taskId: 'persisted-completed-task',
+      goodnightTextPath,
+      comicImagePath: '',
+      status: 'completed',
+      summaryReplyId: 'existing-summary-reply',
+      summaryCompletedAt: new Date()
+    });
+    const publishComment = jest.fn().mockResolvedValue({
+      replyId: 'supplemental-reply',
+      replyTime: Date.now(),
+      imageUrl: 'https://example.com/image.png'
+    });
+    const store = {
+      getTask: jest.fn().mockResolvedValue(completedTask),
+      updateTask: jest.fn().mockResolvedValue(undefined)
+    };
+    const service = new DelayedReplyService({ publishComment } as any, store as any);
+    const summarySettingsSpy = jest.spyOn(BilibiliConfigHelper, 'getSummaryDynamicSettings').mockReturnValue({
+      enabled: true,
+      dynamicId: 'summary-dynamic'
+    });
+
+    try {
+      const result = await service.recoverComicForTask(completedTask.taskId, comicImagePath);
+
+      expect(result.taskId).toBe(completedTask.taskId);
+      expect(result.status).toBe('completed');
+      expect(result.supplementalReplyId).toBe('supplemental-reply');
+      expect(publishComment).toHaveBeenCalledTimes(1);
+      expect(publishComment).toHaveBeenCalledWith({
+        dynamicId: completedTask.repliedDynamicId,
+        content: '（补图）晚安正文',
+        images: [comicImagePath]
+      });
+      expect(store.updateTask).toHaveBeenCalledWith(completedTask.taskId, expect.objectContaining({
+        status: 'waiting_comic',
+        comicImagePath,
+        comicWaitCount: 0
+      }));
+      expect(store.updateTask).toHaveBeenCalledWith(completedTask.taskId, expect.objectContaining({
+        status: 'waiting_summary',
+        supplementalReplyId: 'supplemental-reply'
+      }));
+    } finally {
+      summarySettingsSpy.mockRestore();
+      fs.rmSync(outputDir, { recursive: true, force: true });
+    }
+  });
+
   it('notifies WeChat Work with persisted async image failure details once', async () => {
     const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'delayed-reply-comic-failure-'));
     const comicImagePath = path.join(outputDir, 'stream_COMIC_FACTORY.png');

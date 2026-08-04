@@ -46,6 +46,11 @@ export interface IDelayedReplyService {
   publishSummaryForTask(taskId: string): Promise<DelayedReplyTask>;
 
   /**
+   * 为已成功发布文字回复的历史任务补发漫画图片。
+   */
+  recoverComicForTask(taskId: string, comicImagePath: string): Promise<DelayedReplyTask>;
+
+  /**
    * 获取所有任务
    */
   getTasks(): DelayedReplyTask[];
