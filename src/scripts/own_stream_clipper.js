@@ -102,6 +102,8 @@ const DEFAULT_OWN_STREAM_CLIPS_CONFIG = {
     ]
 };
 
+const OWN_STREAM_SOURCE_ATTRIBUTION_RULE = '来源归属必须严格按输入分区：直播音轨字幕与观众弹幕是两类独立来源，标题、封面文案和理由不得把一方的发言或行为归给另一方。';
+
 const NOISY_EMOTION_EVENTS = new Set(['Speech', 'BGM', 'Event_UNK']);
 
 function notableEmotionEvents(events = []) {
@@ -677,10 +679,10 @@ function buildFullContextSource(parsed, danmaku, config = {}, emotionAnalysis = 
             '=== SenseVoice 情感/声音事件（辅助线索，不作为事实） ===',
             emotionLines.join('\n') || '无',
             '',
-            '=== 全量字幕（时间均相对直播开头） ===',
+            '=== 全量直播音轨字幕（时间均相对直播开头） ===',
             subtitleLines.join('\n') || '无',
             '',
-            '=== 全量弹幕（相同文本在短时间窗口内合并，xN 为重复次数） ===',
+            '=== 全量观众弹幕（相同文本在短时间窗口内合并，xN 为重复次数） ===',
             danmakuLines.join('\n') || '无'
         ].join('\n')
     };
@@ -734,13 +736,13 @@ function buildChunkSources(parsed, danmaku, totalDuration, config, emotionAnalys
                 '高弹幕/高反应时间点:',
                 densityLines.slice(0, 80).join('\n') || '无',
                 '',
-                '反应弹幕样例:',
+                '观众反应弹幕样例:',
                 reactionLines.slice(0, Number(config.maxDanmakuLinesPerChunk) || 220).join('\n') || '无',
                 '',
                 'SenseVoice 情感/声音事件（辅助线索，不作为事实）:',
                 emotionLines.join('\n') || '无',
                 '',
-                '字幕:',
+                '直播音轨字幕:',
                 subtitleText || '无'
             ].join('\n')
         });
@@ -993,6 +995,7 @@ async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, confi
     const worker = async (chunk) => {
         const prompt = [
             '你是直播切片编辑。下面是一段岁己SUI自己直播的字幕和弹幕摘要。',
+            OWN_STREAM_SOURCE_ATTRIBUTION_RULE,
             '请直接找这个分段里所有可能值得本地 review 的切片：有趣、弹幕很多、弹幕很在意、体现岁己想法与众不同、岁己傻事，或弹幕觉得她傻/特别/有趣/可爱。',
             '不要只看关键词；弹幕密度、弹幕反应和上下文都要考虑。不要选普通问好、普通感谢礼物、纯唱歌、无明确看点的片段。',
             'SenseVoice 情感和声音事件只能作为寻找反差、爆笑、惊讶、委屈等时刻的辅助线索；必须结合字幕确认具体内容，不能仅凭标签下结论。',
@@ -1068,6 +1071,7 @@ async function planClipsWithAIFullContext(parsed, danmaku, info, totalDuration, 
     const maxClips = Math.max(1, Number(config.maxClips) || 12);
     const prompt = [
         '你是资深直播切片主编。下面提供岁己SUI本场直播的全量带时间戳字幕和全量弹幕。',
+        OWN_STREAM_SOURCE_ATTRIBUTION_RULE,
         `请通读整场，从全局比较后选出最多 ${maxClips} 个最有趣、最适合独立发布的片段。数量不必凑满，质量优先。`,
         '模型必须同时评估内容质量和弹幕热度：先根据字幕判断事件是否完整、有趣、适合独立发布，再结合30秒热度表、反应弹幕数、重复刷屏和全量弹幕判断观众反应强度。',
         '热度是重要证据但不是唯一标准：高热度但没有明确内容看点的片段不要选；低热度但故事完整、观点独特、反差强或特别可爱的内容仍可选。',
@@ -1252,13 +1256,14 @@ async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config,
         .map(candidate => [
             `#${candidate.index} ${formatClock(candidate.start)}-${formatClock(candidate.end)} score=${candidate.score} reason=${candidate.reason}`,
             `情感线索: emotions=${(candidate.emotions || []).join(',') || '无'} events=${(candidate.events || []).join(',') || '无'}`,
-            `弹幕样例: ${getWindowDanmaku(danmaku, candidate, 8).join(' / ') || '无'}`,
-            `字幕: ${getWindowText(parsed.segments, candidate, 520) || '无'}`
+            `观众弹幕样例: ${getWindowDanmaku(danmaku, candidate, 8).join(' / ') || '无'}`,
+            `直播音轨字幕: ${getWindowText(parsed.segments, candidate, 520) || '无'}`
         ].join('\n'))
         .join('\n\n');
 
     const prompt = [
         '你是直播切片编辑。下面是岁己SUI自己直播的候选片段。',
+        OWN_STREAM_SOURCE_ATTRIBUTION_RULE,
         '请从中挑出适合本地 review 的有趣切片：有趣、弹幕量大、弹幕很在意、体现岁己想法与众不同、岁己做了傻事，或者弹幕指出她傻/特别/有趣/可爱。',
         '不要选纯唱歌、普通问好、普通感谢礼物、没有可看点的片段。',
         '每段 35 秒到 3 分半，尽量切在句子边界。最多 12 段。',

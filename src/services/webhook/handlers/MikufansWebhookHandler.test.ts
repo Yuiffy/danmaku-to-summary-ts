@@ -64,6 +64,86 @@ describe('MikufansWebhookHandler segment collection finalization', () => {
       handler.pendingDelayedReplyFileTimers.clear();
     }
     fs.rmSync(tempDir, { recursive: true, force: true });
+    jest.useRealTimers();
+  });
+
+  test('cancels numeric-keyed stream finalization when the live reconnects', async () => {
+    jest.useFakeTimers();
+    const handler = new MikufansWebhookHandler() as any;
+    handlers.push(handler);
+    const roomId = 25788785;
+    const staleFinalization = jest.fn().mockResolvedValue(undefined);
+
+    handler.startDelayedAction(
+      roomId,
+      'stream_ended',
+      staleFinalization,
+      `StreamEnded: ${roomId}`
+    );
+    handler.startDelayedAction(
+      roomId,
+      'segment_collection',
+      staleFinalization,
+      `SegmentCollection: ${roomId}`
+    );
+
+    expect(Array.from(handler.delayedActions.keys())).toEqual([String(roomId)]);
+
+    await handler.handleStreamStarted({
+      EventTimestamp: '2026-08-05T23:03:21.129+08:00',
+      EventData: {
+        RoomId: roomId
+      }
+    });
+
+    await jest.advanceTimersByTimeAsync(5 * 60 * 1000);
+
+    expect(staleFinalization).not.toHaveBeenCalled();
+    expect(handler.delayedActions.has(String(roomId))).toBe(false);
+    expect(handler.activeLiveRooms.has(String(roomId))).toBe(true);
+  });
+
+  test('an already-fired stale end callback cannot finalize after reconnect', async () => {
+    const handler = new MikufansWebhookHandler() as any;
+    handlers.push(handler);
+    const roomId = '25788785';
+    const startProcessing = jest.fn().mockResolvedValue(true);
+    handler.startProcessing = startProcessing;
+    const { videoPath, xmlPath } = writeSegment(tempDir, roomId);
+    const now = new Date();
+    handler.liveSessionManager.createOrGetSession(roomId, 'SUI', 'live');
+    handler.liveSessionManager.addSegment(
+      roomId,
+      videoPath,
+      xmlPath,
+      new Date(now.getTime() - 60_000),
+      now,
+      now
+    );
+    handler.activeLiveRooms.add(roomId);
+
+    await handler.processStreamEnded(roomId);
+
+    expect(startProcessing).not.toHaveBeenCalled();
+  });
+
+  test('ignores an out-of-order StreamEnded older than the reconnect start', async () => {
+    const handler = new MikufansWebhookHandler() as any;
+    handlers.push(handler);
+    const roomId = 25788785;
+
+    await handler.handleStreamStarted({
+      EventTimestamp: '2026-08-05T23:03:21.129+08:00',
+      EventData: { RoomId: roomId }
+    });
+    await handler.handleStreamEnded('old-session', {
+      EventTimestamp: '2026-08-05T23:02:07.785+08:00',
+      EventData: { RoomId: roomId }
+    });
+
+    expect(handler.activeLiveRooms.has(String(roomId))).toBe(true);
+    expect(handler.delayedActions.has(String(roomId))).toBe(false);
+    expect(handler.streamTimestamps.get(String(roomId)).endTime).toBeUndefined();
   });
 
   test('finalizes after segment collection timeout when FileClosed reported Streaming=false', async () => {

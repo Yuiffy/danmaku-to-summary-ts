@@ -452,12 +452,46 @@ describe('own_stream_clipper', () => {
     expect(source.sourceText).toContain('00:01:01-00:01:03 最后一句');
     expect(source.sourceText).toContain('笑死 (x2)');
     expect(source.sourceText).toContain('=== 30秒弹幕热度表 ===');
+    expect(source.sourceText).toContain('=== 全量直播音轨字幕（时间均相对直播开头） ===');
+    expect(source.sourceText).toContain('=== 全量观众弹幕（相同文本在短时间窗口内合并，xN 为重复次数） ===');
     expect(source.heatLines[0]).toContain('count=2');
     expect(source.heatLines[0]).toContain('baselineRatio=1');
     expect(source.heatLines[0]).not.toContain('笑死');
     expect(source.sourceText.match(/笑死/gu)).toHaveLength(1);
     expect(source.subtitleLines).toHaveLength(2);
     expect(source.danmakuLines).toHaveLength(1);
+  });
+
+  test('keeps viewer danmaku separate from streamer actions in the full-context prompt', async () => {
+    const generator = require('./ai_text_generator');
+    const generateSpy = jest.spyOn(generator, 'generateTextWithDaiYu').mockResolvedValue({
+      text: '{"clips":[]}',
+      meta: { model: 'test-model' }
+    });
+    const config = ownStreamClipper.getOwnStreamClipsConfig({
+      ownStreamClips: {
+        maxClips: 1,
+        ai: { enabled: true, model: 'test-model' }
+      }
+    });
+
+    try {
+      await ownStreamClipper.planClipsWithAIFullContext(
+        { segments: [{ start: 1, end: 3, text: '他是毒液啊原来如此' }] },
+        [{ time: 2, text: '我是毒液！我是毒液！' }],
+        { streamTitle: '测试直播', recordedAt: '2026-08-05 20:10:39' },
+        60,
+        config,
+        { ai: { text: { enabled: true, provider: 'daiYu' } } }
+      );
+
+      const prompt = String(generateSpy.mock.calls[0][0]);
+      expect(prompt).toContain('来源归属必须严格按输入分区：直播音轨字幕与观众弹幕是两类独立来源，标题、封面文案和理由不得把一方的发言或行为归给另一方。');
+      expect(prompt).toContain('=== 全量直播音轨字幕（时间均相对直播开头） ===\n00:00:01-00:00:03 他是毒液啊原来如此');
+      expect(prompt).toContain('=== 全量观众弹幕（相同文本在短时间窗口内合并，xN 为重复次数） ===\n00:00:02 我是毒液！我是毒液！');
+    } finally {
+      generateSpy.mockRestore();
+    }
   });
 
   test('removes overlaps after subtitle alignment and keeps the higher-scored clip', () => {
