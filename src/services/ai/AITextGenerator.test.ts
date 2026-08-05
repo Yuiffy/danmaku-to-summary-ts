@@ -30,6 +30,10 @@ describe('AITextGenerator goodnight naming boundary', () => {
     expect(prompt).toContain('主播可用称呼只有：“小栞”、“栞栞”、“栞栞Shiori”、“Shiori”');
     expect(prompt).toContain('粉丝昵称是“獭獭栞”');
     expect(prompt).toContain('字数要求：250字以内');
+    expect(prompt).toContain('称呼之后直接回应本场一个具体细节、主播原话或弹幕反应');
+    expect(prompt).not.toContain('【去模板化要求（高优先级）】');
+    expect(prompt).not.toContain('一句话总结今天直播的整体感受');
+    expect(prompt).not.toContain('含金量极高、含梗量爆炸');
   });
 
   test('rejects a fan name used as the opening address', () => {

@@ -1,6 +1,19 @@
 const aiTextGenerator = require('./ai_text_generator');
 
 describe('ai_text_generator speaker guidance', () => {
+  test('uses a concise, concrete opening instruction without cliché examples', () => {
+    const prompt = aiTextGenerator.buildPrompt(
+      '主播把水杯打翻后说“今天和桌子有仇”，弹幕都在笑。',
+      '26966466',
+      '21:00~23:00'
+    );
+
+    expect(prompt).toContain('称呼之后直接回应本场一个具体细节、主播原话或弹幕反应');
+    expect(prompt).not.toContain('【去模板化要求（高优先级）】');
+    expect(prompt).not.toContain('一句话总结今天直播的整体感受');
+    expect(prompt).not.toContain('含金量极高、含梗量爆炸');
+  });
+
   test('keeps anonymous guest self-introductions separate from the room owner', () => {
     const prompt = aiTextGenerator.buildPrompt(
       '[栞栞 0.65] 你好\n[SPEAKER_04 0.57] 大家好，我是露露',
