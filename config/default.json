@@ -1083,6 +1083,7 @@
     "maxClipSeconds": 180,
     "mergeGapSeconds": 45,
     "burnSubtitles": true,
+    "ffmpegTimeoutMs": 600000,
     "subtitleFontSizeRatio": 0.044,
     "subtitleMinFontSize": 30,
     "subtitleMaxFontSize": 72,

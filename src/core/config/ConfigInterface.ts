@@ -508,6 +508,7 @@ export interface ClipTopicsConfig {
   maxClipSeconds: number;
   mergeGapSeconds: number;
   burnSubtitles: boolean;
+  ffmpegTimeoutMs?: number;
   outputDirName: string;
   tags?: string[];
   extraTags: string[];

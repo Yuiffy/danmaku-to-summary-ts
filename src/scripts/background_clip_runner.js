@@ -44,6 +44,21 @@ async function generateTopicClipsForMedia(originalMediaPath, processedMediaPath,
         return results;
     } catch (error) {
         console.warn(`⚠️  话题切片阶段失败，继续后续流程: ${error.message}`);
+        try {
+            const mediaPath = processedMediaPath || originalMediaPath;
+            const info = topicClipper.parseRecordingInfo(mediaPath, context || {});
+            await topicClipper.notifyTopicClipFailure(error, {
+                streamerName: topicClipper.resolveStreamerName(config, info.roomId || roomId, context || {}),
+                streamTitle: info.streamTitle,
+                roomId: info.roomId || (roomId ? String(roomId) : null),
+                recordedAt: info.recordedAt,
+                outputRoot: path.join(path.dirname(mediaPath), clipConfig.outputDirName),
+                sourceFileName: info.fileName,
+                stage: 'topic_clipper'
+            }, config);
+        } catch (notifyError) {
+            console.warn(`⚠️  话题切片失败通知发送失败: ${notifyError.message}`);
+        }
         return [];
     }
 }
@@ -240,6 +255,7 @@ async function runBackgroundClipsFromPayload(payloadPath) {
 }
 
 module.exports = {
+    generateTopicClipsForMedia,
     shouldRunAnyClipper,
     spawnBackgroundClipProcess,
     runBackgroundClipsFromPayload

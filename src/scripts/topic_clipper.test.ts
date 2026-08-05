@@ -469,6 +469,24 @@ describe('topic_clipper', () => {
     ], 358.366)).toBe(358.366);
   });
 
+  test('terminates a hung ffmpeg process at the configured timeout', async () => {
+    const startedAt = Date.now();
+
+    await expect(topicClipper.runFfmpeg([
+      '-e',
+      'setInterval(() => {}, 1000)'
+    ], {
+      ffmpegPath: process.execPath,
+      timeoutMs: 100,
+      resourceConfig: {
+        threads: 0,
+        cpuGuard: { enabled: false }
+      }
+    })).rejects.toThrow('ffmpeg timed out after 100ms');
+
+    expect(Date.now() - startedAt).toBeLessThan(5000);
+  });
+
   test('disabled config does not generate topic clips', async () => {
     const dir = makeTempDir();
     const mediaPath = path.join(dir, '录制-25788785-20260603-201530-001-聊天回.m4a');
@@ -552,6 +570,162 @@ describe('topic_clipper', () => {
     expect(fs.existsSync(results[0].output.metadataPath)).toBe(true);
     expect(fs.existsSync(results[0].output.copyPath)).toBe(true);
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('isolates one failed clip, registers the successful clip, and still finalizes the batch', async () => {
+    const dir = makeTempDir();
+    const mediaPath = path.join(dir, '录制-26966466-20260805-102031-440-早安獭獭栞！.flv');
+    const srtPath = path.join(dir, '录制-26966466-20260805-102031-440-早安獭獭栞！.srt');
+    fs.writeFileSync(mediaPath, 'fake video', 'utf8');
+    fs.writeFileSync(srtPath, [
+      '1',
+      '00:00:10,000 --> 00:00:12,000',
+      '这里第一次提到岁己',
+      '',
+      '2',
+      '00:20:00,000 --> 00:20:02,000',
+      '这里第二次提到小岁',
+      ''
+    ].join('\n'), 'utf8');
+
+    let mediaCalls = 0;
+    const registerReviewForUpload = jest.fn(() => ({ clipIds: [901] }));
+    const notifyTopicClipResults = jest.fn(async () => true);
+
+    const results = await topicClipper.generateTopicClips({
+      config: {
+        clipTopics: {
+          enabled: true,
+          aiSegmentBurst: false,
+          keywords: ['岁己', '小岁'],
+          contextPrePaddingSeconds: 30,
+          contextPostPaddingSeconds: 30,
+          mergeGapSeconds: 10,
+          minClipSeconds: 10,
+          maxClipSeconds: 60,
+          notify: { enabled: true }
+        },
+        ai: {
+          roomSettings: {
+            '26966466': { anchorName: '小栞' }
+          }
+        }
+      },
+      originalMediaPath: mediaPath,
+      processedMediaPath: mediaPath,
+      srtPath,
+      titleGenerator: async () => '测试话题切片',
+      descriptionGenerator: async () => '测试简介',
+      mediaGenerator: async (_source: unknown, _window: unknown, _srt: string, outputPath: string) => {
+        mediaCalls += 1;
+        if (mediaCalls === 2) {
+          throw new Error('simulated ffmpeg timeout');
+        }
+        fs.writeFileSync(outputPath, 'generated clip', 'utf8');
+        return {
+          path: outputPath,
+          burnedSubtitles: true,
+          fallbackUsed: false
+        };
+      },
+      coverGenerator: async () => null,
+      registerReviewForUpload,
+      notifyTopicClipResults
+    });
+
+    expect(results).toHaveLength(2);
+    expect(results[0]).toMatchObject({ uploadReady: true, uploadId: 901, status: 'success' });
+    expect(results[1]).toMatchObject({ uploadReady: false, status: 'failed' });
+    expect(results[1].output.mediaError).toContain('simulated ffmpeg timeout');
+    expect(registerReviewForUpload).toHaveBeenCalledTimes(1);
+    expect(registerReviewForUpload.mock.calls[0][1]).toHaveLength(1);
+    expect(notifyTopicClipResults).toHaveBeenCalledTimes(1);
+    expect(notifyTopicClipResults.mock.calls[0][1].failures).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: 'media', error: 'simulated ffmpeg timeout' })
+    ]));
+
+    const outputDir = path.join(dir, 'topic_clips');
+    const uniqueReviews = fs.readdirSync(outputDir).filter((name: string) => name.endsWith('_REVIEW.md'));
+    expect(uniqueReviews).toHaveLength(1);
+    expect(fs.existsSync(path.join(outputDir, 'REVIEW.md'))).toBe(true);
+    const review = fs.readFileSync(path.join(outputDir, uniqueReviews[0]), 'utf8');
+    expect(review.match(/^\d+\./gm)).toHaveLength(1);
+    expect(review).toContain('## 失败与降级记录');
+    expect(review).toContain('simulated ffmpeg timeout');
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('reports an upload registry result with the wrong number of clip IDs', async () => {
+    const dir = makeTempDir();
+    const mediaPath = path.join(dir, '录制-26966466-20260805-102031-440-早安獭獭栞！.flv');
+    const srtPath = path.join(dir, '录制-26966466-20260805-102031-440-早安獭獭栞！.srt');
+    fs.writeFileSync(mediaPath, 'fake video', 'utf8');
+    writeSrt(srtPath);
+
+    const notifyTopicClipResults = jest.fn(async () => true);
+    const results = await topicClipper.generateTopicClips({
+      config: {
+        clipTopics: {
+          enabled: true,
+          aiSegmentBurst: false,
+          keywords: ['岁己', '小岁'],
+          notify: { enabled: true }
+        },
+        ai: {
+          roomSettings: {
+            '26966466': { anchorName: '小栞' }
+          }
+        }
+      },
+      originalMediaPath: mediaPath,
+      processedMediaPath: mediaPath,
+      srtPath,
+      mediaGenerator: async (_source: unknown, _window: unknown, _srt: string, outputPath: string) => {
+        fs.writeFileSync(outputPath, 'generated clip', 'utf8');
+        return { path: outputPath, burnedSubtitles: true, fallbackUsed: false };
+      },
+      coverGenerator: async () => null,
+      registerReviewForUpload: () => ({ clipIds: [901, 902] }),
+      notifyTopicClipResults
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].uploadId).toBeUndefined();
+    expect(notifyTopicClipResults).toHaveBeenCalledTimes(1);
+    expect(notifyTopicClipResults.mock.calls[0][1].failures).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 'registry',
+        error: expect.stringContaining('返回 2 个短 ID,预期 1 个')
+      })
+    ]));
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('topic notification reports partial failures with their stage and reason', () => {
+    const markdown = topicClipper.buildTopicNotifyMarkdown([
+      {
+        window: { start: 10, end: 42 },
+        copy: { title: '成功片段' },
+        output: { mediaPath: 'D:/clips/success.mp4', mediaError: null }
+      },
+      {
+        window: { start: 100, end: 140 },
+        copy: { title: '失败片段' },
+        output: { mediaPath: 'D:/clips/failed.mp4', mediaError: 'ffmpeg timed out after 600000ms' }
+      }
+    ], {
+      streamerName: '小栞',
+      streamTitle: '早安獭獭栞！',
+      outputRoot: 'D:/clips'
+    });
+
+    expect(markdown).toContain('话题切片提醒（存在失败）');
+    expect(markdown).toContain('成功生成 **1** 段');
+    expect(markdown).toContain('[失败/媒体生成]');
+    expect(markdown).toContain('ffmpeg timed out after 600000ms');
+    expect(markdown).toContain('success.mp4');
   });
 
   test('builds a compact topic notification markdown', () => {

@@ -229,6 +229,7 @@ const ConfigSchema = Joi.object({
         maxClipSeconds: Joi.number().default(180),
         mergeGapSeconds: Joi.number().default(45),
         burnSubtitles: Joi.boolean().default(true),
+        ffmpegTimeoutMs: Joi.number().integer().min(1000).default(600000),
         outputDirName: Joi.string().default('topic_clips'),
         tags: Joi.array().items(Joi.string()).optional(),
         extraTags: Joi.array().items(Joi.string()).default([]),

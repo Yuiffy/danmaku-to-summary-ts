@@ -448,6 +448,7 @@ export class ConfigValidator {
         maxClipSeconds: 180,
         mergeGapSeconds: 45,
         burnSubtitles: true,
+        ffmpegTimeoutMs: 600000,
         outputDirName: 'topic_clips',
         extraTags: [],
         autoUpload: {

@@ -76,6 +76,7 @@ const DEFAULT_CLIP_TOPICS_CONFIG = {
     maxSegmentsPerBurst: 200,     // 每个 burst 最多取多少条 SRT
     aiSegmentBurst: true,         // 让 AI 决定切在哪里(而不是固定 paddding)
     burnSubtitles: true,
+    ffmpegTimeoutMs: 600000,
     outputDirName: 'topic_clips',
     extraTags: [],
     autoUpload: {
@@ -1534,22 +1535,48 @@ async function runFfmpeg(args, options = {}) {
     return new Promise((resolve, reject) => {
         const ffmpegPath = options.ffmpegPath || 'ffmpeg';
         const commandArgs = withFfmpegResourceLimits(args, resourceConfig);
+        const timeoutMs = Math.max(1, Number(options.timeoutMs) || DEFAULT_CLIP_TOPICS_CONFIG.ffmpegTimeoutMs);
         const child = spawn(ffmpegPath, commandArgs, {
-            stdio: ['ignore', 'pipe', 'pipe'],
+            stdio: ['ignore', 'ignore', 'pipe'],
             windowsHide: true
         });
         applyFfmpegProcessPriority(child.pid, resourceConfig.priority);
         let stderr = '';
-        child.stderr.on('data', chunk => {
-            stderr += chunk.toString();
-        });
-        child.on('error', reject);
-        child.on('close', code => {
-            if (code === 0) {
-                resolve({ stderr });
-                return;
+        let timedOut = false;
+        let settled = false;
+        const finish = (callback) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeoutId);
+            callback();
+        };
+        const timeoutId = setTimeout(() => {
+            timedOut = true;
+            try {
+                const killed = child.kill('SIGKILL');
+                if (!killed) {
+                    finish(() => reject(new Error(`ffmpeg timed out after ${timeoutMs}ms and could not be terminated`)));
+                }
+            } catch {
+                finish(() => reject(new Error(`ffmpeg timed out after ${timeoutMs}ms and could not be terminated`)));
             }
-            reject(new Error(`ffmpeg exited with code ${code}: ${stderr.slice(-500)}`));
+        }, timeoutMs);
+        child.stderr.on('data', chunk => {
+            stderr = `${stderr}${chunk.toString()}`.slice(-32768);
+        });
+        child.on('error', error => finish(() => reject(error)));
+        child.on('close', code => {
+            finish(() => {
+                if (timedOut) {
+                    reject(new Error(`ffmpeg timed out after ${timeoutMs}ms`));
+                    return;
+                }
+                if (code === 0) {
+                    resolve({ stderr });
+                    return;
+                }
+                reject(new Error(`ffmpeg exited with code ${code}: ${stderr.slice(-500)}`));
+            });
         });
     });
 }
@@ -1619,6 +1646,7 @@ async function generateClipCover(videoPath, title, outputDir, info = {}) {
         ? info.coverSourcePath
         : videoPath;
     const resourceConfig = info.resourceConfig || getFfmpegResourceConfig(configLoader.getConfig());
+    const timeoutMs = Math.max(1, Number(info.timeoutMs) || DEFAULT_CLIP_TOPICS_CONFIG.ffmpegTimeoutMs);
     await waitForCpuAvailability('话题切片封面生成', resourceConfig);
 
     return new Promise((resolve, reject) => {
@@ -1652,18 +1680,46 @@ async function generateClipCover(videoPath, title, outputDir, info = {}) {
         applyFfmpegProcessPriority(child.pid, resourceConfig.priority);
 
         let stderr = '';
+        let timedOut = false;
+        let settled = false;
+        const finish = (callback) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeoutId);
+            callback();
+        };
+        const timeoutId = setTimeout(() => {
+            timedOut = true;
+            try {
+                const killed = child.kill('SIGKILL');
+                if (!killed) {
+                    finish(() => reject(new Error(`cover_generator timed out after ${timeoutMs}ms and could not be terminated`)));
+                }
+            } catch {
+                finish(() => reject(new Error(`cover_generator timed out after ${timeoutMs}ms and could not be terminated`)));
+            }
+        }, timeoutMs);
         child.stdout.on('data', (d) => process.stdout.write(d));
-        child.stderr.on('data', (d) => { stderr += d.toString(); process.stderr.write(d); });
+        child.stderr.on('data', (d) => {
+            stderr = `${stderr}${d.toString()}`.slice(-32768);
+            process.stderr.write(d);
+        });
 
         child.on('close', (code) => {
-            if (code === 0 && fs.existsSync(coverPath)) {
-                console.log(`🖼️  封面已生成: ${coverPath}`);
-                resolve(coverPath);
-            } else {
-                reject(new Error(`cover_generator 退出码 ${code}: ${stderr.slice(-300)}`));
-            }
+            finish(() => {
+                if (timedOut) {
+                    reject(new Error(`cover_generator timed out after ${timeoutMs}ms`));
+                    return;
+                }
+                if (code === 0 && fs.existsSync(coverPath)) {
+                    console.log(`🖼️  封面已生成: ${coverPath}`);
+                    resolve(coverPath);
+                } else {
+                    reject(new Error(`cover_generator 退出码 ${code}: ${stderr.slice(-300)}`));
+                }
+            });
         });
-        child.on('error', reject);
+        child.on('error', error => finish(() => reject(error)));
     });
 }
 
@@ -1731,7 +1787,8 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
     const ffmpegOptions = {
         ffmpegPath,
         threads: config.ffmpegThreads ?? config.clipFfmpegThreads,
-        resourceConfig: config.resourceConfig
+        resourceConfig: config.resourceConfig,
+        timeoutMs: config.ffmpegTimeoutMs
     };
     const duration = String(Math.max(0.1, window.duration));
     const start = String(Math.max(0, window.start));
@@ -1739,6 +1796,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
     let coverClipStart = null;
     let coverTimeOrigin = null;
     let burnAssPath = null;
+    let subtitleBurnFailure = null;
 
     if (source.kind === 'audio') {
         await runFfmpeg([
@@ -1865,6 +1923,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                     : null
             };
         } catch (error) {
+            subtitleBurnFailure = error.message;
             if (useTwoStageBurn) {
                 console.warn(`⚠️  两段式字幕烧录失败,退回原始源直接烧录: ${error.message}`);
                 try {
@@ -1882,10 +1941,12 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                     return {
                         path: outputPath,
                         burnedSubtitles: true,
-                        fallbackUsed: false,
+                        fallbackUsed: true,
+                        fallbackReason: subtitleBurnFailure,
                         twoStageSubtitleBurn: false
                     };
                 } catch (directError) {
+                    subtitleBurnFailure = `${subtitleBurnFailure}; direct burn failed: ${directError.message}`;
                     console.warn(`⚠️  字幕烧录失败,改为生成无烧录切片: ${directError.message}`);
                 }
             } else {
@@ -1911,7 +1972,8 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
     return {
         path: outputPath,
         burnedSubtitles: false,
-        fallbackUsed: config.burnSubtitles !== false
+        fallbackUsed: config.burnSubtitles !== false,
+        fallbackReason: subtitleBurnFailure
     };
 }
 
@@ -2125,6 +2187,53 @@ function buildClipNotifyBlock(result = {}, notifyConfig = {}) {
     return lines.join('\n');
 }
 
+const TOPIC_FAILURE_STAGE_LABELS = {
+    planning: 'AI 分段',
+    subtitle: '字幕生成',
+    subtitle_burn: '字幕烧录降级',
+    copy: '文案生成',
+    media: '媒体生成',
+    cover: '封面生成',
+    metadata: '元数据写入',
+    review: '审核文件写入',
+    registry: '上传注册',
+    topic_clipper: '话题切片'
+};
+
+function collectTopicFailures(results = [], failures = []) {
+    const collected = Array.isArray(failures) ? [...failures] : [];
+    for (const result of results) {
+        const mediaError = result?.output?.mediaError;
+        if (!mediaError) continue;
+        const duplicate = collected.some(item =>
+            item?.stage === 'media'
+            && Number(item?.window?.start) === Number(result?.window?.start)
+            && String(item?.error || '') === String(mediaError)
+        );
+        if (!duplicate) {
+            collected.push({
+                stage: 'media',
+                window: result.window,
+                title: result.copy?.title || null,
+                error: mediaError
+            });
+        }
+    }
+    return collected;
+}
+
+function buildTopicFailureBlock(failure = {}) {
+    const stage = TOPIC_FAILURE_STAGE_LABELS[failure.stage] || failure.stage || '未知阶段';
+    const window = failure.window || {};
+    const hasWindow = Number.isFinite(Number(window.start)) || Number.isFinite(Number(window.end));
+    const range = hasWindow
+        ? `${formatClock(window.start || 0)}-${formatClock(window.end || window.start || 0)} | `
+        : '';
+    const severity = failure.severity === 'warning' ? '降级' : '失败';
+    const error = compactNotifyText(failure.error || failure.message || '未知错误', 360);
+    return `- [${severity}/${stage}] ${range}${error}`;
+}
+
 function cleanupTemporaryCoverSource(mediaResult = {}) {
     const tempPath = mediaResult?.coverSourceTemporary ? mediaResult.coverSourcePath : null;
     if (!tempPath) return false;
@@ -2142,24 +2251,35 @@ function buildTopicNotifyMarkdown(results = [], metadata = {}) {
     const aiModels = Array.isArray(metadata.aiModels) && metadata.aiModels.length > 0
         ? metadata.aiModels.join(', ')
         : '规则兜底（未调用 AI）';
-    const windowSummary = results
+    const failures = collectTopicFailures(results, metadata.failures);
+    const successfulResults = results.filter(result => !result?.output?.mediaError && result?.output?.mediaPath);
+    const windowSummary = successfulResults
         .map(result => buildClipNotifyBlock(result, notifyConfig))
         .join('\n');
+    const failureSummary = failures.map(buildTopicFailureBlock).join('\n');
+    const title = failures.length > 0 ? '## 话题切片提醒（存在失败）' : '## 话题切片提醒';
+    const outcome = failures.length > 0
+        ? `本次候选 **${results.length}** 段,成功生成 **${successfulResults.length}** 段,另有 **${failures.length}** 条失败或降级记录。`
+        : `找到其中 **${results.length}** 段提到岁己的地方,已分别切为切片。`;
 
     return [
-        '## 话题切片提醒',
+        title,
         '',
         `在 **${metadata.streamerName || '主播'}** 的直播 **${metadata.streamTitle || metadata.sourceFileName || '未知直播'}** 结束后,`,
-        `找到其中 **${results.length}** 段提到岁己的地方,已分别切为切片。`,
+        outcome,
         '',
         `- 直播间: ${metadata.roomId || '未知'}`,
         `- 录制时间: ${metadata.recordedAt || '未知'}`,
         `- AI模型: ${aiModels}`,
         `- 切片目录: ${toFwdSlash(metadata.outputRoot || '未知')}`,
+        metadata.reviewPath ? `- 审核文件: ${toFwdSlash(metadata.reviewPath)}` : null,
         metadata.uploadRegistry?.clipIds?.length ? `- 投稿短id: ${metadata.uploadRegistry.clipIds.join(',')}` : null,
         '',
-        '切片列表:',
-        windowSummary || '- 无'
+        '成功切片:',
+        windowSummary || '- 无',
+        failures.length > 0 ? '' : null,
+        failures.length > 0 ? '失败与降级详情:' : null,
+        failures.length > 0 ? failureSummary : null
     ].filter(Boolean).join('\n');
 }
 
@@ -2238,6 +2358,9 @@ function buildTopicReviewMarkdown(results = [], metadata = {}) {
     const uploadIds = Array.isArray(metadata.uploadRegistry?.clipIds)
         ? metadata.uploadRegistry.clipIds
         : [];
+    const failures = collectTopicFailures(results, metadata.failures);
+    const uploadableResults = results.filter(result => result?.uploadReady && !result?.output?.mediaError);
+    const localOnlyResults = results.filter(result => !result?.output?.mediaError && !result?.uploadReady);
     const lines = [
         '# 话题切片 review',
         '',
@@ -2250,7 +2373,7 @@ function buildTopicReviewMarkdown(results = [], metadata = {}) {
         ''
     ].filter(line => line !== null);
 
-    results.forEach((result, index) => {
+    uploadableResults.forEach((result, index) => {
         const start = formatClock(result.window?.start || 0);
         const duration = formatClock(result.window?.duration || ((result.window?.end || 0) - (result.window?.start || 0)));
         lines.push(`${index + 1}. ${result.copy?.title || '话题切片'} | ${start} | ${duration} | ${result.output?.mediaPath || ''}`);
@@ -2261,6 +2384,19 @@ function buildTopicReviewMarkdown(results = [], metadata = {}) {
             lines.push(`   封面: ${result.output.coverPath}`);
         }
     });
+    if (uploadableResults.length === 0) {
+        lines.push('- 无可上传切片');
+    }
+    if (localOnlyResults.length > 0) {
+        lines.push('', '## 仅本地结果', '');
+        localOnlyResults.forEach(result => {
+            lines.push(`- ${result.copy?.title || '话题切片'} | ${formatClock(result.window?.start || 0)} | ${result.output?.mediaPath || ''}`);
+        });
+    }
+    if (failures.length > 0) {
+        lines.push('', '## 失败与降级记录', '');
+        lines.push(...failures.map(buildTopicFailureBlock));
+    }
     lines.push('');
     return `${lines.join('\n')}\n`;
 }
@@ -2295,15 +2431,24 @@ function registerReviewForUpload(reviewPath, results, metadata) {
         '--tid', '21',
         '--label', `${metadata.streamerName || '主播'} ${metadata.recordedAt || ''}`.trim()
     ];
-    const result = require('child_process').spawnSync('python', args, {
-        cwd: path.dirname(path.dirname(__dirname)),
-        encoding: 'utf8',
-        windowsHide: true
-    });
+    let result;
+    try {
+        result = require('child_process').spawnSync('python', args, {
+            cwd: path.dirname(path.dirname(__dirname)),
+            encoding: 'utf8',
+            windowsHide: true,
+            timeout: getClipTopicsConfig(metadata.config || {}).ffmpegTimeoutMs,
+            killSignal: 'SIGKILL'
+        });
+    } catch (error) {
+        throw new Error(`Upload registry import could not start: ${error.message}`);
+    }
+    if (result.error) {
+        throw new Error(`Upload registry import could not start: ${result.error.message}`);
+    }
     const output = `${result.stdout || ''}${result.stderr || ''}`.trim();
     if (result.status !== 0) {
-        console.warn(`Upload registry import failed: ${output}`);
-        return null;
+        throw new Error(`Upload registry import failed: ${output || `exit ${result.status}`}`);
     }
     if (output) {
         console.log(output);
@@ -2313,7 +2458,8 @@ function registerReviewForUpload(reviewPath, results, metadata) {
 
 async function notifyTopicClipResults(results = [], metadata = {}, config = {}) {
     const notifyConfig = config.clipTopics?.notify || {};
-    if (!notifyConfig.enabled || results.length === 0) {
+    const failures = collectTopicFailures(results, metadata.failures);
+    if (!notifyConfig.enabled || (results.length === 0 && failures.length === 0)) {
         return false;
     }
 
@@ -2325,6 +2471,7 @@ async function notifyTopicClipResults(results = [], metadata = {}, config = {}) 
 
     const markdown = buildTopicNotifyMarkdown(results, {
         ...metadata,
+        failures,
         notify: notifyConfig
     });
     const messages = splitWeChatMarkdown(markdown);
@@ -2332,6 +2479,17 @@ async function notifyTopicClipResults(results = [], metadata = {}, config = {}) 
         await sendWeChatMarkdown(webhookUrl, message);
     }
     return true;
+}
+
+async function notifyTopicClipFailure(error, metadata = {}, config = {}) {
+    const failure = {
+        stage: metadata.stage || 'topic_clipper',
+        error: error?.message || String(error || '未知错误')
+    };
+    return notifyTopicClipResults([], {
+        ...metadata,
+        failures: [failure]
+    }, config);
 }
 
 async function generateTopicClips(options = {}) {
@@ -2406,69 +2564,79 @@ async function generateTopicClips(options = {}) {
     // AI 分段:对每个 burst 决定切 1-3 段
     const aiSegmentedClips = [];
     const aiModelsUsed = new Set();
+    const failures = [];
     for (const burst of bursts) {
-        console.log(`  🔍 [${formatClock(burst.matchStart)}] 命中 ${burst.matchCount} 次,上下文窗口 ${formatClock(burst.start)}-${formatClock(burst.end)} (${burst.allSegments.length}/${burst.contextCandidateCount} 条字幕${burst.contextSampled ? ',均匀抽样' : ''})`);
+        try {
+            console.log(`  🔍 [${formatClock(burst.matchStart)}] 命中 ${burst.matchCount} 次,上下文窗口 ${formatClock(burst.start)}-${formatClock(burst.end)} (${burst.allSegments.length}/${burst.contextCandidateCount} 条字幕${burst.contextSampled ? ',均匀抽样' : ''})`);
 
-        const segments = await segmentBurstWithAI(burst, parsed, streamerName, info, aiConfig);
+            const segments = await segmentBurstWithAI(burst, parsed, streamerName, info, aiConfig);
 
-        if (segments.length === 0) {
-            console.log(`  ⏭️  AI 判定跳过(可能是唱歌/误识别)`);
-            continue;
-        }
-
-        for (const seg of segments) {
-            if (seg.aiModel) {
-                aiModelsUsed.add(seg.aiModel);
+            if (segments.length === 0) {
+                console.log(`  ⏭️  AI 判定跳过(可能是唱歌/误识别)`);
+                continue;
             }
-            const matchKeys = new Set((burst.matchSegments || []).map(segmentKey));
-            const contextSegments = parsed.segments
-                .map((s, index) => ({
-                    index,
-                    start: s.start,
-                    end: s.end,
-                    text: s.text,
-                    hit: matchKeys.has(segmentKey(s))
-                }))
-                .filter(s => Number(s.end) >= seg.start - 20 && Number(s.start) <= seg.end + 20);
-            const clipMatchSegments = (burst.matchSegments || []).filter(match =>
-                Number(match.end) >= seg.start && Number(match.start) <= seg.end
-            );
-            // 构造一个兼容旧代码的 window 对象
-            const w = {
-                index: `${burst.index}-${seg.sliceIndex || 1}`,
-                start: seg.start,
-                end: seg.end,
-                duration: seg.end - seg.start,
-                matchedKeywords: burst.matchedKeywords,
-                matchCount: burst.matchCount,
-                matchSegments: clipMatchSegments.length > 0 ? clipMatchSegments : burst.matchSegments,
-                contextSegments,
-                allSegmentTexts: parsed.segments
-                    .filter(s => Number(s.start) >= seg.start - 5 && Number(s.end) <= seg.end + 5)
-                    .map(s => s.text),
-                preContext: parsed.segments
-                    .filter(s => Number(s.end) <= seg.start && Number(s.end) >= seg.start - 60)
-                    .map(s => s.text).slice(-10),
-                postContext: parsed.segments
-                    .filter(s => Number(s.start) >= seg.end && Number(s.start) <= seg.end + 60)
-                    .map(s => s.text).slice(0, 10),
-            };
-            w.danmakuContext = buildDanmakuContextLines(danmaku, w, config.notify || {});
-            aiSegmentedClips.push({
-                window: w,
-                burst,
-                aiTitle: seg.aiTitle,
-                aiCoverText: seg.aiCoverText,
-                aiDescription: seg.aiDescription,
-                aiModel: seg.aiModel || null,
-                boundaryAdjusted: Boolean(seg.boundaryAdjusted)
-            });
-        }
 
-        console.log(`  ✅ 切出 ${segments.length} 段: ${segments.map(s => formatClock(s.start) + '-' + formatClock(s.end)).join(', ')}`);
+            for (const seg of segments) {
+                if (seg.aiModel) {
+                    aiModelsUsed.add(seg.aiModel);
+                }
+                const matchKeys = new Set((burst.matchSegments || []).map(segmentKey));
+                const contextSegments = parsed.segments
+                    .map((s, index) => ({
+                        index,
+                        start: s.start,
+                        end: s.end,
+                        text: s.text,
+                        hit: matchKeys.has(segmentKey(s))
+                    }))
+                    .filter(s => Number(s.end) >= seg.start - 20 && Number(s.start) <= seg.end + 20);
+                const clipMatchSegments = (burst.matchSegments || []).filter(match =>
+                    Number(match.end) >= seg.start && Number(match.start) <= seg.end
+                );
+                // 构造一个兼容旧代码的 window 对象
+                const w = {
+                    index: `${burst.index}-${seg.sliceIndex || 1}`,
+                    start: seg.start,
+                    end: seg.end,
+                    duration: seg.end - seg.start,
+                    matchedKeywords: burst.matchedKeywords,
+                    matchCount: burst.matchCount,
+                    matchSegments: clipMatchSegments.length > 0 ? clipMatchSegments : burst.matchSegments,
+                    contextSegments,
+                    allSegmentTexts: parsed.segments
+                        .filter(s => Number(s.start) >= seg.start - 5 && Number(s.end) <= seg.end + 5)
+                        .map(s => s.text),
+                    preContext: parsed.segments
+                        .filter(s => Number(s.end) <= seg.start && Number(s.end) >= seg.start - 60)
+                        .map(s => s.text).slice(-10),
+                    postContext: parsed.segments
+                        .filter(s => Number(s.start) >= seg.end && Number(s.start) <= seg.end + 60)
+                        .map(s => s.text).slice(0, 10),
+                };
+                w.danmakuContext = buildDanmakuContextLines(danmaku, w, config.notify || {});
+                aiSegmentedClips.push({
+                    window: w,
+                    burst,
+                    aiTitle: seg.aiTitle,
+                    aiCoverText: seg.aiCoverText,
+                    aiDescription: seg.aiDescription,
+                    aiModel: seg.aiModel || null,
+                    boundaryAdjusted: Boolean(seg.boundaryAdjusted)
+                });
+            }
+
+            console.log(`  ✅ 切出 ${segments.length} 段: ${segments.map(s => formatClock(s.start) + '-' + formatClock(s.end)).join(', ')}`);
+        } catch (error) {
+            failures.push({
+                stage: 'planning',
+                window: { start: burst.start, end: burst.end },
+                error: error.message
+            });
+            console.warn(`⚠️  话题 burst 处理失败,跳过本段并继续: ${error.message}`);
+        }
     }
 
-    if (aiSegmentedClips.length === 0) {
+    if (aiSegmentedClips.length === 0 && failures.length === 0) {
         console.log('i️  AI 分段后无有效切片');
         return [];
     }
@@ -2482,6 +2650,10 @@ async function generateTopicClips(options = {}) {
 
     const results = [];
     const clipResourceConfig = getFfmpegResourceConfig(options.config || configLoader.getConfig());
+    const mediaGenerator = options.mediaGenerator || cutClipMedia;
+    const coverGenerator = options.coverGenerator || generateClipCover;
+    const reviewRegistrar = options.registerReviewForUpload || registerReviewForUpload;
+    const resultNotifier = options.notifyTopicClipResults || notifyTopicClipResults;
     for (const clip of clipsToGenerate) {
         const window = clip.window;
         const base = sanitizeFileName(`${path.basename(source.mediaPath, path.extname(source.mediaPath))}_topic_${String(window.index).padStart(2, '0')}_${formatClock(window.start).replace(/:/g, '')}`);
@@ -2490,65 +2662,35 @@ async function generateTopicClips(options = {}) {
         const srtPath = path.join(outputRoot, `${base}.srt`);
         const metadataPath = path.join(outputRoot, `${base}.json`);
         const copyPath = path.join(outputRoot, `${base}_投稿文案.md`);
-
-        const srtResult = writeClipSrt(parsed.segments, window, srtPath, {
-            maxCharsPerLine: config.subtitleMaxCharsPerLine ?? 18
-        });
-        // 优先用 AI 分段时生成的标题/简介,其次调用独立的标题/简介生成器
-        const titleGen = clip.aiTitle
-            ? async () => clip.aiTitle
-            : options.titleGenerator;
-        const descGen = clip.aiDescription
-            ? async () => clip.aiDescription
-            : options.descriptionGenerator;
-        // 从 streamerRegistry 解析正式标签(如 米汀Nagisa)
-        const registryTags = resolveStreamerTags(options.config || {}, info.roomId);
-        const metadataConfig = { ...config, ai: options.config?.ai };
-        const copy = await buildClipCopy(window, info, streamerName, metadataConfig, titleGen, descGen, registryTags, clip.aiCoverText);
-
+        let stage = 'subtitle';
+        let srtResult = { segmentCount: 0, segments: [] };
+        let copy = {
+            title: clip.aiTitle || buildDefaultTitle(window, info),
+            coverText: clip.aiCoverText || '',
+            description: clip.aiDescription || '',
+            tags: Array.isArray(config.extraTags) ? [...config.extraTags] : []
+        };
         let mediaResult = null;
-        let error = null;
-        try {
-            mediaResult = await cutClipMedia(source, window, srtPath, mediaPath, {
-                burnSubtitles: config.burnSubtitles,
-                subtitleSegments: srtResult.segments,
-                preserveCoverSource: true,
-                ffmpegPath: options.ffmpegPath,
-                resourceConfig: clipResourceConfig
-            });
-        } catch (clipError) {
-            error = clipError.message;
-            console.warn(`⚠️  话题切片媒体生成失败,保留字幕和元数据: ${clipError.message}`);
-        }
-
-        // 生成封面(从切片视频截取关键帧 + 添加标题文字)
+        let mediaError = null;
         let coverPath = null;
-        if (mediaResult?.path && fs.existsSync(mediaResult.path)) {
-            try {
-                const preferredTime = selectCoverPreferredTime(danmaku, window, config.reactionKeywords || []);
-                coverPath = await generateClipCover(mediaResult.path, copy.coverText || copy.title, outputRoot, {
-                    ...info,
-                    coverSourcePath: mediaResult.coverSourcePath || source.mediaPath,
-                    clipStart: Number.isFinite(Number(mediaResult.coverClipStart))
-                        ? Number(mediaResult.coverClipStart)
-                        : window.start,
-                    clipDuration: window.duration,
-                    preferredTime: Number.isFinite(Number(mediaResult.coverTimeOrigin)) && Number.isFinite(Number(preferredTime))
-                        ? Number(preferredTime) - Number(mediaResult.coverTimeOrigin)
-                        : preferredTime,
-                    resourceConfig: clipResourceConfig
-                });
-            } catch (coverErr) {
-                console.warn(`⚠️  封面生成失败,跳过: ${coverErr.message}`);
-            } finally {
-                cleanupTemporaryCoverSource(mediaResult);
-            }
-        }
-
-        const metadata = {
+        const clipFailures = [];
+        const recordFailure = (failureStage, error, severity = 'error') => {
+            const failure = {
+                stage: failureStage,
+                severity,
+                window,
+                title: copy?.title || null,
+                error: error?.message || String(error || '未知错误')
+            };
+            clipFailures.push(failure);
+            failures.push(failure);
+            return failure;
+        };
+        const createMetadata = () => ({
             version: 1,
             generatedAt: new Date().toISOString(),
             mode: 'local_review',
+            status: mediaError ? 'failed' : (clipFailures.length > 0 ? 'partial' : 'success'),
             source: {
                 mediaPath: source.mediaPath,
                 sourceKind: source.kind,
@@ -2569,7 +2711,8 @@ async function generateTopicClips(options = {}) {
                 boundaryAdjusted: Boolean(clip.boundaryAdjusted),
                 requestedModel: getTopicClipAiModel(options.config || {})
             },
-            uploadReady: source.uploadReady && Boolean(mediaResult?.path),
+            issues: clipFailures,
+            uploadReady: source.uploadReady && Boolean(mediaResult?.path) && !mediaError,
             autoUploadEnabled: false,
             output: {
                 mediaPath: mediaResult?.path || mediaPath,
@@ -2579,18 +2722,110 @@ async function generateTopicClips(options = {}) {
                 coverPath,
                 burnedSubtitles: Boolean(mediaResult?.burnedSubtitles),
                 subtitleBurnFallbackUsed: Boolean(mediaResult?.fallbackUsed),
+                subtitleBurnFallbackReason: mediaResult?.fallbackReason || null,
                 srtSegmentCount: srtResult.segmentCount,
-                mediaError: error
+                mediaError
             }
-        };
+        });
 
-        fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2), 'utf8');
-        writeCopyMarkdown(copy, metadata, copyPath);
-        results.push(metadata);
-        console.log(`✅ 话题切片已生成: ${path.basename(mediaPath)} (${formatClock(window.start)}-${formatClock(window.end)})`);
+        try {
+            srtResult = writeClipSrt(parsed.segments, window, srtPath, {
+                maxCharsPerLine: config.subtitleMaxCharsPerLine ?? 18
+            });
+            stage = 'copy';
+            // 优先用 AI 分段时生成的标题/简介,其次调用独立的标题/简介生成器
+            const titleGen = clip.aiTitle
+                ? async () => clip.aiTitle
+                : options.titleGenerator;
+            const descGen = clip.aiDescription
+                ? async () => clip.aiDescription
+                : options.descriptionGenerator;
+            // 从 streamerRegistry 解析正式标签(如 米汀Nagisa)
+            const registryTags = resolveStreamerTags(options.config || {}, info.roomId);
+            const metadataConfig = { ...config, ai: options.config?.ai };
+            copy = await buildClipCopy(window, info, streamerName, metadataConfig, titleGen, descGen, registryTags, clip.aiCoverText);
+
+            stage = 'media';
+            try {
+                mediaResult = await mediaGenerator(source, window, srtPath, mediaPath, {
+                    burnSubtitles: config.burnSubtitles,
+                    subtitleSegments: srtResult.segments,
+                    preserveCoverSource: true,
+                    ffmpegPath: options.ffmpegPath,
+                    ffmpegTimeoutMs: config.ffmpegTimeoutMs,
+                    resourceConfig: clipResourceConfig
+                });
+            } catch (clipError) {
+                mediaError = clipError.message;
+                recordFailure('media', clipError);
+                try {
+                    if (fs.existsSync(mediaPath)) fs.unlinkSync(mediaPath);
+                } catch (cleanupError) {
+                    console.warn(`⚠️  清理失败切片文件失败: ${cleanupError.message}`);
+                }
+                console.warn(`⚠️  话题切片媒体生成失败,保留字幕和元数据并继续下一段: ${clipError.message}`);
+            }
+            if (mediaResult?.fallbackUsed) {
+                recordFailure(
+                    'subtitle_burn',
+                    new Error(mediaResult.fallbackReason || '字幕烧录失败,已降级生成媒体'),
+                    'warning'
+                );
+            }
+
+            stage = 'cover';
+            // 生成封面(从切片视频截取关键帧 + 添加标题文字)
+            if (mediaResult?.path && fs.existsSync(mediaResult.path)) {
+                try {
+                    const preferredTime = selectCoverPreferredTime(danmaku, window, config.reactionKeywords || []);
+                    coverPath = await coverGenerator(mediaResult.path, copy.coverText || copy.title, outputRoot, {
+                        ...info,
+                        coverSourcePath: mediaResult.coverSourcePath || source.mediaPath,
+                        clipStart: Number.isFinite(Number(mediaResult.coverClipStart))
+                            ? Number(mediaResult.coverClipStart)
+                            : window.start,
+                        clipDuration: window.duration,
+                        preferredTime: Number.isFinite(Number(mediaResult.coverTimeOrigin)) && Number.isFinite(Number(preferredTime))
+                            ? Number(preferredTime) - Number(mediaResult.coverTimeOrigin)
+                            : preferredTime,
+                        timeoutMs: config.ffmpegTimeoutMs,
+                        resourceConfig: clipResourceConfig
+                    });
+                } catch (coverErr) {
+                    recordFailure('cover', coverErr, 'warning');
+                    console.warn(`⚠️  封面生成失败,保留切片并继续: ${coverErr.message}`);
+                } finally {
+                    cleanupTemporaryCoverSource(mediaResult);
+                }
+            }
+
+            stage = 'metadata';
+            const metadata = createMetadata();
+            fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2), 'utf8');
+            writeCopyMarkdown(copy, metadata, copyPath);
+            results.push(metadata);
+            console.log(mediaError
+                ? `⚠️  话题切片处理失败但已记录: ${path.basename(mediaPath)} (${formatClock(window.start)}-${formatClock(window.end)})`
+                : `✅ 话题切片已生成: ${path.basename(mediaPath)} (${formatClock(window.start)}-${formatClock(window.end)})`);
+        } catch (clipError) {
+            mediaError = mediaError || clipError.message;
+            recordFailure(stage, clipError);
+            cleanupTemporaryCoverSource(mediaResult || {});
+            const metadata = createMetadata();
+            try {
+                fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2), 'utf8');
+                writeCopyMarkdown(copy, metadata, copyPath);
+            } catch (metadataError) {
+                console.warn(`⚠️  失败切片的元数据也无法写入: ${metadataError.message}`);
+            }
+            results.push(metadata);
+            console.warn(`⚠️  单个话题切片失败,已隔离并继续下一段: ${clipError.message}`);
+        }
     }
 
-    const reviewPath = path.join(outputRoot, 'REVIEW.md');
+    const reviewStem = sanitizeFileName(path.basename(source.mediaPath, path.extname(source.mediaPath)));
+    const reviewPath = path.join(outputRoot, `${reviewStem}_REVIEW.md`);
+    const latestReviewPath = path.join(outputRoot, 'REVIEW.md');
     const reviewMetadata = {
         streamerName,
         streamTitle: info.streamTitle,
@@ -2599,28 +2834,63 @@ async function generateTopicClips(options = {}) {
         config: options.config || {},
         aiModels: Array.from(aiModelsUsed),
         outputRoot,
-        sourceFileName: info.fileName
+        sourceFileName: info.fileName,
+        reviewPath,
+        failures
     };
-    fs.writeFileSync(reviewPath, buildTopicReviewMarkdown(results, reviewMetadata), 'utf8');
-    const uploadRegistry = registerReviewForUpload(reviewPath, results, reviewMetadata);
-    if (uploadRegistry) {
-        results.forEach((result, index) => {
-            result.uploadId = uploadRegistry.clipIds[index];
-        });
-        reviewMetadata.uploadRegistry = uploadRegistry;
+    let reviewWritten = false;
+    try {
         fs.writeFileSync(reviewPath, buildTopicReviewMarkdown(results, reviewMetadata), 'utf8');
+        reviewWritten = true;
+    } catch (error) {
+        failures.push({ stage: 'review', error: error.message });
+        console.warn(`⚠️  话题切片审核文件写入失败,继续发送结果通知: ${error.message}`);
+    }
+
+    const uploadableResults = results.filter(result => result?.uploadReady && !result?.output?.mediaError);
+    let uploadRegistry = null;
+    if (reviewWritten && uploadableResults.length > 0) {
+        try {
+            uploadRegistry = await Promise.resolve(reviewRegistrar(reviewPath, uploadableResults, reviewMetadata));
+            if (!Array.isArray(uploadRegistry?.clipIds)) {
+                throw new Error('上传注册未返回切片短 ID');
+            }
+            if (uploadRegistry.clipIds.length !== uploadableResults.length) {
+                throw new Error(`上传注册返回 ${uploadRegistry.clipIds.length} 个短 ID,预期 ${uploadableResults.length} 个`);
+            }
+            uploadableResults.forEach((result, index) => {
+                result.uploadId = uploadRegistry.clipIds[index];
+            });
+            reviewMetadata.uploadRegistry = uploadRegistry;
+        } catch (error) {
+            failures.push({ stage: 'registry', error: error.message });
+            console.warn(`⚠️  话题切片上传注册失败,本地结果仍保留: ${error.message}`);
+        }
+    }
+
+    const finalReview = buildTopicReviewMarkdown(results, reviewMetadata);
+    try {
+        fs.writeFileSync(reviewPath, finalReview, 'utf8');
+    } catch (error) {
+        failures.push({ stage: 'review', error: error.message });
+        console.warn(`⚠️  话题切片最终审核文件写入失败: ${error.message}`);
+    }
+    try {
+        fs.writeFileSync(latestReviewPath, buildTopicReviewMarkdown(results, reviewMetadata), 'utf8');
+    } catch (error) {
+        failures.push({ stage: 'review', severity: 'warning', error: `更新最新 REVIEW.md 失败: ${error.message}` });
+        console.warn(`⚠️  最新 REVIEW.md 更新失败,每场独立审核文件仍保留: ${error.message}`);
     }
 
     try {
-        await notifyTopicClipResults(results, {
+        await resultNotifier(results, {
             ...reviewMetadata,
+            failures,
             uploadRegistry
         }, options.config || {});
-        if (results.length > 0) {
-            console.log(`📣 话题切片提醒已尝试发送: ${results.length} 段`);
-        }
+        console.log(`📣 话题切片提醒已尝试发送: 成功=${uploadableResults.length},异常=${failures.length}`);
     } catch (error) {
-        console.warn(`⚠️  话题切片提醒发送失败,继续保留本地切片: ${error.message}`);
+        console.warn(`⚠️  话题切片提醒发送失败,继续保留本地结果: ${error.message}`);
     }
 
     return results;
@@ -2654,11 +2924,15 @@ module.exports = {
     selectInputSeekKeyframe,
     selectCoverPreferredTime,
     cleanupTemporaryCoverSource,
+    runFfmpeg,
     cutClipMedia,
     generateClipCover,
     generateTopicClips,
     notifyTopicClipResults,
+    notifyTopicClipFailure,
     buildTopicNotifyMarkdown,
+    buildTopicReviewMarkdown,
+    collectTopicFailures,
     splitWeChatMarkdown,
     formatClock,
     calculateSubtitleStyle,
