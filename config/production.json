@@ -45,7 +45,11 @@
       1713546334,
       1713548468,
       1986461465,
-      25034104
+      25034104,
+      1700301235,
+      1727071052,
+      1727074031,
+      1727076670
     ],
     "formats": [
       ".m4a",
@@ -1088,6 +1092,15 @@
           "appendCharacterDescriptions": true
         }
       },
+      "1700301235": {
+        "uid": "1512246445",
+        "audioOnly": true,
+        "anchorName": "四时小路Komichi",
+        "fanName": "粉丝",
+        "enableTextGeneration": true,
+        "enableComicGeneration": false,
+        "enableDelayedReply": false
+      },
       "1713546334": {
         "audioOnly": true,
         "referenceImage": "public/reference_images/Hazel_灰泽满_立绘.png",
@@ -1144,6 +1157,33 @@
           "filterMentionedImagesByComicScript": false,
           "appendCharacterDescriptions": true
         }
+      },
+      "1727071052": {
+        "uid": "1891335475",
+        "audioOnly": true,
+        "anchorName": "小松绿Viridis",
+        "fanName": "粉丝",
+        "enableTextGeneration": true,
+        "enableComicGeneration": false,
+        "enableDelayedReply": false
+      },
+      "1727074031": {
+        "uid": "2138961136",
+        "audioOnly": true,
+        "anchorName": "羽啾chu2u",
+        "fanName": "粉丝",
+        "enableTextGeneration": true,
+        "enableComicGeneration": false,
+        "enableDelayedReply": false
+      },
+      "1727076670": {
+        "uid": "1150976664",
+        "audioOnly": true,
+        "anchorName": "枝堇Sumire",
+        "fanName": "粉丝",
+        "enableTextGeneration": true,
+        "enableComicGeneration": false,
+        "enableDelayedReply": false
       },
       "1741667419": {
         "audioOnly": true,
