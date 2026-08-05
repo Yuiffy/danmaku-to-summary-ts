@@ -2382,9 +2382,10 @@ export class DelayedReplyService implements IDelayedReplyService {
       const fallback = frontMatter.fallback === 'true' ? '，fallback: 是' : '';
       const promptTokens = this.getFiniteNumber(frontMatter.promptTokens);
       const cachedTokens = this.getFiniteNumber(frontMatter.cachedTokens);
+      const cacheWriteTokens = this.getFiniteNumber(frontMatter.cacheWriteTokens);
       const cacheInfo = promptTokens !== undefined
         ? cachedTokens !== undefined
-          ? `，输入缓存: ${cachedTokens}/${promptTokens} tokens`
+          ? `，输入缓存: ${cachedTokens}/${promptTokens} tokens${cacheWriteTokens !== undefined ? `，缓存写入: ${cacheWriteTokens} tokens` : ''}`
           : `，输入: ${promptTokens} tokens（缓存命中量未报告）`
         : '';
       return `模型: ${model}，服务: ${provider}${fallback}${cacheInfo}`;
@@ -2419,9 +2420,10 @@ export class DelayedReplyService implements IDelayedReplyService {
         const successfulAttempt = attempts.find((attempt: any) => attempt?.status === 'success');
         const promptTokens = this.getFiniteNumber(successfulAttempt?.promptTokens);
         const cachedTokens = this.getFiniteNumber(successfulAttempt?.cachedTokens);
+        const cacheWriteTokens = this.getFiniteNumber(successfulAttempt?.cacheWriteTokens);
         const cacheInfo = promptTokens !== undefined
           ? cachedTokens !== undefined
-            ? `，输入缓存: ${cachedTokens}/${promptTokens} tokens`
+            ? `，输入缓存: ${cachedTokens}/${promptTokens} tokens${cacheWriteTokens !== undefined ? `，缓存写入: ${cacheWriteTokens} tokens` : ''}`
             : `，输入: ${promptTokens} tokens（缓存命中量未报告）`
           : '';
         return `模型: ${model}，服务: ${provider}，状态: ${status}${fallback}${cacheInfo}${reason}`;
@@ -2490,6 +2492,21 @@ export class DelayedReplyService implements IDelayedReplyService {
       const endpoint = meta.endpoint || '未知接口';
       const reason = meta.reason ? String(meta.reason) : '';
       const attempts = Array.isArray(meta.attempts) ? meta.attempts : [];
+      const successfulAttempt = attempts.find((attempt: any) => attempt?.status === 'success');
+      const usage = meta.usage || successfulAttempt?.usage || {};
+      const usageDetails = usage.input_tokens_details || usage.prompt_tokens_details || {};
+      const inputTokens = this.getFirstFiniteNumber(usage.input_tokens, usage.prompt_tokens);
+      const outputTokens = this.getFirstFiniteNumber(usage.output_tokens, usage.completion_tokens);
+      const imageInputTokens = this.getFiniteNumber(usageDetails.image_tokens);
+      const textInputTokens = this.getFiniteNumber(usageDetails.text_tokens);
+      const usageInfo = inputTokens !== undefined || outputTokens !== undefined
+        ? [
+            inputTokens !== undefined ? `输入 ${inputTokens}` : undefined,
+            imageInputTokens !== undefined ? `图片 ${imageInputTokens}` : undefined,
+            textInputTokens !== undefined ? `文字 ${textInputTokens}` : undefined,
+            outputTokens !== undefined ? `输出 ${outputTokens}` : undefined
+          ].filter(Boolean).join('，') + ' tokens'
+        : undefined;
       const combinedAttempts = routeAttempts.length > 0 ? routeAttempts : attempts;
       const formatRoute = (routeProvider: string, routeModel: string, routeEndpoint: string) =>
         `${routeProvider}/${routeModel}${routeEndpoint !== '未知接口' && routeEndpoint !== 'unknown' ? ` (${routeEndpoint})` : ''}`;
@@ -2506,6 +2523,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       return [
         modeInfo,
         `模型: ${summary}`,
+        usageInfo ? `用量: ${usageInfo}` : undefined,
         reason ? `原因: ${reason}` : undefined,
         lastAttempts.length > 1 || status !== '成功' ? `尝试:\n${lastAttempts.join('\n')}` : undefined
       ].filter(Boolean).join('\n');

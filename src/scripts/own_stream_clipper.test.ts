@@ -454,6 +454,8 @@ describe('own_stream_clipper', () => {
     expect(source.sourceText).toContain('=== 30秒弹幕热度表 ===');
     expect(source.heatLines[0]).toContain('count=2');
     expect(source.heatLines[0]).toContain('baselineRatio=1');
+    expect(source.heatLines[0]).not.toContain('笑死');
+    expect(source.sourceText.match(/笑死/gu)).toHaveLength(1);
     expect(source.subtitleLines).toHaveLength(2);
     expect(source.danmakuLines).toHaveLength(1);
   });

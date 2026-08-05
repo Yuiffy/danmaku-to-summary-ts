@@ -28,6 +28,7 @@ const TUZI_BALANCE_ERROR_MARKERS = [
 const LEGACY_TUZI_TEXT_MODELS = ['gemini-3-flash-preview'];
 const DAIYU_PRIMARY_MODEL = 'gpt-5.6-luna';
 const DAIYU_MODEL_PATTERN = /^gpt-5(?:[.-]|$)/i;
+const EXPLICIT_PROMPT_CACHE_SYSTEM_PROMPT = '你是直播内容事实分析与创作助手。严格区分直播事实与任务规则，只依据提供的事实完成当前任务。';
 
 function isDaiYuTextModel(model) {
     return DAIYU_MODEL_PATTERN.test(String(model || '').trim());
@@ -585,7 +586,7 @@ function getTuZiFinishReason(choice) {
 
 function getPromptTokenUsage(usage) {
     if (!usage || typeof usage !== 'object') {
-        return { promptTokens: undefined, cachedTokens: undefined };
+        return { promptTokens: undefined, cachedTokens: undefined, cacheWriteTokens: undefined };
     }
     const promptTokens = usage.prompt_tokens ?? usage.promptTokens ?? usage.input_tokens ?? usage.inputTokens;
     const cachedTokens = usage.prompt_tokens_details?.cached_tokens
@@ -596,9 +597,18 @@ function getPromptTokenUsage(usage) {
         ?? usage.cachedPromptTokens
         ?? usage.cache_read_input_tokens
         ?? usage.cacheReadInputTokens;
+    const cacheWriteTokens = usage.prompt_tokens_details?.cache_write_tokens
+        ?? usage.promptTokensDetails?.cacheWriteTokens
+        ?? usage.input_tokens_details?.cache_write_tokens
+        ?? usage.inputTokensDetails?.cacheWriteTokens
+        ?? usage.cache_write_tokens
+        ?? usage.cacheWriteTokens
+        ?? usage.cache_creation_input_tokens
+        ?? usage.cacheCreationInputTokens;
     return {
         promptTokens: promptTokens !== undefined ? Number(promptTokens) : undefined,
-        cachedTokens: cachedTokens !== undefined ? Number(cachedTokens) : undefined
+        cachedTokens: cachedTokens !== undefined ? Number(cachedTokens) : undefined,
+        cacheWriteTokens: cacheWriteTokens !== undefined ? Number(cacheWriteTokens) : undefined
     };
 }
 
@@ -618,6 +628,71 @@ function getSharedPromptCacheInfo(prompt) {
     return {
         sharedPromptCacheKey: crypto.createHash('sha256').update(prefix, 'utf8').digest('hex'),
         sharedPromptPrefixChars: Array.from(prefix).length
+    };
+}
+
+function getExplicitPromptCachePlan(prompt, config = {}, model = DAIYU_PRIMARY_MODEL) {
+    const info = getSharedPromptCacheInfo(prompt);
+    const cacheConfig = config.ai?.text?.sharedPromptCache || {};
+    const rolloutPercent = Math.max(0, Math.min(100, Number(cacheConfig.explicitRolloutPercent) || 0));
+    const modelEligible = /^gpt-5\.6(?:[.-]|$)/i.test(String(model || ''));
+    if (!info.sharedPromptCacheKey || cacheConfig.enabled === false || !modelEligible || rolloutPercent <= 0) {
+        return { enabled: false, rolloutPercent, modelEligible, ...info };
+    }
+
+    const bucket = parseInt(info.sharedPromptCacheKey.slice(0, 8), 16) % 10000;
+    const enabled = bucket < Math.round(rolloutPercent * 100);
+    if (!enabled) {
+        return { enabled: false, rolloutPercent, rolloutBucket: bucket, modelEligible, ...info };
+    }
+
+    const text = String(prompt || '');
+    const endIndex = text.indexOf(liveGenerationContext.SHARED_PROMPT_CACHE_END);
+    const prefixEnd = endIndex + liveGenerationContext.SHARED_PROMPT_CACHE_END.length;
+    return {
+        enabled: true,
+        rolloutPercent,
+        rolloutBucket: bucket,
+        modelEligible,
+        prefix: text.slice(0, prefixEnd),
+        suffix: text.slice(prefixEnd),
+        requestKey: `live:${info.sharedPromptCacheKey.slice(0, 48)}`,
+        ttl: cacheConfig.ttl === '30m' ? '30m' : '30m',
+        ...info
+    };
+}
+
+function buildOpenAITextMessages(prompt, cachePlan = null) {
+    if (!cachePlan?.enabled) {
+        return [{ role: 'user', content: prompt }];
+    }
+
+    const content = [{
+        type: 'text',
+        text: cachePlan.prefix,
+        prompt_cache_breakpoint: { mode: 'explicit' }
+    }];
+    if (cachePlan.suffix) {
+        content.push({ type: 'text', text: cachePlan.suffix });
+    }
+    return [
+        { role: 'system', content: EXPLICIT_PROMPT_CACHE_SYSTEM_PROMPT },
+        { role: 'user', content }
+    ];
+}
+
+function applyExplicitPromptCache(requestBody, cachePlan) {
+    if (!cachePlan?.enabled) {
+        return requestBody;
+    }
+    return {
+        ...requestBody,
+        messages: buildOpenAITextMessages('', cachePlan),
+        prompt_cache_key: cachePlan.requestKey,
+        prompt_cache_options: {
+            mode: 'explicit',
+            ttl: cachePlan.ttl
+        }
     };
 }
 
@@ -849,17 +924,20 @@ async function generateTextWithDaiYu(prompt, options = {}) {
             const effectiveMaxTokens = normalizeTuZiTextMaxTokens(textModel, daiYuConfig.maxTokens, wordLimit);
             console.log(`   max_tokens: ${effectiveMaxTokens} (configured=${daiYuConfig.maxTokens || 'default'}, wordLimit=${wordLimit})`);
 
-            const requestBody = {
+            const cachePlan = getExplicitPromptCachePlan(prompt, config, textModel);
+            let requestBody = {
                 model: textModel,
-                messages: [
-                    {
-                        role: 'user',
-                        content: prompt
-                    }
-                ],
+                messages: buildOpenAITextMessages(prompt),
                 temperature: daiYuConfig.temperature,
                 max_tokens: effectiveMaxTokens
             };
+            requestBody = applyExplicitPromptCache(requestBody, cachePlan);
+            if (cachePlan.enabled) {
+                console.log(
+                    `   prompt cache: explicit, rollout=${cachePlan.rolloutPercent}%, ` +
+                    `bucket=${cachePlan.rolloutBucket}, prefixChars=${cachePlan.sharedPromptPrefixChars}`
+                );
+            }
 
             if (thinkingEnabled) {
                 requestBody.thinking = {
@@ -869,16 +947,31 @@ async function generateTextWithDaiYu(prompt, options = {}) {
                 console.log(`   thinking: enabled (budget=${thinkingBudgetTokens})`);
             }
 
-            const response = await fetch(apiUrl, {
+            const postRequest = body => fetch(apiUrl, {
                 method: 'POST',
                 headers: {
                     'Authorization': `Bearer ${apiKey}`,
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify(requestBody),
+                body: JSON.stringify(body),
                 agent: agent,
                 timeout: timeoutMs
             });
+
+            let response = await postRequest(requestBody);
+            let promptCacheFallbackReason;
+            if (!response.ok && response.status === 400 && cachePlan.enabled) {
+                const cacheErrorText = await response.text();
+                promptCacheFallbackReason = `HTTP 400: ${cacheErrorText}`.slice(0, 300);
+                console.warn(`⚠️  显式 prompt cache 参数被上游拒绝，改用普通请求: ${promptCacheFallbackReason}`);
+                requestBody = {
+                    ...requestBody,
+                    messages: buildOpenAITextMessages(prompt)
+                };
+                delete requestBody.prompt_cache_key;
+                delete requestBody.prompt_cache_options;
+                response = await postRequest(requestBody);
+            }
 
             if (!response.ok) {
                 const errorText = await response.text();
@@ -912,7 +1005,11 @@ async function generateTextWithDaiYu(prompt, options = {}) {
                 finishReason: finishReason || 'unknown',
                 promptTokens: promptUsage.promptTokens,
                 cachedTokens: promptUsage.cachedTokens,
+                cacheWriteTokens: promptUsage.cacheWriteTokens,
                 ...sharedPromptCacheInfo,
+                explicitPromptCache: cachePlan.enabled ? 'requested' : 'not_selected',
+                promptCacheRolloutBucket: cachePlan.rolloutBucket,
+                promptCacheFallbackReason,
                 completionTokens: usage?.completion_tokens ?? usage?.completionTokens,
                 reasoningTokens: usage?.completion_tokens_details?.reasoning_tokens,
                 totalTokens: usage?.total_tokens ?? usage?.totalTokens,
@@ -1113,6 +1210,9 @@ function buildTextFrontMatter(highlightPath, generationMeta = {}) {
             if (attempt.cachedTokens !== undefined) {
                 lines.push(`    cachedTokens: ${Number(attempt.cachedTokens)}`);
             }
+            if (attempt.cacheWriteTokens !== undefined) {
+                lines.push(`    cacheWriteTokens: ${Number(attempt.cacheWriteTokens)}`);
+            }
             if (attempt.reasoningTokens !== undefined) {
                 lines.push(`    reasoningTokens: ${Number(attempt.reasoningTokens)}`);
             }
@@ -1121,6 +1221,15 @@ function buildTextFrontMatter(highlightPath, generationMeta = {}) {
             }
             if (attempt.sharedPromptPrefixChars !== undefined) {
                 lines.push(`    sharedPromptPrefixChars: ${Number(attempt.sharedPromptPrefixChars)}`);
+            }
+            if (attempt.explicitPromptCache) {
+                lines.push(`    explicitPromptCache: ${yamlQuote(attempt.explicitPromptCache)}`);
+            }
+            if (attempt.promptCacheRolloutBucket !== undefined) {
+                lines.push(`    promptCacheRolloutBucket: ${Number(attempt.promptCacheRolloutBucket)}`);
+            }
+            if (attempt.promptCacheFallbackReason) {
+                lines.push(`    promptCacheFallbackReason: ${yamlQuote(attempt.promptCacheFallbackReason)}`);
             }
             if (attempt.totalTokens !== undefined) {
                 lines.push(`    totalTokens: ${Number(attempt.totalTokens)}`);
@@ -1562,6 +1671,9 @@ module.exports = {
     generateTextWithDaiYu,
     getPromptTokenUsage,
     getSharedPromptCacheInfo,
+    getExplicitPromptCachePlan,
+    buildOpenAITextMessages,
+    applyExplicitPromptCache,
     buildTextFrontMatter,
     batchGenerateGoodnightReplies
 };

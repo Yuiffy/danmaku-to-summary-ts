@@ -99,6 +99,7 @@ def append_image_generation_attempt(
     reason: str = "",
     request_id: Optional[str] = None,
     response_id: Optional[str] = None,
+    usage: Optional[Dict[str, Any]] = None,
 ) -> None:
     attempts = LAST_IMAGE_GENERATION_META.setdefault("attempts", [])
     attempt = {
@@ -111,6 +112,9 @@ def append_image_generation_attempt(
         attempt["requestId"] = request_id
     if response_id:
         attempt["responseId"] = response_id
+    if usage:
+        attempt["usage"] = usage
+        attempt.update(extract_token_usage(usage))
     attempts.append(attempt)
     LAST_IMAGE_GENERATION_META["status"] = status
     LAST_IMAGE_GENERATION_META["model"] = model
@@ -123,6 +127,8 @@ def append_image_generation_attempt(
         LAST_IMAGE_GENERATION_META["lastRequestId"] = request_id
     if response_id:
         LAST_IMAGE_GENERATION_META["lastResponseId"] = response_id
+    if usage:
+        LAST_IMAGE_GENERATION_META["usage"] = usage
 
 
 def get_last_image_generation_meta() -> Dict[str, Any]:
@@ -217,6 +223,41 @@ def normalize_text_max_tokens(model: str, max_tokens: int) -> int:
     if normalized != requested:
         print(f"[WARNING] 文本 max_tokens 超过模型上限，已从 {requested} 限制为 {normalized} (model={model})")
     return normalized
+
+
+def extract_token_usage(usage: Any) -> Dict[str, int]:
+    """Normalize OpenAI-compatible text and image usage without dropping raw usage."""
+    if not isinstance(usage, dict):
+        return {}
+    prompt_details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details") or {}
+    completion_details = usage.get("completion_tokens_details") or usage.get("output_tokens_details") or {}
+
+    def first_number(*values):
+        for value in values:
+            if isinstance(value, (int, float)):
+                return int(value)
+        return None
+
+    fields = {
+        "promptTokens": first_number(usage.get("prompt_tokens"), usage.get("input_tokens")),
+        "cachedTokens": first_number(
+            prompt_details.get("cached_tokens"),
+            usage.get("cached_prompt_tokens"),
+            usage.get("cache_read_input_tokens"),
+        ),
+        "cacheWriteTokens": first_number(
+            prompt_details.get("cache_write_tokens"),
+            usage.get("cache_write_tokens"),
+            usage.get("cache_creation_input_tokens"),
+        ),
+        "completionTokens": first_number(usage.get("completion_tokens"), usage.get("output_tokens")),
+        "reasoningTokens": first_number(
+            completion_details.get("reasoning_tokens"),
+            completion_details.get("reasoningTokens"),
+        ),
+        "totalTokens": first_number(usage.get("total_tokens"), usage.get("totalTokens")),
+    }
+    return {key: value for key, value in fields.items() if value is not None}
 
 
 def _extract_text_parts(value: Any) -> list[str]:
@@ -1106,7 +1147,10 @@ def call_tuzi_chat_completions(
     max_tokens: int = 100000,
     thinking: bool = False,
     thinking_budget_tokens: int = 10000,
-) -> Optional[str]:
+    prompt_cache: Optional[Dict[str, Any]] = None,
+    return_metadata: bool = False,
+    provider_label: str = "tuZi",
+) -> Any:
     """
     调用tuZi的/v1/chat/completions端点生成文本
     
@@ -1146,16 +1190,36 @@ def call_tuzi_chat_completions(
             "Accept": "application/json",
         }
 
-        # 构建消息列表
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
         valid_image_paths = [
             str(path) for path in (image_paths or [])
             if path and os.path.isfile(str(path))
         ]
-        if valid_image_paths:
-            user_content = [{"type": "text", "text": prompt}]
+
+        cache_enabled = bool(
+            prompt_cache
+            and prompt_cache.get("enabled")
+            and prompt_cache.get("prefix")
+            and prompt_cache.get("requestKey")
+        )
+
+        def build_messages(use_cache: bool):
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            if use_cache:
+                user_content = [{
+                    "type": "text",
+                    "text": prompt_cache["prefix"],
+                    "prompt_cache_breakpoint": {"mode": "explicit"},
+                }]
+                if prompt_cache.get("suffix"):
+                    user_content.append({"type": "text", "text": prompt_cache["suffix"]})
+            elif valid_image_paths:
+                user_content = [{"type": "text", "text": prompt}]
+            else:
+                messages.append({"role": "user", "content": prompt})
+                return messages
+
             for image_path in valid_image_paths:
                 user_content.append({
                     "type": "image_url",
@@ -1165,8 +1229,9 @@ def call_tuzi_chat_completions(
                     },
                 })
             messages.append({"role": "user", "content": user_content})
-        else:
-            messages.append({"role": "user", "content": prompt})
+            return messages
+
+        messages = build_messages(cache_enabled)
 
         normalized_max_tokens = normalize_text_max_tokens(model, max_tokens)
         payload = {
@@ -1181,24 +1246,66 @@ def call_tuzi_chat_completions(
                 "type": "enabled",
                 "budget_tokens": max(1, int(thinking_budget_tokens)),
             }
+        if cache_enabled:
+            payload["prompt_cache_key"] = prompt_cache["requestKey"]
+            payload["prompt_cache_options"] = {
+                "mode": "explicit",
+                "ttl": prompt_cache.get("ttl") or "30m",
+            }
+            print(
+                "[PROMPT_CACHE] "
+                f"explicit rollout={prompt_cache.get('rolloutPercent')}%, "
+                f"bucket={prompt_cache.get('rolloutBucket')}, "
+                f"prefix_chars={prompt_cache.get('sharedPromptPrefixChars')}"
+            )
 
         print(f"[TUZI_TEXT] 调用tuZi Chat Completions API...")
         response = request_tuzi_with_retry(
             "chat/completions 文本生成",
             lambda: requests.post(api_url, headers=headers, json=payload, timeout=timeout, proxies=proxies)
         )
+        prompt_cache_fallback_reason = None
+        if response is not None and response.status_code == 400 and cache_enabled:
+            prompt_cache_fallback_reason = f"HTTP 400: {response.text[:300]}"
+            print(f"[WARNING] 显式 prompt cache 参数被上游拒绝，改用普通请求: {prompt_cache_fallback_reason}")
+            payload.pop("prompt_cache_key", None)
+            payload.pop("prompt_cache_options", None)
+            payload["messages"] = build_messages(False)
+            response = request_tuzi_with_retry(
+                "chat/completions 文本生成（无缓存回退）",
+                lambda: requests.post(api_url, headers=headers, json=payload, timeout=timeout, proxies=proxies)
+            )
         if response is None:
             print("[ERROR]  tuZi Chat Completions API调用失败: 重试耗尽")
             return None
 
         if response.status_code == 200:
             result = response.json()
-            log_tuzi_response_identifiers(f"chat/completions 文本生成 {model}", response, result)
+            ids = log_tuzi_response_identifiers(f"chat/completions 文本生成 {model}", response, result)
             content = extract_tuzi_text_content(result)
             if content:
+                usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+                usage_summary = extract_token_usage(usage)
+                metadata = {
+                    "provider": provider_label,
+                    "model": model,
+                    "status": "success",
+                    "finishReason": (result.get("choices") or [{}])[0].get("finish_reason") or "unknown",
+                    "requestId": ids.get("requestId"),
+                    "responseId": ids.get("responseId"),
+                    "usage": usage,
+                    **usage_summary,
+                    "sharedPromptCacheKey": (prompt_cache or {}).get("sharedPromptCacheKey"),
+                    "sharedPromptPrefixChars": (prompt_cache or {}).get("sharedPromptPrefixChars"),
+                    "explicitPromptCache": "requested" if cache_enabled else "not_selected",
+                    "promptCacheRolloutBucket": (prompt_cache or {}).get("rolloutBucket"),
+                    "promptCacheFallbackReason": prompt_cache_fallback_reason,
+                }
+                metadata = {key: value for key, value in metadata.items() if value is not None}
                 print("[OK] tuZi Chat Completions 文本生成成功")
                 print(f"生成内容长度: {len(content)} 字符")
-                return content
+                print(f"[TUZI_TEXT_USAGE] {json.dumps(metadata, ensure_ascii=False, separators=(',', ':'))}")
+                return (content, metadata) if return_metadata else content
 
             print(f"[WARNING]  tuZi API返回空内容: {summarize_tuzi_text_response(result)}")
             return None
@@ -1226,7 +1333,9 @@ def call_daiyu_chat_completions(
     max_tokens: int = 100000,
     thinking: bool = True,
     thinking_budget_tokens: int = 10000,
-) -> Optional[str]:
+    prompt_cache: Optional[Dict[str, Any]] = None,
+    return_metadata: bool = False,
+) -> Any:
     """调用带鱼的 OpenAI-compatible 文本接口，并默认开启思考。"""
     return call_tuzi_chat_completions(
         prompt=prompt,
@@ -1241,6 +1350,9 @@ def call_daiyu_chat_completions(
         max_tokens=max_tokens,
         thinking=thinking,
         thinking_budget_tokens=thinking_budget_tokens,
+        prompt_cache=prompt_cache,
+        return_metadata=return_metadata,
+        provider_label="daiYu",
     )
 
 
@@ -1409,6 +1521,9 @@ def call_tuzi_images_edits(
         result = resp.json()
         ids = log_tuzi_response_identifiers(operation_name, resp, result)
         print(f"[DEBUG] images/edits 响应结构: {list(result.keys())}")
+        usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+        if usage:
+            print(f"[IMAGE_USAGE] {json.dumps(usage, ensure_ascii=False, separators=(',', ':'))}")
 
         extracted = try_extract_image_from_data_items(result.get("data"), proxies, prefix=f"comic_{model.replace('/', '_')}_edit")
         if extracted:
@@ -1420,6 +1535,7 @@ def call_tuzi_images_edits(
                 "生成成功",
                 ids.get("requestId"),
                 ids.get("responseId"),
+                usage,
             )
             print(f"[OK] images/edits 成功，保存到: {extracted}")
             return extracted
@@ -1432,6 +1548,7 @@ def call_tuzi_images_edits(
             "响应中未找到图片数据",
             ids.get("requestId"),
             ids.get("responseId"),
+            usage,
         )
         return None
 

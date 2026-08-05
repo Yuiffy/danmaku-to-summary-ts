@@ -6,10 +6,11 @@ describe('shared text prompt cache metadata', () => {
   it('extracts OpenAI-compatible prompt and cached token usage', () => {
     expect(aiTextGenerator.getPromptTokenUsage({
       prompt_tokens: 5600,
-      prompt_tokens_details: { cached_tokens: 4608 }
+      prompt_tokens_details: { cached_tokens: 4608, cache_write_tokens: 0 }
     })).toEqual({
       promptTokens: 5600,
-      cachedTokens: 4608
+      cachedTokens: 4608,
+      cacheWriteTokens: 0
     });
 
     expect(aiTextGenerator.getPromptTokenUsage({
@@ -17,8 +18,66 @@ describe('shared text prompt cache metadata', () => {
       input_tokens_details: { cached_tokens: 4096 }
     })).toEqual({
       promptTokens: 5600,
-      cachedTokens: 4096
+      cachedTokens: 4096,
+      cacheWriteTokens: undefined
     });
+  });
+
+  it('marks the stable live prefix with an explicit GPT-5.6 cache breakpoint', () => {
+    const prompt = [
+      liveGenerationContext.SHARED_PROMPT_CACHE_START,
+      '这里是足够长的本场事实块。',
+      liveGenerationContext.SHARED_PROMPT_CACHE_END,
+      '',
+      '【晚安回复任务】',
+      '请生成晚安回复。'
+    ].join('\n');
+    const config = {
+      ai: {
+        text: {
+          sharedPromptCache: {
+            enabled: true,
+            explicitRolloutPercent: 100,
+            ttl: '30m'
+          }
+        }
+      }
+    };
+
+    const plan = aiTextGenerator.getExplicitPromptCachePlan(prompt, config, 'gpt-5.6-luna');
+    const body = aiTextGenerator.applyExplicitPromptCache({
+      model: 'gpt-5.6-luna',
+      messages: aiTextGenerator.buildOpenAITextMessages(prompt)
+    }, plan);
+
+    expect(plan.enabled).toBe(true);
+    expect(plan.prefix).toBe([
+      liveGenerationContext.SHARED_PROMPT_CACHE_START,
+      '这里是足够长的本场事实块。',
+      liveGenerationContext.SHARED_PROMPT_CACHE_END
+    ].join('\n'));
+    expect(plan.suffix).toContain('【晚安回复任务】');
+    expect(body.prompt_cache_key).toMatch(/^live:[a-f0-9]{48}$/u);
+    expect(body.prompt_cache_options).toEqual({ mode: 'explicit', ttl: '30m' });
+    expect(body.messages[0]).toEqual(expect.objectContaining({ role: 'system' }));
+    expect(body.messages[1].content[0]).toEqual(expect.objectContaining({
+      type: 'text',
+      prompt_cache_breakpoint: { mode: 'explicit' }
+    }));
+    expect(body.messages[1].content[1].text).toContain('【晚安回复任务】');
+  });
+
+  it('keeps explicit caching off outside the rollout and on unsupported models', () => {
+    const prompt = `${liveGenerationContext.SHARED_PROMPT_CACHE_START}\n事实\n${liveGenerationContext.SHARED_PROMPT_CACHE_END}\n任务`;
+    const disabled = aiTextGenerator.getExplicitPromptCachePlan(prompt, {
+      ai: { text: { sharedPromptCache: { enabled: true, explicitRolloutPercent: 0 } } }
+    }, 'gpt-5.6-luna');
+    const unsupported = aiTextGenerator.getExplicitPromptCachePlan(prompt, {
+      ai: { text: { sharedPromptCache: { enabled: true, explicitRolloutPercent: 100 } } }
+    }, 'gemini-3-flash-preview');
+
+    expect(disabled.enabled).toBe(false);
+    expect(unsupported.enabled).toBe(false);
   });
 
   it('places the shared live facts before goodnight-specific instructions', () => {
@@ -82,6 +141,7 @@ describe('shared text prompt cache metadata', () => {
         status: 'success',
         promptTokens: 5600,
         cachedTokens: 4608,
+        cacheWriteTokens: 1024,
         sharedPromptCacheKey: 'a'.repeat(64),
         sharedPromptPrefixChars: 8000
       }]
@@ -89,6 +149,7 @@ describe('shared text prompt cache metadata', () => {
 
     expect(frontMatter).toContain('promptTokens: 5600');
     expect(frontMatter).toContain('cachedTokens: 4608');
+    expect(frontMatter).toContain('cacheWriteTokens: 1024');
     expect(frontMatter).toContain(`sharedPromptCacheKey: "${'a'.repeat(64)}"`);
     expect(frontMatter).toContain('sharedPromptPrefixChars: 8000');
   });

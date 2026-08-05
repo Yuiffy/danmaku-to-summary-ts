@@ -629,15 +629,13 @@ function buildFullContextHeatLines(danmaku = [], totalDuration = 0, config = {})
     const nonZeroCounts = density.buckets.map(bucket => bucket.count).filter(count => count > 0);
     const baseline = Math.max(1, median(nonZeroCounts));
     return density.buckets.map(bucket => {
-        const items = danmaku.filter(item => item.time >= bucket.start && item.time < bucket.end);
-        const repeated = topDanmakuTexts(items, 5).join(' / ');
         const ratio = Number((bucket.count / baseline).toFixed(2));
         const level = bucket.count >= density.threshold
             ? 'HIGH'
             : bucket.keywords > 0
                 ? 'REACTION'
                 : 'NORMAL';
-        return `${formatClock(bucket.start)}-${formatClock(Math.min(bucket.end, totalDuration))} count=${bucket.count} reaction=${bucket.keywords} baselineRatio=${ratio} level=${level}${repeated ? ` | ${repeated}` : ''}`;
+        return `${formatClock(bucket.start)}-${formatClock(Math.min(bucket.end, totalDuration))} count=${bucket.count} reaction=${bucket.keywords} baselineRatio=${ratio} level=${level}`;
     });
 }
 
@@ -673,7 +671,7 @@ function buildFullContextSource(parsed, danmaku, config = {}, emotionAnalysis = 
         aggregatedDanmaku,
         sourceText: [
             '=== 30秒弹幕热度表 ===',
-            'count=弹幕总数；reaction=命中强反应词的弹幕数；baselineRatio=相对本场非空窗口中位数；HIGH=达到程序热度阈值。',
+            'count=弹幕总数；reaction=命中强反应词的弹幕数；baselineRatio=相对本场非空窗口中位数；HIGH=达到程序热度阈值。具体弹幕文本只在后面的全量弹幕中出现，避免重复输入。',
             heatLines.join('\n') || '无',
             '',
             '=== SenseVoice 情感/声音事件（辅助线索，不作为事实） ===',

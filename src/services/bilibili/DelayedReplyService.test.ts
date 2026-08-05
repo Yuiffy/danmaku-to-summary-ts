@@ -203,7 +203,12 @@ describe('DelayedReplyService duplicate reply detection', () => {
       storytellingVariant: 'immersive_v1',
       storytellingAssignmentReason: 'stable-rollout',
       storytellingImmersivePercent: 30,
-      storytellingBucket: 419
+      storytellingBucket: 419,
+      usage: {
+        input_tokens: 3200,
+        input_tokens_details: { image_tokens: 2700, text_tokens: 500 },
+        output_tokens: 4096
+      }
     }), 'utf8');
     fs.writeFileSync(path.join(outputDir, 'control_COMIC_FACTORY_META.json'), JSON.stringify({
       status: 'success',
@@ -221,6 +226,7 @@ describe('DelayedReplyService duplicate reply detection', () => {
       expect(immersiveInfo).toContain('分配: 稳定灰度');
       expect(immersiveInfo).toContain('新版比例: 30%');
       expect(immersiveInfo).toContain('桶: 4.19');
+      expect(immersiveInfo).toContain('用量: 输入 3200，图片 2700，文字 500，输出 4096 tokens');
       expect(controlInfo).toContain('漫画模式: 旧版对照组（control）');
       expect(controlInfo).toContain('分配: 强制指定');
     } finally {
@@ -242,6 +248,7 @@ describe('DelayedReplyService duplicate reply detection', () => {
       '  - status: "success"',
       '    promptTokens: 5600',
       '    cachedTokens: 4608',
+      '    cacheWriteTokens: 1024',
       '---',
       '晚安正文'
     ].join('\n'), 'utf8');
@@ -249,13 +256,13 @@ describe('DelayedReplyService duplicate reply detection', () => {
       status: 'success',
       provider: 'daiYu',
       model: 'gpt-5.6-luna',
-      attempts: [{ status: 'success', promptTokens: 7200, cachedTokens: 5120 }]
+      attempts: [{ status: 'success', promptTokens: 7200, cachedTokens: 5120, cacheWriteTokens: 0 }]
     }), 'utf8');
 
     try {
       const info = service.getTextGenerationNotificationInfo(goodnightTextPath, comicImagePath);
-      expect(info).toContain('晚安文本: 模型: gpt-5.6-luna，服务: daiYu，输入缓存: 4608/5600 tokens');
-      expect(info).toContain('漫画脚本文本: 模型: gpt-5.6-luna，服务: daiYu，状态: 成功，输入缓存: 5120/7200 tokens');
+      expect(info).toContain('晚安文本: 模型: gpt-5.6-luna，服务: daiYu，输入缓存: 4608/5600 tokens，缓存写入: 1024 tokens');
+      expect(info).toContain('漫画脚本文本: 模型: gpt-5.6-luna，服务: daiYu，状态: 成功，输入缓存: 5120/7200 tokens，缓存写入: 0 tokens');
     } finally {
       fs.rmSync(outputDir, { recursive: true, force: true });
     }

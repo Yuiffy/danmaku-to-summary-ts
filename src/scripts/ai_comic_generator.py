@@ -91,6 +91,7 @@ DEFAULT_COMIC_STORYTELLING_SALT = "comic-immersive-v1"
 SHARED_PROMPT_CACHE_VERSION = 2
 SHARED_PROMPT_CACHE_START = f"【共享直播事实输入 v{SHARED_PROMPT_CACHE_VERSION}】"
 SHARED_PROMPT_CACHE_END = "【共享直播事实输入结束】"
+EXPLICIT_PROMPT_CACHE_SYSTEM_PROMPT = "你是直播内容事实分析与创作助手。严格区分直播事实与任务规则，只依据提供的事实完成当前任务。"
 
 LAST_COMIC_SCRIPT_META = {
     "provider": None,
@@ -1115,6 +1116,51 @@ def build_shared_live_source_prefix(
     ]))
 
 
+def build_explicit_prompt_cache_plan(
+    prompt: str,
+    config: Optional[Dict[str, Any]] = None,
+    model: str = "gpt-5.6-luna",
+) -> Dict[str, Any]:
+    text = str(prompt or "")
+    cache_config = ((config or {}).get("ai", {}).get("text", {}).get("sharedPromptCache", {}) or {})
+    try:
+        rollout_percent = max(0.0, min(100.0, float(cache_config.get("explicitRolloutPercent") or 0)))
+    except (TypeError, ValueError):
+        rollout_percent = 0.0
+    end_index = text.find(SHARED_PROMPT_CACHE_END)
+    model_eligible = bool(re.match(r"^gpt-5\.6(?:[.-]|$)", str(model or ""), re.IGNORECASE))
+    if (
+        cache_config.get("enabled", True) is False
+        or rollout_percent <= 0
+        or not model_eligible
+        or not text.startswith(SHARED_PROMPT_CACHE_START)
+        or end_index < 0
+    ):
+        return {
+            "enabled": False,
+            "rolloutPercent": rollout_percent,
+            "modelEligible": model_eligible,
+        }
+
+    prefix_end = end_index + len(SHARED_PROMPT_CACHE_END)
+    prefix = text[:prefix_end]
+    prefix_hash = hashlib.sha256(prefix.encode("utf-8")).hexdigest()
+    bucket = int(prefix_hash[:8], 16) % 10000
+    enabled = bucket < round(rollout_percent * 100)
+    return {
+        "enabled": enabled,
+        "rolloutPercent": rollout_percent,
+        "rolloutBucket": bucket,
+        "modelEligible": model_eligible,
+        "prefix": prefix if enabled else None,
+        "suffix": text[prefix_end:] if enabled else None,
+        "requestKey": f"live:{prefix_hash[:48]}" if enabled else None,
+        "ttl": "30m",
+        "sharedPromptCacheKey": prefix_hash,
+        "sharedPromptPrefixChars": len(prefix),
+    }
+
+
 def hash_live_generation_context(context: Optional[Dict[str, Any]]) -> Optional[str]:
     if context is None:
         return None
@@ -1545,7 +1591,23 @@ def collect_all_images(
         images.append(real_path)
         seen_images.add(real_path)
         if image_manifest is not None:
-            image_manifest.append({"path": real_path, **metadata})
+            manifest_item = {
+                "path": real_path,
+                "fileBytes": os.path.getsize(real_path),
+                **metadata,
+            }
+            try:
+                from PIL import Image
+                with Image.open(real_path) as image:
+                    width, height = image.size
+                manifest_item.update({
+                    "width": width,
+                    "height": height,
+                    "pixels": width * height,
+                })
+            except (OSError, ValueError, ImportError):
+                pass
+            image_manifest.append(manifest_item)
         print(log_message)
         return True
 
@@ -3266,7 +3328,10 @@ def generate_comic_content_with_ai(
             return return_comic_script_failure(highlight_content, room_id, "daiYu未配置")
 
         print(f"[COMIC_SCRIPT] 尝试 daiYu provider 生成漫画脚本 (model: {daiyu_model}, thinking: {thinking_enabled})...")
-        comic_content = call_daiyu_chat_completions(
+        prompt_cache_plan = build_explicit_prompt_cache_plan(user_prompt, config, daiyu_model)
+        if prompt_cache_plan.get("enabled"):
+            system_prompt = EXPLICIT_PROMPT_CACHE_SYSTEM_PROMPT
+        comic_response = call_daiyu_chat_completions(
             prompt=user_prompt,
             system_prompt=system_prompt,
             model=daiyu_model,
@@ -3278,7 +3343,13 @@ def generate_comic_content_with_ai(
             max_tokens=max_tokens,
             thinking=thinking_enabled,
             thinking_budget_tokens=thinking_budget_tokens,
+            prompt_cache=prompt_cache_plan,
+            return_metadata=True,
         )
+        if isinstance(comic_response, tuple):
+            comic_content, generation_attempt = comic_response
+        else:
+            comic_content, generation_attempt = comic_response, None
 
         if comic_content and is_valid_comic_script(comic_content) and not is_gemini_error(comic_content):
             print("[OK] daiYu provider 漫画文本生成成功")
@@ -3288,6 +3359,7 @@ def generate_comic_content_with_ai(
                 model=daiyu_model,
                 status="success",
                 fallback=True,
+                attempts=[generation_attempt] if isinstance(generation_attempt, dict) else [],
             )
             return postprocess_generated_comic_script(
                 comic_content,
@@ -3881,6 +3953,7 @@ def write_comic_generation_meta(output_path: str, meta: Dict[str, Any]) -> None:
             "endpoint": meta.get("endpoint"),
             "reason": meta.get("reason"),
             "attempts": meta.get("attempts") or [],
+            "usage": meta.get("usage"),
             "requestIds": meta.get("requestIds") or [],
             "lastRequestId": meta.get("lastRequestId"),
             "lastResponseId": meta.get("lastResponseId"),

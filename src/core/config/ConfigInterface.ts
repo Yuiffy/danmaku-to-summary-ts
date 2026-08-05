@@ -376,6 +376,8 @@ export interface TextAIConfig {
   /** Reuse one exact live-facts prefix across goodnight and comic-script requests. */
   sharedPromptCache?: {
     enabled?: boolean;
+    explicitRolloutPercent?: number;
+    ttl?: '30m';
   };
   gemini?: GeminiConfig;
   tuZi?: TuZiConfig;

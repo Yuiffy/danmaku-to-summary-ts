@@ -36,6 +36,11 @@ const AISchema = Joi.object({
     text: Joi.object({
         enabled: Joi.boolean().default(true),
         provider: Joi.string().default('daiYu'),
+        sharedPromptCache: Joi.object({
+            enabled: Joi.boolean().default(true),
+            explicitRolloutPercent: Joi.number().min(0).max(100).default(0),
+            ttl: Joi.string().valid('30m').default('30m')
+        }).default(),
         gemini: Joi.object({
             enabled: Joi.boolean().default(true),
             apiKey: Joi.string().allow('').default(''),

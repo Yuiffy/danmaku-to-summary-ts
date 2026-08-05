@@ -679,7 +679,9 @@
       "enabled": true,
       "provider": "daiYu",
       "sharedPromptCache": {
-        "enabled": true
+        "enabled": true,
+        "explicitRolloutPercent": 0,
+        "ttl": "30m"
       },
       "gemini": {
         "enabled": true,
