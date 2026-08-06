@@ -910,7 +910,63 @@
         "fanName": "奶糖花",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
-        "enableDelayedReply": true
+        "enableDelayedReply": true,
+        "imageGeneration": {
+          "enabled": true,
+          "routes": [
+            {
+              "provider": "daiYu",
+              "model": "gpt-image-2",
+              "flow": "openaiImages",
+              "maxAttempts": 1,
+              "timeoutMs": 1200000,
+              "size": "1:1",
+              "quality": "high",
+              "outputFormat": "png",
+              "responseFormat": "b64_json",
+              "useTuziRetry": false
+            },
+            {
+              "provider": "tuZi",
+              "model": "gpt-image-2",
+              "flow": "tuZiCompatible",
+              "maxAttempts": 1,
+              "timeoutMs": 1200000,
+              "size": "1:1",
+              "quality": "high",
+              "outputFormat": "png",
+              "responseFormat": "b64_json",
+              "useTuziRetry": true,
+              "includeAsyncFallback": false
+            },
+            {
+              "provider": "daiYu",
+              "model": "gpt-image-2",
+              "flow": "openaiImages",
+              "maxAttempts": 1,
+              "timeoutMs": 1200000,
+              "size": "1:1",
+              "quality": "high",
+              "outputFormat": "png",
+              "responseFormat": "b64_json",
+              "useTuziRetry": false
+            },
+            {
+              "provider": "tuZi",
+              "model": "gpt-image-2",
+              "flow": "tuZiCompatible",
+              "strategyMode": "asyncOnly",
+              "asyncFallbackModel": "gemini-3-pro-image-preview-async",
+              "maxAttempts": 1,
+              "timeoutMs": 1200000,
+              "size": "1:1",
+              "quality": "high",
+              "outputFormat": "png",
+              "responseFormat": "b64_json",
+              "useTuziRetry": true
+            }
+          ]
+        }
       },
       "25788785": {
         "uid": "1954091502",
