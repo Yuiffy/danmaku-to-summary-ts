@@ -238,6 +238,19 @@ function buildLiveTimeDesc(highlightPath) {
     return `${startStr}左右开始`;
 }
 
+function getAnchorNameCandidates(anchor, configuredNicknames = []) {
+    const normalizedAnchor = String(anchor || '').trim();
+    const nicknames = configuredNicknames
+        .map(name => String(name || '').trim())
+        .filter(Boolean);
+    const nativePrefix = normalizedAnchor.match(/^([\p{Script=Han}]{1,12})(?=[A-Za-z])/u)?.[1];
+    const orderedNames = nativePrefix
+        ? [...nicknames, nativePrefix, normalizedAnchor]
+        : [normalizedAnchor, ...nicknames];
+
+    return Array.from(new Set(orderedNames.filter(Boolean)));
+}
+
 // 构建提示词(支持传入 roomId 以使用房间级名称覆盖)
 function buildPrompt(highlightContent, roomId, liveTimeDesc = null, liveContext = null) {
     const names = configLoader.getNames(roomId);
@@ -251,10 +264,10 @@ function buildPrompt(highlightContent, roomId, liveTimeDesc = null, liveContext 
     const roomSettings = config?.ai?.roomSettings || {};
     const roomConfig = roomId ? roomSettings[String(roomId)] : null;
     const customPrompt = roomConfig?.customPrompts?.goodnightReply;
-    const anchorNames = Array.from(new Set([
+    const anchorNames = getAnchorNameCandidates(
         anchor,
-        ...(Array.isArray(roomConfig?.anchorNicknames) ? roomConfig.anchorNicknames : [])
-    ].map(name => String(name || '').trim()).filter(Boolean)));
+        Array.isArray(roomConfig?.anchorNicknames) ? roomConfig.anchorNicknames : []
+    );
     const anchorNameList = anchorNames.map(name => `“${name}”`).join('、');
     const liveContextBlock = liveGenerationContext.formatLiveGenerationContext(liveContext);
     const sharedCacheEnabled = liveGenerationContext.isSharedPromptCacheEnabled(config);
@@ -272,7 +285,7 @@ function buildPrompt(highlightContent, roomId, liveTimeDesc = null, liveContext 
 - 回复对象是主播“${anchor}”。主播可用称呼只有：${anchorNameList}。
 - 粉丝昵称是“${fan}”，它表示粉丝/评论者所属的粉丝群体，不是主播名字。
 - 绝对不能用“${fan}”称呼主播，不能写“${fan}！”、“晚安${fan}”或让“${fan}”出现在开头称呼位置。
-- 开头必须对主播说话，优先使用“${anchor}”或上面的主播称呼之一；如果直接从直播梗开始，也不能用“${fan}”开头。
+- 开头不必每次直呼主播名字，可以直接从本场具体内容起笔。若写称呼，优先选上面列表中较短、口语化的称呼，不要每条都固定照抄“${anchor}”。
 - 如需表达评论者身份，“${fan}”只能作为粉丝自称/群体名自然出现，也可以完全不提。`;
 
     if (customPrompt) {
@@ -336,8 +349,8 @@ function buildPrompt(highlightContent, roomId, liveTimeDesc = null, liveContext 
 【写作结构与要素】
 
 开场白:
-- 必须先对主播说话,称呼从${anchorNameList}中选择一个；不要把粉丝昵称当作称呼。
-- 可以使用“${anchor}!🌙”这类开头,也可以自然地接入第一句直播梗。
+- 可以直接接入本场第一个具体细节或直播梗,不必先写称呼或问候。
+- 如果称呼主播,遵守上面的称谓边界,不要把粉丝昵称当作主播称呼。
 
 正文(核心内容回顾):
 抓细节:从文档中提取3-5个具体的直播亮点。
@@ -369,7 +382,7 @@ ${speakerGuidance}
 
 ${randomMainPrompt}
 
-称呼之后直接回应本场一个具体细节、主播原话或弹幕反应,再自然带出感受和其他内容。
+优先直接回应本场一个具体细节、主播原话或弹幕反应；如需称呼主播,自然嵌入即可,不必固定放在开头。
 
 【字数与格式(必须严格遵守!)】
 字数限制:${wordLimit}字以内。这是硬性要求,超过会被系统拒绝!
@@ -1368,12 +1381,6 @@ async function generateGoodnightReply(highlightPath, roomId = null) {
                 // 构建提示词
                 const prompt = buildPrompt(highlightContent, finalRoomId, liveTimeDesc, liveContext);
                 const wordLimit = configLoader.getWordLimit(finalRoomId);
-                const finalRoomConfig = finalRoomId ? config?.ai?.roomSettings?.[String(finalRoomId)] : null;
-                const retryAnchorNameList = Array.from(new Set([
-                    configLoader.getNames(finalRoomId).anchor,
-                    ...(Array.isArray(finalRoomConfig?.anchorNicknames) ? finalRoomConfig.anchorNicknames : [])
-                ].map(name => String(name || '').trim()).filter(Boolean))).join('、');
-
                 // 调用API生成文本
                 let generationResult;
                 const provider = config.ai?.text?.provider || 'gemini';
@@ -1381,7 +1388,7 @@ async function generateGoodnightReply(highlightPath, roomId = null) {
                     ? prompt
                     : `${prompt}
 
-【失败重试纠错】上一版未通过发布前校验。再次生成时，开头称呼必须是主播（${retryAnchorNameList}）之一，绝不能以粉丝昵称“${configLoader.getNames(finalRoomId).fan}”开头；只输出最终评论。`;
+【失败重试纠错】上一版未通过发布前校验。再次生成时可以直接从本场具体内容起笔，不必补主播称呼；绝不能以粉丝昵称“${configLoader.getNames(finalRoomId).fan}”开头。只输出最终评论。`;
 
                 if (provider === 'tuZi') {
                     generationResult = await generateTextWithTuZi(attemptPrompt, { wordLimit });

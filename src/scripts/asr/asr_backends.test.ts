@@ -782,6 +782,15 @@ describe('asr_backends', () => {
       .toBe('岁己岁己岁己今天都被识别错了');
   });
 
+  test('production corrections recover sui from the c自己 ASR variant', () => {
+    const resolved = asr.resolveAsrHotwords(productionConfig, { room_id: '26966466' });
+
+    expect(asr.applyCorrectionsToText('昨天昨天那个c自己特别爱看丧尸片嘛', resolved.corrections))
+      .toBe('昨天昨天那个岁己特别爱看丧尸片嘛');
+    expect(asr.applyCorrectionsToText('C 自己也爱看丧尸片', resolved.corrections))
+      .toBe('岁己也爱看丧尸片');
+  });
+
   test('normalizes screenshot global replacement corrections', () => {
     const configuredCorrections = {
       safe: {

@@ -8,7 +8,8 @@ describe('ai_text_generator speaker guidance', () => {
       '21:00~23:00'
     );
 
-    expect(prompt).toContain('称呼之后直接回应本场一个具体细节、主播原话或弹幕反应');
+    expect(prompt).toContain('优先直接回应本场一个具体细节、主播原话或弹幕反应');
+    expect(prompt).toContain('不必固定放在开头');
     expect(prompt).not.toContain('【去模板化要求（高优先级）】');
     expect(prompt).not.toContain('一句话总结今天直播的整体感受');
     expect(prompt).not.toContain('含金量极高、含梗量爆炸');
@@ -58,7 +59,36 @@ describe('ai_text_generator speaker guidance', () => {
     expect(prompt).toContain('主播可用称呼只有：“小栞”、“栞栞”、“栞栞Shiori”、“Shiori”');
     expect(prompt).toContain('粉丝昵称是“獭獭栞”');
     expect(prompt).toContain('不能写“獭獭栞！”');
-    expect(prompt).toContain('优先使用“小栞”或上面的主播称呼之一');
+    expect(prompt).toContain('开头不必每次直呼主播名字');
+  });
+
+  test('offers the Chinese part of a bilingual anchor name as a natural short address', () => {
+    const configLoader = require('./config-loader');
+    const config = structuredClone(configLoader.getConfig());
+    config.ai.roomSettings = config.ai.roomSettings || {};
+    config.ai.roomSettings['bilingual-name-test'] = {
+      anchorName: '莉蔻Liko',
+      fanName: '蔻萝特'
+    };
+    const configSpy = jest.spyOn(configLoader, 'getConfig').mockReturnValue(config);
+    const namesSpy = jest.spyOn(configLoader, 'getNames').mockReturnValue({
+      anchor: '莉蔻Liko',
+      fan: '蔻萝特'
+    });
+    let prompt;
+    try {
+      prompt = aiTextGenerator.buildPrompt(
+        '主播唱歌忘词后躲进被窝。',
+        'bilingual-name-test',
+        '20:00~23:00'
+      );
+    } finally {
+      namesSpy.mockRestore();
+      configSpy.mockRestore();
+    }
+
+    expect(prompt).toContain('主播可用称呼只有：“莉蔻”、“莉蔻Liko”');
+    expect(prompt).toContain('不要每条都固定照抄“莉蔻Liko”');
   });
 
   test('rejects a reply that opens with the fan name', () => {

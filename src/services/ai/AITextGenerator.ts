@@ -522,10 +522,16 @@ export class AITextGenerator implements IAITextGenerator {
 
   private getAnchorNames(roomId?: string): string[] {
     const names = this.getNames(roomId);
-    return Array.from(new Set([
-      names.anchor,
-      ...(names.anchorNicknames || [])
-    ].map(name => String(name || '').trim()).filter(Boolean)));
+    const anchor = String(names.anchor || '').trim();
+    const nicknames = (names.anchorNicknames || [])
+      .map(name => String(name || '').trim())
+      .filter(Boolean);
+    const nativePrefix = anchor.match(/^([\p{Script=Han}]{1,12})(?=[A-Za-z])/u)?.[1];
+    const orderedNames = nativePrefix
+      ? [...nicknames, nativePrefix, anchor]
+      : [anchor, ...nicknames];
+
+    return Array.from(new Set(orderedNames.filter(Boolean)));
   }
 
   private buildNamingGuidance(roomId?: string): string {
@@ -538,7 +544,7 @@ export class AITextGenerator implements IAITextGenerator {
 - 回复对象是主播“${names.anchor}”。主播可用称呼只有：${anchorNameList}。
 - 粉丝昵称是“${names.fan}”，它表示粉丝/评论者所属的粉丝群体，不是主播名字。
 - 绝对不能用“${names.fan}”称呼主播，不能写“${names.fan}！”、“晚安${names.fan}”或让“${names.fan}”出现在开头称呼位置。
-- 开头必须对主播说话，优先使用“${names.anchor}”或上面的主播称呼之一；如果直接从直播梗开始，也不能用“${names.fan}”开头。
+- 开头不必每次直呼主播名字，可以直接从本场具体内容起笔。若写称呼，优先选上面列表中较短、口语化的称呼，不要每条都固定照抄“${names.anchor}”。
 - 如需表达评论者身份，“${names.fan}”只能作为粉丝自称/群体名自然出现，也可以完全不提。`;
   }
 
@@ -567,9 +573,6 @@ export class AITextGenerator implements IAITextGenerator {
     const names = this.getNames(roomId);
     const anchor = names.anchor;
     const fan = names.fan;
-    const anchorNameList = this.getAnchorNames(roomId)
-      .map(name => `“${name}”`)
-      .join('、');
     const namingGuidance = this.buildNamingGuidance(roomId);
     const wordLimit = this.getWordLimit(roomId);
 
@@ -594,8 +597,9 @@ export class AITextGenerator implements IAITextGenerator {
 【写作结构与要素】
 
 开场白：
-- 必须先对主播说话，称呼从${anchorNameList}中选择一个；不要把粉丝昵称当作称呼。
-- 称呼之后直接回应本场一个具体细节、主播原话或弹幕反应，再自然带出感受和其他内容。
+- 可以直接接入本场第一个具体细节或直播梗，不必先写称呼或问候。
+- 如果称呼主播，遵守上面的称谓边界，不要把粉丝昵称当作主播称呼。
+- 优先直接回应本场一个具体细节、主播原话或弹幕反应；如需称呼主播，自然嵌入即可，不必固定放在开头。
 
 正文（核心内容回顾）：
 抓细节：从文档中提取3-5个具体的直播亮点。
@@ -1039,7 +1043,7 @@ ${highlightContent}
             ? prompt
             : `${prompt}
 
-【失败重试纠错】上一版未通过发布前校验。再次生成时，开头称呼必须是主播（${this.getAnchorNames(actualRoomId).join('、')}）之一，绝不能以粉丝昵称“${this.getNames(actualRoomId).fan}”开头；只输出最终评论。`;
+【失败重试纠错】上一版未通过发布前校验。再次生成时可以直接从本场具体内容起笔，不必补主播称呼；绝不能以粉丝昵称“${this.getNames(actualRoomId).fan}”开头。只输出最终评论。`;
           const generation = await this.generateGoodnightText(attemptPrompt);
           let generatedText = generation.text;
           const inspection = this.inspectGeneratedReply(
