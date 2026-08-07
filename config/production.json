@@ -1156,7 +1156,7 @@
         "anchorName": "四时小路Komichi",
         "fanName": "粉丝",
         "enableTextGeneration": true,
-        "enableComicGeneration": false,
+        "enableComicGeneration": true,
         "enableDelayedReply": true
       },
       "1713546334": {
@@ -1222,7 +1222,7 @@
         "anchorName": "小松绿Viridis",
         "fanName": "粉丝",
         "enableTextGeneration": true,
-        "enableComicGeneration": false,
+        "enableComicGeneration": true,
         "enableDelayedReply": true
       },
       "1727074031": {
@@ -1231,7 +1231,7 @@
         "anchorName": "羽啾chu2u",
         "fanName": "粉丝",
         "enableTextGeneration": true,
-        "enableComicGeneration": false,
+        "enableComicGeneration": true,
         "enableDelayedReply": true
       },
       "1727076670": {
@@ -1240,7 +1240,7 @@
         "anchorName": "枝堇Sumire",
         "fanName": "粉丝",
         "enableTextGeneration": true,
-        "enableComicGeneration": false,
+        "enableComicGeneration": true,
         "enableDelayedReply": true
       },
       "1741667419": {
