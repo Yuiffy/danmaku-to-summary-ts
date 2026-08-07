@@ -33,7 +33,14 @@ export class DelayedReplyHandler implements IWebhookHandler {
     // POST /api/delayed-reply - 手动触发延迟回复
     app.post(this.path, async (req: Request, res: Response): Promise<any> => {
       try {
-        const { roomId, delaySeconds, goodnightTextPath, comicImagePath } = req.body;
+        const {
+          roomId,
+          delaySeconds,
+          goodnightTextPath,
+          comicImagePath,
+          liveStartTime,
+          liveEndTime,
+        } = req.body;
         
         if (!roomId) {
           return res.status(400).json({
@@ -46,6 +53,18 @@ export class DelayedReplyHandler implements IWebhookHandler {
           return res.status(500).json({
             success: false,
             error: 'Delayed reply service not available'
+          });
+        }
+
+        const parsedLiveStartTime = liveStartTime ? new Date(liveStartTime) : undefined;
+        const parsedLiveEndTime = liveEndTime ? new Date(liveEndTime) : undefined;
+        if (
+          (parsedLiveStartTime && Number.isNaN(parsedLiveStartTime.getTime())) ||
+          (parsedLiveEndTime && Number.isNaN(parsedLiveEndTime.getTime()))
+        ) {
+          return res.status(400).json({
+            success: false,
+            error: 'liveStartTime and liveEndTime must be valid dates'
           });
         }
         
@@ -61,12 +80,21 @@ export class DelayedReplyHandler implements IWebhookHandler {
         }
         
         // 添加延迟回复任务（直接传递 delaySeconds）
-        const taskId = await this.delayedReplyService.addTask(roomId, textPath, imagePath || '', delaySeconds);
+        const taskId = await this.delayedReplyService.addTask(
+          roomId,
+          textPath,
+          imagePath || '',
+          delaySeconds,
+          parsedLiveStartTime,
+          parsedLiveEndTime
+        );
         
         this.logger.info(`手动触发延迟回复任务:`, {
           taskId,
           roomId,
           delaySeconds: delaySeconds || '使用配置的延迟时间',
+          liveStartTime: parsedLiveStartTime?.toISOString(),
+          liveEndTime: parsedLiveEndTime?.toISOString(),
           textPath,
           imagePath
         });
@@ -76,6 +104,8 @@ export class DelayedReplyHandler implements IWebhookHandler {
           taskId,
           roomId,
           delaySeconds: delaySeconds || '使用配置的延迟时间',
+          liveStartTime: parsedLiveStartTime?.toISOString(),
+          liveEndTime: parsedLiveEndTime?.toISOString(),
           textPath,
           imagePath
         });

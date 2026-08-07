@@ -1157,7 +1157,7 @@
         "fanName": "粉丝",
         "enableTextGeneration": true,
         "enableComicGeneration": false,
-        "enableDelayedReply": false
+        "enableDelayedReply": true
       },
       "1713546334": {
         "audioOnly": true,
@@ -1223,7 +1223,7 @@
         "fanName": "粉丝",
         "enableTextGeneration": true,
         "enableComicGeneration": false,
-        "enableDelayedReply": false
+        "enableDelayedReply": true
       },
       "1727074031": {
         "uid": "2138961136",
@@ -1232,7 +1232,7 @@
         "fanName": "粉丝",
         "enableTextGeneration": true,
         "enableComicGeneration": false,
-        "enableDelayedReply": false
+        "enableDelayedReply": true
       },
       "1727076670": {
         "uid": "1150976664",
@@ -1241,7 +1241,7 @@
         "fanName": "粉丝",
         "enableTextGeneration": true,
         "enableComicGeneration": false,
-        "enableDelayedReply": false
+        "enableDelayedReply": true
       },
       "1741667419": {
         "audioOnly": true,
