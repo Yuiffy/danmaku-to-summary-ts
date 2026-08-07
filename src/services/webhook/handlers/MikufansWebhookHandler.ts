@@ -750,6 +750,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
    */
   private async collectSegment(roomId: string, videoPath: string, payload: any): Promise<void> {
     let session = this.liveSessionManager.getSession(roomId);
+    const reconstructedSession = !session;
     if (!session) {
       this.ensureSessionFromPayload(roomId, payload, 'FileClosed without active session');
       session = this.liveSessionManager.getSession(roomId);
@@ -804,6 +805,20 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     if (!added) {
       this.logger.warn(`⚠️  片段未加入会话，跳过片段收集定时器: ${roomId} (${path.basename(videoPath)})`);
       return;
+    }
+
+    if (reconstructedSession) {
+      const mergeConfig = this.liveSessionManager.getMergeConfig();
+      if (mergeConfig.nearbySegmentRecovery) {
+        const recoveredCount = this.liveSessionManager.augmentSessionWithNearbySegments(roomId, {
+          enabled: mergeConfig.nearbySegmentRecovery,
+          maxGapSeconds: mergeConfig.nearbySegmentMaxGapSeconds,
+          maxSegments: mergeConfig.maxSegments
+        });
+        if (recoveredCount > 0) {
+          this.logger.info(`🔄 重建会话后立即补收同场直播片段: ${roomId} (+${recoveredCount})`);
+        }
+      }
     }
 
     this.logger.info(`📦 收集片段: ${path.basename(videoPath)} (会话: ${roomId}, 片段数: ${session.segments.length})`);

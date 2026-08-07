@@ -223,7 +223,7 @@ describe('MikufansWebhookHandler segment collection finalization', () => {
     expect(startProcessing.mock.calls[0][0]).toBe(videoPath);
   });
 
-  test('recovers nearby disk segments before merging when session state was lost', async () => {
+  test('immediately recovers nearby disk segments when FileClosed reconstructs lost session state', async () => {
     const handler = new MikufansWebhookHandler() as any;
     handlers.push(handler);
     const roomId = '25788785';
@@ -261,6 +261,14 @@ describe('MikufansWebhookHandler segment collection finalization', () => {
         FileCloseTime: close4.toISOString()
       }
     });
+
+    expect(handler.liveSessionManager.getSession(roomId).segments.map((segment: { videoPath: string }) => path.basename(segment.videoPath))).toEqual([
+      name1,
+      name2,
+      name3,
+      name4
+    ]);
+
     handler.finalFileClosedRooms.set(roomId, close4);
 
     await handler.processSegmentCollectionTimeout(roomId);

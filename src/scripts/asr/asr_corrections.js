@@ -539,9 +539,17 @@ function isProtectedByTokenBoundary(context, start, end) {
 
 function isEmbeddedInLargerLatinTerm(text, start, end) {
     const source = String(text || '');
+    const firstMatchedChar = start < end ? source[start] : '';
+    const lastMatchedChar = start < end ? source[end - 1] : '';
     const previousChar = start > 0 ? source[start - 1] : '';
     const nextChar = end < source.length ? source[end] : '';
-    return ASCII_WORDLIKE_CHAR_PATTERN.test(previousChar) || ASCII_WORDLIKE_CHAR_PATTERN.test(nextChar);
+    return (
+        ASCII_WORDLIKE_CHAR_PATTERN.test(firstMatchedChar) &&
+        ASCII_WORDLIKE_CHAR_PATTERN.test(previousChar)
+    ) || (
+        ASCII_WORDLIKE_CHAR_PATTERN.test(lastMatchedChar) &&
+        ASCII_WORDLIKE_CHAR_PATTERN.test(nextChar)
+    );
 }
 
 function shouldProtectSafeCorrection(text, start, end, correction, context = null) {
@@ -552,8 +560,11 @@ function shouldProtectSafeCorrection(text, start, end, correction, context = nul
     if (!matched) {
         return false;
     }
+    if (isEmbeddedInLargerLatinTerm(text, start, end)) {
+        return true;
+    }
     if (!NON_ASCII_PATTERN.test(matched)) {
-        return isEmbeddedInLargerLatinTerm(text, start, end);
+        return false;
     }
     return isProtectedByTokenBoundary(context, start, end);
 }

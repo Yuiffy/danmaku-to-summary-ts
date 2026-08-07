@@ -611,6 +611,7 @@ function getMultiReferenceConfig(config = {}, roomId = null) {
         minSpeechSeconds: 8,
         minSpeakerMaxScore: 0.80,
         minSpeakerSecondsWhenLowScore: 900,
+        speakerThresholdOverrides: {},
         includeUnknownSpeakers: false,
         useMentionedOnlyAsContext: true,
         appendCharacterDescriptions: true,
@@ -769,6 +770,32 @@ function resolveSingleHostSpeakerFallback(result, config, context, registry, roo
     };
 }
 
+function getSpeakerAcceptanceThresholds(multiConfig, streamerId) {
+    const configuredOverrides = multiConfig?.speakerThresholdOverrides;
+    const override = configuredOverrides && typeof configuredOverrides === 'object' && !Array.isArray(configuredOverrides)
+        ? configuredOverrides[streamerId]
+        : null;
+    const scoped = override && typeof override === 'object' && !Array.isArray(override)
+        ? override
+        : {};
+    const numberOrFallback = (value, fallback) => {
+        if (value === undefined || value === null || value === '') {
+            return Number(fallback || 0);
+        }
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : Number(fallback || 0);
+    };
+    return {
+        minSpeechSeconds: numberOrFallback(scoped.minSpeechSeconds, multiConfig.minSpeechSeconds),
+        minSpeakerScore: numberOrFallback(scoped.minSpeakerScore, multiConfig.minSpeakerScore),
+        minSpeakerMaxScore: numberOrFallback(scoped.minSpeakerMaxScore, multiConfig.minSpeakerMaxScore),
+        minSpeakerSecondsWhenLowScore: numberOrFallback(
+            scoped.minSpeakerSecondsWhenLowScore,
+            multiConfig.minSpeakerSecondsWhenLowScore
+        )
+    };
+}
+
 function summarizeAsrSpeakers(result, config = {}, context = {}) {
     const registry = resolveStreamerRegistry(config);
     const roomId = context.room_id || context.roomId || context.hostRoomId || null;
@@ -845,19 +872,20 @@ function summarizeAsrSpeakers(result, config = {}, context = {}) {
             }
             return;
         }
-        const enoughSpeech = speaker.totalSpeechSeconds >= Number(multiConfig.minSpeechSeconds || 0);
+        const thresholds = getSpeakerAcceptanceThresholds(multiConfig, streamerId);
+        const enoughSpeech = speaker.totalSpeechSeconds >= thresholds.minSpeechSeconds;
         const scoreMissing = speaker.avgScore === null;
-        const enoughScore = scoreMissing || speaker.avgScore >= Number(multiConfig.minSpeakerScore || 0);
-        const minSpeakerMaxScore = Number(multiConfig.minSpeakerMaxScore || 0);
-        const lowScoreSeconds = Number(multiConfig.minSpeakerSecondsWhenLowScore || 0);
+        const enoughScore = scoreMissing || speaker.avgScore >= thresholds.minSpeakerScore;
+        const minSpeakerMaxScore = thresholds.minSpeakerMaxScore;
+        const lowScoreSeconds = thresholds.minSpeakerSecondsWhenLowScore;
         const lowMaxScore = speaker.maxScore !== null && minSpeakerMaxScore > 0 && speaker.maxScore < minSpeakerMaxScore;
         const enoughDurationForLowScore = speaker.totalSpeechSeconds >= lowScoreSeconds;
         if (!enoughSpeech) {
-            console.log(`[ASR] speaker summary: 过滤 ${speaker.label} -> ${streamerId}，出声 ${speaker.totalSpeechSeconds.toFixed(1)}s < ${multiConfig.minSpeechSeconds}s`);
+            console.log(`[ASR] speaker summary: 过滤 ${speaker.label} -> ${streamerId}，出声 ${speaker.totalSpeechSeconds.toFixed(1)}s < ${thresholds.minSpeechSeconds}s`);
             return;
         }
         if (!enoughScore) {
-            console.log(`[ASR] speaker summary: 过滤 ${speaker.label} -> ${streamerId}，avgScore ${speaker.avgScore} < ${multiConfig.minSpeakerScore}`);
+            console.log(`[ASR] speaker summary: 过滤 ${speaker.label} -> ${streamerId}，avgScore ${speaker.avgScore} < ${thresholds.minSpeakerScore}`);
             return;
         }
         if (lowMaxScore && !enoughDurationForLowScore) {

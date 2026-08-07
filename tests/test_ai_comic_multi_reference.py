@@ -185,6 +185,33 @@ class MultiReferenceComicTests(unittest.TestCase):
 
         self.assertEqual(extras, [])
 
+    def test_shiori_specific_thresholds_survive_comic_reference_filter(self):
+        multi_config = self.config["ai"]["comic"]["multiReferenceImages"]
+        multi_config.update({
+            "minSpeakerScore": 0.64,
+            "minSpeakerMaxScore": 0.8,
+            "minSpeakerSecondsWhenLowScore": 900,
+            "speakerThresholdOverrides": {
+                "shiori": {
+                    "minSpeakerScore": 0.63,
+                    "minSpeakerMaxScore": 0.75,
+                    "minSpeakerSecondsWhenLowScore": 480,
+                }
+            },
+        })
+        self.write_sidecar(["shiori"], speakers=[{
+            "label": "Shiori",
+            "totalSpeechSeconds": 535.83,
+            "segmentCount": 164,
+            "avgScore": 0.6348,
+            "maxScore": 0.7648,
+            "isUnknown": False,
+        }])
+
+        extras = comic.resolve_extra_appeared_streamers(self.config, "25788785", str(self.highlight))
+
+        self.assertEqual([item["id"] for item in extras], ["shiori"])
+
     def test_host_streamer_registry_reference_image_fills_missing_room_image(self):
         self.config["roomSettings"].pop("25788785")
 
@@ -785,6 +812,9 @@ class MultiReferenceComicTests(unittest.TestCase):
         forced = comic.select_comic_storytelling_variant(
             self.config, "25788785", "同一场直播内容", override="immersive_v1"
         )
+        forced_control = comic.select_comic_storytelling_variant(
+            self.config, "25788785", "同一场直播内容", override="control"
+        )
 
         self.assertEqual(first, second)
         self.assertIn(first["variant"], {"control", "immersive_v1"})
@@ -796,6 +826,8 @@ class MultiReferenceComicTests(unittest.TestCase):
         self.assertEqual(forced["variant"], "immersive_v1")
         self.assertEqual(forced["assignmentReason"], "forced")
         self.assertEqual(forced["screenshotMode"], "individual")
+        self.assertEqual(forced_control["variant"], "control")
+        self.assertEqual(forced_control["screenshotMode"], "individual")
 
     def test_immersive_prompt_requires_structured_shots_and_non_grid_composition(self):
         storytelling = {"variant": "immersive_v1"}
@@ -947,7 +979,11 @@ process.stdout.write(context.buildSharedLiveSourcePrefix(
         control_image_prompt, _, _ = comic.build_comic_prompt(
             "主播看电影并聊旅行计划。",
             room_id="30655190",
-            existing_comic="分镜一：主播坐在桌前聊电影。",
+            existing_comic=(
+                "分镜1：主播坐在桌前聊电影。\n"
+                '{"kind":"reference","timestampsSeconds":[60],'
+                '"referenceUsage":"核对屏幕里的电影画面","captureMode":"individual"}'
+            ),
             storytelling={"variant": "control"},
         )
         immersive_image_prompt, _, _ = comic.build_comic_prompt(
@@ -962,11 +998,16 @@ process.stdout.write(context.buildSharedLiveSourcePrefix(
         )
 
         self.assertIn("多个剪贴画风格分镜", control_script_prompt)
+        self.assertIn('"kind":"reference"', control_script_prompt)
+        self.assertIn('"timestampsSeconds":[数值1,数值2]', control_script_prompt)
+        self.assertIn('"captureMode":"individual或sheet"', control_script_prompt)
         self.assertNotIn('"timestampSeconds":数值', control_script_prompt)
         self.assertNotIn('"textPlan"', control_script_prompt)
         self.assertIn('"timestampSeconds":数值', immersive_script_prompt)
         self.assertIn('"textPlan"', immersive_script_prompt)
         self.assertNotIn("沉浸式画面策略", control_image_prompt)
+        self.assertIn("reference 的 JSON 记录只是选择输入截图", control_image_prompt)
+        self.assertIn("不是额外分镜、台词、标题", control_image_prompt)
         self.assertIn("沉浸式画面策略", immersive_image_prompt)
 
     def test_immersive_prompts_preserve_future_and_imagined_modality(self):
@@ -1005,6 +1046,50 @@ process.stdout.write(context.buildSharedLiveSourcePrefix(
         self.assertEqual([item["timestampSeconds"] for item in shots], [125.0, 190.0])
         self.assertEqual(shots[0]["scene"], "冲入战场")
         self.assertEqual(shots[1]["referenceUsage"], "核对结果页")
+
+    def test_extract_storyboard_and_references_parse_adjacent_json_objects(self):
+        script = "\n".join([
+            '{"format":"immersive_v1","composition":"双人骑行主画面"}'
+            '{"kind":"beat","timestampSeconds":120,"scene":"看四位新人出道",'
+            '"visualIntent":"屏幕和主播同框","referenceUsage":"核对新人画面"}',
+            '{"kind":"beat","timestampSeconds":3600,"scene":"小岁和栞栞开始骑单车",'
+            '"visualIntent":"双人构图","referenceUsage":"核对游戏与人物"}'
+            '{"kind":"beat","timestampSeconds":7200,"scene":"两人在窄路互相指挥",'
+            '"visualIntent":"动作近景","referenceUsage":"核对骑行场景"}',
+            '{"kind":"beat","timestampSeconds":10800,"scene":"抵达民宿放烟花",'
+            '"visualIntent":"双人庆祝","referenceUsage":"核对结尾"}'
+            '{"kind":"reference","timestampsSeconds":[120],"referenceUsage":"核对新人出道画面","captureMode":"individual"}'
+            '{"kind":"reference","timestampsSeconds":[3600,7200],"referenceUsage":"核对栞栞与双人骑行","captureMode":"sheet"}'
+            '{"kind":"reference","timestampsSeconds":[10800],"referenceUsage":"核对烟花结尾","captureMode":"individual"}',
+        ])
+
+        shots = comic.extract_storyboard_shots(script, max_shots=4)
+        requests = comic.extract_reference_requests(script, max_requests=3)
+
+        self.assertEqual([item["timestampSeconds"] for item in shots], [120.0, 3600.0, 7200.0, 10800.0])
+        self.assertEqual([item["referenceUsage"] for item in requests], [
+            "核对新人出道画面", "核对栞栞与双人骑行", "核对烟花结尾"
+        ])
+        self.assertEqual(requests[1]["timestampsSeconds"], [3600.0, 7200.0])
+
+    def test_control_reference_records_survive_plain_text_and_adjacent_json(self):
+        script = (
+            "分镜1：小岁在屏幕前观看四位新人出道。\n"
+            "分镜2：小岁和栞栞一起玩骑单车。\n"
+            '{"kind":"reference","timestampsSeconds":[120,180],'
+            '"referenceUsage":"核对屏幕内四位新人外观、数量，且她们是被观看内容而非现场互动角色",'
+            '"captureMode":"sheet"}'
+            '{"kind":"reference","timestampsSeconds":[7200],'
+            '"referenceUsage":"核对双人游戏中的自行车外观与场景",'
+            '"captureMode":"individual"}'
+        )
+
+        requests = comic.extract_reference_requests(script, max_requests=4)
+
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(requests[0]["timestampsSeconds"], [120.0, 180.0])
+        self.assertEqual(requests[0]["captureMode"], "sheet")
+        self.assertEqual(requests[1]["referenceUsage"], "核对双人游戏中的自行车外观与场景")
 
     def test_reference_requests_parse_generic_multi_timestamp_protocol(self):
         script = "\n".join([
@@ -1128,9 +1213,9 @@ process.stdout.write(context.buildSharedLiveSourcePrefix(
         self.assertIn("参考图2：直播 120 秒关键帧", reference_prompt)
         self.assertIn("用途：核对事件1", reference_prompt)
 
-    def test_immersive_budget_matches_provider_limit_without_changing_default_limit(self):
+    def test_reference_budget_can_expand_to_twelve_without_changing_default_limit(self):
         directed = []
-        for index in range(1, 6):
+        for index in range(1, 14):
             frame = self.root / f"evidence-{index}.jpg"
             frame.write_bytes(b"frame")
             directed.append({
@@ -1145,19 +1230,19 @@ process.stdout.write(context.buildSharedLiveSourcePrefix(
             directed_screenshots=directed,
             screenshot_mode="individual",
         )
-        immersive_images = comic.collect_all_images(
+        expanded_images = comic.collect_all_images(
             "25788785",
             str(self.highlight),
             directed_screenshots=directed,
             screenshot_mode="individual",
-            max_total_images=5,
+            max_total_images=12,
         )
 
         self.assertEqual(len(default_images), 4)
-        self.assertEqual(len(immersive_images), 5)
-        self.assertEqual(Path(immersive_images[-1]).name, "evidence-4.jpg")
+        self.assertEqual(len(expanded_images), 12)
+        self.assertEqual(Path(expanded_images[-1]).name, "evidence-11.jpg")
 
-    def test_script_requested_references_are_reserved_before_extra_characters(self):
+    def test_character_references_are_kept_before_script_requested_evidence(self):
         extra_streamer = self.config["ai"]["streamerRegistry"]["shiori"]
         directed = []
         evidence_specs = [
@@ -1194,14 +1279,12 @@ process.stdout.write(context.buildSharedLiveSourcePrefix(
 
         self.assertEqual([Path(item).name for item in images], [
             "host.png",
+            "shiori.png",
             "costume-frame.jpg",
             "prop-frame.jpg",
             "stage-sheet.jpg",
-            "score-sheet.jpg",
         ])
-        self.assertNotIn("shiori.png", [Path(item).name for item in images])
-        self.assertIn("栞栞 没有参考图", constraints)
-        self.assertNotIn("参考图2 = 栞栞", constraints)
+        self.assertIn("参考图2 = 栞栞", constraints)
 
     def test_reference_manifest_explains_individual_frames_by_usage(self):
         manifest = [
@@ -1314,6 +1397,53 @@ process.stdout.write(context.buildSharedLiveSourcePrefix(
         self.assertEqual([item[item.index("-ss") + 1] for item in ffmpeg_calls], ["60.000", "180.000"])
         self.assertTrue(all("scale=960" in item[item.index("-vf") + 1] for item in ffmpeg_calls))
         self.assertEqual([item["selectedTimestampSeconds"] for item in frames], [60.0, 180.0])
+
+    def test_control_directed_screenshot_generation_uses_reference_request(self):
+        source_video = self.root / "source.flv"
+        source_video.write_bytes(b"video")
+        script = (
+            "分镜1：小岁和栞栞一起玩骑单车。\n"
+            '{"kind":"reference","timestampsSeconds":[7200],'
+            '"referenceUsage":"核对双人游戏中的自行车外观与场景",'
+            '"captureMode":"individual"}'
+        )
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            if "ffprobe" in str(args[0]):
+                return comic.subprocess.CompletedProcess(args, 0, stdout=b"8000\n", stderr=b"")
+            Path(args[-1]).write_bytes(b"jpg")
+            return comic.subprocess.CompletedProcess(args, 0, stdout=b"", stderr=b"")
+
+        with mock.patch.object(comic.shutil, "which", side_effect=lambda name: name), \
+                mock.patch.object(comic.subprocess, "run", side_effect=fake_run):
+            frames = comic.generate_directed_storyboard_screenshots(
+                str(self.highlight),
+                script,
+                {
+                    "variant": "control",
+                    "directedScreenshots": {"enabled": True, "maxImages": 1},
+                },
+                source_video_path=str(source_video),
+            )
+
+        ffmpeg_calls = [item for item in calls if "ffmpeg" in str(item[0])]
+        self.assertEqual(len(frames), 1)
+        self.assertEqual(ffmpeg_calls[0][ffmpeg_calls[0].index("-ss") + 1], "7200.000")
+        self.assertEqual(frames[0]["referenceUsage"], "核对双人游戏中的自行车外观与场景")
+
+    def test_control_without_valid_reference_request_keeps_contact_sheet_fallback(self):
+        frames = comic.generate_directed_storyboard_screenshots(
+            str(self.highlight),
+            "分镜1：主播坐在桌前聊天。",
+            {
+                "variant": "control",
+                "directedScreenshots": {"enabled": True, "maxImages": 2},
+            },
+        )
+
+        self.assertEqual(frames, [])
 
     def test_sheet_reference_uses_script_timestamps_without_visual_ai(self):
         from PIL import Image

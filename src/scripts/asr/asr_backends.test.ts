@@ -927,6 +927,36 @@ describe('asr_backends', () => {
     expect(asr.applyCorrectionsToText('AVR设备今晚开机', corrections)).toBe('AVR设备今晚开机');
   });
 
+  test('safe mixed-script corrections protect the latin part inside a larger word', () => {
+    const corrections = {
+      safe: [
+        { from: '小c', to: '小岁' },
+        { from: 'c级', to: '岁己' }
+      ]
+    };
+
+    expect(asr.applyCorrectionsToText('小c有点可爱', corrections)).toBe('小岁有点可爱');
+    expect(asr.applyCorrectionsToText('小cookie有点蛆', corrections)).toBe('小cookie有点蛆');
+    expect(asr.applyCorrectionsToText('abc级接口', corrections)).toBe('abc级接口');
+    expect(asr.applyCorrectionsToAsrResult({
+      backend: 'paraformer',
+      segments: [
+        { start: 0, end: 1, text: '这个小c' },
+        { start: 1, end: 2, text: 'ookie有点蛆' }
+      ]
+    }, corrections).segments.map((segment: any) => segment.text).join(''))
+      .toBe('这个小cookie有点蛆');
+  });
+
+  test('production corrections preserve cookie while still correcting standalone 小c', () => {
+    const resolved = asr.resolveAsrHotwords(productionConfig, { room_id: '1713546334' });
+
+    expect(asr.applyCorrectionsToText('小cookie有点蛆', resolved.corrections))
+      .toBe('小cookie有点蛆');
+    expect(asr.applyCorrectionsToText('这个小c有点可爱', resolved.corrections))
+      .toBe('这个小岁有点可爱');
+  });
+
   test('correction exclusions preserve protected words containing an alias', () => {
     const corrections = {
       safe: [
@@ -1338,6 +1368,71 @@ describe('asr_backends', () => {
 
     expect(result.appearedStreamerIds).toEqual(['shiori']);
     expect(result.extraAppearedStreamerIds).toEqual([]);
+  });
+
+  test('applies streamer-specific speaker thresholds without lowering the global gate', () => {
+    const baseConfig = {
+      ai: {
+        comic: {
+          multiReferenceImages: {
+            enabled: true,
+            minSpeakerScore: 0.64,
+            minSpeechSeconds: 8,
+            minSpeakerMaxScore: 0.8,
+            minSpeakerSecondsWhenLowScore: 900,
+            maxExtraCharacters: 2
+          }
+        },
+        streamerRegistry: {
+          sui: {
+            displayName: '岁己SUI',
+            roomIds: ['25788785'],
+            speakerLabels: ['岁己SUI']
+          },
+          shiori: {
+            displayName: '栞栞',
+            speakerLabels: ['栞栞']
+          }
+        }
+      }
+    };
+    const asrResult = {
+      backend: 'paraformer',
+      segments: [
+        { start: 0, end: 600, text: 'host', speaker: '岁己SUI', speaker_score: 0.9 },
+        { start: 600, end: 868, text: 'calm guest', speaker: '栞栞', speaker_score: 0.5048 },
+        { start: 868, end: 1135.83, text: 'excited guest', speaker: '栞栞', speaker_score: 0.7648 }
+      ]
+    };
+
+    const globallyFiltered = asr.summarizeAsrSpeakers(
+      asrResult,
+      baseConfig,
+      { room_id: '25788785', mediaPath: 'x.m4a' }
+    );
+    const scopedConfig = JSON.parse(JSON.stringify(baseConfig));
+    scopedConfig.ai.comic.multiReferenceImages.speakerThresholdOverrides = {
+      shiori: {
+        minSpeakerScore: 0.63,
+        minSpeakerMaxScore: 0.75,
+        minSpeakerSecondsWhenLowScore: 480
+      }
+    };
+    const scopedAccepted = asr.summarizeAsrSpeakers(
+      asrResult,
+      scopedConfig,
+      { room_id: '25788785', mediaPath: 'x.m4a' }
+    );
+
+    expect(globallyFiltered.appearedStreamerIds).toEqual(['sui']);
+    expect(scopedAccepted.appearedStreamerIds).toEqual(['sui', 'shiori']);
+    expect(scopedAccepted.speakers.find((speaker: any) => speaker.streamerId === 'shiori')).toEqual(
+      expect.objectContaining({
+        totalSpeechSeconds: 535.83,
+        avgScore: 0.6348,
+        maxScore: 0.7648
+      })
+    );
   });
 
   test('summarizes speakers allowing missing score when duration passes', () => {

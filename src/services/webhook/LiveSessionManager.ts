@@ -201,39 +201,62 @@ export class LiveSessionManager {
 
     const originalKeys = new Set(session.segments.map(segment => this.normalizePathKey(segment.videoPath)));
     const candidatesByPath = new Map<string, SegmentCandidate>();
+    const scanDirs = this.getNearbySegmentScanDirs(session.segments, options.includeBak !== false);
+    const rejected = {
+      unreadableDirectory: 0,
+      unsupportedExtension: 0,
+      generatedRecording: 0,
+      invalidFileName: 0,
+      differentRoom: 0,
+      missingXml: 0,
+      statFailed: 0,
+      invalidOrTooSmall: 0,
+      alreadyCollected: 0
+    };
+    let scannedEntries = 0;
 
     for (const segment of session.segments) {
       const key = this.normalizePathKey(segment.videoPath);
       candidatesByPath.set(key, this.toSegmentCandidate(segment));
     }
 
-    for (const dir of this.getNearbySegmentScanDirs(session.segments, options.includeBak !== false)) {
+    for (const dir of scanDirs) {
       let entries: string[] = [];
       try {
         entries = fs.readdirSync(dir);
       } catch {
+        rejected.unreadableDirectory += 1;
         continue;
       }
 
       for (const entry of entries) {
+        scannedEntries += 1;
         const fullPath = path.join(dir, entry);
         const ext = path.extname(fullPath).toLowerCase();
         if (!supportedExtensions.includes(ext)) {
+          rejected.unsupportedExtension += 1;
           continue;
         }
 
         const baseName = path.basename(fullPath, ext);
         if (baseName.includes('_merged') || baseName.startsWith('blank_')) {
+          rejected.generatedRecording += 1;
           continue;
         }
 
         const info = this.parseRecordingFileName(path.basename(fullPath));
-        if (!info || info.roomId !== roomId) {
+        if (!info) {
+          rejected.invalidFileName += 1;
+          continue;
+        }
+        if (info.roomId !== roomId) {
+          rejected.differentRoom += 1;
           continue;
         }
 
         const xmlPath = path.join(dir, `${baseName}.xml`);
         if (!fs.existsSync(xmlPath)) {
+          rejected.missingXml += 1;
           continue;
         }
 
@@ -241,15 +264,18 @@ export class LiveSessionManager {
         try {
           stats = fs.statSync(fullPath);
         } catch {
+          rejected.statFailed += 1;
           continue;
         }
 
         if (!stats.isFile() || stats.size < minSizeBytes) {
+          rejected.invalidOrTooSmall += 1;
           continue;
         }
 
         const key = this.normalizePathKey(fullPath);
         if (candidatesByPath.has(key)) {
+          rejected.alreadyCollected += 1;
           continue;
         }
 
@@ -294,6 +320,16 @@ export class LiveSessionManager {
 
     const addedCount = recoveredSegments.filter(segment => !originalKeys.has(this.normalizePathKey(segment.videoPath))).length;
     if (addedCount === 0) {
+      this.logger.info(`Nearby same-stream recovery found no additional segments: ${roomId}`, {
+        roomId,
+        sessionSegmentCount: session.segments.length,
+        maxGapSeconds,
+        scanDirs,
+        scannedEntries,
+        eligibleCandidateCount: Math.max(0, allCandidates.length - originalKeys.size),
+        outsideGapCount: Math.max(0, allCandidates.length - selectedKeys.size),
+        rejected
+      });
       return 0;
     }
 
@@ -303,6 +339,10 @@ export class LiveSessionManager {
       addedCount,
       segmentCount: session.segments.length,
       maxGapSeconds,
+      scanDirs,
+      scannedEntries,
+      outsideGapCount: Math.max(0, allCandidates.length - selectedKeys.size),
+      rejected,
       segments: session.segments.map(segment => path.basename(segment.videoPath))
     });
 

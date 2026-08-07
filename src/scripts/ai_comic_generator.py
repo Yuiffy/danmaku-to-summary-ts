@@ -84,7 +84,7 @@ import subprocess
 import shutil
 import uuid
 
-COMIC_SCRIPT_POLICY_VERSION = 11
+COMIC_SCRIPT_POLICY_VERSION = 12
 COMIC_SCRIPT_META_SCHEMA_VERSION = 7
 COMIC_STORYTELLING_VARIANTS = {"control", "immersive_v1"}
 DEFAULT_COMIC_STORYTELLING_SALT = "comic-immersive-v1"
@@ -208,7 +208,7 @@ def get_comic_storytelling_config(config: Dict[str, Any], room_id: Optional[str]
             "maxImages": 4,
             "maxRequests": 4,
             "maxFramesPerRequest": 4,
-            "maxTotalReferenceImages": 5,
+            "maxTotalReferenceImages": 12,
             "coverageSheetsEnabled": True,
             "coverageSheetMaxCandidates": 4,
             "coverageSheetWidth": 1600,
@@ -270,7 +270,9 @@ def select_comic_storytelling_variant(
         "immersivePercent": experiment["immersivePercent"],
         "assignmentHash": assignment_hash,
         "assignmentReason": assignment_reason,
-        "screenshotMode": "individual" if variant == "immersive_v1" else "contact_sheet",
+        # Both variants can plan exact evidence frames. collect_all_images still
+        # falls back to the legacy contact sheet when no directed frame exists.
+        "screenshotMode": "individual",
         "directedScreenshots": dict(experiment.get("directedScreenshots") or {}),
     }
 
@@ -284,7 +286,7 @@ def comic_storytelling_meta(storytelling: Optional[Dict[str, Any]]) -> Dict[str,
         "storytellingImmersivePercent": storytelling.get("immersivePercent"),
         "storytellingAssignmentHash": storytelling.get("assignmentHash"),
         "storytellingAssignmentReason": storytelling.get("assignmentReason"),
-        "screenshotMode": storytelling.get("screenshotMode") or "contact_sheet",
+        "screenshotMode": storytelling.get("screenshotMode") or "individual",
     }
 
 def is_huggingface_configured() -> bool:
@@ -719,6 +721,7 @@ def get_multi_reference_config(config: Dict[str, Any], room_id: Optional[str]) -
         "minSpeechSeconds": 8,
         "minSpeakerMaxScore": 0.80,
         "minSpeakerSecondsWhenLowScore": 900,
+        "speakerThresholdOverrides": {},
         "includeUnknownSpeakers": False,
         "includeMentionedStreamers": True,
         "includeMentionedStreamerImages": True,
@@ -1284,6 +1287,28 @@ def to_optional_float(value: Any) -> Optional[float]:
     except (TypeError, ValueError):
         return None
 
+
+def get_speaker_acceptance_thresholds(
+    multi_config: Dict[str, Any],
+    streamer_id: str,
+) -> Dict[str, float]:
+    configured_overrides = multi_config.get("speakerThresholdOverrides")
+    override = configured_overrides.get(streamer_id, {}) if isinstance(configured_overrides, dict) else {}
+    if not isinstance(override, dict):
+        override = {}
+
+    thresholds = {}
+    for key in (
+        "minSpeechSeconds",
+        "minSpeakerScore",
+        "minSpeakerMaxScore",
+        "minSpeakerSecondsWhenLowScore",
+    ):
+        parsed = to_optional_float(override.get(key, multi_config.get(key)))
+        thresholds[key] = parsed if parsed is not None else 0.0
+    return thresholds
+
+
 def find_sidecar_participant_for_streamer(sidecar: dict, streamer: Dict[str, Any]) -> Optional[dict]:
     participants = sidecar.get("participants", []) if isinstance(sidecar, dict) else []
     streamer_id = str(streamer.get("id") or "")
@@ -1323,10 +1348,11 @@ def sidecar_speaker_passes_reference_thresholds(
     total_seconds = to_optional_float(speaker.get("totalSpeechSeconds")) or 0.0
     avg_score = to_optional_float(speaker.get("avgScore"))
     max_score = to_optional_float(speaker.get("maxScore"))
-    min_seconds = float(multi_config.get("minSpeechSeconds") or 0)
-    min_avg_score = float(multi_config.get("minSpeakerScore") or 0)
-    min_max_score = float(multi_config.get("minSpeakerMaxScore") or 0)
-    low_score_seconds = float(multi_config.get("minSpeakerSecondsWhenLowScore") or 0)
+    thresholds = get_speaker_acceptance_thresholds(multi_config, str(streamer.get("id") or ""))
+    min_seconds = thresholds["minSpeechSeconds"]
+    min_avg_score = thresholds["minSpeakerScore"]
+    min_max_score = thresholds["minSpeakerMaxScore"]
+    low_score_seconds = thresholds["minSpeakerSecondsWhenLowScore"]
 
     if total_seconds < min_seconds:
         print(f"[INFO]  过滤额外出声主播参考图: {display_name} 出声 {total_seconds:.1f}s < {min_seconds:.1f}s")
@@ -1573,8 +1599,8 @@ def collect_all_images(
     
     返回图片路径列表，按优先级排序：
     1. 主播参考图（roomSettings中配置的referenceImage）
-    2. 额外人物参考图，但不能占用漫画脚本明确请求的直播证据额度
-    3. 沉浸版定向直播证据；脚本请求的独立高清帧优先于同请求的多时间点宫格
+    2. 已确认出声及脚本需要的额外人物参考图；人物身份锚点优先于直播证据
+    3. 脚本定向直播证据；超出图片额度时从低优先级截图开始截断
     4. 直播封面（.cover文件）
     5. 旧版固定时间截图拼图（_SCREENSHOTS.jpg，或独立关键帧失败时兜底）
     6. 默认参考图（只有在没有主播参考图、封面、截图且配置了 defaultReferenceImage 时才使用）
@@ -1698,25 +1724,10 @@ def collect_all_images(
                 print(f"[WARNING] streamerRegistry 主播参考图不存在: {host_streamer_id} -> {ref_image}")
 
     # 1.5 额外实际出声/文本提到主播参考图。只取每人第一张存在的图。
-    # 漫画脚本明确请求的本场视觉证据必须先保留接口额度。
-    requested_evidence_paths = {
-        os.path.abspath(str(screenshot.get("path") or ""))
-        for screenshot in directed_candidates
-        if screenshot.get("requestSource") in {"script_reference", "script_reference_sheet"}
-        and screenshot.get("path")
-        and os.path.exists(str(screenshot.get("path")))
-    }
-    reserved_evidence_slots = min(
-        len(requested_evidence_paths - seen_images),
-        max(0, max_total_images - len(images)),
-    )
-    extra_character_limit = max_total_images - reserved_evidence_slots
+    # 人物身份参考是不可替代的锚点；截图只能使用人物图加入后的剩余额度。
     for streamer in (extra_streamers or []):
-        if len(images) >= extra_character_limit:
-            print(
-                f"[INFO]  为 {reserved_evidence_slots} 张脚本请求的直播证据保留额度，"
-                "停止加入额外主播参考图"
-            )
+        if len(images) >= max_total_images:
+            print(f"[INFO]  图片数量达到上限 {max_total_images}，停止加入额外主播参考图")
             break
         display_name = streamer.get("displayName") or streamer.get("id") or "unknown"
         reason = streamer.get("_comicReferenceReason") or "appeared"
@@ -1744,7 +1755,7 @@ def collect_all_images(
         if not added:
             print(f"[WARNING] 额外主播没有可用参考图: {display_name}")
     
-    # 2. 沉浸版优先加入脚本时间点对应的独立关键帧。
+    # 2. 优先加入脚本时间点对应的定向关键帧。
     directed_added = False
     if screenshot_mode == "individual":
         for screenshot in directed_candidates:
@@ -1798,7 +1809,7 @@ def collect_all_images(
         elif cover_image:
             print(f"[INFO]  图片数量达到保守上限 {max_total_images}，跳过直播封面: {os.path.basename(cover_image)}")
 
-    # 4. 旧版使用固定时间截图拼图；沉浸版只在独立关键帧全部失败时降级使用。
+    # 4. 没有可用定向关键帧时，降级使用固定时间截图拼图。
     screenshot_path = os.environ.get('SCREENSHOT_PATH', '')
     should_use_contact_sheet = screenshot_mode != "individual" or not directed_added
     if should_use_contact_sheet and screenshot_path and os.path.exists(screenshot_path) and len(images) < max_total_images:
@@ -1884,34 +1895,46 @@ def _coerce_timestamp_seconds(value: Any) -> Optional[float]:
 
 
 def _extract_comic_json_objects(comic_text: str) -> list[dict]:
-    """Return structured records from either JSON, a JSON array, or JSON Lines."""
-    text = re.sub(r"^\s*```(?:json|jsonl)?\s*|\s*```\s*$", "", comic_text or "", flags=re.IGNORECASE)
+    """Return structured records from JSON arrays, JSON Lines, or adjacent JSON values."""
+    text = re.sub(r"```(?:jsonl?)?\s*", "", comic_text or "", flags=re.IGNORECASE)
     candidates: list[Any] = []
-    try:
-        payload = json.loads(text)
+
+    def append_payload(payload: Any) -> None:
         if isinstance(payload, dict):
             nested = []
             for key in ("shots", "beats", "references"):
                 value = payload.get(key)
                 if isinstance(value, list):
                     nested.extend(value)
-            candidates.extend(nested or [payload])
+            if nested:
+                for item in nested:
+                    append_payload(item)
+            else:
+                candidates.append(payload)
         elif isinstance(payload, list):
-            candidates.extend(payload)
-    except (json.JSONDecodeError, TypeError):
-        pass
+            for item in payload:
+                append_payload(item)
 
-    if not candidates:
-        for line in text.splitlines():
-            stripped = line.strip().rstrip(",")
-            if not (stripped.startswith("{") and stripped.endswith("}")):
-                continue
-            try:
-                item = json.loads(stripped)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(item, dict):
-                candidates.append(item)
+    decoder = json.JSONDecoder()
+    cursor = 0
+    while cursor < len(text):
+        while cursor < len(text) and (text[cursor].isspace() or text[cursor] in ",;"):
+            cursor += 1
+        if cursor >= len(text):
+            break
+        if text[cursor] not in "[{":
+            next_value = re.search(r"[\[{]", text[cursor + 1:])
+            if not next_value:
+                break
+            cursor += next_value.start() + 1
+        try:
+            payload, end = decoder.raw_decode(text, cursor)
+        except json.JSONDecodeError:
+            cursor += 1
+            continue
+        append_payload(payload)
+        cursor = end
+
     return [item for item in candidates if isinstance(item, dict)]
 
 
@@ -2274,9 +2297,7 @@ def generate_directed_storyboard_screenshots(
     storytelling: Optional[Dict[str, Any]],
     source_video_path: Optional[str] = None,
 ) -> list[dict]:
-    """Extract independent visual-evidence frames requested by the immersive script."""
-    if (storytelling or {}).get("variant") != "immersive_v1":
-        return []
+    """Extract visual-evidence frames requested by either comic script variant."""
     screenshot_config = (storytelling or {}).get("directedScreenshots") or {}
     if screenshot_config.get("enabled", True) is False:
         return []
@@ -2292,7 +2313,7 @@ def generate_directed_storyboard_screenshots(
 
     reference_requests = extract_reference_requests(comic_text, max_requests)
     if not reference_requests:
-        print("[WARNING] 沉浸版漫画脚本未解析出有效视觉证据请求，降级使用原截图拼图")
+        print("[WARNING] 漫画脚本未解析出有效视觉证据请求，降级使用原截图拼图")
         return []
 
     video_path = infer_source_video_path(highlight_path, source_video_path)
@@ -2684,6 +2705,12 @@ def format_image_reference_manifest(image_manifest: Optional[list[dict]]) -> str
         lines.append(f"- 参考图{index}：{description}")
     return "\n".join(lines)
 
+
+REFERENCE_RECORD_IMAGE_PROMPT_RULES = """截图规划记录规则：
+- 漫画脚本中 kind=reference 的 JSON 记录只是选择输入截图及说明核对用途的规划元数据，不是额外分镜、台词、标题或任何应出现在画面里的文字。
+- 只从实际提供的对应参考图中读取与 referenceUsage 有关的可见事实；不要绘制 JSON 字段、时间戳或记录本身。"""
+
+
 def build_comic_prompt(
     highlight_content: str,
     reference_image_path: Optional[str] = None,
@@ -2738,6 +2765,11 @@ def build_comic_prompt(
     storytelling_variant = (storytelling or {}).get("variant") or "control"
     reference_manifest_block = format_image_reference_manifest(image_manifest)
     immersive_image_rules = IMMERSIVE_IMAGE_PROMPT_RULES if storytelling_variant == "immersive_v1" else ""
+    has_reference_records = any(
+        str(item.get("kind") or "").strip().lower() == "reference"
+        for item in _extract_comic_json_objects(comic_content)
+    )
+    reference_record_rules = REFERENCE_RECORD_IMAGE_PROMPT_RULES if has_reference_records else ""
 
     # 第二步：基于漫画内容构建绘画提示词（包含角色设定，便于图像生成一致）
     if custom_image_prompt:
@@ -2751,6 +2783,8 @@ def build_comic_prompt(
             base_prompt = f"{base_prompt}\n{multi_constraints}"
         if reference_manifest_block:
             base_prompt = f"{base_prompt}\n\n{reference_manifest_block}"
+        if reference_record_rules:
+            base_prompt = f"{base_prompt}\n\n{reference_record_rules}"
         if immersive_image_rules:
             base_prompt = f"{base_prompt}\n\n{immersive_image_rules}"
     else:
@@ -2762,6 +2796,7 @@ def build_comic_prompt(
 若下方漫画脚本与 live_facts 冲突，以 live_facts 为准并修正画面，不要绘制错误的游戏界面、角色、Logo或台词。
 {multi_constraints}
 {reference_manifest_block}
+{reference_record_rules}
 {immersive_image_rules}
 要画得精致，角色要画得帅气、美丽、可爱。
 {{chinese_instruction}}
@@ -2841,7 +2876,19 @@ COMIC_ARTIST_PROMPT_TEMPLATE = """你作为虚拟主播二创画师大手子，�
 注意：弹幕里的“[某某收藏集表情包_xxx]”或“[某某表情包_xxx]”只是观众发的表情包名称，不代表这个主播出场、连麦或参与对话；不要把表情包名称当成漫画角色。
 只画语音正文、摘要事件或明确提到的真实人物；不确定时画房间主人、观众小人、道具或屏幕内容，不要凭表情包名新增主播。
 如果语音正文给出团体、名单或成员关系，只能按该关系附近的正文确定成员；不能把本场其它段落提到的主播替换进这个团体。
-下面是一场直播的语音+弹幕文本，请先构思图片并用文字给我，我再拿去绘制图片。整体600个字符以内。只返回各个分镜的文字描述，不要包含任何多余的说明、格式。若适合带字，请明确写出这些字应该出现在什么位置、每处写什么，单处文字尽量控制在1到12个字。
+
+输出格式：
+- 先输出2~4行剪贴画分镜，格式为“分镜1：……”。若适合带字，请明确写出文字位置和内容，单处文字尽量控制在1到12个字。
+- 分镜之后按重要性输出1~4行严格JSON格式的参考截图建议，每行一条，不要Markdown代码块：{"kind":"reference","timestampsSeconds":[数值1,数值2],"referenceUsage":"这些截图在最终生图时具体用于核对哪些可见事实","captureMode":"individual或sheet"}
+- reference记录只是后续截图规划元数据，不是额外分镜、台词或可见文字，不计入2~4个分镜，最终画面不得画出JSON字段、时间戳或记录本身。
+
+参考截图建议规则：
+- 时间标记如“[12m]”表示录制后第12分钟，必须换算为数值秒数。每条timestampsSeconds包含1~4个去重时间点，尽量对准所需事实稳定可见的时刻；文本只能粗略定位时可给附近多个合理时间点。
+- 每条建议只核对一个具体可见事实。优先选择一旦画错就会改变人物/作品身份、人物或物品数量、关键物体、动作过程、界面状态或事件结果的画面，不要只写“参考画面”。
+- 对屏幕内正在被观看的新人、视频或作品角色，referenceUsage必须明确其外观、数量以及“属于屏幕内容而非本场互动角色”；不要用已确认出声的联动角色替代屏幕人物。
+- captureMode=individual适合细节必须清楚的独立高清帧；captureMode=sheet适合同一用途的多个候选时刻、不同角度或连续过程。不同核对用途必须拆成不同reference。
+
+下面是一场直播的语音+弹幕文本，请先构思图片并用文字给我，我再拿去绘制图片。整体1200个字符以内。只返回分镜描述和reference JSON行，不要包含任何说明或其它格式。
 {highlight_content}
 """
 
@@ -4223,11 +4270,7 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
             directed_screenshots=directed_screenshots,
             screenshot_mode=storytelling["screenshotMode"],
             image_manifest=image_manifest,
-            max_total_images=(
-                directed_screenshot_config.get("maxTotalReferenceImages") or 5
-                if storytelling.get("variant") == "immersive_v1"
-                else None
-            ),
+            max_total_images=directed_screenshot_config.get("maxTotalReferenceImages") or 12,
         )
         reference_image_path = all_images if all_images else None
         prompt, comic_text, is_comic_generated = build_comic_prompt(

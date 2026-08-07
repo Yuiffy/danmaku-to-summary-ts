@@ -189,7 +189,7 @@
           "maxImages": 4,
           "maxRequests": 4,
           "maxFramesPerRequest": 4,
-          "maxTotalReferenceImages": 5,
+          "maxTotalReferenceImages": 12,
           "coverageSheetsEnabled": true,
           "coverageSheetMaxCandidates": 4,
           "coverageSheetWidth": 1600,
@@ -204,6 +204,13 @@
         "minSpeechSeconds": 8,
         "minSpeakerMaxScore": 0.8,
         "minSpeakerSecondsWhenLowScore": 900,
+        "speakerThresholdOverrides": {
+          "shiori": {
+            "minSpeakerScore": 0.63,
+            "minSpeakerMaxScore": 0.75,
+            "minSpeakerSecondsWhenLowScore": 480
+          }
+        },
         "includeUnknownSpeakers": false,
         "useMentionedOnlyAsContext": true,
         "filterExtraImagesByComicScript": true,
