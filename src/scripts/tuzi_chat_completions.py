@@ -1398,6 +1398,9 @@ def normalize_gpt_image_size(size: str) -> str:
     return ratio_to_pixels.get(size, size)
 
 
+MAX_GPT_IMAGE_EDIT_REFERENCES = 12
+
+
 def call_tuzi_images_edits(
     prompt: str,
     reference_image_path,
@@ -1432,9 +1435,12 @@ def call_tuzi_images_edits(
             print("[WARNING] images/edits 缺少有效参考图，跳过")
             return None
 
-        if len(reference_paths) > 5:
-            print(f"[WARNING] gpt-image-2 edits 最多支持 5 张参考图，当前 {len(reference_paths)} 张，仅使用前 5 张")
-            reference_paths = reference_paths[:5]
+        if len(reference_paths) > MAX_GPT_IMAGE_EDIT_REFERENCES:
+            print(
+                f"[WARNING] gpt-image-2 edits 最多使用 {MAX_GPT_IMAGE_EDIT_REFERENCES} 张参考图，"
+                f"当前 {len(reference_paths)} 张，仅使用前 {MAX_GPT_IMAGE_EDIT_REFERENCES} 张"
+            )
+            reference_paths = reference_paths[:MAX_GPT_IMAGE_EDIT_REFERENCES]
 
         api_url = f"{normalize_openai_base_url(base_url)}/v1/images/edits"
         headers = {

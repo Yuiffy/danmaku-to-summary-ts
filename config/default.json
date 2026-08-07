@@ -738,7 +738,7 @@
           "maxImages": 4,
           "maxRequests": 4,
           "maxFramesPerRequest": 4,
-          "maxTotalReferenceImages": 5,
+          "maxTotalReferenceImages": 12,
           "coverageSheetsEnabled": true,
           "coverageSheetMaxCandidates": 4,
           "coverageSheetWidth": 1600,

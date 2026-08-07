@@ -1,5 +1,6 @@
 import importlib.util
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -26,6 +27,12 @@ class FakeResponse:
 
     def json(self):
         return self.body
+
+
+class FakeElapsed:
+    @staticmethod
+    def total_seconds():
+        return 0.1
 
 
 class TuziTextCompletionTests(unittest.TestCase):
@@ -193,6 +200,41 @@ class TuziTextCompletionTests(unittest.TestCase):
 
         self.assertEqual(content, "LUNA_OK")
         self.assertEqual(post.call_args.kwargs["json"]["model"], "gpt-5.6-luna")
+
+    def test_images_edits_sends_up_to_twelve_reference_images(self):
+        response = FakeResponse({"data": [{"b64_json": "unused"}]})
+        response.elapsed = FakeElapsed()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            reference_paths = []
+            for index in range(13):
+                image_path = Path(temp_dir) / f"reference-{index + 1:02d}.png"
+                image_path.write_bytes(b"test-image")
+                reference_paths.append(str(image_path))
+
+            with (
+                patch.object(tuzi, "check_image_api_rate_limit", return_value=True),
+                patch.object(tuzi.requests, "post", return_value=response) as post,
+                patch.object(tuzi, "try_extract_image_from_data_items", return_value="result.png"),
+                patch.object(tuzi, "record_successful_image_api_call"),
+                patch.object(tuzi, "append_image_generation_attempt"),
+                patch.object(tuzi, "log_tuzi_response_identifiers", return_value={}),
+            ):
+                result = tuzi.call_tuzi_images_edits(
+                    prompt="generate",
+                    reference_image_path=reference_paths,
+                    base_url="https://api.example/v1",
+                    api_key="secret",
+                    use_tuzi_retry=False,
+                )
+
+        self.assertEqual(result, "result.png")
+        uploaded_files = post.call_args.kwargs["files"]
+        self.assertEqual(len(uploaded_files), 12)
+        self.assertEqual(
+            [file_tuple[1][0] for file_tuple in uploaded_files],
+            [f"reference-{index:02d}.png" for index in range(1, 13)],
+        )
 
 
 if __name__ == "__main__":
