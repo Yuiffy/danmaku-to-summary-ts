@@ -49,6 +49,19 @@ describe('ai_text_generator speaker guidance', () => {
     expect(prompt).toContain('字幕多次出现明日方舟');
   });
 
+  test('uses a post-stream reply by default instead of a fixed goodnight greeting', () => {
+    const prompt = aiTextGenerator.buildPrompt(
+      '主播中午结束直播，和观众告别。',
+      '26966466',
+      '11:57~13:33'
+    );
+
+    expect(prompt).toContain('【下播回复任务】');
+    expect(prompt).toContain('不要默认写“晚安”');
+    expect(prompt).toContain('只有明确是夜间或深夜时');
+    expect(prompt).not.toContain('如清晨/上午可用早安');
+  });
+
   test('keeps Shiori address names separate from her fan name', () => {
     const prompt = aiTextGenerator.buildPrompt(
       '主播玩了第五人格，和观众连麦聊天，最后提醒明天下午去诊所。',

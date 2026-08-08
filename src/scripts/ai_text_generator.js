@@ -287,6 +287,9 @@ function buildPrompt(highlightContent, roomId, liveTimeDesc = null, liveContext 
 - 绝对不能用“${fan}”称呼主播，不能写“${fan}！”、“晚安${fan}”或让“${fan}”出现在开头称呼位置。
 - 开头不必每次直呼主播名字，可以直接从本场具体内容起笔。若写称呼，优先选上面列表中较短、口语化的称呼，不要每条都固定照抄“${anchor}”。
 - 如需表达评论者身份，“${fan}”只能作为粉丝自称/群体名自然出现，也可以完全不提。`;
+    const timingGuidance = liveTimeDesc
+        ? `直播时段为北京时间 ${liveTimeDesc}。这是下播回复，不要默认写“晚安”；只有明确是夜间或深夜时，才自然使用“晚安”。其他时段围绕直播辛苦和休息表达。`
+        : '这是下播回复，不要默认写“晚安”。没有可靠时段信息时，围绕直播辛苦和休息表达。';
 
     if (customPrompt) {
         const renderedLiveContext = sharedCacheEnabled ? '' : liveContextBlock;
@@ -304,9 +307,9 @@ function buildPrompt(highlightContent, roomId, liveTimeDesc = null, liveContext 
             ? `${liveContextBlock}\n\n`
             : '';
         const sourcePrefix = sharedCacheEnabled
-            ? `${sharedSourcePrefix}\n\n【晚安回复任务】\n只使用上方共享事实输入完成本任务。\n\n`
+            ? `${sharedSourcePrefix}\n\n【下播回复任务】\n只使用上方共享事实输入完成本任务。\n\n`
             : '';
-        return `${sourcePrefix}${namingGuidance}\n\n${speakerGuidance}\n\n${contextPrefix}${renderedPrompt}`;
+        return `${sourcePrefix}${namingGuidance}\n\n${speakerGuidance}\n\n${contextPrefix}${renderedPrompt}\n\n【下播时段】\n${timingGuidance}`;
     }
 
     // --- 核心修改:全肯定萌萌人 2.0 ---
@@ -326,7 +329,8 @@ function buildPrompt(highlightContent, roomId, liveTimeDesc = null, liveContext 
 3. **萌萌人**:可以使用颜文字 (  ́∀\`),语气词(捏、呀、嘛、呜呜),但要自然点。
 
 【当前任务】
-根据提供的直播内容,写一段晚安回复。
+时效性:${timingGuidance}
+根据提供的直播内容,写一段下播回复。
 **今日夸奖切入点**:${randomAngle}
 
 【写作要求】
@@ -344,7 +348,7 @@ function buildPrompt(highlightContent, roomId, liveTimeDesc = null, liveContext 
 
 严格限定素材:只根据用户当前提供的文档/文本内容进行创作。绝对禁止混入该文档以外的任何已知信息、历史直播内容或互联网搜索结果(因为${anchor}的梗很多,AI容易串台,这一点必须强调)。
 
-时效性:${liveTimeDesc ? `该直播时段为北京时间 ${liveTimeDesc}。请根据时段自然地选择开场白（如清晨/上午可用早安、下午可用下午好、晚上可用晚安等），不强制使用特定问候语。` : '根据文档内容判断是早播、午播还是晚播,自然地选择开场白。'}
+时效性:${timingGuidance}
 
 【写作结构与要素】
 
@@ -368,7 +372,7 @@ function buildPrompt(highlightContent, roomId, liveTimeDesc = null, liveContext 
 
     const randomMainPrompt = mainPrompts[Math.floor(Math.random() * mainPrompts.length)];
     const sourceContext = sharedCacheEnabled
-        ? `${sharedSourcePrefix}\n\n【晚安回复任务】\n只使用上方共享事实输入完成本任务。`
+        ? `${sharedSourcePrefix}\n\n【下播回复任务】\n只使用上方共享事实输入完成本任务。`
         : `${liveContextBlock}\n\n【直播内容(主播语音转写+观众弹幕)】\n${highlightContent}`;
 
     const result = `${sourceContext}

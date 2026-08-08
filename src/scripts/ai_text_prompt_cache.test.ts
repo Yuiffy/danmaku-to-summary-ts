@@ -29,7 +29,7 @@ describe('shared text prompt cache metadata', () => {
       '这里是足够长的本场事实块。',
       liveGenerationContext.SHARED_PROMPT_CACHE_END,
       '',
-      '【晚安回复任务】',
+      '【下播回复任务】',
       '请生成晚安回复。'
     ].join('\n');
     const config = {
@@ -56,7 +56,7 @@ describe('shared text prompt cache metadata', () => {
       '这里是足够长的本场事实块。',
       liveGenerationContext.SHARED_PROMPT_CACHE_END
     ].join('\n'));
-    expect(plan.suffix).toContain('【晚安回复任务】');
+    expect(plan.suffix).toContain('【下播回复任务】');
     expect(body.prompt_cache_key).toMatch(/^live:[a-f0-9]{48}$/u);
     expect(body.prompt_cache_options).toEqual({ mode: 'explicit', ttl: '30m' });
     expect(body.messages[0]).toEqual(expect.objectContaining({ role: 'system' }));
@@ -64,7 +64,7 @@ describe('shared text prompt cache metadata', () => {
       type: 'text',
       prompt_cache_breakpoint: { mode: 'explicit' }
     }));
-    expect(body.messages[1].content[1].text).toContain('【晚安回复任务】');
+    expect(body.messages[1].content[1].text).toContain('【下播回复任务】');
   });
 
   it('keeps explicit caching off outside the rollout and on unsupported models', () => {
@@ -91,7 +91,7 @@ describe('shared text prompt cache metadata', () => {
 
     expect(prompt.startsWith(liveGenerationContext.SHARED_PROMPT_CACHE_START)).toBe(true);
     expect(prompt.indexOf(liveGenerationContext.SHARED_PROMPT_CACHE_END))
-      .toBeLessThan(prompt.indexOf('【晚安回复任务】'));
+      .toBeLessThan(prompt.indexOf('【下播回复任务】'));
     expect(prompt.match(/明日方舟代抽十连/gu)).toHaveLength(1);
     expect(prompt).toContain('[弥月Mizuki 0.91]');
     expect(prompt).toContain('[SPEAKER_04 0.57] 大家好，我是露露');
@@ -126,7 +126,7 @@ describe('shared text prompt cache metadata', () => {
 
     expect(prompt.startsWith(liveGenerationContext.SHARED_PROMPT_CACHE_START)).toBe(true);
     expect(prompt.indexOf(liveGenerationContext.SHARED_PROMPT_CACHE_END))
-      .toBeLessThan(prompt.indexOf('【晚安回复任务】'));
+      .toBeLessThan(prompt.indexOf('【下播回复任务】'));
     expect(prompt.match(/测试自定义晚安模板的共享正文/gu)).toHaveLength(1);
     expect(prompt).toContain('弹幕法庭式玩梗评论');
   });

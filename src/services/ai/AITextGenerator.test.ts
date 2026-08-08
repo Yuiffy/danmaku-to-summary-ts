@@ -54,6 +54,20 @@ describe('AITextGenerator goodnight naming boundary', () => {
     expect(prompt).toContain('不要每条都固定照抄“莉蔻Liko”');
   });
 
+  test('treats goodnight as conditional on the stream time', () => {
+    const generator = createGeneratorForTest();
+    const prompt = generator.buildGoodnightPrompt(
+      '主播中午结束直播，和观众告别。',
+      '26966466',
+      '11:57~13:33'
+    );
+
+    expect(prompt).toContain('不要默认写“晚安”');
+    expect(prompt).toContain('只有明确是夜间或深夜时');
+    expect(prompt).toContain('其他时段围绕直播辛苦和休息表达');
+    expect(prompt).not.toContain('如清晨/上午可用早安');
+  });
+
   test('rejects a fan name used as the opening address', () => {
     const generator = createGeneratorForTest();
     const inspection = generator.inspectGeneratedReply(
