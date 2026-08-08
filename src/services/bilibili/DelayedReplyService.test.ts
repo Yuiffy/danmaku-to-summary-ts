@@ -45,6 +45,61 @@ describe('DelayedReplyService duplicate reply detection', () => {
     expect(duplicate).toBe(repliedTask);
   });
 
+  it('keeps a partial recording task deferred after the active-live limit', async () => {
+    const store = { updateTask: jest.fn().mockResolvedValue(undefined) };
+    const service = new DelayedReplyService({} as any, store as any) as any;
+    const scheduleTask = jest.spyOn(service, 'scheduleTask').mockImplementation(() => undefined);
+    const task = createTask({
+      taskId: 'partial-task',
+      status: 'pending',
+      replyId: undefined,
+      deferredForActiveLive: true,
+      activeLiveDeferCount: 60,
+      liveContinuationWaitCount: 0
+    });
+
+    await service.deferTaskForActiveLive(task, {
+      isLive: true,
+      liveStatus: 1,
+      liveStartTime: new Date()
+    });
+
+    expect(task.status).toBe('pending');
+    expect(task.deferredForActiveLive).toBe(true);
+    expect(task.activeLiveDeferCount).toBe(61);
+    expect(task.liveContinuationWaitCount).toBe(1);
+    expect(store.updateTask).toHaveBeenCalledWith(task.taskId, expect.objectContaining({
+      status: 'pending',
+      deferredForActiveLive: true,
+      activeLiveDeferCount: 61,
+      liveContinuationWaitCount: 1
+    }));
+    expect(scheduleTask).toHaveBeenCalledWith(task);
+  });
+
+  it('does not suppress a newer final recording because an earlier partial task replied', () => {
+    const service = createService() as any;
+    const partialTask = createTask({
+      taskId: 'partial-task',
+      liveEndTime: new Date('2026-08-08T12:05:00.000Z')
+    });
+    const finalTask = createTask({
+      taskId: 'final-task',
+      liveEndTime: new Date('2026-08-08T17:32:00.000Z')
+    });
+    service.tasks.set(partialTask.taskId, partialTask);
+    service.tasks.set(finalTask.taskId, finalTask);
+
+    const duplicate = service.findRecentCompletedReply(
+      finalTask.roomId,
+      finalTask.repliedDynamicId,
+      finalTask.taskId,
+      finalTask
+    );
+
+    expect(duplicate).toBeNull();
+  });
+
   it('reattaches a recovered comic to a completed text task without creating another reply task', async () => {
     const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'delayed-reply-recovered-comic-'));
     const goodnightTextPath = path.join(outputDir, 'stream_晚安回复.md');

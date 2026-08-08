@@ -32,7 +32,7 @@ export class DelayedReplyService implements IDelayedReplyService {
   private static readonly SUPPLEMENTAL_COMIC_REPLY_PREFIX = '（补图）';
   private static readonly LIVE_RECHECK_INTERVAL_MS = 2 * 60 * 1000;
   private static readonly LIVE_CONTINUATION_REPLACEMENT_MAX_WAIT_COUNT = 180;
-  /** Max times to defer for active live before forcing through (2h = 60 * 2min). */
+  /** Initial active-live defer window before waiting for a final recording replacement. */
   private static readonly MAX_ACTIVE_LIVE_DEFER_COUNT = 60;
   private tasks: Map<string, DelayedReplyTask> = new Map();
   private timers: Map<string, NodeJS.Timeout> = new Map();
@@ -1022,26 +1022,57 @@ export class DelayedReplyService implements IDelayedReplyService {
     const deferCount = (task.activeLiveDeferCount || 0) + 1;
 
     if (deferCount > DelayedReplyService.MAX_ACTIVE_LIVE_DEFER_COUNT) {
-      const maxMinutes = DelayedReplyService.MAX_ACTIVE_LIVE_DEFER_COUNT * (DelayedReplyService.LIVE_RECHECK_INTERVAL_MS / 60000);
-      this.logger.warn(
-        `Active live defer count exceeded limit (${deferCount}/${DelayedReplyService.MAX_ACTIVE_LIVE_DEFER_COUNT}, ~${maxMinutes} min). ` +
-        `Assuming live has ended or API is stale, proceeding with delayed reply.`,
-        {
+      // A live status that remains active is not enough evidence to publish a
+      // partial recording. Keep the task replaceable until the final merged
+      // recording creates its own delayed-reply task.
+      const waitCount = task.liveContinuationWaitCount || 0;
+      if (waitCount >= DelayedReplyService.LIVE_CONTINUATION_REPLACEMENT_MAX_WAIT_COUNT) {
+        task.status = 'failed';
+        task.error = 'stale delayed reply suppressed after live continuation; waiting replacement task timed out';
+        task.activeLiveDeferCount = deferCount;
+        await this.store.updateTask(task.taskId, {
+          status: 'failed',
+          error: task.error,
+          activeLiveDeferCount: deferCount,
+          liveContinuationWaitCount: waitCount
+        });
+        this.logger.warn('Suppressed stale delayed reply after the final recording replacement timed out', {
           taskId: task.taskId,
           roomId: task.roomId,
           activeLiveDeferCount: deferCount,
+          liveContinuationWaitCount: waitCount,
           liveStatus: liveStatus.liveStatus,
           liveStartTime: liveStatus.liveStartTime?.toISOString()
-        }
-      );
-      // Clear deferred state so we don't re-enter this loop
-      task.deferredForActiveLive = false;
+        });
+        return;
+      }
+
+      task.status = 'pending';
+      task.scheduledTime = new Date(Date.now() + DelayedReplyService.LIVE_RECHECK_INTERVAL_MS);
+      task.deferredForActiveLive = true;
       task.activeLiveDeferCount = deferCount;
+      task.liveContinuationWaitCount = waitCount + 1;
+      task.lastCheckTime = new Date();
       await this.store.updateTask(task.taskId, {
-        deferredForActiveLive: false,
-        activeLiveDeferCount: deferCount
+        status: 'pending',
+        scheduledTime: task.scheduledTime,
+        deferredForActiveLive: true,
+        activeLiveDeferCount: deferCount,
+        liveContinuationWaitCount: task.liveContinuationWaitCount,
+        lastCheckTime: task.lastCheckTime
       });
-      return; // caller will continue normal execution flow
+
+      this.logger.warn('Active live defer limit reached; waiting for the final recording task to replace the partial task', {
+        taskId: task.taskId,
+        roomId: task.roomId,
+        activeLiveDeferCount: deferCount,
+        liveContinuationWaitCount: task.liveContinuationWaitCount,
+        liveStatus: liveStatus.liveStatus,
+        liveStartTime: liveStatus.liveStartTime?.toISOString(),
+        nextCheckTime: task.scheduledTime.toISOString()
+      });
+      this.scheduleTask(task);
+      return;
     }
 
     task.status = 'pending';
@@ -1813,7 +1844,7 @@ export class DelayedReplyService implements IDelayedReplyService {
         return;
       }
 
-      const duplicateReply = this.findRecentCompletedReply(task.roomId, String(finalDynamic.id), task.taskId);
+      const duplicateReply = this.findRecentCompletedReply(task.roomId, String(finalDynamic.id), task.taskId, task);
       if (duplicateReply) {
         const skippedMessage = `跳过重复延迟回复：房间 ${task.roomId} 最近已回复动态 ${String(finalDynamic.id)}`;
         this.logger.warn(skippedMessage, {
@@ -2052,15 +2083,22 @@ export class DelayedReplyService implements IDelayedReplyService {
   /**
    * 查找近期已发布主回复的同房间任务，避免多段/续播任务重复回复同一条动态。
    */
-  private findRecentCompletedReply(roomId: string, dynamicId: string, currentTaskId: string): DelayedReplyTask | null {
+  private findRecentCompletedReply(
+    roomId: string,
+    dynamicId: string,
+    currentTaskId: string,
+    currentTask?: DelayedReplyTask
+  ): DelayedReplyTask | null {
     const now = Date.now();
     const recentReplyWindowMs = 2 * 60 * 60 * 1000;
+    const effectiveCurrentTask = currentTask || this.tasks.get(currentTaskId);
 
     const repliedTasks = Array.from(this.tasks.values())
       .filter(task =>
         task.taskId !== currentTaskId &&
         task.roomId === roomId &&
-        !!task.replyId
+        !!task.replyId &&
+        (!effectiveCurrentTask || !this.isNewerRecordingTask(effectiveCurrentTask, task))
       )
       .sort((a, b) => this.getTaskCompletionTime(b).getTime() - this.getTaskCompletionTime(a).getTime());
 
@@ -2075,6 +2113,24 @@ export class DelayedReplyService implements IDelayedReplyService {
     return repliedTasks.find(task =>
       now - this.getTaskCompletionTime(task).getTime() < recentReplyWindowMs
     ) || null;
+  }
+
+  /**
+   * A later final recording can legitimately target the same dynamic as an
+   * earlier partial recording. The later live end time identifies that case.
+   */
+  private isNewerRecordingTask(currentTask: DelayedReplyTask, previousTask: DelayedReplyTask): boolean {
+    const currentEnd = currentTask.liveEndTime?.getTime();
+    const previousEnd = previousTask.liveEndTime?.getTime();
+
+    if (!currentEnd || Number.isNaN(currentEnd)) {
+      return false;
+    }
+    if (!previousEnd || Number.isNaN(previousEnd)) {
+      return true;
+    }
+
+    return currentEnd > previousEnd;
   }
 
   private getTaskCompletionTime(task: DelayedReplyTask): Date {
