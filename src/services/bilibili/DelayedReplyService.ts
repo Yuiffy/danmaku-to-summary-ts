@@ -26,7 +26,9 @@ function generateUUID(): string {
 export class DelayedReplyService implements IDelayedReplyService {
   private logger = getLogger('DelayedReplyService');
   private static readonly COMIC_WAIT_INTERVAL_MS = 2 * 60 * 1000;
-  private static readonly MAX_COMIC_WAIT_COUNT = 0;
+  private static readonly COMBINED_REPLY_COMIC_WAIT_INTERVAL_MS = 60 * 1000;
+  private static readonly FIRST_REPLY_WAVE_WINDOW_MS = 5 * 60 * 1000;
+  private static readonly MAX_COMIC_WAIT_COUNT = 5;
   private static readonly MAX_SUPPLEMENTAL_COMIC_WAIT_COUNT = 30;
   private static readonly DEFAULT_MAX_TASK_AGE_HOURS = 24;
   private static readonly SUPPLEMENTAL_COMIC_REPLY_PREFIX = '（补图）';
@@ -1786,10 +1788,15 @@ export class DelayedReplyService implements IDelayedReplyService {
         const hasComicImage = await this.checkFileExists(task.comicImagePath);
         if (hasComicImage) {
           imagePath = [task.comicImagePath];
-        } else if (this.shouldWaitForComicImage(task)) {
+        } else if (
+          !this.isWithinFirstReplyWave(finalDynamic) &&
+          this.shouldWaitForComicImage(task)
+        ) {
           task.comicWaitCount = (task.comicWaitCount || 0) + 1;
           task.status = 'pending';
-          task.scheduledTime = new Date(Date.now() + DelayedReplyService.COMIC_WAIT_INTERVAL_MS);
+          task.scheduledTime = new Date(
+            Date.now() + DelayedReplyService.COMBINED_REPLY_COMIC_WAIT_INTERVAL_MS
+          );
           task.error = `等待漫画图片生成 (${task.comicWaitCount}/${DelayedReplyService.MAX_COMIC_WAIT_COUNT})`;
 
           await this.store.updateTask(task.taskId, {
@@ -1799,9 +1806,14 @@ export class DelayedReplyService implements IDelayedReplyService {
             error: task.error
           });
 
-          this.logger.info(`漫画图片尚未生成，延后发布晚安回复`, {
+          this.logger.info(`晚安动态已错过第一梯队，等待漫画图片后合并发布`, {
             taskId: task.taskId,
             roomId: task.roomId,
+            dynamicId: String(finalDynamic.id),
+            dynamicAgeMinutes: Math.max(
+              0,
+              (Date.now() - finalDynamic.publishTime.getTime()) / 60_000
+            ).toFixed(1),
             comicImagePath: task.comicImagePath,
             comicWaitCount: task.comicWaitCount,
             scheduledTime: task.scheduledTime.toISOString()
@@ -1810,9 +1822,11 @@ export class DelayedReplyService implements IDelayedReplyService {
           this.scheduleTask(task);
           return;
         } else {
-          this.logger.warn(`漫画图片仍未生成，已达到等待上限，将发送纯文字晚安回复`, {
+          this.logger.warn(`漫画图片仍未生成，将发送纯文字晚安回复`, {
             taskId: task.taskId,
             roomId: task.roomId,
+            dynamicId: String(finalDynamic.id),
+            withinFirstReplyWave: this.isWithinFirstReplyWave(finalDynamic),
             comicImagePath: task.comicImagePath,
             comicWaitCount: task.comicWaitCount || 0
           });
@@ -1903,6 +1917,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       task.error = undefined;
 
       if (shouldWaitForSupplementalComic) {
+        task.comicWaitCount = 0;
         task.status = 'waiting_comic';
         task.scheduledTime = new Date(Date.now() + DelayedReplyService.COMIC_WAIT_INTERVAL_MS);
         task.error = '已发送纯文字晚安回复，等待漫画图片生成后补图';
@@ -1913,6 +1928,7 @@ export class DelayedReplyService implements IDelayedReplyService {
           replyId: task.replyId,
           completedAt: task.completedAt,
           scheduledTime: task.scheduledTime,
+          comicWaitCount: task.comicWaitCount,
           error: task.error
         });
 
@@ -2701,6 +2717,11 @@ export class DelayedReplyService implements IDelayedReplyService {
     } catch {
       return true;
     }
+  }
+
+  private isWithinFirstReplyWave(dynamic: BilibiliDynamic, now = Date.now()): boolean {
+    const dynamicAgeMs = Math.max(0, now - dynamic.publishTime.getTime());
+    return dynamicAgeMs <= DelayedReplyService.FIRST_REPLY_WAVE_WINDOW_MS;
   }
 
   private isComicGenerationTerminalFailure(comicImagePath?: string): boolean {

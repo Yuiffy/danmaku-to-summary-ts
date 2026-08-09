@@ -1,5 +1,5 @@
 import { DelayedReplyService } from './DelayedReplyService';
-import { DelayedReplyTask } from './interfaces/types';
+import { BilibiliDynamic, DelayedReplyTask, DynamicType } from './interfaces/types';
 import { BilibiliConfigHelper } from './BilibiliConfigHelper';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -321,6 +321,177 @@ describe('DelayedReplyService duplicate reply detection', () => {
     } finally {
       fs.rmSync(outputDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('DelayedReplyService first-wave comic policy', () => {
+  const now = new Date('2026-08-10T01:42:00.000+08:00');
+  let summarySettingsSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(now);
+    summarySettingsSpy = jest.spyOn(BilibiliConfigHelper, 'getSummaryDynamicSettings').mockReturnValue(null);
+  });
+
+  afterEach(() => {
+    summarySettingsSpy.mockRestore();
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  function createTask(overrides: Partial<DelayedReplyTask> = {}): DelayedReplyTask {
+    return {
+      taskId: 'first-wave-task',
+      roomId: '27628030',
+      uid: 'anchor-uid',
+      goodnightTextPath: 'goodnight.md',
+      comicImagePath: 'comic.png',
+      createTime: new Date(now.getTime() - 60 * 1000),
+      scheduledTime: new Date(now),
+      status: 'pending',
+      retryCount: 0,
+      checkCount: 0,
+      ...overrides
+    };
+  }
+
+  function createDynamic(ageMs: number): BilibiliDynamic {
+    return {
+      id: 'dynamic-1',
+      uid: 'anchor-uid',
+      type: DynamicType.WORD,
+      content: '晚安',
+      publishTime: new Date(now.getTime() - ageMs),
+      url: 'https://www.bilibili.com/opus/dynamic-1'
+    };
+  }
+
+  function createHarness(dynamic: BilibiliDynamic, options: {
+    imageExists?: boolean;
+    terminalFailure?: boolean;
+  } = {}) {
+    const publishComment = jest.fn().mockResolvedValue({
+      replyId: 'reply-1',
+      replyTime: now.getTime()
+    });
+    const store = { updateTask: jest.fn().mockResolvedValue(undefined) };
+    const service = new DelayedReplyService({ publishComment } as any, store as any) as any;
+    const scheduleTask = jest.spyOn(service, 'scheduleTask').mockImplementation(() => undefined);
+
+    jest.spyOn(service, 'getRoomLiveStatusSafely').mockResolvedValue(null);
+    jest.spyOn(service, 'deferTaskWaitingForReplacement').mockResolvedValue(false);
+    jest.spyOn(service, 'isTaskExpiredForCurrentStatus').mockReturnValue(false);
+    jest.spyOn(service, 'resolveDelayedReplyPaths').mockImplementation(
+      (_roomId: string, goodnightTextPath: string, comicImagePath?: string) => ({
+        goodnightTextPath,
+        comicImagePath
+      })
+    );
+    jest.spyOn(service, 'findTargetDynamic').mockResolvedValue(dynamic);
+    jest.spyOn(service, 'readReplyText').mockResolvedValue('晚安正文');
+    jest.spyOn(service, 'checkFileExists').mockResolvedValue(options.imageExists ?? false);
+    jest.spyOn(service, 'isComicGenerationTerminalFailure').mockReturnValue(options.terminalFailure ?? false);
+    jest.spyOn(service, 'notifyComicGenerationFailure').mockResolvedValue(undefined);
+    if (options.terminalFailure) {
+      jest.spyOn(service, 'shouldWaitForComicImage').mockReturnValue(false);
+    }
+
+    return { service, store, publishComment, scheduleTask };
+  }
+
+  it('treats exactly five minutes as part of the first reply wave', () => {
+    const dynamic = createDynamic(5 * 60 * 1000);
+    const { service } = createHarness(dynamic);
+
+    expect(service.isWithinFirstReplyWave(dynamic, now.getTime())).toBe(true);
+
+    dynamic.publishTime = new Date(dynamic.publishTime.getTime() - 1);
+    expect(service.isWithinFirstReplyWave(dynamic, now.getTime())).toBe(false);
+  });
+
+  it('publishes text immediately inside the first reply wave and waits to supplement the comic', async () => {
+    const task = createTask();
+    const { service, publishComment, scheduleTask } = createHarness(createDynamic(4 * 60 * 1000));
+
+    await service.executeDelayedReplyLocked(task);
+
+    expect(publishComment).toHaveBeenCalledWith({
+      dynamicId: 'dynamic-1',
+      content: '晚安正文',
+      images: undefined
+    });
+    expect(task.status).toBe('waiting_comic');
+    expect(task.comicWaitCount).toBe(0);
+    expect(task.replyId).toBe('reply-1');
+    expect(scheduleTask).toHaveBeenCalledWith(task);
+  });
+
+  it('waits for the comic when the target dynamic is older than five minutes', async () => {
+    const task = createTask();
+    const { service, store, publishComment, scheduleTask } = createHarness(createDynamic(9 * 60 * 1000));
+
+    await service.executeDelayedReplyLocked(task);
+
+    expect(publishComment).not.toHaveBeenCalled();
+    expect(task.status).toBe('pending');
+    expect(task.comicWaitCount).toBe(1);
+    expect(task.scheduledTime.getTime()).toBe(now.getTime() + 60 * 1000);
+    expect(store.updateTask).toHaveBeenCalledWith(task.taskId, expect.objectContaining({
+      status: 'pending',
+      comicWaitCount: 1
+    }));
+    expect(scheduleTask).toHaveBeenCalledWith(task);
+  });
+
+  it('publishes one combined reply when the comic appears during the extra wait', async () => {
+    const task = createTask({ comicWaitCount: 3 });
+    const { service, publishComment, scheduleTask } = createHarness(
+      createDynamic(12 * 60 * 1000),
+      { imageExists: true }
+    );
+
+    await service.executeDelayedReplyLocked(task);
+
+    expect(publishComment).toHaveBeenCalledTimes(1);
+    expect(publishComment).toHaveBeenCalledWith({
+      dynamicId: 'dynamic-1',
+      content: '晚安正文',
+      images: ['comic.png']
+    });
+    expect(task.status).toBe('completed');
+    expect(scheduleTask).not.toHaveBeenCalled();
+  });
+
+  it('falls back to text first after five extra wait checks', async () => {
+    const task = createTask({ comicWaitCount: 5 });
+    const { service, publishComment, scheduleTask } = createHarness(createDynamic(14 * 60 * 1000));
+
+    await service.executeDelayedReplyLocked(task);
+
+    expect(publishComment).toHaveBeenCalledWith({
+      dynamicId: 'dynamic-1',
+      content: '晚安正文',
+      images: undefined
+    });
+    expect(task.status).toBe('waiting_comic');
+    expect(task.comicWaitCount).toBe(0);
+    expect(scheduleTask).toHaveBeenCalledWith(task);
+  });
+
+  it('publishes text without waiting or supplementing after terminal comic failure', async () => {
+    const task = createTask();
+    const { service, publishComment, scheduleTask } = createHarness(
+      createDynamic(9 * 60 * 1000),
+      { terminalFailure: true }
+    );
+
+    await service.executeDelayedReplyLocked(task);
+
+    expect(publishComment).toHaveBeenCalledTimes(1);
+    expect(task.status).toBe('completed');
+    expect(scheduleTask).not.toHaveBeenCalled();
+    expect(service.notifyComicGenerationFailure).toHaveBeenCalledWith(task);
   });
 });
 
