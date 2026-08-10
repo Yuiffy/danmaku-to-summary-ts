@@ -1455,6 +1455,7 @@ async function buildClipCopy(window, info, streamerName, config, titleGenerator 
 
     const configuredTags = Array.isArray(config.tags) ? config.tags : null;
     const tags = Array.from(new Set([
+        'AI切片',
         ...(configuredTags || [streamerName, '岁己', '小岁', '虚拟主播', '直播切片']),
         ...(Array.isArray(config.extraTags) ? config.extraTags : []),
         ...(Array.isArray(extraTagList) ? extraTagList : [])
@@ -2371,7 +2372,8 @@ function splitWeChatMarkdown(content, maxLength = 4096) {
 function deriveUploadPrefix(streamerName = null) {
     const name = String(streamerName || '').trim();
     if (!name) return '【小切片】';
-    if (name.startsWith('小')) return `【${name}】`;
+    const nameChars = Array.from(name.matchAll(/[\u3400-\u9fffA-Za-z0-9]/g), match => match[0]);
+    if (nameChars[0] === '小' && nameChars[1]) return `【小${nameChars[1]}】`;
     // 优先取主播名中的第一个中文字符,例如"瑞瑞"→"小瑞"、
     // "岁己SUI"→"小岁"、"米汀Nagisa"→"小米"。
     const cjk = name.match(/[\u3400-\u9fff]/);
@@ -2386,6 +2388,14 @@ function resolveUploadPrefix(config = {}, roomId = null, streamerName = null) {
         : null;
     const configured = String(roomSettings?.clipTitlePrefix || '').trim();
     if (configured) return `【${configured.replace(/^【|】$/g, '')}】`;
+
+    for (const entry of Object.values(config.ai?.streamerRegistry || {})) {
+        const roomIds = Array.isArray(entry.roomIds) ? entry.roomIds.map(value => String(value)) : [];
+        if (!roomKey || !roomIds.includes(roomKey)) continue;
+        const registryName = String(entry.aiClipName || entry.uploadPrefix || '').trim();
+        if (registryName) return `【${registryName.replace(/[【】]/g, '')}】`;
+        break;
+    }
     return deriveUploadPrefix(streamerName);
 }
 
@@ -2453,7 +2463,7 @@ function registerReviewForUpload(reviewPath, results, metadata) {
     const source = `${metadata.streamerName || '主播'} 直播《${metadata.streamTitle || metadata.sourceFileName || '未知直播'}》${metadata.recordedAt || ''}`.trim();
     const tags = Array.isArray(results[0]?.copy?.tags) && results[0].copy.tags.length
         ? results[0].copy.tags.join(',')
-        : '岁己,虚拟主播,直播切片';
+        : '岁己,虚拟主播,直播切片,AI切片';
     const prefix = resolveUploadPrefix(metadata.config || {}, metadata.roomId, metadata.streamerName);
     const scriptPath = path.join(__dirname, 'clip_upload_registry.py');
     const args = [

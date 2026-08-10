@@ -8,6 +8,23 @@ function makeTempDir() {
 }
 
 describe('own_stream_clipper', () => {
+  test('uses upload aliases and AI切片 for clip tags without the full streamer name', () => {
+    const tags = ownStreamClipper.buildClipTags({
+      ai: {
+        streamerRegistry: {
+          viridis: {
+            roomIds: ['1727071052'],
+            displayName: '小松绿Viridis',
+            searchTags: ['小松绿'],
+            uploadTags: ['Viridis']
+          }
+        }
+      }
+    }, '1727071052', '小松绿Viridis');
+
+    expect(tags).toEqual(['Viridis', '虚拟主播', '直播切片', 'AI切片']);
+  });
+
   test('parses bilibili danmaku xml rows', async () => {
     const dir = makeTempDir();
     const xmlPath = path.join(dir, 'danmaku.xml');

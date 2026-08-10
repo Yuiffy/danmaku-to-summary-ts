@@ -629,6 +629,62 @@
           "public/reference_images/十六萤Izayoi.png"
         ],
         "characterDescription": "十六萤Izayoi，浅绿色浣熊耳朵和浅色毛茸茸大尾巴，浅发色黄瞳少女，咖啡馆馆长。"
+      },
+      "komichi": {
+        "displayName": "四时小路Komichi",
+        "aiClipName": "小路",
+        "roomIds": [
+          "1700301235"
+        ],
+        "searchTags": [
+          "四时小路Komichi",
+          "四时小路"
+        ],
+        "uploadTags": [
+          "小路边"
+        ]
+      },
+      "viridis": {
+        "displayName": "小松绿Viridis",
+        "aiClipName": "小松",
+        "roomIds": [
+          "1727071052"
+        ],
+        "searchTags": [
+          "小松绿Viridis",
+          "小松绿"
+        ],
+        "uploadTags": [
+          "Viridis"
+        ]
+      },
+      "chu2u": {
+        "displayName": "羽啾chu2u",
+        "aiClipName": "小羽",
+        "roomIds": [
+          "1727074031"
+        ],
+        "searchTags": [
+          "羽啾chu2u",
+          "羽啾"
+        ],
+        "uploadTags": [
+          "chu2u"
+        ]
+      },
+      "sumire": {
+        "displayName": "枝堇Sumire",
+        "aiClipName": "小枝",
+        "roomIds": [
+          "1727076670"
+        ],
+        "searchTags": [
+          "枝堇Sumire",
+          "枝堇"
+        ],
+        "uploadTags": [
+          "Sumire"
+        ]
       }
     },
     "tuziRetry": {

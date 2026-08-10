@@ -204,6 +204,19 @@ function buildClipDescription({ streamerName, streamTitle, recordedAt, start, en
     return lines.join('\n');
 }
 
+function buildClipTags(config, roomId, streamerName) {
+    const registryTags = topicClipper.resolveStreamerTags(config || {}, roomId);
+    const tags = Array.from(new Set([
+        ...registryTags,
+        ...(String(roomId || '') === '25788785' ? ['小岁', '岁AI切片'] : []),
+        streamerName,
+        '虚拟主播',
+        '直播切片',
+        'AI切片'
+    ].map(tag => String(tag || '').trim()).filter(Boolean)));
+    return postProcessAiClipMetadata({ tags }, config || {}).tags;
+}
+
 function timeStringToSeconds(value) {
     const match = String(value || '').trim().match(/^(\d{1,2}):(\d{2}):(\d{2})(?:\.\d+)?$/);
     if (!match) return NaN;
@@ -1571,7 +1584,7 @@ function registerReviewForUpload(reviewPath, results, metadata) {
     const source = `${metadata.streamerName || '主播'} 直播《${metadata.streamTitle || metadata.sourceFileName || '未知直播'}》${metadata.recordedAt || ''}`.trim();
     const tags = Array.isArray(results[0]?.copy?.tags) && results[0].copy.tags.length
         ? results[0].copy.tags.join(',')
-        : '小岁,虚拟主播,直播切片,岁AI切片';
+        : '小岁,虚拟主播,直播切片,岁AI切片,AI切片';
     const prefix = metadata.roomId === '25788785' ? '【小岁】' : `【${metadata.streamerName || '切片'}】`;
     const scriptPath = path.join(__dirname, 'clip_upload_registry.py');
     const args = [
@@ -1684,9 +1697,7 @@ async function generateOwnStreamClipJob({
             end: window.end,
             reason: clip.reason
         }),
-        tags: info.roomId === '25788785'
-            ? ['小岁', '虚拟主播', '直播切片', '岁AI切片']
-            : [streamerName, '虚拟主播', '直播切片']
+        tags: buildClipTags(options.config || {}, info.roomId, streamerName)
     };
     const processedCopy = postProcessAiClipMetadata(rawCopy, options.config || {});
     const copy = { ...rawCopy, ...processedCopy };
@@ -2007,7 +2018,7 @@ async function generateOwnStreamClips(options = {}) {
         const srtPath = path.join(outputRoot, `${baseName}.srt`);
         const metadataPath = path.join(outputRoot, `${baseName}.json`);
         const srtResult = topicClipper.writeClipSrt(parsed.segments, window, srtPath);
-        const copy = {
+        const rawCopy = {
             title: clip.title,
             coverText: topicClipper.normalizeCoverText(clip.coverText),
             description: buildClipDescription({
@@ -2018,10 +2029,10 @@ async function generateOwnStreamClips(options = {}) {
                 end: window.end,
                 reason: clip.reason
             }),
-            tags: info.roomId === '25788785'
-                ? ['小岁', '虚拟主播', '直播切片', '岁AI切片']
-                : [streamerName, '虚拟主播', '直播切片']
+            tags: buildClipTags(options.config || {}, info.roomId, streamerName)
         };
+        const processedCopy = postProcessAiClipMetadata(rawCopy, options.config || {});
+        const copy = { ...rawCopy, ...processedCopy };
         let mediaResult = null;
         let mediaError = null;
         try {
@@ -2231,6 +2242,7 @@ module.exports = {
     buildReviewMarkdown,
     buildPlanReviewMarkdown,
     buildClipDescription,
+    buildClipTags,
     buildCoverTitle,
     selectCoverPreferredTime: topicClipper.selectCoverPreferredTime,
     toFwdSlash,

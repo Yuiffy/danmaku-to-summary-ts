@@ -103,6 +103,62 @@ describe('topic_clipper', () => {
     expect(topicClipper.deriveUploadPrefix('岁己SUI')).toBe('【小岁】');
     expect(topicClipper.deriveUploadPrefix('米汀Nagisa')).toBe('【小米】');
     expect(topicClipper.deriveUploadPrefix('小栞')).toBe('【小栞】');
+    expect(topicClipper.deriveUploadPrefix('小松绿Viridis')).toBe('【小松】');
+  });
+
+  test('uses newcomer nicknames for upload prefixes and tags', () => {
+    const config = {
+      ai: {
+        streamerRegistry: {
+          komichi: {
+            roomIds: ['1700301235'],
+            displayName: '四时小路Komichi',
+            aiClipName: '小路',
+            uploadTags: ['小路边']
+          },
+          viridis: {
+            roomIds: ['1727071052'],
+            displayName: '小松绿Viridis',
+            aiClipName: '小松',
+            uploadTags: ['Viridis']
+          }
+        }
+      }
+    };
+
+    expect(topicClipper.resolveUploadPrefix(config, '1700301235', '四时小路Komichi')).toBe('【小路】');
+    expect(topicClipper.resolveStreamerTags(config, '1700301235')).toEqual(['小路边']);
+    expect(topicClipper.resolveUploadPrefix(config, '1727071052', '小松绿Viridis')).toBe('【小松】');
+    expect(topicClipper.resolveStreamerTags(config, '1727071052')).toEqual(['Viridis']);
+  });
+
+  test('always includes AI切片 in generated topic clip tags', async () => {
+    const copy = await topicClipper.buildClipCopy({
+      start: 10,
+      end: 20,
+      matchSegments: [],
+      allSegmentTexts: [],
+      preContext: [],
+      postContext: [],
+      matchedKeywords: []
+    }, {
+      recordedAt: '2026-08-11',
+      streamTitle: '测试直播'
+    }, '小松绿Viridis', {
+      ai: {
+        streamerRegistry: {
+          viridis: {
+            displayName: '小松绿Viridis',
+            searchTags: ['小松绿'],
+            aiClipName: '小松'
+          }
+        }
+      }
+    }, null, null, ['Viridis']);
+
+    expect(copy.tags).toContain('AI切片');
+    expect(copy.tags).toContain('Viridis');
+    expect(copy.tags).not.toContain('小松绿Viridis');
   });
 
   test('finds keyword matches and ignores unrelated segments', () => {
