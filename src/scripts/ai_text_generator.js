@@ -1550,6 +1550,16 @@ function buildCoverTextPromptLines() {
     ];
 }
 
+function buildClipDescriptionPromptLines() {
+    return [
+        '简介要求：',
+        '- 50字以内，一句话写清片中发生的具体事件，优先交代人物、做法和结果。',
+        '- 简介面向观众，只陈述片中内容；不要写选片理由或效果评估，也不要暴露弹幕统计、关键词命中、情绪或声音标签等内部判据。',
+        '- 若弹幕的具体发言推动了事件，只描述互动内容，不概括反应数量或强度。',
+        '- 准确自然，不夸大，不写广告腔。',
+    ];
+}
+
 async function generateClipDescription(context = {}) {
     const config = configLoader.getConfig();
     const textEnabled = config.ai?.text?.enabled !== false;
@@ -1563,12 +1573,10 @@ async function generateClipDescription(context = {}) {
 
     const prompt = [
         '给一个B站直播切片写一句简介（50字以内）。',
-        '要求：',
-        '1. 只输出简介文字，不要解释，不要引号。',
-        '2. 一句话说清楚主播在聊什么、发生了什么。',
-        '3. 准确基于上下文，ASR可能有同音错字要根据语境推断。',
-        '4. 风格自然口语化，不要广告语气。',
-        '5. 如果提到其他主播（如岁己/小岁/栞栞），直接用名字。',
+        ...buildClipDescriptionPromptLines(),
+        '- 只输出简介文字，不要解释，不要引号。',
+        '- 准确基于上下文；ASR可能有同音错字，要根据语境推断。',
+        '- 提到其他主播时直接用名字。',
         '',
         `主播: ${context.streamerName || '主播'}`,
         '',
@@ -1677,6 +1685,7 @@ module.exports = {
     generateClipDescription,
     buildClipTitlePromptLines,
     buildCoverTextPromptLines,
+    buildClipDescriptionPromptLines,
     inspectGeneratedReply,
     generateTextWithGemini,
     generateTextWithTuZi,

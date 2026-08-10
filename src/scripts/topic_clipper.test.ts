@@ -73,6 +73,11 @@ describe('topic_clipper', () => {
     expect(prompt).toContain('前后扩展上下文只用于理解语境和决定切片边界');
     expect(prompt).toContain('不得把区间外的事件、弹幕或说法写进文案');
     expect(prompt).toContain('每个具体事实都能在最终区间字幕中找到');
+    expect(prompt).toContain('简介面向观众，只陈述片中内容');
+    expect(prompt).toContain('不要写选片理由或效果评估');
+    expect(prompt).toContain('弹幕统计');
+    expect(prompt).toContain('内部判据');
+    expect(prompt).toContain('只描述互动内容，不概括反应数量或强度');
   });
 
   test('uses configured upload prefix and upload tags for a room', () => {

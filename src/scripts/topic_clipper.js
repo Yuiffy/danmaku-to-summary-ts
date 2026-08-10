@@ -907,6 +907,9 @@ function buildTopicBurstPrompt(burst, streamerName, info = {}, generateText) {
     const coverPromptLines = typeof generateText?.buildCoverTextPromptLines === 'function'
         ? generateText.buildCoverTextPromptLines()
         : [];
+    const descriptionPromptLines = typeof generateText?.buildClipDescriptionPromptLines === 'function'
+        ? generateText.buildClipDescriptionPromptLines()
+        : [];
 
     return [
         '你是一个直播切片编辑。下面是一段直播字幕(带时间戳),主播在聊的话题中提到了"岁己"(关键词:' + keywordStr + ')。',
@@ -942,9 +945,7 @@ function buildTopicBurstPrompt(burst, streamerName, info = {}, generateText) {
         ...titlePromptLines,
         ...coverPromptLines,
         '',
-        '简介要求:',
-        '- 一句话说清主播聊了什么(50字内)',
-        '- 口语化自然',
+        ...descriptionPromptLines,
         '',
         `主播: ${streamerName || '主播'}`,
         `直播标题: ${info.streamTitle || '未知'}`,
