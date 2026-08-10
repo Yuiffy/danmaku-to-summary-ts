@@ -1205,6 +1205,9 @@ function buildBurnAssContentFromSrt(srtContent, style = {}) {
     const bold = Number(style.bold) || 1;
     const shadow = Number(style.shadow) || 0;
     const wrapStyle = Number(style.wrapStyle) || 2;
+    const marginL = Math.max(0, Number(style.marginL) || 32);
+    const marginR = Math.max(0, Number(style.marginR) || 32);
+    const maxCharsPerLine = Number(style.maxCharsPerLine);
     const speakerSegments = Array.isArray(style.speakerSegments) ? style.speakerSegments : [];
     const speakerStyles = buildSpeakerStyles(speakerSegments);
     const blocks = String(srtContent || '').trim().split(/\r?\n\r?\n+/).filter(Boolean);
@@ -1216,16 +1219,20 @@ function buildBurnAssContentFromSrt(srtContent, style = {}) {
         const timeLine = lines[1].trim();
         const match = timeLine.match(/^(\d{2}:\d{2}:\d{2},\d{3})\s+-->\s+(\d{2}:\d{2}:\d{2},\d{3})$/);
         if (!match) return;
-        const text = lines.slice(2).join('\n').trim();
+        const shouldRewrap = Number.isFinite(maxCharsPerLine) && maxCharsPerLine > 0;
+        const rawText = lines.slice(2).join(shouldRewrap ? '' : '\n').trim();
+        const text = shouldRewrap
+            ? wrapSubtitleText(rawText, maxCharsPerLine)
+            : rawText;
         if (!text) return;
         const speaker = String(speakerSegments[blockIndex]?.speaker || '').trim();
         const speakerStyle = speakerStyles.get(speaker);
         events.push(`Dialogue: 0,${srtTimestampToAss(match[1])},${srtTimestampToAss(match[2])},${speakerStyle?.name || 'Default'},,0,0,0,,${assEscapeText(text)}`);
     });
 
-    const defaultStyle = `Style: Default,${fontName},${fontSize},&H00FFFFFF,&H000000FF,&H00000000,&H00000000,${bold},0,0,0,100,100,0,0,1,${outline},${shadow},${alignment},32,32,${marginV},1`;
+    const defaultStyle = `Style: Default,${fontName},${fontSize},&H00FFFFFF,&H000000FF,&H00000000,&H00000000,${bold},0,0,0,100,100,0,0,1,${outline},${shadow},${alignment},${marginL},${marginR},${marginV},1`;
     const speakerStyleLines = Array.from(speakerStyles.values()).map(speakerStyle =>
-        `Style: ${speakerStyle.name},${fontName},${fontSize},&H00FFFFFF,&H000000FF,${speakerStyle.outlineColour},&H00000000,${bold},0,0,0,100,100,0,0,1,${outline},${shadow},${alignment},32,32,${marginV},1`
+        `Style: ${speakerStyle.name},${fontName},${fontSize},&H00FFFFFF,&H000000FF,${speakerStyle.outlineColour},&H00000000,${bold},0,0,0,100,100,0,0,1,${outline},${shadow},${alignment},${marginL},${marginR},${marginV},1`
     );
 
     return [
@@ -1234,7 +1241,7 @@ function buildBurnAssContentFromSrt(srtContent, style = {}) {
         'ScaledBorderAndShadow: yes',
         `PlayResX: ${playResX}`,
         `PlayResY: ${playResY}`,
-        'WrapStyle: 2',
+        `WrapStyle: ${wrapStyle}`,
         '',
         '[V4+ Styles]',
         'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
@@ -1752,15 +1759,42 @@ function calculateSubtitleStyle(width, height, config = {}) {
     const minFontSize = Number(config.subtitleMinFontSize ?? process.env.FFMPEG_SUBTITLE_MIN_FONT_SIZE ?? 30);
     const maxFontSize = Number(config.subtitleMaxFontSize ?? process.env.FFMPEG_SUBTITLE_MAX_FONT_SIZE ?? 72);
     const fontName = String(config.subtitleFontName ?? process.env.FFMPEG_SUBTITLE_FONT_NAME ?? '汉仪有圆 85简').trim() || '汉仪有圆 85简';
-    const playResX = Number(config.subtitlePlayResX ?? process.env.FFMPEG_SUBTITLE_PLAYRES_X ?? 1280);
     const playResY = Number(config.subtitlePlayResY ?? process.env.FFMPEG_SUBTITLE_PLAYRES_Y ?? 720);
+    const configuredPlayResX = Number(config.subtitlePlayResX ?? process.env.FFMPEG_SUBTITLE_PLAYRES_X);
+    const videoWidth = Number(width);
+    const videoHeight = Number(height);
+    const playResX = Number.isFinite(configuredPlayResX) && configuredPlayResX > 0
+        ? Math.round(configuredPlayResX)
+        : (
+            Number.isFinite(videoWidth) && videoWidth > 0 && Number.isFinite(videoHeight) && videoHeight > 0
+                ? Math.max(1, Math.round(playResY * videoWidth / videoHeight))
+                : 1280
+        );
     const fontSize = Math.min(maxFontSize, Math.max(minFontSize, Math.round(playResY * fontSizeRatio)));
     const outline = Math.max(2, Math.round(fontSize * 0.09));
     const marginV = Number(config.subtitleMarginV ?? process.env.FFMPEG_SUBTITLE_MARGIN_V ?? 24);
-    // 汉字接近全角宽度；按 0.95em 估算并预留描边空间，避免放大后左右被裁切。
-    const maxCharsPerLine = Math.max(12, Math.floor(playResX / (fontSize * 0.95)));
+    const marginL = Math.max(0, Number(config.subtitleMarginL ?? config.subtitleMarginHorizontal ?? process.env.FFMPEG_SUBTITLE_MARGIN_L ?? 32));
+    const marginR = Math.max(0, Number(config.subtitleMarginR ?? config.subtitleMarginHorizontal ?? process.env.FFMPEG_SUBTITLE_MARGIN_R ?? 32));
+    const glyphWidthRatio = Math.max(0.5, Number(config.subtitleGlyphWidthRatio ?? process.env.FFMPEG_SUBTITLE_GLYPH_WIDTH_RATIO ?? 1));
+    const availableWidth = Math.max(fontSize, playResX - marginL - marginR - outline * 2);
+    const calculatedMaxChars = Math.max(1, Math.floor(availableWidth / (fontSize * glyphWidthRatio)));
+    const configuredMaxChars = Number(config.subtitleMaxCharsPerLine);
+    const maxCharsPerLine = Number.isFinite(configuredMaxChars) && configuredMaxChars > 0
+        ? Math.min(calculatedMaxChars, Math.floor(configuredMaxChars))
+        : calculatedMaxChars;
     const forceStyle = `FontSize=${fontSize},FontName=${fontName},Bold=1,Outline=${outline}`;
-    return { forceStyle, maxCharsPerLine, fontSize, outline, fontName, playResX, playResY, marginV };
+    return {
+        forceStyle,
+        maxCharsPerLine,
+        fontSize,
+        outline,
+        fontName,
+        playResX,
+        playResY,
+        marginL,
+        marginR,
+        marginV
+    };
 }
 
 /**
@@ -2749,6 +2783,7 @@ async function generateTopicClips(options = {}) {
             stage = 'media';
             try {
                 mediaResult = await mediaGenerator(source, window, srtPath, mediaPath, {
+                    ...config,
                     burnSubtitles: config.burnSubtitles,
                     subtitleSegments: srtResult.segments,
                     preserveCoverSource: true,

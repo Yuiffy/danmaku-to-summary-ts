@@ -436,17 +436,48 @@ describe('topic_clipper', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  test('rewraps burned ASS text to the portrait safe width', () => {
+    const dir = makeTempDir();
+    const srtPath = path.join(dir, 'portrait.srt');
+    const assPath = path.join(dir, 'portrait.ass');
+    fs.writeFileSync(srtPath, [
+      '1',
+      '00:00:00,000 --> 00:00:02,000',
+      '123456789012345678',
+      '90',
+      ''
+    ].join('\n'), 'utf8');
+
+    const style = topicClipper.calculateSubtitleStyle(720, 1280, {
+      subtitleFontSizeRatio: 0.044,
+      subtitleMaxCharsPerLine: 18
+    });
+    topicClipper.writeTemporaryBurnAssFromSrt(srtPath, assPath, style);
+
+    const content = fs.readFileSync(assPath, 'utf8');
+    expect(style).toMatchObject({
+      fontSize: 32,
+      playResX: 405,
+      playResY: 720,
+      maxCharsPerLine: 10,
+      marginL: 32,
+      marginR: 32
+    });
+    expect(content).toContain('1234567890\\N1234567890');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   test('uses similar burned subtitle proportions across common resolutions while preserving overrides', () => {
     expect(topicClipper.calculateSubtitleStyle(1920, 1080)).toMatchObject({
       fontSize: 68,
-      maxCharsPerLine: 19,
+      maxCharsPerLine: 17,
       playResX: 1280,
       playResY: 720
     });
 
     expect(topicClipper.calculateSubtitleStyle(1280, 720)).toMatchObject({
       fontSize: 68,
-      maxCharsPerLine: 19,
+      maxCharsPerLine: 17,
       playResX: 1280,
       playResY: 720
     });
@@ -455,7 +486,7 @@ describe('topic_clipper', () => {
       subtitleFontSizeRatio: 0.039
     })).toMatchObject({
       fontSize: 30,
-      maxCharsPerLine: 44
+      maxCharsPerLine: 40
     });
   });
 

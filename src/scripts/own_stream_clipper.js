@@ -163,6 +163,18 @@ function buildCutClipMediaConfig(config = {}, options = {}) {
         subtitleVideoPreset: config.subtitleVideoPreset,
         subtitleVideoCrf: config.subtitleVideoCrf,
         subtitleVideoCq: config.subtitleVideoCq,
+        subtitleFontSizeRatio: config.subtitleFontSizeRatio,
+        subtitleMinFontSize: config.subtitleMinFontSize,
+        subtitleMaxFontSize: config.subtitleMaxFontSize,
+        subtitleMaxCharsPerLine: config.subtitleMaxCharsPerLine,
+        subtitleFontName: config.subtitleFontName,
+        subtitlePlayResX: config.subtitlePlayResX,
+        subtitlePlayResY: config.subtitlePlayResY,
+        subtitleMarginL: config.subtitleMarginL,
+        subtitleMarginR: config.subtitleMarginR,
+        subtitleMarginHorizontal: config.subtitleMarginHorizontal,
+        subtitleMarginV: config.subtitleMarginV,
+        subtitleGlyphWidthRatio: config.subtitleGlyphWidthRatio,
         ffmpegThreads: config.clipFfmpegThreads,
         ffmpegPath: options.ffmpegPath
     };

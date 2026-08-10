@@ -791,6 +791,13 @@ describe('asr_backends', () => {
       .toBe('岁己也爱看丧尸片');
   });
 
+  test('production corrections normalize Yua and 虹味 ASR variants', () => {
+    const resolved = asr.resolveAsrHotwords(productionConfig, { room_id: '1700301235' });
+
+    expect(asr.applyCorrectionsToText('优瓦、玉瓦和月瓦前辈都很有红味儿', resolved.corrections))
+      .toBe('Yua、Yua和Yua前辈都很有虹味儿');
+  });
+
   test('normalizes screenshot global replacement corrections', () => {
     const configuredCorrections = {
       safe: {
