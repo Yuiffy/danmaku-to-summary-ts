@@ -1675,6 +1675,49 @@ export class DelayedReplyService implements IDelayedReplyService {
     task.liveContentSummaryPublishingAt = undefined;
   }
 
+  private async notifyLiveContentSummaryReplySuccess(
+    task: DelayedReplyTask,
+    summaryText: string
+  ): Promise<void> {
+    if (!this.notifier || !task.repliedDynamicId || !task.liveContentSummaryReplyId) {
+      return;
+    }
+
+    try {
+      const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
+      const replyUrl =
+        `https://www.bilibili.com/opus/${task.repliedDynamicId}#reply${task.liveContentSummaryReplyId}`;
+      const lines = [
+        '✅ 直播梗概已发送',
+        '',
+        anchorConfig?.name ? `主播: ${anchorConfig.name}` : undefined,
+        `动态ID: ${task.repliedDynamicId}`,
+        `梗概回复ID: ${task.liveContentSummaryReplyId}`,
+        '',
+        `梗概内容:\n${summaryText}`,
+        '',
+        `[查看梗概回复](${replyUrl})`
+      ].filter((line): line is string => line !== undefined);
+      const sent = await this.notifier.sendMarkdown(lines.join('\n'));
+      if (!sent) {
+        this.logger.warn('直播梗概已发布，但企微通知发送失败；不会重试评论', {
+          taskId: task.taskId,
+          roomId: task.roomId,
+          dynamicId: task.repliedDynamicId,
+          liveContentSummaryReplyId: task.liveContentSummaryReplyId
+        });
+      }
+    } catch (notifyError) {
+      this.logger.warn('直播梗概已发布，但企微通知发送异常；不会重试评论', {
+        taskId: task.taskId,
+        roomId: task.roomId,
+        dynamicId: task.repliedDynamicId,
+        liveContentSummaryReplyId: task.liveContentSummaryReplyId,
+        error: notifyError instanceof Error ? notifyError.message : String(notifyError)
+      });
+    }
+  }
+
   private async tryPublishLiveContentSummarySeparately(
     task: DelayedReplyTask
   ): Promise<'done' | 'waiting' | 'retry' | 'failed'> {
@@ -1739,6 +1782,7 @@ export class DelayedReplyService implements IDelayedReplyService {
         replyId: task.liveContentSummaryReplyId,
         contentLength: summary.text.length
       });
+      await this.notifyLiveContentSummaryReplySuccess(task, summary.text);
       return 'done';
     } catch (error) {
       const delayedReplyConfig = BilibiliConfigHelper.getDelayedReplyConfig();

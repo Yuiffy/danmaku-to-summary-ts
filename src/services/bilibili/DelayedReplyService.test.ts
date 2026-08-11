@@ -1010,12 +1010,58 @@ describe('DelayedReplyService live content summary delivery', () => {
       replyTime: now.getTime()
     });
     const store = { updateTask: jest.fn().mockResolvedValue(undefined) };
-    const service = new DelayedReplyService({ publishComment } as any, store as any) as any;
+    const notifier = { sendMarkdown: jest.fn().mockResolvedValue(true) };
+    const anchorConfigSpy = jest.spyOn(BilibiliConfigHelper, 'getAnchorConfig').mockReturnValue({
+      name: '岁己SUI'
+    } as any);
+    const service = new DelayedReplyService(
+      { publishComment } as any,
+      store as any,
+      notifier as any
+    ) as any;
 
     await service.tryPublishLiveContentSummarySeparately(task);
     await service.tryPublishLiveContentSummarySeparately(task);
 
     expect(publishComment).toHaveBeenCalledTimes(1);
+    expect(notifier.sendMarkdown).toHaveBeenCalledTimes(1);
+    expect(notifier.sendMarkdown.mock.calls[0][0]).toContain('✅ 直播梗概已发送');
+    expect(notifier.sendMarkdown.mock.calls[0][0]).toContain('主播: 岁己SUI');
+    expect(notifier.sendMarkdown.mock.calls[0][0]).toContain(
+      '梗概内容:\n本场直播内容：杂谈、唱歌；歌曲：夜航星；游戏：星露谷物语；话题：妈妈做火烧云、最喜欢的前辈'
+    );
+    expect(notifier.sendMarkdown.mock.calls[0][0]).toContain(
+      '[查看梗概回复](https://www.bilibili.com/opus/owner-dynamic#replysummary-reply)'
+    );
+    expect(task.liveContentSummaryReplyId).toBe('summary-reply');
+    anchorConfigSpy.mockRestore();
+  });
+
+  it('keeps a published live content summary completed when its WeChat Work notification throws', async () => {
+    const task = createTask({
+      liveContentSummaryPath: writeSummary(),
+      repliedDynamicId: 'owner-dynamic',
+      replyId: 'main-reply'
+    });
+    const publishComment = jest.fn().mockResolvedValue({
+      replyId: 'summary-reply',
+      replyTime: now.getTime()
+    });
+    const store = { updateTask: jest.fn().mockResolvedValue(undefined) };
+    const notifier = { sendMarkdown: jest.fn().mockRejectedValue(new Error('wecom unavailable')) };
+    jest.spyOn(BilibiliConfigHelper, 'getAnchorConfig').mockReturnValue(undefined);
+    const service = new DelayedReplyService(
+      { publishComment } as any,
+      store as any,
+      notifier as any
+    ) as any;
+
+    const outcome = await service.tryPublishLiveContentSummarySeparately(task);
+
+    expect(outcome).toBe('done');
+    expect(publishComment).toHaveBeenCalledTimes(1);
+    expect(notifier.sendMarkdown).toHaveBeenCalledTimes(1);
+    expect(task.liveContentSummaryState).toBe('published_separate');
     expect(task.liveContentSummaryReplyId).toBe('summary-reply');
   });
 
