@@ -137,6 +137,9 @@ function getAudioRetentionConfig() {
         additionalArchiveRoomIds: new Set((storage.additionalArchiveRoomIds || []).map(value => String(value))),
         archiveAllRoomDirectories: storage.archiveAllRoomDirectories === true,
         pruneNonMergedVideosBeforeArchiveRoomIds: new Set((storage.pruneNonMergedVideosBeforeArchiveRoomIds || []).map(value => String(value))),
+        expiringClipDirectoryNames: new Set([
+            config.clipTopics?.outputDirName || 'topic_clips'
+        ].map(value => String(value).toLowerCase())),
         basePaths: Array.from(new Set([
             storage.basePath,
             config.storage?.basePath,
@@ -638,6 +641,15 @@ function isTemporaryAudioOutput(filePath) {
     return /\.tmp-\d+-\d+\.opus$/i.test(path.basename(filePath));
 }
 
+function isPathInsideNamedDirectory(filePath, directoryNames) {
+    const names = directoryNames instanceof Set
+        ? directoryNames
+        : new Set(Array.from(directoryNames || [], value => String(value).toLowerCase()));
+    return path.normalize(path.dirname(filePath))
+        .split(path.sep)
+        .some(part => names.has(part.toLowerCase()));
+}
+
 function isStaleTemporaryAudioOutput(stats, now = Date.now()) {
     return now - stats.mtimeMs >= TEMPORARY_AUDIO_STALE_AFTER_MS;
 }
@@ -708,6 +720,45 @@ async function collectTemporaryAudioOutputs(dayDir) {
     return mediaFiles.filter(isTemporaryAudioOutput);
 }
 
+async function collectNamedDirectories(rootDir, directoryNames) {
+    const names = directoryNames instanceof Set
+        ? directoryNames
+        : new Set(Array.from(directoryNames || [], value => String(value).toLowerCase()));
+    const results = [];
+
+    async function walk(currentDir) {
+        let entries;
+        try {
+            entries = await readdir(currentDir, { withFileTypes: true });
+        } catch {
+            return;
+        }
+
+        for (const entry of entries) {
+            if (!entry.isDirectory()) continue;
+            const fullPath = path.join(currentDir, entry.name);
+            if (names.has(entry.name.toLowerCase())) {
+                results.push(fullPath);
+                continue;
+            }
+            await walk(fullPath);
+        }
+    }
+
+    await walk(rootDir);
+    return results;
+}
+
+async function getRecursiveSize(targetPath) {
+    const stats = await stat(targetPath).catch(() => null);
+    if (!stats) return 0;
+    if (!stats.isDirectory()) return stats.size;
+
+    const entries = await readdir(targetPath, { withFileTypes: true }).catch(() => []);
+    const sizes = await Promise.all(entries.map(entry => getRecursiveSize(path.join(targetPath, entry.name))));
+    return sizes.reduce((total, size) => total + size, 0);
+}
+
 async function pruneStaleTemporaryAudioOutputs(mediaFiles, context) {
     const prunedPaths = new Set();
     for (const mediaPath of mediaFiles) {
@@ -735,11 +786,9 @@ async function pruneStaleTemporaryAudioOutputs(mediaFiles, context) {
     return mediaFiles.filter(mediaPath => !prunedPaths.has(path.resolve(mediaPath)));
 }
 
-async function pruneArchiveFiles(filePaths) {
-    for (const filePath of filePaths) {
-        await unlink(filePath).catch(error => {
-            if (error.code !== 'ENOENT') throw error;
-        });
+async function pruneArchiveEntries(entryPaths) {
+    for (const entryPath of entryPaths) {
+        await rm(entryPath, { recursive: true, force: true });
     }
 }
 
@@ -826,7 +875,7 @@ async function archiveDayDirectory(dayDir, sourceRoot, retention, pruneFilePaths
     if (retention.deleteBakBeforeArchive) {
         await removeBakEntries(dayDir);
     }
-    await pruneArchiveFiles(pruneFilePaths);
+    await pruneArchiveEntries(pruneFilePaths);
 
     await moveDirectoryContents(dayDir, targetDir);
     await cleanupEmptyParents(dayDir, sourceRoot);
@@ -881,6 +930,10 @@ async function hasPendingAudioConversionInDirectory(dayDir, retention, outputCon
     const mediaFiles = await collectMediaFiles(dayDir, { includeBak: retention.includeBak });
 
     for (const mediaPath of mediaFiles) {
+        if (isPathInsideNamedDirectory(mediaPath, retention.expiringClipDirectoryNames)) {
+            debugLog(`archive ignores expiring clip media: ${mediaPath}`);
+            continue;
+        }
         if (isTemporaryAudioOutput(mediaPath)) {
             debugLog(`archive ignores temporary audio output: ${mediaPath}`);
             continue;
@@ -925,10 +978,20 @@ async function archiveEligibleDayDirectories(root, retention, outputConfig, cont
         if (archivedDirs.has(dayDir) || !fs.existsSync(dayDir)) continue;
 
         const pruneVideoPaths = pruneNonMergedVideos ? await collectPrunableArchiveVideos(dayDir) : [];
+        const expiringClipDirectoryPaths = pruneNonMergedVideos
+            ? []
+            : await collectNamedDirectories(dayDir, retention.expiringClipDirectoryNames);
         const temporaryAudioPaths = await collectTemporaryAudioOutputs(dayDir);
-        const pruneFilePaths = [...new Set([...pruneVideoPaths, ...temporaryAudioPaths])];
+        const pruneFilePaths = [...new Set([
+            ...expiringClipDirectoryPaths,
+            ...pruneVideoPaths,
+            ...temporaryAudioPaths
+        ])];
         const pruneVideoBytes = (await Promise.all(
             pruneVideoPaths.map(filePath => stat(filePath).then(stats => stats.size).catch(() => 0))
+        )).reduce((total, size) => total + size, 0);
+        const prunedClipBytes = (await Promise.all(
+            expiringClipDirectoryPaths.map(getRecursiveSize)
         )).reduce((total, size) => total + size, 0);
         const dirAgeDays = getDayDirectoryAgeDays(dayDir, now);
         if (dirAgeDays === null) continue;
@@ -943,7 +1006,7 @@ async function archiveEligibleDayDirectories(root, retention, outputConfig, cont
         try {
             if (dryRun) {
                 const targetDir = path.join(retention.archiveTargetBasePath, path.relative(root, dayDir));
-                debugLog(`[dry-run] archive day directory: ${dayDir} -> ${targetDir} (${dirAgeDays.toFixed(1)} days, pruneVideos=${pruneVideoPaths.length})`);
+                debugLog(`[dry-run] archive day directory: ${dayDir} -> ${targetDir} (${dirAgeDays.toFixed(1)} days, pruneVideos=${pruneVideoPaths.length}, pruneClipDirs=${expiringClipDirectoryPaths.length})`);
             } else {
                 await archiveDayDirectory(dayDir, root, retention, pruneFilePaths);
             }
@@ -956,6 +1019,8 @@ async function archiveEligibleDayDirectories(root, retention, outputConfig, cont
         summary.archived++;
         summary.prunedVideos += pruneVideoPaths.length;
         summary.prunedVideoBytes += pruneVideoBytes;
+        summary.prunedClipDirectories += expiringClipDirectoryPaths.length;
+        summary.prunedClipBytes += prunedClipBytes;
         summary.prunedTemporaryFiles += temporaryAudioPaths.length;
         context.incrementAction();
     }
@@ -1105,6 +1170,8 @@ applyOnlyAudioRetention = async function applyConfiguredOnlyAudioRetention(optio
         archived: 0,
         prunedVideos: 0,
         prunedVideoBytes: 0,
+        prunedClipDirectories: 0,
+        prunedClipBytes: 0,
         prunedTemporaryFiles: 0,
         failed: 0,
         roots: retention.basePaths,
@@ -1151,6 +1218,13 @@ applyOnlyAudioRetention = async function applyConfiguredOnlyAudioRetention(optio
             }
 
             if (!isAudioOnlyRoom(roomId, { mediaPath })) {
+                summary.skipped++;
+                continue;
+            }
+
+            if (!retention.pruneNonMergedVideosBeforeArchiveRoomIds.has(String(roomId)) &&
+                isPathInsideNamedDirectory(mediaPath, retention.expiringClipDirectoryNames)) {
+                debugLog(`onlyAudio retention keeps clip media until archive expiry: ${mediaPath}`);
                 summary.skipped++;
                 continue;
             }
@@ -1273,7 +1347,7 @@ applyOnlyAudioRetention = async function applyConfiguredOnlyAudioRetention(optio
 
     summary.actionLimit = maxActions;
     summary.limitReached = isLimitReached();
-    console.log(`onlyAudio retention done: scanned=${summary.scanned}, converted=${summary.converted}, archived=${summary.archived}, prunedVideos=${summary.prunedVideos}, deleted=${summary.deleted}, skipped=${summary.skipped}, skippedOld=${summary.skippedOld}, failed=${summary.failed}, limitReached=${summary.limitReached}`);
+    console.log(`onlyAudio retention done: scanned=${summary.scanned}, converted=${summary.converted}, archived=${summary.archived}, prunedVideos=${summary.prunedVideos}, prunedClipDirs=${summary.prunedClipDirectories}, deleted=${summary.deleted}, skipped=${summary.skipped}, skippedOld=${summary.skippedOld}, failed=${summary.failed}, limitReached=${summary.limitReached}`);
     return summary;
 };
 
@@ -1351,6 +1425,9 @@ module.exports = {
     isMergedRecordingVideo,
     collectPrunableArchiveVideos,
     collectTemporaryAudioOutputs,
+    collectNamedDirectories,
+    pruneArchiveEntries,
+    isPathInsideNamedDirectory,
     isStaleTemporaryAudioOutput,
     isUsableMediaDuration,
     getDayDirectoryAgeDays

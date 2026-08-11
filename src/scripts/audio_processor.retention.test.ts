@@ -3,13 +3,16 @@ const os = require('os');
 const path = require('path');
 const {
   collectPrunableArchiveVideos,
+  collectNamedDirectories,
   collectTemporaryAudioOutputs,
   extractRoomIdFromMediaName,
   getDayDirectoryAgeDays,
   isBakEntryName,
   isMergedRecordingVideo,
+  isPathInsideNamedDirectory,
   isStaleTemporaryAudioOutput,
-  isUsableMediaDuration
+  isUsableMediaDuration,
+  pruneArchiveEntries
 } = require('./audio_processor');
 
 describe('recording archive pruning', () => {
@@ -107,5 +110,38 @@ describe('recording archive pruning', () => {
 
     expect(isStaleTemporaryAudioOutput({ mtimeMs: now - 11 * 60 * 1000 }, now)).toBe(true);
     expect(isStaleTemporaryAudioOutput({ mtimeMs: now - 9 * 60 * 1000 }, now)).toBe(false);
+  });
+
+  test('recognizes configured clip media that must stay as video until archive expiry', () => {
+    const clipPath = path.join(dayDir, 'topic_clips', 'review', 'clip.mp4');
+    const recordingPath = path.join(dayDir, 'recording.flv');
+
+    expect(isPathInsideNamedDirectory(clipPath, new Set(['topic_clips']))).toBe(true);
+    expect(isPathInsideNamedDirectory(recordingPath, new Set(['topic_clips']))).toBe(false);
+  });
+
+  test('collects whole configured clip directories for deletion before archive', async () => {
+    const clipDir = path.join(dayDir, 'topic_clips');
+    write('topic_clips/clip.mp4');
+    write('topic_clips/REVIEW.md');
+    write('nested/topic_clips/clip.mp4');
+    write('own_stream_fun_clips/keep.mp4');
+
+    expect(new Set(await collectNamedDirectories(dayDir, new Set(['topic_clips'])))).toEqual(new Set([
+      clipDir,
+      path.join(dayDir, 'nested', 'topic_clips')
+    ]));
+  });
+
+  test('deletes an expired clip directory without touching normal recording files', async () => {
+    const clipDir = path.join(dayDir, 'topic_clips');
+    const recording = write('recording.flv');
+    write('topic_clips/nested/clip.mp4');
+    write('topic_clips/REVIEW.md');
+
+    await pruneArchiveEntries([clipDir]);
+
+    expect(fs.existsSync(clipDir)).toBe(false);
+    expect(fs.existsSync(recording)).toBe(true);
   });
 });
