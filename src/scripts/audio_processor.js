@@ -718,9 +718,15 @@ async function pruneStaleTemporaryAudioOutputs(mediaFiles, context) {
         if (context.dryRun) {
             debugLog(`[dry-run] delete stale temporary audio output: ${mediaPath}`);
         } else {
-            await unlink(mediaPath).catch(error => {
-                if (error.code !== 'ENOENT') throw error;
-            });
+            try {
+                await unlink(mediaPath);
+            } catch (error) {
+                if (error.code !== 'ENOENT') {
+                    context.summary.failed++;
+                    console.warn(`stale temporary audio cleanup failed: ${mediaPath} (${error.message})`);
+                    continue;
+                }
+            }
         }
         prunedPaths.add(path.resolve(mediaPath));
         context.summary.prunedTemporaryFiles++;
