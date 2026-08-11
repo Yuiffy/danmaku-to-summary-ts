@@ -248,29 +248,6 @@ export class ProcessingAlertService {
     );
   }
 
-  static async notifyOfflineInvalidResume(details: MikufansLifecycleAlertDetails): Promise<void> {
-    if (!this.isEnabled()) return;
-
-    const incidentId = details.streamEndedAt || details.eventTimestamp || details.sessionId || 'unknown';
-    await this.notifyOnce(
-      `mikufans-offline-invalid-resume:${details.roomId}:${incidentId}`,
-      'Mikufans 收到离线恢复事件',
-      [
-        this.formatRoom(details),
-        details.title ? `**标题**: ${details.title}` : undefined,
-        details.sessionId ? `**SessionId**: ${details.sessionId}` : undefined,
-        details.streamStartedAt ? `**StreamStarted**: ${details.streamStartedAt}` : undefined,
-        details.streamEndedAt ? `**StreamEnded**: ${details.streamEndedAt}` : undefined,
-        typeof details.recording === 'boolean' ? `**Recording**: ${details.recording}` : undefined,
-        typeof details.streaming === 'boolean' ? `**Streaming**: ${details.streaming}` : undefined,
-        details.reason ? `**处理**: ${details.reason}` : undefined,
-        '**结果**: 已忽略该恢复信号并保留原收尾流程。'
-      ],
-      `mikufans-offline-invalid-resume:${details.roomId}`,
-      LIFECYCLE_ALERT_RETRY_OPTIONS
-    );
-  }
-
   private static readCpuTimes(): CpuTimes {
     return os.cpus().reduce<CpuTimes>((acc, cpu) => {
       const total = Object.values(cpu.times).reduce((sum, value) => sum + value, 0);

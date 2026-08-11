@@ -249,7 +249,6 @@ class TuziTextCompletionTests(unittest.TestCase):
         self.assertEqual(content_parts[0], {
             "type": "input_text",
             "text": "全量直播事实",
-            "prompt_cache_breakpoint": {"mode": "explicit"},
         })
         self.assertEqual(content_parts[1], {
             "type": "input_text",
@@ -259,6 +258,7 @@ class TuziTextCompletionTests(unittest.TestCase):
         self.assertEqual(content_parts[2]["image_url"], "data:image/jpeg;base64,AA==")
         self.assertEqual(metadata["apiModeRequested"], "responses")
         self.assertEqual(metadata["apiModeUsed"], "responses")
+        self.assertEqual(metadata["explicitPromptCache"], "prefix_routed")
         self.assertEqual(metadata["cachedTokens"], 10000)
         self.assertEqual(metadata["cacheWriteTokens"], 2000)
 

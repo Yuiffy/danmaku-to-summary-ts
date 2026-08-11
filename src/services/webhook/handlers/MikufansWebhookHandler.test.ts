@@ -53,7 +53,6 @@ describe('MikufansWebhookHandler segment collection finalization', () => {
     jest.spyOn(ProcessingAlertService, 'notifyStreamStartedWithoutFileOpening').mockResolvedValue(undefined);
     jest.spyOn(ProcessingAlertService, 'notifyStreamEndedWithoutCurrentSegment').mockResolvedValue(undefined);
     jest.spyOn(ProcessingAlertService, 'notifyFinalizationStuck').mockResolvedValue(undefined);
-    jest.spyOn(ProcessingAlertService, 'notifyOfflineInvalidResume').mockResolvedValue(undefined);
     jest.spyOn(ProcessingAlertService, 'notifyMissingFileCloseAfterStreamEnd').mockResolvedValue(undefined);
   });
 

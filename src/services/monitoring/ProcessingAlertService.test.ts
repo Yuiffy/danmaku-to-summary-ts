@@ -166,15 +166,4 @@ describe('ProcessingAlertService recorder lifecycle alerts', () => {
     expect((ProcessingAlertService as any).inFlightKeys.size).toBe(0);
   });
 
-  test('keeps offline resume anomalies separate from a later stuck watchdog alert', async () => {
-    const details = {
-      roomId: '26966466',
-      streamEndedAt: '2026-08-11T17:05:22.358+08:00'
-    };
-
-    await ProcessingAlertService.notifyOfflineInvalidResume(details);
-    await ProcessingAlertService.notifyFinalizationStuck(details);
-
-    expect(sendMarkdown).toHaveBeenCalledTimes(2);
-  });
 });

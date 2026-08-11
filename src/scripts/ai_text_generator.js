@@ -867,10 +867,11 @@ function applyExplicitPromptCache(requestBody, cachePlan) {
 function buildOpenAIResponsesInput(prompt, cachePlan = null) {
     const content = [];
     if (cachePlan?.enabled) {
+        // DaiYu/sub2api currently returns 502 when this input_text carries
+        // prompt_cache_breakpoint. Separate blocks still preserve prefix caching.
         content.push({
             type: 'input_text',
-            text: cachePlan.prefix,
-            prompt_cache_breakpoint: { mode: 'explicit' }
+            text: cachePlan.prefix
         });
         if (cachePlan.suffix) {
             content.push({ type: 'input_text', text: cachePlan.suffix });
@@ -1189,8 +1190,9 @@ async function generateTextWithDaiYu(prompt, options = {}) {
                 options.promptCacheRolloutPercent
             );
             if (cachePlan.enabled) {
+                const cacheMode = apiModeRequested === 'responses' ? 'prefix-routed' : 'explicit';
                 console.log(
-                    `   prompt cache: explicit, rollout=${cachePlan.rolloutPercent}%, ` +
+                    `   prompt cache: ${cacheMode}, rollout=${cachePlan.rolloutPercent}%, ` +
                     `bucket=${cachePlan.rolloutBucket}, prefixChars=${cachePlan.sharedPromptPrefixChars}`
                 );
             }
@@ -1305,7 +1307,9 @@ async function generateTextWithDaiYu(prompt, options = {}) {
                 apiModeUsed,
                 apiModeFallbackReason,
                 ...sharedPromptCacheInfo,
-                explicitPromptCache: cachePlan.enabled ? 'requested' : 'not_selected',
+                explicitPromptCache: cachePlan.enabled
+                    ? (apiModeUsed === 'responses' ? 'prefix_routed' : 'requested')
+                    : 'not_selected',
                 promptCacheRolloutBucket: cachePlan.rolloutBucket,
                 promptCacheFallbackReason,
                 completionTokens: completionUsage.completionTokens,

@@ -406,23 +406,6 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       streamEndedAt: timestamps?.endTime?.toISOString()
     });
 
-    if (pendingFinalization.length === 0 && !timestamps?.endTime) return;
-
-    const session = this.liveSessionManager.getSession(roomKey);
-    void ProcessingAlertService.notifyOfflineInvalidResume({
-      roomId: roomKey,
-      roomName: payload.EventData?.Name,
-      title: payload.EventData?.Title,
-      sessionId: payload.EventData?.SessionId,
-      streamStartedAt: timestamps?.startTime?.toISOString(),
-      streamEndedAt: timestamps?.endTime?.toISOString(),
-      segmentCount: session?.segments.length || 0,
-      status: session?.status,
-      recording: payload.EventData?.Recording,
-      streaming: payload.EventData?.Streaming,
-      cancelledActions: [],
-      reason: `Ignored offline ${source}; pending finalization was preserved (${pendingFinalization.join(', ') || 'end observed'})`
-    });
   }
 
   private markLiveResumed(roomId: string | number, source: string): void {

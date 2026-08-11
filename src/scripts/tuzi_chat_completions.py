@@ -1264,10 +1264,11 @@ def call_tuzi_chat_completions(
 
         def build_responses_input(use_cache: bool):
             if use_cache:
+                # DaiYu/sub2api currently returns 502 when input_text includes
+                # prompt_cache_breakpoint. Split parts still preserve prefix caching.
                 user_content = [{
                     "type": "input_text",
                     "text": prompt_cache["prefix"],
-                    "prompt_cache_breakpoint": {"mode": "explicit"},
                 }]
                 if prompt_cache.get("suffix"):
                     user_content.append({"type": "input_text", "text": prompt_cache["suffix"]})
@@ -1338,9 +1339,10 @@ def call_tuzi_chat_completions(
             )
 
         if cache_enabled:
+            cache_mode = "prefix-routed" if api_mode_requested == "responses" else "explicit"
             print(
                 "[PROMPT_CACHE] "
-                f"explicit rollout={prompt_cache.get('rolloutPercent')}%, "
+                f"{cache_mode} rollout={prompt_cache.get('rolloutPercent')}%, "
                 f"bucket={prompt_cache.get('rolloutBucket')}, "
                 f"prefix_chars={prompt_cache.get('sharedPromptPrefixChars')}"
             )
@@ -1391,7 +1393,11 @@ def call_tuzi_chat_completions(
                     "apiModeFallbackReason": api_mode_fallback_reason,
                     "sharedPromptCacheKey": (prompt_cache or {}).get("sharedPromptCacheKey"),
                     "sharedPromptPrefixChars": (prompt_cache or {}).get("sharedPromptPrefixChars"),
-                    "explicitPromptCache": "requested" if cache_enabled else "not_selected",
+                    "explicitPromptCache": (
+                        "prefix_routed"
+                        if cache_enabled and api_mode_used == "responses"
+                        else "requested" if cache_enabled else "not_selected"
+                    ),
                     "promptCacheRolloutBucket": (prompt_cache or {}).get("rolloutBucket"),
                     "promptCacheFallbackReason": prompt_cache_fallback_reason,
                 }

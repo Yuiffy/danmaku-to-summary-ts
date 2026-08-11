@@ -77,7 +77,7 @@ describe('daiYu model routing', () => {
     });
   });
 
-  test('uses native Responses fields and preserves the explicit cache breakpoint', async () => {
+  test('uses native Responses fields and preserves the stable cache prefix', async () => {
     const responsesConfig = structuredClone(config);
     responsesConfig.ai.text.daiYu.apiMode = 'responses';
     responsesConfig.ai.text.daiYu.thinking.reasoningEffort = 'high';
@@ -134,8 +134,8 @@ describe('daiYu model routing', () => {
     expect(request.input[0].content[0]).toEqual(expect.objectContaining({
       type: 'input_text',
       text: expect.stringContaining('全量直播事实'),
-      prompt_cache_breakpoint: { mode: 'explicit' },
     }));
+    expect(request.input[0].content[0]).not.toHaveProperty('prompt_cache_breakpoint');
     expect(request.input[0].content[1]).toEqual({
       type: 'input_text',
       text: '\n当前任务规则',
@@ -143,6 +143,7 @@ describe('daiYu model routing', () => {
     expect(result.meta.attempts[result.meta.attempts.length - 1]).toEqual(expect.objectContaining({
       apiModeRequested: 'responses',
       apiModeUsed: 'responses',
+      explicitPromptCache: 'prefix_routed',
       cachedTokens: 10000,
       cacheWriteTokens: 2000,
     }));
