@@ -165,6 +165,7 @@
       "daiYu": {
         "enabled": true,
         "baseUrl": "http://localhost:8080",
+        "apiMode": "responses",
         "model": "gpt-5.6-luna",
         "fallbackModels": [
           "gemini-3-flash-preview"
@@ -172,7 +173,8 @@
         "includeBuiltInFallbackModels": true,
         "thinking": {
           "enabled": true,
-          "budgetTokens": 10000
+          "budgetTokens": 10000,
+          "reasoningEffort": "high"
         },
         "temperature": 0.7,
         "maxTokens": 100000,

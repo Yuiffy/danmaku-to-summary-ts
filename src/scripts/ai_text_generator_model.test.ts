@@ -10,6 +10,7 @@ jest.mock('./config-loader', () => ({
 
 const fetchMock = require('node-fetch') as jest.Mock;
 const configLoader = require('./config-loader');
+const liveGenerationContext = require('./live_generation_context');
 const {
   generateTextWithDaiYu,
   generateTextWithTuZi,
@@ -74,6 +75,121 @@ describe('daiYu model routing', () => {
       type: 'enabled',
       budget_tokens: 2048,
     });
+  });
+
+  test('uses native Responses fields and preserves the explicit cache breakpoint', async () => {
+    const responsesConfig = structuredClone(config);
+    responsesConfig.ai.text.daiYu.apiMode = 'responses';
+    responsesConfig.ai.text.daiYu.thinking.reasoningEffort = 'high';
+    responsesConfig.ai.text.sharedPromptCache = {
+      enabled: true,
+      explicitRolloutPercent: 100,
+      ttl: '30m',
+    };
+    configLoader.getConfig.mockReturnValue(responsesConfig);
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        id: 'resp_native',
+        status: 'completed',
+        output: [{
+          type: 'message',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'RESPONSES_OK' }],
+        }],
+        usage: {
+          input_tokens: 12000,
+          input_tokens_details: { cached_tokens: 10000, cache_write_tokens: 2000 },
+          output_tokens: 900,
+          output_tokens_details: { reasoning_tokens: 700 },
+          total_tokens: 12900,
+        },
+      }),
+    });
+    const prompt = [
+      liveGenerationContext.SHARED_PROMPT_CACHE_START,
+      '全量直播事实',
+      liveGenerationContext.SHARED_PROMPT_CACHE_END,
+      '当前任务规则',
+    ].join('\n');
+
+    const result = await generateTextWithDaiYu(prompt);
+
+    expect(result.text).toBe('RESPONSES_OK');
+    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8080/v1/responses');
+    const request = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(request).toEqual(expect.objectContaining({
+      model: 'gpt-5.6-luna',
+      max_output_tokens: 1000,
+      stream: false,
+      store: false,
+      reasoning: { effort: 'high' },
+      prompt_cache_options: { mode: 'explicit', ttl: '30m' },
+    }));
+    expect(request).not.toHaveProperty('messages');
+    expect(request).not.toHaveProperty('max_tokens');
+    expect(request).not.toHaveProperty('thinking');
+    expect(request).not.toHaveProperty('temperature');
+    expect(request.input[0].content[0]).toEqual(expect.objectContaining({
+      type: 'input_text',
+      text: expect.stringContaining('全量直播事实'),
+      prompt_cache_breakpoint: { mode: 'explicit' },
+    }));
+    expect(request.input[0].content[1]).toEqual({
+      type: 'input_text',
+      text: '\n当前任务规则',
+    });
+    expect(result.meta.attempts[result.meta.attempts.length - 1]).toEqual(expect.objectContaining({
+      apiModeRequested: 'responses',
+      apiModeUsed: 'responses',
+      cachedTokens: 10000,
+      cacheWriteTokens: 2000,
+    }));
+  });
+
+  test('falls back to Chat Completions when the Responses protocol is rejected', async () => {
+    const responsesConfig = structuredClone(config);
+    responsesConfig.ai.text.daiYu.apiMode = 'responses';
+    configLoader.getConfig.mockReturnValue(responsesConfig);
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        text: async () => 'unsupported responses payload',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{
+            message: { content: 'CHAT_FALLBACK_OK' },
+            finish_reason: 'stop',
+          }],
+          usage: {},
+        }),
+      });
+
+    const result = await generateTextWithDaiYu('只回复 CHAT_FALLBACK_OK');
+
+    expect(result.text).toBe('CHAT_FALLBACK_OK');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8080/v1/responses');
+    expect(fetchMock.mock.calls[1][0]).toBe('http://localhost:8080/v1/chat/completions');
+    const fallbackRequest = JSON.parse(fetchMock.mock.calls[1][1].body);
+    expect(fallbackRequest.messages[0]).toEqual({
+      role: 'user',
+      content: '只回复 CHAT_FALLBACK_OK',
+    });
+    expect(fallbackRequest.thinking).toEqual({
+      type: 'enabled',
+      budget_tokens: 1024,
+    });
+    expect(result.meta.attempts[result.meta.attempts.length - 1]).toEqual(expect.objectContaining({
+      apiModeRequested: 'responses',
+      apiModeUsed: 'chatCompletions',
+      apiModeFallbackReason: expect.stringContaining('HTTP 400'),
+    }));
   });
 
   test('can isolate a one-shot structured task from configured fallback models', async () => {

@@ -53,6 +53,9 @@ describe('shared text prompt cache metadata', () => {
       reasoningTokens: 800,
       totalTokens: 11200,
       cacheHitRatio: 0.8192,
+      apiModeRequested: null,
+      apiModeUsed: null,
+      apiModeFallbackReason: null,
       sharedPromptCacheKey: null,
       explicitPromptCache: 'requested'
     });
@@ -291,6 +294,8 @@ describe('shared text prompt cache metadata', () => {
         promptTokens: 5600,
         cachedTokens: 4608,
         cacheWriteTokens: 1024,
+        apiModeRequested: 'responses',
+        apiModeUsed: 'responses',
         sharedPromptCacheKey: 'a'.repeat(64),
         sharedPromptPrefixChars: 8000
       }]
@@ -299,6 +304,8 @@ describe('shared text prompt cache metadata', () => {
     expect(frontMatter).toContain('promptTokens: 5600');
     expect(frontMatter).toContain('cachedTokens: 4608');
     expect(frontMatter).toContain('cacheWriteTokens: 1024');
+    expect(frontMatter).toContain('apiModeRequested: "responses"');
+    expect(frontMatter).toContain('apiModeUsed: "responses"');
     expect(frontMatter).toContain(`sharedPromptCacheKey: "${'a'.repeat(64)}"`);
     expect(frontMatter).toContain('sharedPromptPrefixChars: 8000');
   });

@@ -63,11 +63,15 @@ const AISchema = Joi.object({
             enabled: Joi.boolean().default(true),
             apiKey: Joi.string().allow('').default(''),
             baseUrl: Joi.string().default('http://localhost:8080'),
+            apiMode: Joi.string().valid('chatCompletions', 'responses').default('chatCompletions'),
             model: Joi.string().default('gpt-5.6-luna'),
             fallbackModels: Joi.array().items(Joi.string()).default(['gemini-3-flash-preview']),
             thinking: Joi.object({
                 enabled: Joi.boolean().default(true),
-                budgetTokens: Joi.number().integer().min(1024).default(10000)
+                budgetTokens: Joi.number().integer().min(1024).default(10000),
+                reasoningEffort: Joi.string()
+                    .valid('none', 'minimal', 'low', 'medium', 'high', 'xhigh')
+                    .default('high')
             }).default(),
             temperature: Joi.number().default(0.7),
             maxTokens: Joi.number().default(100000),

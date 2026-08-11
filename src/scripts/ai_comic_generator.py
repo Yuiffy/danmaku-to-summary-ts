@@ -3541,6 +3541,12 @@ def generate_comic_content_with_ai(
         daiyu_thinking = daiyu_config.get("thinking", {}) or {}
         thinking_enabled = daiyu_thinking.get("enabled", True) is not False
         thinking_budget_tokens = daiyu_thinking.get("budgetTokens", 10000)
+        reasoning_effort = (
+            daiyu_thinking.get("reasoningEffort")
+            or daiyu_thinking.get("effort")
+            or "high"
+        )
+        api_mode = daiyu_config.get("apiMode", "chatCompletions")
         temperature = daiyu_config.get("temperature", provider_config.get("textTemperature", 0.7))
         max_tokens = daiyu_config.get("maxTokens", provider_config.get("textMaxTokens", 100000))
 
@@ -3571,6 +3577,8 @@ def generate_comic_content_with_ai(
             thinking_budget_tokens=thinking_budget_tokens,
             prompt_cache=prompt_cache_plan,
             return_metadata=True,
+            api_mode=api_mode,
+            reasoning_effort=reasoning_effort,
         )
         if isinstance(comic_response, tuple):
             comic_content, generation_attempt = comic_response

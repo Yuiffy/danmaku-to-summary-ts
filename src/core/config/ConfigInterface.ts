@@ -388,9 +388,11 @@ export interface TextAIConfig {
   gemini?: GeminiConfig;
   tuZi?: TuZiConfig;
   daiYu?: TuZiConfig & {
+    apiMode?: 'chatCompletions' | 'responses';
     thinking?: {
       enabled?: boolean;
       budgetTokens?: number;
+      reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
     };
   };
   openai?: OpenAIConfig;

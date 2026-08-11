@@ -66,12 +66,24 @@ LAST_IMAGE_GENERATION_META = {
 
 DAIYU_PRIMARY_MODEL = "gpt-5.6-luna"
 DAIYU_MODEL_PATTERN = re.compile(r"^gpt-5(?:[.-]|$)", re.IGNORECASE)
+DAIYU_RESPONSES_COMPATIBILITY_STATUSES = {400, 404, 405, 415, 422, 501}
+OPENAI_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
 
 
 def normalize_daiyu_model(model: Optional[str]) -> str:
     """Keep every GPT-5 daiYu request on the current Luna model."""
     normalized = str(model or "").strip()
     return DAIYU_PRIMARY_MODEL if DAIYU_MODEL_PATTERN.match(normalized) else (normalized or DAIYU_PRIMARY_MODEL)
+
+
+def normalize_daiyu_api_mode(api_mode: Optional[str]) -> str:
+    """Keep the legacy transport unless native Responses is explicitly selected."""
+    return "responses" if str(api_mode or "").strip().lower() == "responses" else "chatCompletions"
+
+
+def normalize_openai_reasoning_effort(effort: Optional[str]) -> str:
+    normalized = str(effort or "").strip().lower()
+    return normalized if normalized in OPENAI_REASONING_EFFORTS else "high"
 
 
 class TuziRetryBudgetExceeded(Exception):
@@ -310,6 +322,21 @@ def extract_tuzi_text_content(result: Any) -> str:
     return "\n".join(part.strip() for part in parts if part.strip()).strip()
 
 
+def extract_text_finish_reason(result: Any) -> str:
+    """Normalize Chat Completions finish_reason and Responses completion status."""
+    if not isinstance(result, dict):
+        return "unknown"
+    choices = result.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        finish_reason = choices[0].get("finish_reason")
+        if finish_reason:
+            return str(finish_reason)
+    incomplete_details = result.get("incomplete_details") or result.get("incompleteDetails") or {}
+    if isinstance(incomplete_details, dict) and incomplete_details.get("reason"):
+        return str(incomplete_details["reason"])
+    return str(result.get("status") or "unknown")
+
+
 def summarize_tuzi_text_response(result: Any) -> str:
     """Return a prompt-free diagnostic summary for empty text responses."""
     if not isinstance(result, dict):
@@ -323,7 +350,7 @@ def summarize_tuzi_text_response(result: Any) -> str:
     usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
     summary = {
         "object": result.get("object"),
-        "finish_reason": choice.get("finish_reason"),
+        "finish_reason": extract_text_finish_reason(result),
         "content_type": type(content).__name__,
         "content_length": len(content) if isinstance(content, (str, list, dict)) else None,
         "reasoning_content_length": len(reasoning_content) if isinstance(reasoning_content, str) else None,
@@ -1150,6 +1177,8 @@ def call_tuzi_chat_completions(
     prompt_cache: Optional[Dict[str, Any]] = None,
     return_metadata: bool = False,
     provider_label: str = "tuZi",
+    api_mode: str = "chatCompletions",
+    reasoning_effort: str = "high",
 ) -> Any:
     """
     调用tuZi的/v1/chat/completions端点生成文本
@@ -1180,9 +1209,6 @@ def call_tuzi_chat_completions(
                 "https": proxy_url
             }
             print(f"[PROXY] 使用代理: {proxy_url}")
-
-        # 构建API请求
-        api_url = f"{normalize_openai_base_url(base_url)}/v1/chat/completions"
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -1231,27 +1257,87 @@ def call_tuzi_chat_completions(
             messages.append({"role": "user", "content": user_content})
             return messages
 
-        messages = build_messages(cache_enabled)
-
         normalized_max_tokens = normalize_text_max_tokens(model, max_tokens)
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": normalized_max_tokens,
-            "stream": False,
-        }
-        if thinking:
-            payload["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": max(1, int(thinking_budget_tokens)),
-            }
+        api_mode_requested = normalize_daiyu_api_mode(api_mode)
+        api_mode_used = api_mode_requested
+        api_mode_fallback_reason = None
+
+        def build_responses_input(use_cache: bool):
+            if use_cache:
+                user_content = [{
+                    "type": "input_text",
+                    "text": prompt_cache["prefix"],
+                    "prompt_cache_breakpoint": {"mode": "explicit"},
+                }]
+                if prompt_cache.get("suffix"):
+                    user_content.append({"type": "input_text", "text": prompt_cache["suffix"]})
+            else:
+                user_content = [{"type": "input_text", "text": prompt}]
+
+            for image_path in valid_image_paths:
+                user_content.append({
+                    "type": "input_image",
+                    "image_url": encode_image_to_base64(image_path, with_data_uri=True),
+                    "detail": "high",
+                })
+            return [{"role": "user", "content": user_content}]
+
+        def build_payload(selected_api_mode: str, use_cache: bool):
+            if selected_api_mode == "responses":
+                payload = {
+                    "model": model,
+                    "input": build_responses_input(use_cache),
+                    "max_output_tokens": normalized_max_tokens,
+                    "stream": False,
+                    "store": False,
+                }
+                if system_prompt:
+                    payload["instructions"] = system_prompt
+                if thinking:
+                    payload["reasoning"] = {
+                        "effort": normalize_openai_reasoning_effort(reasoning_effort),
+                    }
+                elif temperature is not None:
+                    payload["temperature"] = temperature
+            else:
+                payload = {
+                    "model": model,
+                    "messages": build_messages(use_cache),
+                    "temperature": temperature,
+                    "max_tokens": normalized_max_tokens,
+                    "stream": False,
+                }
+                if thinking:
+                    payload["thinking"] = {
+                        "type": "enabled",
+                        "budget_tokens": max(1, int(thinking_budget_tokens)),
+                    }
+
+            if use_cache:
+                payload["prompt_cache_key"] = prompt_cache["requestKey"]
+                payload["prompt_cache_options"] = {
+                    "mode": "explicit",
+                    "ttl": prompt_cache.get("ttl") or "30m",
+                }
+            return payload
+
+        def perform_request(selected_api_mode: str, use_cache: bool, operation_suffix: str = ""):
+            endpoint = "responses" if selected_api_mode == "responses" else "chat/completions"
+            api_url = f"{normalize_openai_base_url(base_url)}/v1/{endpoint}"
+            payload = build_payload(selected_api_mode, use_cache)
+            operation_name = f"{endpoint} 文本生成{operation_suffix}"
+            return request_tuzi_with_retry(
+                operation_name,
+                lambda: requests.post(
+                    api_url,
+                    headers=headers,
+                    json=payload,
+                    timeout=timeout,
+                    proxies=proxies,
+                ),
+            )
+
         if cache_enabled:
-            payload["prompt_cache_key"] = prompt_cache["requestKey"]
-            payload["prompt_cache_options"] = {
-                "mode": "explicit",
-                "ttl": prompt_cache.get("ttl") or "30m",
-            }
             print(
                 "[PROMPT_CACHE] "
                 f"explicit rollout={prompt_cache.get('rolloutPercent')}%, "
@@ -1259,29 +1345,34 @@ def call_tuzi_chat_completions(
                 f"prefix_chars={prompt_cache.get('sharedPromptPrefixChars')}"
             )
 
-        print(f"[TUZI_TEXT] 调用tuZi Chat Completions API...")
-        response = request_tuzi_with_retry(
-            "chat/completions 文本生成",
-            lambda: requests.post(api_url, headers=headers, json=payload, timeout=timeout, proxies=proxies)
-        )
+        print(f"[TUZI_TEXT] 调用{provider_label}文本API (api_mode={api_mode_requested})...")
+        response = perform_request(api_mode_used, cache_enabled)
+        if (
+            response is not None
+            and api_mode_used == "responses"
+            and response.status_code in DAIYU_RESPONSES_COMPATIBILITY_STATUSES
+        ):
+            api_mode_fallback_reason = f"HTTP {response.status_code}: {response.text[:300]}"
+            print(
+                "[WARNING] daiYu Responses API不兼容，回退Chat Completions: "
+                f"{api_mode_fallback_reason}"
+            )
+            api_mode_used = "chatCompletions"
+            response = perform_request(api_mode_used, cache_enabled, "（Responses兼容回退）")
+
         prompt_cache_fallback_reason = None
         if response is not None and response.status_code == 400 and cache_enabled:
             prompt_cache_fallback_reason = f"HTTP 400: {response.text[:300]}"
             print(f"[WARNING] 显式 prompt cache 参数被上游拒绝，改用普通请求: {prompt_cache_fallback_reason}")
-            payload.pop("prompt_cache_key", None)
-            payload.pop("prompt_cache_options", None)
-            payload["messages"] = build_messages(False)
-            response = request_tuzi_with_retry(
-                "chat/completions 文本生成（无缓存回退）",
-                lambda: requests.post(api_url, headers=headers, json=payload, timeout=timeout, proxies=proxies)
-            )
+            response = perform_request(api_mode_used, False, "（无缓存回退）")
         if response is None:
-            print("[ERROR]  tuZi Chat Completions API调用失败: 重试耗尽")
+            print(f"[ERROR] {provider_label}文本API调用失败: 重试耗尽")
             return None
 
         if response.status_code == 200:
             result = response.json()
-            ids = log_tuzi_response_identifiers(f"chat/completions 文本生成 {model}", response, result)
+            endpoint_used = "responses" if api_mode_used == "responses" else "chat/completions"
+            ids = log_tuzi_response_identifiers(f"{endpoint_used} 文本生成 {model}", response, result)
             content = extract_tuzi_text_content(result)
             if content:
                 usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
@@ -1290,11 +1381,14 @@ def call_tuzi_chat_completions(
                     "provider": provider_label,
                     "model": model,
                     "status": "success",
-                    "finishReason": (result.get("choices") or [{}])[0].get("finish_reason") or "unknown",
+                    "finishReason": extract_text_finish_reason(result),
                     "requestId": ids.get("requestId"),
                     "responseId": ids.get("responseId"),
                     "usage": usage,
                     **usage_summary,
+                    "apiModeRequested": api_mode_requested,
+                    "apiModeUsed": api_mode_used,
+                    "apiModeFallbackReason": api_mode_fallback_reason,
                     "sharedPromptCacheKey": (prompt_cache or {}).get("sharedPromptCacheKey"),
                     "sharedPromptPrefixChars": (prompt_cache or {}).get("sharedPromptPrefixChars"),
                     "explicitPromptCache": "requested" if cache_enabled else "not_selected",
@@ -1302,7 +1396,7 @@ def call_tuzi_chat_completions(
                     "promptCacheFallbackReason": prompt_cache_fallback_reason,
                 }
                 metadata = {key: value for key, value in metadata.items() if value is not None}
-                print("[OK] tuZi Chat Completions 文本生成成功")
+                print(f"[OK] {provider_label}文本生成成功 (api_mode={api_mode_used})")
                 print(f"生成内容长度: {len(content)} 字符")
                 print(f"[TUZI_TEXT_USAGE] {json.dumps(metadata, ensure_ascii=False, separators=(',', ':'))}")
                 return (content, metadata) if return_metadata else content
@@ -1310,12 +1404,12 @@ def call_tuzi_chat_completions(
             print(f"[WARNING]  tuZi API返回空内容: {summarize_tuzi_text_response(result)}")
             return None
         else:
-            print(f"[WARNING]  tuZi Chat Completions API调用失败: HTTP {response.status_code}")
+            print(f"[WARNING] {provider_label}文本API调用失败: HTTP {response.status_code}")
             print(f"响应内容: {response.text[:500]}")
             return None
 
     except Exception as e:
-        print(f"[ERROR]  tuZi Chat Completions API调用失败: {e}")
+        print(f"[ERROR] {provider_label}文本API调用失败: {e}")
         traceback.print_exc()
         return None
 
@@ -1335,6 +1429,8 @@ def call_daiyu_chat_completions(
     thinking_budget_tokens: int = 10000,
     prompt_cache: Optional[Dict[str, Any]] = None,
     return_metadata: bool = False,
+    api_mode: str = "chatCompletions",
+    reasoning_effort: str = "high",
 ) -> Any:
     """调用带鱼的 OpenAI-compatible 文本接口，并默认开启思考。"""
     return call_tuzi_chat_completions(
@@ -1353,6 +1449,8 @@ def call_daiyu_chat_completions(
         prompt_cache=prompt_cache,
         return_metadata=return_metadata,
         provider_label="daiYu",
+        api_mode=api_mode,
+        reasoning_effort=reasoning_effort,
     )
 
 

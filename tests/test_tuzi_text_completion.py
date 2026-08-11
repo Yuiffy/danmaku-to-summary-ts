@@ -17,13 +17,13 @@ spec.loader.exec_module(tuzi)
 
 
 class FakeResponse:
-    status_code = 200
     headers = {}
-    text = ""
     elapsed = None
 
-    def __init__(self, body):
+    def __init__(self, body, status_code=200, text=""):
         self.body = body
+        self.status_code = status_code
+        self.text = text
 
     def json(self):
         return self.body
@@ -177,6 +177,128 @@ class TuziTextCompletionTests(unittest.TestCase):
             post.call_args.kwargs["json"]["thinking"],
             {"type": "enabled", "budget_tokens": 8192},
         )
+
+    def test_daiyu_responses_request_preserves_cache_prefix_before_images(self):
+        response = FakeResponse({
+            "id": "resp_native",
+            "status": "completed",
+            "output": [{
+                "type": "message",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "RESPONSES_OK"}],
+            }],
+            "usage": {
+                "input_tokens": 12000,
+                "input_tokens_details": {
+                    "cached_tokens": 10000,
+                    "cache_write_tokens": 2000,
+                },
+                "output_tokens": 900,
+                "output_tokens_details": {"reasoning_tokens": 700},
+                "total_tokens": 12900,
+            },
+        })
+        prompt_cache = {
+            "enabled": True,
+            "prefix": "全量直播事实",
+            "suffix": "\n漫画任务规则",
+            "requestKey": "live:test",
+            "ttl": "30m",
+            "rolloutPercent": 100,
+            "rolloutBucket": 1,
+            "sharedPromptCacheKey": "a" * 64,
+            "sharedPromptPrefixChars": 6,
+        }
+        image_path = ROOT / "tests" / "fixtures" / "vision-candidate.jpg"
+
+        with (
+            patch.object(tuzi, "request_tuzi_with_retry", side_effect=lambda _, request: request()),
+            patch.object(tuzi.requests, "post", return_value=response) as post,
+            patch.object(tuzi.os.path, "isfile", return_value=True),
+            patch.object(tuzi, "encode_image_to_base64", return_value="data:image/jpeg;base64,AA=="),
+        ):
+            content, metadata = tuzi.call_daiyu_chat_completions(
+                prompt="全量直播事实\n漫画任务规则",
+                system_prompt="稳定系统指令",
+                image_paths=[str(image_path)],
+                model="gpt-5.6-luna",
+                base_url="https://daiyu.example/v1",
+                api_key="secret",
+                max_tokens=4096,
+                thinking=True,
+                prompt_cache=prompt_cache,
+                return_metadata=True,
+                api_mode="responses",
+                reasoning_effort="high",
+            )
+
+        self.assertEqual(content, "RESPONSES_OK")
+        args, kwargs = post.call_args
+        self.assertEqual(args[0], "https://daiyu.example/v1/responses")
+        payload = kwargs["json"]
+        self.assertEqual(payload["max_output_tokens"], 4096)
+        self.assertEqual(payload["reasoning"], {"effort": "high"})
+        self.assertEqual(payload["instructions"], "稳定系统指令")
+        self.assertFalse(payload["stream"])
+        self.assertFalse(payload["store"])
+        self.assertNotIn("messages", payload)
+        self.assertNotIn("max_tokens", payload)
+        self.assertNotIn("thinking", payload)
+        self.assertNotIn("temperature", payload)
+        content_parts = payload["input"][0]["content"]
+        self.assertEqual(content_parts[0], {
+            "type": "input_text",
+            "text": "全量直播事实",
+            "prompt_cache_breakpoint": {"mode": "explicit"},
+        })
+        self.assertEqual(content_parts[1], {
+            "type": "input_text",
+            "text": "\n漫画任务规则",
+        })
+        self.assertEqual(content_parts[2]["type"], "input_image")
+        self.assertEqual(content_parts[2]["image_url"], "data:image/jpeg;base64,AA==")
+        self.assertEqual(metadata["apiModeRequested"], "responses")
+        self.assertEqual(metadata["apiModeUsed"], "responses")
+        self.assertEqual(metadata["cachedTokens"], 10000)
+        self.assertEqual(metadata["cacheWriteTokens"], 2000)
+
+    def test_daiyu_responses_rejection_falls_back_to_chat_completions(self):
+        responses_error = FakeResponse({}, status_code=400, text="unsupported responses payload")
+        chat_response = FakeResponse({
+            "choices": [{
+                "message": {"role": "assistant", "content": "CHAT_FALLBACK_OK"},
+                "finish_reason": "stop",
+            }],
+            "usage": {},
+        })
+
+        with (
+            patch.object(tuzi, "request_tuzi_with_retry", side_effect=lambda _, request: request()),
+            patch.object(tuzi.requests, "post", side_effect=[responses_error, chat_response]) as post,
+        ):
+            content, metadata = tuzi.call_daiyu_chat_completions(
+                prompt="只回复 CHAT_FALLBACK_OK",
+                model="gpt-5.6-luna",
+                base_url="https://daiyu.example/v1",
+                api_key="secret",
+                thinking=True,
+                thinking_budget_tokens=8192,
+                return_metadata=True,
+                api_mode="responses",
+            )
+
+        self.assertEqual(content, "CHAT_FALLBACK_OK")
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(post.call_args_list[0].args[0], "https://daiyu.example/v1/responses")
+        self.assertEqual(post.call_args_list[1].args[0], "https://daiyu.example/v1/chat/completions")
+        fallback_payload = post.call_args_list[1].kwargs["json"]
+        self.assertEqual(
+            fallback_payload["thinking"],
+            {"type": "enabled", "budget_tokens": 8192},
+        )
+        self.assertEqual(metadata["apiModeRequested"], "responses")
+        self.assertEqual(metadata["apiModeUsed"], "chatCompletions")
+        self.assertIn("HTTP 400", metadata["apiModeFallbackReason"])
 
     def test_daiyu_legacy_gpt5_model_is_normalized_to_luna(self):
         response = FakeResponse({

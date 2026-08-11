@@ -40,12 +40,14 @@ class ComicTextProviderTests(unittest.TestCase):
                         "enabled": True,
                         "apiKey": "daiyu-key",
                         "baseUrl": "https://daiyu.example/v1",
+                        "apiMode": "responses",
                         "model": "gpt-5.6-luna",
                         "temperature": 0.25,
                         "maxTokens": 12345,
                         "thinking": {
                             "enabled": True,
                             "budgetTokens": 8192,
+                            "reasoningEffort": "high",
                         },
                     }
                 },
@@ -104,6 +106,8 @@ class ComicTextProviderTests(unittest.TestCase):
         self.assertEqual(daiyu_call["temperature"], 0.25)
         self.assertTrue(daiyu_call["thinking"])
         self.assertEqual(daiyu_call["thinking_budget_tokens"], 8192)
+        self.assertEqual(daiyu_call["api_mode"], "responses")
+        self.assertEqual(daiyu_call["reasoning_effort"], "high")
         self.assertEqual(daiyu_call["prompt"].count("UNIQUE_HIGHLIGHT"), 1)
         self.assertNotIn("UNIQUE_HIGHLIGHT", daiyu_call["system_prompt"])
         self.assertEqual(daiyu_call["base_url"], "https://daiyu.example/v1")
