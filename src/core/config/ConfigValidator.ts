@@ -142,6 +142,9 @@ export class ConfigValidator {
           moveToArchiveAfterDays: 33,
           archiveTargetBasePath: 'E:/EFiles/Evideo/DDTV录播-E',
           deleteBakBeforeArchive: true,
+          additionalArchiveRoomIds: [],
+          archiveAllRoomDirectories: false,
+          pruneNonMergedVideosBeforeArchiveRoomIds: [],
         },
       },
       asr: {
@@ -481,6 +484,9 @@ export class ConfigValidator {
           mergeSlowSeconds: 480,
           screenshotSlowSeconds: 300,
           asrSlowSeconds: 900,
+          streamStartNoFileOpeningSeconds: 300,
+          streamEndNoSegmentGraceSeconds: 60,
+          finalizationWatchdogGraceSeconds: 60,
           cooldownMs: 1800000,
         },
         metrics: {

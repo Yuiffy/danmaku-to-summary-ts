@@ -69,7 +69,10 @@
       "archiveEnabled": true,
       "moveToArchiveAfterDays": 33,
       "archiveTargetBasePath": "E:/EFiles/Evideo/DDTV录播-E",
-      "deleteBakBeforeArchive": true
+      "deleteBakBeforeArchive": true,
+      "additionalArchiveRoomIds": [],
+      "archiveAllRoomDirectories": false,
+      "pruneNonMergedVideosBeforeArchiveRoomIds": []
     }
   },
   "asr": {
@@ -1120,7 +1123,8 @@
     "mergeGapSeconds": 45,
     "burnSubtitles": true,
     "ffmpegTimeoutMs": 600000,
-    "subtitleFontSizeRatio": 0.044,
+    "subtitleFontSizeRatio": 0.094,
+    "subtitlePortraitFontSizeRatio": 0.044,
     "subtitleMinFontSize": 30,
     "subtitleMaxFontSize": 72,
     "subtitleMaxCharsPerLine": 18,
@@ -1221,6 +1225,9 @@
       "mergeSlowSeconds": 480,
       "screenshotSlowSeconds": 300,
       "asrSlowSeconds": 900,
+      "streamStartNoFileOpeningSeconds": 300,
+      "streamEndNoSegmentGraceSeconds": 60,
+      "finalizationWatchdogGraceSeconds": 60,
       "cooldownMs": 1800000
     },
     "metrics": {

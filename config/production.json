@@ -110,7 +110,10 @@
       "archiveEnabled": true,
       "moveToArchiveAfterDays": 33,
       "archiveTargetBasePath": "E:/EFiles/Evideo/DDTV录播-E",
-      "deleteBakBeforeArchive": true
+      "deleteBakBeforeArchive": true,
+      "additionalArchiveRoomIds": [25788785],
+      "archiveAllRoomDirectories": true,
+      "pruneNonMergedVideosBeforeArchiveRoomIds": [25788785]
     }
   },
   "ai": {
@@ -1045,6 +1048,22 @@
         "wordLimit": 800,
         "minComicDurationMinutes": 0,
         "comicGenerationProbability": 1,
+        "fullLiveContextExperiment": {
+          "enabled": true,
+          "tasks": [
+            "summary",
+            "ownStreamClips"
+          ],
+          "summaryDeliveryMode": "separate",
+          "promptCacheRolloutPercent": 100,
+          "model": "gpt-5.6-luna",
+          "cacheWarmupWaitMs": 45000,
+          "timeoutMs": 180000,
+          "maxAttempts": 1,
+          "failureRetryCooldownMs": 1800000,
+          "maxTokens": 2000,
+          "thinkingBudgetTokens": 2000
+        },
         "multiReferenceImages": {
           "enabled": true,
           "maxExtraCharacters": 2,
@@ -1135,6 +1154,23 @@
         "enableComicGeneration": true,
         "enableDelayedReply": true,
         "wordLimit": 250,
+        "fullLiveContextExperiment": {
+          "enabled": true,
+          "tasks": [
+            "goodnight",
+            "comic",
+            "summary"
+          ],
+          "summaryDeliveryMode": "attach_if_ready",
+          "promptCacheRolloutPercent": 100,
+          "model": "gpt-5.6-luna",
+          "cacheWarmupWaitMs": 45000,
+          "timeoutMs": 180000,
+          "maxAttempts": 1,
+          "failureRetryCooldownMs": 1800000,
+          "maxTokens": 2000,
+          "thinkingBudgetTokens": 2000
+        },
         "anchorNicknames": ["栞栞", "栞栞Shiori", "Shiori"],
         "preferSpeakerReviewSrtWhenMultipleSpeakers": true,
         "multiReferenceImages": {
@@ -1505,7 +1541,8 @@
     "mergeGapSeconds": 45,
     "burnSubtitles": true,
     "ffmpegTimeoutMs": 600000,
-    "subtitleFontSizeRatio": 0.044,
+    "subtitleFontSizeRatio": 0.094,
+    "subtitlePortraitFontSizeRatio": 0.044,
     "subtitleMinFontSize": 30,
     "subtitleMaxFontSize": 72,
     "subtitleMaxCharsPerLine": 18,
@@ -1639,6 +1676,9 @@
       "mergeSlowSeconds": 480,
       "screenshotSlowSeconds": 300,
       "asrSlowSeconds": 900,
+      "streamStartNoFileOpeningSeconds": 300,
+      "streamEndNoSegmentGraceSeconds": 60,
+      "finalizationWatchdogGraceSeconds": 60,
       "cooldownMs": 1800000
     },
     "metrics": {

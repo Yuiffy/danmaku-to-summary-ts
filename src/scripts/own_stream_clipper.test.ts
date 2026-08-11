@@ -2,6 +2,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const ownStreamClipper = require('./own_stream_clipper');
+const fullLiveContext = require('./full_live_context');
+const liveGenerationContext = require('./live_generation_context');
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'own-stream-clipper-'));
@@ -167,6 +169,8 @@ describe('own_stream_clipper', () => {
       twoStagePreRollSeconds: 8,
       twoStagePostRollSeconds: 2,
       preserveCoverSource: true,
+      subtitleFontSizeRatio: 0.094,
+      subtitlePortraitFontSizeRatio: 0.044,
       ffmpegPath: 'ffmpeg-test'
     });
   });
@@ -479,6 +483,70 @@ describe('own_stream_clipper', () => {
     expect(source.danmakuLines).toHaveLength(1);
   });
 
+  test('builds a stable versioned full-live shared prefix and round-trips its sidecar', () => {
+    const input = {
+      parsed: {
+        segments: [
+          { start: 1, end: 2, text: '第一句完整字幕' },
+          { start: 61, end: 63, text: '最后一句完整字幕' }
+        ]
+      },
+      danmaku: [
+        { time: 1.2, text: '笑死' },
+        { time: 1.8, text: ' 笑死 ' },
+        { time: 62, text: '结尾也很好笑' }
+      ],
+      config: {
+        fullContextDanmakuMergeWindowSeconds: 30,
+        emotionScoring: { maxContextLines: 10 }
+      },
+      emotionAnalysis: {
+        status: 'completed',
+        timeline: [
+          { start: 60, end: 63, emotion: 'SURPRISE', events: ['Laughter'], text: '突然笑了' }
+        ]
+      },
+      info: { streamTitle: '缓存实验', recordedAt: '2026-08-11 20:00:00' },
+      totalDuration: 90
+    };
+
+    const first = fullLiveContext.buildFullLiveSharedContext(input);
+    const second = fullLiveContext.buildFullLiveSharedContext(structuredClone(input));
+
+    expect(first.sharedPrefix).toBe(second.sharedPrefix);
+    expect(first.sharedPrefix.startsWith(liveGenerationContext.SHARED_PROMPT_CACHE_START)).toBe(true);
+    expect(first.sharedPrefix.endsWith(liveGenerationContext.SHARED_PROMPT_CACHE_END)).toBe(true);
+    expect(first.sharedPrefix).toContain(fullLiveContext.FULL_LIVE_SHARED_PREFIX_LABEL);
+    expect(first.sharedPrefix).toContain('00:00:01-00:00:02 第一句完整字幕');
+    expect(first.sharedPrefix).toContain('00:01:01-00:01:03 最后一句完整字幕');
+    expect(first.sharedPrefix).toContain('00:00:01-00:00:01 笑死 (x2)');
+    expect(first.sharedPrefix).toContain('00:01:02 结尾也很好笑');
+    expect(first.sharedPrefix).toContain('emotion=SURPRISE events=Laughter');
+
+    const dir = makeTempDir();
+    const highlightPath = path.join(dir, '录制-25788785-test_AI_HIGHLIGHT.txt');
+    try {
+      const saved = fullLiveContext.saveFullLiveContextSidecar(highlightPath, first);
+      const loaded = fullLiveContext.loadFullLiveContextSidecar(highlightPath);
+      const loadedFromDirectPath = fullLiveContext.loadFullLiveContextSidecar(saved.outputPath);
+
+      expect(saved.outputPath).toBe(path.join(dir, '录制-25788785-test_FULL_LIVE_CONTEXT.json'));
+      expect(loaded.sharedPrefix).toBe(first.sharedPrefix);
+      expect(loadedFromDirectPath.sharedPrefix).toBe(first.sharedPrefix);
+      expect(loaded.sourceText).toBe(first.sourceText);
+      expect(loaded.sourceSha256).toMatch(/^[a-f0-9]{64}$/u);
+      expect(loaded.counts).toEqual({
+        subtitleLines: 2,
+        rawDanmaku: 3,
+        mergedDanmaku: 2,
+        heatLines: 3,
+        emotionLines: 1
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('keeps viewer danmaku separate from streamer actions in the full-context prompt', async () => {
     const generator = require('./ai_text_generator');
     const generateSpy = jest.spyOn(generator, 'generateTextWithDaiYu').mockResolvedValue({
@@ -491,18 +559,54 @@ describe('own_stream_clipper', () => {
         ai: { enabled: true, model: 'test-model' }
       }
     });
+    const parsedInput = { segments: [{ start: 1, end: 3, text: '他是毒液啊原来如此' }] };
+    const danmakuInput = [{ time: 2, text: '我是毒液！我是毒液！' }];
+    const prebuiltFullLiveContext = fullLiveContext.buildFullLiveSharedContext({
+      parsed: parsedInput,
+      danmaku: danmakuInput,
+      config,
+      info: { streamTitle: '预生成测试直播', recordedAt: '2026-08-05 20:10:39' },
+      totalDuration: 60
+    });
 
     try {
       await ownStreamClipper.planClipsWithAIFullContext(
-        { segments: [{ start: 1, end: 3, text: '他是毒液啊原来如此' }] },
-        [{ time: 2, text: '我是毒液！我是毒液！' }],
-        { streamTitle: '测试直播', recordedAt: '2026-08-05 20:10:39' },
+        parsedInput,
+        danmakuInput,
+        { roomId: '25788785', streamTitle: '测试直播', recordedAt: '2026-08-05 20:10:39' },
         60,
         config,
-        { ai: { text: { enabled: true, provider: 'daiYu' } } }
+        {
+          ai: {
+            text: { enabled: true, provider: 'daiYu' },
+            roomSettings: {
+              '25788785': {
+                fullLiveContextExperiment: { promptCacheRolloutPercent: 100 }
+              }
+            }
+          }
+        },
+        null,
+        null,
+        prebuiltFullLiveContext
       );
 
       const prompt = String(generateSpy.mock.calls[0][0]);
+      const callOptions = generateSpy.mock.calls[0][1];
+      const cachePlan = generator.getExplicitPromptCachePlan(prompt, {
+        ai: { text: { sharedPromptCache: { enabled: true, explicitRolloutPercent: 100 } } }
+      }, 'gpt-5.6-luna');
+      expect(prompt.startsWith(liveGenerationContext.SHARED_PROMPT_CACHE_START)).toBe(true);
+      expect(prompt.indexOf(liveGenerationContext.SHARED_PROMPT_CACHE_END))
+        .toBeLessThan(prompt.indexOf('你是资深直播切片主编'));
+      expect(cachePlan.enabled).toBe(true);
+      expect(cachePlan.prefix).toBe(prompt.slice(
+        0,
+        prompt.indexOf(liveGenerationContext.SHARED_PROMPT_CACHE_END)
+          + liveGenerationContext.SHARED_PROMPT_CACHE_END.length
+      ));
+      expect(callOptions.promptCacheRolloutPercent).toBe(100);
+      expect(prompt).toContain('直播标题: 预生成测试直播');
       expect(prompt).toContain('来源归属必须严格按输入分区：直播音轨字幕与观众弹幕是两类独立来源，标题、封面文案和理由不得把一方的发言或行为归给另一方。');
       expect(prompt).toContain('=== 全量直播音轨字幕（时间均相对直播开头） ===\n00:00:01-00:00:03 他是毒液啊原来如此');
       expect(prompt).toContain('=== 全量观众弹幕（相同文本在短时间窗口内合并，xN 为重复次数） ===\n00:00:02 我是毒液！我是毒液！');

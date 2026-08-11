@@ -21,6 +21,8 @@ const rm = promisify(fs.rm);
 
 const DEFAULT_AUDIO_FORMATS = ['.m4a', '.aac', '.mp3', '.wav', '.ogg', '.flac', '.opus'];
 const DEFAULT_VIDEO_FORMATS = ['.mp4', '.flv', '.mkv', '.ts', '.mov'];
+const MIN_VALID_MEDIA_DURATION_SECONDS = 0.1;
+const TEMPORARY_AUDIO_STALE_AFTER_MS = 10 * 60 * 1000;
 const DEFAULT_AUDIO_OUTPUT_PROFILES = {
     copyM4a: {
         format: '.m4a',
@@ -132,6 +134,9 @@ function getAudioRetentionConfig() {
         archiveAfterDays: toOptionalDays(storage.moveToArchiveAfterDays ?? storage.archiveAfterDays, defaultArchiveAfterDays),
         archiveTargetBasePath: path.resolve(archiveTargetBasePath),
         deleteBakBeforeArchive: storage.deleteBakBeforeArchive !== false,
+        additionalArchiveRoomIds: new Set((storage.additionalArchiveRoomIds || []).map(value => String(value))),
+        archiveAllRoomDirectories: storage.archiveAllRoomDirectories === true,
+        pruneNonMergedVideosBeforeArchiveRoomIds: new Set((storage.pruneNonMergedVideosBeforeArchiveRoomIds || []).map(value => String(value))),
         basePaths: Array.from(new Set([
             storage.basePath,
             config.storage?.basePath,
@@ -201,6 +206,13 @@ function extractRoomIdFromMediaName(filename) {
         if (match) {
             return parseInt(match[1], 10);
         }
+    }
+
+    const pathParts = path.normalize(String(filename)).split(path.sep).filter(Boolean).reverse();
+    for (const part of pathParts) {
+        if (isDayDirectoryName(part)) continue;
+        const match = part.match(/^(\d+)_/);
+        if (match) return parseInt(match[1], 10);
     }
 
     return null;
@@ -281,6 +293,10 @@ function getFfprobePath() {
     return 'ffprobe';
 }
 
+function isUsableMediaDuration(duration) {
+    return Number.isFinite(duration) && duration >= MIN_VALID_MEDIA_DURATION_SECONDS;
+}
+
 function runFfprobeDuration(filePath, timeout = 30000) {
     return new Promise((resolve, reject) => {
         const child = spawn(getFfprobePath(), [
@@ -309,7 +325,7 @@ function runFfprobeDuration(filePath, timeout = 30000) {
                 return;
             }
             const duration = Number(String(stdout).trim());
-            if (!Number.isFinite(duration) || duration <= 0) {
+            if (!isUsableMediaDuration(duration)) {
                 reject(new Error(`ffprobe returned invalid duration for ${filePath}: ${stdout}`));
                 return;
             }
@@ -365,6 +381,15 @@ function runFfprobeAudioStreamCount(filePath, timeout = 30000) {
 
 async function hasAudioStream(filePath) {
     return (await runFfprobeAudioStreamCount(filePath)) > 0;
+}
+
+async function assertConvertibleAudioMedia(filePath) {
+    const [streamCount, duration] = await Promise.all([
+        runFfprobeAudioStreamCount(filePath),
+        runFfprobeDuration(filePath)
+    ]);
+    if (streamCount <= 0) throw createNoAudioStreamError(filePath);
+    return duration;
 }
 
 function createNoAudioStreamError(filePath) {
@@ -462,9 +487,7 @@ convertVideoToAudio = async function convertMediaToConfiguredAudio(mediaPath, au
 
     try {
         await stat(mediaPath);
-        if (!(await hasAudioStream(mediaPath))) {
-            throw createNoAudioStreamError(mediaPath);
-        }
+        await assertConvertibleAudioMedia(mediaPath);
         await rm(tempAudioPath, { force: true }).catch(() => {});
         const args = [
             '-i', mediaPath,
@@ -560,6 +583,28 @@ function isSubPath(childPath, parentPath) {
     return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
+function assertStrictSubPath(childPath, parentPath, label) {
+    const child = path.resolve(childPath);
+    const parent = path.resolve(parentPath);
+    if (child === parent || !isSubPath(child, parent)) {
+        throw new Error(`refusing to modify ${label} outside expected root: ${child} (root: ${parent})`);
+    }
+}
+
+function isBakEntryName(name) {
+    const lowerName = String(name || '').toLowerCase();
+    return lowerName === 'bak' ||
+        lowerName.startsWith('bak_') ||
+        lowerName.endsWith('.bak') ||
+        /\.bak[_-]\d/.test(lowerName);
+}
+
+function isMergedRecordingVideo(filePath) {
+    if (!isVideoFile(filePath)) return false;
+    const baseName = path.basename(filePath, path.extname(filePath));
+    return /(?:^|[_-])merged(?:$|[_-])/i.test(baseName);
+}
+
 function getArchiveCandidateDir(mediaPath, sourceRoot) {
     const relative = path.relative(sourceRoot, mediaPath);
     const parts = relative.split(path.sep).filter(Boolean);
@@ -573,51 +618,33 @@ function isDayDirectoryName(name) {
     return /^\d{4}_\d{2}_\d{2}$/.test(name);
 }
 
+function getDayDirectoryAgeDays(dayDir, now = Date.now()) {
+    const match = path.basename(dayDir).match(/^(\d{4})_(\d{2})_(\d{2})$/);
+    if (!match) return null;
+
+    const year = Number(match[1]);
+    const monthIndex = Number(match[2]) - 1;
+    const day = Number(match[3]);
+    const start = new Date(year, monthIndex, day);
+    if (start.getFullYear() !== year || start.getMonth() !== monthIndex || start.getDate() !== day) {
+        return null;
+    }
+
+    const endOfDay = new Date(year, monthIndex, day + 1).getTime();
+    return (now - endOfDay) / (24 * 60 * 60 * 1000);
+}
+
 function isTemporaryAudioOutput(filePath) {
     return /\.tmp-\d+-\d+\.opus$/i.test(path.basename(filePath));
+}
+
+function isStaleTemporaryAudioOutput(stats, now = Date.now()) {
+    return now - stats.mtimeMs >= TEMPORARY_AUDIO_STALE_AFTER_MS;
 }
 
 function needsConfiguredAudioConversion(mediaPath, outputConfig) {
     return isVideoFile(mediaPath) ||
         (isAudioFilePath(mediaPath) && path.extname(mediaPath).toLowerCase() !== outputConfig.format);
-}
-
-async function getNewestFileMtimeMs(dir, options = {}) {
-    const excludeBak = options.excludeBak !== false;
-    let newest = 0;
-
-    async function walk(currentDir) {
-        let entries;
-        try {
-            entries = await readdir(currentDir, { withFileTypes: true });
-        } catch {
-            return;
-        }
-
-        for (const entry of entries) {
-            const fullPath = path.join(currentDir, entry.name);
-            const lowerName = entry.name.toLowerCase();
-            if (excludeBak && (lowerName === 'bak' || lowerName.endsWith('.bak'))) {
-                continue;
-            }
-
-            if (entry.isDirectory()) {
-                await walk(fullPath);
-                continue;
-            }
-
-            if (!entry.isFile()) continue;
-            try {
-                const stats = await stat(fullPath);
-                newest = Math.max(newest, stats.mtimeMs);
-            } catch {
-                // Ignore files that disappear during a scan.
-            }
-        }
-    }
-
-    await walk(dir);
-    return newest;
 }
 
 async function removeBakEntries(dir) {
@@ -630,14 +657,83 @@ async function removeBakEntries(dir) {
 
     for (const entry of entries) {
         const fullPath = path.join(dir, entry.name);
-        const lowerName = entry.name.toLowerCase();
-        if (lowerName === 'bak' || lowerName.endsWith('.bak')) {
+        if (isBakEntryName(entry.name)) {
             await rm(fullPath, { recursive: true, force: true });
             continue;
         }
         if (entry.isDirectory()) {
             await removeBakEntries(fullPath);
         }
+    }
+}
+
+async function collectPrunableArchiveVideos(dayDir) {
+    const resolvedDayDir = path.resolve(dayDir);
+    const rootVideos = [];
+    const nestedVideos = [];
+
+    async function walk(currentDir) {
+        let entries;
+        try {
+            entries = await readdir(currentDir, { withFileTypes: true });
+        } catch {
+            return;
+        }
+
+        for (const entry of entries) {
+            const fullPath = path.join(currentDir, entry.name);
+            if (isBakEntryName(entry.name)) continue;
+            if (entry.isDirectory()) {
+                await walk(fullPath);
+            } else if (entry.isFile() && isVideoFile(fullPath)) {
+                if (path.resolve(currentDir) === resolvedDayDir) {
+                    rootVideos.push(fullPath);
+                } else {
+                    nestedVideos.push(fullPath);
+                }
+            }
+        }
+    }
+
+    await walk(resolvedDayDir);
+    const hasMergedRecording = rootVideos.some(isMergedRecordingVideo);
+    const disposableRootVideos = hasMergedRecording
+        ? rootVideos.filter(videoPath => !isMergedRecordingVideo(videoPath))
+        : [];
+    return [...nestedVideos, ...disposableRootVideos];
+}
+
+async function collectTemporaryAudioOutputs(dayDir) {
+    const mediaFiles = await collectMediaFiles(dayDir, { includeBak: false });
+    return mediaFiles.filter(isTemporaryAudioOutput);
+}
+
+async function pruneStaleTemporaryAudioOutputs(mediaFiles, context) {
+    const prunedPaths = new Set();
+    for (const mediaPath of mediaFiles) {
+        if (context.isLimitReached() || !isTemporaryAudioOutput(mediaPath)) continue;
+        const stats = await stat(mediaPath).catch(() => null);
+        if (!stats || !isStaleTemporaryAudioOutput(stats, context.now)) continue;
+
+        if (context.dryRun) {
+            debugLog(`[dry-run] delete stale temporary audio output: ${mediaPath}`);
+        } else {
+            await unlink(mediaPath).catch(error => {
+                if (error.code !== 'ENOENT') throw error;
+            });
+        }
+        prunedPaths.add(path.resolve(mediaPath));
+        context.summary.prunedTemporaryFiles++;
+        context.incrementAction();
+    }
+    return mediaFiles.filter(mediaPath => !prunedPaths.has(path.resolve(mediaPath)));
+}
+
+async function pruneArchiveFiles(filePaths) {
+    for (const filePath of filePaths) {
+        await unlink(filePath).catch(error => {
+            if (error.code !== 'ENOENT') throw error;
+        });
     }
 }
 
@@ -711,20 +807,28 @@ async function cleanupEmptyParents(startDir, stopRoot) {
     }
 }
 
-async function archiveDayDirectory(dayDir, sourceRoot, retention) {
-    if (retention.deleteBakBeforeArchive) {
-        await removeBakEntries(dayDir);
+async function archiveDayDirectory(dayDir, sourceRoot, retention, pruneFilePaths = []) {
+    assertStrictSubPath(dayDir, sourceRoot, 'archive source');
+    for (const filePath of pruneFilePaths) {
+        assertStrictSubPath(filePath, dayDir, 'prune target');
     }
 
     const relativeDir = path.relative(sourceRoot, dayDir);
     const targetDir = path.join(retention.archiveTargetBasePath, relativeDir);
+    assertStrictSubPath(targetDir, retention.archiveTargetBasePath, 'archive target');
+
+    if (retention.deleteBakBeforeArchive) {
+        await removeBakEntries(dayDir);
+    }
+    await pruneArchiveFiles(pruneFilePaths);
+
     await moveDirectoryContents(dayDir, targetDir);
     await cleanupEmptyParents(dayDir, sourceRoot);
     debugLog(`archived onlyAudio day directory: ${dayDir} -> ${targetDir}`);
     return targetDir;
 }
 
-async function collectAudioOnlyDayDirectories(rootDir) {
+async function collectArchivableDayDirectories(rootDir, retention) {
     const dayDirs = [];
     let roomEntries;
     try {
@@ -739,7 +843,10 @@ async function collectAudioOnlyDayDirectories(rootDir) {
 
         const roomDir = path.join(rootDir, roomEntry.name);
         const roomId = extractRoomIdFromMediaName(roomEntry.name);
-        if (!roomId || !isAudioOnlyRoom(roomId, { mediaPath: roomDir })) continue;
+        if (!roomId) continue;
+        const audioOnly = isAudioOnlyRoom(roomId, { mediaPath: roomDir });
+        const additionalArchive = retention.additionalArchiveRoomIds.has(String(roomId));
+        if (!audioOnly && !additionalArchive && !retention.archiveAllRoomDirectories) continue;
 
         let dateEntries;
         try {
@@ -751,7 +858,12 @@ async function collectAudioOnlyDayDirectories(rootDir) {
 
         for (const dateEntry of dateEntries) {
             if (dateEntry.isDirectory() && isDayDirectoryName(dateEntry.name)) {
-                dayDirs.push(path.join(roomDir, dateEntry.name));
+                dayDirs.push({
+                    dayDir: path.join(roomDir, dateEntry.name),
+                    roomId: String(roomId),
+                    audioOnly,
+                    pruneNonMergedVideos: retention.pruneNonMergedVideosBeforeArchiveRoomIds.has(String(roomId))
+                });
             }
         }
     }
@@ -763,7 +875,10 @@ async function hasPendingAudioConversionInDirectory(dayDir, retention, outputCon
     const mediaFiles = await collectMediaFiles(dayDir, { includeBak: retention.includeBak });
 
     for (const mediaPath of mediaFiles) {
-        if (isTemporaryAudioOutput(mediaPath)) return true;
+        if (isTemporaryAudioOutput(mediaPath)) {
+            debugLog(`archive ignores temporary audio output: ${mediaPath}`);
+            continue;
+        }
         if (!needsConfiguredAudioConversion(mediaPath, outputConfig)) continue;
         if (unconvertibleMediaPaths.has(path.resolve(mediaPath))) continue;
 
@@ -779,12 +894,14 @@ async function hasPendingAudioConversionInDirectory(dayDir, retention, outputCon
             continue;
         }
         if (retention.convertAfterDays !== null && ageDays >= retention.convertAfterDays) {
-            if (!(await hasAudioStream(mediaPath))) {
+            try {
+                await assertConvertibleAudioMedia(mediaPath);
+                debugLog(`archive pending configured audio conversion: ${mediaPath}`);
+                return true;
+            } catch (error) {
                 unconvertibleMediaPaths.add(path.resolve(mediaPath));
-                debugLog(`archive ignores media without audio stream: ${mediaPath}`);
-                continue;
+                console.warn(`archive ignores unreadable media: ${mediaPath} (${error.message})`);
             }
-            return true;
         }
     }
 
@@ -795,31 +912,45 @@ async function archiveEligibleDayDirectories(root, retention, outputConfig, cont
     const { dryRun, now, summary, archivedDirs, isLimitReached, unconvertibleMediaPaths } = context;
     if (!retention.archiveEnabled || retention.archiveAfterDays === null) return;
 
-    const dayDirs = await collectAudioOnlyDayDirectories(root);
-    for (const dayDir of dayDirs) {
+    const dayDirs = await collectArchivableDayDirectories(root, retention);
+    for (const candidate of dayDirs) {
+        const { dayDir, audioOnly, pruneNonMergedVideos } = candidate;
         if (isLimitReached()) break;
         if (archivedDirs.has(dayDir) || !fs.existsSync(dayDir)) continue;
 
-        const newestMtime = await getNewestFileMtimeMs(dayDir, { excludeBak: retention.deleteBakBeforeArchive });
-        if (newestMtime <= 0) continue;
-
-        const dirAgeDays = (now - newestMtime) / (24 * 60 * 60 * 1000);
+        const pruneVideoPaths = pruneNonMergedVideos ? await collectPrunableArchiveVideos(dayDir) : [];
+        const temporaryAudioPaths = await collectTemporaryAudioOutputs(dayDir);
+        const pruneFilePaths = [...new Set([...pruneVideoPaths, ...temporaryAudioPaths])];
+        const pruneVideoBytes = (await Promise.all(
+            pruneVideoPaths.map(filePath => stat(filePath).then(stats => stats.size).catch(() => 0))
+        )).reduce((total, size) => total + size, 0);
+        const dirAgeDays = getDayDirectoryAgeDays(dayDir, now);
+        if (dirAgeDays === null) continue;
         if (dirAgeDays < retention.archiveAfterDays) continue;
 
-        if (await hasPendingAudioConversionInDirectory(dayDir, retention, outputConfig, now, unconvertibleMediaPaths)) {
+        if (audioOnly && await hasPendingAudioConversionInDirectory(dayDir, retention, outputConfig, now, unconvertibleMediaPaths)) {
             debugLog(`archive skip pending conversion: ${dayDir}`);
             summary.skipped++;
             continue;
         }
 
-        if (dryRun) {
-            const targetDir = path.join(retention.archiveTargetBasePath, path.relative(root, dayDir));
-            debugLog(`[dry-run] archive day directory: ${dayDir} -> ${targetDir} (${dirAgeDays.toFixed(1)} days)`);
-        } else {
-            await archiveDayDirectory(dayDir, root, retention);
+        try {
+            if (dryRun) {
+                const targetDir = path.join(retention.archiveTargetBasePath, path.relative(root, dayDir));
+                debugLog(`[dry-run] archive day directory: ${dayDir} -> ${targetDir} (${dirAgeDays.toFixed(1)} days, pruneVideos=${pruneVideoPaths.length})`);
+            } else {
+                await archiveDayDirectory(dayDir, root, retention, pruneFilePaths);
+            }
+        } catch (error) {
+            summary.failed++;
+            console.warn(`archive day directory failed: ${dayDir} (${error.message})`);
+            continue;
         }
         archivedDirs.add(dayDir);
         summary.archived++;
+        summary.prunedVideos += pruneVideoPaths.length;
+        summary.prunedVideoBytes += pruneVideoBytes;
+        summary.prunedTemporaryFiles += temporaryAudioPaths.length;
         context.incrementAction();
     }
 }
@@ -842,7 +973,7 @@ async function collectMediaFiles(rootDir, options = {}) {
         for (const entry of entries) {
             const fullPath = path.join(dir, entry.name);
             if (entry.isDirectory()) {
-                if (!includeBak && entry.name.toLowerCase() === 'bak') continue;
+                if (!includeBak && isBakEntryName(entry.name)) continue;
                 await walk(fullPath, depth + 1);
             } else if (entry.isFile() && (isVideoFile(fullPath) || isAudioFilePath(fullPath))) {
                 results.push(fullPath);
@@ -966,6 +1097,9 @@ applyOnlyAudioRetention = async function applyConfiguredOnlyAudioRetention(optio
         converted: 0,
         deleted: 0,
         archived: 0,
+        prunedVideos: 0,
+        prunedVideoBytes: 0,
+        prunedTemporaryFiles: 0,
         failed: 0,
         roots: retention.basePaths,
         outputProfile: outputConfig.profileName,
@@ -986,7 +1120,14 @@ applyOnlyAudioRetention = async function applyConfiguredOnlyAudioRetention(optio
     for (const root of retention.basePaths) {
         if (isLimitReached()) break;
         if (!fs.existsSync(root)) continue;
-        const mediaFiles = await collectMediaFiles(root, { includeBak: retention.includeBak });
+        let mediaFiles = await collectMediaFiles(root, { includeBak: retention.includeBak });
+        mediaFiles = await pruneStaleTemporaryAudioOutputs(mediaFiles, {
+            dryRun,
+            now,
+            summary,
+            isLimitReached,
+            incrementAction: () => { actionCount++; }
+        });
 
         for (let mediaPath of mediaFiles) {
             if (isLimitReached()) break;
@@ -1029,6 +1170,14 @@ applyOnlyAudioRetention = async function applyConfiguredOnlyAudioRetention(optio
                 const needsAudioConversion = needsConfiguredAudioConversion(mediaPath, outputConfig);
 
                 if (needsAudioConversion && retention.convertAfterDays !== null && ageDays >= retention.convertAfterDays) {
+                    try {
+                        await assertConvertibleAudioMedia(mediaPath);
+                    } catch (error) {
+                        unconvertibleMediaPaths.add(path.resolve(mediaPath));
+                        summary.skipped++;
+                        console.warn(`onlyAudio retention skipped unreadable media: ${mediaPath} (${error.message})`);
+                        continue;
+                    }
                     const targetAudio = getOutputAudioPath(mediaPath, outputConfig);
                     if (fs.existsSync(targetAudio)) {
                         let existingTargetVerified = false;
@@ -1118,7 +1267,7 @@ applyOnlyAudioRetention = async function applyConfiguredOnlyAudioRetention(optio
 
     summary.actionLimit = maxActions;
     summary.limitReached = isLimitReached();
-    console.log(`onlyAudio retention done: scanned=${summary.scanned}, converted=${summary.converted}, archived=${summary.archived}, deleted=${summary.deleted}, skipped=${summary.skipped}, skippedOld=${summary.skippedOld}, failed=${summary.failed}, limitReached=${summary.limitReached}`);
+    console.log(`onlyAudio retention done: scanned=${summary.scanned}, converted=${summary.converted}, archived=${summary.archived}, prunedVideos=${summary.prunedVideos}, deleted=${summary.deleted}, skipped=${summary.skipped}, skippedOld=${summary.skippedOld}, failed=${summary.failed}, limitReached=${summary.limitReached}`);
     return summary;
 };
 
@@ -1191,7 +1340,14 @@ module.exports = {
     applyOnlyAudioRetention,
     startOnlyAudioRetentionScheduler,
     checkFfmpegAvailability,
-    processVideoForAudio
+    processVideoForAudio,
+    isBakEntryName,
+    isMergedRecordingVideo,
+    collectPrunableArchiveVideos,
+    collectTemporaryAudioOutputs,
+    isStaleTemporaryAudioOutput,
+    isUsableMediaDuration,
+    getDayDirectoryAgeDays
 };
 
 // 命令行测试

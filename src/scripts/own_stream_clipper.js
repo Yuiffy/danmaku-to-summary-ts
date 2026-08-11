@@ -7,6 +7,17 @@ const asrBackends = require('./asr/asr_backends');
 const configLoader = require('./config-loader');
 const topicClipper = require('./topic_clipper');
 const { postProcessAiClipMetadata } = require('./ai_clip_metadata');
+const fullLiveContext = require('./full_live_context');
+
+const {
+    notableEmotionEvents,
+    emotionMomentScore,
+    buildEmotionContextLines,
+    buildDanmakuDensity,
+    aggregateDanmakuForFullContext,
+    buildFullContextHeatLines,
+    buildFullContextSource
+} = fullLiveContext;
 
 const DEFAULT_OWN_STREAM_CLIPS_CONFIG = {
     enabled: false,
@@ -46,6 +57,8 @@ const DEFAULT_OWN_STREAM_CLIPS_CONFIG = {
     subtitleVideoPreset: 'ultrafast',
     subtitleVideoCrf: 23,
     subtitleVideoCq: 23,
+    subtitleFontSizeRatio: 0.094,
+    subtitlePortraitFontSizeRatio: 0.044,
     outputDirName: 'own_stream_fun_clips',
     ai: {
         enabled: true,
@@ -104,12 +117,6 @@ const DEFAULT_OWN_STREAM_CLIPS_CONFIG = {
 
 const OWN_STREAM_SOURCE_ATTRIBUTION_RULE = '来源归属必须严格按输入分区：直播音轨字幕与观众弹幕是两类独立来源，标题、封面文案和理由不得把一方的发言或行为归给另一方。';
 
-const NOISY_EMOTION_EVENTS = new Set(['Speech', 'BGM', 'Event_UNK']);
-
-function notableEmotionEvents(events = []) {
-    return Array.from(new Set(events || [])).filter(event => !NOISY_EMOTION_EVENTS.has(event));
-}
-
 function getOwnStreamClipsConfig(config = {}) {
     const raw = config.ownStreamClips || {};
     return {
@@ -164,6 +171,7 @@ function buildCutClipMediaConfig(config = {}, options = {}) {
         subtitleVideoCrf: config.subtitleVideoCrf,
         subtitleVideoCq: config.subtitleVideoCq,
         subtitleFontSizeRatio: config.subtitleFontSizeRatio,
+        subtitlePortraitFontSizeRatio: config.subtitlePortraitFontSizeRatio,
         subtitleMinFontSize: config.subtitleMinFontSize,
         subtitleMaxFontSize: config.subtitleMaxFontSize,
         subtitleMaxCharsPerLine: config.subtitleMaxCharsPerLine,
@@ -227,19 +235,6 @@ function clamp(value, min, max = Number.POSITIVE_INFINITY) {
     return Math.min(Math.max(value, min), max);
 }
 
-function median(values) {
-    if (values.length === 0) return 0;
-    const sorted = [...values].sort((a, b) => a - b);
-    return sorted[Math.floor(sorted.length / 2)];
-}
-
-function percentile(values, pct) {
-    if (values.length === 0) return 0;
-    const sorted = [...values].sort((a, b) => b - a);
-    const index = clamp(Math.floor(sorted.length * pct), 0, sorted.length - 1);
-    return sorted[index] || 0;
-}
-
 function uniqueTextSamples(items, max = 8) {
     const seen = new Set();
     const out = [];
@@ -283,38 +278,6 @@ async function parseDanmakuXml(xmlPath) {
     return rows.sort((a, b) => a.time - b.time);
 }
 
-function buildDanmakuDensity(danmaku = [], totalDuration, config) {
-    const windowSeconds = Math.max(5, Number(config.densityWindowSeconds) || 30);
-    const bucketCount = Math.max(1, Math.ceil(Math.max(totalDuration, 1) / windowSeconds));
-    const buckets = Array.from({ length: bucketCount }, (_, index) => ({
-        index,
-        start: index * windowSeconds,
-        end: (index + 1) * windowSeconds,
-        count: 0,
-        keywords: 0,
-        samples: []
-    }));
-    const reactionKeywords = config.reactionKeywords || [];
-    for (const item of danmaku) {
-        const index = clamp(Math.floor(item.time / windowSeconds), 0, bucketCount - 1);
-        const bucket = buckets[index];
-        bucket.count += 1;
-        if (reactionKeywords.some(keyword => item.text.includes(keyword))) {
-            bucket.keywords += 1;
-            if (bucket.samples.length < 12) bucket.samples.push(item.text);
-        } else if (bucket.samples.length < 6) {
-            bucket.samples.push(item.text);
-        }
-    }
-    const counts = buckets.map(bucket => bucket.count);
-    const threshold = Math.max(
-        Number(config.minDanmakuCount) || 0,
-        percentile(counts, Number(config.densityPercentile) || 0.2),
-        Math.ceil(median(counts) * 1.8)
-    );
-    return { buckets, threshold, windowSeconds };
-}
-
 function makeCandidate(start, end, reason, score, extra = {}) {
     return {
         start,
@@ -344,64 +307,6 @@ function loadEmotionAnalysisForSrt(srtPath) {
         console.warn(`Failed to read ASR emotion metadata: ${error.message}`);
         return {};
     }
-}
-
-function emotionMomentScore(item, config = {}) {
-    const emotionScore = Number(config.emotionScores?.[item?.emotion] || 0);
-    const eventScore = Math.max(0, ...(item?.events || []).map(event => Number(config.eventScores?.[event] || 0)));
-    return emotionScore + eventScore;
-}
-
-function buildEmotionContextLines(analysis, config = {}, start = 0, end = Number.POSITIVE_INFINITY, maxLines = null) {
-    if (analysis?.status !== 'completed' || !Array.isArray(analysis.timeline)) return [];
-    const source = analysis.timeline
-        .filter(item => Number(item.end) > start && Number(item.start) < end)
-        .sort((a, b) => Number(a.start) - Number(b.start));
-    const collapsed = [];
-    for (const item of source) {
-        const emotion = String(item.emotion || '');
-        const events = notableEmotionEvents(item.events).sort();
-        const last = collapsed.at(-1);
-        if (
-            last
-            && last.emotion === emotion
-            && JSON.stringify(last.events) === JSON.stringify(events)
-            && Number(item.start) - Number(last.end) <= 5
-        ) {
-            last.end = Number(item.end);
-            if (!last.text && item.text) last.text = item.text;
-            continue;
-        }
-        collapsed.push({
-            start: Number(item.start),
-            end: Number(item.end),
-            emotion,
-            events,
-            text: String(item.text || '').replace(/\s+/g, ' ').trim()
-        });
-    }
-    const limit = Math.max(1, Number(maxLines || config.maxContextLines) || 160);
-    let selected = collapsed;
-    if (collapsed.length > limit) {
-        selected = collapsed
-            .map((item, index) => ({
-                item,
-                index,
-                score: emotionMomentScore(item, config)
-                    + (index > 0 && collapsed[index - 1].emotion !== item.emotion ? Number(config.transitionScore || 0) : 0)
-            }))
-            .sort((a, b) => b.score - a.score || a.index - b.index)
-            .slice(0, limit)
-            .sort((a, b) => a.index - b.index)
-            .map(entry => entry.item);
-    }
-    return selected.map(item => {
-        const fields = [
-            item.emotion ? `emotion=${item.emotion}` : '',
-            item.events.length > 0 ? `events=${item.events.join(',')}` : ''
-        ].filter(Boolean).join(' ');
-        return `${formatClock(item.start)}-${formatClock(item.end)} ${fields || 'unlabeled'}${item.text ? ` | ${item.text.slice(0, 100)}` : ''}`;
-    });
 }
 
 function getEmotionEvidenceForWindow(analysis, window, config = {}) {
@@ -624,93 +529,6 @@ function topDanmakuTexts(items, max = 8) {
         .sort((a, b) => b[1] - a[1])
         .slice(0, max)
         .map(([text, count]) => count > 1 ? `${text}(x${count})` : text);
-}
-
-function aggregateDanmakuForFullContext(danmaku = [], mergeWindowSeconds = 30) {
-    const windowSeconds = Math.max(1, Number(mergeWindowSeconds) || 30);
-    const groups = new Map();
-    for (const item of danmaku) {
-        const time = Number(item.time);
-        const text = String(item.text || '').replace(/\s+/g, ' ').trim();
-        if (!Number.isFinite(time) || time < 0 || !text) continue;
-        const bucket = Math.floor(time / windowSeconds);
-        const key = `${bucket}\u0000${text}`;
-        const existing = groups.get(key);
-        if (existing) {
-            existing.count += 1;
-            existing.lastTime = time;
-        } else {
-            groups.set(key, {
-                text,
-                count: 1,
-                firstTime: time,
-                lastTime: time
-            });
-        }
-    }
-    return Array.from(groups.values()).sort((a, b) => a.firstTime - b.firstTime);
-}
-
-function buildFullContextHeatLines(danmaku = [], totalDuration = 0, config = {}) {
-    const density = buildDanmakuDensity(danmaku, totalDuration, config);
-    const nonZeroCounts = density.buckets.map(bucket => bucket.count).filter(count => count > 0);
-    const baseline = Math.max(1, median(nonZeroCounts));
-    return density.buckets.map(bucket => {
-        const ratio = Number((bucket.count / baseline).toFixed(2));
-        const level = bucket.count >= density.threshold
-            ? 'HIGH'
-            : bucket.keywords > 0
-                ? 'REACTION'
-                : 'NORMAL';
-        return `${formatClock(bucket.start)}-${formatClock(Math.min(bucket.end, totalDuration))} count=${bucket.count} reaction=${bucket.keywords} baselineRatio=${ratio} level=${level}`;
-    });
-}
-
-function buildFullContextSource(parsed, danmaku, config = {}, emotionAnalysis = null) {
-    const subtitleLines = (parsed.segments || []).map(segment =>
-        `${formatClock(Number(segment.start))}-${formatClock(Number(segment.end))} ${String(segment.text || '').replace(/\s+/g, ' ').trim()}`
-    );
-    const aggregatedDanmaku = aggregateDanmakuForFullContext(
-        danmaku,
-        config.fullContextDanmakuMergeWindowSeconds
-    );
-    const danmakuLines = aggregatedDanmaku.map(item => {
-        const time = item.lastTime > item.firstTime
-            ? `${formatClock(item.firstTime)}-${formatClock(item.lastTime)}`
-            : formatClock(item.firstTime);
-        return `${time} ${item.text}${item.count > 1 ? ` (x${item.count})` : ''}`;
-    });
-    const lastSubtitleEnd = Number((parsed.segments || []).at(-1)?.end || 0);
-    const lastDanmakuTime = Number(danmaku.at(-1)?.time || 0);
-    const totalDuration = Math.max(lastSubtitleEnd, lastDanmakuTime);
-    const heatLines = buildFullContextHeatLines(danmaku, totalDuration, config);
-    const emotionLines = buildEmotionContextLines(
-        emotionAnalysis,
-        config.emotionScoring || {},
-        0,
-        totalDuration
-    );
-    return {
-        subtitleLines,
-        danmakuLines,
-        heatLines,
-        emotionLines,
-        aggregatedDanmaku,
-        sourceText: [
-            '=== 30秒弹幕热度表 ===',
-            'count=弹幕总数；reaction=命中强反应词的弹幕数；baselineRatio=相对本场非空窗口中位数；HIGH=达到程序热度阈值。具体弹幕文本只在后面的全量弹幕中出现，避免重复输入。',
-            heatLines.join('\n') || '无',
-            '',
-            '=== SenseVoice 情感/声音事件（辅助线索，不作为事实） ===',
-            emotionLines.join('\n') || '无',
-            '',
-            '=== 全量直播音轨字幕（时间均相对直播开头） ===',
-            subtitleLines.join('\n') || '无',
-            '',
-            '=== 全量观众弹幕（相同文本在短时间窗口内合并，xN 为重复次数） ===',
-            danmakuLines.join('\n') || '无'
-        ].join('\n')
-    };
 }
 
 function buildChunkSources(parsed, danmaku, totalDuration, config, emotionAnalysis = null) {
@@ -1088,14 +906,39 @@ async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, confi
     return dedupePlannedClips(nested.flat(), config);
 }
 
-async function planClipsWithAIFullContext(parsed, danmaku, info, totalDuration, config, rootConfig = {}, diagnostics = null, emotionAnalysis = null) {
+async function planClipsWithAIFullContext(
+    parsed,
+    danmaku,
+    info,
+    totalDuration,
+    config,
+    rootConfig = {},
+    diagnostics = null,
+    emotionAnalysis = null,
+    existingFullLiveContext = null
+) {
     if (!config.ai?.enabled || rootConfig.ai?.text?.enabled === false) return [];
     const provider = rootConfig.ai?.text?.provider || 'gemini';
     const generator = require('./ai_text_generator');
-    const fullContext = buildFullContextSource(parsed, danmaku, config, emotionAnalysis);
+    const fullContext = fullLiveContext.buildFullLiveSharedContext({
+        parsed,
+        danmaku,
+        config,
+        emotionAnalysis,
+        info,
+        totalDuration
+    });
+    if (existingFullLiveContext?.sharedPrefix) {
+        const sourceMatches = String(existingFullLiveContext.sourceText || '') === fullContext.sourceText;
+        if (sourceMatches && fullLiveContext.isFullLiveSharedPrefix(existingFullLiveContext.sharedPrefix)) {
+            fullContext.sharedPrefix = String(existingFullLiveContext.sharedPrefix);
+        } else {
+            console.warn('Full-live context sidecar does not match current full input; regenerated shared prefix will be used.');
+        }
+    }
     const maxClips = Math.max(1, Number(config.maxClips) || 12);
-    const prompt = [
-        '你是资深直播切片主编。下面提供岁己SUI本场直播的全量带时间戳字幕和全量弹幕。',
+    const taskSuffix = [
+        '你是资深直播切片主编。共享事实输入提供了岁己SUI本场直播的全量带时间戳字幕和全量弹幕。',
         OWN_STREAM_SOURCE_ATTRIBUTION_RULE,
         `请通读整场，从全局比较后选出最多 ${maxClips} 个最有趣、最适合独立发布的片段。数量不必凑满，质量优先。`,
         '模型必须同时评估内容质量和弹幕热度：先根据字幕判断事件是否完整、有趣、适合独立发布，再结合30秒热度表、反应弹幕数、重复刷屏和全量弹幕判断观众反应强度。',
@@ -1110,17 +953,11 @@ async function planClipsWithAIFullContext(parsed, danmaku, info, totalDuration, 
         '输出纯 JSON，不要 Markdown，不要解释：',
         ...generator.buildClipTitlePromptLines({ outputMode: 'jsonTitle', streamerName: '岁己SUI' }),
         ...generator.buildCoverTextPromptLines(),
-        '{"clips":[{"startTime":"HH:MM:SS","endTime":"HH:MM:SS","title":"人工风格标题，18-42字","coverText":"第一行\\n第二行","reason":"一句话说明全场比较后为什么值得切","score":95}]}',
-        '',
-        `直播标题: ${info.streamTitle || '未知'}`,
-        `录制时间: ${info.recordedAt || '未知'}`,
-        `直播总时长: ${formatClock(totalDuration)}`,
-        `字幕条数: ${fullContext.subtitleLines.length}`,
-        `原始弹幕条数: ${danmaku.length}`,
-        `合并后弹幕条数: ${fullContext.danmakuLines.length}`,
-        '',
-        fullContext.sourceText
+        '{"clips":[{"startTime":"HH:MM:SS","endTime":"HH:MM:SS","title":"人工风格标题，18-42字","coverText":"第一行\\n第二行","reason":"一句话说明全场比较后为什么值得切","score":95}]}'
     ].join('\n');
+    const prompt = `${fullContext.sharedPrefix}\n\n${taskSuffix}`;
+    const experiment = rootConfig.ai?.roomSettings?.[String(info?.roomId || '')]?.fullLiveContextExperiment || {};
+    const promptCacheRolloutPercent = Number(experiment.promptCacheRolloutPercent);
 
     try {
         console.log(`Full-context AI input: ${prompt.length} chars, subtitles=${fullContext.subtitleLines.length}, danmaku=${danmaku.length}->${fullContext.danmakuLines.length}`);
@@ -1134,7 +971,8 @@ async function planClipsWithAIFullContext(parsed, danmaku, info, totalDuration, 
             ? await generator.generateTextWithDaiYu(prompt, {
                 wordLimit: Math.max(2400, maxClips * 140),
                 primaryModel: config.ai?.model || undefined,
-                timeoutMs: config.ai?.timeoutMs
+                timeoutMs: config.ai?.timeoutMs,
+                ...(Number.isFinite(promptCacheRolloutPercent) ? { promptCacheRolloutPercent } : {})
             })
             : await generator.generateTextWithGemini(prompt, { wordLimit: Math.max(2400, maxClips * 140) });
         const text = String(result.text || '').trim();
@@ -1797,6 +1635,17 @@ async function generateOwnStreamClips(options = {}) {
     const totalDuration = Number(options.totalDurationSeconds) || Number(parsed.segments.at(-1)?.end || 0);
     const danmaku = await parseDanmakuXml(options.xmlPath);
     const emotionAnalysis = loadEmotionAnalysisForSrt(options.srtPath);
+    let existingFullLiveContext = options.fullLiveContext || null;
+    if (!existingFullLiveContext && options.fullLiveContextPath) {
+        try {
+            existingFullLiveContext = fullLiveContext.loadFullLiveContextSidecar(options.fullLiveContextPath);
+            if (existingFullLiveContext) {
+                console.log(`Full-live shared prefix loaded: ${fullLiveContext.getFullLiveContextPath(options.fullLiveContextPath)}`);
+            }
+        } catch (error) {
+            console.warn(`Failed to load full-live context sidecar, continuing with regenerated input: ${error.message}`);
+        }
+    }
     const candidates = buildCandidateWindows(parsed, danmaku, config, totalDuration, emotionAnalysis);
     const info = parseRecordingInfo(options.mediaPath, options.context || {});
     const participantMetadata = topicClipper.buildParticipantMetadata(topicClipper.loadAsrSpeakerSidecarForMediaPath(options.srtPath || options.mediaPath));
@@ -1846,7 +1695,7 @@ async function generateOwnStreamClips(options = {}) {
                 maxClips: modelLimit
             };
             const modelClips = modelLimit > 0
-                ? await planClipsWithAIFullContext(parsed, danmaku, info, totalDuration, modelConfig, rootConfig, aiDiagnostics, emotionAnalysis)
+                ? await planClipsWithAIFullContext(parsed, danmaku, info, totalDuration, modelConfig, rootConfig, aiDiagnostics, emotionAnalysis, existingFullLiveContext)
                 : [];
             clips = combineParallelClipPlans(heatCandidates, modelClips, config.parallel);
             aiDiagnostics.selectedSource = 'parallel';
@@ -1855,7 +1704,7 @@ async function generateOwnStreamClips(options = {}) {
                 aiDiagnostics.fallbackReason = classifyAiFallbackReason(aiDiagnostics.errors);
             }
         } else if (config.ai?.enabled && config.ai?.strategy === 'full_context') {
-            clips = await planClipsWithAIFullContext(parsed, danmaku, info, totalDuration, config, rootConfig, aiDiagnostics, emotionAnalysis);
+            clips = await planClipsWithAIFullContext(parsed, danmaku, info, totalDuration, config, rootConfig, aiDiagnostics, emotionAnalysis, existingFullLiveContext);
             if (clips.length > 0) {
                 aiDiagnostics.selectedSource = 'full_context_ai';
             }
@@ -2228,6 +2077,7 @@ module.exports = {
     aggregateDanmakuForFullContext,
     buildFullContextHeatLines,
     buildFullContextSource,
+    parseRecordingInfo,
     buildDanmakuHeatClips,
     combineParallelClipPlans,
     getSelectionSourceLabel,

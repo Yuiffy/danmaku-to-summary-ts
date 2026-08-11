@@ -9,6 +9,8 @@ import { basename, join } from 'path';
 import * as crypto from 'crypto';
 import sharp = require('sharp');
 
+export const WECHAT_WORK_REQUEST_TIMEOUT_MS = 10 * 1000;
+
 /**
  * 企业微信消息类型
  */
@@ -56,9 +58,13 @@ export class WeChatWorkNotifier {
   private logger = getLogger('WeChatWorkNotifier');
   private webhookUrl: string;
   private uploadUrl: string;
+  private requestTimeoutMs: number;
 
-  constructor(webhookUrl: string) {
+  constructor(webhookUrl: string, requestTimeoutMs = WECHAT_WORK_REQUEST_TIMEOUT_MS) {
     this.webhookUrl = webhookUrl;
+    this.requestTimeoutMs = Number.isFinite(requestTimeoutMs) && requestTimeoutMs > 0
+      ? requestTimeoutMs
+      : WECHAT_WORK_REQUEST_TIMEOUT_MS;
     // 从webhook URL中提取key，构建上传URL
     const keyMatch = webhookUrl.match(/key=([^&]+)/);
     const key = keyMatch ? keyMatch[1] : '';
@@ -193,7 +199,7 @@ export class WeChatWorkNotifier {
     });
 
     // 3. 发起请求
-    const response = await fetch(this.uploadUrl, {
+    const { response, result } = await this.fetchJsonWithTimeout<UploadMediaResponse>(this.uploadUrl, {
       method: 'POST',
       body: form,
       headers: form.getHeaders() // 这里会自动包含正确的 Content-Length (因为是Buffer)
@@ -207,12 +213,10 @@ export class WeChatWorkNotifier {
       return null;
     }
 
-    const result: UploadMediaResponse = await response.json() as UploadMediaResponse;
-
-    if (result.errcode !== 0) {
+    if (!result || result.errcode !== 0) {
       this.logger.error('企业微信上传图片返回错误', {
-        errcode: result.errcode,
-        errmsg: result.errmsg
+        errcode: result?.errcode,
+        errmsg: result?.errmsg || 'empty response body'
       });
       return null;
     }
@@ -388,7 +392,7 @@ export class WeChatWorkNotifier {
       this.logger.debug('发送企业微信消息', { msgtype: message.msgtype });
       const normalizedMessage = this.normalizeMessage(message);
 
-      const response = await fetch(this.webhookUrl, {
+      const { response, result } = await this.fetchJsonWithTimeout<{ errcode: number; errmsg?: string }>(this.webhookUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -404,12 +408,10 @@ export class WeChatWorkNotifier {
         return false;
       }
 
-      const result = await response.json();
-
-      if (result.errcode !== 0) {
+      if (!result || result.errcode !== 0) {
         this.logger.error('企业微信API返回错误', {
-          errcode: result.errcode,
-          errmsg: result.errmsg
+          errcode: result?.errcode,
+          errmsg: result?.errmsg || 'empty response body'
         });
         return false;
       }
@@ -419,6 +421,27 @@ export class WeChatWorkNotifier {
     } catch (error) {
       this.logger.error('发送企业微信消息异常', undefined, error instanceof Error ? error : new Error(String(error)));
       return false;
+    }
+  }
+
+  private async fetchJsonWithTimeout<T>(
+    url: string,
+    init: fetch.RequestInit
+  ): Promise<{ response: fetch.Response; result?: T }> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+    timeoutId.unref?.();
+
+    try {
+      const response = await fetch(url, {
+        ...init,
+        // node-fetch v2 的类型声明使用自有 AbortSignal 接口，运行时支持 Node 标准 signal。
+        signal: controller.signal as unknown as fetch.RequestInit['signal']
+      });
+      const result = response.ok ? await response.json() as T : undefined;
+      return { response, result };
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 

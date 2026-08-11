@@ -77,6 +77,23 @@ describe('DelayedReplyService duplicate reply detection', () => {
     expect(scheduleTask).toHaveBeenCalledWith(task);
   });
 
+  it('does not treat a later live as the historical task live', () => {
+    const service = createService() as any;
+    const task = createTask({
+      createTime: new Date('2026-08-11T20:09:25.000+08:00'),
+      liveStartTime: new Date('2026-08-11T15:03:07.000+08:00'),
+      liveEndTime: new Date('2026-08-11T17:09:31.610+08:00')
+    });
+
+    const sameLive = service.isSameActiveLiveForTask(task, {
+      isLive: true,
+      liveStatus: 1,
+      liveStartTime: new Date('2026-08-11T20:05:20.000+08:00')
+    });
+
+    expect(sameLive).toBe(false);
+  });
+
   it('does not suppress a newer final recording because an earlier partial task replied', () => {
     const service = createService() as any;
     const partialTask = createTask({
@@ -666,6 +683,390 @@ describe('DelayedReplyService summary dynamic reply', () => {
       status: 'completed',
       summaryReplyId: 'summary-backfill-reply'
     }));
+  });
+});
+
+describe('DelayedReplyService live content summary delivery', () => {
+  const now = new Date('2026-08-11T02:00:00.000+08:00');
+  let outputDir: string;
+  let summarySettingsSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(now);
+    outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'delayed-reply-live-content-'));
+    summarySettingsSpy = jest.spyOn(BilibiliConfigHelper, 'getSummaryDynamicSettings').mockReturnValue(null);
+  });
+
+  afterEach(() => {
+    summarySettingsSpy.mockRestore();
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  });
+
+  function writeSummary(status: 'success' | 'failed' = 'success'): string {
+    const summaryPath = path.join(outputDir, 'stream_LIVE_CONTENT.json');
+    fs.writeFileSync(summaryPath, JSON.stringify(status === 'success' ? {
+      status: 'success',
+      content: {
+        overview: '杂谈、唱歌',
+        activityTypes: ['chat', 'singing'],
+        songs: ['夜航星'],
+        games: ['星露谷物语'],
+        topics: ['妈妈做火烧云', '最喜欢的前辈']
+      }
+    } : {
+      status: 'failed',
+      error: 'model request failed'
+    }), 'utf8');
+    return summaryPath;
+  }
+
+  function createTask(overrides: Partial<DelayedReplyTask> = {}): DelayedReplyTask {
+    return {
+      taskId: 'live-content-task',
+      roomId: '26966466',
+      uid: 'anchor-uid',
+      goodnightTextPath: path.join(outputDir, 'stream_晚安回复.md'),
+      createTime: new Date(now.getTime() - 60 * 1000),
+      scheduledTime: new Date(now),
+      status: 'pending',
+      retryCount: 0,
+      checkCount: 0,
+      liveContentSummaryDeliveryMode: 'attach_if_ready',
+      liveContentSummaryState: 'ready',
+      ...overrides
+    };
+  }
+
+  function createInitialReplyHarness(task: DelayedReplyTask, replyText = '晚安正文') {
+    fs.writeFileSync(task.goodnightTextPath, replyText, 'utf8');
+    let replyIndex = 0;
+    const publishComment = jest.fn().mockImplementation(async () => ({
+      replyId: `reply-${++replyIndex}`,
+      replyTime: now.getTime()
+    }));
+    const store = { updateTask: jest.fn().mockResolvedValue(undefined) };
+    const service = new DelayedReplyService({ publishComment } as any, store as any) as any;
+    jest.spyOn(service, 'scheduleTask').mockImplementation(() => undefined);
+    jest.spyOn(service, 'getRoomLiveStatusSafely').mockResolvedValue(null);
+    jest.spyOn(service, 'deferTaskWaitingForReplacement').mockResolvedValue(false);
+    jest.spyOn(service, 'isTaskExpiredForCurrentStatus').mockReturnValue(false);
+    jest.spyOn(service, 'resolveDelayedReplyPaths').mockImplementation(
+      (_roomId: string, goodnightTextPath: string, comicImagePath?: string) => ({
+        goodnightTextPath,
+        comicImagePath
+      })
+    );
+    jest.spyOn(service, 'findTargetDynamic').mockResolvedValue({
+      id: 'owner-dynamic',
+      uid: 'anchor-uid',
+      type: DynamicType.WORD,
+      content: '晚安',
+      publishTime: new Date(now.getTime() - 60 * 1000),
+      url: 'https://www.bilibili.com/opus/owner-dynamic'
+    });
+    return { service, store, publishComment };
+  }
+
+  it('always publishes Sui live content as a separate comment', async () => {
+    const task = createTask({
+      roomId: '25788785',
+      liveContentSummaryPath: writeSummary(),
+      liveContentSummaryDeliveryMode: 'separate'
+    });
+    const { service, publishComment } = createInitialReplyHarness(task);
+
+    await service.executeDelayedReplyLocked(task);
+
+    expect(publishComment).toHaveBeenCalledTimes(2);
+    expect(publishComment.mock.calls[0][0]).toEqual({
+      dynamicId: 'owner-dynamic',
+      content: '晚安正文',
+      images: undefined
+    });
+    expect(publishComment.mock.calls[1][0]).toEqual({
+      dynamicId: 'owner-dynamic',
+      content: '本场直播内容：杂谈、唱歌；歌曲：夜航星；游戏：星露谷物语；话题：妈妈做火烧云、最喜欢的前辈'
+    });
+    expect(task.liveContentSummaryState).toBe('published_separate');
+    expect(task.liveContentSummaryReplyId).toBe('reply-2');
+    expect(task.status).toBe('completed');
+  });
+
+  it('bounds a large standalone live-content summary to the Bilibili comment limit', async () => {
+    const summaryPath = path.join(outputDir, 'large_LIVE_CONTENT.json');
+    const overview = '整场以唱歌和杂谈为主';
+    fs.writeFileSync(summaryPath, JSON.stringify({
+      status: 'success',
+      content: {
+        overview,
+        activityTypes: ['chat', 'singing'],
+        songs: Array.from(
+          { length: 400 },
+          (_, index) => `第${index + 1}首特别特别长的测试歌曲名称`
+        ),
+        games: [],
+        topics: []
+      }
+    }), 'utf8');
+    const task = createTask({
+      roomId: '25788785',
+      status: 'waiting_live_content',
+      liveContentSummaryPath: summaryPath,
+      liveContentSummaryDeliveryMode: 'separate',
+      repliedDynamicId: 'owner-dynamic',
+      replyId: 'main-reply'
+    });
+    const publishComment = jest.fn().mockResolvedValue({
+      replyId: 'summary-reply',
+      replyTime: now.getTime()
+    });
+    const store = { updateTask: jest.fn().mockResolvedValue(undefined) };
+    const service = new DelayedReplyService({ publishComment } as any, store as any) as any;
+
+    await service.executeLiveContentSummaryReply(task);
+
+    const publishedText = publishComment.mock.calls[0][0].content as string;
+    expect(publishedText.length).toBeLessThanOrEqual(1000);
+    expect(publishedText).toContain(overview);
+    expect(publishedText).toMatch(/(?:等|共)\d+项/u);
+  });
+
+  it('deduplicates a ready event while the existing task waits to publish live content', async () => {
+    const summaryPath = writeSummary();
+    const task = createTask({
+      status: 'waiting_live_content',
+      liveContentSummaryPath: summaryPath,
+      repliedDynamicId: 'owner-dynamic',
+      replyId: 'main-reply'
+    });
+    fs.writeFileSync(task.goodnightTextPath, '晚安正文', 'utf8');
+    const store = {
+      updateTask: jest.fn().mockResolvedValue(undefined),
+      addTask: jest.fn().mockResolvedValue(undefined)
+    };
+    const service = new DelayedReplyService({} as any, store as any) as any;
+    service.tasks.set(task.taskId, task);
+    jest.spyOn(service, 'scheduleTask').mockImplementation(() => undefined);
+    const delayedReplySettingsSpy = jest.spyOn(BilibiliConfigHelper, 'getDelayedReplySettings').mockReturnValue({
+      enabled: true,
+      anchorEnabled: true,
+      delayMinutes: 2
+    } as any);
+
+    try {
+      const taskId = await service.addTask(
+        task.roomId,
+        task.goodnightTextPath,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        summaryPath,
+        'attach_if_ready'
+      );
+
+      expect(taskId).toBe(task.taskId);
+      expect(service.tasks.size).toBe(1);
+      expect(store.addTask).not.toHaveBeenCalled();
+    } finally {
+      delayedReplySettingsSpy.mockRestore();
+    }
+  });
+
+  it('attaches Shiori live content to the initial reply when ready', async () => {
+    const task = createTask({ liveContentSummaryPath: writeSummary() });
+    const { service, publishComment } = createInitialReplyHarness(task);
+
+    await service.executeDelayedReplyLocked(task);
+
+    expect(publishComment).toHaveBeenCalledTimes(1);
+    expect(publishComment.mock.calls[0][0].content).toBe(
+      '晚安正文\n\n本场直播内容：杂谈、唱歌；歌曲：夜航星；游戏：星露谷物语；话题：妈妈做火烧云、最喜欢的前辈'
+    );
+    expect(task.liveContentSummaryState).toBe('attached_main');
+    expect(task.liveContentSummaryAttachedTo).toBe('main');
+  });
+
+  it('attaches Shiori live content to the supplemental comic reply when it becomes ready later', async () => {
+    const summaryPath = writeSummary();
+    const comicImagePath = path.join(outputDir, 'stream_COMIC_FACTORY.png');
+    const goodnightTextPath = path.join(outputDir, 'stream_晚安回复.md');
+    fs.writeFileSync(comicImagePath, 'image', 'utf8');
+    fs.writeFileSync(goodnightTextPath, '晚安正文', 'utf8');
+    const task = createTask({
+      status: 'waiting_comic',
+      goodnightTextPath,
+      comicImagePath,
+      repliedDynamicId: 'owner-dynamic',
+      replyId: 'main-reply',
+      completedAt: new Date(),
+      liveContentSummaryPath: summaryPath
+    });
+    const publishComment = jest.fn().mockResolvedValue({
+      replyId: 'supplemental-reply',
+      replyTime: now.getTime()
+    });
+    const store = { updateTask: jest.fn().mockResolvedValue(undefined) };
+    const service = new DelayedReplyService({ publishComment } as any, store as any) as any;
+
+    await service.executeSupplementalComicReply(task);
+
+    expect(publishComment).toHaveBeenCalledTimes(1);
+    expect(publishComment).toHaveBeenCalledWith({
+      dynamicId: 'owner-dynamic',
+      content: '（补图）晚安正文\n\n本场直播内容：杂谈、唱歌；歌曲：夜航星；游戏：星露谷物语；话题：妈妈做火烧云、最喜欢的前辈',
+      images: [comicImagePath]
+    });
+    expect(task.liveContentSummaryState).toBe('attached_supplemental');
+    expect(task.liveContentSummaryReplyId).toBe('supplemental-reply');
+  });
+
+  it('publishes Shiori live content separately after both reply opportunities have passed', async () => {
+    const task = createTask({
+      status: 'waiting_live_content',
+      liveContentSummaryPath: writeSummary(),
+      repliedDynamicId: 'owner-dynamic',
+      replyId: 'main-reply',
+      supplementalReplyId: 'supplemental-reply'
+    });
+    const publishComment = jest.fn().mockResolvedValue({
+      replyId: 'summary-reply',
+      replyTime: now.getTime()
+    });
+    const store = { updateTask: jest.fn().mockResolvedValue(undefined) };
+    const service = new DelayedReplyService({ publishComment } as any, store as any) as any;
+
+    await service.executeLiveContentSummaryReply(task);
+
+    expect(publishComment).toHaveBeenCalledTimes(1);
+    expect(task.liveContentSummaryState).toBe('published_separate');
+    expect(task.liveContentSummaryReplyId).toBe('summary-reply');
+    expect(task.status).toBe('completed');
+  });
+
+  it('keeps polling when the live content sidecar appears after the main reply', async () => {
+    const summaryPath = path.join(outputDir, 'stream_LIVE_CONTENT.json');
+    const task = createTask({
+      liveContentSummaryPath: summaryPath,
+      liveContentSummaryState: 'waiting'
+    });
+    const { service, publishComment } = createInitialReplyHarness(task);
+    const scheduleTask = jest.spyOn(service, 'scheduleTask');
+
+    await service.executeDelayedReplyLocked(task);
+
+    expect(publishComment).toHaveBeenCalledTimes(1);
+    expect(task.status).toBe('waiting_live_content');
+    expect(task.liveContentSummaryState).toBe('waiting');
+    expect(scheduleTask).toHaveBeenCalledWith(task);
+
+    writeSummary();
+    await service.executeLiveContentSummaryReply(task);
+
+    expect(publishComment).toHaveBeenCalledTimes(2);
+    expect(publishComment.mock.calls[1][0].content).toMatch(/^本场直播内容：/u);
+    expect(task.liveContentSummaryState).toBe('published_separate');
+    expect(task.status).toBe('completed');
+  });
+
+  it('splits a ready summary into a separate comment when the combined text exceeds 1000 characters', async () => {
+    const task = createTask({ liveContentSummaryPath: writeSummary() });
+    const longReply = '晚'.repeat(960);
+    const { service, publishComment } = createInitialReplyHarness(task, longReply);
+
+    await service.executeDelayedReplyLocked(task);
+
+    expect(publishComment).toHaveBeenCalledTimes(2);
+    expect(publishComment.mock.calls[0][0].content).toBe(longReply);
+    expect(publishComment.mock.calls[1][0].content).toMatch(/^本场直播内容：/u);
+    expect(task.liveContentSummaryForceSeparate).toBe(true);
+    expect(task.liveContentSummaryState).toBe('published_separate');
+  });
+
+  it('does not block the main reply when live content generation failed', async () => {
+    const task = createTask({ liveContentSummaryPath: writeSummary('failed') });
+    const { service, publishComment } = createInitialReplyHarness(task);
+
+    await service.executeDelayedReplyLocked(task);
+
+    expect(publishComment).toHaveBeenCalledTimes(1);
+    expect(publishComment.mock.calls[0][0].content).toBe('晚安正文');
+    expect(task.liveContentSummaryState).toBe('failed');
+    expect(task.liveContentSummaryError).toBe('model request failed');
+    expect(task.status).toBe('completed');
+  });
+
+  it('does not republish a live content summary after its reply id is persisted', async () => {
+    const task = createTask({
+      liveContentSummaryPath: writeSummary(),
+      repliedDynamicId: 'owner-dynamic',
+      replyId: 'main-reply'
+    });
+    const publishComment = jest.fn().mockResolvedValue({
+      replyId: 'summary-reply',
+      replyTime: now.getTime()
+    });
+    const store = { updateTask: jest.fn().mockResolvedValue(undefined) };
+    const service = new DelayedReplyService({ publishComment } as any, store as any) as any;
+
+    await service.tryPublishLiveContentSummarySeparately(task);
+    await service.tryPublishLiveContentSummarySeparately(task);
+
+    expect(publishComment).toHaveBeenCalledTimes(1);
+    expect(task.liveContentSummaryReplyId).toBe('summary-reply');
+  });
+
+  it('reuses a persisted completed task when the ready event is replayed after restart', async () => {
+    const summaryPath = writeSummary();
+    const task = createTask({
+      status: 'completed',
+      repliedDynamicId: 'owner-dynamic',
+      replyId: 'main-reply',
+      liveContentSummaryPath: undefined,
+      liveContentSummaryState: undefined
+    });
+    const store = {
+      getAllTasks: jest.fn().mockResolvedValue([task]),
+      updateTask: jest.fn().mockResolvedValue(undefined)
+    };
+    const service = new DelayedReplyService({} as any, store as any) as any;
+    const scheduleTask = jest.spyOn(service, 'scheduleTask').mockImplementation(() => undefined);
+
+    const registered = await service.registerLiveContentSummary(
+      task.roomId,
+      task.goodnightTextPath,
+      summaryPath,
+      'attach_if_ready'
+    );
+
+    expect(registered).toBe(task);
+    expect(task.status).toBe('waiting_live_content');
+    expect(task.liveContentSummaryState).toBe('ready');
+    expect(scheduleTask).toHaveBeenCalledWith(task);
+  });
+
+  it('does not blindly repeat a publishing request restored after a crash', async () => {
+    const task = createTask({
+      status: 'waiting_live_content',
+      liveContentSummaryPath: writeSummary(),
+      liveContentSummaryState: 'publishing',
+      liveContentSummaryPublishingAt: new Date(),
+      repliedDynamicId: 'owner-dynamic',
+      replyId: 'main-reply'
+    });
+    const publishComment = jest.fn();
+    const store = { updateTask: jest.fn().mockResolvedValue(undefined) };
+    const service = new DelayedReplyService({ publishComment } as any, store as any) as any;
+
+    await service.executeLiveContentSummaryReply(task);
+
+    expect(publishComment).not.toHaveBeenCalled();
+    expect(task.liveContentSummaryState).toBe('failed');
+    expect(task.liveContentSummaryError).toContain('避免重启后重复评论');
+    expect(task.status).toBe('completed');
   });
 });
 

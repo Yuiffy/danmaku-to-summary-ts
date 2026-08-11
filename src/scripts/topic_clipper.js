@@ -77,6 +77,8 @@ const DEFAULT_CLIP_TOPICS_CONFIG = {
     aiSegmentBurst: true,         // 让 AI 决定切在哪里(而不是固定 paddding)
     burnSubtitles: true,
     ffmpegTimeoutMs: 600000,
+    subtitleFontSizeRatio: 0.094,
+    subtitlePortraitFontSizeRatio: 0.044,
     outputDirName: 'topic_clips',
     extraTags: [],
     autoUpload: {
@@ -1052,10 +1054,17 @@ function wrapSubtitleText(text, maxCharsPerLine = 20) {
     const limit = Math.max(1, Number(maxCharsPerLine) || 20);
     return String(text || '').split(/\r?\n/).flatMap(line => {
         const trimmed = line.trim();
-        if (!trimmed || trimmed.length <= limit) return [trimmed];
+        const characters = Array.from(trimmed);
+        if (!trimmed || characters.length <= limit) return [trimmed];
+        const lineCount = Math.ceil(characters.length / limit);
+        const baseLineLength = Math.floor(characters.length / lineCount);
+        const longerLineCount = characters.length % lineCount;
         const wrapped = [];
-        for (let index = 0; index < trimmed.length; index += limit) {
-            wrapped.push(trimmed.slice(index, index + limit));
+        let offset = 0;
+        for (let index = 0; index < lineCount; index += 1) {
+            const lineLength = baseLineLength + (index < longerLineCount ? 1 : 0);
+            wrapped.push(characters.slice(offset, offset + lineLength).join(''));
+            offset += lineLength;
         }
         return wrapped;
     }).join('\n');
@@ -1756,14 +1765,19 @@ function buildSubtitleBurnVideoArgs(config = {}) {
 function calculateSubtitleStyle(width, height, config = {}) {
     // ASS 会把 PlayRes 坐标系自动缩放到输出画面。字号必须只按 PlayRes 计算，
     // 如果再按源视频高度缩放，720p 和 1080p 就会得到不同的画面占比。
-    const fontSizeRatio = Number(config.subtitleFontSizeRatio ?? process.env.FFMPEG_SUBTITLE_FONT_SIZE_RATIO ?? 0.094);
+    const videoWidth = Number(width);
+    const videoHeight = Number(height);
+    const isPortrait = Number.isFinite(videoWidth) && videoWidth > 0
+        && Number.isFinite(videoHeight) && videoHeight > videoWidth;
+    const landscapeFontSizeRatio = Number(config.subtitleFontSizeRatio ?? process.env.FFMPEG_SUBTITLE_FONT_SIZE_RATIO ?? 0.094);
+    // 竖屏的可用横向空间明显更窄，单独控制字号，避免为了竖屏缩小所有横屏字幕。
+    const portraitFontSizeRatio = Number(config.subtitlePortraitFontSizeRatio ?? process.env.FFMPEG_SUBTITLE_PORTRAIT_FONT_SIZE_RATIO ?? 0.044);
+    const fontSizeRatio = isPortrait ? portraitFontSizeRatio : landscapeFontSizeRatio;
     const minFontSize = Number(config.subtitleMinFontSize ?? process.env.FFMPEG_SUBTITLE_MIN_FONT_SIZE ?? 30);
     const maxFontSize = Number(config.subtitleMaxFontSize ?? process.env.FFMPEG_SUBTITLE_MAX_FONT_SIZE ?? 72);
     const fontName = String(config.subtitleFontName ?? process.env.FFMPEG_SUBTITLE_FONT_NAME ?? '汉仪有圆 85简').trim() || '汉仪有圆 85简';
     const playResY = Number(config.subtitlePlayResY ?? process.env.FFMPEG_SUBTITLE_PLAYRES_Y ?? 720);
     const configuredPlayResX = Number(config.subtitlePlayResX ?? process.env.FFMPEG_SUBTITLE_PLAYRES_X);
-    const videoWidth = Number(width);
-    const videoHeight = Number(height);
     const playResX = Number.isFinite(configuredPlayResX) && configuredPlayResX > 0
         ? Math.round(configuredPlayResX)
         : (
@@ -1776,7 +1790,12 @@ function calculateSubtitleStyle(width, height, config = {}) {
     const marginV = Number(config.subtitleMarginV ?? process.env.FFMPEG_SUBTITLE_MARGIN_V ?? 24);
     const marginL = Math.max(0, Number(config.subtitleMarginL ?? config.subtitleMarginHorizontal ?? process.env.FFMPEG_SUBTITLE_MARGIN_L ?? 32));
     const marginR = Math.max(0, Number(config.subtitleMarginR ?? config.subtitleMarginHorizontal ?? process.env.FFMPEG_SUBTITLE_MARGIN_R ?? 32));
-    const glyphWidthRatio = Math.max(0.5, Number(config.subtitleGlyphWidthRatio ?? process.env.FFMPEG_SUBTITLE_GLYPH_WIDTH_RATIO ?? 1));
+    // 汉字实际字面通常略窄于 1em；横屏沿用 0.95em，竖屏则保持保守的 1em 安全估算。
+    const glyphWidthRatio = Math.max(0.5, Number(
+        config.subtitleGlyphWidthRatio
+        ?? process.env.FFMPEG_SUBTITLE_GLYPH_WIDTH_RATIO
+        ?? (isPortrait ? 1 : 0.95)
+    ));
     const availableWidth = Math.max(fontSize, playResX - marginL - marginR - outline * 2);
     const calculatedMaxChars = Math.max(1, Math.floor(availableWidth / (fontSize * glyphWidthRatio)));
     const configuredMaxChars = Number(config.subtitleMaxCharsPerLine);

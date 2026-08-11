@@ -9,6 +9,7 @@ import { ConfigProvider } from '../../../core/config/ConfigProvider';
 import { FileStabilityChecker } from '../FileStabilityChecker';
 import { DuplicateProcessorGuard } from '../DuplicateProcessorGuard';
 import { IDelayedReplyService } from '../../../services/bilibili/interfaces/IDelayedReplyService';
+import { LiveContentSummaryDeliveryMode } from '../../../services/bilibili/interfaces/types';
 import { LIVE_RECONNECT_GRACE_MS, LiveSessionManager, LiveSegment } from '../LiveSessionManager';
 import { FileMerger } from '../FileMerger';
 import { VideoScreenshotService } from '../../video/VideoScreenshotService';
@@ -54,7 +55,10 @@ enum DelayedActionType {
   SESSION_ENDED = 'session_ended',         // SessionEnded后等待SessionStart
   FILE_WITHOUT_SESSION = 'file_no_session', // FileClosed但会话不存在
   SEGMENT_COLLECTION = 'segment_collection', // 收集片段后等待更多片段或结算
-  FILE_CLOSE_ALERT = 'file_close_alert'
+  FILE_CLOSE_ALERT = 'file_close_alert',
+  RECORDING_START_ALERT = 'recording_start_alert',
+  STREAM_END_SEGMENT_ALERT = 'stream_end_segment_alert',
+  FINALIZATION_WATCHDOG = 'finalization_watchdog'
 }
 
 /**
@@ -89,9 +93,12 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   // Webhook 已明确观察到仍在直播的房间。用于拦截已经开始执行、来不及 clearTimeout 的旧结算回调。
   private activeLiveRooms: Set<string> = new Set();
   private finalFileClosedRooms: Map<string, Date> = new Map();
+  // 记录在线 SessionStarted/FileOpening，用于识别先于 StreamStarted 到达的同场录制信号。
+  private recorderReadyTimestamps: Map<string, Date> = new Map();
   // 只对本进程实际观察到 FileOpening 的直播报警，避免服务重启后误报历史 StreamEnded。
   private fileOpeningTimestamps: Map<string, Date> = new Map();
   private readonly FILE_CLOSE_ALERT_DELAY_MS = 60 * 1000;
+  private readonly MIN_PROCESSABLE_FILE_BYTES = 1024 * 1024;
   // 最大等待时间(毫秒)
   // 断流重连可恢复最近会话；在此窗口内不能把单个分段结算，避免原文件与后续 _merged 文件各处理一次。
   private readonly MAX_DELAY_MS = LIVE_RECONNECT_GRACE_MS;
@@ -201,13 +208,13 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     this.logger.info(`⏳ 启动延迟处理: ${description} (等待 ${delayMs / 1000} 秒)`);
 
     const timer = setTimeout(async () => {
+      // 只移除本次 timer；若同类动作已被新 timer 替换，不会误删新记录。
+      this.removeDelayedAction(roomKey, actionType, timer);
       this.logger.info(`⏰ 延迟处理超时触发: ${description}`);
       try {
         await action();
       } catch (error: any) {
         this.logger.error(`延迟处理失败: ${description}: ${error.message}`, { error });
-      } finally {
-        this.removeDelayedAction(roomKey, actionType, timer);
       }
     }, delayMs);
 
@@ -260,6 +267,162 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         this.delayedActions.delete(roomKey);
       }
     }
+  }
+
+  private hasDelayedAction(roomId: string | number, actionType: DelayedActionType): boolean {
+    return this.delayedActions.get(String(roomId))?.has(actionType) === true;
+  }
+
+  private getPendingFinalizationActions(roomId: string | number): DelayedActionType[] {
+    const roomActions = this.delayedActions.get(String(roomId));
+    if (!roomActions) return [];
+
+    return [
+      DelayedActionType.STREAM_ENDED,
+      DelayedActionType.SEGMENT_COLLECTION
+    ].filter(actionType => roomActions.has(actionType));
+  }
+
+  private getProcessingAlertDelayMs(configKey: string, defaultSeconds: number): number {
+    try {
+      const config = ConfigProvider.getConfig() as any;
+      const configuredSeconds = Number(config.monitoring?.processingAlerts?.[configKey]);
+      if (Number.isFinite(configuredSeconds) && configuredSeconds > 0) {
+        return configuredSeconds * 1000;
+      }
+    } catch {
+      // Use the local default when configuration is unavailable during startup.
+    }
+    return defaultSeconds * 1000;
+  }
+
+  private rememberRecorderReady(roomId: string | number, timestamp: unknown): Date {
+    const roomKey = String(roomId);
+    const parsedTime = timestamp ? new Date(String(timestamp)) : new Date();
+    const readyTime = Number.isNaN(parsedTime.getTime()) ? new Date() : parsedTime;
+    const previous = this.recorderReadyTimestamps.get(roomKey);
+    if (!previous || readyTime.getTime() >= previous.getTime()) {
+      this.recorderReadyTimestamps.set(roomKey, readyTime);
+      return readyTime;
+    }
+    return previous;
+  }
+
+  private isStaleOnlineResumeEvent(
+    payload: any,
+    source: 'SessionStarted' | 'FileOpening'
+  ): boolean {
+    const roomId = payload.EventData?.RoomId;
+    if (!roomId) return false;
+
+    const roomKey = String(roomId);
+    const timestamps = this.streamTimestamps.get(roomKey);
+    if (!timestamps) return false;
+
+    const rawEventTime = source === 'FileOpening'
+      ? payload.EventData?.FileOpenTime || payload.EventTimestamp
+      : payload.EventTimestamp;
+    if (!rawEventTime) return false;
+
+    const eventTime = new Date(String(rawEventTime));
+    if (Number.isNaN(eventTime.getTime())) return false;
+
+    if (timestamps.endTime && eventTime.getTime() <= timestamps.endTime.getTime()) {
+      this.logger.warn(`忽略晚于送达但发生在下播前的 ${source}: ${roomKey}`, {
+        eventTime: eventTime.toISOString(),
+        streamEndedAt: timestamps.endTime.toISOString()
+      });
+      return true;
+    }
+
+    const clockSkewToleranceMs = 5 * 1000;
+    if (
+      !timestamps.endTime &&
+      timestamps.startTime &&
+      eventTime.getTime() < timestamps.startTime.getTime() - clockSkewToleranceMs
+    ) {
+      this.logger.warn(`忽略早于当前开播时间的过期 ${source}: ${roomKey}`, {
+        eventTime: eventTime.toISOString(),
+        streamStartedAt: timestamps.startTime.toISOString()
+      });
+      return true;
+    }
+
+    return false;
+  }
+
+  private hasCurrentStreamSegment(roomId: string | number): boolean {
+    const roomKey = String(roomId);
+    const session = this.liveSessionManager.getSession(roomKey);
+    if (!session || session.segments.length === 0) return false;
+
+    const streamStartTime = this.streamTimestamps.get(roomKey)?.startTime?.getTime();
+    const clockSkewToleranceMs = 5 * 1000;
+
+    return session.segments.some(segment => {
+      if (
+        streamStartTime !== undefined &&
+        segment.fileCloseTime.getTime() < streamStartTime - clockSkewToleranceMs
+      ) {
+        return false;
+      }
+
+      try {
+        return fs.existsSync(segment.videoPath) &&
+          fs.statSync(segment.videoPath).size >= this.MIN_PROCESSABLE_FILE_BYTES &&
+          fs.existsSync(segment.xmlPath);
+      } catch {
+        return false;
+      }
+    });
+  }
+
+  private shouldMonitorRecordingLifecycle(roomId: string | number, payload: any): boolean {
+    if (payload.EventData?.Recording !== false) return true;
+
+    const roomKey = String(roomId);
+    const streamStartTime = this.streamTimestamps.get(roomKey)?.startTime?.getTime();
+    const recorderReadyAt = this.recorderReadyTimestamps.get(roomKey)?.getTime();
+    const clockSkewToleranceMs = 5 * 1000;
+    if (
+      recorderReadyAt !== undefined &&
+      (streamStartTime === undefined || recorderReadyAt >= streamStartTime - clockSkewToleranceMs)
+    ) {
+      return true;
+    }
+
+    return this.hasCurrentStreamSegment(roomKey);
+  }
+
+  private ignoreOfflineResumeEvent(payload: any, source: 'SessionStarted' | 'FileOpening'): void {
+    const roomId = payload.EventData?.RoomId;
+    if (!roomId) return;
+
+    const roomKey = String(roomId);
+    const pendingFinalization = this.getPendingFinalizationActions(roomKey);
+    const timestamps = this.streamTimestamps.get(roomKey);
+    this.logger.warn(`忽略 Streaming=false 的 ${source}，保留当前收尾状态: ${roomKey}`, {
+      pendingFinalization,
+      streamEndedAt: timestamps?.endTime?.toISOString()
+    });
+
+    if (pendingFinalization.length === 0 && !timestamps?.endTime) return;
+
+    const session = this.liveSessionManager.getSession(roomKey);
+    void ProcessingAlertService.notifyOfflineInvalidResume({
+      roomId: roomKey,
+      roomName: payload.EventData?.Name,
+      title: payload.EventData?.Title,
+      sessionId: payload.EventData?.SessionId,
+      streamStartedAt: timestamps?.startTime?.toISOString(),
+      streamEndedAt: timestamps?.endTime?.toISOString(),
+      segmentCount: session?.segments.length || 0,
+      status: session?.status,
+      recording: payload.EventData?.Recording,
+      streaming: payload.EventData?.Streaming,
+      cancelledActions: [],
+      reason: `Ignored offline ${source}; pending finalization was preserved (${pendingFinalization.join(', ') || 'end observed'})`
+    });
   }
 
   private markLiveResumed(roomId: string | number, source: string): void {
@@ -340,23 +503,73 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       return;
     }
     const roomKey = String(roomId);
-    this.fileOpeningTimestamps.delete(roomKey);
-    this.markLiveResumed(roomKey, 'StreamStarted');
 
     // 从 EventTimestamp 提取时间
     const eventTimestamp = payload.EventTimestamp;
-    if (eventTimestamp) {
-      const startTime = new Date(eventTimestamp);
-      
-      // 记录或更新时间戳
-      const existing = this.streamTimestamps.get(roomKey) || {};
-      this.streamTimestamps.set(roomKey, {
-        ...existing,
-        startTime
+    const parsedStartTime = eventTimestamp ? new Date(eventTimestamp) : new Date();
+    const startTime = Number.isNaN(parsedStartTime.getTime()) ? new Date() : parsedStartTime;
+    const previousTimestamps = this.streamTimestamps.get(roomKey);
+    if (
+      previousTimestamps?.endTime &&
+      startTime.getTime() <= previousTimestamps.endTime.getTime()
+    ) {
+      this.logger.info(`忽略不晚于已观察下播时间的过期 StreamStarted: ${roomKey}`, {
+        startTime: startTime.toISOString(),
+        endTime: previousTimestamps.endTime.toISOString()
       });
-      
-      this.logger.info(`📅 记录直播开始时间: ${roomId} -> ${startTime.toISOString()}`);
+      return;
     }
+
+    const recorderReadyAt = this.recorderReadyTimestamps.get(roomKey);
+    const recorderAlreadyReady = !!recorderReadyAt &&
+      recorderReadyAt.getTime() >= startTime.getTime() - 5 * 1000;
+
+    this.cancelDelayedAction(roomKey, DelayedActionType.RECORDING_START_ALERT);
+    if (!recorderAlreadyReady) {
+      this.fileOpeningTimestamps.delete(roomKey);
+      this.recorderReadyTimestamps.delete(roomKey);
+    }
+    this.markLiveResumed(roomKey, 'StreamStarted');
+
+    this.streamTimestamps.set(roomKey, {
+      startTime,
+      endTime: undefined
+    });
+
+    this.logger.info(`📅 记录直播开始时间: ${roomId} -> ${startTime.toISOString()}`);
+
+    if (payload.EventData?.Recording === false) {
+      this.logger.info(`跳过缺录制告警: ${roomKey} 的 StreamStarted 明确标记 Recording=false`);
+      return;
+    }
+
+    if (recorderAlreadyReady) {
+      this.logger.info(`StreamStarted 到达前已观察到同场录制信号，不启动缺录制告警: ${roomKey}`, {
+        recorderReadyAt: recorderReadyAt?.toISOString(),
+        startTime: startTime.toISOString()
+      });
+      return;
+    }
+
+    const expectedStartTime = startTime.getTime();
+    this.startDelayedAction(
+      roomKey,
+      DelayedActionType.RECORDING_START_ALERT,
+      async () => {
+        const currentStartTime = this.streamTimestamps.get(roomKey)?.startTime?.getTime();
+        if (currentStartTime !== expectedStartTime || !this.activeLiveRooms.has(roomKey)) return;
+
+        await ProcessingAlertService.notifyStreamStartedWithoutFileOpening({
+          roomId: roomKey,
+          roomName: payload.EventData?.Name,
+          title: payload.EventData?.Title,
+          streamStartedAt: startTime.toISOString(),
+          reason: 'StreamStarted was observed, but neither an online SessionStarted nor FileOpening followed'
+        });
+      },
+      `RecordingStartMissing: ${roomKey}`,
+      this.getProcessingAlertDelayMs('streamStartNoFileOpeningSeconds', 300)
+    );
   }
 
   /**
@@ -364,15 +577,24 @@ export class MikufansWebhookHandler implements IWebhookHandler {
    */
   private async handleSessionStarted(sessionId: string, payload: any): Promise<void> {
     const roomName = payload.EventData?.Name || '未知主播';
-    const roomId = payload.EventData?.RoomId || 'unknown';
+    const roomId = String(payload.EventData?.RoomId || 'unknown');
     const title = payload.EventData?.Title || '直播';
     const roomKey = String(roomId);
 
+    if (payload.EventData?.Streaming === false) {
+      this.ignoreOfflineResumeEvent(payload, 'SessionStarted');
+      return;
+    }
+
+    if (this.isStaleOnlineResumeEvent(payload, 'SessionStarted')) return;
+
     // 使用LiveSessionManager创建或获取会话（使用RoomId）
     this.liveSessionManager.createOrGetSession(roomId, roomName, title);
+    this.rememberRecorderReady(roomKey, payload.EventTimestamp);
 
     // 任一开播信号都说明旧的 StreamEnded/SessionEnded 结算已经失效。
     this.markLiveResumed(roomKey, 'SessionStarted');
+    this.cancelDelayedAction(roomKey, DelayedActionType.RECORDING_START_ALERT);
 
     // 恢复待处理的文件到新会话（说明是断线重连或事件乱序，这些文件属于当前会话）
     const pendingFiles = this.pendingFiles.get(roomId);
@@ -404,12 +626,24 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       return;
     }
     const roomKey = String(roomId);
+
+    if (payload.EventData?.Streaming === false) {
+      this.ignoreOfflineResumeEvent(payload, 'FileOpening');
+      return;
+    }
+
+    if (this.isStaleOnlineResumeEvent(payload, 'FileOpening')) return;
+
     this.markLiveResumed(roomKey, 'FileOpening');
+    this.cancelDelayedAction(roomKey, DelayedActionType.RECORDING_START_ALERT);
 
     const eventTime = payload.EventData?.FileOpenTime || payload.EventTimestamp;
     const openTime = eventTime ? new Date(eventTime) : new Date();
     if (!Number.isNaN(openTime.getTime())) {
       this.fileOpeningTimestamps.set(roomKey, openTime);
+      this.rememberRecorderReady(roomKey, openTime);
+    } else {
+      this.rememberRecorderReady(roomKey, undefined);
     }
     this.logger.info(`📂 FileOpening: ${roomId} (已取消相关延迟处理)`);
   }
@@ -418,9 +652,66 @@ export class MikufansWebhookHandler implements IWebhookHandler {
    * 处理会话结束事件
    */
   private async handleSessionEnded(sessionId: string, payload: any): Promise<void> {
-    const roomId = payload.EventData?.RoomId;
-    if (!roomId) {
+    const rawRoomId = payload.EventData?.RoomId;
+    if (!rawRoomId) {
       this.logger.warn(`SessionEnded事件缺少RoomId`);
+      return;
+    }
+
+    const roomId = String(rawRoomId);
+    const roomKey = roomId;
+    const timestamps = this.streamTimestamps.get(roomKey);
+    if (timestamps?.endTime && !this.activeLiveRooms.has(roomKey)) {
+      const pendingFinalization = this.getPendingFinalizationActions(roomKey);
+      if (pendingFinalization.length > 0) {
+        this.logger.info(`SessionEnded arrived after StreamEnded; existing finalization remains active: ${roomKey}`, {
+          pendingFinalization
+        });
+        return;
+      }
+
+      const sessionAfterEnd = this.liveSessionManager.getSession(roomKey);
+      if (!sessionAfterEnd) {
+        this.ensureStreamEndSegmentAlert(roomKey, payload, timestamps.endTime);
+        this.logger.info(`SessionEnded 在 FileClosed 前到达，继续等待下播片段宽限: ${roomKey}`);
+        return;
+      }
+
+      if (sessionAfterEnd.status !== 'collecting') {
+        this.logger.info(`SessionEnded arrived after finalization had already advanced: ${roomKey}`, {
+          status: sessionAfterEnd.status
+        });
+        return;
+      }
+
+      if (!this.hasCurrentStreamSegment(roomId)) {
+        this.ensureStreamEndSegmentAlert(roomKey, payload, timestamps.endTime);
+        this.logger.info(`SessionEnded 到达时尚无有效片段，继续等待下播片段宽限: ${roomKey}`);
+        return;
+      }
+
+      this.startDelayedAction(
+        roomId,
+        DelayedActionType.STREAM_ENDED,
+        async () => {
+          await this.processStreamEnded(roomId);
+        },
+        `RecoveredFinalizationAfterSessionEnded: ${roomKey}`
+      );
+      this.startFinalizationWatchdog(roomId, payload, timestamps.endTime);
+
+      void ProcessingAlertService.notifyFinalizationStuck({
+        roomId: roomKey,
+        roomName: payload.EventData?.Name,
+        title: payload.EventData?.Title,
+        sessionId,
+        streamStartedAt: timestamps.startTime?.toISOString(),
+        streamEndedAt: timestamps.endTime.toISOString(),
+        segmentCount: sessionAfterEnd?.segments.length || 0,
+        status: sessionAfterEnd?.status,
+        cancelledActions: [],
+        reason: 'SessionEnded observed an earlier StreamEnded, but no finalization timer remained'
+      });
       return;
     }
 
@@ -518,35 +809,42 @@ export class MikufansWebhookHandler implements IWebhookHandler {
    * 处理直播结束事件
    */
   private async handleStreamEnded(sessionId: string, payload: any): Promise<void> {
-    const roomId = payload.EventData?.RoomId;
-    if (!roomId) {
+    const rawRoomId = payload.EventData?.RoomId;
+    if (!rawRoomId) {
       this.logger.warn(`StreamEnded事件缺少RoomId`);
       return;
     }
-    const roomKey = String(roomId);
+    const roomId = String(rawRoomId);
+    const roomKey = roomId;
 
     // 从 EventTimestamp 提取时间并记录
     const eventTimestamp = payload.EventTimestamp;
-    if (eventTimestamp) {
-      const endTime = new Date(eventTimestamp);
-      
-      // 记录或更新时间戳
-      const existing = this.streamTimestamps.get(roomKey) || {};
-      if (existing.startTime && endTime.getTime() <= existing.startTime.getTime()) {
-        this.logger.info(`忽略早于最近开播时间的过期 StreamEnded: ${roomKey}`, {
-          startTime: existing.startTime.toISOString(),
-          endTime: endTime.toISOString()
-        });
-        return;
-      }
-      this.streamTimestamps.set(roomKey, {
-        ...existing,
-        endTime
+    const parsedEndTime = eventTimestamp ? new Date(eventTimestamp) : new Date();
+    const endTime = Number.isNaN(parsedEndTime.getTime()) ? new Date() : parsedEndTime;
+    const existing = this.streamTimestamps.get(roomKey) || {};
+    if (existing.endTime && !this.activeLiveRooms.has(roomKey)) {
+      this.logger.info(`忽略未观察到恢复信号的重复 StreamEnded: ${roomKey}`, {
+        previousEndTime: existing.endTime.toISOString(),
+        duplicateEndTime: endTime.toISOString()
       });
-      
-      this.logger.info(`📅 记录直播结束时间: ${roomId} -> ${endTime.toISOString()}`);
+      return;
     }
+    if (existing.startTime && endTime.getTime() <= existing.startTime.getTime()) {
+      this.logger.info(`忽略早于最近开播时间的过期 StreamEnded: ${roomKey}`, {
+        startTime: existing.startTime.toISOString(),
+        endTime: endTime.toISOString()
+      });
+      return;
+    }
+    this.streamTimestamps.set(roomKey, {
+      ...existing,
+      endTime
+    });
+
+    this.logger.info(`📅 记录直播结束时间: ${roomId} -> ${endTime.toISOString()}`);
+    this.cancelDelayedAction(roomKey, DelayedActionType.RECORDING_START_ALERT);
     this.activeLiveRooms.delete(roomKey);
+    this.startStreamEndSegmentAlert(roomId, payload, endTime);
 
     const session = this.liveSessionManager.getSession(roomId);
     if (!session) {
@@ -558,6 +856,13 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     this.logger.info(`🏁 直播结束 (收到事件): ${session.roomName} (Room: ${roomId}, 当前片段数: ${session.segments.length})`);
     this.startMissingFileCloseAlert(roomKey, payload, 'StreamEnded');
 
+    if (session.status !== 'collecting') {
+      this.logger.info(`StreamEnded 不会重新处理已进入后续阶段的会话: ${roomKey}`, {
+        status: session.status
+      });
+      return;
+    }
+
     // 启动动态延迟等待
     this.startDelayedAction(
       roomId,
@@ -566,6 +871,97 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         await this.processStreamEnded(roomId);
       },
       `StreamEnded: ${roomId}`
+    );
+    this.startFinalizationWatchdog(roomId, payload, endTime);
+  }
+
+  private startStreamEndSegmentAlert(roomId: string | number, payload: any, endTime: Date): void {
+    const roomKey = String(roomId);
+    if (!this.shouldMonitorRecordingLifecycle(roomKey, payload)) {
+      this.logger.info(`跳过下播无片段告警: ${roomKey} 明确未录制且没有本场录制证据`);
+      return;
+    }
+
+    const expectedEndTime = endTime.getTime();
+    this.startDelayedAction(
+      roomKey,
+      DelayedActionType.STREAM_END_SEGMENT_ALERT,
+      async () => {
+        const timestamps = this.streamTimestamps.get(roomKey);
+        if (
+          timestamps?.endTime?.getTime() !== expectedEndTime ||
+          this.activeLiveRooms.has(roomKey) ||
+          this.hasCurrentStreamSegment(roomId)
+        ) {
+          return;
+        }
+
+        const session = this.liveSessionManager.getSession(roomKey);
+        void ProcessingAlertService.notifyStreamEndedWithoutCurrentSegment({
+          roomId: roomKey,
+          roomName: payload.EventData?.Name,
+          title: payload.EventData?.Title,
+          sessionId: payload.EventData?.SessionId,
+          streamStartedAt: timestamps?.startTime?.toISOString(),
+          streamEndedAt: endTime.toISOString(),
+          segmentCount: session?.segments.length || 0,
+          status: session?.status,
+          reason: 'StreamEnded was observed without a processable segment from the current stream'
+        });
+      },
+      `StreamEndNoSegment: ${roomKey}`,
+      this.getProcessingAlertDelayMs('streamEndNoSegmentGraceSeconds', 60)
+    );
+  }
+
+  private ensureStreamEndSegmentAlert(roomId: string | number, payload: any, endTime: Date): void {
+    if (this.hasDelayedAction(roomId, DelayedActionType.STREAM_END_SEGMENT_ALERT)) return;
+    this.startStreamEndSegmentAlert(roomId, payload, endTime);
+  }
+
+  private startFinalizationWatchdog(roomId: string | number, payload: any, endTime: Date): void {
+    const roomKey = String(roomId);
+    const expectedEndTime = endTime.getTime();
+    const watchdogDelayMs = this.MAX_DELAY_MS +
+      this.getProcessingAlertDelayMs('finalizationWatchdogGraceSeconds', 60);
+
+    this.startDelayedAction(
+      roomKey,
+      DelayedActionType.FINALIZATION_WATCHDOG,
+      async () => {
+        const timestamps = this.streamTimestamps.get(roomKey);
+        if (
+          timestamps?.endTime?.getTime() !== expectedEndTime ||
+          this.activeLiveRooms.has(roomKey)
+        ) {
+          return;
+        }
+
+        const session = this.liveSessionManager.getSession(roomKey);
+        if (!session || session.status !== 'collecting') return;
+
+        const pendingFinalization = this.getPendingFinalizationActions(roomKey);
+        if (pendingFinalization.length > 0) return;
+
+        void ProcessingAlertService.notifyFinalizationStuck({
+          roomId: roomKey,
+          roomName: payload.EventData?.Name,
+          title: payload.EventData?.Title,
+          sessionId: payload.EventData?.SessionId,
+          streamStartedAt: timestamps?.startTime?.toISOString(),
+          streamEndedAt: endTime.toISOString(),
+          segmentCount: session.segments.length,
+          status: session.status,
+          cancelledActions: [],
+          reason: 'No finalization timer remained after the reconnect grace window; attempting recovery'
+        });
+
+        if (this.hasCurrentStreamSegment(roomId)) {
+          await this.processStreamEnded(roomKey);
+        }
+      },
+      `FinalizationWatchdog: ${roomKey}`,
+      watchdogDelayMs
     );
   }
 
@@ -616,6 +1012,28 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     const session = this.liveSessionManager.getSession(roomId);
     if (!session) {
       this.logger.warn(`延迟处理时会话不存在: ${roomId}`);
+      return;
+    }
+
+    if (session.status !== 'collecting') {
+      this.logger.info(`忽略已进入后续阶段会话的重复结束结算: ${roomId}`, {
+        status: session.status
+      });
+      return;
+    }
+
+    if (!this.hasCurrentStreamSegment(roomId)) {
+      const timestamps = this.streamTimestamps.get(roomKey);
+      void ProcessingAlertService.notifyStreamEndedWithoutCurrentSegment({
+        roomId: roomKey,
+        roomName: session.roomName,
+        title: session.title,
+        streamStartedAt: timestamps?.startTime?.toISOString(),
+        streamEndedAt: timestamps?.endTime?.toISOString(),
+        segmentCount: session.segments.length,
+        status: session.status,
+        reason: 'Finalization was skipped because the session has no processable segment from the current stream'
+      });
       return;
     }
 
@@ -689,18 +1107,27 @@ export class MikufansWebhookHandler implements IWebhookHandler {
 
     this.logger.info(`📁 文件路径: ${normalizedPath}`);
 
-    const roomId = payload.EventData?.RoomId;
+    const rawRoomId = payload.EventData?.RoomId;
+    const roomId = rawRoomId ? String(rawRoomId) : undefined;
+    let observedEndBeforeFileClose: Date | undefined;
     if (roomId) {
       const roomKey = String(roomId);
       this.cancelDelayedAction(roomKey, DelayedActionType.FILE_CLOSE_ALERT);
       this.fileOpeningTimestamps.delete(roomKey);
-      if (payload.EventData?.Streaming === false) {
+      const timestamps = this.streamTimestamps.get(roomKey);
+      const hasObservedOfflineEnd = !!timestamps?.endTime && !this.activeLiveRooms.has(roomKey);
+      if (payload.EventData?.Streaming === false || hasObservedOfflineEnd) {
         const closeTime = new Date(payload.EventData?.FileCloseTime || payload.EventTimestamp || Date.now());
         const normalizedCloseTime = Number.isNaN(closeTime.getTime()) ? new Date() : closeTime;
-        const latestStartTime = this.streamTimestamps.get(roomKey)?.startTime;
-        if (!latestStartTime || normalizedCloseTime.getTime() >= latestStartTime.getTime()) {
+        const latestStartTime = timestamps?.startTime;
+        const clockSkewToleranceMs = 5 * 1000;
+        if (
+          !latestStartTime ||
+          normalizedCloseTime.getTime() >= latestStartTime.getTime() - clockSkewToleranceMs
+        ) {
           this.finalFileClosedRooms.set(roomKey, normalizedCloseTime);
           this.activeLiveRooms.delete(roomKey);
+          observedEndBeforeFileClose = hasObservedOfflineEnd ? timestamps?.endTime : undefined;
           this.logger.info(`FileClosed indicates stream is offline; will finalize after segment collection timeout: ${roomKey}`);
         } else {
           this.logger.info(`忽略早于最近开播时间的过期 FileClosed 结束标记: ${roomKey}`, {
@@ -725,7 +1152,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       if (fs.existsSync(normalizedPath)) {
         const fileSize = fs.statSync(normalizedPath).size;
         const fileSizeInMB = fileSize / (1024 * 1024);
-        const minSizeMB = 1; // 最小处理大小：1MB
+        const minSizeMB = this.MIN_PROCESSABLE_FILE_BYTES / (1024 * 1024);
 
         if (fileSizeInMB < minSizeMB) {
           this.logger.info(`⏭️  文件过小 (${fileSizeInMB.toFixed(2)}MB < ${minSizeMB}MB)，跳过处理: ${path.basename(normalizedPath)}`);
@@ -739,6 +1166,17 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     // 收集片段到会话
     if (roomId) {
       await this.collectSegment(roomId, normalizedPath, payload);
+      if (this.hasCurrentStreamSegment(roomId)) {
+        this.cancelDelayedAction(roomId, DelayedActionType.STREAM_END_SEGMENT_ALERT);
+      }
+      const session = this.liveSessionManager.getSession(roomId);
+      if (
+        observedEndBeforeFileClose &&
+        session?.status === 'collecting' &&
+        !this.hasDelayedAction(roomId, DelayedActionType.FINALIZATION_WATCHDOG)
+      ) {
+        this.startFinalizationWatchdog(roomId, payload, observedEndBeforeFileClose);
+      }
     } else {
       // 如果没有roomId，直接处理文件（兼容旧逻辑）
       await this.processMikufansFile(normalizedPath, payload);
@@ -1570,6 +2008,10 @@ export class MikufansWebhookHandler implements IWebhookHandler {
             this.logger.warn(`Stream结束时间早于当前文件开始时间，丢弃旧结束时间: streamEnd=${endTime.toISOString()}, fileStart=${recordingStartTime.toISOString()}, fileName=${fileName}`);
             endTime = fileMtime && fileMtime.getTime() >= recordingStartMs ? fileMtime : undefined;
           }
+
+          if (!endTime && fileMtime && fileMtime.getTime() >= recordingStartMs) {
+            endTime = fileMtime;
+          }
         }
 
         if (startTime && endTime && endTime.getTime() < startTime.getTime()) {
@@ -1679,6 +2121,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       const goodnightTextPath = path.join(dir, `${baseName}_晚安回复.md`);
       // 查找漫画文件
       const comicImagePath = path.join(dir, `${baseName}_COMIC_FACTORY.png`);
+      const liveContentSummaryPath = path.join(dir, `${baseName}_LIVE_CONTENT.json`);
 
       this.logger.info(`🔍 [延迟回复检查] 检查文件:`);
       this.logger.info(`   晚安回复路径: ${goodnightTextPath}`);
@@ -1687,6 +2130,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       // 检查文件是否存在
       const hasGoodnightText = fs.existsSync(goodnightTextPath);
       const hasComicImage = fs.existsSync(comicImagePath);
+      const hasLiveContentSummary = fs.existsSync(liveContentSummaryPath);
 
       this.logger.info(`   晚安回复存在: ${hasGoodnightText}`);
       this.logger.info(`   漫画存在: ${hasComicImage}`);
@@ -1697,6 +2141,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
           roomId,
           goodnightTextPath,
           comicImagePath: hasComicImage ? comicImagePath : undefined,
+          liveContentSummaryPath: hasLiveContentSummary ? liveContentSummaryPath : undefined,
           mediaPath: videoPath,
           source: hasComicImage ? 'process-close-with-comic' : 'process-close-text-only'
         });
@@ -1706,6 +2151,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
           roomId,
           goodnightTextPath,
           comicImagePath,
+          liveContentSummaryPath,
           mediaPath: videoPath,
           source: 'process-close-missing-text'
         });
@@ -1737,6 +2183,8 @@ export class MikufansWebhookHandler implements IWebhookHandler {
           roomId?: string;
           goodnightTextPath?: string;
           comicImagePath?: string;
+          liveContentSummaryPath?: string;
+          liveContentSummaryDeliveryMode?: LiveContentSummaryDeliveryMode;
           mediaPath?: string;
         };
 
@@ -1749,6 +2197,8 @@ export class MikufansWebhookHandler implements IWebhookHandler {
           roomId: String(payload.roomId),
           goodnightTextPath: payload.goodnightTextPath,
           comicImagePath: payload.comicImagePath,
+          liveContentSummaryPath: payload.liveContentSummaryPath,
+          liveContentSummaryDeliveryMode: payload.liveContentSummaryDeliveryMode,
           mediaPath: payload.mediaPath || fallbackMediaPath,
           source: 'text-ready'
         });
@@ -1762,16 +2212,35 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     liveStartTime?: Date;
     liveEndTime?: Date;
   } {
+    const fallbackTimes = this.extractLiveTimeFallback(mediaPath, roomId);
     const session = this.liveSessionManager.getSession(roomId);
     if (session) {
       const liveStartTime = session.startTime;
       const liveEndTime = session.endTime || new Date();
+
+      const fallbackStartTime = fallbackTimes?.startTime;
+      const fallbackEndTime = fallbackTimes?.endTime;
+      const sessionMismatchToleranceMs = 10 * 60 * 1000;
+      if (
+        fallbackTimes?.source !== '文件系统时间' &&
+        fallbackStartTime &&
+        fallbackEndTime &&
+        Math.abs(liveStartTime.getTime() - fallbackStartTime.getTime()) > sessionMismatchToleranceMs
+      ) {
+        this.logger.warn(
+          `当前会话与录播文件时间不匹配，延迟回复改用录播时间: session=${liveStartTime.toISOString()}, file=${fallbackStartTime.toISOString()}, media=${path.basename(mediaPath)}`
+        );
+        return {
+          liveStartTime: fallbackStartTime,
+          liveEndTime: fallbackEndTime
+        };
+      }
+
       this.logger.info(`📅 [时间来源: 会话] 开始=${liveStartTime.toISOString()}, 结束=${liveEndTime.toISOString()}`);
       return { liveStartTime, liveEndTime };
     }
 
     this.logger.warn(`⚠️  未找到会话信息，尝试从其他来源获取直播时间`);
-    const fallbackTimes = this.extractLiveTimeFallback(mediaPath, roomId);
     if (fallbackTimes) {
       const startStr = fallbackTimes.startTime ? fallbackTimes.startTime.toISOString() : 'undefined';
       const endStr = fallbackTimes.endTime ? fallbackTimes.endTime.toISOString() : 'undefined';
@@ -1790,6 +2259,8 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     roomId: string;
     goodnightTextPath: string;
     comicImagePath?: string | null;
+    liveContentSummaryPath?: string | null;
+    liveContentSummaryDeliveryMode?: LiveContentSummaryDeliveryMode;
     mediaPath: string;
     source: string;
   }): Promise<void> {
@@ -1835,7 +2306,9 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       comicImagePath,
       undefined,
       liveStartTime,
-      liveEndTime
+      liveEndTime,
+      params.liveContentSummaryPath || undefined,
+      params.liveContentSummaryDeliveryMode
     );
 
     if (taskId) {
@@ -1849,6 +2322,8 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     roomId: string;
     goodnightTextPath: string;
     comicImagePath?: string | null;
+    liveContentSummaryPath?: string | null;
+    liveContentSummaryDeliveryMode?: LiveContentSummaryDeliveryMode;
     mediaPath: string;
     source: string;
   }): void {

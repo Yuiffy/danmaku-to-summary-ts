@@ -105,6 +105,42 @@ describe('LiveSessionManager nearby segment recovery', () => {
     ]);
   });
 
+  test('ignores a duplicate FileClosed path without reviving a completed session', () => {
+    const manager = new LiveSessionManager();
+    const roomId = '25788785';
+    const recording = writeRecording(
+      tempDir,
+      `${RECORD_PREFIX}-25788785-20260703-011248-481-live.flv`,
+      new Date(2026, 6, 3, 1, 15, 0)
+    );
+    const openTime = new Date(2026, 6, 3, 1, 12, 48);
+    const closeTime = new Date(2026, 6, 3, 1, 15, 0);
+
+    manager.createOrGetSession(roomId, 'SUI', 'live');
+    expect(manager.addSegment(
+      roomId,
+      recording,
+      recording.replace(/\.flv$/, '.xml'),
+      openTime,
+      closeTime,
+      closeTime
+    )).toBe(true);
+    manager.markAsCompleted(roomId);
+
+    const duplicateAdded = manager.addSegment(
+      roomId,
+      path.join(tempDir, '.', path.basename(recording)),
+      recording.replace(/\.flv$/, '.xml'),
+      openTime,
+      closeTime,
+      closeTime
+    );
+
+    expect(duplicateAdded).toBe(false);
+    expect(manager.getSession(roomId)?.status).toBe('completed');
+    expect(manager.getSession(roomId)?.segments).toHaveLength(1);
+  });
+
   test('recovers same-room adjacent recordings despite title changes and bak location', () => {
     const manager = new LiveSessionManager();
     const roomId = '25788785';

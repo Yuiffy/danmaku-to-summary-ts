@@ -1,4 +1,5 @@
 import builtins
+import hashlib
 import importlib.util
 import json
 import os
@@ -622,6 +623,7 @@ class MultiReferenceComicTests(unittest.TestCase):
             "25788785",
             "highlight",
             ["shiori", "shiori"],
+            full_live_source_sha256="b" * 64,
         )
         meta = json.loads(
             Path(comic.comic_script_meta_path(str(output))).read_text(encoding="utf-8")
@@ -630,6 +632,7 @@ class MultiReferenceComicTests(unittest.TestCase):
         self.assertEqual(meta["schemaVersion"], comic.COMIC_SCRIPT_META_SCHEMA_VERSION)
         self.assertEqual(meta["policyVersion"], comic.COMIC_SCRIPT_POLICY_VERSION)
         self.assertEqual(meta["appearedStreamerIds"], ["shiori"])
+        self.assertEqual(meta["fullLiveSourceSha256"], "b" * 64)
 
     def test_live_context_constrains_storyboard_and_final_image_prompt(self):
         live_context = {
@@ -922,6 +925,104 @@ process.stdout.write(context.buildSharedLiveSourcePrefix(
         self.assertIn("小岁说启动 明日方舟", python_prefix)
         self.assertIn("声学分离元数据", python_prefix)
         self.assertNotIn("收藏集表情包", python_prefix)
+
+    def test_comic_experiment_uses_sidecar_shared_prefix_without_rebuilding(self):
+        self.config["ai"]["text"] = {
+            "sharedPromptCache": {
+                "enabled": True,
+                "explicitRolloutPercent": 0,
+            }
+        }
+        self.config["ai"]["roomSettings"]["25788785"]["fullLiveContextExperiment"] = {
+            "enabled": True,
+            "tasks": ["comic"],
+            "promptCacheRolloutPercent": 100,
+        }
+        shared_prefix = "\n".join([
+            comic.SHARED_PROMPT_CACHE_START,
+            "全量 SRT 第一行",
+            "全量聚合弹幕 第二行",
+            comic.SHARED_PROMPT_CACHE_END,
+        ])
+        source_text = "全量 SRT 第一行\n全量聚合弹幕 第二行"
+        sidecar_path = Path(comic.full_live_context_path(str(self.highlight)))
+        sidecar_path.write_text(json.dumps({
+            "schemaVersion": 1,
+            "sharedPrefix": shared_prefix,
+            "sourceText": source_text,
+            "sourceSha256": hashlib.sha256(source_text.encode("utf-8")).hexdigest(),
+            "sharedPrefixSha256": hashlib.sha256(shared_prefix.encode("utf-8")).hexdigest(),
+        }, ensure_ascii=False), encoding="utf-8")
+
+        with mock.patch.dict(os.environ, {"FULL_LIVE_CONTEXT_PATH": str(sidecar_path)}):
+            loaded = comic.load_full_live_context_sidecar(
+                str(self.highlight),
+                "25788785",
+                self.config,
+                task="comic",
+            )
+
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded["sharedPrefix"], shared_prefix)
+        prompt = comic.build_comic_generation_prompt(
+            "白发红瞳女生",
+            "裁剪后的高光不应替换全量输入",
+            "25788785",
+            shared_source_prefix=loaded["sharedPrefix"],
+        )
+        self.assertTrue(prompt.startswith(shared_prefix + "\n\n【漫画脚本任务】"))
+        self.assertNotIn("裁剪后的高光不应替换全量输入", prompt)
+
+        cache_plan = comic.build_explicit_prompt_cache_plan(
+            prompt,
+            self.config,
+            "gpt-5.6-luna",
+            comic.get_full_live_context_rollout_percent(
+                self.config,
+                "25788785",
+                "comic",
+            ),
+        )
+        self.assertTrue(cache_plan["enabled"])
+        self.assertEqual(cache_plan["prefix"], shared_prefix)
+        self.assertEqual(cache_plan["rolloutPercent"], 100)
+
+    def test_comic_experiment_rejects_tampered_sidecar_hashes(self):
+        self.config["ai"]["roomSettings"]["25788785"]["fullLiveContextExperiment"] = {
+            "enabled": True,
+            "tasks": ["comic"],
+        }
+        source_text = "完整直播内容"
+        shared_prefix = "\n".join([
+            comic.SHARED_PROMPT_CACHE_START,
+            source_text,
+            comic.SHARED_PROMPT_CACHE_END,
+        ])
+        valid_payload = {
+            "schemaVersion": 1,
+            "sharedPrefix": shared_prefix,
+            "sourceText": source_text,
+            "sourceSha256": hashlib.sha256(source_text.encode("utf-8")).hexdigest(),
+            "sharedPrefixSha256": hashlib.sha256(shared_prefix.encode("utf-8")).hexdigest(),
+        }
+        sidecar_path = Path(comic.full_live_context_path(str(self.highlight)))
+
+        for hash_field in ("sourceSha256", "sharedPrefixSha256"):
+            with self.subTest(hash_field=hash_field):
+                payload = {**valid_payload, hash_field: "0" * 64}
+                sidecar_path.write_text(
+                    json.dumps(payload, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                with mock.patch.dict(os.environ, {"FULL_LIVE_CONTEXT_PATH": str(sidecar_path)}):
+                    loaded = comic.load_full_live_context_sidecar(
+                        str(self.highlight),
+                        "25788785",
+                        self.config,
+                        task="comic",
+                    )
+
+                self.assertIsNone(loaded)
 
     def test_comic_script_prompt_puts_shared_facts_before_task_instructions(self):
         self.config["ai"]["text"] = {"sharedPromptCache": {"enabled": True}}

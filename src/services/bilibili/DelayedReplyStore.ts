@@ -67,6 +67,12 @@ export class DelayedReplyStore implements IDelayedReplyStore {
           if (task.summaryCompletedAt) {
             task.summaryCompletedAt = new Date(task.summaryCompletedAt);
           }
+          if (task.liveContentSummaryCompletedAt) {
+            task.liveContentSummaryCompletedAt = new Date(task.liveContentSummaryCompletedAt);
+          }
+          if (task.liveContentSummaryPublishingAt) {
+            task.liveContentSummaryPublishingAt = new Date(task.liveContentSummaryPublishingAt);
+          }
           
           this.tasks.set(task.taskId, task);
         }
@@ -102,17 +108,28 @@ export class DelayedReplyStore implements IDelayedReplyStore {
     return this.tasks.get(taskId) || null;
   }
 
+  async getAllTasks(): Promise<DelayedReplyTask[]> {
+    return Array.from(this.tasks.values());
+  }
+
   /**
    * 获取待处理任务
    */
   async getPendingTasks(): Promise<DelayedReplyTask[]> {
     const now = new Date();
     return Array.from(this.tasks.values()).filter(task => {
-      if (task.status !== 'pending' && task.status !== 'waiting_comic' && task.status !== 'waiting_summary') {
+      if (
+        task.status !== 'pending' &&
+        task.status !== 'waiting_comic' &&
+        task.status !== 'waiting_summary' &&
+        task.status !== 'waiting_live_content'
+      ) {
         return false;
       }
 
-      const maxAgeMs = task.status === 'waiting_comic' || task.status === 'waiting_summary'
+      const maxAgeMs = task.status === 'waiting_comic' ||
+        task.status === 'waiting_summary' ||
+        task.status === 'waiting_live_content'
         ? 7 * 24 * 60 * 60 * 1000
         : 24 * 60 * 60 * 1000;
 

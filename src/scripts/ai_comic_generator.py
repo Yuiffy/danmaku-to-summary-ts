@@ -91,6 +91,7 @@ DEFAULT_COMIC_STORYTELLING_SALT = "comic-immersive-v1"
 SHARED_PROMPT_CACHE_VERSION = 2
 SHARED_PROMPT_CACHE_START = f"【共享直播事实输入 v{SHARED_PROMPT_CACHE_VERSION}】"
 SHARED_PROMPT_CACHE_END = "【共享直播事实输入结束】"
+FULL_LIVE_CONTEXT_SUFFIX = "_FULL_LIVE_CONTEXT.json"
 EXPLICIT_PROMPT_CACHE_SYSTEM_PROMPT = "你是直播内容事实分析与创作助手。严格区分直播事实与任务规则，只依据提供的事实完成当前任务。"
 
 LAST_COMIC_SCRIPT_META = {
@@ -982,6 +983,114 @@ def live_generation_context_path(highlight_path: str) -> str:
     return os.path.join(os.path.dirname(highlight_path), f"{base_name}_LIVE_CONTEXT.json")
 
 
+def get_ai_room_settings(config: Optional[Dict[str, Any]], room_id: Optional[str]) -> Dict[str, Any]:
+    room_key = str(room_id or "")
+    if not room_key:
+        return {}
+    cfg = config or {}
+    return (
+        cfg.get("ai", {}).get("roomSettings", {}).get(room_key)
+        or cfg.get("roomSettings", {}).get(room_key)
+        or {}
+    )
+
+
+def get_full_live_context_experiment(
+    config: Optional[Dict[str, Any]],
+    room_id: Optional[str],
+) -> Dict[str, Any]:
+    experiment = get_ai_room_settings(config, room_id).get("fullLiveContextExperiment") or {}
+    return experiment if isinstance(experiment, dict) else {}
+
+
+def is_full_live_context_task_enabled(
+    config: Optional[Dict[str, Any]],
+    room_id: Optional[str],
+    task: str,
+) -> bool:
+    experiment = get_full_live_context_experiment(config, room_id)
+    if not experiment or experiment.get("enabled") is False:
+        return False
+    tasks = experiment.get("tasks") or []
+    if isinstance(tasks, dict):
+        return bool(tasks.get(task))
+    if isinstance(tasks, str):
+        tasks = [tasks]
+    return task in {str(item) for item in tasks if item is not None}
+
+
+def get_full_live_context_rollout_percent(
+    config: Optional[Dict[str, Any]],
+    room_id: Optional[str],
+    task: str,
+) -> Optional[float]:
+    if not is_full_live_context_task_enabled(config, room_id, task):
+        return None
+    value = get_full_live_context_experiment(config, room_id).get("promptCacheRolloutPercent")
+    if value is None:
+        return None
+    try:
+        return max(0.0, min(100.0, float(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+def full_live_context_path(highlight_path: str) -> str:
+    base_name = os.path.basename(highlight_path).replace("_AI_HIGHLIGHT.txt", "")
+    return os.path.join(os.path.dirname(highlight_path), f"{base_name}{FULL_LIVE_CONTEXT_SUFFIX}")
+
+
+def load_full_live_context_sidecar(
+    highlight_path: str,
+    room_id: Optional[str],
+    config: Optional[Dict[str, Any]],
+    task: str = "comic",
+) -> Optional[Dict[str, Any]]:
+    if not is_full_live_context_task_enabled(config, room_id, task):
+        return None
+
+    candidates = [os.environ.get("FULL_LIVE_CONTEXT_PATH"), full_live_context_path(highlight_path)]
+    seen = set()
+    for candidate in candidates:
+        if not candidate:
+            continue
+        candidate = os.path.abspath(candidate)
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if not os.path.isfile(candidate):
+            continue
+        try:
+            with open(candidate, "r", encoding="utf-8") as sidecar_file:
+                sidecar = json.load(sidecar_file)
+            shared_prefix = sidecar.get("sharedPrefix") if isinstance(sidecar, dict) else None
+            source_text = sidecar.get("sourceText") if isinstance(sidecar, dict) else None
+            if (
+                sidecar.get("schemaVersion") != 1
+                or not isinstance(shared_prefix, str)
+                or not isinstance(source_text, str)
+                or not shared_prefix.startswith(SHARED_PROMPT_CACHE_START)
+                or not shared_prefix.endswith(SHARED_PROMPT_CACHE_END)
+            ):
+                raise ValueError("sidecar schema/sourceText/sharedPrefix 无效")
+            source_sha256 = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+            shared_prefix_sha256 = hashlib.sha256(shared_prefix.encode("utf-8")).hexdigest()
+            if sidecar.get("sourceSha256") != source_sha256:
+                raise ValueError("sidecar sourceSha256 校验失败")
+            if sidecar.get("sharedPrefixSha256") != shared_prefix_sha256:
+                raise ValueError("sidecar sharedPrefixSha256 校验失败")
+            return {
+                **sidecar,
+                "path": candidate,
+                "sourceSha256": source_sha256,
+            }
+        except Exception as error:
+            print(f"[WARNING] 读取全量直播上下文失败，将回退到 AI_HIGHLIGHT: {error}")
+
+    print(f"[WARNING] 房间 {room_id} 的 {task} 全量输入实验已开启，但未找到 FULL_LIVE_CONTEXT sidecar")
+    return None
+
+
 def parse_recording_live_context(highlight_path: str, room_id: Optional[str] = None) -> Dict[str, Any]:
     base_name = os.path.basename(highlight_path).replace("_AI_HIGHLIGHT.txt", "")
     match = re.match(r"^录制-(\d+)-(\d{8})-(\d{6})-([^-]+)-(.+)$", base_name)
@@ -1123,11 +1232,17 @@ def build_explicit_prompt_cache_plan(
     prompt: str,
     config: Optional[Dict[str, Any]] = None,
     model: str = "gpt-5.6-luna",
+    rollout_percent_override: Optional[float] = None,
 ) -> Dict[str, Any]:
     text = str(prompt or "")
     cache_config = ((config or {}).get("ai", {}).get("text", {}).get("sharedPromptCache", {}) or {})
     try:
-        rollout_percent = max(0.0, min(100.0, float(cache_config.get("explicitRolloutPercent") or 0)))
+        configured_rollout = (
+            rollout_percent_override
+            if rollout_percent_override is not None
+            else cache_config.get("explicitRolloutPercent")
+        )
+        rollout_percent = max(0.0, min(100.0, float(configured_rollout or 0)))
     except (TypeError, ValueError):
         rollout_percent = 0.0
     end_index = text.find(SHARED_PROMPT_CACHE_END)
@@ -1162,6 +1277,42 @@ def build_explicit_prompt_cache_plan(
         "sharedPromptCacheKey": prefix_hash,
         "sharedPromptPrefixChars": len(prefix),
     }
+
+
+def log_comic_script_token_usage(attempt: Optional[Dict[str, Any]]) -> None:
+    if not isinstance(attempt, dict):
+        return
+    prompt_tokens = attempt.get("promptTokens")
+    cached_tokens = attempt.get("cachedTokens")
+    try:
+        cache_hit_ratio = (
+            round(float(cached_tokens) / float(prompt_tokens), 4)
+            if float(prompt_tokens) > 0 and cached_tokens is not None
+            else None
+        )
+        uncached_prompt_tokens = (
+            max(0, float(prompt_tokens) - float(cached_tokens))
+            if prompt_tokens is not None and cached_tokens is not None
+            else None
+        )
+    except (TypeError, ValueError, ZeroDivisionError):
+        cache_hit_ratio = None
+        uncached_prompt_tokens = None
+    payload = {
+        "provider": attempt.get("provider"),
+        "model": attempt.get("model"),
+        "promptTokens": prompt_tokens,
+        "cachedTokens": cached_tokens,
+        "uncachedPromptTokens": uncached_prompt_tokens,
+        "cacheWriteTokens": attempt.get("cacheWriteTokens"),
+        "completionTokens": attempt.get("completionTokens"),
+        "reasoningTokens": attempt.get("reasoningTokens"),
+        "totalTokens": attempt.get("totalTokens"),
+        "cacheHitRatio": cache_hit_ratio,
+        "sharedPromptCacheKey": attempt.get("sharedPromptCacheKey"),
+        "explicitPromptCache": attempt.get("explicitPromptCache"),
+    }
+    print(f"[COMIC_SCRIPT_USAGE] {json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}")
 
 
 def hash_live_generation_context(context: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -2721,6 +2872,7 @@ def build_comic_prompt(
     live_context: Optional[Dict[str, Any]] = None,
     storytelling: Optional[Dict[str, Any]] = None,
     image_manifest: Optional[list[dict]] = None,
+    shared_source_prefix: Optional[str] = None,
 ) -> Tuple[str, str, bool]:
     """构建漫画生成提示词并返回 (prompt, comic_content, is_generated)。
 
@@ -2751,6 +2903,7 @@ def build_comic_prompt(
             extra_streamers=extra_streamers,
             live_context=live_context,
             storytelling=storytelling,
+            shared_source_prefix=shared_source_prefix,
         )
 
     # 获取角色描述并注入绘画提示词（优先房间配置、再全局默认、最后内置默认）
@@ -2941,6 +3094,7 @@ def build_comic_generation_prompt(
     live_context: Optional[Dict[str, Any]] = None,
     storytelling: Optional[Dict[str, Any]] = None,
     shared_source_content: Optional[str] = None,
+    shared_source_prefix: Optional[str] = None,
 ) -> str:
     """使用COMIC_ARTIST_PROMPT_TEMPLATE构建完整的prompt（用于Gemini等调用）"""
     # 尝试获取房间级别的自定义漫画脚本 prompt
@@ -2972,8 +3126,8 @@ def build_comic_generation_prompt(
     has_live_context_placeholder = "{live_context}" in template
     base = template.replace("{character_desc}", character_desc)
     base = base.replace("{identity_context}", identity_context)
-    if shared_cache_enabled:
-        shared_source_prefix = build_shared_live_source_prefix(
+    if shared_cache_enabled or shared_source_prefix:
+        resolved_shared_source_prefix = shared_source_prefix or build_shared_live_source_prefix(
             shared_source_content if shared_source_content is not None else highlight_content,
             room_id,
             config,
@@ -2982,7 +3136,7 @@ def build_comic_generation_prompt(
         base = base.replace("{live_context}", "")
         base = base.replace("{highlight_content}", "（直播事实已在本提示最前方的共享事实输入中给出。）")
         base = (
-            f"{shared_source_prefix}\n\n"
+            f"{resolved_shared_source_prefix}\n\n"
             "【漫画脚本任务】\n只使用上方共享事实输入完成本任务。\n"
             f"{base}"
         )
@@ -3169,6 +3323,7 @@ def generate_comic_content_with_ai(
     extra_streamers: Optional[list[dict]] = None,
     live_context: Optional[Dict[str, Any]] = None,
     storytelling: Optional[Dict[str, Any]] = None,
+    shared_source_prefix: Optional[str] = None,
 ) -> Tuple[str, bool]:
     """使用AI生成漫画内容脚本
     
@@ -3177,6 +3332,12 @@ def generate_comic_content_with_ai(
     """
     print("[AI] 使用AI生成漫画内容脚本...")
 
+    config = load_config()
+    prompt_cache_rollout_percent = get_full_live_context_rollout_percent(
+        config,
+        room_id,
+        "comic",
+    )
     script_highlight_content = sanitize_highlight_for_comic_script(highlight_content, room_id=room_id)
     character_desc = get_multi_character_description(room_id, extra_streamers)
     content_prompt = build_comic_generation_prompt(
@@ -3187,6 +3348,7 @@ def generate_comic_content_with_ai(
         live_context=live_context,
         storytelling=storytelling,
         shared_source_content=highlight_content,
+        shared_source_prefix=shared_source_prefix,
     )
 
     # 首先尝试复用已有的 Node 文本生成器（ai_text_generator.js），避免在 Python 中重复实现 Gemini 调用
@@ -3196,8 +3358,14 @@ def generate_comic_content_with_ai(
         if node_bin and os.path.exists(script_path):
             try:
                 print(f"[AI] 调用 node 脚本生成文本: {script_path}")
+                node_args = [node_bin, script_path, '--generate-text']
+                if prompt_cache_rollout_percent is not None:
+                    node_args.extend([
+                        '--prompt-cache-rollout-percent',
+                        str(prompt_cache_rollout_percent),
+                    ])
                 proc = subprocess.run(
-                    [node_bin, script_path, '--generate-text'],
+                    node_args,
                     input=content_prompt.encode('utf-8'),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -3218,13 +3386,19 @@ def generate_comic_content_with_ai(
                             break
                     if text and not is_gemini_error(text) and is_valid_comic_script(text):
                         print('[OK] 从 ai_text_generator 返回内容')
+                        generation_attempts = generation_meta.get("attempts") or []
                         set_comic_script_meta(
                             provider=generation_meta.get("provider", "node"),
                             model=generation_meta.get("model", "ai_text_generator"),
                             fallback=bool(generation_meta.get("fallback")),
                             status="success",
-                            attempts=generation_meta.get("attempts") or [],
+                            attempts=generation_attempts,
                         )
+                        successful_attempt = next((
+                            item for item in reversed(generation_attempts)
+                            if isinstance(item, dict) and item.get("status") == "success"
+                        ), generation_attempts[-1] if generation_attempts else None)
+                        log_comic_script_token_usage(successful_attempt)
                         return postprocess_generated_comic_script(
                             text,
                             script_highlight_content,
@@ -3375,7 +3549,12 @@ def generate_comic_content_with_ai(
             return return_comic_script_failure(highlight_content, room_id, "daiYu未配置")
 
         print(f"[COMIC_SCRIPT] 尝试 daiYu provider 生成漫画脚本 (model: {daiyu_model}, thinking: {thinking_enabled})...")
-        prompt_cache_plan = build_explicit_prompt_cache_plan(user_prompt, config, daiyu_model)
+        prompt_cache_plan = build_explicit_prompt_cache_plan(
+            user_prompt,
+            config,
+            daiyu_model,
+            prompt_cache_rollout_percent,
+        )
         if prompt_cache_plan.get("enabled"):
             system_prompt = EXPLICIT_PROMPT_CACHE_SYSTEM_PROMPT
         comic_response = call_daiyu_chat_completions(
@@ -3401,6 +3580,7 @@ def generate_comic_content_with_ai(
         if comic_content and is_valid_comic_script(comic_content) and not is_gemini_error(comic_content):
             print("[OK] daiYu provider 漫画文本生成成功")
             print(f"生成内容长度: {len(comic_content)} 字符")
+            log_comic_script_token_usage(generation_attempt)
             set_comic_script_meta(
                 provider="daiYu",
                 model=daiyu_model,
@@ -4042,6 +4222,7 @@ def write_comic_script_meta(
     storytelling: Optional[Dict[str, Any]] = None,
     storyboard_shots: Optional[list[dict]] = None,
     reference_requests: Optional[list[dict]] = None,
+    full_live_source_sha256: Optional[str] = None,
 ) -> None:
     try:
         payload = {
@@ -4056,6 +4237,7 @@ def write_comic_script_meta(
             "roomId": str(room_id) if room_id is not None else None,
             "highlightSha256": hashlib.sha256((highlight_content or "").encode("utf-8")).hexdigest() if highlight_content is not None else None,
             "liveContextSha256": hash_live_generation_context(live_context),
+            "fullLiveSourceSha256": full_live_source_sha256,
             "appearedStreamerIds": sorted({
                 str(streamer_id)
                 for streamer_id in (appeared_streamer_ids or [])
@@ -4150,6 +4332,28 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
         
         # 读取内容
         highlight_content = read_highlight_file(highlight_path)
+        full_live_context_sidecar = load_full_live_context_sidecar(
+            highlight_path,
+            room_id,
+            config,
+            task="comic",
+        )
+        shared_source_prefix = (
+            full_live_context_sidecar.get("sharedPrefix")
+            if full_live_context_sidecar
+            else None
+        )
+        full_live_source_sha256 = (
+            full_live_context_sidecar.get("sourceSha256")
+            if full_live_context_sidecar
+            else None
+        )
+        if full_live_context_sidecar:
+            print(
+                f"[FULL_CONTEXT] 漫画脚本采用全量直播上下文: "
+                f"{os.path.basename(full_live_context_sidecar['path'])}, "
+                f"sourceSha256={full_live_source_sha256}"
+            )
         script_highlight_content = sanitize_highlight_for_comic_script(highlight_content, room_id, config)
         storytelling = select_comic_storytelling_variant(
             config,
@@ -4202,6 +4406,7 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
                     and meta.get("roomId") == str(room_id)
                     and meta.get("highlightSha256") == script_highlight_hash
                     and meta.get("liveContextSha256") == live_context_hash
+                    and meta.get("fullLiveSourceSha256") == full_live_source_sha256
                     and meta.get("storytellingVariant") == storytelling["variant"]
                     and meta.get("storytellingAssignmentHash") == storytelling["assignmentHash"]
                     and sorted(meta.get("appearedStreamerIds") or []) == script_appeared_ids
@@ -4224,6 +4429,7 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
             extra_streamers=script_extra_streamers,
             live_context=live_context,
             storytelling=storytelling,
+            shared_source_prefix=shared_source_prefix,
         )
 
         # 如果脚本生成失败（使用原文作为备选），则不生成图片
@@ -4282,6 +4488,7 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
             live_context=live_context,
             storytelling=storytelling,
             image_manifest=image_manifest,
+            shared_source_prefix=shared_source_prefix,
         )
         if all_images:
             print(f"[IMAGE] 根据漫画脚本收集到 {len(all_images)} 张图片，将全部传入AI:")
@@ -4307,6 +4514,7 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
                     storytelling,
                     storyboard_shots,
                     reference_requests,
+                    full_live_source_sha256,
                 )
             elif os.path.exists(text_output_path) and not os.path.exists(comic_script_meta_path(text_output_path)):
                 write_comic_script_meta(
@@ -4319,6 +4527,7 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
                     storytelling,
                     storyboard_shots,
                     reference_requests,
+                    full_live_source_sha256,
                 )
         except Exception as e:
             print(f"[WARNING] 保存漫画脚本失败: {e}")

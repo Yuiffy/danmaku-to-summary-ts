@@ -22,6 +22,9 @@ export interface IDelayedReplyStore {
    */
   getTask(taskId: string): Promise<DelayedReplyTask | null>;
 
+  /** 获取持久化的全部任务，用于重启后恢复幂等历史。 */
+  getAllTasks(): Promise<DelayedReplyTask[]>;
+
   /**
    * 获取待处理任务
    */

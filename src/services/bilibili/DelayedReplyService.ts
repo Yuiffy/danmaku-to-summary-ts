@@ -9,7 +9,13 @@ import { ConfigProvider } from '../../core/config/ConfigProvider';
 import { IDelayedReplyService } from './interfaces/IDelayedReplyService';
 import { IDelayedReplyStore } from './interfaces/IDelayedReplyStore';
 import { IBilibiliAPIService } from './interfaces/IBilibiliAPIService';
-import { DelayedReplyTask, BilibiliDynamic, RoomLiveStatus, PublishCommentResponse } from './interfaces/types';
+import {
+  DelayedReplyTask,
+  BilibiliDynamic,
+  RoomLiveStatus,
+  PublishCommentResponse,
+  LiveContentSummaryDeliveryMode,
+} from './interfaces/types';
 import { BilibiliConfigHelper } from './BilibiliConfigHelper';
 import { WeChatWorkNotifier } from '../notification/WeChatWorkNotifier';
 
@@ -30,6 +36,10 @@ export class DelayedReplyService implements IDelayedReplyService {
   private static readonly FIRST_REPLY_WAVE_WINDOW_MS = 5 * 60 * 1000;
   private static readonly MAX_COMIC_WAIT_COUNT = 5;
   private static readonly MAX_SUPPLEMENTAL_COMIC_WAIT_COUNT = 30;
+  private static readonly LIVE_CONTENT_WAIT_INTERVAL_MS = 60 * 1000;
+  private static readonly MAX_COMMENT_CHARACTERS = 1000;
+  private static readonly SUI_ROOM_ID = '25788785';
+  private static readonly SHIORI_ROOM_ID = '26966466';
   private static readonly DEFAULT_MAX_TASK_AGE_HOURS = 24;
   private static readonly SUPPLEMENTAL_COMIC_REPLY_PREFIX = '（补图）';
   private static readonly LIVE_RECHECK_INTERVAL_MS = 2 * 60 * 1000;
@@ -121,7 +131,9 @@ export class DelayedReplyService implements IDelayedReplyService {
     comicImagePath?: string, 
     delaySeconds?: number,
     liveStartTime?: Date,
-    liveEndTime?: Date
+    liveEndTime?: Date,
+    liveContentSummaryPath?: string,
+    liveContentSummaryDeliveryMode?: LiveContentSummaryDeliveryMode
   ): Promise<string> {
     const resolvedPaths = this.resolveDelayedReplyPaths(roomId, goodnightTextPath, comicImagePath);
     goodnightTextPath = resolvedPaths.goodnightTextPath;
@@ -144,7 +156,9 @@ export class DelayedReplyService implements IDelayedReplyService {
       comicImagePath,
       delaySeconds,
       liveStartTime,
-      liveEndTime
+      liveEndTime,
+      liveContentSummaryPath,
+      liveContentSummaryDeliveryMode
     );
     this.addTaskLocks.set(dedupeKey, createTaskPromise);
 
@@ -163,9 +177,18 @@ export class DelayedReplyService implements IDelayedReplyService {
     comicImagePath?: string,
     delaySeconds?: number,
     liveStartTime?: Date,
-    liveEndTime?: Date
+    liveEndTime?: Date,
+    liveContentSummaryPath?: string,
+    liveContentSummaryDeliveryMode?: LiveContentSummaryDeliveryMode
   ): Promise<string> {
     try {
+      liveContentSummaryPath = liveContentSummaryPath
+        ? path.normalize(liveContentSummaryPath)
+        : undefined;
+      liveContentSummaryDeliveryMode = this.resolveLiveContentSummaryDeliveryMode(
+        roomId,
+        liveContentSummaryDeliveryMode
+      );
       this.logger.info(`[延迟回复] 尝试添加任务: roomId=${roomId}, goodnightTextPath=${goodnightTextPath}, comicImagePath=${comicImagePath}`);
       
       // 获取延迟回复配置
@@ -184,11 +207,19 @@ export class DelayedReplyService implements IDelayedReplyService {
                   task.status === 'pending' ||
                   task.status === 'processing' ||
                   task.status === 'waiting_comic' ||
-                  task.status === 'waiting_summary'
+                  task.status === 'waiting_summary' ||
+                  task.status === 'waiting_live_content'
                 )
       );
 
       if (exactExistingTask) {
+        if (liveContentSummaryPath) {
+          await this.registerLiveContentSummaryForTask(
+            exactExistingTask,
+            liveContentSummaryPath,
+            liveContentSummaryDeliveryMode
+          );
+        }
         if (exactExistingTask.status === 'waiting_comic' && comicImagePath && fs.existsSync(comicImagePath)) {
           exactExistingTask.scheduledTime = new Date();
           exactExistingTask.error = undefined;
@@ -220,6 +251,13 @@ export class DelayedReplyService implements IDelayedReplyService {
         : undefined;
 
       if (completedTextTaskAwaitingRecoveredComic) {
+        if (liveContentSummaryPath) {
+          await this.registerLiveContentSummaryForTask(
+            completedTextTaskAwaitingRecoveredComic,
+            liveContentSummaryPath,
+            liveContentSummaryDeliveryMode
+          );
+        }
         completedTextTaskAwaitingRecoveredComic.comicImagePath = comicImagePath;
         completedTextTaskAwaitingRecoveredComic.comicWaitCount = 0;
         completedTextTaskAwaitingRecoveredComic.status = 'waiting_comic';
@@ -245,12 +283,18 @@ export class DelayedReplyService implements IDelayedReplyService {
 
       const recentCompletedExactTask = Array.from(this.tasks.values()).find(
         task => this.isSameDelayedReplyTask(task, roomId, goodnightTextPath, comicImagePath) &&
-                task.status === 'completed' &&
-                now.getTime() - task.createTime.getTime() < 30 * 60 * 1000
+                task.status === 'completed'
       );
 
       if (recentCompletedExactTask) {
-        this.logger.info('跳过添加任务：相同延迟回复任务已在30分钟内完成', {
+        if (liveContentSummaryPath) {
+          await this.registerLiveContentSummaryForTask(
+            recentCompletedExactTask,
+            liveContentSummaryPath,
+            liveContentSummaryDeliveryMode
+          );
+        }
+        this.logger.info('跳过添加任务：相同延迟回复任务已完成', {
           roomId,
           existingTaskId: recentCompletedExactTask.taskId,
           completedTaskCreatedAt: recentCompletedExactTask.createTime.toISOString()
@@ -264,7 +308,11 @@ export class DelayedReplyService implements IDelayedReplyService {
                   task.status === 'pending' ||
                   task.status === 'processing' ||
                   (
-                    (task.status === 'waiting_comic' || task.status === 'waiting_summary') &&
+                    (
+                      task.status === 'waiting_comic' ||
+                      task.status === 'waiting_summary' ||
+                      task.status === 'waiting_live_content'
+                    ) &&
                     path.normalize(task.goodnightTextPath) === path.normalize(goodnightTextPath)
                   )
                 )
@@ -332,7 +380,11 @@ export class DelayedReplyService implements IDelayedReplyService {
         retryCount: 0,
         liveStartTime,
         liveEndTime,
-        checkCount: 0
+        checkCount: 0,
+        liveContentSummaryPath,
+        liveContentSummaryDeliveryMode,
+        liveContentSummaryState: liveContentSummaryPath ? 'waiting' : undefined,
+        liveContentSummaryRetryCount: 0
       };
 
       try {
@@ -513,6 +565,101 @@ export class DelayedReplyService implements IDelayedReplyService {
       return task;
     } finally {
       this.executingTaskIds.delete(taskId);
+    }
+  }
+
+  async registerLiveContentSummary(
+    roomId: string,
+    goodnightTextPath: string,
+    liveContentSummaryPath: string,
+    deliveryMode?: LiveContentSummaryDeliveryMode
+  ): Promise<DelayedReplyTask | null> {
+    const normalizedTextPath = path.normalize(goodnightTextPath);
+    const normalizedSummaryPath = path.normalize(liveContentSummaryPath);
+    const resolvedMode = this.resolveLiveContentSummaryDeliveryMode(roomId, deliveryMode);
+    let task = Array.from(this.tasks.values())
+      .filter(candidate => this.isSameDelayedReplyTextTask(candidate, roomId, normalizedTextPath))
+      .sort((a, b) => b.createTime.getTime() - a.createTime.getTime())[0];
+
+    if (!task) {
+      const storedTasks = await this.store.getAllTasks();
+      task = storedTasks
+        .filter(candidate => this.isSameDelayedReplyTextTask(candidate, roomId, normalizedTextPath))
+        .sort((a, b) => b.createTime.getTime() - a.createTime.getTime())[0];
+      if (task) {
+        this.tasks.set(task.taskId, task);
+      }
+    }
+
+    if (!task) {
+      this.logger.warn('未找到可注册直播梗概的延迟回复任务', {
+        roomId,
+        goodnightTextPath: normalizedTextPath,
+        liveContentSummaryPath: normalizedSummaryPath
+      });
+      return null;
+    }
+
+    await this.registerLiveContentSummaryForTask(task, normalizedSummaryPath, resolvedMode);
+    return task;
+  }
+
+  private async registerLiveContentSummaryForTask(
+    task: DelayedReplyTask,
+    liveContentSummaryPath: string,
+    deliveryMode: LiveContentSummaryDeliveryMode
+  ): Promise<void> {
+    task.liveContentSummaryPath = path.normalize(liveContentSummaryPath);
+    task.liveContentSummaryDeliveryMode = deliveryMode;
+
+    if (!this.isLiveContentSummaryDelivered(task) && task.liveContentSummaryState !== 'publishing') {
+      const summary = this.readLiveContentSummary(task);
+      task.liveContentSummaryState = summary.kind === 'success'
+        ? 'ready'
+        : summary.kind === 'failed'
+          ? 'failed'
+          : 'waiting';
+      task.liveContentSummaryError = summary.kind === 'failed' ? summary.error : undefined;
+    }
+
+    let shouldSchedule = false;
+    if (task.replyId && !this.isLiveContentSummaryDelivered(task)) {
+      if (
+        task.liveContentSummaryState !== 'failed' &&
+        (task.status === 'completed' || task.status === 'failed')
+      ) {
+        task.status = 'waiting_live_content';
+        task.scheduledTime = task.liveContentSummaryState === 'ready'
+          ? new Date()
+          : new Date(Date.now() + DelayedReplyService.LIVE_CONTENT_WAIT_INTERVAL_MS);
+        shouldSchedule = true;
+      } else if (
+        task.status === 'waiting_comic' &&
+        task.liveContentSummaryState === 'ready' &&
+        deliveryMode === 'separate'
+      ) {
+        task.scheduledTime = new Date();
+        shouldSchedule = true;
+      } else if (
+        task.status === 'waiting_live_content' &&
+        task.liveContentSummaryState === 'ready'
+      ) {
+        task.scheduledTime = new Date();
+        shouldSchedule = true;
+      }
+    }
+
+    await this.store.updateTask(task.taskId, {
+      liveContentSummaryPath: task.liveContentSummaryPath,
+      liveContentSummaryDeliveryMode: task.liveContentSummaryDeliveryMode,
+      liveContentSummaryState: task.liveContentSummaryState,
+      liveContentSummaryError: task.liveContentSummaryError,
+      status: task.status,
+      scheduledTime: task.scheduledTime
+    });
+
+    if (shouldSchedule) {
+      this.scheduleTask(task);
     }
   }
 
@@ -736,11 +883,21 @@ export class DelayedReplyService implements IDelayedReplyService {
    */
   private async loadTasks(): Promise<void> {
     try {
-      const pendingTasks = await this.store.getPendingTasks();
+      const storedTasks = await this.store.getAllTasks();
       const uniqueTasks: DelayedReplyTask[] = [];
       const seenTaskKeys = new Set<string>();
 
-      for (const task of pendingTasks) {
+      for (const task of storedTasks) {
+        this.tasks.set(task.taskId, task);
+        const isPending =
+          task.status === 'pending' ||
+          task.status === 'waiting_comic' ||
+          task.status === 'waiting_summary' ||
+          task.status === 'waiting_live_content';
+        if (!isPending) {
+          continue;
+        }
+
         if (this.isTaskExpiredForCurrentStatus(task)) {
           await this.suppressStaleTask(task, 'stale delayed reply suppressed on service startup');
           continue;
@@ -773,11 +930,10 @@ export class DelayedReplyService implements IDelayedReplyService {
         seenTaskKeys.add(dedupeKey);
         uniqueTasks.push(task);
         this.restoredTaskIds.add(task.taskId);
-        this.tasks.set(task.taskId, task);
         this.scheduleTask(task);
       }
 
-      this.logger.info(`加载了 ${uniqueTasks.length} 个待处理任务，压制重复任务 ${pendingTasks.length - uniqueTasks.length} 个`);
+      this.logger.info(`加载了 ${uniqueTasks.length} 个待处理任务，并恢复 ${storedTasks.length} 条幂等历史`);
     } catch (error) {
       this.logger.error('加载延迟任务失败', undefined, error instanceof Error ? error : new Error(String(error)));
     }
@@ -810,7 +966,8 @@ export class DelayedReplyService implements IDelayedReplyService {
       task =>
         task.status === 'pending' ||
         task.status === 'waiting_comic' ||
-        task.status === 'waiting_summary'
+        task.status === 'waiting_summary' ||
+        task.status === 'waiting_live_content'
     );
 
     if (pendingTasks.length === 0) {
@@ -839,6 +996,10 @@ export class DelayedReplyService implements IDelayedReplyService {
           this.logger.info(
             `   ⏰ [${task.taskId.slice(0, 8)}] ${anchorName} - 等待重试汇总动态回复，还剩 ${remainingMinutes} 分钟`
           );
+        } else if (task.status === 'waiting_live_content') {
+          this.logger.info(
+            `   ⏰ [${task.taskId.slice(0, 8)}] ${anchorName} - 等待本场直播梗概，还剩 ${remainingMinutes} 分钟`
+          );
         } else {
           const checkCount = task.checkCount || 0;
           const remainingChecks = MAX_CHECK_COUNT - checkCount;
@@ -865,7 +1026,8 @@ export class DelayedReplyService implements IDelayedReplyService {
           (
             task.status === 'pending' ||
             task.status === 'waiting_comic' ||
-            task.status === 'waiting_summary'
+            task.status === 'waiting_summary' ||
+            task.status === 'waiting_live_content'
           ) &&
           task.scheduledTime <= now
         ) {
@@ -1009,12 +1171,15 @@ export class DelayedReplyService implements IDelayedReplyService {
     const taskLiveStart = task.liveStartTime?.getTime();
     const taskLiveEnd = task.liveEndTime?.getTime();
 
-    if (taskLiveStart && liveStart >= taskLiveStart - toleranceMs && liveStart <= taskCreateTime + toleranceMs) {
-      return true;
+    if (taskLiveEnd) {
+      const earliestSameLiveStart = taskLiveStart
+        ? taskLiveStart - toleranceMs
+        : Number.NEGATIVE_INFINITY;
+      return liveStart >= earliestSameLiveStart && liveStart <= taskLiveEnd + toleranceMs;
     }
 
-    if (taskLiveEnd && liveStart <= taskLiveEnd + toleranceMs) {
-      return true;
+    if (taskLiveStart) {
+      return liveStart >= taskLiveStart - toleranceMs && liveStart <= taskCreateTime + toleranceMs;
     }
 
     return liveStart <= taskCreateTime + toleranceMs;
@@ -1299,12 +1464,395 @@ export class DelayedReplyService implements IDelayedReplyService {
     return `${prefix}\n${replyText}`;
   }
 
-  private async completeWithoutSummaryDynamic(task: DelayedReplyTask): Promise<void> {
+  private resolveLiveContentSummaryDeliveryMode(
+    roomId: string,
+    requestedMode?: LiveContentSummaryDeliveryMode
+  ): LiveContentSummaryDeliveryMode {
+    if (requestedMode === 'separate' || requestedMode === 'attach_if_ready') {
+      return requestedMode;
+    }
+
+    if (String(roomId) === DelayedReplyService.SHIORI_ROOM_ID) {
+      return 'attach_if_ready';
+    }
+    if (String(roomId) === DelayedReplyService.SUI_ROOM_ID) {
+      return 'separate';
+    }
+    return 'separate';
+  }
+
+  private isLiveContentSummaryDelivered(task: DelayedReplyTask): boolean {
+    return task.liveContentSummaryState === 'attached_main' ||
+      task.liveContentSummaryState === 'attached_supplemental' ||
+      task.liveContentSummaryState === 'published_separate' ||
+      !!task.liveContentSummaryCompletedAt;
+  }
+
+  private getLiveContentSummaryTaskUpdates(task: DelayedReplyTask): Partial<DelayedReplyTask> {
+    return {
+      liveContentSummaryPath: task.liveContentSummaryPath,
+      liveContentSummaryDeliveryMode: task.liveContentSummaryDeliveryMode,
+      liveContentSummaryState: task.liveContentSummaryState,
+      liveContentSummaryReplyId: task.liveContentSummaryReplyId,
+      liveContentSummaryAttachedTo: task.liveContentSummaryAttachedTo,
+      liveContentSummaryCompletedAt: task.liveContentSummaryCompletedAt,
+      liveContentSummaryRetryCount: task.liveContentSummaryRetryCount,
+      liveContentSummaryError: task.liveContentSummaryError,
+      liveContentSummaryForceSeparate: task.liveContentSummaryForceSeparate,
+      liveContentSummaryPublishingAt: task.liveContentSummaryPublishingAt
+    };
+  }
+
+  private normalizeLiveContentStringList(value: unknown): string[] {
+    const values = Array.isArray(value) ? value : value === null || value === undefined ? [] : [value];
+    return values
+      .map(item => String(item || '').trim())
+      .filter(Boolean);
+  }
+
+  private buildBoundedLiveContentSummaryText(
+    overview: string,
+    groups: Array<{ label: string; items: string[] }>
+  ): string {
+    const prefix = '本场直播内容：';
+    const limit = DelayedReplyService.MAX_COMMENT_CHARACTERS;
+    let result = prefix;
+
+    if (overview) {
+      const remaining = limit - result.length;
+      if (overview.length <= remaining) {
+        result += overview;
+      } else if (remaining > 3) {
+        return `${result}${overview.slice(0, remaining - 3)}...`;
+      } else {
+        return `${result}${overview.slice(0, Math.max(0, remaining))}`;
+      }
+    }
+
+    for (const group of groups) {
+      if (group.items.length === 0 || result.length >= limit) {
+        continue;
+      }
+
+      const separator = result === prefix ? '' : '；';
+      let selectedSegment = '';
+      for (let count = 1; count <= group.items.length; count++) {
+        const omittedCount = group.items.length - count;
+        const omittedSuffix = omittedCount > 0 ? `、等${omittedCount}项` : '';
+        const segment = `${group.label}${group.items.slice(0, count).join('、')}${omittedSuffix}`;
+        if (`${result}${separator}${segment}`.length > limit) {
+          break;
+        }
+        selectedSegment = segment;
+      }
+
+      if (!selectedSegment) {
+        const countOnlySegment = `${group.label}共${group.items.length}项`;
+        if (`${result}${separator}${countOnlySegment}`.length <= limit) {
+          selectedSegment = countOnlySegment;
+        }
+      }
+
+      if (selectedSegment) {
+        result = `${result}${separator}${selectedSegment}`;
+      }
+    }
+
+    return result;
+  }
+
+  private readLiveContentSummary(task: DelayedReplyTask):
+    | { kind: 'missing'; error?: string }
+    | { kind: 'failed'; error: string }
+    | { kind: 'success'; text: string } {
+    const summaryPath = task.liveContentSummaryPath;
+    if (!summaryPath || !fs.existsSync(summaryPath)) {
+      return { kind: 'missing' };
+    }
+
+    try {
+      const payload = JSON.parse(fs.readFileSync(summaryPath, 'utf8')) as {
+        status?: string;
+        error?: unknown;
+        content?: {
+          overview?: unknown;
+          activityTypes?: unknown;
+          songs?: unknown;
+          games?: unknown;
+          topics?: unknown;
+        };
+      };
+      if (payload.status === 'failed') {
+        return {
+          kind: 'failed',
+          error: String(payload.error || '直播梗概生成失败')
+        };
+      }
+      if (payload.status !== 'success') {
+        return { kind: 'missing', error: `直播梗概状态尚未完成: ${payload.status || 'unknown'}` };
+      }
+
+      const content = payload.content || {};
+      const overview = String(content.overview || '').trim();
+      const activityTypes = this.normalizeLiveContentStringList(content.activityTypes);
+      const songs = this.normalizeLiveContentStringList(content.songs);
+      const games = this.normalizeLiveContentStringList(content.games);
+      const topics = this.normalizeLiveContentStringList(content.topics);
+      const primaryOverview = overview || (activityTypes.length > 0 ? `内容：${activityTypes.join('、')}` : '');
+      if (!primaryOverview && songs.length === 0 && games.length === 0 && topics.length === 0) {
+        return { kind: 'failed', error: '直播梗概内容为空' };
+      }
+      return {
+        kind: 'success',
+        text: this.buildBoundedLiveContentSummaryText(primaryOverview, [
+          { label: '歌曲：', items: songs },
+          { label: '游戏：', items: games },
+          { label: '话题：', items: topics }
+        ])
+      };
+    } catch (error) {
+      return {
+        kind: 'missing',
+        error: `直播梗概 JSON 暂不可读: ${error instanceof Error ? error.message : String(error)}`
+      };
+    }
+  }
+
+  private composeReplyWithLiveContentSummary(
+    task: DelayedReplyTask,
+    replyText: string,
+    target: 'main' | 'supplemental'
+  ): { text: string; attached: boolean } {
+    if (
+      !task.liveContentSummaryPath ||
+      task.liveContentSummaryDeliveryMode !== 'attach_if_ready' ||
+      task.liveContentSummaryForceSeparate ||
+      this.isLiveContentSummaryDelivered(task)
+    ) {
+      return { text: replyText, attached: false };
+    }
+
+    const summary = this.readLiveContentSummary(task);
+    if (summary.kind === 'failed') {
+      task.liveContentSummaryState = 'failed';
+      task.liveContentSummaryError = summary.error;
+      return { text: replyText, attached: false };
+    }
+    if (summary.kind !== 'success') {
+      task.liveContentSummaryState = 'waiting';
+      task.liveContentSummaryError = summary.error;
+      return { text: replyText, attached: false };
+    }
+
+    task.liveContentSummaryState = 'ready';
+    task.liveContentSummaryError = undefined;
+    const combined = `${replyText}\n\n${summary.text}`;
+    if (combined.length > DelayedReplyService.MAX_COMMENT_CHARACTERS) {
+      task.liveContentSummaryForceSeparate = true;
+      this.logger.info('晚安回复拼接直播梗概后超过 B 站评论上限，改为独立发布', {
+        taskId: task.taskId,
+        roomId: task.roomId,
+        target,
+        combinedLength: combined.length,
+        maxLength: DelayedReplyService.MAX_COMMENT_CHARACTERS
+      });
+      return { text: replyText, attached: false };
+    }
+
+    return { text: combined, attached: true };
+  }
+
+  private markLiveContentSummaryAttached(
+    task: DelayedReplyTask,
+    target: 'main' | 'supplemental',
+    replyId: string
+  ): void {
+    task.liveContentSummaryState = target === 'main' ? 'attached_main' : 'attached_supplemental';
+    task.liveContentSummaryAttachedTo = target;
+    task.liveContentSummaryReplyId = replyId;
+    task.liveContentSummaryCompletedAt = new Date();
+    task.liveContentSummaryError = undefined;
+    task.liveContentSummaryPublishingAt = undefined;
+  }
+
+  private async tryPublishLiveContentSummarySeparately(
+    task: DelayedReplyTask
+  ): Promise<'done' | 'waiting' | 'retry' | 'failed'> {
+    if (!task.liveContentSummaryPath || this.isLiveContentSummaryDelivered(task)) {
+      return 'done';
+    }
+    if (!task.repliedDynamicId || !task.replyId) {
+      return 'waiting';
+    }
+    if (task.liveContentSummaryState === 'publishing') {
+      task.liveContentSummaryState = 'failed';
+      task.liveContentSummaryError = '直播梗概发布结果不确定，为避免重启后重复评论，已停止自动重发';
+      await this.store.updateTask(task.taskId, this.getLiveContentSummaryTaskUpdates(task));
+      this.logger.warn(task.liveContentSummaryError, {
+        taskId: task.taskId,
+        roomId: task.roomId,
+        dynamicId: task.repliedDynamicId
+      });
+      return 'failed';
+    }
+
+    const summary = this.readLiveContentSummary(task);
+    if (summary.kind === 'missing') {
+      task.liveContentSummaryState = 'waiting';
+      task.liveContentSummaryError = summary.error;
+      await this.store.updateTask(task.taskId, this.getLiveContentSummaryTaskUpdates(task));
+      return 'waiting';
+    }
+    if (summary.kind === 'failed') {
+      task.liveContentSummaryState = 'failed';
+      task.liveContentSummaryError = summary.error;
+      await this.store.updateTask(task.taskId, this.getLiveContentSummaryTaskUpdates(task));
+      this.logger.warn('直播梗概生成失败，不影响晚安回复流程', {
+        taskId: task.taskId,
+        roomId: task.roomId,
+        error: summary.error
+      });
+      return 'failed';
+    }
+
+    task.liveContentSummaryState = 'publishing';
+    task.liveContentSummaryPublishingAt = new Date();
+    task.liveContentSummaryError = undefined;
+    await this.store.updateTask(task.taskId, this.getLiveContentSummaryTaskUpdates(task));
+
+    try {
+      const result = await this.bilibiliAPI.publishComment({
+        dynamicId: task.repliedDynamicId,
+        content: summary.text
+      });
+      task.liveContentSummaryState = 'published_separate';
+      task.liveContentSummaryAttachedTo = 'separate';
+      task.liveContentSummaryReplyId = String(result.replyId);
+      task.liveContentSummaryCompletedAt = new Date();
+      task.liveContentSummaryPublishingAt = undefined;
+      task.liveContentSummaryError = undefined;
+      await this.store.updateTask(task.taskId, this.getLiveContentSummaryTaskUpdates(task));
+      this.logger.info('本场直播梗概已单独发布', {
+        taskId: task.taskId,
+        roomId: task.roomId,
+        dynamicId: task.repliedDynamicId,
+        replyId: task.liveContentSummaryReplyId,
+        contentLength: summary.text.length
+      });
+      return 'done';
+    } catch (error) {
+      const delayedReplyConfig = BilibiliConfigHelper.getDelayedReplyConfig();
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const isBlacklistError = errorMessage.includes('黑名单') || errorMessage.includes('12035');
+      const canRetry =
+        !isBlacklistError &&
+        !this.isCredentialError(error) &&
+        !this.isPermanentReplyError(error) &&
+        (task.liveContentSummaryRetryCount || 0) < delayedReplyConfig.maxRetries;
+
+      task.liveContentSummaryPublishingAt = undefined;
+      task.liveContentSummaryRetryCount = (task.liveContentSummaryRetryCount || 0) + (canRetry ? 1 : 0);
+      task.liveContentSummaryState = canRetry ? 'ready' : 'failed';
+      task.liveContentSummaryError = `直播梗概评论发布失败: ${errorMessage}`;
+      await this.store.updateTask(task.taskId, this.getLiveContentSummaryTaskUpdates(task));
+      this.logger[canRetry ? 'warn' : 'error'](
+        canRetry ? '直播梗概评论发布失败，将独立重试' : '直播梗概评论发布最终失败，晚安回复不受影响',
+        {
+          taskId: task.taskId,
+          roomId: task.roomId,
+          retryCount: task.liveContentSummaryRetryCount,
+          error: errorMessage
+        }
+      );
+      return canRetry ? 'retry' : 'failed';
+    }
+  }
+
+  private async executeLiveContentSummaryReply(task: DelayedReplyTask): Promise<void> {
+    const outcome = await this.tryPublishLiveContentSummarySeparately(task);
+    if (outcome === 'waiting' || outcome === 'retry') {
+      const delayedReplyConfig = BilibiliConfigHelper.getDelayedReplyConfig();
+      const waitMs = outcome === 'retry'
+        ? delayedReplyConfig.retryDelayMinutes * 60 * 1000
+        : DelayedReplyService.LIVE_CONTENT_WAIT_INTERVAL_MS;
+      task.status = 'waiting_live_content';
+      task.scheduledTime = new Date(Date.now() + waitMs);
+      await this.store.updateTask(task.taskId, {
+        status: task.status,
+        scheduledTime: task.scheduledTime,
+        ...this.getLiveContentSummaryTaskUpdates(task)
+      });
+      this.scheduleTask(task);
+      return;
+    }
+
     task.status = 'completed';
     await this.store.updateTask(task.taskId, {
       status: task.status,
-      error: task.error
+      ...this.getLiveContentSummaryTaskUpdates(task)
     });
+  }
+
+  private async completeOrWaitForLiveContentSummary(task: DelayedReplyTask): Promise<void> {
+    if (!task.liveContentSummaryPath || this.isLiveContentSummaryDelivered(task)) {
+      task.status = 'completed';
+      await this.store.updateTask(task.taskId, {
+        status: task.status,
+        summaryReplyId: task.summaryReplyId,
+        summaryCompletedAt: task.summaryCompletedAt,
+        summaryRetryCount: task.summaryRetryCount,
+        error: task.error,
+        ...this.getLiveContentSummaryTaskUpdates(task)
+      });
+      return;
+    }
+
+    if (task.liveContentSummaryState === 'publishing') {
+      task.liveContentSummaryState = 'failed';
+      task.liveContentSummaryError = '直播梗概发布结果不确定，为避免重复评论，已停止自动重发';
+    } else {
+      const summary = this.readLiveContentSummary(task);
+      task.liveContentSummaryState = summary.kind === 'success'
+        ? 'ready'
+        : summary.kind === 'failed'
+          ? 'failed'
+          : 'waiting';
+      task.liveContentSummaryError = summary.kind === 'failed' || summary.kind === 'missing'
+        ? summary.error
+        : undefined;
+    }
+
+    if (task.liveContentSummaryState === 'failed') {
+      task.status = 'completed';
+      await this.store.updateTask(task.taskId, {
+        status: task.status,
+        summaryReplyId: task.summaryReplyId,
+        summaryCompletedAt: task.summaryCompletedAt,
+        summaryRetryCount: task.summaryRetryCount,
+        error: task.error,
+        ...this.getLiveContentSummaryTaskUpdates(task)
+      });
+      return;
+    }
+
+    task.status = 'waiting_live_content';
+    task.scheduledTime = task.liveContentSummaryState === 'ready'
+      ? new Date()
+      : new Date(Date.now() + DelayedReplyService.LIVE_CONTENT_WAIT_INTERVAL_MS);
+    await this.store.updateTask(task.taskId, {
+      status: task.status,
+      scheduledTime: task.scheduledTime,
+      summaryReplyId: task.summaryReplyId,
+      summaryCompletedAt: task.summaryCompletedAt,
+      summaryRetryCount: task.summaryRetryCount,
+      error: task.error,
+      ...this.getLiveContentSummaryTaskUpdates(task)
+    });
+    this.scheduleTask(task);
+  }
+
+  private async completeWithoutSummaryDynamic(task: DelayedReplyTask): Promise<void> {
+    await this.completeOrWaitForLiveContentSummary(task);
   }
 
   private async executeSummaryDynamicReply(
@@ -1339,16 +1887,10 @@ export class DelayedReplyService implements IDelayedReplyService {
         images: resolvedImagePath ? [resolvedImagePath] : undefined
       });
 
-      task.status = 'completed';
       task.summaryReplyId = String(result.replyId);
       task.summaryCompletedAt = new Date();
       task.error = undefined;
-      await this.store.updateTask(task.taskId, {
-        status: task.status,
-        summaryReplyId: task.summaryReplyId,
-        summaryCompletedAt: task.summaryCompletedAt,
-        error: undefined
-      });
+      await this.completeOrWaitForLiveContentSummary(task);
       this.logger.info('晚安回复已发布到汇总动态', {
         taskId: task.taskId,
         roomId: task.roomId,
@@ -1391,10 +1933,8 @@ export class DelayedReplyService implements IDelayedReplyService {
         return;
       }
 
-      task.status = 'completed';
       task.error = `汇总动态回复发布失败，已停止重试: ${errorMessage}`;
       await this.store.updateTask(task.taskId, {
-        status: task.status,
         summaryRetryCount: task.summaryRetryCount || 0,
         error: task.error
       });
@@ -1403,6 +1943,7 @@ export class DelayedReplyService implements IDelayedReplyService {
         roomId: task.roomId,
         dynamicId: summarySettings.dynamicId
       }, error instanceof Error ? error : new Error(errorMessage));
+      await this.completeOrWaitForLiveContentSummary(task);
     }
   }
 
@@ -1425,6 +1966,13 @@ export class DelayedReplyService implements IDelayedReplyService {
         error: task.error
       });
       return;
+    }
+
+    if (
+      task.liveContentSummaryDeliveryMode === 'separate' ||
+      task.liveContentSummaryForceSeparate
+    ) {
+      await this.tryPublishLiveContentSummarySeparately(task);
     }
 
     if (!task.comicImagePath) {
@@ -1523,7 +2071,9 @@ export class DelayedReplyService implements IDelayedReplyService {
     }
 
     try {
-      const replyText = this.buildSupplementalComicReplyText(await this.readReplyText(task.goodnightTextPath));
+      const baseReplyText = this.buildSupplementalComicReplyText(await this.readReplyText(task.goodnightTextPath));
+      const composition = this.composeReplyWithLiveContentSummary(task, baseReplyText, 'supplemental');
+      const replyText = composition.text;
       const result = await this.bilibiliAPI.publishComment({
         dynamicId: task.repliedDynamicId,
         content: replyText,
@@ -1536,11 +2086,15 @@ export class DelayedReplyService implements IDelayedReplyService {
       task.supplementalReplyId = String(result.replyId);
       task.supplementalCompletedAt = new Date();
       task.error = undefined;
+      if (composition.attached) {
+        this.markLiveContentSummaryAttached(task, 'supplemental', task.supplementalReplyId);
+      }
       await this.store.updateTask(task.taskId, {
         status: task.status,
         supplementalReplyId: task.supplementalReplyId,
         supplementalCompletedAt: task.supplementalCompletedAt,
-        error: undefined
+        error: undefined,
+        ...this.getLiveContentSummaryTaskUpdates(task)
       });
 
       this.logger.info('补图回复发布成功', {
@@ -1552,6 +2106,13 @@ export class DelayedReplyService implements IDelayedReplyService {
 
       if (this.notifier) {
         await this.notifySupplementalComicReplySuccess(task, comicImagePath, result, replyText);
+      }
+
+      if (
+        !composition.attached &&
+        (task.liveContentSummaryDeliveryMode === 'separate' || task.liveContentSummaryForceSeparate)
+      ) {
+        await this.tryPublishLiveContentSummarySeparately(task);
       }
 
       await this.executeSummaryDynamicReply(
@@ -1613,7 +2174,8 @@ export class DelayedReplyService implements IDelayedReplyService {
       if (
         task.status !== 'pending' &&
         task.status !== 'waiting_comic' &&
-        task.status !== 'waiting_summary'
+        task.status !== 'waiting_summary' &&
+        task.status !== 'waiting_live_content'
       ) {
         this.logger.info('Skip delayed reply execution because task is no longer pending', {
           taskId: task.taskId,
@@ -1646,6 +2208,16 @@ export class DelayedReplyService implements IDelayedReplyService {
         }
 
         await this.executeSummaryDynamicReply(task);
+        return;
+      }
+
+      if (task.status === 'waiting_live_content') {
+        if (this.isTaskExpiredForCurrentStatus(task)) {
+          await this.suppressStaleTask(task, 'stale live content summary reply suppressed before execution');
+          return;
+        }
+
+        await this.executeLiveContentSummaryReply(task);
         return;
       }
 
@@ -1762,8 +2334,8 @@ export class DelayedReplyService implements IDelayedReplyService {
 
       // 直接发布评论，而不是通过ReplyManager
       // 读取晚安回复文本
-      const replyText = await this.readReplyText(task.goodnightTextPath);
-      if (!replyText) {
+      const baseReplyText = await this.readReplyText(task.goodnightTextPath);
+      if (!baseReplyText) {
         const errorMsg = '晚安回复文本为空';
         
         // 发送企微错误通知
@@ -1838,6 +2410,9 @@ export class DelayedReplyService implements IDelayedReplyService {
         }
       }
 
+      const composition = this.composeReplyWithLiveContentSummary(task, baseReplyText, 'main');
+      const replyText = composition.text;
+
       const dynamicReplyDedupeKey = this.getDynamicReplyDedupeKey(task.roomId, String(finalDynamic.id));
       if (this.publishingDynamicReplyKeys.has(dynamicReplyDedupeKey)) {
         task.status = 'pending';
@@ -1869,6 +2444,13 @@ export class DelayedReplyService implements IDelayedReplyService {
           existingCompletedAt: duplicateReply.completedAt?.toISOString()
         });
 
+        if (task.liveContentSummaryPath) {
+          await this.registerLiveContentSummaryForTask(
+            duplicateReply,
+            task.liveContentSummaryPath,
+            task.liveContentSummaryDeliveryMode || this.resolveLiveContentSummaryDeliveryMode(task.roomId)
+          );
+        }
         task.status = 'completed';
         task.error = skippedMessage;
         task.repliedDynamicId = String(finalDynamic.id);
@@ -1915,6 +2497,9 @@ export class DelayedReplyService implements IDelayedReplyService {
       task.replyId = String(result.replyId);
       task.completedAt = new Date();
       task.error = undefined;
+      if (composition.attached) {
+        this.markLiveContentSummaryAttached(task, 'main', task.replyId);
+      }
 
       if (shouldWaitForSupplementalComic) {
         task.comicWaitCount = 0;
@@ -1929,7 +2514,8 @@ export class DelayedReplyService implements IDelayedReplyService {
           completedAt: task.completedAt,
           scheduledTime: task.scheduledTime,
           comicWaitCount: task.comicWaitCount,
-          error: task.error
+          error: task.error,
+          ...this.getLiveContentSummaryTaskUpdates(task)
         });
 
         this.logger.info('已发送纯文字晚安回复，继续等待漫画图片生成后补图', {
@@ -1942,20 +2528,33 @@ export class DelayedReplyService implements IDelayedReplyService {
 
         this.scheduleTask(task);
       } else {
+        const hasPendingLiveContent = !!task.liveContentSummaryPath &&
+          !this.isLiveContentSummaryDelivered(task) &&
+          task.liveContentSummaryState !== 'failed';
         task.status = BilibiliConfigHelper.getSummaryDynamicSettings()
           ? 'waiting_summary'
-          : 'completed';
+          : hasPendingLiveContent
+            ? 'waiting_live_content'
+            : 'completed';
         await this.store.updateTask(task.taskId, {
           status: task.status,
           repliedDynamicId: task.repliedDynamicId,
           replyId: task.replyId,
           completedAt: task.completedAt,
-          error: undefined
+          error: undefined,
+          ...this.getLiveContentSummaryTaskUpdates(task)
         });
 
         this.logger.info(`延迟回复完成: ${task.taskId}`, {
           dynamicId: String(finalDynamic.id)
         });
+      }
+
+      if (
+        !composition.attached &&
+        (task.liveContentSummaryDeliveryMode === 'separate' || task.liveContentSummaryForceSeparate)
+      ) {
+        await this.tryPublishLiveContentSummarySeparately(task);
       }
 
       // B站评论已经成功发布并持久化，通知失败不能触发重试，否则会重复评论。

@@ -3,6 +3,8 @@ const os = require('os');
 const path = require('path');
 const topicClipper = require('./topic_clipper');
 const aiTextGenerator = require('./ai_text_generator');
+const defaultConfig = require('../../config/default.json');
+const productionConfig = require('../../config/production.json');
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'topic-clipper-'));
@@ -480,7 +482,7 @@ describe('topic_clipper', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  test('wraps long subtitle lines for enlarged burned-in subtitles', () => {
+  test('balances long subtitle lines instead of leaving a one-character final line', () => {
     const dir = makeTempDir();
     const srtPath = path.join(dir, 'wrapped.srt');
 
@@ -488,7 +490,7 @@ describe('topic_clipper', () => {
       { start: 0, end: 2, text: '123456789012345678901' }
     ], { start: 0, end: 2, duration: 2 }, srtPath, { maxCharsPerLine: 20 });
 
-    expect(fs.readFileSync(srtPath, 'utf8')).toContain('12345678901234567890\n1');
+    expect(fs.readFileSync(srtPath, 'utf8')).toContain('12345678901\n2345678901');
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
@@ -504,10 +506,11 @@ describe('topic_clipper', () => {
       ''
     ].join('\n'), 'utf8');
 
-    const style = topicClipper.calculateSubtitleStyle(720, 1280, {
-      subtitleFontSizeRatio: 0.044,
-      subtitleMaxCharsPerLine: 18
-    });
+    const style = topicClipper.calculateSubtitleStyle(
+      720,
+      1280,
+      topicClipper.getClipTopicsConfig(defaultConfig)
+    );
     topicClipper.writeTemporaryBurnAssFromSrt(srtPath, assPath, style);
 
     const content = fs.readFileSync(assPath, 'utf8');
@@ -523,26 +526,41 @@ describe('topic_clipper', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  test('uses similar burned subtitle proportions across common resolutions while preserving overrides', () => {
-    expect(topicClipper.calculateSubtitleStyle(1920, 1080)).toMatchObject({
+  test.each([
+    ['default', defaultConfig],
+    ['production', productionConfig]
+  ])('keeps %s config landscape subtitles large while sizing portrait subtitles separately', (_name, rootConfig) => {
+    const config = topicClipper.getClipTopicsConfig(rootConfig);
+    expect(config).toMatchObject({
+      subtitleFontSizeRatio: 0.094,
+      subtitlePortraitFontSizeRatio: 0.044
+    });
+    expect(topicClipper.calculateSubtitleStyle(1920, 1080, config)).toMatchObject({
       fontSize: 68,
-      maxCharsPerLine: 17,
+      maxCharsPerLine: 18,
       playResX: 1280,
       playResY: 720
     });
-
-    expect(topicClipper.calculateSubtitleStyle(1280, 720)).toMatchObject({
-      fontSize: 68,
-      maxCharsPerLine: 17,
-      playResX: 1280,
+    expect(topicClipper.calculateSubtitleStyle(720, 1280, config)).toMatchObject({
+      fontSize: 32,
+      maxCharsPerLine: 10,
+      playResX: 405,
       playResY: 720
     });
+  });
 
-    expect(topicClipper.calculateSubtitleStyle(1920, 1080, {
-      subtitleFontSizeRatio: 0.039
-    })).toMatchObject({
+  test('keeps explicit landscape and portrait font size overrides independent', () => {
+    const config = {
+      subtitleFontSizeRatio: 0.039,
+      subtitlePortraitFontSizeRatio: 0.05
+    };
+    expect(topicClipper.calculateSubtitleStyle(1920, 1080, config)).toMatchObject({
       fontSize: 30,
-      maxCharsPerLine: 40
+      maxCharsPerLine: 42
+    });
+    expect(topicClipper.calculateSubtitleStyle(720, 1280, config)).toMatchObject({
+      fontSize: 36,
+      maxCharsPerLine: 9
     });
   });
 
@@ -620,6 +638,48 @@ describe('topic_clipper', () => {
 
     expect(results).toEqual([]);
     expect(fs.existsSync(path.join(dir, 'topic_clips'))).toBe(false);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('passes independent landscape and portrait subtitle sizes to the media generator', async () => {
+    const dir = makeTempDir();
+    const mediaPath = path.join(dir, '录制-26966466-20260805-102031-440-字幕配置.mp4');
+    const srtPath = path.join(dir, '录制-26966466-20260805-102031-440-字幕配置.srt');
+    fs.writeFileSync(mediaPath, 'fake video', 'utf8');
+    writeSrt(srtPath);
+    let receivedMediaConfig: Record<string, unknown> | null = null;
+
+    const results = await topicClipper.generateTopicClips({
+      config: {
+        clipTopics: {
+          enabled: true,
+          aiSegmentBurst: false,
+          keywords: ['岁己', '小岁'],
+          subtitleFontSizeRatio: 0.094,
+          subtitlePortraitFontSizeRatio: 0.044,
+          notify: { enabled: false }
+        },
+        ai: { text: { enabled: false } }
+      },
+      originalMediaPath: mediaPath,
+      processedMediaPath: mediaPath,
+      srtPath,
+      titleGenerator: async () => '字幕配置透传测试',
+      mediaGenerator: async (_source: unknown, _window: unknown, _srt: string, outputPath: string, mediaConfig: Record<string, unknown>) => {
+        receivedMediaConfig = mediaConfig;
+        fs.writeFileSync(outputPath, 'generated clip', 'utf8');
+        return { path: outputPath, burnedSubtitles: true, fallbackUsed: false };
+      },
+      coverGenerator: async () => null,
+      registerReviewForUpload: () => ({ clipIds: [999] }),
+      notifyTopicClipResults: async () => true
+    });
+
+    expect(results).toHaveLength(1);
+    expect(receivedMediaConfig).toMatchObject({
+      subtitleFontSizeRatio: 0.094,
+      subtitlePortraitFontSizeRatio: 0.044
+    });
     fs.rmSync(dir, { recursive: true, force: true });
   });
 

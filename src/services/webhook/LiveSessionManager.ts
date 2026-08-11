@@ -129,6 +129,16 @@ export class LiveSessionManager {
       return false;
     }
 
+    const videoPathKey = this.normalizePathKey(videoPath);
+    if (session.segments.some(segment => this.normalizePathKey(segment.videoPath) === videoPathKey)) {
+      this.logger.info(`忽略重复 FileClosed 片段: ${roomId}`, {
+        roomId,
+        videoPath: path.basename(videoPath),
+        status: session.status
+      });
+      return false;
+    }
+
     if (session.status !== 'collecting') {
       const lastSegment = session.segments[session.segments.length - 1];
       const reconnectGapMs = lastSegment

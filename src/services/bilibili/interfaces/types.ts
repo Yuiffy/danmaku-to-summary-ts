@@ -150,6 +150,17 @@ export interface PublishCommentResponse {
   imageUrl?: string;
 }
 
+export type LiveContentSummaryDeliveryMode = 'separate' | 'attach_if_ready';
+
+export type LiveContentSummaryDeliveryState =
+  | 'waiting'
+  | 'ready'
+  | 'publishing'
+  | 'attached_main'
+  | 'attached_supplemental'
+  | 'published_separate'
+  | 'failed';
+
 /**
  * B站配置
  */
@@ -188,7 +199,7 @@ export interface DelayedReplyTask {
   /** 计划执行时间 */
   scheduledTime: Date;
   /** 任务状态 */
-  status: 'pending' | 'processing' | 'waiting_comic' | 'waiting_summary' | 'completed' | 'failed';
+  status: 'pending' | 'processing' | 'waiting_comic' | 'waiting_summary' | 'waiting_live_content' | 'completed' | 'failed';
   /** 重试次数 */
   retryCount: number;
   /** 错误信息 */
@@ -219,6 +230,26 @@ export interface DelayedReplyTask {
   summaryCompletedAt?: Date;
   /** 汇总动态回复的独立重试次数，避免影响主回复/补图重试 */
   summaryRetryCount?: number;
+  /** 本场直播内容梗概 JSON 路径 */
+  liveContentSummaryPath?: string;
+  /** 梗概发布方式：始终单发，或在主回复/补图就绪时拼接 */
+  liveContentSummaryDeliveryMode?: LiveContentSummaryDeliveryMode;
+  /** 梗概发布子状态；与固定汇总动态的 summaryReplyId 相互独立 */
+  liveContentSummaryState?: LiveContentSummaryDeliveryState;
+  /** 梗概最终所在的评论 ID（拼接时等于主回复或补图回复 ID） */
+  liveContentSummaryReplyId?: string;
+  /** 梗概最终投递位置 */
+  liveContentSummaryAttachedTo?: 'main' | 'supplemental' | 'separate';
+  /** 梗概投递完成时间 */
+  liveContentSummaryCompletedAt?: Date;
+  /** 梗概单独发布重试次数 */
+  liveContentSummaryRetryCount?: number;
+  /** 梗概读取或发布错误，不影响主晚安回复/补图 */
+  liveContentSummaryError?: string;
+  /** 主回复拼接超过 B 站上限后强制改为单独评论 */
+  liveContentSummaryForceSeparate?: boolean;
+  /** 单独发布请求发出前的持久化时间；重启后用于避免不确定请求重复发送 */
+  liveContentSummaryPublishingAt?: Date;
   /** 完成时间 */
   completedAt?: Date;
   /** Task was delayed because the same live was still active after restart. */

@@ -3,6 +3,8 @@ jest.mock('./config-loader', () => ({
   getConfig: jest.fn(),
   getDaiYuApiKey: jest.fn(),
   isDaiYuTextConfigured: jest.fn(),
+  getTuZiTextApiKey: jest.fn(),
+  isTuZiTextConfigured: jest.fn(),
   getByPath: jest.fn(),
 }));
 
@@ -36,6 +38,8 @@ describe('daiYu model routing', () => {
     configLoader.getConfig.mockReturnValue(config);
     configLoader.getDaiYuApiKey.mockReturnValue('test-key');
     configLoader.isDaiYuTextConfigured.mockReturnValue(true);
+    configLoader.getTuZiTextApiKey.mockReturnValue('test-key');
+    configLoader.isTuZiTextConfigured.mockReturnValue(true);
     configLoader.getByPath.mockReturnValue(100);
     fetchMock.mockResolvedValue({
       ok: true,
@@ -56,6 +60,121 @@ describe('daiYu model routing', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const request = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(request.model).toBe('gpt-5.6-luna');
+  });
+
+  test('allows short structured tasks to lower output and thinking budgets', async () => {
+    await generateTextWithDaiYu('只回复 LUNA_OK', {
+      maxTokens: 2000,
+      thinkingBudgetTokens: 2048,
+    });
+
+    const request = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(request.max_tokens).toBe(2000);
+    expect(request.thinking).toEqual({
+      type: 'enabled',
+      budget_tokens: 2048,
+    });
+  });
+
+  test('can isolate a one-shot structured task from configured fallback models', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 503,
+      text: async () => 'temporary failure',
+    });
+
+    await expect(generateTextWithDaiYu('只回复 JSON', {
+      fallbackModelsEnabled: false,
+    })).rejects.toThrow('gpt-5.6-luna');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  test('logs daiYu cache and token usage after a successful response', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        choices: [{
+          message: { content: 'LUNA_OK' },
+          finish_reason: 'stop',
+        }],
+        usage: {
+          prompt_tokens: 10000,
+          prompt_tokens_details: { cached_tokens: 8192, cache_write_tokens: 1024 },
+          completion_tokens: 1200,
+          completion_tokens_details: { reasoning_tokens: 800 },
+          total_tokens: 11200,
+        },
+      }),
+    });
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    try {
+      await generateTextWithDaiYu('只回复 LUNA_OK');
+      const usageLine = logSpy.mock.calls
+        .map(call => String(call[0]))
+        .find(line => line.startsWith('[AI_USAGE] '));
+
+      expect(usageLine).toBeDefined();
+      expect(JSON.parse(usageLine.slice('[AI_USAGE] '.length))).toEqual(expect.objectContaining({
+        provider: 'daiYu',
+        model: 'gpt-5.6-luna',
+        promptTokens: 10000,
+        cachedTokens: 8192,
+        uncachedPromptTokens: 1808,
+        cacheWriteTokens: 1024,
+        completionTokens: 1200,
+        reasoningTokens: 800,
+        totalTokens: 11200,
+        cacheHitRatio: 0.8192,
+      }));
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  test('logs TuZi token usage with the same structured line', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        choices: [{
+          message: { content: 'TUZI_OK' },
+          finish_reason: 'stop',
+        }],
+        usage: {
+          input_tokens: 4000,
+          input_tokens_details: { cached_tokens: 1000, cache_write_tokens: 500 },
+          output_tokens: 300,
+          output_tokens_details: { reasoning_tokens: 200 },
+          total_tokens: 4300,
+        },
+      }),
+    });
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    try {
+      await generateTextWithTuZi('只回复 TUZI_OK', {
+        primaryModel: 'qwen2.5-72b-instruct',
+      });
+      const usageLine = logSpy.mock.calls
+        .map(call => String(call[0]))
+        .find(line => line.startsWith('[AI_USAGE] '));
+
+      expect(usageLine).toBeDefined();
+      expect(JSON.parse(usageLine.slice('[AI_USAGE] '.length))).toEqual(expect.objectContaining({
+        provider: 'tuZi',
+        model: 'qwen2.5-72b-instruct',
+        promptTokens: 4000,
+        cachedTokens: 1000,
+        uncachedPromptTokens: 3000,
+        cacheWriteTokens: 500,
+        completionTokens: 300,
+        reasoningTokens: 200,
+        totalTokens: 4300,
+        cacheHitRatio: 0.25,
+      }));
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 
   test('routes a legacy GPT-5 model from the tuZi compatibility entry to Luna', async () => {

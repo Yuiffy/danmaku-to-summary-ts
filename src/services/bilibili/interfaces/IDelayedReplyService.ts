@@ -1,7 +1,7 @@
 /**
  * 延迟回复服务接口
  */
-import { DelayedReplyTask } from './types';
+import { DelayedReplyTask, LiveContentSummaryDeliveryMode } from './types';
 
 /**
  * 延迟回复服务接口
@@ -32,8 +32,20 @@ export interface IDelayedReplyService {
     comicImagePath?: string, 
     delaySeconds?: number,
     liveStartTime?: Date,
-    liveEndTime?: Date
+    liveEndTime?: Date,
+    liveContentSummaryPath?: string,
+    liveContentSummaryDeliveryMode?: LiveContentSummaryDeliveryMode
   ): Promise<string>;
+
+  /**
+   * 注册已计划或已生成的本场直播梗概，并唤醒对应延迟回复任务。
+   */
+  registerLiveContentSummary(
+    roomId: string,
+    goodnightTextPath: string,
+    liveContentSummaryPath: string,
+    deliveryMode?: LiveContentSummaryDeliveryMode
+  ): Promise<DelayedReplyTask | null>;
 
   /**
    * 移除任务

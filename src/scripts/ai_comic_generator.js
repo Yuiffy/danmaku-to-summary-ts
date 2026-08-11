@@ -7,6 +7,20 @@ const configLoader = require('./config-loader');
 const GENERATION_LOCK_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_CONCURRENCY_LOCK_TIMEOUT_MS = 3 * 60 * 60 * 1000;
 const COMIC_SCRIPT_READY_SENTINEL = '[[COMIC_SCRIPT_READY]]';
+const FULL_LIVE_CONTEXT_SUFFIX = '_FULL_LIVE_CONTEXT.json';
+
+function getFullLiveContextPath(highlightPath) {
+    const parsed = path.parse(highlightPath);
+    const baseName = parsed.name.replace(/_AI_HIGHLIGHT$/iu, '');
+    return path.join(parsed.dir, `${baseName}${FULL_LIVE_CONTEXT_SUFFIX}`);
+}
+
+function resolveFullLiveContextPath(highlightPath, options = {}) {
+    const candidate = options.fullLiveContextPath
+        ? path.resolve(options.fullLiveContextPath)
+        : getFullLiveContextPath(highlightPath);
+    return candidate && fs.existsSync(candidate) ? candidate : null;
+}
 
 // 检查配置是否有效
 function isComicGenerationEnabled() {
@@ -222,6 +236,10 @@ async function generateComicWithPython(highlightPath, roomId = null, options = {
 
     // 使用正确的Python路径（优先使用环境变量，否则使用默认路径）
     const pythonPath = process.env.PYTHON_PATH || 'D:\\develop\\Python\\python.exe';
+    const fullLiveContextPath = resolveFullLiveContextPath(highlightPath, options);
+    if (fullLiveContextPath) {
+        console.log(`📚 漫画脚本将复用全量直播上下文: ${path.basename(fullLiveContextPath)}`);
+    }
 
     return new Promise((resolve, reject) => {
         // 构建命令行参数
@@ -257,6 +275,9 @@ async function generateComicWithPython(highlightPath, roomId = null, options = {
                     : {}),
                 ...(options.sourceVideoPath
                     ? { SOURCE_VIDEO_PATH: path.resolve(options.sourceVideoPath) }
+                    : {}),
+                ...(fullLiveContextPath
+                    ? { FULL_LIVE_CONTEXT_PATH: fullLiveContextPath }
                     : {}),
                 ...(options.storytellingVariant
                     ? { COMIC_STORYTELLING_VARIANT: String(options.storytellingVariant) }
@@ -475,7 +496,9 @@ async function batchGenerateComics(directory, roomId = null, options = {}) {
 module.exports = {
     isComicGenerationEnabled,
     generateComicFromHighlight,
-    batchGenerateComics
+    batchGenerateComics,
+    getFullLiveContextPath,
+    resolveFullLiveContextPath
 };
 
 function parseCliArgs(rawArgs) {

@@ -32,6 +32,10 @@ class ComicTextProviderTests(unittest.TestCase):
             "aiServices": {"gemini": {}},
             "ai": {
                 "text": {
+                    "sharedPromptCache": {
+                        "enabled": True,
+                        "explicitRolloutPercent": 0,
+                    },
                     "daiYu": {
                         "enabled": True,
                         "apiKey": "daiyu-key",
@@ -47,22 +51,42 @@ class ComicTextProviderTests(unittest.TestCase):
                 },
                 "providers": {},
                 "streamerRegistry": {},
-                "roomSettings": {},
+                "roomSettings": {
+                    "25788785": {
+                        "fullLiveContextExperiment": {
+                            "enabled": True,
+                            "tasks": ["comic"],
+                            "promptCacheRolloutPercent": 100,
+                        }
+                    }
+                },
             },
             "asr": {},
             "roomSettings": {},
         }
 
+        usage_attempt = {
+            "provider": "daiYu",
+            "model": "gpt-5.6-luna",
+            "status": "success",
+            "promptTokens": 10000,
+            "cachedTokens": 8000,
+            "cacheWriteTokens": 2000,
+            "completionTokens": 600,
+            "reasoningTokens": 400,
+            "totalTokens": 10600,
+        }
         with tempfile.TemporaryDirectory() as temp_dir:
             with (
                 patch.object(comic, "load_config", return_value=config),
                 patch.object(comic, "get_project_root", return_value=temp_dir),
                 patch.object(comic.shutil, "which", return_value=None),
                 patch.object(comic, "HAS_GOOGLE_GENAI", False),
+                patch.object(comic, "print") as print_log,
                 patch.object(
                     comic,
                     "call_daiyu_chat_completions",
-                    return_value=daiyu_script,
+                    return_value=(daiyu_script, usage_attempt),
                 ) as call_text,
             ):
                 result, generated = comic.generate_comic_content_with_ai(
@@ -83,7 +107,24 @@ class ComicTextProviderTests(unittest.TestCase):
         self.assertEqual(daiyu_call["prompt"].count("UNIQUE_HIGHLIGHT"), 1)
         self.assertNotIn("UNIQUE_HIGHLIGHT", daiyu_call["system_prompt"])
         self.assertEqual(daiyu_call["base_url"], "https://daiyu.example/v1")
+        self.assertTrue(daiyu_call["prompt_cache"]["enabled"])
+        self.assertEqual(daiyu_call["prompt_cache"]["rolloutPercent"], 100)
         self.assertEqual(comic.get_comic_script_meta()["provider"], "daiYu")
+        self.assertEqual(comic.get_comic_script_meta()["attempts"], [usage_attempt])
+        usage_logs = [
+            str(call.args[0])
+            for call in print_log.call_args_list
+            if call.args and str(call.args[0]).startswith("[COMIC_SCRIPT_USAGE]")
+        ]
+        self.assertEqual(len(usage_logs), 1)
+        self.assertIn('"promptTokens":10000', usage_logs[0])
+        self.assertIn('"cachedTokens":8000', usage_logs[0])
+        self.assertIn('"uncachedPromptTokens":2000.0', usage_logs[0])
+        self.assertIn('"cacheWriteTokens":2000', usage_logs[0])
+        self.assertIn('"completionTokens":600', usage_logs[0])
+        self.assertIn('"reasoningTokens":400', usage_logs[0])
+        self.assertIn('"totalTokens":10600', usage_logs[0])
+        self.assertIn('"cacheHitRatio":0.8', usage_logs[0])
 
 
 if __name__ == "__main__":

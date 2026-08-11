@@ -200,7 +200,10 @@ const ConfigSchema = Joi.object({
             archiveAfterDays: Joi.number().allow(null, false).default(33),
             archiveExtraDays: Joi.number().allow(null, false).default(30),
             archiveTargetBasePath: Joi.string().default('E:/EFiles/Evideo/DDTV录播-E'),
-            deleteBakBeforeArchive: Joi.boolean().default(true)
+            deleteBakBeforeArchive: Joi.boolean().default(true),
+            additionalArchiveRoomIds: Joi.array().items(Joi.number().integer().positive()).default([]),
+            archiveAllRoomDirectories: Joi.boolean().default(false),
+            pruneNonMergedVideosBeforeArchiveRoomIds: Joi.array().items(Joi.number().integer().positive()).default([])
         }).default()
     }).default(),
     ai: AISchema,

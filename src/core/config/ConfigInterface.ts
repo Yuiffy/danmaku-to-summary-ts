@@ -57,6 +57,12 @@ export interface AudioStorageConfig {
   archiveExtraDays?: number | null | false;
   archiveTargetBasePath?: string;
   deleteBakBeforeArchive?: boolean;
+  /** Rooms archived without converting their recordings to audio first. */
+  additionalArchiveRoomIds?: number[];
+  /** Archive every numeric DDTV room directory, independently of audio conversion policy. */
+  archiveAllRoomDirectories?: boolean;
+  /** Additional archive rooms whose disposable videos are pruned before moving. */
+  pruneNonMergedVideosBeforeArchiveRoomIds?: number[];
 }
 
 export interface AudioOutputProfileConfig {
@@ -417,6 +423,23 @@ export interface ComicStorytellingExperimentConfig {
   };
 }
 
+export interface FullLiveContextExperimentConfig {
+  enabled: boolean;
+  tasks: Array<'summary' | 'goodnight' | 'comic' | 'ownStreamClips'>;
+  summaryDeliveryMode: 'separate' | 'attach_if_ready';
+  /** Per-request explicit prompt-cache rollout for this room experiment. */
+  promptCacheRolloutPercent?: number;
+  /** Maximum time to delay cache-dependent work while the summary seeds the prefix. */
+  cacheWarmupWaitMs?: number;
+  model?: string;
+  timeoutMs?: number;
+  maxAttempts?: number;
+  /** Reuse an identical failed summary for this long before retrying the model. */
+  failureRetryCooldownMs?: number;
+  maxTokens?: number;
+  thinkingBudgetTokens?: number;
+}
+
 // 漫画AI配置
 export interface ComicAIConfig {
   enabled: boolean;
@@ -467,6 +490,7 @@ export interface RoomAIConfig {
   /** 生成图片的概率（0.0~1.0），不设置则使用全局默认值 */
   comicGenerationProbability?: number;
   storytellingExperiment?: Partial<ComicStorytellingExperimentConfig>;
+  fullLiveContextExperiment?: FullLiveContextExperimentConfig;
 }
 
 // AI配置
@@ -611,6 +635,12 @@ export interface MonitoringConfig {
     mergeSlowSeconds: number;
     screenshotSlowSeconds: number;
     asrSlowSeconds: number;
+    /** StreamStarted 后多久仍未见 SessionStarted/FileOpening 时告警。 */
+    streamStartNoFileOpeningSeconds: number;
+    /** StreamEnded 后等待迟到 FileClosed/片段事件的告警宽限。 */
+    streamEndNoSegmentGraceSeconds: number;
+    /** 正常收尾等待结束后，再给 watchdog 的额外宽限。 */
+    finalizationWatchdogGraceSeconds: number;
     cooldownMs: number;
   };
   metrics: {

@@ -14,6 +14,9 @@ export interface ProcessingAlertThresholds {
   mergeSlowSeconds: number;
   screenshotSlowSeconds: number;
   asrSlowSeconds: number;
+  streamStartNoFileOpeningSeconds: number;
+  streamEndNoSegmentGraceSeconds: number;
+  finalizationWatchdogGraceSeconds: number;
 }
 
 export interface MissingFileCloseAlertDetails {
@@ -26,17 +29,52 @@ export interface MissingFileCloseAlertDetails {
   reason?: string;
 }
 
+export interface MikufansLifecycleAlertDetails {
+  roomId: string;
+  roomName?: string;
+  title?: string;
+  sessionId?: string;
+  streamStartedAt?: string;
+  streamEndedAt?: string;
+  eventTimestamp?: string;
+  elapsedSeconds?: number;
+  segmentCount?: number;
+  sessionStatus?: string;
+  status?: string;
+  recording?: boolean;
+  streaming?: boolean;
+  observedSessionStarted?: boolean;
+  observedFileOpening?: boolean;
+  cancelledActions?: string[];
+  reason?: string;
+}
+
+interface AlertRetryOptions {
+  maxAttempts?: number;
+  retryDelayMs?: number;
+}
+
+const LIFECYCLE_ALERT_RETRY_OPTIONS: AlertRetryOptions = {
+  maxAttempts: 2,
+  retryDelayMs: 1000
+};
+
 export class ProcessingAlertService {
   private static logger = getLogger('ProcessingAlertService');
   private static notifier?: WeChatWorkNotifier;
+  private static sentIncidentsAt = new Map<string, number>();
   private static lastSentAt = new Map<string, number>();
+  private static inFlightKeys = new Set<string>();
 
   static getThresholds(): ProcessingAlertThresholds {
     const defaults: ProcessingAlertThresholds = {
       cpuHighPercent: 85,
       mergeSlowSeconds: 480,
       screenshotSlowSeconds: 300,
-      asrSlowSeconds: 900
+      asrSlowSeconds: 900,
+      streamStartNoFileOpeningSeconds: 300,
+      streamEndNoSegmentGraceSeconds: 60,
+      finalizationWatchdogGraceSeconds: 60
     };
 
     try {
@@ -46,7 +84,10 @@ export class ProcessingAlertService {
         cpuHighPercent: Number(configured.cpuHighPercent) || defaults.cpuHighPercent,
         mergeSlowSeconds: Number(configured.mergeSlowSeconds) || defaults.mergeSlowSeconds,
         screenshotSlowSeconds: Number(configured.screenshotSlowSeconds) || defaults.screenshotSlowSeconds,
-        asrSlowSeconds: Number(configured.asrSlowSeconds) || defaults.asrSlowSeconds
+        asrSlowSeconds: Number(configured.asrSlowSeconds) || defaults.asrSlowSeconds,
+        streamStartNoFileOpeningSeconds: Number(configured.streamStartNoFileOpeningSeconds) || defaults.streamStartNoFileOpeningSeconds,
+        streamEndNoSegmentGraceSeconds: Number(configured.streamEndNoSegmentGraceSeconds) || defaults.streamEndNoSegmentGraceSeconds,
+        finalizationWatchdogGraceSeconds: Number(configured.finalizationWatchdogGraceSeconds) || defaults.finalizationWatchdogGraceSeconds
       };
     } catch {
       return defaults;
@@ -112,8 +153,9 @@ export class ProcessingAlertService {
   static async notifyMissingFileCloseAfterStreamEnd(details: MissingFileCloseAlertDetails): Promise<void> {
     if (!this.isEnabled()) return;
 
+    const incidentId = details.eventTimestamp || details.sessionId || details.fileOpenedAt || 'unknown';
     await this.notifyOnce(
-      `missing-fileclose:${details.roomId}`,
+      `missing-fileclose:${details.roomId}:${incidentId}`,
       'Mikufans StreamEnded without FileClosed',
       [
         `**Room**: ${details.roomName || 'unknown'} (${details.roomId})`,
@@ -123,7 +165,109 @@ export class ProcessingAlertService {
         details.eventTimestamp ? `**StreamEnded**: ${details.eventTimestamp}` : undefined,
         details.reason ? `**Reason**: ${details.reason}` : undefined,
         '**Action**: Check recorder status manually. No file recovery was attempted.'
-      ]
+      ],
+      `missing-fileclose:${details.roomId}`,
+      LIFECYCLE_ALERT_RETRY_OPTIONS
+    );
+  }
+
+  static async notifyStreamStartedWithoutFileOrSession(details: MikufansLifecycleAlertDetails): Promise<void> {
+    if (!this.isEnabled()) return;
+
+    const incidentId = details.streamStartedAt || details.eventTimestamp || details.sessionId || 'unknown';
+    await this.notifyOnce(
+      `mikufans-start-no-file-session:${details.roomId}:${incidentId}`,
+      'Mikufans 开播后未开始录制',
+      [
+        this.formatRoom(details),
+        details.title ? `**标题**: ${details.title}` : undefined,
+        details.sessionId ? `**SessionId**: ${details.sessionId}` : undefined,
+        details.streamStartedAt ? `**StreamStarted**: ${details.streamStartedAt}` : undefined,
+        typeof details.elapsedSeconds === 'number' ? `**已等待**: ${details.elapsedSeconds.toFixed(0)} 秒` : undefined,
+        typeof details.observedSessionStarted === 'boolean' ? `**已见 SessionStarted**: ${details.observedSessionStarted ? '是' : '否'}` : undefined,
+        typeof details.observedFileOpening === 'boolean' ? `**已见 FileOpening**: ${details.observedFileOpening ? '是' : '否'}` : undefined,
+        details.reason ? `**原因**: ${details.reason}` : undefined,
+        '**建议**: 检查 Mikufans 房间状态、录制会话和磁盘写入。'
+      ],
+      `mikufans-start-no-file-session:${details.roomId}`,
+      LIFECYCLE_ALERT_RETRY_OPTIONS
+    );
+  }
+
+  static async notifyStreamStartedWithoutFileOpening(details: MikufansLifecycleAlertDetails): Promise<void> {
+    await this.notifyStreamStartedWithoutFileOrSession(details);
+  }
+
+  static async notifyStreamEndedWithoutCurrentSegment(details: MikufansLifecycleAlertDetails): Promise<void> {
+    if (!this.isEnabled()) return;
+
+    const incidentId = details.streamEndedAt || details.eventTimestamp || details.sessionId || 'unknown';
+    await this.notifyOnce(
+      `mikufans-end-no-current-segment:${details.roomId}:${incidentId}`,
+      'Mikufans 下播后没有本场有效片段',
+      [
+        this.formatRoom(details),
+        details.title ? `**标题**: ${details.title}` : undefined,
+        details.sessionId ? `**SessionId**: ${details.sessionId}` : undefined,
+        details.streamStartedAt ? `**StreamStarted**: ${details.streamStartedAt}` : undefined,
+        details.streamEndedAt ? `**StreamEnded**: ${details.streamEndedAt}` : undefined,
+        typeof details.segmentCount === 'number' ? `**当前片段数**: ${details.segmentCount}` : undefined,
+        details.sessionStatus || details.status ? `**会话状态**: ${details.sessionStatus || details.status}` : undefined,
+        details.reason ? `**原因**: ${details.reason}` : undefined,
+        '**建议**: 检查录播文件是否生成，必要时从备用录播源补档。'
+      ],
+      `mikufans-end-no-current-segment:${details.roomId}`,
+      LIFECYCLE_ALERT_RETRY_OPTIONS
+    );
+  }
+
+  static async notifyFinalizationStuck(details: MikufansLifecycleAlertDetails): Promise<void> {
+    if (!this.isEnabled()) return;
+
+    const incidentId = details.streamEndedAt || details.eventTimestamp || details.sessionId || 'unknown';
+    await this.notifyOnce(
+      `mikufans-finalization-stuck:${details.roomId}:${incidentId}`,
+      'Mikufans 收尾流程疑似悬挂',
+      [
+        this.formatRoom(details),
+        details.title ? `**标题**: ${details.title}` : undefined,
+        details.sessionId ? `**SessionId**: ${details.sessionId}` : undefined,
+        details.streamStartedAt ? `**StreamStarted**: ${details.streamStartedAt}` : undefined,
+        details.streamEndedAt ? `**StreamEnded**: ${details.streamEndedAt}` : undefined,
+        typeof details.elapsedSeconds === 'number' ? `**已等待**: ${details.elapsedSeconds.toFixed(0)} 秒` : undefined,
+        typeof details.segmentCount === 'number' ? `**当前片段数**: ${details.segmentCount}` : undefined,
+        details.sessionStatus || details.status ? `**会话状态**: ${details.sessionStatus || details.status}` : undefined,
+        typeof details.recording === 'boolean' ? `**Recording**: ${details.recording}` : undefined,
+        typeof details.streaming === 'boolean' ? `**Streaming**: ${details.streaming}` : undefined,
+        details.cancelledActions?.length ? `**被取消动作**: ${details.cancelledActions.join(', ')}` : undefined,
+        details.reason ? `**原因**: ${details.reason}` : undefined,
+        '**建议**: 检查该房间是否仍有收尾定时器；确认离线后重新触发处理流程。'
+      ],
+      `mikufans-finalization-stuck:${details.roomId}`,
+      LIFECYCLE_ALERT_RETRY_OPTIONS
+    );
+  }
+
+  static async notifyOfflineInvalidResume(details: MikufansLifecycleAlertDetails): Promise<void> {
+    if (!this.isEnabled()) return;
+
+    const incidentId = details.streamEndedAt || details.eventTimestamp || details.sessionId || 'unknown';
+    await this.notifyOnce(
+      `mikufans-offline-invalid-resume:${details.roomId}:${incidentId}`,
+      'Mikufans 收到离线恢复事件',
+      [
+        this.formatRoom(details),
+        details.title ? `**标题**: ${details.title}` : undefined,
+        details.sessionId ? `**SessionId**: ${details.sessionId}` : undefined,
+        details.streamStartedAt ? `**StreamStarted**: ${details.streamStartedAt}` : undefined,
+        details.streamEndedAt ? `**StreamEnded**: ${details.streamEndedAt}` : undefined,
+        typeof details.recording === 'boolean' ? `**Recording**: ${details.recording}` : undefined,
+        typeof details.streaming === 'boolean' ? `**Streaming**: ${details.streaming}` : undefined,
+        details.reason ? `**处理**: ${details.reason}` : undefined,
+        '**结果**: 已忽略该恢复信号并保留原收尾流程。'
+      ],
+      `mikufans-offline-invalid-resume:${details.roomId}`,
+      LIFECYCLE_ALERT_RETRY_OPTIONS
     );
   }
 
@@ -150,26 +294,77 @@ export class ProcessingAlertService {
     }
   }
 
-  private static async notifyOnce(key: string, title: string, lines: Array<string | undefined>): Promise<void> {
+  private static formatRoom(details: MikufansLifecycleAlertDetails): string {
+    return `**房间**: ${details.roomName || 'unknown'} (${details.roomId})`;
+  }
+
+  private static async notifyOnce(
+    incidentKey: string,
+    title: string,
+    lines: Array<string | undefined>,
+    cooldownKey = incidentKey,
+    retryOptions: AlertRetryOptions = {}
+  ): Promise<void> {
     const now = Date.now();
     const cooldownMs = this.getCooldownMs();
-    const lastSent = this.lastSentAt.get(key) || 0;
+    this.cleanupAlertState(now, cooldownMs);
+
+    if (this.sentIncidentsAt.has(incidentKey)) return;
+
+    const lastSent = this.lastSentAt.get(cooldownKey) || 0;
     if (now - lastSent < cooldownMs) return;
+
+    const incidentFlightKey = `incident:${incidentKey}`;
+    const cooldownFlightKey = `cooldown:${cooldownKey}`;
+    if (this.inFlightKeys.has(incidentFlightKey) || this.inFlightKeys.has(cooldownFlightKey)) return;
 
     const notifier = this.getNotifier();
     if (!notifier) return;
 
-    this.lastSentAt.set(key, now);
     const content = [
       `### ${title}`,
       ...lines.filter((line): line is string => Boolean(line)),
       `**时间**: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`
     ].join('\n');
 
+    this.inFlightKeys.add(incidentFlightKey);
+    this.inFlightKeys.add(cooldownFlightKey);
     try {
-      await notifier.sendMarkdown(content);
-    } catch (error: any) {
-      this.logger.warn(`处理性能提醒发送失败: ${error.message}`);
+      const maxAttempts = Math.max(1, Math.floor(Number(retryOptions.maxAttempts) || 1));
+      const retryDelayMs = Math.max(0, Number(retryOptions.retryDelayMs) || 0);
+
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          const sent = await notifier.sendMarkdown(content);
+          if (sent) {
+            const sentAt = Date.now();
+            this.sentIncidentsAt.set(incidentKey, sentAt);
+            this.lastSentAt.set(cooldownKey, sentAt);
+            this.logger.info('处理性能提醒已发送', { title, incidentKey });
+            return;
+          }
+          this.logger.warn(`处理性能提醒发送失败: ${title} (${attempt}/${maxAttempts})`);
+        } catch (error: any) {
+          this.logger.warn(`处理性能提醒发送失败: ${error?.message || String(error)} (${attempt}/${maxAttempts})`);
+        }
+
+        if (attempt < maxAttempts && retryDelayMs > 0) {
+          await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+        }
+      }
+    } finally {
+      this.inFlightKeys.delete(incidentFlightKey);
+      this.inFlightKeys.delete(cooldownFlightKey);
+    }
+  }
+
+  private static cleanupAlertState(now: number, cooldownMs: number): void {
+    const incidentRetentionMs = Math.max(24 * 60 * 60 * 1000, cooldownMs * 2);
+    for (const [key, sentAt] of this.sentIncidentsAt.entries()) {
+      if (now - sentAt > incidentRetentionMs) this.sentIncidentsAt.delete(key);
+    }
+    for (const [key, sentAt] of this.lastSentAt.entries()) {
+      if (now - sentAt > incidentRetentionMs) this.lastSentAt.delete(key);
     }
   }
 

@@ -63,7 +63,14 @@ async function generateTopicClipsForMedia(originalMediaPath, processedMediaPath,
     }
 }
 
-async function generateOwnStreamClipsForMedia(mediaPath, srtPath, xmlPath, roomId = null, context = {}) {
+async function generateOwnStreamClipsForMedia(
+    mediaPath,
+    srtPath,
+    xmlPath,
+    roomId = null,
+    context = {},
+    fullLiveContextPath = null
+) {
     const config = configLoader.getConfig();
     const clipConfig = ownStreamClipper.getOwnStreamClipsConfig(config);
     if (!clipConfig.enabled) {
@@ -95,7 +102,8 @@ async function generateOwnStreamClipsForMedia(mediaPath, srtPath, xmlPath, roomI
                 ...context,
                 roomId: roomKey
             },
-            streamerName: context.streamerName || context.streamer_name || null
+            streamerName: context.streamerName || context.streamer_name || null,
+            fullLiveContextPath
         });
         console.log(results.length > 0
             ? `✅ 岁己直播有趣切片完成: ${results.length} 段`
@@ -241,7 +249,8 @@ async function runBackgroundClipsFromPayload(payloadPath) {
             payload.srtPath,
             payload.xmlPath,
             payload.roomId,
-            context
+            context,
+            payload.fullLiveContextPath || null
         );
         console.log('✅ 后台自动切片子进程完成');
     } finally {
