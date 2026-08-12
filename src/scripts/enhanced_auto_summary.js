@@ -1877,6 +1877,16 @@ const main = async () => {
             const liveContentSummaryDeliveryMode = liveContentSummaryEnabled
                 ? liveContentSummary.getSummaryDeliveryMode(preparedFullLiveContext.experiment)
                 : null;
+            const cachePropagationWaitMs = liveContentSummary.getCachePropagationWaitMs(
+                preparedFullLiveContext?.experiment
+            );
+            if (goodnightTextPath && cachePropagationWaitMs > 0) {
+                console.log(
+                    `⏳ 等待 ${cachePropagationWaitMs}ms 让晚安请求建立的共享前缀缓存传播，`
+                    + '再启动直播梗概与后续生成任务'
+                );
+                await new Promise(resolve => setTimeout(resolve, cachePropagationWaitMs));
+            }
             let delayedReplyReadyEmitted = false;
 
             const emitDelayedReplyReady = (comicImagePathForReply = null) => {

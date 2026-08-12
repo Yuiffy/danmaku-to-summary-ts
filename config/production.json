@@ -1167,6 +1167,7 @@
           "promptCacheRolloutPercent": 100,
           "model": "gpt-5.6-luna",
           "cacheWarmupWaitMs": 45000,
+          "cachePropagationWaitMs": 3000,
           "timeoutMs": 180000,
           "maxAttempts": 1,
           "failureRetryCooldownMs": 1800000,

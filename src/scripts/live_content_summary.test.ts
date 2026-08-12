@@ -52,13 +52,35 @@ describe('live_content_summary', () => {
         promptCacheRolloutPercent: 100
       })
     );
+    expect(production.ai.roomSettings['25788785'].fullLiveContextExperiment.cachePropagationWaitMs)
+      .toBeUndefined();
     expect(production.ai.roomSettings['26966466'].fullLiveContextExperiment).toEqual(
       expect.objectContaining({
         tasks: ['goodnight', 'comic', 'summary'],
         summaryDeliveryMode: 'attach_if_ready',
-        promptCacheRolloutPercent: 100
+        promptCacheRolloutPercent: 100,
+        cachePropagationWaitMs: 3000
       })
     );
+  });
+
+  test('waits for cache propagation only in the attached goodnight-summary mode', () => {
+    expect(liveContentSummary.getCachePropagationWaitMs(makeExperiment({
+      tasks: ['goodnight', 'comic', 'summary'],
+      summaryDeliveryMode: 'attach_if_ready',
+      cachePropagationWaitMs: 3000
+    }))).toBe(3000);
+
+    expect(liveContentSummary.getCachePropagationWaitMs(makeExperiment({
+      tasks: ['summary', 'ownStreamClips'],
+      summaryDeliveryMode: 'separate',
+      cachePropagationWaitMs: 3000
+    }))).toBe(0);
+
+    expect(liveContentSummary.getCachePropagationWaitMs(makeExperiment({
+      tasks: ['goodnight', 'summary'],
+      summaryDeliveryMode: 'attach_if_ready'
+    }))).toBe(0);
   });
 
   test('keeps the byte-identical full-live prefix before its task suffix', () => {

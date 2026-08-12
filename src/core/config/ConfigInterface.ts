@@ -433,6 +433,8 @@ export interface FullLiveContextExperimentConfig {
   promptCacheRolloutPercent?: number;
   /** Maximum time to delay cache-dependent work while the summary seeds the prefix. */
   cacheWarmupWaitMs?: number;
+  /** Delay after goodnight completes so its shared prefix cache can propagate before summary/comic requests start. */
+  cachePropagationWaitMs?: number;
   model?: string;
   timeoutMs?: number;
   maxAttempts?: number;

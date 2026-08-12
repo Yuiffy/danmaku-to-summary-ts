@@ -58,6 +58,20 @@ function getSummaryDeliveryMode(experiment) {
         : 'separate';
 }
 
+function getCachePropagationWaitMs(experiment) {
+    if (
+        getSummaryDeliveryMode(experiment) !== 'attach_if_ready'
+        || !isExperimentTaskEnabled(experiment, 'goodnight')
+        || !isExperimentTaskEnabled(experiment, 'summary')
+    ) {
+        return 0;
+    }
+    const configuredWaitMs = Number(experiment?.cachePropagationWaitMs);
+    return Number.isFinite(configuredWaitMs) && configuredWaitMs > 0
+        ? Math.floor(configuredWaitMs)
+        : 0;
+}
+
 function loadFullContextPayload(highlightPath, explicitPath = null) {
     if (!explicitPath) {
         return fullLiveContext.loadFullLiveContextSidecar(highlightPath);
@@ -416,6 +430,7 @@ module.exports = {
     getFullLiveContextExperiment,
     isExperimentTaskEnabled,
     getSummaryDeliveryMode,
+    getCachePropagationWaitMs,
     loadFullContextPayload,
     buildLiveContentSummaryPrompt,
     parseJsonObject,
