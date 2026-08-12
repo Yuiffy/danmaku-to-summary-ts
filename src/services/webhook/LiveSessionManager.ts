@@ -64,7 +64,7 @@ export class LiveSessionManager {
   /**
    * 创建或获取会话（使用RoomId）
    */
-  createOrGetSession(roomId: string, roomName: string, title: string): LiveSession {
+  createOrGetSession(roomId: string, roomName: string, title: string, startTime?: Date): LiveSession {
     let session = this.sessions.get(roomId);
     const previousStatus = session?.status;
     const lastSegment = session?.segments[session.segments.length - 1];
@@ -99,7 +99,9 @@ export class LiveSessionManager {
         roomId,
         roomName,
         title,
-        startTime: new Date(),
+        // FileClosed may rebuild a session after a process restart. In that case
+        // the recording's FileOpenTime is the only reliable start, not "now".
+        startTime: startTime && !Number.isNaN(startTime.getTime()) ? startTime : new Date(),
         segments: [],
         status: 'collecting'
       };
@@ -615,13 +617,10 @@ export class LiveSessionManager {
     }
 
     const [, roomId, date, time] = match;
+    // Recording filenames contain wall-clock Asia/Shanghai time. Do not let the
+    // host process timezone change the resulting instant.
     const startTime = new Date(
-      Number(date.slice(0, 4)),
-      Number(date.slice(4, 6)) - 1,
-      Number(date.slice(6, 8)),
-      Number(time.slice(0, 2)),
-      Number(time.slice(2, 4)),
-      Number(time.slice(4, 6))
+      `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}T${time.slice(0, 2)}:${time.slice(2, 4)}:${time.slice(4, 6)}+08:00`
     );
 
     if (Number.isNaN(startTime.getTime())) {

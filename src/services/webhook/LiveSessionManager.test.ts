@@ -33,6 +33,23 @@ describe('LiveSessionManager nearby segment recovery', () => {
     jest.useRealTimers();
   });
 
+  test('uses an explicit recording start when rebuilding a session', () => {
+    const manager = new LiveSessionManager();
+    const recordingStart = new Date('2026-08-12T04:14:22.532+08:00');
+
+    const session = manager.createOrGetSession('21452505', '七海Nana7mi', '种田！第一年冬', recordingStart);
+
+    expect(session.startTime).toEqual(recordingStart);
+  });
+
+  test('parses recording filename timestamps as Asia/Shanghai time', () => {
+    const manager = new LiveSessionManager() as any;
+
+    const parsed = manager.parseRecordingFileName('录制-21452505-20260812-041422-531-种田！第一年冬.flv');
+
+    expect(parsed.startTime).toEqual(new Date('2026-08-12T04:14:22+08:00'));
+  });
+
   test('resumes a recently processing session as the same live after a short reconnect', () => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date(2026, 6, 3, 1, 12, 55));

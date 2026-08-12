@@ -192,7 +192,53 @@ function formatClock(seconds) {
     return topicClipper.formatClock(seconds);
 }
 
-function buildClipDescription({ streamerName, streamTitle, recordedAt, start, end, reason }) {
+const EMOTION_DISPLAY_NAMES = {
+    HAPPY: '愉快',
+    ANGRY: '愤怒',
+    SURPRISE: '惊讶',
+    SAD: '悲伤',
+    FEAR: '恐惧',
+    DISGUST: '厌恶',
+    CONTEMPT: '轻蔑',
+    NEUTRAL: '平静'
+};
+
+function buildEmotionComposition(evidence = [], start = 0, end = 0) {
+    const scores = new Map();
+    for (const item of Array.isArray(evidence) ? evidence : []) {
+        const emotion = String(item?.emotion || '').trim().toUpperCase();
+        if (!emotion) continue;
+        const itemStart = Number(item.start);
+        const itemEnd = Number(item.end);
+        const overlap = Number.isFinite(itemStart) && Number.isFinite(itemEnd)
+            ? Math.max(0, Math.min(Number(end), itemEnd) - Math.max(Number(start), itemStart))
+            : 0;
+        if (overlap > 0) scores.set(emotion, (scores.get(emotion) || 0) + overlap);
+    }
+    if (scores.size === 0) return '';
+
+    // Neutral is useful only when it is the sole detected state; otherwise the
+    // description should surface the expressive part of the clip.
+    const expressive = [...scores].filter(([emotion]) => emotion !== 'NEUTRAL');
+    const ranked = (expressive.length > 0 ? expressive : [...scores])
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 4);
+    const total = ranked.reduce((sum, [, value]) => sum + value, 0);
+    if (!(total > 0)) return '';
+    const percentages = ranked.map(([emotion, value]) => ({
+        emotion,
+        value,
+        percent: Math.round(value / total * 100)
+    }));
+    const roundingDelta = 100 - percentages.reduce((sum, item) => sum + item.percent, 0);
+    percentages[0].percent += roundingDelta;
+    return percentages
+        .filter(item => item.percent > 0)
+        .map(item => `${EMOTION_DISPLAY_NAMES[item.emotion] || item.emotion}：${item.percent}%`)
+        .join(' ');
+}
+
+function buildClipDescription({ streamerName, streamTitle, recordedAt, start, end, reason, emotionEvidence }) {
     const liveName = streamerName || '\u4e3b\u64ad';
     const title = streamTitle || '\u672a\u77e5\u76f4\u64ad';
     const time = recordedAt || '\u672a\u77e5';
@@ -202,6 +248,9 @@ function buildClipDescription({ streamerName, streamTitle, recordedAt, start, en
         '\u6765\u81ea ' + liveName + ' \u7684\u76f4\u64ad\u300a' + title + '\u300b\uff0c\u5f55\u5236\u65f6\u95f4 ' + time + '\u3002',
         '\u7247\u6bb5\u65f6\u95f4 ' + clipStart + '-' + clipEnd + '\u3002'
     ];
+
+    const emotionComposition = buildEmotionComposition(emotionEvidence, start, end);
+    if (emotionComposition) lines.push(`情绪：${emotionComposition}`);
 
     const extraReason = String(reason || '').trim();
     if (extraReason) {
@@ -1524,17 +1573,18 @@ async function generateOwnStreamClipJob({
     const srtPath = path.join(outputRoot, `${baseName}.srt`);
     const metadataPath = path.join(outputRoot, `${baseName}.json`);
     const srtResult = topicClipper.writeClipSrt(parsed.segments, window, srtPath);
-    const rawCopy = {
-        title: clip.title,
-        coverText: topicClipper.normalizeCoverText(clip.coverText),
-        description: buildClipDescription({
-            streamerName,
-            streamTitle: info.streamTitle,
-            recordedAt: info.recordedAt,
-            start: window.start,
-            end: window.end,
-            reason: clip.reason
-        }),
+            const rawCopy = {
+                title: clip.title,
+                coverText: topicClipper.normalizeCoverText(clip.coverText),
+                description: buildClipDescription({
+                    streamerName,
+                    streamTitle: info.streamTitle,
+                    recordedAt: info.recordedAt,
+                    start: window.start,
+                    end: window.end,
+                    reason: clip.reason,
+                    emotionEvidence: clip.base?.emotionEvidence || clip.emotionEvidence || []
+                }),
         tags: buildClipTags(options.config || {}, info.roomId, streamerName)
     };
     const processedCopy = postProcessAiClipMetadata(rawCopy, options.config || {});
@@ -1874,9 +1924,10 @@ async function generateOwnStreamClips(options = {}) {
                 streamerName,
                 streamTitle: info.streamTitle,
                 recordedAt: info.recordedAt,
-                start: window.start,
-                end: window.end,
-                reason: clip.reason
+            start: window.start,
+            end: window.end,
+            reason: clip.reason,
+            emotionEvidence: clip.base?.emotionEvidence || clip.emotionEvidence || []
             }),
             tags: buildClipTags(options.config || {}, info.roomId, streamerName)
         };
@@ -2092,6 +2143,7 @@ module.exports = {
     buildReviewMarkdown,
     buildPlanReviewMarkdown,
     buildClipDescription,
+    buildEmotionComposition,
     buildClipTags,
     buildCoverTitle,
     selectCoverPreferredTime: topicClipper.selectCoverPreferredTime,

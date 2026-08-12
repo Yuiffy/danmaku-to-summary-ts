@@ -59,6 +59,22 @@ describe('own_stream_clipper', () => {
     expect(description).toContain('宀佸繁鍏堣嚜鎴戞媿鎵嬪彨琛?');
   });
 
+  test('adds time-weighted emotion composition to upload description', () => {
+    const description = ownStreamClipper.buildClipDescription({
+      streamerName: '岁己SUI',
+      streamTitle: '测试直播',
+      recordedAt: '2026-08-12 20:00:00',
+      start: 0,
+      end: 10,
+      emotionEvidence: [
+        { start: 0, end: 8, emotion: 'ANGRY' },
+        { start: 8, end: 10, emotion: 'SURPRISE' }
+      ]
+    });
+
+    expect(description).toContain('情绪：愤怒：80% 惊讶：20%');
+  });
+
   test('builds candidates from danmaku density and reaction keywords', () => {
     const parsed = {
       segments: [

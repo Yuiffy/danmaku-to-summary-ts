@@ -551,7 +551,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         });
       },
       `RecordingStartMissing: ${roomKey}`,
-      this.getProcessingAlertDelayMs('streamStartNoFileOpeningSeconds', 300)
+      this.getProcessingAlertDelayMs('streamStartNoFileOpeningSeconds', 480)
     );
   }
 
@@ -598,7 +598,9 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   private ensureSessionFromPayload(roomId: string, payload: any, reason: string): void {
     const roomName = payload.EventData?.Name || 'unknown';
     const title = payload.EventData?.Title || 'live';
-    this.liveSessionManager.createOrGetSession(roomId, roomName, title);
+    const startTimeValue = payload.EventData?.FileOpenTime || payload.EventData?.StreamStartTime;
+    const startTime = startTimeValue ? new Date(startTimeValue) : undefined;
+    this.liveSessionManager.createOrGetSession(roomId, roomName, title, startTime);
     this.logger.info(`Rebuilt live session from webhook event: ${roomId} (${reason})`);
   }
 
@@ -1960,7 +1962,9 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         const hour = parseInt(timeStr.substring(0, 2));
         const minute = parseInt(timeStr.substring(2, 4));
         const second = parseInt(timeStr.substring(4, 6));
-        const parsedStart = new Date(year, month, day, hour, minute, second);
+        const parsedStart = new Date(
+          `${dateStr.slice(0, 4)}-${dateStr.slice(4, 6)}-${dateStr.slice(6, 8)}T${timeStr.slice(0, 2)}:${timeStr.slice(2, 4)}:${timeStr.slice(4, 6)}+08:00`
+        );
         if (!Number.isNaN(parsedStart.getTime()) && year >= 2020 && year <= 2100) {
           recordingStartTime = parsedStart;
         }
@@ -2025,7 +2029,9 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         const minute = parseInt(timeStr.substring(2, 4));
         const second = parseInt(timeStr.substring(4, 6));
         
-        const startTime = new Date(year, month, day, hour, minute, second);
+        const startTime = new Date(
+          `${dateStr.slice(0, 4)}-${dateStr.slice(4, 6)}-${dateStr.slice(6, 8)}T${timeStr.slice(0, 2)}:${timeStr.slice(2, 4)}:${timeStr.slice(4, 6)}+08:00`
+        );
 
         if (
           Number.isNaN(startTime.getTime()) ||
@@ -2199,7 +2205,13 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     const session = this.liveSessionManager.getSession(roomId);
     if (session) {
       const liveStartTime = session.startTime;
-      const liveEndTime = session.endTime || new Date();
+      const latestSegmentEndTime = session.segments
+        .map(segment => segment.fileCloseTime)
+        .filter(value => value && !Number.isNaN(value.getTime()))
+        .sort((a, b) => b.getTime() - a.getTime())[0];
+      // A rebuilt session can still be processing when this is called. Prefer
+      // observed stream/file end times over the processing wall clock.
+      const liveEndTime = session.endTime || fallbackTimes?.endTime || latestSegmentEndTime || new Date();
 
       const fallbackStartTime = fallbackTimes?.startTime;
       const fallbackEndTime = fallbackTimes?.endTime;

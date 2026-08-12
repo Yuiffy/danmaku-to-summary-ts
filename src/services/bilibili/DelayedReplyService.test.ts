@@ -586,6 +586,18 @@ describe('DelayedReplyService summary dynamic reply', () => {
     }));
   });
 
+  it('uses Beijing time when deriving the start from a recording filename', () => {
+    const service = new DelayedReplyService({} as any, {} as any) as any;
+    const task = createSummaryTask({
+      liveStartTime: undefined,
+      goodnightTextPath: path.join(outputDir, '27628030-20260729-041422-001_晚安回复.md')
+    });
+
+    const times = service.getSummaryLiveTimes(task);
+
+    expect(times.startTime).toEqual(new Date('2026-07-29T04:14:22+08:00'));
+  });
+
   it('publishes text only after image generation declares terminal failure', async () => {
     const comicImagePath = path.join(outputDir, 'stream_COMIC_FACTORY.png');
     const metaPath = path.join(outputDir, 'stream_COMIC_FACTORY_META.json');

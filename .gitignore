@@ -45,6 +45,7 @@ __pycache__/
 # local tool/runtime state
 .gemini/
 .claude/
+/artifacts/
 data/runtime/
 local-scripts/*
 !local-scripts/README.md

@@ -1406,13 +1406,10 @@ export class DelayedReplyService implements IDelayedReplyService {
       if (match) {
         const date = match[1];
         const time = match[2];
+        // Recording filenames use Beijing wall-clock time regardless of the
+        // machine timezone running the service.
         const parsed = new Date(
-          Number(date.slice(0, 4)),
-          Number(date.slice(4, 6)) - 1,
-          Number(date.slice(6, 8)),
-          Number(time.slice(0, 2)),
-          Number(time.slice(2, 4)),
-          Number(time.slice(4, 6))
+          `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}T${time.slice(0, 2)}:${time.slice(2, 4)}:${time.slice(4, 6)}+08:00`
         );
         if (!Number.isNaN(parsed.getTime())) {
           startTime = parsed;

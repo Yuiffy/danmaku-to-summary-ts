@@ -22,7 +22,7 @@ describe('ProcessingAlertService recorder lifecycle alerts', () => {
           mergeSlowSeconds: 480,
           screenshotSlowSeconds: 300,
           asrSlowSeconds: 900,
-          streamStartNoFileOpeningSeconds: 300,
+          streamStartNoFileOpeningSeconds: 480,
           streamEndNoSegmentGraceSeconds: 60,
           finalizationWatchdogGraceSeconds: 60,
           cooldownMs
@@ -51,7 +51,7 @@ describe('ProcessingAlertService recorder lifecycle alerts', () => {
       mergeSlowSeconds: 480,
       screenshotSlowSeconds: 300,
       asrSlowSeconds: 900,
-      streamStartNoFileOpeningSeconds: 300,
+      streamStartNoFileOpeningSeconds: 480,
       streamEndNoSegmentGraceSeconds: 60,
       finalizationWatchdogGraceSeconds: 60
     });

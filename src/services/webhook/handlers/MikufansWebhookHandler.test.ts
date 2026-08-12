@@ -106,7 +106,9 @@ describe('MikufansWebhookHandler segment collection finalization', () => {
     await jest.advanceTimersByTimeAsync(5 * 60 * 1000);
 
     expect(staleFinalization).not.toHaveBeenCalled();
-    expect(handler.delayedActions.has(String(roomId))).toBe(false);
+    expect(handler.delayedActions.get(String(roomId))?.has('stream_ended')).not.toBe(true);
+    expect(handler.delayedActions.get(String(roomId))?.has('segment_collection')).not.toBe(true);
+    expect(handler.delayedActions.get(String(roomId))?.has('recording_start_alert')).toBe(true);
     expect(handler.activeLiveRooms.has(String(roomId))).toBe(true);
   });
 
@@ -397,7 +399,7 @@ describe('MikufansWebhookHandler segment collection finalization', () => {
       }
     });
 
-    await jest.advanceTimersByTimeAsync(300 * 1000 - 1);
+    await jest.advanceTimersByTimeAsync(480 * 1000 - 1);
     expect(alert).not.toHaveBeenCalled();
     await jest.advanceTimersByTimeAsync(1);
     expect(alert).toHaveBeenCalledTimes(1);
@@ -795,7 +797,9 @@ describe('MikufansWebhookHandler segment collection finalization', () => {
     });
 
     expect(handler.finalFileClosedRooms.has(roomId)).toBe(true);
-    expect(handler.liveSessionManager.getSession(roomId).segments).toHaveLength(1);
+    const rebuiltSession = handler.liveSessionManager.getSession(roomId);
+    expect(rebuiltSession.segments).toHaveLength(1);
+    expect(rebuiltSession.startTime).toEqual(new Date(startTime.getTime() + 1000));
     expect(handler.delayedActions.get(roomId)?.has('segment_collection')).toBe(true);
     expect(handler.delayedActions.get(roomId)?.has('finalization_watchdog')).toBe(true);
 
