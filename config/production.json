@@ -409,7 +409,9 @@
           "星西",
           "星希"
         ],
-        "referenceImages": [],
+        "referenceImages": [
+          "public/reference_images/seki_standing.png"
+        ],
         "characterDescription": "星汐Seki，蓝发带粉色挑染、紫瞳、爆炸双马尾的网瘾少女。"
       },
       "mizuki": {
@@ -464,7 +466,7 @@
           "米婷"
         ],
         "referenceImages": [
-          "public/reference_images/米汀.png"
+          "public/reference_images/miting_official_standing.png"
         ],
         "characterDescription": "米汀Nagisa，银发灰瞳，戴帽子的女性推理社社员。"
       },
@@ -664,7 +666,7 @@
           "public/reference_images/komichi_official_standing.png",
           "public/reference_images/komichi_official_sign.png"
         ],
-        "characterDescription": "四时小路Komichi，黑色长发、紫色眼睛，红色发带，左侧有黄色警示牌发饰和蓝白方向标发饰；官方账号头像仅用于身份锚定。"
+        "characterDescription": "四时小路Komichi，黑色长发、紫色眼睛，红色发带，左侧有黄色警示牌发饰和蓝白方向标发饰；使用官方置顶动态发布的全身立绘和签名素材。"
       },
       "viridis": {
         "displayName": "小松绿Viridis",
@@ -678,6 +680,9 @@
         ],
         "uploadTags": [
           "Viridis"
+        ],
+        "referenceImages": [
+          "public/reference_images/viridis_official_standing.png"
         ]
       },
       "chu2u": {
@@ -692,6 +697,9 @@
         ],
         "uploadTags": [
           "chu2u"
+        ],
+        "referenceImages": [
+          "public/reference_images/chu2u_standing.png"
         ]
       },
       "sumire": {
@@ -706,6 +714,9 @@
         ],
         "uploadTags": [
           "Sumire"
+        ],
+        "referenceImages": [
+          "public/reference_images/sumire_vr_official_standing.png"
         ]
       }
     },
@@ -769,7 +780,7 @@
     "roomSettings": {
       "80397": {
         "audioOnly": true,
-        "referenceImage": "public/reference_images/梓神百万.webp",
+        "referenceImage": "public/reference_images/azusa_standing.png",
         "characterDescription": "阿梓从小就很可爱（紫发豆豆眉双马尾的可爱少女），粉丝是小孩梓（一群Q版形象的狂热粉丝/阿伟）",
         "anchorName": "梓神",
         "fanName": "小孩梓",
@@ -792,6 +803,7 @@
       "573893": {
         "uid": "15641218",
         "audioOnly": true,
+        "referenceImage": "public/reference_images/shengge_standing.png",
         "characterDescription": "帅比笙歌超可爱OvO（西湖畔唱歌的中国风美少女，常见外号“塔宝/塔神”，粉丝常称“boba”）。",
         "anchorName": "帅比笙歌超可爱OvO",
         "fanName": "boba",
@@ -836,7 +848,7 @@
       },
       "3473884": {
         "audioOnly": true,
-        "referenceImage": "public/reference_images/菫時_杠杠_头像.jpg",
+        "referenceImage": "public/reference_images/ganggang_model_sheet.png",
         "characterDescription": "-菫時-（浅金发蓝瞳、带光环的天使系少女），昵称杠杠，粉丝是鸽总",
         "anchorName": "杠杠",
         "fanName": "鸽总",
@@ -846,6 +858,7 @@
       },
       "21224291": {
         "audioOnly": true,
+        "referenceImage": "public/reference_images/inori_standing.png",
         "characterDescription": "安堂Inori（橘发绿瞳狐娘机娘），机械狐狸型Vtuber，双马尾，自称机器人但内心是人类，擅长射击游戏",
         "anchorName": "安堂Inori",
         "fanName": "科研者",
@@ -910,6 +923,7 @@
       "21692711": {
         "uid": "3821157",
         "audioOnly": true,
+        "referenceImage": "public/reference_images/lovely_official_model_overview.png",
         "characterDescription": "东爱璃Lovely（棕发蓝瞳的事故系/种田系前偶像，常见外号“傻狍子/狍子/拉布里”，粉丝勋章“秧歌星”）。",
         "anchorName": "东爱璃Lovely",
         "fanName": "秧歌星",
@@ -958,6 +972,7 @@
       },
       "23222837": {
         "audioOnly": true,
+        "referenceImage": "public/reference_images/sumi_standing.png",
         "characterDescription": "礼墨Sumi（psplive 所属“元气阴咖东方龙”，常见称呼“礼墨/Sumi”，粉丝侧常见“礼吸湖”）。",
         "anchorName": "礼墨Sumi",
         "fanName": "礼吸湖",
@@ -989,7 +1004,7 @@
       "25034104": {
         "uid": "2132180406",
         "audioOnly": true,
-        "referenceImage": "public/reference_images/明前奶绿.png",
+        "referenceImage": "public/reference_images/mingqian_scarf_casual_standing.png",
         "characterDescription": "明前奶绿，灰发绿瞳、带绿色挑染和心形呆毛的花店店员少女，喜欢百合。粉丝是奶糖花。",
         "anchorName": "明前奶绿",
         "fanName": "奶糖花",
@@ -1246,7 +1261,7 @@
       "31368705": {
         "uid": "2124647716",
         "audioOnly": true,
-        "referenceImage": "public/reference_images/米汀.png",
+        "referenceImage": "public/reference_images/miting_official_standing.png",
         "characterDescription": "米汀Nagisa，银发灰瞳，戴帽子的女性推理社社员。粉丝“旁汀生”是白色猫头鹰形象",
         "anchorName": "米米",
         "fanName": "旁汀生",
@@ -1394,6 +1409,7 @@
       },
       "1791260716": {
         "audioOnly": true,
+        "referenceImage": "public/reference_images/mofu_standing_sheet.png",
         "characterDescription": "犬绒Mofu（棕粉渐变长发、黄蓝异瞳犬娘），可爱小女孩，立绘胸部较大，被称为大奶狗。粉丝绒绒民是白色小狗戴着粉色蝴蝶结",
         "anchorName": "犬绒Mofu",
         "fanName": "绒绒民",
@@ -1425,6 +1441,7 @@
       },
       "1844410596": {
         "audioOnly": true,
+        "referenceImage": "public/reference_images/awayong_official_character_sheet.jpg",
         "characterDescription": "夜永awa，银色美少女主播",
         "anchorName": "酱酱",
         "fanName": "foam",
@@ -1444,6 +1461,7 @@
       "1967216004": {
         "uid": "2030198123",
         "audioOnly": true,
+        "referenceImage": "public/reference_images/mit3uri_standing.png",
         "characterDescription": "三理Mit3uri，淡紫发戴着挡风镜的实验室少女。粉丝是理电池，小电池生物，有时候会有可爱小猪的特征",
         "anchorName": "三理",
         "fanName": "理电池",

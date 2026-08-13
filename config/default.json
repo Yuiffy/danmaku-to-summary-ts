@@ -886,7 +886,9 @@
         "roomIds": ["1603600"],
         "speakerLabels": ["星汐Seki", "星汐", "Seki", "seki"],
         "aliases": ["星夕", "星西", "星希"],
-        "referenceImages": [],
+        "referenceImages": [
+          "public/reference_images/seki_standing.png"
+        ],
         "characterDescription": "星汐Seki，PSPlive所属虚拟UP主，蓝发带粉色挑染、紫瞳、爆炸双马尾的网瘾少女，喜欢打游戏、唱歌、聊天和土味内容。"
       },
       "mizuki": {
@@ -911,7 +913,7 @@
         "speakerLabels": ["米汀", "Miting"],
         "aliases": ["米丁", "米婷"],
         "referenceImages": [
-          "public/reference_images/米汀.png"
+          "public/reference_images/miting_official_standing.png"
         ],
         "characterDescription": "米汀Nagisa，银发灰瞳，戴帽子的女性推理社社员。粉丝“旁汀生”是白色猫头鹰形象。"
       },
@@ -996,28 +998,37 @@
           "public/reference_images/komichi_official_standing.png",
           "public/reference_images/komichi_official_sign.png"
         ],
-        "characterDescription": "四时小路Komichi，黑色长发、紫色眼睛，红色发带，左侧有黄色警示牌发饰和蓝白方向标发饰；官方账号头像仅用于身份锚定。"
+        "characterDescription": "四时小路Komichi，黑色长发、紫色眼睛，红色发带，左侧有黄色警示牌发饰和蓝白方向标发饰；使用官方置顶动态发布的全身立绘和签名素材。"
       },
       "viridis": {
         "displayName": "小松绿Viridis",
         "aiClipName": "小松",
         "roomIds": ["1727071052"],
         "searchTags": ["小松绿Viridis", "小松绿"],
-        "uploadTags": ["Viridis"]
+        "uploadTags": ["Viridis"],
+        "referenceImages": [
+          "public/reference_images/viridis_official_standing.png"
+        ]
       },
       "chu2u": {
         "displayName": "羽啾chu2u",
         "aiClipName": "小羽",
         "roomIds": ["1727074031"],
         "searchTags": ["羽啾chu2u", "羽啾"],
-        "uploadTags": ["chu2u"]
+        "uploadTags": ["chu2u"],
+        "referenceImages": [
+          "public/reference_images/chu2u_standing.png"
+        ]
       },
       "sumire": {
         "displayName": "枝堇Sumire",
         "aiClipName": "小枝",
         "roomIds": ["1727076670"],
         "searchTags": ["枝堇Sumire", "枝堇"],
-        "uploadTags": ["Sumire"]
+        "uploadTags": ["Sumire"],
+        "referenceImages": [
+          "public/reference_images/sumire_vr_official_standing.png"
+        ]
       }
     },
     "tuziRetry": {

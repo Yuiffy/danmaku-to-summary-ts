@@ -113,6 +113,104 @@ class MultiReferenceComicTests(unittest.TestCase):
             "extraAppearedStreamerIds": extra_ids,
         }, ensure_ascii=False), encoding="utf-8")
 
+    def test_delayed_reply_virtual_streamers_have_existing_character_references(self):
+        config_paths = [ROOT / "config" / name for name in ("default.json", "production.json")]
+        configs = [json.loads(path.read_text(encoding="utf-8")) for path in config_paths]
+        production_ai = configs[1]["ai"]
+
+        excluded_non_virtual_rooms = {
+            "5332",        # Event organizer account
+            "129548",      # Fan/personal account
+            "612978",      # Real-person/game streamer
+            "628684",      # Real-person/game streamer
+            "21470454",    # VirtuaReal group account
+            "23197314",    # Real-person game commentator
+        }
+        registry = production_ai["streamerRegistry"]
+        missing_references = []
+        nonexistent_references = []
+
+        for room_id, room in production_ai["roomSettings"].items():
+            if not room.get("enableDelayedReply") or room_id in excluded_non_virtual_rooms:
+                continue
+
+            references = [room.get("referenceImage")]
+            references.extend(room.get("referenceImages", []))
+            for streamer in registry.values():
+                if room_id in {str(value) for value in streamer.get("roomIds", [])}:
+                    references.extend(streamer.get("referenceImages", []))
+            references = [value for value in references if value]
+
+            if not references:
+                missing_references.append(f"{room_id} ({room.get('anchorName', 'unknown')})")
+                continue
+            nonexistent_references.extend(
+                f"{room_id}: {value}"
+                for value in references
+                if not (ROOT / value).is_file()
+            )
+
+        self.assertEqual([], missing_references)
+        self.assertEqual([], nonexistent_references)
+
+        forbidden_references = {
+            "public/reference_images/梓神百万.webp",
+            "public/reference_images/菫時_杠杠_头像.jpg",
+            "public/reference_images/米汀.png",
+            "public/reference_images/明前奶绿.png",
+        }
+        serialized_configs = json.dumps(configs, ensure_ascii=False)
+        for reference in forbidden_references:
+            self.assertNotIn(reference, serialized_configs)
+
+        expected_references = {
+            "public/reference_images/azusa_standing.png",
+            "public/reference_images/ganggang_model_sheet.png",
+            "public/reference_images/mingqian_scarf_casual_standing.png",
+            "public/reference_images/miting_official_standing.png",
+            "public/reference_images/shengge_standing.png",
+            "public/reference_images/seki_standing.png",
+            "public/reference_images/inori_standing.png",
+            "public/reference_images/lovely_official_model_overview.png",
+            "public/reference_images/sumi_standing.png",
+            "public/reference_images/viridis_official_standing.png",
+            "public/reference_images/chu2u_standing.png",
+            "public/reference_images/sumire_vr_official_standing.png",
+            "public/reference_images/mofu_standing_sheet.png",
+            "public/reference_images/awayong_official_character_sheet.jpg",
+            "public/reference_images/mit3uri_standing.png",
+        }
+        for reference in expected_references:
+            self.assertGreater((ROOT / reference).stat().st_size, 0)
+
+        expected_room_references = {
+            "80397": "public/reference_images/azusa_standing.png",
+            "573893": "public/reference_images/shengge_standing.png",
+            "3473884": "public/reference_images/ganggang_model_sheet.png",
+            "21224291": "public/reference_images/inori_standing.png",
+            "21692711": "public/reference_images/lovely_official_model_overview.png",
+            "23222837": "public/reference_images/sumi_standing.png",
+            "25034104": "public/reference_images/mingqian_scarf_casual_standing.png",
+            "31368705": "public/reference_images/miting_official_standing.png",
+            "1791260716": "public/reference_images/mofu_standing_sheet.png",
+            "1844410596": "public/reference_images/awayong_official_character_sheet.jpg",
+            "1967216004": "public/reference_images/mit3uri_standing.png",
+        }
+        for room_id, reference in expected_room_references.items():
+            self.assertEqual(reference, production_ai["roomSettings"][room_id]["referenceImage"])
+
+        expected_registry_references = {
+            "seki": "public/reference_images/seki_standing.png",
+            "miting": "public/reference_images/miting_official_standing.png",
+            "viridis": "public/reference_images/viridis_official_standing.png",
+            "chu2u": "public/reference_images/chu2u_standing.png",
+            "sumire": "public/reference_images/sumire_vr_official_standing.png",
+        }
+        for config in configs:
+            config_registry = config["ai"]["streamerRegistry"]
+            for streamer_id, reference in expected_registry_references.items():
+                self.assertIn(reference, config_registry[streamer_id]["referenceImages"])
+
     def test_disabled_collect_all_images_matches_original_behavior(self):
         self.config["ai"]["comic"]["multiReferenceImages"]["enabled"] = False
         with_extra = comic.collect_all_images("25788785", str(self.highlight), extra_streamers=[
