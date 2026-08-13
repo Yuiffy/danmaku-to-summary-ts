@@ -162,6 +162,7 @@ class MultiReferenceComicTests(unittest.TestCase):
         serialized_configs = json.dumps(configs, ensure_ascii=False)
         for reference in forbidden_references:
             self.assertNotIn(reference, serialized_configs)
+            self.assertFalse((ROOT / reference).exists())
 
         expected_references = {
             "public/reference_images/azusa_standing.png",
