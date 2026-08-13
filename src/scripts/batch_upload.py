@@ -336,6 +336,7 @@ def parse_review(review_path):
     """
     clips = []
     selection_source_by_idx = {}
+    cover_by_idx = {}
     with open(review_path, 'r', encoding='utf-8') as f:
         for line in f:
             line = line.strip()
@@ -359,9 +360,14 @@ def parse_review(review_path):
             source_match = re.match(r'^\s*来源:\s*(.+?)\s*$', line)
             if source_match and clips:
                 selection_source_by_idx[clips[-1]['idx']] = source_match.group(1).strip()
+                continue
+            cover_match = re.match(r'^\s*封面:\s*(.+?)\s*$', line)
+            if cover_match and clips:
+                cover_by_idx[clips[-1]['idx']] = cover_match.group(1).strip()
 
     for clip in clips:
         clip['selectionSource'] = selection_source_by_idx.get(clip['idx'], '')
+        clip['cover'] = cover_by_idx.get(clip['idx'], '')
     return clips
 
 

@@ -6,6 +6,7 @@ const xml2js = require('xml2js');
 const fetch = require('node-fetch');
 const asrBackends = require('./asr/asr_backends');
 const configLoader = require('./config-loader');
+const { resolveClipOutputRoot } = require('./clip_output_path');
 const {
     applyFfmpegProcessPriority,
     getFfmpegResourceConfig,
@@ -1479,71 +1480,6 @@ async function buildClipCopy(window, info, streamerName, config, titleGenerator 
     };
 }
 
-/**
- * Pick the keyframe ffmpeg will use as the input-side seek point.
- * With `-ss` before `-i` and stream copy, ffmpeg usually seeks backward to
- * the closest keyframe at or before targetTime. The stage-2 trim offset must
- * be based on that timestamp, otherwise burned subtitles drift from audio.
- */
-function selectInputSeekKeyframe(keyframes, targetTime) {
-    const sorted = Array.from(new Set((keyframes || [])
-        .map(t => Number(t))
-        .filter(t => Number.isFinite(t) && t >= 0)))
-        .sort((a, b) => a - b);
-    if (sorted.length === 0) {
-        return targetTime;
-    }
-
-    const epsilon = 0.001;
-    const atOrBefore = sorted.filter(kf => kf <= targetTime + epsilon);
-    if (atOrBefore.length > 0) {
-        return atOrBefore[atOrBefore.length - 1];
-    }
-    return sorted[0];
-}
-
-/**
- * Probe the actual keyframe ffmpeg will use for an input-side seek.
- */
-function probeNearestKeyframe(ffmpegPath, mediaPath, targetTime) {
-    return new Promise((resolve, reject) => {
-        const ffprobePath = (ffmpegPath || 'ffmpeg').replace(/ffmpeg(\.exe)?$/i, 'ffprobe$1');
-        const searchStart = Math.max(0, targetTime - 10);
-        const searchDur = 20;
-        const child = spawn(ffprobePath, [
-            '-skip_frame', 'nokey',
-            '-select_streams', 'v:0',
-            '-show_entries', 'frame=pts_time',
-            '-of', 'csv=p=0',
-            '-read_intervals', `${searchStart}%+${searchDur}`,
-            mediaPath
-        ], {
-            stdio: ['ignore', 'pipe', 'pipe'],
-            windowsHide: true
-        });
-        let stdout = '';
-        let stderr = '';
-        child.stdout.on('data', chunk => { stdout += chunk.toString(); });
-        child.stderr.on('data', chunk => { stderr += chunk.toString(); });
-        child.on('error', reject);
-        child.on('close', code => {
-            if (code !== 0) {
-                reject(new Error(`ffprobe exited with code ${code}: ${stderr.slice(-300)}`));
-                return;
-            }
-            const keyframes = stdout
-                .split('\n')
-                .map(line => parseFloat(line.trim()))
-                .filter(t => !isNaN(t) && t >= 0);
-            if (keyframes.length === 0) {
-                resolve(targetTime);
-                return;
-            }
-            resolve(selectInputSeekKeyframe(keyframes, targetTime));
-        });
-    });
-}
-
 async function runFfmpeg(args, options = {}) {
     const resourceConfig = {
         ...(options.resourceConfig || getFfmpegResourceConfig(configLoader.getConfig())),
@@ -1597,6 +1533,84 @@ async function runFfmpeg(args, options = {}) {
             });
         });
     });
+}
+
+function probeVideoPacketsWithHashes(ffmpegPath, mediaPath, readInterval) {
+    return new Promise((resolve, reject) => {
+        const ffprobePath = (ffmpegPath || 'ffmpeg').replace(/ffmpeg(\.exe)?$/i, 'ffprobe$1');
+        const child = spawn(ffprobePath, [
+            '-v', 'error',
+            '-select_streams', 'v:0',
+            '-show_packets',
+            '-show_entries', 'packet=pts_time,dts_time,flags,data_hash',
+            '-show_data_hash', 'md5',
+            '-of', 'json',
+            '-read_intervals', readInterval,
+            mediaPath
+        ], {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            windowsHide: true
+        });
+        let stdout = '';
+        let stderr = '';
+        child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+        child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+        child.on('error', reject);
+        child.on('close', code => {
+            if (code !== 0) {
+                reject(new Error(`ffprobe packet hash probe exited with code ${code}: ${stderr.slice(-300)}`));
+                return;
+            }
+            try {
+                const parsed = JSON.parse(stdout || '{}');
+                resolve(Array.isArray(parsed.packets) ? parsed.packets : []);
+            } catch (error) {
+                reject(new Error(`ffprobe packet hash output is invalid JSON: ${error.message}`));
+            }
+        });
+    });
+}
+
+function findMatchingPacketTime(roughPacket, sourcePackets, targetTime) {
+    const hash = String(roughPacket?.data_hash || '').trim();
+    if (!hash) return null;
+    const matches = (sourcePackets || [])
+        .filter(packet => String(packet?.data_hash || '').trim() === hash)
+        .map(packet => Number(packet?.pts_time ?? packet?.dts_time))
+        .filter(time => Number.isFinite(time) && time >= 0 && time <= Number(targetTime) + 0.5)
+        .sort((a, b) => b - a);
+    return matches.length > 0 ? matches[0] : null;
+}
+
+/**
+ * Locate the stream-copy rough cut's real source origin by matching its first
+ * compressed keyframe packet against a small source window. Packet hashing
+ * avoids decoding and follows ffmpeg's actual demux seek, which can differ by
+ * a full GOP from ffprobe's predicted keyframe on indexed FLV files.
+ */
+async function probeRoughCutSourceStart(ffmpegPath, sourcePath, roughPath, targetTime) {
+    const roughPackets = await probeVideoPacketsWithHashes(ffmpegPath, roughPath, '%+#1');
+    const roughPacket = roughPackets[0];
+    if (!roughPacket?.data_hash) {
+        throw new Error('rough cut has no hashable first video packet');
+    }
+    if (!String(roughPacket.flags || '').includes('K')) {
+        throw new Error('rough cut first video packet is not a keyframe');
+    }
+
+    const lookbacks = [30, 120];
+    for (const lookback of lookbacks) {
+        const searchStart = Math.max(0, Number(targetTime) - lookback);
+        const searchDuration = Math.max(2, Number(targetTime) - searchStart + 2);
+        const sourcePackets = await probeVideoPacketsWithHashes(
+            ffmpegPath,
+            sourcePath,
+            `${searchStart}%+${searchDuration}`
+        );
+        const matchedTime = findMatchingPacketTime(roughPacket, sourcePackets, targetTime);
+        if (matchedTime !== null) return matchedTime;
+    }
+    throw new Error(`could not match rough cut first packet near source time ${targetTime}`);
 }
 
 function escapeSubtitlePathForFfmpegFilter(srtPath) {
@@ -1817,6 +1831,26 @@ function calculateSubtitleStyle(width, height, config = {}) {
     };
 }
 
+function resolveSubtitleBurnPlan(config = {}) {
+    const requestedMode = String(
+        config.twoStageMode || process.env.FFMPEG_TWO_STAGE_MODE || 'copy'
+    ).toLowerCase();
+    const twoStageEnabled = config.twoStageSubtitleBurn !== false
+        && process.env.FFMPEG_TWO_STAGE_BURN !== 'false';
+    if (!twoStageEnabled || requestedMode === 'direct') {
+        return {
+            useTwoStageBurn: false,
+            mode: 'direct',
+            requestedMode
+        };
+    }
+    return {
+        useTwoStageBurn: true,
+        mode: requestedMode === 'transcode' ? 'transcode' : 'copy',
+        requestedMode
+    };
+}
+
 /**
  * 获取视频分辨率
  * @param {string} mediaPath
@@ -1852,6 +1886,8 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
     let coverTimeOrigin = null;
     let burnAssPath = null;
     let subtitleBurnFailure = null;
+    let roughSourceStart = null;
+    let roughTrimOffset = null;
 
     if (source.kind === 'audio') {
         await runFfmpeg([
@@ -1880,17 +1916,16 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
             ...subtitleStyle,
             speakerSegments: config.subtitleSegments
         });
-        const useTwoStageBurn = config.twoStageSubtitleBurn !== false && process.env.FFMPEG_TWO_STAGE_BURN !== 'false';
+        const subtitleBurnPlan = resolveSubtitleBurnPlan(config);
+        const useTwoStageBurn = subtitleBurnPlan.useTwoStageBurn;
         try {
             if (useTwoStageBurn) {
-                const twoStageMode = String(config.twoStageMode || process.env.FFMPEG_TWO_STAGE_MODE || 'transcode').toLowerCase();
+                const twoStageMode = subtitleBurnPlan.mode;
                 const preRollSeconds = Math.max(0, Number(config.twoStagePreRollSeconds ?? process.env.FFMPEG_TWO_STAGE_PREROLL ?? 8));
                 const postRollSeconds = Math.max(0, Number(config.twoStagePostRollSeconds ?? process.env.FFMPEG_TWO_STAGE_POSTROLL ?? 2));
                 const roughStart = Math.max(0, Number(window.start) - preRollSeconds);
-                const actualRoughStart = twoStageMode === 'copy'
-                    ? await probeNearestKeyframe(ffmpegPath, source.mediaPath, roughStart)
-                    : roughStart;
-                const offsetInRoughClip = Math.max(0, Number(window.start) - actualRoughStart);
+                let actualRoughStart = roughStart;
+                let offsetInRoughClip = Math.max(0, Number(window.start) - actualRoughStart);
                 const roughDuration = Math.max(0.1, Number(window.duration) + offsetInRoughClip + postRollSeconds);
                 const tempPath = path.join(parsedOutput.dir, `${parsedOutput.name}.source.tmp${parsedOutput.ext || '.mp4'}`);
                 let keepTempForCover = false;
@@ -1907,6 +1942,15 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                             '-avoid_negative_ts', 'make_zero',
                             tempPath
                         ], ffmpegOptions);
+                        actualRoughStart = await probeRoughCutSourceStart(
+                            ffmpegPath,
+                            source.mediaPath,
+                            tempPath,
+                            roughStart
+                        );
+                        offsetInRoughClip = Math.max(0, Number(window.start) - actualRoughStart);
+                        roughSourceStart = actualRoughStart;
+                        roughTrimOffset = offsetInRoughClip;
                     } else {
                         await runFfmpeg([
                             '-y',
@@ -1922,6 +1966,8 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                             '-movflags', '+faststart',
                             tempPath
                         ], ffmpegOptions);
+                        roughSourceStart = actualRoughStart;
+                        roughTrimOffset = offsetInRoughClip;
                     }
                     // Use filter-based trim instead of -ss for frame-exact precision.
                     // -ss on the input side is keyframe-aligned (especially with copy-mode
@@ -1973,9 +2019,10 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                 coverClipStart,
                 coverTimeOrigin,
                 twoStageSubtitleBurn: useTwoStageBurn,
-                twoStageMode: useTwoStageBurn
-                    ? String(config.twoStageMode || process.env.FFMPEG_TWO_STAGE_MODE || 'transcode').toLowerCase()
-                    : null
+                twoStageMode: subtitleBurnPlan.mode,
+                requestedTwoStageMode: subtitleBurnPlan.requestedMode,
+                roughSourceStart,
+                roughTrimOffset
             };
         } catch (error) {
             subtitleBurnFailure = error.message;
@@ -2622,7 +2669,7 @@ async function generateTopicClips(options = {}) {
     }
     const streamerName = resolveStreamerName(options.config || {}, info.roomId, options.context || {});
     const participantMetadata = buildParticipantMetadata(loadAsrSpeakerSidecarForMediaPath(options.srtPath || source.mediaPath));
-    const outputRoot = path.join(path.dirname(source.mediaPath), config.outputDirName);
+    const outputRoot = resolveClipOutputRoot(source.mediaPath, config);
     fs.mkdirSync(outputRoot, { recursive: true });
 
     // AI 分段:对每个 burst 决定切 1-3 段
@@ -2986,7 +3033,9 @@ module.exports = {
     buildDefaultTitle,
     normalizeCoverText,
     buildClipCopy,
-    selectInputSeekKeyframe,
+    findMatchingPacketTime,
+    probeRoughCutSourceStart,
+    resolveSubtitleBurnPlan,
     selectCoverPreferredTime,
     cleanupTemporaryCoverSource,
     runFfmpeg,

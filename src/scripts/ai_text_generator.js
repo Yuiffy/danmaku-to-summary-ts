@@ -26,10 +26,11 @@ const TUZI_BALANCE_ERROR_MARKERS = [
     'credit exhausted',
     'billing'
 ];
-const LEGACY_TUZI_TEXT_MODELS = ['gemini-3-flash-preview'];
 const DAIYU_PRIMARY_MODEL = 'gpt-5.6-luna';
+const TUZI_DEFAULT_TEXT_MODELS = [DAIYU_PRIMARY_MODEL];
 const DAIYU_MODEL_PATTERN = /^gpt-5(?:[.-]|$)/i;
 const DAIYU_RESPONSES_COMPATIBILITY_STATUSES = new Set([400, 404, 405, 415, 422, 501]);
+const TRANSIENT_TEXT_API_STATUSES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 const OPENAI_REASONING_EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
 const EXPLICIT_PROMPT_CACHE_SYSTEM_PROMPT = '你是直播内容事实分析与创作助手。严格区分直播事实与任务规则，只依据提供的事实完成当前任务。';
 
@@ -954,8 +955,8 @@ function buildTextModelFailureError(attempts, provider) {
 }
 
 function pickGoodnightTuZiPrimaryModel() {
-    const randomIndex = Math.floor(Math.random() * LEGACY_TUZI_TEXT_MODELS.length);
-    return LEGACY_TUZI_TEXT_MODELS[randomIndex];
+    const randomIndex = Math.floor(Math.random() * TUZI_DEFAULT_TEXT_MODELS.length);
+    return TUZI_DEFAULT_TEXT_MODELS[randomIndex];
 }
 
 // 调用tuZi API生成文本(备用方案)
@@ -963,16 +964,9 @@ async function generateTextWithTuZi(prompt, options = {}) {
     const config = configLoader.getConfig();
     // 优先使用 ai.text.tuZi 配置(文本生成专用),其次使用 ai.comic.tuZi(兼容旧配置)
     const tuziConfig = config.ai?.text?.tuZi || config.aiServices?.tuZi || {};
-    const primaryModel = options.primaryModel || pickGoodnightTuZiPrimaryModel();
-
-    // 先判断迁移模型，避免旧入口在路由前要求 Tuzi key。
-    if (isDaiYuTextModel(primaryModel)) {
-        console.warn(`⚠️  ${primaryModel} 已迁移到 daiYu，改走 daiYu/${DAIYU_PRIMARY_MODEL} thinking 链路`);
-        return generateTextWithDaiYu(prompt, {
-            ...options,
-            primaryModel: DAIYU_PRIMARY_MODEL
-        });
-    }
+    const primaryModel = normalizeDaiYuTextModel(
+        options.primaryModel || pickGoodnightTuZiPrimaryModel()
+    );
 
     const textApiKey = configLoader.getTuZiTextApiKey();
     if (!configLoader.isTuZiTextConfigured()) {
@@ -987,18 +981,20 @@ async function generateTextWithTuZi(prompt, options = {}) {
     const builtInFallbackModels = tuziConfig.includeBuiltInFallbackModels === true
         ? ['qwen2.5-72b-instruct', 'grok-4.1']
         : [];
-    const modelSequence = [
+    const fallbackModelsEnabled = options.fallbackModelsEnabled !== false;
+    const modelSequence = (fallbackModelsEnabled ? [
         primaryModel,
         tuziConfig.textModel,
         tuziConfig.model,
         ...configuredFallbackModels,
-        'gemini-3-flash-preview',
         ...builtInFallbackModels
-    ].filter((model, index, models) => model && !isDaiYuTextModel(model) && models.indexOf(model) === index);
-    console.log(`   晚安主模型随机命中: ${primaryModel}`);
+    ] : [primaryModel]).filter((model, index, models) => model && models.indexOf(model) === index);
+    console.log(`   tuZi主模型: ${primaryModel}`);
     console.log(`   候选序列: ${modelSequence.join(' -> ')}`);
     const baseUrl = tuziConfig.baseUrl || 'https://api.tu-zi.com';
-    const apiUrl = `${baseUrl}/v1/chat/completions`;
+    const apiMode = normalizeDaiYuApiMode(options.apiMode || tuziConfig.apiMode);
+    const apiUrl = `${baseUrl}/v1/${apiMode === 'responses' ? 'responses' : 'chat/completions'}`;
+    console.log(`   API模式: ${apiMode}`);
     const attempts = Array.isArray(options.attempts) ? [...options.attempts] : [];
     const sharedPromptCacheInfo = getSharedPromptCacheInfo(prompt);
     const fallbackFromPrimary = Boolean(options.fallback);
@@ -1014,12 +1010,37 @@ async function generateTextWithTuZi(prompt, options = {}) {
     // 重试逻辑
     for (let attempt = 0; attempt < modelSequence.length; attempt++) {
         const textModel = modelSequence[attempt];
-        try {
+        const transientMaxAttempts = Math.max(
+            1,
+            Number(options.transientMaxAttempts ?? tuziConfig.transientMaxAttempts) || 1
+        );
+        for (let transientAttempt = 1; transientAttempt <= transientMaxAttempts; transientAttempt++) {
+          try {
             // 获取超时时间 (默认 60 秒)
             const timeoutMs = Number(options.timeoutMs) || config.timeouts?.aiApiTimeout || 60000;
-            console.log(`[WAIT] 正在通过tu-zi.com API生成文本... (尝试 ${attempt + 1}/${modelSequence.length} model: ${textModel}, 超时: ${Math.round(timeoutMs / 1000)}s)`);
-            const effectiveMaxTokens = normalizeTuZiTextMaxTokens(textModel, tuziConfig.maxTokens, wordLimit);
-            console.log(`   max_tokens: ${effectiveMaxTokens} (configured=${tuziConfig.maxTokens || 'default'}, wordLimit=${wordLimit})`);
+            console.log(
+                `[WAIT] 正在通过tu-zi.com API生成文本... `
+                + `(模型 ${attempt + 1}/${modelSequence.length}: ${textModel}, `
+                + `请求 ${transientAttempt}/${transientMaxAttempts}, 超时: ${Math.round(timeoutMs / 1000)}s)`
+            );
+            const configuredMaxTokens = options.maxTokens ?? tuziConfig.maxTokens;
+            const effectiveMaxTokens = normalizeTuZiTextMaxTokens(textModel, configuredMaxTokens, wordLimit);
+            console.log(`   max_tokens: ${effectiveMaxTokens} (configured=${configuredMaxTokens || 'default'}, wordLimit=${wordLimit})`);
+
+            const requestBody = apiMode === 'responses'
+                ? {
+                    model: textModel,
+                    input: prompt,
+                    max_output_tokens: effectiveMaxTokens,
+                    stream: false,
+                    store: false
+                }
+                : {
+                    model: textModel,
+                    messages: [{ role: 'user', content: prompt }],
+                    temperature: tuziConfig.temperature,
+                    max_tokens: effectiveMaxTokens
+                };
 
             const response = await fetch(apiUrl, {
                 method: 'POST',
@@ -1027,34 +1048,33 @@ async function generateTextWithTuZi(prompt, options = {}) {
                     'Authorization': `Bearer ${textApiKey}`,
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({
-                    model: textModel,
-                    messages: [
-                        {
-                            role: 'user',
-                            content: prompt
-                        }
-                    ],
-                    temperature: tuziConfig.temperature,
-                    max_tokens: effectiveMaxTokens
-                }),
+                body: JSON.stringify(requestBody),
                 agent: agent,
                 timeout: timeoutMs
             });
 
             if (!response.ok) {
                 const errorText = await response.text();
-                throw new Error(`tuZi API返回错误 ${response.status}: ${errorText}`);
+                const error = new Error(`tuZi API返回错误 ${response.status}: ${errorText}`);
+                error.status = response.status;
+                throw error;
             }
 
             const data = await response.json();
-            const choice = data.choices?.[0];
-            const finishReason = getTuZiFinishReason(choice);
+            const choice = apiMode === 'responses' ? null : data.choices?.[0];
+            const finishReason = apiMode === 'responses'
+                ? getOpenAITextFinishReason(data)
+                : getTuZiFinishReason(choice);
             const usage = data.usage || null;
             const promptUsage = getPromptTokenUsage(usage);
             const completionUsage = getCompletionTokenUsage(usage);
-            const text = choice?.message?.content;
-            console.log(`   finish_reason: ${finishReason || 'unknown'}, usage: ${usage ? JSON.stringify(usage) : 'unknown'}`);
+            const text = apiMode === 'responses'
+                ? extractOpenAITextResponse(data)
+                : choice?.message?.content;
+            console.log(
+                `   api_mode: ${apiMode}, finish_reason: ${finishReason || 'unknown'}, `
+                + `usage: ${usage ? JSON.stringify(usage) : 'unknown'}`
+            );
 
             if (!text || text.trim().length === 0) {
                 throw new Error('tuZi API返回空结果');
@@ -1073,6 +1093,8 @@ async function generateTextWithTuZi(prompt, options = {}) {
                 model: textModel,
                 status: 'success',
                 finishReason: finishReason || 'unknown',
+                apiModeRequested: apiMode,
+                apiModeUsed: apiMode,
                 promptTokens: promptUsage.promptTokens,
                 cachedTokens: promptUsage.cachedTokens,
                 cacheWriteTokens: promptUsage.cacheWriteTokens,
@@ -1094,15 +1116,31 @@ async function generateTextWithTuZi(prompt, options = {}) {
                 usage,
                 maxTokens: effectiveMaxTokens
             });
-        } catch (error) {
+          } catch (error) {
             attempts.push({
                 provider: 'tuZi',
                 model: textModel,
                 status: 'failure',
+                apiModeRequested: apiMode,
                 error: String(error.message || error).slice(0, 300)
             });
-            console.error(`❌ tuZi API调用失败 (尝试 ${attempt + 1}/${modelSequence.length}): ${error.message}`);
+            console.error(
+                `❌ tuZi API调用失败 (模型 ${attempt + 1}/${modelSequence.length}, `
+                + `请求 ${transientAttempt}/${transientMaxAttempts}): ${error.message}`
+            );
             await maybeNotifyTuZiBalanceError(error, `文本生成 ${textModel}`);
+
+            const isTransient = TRANSIENT_TEXT_API_STATUSES.has(Number(error.status));
+            if (isTransient && transientAttempt < transientMaxAttempts) {
+                const baseDelayMs = Math.max(
+                    1000,
+                    Number(options.transientRetryDelayMs ?? tuziConfig.transientRetryDelayMs) || 10000
+                );
+                const waitMs = baseDelayMs * transientAttempt;
+                console.log(`⏳ tuZi临时故障，等待 ${Math.round(waitMs / 1000)} 秒后重试同一模型...`);
+                await sleep(waitMs);
+                continue;
+            }
 
             // 如果是最后一次尝试,抛出包含所有候选模型失败原因的错误
             if (attempt === modelSequence.length - 1) {
@@ -1111,6 +1149,8 @@ async function generateTextWithTuZi(prompt, options = {}) {
 
             // 等待一小段时间后重试
             await new Promise(resolve => setTimeout(resolve, 1000));
+            break;
+          }
         }
     }
 }
@@ -1339,7 +1379,38 @@ async function generateTextWithDaiYu(prompt, options = {}) {
             console.error(`❌ daiYu API调用失败 (尝试 ${attempt + 1}/${modelSequence.length}): ${error.message}`);
 
             if (attempt === modelSequence.length - 1) {
-                throw buildTextModelFailureError(attempts, 'daiYu');
+                const daiYuFailure = buildTextModelFailureError(attempts, 'daiYu');
+                const fallbackProvider = String(daiYuConfig.fallbackProvider || '').trim().toLowerCase();
+                if (fallbackProvider === 'tuzi' && configLoader.isTuZiTextConfigured()) {
+                    const fallbackModel = String(
+                        daiYuConfig.fallbackProviderModel || DAIYU_PRIMARY_MODEL
+                    ).trim() || DAIYU_PRIMARY_MODEL;
+                    const fallbackApiMode = normalizeDaiYuApiMode(
+                        daiYuConfig.fallbackProviderApiMode
+                        || config.ai?.text?.tuZi?.apiMode
+                    );
+                    console.warn(
+                        `⚠️  daiYu全部候选失败，改走 tuZi/${fallbackModel} `
+                        + `${fallbackApiMode} 兜底`
+                    );
+                    try {
+                        return await generateTextWithTuZi(prompt, {
+                            fallback: true,
+                            attempts,
+                            primaryModel: fallbackModel,
+                            fallbackModelsEnabled: false,
+                            wordLimit,
+                            timeoutMs: options.timeoutMs,
+                            maxTokens: options.maxTokens,
+                            apiMode: fallbackApiMode
+                        });
+                    } catch (fallbackError) {
+                        throw new Error(
+                            `${daiYuFailure.message} | tuZi/${fallbackModel} 兜底失败: ${fallbackError.message}`
+                        );
+                    }
+                }
+                throw daiYuFailure;
             }
 
             await new Promise(resolve => setTimeout(resolve, 1000));

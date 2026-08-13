@@ -334,6 +334,14 @@ export interface TuZiConfig {
   apiKey: string;
   baseUrl: string;
   model: string;
+  textModel?: string;
+  fallbackModels?: string[];
+  includeBuiltInFallbackModels?: boolean;
+  apiMode?: 'chatCompletions' | 'responses';
+  transientMaxAttempts?: number;
+  transientRetryDelayMs?: number;
+  temperature?: number;
+  maxTokens?: number;
   proxy?: string;
 }
 
@@ -378,7 +386,7 @@ export interface ImageGenerationConfig {
 }
 export interface TextAIConfig {
   enabled: boolean;
-  provider: 'gemini' | 'openai' | 'claude' | 'daiYu';
+  provider: 'gemini' | 'openai' | 'claude' | 'daiYu' | 'tuZi';
   /** Reuse one exact live-facts prefix across goodnight and comic-script requests. */
   sharedPromptCache?: {
     enabled?: boolean;
@@ -389,6 +397,9 @@ export interface TextAIConfig {
   tuZi?: TuZiConfig;
   daiYu?: TuZiConfig & {
     apiMode?: 'chatCompletions' | 'responses';
+    fallbackProvider?: 'tuZi';
+    fallbackProviderModel?: string;
+    fallbackProviderApiMode?: 'chatCompletions' | 'responses';
     thinking?: {
       enabled?: boolean;
       budgetTokens?: number;
@@ -538,6 +549,8 @@ export interface ClipTopicsConfig {
   burnSubtitles: boolean;
   ffmpegTimeoutMs?: number;
   outputDirName: string;
+  archiveSourceRoot?: string;
+  activeOutputRoot?: string;
   tags?: string[];
   extraTags: string[];
   autoUpload: {

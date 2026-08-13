@@ -153,11 +153,12 @@
         "enabled": true,
         "apiKey": "",
         "baseUrl": "https://api.tu-zi.com",
-        "model": "gemini-3-flash-preview",
-        "fallbackModels": [
-          "gemini-3-flash-preview"
-        ],
-        "includeBuiltInFallbackModels": true,
+        "model": "gpt-5.6-luna",
+        "fallbackModels": [],
+        "includeBuiltInFallbackModels": false,
+        "apiMode": "responses",
+        "transientMaxAttempts": 3,
+        "transientRetryDelayMs": 10000,
         "temperature": 0.7,
         "maxTokens": 100000,
         "proxy": null
@@ -167,10 +168,11 @@
         "baseUrl": "http://localhost:8080",
         "apiMode": "responses",
         "model": "gpt-5.6-luna",
-        "fallbackModels": [
-          "gemini-3-flash-preview"
-        ],
-        "includeBuiltInFallbackModels": true,
+        "fallbackModels": [],
+        "includeBuiltInFallbackModels": false,
+        "fallbackProvider": "tuZi",
+        "fallbackProviderModel": "gpt-5.6-luna",
+        "fallbackProviderApiMode": "responses",
         "thinking": {
           "enabled": true,
           "budgetTokens": 10000,
@@ -200,6 +202,16 @@
           "coverageSheetWidth": 1600,
           "maxWidth": 1600,
           "jpegQuality": 2
+        }
+      },
+      "referenceImagePolicy": {
+        "allowLiveCover": false,
+        "excludeScreenshotsForStaticVideo": true,
+        "staticVideoDetection": {
+          "enabled": true,
+          "referencePixels": 921600,
+          "maxFormatBitrateKbpsAtReference": 500,
+          "missingVideoStreamIsStatic": true
         }
       },
       "multiReferenceImages": {
@@ -647,7 +659,12 @@
         ],
         "uploadTags": [
           "小路边"
-        ]
+        ],
+        "referenceImages": [
+          "public/reference_images/komichi_official_standing.png",
+          "public/reference_images/komichi_official_sign.png"
+        ],
+        "characterDescription": "四时小路Komichi，黑色长发、紫色眼睛，红色发带，左侧有黄色警示牌发饰和蓝白方向标发饰；官方账号头像仅用于身份锚定。"
       },
       "viridis": {
         "displayName": "小松绿Viridis",
@@ -1257,6 +1274,10 @@
         "audioOnly": true,
         "anchorName": "四时小路Komichi",
         "fanName": "粉丝",
+        "referenceImages": [
+          "public/reference_images/komichi_official_standing.png",
+          "public/reference_images/komichi_official_sign.png"
+        ],
         "enableTextGeneration": true,
         "enableComicGeneration": true,
         "enableDelayedReply": true
@@ -1550,6 +1571,8 @@
     "subtitleMaxFontSize": 72,
     "subtitleMaxCharsPerLine": 18,
     "outputDirName": "topic_clips",
+    "archiveSourceRoot": "E:/EFiles/Evideo/DDTV录播-E",
+    "activeOutputRoot": "D:/files/videos/DDTV录播",
     "extraTags": [],
     "autoUpload": {
       "enabled": false
@@ -1579,6 +1602,8 @@
     "subtitleVideoPreset": "ultrafast",
     "subtitleVideoCrf": 23,
     "outputDirName": "own_stream_fun_clips",
+    "archiveSourceRoot": "E:/EFiles/Evideo/DDTV录播-E",
+    "activeOutputRoot": "D:/files/videos/DDTV录播",
     "alignBoundaries": true,
     "boundaryStartBacktrackSeconds": 12,
     "boundaryEndExtendSeconds": 45,

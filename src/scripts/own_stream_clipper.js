@@ -8,6 +8,7 @@ const configLoader = require('./config-loader');
 const topicClipper = require('./topic_clipper');
 const { postProcessAiClipMetadata } = require('./ai_clip_metadata');
 const fullLiveContext = require('./full_live_context');
+const { resolveClipOutputRoot } = require('./clip_output_path');
 
 const {
     notableEmotionEvents,
@@ -1699,7 +1700,7 @@ async function generateOwnStreamClips(options = {}) {
     const candidates = buildCandidateWindows(parsed, danmaku, config, totalDuration, emotionAnalysis);
     const info = parseRecordingInfo(options.mediaPath, options.context || {});
     const participantMetadata = topicClipper.buildParticipantMetadata(topicClipper.loadAsrSpeakerSidecarForMediaPath(options.srtPath || options.mediaPath));
-    const outputRoot = path.join(path.dirname(options.mediaPath), config.outputDirName);
+    const outputRoot = resolveClipOutputRoot(options.mediaPath, config);
     fs.mkdirSync(outputRoot, { recursive: true });
     const reviewMetadata = {
         streamerName: options.streamerName || '岁己SUI',

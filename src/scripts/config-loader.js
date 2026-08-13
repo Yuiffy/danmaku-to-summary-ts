@@ -238,6 +238,8 @@ const ConfigSchema = Joi.object({
         burnSubtitles: Joi.boolean().default(true),
         ffmpegTimeoutMs: Joi.number().integer().min(1000).default(600000),
         outputDirName: Joi.string().default('topic_clips'),
+        archiveSourceRoot: Joi.string().allow('').default(''),
+        activeOutputRoot: Joi.string().allow('').default(''),
         tags: Joi.array().items(Joi.string()).optional(),
         extraTags: Joi.array().items(Joi.string()).default([]),
         autoUpload: Joi.object({
@@ -272,6 +274,8 @@ const ConfigSchema = Joi.object({
         twoStagePreRollSeconds: Joi.number().min(0).default(8),
         twoStagePostRollSeconds: Joi.number().min(0).default(2),
         outputDirName: Joi.string().default('own_stream_fun_clips'),
+        archiveSourceRoot: Joi.string().allow('').default(''),
+        activeOutputRoot: Joi.string().allow('').default(''),
         alignBoundaries: Joi.boolean().default(true),
         boundaryStartBacktrackSeconds: Joi.number().default(12),
         boundaryEndExtendSeconds: Joi.number().default(35),

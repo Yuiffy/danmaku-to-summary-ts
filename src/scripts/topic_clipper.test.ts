@@ -564,19 +564,40 @@ describe('topic_clipper', () => {
     });
   });
 
-  test('selects the input-side seek keyframe at or before the rough cut target', () => {
-    expect(topicClipper.selectInputSeekKeyframe([
-      354.199,
-      358.366,
-      362.532,
-      366.699
-    ], 357.819)).toBe(354.199);
+  test('keeps stream-copy rough cuts enabled when burning subtitles', () => {
+    expect(topicClipper.resolveSubtitleBurnPlan({
+      twoStageSubtitleBurn: true,
+      twoStageMode: 'copy'
+    })).toEqual({
+      useTwoStageBurn: true,
+      mode: 'copy',
+      requestedMode: 'copy'
+    });
 
-    expect(topicClipper.selectInputSeekKeyframe([
-      354.199,
-      358.366,
-      362.532
-    ], 358.366)).toBe(358.366);
+    expect(topicClipper.resolveSubtitleBurnPlan({
+      twoStageSubtitleBurn: true,
+      twoStageMode: 'transcode'
+    })).toEqual({
+      useTwoStageBurn: true,
+      mode: 'transcode',
+      requestedMode: 'transcode'
+    });
+  });
+
+  test('calibrates a rough cut to the matching source packet instead of the predicted GOP', () => {
+    const roughPacket = {
+      pts_time: '0.033000',
+      flags: 'K__',
+      data_hash: 'MD5:bfb57c5441b5ad6b27a47d27db58e169'
+    };
+    const sourcePackets = [
+      { pts_time: '1912.532000', flags: 'K__', data_hash: 'MD5:other' },
+      { pts_time: '1916.699000', flags: 'K__', data_hash: roughPacket.data_hash },
+      { pts_time: '1920.866000', flags: 'K__', data_hash: 'MD5:predicted-but-not-used' }
+    ];
+
+    expect(topicClipper.findMatchingPacketTime(roughPacket, sourcePackets, 1920.91)).toBe(1916.699);
+    expect(1928.91 - topicClipper.findMatchingPacketTime(roughPacket, sourcePackets, 1920.91)).toBeCloseTo(12.211, 3);
   });
 
   test('terminates a hung ffmpeg process at the configured timeout', async () => {

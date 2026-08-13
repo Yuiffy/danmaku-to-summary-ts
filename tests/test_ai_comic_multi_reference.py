@@ -123,6 +123,73 @@ class MultiReferenceComicTests(unittest.TestCase):
         self.assertEqual(with_extra, without_extra)
         self.assertNotIn(str(self.extra), with_extra)
 
+    def test_static_video_uses_only_host_reference_image(self):
+        radio_highlight = self.root / "录制-25788785-20260810-080007-655-静态视频_AI_HIGHLIGHT.txt"
+        radio_highlight.write_text("static video", encoding="utf-8")
+        radio_cover = self.root / "录制-25788785-20260810-080007-655-静态视频.cover.jpg"
+        radio_cover.write_bytes(b"cover")
+        screenshot = self.root / "录制-25788785-20260810-080007-655-静态视频_SCREENSHOTS.jpg"
+        screenshot.write_bytes(b"screenshot")
+        self.config["roomSettings"]["25788785"].update({
+        })
+        self.config["ai"]["comic"]["referenceImagePolicy"] = {
+            "allowLiveCover": False,
+            "excludeScreenshotsForStaticVideo": True,
+            "staticVideoDetection": {
+                "enabled": True,
+                "referencePixels": 1280 * 720,
+                "maxFormatBitrateKbpsAtReference": 500,
+            },
+        }
+
+        with mock.patch.dict(os.environ, {"SCREENSHOT_PATH": str(screenshot)}):
+            with mock.patch.object(comic, "is_static_video_recording", return_value=True):
+                images = comic.collect_all_images(
+                "25788785",
+                str(radio_highlight),
+                directed_screenshots=[{"path": str(screenshot)}],
+                screenshot_mode="individual",
+                )
+
+        self.assertEqual([Path(item).name for item in images], ["host.png"])
+
+    def test_static_video_bitrate_detection_scales_with_resolution(self):
+        policy = {
+            "ai": {
+                "comic": {
+                    "referenceImagePolicy": {
+                        "staticVideoDetection": {
+                            "enabled": True,
+                            "referencePixels": 1280 * 720,
+                            "maxFormatBitrateKbpsAtReference": 500,
+                        }
+                    }
+                }
+            }
+        }
+        cases = [
+            (720, 1280, 387166, True),
+            (1280, 720, 600855, False),
+            (1920, 1080, 1100000, True),
+            (1920, 1080, 1200000, False),
+        ]
+        for width, height, format_bitrate, expected in cases:
+            probe = {
+                "format": {"bit_rate": str(format_bitrate)},
+                "streams": [{
+                    "codec_type": "video",
+                    "width": width,
+                    "height": height,
+                }],
+            }
+            with self.subTest(width=width, height=height, format_bitrate=format_bitrate):
+                with mock.patch.object(comic, "infer_source_video_path", return_value=str(self.highlight)):
+                    with mock.patch.object(comic, "_probe_video_streams", return_value=probe):
+                        self.assertEqual(
+                            comic.is_static_video_recording(policy, str(self.highlight)),
+                            expected,
+                        )
+
     def test_enabled_without_sidecar_does_not_error(self):
         extras = comic.resolve_extra_appeared_streamers(self.config, "25788785", str(self.highlight))
         self.assertEqual(extras, [])

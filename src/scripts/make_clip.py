@@ -194,7 +194,7 @@ def main():
     parser.add_argument('--reason', default='直播切片', help='切片理由/简介第一行')
     parser.add_argument('--source-desc', required=True, help='来源描述')
     parser.add_argument('--live-start', required=True, help='直播开始时间 HH:MM:SS（从文件名解析）')
-    parser.add_argument('--out-dir', default=None, help='输出目录（默认与 FLV 同目录下的 own_stream_fun_clips/）')
+    parser.add_argument('--out-dir', default=None, help='输出目录（默认归档源映射到 D 盘，否则与源文件同目录）')
     parser.add_argument('--upload', action='store_true', help='制作完成后自动上传')
     args = parser.parse_args()
 
@@ -203,6 +203,13 @@ def main():
         out_dir = Path(args.out_dir)
     else:
         flv_dir = Path(args.flv).parent
+        archive_root = Path(r'E:\EFiles\Evideo\DDTV录播-E')
+        active_root = Path(r'D:\files\videos\DDTV录播')
+        try:
+            relative_dir = flv_dir.resolve().relative_to(archive_root.resolve())
+            flv_dir = active_root / relative_dir
+        except ValueError:
+            pass
         out_dir = flv_dir / 'own_stream_fun_clips'
     out_dir.mkdir(parents=True, exist_ok=True)
 

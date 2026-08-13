@@ -206,6 +206,59 @@ describe('daiYu model routing', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  test('falls back from daiYu to tuZi using Luna over Responses', async () => {
+    const fallbackConfig = structuredClone(config);
+    fallbackConfig.ai.text.daiYu.fallbackModels = [];
+    fallbackConfig.ai.text.daiYu.fallbackProvider = 'tuZi';
+    fallbackConfig.ai.text.daiYu.fallbackProviderModel = 'gpt-5.6-luna';
+    fallbackConfig.ai.text.tuZi = {
+      enabled: true,
+      baseUrl: 'https://api.tu-zi.com',
+      model: 'gpt-5.6-luna',
+      fallbackModels: [],
+      includeBuiltInFallbackModels: false,
+      apiMode: 'responses',
+      transientMaxAttempts: 1,
+      maxTokens: 1000,
+    };
+    configLoader.getConfig.mockReturnValue(fallbackConfig);
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 502,
+        text: async () => 'upstream temporarily unavailable',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          status: 'completed',
+          output: [{
+            type: 'message',
+            content: [{ type: 'output_text', text: 'TUZI_LUNA_OK' }],
+          }],
+          usage: {},
+        }),
+      });
+
+    const result = await generateTextWithDaiYu('只回复 TUZI_LUNA_OK', {
+      fallbackModelsEnabled: false,
+    });
+
+    expect(result.text).toBe('TUZI_LUNA_OK');
+    expect(result.meta.provider).toBe('tuZi');
+    expect(result.meta.fallback).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][0]).toBe('https://api.tu-zi.com/v1/responses');
+    const fallbackRequest = JSON.parse(fetchMock.mock.calls[1][1].body);
+    expect(fallbackRequest.model).toBe('gpt-5.6-luna');
+    expect(fallbackRequest.input).toBe('只回复 TUZI_LUNA_OK');
+    expect(result.meta.attempts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ provider: 'daiYu', status: 'failure' }),
+      expect.objectContaining({ provider: 'tuZi', model: 'gpt-5.6-luna', status: 'success' }),
+    ]));
+  });
+
   test('logs daiYu cache and token usage after a successful response', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
@@ -294,12 +347,13 @@ describe('daiYu model routing', () => {
     }
   });
 
-  test('routes a legacy GPT-5 model from the tuZi compatibility entry to Luna', async () => {
+  test('sends Luna directly through tuZi without routing back to daiYu', async () => {
     const result = await generateTextWithTuZi('只回复 LUNA_OK', {
       primaryModel: legacyModel,
     });
 
     expect(result.text).toBe('LUNA_OK');
+    expect(fetchMock.mock.calls[0][0]).toBe('https://api.tu-zi.com/v1/chat/completions');
     const request = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(request.model).toBe('gpt-5.6-luna');
   });

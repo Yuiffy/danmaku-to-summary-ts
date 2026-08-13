@@ -595,6 +595,63 @@ def get_live_cover_image(highlight_path: str) -> Optional[str]:
         print(f"[WARNING] 查找直播封面失败: {e}")
         return None
 
+def get_reference_image_policy(config: Dict[str, Any]) -> Dict[str, Any]:
+    policy = config.get("ai", {}).get("comic", {}).get("referenceImagePolicy", {}) or {}
+    return {
+        "allowLiveCover": bool(policy.get("allowLiveCover", False)),
+        "excludeScreenshotsForStaticVideo": bool(policy.get("excludeScreenshotsForStaticVideo", True)),
+        "staticVideoDetection": policy.get("staticVideoDetection", {}) or {},
+    }
+
+def _probe_video_streams(video_path: str) -> Optional[dict]:
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe or not video_path:
+        return None
+    try:
+        result = subprocess.run(
+            [ffprobe, "-v", "error", "-show_entries", "format=bit_rate:stream=codec_type,bit_rate,width,height,avg_frame_rate", "-of", "json", video_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        if result.returncode != 0:
+            return None
+        return json.loads(result.stdout.decode("utf-8", errors="replace"))
+    except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError):
+        return None
+
+def is_static_video_recording(config: Dict[str, Any], highlight_path: Optional[str], source_video_path: Optional[str] = None) -> bool:
+    detection = get_reference_image_policy(config).get("staticVideoDetection") or {}
+    if not detection.get("enabled", True) or not highlight_path:
+        return False
+    video_path = infer_source_video_path(highlight_path, source_video_path)
+    if not video_path:
+        return False
+    probe = _probe_video_streams(video_path)
+    if not probe:
+        return False
+    video_stream = next((stream for stream in probe.get("streams", []) if stream.get("codec_type") == "video"), None)
+    if not video_stream:
+        return bool(detection.get("missingVideoStreamIsStatic", True))
+    try:
+        format_bitrate = float((probe.get("format") or {}).get("bit_rate"))
+        width = int(video_stream.get("width"))
+        height = int(video_stream.get("height"))
+    except (TypeError, ValueError):
+        return False
+    if width <= 0 or height <= 0:
+        return False
+    reference_pixels = max(1, int(detection.get("referencePixels") or 1280 * 720))
+    pixel_scale = (width * height) / reference_pixels
+    max_format_bitrate = float(detection.get("maxFormatBitrateKbpsAtReference") or 500) * 1000 * pixel_scale
+    is_static = format_bitrate <= max_format_bitrate
+    print(
+        f"[INFO] 静态视频检测: {os.path.basename(video_path)} "
+        f"resolution={width}x{height} formatBitrate={format_bitrate}/{max_format_bitrate:.0f} -> {is_static}"
+    )
+    return is_static
+
 def get_room_reference_image(room_id: str, highlight_path: Optional[str] = None) -> Optional[str]:
     """获取房间的参考图片路径
     
@@ -658,7 +715,7 @@ def get_room_reference_image(room_id: str, highlight_path: Optional[str] = None)
                     return resolved
                 print(f"[WARNING] streamerRegistry 主播参考图不存在: {host_streamer_id} -> {ref_image}")
 
-    if not room_has_config and highlight_path:
+    if not room_has_config and highlight_path and get_reference_image_policy(config)["allowLiveCover"]:
         live_cover = get_live_cover_image(highlight_path)
         if live_cover:
             print(f"[INFO]  未配置主播参考图，使用直播封面: {os.path.basename(live_cover)}")
@@ -1792,6 +1849,14 @@ def collect_all_images(
     scripts_dir = os.path.dirname(__file__)
     project_root = get_project_root()
     multi_config = get_multi_reference_config(config, room_id)
+    reference_policy = get_reference_image_policy(config)
+    exclude_screenshots = reference_policy["excludeScreenshotsForStaticVideo"] and is_static_video_recording(
+        config,
+        highlight_path,
+        os.environ.get("SOURCE_VIDEO_PATH"),
+    )
+    if exclude_screenshots:
+        print(f"[INFO] 房间 {room_id} 按静态视频检测跳过直播截图")
     if not multi_config.get("enabled"):
         extra_streamers = []
     if max_total_images is None:
@@ -1806,6 +1871,8 @@ def collect_all_images(
         screenshot for screenshot in (directed_screenshots or [])
         if isinstance(screenshot, dict)
     ]
+    if exclude_screenshots:
+        directed_candidates = []
 
     def directed_priority(indexed_screenshot: tuple[int, dict]) -> tuple[int, int]:
         index, screenshot = indexed_screenshot
@@ -1830,19 +1897,24 @@ def collect_all_images(
     has_anchor_image = False
     
     if room_str in config["roomSettings"]:
-        ref_image = config["roomSettings"][room_str].get("referenceImage", "")
-        if ref_image:
+        room_config = config["roomSettings"][room_str]
+        configured_room_images = list(room_config.get("referenceImages") or [])
+        if room_config.get("referenceImage"):
+            configured_room_images.insert(0, room_config["referenceImage"])
+        for ref_image in configured_room_images:
             # 尝试相对于项目根目录的路径
             absolute_path = os.path.join(project_root, ref_image) if not os.path.isabs(ref_image) else ref_image
             if os.path.exists(absolute_path):
                 add_image(absolute_path, f"[INFO]  收集到主播参考图: {os.path.basename(absolute_path)}", role="host")
                 has_anchor_image = True
+                continue
             else:
                 # 尝试相对于脚本目录的路径
                 script_relative = os.path.join(scripts_dir, ref_image) if not os.path.isabs(ref_image) else ref_image
                 if os.path.exists(script_relative):
                     add_image(script_relative, f"[INFO]  收集到主播参考图: {os.path.basename(script_relative)}", role="host")
                     has_anchor_image = True
+                    continue
                 else:
                     print(f"[WARNING] 配置的主播参考图不存在: {ref_image}")
     
@@ -1948,7 +2020,7 @@ def collect_all_images(
 
     # 3. 独立关键帧优先于封面；旧版仍保持“角色图 -> 封面 -> 拼图”的顺序。
     has_cover = False
-    if highlight_path and (screenshot_mode != "individual" or not directed_added or len(images) < max_total_images):
+    if reference_policy["allowLiveCover"] and highlight_path and (screenshot_mode != "individual" or not directed_added or len(images) < max_total_images):
         cover_image = get_live_cover_image(highlight_path)
         if cover_image and len(images) < max_total_images:
             add_image(
@@ -1962,7 +2034,7 @@ def collect_all_images(
 
     # 4. 没有可用定向关键帧时，降级使用固定时间截图拼图。
     screenshot_path = os.environ.get('SCREENSHOT_PATH', '')
-    should_use_contact_sheet = screenshot_mode != "individual" or not directed_added
+    should_use_contact_sheet = not exclude_screenshots and (screenshot_mode != "individual" or not directed_added)
     if should_use_contact_sheet and screenshot_path and os.path.exists(screenshot_path) and len(images) < max_total_images:
         add_image(
             screenshot_path,

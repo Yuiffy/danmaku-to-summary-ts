@@ -118,6 +118,69 @@ export class DelayedReplyHandler implements IWebhookHandler {
       }
     });
 
+    app.post(`${this.path}/live-content-summary`, async (req: Request, res: Response): Promise<any> => {
+      try {
+        const {
+          roomId,
+          goodnightTextPath,
+          liveContentSummaryPath,
+          deliveryMode,
+        } = req.body;
+
+        if (!roomId || !goodnightTextPath || !liveContentSummaryPath) {
+          return res.status(400).json({
+            success: false,
+            error: 'roomId, goodnightTextPath and liveContentSummaryPath are required'
+          });
+        }
+        if (deliveryMode && deliveryMode !== 'separate' && deliveryMode !== 'attach_if_ready') {
+          return res.status(400).json({
+            success: false,
+            error: 'deliveryMode must be separate or attach_if_ready'
+          });
+        }
+        if (!this.delayedReplyService) {
+          return res.status(500).json({
+            success: false,
+            error: 'Delayed reply service not available'
+          });
+        }
+
+        const task = await this.delayedReplyService.registerLiveContentSummary(
+          String(roomId),
+          String(goodnightTextPath),
+          String(liveContentSummaryPath),
+          deliveryMode
+        );
+        if (!task) {
+          return res.status(404).json({
+            success: false,
+            error: 'Matching delayed reply task not found'
+          });
+        }
+
+        this.logger.info('已为延迟回复任务注册直播梗概', {
+          taskId: task.taskId,
+          roomId: String(roomId),
+          deliveryMode: task.liveContentSummaryDeliveryMode,
+          liveContentSummaryPath: task.liveContentSummaryPath
+        });
+        return res.json({
+          success: true,
+          taskId: task.taskId,
+          status: task.status,
+          liveContentSummaryState: task.liveContentSummaryState,
+          deliveryMode: task.liveContentSummaryDeliveryMode
+        });
+      } catch (error: any) {
+        this.logger.error(`注册直播梗概失败: ${error.message}`, { error });
+        return res.status(500).json({
+          success: false,
+          error: error.message
+        });
+      }
+    });
+
     this.logger.info(`注册延迟回复处理器路由: ${this.path}`);
   }
 
