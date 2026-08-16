@@ -51,12 +51,15 @@ describe('own_stream_clipper', () => {
       recordedAt: '2026-06-05 19:43:31',
       start: 112.5,
       end: 145.2,
-      reason: '宀佸繁鍏堣嚜鎴戞媿鎵嬪彨琛?'
+      description: '小岁从只想换显卡一路列出五个必须更换的部件。',
+      reason: '字幕有完整铺垫和反转，相关窗口出现多轮刷屏。'
     });
 
     expect(description).toContain('录制时间 2026-06-05 19:43:31');
     expect(description).toContain('片段时间 00:01:52-00:02:25');
-    expect(description).toContain('宀佸繁鍏堣嚜鎴戞媿鎵嬪彨琛?');
+    expect(description).toContain('小岁从只想换显卡一路列出五个必须更换的部件。');
+    expect(description).not.toContain('字幕有完整铺垫');
+    expect(description).not.toContain('相关窗口');
   });
 
   test('adds time-weighted emotion composition to upload description', () => {
@@ -66,6 +69,8 @@ describe('own_stream_clipper', () => {
       recordedAt: '2026-08-12 20:00:00',
       start: 0,
       end: 10,
+      description: '小岁讲述升级电脑时发现多个部件都得一起更换。',
+      reason: '字幕完整且弹幕反应密集。',
       emotionEvidence: [
         { start: 0, end: 8, emotion: 'ANGRY' },
         { start: 8, end: 10, emotion: 'SURPRISE' }
@@ -73,6 +78,8 @@ describe('own_stream_clipper', () => {
     });
 
     expect(description).toContain('情绪：愤怒：80% 惊讶：20%');
+    expect(description).toContain('小岁讲述升级电脑时发现多个部件都得一起更换。');
+    expect(description).not.toContain('弹幕反应密集');
   });
 
   test('builds candidates from danmaku density and reaction keywords', () => {
@@ -135,6 +142,23 @@ describe('own_stream_clipper', () => {
     expect(candidates[0].emotions).toContain('SURPRISE');
     expect(candidates[0].events).toContain('Laughter');
     expect(candidates[0].score).toBeGreaterThanOrEqual(34);
+  });
+
+  test('keeps default selection policy inclusive and supports task-specific overrides', () => {
+    expect(ownStreamClipper.getOwnStreamClipsConfig({ ownStreamClips: {} }).residualAudit.enabled).toBe(false);
+    expect(ownStreamClipper.buildSelectionPolicyPromptLines({})).toEqual([
+      '内容类型不做默认排除：电影、感谢、唱歌、普通聊天等，只按是否有独立内容价值、完整事件、观点、反应或反差判断。'
+    ]);
+    expect(ownStreamClipper.buildSelectionPolicyPromptLines({
+      excludedCategories: ['电影'],
+      priorityCategories: ['电脑升级'],
+      requireTimeCoverage: true
+    })).toEqual([
+      '内容类型不做默认排除：电影、感谢、唱歌、普通聊天等，只按是否有独立内容价值、完整事件、观点、反应或反差判断。',
+      '本次任务明确排除这些类型：电影。',
+      '本次任务优先关注这些类型：电脑升级。',
+      '本次任务要求覆盖不同时间段；不要把名额全部集中在同一小段话题内。'
+    ]);
   });
 
   test('adds compact emotion evidence to AI context and final clip metadata', () => {
@@ -566,7 +590,17 @@ describe('own_stream_clipper', () => {
   test('keeps viewer danmaku separate from streamer actions in the full-context prompt', async () => {
     const generator = require('./ai_text_generator');
     const generateSpy = jest.spyOn(generator, 'generateTextWithDaiYu').mockResolvedValue({
-      text: '{"clips":[]}',
+      text: JSON.stringify({
+        clips: [{
+          startTime: '00:00:01',
+          endTime: '00:00:40',
+          title: '从只换显卡到五件套全换，小岁越列越不对劲',
+          coverText: '只想换显卡\\n最后全得换',
+          description: '小岁从只想换显卡一路列出五个必须更换的部件。',
+          reason: '字幕有完整铺垫和反转，相关窗口出现多轮刷屏。',
+          score: 95
+        }]
+      }),
       meta: { model: 'test-model' }
     });
     const config = ownStreamClipper.getOwnStreamClipsConfig({
@@ -586,7 +620,7 @@ describe('own_stream_clipper', () => {
     });
 
     try {
-      await ownStreamClipper.planClipsWithAIFullContext(
+      const clips = await ownStreamClipper.planClipsWithAIFullContext(
         parsedInput,
         danmakuInput,
         { roomId: '25788785', streamTitle: '测试直播', recordedAt: '2026-08-05 20:10:39' },
@@ -623,9 +657,18 @@ describe('own_stream_clipper', () => {
       ));
       expect(callOptions.promptCacheRolloutPercent).toBe(100);
       expect(prompt).toContain('直播标题: 预生成测试直播');
-      expect(prompt).toContain('来源归属必须严格按输入分区：直播音轨字幕与观众弹幕是两类独立来源，标题、封面文案和理由不得把一方的发言或行为归给另一方。');
+      expect(prompt).toContain('来源归属必须严格按输入分区：直播音轨字幕与观众弹幕是两类独立来源，标题、封面文案、简介和理由不得把一方的发言或行为归给另一方。');
+      expect(prompt).toContain('description 是公开简介，只写片中具体内容');
+      expect(prompt).toContain('reason 是内部选材理由');
+      expect(prompt).toContain('不得把 reason 复述或改写进 description');
+      expect(prompt).toContain('内容类型不做默认排除：电影、感谢、唱歌、普通聊天等');
+      expect(prompt).not.toContain('时间覆盖要求：不要把名额全部用在同一话题或同一小段时间内');
+      expect(prompt).not.toContain('遗漏的非重叠窗口会由残余高光审计单独召回');
+      expect(prompt).toContain('不要写选片理由或效果评估');
       expect(prompt).toContain('=== 全量直播音轨字幕（时间均相对直播开头） ===\n00:00:01-00:00:03 他是毒液啊原来如此');
       expect(prompt).toContain('=== 全量观众弹幕（相同文本在短时间窗口内合并，xN 为重复次数） ===\n00:00:02 我是毒液！我是毒液！');
+      expect(clips[0].description).toBe('小岁从只想换显卡一路列出五个必须更换的部件。');
+      expect(clips[0].reason).toBe('字幕有完整铺垫和反转，相关窗口出现多轮刷屏。');
     } finally {
       generateSpy.mockRestore();
     }
@@ -646,6 +689,8 @@ describe('own_stream_clipper', () => {
 
     expect(production.ownStreamClips.enabled).toBe(true);
     expect(production.ownStreamClips.roomIds).toEqual(['25788785']);
+    expect(production.ownStreamClips.maxClips).toBe(24);
+    expect(production.ownStreamClips.maxCandidates).toBe(48);
     expect(production.ownStreamClips.ai.strategy).toBe('full_context');
     expect(production.ownStreamClips.ai.model).toBe('gpt-5.6-luna');
     expect(production.ownStreamClips.parallel.enabled).toBe(false);

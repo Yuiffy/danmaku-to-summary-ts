@@ -8,6 +8,7 @@ const configLoader = require('./config-loader');
 const topicClipper = require('./topic_clipper');
 const { postProcessAiClipMetadata } = require('./ai_clip_metadata');
 const fullLiveContext = require('./full_live_context');
+const residualAudit = require('./own_stream_residual_audit');
 const { resolveClipOutputRoot } = require('./clip_output_path');
 
 const {
@@ -30,8 +31,8 @@ const DEFAULT_OWN_STREAM_CLIPS_CONFIG = {
     mergeGapSeconds: 45,
     maxClipSeconds: 210,
     minClipSeconds: 35,
-    maxCandidates: 28,
-    maxClips: 12,
+    maxCandidates: 48,
+    maxClips: 24,
     chunkSeconds: 2700,
     aiConcurrency: 3,
     clipConcurrency: 3,
@@ -101,6 +102,18 @@ const DEFAULT_OWN_STREAM_CLIPS_CONFIG = {
             Speech: 0
         }
     },
+    selectionPolicy: {
+        requireTimeCoverage: false,
+        excludedCategories: [],
+        priorityCategories: []
+    },
+    residualAudit: {
+        enabled: false,
+        reviewOnly: true,
+        windowSeconds: 90,
+        stepSeconds: 45,
+        maxCandidates: 12
+    },
     notify: {
         enabled: true
     },
@@ -116,7 +129,16 @@ const DEFAULT_OWN_STREAM_CLIPS_CONFIG = {
     ]
 };
 
-const OWN_STREAM_SOURCE_ATTRIBUTION_RULE = '来源归属必须严格按输入分区：直播音轨字幕与观众弹幕是两类独立来源，标题、封面文案和理由不得把一方的发言或行为归给另一方。';
+const OWN_STREAM_SOURCE_ATTRIBUTION_RULE = '来源归属必须严格按输入分区：直播音轨字幕与观众弹幕是两类独立来源，标题、封面文案、简介和理由不得把一方的发言或行为归给另一方。';
+
+function buildOwnStreamClipCopyPromptLines(generator) {
+    return [
+        ...generator.buildClipTitlePromptLines({ outputMode: 'jsonTitle', streamerName: '岁己SUI' }),
+        ...generator.buildCoverTextPromptLines(),
+        ...generator.buildClipDescriptionPromptLines(),
+        '字段必须分工：description 是公开简介，只写片中具体内容；reason 是内部选材理由，可记录字幕完整性、弹幕反应和情绪信号。不得把 reason 复述或改写进 description。'
+    ];
+}
 
 function getOwnStreamClipsConfig(config = {}) {
     const raw = config.ownStreamClips || {};
@@ -151,6 +173,20 @@ function getOwnStreamClipsConfig(config = {}) {
                 ...DEFAULT_OWN_STREAM_CLIPS_CONFIG.emotionScoring.eventScores,
                 ...(raw.emotionScoring?.eventScores || {})
             }
+        },
+        selectionPolicy: {
+            ...DEFAULT_OWN_STREAM_CLIPS_CONFIG.selectionPolicy,
+            ...(raw.selectionPolicy || {}),
+            excludedCategories: Array.isArray(raw.selectionPolicy?.excludedCategories)
+                ? raw.selectionPolicy.excludedCategories
+                : DEFAULT_OWN_STREAM_CLIPS_CONFIG.selectionPolicy.excludedCategories,
+            priorityCategories: Array.isArray(raw.selectionPolicy?.priorityCategories)
+                ? raw.selectionPolicy.priorityCategories
+                : DEFAULT_OWN_STREAM_CLIPS_CONFIG.selectionPolicy.priorityCategories
+        },
+        residualAudit: {
+            ...DEFAULT_OWN_STREAM_CLIPS_CONFIG.residualAudit,
+            ...(raw.residualAudit || {})
         },
         notify: {
             ...DEFAULT_OWN_STREAM_CLIPS_CONFIG.notify,
@@ -187,6 +223,48 @@ function buildCutClipMediaConfig(config = {}, options = {}) {
         ffmpegThreads: config.clipFfmpegThreads,
         ffmpegPath: options.ffmpegPath
     };
+}
+
+function buildSelectionPolicyPromptLines(policy = {}) {
+    const lines = [
+        '内容类型不做默认排除：电影、感谢、唱歌、普通聊天等，只按是否有独立内容价值、完整事件、观点、反应或反差判断。'
+    ];
+    const excluded = Array.isArray(policy.excludedCategories)
+        ? policy.excludedCategories.map(value => String(value).trim()).filter(Boolean)
+        : [];
+    const priority = Array.isArray(policy.priorityCategories)
+        ? policy.priorityCategories.map(value => String(value).trim()).filter(Boolean)
+        : [];
+    if (excluded.length) lines.push(`本次任务明确排除这些类型：${excluded.join('、')}。`);
+    if (priority.length) lines.push(`本次任务优先关注这些类型：${priority.join('、')}。`);
+    if (policy.requireTimeCoverage === true) {
+        lines.push('本次任务要求覆盖不同时间段；不要把名额全部集中在同一小段话题内。');
+    }
+    return lines;
+}
+
+function writeResidualAuditForOwnStream({ options = {}, config = {}, outputRoot, planPath, clips = [] } = {}) {
+    const auditConfig = config.residualAudit || {};
+    if (auditConfig.enabled !== true) return null;
+    const outputPath = path.join(outputRoot, 'RESIDUAL_REVIEW.md');
+    try {
+        const result = residualAudit.writeResidualReview({
+            mediaPath: options.mediaPath,
+            srtPath: options.srtPath,
+            xmlPath: options.xmlPath,
+            planPath,
+            selectedWindows: clips.map(clip => ({ start: clip.start, end: clip.end })),
+            outputPath,
+            windowSeconds: auditConfig.windowSeconds,
+            stepSeconds: auditConfig.stepSeconds,
+            maxCandidates: auditConfig.maxCandidates
+        });
+        console.log(`Residual review: ${result.outputPath} (${result.candidates.length} candidates)`);
+        return result;
+    } catch (error) {
+        console.warn(`Residual audit failed, automatic review kept: ${error.message}`);
+        return null;
+    }
 }
 
 function formatClock(seconds) {
@@ -239,7 +317,7 @@ function buildEmotionComposition(evidence = [], start = 0, end = 0) {
         .join(' ');
 }
 
-function buildClipDescription({ streamerName, streamTitle, recordedAt, start, end, reason, emotionEvidence }) {
+function buildClipDescription({ streamerName, streamTitle, recordedAt, start, end, description, emotionEvidence }) {
     const liveName = streamerName || '\u4e3b\u64ad';
     const title = streamTitle || '\u672a\u77e5\u76f4\u64ad';
     const time = recordedAt || '\u672a\u77e5';
@@ -253,10 +331,10 @@ function buildClipDescription({ streamerName, streamTitle, recordedAt, start, en
     const emotionComposition = buildEmotionComposition(emotionEvidence, start, end);
     if (emotionComposition) lines.push(`情绪：${emotionComposition}`);
 
-    const extraReason = String(reason || '').trim();
-    if (extraReason) {
+    const publicDescription = String(description || '').replace(/\s+/g, ' ').trim();
+    if (publicDescription) {
         lines.push('');
-        lines.push(extraReason);
+        lines.push(publicDescription);
     }
 
     return lines.join('\n');
@@ -549,7 +627,7 @@ function buildCandidateWindows(parsed, danmaku, config, totalDuration, emotionAn
             duration: candidate.end - candidate.start
         }))
         .sort((a, b) => b.score - a.score)
-        .slice(0, Math.max(1, Number(config.maxCandidates) || 28))
+        .slice(0, Math.max(1, Number(config.maxCandidates) || 48))
         .sort((a, b) => a.start - b.start);
 }
 
@@ -674,7 +752,7 @@ function dedupePlannedClips(clips, config) {
     }
     return out
         .sort((a, b) => (b.score || 0) - (a.score || 0))
-        .slice(0, Math.max(1, Number(config.maxClips) || 12))
+        .slice(0, Math.max(1, Number(config.maxClips) || 24))
         .sort((a, b) => a.start - b.start);
 }
 
@@ -890,7 +968,8 @@ async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, confi
             '你是直播切片编辑。下面是一段岁己SUI自己直播的字幕和弹幕摘要。',
             OWN_STREAM_SOURCE_ATTRIBUTION_RULE,
             '请直接找这个分段里所有可能值得本地 review 的切片：有趣、弹幕很多、弹幕很在意、体现岁己想法与众不同、岁己傻事，或弹幕觉得她傻/特别/有趣/可爱。',
-            '不要只看关键词；弹幕密度、弹幕反应和上下文都要考虑。不要选普通问好、普通感谢礼物、纯唱歌、无明确看点的片段。',
+            '不要只看关键词；弹幕密度、弹幕反应和上下文都要考虑。没有独立看点的片段降低优先级，但不要按内容类型一刀切排除。',
+            ...buildSelectionPolicyPromptLines(config.selectionPolicy),
             'SenseVoice 情感和声音事件只能作为寻找反差、爆笑、惊讶、委屈等时刻的辅助线索；必须结合字幕确认具体内容，不能仅凭标签下结论。',
             '每段 35 秒到 3 分半，尽量切在句子边界。一个分段最多返回 8 段，没有就返回空数组。',
             '输出纯 JSON，不要 Markdown：',
@@ -898,12 +977,11 @@ async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, confi
             '- startTime must include the setup/premise, not start from the punchline.',
             '- endTime must include the explanation, follow-up reactions, and the final closing sentence.',
             '- If the streamer continues explaining the same incident after a short pause, extend endTime until that explanation is complete.',
-            '- Stop before a truly new topic, gift thanks, unrelated chat, or reading unrelated danmaku.',
+            '- Stop before a truly new topic or unrelated material; keep meaningful reactions and follow-up context.',
             '- Prefer a natural silence after a complete sentence; never end in the middle of a sentence or continuous story.',
             '',
-            ...generator.buildClipTitlePromptLines({ outputMode: 'jsonTitle', streamerName: '岁己SUI' }),
-            ...generator.buildCoverTextPromptLines(),
-            '{"clips":[{"startTime":"HH:MM:SS","endTime":"HH:MM:SS","title":"人工风格标题，18-42字","coverText":"第一行\\n第二行","reason":"一句话说明为什么值得看","score":1}]}',
+            ...buildOwnStreamClipCopyPromptLines(generator),
+            '{"clips":[{"startTime":"HH:MM:SS","endTime":"HH:MM:SS","title":"人工风格标题，18-42字","coverText":"第一行\\n第二行","description":"面向观众的一句话内容简介","reason":"内部选材理由","score":1}]}',
             '',
             `直播标题: ${info.streamTitle || '未知'}`,
             `录制时间: ${info.recordedAt || '未知'}`,
@@ -936,6 +1014,7 @@ async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, confi
                     duration,
                     title: String(clip.title || '').trim() || '小岁：直播有趣片段',
                     coverText: topicClipper.normalizeCoverText(clip.coverText),
+                    description: String(clip.description || '').trim(),
                     reason: String(clip.reason || '').trim(),
                     score: Number(clip.score || 0) + 100 - index,
                     candidateIndex: `chunk-${chunk.index}-${index + 1}`,
@@ -986,7 +1065,7 @@ async function planClipsWithAIFullContext(
             console.warn('Full-live context sidecar does not match current full input; regenerated shared prefix will be used.');
         }
     }
-    const maxClips = Math.max(1, Number(config.maxClips) || 12);
+    const maxClips = Math.max(1, Number(config.maxClips) || 24);
     const taskSuffix = [
         '你是资深直播切片主编。共享事实输入提供了岁己SUI本场直播的全量带时间戳字幕和全量弹幕。',
         OWN_STREAM_SOURCE_ATTRIBUTION_RULE,
@@ -995,15 +1074,15 @@ async function planClipsWithAIFullContext(
         '热度是重要证据但不是唯一标准：高热度但没有明确内容看点的片段不要选；低热度但故事完整、观点独特、反差强或特别可爱的内容仍可选。',
         'SenseVoice 情感和笑声/哭声等事件是辅助证据，可用于定位反差或强反应；必须结合字幕和弹幕验证，不能只凭标签选段或描述事实。',
         '优先：完整有起承转合的趣事；岁己独特/离谱/可爱的想法；口误或操作事故及后续反应；弹幕明显在意且字幕能说明原因的内容。',
-        '排除：普通问好、普通礼物感谢、纯唱歌、长时间无明确事件、只有弹幕热闹但字幕看不出原因、彼此高度重复的话题。',
+        '没有独立看点的片段降低优先级；电影、感谢、唱歌和普通聊天不做默认排除，有完整事件、观点、反应或反差时可以选择。',
+        ...buildSelectionPolicyPromptLines(config.selectionPolicy),
         `每段 ${config.minClipSeconds}-${config.maxClipSeconds} 秒。时间必须取自输入，不能编造。`,
         '边界要求：startTime 包含铺垫；endTime 包含解释、弹幕后续反应和收尾句；不要从笑点中间开始，也不要在句子或故事中间结束。',
-        '所有输出片段必须互不重叠；如果两个看点时间范围相交，保留全场价值更高的一段，或调整到自然且不相交的句子边界。',
+        '所有输出片段必须互不重叠；同一话题可以有多个片段，只要各自独立成立且时间不重叠。',
         '请给每段 1-100 的全场相对分数，并按 score 从高到低输出。',
         '输出纯 JSON，不要 Markdown，不要解释：',
-        ...generator.buildClipTitlePromptLines({ outputMode: 'jsonTitle', streamerName: '岁己SUI' }),
-        ...generator.buildCoverTextPromptLines(),
-        '{"clips":[{"startTime":"HH:MM:SS","endTime":"HH:MM:SS","title":"人工风格标题，18-42字","coverText":"第一行\\n第二行","reason":"一句话说明全场比较后为什么值得切","score":95}]}'
+        ...buildOwnStreamClipCopyPromptLines(generator),
+        '{"clips":[{"startTime":"HH:MM:SS","endTime":"HH:MM:SS","title":"人工风格标题，18-42字","coverText":"第一行\\n第二行","description":"面向观众的一句话内容简介","reason":"内部选材理由","score":95}]}'
     ].join('\n');
     const prompt = `${fullContext.sharedPrefix}\n\n${taskSuffix}`;
     const experiment = rootConfig.ai?.roomSettings?.[String(info?.roomId || '')]?.fullLiveContextExperiment || {};
@@ -1045,6 +1124,7 @@ async function planClipsWithAIFullContext(
                 duration,
                 title: String(clip.title || '').trim() || '小岁：直播有趣片段',
                 coverText: topicClipper.normalizeCoverText(clip.coverText),
+                description: String(clip.description || '').trim(),
                 reason: String(clip.reason || '').trim(),
                 score: Number(clip.score || (100 - index)),
                 selectionSource: 'model_full_context',
@@ -1147,6 +1227,7 @@ function normalizeAiClips(rawClips, candidates, totalDuration, config) {
                 duration,
                 title: String(clip.title || '').trim() || (base ? buildFallbackTitle(base) : '小岁：直播有趣片段'),
                 coverText: topicClipper.normalizeCoverText(clip.coverText),
+                description: String(clip.description || '').trim(),
                 reason: String(clip.reason || base?.reason || '').trim(),
                 candidateIndex: base?.index || clip.candidateIndex || index + 1,
                 score: Number(base?.score || 0),
@@ -1155,7 +1236,7 @@ function normalizeAiClips(rawClips, candidates, totalDuration, config) {
         })
         .filter(Boolean)
         .sort((a, b) => a.start - b.start)
-        .slice(0, Math.max(1, Number(config.maxClips) || 12));
+        .slice(0, Math.max(1, Number(config.maxClips) || 24));
 }
 
 async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config, rootConfig = {}, diagnostics = null) {
@@ -1178,19 +1259,19 @@ async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config,
         '你是直播切片编辑。下面是岁己SUI自己直播的候选片段。',
         OWN_STREAM_SOURCE_ATTRIBUTION_RULE,
         '请从中挑出适合本地 review 的有趣切片：有趣、弹幕量大、弹幕很在意、体现岁己想法与众不同、岁己做了傻事，或者弹幕指出她傻/特别/有趣/可爱。',
-        '不要选纯唱歌、普通问好、普通感谢礼物、没有可看点的片段。',
-        '每段 35 秒到 3 分半，尽量切在句子边界。最多 12 段。',
+        '没有独立看点的片段降低优先级；内容类型不做默认排除。',
+        ...buildSelectionPolicyPromptLines(config.selectionPolicy),
+        `每段 35 秒到 3 分半，尽量切在句子边界。最多 ${Math.max(1, Number(config.maxClips) || 24)} 段。`,
         '输出纯 JSON，不要 Markdown：',
         'Boundary rules are critical:',
         '- startTime must include the setup/premise, not start from the punchline.',
         '- endTime must include the explanation, follow-up reactions, and the final closing sentence.',
         '- If the streamer continues explaining the same incident after a short pause, extend endTime until that explanation is complete.',
-        '- Stop before a truly new topic, gift thanks, unrelated chat, or reading unrelated danmaku.',
+        '- Stop before a truly new topic or unrelated material; keep meaningful reactions and follow-up context.',
         '- Prefer a natural silence after a complete sentence; never end in the middle of a sentence or continuous story.',
         '',
-        ...generator.buildClipTitlePromptLines({ outputMode: 'jsonTitle', streamerName: '岁己SUI' }),
-        ...generator.buildCoverTextPromptLines(),
-        '{"clips":[{"candidateIndex":1,"startTime":"HH:MM:SS","endTime":"HH:MM:SS","title":"人工风格标题，18-42字","coverText":"第一行\\n第二行","reason":"一句话说明为什么值得看"}]}',
+        ...buildOwnStreamClipCopyPromptLines(generator),
+        '{"clips":[{"candidateIndex":1,"startTime":"HH:MM:SS","endTime":"HH:MM:SS","title":"人工风格标题，18-42字","coverText":"第一行\\n第二行","description":"面向观众的一句话内容简介","reason":"内部选材理由"}]}',
         '',
         `直播标题: ${info.streamTitle || '未知'}`,
         `录制时间: ${info.recordedAt || '未知'}`,
@@ -1224,12 +1305,13 @@ async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config,
 function fallbackClipsFromCandidates(candidates, config) {
     return candidates
         .sort((a, b) => b.score - a.score)
-        .slice(0, Math.max(1, Number(config.maxClips) || 12))
+        .slice(0, Math.max(1, Number(config.maxClips) || 24))
         .map(candidate => ({
             start: candidate.start,
             end: candidate.end,
             duration: candidate.duration,
             title: buildFallbackTitle(candidate),
+            description: '',
             reason: candidate.reason,
             candidateIndex: candidate.index,
             score: candidate.score,
@@ -1254,6 +1336,7 @@ function buildDanmakuHeatClips(candidates = [], count = 0) {
             end: candidate.end,
             duration: candidate.duration,
             title: buildFallbackTitle(candidate),
+            description: '',
             reason: candidate.reason,
             candidateIndex: candidate.index,
             score: heatScore,
@@ -1574,18 +1657,18 @@ async function generateOwnStreamClipJob({
     const srtPath = path.join(outputRoot, `${baseName}.srt`);
     const metadataPath = path.join(outputRoot, `${baseName}.json`);
     const srtResult = topicClipper.writeClipSrt(parsed.segments, window, srtPath);
-            const rawCopy = {
-                title: clip.title,
-                coverText: topicClipper.normalizeCoverText(clip.coverText),
-                description: buildClipDescription({
-                    streamerName,
-                    streamTitle: info.streamTitle,
-                    recordedAt: info.recordedAt,
-                    start: window.start,
-                    end: window.end,
-                    reason: clip.reason,
-                    emotionEvidence: clip.base?.emotionEvidence || clip.emotionEvidence || []
-                }),
+    const rawCopy = {
+        title: clip.title,
+        coverText: topicClipper.normalizeCoverText(clip.coverText),
+        description: buildClipDescription({
+            streamerName,
+            streamTitle: info.streamTitle,
+            recordedAt: info.recordedAt,
+            start: window.start,
+            end: window.end,
+            description: clip.description,
+            emotionEvidence: clip.base?.emotionEvidence || clip.emotionEvidence || []
+        }),
         tags: buildClipTags(options.config || {}, info.roomId, streamerName)
     };
     const processedCopy = postProcessAiClipMetadata(rawCopy, options.config || {});
@@ -1872,6 +1955,14 @@ async function generateOwnStreamClips(options = {}) {
         }));
         const results = await runJobsWithConcurrency(jobs, clipConcurrency);
         fs.writeFileSync(reviewPath, buildReviewMarkdown(results, reviewMetadata), 'utf8');
+        const residualReview = writeResidualAuditForOwnStream({
+            options,
+            config,
+            outputRoot,
+            planPath,
+            clips
+        });
+        if (residualReview) reviewMetadata.residualAuditPath = residualReview.outputPath;
         const uploadRegistry = registerReviewForUpload(reviewPath, results, reviewMetadata);
         if (uploadRegistry) {
             reviewMetadata.uploadRegistry = uploadRegistry;
@@ -1925,10 +2016,10 @@ async function generateOwnStreamClips(options = {}) {
                 streamerName,
                 streamTitle: info.streamTitle,
                 recordedAt: info.recordedAt,
-            start: window.start,
-            end: window.end,
-            reason: clip.reason,
-            emotionEvidence: clip.base?.emotionEvidence || clip.emotionEvidence || []
+                start: window.start,
+                end: window.end,
+                description: clip.description,
+                emotionEvidence: clip.base?.emotionEvidence || clip.emotionEvidence || []
             }),
             tags: buildClipTags(options.config || {}, info.roomId, streamerName)
         };
@@ -2016,6 +2107,14 @@ async function generateOwnStreamClips(options = {}) {
     }
 
     fs.writeFileSync(reviewPath, buildReviewMarkdown(results, reviewMetadata), 'utf8');
+    const residualReview = writeResidualAuditForOwnStream({
+        options,
+        config,
+        outputRoot,
+        planPath,
+        clips
+    });
+    if (residualReview) reviewMetadata.residualAuditPath = residualReview.outputPath;
     const uploadRegistry = registerReviewForUpload(reviewPath, results, reviewMetadata);
     if (uploadRegistry) {
         reviewMetadata.uploadRegistry = uploadRegistry;
@@ -2050,6 +2149,8 @@ function parseCliArgs(argv) {
         }
         else if (arg === '--no-ai') options.noAi = true;
         else if (arg === '--no-notify') options.noNotify = true;
+        else if (arg === '--residual-audit') options.residualAudit = true;
+        else if (arg === '--no-residual-audit') options.residualAudit = false;
         else if (arg === '--plan-only') options.planOnly = true;
         else if (arg === '--parallel') options.parallel = true;
         else if (arg === '--danmaku-heat-clips') options.danmakuHeatClips = Number(argv[++i]);
@@ -2079,6 +2180,9 @@ if (require.main === module) {
             ...(config.ownStreamClips || {}),
             ...(cli.noAi ? { ai: { ...(config.ownStreamClips?.ai || {}), enabled: false } } : {}),
             ...(cli.noNotify ? { notify: { ...(config.ownStreamClips?.notify || {}), enabled: false } } : {}),
+            ...(typeof cli.residualAudit === 'boolean' ? {
+                residualAudit: { ...(config.ownStreamClips?.residualAudit || {}), enabled: cli.residualAudit }
+            } : {}),
             ...(Number.isFinite(cli.maxClips) ? { maxClips: cli.maxClips } : {}),
             ...(Number.isFinite(cli.chunkSeconds) ? { chunkSeconds: cli.chunkSeconds } : {}),
             ...(Number.isFinite(cli.aiConcurrency) ? { aiConcurrency: cli.aiConcurrency } : {}),
@@ -2116,6 +2220,8 @@ module.exports = {
     DEFAULT_OWN_STREAM_CLIPS_CONFIG,
     getOwnStreamClipsConfig,
     buildCutClipMediaConfig,
+    buildSelectionPolicyPromptLines,
+    writeResidualAuditForOwnStream,
     parseDanmakuXml,
     buildDanmakuDensity,
     buildCandidateWindows,

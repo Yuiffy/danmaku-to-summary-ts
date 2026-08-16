@@ -1178,7 +1178,8 @@
     "enabled": true,
     "mode": "local_review",
     "roomIds": ["25788785"],
-    "maxClips": 18,
+    "maxCandidates": 48,
+    "maxClips": 24,
     "chunkSeconds": 2700,
     "aiConcurrency": 3,
     "clipConcurrency": 3,
@@ -1236,6 +1237,18 @@
         "BGM": 0,
         "Speech": 0
       }
+    },
+    "selectionPolicy": {
+      "requireTimeCoverage": false,
+      "excludedCategories": [],
+      "priorityCategories": []
+    },
+    "residualAudit": {
+      "enabled": false,
+      "reviewOnly": true,
+      "windowSeconds": 90,
+      "stepSeconds": 45,
+      "maxCandidates": 12
     },
     "notify": {
       "enabled": true

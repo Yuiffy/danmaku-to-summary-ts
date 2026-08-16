@@ -258,7 +258,8 @@ const ConfigSchema = Joi.object({
         enabled: Joi.boolean().default(false),
         mode: Joi.string().default('local_review'),
         roomIds: Joi.array().items(Joi.alternatives(Joi.string(), Joi.number())).default([]),
-        maxClips: Joi.number().default(12),
+        maxCandidates: Joi.number().default(48),
+        maxClips: Joi.number().default(24),
         chunkSeconds: Joi.number().default(2700),
         aiConcurrency: Joi.number().default(3),
         maxSubtitleCharsPerChunk: Joi.number().default(14000),
@@ -306,6 +307,18 @@ const ConfigSchema = Joi.object({
             maxContextLines: Joi.number().integer().min(1).default(160),
             emotionScores: Joi.object().pattern(Joi.string(), Joi.number()).default(),
             eventScores: Joi.object().pattern(Joi.string(), Joi.number()).default()
+        }).default(),
+        selectionPolicy: Joi.object({
+            requireTimeCoverage: Joi.boolean().default(false),
+            excludedCategories: Joi.array().items(Joi.string()).default([]),
+            priorityCategories: Joi.array().items(Joi.string()).default([])
+        }).default(),
+        residualAudit: Joi.object({
+            enabled: Joi.boolean().default(false),
+            reviewOnly: Joi.boolean().default(true),
+            windowSeconds: Joi.number().min(30).default(90),
+            stepSeconds: Joi.number().min(15).default(45),
+            maxCandidates: Joi.number().integer().min(1).default(12)
         }).default(),
         notify: Joi.object({
             enabled: Joi.boolean().default(true)

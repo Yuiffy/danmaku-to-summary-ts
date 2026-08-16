@@ -1288,7 +1288,7 @@
         "uid": "1512246445",
         "audioOnly": true,
         "anchorName": "四时小路Komichi",
-        "fanName": "粉丝",
+        "fanName": "小路泥",
         "referenceImages": [
           "public/reference_images/komichi_official_standing.png",
           "public/reference_images/komichi_official_sign.png"
@@ -1358,7 +1358,7 @@
         "uid": "1891335475",
         "audioOnly": true,
         "anchorName": "小松绿Viridis",
-        "fanName": "粉丝",
+        "fanName": "枼绿素",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
         "enableDelayedReply": true
@@ -1367,7 +1367,7 @@
         "uid": "2138961136",
         "audioOnly": true,
         "anchorName": "羽啾chu2u",
-        "fanName": "粉丝",
+        "fanName": "宇宙猫",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
         "enableDelayedReply": true
@@ -1376,7 +1376,7 @@
         "uid": "1150976664",
         "audioOnly": true,
         "anchorName": "枝堇Sumire",
-        "fanName": "粉丝",
+        "fanName": "小粉螈",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
         "enableDelayedReply": true
@@ -1610,7 +1610,8 @@
     "roomIds": [
       "25788785"
     ],
-    "maxClips": 18,
+    "maxCandidates": 48,
+    "maxClips": 24,
     "chunkSeconds": 2700,
     "aiConcurrency": 3,
     "clipConcurrency": 2,
@@ -1668,6 +1669,18 @@
         "BGM": 0,
         "Speech": 0
       }
+    },
+    "selectionPolicy": {
+      "requireTimeCoverage": false,
+      "excludedCategories": [],
+      "priorityCategories": []
+    },
+    "residualAudit": {
+      "enabled": false,
+      "reviewOnly": true,
+      "windowSeconds": 90,
+      "stepSeconds": 45,
+      "maxCandidates": 12
     },
     "notify": {
       "enabled": true

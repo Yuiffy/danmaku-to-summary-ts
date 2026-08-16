@@ -38,6 +38,7 @@ XIAOHONGMAO = Path(r"D:\files\Pictures\保存素材\VirtuaReal和PSP同事\岁�
 GPT_DIR = Path(r"D:\files\Pictures\AI图保存\gpt")
 PROJECT_REFS = Path(r"D:\workspace\myrepo\danmaku-to-summary-ts\public\reference_images")
 PROJECT_IMAGEGEN = Path(r"D:\workspace\myrepo\danmaku-to-summary-ts\output\imagegen")
+SHORT_DRAMA_REFS = Path(r"D:\files\Pictures\保存素材\短剧素材\新短剧素材20260802")
 
 # ── 参考图短名称 → 绝对路径映射 ──
 REF_MAP = {
@@ -101,6 +102,15 @@ REF_MAP = {
     # === 武侠系 ===
     "wuxia_sui_3view":   XIAOHUAMA / "AI素材" / "武侠岁己三视图.png",       # 武侠岁己三视图
     "wuxia_binggan_3view": XIAOHUAMA / "AI素材" / "武侠饼干岁三视图.png",    # 武侠饼干岁三视图
+
+    # === 新短剧素材 20260802（本次装机短剧） ===
+    "short_drama_sleepwear": SHORT_DRAMA_REFS / "吊带连衣裙三视图.png",
+    "short_drama_sleepwear_illust": SHORT_DRAMA_REFS / "吊带连衣裙睡衣定妆插画.png",
+    "short_drama_convex_sleepwear": SHORT_DRAMA_REFS / "凸出睡衣岁己.png",
+    "short_drama_lanmao_big": SHORT_DRAMA_REFS / "小蓝帽三视图加强版2_大熊.png",
+    "short_drama_sport": SHORT_DRAMA_REFS / "红白健身服装2.png",
+    "short_drama_sport_illust": SHORT_DRAMA_REFS / "红白健身服装2定妆插画.png",
+    "short_drama_outdoor_sui": SHORT_DRAMA_REFS / "运动外出岁己.png",  # 运动外出岁己定妆
 
     # === 其他角色 ===
     "shiori":            Path(r"D:\files\Pictures\保存素材\VirtuaReal和PSP同事\栞栞Shiori\栞栞立绘.webp"),

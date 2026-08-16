@@ -1025,11 +1025,28 @@ class MultiReferenceComicTests(unittest.TestCase):
         self.assertIn("至少一处选用正文中最有辨识度的原话、吐槽或梗", prompt)
         self.assertIn("禁止默认规则2x2四宫格", prompt)
         self.assertIn("主动进入本场明确出现的游戏", prompt)
+        self.assertIn("必须在scene和referenceUsage中保留其规范作品名", prompt)
+        self.assertIn("不能设计成“作品氛围启发”的原创替代人物", prompt)
+        self.assertIn("核对现成作品中的人物身份与外观时，优先使用captureMode=individual", prompt)
         self.assertIn("不要画成规则的2x2四宫格", image_prompt)
         self.assertIn("整张图最多允许一个小区域出现直播桌面", image_prompt)
         self.assertIn("清晰绘制4~6处中文“回忆锚点”", image_prompt)
         self.assertIn("不要把全部文字堆成底部摘要", image_prompt)
         self.assertIn("不遮挡脸、手、关键角色或关键道具", image_prompt)
+        self.assertIn("屏幕内或作品世界中的人物必须是该作品的实际角色", image_prompt)
+        self.assertIn("不要生成同题材原创人物来替代", image_prompt)
+
+    def test_control_prompt_preserves_identified_existing_work_characters(self):
+        prompt = comic.build_comic_generation_prompt(
+            "棕粉渐变长发、黄蓝异瞳犬娘",
+            "[12m] 今天看《来自风平浪静的明天》。[58m] 还有五角恋吗。",
+            "1791260716",
+            storytelling={"variant": "control"},
+        )
+
+        self.assertIn("分镜和referenceUsage必须保留其规范作品名", prompt)
+        self.assertIn("不要改写成同题材的原创人物", prompt)
+        self.assertIn("不要用只有背影、转场或空景的宫格承担角色还原", prompt)
 
     def test_shared_prompt_prefix_is_byte_identical_between_node_and_python(self):
         node = shutil.which("node")
