@@ -1026,14 +1026,18 @@ class MultiReferenceComicTests(unittest.TestCase):
         self.assertIn("禁止默认规则2x2四宫格", prompt)
         self.assertIn("主动进入本场明确出现的游戏", prompt)
         self.assertIn("必须在scene和referenceUsage中保留其规范作品名", prompt)
-        self.assertIn("不能设计成“作品氛围启发”的原创替代人物", prompt)
+        self.assertIn("不得把作品画面泛化成“类似氛围”的原创场景", prompt)
         self.assertIn("核对现成作品中的人物身份与外观时，优先使用captureMode=individual", prompt)
+        self.assertIn("游戏/影视开始后优先请求能看清标题或代表性玩法的individual截图", prompt)
         self.assertIn("不要画成规则的2x2四宫格", image_prompt)
         self.assertIn("整张图最多允许一个小区域出现直播桌面", image_prompt)
+        self.assertIn("游戏/影视本身的画面、标题画面、解谜界面和字幕不受此限制", image_prompt)
+        self.assertIn("游戏/影视截图是视觉主证据", image_prompt)
+        self.assertIn("截图中清楚可见的作品标题/Logo、游戏或影视画面和UI，优先于ASR对作品名的猜测", image_prompt)
         self.assertIn("清晰绘制4~6处中文“回忆锚点”", image_prompt)
         self.assertIn("不要把全部文字堆成底部摘要", image_prompt)
         self.assertIn("不遮挡脸、手、关键角色或关键道具", image_prompt)
-        self.assertIn("屏幕内或作品世界中的人物必须是该作品的实际角色", image_prompt)
+        self.assertIn("截图中看得见的作品人物必须按原作/截图还原", image_prompt)
         self.assertIn("不要生成同题材原创人物来替代", image_prompt)
 
     def test_control_prompt_preserves_identified_existing_work_characters(self):
@@ -1047,6 +1051,7 @@ class MultiReferenceComicTests(unittest.TestCase):
         self.assertIn("分镜和referenceUsage必须保留其规范作品名", prompt)
         self.assertIn("不要改写成同题材的原创人物", prompt)
         self.assertIn("不要用只有背影、转场或空景的宫格承担角色还原", prompt)
+        self.assertIn("将其视为候选而不是事实", prompt)
 
     def test_shared_prompt_prefix_is_byte_identical_between_node_and_python(self):
         node = shutil.which("node")
@@ -1496,6 +1501,7 @@ process.stdout.write(context.buildSharedLiveSourcePrefix(
         reference_prompt = comic.format_image_reference_manifest(manifest)
         self.assertIn("参考图2：直播 120 秒关键帧", reference_prompt)
         self.assertIn("用途：核对事件1", reference_prompt)
+        self.assertIn("游戏/影视截图是视觉主证据", reference_prompt)
 
     def test_reference_budget_can_expand_to_twelve_without_changing_default_limit(self):
         directed = []
