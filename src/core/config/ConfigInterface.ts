@@ -196,6 +196,24 @@ export interface AsrResourceGuardConfig {
   e_core_efficiency_class?: number | null;
   torch_num_threads?: number;
   torch_num_interop_threads?: number;
+  soft_gpu?: AsrGpuSoftPressureConfig;
+  low_impact?: AsrGpuLowImpactConfig;
+}
+
+export interface AsrGpuSoftPressureConfig {
+  enabled?: boolean;
+  sm_threshold?: number;
+  mem_threshold?: number;
+  fb_threshold_mb?: number;
+  total_memory_threshold_pct?: number;
+  include_total_utilization?: boolean;
+}
+
+export interface AsrGpuLowImpactConfig {
+  batch_size_s?: number;
+  yield_s?: number;
+  model_load_max_wait_s?: number;
+  model_load_poll_s?: number;
 }
 
 export interface AsrGpuThrottleConfig {
@@ -208,6 +226,9 @@ export interface AsrGpuThrottleConfig {
   max_wait_s?: number;
   pmon_sample_count?: number;
   segment_paraformer?: boolean;
+  hard_wait?: boolean;
+  soft_gpu?: AsrGpuSoftPressureConfig;
+  low_impact?: AsrGpuLowImpactConfig;
 }
 
 export interface AsrAdaptiveSpeakerConfig {

@@ -41,7 +41,7 @@ const DEFAULT_GPU_THROTTLE = {
 const DEFAULT_RESOURCE_GUARD = {
     enabled: false,
     game_process_names: ['DeltaForceClient-Win64-Shipping.exe'],
-    pause_when_game_running: true,
+    pause_when_game_running: false,
     poll_interval_s: 3,
     wait_s: 15,
     max_wait_s: 0,

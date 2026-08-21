@@ -1460,6 +1460,26 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     };
   }
 
+  private isAdaptiveParaformerGpuProtectionEnabled(config: any): boolean {
+    const backend = String(config.asr?.default_backend || config.asr?.backend || 'paraformer');
+    if (backend !== 'paraformer') {
+      return false;
+    }
+
+    const paraformerConfig = config.asr?.paraformer || {};
+    const resourceConfig = getAsrResourceGuardConfig(paraformerConfig);
+    const gpuConfig = paraformerConfig.gpu_throttle;
+    const softGpuConfig = gpuConfig?.soft_gpu || resourceConfig.soft_gpu;
+    const gpuEnabled = gpuConfig === true || Boolean(
+      gpuConfig && typeof gpuConfig === 'object' && gpuConfig.enabled !== false
+    );
+    return Boolean(
+      resourceConfig.enabled !== false &&
+      gpuEnabled &&
+      softGpuConfig?.enabled === true
+    );
+  }
+
   /**
    * 启动由队列父进程持有的 Paraformer worker。子任务通过本机回环端口复用模型；
    * worker 本身不预加载，第一条 Paraformer 请求到达时才占用显存。
@@ -1662,12 +1682,17 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         this.asrGamePaused = false;
       }
 
-      const gpuStatus = await this.isGpuBusyForWhisper();
-      if (gpuStatus.busy) {
-        await this.stopPersistentAsrWorker(`GPU 繁忙: ${gpuStatus.reason}`);
-        this.logger.info(`GPU 当前繁忙，队列Worker继续等待: ${gpuStatus.reason}`);
-        await this.sleep(idleWaitMs);
-        continue;
+      // Paraformer owns the adaptive GPU policy in Python. The legacy total
+      // GPU gate would stop the persistent worker before it can shrink its
+      // batch and yield, so keep it only for non-adaptive backends.
+      if (!this.isAdaptiveParaformerGpuProtectionEnabled(config)) {
+        const gpuStatus = await this.isGpuBusyForWhisper();
+        if (gpuStatus.busy) {
+          await this.stopPersistentAsrWorker(`GPU 繁忙: ${gpuStatus.reason}`);
+          this.logger.info(`GPU 当前繁忙，队列Worker继续等待: ${gpuStatus.reason}`);
+          await this.sleep(idleWaitMs);
+          continue;
+        }
       }
 
       await this.ensurePersistentAsrWorker();

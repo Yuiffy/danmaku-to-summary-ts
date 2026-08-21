@@ -166,6 +166,138 @@ class GpuThrottleTests(unittest.TestCase):
         self.assertEqual(waited, 1)
         sleep.assert_called_once_with(1.0)
 
+    def test_soft_gpu_pressure_shrinks_batch_and_yields_without_waiting(self):
+        payload = {
+            "gpu_throttle": {
+                "enabled": True,
+                "hard_wait": False,
+                "soft_gpu": {
+                    "enabled": True,
+                    "sm_threshold": 40,
+                },
+                "low_impact": {
+                    "batch_size_s": 30,
+                    "yield_s": 0.25,
+                },
+            },
+            "interactive_batch_size_s": 180,
+        }
+        sleeps = []
+        throttle = GpuThrottle(payload, "cuda", sleep_fn=sleeps.append)
+        throttle.last_check_at = -100
+        throttle._sample_gpu_processes = mock.Mock(return_value=[{
+            "pid": 9999,
+            "type": "C+G",
+            "sm": None,
+            "mem": None,
+            "fb_mb": 0,
+            "name": "game.exe",
+        }])
+        throttle._sample_gpu_summary = mock.Mock(return_value={
+            "gpu_util": 85,
+            "memory_used_mb": 12000,
+            "memory_total_mb": 16384,
+        })
+
+        waited = throttle.wait_if_busy("ASR batch")
+
+        self.assertEqual(waited, 0)
+        self.assertTrue(throttle.soft_pressure)
+        self.assertEqual(payload["interactive_batch_size_s"], 30)
+        self.assertEqual(sleeps, [0.25])
+
+    def test_soft_gpu_pressure_ignores_total_utilization_when_only_asr_is_visible(self):
+        payload = {
+            "gpu_throttle": {
+                "enabled": True,
+                "soft_gpu": {"enabled": True, "sm_threshold": 40},
+            }
+        }
+        throttle = GpuThrottle(payload, "cuda", sleep_fn=lambda _seconds: None)
+        throttle.last_check_at = -100
+        throttle.self_pids = {1234}
+        throttle._sample_gpu_processes = mock.Mock(return_value=[{
+            "pid": 1234,
+            "type": "C",
+            "sm": 90,
+            "mem": 90,
+            "fb_mb": 6000,
+            "name": "python.exe",
+        }])
+        throttle._sample_gpu_summary = mock.Mock(return_value={
+            "gpu_util": 95,
+            "memory_used_mb": 14000,
+            "memory_total_mb": 16384,
+        })
+
+        throttle.wait_if_busy("ASR batch")
+
+        self.assertFalse(throttle.soft_pressure)
+        self.assertNotIn("interactive_batch_size_s", payload)
+        throttle._sample_gpu_summary.assert_not_called()
+
+    def test_soft_gpu_pressure_detects_high_total_memory_even_when_utilization_is_low(self):
+        payload = {
+            "gpu_throttle": {
+                "enabled": True,
+                "soft_gpu": {
+                    "enabled": True,
+                    "sm_threshold": 40,
+                    "total_memory_threshold_pct": 75,
+                },
+                "low_impact": {"batch_size_s": 30, "yield_s": 0},
+            }
+        }
+        throttle = GpuThrottle(payload, "cuda", sleep_fn=lambda _seconds: None)
+        throttle.last_check_at = -100
+        throttle._sample_gpu_processes = mock.Mock(return_value=[{
+            "pid": 9999,
+            "type": "C+G",
+            "sm": None,
+            "mem": None,
+            "fb_mb": 0,
+            "name": "game.exe",
+        }])
+        throttle._sample_gpu_summary = mock.Mock(return_value={
+            "gpu_util": 10,
+            "memory_used_mb": 13000,
+            "memory_total_mb": 16384,
+        })
+
+        throttle.wait_if_busy("模型加载")
+
+        self.assertTrue(throttle.soft_pressure)
+        self.assertEqual(payload["interactive_batch_size_s"], 30)
+
+    def test_model_load_gap_wait_is_bounded_and_keeps_low_impact_mode(self):
+        payload = {
+            "gpu_throttle": {
+                "enabled": True,
+                "soft_gpu": {"enabled": True},
+                "low_impact": {
+                    "batch_size_s": 30,
+                    "yield_s": 0,
+                    "model_load_max_wait_s": 2,
+                    "model_load_poll_s": 1,
+                },
+            }
+        }
+        sleeps = []
+        throttle = GpuThrottle(payload, "cuda", sleep_fn=sleeps.append)
+        throttle.last_check_at = -100
+        throttle._sample_pressure = mock.Mock(side_effect=[
+            (False, True, "", "game"),
+            (False, True, "", "game"),
+            (False, True, "", "game"),
+        ])
+
+        throttle.wait_if_busy("模型加载")
+        waited = throttle.wait_for_model_load_gap("模型加载")
+
+        self.assertEqual(waited, 2)
+        self.assertEqual(sleeps, [1, 1])
+        self.assertTrue(throttle.soft_pressure)
+
 
 if __name__ == "__main__":
     unittest.main()

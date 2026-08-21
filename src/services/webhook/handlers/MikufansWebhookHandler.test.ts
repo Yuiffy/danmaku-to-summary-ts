@@ -1008,4 +1008,43 @@ describe('MikufansWebhookHandler segment collection finalization', () => {
       name4
     ]);
   });
+
+  test('uses Python soft GPU protection instead of the legacy queue GPU gate', () => {
+    const handler = new MikufansWebhookHandler() as any;
+    handlers.push(handler);
+    const adaptiveConfig = {
+      asr: {
+        default_backend: 'paraformer',
+        paraformer: {
+          resource_guard: {
+            enabled: true,
+            pause_when_game_running: false
+          },
+          gpu_throttle: {
+            enabled: true,
+            soft_gpu: { enabled: true }
+          }
+        }
+      }
+    };
+
+    expect(handler.isAdaptiveParaformerGpuProtectionEnabled(adaptiveConfig)).toBe(true);
+    expect(handler.isAdaptiveParaformerGpuProtectionEnabled({
+      ...adaptiveConfig,
+      asr: {
+        ...adaptiveConfig.asr,
+        paraformer: {
+          ...adaptiveConfig.asr.paraformer,
+          resource_guard: { enabled: true, pause_when_game_running: true }
+        }
+      }
+    })).toBe(true);
+    expect(handler.isAdaptiveParaformerGpuProtectionEnabled({
+      ...adaptiveConfig,
+      asr: {
+        ...adaptiveConfig.asr,
+        default_backend: 'whisper'
+      }
+    })).toBe(false);
+  });
 });

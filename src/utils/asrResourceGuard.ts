@@ -14,6 +14,14 @@ export interface AsrResourceGuardConfig {
   e_core_efficiency_class?: number | null;
   torch_num_threads?: number;
   torch_num_interop_threads?: number;
+  soft_gpu?: {
+    enabled?: boolean;
+    sm_threshold?: number;
+    mem_threshold?: number;
+    fb_threshold_mb?: number;
+    total_memory_threshold_pct?: number;
+    include_total_utilization?: boolean;
+  };
 }
 
 function normalizeProcessName(value: unknown): string {

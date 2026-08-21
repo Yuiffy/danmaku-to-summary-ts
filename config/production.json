@@ -2447,7 +2447,7 @@
         "game_process_names": [
           "DeltaForceClient-Win64-Shipping.exe"
         ],
-        "pause_when_game_running": true,
+        "pause_when_game_running": false,
         "poll_interval_s": 3,
         "wait_s": 15,
         "max_wait_s": 0,
@@ -2466,7 +2466,22 @@
         "wait_s": 20,
         "max_wait_s": 0,
         "pmon_sample_count": 2,
-        "segment_paraformer": true
+        "segment_paraformer": true,
+        "hard_wait": false,
+        "soft_gpu": {
+          "enabled": true,
+          "sm_threshold": 40,
+          "mem_threshold": 40,
+          "fb_threshold_mb": 4096,
+          "total_memory_threshold_pct": 75,
+          "include_total_utilization": true
+        },
+        "low_impact": {
+          "batch_size_s": 30,
+          "yield_s": 0.2,
+          "model_load_max_wait_s": 3,
+          "model_load_poll_s": 1
+        }
       },
       "cpu_throttle": {
         "enabled": true,
@@ -2474,8 +2489,8 @@
         "resume_percent_threshold": 60,
         "sample_interval_s": 0.5,
         "check_interval_s": 5,
-        "wait_s": 5,
-        "max_wait_s": 0,
+        "wait_s": 1,
+        "max_wait_s": 2,
         "consecutive_busy_samples": 2,
         "consecutive_idle_samples": 2
       },

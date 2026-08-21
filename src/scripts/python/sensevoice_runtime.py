@@ -71,6 +71,25 @@ def _resource_guard_config(payload):
     return config if isinstance(config, dict) else {}
 
 
+def _gpu_throttle_config(payload):
+    config = payload.get("gpu_throttle") if isinstance(payload, dict) else None
+    if isinstance(config, bool):
+        config = {"enabled": config}
+    return config if isinstance(config, dict) else {}
+
+
+def _merged_throttle_section(payload, name):
+    """Allow pressure policy to live beside either legacy config section."""
+    gpu_config = _gpu_throttle_config(payload)
+    resource_config = _resource_guard_config(payload)
+    merged = {}
+    if isinstance(gpu_config.get(name), dict):
+        merged.update(gpu_config[name])
+    if isinstance(resource_config.get(name), dict):
+        merged.update(resource_config[name])
+    return merged
+
+
 def _normalize_process_name(value):
     text = str(value or "").strip().replace("\\", "/").rsplit("/", 1)[-1].lower()
     if text and not text.endswith(".exe"):
@@ -392,13 +411,12 @@ def prepare_asr_runtime(payload):
 
 
 class GpuThrottle:
-    def __init__(self, payload, device):
-        config = payload.get("gpu_throttle")
-        if isinstance(config, bool):
-            config = {"enabled": config}
-        if not isinstance(config, dict):
-            config = {}
+    """Keep ASR on CUDA while reducing its foreground impact under GPU pressure."""
 
+    def __init__(self, payload, device, sleep_fn=None):
+        config = _gpu_throttle_config(payload)
+
+        self.payload = payload
         self.enabled = coerce_bool(config.get("enabled"), False) and str(device).startswith("cuda")
         self.nvidia_smi = str(config.get("nvidia_smi") or "nvidia-smi")
         self.busy_sm_threshold = float(config.get("busy_sm_threshold", 25) or 25)
@@ -410,10 +428,40 @@ class GpuThrottle:
         self.sample_count = max(1, int(float(config.get("pmon_sample_count", 2) or 2)))
         self.command_timeout_s = max(2.0, float(config.get("command_timeout_s", 8) or 8))
         self.segment_paraformer = coerce_bool(config.get("segment_paraformer"), True)
+        self.soft_gpu = _merged_throttle_section(payload, "soft_gpu")
+        self.soft_enabled = self.enabled and coerce_bool(
+            self.soft_gpu.get("enabled"), False
+        )
+        self.soft_sm_threshold = float(self.soft_gpu.get("sm_threshold", 40) or 40)
+        self.soft_mem_threshold = float(self.soft_gpu.get("mem_threshold", 40) or 40)
+        self.soft_fb_threshold_mb = float(
+            self.soft_gpu.get("fb_threshold_mb", 4096) or 4096
+        )
+        self.soft_total_memory_pct = float(
+            self.soft_gpu.get("total_memory_threshold_pct", 75) or 75
+        )
+        self.include_total_utilization = coerce_bool(
+            self.soft_gpu.get("include_total_utilization"), True
+        )
+        self.low_impact = _merged_throttle_section(payload, "low_impact")
+        self.low_impact_batch_size_s = float(
+            self.low_impact.get("batch_size_s", 30) or 30
+        )
+        yield_value = self.low_impact.get("yield_s")
+        if yield_value is None:
+            yield_value = 0.25
+        self.low_impact_yield_s = max(0.0, float(yield_value))
+        self.hard_wait = coerce_bool(
+            config.get("hard_wait"), not self.soft_enabled
+        )
         self.resource_guard = AsrResourceGuard(payload)
         self.last_check_at = 0.0
         self.last_busy = False
+        self.soft_pressure = False
+        self.pressure_reason = ""
         self.failure_warned = False
+        self._pressure_announced = False
+        self._sleep_fn = sleep_fn
         self.self_pids = {os.getpid()}
         if coerce_bool(config.get("ignore_parent_pid"), True):
             try:
@@ -426,6 +474,9 @@ class GpuThrottle:
             except Exception:
                 pass
 
+    def _sleep_for(self, seconds):
+        (self._sleep_fn or time.sleep)(seconds)
+
     @staticmethod
     def _parse_metric(value):
         text = str(value or "").strip()
@@ -436,8 +487,7 @@ class GpuThrottle:
         except ValueError:
             return None
 
-    def _sample_gpu_processes(self):
-        cmd = [self.nvidia_smi, "pmon", "-c", str(self.sample_count), "-s", "um"]
+    def _run_nvidia_smi(self, args):
         kwargs = {
             "capture_output": True,
             "text": True,
@@ -445,12 +495,17 @@ class GpuThrottle:
         }
         if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
             kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-        proc = subprocess.run(cmd, **kwargs)
+        proc = subprocess.run([self.nvidia_smi, *args], **kwargs)
         if proc.returncode != 0:
-            raise RuntimeError((proc.stderr or proc.stdout or "nvidia-smi pmon failed").strip())
+            raise RuntimeError((proc.stderr or proc.stdout or "nvidia-smi failed").strip())
+        return proc.stdout or ""
 
+    def _sample_gpu_processes(self):
+        output = self._run_nvidia_smi(
+            ["pmon", "-c", str(self.sample_count), "-s", "um"]
+        )
         processes = []
-        for line in proc.stdout.splitlines():
+        for line in output.splitlines():
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
@@ -471,37 +526,263 @@ class GpuThrottle:
             })
         return processes
 
-    def _is_gpu_busy(self):
-        busy = []
-        for item in self._sample_gpu_processes():
-            if item["pid"] in self.self_pids:
-                continue
-            sm = item.get("sm")
-            mem = item.get("mem")
-            fb_mb = item.get("fb_mb")
-            if (
-                (sm is not None and sm >= self.busy_sm_threshold)
-                or (mem is not None and mem >= self.busy_mem_threshold)
-                or (fb_mb is not None and fb_mb >= self.busy_fb_threshold_mb)
-            ):
-                busy.append(item)
-        if not busy:
-            return False, ""
-        busy.sort(key=lambda item: max(item.get("sm") or 0, item.get("mem") or 0), reverse=True)
-        item = busy[0]
-        return True, (
+    def _sample_gpu_summary(self):
+        output = self._run_nvidia_smi([
+            "--query-gpu=utilization.gpu,memory.used,memory.total",
+            "--format=csv,noheader,nounits",
+        ])
+        first_line = next((line.strip() for line in output.splitlines() if line.strip()), "")
+        values = [self._parse_metric(item) for item in first_line.split(",")]
+        if len(values) < 3 or any(value is None for value in values[:3]):
+            raise RuntimeError("nvidia-smi GPU summary 格式无效")
+        return {
+            "gpu_util": values[0],
+            "memory_used_mb": values[1],
+            "memory_total_mb": values[2],
+        }
+
+    @staticmethod
+    def _matches_threshold(item, sm_threshold, mem_threshold, fb_threshold_mb):
+        return (
+            (item.get("sm") is not None and item["sm"] >= sm_threshold)
+            or (item.get("mem") is not None and item["mem"] >= mem_threshold)
+            or (item.get("fb_mb") is not None and item["fb_mb"] >= fb_threshold_mb)
+        )
+
+    @staticmethod
+    def _format_process_reason(item):
+        return (
             f"pid={item['pid']} name={item['name']} "
             f"sm={item.get('sm')}% mem={item.get('mem')}% fb={item.get('fb_mb')}MB"
         )
+
+    def _external_processes(self, processes):
+        return [item for item in processes if item["pid"] not in self.self_pids]
+
+    def _is_gpu_busy(self):
+        busy = [
+            item
+            for item in self._external_processes(self._sample_gpu_processes())
+            if self._matches_threshold(
+                item,
+                self.busy_sm_threshold,
+                self.busy_mem_threshold,
+                self.busy_fb_threshold_mb,
+            )
+        ]
+        if not busy:
+            return False, ""
+        busy.sort(
+            key=lambda item: max(item.get("sm") or 0, item.get("mem") or 0),
+            reverse=True,
+        )
+        return True, self._format_process_reason(busy[0])
+
+    def _sample_pressure(self):
+        """Sample CUDA and WDDM-visible pressure in one process listing pass."""
+        processes = self._sample_gpu_processes()
+        external = self._external_processes(processes)
+        hard_items = [
+            item
+            for item in external
+            if self._matches_threshold(
+                item,
+                self.busy_sm_threshold,
+                self.busy_mem_threshold,
+                self.busy_fb_threshold_mb,
+            )
+        ]
+        soft_items = [
+            item
+            for item in external
+            if self._matches_threshold(
+                item,
+                self.soft_sm_threshold,
+                self.soft_mem_threshold,
+                self.soft_fb_threshold_mb,
+            )
+        ]
+        hard_reason = ""
+        soft_reason = ""
+        if hard_items:
+            hard_items.sort(
+                key=lambda item: max(item.get("sm") or 0, item.get("mem") or 0),
+                reverse=True,
+            )
+            hard_reason = self._format_process_reason(hard_items[0])
+        if soft_items:
+            soft_items.sort(
+                key=lambda item: max(item.get("sm") or 0, item.get("mem") or 0),
+                reverse=True,
+            )
+            soft_reason = self._format_process_reason(soft_items[0])
+
+        # Windows graphics processes frequently report '-' in pmon. The total
+        # utilization sample is the useful signal for games and other 3D apps;
+        # only use it when another PID is visible so our own CUDA work is not
+        # mistaken for an external foreground application.
+        if self.soft_enabled and self.include_total_utilization and external:
+            try:
+                summary = self._sample_gpu_summary()
+            except Exception as exc:
+                if not self.failure_warned:
+                    log_progress(f"GPU 总利用率检测不可用，继续使用 pmon: {exc}")
+                    self.failure_warned = True
+            else:
+                memory_total = summary["memory_total_mb"]
+                memory_pct = (
+                    summary["memory_used_mb"] / memory_total * 100
+                    if memory_total > 0
+                    else 0
+                )
+                if summary["gpu_util"] >= self.soft_sm_threshold:
+                    soft_reason = (
+                        f"外部 GPU 进程 {len(external)} 个，GPU 总利用率="
+                        f"{summary['gpu_util']:.0f}%"
+                    )
+                elif memory_pct >= self.soft_total_memory_pct:
+                    soft_reason = (
+                        f"外部 GPU 进程 {len(external)} 个，GPU 显存使用="
+                        f"{memory_pct:.0f}% ({summary['memory_used_mb']:.0f}/"
+                        f"{memory_total:.0f}MB)"
+                    )
+
+        return bool(hard_items), bool(soft_reason), hard_reason, soft_reason
+
+    def _activate_low_impact_mode(self, stage, reason):
+        self.soft_pressure = True
+        self.pressure_reason = reason
+        self.payload["_asr_gpu_soft_pressure"] = True
+        if self.low_impact_batch_size_s > 0:
+            current_batch = float(self.payload.get("interactive_batch_size_s", 0) or 0)
+            if current_batch <= 0 or current_batch > self.low_impact_batch_size_s:
+                self.payload["interactive_batch_size_s"] = self.low_impact_batch_size_s
+        if not self._pressure_announced:
+            log_progress(
+                f"检测到外部 GPU 压力，启用低影响 CUDA 模式: {reason}; "
+                f"batch<={self.low_impact_batch_size_s:g}s, "
+                f"yield={self.low_impact_yield_s:g}s"
+            )
+            self._pressure_announced = True
+        if self.low_impact_yield_s > 0:
+            self._sleep_for(self.low_impact_yield_s)
+
+    def _clear_pressure(self, stage):
+        if self.soft_pressure and self._pressure_announced:
+            log_progress(f"GPU 压力下降，恢复正常 CUDA 模式: {stage}")
+        self.soft_pressure = False
+        self.pressure_reason = ""
+        self._pressure_announced = False
+        self.payload["_asr_gpu_soft_pressure"] = False
+
+    def wait_for_model_load_gap(self, stage):
+        """Wait briefly for a GPU gap before a cold model load, never indefinitely."""
+        if not self.soft_enabled or not self.soft_pressure:
+            return 0.0
+        max_wait_s = max(
+            0.0,
+            float(self.low_impact.get("model_load_max_wait_s", 0) or 0),
+        )
+        poll_s = max(
+            0.25,
+            float(self.low_impact.get("model_load_poll_s", 1) or 1),
+        )
+        if max_wait_s <= 0:
+            return 0.0
+
+        waited = 0.0
+        while waited < max_wait_s:
+            sleep_s = min(poll_s, max_wait_s - waited)
+            self._sleep_for(sleep_s)
+            waited += sleep_s
+            try:
+                hard_busy, soft_busy, hard_reason, soft_reason = self._sample_pressure()
+            except Exception:
+                break
+            self.last_check_at = time.monotonic()
+            self.last_busy = hard_busy
+            if not hard_busy and not soft_busy:
+                self._clear_pressure(stage)
+                log_progress(f"GPU 出现加载窗口，继续 {stage}，已等待 {waited:.1f}s")
+                return waited
+            self.soft_pressure = True
+            self.pressure_reason = soft_reason or hard_reason
+
+        if waited > 0:
+            log_progress(
+                f"GPU 加载窗口等待达到上限 {max_wait_s:.1f}s，"
+                f"继续低影响 {stage}"
+            )
+        return waited
 
     def wait_if_busy(self, stage):
         self.resource_guard.wait_if_game_active(stage)
         if not self.enabled:
             return 0.0
         now = time.monotonic()
-        if not self.last_busy and now - self.last_check_at < self.check_interval_s:
+        if self.soft_enabled and not self.hard_wait:
+            if now - self.last_check_at < self.check_interval_s:
+                if self.soft_pressure:
+                    self._activate_low_impact_mode(stage, self.pressure_reason)
+                return 0.0
+        if (
+            not self.last_busy
+            and not self.soft_pressure
+            and now - self.last_check_at < self.check_interval_s
+        ):
             return 0.0
 
+        if self.soft_enabled:
+            try:
+                hard_busy, soft_busy, hard_reason, soft_reason = self._sample_pressure()
+                self.last_check_at = time.monotonic()
+                self.last_busy = hard_busy
+                if soft_busy or hard_busy:
+                    reason = soft_reason or hard_reason
+                    if self.hard_wait:
+                        # Explicit opt-in compatibility mode for deployments
+                        # that still prefer waiting over sharing the GPU.
+                        waited = 0.0
+                        while True:
+                            if waited <= 0:
+                                log_progress(f"检测到其他 GPU 进程繁忙，暂停 {stage}: {reason}")
+                            if self.max_wait_s > 0 and waited >= self.max_wait_s:
+                                log_progress(
+                                    f"GPU 节流等待达到上限 {self.max_wait_s:.0f}s，继续 {stage}"
+                                )
+                                break
+                            sleep_s = self.wait_s
+                            if self.max_wait_s > 0:
+                                sleep_s = min(sleep_s, max(1.0, self.max_wait_s - waited))
+                            self._sleep_for(sleep_s)
+                            waited += sleep_s
+                            try:
+                                hard_busy, soft_busy, hard_reason, soft_reason = self._sample_pressure()
+                            except Exception:
+                                break
+                            if not hard_busy and not soft_busy:
+                                break
+                        self.soft_pressure = bool(soft_busy or hard_busy)
+                        self.pressure_reason = soft_reason or hard_reason
+                        if self.soft_pressure:
+                            self._activate_low_impact_mode(stage, self.pressure_reason)
+                        else:
+                            self._clear_pressure(stage)
+                        return waited
+                    self._activate_low_impact_mode(stage, reason)
+                    return 0.0
+                self._clear_pressure(stage)
+                return 0.0
+            except Exception as exc:
+                if not self.failure_warned:
+                    log_progress(f"GPU 节流检测不可用，继续 ASR: {exc}")
+                    self.failure_warned = True
+                self.last_busy = False
+                self.last_check_at = time.monotonic()
+                self._clear_pressure(stage)
+                return 0.0
+
+        # Legacy hard-wait behavior remains available when soft_gpu is absent.
         waited = 0.0
         while True:
             try:
@@ -530,7 +811,7 @@ class GpuThrottle:
             sleep_s = self.wait_s
             if self.max_wait_s > 0:
                 sleep_s = min(sleep_s, max(1.0, self.max_wait_s - waited))
-            time.sleep(sleep_s)
+            self._sleep_for(sleep_s)
             waited += sleep_s
 
 

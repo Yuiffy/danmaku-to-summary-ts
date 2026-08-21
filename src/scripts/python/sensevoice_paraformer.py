@@ -580,6 +580,7 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
         {
             "model_kwargs": model_kwargs,
             "vad_device": vad_device or None,
+            "speaker_model": resolve_cached_model_name(spk_model) if enable_speaker and spk_model else None,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -589,6 +590,16 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
     cache_entry = cache.get("paraformer")
     cache_hit = bool(cache_entry and cache_entry.get("key") == cache_key)
     set_timing(payload, "model_cache_hit", 1 if cache_hit else 0)
+
+    # Sample before model construction and before choosing the request batch.
+    # This matters when the persistent worker receives its first request while
+    # a game is already using the GPU.
+    if gpu_throttle:
+        gpu_throttle.wait_if_busy("paraformer pipeline 使用")
+        if not cache_hit:
+            wait_for_gap = getattr(gpu_throttle, "wait_for_model_load_gap", None)
+            if callable(wait_for_gap):
+                wait_for_gap("paraformer pipeline 加载")
 
     if cache_hit:
         model = cache_entry["model"]
@@ -601,12 +612,13 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
     else:
         if cache_entry:
             log_progress("paraformer 模型配置变化，替换常驻缓存")
-            cache.pop("paraformer", None)
+            cache.clear()
+            cache_entry = None
             gc.collect()
             try:
                 import torch
 
-                if torch.cuda.is_available() and not cache.get("speaker_model"):
+                if torch.cuda.is_available():
                     torch.cuda.empty_cache()
             except Exception:
                 pass
