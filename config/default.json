@@ -571,6 +571,21 @@
         "enabled": true,
         "startup_timeout_s": 60
       },
+      "resource_guard": {
+        "enabled": false,
+        "game_process_names": [
+          "DeltaForceClient-Win64-Shipping.exe"
+        ],
+        "pause_when_game_running": true,
+        "poll_interval_s": 3,
+        "wait_s": 15,
+        "max_wait_s": 0,
+        "priority": "belowNormal",
+        "eco_qos": true,
+        "prefer_e_cores": false,
+        "torch_num_threads": 4,
+        "torch_num_interop_threads": 1
+      },
       "gpu_throttle": {
         "enabled": true,
         "busy_sm_threshold": 80,

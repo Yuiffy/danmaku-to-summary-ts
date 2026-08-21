@@ -46,6 +46,48 @@ function resolveRecordedDate(recordedAt, mediaPath = '') {
     return formatRecordedDate(recordedAt) || formatRecordedDate(mediaPath);
 }
 
+function formatRecordedAt(recordedAt, mediaPath = '') {
+    const values = [recordedAt, mediaPath].map(value => String(value || '').trim()).filter(Boolean);
+    for (const value of values) {
+        let match = value.match(/(\d{4})[-_/年](\d{1,2})[-_/月](\d{1,2})(?:日)?[T\s]+(\d{1,2})[:：](\d{2})(?:[:：](\d{2}))?/);
+        if (match) {
+            return `${match[1]}-${String(match[2]).padStart(2, '0')}-${String(match[3]).padStart(2, '0')} ${String(match[4]).padStart(2, '0')}:${match[5]}:${match[6] || '00'}`;
+        }
+
+        match = value.match(/(?:^|[^\d])((?:19|20)\d{2})(\d{2})(\d{2})[-_](\d{2})(\d{2})(\d{2})(?!\d)/);
+        if (match) {
+            return `${match[1]}-${match[2]}-${match[3]} ${match[4]}:${match[5]}:${match[6]}`;
+        }
+
+        match = value.match(/(\d{4})[-_/年](\d{1,2})[-_/月](\d{1,2})(?:日)?/);
+        if (match) {
+            return `${match[1]}-${String(match[2]).padStart(2, '0')}-${String(match[3]).padStart(2, '0')}`;
+        }
+    }
+    return '';
+}
+
+function normalizeStreamTitle(streamTitle) {
+    return String(streamTitle || '')
+        .trim()
+        .replace(/[\s_-]*(?:merged|best_effort)$/i, '')
+        .replace(/^《|》$/g, '')
+        .trim();
+}
+
+function buildUploadSource({
+    streamerName = '岁己SUI',
+    streamTitle = '',
+    recordedAt = '',
+    mediaPath = ''
+} = {}) {
+    const name = String(streamerName || '岁己SUI').trim() || '岁己SUI';
+    const title = normalizeStreamTitle(streamTitle);
+    const timestamp = formatRecordedAt(recordedAt, mediaPath);
+    const titlePart = title ? ` 直播《${title}》` : ' 直播';
+    return `${name}${titlePart}${timestamp ? `${title ? '' : ' '}${timestamp}` : ''}`.trim();
+}
+
 function normalizeOldSuiTitle(title, { recordedAt = '', mediaPath = '' } = {}) {
     const normalized = String(title || '').trim();
     const date = resolveRecordedDate(recordedAt, mediaPath);
@@ -165,11 +207,12 @@ function appendReview(reviewPath, task, result) {
 
 function importReview(reviewPath, task) {
     const profile = resolveQueueProfile(task.profile);
+    const source = buildUploadSource(task);
     const args = [
         path.join(projectRoot, 'src/scripts/clip_upload_registry.py'),
         'import-review',
         '--review', reviewPath,
-        '--source', '手工候选队列',
+        '--source', source,
         '--prefix', profile.titlePrefix,
         '--tags', profile.tags.join(','),
         '--tid', String(task.tid || 21),
@@ -292,6 +335,7 @@ async function cutTask(task, rootConfig) {
         streamerName: task.streamerName || '岁己SUI',
         recordedAt: task.recordedAt || null,
         streamTitle: task.streamTitle || null,
+        uploadSource: buildUploadSource(task),
         window,
         copy: { title: task.title, coverText: task.coverText, description: task.description, tags: profile.tags },
         uploadReady: true,
@@ -307,10 +351,15 @@ async function cutTask(task, rootConfig) {
         }
     };
     fs.writeFileSync(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, 'utf8');
+    const uploadSource = buildUploadSource(task);
+    const recordedAt = formatRecordedAt(task.recordedAt, task.mediaPath);
     fs.writeFileSync(copyPath, [
         `# ${task.title}`,
         '',
         '## 简介', task.description || '',
+        '',
+        '## 来源', `来源：${uploadSource}`,
+        recordedAt ? `直播开始时间：${recordedAt}` : null,
         '',
         '## Tags', profile.tags.join(', '),
         '',
@@ -450,6 +499,9 @@ module.exports = {
     resolveQueueProfile,
     formatRecordedDate,
     resolveRecordedDate,
+    formatRecordedAt,
+    normalizeStreamTitle,
+    buildUploadSource,
     normalizeOldSuiTitle,
     buildProfileDescription,
     parseArgs,

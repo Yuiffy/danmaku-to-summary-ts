@@ -7,7 +7,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(__file__))
 
 from sensevoice_paraformer import install_paraformer_timing_probe
-from sensevoice_runtime import CpuThrottle, GpuThrottle
+from sensevoice_runtime import AsrResourceGuard, CpuThrottle, GpuThrottle
 
 
 class RecordingThrottle:
@@ -108,6 +108,41 @@ class CpuThrottleTests(unittest.TestCase):
         throttle.last_check_at = -100
 
         self.assertEqual(throttle.wait_if_busy("VAD"), 0)
+
+
+class AsrResourceGuardTests(unittest.TestCase):
+    def test_waits_while_configured_game_process_is_running(self):
+        observations = iter([
+            {"DeltaForceClient-Win64-Shipping.exe"},
+            set(),
+        ])
+        sleeps = []
+        guard = AsrResourceGuard(
+            {
+                "resource_guard": {
+                    "enabled": True,
+                    "game_process_names": ["DeltaForceClient-Win64-Shipping"],
+                    "wait_s": 2,
+                    "max_wait_s": 10,
+                }
+            },
+            process_names_fn=lambda: next(observations),
+            sleep_fn=sleeps.append,
+            monotonic_fn=lambda: 100,
+        )
+
+        waited = guard.wait_if_game_active("模型加载")
+
+        self.assertEqual(waited, 2)
+        self.assertEqual(sleeps, [2.0])
+
+    def test_disabled_guard_does_not_query_processes(self):
+        guard = AsrResourceGuard(
+            {"resource_guard": {"enabled": False}},
+            process_names_fn=lambda: self.fail("disabled guard should not inspect tasklist"),
+        )
+
+        self.assertEqual(guard.wait_if_game_active("模型加载"), 0)
 
 
 class GpuThrottleTests(unittest.TestCase):

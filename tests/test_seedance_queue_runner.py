@@ -101,6 +101,44 @@ class SeedanceQueueRunnerTests(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--model_version") + 1], "seedance2.0_vip")
         self.assertEqual(cmd[cmd.index("--video_resolution") + 1], "1080p")
 
+    def test_submit_passes_seedance_25_duration_and_audio_reference(self):
+        audio = self.root / "voice.mp3"
+        audio.write_bytes(b"voice")
+        task = self.task(
+            "seedance-25",
+            "seedance2.5",
+            duration=30,
+            video_resolution="1080p",
+            audio_references=[str(audio)],
+        )
+        calls = []
+
+        class Result:
+            returncode = 0
+            stdout = '{"submit_id":"remote-25","gen_status":"querying"}'
+            stderr = ""
+
+        with patch.object(runner, "run", side_effect=lambda cmd, timeout: calls.append((cmd, timeout)) or Result()):
+            self.assertEqual(runner.submit(task), "remote-25")
+        cmd = calls[0][0]
+        self.assertEqual(cmd[cmd.index("--model_version") + 1], "seedance2.5")
+        self.assertEqual(cmd[cmd.index("--duration") + 1], "30")
+        self.assertEqual(cmd[cmd.index("--video_resolution") + 1], "1080p")
+        self.assertEqual(cmd[cmd.index("--audio") + 1], str(audio))
+
+    def test_validate_profile_accepts_seedance_25_resolution_and_duration_range(self):
+        task = self.task("seedance-25", "seedance2.5", duration=30, video_resolution="1080p")
+        self.assertIsNone(runner.validate_profile(task))
+        task["video_resolution"] = "480p"
+        self.assertIsNone(runner.validate_profile(task))
+
+    def test_validate_profile_rejects_seedance_25_duration_above_cli_limit(self):
+        task = self.task("seedance-25", "seedance2.5", duration=31)
+        self.assertEqual(
+            runner.validate_profile(task),
+            "duration must be between 4 and 30 seconds: 31",
+        )
+
     def test_dry_run_does_not_change_queue_bytes(self):
         data = self.write_queue([self.task("normal"), self.task("vip", "seedance2.0_vip")])
         before = self.queue_path.read_bytes()

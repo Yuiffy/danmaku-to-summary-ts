@@ -38,6 +38,20 @@ const DEFAULT_GPU_THROTTLE = {
     segment_paraformer: true
 };
 
+const DEFAULT_RESOURCE_GUARD = {
+    enabled: false,
+    game_process_names: ['DeltaForceClient-Win64-Shipping.exe'],
+    pause_when_game_running: true,
+    poll_interval_s: 3,
+    wait_s: 15,
+    max_wait_s: 0,
+    priority: 'belowNormal',
+    eco_qos: true,
+    prefer_e_cores: false,
+    torch_num_threads: 4,
+    torch_num_interop_threads: 1
+};
+
 const DEFAULT_ADAPTIVE_SPEAKER_CONFIG = {
     speaker_detection_mode: 'auto',
     speaker_min_segment_s: 0.8,
@@ -67,6 +81,7 @@ const DEFAULT_ADAPTIVE_SPEAKER_CONFIG = {
 const DEFAULT_ASR_CONFIG = {
     default_backend: 'paraformer',
     backend: undefined,
+    resource_guard: DEFAULT_RESOURCE_GUARD,
     common_hotwords: [],
     corrections: [],
     routing: [],
@@ -97,6 +112,7 @@ const DEFAULT_ASR_CONFIG = {
         batch_size_threshold_s: 60,
         process_timeout_s: 7200,
         gpu_throttle: DEFAULT_GPU_THROTTLE,
+        resource_guard: DEFAULT_RESOURCE_GUARD,
         enable_speaker: true,
         preset_spk_num: null,
         speaker_merge_threshold: 0.78,
@@ -122,6 +138,7 @@ const DEFAULT_ASR_CONFIG = {
         batch_size_threshold_s: 60,
         process_timeout_s: 7200,
         gpu_throttle: DEFAULT_GPU_THROTTLE,
+        resource_guard: DEFAULT_RESOURCE_GUARD,
         enable_speaker: true,
         preset_spk_num: null,
         speaker_merge_threshold: 0.78,
@@ -144,6 +161,7 @@ const DEFAULT_ASR_CONFIG = {
         use_itn: true,
         process_timeout_s: 10800,
         gpu_throttle: DEFAULT_GPU_THROTTLE,
+        resource_guard: DEFAULT_RESOURCE_GUARD,
         enable_speaker: true,
         preset_spk_num: null,
         speaker_merge_threshold: 0.78,
@@ -179,6 +197,7 @@ const DEFAULT_ASR_CONFIG = {
         batch_size_threshold_s: 60,
         process_timeout_s: 7200,
         gpu_throttle: DEFAULT_GPU_THROTTLE,
+        resource_guard: DEFAULT_RESOURCE_GUARD,
         enable_speaker: true,
         preset_spk_num: null,
         speaker_merge_threshold: 0.78,
@@ -214,9 +233,18 @@ const DEFAULT_SUBTITLE_CONFIG = {
 };
 
 function getAsrConfig(config = {}) {
+    const commonResourceGuard = {
+        ...DEFAULT_RESOURCE_GUARD,
+        ...(config.asr?.resource_guard || {})
+    };
+    const resourceGuardFor = backend => ({
+        ...commonResourceGuard,
+        ...(config.asr?.[backend]?.resource_guard || {})
+    });
     return {
         ...DEFAULT_ASR_CONFIG,
         ...(config.asr || {}),
+        resource_guard: commonResourceGuard,
         whisper: {
             ...DEFAULT_ASR_CONFIG.whisper,
             ...(config.whisper || {}),
@@ -224,19 +252,23 @@ function getAsrConfig(config = {}) {
         },
         sensevoice: {
             ...DEFAULT_ASR_CONFIG.sensevoice,
-            ...(config.asr?.sensevoice || {})
+            ...(config.asr?.sensevoice || {}),
+            resource_guard: resourceGuardFor('sensevoice')
         },
         fun_asr_nano: {
             ...DEFAULT_ASR_CONFIG.fun_asr_nano,
-            ...(config.asr?.fun_asr_nano || {})
+            ...(config.asr?.fun_asr_nano || {}),
+            resource_guard: resourceGuardFor('fun_asr_nano')
         },
         fun_asr_nano_vllm: {
             ...DEFAULT_ASR_CONFIG.fun_asr_nano_vllm,
-            ...(config.asr?.fun_asr_nano_vllm || {})
+            ...(config.asr?.fun_asr_nano_vllm || {}),
+            resource_guard: resourceGuardFor('fun_asr_nano_vllm')
         },
         paraformer: {
             ...DEFAULT_ASR_CONFIG.paraformer,
-            ...(config.asr?.paraformer || {})
+            ...(config.asr?.paraformer || {}),
+            resource_guard: resourceGuardFor('paraformer')
         },
         gray_rollout: {
             ...DEFAULT_ASR_CONFIG.gray_rollout,
@@ -1262,7 +1294,10 @@ function runJsonPythonProcess(scriptPath, payload, label = 'ASR backend') {
             windowsHide: true,
             env: { ...process.env, PYTHONUTF8: '1' }
         });
-        applyFfmpegProcessPriority(child.pid, resourceConfig.priority);
+        applyFfmpegProcessPriority(
+            child.pid,
+            String(payload?.resource_guard?.priority || resourceConfig.priority || 'belowNormal')
+        );
         const timeoutSeconds = Number(payload?.process_timeout_s || 0);
         const timeout = timeoutSeconds > 0
             ? setTimeout(() => {

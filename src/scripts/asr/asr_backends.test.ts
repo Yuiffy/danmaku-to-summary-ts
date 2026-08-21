@@ -3,6 +3,29 @@ const productionConfig = require('../../../config/production.json');
 const net = require('net');
 
 describe('asr_backends', () => {
+  test('merges common and backend-specific resource guard settings', () => {
+    const config = asr.getAsrConfig({
+      asr: {
+        resource_guard: {
+          enabled: true,
+          game_process_names: ['game.exe']
+        },
+        paraformer: {
+          resource_guard: {
+            prefer_e_cores: true
+          }
+        }
+      }
+    });
+
+    expect(config.paraformer.resource_guard).toMatchObject({
+      enabled: true,
+      game_process_names: ['game.exe'],
+      prefer_e_cores: true,
+      torch_num_threads: 4
+    });
+  });
+
   test('uses the persistent paraformer worker when configured', async () => {
     const server = net.createServer((socket: any) => {
       let buffer = '';

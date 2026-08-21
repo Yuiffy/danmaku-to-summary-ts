@@ -164,6 +164,38 @@ export interface AsrPythonRuntimeConfig {
   python_executable?: string | null;
   python_args?: string[];
   python_path_map?: Array<{ from: string; to: string }> | Record<string, string>;
+  resource_guard?: AsrResourceGuardConfig;
+  cpu_throttle?: boolean | AsrCpuThrottleConfig;
+}
+
+export interface AsrCpuThrottleConfig {
+  enabled?: boolean;
+  busy_percent_threshold?: number;
+  resume_percent_threshold?: number;
+  sample_interval_s?: number;
+  check_interval_s?: number;
+  wait_s?: number;
+  max_wait_s?: number;
+  consecutive_busy_samples?: number;
+  consecutive_idle_samples?: number;
+  torch_num_threads?: number;
+  torch_num_interop_threads?: number;
+}
+
+export interface AsrResourceGuardConfig {
+  enabled?: boolean;
+  game_process_names?: string[] | string;
+  process_names?: string[] | string;
+  pause_when_game_running?: boolean;
+  poll_interval_s?: number;
+  wait_s?: number;
+  max_wait_s?: number;
+  priority?: 'idle' | 'belowNormal' | 'normal' | 'aboveNormal' | 'high' | string;
+  eco_qos?: boolean;
+  prefer_e_cores?: boolean;
+  e_core_efficiency_class?: number | null;
+  torch_num_threads?: number;
+  torch_num_interop_threads?: number;
 }
 
 export interface AsrGpuThrottleConfig {

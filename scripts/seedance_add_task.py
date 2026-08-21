@@ -23,12 +23,12 @@ import json
 import sys
 from pathlib import Path
 
+from seedance_model_caps import VALID_MODELS, VALID_RESOLUTIONS, duration_bounds, supported_resolutions
 from seedance_queue_store import DEFAULT_QUEUE_PATH, QueueStore
 
 # ── 队列文件路径 ──
 QUEUE_PATH = DEFAULT_QUEUE_PATH
-VALID_MODELS = {"seedance2.0", "seedance2.0mini", "seedance2.0_vip", "seedance2.0fast_vip"}
-VALID_RESOLUTIONS = {"720p", "1080p", "4k"}
+VALID_STATUSES = {"pending", "paused"}
 
 # ── 素材根目录 ──
 XIAOHUAMA = Path(r"D:\files\Pictures\保存素材\小花帽")
@@ -39,6 +39,7 @@ GPT_DIR = Path(r"D:\files\Pictures\AI图保存\gpt")
 PROJECT_REFS = Path(r"D:\workspace\myrepo\danmaku-to-summary-ts\public\reference_images")
 PROJECT_IMAGEGEN = Path(r"D:\workspace\myrepo\danmaku-to-summary-ts\output\imagegen")
 SHORT_DRAMA_REFS = Path(r"D:\files\Pictures\保存素材\短剧素材\新短剧素材20260802")
+SUI_VOICE_SAMPLE = Path(r"D:\files\Pictures\保存素材\VirtuaReal和PSP同事\岁己SUI\饼干岁我告诉你只许喜欢我一个人，不许跟别的女人说话！.MP3")
 
 # ── 参考图短名称 → 绝对路径映射 ──
 REF_MAP = {
@@ -111,6 +112,7 @@ REF_MAP = {
     "short_drama_sport": SHORT_DRAMA_REFS / "红白健身服装2.png",
     "short_drama_sport_illust": SHORT_DRAMA_REFS / "红白健身服装2定妆插画.png",
     "short_drama_outdoor_sui": SHORT_DRAMA_REFS / "运动外出岁己.png",  # 运动外出岁己定妆
+    "short_drama_rtx5090_box": SHORT_DRAMA_REFS / "RTX5090显卡包装参考.jpg",  # RTX 5090包装结构参考
 
     # === 其他角色 ===
     "shiori":            Path(r"D:\files\Pictures\保存素材\VirtuaReal和PSP同事\栞栞Shiori\栞栞立绘.webp"),
@@ -122,6 +124,10 @@ REF_MAP = {
     "villain_boss":      PROJECT_IMAGEGEN / "convenience_store_villain_boss_v1.png",  # 无眼匿名便利店老板
     "convenience_store_boss_store": PROJECT_IMAGEGEN / "convenience_store_boss_store_reference_v1.png",  # 用户提供的老板与小卖部参考图1
     "convenience_store_basement": PROJECT_IMAGEGEN / "convenience_store_basement_reference_v1.png",  # 用户提供的地下室参考图2
+}
+
+AUDIO_MAP = {
+    "sui_voice_sample": SUI_VOICE_SAMPLE,
 }
 
 
@@ -146,6 +152,27 @@ def resolve_refs(short_names: list[str]) -> list[str]:
     return paths
 
 
+def resolve_audio_refs(short_names: list[str]) -> list[str]:
+    """音频参考短名称 → 绝对路径，验证存在性"""
+    paths = []
+    errors = []
+    for name in short_names:
+        if name not in AUDIO_MAP:
+            errors.append(f"  ✗ 未知音频参考短名称: '{name}'")
+            continue
+        p = AUDIO_MAP[name]
+        if not p.exists():
+            errors.append(f"  ✗ 音频文件不存在: '{name}' → {p}")
+            continue
+        paths.append(str(p))
+    if errors:
+        print("音频参考验证失败:", file=sys.stderr)
+        for e in errors:
+            print(e, file=sys.stderr)
+        sys.exit(1)
+    return paths
+
+
 def next_task_id(tasks: list) -> str:
     """获取下一个 task ID"""
     max_num = 0
@@ -158,7 +185,7 @@ def next_task_id(tasks: list) -> str:
     return f"task_{max_num + 1:03d}"
 
 
-def add_task(name: str, prompt: str, refs: list[str], repeat: int, ratio: str = "16:9", model_version: str = "seedance2.0", resolution: str = "720p", queue_path: Path = QUEUE_PATH, task_id: str | None = None):
+def add_task(name: str, prompt: str, refs: list[str], repeat: int, ratio: str = "16:9", model_version: str = "seedance2.0", resolution: str = "720p", queue_path: Path = QUEUE_PATH, task_id: str | None = None, duration: int = 15, audio_refs: list[str] | None = None, initial_status: str = "pending"):
     """添加任务到队列。模型决定进入普通或 VIP 线上通道。"""
     if not queue_path.exists():
         print(f"✗ 队列文件不存在: {queue_path}", file=sys.stderr)
@@ -181,14 +208,22 @@ def add_task(name: str, prompt: str, refs: list[str], repeat: int, ratio: str = 
     if model_version not in VALID_MODELS:
         print(f"✗ model-version 无效: '{model_version}'，可选: {', '.join(sorted(VALID_MODELS))}", file=sys.stderr)
         sys.exit(1)
-    if resolution not in VALID_RESOLUTIONS or (not model_version.endswith("_vip") and resolution != "720p"):
+    minimum, maximum = duration_bounds(model_version)
+    if duration < minimum or duration > maximum:
+        print(f"✗ {model_version} 的 duration 应在 {minimum}-{maximum} 秒之间，当前: {duration}", file=sys.stderr)
+        sys.exit(1)
+    if resolution not in supported_resolutions(model_version):
         print(f"✗ {model_version} 不支持分辨率: '{resolution}'", file=sys.stderr)
         sys.exit(1)
     if not refs:
         print("✗ 至少需要一个参考图", file=sys.stderr)
         sys.exit(1)
+    if initial_status not in VALID_STATUSES:
+        print(f"✗ initial-status 无效: '{initial_status}'，可选: {', '.join(sorted(VALID_STATUSES))}", file=sys.stderr)
+        sys.exit(1)
 
     ref_paths = resolve_refs(refs)
+    audio_paths = resolve_audio_refs(audio_refs or [])
     store = QueueStore(queue_path)
     with store.transaction() as q:
         if task_id is None:
@@ -201,12 +236,14 @@ def add_task(name: str, prompt: str, refs: list[str], repeat: int, ratio: str = 
             "name": name,
             "prompt": prompt,
             "reference_images": ref_paths,
+            "audio_references": audio_paths,
             "ratio": ratio,
             "model_version": model_version,
             "video_resolution": resolution,
+            "duration": duration,
             "repeat": repeat,
             "completed": 0,
-            "status": "pending",
+            "status": initial_status,
             "submit_ids": [],
             "inflight": [],
         }
@@ -216,7 +253,7 @@ def add_task(name: str, prompt: str, refs: list[str], repeat: int, ratio: str = 
 
     lane = "普通" if model_version == "seedance2.0" else "VIP"
     print(f"✅ 已添加 {task_id}: {name}")
-    print(f"   repeat={repeat}, refs={refs}, model={model_version}, resolution={resolution}, 通道={lane}")
+    print(f"   repeat={repeat}, duration={duration}s, refs={refs}, audio={audio_refs or []}, model={model_version}, resolution={resolution}, status={initial_status}, 通道={lane}")
     print(f"   总任务数: {task_count}")
 
 
@@ -249,7 +286,10 @@ def main():
     p_add.add_argument("--repeat", type=int, default=2, help="重复次数 (默认2，最多200)")
     p_add.add_argument("--ratio", default="16:9", help="视频比例 (默认16:9): 1:1, 3:4, 16:9, 4:3, 9:16, 21:9")
     p_add.add_argument("--model-version", default="seedance2.0", choices=sorted(VALID_MODELS), help="生成模型；seedance2.0 走普通通道，其余模型走 VIP 通道")
-    p_add.add_argument("--resolution", default="720p", choices=sorted(VALID_RESOLUTIONS), help="视频分辨率 (非 VIP 模型仅支持 720p)")
+    p_add.add_argument("--resolution", default="720p", choices=sorted(VALID_RESOLUTIONS), help="视频分辨率；2.5 支持 480p/720p/1080p")
+    p_add.add_argument("--duration", type=int, default=15, help="视频时长；2.5 支持 4-30 秒，其余模型 4-15 秒")
+    p_add.add_argument("--audio-refs", default="", help="音频参考短名称，逗号分隔，例如 sui_voice_sample")
+    p_add.add_argument("--initial-status", default="pending", choices=sorted(VALID_STATUSES), help="初始状态；paused 用于先建档再分批释放")
     p_add.add_argument("--task-id", default=None, help="显式任务 ID，例如 task_153；用于保持删除任务后的编号连续性")
     p_add.add_argument("--queue", type=Path, default=QUEUE_PATH, help="队列文件路径（测试/维护覆盖）")
 
@@ -268,7 +308,8 @@ def main():
 
     if args.command == "add":
         refs = [r.strip() for r in args.refs.split(",") if r.strip()]
-        add_task(args.name, args.prompt, refs, args.repeat, args.ratio, args.model_version, args.resolution, args.queue, args.task_id)
+        audio_refs = [r.strip() for r in args.audio_refs.split(",") if r.strip()]
+        add_task(args.name, args.prompt, refs, args.repeat, args.ratio, args.model_version, args.resolution, args.queue, args.task_id, args.duration, audio_refs, args.initial_status)
 
     elif args.command == "list-refs":
         list_refs()

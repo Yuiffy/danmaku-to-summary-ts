@@ -16,6 +16,12 @@ import { VideoScreenshotService } from '../../video/VideoScreenshotService';
 import { listRelevantProcesses, terminateProcessTree } from '../../../utils/processCleanup';
 import { ProcessingAlertService } from '../../monitoring/ProcessingAlertService';
 import { applyFfmpegProcessPriority, getFfmpegResourceConfig } from '../../../utils/ffmpegResource';
+import {
+  getAsrGamePollIntervalMs,
+  getAsrResourceGuardConfig,
+  isAnyWindowsProcessRunning,
+  normalizeAsrProcessNames
+} from '../../../utils/asrResourceGuard';
 
 const queueManager = require(path.join(process.cwd(), 'src', 'scripts', 'whisper_queue_manager.js'));
 const speakerOnceRegistry = require(path.join(process.cwd(), 'src', 'scripts', 'asr', 'speaker_once_registry.js'));
@@ -83,6 +89,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   private asrPersistentWorkerPort: number | null = null;
   private asrPersistentWorkerToken: string | null = null;
   private asrPersistentWorkerStarting: Promise<void> | null = null;
+  private asrGamePaused = false;
 
   // 延迟处理定时器管理器(roomId -> Map<actionType, timer>)
   private delayedActions: Map<string, Map<DelayedActionType, NodeJS.Timeout>> = new Map();
@@ -1431,6 +1438,28 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     return { busy, reason };
   }
 
+  private async isAsrGameRunning(): Promise<{ busy: boolean; reason: string; waitMs: number }> {
+    const config: any = ConfigProvider.getConfig();
+    const resourceConfig = getAsrResourceGuardConfig(config.asr?.paraformer);
+    if (!resourceConfig.enabled || resourceConfig.pause_when_game_running === false) {
+      return { busy: false, reason: 'ASR 游戏保护未启用', waitMs: 5000 };
+    }
+
+    const names = normalizeAsrProcessNames(
+      resourceConfig.game_process_names || resourceConfig.process_names || []
+    );
+    if (names.length === 0) {
+      return { busy: false, reason: '未配置游戏进程名', waitMs: 5000 };
+    }
+
+    const running = await isAnyWindowsProcessRunning(names);
+    return {
+      busy: running,
+      reason: running ? `检测到游戏进程: ${names.join(', ')}` : '',
+      waitMs: getAsrGamePollIntervalMs({ resource_guard: resourceConfig })
+    };
+  }
+
   /**
    * 启动由队列父进程持有的 Paraformer worker。子任务通过本机回环端口复用模型；
    * worker 本身不预加载，第一条 Paraformer 请求到达时才占用显存。
@@ -1465,12 +1494,16 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       const token = crypto.randomBytes(24).toString('hex');
       const args = [...pythonArgs, workerScript, '--port', '0', '--token', token];
       const resourceConfig = getFfmpegResourceConfig();
+      const asrResourceConfig = getAsrResourceGuardConfig(paraformerConfig);
       const child = spawn(executable, args, {
         cwd: process.cwd(),
         windowsHide: true,
         env: { ...process.env, PYTHONUTF8: '1' }
       });
-      applyFfmpegProcessPriority(child.pid, resourceConfig.priority);
+      applyFfmpegProcessPriority(
+        child.pid,
+        String(asrResourceConfig.priority || resourceConfig.priority || 'belowNormal')
+      );
 
       this.asrPersistentWorkerProcess = child;
       this.asrPersistentWorkerToken = token;
@@ -1574,6 +1607,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         await this.stopPersistentAsrWorker('队列 worker 退出');
         this.queueWorkerPromise = null;
         this.queueWorkerProcess = null;
+        this.asrGamePaused = false;
         const pendingTask = queueManager.getNextPendingTask({ reload: true }) as QueuedSummaryTask | null;
         if (pendingTask) {
           this.logger.info('队列 worker 清理期间收到新任务，立即重新唤醒');
@@ -1611,6 +1645,21 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         await this.stopPersistentAsrWorker('ASR 队列已清空');
         this.logger.info('Mikufans队列Worker空闲，退出等待下次唤醒');
         return;
+      }
+
+      const gameStatus = await this.isAsrGameRunning();
+      if (gameStatus.busy) {
+        await this.stopPersistentAsrWorker(`游戏运行: ${gameStatus.reason}`);
+        if (!this.asrGamePaused) {
+          this.logger.info(`检测到游戏运行，ASR 队列暂停: ${gameStatus.reason}`);
+          this.asrGamePaused = true;
+        }
+        await this.sleep(Math.min(idleWaitMs, gameStatus.waitMs));
+        continue;
+      }
+      if (this.asrGamePaused) {
+        this.logger.info('游戏已退出，ASR 队列恢复');
+        this.asrGamePaused = false;
       }
 
       const gpuStatus = await this.isGpuBusyForWhisper();

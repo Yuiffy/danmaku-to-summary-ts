@@ -1,7 +1,9 @@
 import contextlib
+import csv
 import ctypes
 import os
 import signal
+import struct
 import subprocess
 import sys
 import time
@@ -64,6 +66,331 @@ def coerce_bool(value, default=False):
     return default
 
 
+def _resource_guard_config(payload):
+    config = payload.get("resource_guard") if isinstance(payload, dict) else None
+    return config if isinstance(config, dict) else {}
+
+
+def _normalize_process_name(value):
+    text = str(value or "").strip().replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if text and not text.endswith(".exe"):
+        text += ".exe"
+    return text
+
+
+def _list_windows_process_names():
+    """Return image names from tasklist; failure is deliberately fail-open."""
+    if os.name != "nt":
+        return set()
+    kwargs = {
+        "capture_output": True,
+        "text": True,
+        "timeout": 3,
+    }
+    if hasattr(subprocess, "CREATE_NO_WINDOW"):
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    try:
+        result = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], **kwargs)
+        if result.returncode != 0:
+            return set()
+        names = set()
+        for row in csv.reader((result.stdout or "").splitlines()):
+            if row:
+                normalized = _normalize_process_name(row[0])
+                if normalized:
+                    names.add(normalized)
+        return names
+    except Exception:
+        return set()
+
+
+class AsrResourceGuard:
+    """Pause ASR while configured interactive applications are running."""
+
+    def __init__(self, payload, process_names_fn=None, sleep_fn=None, monotonic_fn=None):
+        config = _resource_guard_config(payload)
+        raw_names = config.get("game_process_names") or config.get("process_names") or []
+        if isinstance(raw_names, str):
+            raw_names = [raw_names]
+        self.game_process_names = {
+            normalized
+            for normalized in (_normalize_process_name(item) for item in raw_names)
+            if normalized
+        }
+        self.enabled = coerce_bool(config.get("enabled"), False)
+        self.pause_when_game_running = coerce_bool(
+            config.get("pause_when_game_running"), True
+        )
+        self.poll_interval_s = max(0.25, float(config.get("poll_interval_s", 3) or 3))
+        self.wait_s = max(0.25, float(config.get("wait_s", 15) or 15))
+        self.max_wait_s = max(0.0, float(config.get("max_wait_s", 0) or 0))
+        self._process_names_fn = process_names_fn or _list_windows_process_names
+        self._sleep = sleep_fn or time.sleep
+        self._monotonic = monotonic_fn or time.monotonic
+        self._last_check_at = None
+        self._last_game_running = False
+        self._failure_warned = False
+
+    @property
+    def active(self):
+        return bool(
+            self.enabled
+            and self.pause_when_game_running
+            and self.game_process_names
+        )
+
+    def game_running(self, force=False):
+        if not self.active:
+            return False
+        now = self._monotonic()
+        if (
+            not force
+            and self._last_check_at is not None
+            and now - self._last_check_at < self.poll_interval_s
+        ):
+            return self._last_game_running
+        try:
+            observed = self._process_names_fn()
+            if isinstance(observed, bool):
+                running = observed
+            else:
+                normalized = {
+                    _normalize_process_name(item)
+                    for item in (observed or [])
+                }
+                running = bool(self.game_process_names.intersection(normalized))
+            self._last_game_running = running
+            self._last_check_at = now
+            return running
+        except Exception as exc:
+            if not self._failure_warned:
+                log_progress(f"游戏进程检测不可用，继续 ASR: {exc}")
+                self._failure_warned = True
+            self._last_game_running = False
+            self._last_check_at = now
+            return False
+
+    def wait_if_game_active(self, stage):
+        if not self.active:
+            return 0.0
+
+        waited = 0.0
+        announced = False
+        while self.game_running(force=waited > 0):
+            if not announced:
+                names = ", ".join(sorted(self.game_process_names))
+                log_progress(f"检测到游戏运行，暂停 {stage}: {names}")
+                announced = True
+            if self.max_wait_s > 0 and waited >= self.max_wait_s:
+                log_progress(
+                    f"游戏保护等待达到上限 {self.max_wait_s:.0f}s，继续 {stage}"
+                )
+                return waited
+            sleep_s = self.wait_s
+            if self.max_wait_s > 0:
+                sleep_s = min(sleep_s, max(0.25, self.max_wait_s - waited))
+            self._sleep(sleep_s)
+            waited += sleep_s
+
+        if waited > 0:
+            log_progress(f"游戏已退出，继续 {stage}，已等待 {waited:.0f}s")
+        return waited
+
+
+def _torch_thread_config(payload):
+    resource_config = _resource_guard_config(payload)
+    cpu_config = payload.get("cpu_throttle") if isinstance(payload, dict) else None
+    cpu_config = cpu_config if isinstance(cpu_config, dict) else {}
+    thread_count = resource_config.get("torch_num_threads")
+    if thread_count is None:
+        thread_count = cpu_config.get("torch_num_threads")
+    interop_count = resource_config.get("torch_num_interop_threads")
+    if interop_count is None:
+        interop_count = cpu_config.get("torch_num_interop_threads")
+    try:
+        thread_count = max(0, int(float(thread_count))) if thread_count is not None else 0
+    except (TypeError, ValueError):
+        thread_count = 0
+    try:
+        interop_count = max(0, int(float(interop_count))) if interop_count is not None else 0
+    except (TypeError, ValueError):
+        interop_count = 0
+    return thread_count, interop_count
+
+
+def _windows_cpu_set_records(kernel32):
+    get_cpu_sets = getattr(kernel32, "GetSystemCpuSetInformation", None)
+    if get_cpu_sets is None:
+        return []
+    required = ctypes.c_ulong(0)
+    get_cpu_sets(None, 0, ctypes.byref(required), None, 0)
+    if required.value <= 0:
+        return []
+    buffer = ctypes.create_string_buffer(required.value)
+    if not get_cpu_sets(buffer, required.value, ctypes.byref(required), None, 0):
+        return []
+
+    records = []
+    offset = 0
+    total = required.value
+    while offset + 8 <= total:
+        size, item_type = struct.unpack_from("<II", buffer.raw, offset)
+        if size < 20 or offset + size > total:
+            break
+        if item_type == 0:
+            cpu_set_id = struct.unpack_from("<I", buffer.raw, offset + 8)[0]
+            efficiency_class = buffer.raw[offset + 18]
+            records.append((cpu_set_id, efficiency_class))
+        offset += size
+    return records
+
+
+def _apply_windows_process_policy(config):
+    if os.name != "nt":
+        return
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        get_current_process = kernel32.GetCurrentProcess
+        get_current_process.restype = ctypes.c_void_p
+        process_handle = get_current_process()
+    except Exception as exc:
+        log_progress(f"Windows ASR 调度策略不可用，继续运行: {exc}")
+        return
+
+    failures = []
+
+    def apply_policy(label, callback):
+        try:
+            callback()
+        except Exception as exc:
+            failures.append(f"{label}: {exc}")
+
+    priority_name = str(config.get("priority") or "").replace("_", "").lower()
+    priority_classes = {
+        "idle": 0x40,
+        "belownormal": 0x4000,
+        "normal": 0x20,
+        "abovenormal": 0x8000,
+        "high": 0x80,
+    }
+    priority_class = priority_classes.get(priority_name)
+    if priority_class is not None:
+        def apply_priority():
+            set_priority = kernel32.SetPriorityClass
+            set_priority.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+            set_priority.restype = ctypes.c_bool
+            if not set_priority(process_handle, priority_class):
+                raise ctypes.WinError(ctypes.get_last_error())
+        apply_policy("进程优先级", apply_priority)
+
+    if coerce_bool(config.get("eco_qos"), False):
+        def apply_eco_qos():
+            set_information = getattr(kernel32, "SetProcessInformation", None)
+            if set_information is None:
+                return
+            set_information.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_int,
+                ctypes.c_void_p,
+                ctypes.c_uint32,
+            ]
+            set_information.restype = ctypes.c_bool
+
+            class PowerThrottlingState(ctypes.Structure):
+                _fields_ = [
+                    ("Version", ctypes.c_uint32),
+                    ("ControlMask", ctypes.c_uint32),
+                    ("State", ctypes.c_uint32),
+                ]
+
+            state = PowerThrottlingState(1, 0x1, 0x1)
+            if not set_information(
+                process_handle,
+                4,
+                ctypes.byref(state),
+                ctypes.sizeof(state),
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+        apply_policy("EcoQoS", apply_eco_qos)
+
+    if coerce_bool(config.get("prefer_e_cores"), False):
+        def apply_e_core_preference():
+            set_cpu_sets = getattr(kernel32, "SetProcessDefaultCpuSets", None)
+            if set_cpu_sets is None:
+                return
+            set_cpu_sets.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_uint32),
+                ctypes.c_uint32,
+            ]
+            set_cpu_sets.restype = ctypes.c_bool
+            records = _windows_cpu_set_records(kernel32)
+            if not records:
+                return
+            requested_class = config.get("e_core_efficiency_class")
+            if requested_class is None:
+                # On Windows hybrid CPUs the highest efficiency class is the
+                # scheduler's E-core class. This remains best-effort.
+                requested_class = max(item[1] for item in records)
+            requested_class = int(requested_class)
+            selected = [
+                cpu_set_id
+                for cpu_set_id, efficiency_class in records
+                if efficiency_class == requested_class
+            ]
+            if not selected:
+                return
+            ids = (ctypes.c_uint32 * len(selected))(*selected)
+            if not set_cpu_sets(process_handle, ids, len(selected)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            log_progress(
+                f"ASR 已偏向效率核心: CPU sets={len(selected)}, class={requested_class}"
+            )
+        apply_policy("E-core 偏好", apply_e_core_preference)
+
+    if failures:
+        log_progress(
+            "部分 Windows ASR 调度策略应用失败，继续运行: " + "; ".join(failures)
+        )
+
+
+def configure_torch_runtime(payload):
+    """Apply thread caps after the game guard and before model construction."""
+    resource_config = _resource_guard_config(payload)
+    cpu_config = payload.get("cpu_throttle") if isinstance(payload, dict) else None
+    cpu_config = cpu_config if isinstance(cpu_config, dict) else {}
+    if not coerce_bool(resource_config.get("enabled"), False) and not coerce_bool(
+        cpu_config.get("enabled"), False
+    ):
+        return
+    thread_count, interop_count = _torch_thread_config(payload)
+    if thread_count <= 0 and interop_count <= 0:
+        return
+    if thread_count > 0:
+        os.environ["OMP_NUM_THREADS"] = str(thread_count)
+        os.environ["MKL_NUM_THREADS"] = str(thread_count)
+    try:
+        import torch
+
+        if thread_count > 0:
+            torch.set_num_threads(thread_count)
+        if interop_count > 0:
+            torch.set_num_interop_threads(interop_count)
+    except Exception as exc:
+        log_progress(f"PyTorch 线程上限应用失败，继续运行: {exc}")
+
+
+def prepare_asr_runtime(payload):
+    """Set low-impact scheduling, wait for games, then configure torch threads."""
+    resource_config = _resource_guard_config(payload)
+    guard = AsrResourceGuard(payload)
+    if coerce_bool(resource_config.get("enabled"), False):
+        _apply_windows_process_policy(resource_config)
+    guard.wait_if_game_active("ASR 模型加载")
+    configure_torch_runtime(payload)
+    return guard
+
+
 class GpuThrottle:
     def __init__(self, payload, device):
         config = payload.get("gpu_throttle")
@@ -83,6 +410,7 @@ class GpuThrottle:
         self.sample_count = max(1, int(float(config.get("pmon_sample_count", 2) or 2)))
         self.command_timeout_s = max(2.0, float(config.get("command_timeout_s", 8) or 8))
         self.segment_paraformer = coerce_bool(config.get("segment_paraformer"), True)
+        self.resource_guard = AsrResourceGuard(payload)
         self.last_check_at = 0.0
         self.last_busy = False
         self.failure_warned = False
@@ -167,6 +495,7 @@ class GpuThrottle:
         )
 
     def wait_if_busy(self, stage):
+        self.resource_guard.wait_if_game_active(stage)
         if not self.enabled:
             return 0.0
         now = time.monotonic()
@@ -263,8 +592,10 @@ class CpuThrottle:
         self.last_check_at = 0.0
         self.last_busy = False
         self.failure_warned = False
+        self.resource_guard = AsrResourceGuard(payload)
 
     def wait_if_busy(self, stage):
+        self.resource_guard.wait_if_game_active(stage)
         if not self.enabled:
             return 0.0
         now = self._monotonic()

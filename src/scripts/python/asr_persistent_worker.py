@@ -11,6 +11,7 @@ from sensevoice_transcribe import (
     _apply_hotword_correction,
     coerce_bool,
     normalize_backend_name,
+    prepare_asr_runtime,
     transcribe_paraformer_builtin,
 )
 
@@ -55,6 +56,7 @@ def release_cache(runtime_cache):
 
 
 def transcribe(payload, runtime_cache):
+    resource_guard = prepare_asr_runtime(payload)
     audio_path = payload.get("audio_path")
     if not audio_path or not os.path.exists(audio_path):
         raise FileNotFoundError(audio_path or "未提供 audio_path")
@@ -70,13 +72,19 @@ def transcribe(payload, runtime_cache):
             raise RuntimeError("配置 device=cuda，但 torch.cuda.is_available() 为 False")
 
     throttle = GpuThrottle(payload, device)
-    raw_result = transcribe_paraformer_builtin(
-        payload,
-        audio_path,
-        device,
-        throttle,
-        runtime_cache=runtime_cache,
-    )
+    try:
+        raw_result = transcribe_paraformer_builtin(
+            payload,
+            audio_path,
+            device,
+            throttle,
+            runtime_cache=runtime_cache,
+        )
+    finally:
+        # If a game starts during a request, the next request must not inherit
+        # the resident CUDA models while the game is still running.
+        if resource_guard.game_running(force=True):
+            release_cache(runtime_cache)
     output = {
         "backend": backend_name,
         "language": payload.get("language", "auto"),

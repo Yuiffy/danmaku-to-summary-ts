@@ -14,13 +14,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from seedance_model_caps import VALID_MODELS, VALID_RESOLUTIONS, duration_bounds, supported_resolutions
 from seedance_queue_store import DEFAULT_QUEUE_PATH, QueueStore
 
 DREAMINA = "dreamina"
 DEFAULT_MODEL = "seedance2.0"
 DEFAULT_RESOLUTION = "720p"
-VALID_MODELS = {"seedance2.0", "seedance2.0mini", "seedance2.0_vip", "seedance2.0fast_vip"}
-VALID_RESOLUTIONS = {"720p", "1080p", "4k"}
 SESSION = "15001602620940"
 DURATION = "15"
 DEFAULT_RATIO = "16:9"
@@ -196,8 +195,21 @@ def resolved_resolution(task: Dict[str, Any]) -> str:
     return str(task.get("video_resolution") or DEFAULT_RESOLUTION)
 
 
+def resolved_duration(task: Dict[str, Any]) -> int:
+    try:
+        duration = int(task.get("duration") or DURATION)
+    except (TypeError, ValueError):
+        return int(DURATION)
+    return duration
+
+
+def resolved_audio_references(task: Dict[str, Any]) -> List[str]:
+    values = task.get("audio_references")
+    return [str(value) for value in values] if isinstance(values, list) else []
+
+
 def task_lane(task: Dict[str, Any]) -> str:
-    """Dreamina treats mini and *_vip models as VIP-capacity work."""
+    """Dreamina treats mini, 2.5, and *_vip models as VIP-capacity work."""
     return "normal" if resolved_model(task) == "seedance2.0" else "vip"
 
 
@@ -222,13 +234,25 @@ def validate_profile(task: Dict[str, Any]) -> Optional[str]:
         return f"unsupported model_version: {model}"
     if resolution not in VALID_RESOLUTIONS:
         return f"unsupported video_resolution: {resolution}"
-    if not model.endswith("_vip") and resolution != "720p":
-        return f"{model} supports only 720p"
+    supported = supported_resolutions(model)
+    if resolution not in supported:
+        values = ", ".join(sorted(supported))
+        return f"{model} supports resolutions: {values}"
+    minimum, maximum = duration_bounds(model)
+    duration = resolved_duration(task)
+    if duration < minimum or duration > maximum:
+        return f"duration must be between {minimum} and {maximum} seconds: {duration}"
     images = task.get("reference_images")
     if not isinstance(images, list) or not images:
         return "reference_images must contain at least one image"
     missing = [str(path) for path in images if not Path(str(path)).is_file()]
-    return f"reference image missing: {missing[0]}" if missing else None
+    if missing:
+        return f"reference image missing: {missing[0]}"
+    audio_missing = [
+        path for path in resolved_audio_references(task)
+        if not Path(path).is_file()
+    ]
+    return f"audio reference missing: {audio_missing[0]}" if audio_missing else None
 
 
 def task_by_id(data: Dict[str, Any], task_id: str) -> Optional[Dict[str, Any]]:
@@ -329,9 +353,11 @@ def run(cmd: List[str], timeout: int) -> subprocess.CompletedProcess[str]:
 
 
 def submit(task: Dict[str, Any]) -> str:
-    cmd = [DREAMINA, "multimodal2video", "--model_version", resolved_model(task), "--duration", DURATION, "--ratio", str(task.get("ratio") or DEFAULT_RATIO), "--video_resolution", resolved_resolution(task), "--session", SESSION, "--poll", POLL]
+    cmd = [DREAMINA, "multimodal2video", "--model_version", resolved_model(task), "--duration", str(resolved_duration(task)), "--ratio", str(task.get("ratio") or DEFAULT_RATIO), "--video_resolution", resolved_resolution(task), "--session", SESSION, "--poll", POLL]
     for image in task.get("reference_images", []):
         cmd += ["--image", str(image)]
+    for audio in resolved_audio_references(task):
+        cmd += ["--audio", audio]
     cmd += ["--prompt", str(task["prompt"])]
     print(f"submit start version={SCRIPT_VERSION} task={task.get('id')} lane={task_lane(task)} model={resolved_model(task)} active={active_attempt_count(task)} remaining={remaining(task)}")
     cp = run(cmd, 1800)

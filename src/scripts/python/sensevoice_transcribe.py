@@ -5,7 +5,14 @@ import sys
 
 from sensevoice_pipeline import transcribe_segmented_backend, transcribe_with_vllm_pipeline
 from sensevoice_paraformer import configure_paraformer_devices, transcribe_paraformer_builtin
-from sensevoice_runtime import GpuThrottle, StageTimeout, coerce_bool, log_progress, suppress_model_output
+from sensevoice_runtime import (
+    GpuThrottle,
+    StageTimeout,
+    coerce_bool,
+    log_progress,
+    prepare_asr_runtime,
+    suppress_model_output,
+)
 from sensevoice_text import (
     _apply_hotword_correction,
     normalize_backend_name,
@@ -18,6 +25,7 @@ __all__ = [
     "StageTimeout",
     "coerce_bool",
     "log_progress",
+    "prepare_asr_runtime",
     "suppress_model_output",
     "normalize_backend_name",
     "normalize_segments",
@@ -60,6 +68,7 @@ def main():
     if not audio_path or not os.path.exists(audio_path):
         fail("输入音频不存在", audio_path or "未提供 audio_path")
     log_progress(f"输入音频: {audio_path}")
+    prepare_asr_runtime(payload)
 
     try:
         log_progress("导入 FunASR")
