@@ -1,7 +1,31 @@
-const { waitForCpuAvailability } = require('./ffmpeg_resource');
+const { waitForAsrAvailability, waitForCpuAvailability } = require('./ffmpeg_resource');
 
 
 describe('topic clip CPU resource guard', () => {
+  test('waits briefly for an active ASR lease, then resumes after it is released', async () => {
+    const activeSamples = [true, true, false];
+    const sleep = jest.fn().mockResolvedValue(undefined);
+    const log = jest.fn();
+    const result = await waitForAsrAvailability('ffmpeg test', {
+      asrGuard: {
+        enabled: true,
+        staleMs: 15000,
+        pollMs: 1000,
+        maxWaitMs: 5000,
+        overlapThreads: 1
+      }
+    }, {
+      isActive: jest.fn(() => activeSamples.shift()),
+      sleep,
+      log
+    });
+
+    expect(result).toEqual({ waitedMs: 2000, asrActive: false });
+    expect(sleep).toHaveBeenCalledTimes(2);
+    expect(log.mock.calls[0][0]).toContain('ASR 正在使用资源');
+    expect(log.mock.calls[1][0]).toContain('ASR 租约已释放');
+  });
+
   const resourceConfig = {
     threads: 1,
     priority: 'idle',

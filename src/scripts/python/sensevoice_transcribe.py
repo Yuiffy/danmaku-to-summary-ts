@@ -68,7 +68,7 @@ def main():
     if not audio_path or not os.path.exists(audio_path):
         fail("输入音频不存在", audio_path or "未提供 audio_path")
     log_progress(f"输入音频: {audio_path}")
-    prepare_asr_runtime(payload)
+    resource_guard = prepare_asr_runtime(payload)
 
     try:
         log_progress("导入 FunASR")
@@ -119,12 +119,14 @@ def main():
                 "language": payload.get("language", "中文"),
                 "segments": normalize_segments(raw_result),
                 "timings": payload.get("_timings", {}),
+                "resource_peaks": payload.get("_resource_peaks", {}),
                 "speaker_processing": payload.get("_speaker_processing"),
                 "emotion_analysis": payload.get("_emotion_analysis"),
             }
             if payload.get("include_raw", False):
                 output["raw"] = raw_result
             print(json.dumps(output, ensure_ascii=False, default=str), file=original_stdout)
+            resource_guard.close_claim()
             return
 
         paraformer_profile = str(payload.get("model_profile") or "").strip().lower()
@@ -153,6 +155,7 @@ def main():
                 "language": payload.get("language", "auto"),
                 "segments": raw_result,
                 "timings": payload.get("_timings", {}),
+                "resource_peaks": payload.get("_resource_peaks", {}),
                 "speaker_processing": payload.get("_speaker_processing"),
                 "emotion_analysis": payload.get("_emotion_analysis"),
             }
@@ -162,6 +165,7 @@ def main():
             if payload.get("include_raw", False):
                 output["raw"] = raw_result
             print(json.dumps(output, ensure_ascii=False, default=str), file=original_stdout)
+            resource_guard.close_claim()
             return
 
         raw_result = transcribe_segmented_backend(
@@ -179,6 +183,7 @@ def main():
         "language": payload.get("language", "auto"),
         "segments": normalize_segments(raw_result),
         "timings": payload.get("_timings", {}),
+        "resource_peaks": payload.get("_resource_peaks", {}),
         "speaker_processing": payload.get("_speaker_processing"),
         "emotion_analysis": payload.get("_emotion_analysis"),
     }
@@ -190,6 +195,7 @@ def main():
         _apply_hotword_correction(output, payload)
 
     print(json.dumps(output, ensure_ascii=False, default=str), file=original_stdout)
+    resource_guard.close_claim()
 
 
 if __name__ == "__main__":

@@ -7,12 +7,14 @@ const configLoader = require('./config-loader');
 const aiTextGenerator = require('./ai_text_generator');
 const topicClipper = require('./topic_clipper');
 const ownStreamClipper = require('./own_stream_clipper');
+const backgroundClipQueue = require('./background_clip_queue');
 const {
     applyFfmpegProcessPriority,
     getFfmpegResourceConfig
 } = require('./ffmpeg_resource');
 
 const BACKGROUND_CLIPS_ARG = '--payload';
+const BACKGROUND_CLIP_QUEUE_WORKER_ARG = '--queue-worker';
 
 async function generateTopicClipsForMedia(originalMediaPath, processedMediaPath, srtPath, roomId = null, context = {}, xmlPath = null) {
     const config = configLoader.getConfig();
@@ -133,7 +135,7 @@ function shouldRunAnyClipper(roomId = null, xmlPath = null) {
 
 function installBackgroundClipLogger(logPath) {
     if (!logPath) {
-        return;
+        return () => {};
     }
 
     const append = (level, args) => {
@@ -150,16 +152,39 @@ function installBackgroundClipLogger(logPath) {
                 return String(arg);
             }
         }).join(' ');
-        fs.appendFileSync(logPath, `[${new Date().toISOString()}] [${level}] ${line}\n`, 'utf8');
+        try {
+            fs.appendFileSync(logPath, `[${new Date().toISOString()}] [${level}] ${line}\n`, 'utf8');
+        } catch {
+            // A logging failure must not abort an otherwise valid clip job.
+        }
     };
 
+    const originals = new Map();
+    const wrappers = new Map();
     for (const level of ['log', 'info', 'warn', 'error']) {
-        const original = console[level].bind(console);
-        console[level] = (...args) => {
+        const original = console[level];
+        const wrapper = (...args) => {
             append(level.toUpperCase(), args);
-            original(...args);
+            original.apply(console, args);
         };
+        originals.set(level, original);
+        wrappers.set(level, wrapper);
+        console[level] = wrapper;
     }
+
+    return () => {
+        for (const level of ['log', 'info', 'warn', 'error']) {
+            if (console[level] === wrappers.get(level)) {
+                console[level] = originals.get(level);
+            }
+        }
+    }
+}
+
+function getBackgroundClipQueueConfig(config = configLoader.getConfig()) {
+    return backgroundClipQueue.getQueueConfig(
+        config?.clipTopics?.backgroundQueue || config?.backgroundClipQueue || {}
+    );
 }
 
 function writeBackgroundClipPayload(payload) {
@@ -182,10 +207,7 @@ function writeBackgroundClipPayload(payload) {
     return { payloadPath, logPath };
 }
 
-function spawnBackgroundClipProcess(payload) {
-    const config = configLoader.getConfig();
-    const resourceConfig = getFfmpegResourceConfig(config);
-    const { payloadPath, logPath } = writeBackgroundClipPayload(payload);
+function spawnDetachedBackgroundClipProcess(payloadPath, resourceConfig, extraEnv = {}) {
     const child = spawn(process.execPath, [__filename, BACKGROUND_CLIPS_ARG, payloadPath], {
         cwd: process.cwd(),
         detached: true,
@@ -197,13 +219,81 @@ function spawnBackgroundClipProcess(payload) {
             AUTOMATION: 'true',
             BACKGROUND_CLIPS: 'true',
             FFMPEG_THREADS: String(resourceConfig.threads),
-            FFMPEG_PRIORITY: resourceConfig.priority
+            FFMPEG_PRIORITY: resourceConfig.priority,
+            ...extraEnv
         }
     });
     applyFfmpegProcessPriority(child.pid, resourceConfig.priority);
     child.unref();
-    console.log(`🎬 自动切片已转入后台子进程: pid=${child.pid || 'unknown'}, log=${logPath}`);
-    return { payloadPath, logPath, pid: child.pid };
+    return child;
+}
+
+function spawnBackgroundClipWorker(queueConfig, resourceConfig) {
+    const child = spawn(process.execPath, [__filename, BACKGROUND_CLIP_QUEUE_WORKER_ARG], {
+        cwd: process.cwd(),
+        detached: true,
+        windowsHide: true,
+        stdio: 'ignore',
+        env: {
+            ...process.env,
+            NODE_ENV: process.env.NODE_ENV || 'production',
+            AUTOMATION: 'true',
+            BACKGROUND_CLIPS: 'true',
+            FFMPEG_THREADS: String(resourceConfig.threads),
+            FFMPEG_PRIORITY: resourceConfig.priority,
+            DANMAKU_BACKGROUND_CLIP_QUEUE_DIR: queueConfig.directory,
+            DANMAKU_BACKGROUND_CLIP_QUEUE_ENABLED: 'true'
+        }
+    });
+    applyFfmpegProcessPriority(child.pid, resourceConfig.priority);
+    child.unref();
+    return child;
+}
+
+function spawnBackgroundClipProcess(payload) {
+    const config = configLoader.getConfig();
+    const resourceConfig = getFfmpegResourceConfig(config);
+    const queueConfig = getBackgroundClipQueueConfig(config);
+    const { payloadPath, logPath } = writeBackgroundClipPayload(payload);
+
+    if (!queueConfig.enabled) {
+        const child = spawnDetachedBackgroundClipProcess(payloadPath, resourceConfig);
+        console.log(`🎬 自动切片已转入后台子进程: pid=${child.pid || 'unknown'}, log=${logPath}`);
+        return { payloadPath, logPath, pid: child.pid, queued: false };
+    }
+
+    const queuedJob = backgroundClipQueue.enqueueJob({
+        payloadPath,
+        logPath,
+        roomId: payload.roomId
+    }, queueConfig);
+    const workerLaunch = backgroundClipQueue.claimWorkerLaunch(
+        queueConfig.directory,
+        queueConfig.staleLockMs
+    );
+    let worker = null;
+    if (workerLaunch) {
+        try {
+            worker = spawnBackgroundClipWorker(queueConfig, resourceConfig);
+            workerLaunch.commit();
+        } catch (error) {
+            workerLaunch.release();
+            throw error;
+        }
+    }
+    const pendingCount = backgroundClipQueue.countQueueEntries(queueConfig.directory);
+    console.log(
+        `🎬 自动切片已加入全局串行队列: job=${queuedJob.jobId}, roomId=${payload.roomId || 'unknown'}, `
+        + `pending=${pendingCount}, workerPid=${worker?.pid || 'existing-or-starting'}, log=${logPath}`
+    );
+    return {
+        ...queuedJob,
+        payloadPath,
+        logPath,
+        pid: worker?.pid,
+        workerStarted: Boolean(worker),
+        queued: true
+    };
 }
 
 async function deleteOriginalVideoAfterBackgroundClips(videoPathToDelete) {
@@ -228,13 +318,13 @@ async function runBackgroundClipsFromPayload(payloadPath) {
     }
 
     const payload = JSON.parse(fs.readFileSync(payloadPath, 'utf8'));
-    installBackgroundClipLogger(payload.logPath);
-    console.log('🎬 后台自动切片子进程启动');
-    console.log(`   media=${payload.processedMediaPath || payload.originalMediaPath}`);
-    console.log(`   srt=${payload.srtPath}`);
-    console.log(`   roomId=${payload.roomId || 'unknown'}`);
+    const restoreLogger = installBackgroundClipLogger(payload.logPath);
 
     try {
+        console.log('🎬 后台自动切片 worker 开始处理任务');
+        console.log(`   media=${payload.processedMediaPath || payload.originalMediaPath}`);
+        console.log(`   srt=${payload.srtPath}`);
+        console.log(`   roomId=${payload.roomId || 'unknown'}`);
         const context = payload.context || {};
         await generateTopicClipsForMedia(
             payload.originalMediaPath,
@@ -260,19 +350,36 @@ async function runBackgroundClipsFromPayload(payloadPath) {
         } catch (error) {
             console.warn(`⚠️  删除后台切片 payload 失败: ${error.message}`);
         }
+        restoreLogger();
     }
+}
+
+async function runBackgroundClipQueueWorker() {
+    const config = configLoader.getConfig();
+    const queueConfig = getBackgroundClipQueueConfig(config);
+    return backgroundClipQueue.runQueueWorker(
+        queueConfig,
+        async entry => runBackgroundClipsFromPayload(entry.payloadPath),
+        { log: message => console.error(message) }
+    );
 }
 
 module.exports = {
     generateTopicClipsForMedia,
     shouldRunAnyClipper,
     spawnBackgroundClipProcess,
-    runBackgroundClipsFromPayload
+    runBackgroundClipsFromPayload,
+    runBackgroundClipQueueWorker,
+    getBackgroundClipQueueConfig
 };
 
 if (require.main === module) {
     (async () => {
         try {
+            if (process.argv.includes(BACKGROUND_CLIP_QUEUE_WORKER_ARG)) {
+                await runBackgroundClipQueueWorker();
+                return;
+            }
             const payloadIndex = process.argv.indexOf(BACKGROUND_CLIPS_ARG);
             const payloadPath = payloadIndex >= 0 ? process.argv[payloadIndex + 1] : process.argv[2];
             await runBackgroundClipsFromPayload(payloadPath);

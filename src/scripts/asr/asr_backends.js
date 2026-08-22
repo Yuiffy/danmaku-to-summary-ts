@@ -49,7 +49,9 @@ const DEFAULT_RESOURCE_GUARD = {
     eco_qos: true,
     prefer_e_cores: false,
     torch_num_threads: 4,
-    torch_num_interop_threads: 1
+    torch_num_interop_threads: 1,
+    claim_enabled: true,
+    claim_heartbeat_s: 2
 };
 
 const DEFAULT_ADAPTIVE_SPEAKER_CONFIG = {
@@ -556,6 +558,7 @@ function normalizeAsrResult(result, subtitleConfig = {}) {
         segments: normalized,
         raw: result?.raw,
         timings: result?.timings,
+        resource_peaks: result?.resource_peaks || result?.resourcePeaks,
         speaker_processing: result?.speaker_processing || result?.speakerProcessing,
         emotion_analysis: result?.emotion_analysis || result?.emotionAnalysis
     };

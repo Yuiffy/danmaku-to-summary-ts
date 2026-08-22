@@ -1,11 +1,14 @@
 import contextlib
 import csv
 import ctypes
+import atexit
 import os
 import signal
 import struct
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 
 
@@ -16,6 +19,223 @@ def log_progress(message):
 def set_timing(payload, key, seconds):
     timings = payload.setdefault("_timings", {})
     timings[key] = round(float(seconds), 3)
+
+
+def _resource_peak_config(payload):
+    config = payload.get("resource_peak_monitor") if isinstance(payload, dict) else None
+    return config if isinstance(config, dict) else {}
+
+
+def _resource_claim_file(payload=None):
+    config = _resource_guard_config(payload or {})
+    configured = os.environ.get("DANMAKU_RESOURCE_STATE_FILE") or config.get("claim_file")
+    if configured:
+        return os.path.abspath(os.path.expandvars(os.path.expanduser(str(configured))))
+    return os.path.join(tempfile.gettempdir(), "danmaku-to-summary-asr.claim")
+
+
+def _merge_resource_peak(target, key, value):
+    if value is None:
+        return
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return
+    previous = target.get(key)
+    target[key] = round(max(float(previous or 0), number), 2)
+
+
+class AsrResourceClaim:
+    """Publish a short-lived cross-process lease while ASR owns the accelerator."""
+
+    def __init__(self, payload):
+        config = _resource_guard_config(payload)
+        self.enabled = coerce_bool(config.get("claim_enabled"), False)
+        self.claim_file = _resource_claim_file(payload)
+        self.heartbeat_s = max(0.5, float(config.get("claim_heartbeat_s", 2) or 2))
+        self._stop = threading.Event()
+        self._thread = None
+        self._started = False
+        self._closed = False
+        self._token = f"{os.getpid()}:{id(self)}"
+
+    def _write(self):
+        parent = os.path.dirname(self.claim_file)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        temporary = f"{self.claim_file}.{os.getpid()}.tmp"
+        with open(temporary, "w", encoding="utf-8") as handle:
+            handle.write(f"pid={os.getpid()}\ntoken={self._token}\n")
+        os.replace(temporary, self.claim_file)
+
+    def _heartbeat(self):
+        while not self._stop.wait(self.heartbeat_s):
+            try:
+                os.utime(self.claim_file, None)
+            except FileNotFoundError:
+                try:
+                    self._write()
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+    def start(self):
+        if not self.enabled or self._started:
+            return self
+        try:
+            self._write()
+            self._started = True
+            self._thread = threading.Thread(
+                target=self._heartbeat,
+                name="asr-resource-claim",
+                daemon=True,
+            )
+            self._thread.start()
+            atexit.register(self.close)
+        except Exception as exc:
+            log_progress(f"ASR 资源租约创建失败，继续运行: {exc}")
+        return self
+
+    def close(self):
+        if not self._started or self._closed:
+            return
+        self._closed = True
+        self._stop.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=min(1.0, self.heartbeat_s))
+        try:
+            with open(self.claim_file, "r", encoding="utf-8") as handle:
+                content = handle.read()
+            if f"token={self._token}" in content:
+                os.unlink(self.claim_file)
+        except (FileNotFoundError, PermissionError, OSError):
+            pass
+
+
+class ResourcePeakMonitor:
+    """Sample host/process/GPU resources only while a stage is executing."""
+
+    def __init__(self, payload, stage, gpu_throttle=None, sample_interval_s=None):
+        self.payload = payload if isinstance(payload, dict) else None
+        self.stage = str(stage or "stage")
+        self.gpu_throttle = gpu_throttle
+        config = _resource_peak_config(self.payload or {})
+        self.enabled = bool(self.payload is not None) and coerce_bool(
+            config.get("enabled"), True
+        )
+        interval = sample_interval_s
+        if interval is None:
+            interval = config.get("sample_interval_s", 1.0)
+        self.sample_interval_s = max(0.25, float(interval or 1.0))
+        self.stats = {"samples": 0, "elapsed_s": 0.0}
+        self._stop = threading.Event()
+        self._thread = None
+        self._started_at = None
+        self._last_wall = None
+        self._last_process = None
+        self._last_cpu = None
+
+    def _read_cpu(self):
+        if os.name != "nt":
+            return None
+        try:
+            return _windows_cpu_times()
+        except Exception:
+            return None
+
+    def _sample(self, include_gpu=True):
+        now = time.perf_counter()
+        process_now = time.process_time()
+        cpu_now = self._read_cpu()
+        if self._last_wall is not None:
+            wall_delta = max(0.0001, now - self._last_wall)
+            process_delta = max(0.0, process_now - (self._last_process or process_now))
+            core_percent = process_delta / wall_delta * 100.0
+            total_percent = core_percent / max(1, os.cpu_count() or 1)
+            _merge_resource_peak(self.stats, "process_cpu_peak_pct", total_percent)
+            _merge_resource_peak(self.stats, "process_core_peak_pct", core_percent)
+            if cpu_now is not None and self._last_cpu is not None:
+                idle_delta = cpu_now[0] - self._last_cpu[0]
+                total_delta = (cpu_now[1] - self._last_cpu[1]) + (
+                    cpu_now[2] - self._last_cpu[2]
+                )
+                if total_delta > 0:
+                    _merge_resource_peak(
+                        self.stats,
+                        "host_cpu_peak_pct",
+                        max(0.0, min(100.0, (1.0 - idle_delta / total_delta) * 100.0)),
+                    )
+        self._last_wall = now
+        self._last_process = process_now
+        self._last_cpu = cpu_now
+        self.stats["samples"] += 1
+
+        if include_gpu and self.gpu_throttle is not None:
+            sampler = getattr(self.gpu_throttle, "sample_gpu_telemetry", None)
+            if callable(sampler):
+                try:
+                    metrics = sampler()
+                except Exception:
+                    metrics = None
+                if isinstance(metrics, dict):
+                    _merge_resource_peak(self.stats, "gpu_util_peak_pct", metrics.get("gpu_util_pct"))
+                    _merge_resource_peak(self.stats, "gpu_memory_peak_mb", metrics.get("memory_used_mb"))
+                    _merge_resource_peak(self.stats, "gpu_temperature_peak_c", metrics.get("temperature_c"))
+                    _merge_resource_peak(self.stats, "gpu_power_peak_w", metrics.get("power_w"))
+
+    def _run(self):
+        while not self._stop.wait(self.sample_interval_s):
+            self._sample()
+
+    def __enter__(self):
+        if not self.enabled:
+            return self
+        self._started_at = time.perf_counter()
+        self._sample(include_gpu=False)
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"resource-peak-{self.stage[:24]}",
+            daemon=True,
+        )
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if not self.enabled:
+            return False
+        self._stop.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=max(1.0, min(3.0, self.sample_interval_s + 1.0)))
+        # Short stages may finish before the periodic sampler wakes up. Take
+        # one final GPU sample in that case so their peak record is useful,
+        # while avoiding an extra nvidia-smi call for long stages.
+        needs_gpu_sample = (
+            self.gpu_throttle is not None
+            and "gpu_util_peak_pct" not in self.stats
+        )
+        self._sample(include_gpu=needs_gpu_sample)
+        self.stats["elapsed_s"] = round(
+            max(0.0, time.perf_counter() - (self._started_at or time.perf_counter())),
+            3,
+        )
+        peaks = self.payload.setdefault("_resource_peaks", {})
+        existing = peaks.setdefault(self.stage, {"samples": 0, "elapsed_s": 0.0})
+        for key, value in self.stats.items():
+            if key in {"samples", "elapsed_s"}:
+                existing[key] = round(float(existing.get(key, 0) or 0) + float(value or 0), 3)
+            else:
+                _merge_resource_peak(existing, key, value)
+        summary = ", ".join(
+            f"{key}={value:g}" if isinstance(value, (int, float)) else f"{key}={value}"
+            for key, value in existing.items()
+            if key not in {"samples", "elapsed_s"}
+        )
+        log_progress(
+            f"资源峰值 [{self.stage}]: {summary or '未采到系统指标'}, "
+            f"samples={existing.get('samples', 0)}, elapsed={existing.get('elapsed_s', 0):.3f}s"
+        )
+        return False
 
 
 @contextlib.contextmanager
@@ -149,6 +369,13 @@ class AsrResourceGuard:
         self._last_check_at = None
         self._last_game_running = False
         self._failure_warned = False
+        self.resource_claim = AsrResourceClaim(payload)
+
+    def start_claim(self):
+        self.resource_claim.start()
+
+    def close_claim(self):
+        self.resource_claim.close()
 
     @property
     def active(self):
@@ -406,6 +633,7 @@ def prepare_asr_runtime(payload):
     if coerce_bool(resource_config.get("enabled"), False):
         _apply_windows_process_policy(resource_config)
     guard.wait_if_game_active("ASR 模型加载")
+    guard.start_claim()
     configure_torch_runtime(payload)
     return guard
 
@@ -447,6 +675,14 @@ class GpuThrottle:
         self.low_impact_batch_size_s = float(
             self.low_impact.get("batch_size_s", 30) or 30
         )
+        self.low_impact_speaker_batch_size = max(
+            1,
+            int(float(self.low_impact.get("speaker_batch_size", 8) or 8)),
+        )
+        self.low_impact_emotion_batch_size_s = max(
+            1.0,
+            float(self.low_impact.get("emotion_batch_size_s", 30) or 30),
+        )
         yield_value = self.low_impact.get("yield_s")
         if yield_value is None:
             yield_value = 0.25
@@ -487,11 +723,11 @@ class GpuThrottle:
         except ValueError:
             return None
 
-    def _run_nvidia_smi(self, args):
+    def _run_nvidia_smi(self, args, timeout_s=None):
         kwargs = {
             "capture_output": True,
             "text": True,
-            "timeout": self.command_timeout_s,
+            "timeout": timeout_s or self.command_timeout_s,
         }
         if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
             kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
@@ -540,6 +776,42 @@ class GpuThrottle:
             "memory_used_mb": values[1],
             "memory_total_mb": values[2],
         }
+
+    def sample_gpu_telemetry(self):
+        """Return inexpensive whole-device metrics for stage peak logging."""
+        if not self.enabled:
+            return None
+        output = self._run_nvidia_smi(
+            [
+                "--query-gpu=utilization.gpu,memory.used,temperature.gpu,power.draw",
+                "--format=csv,noheader,nounits",
+            ],
+            timeout_s=min(self.command_timeout_s, 2.0),
+        )
+        first_line = next((line.strip() for line in output.splitlines() if line.strip()), "")
+        values = [self._parse_metric(item) for item in first_line.split(",")]
+        if len(values) < 4:
+            return None
+        return {
+            "gpu_util_pct": values[0],
+            "memory_used_mb": values[1],
+            "temperature_c": values[2],
+            "power_w": values[3],
+        }
+
+    def batch_size_for(self, kind, normal_size):
+        """Keep the normal batch when idle; shrink only during soft GPU pressure."""
+        try:
+            normal = float(normal_size)
+        except (TypeError, ValueError):
+            return normal_size
+        if not self.soft_pressure or not self.soft_enabled:
+            return normal_size
+        if str(kind).lower() == "speaker":
+            return max(1, min(int(normal), self.low_impact_speaker_batch_size))
+        if str(kind).lower() == "emotion":
+            return max(1.0, min(normal, self.low_impact_emotion_batch_size_s))
+        return max(1.0, min(normal, self.low_impact_batch_size_s))
 
     @staticmethod
     def _matches_threshold(item, sm_threshold, mem_threshold, fb_threshold_mb):

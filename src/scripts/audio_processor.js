@@ -6,6 +6,8 @@ const configLoader = require('./config-loader');
 const {
     applyFfmpegProcessPriority,
     getFfmpegResourceConfig,
+    startResourcePeakMonitor,
+    waitForAsrAvailability,
     withFfmpegResourceLimits
 } = require('./ffmpeg_resource');
 
@@ -228,12 +230,26 @@ function extractRoomIdFromFilename(filename) {
 }
 
 // 执行ffmpeg命令
-function runFfmpegCommand(args, timeout = 300000) {
+async function runFfmpegCommand(args, timeout = 300000) {
+    const config = configLoader.getConfig();
+    const ffmpegPath = config.audio?.ffmpeg?.path || config.audioProcessing?.ffmpegPath || 'ffmpeg';
+    const resourceConfig = getFfmpegResourceConfig(config);
+    const stage = '音频处理 ffmpeg';
+    const asrState = args.includes('-version')
+        ? { asrActive: false }
+        : await waitForAsrAvailability(stage, resourceConfig);
+    const effectiveResourceConfig = { ...resourceConfig };
+    if (asrState.asrActive && Number(effectiveResourceConfig.threads) > 0) {
+        effectiveResourceConfig.threads = Math.min(
+            Number(effectiveResourceConfig.threads),
+            Math.max(1, Number(effectiveResourceConfig.asrGuard?.overlapThreads) || 1)
+        );
+        console.log(`[resource] ${stage} 与 ASR 重叠，FFmpeg threads=${effectiveResourceConfig.threads}`);
+    }
     return new Promise((resolve, reject) => {
-        const config = configLoader.getConfig();
-        const ffmpegPath = config.audio?.ffmpeg?.path || config.audioProcessing?.ffmpegPath || 'ffmpeg';
-        const resourceConfig = getFfmpegResourceConfig(config);
-        const commandArgs = args.includes('-version') ? [...args] : withFfmpegResourceLimits(args, resourceConfig);
+        const commandArgs = args.includes('-version')
+            ? [...args]
+            : withFfmpegResourceLimits(args, effectiveResourceConfig);
         
         console.log(`🎵 执行ffmpeg命令: ${ffmpegPath} ${commandArgs.join(' ')}`);
         
@@ -241,7 +257,10 @@ function runFfmpegCommand(args, timeout = 300000) {
             stdio: ['ignore', 'pipe', 'pipe'],
             windowsHide: true
         });
-        applyFfmpegProcessPriority(child.pid, resourceConfig.priority);
+        applyFfmpegProcessPriority(child.pid, effectiveResourceConfig.priority);
+        const peakMonitor = startResourcePeakMonitor(stage, {
+            resourceConfig: effectiveResourceConfig
+        });
 
         let stdout = '';
         let stderr = '';
@@ -268,6 +287,7 @@ function runFfmpegCommand(args, timeout = 300000) {
 
         child.on('close', (code) => {
             if (timeoutId) clearTimeout(timeoutId);
+            peakMonitor.stop();
             
             if (code === 0) {
                 console.log('\n✅ ffmpeg命令执行成功');
@@ -281,6 +301,7 @@ function runFfmpegCommand(args, timeout = 300000) {
 
         child.on('error', (err) => {
             if (timeoutId) clearTimeout(timeoutId);
+            peakMonitor.stop();
             reject(err);
         });
     });

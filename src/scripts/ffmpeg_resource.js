@@ -1,8 +1,10 @@
 const { spawn } = require('child_process');
+const fs = require('fs');
 const os = require('os');
 
 const DEFAULT_THREADS = 2;
 const DEFAULT_PRIORITY = 'belowNormal';
+const DEFAULT_ASR_CLAIM_FILE = require('path').join(os.tmpdir(), 'danmaku-to-summary-asr.claim');
 
 const WINDOWS_PRIORITY_CLASSES = {
     idle: 'Idle',
@@ -39,6 +41,25 @@ function getFfmpegResourceConfig(config = {}) {
             maxWaitMs: normalizeNumber(cpuGuard.maxWaitMs, 0, 0),
             consecutiveBusySamples: normalizeNumber(cpuGuard.consecutiveBusySamples, 2, 1),
             consecutiveIdleSamples: normalizeNumber(cpuGuard.consecutiveIdleSamples, 2, 1)
+        },
+        asrGuard: {
+            enabled: normalizeBoolean(
+                process.env.DANMAKU_ASR_GUARD_ENABLED ?? ffmpeg.asrGuard?.enabled,
+                false
+            ),
+            claimFile: String(
+                process.env.DANMAKU_RESOURCE_STATE_FILE
+                || ffmpeg.asrGuard?.claimFile
+                || DEFAULT_ASR_CLAIM_FILE
+            ),
+            staleMs: normalizeNumber(ffmpeg.asrGuard?.staleMs, 15000, 1000),
+            pollMs: normalizeNumber(ffmpeg.asrGuard?.pollMs, 1000, 100),
+            maxWaitMs: normalizeNumber(ffmpeg.asrGuard?.maxWaitMs, 15000, 0),
+            overlapThreads: normalizeThreads(ffmpeg.asrGuard?.overlapThreads, 1)
+        },
+        resourcePeak: {
+            enabled: normalizeBoolean(ffmpeg.resourcePeak?.enabled, true),
+            sampleIntervalMs: normalizeNumber(ffmpeg.resourcePeak?.sampleIntervalMs, 1000, 250)
         }
     };
 }
@@ -141,6 +162,123 @@ async function waitForCpuAvailability(stage, resourceConfig = {}, dependencies =
     }
 }
 
+function isAsrClaimActive(resourceConfig = {}, dependencies = {}) {
+    const guard = resourceConfig.asrGuard || {};
+    if (!guard.enabled) return false;
+    const stat = dependencies.stat || fs.statSync;
+    try {
+        const metadata = stat(guard.claimFile);
+        const ageMs = Date.now() - Number(metadata.mtimeMs || 0);
+        return ageMs >= 0 && ageMs <= normalizeNumber(guard.staleMs, 15000, 1000);
+    } catch {
+        return false;
+    }
+}
+
+async function waitForAsrAvailability(stage, resourceConfig = {}, dependencies = {}) {
+    const guard = resourceConfig.asrGuard || {};
+    if (!guard.enabled) {
+        return { waitedMs: 0, asrActive: false };
+    }
+
+    const sleep = dependencies.sleep || delay;
+    const active = dependencies.isActive || (() => isAsrClaimActive(resourceConfig, dependencies));
+    const pollMs = normalizeNumber(guard.pollMs, 1000, 100);
+    const maxWaitMs = normalizeNumber(guard.maxWaitMs, 15000, 0);
+    const log = dependencies.log || console.log;
+    let waitedMs = 0;
+    let announced = false;
+
+    while (active()) {
+        if (!announced) {
+            announced = true;
+            log(`[resource] ASR 正在使用资源，延后 ${stage} 启动`);
+        }
+        if (maxWaitMs > 0 && waitedMs >= maxWaitMs) {
+            log(`[resource] ASR 租约等待达到上限，继续 ${stage}: ${(waitedMs / 1000).toFixed(1)}s`);
+            break;
+        }
+        const currentWaitMs = maxWaitMs > 0
+            ? Math.min(pollMs, maxWaitMs - waitedMs)
+            : pollMs;
+        await sleep(currentWaitMs);
+        waitedMs += currentWaitMs;
+    }
+
+    const asrActive = Boolean(active());
+    if (announced && !asrActive) {
+        log(`[resource] ASR 租约已释放，继续 ${stage}: 已等待 ${(waitedMs / 1000).toFixed(1)}s`);
+    }
+    return { waitedMs, asrActive };
+}
+
+function startResourcePeakMonitor(stage, options = {}) {
+    const resourceConfig = options.resourceConfig || {};
+    const peakConfig = resourceConfig.resourcePeak || {};
+    if (peakConfig.enabled === false) {
+        return { stop: () => null };
+    }
+
+    const intervalMs = normalizeNumber(peakConfig.sampleIntervalMs, 1000, 250);
+    const cpuCount = Math.max(1, os.cpus().length || 1);
+    let lastSnapshot = readCpuSnapshot();
+    let lastUsage = process.cpuUsage();
+    let lastAt = process.hrtime.bigint();
+    let hostPeak = null;
+    let nodePeak = null;
+    let nodeCorePeak = null;
+    let samples = 0;
+    let stopped = false;
+
+    const sample = () => {
+        if (stopped) return;
+        const currentSnapshot = readCpuSnapshot();
+        const idleDelta = currentSnapshot.idle - lastSnapshot.idle;
+        const totalDelta = currentSnapshot.total - lastSnapshot.total;
+        if (totalDelta > 0) {
+            const hostPercent = Math.max(0, Math.min(100, (1 - idleDelta / totalDelta) * 100));
+            hostPeak = hostPeak === null ? hostPercent : Math.max(hostPeak, hostPercent);
+        }
+        lastSnapshot = currentSnapshot;
+
+        const currentAt = process.hrtime.bigint();
+        const elapsedMs = Math.max(0.1, Number(currentAt - lastAt) / 1e6);
+        const usage = process.cpuUsage(lastUsage);
+        const nodeCorePercent = ((usage.user + usage.system) / 1000) / elapsedMs * 100;
+        const nodePercent = nodeCorePercent / cpuCount;
+        nodeCorePeak = nodeCorePeak === null ? nodeCorePercent : Math.max(nodeCorePeak, nodeCorePercent);
+        nodePeak = nodePeak === null ? nodePercent : Math.max(nodePeak, nodePercent);
+        lastUsage = process.cpuUsage();
+        lastAt = currentAt;
+        samples += 1;
+    };
+
+    const timer = setInterval(sample, intervalMs);
+    if (typeof timer.unref === 'function') timer.unref();
+    return {
+        stop: () => {
+            if (stopped) return null;
+            clearInterval(timer);
+            sample();
+            stopped = true;
+            const result = {
+                stage: String(stage || 'ffmpeg'),
+                hostCpuPeakPct: hostPeak === null ? null : Number(hostPeak.toFixed(2)),
+                nodeCpuPeakPct: nodePeak === null ? null : Number(nodePeak.toFixed(2)),
+                nodeCorePeakPct: nodeCorePeak === null ? null : Number(nodeCorePeak.toFixed(2)),
+                samples
+            };
+            const parts = [
+                `host_cpu_peak=${result.hostCpuPeakPct === null ? 'n/a' : `${result.hostCpuPeakPct}%`}`,
+                `node_cpu_peak=${result.nodeCpuPeakPct === null ? 'n/a' : `${result.nodeCpuPeakPct}%`}`,
+                `node_core_peak=${result.nodeCorePeakPct === null ? 'n/a' : `${result.nodeCorePeakPct}%`}`
+            ];
+            (options.log || console.log)(`[resource] 峰值 ${result.stage}: ${parts.join(', ')}, samples=${samples}`);
+            return result;
+        }
+    };
+}
+
 function withFfmpegResourceLimits(args, resourceConfig = {}) {
     const threads = normalizeThreads(resourceConfig.threads, DEFAULT_THREADS);
     if (threads <= 0 || args.includes('-threads')) {
@@ -177,9 +315,13 @@ function applyFfmpegProcessPriority(pid, priority = DEFAULT_PRIORITY) {
 }
 
 module.exports = {
+    DEFAULT_ASR_CLAIM_FILE,
     getFfmpegResourceConfig,
     withFfmpegResourceLimits,
     applyFfmpegProcessPriority,
     sampleCpuPercent,
-    waitForCpuAvailability
+    waitForCpuAvailability,
+    isAsrClaimActive,
+    waitForAsrAvailability,
+    startResourcePeakMonitor
 };

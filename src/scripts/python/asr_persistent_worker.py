@@ -57,22 +57,22 @@ def release_cache(runtime_cache):
 
 def transcribe(payload, runtime_cache):
     resource_guard = prepare_asr_runtime(payload)
-    audio_path = payload.get("audio_path")
-    if not audio_path or not os.path.exists(audio_path):
-        raise FileNotFoundError(audio_path or "未提供 audio_path")
-
-    backend_name = normalize_backend_name(payload.get("backend") or "paraformer")
-    if backend_name != "paraformer":
-        raise ValueError(f"常驻 worker 仅支持 paraformer，收到: {backend_name}")
-
-    device = payload.get("device", "cuda")
-    if device == "cuda":
-        import torch
-        if not torch.cuda.is_available():
-            raise RuntimeError("配置 device=cuda，但 torch.cuda.is_available() 为 False")
-
-    throttle = GpuThrottle(payload, device)
     try:
+        audio_path = payload.get("audio_path")
+        if not audio_path or not os.path.exists(audio_path):
+            raise FileNotFoundError(audio_path or "未提供 audio_path")
+
+        backend_name = normalize_backend_name(payload.get("backend") or "paraformer")
+        if backend_name != "paraformer":
+            raise ValueError(f"常驻 worker 仅支持 paraformer，收到: {backend_name}")
+
+        device = payload.get("device", "cuda")
+        if device == "cuda":
+            import torch
+            if not torch.cuda.is_available():
+                raise RuntimeError("配置 device=cuda，但 torch.cuda.is_available() 为 False")
+
+        throttle = GpuThrottle(payload, device)
         raw_result = transcribe_paraformer_builtin(
             payload,
             audio_path,
@@ -80,23 +80,29 @@ def transcribe(payload, runtime_cache):
             throttle,
             runtime_cache=runtime_cache,
         )
+        output = {
+            "backend": backend_name,
+            "language": payload.get("language", "auto"),
+            "segments": raw_result,
+            "timings": payload.get("_timings", {}),
+            "resource_peaks": payload.get("_resource_peaks", {}),
+            "speaker_processing": payload.get("_speaker_processing"),
+            "emotion_analysis": payload.get("_emotion_analysis"),
+        }
+        hotword_config = payload.get("phoneme_correction")
+        if isinstance(hotword_config, dict) and coerce_bool(hotword_config.get("enabled"), False):
+            _apply_hotword_correction(output, payload)
+        return output
     finally:
-        # If a game starts during a request, the next request must not inherit
-        # the resident CUDA models while the game is still running.
-        if resource_guard.game_running(force=True):
-            release_cache(runtime_cache)
-    output = {
-        "backend": backend_name,
-        "language": payload.get("language", "auto"),
-        "segments": raw_result,
-        "timings": payload.get("_timings", {}),
-        "speaker_processing": payload.get("_speaker_processing"),
-        "emotion_analysis": payload.get("_emotion_analysis"),
-    }
-    hotword_config = payload.get("phoneme_correction")
-    if isinstance(hotword_config, dict) and coerce_bool(hotword_config.get("enabled"), False):
-        _apply_hotword_correction(output, payload)
-    return output
+        try:
+            # If a game starts during a request, the next request must not inherit
+            # the resident CUDA models while the game is still running.
+            if resource_guard.game_running(force=True):
+                release_cache(runtime_cache)
+        finally:
+            # The persistent worker stays alive after request errors, so every
+            # request must release its cross-process resource lease.
+            resource_guard.close_claim()
 
 
 def main():

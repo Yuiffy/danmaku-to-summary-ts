@@ -161,6 +161,27 @@ pm2 save                         # 保存当前进程列表
 
 > 当前 PM2 进程入口为 `dist/app/main.js`，生产端口由 `config/production.json` 的 `webhook.port` 决定（当前 `12523`）。更多说明见 [docs/runtime-notes.md](docs/runtime-notes.md)。
 
+### GPU TDR 证据监控
+
+为尽快保留 NVIDIA 驱动超时、黑屏或 OBS 设备重置时的现场证据，单独启动 GPU TDR 捕获进程：
+
+```bash
+npm run gpu:tdr:start
+npm run gpu:tdr:status
+npm run gpu:tdr:logs
+```
+
+它只读取 Windows 事件日志、`C:\Windows\LiveKernelReports\WATCHDOG`、WER 报告目录和 OBS 日志目录。发现 `nvlddmkm` 153、显示驱动 TDR、LiveKernel/WATCHDOG 相关事件或新转储时，会按约 90 秒合并同一次事故，并保存到 `D:\diagnostics\gpu-tdr`。转储复制会等待文件稳定并重试；平时不会运行 WinDbg，也不会修改显卡、TDR、游戏或 OBS 设置。
+
+停止或重启它不会影响其他 PM2 服务：
+
+```bash
+npm run gpu:tdr:stop
+npm run gpu:tdr:restart
+```
+
+如果 D 盘不可用，可通过 PM2 环境变量 `GPU_TDR_CAPTURE_DIR` 改到其他诊断盘。
+
 ### 开发模式（直接运行）
 
 ```powershell

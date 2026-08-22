@@ -2,7 +2,7 @@ import os
 import re
 import sys
 
-from sensevoice_runtime import log_progress, suppress_model_output
+from sensevoice_runtime import ResourcePeakMonitor, log_progress, suppress_model_output
 
 
 TAG_RE = re.compile(r"<\|[^|]+?\|>")
@@ -542,11 +542,16 @@ def load_punc_model(AutoModel, payload, device, gpu_throttle=None):
         log_progress(f"加载标点模型: {punc_model_name}")
         if gpu_throttle:
             gpu_throttle.wait_if_busy("标点模型加载")
-        return AutoModel(
-            model=punc_model_name,
-            device="cuda:0" if device == "cuda" else device,
-            disable_update=True,
-        )
+        with ResourcePeakMonitor(
+            payload,
+            "标点模型加载 (CUDA)" if device == "cuda" else "标点模型加载 (CPU)",
+            gpu_throttle=gpu_throttle if device == "cuda" else None,
+        ):
+            return AutoModel(
+                model=punc_model_name,
+                device="cuda:0" if device == "cuda" else device,
+                disable_update=True,
+            )
     except Exception as exc:
         if not PUNC_MODEL_WARNED:
             print(

@@ -4,7 +4,13 @@ import * as fs from 'fs';
 import { getLogger } from '../../core/logging/LogManager';
 import { IVideoScreenshotService } from './IVideoScreenshotService';
 import { ProcessingAlertService } from '../monitoring/ProcessingAlertService';
-import { applyFfmpegProcessPriority, getFfmpegResourceConfig, withFfmpegResourceLimits } from '../../utils/ffmpegResource';
+import {
+  applyFfmpegProcessPriority,
+  getFfmpegResourceConfig,
+  startFfmpegResourcePeakMonitor,
+  waitForAsrAvailability,
+  withFfmpegResourceLimits
+} from '../../utils/ffmpegResource';
 
 export class VideoScreenshotService implements IVideoScreenshotService {
   private logger = getLogger('VideoScreenshotService');
@@ -126,11 +132,29 @@ export class VideoScreenshotService implements IVideoScreenshotService {
   }
 
   private async runFFmpeg(args: string[]): Promise<void> {
+    const resourceConfig = getFfmpegResourceConfig();
+    const asrState = await waitForAsrAvailability(
+      '视频截图 ffmpeg',
+      resourceConfig,
+      message => this.logger.info(message)
+    );
+    const effectiveResourceConfig = { ...resourceConfig };
+    if (asrState.asrActive && Number(effectiveResourceConfig.threads) > 0) {
+      effectiveResourceConfig.threads = Math.min(
+        Number(effectiveResourceConfig.threads),
+        Math.max(1, Number(effectiveResourceConfig.asrGuard?.overlapThreads) || 1)
+      );
+      this.logger.info(`视频截图 ffmpeg 与 ASR 重叠，threads=${effectiveResourceConfig.threads}`);
+    }
     return new Promise((resolve, reject) => {
-      const resourceConfig = getFfmpegResourceConfig();
-      const limitedArgs = withFfmpegResourceLimits(args, resourceConfig);
+      const limitedArgs = withFfmpegResourceLimits(args, effectiveResourceConfig);
       const ffmpeg = spawn('ffmpeg', limitedArgs, { windowsHide: true });
-      applyFfmpegProcessPriority(ffmpeg.pid, resourceConfig.priority);
+      applyFfmpegProcessPriority(ffmpeg.pid, effectiveResourceConfig.priority);
+      const peakMonitor = startFfmpegResourcePeakMonitor(
+        '视频截图 ffmpeg',
+        effectiveResourceConfig,
+        message => this.logger.info(message)
+      );
 
       let errorMsg = '';
       ffmpeg.stderr?.on('data', (data: Buffer) => {
@@ -138,6 +162,7 @@ export class VideoScreenshotService implements IVideoScreenshotService {
       });
 
       ffmpeg.on('close', (code: number | null) => {
+        peakMonitor.stop();
         if (code === 0) {
           resolve();
         } else {
@@ -151,6 +176,7 @@ export class VideoScreenshotService implements IVideoScreenshotService {
       });
 
       ffmpeg.on('error', (error) => {
+        peakMonitor.stop();
         this.logger.error('ffmpeg进程错误', { error: error.message });
         reject(error);
       });

@@ -240,6 +240,13 @@ const ConfigSchema = Joi.object({
         outputDirName: Joi.string().default('topic_clips'),
         archiveSourceRoot: Joi.string().allow('').default(''),
         activeOutputRoot: Joi.string().allow('').default(''),
+        backgroundQueue: Joi.object({
+            enabled: Joi.boolean().default(true),
+            directory: Joi.string().allow('').default(''),
+            pollMs: Joi.number().integer().min(100).default(500),
+            idleGraceMs: Joi.number().integer().min(0).default(1000),
+            staleLockMs: Joi.number().integer().min(1000).default(60000)
+        }).default(),
         tags: Joi.array().items(Joi.string()).optional(),
         extraTags: Joi.array().items(Joi.string()).default([]),
         autoUpload: Joi.object({

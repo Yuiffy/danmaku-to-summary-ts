@@ -8,7 +8,13 @@ import { spawn } from 'child_process';
 import { getLogger } from '../../core/logging/LogManager';
 import { LiveSegment } from './LiveSessionManager';
 import { ProcessingAlertService } from '../monitoring/ProcessingAlertService';
-import { applyFfmpegProcessPriority, getFfmpegResourceConfig, withFfmpegResourceLimits } from '../../utils/ffmpegResource';
+import {
+  applyFfmpegProcessPriority,
+  getFfmpegResourceConfig,
+  startFfmpegResourcePeakMonitor,
+  waitForAsrAvailability,
+  withFfmpegResourceLimits
+} from '../../utils/ffmpegResource';
 
 export interface MergeVideoOptions {
   fillGaps?: boolean;
@@ -589,13 +595,31 @@ export class FileMerger {
    * 运行ffmpeg命令
    */
   private async runFfmpeg(args: string[], operationLabel?: string): Promise<void> {
+    const label = operationLabel || 'ffmpeg任务';
+    const resourceConfig = getFfmpegResourceConfig();
+    const asrState = await waitForAsrAvailability(
+      label,
+      resourceConfig,
+      message => this.logger.info(message)
+    );
+    const effectiveResourceConfig = { ...resourceConfig };
+    if (asrState.asrActive && Number(effectiveResourceConfig.threads) > 0) {
+      effectiveResourceConfig.threads = Math.min(
+        Number(effectiveResourceConfig.threads),
+        Math.max(1, Number(effectiveResourceConfig.asrGuard?.overlapThreads) || 1)
+      );
+      this.logger.info(`文件合并 ffmpeg 与 ASR 重叠，threads=${effectiveResourceConfig.threads}`);
+    }
     return new Promise((resolve, reject) => {
-      const label = operationLabel || 'ffmpeg任务';
       const startedAt = Date.now();
-      const resourceConfig = getFfmpegResourceConfig();
-      const limitedArgs = withFfmpegResourceLimits(args, resourceConfig);
+      const limitedArgs = withFfmpegResourceLimits(args, effectiveResourceConfig);
       const ffmpeg = spawn('ffmpeg', limitedArgs, { windowsHide: true });
-      applyFfmpegProcessPriority(ffmpeg.pid, resourceConfig.priority);
+      applyFfmpegProcessPriority(ffmpeg.pid, effectiveResourceConfig.priority);
+      const peakMonitor = startFfmpegResourcePeakMonitor(
+        label,
+        effectiveResourceConfig,
+        message => this.logger.info(message)
+      );
 
       let stderrOutput = '';
       let lastProgressLogAt = 0;
@@ -630,6 +654,7 @@ export class FileMerger {
 
       ffmpeg.on('close', (code: number | null) => {
         clearInterval(heartbeatTimer);
+        peakMonitor.stop();
         if (code === 0) {
           const elapsedSec = Math.floor((Date.now() - startedAt) / 1000);
           this.logger.info(`ffmpeg执行成功: ${label} (耗时 ${elapsedSec}s)`);
@@ -647,6 +672,7 @@ export class FileMerger {
 
       ffmpeg.on('error', (error) => {
         clearInterval(heartbeatTimer);
+        peakMonitor.stop();
         this.logger.error(`ffmpeg进程错误`, { error: error.message });
         reject(error);
       });

@@ -40,6 +40,18 @@ export interface FFmpegConfig {
   timeout: number;
   threads?: number;
   priority?: 'idle' | 'belowNormal' | 'normal' | 'aboveNormal' | 'high' | string;
+  asrGuard?: {
+    enabled?: boolean;
+    claimFile?: string;
+    staleMs?: number;
+    pollMs?: number;
+    maxWaitMs?: number;
+    overlapThreads?: number;
+  };
+  resourcePeak?: {
+    enabled?: boolean;
+    sampleIntervalMs?: number;
+  };
 }
 
 // 音频存储配置
@@ -166,6 +178,7 @@ export interface AsrPythonRuntimeConfig {
   python_path_map?: Array<{ from: string; to: string }> | Record<string, string>;
   resource_guard?: AsrResourceGuardConfig;
   cpu_throttle?: boolean | AsrCpuThrottleConfig;
+  resource_peak_monitor?: AsrResourcePeakMonitorConfig;
 }
 
 export interface AsrCpuThrottleConfig {
@@ -196,6 +209,9 @@ export interface AsrResourceGuardConfig {
   e_core_efficiency_class?: number | null;
   torch_num_threads?: number;
   torch_num_interop_threads?: number;
+  claim_enabled?: boolean;
+  claim_file?: string;
+  claim_heartbeat_s?: number;
   soft_gpu?: AsrGpuSoftPressureConfig;
   low_impact?: AsrGpuLowImpactConfig;
 }
@@ -211,9 +227,16 @@ export interface AsrGpuSoftPressureConfig {
 
 export interface AsrGpuLowImpactConfig {
   batch_size_s?: number;
+  speaker_batch_size?: number;
+  emotion_batch_size_s?: number;
   yield_s?: number;
   model_load_max_wait_s?: number;
   model_load_poll_s?: number;
+}
+
+export interface AsrResourcePeakMonitorConfig {
+  enabled?: boolean;
+  sample_interval_s?: number;
 }
 
 export interface AsrGpuThrottleConfig {
@@ -604,6 +627,13 @@ export interface ClipTopicsConfig {
   outputDirName: string;
   archiveSourceRoot?: string;
   activeOutputRoot?: string;
+  backgroundQueue?: {
+    enabled?: boolean;
+    directory?: string;
+    pollMs?: number;
+    idleGraceMs?: number;
+    staleLockMs?: number;
+  };
   tags?: string[];
   extraTags: string[];
   autoUpload: {

@@ -5,6 +5,13 @@
 
 const path = require('path');
 
+const gpuTdrEnv = {
+  NODE_ENV: 'production',
+  GPU_TDR_CAPTURE_DIR: 'D:\\diagnostics\\gpu-tdr',
+  GPU_TDR_EVENT_POLL_MS: '5000',
+  GPU_TDR_DUMP_POLL_MS: '1500'
+};
+
 module.exports = {
   apps: [
     {
@@ -120,6 +127,26 @@ module.exports = {
       time: false,
       min_uptime: '10s',
       restart_delay: 10000
+    },
+    {
+      name: 'gpu-tdr-capture',
+      script: 'scripts/gpu_tdr_capture.js',
+      cwd: __dirname,
+      instances: 1,
+      exec_mode: 'fork',
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '256M',
+      env: gpuTdrEnv,
+      env_production: gpuTdrEnv,
+      log_date_format: '',
+      error_file: path.join(__dirname, 'logs', 'gpu-tdr-capture-error.log'),
+      out_file: path.join(__dirname, 'logs', 'gpu-tdr-capture-out.log'),
+      log_file: path.join(__dirname, 'logs', 'gpu-tdr-capture-combined.log'),
+      time: false,
+      min_uptime: '10s',
+      restart_delay: 5000,
+      kill_timeout: 10000
     }
   ],
 

@@ -5,7 +5,13 @@ import { promisify } from 'util';
 import { getLogger } from '../../core/logging/LogManager';
 import { ConfigProvider } from '../../core/config/ConfigProvider';
 import { AppError, TimeoutError } from '../../core/errors/AppError';
-import { applyFfmpegProcessPriority, getFfmpegResourceConfig, withFfmpegResourceLimits } from '../../utils/ffmpegResource';
+import {
+  applyFfmpegProcessPriority,
+  getFfmpegResourceConfig,
+  startFfmpegResourcePeakMonitor,
+  waitForAsrAvailability,
+  withFfmpegResourceLimits
+} from '../../utils/ffmpegResource';
 import {
   IAudioProcessor,
   AudioProcessingConfig,
@@ -121,7 +127,22 @@ export class AudioProcessor implements IAudioProcessor {
     const ffmpegPath = this.config.ffmpegPath || 'ffmpeg';
     const timeoutMs = timeout || this.config.timeouts.ffmpegTimeout;
     const resourceConfig = getFfmpegResourceConfig();
-    const commandArgs = args.includes('-version') ? [...args] : withFfmpegResourceLimits(args, resourceConfig);
+    const asrState = args.includes('-version')
+      ? { asrActive: false }
+      : await waitForAsrAvailability(
+        'AudioProcessor ffmpeg',
+        resourceConfig,
+        message => this.logger.info(message)
+      );
+    const effectiveResourceConfig = { ...resourceConfig };
+    if (asrState.asrActive && Number(effectiveResourceConfig.threads) > 0) {
+      effectiveResourceConfig.threads = Math.min(
+        Number(effectiveResourceConfig.threads),
+        Math.max(1, Number(effectiveResourceConfig.asrGuard?.overlapThreads) || 1)
+      );
+      this.logger.info(`AudioProcessor ffmpeg 与 ASR 重叠，threads=${effectiveResourceConfig.threads}`);
+    }
+    const commandArgs = args.includes('-version') ? [...args] : withFfmpegResourceLimits(args, effectiveResourceConfig);
     
     this.logger.info('执行FFmpeg命令', { 
       command: `${ffmpegPath} ${commandArgs.join(' ')}`,
@@ -133,7 +154,12 @@ export class AudioProcessor implements IAudioProcessor {
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true
       });
-      applyFfmpegProcessPriority(child.pid, resourceConfig.priority);
+      applyFfmpegProcessPriority(child.pid, effectiveResourceConfig.priority);
+      const peakMonitor = startFfmpegResourcePeakMonitor(
+        'AudioProcessor ffmpeg',
+        effectiveResourceConfig,
+        message => this.logger.info(message)
+      );
 
       let stdout = '';
       let stderr = '';
@@ -168,6 +194,7 @@ export class AudioProcessor implements IAudioProcessor {
       // 处理命令完成
       child.on('close', (code) => {
         if (timeoutId) clearTimeout(timeoutId);
+        peakMonitor.stop();
         
         if (code === 0) {
           this.logger.info('FFmpeg命令执行成功');
@@ -190,6 +217,7 @@ export class AudioProcessor implements IAudioProcessor {
       // 处理命令错误
       child.on('error', (err) => {
         if (timeoutId) clearTimeout(timeoutId);
+        peakMonitor.stop();
         this.logger.error('FFmpeg命令执行错误', { error: err.message });
         reject(new AppError(
           `FFmpeg命令执行错误: ${err.message}`,

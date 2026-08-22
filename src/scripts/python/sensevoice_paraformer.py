@@ -6,7 +6,14 @@ import time
 import traceback
 import unicodedata
 
-from sensevoice_runtime import CpuThrottle, StageTimeout, log_progress, set_timing, suppress_model_output
+from sensevoice_runtime import (
+    CpuThrottle,
+    ResourcePeakMonitor,
+    StageTimeout,
+    log_progress,
+    set_timing,
+    suppress_model_output,
+)
 from sensevoice_emotion import analyze_paraformer_emotions
 from sensevoice_speaker import (
     build_speaker_reference_centroids,
@@ -392,9 +399,16 @@ def normalize_model_results_with_meta(results, meta, punc_model):
     return timed_segments
 
 
-def install_paraformer_timing_probe(model, gpu_throttle=None, cpu_throttle=None):
+def install_paraformer_timing_probe(
+    model,
+    gpu_throttle=None,
+    cpu_throttle=None,
+    payload=None,
+):
     model._danmaku_gpu_throttle = gpu_throttle
     model._danmaku_cpu_throttle = cpu_throttle
+    if isinstance(payload, dict):
+        model._danmaku_resource_payload = payload
     if getattr(model, "_danmaku_timing_probe_installed", False):
         return
 
@@ -436,12 +450,17 @@ def install_paraformer_timing_probe(model, gpu_throttle=None, cpu_throttle=None)
         log_progress(f"开始 {stage_instance}，资源等待={waited:.1f}s")
         started = time.perf_counter()
         try:
-            result = original_inference(*args, **kwargs)
-            if stage == "vad_s":
-                model._danmaku_vad_intervals = (
-                    extract_vad_speaker_intervals(result)
-                )
-            return result
+            with ResourcePeakMonitor(
+                getattr(model, "_danmaku_resource_payload", None),
+                stage_label,
+                gpu_throttle=throttle if stage != "vad_s" else None,
+            ):
+                result = original_inference(*args, **kwargs)
+                if stage == "vad_s":
+                    model._danmaku_vad_intervals = (
+                        extract_vad_speaker_intervals(result)
+                    )
+                return result
         finally:
             collector = getattr(model, "_danmaku_timing_collector", None)
             if isinstance(collector, dict):
@@ -531,6 +550,7 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
 
     backend_started = time.perf_counter()
     payload["_timings"] = {}
+    payload["_resource_peaks"] = {}
     cpu_throttle = CpuThrottle(payload)
 
     device_name = "cuda:0" if device == "cuda" else device
@@ -632,17 +652,27 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
                 spk_model_obj = cache.get("speaker_model")
                 if spk_model_obj is None:
                     speaker_load_started = time.perf_counter()
-                    spk_model_obj = AutoModel(
-                        model=resolve_cached_model_name(spk_model),
-                        device=device_name,
-                        disable_update=True,
-                    )
+                    with ResourcePeakMonitor(
+                        payload,
+                        "说话人模型加载 (CUDA)" if device == "cuda" else "说话人模型加载 (CPU)",
+                        gpu_throttle=gpu_throttle if device == "cuda" else None,
+                    ):
+                        spk_model_obj = AutoModel(
+                            model=resolve_cached_model_name(spk_model),
+                            device=device_name,
+                            disable_update=True,
+                        )
                     cache["speaker_model"] = spk_model_obj
                     set_timing(payload, "speaker_model_load_s", time.perf_counter() - speaker_load_started)
                 else:
                     set_timing(payload, "speaker_model_load_s", 0)
-            with StageTimeout(payload.get("model_load_timeout_s", 180), "paraformer pipeline 加载"):
-                model = AutoModel(**model_kwargs)
+            with ResourcePeakMonitor(
+                payload,
+                "paraformer pipeline 模型加载",
+                gpu_throttle=gpu_throttle,
+            ):
+                with StageTimeout(payload.get("model_load_timeout_s", 180), "paraformer pipeline 加载"):
+                    model = AutoModel(**model_kwargs)
             set_timing(payload, "model_load_s", time.perf_counter() - model_load_started)
             log_progress(f"paraformer pipeline 加载完成: {payload['_timings']['model_load_s']:.3f}s")
         except Exception as exc:
@@ -658,11 +688,16 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
     if enable_speaker and spk_model and spk_model_obj is None:
         try:
             speaker_load_started = time.perf_counter()
-            spk_model_obj = AutoModel(
-                model=resolve_cached_model_name(spk_model),
-                device=device_name,
-                disable_update=True,
-            )
+            with ResourcePeakMonitor(
+                payload,
+                "说话人模型加载 (CUDA)" if device == "cuda" else "说话人模型加载 (CPU)",
+                gpu_throttle=gpu_throttle if device == "cuda" else None,
+            ):
+                spk_model_obj = AutoModel(
+                    model=resolve_cached_model_name(spk_model),
+                    device=device_name,
+                    disable_update=True,
+                )
             cache["speaker_model"] = spk_model_obj
             set_timing(payload, "speaker_model_load_s", time.perf_counter() - speaker_load_started)
         except Exception as exc:
@@ -676,6 +711,7 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
             model,
             gpu_throttle=gpu_throttle,
             cpu_throttle=cpu_throttle,
+            payload=payload,
         )
     except Exception as exc:
         _fail(fail_fn, "paraformer pipeline 设备配置失败", f"{exc}\n{traceback.format_exc()}")
@@ -843,6 +879,8 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
                         )
                         or 2
                     ),
+                    gpu_throttle=gpu_throttle,
+                    payload=payload,
                 )
                 set_timing(payload, "reference_embedding_s", time.perf_counter() - reference_started)
                 return centroids
@@ -855,6 +893,7 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
                 boundary_intervals=speaker_boundary_intervals,
                 payload=speaker_payload,
                 references=load_references if speaker_references else None,
+                gpu_throttle=gpu_throttle,
             )
             speaker_timeline = smooth_speaker_timeline(
                 adaptive.get("timeline", []),

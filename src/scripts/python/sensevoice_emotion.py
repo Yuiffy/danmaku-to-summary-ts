@@ -2,7 +2,12 @@ import gc
 import json
 import time
 
-from sensevoice_runtime import StageTimeout, log_progress, suppress_model_output
+from sensevoice_runtime import (
+    ResourcePeakMonitor,
+    StageTimeout,
+    log_progress,
+    suppress_model_output,
+)
 from sensevoice_speaker import load_audio_16k_mono
 from sensevoice_text import extract_sensevoice_metadata, resolve_cached_model_name
 
@@ -222,25 +227,49 @@ def analyze_paraformer_emotions(
 
         if gpu_throttle:
             gpu_throttle.wait_if_busy("SenseVoice 情感模型加载")
-        with StageTimeout(config.get("model_load_timeout_s", 180), "SenseVoice 情感模型加载"):
-            model, cache_hit, resolved_model, model_load_s = _load_emotion_model(
-                config,
-                emotion_device,
-                runtime_cache,
-                auto_model_cls,
-            )
+        with ResourcePeakMonitor(
+            payload,
+            "SenseVoice 情感模型加载",
+            gpu_throttle=gpu_throttle,
+        ):
+            with StageTimeout(config.get("model_load_timeout_s", 180), "SenseVoice 情感模型加载"):
+                model, cache_hit, resolved_model, model_load_s = _load_emotion_model(
+                    config,
+                    emotion_device,
+                    runtime_cache,
+                    auto_model_cls,
+                )
         analysis["resolvedModel"] = resolved_model
         analysis["modelCacheHit"] = cache_hit
         analysis["timings"]["model_load_s"] = model_load_s
 
-        batches = build_duration_batches(
+        configured_batch_size_s = float(config.get("batch_size_s", 300) or 300)
+        max_batch_chunks = config.get("max_batch_chunks", 64)
+        planned_batches = build_duration_batches(
             chunks,
-            max_batch_duration_s=config.get("batch_size_s", 300),
-            max_batch_chunks=config.get("max_batch_chunks", 64),
+            max_batch_duration_s=configured_batch_size_s,
+            max_batch_chunks=max_batch_chunks,
         )
         inference_started = time.perf_counter()
         timeline = []
-        for batch_index, batch in enumerate(batches):
+        remaining_chunks = list(chunks)
+        batch_index = 0
+        while remaining_chunks:
+            if gpu_throttle:
+                gpu_throttle.wait_if_busy("SenseVoice 情感批次规划")
+            choose_batch = getattr(gpu_throttle, "batch_size_for", None) if gpu_throttle else None
+            effective_batch_size_s = (
+                choose_batch("emotion", configured_batch_size_s)
+                if callable(choose_batch)
+                else configured_batch_size_s
+            )
+            current_batches = build_duration_batches(
+                remaining_chunks,
+                max_batch_duration_s=effective_batch_size_s,
+                max_batch_chunks=max_batch_chunks,
+            )
+            batch = current_batches[0]
+            remaining_chunks = remaining_chunks[len(batch):]
             audio_batch = []
             valid_batch = []
             for chunk in batch:
@@ -251,18 +280,24 @@ def analyze_paraformer_emotions(
                 audio_batch.append(audio_data[start_index:end_index])
                 valid_batch.append(chunk)
             if not audio_batch:
+                batch_index += 1
                 continue
             if gpu_throttle:
                 gpu_throttle.wait_if_busy("SenseVoice 情感批量推理")
             timeout_s = float(config.get("batch_timeout_s", 180) or 180)
-            with StageTimeout(timeout_s, "SenseVoice 情感批量推理"):
-                with suppress_model_output():
-                    results = model.generate(
-                        input=audio_batch,
-                        language=config.get("language", "auto"),
-                        use_itn=False,
-                        batch_size_s=int(float(config.get("batch_size_s", 300) or 300)),
-                    )
+            with ResourcePeakMonitor(
+                payload,
+                "SenseVoice 情感批量推理",
+                gpu_throttle=gpu_throttle,
+            ):
+                with StageTimeout(timeout_s, "SenseVoice 情感批量推理"):
+                    with suppress_model_output():
+                        results = model.generate(
+                            input=audio_batch,
+                            language=config.get("language", "auto"),
+                            use_itn=False,
+                            batch_size_s=max(1, int(float(effective_batch_size_s))),
+                        )
             for result_index, chunk in enumerate(valid_batch):
                 item = _result_item(results, result_index)
                 raw_text = item.get("text") or item.get("sentence") or ""
@@ -280,9 +315,10 @@ def analyze_paraformer_emotions(
                     timeline_item["events"] = metadata["events"]
                 timeline.append(timeline_item)
             log_progress(
-                f"SenseVoice 情感进度: {batch_index + 1}/{len(batches)} "
+                f"SenseVoice 情感进度: {batch_index + 1}/~{len(planned_batches)} "
                 f"(chunks={len(valid_batch)})"
             )
+            batch_index += 1
 
         inference_s = time.perf_counter() - inference_started
         analysis["timeline"] = timeline

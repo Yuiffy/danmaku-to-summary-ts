@@ -7,7 +7,13 @@ from sensevoice_paraformer import (
     paraformer_timestamp_to_sentences,
     pick_batched_result,
 )
-from sensevoice_runtime import StageTimeout, log_progress, set_timing, suppress_model_output
+from sensevoice_runtime import (
+    ResourcePeakMonitor,
+    StageTimeout,
+    log_progress,
+    set_timing,
+    suppress_model_output,
+)
 from sensevoice_speaker import (
     build_speaker_reference_centroids,
     dominant_speaker_for_interval,
@@ -85,6 +91,7 @@ def import_vllm_pipeline(fail_fn=None):
 def transcribe_with_vllm_pipeline(payload, audio_path, device, gpu_throttle=None, fail_fn=None):
     backend_started = time.perf_counter()
     payload["_timings"] = {}
+    payload["_resource_peaks"] = {}
     if device == "cuda":
         try:
             import torch
@@ -112,47 +119,62 @@ def transcribe_with_vllm_pipeline(payload, audio_path, device, gpu_throttle=None
     try:
         if gpu_throttle:
             gpu_throttle.wait_if_busy("Fun-ASR-Nano vLLM pipeline 加载")
-        with StageTimeout(payload.get("model_load_timeout_s", 600), "Fun-ASR-Nano vLLM pipeline 加载"):
-            model = FunASRNanoVLLMPipeline(
-                model=resolved_model,
-                vad_model=resolved_vad_model,
-                vad_kwargs=payload.get("vad_kwargs") or None,
-                spk_model=None,
-                spk_kwargs=None,
-                hub=payload.get("hub", "ms"),
-                device=device_name,
-                dtype=payload.get("dtype", "bf16"),
-                tensor_parallel_size=int(payload.get("tensor_parallel_size", 1) or 1),
-                gpu_memory_utilization=float(payload.get("gpu_memory_utilization", 0.8) or 0.8),
-                max_model_len=int(payload.get("max_model_len", 4096) or 4096),
-                enforce_eager=bool(payload.get("enforce_eager", False)),
-            )
+        with ResourcePeakMonitor(
+            payload,
+            "Fun-ASR-Nano vLLM 模型加载",
+            gpu_throttle=gpu_throttle,
+        ):
+            with StageTimeout(payload.get("model_load_timeout_s", 600), "Fun-ASR-Nano vLLM pipeline 加载"):
+                model = FunASRNanoVLLMPipeline(
+                    model=resolved_model,
+                    vad_model=resolved_vad_model,
+                    vad_kwargs=payload.get("vad_kwargs") or None,
+                    spk_model=None,
+                    spk_kwargs=None,
+                    hub=payload.get("hub", "ms"),
+                    device=device_name,
+                    dtype=payload.get("dtype", "bf16"),
+                    tensor_parallel_size=int(payload.get("tensor_parallel_size", 1) or 1),
+                    gpu_memory_utilization=float(payload.get("gpu_memory_utilization", 0.8) or 0.8),
+                    max_model_len=int(payload.get("max_model_len", 4096) or 4096),
+                    enforce_eager=bool(payload.get("enforce_eager", False)),
+                )
         log_progress("Fun-ASR-Nano vLLM pipeline 加载完成，开始转写")
         if gpu_throttle:
             gpu_throttle.wait_if_busy("Fun-ASR-Nano vLLM 转写")
-        with StageTimeout(payload.get("asr_timeout_s", payload.get("process_timeout_s", 3600)), "Fun-ASR-Nano vLLM 转写"):
-            with suppress_model_output():
-                results = model.generate(
-                    audio_path,
-                    hotwords=hotwords,
-                    language=payload.get("language", "中文"),
-                    itn=bool(payload.get("use_itn", True)),
-                    max_new_tokens=int(payload.get("max_new_tokens", 512) or 512),
-                    batch_size_s=int(float(payload.get("batch_size_s", 300) or 300)),
-                    return_spk_res=False,
-                    preset_spk_num=None,
-                )
+        with ResourcePeakMonitor(
+            payload,
+            "Fun-ASR-Nano vLLM 转写",
+            gpu_throttle=gpu_throttle,
+        ):
+            with StageTimeout(payload.get("asr_timeout_s", payload.get("process_timeout_s", 3600)), "Fun-ASR-Nano vLLM 转写"):
+                with suppress_model_output():
+                    results = model.generate(
+                        audio_path,
+                        hotwords=hotwords,
+                        language=payload.get("language", "中文"),
+                        itn=bool(payload.get("use_itn", True)),
+                        max_new_tokens=int(payload.get("max_new_tokens", 512) or 512),
+                        batch_size_s=int(float(payload.get("batch_size_s", 300) or 300)),
+                        return_spk_res=False,
+                        preset_spk_num=None,
+                    )
         normalized = normalize_segments(results)
         if payload.get("enable_speaker"):
             try:
                 from funasr import AutoModel
 
                 speaker_load_started = time.perf_counter()
-                spk_model_obj = AutoModel(
-                    model=resolve_cached_model_name(payload.get("spk_model")),
-                    device=device_name,
-                    disable_update=True,
-                )
+                with ResourcePeakMonitor(
+                    payload,
+                    "说话人模型加载 (CUDA)" if device == "cuda" else "说话人模型加载 (CPU)",
+                    gpu_throttle=gpu_throttle if device == "cuda" else None,
+                ):
+                    spk_model_obj = AutoModel(
+                        model=resolve_cached_model_name(payload.get("spk_model")),
+                        device=device_name,
+                        disable_update=True,
+                    )
                 set_timing(payload, "speaker_model_load_s", time.perf_counter() - speaker_load_started)
                 audio, sample_rate = load_audio_16k_mono(audio_path)
                 intervals = [
@@ -187,6 +209,8 @@ def transcribe_with_vllm_pipeline(payload, audio_path, device, gpu_throttle=None
                             )
                             or 2
                         ),
+                        gpu_throttle=gpu_throttle,
+                        payload=payload,
                     )
 
                 adaptive = run_adaptive_speaker_engine(
@@ -196,6 +220,7 @@ def transcribe_with_vllm_pipeline(payload, audio_path, device, gpu_throttle=None
                     intervals,
                     payload=payload,
                     references=load_references if payload.get("speaker_references") else None,
+                    gpu_throttle=gpu_throttle,
                 )
                 timeline = adaptive.get("timeline", [])
                 for item in normalized:
@@ -245,6 +270,7 @@ def transcribe_with_vllm_pipeline(payload, audio_path, device, gpu_throttle=None
 def transcribe_segmented_backend(payload, audio_path, device, backend_name, AutoModel, gpu_throttle=None, fail_fn=None):
     backend_started = time.perf_counter()
     payload["_timings"] = {}
+    payload["_resource_peaks"] = {}
     enable_speaker = bool(payload.get("enable_speaker", False))
     payload["_speaker_processing"] = {
         "mode": "disabled" if not enable_speaker else str(payload.get("speaker_detection_mode") or "auto"),
@@ -290,8 +316,13 @@ def transcribe_segmented_backend(payload, audio_path, device, backend_name, Auto
         if gpu_throttle:
             gpu_throttle.wait_if_busy("主模型加载")
         model_started = time.perf_counter()
-        with StageTimeout(payload.get("model_load_timeout_s", 180), "主模型加载"):
-            model = AutoModel(**model_kwargs)
+        with ResourcePeakMonitor(
+            payload,
+            f"{backend_name} 主模型加载",
+            gpu_throttle=gpu_throttle,
+        ):
+            with StageTimeout(payload.get("model_load_timeout_s", 180), "主模型加载"):
+                model = AutoModel(**model_kwargs)
         set_timing(payload, "model_load_s", time.perf_counter() - model_started)
         log_progress("主模型加载完成")
     except Exception as exc:
@@ -310,19 +341,29 @@ def transcribe_segmented_backend(payload, audio_path, device, backend_name, Auto
         log_progress(f"加载 VAD 模型: {vad_model_name}")
         if gpu_throttle:
             gpu_throttle.wait_if_busy("VAD 模型加载")
-        with StageTimeout(payload.get("model_load_timeout_s", 180), "VAD 模型加载"):
-            vad_model = AutoModel(
-                model=vad_model_name,
-                device="cuda:0" if device == "cuda" else device,
-                disable_update=True,
-            )
+        with ResourcePeakMonitor(
+            payload,
+            "VAD 模型加载 (CUDA)" if device == "cuda" else "VAD 模型加载 (CPU)",
+            gpu_throttle=gpu_throttle if device == "cuda" else None,
+        ):
+            with StageTimeout(payload.get("model_load_timeout_s", 180), "VAD 模型加载"):
+                vad_model = AutoModel(
+                    model=vad_model_name,
+                    device="cuda:0" if device == "cuda" else device,
+                    disable_update=True,
+                )
         log_progress("VAD 模型加载完成，开始 VAD")
         if gpu_throttle:
             gpu_throttle.wait_if_busy("VAD 处理")
         vad_started = time.perf_counter()
-        with StageTimeout(payload.get("vad_timeout_s", 180), "VAD 处理"):
-            with suppress_model_output():
-                vad_result = vad_model.generate(input=audio_path)
+        with ResourcePeakMonitor(
+            payload,
+            "VAD (CUDA)" if device == "cuda" else "VAD (CPU)",
+            gpu_throttle=gpu_throttle if device == "cuda" else None,
+        ):
+            with StageTimeout(payload.get("vad_timeout_s", 180), "VAD 处理"):
+                with suppress_model_output():
+                    vad_result = vad_model.generate(input=audio_path)
         set_timing(payload, "vad_s", time.perf_counter() - vad_started)
         vad_segments = vad_result[0].get("value") if vad_result and isinstance(vad_result, list) else []
         log_progress(f"VAD 完成: segments={len(vad_segments)}")
@@ -372,12 +413,17 @@ def transcribe_segmented_backend(payload, audio_path, device, backend_name, Auto
                 if gpu_throttle:
                     gpu_throttle.wait_if_busy("说话人模型加载")
                 speaker_load_started = time.perf_counter()
-                with StageTimeout(payload.get("model_load_timeout_s", 180), "说话人模型加载"):
-                    spk_model_obj = AutoModel(
-                        model=resolved_spk_model,
-                        device="cuda:0" if device == "cuda" else device,
-                        disable_update=True,
-                    )
+                with ResourcePeakMonitor(
+                    payload,
+                    "说话人模型加载 (CUDA)" if device == "cuda" else "说话人模型加载 (CPU)",
+                    gpu_throttle=gpu_throttle if device == "cuda" else None,
+                ):
+                    with StageTimeout(payload.get("model_load_timeout_s", 180), "说话人模型加载"):
+                        spk_model_obj = AutoModel(
+                            model=resolved_spk_model,
+                            device="cuda:0" if device == "cuda" else device,
+                            disable_update=True,
+                        )
                 set_timing(payload, "speaker_model_load_s", time.perf_counter() - speaker_load_started)
             except Exception as exc:
                 log_progress(f"说话人模型加载失败，保留 ASR 结果: {exc}")
@@ -425,29 +471,34 @@ def transcribe_segmented_backend(payload, audio_path, device, backend_name, Auto
                     "batch_timeout_s",
                     payload.get("segment_timeout_s", 90) * len(batch_audio),
                 )
-                with StageTimeout(batch_timeout_s, "paraformer batch 转写"):
-                    with suppress_model_output():
-                        batch_results = generate_with_optional_hotword(
-                            model,
-                            payload,
-                            backend_name,
-                            input=batch_audio,
-                            language=payload.get("language", "auto"),
-                            use_itn=bool(payload.get("use_itn", True)),
-                            batch_size_s=batch_size_s,
+                with ResourcePeakMonitor(
+                    payload,
+                    f"{backend_name} batch + 标点 (CUDA)" if device == "cuda" else f"{backend_name} batch + 标点 (CPU)",
+                    gpu_throttle=gpu_throttle if device == "cuda" else None,
+                ):
+                    with StageTimeout(batch_timeout_s, "paraformer batch 转写"):
+                        with suppress_model_output():
+                            batch_results = generate_with_optional_hotword(
+                                model,
+                                payload,
+                                backend_name,
+                                input=batch_audio,
+                                language=payload.get("language", "auto"),
+                                use_itn=bool(payload.get("use_itn", True)),
+                                batch_size_s=batch_size_s,
+                            )
+                    for index, meta in enumerate(batch_meta):
+                        results = pick_batched_result(batch_results, index)
+                        normalized_items = paraformer_timestamp_to_sentences(
+                            results,
+                            meta,
+                            punc_model_obj,
+                            max_subtitle_chars=int(payload.get("max_subtitle_chars", 18) or 18),
                         )
-                for index, meta in enumerate(batch_meta):
-                    results = pick_batched_result(batch_results, index)
-                    normalized_items = paraformer_timestamp_to_sentences(
-                        results,
-                        meta,
-                        punc_model_obj,
-                        max_subtitle_chars=int(payload.get("max_subtitle_chars", 18) or 18),
-                    )
-                    for item in normalized_items:
-                        if is_meaningless_asr_text(item.get("text", "")):
-                            item["speaker"] = None
-                    raw_result.extend(normalized_items)
+                        for item in normalized_items:
+                            if is_meaningless_asr_text(item.get("text", "")):
+                                item["speaker"] = None
+                        raw_result.extend(normalized_items)
                 batch_audio = []
                 batch_meta = []
                 batch_duration = 0.0
@@ -464,26 +515,31 @@ def transcribe_segmented_backend(payload, audio_path, device, backend_name, Auto
                     log_progress(f"转写进度: {pct:.1f}% ({transcribed_segments}/{total_segments})")
                 if gpu_throttle:
                     gpu_throttle.wait_if_busy("单段转写")
-                with StageTimeout(payload.get("segment_timeout_s", 90), "单段转写"):
-                    with suppress_model_output():
-                        results = generate_with_optional_hotword(
-                            model,
-                            payload,
-                            backend_name,
-                            input=chunk,
-                            language=payload.get("language", "auto"),
-                            use_itn=bool(payload.get("use_itn", True)),
-                            batch_size_s=batch_size_s,
+                with ResourcePeakMonitor(
+                    payload,
+                    f"{backend_name} 单段 + 标点 (CUDA)" if device == "cuda" else f"{backend_name} 单段 + 标点 (CPU)",
+                    gpu_throttle=gpu_throttle if device == "cuda" else None,
+                ):
+                    with StageTimeout(payload.get("segment_timeout_s", 90), "单段转写"):
+                        with suppress_model_output():
+                            results = generate_with_optional_hotword(
+                                model,
+                                payload,
+                                backend_name,
+                                input=chunk,
+                                language=payload.get("language", "auto"),
+                                use_itn=bool(payload.get("use_itn", True)),
+                                batch_size_s=batch_size_s,
+                            )
+                    if backend_name == "paraformer":
+                        normalized_items = paraformer_timestamp_to_sentences(
+                            results,
+                            meta,
+                            punc_model_obj,
+                            max_subtitle_chars=int(payload.get("max_subtitle_chars", 18) or 18),
                         )
-                if backend_name == "paraformer":
-                    normalized_items = paraformer_timestamp_to_sentences(
-                        results,
-                        meta,
-                        punc_model_obj,
-                        max_subtitle_chars=int(payload.get("max_subtitle_chars", 18) or 18),
-                    )
-                else:
-                    normalized_items = normalize_model_results_with_meta(results, meta, punc_model_obj)
+                    else:
+                        normalized_items = normalize_model_results_with_meta(results, meta, punc_model_obj)
                 for item in normalized_items:
                     if is_meaningless_asr_text(item.get("text", "")):
                         item["speaker"] = None
@@ -543,6 +599,8 @@ def transcribe_segmented_backend(payload, audio_path, device, backend_name, Auto
                             )
                             or 2
                         ),
+                        gpu_throttle=gpu_throttle,
+                        payload=payload,
                     )
                     set_timing(payload, "reference_embedding_s", time.perf_counter() - reference_started)
                     return centroids
@@ -574,6 +632,7 @@ def transcribe_segmented_backend(payload, audio_path, device, backend_name, Auto
                     ),
                     payload=speaker_payload,
                     references=load_references if payload.get("speaker_references") else None,
+                    gpu_throttle=gpu_throttle,
                 )
                 speaker_timeline = smooth_speaker_timeline(
                     adaptive.get("timeline", []),

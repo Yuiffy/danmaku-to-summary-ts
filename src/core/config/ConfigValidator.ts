@@ -129,6 +129,17 @@ export class ConfigValidator {
           timeout: 300000,
           threads: 2,
           priority: 'belowNormal',
+          asrGuard: {
+            enabled: true,
+            staleMs: 15000,
+            pollMs: 1000,
+            maxWaitMs: 15000,
+            overlapThreads: 1,
+          },
+          resourcePeak: {
+            enabled: true,
+            sampleIntervalMs: 1000,
+          },
         },
         storage: {
           keepOriginalVideo: false,
@@ -361,6 +372,8 @@ export class ConfigValidator {
             prefer_e_cores: false,
             torch_num_threads: 4,
             torch_num_interop_threads: 1,
+            claim_enabled: true,
+            claim_heartbeat_s: 2,
           },
           gpu_throttle: {
             enabled: true,
@@ -372,6 +385,12 @@ export class ConfigValidator {
             max_wait_s: 0,
             pmon_sample_count: 2,
             segment_paraformer: true,
+            low_impact: {
+              batch_size_s: 30,
+              speaker_batch_size: 8,
+              emotion_batch_size_s: 30,
+              yield_s: 0.2,
+            },
           },
           cpu_throttle: {
             enabled: false,
@@ -479,6 +498,13 @@ export class ConfigValidator {
         burnSubtitles: true,
         ffmpegTimeoutMs: 600000,
         outputDirName: 'topic_clips',
+        backgroundQueue: {
+          enabled: true,
+          directory: '',
+          pollMs: 500,
+          idleGraceMs: 1000,
+          staleLockMs: 60000,
+        },
         extraTags: [],
         autoUpload: {
           enabled: false,

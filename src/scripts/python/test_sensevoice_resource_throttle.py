@@ -7,7 +7,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(__file__))
 
 from sensevoice_paraformer import install_paraformer_timing_probe
-from sensevoice_runtime import AsrResourceGuard, CpuThrottle, GpuThrottle
+from sensevoice_runtime import AsrResourceGuard, CpuThrottle, GpuThrottle, ResourcePeakMonitor
 
 
 class RecordingThrottle:
@@ -146,6 +146,28 @@ class AsrResourceGuardTests(unittest.TestCase):
 
 
 class GpuThrottleTests(unittest.TestCase):
+    def test_soft_pressure_shrinks_only_speaker_and_emotion_batches(self):
+        payload = {
+            "gpu_throttle": {
+                "enabled": True,
+                "soft_gpu": {"enabled": True},
+                "low_impact": {
+                    "batch_size_s": 30,
+                    "speaker_batch_size": 8,
+                    "emotion_batch_size_s": 24,
+                },
+            }
+        }
+        throttle = GpuThrottle(payload, "cuda", sleep_fn=lambda _seconds: None)
+
+        self.assertEqual(throttle.batch_size_for("speaker", 64), 64)
+        self.assertEqual(throttle.batch_size_for("emotion", 300), 300)
+
+        throttle.soft_pressure = True
+        self.assertEqual(throttle.batch_size_for("speaker", 64), 8)
+        self.assertEqual(throttle.batch_size_for("emotion", 300), 24)
+        self.assertEqual(throttle.batch_size_for("paraformer", 180), 30)
+
     def test_returns_the_observed_wait_duration(self):
         throttle = GpuThrottle(
             {
@@ -297,6 +319,36 @@ class GpuThrottleTests(unittest.TestCase):
         self.assertEqual(waited, 2)
         self.assertEqual(sleeps, [1, 1])
         self.assertTrue(throttle.soft_pressure)
+
+
+class ResourcePeakMonitorTests(unittest.TestCase):
+    def test_short_stage_takes_a_final_gpu_sample(self):
+        payload = {
+            "resource_peak_monitor": {
+                "enabled": True,
+                "sample_interval_s": 10,
+            }
+        }
+
+        class FakeGpuThrottle:
+            def __init__(self):
+                self.calls = 0
+
+            def sample_gpu_telemetry(self):
+                self.calls += 1
+                return {
+                    "gpu_util_pct": 91,
+                    "memory_used_mb": 4096,
+                    "temperature_c": 52,
+                    "power_w": 44,
+                }
+
+        throttle = FakeGpuThrottle()
+        with ResourcePeakMonitor(payload, "短阶段", gpu_throttle=throttle):
+            pass
+
+        self.assertEqual(throttle.calls, 1)
+        self.assertEqual(payload["_resource_peaks"]["短阶段"]["gpu_util_peak_pct"], 91)
 
 
 if __name__ == "__main__":

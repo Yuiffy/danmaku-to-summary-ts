@@ -10,6 +10,8 @@ const { resolveClipOutputRoot } = require('./clip_output_path');
 const {
     applyFfmpegProcessPriority,
     getFfmpegResourceConfig,
+    startResourcePeakMonitor,
+    waitForAsrAvailability,
     waitForCpuAvailability,
     withFfmpegResourceLimits
 } = require('./ffmpeg_resource');
@@ -1485,16 +1487,30 @@ async function runFfmpeg(args, options = {}) {
         ...(options.resourceConfig || getFfmpegResourceConfig(configLoader.getConfig())),
         ...(Number.isFinite(Number(options.threads)) ? { threads: Number(options.threads) } : {})
     };
-    await waitForCpuAvailability(options.stage || '话题切片 ffmpeg', resourceConfig);
+    const stage = options.stage || '话题切片 ffmpeg';
+    const asrState = await waitForAsrAvailability(stage, resourceConfig);
+    const effectiveResourceConfig = { ...resourceConfig };
+    if (asrState.asrActive && Number(effectiveResourceConfig.threads) > 0) {
+        const overlapThreads = Math.max(1, Number(effectiveResourceConfig.asrGuard?.overlapThreads) || 1);
+        effectiveResourceConfig.threads = Math.min(
+            Number(effectiveResourceConfig.threads),
+            overlapThreads
+        );
+        console.log(`[resource] ${stage} 与 ASR 重叠，FFmpeg threads=${effectiveResourceConfig.threads}`);
+    }
+    await waitForCpuAvailability(stage, effectiveResourceConfig);
     return new Promise((resolve, reject) => {
         const ffmpegPath = options.ffmpegPath || 'ffmpeg';
-        const commandArgs = withFfmpegResourceLimits(args, resourceConfig);
+        const commandArgs = withFfmpegResourceLimits(args, effectiveResourceConfig);
         const timeoutMs = Math.max(1, Number(options.timeoutMs) || DEFAULT_CLIP_TOPICS_CONFIG.ffmpegTimeoutMs);
         const child = spawn(ffmpegPath, commandArgs, {
             stdio: ['ignore', 'ignore', 'pipe'],
             windowsHide: true
         });
-        applyFfmpegProcessPriority(child.pid, resourceConfig.priority);
+        applyFfmpegProcessPriority(child.pid, effectiveResourceConfig.priority);
+        const peakMonitor = startResourcePeakMonitor(stage, {
+            resourceConfig: effectiveResourceConfig
+        });
         let stderr = '';
         let timedOut = false;
         let settled = false;
@@ -1502,6 +1518,7 @@ async function runFfmpeg(args, options = {}) {
             if (settled) return;
             settled = true;
             clearTimeout(timeoutId);
+            peakMonitor.stop();
             callback();
         };
         const timeoutId = setTimeout(() => {
@@ -1679,7 +1696,12 @@ async function generateClipCover(videoPath, title, outputDir, info = {}) {
         : videoPath;
     const resourceConfig = info.resourceConfig || getFfmpegResourceConfig(configLoader.getConfig());
     const timeoutMs = Math.max(1, Number(info.timeoutMs) || DEFAULT_CLIP_TOPICS_CONFIG.ffmpegTimeoutMs);
-    await waitForCpuAvailability('话题切片封面生成', resourceConfig);
+    const coverStage = '话题切片封面生成';
+    const asrState = await waitForAsrAvailability(coverStage, resourceConfig);
+    if (asrState.asrActive) {
+        console.log(`[resource] ${coverStage} 与 ASR 重叠，继续使用低优先级封面任务`);
+    }
+    await waitForCpuAvailability(coverStage, resourceConfig);
 
     return new Promise((resolve, reject) => {
         const args = ['python', scriptPath, coverSourcePath,
@@ -1710,6 +1732,9 @@ async function generateClipCover(videoPath, title, outputDir, info = {}) {
             windowsHide: true,
         });
         applyFfmpegProcessPriority(child.pid, resourceConfig.priority);
+        const peakMonitor = startResourcePeakMonitor(coverStage, {
+            resourceConfig
+        });
 
         let stderr = '';
         let timedOut = false;
@@ -1718,6 +1743,7 @@ async function generateClipCover(videoPath, title, outputDir, info = {}) {
             if (settled) return;
             settled = true;
             clearTimeout(timeoutId);
+            peakMonitor.stop();
             callback();
         };
         const timeoutId = setTimeout(() => {

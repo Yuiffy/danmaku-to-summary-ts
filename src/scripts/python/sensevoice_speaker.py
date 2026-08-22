@@ -3,7 +3,7 @@ import os
 import sys
 import time
 
-from sensevoice_runtime import log_progress, suppress_model_output
+from sensevoice_runtime import ResourcePeakMonitor, log_progress, suppress_model_output
 
 
 def load_audio_16k_mono(audio_path):
@@ -88,34 +88,60 @@ def _split_speaker_embedding_rows(embedding):
         return [embedding]
 
 
-def _generate_speaker_embeddings(spk_model_obj, chunks, batch_size=64):
-    """Extract one embedding row per clip with one FunASR generate call."""
+def _generate_speaker_embeddings(
+    spk_model_obj,
+    chunks,
+    batch_size=64,
+    gpu_throttle=None,
+    payload=None,
+    stage="说话人嵌入 (CUDA)",
+):
+    """Extract one embedding row per clip, shrinking batches only under pressure."""
     if not chunks:
         return []
 
     import torch
 
-    with suppress_model_output():
-        results = spk_model_obj.generate(
-            input=chunks,
-            cache={},
-            is_final=True,
-            batch_size=max(1, int(batch_size or 64)),
-        )
-    if not isinstance(results, list):
-        results = [results]
-
     embeddings = []
-    for result in results:
-        embedding = result.get("spk_embedding") if isinstance(result, dict) else None
-        rows = _split_speaker_embedding_rows(embedding)
-        if not rows:
-            embeddings.append(None)
-            continue
-        for row in rows:
-            embeddings.append(
-                row if row is not None and torch.isfinite(row).all() else None
-            )
+    requested_batch_size = max(1, int(batch_size or 64))
+    offset = 0
+    while offset < len(chunks):
+        if gpu_throttle:
+            gpu_throttle.wait_if_busy(stage)
+        choose_batch = getattr(gpu_throttle, "batch_size_for", None) if gpu_throttle else None
+        effective_batch_size = (
+            choose_batch("speaker", requested_batch_size)
+            if callable(choose_batch)
+            else requested_batch_size
+        )
+        effective_batch_size = max(1, int(effective_batch_size or requested_batch_size))
+        current_chunks = chunks[offset:offset + effective_batch_size]
+        with ResourcePeakMonitor(
+            payload,
+            stage,
+            gpu_throttle=gpu_throttle,
+        ):
+            with suppress_model_output():
+                results = spk_model_obj.generate(
+                    input=current_chunks,
+                    cache={},
+                    is_final=True,
+                    batch_size=effective_batch_size,
+                )
+        if not isinstance(results, list):
+            results = [results]
+
+        for result in results:
+            embedding = result.get("spk_embedding") if isinstance(result, dict) else None
+            rows = _split_speaker_embedding_rows(embedding)
+            if not rows:
+                embeddings.append(None)
+                continue
+            for row in rows:
+                embeddings.append(
+                    row if row is not None and torch.isfinite(row).all() else None
+                )
+        offset += len(current_chunks)
     if len(embeddings) < len(chunks):
         embeddings.extend([None] * (len(chunks) - len(embeddings)))
     return embeddings[:len(chunks)]
@@ -192,6 +218,8 @@ def build_speaker_reference_centroids(
     prototype_merge_threshold=0.72,
     max_prototypes=6,
     prototype_min_support_chunks=2,
+    gpu_throttle=None,
+    payload=None,
 ):
     if not isinstance(references, list) or not references:
         return None
@@ -247,6 +275,9 @@ def build_speaker_reference_centroids(
         spk_model_obj,
         batched_chunks,
         batch_size=batch_size,
+        gpu_throttle=gpu_throttle,
+        payload=payload,
+        stage="说话人参考嵌入 (CUDA)",
     )
     for (speaker, state), embedding in zip(chunk_identities, embeddings):
         if embedding is not None:
@@ -1132,6 +1163,7 @@ def run_adaptive_speaker_engine(
     payload=None,
     references=None,
     clusterer=None,
+    gpu_throttle=None,
 ):
     """Run adaptive speaker clustering and return timeline plus processing metadata."""
     payload = payload if isinstance(payload, dict) else {}
@@ -1252,6 +1284,9 @@ def run_adaptive_speaker_engine(
                 spk_model_obj,
                 [candidate["chunk"] for candidate in probe_candidates],
                 batch_size=int(payload.get("speaker_embedding_batch_size", 64) or 64),
+                gpu_throttle=gpu_throttle,
+                payload=payload,
+                stage="说话人探测嵌入 (CUDA)",
             )
             timings["probe_embedding_s"] = time.perf_counter() - stage_started
             valid_probe = [
@@ -1371,6 +1406,9 @@ def run_adaptive_speaker_engine(
             spk_model_obj,
             [candidate["chunk"] for candidate in remaining_candidates],
             batch_size=int(payload.get("speaker_embedding_batch_size", 64) or 64),
+            gpu_throttle=gpu_throttle,
+            payload=payload,
+            stage="说话人完整嵌入 (CUDA)",
         )
         timings["full_embedding_s"] = time.perf_counter() - stage_started
         embedding_by_index = dict(probe_by_index)

@@ -97,6 +97,17 @@
         "maxWaitMs": 0,
         "consecutiveBusySamples": 2,
         "consecutiveIdleSamples": 2
+      },
+      "asrGuard": {
+        "enabled": true,
+        "staleMs": 15000,
+        "pollMs": 1000,
+        "maxWaitMs": 15000,
+        "overlapThreads": 1
+      },
+      "resourcePeak": {
+        "enabled": true,
+        "sampleIntervalMs": 1000
       }
     },
     "storage": {
@@ -1583,6 +1594,12 @@
     "mergeGapSeconds": 45,
     "burnSubtitles": true,
     "ffmpegTimeoutMs": 600000,
+    "backgroundQueue": {
+      "enabled": true,
+      "pollMs": 500,
+      "idleGraceMs": 1000,
+      "staleLockMs": 60000
+    },
     "subtitleFontSizeRatio": 0.094,
     "subtitlePortraitFontSizeRatio": 0.044,
     "subtitleMinFontSize": 30,
@@ -2455,7 +2472,9 @@
         "eco_qos": true,
         "prefer_e_cores": true,
         "torch_num_threads": 4,
-        "torch_num_interop_threads": 1
+        "torch_num_interop_threads": 1,
+        "claim_enabled": true,
+        "claim_heartbeat_s": 2
       },
       "gpu_throttle": {
         "enabled": true,
@@ -2478,6 +2497,8 @@
         },
         "low_impact": {
           "batch_size_s": 30,
+          "speaker_batch_size": 8,
+          "emotion_batch_size_s": 30,
           "yield_s": 0.2,
           "model_load_max_wait_s": 3,
           "model_load_poll_s": 1
