@@ -26,6 +26,22 @@ DEFAULT_RATE_LIMIT_RETRIES = 5
 DEFAULT_JOB_TIMEOUT_SECONDS = 45 * 60
 DEFAULT_RETRY_DELAY_SECONDS = 10 * 60
 MAX_AUTOMATIC_JOB_RETRIES = 8
+TERMINAL_UPLOAD_ERROR_MARKERS = (
+    "视频文件不存在",
+    "文件不存在:",
+    "no such file or directory",
+    "review.md not found",
+    "cannot read review",
+    "cannot read review.md",
+    "no clips found in review",
+    "review.md 中未找到切片",
+    "invalid_video",
+    "video validation failed",
+    "no video stream",
+    "video too short",
+    "无法创建封面",
+    "no_cover",
+)
 LOCK_OWNER_TOKEN: Optional[str] = None
 INTERNAL_REVIEW_LABEL_RE = re.compile(r"^\[(?:模型全量|模型分块|弹幕热度|本地规则)\]\s*")
 
@@ -318,6 +334,7 @@ def sync_clip_statuses(registry: Dict[str, Any], ids: Iterable[int]) -> None:
             continue
         clip["status"] = status.pop("status")
         clip["uploadState"] = status
+        clip.pop("failureReason", None)
         clip["updatedAt"] = now_iso()
 
 
@@ -393,6 +410,7 @@ def enqueue(args: argparse.Namespace) -> int:
         clip = registry["clips"][str(clip_id)]
         if clip.get("status") != "uploaded":
             clip["status"] = "queued"
+            clip.pop("failureReason", None)
             clip["updatedAt"] = now_iso()
     save_json(QUEUE_PATH, queue)
     save_json(REGISTRY_PATH, registry)
@@ -403,10 +421,17 @@ def enqueue(args: argparse.Namespace) -> int:
 def queue_status(args: argparse.Namespace) -> int:
     queue = load_json(QUEUE_PATH, default_queue())
     for job in queue.get("jobs", []):
+        details = []
+        if job.get("attempts") is not None:
+            details.append(f"attempts={job.get('attempts')}")
+        if job.get("retryAt"):
+            details.append(f"retryAt={job.get('retryAt')}")
         print(
             f"{job.get('id')} {job.get('status')} ids={','.join(str(i) for i in job.get('clipIds', []))} "
-            f"updated={job.get('updatedAt')}"
+            f"updated={job.get('updatedAt')} {' '.join(details)}".rstrip()
         )
+        if job.get("error"):
+            print(f"  error: {str(job['error'])[:1000]}")
         if args.verbose and job.get("lastOutput"):
             print(str(job["lastOutput"])[-2000:])
     return 0
@@ -449,6 +474,7 @@ def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.Co
         only = ",".join(str(int(clip["reviewIndex"])) for clip in review_clips)
         cmd = [
             sys.executable,
+            "-u",
             str(PROJECT_ROOT / "src" / "scripts" / "batch_upload.py"),
             "--review",
             first["reviewPath"],
@@ -505,6 +531,7 @@ def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.Co
             source_desc = clip.get("source", "")
             cmd2 = [
                 sys.executable,
+                "-u",
                 str(PROJECT_ROOT / "src" / "scripts" / "bilibili_upload.py"),
                 media,
                 "--title", title,
@@ -602,6 +629,106 @@ def mark_job(job: Dict[str, Any], status: str, **extra: Any) -> None:
     job["status"] = status
     job["updatedAt"] = now_iso()
     job.update(extra)
+
+
+def clip_status_map(registry: Dict[str, Any], ids: Iterable[int]) -> Dict[int, str]:
+    return {
+        int(clip_id): registry["clips"][str(clip_id)].get("status", "review")
+        for clip_id in ids
+        if str(clip_id) in registry.get("clips", {})
+    }
+
+
+def set_unfinished_clip_statuses(
+    registry: Dict[str, Any],
+    ids: Iterable[int],
+    status: str,
+    reason: str = "",
+) -> None:
+    """Keep registry state honest while a job waits or reaches a terminal error."""
+    for clip_id in ids:
+        clip = registry.get("clips", {}).get(str(clip_id))
+        if not clip or clip.get("status") == "uploaded":
+            continue
+        clip["status"] = status
+        if reason:
+            clip["failureReason"] = reason
+        else:
+            clip.pop("failureReason", None)
+        clip["updatedAt"] = now_iso()
+
+
+def has_terminal_upload_error(output: str) -> bool:
+    return bool(terminal_upload_error_reason(output))
+
+
+def terminal_upload_error_reason(output: str) -> str:
+    """Return a reason for an error that cannot succeed by retrying unchanged.
+
+    Do not match the batch summary's ``文件缺失: 0`` line.  Only a positive
+    count or a per-clip error should make a job terminal.
+    """
+    text = str(output or "")
+    lowered = text.lower()
+    for marker in TERMINAL_UPLOAD_ERROR_MARKERS:
+        if marker.lower() in lowered:
+            return f"deterministic uploader error: {marker}"
+    if re.search(r"文件缺失:\s*[1-9]\d*", text):
+        return "deterministic uploader error: 文件缺失"
+    return ""
+
+
+def format_upload_failure(returncode: int, output: str) -> str:
+    detail = str(output or "").strip()
+    if len(detail) > 2000:
+        detail = detail[-2000:]
+    prefix = f"upload subprocess exited with code {returncode}"
+    return f"{prefix}: {detail}" if detail else prefix
+
+
+def schedule_retry_or_block(
+    registry: Dict[str, Any],
+    job: Dict[str, Any],
+    ids: Iterable[int],
+    output: str,
+    reason: str,
+) -> str:
+    """Retry transient failures instead of losing partially completed jobs."""
+    attempt = int(job.get("attempts") or 0) + 1
+    last_output = str(output or "")[-12000:]
+    ids_list = [int(clip_id) for clip_id in ids]
+    if attempt >= MAX_AUTOMATIC_JOB_RETRIES:
+        set_unfinished_clip_statuses(registry, ids_list, "failed", reason)
+        clear_job_retry_metadata(job)
+        mark_job(
+            job,
+            "blocked",
+            attempts=attempt,
+            clipStatuses=clip_status_map(registry, ids_list),
+            lastOutput=last_output,
+            error=f"automatic retry limit reached: {reason}",
+        )
+        return "blocked"
+
+    set_unfinished_clip_statuses(registry, ids_list, "queued")
+    retry_at = dt.datetime.now(dt.timezone.utc) + dt.timedelta(
+        seconds=retry_delay_seconds(attempt)
+    )
+    mark_job(
+        job,
+        "retry_wait",
+        attempts=attempt,
+        retryAt=retry_at.isoformat(),
+        clipStatuses=clip_status_map(registry, ids_list),
+        lastOutput=last_output,
+        error=reason,
+    )
+    return "retry_wait"
+
+
+def clear_job_retry_metadata(job: Dict[str, Any]) -> None:
+    for key in ("retryAt", "error"):
+        job.pop(key, None)
 
 
 def pid_is_alive(pid: int) -> bool:
@@ -741,27 +868,57 @@ def retry_delay_seconds(attempt: int) -> int:
 
 
 def recover_interrupted_jobs() -> bool:
-    """Make unfinished jobs from a previous worker run eligible again.
+    """Requeue work left in ``running`` when the worker was interrupted.
 
-    Older versions used ``blocked`` as a terminal status after a transient
-    rate-limit/network stop.  On every restart they therefore stayed stuck
-    even though their state file makes a retry idempotent.
+    A job marked ``blocked`` is now a deliberate retry-limit terminal state;
+    restarting the worker must not silently bypass that limit.  Re-running a
+    recovered job is idempotent because the uploader checks both its state
+    file and the live member archive before submitting anything.
     """
     registry = load_json(REGISTRY_PATH, default_registry())
     queue = load_json(QUEUE_PATH, default_queue())
     changed = False
     for job in queue.get("jobs", []):
-        if job.get("status") not in ("running", "blocked"):
+        job_status = job.get("status")
+        if job_status not in ("running", "failed", "blocked"):
             continue
         ids = [int(i) for i in job.get("clipIds", [])]
         known_ids = [clip_id for clip_id in ids if str(clip_id) in registry.get("clips", {})]
         if not known_ids:
+            if job_status == "running":
+                mark_job(job, "failed", error=f"missing registry ids: {ids}")
+                changed = True
             continue
         sync_clip_statuses(registry, known_ids)
         if all(registry["clips"][str(clip_id)].get("status") == "uploaded" for clip_id in known_ids):
-            mark_job(job, "done", result="all ids already uploaded")
+            clear_job_retry_metadata(job)
+            mark_job(
+                job,
+                "done",
+                result="all ids already uploaded after recovery",
+                clipStatuses=clip_status_map(registry, known_ids),
+            )
+        elif job_status != "running":
+            # Historical failures remain manual-review candidates.  Only
+            # close them when every requested clip is independently confirmed
+            # uploaded; never revive a failed job into an automatic retry.
+            if job.pop("retryAt", None) is not None:
+                changed = True
+            continue
         else:
-            mark_job(job, "pending", recoveredAt=now_iso())
+            set_unfinished_clip_statuses(
+                registry,
+                known_ids,
+                "queued",
+                reason="",
+            )
+            mark_job(
+                job,
+                "pending",
+                recoveredAt=now_iso(),
+                recoveryReason="worker interrupted while upload was running",
+                clipStatuses=clip_status_map(registry, known_ids),
+            )
         changed = True
     if changed:
         save_json(REGISTRY_PATH, registry)
@@ -779,7 +936,12 @@ def run_one_job() -> bool:
     ids = [int(i) for i in job.get("clipIds", [])]
     missing = [clip_id for clip_id in ids if str(clip_id) not in registry.get("clips", {})]
     if missing:
-        mark_job(job, "failed", error=f"missing registry ids: {missing}")
+        reason = f"missing registry ids: {missing}"
+        known_ids = [clip_id for clip_id in ids if str(clip_id) in registry.get("clips", {})]
+        set_unfinished_clip_statuses(registry, known_ids, "failed", reason)
+        clear_job_retry_metadata(job)
+        mark_job(job, "failed", clipStatuses=clip_status_map(registry, known_ids), error=reason)
+        save_json(REGISTRY_PATH, registry)
         save_json(QUEUE_PATH, queue)
         return True
 
@@ -794,14 +956,13 @@ def run_one_job() -> bool:
     groups = grouped_clips(registry, pending_ids)
     validation_errors = validate_groups(groups)
     if validation_errors:
-        for clip_id in pending_ids:
-            clip = registry["clips"][str(clip_id)]
-            clip["status"] = "failed"
-            clip["updatedAt"] = now_iso()
-        mark_job(job, "failed", error="; ".join(validation_errors))
+        reason = "; ".join(validation_errors)
+        set_unfinished_clip_statuses(registry, pending_ids, "failed", reason)
+        clear_job_retry_metadata(job)
+        mark_job(job, "failed", clipStatuses=clip_status_map(registry, ids), error=reason)
         save_json(REGISTRY_PATH, registry)
         save_json(QUEUE_PATH, queue)
-        print(f"[worker] invalid upload job: {job.get('error')}", file=sys.stderr)
+        print(f"[worker] invalid upload job: {reason}", file=sys.stderr)
         return True
 
     mark_job(job, "running", startedAt=now_iso())
@@ -813,8 +974,10 @@ def run_one_job() -> bool:
 
     all_outputs: List[str] = []
     failed = False
+    last_returncode = 0
     for group in groups:
         cp = run_batch(group, job)
+        last_returncode = cp.returncode
         output = cp.stdout or ""
         all_outputs.append(output[-8000:])
         print(output, end="", flush=True)
@@ -831,31 +994,45 @@ def run_one_job() -> bool:
     queue = load_json(QUEUE_PATH, default_queue())
     current = next((item for item in queue.get("jobs", []) if item.get("id") == job.get("id")), job)
     statuses = {clip_id: registry["clips"][str(clip_id)].get("status") for clip_id in ids}
-    if failed:
-        mark_job(current, "failed", clipStatuses=statuses, lastOutput="\n".join(all_outputs)[-12000:])
-    elif all(status == "uploaded" for status in statuses.values()):
-        mark_job(current, "done", clipStatuses=statuses, lastOutput="\n".join(all_outputs)[-12000:])
+    last_output = "\n".join(all_outputs)[-12000:]
+    pending_after_run = [clip_id for clip_id, status in statuses.items() if status != "uploaded"]
+
+    # A subprocess can exit non-zero after it has already persisted the final
+    # successful result (for example while attaching a collection).  The
+    # registry state is authoritative, so never turn that into a failed job.
+    if not pending_after_run:
+        clear_job_retry_metadata(current)
+        mark_job(current, "done", clipStatuses=statuses, lastOutput=last_output)
     else:
-        attempt = int(current.get("attempts") or 0) + 1
-        if attempt >= MAX_AUTOMATIC_JOB_RETRIES:
+        terminal_reason = terminal_upload_error_reason(last_output)
+        if terminal_reason:
+            reason = f"{terminal_reason}; subprocess exited with code {last_returncode}"
+            set_unfinished_clip_statuses(registry, pending_after_run, "failed", reason)
+            clear_job_retry_metadata(current)
             mark_job(
                 current,
-                "blocked",
-                attempts=attempt,
-                clipStatuses=statuses,
-                lastOutput="\n".join(all_outputs)[-12000:],
-                error="automatic retry limit reached; inspect and re-enqueue the affected IDs",
+                "failed",
+                clipStatuses=clip_status_map(registry, ids),
+                lastOutput=last_output,
+                error=reason,
+            )
+        elif failed:
+            schedule_retry_or_block(
+                registry,
+                current,
+                ids,
+                last_output,
+                format_upload_failure(last_returncode, last_output),
             )
         else:
-            retry_at = dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=retry_delay_seconds(attempt))
-            mark_job(
+            schedule_retry_or_block(
+                registry,
                 current,
-                "retry_wait",
-                attempts=attempt,
-                retryAt=retry_at.isoformat(),
-                clipStatuses=statuses,
-                lastOutput="\n".join(all_outputs)[-12000:],
+                ids,
+                last_output,
+                "uploader completed without recording all requested clips",
             )
+    save_json(REGISTRY_PATH, registry)
     save_json(QUEUE_PATH, queue)
     return True
 

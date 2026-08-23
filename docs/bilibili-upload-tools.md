@@ -91,6 +91,15 @@ Queue processing is single-worker and calls `batch_upload.py` with grouped
 review indices. Existing duplicate checks, upload state, 406 recovery, and
 preupload rate-limit waiting stay inside `batch_upload.py`.
 
+The persistent queue treats the per-clip upload state as authoritative when a
+subprocess exits. A job with partial success is retried with only unfinished
+clips; deterministic problems such as a missing video or REVIEW row become
+`failed` with a recorded reason; transient exits enter `retry_wait` with
+backoff and eventually become `blocked` after the automatic retry limit. On a
+worker restart, only jobs left in `running` are recovered to `pending`, while
+`blocked` remains a manual-review state. `queue --verbose` shows the last
+uploader output for diagnosis.
+
 For persistent operation:
 
 ```powershell

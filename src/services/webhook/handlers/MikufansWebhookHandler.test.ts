@@ -54,6 +54,7 @@ describe('MikufansWebhookHandler segment collection finalization', () => {
     jest.spyOn(ProcessingAlertService, 'notifyStreamEndedWithoutCurrentSegment').mockResolvedValue(undefined);
     jest.spyOn(ProcessingAlertService, 'notifyFinalizationStuck').mockResolvedValue(undefined);
     jest.spyOn(ProcessingAlertService, 'notifyMissingFileCloseAfterStreamEnd').mockResolvedValue(undefined);
+    jest.spyOn(ProcessingAlertService, 'notifyMikufansOfflineStateStuck').mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -896,6 +897,45 @@ describe('MikufansWebhookHandler segment collection finalization', () => {
 
     expect(startProcessing).toHaveBeenCalledTimes(1);
     expect(startProcessing.mock.calls[0][0]).toBe(videoPath);
+  });
+
+  test('alerts when Bilibili is offline but Mikufans remains active without changing lifecycle state', async () => {
+    const handler = new MikufansWebhookHandler() as any;
+    handlers.push(handler);
+    const roomId = '25788785';
+    const { videoPath, xmlPath } = writeSegment(tempDir, roomId);
+    const startTime = new Date(Date.now() - 60 * 60 * 1000);
+    const closeTime = new Date(Date.now() - 60 * 1000);
+
+    handler.liveSessionManager.createOrGetSession(roomId, 'SUI', 'live', startTime);
+    handler.liveSessionManager.addSegment(roomId, videoPath, xmlPath, startTime, closeTime, closeTime);
+    handler.liveSessionManager.markAsCompleted(roomId);
+    handler.streamTimestamps.set(roomId, { startTime });
+    handler.activeLiveRooms.add(roomId);
+    handler.offlineFallbackMonitor.getConfig = jest.fn().mockReturnValue({
+      enabled: true,
+      pollIntervalSeconds: 60,
+      offlineConfirmations: 1,
+      offlineGraceSeconds: 0,
+      apiTimeoutMs: 1000
+    });
+    handler.offlineFallbackMonitor.setProvider({
+      getRoomLiveStatus: jest.fn().mockResolvedValue({
+        roomId,
+        liveStatus: 0,
+        isLive: false
+      })
+    });
+
+    await handler.offlineFallbackMonitor.pollOnce();
+
+    expect(handler.activeLiveRooms.has(roomId)).toBe(true);
+    expect(handler.streamTimestamps.get(roomId).endTime).toBeUndefined();
+    expect(ProcessingAlertService.notifyMikufansOfflineStateStuck).toHaveBeenCalledWith(expect.objectContaining({
+      roomId,
+      consecutiveConfirmations: 1,
+      bilibiliLiveStatus: 0
+    }));
   });
 
   test('keeps waiting for StreamEnded when the final FileClosed marker is absent', async () => {

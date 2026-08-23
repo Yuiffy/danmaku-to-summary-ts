@@ -49,6 +49,13 @@ export interface MikufansLifecycleAlertDetails {
   reason?: string;
 }
 
+export interface MikufansOfflineFallbackAlertDetails extends MikufansLifecycleAlertDetails {
+  consecutiveConfirmations: number;
+  offlineSince: string;
+  offlineGraceSeconds: number;
+  bilibiliLiveStatus: number;
+}
+
 interface AlertRetryOptions {
   maxAttempts?: number;
   retryDelayMs?: number;
@@ -244,6 +251,31 @@ export class ProcessingAlertService {
         '**建议**: 检查该房间是否仍有收尾定时器；确认离线后重新触发处理流程。'
       ],
       `mikufans-finalization-stuck:${details.roomId}`,
+      LIFECYCLE_ALERT_RETRY_OPTIONS
+    );
+  }
+
+  static async notifyMikufansOfflineStateStuck(details: MikufansOfflineFallbackAlertDetails): Promise<void> {
+    if (!this.isEnabled()) return;
+
+    const incidentId = details.streamStartedAt || details.streamEndedAt || details.offlineSince;
+    await this.notifyOnce(
+      `mikufans-offline-fallback:${details.roomId}:${incidentId}`,
+      'Mikufans 状态未收敛，已提醒人工',
+      [
+        this.formatRoom(details),
+        details.title ? `**标题**: ${details.title}` : undefined,
+        details.streamStartedAt ? `**本场开始**: ${details.streamStartedAt}` : undefined,
+        details.offlineSince ? `**首次检测离线**: ${details.offlineSince}` : undefined,
+        `**B站 live_status**: ${details.bilibiliLiveStatus}（离线）`,
+        `**连续离线确认**: ${details.consecutiveConfirmations} 次`,
+        `**离线宽限**: ${details.offlineGraceSeconds} 秒`,
+        typeof details.segmentCount === 'number' ? `**当前片段数**: ${details.segmentCount}` : undefined,
+        `**本地会话状态**: ${details.status || 'unknown'}`,
+        '**说明**: 只读监测未修改会话，也未重复启动后续处理。',
+        '**人工确认**: 请确认晚安回复、自动切片等后续任务是否已完成；必要时重启 Mikufans 或手工操作。'
+      ],
+      `mikufans-offline-fallback:${details.roomId}`,
       LIFECYCLE_ALERT_RETRY_OPTIONS
     );
   }

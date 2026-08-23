@@ -10,6 +10,7 @@ import { DelayedReplyHandler } from './handlers/DelayedReplyHandler';
 import { FileStabilityChecker } from './FileStabilityChecker';
 import { DuplicateProcessorGuard } from './DuplicateProcessorGuard';
 import { ComicGeneratorService } from '../comic/ComicGeneratorService';
+import { IBilibiliAPIService } from '../bilibili/interfaces/IBilibiliAPIService';
 import { IDelayedReplyService } from '../bilibili/interfaces/IDelayedReplyService';
 import { WeChatWorkNotifier } from '../notification/WeChatWorkNotifier';
 
@@ -124,6 +125,11 @@ export class WebhookService implements IWebhookService {
    * 停止Webhook服务器
    */
   async stop(): Promise<void> {
+    for (const handler of this.handlers) {
+      const stoppableHandler = handler as IWebhookHandler & { stop?: () => void };
+      stoppableHandler.stop?.();
+    }
+
     return new Promise((resolve, reject) => {
       if (!this.server) {
         resolve();
@@ -567,6 +573,16 @@ export class WebhookService implements IWebhookService {
   setDelayedReplyService(service: IDelayedReplyService): void {
     this.delayedReplyService = service;
     this.getLogger().info('延迟回复服务已设置');
+  }
+
+  setBilibiliAPIService(service: IBilibiliAPIService): void {
+    for (const handler of this.handlers) {
+      const configurableHandler = handler as IWebhookHandler & {
+        setBilibiliAPIService?: (bilibiliService: IBilibiliAPIService) => void;
+      };
+      configurableHandler.setBilibiliAPIService?.(service);
+    }
+    this.getLogger().info('B站房间状态服务已注入Webhook处理器');
   }
 
   /**

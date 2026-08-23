@@ -106,6 +106,13 @@ export class ConfigValidator {
           nearbySegmentRecovery: true,
           nearbySegmentMaxGapSeconds: 1800,
         },
+        mikufansOfflineFallback: {
+          enabled: true,
+          pollIntervalSeconds: 60,
+          offlineConfirmations: 3,
+          offlineGraceSeconds: 180,
+          apiTimeoutMs: 10000,
+        },
       },
       audio: {
         enabled: true,

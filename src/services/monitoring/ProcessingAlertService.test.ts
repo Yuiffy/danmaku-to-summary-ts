@@ -147,6 +147,24 @@ describe('ProcessingAlertService recorder lifecycle alerts', () => {
     });
   });
 
+  test('explains the automatic lifecycle recovery and the required human follow-up', async () => {
+    await ProcessingAlertService.notifyMikufansOfflineStateStuck({
+      roomId: '25788785',
+      roomName: 'SUI',
+      title: 'live',
+      streamStartedAt: '2026-08-23T10:00:00.000Z',
+      segmentCount: 4,
+      consecutiveConfirmations: 3,
+      offlineSince: '2026-08-23T12:00:00.000Z',
+      offlineGraceSeconds: 180,
+      bilibiliLiveStatus: 0
+    });
+
+    expect(sendMarkdown).toHaveBeenCalledTimes(1);
+    expect(sendMarkdown.mock.calls[0][0]).toContain('只读监测未修改会话');
+    expect(sendMarkdown.mock.calls[0][0]).toContain('必要时重启 Mikufans');
+  });
+
   test('coalesces concurrent sends for the same incident', async () => {
     let finishSend!: (sent: boolean) => void;
     sendMarkdown.mockReturnValue(new Promise<boolean>(resolve => {

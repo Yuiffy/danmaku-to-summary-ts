@@ -32,6 +32,17 @@ export interface WebhookConfig {
     nearbySegmentRecovery?: boolean;
     nearbySegmentMaxGapSeconds?: number;
   };
+  /**
+   * Detect a stuck Mikufans recorder state from Bilibili's room status.
+   * The monitor only sends an alert and does not change lifecycle state.
+   */
+  mikufansOfflineFallback?: {
+    enabled?: boolean;
+    pollIntervalSeconds?: number;
+    offlineConfirmations?: number;
+    offlineGraceSeconds?: number;
+    apiTimeoutMs?: number;
+  };
 }
 
 // FFmpeg配置

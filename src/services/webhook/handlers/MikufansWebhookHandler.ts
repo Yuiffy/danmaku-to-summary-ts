@@ -8,6 +8,7 @@ import { getLogger } from '../../../core/logging/LogManager';
 import { ConfigProvider } from '../../../core/config/ConfigProvider';
 import { FileStabilityChecker } from '../FileStabilityChecker';
 import { DuplicateProcessorGuard } from '../DuplicateProcessorGuard';
+import { IBilibiliAPIService } from '../../../services/bilibili/interfaces/IBilibiliAPIService';
 import { IDelayedReplyService } from '../../../services/bilibili/interfaces/IDelayedReplyService';
 import { LiveContentSummaryDeliveryMode } from '../../../services/bilibili/interfaces/types';
 import { LIVE_RECONNECT_GRACE_MS, LiveSessionManager, LiveSegment } from '../LiveSessionManager';
@@ -22,6 +23,11 @@ import {
   isAnyWindowsProcessRunning,
   normalizeAsrProcessNames
 } from '../../../utils/asrResourceGuard';
+import {
+  MikufansOfflineFallbackCandidate,
+  MikufansOfflineFallbackMonitor,
+  MikufansOfflineFallbackTrigger
+} from '../MikufansOfflineFallbackMonitor';
 
 const queueManager = require(path.join(process.cwd(), 'src', 'scripts', 'whisper_queue_manager.js'));
 const speakerOnceRegistry = require(path.join(process.cwd(), 'src', 'scripts', 'asr', 'speaker_once_registry.js'));
@@ -113,6 +119,14 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   private readonly DELAYED_REPLY_FILE_RETRY_INTERVAL_MS = 5 * 60 * 1000;
   private readonly DELAYED_REPLY_FILE_RETRY_MAX_MS = 2 * 60 * 60 * 1000;
   private pendingDelayedReplyFileTimers: Map<string, NodeJS.Timeout> = new Map();
+  private offlineFallbackMonitor: MikufansOfflineFallbackMonitor;
+
+  constructor() {
+    this.offlineFallbackMonitor = new MikufansOfflineFallbackMonitor(
+      () => this.getOfflineFallbackCandidates(),
+      details => this.handleConfirmedOfflineFallback(details)
+    );
+  }
 
 
   /**
@@ -122,6 +136,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     app.post(this.path, this.handleRequest.bind(this));
     this.logger.info(`注册Mikufans Webhook处理器，路径: ${this.path}`);
     this.ensureQueueWorkerRunning();
+    this.offlineFallbackMonitor.start();
   }
 
   /**
@@ -419,6 +434,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     const roomKey = String(roomId);
     this.activeLiveRooms.add(roomKey);
     this.finalFileClosedRooms.delete(roomKey);
+    this.offlineFallbackMonitor.reset(roomKey);
 
     const cancelled = [
       DelayedActionType.STREAM_ENDED,
@@ -1284,6 +1300,72 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     this.logger.info(`Segment collection timeout for ${roomId}; waiting for StreamEnded before final processing`);
   }
 
+  private getOfflineFallbackCandidates(): MikufansOfflineFallbackCandidate[] {
+    const candidates: MikufansOfflineFallbackCandidate[] = [];
+
+    for (const [roomId, session] of this.liveSessionManager.getAllSessions()) {
+      // Downstream processing may already have completed while the recorder's
+      // active-room flag remained stale, so do not require collecting here.
+      if (
+        !this.activeLiveRooms.has(roomId) ||
+        this.streamTimestamps.get(roomId)?.endTime ||
+        !this.hasCurrentStreamSegment(roomId)
+      ) {
+        continue;
+      }
+
+      const latestSegmentActivityAt = session.segments.reduce<Date | undefined>((latest, segment) => {
+        const candidateTimes = [segment.eventTimestamp, segment.fileCloseTime]
+          .filter(value => value && !Number.isNaN(value.getTime()));
+        const segmentLatest = candidateTimes.reduce<Date | undefined>((current, value) => {
+          if (!current || value.getTime() > current.getTime()) return value;
+          return current;
+        }, undefined);
+        if (!segmentLatest || (latest && latest.getTime() >= segmentLatest.getTime())) return latest;
+        return segmentLatest;
+      }, undefined);
+
+      candidates.push({
+        roomId,
+        roomName: session.roomName,
+        title: session.title,
+        segmentCount: session.segments.length,
+        streamStartedAt: this.streamTimestamps.get(roomId)?.startTime || session.startTime,
+        latestSegmentActivityAt
+      });
+    }
+
+    return candidates;
+  }
+
+  private async handleConfirmedOfflineFallback(details: MikufansOfflineFallbackTrigger): Promise<void> {
+    const roomId = details.candidate.roomId;
+    const session = this.liveSessionManager.getSession(roomId);
+    const timestamps = this.streamTimestamps.get(roomId);
+    if (
+      !session ||
+      !this.activeLiveRooms.has(roomId) ||
+      timestamps?.endTime ||
+      !this.hasCurrentStreamSegment(roomId)
+    ) {
+      this.logger.info(`Offline fallback became stale before sending its alert: ${roomId}`);
+      return;
+    }
+
+    await ProcessingAlertService.notifyMikufansOfflineStateStuck({
+      roomId,
+      roomName: session.roomName,
+      title: session.title,
+      streamStartedAt: timestamps?.startTime?.toISOString() || session.startTime.toISOString(),
+      segmentCount: session.segments.length,
+      status: session.status,
+      consecutiveConfirmations: details.consecutiveConfirmations,
+      offlineSince: details.offlineSince.toISOString(),
+      offlineGraceSeconds: details.offlineGraceSeconds,
+      bilibiliLiveStatus: details.status.liveStatus
+    });
+  }
+
   /**
    * 处理Mikufans文件
    */
@@ -2016,6 +2098,24 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   setDelayedReplyService(service: IDelayedReplyService): void {
     this.delayedReplyService = service;
     this.logger.info('延迟回复服务已设置');
+  }
+
+  setBilibiliAPIService(service: IBilibiliAPIService): void {
+    const getRoomLiveStatus = service.getRoomLiveStatus;
+    if (typeof getRoomLiveStatus !== 'function') {
+      this.logger.warn('Bilibili API service does not expose room live status; offline fallback is unavailable');
+      this.offlineFallbackMonitor.setProvider(undefined);
+      return;
+    }
+
+    this.offlineFallbackMonitor.setProvider({
+      getRoomLiveStatus: roomId => getRoomLiveStatus.call(service, roomId)
+    });
+    this.logger.info('Bilibili room status provider injected into Mikufans handler');
+  }
+
+  stop(): void {
+    this.offlineFallbackMonitor.stop();
   }
 
   /**
