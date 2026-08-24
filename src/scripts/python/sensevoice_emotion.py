@@ -1,3 +1,4 @@
+import contextlib
 import gc
 import json
 import time
@@ -18,6 +19,124 @@ def _coerce_bool(value, default=False):
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_cuda_device(device):
+    return str(device or "").strip().lower().startswith("cuda")
+
+
+def _coerce_positive_int(value, default):
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return max(1, int(default))
+
+
+def _load_torch_for_device(device):
+    if not _is_cuda_device(device):
+        return None
+    try:
+        import torch
+    except ImportError:
+        return None
+    cuda = getattr(torch, "cuda", None)
+    is_available = getattr(cuda, "is_available", None)
+    if callable(is_available) and not is_available():
+        return None
+    return torch
+
+
+def _resolve_precision(config, device, torch_module):
+    requested = str(config.get("precision") or "bf16").strip().lower()
+    if requested in {"bfloat16", "bf16", "amp-bf16", "mixed-bf16"}:
+        if torch_module is not None and _is_cuda_device(device):
+            return "bf16"
+        return "fp32"
+    return "fp32"
+
+
+@contextlib.contextmanager
+def _cuda_tf32_context(device, enabled, torch_module):
+    """Enable TF32 only while SenseVoice emotion inference is running."""
+    if not enabled or torch_module is None or not _is_cuda_device(device):
+        yield False
+        return
+
+    previous = []
+    backends = getattr(torch_module, "backends", None)
+    cuda_backend = getattr(backends, "cuda", None)
+    matmul_backend = getattr(cuda_backend, "matmul", None)
+    cudnn_backend = getattr(backends, "cudnn", None)
+    for backend, name in (
+        (matmul_backend, "allow_tf32"),
+        (cudnn_backend, "allow_tf32"),
+    ):
+        if backend is None or not hasattr(backend, name):
+            continue
+        previous.append((backend, name, getattr(backend, name)))
+        setattr(backend, name, True)
+
+    precision_getter = getattr(torch_module, "get_float32_matmul_precision", None)
+    precision_setter = getattr(torch_module, "set_float32_matmul_precision", None)
+    previous_precision = None
+    if callable(precision_getter) and callable(precision_setter):
+        try:
+            previous_precision = precision_getter()
+            precision_setter("high")
+        except Exception:
+            previous_precision = None
+
+    try:
+        yield bool(previous or previous_precision is not None)
+    finally:
+        for backend, name, value in previous:
+            try:
+                setattr(backend, name, value)
+            except Exception:
+                pass
+        if previous_precision is not None:
+            try:
+                precision_setter(previous_precision)
+            except Exception:
+                pass
+
+
+def _bf16_autocast(torch_module):
+    autocast = getattr(torch_module, "autocast", None)
+    if callable(autocast):
+        return autocast(device_type="cuda", dtype=torch_module.bfloat16)
+    cuda = getattr(torch_module, "cuda", None)
+    amp = getattr(cuda, "amp", None)
+    legacy_autocast = getattr(amp, "autocast", None)
+    if callable(legacy_autocast):
+        return legacy_autocast(dtype=torch_module.bfloat16)
+    raise RuntimeError("当前 PyTorch 不支持 CUDA BF16 autocast")
+
+
+def _generate_emotion_batch(
+    model,
+    audio_batch,
+    config,
+    effective_batch_size_s,
+    precision,
+    torch_module=None,
+):
+    kwargs = {
+        "input": audio_batch,
+        "language": config.get("language", "auto"),
+        "use_itn": False,
+        "batch_size": _coerce_positive_int(config.get("inference_batch_size"), 8),
+        "batch_size_s": max(1, int(float(effective_batch_size_s))),
+    }
+    if precision != "bf16" or torch_module is None:
+        return model.generate(**kwargs), False
+
+    try:
+        with _bf16_autocast(torch_module):
+            return model.generate(**kwargs), False
+    except Exception as exc:
+        log_progress(f"SenseVoice BF16 情感推理失败，当前批次回退 FP32: {exc}")
+        return model.generate(**kwargs), True
 
 
 def merge_segments_to_emotion_chunks(segments, chunk_s=12.0, max_gap_s=1.5):
@@ -243,6 +362,27 @@ def analyze_paraformer_emotions(
         analysis["modelCacheHit"] = cache_hit
         analysis["timings"]["model_load_s"] = model_load_s
 
+        torch_module = _load_torch_for_device(emotion_device)
+        inference_batch_size = _coerce_positive_int(
+            config.get("inference_batch_size"), 8
+        )
+        precision_requested = str(config.get("precision") or "bf16").strip().lower()
+        precision = _resolve_precision(config, emotion_device, torch_module)
+        tf32_requested = _coerce_bool(config.get("tf32"), True)
+        tf32_available = bool(
+            torch_module is not None and _is_cuda_device(emotion_device)
+        )
+        analysis["inferenceBatchSize"] = inference_batch_size
+        analysis["precisionRequested"] = precision_requested
+        analysis["precision"] = precision
+        analysis["tf32"] = bool(tf32_requested and tf32_available)
+        analysis["precisionFallbackBatches"] = 0
+        log_progress(
+            "SenseVoice 情感推理配置: "
+            f"batch_size={inference_batch_size}, precision={precision}, "
+            f"tf32={'on' if analysis['tf32'] else 'off'}"
+        )
+
         configured_batch_size_s = float(config.get("batch_size_s", 300) or 300)
         max_batch_chunks = config.get("max_batch_chunks", 64)
         planned_batches = build_duration_batches(
@@ -292,12 +432,21 @@ def analyze_paraformer_emotions(
             ):
                 with StageTimeout(timeout_s, "SenseVoice 情感批量推理"):
                     with suppress_model_output():
-                        results = model.generate(
-                            input=audio_batch,
-                            language=config.get("language", "auto"),
-                            use_itn=False,
-                            batch_size_s=max(1, int(float(effective_batch_size_s))),
-                        )
+                        with _cuda_tf32_context(
+                            emotion_device,
+                            tf32_requested,
+                            torch_module,
+                        ):
+                            results, precision_fallback = _generate_emotion_batch(
+                                model,
+                                audio_batch,
+                                config,
+                                effective_batch_size_s,
+                                precision,
+                                torch_module=torch_module,
+                            )
+            if precision_fallback:
+                analysis["precisionFallbackBatches"] += 1
             for result_index, chunk in enumerate(valid_batch):
                 item = _result_item(results, result_index)
                 raw_text = item.get("text") or item.get("sentence") or ""

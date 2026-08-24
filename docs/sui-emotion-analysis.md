@@ -30,6 +30,9 @@ SenseVoiceSmall 没有官方 vLLM 推理路径。这种无重复 VAD、无重复
         "max_gap_s": 1.5,
         "batch_size_s": 300,
         "max_batch_chunks": 64,
+        "inference_batch_size": 8,
+        "precision": "bf16",
+        "tf32": true,
         "include_events": true,
         "fail_open": true
       }
@@ -39,6 +42,9 @@ SenseVoiceSmall 没有官方 vLLM 推理路径。这种无重复 VAD、无重复
 ```
 
 `room_ids` 是第二道保护。即使生产配置开启，其他直播间传给 Python 的 `enabled` 仍为 `false`。
+
+`inference_batch_size`、`precision` 和 `tf32` 只改变 SenseVoice 的 GPU 推理方式，
+不改变 `chunk_s`、`max_gap_s` 或情感时间轴输入，因此不会破坏下游多次 AI 调用复用的固定输入。
 
 ## 输出契约
 
@@ -76,6 +82,9 @@ Paraformer 每个字幕段可带：
       "inference_s": 4.2,
       "total_s": 6.1
     },
+    "inferenceBatchSize": 8,
+    "precision": "bf16",
+    "tf32": true,
     "timeline": []
   }
 }

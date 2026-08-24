@@ -1,9 +1,53 @@
 import math
 import os
+import subprocess
 import sys
 import time
 
 from sensevoice_runtime import ResourcePeakMonitor, log_progress, suppress_model_output
+
+
+def _load_audio_with_ffmpeg(audio_path):
+    """Decode unsupported containers directly to 16 kHz mono float PCM."""
+    import numpy as np
+
+    ffmpeg_binary = os.environ.get("FFMPEG_BINARY", "ffmpeg")
+    command = [
+        ffmpeg_binary,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-i",
+        str(audio_path),
+        "-map",
+        "0:a:0",
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-c:a",
+        "pcm_f32le",
+        "-f",
+        "f32le",
+        "pipe:1",
+    ]
+    run_kwargs = {
+        "capture_output": True,
+        "timeout": 900,
+    }
+    if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+        run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    process = subprocess.run(command, **run_kwargs)
+    if process.returncode != 0:
+        detail = (process.stderr or b"").decode("utf-8", errors="replace").strip()
+        raise RuntimeError(detail or f"ffmpeg exited with code {process.returncode}")
+
+    raw_audio = process.stdout or b""
+    if len(raw_audio) == 0 or len(raw_audio) % 4 != 0:
+        raise RuntimeError("ffmpeg 未输出有效的 float32 PCM 音频")
+    return np.frombuffer(raw_audio, dtype=np.float32), 16000
 
 
 def load_audio_16k_mono(audio_path):
@@ -18,7 +62,11 @@ def load_audio_16k_mono(audio_path):
         import librosa
 
         return librosa.resample(audio, orig_sr=int(sample_rate), target_sr=16000), 16000
-    except Exception as exc:
+    except Exception as soundfile_exc:
+        try:
+            return _load_audio_with_ffmpeg(audio_path)
+        except Exception as ffmpeg_exc:
+            exc = f"soundfile: {soundfile_exc}; ffmpeg: {ffmpeg_exc}"
         print(
             f"⚠️ soundfile 读取音频失败，降级使用 librosa.load: {exc}",
             file=sys.stderr,
@@ -1044,9 +1092,24 @@ def _timeline_from_chunk_labels(
             and cluster_has_reference_identity
             and str(direct_match.get("label")) != str(cluster_match_label)
         ):
-            direct_match = {}
-            direct_match_rejected = True
-        requires_row_match = str(cluster_match_label) in strict_labels
+            direct_label_support = match.get("reference_support", {}).get(
+                str(direct_match.get("label")),
+                {},
+            )
+            if int(direct_label_support.get("support_count", 0) or 0) < max(
+                1,
+                int(row_reference_cluster_min_support_chunks or 1),
+            ):
+                direct_match = {}
+                direct_match_rejected = True
+        cluster_label_by_default = bool(
+            cluster_has_reference_identity
+            and match.get("cluster_label_by_default") is True
+        )
+        requires_row_match = bool(
+            str(cluster_match_label) in strict_labels
+            and not cluster_label_by_default
+        )
         cluster_row_match = bool(
             cluster_has_reference_identity
             and str(row_match.get("best_label") or "") == str(cluster_match_label)
@@ -1055,12 +1118,15 @@ def _timeline_from_chunk_labels(
         )
         speaker = (
             direct_match.get("label")
+            or (cluster_match_label if cluster_label_by_default else None)
             or (cluster_match_label if cluster_row_match else None)
             or (cluster_label if requires_row_match else cluster_match_label)
         )
         speaker_score = (
             direct_match.get("score")
             if direct_match
+            else match.get("score")
+            if cluster_label_by_default
             else row_match.get("score")
             if cluster_row_match
             else row_match.get("score")
@@ -1077,7 +1143,7 @@ def _timeline_from_chunk_labels(
                 direct_match.get("best_label")
                 or (
                     row_match.get("best_label")
-                    if requires_row_match
+                    if requires_row_match or cluster_label_by_default
                     else None
                 )
                 or match.get("best_label")
@@ -1086,6 +1152,8 @@ def _timeline_from_chunk_labels(
             "speaker_match_scope": (
                 "row"
                 if direct_match
+                else "cluster_high_confidence"
+                if cluster_label_by_default
                 else "cluster_with_row_corroboration"
                 if cluster_row_match
                 else "cluster_rejected_by_row"
@@ -1093,64 +1161,6 @@ def _timeline_from_chunk_labels(
                 else "cluster"
             ),
         })
-    return timeline
-
-
-def _is_anonymous_speaker_label(label):
-    value = str(label or "").strip()
-    return (
-        not value
-        or value.upper() in {"UNKNOWN", "-1"}
-        or (value.upper().startswith("SPEAKER_") and value[8:].isdigit())
-    )
-
-
-def apply_single_host_speaker_fallback(timeline, reference_matches, processing, payload):
-    """Merge weak anonymous clusters into a confirmed host-only stream.
-
-    This is intentionally gated by the caller. A confirmed non-host reference
-    match always wins and prevents the fallback from hiding a real guest.
-    """
-    payload = payload if isinstance(payload, dict) else {}
-    if not bool(payload.get("speaker_single_host_fallback", False)):
-        return timeline
-
-    host_label = str(payload.get("speaker_host_label") or "").strip()
-    if not host_label or not isinstance(reference_matches, dict):
-        return timeline
-
-    matches = [
-        match for match in reference_matches.values()
-        if isinstance(match, dict)
-    ]
-    accepted_host = any(
-        match.get("accepted") is True
-        and str(match.get("label") or match.get("best_label") or "").strip() == host_label
-        for match in matches
-    )
-    accepted_non_host = any(
-        match.get("accepted") is True
-        and str(match.get("label") or match.get("best_label") or "").strip() != host_label
-        for match in matches
-    )
-    if not accepted_host or accepted_non_host:
-        return timeline
-
-    changed = 0
-    for item in timeline or []:
-        if not _is_anonymous_speaker_label(item.get("speaker")):
-            continue
-        item["speaker"] = host_label
-        item["speaker_fallback_reason"] = "confirmed_single_host"
-        changed += 1
-
-    if changed:
-        processing["singleHostFallback"] = {
-            "applied": True,
-            "hostLabel": host_label,
-            "changedIntervals": changed,
-            "reason": "confirmed_host_only",
-        }
     return timeline
 
 
@@ -1267,6 +1277,7 @@ def run_adaptive_speaker_engine(
     probe_by_index = {}
     probe_assignment_embeddings = []
     probe_assignment_labels = []
+    probe_cluster_embeddings = {}
     should_run_full = mode == "always"
 
     if mode == "auto":
@@ -1345,6 +1356,25 @@ def run_adaptive_speaker_engine(
                 "cluster_sizes": evidence["cluster_sizes"],
                 "cluster_speech_s": evidence["cluster_speech_s"],
             })
+            probe_groups = {}
+            for (_candidate, embedding), raw_label in zip(
+                valid_probe,
+                _cluster_label_values(primary_labels),
+            ):
+                cluster_label = (
+                    f"SPEAKER_{int(raw_label):02d}"
+                    if str(raw_label).isdigit()
+                    else str(raw_label)
+                )
+                probe_groups.setdefault(cluster_label, []).append(embedding)
+            probe_cluster_embeddings = {
+                label: torch.nn.functional.normalize(
+                    torch.cat(embeddings, dim=0).to("cpu"),
+                    dim=1,
+                )
+                for label, embeddings in probe_groups.items()
+                if embeddings
+            }
             if _should_assign_from_probe_centroids(
                 mode,
                 evidence,
@@ -1538,6 +1568,86 @@ def run_adaptive_speaker_engine(
                             or 0.0
                         ),
                     )
+                    consensus_enabled = payload.get(
+                        "speaker_reference_consensus_enabled",
+                        True,
+                    ) is not False
+                    if consensus_enabled:
+                        before_consensus = {
+                            label
+                            for label, match in reference_matches.items()
+                            if isinstance(match, dict)
+                            and match.get("accepted") is True
+                        }
+                        reference_matches = promote_reference_consensus_matches(
+                            cluster_embeddings,
+                            reference_matches,
+                            min_score=float(
+                                payload.get(
+                                    "speaker_reference_consensus_min_score",
+                                    0.50,
+                                )
+                                or 0.50
+                            ),
+                            min_margin=float(
+                                payload.get(
+                                    "speaker_reference_consensus_min_margin",
+                                    0.06,
+                                )
+                                or 0.06
+                            ),
+                            min_support_chunks=int(
+                                payload.get(
+                                    "speaker_reference_consensus_min_support_chunks",
+                                    2,
+                                )
+                                or 2
+                            ),
+                            min_support_ratio=float(
+                                payload.get(
+                                    "speaker_reference_consensus_min_support_ratio",
+                                    0.20,
+                                )
+                                or 0.20
+                            ),
+                            min_support_mean_score=float(
+                                payload.get(
+                                    "speaker_reference_consensus_min_support_mean_score",
+                                    0.46,
+                                )
+                                or 0.46
+                            ),
+                            min_cluster_similarity=float(
+                                payload.get(
+                                    "speaker_reference_consensus_min_cluster_similarity",
+                                    0.60,
+                                )
+                                or 0.60
+                            ),
+                            min_anchor_similarity=float(
+                                payload.get(
+                                    "speaker_reference_consensus_min_anchor_similarity",
+                                    0.78,
+                                )
+                                    or 0.70
+                            ),
+                            anchor_cluster_embeddings=probe_cluster_embeddings,
+                        )
+                        processing["referenceConsensus"] = {
+                            "enabled": True,
+                            "promotedClusters": [
+                                label
+                                for label, match in reference_matches.items()
+                                if isinstance(match, dict)
+                                and match.get("accepted") is True
+                                and label not in before_consensus
+                            ],
+                        }
+                    else:
+                        processing["referenceConsensus"] = {
+                            "enabled": False,
+                            "promotedClusters": [],
+                        }
                     processing["referenceMatches"] = reference_matches
                     processing["reference_matches"] = reference_matches
                     strict_reference_labels = list(resolved_references)
@@ -1611,12 +1721,6 @@ def run_adaptive_speaker_engine(
                 "detectedClusters": len(grouped),
                 "supportedClusters": len(grouped),
             })
-        timeline = apply_single_host_speaker_fallback(
-            timeline,
-            reference_matches,
-            processing,
-            payload,
-        )
         return finish(timeline, reference_matches)
     except Exception as exc:
         mark_failed(exc, "full_clustering_failed")
@@ -1826,6 +1930,341 @@ def classify_speaker_clusters(
                 for candidate in candidates
             },
         }
+    return matches
+
+
+def promote_reference_consensus_matches(
+    cluster_embeddings,
+    matches,
+    min_score=0.50,
+    min_margin=0.06,
+    min_support_chunks=2,
+    min_support_ratio=0.20,
+    min_support_mean_score=0.46,
+    min_cluster_similarity=0.60,
+    min_anchor_similarity=0.70,
+    anchor_cluster_embeddings=None,
+):
+    """Accept a weak cluster only when it agrees with a strong same-speaker cluster.
+
+    This is a reference-supported identity decision, not a room-level guest
+    assumption. Every acoustic cluster still has to provide its own score,
+    margin, repeated votes, and similarity to an already accepted cluster for
+    the same reference label.
+    """
+    if not isinstance(cluster_embeddings, dict) or not isinstance(matches, dict):
+        return matches
+
+    import torch
+
+    if any(
+        not hasattr(embeddings, "shape")
+        for embeddings in cluster_embeddings.values()
+    ):
+        return matches
+
+    accepted_by_label = {}
+    for cluster_label, match in matches.items():
+        if not isinstance(match, dict) or match.get("accepted") is not True:
+            continue
+        label = str(match.get("label") or "").strip()
+        if label:
+            accepted_by_label.setdefault(label, []).append(cluster_label)
+            match.setdefault("acceptance_mode", "cluster_vote")
+
+    stable_cluster_embeddings = (
+        anchor_cluster_embeddings
+        if isinstance(anchor_cluster_embeddings, dict)
+        else {}
+    )
+
+    def centroid(embeddings):
+        value = embeddings.to("cpu").mean(dim=0, keepdim=True)
+        return torch.nn.functional.normalize(value, dim=1)
+
+    minimum_score = float(min_score or 0.0)
+    minimum_margin = float(min_margin or 0.0)
+    minimum_chunks = max(1, int(min_support_chunks or 1))
+    minimum_ratio = max(0.0, min(1.0, float(min_support_ratio or 0.0)))
+    minimum_mean = float(min_support_mean_score or 0.0)
+    minimum_cluster_similarity = max(
+        -1.0,
+        min(1.0, float(min_cluster_similarity or 0.0)),
+    )
+    minimum_anchor_similarity = max(
+        minimum_cluster_similarity,
+        min(1.0, float(min_anchor_similarity or 0.0)),
+    )
+
+    def cluster_similarity(source_embeddings, target_embeddings):
+        """Compare cluster centers and robust row-level nearest neighbors."""
+        source_embeddings = torch.nn.functional.normalize(
+            source_embeddings.to("cpu"),
+            dim=1,
+        )
+        target_embeddings = torch.nn.functional.normalize(
+            target_embeddings.to("cpu"),
+            dim=1,
+        )
+        source_centroid = centroid(source_embeddings)
+        target_centroid = centroid(target_embeddings)
+        centroid_score = float(
+            torch.matmul(target_centroid, source_centroid.T).item()
+        )
+
+        # A fragmented same-speaker cluster can have a diluted full centroid.
+        # Compare deterministic bounded samples as well, but use a lower
+        # quartile so one matching outlier cannot establish identity.
+        source_sample = _sample_embedding_rows(source_embeddings, 64)
+        target_sample = _sample_embedding_rows(target_embeddings, 64)
+        nearest_scores = torch.max(
+            torch.matmul(target_sample, source_sample.T),
+            dim=1,
+        ).values
+        ordered_scores, _ = torch.sort(nearest_scores)
+        quartile_index = max(
+            0,
+            min(
+                int(ordered_scores.shape[0]) - 1,
+                int(math.ceil(float(ordered_scores.shape[0]) * 0.25)) - 1,
+            ),
+        )
+        nearest_quartile = float(ordered_scores[quartile_index].item())
+        return max(centroid_score, nearest_quartile), {
+            "centroid_similarity": centroid_score,
+            "nearest_quartile_similarity": nearest_quartile,
+        }
+
+    def closest_source(label, target_label):
+        source_similarities = []
+        for source_label in accepted_by_label.get(label, []):
+            if source_label not in cluster_embeddings:
+                continue
+            source_embeddings = stable_cluster_embeddings.get(
+                source_label,
+                cluster_embeddings[source_label],
+            )
+            target_embeddings = stable_cluster_embeddings.get(
+                target_label,
+                cluster_embeddings[target_label],
+            )
+            source_similarity, details = cluster_similarity(
+                source_embeddings,
+                target_embeddings,
+            )
+            details["embedding_source"] = (
+                "probe"
+                if source_label in stable_cluster_embeddings
+                and target_label in stable_cluster_embeddings
+                else "full_or_mixed"
+            )
+            source_similarities.append((source_label, source_similarity, details))
+        return max(source_similarities, key=lambda item: item[1]) if source_similarities else None
+
+    for cluster_label, match in matches.items():
+        if not isinstance(match, dict) or match.get("accepted") is True:
+            continue
+        if cluster_label not in cluster_embeddings:
+            continue
+
+        # `best_label` is selected by the ordinary row-vote policy. A nearby
+        # reference can win that policy by count even when another reference
+        # has the stronger repeated score. Evaluate every candidate here so a
+        # fragmented same-speaker cluster can use its own evidence, while
+        # keeping all of the independent gates below.
+        support_by_label = match.get("reference_support") or {}
+        if not isinstance(support_by_label, dict):
+            support_by_label = {}
+        if not support_by_label:
+            best_label = str(match.get("best_label") or "").strip()
+            if best_label:
+                support_by_label = {best_label: match}
+
+        sampled_chunks = max(0, int(match.get("sampled_chunks", 0) or 0))
+        candidate_evidence = []
+        for raw_label, raw_support in support_by_label.items():
+            if not isinstance(raw_support, dict):
+                continue
+            label = str(raw_label or "").strip()
+            if not label or not accepted_by_label.get(label):
+                continue
+            support_count = int(raw_support.get("support_count", 0) or 0)
+            support_ratio = (
+                support_count / sampled_chunks
+                if sampled_chunks > 0
+                else float(match.get("support_ratio", 0.0) or 0.0)
+            )
+            support_mean = float(
+                raw_support.get(
+                    "support_mean_score",
+                    match.get("support_mean_score", -1.0),
+                )
+                or -1.0
+            )
+            score = float(
+                raw_support.get("score", match.get("score", -1.0))
+                or -1.0
+            )
+            margin = float(raw_support.get("margin", match.get("margin", -1.0)) or -1.0)
+            if (
+                score < minimum_score
+                or margin < minimum_margin
+                or support_count < minimum_chunks
+                or support_ratio < minimum_ratio
+                or support_mean < minimum_mean
+            ):
+                continue
+            candidate_evidence.append({
+                "label": label,
+                "support_count": support_count,
+                "support_ratio": support_ratio,
+                "support_mean_score": support_mean,
+                "score": score,
+                "margin": margin,
+            })
+
+        if not candidate_evidence:
+            # A severely fragmented cluster may have only one direct row hit,
+            # but still sit very close to a high-confidence same-speaker
+            # cluster. This anchor path remains deliberately stricter than
+            # ordinary cluster acceptance and never uses room/roster facts.
+            anchor_label = str(match.get("best_label") or "").strip()
+            anchor_support = support_by_label.get(anchor_label, {})
+            anchor_support_count = int(anchor_support.get("support_count", 0) or 0)
+            anchor_score = float(
+                anchor_support.get("score", match.get("score", -1.0)) or -1.0
+            )
+            anchor_margin = float(
+                anchor_support.get("margin", match.get("margin", -1.0)) or -1.0
+            )
+            anchor_mean = float(
+                anchor_support.get(
+                    "support_mean_score",
+                    match.get("support_mean_score", -1.0),
+                )
+                or -1.0
+            )
+            anchor_source = (
+                closest_source(anchor_label, cluster_label)
+                if anchor_label
+                else None
+            )
+            if anchor_source:
+                (
+                    source_label,
+                    source_similarity,
+                    similarity_details,
+                ) = anchor_source
+                match["reference_consensus_diagnostic"] = {
+                    "source_cluster": source_label,
+                    "cluster_similarity": source_similarity,
+                    **similarity_details,
+                    "min_anchor_similarity": minimum_anchor_similarity,
+                    "anchor_support_count": anchor_support_count,
+                    "anchor_score": anchor_score,
+                    "anchor_margin": anchor_margin,
+                    "anchor_support_mean_score": anchor_mean,
+                }
+            if (
+                anchor_source
+                and anchor_support_count >= 1
+                and anchor_score >= max(0.45, minimum_score - 0.05)
+                and anchor_margin >= max(0.08, minimum_margin)
+                and anchor_mean >= max(0.45, minimum_mean - 0.01)
+                and anchor_source[1] >= minimum_anchor_similarity
+            ):
+                source_label, source_similarity, similarity_details = anchor_source
+                match.update({
+                    "label": anchor_label,
+                    "accepted": True,
+                    "acceptance_mode": "cluster_anchor_consensus",
+                    "cluster_label_by_default": True,
+                    "score": anchor_score,
+                    "support_chunks": anchor_support_count,
+                    "support_ratio": (
+                        anchor_support_count / sampled_chunks
+                        if sampled_chunks > 0
+                        else float(match.get("support_ratio", 0.0) or 0.0)
+                    ),
+                    "support_mean_score": anchor_mean,
+                    "margin": anchor_margin,
+                    "reference_consensus": {
+                        "source_cluster": source_label,
+                        "cluster_similarity": source_similarity,
+                        **similarity_details,
+                        "min_anchor_similarity": minimum_anchor_similarity,
+                        "anchor_support_count": anchor_support_count,
+                        "anchor_score": anchor_score,
+                        "anchor_margin": anchor_margin,
+                    },
+                })
+            continue
+
+        # Prefer stable repeated quality over a single high-score outlier;
+        # support count remains an eligibility gate, not the identity oracle.
+        candidate_evidence.sort(
+            key=lambda item: (
+                item["support_mean_score"],
+                item["margin"],
+                item["score"],
+                item["support_count"],
+            ),
+            reverse=True,
+        )
+        selected = candidate_evidence[0]
+        source_match = closest_source(selected["label"], cluster_label)
+        if not source_match:
+            continue
+        source_label, source_similarity, similarity_details = source_match
+        if source_similarity < minimum_cluster_similarity:
+            continue
+
+        previous_best_label = str(match.get("best_label") or "").strip()
+        match.update({
+            "label": selected["label"],
+            "accepted": True,
+            "acceptance_mode": "reference_consensus",
+            "cluster_label_by_default": True,
+            # Expose the selected candidate's metrics to downstream scores;
+            # retain `best_label` as the raw row-vote diagnostic above.
+            "score": selected["score"],
+            "support_chunks": selected["support_count"],
+            "support_ratio": selected["support_ratio"],
+            "support_mean_score": selected["support_mean_score"],
+            "margin": selected["margin"],
+            "reference_consensus": {
+                "source_cluster": source_label,
+                "cluster_similarity": source_similarity,
+                **similarity_details,
+                "min_cluster_similarity": minimum_cluster_similarity,
+                "min_support_ratio": minimum_ratio,
+                "min_support_mean_score": minimum_mean,
+                "selected_label": selected["label"],
+                "raw_best_label": previous_best_label or None,
+                "candidate_count": len(candidate_evidence),
+            },
+        })
+
+    for match in matches.values():
+        if not isinstance(match, dict) or match.get("accepted") is not True:
+            continue
+        if match.get("acceptance_mode") in {
+            "reference_consensus",
+            "cluster_anchor_consensus",
+        }:
+            continue
+        support_ratio = float(match.get("support_ratio", 0.0) or 0.0)
+        support_mean = float(match.get("support_mean_score", -1.0) or -1.0)
+        score = float(match.get("score", -1.0) or -1.0)
+        margin = float(match.get("margin", -1.0) or -1.0)
+        if (
+            score >= 0.70
+            and margin >= 0.10
+            and support_ratio >= 0.50
+            and support_mean >= 0.58
+        ):
+            match["cluster_label_by_default"] = True
+
     return matches
 
 

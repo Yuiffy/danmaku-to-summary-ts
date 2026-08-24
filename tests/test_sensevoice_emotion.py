@@ -1,6 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 
 PYTHON_DIR = Path(__file__).resolve().parents[1] / "src" / "scripts" / "python"
@@ -8,6 +9,8 @@ if str(PYTHON_DIR) not in sys.path:
     sys.path.insert(0, str(PYTHON_DIR))
 
 from sensevoice_emotion import (  # noqa: E402
+    _cuda_tf32_context,
+    _generate_emotion_batch,
     analyze_paraformer_emotions,
     build_duration_batches,
     merge_segments_to_emotion_chunks,
@@ -18,12 +21,14 @@ from sensevoice_emotion import (  # noqa: E402
 class FakeSenseVoiceModel:
     loads = 0
     generate_calls = 0
+    generate_kwargs = []
 
     def __init__(self, **_kwargs):
         type(self).loads += 1
 
     def generate(self, input, **_kwargs):
         type(self).generate_calls += 1
+        type(self).generate_kwargs.append(dict(_kwargs))
         tags = [
             "<|zh|><|HAPPY|><|Laughter|><|withitn|>第一段",
             "<|zh|><|SURPRISED|><|Speech|><|withitn|>第二段",
@@ -40,6 +45,7 @@ class SenseVoiceEmotionTests(unittest.TestCase):
     def setUp(self):
         FakeSenseVoiceModel.loads = 0
         FakeSenseVoiceModel.generate_calls = 0
+        FakeSenseVoiceModel.generate_kwargs = []
 
     def test_merges_nearby_segments_without_crossing_chunk_limit(self):
         chunks = merge_segments_to_emotion_chunks([
@@ -83,6 +89,9 @@ class SenseVoiceEmotionTests(unittest.TestCase):
                 "max_gap_s": 0,
                 "batch_size_s": 20,
                 "max_batch_chunks": 8,
+                "inference_batch_size": 8,
+                "precision": "fp32",
+                "tf32": False,
             }
         }
         segments = [
@@ -118,6 +127,73 @@ class SenseVoiceEmotionTests(unittest.TestCase):
         self.assertEqual(FakeSenseVoiceModel.loads, 1)
         self.assertFalse(first["modelCacheHit"])
         self.assertTrue(second["modelCacheHit"])
+        self.assertEqual(first["inferenceBatchSize"], 8)
+        self.assertEqual(
+            [kwargs["batch_size"] for kwargs in FakeSenseVoiceModel.generate_kwargs],
+            [8, 8],
+        )
+
+    def test_bf16_failure_retries_only_current_batch_in_fp32(self):
+        class FakeAutocast:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        class FakeTorch:
+            bfloat16 = object()
+
+            @staticmethod
+            def autocast(**_kwargs):
+                return FakeAutocast()
+
+        class FailingBf16Model:
+            def __init__(self):
+                self.calls = []
+
+            def generate(self, **kwargs):
+                self.calls.append(kwargs)
+                if len(self.calls) == 1:
+                    raise RuntimeError("BF16 kernel unavailable")
+                return [{"text": "<|HAPPY|><|Speech|>回退成功"}]
+
+        model = FailingBf16Model()
+        results, fallback = _generate_emotion_batch(
+            model,
+            [[0.0, 0.0]],
+            {"inference_batch_size": 8},
+            20,
+            "bf16",
+            torch_module=FakeTorch,
+        )
+
+        self.assertTrue(fallback)
+        self.assertEqual(results[0]["text"], "<|HAPPY|><|Speech|>回退成功")
+        self.assertEqual(len(model.calls), 2)
+        self.assertEqual(model.calls[0]["batch_size"], 8)
+        self.assertEqual(model.calls[1]["batch_size"], 8)
+
+    def test_tf32_context_restores_previous_torch_settings(self):
+        fake_torch = SimpleNamespace(
+            backends=SimpleNamespace(
+                cuda=SimpleNamespace(matmul=SimpleNamespace(allow_tf32=False)),
+                cudnn=SimpleNamespace(allow_tf32=False),
+            ),
+            get_float32_matmul_precision=lambda: "highest",
+            set_float32_matmul_precision=lambda value: setattr(fake_torch, "precision", value),
+            precision="highest",
+        )
+
+        with _cuda_tf32_context("cuda", True, fake_torch) as enabled:
+            self.assertTrue(enabled)
+            self.assertTrue(fake_torch.backends.cuda.matmul.allow_tf32)
+            self.assertTrue(fake_torch.backends.cudnn.allow_tf32)
+            self.assertEqual(fake_torch.precision, "high")
+
+        self.assertFalse(fake_torch.backends.cuda.matmul.allow_tf32)
+        self.assertFalse(fake_torch.backends.cudnn.allow_tf32)
+        self.assertEqual(fake_torch.precision, "highest")
 
     def test_failure_is_recorded_without_discarding_paraformer_segments(self):
         payload = {

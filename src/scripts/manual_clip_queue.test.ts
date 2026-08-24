@@ -34,6 +34,11 @@ describe('manual_clip_queue', () => {
       titlePrefix: '【老岁片】',
       tags: expect.arrayContaining(['老岁片']),
     });
+    expect(resolveQueueProfile('shiori')).toMatchObject({
+      name: 'shiori',
+      titlePrefix: '【小栞】',
+      tags: expect.arrayContaining(['AI切片']),
+    });
   });
 
   test('adds the recording date and source title to old-sui copy', () => {

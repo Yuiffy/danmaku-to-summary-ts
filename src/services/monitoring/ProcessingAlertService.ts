@@ -3,6 +3,7 @@ import * as path from 'path';
 import { ConfigProvider } from '../../core/config/ConfigProvider';
 import { getLogger } from '../../core/logging/LogManager';
 import { WeChatWorkNotifier } from '../notification/WeChatWorkNotifier';
+import type { RecorderStallDiagnosticSnapshot } from './RecorderStallDiagnostics';
 
 interface CpuTimes {
   idle: number;
@@ -203,6 +204,37 @@ export class ProcessingAlertService {
 
   static async notifyStreamStartedWithoutFileOpening(details: MikufansLifecycleAlertDetails): Promise<void> {
     await this.notifyStreamStartedWithoutFileOrSession(details);
+  }
+
+  static async notifyRecorderStallDiagnostics(snapshot: RecorderStallDiagnosticSnapshot): Promise<void> {
+    if (!this.isEnabled()) return;
+
+    const incidentId = snapshot.sessionId || snapshot.observedAt || snapshot.capturedAt;
+    const dump = snapshot.dump;
+    const matchedLogCount = snapshot.logEvidence.filter(item => item.matchedLines.length > 0).length;
+    await this.notifyOnce(
+      `mikufans-recorder-stall:${snapshot.roomId}:${incidentId}`,
+      'Mikufans 录制疑似卡在 FileOpening 前',
+      [
+        this.formatRoom(snapshot),
+        snapshot.title ? `**标题**: ${snapshot.title}` : undefined,
+        snapshot.sessionId ? `**SessionId**: ${snapshot.sessionId}` : undefined,
+        snapshot.sessionStartedAt ? `**SessionStarted时间**: ${snapshot.sessionStartedAt}` : undefined,
+        `**已等待**: ${snapshot.elapsedSeconds.toFixed(0)} 秒`,
+        '**已确认**: 已收到 SessionStarted，但诊断窗口内没有收到同一会话的 FileOpening',
+        `**事件数**: ${snapshot.events.length}`,
+        `**录播目录文件快照**: ${snapshot.fileInventory.entries.length} 个${snapshot.fileInventory.truncated ? '（已截断）' : ''}`,
+        `**BililiveRecorder日志证据**: ${matchedLogCount}/${snapshot.logEvidence.length} 个文件匹配`,
+        `**进程快照**: ${snapshot.processSnapshot.processes.length} 个候选进程`,
+        `**进程Dump**: ${dump?.status || '未请求'}${dump?.sizeBytes ? `（${(dump.sizeBytes / 1024 / 1024).toFixed(1)} MiB）` : ''}`,
+        dump?.analysis ? `**Dump分析**: ${dump.analysis.status}${dump.analysis.path ? `（${dump.analysis.path}）` : ''}` : undefined,
+        `**诊断目录**: ${snapshot.diagnosticDirectory}`,
+        snapshot.writeError ? `**诊断写盘错误**: ${snapshot.writeError}` : undefined,
+        '**建议**: 先查看诊断目录中的时间线、日志、文件快照和Dump；若仍需确认服务器字节内容，再人工临时切换原始数据模式。'
+      ],
+      `mikufans-recorder-stall:${snapshot.roomId}`,
+      LIFECYCLE_ALERT_RETRY_OPTIONS
+    );
   }
 
   static async notifyStreamEndedWithoutCurrentSegment(details: MikufansLifecycleAlertDetails): Promise<void> {

@@ -78,3 +78,4 @@ config/cookies*.txt
 data/delayed_reply_tasks.json
 src/scripts/.whisper_lock
 tmp/*
+temp/*

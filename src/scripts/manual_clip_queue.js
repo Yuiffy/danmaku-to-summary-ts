@@ -26,12 +26,21 @@ const QUEUE_PROFILES = {
         titlePrefix: '【老岁片】',
         tags: ['老岁片', '岁己SUI', '虚拟主播', '直播切片', 'AI切片'],
         label: '老岁片手工队列'
+    },
+    shiori: {
+        name: 'shiori',
+        titlePrefix: '【小栞】',
+        tags: ['AI切片', '小岁', '虚拟主播', '直播切片'],
+        label: '栞栞手工队列'
     }
 };
 function resolveQueueProfile(value) {
     const normalized = String(value || 'small_sui').trim().toLowerCase();
     if (['old', 'legacy', 'old-sui', 'old_sui', '老岁片'].includes(normalized)) {
         return QUEUE_PROFILES.old_sui;
+    }
+    if (['shiori', '小栞', '栞栞'].includes(normalized)) {
+        return QUEUE_PROFILES.shiori;
     }
     return QUEUE_PROFILES.small_sui;
 }
@@ -284,7 +293,14 @@ async function cutTask(task, rootConfig) {
     const metadataPath = path.join(task.outputDir, `${task.outputStem}.json`);
     const copyPath = path.join(task.outputDir, `${task.outputStem}_投稿文案.md`);
     const window = { start: task.start, end: task.end, duration: task.end - task.start };
-    const srtResult = topicClipper.writeClipSrt(sourceSrt.segments, window, outputSrt);
+    const subtitleConfig = rootConfig.subtitle || {};
+    const clipTopicsConfig = rootConfig.clipTopics || {};
+    const srtResult = topicClipper.writeClipSrt(sourceSrt.segments, window, outputSrt, {
+        maxCharsPerLine: clipTopicsConfig.subtitleMaxCharsPerLine
+            ?? subtitleConfig.max_chars_per_line
+            ?? 18,
+        stripPunctuation: subtitleConfig.strip_punctuation ?? true
+    });
     const own = rootConfig.ownStreamClips || {};
     const cutConfig = {
         ...(rootConfig.clipTopics || {}),

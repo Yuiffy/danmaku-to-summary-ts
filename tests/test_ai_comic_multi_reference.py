@@ -837,6 +837,60 @@ class MultiReferenceComicTests(unittest.TestCase):
         self.assertIn("若下方漫画脚本与 live_facts 冲突", image_prompt)
         self.assertIn("不要绘制错误的游戏界面", image_prompt)
 
+    def test_same_recording_live_content_summary_constrains_game_identity(self):
+        summary_path = Path(comic.live_content_summary_path(str(self.highlight)))
+        summary_path.write_text(json.dumps({
+            "schemaVersion": 1,
+            "status": "success",
+            "source": {"sourceSha256": "source-a"},
+            "content": {
+                "overview": "玩《魔兽世界》做任务",
+                "activityTypes": ["game"],
+                "songs": [],
+                "games": ["魔兽世界"],
+                "topics": ["任务和装备"],
+            },
+        }, ensure_ascii=False), encoding="utf-8")
+
+        live_context = comic.load_live_generation_context(
+            str(self.highlight),
+            "25788785",
+            self.config,
+        )
+        self.assertEqual(live_context["liveContent"]["games"], ["魔兽世界"])
+        prompt = comic.build_comic_generation_prompt(
+            "白发红瞳女生",
+            "主播开始刷装备。",
+            "25788785",
+            live_context=live_context,
+        )
+
+        self.assertIn("本场明确实际游玩的游戏（涉及游戏时只能从此列表选择）：魔兽世界", prompt)
+        self.assertIn("games 非空时，涉及游戏的脚本、截图请求和画面只能使用列表中的游戏名", prompt)
+
+        summary_path.write_text(json.dumps({
+            "schemaVersion": 1,
+            "status": "success",
+            "source": {"sourceSha256": "source-a"},
+            "content": {
+                "overview": "早间杂谈和唱歌",
+                "activityTypes": ["chat", "singing"],
+                "songs": ["心墙"],
+                "games": [],
+                "topics": ["设备和睡眠"],
+            },
+        }, ensure_ascii=False), encoding="utf-8")
+        no_game_context = comic.load_live_generation_context(
+            str(self.highlight),
+            "25788785",
+            self.config,
+        )
+        no_game_prompt = comic.format_live_generation_context(no_game_context)
+        self.assertIn("本场明确实际游玩的游戏：无", no_game_prompt)
+        self.assertIn("不得仅凭聊天提及、观看视频片段或孤立ASR词语猜测具体游戏界面", no_game_prompt)
+
+        summary_path.unlink()
+
     def test_comic_script_meta_hashes_live_context(self):
         output = self.root / "context_story_COMIC_SCRIPT.txt"
         live_context = {
@@ -1074,6 +1128,13 @@ class MultiReferenceComicTests(unittest.TestCase):
                 "content": "中午明日方舟代抽",
             }],
             "contentHints": [],
+            "liveContent": {
+                "overview": "玩《魔兽世界》做任务",
+                "activityTypes": ["game"],
+                "songs": [],
+                "games": ["魔兽世界"],
+                "topics": ["插件和装备"],
+            },
         }
         python_prefix = comic.build_shared_live_source_prefix(
             raw_highlight,
@@ -1295,8 +1356,11 @@ process.stdout.write(context.buildSharedLiveSourcePrefix(
         self.assertIn('"timestampSeconds":数值', immersive_script_prompt)
         self.assertIn('"textPlan"', immersive_script_prompt)
         self.assertNotIn("沉浸式画面策略", control_image_prompt)
+        self.assertIn("统一视觉证据规则（四格与沉浸式共用）", control_image_prompt)
+        self.assertIn("截图只是直播间画面、黑屏、加载、转场、遮挡", control_image_prompt)
         self.assertIn("reference 的 JSON 记录只是选择输入截图", control_image_prompt)
         self.assertIn("不是额外分镜、台词、标题", control_image_prompt)
+        self.assertIn("统一视觉证据规则（四格与沉浸式共用）", immersive_image_prompt)
         self.assertIn("沉浸式画面策略", immersive_image_prompt)
 
     def test_immersive_prompts_preserve_future_and_imagined_modality(self):

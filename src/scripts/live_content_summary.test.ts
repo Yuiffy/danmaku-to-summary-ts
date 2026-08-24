@@ -45,6 +45,8 @@ describe('live_content_summary', () => {
     const production = require('../../config/production.json');
 
     expect(production.ai.text.sharedPromptCache.explicitRolloutPercent).toBe(10);
+    expect(production.ai.comic.storytellingExperiment.immersivePercent).toBe(60);
+    expect(production.ai.roomSettings['26966466'].storytellingExperiment).toBeUndefined();
     expect(production.ai.roomSettings['25788785'].fullLiveContextExperiment).toEqual(
       expect.objectContaining({
         tasks: ['summary', 'ownStreamClips'],

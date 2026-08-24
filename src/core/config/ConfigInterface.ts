@@ -265,6 +265,25 @@ export interface AsrGpuThrottleConfig {
   low_impact?: AsrGpuLowImpactConfig;
 }
 
+export interface AsrEmotionAnalysisConfig {
+  enabled?: boolean;
+  room_ids?: Array<string | number>;
+  model?: string;
+  device?: 'cuda' | 'cpu' | string;
+  language?: string;
+  chunk_s?: number;
+  max_gap_s?: number;
+  batch_size_s?: number;
+  max_batch_chunks?: number;
+  inference_batch_size?: number;
+  precision?: 'bf16' | 'fp32' | string;
+  tf32?: boolean;
+  include_events?: boolean;
+  fail_open?: boolean;
+  model_load_timeout_s?: number;
+  batch_timeout_s?: number;
+}
+
 export interface AsrAdaptiveSpeakerConfig {
   speaker_detection_mode?: 'auto' | 'always';
   speaker_min_segment_s?: number;
@@ -289,6 +308,14 @@ export interface AsrAdaptiveSpeakerConfig {
   speaker_row_reference_threshold?: number;
   speaker_row_reference_margin?: number;
   speaker_row_reference_top_k?: number;
+  speaker_reference_consensus_enabled?: boolean;
+  speaker_reference_consensus_min_score?: number;
+  speaker_reference_consensus_min_margin?: number;
+  speaker_reference_consensus_min_support_chunks?: number;
+  speaker_reference_consensus_min_support_ratio?: number;
+  speaker_reference_consensus_min_support_mean_score?: number;
+  speaker_reference_consensus_min_cluster_similarity?: number;
+  speaker_reference_consensus_min_anchor_similarity?: number;
 }
 
 export interface AsrConfig {
@@ -380,6 +407,7 @@ export interface AsrConfig {
     batch_size_s?: number;
     batch_size_threshold_s?: number;
     process_timeout_s?: number;
+    emotion_analysis?: AsrEmotionAnalysisConfig;
     persistent_worker?: {
       enabled?: boolean;
       startup_timeout_s?: number;
@@ -737,9 +765,35 @@ export interface WeChatWorkConfig {
   webhookUrl?: string;
 }
 
+export interface RecorderStallDiagnosticsConfig {
+  /** 是否在 SessionStarted 后自动诊断迟迟没有 FileOpening 的录制会话。 */
+  enabled?: boolean;
+  /** 等待 FileOpening 的秒数，默认 480。 */
+  delaySeconds?: number;
+  /** 相对 storage.tempPath 的诊断输出目录，也可以填写绝对路径。 */
+  outputDirectory?: string;
+  /** 是否在诊断触发时自动采集 BililiveRecorder 进程完整 dump，默认开启。 */
+  includeProcessDump?: boolean;
+  /** 采集 dotnet-dump 后是否自动导出 clrstack/clrthreads，默认开启。 */
+  analyzeDump?: boolean;
+  /** auto、dotnet-dump 或 procdump。 */
+  dumpTool?: string;
+  /** 可选的 dump 工具绝对路径。 */
+  dumpToolPath?: string;
+  /** dump 工具最长运行秒数。 */
+  dumpTimeoutSeconds?: number;
+  /** BililiveRecorder 日志目录；为空时自动搜索。 */
+  logDirectory?: string;
+  /** 每个日志文件最多读取的尾部字节数。 */
+  maxLogBytes?: number;
+  /** 录播目录最多记录多少个匹配文件。 */
+  maxFileEntries?: number;
+}
+
 // 监控配置
 export interface MonitoringConfig {
   enabled: boolean;
+  recorderStallDiagnostics?: RecorderStallDiagnosticsConfig;
   processingAlerts?: {
     enabled: boolean;
     cpuHighPercent: number;

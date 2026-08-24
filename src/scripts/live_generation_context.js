@@ -382,6 +382,43 @@ function formatLiveGenerationContext(context) {
         `- 开播时间（北京时间）：${context.recordingStartLocalTime || '未取得'}。判断早/午/晚必须以此为准，不能因主播说“刚起床”等作息描述改写客观时段。`
     ];
 
+    const liveContent = context.liveContent && typeof context.liveContent === 'object'
+        ? context.liveContent
+        : {};
+    const overview = normalizeText(liveContent.overview);
+    const activityTypes = Array.isArray(liveContent.activityTypes)
+        ? liveContent.activityTypes.map(item => String(item || '').trim()).filter(Boolean)
+        : [];
+    const songs = Array.isArray(liveContent.songs)
+        ? liveContent.songs.map(item => String(item || '').trim()).filter(Boolean)
+        : [];
+    const games = Array.isArray(liveContent.games)
+        ? liveContent.games.map(item => String(item || '').trim()).filter(Boolean)
+        : [];
+    const topics = Array.isArray(liveContent.topics)
+        ? liveContent.topics.map(item => String(item || '').trim()).filter(Boolean)
+        : [];
+    if (overview || activityTypes.length > 0 || songs.length > 0 || games.length > 0 || topics.length > 0) {
+        lines.push('【同场结构化直播梗概（用于锁定本场活动，不是人设常识）】');
+        if (overview) {
+            lines.push(`- 本场概览：${overview}`);
+        }
+        if (activityTypes.length > 0) {
+            lines.push(`- 本场活动类型：${activityTypes.join('、')}`);
+        }
+        if (games.length > 0) {
+            lines.push(`- 本场明确实际游玩的游戏（涉及游戏时只能从此列表选择）：${games.join('、')}`);
+        } else {
+            lines.push('- 本场明确实际游玩的游戏：无（不得仅凭聊天提及、观看视频片段或孤立ASR词语猜测具体游戏界面）');
+        }
+        if (songs.length > 0) {
+            lines.push(`- 本场明确演唱或播放的歌曲：${songs.join('、')}`);
+        }
+        if (topics.length > 0) {
+            lines.push(`- 本场明确讨论的话题：${topics.join('、')}`);
+        }
+    }
+
     if (Array.isArray(context.recentDynamics) && context.recentDynamics.length > 0) {
         lines.push('- 开播前近期动态（仅用于确认本场主题/预告，不得把动态里未在本场发生的事写成直播内容）：');
         context.recentDynamics.forEach((item) => {
@@ -398,6 +435,8 @@ function formatLiveGenerationContext(context) {
         '【事实证据优先级】直播标题与明确语音 > 同场弹幕 > 开播前近期动态 > 稳定人设、兴趣、口头禅与模型常识。',
         '稳定人设、兴趣和口头禅不是本场发生的事实，只能消解正文中确实存在且没有冲突证据的歧义；一旦高优先级证据指向其他游戏、活动或人物，必须服从高优先级证据。',
         '当直播标题、明确语音或开播前动态中至少两类证据一致确认具体游戏/活动时，回复和画面应自然点明该名称，不要退化成泛化的“某游戏”“抽卡界面”；只有证据不足或互相冲突时才使用中性描述。',
+        '同场结构化直播梗概中的 games 只表示本场明确实际游玩的游戏；games 为空时，禁止把“鱼雷”“火墙”“装备”等孤立词语或被观看视频的片段升级成另一款游戏。games 非空时，涉及游戏的脚本、截图请求和画面只能使用列表中的游戏名。',
+        '若脚本请求的截图与文字候选作品冲突，优先依据截图中清楚可见的标题、Logo、UI和画面核对作品身份；截图没有显示游戏时不要凭题材常识补画具体游戏。',
         '不得因为人物设定中的某款游戏或口头禅，擅自给本场添加对应游戏界面、角色、Logo或台词。游戏/活动无法确认时使用中性描述，不猜具体作品。'
     );
 

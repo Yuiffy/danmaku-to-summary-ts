@@ -61,6 +61,36 @@ describe('live_generation_context', () => {
     expect(formatted).toContain('不得因为人物设定中的某款游戏或口头禅');
   });
 
+  test('uses same-recording structured activity summary to constrain game identity', () => {
+    const withGame = liveContext.formatLiveGenerationContext({
+      liveTitle: '早安獭獭栞！',
+      recordingStartLocalTime: '2026-08-23 10:00:22 UTC+8',
+      liveContent: {
+        overview: '玩《魔兽世界》做任务',
+        activityTypes: ['game'],
+        games: ['魔兽世界'],
+        songs: [],
+        topics: ['任务和装备']
+      }
+    });
+    const withoutGame = liveContext.formatLiveGenerationContext({
+      liveTitle: '早安獭獭栞！',
+      recordingStartLocalTime: '2026-08-23 10:00:22 UTC+8',
+      liveContent: {
+        overview: '早间杂谈和唱歌',
+        activityTypes: ['chat', 'singing'],
+        games: [],
+        songs: ['心墙'],
+        topics: ['设备和睡眠']
+      }
+    });
+
+    expect(withGame).toContain('本场明确实际游玩的游戏（涉及游戏时只能从此列表选择）：魔兽世界');
+    expect(withGame).toContain('games 非空时，涉及游戏的脚本、截图请求和画面只能使用列表中的游戏名');
+    expect(withoutGame).toContain('本场明确实际游玩的游戏：无');
+    expect(withoutGame).toContain('不得仅凭聊天提及、观看视频片段或孤立ASR词语猜测具体游戏界面');
+  });
+
   test('keeps title context when the optional dynamics lookup fails', async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'live-context-'));
     const tempHighlight = path.join(tempDir, '录制-30655190-20260801-115716-543-明日方舟代抽⭐_AI_HIGHLIGHT.txt');

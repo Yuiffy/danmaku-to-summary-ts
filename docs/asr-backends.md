@@ -496,6 +496,8 @@ SenseVoice 时间轴优先使用 FunASR 返回的 `sentence_info` / `segments` �
 - 岁己 -> `data/asr_speaker_refs/sui.wav`
 - 栞栞平静聊天 -> `data/asr_speaker_refs/shiori.wav`
 - 栞栞激动游戏 -> `data/asr_speaker_refs/shiori_excited_game.wav`
+- 栞栞近期聊天/变声状态 -> `data/asr_speaker_refs/shiori_recent_solo.wav`, `data/asr_speaker_refs/shiori_recent_august.wav`, `data/asr_speaker_refs/shiori_recent_august_alt.wav`, `data/asr_speaker_refs/shiori_recent_august_24.wav`, `data/asr_speaker_refs/shiori_august_24_fragmented.wav`
+- 栞栞唱歌状态 -> `data/asr_speaker_refs/shiori_singing.wav`, `data/asr_speaker_refs/shiori_singing_august_24.wav`
 - 瑞娅 -> `data/asr_speaker_refs/rhea.wav`
 - 三理 -> `data/asr_speaker_refs/mit3uri.wav`
 - 米汀 -> `data/asr_speaker_refs/miting.wav`
@@ -510,8 +512,9 @@ SenseVoice 时间轴优先使用 FunASR 返回的 `sentence_info` / `segments` �
 - `speaker_merge_threshold`: 聚类合并阈值，当前默认 `0.78`；具体生产值以 config 为准。
 - `speaker_references`: 可选已知单人音频；完整处理选中后才延迟构建 prototypes。同一 `speaker` 可用不同 `state` 登记多份参考，以覆盖平静、激动、游戏麦等稳定声学状态。
 - `speaker_reference_threshold` 与 `speaker_reference_margin`: 约束 cluster 最佳分数和相对第二名的 margin；`speaker_reference_min_support_chunks` 与 `speaker_reference_min_support_ratio` 进一步要求多句重复证据。
-- `speaker_reference_prototype_*`: 控制每个状态内的离群过滤、原型合并和最大原型数。单个状态只有一条样本时不会独立形成受支持原型；仅有一条参考的旧配置仍保留兼容回退。
+- `speaker_reference_prototype_*`: 控制每个状态内的离群过滤、原型合并和最大原型数；当前生产上限为 10，以覆盖同一主播的多个声学状态。单个状态只有一条样本时不会独立形成受支持原型；仅有一条参考的旧配置仍保留兼容回退。
 - `speaker_row_reference_threshold` 与 `speaker_row_reference_margin`: 逐句实名门槛。已实名 cluster 也不会无条件覆盖内部所有短句，避免混说、游戏语音或聚类污染被批量实名。
+- `speaker_reference_consensus_*`: 用已确认的同名参考簇补足声学过分裂；普通共识默认中心相似度门槛为 `0.60`，极弱但与高置信同名簇接近的碎片另需当前生产配置中的 `0.70` 锚定相似度、至少一块直接证据、分数和 margin 门槛。所有参考说话人仍同时竞争，证据不足继续匿名。
 - `speaker_constrain_to_references`: 保留兼容字段；当前 JS adapter 明确传 `false`。未知声音保留 `SPEAKER_nn`，planned roster 不改变这一开放集行为。
 
 这是 speech-chunk 级聚类和句子级 dominant-overlap 投影，不做逐词级重叠说话分离。多人同时说话、背景音、变声、距离麦克风差异大时仍可能过分裂、合并或变为 `UNKNOWN`；应通过 metadata 和 review SRT 复核。
@@ -581,7 +584,7 @@ xxx.asr_speakers.json
 
 `appearedStreamerIds` 只来自 ASR segment 中真实识别到的 known speaker。字幕文本里提到某个主播名字，不会自动加入参考图；mentioned streamers 可以作为后续上下文能力预留，但默认不参与生图。
 
-单主播 fallback 默认关闭。只有任务上下文显式设置 `speakerSingleHostFallback=true`、speaker request 设置 `singleHostFallback=true`，或房间配置 `ai.roomSettings[roomId].speakerSingleHostFallback=true` 时才会考虑启用；即使启用，也要求 speaker reference 已确认房主、没有计划 roster 嘉宾、没有已知非房主标签或已确认的非房主匹配，并且结果中只有匿名 `SPEAKER_nn`/`UNKNOWN` 簇。fallback 只处理说话人标签，不会把字幕文本中提到的人名当成说话人。
+参考簇共识只用于补足弱声学簇：弱簇必须自行满足最低分数、margin、重复支持和簇中心相似度，并且与已经高置信识别出的同名参考簇一致，才会获得该实名标签。没有这些独立证据的 `SPEAKER_nn`/`UNKNOWN` 簇保持匿名；房间是否单主播不会改变说话人判定，也不会覆盖有重复证据指向其他参考说话人的字幕行。
 
 开启多参考图需要配置全局开关、房间开关和主播实体库：
 

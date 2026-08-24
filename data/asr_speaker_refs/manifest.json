@@ -3,7 +3,7 @@
     "speaker": "岁己SUI",
     "key": "sui",
     "audio_path": "data/asr_speaker_refs/sui.wav",
-    "seconds": 160.0,
+    "seconds": 160,
     "source_count": 20,
     "source_media": "D:\\files\\videos\\DDTV录播\\25788785_岁己SUI\\2026_05_26\\录制-25788785-20260526-202308-561-悠哉悠哉夜晚_merged.flv",
     "source_srt": "D:\\files\\videos\\DDTV录播\\25788785_岁己SUI\\2026_05_26\\录制-25788785-20260526-202308-561-悠哉悠哉夜晚_merged.srt"
@@ -13,7 +13,7 @@
     "key": "shiori",
     "audio_path": "data/asr_speaker_refs/shiori.wav",
     "state": "calm_chat",
-    "seconds": 160.0,
+    "seconds": 160,
     "source_count": 20,
     "source_media": "D:\\files\\videos\\DDTV录播\\26966466_栞栞Shiori\\2026_05_26\\录制-26966466-20260526-100634-093-早安獭獭栞！.m4a; D:\\files\\videos\\DDTV录播\\26966466_栞栞Shiori\\2026_05_26\\录制-26966466-20260526-214833-809-栞来！.m4a",
     "source_srt": "D:\\files\\videos\\DDTV录播\\26966466_栞栞Shiori\\2026_05_26\\录制-26966466-20260526-100634-093-早安獭獭栞！.srt; D:\\files\\videos\\DDTV录播\\26966466_栞栞Shiori\\2026_05_26\\录制-26966466-20260526-214833-809-栞来！.srt"
@@ -27,6 +27,61 @@
     "source_count": 12,
     "source_media": "D:\\files\\videos\\DDTV录播\\26966466_栞栞Shiori\\2026_07_30\\录制-26966466-20260730-154902-305-栞瓦！_merged.flv",
     "source_srt": "D:\\files\\videos\\DDTV录播\\26966466_栞栞Shiori\\2026_07_30\\录制-26966466-20260730-154902-305-栞瓦！_merged.speaker.srt"
+  },
+  {
+    "speaker": "栞栞",
+    "key": "shiori_recent_solo",
+    "audio_path": "data/asr_speaker_refs/shiori_recent_solo.wav",
+    "state": "recent_solo_chat",
+    "seconds": 64,
+    "source_count": 8,
+    "source_media": "E:\\EFiles\\Evideo\\DDTV录播-E\\26966466_栞栞Shiori\\2026_07_20\\录制-26966466-20260720-230255-236-困困小栞QWQ.opus; E:\\EFiles\\Evideo\\DDTV录播-E\\26966466_栞栞Shiori\\2026_07_21\\录制-26966466-20260721-101225-974-早安獭獭栞！.opus",
+    "source_srt": "E:\\EFiles\\Evideo\\DDTV录播-E\\26966466_栞栞Shiori\\2026_07_20\\录制-26966466-20260720-230255-236-困困小栞QWQ.speaker.srt; E:\\EFiles\\Evideo\\DDTV录播-E\\26966466_栞栞Shiori\\2026_07_21\\录制-26966466-20260721-101225-974-早安獭獭栞！.speaker.srt",
+    "enrollment_manifest": "data/asr_speaker_refs/enrollment_candidates/shiori_v2.enrollment.json",
+    "validation_report": "data/asr_speaker_refs/enrollment_candidates/shiori_v2_candidate_report.json",
+    "sha256": "26e8b84bbebb7aec5b3ff59a2e69261a3c4515e47f80d0053489ad742867136a"
+  },
+  {
+    "speaker": "栞栞",
+    "key": "shiori_singing",
+    "audio_path": "data/asr_speaker_refs/shiori_singing.wav",
+    "state": "singing_karaoke",
+    "seconds": 64,
+    "source_count": 8,
+    "source_media": "D:\\files\\videos\\DDTV录播\\26966466_栞栞Shiori\\2026_08_19\\录制-26966466-20260819-210645-562-七夕唱唱歌(_^▽^_).opus",
+    "source_srt": "D:\\files\\videos\\DDTV录播\\26966466_栞栞Shiori\\2026_08_19\\录制-26966466-20260819-210645-562-七夕唱唱歌(_^▽^_).speaker.srt",
+    "source_segments": "00:06:54-00:07:02; 00:08:02-00:08:10; 00:09:04-00:09:12; 00:10:57-00:11:05; 00:32:10-00:32:18; 00:43:01-00:43:09; 00:51:22-00:51:30; 00:59:51-00:59:59",
+    "enrollment_manifest": "data/asr_speaker_refs/enrollment_candidates/shiori_singing.enrollment.json",
+    "validation_report": "data/asr_speaker_refs/enrollment_candidates/shiori_singing_candidate_report.json",
+    "sha256": "fa8a6ec29f71debcfa01b20970569417610c9b8c95495e557b89297165d44285"
+  },
+  {
+    "speaker": "栞栞",
+    "key": "shiori_recent_august",
+    "audio_path": "data/asr_speaker_refs/shiori_recent_august.wav",
+    "state": "recent_chat_august",
+    "seconds": 64,
+    "source_count": 8,
+    "source_media": "D:\\files\\videos\\DDTV录播\\26966466_栞栞Shiori\\2026_08_23\\录制-26966466-20260823-100022-769-早安獭獭栞！.flv",
+    "source_srt": "D:\\files\\videos\\DDTV录播\\26966466_栞栞Shiori\\2026_08_23\\录制-26966466-20260823-100022-769-早安獭獭栞！.speaker.srt",
+    "source_segments": "00:07:04-00:07:12; 00:09:28-00:09:36; 00:12:02-00:12:10; 00:19:23-00:19:31; 00:20:14-00:20:22; 00:30:00-00:30:08; 00:31:48-00:31:56; 00:33:50-00:33:58",
+    "enrollment_manifest": "data/asr_speaker_refs/enrollment_candidates/shiori_recent_august.enrollment.json",
+    "validation_report": "data/asr_speaker_refs/enrollment_candidates/shiori_recent_august_candidate_report.json",
+    "sha256": "03e38e4659fcf0a4a827903e4c49996ac18dcb57890087a53f89e00e2d955448"
+  },
+  {
+    "speaker": "栞栞",
+    "key": "shiori_recent_august_alt",
+    "audio_path": "data/asr_speaker_refs/shiori_recent_august_alt.wav",
+    "state": "alternate_chat_august",
+    "seconds": 64,
+    "source_count": 8,
+    "source_media": "D:\\files\\videos\\DDTV录播\\26966466_栞栞Shiori\\2026_08_23\\录制-26966466-20260823-100022-769-早安獭獭栞！.flv",
+    "source_srt": "D:\\files\\videos\\DDTV录播\\26966466_栞栞Shiori\\2026_08_23\\录制-26966466-20260823-100022-769-早安獭獭栞！.speaker.srt",
+    "source_segments": "00:08:02-00:08:10; 00:10:52-00:11:00; 00:11:30-00:11:38; 00:13:33-00:13:41; 00:40:28-00:40:36; 00:49:52-00:50:00; 00:55:28-00:55:36; 00:58:53-00:59:01",
+    "enrollment_manifest": "data/asr_speaker_refs/enrollment_candidates/shiori_recent_august_alt.enrollment.json",
+    "validation_report": "data/asr_speaker_refs/enrollment_candidates/shiori_recent_august_alt_candidate_report.json",
+    "sha256": "c2391ab80fa6a0bdb1bc866cc9cd7600220745e8284277eade22c832eb310c23"
   },
   {
     "speaker": "星汐Seki",
@@ -46,7 +101,7 @@
     "speaker": "瑞娅",
     "key": "rhea",
     "audio_path": "data/asr_speaker_refs/rhea.wav",
-    "seconds": 160.0,
+    "seconds": 160,
     "source_count": 20,
     "source_media": "D:\\files\\videos\\DDTV录播\\23260993_瑞娅_Rhea\\2026_05_26\\录制-23260993-20260526-211447-574-今天也拼尽全力来见面了_merged.m4a",
     "source_srt": "D:\\files\\videos\\DDTV录播\\23260993_瑞娅_Rhea\\2026_05_26\\录制-23260993-20260526-211447-574-今天也拼尽全力来见面了_merged.srt"
@@ -55,7 +110,7 @@
     "speaker": "三理",
     "key": "mit3uri",
     "audio_path": "data/asr_speaker_refs/mit3uri.wav",
-    "seconds": 160.0,
+    "seconds": 160,
     "source_count": 20,
     "source_media": "D:\\files\\videos\\DDTV录播\\1967216004_三理Mit3uri\\2026_06_16\\录制-1967216004-20260616-100339-106-早台试行中！.flv",
     "source_srt": "D:\\files\\videos\\DDTV录播\\1967216004_三理Mit3uri\\2026_06_16\\录制-1967216004-20260616-100339-106-早台试行中！.srt"
@@ -64,7 +119,7 @@
     "speaker": "米汀",
     "key": "miting",
     "audio_path": "data/asr_speaker_refs/miting.wav",
-    "seconds": 160.0,
+    "seconds": 160,
     "source_count": 8,
     "source_media": "D:\\files\\videos\\DDTV录播\\31368705_米汀Nagisa\\2026_06_30\\录制-31368705-20260630-080607-561-早安一会儿.flv",
     "source_segments": "00:08:05-00:08:25; 00:10:05-00:10:25; 00:11:10-00:11:30; 00:13:05-00:13:25; 01:01:05-01:01:25; 01:05:05-01:05:25; 01:06:05-01:06:25; 01:07:05-01:07:25"
@@ -75,5 +130,47 @@
     "audio_path": "data/asr_speaker_refs/harei.wav",
     "seconds": 49.15,
     "source_count": 2
+  },
+  {
+    "speaker": "栞栞",
+    "key": "shiori_recent_august_24",
+    "audio_path": "data/asr_speaker_refs/shiori_recent_august_24.wav",
+    "state": "recent_chat_august_24",
+    "seconds": 64,
+    "source_count": 8,
+    "source_media": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_24/录制-26966466-20260824-100721-324-早安獭獭栞！.flv",
+    "source_srt": "tmp/verify-1249-consensus-final/1249.rerun.speaker.srt",
+    "source_segments": "00:02:25-00:02:33; 00:31:50-00:31:58; 00:50:55-00:51:03; 00:51:14-00:51:22; 01:15:41-01:15:49; 01:17:11-01:17:19; 01:28:21-01:28:29; 01:47:47-01:47:55",
+    "enrollment_manifest": "data/asr_speaker_refs/enrollment_candidates/shiori_recent_august_24.enrollment.json",
+    "validation_report": "data/asr_speaker_refs/enrollment_candidates/shiori_recent_august_24_candidate_report.json",
+    "sha256": "692db8c83ca45209fa6365bf76d192a4ed97842d9eae54a64f8552fd1d33a146"
+  },
+  {
+    "speaker": "栞栞",
+    "key": "shiori_august_24_fragmented",
+    "audio_path": "data/asr_speaker_refs/shiori_august_24_fragmented.wav",
+    "state": "fragmented_state_august_24",
+    "seconds": 64,
+    "source_count": 8,
+    "source_media": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_24/录制-26966466-20260824-100721-324-早安獭獭栞！.flv",
+    "source_srt": "tmp/verify-1249-consensus-final/1249.rerun.speaker.srt",
+    "source_segments": "00:27:26-00:27:34; 01:23:05-01:23:13; 01:32:22-01:32:30; 01:37:58-01:38:06; 01:43:52-01:44:00; 01:50:37-01:50:45; 01:51:34-01:51:42; 02:01:21-02:01:29",
+    "enrollment_manifest": "data/asr_speaker_refs/enrollment_candidates/shiori_august_24_fragmented.enrollment.json",
+    "validation_report": "data/asr_speaker_refs/enrollment_candidates/shiori_august_24_fragmented_candidate_report.json",
+    "sha256": "7299f1124ff5eae04729cc63199eeb887e8372f8a8782b19311baf75bfa74bb5"
+  },
+  {
+    "speaker": "栞栞",
+    "key": "shiori_singing_august_24",
+    "audio_path": "data/asr_speaker_refs/shiori_singing_august_24.wav",
+    "state": "singing_august_24",
+    "seconds": 64,
+    "source_count": 8,
+    "source_media": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_24/录制-26966466-20260824-100721-324-早安獭獭栞！.flv",
+    "source_srt": "tmp/verify-1249-consensus-final/1249.rerun.speaker.srt",
+    "source_segments": "01:57:33-01:57:41; 01:57:51-01:57:59; 01:58:11-01:58:19; 01:58:26-01:58:34; 01:59:09-01:59:17; 01:59:40-01:59:48; 02:00:01-02:00:09; 02:00:30-02:00:38",
+    "enrollment_manifest": "data/asr_speaker_refs/enrollment_candidates/shiori_singing_august_24.enrollment.json",
+    "validation_report": "data/asr_speaker_refs/enrollment_candidates/shiori_singing_august_24_candidate_report.json",
+    "sha256": "b8c28e0cd42ac57997330727776b3faa8b5f71ae4ca9eef75308688fb6d8e92f"
   }
 ]

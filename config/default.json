@@ -337,6 +337,55 @@
           "state": "excited_game"
         },
         {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_recent_solo.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "recent_solo_chat"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_recent_august.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "recent_chat_august"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_recent_august_alt.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "alternate_chat_august"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_singing.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "singing_karaoke"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_singing_august_24.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "singing_august_24"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_recent_august_24.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "recent_chat_august_24"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_august_24_fragmented.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "fragmented_state_august_24"
+        },
+        {
           "speaker": "瑞娅",
           "audio_path": "data/asr_speaker_refs/rhea.wav",
           "chunk_s": 8,
@@ -367,7 +416,7 @@
       "speaker_reference_min_support_chunks": 2,
       "speaker_reference_min_support_ratio": 0.5,
       "speaker_reference_prototype_merge_threshold": 0.72,
-      "speaker_reference_max_prototypes": 6,
+      "speaker_reference_max_prototypes": 10,
       "speaker_reference_prototype_min_support_chunks": 2,
       "speaker_row_reference_threshold": 0.55,
       "speaker_row_reference_margin": 0.08,
@@ -423,7 +472,7 @@
       "speaker_reference_min_support_chunks": 2,
       "speaker_reference_min_support_ratio": 0.5,
       "speaker_reference_prototype_merge_threshold": 0.72,
-      "speaker_reference_max_prototypes": 6,
+      "speaker_reference_max_prototypes": 10,
       "speaker_reference_prototype_min_support_chunks": 2,
       "speaker_row_reference_threshold": 0.55,
       "speaker_row_reference_margin": 0.08,
@@ -492,6 +541,55 @@
           "state": "excited_game"
         },
         {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_recent_solo.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "recent_solo_chat"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_recent_august.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "recent_chat_august"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_recent_august_alt.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "alternate_chat_august"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_singing.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "singing_karaoke"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_singing_august_24.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "singing_august_24"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_recent_august_24.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "recent_chat_august_24"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_august_24_fragmented.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "fragmented_state_august_24"
+        },
+        {
           "speaker": "瑞娅",
           "audio_path": "data/asr_speaker_refs/rhea.wav",
           "chunk_s": 8,
@@ -522,7 +620,7 @@
       "speaker_reference_min_support_chunks": 2,
       "speaker_reference_min_support_ratio": 0.5,
       "speaker_reference_prototype_merge_threshold": 0.72,
-      "speaker_reference_max_prototypes": 6,
+      "speaker_reference_max_prototypes": 10,
       "speaker_reference_prototype_min_support_chunks": 2,
       "speaker_row_reference_threshold": 0.55,
       "speaker_row_reference_margin": 0.08,
@@ -582,6 +680,9 @@
         "max_gap_s": 1.5,
         "batch_size_s": 300,
         "max_batch_chunks": 64,
+        "inference_batch_size": 8,
+        "precision": "bf16",
+        "tf32": true,
         "include_events": true,
         "fail_open": true
       },
@@ -642,6 +743,55 @@
           "state": "excited_game"
         },
         {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_recent_solo.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "recent_solo_chat"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_recent_august.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "recent_chat_august"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_recent_august_alt.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "alternate_chat_august"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_singing.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "singing_karaoke"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_singing_august_24.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "singing_august_24"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_recent_august_24.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "recent_chat_august_24"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_august_24_fragmented.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "fragmented_state_august_24"
+        },
+        {
           "speaker": "瑞娅",
           "audio_path": "data/asr_speaker_refs/rhea.wav",
           "chunk_s": 8,
@@ -672,7 +822,7 @@
       "speaker_reference_min_support_chunks": 2,
       "speaker_reference_min_support_ratio": 0.5,
       "speaker_reference_prototype_merge_threshold": 0.72,
-      "speaker_reference_max_prototypes": 6,
+      "speaker_reference_max_prototypes": 10,
       "speaker_reference_prototype_min_support_chunks": 2,
       "speaker_row_reference_threshold": 0.55,
       "speaker_row_reference_margin": 0.08,
@@ -1307,6 +1457,18 @@
   },
   "monitoring": {
     "enabled": false,
+    "recorderStallDiagnostics": {
+      "enabled": true,
+      "delaySeconds": 480,
+      "outputDirectory": "recorder-diagnostics",
+      "includeProcessDump": true,
+      "analyzeDump": true,
+      "dumpTool": "auto",
+      "dumpTimeoutSeconds": 180,
+      "logDirectory": "",
+      "maxLogBytes": 262144,
+      "maxFileEntries": 300
+    },
     "processingAlerts": {
       "enabled": true,
       "cpuHighPercent": 85,

@@ -9,11 +9,11 @@
   },
   "clips": [
     {
-      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_07_21/录制-26966466-20260721-101225-974-早安獭獭栞！.flv",
+      "source": "E:/EFiles/Evideo/DDTV录播-E/26966466_栞栞Shiori/2026_07_21/录制-26966466-20260721-101225-974-早安獭獭栞！.opus",
       "startSeconds": 120,
       "durationSeconds": 8.0,
       "kind": "speech",
-      "reviewed": false,
+      "reviewed": true,
       "rms": 0.036032,
       "clippingRatio": 0.0,
       "accepted": true,
@@ -21,11 +21,11 @@
       "embeddingValid": true
     },
     {
-      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_07_21/录制-26966466-20260721-101225-974-早安獭獭栞！.flv",
+      "source": "E:/EFiles/Evideo/DDTV录播-E/26966466_栞栞Shiori/2026_07_21/录制-26966466-20260721-101225-974-早安獭獭栞！.opus",
       "startSeconds": 300,
       "durationSeconds": 8.0,
       "kind": "speech",
-      "reviewed": false,
+      "reviewed": true,
       "rms": 0.043998,
       "clippingRatio": 0.0,
       "accepted": true,
@@ -33,11 +33,11 @@
       "embeddingValid": true
     },
     {
-      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_07_21/录制-26966466-20260721-101225-974-早安獭獭栞！.flv",
+      "source": "E:/EFiles/Evideo/DDTV录播-E/26966466_栞栞Shiori/2026_07_21/录制-26966466-20260721-101225-974-早安獭獭栞！.opus",
       "startSeconds": 540,
       "durationSeconds": 8.0,
       "kind": "speech",
-      "reviewed": false,
+      "reviewed": true,
       "rms": 0.050337,
       "clippingRatio": 0.0,
       "accepted": true,
@@ -45,11 +45,11 @@
       "embeddingValid": true
     },
     {
-      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_07_21/录制-26966466-20260721-101225-974-早安獭獭栞！.flv",
+      "source": "E:/EFiles/Evideo/DDTV录播-E/26966466_栞栞Shiori/2026_07_21/录制-26966466-20260721-101225-974-早安獭獭栞！.opus",
       "startSeconds": 780,
       "durationSeconds": 8.0,
       "kind": "speech",
-      "reviewed": false,
+      "reviewed": true,
       "rms": 0.040796,
       "clippingRatio": 0.0,
       "accepted": true,
@@ -57,11 +57,11 @@
       "embeddingValid": true
     },
     {
-      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_07_20/录制-26966466-20260720-230255-236-困困小栞QWQ.flv",
+      "source": "E:/EFiles/Evideo/DDTV录播-E/26966466_栞栞Shiori/2026_07_20/录制-26966466-20260720-230255-236-困困小栞QWQ.opus",
       "startSeconds": 120,
       "durationSeconds": 8.0,
       "kind": "speech",
-      "reviewed": false,
+      "reviewed": true,
       "rms": 0.07292,
       "clippingRatio": 0.0,
       "accepted": true,
@@ -69,11 +69,11 @@
       "embeddingValid": true
     },
     {
-      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_07_20/录制-26966466-20260720-230255-236-困困小栞QWQ.flv",
+      "source": "E:/EFiles/Evideo/DDTV录播-E/26966466_栞栞Shiori/2026_07_20/录制-26966466-20260720-230255-236-困困小栞QWQ.opus",
       "startSeconds": 360,
       "durationSeconds": 8.0,
       "kind": "speech",
-      "reviewed": false,
+      "reviewed": true,
       "rms": 0.066115,
       "clippingRatio": 0.0,
       "accepted": true,
@@ -81,11 +81,11 @@
       "embeddingValid": true
     },
     {
-      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_07_20/录制-26966466-20260720-230255-236-困困小栞QWQ.flv",
+      "source": "E:/EFiles/Evideo/DDTV录播-E/26966466_栞栞Shiori/2026_07_20/录制-26966466-20260720-230255-236-困困小栞QWQ.opus",
       "startSeconds": 600,
       "durationSeconds": 8.0,
       "kind": "speech",
-      "reviewed": false,
+      "reviewed": true,
       "rms": 0.069599,
       "clippingRatio": 0.0,
       "accepted": true,
@@ -93,11 +93,11 @@
       "embeddingValid": true
     },
     {
-      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_07_20/录制-26966466-20260720-230255-236-困困小栞QWQ.flv",
+      "source": "E:/EFiles/Evideo/DDTV录播-E/26966466_栞栞Shiori/2026_07_20/录制-26966466-20260720-230255-236-困困小栞QWQ.opus",
       "startSeconds": 900,
       "durationSeconds": 8.0,
       "kind": "speech",
-      "reviewed": false,
+      "reviewed": true,
       "rms": 0.062021,
       "clippingRatio": 0.0,
       "accepted": true,

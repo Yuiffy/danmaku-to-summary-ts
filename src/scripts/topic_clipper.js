@@ -1116,7 +1116,10 @@ function writeClipSrt(segments = [], window, outputPath, options = {}) {
     for (const segment of clipSegments) {
         const start = clamp(Number(segment.start) - window.start, 0, window.duration);
         const end = clamp(Number(segment.end) - window.start, 0, window.duration);
-        const text = String(segment.text || '').trim();
+        const rawText = String(segment.text || '').trim();
+        const text = options.stripPunctuation
+            ? asrBackends.stripSubtitlePunctuation(rawText)
+            : rawText;
         if (!text || end <= start) {
             continue;
         }

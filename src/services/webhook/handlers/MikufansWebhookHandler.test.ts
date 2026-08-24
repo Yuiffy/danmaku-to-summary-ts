@@ -55,6 +55,7 @@ describe('MikufansWebhookHandler segment collection finalization', () => {
     jest.spyOn(ProcessingAlertService, 'notifyFinalizationStuck').mockResolvedValue(undefined);
     jest.spyOn(ProcessingAlertService, 'notifyMissingFileCloseAfterStreamEnd').mockResolvedValue(undefined);
     jest.spyOn(ProcessingAlertService, 'notifyMikufansOfflineStateStuck').mockResolvedValue(undefined);
+    jest.spyOn(ProcessingAlertService, 'notifyRecorderStallDiagnostics').mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -65,6 +66,7 @@ describe('MikufansWebhookHandler segment collection finalization', () => {
         }
       }
       handler.delayedActions.clear();
+      handler.recorderStallDiagnostics?.dispose();
       for (const timer of handler.pendingDelayedReplyFileTimers.values()) {
         clearTimeout(timer);
       }
@@ -404,6 +406,184 @@ describe('MikufansWebhookHandler segment collection finalization', () => {
     expect(alert).not.toHaveBeenCalled();
     await jest.advanceTimersByTimeAsync(1);
     expect(alert).toHaveBeenCalledTimes(1);
+  });
+
+  test('captures a diagnostic when SessionStarted has no FileOpening', async () => {
+    jest.useFakeTimers();
+    const recorderRoot = path.join(tempDir, 'recordings');
+    const recorderLogDirectory = path.join(tempDir, 'bilirecorder-logs');
+    fs.mkdirSync(recorderLogDirectory, { recursive: true });
+    fs.writeFileSync(
+      path.join(recorderLogDirectory, 'bilirec.log'),
+      '[2026-08-11 15:00:43] RoomId=25788785 SessionStarted 开始接收直播流\n'
+    );
+    const getConfig = jest.spyOn(ConfigProvider, 'getConfig').mockReturnValue({
+      storage: { tempPath: tempDir },
+      webhook: { endpoints: { mikufans: { basePath: recorderRoot } } },
+      monitoring: {
+        recorderStallDiagnostics: {
+          enabled: true,
+          delaySeconds: 1,
+          outputDirectory: 'diagnostics',
+          includeProcessDump: false,
+          logDirectory: recorderLogDirectory,
+          maxLogBytes: 4096,
+          maxFileEntries: 20
+        }
+      }
+    } as any);
+    const handler = new MikufansWebhookHandler() as any;
+    handlers.push(handler);
+    handler.recorderStallDiagnostics.runCommand = jest.fn().mockResolvedValue({
+      exitCode: 0,
+      stdout: '[]',
+      stderr: ''
+    });
+    const alert = ProcessingAlertService.notifyRecorderStallDiagnostics as jest.Mock;
+
+    await handler.handleSessionStarted('stall-session', {
+      EventTimestamp: '2026-08-11T15:00:43.000+08:00',
+      EventData: {
+        RoomId: 25788785,
+        SessionId: 'stall-session',
+        Name: '岁己SUI',
+        Title: '测试录制',
+        Recording: true,
+        Streaming: true
+      }
+    });
+
+    await jest.advanceTimersByTimeAsync(1000);
+    await Promise.resolve();
+    await Promise.resolve();
+    await jest.runOnlyPendingTimersAsync();
+
+    expect(getConfig).toHaveBeenCalled();
+    expect(alert).toHaveBeenCalledTimes(1);
+    const snapshot = alert.mock.calls[0][0];
+    expect(snapshot.roomId).toBe('25788785');
+    expect(snapshot.events.map((event: any) => event.type)).toEqual(['SessionStarted']);
+    expect(snapshot.logEvidence[0].matchedLines.join('\n')).toContain('RoomId=25788785');
+    expect(fs.existsSync(snapshot.diagnosticFile)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(snapshot.diagnosticFile, 'utf8')).reason).toContain('FileOpening');
+  });
+
+  test('keeps a ProcDump file when the tool reports a non-zero completion code', async () => {
+    jest.useFakeTimers();
+    const getConfig = jest.spyOn(ConfigProvider, 'getConfig').mockReturnValue({
+      storage: { tempPath: tempDir },
+      webhook: { endpoints: { mikufans: { basePath: tempDir } } },
+      monitoring: {
+        recorderStallDiagnostics: {
+          enabled: true,
+          delaySeconds: 1,
+          outputDirectory: 'diagnostics',
+          includeProcessDump: true,
+          analyzeDump: false,
+          dumpTool: 'procdump'
+        }
+      }
+    } as any);
+    const handler = new MikufansWebhookHandler() as any;
+    handlers.push(handler);
+    handler.recorderStallDiagnostics.runCommand = jest.fn(async (command: string, args: string[]) => {
+      if (command === 'powershell') {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify([{
+            ProcessId: 3180,
+            Name: 'BililiveRecorder.WPF',
+            ExecutablePath: 'C:\\BililiveRecorder\\BililiveRecorder.WPF.exe'
+          }]),
+          stderr: ''
+        };
+      }
+      if (command === 'where') {
+        return { exitCode: 0, stdout: 'C:\\Tools\\procdump64.exe', stderr: '' };
+      }
+      const outputDirectory = args[args.length - 1];
+      fs.writeFileSync(path.join(outputDirectory, 'BililiveRecorder.WPF-3180.dmp'), Buffer.from('MDMP'));
+      return { exitCode: 1, stdout: 'Dump complete', stderr: '' };
+    });
+    const alert = ProcessingAlertService.notifyRecorderStallDiagnostics as jest.Mock;
+
+    await handler.handleSessionStarted('dump-session', {
+      EventTimestamp: '2026-08-11T15:00:43.000+08:00',
+      EventData: {
+        RoomId: 25788785,
+        SessionId: 'dump-session',
+        Name: '岁己SUI',
+        Title: '测试录制',
+        Recording: true,
+        Streaming: true
+      }
+    });
+
+    await jest.advanceTimersByTimeAsync(1000);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getConfig).toHaveBeenCalled();
+    expect(alert).toHaveBeenCalledTimes(1);
+    const snapshot = alert.mock.calls[0][0];
+    expect(snapshot.dump).toMatchObject({
+      status: 'collected_with_nonzero_exit',
+      tool: 'procdump',
+      processId: 3180,
+      exitCode: 1,
+      sizeBytes: 4
+    });
+    expect(snapshot.dump.path).toMatch(/\.dmp$/i);
+    expect(fs.existsSync(snapshot.dump.path)).toBe(true);
+  });
+
+  test('cancels the stall diagnostic when FileOpening arrives for the same session', async () => {
+    jest.useFakeTimers();
+    const getConfig = jest.spyOn(ConfigProvider, 'getConfig').mockReturnValue({
+      storage: { tempPath: tempDir },
+      webhook: { endpoints: { mikufans: { basePath: tempDir } } },
+      monitoring: {
+        recorderStallDiagnostics: {
+          enabled: true,
+          delaySeconds: 1,
+          outputDirectory: 'diagnostics',
+          includeProcessDump: false
+        }
+      }
+    } as any);
+    const handler = new MikufansWebhookHandler() as any;
+    handlers.push(handler);
+    handler.recorderStallDiagnostics.runCommand = jest.fn().mockResolvedValue({
+      exitCode: 0,
+      stdout: '[]',
+      stderr: ''
+    });
+    const alert = ProcessingAlertService.notifyRecorderStallDiagnostics as jest.Mock;
+
+    await handler.handleSessionStarted('normal-session', {
+      EventTimestamp: '2026-08-11T15:00:43.000+08:00',
+      EventData: {
+        RoomId: 25788785,
+        SessionId: 'normal-session',
+        Name: '岁己SUI',
+        Recording: true,
+        Streaming: true
+      }
+    });
+    await handler.handleFileOpening({
+      EventTimestamp: '2026-08-11T15:00:44.000+08:00',
+      EventData: {
+        RoomId: 25788785,
+        SessionId: 'normal-session',
+        Name: '岁己SUI',
+        Streaming: true
+      }
+    });
+
+    await jest.advanceTimersByTimeAsync(1000);
+
+    expect(getConfig).toHaveBeenCalled();
+    expect(alert).not.toHaveBeenCalled();
   });
 
   test('does not arm the missing-recorder alert when StreamStarted says Recording=false', async () => {

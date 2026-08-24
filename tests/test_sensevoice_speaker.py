@@ -54,6 +54,35 @@ def make_fake_torch():
     return module
 
 
+class AudioLoaderTests(unittest.TestCase):
+    def test_unsupported_container_uses_ffmpeg_pcm_fallback(self):
+        import numpy as np
+
+        fake_soundfile = types.ModuleType("soundfile")
+
+        def fail_read(*_args, **_kwargs):
+            raise RuntimeError("format not supported")
+
+        fake_soundfile.read = fail_read
+        pcm = np.asarray([0.1, -0.2, 0.3], dtype=np.float32).tobytes()
+        completed = types.SimpleNamespace(returncode=0, stdout=pcm, stderr=b"")
+
+        with patch.dict(sys.modules, {"soundfile": fake_soundfile}), patch(
+            "sensevoice_speaker.subprocess.run",
+            return_value=completed,
+        ) as run:
+            audio, sample_rate = sensevoice_speaker.load_audio_16k_mono("recording.flv")
+
+        self.assertEqual(sample_rate, 16000)
+        self.assertEqual(len(audio), 3)
+        for actual, expected in zip(audio.tolist(), [0.1, -0.2, 0.3]):
+            self.assertAlmostEqual(actual, expected, places=6)
+        command = run.call_args.args[0]
+        self.assertEqual(command[command.index("-i") + 1], "recording.flv")
+        self.assertIn("pcm_f32le", command)
+        self.assertIn("pipe:1", command)
+
+
 class FakeSpeakerModel:
     def __init__(self, fail=False):
         self.calls = []
@@ -309,63 +338,343 @@ class SenseVoiceSpeakerBatchingTests(unittest.TestCase):
         self.assertEqual(match["support_chunks"], 2)
         self.assertTrue(match["accepted"])
 
-    def test_single_host_fallback_merges_anonymous_clusters_after_host_confirmation(self):
-        timeline = [
-            {"start": 0, "end": 2, "speaker": "SPEAKER_00", "speaker_score": 0.49},
-            {"start": 2, "end": 4, "speaker": "栞栞", "speaker_score": 0.79},
-            {"start": 4, "end": 6, "speaker": "UNKNOWN", "speaker_score": None},
-        ]
-        processing = {}
-        matches = {
-            "SPEAKER_01": {
-                "label": "栞栞",
-                "accepted": True,
-                "score": 0.79,
-            },
-            "SPEAKER_00": {
-                "label": "SPEAKER_00",
-                "best_label": "弥月Mizuki",
-                "accepted": False,
-                "score": 0.495,
-            },
-        }
+    def test_reference_consensus_promotes_a_weak_cluster_with_same_speaker_evidence(self):
+        import torch
 
-        result = sensevoice_speaker.apply_single_host_speaker_fallback(
-            timeline,
-            matches,
-            processing,
+        matches = sensevoice_speaker.classify_speaker_clusters(
             {
-                "speaker_host_label": "栞栞",
-                "speaker_single_host_fallback": True,
+                "SPEAKER_00": torch.tensor([
+                    [0.9, 0.0],
+                    [0.9, 0.0],
+                    [0.9, 0.0],
+                ]),
+                "SPEAKER_01": torch.tensor(
+                    [[0.52, 0.0], [0.52, 0.0]]
+                    + [[0.10, 0.0]] * 8
+                ),
             },
+            {
+                "Host": torch.tensor([[1.0, 0.0]]),
+                "Guest": torch.tensor([[0.0, 0.8]]),
+            },
+            threshold=0.45,
+            margin_threshold=0.06,
+            constrain_to_references=True,
+            min_support_chunks=2,
+            min_support_ratio=0.5,
         )
 
+        self.assertTrue(matches["SPEAKER_00"]["accepted"])
+        self.assertFalse(matches["SPEAKER_01"]["accepted"])
+        promoted = sensevoice_speaker.promote_reference_consensus_matches(
+            {
+                "SPEAKER_00": torch.tensor([
+                    [0.9, 0.0],
+                    [0.9, 0.0],
+                    [0.9, 0.0],
+                ]),
+                "SPEAKER_01": torch.tensor(
+                    [[0.52, 0.0], [0.52, 0.0]]
+                    + [[0.10, 0.0]] * 8
+                ),
+            },
+            matches,
+        )
+
+        self.assertEqual(promoted["SPEAKER_01"]["label"], "Host")
+        self.assertTrue(promoted["SPEAKER_01"]["accepted"])
         self.assertEqual(
-            [item["speaker"] for item in result],
-            ["栞栞", "栞栞", "栞栞"],
+            promoted["SPEAKER_01"]["acceptance_mode"],
+            "reference_consensus",
         )
-        self.assertEqual(processing["singleHostFallback"]["changedIntervals"], 2)
+        self.assertTrue(promoted["SPEAKER_01"]["cluster_label_by_default"])
 
-    def test_single_host_fallback_does_not_hide_confirmed_non_host(self):
-        timeline = [{"start": 0, "end": 2, "speaker": "SPEAKER_00"}]
-        processing = {}
+    def test_reference_consensus_does_not_relabel_a_weak_different_guest_cluster(self):
+        import torch
+
+        cluster_embeddings = {
+            "SPEAKER_00": torch.tensor([
+                [0.9, 0.0],
+                [0.9, 0.0],
+                [0.9, 0.0],
+            ]),
+            "SPEAKER_01": torch.tensor(
+                [[0.0, 0.52], [0.0, 0.52]]
+                + [[0.0, 0.10]] * 8
+            ),
+        }
+        matches = sensevoice_speaker.classify_speaker_clusters(
+            cluster_embeddings,
+            {
+                "Host": torch.tensor([[1.0, 0.0]]),
+                "Guest": torch.tensor([[0.0, 1.0]]),
+            },
+            threshold=0.45,
+            margin_threshold=0.06,
+            constrain_to_references=True,
+            min_support_chunks=2,
+            min_support_ratio=0.5,
+        )
+
+        promoted = sensevoice_speaker.promote_reference_consensus_matches(
+            cluster_embeddings,
+            matches,
+        )
+
+        self.assertEqual(promoted["SPEAKER_01"]["label"], "UNKNOWN")
+        self.assertEqual(promoted["SPEAKER_01"]["best_label"], "Guest")
+        self.assertFalse(promoted["SPEAKER_01"]["accepted"])
+
+    def test_reference_consensus_checks_a_non_best_candidate_with_stronger_quality(self):
+        import torch
+
+        cluster_embeddings = {
+            "SPEAKER_00": torch.tensor([
+                [1.0, 0.0],
+                [1.0, 0.0],
+            ]),
+            "SPEAKER_01": torch.tensor([
+                [0.98, 0.20],
+                [0.98, 0.20],
+            ]),
+        }
         matches = {
-            "SPEAKER_00": {"label": "栞栞", "accepted": True},
-            "SPEAKER_01": {"label": "弥月Mizuki", "accepted": True},
+            "SPEAKER_00": {
+                "label": "Host",
+                "accepted": True,
+                "score": 0.86,
+                "support_chunks": 10,
+                "support_ratio": 0.8,
+                "support_mean_score": 0.72,
+            },
+            "SPEAKER_01": {
+                "label": "SPEAKER_01",
+                "best_label": "Guest",
+                "accepted": False,
+                "score": 0.58,
+                "margin": 0.11,
+                "support_chunks": 6,
+                "support_ratio": 0.6,
+                "support_mean_score": 0.50,
+                "sampled_chunks": 10,
+                "reference_support": {
+                    "Guest": {
+                        "support_count": 6,
+                        "support_mean_score": 0.50,
+                        "score": 0.58,
+                        "margin": 0.11,
+                    },
+                    "Host": {
+                        "support_count": 4,
+                        "support_mean_score": 0.56,
+                        "score": 0.61,
+                        "margin": 0.09,
+                    },
+                },
+            },
         }
 
-        result = sensevoice_speaker.apply_single_host_speaker_fallback(
-            timeline,
+        promoted = sensevoice_speaker.promote_reference_consensus_matches(
+            cluster_embeddings,
             matches,
-            processing,
+            min_cluster_similarity=0.60,
+        )
+
+        self.assertEqual(promoted["SPEAKER_01"]["label"], "Host")
+        self.assertTrue(promoted["SPEAKER_01"]["accepted"])
+        self.assertEqual(promoted["SPEAKER_01"]["best_label"], "Guest")
+        self.assertEqual(
+            promoted["SPEAKER_01"]["reference_consensus"]["raw_best_label"],
+            "Guest",
+        )
+
+    def test_reference_consensus_still_requires_cluster_similarity(self):
+        import torch
+
+        cluster_embeddings = {
+            "SPEAKER_00": torch.tensor([
+                [1.0, 0.0],
+                [1.0, 0.0],
+            ]),
+            "SPEAKER_01": torch.tensor([
+                [0.6, 0.8],
+                [0.6, 0.8],
+            ]),
+        }
+        matches = {
+            "SPEAKER_00": {
+                "label": "Host",
+                "accepted": True,
+                "score": 0.85,
+                "support_chunks": 10,
+                "support_ratio": 0.8,
+                "support_mean_score": 0.7,
+            },
+            "SPEAKER_01": {
+                "label": "SPEAKER_01",
+                "best_label": "Host",
+                "accepted": False,
+                "score": 0.56,
+                "margin": 0.10,
+                "support_chunks": 4,
+                "support_ratio": 0.25,
+                "support_mean_score": 0.49,
+                "reference_support": {
+                    "Host": {
+                        "support_count": 4,
+                        "support_mean_score": 0.49,
+                    },
+                },
+            },
+        }
+
+        promoted = sensevoice_speaker.promote_reference_consensus_matches(
+            cluster_embeddings,
+            matches,
+            min_cluster_similarity=0.61,
+        )
+
+        self.assertEqual(promoted["SPEAKER_01"]["label"], "SPEAKER_01")
+        self.assertFalse(promoted["SPEAKER_01"]["accepted"])
+
+    def test_cluster_anchor_consensus_can_recover_a_fragmented_same_speaker_cluster(self):
+        import torch
+
+        matches = {
+            "SPEAKER_00": {
+                "label": "Host",
+                "accepted": True,
+                "score": 0.86,
+                "support_chunks": 10,
+                "support_ratio": 0.8,
+                "support_mean_score": 0.72,
+            },
+            "SPEAKER_01": {
+                "label": "SPEAKER_01",
+                "best_label": "Host",
+                "accepted": False,
+                "score": 0.46,
+                "margin": 0.09,
+                "support_chunks": 1,
+                "support_ratio": 1 / 24,
+                "support_mean_score": 0.46,
+                "sampled_chunks": 24,
+                "reference_support": {
+                    "Host": {
+                        "support_count": 1,
+                        "support_mean_score": 0.46,
+                        "score": 0.46,
+                        "margin": 0.09,
+                    },
+                },
+            },
+        }
+
+        promoted = sensevoice_speaker.promote_reference_consensus_matches(
             {
-                "speaker_host_label": "栞栞",
-                "speaker_single_host_fallback": True,
+                "SPEAKER_00": torch.tensor([
+                    [1.0, 0.0],
+                    [1.0, 0.0],
+                ]),
+                "SPEAKER_01": torch.tensor([
+                    [0.8, 0.6],
+                    [0.8, 0.6],
+                ]),
+            },
+            matches,
+        )
+
+        self.assertEqual(promoted["SPEAKER_01"]["label"], "Host")
+        self.assertTrue(promoted["SPEAKER_01"]["accepted"])
+        self.assertEqual(
+            promoted["SPEAKER_01"]["acceptance_mode"],
+            "cluster_anchor_consensus",
+        )
+        self.assertTrue(promoted["SPEAKER_01"]["cluster_label_by_default"])
+
+    def test_cluster_high_confidence_can_override_a_low_confidence_row(self):
+        timeline = sensevoice_speaker._timeline_from_chunk_labels(
+            [{"start": 0.0, "end": 1.0}],
+            [0],
+            reference_matches={
+                "SPEAKER_00": {
+                    "label": "Host",
+                    "best_label": "Host",
+                    "accepted": True,
+                    "score": 0.8,
+                    "cluster_label_by_default": True,
+                    "reference_support": {
+                        "Host": {"support_count": 4},
+                    },
+                }
+            },
+            row_reference_matches=[{
+                "label": "UNKNOWN",
+                "best_label": "Guest",
+                "score": 0.4,
+                "accepted": False,
+            }],
+            strict_row_reference_labels=["Host", "Guest"],
+        )
+
+        self.assertEqual(timeline[0]["speaker"], "Host")
+        self.assertEqual(
+            timeline[0]["speaker_match_scope"],
+            "cluster_high_confidence",
+        )
+
+    def test_strong_cluster_vote_can_default_to_cluster_label(self):
+        import torch
+
+        matches = sensevoice_speaker.promote_reference_consensus_matches(
+            {
+                "SPEAKER_00": torch.tensor([
+                    [1.0, 0.0],
+                    [1.0, 0.0],
+                ]),
+            },
+            {
+                "SPEAKER_00": {
+                    "label": "Host",
+                    "accepted": True,
+                    "score": 0.79,
+                    "margin": 0.16,
+                    "support_ratio": 0.58,
+                    "support_mean_score": 0.60,
+                },
             },
         )
 
-        self.assertEqual(result[0]["speaker"], "SPEAKER_00")
-        self.assertNotIn("singleHostFallback", processing)
+        self.assertTrue(matches["SPEAKER_00"]["cluster_label_by_default"])
+
+    def test_repeated_row_evidence_for_guest_survives_a_host_cluster_default(self):
+        timeline = sensevoice_speaker._timeline_from_chunk_labels(
+            [{"start": 0.0, "end": 1.0}],
+            [0],
+            reference_matches={
+                "SPEAKER_00": {
+                    "label": "Host",
+                    "best_label": "Host",
+                    "accepted": True,
+                    "score": 0.8,
+                    "cluster_label_by_default": True,
+                    "reference_support": {
+                        "Host": {"support_count": 4},
+                        "Guest": {"support_count": 2},
+                    },
+                }
+            },
+            row_reference_matches=[{
+                "label": "Guest",
+                "best_label": "Guest",
+                "score": 0.78,
+                "accepted": True,
+            }],
+            strict_row_reference_labels=["Host", "Guest"],
+        )
+
+        self.assertEqual(timeline[0]["speaker"], "Guest")
+        self.assertEqual(timeline[0]["speaker_match_scope"], "row")
 
     def test_cluster_match_requires_configured_support_ratio(self):
         import torch

@@ -165,6 +165,40 @@ describe('ProcessingAlertService recorder lifecycle alerts', () => {
     expect(sendMarkdown.mock.calls[0][0]).toContain('必要时重启 Mikufans');
   });
 
+  test('reports the recorder stall diagnostic and optional dump analysis path', async () => {
+    await ProcessingAlertService.notifyRecorderStallDiagnostics({
+      roomId: '25788785',
+      roomName: '岁己SUI',
+      title: '测试录制',
+      sessionId: 'session-stall',
+      observedAt: '2026-08-23T08:00:00.000Z',
+      capturedAt: '2026-08-23T08:08:00.000Z',
+      elapsedSeconds: 480,
+      reason: 'missing FileOpening',
+      events: [],
+      fileInventory: { entries: [] },
+      logEvidence: [],
+      processSnapshot: {
+        capturedAt: '2026-08-23T08:08:00.000Z',
+        platform: 'win32',
+        processes: []
+      },
+      dump: {
+        requested: true,
+        status: 'collected',
+        analysis: {
+          status: 'analyzed',
+          path: 'D:/diagnostics/recorder.analysis.txt'
+        }
+      },
+      diagnosticDirectory: 'D:/diagnostics/room-25788785',
+      diagnosticFile: 'D:/diagnostics/room-25788785/diagnostic.json'
+    });
+
+    expect(sendMarkdown.mock.calls[0][0]).toContain('Mikufans 录制疑似卡在 FileOpening 前');
+    expect(sendMarkdown.mock.calls[0][0]).toContain('D:/diagnostics/recorder.analysis.txt');
+  });
+
   test('coalesces concurrent sends for the same incident', async () => {
     let finishSend!: (sent: boolean) => void;
     sendMarkdown.mockReturnValue(new Promise<boolean>(resolve => {

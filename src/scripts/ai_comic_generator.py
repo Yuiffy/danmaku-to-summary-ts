@@ -84,7 +84,7 @@ import subprocess
 import shutil
 import uuid
 
-COMIC_SCRIPT_POLICY_VERSION = 14
+COMIC_SCRIPT_POLICY_VERSION = 15
 COMIC_SCRIPT_META_SCHEMA_VERSION = 7
 COMIC_STORYTELLING_VARIANTS = {"control", "immersive_v1"}
 DEFAULT_COMIC_STORYTELLING_SALT = "comic-immersive-v1"
@@ -92,6 +92,8 @@ SHARED_PROMPT_CACHE_VERSION = 2
 SHARED_PROMPT_CACHE_START = f"【共享直播事实输入 v{SHARED_PROMPT_CACHE_VERSION}】"
 SHARED_PROMPT_CACHE_END = "【共享直播事实输入结束】"
 FULL_LIVE_CONTEXT_SUFFIX = "_FULL_LIVE_CONTEXT.json"
+LIVE_CONTENT_SUFFIX = "_LIVE_CONTENT.json"
+LIVE_CONTENT_SCHEMA_VERSION = 1
 EXPLICIT_PROMPT_CACHE_SYSTEM_PROMPT = "你是直播内容事实分析与创作助手。严格区分直播事实与任务规则，只依据提供的事实完成当前任务。"
 
 LAST_COMIC_SCRIPT_META = {
@@ -1097,6 +1099,65 @@ def full_live_context_path(highlight_path: str) -> str:
     return os.path.join(os.path.dirname(highlight_path), f"{base_name}{FULL_LIVE_CONTEXT_SUFFIX}")
 
 
+def live_content_summary_path(highlight_path: str) -> str:
+    base_name = os.path.basename(highlight_path).replace("_AI_HIGHLIGHT.txt", "")
+    return os.path.join(os.path.dirname(highlight_path), f"{base_name}{LIVE_CONTENT_SUFFIX}")
+
+
+def load_live_content_summary(highlight_path: str) -> Optional[Dict[str, Any]]:
+    """Load the same-recording structured activity/game summary when available."""
+    summary_path = live_content_summary_path(highlight_path)
+    if not os.path.isfile(summary_path):
+        return None
+
+    try:
+        with open(summary_path, "r", encoding="utf-8") as summary_file:
+            payload = json.load(summary_file)
+        content = payload.get("content") if isinstance(payload, dict) else None
+        if (
+            not isinstance(payload, dict)
+            or payload.get("schemaVersion") != LIVE_CONTENT_SCHEMA_VERSION
+            or payload.get("status") != "success"
+            or not isinstance(content, dict)
+        ):
+            print(f"[WARNING] 忽略无效或未成功的直播梗概: {os.path.basename(summary_path)}")
+            return None
+
+        # The summary is generated from the full-live sidecar. Reject a stale
+        # summary if both files expose a source hash.
+        summary_source_sha256 = (payload.get("source") or {}).get("sourceSha256")
+        full_context_path = full_live_context_path(highlight_path)
+        if summary_source_sha256 and os.path.isfile(full_context_path):
+            with open(full_context_path, "r", encoding="utf-8") as context_file:
+                full_context = json.load(context_file)
+            full_source_sha256 = full_context.get("sourceSha256") if isinstance(full_context, dict) else None
+            if full_source_sha256 and summary_source_sha256 != full_source_sha256:
+                print(
+                    f"[WARNING] 直播梗概与全量直播上下文不是同一版本，忽略: "
+                    f"{os.path.basename(summary_path)}"
+                )
+                return None
+
+        normalized_content = {
+            "overview": str(content.get("overview") or "").strip(),
+            "activityTypes": [str(item).strip() for item in (content.get("activityTypes") or []) if str(item).strip()],
+            "songs": [str(item).strip() for item in (content.get("songs") or []) if str(item).strip()],
+            "games": [str(item).strip() for item in (content.get("games") or []) if str(item).strip()],
+            "topics": [str(item).strip() for item in (content.get("topics") or []) if str(item).strip()],
+        }
+        if not normalized_content["overview"]:
+            print(f"[WARNING] 直播梗概缺少 overview，忽略: {os.path.basename(summary_path)}")
+            return None
+        return {
+            "content": normalized_content,
+            "sourceSha256": summary_source_sha256,
+            "path": summary_path,
+        }
+    except Exception as error:
+        print(f"[WARNING] 读取直播梗概失败，将继续使用原始直播事实: {error}")
+        return None
+
+
 def load_full_live_context_sidecar(
     highlight_path: str,
     room_id: Optional[str],
@@ -1201,18 +1262,34 @@ def load_live_generation_context(
     room_id: Optional[str] = None,
     config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    context = None
     context_path = live_generation_context_path(highlight_path)
     if os.path.exists(context_path):
         try:
             with open(context_path, "r", encoding="utf-8") as context_file:
-                context = json.load(context_file)
-            if isinstance(context, dict) and context.get("schemaVersion") == 1:
-                return context
+                loaded_context = json.load(context_file)
+            if isinstance(loaded_context, dict) and loaded_context.get("schemaVersion") == 1:
+                context = loaded_context
         except Exception as error:
             print(f"[WARNING] 读取直播事实上下文失败，将仅使用文件名: {error}")
 
-    context = parse_recording_live_context(highlight_path, room_id)
-    context["contentHints"] = get_room_content_hints(config or load_config(), context.get("roomId"))
+    if context is None:
+        context = parse_recording_live_context(highlight_path, room_id)
+        context["contentHints"] = get_room_content_hints(config or load_config(), context.get("roomId"))
+
+    live_content_summary = load_live_content_summary(highlight_path)
+    if live_content_summary:
+        context = dict(context)
+        context["liveContent"] = live_content_summary["content"]
+        context["liveContentSourceSha256"] = live_content_summary.get("sourceSha256")
+        context["sources"] = {
+            **(context.get("sources") or {}),
+            "liveContent": "live-content-summary",
+        }
+        print(
+            f"[CONTEXT] 读取同场结构化直播梗概: {os.path.basename(live_content_summary['path'])}, "
+            f"games={','.join(live_content_summary['content'].get('games') or []) or 'none'}"
+        )
     return context
 
 
@@ -1224,6 +1301,27 @@ def format_live_generation_context(context: Optional[Dict[str, Any]]) -> str:
         f"- 直播标题：{context.get('liveTitle') or '未取得'}",
         f"- 开播时间（北京时间）：{context.get('recordingStartLocalTime') or '未取得'}。判断早/午/晚必须以此为准，不能因主播说“刚起床”等作息描述改写客观时段。",
     ]
+    live_content = context.get("liveContent") or {}
+    if isinstance(live_content, dict):
+        overview = re.sub(r"\s+", " ", str(live_content.get("overview") or "")).strip()
+        activity_types = [str(item).strip() for item in (live_content.get("activityTypes") or []) if str(item).strip()]
+        songs = [str(item).strip() for item in (live_content.get("songs") or []) if str(item).strip()]
+        games = [str(item).strip() for item in (live_content.get("games") or []) if str(item).strip()]
+        topics = [str(item).strip() for item in (live_content.get("topics") or []) if str(item).strip()]
+        if overview or activity_types or songs or games or topics:
+            lines.append("【同场结构化直播梗概（用于锁定本场活动，不是人设常识）】")
+            if overview:
+                lines.append(f"- 本场概览：{overview}")
+            if activity_types:
+                lines.append(f"- 本场活动类型：{'、'.join(activity_types)}")
+            if games:
+                lines.append(f"- 本场明确实际游玩的游戏（涉及游戏时只能从此列表选择）：{'、'.join(games)}")
+            else:
+                lines.append("- 本场明确实际游玩的游戏：无（不得仅凭聊天提及、观看视频片段或孤立ASR词语猜测具体游戏界面）")
+            if songs:
+                lines.append(f"- 本场明确演唱或播放的歌曲：{'、'.join(songs)}")
+            if topics:
+                lines.append(f"- 本场明确讨论的话题：{'、'.join(topics)}")
     recent_dynamics = context.get("recentDynamics") or []
     if recent_dynamics:
         lines.append("- 开播前近期动态（仅用于确认本场主题/预告，不得把动态里未在本场发生的事写成直播内容）：")
@@ -1240,6 +1338,8 @@ def format_live_generation_context(context: Optional[Dict[str, Any]]) -> str:
         "【事实证据优先级】直播标题与明确语音 > 同场弹幕 > 开播前近期动态 > 稳定人设、兴趣、口头禅与模型常识。",
         "稳定人设、兴趣和口头禅不是本场发生的事实，只能消解正文中确实存在且没有冲突证据的歧义；一旦高优先级证据指向其他游戏、活动或人物，必须服从高优先级证据。",
         "当直播标题、明确语音或开播前动态中至少两类证据一致确认具体游戏/活动时，回复和画面应自然点明该名称，不要退化成泛化的“某游戏”“抽卡界面”；只有证据不足或互相冲突时才使用中性描述。",
+        "同场结构化直播梗概中的 games 只表示本场明确实际游玩的游戏；games 为空时，禁止把“鱼雷”“火墙”“装备”等孤立词语或被观看视频的片段升级成另一款游戏。games 非空时，涉及游戏的脚本、截图请求和画面只能使用列表中的游戏名。",
+        "若脚本请求的截图与文字候选作品冲突，优先依据截图中清楚可见的标题、Logo、UI和画面核对作品身份；截图没有显示游戏时不要凭题材常识补画具体游戏。",
         "不得因为人物设定中的某款游戏或口头禅，擅自给本场添加对应游戏界面、角色、Logo或台词。游戏/活动无法确认时使用中性描述，不猜具体作品。",
     ])
     return "\n".join(lines)
@@ -1381,6 +1481,7 @@ def hash_live_generation_context(context: Optional[Dict[str, Any]]) -> Optional[
         "recordingStartLocalTime": context.get("recordingStartLocalTime"),
         "contentHints": context.get("contentHints") or [],
         "recentDynamics": context.get("recentDynamics") or [],
+        "liveContent": context.get("liveContent") or {},
     }
     serialized = json.dumps(relevant, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
@@ -2845,21 +2946,24 @@ def build_multi_character_constraints(
 - 仅被提到但没有实际出声的人，可以使用其参考图保持形象准确，但不要默认画成现场连麦角色。"""
 
 
+COMMON_IMAGE_EVIDENCE_PROMPT_RULES = """【统一视觉证据规则（四格与沉浸式共用）】
+- 两种画风使用同一套参考图事实链：人物参考图只决定人物外观；脚本请求的直播截图决定本场画面中真正可见的作品、游戏、人物、道具、数量、界面、动作与结果，不要把参考图当作装饰。
+- 游戏、电影、动画或电视剧类内容，游戏/影视截图是视觉主证据；若截图清楚显示标题、Logo、UI、作品画面或关键道具，优先按截图还原；若截图只是直播间画面、黑屏、加载、转场、遮挡或没有显示目标界面，不能凭孤立词、题材、角色设定或模型常识补出具体游戏、战舰、Logo、UI或角色；但同场结构化 games 已明确确认的游戏名可以作为活动身份使用，只能把未显示的细节保持中性。
+- 当直播事实、脚本候选名称和截图互相冲突时：截图中清楚可见的作品标题/Logo、游戏或影视画面和UI，优先于ASR对作品名的猜测；明确语音与同场结构化 games 决定主播确实做过什么，截图决定输入图中可见的作品视觉身份；证据不足时使用中性游戏/屏幕画面，不强行指定作品。
+- selectionMode=script_requested 的图片是脚本指定时间点的高清独立帧；同一请求的多张独立帧共同服务一个用途，不要机械画成多个分格。selectionMode=script_requested_sheet 的图片是同一用途的多时间点宫格，各格可能是候选画面、不同角度或事件过程；逐格只提取实际可见且与用途相关的事实，不要求全部画入成品。
+- 参考图是事实核对和构图素材，不是最终构图模板；四格也要按自身剪贴画风格重新组织，不要照抄直播软件边框、弹幕瀑布、主播坐姿，也不要把 JSON 字段、时间戳或参考记录画进成品。"""
+
+
 IMMERSIVE_IMAGE_PROMPT_RULES = """【沉浸式画面策略（必须执行）】
 - 不要画成规则的2x2四宫格、编号面板或四块等大的直播截图复述。优先一张有主次关系的电影感主画面；需要多个事件时，用不对称蒙太奇、前中后景或连续动作自然串联。
-- 游戏、电影、动画或电视剧类内容，先以对应作品截图中的标题/Logo、画面构图、色板、UI、关键道具和可见角色作为主视觉锚点，再让房间主人进入其中；不要因为“沉浸式”就把作品画面替换成泛化的豪宅、森林或舞台。房间主人可以参与动作，但不能遮住或取代作品的识别性画面。
+- 沉浸式内容可以让房间主人进入已确认的作品环境，与对应动作和道具互动，但不要因为“沉浸式”就把作品画面替换成泛化的豪宅、森林或舞台。房间主人可以参与动作，但不能遮住或取代作品的识别性画面。
 - 只限制直播软件桌面：整张图最多允许一个小区域出现直播桌面（仅指直播软件边框、弹幕或主播窗口）；游戏/影视本身的画面、标题画面、解谜界面和字幕不受此限制，必要时应保留为大面积主场景。
 - 未来计划、假设、脑补、梦境或转述故事不是本场已经发生的事实。必须用想象气泡、幻想小剧场、Q版分身、梦境边框等视觉语法明确区分，不能画成主播当场真的抵达或经历了该事件。
 - 保留主播参考图中的脸、发色、瞳色、兔耳/配饰等身份特征；“进入作品世界”只改变环境、动作与合适的服装，不要把主播直接替换成作品角色。
 - 保持大幅人物插画和电影感主画面为视觉中心，同时必须落实漫画脚本的 textPlan：清晰绘制4~6处中文“回忆锚点”，总字数约24~60字。至少一处是本场有辨识度的原话、吐槽或梗，其余分别点明不同场景的具体事件或结果，让观众一眼能回忆本场内容。
 - textPlan 中的文字必须逐字使用，不擅自改写、合并或补充无来源内容。每处通常2~14字，使用短台词框、手写旁注、道具标签、冲击字幕或环境字，紧邻它所说明的人物、动作或场景；不要把全部文字堆成底部摘要、节目单、规则四格标题或一个遮挡人物的超大海报标题。
 - 文字要有主次层级：代表性原话/梗可作为中等字号视觉焦点，其余事件锚点用较小字号分散在对应场景；保证中文完整、清晰、高对比且不遮挡脸、手、关键角色或关键道具。不要把直播摘要逐句抄进画面。
-- 参考图清单中的“用途”由漫画脚本根据本场内容规划，是对应参考请求的事实核对目标。逐项查看图片中真实可见的对象、人物外观、数量、状态、界面、动作、环境或结果，并准确用于最终画面；不得用常识、角色设定或其它作品内容替换。游戏/影视截图是视觉主证据，不是可有可无的氛围参考；图中若出现标题、Logo、UI、固定色板、字幕或谜题布局，应优先按图复现。
-- selectionMode=script_requested 的图片是脚本指定时间点截取的高清独立帧。若同一请求有多张独立帧，它们共同服务于同一个用途，应综合互相一致的可见细节，不要把每张图机械画成独立分格。
-- selectionMode=script_requested_sheet 的图片是脚本为同一个用途指定的多时间点宫格。逐格检查编号和时间标签：各格可能是候选画面、不同角度或事件过程，只提取与用途相关且实际可见的事实；不要默认把所有格子、过渡状态或相邻事件同时画入成品。
-- 某张参考图若是黑屏、加载、转场、遮挡或没有直接显示用途所需事实，只能作为时间和上下文线索，不得据此脑补；优先采用同一请求内看得最清楚的格子或独立帧。
-- 事实冲突时：截图中清楚可见的作品标题/Logo、游戏或影视画面和UI，优先于ASR对作品名的猜测；截图决定作品的视觉身份与可见状态，明确语音决定主播确实做过的事件，主播人物参考图只决定主播外观。不要仅因脚本写了另一个候选作品名，就把截图里的作品替换掉。
-- 直播关键帧既是事实证据也是构图素材，但不是最终构图模板；不要照抄直播软件边框、弹幕瀑布或主播坐姿。"""
+"""
 
 
 def format_image_reference_manifest(image_manifest: Optional[list[dict]]) -> str:
@@ -2989,6 +3093,7 @@ def build_comic_prompt(
     live_context_block = format_live_generation_context(live_context)
     storytelling_variant = (storytelling or {}).get("variant") or "control"
     reference_manifest_block = format_image_reference_manifest(image_manifest)
+    shared_image_evidence_rules = COMMON_IMAGE_EVIDENCE_PROMPT_RULES
     immersive_image_rules = IMMERSIVE_IMAGE_PROMPT_RULES if storytelling_variant == "immersive_v1" else ""
     has_reference_records = any(
         str(item.get("kind") or "").strip().lower() == "reference"
@@ -3010,6 +3115,8 @@ def build_comic_prompt(
             base_prompt = f"{base_prompt}\n\n{reference_manifest_block}"
         if reference_record_rules:
             base_prompt = f"{base_prompt}\n\n{reference_record_rules}"
+        if shared_image_evidence_rules:
+            base_prompt = f"{base_prompt}\n\n{shared_image_evidence_rules}"
         if immersive_image_rules:
             base_prompt = f"{base_prompt}\n\n{immersive_image_rules}"
     else:
@@ -3023,6 +3130,7 @@ def build_comic_prompt(
 {multi_constraints}
 {reference_manifest_block}
 {reference_record_rules}
+{shared_image_evidence_rules}
 {immersive_image_rules}
 要画得精致，角色要画得帅气、美丽、可爱。
 {{chinese_instruction}}

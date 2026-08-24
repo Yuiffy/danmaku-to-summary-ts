@@ -67,7 +67,7 @@ describe('asr_backends', () => {
     }
   });
 
-  test('keeps the global speaker reference library for an unconstrained room task', async () => {
+  test('keeps the global speaker reference library without a room-level speaker fallback', async () => {
     const server = net.createServer((socket: any) => {
       let buffer = '';
       socket.on('data', (data: Buffer) => {
@@ -80,7 +80,7 @@ describe('asr_backends', () => {
         expect(request.payload.finetuned_model).toBe('D:/files/videos/asr_eval/models/paraformer_timestamp_avg10');
         expect(request.payload.emotion_analysis.enabled).toBe(false);
         expect(request.payload.speaker_host_label).toBe('栞栞');
-        expect(request.payload.speaker_single_host_fallback).toBe(false);
+        expect(request.payload).not.toHaveProperty('speaker_single_host_fallback');
         expect(request.payload.speaker_constrain_to_references).not.toBe(true);
         expect(request.payload.speaker_references.map((reference: any) => reference.speaker))
           .toEqual(expect.arrayContaining(['栞栞', '米汀']));
@@ -135,7 +135,7 @@ describe('asr_backends', () => {
           { speaker: '米汀', audio_path: 'data/asr_speaker_refs/mintin.wav' }
         ]);
         expect(request.payload.speaker_host_label).toBe('岁己SUI');
-        expect(request.payload.speaker_single_host_fallback).toBe(false);
+        expect(request.payload).not.toHaveProperty('speaker_single_host_fallback');
         expect(request.payload.room_id).toBe('25788785');
         expect(request.payload.emotion_analysis.enabled).toBe(true);
         socket.end(JSON.stringify({ ok: true, result: { backend: 'paraformer', segments: [] } }) + '\n');
@@ -457,7 +457,7 @@ describe('asr_backends', () => {
     fs.unlinkSync(reviewPath);
   });
 
-  test('merges weak anonymous clusters into a confirmed host-only room', () => {
+  test('keeps anonymous clusters independent of a confirmed host cluster', () => {
     const config = {
       ai: {
         comic: { multiReferenceImages: { enabled: true, minSpeakerScore: 0.64 } },
@@ -482,33 +482,26 @@ describe('asr_backends', () => {
         }
       },
       segments: [
-        { start: 0, end: 120, text: '房主', speaker: '栞栞', speaker_score: 0.79 },
+        { start: 0, end: 120, text: '房主', speaker: '栞栞', speaker_score: 0.82 },
         { start: 120, end: 135, text: '匿名簇', speaker: 'SPEAKER_00', speaker_score: 0.49 },
         { start: 135, end: 145, text: '未标记', speaker: 'UNKNOWN' }
       ]
     };
 
-    const context = { room_id: '26966466', speakerSingleHostFallback: true };
+    const context = { room_id: '26966466' };
     const summary = asr.summarizeAsrSpeakers(result, config, context);
     expect(summary.appearedStreamerIds).toEqual(['shiori']);
-    expect(summary.speakerFallback).toMatchObject({
-      applied: true,
-      hostStreamerId: 'shiori',
-      hostLabel: '栞栞'
-    });
-    expect(summary.speakerLabelOverrides).toEqual({
-      SPEAKER_00: '栞栞',
-      UNKNOWN: '栞栞'
-    });
+    expect(summary).not.toHaveProperty('speakerFallback');
+    expect(summary).not.toHaveProperty('speakerLabelOverrides');
 
     const path = require('path');
     const fs = require('fs');
-    const tmp = path.join(require('os').tmpdir(), `asr-review-host-fallback-${Date.now()}.srt`);
+    const tmp = path.join(require('os').tmpdir(), `asr-review-independent-clusters-${Date.now()}.srt`);
     const reviewPath = asr.writeSpeakerReviewSrt(result, tmp, { max_chars_per_line: 30 }, config, context);
     const content = fs.readFileSync(reviewPath, 'utf8');
-    expect(content).not.toContain('[SPEAKER_00');
-    expect(content).not.toContain('[UNKNOWN');
-    expect(content).toContain('[栞栞 0.49] 匿名簇');
+    expect(content).toContain('[SPEAKER_00 0.49] 匿名簇');
+    expect(content).toContain('[UNKNOWN] 未标记');
+    expect(content).not.toContain('[栞栞 0.49] 匿名簇');
     fs.unlinkSync(reviewPath);
   });
 

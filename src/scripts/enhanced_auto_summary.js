@@ -1980,6 +1980,10 @@ const main = async () => {
                     } else {
                         emitDelayedReplyReady(expectedComicImagePath);
                         await waitForLiveContentCacheWarmup();
+                        if (liveContentSummaryPromise && liveContentSummaryEnabled) {
+                            console.log('⏳ 等待同场直播梗概完成，再启动漫画生成，确保游戏名和活动类型进入漫画事实约束');
+                            await liveContentSummaryPromise;
+                        }
                         console.log(`🎲 概率抓取命中 (${roll.toFixed(3)} ≤ ${prob})，开始生成图片`);
                         console.log(`🎨 开始AI漫画生成...`);
                         const isSuiRoom = String(finalRoomId) === SUI_ROOM_ID;

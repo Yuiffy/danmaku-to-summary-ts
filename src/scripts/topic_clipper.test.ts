@@ -82,6 +82,24 @@ describe('topic_clipper', () => {
     expect(prompt).toContain('只描述互动内容，不概括反应数量或强度');
   });
 
+  test('writes manual clip subtitles with production punctuation and line-length options', () => {
+    const root = makeTempDir();
+    const outputPath = path.join(root, 'clip.srt');
+    topicClipper.writeClipSrt([
+      { start: 0, end: 2, text: '小栞打游戏这么厉害，DLC打了吗？话说。' }
+    ], { start: 0, end: 2, duration: 2 }, outputPath, {
+      maxCharsPerLine: 18,
+      stripPunctuation: true
+    });
+
+    const subtitleText = fs.readFileSync(outputPath, 'utf8');
+    const textLines = subtitleText
+      .split(/\r?\n/)
+      .filter(line => line && !/^\d+$/.test(line) && !line.includes('-->'));
+    expect(textLines.join('')).not.toMatch(/[，。！？：；、,.?!;:]/);
+    expect(textLines.every(line => Array.from(line).length <= 18)).toBe(true);
+  });
+
   test('uses configured upload prefix and upload tags for a room', () => {
     const config = {
       ai: {

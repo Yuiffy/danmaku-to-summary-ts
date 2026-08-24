@@ -16,6 +16,10 @@ import { FileMerger } from '../FileMerger';
 import { VideoScreenshotService } from '../../video/VideoScreenshotService';
 import { listRelevantProcesses, terminateProcessTree } from '../../../utils/processCleanup';
 import { ProcessingAlertService } from '../../monitoring/ProcessingAlertService';
+import {
+  RecorderStallDiagnostics,
+  RecorderStallDiagnosticSnapshot
+} from '../../monitoring/RecorderStallDiagnostics';
 import { applyFfmpegProcessPriority, getFfmpegResourceConfig } from '../../../utils/ffmpegResource';
 import {
   getAsrGamePollIntervalMs,
@@ -120,12 +124,17 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   private readonly DELAYED_REPLY_FILE_RETRY_MAX_MS = 2 * 60 * 60 * 1000;
   private pendingDelayedReplyFileTimers: Map<string, NodeJS.Timeout> = new Map();
   private offlineFallbackMonitor: MikufansOfflineFallbackMonitor;
+  private recorderStallDiagnostics: RecorderStallDiagnostics;
 
   constructor() {
     this.offlineFallbackMonitor = new MikufansOfflineFallbackMonitor(
       () => this.getOfflineFallbackCandidates(),
       details => this.handleConfirmedOfflineFallback(details)
     );
+    this.recorderStallDiagnostics = new RecorderStallDiagnostics({
+      onSnapshot: snapshot => this.handleRecorderStallDiagnostic(snapshot),
+      getState: roomId => this.getRecorderDiagnosticState(roomId)
+    });
   }
 
 
@@ -316,6 +325,23 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       // Use the local default when configuration is unavailable during startup.
     }
     return defaultSeconds * 1000;
+  }
+
+  private getRecorderDiagnosticState(roomId: string): Record<string, unknown> {
+    const session = this.liveSessionManager.getSession(roomId);
+    const timestamps = this.streamTimestamps.get(roomId);
+    return {
+      activeLive: this.activeLiveRooms.has(roomId),
+      sessionStatus: session?.status,
+      segmentCount: session?.segments.length || 0,
+      streamStartedAt: timestamps?.startTime?.toISOString(),
+      streamEndedAt: timestamps?.endTime?.toISOString(),
+      pendingDelayedActions: this.getPendingFinalizationActions(roomId)
+    };
+  }
+
+  private async handleRecorderStallDiagnostic(snapshot: RecorderStallDiagnosticSnapshot): Promise<void> {
+    await ProcessingAlertService.notifyRecorderStallDiagnostics(snapshot);
   }
 
   private rememberRecorderReady(roomId: string | number, timestamp: unknown): Date {
@@ -541,6 +567,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       startTime,
       endTime: undefined
     });
+    this.recorderStallDiagnostics.observe('StreamStarted', payload);
 
     this.logger.info(`📅 记录直播开始时间: ${roomId} -> ${startTime.toISOString()}`);
 
@@ -594,6 +621,8 @@ export class MikufansWebhookHandler implements IWebhookHandler {
 
     if (this.isStaleOnlineResumeEvent(payload, 'SessionStarted')) return;
 
+    this.recorderStallDiagnostics.startSession(payload);
+
     // 使用LiveSessionManager创建或获取会话（使用RoomId）
     this.liveSessionManager.createOrGetSession(roomId, roomName, title);
     this.rememberRecorderReady(roomKey, payload.EventTimestamp);
@@ -642,6 +671,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
 
     if (this.isStaleOnlineResumeEvent(payload, 'FileOpening')) return;
 
+    this.recorderStallDiagnostics.observe('FileOpening', payload);
     this.markLiveResumed(roomKey, 'FileOpening');
     this.cancelDelayedAction(roomKey, DelayedActionType.RECORDING_START_ALERT);
 
@@ -668,6 +698,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
 
     const roomId = String(rawRoomId);
     const roomKey = roomId;
+    this.recorderStallDiagnostics.observe('SessionEnded', payload);
     const timestamps = this.streamTimestamps.get(roomKey);
     if (timestamps?.endTime && !this.activeLiveRooms.has(roomKey)) {
       const pendingFinalization = this.getPendingFinalizationActions(roomKey);
@@ -848,6 +879,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
       ...existing,
       endTime
     });
+    this.recorderStallDiagnostics.observe('StreamEnded', payload);
 
     this.logger.info(`📅 记录直播结束时间: ${roomId} -> ${endTime.toISOString()}`);
     this.cancelDelayedAction(roomKey, DelayedActionType.RECORDING_START_ALERT);
@@ -1117,6 +1149,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
 
     const rawRoomId = payload.EventData?.RoomId;
     const roomId = rawRoomId ? String(rawRoomId) : undefined;
+    if (roomId) this.recorderStallDiagnostics.observe('FileClosed', payload);
     let observedEndBeforeFileClose: Date | undefined;
     if (roomId) {
       const roomKey = String(roomId);
