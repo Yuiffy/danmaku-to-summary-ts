@@ -37,6 +37,7 @@
     "upload:clips:queue": "python src/scripts/clip_upload_registry.py queue",
     "upload:clips:worker": "node scripts/clip_upload_queue_runner.js",
     "upload:clips:worker:loop": "node scripts/clip_upload_queue_runner.js --loop",
+    "bilibili:clip-audit": "python src/scripts/audit_bilibili_clip.py",
     "manual:clips": "node src/scripts/manual_clip_queue.js",
     "asr:hotword-benchmark": "node src/scripts/asr/hotword_benchmark.js",
     "asr:hotword-benchmark:vllm": "node src/scripts/asr/hotword_benchmark.js --backend fun_asr_nano_vllm",

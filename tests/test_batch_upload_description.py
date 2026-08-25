@@ -3,7 +3,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.scripts.batch_upload import build_desc, load_generated_description
+from src.scripts.batch_upload import (
+    build_desc,
+    load_generated_description,
+    record_title_conflict,
+    state_record_matches_upload,
+)
 
 
 class BatchUploadDescriptionTests(unittest.TestCase):
@@ -78,6 +83,35 @@ class BatchUploadDescriptionTests(unittest.TestCase):
                 load_generated_description({'path': str(media_path)}),
                 '提前生成的简介',
             )
+
+    def test_title_only_duplicate_state_is_not_treated_as_local_upload(self):
+        self.assertFalse(
+            state_record_matches_upload(
+                {
+                    'source': 'search_dup',
+                    'title': '【小岁】标题',
+                    'bvid': 'BV1TITLEONLY',
+                    'mediaPath': 'D:/clips/clip.mp4',
+                },
+                '【小岁】标题',
+                'D:/clips/clip.mp4',
+            )
+        )
+
+    def test_title_conflict_is_recorded_separately_from_done_state(self):
+        state = {'done': {'3': {'source': 'search_dup', 'bvid': 'BV1OLD'}}}
+        clip = {'idx': 3, 'path': 'D:/clips/correct.mp4'}
+
+        record_title_conflict(
+            state,
+            clip,
+            '【小岁】标题',
+            bvid='BV1CONFLICT',
+        )
+
+        self.assertNotIn('3', state['done'])
+        self.assertEqual(state['title_conflicts']['3']['source'], 'title_conflict')
+        self.assertEqual(state['title_conflicts']['3']['bvid'], 'BV1CONFLICT')
 
 
 if __name__ == '__main__':

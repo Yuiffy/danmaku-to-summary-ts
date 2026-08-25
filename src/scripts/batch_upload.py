@@ -14,6 +14,7 @@ B站批量切片投稿脚本（防重复版）
   --delay      每次上传间隔秒数（默认：30）
   --skip       跳过指定序号（逗号分隔，如：1,2,3）
   --only       只上传指定序号（逗号分隔，如：5,6,7）
+  --force      允许本次明确授权的修正版跳过同标题查重并重新投稿
   --dry-run    只查重不实际上传
   --state      状态文件路径（默认：同目录下 upload_state.json）
   --rate-limit-wait     B站提示上传过快后的等待秒数（默认：120）
@@ -21,10 +22,11 @@ B站批量切片投稿脚本（防重复版）
 
 核心防重复逻辑:
   1. 上传前：通过搜索 API + member archives 实时列表双重查同名稿件
-  2. 上传前/406后：每条都查 member archives，确认同标题不存在才继续
-  3. 406 错误：不盲目重试，先查 member archives；若 B站提示上传过快则等待后重试
-  4. 状态持久化：每传完一个立即写 state，中途 kill 也能保留记录
-  5. member archives 是实时的（不走搜索索引），作为查重主力的可靠来源
+  2. 同标题只记录为 title_conflict，不写入已上传状态，等待人工核对
+  3. 只有显式 --force 才跳过同标题查重，允许授权的修正版重新投稿
+  4. 406 错误：不盲目重试，先查 member archives；若 B站提示上传过快则等待后重试
+  5. 状态持久化：每传完一个立即写 state，中途 kill 也能保留记录
+  6. member archives 是实时的（不走搜索索引），作为查重主力的可靠来源
 """
 
 import sys
@@ -259,10 +261,31 @@ def same_path(a, b):
 def state_record_matches_upload(record, full_title, media_path=''):
     if not isinstance(record, dict):
         return False
+    # A title-only match is not proof that this local media was uploaded.
+    # Older state files used these sources as if they were successful uploads;
+    # force the next run through the explicit title-conflict path instead.
+    if record.get('source') in ('search_dup', 'already_exists', 'title_conflict'):
+        return False
     if record.get('bvid') or record.get('aid') or record.get('cid'):
         recorded_path = record.get('mediaPath') or ''
-        return not recorded_path or same_path(recorded_path, media_path)
-    return record.get('title') == full_title
+        return bool(recorded_path and media_path and same_path(recorded_path, media_path))
+    return False
+
+
+def record_title_conflict(state, clip, full_title, bvid='', online_title='', reason='', review_path=''):
+    """Persist a title collision without pretending the local media succeeded."""
+    clip_key = str(clip['idx'])
+    state.setdefault('done', {}).pop(clip_key, None)
+    state.setdefault('got_406', {}).pop(clip_key, None)
+    state.setdefault('title_conflicts', {})[clip_key] = {
+        'title': full_title,
+        'onlineTitle': online_title or full_title,
+        'bvid': bvid or '',
+        'source': 'title_conflict',
+        'reason': reason or '线上已有同标题稿件，尚未核对是否为同一媒体',
+        'reviewPath': review_path or clip.get('reviewPath') or '',
+        'mediaPath': clip.get('path') or '',
+    }
 
 
 def fetch_archive_detail(cookie_str, bvid):
@@ -653,6 +676,7 @@ async def upload_one_guarded(
     rate_limit_wait,
     rate_limit_retries,
     collection_section_id=None,
+    allow_duplicate_title=False,
 ):
     full_title = f"{prefix}{clip['title']}"
 
@@ -674,13 +698,16 @@ async def upload_one_guarded(
         return result
 
     for attempt in range(rate_limit_retries + 1):
-        archives_before = fetch_member_archives(cookie_str, warn_duplicate_titles={full_title})
-        if full_title in archives_before:
-            bvid = archives_before[full_title]
-            print(f"  [SKIP] 上传前发现同标题已存在: {bvid}")
-            return await enrich_and_attach({
-                'idx': clip['idx'], 'title': full_title, 'status': 'already_exists', 'bvid': bvid,
-            })
+        if not allow_duplicate_title:
+            archives_before = fetch_member_archives(cookie_str, warn_duplicate_titles={full_title})
+            if full_title in archives_before:
+                bvid = archives_before[full_title]
+                print(f"  [CONFLICT] 上传前发现同标题已存在，需人工核对: {bvid}")
+                return enrich_upload_result({
+                    'idx': clip['idx'], 'title': full_title, 'status': 'title_conflict', 'bvid': bvid,
+                }, cookie_str)
+        else:
+            print(f"  [FORCE] 跳过上传前同标题查重: {full_title}")
 
         available, message = await wait_for_upload_available(credential, rate_limit_wait, rate_limit_retries)
         if not available:
@@ -699,7 +726,7 @@ async def upload_one_guarded(
             source_desc,
             collection_section_id=collection_section_id,
         )
-        if result.get('status') in ('ok', 'already_exists') and result.get('bvid'):
+        if result.get('status') == 'ok' and result.get('bvid'):
             result = await enrich_and_attach(result)
         if result['status'] != 'got_406':
             return result
@@ -745,6 +772,7 @@ async def main():
     parser.add_argument('--delay', type=int, default=30, help='上传间隔秒数')
     parser.add_argument('--skip', default='', help='跳过序号（逗号分隔）')
     parser.add_argument('--only', default='', help='只传指定序号（逗号分隔）')
+    parser.add_argument('--force', action='store_true', help='允许明确授权的修正版跳过同标题查重并重新投稿')
     parser.add_argument('--dry-run', action='store_true', help='只查重不上传')
     parser.add_argument('--state', default=None, help='状态文件路径')
     parser.add_argument('--rate-limit-wait', type=int, default=DEFAULT_RATE_LIMIT_WAIT, help='B站提示上传过快后的等待秒数')
@@ -797,7 +825,7 @@ async def main():
 
     # 过滤要上传的切片
     to_upload = []
-    skipped_dup = []
+    title_conflicts = []
     skipped_state = []
     skipped_arg = []
     skipped_review_dup = []
@@ -815,12 +843,14 @@ async def main():
 
         # 状态文件查重
         done_record = state.get('done', {}).get(str(clip['idx']))
-        if done_record is not None:
+        if done_record is not None and not args.force:
             if state_record_matches_upload(done_record, full_title, clip.get('path') or ''):
                 skipped_state.append(clip)
                 continue
             old_title = done_record.get('title') if isinstance(done_record, dict) else ''
             print(f"  [{clip['idx']}] WARN 忽略标题不匹配的旧状态: {old_title} != {full_title}")
+        elif done_record is not None and args.force:
+            print(f"  [{clip['idx']}] [FORCE] 忽略已有状态，准备重新投稿: {full_title}")
 
         if full_title in planned_titles:
             print(f"  [{clip['idx']}] SKIP (REVIEW 内同标题重复): {full_title}")
@@ -828,31 +858,31 @@ async def main():
             continue
 
         # 搜索查重
-        if full_title in existing:
+        if full_title in existing and not args.force:
             bvid = existing[full_title]
             existing_result = enrich_upload_result(
-                {'idx': clip['idx'], 'title': full_title, 'status': 'search_dup', 'bvid': bvid},
+                {'idx': clip['idx'], 'title': full_title, 'status': 'title_conflict', 'bvid': bvid},
                 cookie_str,
             )
-            print(f"  [{clip['idx']}] SKIP (搜索已存在): {full_title} -> {bvid}")
-            skipped_dup.append(clip)
-            state.setdefault('done', {})[str(clip['idx'])] = {
-                'title': full_title,
-                'submittedTitle': full_title,
-                'onlineTitle': existing_result.get('onlineTitle') or '',
-                'bvid': existing_result.get('bvid') or bvid,
-                'aid': existing_result.get('aid'),
-                'cid': existing_result.get('cid'),
-                'source': 'search_dup',
-                'reviewPath': args.review, 'mediaPath': clip.get('path') or '',
-            }
+            print(f"  [{clip['idx']}] CONFLICT (线上同标题，未确认媒体): {full_title} -> {bvid}")
+            title_conflicts.append(clip)
+            record_title_conflict(
+                state,
+                clip,
+                full_title,
+                bvid=existing_result.get('bvid') or bvid,
+                online_title=existing_result.get('onlineTitle') or full_title,
+                review_path=args.review,
+            )
             continue
+        if full_title in existing and args.force:
+            print(f"  [{clip['idx']}] [FORCE] 忽略线上同标题稿件，准备重新投稿: {existing[full_title]}")
 
         to_upload.append(clip)
         planned_titles.add(full_title)
 
     print(
-        f"\n[INFO] 跳过(线上已存在): {len(skipped_dup)} | "
+        f"\n[INFO] 同标题冲突(待核对): {len(title_conflicts)} | "
         f"跳过(状态已完成): {len(skipped_state)} | "
         f"跳过(REVIEW重复): {len(skipped_review_dup)} | "
         f"跳过(参数): {len(skipped_arg)} | 待上传: {len(to_upload)}"
@@ -866,11 +896,11 @@ async def main():
         print("\n[DRY-RUN] 不实际上传。")
         for clip in to_upload:
             print(f"  [{clip['idx']}] {args.prefix}{clip['title']}")
-        return
+        return 2 if title_conflicts else 0
 
     if not to_upload:
         print("\n[INFO] 没有需要上传的切片。")
-        return
+        return 2 if title_conflicts else 0
 
     credential = build_credential()
     upload_available, upload_limit_message = await wait_for_upload_available(
@@ -909,11 +939,12 @@ async def main():
             max(30, args.rate_limit_wait),
             max(0, args.rate_limit_retries),
             collection_section_id,
+            allow_duplicate_title=args.force,
         )
         results.append(result)
 
         # 记录到状态
-        if result['status'] in ('ok', 'ok_after_406', 'already_exists'):
+        if result['status'] in ('ok', 'ok_after_406'):
             state.setdefault('done', {})[str(clip['idx'])] = {
                 'title': full_title,
                 'submittedTitle': full_title,
@@ -929,7 +960,19 @@ async def main():
                 'collectionStatus': result.get('collectionStatus'),
                 'collectionError': result.get('collectionError'),
             }
+            state.setdefault('title_conflicts', {}).pop(str(clip['idx']), None)
             state.get('got_406', {}).pop(str(clip['idx']), None)
+        elif result['status'] == 'title_conflict':
+            title_conflicts.append(clip)
+            record_title_conflict(
+                state,
+                clip,
+                full_title,
+                bvid=result.get('bvid') or '',
+                online_title=result.get('onlineTitle') or full_title,
+                reason='上传前发现同标题稿件，未确认线上媒体与本地媒体一致',
+                review_path=args.review,
+            )
         elif result['status'] in ('got_406', 'rate_limited'):
             state.setdefault('got_406', {})[str(clip['idx'])] = {
                 'title': full_title,
@@ -954,20 +997,23 @@ async def main():
 
     # === 第3步：汇总 ===
     print(f"\n=== 上传完成 ===")
-    ok = sum(1 for r in results if r['status'] in ('ok', 'ok_after_406', 'already_exists'))
+    ok = sum(1 for r in results if r['status'] in ('ok', 'ok_after_406'))
     fail = sum(1 for r in results if r['status'] in ('fail', 'error'))
+    conflicts = len(title_conflicts)
     got_406 = sum(1 for r in results if r['status'] == 'got_406')
     rate_limited = sum(1 for r in results if r['status'] == 'rate_limited')
     no_file = sum(1 for r in results if r['status'] == 'no_file')
-    print(f"成功/已存在: {ok} | 失败: {fail} | 待确认406: {got_406} | 限速停止: {rate_limited} | 文件缺失: {no_file}")
+    print(f"成功: {ok} | 同标题冲突: {conflicts} | 失败: {fail} | 待确认406: {got_406} | 限速停止: {rate_limited} | 文件缺失: {no_file}")
     print(f"状态文件: {state_path}")
 
     for r in sorted(results, key=lambda x: x['idx']):
-        icon = {'ok': '✅', 'ok_after_406': '✅(406确认)', 'already_exists': '✅(已存在)', 'fail': '❌',
+        icon = {'ok': '✅', 'ok_after_406': '✅(406确认)', 'title_conflict': '⚠️(同标题冲突)', 'fail': '❌',
                 'error': '❌', 'got_406': '❓', 'rate_limited': '⏸', 'no_file': '⚠️', 'no_cover': '⚠️'}.get(r['status'], '?')
         bvid = r.get('bvid', '')
         print(f"  {icon} [{r['idx']}] {r['title']} {bvid}")
 
+    return 2 if title_conflicts else 0
+
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    raise SystemExit(asyncio.run(main()) or 0)

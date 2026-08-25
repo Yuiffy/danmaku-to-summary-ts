@@ -182,6 +182,51 @@ class ClipUploadRegistryTests(unittest.TestCase):
         self.assertFalse(registry.has_terminal_upload_error("文件缺失: 0"))
         self.assertTrue(registry.has_terminal_upload_error("文件缺失: 1"))
 
+    def test_title_conflict_is_terminal_for_manual_review(self):
+        self.assertTrue(registry.has_terminal_upload_error("同标题冲突: BV1CONFLICT"))
+
+    def test_force_job_reuploads_clip_even_when_registry_says_uploaded(self):
+        fixture = self.make_fixture(count=1)
+        fixture["registry"]["clips"]["1"]["status"] = "uploaded"
+        fixture["queue"]["jobs"][0]["allowDuplicateTitle"] = True
+
+        calls = []
+
+        def run_batch(group, job):
+            calls.append(job.get("allowDuplicateTitle"))
+            self.write_done(fixture, [1])
+            return subprocess.CompletedProcess([], 0, stdout="uploaded replacement")
+
+        self.run_job_with(fixture, run_batch)
+        self.assertEqual(calls, [True])
+
+    def test_force_enqueue_marks_job_and_clip_for_resubmission(self):
+        fixture = self.make_fixture(count=1)
+        fixture["runtime"].mkdir(parents=True, exist_ok=True)
+        registry.save_json(fixture["registry_path"], fixture["registry"])
+        with patch.object(registry, "RUNTIME_DIR", fixture["runtime"]), patch.object(
+            registry, "REGISTRY_PATH", fixture["registry_path"]
+        ), patch.object(registry, "QUEUE_PATH", fixture["queue_path"]):
+            args = type(
+                "Args",
+                (),
+                {
+                    "ids": "1",
+                    "force": True,
+                    "dry_run": False,
+                    "delay": 0,
+                    "rate_limit_wait": 30,
+                    "rate_limit_retries": 1,
+                    "note": "authorized replacement",
+                },
+            )()
+            self.assertEqual(registry.enqueue(args), 0)
+
+        saved_registry = registry.load_json(fixture["registry_path"], {})
+        saved_queue = registry.load_json(fixture["queue_path"], {})
+        self.assertEqual(saved_registry["clips"]["1"]["status"], "queued")
+        self.assertTrue(saved_queue["jobs"][-1]["allowDuplicateTitle"])
+
 
 if __name__ == "__main__":
     unittest.main()

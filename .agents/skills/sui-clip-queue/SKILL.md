@@ -67,6 +67,10 @@ npm run manual:clips -- worker
 
 The worker generates MP4, clipped SRT, burned subtitles, cover, JSON metadata, posting copy, and an isolated REVIEW entry. The standard media settings come from `ownStreamClips` and use the fast two-stage `copy` workflow; do not replace this with slow full re-encoding merely to solve a subtitle offset. Re-ASR is a targeted fallback for bad source subtitles, not the default for every clip.
 
+GPU performance is the default media path for this repository. Read `config/production.json` or `config/default.json` through the project config loader; do not hardcode `libx264` in a new clipping script and do not ask the user to set `DANMAKU_CLIP_CONCURRENCY` or `DANMAKU_CLIP_FFMPEG_THREADS`. The configured path is `h264_nvenc` with `p4`, `subtitleHwaccel: cuda`, and the fast two-stage burn. The automatic resource scheduler samples the foreground process, running processes, NVIDIA telemetry, and host CPU, using the normal idle profile when the machine is free and reducing to `1` worker / `1` FFmpeg thread during game or high-load use. An NVENC/CUDA failure must use the existing `libx264` fallback and still produce burned subtitles when possible.
+
+After a worker finishes, inspect the output JSON fields `resourceMode`, `ffmpegThreads`, `subtitleVideoEncoder`, and `subtitleHwaccel` when performance provenance matters. Performance thresholds are machine-specific and should be remeasured on the target host before changing production defaults; the queue-specific operational summary is in `docs/manual-clip-queue.md`.
+
 ### 4. Review and upload authorization
 
 The normal state path is:

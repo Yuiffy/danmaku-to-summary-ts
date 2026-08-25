@@ -1784,19 +1784,46 @@ async function generateClipCover(videoPath, title, outputDir, info = {}) {
     });
 }
 
-function buildSubtitleBurnVideoArgs(config = {}) {
-    const encoder = String(process.env.FFMPEG_SUBTITLE_VIDEO_ENCODER || config.subtitleVideoEncoder || 'libx264').trim();
+function buildSubtitleBurnVideoArgs(config = {}, options = {}) {
+    const forceCpu = options.forceCpu === true;
+    const encoder = forceCpu
+        ? 'libx264'
+        : String(process.env.FFMPEG_SUBTITLE_VIDEO_ENCODER || config.subtitleVideoEncoder || 'libx264').trim();
     const cq = String(config.subtitleVideoCq ?? process.env.FFMPEG_SUBTITLE_VIDEO_CQ ?? 23);
     const crf = String(config.subtitleVideoCrf ?? process.env.FFMPEG_SUBTITLE_VIDEO_CRF ?? 23);
 
-    if (encoder === 'h264_nvenc' || encoder === 'hevc_nvenc') {
+    if (!forceCpu && (encoder === 'h264_nvenc' || encoder === 'hevc_nvenc')) {
         const rawPreset = String(process.env.FFMPEG_SUBTITLE_VIDEO_PRESET || config.subtitleVideoPreset || 'p4').trim();
         const preset = rawPreset === 'ultrafast' ? 'p4' : rawPreset;
         return ['-c:v', encoder, '-preset', preset || 'p4', '-cq', cq];
     }
 
-    const preset = String(process.env.FFMPEG_SUBTITLE_VIDEO_PRESET || config.subtitleVideoPreset || 'ultrafast').trim();
+    const preset = forceCpu
+        ? String(process.env.FFMPEG_SUBTITLE_CPU_FALLBACK_PRESET || config.subtitleCpuFallbackPreset || 'ultrafast').trim()
+        : String(process.env.FFMPEG_SUBTITLE_VIDEO_PRESET || config.subtitleVideoPreset || 'ultrafast').trim();
     return ['-c:v', encoder || 'libx264', '-preset', preset || 'ultrafast', '-crf', crf];
+}
+
+function buildSubtitleBurnInputArgs(config = {}, options = {}) {
+    if (options.forceCpu === true) return [];
+    const hwaccel = String(
+        config.subtitleHwaccel
+        ?? process.env.FFMPEG_SUBTITLE_HWACCEL
+        ?? ''
+    ).trim().toLowerCase();
+    if (!hwaccel || ['none', 'off', 'false'].includes(hwaccel)) return [];
+    // Keep frames in system memory after decode: libass/subtitles is a CPU
+    // filter and cannot consume cuda frames directly.
+    return ['-hwaccel', hwaccel];
+}
+
+function isNvencSubtitleEncoder(config = {}) {
+    const encoder = String(
+        process.env.FFMPEG_SUBTITLE_VIDEO_ENCODER
+        || config.subtitleVideoEncoder
+        || 'libx264'
+    ).trim().toLowerCase();
+    return encoder === 'h264_nvenc' || encoder === 'hevc_nvenc';
 }
 
 /**
@@ -2005,6 +2032,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                     const trimEnd = String(Number(offsetInRoughClip) + Number(duration));
                     await runFfmpeg([
                         '-y',
+                        ...buildSubtitleBurnInputArgs(config),
                         '-i', tempPath,
                         '-filter_complex', `[0:v]trim=start=${trimStart}:end=${trimEnd},setpts=PTS-STARTPTS[sub_v];[0:a]atrim=start=${trimStart}:end=${trimEnd},asetpts=PTS-STARTPTS[sub_a];[sub_v]subtitles='${escapeSubtitlePathForFfmpegFilter(burnAssPath)}'[vout]`,
                         '-map', '[vout]',
@@ -2030,6 +2058,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                 await runFfmpeg([
                     '-y',
                     '-ss', start,
+                    ...buildSubtitleBurnInputArgs(config),
                     '-i', source.mediaPath,
                     '-t', duration,
                     '-vf', `subtitles='${escapeSubtitlePathForFfmpegFilter(burnAssPath)}'`,
@@ -2061,6 +2090,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                     await runFfmpeg([
                         '-y',
                         '-ss', start,
+                        ...buildSubtitleBurnInputArgs(config),
                         '-i', source.mediaPath,
                         '-t', duration,
                         '-vf', `subtitles='${escapeSubtitlePathForFfmpegFilter(burnAssPath)}'`,
@@ -2082,6 +2112,36 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                 }
             } else {
                 console.warn(`⚠️  字幕烧录失败,改为生成无烧录切片: ${error.message}`);
+            }
+
+            if (isNvencSubtitleEncoder(config)) {
+                try {
+                    console.warn('⚠️  NVENC 字幕烧录不可用，回退到 libx264，并关闭 CUDA 解码');
+                    await runFfmpeg([
+                        '-y',
+                        '-ss', start,
+                        ...buildSubtitleBurnInputArgs(config, { forceCpu: true }),
+                        '-i', source.mediaPath,
+                        '-t', duration,
+                        '-vf', `subtitles='${escapeSubtitlePathForFfmpegFilter(burnAssPath)}'`,
+                        ...buildSubtitleBurnVideoArgs(config, { forceCpu: true }),
+                        '-c:a', 'copy',
+                        '-movflags', '+faststart',
+                        outputPath
+                    ], ffmpegOptions);
+                    return {
+                        path: outputPath,
+                        burnedSubtitles: true,
+                        fallbackUsed: true,
+                        fallbackReason: `${subtitleBurnFailure}; NVENC failed, used libx264`,
+                        subtitleVideoEncoder: 'libx264',
+                        twoStageSubtitleBurn: false,
+                        twoStageMode: 'direct'
+                    };
+                } catch (cpuFallbackError) {
+                    subtitleBurnFailure = `${subtitleBurnFailure}; libx264 fallback failed: ${cpuFallbackError.message}`;
+                    console.warn(`⚠️  libx264 字幕回退也失败,改为生成无烧录切片: ${cpuFallbackError.message}`);
+                }
             }
         } finally {
             try {

@@ -380,6 +380,37 @@ describe('own_stream_clipper', () => {
     ]);
   });
 
+  test('passes adaptive resource profiles to clip jobs and releases their leases', async () => {
+    let inFlight = 0;
+    let released = 0;
+    const scheduler = {
+      maxConcurrency: 2,
+      acquire: jest.fn(async () => {
+        inFlight += 1;
+        return {
+          profile: { mode: 'busy', ffmpegThreads: 1 },
+          release: () => {
+            inFlight -= 1;
+            released += 1;
+          }
+        };
+      })
+    };
+
+    const results = await ownStreamClipper.runJobsWithConcurrency([
+      async profile => ({ mode: profile.mode, threads: profile.ffmpegThreads }),
+      async profile => ({ mode: profile.mode, threads: profile.ffmpegThreads })
+    ], 2, { scheduler });
+
+    expect(results).toEqual([
+      { mode: 'busy', threads: 1 },
+      { mode: 'busy', threads: 1 }
+    ]);
+    expect(scheduler.acquire).toHaveBeenCalledTimes(2);
+    expect(inFlight).toBe(0);
+    expect(released).toBe(2);
+  });
+
   test('aligns clip end forward to the next subtitle silence gap', () => {
     const aligned = ownStreamClipper.alignClipToSubtitleBoundaries(
       { start: 100, end: 115, title: 'airport story' },
@@ -658,6 +689,9 @@ describe('own_stream_clipper', () => {
       expect(callOptions.promptCacheRolloutPercent).toBe(100);
       expect(prompt).toContain('直播标题: 预生成测试直播');
       expect(prompt).toContain('来源归属必须严格按输入分区：直播音轨字幕与观众弹幕是两类独立来源，标题、封面文案、简介和理由不得把一方的发言或行为归给另一方。');
+      expect(prompt).toContain('片段时间与文案必须一一对应：先读取当前 clips 对象 startTime-endTime 范围内的直播音轨字幕和同一范围内的观众弹幕，再填写该对象的 title、coverText、description 和 reason。');
+      expect(prompt).toContain('直播标题、录制时间和整场上下文只用于确认来源，不是当前片段的内容证据；禁止把直播标题中的型号、人物、事件或梗直接套进任何片段。');
+      expect(prompt).toContain('严格禁止跨窗口串题：每个 clips 对象只能使用自己时间范围内能核实的内容，不得借用其他候选或其他时间窗口的文案。输出前逐条核对，若时间窗口与文案不匹配就删除该对象，不要猜测或保留错误标题。');
       expect(prompt).toContain('description 是公开简介，只写片中具体内容');
       expect(prompt).toContain('reason 是内部选材理由');
       expect(prompt).toContain('不得把 reason 复述或改写进 description');

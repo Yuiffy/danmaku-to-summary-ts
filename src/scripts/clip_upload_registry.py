@@ -41,6 +41,9 @@ TERMINAL_UPLOAD_ERROR_MARKERS = (
     "video too short",
     "无法创建封面",
     "no_cover",
+    "同标题冲突",
+    "标题冲突",
+    "title conflict",
 )
 LOCK_OWNER_TOKEN: Optional[str] = None
 INTERNAL_REVIEW_LABEL_RE = re.compile(r"^\[(?:模型全量|模型分块|弹幕热度|本地规则)\]\s*")
@@ -404,11 +407,14 @@ def enqueue(args: argparse.Namespace) -> int:
         "rateLimitWait": int(args.rate_limit_wait),
         "rateLimitRetries": int(args.rate_limit_retries),
         "note": args.note or "",
+        # ``--force`` is an explicit authorization to re-submit this job,
+        # including when Bilibili already has the same title.
+        "allowDuplicateTitle": bool(args.force),
     }
     queue.setdefault("jobs", []).append(job)
     for clip_id in ids:
         clip = registry["clips"][str(clip_id)]
-        if clip.get("status") != "uploaded":
+        if clip.get("status") != "uploaded" or args.force:
             clip["status"] = "queued"
             clip.pop("failureReason", None)
             clip["updatedAt"] = now_iso()
@@ -497,6 +503,8 @@ def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.Co
             "--rate-limit-retries",
             str(int(job.get("rateLimitRetries") or DEFAULT_RATE_LIMIT_RETRIES)),
         ]
+        if job.get("allowDuplicateTitle"):
+            cmd.append("--force")
         print("[worker] run:", " ".join(f'"{c}"' if " " in c else c for c in cmd), flush=True)
         try:
             cp = subprocess.run(
@@ -946,7 +954,12 @@ def run_one_job() -> bool:
         return True
 
     sync_clip_statuses(registry, ids)
-    pending_ids = [clip_id for clip_id in ids if registry["clips"][str(clip_id)].get("status") != "uploaded"]
+    force_resubmit = bool(job.get("allowDuplicateTitle"))
+    pending_ids = [
+        clip_id
+        for clip_id in ids
+        if force_resubmit or registry["clips"][str(clip_id)].get("status") != "uploaded"
+    ]
     if not pending_ids:
         mark_job(job, "done", result="all ids already uploaded")
         save_json(REGISTRY_PATH, registry)

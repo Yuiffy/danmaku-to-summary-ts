@@ -62,6 +62,7 @@ import sys
 from typing import Optional
 
 from bilibili_api import Credential
+from bilibili_api import video
 from bilibili_api.video_uploader import VideoEditor
 
 
@@ -110,6 +111,7 @@ async def edit_video_meta(
     dynamic: Optional[str] = None,
     no_reprint: int = 0,
     copyright: int = None,
+    page_title: Optional[str] = None,
     extra_meta: dict = None,
 ) -> dict:
     """
@@ -159,7 +161,30 @@ async def edit_video_meta(
         meta=meta,
         credential=credential,
     )
-    
+
+    if page_title is not None:
+        await editor._fetch_configs()
+        old_configs = editor._VideoEditor__old_configs
+        old_archive = old_configs["archive"]
+        pages = []
+        for index, old_page in enumerate(old_configs.get("videos", [])):
+            cid = old_page.get("cid")
+            if not cid:
+                cid = await video.Video(bvid=bvid, credential=credential).get_cid(index)
+            pages.append({
+                "title": page_title if index == 0 else old_page.get("title", ""),
+                "desc": old_page.get("desc", ""),
+                "filename": old_page.get("filename", ""),
+                "cid": cid,
+            })
+        editor.meta.update({
+            "videos": pages,
+            "cover": old_archive.get("cover", ""),
+            "tid": old_archive.get("tid", 21),
+        })
+        await editor._submit()
+        return {"bvid": bvid}
+
     result = await editor.start()
     return result
 
@@ -203,6 +228,7 @@ def main():
     parser.add_argument("--title", help="新标题")
     parser.add_argument("--tag", help="新标签（逗号分隔）")
     parser.add_argument("--desc", help="新描述")
+    parser.add_argument("--page-title", help="单 P 标题；需要与稿件标题同步时使用")
     parser.add_argument("--secret", help="secret.json 路径（可选）")
     
     args = parser.parse_args()
@@ -217,6 +243,8 @@ def main():
         kwargs["tag"] = args.tag
     if args.desc:
         kwargs["desc"] = args.desc
+    if args.page_title:
+        kwargs["page_title"] = args.page_title
     
     result = asyncio.run(edit_video_meta(credential, args.bvid, **kwargs))
     print(json.dumps(result, ensure_ascii=False))

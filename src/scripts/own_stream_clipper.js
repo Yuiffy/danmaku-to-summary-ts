@@ -10,6 +10,7 @@ const { postProcessAiClipMetadata } = require('./ai_clip_metadata');
 const fullLiveContext = require('./full_live_context');
 const residualAudit = require('./own_stream_residual_audit');
 const { resolveClipOutputRoot } = require('./clip_output_path');
+const { createClipResourceAdaptiveScheduler } = require('./clip_resource_adaptive');
 
 const {
     notableEmotionEvents,
@@ -35,8 +36,20 @@ const DEFAULT_OWN_STREAM_CLIPS_CONFIG = {
     maxClips: 24,
     chunkSeconds: 2700,
     aiConcurrency: 3,
-    clipConcurrency: 3,
-    clipFfmpegThreads: 4,
+    clipConcurrency: 2,
+    clipFfmpegThreads: 2,
+    clipResourceAdaptive: {
+        enabled: true,
+        busyConcurrency: 1,
+        busyFfmpegThreads: 1,
+        pollIntervalMs: 3000,
+        busyCpuPercentThreshold: 70,
+        busyGpuUtilizationThreshold: 35,
+        foregroundGpuUtilizationThreshold: 20,
+        externalGpuActivityThreshold: 25,
+        busySamples: 2,
+        idleSamples: 3
+    },
     maxSubtitleCharsPerChunk: 14000,
     maxDanmakuLinesPerChunk: 220,
     fullContextDanmakuMergeWindowSeconds: 30,
@@ -55,10 +68,11 @@ const DEFAULT_OWN_STREAM_CLIPS_CONFIG = {
     twoStageMode: 'copy',
     twoStagePreRollSeconds: 8,
     twoStagePostRollSeconds: 2,
-    subtitleVideoEncoder: 'libx264',
-    subtitleVideoPreset: 'ultrafast',
+    subtitleVideoEncoder: 'h264_nvenc',
+    subtitleVideoPreset: 'p4',
     subtitleVideoCrf: 23,
     subtitleVideoCq: 23,
+    subtitleHwaccel: 'cuda',
     subtitleFontSizeRatio: 0.094,
     subtitlePortraitFontSizeRatio: 0.044,
     outputDirName: 'own_stream_fun_clips',
@@ -133,6 +147,9 @@ const OWN_STREAM_SOURCE_ATTRIBUTION_RULE = '来源归属必须严格按输入分
 
 function buildOwnStreamClipCopyPromptLines(generator) {
     return [
+        '片段时间与文案必须一一对应：先读取当前 clips 对象 startTime-endTime 范围内的直播音轨字幕和同一范围内的观众弹幕，再填写该对象的 title、coverText、description 和 reason。',
+        '直播标题、录制时间和整场上下文只用于确认来源，不是当前片段的内容证据；禁止把直播标题中的型号、人物、事件或梗直接套进任何片段。',
+        '严格禁止跨窗口串题：每个 clips 对象只能使用自己时间范围内能核实的内容，不得借用其他候选或其他时间窗口的文案。输出前逐条核对，若时间窗口与文案不匹配就删除该对象，不要猜测或保留错误标题。',
         ...generator.buildClipTitlePromptLines({ outputMode: 'jsonTitle', streamerName: '岁己SUI' }),
         ...generator.buildCoverTextPromptLines(),
         ...generator.buildClipDescriptionPromptLines(),
@@ -161,6 +178,10 @@ function getOwnStreamClipsConfig(config = {}) {
         parallel: {
             ...DEFAULT_OWN_STREAM_CLIPS_CONFIG.parallel,
             ...(raw.parallel || {})
+        },
+        clipResourceAdaptive: {
+            ...DEFAULT_OWN_STREAM_CLIPS_CONFIG.clipResourceAdaptive,
+            ...(raw.clipResourceAdaptive || {})
         },
         emotionScoring: {
             ...DEFAULT_OWN_STREAM_CLIPS_CONFIG.emotionScoring,
@@ -207,6 +228,7 @@ function buildCutClipMediaConfig(config = {}, options = {}) {
         subtitleVideoPreset: config.subtitleVideoPreset,
         subtitleVideoCrf: config.subtitleVideoCrf,
         subtitleVideoCq: config.subtitleVideoCq,
+        subtitleHwaccel: config.subtitleHwaccel,
         subtitleFontSizeRatio: config.subtitleFontSizeRatio,
         subtitlePortraitFontSizeRatio: config.subtitlePortraitFontSizeRatio,
         subtitleMinFontSize: config.subtitleMinFontSize,
@@ -933,8 +955,14 @@ function removeOverlappingClips(clips = [], toleranceSeconds = 0) {
     return selected.sort((a, b) => Number(a.start) - Number(b.start));
 }
 
-async function runJobsWithConcurrency(jobs = [], concurrency = 1) {
-    const limit = Math.max(1, Math.floor(Number(concurrency) || 1));
+async function runJobsWithConcurrency(jobs = [], concurrency = 1, options = {}) {
+    const scheduler = options.scheduler && typeof options.scheduler.acquire === 'function'
+        ? options.scheduler
+        : null;
+    const requestedWorkerConcurrency = options.workerConcurrency ?? (
+        scheduler?.maxConcurrency ?? concurrency
+    );
+    const limit = Math.max(1, Math.floor(Number(requestedWorkerConcurrency) || 1));
     const results = new Array(jobs.length);
     let cursor = 0;
 
@@ -942,13 +970,17 @@ async function runJobsWithConcurrency(jobs = [], concurrency = 1) {
         while (cursor < jobs.length) {
             const index = cursor;
             cursor += 1;
+            let lease = null;
             try {
-                results[index] = await jobs[index]();
+                lease = scheduler ? await scheduler.acquire() : null;
+                results[index] = await jobs[index](lease?.profile || null);
             } catch (error) {
                 // 一个切片失败不应终止同一场直播的其余切片；保留已完成结果，
                 // 让 review/企微通知至少覆盖成功生成的部分。
                 console.warn(`clip job ${index + 1} failed, continuing remaining jobs: ${error.message}`);
                 results[index] = null;
+            } finally {
+                lease?.release();
             }
         }
     }
@@ -1757,6 +1789,18 @@ async function generateOwnStreamClipJob({
 async function generateOwnStreamClips(options = {}) {
     const rootConfig = options.config || {};
     const config = getOwnStreamClipsConfig(rootConfig);
+    const clipConcurrency = Math.max(
+        1,
+        Math.floor(Number(config.clipConcurrency) || 1)
+    );
+    const clipFfmpegThreads = Math.max(
+        0,
+        Math.floor(Number(config.clipFfmpegThreads) || 0)
+    );
+    const mediaConfig = {
+        ...config,
+        clipFfmpegThreads
+    };
     if (!config.enabled) return [];
     if (!options.mediaPath || !fs.existsSync(options.mediaPath)) {
         throw new Error(`mediaPath not found: ${options.mediaPath || ''}`);
@@ -1910,7 +1954,8 @@ async function generateOwnStreamClips(options = {}) {
             maxClips: config.maxClips,
             chunkSeconds: config.chunkSeconds,
             aiConcurrency: config.aiConcurrency,
-            clipConcurrency: config.clipConcurrency,
+            clipConcurrency,
+            clipFfmpegThreads,
             aiStrategy: config.ai?.strategy || null,
             aiModel: config.ai?.model || null,
             parallel: config.parallel
@@ -1928,6 +1973,23 @@ async function generateOwnStreamClips(options = {}) {
         return clips;
     }
 
+    const resourceScheduler = createClipResourceAdaptiveScheduler({
+        ownConfig: config,
+        rootConfig
+    });
+    const initialResourceProfile = await resourceScheduler.refresh(true);
+    const mediaConcurrency = resourceScheduler.enabled
+        ? resourceScheduler.maxConcurrency
+        : clipConcurrency;
+    if (resourceScheduler.enabled) {
+        console.log(
+            `[resource] 自动切片资源检测: mode=${initialResourceProfile.mode}; `
+            + `concurrency=${initialResourceProfile.concurrency}; `
+            + `threads=${initialResourceProfile.ffmpegThreads}`
+            + (initialResourceProfile.reason ? `; reason=${initialResourceProfile.reason}` : '')
+        );
+    }
+
     const source = {
         mediaPath: options.mediaPath,
         kind: topicClipper.chooseClipSource(options.mediaPath, options.mediaPath)?.kind || 'video',
@@ -1937,10 +1999,9 @@ async function generateOwnStreamClips(options = {}) {
     const streamerName = topicClipper.resolveStreamerName(rootConfig, info.roomId, {
         streamerName: options.streamerName || '岁己SUI'
     });
-    const clipConcurrency = Math.max(1, Math.floor(Number(config.clipConcurrency) || 1));
-    if (clipConcurrency > 1) {
-        console.log(`Clip media concurrency: ${clipConcurrency}`);
-        const jobs = clips.map((clip, index) => () => generateOwnStreamClipJob({
+    if (mediaConcurrency > 1) {
+        console.log(`Clip media concurrency: ${mediaConcurrency}`);
+        const profileAwareJobs = clips.map((clip, index) => resourceProfile => generateOwnStreamClipJob({
             clip,
             index,
             parsed,
@@ -1950,10 +2011,14 @@ async function generateOwnStreamClips(options = {}) {
             source,
             streamerName,
             info,
-            config,
+            config: resourceProfile
+                ? { ...mediaConfig, clipFfmpegThreads: resourceProfile.ffmpegThreads }
+                : mediaConfig,
             participantMetadata
         }));
-        const results = await runJobsWithConcurrency(jobs, clipConcurrency);
+        const results = await runJobsWithConcurrency(profileAwareJobs, mediaConcurrency, {
+            scheduler: resourceScheduler
+        });
         fs.writeFileSync(reviewPath, buildReviewMarkdown(results, reviewMetadata), 'utf8');
         const residualReview = writeResidualAuditForOwnStream({
             options,
@@ -1978,6 +2043,13 @@ async function generateOwnStreamClips(options = {}) {
     }
     const results = [];
     for (const [index, clip] of clips.entries()) {
+        const resourceLease = resourceScheduler.enabled
+            ? await resourceScheduler.acquire()
+            : null;
+        const activeMediaConfig = resourceLease
+            ? { ...mediaConfig, clipFfmpegThreads: resourceLease.profile.ffmpegThreads }
+            : mediaConfig;
+        try {
         const window = {
             index: index + 1,
             start: clip.start,
@@ -2029,7 +2101,7 @@ async function generateOwnStreamClips(options = {}) {
         let mediaError = null;
         try {
             mediaResult = await topicClipper.cutClipMedia(source, window, srtPath, mediaPath, {
-                ...buildCutClipMediaConfig(config, options)
+                ...buildCutClipMediaConfig(activeMediaConfig, options)
             });
         } catch (error) {
             mediaError = error.message;
@@ -2104,6 +2176,9 @@ async function generateOwnStreamClips(options = {}) {
         fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2), 'utf8');
         results.push(metadata);
         console.log(`${index + 1}. ${copy.title} ${formatClock(window.start)} ${formatClock(window.duration)} ${metadata.output.mediaPath}`);
+        } finally {
+            resourceLease?.release();
+        }
     }
 
     fs.writeFileSync(reviewPath, buildReviewMarkdown(results, reviewMetadata), 'utf8');

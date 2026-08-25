@@ -11,6 +11,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const topicClipper = require('./topic_clipper');
 const configLoader = require('./config-loader');
+const { createClipResourceAdaptiveScheduler } = require('./clip_resource_adaptive');
 
 const projectRoot = path.resolve(__dirname, '../..');
 const defaultQueuePath = path.join(projectRoot, 'data/runtime/manual_clip_queue.json');
@@ -179,6 +180,24 @@ function deriveReviewPath(mediaPath, outputDir, explicit) {
     return path.join(outputDir, `${stem}_MANUAL_REVIEW.md`);
 }
 
+function buildQueueMediaConfig(rootConfig = {}, resourceProfile = null) {
+    const own = rootConfig.ownStreamClips || {};
+    return {
+        ...(rootConfig.clipTopics || {}),
+        subtitleVideoEncoder: own.subtitleVideoEncoder || 'h264_nvenc',
+        subtitleVideoPreset: own.subtitleVideoPreset || 'p4',
+        subtitleVideoCrf: own.subtitleVideoCrf ?? 23,
+        subtitleVideoCq: own.subtitleVideoCq ?? 23,
+        subtitleHwaccel: own.subtitleHwaccel ?? 'cuda',
+        clipFfmpegThreads: resourceProfile?.ffmpegThreads ?? own.clipFfmpegThreads ?? 2,
+        burnSubtitles: true,
+        twoStageSubtitleBurn: true,
+        twoStageMode: 'copy',
+        preserveCoverSource: true,
+        ffmpegTimeoutMs: 1200000
+    };
+}
+
 function formatClock(seconds) {
     return topicClipper.formatClock(seconds);
 }
@@ -282,7 +301,7 @@ async function notifyTask(task, result, rootConfig) {
     );
 }
 
-async function cutTask(task, rootConfig) {
+async function cutTask(task, rootConfig, resourceSchedulerOverride = null) {
     if (!fs.existsSync(task.mediaPath)) throw new Error(`media not found: ${task.mediaPath}`);
     if (!fs.existsSync(task.srtPath)) throw new Error(`SRT not found: ${task.srtPath}`);
     if (!(task.end > task.start)) throw new Error('end must be greater than start');
@@ -301,26 +320,27 @@ async function cutTask(task, rootConfig) {
             ?? 18,
         stripPunctuation: subtitleConfig.strip_punctuation ?? true
     });
-    const own = rootConfig.ownStreamClips || {};
-    const cutConfig = {
-        ...(rootConfig.clipTopics || {}),
-        subtitleVideoEncoder: own.subtitleVideoEncoder || 'libx264',
-        subtitleVideoPreset: own.subtitleVideoPreset || 'ultrafast',
-        subtitleVideoCrf: own.subtitleVideoCrf ?? 23,
-        clipFfmpegThreads: own.clipFfmpegThreads ?? 2,
-        burnSubtitles: true,
-        twoStageSubtitleBurn: true,
-        twoStageMode: 'copy',
-        preserveCoverSource: true,
-        ffmpegTimeoutMs: 1200000
-    };
-    const mediaResult = await topicClipper.cutClipMedia(
-        { kind: 'video', mediaPath: task.mediaPath },
-        window,
-        outputSrt,
-        outputVideo,
-        cutConfig
-    );
+    const resourceScheduler = resourceSchedulerOverride || createClipResourceAdaptiveScheduler({
+        ownConfig: rootConfig.ownStreamClips || {},
+        rootConfig
+    });
+    const resourceLease = resourceScheduler.enabled
+        ? await resourceScheduler.acquire()
+        : null;
+    const resourceProfile = resourceLease?.profile || resourceScheduler.getProfile();
+    const cutConfig = buildQueueMediaConfig(rootConfig, resourceProfile);
+    let mediaResult;
+    try {
+        mediaResult = await topicClipper.cutClipMedia(
+            { kind: 'video', mediaPath: task.mediaPath },
+            window,
+            outputSrt,
+            outputVideo,
+            cutConfig
+        );
+    } finally {
+        resourceLease?.release();
+    }
     let coverPath = null;
     try {
         coverPath = await topicClipper.generateClipCover(
@@ -363,7 +383,11 @@ async function cutTask(task, rootConfig) {
             coverPath,
             burnedSubtitles: Boolean(mediaResult.burnedSubtitles),
             twoStageMode: mediaResult.twoStageMode || 'copy',
-            subtitleSegmentCount: srtResult.segmentCount
+            subtitleSegmentCount: srtResult.segmentCount,
+            resourceMode: resourceProfile.mode,
+            ffmpegThreads: cutConfig.clipFfmpegThreads,
+            subtitleVideoEncoder: mediaResult.subtitleVideoEncoder || cutConfig.subtitleVideoEncoder,
+            subtitleHwaccel: cutConfig.subtitleHwaccel || null
         }
     };
     fs.writeFileSync(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, 'utf8');
@@ -387,8 +411,8 @@ async function cutTask(task, rootConfig) {
     return result;
 }
 
-async function processTask(task, queue, rootConfig, queuePath = defaultQueuePath) {
-    const result = await cutTask(task, rootConfig);
+async function processTask(task, queue, rootConfig, queuePath = defaultQueuePath, resourceScheduler = null) {
+    const result = await cutTask(task, rootConfig, resourceScheduler);
     task.outputVideo = result.output.mediaPath;
     task.outputSrt = result.output.srtPath;
     task.coverPath = result.output.coverPath;
@@ -482,6 +506,10 @@ async function main(argv = process.argv.slice(2)) {
         return;
     }
     if (options.command === 'worker') {
+        const resourceScheduler = createClipResourceAdaptiveScheduler({
+            ownConfig: rootConfig.ownStreamClips || {},
+            rootConfig
+        });
         do {
             const tasks = queue.tasks.filter(task => task.status === 'pending_cut');
             if (!tasks.length) {
@@ -495,7 +523,7 @@ async function main(argv = process.argv.slice(2)) {
             }
             const task = tasks[0];
             console.log(`cutting ${task.id}: ${task.title}`);
-            await processTask(task, queue, rootConfig, queuePath);
+            await processTask(task, queue, rootConfig, queuePath, resourceScheduler);
             console.log(`done ${task.id}: ${task.status} (${(task.uploadIds || []).join(',')})`);
         } while (options.loop);
         return;
@@ -527,6 +555,7 @@ module.exports = {
     deriveSrt,
     deriveOutputDir,
     deriveReviewPath,
+    buildQueueMediaConfig,
     cutTask,
     processTask
 };
