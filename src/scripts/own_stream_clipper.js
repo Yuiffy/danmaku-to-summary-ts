@@ -9,8 +9,8 @@ const topicClipper = require('./topic_clipper');
 const { postProcessAiClipMetadata } = require('./ai_clip_metadata');
 const fullLiveContext = require('./full_live_context');
 const residualAudit = require('./own_stream_residual_audit');
-const { resolveClipOutputRoot } = require('./clip_output_path');
-const { createClipResourceAdaptiveScheduler } = require('./clip_resource_adaptive');
+const { resolveClipOutputRoot } = require('./clipping/output_path');
+const { createClipResourceAdaptiveScheduler } = require('./clipping/resource_scheduler');
 
 const {
     notableEmotionEvents,

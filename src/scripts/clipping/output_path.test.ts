@@ -1,5 +1,5 @@
 const path = require('path');
-const { resolveClipOutputRoot } = require('./clip_output_path');
+const { resolveClipOutputRoot } = require('./output_path');
 
 describe('resolveClipOutputRoot', () => {
   const config = {

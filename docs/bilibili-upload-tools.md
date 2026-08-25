@@ -2,7 +2,9 @@
 
 This repo has two categories of upload-related scripts:
 
-- Reusable tools live in `src/scripts` or as documented root-level helpers.
+- Reusable tools live in the relevant `src/scripts` subdirectory or as documented root-level helpers.
+- Shared clipping and evidence modules live in `src/scripts/clipping/`; the root-level
+  `clip_resource_adaptive.js` and `clip_output_path.js` files are compatibility entrypoints.
 - One-off scripts tied to a date, BV list, local media path, or recovery batch
   should live under `local-scripts/` or `tmp/`; both are ignored by Git.
 

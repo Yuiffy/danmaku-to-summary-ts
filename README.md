@@ -56,7 +56,9 @@ danmaku-to-summary-ts/
 ├── src/app/main.ts                         # TypeScript 应用入口；构建后为 dist/app/main.js
 ├── src/services/webhook/                   # Webhook 服务和 DDTV / Mikufans / B站 API handlers
 ├── src/scripts/enhanced_auto_summary.js    # 完整媒体处理流程
+├── src/scripts/README.md                    # 脚本目录和迁移约定
 ├── src/scripts/asr/                        # backend 路由、统一结果、队列和 speaker-once
+├── src/scripts/clipping/                   # 跨录播合集、事件契约、资源调度和输出路径
 ├── src/scripts/python/                     # Whisper、Paraformer、SenseVoice、Nano 与 speaker 引擎
 ├── config/
 │   ├── default.json                        # 开发/仓库默认配置

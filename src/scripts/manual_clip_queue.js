@@ -11,7 +11,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const topicClipper = require('./topic_clipper');
 const configLoader = require('./config-loader');
-const { createClipResourceAdaptiveScheduler } = require('./clip_resource_adaptive');
+const { createClipResourceAdaptiveScheduler } = require('./clipping/resource_scheduler');
 
 const projectRoot = path.resolve(__dirname, '../..');
 const defaultQueuePath = path.join(projectRoot, 'data/runtime/manual_clip_queue.json');

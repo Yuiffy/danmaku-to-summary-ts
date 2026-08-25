@@ -4,7 +4,7 @@ const {
   parseGpuProcessMonitor,
   parseGpuSummary,
   resolveClipResourceAdaptiveConfig
-} = require('./clip_resource_adaptive');
+} = require('./resource_scheduler');
 
 const BASE_CONFIG = {
   enabled: true,

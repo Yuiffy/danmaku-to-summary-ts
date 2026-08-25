@@ -6,7 +6,7 @@ const xml2js = require('xml2js');
 const fetch = require('node-fetch');
 const asrBackends = require('./asr/asr_backends');
 const configLoader = require('./config-loader');
-const { resolveClipOutputRoot } = require('./clip_output_path');
+const { resolveClipOutputRoot } = require('./clipping/output_path');
 const {
     applyFfmpegProcessPriority,
     getFfmpegResourceConfig,
