@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 import time
 from typing import Optional
@@ -52,21 +53,104 @@ def build_credential() -> Credential:
     )
 
 
-def get_collection_section_id(config: Optional[dict] = None) -> Optional[int]:
-    """从配置中读取要自动加入的合集 section_id。
+def _positive_collection_id(value) -> Optional[int]:
+    if value in (None, '', 0):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
-    优先读 collectionSectionId；如果没有则回退到旧的 collectionSeriesId。
+
+def _routing_entry(upload_cfg: dict, key: str) -> dict:
+    routing = upload_cfg.get('collectionRouting') or {}
+    entry = routing.get(key) if isinstance(routing, dict) else None
+    return entry if isinstance(entry, dict) else {}
+
+
+def _is_sui_context(
+    *,
+    upload_cfg: dict,
+    streamer_name: Optional[str] = None,
+    room_id: Optional[str] = None,
+    source_desc: Optional[str] = None,
+    title: Optional[str] = None,
+    prefix: Optional[str] = None,
+) -> bool:
+    """Classify the source streamer without treating a topic mention as ownership."""
+    sui_entry = _routing_entry(upload_cfg, 'sui')
+    room_ids = sui_entry.get('roomIds') or ['25788785']
+    if str(room_id or '').strip() in {str(value).strip() for value in room_ids}:
+        return True
+
+    identity = str(streamer_name or prefix or '').strip()
+    if not identity:
+        title_text = str(title or '').strip()
+        match = re.match(r'^\s*【([^】]+)】', title_text)
+        identity = match.group(1).strip() if match else ''
+    if identity:
+        markers = sui_entry.get('markers') or ['岁己', '小岁', 'sui']
+        return any(str(marker).casefold() in identity.casefold() for marker in markers)
+
+    # A source description normally starts with the streamer name.  Only use
+    # that leading identity as a fallback, so "小栞提及岁己" stays non-Sui.
+    source_text = str(source_desc or '').strip()
+    leading = re.split(r'\s+直播|[《(（]', source_text, maxsplit=1)[0].strip()
+    if not leading:
+        return False
+    markers = sui_entry.get('markers') or ['岁己', '小岁', 'sui']
+    return any(str(marker).casefold() in leading.casefold() for marker in markers)
+
+
+def get_collection_section_id(
+    config: Optional[dict] = None,
+    *,
+    streamer_name: Optional[str] = None,
+    room_id: Optional[str] = None,
+    source_desc: Optional[str] = None,
+    title: Optional[str] = None,
+    prefix: Optional[str] = None,
+) -> Optional[int]:
+    """Resolve the upload collection section for a streamer.
+
+    ``8513688`` and ``8941979`` are season IDs shown by Bilibili.  The upload
+    endpoint needs their child section IDs, configured as ``sectionId`` below.
+    The legacy single ``collectionSectionId`` remains the default fallback.
     """
     config = config or get_config()
     upload_cfg = (config.get('bilibili') or {}).get('upload') or {}
-    section_id = upload_cfg.get('collectionSectionId') or upload_cfg.get('collectionSeriesId')
-    if section_id in (None, '', 0):
-        return None
-    try:
-        return int(section_id)
-    except (TypeError, ValueError):
-        print(f'[WARN] 无效的合集 section_id: {section_id}')
-        return None
+    sui_entry = _routing_entry(upload_cfg, 'sui')
+    other_entry = _routing_entry(upload_cfg, 'other') or _routing_entry(upload_cfg, 'default')
+
+    if _is_sui_context(
+        upload_cfg=upload_cfg,
+        streamer_name=streamer_name,
+        room_id=room_id,
+        source_desc=source_desc,
+        title=title,
+        prefix=prefix,
+    ):
+        section_id = _positive_collection_id(sui_entry.get('sectionId'))
+    else:
+        section_id = _positive_collection_id(other_entry.get('sectionId'))
+
+    if section_id is None:
+        section_id = _positive_collection_id(upload_cfg.get('collectionSectionId'))
+    if section_id is None:
+        section_id = _positive_collection_id(upload_cfg.get('collectionSeriesId'))
+    if section_id is None:
+        configured = sui_entry.get('sectionId') if _is_sui_context(
+            upload_cfg=upload_cfg,
+            streamer_name=streamer_name,
+            room_id=room_id,
+            source_desc=source_desc,
+            title=title,
+            prefix=prefix,
+        ) else other_entry.get('sectionId')
+        if configured not in (None, ''):
+            print(f'[WARN] 无效的合集 section_id: {configured}')
+    return section_id
 
 
 # 向后兼容别名
@@ -122,12 +206,23 @@ async def attach_video_to_collection(
     credential: Credential,
     collection_section_id: Optional[int] = None,
     config: Optional[dict] = None,
+    streamer_name: Optional[str] = None,
+    room_id: Optional[str] = None,
+    source_desc: Optional[str] = None,
+    prefix: Optional[str] = None,
 ):
     """把已上传的视频加入合集（创作中心 episodes/add 接口）。"""
     if not isinstance(upload_result, dict):
         return None
 
-    section_id = collection_section_id if collection_section_id is not None else get_collection_section_id(config)
+    section_id = collection_section_id if collection_section_id is not None else get_collection_section_id(
+        config,
+        streamer_name=streamer_name,
+        room_id=room_id,
+        source_desc=source_desc,
+        title=(upload_result or {}).get('title') if isinstance(upload_result, dict) else None,
+        prefix=prefix,
+    )
     if not section_id:
         return None
 
@@ -208,6 +303,9 @@ async def upload_video(
     dynamic: str = None,
     credential: Credential = None,
     collection_section_id: Optional[int] = None,
+    source_desc: Optional[str] = None,
+    streamer_name: Optional[str] = None,
+    room_id: Optional[str] = None,
 ):
     """上传视频到 B 站。"""
     if not os.path.exists(video_path):
@@ -286,6 +384,13 @@ async def upload_video(
     print('[INFO] 开始上传...')
     result = await uploader.start()
     if result:
+        if collection_section_id is None:
+            collection_section_id = get_collection_section_id(
+                streamer_name=streamer_name,
+                room_id=room_id,
+                source_desc=source_desc,
+                title=title,
+            )
         await attach_video_to_collection(
             result,
             credential,
@@ -318,7 +423,7 @@ def main():
     parser.add_argument('--cover', default=None, help='封面图片路径')
     parser.add_argument('--dynamic', default=None, help='动态文案')
     parser.add_argument('--source-desc', default=None, help='来源描述，会自动拼到简介末尾')
-    parser.add_argument('--collection-series-id', type=int, default=None, help='投稿后自动加入的合集 series_id')
+    parser.add_argument('--collection-series-id', type=int, default=None, help='投稿后自动加入的合集 section_id（兼容旧参数名）')
 
     args = parser.parse_args()
     tags = [t.strip() for t in args.tags.split(',') if t.strip()]
@@ -331,7 +436,10 @@ def main():
 
     collection_section_id = args.collection_series_id
     if collection_section_id is None:
-        collection_section_id = get_collection_section_id()
+        collection_section_id = get_collection_section_id(
+            source_desc=args.source_desc,
+            title=args.title,
+        )
 
     result = asyncio.run(
         upload_video(
@@ -344,6 +452,7 @@ def main():
             dynamic=args.dynamic,
             credential=credential,
             collection_section_id=collection_section_id,
+            source_desc=args.source_desc,
         )
     )
 

@@ -386,7 +386,23 @@ const ConfigSchema = Joi.object({
         enabled: Joi.boolean().default(true),
         upload: Joi.object({
             collectionSectionId: Joi.number().integer().positive().allow(null).default(null),
-            collectionSeriesId: Joi.number().integer().positive().allow(null).default(null)
+            collectionSeriesId: Joi.number().integer().positive().allow(null).default(null),
+            collectionRouting: Joi.object({
+                sui: Joi.object({
+                    seasonId: Joi.number().integer().positive().allow(null),
+                    sectionId: Joi.number().integer().positive().allow(null),
+                    roomIds: Joi.array().items(Joi.alternatives(Joi.string(), Joi.number())).default([]),
+                    markers: Joi.array().items(Joi.string()).default([])
+                }).unknown(true).optional(),
+                other: Joi.object({
+                    seasonId: Joi.number().integer().positive().allow(null),
+                    sectionId: Joi.number().integer().positive().allow(null)
+                }).unknown(true).optional(),
+                default: Joi.object({
+                    seasonId: Joi.number().integer().positive().allow(null),
+                    sectionId: Joi.number().integer().positive().allow(null)
+                }).unknown(true).optional()
+            }).unknown(true).optional()
         }).default(),
         polling: Joi.object({
             interval: Joi.number().default(60000),

@@ -293,6 +293,122 @@ function formatClock(seconds) {
     return topicClipper.formatClock(seconds);
 }
 
+function formatProcessingDuration(milliseconds) {
+    if (milliseconds === null || milliseconds === undefined || milliseconds === '') return '未知';
+    const value = Number(milliseconds);
+    if (!Number.isFinite(value) || value < 0) return '未知';
+    if (value < 1000) return `${(value / 1000).toFixed(1)}秒`;
+    let totalSeconds = Math.round(value / 1000);
+    const hours = Math.floor(totalSeconds / 3600);
+    totalSeconds %= 3600;
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    const parts = [];
+    if (hours > 0) parts.push(`${hours}小时`);
+    if (minutes > 0 || hours > 0) parts.push(`${minutes}分`);
+    if (seconds > 0 || parts.length === 0) parts.push(`${seconds}秒`);
+    return parts.join('');
+}
+
+function formatPercent(value) {
+    if (value === null || value === undefined || value === '') return '不可用';
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return '不可用';
+    return `${Number(numeric.toFixed(1))}%`;
+}
+
+function formatMemoryMb(value) {
+    if (value === null || value === undefined || value === '') return '不可用';
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return '不可用';
+    if (numeric >= 1024) return `${(numeric / 1024).toFixed(1)} GB`;
+    return `${Math.round(numeric)} MB`;
+}
+
+function summarizeResourcePeaks(peaks = []) {
+    const entries = (Array.isArray(peaks) ? peaks : [])
+        .filter(item => item && typeof item === 'object');
+    const weightedAverage = (valueKey, weightKey, fallbackKey = null) => {
+        let weightedTotal = 0;
+        let weightTotal = 0;
+        for (const entry of entries) {
+            const value = Number(entry[valueKey]);
+            const fallback = fallbackKey ? Number(entry[fallbackKey]) : null;
+            const resolved = Number.isFinite(value) ? value : fallback;
+            if (!Number.isFinite(resolved)) continue;
+            const weight = Math.max(1, Number(entry[weightKey]) || 1);
+            weightedTotal += resolved * weight;
+            weightTotal += weight;
+        }
+        return weightTotal > 0 ? Number((weightedTotal / weightTotal).toFixed(2)) : null;
+    };
+    const maximum = key => {
+        const values = entries.map(entry => Number(entry[key])).filter(Number.isFinite);
+        return values.length > 0 ? Number(Math.max(...values).toFixed(2)) : null;
+    };
+    const sum = key => entries.reduce((total, entry) => {
+        const value = Number(entry[key]);
+        return total + (Number.isFinite(value) ? value : 0);
+    }, 0);
+    const gpuUtilPeakPct = maximum('gpuUtilPeakPct');
+    const gpuAvailable = entries.some(entry => (
+        entry.gpuAvailable === true || Number.isFinite(Number(entry.gpuUtilPeakPct))
+    ));
+
+    return {
+        stageCount: entries.length,
+        hostCpuAvgPct: weightedAverage('hostCpuAvgPct', 'samples', 'hostCpuPeakPct'),
+        hostCpuPeakPct: maximum('hostCpuPeakPct'),
+        gpuAvailable,
+        gpuUtilAvgPct: weightedAverage('gpuUtilAvgPct', 'gpuSamples', 'gpuUtilPeakPct'),
+        gpuUtilPeakPct,
+        gpuMemoryUsedPeakMb: maximum('gpuMemoryUsedPeakMb'),
+        gpuMemoryTotalMb: maximum('gpuMemoryTotalMb'),
+        gpuSamples: sum('gpuSamples'),
+        gpuQueryErrors: sum('gpuQueryErrors')
+    };
+}
+
+function buildClipProcessingStats(results = [], elapsedMs, startedAt = null, finishedAt = null) {
+    const timings = (Array.isArray(results) ? results : [])
+        .map(result => Number(result?.processing?.elapsedMs))
+        .filter(value => Number.isFinite(value) && value >= 0);
+    const totalClipElapsedMs = timings.reduce((total, value) => total + value, 0);
+    const resourcePeaks = (Array.isArray(results) ? results : [])
+        .flatMap(result => Array.isArray(result?.processing?.resourcePeaks)
+            ? result.processing.resourcePeaks
+            : []);
+
+    return {
+        version: 1,
+        startedAt,
+        finishedAt,
+        totalElapsedMs: Number.isFinite(Number(elapsedMs)) ? Math.round(Number(elapsedMs)) : null,
+        averageClipElapsedMs: timings.length > 0
+            ? Math.round(totalClipElapsedMs / timings.length)
+            : null,
+        totalClipElapsedMs: Math.round(totalClipElapsedMs),
+        clipCount: Array.isArray(results) ? results.length : 0,
+        timedClipCount: timings.length,
+        resource: summarizeResourcePeaks(resourcePeaks)
+    };
+}
+
+function buildProcessingSummaryLines(stats = null) {
+    if (!stats || typeof stats !== 'object') return [];
+    const clipCount = Number.isFinite(Number(stats.clipCount)) ? Number(stats.clipCount) : 0;
+    const average = formatProcessingDuration(stats.averageClipElapsedMs);
+    const total = formatProcessingDuration(stats.totalElapsedMs);
+    const resource = stats.resource || {};
+    const memory = resource.gpuAvailable
+        ? `${formatMemoryMb(resource.gpuMemoryUsedPeakMb)}/${formatMemoryMb(resource.gpuMemoryTotalMb)}`
+        : '不可用';
+    return [
+        `切片耗时: 总耗时 ${total}，平均每个切片 ${average}（${clipCount} 段）`,
+        `资源占用: CPU 平均 ${formatPercent(resource.hostCpuAvgPct)} / 峰值 ${formatPercent(resource.hostCpuPeakPct)}；GPU 平均 ${formatPercent(resource.gpuUtilAvgPct)} / 峰值 ${formatPercent(resource.gpuUtilPeakPct)}；显存峰值 ${memory}`
+    ];
+}
+
 const EMOTION_DISPLAY_NAMES = {
     HAPPY: '愉快',
     ANGRY: '愤怒',
@@ -1476,6 +1592,7 @@ function buildReviewMarkdown(results, metadata) {
         results.length ? `来源统计: ${formatSelectionSourceCounts(results)}` : null,
         uploadIds.length ? `上传短ID: ${uploadIds.join(',')}` : null,
         aiStatusLine,
+        ...buildProcessingSummaryLines(metadata.processingStats),
         '',
         '## 切片列表',
         ''
@@ -1539,6 +1656,7 @@ function buildNotifyMarkdown(results, metadata) {
         results.length ? `来源统计: ${formatSelectionSourceCounts(results)}` : null,
         uploadIds.length ? `上传短ID: ${uploadIds.join(',')}` : null,
         aiStatusLine,
+        ...buildProcessingSummaryLines(metadata.processingStats),
         '',
         '\u5207\u7247\u5217\u8868:'
     ].filter(line => line !== null);
@@ -1554,7 +1672,8 @@ function buildNotifyMarkdown(results, metadata) {
         return markdown;
     }
 
-    const compact = lines.slice(0, 7);
+    const clipListIndex = lines.indexOf('\u5207\u7247\u5217\u8868:');
+    const compact = lines.slice(0, clipListIndex >= 0 ? clipListIndex + 1 : 7);
     for (const [index, result] of results.entries()) {
         const title = result.copy.title;
         const start = formatClock(result.window.start);
@@ -1658,6 +1777,9 @@ async function generateOwnStreamClipJob({
     config,
     participantMetadata
 }) {
+    const processingStartedAt = new Date();
+    const processingStartedNs = process.hrtime.bigint();
+    const resourcePeaks = [];
     const window = {
         index: index + 1,
         start: clip.start,
@@ -1709,8 +1831,12 @@ async function generateOwnStreamClipJob({
     let mediaError = null;
     try {
         mediaResult = await topicClipper.cutClipMedia(source, window, srtPath, mediaPath, {
-            ...buildCutClipMediaConfig(config, options)
+            ...buildCutClipMediaConfig(config, options),
+            resourcePeaks
         });
+        if (Array.isArray(mediaResult?.resourcePeaks) && mediaResult.resourcePeaks !== resourcePeaks) {
+            resourcePeaks.push(...mediaResult.resourcePeaks);
+        }
     } catch (error) {
         mediaError = error.message;
         console.warn(`clip media generation failed, metadata kept: ${error.message}`);
@@ -1739,7 +1865,8 @@ async function generateOwnStreamClipJob({
                         return Number.isFinite(Number(mediaResult.coverTimeOrigin)) && Number.isFinite(Number(absolutePeak))
                             ? Number(absolutePeak) - Number(mediaResult.coverTimeOrigin)
                             : absolutePeak;
-                    })()
+                    })(),
+                    resourcePeaks
                 }
             );
         } catch (error) {
@@ -1749,6 +1876,19 @@ async function generateOwnStreamClipJob({
             topicClipper.cleanupTemporaryCoverSource(mediaResult);
         }
     }
+    const processingFinishedAt = new Date();
+    const processing = {
+        version: 1,
+        startedAt: processingStartedAt.toISOString(),
+        finishedAt: processingFinishedAt.toISOString(),
+        elapsedMs: Math.round(Number(process.hrtime.bigint() - processingStartedNs) / 1e6),
+        resourceMode: config.mode || config.resourceMode || null,
+        ffmpegThreads: Number.isFinite(Number(config.clipFfmpegThreads))
+            ? Number(config.clipFfmpegThreads)
+            : null,
+        resourcePeaks,
+        resource: summarizeResourcePeaks(resourcePeaks)
+    };
     const metadata = {
         version: 1,
         generatedAt: new Date().toISOString(),
@@ -1766,6 +1906,7 @@ async function generateOwnStreamClipJob({
         window,
         candidate: clip.base || null,
         copy,
+        processing,
         uploadReady: Boolean(mediaResult?.path),
         output: {
             mediaPath: mediaResult?.path || mediaPath,
@@ -1973,6 +2114,17 @@ async function generateOwnStreamClips(options = {}) {
         return clips;
     }
 
+    const clipProcessingStartedAt = new Date();
+    const clipProcessingStartedNs = process.hrtime.bigint();
+    const completeClipProcessingStats = results => {
+        const finishedAt = new Date();
+        reviewMetadata.processingStats = buildClipProcessingStats(
+            results,
+            Number(process.hrtime.bigint() - clipProcessingStartedNs) / 1e6,
+            clipProcessingStartedAt.toISOString(),
+            finishedAt.toISOString()
+        );
+    };
     const resourceScheduler = createClipResourceAdaptiveScheduler({
         ownConfig: config,
         rootConfig
@@ -2019,6 +2171,7 @@ async function generateOwnStreamClips(options = {}) {
         const results = await runJobsWithConcurrency(profileAwareJobs, mediaConcurrency, {
             scheduler: resourceScheduler
         });
+        completeClipProcessingStats(results);
         fs.writeFileSync(reviewPath, buildReviewMarkdown(results, reviewMetadata), 'utf8');
         const residualReview = writeResidualAuditForOwnStream({
             options,
@@ -2043,6 +2196,9 @@ async function generateOwnStreamClips(options = {}) {
     }
     const results = [];
     for (const [index, clip] of clips.entries()) {
+        const processingStartedAt = new Date();
+        const processingStartedNs = process.hrtime.bigint();
+        const resourcePeaks = [];
         const resourceLease = resourceScheduler.enabled
             ? await resourceScheduler.acquire()
             : null;
@@ -2101,8 +2257,12 @@ async function generateOwnStreamClips(options = {}) {
         let mediaError = null;
         try {
             mediaResult = await topicClipper.cutClipMedia(source, window, srtPath, mediaPath, {
-                ...buildCutClipMediaConfig(activeMediaConfig, options)
+                ...buildCutClipMediaConfig(activeMediaConfig, options),
+                resourcePeaks
             });
+            if (Array.isArray(mediaResult?.resourcePeaks) && mediaResult.resourcePeaks !== resourcePeaks) {
+                resourcePeaks.push(...mediaResult.resourcePeaks);
+            }
         } catch (error) {
             mediaError = error.message;
             console.warn(`clip media generation failed, metadata kept: ${error.message}`);
@@ -2131,7 +2291,8 @@ async function generateOwnStreamClips(options = {}) {
                             return Number.isFinite(Number(mediaResult.coverTimeOrigin)) && Number.isFinite(Number(absolutePeak))
                                 ? Number(absolutePeak) - Number(mediaResult.coverTimeOrigin)
                                 : absolutePeak;
-                        })()
+                        })(),
+                        resourcePeaks
                     }
                 );
             } catch (error) {
@@ -2141,6 +2302,19 @@ async function generateOwnStreamClips(options = {}) {
                 topicClipper.cleanupTemporaryCoverSource(mediaResult);
             }
         }
+        const processingFinishedAt = new Date();
+        const processing = {
+            version: 1,
+            startedAt: processingStartedAt.toISOString(),
+            finishedAt: processingFinishedAt.toISOString(),
+            elapsedMs: Math.round(Number(process.hrtime.bigint() - processingStartedNs) / 1e6),
+            resourceMode: config.mode || config.resourceMode || null,
+            ffmpegThreads: Number.isFinite(Number(config.clipFfmpegThreads))
+                ? Number(config.clipFfmpegThreads)
+                : null,
+            resourcePeaks,
+            resource: summarizeResourcePeaks(resourcePeaks)
+        };
         const metadata = {
             version: 1,
             generatedAt: new Date().toISOString(),
@@ -2158,6 +2332,7 @@ async function generateOwnStreamClips(options = {}) {
             window,
             candidate: clip.base || null,
             copy,
+            processing,
             uploadReady: Boolean(mediaResult?.path),
             output: {
                 mediaPath: mediaResult?.path || mediaPath,
@@ -2181,6 +2356,7 @@ async function generateOwnStreamClips(options = {}) {
         }
     }
 
+    completeClipProcessingStats(results);
     fs.writeFileSync(reviewPath, buildReviewMarkdown(results, reviewMetadata), 'utf8');
     const residualReview = writeResidualAuditForOwnStream({
         options,
@@ -2321,6 +2497,11 @@ module.exports = {
     alignClipsToSubtitleBoundaries,
     removeOverlappingClips,
     runJobsWithConcurrency,
+    formatClock,
+    formatProcessingDuration,
+    summarizeResourcePeaks,
+    buildClipProcessingStats,
+    buildProcessingSummaryLines,
     buildNotifyMarkdown,
     buildReviewMarkdown,
     buildPlanReviewMarkdown,

@@ -133,7 +133,19 @@
   },
   "bilibili": {
     "upload": {
-      "collectionSectionId": 9482593
+      "collectionSectionId": 9974272,
+      "collectionRouting": {
+        "sui": {
+          "seasonId": 8513688,
+          "sectionId": 9482593,
+          "roomIds": ["25788785"],
+          "markers": ["岁己", "小岁", "sui"]
+        },
+        "other": {
+          "seasonId": 8941979,
+          "sectionId": 9974272
+        }
+      }
     }
   }
 }

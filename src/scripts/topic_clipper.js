@@ -1511,8 +1511,17 @@ async function runFfmpeg(args, options = {}) {
             windowsHide: true
         });
         applyFfmpegProcessPriority(child.pid, effectiveResourceConfig.priority);
+        let resourcePeak = null;
         const peakMonitor = startResourcePeakMonitor(stage, {
-            resourceConfig: effectiveResourceConfig
+            resourceConfig: effectiveResourceConfig,
+            gpuTelemetry: options.gpuTelemetry === true,
+            nvidiaSmiPath: options.nvidiaSmiPath,
+            onStop: peak => {
+                resourcePeak = peak;
+                if (typeof options.onResourcePeak === 'function') {
+                    options.onResourcePeak(peak);
+                }
+            }
         });
         let stderr = '';
         let timedOut = false;
@@ -1546,7 +1555,7 @@ async function runFfmpeg(args, options = {}) {
                     return;
                 }
                 if (code === 0) {
-                    resolve({ stderr });
+                    resolve({ stderr, resourcePeak });
                     return;
                 }
                 reject(new Error(`ffmpeg exited with code ${code}: ${stderr.slice(-500)}`));
@@ -1736,7 +1745,11 @@ async function generateClipCover(videoPath, title, outputDir, info = {}) {
         });
         applyFfmpegProcessPriority(child.pid, resourceConfig.priority);
         const peakMonitor = startResourcePeakMonitor(coverStage, {
-            resourceConfig
+            resourceConfig,
+            gpuTelemetry: Array.isArray(info.resourcePeaks),
+            onStop: peak => {
+                if (Array.isArray(info.resourcePeaks)) info.resourcePeaks.push(peak);
+            }
         });
 
         let stderr = '';
@@ -1929,11 +1942,14 @@ async function getVideoResolution(mediaPath) {
 
 async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
     const ffmpegPath = config.ffmpegPath || 'ffmpeg';
+    const resourcePeaks = Array.isArray(config.resourcePeaks) ? config.resourcePeaks : [];
     const ffmpegOptions = {
         ffmpegPath,
         threads: config.ffmpegThreads ?? config.clipFfmpegThreads,
         resourceConfig: config.resourceConfig,
-        timeoutMs: config.ffmpegTimeoutMs
+        timeoutMs: config.ffmpegTimeoutMs,
+        gpuTelemetry: Array.isArray(config.resourcePeaks),
+        onResourcePeak: peak => resourcePeaks.push(peak)
     };
     const duration = String(Math.max(0.1, window.duration));
     const start = String(Math.max(0, window.start));
@@ -1958,7 +1974,8 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
         return {
             path: outputPath,
             burnedSubtitles: false,
-            fallbackUsed: false
+            fallbackUsed: false,
+            resourcePeaks
         };
     }
 
@@ -2080,7 +2097,8 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                 twoStageMode: subtitleBurnPlan.mode,
                 requestedTwoStageMode: subtitleBurnPlan.requestedMode,
                 roughSourceStart,
-                roughTrimOffset
+                roughTrimOffset,
+                resourcePeaks
             };
         } catch (error) {
             subtitleBurnFailure = error.message;
@@ -2136,7 +2154,8 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                         fallbackReason: `${subtitleBurnFailure}; NVENC failed, used libx264`,
                         subtitleVideoEncoder: 'libx264',
                         twoStageSubtitleBurn: false,
-                        twoStageMode: 'direct'
+                        twoStageMode: 'direct',
+                        resourcePeaks
                     };
                 } catch (cpuFallbackError) {
                     subtitleBurnFailure = `${subtitleBurnFailure}; libx264 fallback failed: ${cpuFallbackError.message}`;
@@ -2164,7 +2183,8 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
         path: outputPath,
         burnedSubtitles: false,
         fallbackUsed: config.burnSubtitles !== false,
-        fallbackReason: subtitleBurnFailure
+        fallbackReason: subtitleBurnFailure,
+        resourcePeaks
     };
 }
 

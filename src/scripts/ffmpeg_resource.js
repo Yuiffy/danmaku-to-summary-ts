@@ -1,6 +1,9 @@
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
 const fs = require('fs');
 const os = require('os');
+const { promisify } = require('util');
+
+const execFileAsync = promisify(execFile);
 
 const DEFAULT_THREADS = 2;
 const DEFAULT_PRIORITY = 'belowNormal';
@@ -59,7 +62,12 @@ function getFfmpegResourceConfig(config = {}) {
         },
         resourcePeak: {
             enabled: normalizeBoolean(ffmpeg.resourcePeak?.enabled, true),
-            sampleIntervalMs: normalizeNumber(ffmpeg.resourcePeak?.sampleIntervalMs, 1000, 250)
+            sampleIntervalMs: normalizeNumber(ffmpeg.resourcePeak?.sampleIntervalMs, 1000, 250),
+            nvidiaSmiPath: String(
+                process.env.NVIDIA_SMI_PATH
+                || ffmpeg.resourcePeak?.nvidiaSmiPath
+                || 'nvidia-smi'
+            )
         }
     };
 }
@@ -212,6 +220,35 @@ async function waitForAsrAvailability(stage, resourceConfig = {}, dependencies =
     return { waitedMs, asrActive };
 }
 
+function parseGpuTelemetry(output) {
+    const rows = String(output || '')
+        .split(/\r?\n/)
+        .map(line => line.trim())
+        .filter(Boolean)
+        .map(line => line.split(',').map(value => Number(String(value).trim())))
+        .filter(values => values.length >= 3 && values.slice(0, 3).every(Number.isFinite));
+    if (rows.length === 0) return null;
+
+    return {
+        utilization: Math.max(...rows.map(values => values[0])),
+        memoryUsedMb: rows.reduce((sum, values) => sum + values[1], 0),
+        memoryTotalMb: rows.reduce((sum, values) => sum + values[2], 0)
+    };
+}
+
+async function readGpuTelemetry(nvidiaSmiPath = 'nvidia-smi') {
+    if (process.platform !== 'win32' && process.platform !== 'linux') return null;
+    const result = await execFileAsync(nvidiaSmiPath, [
+        '--query-gpu=utilization.gpu,memory.used,memory.total',
+        '--format=csv,noheader,nounits'
+    ], {
+        windowsHide: true,
+        timeout: 1500,
+        maxBuffer: 64 * 1024
+    });
+    return parseGpuTelemetry(result.stdout || '');
+}
+
 function startResourcePeakMonitor(stage, options = {}) {
     const resourceConfig = options.resourceConfig || {};
     const peakConfig = resourceConfig.resourcePeak || {};
@@ -221,12 +258,29 @@ function startResourcePeakMonitor(stage, options = {}) {
 
     const intervalMs = normalizeNumber(peakConfig.sampleIntervalMs, 1000, 250);
     const cpuCount = Math.max(1, os.cpus().length || 1);
+    const gpuTelemetryEnabled = options.gpuTelemetry === true;
+    const nvidiaSmiPath = String(
+        options.nvidiaSmiPath
+        || peakConfig.nvidiaSmiPath
+        || process.env.NVIDIA_SMI_PATH
+        || 'nvidia-smi'
+    );
     let lastSnapshot = readCpuSnapshot();
     let lastUsage = process.cpuUsage();
     let lastAt = process.hrtime.bigint();
     let hostPeak = null;
+    let hostSum = 0;
+    let hostSamples = 0;
     let nodePeak = null;
     let nodeCorePeak = null;
+    let gpuInFlight = false;
+    let gpuAvailable = false;
+    let gpuSum = 0;
+    let gpuSamples = 0;
+    let gpuPeak = null;
+    let gpuMemoryUsedPeak = null;
+    let gpuMemoryTotal = null;
+    let gpuQueryErrors = 0;
     let samples = 0;
     let stopped = false;
 
@@ -238,6 +292,8 @@ function startResourcePeakMonitor(stage, options = {}) {
         if (totalDelta > 0) {
             const hostPercent = Math.max(0, Math.min(100, (1 - idleDelta / totalDelta) * 100));
             hostPeak = hostPeak === null ? hostPercent : Math.max(hostPeak, hostPercent);
+            hostSum += hostPercent;
+            hostSamples += 1;
         }
         lastSnapshot = currentSnapshot;
 
@@ -253,8 +309,37 @@ function startResourcePeakMonitor(stage, options = {}) {
         samples += 1;
     };
 
-    const timer = setInterval(sample, intervalMs);
+    const sampleGpu = () => {
+        if (!gpuTelemetryEnabled || stopped || gpuInFlight) return;
+        gpuInFlight = true;
+        readGpuTelemetry(nvidiaSmiPath)
+            .then(snapshot => {
+                if (stopped || !snapshot) return;
+                gpuAvailable = true;
+                gpuSum += snapshot.utilization;
+                gpuSamples += 1;
+                gpuPeak = gpuPeak === null ? snapshot.utilization : Math.max(gpuPeak, snapshot.utilization);
+                gpuMemoryUsedPeak = gpuMemoryUsedPeak === null
+                    ? snapshot.memoryUsedMb
+                    : Math.max(gpuMemoryUsedPeak, snapshot.memoryUsedMb);
+                gpuMemoryTotal = gpuMemoryTotal === null
+                    ? snapshot.memoryTotalMb
+                    : Math.max(gpuMemoryTotal, snapshot.memoryTotalMb);
+            })
+            .catch(() => {
+                gpuQueryErrors += 1;
+            })
+            .finally(() => {
+                gpuInFlight = false;
+            });
+    };
+
+    const timer = setInterval(() => {
+        sample();
+        sampleGpu();
+    }, intervalMs);
     if (typeof timer.unref === 'function') timer.unref();
+    sampleGpu();
     return {
         stop: () => {
             if (stopped) return null;
@@ -264,16 +349,29 @@ function startResourcePeakMonitor(stage, options = {}) {
             const result = {
                 stage: String(stage || 'ffmpeg'),
                 hostCpuPeakPct: hostPeak === null ? null : Number(hostPeak.toFixed(2)),
+                hostCpuAvgPct: hostSamples > 0 ? Number((hostSum / hostSamples).toFixed(2)) : null,
                 nodeCpuPeakPct: nodePeak === null ? null : Number(nodePeak.toFixed(2)),
                 nodeCorePeakPct: nodeCorePeak === null ? null : Number(nodeCorePeak.toFixed(2)),
-                samples
+                samples,
+                gpuAvailable,
+                gpuUtilPeakPct: gpuPeak === null ? null : Number(gpuPeak.toFixed(2)),
+                gpuUtilAvgPct: gpuSamples > 0 ? Number((gpuSum / gpuSamples).toFixed(2)) : null,
+                gpuMemoryUsedPeakMb: gpuMemoryUsedPeak === null ? null : Number(gpuMemoryUsedPeak.toFixed(2)),
+                gpuMemoryTotalMb: gpuMemoryTotal === null ? null : Number(gpuMemoryTotal.toFixed(2)),
+                gpuSamples,
+                gpuQueryErrors
             };
             const parts = [
                 `host_cpu_peak=${result.hostCpuPeakPct === null ? 'n/a' : `${result.hostCpuPeakPct}%`}`,
+                `host_cpu_avg=${result.hostCpuAvgPct === null ? 'n/a' : `${result.hostCpuAvgPct}%`}`,
                 `node_cpu_peak=${result.nodeCpuPeakPct === null ? 'n/a' : `${result.nodeCpuPeakPct}%`}`,
-                `node_core_peak=${result.nodeCorePeakPct === null ? 'n/a' : `${result.nodeCorePeakPct}%`}`
+                `node_core_peak=${result.nodeCorePeakPct === null ? 'n/a' : `${result.nodeCorePeakPct}%`}`,
+                `gpu_peak=${result.gpuUtilPeakPct === null ? 'n/a' : `${result.gpuUtilPeakPct}%`}`
             ];
             (options.log || console.log)(`[resource] 峰值 ${result.stage}: ${parts.join(', ')}, samples=${samples}`);
+            if (typeof options.onStop === 'function') {
+                options.onStop(result);
+            }
             return result;
         }
     };
@@ -323,5 +421,6 @@ module.exports = {
     waitForCpuAvailability,
     isAsrClaimActive,
     waitForAsrAvailability,
+    parseGpuTelemetry,
     startResourcePeakMonitor
 };

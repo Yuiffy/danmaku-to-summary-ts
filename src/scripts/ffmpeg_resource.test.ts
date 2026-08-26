@@ -1,4 +1,8 @@
-const { waitForAsrAvailability, waitForCpuAvailability } = require('./ffmpeg_resource');
+const {
+  waitForAsrAvailability,
+  waitForCpuAvailability,
+  parseGpuTelemetry
+} = require('./ffmpeg_resource');
 
 
 describe('topic clip CPU resource guard', () => {
@@ -82,5 +86,14 @@ describe('topic clip CPU resource guard', () => {
 
     expect(result).toEqual({ waitedMs: 0, lastCpuPercent: null });
     expect(sampleCpuPercent).not.toHaveBeenCalled();
+  });
+
+  test('parses GPU utilization and memory telemetry for multiple adapters', () => {
+    expect(parseGpuTelemetry('42, 2048, 16384\n75, 1024, 8192\n')).toEqual({
+      utilization: 75,
+      memoryUsedMb: 3072,
+      memoryTotalMb: 24576
+    });
+    expect(parseGpuTelemetry('')).toBeNull();
   });
 });

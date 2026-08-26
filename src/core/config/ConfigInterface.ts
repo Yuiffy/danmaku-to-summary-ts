@@ -742,6 +742,23 @@ export interface BilibiliConfig {
     collectionSectionId?: number | null;
     /** @deprecated Use collectionSectionId. */
     collectionSeriesId?: number | null;
+    /** 按主播来源选择合集；seasonId 是 B 站页面展示的合集 ID，sectionId 用于投稿接口。 */
+    collectionRouting?: {
+      sui?: {
+        seasonId?: number | null;
+        sectionId?: number | null;
+        roomIds?: Array<string | number>;
+        markers?: string[];
+      };
+      other?: {
+        seasonId?: number | null;
+        sectionId?: number | null;
+      };
+      default?: {
+        seasonId?: number | null;
+        sectionId?: number | null;
+      };
+    };
   };
   polling: {
     interval: number;

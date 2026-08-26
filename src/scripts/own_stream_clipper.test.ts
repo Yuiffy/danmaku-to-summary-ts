@@ -815,4 +815,80 @@ describe('own_stream_clipper', () => {
     expect(markdown).toContain('请看 Review');
     expect(markdown).not.toContain('[模型全量]');
   });
+
+  test('includes clipping duration and CPU/GPU resource statistics in WeChat notifications', () => {
+    const stats = ownStreamClipper.buildClipProcessingStats([
+      {
+        processing: {
+          elapsedMs: 30000,
+          resourcePeaks: [{
+            samples: 3,
+            hostCpuAvgPct: 40,
+            hostCpuPeakPct: 60,
+            gpuAvailable: true,
+            gpuSamples: 3,
+            gpuUtilAvgPct: 80,
+            gpuUtilPeakPct: 90,
+            gpuMemoryUsedPeakMb: 4000,
+            gpuMemoryTotalMb: 12000
+          }]
+        }
+      },
+      {
+        processing: {
+          elapsedMs: 50000,
+          resourcePeaks: [{
+            samples: 4,
+            hostCpuAvgPct: 20,
+            hostCpuPeakPct: 70,
+            gpuAvailable: true,
+            gpuSamples: 2,
+            gpuUtilAvgPct: 60,
+            gpuUtilPeakPct: 95,
+            gpuMemoryUsedPeakMb: 4500,
+            gpuMemoryTotalMb: 12000
+          }]
+        }
+      }
+    ], 90000, '2026-08-25T12:00:00.000Z', '2026-08-25T12:01:30.000Z');
+
+    const markdown = ownStreamClipper.buildNotifyMarkdown([
+      {
+        window: { start: 75, duration: 90 },
+        copy: { title: '统计测试片段' },
+        candidate: { selectionSource: 'model_full_context' },
+        output: { mediaPath: 'D:/clips/one.mp4' },
+        processing: { elapsedMs: 30000, resourcePeaks: [] }
+      },
+      {
+        window: { start: 180, duration: 45 },
+        copy: { title: '统计测试片段二' },
+        candidate: { selectionSource: 'danmaku_heat' },
+        output: { mediaPath: 'D:/clips/two.mp4' },
+        processing: { elapsedMs: 50000, resourcePeaks: [] }
+      }
+    ], {
+      streamTitle: '统计测试直播',
+      recordedAt: '2026-08-25 12:00:00',
+      outputRoot: 'D:/clips',
+      processingStats: stats
+    });
+
+    expect(stats).toMatchObject({
+      totalElapsedMs: 90000,
+      averageClipElapsedMs: 40000,
+      resource: {
+        hostCpuAvgPct: 28.57,
+        hostCpuPeakPct: 70,
+        gpuUtilAvgPct: 72,
+        gpuUtilPeakPct: 95,
+        gpuMemoryUsedPeakMb: 4500,
+        gpuMemoryTotalMb: 12000
+      }
+    });
+    expect(markdown).toContain('切片耗时: 总耗时 1分30秒，平均每个切片 40秒（2 段）');
+    expect(markdown).toContain('CPU 平均 28.6% / 峰值 70%');
+    expect(markdown).toContain('GPU 平均 72% / 峰值 95%');
+    expect(markdown).toContain('显存峰值 4.4 GB/11.7 GB');
+  });
 });
