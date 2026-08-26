@@ -589,6 +589,7 @@ def _write_manual_state(state_path: Path, clip_id: Any, clip: Dict[str, Any], ou
     import re
     bvid_match = re.search(r"bvid:\s*(BV\w+)", output)
     aid_match = re.search(r"aid:\s*(\d+)", output)
+    collection_match = re.search(r"合集:\s*(\d+)\s+\(([^)\r\n]+)\)", output)
     if not bvid_match:
         return
     bvid = bvid_match.group(1)
@@ -606,6 +607,9 @@ def _write_manual_state(state_path: Path, clip_id: Any, clip: Dict[str, Any], ou
         "reviewPath": clip.get("reviewPath", ""),
         "mediaPath": clip.get("mediaPath", ""),
     }
+    if collection_match:
+        entry["collectionSectionId"] = int(collection_match.group(1))
+        entry["collectionStatus"] = collection_match.group(2).strip()
     try:
         state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {"done": {}, "got_406": {}}
     except (OSError, json.JSONDecodeError):

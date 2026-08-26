@@ -201,6 +201,47 @@ def add_episode_to_section(
     return resp.json()
 
 
+def delete_episode_from_section(ep_id: int, credential: Credential) -> dict:
+    """Remove an episode from its current collection section."""
+    csrf = getattr(credential, 'bili_jct', '')
+    url = 'https://member.bilibili.com/x2/creative/web/season/section/episode/del'
+    params = {'t': str(int(time.time() * 1000)), 'csrf': csrf}
+    headers = {
+        'accept': 'application/json, text/plain, */*',
+        'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'origin': 'https://member.bilibili.com',
+        'referer': 'https://member.bilibili.com/platform/upload-manager',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/150.0 Safari/537.36',
+        'cookie': _build_cookie_str(credential),
+    }
+    resp = requests.post(
+        url,
+        params=params,
+        data={'id': int(ep_id), 'csrf': csrf},
+        headers=headers,
+        timeout=20,
+    )
+    return resp.json()
+
+
+def move_episode_to_section(ep_id: int, section_id: int, credential: Credential) -> dict:
+    """Move an episode between sections of the same collection season."""
+    csrf = getattr(credential, 'bili_jct', '')
+    url = 'https://member.bilibili.com/x2/creative/web/season/section/episode/move'
+    params = {'t': str(int(time.time() * 1000)), 'csrf': csrf}
+    payload = {'sectionId': int(section_id), 'epId': int(ep_id)}
+    headers = {
+        'accept': 'application/json, text/plain, */*',
+        'content-type': 'application/json;charset=UTF-8',
+        'origin': 'https://member.bilibili.com',
+        'referer': 'https://member.bilibili.com/platform/upload-manager',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/150.0 Safari/537.36',
+        'cookie': _build_cookie_str(credential),
+    }
+    resp = requests.post(url, params=params, json=payload, headers=headers, timeout=20)
+    return resp.json()
+
+
 async def attach_video_to_collection(
     upload_result,
     credential: Credential,

@@ -182,6 +182,18 @@ class ClipUploadRegistryTests(unittest.TestCase):
         self.assertFalse(registry.has_terminal_upload_error("文件缺失: 0"))
         self.assertTrue(registry.has_terminal_upload_error("文件缺失: 1"))
 
+    def test_manual_state_records_collection_result(self):
+        fixture = self.make_fixture(count=1)
+        registry._write_manual_state(
+            fixture["state_path"],
+            1,
+            fixture["clips"][0],
+            "  bvid: BV1ROUTING\n  aid: 12345\n  合集: 9974272 (ok)\n",
+        )
+        saved = json.loads(fixture["state_path"].read_text(encoding="utf-8"))
+        self.assertEqual(saved["done"]["1"]["collectionSectionId"], 9974272)
+        self.assertEqual(saved["done"]["1"]["collectionStatus"], "ok")
+
     def test_title_conflict_is_terminal_for_manual_review(self):
         self.assertTrue(registry.has_terminal_upload_error("同标题冲突: BV1CONFLICT"))
 

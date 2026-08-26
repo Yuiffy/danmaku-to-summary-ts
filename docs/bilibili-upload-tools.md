@@ -46,6 +46,22 @@ To auto-attach uploads to a Bilibili合集/series after success, set:
   add each successful upload to. (`collectionSeriesId` remains supported only
   for legacy configurations.)
 
+Current production routing keeps Sui clips in season `8513688` (section
+`9482593`) and sends other streamers to season `8941979` (section `9974272`).
+The user-facing season IDs are recorded alongside the section IDs in
+`bilibili.upload.collectionRouting`; upload code always sends the child
+`sectionId` required by the creator-center API. Historical registry entries can
+be previewed and migrated with:
+
+```powershell
+python src\scripts\migrate_clip_collections.py
+python src\scripts\migrate_clip_collections.py --apply
+```
+
+The migration only deletes episodes that are confirmed to be in the old
+section, then adds them to the routed target section. A failed add is recorded
+in the registry so it can be retried manually.
+
 The script reads `config/secret.json` through `config_loader.find_secrets_path`
 and uses `bilibili.cookie`.
 
