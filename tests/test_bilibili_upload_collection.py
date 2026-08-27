@@ -46,6 +46,26 @@ class CollectionRoutingTests(unittest.TestCase):
             9482593,
         )
 
+    def test_old_sui_prefix_falls_back_to_sui_source(self):
+        self.assertEqual(
+            get_collection_section_id(
+                self.config,
+                prefix="【老岁片】",
+                source_desc="岁己SUI 老岁片合集《测试》2025-06-19、2025-06-25",
+            ),
+            9482593,
+        )
+
+    def test_old_sui_title_falls_back_to_sui_source(self):
+        self.assertEqual(
+            get_collection_section_id(
+                self.config,
+                title="【AI老岁片】岁己回顾旧预言",
+                source_desc="岁己SUI 老岁片合集《测试》2025-06-19",
+            ),
+            9482593,
+        )
+
     def test_unknown_streamer_uses_other_section(self):
         self.assertEqual(
             get_collection_section_id(self.config, streamer_name="栞栞"),

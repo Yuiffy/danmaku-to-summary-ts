@@ -24,6 +24,7 @@ import requests
 
 DEFAULT_TID = 21
 ACCOUNT_MID = 412141275
+GENERIC_COLLECTION_LABELS = {'老岁片', 'AI老岁片'}
 
 
 def build_credential() -> Credential:
@@ -69,6 +70,18 @@ def _routing_entry(upload_cfg: dict, key: str) -> dict:
     return entry if isinstance(entry, dict) else {}
 
 
+def _collection_identity(value: Optional[str]) -> str:
+    text = str(value or '').strip()
+    match = re.match(r'^\s*【([^】]+)】', text)
+    return (match.group(1) if match else text).strip()
+
+
+def _is_generic_collection_label(value: Optional[str]) -> bool:
+    return _collection_identity(value).casefold() in {
+        label.casefold() for label in GENERIC_COLLECTION_LABELS
+    }
+
+
 def _is_sui_context(
     *,
     upload_cfg: dict,
@@ -84,11 +97,11 @@ def _is_sui_context(
     if str(room_id or '').strip() in {str(value).strip() for value in room_ids}:
         return True
 
-    identity = str(streamer_name or prefix or '').strip()
-    if not identity:
-        title_text = str(title or '').strip()
-        match = re.match(r'^\s*【([^】]+)】', title_text)
-        identity = match.group(1).strip() if match else ''
+    identity = str(streamer_name or '').strip()
+    if not identity and prefix and not _is_generic_collection_label(prefix):
+        identity = _collection_identity(prefix)
+    if not identity and title and not _is_generic_collection_label(title):
+        identity = _collection_identity(title)
     if identity:
         markers = sui_entry.get('markers') or ['岁己', '小岁', 'sui']
         return any(str(marker).casefold() in identity.casefold() for marker in markers)

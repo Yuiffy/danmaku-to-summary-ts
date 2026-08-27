@@ -112,6 +112,87 @@ describe('own_stream_clipper', () => {
     expect(candidates.some(candidate => String(candidate.reason).includes('danmaku'))).toBe(true);
   });
 
+  test('keeps high-signal local candidates while adding chunk-model recall to one pool', () => {
+    const local = Array.from({ length: 80 }, (_, index) => ({
+      index: index + 1,
+      start: index * 300,
+      end: index * 300 + 90,
+      duration: 90,
+      score: 1000 - index,
+      reason: 'danmaku_density',
+      danmakuCount: 20 - (index % 5),
+      reactionCount: 5
+    }));
+    const target = local[22];
+    const model = [
+      {
+        start: target.start + 5,
+        end: target.end - 5,
+        duration: 80,
+        score: 190,
+        modelScore: 91,
+        title: '分块模型发现的持续追问话题',
+        reason: '弹幕持续追问主播没说完的内容',
+        candidateIndex: 'chunk-3-1',
+        base: { reason: 'ai_chunked_plan', score: 91, selectionSource: 'model_chunked' }
+      },
+      ...Array.from({ length: 39 }, (_, index) => ({
+        start: 30000 + index * 300,
+        end: 30090 + index * 300,
+        duration: 90,
+        score: 180 - index,
+        modelScore: 80 - index,
+        title: `模型候选 ${index + 1}`,
+        reason: 'ai_chunked_plan',
+        candidateIndex: `chunk-4-${index + 1}`,
+        base: { reason: 'ai_chunked_plan', score: 80 - index, selectionSource: 'model_chunked' }
+      }))
+    ];
+    const config = ownStreamClipper.getOwnStreamClipsConfig({
+      ownStreamClips: { ai: { maxCandidateLines: 100 } }
+    });
+
+    const pool = ownStreamClipper.buildRecallCandidatePool(local, model, config);
+    const recalledTarget = pool.find((candidate: any) => (
+      candidate.start < target.end && candidate.end > target.start
+    ));
+
+    expect(pool).toHaveLength(100);
+    expect(pool.filter((candidate: any) => candidate.localScore > 0)).toHaveLength(80);
+    expect(recalledTarget.recallSources).toEqual(expect.arrayContaining(['local_signals', 'model_chunked']));
+    expect(recalledTarget.title).toBe('分块模型发现的持续追问话题');
+  });
+
+  test('samples danmaku across the full window while retaining repeated and reaction lines', () => {
+    const danmaku = Array.from({ length: 30 }, (_, index) => ({
+      time: index * 3,
+      text: index === 0
+        ? '开头弹幕'
+        : index === 29
+        ? '结尾弹幕'
+        : index % 5 === 0
+        ? '让她说'
+        : '普通讨论'
+    }));
+
+    const evidence = ownStreamClipper.getWindowDanmakuEvidence(
+      danmaku,
+      { start: 0, end: 90 },
+      ['让她说'],
+      10
+    );
+
+    expect(evidence.totalCount).toBe(30);
+    expect(evidence.reactionCount).toBe(5);
+    expect(evidence.repeatedMessageCount).toBe(28);
+    expect(evidence.repeatedTextCount).toBe(2);
+    expect(evidence.activeSpanSeconds).toBe(87);
+    expect(evidence.topTexts[0]).toContain('普通讨论');
+    expect(evidence.sampleLines.join('\n')).toContain('开头弹幕');
+    expect(evidence.sampleLines.join('\n')).toContain('让她说');
+    expect(evidence.sampleLines.join('\n')).toContain('结尾弹幕');
+  });
+
   test('adds strong emotion candidates without turning common happy labels into candidates', () => {
     const config = ownStreamClipper.getOwnStreamClipsConfig({
       ownStreamClips: {
@@ -355,7 +436,7 @@ describe('own_stream_clipper', () => {
     });
 
     expect(markdown).toContain('AI状态: AI 规划未成功（TuZi 余额不足）');
-    expect(markdown).toContain('已回退到本地弹幕规则候选');
+    expect(markdown).toContain('已回退到本地字幕/弹幕/情绪信号候选');
   });
 
   test('filters planned clips by one-based selection', () => {
@@ -708,6 +789,167 @@ describe('own_stream_clipper', () => {
     }
   });
 
+  test('globally reranks strongest candidates and keeps sustained viewer follow-up in the prompt', async () => {
+    const generator = require('./ai_text_generator');
+    const generateSpy = jest.spyOn(generator, 'generateTextWithDaiYu').mockResolvedValue({
+      text: JSON.stringify({
+        clips: [{
+          candidateIndex: 3,
+          startTime: '00:02:40',
+          endTime: '00:03:40',
+          title: '一句没说完的话让弹幕集体追问后续',
+          coverText: '到底想说什么\n弹幕还在追问',
+          description: '小岁话说到一半停住，弹幕持续追问她原本想说的内容。',
+          reason: '主播反应与观众持续追问形成完整互动。',
+          score: 94
+        }]
+      }),
+      meta: { model: 'test-model' }
+    });
+    const config = ownStreamClipper.getOwnStreamClipsConfig({
+      ownStreamClips: {
+        maxClips: 50,
+        minClipSeconds: 20,
+        ai: {
+          enabled: true,
+          model: 'test-model',
+          maxCandidateLines: 2,
+          maxCandidateSubtitleChars: 520,
+          maxCandidateDanmakuLines: 14
+        },
+        reactionKeywords: ['算了什么', '让她说', '细说一下']
+      }
+    });
+    const candidates = [
+      { index: 1, start: 0, end: 60, score: 10, recallScore: 10, reason: '低信号一' },
+      { index: 2, start: 80, end: 140, score: 20, recallScore: 20, reason: '低信号二' },
+      {
+        index: 3,
+        start: 155,
+        end: 235,
+        score: 99,
+        recallScore: 99,
+        localScore: 727,
+        modelScore: 0,
+        recallSources: ['local_signals'],
+        recallReasons: ['弹幕持续追问'],
+        reason: 'danmaku_density+danmaku_reaction'
+      }
+    ];
+    const parsedInput = {
+      segments: [
+        { start: 0, end: 10, text: '普通开场' },
+        { start: 90, end: 100, text: '普通内容' },
+        { start: 160, end: 180, text: '我本来想说一个事情，算了不说了' },
+        { start: 180, end: 220, text: '弹幕怎么还在问，我继续解释一下' },
+        { start: 240, end: 260, text: '下一个话题' }
+      ]
+    };
+    const danmakuInput = [
+      { time: 165, text: '算了什么' },
+      { time: 180, text: '让她说' },
+      { time: 210, text: '细说一下' }
+    ];
+
+    try {
+      const clips = await ownStreamClipper.refineCandidatesWithAI(
+        candidates,
+        parsedInput,
+        danmakuInput,
+        { streamTitle: '测试直播', recordedAt: '2026-08-17 20:04:16' },
+        config,
+        { ai: { text: { enabled: true, provider: 'daiYu' } } }
+      );
+
+      const prompt = String(generateSpy.mock.calls[0][0]);
+      const callOptions = generateSpy.mock.calls[0][1];
+      expect(prompt).toContain('#3 00:02:35-00:03:55');
+      expect(prompt).not.toContain('#1 00:00:00-00:01:00');
+      expect(prompt).toContain('弹幕持续追问或要求细说');
+      expect(prompt).toContain('算了什么');
+      expect(prompt).toContain('让她说');
+      expect(prompt).toContain('细说一下');
+      expect(callOptions).toMatchObject({
+        wordLimit: 7000,
+        primaryModel: 'test-model'
+      });
+      expect(clips).toHaveLength(1);
+      expect(clips[0]).toMatchObject({
+        start: 160,
+        end: 220,
+        score: 94,
+        selectionSource: 'model_global_rerank'
+      });
+    } finally {
+      generateSpy.mockRestore();
+    }
+  });
+
+  test('keeps all 50 globally selected clips without the old 24-clip truncation', async () => {
+    const generator = require('./ai_text_generator');
+    const candidates = Array.from({ length: 50 }, (_, index) => ({
+      index: index + 1,
+      start: index * 240,
+      end: index * 240 + 60,
+      duration: 60,
+      score: 100 - index,
+      recallScore: 100 - index,
+      localScore: 500 - index,
+      recallSources: ['local_signals'],
+      reason: 'test_signal'
+    }));
+    const generateSpy = jest.spyOn(generator, 'generateTextWithDaiYu').mockResolvedValue({
+      text: JSON.stringify({
+        clips: candidates.map((candidate, index) => ({
+          candidateIndex: candidate.index,
+          startTime: ownStreamClipper.formatClock(candidate.start),
+          endTime: ownStreamClipper.formatClock(candidate.end),
+          title: `最终候选 ${index + 1}`,
+          coverText: `候选 ${index + 1}`,
+          description: `第 ${index + 1} 个独立话题。`,
+          reason: '内容完整且可以独立发布。',
+          score: 100 - index
+        }))
+      }),
+      meta: { model: 'test-model' }
+    });
+    const config = ownStreamClipper.getOwnStreamClipsConfig({
+      ownStreamClips: {
+        maxClips: 50,
+        ai: {
+          enabled: true,
+          model: 'test-model',
+          maxCandidateLines: 100
+        }
+      }
+    });
+    const parsedInput = {
+      segments: candidates.map((candidate, index) => ({
+        start: candidate.start,
+        end: candidate.end,
+        text: `第 ${index + 1} 个完整话题`
+      }))
+    };
+
+    try {
+      const clips = await ownStreamClipper.refineCandidatesWithAI(
+        candidates,
+        parsedInput,
+        [],
+        { streamTitle: '五十条上限测试', recordedAt: '2026-08-27 20:00:00' },
+        config,
+        { ai: { text: { enabled: true, provider: 'daiYu' } } }
+      );
+
+      expect(clips).toHaveLength(50);
+      expect(clips[24].title).toBe('最终候选 25');
+      expect(clips[49].title).toBe('最终候选 50');
+      expect(generateSpy.mock.calls[0][1].wordLimit).toBe(7000);
+    } finally {
+      generateSpy.mockRestore();
+    }
+  });
+
   test('removes overlaps after subtitle alignment and keeps the higher-scored clip', () => {
     const clips = ownStreamClipper.removeOverlappingClips([
       { start: 100, end: 180, score: 80, title: 'lower' },
@@ -718,15 +960,16 @@ describe('own_stream_clipper', () => {
     expect(clips.map((clip: any) => clip.title)).toEqual(['higher', 'touching is allowed']);
   });
 
-  test('production full-context own-stream clipping is scoped only to Sui room', () => {
+  test('production staged own-stream clipping is scoped only to Sui room', () => {
     const production = require('../../config/production.json');
 
     expect(production.ownStreamClips.enabled).toBe(true);
     expect(production.ownStreamClips.roomIds).toEqual(['25788785']);
-    expect(production.ownStreamClips.maxClips).toBe(24);
-    expect(production.ownStreamClips.maxCandidates).toBe(48);
-    expect(production.ownStreamClips.ai.strategy).toBe('full_context');
+    expect(production.ownStreamClips.maxClips).toBe(50);
+    expect(production.ownStreamClips.maxCandidates).toBe(80);
+    expect(production.ownStreamClips.ai.strategy).toBe('staged');
     expect(production.ownStreamClips.ai.model).toBe('gpt-5.6-luna');
+    expect(production.ownStreamClips.ai.maxCandidateLines).toBe(100);
     expect(production.ownStreamClips.parallel.enabled).toBe(false);
   });
 

@@ -23,7 +23,8 @@ LOCK_PATH = RUNTIME_DIR / "clip_upload_worker.lock"
 DEFAULT_DELAY = 60
 DEFAULT_RATE_LIMIT_WAIT = 120
 DEFAULT_RATE_LIMIT_RETRIES = 5
-DEFAULT_JOB_TIMEOUT_SECONDS = 45 * 60
+DEFAULT_BATCH_SIZE = 4
+DEFAULT_BATCH_TIMEOUT_SECONDS = 30 * 60
 DEFAULT_RETRY_DELAY_SECONDS = 10 * 60
 MAX_AUTOMATIC_JOB_RETRIES = 8
 TERMINAL_UPLOAD_ERROR_MARKERS = (
@@ -41,9 +42,6 @@ TERMINAL_UPLOAD_ERROR_MARKERS = (
     "video too short",
     "无法创建封面",
     "no_cover",
-    "同标题冲突",
-    "标题冲突",
-    "title conflict",
 )
 LOCK_OWNER_TOKEN: Optional[str] = None
 INTERNAL_REVIEW_LABEL_RE = re.compile(r"^\[(?:模型全量|模型分块|弹幕热度|本地规则)\]\s*")
@@ -380,6 +378,16 @@ def enqueue(args: argparse.Namespace) -> int:
     if not ids:
         print("[ERROR] --ids is empty", file=sys.stderr)
         return 2
+    batch_size = int(getattr(args, "batch_size", DEFAULT_BATCH_SIZE))
+    timeout_seconds = int(
+        getattr(args, "timeout_seconds", DEFAULT_BATCH_TIMEOUT_SECONDS)
+    )
+    if batch_size < 1:
+        print("[ERROR] --batch-size must be at least 1", file=sys.stderr)
+        return 2
+    if timeout_seconds < 60:
+        print("[ERROR] --timeout-seconds must be at least 60", file=sys.stderr)
+        return 2
     registry = load_json(REGISTRY_PATH, default_registry())
     missing = [clip_id for clip_id in ids if str(clip_id) not in registry.get("clips", {})]
     if missing:
@@ -406,6 +414,8 @@ def enqueue(args: argparse.Namespace) -> int:
         "delay": int(args.delay),
         "rateLimitWait": int(args.rate_limit_wait),
         "rateLimitRetries": int(args.rate_limit_retries),
+        "batchSize": batch_size,
+        "timeoutSeconds": timeout_seconds,
         "note": args.note or "",
         # ``--force`` is an explicit authorization to re-submit this job,
         # including when Bilibili already has the same title.
@@ -430,6 +440,10 @@ def queue_status(args: argparse.Namespace) -> int:
         details = []
         if job.get("attempts") is not None:
             details.append(f"attempts={job.get('attempts')}")
+        if job.get("batchSize") is not None:
+            details.append(f"batchSize={job.get('batchSize')}")
+        if job.get("timeoutSeconds") is not None:
+            details.append(f"timeout={job.get('timeoutSeconds')}s")
         if job.get("retryAt"):
             details.append(f"retryAt={job.get('retryAt')}")
         print(
@@ -459,6 +473,35 @@ def grouped_clips(registry: Dict[str, Any], ids: List[int]) -> List[List[Dict[st
     return list(groups.values())
 
 
+def batch_size_for_job(job: Dict[str, Any]) -> int:
+    try:
+        configured = int(job.get("batchSize") or DEFAULT_BATCH_SIZE)
+    except (TypeError, ValueError):
+        configured = DEFAULT_BATCH_SIZE
+    return max(1, configured)
+
+
+def split_upload_groups(
+    groups: List[List[Dict[str, Any]]], batch_size: int
+) -> List[List[Dict[str, Any]]]:
+    """Keep review groups ordered while bounding each uploader subprocess."""
+    if batch_size < 1:
+        raise ValueError("batch_size must be at least 1")
+    chunks: List[List[Dict[str, Any]]] = []
+    for group in groups:
+        for offset in range(0, len(group), batch_size):
+            chunks.append(group[offset : offset + batch_size])
+    return chunks
+
+
+def timeout_seconds_for_job(job: Dict[str, Any]) -> int:
+    try:
+        configured = int(job.get("timeoutSeconds") or DEFAULT_BATCH_TIMEOUT_SECONDS)
+    except (TypeError, ValueError):
+        configured = DEFAULT_BATCH_TIMEOUT_SECONDS
+    return max(60, configured)
+
+
 def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.CompletedProcess[str]:
     """Upload a group of clips.
 
@@ -473,7 +516,7 @@ def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.Co
 
     outputs: List[str] = []
     returncode = 0
-    timeout_seconds = int(job.get("timeoutSeconds") or DEFAULT_JOB_TIMEOUT_SECONDS)
+    timeout_seconds = timeout_seconds_for_job(job)
 
     # --- REVIEW.md-backed clips: use batch_upload.py ---
     if review_clips:
@@ -677,8 +720,8 @@ def has_terminal_upload_error(output: str) -> bool:
 def terminal_upload_error_reason(output: str) -> str:
     """Return a reason for an error that cannot succeed by retrying unchanged.
 
-    Do not match the batch summary's ``文件缺失: 0`` line.  Only a positive
-    count or a per-clip error should make a job terminal.
+    Summary lines with a zero count are informational.  Only a positive
+    count or an explicit per-clip error should make a job terminal.
     """
     text = str(output or "")
     lowered = text.lower()
@@ -687,6 +730,11 @@ def terminal_upload_error_reason(output: str) -> str:
             return f"deterministic uploader error: {marker}"
     if re.search(r"文件缺失:\s*[1-9]\d*", text):
         return "deterministic uploader error: 文件缺失"
+    if re.search(
+        r"(?:同标题冲突(?:\(待核对\))?|标题冲突)\s*[:：]\s*(?:[1-9]\d*|BV\w+)",
+        text,
+    ) or re.search(r"\[\s*CONFLICT\s*\]|上传前发现同标题已存在", text, re.IGNORECASE):
+        return "deterministic uploader error: 同标题冲突"
     return ""
 
 
@@ -992,7 +1040,8 @@ def run_one_job() -> bool:
     all_outputs: List[str] = []
     failed = False
     last_returncode = 0
-    for group in groups:
+    upload_groups = split_upload_groups(groups, batch_size_for_job(job))
+    for group in upload_groups:
         cp = run_batch(group, job)
         last_returncode = cp.returncode
         output = cp.stdout or ""
@@ -1097,6 +1146,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--delay", type=int, default=DEFAULT_DELAY)
     p.add_argument("--rate-limit-wait", type=int, default=DEFAULT_RATE_LIMIT_WAIT)
     p.add_argument("--rate-limit-retries", type=int, default=DEFAULT_RATE_LIMIT_RETRIES)
+    p.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
+    p.add_argument(
+        "--timeout-seconds",
+        type=int,
+        default=DEFAULT_BATCH_TIMEOUT_SECONDS,
+        help="每个小批次的子进程超时秒数",
+    )
     p.add_argument("--note", default="")
     p.add_argument("--force", action="store_true")
     p.add_argument("--dry-run", action="store_true")

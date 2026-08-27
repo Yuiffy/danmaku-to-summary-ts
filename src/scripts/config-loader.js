@@ -265,8 +265,8 @@ const ConfigSchema = Joi.object({
         enabled: Joi.boolean().default(false),
         mode: Joi.string().default('local_review'),
         roomIds: Joi.array().items(Joi.alternatives(Joi.string(), Joi.number())).default([]),
-        maxCandidates: Joi.number().default(48),
-        maxClips: Joi.number().default(24),
+        maxCandidates: Joi.number().default(80),
+        maxClips: Joi.number().default(50),
         chunkSeconds: Joi.number().default(2700),
         aiConcurrency: Joi.number().default(3),
         clipConcurrency: Joi.number().integer().min(1).default(3),
@@ -319,10 +319,12 @@ const ConfigSchema = Joi.object({
         subtitleKeywords: Joi.array().items(Joi.string()).optional(),
         ai: Joi.object({
             enabled: Joi.boolean().default(true),
-            strategy: Joi.string().valid('chunked', 'candidate_only', 'full_context').default('chunked'),
+            strategy: Joi.string().valid('staged', 'chunked', 'candidate_only', 'full_context').default('staged'),
             model: Joi.string().allow('', null).default(null),
             timeoutMs: Joi.number().min(1000).default(600000),
-            maxCandidateLines: Joi.number().default(32),
+            maxCandidateLines: Joi.number().integer().min(1).default(100),
+            maxCandidateSubtitleChars: Joi.number().integer().min(100).default(520),
+            maxCandidateDanmakuLines: Joi.number().integer().min(1).default(14),
             fallbackToLocalRules: Joi.boolean().default(true)
         }).default(),
         parallel: Joi.object({

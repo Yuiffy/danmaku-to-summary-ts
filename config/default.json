@@ -1369,8 +1369,8 @@
     "enabled": true,
     "mode": "local_review",
     "roomIds": ["25788785"],
-    "maxCandidates": 48,
-    "maxClips": 24,
+    "maxCandidates": 80,
+    "maxClips": 50,
     "chunkSeconds": 2700,
     "aiConcurrency": 3,
     "clipConcurrency": 2,
@@ -1405,10 +1405,12 @@
     "finalOverlapToleranceSeconds": 0,
     "ai": {
       "enabled": true,
-      "strategy": "full_context",
+      "strategy": "staged",
       "model": "gpt-5.6-luna",
       "timeoutMs": 600000,
-      "maxCandidateLines": 32,
+      "maxCandidateLines": 100,
+      "maxCandidateSubtitleChars": 520,
+      "maxCandidateDanmakuLines": 14,
       "fallbackToLocalRules": true
     },
     "parallel": {

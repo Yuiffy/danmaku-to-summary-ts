@@ -32,8 +32,8 @@ const DEFAULT_OWN_STREAM_CLIPS_CONFIG = {
     mergeGapSeconds: 45,
     maxClipSeconds: 210,
     minClipSeconds: 35,
-    maxCandidates: 48,
-    maxClips: 24,
+    maxCandidates: 80,
+    maxClips: 50,
     chunkSeconds: 2700,
     aiConcurrency: 3,
     clipConcurrency: 2,
@@ -78,10 +78,12 @@ const DEFAULT_OWN_STREAM_CLIPS_CONFIG = {
     outputDirName: 'own_stream_fun_clips',
     ai: {
         enabled: true,
-        strategy: 'chunked',
+        strategy: 'staged',
         model: null,
         timeoutMs: 600000,
-        maxCandidateLines: 32,
+        maxCandidateLines: 100,
+        maxCandidateSubtitleChars: 520,
+        maxCandidateDanmakuLines: 14,
         fallbackToLocalRules: true
     },
     parallel: {
@@ -765,23 +767,81 @@ function buildCandidateWindows(parsed, danmaku, config, totalDuration, emotionAn
             duration: candidate.end - candidate.start
         }))
         .sort((a, b) => b.score - a.score)
-        .slice(0, Math.max(1, Number(config.maxCandidates) || 48))
+        .slice(0, Math.max(1, Number(config.maxCandidates) || 80))
         .sort((a, b) => a.start - b.start);
 }
 
 function getWindowText(segments, window, maxChars = 700) {
-    return segments
+    const text = segments
         .filter(segment => Number(segment.end) > window.start && Number(segment.start) < window.end)
         .map(segment => `${formatClock(segment.start)} ${String(segment.text || '').trim()}`)
-        .join('\n')
-        .slice(0, maxChars);
+        .join('\n');
+    if (text.length <= maxChars) return text;
+    const marker = '\n...(中段省略)...\n';
+    const headChars = Math.max(1, Math.floor((maxChars - marker.length) * 0.65));
+    const tailChars = Math.max(1, maxChars - marker.length - headChars);
+    return `${text.slice(0, headChars)}${marker}${text.slice(-tailChars)}`;
 }
 
-function getWindowDanmaku(danmaku, window, max = 12) {
-    return danmaku
-        .filter(item => item.time >= window.start && item.time <= window.end)
-        .slice(0, max)
-        .map(item => `${formatClock(item.time)} ${item.text}`);
+function getWindowDanmakuEvidence(danmaku, window, reactionKeywords = [], max = 14) {
+    const items = (danmaku || [])
+        .filter(item => Number(item.time) >= Number(window.start) && Number(item.time) <= Number(window.end))
+        .sort((a, b) => Number(a.time) - Number(b.time));
+    const limit = Math.max(1, Math.floor(Number(max) || 14));
+    const reactionRows = items
+        .map(item => ({
+            item,
+            hits: reactionKeywords.filter(keyword => String(item.text || '').includes(keyword)).length
+        }))
+        .filter(row => row.hits > 0)
+        .sort((a, b) => b.hits - a.hits || Number(a.item.time) - Number(b.item.time));
+    const counts = new Map();
+    for (const item of items) {
+        const text = String(item.text || '').trim();
+        if (!text) continue;
+        const current = counts.get(text) || { count: 0, first: item };
+        current.count += 1;
+        counts.set(text, current);
+    }
+    const frequentRows = Array.from(counts.values())
+        .sort((a, b) => b.count - a.count || Number(a.first.time) - Number(b.first.time));
+    const evenlySpaced = [];
+    if (items.length > 0) {
+        for (let index = 0; index < limit; index += 1) {
+            const sourceIndex = limit === 1
+                ? 0
+                : Math.round(index * (items.length - 1) / (limit - 1));
+            evenlySpaced.push(items[sourceIndex]);
+        }
+    }
+
+    const selected = new Map();
+    const add = item => {
+        if (!item || selected.size >= limit) return;
+        const key = `${Number(item.time).toFixed(3)}\u0000${String(item.text || '').trim()}`;
+        if (!selected.has(key)) selected.set(key, item);
+    };
+    add(items[0]);
+    add(items.at(-1));
+    reactionRows.slice(0, Math.ceil(limit / 2)).forEach(row => add(row.item));
+    frequentRows.slice(0, Math.min(4, limit)).forEach(row => add(row.first));
+    evenlySpaced.forEach(add);
+
+    return {
+        totalCount: items.length,
+        reactionCount: reactionRows.length,
+        repeatedMessageCount: Array.from(counts.values())
+            .filter(row => row.count > 1)
+            .reduce((sum, row) => sum + row.count, 0),
+        repeatedTextCount: Array.from(counts.values()).filter(row => row.count > 1).length,
+        activeSpanSeconds: items.length > 1
+            ? Number((Number(items.at(-1).time) - Number(items[0].time)).toFixed(1))
+            : 0,
+        topTexts: topDanmakuTexts(items, 6),
+        sampleLines: Array.from(selected.values())
+            .sort((a, b) => Number(a.time) - Number(b.time))
+            .map(item => `${formatClock(item.time)} ${item.text}`)
+    };
 }
 
 function topDanmakuTexts(items, max = 8) {
@@ -795,6 +855,164 @@ function topDanmakuTexts(items, max = 8) {
         .sort((a, b) => b[1] - a[1])
         .slice(0, max)
         .map(([text, count]) => count > 1 ? `${text}(x${count})` : text);
+}
+
+function recallWindowOverlap(first, second) {
+    const intersection = Math.max(
+        0,
+        Math.min(Number(first.end), Number(second.end)) - Math.max(Number(first.start), Number(second.start))
+    );
+    if (intersection <= 0) return { matches: false, score: 0 };
+    const firstDuration = Math.max(0.1, Number(first.end) - Number(first.start));
+    const secondDuration = Math.max(0.1, Number(second.end) - Number(second.start));
+    const smallerCoverage = intersection / Math.min(firstDuration, secondDuration);
+    const largerCoverage = intersection / Math.max(firstDuration, secondDuration);
+    const centerDistance = Math.abs(
+        (Number(first.start) + Number(first.end)) / 2
+        - (Number(second.start) + Number(second.end)) / 2
+    );
+    return {
+        matches: smallerCoverage >= 0.65 || (centerDistance <= 30 && largerCoverage >= 0.35),
+        score: smallerCoverage + largerCoverage
+    };
+}
+
+function normalizeRecallCandidate(candidate, source, order) {
+    const base = candidate.base || {};
+    const isLocal = source === 'local_signals';
+    const modelScore = isLocal
+        ? 0
+        : Number(base.score ?? candidate.modelScore ?? candidate.score ?? 0);
+    return {
+        ...candidate,
+        start: Number(candidate.start),
+        end: Number(candidate.end),
+        duration: Number(candidate.end) - Number(candidate.start),
+        recallSources: [source],
+        recallReasons: [String(candidate.reason || base.reason || source)].filter(Boolean),
+        localScore: isLocal ? Number(candidate.score || 0) : 0,
+        modelScore: Number.isFinite(modelScore) ? modelScore : 0,
+        sourceCandidateIndices: [String(candidate.index ?? candidate.candidateIndex ?? `${source}-${order + 1}`)],
+        selectionSource: 'recall_pool'
+    };
+}
+
+function mergeRecallCandidateEvidence(first, second) {
+    const firstHasModel = (first.recallSources || []).includes('model_chunked');
+    const secondHasModel = (second.recallSources || []).includes('model_chunked');
+    let preferred = first;
+    let other = second;
+    if (
+        (!firstHasModel && secondHasModel)
+        || (firstHasModel === secondHasModel && Number(second.modelScore || 0) > Number(first.modelScore || 0))
+    ) {
+        preferred = second;
+        other = first;
+    }
+    const reasonParts = Array.from(new Set([
+        ...(first.recallReasons || []),
+        ...(second.recallReasons || [])
+    ].filter(Boolean)));
+    return {
+        ...other,
+        ...preferred,
+        recallSources: Array.from(new Set([...(first.recallSources || []), ...(second.recallSources || [])])),
+        recallReasons: reasonParts,
+        reason: reasonParts.join(' | '),
+        localScore: Math.max(Number(first.localScore || 0), Number(second.localScore || 0)),
+        modelScore: Math.max(Number(first.modelScore || 0), Number(second.modelScore || 0)),
+        sourceCandidateIndices: Array.from(new Set([
+            ...(first.sourceCandidateIndices || []),
+            ...(second.sourceCandidateIndices || [])
+        ])),
+        danmakuCount: Math.max(Number(first.danmakuCount || 0), Number(second.danmakuCount || 0)),
+        reactionCount: Math.max(Number(first.reactionCount || 0), Number(second.reactionCount || 0)),
+        matchedKeywords: Array.from(new Set([...(first.matchedKeywords || []), ...(second.matchedKeywords || [])])),
+        danmakuSamples: Array.from(new Set([...(first.danmakuSamples || []), ...(second.danmakuSamples || [])])).slice(0, 14),
+        emotions: Array.from(new Set([...(first.emotions || []), ...(second.emotions || [])])),
+        events: Array.from(new Set([...(first.events || []), ...(second.events || [])])),
+        emotionEvidence: [...(first.emotionEvidence || []), ...(second.emotionEvidence || [])],
+        selectionSource: 'recall_pool'
+    };
+}
+
+function buildRecallCandidatePool(localCandidates = [], modelCandidates = [], config = {}) {
+    const normalized = [
+        ...localCandidates.map((candidate, index) => normalizeRecallCandidate(candidate, 'local_signals', index)),
+        ...modelCandidates.map((candidate, index) => normalizeRecallCandidate(candidate, 'model_chunked', index))
+    ].filter(candidate => (
+        Number.isFinite(candidate.start)
+        && Number.isFinite(candidate.end)
+        && candidate.end > candidate.start
+    ));
+    const deduped = [];
+    for (const candidate of normalized) {
+        let matchIndex = -1;
+        let matchScore = 0;
+        deduped.forEach((existing, index) => {
+            const overlap = recallWindowOverlap(existing, candidate);
+            if (overlap.matches && overlap.score > matchScore) {
+                matchIndex = index;
+                matchScore = overlap.score;
+            }
+        });
+        if (matchIndex >= 0) {
+            deduped[matchIndex] = mergeRecallCandidateEvidence(deduped[matchIndex], candidate);
+        } else {
+            deduped.push(candidate);
+        }
+    }
+
+    const localRanked = deduped
+        .filter(candidate => Number(candidate.localScore || 0) > 0)
+        .sort((a, b) => Number(b.localScore || 0) - Number(a.localScore || 0));
+    const localPercentiles = new Map(localRanked.map((candidate, index) => [
+        candidate,
+        100 * (localRanked.length - index) / Math.max(1, localRanked.length)
+    ]));
+    deduped.forEach(candidate => {
+        const localPriority = localPercentiles.get(candidate) || 0;
+        const modelPriority = clamp(Number(candidate.modelScore || 0), 0, 100);
+        const sourceBonus = (candidate.recallSources || []).length > 1 ? 8 : 0;
+        candidate.recallScore = Number((Math.max(localPriority, modelPriority) + sourceBonus).toFixed(2));
+        candidate.score = candidate.recallScore;
+    });
+
+    const limit = Math.max(1, Math.floor(Number(config.ai?.maxCandidateLines) || 100));
+    const selected = [];
+    const selectedSet = new Set();
+    const add = candidate => {
+        if (!candidate || selected.length >= limit || selectedSet.has(candidate)) return;
+        selected.push(candidate);
+        selectedSet.add(candidate);
+    };
+    localRanked.forEach(add);
+    deduped
+        .filter(candidate => Number(candidate.localScore || 0) <= 0)
+        .sort((a, b) => Number(b.modelScore || 0) - Number(a.modelScore || 0))
+        .forEach(add);
+    deduped
+        .slice()
+        .sort((a, b) => Number(b.recallScore || 0) - Number(a.recallScore || 0))
+        .forEach(add);
+
+    return selected
+        .sort((a, b) => Number(b.recallScore || 0) - Number(a.recallScore || 0) || Number(a.start) - Number(b.start))
+        .map((candidate, index) => ({
+            ...candidate,
+            index: index + 1,
+            base: {
+                ...(candidate.base || {}),
+                reason: 'staged_recall_pool',
+                selectionSource: 'recall_pool',
+                recallSources: candidate.recallSources,
+                recallReasons: candidate.recallReasons,
+                localScore: candidate.localScore,
+                modelScore: candidate.modelScore,
+                recallScore: candidate.recallScore,
+                sourceCandidateIndices: candidate.sourceCandidateIndices
+            }
+        }));
 }
 
 function buildChunkSources(parsed, danmaku, totalDuration, config, emotionAnalysis = null) {
@@ -890,7 +1108,7 @@ function dedupePlannedClips(clips, config) {
     }
     return out
         .sort((a, b) => (b.score || 0) - (a.score || 0))
-        .slice(0, Math.max(1, Number(config.maxClips) || 24))
+        .slice(0, Math.max(1, Number(config.maxClips) || 50))
         .sort((a, b) => a.start - b.start);
 }
 
@@ -1137,11 +1355,16 @@ async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, confi
             chunk.sourceText
         ].join('\n');
         try {
+            const requestOptions = {
+                wordLimit: 1600,
+                primaryModel: config.ai?.model || undefined,
+                timeoutMs: config.ai?.timeoutMs
+            };
             const result = provider === 'tuZi'
-                ? await generator.generateTextWithTuZi(prompt, { wordLimit: 1000 })
+                ? await generator.generateTextWithTuZi(prompt, requestOptions)
                 : provider === 'daiYu'
-                ? await generator.generateTextWithDaiYu(prompt, { wordLimit: 1000 })
-                : await generator.generateTextWithGemini(prompt, { wordLimit: 1000 });
+                ? await generator.generateTextWithDaiYu(prompt, requestOptions)
+                : await generator.generateTextWithGemini(prompt, { wordLimit: requestOptions.wordLimit });
             const text = String(result.text || '').trim();
             const match = text.match(/\{[\s\S]*"clips"[\s\S]*\}/);
             if (!match) {
@@ -1165,10 +1388,14 @@ async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, confi
                     description: String(clip.description || '').trim(),
                     reason: String(clip.reason || '').trim(),
                     score: Number(clip.score || 0) + 100 - index,
+                    modelScore: Number(clip.score || 0),
+                    selectionSource: 'model_chunked',
                     candidateIndex: `chunk-${chunk.index}-${index + 1}`,
                     base: {
                         reason: 'ai_chunked_plan',
                         chunkIndex: chunk.index,
+                        selectionSource: 'model_chunked',
+                        model: result.meta?.model || config.ai?.model || null,
                         score: Number(clip.score || 0)
                     }
                 };
@@ -1213,7 +1440,7 @@ async function planClipsWithAIFullContext(
             console.warn('Full-live context sidecar does not match current full input; regenerated shared prefix will be used.');
         }
     }
-    const maxClips = Math.max(1, Number(config.maxClips) || 24);
+    const maxClips = Math.max(1, Number(config.maxClips) || 50);
     const taskSuffix = [
         '你是资深直播切片主编。共享事实输入提供了岁己SUI本场直播的全量带时间戳字幕和全量弹幕。',
         OWN_STREAM_SOURCE_ATTRIBUTION_RULE,
@@ -1325,7 +1552,7 @@ function recordAiDiagnostic(diagnostics, phase, error) {
 function buildAiStatusLine(aiStatus = {}) {
     if (!aiStatus || !aiStatus.usedFallback) return null;
     const reason = aiStatus.fallbackReason || classifyAiFallbackReason(aiStatus.errors || []);
-    return `AI\u72b6\u6001: AI \u89c4\u5212\u672a\u6210\u529f\uff08${reason}\uff09\uff0c\u5df2\u56de\u9000\u5230\u672c\u5730\u5f39\u5e55\u89c4\u5219\u5019\u9009\uff0c\u6807\u9898\u53ef\u80fd\u504f\u6cdb\u3002`;
+    return `AI\u72b6\u6001: AI \u89c4\u5212\u672a\u6210\u529f\uff08${reason}\uff09\uff0c\u5df2\u56de\u9000\u5230\u672c\u5730\u5b57\u5e55/\u5f39\u5e55/\u60c5\u7eea\u4fe1\u53f7\u5019\u9009\uff0c\u6807\u9898\u53ef\u80fd\u504f\u6cdb\u3002`;
 }
 
 function buildFallbackTitle(candidate) {
@@ -1367,24 +1594,32 @@ function normalizeAiClips(rawClips, candidates, totalDuration, config) {
             const start = timeStringToSeconds(clip.startTime);
             const end = timeStringToSeconds(clip.endTime);
             if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
-            const duration = end - start;
+            const boundedStart = clamp(start, 0, totalDuration);
+            const boundedEnd = clamp(end, 0, totalDuration);
+            const duration = boundedEnd - boundedStart;
             if (duration < config.minClipSeconds || duration > config.maxClipSeconds + 5) return null;
+            if (base && !clipsConflict({ start: boundedStart, end: boundedEnd }, base, 0)) return null;
             return {
-                start: clamp(start, 0, totalDuration),
-                end: clamp(end, 0, totalDuration),
+                start: boundedStart,
+                end: boundedEnd,
                 duration,
                 title: String(clip.title || '').trim() || (base ? buildFallbackTitle(base) : '小岁：直播有趣片段'),
                 coverText: topicClipper.normalizeCoverText(clip.coverText),
                 description: String(clip.description || '').trim(),
                 reason: String(clip.reason || base?.reason || '').trim(),
                 candidateIndex: base?.index || clip.candidateIndex || index + 1,
-                score: Number(base?.score || 0),
-                base
+                score: Number(clip.score ?? base?.recallScore ?? base?.score ?? 0),
+                selectionSource: 'model_global_rerank',
+                base: base ? {
+                    ...base,
+                    selectionSource: 'model_global_rerank'
+                } : null
             };
         })
         .filter(Boolean)
-        .sort((a, b) => a.start - b.start)
-        .slice(0, Math.max(1, Number(config.maxClips) || 24));
+        .sort((a, b) => Number(b.score || 0) - Number(a.score || 0) || Number(a.start) - Number(b.start))
+        .slice(0, Math.max(1, Number(config.maxClips) || 50))
+        .sort((a, b) => Number(a.start) - Number(b.start));
 }
 
 async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config, rootConfig = {}, diagnostics = null) {
@@ -1393,23 +1628,53 @@ async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config,
     }
     const provider = rootConfig.ai?.text?.provider || 'gemini';
     const generator = require('./ai_text_generator');
-    const candidateLines = candidates
-        .slice(0, config.ai.maxCandidateLines)
-        .map(candidate => [
-            `#${candidate.index} ${formatClock(candidate.start)}-${formatClock(candidate.end)} score=${candidate.score} reason=${candidate.reason}`,
-            `情感线索: emotions=${(candidate.emotions || []).join(',') || '无'} events=${(candidate.events || []).join(',') || '无'}`,
-            `观众弹幕样例: ${getWindowDanmaku(danmaku, candidate, 8).join(' / ') || '无'}`,
-            `直播音轨字幕: ${getWindowText(parsed.segments, candidate, 520) || '无'}`
-        ].join('\n'))
+    const candidateLimit = Math.max(1, Math.floor(Number(config.ai?.maxCandidateLines) || 100));
+    const subtitleChars = Math.max(100, Math.floor(Number(config.ai?.maxCandidateSubtitleChars) || 520));
+    const danmakuLines = Math.max(1, Math.floor(Number(config.ai?.maxCandidateDanmakuLines) || 14));
+    const rankedCandidates = candidates
+        .slice()
+        .sort((a, b) => (
+            Number(b.recallScore ?? b.score ?? 0) - Number(a.recallScore ?? a.score ?? 0)
+            || Number(b.reactionCount || 0) - Number(a.reactionCount || 0)
+            || Number(b.danmakuCount || 0) - Number(a.danmakuCount || 0)
+            || Number(a.start) - Number(b.start)
+        ))
+        .slice(0, candidateLimit);
+    const candidateLines = rankedCandidates
+        .map(candidate => {
+            const evidence = getWindowDanmakuEvidence(
+                danmaku,
+                candidate,
+                config.reactionKeywords || [],
+                danmakuLines
+            );
+            return [
+                `#${candidate.index} ${formatClock(candidate.start)}-${formatClock(candidate.end)} recallScore=${Number(candidate.recallScore ?? candidate.score ?? 0).toFixed(2)}`,
+                `召回来源: ${(candidate.recallSources || [candidate.selectionSource || 'local_signals']).join(',')}`,
+                `召回分项: localSignal=${Number(candidate.localScore ?? candidate.score ?? 0).toFixed(2)} modelChunk=${Number(candidate.modelScore || 0).toFixed(2)} danmaku=${evidence.totalCount} reaction=${evidence.reactionCount} repeated=${evidence.repeatedMessageCount}/${evidence.repeatedTextCount} activeSpan=${evidence.activeSpanSeconds}s`,
+                `规则/模型理由: ${(candidate.recallReasons || [candidate.reason]).filter(Boolean).join(' | ') || '无'}`,
+                `情感线索: emotions=${(candidate.emotions || []).join(',') || '无'} events=${(candidate.events || []).join(',') || '无'}`,
+                `高频观众弹幕: ${evidence.topTexts.join(' / ') || '无'}`,
+                `观众弹幕样例: ${evidence.sampleLines.join(' / ') || '无'}`,
+                `直播音轨字幕: ${getWindowText(parsed.segments, candidate, subtitleChars) || '无'}`,
+                candidate.title ? `分块模型初拟标题（仅供定位，须按本窗口事实重写）: ${candidate.title}` : null
+            ].filter(Boolean).join('\n');
+        })
         .join('\n\n');
 
+    const maxClips = Math.max(1, Number(config.maxClips) || 50);
+
     const prompt = [
-        '你是直播切片编辑。下面是岁己SUI自己直播的候选片段。',
+        '你是直播切片主编。下面是岁己SUI本场直播经过分块模型、字幕、弹幕和情绪信号共同召回并去重后的完整候选池。',
         OWN_STREAM_SOURCE_ATTRIBUTION_RULE,
-        '请从中挑出适合本地 review 的有趣切片：有趣、弹幕量大、弹幕很在意、体现岁己想法与众不同、岁己做了傻事，或者弹幕指出她傻/特别/有趣/可爱。',
+        `请一次性全局比较所有候选，输出最多 ${maxClips} 个适合本地 review、能够独立发布的最终片段。${maxClips} 是硬上限而不是数量目标，有多少合格题材就返回多少。`,
+        '候选阶段追求高召回，recallScore 和召回来源不是最终质量结论；不要按来源分配固定名额，最终只按内容价值、完整性、观众反应和独立发布价值排序。',
+        '重点识别：完整趣事或观点、明显反差/口误/事故、弹幕持续追问或要求细说、观众对一句没说完的话持续在意、以及弹幕觉得岁己特别/有趣/可爱的片段。持续讨论本身是通用信号，不要求命中特定题材词。',
         '没有独立看点的片段降低优先级；内容类型不做默认排除。',
         ...buildSelectionPolicyPromptLines(config.selectionPolicy),
-        `每段 35 秒到 3 分半，尽量切在句子边界。最多 ${Math.max(1, Number(config.maxClips) || 24)} 段。`,
+        `每段 ${config.minClipSeconds} 秒到 ${config.maxClipSeconds} 秒，尽量切在句子边界。`,
+        '必须从给出的 candidateIndex 中选择；允许在该候选附近微调 startTime/endTime 来补齐铺垫和收束，但不得跨到无关话题。',
+        '请给每段 1-100 的全场相对分数，按 score 从高到低输出。',
         '输出纯 JSON，不要 Markdown：',
         'Boundary rules are critical:',
         '- startTime must include the setup/premise, not start from the punchline.',
@@ -1419,7 +1684,7 @@ async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config,
         '- Prefer a natural silence after a complete sentence; never end in the middle of a sentence or continuous story.',
         '',
         ...buildOwnStreamClipCopyPromptLines(generator),
-        '{"clips":[{"candidateIndex":1,"startTime":"HH:MM:SS","endTime":"HH:MM:SS","title":"人工风格标题，18-42字","coverText":"第一行\\n第二行","description":"面向观众的一句话内容简介","reason":"内部选材理由"}]}',
+        '{"clips":[{"candidateIndex":1,"startTime":"HH:MM:SS","endTime":"HH:MM:SS","title":"人工风格标题，18-42字","coverText":"第一行\\n第二行","description":"面向观众的一句话内容简介","reason":"内部选材理由","score":95}]}',
         '',
         `直播标题: ${info.streamTitle || '未知'}`,
         `录制时间: ${info.recordedAt || '未知'}`,
@@ -1429,11 +1694,16 @@ async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config,
     ].join('\n');
 
     try {
+        const requestOptions = {
+            wordLimit: Math.max(2400, maxClips * 140),
+            primaryModel: config.ai?.model || undefined,
+            timeoutMs: config.ai?.timeoutMs
+        };
         const result = provider === 'tuZi'
-            ? await generator.generateTextWithTuZi(prompt, { wordLimit: 1200 })
+            ? await generator.generateTextWithTuZi(prompt, requestOptions)
             : provider === 'daiYu'
-            ? await generator.generateTextWithDaiYu(prompt, { wordLimit: 1200 })
-            : await generator.generateTextWithGemini(prompt, { wordLimit: 1200 });
+            ? await generator.generateTextWithDaiYu(prompt, requestOptions)
+            : await generator.generateTextWithGemini(prompt, { wordLimit: requestOptions.wordLimit });
         const text = String(result.text || '').trim();
         const match = text.match(/\{[\s\S]*"clips"[\s\S]*\}/);
         if (!match) {
@@ -1442,7 +1712,7 @@ async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config,
             return [];
         }
         const parsedJson = JSON.parse(match[0]);
-        return normalizeAiClips(parsedJson.clips, candidates, parsed.segments.at(-1)?.end || 0, config);
+        return normalizeAiClips(parsedJson.clips, rankedCandidates, parsed.segments.at(-1)?.end || 0, config);
     } catch (error) {
         recordAiDiagnostic(diagnostics, 'candidate_refine', error);
         console.warn(`AI clip refinement failed, using local candidates: ${error.message}`);
@@ -1450,21 +1720,73 @@ async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config,
     }
 }
 
+async function planClipsWithStagedAI(
+    localCandidates,
+    parsed,
+    danmaku,
+    info,
+    totalDuration,
+    config,
+    rootConfig = {},
+    diagnostics = null,
+    emotionAnalysis = null
+) {
+    const candidateLimit = Math.max(
+        Number(config.maxClips) || 50,
+        Number(config.ai?.maxCandidateLines) || 100
+    );
+    const chunkConfig = {
+        ...config,
+        maxClips: candidateLimit
+    };
+    const modelCandidates = await planClipsWithAIChunks(
+        parsed,
+        danmaku,
+        info,
+        totalDuration,
+        chunkConfig,
+        rootConfig,
+        diagnostics,
+        emotionAnalysis
+    );
+    const pool = buildRecallCandidatePool(localCandidates, modelCandidates, config);
+    const clips = await refineCandidatesWithAI(
+        pool,
+        parsed,
+        danmaku,
+        info,
+        config,
+        rootConfig,
+        diagnostics
+    );
+    return { clips, pool, modelCandidates };
+}
+
 function fallbackClipsFromCandidates(candidates, config) {
     return candidates
+        .slice()
         .sort((a, b) => b.score - a.score)
-        .slice(0, Math.max(1, Number(config.maxClips) || 24))
-        .map(candidate => ({
-            start: candidate.start,
-            end: candidate.end,
-            duration: candidate.duration,
-            title: buildFallbackTitle(candidate),
-            description: '',
-            reason: candidate.reason,
-            candidateIndex: candidate.index,
-            score: candidate.score,
-            base: candidate
-        }))
+        .slice(0, Math.max(1, Number(config.maxClips) || 50))
+        .map(candidate => {
+            const fromRecallPool = Array.isArray(candidate.recallSources);
+            const selectionSource = fromRecallPool ? 'recall_pool_fallback' : 'local_rules';
+            return {
+                start: candidate.start,
+                end: candidate.end,
+                duration: candidate.duration,
+                title: String(candidate.title || '').trim() || buildFallbackTitle(candidate),
+                coverText: topicClipper.normalizeCoverText(candidate.coverText),
+                description: String(candidate.description || '').trim(),
+                reason: candidate.reason,
+                candidateIndex: candidate.index,
+                score: candidate.score,
+                selectionSource,
+                base: {
+                    ...candidate,
+                    selectionSource
+                }
+            };
+        })
         .sort((a, b) => a.start - b.start);
 }
 
@@ -1540,7 +1862,10 @@ function getSelectionSource(value = {}) {
 
 function getSelectionSourceLabel(value = {}) {
     const source = getSelectionSource(value);
+    if (source === 'model_global_rerank') return '统一重排';
+    if (source === 'recall_pool_fallback') return '候选池回退';
     if (source === 'model_full_context') return '模型全量';
+    if (source === 'model_chunked') return '模型分块';
     if (source === 'danmaku_heat') return '弹幕热度';
     if (value.base?.reason === 'ai_chunked_plan' || value.candidate?.reason === 'ai_chunked_plan') return '模型分块';
     return '本地规则';
@@ -2002,6 +2327,8 @@ async function generateOwnStreamClips(options = {}) {
     }
 
     let clips = [];
+    let fallbackCandidates = candidates;
+    let candidateRefinementAttempted = false;
     if (options.planPath) {
         const plan = JSON.parse(fs.readFileSync(options.planPath, 'utf8'));
         clips = Array.isArray(plan.clips) ? plan.clips : [];
@@ -2022,6 +2349,29 @@ async function generateOwnStreamClips(options = {}) {
                 aiDiagnostics.usedFallback = true;
                 aiDiagnostics.fallbackReason = classifyAiFallbackReason(aiDiagnostics.errors);
             }
+        } else if (config.ai?.enabled && config.ai?.strategy === 'staged') {
+            const staged = await planClipsWithStagedAI(
+                candidates,
+                parsed,
+                danmaku,
+                info,
+                totalDuration,
+                config,
+                rootConfig,
+                aiDiagnostics,
+                emotionAnalysis
+            );
+            candidateRefinementAttempted = true;
+            clips = staged.clips;
+            fallbackCandidates = staged.pool.length > 0 ? staged.pool : candidates;
+            aiDiagnostics.candidatePool = {
+                localCandidates: candidates.length,
+                chunkModelCandidates: staged.modelCandidates.length,
+                rerankCandidates: staged.pool.length
+            };
+            if (clips.length > 0) {
+                aiDiagnostics.selectedSource = 'staged_global_ai';
+            }
         } else if (config.ai?.enabled && config.ai?.strategy === 'full_context') {
             clips = await planClipsWithAIFullContext(parsed, danmaku, info, totalDuration, config, rootConfig, aiDiagnostics, emotionAnalysis, existingFullLiveContext);
             if (clips.length > 0) {
@@ -2034,17 +2384,21 @@ async function generateOwnStreamClips(options = {}) {
             }
         }
         if (clips.length === 0 && !config.parallel?.enabled) {
-            const clipsFromAi = await refineCandidatesWithAI(candidates, parsed, danmaku, info, config, rootConfig, aiDiagnostics);
+            const clipsFromAi = candidateRefinementAttempted
+                ? []
+                : await refineCandidatesWithAI(candidates, parsed, danmaku, info, config, rootConfig, aiDiagnostics);
             if (clipsFromAi.length > 0) {
                 clips = clipsFromAi;
                 aiDiagnostics.selectedSource = 'candidate_ai';
             } else if (aiDiagnostics.localFallbackEnabled) {
-                clips = fallbackClipsFromCandidates(candidates, config);
+                clips = fallbackClipsFromCandidates(fallbackCandidates, config);
                 aiDiagnostics.usedFallback = true;
                 aiDiagnostics.fallbackReason = (!config.ai?.enabled || rootConfig.ai?.text?.enabled === false)
                     ? 'AI \u5df2\u7981\u7528'
                     : classifyAiFallbackReason(aiDiagnostics.errors);
-                aiDiagnostics.selectedSource = 'local_rules';
+                aiDiagnostics.selectedSource = fallbackCandidates === candidates
+                    ? 'local_rules'
+                    : 'recall_pool_fallback';
             } else {
                 const failureReason = (!config.ai?.enabled || rootConfig.ai?.text?.enabled === false)
                     ? 'AI 已禁用'
@@ -2061,7 +2415,8 @@ async function generateOwnStreamClips(options = {}) {
         usedFallback: aiDiagnostics.usedFallback,
         fallbackReason: aiDiagnostics.fallbackReason,
         selectedSource: aiDiagnostics.selectedSource,
-        errorCount: aiDiagnostics.errors.length
+        errorCount: aiDiagnostics.errors.length,
+        ...(aiDiagnostics.candidatePool ? { candidatePool: aiDiagnostics.candidatePool } : {})
     };
     clips = filterClipsBySelection(clips, options.selectedIndices);
     clips = attachEmotionEvidenceToClips(clips, emotionAnalysis, config.emotionScoring || {});
@@ -2092,6 +2447,7 @@ async function generateOwnStreamClips(options = {}) {
             xmlPath: options.xmlPath || null
         },
         config: {
+            maxCandidates: config.maxCandidates,
             maxClips: config.maxClips,
             chunkSeconds: config.chunkSeconds,
             aiConcurrency: config.aiConcurrency,
@@ -2099,6 +2455,9 @@ async function generateOwnStreamClips(options = {}) {
             clipFfmpegThreads,
             aiStrategy: config.ai?.strategy || null,
             aiModel: config.ai?.model || null,
+            maxCandidateLines: config.ai?.maxCandidateLines || null,
+            maxCandidateSubtitleChars: config.ai?.maxCandidateSubtitleChars || null,
+            maxCandidateDanmakuLines: config.ai?.maxCandidateDanmakuLines || null,
             parallel: config.parallel
         },
         aiStatus: reviewMetadata.aiStatus,
@@ -2482,7 +2841,9 @@ module.exports = {
     getEmotionEvidenceForWindow,
     buildEmotionCandidates,
     attachEmotionEvidenceToClips,
+    getWindowDanmakuEvidence,
     buildChunkSources,
+    buildRecallCandidatePool,
     aggregateDanmakuForFullContext,
     buildFullContextHeatLines,
     buildFullContextSource,
@@ -2493,6 +2854,8 @@ module.exports = {
     countSelectionSources,
     planClipsWithAIChunks,
     planClipsWithAIFullContext,
+    planClipsWithStagedAI,
+    refineCandidatesWithAI,
     alignClipToSubtitleBoundaries,
     alignClipsToSubtitleBoundaries,
     removeOverlappingClips,

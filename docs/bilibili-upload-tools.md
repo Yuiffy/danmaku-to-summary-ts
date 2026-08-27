@@ -112,17 +112,22 @@ python src\scripts\clip_upload_registry.py import-review `
 ```
 
 Queue processing is single-worker and calls `batch_upload.py` with grouped
-review indices. Existing duplicate checks, upload state, 406 recovery, and
-preupload rate-limit waiting stay inside `batch_upload.py`.
+review indices. Each review group is split into at most four clips by default
+(`enqueue --batch-size` can override it), and each uploader subprocess has a
+30-minute timeout by default (`enqueue --timeout-seconds` can override it).
+This bounds the impact of a hung upload while preserving order. Existing
+duplicate checks, upload state, 406 recovery, and preupload rate-limit waiting
+stay inside `batch_upload.py`.
 
 The persistent queue treats the per-clip upload state as authoritative when a
 subprocess exits. A job with partial success is retried with only unfinished
 clips; deterministic problems such as a missing video or REVIEW row become
-`failed` with a recorded reason; transient exits enter `retry_wait` with
-backoff and eventually become `blocked` after the automatic retry limit. On a
-worker restart, only jobs left in `running` are recovered to `pending`, while
-`blocked` remains a manual-review state. `queue --verbose` shows the last
-uploader output for diagnosis.
+`failed` with a recorded reason; transient exits, including batch timeouts,
+enter `retry_wait` with backoff and eventually become `blocked` after the
+automatic retry limit. A zero-count summary such as `同标题冲突: 0` is not
+treated as a title conflict. On a worker restart, only jobs left in `running`
+are recovered to `pending`, while `blocked` remains a manual-review state.
+`queue --verbose` shows the last uploader output for diagnosis.
 
 For persistent operation:
 

@@ -103,6 +103,44 @@ class ClipUploadRegistryTests(unittest.TestCase):
         self.assertEqual(saved_queue["jobs"][0]["clipStatuses"]["1"], "uploaded")
         self.assertEqual(saved_queue["jobs"][0]["clipStatuses"]["2"], "queued")
 
+    def test_timeout_with_zero_title_conflicts_is_retryable(self):
+        fixture = self.make_fixture()
+
+        def run_batch(group, job):
+            self.write_done(fixture, [1])
+            return subprocess.CompletedProcess(
+                [],
+                124,
+                stdout="[INFO] 同标题冲突(待核对): 0\n[worker] batch timed out after 1800s",
+            )
+
+        saved_registry, saved_queue = self.run_job_with(fixture, run_batch)
+        self.assertEqual(saved_registry["clips"]["1"]["status"], "uploaded")
+        self.assertEqual(saved_registry["clips"]["2"]["status"], "queued")
+        self.assertEqual(saved_queue["jobs"][0]["status"], "retry_wait")
+        self.assertNotIn("failureReason", saved_registry["clips"]["2"])
+
+    def test_large_review_group_is_split_in_order(self):
+        fixture = self.make_fixture(count=5)
+        fixture["queue"]["jobs"][0]["batchSize"] = 2
+        calls = []
+
+        def run_batch(group, job):
+            ids = [clip["id"] for clip in group]
+            calls.append(ids)
+            self.write_done(fixture, ids)
+            return subprocess.CompletedProcess([], 0, stdout="uploaded")
+
+        saved_registry, saved_queue = self.run_job_with(fixture, run_batch)
+        self.assertEqual(calls, [[1, 2], [3, 4], [5]])
+        self.assertTrue(
+            all(
+                clip["status"] == "uploaded"
+                for clip in saved_registry["clips"].values()
+            )
+        )
+        self.assertEqual(saved_queue["jobs"][0]["status"], "done")
+
     def test_terminal_missing_file_does_not_retry_forever(self):
         fixture = self.make_fixture(count=1)
 
@@ -181,6 +219,12 @@ class ClipUploadRegistryTests(unittest.TestCase):
     def test_zero_missing_file_summary_is_not_terminal(self):
         self.assertFalse(registry.has_terminal_upload_error("文件缺失: 0"))
         self.assertTrue(registry.has_terminal_upload_error("文件缺失: 1"))
+        self.assertFalse(
+            registry.has_terminal_upload_error("同标题冲突(待核对): 0")
+        )
+        self.assertTrue(
+            registry.has_terminal_upload_error("同标题冲突(待核对): 1")
+        )
 
     def test_manual_state_records_collection_result(self):
         fixture = self.make_fixture(count=1)
