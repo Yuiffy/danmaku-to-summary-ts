@@ -79,9 +79,10 @@ const attrs = String(d.$.P).split(",");
 
 ## 🧪 测试验证
 
-使用测试文件验证:
+当时使用一次性测试文件验证（现仅保留在本机
+`local-scripts/legacy-tests/root/` 和 Git 历史中）:
 ```bash
-node test_fusion_fix.js
+node local-scripts/legacy-tests/root/test_fusion_fix.js
 ```
 
 测试结果:
@@ -92,8 +93,8 @@ node test_fusion_fix.js
 ## 📝 相关文件
 
 - `src/scripts/do_fusion_summary.js` - 主修复文件
-- `test_xml_parse.js` - XML解析诊断脚本
-- `test_fusion_fix.js` - 完整功能测试脚本
+- `local-scripts/legacy-tests/root/test_xml_parse.js` - 历史 XML 解析诊断脚本
+- `local-scripts/legacy-tests/root/test_fusion_fix.js` - 历史完整功能测试脚本
 
 ## 💡 经验教训
 

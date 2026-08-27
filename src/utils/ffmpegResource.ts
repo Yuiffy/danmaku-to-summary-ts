@@ -193,9 +193,9 @@ export async function waitForAsrAvailability(
 }
 
 function readCpuSnapshot(): { idle: number; total: number } {
-  return os.cpus().reduce((totals, cpu) => {
-    const times = cpu.times || {};
-    const total = Object.values(times).reduce((sum, value) => sum + Number(value || 0), 0);
+  return os.cpus().reduce<{ idle: number; total: number }>((totals, cpu) => {
+    const times: os.CpuInfo['times'] = cpu.times;
+    const total = Object.values(times).reduce<number>((sum, value) => sum + Number(value || 0), 0);
     totals.idle += Number(times.idle || 0);
     totals.total += total;
     return totals;

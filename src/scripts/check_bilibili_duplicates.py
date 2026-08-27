@@ -1,27 +1,20 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 """Find duplicate Bilibili uploads by exact title.
 
-This is a lightweight pre/post-upload diagnostic. It searches the public
-Bilibili video search endpoint for the current account and groups results by
-exact title after removing search-result highlight markup.
+This lightweight pre/post-upload diagnostic searches public Bilibili results
+for one uploader and groups matches by exact title after removing highlight
+markup from the search response.
 """
 
 import argparse
 import json
-import os
 import re
-import sys
 import time
 from collections import defaultdict
 
 import requests
 
-
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(PROJECT_ROOT, "src", "scripts"))
-
-from config_loader import find_secrets_path  # noqa: E402
+from config_loader import find_secrets_path
 
 
 DEFAULT_ACCOUNT_MID = 412141275
@@ -29,8 +22,8 @@ DEFAULT_ACCOUNT_MID = 412141275
 
 def load_cookie():
     secrets_path = find_secrets_path()
-    with open(secrets_path, "r", encoding="utf-8-sig") as f:
-        secrets = json.load(f)
+    with open(secrets_path, "r", encoding="utf-8-sig") as file:
+        secrets = json.load(file)
     cookie = secrets.get("bilibili", {}).get("cookie", "")
     if not cookie:
         raise RuntimeError("Missing bilibili.cookie in secrets config")
@@ -87,7 +80,7 @@ def main():
     parser.add_argument("--pages", type=int, default=5, help="Search result pages to scan")
     parser.add_argument("--account-mid", type=int, default=DEFAULT_ACCOUNT_MID, help="Uploader mid")
     parser.add_argument("--delay", type=float, default=1.0, help="Delay between search pages")
-    parser.add_argument("--show-recent", type=int, default=30, help="How many recent matched uploads to print")
+    parser.add_argument("--show-recent", type=int, default=30, help="Recent matched uploads to print")
     args = parser.parse_args()
 
     found = search_account_titles(

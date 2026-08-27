@@ -35,7 +35,7 @@
     "noEmit": false,
     "noEmitOnError": false,
     "resolveJsonModule": true,
-    "allowJs": true,
+    "allowJs": false,
     "checkJs": false,
     "jsx": "preserve"
   },

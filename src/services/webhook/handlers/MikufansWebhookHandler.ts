@@ -1,7 +1,6 @@
 import { Request, Response } from 'express';
 import * as path from 'path';
 import * as fs from 'fs';
-import * as crypto from 'crypto';
 import { spawn, ChildProcess } from 'child_process';
 import { IWebhookHandler } from '../IWebhookService';
 import { getLogger } from '../../../core/logging/LogManager';
@@ -10,7 +9,6 @@ import { FileStabilityChecker } from '../FileStabilityChecker';
 import { DuplicateProcessorGuard } from '../DuplicateProcessorGuard';
 import { IBilibiliAPIService } from '../../../services/bilibili/interfaces/IBilibiliAPIService';
 import { IDelayedReplyService } from '../../../services/bilibili/interfaces/IDelayedReplyService';
-import { LiveContentSummaryDeliveryMode } from '../../../services/bilibili/interfaces/types';
 import { LIVE_RECONNECT_GRACE_MS, LiveSessionManager, LiveSegment } from '../LiveSessionManager';
 import { FileMerger } from '../FileMerger';
 import { VideoScreenshotService } from '../../video/VideoScreenshotService';
@@ -22,22 +20,17 @@ import {
 } from '../../monitoring/RecorderStallDiagnostics';
 import { applyFfmpegProcessPriority, getFfmpegResourceConfig } from '../../../utils/ffmpegResource';
 import {
-  getAsrGamePollIntervalMs,
-  getAsrResourceGuardConfig,
-  isAnyWindowsProcessRunning,
-  normalizeAsrProcessNames
-} from '../../../utils/asrResourceGuard';
-import {
   MikufansOfflineFallbackCandidate,
   MikufansOfflineFallbackMonitor,
   MikufansOfflineFallbackTrigger
 } from '../MikufansOfflineFallbackMonitor';
+import { MikufansAsrResourceController } from './mikufans/MikufansAsrResourceController';
+import { MikufansDelayedReplyCoordinator } from './mikufans/MikufansDelayedReplyCoordinator';
 
 const queueManager = require(path.join(process.cwd(), 'src', 'scripts', 'whisper_queue_manager.js'));
 const speakerOnceRegistry = require(path.join(process.cwd(), 'src', 'scripts', 'asr', 'speaker_once_registry.js'));
 const ASR_PHASE_DONE_SENTINEL = '[[ASR_PHASE_DONE]]';
 const LEGACY_WHISPER_PHASE_DONE_SENTINEL = '[[WHISPER_PHASE_DONE]]';
-const DELAYED_REPLY_READY_SENTINEL = '[[DELAYED_REPLY_READY]]';
 
 interface QueuedSummaryTask {
   id: string;
@@ -90,16 +83,12 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   private duplicateGuard = new DuplicateProcessorGuard();
   private liveSessionManager = new LiveSessionManager();
   private fileMerger = new FileMerger();
-  private delayedReplyService?: IDelayedReplyService;
   private screenshotService = new VideoScreenshotService();
   private queueWorkerPromise: Promise<void> | null = null;
   private queueWorkerProcess: ChildProcess | null = null;
   private queueWorkerShouldStop = false;
-  private asrPersistentWorkerProcess: ChildProcess | null = null;
-  private asrPersistentWorkerPort: number | null = null;
-  private asrPersistentWorkerToken: string | null = null;
-  private asrPersistentWorkerStarting: Promise<void> | null = null;
   private asrGamePaused = false;
+  private readonly asrResources = new MikufansAsrResourceController();
 
   // 延迟处理定时器管理器(roomId -> Map<actionType, timer>)
   private delayedActions: Map<string, Map<DelayedActionType, NodeJS.Timeout>> = new Map();
@@ -107,6 +96,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   private pendingFiles: Map<string, Array<{videoPath: string, payload: any}>> = new Map();
   // Stream事件时间戳记录(roomId -> {startTime?, endTime?})
   private streamTimestamps: Map<string, {startTime?: Date, endTime?: Date}> = new Map();
+  private readonly delayedReplyCoordinator: MikufansDelayedReplyCoordinator;
   // Webhook 已明确观察到仍在直播的房间。用于拦截已经开始执行、来不及 clearTimeout 的旧结算回调。
   private activeLiveRooms: Set<string> = new Set();
   private finalFileClosedRooms: Map<string, Date> = new Map();
@@ -119,14 +109,14 @@ export class MikufansWebhookHandler implements IWebhookHandler {
   // 最大等待时间(毫秒)
   // 断流重连可恢复最近会话；在此窗口内不能把单个分段结算，避免原文件与后续 _merged 文件各处理一次。
   private readonly MAX_DELAY_MS = LIVE_RECONNECT_GRACE_MS;
-  private readonly DELAYED_REPLY_FILE_RETRY_INITIAL_MS = 30 * 1000;
-  private readonly DELAYED_REPLY_FILE_RETRY_INTERVAL_MS = 5 * 60 * 1000;
-  private readonly DELAYED_REPLY_FILE_RETRY_MAX_MS = 2 * 60 * 60 * 1000;
-  private pendingDelayedReplyFileTimers: Map<string, NodeJS.Timeout> = new Map();
   private offlineFallbackMonitor: MikufansOfflineFallbackMonitor;
   private recorderStallDiagnostics: RecorderStallDiagnostics;
 
   constructor() {
+    this.delayedReplyCoordinator = new MikufansDelayedReplyCoordinator(
+      this.liveSessionManager,
+      this.streamTimestamps
+    );
     this.offlineFallbackMonitor = new MikufansOfflineFallbackMonitor(
       () => this.getOfflineFallbackCandidates(),
       details => this.handleConfirmedOfflineFallback(details)
@@ -1480,254 +1470,26 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     await new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  /**
-   * 查询 GPU 占用情况
-   */
-  private async getGpuUsage(): Promise<{ gpuUtil: number; vramUsed: number; vramTotal: number } | null> {
-    return new Promise((resolve) => {
-      const child = spawn('nvidia-smi', [
-        '--query-gpu=utilization.gpu,memory.used,memory.total',
-        '--format=csv,noheader,nounits'
-      ], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        windowsHide: true
-      });
-
-      let stdout = '';
-
-      child.stdout?.on('data', (data: Buffer) => {
-        stdout += data.toString();
-      });
-
-      child.on('close', (code: number | null) => {
-        if (code !== 0) {
-          resolve(null);
-          return;
-        }
-
-        const firstLine = stdout.trim().split(/\r?\n/)[0];
-        if (!firstLine) {
-          resolve(null);
-          return;
-        }
-
-        const values = firstLine.split(',').map(item => Number.parseFloat(item.trim()));
-        if (values.length < 3 || values.some(value => Number.isNaN(value))) {
-          resolve(null);
-          return;
-        }
-
-        resolve({
-          gpuUtil: values[0],
-          vramUsed: values[1],
-          vramTotal: values[2]
-        });
-      });
-
-      child.on('error', () => resolve(null));
-    });
-  }
-
-  /**
-   * 检查 GPU 是否繁忙
-   */
   private async isGpuBusyForWhisper(): Promise<{ busy: boolean; reason: string }> {
-    const config: any = ConfigProvider.getConfig();
-    const gpuConfig = config.whisper?.gpuDetection;
-
-    if (!gpuConfig?.enabled) {
-      return { busy: false, reason: 'gpuDetection disabled' };
-    }
-
-    const usage = await this.getGpuUsage();
-    if (!usage) {
-      return { busy: false, reason: 'nvidia-smi unavailable' };
-    }
-
-    const utilThreshold = gpuConfig.gpuUtilizationThreshold ?? 60;
-    const vramThreshold = gpuConfig.vramUsageThreshold ?? 70;
-    const vramPct = usage.vramTotal > 0 ? (usage.vramUsed / usage.vramTotal) * 100 : 0;
-    const busy = usage.gpuUtil >= utilThreshold || vramPct >= vramThreshold;
-    const reason = `运算: ${usage.gpuUtil.toFixed(0)}%, 显存: ${usage.vramUsed.toFixed(0)}/${usage.vramTotal.toFixed(0)} MB (${vramPct.toFixed(1)}%)`;
-
-    return { busy, reason };
+    return this.asrResources.isLegacyGpuBusy();
   }
 
   private async isAsrGameRunning(): Promise<{ busy: boolean; reason: string; waitMs: number }> {
-    const config: any = ConfigProvider.getConfig();
-    const resourceConfig = getAsrResourceGuardConfig(config.asr?.paraformer);
-    if (!resourceConfig.enabled || resourceConfig.pause_when_game_running === false) {
-      return { busy: false, reason: 'ASR 游戏保护未启用', waitMs: 5000 };
-    }
-
-    const names = normalizeAsrProcessNames(
-      resourceConfig.game_process_names || resourceConfig.process_names || []
-    );
-    if (names.length === 0) {
-      return { busy: false, reason: '未配置游戏进程名', waitMs: 5000 };
-    }
-
-    const running = await isAnyWindowsProcessRunning(names);
-    return {
-      busy: running,
-      reason: running ? `检测到游戏进程: ${names.join(', ')}` : '',
-      waitMs: getAsrGamePollIntervalMs({ resource_guard: resourceConfig })
-    };
+    return this.asrResources.isGameRunning();
   }
 
   private isAdaptiveParaformerGpuProtectionEnabled(config: any): boolean {
-    const backend = String(config.asr?.default_backend || config.asr?.backend || 'paraformer');
-    if (backend !== 'paraformer') {
-      return false;
-    }
-
-    const paraformerConfig = config.asr?.paraformer || {};
-    const resourceConfig = getAsrResourceGuardConfig(paraformerConfig);
-    const gpuConfig = paraformerConfig.gpu_throttle;
-    const softGpuConfig = gpuConfig?.soft_gpu || resourceConfig.soft_gpu;
-    const gpuEnabled = gpuConfig === true || Boolean(
-      gpuConfig && typeof gpuConfig === 'object' && gpuConfig.enabled !== false
-    );
-    return Boolean(
-      resourceConfig.enabled !== false &&
-      gpuEnabled &&
-      softGpuConfig?.enabled === true
-    );
+    return this.asrResources.isAdaptiveGpuProtectionEnabled(config);
   }
 
-  /**
-   * 启动由队列父进程持有的 Paraformer worker。子任务通过本机回环端口复用模型；
-   * worker 本身不预加载，第一条 Paraformer 请求到达时才占用显存。
-   */
   private async ensurePersistentAsrWorker(): Promise<void> {
-    const config: any = ConfigProvider.getConfig();
-    const paraformerConfig = config.asr?.paraformer || {};
-    if (paraformerConfig.persistent_worker?.enabled === false) {
-      return;
-    }
-    if (this.asrPersistentWorkerProcess && this.asrPersistentWorkerPort) {
-      return;
-    }
-    if (this.asrPersistentWorkerStarting) {
-      return this.asrPersistentWorkerStarting;
-    }
-
-    this.asrPersistentWorkerStarting = new Promise<void>((resolve, reject) => {
-      const executable = String(
-        paraformerConfig.python_executable || process.env.ASR_PYTHON || 'python'
-      );
-      const pythonArgs = Array.isArray(paraformerConfig.python_args)
-        ? paraformerConfig.python_args.map((value: unknown) => String(value)).filter(Boolean)
-        : [];
-      const workerScript = path.join(
-        process.cwd(),
-        'src',
-        'scripts',
-        'python',
-        'asr_persistent_worker.py'
-      );
-      const token = crypto.randomBytes(24).toString('hex');
-      const args = [...pythonArgs, workerScript, '--port', '0', '--token', token];
-      const resourceConfig = getFfmpegResourceConfig();
-      const asrResourceConfig = getAsrResourceGuardConfig(paraformerConfig);
-      const child = spawn(executable, args, {
-        cwd: process.cwd(),
-        windowsHide: true,
-        env: { ...process.env, PYTHONUTF8: '1' }
-      });
-      applyFfmpegProcessPriority(
-        child.pid,
-        String(asrResourceConfig.priority || resourceConfig.priority || 'belowNormal')
-      );
-
-      this.asrPersistentWorkerProcess = child;
-      this.asrPersistentWorkerToken = token;
-      let stdoutBuffer = '';
-      let ready = false;
-      const readyTimeoutMs = Number(paraformerConfig.persistent_worker?.startup_timeout_s || 60) * 1000;
-      const readyTimeout = setTimeout(() => {
-        if (!ready) {
-          reject(new Error(`ASR 常驻 worker 启动超时: ${readyTimeoutMs / 1000}s`));
-          void terminateProcessTree(child, {
-            gracePeriodMs: 1000,
-            label: 'ASR常驻Worker启动超时',
-            logger: this.logger
-          });
-        }
-      }, readyTimeoutMs);
-
-      child.stdout?.on('data', (data: Buffer) => {
-        stdoutBuffer += data.toString();
-        const lines = stdoutBuffer.split(/\r?\n/);
-        stdoutBuffer = lines.pop() || '';
-        for (const line of lines) {
-          const readyMatch = line.match(/^\[ASR_WORKER_READY\]\s+(.+)$/);
-          if (readyMatch && !ready) {
-            try {
-              const payload = JSON.parse(readyMatch[1]);
-              this.asrPersistentWorkerPort = Number(payload.port);
-              ready = true;
-              clearTimeout(readyTimeout);
-              this.logger.info(
-                `ASR 常驻 worker 已就绪: pid=${child.pid ?? payload.pid}, port=${this.asrPersistentWorkerPort}`
-              );
-              resolve();
-            } catch (error: any) {
-              reject(new Error(`ASR 常驻 worker ready 消息无效: ${error.message}`));
-            }
-          } else if (line.trim()) {
-            this.logger.info(`[ASR常驻Worker] ${line}`);
-          }
-        }
-      });
-      child.stderr?.on('data', (data: Buffer) => {
-        const output = data.toString().trim();
-        if (output) {
-          this.logger.info(`[ASR常驻Worker] ${output}`);
-        }
-      });
-      child.on('error', (error: Error) => {
-        clearTimeout(readyTimeout);
-        if (!ready) reject(error);
-      });
-      child.on('close', (code: number | null) => {
-        clearTimeout(readyTimeout);
-        if (!ready) {
-          reject(new Error(`ASR 常驻 worker 提前退出: code=${code}`));
-        }
-        if (this.asrPersistentWorkerProcess === child) {
-          this.asrPersistentWorkerProcess = null;
-          this.asrPersistentWorkerPort = null;
-          this.asrPersistentWorkerToken = null;
-        }
-        this.logger.info(`ASR 常驻 worker 已退出: code=${code}`);
-      });
-    }).finally(() => {
-      this.asrPersistentWorkerStarting = null;
-    });
-
-    return this.asrPersistentWorkerStarting;
+    await this.asrResources.ensurePersistentWorker();
   }
 
   private async stopPersistentAsrWorker(reason: string): Promise<void> {
-    const child = this.asrPersistentWorkerProcess;
-    if (!child) {
-      return;
-    }
-    this.asrPersistentWorkerProcess = null;
-    this.asrPersistentWorkerPort = null;
-    this.asrPersistentWorkerToken = null;
-    this.logger.info(`释放 ASR 常驻模型与显存: ${reason}, pid=${child.pid ?? 'unknown'}`);
-    await terminateProcessTree(child, {
-      gracePeriodMs: 3000,
-      label: `ASR常驻Worker(${reason})`,
-      logger: this.logger
-    });
+    await this.asrResources.stopPersistentWorker(reason);
   }
 
-  /**
-   * 确保集中队列 worker 在运行
-   */
   private ensureQueueWorkerRunning(): void {
     if (this.queueWorkerPromise) {
       return;
@@ -1872,6 +1634,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     }
     const encodedSpeakerRequest = encodeSpeakerRequestEnv(task.speakerRecognitionRequest || null);
     const resourceConfig = getFfmpegResourceConfig();
+    const asrWorkerConnection = this.asrResources.getConnection();
     this.logger.info(`Mikufans队列Worker开始执行: ${path.basename(task.mediaPath)} (taskId=${task.id})`);
 
     const ps: ChildProcess = spawn('node', args, {
@@ -1886,10 +1649,10 @@ export class MikufansWebhookHandler implements IWebhookHandler {
         SCREENSHOT_PATH: task.screenshotPath || '',
         FFMPEG_THREADS: String(resourceConfig.threads),
         FFMPEG_PRIORITY: resourceConfig.priority,
-        ASR_PERSISTENT_WORKER_PORT: this.asrPersistentWorkerPort
-          ? String(this.asrPersistentWorkerPort)
+        ASR_PERSISTENT_WORKER_PORT: asrWorkerConnection.port
+          ? String(asrWorkerConnection.port)
           : '',
-        ASR_PERSISTENT_WORKER_TOKEN: this.asrPersistentWorkerToken || '',
+        ASR_PERSISTENT_WORKER_TOKEN: asrWorkerConnection.token || '',
         ASR_ENABLE_SPEAKER_ONCE: task.enableSpeakerRecognition ? 'true' : '',
         ASR_SPEAKER_REQUEST_JSON: encodedSpeakerRequest
       }
@@ -2129,7 +1892,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
    * 设置延迟回复服务
    */
   setDelayedReplyService(service: IDelayedReplyService): void {
-    this.delayedReplyService = service;
+    this.delayedReplyCoordinator.setService(service);
     this.logger.info('延迟回复服务已设置');
   }
 
@@ -2149,461 +1912,28 @@ export class MikufansWebhookHandler implements IWebhookHandler {
 
   stop(): void {
     this.offlineFallbackMonitor.stop();
+    this.delayedReplyCoordinator.stop();
   }
 
-  /**
-   * 从多个来源提取直播时间（兜底方案）
-   * 优先级：streamTimestamps > 文件名解析 > 文件系统时间
-   */
-  private extractLiveTimeFallback(videoPath: string, roomId: string): { startTime?: Date; endTime?: Date; source: string } | null {
-    try {
-      const fileName = path.basename(videoPath, path.extname(videoPath));
-      const recordingTimeMatch = fileName.match(/(?:录制-)?\d+-(\d{8})-(\d{6})-(\d{3})-/);
-      let recordingStartTime: Date | undefined;
-      if (recordingTimeMatch) {
-        const dateStr = recordingTimeMatch[1];
-        const timeStr = recordingTimeMatch[2];
-        const year = parseInt(dateStr.substring(0, 4));
-        const month = parseInt(dateStr.substring(4, 6)) - 1;
-        const day = parseInt(dateStr.substring(6, 8));
-        const hour = parseInt(timeStr.substring(0, 2));
-        const minute = parseInt(timeStr.substring(2, 4));
-        const second = parseInt(timeStr.substring(4, 6));
-        const parsedStart = new Date(
-          `${dateStr.slice(0, 4)}-${dateStr.slice(4, 6)}-${dateStr.slice(6, 8)}T${timeStr.slice(0, 2)}:${timeStr.slice(2, 4)}:${timeStr.slice(4, 6)}+08:00`
-        );
-        if (!Number.isNaN(parsedStart.getTime()) && year >= 2020 && year <= 2100) {
-          recordingStartTime = parsedStart;
-        }
-      }
-
-      let fileMtime: Date | undefined;
-      try {
-        fileMtime = fs.statSync(videoPath).mtime;
-      } catch {
-        fileMtime = undefined;
-      }
-
-      // 方案1（最优先）: 从 streamTimestamps 获取（来自 StreamStarted/StreamEnded 事件）
-      const timestamps = this.streamTimestamps.get(roomId);
-      if (timestamps && (timestamps.startTime || timestamps.endTime)) {
-        let startTime = timestamps.startTime;
-        let endTime = timestamps.endTime;
-        const toleranceMs = 10 * 60 * 1000;
-
-        if (recordingStartTime) {
-          const recordingStartMs = recordingStartTime.getTime();
-          if (startTime && Math.abs(startTime.getTime() - recordingStartMs) > toleranceMs) {
-            this.logger.warn(`Stream开始时间与当前文件名不匹配，改用文件名时间: stream=${startTime.toISOString()}, file=${recordingStartTime.toISOString()}, fileName=${fileName}`);
-            startTime = recordingStartTime;
-          }
-
-          if (endTime && endTime.getTime() < recordingStartMs - toleranceMs) {
-            this.logger.warn(`Stream结束时间早于当前文件开始时间，丢弃旧结束时间: streamEnd=${endTime.toISOString()}, fileStart=${recordingStartTime.toISOString()}, fileName=${fileName}`);
-            endTime = fileMtime && fileMtime.getTime() >= recordingStartMs ? fileMtime : undefined;
-          }
-
-          if (!endTime && fileMtime && fileMtime.getTime() >= recordingStartMs) {
-            endTime = fileMtime;
-          }
-        }
-
-        if (startTime && endTime && endTime.getTime() < startTime.getTime()) {
-          this.logger.warn(`Stream时间范围异常，使用文件修改时间兜底: start=${startTime.toISOString()}, end=${endTime.toISOString()}, fileName=${fileName}`);
-          endTime = fileMtime && fileMtime.getTime() >= startTime.getTime() ? fileMtime : undefined;
-        }
-
-        this.logger.info(`🎯 从Stream事件记录中找到时间: start=${startTime?.toISOString() || 'undefined'}, end=${endTime?.toISOString() || 'undefined'}`);
-        return {
-          startTime,
-          endTime,
-          source: 'Stream事件记录'
-        };
-      }
-      
-      // 方案2: 从文件名解析时间戳
-      // 格式: 录制-1820703922-20260123-180036-344-鼠继续过鸣潮1.0
-      // 或: 录制-1820703922-20260123-180036-344-鼠继续过鸣潮1.0_merged
-      const timeMatch = fileName.match(/(?:录制-)?\d+-(\d{8})-(\d{6})-(\d{3})-/);
-      if (timeMatch) {
-        const dateStr = timeMatch[1]; // 20260123
-        const timeStr = timeMatch[2]; // 180036
-        
-        const year = parseInt(dateStr.substring(0, 4));
-        const month = parseInt(dateStr.substring(4, 6)) - 1; // 月份从0开始
-        const day = parseInt(dateStr.substring(6, 8));
-        const hour = parseInt(timeStr.substring(0, 2));
-        const minute = parseInt(timeStr.substring(2, 4));
-        const second = parseInt(timeStr.substring(4, 6));
-        
-        const startTime = new Date(
-          `${dateStr.slice(0, 4)}-${dateStr.slice(4, 6)}-${dateStr.slice(6, 8)}T${timeStr.slice(0, 2)}:${timeStr.slice(2, 4)}:${timeStr.slice(4, 6)}+08:00`
-        );
-
-        if (
-          Number.isNaN(startTime.getTime()) ||
-          year < 2020 ||
-          year > 2100
-        ) {
-          this.logger.warn(`文件名解析出的直播开始时间无效，跳过该兜底结果: ${fileName}`);
-        } else {
-          // 尝试从文件的实际时长或修改时间推算结束时间
-          let endTime: Date;
-          try {
-            const stats = fs.statSync(videoPath);
-            endTime = new Date(stats.mtime); // 使用文件修改时间作为结束时间
-          } catch {
-            // 如果无法获取文件信息，假设直播持续了2小时（保守估计）
-            endTime = new Date(startTime.getTime() + 2 * 60 * 60 * 1000);
-          }
-
-          if (
-            Number.isNaN(endTime.getTime()) ||
-            endTime.getTime() < startTime.getTime()
-          ) {
-            this.logger.warn(
-              `文件名兜底时间异常，结束时间早于开始时间，放弃文件名解析: ${fileName}, start=${startTime.toISOString()}, end=${endTime.toISOString()}`
-            );
-          } else {
-            return {
-              startTime,
-              endTime,
-              source: '文件名解析'
-            };
-          }
-        }
-      }
-      
-      // 方案3: 使用文件的创建和修改时间
-      try {
-        const stats = fs.statSync(videoPath);
-        return {
-          startTime: new Date(stats.birthtime), // 文件创建时间
-          endTime: new Date(stats.mtime),       // 文件修改时间
-          source: '文件系统时间'
-        };
-      } catch (error: any) {
-        this.logger.warn(`无法获取文件时间信息: ${error.message}`);
-      }
-      
-      return null;
-    } catch (error: any) {
-      this.logger.error(`提取兜底时间失败: ${error.message}`, { error });
-      return null;
-    }
+  private get pendingDelayedReplyFileTimers(): Map<string, NodeJS.Timeout> {
+    return this.delayedReplyCoordinator.pendingFileTimers;
   }
 
-  /**
-   * 检查并触发延迟回复
-   */
   private async checkAndTriggerDelayedReply(videoPath: string, roomId: string): Promise<void> {
-    this.logger.info(`🔍 [延迟回复检查] 开始检查: roomId=${roomId}, videoPath=${path.basename(videoPath)}`);
-
-    if (!this.delayedReplyService) {
-      this.logger.warn('⚠️  延迟回复服务未设置，跳过触发');
-      return;
-    }
-
-    if (!roomId || roomId === 'unknown') {
-      this.logger.warn(`⚠️  房间ID无效 (${roomId})，跳过触发延迟回复`);
-      return;
-    }
-
-    try {
-      const dir = path.dirname(videoPath);
-      const baseName = path.basename(videoPath, path.extname(videoPath));
-
-      // 查找晚安回复文件
-      const goodnightTextPath = path.join(dir, `${baseName}_晚安回复.md`);
-      // 查找漫画文件
-      const comicImagePath = path.join(dir, `${baseName}_COMIC_FACTORY.png`);
-      const liveContentSummaryPath = path.join(dir, `${baseName}_LIVE_CONTENT.json`);
-
-      this.logger.info(`🔍 [延迟回复检查] 检查文件:`);
-      this.logger.info(`   晚安回复路径: ${goodnightTextPath}`);
-      this.logger.info(`   漫画路径: ${comicImagePath}`);
-
-      // 检查文件是否存在
-      const hasGoodnightText = fs.existsSync(goodnightTextPath);
-      const hasComicImage = fs.existsSync(comicImagePath);
-      const hasLiveContentSummary = fs.existsSync(liveContentSummaryPath);
-
-      this.logger.info(`   晚安回复存在: ${hasGoodnightText}`);
-      this.logger.info(`   漫画存在: ${hasComicImage}`);
-
-      // 只要有晚安回复就触发延迟回复（漫画可选）
-      if (hasGoodnightText) {
-        await this.triggerDelayedReplyFromPaths({
-          roomId,
-          goodnightTextPath,
-          comicImagePath: hasComicImage ? comicImagePath : undefined,
-          liveContentSummaryPath: hasLiveContentSummary ? liveContentSummaryPath : undefined,
-          mediaPath: videoPath,
-          source: hasComicImage ? 'process-close-with-comic' : 'process-close-text-only'
-        });
-      } else {
-        this.logger.info(`ℹ️  未找到晚安回复文件，跳过延迟回复`);
-        this.scheduleDelayedReplyFileRetry({
-          roomId,
-          goodnightTextPath,
-          comicImagePath,
-          liveContentSummaryPath,
-          mediaPath: videoPath,
-          source: 'process-close-missing-text'
-        });
-      }
-    } catch (error: any) {
-      this.logger.error(`❌ 检查并触发延迟回复失败: ${error.message}`, { error });
-    }
+    await this.delayedReplyCoordinator.checkAfterProcessing(videoPath, roomId);
   }
 
   private async handleDelayedReplyReadyOutput(output: string, fallbackMediaPath: string): Promise<void> {
-    if (!output.includes(DELAYED_REPLY_READY_SENTINEL)) {
-      return;
-    }
-
-    for (const line of output.split(/\r?\n/)) {
-      const markerIndex = line.indexOf(DELAYED_REPLY_READY_SENTINEL);
-      if (markerIndex < 0) {
-        continue;
-      }
-
-      const jsonText = line.slice(markerIndex + DELAYED_REPLY_READY_SENTINEL.length).trim();
-      if (!jsonText) {
-        this.logger.warn('延迟回复提前触发事件缺少JSON载荷');
-        continue;
-      }
-
-      try {
-        const payload = JSON.parse(jsonText) as {
-          roomId?: string;
-          goodnightTextPath?: string;
-          comicImagePath?: string;
-          liveContentSummaryPath?: string;
-          liveContentSummaryDeliveryMode?: LiveContentSummaryDeliveryMode;
-          mediaPath?: string;
-        };
-
-        if (!payload.roomId || !payload.goodnightTextPath) {
-          this.logger.warn('延迟回复提前触发事件字段不完整', { payload });
-          continue;
-        }
-
-        await this.triggerDelayedReplyFromPaths({
-          roomId: String(payload.roomId),
-          goodnightTextPath: payload.goodnightTextPath,
-          comicImagePath: payload.comicImagePath,
-          liveContentSummaryPath: payload.liveContentSummaryPath,
-          liveContentSummaryDeliveryMode: payload.liveContentSummaryDeliveryMode,
-          mediaPath: payload.mediaPath || fallbackMediaPath,
-          source: 'text-ready'
-        });
-      } catch (error: any) {
-        this.logger.error(`解析延迟回复提前触发事件失败: ${error.message}`, { line, error });
-      }
-    }
+    await this.delayedReplyCoordinator.handleReadyOutput(output, fallbackMediaPath);
   }
 
   private resolveLiveTimesForDelayedReply(mediaPath: string, roomId: string): {
     liveStartTime?: Date;
     liveEndTime?: Date;
   } {
-    const fallbackTimes = this.extractLiveTimeFallback(mediaPath, roomId);
-    const session = this.liveSessionManager.getSession(roomId);
-    if (session) {
-      const liveStartTime = session.startTime;
-      const latestSegmentEndTime = session.segments
-        .map(segment => segment.fileCloseTime)
-        .filter(value => value && !Number.isNaN(value.getTime()))
-        .sort((a, b) => b.getTime() - a.getTime())[0];
-      // A rebuilt session can still be processing when this is called. Prefer
-      // observed stream/file end times over the processing wall clock.
-      const liveEndTime = session.endTime || fallbackTimes?.endTime || latestSegmentEndTime || new Date();
-
-      const fallbackStartTime = fallbackTimes?.startTime;
-      const fallbackEndTime = fallbackTimes?.endTime;
-      const sessionMismatchToleranceMs = 10 * 60 * 1000;
-      if (
-        fallbackTimes?.source !== '文件系统时间' &&
-        fallbackStartTime &&
-        fallbackEndTime &&
-        Math.abs(liveStartTime.getTime() - fallbackStartTime.getTime()) > sessionMismatchToleranceMs
-      ) {
-        this.logger.warn(
-          `当前会话与录播文件时间不匹配，延迟回复改用录播时间: session=${liveStartTime.toISOString()}, file=${fallbackStartTime.toISOString()}, media=${path.basename(mediaPath)}`
-        );
-        return {
-          liveStartTime: fallbackStartTime,
-          liveEndTime: fallbackEndTime
-        };
-      }
-
-      this.logger.info(`📅 [时间来源: 会话] 开始=${liveStartTime.toISOString()}, 结束=${liveEndTime.toISOString()}`);
-      return { liveStartTime, liveEndTime };
-    }
-
-    this.logger.warn(`⚠️  未找到会话信息，尝试从其他来源获取直播时间`);
-    if (fallbackTimes) {
-      const startStr = fallbackTimes.startTime ? fallbackTimes.startTime.toISOString() : 'undefined';
-      const endStr = fallbackTimes.endTime ? fallbackTimes.endTime.toISOString() : 'undefined';
-      this.logger.info(`📅 [时间来源: ${fallbackTimes.source}] 开始=${startStr}, 结束=${endStr}`);
-      return {
-        liveStartTime: fallbackTimes.startTime,
-        liveEndTime: fallbackTimes.endTime
-      };
-    }
-
-    this.logger.warn(`⚠️  无法从任何来源获取直播时间，将使用 undefined`);
-    return {};
+    return this.delayedReplyCoordinator.resolveLiveTimes(mediaPath, roomId);
   }
 
-  private async triggerDelayedReplyFromPaths(params: {
-    roomId: string;
-    goodnightTextPath: string;
-    comicImagePath?: string | null;
-    liveContentSummaryPath?: string | null;
-    liveContentSummaryDeliveryMode?: LiveContentSummaryDeliveryMode;
-    mediaPath: string;
-    source: string;
-  }): Promise<void> {
-    if (!this.delayedReplyService) {
-      this.logger.warn('⚠️  延迟回复服务未设置，跳过触发');
-      return;
-    }
-
-    const { roomId, goodnightTextPath, mediaPath, source } = params;
-    const comicImagePath = params.comicImagePath || '';
-
-    if (!roomId || roomId === 'unknown') {
-      this.logger.warn(`⚠️  房间ID无效 (${roomId})，跳过触发延迟回复`);
-      return;
-    }
-
-    if (!fs.existsSync(goodnightTextPath)) {
-      this.logger.info(`ℹ️  晚安回复文件暂不存在，跳过延迟回复触发`, { goodnightTextPath, source });
-      this.scheduleDelayedReplyFileRetry(params);
-      return;
-    }
-
-    const hasComicImage = !!comicImagePath && fs.existsSync(comicImagePath);
-    const { liveStartTime, liveEndTime } = this.resolveLiveTimesForDelayedReply(mediaPath, roomId);
-
-    this.logger.info(`✅ 找到晚安回复文件，触发延迟回复任务`, { source });
-    this.logger.info(`   房间ID: ${roomId}`);
-    this.logger.info(`   晚安回复: ${path.basename(goodnightTextPath)}`);
-    if (comicImagePath) {
-      this.logger.info(`   漫画: ${hasComicImage ? path.basename(comicImagePath) : `${path.basename(comicImagePath)}（等待生成）`}`);
-    } else {
-      this.logger.info(`   漫画: 未计划生成（将只发送晚安回复）`);
-    }
-    if (liveStartTime && liveEndTime) {
-      this.logger.info(`   直播时间: ${liveStartTime.toISOString()} ~ ${liveEndTime.toISOString()}`);
-    } else {
-      this.logger.info(`   直播时间: 未知（将不显示直播时长信息）`);
-    }
-
-    const taskId = await this.delayedReplyService.addTask(
-      roomId,
-      goodnightTextPath,
-      comicImagePath,
-      undefined,
-      liveStartTime,
-      liveEndTime,
-      params.liveContentSummaryPath || undefined,
-      params.liveContentSummaryDeliveryMode
-    );
-
-    if (taskId) {
-      this.logger.info(`✅ 延迟回复任务已触发: ${taskId}`, { source });
-    } else {
-      this.logger.info(`ℹ️  延迟回复任务未添加（可能配置未启用）`, { source });
-    }
-  }
-
-  private scheduleDelayedReplyFileRetry(params: {
-    roomId: string;
-    goodnightTextPath: string;
-    comicImagePath?: string | null;
-    liveContentSummaryPath?: string | null;
-    liveContentSummaryDeliveryMode?: LiveContentSummaryDeliveryMode;
-    mediaPath: string;
-    source: string;
-  }): void {
-    if (!this.delayedReplyService) {
-      return;
-    }
-
-    const key = `${params.roomId}:${path.normalize(params.goodnightTextPath)}`;
-    if (this.pendingDelayedReplyFileTimers.has(key)) {
-      this.logger.info('Delayed reply file wait is already scheduled', {
-        roomId: params.roomId,
-        goodnightTextPath: params.goodnightTextPath,
-        source: params.source
-      });
-      return;
-    }
-
-    const startedAt = Date.now();
-    const scheduleNext = (delayMs: number) => {
-      const timer = setTimeout(() => {
-        void checkOnce();
-      }, delayMs);
-      timer.unref?.();
-      this.pendingDelayedReplyFileTimers.set(key, timer);
-    };
-
-    const checkOnce = async () => {
-      try {
-        if (fs.existsSync(params.goodnightTextPath)) {
-          this.pendingDelayedReplyFileTimers.delete(key);
-          this.logger.info('Delayed reply file appeared after wait; triggering task', {
-            roomId: params.roomId,
-            goodnightTextPath: params.goodnightTextPath,
-            source: params.source
-          });
-          await this.triggerDelayedReplyFromPaths({
-            ...params,
-            source: `${params.source}-file-ready`
-          });
-          return;
-        }
-
-        const elapsedMs = Date.now() - startedAt;
-        if (elapsedMs >= this.DELAYED_REPLY_FILE_RETRY_MAX_MS) {
-          this.pendingDelayedReplyFileTimers.delete(key);
-          this.logger.warn('Delayed reply file did not appear before wait timeout', {
-            roomId: params.roomId,
-            goodnightTextPath: params.goodnightTextPath,
-            elapsedMs,
-            source: params.source
-          });
-          return;
-        }
-
-        scheduleNext(this.DELAYED_REPLY_FILE_RETRY_INTERVAL_MS);
-      } catch (error: any) {
-        this.pendingDelayedReplyFileTimers.delete(key);
-        this.logger.error(`Delayed reply file wait failed: ${error.message}`, {
-          roomId: params.roomId,
-          goodnightTextPath: params.goodnightTextPath,
-          source: params.source,
-          error
-        });
-      }
-    };
-
-    this.logger.info('Scheduled delayed reply file wait', {
-      roomId: params.roomId,
-      goodnightTextPath: params.goodnightTextPath,
-      maxWaitMs: this.DELAYED_REPLY_FILE_RETRY_MAX_MS,
-      source: params.source
-    });
-    scheduleNext(this.DELAYED_REPLY_FILE_RETRY_INITIAL_MS);
-  }
-
-  /**
-   * 合并并处理会话（多片段场景）
-   */
   private async mergeAndProcessSession(roomId: string): Promise<void> {
     const session = this.liveSessionManager.getSession(roomId);
     if (!session) {

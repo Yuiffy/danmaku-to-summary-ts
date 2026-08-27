@@ -480,6 +480,7 @@ Webhook 会自动查找与视频同名的 `.xml` 文件（同目录）。确认 
 ## 📚 延伸阅读
 
 - [当前运行说明](docs/runtime-notes.md)
+- [当前架构、模块边界与语言策略](docs/architecture.md)
 - [ASR backend / adaptive speaker 架构与验证](docs/asr-backends.md)
 - [Paraformer 微调](docs/funasr-finetune.md)
 - [vLLM 独立队列](docs/asr-vllm-queue.md)

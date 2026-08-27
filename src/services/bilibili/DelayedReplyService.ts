@@ -5,7 +5,6 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { getLogger } from '../../core/logging/LogManager';
-import { ConfigProvider } from '../../core/config/ConfigProvider';
 import { IDelayedReplyService } from './interfaces/IDelayedReplyService';
 import { IDelayedReplyStore } from './interfaces/IDelayedReplyStore';
 import { IBilibiliAPIService } from './interfaces/IBilibiliAPIService';
@@ -18,6 +17,9 @@ import {
 } from './interfaces/types';
 import { BilibiliConfigHelper } from './BilibiliConfigHelper';
 import { WeChatWorkNotifier } from '../notification/WeChatWorkNotifier';
+import { DelayedReplyArtifactResolver } from './delayed-reply/DelayedReplyArtifactResolver';
+import { DelayedReplyDiagnostics } from './delayed-reply/DelayedReplyDiagnostics';
+import { LiveContentSummaryComposer } from './delayed-reply/LiveContentSummaryComposer';
 
 /**
  * 生成UUID
@@ -31,15 +33,15 @@ function generateUUID(): string {
  */
 export class DelayedReplyService implements IDelayedReplyService {
   private logger = getLogger('DelayedReplyService');
+  private readonly artifactResolver = new DelayedReplyArtifactResolver();
+  private readonly diagnostics = new DelayedReplyDiagnostics();
+  private readonly liveContentSummaryComposer = new LiveContentSummaryComposer();
   private static readonly COMIC_WAIT_INTERVAL_MS = 2 * 60 * 1000;
   private static readonly COMBINED_REPLY_COMIC_WAIT_INTERVAL_MS = 60 * 1000;
   private static readonly FIRST_REPLY_WAVE_WINDOW_MS = 5 * 60 * 1000;
   private static readonly MAX_COMIC_WAIT_COUNT = 5;
   private static readonly MAX_SUPPLEMENTAL_COMIC_WAIT_COUNT = 30;
   private static readonly LIVE_CONTENT_WAIT_INTERVAL_MS = 60 * 1000;
-  private static readonly MAX_COMMENT_CHARACTERS = 1000;
-  private static readonly SUI_ROOM_ID = '25788785';
-  private static readonly SHIORI_ROOM_ID = '26966466';
   private static readonly DEFAULT_MAX_TASK_AGE_HOURS = 24;
   private static readonly SUPPLEMENTAL_COMIC_REPLY_PREFIX = '（补图）';
   private static readonly LIVE_RECHECK_INTERVAL_MS = 2 * 60 * 1000;
@@ -682,129 +684,7 @@ export class DelayedReplyService implements IDelayedReplyService {
     goodnightTextPath: string,
     comicImagePath?: string
   ): { goodnightTextPath: string; comicImagePath?: string } {
-    const normalizedTextPath = path.normalize(goodnightTextPath);
-    const normalizedComicPath = comicImagePath ? path.normalize(comicImagePath) : comicImagePath;
-
-    if (fs.existsSync(normalizedTextPath)) {
-      return {
-        goodnightTextPath: normalizedTextPath,
-        comicImagePath: normalizedComicPath
-      };
-    }
-
-    const repairedTextPath = this.findExistingGoodnightPath(roomId, normalizedTextPath);
-    if (!repairedTextPath) {
-      return {
-        goodnightTextPath: normalizedTextPath,
-        comicImagePath: normalizedComicPath
-      };
-    }
-
-    const repairedComicPath = this.deriveComicPathFromGoodnightPath(repairedTextPath);
-    const finalComicPath = repairedComicPath || normalizedComicPath;
-    this.logger.warn('修复延迟回复路径：传入路径不存在，已按房间/录制时间匹配真实文件', {
-      roomId,
-      originalGoodnightTextPath: goodnightTextPath,
-      repairedGoodnightTextPath: repairedTextPath,
-      originalComicImagePath: comicImagePath,
-      repairedComicImagePath: finalComicPath
-    });
-
-    return {
-      goodnightTextPath: repairedTextPath,
-      comicImagePath: finalComicPath
-    };
-  }
-
-  private findExistingGoodnightPath(roomId: string, badTextPath: string): string | undefined {
-    const recordingMatch = badTextPath.match(new RegExp(`${this.escapeRegExp(String(roomId))}-(\\d{8})-(\\d{6})-(\\d{3})`));
-    if (!recordingMatch) {
-      return undefined;
-    }
-
-    const [, yyyymmdd, hhmmss, sequence] = recordingMatch;
-    const fingerprint = `${roomId}-${yyyymmdd}-${hhmmss}-${sequence}`;
-    const dateDirName = `${yyyymmdd.slice(0, 4)}_${yyyymmdd.slice(4, 6)}_${yyyymmdd.slice(6, 8)}`;
-    const searchDirs = this.getDelayedReplySearchDirs(roomId, dateDirName, badTextPath);
-    const candidates: string[] = [];
-
-    for (const dir of searchDirs) {
-      try {
-        if (!fs.existsSync(dir)) {
-          continue;
-        }
-
-        for (const fileName of fs.readdirSync(dir)) {
-          if (fileName.includes(fingerprint) && fileName.endsWith('_晚安回复.md')) {
-            candidates.push(path.join(dir, fileName));
-          }
-        }
-      } catch (error) {
-        this.logger.warn('扫描晚安回复候选目录失败', {
-          roomId,
-          dir,
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
-    }
-
-    return candidates
-      .filter(candidate => fs.existsSync(candidate))
-      .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
-  }
-
-  private getDelayedReplySearchDirs(roomId: string, dateDirName: string, badTextPath: string): string[] {
-    const dirs = new Set<string>();
-    const parsedBadPath = path.parse(badTextPath);
-    if (parsedBadPath.dir && fs.existsSync(parsedBadPath.dir)) {
-      dirs.add(parsedBadPath.dir);
-    }
-
-    for (const basePath of this.getRecordingBasePathCandidates()) {
-      try {
-        if (!fs.existsSync(basePath)) {
-          continue;
-        }
-
-        for (const roomDirName of fs.readdirSync(basePath)) {
-          if (roomDirName.startsWith(`${roomId}_`)) {
-            dirs.add(path.join(basePath, roomDirName, dateDirName));
-          }
-        }
-      } catch (error) {
-        this.logger.warn('扫描录播根目录失败', {
-          roomId,
-          basePath,
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
-    }
-
-    return Array.from(dirs);
-  }
-
-  private getRecordingBasePathCandidates(): string[] {
-    const candidates = new Set<string>();
-    try {
-      const configBasePath = ConfigProvider.getConfig().webhook?.endpoints?.mikufans?.basePath;
-      if (configBasePath) {
-        candidates.add(path.normalize(configBasePath));
-      }
-    } catch {
-      // 配置不可用时继续使用兜底路径
-    }
-
-    candidates.add(path.normalize('D:/files/videos/DDTV录播'));
-    return Array.from(candidates);
-  }
-
-  private deriveComicPathFromGoodnightPath(goodnightTextPath: string): string | undefined {
-    const comicPath = goodnightTextPath.replace(/_晚安回复\.md$/u, '_COMIC_FACTORY.png');
-    return comicPath !== goodnightTextPath ? comicPath : undefined;
-  }
-
-  private escapeRegExp(value: string): string {
-    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return this.artifactResolver.resolve(roomId, goodnightTextPath, comicImagePath);
   }
 
   private getTaskDedupeKey(roomId: string, goodnightTextPath: string, comicImagePath?: string): string {
@@ -1400,219 +1280,32 @@ export class DelayedReplyService implements IDelayedReplyService {
   }
 
   private getSummaryLiveTimes(task: DelayedReplyTask): { startTime: Date; endTime: Date } {
-    let startTime = task.liveStartTime;
-    if (!startTime) {
-      const match = path.basename(task.goodnightTextPath).match(/(?:录制-)?\d+-(\d{8})-(\d{6})-\d{3}/u);
-      if (match) {
-        const date = match[1];
-        const time = match[2];
-        // Recording filenames use Beijing wall-clock time regardless of the
-        // machine timezone running the service.
-        const parsed = new Date(
-          `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}T${time.slice(0, 2)}:${time.slice(2, 4)}:${time.slice(4, 6)}+08:00`
-        );
-        if (!Number.isNaN(parsed.getTime())) {
-          startTime = parsed;
-        }
-      }
-    }
-
-    let endTime = task.liveEndTime;
-    if (!endTime) {
-      try {
-        endTime = fs.statSync(task.goodnightTextPath).mtime;
-      } catch {
-        endTime = undefined;
-      }
-    }
-
-    startTime = startTime || task.createTime;
-    endTime = endTime && endTime.getTime() >= startTime.getTime() ? endTime : startTime;
-    return { startTime, endTime };
-  }
-
-  private getShanghaiDateParts(value: Date): { month: number; day: number; hour: number } {
-    const parts = new Intl.DateTimeFormat('zh-CN', {
-      timeZone: 'Asia/Shanghai',
-      month: 'numeric',
-      day: 'numeric',
-      hour: 'numeric',
-      hourCycle: 'h23'
-    }).formatToParts(value);
-    const getPart = (type: Intl.DateTimeFormatPartTypes): number =>
-      Number(parts.find(part => part.type === type)?.value || 0);
-
-    return {
-      month: getPart('month'),
-      day: getPart('day'),
-      hour: getPart('hour')
-    };
+    return this.liveContentSummaryComposer.getSummaryLiveTimes(task);
   }
 
   private buildSummaryReplyText(task: DelayedReplyTask, replyText: string): string {
-    const anchorName = BilibiliConfigHelper.getAnchorConfig(task.roomId)?.name || task.roomId;
-    const { startTime, endTime } = this.getSummaryLiveTimes(task);
-    const start = this.getShanghaiDateParts(startTime);
-    const end = this.getShanghaiDateParts(endTime);
-    const endLabel = start.month === end.month && start.day === end.day
-      ? `${end.hour}点`
-      : `${end.month}月${end.day}日${end.hour}点`;
-    const prefix = `to ${anchorName} ${start.month}月${start.day}日${start.hour}点~${endLabel}的直播。`;
-    return `${prefix}\n${replyText}`;
+    return this.liveContentSummaryComposer.buildSummaryReplyText(task, replyText);
   }
 
   private resolveLiveContentSummaryDeliveryMode(
     roomId: string,
     requestedMode?: LiveContentSummaryDeliveryMode
   ): LiveContentSummaryDeliveryMode {
-    if (requestedMode === 'separate' || requestedMode === 'attach_if_ready') {
-      return requestedMode;
-    }
-
-    if (String(roomId) === DelayedReplyService.SHIORI_ROOM_ID) {
-      return 'attach_if_ready';
-    }
-    if (String(roomId) === DelayedReplyService.SUI_ROOM_ID) {
-      return 'separate';
-    }
-    return 'separate';
+    return this.liveContentSummaryComposer.resolveDeliveryMode(roomId, requestedMode);
   }
 
   private isLiveContentSummaryDelivered(task: DelayedReplyTask): boolean {
-    return task.liveContentSummaryState === 'attached_main' ||
-      task.liveContentSummaryState === 'attached_supplemental' ||
-      task.liveContentSummaryState === 'published_separate' ||
-      !!task.liveContentSummaryCompletedAt;
+    return this.liveContentSummaryComposer.isDelivered(task);
   }
 
   private getLiveContentSummaryTaskUpdates(task: DelayedReplyTask): Partial<DelayedReplyTask> {
-    return {
-      liveContentSummaryPath: task.liveContentSummaryPath,
-      liveContentSummaryDeliveryMode: task.liveContentSummaryDeliveryMode,
-      liveContentSummaryState: task.liveContentSummaryState,
-      liveContentSummaryReplyId: task.liveContentSummaryReplyId,
-      liveContentSummaryAttachedTo: task.liveContentSummaryAttachedTo,
-      liveContentSummaryCompletedAt: task.liveContentSummaryCompletedAt,
-      liveContentSummaryRetryCount: task.liveContentSummaryRetryCount,
-      liveContentSummaryError: task.liveContentSummaryError,
-      liveContentSummaryForceSeparate: task.liveContentSummaryForceSeparate,
-      liveContentSummaryPublishingAt: task.liveContentSummaryPublishingAt
-    };
+    return this.liveContentSummaryComposer.getTaskUpdates(task);
   }
 
-  private normalizeLiveContentStringList(value: unknown): string[] {
-    const values = Array.isArray(value) ? value : value === null || value === undefined ? [] : [value];
-    return values
-      .map(item => String(item || '').trim())
-      .filter(Boolean);
-  }
-
-  private buildBoundedLiveContentSummaryText(
-    overview: string,
-    groups: Array<{ label: string; items: string[] }>
-  ): string {
-    const prefix = '本场直播内容：';
-    const limit = DelayedReplyService.MAX_COMMENT_CHARACTERS;
-    let result = prefix;
-
-    if (overview) {
-      const remaining = limit - result.length;
-      if (overview.length <= remaining) {
-        result += overview;
-      } else if (remaining > 3) {
-        return `${result}${overview.slice(0, remaining - 3)}...`;
-      } else {
-        return `${result}${overview.slice(0, Math.max(0, remaining))}`;
-      }
-    }
-
-    for (const group of groups) {
-      if (group.items.length === 0 || result.length >= limit) {
-        continue;
-      }
-
-      const separator = result === prefix ? '' : '；';
-      let selectedSegment = '';
-      for (let count = 1; count <= group.items.length; count++) {
-        const omittedCount = group.items.length - count;
-        const omittedSuffix = omittedCount > 0 ? `、等${omittedCount}项` : '';
-        const segment = `${group.label}${group.items.slice(0, count).join('、')}${omittedSuffix}`;
-        if (`${result}${separator}${segment}`.length > limit) {
-          break;
-        }
-        selectedSegment = segment;
-      }
-
-      if (!selectedSegment) {
-        const countOnlySegment = `${group.label}共${group.items.length}项`;
-        if (`${result}${separator}${countOnlySegment}`.length <= limit) {
-          selectedSegment = countOnlySegment;
-        }
-      }
-
-      if (selectedSegment) {
-        result = `${result}${separator}${selectedSegment}`;
-      }
-    }
-
-    return result;
-  }
-
-  private readLiveContentSummary(task: DelayedReplyTask):
-    | { kind: 'missing'; error?: string }
-    | { kind: 'failed'; error: string }
-    | { kind: 'success'; text: string } {
-    const summaryPath = task.liveContentSummaryPath;
-    if (!summaryPath || !fs.existsSync(summaryPath)) {
-      return { kind: 'missing' };
-    }
-
-    try {
-      const payload = JSON.parse(fs.readFileSync(summaryPath, 'utf8')) as {
-        status?: string;
-        error?: unknown;
-        content?: {
-          overview?: unknown;
-          activityTypes?: unknown;
-          songs?: unknown;
-          games?: unknown;
-          topics?: unknown;
-        };
-      };
-      if (payload.status === 'failed') {
-        return {
-          kind: 'failed',
-          error: String(payload.error || '直播梗概生成失败')
-        };
-      }
-      if (payload.status !== 'success') {
-        return { kind: 'missing', error: `直播梗概状态尚未完成: ${payload.status || 'unknown'}` };
-      }
-
-      const content = payload.content || {};
-      const overview = String(content.overview || '').trim();
-      const activityTypes = this.normalizeLiveContentStringList(content.activityTypes);
-      const songs = this.normalizeLiveContentStringList(content.songs);
-      const games = this.normalizeLiveContentStringList(content.games);
-      const topics = this.normalizeLiveContentStringList(content.topics);
-      const primaryOverview = overview || (activityTypes.length > 0 ? `内容：${activityTypes.join('、')}` : '');
-      if (!primaryOverview && songs.length === 0 && games.length === 0 && topics.length === 0) {
-        return { kind: 'failed', error: '直播梗概内容为空' };
-      }
-      return {
-        kind: 'success',
-        text: this.buildBoundedLiveContentSummaryText(primaryOverview, [
-          { label: '歌曲：', items: songs },
-          { label: '游戏：', items: games },
-          { label: '话题：', items: topics }
-        ])
-      };
-    } catch (error) {
-      return {
-        kind: 'missing',
-        error: `直播梗概 JSON 暂不可读: ${error instanceof Error ? error.message : String(error)}`
-      };
-    }
+  private readLiveContentSummary(
+    task: DelayedReplyTask
+  ): ReturnType<LiveContentSummaryComposer['read']> {
+    return this.liveContentSummaryComposer.read(task);
   }
 
   private composeReplyWithLiveContentSummary(
@@ -1620,43 +1313,7 @@ export class DelayedReplyService implements IDelayedReplyService {
     replyText: string,
     target: 'main' | 'supplemental'
   ): { text: string; attached: boolean } {
-    if (
-      !task.liveContentSummaryPath ||
-      task.liveContentSummaryDeliveryMode !== 'attach_if_ready' ||
-      task.liveContentSummaryForceSeparate ||
-      this.isLiveContentSummaryDelivered(task)
-    ) {
-      return { text: replyText, attached: false };
-    }
-
-    const summary = this.readLiveContentSummary(task);
-    if (summary.kind === 'failed') {
-      task.liveContentSummaryState = 'failed';
-      task.liveContentSummaryError = summary.error;
-      return { text: replyText, attached: false };
-    }
-    if (summary.kind !== 'success') {
-      task.liveContentSummaryState = 'waiting';
-      task.liveContentSummaryError = summary.error;
-      return { text: replyText, attached: false };
-    }
-
-    task.liveContentSummaryState = 'ready';
-    task.liveContentSummaryError = undefined;
-    const combined = `${replyText}\n\n${summary.text}`;
-    if (combined.length > DelayedReplyService.MAX_COMMENT_CHARACTERS) {
-      task.liveContentSummaryForceSeparate = true;
-      this.logger.info('晚安回复拼接直播梗概后超过 B 站评论上限，改为独立发布', {
-        taskId: task.taskId,
-        roomId: task.roomId,
-        target,
-        combinedLength: combined.length,
-        maxLength: DelayedReplyService.MAX_COMMENT_CHARACTERS
-      });
-      return { text: replyText, attached: false };
-    }
-
-    return { text: combined, attached: true };
+    return this.liveContentSummaryComposer.compose(task, replyText, target);
   }
 
   private markLiveContentSummaryAttached(
@@ -1664,12 +1321,7 @@ export class DelayedReplyService implements IDelayedReplyService {
     target: 'main' | 'supplemental',
     replyId: string
   ): void {
-    task.liveContentSummaryState = target === 'main' ? 'attached_main' : 'attached_supplemental';
-    task.liveContentSummaryAttachedTo = target;
-    task.liveContentSummaryReplyId = replyId;
-    task.liveContentSummaryCompletedAt = new Date();
-    task.liveContentSummaryError = undefined;
-    task.liveContentSummaryPublishingAt = undefined;
+    this.liveContentSummaryComposer.markAttached(task, target, replyId);
   }
 
   private async notifyLiveContentSummaryReplySuccess(
@@ -2878,412 +2530,21 @@ export class DelayedReplyService implements IDelayedReplyService {
   }
 
   private getTextGenerationNotificationInfo(goodnightTextPath: string, comicImagePath?: string): string | undefined {
-    const goodnightInfo = this.getGoodnightTextGenerationInfo(goodnightTextPath);
-    const comicScriptInfo = this.getComicScriptGenerationInfo(comicImagePath);
-
-    return [
-      this.getAsrNotificationInfo(goodnightTextPath),
-      goodnightInfo ? `晚安文本: ${goodnightInfo}` : undefined,
-      comicScriptInfo ? `漫画脚本文本: ${comicScriptInfo}` : undefined
-    ].filter(Boolean).join('\n') || undefined;
+    return this.diagnostics.getTextGenerationInfo(goodnightTextPath, comicImagePath);
   }
 
   private getAsrNotificationInfo(goodnightTextPath: string): string | undefined {
-    try {
-      const asrMetaPath = goodnightTextPath.replace(/_晚安回复\.md$/u, '.asr_meta.json');
-      if (!fs.existsSync(asrMetaPath)) {
-        return undefined;
-      }
-      const meta = JSON.parse(fs.readFileSync(asrMetaPath, 'utf8'));
-      const backend = meta.backend || 'unknown';
-      const profile = meta.modelProfile || 'default';
-      const elapsed = Number(meta.elapsedSeconds || 0);
-      const duration = Number(meta.mediaDurationSeconds || 0);
-      const speed = elapsed > 0 && duration > 0 ? (duration / elapsed) : null;
-      const modelLabel = profile === 'finetuned'
-        ? `微调(${path.basename(String(meta.finetunedModel || meta.model || 'unknown'))})`
-        : `原版(${meta.model || 'paraformer-zh'})`;
-      return [
-        `ASR: ${backend} / ${modelLabel}`,
-        elapsed > 0 ? `耗时: ${elapsed.toFixed(1)}s` : undefined,
-        speed ? `速度: ${speed.toFixed(2)}x` : undefined,
-        meta.realtimeFactor !== null && meta.realtimeFactor !== undefined ? `RTF: ${Number(meta.realtimeFactor).toFixed(3)}` : undefined,
-        this.getSpeakerProcessingNotificationInfo(meta.speakerProcessing)
-      ].filter(Boolean).join('，');
-    } catch (error) {
-      this.logger.warn('读取 ASR 元数据失败', {
-        goodnightTextPath,
-        error: error instanceof Error ? error.message : String(error)
-      });
-      return 'ASR: 元数据读取失败';
-    }
-  }
-
-  private getSpeakerProcessingNotificationInfo(speakerProcessing: any): string | undefined {
-    if (!speakerProcessing || typeof speakerProcessing !== 'object') {
-      return undefined;
-    }
-
-    const rawStatus = speakerProcessing.status !== null && speakerProcessing.status !== undefined
-      ? String(speakerProcessing.status)
-      : '';
-    const status = rawStatus.trim().toLowerCase();
-    const decision = speakerProcessing.decision !== null && speakerProcessing.decision !== undefined
-      ? String(speakerProcessing.decision)
-      : '';
-    const normalizedDecision = decision.trim().toLowerCase();
-    const mode = speakerProcessing.mode !== null && speakerProcessing.mode !== undefined
-      ? String(speakerProcessing.mode)
-      : '';
-    const reason = speakerProcessing.reason !== null && speakerProcessing.reason !== undefined
-      ? String(speakerProcessing.reason)
-      : '';
-    const rawStrategy = speakerProcessing.fullClusteringStrategy
-      ?? speakerProcessing.full_clustering_strategy;
-    const strategy = rawStrategy === 'probe_centroid_assignment'
-      ? '探测簇中心分配'
-      : rawStrategy === 'full_clustering_fallback'
-        ? '全量聚类回退'
-        : rawStrategy === 'full_clustering'
-          ? '全量聚类'
-          : undefined;
-    const fullRunValue = speakerProcessing.fullRun ?? speakerProcessing.full_run;
-
-    if (status === 'disabled' || normalizedDecision === 'disabled' || mode === 'disabled') {
-      return undefined;
-    }
-
-    let statusLabel: string;
-    if (status.includes('fail') || status.includes('error')) {
-      statusLabel = '处理失败（ASR 已保留）';
-    } else if (fullRunValue === true) {
-      statusLabel = '已完整处理';
-    } else if (
-      fullRunValue === false ||
-      status.includes('skip') ||
-      normalizedDecision.includes('single')
-    ) {
-      statusLabel = '抽样判定单人，已跳过全量';
-    } else if (
-      status === 'completed' ||
-      status === 'complete' ||
-      status === 'success' ||
-      normalizedDecision.includes('multi') ||
-      normalizedDecision.includes('multiple')
-    ) {
-      statusLabel = '已完整处理';
-    } else {
-      statusLabel = rawStatus ? `状态: ${rawStatus}` : '状态未知';
-    }
-
-    const context = [
-      mode ? `模式: ${mode}` : undefined,
-      decision ? `判定: ${decision}` : undefined,
-      reason ? `原因: ${reason}` : undefined,
-      strategy ? `策略: ${strategy}` : undefined
-    ].filter(Boolean).join('，');
-
-    const sampleParts = [
-      this.formatSpeakerCount(
-        speakerProcessing.sampledChunks ?? speakerProcessing.sampled_chunks,
-        '段'
-      ),
-      this.formatSpeakerCount(
-        speakerProcessing.validChunks ?? speakerProcessing.valid_chunks,
-        '段有效'
-      ),
-      this.formatSpeakerCount(
-        speakerProcessing.detectedClusters ?? speakerProcessing.detected_clusters,
-        '个检测簇'
-      ),
-      this.formatSpeakerCount(
-        speakerProcessing.supportedClusters ?? speakerProcessing.supported_clusters,
-        '个支持簇'
-      ),
-      this.formatSpeakerSeconds(
-        speakerProcessing.sampledSpeechSeconds ??
-          speakerProcessing.sampled_speech_seconds ??
-          speakerProcessing.sampled_speech_s,
-        '语音'
-      )
-    ].filter(Boolean);
-
-    const timingInfo = this.getSpeakerTimingNotificationInfo(speakerProcessing.timings);
-    return [
-      `说话人: ${statusLabel}${context ? `（${context}）` : ''}`,
-      sampleParts.length > 0 ? `抽样: ${sampleParts.join('/')}` : undefined,
-      timingInfo
-    ].filter(Boolean).join('；');
-  }
-
-  private getSpeakerTimingNotificationInfo(timings: any): string | undefined {
-    if (!timings || typeof timings !== 'object') {
-      return undefined;
-    }
-
-    const probeEmbedding = this.getFirstFiniteNumber(timings.probeEmbedding, timings.probe_embedding_s);
-    const probeClustering = this.getFirstFiniteNumber(timings.probeClustering, timings.probe_clustering_s);
-    const probeParts = [probeEmbedding, probeClustering].filter((value): value is number => value !== undefined);
-    const probe = probeParts.length > 0
-      ? probeParts.reduce((sum, value) => sum + value, 0)
-      : undefined;
-    const full = this.getFirstFiniteNumber(timings.fullEmbedding, timings.full_embedding_s);
-    const clustering = this.getFirstFiniteNumber(timings.fullClustering, timings.full_clustering_s);
-    const reference = this.getFirstFiniteNumber(timings.reference, timings.referenceEmbedding, timings.reference_embedding_s);
-    const matching = this.getFirstFiniteNumber(timings.matching, timings.speakerMatching, timings.reference_matching_s);
-    const total = this.getFirstFiniteNumber(timings.total, timings.total_s);
-
-    const parts = [
-      this.formatSpeakerTiming(probe, '探测'),
-      this.formatSpeakerTiming(full, '全量'),
-      this.formatSpeakerTiming(clustering, '聚类'),
-      this.formatSpeakerTiming(reference, '参考'),
-      this.formatSpeakerTiming(matching, '匹配'),
-      this.formatSpeakerTiming(total, '总计')
-    ].filter(Boolean);
-
-    return parts.length > 0 ? `说话人耗时: ${parts.join(' / ')}` : undefined;
-  }
-
-  private getFirstFiniteNumber(...values: unknown[]): number | undefined {
-    for (const value of values) {
-      const number = this.getFiniteNumber(value);
-      if (number !== undefined) {
-        return number;
-      }
-    }
-    return undefined;
-  }
-
-  private getFiniteNumber(value: unknown): number | undefined {
-    if (value === null || value === undefined || value === '') {
-      return undefined;
-    }
-    const number = Number(value);
-    return Number.isFinite(number) ? number : undefined;
-  }
-
-  private formatSpeakerCount(value: unknown, suffix: string): string | undefined {
-    const number = Array.isArray(value) ? value.length : this.getFiniteNumber(value);
-    return number !== undefined ? `${number}${suffix}` : undefined;
-  }
-
-  private formatSpeakerSeconds(value: unknown, label: string): string | undefined {
-    const seconds = this.getFiniteNumber(value);
-    return seconds !== undefined ? `${seconds.toFixed(1)}s${label}` : undefined;
-  }
-
-  private formatSpeakerTiming(value: number | undefined, label: string): string | undefined {
-    return value !== undefined ? `${label} ${value.toFixed(1)}s` : undefined;
-  }
-
-  private getGoodnightTextGenerationInfo(textPath: string): string | undefined {
-    try {
-      if (!fs.existsSync(textPath)) {
-        return undefined;
-      }
-
-      const content = fs.readFileSync(textPath, 'utf8');
-      const frontMatter = this.parseFrontMatter(content);
-      if (!frontMatter) {
-        return '模型: 未知（无元数据）';
-      }
-
-      const provider = frontMatter.provider || '未知服务';
-      const model = frontMatter.model || '未知模型';
-      const fallback = frontMatter.fallback === 'true' ? '，fallback: 是' : '';
-      const promptTokens = this.getFiniteNumber(frontMatter.promptTokens);
-      const cachedTokens = this.getFiniteNumber(frontMatter.cachedTokens);
-      const cacheWriteTokens = this.getFiniteNumber(frontMatter.cacheWriteTokens);
-      const cacheInfo = promptTokens !== undefined
-        ? cachedTokens !== undefined
-          ? `，输入缓存: ${cachedTokens}/${promptTokens} tokens${cacheWriteTokens !== undefined ? `，缓存写入: ${cacheWriteTokens} tokens` : ''}`
-          : `，输入: ${promptTokens} tokens（缓存命中量未报告）`
-        : '';
-      return `模型: ${model}，服务: ${provider}${fallback}${cacheInfo}`;
-    } catch (error) {
-      this.logger.warn('读取晚安文本生成元数据失败', {
-        textPath,
-        error: error instanceof Error ? error.message : String(error)
-      });
-      return '模型: 未知（元数据读取失败）';
-    }
+    return this.diagnostics.getAsrInfo(goodnightTextPath);
   }
 
   private getComicScriptGenerationInfo(comicImagePath?: string): string | undefined {
-    if (!comicImagePath) {
-      return undefined;
-    }
-
-    const parsedPath = path.parse(comicImagePath);
-    const scriptBaseName = parsedPath.name.replace(/_COMIC_FACTORY$/i, '_COMIC_SCRIPT');
-    const scriptPath = path.join(parsedPath.dir, `${scriptBaseName}.txt`);
-    const metaPath = path.join(parsedPath.dir, `${scriptBaseName}_META.json`);
-
-    try {
-      if (fs.existsSync(metaPath)) {
-        const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-        const provider = meta.provider || '未知服务';
-        const model = meta.model || '未知模型';
-        const fallback = meta.fallback ? '，fallback: 是' : '';
-        const reason = meta.reason ? `，原因: ${String(meta.reason).slice(0, 200)}` : '';
-        const status = meta.status === 'success' ? '成功' : meta.status === 'failure' ? '失败' : String(meta.status || '未知');
-        const attempts = Array.isArray(meta.attempts) ? meta.attempts : [];
-        const successfulAttempt = attempts.find((attempt: any) => attempt?.status === 'success');
-        const promptTokens = this.getFiniteNumber(successfulAttempt?.promptTokens);
-        const cachedTokens = this.getFiniteNumber(successfulAttempt?.cachedTokens);
-        const cacheWriteTokens = this.getFiniteNumber(successfulAttempt?.cacheWriteTokens);
-        const cacheInfo = promptTokens !== undefined
-          ? cachedTokens !== undefined
-            ? `，输入缓存: ${cachedTokens}/${promptTokens} tokens${cacheWriteTokens !== undefined ? `，缓存写入: ${cacheWriteTokens} tokens` : ''}`
-            : `，输入: ${promptTokens} tokens（缓存命中量未报告）`
-          : '';
-        return `模型: ${model}，服务: ${provider}，状态: ${status}${fallback}${cacheInfo}${reason}`;
-      }
-
-      if (fs.existsSync(scriptPath)) {
-        return '模型: 未知（旧脚本未记录元数据）';
-      }
-
-      return '模型: 未知（未找到漫画脚本）';
-    } catch (error) {
-      this.logger.warn('读取漫画脚本文本生成元数据失败', {
-        comicImagePath,
-        metaPath,
-        error: error instanceof Error ? error.message : String(error)
-      });
-      return '模型: 未知（元数据读取失败）';
-    }
-  }
-
-  private parseFrontMatter(content: string): Record<string, string> | null {
-    const match = content.match(/^\s*---\r?\n([\s\S]*?)\r?\n---/);
-    if (!match) {
-      return null;
-    }
-
-    const result: Record<string, string> = {};
-    for (const line of match[1].split(/\r?\n/)) {
-      const item = line.match(/^\s*([A-Za-z0-9_-]+):\s*(.*?)\s*$/);
-      if (!item) {
-        continue;
-      }
-      result[item[1]] = item[2].replace(/^"|"$/g, '');
-    }
-
-    return result;
+    return this.diagnostics.getComicScriptGenerationInfo(comicImagePath);
   }
 
   private getComicGenerationNotificationInfo(comicImagePath?: string): string | undefined {
-    if (!comicImagePath) {
-      return undefined;
-    }
-
-    const parsedPath = path.parse(comicImagePath);
-    const metaCandidates = [
-      path.join(parsedPath.dir, `${parsedPath.name}_META.json`),
-      path.join(parsedPath.dir, `${parsedPath.name.replace(/_COMIC_FACTORY$/i, '')}_COMIC_FACTORY_META.json`)
-    ];
-
-    const metaPath = metaCandidates.find(candidate => fs.existsSync(candidate));
-    if (!metaPath) {
-      const modeInfo = '漫画模式: 未记录（无法判定新版/旧版）';
-      const imageInfo = fs.existsSync(comicImagePath)
-        ? '图片已生成，未找到生图元数据'
-        : '图片未生成，未找到生图失败元数据';
-      return `${modeInfo}\n${imageInfo}`;
-    }
-    try {
-      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-      const modeInfo = this.formatComicStorytellingMode(meta);
-      const status = meta.status === 'success' ? '成功' : meta.status === 'failure' ? '失败' : String(meta.status || '未知');
-      const routeAttempts = Array.isArray(meta.routeAttempts) ? meta.routeAttempts : [];
-      const successfulRoute = routeAttempts.find((attempt: any) => attempt?.status === 'success');
-      const provider = meta.provider || successfulRoute?.provider || '未知服务';
-      const model = meta.model || successfulRoute?.model || '未知模型';
-      const endpoint = meta.endpoint || '未知接口';
-      const reason = meta.reason ? String(meta.reason) : '';
-      const attempts = Array.isArray(meta.attempts) ? meta.attempts : [];
-      const successfulAttempt = attempts.find((attempt: any) => attempt?.status === 'success');
-      const usage = meta.usage || successfulAttempt?.usage || {};
-      const usageDetails = usage.input_tokens_details || usage.prompt_tokens_details || {};
-      const inputTokens = this.getFirstFiniteNumber(usage.input_tokens, usage.prompt_tokens);
-      const outputTokens = this.getFirstFiniteNumber(usage.output_tokens, usage.completion_tokens);
-      const imageInputTokens = this.getFiniteNumber(usageDetails.image_tokens);
-      const textInputTokens = this.getFiniteNumber(usageDetails.text_tokens);
-      const usageInfo = inputTokens !== undefined || outputTokens !== undefined
-        ? [
-            inputTokens !== undefined ? `输入 ${inputTokens}` : undefined,
-            imageInputTokens !== undefined ? `图片 ${imageInputTokens}` : undefined,
-            textInputTokens !== undefined ? `文字 ${textInputTokens}` : undefined,
-            outputTokens !== undefined ? `输出 ${outputTokens}` : undefined
-          ].filter(Boolean).join('，') + ' tokens'
-        : undefined;
-      const combinedAttempts = routeAttempts.length > 0 ? routeAttempts : attempts;
-      const formatRoute = (routeProvider: string, routeModel: string, routeEndpoint: string) =>
-        `${routeProvider}/${routeModel}${routeEndpoint !== '未知接口' && routeEndpoint !== 'unknown' ? ` (${routeEndpoint})` : ''}`;
-      const lastAttempts = combinedAttempts.slice(-3).map((attempt: any) => {
-        const attemptProvider = attempt?.provider || provider || '未知服务';
-        const attemptModel = attempt?.model || '未知模型';
-        const attemptEndpoint = attempt?.endpoint || '未知接口';
-        const attemptStatus = attempt?.status || 'unknown';
-        const attemptReason = attempt?.reason ? `: ${String(attempt.reason).slice(0, 120)}` : '';
-        return `- ${formatRoute(attemptProvider, attemptModel, attemptEndpoint)} / ${attemptStatus}${attemptReason}`;
-      });
-      const summary = `${formatRoute(provider, model, endpoint)}: ${status}`;
-
-      return [
-        modeInfo,
-        `模型: ${summary}`,
-        usageInfo ? `用量: ${usageInfo}` : undefined,
-        reason ? `原因: ${reason}` : undefined,
-        lastAttempts.length > 1 || status !== '成功' ? `尝试:\n${lastAttempts.join('\n')}` : undefined
-      ].filter(Boolean).join('\n');
-    } catch (error) {
-      this.logger.warn('读取生图元数据失败', {
-        comicImagePath,
-        metaPath,
-        error: error instanceof Error ? error.message : String(error)
-      });
-      const modeInfo = '漫画模式: 未知（生图元数据读取失败）';
-      const imageInfo = fs.existsSync(comicImagePath)
-        ? '图片已生成，但生图元数据读取失败'
-        : '图片未生成，且生图元数据读取失败';
-      return `${modeInfo}\n${imageInfo}`;
-    }
+    return this.diagnostics.getComicGenerationInfo(comicImagePath);
   }
 
-  private formatComicStorytellingMode(meta: any): string {
-    const variant = String(meta?.storytellingVariant || '').trim();
-    const mode = variant === 'immersive_v1'
-      ? '新版沉浸式（灰度组 immersive_v1）'
-      : variant === 'control'
-        ? '旧版对照组（control）'
-        : variant
-          ? `未知变体（${variant}）`
-          : '未记录（无法判定新版/旧版）';
-    const reasonLabels: Record<string, string> = {
-      forced: '强制指定',
-      'stable-rollout': '稳定灰度',
-      'experiment-disabled': '实验关闭'
-    };
-    const assignmentReason = String(meta?.storytellingAssignmentReason || '').trim();
-    const assignment = reasonLabels[assignmentReason] || assignmentReason;
-    const rollout = this.getFiniteNumber(meta?.storytellingImmersivePercent);
-    const bucket = this.getFiniteNumber(meta?.storytellingBucket);
-    const details = [
-      assignment ? `分配: ${assignment}` : undefined,
-      rollout !== undefined ? `新版比例: ${rollout}%` : undefined,
-      bucket !== undefined ? `桶: ${(bucket / 100).toFixed(2)}` : undefined
-    ].filter(Boolean);
-
-    return `漫画模式: ${mode}${details.length > 0 ? `；${details.join('；')}` : ''}`;
-  }
-
-  /**
-   * 生图已经明确失败时单独告警。成功回复通知里的“生图状态”只是附带信息，
-   * 容易被“回复成功”掩盖；这里确保原因会以失败告警的形式送达企微。
-   */
   private async notifyComicGenerationFailure(task: DelayedReplyTask): Promise<void> {
     if (!this.notifier || task.comicGenerationFailureNotifiedAt) {
       return;

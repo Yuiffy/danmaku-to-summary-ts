@@ -139,11 +139,11 @@ npm run pm2:status:clip-upload
 
 ## Check Public Duplicates
 
-Use root `check_dupes.py` to search public Bilibili results for the current
-account and group exact duplicate titles.
+Use the maintained Python diagnostic to search public Bilibili results for the
+current account and group exact duplicate titles.
 
 ```powershell
-python check_dupes.py --keyword "小岁 空洞骑士" --pages 5
+python src/scripts/check_bilibili_duplicates.py --keyword "小岁 空洞骑士" --pages 5
 ```
 
 This is useful after upload errors such as HTTP 406, where a submission may

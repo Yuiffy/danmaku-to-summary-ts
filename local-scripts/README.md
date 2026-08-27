@@ -10,6 +10,10 @@ Temporary or one-off files should not be added to Git. Use these locations:
 
 - `local-scripts/one-off-scripts/<date-or-task>/` for disposable scripts used to
   inspect APIs, retry uploads, fix a specific batch, or operate on fixed BV ids.
+- `local-scripts/legacy-tests/` for old manual probes that are not part of the
+  automated Jest or Python test suites.
+- `local-scripts/artifacts/` for local binary probes and diagnostic captures
+  that should not live at repository root.
 - `tmp/` for scratch data, exported responses, logs, and other temporary output.
 
 Only move scripts back into `src/scripts` when they are reusable, parameterized,
