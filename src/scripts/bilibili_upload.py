@@ -25,6 +25,13 @@ import requests
 DEFAULT_TID = 21
 ACCOUNT_MID = 412141275
 GENERIC_COLLECTION_LABELS = {'老岁片', 'AI老岁片'}
+ROOM_ID_PATTERN = re.compile(r'(?:录制-|[\\/])(\d{5,})[-_]')
+
+
+def extract_room_id(value: Optional[str]) -> Optional[str]:
+    """Extract a Bilibili room id from a generated media/path string."""
+    match = ROOM_ID_PATTERN.search(str(value or ''))
+    return match.group(1) if match else None
 
 
 def build_credential() -> Credential:
@@ -82,6 +89,74 @@ def _is_generic_collection_label(value: Optional[str]) -> bool:
     }
 
 
+def _is_collection_route_context(
+    entry: dict,
+    *,
+    streamer_name: Optional[str] = None,
+    room_id: Optional[str] = None,
+    source_desc: Optional[str] = None,
+    title: Optional[str] = None,
+    prefix: Optional[str] = None,
+) -> bool:
+    """Match a configured non-default collection route to a source streamer."""
+    room_ids = entry.get('roomIds') or []
+    normalized_room_ids = {str(value).strip() for value in room_ids}
+    if str(room_id or '').strip() in normalized_room_ids:
+        return True
+
+    markers = [str(marker).strip() for marker in (entry.get('markers') or []) if str(marker).strip()]
+    if not markers:
+        return False
+
+    identities = []
+    if streamer_name:
+        identities.append(str(streamer_name).strip())
+    if prefix and not _is_generic_collection_label(prefix):
+        identities.append(_collection_identity(prefix))
+    if title and not _is_generic_collection_label(title):
+        identities.append(_collection_identity(title))
+    for identity in identities:
+        if any(marker.casefold() in identity.casefold() for marker in markers):
+            return True
+
+    # A source description normally starts with the streamer name.  Restrict
+    # this fallback to that leading identity so a topic mention does not move
+    # an otherwise unrelated upload into the activity collection.
+    source_text = str(source_desc or '').strip()
+    leading = re.split(r'\s+直播|[《(（]', source_text, maxsplit=1)[0].strip()
+    return bool(leading) and any(
+        marker.casefold() in leading.casefold() for marker in markers
+    )
+
+
+def _find_collection_route(
+    upload_cfg: dict,
+    *,
+    streamer_name: Optional[str] = None,
+    room_id: Optional[str] = None,
+    source_desc: Optional[str] = None,
+    title: Optional[str] = None,
+    prefix: Optional[str] = None,
+) -> dict:
+    """Return the first explicitly configured custom route that matches."""
+    routing = upload_cfg.get('collectionRouting') or {}
+    if not isinstance(routing, dict):
+        return {}
+    for key, entry in routing.items():
+        if key in {'sui', 'other', 'default'} or not isinstance(entry, dict):
+            continue
+        if _is_collection_route_context(
+            entry,
+            streamer_name=streamer_name,
+            room_id=room_id,
+            source_desc=source_desc,
+            title=title,
+            prefix=prefix,
+        ):
+            return entry
+    return {}
+
+
 def _is_sui_context(
     *,
     upload_cfg: dict,
@@ -127,7 +202,7 @@ def get_collection_section_id(
 ) -> Optional[int]:
     """Resolve the upload collection section for a streamer.
 
-    ``8513688`` and ``8941979`` are season IDs shown by Bilibili.  The upload
+    ``seasonId`` values are the season IDs shown by Bilibili.  The upload
     endpoint needs their child section IDs, configured as ``sectionId`` below.
     The legacy single ``collectionSectionId`` remains the default fallback.
     """
@@ -136,31 +211,34 @@ def get_collection_section_id(
     sui_entry = _routing_entry(upload_cfg, 'sui')
     other_entry = _routing_entry(upload_cfg, 'other') or _routing_entry(upload_cfg, 'default')
 
-    if _is_sui_context(
+    route_entry = _find_collection_route(
+        upload_cfg,
+        streamer_name=streamer_name,
+        room_id=room_id,
+        source_desc=source_desc,
+        title=title,
+        prefix=prefix,
+    )
+    is_sui = _is_sui_context(
         upload_cfg=upload_cfg,
         streamer_name=streamer_name,
         room_id=room_id,
         source_desc=source_desc,
         title=title,
         prefix=prefix,
-    ):
-        section_id = _positive_collection_id(sui_entry.get('sectionId'))
+    )
+    selected_entry = route_entry or (sui_entry if is_sui else other_entry)
+    if selected_entry:
+        section_id = _positive_collection_id(selected_entry.get('sectionId'))
     else:
-        section_id = _positive_collection_id(other_entry.get('sectionId'))
+        section_id = None
 
     if section_id is None:
         section_id = _positive_collection_id(upload_cfg.get('collectionSectionId'))
     if section_id is None:
         section_id = _positive_collection_id(upload_cfg.get('collectionSeriesId'))
     if section_id is None:
-        configured = sui_entry.get('sectionId') if _is_sui_context(
-            upload_cfg=upload_cfg,
-            streamer_name=streamer_name,
-            room_id=room_id,
-            source_desc=source_desc,
-            title=title,
-            prefix=prefix,
-        ) else other_entry.get('sectionId')
+        configured = selected_entry.get('sectionId') if selected_entry else None
         if configured not in (None, ''):
             print(f'[WARN] 无效的合集 section_id: {configured}')
     return section_id
@@ -366,6 +444,8 @@ async def upload_video(
         print(f'[ERROR] 视频文件不存在: {video_path}')
         return None
 
+    room_id = room_id or extract_room_id(video_path)
+
     file_size = os.path.getsize(video_path) / (1024 * 1024)
     print(f'[INFO] 视频文件: {video_path} ({file_size:.1f}MB)')
     print(f'[INFO] 标题: {title}')
@@ -477,6 +557,8 @@ def main():
     parser.add_argument('--cover', default=None, help='封面图片路径')
     parser.add_argument('--dynamic', default=None, help='动态文案')
     parser.add_argument('--source-desc', default=None, help='来源描述，会自动拼到简介末尾')
+    parser.add_argument('--streamer-name', default=None, help='主播名，用于合集路由')
+    parser.add_argument('--room-id', default=None, help='直播间号，用于合集路由')
     parser.add_argument('--collection-series-id', type=int, default=None, help='投稿后自动加入的合集 section_id（兼容旧参数名）')
 
     args = parser.parse_args()
@@ -489,8 +571,11 @@ def main():
         final_desc = final_desc.rstrip() + '\n\n来源：' + args.source_desc
 
     collection_section_id = args.collection_series_id
+    room_id = args.room_id or extract_room_id(args.video)
     if collection_section_id is None:
         collection_section_id = get_collection_section_id(
+            streamer_name=args.streamer_name,
+            room_id=room_id,
             source_desc=args.source_desc,
             title=args.title,
         )
@@ -507,6 +592,8 @@ def main():
             credential=credential,
             collection_section_id=collection_section_id,
             source_desc=args.source_desc,
+            streamer_name=args.streamer_name,
+            room_id=room_id,
         )
     )
 

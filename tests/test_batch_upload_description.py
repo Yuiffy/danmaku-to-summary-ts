@@ -8,10 +8,19 @@ from src.scripts.batch_upload import (
     load_generated_description,
     record_title_conflict,
     state_record_matches_upload,
+    strip_review_score_suffix,
 )
 
 
 class BatchUploadDescriptionTests(unittest.TestCase):
+    def test_review_score_suffix_is_not_part_of_media_path(self):
+        self.assertEqual(
+            strip_review_score_suffix(
+                r"D:\clips\录制-25788785-20260828_fun_01.mp4 | 94分"
+            ),
+            r"D:\clips\录制-25788785-20260828_fun_01.mp4",
+        )
+
     def test_uses_generated_description_and_adds_structured_fields_once(self):
         description = build_desc(
             '饼干小岁认不出来了？',

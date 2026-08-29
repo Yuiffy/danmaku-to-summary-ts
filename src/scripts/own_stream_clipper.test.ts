@@ -320,11 +320,13 @@ describe('own_stream_clipper', () => {
       {
         window: { start: 75, duration: 90 },
         copy: { title: '岁己：弹幕觉得这里很有趣' },
+        recommendationScore: 86,
         output: { mediaPath: 'D:/clips/one.mp4' }
       },
       {
         window: { start: 180, duration: 45 },
         copy: { title: '岁己：很有岁己想法的一段' },
+        recommendationScore: 72,
         output: { mediaPath: 'D:/clips/two.mp4' }
       }
     ], {
@@ -336,7 +338,42 @@ describe('own_stream_clipper', () => {
     expect(markdown).toContain('来源统计: 本地规则 2');
     expect(markdown).toContain('1. 岁己：弹幕觉得这里很有趣 | 00:01:15 | 00:01:30');
     expect(markdown).toContain('2. 岁己：很有岁己想法的一段 | 00:03:00 | 00:00:45');
+    expect(markdown).toContain('1. 岁己：弹幕觉得这里很有趣 | 00:01:15 | 00:01:30 | 86分');
+    expect(markdown).toContain('2. 岁己：很有岁己想法的一段 | 00:03:00 | 00:00:45 | 72分');
     expect(markdown).not.toContain('D:/clips/one.mp4');
+  });
+
+  test('shows recommendation scores in plan and review markdown', () => {
+    const plan = ownStreamClipper.buildPlanReviewMarkdown([
+      {
+        start: 75,
+        end: 165,
+        duration: 90,
+        title: '高分候选',
+        reason: '事件完整',
+        score: 95,
+        selectionSource: 'model_global_rerank'
+      }
+    ], {
+      streamTitle: '评分测试',
+      recordedAt: '2026-06-05 19:43:31',
+      outputRoot: 'D:/clips'
+    });
+    const review = ownStreamClipper.buildReviewMarkdown([
+      {
+        window: { start: 75, duration: 90 },
+        copy: { title: '高分成片' },
+        recommendationScore: 95,
+        output: { mediaPath: 'D:/clips/one.mp4' }
+      }
+    ], {
+      streamTitle: '评分测试',
+      recordedAt: '2026-06-05 19:43:31',
+      outputRoot: 'D:/clips'
+    });
+
+    expect(plan).toContain('1. 高分候选 | 00:01:15-00:02:45 | 00:01:30 | 事件完整 | 95分');
+    expect(review).toContain('1. 高分成片 | 00:01:15 | 00:01:30 | D:/clips/one.mp4 | 95分');
   });
 
   test('review and notify markdown remain compatible when participant info is present', () => {
@@ -750,7 +787,8 @@ describe('own_stream_clipper', () => {
         },
         null,
         null,
-        prebuiltFullLiveContext
+        prebuiltFullLiveContext,
+        '花礼Harei'
       );
 
       const prompt = String(generateSpy.mock.calls[0][0]);
@@ -769,6 +807,8 @@ describe('own_stream_clipper', () => {
       ));
       expect(callOptions.promptCacheRolloutPercent).toBe(100);
       expect(prompt).toContain('直播标题: 预生成测试直播');
+      expect(prompt).toContain('花礼Harei本场直播的全量带时间戳字幕和全量弹幕');
+      expect(prompt).not.toContain('岁己SUI本场直播的全量带时间戳字幕和全量弹幕');
       expect(prompt).toContain('来源归属必须严格按输入分区：直播音轨字幕与观众弹幕是两类独立来源，标题、封面文案、简介和理由不得把一方的发言或行为归给另一方。');
       expect(prompt).toContain('片段时间与文案必须一一对应：先读取当前 clips 对象 startTime-endTime 范围内的直播音轨字幕和同一范围内的观众弹幕，再填写该对象的 title、coverText、description 和 reason。');
       expect(prompt).toContain('直播标题、录制时间和整场上下文只用于确认来源，不是当前片段的内容证据；禁止把直播标题中的型号、人物、事件或梗直接套进任何片段。');
@@ -960,17 +1000,45 @@ describe('own_stream_clipper', () => {
     expect(clips.map((clip: any) => clip.title)).toEqual(['higher', 'touching is allowed']);
   });
 
-  test('production staged own-stream clipping is scoped only to Sui room', () => {
+  test('production staged own-stream clipping covers Sui and the activity rooms', () => {
     const production = require('../../config/production.json');
 
     expect(production.ownStreamClips.enabled).toBe(true);
-    expect(production.ownStreamClips.roomIds).toEqual(['25788785']);
+    expect(production.ownStreamClips.roomIds).toEqual([
+      '25788785',
+      '1820703922',
+      '1713546334',
+      '1727074031',
+      '23771092'
+    ]);
     expect(production.ownStreamClips.maxClips).toBe(50);
     expect(production.ownStreamClips.maxCandidates).toBe(80);
     expect(production.ownStreamClips.ai.strategy).toBe('staged');
     expect(production.ownStreamClips.ai.model).toBe('gpt-5.6-luna');
     expect(production.ownStreamClips.ai.maxCandidateLines).toBe(100);
     expect(production.ownStreamClips.parallel.enabled).toBe(false);
+  });
+
+  test('keeps activity streamer and event tags in own-stream upload metadata', () => {
+    const production = require('../../config/production.json');
+    const expected = {
+      '1820703922': ['花礼Harei', '芙娅之魂'],
+      '1713546334': ['灰泽满Hazel', '芙娅之魂'],
+      '1727074031': ['chu2u', '羽啾chu2u', '芙娅之魂'],
+      '23771092': ['又一充电中', '芙娅之魂']
+    };
+
+    for (const [roomId, uploadTags] of Object.entries(expected)) {
+      const entry = Object.values(production.ai.streamerRegistry)
+        .find((candidate: any) => candidate.roomIds?.map(String).includes(roomId));
+      expect(entry).toBeDefined();
+      expect((entry as any).uploadTags).toEqual(uploadTags);
+      expect(ownStreamClipper.buildClipTags(
+        production,
+        roomId,
+        (entry as any).displayName
+      )).toEqual(expect.arrayContaining([...uploadTags, '虚拟主播', '直播切片', 'AI切片']));
+    }
   });
 
   test('combines separately configured heat and model routes and prefers model on overlap', () => {

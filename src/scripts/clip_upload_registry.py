@@ -45,6 +45,7 @@ TERMINAL_UPLOAD_ERROR_MARKERS = (
 )
 LOCK_OWNER_TOKEN: Optional[str] = None
 INTERNAL_REVIEW_LABEL_RE = re.compile(r"^\[(?:模型全量|模型分块|弹幕热度|本地规则)\]\s*")
+REVIEW_SCORE_SUFFIX_RE = re.compile(r"\s+\|\s+\d+(?:\.\d+)?分\s*$")
 
 
 def now_iso() -> str:
@@ -125,6 +126,25 @@ def strip_internal_review_label(title: str) -> str:
     return INTERNAL_REVIEW_LABEL_RE.sub("", str(title or "").strip(), count=1)
 
 
+def strip_review_score_suffix(value: str) -> str:
+    """Remove the recommendation score appended after a REVIEW media path."""
+    return REVIEW_SCORE_SUFFIX_RE.sub("", str(value or "")).strip()
+
+
+def normalize_registry_media_paths(registry: Dict[str, Any]) -> bool:
+    """Repair paths imported before REVIEW score suffix handling was fixed."""
+    changed = False
+    for clip in (registry.get("clips") or {}).values():
+        if not isinstance(clip, dict):
+            continue
+        media_path = clip.get("mediaPath")
+        normalized = strip_review_score_suffix(media_path)
+        if media_path and normalized != media_path:
+            clip["mediaPath"] = normalized
+            changed = True
+    return changed
+
+
 def parse_review(review_path: Path) -> List[Dict[str, Any]]:
     clips: List[Dict[str, Any]] = []
     cover_by_idx: Dict[int, str] = {}
@@ -145,7 +165,7 @@ def parse_review(review_path: Path) -> List[Dict[str, Any]]:
                         "title": strip_internal_review_label(m.group(2)),
                         "start": m.group(3).strip(),
                         "duration": m.group(4).strip(),
-                        "mediaPath": (m.group(5) or "").strip(),
+                        "mediaPath": strip_review_score_suffix(m.group(5)),
                     }
                 )
                 continue
@@ -341,6 +361,7 @@ def sync_clip_statuses(registry: Dict[str, Any], ids: Iterable[int]) -> None:
 
 def list_clips(args: argparse.Namespace) -> int:
     registry = load_json(REGISTRY_PATH, default_registry())
+    normalize_registry_media_paths(registry)
     ids = sorted(int(i) for i in registry.get("clips", {}).keys())
     sync_clip_statuses(registry, ids)
     save_json(REGISTRY_PATH, registry)
@@ -362,6 +383,7 @@ def list_clips(args: argparse.Namespace) -> int:
 def show_clips(args: argparse.Namespace) -> int:
     ids = parse_int_list(args.ids)
     registry = load_json(REGISTRY_PATH, default_registry())
+    normalize_registry_media_paths(registry)
     sync_clip_statuses(registry, ids)
     save_json(REGISTRY_PATH, registry)
     for clip_id in ids:
@@ -937,7 +959,7 @@ def recover_interrupted_jobs() -> bool:
     """
     registry = load_json(REGISTRY_PATH, default_registry())
     queue = load_json(QUEUE_PATH, default_queue())
-    changed = False
+    changed = normalize_registry_media_paths(registry)
     for job in queue.get("jobs", []):
         job_status = job.get("status")
         if job_status not in ("running", "failed", "blocked"):
@@ -989,6 +1011,8 @@ def recover_interrupted_jobs() -> bool:
 def run_one_job() -> bool:
     registry = load_json(REGISTRY_PATH, default_registry())
     queue = load_json(QUEUE_PATH, default_queue())
+    if normalize_registry_media_paths(registry):
+        save_json(REGISTRY_PATH, registry)
     job = next_pending_job(queue)
     if not job:
         return False

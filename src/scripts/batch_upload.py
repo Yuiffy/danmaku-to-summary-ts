@@ -40,19 +40,36 @@ import datetime
 import subprocess
 
 INTERNAL_REVIEW_LABEL_RE = re.compile(r'^\[(?:模型全量|模型分块|弹幕热度|本地规则)\]\s*')
+REVIEW_SCORE_SUFFIX_RE = re.compile(r'\s+\|\s+\d+(?:\.\d+)?分\s*$')
 
 # 添加项目路径
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src', 'scripts'))
 
 from config_loader import get_config, find_secrets_path
-from bilibili_upload import attach_video_to_collection, get_collection_section_id
+from bilibili_upload import attach_video_to_collection, extract_room_id, get_collection_section_id
 from bilibili_api import Credential, video_uploader, Picture, video, get_client
 import requests
 
 ACCOUNT_MID = 412141275
 DEFAULT_RATE_LIMIT_WAIT = 120
 DEFAULT_RATE_LIMIT_RETRIES = 5
+
+
+def infer_room_id(clips, explicit_room_id=None):
+    """Resolve the source room from an explicit option or generated media path."""
+    if explicit_room_id:
+        return str(explicit_room_id).strip()
+    for clip in clips or []:
+        room_id = extract_room_id(clip.get('path'))
+        if room_id:
+            return room_id
+    return None
+
+
+def strip_review_score_suffix(value):
+    """Remove the recommendation score appended after a REVIEW media path."""
+    return REVIEW_SCORE_SUFFIX_RE.sub('', str(value or '')).strip()
 
 
 def validate_video_stream(filepath):
@@ -82,13 +99,19 @@ def validate_video_stream(filepath):
         return False, f'video validation failed: {error}'
 
 
-def build_credential():
+def build_credential(room_id=None, streamer_name=None, source_desc=None, prefix=None):
     secrets_path = find_secrets_path()
     with open(secrets_path, 'r', encoding='utf-8-sig') as f:
         secrets = json.load(f)
     cookie_str = secrets.get('bilibili', {}).get('cookie', '')
     config = get_config()
-    collection_section_id = get_collection_section_id(config)
+    collection_section_id = get_collection_section_id(
+        config,
+        room_id=room_id,
+        streamer_name=streamer_name,
+        source_desc=source_desc,
+        prefix=prefix,
+    )
     if collection_section_id:
         print(f"[INFO] 自动加入合集 section_id={collection_section_id}")
     if not cookie_str:
@@ -370,7 +393,7 @@ def parse_review(review_path):
                 title = INTERNAL_REVIEW_LABEL_RE.sub('', m.group(2).strip(), count=1)
                 start = m.group(3).strip()
                 dur = m.group(4).strip()
-                path = m.group(5).strip() if m.group(5) else ''
+                path = strip_review_score_suffix(m.group(5)) if m.group(5) else ''
                 clips.append({
                     'idx': idx,
                     'title': title,
@@ -768,6 +791,8 @@ async def main():
     parser.add_argument('--source', required=True, help='来源描述')
     parser.add_argument('--tags', default='小岁,虚拟主播,直播切片,岁AI切片', help='标签')
     parser.add_argument('--prefix', default='【小岁】', help='标题前缀')
+    parser.add_argument('--streamer-name', default=None, help='主播名，用于合集路由')
+    parser.add_argument('--room-id', default=None, help='直播间号，用于合集路由；未提供时从媒体路径识别')
     parser.add_argument('--tid', type=int, default=21, help='分区ID')
     parser.add_argument('--delay', type=int, default=30, help='上传间隔秒数')
     parser.add_argument('--skip', default='', help='跳过序号（逗号分隔）')
@@ -902,7 +927,18 @@ async def main():
         print("\n[INFO] 没有需要上传的切片。")
         return 2 if title_conflicts else 0
 
-    credential = build_credential()
+    room_id = infer_room_id(to_upload, args.room_id)
+    if room_id:
+        print(f"[INFO] 根据切片媒体路径识别直播间: {room_id}")
+    else:
+        print("[WARN] 未识别到直播间号，将按来源文本回退判断合集")
+
+    credential = build_credential(
+        room_id=room_id,
+        streamer_name=args.streamer_name,
+        source_desc=args.source,
+        prefix=args.prefix,
+    )
     upload_available, upload_limit_message = await wait_for_upload_available(
         credential,
         max(30, args.rate_limit_wait),
@@ -920,6 +956,8 @@ async def main():
     collection_section_id = None
     try:
         collection_section_id = get_collection_section_id(
+            room_id=room_id,
+            streamer_name=args.streamer_name,
             source_desc=args.source,
             prefix=args.prefix,
         )

@@ -9,6 +9,38 @@ from src.scripts import clip_upload_registry as registry
 
 
 class ClipUploadRegistryTests(unittest.TestCase):
+    def test_normalizes_previously_imported_scored_media_paths(self):
+        registry_data = {
+            "clips": {
+                "1": {
+                    "mediaPath": r"D:\clips\clip.mp4 | 94分",
+                },
+                "2": {
+                    "mediaPath": r"D:\clips\clip-2.mp4",
+                },
+            }
+        }
+
+        self.assertTrue(registry.normalize_registry_media_paths(registry_data))
+        self.assertEqual(registry_data["clips"]["1"]["mediaPath"], r"D:\clips\clip.mp4")
+        self.assertFalse(registry.normalize_registry_media_paths(registry_data))
+
+    def test_review_parser_strips_score_from_media_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            review_path = Path(directory) / "REVIEW.md"
+            review_path.write_text(
+                "1. 测试标题 | 00:01:00 | 00:00:30 | "
+                r"D:\clips\录制-25788785-20260828_fun_01.mp4 | 94分" "\n",
+                encoding="utf-8",
+            )
+
+            parsed = registry.parse_review(review_path)
+
+        self.assertEqual(
+            parsed[0]["mediaPath"],
+            r"D:\clips\录制-25788785-20260828_fun_01.mp4",
+        )
+
     def make_fixture(self, count=2):
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)

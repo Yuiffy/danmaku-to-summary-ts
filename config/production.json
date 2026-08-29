@@ -497,6 +497,10 @@
           "花礼Harei",
           "花礼"
         ],
+        "uploadTags": [
+          "花礼Harei",
+          "芙娅之魂"
+        ],
         "mentionLabels": [
           "花礼Harei",
           "花礼",
@@ -554,6 +558,10 @@
         "searchTags": [
           "灰泽满Hazel",
           "灰泽满"
+        ],
+        "uploadTags": [
+          "灰泽满Hazel",
+          "芙娅之魂"
         ],
         "mentionLabels": [
           "灰泽满Hazel",
@@ -714,10 +722,36 @@
           "羽啾"
         ],
         "uploadTags": [
-          "chu2u"
+          "chu2u",
+          "羽啾chu2u",
+          "芙娅之魂"
         ],
         "referenceImages": [
           "public/reference_images/chu2u_standing.png"
+        ]
+      },
+      "youyi": {
+        "displayName": "又一充电中",
+        "uid": "1217754423",
+        "roomIds": [
+          "23771092"
+        ],
+        "searchTags": [
+          "又一充电中"
+        ],
+        "uploadTags": [
+          "又一充电中",
+          "芙娅之魂"
+        ],
+        "mentionLabels": [
+          "又一充电中"
+        ],
+        "speakerLabels": [
+          "又一充电中",
+          "又一"
+        ],
+        "aliases": [
+          "又一"
         ]
       },
       "sumire": {
@@ -1632,7 +1666,11 @@
     "enabled": true,
     "mode": "local_review",
     "roomIds": [
-      "25788785"
+      "25788785",
+      "1820703922",
+      "1713546334",
+      "1727074031",
+      "23771092"
     ],
     "maxCandidates": 80,
     "maxClips": 50,
@@ -1746,6 +1784,12 @@
     "upload": {
       "collectionSectionId": 9974272,
       "collectionRouting": {
+        "fuyasoul": {
+          "seasonId": 8956269,
+          "sectionId": 9991476,
+          "roomIds": ["1820703922", "1713546334", "1727074031", "23771092"],
+          "markers": ["花礼Harei", "灰泽满Hazel", "羽啾chu2u", "又一充电中"]
+        },
         "sui": {
           "seasonId": 8513688,
           "sectionId": 9482593,

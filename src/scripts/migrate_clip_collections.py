@@ -167,6 +167,32 @@ def update_registry_clip(clip: dict, target_section_id: int, status: str, error:
     state.pop("collectionApiResponse", None)
 
 
+def update_upload_state(clip: dict, target_section_id: int, status: str, error: str = "") -> None:
+    """Keep the per-review upload state aligned with the registry migration."""
+    state_path = Path(str(clip.get("statePath") or "")).expanduser()
+    review_index = str(clip.get("reviewIndex") or "")
+    if not state_path or not review_index or not state_path.exists():
+        return
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return
+    record = (state.get("done") or {}).get(review_index)
+    if not isinstance(record, dict):
+        return
+    record["collectionSectionId"] = int(target_section_id)
+    record["collectionStatus"] = status
+    if error:
+        record["collectionError"] = error
+    else:
+        record.pop("collectionError", None)
+    record.pop("collectionApiResponse", None)
+    state_path.write_text(
+        json.dumps(state, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="迁移历史切片到按主播划分的 B 站合集")
     parser.add_argument("--registry", default=str(DEFAULT_REGISTRY), help="clip_upload_registry.json 路径")
@@ -228,11 +254,13 @@ def main(argv: Optional[list[str]] = None) -> int:
                     f"加入新合集失败（旧合集已移除）: code={added.get('code')} message={added.get('message', '')}"
                 )
             update_registry_clip(item["clip"], item["targetSectionId"], "ok")
+            update_upload_state(item["clip"], item["targetSectionId"], "ok")
             success += 1
             print("  [OK]")
         except Exception as error:
             failures += 1
             update_registry_clip(item["clip"], item["targetSectionId"], "failed", str(error)[:300])
+            update_upload_state(item["clip"], item["targetSectionId"], "failed", str(error)[:300])
             print(f"  [WARN] {error}")
         # Keep the local registry resumable if the worker is interrupted.
         registry_path.write_text(
