@@ -152,7 +152,8 @@ export class AudioProcessor implements IAudioProcessor {
     return new Promise((resolve, reject) => {
       const child = spawn(ffmpegPath, commandArgs, {
         stdio: ['ignore', 'pipe', 'pipe'],
-        windowsHide: true
+        windowsHide: true,
+        shell: false
       });
       applyFfmpegProcessPriority(child.pid, effectiveResourceConfig.priority);
       const peakMonitor = startFfmpegResourcePeakMonitor(

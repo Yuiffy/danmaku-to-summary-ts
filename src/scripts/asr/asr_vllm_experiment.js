@@ -71,6 +71,7 @@ function runNode(args, label, options = {}) {
         cwd: process.cwd(),
         encoding: 'utf8',
         windowsHide: true,
+        shell: false,
         maxBuffer: 1024 * 1024 * 64
     });
     if (result.stdout && !options.quietStdout) {

@@ -1640,6 +1640,7 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     const ps: ChildProcess = spawn('node', args, {
       cwd: process.cwd(),
       windowsHide: true,
+      shell: false,
       env: {
         ...process.env,
         NODE_ENV: 'production',

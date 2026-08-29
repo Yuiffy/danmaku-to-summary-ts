@@ -92,7 +92,8 @@ export function isAnyWindowsProcessRunning(processNames: unknown): Promise<boole
     try {
       child = spawn('tasklist', ['/FO', 'CSV', '/NH'], {
         stdio: ['ignore', 'pipe', 'ignore'],
-        windowsHide: true
+        windowsHide: true,
+        shell: false
       });
     } catch {
       finish(false);

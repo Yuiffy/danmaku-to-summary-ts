@@ -97,7 +97,15 @@ async function waitFileStable(filePath) {
  */
 function showWindowsNotification(title, message) {
     const psCommand = `[void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms'); [System.Windows.Forms.MessageBox]::Show('${message}', '${title}', 'OK', 'Warning')`;
-    spawn('powershell.exe', ['-Command', psCommand], { windowsHide: true });
+    spawn('powershell.exe', [
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-WindowStyle',
+        'Hidden',
+        '-Command',
+        psCommand
+    ], { windowsHide: true, shell: false, stdio: 'ignore' });
 }
 
 /**

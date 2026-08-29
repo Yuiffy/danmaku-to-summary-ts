@@ -212,6 +212,7 @@ function spawnDetachedBackgroundClipProcess(payloadPath, resourceConfig, extraEn
         cwd: process.cwd(),
         detached: true,
         windowsHide: true,
+        shell: false,
         stdio: 'ignore',
         env: {
             ...process.env,
@@ -233,6 +234,7 @@ function spawnBackgroundClipWorker(queueConfig, resourceConfig) {
         cwd: process.cwd(),
         detached: true,
         windowsHide: true,
+        shell: false,
         stdio: 'ignore',
         env: {
             ...process.env,

@@ -253,7 +253,8 @@ function runFfmpeg(ffmpegPath, args) {
     return new Promise((resolve, reject) => {
         const child = spawn(ffmpegPath, args, {
             stdio: ['ignore', 'pipe', 'pipe'],
-            windowsHide: true
+            windowsHide: true,
+            shell: false
         });
         let stderr = '';
         child.stderr.on('data', data => {

@@ -1,8 +1,10 @@
 const {
+  applyFfmpegProcessPriority,
   waitForAsrAvailability,
   waitForCpuAvailability,
   parseGpuTelemetry
 } = require('./ffmpeg_resource');
+const os = require('os');
 
 
 describe('topic clip CPU resource guard', () => {
@@ -95,5 +97,33 @@ describe('topic clip CPU resource guard', () => {
       memoryTotalMb: 24576
     });
     expect(parseGpuTelemetry('')).toBeNull();
+  });
+
+  test('uses Node native priority updates without spawning PowerShell', () => {
+    const setPriority = jest.spyOn(os, 'setPriority').mockImplementation(() => {});
+    try {
+      applyFfmpegProcessPriority(1234, 'belowNormal');
+      if (process.platform === 'win32') {
+        expect(setPriority).toHaveBeenCalledWith(
+          1234,
+          os.constants.priority.PRIORITY_BELOW_NORMAL
+        );
+      } else {
+        expect(setPriority).not.toHaveBeenCalled();
+      }
+    } finally {
+      setPriority.mockRestore();
+    }
+  });
+
+  test('ignores invalid process IDs when applying priority', () => {
+    const setPriority = jest.spyOn(os, 'setPriority').mockImplementation(() => {});
+    try {
+      applyFfmpegProcessPriority(0, 'belowNormal');
+      applyFfmpegProcessPriority(1.5, 'belowNormal');
+      expect(setPriority).not.toHaveBeenCalled();
+    } finally {
+      setPriority.mockRestore();
+    }
   });
 });

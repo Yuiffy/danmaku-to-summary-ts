@@ -1130,6 +1130,28 @@ describe('own_stream_clipper', () => {
     expect(markdown).not.toContain('[模型全量]');
   });
 
+  test('keeps a normal multibyte clip list complete when it only needs two messages', () => {
+    const results = Array.from({ length: 32 }, (_, index) => ({
+      window: { start: index * 90, duration: 60 },
+      copy: { title: `小岁片段 ${index + 1} ${'很有趣'.repeat(20)}` },
+      candidate: { selectionSource: 'model_full_context' },
+      output: { mediaPath: `D:/clips/${index + 1}.mp4` }
+    }));
+
+    const markdown = ownStreamClipper.buildNotifyMarkdown(results, {
+      streamTitle: '正常中文通知',
+      recordedAt: '2026-08-30 03:00:00',
+      outputRoot: 'D:/clips'
+    });
+
+    expect(markdown).toContain('32. 小岁片段 32');
+    expect(markdown).not.toContain('请看 Review');
+    expect(ownStreamClipper.splitWeChatMarkdown(markdown).length).toBeLessThanOrEqual(2);
+    expect(ownStreamClipper.splitWeChatMarkdown(markdown).every((part: string) => (
+      Buffer.byteLength(part, 'utf8') <= 4096
+    ))).toBe(true);
+  });
+
   test('includes clipping duration and CPU/GPU resource statistics in WeChat notifications', () => {
     const stats = ownStreamClipper.buildClipProcessingStats([
       {

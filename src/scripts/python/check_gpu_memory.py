@@ -6,11 +6,19 @@ GPU显存检测工具
 """
 
 import sys
+import os
 import subprocess
 import json
 import time
 
 DEFAULT_MAX_WAIT_SECONDS = 24 * 60 * 60
+
+
+def hidden_subprocess_kwargs():
+    """Prevent nvidia-smi from opening a console window on Windows."""
+    if os.name == 'nt' and hasattr(subprocess, 'CREATE_NO_WINDOW'):
+        return {'creationflags': subprocess.CREATE_NO_WINDOW}
+    return {}
 
 def check_gpu_memory():
     """
@@ -30,7 +38,8 @@ def check_gpu_memory():
             ['nvidia-smi', '--query-gpu=memory.total,memory.used,memory.free', '--format=csv,noheader,nounits'],
             capture_output=True,
             text=True,
-            timeout=5
+            timeout=5,
+            **hidden_subprocess_kwargs()
         )
         
         if result.returncode != 0:

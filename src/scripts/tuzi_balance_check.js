@@ -6,6 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const configLoader = require('./config-loader');
+const { sendWeChatMarkdown: sendSegmentedWeChatMarkdown } = require('./wechat_work_markdown');
 
 const DEFAULT_STATE_FILE = path.join(os.tmpdir(), 'danmaku_tuzi_balance_alert_state.json');
 
@@ -56,26 +57,7 @@ async function sendWeChatMarkdown(webhookUrl, content) {
         console.warn('⚠️ 未配置企业微信 webhookUrl，跳过余额通知');
         return false;
     }
-
-    const response = await fetch(webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            msgtype: 'markdown',
-            markdown: { content: toFwdSlash(content) }
-        }),
-        timeout: 10000
-    });
-
-    if (!response.ok) {
-        throw new Error(`企业微信请求失败: HTTP ${response.status}`);
-    }
-
-    const result = await response.json();
-    if (result.errcode !== 0) {
-        throw new Error(`企业微信返回错误: ${result.errcode} ${result.errmsg || ''}`.trim());
-    }
-    return true;
+    return sendSegmentedWeChatMarkdown(webhookUrl, content, { timeout: 10000 });
 }
 
 function readState(stateFile) {

@@ -12,7 +12,7 @@ export interface ProcessTreeTerminationOptions {
 
 function execFileAsync(command: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    execFile(command, args, { windowsHide: true }, (error, stdout, stderr) => {
+    execFile(command, args, { windowsHide: true, shell: false }, (error, stdout, stderr) => {
       if (error) {
         reject(error);
         return;
@@ -53,7 +53,15 @@ function waitForExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
 export async function listRelevantProcesses(): Promise<string[]> {
   try {
     const script = 'Get-Process python,node,ffmpeg -ErrorAction SilentlyContinue | Select-Object Id,ProcessName,Path | ConvertTo-Json -Compress';
-    const { stdout } = await execFileAsync('powershell', ['-NoProfile', '-Command', script]);
+    const { stdout } = await execFileAsync('powershell', [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-WindowStyle',
+      'Hidden',
+      '-Command',
+      script
+    ]);
     const trimmed = stdout.trim();
     if (!trimmed) {
       return [];
@@ -109,6 +117,7 @@ export function spawnWithInheritedOutput(command: string, args: string[], env: N
   return spawn(command, args, {
     env,
     windowsHide: true,
+    shell: false,
     stdio: ['ignore', 'pipe', 'pipe']
   });
 }

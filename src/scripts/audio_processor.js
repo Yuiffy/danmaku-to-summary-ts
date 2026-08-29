@@ -255,7 +255,8 @@ async function runFfmpegCommand(args, timeout = 300000) {
         
         const child = spawn(ffmpegPath, commandArgs, {
             stdio: ['ignore', 'pipe', 'pipe'],
-            windowsHide: true
+            windowsHide: true,
+            shell: false
         });
         applyFfmpegProcessPriority(child.pid, effectiveResourceConfig.priority);
         const peakMonitor = startResourcePeakMonitor(stage, {
@@ -330,7 +331,8 @@ function runFfprobeDuration(filePath, timeout = 30000) {
             filePath
         ], {
             stdio: ['ignore', 'pipe', 'pipe'],
-            windowsHide: true
+            windowsHide: true,
+            shell: false
         });
 
         let stdout = '';
@@ -372,7 +374,8 @@ function runFfprobeAudioStreamCount(filePath, timeout = 30000) {
             filePath
         ], {
             stdio: ['ignore', 'pipe', 'pipe'],
-            windowsHide: true
+            windowsHide: true,
+            shell: false
         });
 
         let stdout = '';

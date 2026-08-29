@@ -1,9 +1,13 @@
 const fs = require('fs');
 const path = require('path');
 const { postProcessAiClipMetadata } = require('./ai_clip_metadata');
-const { spawn } = require('child_process');
+const childProcess = require('child_process');
+const { spawn } = childProcess;
 const xml2js = require('xml2js');
-const fetch = require('node-fetch');
+const {
+    sendWeChatMarkdown,
+    splitWeChatMarkdown
+} = require('./wechat_work_markdown');
 const asrBackends = require('./asr/asr_backends');
 const configLoader = require('./config-loader');
 const { resolveClipOutputRoot } = require('./clipping/output_path');
@@ -1508,7 +1512,8 @@ async function runFfmpeg(args, options = {}) {
         const timeoutMs = Math.max(1, Number(options.timeoutMs) || DEFAULT_CLIP_TOPICS_CONFIG.ffmpegTimeoutMs);
         const child = spawn(ffmpegPath, commandArgs, {
             stdio: ['ignore', 'ignore', 'pipe'],
-            windowsHide: true
+            windowsHide: true,
+            shell: false
         });
         applyFfmpegProcessPriority(child.pid, effectiveResourceConfig.priority);
         let resourcePeak = null;
@@ -1566,7 +1571,7 @@ async function runFfmpeg(args, options = {}) {
 
 function probeVideoPacketsWithHashes(ffmpegPath, mediaPath, readInterval) {
     return new Promise((resolve, reject) => {
-        const ffprobePath = (ffmpegPath || 'ffmpeg').replace(/ffmpeg(\.exe)?$/i, 'ffprobe$1');
+        const ffprobePath = resolveFfprobePath(ffmpegPath);
         const child = spawn(ffprobePath, [
             '-v', 'error',
             '-select_streams', 'v:0',
@@ -1578,7 +1583,8 @@ function probeVideoPacketsWithHashes(ffmpegPath, mediaPath, readInterval) {
             mediaPath
         ], {
             stdio: ['ignore', 'pipe', 'pipe'],
-            windowsHide: true
+            windowsHide: true,
+            shell: false
         });
         let stdout = '';
         let stderr = '';
@@ -1598,6 +1604,11 @@ function probeVideoPacketsWithHashes(ffmpegPath, mediaPath, readInterval) {
             }
         });
     });
+}
+
+function resolveFfprobePath(ffmpegPath = 'ffmpeg') {
+    const normalized = String(ffmpegPath || 'ffmpeg').trim() || 'ffmpeg';
+    return normalized.replace(/ffmpeg(\.exe)?$/i, 'ffprobe$1');
 }
 
 function findMatchingPacketTime(roughPacket, sourcePackets, targetTime) {
@@ -1742,6 +1753,7 @@ async function generateClipCover(videoPath, title, outputDir, info = {}) {
         const child = spawn(args[0], args.slice(1), {
             stdio: ['ignore', 'pipe', 'pipe'],
             windowsHide: true,
+            shell: false,
         });
         applyFfmpegProcessPriority(child.pid, resourceConfig.priority);
         const peakMonitor = startResourcePeakMonitor(coverStage, {
@@ -1925,13 +1937,21 @@ function resolveSubtitleBurnPlan(config = {}) {
  * @param {string} mediaPath
  * @returns {Promise<{width: number, height: number}>}
  */
-async function getVideoResolution(mediaPath) {
+async function getVideoResolution(mediaPath, ffprobePath = 'ffprobe') {
     try {
-        const { execSync } = require('child_process');
-        const result = execSync(
-            `ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "${mediaPath}"`,
-            { encoding: 'utf8', timeout: 10000 }
-        ).trim();
+        const result = childProcess.execFileSync(ffprobePath, [
+            '-v', 'error',
+            '-select_streams', 'v:0',
+            '-show_entries', 'stream=width,height',
+            '-of', 'csv=p=0',
+            String(mediaPath)
+        ], {
+            encoding: 'utf8',
+            timeout: 10000,
+            windowsHide: true,
+            shell: false,
+            stdio: ['ignore', 'pipe', 'pipe']
+        }).trim();
         const [width, height] = result.split(',').map(Number);
         if (width > 0 && height > 0) return { width, height };
     } catch {
@@ -1981,7 +2001,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
 
     if (config.burnSubtitles !== false) {
         // 获取视频分辨率,动态计算字幕样式
-        const videoRes = await getVideoResolution(source.mediaPath);
+        const videoRes = await getVideoResolution(source.mediaPath, resolveFfprobePath(ffmpegPath));
         const subtitleStyle = calculateSubtitleStyle(videoRes.width, videoRes.height, config);
         const parsedOutput = path.parse(outputPath);
         burnAssPath = path.join(parsedOutput.dir, `${parsedOutput.name}.burn.ass`);
@@ -2212,36 +2232,6 @@ function writeCopyMarkdown(copy, metadata, outputPath) {
 
 function getWeChatWebhookUrl(config = {}) {
     return String(config.wechatWork?.webhookUrl || '').trim();
-}
-
-async function sendWeChatMarkdown(webhookUrl, content) {
-    if (!webhookUrl) {
-        return false;
-    }
-
-    const response = await fetch(webhookUrl, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-            msgtype: 'markdown',
-            markdown: {
-                content: toFwdSlash(content)
-            }
-        })
-    });
-
-    if (!response.ok) {
-        throw new Error(`企业微信请求失败: HTTP ${response.status}`);
-    }
-
-    const result = await response.json();
-    if (result.errcode !== 0) {
-        throw new Error(`企业微信返回错误: ${result.errcode} ${result.errmsg || ''}`.trim());
-    }
-
-    return true;
 }
 
 function toFwdSlash(s) {
@@ -2494,56 +2484,6 @@ function buildTopicNotifyMarkdown(results = [], metadata = {}) {
     ].filter(Boolean).join('\n');
 }
 
-function splitWeChatMarkdown(content, maxLength = 4096) {
-    const limit = Math.max(1, Math.floor(Number(maxLength) || 4096));
-    const lines = String(content || '').split('\n');
-    const chunks = [];
-    let current = '';
-
-    const byteLength = value => Buffer.byteLength(String(value || ''), 'utf8');
-    const takeByBytes = value => {
-        const text = String(value || '');
-        let bytes = 0;
-        let index = 0;
-        while (index < text.length) {
-            const codePoint = text.codePointAt(index);
-            const char = String.fromCodePoint(codePoint);
-            const charBytes = Buffer.byteLength(char, 'utf8');
-            if (bytes + charBytes > limit) break;
-            bytes += charBytes;
-            index += char.length;
-        }
-        return [text.slice(0, index), text.slice(index)];
-    };
-
-    const flush = () => {
-        if (current) {
-            chunks.push(current);
-            current = '';
-        }
-    };
-
-    for (let line of lines) {
-        while (byteLength(line) > limit) {
-            const [head, tail] = takeByBytes(line);
-            flush();
-            if (!head) {
-                throw new Error(`企微 Markdown 单字符超过 ${limit} bytes 限制`);
-            }
-            chunks.push(head);
-            line = tail;
-        }
-
-        const next = current ? `${current}\n${line}` : line;
-        if (byteLength(next) > limit) {
-            flush();
-        }
-        current = current ? `${current}\n${line}` : line;
-    }
-    flush();
-    return chunks.length ? chunks : [''];
-}
-
 function deriveUploadPrefix(streamerName = null) {
     const name = String(streamerName || '').trim();
     if (!name) return '【小切片】';
@@ -2693,6 +2633,8 @@ function registerReviewForUpload(reviewPath, results, metadata) {
             cwd: path.dirname(path.dirname(__dirname)),
             encoding: 'utf8',
             windowsHide: true,
+            shell: false,
+            stdio: ['ignore', 'pipe', 'pipe'],
             timeout: getClipTopicsConfig(metadata.config || {}).ffmpegTimeoutMs,
             killSignal: 'SIGKILL'
         });
@@ -2730,11 +2672,7 @@ async function notifyTopicClipResults(results = [], metadata = {}, config = {}) 
         failures,
         notify: notifyConfig
     });
-    const messages = splitWeChatMarkdown(markdown);
-    for (const message of messages) {
-        await sendWeChatMarkdown(webhookUrl, message);
-    }
-    return true;
+    return sendWeChatMarkdown(webhookUrl, markdown);
 }
 
 async function notifyTopicClipFailure(error, metadata = {}, config = {}) {
@@ -3188,6 +3126,8 @@ module.exports = {
     findMatchingPacketTime,
     probeRoughCutSourceStart,
     resolveSubtitleBurnPlan,
+    resolveFfprobePath,
+    getVideoResolution,
     selectCoverPreferredTime,
     cleanupTemporaryCoverSource,
     runFfmpeg,

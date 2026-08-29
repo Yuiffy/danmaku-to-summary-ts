@@ -1120,7 +1120,7 @@ function probeDuration(mediaPath, ffprobePath = 'ffprobe') {
     const result = childProcess.spawnSync(
         ffprobePath,
         ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', mediaPath],
-        { encoding: 'utf8', windowsHide: true }
+        { encoding: 'utf8', windowsHide: true, shell: false }
     );
     if (result.status !== 0) throw new Error(`ffprobe failed for ${mediaPath}: ${result.stderr || ''}`);
     const duration = Number(String(result.stdout || '').trim());

@@ -4,6 +4,10 @@ import {
   WECHAT_WORK_REQUEST_TIMEOUT_MS,
   WeChatWorkNotifier
 } from './WeChatWorkNotifier';
+import {
+  splitWeChatMarkdown,
+  WECHAT_WORK_MARKDOWN_MAX_BYTES
+} from './wechatWorkMarkdown';
 
 jest.mock('node-fetch', () => jest.fn());
 
@@ -34,6 +38,62 @@ describe('WeChatWorkNotifier', () => {
 
   test('normalizes Windows backslashes in text content', () => {
     expect(normalizeWeChatWorkContent('path=D:\\files\\videos\\clip.mp4')).toBe('path=D:/files/videos/clip.mp4');
+  });
+
+  test('splits Markdown by UTF-8 bytes without cutting a Unicode code point', () => {
+    const messages = splitWeChatMarkdown(`字幕上下文：${'栞'.repeat(2000)}`);
+
+    expect(messages.length).toBeGreaterThan(1);
+    expect(messages.every(message => (
+      Buffer.byteLength(message, 'utf8') <= WECHAT_WORK_MARKDOWN_MAX_BYTES
+    ))).toBe(true);
+    expect(messages.join('')).toContain('字幕上下文：');
+    expect(messages.join('')).toContain('栞'.repeat(2000));
+  });
+
+  test('sends long Markdown as ordered byte-bounded webhook requests', async () => {
+    mockedFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ errcode: 0 })
+    } as any);
+    const notifier = new WeChatWorkNotifier(
+      'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test'
+    );
+    const content = `## 长通知\n${'栞'.repeat(1500)}\n结尾`;
+
+    await expect(notifier.sendMarkdown(content)).resolves.toBe(true);
+
+    expect(mockedFetch.mock.calls.length).toBeGreaterThan(1);
+    const bodies = mockedFetch.mock.calls.map(([, init]) => JSON.parse(String(init?.body)));
+    expect(bodies.every(body => (
+      Buffer.byteLength(body.markdown.content, 'utf8') <= WECHAT_WORK_MARKDOWN_MAX_BYTES
+    ))).toBe(true);
+    expect(bodies[0].markdown.content).toContain('## 长通知');
+    expect(bodies[bodies.length - 1].markdown.content).toContain('结尾');
+  });
+
+  test('stops after the first rejected Markdown part and reports failure', async () => {
+    jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    mockedFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ errcode: 0 })
+      } as any)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ errcode: 40058, errmsg: 'markdown.content exceed max length 4096' })
+      } as any)
+      .mockResolvedValue({
+        ok: true,
+        json: async () => ({ errcode: 0 })
+      } as any);
+    const notifier = new WeChatWorkNotifier(
+      'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test'
+    );
+
+    await expect(notifier.sendMarkdown(`标题\n${'栞'.repeat(1500)}`)).resolves.toBe(false);
+    expect(mockedFetch).toHaveBeenCalledTimes(2);
   });
 
   test('clears the request timeout after a successful send', async () => {

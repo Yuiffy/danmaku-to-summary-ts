@@ -50,7 +50,7 @@ function isAudioFile(filePath) {
 
 function runCommand(command, args, options = {}) {
     return new Promise((resolve, reject) => {
-        const child = spawn(command, args, { windowsHide: true, ...options, stdio: 'inherit' });
+        const child = spawn(command, args, { ...options, windowsHide: true, shell: false, stdio: 'inherit' });
         child.on('close', (code) => {
             if (code === 0) {
                 resolve();
@@ -70,7 +70,7 @@ async function getVideoDuration(filePath) {
             '-show_entries', 'format=duration',
             '-of', 'default=noprint_wrappers=1:nokey=1',
             filePath
-        ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+        ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: false });
         
         let output = '';
         let error = '';
@@ -316,7 +316,7 @@ async function getGpuUsage() {
         const child = require('child_process').spawn(
             'nvidia-smi',
             ['--query-gpu=utilization.gpu,memory.used,memory.total', '--format=csv,noheader,nounits'],
-            { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }
+            { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: false }
         );
 
         let stdout = '';
@@ -347,7 +347,7 @@ async function getGpuUsage() {
 
 function execFileAsync(command, args, options = {}) {
     return new Promise((resolve, reject) => {
-        execFile(command, args, { windowsHide: true, ...options }, (error, stdout, stderr) => {
+        execFile(command, args, { ...options, windowsHide: true, shell: false }, (error, stdout, stderr) => {
             if (error) {
                 reject(error);
                 return;
@@ -360,7 +360,11 @@ function execFileAsync(command, args, options = {}) {
 async function getRelevantProcessSnapshot() {
     try {
         const { stdout } = await execFileAsync('powershell', [
+            '-NoLogo',
             '-NoProfile',
+            '-NonInteractive',
+            '-WindowStyle',
+            'Hidden',
             '-Command',
             'Get-Process python,node,ffmpeg -ErrorAction SilentlyContinue | Select-Object Id,ProcessName,Path | ConvertTo-Json -Compress'
         ]);
@@ -791,6 +795,7 @@ async function runWhisperWithLifecycle(pythonScript, mediaPath) {
         const child = spawn('python', [pythonScript, mediaPath], {
             env: { ...process.env, PYTHONUTF8: '1' },
             windowsHide: true,
+            shell: false,
             stdio: ['ignore', 'pipe', 'pipe']
         });
 

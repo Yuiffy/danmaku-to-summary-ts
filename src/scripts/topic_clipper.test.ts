@@ -582,6 +582,35 @@ describe('topic_clipper', () => {
     });
   });
 
+  test('probes video resolution through a hidden file process without a shell', async () => {
+    const childProcess = require('child_process');
+    const execFileSync = jest.spyOn(childProcess, 'execFileSync')
+      .mockReturnValue('1920,1080\n');
+
+    try {
+      await expect(topicClipper.getVideoResolution('C:/clips/clip with spaces.mp4', 'C:/Program Files/ffmpeg/ffprobe.exe'))
+        .resolves.toEqual({ width: 1920, height: 1080 });
+      expect(execFileSync).toHaveBeenCalledWith(
+        'C:/Program Files/ffmpeg/ffprobe.exe',
+        [
+          '-v', 'error',
+          '-select_streams', 'v:0',
+          '-show_entries', 'stream=width,height',
+          '-of', 'csv=p=0',
+          'C:/clips/clip with spaces.mp4'
+        ],
+        expect.objectContaining({
+          encoding: 'utf8',
+          timeout: 10000,
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'pipe']
+        })
+      );
+    } finally {
+      execFileSync.mockRestore();
+    }
+  });
+
   test('keeps stream-copy rough cuts enabled when burning subtitles', () => {
     expect(topicClipper.resolveSubtitleBurnPlan({
       twoStageSubtitleBurn: true,

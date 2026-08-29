@@ -39,6 +39,13 @@ describe('manual_clip_queue', () => {
       titlePrefix: '【小栞】',
       tags: expect.arrayContaining(['AI切片']),
     });
+    for (const alias of ['izayoi', '十六萤', '十六萤Izayoi']) {
+      expect(resolveQueueProfile(alias)).toMatchObject({
+        name: 'izayoi',
+        titlePrefix: '【十六萤】',
+        tags: expect.arrayContaining(['十六萤Izayoi']),
+      });
+    }
   });
 
   test('adds the recording date and source title to old-sui copy', () => {

@@ -188,6 +188,7 @@ function parseGpuSummary(output) {
 async function execText(file, args, timeoutMs = 1500) {
     const result = await execFileAsync(file, args, {
         windowsHide: true,
+        shell: false,
         timeout: timeoutMs,
         maxBuffer: 1024 * 1024
     });
@@ -199,7 +200,15 @@ async function readForegroundProcess(powerShellPath = 'powershell.exe') {
     try {
         return parseForegroundProcess(await execText(
             powerShellPath,
-            ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', FOREGROUND_PROCESS_SCRIPT],
+            [
+                '-NoLogo',
+                '-NoProfile',
+                '-NonInteractive',
+                '-WindowStyle',
+                'Hidden',
+                '-Command',
+                FOREGROUND_PROCESS_SCRIPT
+            ],
             1500
         ));
     } catch {

@@ -367,6 +367,7 @@ export class DDTVWebhookHandler implements IWebhookHandler {
       const ps: ChildProcess = spawn('node', args, {
         cwd: process.cwd(),
         windowsHide: true,
+        shell: false,
         env: { 
           ...process.env, 
           NODE_ENV: 'production', // 使用production而不是automation
@@ -502,7 +503,15 @@ export class DDTVWebhookHandler implements IWebhookHandler {
     try {
       const psCommand = `[void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms'); [System.Windows.Forms.MessageBox]::Show('${message.replace(/'/g, "''")}', '${title.replace(/'/g, "''")}', 'OK', 'Warning')`;
       const { spawn } = await import('child_process');
-      spawn('powershell.exe', ['-Command', psCommand], { windowsHide: true });
+      spawn('powershell.exe', [
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-WindowStyle',
+        'Hidden',
+        '-Command',
+        psCommand
+      ], { windowsHide: true, shell: false, stdio: 'ignore' });
       this.logger.info(`显示Windows通知: ${title}`);
     } catch (error: any) {
       this.logger.error(`显示Windows通知时出错: ${error.message}`);

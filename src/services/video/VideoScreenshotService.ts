@@ -22,7 +22,7 @@ export class VideoScreenshotService implements IVideoScreenshotService {
         '-show_entries', 'format=duration',
         '-of', 'default=noprint_wrappers=1:nokey=1',
         videoPath
-      ], { windowsHide: true });
+      ], { windowsHide: true, shell: false });
 
       let output = '';
       ffprobe.stdout?.on('data', (data: Buffer) => {
@@ -148,7 +148,7 @@ export class VideoScreenshotService implements IVideoScreenshotService {
     }
     return new Promise((resolve, reject) => {
       const limitedArgs = withFfmpegResourceLimits(args, effectiveResourceConfig);
-      const ffmpeg = spawn('ffmpeg', limitedArgs, { windowsHide: true });
+      const ffmpeg = spawn('ffmpeg', limitedArgs, { windowsHide: true, shell: false });
       applyFfmpegProcessPriority(ffmpeg.pid, effectiveResourceConfig.priority);
       const peakMonitor = startFfmpegResourcePeakMonitor(
         '视频截图 ffmpeg',

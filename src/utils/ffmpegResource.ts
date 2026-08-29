@@ -1,4 +1,3 @@
-import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -47,6 +46,16 @@ const WINDOWS_PRIORITY_CLASSES: Record<string, string> = {
   above_normal: 'AboveNormal',
   aboveNormal: 'AboveNormal',
   high: 'High'
+};
+
+// Use Node's native priority API instead of starting a PowerShell process for
+// every FFmpeg stage. The latter can flash a console window on Windows.
+const WINDOWS_PRIORITY_VALUES: Record<string, number> = {
+  Idle: os.constants.priority?.PRIORITY_LOW ?? 19,
+  BelowNormal: os.constants.priority?.PRIORITY_BELOW_NORMAL ?? 10,
+  Normal: os.constants.priority?.PRIORITY_NORMAL ?? 0,
+  AboveNormal: os.constants.priority?.PRIORITY_ABOVE_NORMAL ?? -7,
+  High: os.constants.priority?.PRIORITY_HIGH ?? -14
 };
 
 export function getFfmpegResourceConfig(): FfmpegResourceConfig {
@@ -118,12 +127,21 @@ export function applyFfmpegProcessPriority(pid: number | undefined, priority = g
     return;
   }
 
-  const command = `$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($p) { $p.PriorityClass = '${priorityClass}' }`;
-  const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command], {
-    stdio: 'ignore',
-    windowsHide: true
-  });
-  child.unref();
+  const safePid = Number(pid);
+  if (!Number.isInteger(safePid) || safePid <= 0) {
+    return;
+  }
+
+  const priorityValue = WINDOWS_PRIORITY_VALUES[priorityClass];
+  if (!Number.isFinite(priorityValue)) {
+    return;
+  }
+
+  try {
+    os.setPriority(safePid, priorityValue);
+  } catch {
+    // The process may have exited between spawn and the priority update.
+  }
 }
 
 function normalizeThreads(value: unknown, fallback: number): number {

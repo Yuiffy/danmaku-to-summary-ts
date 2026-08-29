@@ -12,6 +12,7 @@ import json
 import os
 import re
 import sys
+import subprocess
 import time
 from typing import Optional
 
@@ -26,6 +27,13 @@ DEFAULT_TID = 21
 ACCOUNT_MID = 412141275
 GENERIC_COLLECTION_LABELS = {'老岁片', 'AI老岁片'}
 ROOM_ID_PATTERN = re.compile(r'(?:录制-|[\\/])(\d{5,})[-_]')
+
+
+def hidden_subprocess_kwargs():
+    """Prevent fallback ffmpeg from flashing a console on Windows."""
+    if os.name == 'nt' and hasattr(subprocess, 'CREATE_NO_WINDOW'):
+        return {'creationflags': subprocess.CREATE_NO_WINDOW}
+    return {}
 
 
 def extract_room_id(value: Optional[str]) -> Optional[str]:
@@ -465,8 +473,6 @@ async def upload_video(
             cover = Picture.from_file(cover_path)
             print(f'[INFO] 封面: {cover_path}')
         else:
-            import subprocess
-
             subprocess.run(
                 [
                     'ffmpeg',
@@ -483,6 +489,7 @@ async def upload_video(
                 ],
                 check=True,
                 timeout=30,
+                **hidden_subprocess_kwargs(),
             )
             cover = Picture.from_file(tmp_cover)
             print('[INFO] 封面: 从视频截取第一帧')

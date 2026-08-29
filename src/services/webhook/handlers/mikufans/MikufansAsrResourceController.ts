@@ -128,6 +128,7 @@ export class MikufansAsrResourceController {
       const child = spawn(executable, args, {
         cwd: process.cwd(),
         windowsHide: true,
+        shell: false,
         env: { ...process.env, PYTHONUTF8: '1' }
       });
       applyFfmpegProcessPriority(
@@ -236,7 +237,8 @@ export class MikufansAsrResourceController {
         ],
         {
           stdio: ['ignore', 'pipe', 'pipe'],
-          windowsHide: true
+          windowsHide: true,
+          shell: false
         }
       );
       let stdout = '';

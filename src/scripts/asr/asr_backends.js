@@ -1163,6 +1163,7 @@ function runJsonPythonProcess(scriptPath, payload, label = 'ASR backend') {
         const child = spawn(pythonCommand.executable, [...pythonCommand.args, pythonScriptPath], {
             stdio: ['pipe', 'pipe', 'pipe'],
             windowsHide: true,
+            shell: false,
             env: { ...process.env, PYTHONUTF8: '1' }
         });
         applyFfmpegProcessPriority(

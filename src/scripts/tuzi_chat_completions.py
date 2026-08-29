@@ -19,6 +19,14 @@ import tempfile
 import uuid
 from contextlib import contextmanager
 
+
+def hidden_subprocess_kwargs():
+    """Prevent the optional balance-check process from flashing a console."""
+    if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return {}
+
+
 # 导入 Gemini 异步 API 模块
 try:
     from tuzi_gemini_async import call_tuzi_gemini_async
@@ -615,6 +623,7 @@ def trigger_tuzi_balance_alert(reason: str, operation_name: str = "") -> None:
             encoding="utf-8",
             errors="replace",
             timeout=45,
+            **hidden_subprocess_kwargs(),
         )
         output = "\n".join(part for part in [(result.stdout or "").strip(), (result.stderr or "").strip()] if part)
         if output:

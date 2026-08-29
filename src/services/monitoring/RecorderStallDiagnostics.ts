@@ -163,6 +163,7 @@ function defaultRunCommand(command: string, args: string[], timeoutMs: number): 
   return new Promise(resolve => {
     execFile(command, args, {
       windowsHide: true,
+      shell: false,
       timeout: timeoutMs,
       maxBuffer: 256 * 1024,
       encoding: 'utf8'
@@ -643,7 +644,15 @@ export class RecorderStallDiagnostics {
       "$rows = Get-CimInstance Win32_Process | Where-Object { $_.Name -match '(?i)bililive|dotnet' -or $_.CommandLine -match '(?i)bililive|bilirecorder' } | Select-Object ProcessId,Name,ExecutablePath,CommandLine",
       '$rows | ConvertTo-Json -Compress'
     ].join('; ');
-    const result = await this.runCommand('powershell', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], 10 * 1000);
+    const result = await this.runCommand('powershell', [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-WindowStyle',
+      'Hidden',
+      '-Command',
+      script
+    ], 10 * 1000);
     if (result.exitCode !== 0) {
       snapshot.error = `读取Windows进程信息失败: ${truncateText(result.stderr || result.stdout, 1000)}`;
       return snapshot;

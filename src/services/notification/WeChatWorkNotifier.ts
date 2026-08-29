@@ -7,6 +7,7 @@ import FormData = require('form-data');
 import { createReadStream, readFileSync, statSync } from 'fs';
 import { basename, join } from 'path';
 import * as crypto from 'crypto';
+import { splitWeChatMarkdown, WECHAT_WORK_MARKDOWN_MAX_BYTES } from './wechatWorkMarkdown';
 import sharp = require('sharp');
 
 export const WECHAT_WORK_REQUEST_TIMEOUT_MS = 10 * 1000;
@@ -95,14 +96,25 @@ export class WeChatWorkNotifier {
    */
   async sendMarkdown(content: string): Promise<boolean> {
     try {
-      const message: WeChatWorkMessage = {
-        msgtype: 'markdown',
-        markdown: {
-          content
+      // 企微按 UTF-8 字节限制 Markdown；长通知必须拆成多条顺序发送。
+      const messages = splitWeChatMarkdown(normalizeWeChatWorkContent(content), WECHAT_WORK_MARKDOWN_MAX_BYTES);
+      for (const [index, messageContent] of messages.entries()) {
+        const sent = await this.sendMessage({
+          msgtype: 'markdown',
+          markdown: {
+            content: messageContent
+          }
+        });
+        if (!sent) {
+          this.logger.warn('企业微信Markdown分段发送失败', {
+            part: index + 1,
+            totalParts: messages.length,
+            bytes: Buffer.byteLength(messageContent, 'utf8')
+          });
+          return false;
         }
-      };
-
-      return await this.sendMessage(message);
+      }
+      return true;
     } catch (error) {
       this.logger.error('发送企业微信Markdown消息失败', undefined, error instanceof Error ? error : new Error(String(error)));
       return false;

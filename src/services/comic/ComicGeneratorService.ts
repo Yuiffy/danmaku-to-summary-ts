@@ -312,7 +312,8 @@ export class ComicGeneratorService implements IComicGeneratorService {
         const nodeProcess = spawn('node', [this.nodeScriptPath, '--generate-text'], {
           cwd: path.dirname(this.nodeScriptPath),
           stdio: ['pipe', 'pipe', 'pipe'],
-          windowsHide: true
+          windowsHide: true,
+          shell: false
         });
 
         let output = '';

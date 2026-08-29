@@ -1,8 +1,12 @@
 const fs = require('fs');
 const path = require('path');
 const xml2js = require('xml2js');
-const fetch = require('node-fetch');
 const { spawnSync } = require('child_process');
+const {
+    sendWeChatMarkdown,
+    splitWeChatMarkdown,
+    WECHAT_WORK_MARKDOWN_MAX_BYTES
+} = require('./wechat_work_markdown');
 const asrBackends = require('./asr/asr_backends');
 const configLoader = require('./config-loader');
 const topicClipper = require('./topic_clipper');
@@ -2043,7 +2047,11 @@ function buildNotifyMarkdown(results, metadata) {
         lines.push(`${index + 1}. ${uploadId}${title} | ${start} | ${duration}${formatRecommendationScore(result)}`);
     });
     let markdown = lines.join('\n');
-    if (markdown.length <= 3900) {
+    // 只有预计会产生很多条消息时才压缩；一两条分段消息保留完整切片列表。
+    if (
+        Buffer.byteLength(markdown, 'utf8') <= 3900
+        || splitWeChatMarkdown(markdown, WECHAT_WORK_MARKDOWN_MAX_BYTES).length <= 2
+    ) {
         return markdown;
     }
 
@@ -2055,7 +2063,8 @@ function buildNotifyMarkdown(results, metadata) {
         const duration = formatClock(result.window.duration);
         const uploadId = uploadIds[index] ? `ID ${uploadIds[index]} | ` : '';
         const line = `${index + 1}. ${uploadId}${title} | ${start} | ${duration}${formatRecommendationScore(result)}`;
-        if ((compact.join('\n').length + line.length + 24) > 3880) {
+        const candidate = compact.length ? `${compact.join('\n')}\n${line}` : line;
+        if (Buffer.byteLength(candidate, 'utf8') + 24 > 3880) {
             compact.push(`${index + 1}. ...还有 ${results.length - index} 段，请看 Review`);
             break;
         }
@@ -2136,7 +2145,9 @@ function registerReviewForUpload(reviewPath, results, metadata) {
     const result = spawnSync('python', args, {
         cwd: path.dirname(path.dirname(__dirname)),
         encoding: 'utf8',
-        windowsHide: true
+        windowsHide: true,
+        shell: false,
+        stdio: ['ignore', 'pipe', 'pipe']
     });
     const output = `${result.stdout || ''}${result.stderr || ''}`.trim();
     if (result.status !== 0) {
@@ -2147,26 +2158,6 @@ function registerReviewForUpload(reviewPath, results, metadata) {
         console.log(output);
     }
     return parseUploadRegistryOutput(output);
-}
-
-async function sendWeChatMarkdown(webhookUrl, content) {
-    if (!webhookUrl) return false;
-    const response = await fetch(webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            msgtype: 'markdown',
-            markdown: { content: toFwdSlash(content) }
-        })
-    });
-    if (!response.ok) {
-        throw new Error(`WeChat Work request failed: HTTP ${response.status}`);
-    }
-    const result = await response.json();
-    if (result.errcode !== 0) {
-        throw new Error(`WeChat Work returned error: ${result.errcode} ${result.errmsg || ''}`.trim());
-    }
-    return true;
 }
 
 async function notifyResults(results, metadata, rootConfig) {
@@ -2981,6 +2972,8 @@ module.exports = {
     buildEmotionComposition,
     buildClipTags,
     buildCoverTitle,
+    notifyResults,
+    splitWeChatMarkdown,
     selectCoverPreferredTime: topicClipper.selectCoverPreferredTime,
     toFwdSlash,
     filterClipsBySelection,

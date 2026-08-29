@@ -1,4 +1,4 @@
-const { spawn, execFile } = require('child_process');
+const { execFile } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const { promisify } = require('util');
@@ -19,6 +19,17 @@ const WINDOWS_PRIORITY_CLASSES = {
     above_normal: 'AboveNormal',
     aboveNormal: 'AboveNormal',
     high: 'High'
+};
+
+// Node can set Windows process priority directly. Spawning PowerShell for every
+// FFmpeg stage creates a short-lived console process and is prone to flashing a
+// window even when the child is marked hidden.
+const WINDOWS_PRIORITY_VALUES = {
+    Idle: os.constants?.priority?.PRIORITY_LOW ?? 19,
+    BelowNormal: os.constants?.priority?.PRIORITY_BELOW_NORMAL ?? 10,
+    Normal: os.constants?.priority?.PRIORITY_NORMAL ?? 0,
+    AboveNormal: os.constants?.priority?.PRIORITY_ABOVE_NORMAL ?? -7,
+    High: os.constants?.priority?.PRIORITY_HIGH ?? -14
 };
 
 function normalizeThreads(value, fallback = DEFAULT_THREADS) {
@@ -243,6 +254,7 @@ async function readGpuTelemetry(nvidiaSmiPath = 'nvidia-smi') {
         '--format=csv,noheader,nounits'
     ], {
         windowsHide: true,
+        shell: false,
         timeout: 1500,
         maxBuffer: 64 * 1024
     });
@@ -400,16 +412,20 @@ function applyFfmpegProcessPriority(pid, priority = DEFAULT_PRIORITY) {
     }
 
     const safePid = Number(pid);
-    if (!Number.isFinite(safePid)) {
+    if (!Number.isInteger(safePid) || safePid <= 0) {
         return;
     }
 
-    const command = `$p = Get-Process -Id ${safePid} -ErrorAction SilentlyContinue; if ($p) { $p.PriorityClass = '${priorityClass}' }`;
-    const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command], {
-        stdio: 'ignore',
-        windowsHide: true
-    });
-    child.unref();
+    const priorityValue = WINDOWS_PRIORITY_VALUES[priorityClass];
+    if (!Number.isFinite(priorityValue)) {
+        return;
+    }
+
+    try {
+        os.setPriority(safePid, priorityValue);
+    } catch {
+        // The process may have exited between spawn and the priority update.
+    }
 }
 
 module.exports = {

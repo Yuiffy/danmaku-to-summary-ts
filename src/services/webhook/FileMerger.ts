@@ -199,7 +199,7 @@ export class FileMerger {
           '-show_entries', 'stream=duration',
           '-of', 'csv=p=0',
           videoPath
-        ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+        ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: false });
 
         let output = '';
         ffprobe.stdout.on('data', (data: Buffer) => { output += data.toString(); });
@@ -393,7 +393,7 @@ export class FileMerger {
         '-print_format', 'json',
         '-show_streams',
         videoPath
-      ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+      ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: false });
 
       let output = '';
       const fallback = this.getDefaultMediaProfile();
@@ -454,7 +454,7 @@ export class FileMerger {
         '-show_entries', 'format=duration',
         '-of', 'default=noprint_wrappers=1:nokey=1',
         videoPath
-      ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+      ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: false });
 
       let output = '';
       let error = '';
@@ -613,7 +613,7 @@ export class FileMerger {
     return new Promise((resolve, reject) => {
       const startedAt = Date.now();
       const limitedArgs = withFfmpegResourceLimits(args, effectiveResourceConfig);
-      const ffmpeg = spawn('ffmpeg', limitedArgs, { windowsHide: true });
+      const ffmpeg = spawn('ffmpeg', limitedArgs, { windowsHide: true, shell: false });
       applyFfmpegProcessPriority(ffmpeg.pid, effectiveResourceConfig.priority);
       const peakMonitor = startFfmpegResourcePeakMonitor(
         label,

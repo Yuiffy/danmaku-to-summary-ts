@@ -310,6 +310,7 @@ function createPythonWorker(config) {
     const child = spawn(pythonCommand.executable, [...pythonCommand.args, workerScript], {
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
+        shell: false,
         env: { ...process.env, PYTHONUTF8: '1' }
     });
     applyFfmpegProcessPriority(child.pid, resourceConfig.priority);

@@ -36,6 +36,7 @@ function main() {
     const child = spawn(pythonCommand.executable, args, {
         stdio: 'inherit',
         windowsHide: true,
+        shell: false,
         env: { ...process.env, PYTHONUTF8: '1' }
     });
 

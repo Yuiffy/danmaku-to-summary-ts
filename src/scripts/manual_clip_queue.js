@@ -33,6 +33,12 @@ const QUEUE_PROFILES = {
         titlePrefix: '【小栞】',
         tags: ['AI切片', '小岁', '虚拟主播', '直播切片'],
         label: '栞栞手工队列'
+    },
+    izayoi: {
+        name: 'izayoi',
+        titlePrefix: '【十六萤】',
+        tags: ['十六萤', '十六萤Izayoi', '虚拟主播', '直播切片', 'AI切片'],
+        label: '十六萤手工队列'
     }
 };
 function resolveQueueProfile(value) {
@@ -42,6 +48,9 @@ function resolveQueueProfile(value) {
     }
     if (['shiori', '小栞', '栞栞'].includes(normalized)) {
         return QUEUE_PROFILES.shiori;
+    }
+    if (['izayoi', '十六萤', '十六萤izayoi'].includes(normalized)) {
+        return QUEUE_PROFILES.izayoi;
     }
     return QUEUE_PROFILES.small_sui;
 }
@@ -247,7 +256,14 @@ function importJson(metadataPath, reviewPath, task) {
         '--tid', String(task.tid || 21),
         '--label', profile.label
     ];
-    const result = spawnSync('python', args, { cwd: projectRoot, encoding: 'utf8' });
+    const result = spawnSync('python', args, {
+        cwd: projectRoot,
+        encoding: 'utf8',
+        // Keep the registry helper completely detached from the user's desktop.
+        windowsHide: true,
+        shell: false,
+        stdio: ['ignore', 'pipe', 'pipe']
+    });
     const output = `${result.stdout || ''}${result.stderr || ''}`.trim();
     if (result.status !== 0) throw new Error(`upload registry import failed: ${output || result.status}`);
     const match = output.match(/IDs:\s*([\d,]+)/);
@@ -263,7 +279,13 @@ function enqueueIds(ids) {
         path.join(projectRoot, 'src/scripts/clip_upload_registry.py'),
         'enqueue', '--ids', ids.join(',')
     ];
-    const result = spawnSync('python', args, { cwd: projectRoot, encoding: 'utf8' });
+    const result = spawnSync('python', args, {
+        cwd: projectRoot,
+        encoding: 'utf8',
+        windowsHide: true,
+        shell: false,
+        stdio: ['ignore', 'pipe', 'pipe']
+    });
     const output = `${result.stdout || ''}${result.stderr || ''}`.trim();
     if (result.status !== 0) throw new Error(`upload queue enqueue failed: ${output || result.status}`);
     return output;

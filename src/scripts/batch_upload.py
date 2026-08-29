@@ -59,6 +59,13 @@ DEFAULT_RATE_LIMIT_WAIT = 120
 DEFAULT_RATE_LIMIT_RETRIES = 5
 
 
+def hidden_subprocess_kwargs():
+    """Prevent ffmpeg/ffprobe from flashing a console on Windows."""
+    if os.name == 'nt' and hasattr(subprocess, 'CREATE_NO_WINDOW'):
+        return {'creationflags': subprocess.CREATE_NO_WINDOW}
+    return {}
+
+
 def infer_room_id(clips, explicit_room_id=None):
     """Resolve the source room from an explicit option or generated media path."""
     if explicit_room_id:
@@ -92,6 +99,7 @@ def validate_video_stream(filepath):
             text=True,
             check=True,
             timeout=30,
+            **hidden_subprocess_kwargs(),
         )
         streams = (json.loads(probe.stdout).get('streams') or [])
         if not streams:
@@ -646,7 +654,7 @@ async def upload_one(clip, credential, prefix, tags, tid, source_desc, collectio
             subprocess.run([
                 'ffmpeg', '-i', filepath, '-vframes', '1',
                 '-q:v', '2', cover_tmp, '-y', '-loglevel', 'error'
-            ], check=True, timeout=30)
+            ], check=True, timeout=30, **hidden_subprocess_kwargs())
             cover_path = cover_tmp
             cleanup_cover_tmp = True
             print(f"  [WARN] 未找到标题封面，临时截取第一帧")

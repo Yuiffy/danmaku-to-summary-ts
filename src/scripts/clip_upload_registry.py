@@ -59,6 +59,13 @@ INTERNAL_REVIEW_LABEL_RE = re.compile(r"^\[(?:模型全量|模型分块|弹幕�
 REVIEW_SCORE_SUFFIX_RE = re.compile(r"\s+\|\s+\d+(?:\.\d+)?分\s*$")
 
 
+def hidden_subprocess_kwargs() -> Dict[str, Any]:
+    """Prevent nested console programs from flashing a window on Windows."""
+    if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return {}
+
+
 def now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
 
@@ -730,6 +737,7 @@ def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.Co
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 timeout=timeout_seconds,
+                **hidden_subprocess_kwargs(),
             )
             outputs.append(cp.stdout or "")
             returncode = cp.returncode
@@ -782,6 +790,7 @@ def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.Co
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 timeout=timeout_seconds,
+                **hidden_subprocess_kwargs(),
             )
             outputs.append(cp.stdout or "")
             returncode = cp.returncode
@@ -826,6 +835,7 @@ def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.Co
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     timeout=timeout_seconds,
+                    **hidden_subprocess_kwargs(),
                 )
                 out2 = cp2.stdout or ""
                 outputs.append(out2)
@@ -1026,6 +1036,7 @@ def pid_is_alive(pid: int) -> bool:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                **hidden_subprocess_kwargs(),
             )
             return str(pid) in (result.stdout or "")
         os.kill(pid, 0)

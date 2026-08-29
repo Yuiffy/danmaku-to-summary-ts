@@ -247,7 +247,7 @@ const mainPath = path.join(__dirname, '..', 'dist', 'app', 'main.js');
 
 const child = spawn('node', [mainPath], {
   stdio: 'inherit',
-  shell: true,
+  shell: false,
   windowsHide: true
 });
 
@@ -297,7 +297,7 @@ const mainPath = path.join(__dirname, '..', 'dist', 'app', 'main.js');
 
 const child = spawn('node', [mainPath, 'process', videoPath, xmlPath || '', roomId || ''], {
   stdio: 'inherit',
-  shell: true,
+  shell: false,
   windowsHide: true
 });
 
