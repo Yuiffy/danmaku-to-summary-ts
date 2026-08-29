@@ -343,7 +343,7 @@ describe('own_stream_clipper', () => {
     expect(markdown).not.toContain('D:/clips/one.mp4');
   });
 
-  test('shows recommendation scores in plan and review markdown', () => {
+  test('keeps recommendation scores separate from review path fields', () => {
     const plan = ownStreamClipper.buildPlanReviewMarkdown([
       {
         start: 75,
@@ -372,8 +372,11 @@ describe('own_stream_clipper', () => {
       outputRoot: 'D:/clips'
     });
 
-    expect(plan).toContain('1. 高分候选 | 00:01:15-00:02:45 | 00:01:30 | 事件完整 | 95分');
-    expect(review).toContain('1. 高分成片 | 00:01:15 | 00:01:30 | D:/clips/one.mp4 | 95分');
+    expect(plan).toContain('1. 高分候选 | 00:01:15-00:02:45 | 00:01:30 | 事件完整');
+    expect(plan).toContain('推荐分数: 95分');
+    expect(review).toContain('1. 高分成片 | 00:01:15 | 00:01:30 | D:/clips/one.mp4');
+    expect(review).toContain('推荐分数: 95分');
+    expect(review).not.toContain('D:/clips/one.mp4 | 95分');
   });
 
   test('review and notify markdown remain compatible when participant info is present', () => {

@@ -89,13 +89,13 @@ B站上传接口可能返回 406/206 等错误码，但**视频实际已经成�
 - **批量上传统一用 `batch_upload.py`（防重复版）**
   ```bash
   python src/scripts/batch_upload.py \
-    --review <REVIEW.md路径> \
+    --manifest <UPLOAD_MANIFEST.json路径> \
     --source "岁己SUI 直播《xxx》2026-06-18" \
     --prefix "【小岁】" \
     --tags "小岁,虚拟主播,直播切片,岁AI切片" \
     --delay 30
   ```
-  - 自动从 REVIEW.md 解析切片列表
+  - 自动从结构化 JSON manifest 读取切片列表（旧 REVIEW.md 仍兼容）
   - 上传前搜索 API 查重
   - 406 后自动搜索确认是否已成功
   - 状态持久化到 `upload_state.json`

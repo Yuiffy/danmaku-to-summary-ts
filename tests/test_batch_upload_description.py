@@ -6,6 +6,7 @@ from pathlib import Path
 from src.scripts.batch_upload import (
     build_desc,
     load_generated_description,
+    parse_upload_manifest,
     record_title_conflict,
     state_record_matches_upload,
     strip_review_score_suffix,
@@ -91,6 +92,51 @@ class BatchUploadDescriptionTests(unittest.TestCase):
             self.assertEqual(
                 load_generated_description({'path': str(media_path)}),
                 '提前生成的简介',
+            )
+
+    def test_json_manifest_keeps_metadata_path_separate_from_media_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            metadata_path = root / 'metadata.json'
+            manifest_path = root / 'UPLOAD_MANIFEST.json'
+            metadata_path.write_text(
+                json.dumps(
+                    {
+                        'upload': {
+                            'source': '主播 直播《测试》',
+                            'prefix': '【小主播】',
+                            'tags': ['主播', '#芙娅之魂'],
+                            'roomId': '1820703922',
+                        },
+                        'window': {'start': 65.5, 'duration': 30.4},
+                        'copy': {'title': 'JSON 标题', 'description': 'JSON 简介'},
+                        'output': {
+                            'mediaPath': str(root / 'actual.mp4'),
+                            'metadataPath': str(metadata_path),
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding='utf-8',
+            )
+            manifest_path.write_text(
+                json.dumps(
+                    {'clips': [{'reviewIndex': 8, 'metadataPath': str(metadata_path)}]},
+                    ensure_ascii=False,
+                ),
+                encoding='utf-8',
+            )
+
+            clips = parse_upload_manifest(manifest_path)
+            clip = clips[0]
+            self.assertEqual(clip['idx'], 8)
+            self.assertEqual(clip['path'], str((root / 'actual.mp4').resolve()))
+            self.assertEqual(clip['metadataPath'], str(metadata_path.resolve()))
+            self.assertEqual(clip['tags'], ['主播', '#芙娅之魂'])
+            self.assertEqual(clip['roomId'], '1820703922')
+            self.assertEqual(
+                load_generated_description(clip),
+                'JSON 简介',
             )
 
     def test_title_only_duplicate_state_is_not_treated_as_local_upload(self):

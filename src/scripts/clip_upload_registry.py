@@ -15,6 +15,11 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+try:
+    from .clip_upload_manifest import load_upload_manifest
+except ImportError:
+    from clip_upload_manifest import load_upload_manifest
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_DIR = PROJECT_ROOT / "data" / "runtime"
 REGISTRY_PATH = RUNTIME_DIR / "clip_upload_registry.json"
@@ -30,6 +35,12 @@ MAX_AUTOMATIC_JOB_RETRIES = 8
 TERMINAL_UPLOAD_ERROR_MARKERS = (
     "视频文件不存在",
     "文件不存在:",
+    "metadata json not found",
+    "upload manifest not found",
+    "no clips found in upload json",
+    "unsupported upload json shape",
+    "无法读取上传 json",
+    "上传 json 中未找到切片",
     "no such file or directory",
     "review.md not found",
     "cannot read review",
@@ -224,6 +235,18 @@ def batch_key(review_path: str, source: str, prefix: str, tags: List[str], tid: 
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
 
 
+def clip_batch_key(clip: Dict[str, Any]) -> str:
+    """Use the machine manifest as the batch identity when available."""
+    return batch_key(
+        clip.get("manifestPath") or clip.get("reviewPath") or "",
+        clip.get("source") or "",
+        clip.get("prefix") or "",
+        parse_tags(clip.get("tags") or []),
+        int(clip.get("tid") or 21),
+        clip.get("statePath") or "",
+    )
+
+
 def import_review(args: argparse.Namespace) -> int:
     review_path = Path(args.review).expanduser().resolve()
     if not review_path.exists():
@@ -308,6 +331,133 @@ def import_review(args: argparse.Namespace) -> int:
     }
     save_json(REGISTRY_PATH, registry)
     print(f"[OK] imported {len(ids)} clips from {review_path}")
+    print("IDs:", ",".join(str(i) for i in ids))
+    return 0
+
+
+def import_json(args: argparse.Namespace) -> int:
+    """Import generated clip metadata without parsing the human review file."""
+    manifest_path = Path(args.manifest).expanduser().resolve()
+    if not manifest_path.exists():
+        print(f"[ERROR] upload manifest not found: {manifest_path}", file=sys.stderr)
+        return 2
+
+    try:
+        clips = load_upload_manifest(
+            manifest_path,
+            default_source=args.source or "",
+            default_tags=parse_tags(args.tags),
+            default_prefix=args.prefix or "",
+            default_tid=int(args.tid or 21),
+            review_path=args.review or "",
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        print(f"[ERROR] cannot read upload JSON {manifest_path}: {exc}", file=sys.stderr)
+        return 2
+    if not clips:
+        print(f"[ERROR] no clips found in upload JSON: {manifest_path}", file=sys.stderr)
+        return 2
+
+    first = clips[0]
+    source = str(args.source or first.get("source") or "").strip()
+    tags = parse_tags(args.tags) if args.tags else parse_tags(first.get("tags") or [])
+    prefix = str(args.prefix or first.get("prefix") or "").strip()
+    tid = int(args.tid or first.get("tid") or 21)
+    state_path = (
+        Path(args.state).expanduser().resolve()
+        if args.state
+        else manifest_path.parent / "upload_state.json"
+    )
+    review_value = args.review or first.get("reviewPath") or ""
+    review_str = normalize_path(review_value) if review_value else ""
+    manifest_str = normalize_path(manifest_path)
+    state_str = normalize_path(state_path)
+    key = batch_key(manifest_str, source, prefix, tags, tid, state_str)
+    batch_id = args.batch_id or key
+    registry = load_json(REGISTRY_PATH, default_registry())
+    normalize_registry_media_paths(registry)
+
+    def find_existing_id(clip: Dict[str, Any]) -> Optional[int]:
+        metadata_path = clip.get("metadataPath") or ""
+        review_index = int(clip.get("reviewIndex") or clip.get("idx") or 0)
+        media_path = clip.get("mediaPath") or clip.get("path") or ""
+        for existing_id, record in registry.get("clips", {}).items():
+            if not isinstance(record, dict):
+                continue
+            if metadata_path and paths_match(record.get("metadataPath") or "", metadata_path):
+                return int(existing_id)
+            if (
+                record.get("manifestPath") == manifest_str
+                and int(record.get("reviewIndex") or 0) == review_index
+                and paths_match(record.get("mediaPath") or "", media_path)
+            ):
+                return int(existing_id)
+            if (
+                review_str
+                and record.get("reviewPath") == review_str
+                and int(record.get("reviewIndex") or 0) == review_index
+                and paths_match(record.get("mediaPath") or "", media_path)
+            ):
+                return int(existing_id)
+        return None
+
+    ids: List[int] = []
+    for clip in clips:
+        clip_id = find_existing_id(clip)
+        record_data = {
+            "batchId": batch_id,
+            "manifestPath": manifest_str,
+            "metadataPath": normalize_path(clip["metadataPath"]) if clip.get("metadataPath") else "",
+            "reviewPath": review_str or clip.get("reviewPath") or "",
+            "statePath": state_str,
+            "source": clip.get("source") or source,
+            "prefix": clip.get("prefix") or prefix,
+            "tags": parse_tags(clip.get("tags") or tags),
+            "tid": int(clip.get("tid") or tid),
+            "title": clip.get("title") or "",
+            "start": clip.get("start") or "00:00:00",
+            "duration": clip.get("duration") or "00:00:00",
+            "mediaPath": clip.get("mediaPath") or clip.get("path") or "",
+            "coverPath": clip.get("coverPath") or clip.get("cover") or "",
+            "selectionSource": clip.get("selectionSource") or "",
+            "roomId": clip.get("roomId") or "",
+            "streamerName": clip.get("streamerName") or "",
+            "description": clip.get("description") or "",
+            "reviewIndex": int(clip.get("reviewIndex") or clip.get("idx") or len(ids) + 1),
+            "sourceFormat": "json",
+        }
+        if clip_id is None:
+            clip_id = int(registry.get("nextClipId") or 1)
+            registry["nextClipId"] = clip_id + 1
+            registry.setdefault("clips", {})[str(clip_id)] = {
+                "id": clip_id,
+                "createdAt": now_iso(),
+                "updatedAt": now_iso(),
+                "status": "review",
+                **record_data,
+            }
+        else:
+            record = registry["clips"][str(clip_id)]
+            record.update({"updatedAt": now_iso(), **record_data})
+        ids.append(clip_id)
+
+    registry.setdefault("batches", {})[batch_id] = {
+        "id": batch_id,
+        "label": args.label or source,
+        "createdAt": registry.get("batches", {}).get(batch_id, {}).get("createdAt") or now_iso(),
+        "updatedAt": now_iso(),
+        "manifestPath": manifest_str,
+        "reviewPath": review_str or first.get("reviewPath") or "",
+        "statePath": state_str,
+        "source": source,
+        "prefix": prefix,
+        "tags": tags,
+        "tid": tid,
+        "clipIds": ids,
+        "sourceFormat": "json",
+    }
+    save_json(REGISTRY_PATH, registry)
+    print(f"[OK] imported {len(ids)} clips from {manifest_path}")
     print("IDs:", ",".join(str(i) for i in ids))
     return 0
 
@@ -483,14 +633,7 @@ def grouped_clips(registry: Dict[str, Any], ids: List[int]) -> List[List[Dict[st
     groups: Dict[str, List[Dict[str, Any]]] = {}
     for clip_id in ids:
         clip = registry["clips"][str(clip_id)]
-        key = batch_key(
-            clip["reviewPath"],
-            clip["source"],
-            clip["prefix"],
-            clip["tags"],
-            int(clip["tid"]),
-            clip["statePath"],
-        )
+        key = clip_batch_key(clip)
         groups.setdefault(key, []).append(clip)
     return list(groups.values())
 
@@ -527,21 +670,79 @@ def timeout_seconds_for_job(job: Dict[str, Any]) -> int:
 def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.CompletedProcess[str]:
     """Upload a group of clips.
 
-    Clips found in REVIEW.md go through batch_upload.py as before.
+    JSON-backed clips go through batch_upload.py using their manifest.
+    Historical REVIEW.md clips keep using the Markdown compatibility path.
     Self-contained clips NOT in REVIEW.md (manually created) go through
     bilibili_upload.py individually, then their results are merged into the
     group's state file so sync_clip_statuses picks them up.
     """
     first = group[0]
-    review_clips = [c for c in group if _clip_in_review(c)]
-    manual_clips = [c for c in group if not _clip_in_review(c)]
+    json_clips = [c for c in group if c.get("manifestPath")]
+    review_clips = [c for c in group if not c.get("manifestPath") and _clip_in_review(c)]
+    manual_clips = [c for c in group if not c.get("manifestPath") and not _clip_in_review(c)]
 
     outputs: List[str] = []
     returncode = 0
     timeout_seconds = timeout_seconds_for_job(job)
 
-    # --- REVIEW.md-backed clips: use batch_upload.py ---
-    if review_clips:
+    # --- JSON-backed clips: use the structured manifest ---
+    if json_clips:
+        only = ",".join(str(int(clip["reviewIndex"])) for clip in json_clips)
+        cmd = [
+            sys.executable,
+            "-u",
+            str(PROJECT_ROOT / "src" / "scripts" / "batch_upload.py"),
+            "--manifest",
+            first["manifestPath"],
+            "--source",
+            first["source"],
+            "--tags",
+            ",".join(first["tags"]),
+            "--prefix",
+            first["prefix"],
+            "--tid",
+            str(int(first["tid"])),
+            "--streamer-name",
+            first.get("streamerName") or "",
+            "--room-id",
+            first.get("roomId") or "",
+            "--delay",
+            str(int(job.get("delay") or DEFAULT_DELAY)),
+            "--only",
+            only,
+            "--state",
+            first["statePath"],
+            "--rate-limit-wait",
+            str(int(job.get("rateLimitWait") or DEFAULT_RATE_LIMIT_WAIT)),
+            "--rate-limit-retries",
+            str(int(job.get("rateLimitRetries") or DEFAULT_RATE_LIMIT_RETRIES)),
+        ]
+        if job.get("allowDuplicateTitle"):
+            cmd.append("--force")
+        print("[worker] run:", " ".join(f'"{c}"' if " " in c else c for c in cmd), flush=True)
+        try:
+            cp = subprocess.run(
+                cmd,
+                cwd=str(PROJECT_ROOT),
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=timeout_seconds,
+            )
+            outputs.append(cp.stdout or "")
+            returncode = cp.returncode
+        except subprocess.TimeoutExpired as exc:
+            output = exc.stdout or ""
+            if isinstance(output, bytes):
+                output = output.decode("utf-8", errors="replace")
+            output += f"\n[worker] batch timed out after {timeout_seconds}s\n"
+            outputs.append(output)
+            returncode = 124
+
+    # --- Historical REVIEW.md-backed clips: compatibility path ---
+    if review_clips and returncode == 0:
         only = ",".join(str(int(clip["reviewIndex"])) for clip in review_clips)
         cmd = [
             sys.executable,
@@ -900,27 +1101,27 @@ def validate_groups(groups: List[List[Dict[str, Any]]]) -> List[str]:
     review rows exist.  Without this check the queue labelled such a job as
     blocked and left the clip permanently in ``uploading``.
 
-    Clips that are self-contained (have mediaPath, title, tags, etc. directly
-    in the registry) are allowed to bypass the REVIEW.md check — this supports
-    manually created clips that were never part of a REVIEW.md.
+    JSON-backed clips are self-contained and use their manifest. Historical
+    REVIEW.md records still need the Markdown row check; manually created
+    records without either source continue through the single-upload path.
     """
     errors: List[str] = []
     for group in groups:
-        # Split into REVIEW.md-backed and self-contained clips
-        review_clips = [c for c in group if not clip_is_self_contained(c) or _clip_in_review(c)]
-        manual_clips = [c for c in group if clip_is_self_contained(c) and not _clip_in_review(c)]
+        json_clips = [c for c in group if c.get("manifestPath")]
+        legacy_clips = [c for c in group if not c.get("manifestPath")]
+        if json_clips and not legacy_clips:
+            continue
+
+        review_clips = [c for c in legacy_clips if not clip_is_self_contained(c) or _clip_in_review(c)]
+        manual_clips = [c for c in legacy_clips if clip_is_self_contained(c) and not _clip_in_review(c)]
         if not review_clips and not manual_clips:
-            # All clips are self-contained and not in REVIEW.md — that's fine
             continue
         if not review_clips:
-            # All clips are manual — no REVIEW.md needed
             continue
-        # Only validate clips that need REVIEW.md
-        review_path = Path(group[0]["reviewPath"])
+        review_path = Path(review_clips[0].get("reviewPath") or group[0].get("reviewPath") or "")
         try:
             available = {int(item["reviewIndex"]) for item in parse_review(review_path)}
         except (OSError, UnicodeError) as exc:
-            # If REVIEW.md can't be read but all clips are self-contained, allow it
             if manual_clips and not review_clips:
                 continue
             errors.append(f"cannot read REVIEW.md {review_path}: {exc}")
@@ -934,6 +1135,8 @@ def validate_groups(groups: List[List[Dict[str, Any]]]) -> List[str]:
 
 def _clip_in_review(clip: Dict[str, Any]) -> bool:
     """Best-effort check: is this clip's reviewIndex present in its REVIEW.md?"""
+    if clip.get("manifestPath"):
+        return False
     review_path = Path(clip.get("reviewPath", ""))
     if not review_path.exists():
         return False
@@ -1155,6 +1358,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--label", default="")
     p.add_argument("--batch-id", default="")
     p.set_defaults(func=import_review)
+
+    p = sub.add_parser("import-json", help="Import a generated clip JSON manifest into the short-id registry")
+    p.add_argument("--manifest", required=True, help="批次 manifest 或单个切片 metadata JSON")
+    p.add_argument("--review", default=None, help="仅作为人工审核链接保存，不参与机器解析")
+    p.add_argument("--source", default="")
+    p.add_argument("--tags", default="")
+    p.add_argument("--prefix", default="")
+    p.add_argument("--tid", type=int, default=None)
+    p.add_argument("--state", default=None)
+    p.add_argument("--label", default="")
+    p.add_argument("--batch-id", default="")
+    p.set_defaults(func=import_json)
 
     p = sub.add_parser("list", help="List registered clips")
     p.add_argument("--status", default="")

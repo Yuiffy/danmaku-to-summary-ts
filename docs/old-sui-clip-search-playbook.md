@@ -56,7 +56,7 @@ foreach ($root in $roots) {
 
 - 检查 MP4、SRT、JSON、封面和投稿文案是否齐全。
 - 检查成片实际时长、字幕首尾时间和关键句是否同步。
-- 先写 REVIEW，再用 `clip_upload_registry.py import-review` 获得短 ID；只入队用户确认过的 ID。
+- 新切片优先导入结构化 metadata JSON；历史任务仍可先写 REVIEW，再用 `clip_upload_registry.py import-review` 获得短 ID。只入队用户确认过的 ID。
 - 上传 worker 是单实例，优先 `enqueue`，不要直接调用 `batch_upload.py`。
 
 ## 6. 快速命令

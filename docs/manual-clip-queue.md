@@ -100,4 +100,4 @@ npm run manual:clips -- add --media "录播.flv" --start 100 --end 180 `
 npm run manual:clips -- worker --once
 ```
 
-切完后脚本会导入 REVIEW、取得上传短 ID并调用现有上传队列；仍由单实例上传 worker 负责 B 站重复检查、限流和状态回写。企微通知默认开启，可用 `--no-notify` 关闭。
+切完后脚本会导入成片 metadata JSON、取得上传短 ID并调用现有上传队列；`REVIEW.md` 只用于人工审核展示。仍由单实例上传 worker 负责 B 站重复检查、限流和状态回写。企微通知默认开启，可用 `--no-notify` 关闭。

@@ -11,7 +11,7 @@
 3. **候选池去重**：合并模型与本地信号，保留来源和分项分数，只折叠高度重合的窗口。当前默认最多保留 80 个本地候选，并向统一重排提供最多 100 个候选。
 4. **一次全局重排**：统一比较故事完整性、弹幕热度、持续追问、观点/反差信号、情绪事件和字幕完整度，最终一次输出最多 50 条。50 是硬上限，不要求凑满；时间覆盖和同一主题名额限制只有在任务策略明确要求时才启用。
 5. **边界校准**：先用快速 copy 两段式粗剪和字幕边界校准，保留起因、反应和收束。只有旧 SRT 明显错位时，对候选窗口重新 ASR；不要把全场自动流程改成精剪模式。
-6. **自动 REVIEW**：生成 MP4、SRT、封面、JSON 和 `REVIEW.md`，默认只登记短 ID，不自动上传。`plan-only` 只生成 `PLAN.json` 和 `REVIEW.md`。
+6. **自动 REVIEW**：生成 MP4、SRT、封面、逐片 metadata JSON、`UPLOAD_MANIFEST.json` 和 `REVIEW.md`；默认只登记短 ID，不自动上传。机器上传读取 JSON，`REVIEW.md` 只供人工审核。`plan-only` 只生成 `PLAN.json` 和 `REVIEW.md`。
 7. **可选残余召回**：仅在离线回归、漏选调查或模型故障排查时启用 `own_stream_residual_audit.js`；它排除已选窗口并输出 `RESIDUAL_REVIEW.md`，不进入日常最终清单，也不是自动投稿器。
 8. **人工确认入队**：确认任意候选后调用 `manual_clip_queue.js add`，选择 `small_sui` 或 `old_sui`，让统一 worker 负责烧录和封面。需要立即上传时才使用 `--auto-upload`。
 

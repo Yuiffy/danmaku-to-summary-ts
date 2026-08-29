@@ -1924,14 +1924,24 @@ function buildCoverTitle(title, coverText = '') {
         .trim();
 }
 
-function formatRecommendationScore(value = {}) {
+function getRecommendationScoreText(value = {}) {
     const rawScore = value.recommendationScore ?? value.recommendation?.score ?? value.score;
     const score = Number(rawScore);
     if (!Number.isFinite(score)) return '';
-    const rendered = Number.isInteger(score)
+    return Number.isInteger(score)
         ? String(score)
         : score.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+}
+
+function formatRecommendationScore(value = {}) {
+    const rendered = getRecommendationScoreText(value);
+    if (!rendered) return '';
     return ` | ${rendered}分`;
+}
+
+function buildRecommendationScoreLine(value = {}) {
+    const rendered = getRecommendationScoreText(value);
+    return rendered ? `   推荐分数: ${rendered}分` : null;
 }
 
 function buildReviewMarkdown(results, metadata) {
@@ -1958,7 +1968,11 @@ function buildReviewMarkdown(results, metadata) {
         const start = formatClock(result.window.start);
         const duration = formatClock(result.window.duration);
         const filePath = result.output.mediaPath;
-        lines.push(`${index + 1}. ${result.copy.title} | ${start} | ${duration} | ${filePath}${formatRecommendationScore(result)}`);
+        // Keep the upload manifest's path field pure.  Scores belong to the
+        // structured result and are rendered separately for human review.
+        lines.push(`${index + 1}. ${result.copy.title} | ${start} | ${duration} | ${filePath}`);
+        const scoreLine = buildRecommendationScoreLine(result);
+        if (scoreLine) lines.push(scoreLine);
         lines.push(`   来源: ${getSelectionSourceLabel(result)}`);
         if (uploadIds[index]) {
             lines.push(`   上传ID: ${uploadIds[index]}`);
@@ -1988,7 +2002,9 @@ function buildPlanReviewMarkdown(clips, metadata) {
     ].filter(line => line !== null);
     clips.forEach((clip, index) => {
         const sourceLabel = getSelectionSourceLabel(clip);
-        lines.push(`${index + 1}. ${clip.title} | ${formatClock(clip.start)}-${formatClock(clip.end)} | ${formatClock(clip.duration)} | ${clip.reason || ''}${formatRecommendationScore(clip)}`);
+        lines.push(`${index + 1}. ${clip.title} | ${formatClock(clip.start)}-${formatClock(clip.end)} | ${formatClock(clip.duration)} | ${clip.reason || ''}`);
+        const scoreLine = buildRecommendationScoreLine(clip);
+        if (scoreLine) lines.push(scoreLine);
         lines.push(`   来源: ${sourceLabel}`);
     });
     lines.push('');
@@ -2060,21 +2076,60 @@ function parseUploadRegistryOutput(output) {
     return clipIds.length ? { clipIds } : null;
 }
 
+function buildOwnUploadSettings(metadata, copy = {}) {
+    const source = `${metadata.streamerName || '主播'} 直播《${metadata.streamTitle || metadata.sourceFileName || '未知直播'}》${metadata.recordedAt || ''}`.trim();
+    const tags = Array.isArray(copy.tags) && copy.tags.length
+        ? copy.tags
+        : ['小岁', '虚拟主播', '直播切片', '岁AI切片', 'AI切片'];
+    const prefix = String(metadata.roomId || '') === '25788785'
+        ? '【小岁】'
+        : `【${metadata.streamerName || '切片'}】`;
+    return {
+        source,
+        tags: Array.from(new Set(tags.map(tag => String(tag || '').trim()).filter(Boolean))),
+        prefix,
+        tid: 21,
+        roomId: metadata.roomId || null,
+        streamerName: metadata.streamerName || null
+    };
+}
+
+function writeOwnUploadManifest(manifestPath, reviewPath, results, metadata) {
+    const settings = buildOwnUploadSettings(metadata, results[0]?.copy || {});
+    const manifest = {
+        version: 1,
+        type: 'bilibili_clip_upload_manifest',
+        generatedAt: new Date().toISOString(),
+        reviewPath,
+        roomId: metadata.roomId || null,
+        streamerName: metadata.streamerName || null,
+        recordedAt: metadata.recordedAt || null,
+        streamTitle: metadata.streamTitle || metadata.sourceFileName || null,
+        upload: settings,
+        clips: results.map((result, index) => ({
+            reviewIndex: index + 1,
+            metadataPath: result.output?.metadataPath || null
+        }))
+    };
+    fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+    return manifestPath;
+}
+
 function registerReviewForUpload(reviewPath, results, metadata) {
     if (!reviewPath || !results.length) return null;
-    const source = `${metadata.streamerName || '主播'} 直播《${metadata.streamTitle || metadata.sourceFileName || '未知直播'}》${metadata.recordedAt || ''}`.trim();
-    const tags = Array.isArray(results[0]?.copy?.tags) && results[0].copy.tags.length
-        ? results[0].copy.tags.join(',')
-        : '小岁,虚拟主播,直播切片,岁AI切片,AI切片';
-    const prefix = metadata.roomId === '25788785' ? '【小岁】' : `【${metadata.streamerName || '切片'}】`;
+    const settings = buildOwnUploadSettings(metadata, results[0]?.copy || {});
+    const manifestPath = metadata.uploadManifestPath
+        || path.join(path.dirname(reviewPath), `${path.basename(reviewPath, path.extname(reviewPath))}_UPLOAD_MANIFEST.json`);
+    writeOwnUploadManifest(manifestPath, reviewPath, results, metadata);
     const scriptPath = path.join(__dirname, 'clip_upload_registry.py');
     const args = [
         scriptPath,
-        'import-review',
+        'import-json',
+        '--manifest', manifestPath,
         '--review', reviewPath,
-        '--source', source,
-        '--tags', tags,
-        '--prefix', prefix,
+        '--source', settings.source,
+        '--tags', settings.tags.join(','),
+        '--prefix', settings.prefix,
         '--tid', '21',
         '--label', `${metadata.streamerName || '主播'} ${metadata.recordedAt || ''}`.trim()
     ];
@@ -2266,6 +2321,12 @@ async function generateOwnStreamClipJob({
         window,
         candidate: clip.base || null,
         copy,
+        upload: buildOwnUploadSettings({
+            roomId: info.roomId,
+            streamerName,
+            streamTitle: info.streamTitle,
+            recordedAt: info.recordedAt
+        }, copy),
         processing,
         uploadReady: Boolean(mediaResult?.path),
         output: {
@@ -2479,6 +2540,9 @@ async function generateOwnStreamClips(options = {}) {
         ? path.join(outputRoot, `REVIEW_${inputPlanBase}.md`)
         : path.join(outputRoot, 'REVIEW.md');
     reviewMetadata.reviewPath = reviewPath;
+    reviewMetadata.uploadManifestPath = inputPlanBase
+        ? path.join(outputRoot, `${inputPlanBase}_UPLOAD_MANIFEST.json`)
+        : path.join(outputRoot, 'UPLOAD_MANIFEST.json');
     fs.writeFileSync(planPath, JSON.stringify({
         version: 1,
         generatedAt: new Date().toISOString(),
@@ -2730,6 +2794,12 @@ async function generateOwnStreamClips(options = {}) {
             window,
             candidate: clip.base || null,
             copy,
+            upload: buildOwnUploadSettings({
+                roomId: info.roomId,
+                streamerName,
+                streamTitle: info.streamTitle,
+                recordedAt: info.recordedAt
+            }, copy),
             processing,
             uploadReady: Boolean(mediaResult?.path),
             output: {

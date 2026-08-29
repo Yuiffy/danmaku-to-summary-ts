@@ -41,6 +41,158 @@ class ClipUploadRegistryTests(unittest.TestCase):
             r"D:\clips\录制-25788785-20260828_fun_01.mp4",
         )
 
+    def test_json_manifest_supplies_upload_fields_without_review_parsing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            metadata_path = root / "clip.json"
+            media_path = root / "clip.mp4"
+            cover_path = root / "clip.jpg"
+            metadata_path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "roomId": "1820703922",
+                        "streamerName": "花礼 Harei",
+                        "recordedAt": "2026-08-28 20:00:00",
+                        "streamTitle": "测试直播",
+                        "upload": {
+                            "source": "花礼 Harei 直播《测试直播》2026-08-28 20:00:00",
+                            "prefix": "【小花】",
+                            "tags": ["花礼 Harei", "#芙娅之魂", "AI切片"],
+                            "tid": 21,
+                            "roomId": "1820703922",
+                            "streamerName": "花礼 Harei",
+                        },
+                        "window": {"start": 75, "duration": 90},
+                        "copy": {"title": "结构化标题", "description": "结构化简介"},
+                        "output": {
+                            "mediaPath": str(media_path),
+                            "metadataPath": str(metadata_path),
+                            "coverPath": str(cover_path),
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            manifest_path = root / "UPLOAD_MANIFEST.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "type": "bilibili_clip_upload_manifest",
+                        "reviewPath": str(root / "REVIEW.md"),
+                        "clips": [{"reviewIndex": 3, "metadataPath": str(metadata_path)}],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            parsed = registry.load_upload_manifest(manifest_path)
+
+        self.assertEqual(parsed[0]["reviewIndex"], 3)
+        self.assertEqual(parsed[0]["title"], "结构化标题")
+        self.assertEqual(parsed[0]["path"], str(media_path.resolve()))
+        self.assertEqual(parsed[0]["metadataPath"], str(metadata_path.resolve()))
+        self.assertEqual(parsed[0]["prefix"], "【小花】")
+        self.assertEqual(parsed[0]["tags"], ["花礼 Harei", "#芙娅之魂", "AI切片"])
+        self.assertEqual(parsed[0]["roomId"], "1820703922")
+
+    def test_json_import_registers_manifest_and_does_not_need_review_rows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            registry_path = runtime / "registry.json"
+            metadata_path = root / "clip.json"
+            manifest_path = root / "UPLOAD_MANIFEST.json"
+            media_path = root / "clip.mp4"
+            metadata_path.write_text(
+                json.dumps(
+                    {
+                        "upload": {
+                            "source": "花礼 Harei 直播《测试》",
+                            "prefix": "【小花】",
+                            "tags": ["花礼 Harei", "#芙娅之魂"],
+                            "roomId": "1820703922",
+                            "streamerName": "花礼 Harei",
+                        },
+                        "window": {"start": 10, "duration": 30},
+                        "copy": {"title": "JSON 标题", "description": "JSON 简介"},
+                        "output": {
+                            "mediaPath": str(media_path),
+                            "metadataPath": str(metadata_path),
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "type": "bilibili_clip_upload_manifest",
+                        "clips": [{"reviewIndex": 1, "metadataPath": str(metadata_path)}],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "manifest": str(manifest_path),
+                    "review": str(root / "missing-review.md"),
+                    "source": "",
+                    "tags": "",
+                    "prefix": "",
+                    "tid": 21,
+                    "state": None,
+                    "label": "",
+                    "batch_id": "",
+                },
+            )()
+            with patch.object(registry, "RUNTIME_DIR", runtime), patch.object(
+                registry, "REGISTRY_PATH", registry_path
+            ):
+                self.assertEqual(registry.import_json(args), 0)
+                saved = registry.load_json(registry_path, {})
+                clip = saved["clips"]["1"]
+                self.assertEqual(clip["sourceFormat"], "json")
+                self.assertEqual(clip["manifestPath"], str(manifest_path.resolve()))
+                self.assertEqual(clip["mediaPath"], str(media_path.resolve()))
+                self.assertEqual(clip["tags"], ["花礼 Harei", "#芙娅之魂"])
+                self.assertEqual(registry.validate_groups([[clip]]), [])
+
+    def test_worker_uses_json_manifest_instead_of_review_path(self):
+        clip = {
+            "id": 1,
+            "manifestPath": r"D:\clips\UPLOAD_MANIFEST.json",
+            "reviewPath": r"D:\clips\missing-review.md",
+            "statePath": r"D:\clips\upload_state.json",
+            "source": "花礼 Harei 直播《测试》",
+            "prefix": "【小花】",
+            "tags": ["花礼 Harei", "#芙娅之魂"],
+            "tid": 21,
+            "reviewIndex": 1,
+            "title": "JSON 标题",
+            "mediaPath": r"D:\clips\clip.mp4",
+            "roomId": "1820703922",
+            "streamerName": "花礼 Harei",
+        }
+        job = {"delay": 0, "rateLimitWait": 30, "rateLimitRetries": 1}
+        completed = subprocess.CompletedProcess([], 0, stdout="uploaded")
+        with patch.object(registry.subprocess, "run", return_value=completed) as run:
+            result = registry.run_batch([clip], job)
+
+        self.assertEqual(result.returncode, 0)
+        command = run.call_args.args[0]
+        self.assertIn("--manifest", command)
+        self.assertIn(clip["manifestPath"], command)
+        self.assertNotIn("--review", command)
+
     def make_fixture(self, count=2):
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)

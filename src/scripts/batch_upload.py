@@ -3,10 +3,12 @@
 B站批量切片投稿脚本（防重复版）
 
 用法:
-  python batch_upload.py --review <REVIEW.md路径> [选项]
+  python batch_upload.py --manifest <上传JSON路径> [选项]
+  python batch_upload.py --review <REVIEW.md路径> [选项]  # 历史兼容
 
 选项:
-  --review     REVIEW.md 路径（必需）
+  --manifest   结构化上传 manifest 或单个切片 metadata JSON
+  --review     历史 REVIEW.md 路径（JSON 模式下不参与机器解析）
   --source     来源描述（如：岁己SUI 直播《悠哉悠哉夜晚》2026-06-18）
   --tags       标签（逗号分隔，默认：小岁,虚拟主播,直播切片,岁AI切片）
   --prefix     标题前缀（默认：【小岁】）
@@ -49,6 +51,7 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src', 'scripts'))
 from config_loader import get_config, find_secrets_path
 from bilibili_upload import attach_video_to_collection, extract_room_id, get_collection_section_id
 from bilibili_api import Credential, video_uploader, Picture, video, get_client
+from clip_upload_manifest import load_upload_manifest
 import requests
 
 ACCOUNT_MID = 412141275
@@ -60,6 +63,10 @@ def infer_room_id(clips, explicit_room_id=None):
     """Resolve the source room from an explicit option or generated media path."""
     if explicit_room_id:
         return str(explicit_room_id).strip()
+    for clip in clips or []:
+        room_id = str(clip.get('roomId') or clip.get('room_id') or '').strip()
+        if room_id:
+            return room_id
     for clip in clips or []:
         room_id = extract_room_id(clip.get('path'))
         if room_id:
@@ -417,6 +424,18 @@ def parse_review(review_path):
     return clips
 
 
+def parse_upload_manifest(manifest_path, source='', tags=None, prefix='', tid=21, review_path=''):
+    """Parse structured upload JSON into the historical uploader clip shape."""
+    return load_upload_manifest(
+        manifest_path,
+        default_source=source,
+        default_tags=tags or [],
+        default_prefix=prefix,
+        default_tid=tid,
+        review_path=review_path,
+    )
+
+
 def find_existing_cover(clip):
     """Prefer generated title covers over a plain frame grab."""
     explicit = (clip.get('cover') or '').strip()
@@ -432,8 +451,10 @@ def find_existing_cover(clip):
             os.path.join(os.path.dirname(filepath), f'cover_{clip["idx"]:02d}_sui.jpg'),
             os.path.join(os.path.dirname(filepath), f'cover_{clip["idx"]:02d}.jpg'),
         ]
-        metadata_path = f'{base}.json'
-        if os.path.exists(metadata_path):
+        metadata_paths = [clip.get('metadataPath') or '', f'{base}.json']
+        for metadata_path in metadata_paths:
+            if not metadata_path or not os.path.exists(metadata_path):
+                continue
             try:
                 with open(metadata_path, 'r', encoding='utf-8') as f:
                     metadata = json.load(f)
@@ -451,12 +472,15 @@ def find_existing_cover(clip):
 def load_generated_description(clip):
     """读取切片阶段生成的简介，优先使用结构化元数据。"""
     filepath = (clip.get('path') or '').strip()
-    if not filepath:
+    explicit_metadata_path = (clip.get('metadataPath') or '').strip()
+    if not filepath and not explicit_metadata_path:
         return ''
 
     base, _ = os.path.splitext(filepath)
-    metadata_path = f'{base}.json'
-    if os.path.exists(metadata_path):
+    metadata_paths = [explicit_metadata_path, f'{base}.json' if filepath else '']
+    for metadata_path in metadata_paths:
+        if not metadata_path or not os.path.exists(metadata_path):
+            continue
         try:
             with open(metadata_path, 'r', encoding='utf-8') as f:
                 metadata = json.load(f)
@@ -466,6 +490,8 @@ def load_generated_description(clip):
         except (OSError, UnicodeError, json.JSONDecodeError, AttributeError):
             pass
 
+    if not filepath:
+        return ''
     copy_path = f'{base}_投稿文案.md'
     if os.path.exists(copy_path):
         try:
@@ -787,13 +813,14 @@ async def upload_one_guarded(
 
 async def main():
     parser = argparse.ArgumentParser(description='B站批量切片投稿（防重复版）')
-    parser.add_argument('--review', required=True, help='REVIEW.md 路径')
-    parser.add_argument('--source', required=True, help='来源描述')
-    parser.add_argument('--tags', default='小岁,虚拟主播,直播切片,岁AI切片', help='标签')
-    parser.add_argument('--prefix', default='【小岁】', help='标题前缀')
+    parser.add_argument('--review', default=None, help='历史 REVIEW.md 路径（JSON manifest 模式下不参与机器解析）')
+    parser.add_argument('--manifest', default=None, help='结构化上传 manifest 或单个切片 metadata JSON')
+    parser.add_argument('--source', default='', help='来源描述')
+    parser.add_argument('--tags', default='', help='标签')
+    parser.add_argument('--prefix', default='', help='标题前缀')
     parser.add_argument('--streamer-name', default=None, help='主播名，用于合集路由')
     parser.add_argument('--room-id', default=None, help='直播间号，用于合集路由；未提供时从媒体路径识别')
-    parser.add_argument('--tid', type=int, default=21, help='分区ID')
+    parser.add_argument('--tid', type=int, default=None, help='分区ID')
     parser.add_argument('--delay', type=int, default=30, help='上传间隔秒数')
     parser.add_argument('--skip', default='', help='跳过序号（逗号分隔）')
     parser.add_argument('--only', default='', help='只传指定序号（逗号分隔）')
@@ -804,7 +831,48 @@ async def main():
     parser.add_argument('--rate-limit-retries', type=int, default=DEFAULT_RATE_LIMIT_RETRIES, help='B站提示上传过快后的最大重试次数')
     args = parser.parse_args()
 
-    tags = [t.strip() for t in args.tags.split(',') if t.strip()]
+    if not args.review and not args.manifest:
+        parser.error('必须提供 --manifest 或 --review')
+
+    tag_override = [t.strip() for t in args.tags.split(',') if t.strip()]
+    if args.manifest:
+        try:
+            clips = parse_upload_manifest(
+                args.manifest,
+                source=args.source,
+                tags=tag_override,
+                prefix=args.prefix,
+                tid=args.tid or 21,
+                review_path=args.review or '',
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            print(f'[ERROR] 无法读取上传 JSON: {exc}')
+            return 1
+        if not clips:
+            print('[ERROR] 上传 JSON 中未找到切片')
+            return 1
+        args.source = args.source or clips[0].get('source') or ''
+        args.prefix = args.prefix or clips[0].get('prefix') or '【小岁】'
+        tags = tag_override or clips[0].get('tags') or ['小岁', '虚拟主播', '直播切片', '岁AI切片']
+        args.tid = args.tid or int(clips[0].get('tid') or 21)
+        args.streamer_name = args.streamer_name or clips[0].get('streamerName') or None
+        args.room_id = args.room_id or clips[0].get('roomId') or None
+        args.review = args.review or clips[0].get('reviewPath') or args.manifest
+        print(f"[INFO] 从上传 JSON 解析到 {len(clips)} 个切片: {args.manifest}")
+    else:
+        clips = parse_review(args.review)
+        if not clips:
+            print("[ERROR] REVIEW.md 中未找到切片")
+            return 1
+        if not args.source:
+            print('[ERROR] REVIEW.md 模式必须提供 --source')
+            return 1
+        args.prefix = args.prefix or '【小岁】'
+        tags = tag_override or ['小岁', '虚拟主播', '直播切片', '岁AI切片']
+        args.tid = args.tid or 21
+        print(f"[INFO] 从 REVIEW.md 解析到 {len(clips)} 个切片")
+
+    args.tags = ','.join(tags)
     skip_set = set()
     if args.skip:
         skip_set = {int(x) for x in args.skip.split(',') if x.strip()}
@@ -812,12 +880,6 @@ async def main():
     if args.only:
         only_set = {int(x) for x in args.only.split(',') if x.strip()}
 
-    # 解析 REVIEW.md
-    clips = parse_review(args.review)
-    if not clips:
-        print("[ERROR] REVIEW.md 中未找到切片条目")
-        sys.exit(1)
-    print(f"[INFO] 从 REVIEW.md 解析到 {len(clips)} 个切片")
     review_titles = {f"{args.prefix}{clip['title']}" for clip in clips}
 
     # 状态文件

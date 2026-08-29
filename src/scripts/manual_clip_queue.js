@@ -233,12 +233,13 @@ function appendReview(reviewPath, task, result) {
     return review;
 }
 
-function importReview(reviewPath, task) {
+function importJson(metadataPath, reviewPath, task) {
     const profile = resolveQueueProfile(task.profile);
     const source = buildUploadSource(task);
     const args = [
         path.join(projectRoot, 'src/scripts/clip_upload_registry.py'),
-        'import-review',
+        'import-json',
+        '--manifest', metadataPath,
         '--review', reviewPath,
         '--source', source,
         '--prefix', profile.titlePrefix,
@@ -374,6 +375,14 @@ async function cutTask(task, rootConfig, resourceSchedulerOverride = null) {
         uploadSource: buildUploadSource(task),
         window,
         copy: { title: task.title, coverText: task.coverText, description: task.description, tags: profile.tags },
+        upload: {
+            source: buildUploadSource(task),
+            prefix: profile.titlePrefix,
+            tags: profile.tags,
+            tid: Number(task.tid || 21),
+            roomId: task.roomId || '25788785',
+            streamerName: task.streamerName || '岁己SUI'
+        },
         uploadReady: true,
         output: {
             mediaPath: outputVideo,
@@ -416,7 +425,7 @@ async function processTask(task, queue, rootConfig, queuePath = defaultQueuePath
     task.outputVideo = result.output.mediaPath;
     task.outputSrt = result.output.srtPath;
     task.coverPath = result.output.coverPath;
-    const registry = importReview(task.reviewPath, task);
+    const registry = importJson(result.output.metadataPath, task.reviewPath, task);
     task.uploadIds = registry.clipIds;
     task.cutAt = nowIso();
     task.status = task.autoUpload ? 'pending_upload' : 'pending_review';
