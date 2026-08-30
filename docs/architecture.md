@@ -9,9 +9,9 @@ describes the current boundaries, not an aspirational directory tree.
 Mikufans / DDTV HTTP events
   -> src/app/main.ts
   -> src/services/webhook
-     -> lifecycle and segment collection
-     -> central summary queue
-     -> delayed-reply trigger
+     -> MikufansWebhookHandler (event ordering and segment lifecycle)
+     -> MikufansSummaryQueueWorker (central summary queue and process boundary)
+     -> delayed-reply trigger callback
   -> src/scripts/enhanced_auto_summary.js
      -> media preparation and workflow orchestration
      -> src/scripts/asr/*.js
@@ -33,8 +33,8 @@ production changes require an explicit, separately reviewed PM2 reload.
 | `src/core` | configuration, logging, errors, shared infrastructure | streamer-specific behavior |
 | `src/services` | long-running state, external adapters, business workflows | one-off batch operations |
 | `src/services/ai/goodnight` | room naming policy, reply prompts, generated-text validation | provider HTTP calls or file persistence |
-| `src/services/webhook/handlers/mikufans` | ASR resource admission and delayed-reply coordination | Bilibili publishing policy |
-| `src/services/bilibili/delayed-reply` | artifact resolution, summary composition, diagnostics | timers, HTTP routing, recording lifecycle |
+| `src/services/webhook/handlers/mikufans` | ASR resource admission, summary queue execution, and delayed-reply coordination callbacks | recording lifecycle state or Bilibili publishing policy |
+| `src/services/bilibili/delayed-reply` | artifact resolution, summary composition, diagnostics, timer lifecycle | HTTP routing, recording lifecycle |
 | `src/scripts` | compatible CLIs and the legacy media workflow | new long-running services |
 | `src/scripts/python` | Python ML/ASR implementations | Node process orchestration |
 | `local-scripts` | machine-, date-, or batch-specific work | reusable project behavior |
@@ -64,26 +64,34 @@ The project should not be converted to one language wholesale.
   as an API and do not duplicate configuration defaults on both sides.
 
 `tsconfig.build.json` rejects JavaScript so the production control plane cannot
-silently gain new JS. The root `tsconfig.json` still has `allowJs` during the
-legacy migration because TypeScript tests import existing workflow scripts.
+silently gain new JS and refuses to emit a partial `dist` when type errors are
+present. The root `tsconfig.json` still has `allowJs` during the legacy migration
+because TypeScript tests import existing workflow scripts.
 
 ## Current ratchets
 
 `npm run architecture:check` enforces these constraints:
 
 - production TypeScript files default to at most 1,200 physical lines;
-- the two remaining large stateful services have explicit budgets of 2,900 and
-  2,100 lines, which may only move downward;
+- the two remaining large stateful services have explicit budgets of 2,850 and
+  1,800 lines, which may only move downward;
 - JavaScript and Python cannot enter the production TypeScript directories;
+- `MikufansWebhookHandler` cannot import the legacy queue/workflow modules;
+- delayed-reply timers must stay in `DelayedReplyScheduler`;
 - source-like files cannot be added at repository root;
 - the service build must keep `allowJs: false`.
 
 The 2026-08-27 split moved artifact lookup, generation diagnostics, live-content
-composition, ASR worker ownership, and delayed-reply triggering out of the two
-largest services. Remaining work should split state transitions from effects:
+composition, ASR resource ownership, and delayed-reply triggering out of the two
+largest services. The follow-up extraction moved timer ownership and the summary
+queue's durable enqueue/process boundary as well, leaving the webhook handler
+focused on event ordering, reconnect handling, and session finalization:
 
-1. Extract delayed-reply scheduling/persistence from Bilibili publication.
-2. Extract the summary queue from Mikufans recording lifecycle handling.
+1. Keep delayed-reply timers in `DelayedReplyScheduler`; do not add timer
+   handles back to `DelayedReplyService`.
+2. Keep the summary queue and durable enqueue boundary in
+   `MikufansSummaryQueueWorker`; do not add queue or
+   child-process orchestration back to `MikufansWebhookHandler`.
 3. Migrate `enhanced_auto_summary.js` one stage at a time behind its existing
    CLI contract.
 4. Ratchet the two exception budgets after each extraction; do not create more
@@ -93,8 +101,9 @@ largest services. Remaining work should split state transitions from effects:
 
 - Recording event ordering, reconnects, or segment finalization:
   `MikufansWebhookHandler` and `LiveSessionManager`.
-- GPU/game admission or the persistent Python worker:
-  `MikufansAsrResourceController`.
+- Queue recovery, GPU/game admission, the persistent Python worker, or the
+  `enhanced_auto_summary.js` child process:
+  `MikufansSummaryQueueWorker` and `MikufansAsrResourceController`.
 - Room naming, goodnight prompt wording, or generated-reply validation:
   `GoodnightReplyPolicy`.
 - Finding generated goodnight files and registering delayed tasks:
@@ -106,6 +115,6 @@ largest services. Remaining work should split state transitions from effects:
   `DelayedReplyDiagnostics`.
 
 Before changing a production path, add a focused unit test at the owning module.
-Run `npm run verify:core` without touching `dist`. For a deploy candidate, build
+Run `npm run verify:core` (it includes `build:check`) without touching `dist`. For a deploy candidate, build
 to an isolated output directory and smoke-test on a non-production port before
 an explicitly approved PM2 reload.

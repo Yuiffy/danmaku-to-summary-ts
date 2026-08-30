@@ -5,9 +5,21 @@ const projectRoot = process.cwd();
 const productionRoots = ['src/app', 'src/core', 'src/services', 'src/utils', 'src/tools'];
 const defaultLineBudget = 1200;
 const lineBudgetExceptions: Record<string, number> = {
-  'src/services/bilibili/DelayedReplyService.ts': 2900,
-  'src/services/webhook/handlers/MikufansWebhookHandler.ts': 2100
+  'src/services/bilibili/DelayedReplyService.ts': 2850,
+  'src/services/webhook/handlers/MikufansWebhookHandler.ts': 1800
 };
+const boundaryRules: Array<{ relativePath: string; forbidden: RegExp; message: string }> = [
+  {
+    relativePath: 'src/services/webhook/handlers/MikufansWebhookHandler.ts',
+    forbidden: /whisper_queue_manager|speaker_once_registry|enhanced_auto_summary/,
+    message: 'webhook lifecycle handlers must call MikufansSummaryQueueWorker instead of legacy workflow modules'
+  },
+  {
+    relativePath: 'src/services/bilibili/DelayedReplyService.ts',
+    forbidden: /\b(?:setInterval|setTimeout|clearInterval|clearTimeout)\s*\(/,
+    message: 'delayed-reply timer ownership belongs in DelayedReplyScheduler'
+  }
+];
 const allowedRootCodeFiles = new Set([
   'drag_generate_comic.bat',
   'drag_generate_goodnight.bat',
@@ -80,6 +92,13 @@ function main(): void {
     }
   }
 
+  for (const rule of boundaryRules) {
+    const filePath = path.join(projectRoot, rule.relativePath);
+    if (fs.existsSync(filePath) && rule.forbidden.test(fs.readFileSync(filePath, 'utf8'))) {
+      violations.push(`${rule.relativePath}: ${rule.message}`);
+    }
+  }
+
   for (const entry of fs.readdirSync(projectRoot, { withFileTypes: true })) {
     if (!entry.isFile()) {
       continue;
@@ -92,10 +111,13 @@ function main(): void {
 
   const buildConfigPath = path.join(projectRoot, 'tsconfig.build.json');
   const buildConfig = JSON.parse(fs.readFileSync(buildConfigPath, 'utf8')) as {
-    compilerOptions?: { allowJs?: boolean };
+    compilerOptions?: { allowJs?: boolean; noEmitOnError?: boolean };
   };
   if (buildConfig.compilerOptions?.allowJs !== false) {
     violations.push('tsconfig.build.json: compilerOptions.allowJs must remain false');
+  }
+  if (buildConfig.compilerOptions?.noEmitOnError !== true) {
+    violations.push('tsconfig.build.json: compilerOptions.noEmitOnError must remain true');
   }
 
   const hotspots = sourceFiles

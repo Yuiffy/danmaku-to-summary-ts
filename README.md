@@ -55,6 +55,8 @@ Paraformer 支持 stock 和本地 fine-tuned model。`config/default.json` 保�
 danmaku-to-summary-ts/
 ├── src/app/main.ts                         # TypeScript 应用入口；构建后为 dist/app/main.js
 ├── src/services/webhook/                   # Webhook 服务和 DDTV / Mikufans / B站 API handlers
+│   └── handlers/mikufans/                  # 录播生命周期、队列 Worker、ASR 资源边界
+├── src/services/bilibili/delayed-reply/   # 延迟回复调度、产物解析和诊断
 ├── src/scripts/enhanced_auto_summary.js    # 完整媒体处理流程
 ├── src/scripts/README.md                    # 脚本目录和迁移约定
 ├── src/scripts/asr/                        # backend 路由、统一结果、队列和 speaker-once
@@ -207,7 +209,7 @@ Mikufans 直播事件
     ▼
 [1] TypeScript Webhook 服务 (dist/app/main.js, POST /mikufans)
     │  - MikufansWebhookHandler 归一化事件并持久化任务
-    │  - 中央队列串行占用 ASR/GPU 槽位
+    │  - MikufansSummaryQueueWorker 串行占用 ASR/GPU 槽位并启动媒体子进程
     │
     ▼
 [2] 完整媒体流水线 (src/scripts/enhanced_auto_summary.js)
@@ -238,6 +240,12 @@ Mikufans 直播事件
     ▼
 ✅ 完成
 ```
+
+Mikufans 的事件顺序、断流重连和分段收口由 `MikufansWebhookHandler` 管理；
+中央总结队列、GPU/游戏资源准入、ASR 常驻进程和
+`enhanced_auto_summary.js` 子进程由 `MikufansSummaryQueueWorker` 管理。
+handler 通过 Worker 的入队接口提交媒体任务，不直接加载旧 JS 队列模块；两者通过窄回调通信，
+后续不要把队列或子进程控制逻辑重新放回事件处理器。
 
 ASR/speaker 的详细状态机、sidecar 和验证方法见 [docs/asr-backends.md](docs/asr-backends.md)。
 
@@ -414,6 +422,26 @@ drag_generate_comic.bat                      ← 生成漫画图片
 
 ---
 
+## 🧪 验证与架构门禁
+
+控制面和结构约束：
+
+```powershell
+npm run verify:core
+```
+
+其中包含 TypeScript 类型检查、生产构建只读检查、生产目录架构检查和串行 Jest。Python ASR、说话人和
+媒体工具保持独立运行时，使用：
+
+```powershell
+npm run test:python
+npm run verify:all
+```
+
+`verify:all` 不构建或覆盖 `dist`；线上 PM2 进程只有在单独审核后才允许 reload。
+
+---
+
 ## 📊 监控与日志
 
 ### PM2 日志
@@ -500,6 +528,10 @@ MIT License
 
 > **注意**：本项目仍在积极开发中，配置格式可能随版本更新而变化，升级前请备份配置文件。
 
-## 未来路线
+## 维护约定
 
-本项目开发得比较随意，本来是分别开发的整理输入给AI的文本的ts，和语音识别的py，然后为了全自动，合到一起了。所以代码里又有ts又有py。后续有机会的话重构？
+项目不强行统一成一种语言：TypeScript 负责 HTTP、生命周期、队列、调度和长期运行的
+控制面；Python 负责 ASR、说话人识别、模型运行时及 Python 原生媒体工具；现有 JavaScript
+保留为媒体工作流兼容层，并在修改时逐步抽出可测试的 TypeScript 模块。跨语言调用只通过
+命令行参数、环境变量、JSON sidecar 或明确的 sentinel 行完成。新增长期服务不要放回
+`src/scripts`，详细边界和迁移顺序见 [docs/architecture.md](docs/architecture.md)。

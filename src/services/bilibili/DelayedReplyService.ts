@@ -20,6 +20,7 @@ import { WeChatWorkNotifier } from '../notification/WeChatWorkNotifier';
 import { DelayedReplyArtifactResolver } from './delayed-reply/DelayedReplyArtifactResolver';
 import { DelayedReplyDiagnostics } from './delayed-reply/DelayedReplyDiagnostics';
 import { LiveContentSummaryComposer } from './delayed-reply/LiveContentSummaryComposer';
+import { DelayedReplyScheduler } from './delayed-reply/DelayedReplyScheduler';
 
 /**
  * 生成UUID
@@ -49,10 +50,8 @@ export class DelayedReplyService implements IDelayedReplyService {
   /** Initial active-live defer window before waiting for a final recording replacement. */
   private static readonly MAX_ACTIVE_LIVE_DEFER_COUNT = 60;
   private tasks: Map<string, DelayedReplyTask> = new Map();
-  private timers: Map<string, NodeJS.Timeout> = new Map();
+  private readonly scheduler: DelayedReplyScheduler;
   private isRunningFlag = false;
-  private checkInterval: NodeJS.Timeout | null = null;
-  private countdownInterval: NodeJS.Timeout | null = null;
   private notifier?: WeChatWorkNotifier;
   private addTaskLocks: Map<string, Promise<string>> = new Map();
   private executingTaskIds: Set<string> = new Set();
@@ -65,6 +64,11 @@ export class DelayedReplyService implements IDelayedReplyService {
     notifier?: WeChatWorkNotifier
   ) {
     this.notifier = notifier;
+    this.scheduler = new DelayedReplyScheduler({
+      checkDueTasks: () => this.checkDueTasks(),
+      logCountdown: () => this.logCountdown(),
+      executeTask: task => this.executeDelayedReply(task)
+    });
   }
 
   /**
@@ -102,23 +106,7 @@ export class DelayedReplyService implements IDelayedReplyService {
 
     this.logger.info('停止延迟回复服务');
 
-    // 停止定时检查
-    if (this.checkInterval) {
-      clearInterval(this.checkInterval);
-      this.checkInterval = null;
-    }
-
-    // 停止倒计时预告
-    if (this.countdownInterval) {
-      clearInterval(this.countdownInterval);
-      this.countdownInterval = null;
-    }
-
-    // 清除所有定时器
-    for (const [taskId, timer] of this.timers.entries()) {
-      clearTimeout(timer);
-      this.timers.delete(taskId);
-    }
+    this.scheduler.stop();
 
     this.isRunningFlag = false;
     this.logger.info('延迟回复服务已停止');
@@ -472,12 +460,7 @@ export class DelayedReplyService implements IDelayedReplyService {
    */
   async removeTask(taskId: string): Promise<void> {
     try {
-      // 清除定时器
-      const timer = this.timers.get(taskId);
-      if (timer) {
-        clearTimeout(timer);
-        this.timers.delete(taskId);
-      }
+      this.scheduler.cancel(taskId);
 
       // 删除任务
       this.tasks.delete(taskId);
@@ -823,18 +806,7 @@ export class DelayedReplyService implements IDelayedReplyService {
    * 启动定时检查
    */
   private startCheckInterval(): void {
-    // 每30秒检查一次
-    this.checkInterval = setInterval(() => {
-      this.checkDueTasks();
-    }, 30000);
-
-    // 每分钟倒计时预告
-    this.countdownInterval = setInterval(() => {
-      this.logCountdown();
-    }, 60000);
-
-    // 立即检查一次
-    this.checkDueTasks();
+    this.scheduler.start();
   }
 
   /**
@@ -933,20 +905,7 @@ export class DelayedReplyService implements IDelayedReplyService {
    * 安排任务
    */
   private scheduleTask(task: DelayedReplyTask): void {
-    const existingTimer = this.timers.get(task.taskId);
-    if (existingTimer) {
-      clearTimeout(existingTimer);
-      this.timers.delete(task.taskId);
-    }
-
-    const now = Date.now();
-    const delay = Math.max(0, task.scheduledTime.getTime() - now);
-
-    const timer = setTimeout(async () => {
-      await this.executeDelayedReply(task);
-    }, delay);
-
-    this.timers.set(task.taskId, timer);
+    this.scheduler.schedule(task);
   }
 
   /**
@@ -1878,11 +1837,7 @@ export class DelayedReplyService implements IDelayedReplyService {
         return;
       }
 
-      const timer = this.timers.get(task.taskId);
-      if (timer) {
-        clearTimeout(timer);
-        this.timers.delete(task.taskId);
-      }
+      this.scheduler.cancel(task.taskId);
 
       if (task.status === 'waiting_comic') {
         if (this.isTaskExpiredForCurrentStatus(task)) {

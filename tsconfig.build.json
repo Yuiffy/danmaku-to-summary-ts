@@ -33,7 +33,7 @@
       "@tests/*": ["tests/*"]
     },
     "noEmit": false,
-    "noEmitOnError": false,
+    "noEmitOnError": true,
     "resolveJsonModule": true,
     "allowJs": false,
     "checkJs": false,

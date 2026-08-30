@@ -1010,7 +1010,6 @@ describe('own_stream_clipper', () => {
     expect(production.ownStreamClips.roomIds).toEqual([
       '25788785',
       '1820703922',
-      '1713546334',
       '1727074031',
       '23771092'
     ]);
