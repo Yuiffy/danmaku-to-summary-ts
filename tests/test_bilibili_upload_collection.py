@@ -9,7 +9,7 @@ class CollectionRoutingTests(unittest.TestCase):
         self.config = {
             "bilibili": {
                 "upload": {
-                    "collectionSectionId": 9974272,
+                    "collectionSectionId": 10015117,
                     "collectionRouting": {
                         "fuyasoul": {
                             "seasonId": 8956269,
@@ -32,6 +32,12 @@ class CollectionRoutingTests(unittest.TestCase):
                             "roomIds": ["25788785"],
                             "markers": ["岁己", "小岁", "sui"],
                         },
+                        "yua": {
+                            "seasonId": 8977005,
+                            "sectionId": 10015117,
+                            "roomIds": ["22470216"],
+                            "markers": ["悠亚Yua", "悠亚", "小悠", "Yua"],
+                        },
                         "other": {"sectionId": 9974272},
                     },
                 }
@@ -42,6 +48,36 @@ class CollectionRoutingTests(unittest.TestCase):
         self.assertEqual(
             get_collection_section_id(self.config, room_id="25788785"),
             9482593,
+        )
+
+    def test_unconfigured_context_uses_ai_auto_collection_fallback(self):
+        config = {
+            "bilibili": {
+                "upload": {
+                    "collectionSectionId": 10015117,
+                }
+            }
+        }
+        self.assertEqual(
+            get_collection_section_id(config, streamer_name="未配置主播"),
+            10015117,
+        )
+
+    def test_yua_room_routes_to_standalone_collection(self):
+        self.assertEqual(
+            get_collection_section_id(self.config, room_id="22470216"),
+            10015117,
+        )
+
+    def test_yua_route_wins_when_source_mentions_sui(self):
+        self.assertEqual(
+            get_collection_section_id(
+                self.config,
+                room_id="22470216",
+                streamer_name="小悠",
+                source_desc="小悠 直播《提到岁己的聊天》2026-08-31",
+            ),
+            10015117,
         )
 
     def test_activity_rooms_route_to_new_collection(self):

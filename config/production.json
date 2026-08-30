@@ -1669,7 +1669,8 @@
       "25788785",
       "1820703922",
       "1727074031",
-      "23771092"
+      "23771092",
+      "22470216"
     ],
     "maxCandidates": 80,
     "maxClips": 50,
@@ -1781,7 +1782,7 @@
     },
     "anchors": {},
     "upload": {
-      "collectionSectionId": 9974272,
+      "collectionSectionId": 10015117,
       "collectionRouting": {
         "fuyasoul": {
           "seasonId": 8956269,
@@ -1794,6 +1795,12 @@
           "sectionId": 9482593,
           "roomIds": ["25788785"],
           "markers": ["岁己", "小岁", "sui"]
+        },
+        "yua": {
+          "seasonId": 8977005,
+          "sectionId": 10015117,
+          "roomIds": ["22470216"],
+          "markers": ["悠亚Yua", "悠亚", "小悠", "Yua"]
         },
         "other": {
           "seasonId": 8941979,
