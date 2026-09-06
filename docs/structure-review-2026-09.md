@@ -277,3 +277,38 @@ the same content. Log: `tmp/migration-release-verify.log`.
 The real FFmpeg smoke passed with a five-second NVENC/CUDA subtitle clip,
 two-stage copy, no fallback and 1,161 detected subtitle pixels. The new compiled
 duration probe agreed with ffprobe. Log: `tmp/migration-media-smoke.log`.
+
+### Four-phase deployment and production handover
+
+The four-phase application release was pushed to `feature/use-sense-voice` and
+deployed at `2026-09-06T08:46:03.7093316Z` (16:46 Asia/Shanghai). Deployed commit:
+`b2f31d5704a676c7f459b423719289e86c274356`. The compiled workflow release is
+`93e1ff652d21a9a05c7c`; all 79 staged JavaScript/JSON runtime files matched the
+tested service output, and both source CLI runtime checks passed.
+
+- Only `danmaku-webhook` was restarted, changing PID 132852 to 146404. Port 12523
+  was preserved. The switch and verification took 6.63 seconds; this remains a
+  brief restart of a single fork-mode process, not a zero-downtime deployment.
+- All 2,266 delayed-task records were restored. The pending task retained its
+  identity, status and scheduled deadline. The task file, summary queue,
+  production configuration, external history and workflow pointer had identical
+  hashes before and after the switch.
+- All 16 legacy reply-history identities were preserved in repository `data`.
+  The original sibling history remains intact, with migration backups and an
+  import digest under `data/runtime/reply-history-migration/`.
+- Other PM2 process IDs and states were unchanged. `/health`, `/status`, the task
+  endpoint and the registered Mikufans route were verified after restart.
+
+The real waiting task `5bdf05db-04a2-445b-9057-f65468c802cc` resumed automatically:
+check 8 ran at `2026-09-06T08:47:25.731Z` and check 9 at
+`2026-09-06T08:49:26.075Z`. The broadcaster's matching dynamic was still absent,
+so the task remained pending with zero retries, no error and its next check at
+`2026-09-06T08:51:26.075Z`. The new process remained healthy; there were no new
+timestamped ERROR entries during this observation. This confirms production
+scheduler handover; successful publication is covered by the mocked integration
+tests, not by a synthetic production comment.
+
+The old runtime, state snapshots and exact deployment report are retained under
+`build/deploy-backups/20260906T084555Z/`. `tools/deploy-webhook.ps1` provides the
+tested staging checks, pending-task deadline guard, history verification and
+automatic runtime rollback if deployment verification fails.
