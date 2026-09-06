@@ -1,10 +1,12 @@
+import hashlib
+import json
 import math
 import os
 import subprocess
 import sys
 import time
 
-from sensevoice_runtime import ResourcePeakMonitor, log_progress, suppress_model_output
+from sensevoice_runtime import ResourcePeakMonitor, log_progress, set_timing, suppress_model_output
 
 
 def _load_audio_with_ffmpeg(audio_path):
@@ -258,6 +260,31 @@ def build_speaker_reference_prototypes(
     return prototypes.to("cpu"), [len(indices) for indices in supported_clusters]
 
 
+def _speaker_reference_cache_key(references, device, parameters):
+    fingerprints = {}
+    for ref in references:
+        if not isinstance(ref, dict):
+            continue
+        audio_path = ref.get("audio_path") or ref.get("path")
+        if not audio_path:
+            continue
+        path = os.path.normcase(os.path.realpath(audio_path))
+        if path in fingerprints:
+            continue
+        try:
+            digest = hashlib.sha256()
+            with open(path, "rb") as audio_file:
+                for block in iter(lambda: audio_file.read(1024 * 1024), b""):
+                    digest.update(block)
+            fingerprints[path] = digest.hexdigest()
+        except OSError:
+            return None
+    return json.dumps(
+        [references, device, parameters, fingerprints],
+        ensure_ascii=False, sort_keys=True, default=str,
+    )
+
+
 def build_speaker_reference_centroids(
     spk_model_obj,
     references,
@@ -268,9 +295,27 @@ def build_speaker_reference_centroids(
     prototype_min_support_chunks=2,
     gpu_throttle=None,
     payload=None,
+    runtime_cache=None,
 ):
+    cache = runtime_cache if isinstance(runtime_cache, dict) else None
+    if isinstance(payload, dict):
+        set_timing(payload, "reference_cache_hit", 0)
     if not isinstance(references, list) or not references:
+        if cache is not None:
+            cache.pop("speaker_reference_centroids", None)
         return None
+
+    parameters = (batch_size, prototype_merge_threshold, max_prototypes, prototype_min_support_chunks)
+    cache_key = None
+    if cache is not None:
+        cache_key = _speaker_reference_cache_key(references, device, parameters)
+        entry = cache.get("speaker_reference_centroids")
+        if cache_key is not None and entry and entry["model"] is spk_model_obj and entry["key"] == cache_key:
+            if isinstance(payload, dict):
+                set_timing(payload, "reference_cache_hit", 1)
+            log_progress("Speaker reference prototypes reused from the resident cache")
+            return entry["centroids"]
+        cache.pop("speaker_reference_centroids", None)
 
     import torch
 
@@ -326,6 +371,9 @@ def build_speaker_reference_centroids(
         gpu_throttle=gpu_throttle,
         payload=payload,
         stage="说话人参考嵌入 (CUDA)",
+    )
+    complete_embeddings = len(embeddings) == len(batched_chunks) and all(
+        embedding is not None for embedding in embeddings
     )
     for (speaker, state), embedding in zip(chunk_identities, embeddings):
         if embedding is not None:
@@ -448,6 +496,15 @@ def build_speaker_reference_centroids(
             f"prototypes={len(state_prototypes)}, "
             f"states={state_summaries}"
         )
+    # Do not retain partial embeddings or a reference set replaced during extraction.
+    if (
+        cache is not None and cache_key is not None and centroids
+        and complete_embeddings
+        and cache_key == _speaker_reference_cache_key(references, device, parameters)
+    ):
+        cache["speaker_reference_centroids"] = {
+            "model": spk_model_obj, "key": cache_key, "centroids": centroids,
+        }
     return centroids or None
 
 

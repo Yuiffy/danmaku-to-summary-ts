@@ -67,6 +67,80 @@ def get_safe_asr_segment_s(payload):
     return min(requested, cap)
 
 
+def transcribe_sensevoice_batches(
+    model, payload, chunks, metas, punc_model, device, gpu_throttle=None,
+):
+    """Keep one result per VAD chunk, with bounded batches and a scalar fallback."""
+    if len(chunks) != len(metas):
+        raise ValueError("SenseVoice audio/metadata count mismatch")
+    requested_size = max(1, int(payload.get("inference_batch_size", 8) or 8))
+    timings = payload.setdefault("_timings", {})
+    output = []
+    offset = 0
+    stage = "SenseVoice batch (CUDA)" if str(device).startswith("cuda") else "SenseVoice batch (CPU)"
+    while offset < len(chunks):
+        if gpu_throttle:
+            gpu_throttle.wait_if_busy(stage)
+        duration_limit = float(payload.get("batch_size_s", 300) or 300)
+        choose_batch = getattr(gpu_throttle, "batch_size_for", None)
+        if callable(choose_batch):
+            duration_limit = float(choose_batch("sensevoice", duration_limit))
+        size = 1 if payload.get("_sensevoice_batch_disabled") else requested_size
+        end = offset
+        longest = 0.0
+        while end < min(len(chunks), offset + size):
+            longest = max(longest, float(metas[end]["end"]) - float(metas[end]["start"]))
+            if end > offset and longest * (end - offset + 1) > duration_limit:
+                break
+            end += 1
+        count = end - offset
+        is_batch = count > 1
+        counter = "sensevoice_batch_calls" if is_batch else "sensevoice_single_calls"
+        timings[counter] = timings.get(counter, 0) + 1
+        try:
+            with ResourcePeakMonitor(
+                payload, stage,
+                gpu_throttle=gpu_throttle if str(device).startswith("cuda") else None,
+            ):
+                with StageTimeout(
+                    payload.get("batch_timeout_s", payload.get("segment_timeout_s", 90) * count),
+                    "SenseVoice batch",
+                ):
+                    with suppress_model_output():
+                        results = generate_with_optional_hotword(
+                            model, payload, "sensevoice",
+                            input=chunks[offset:end] if is_batch else chunks[offset],
+                            language=payload.get("language", "auto"),
+                            use_itn=bool(payload.get("use_itn", True)),
+                            batch_size=count,
+                            batch_size_s=duration_limit,
+                        )
+            if isinstance(results, dict) and not is_batch:
+                results = [results]
+            if (
+                not isinstance(results, list)
+                or len(results) != count
+                or any(not isinstance(item, dict) or "text" not in item for item in results)
+            ):
+                raise ValueError("SenseVoice must return exactly one text result per input")
+        except Exception as exc:
+            if not is_batch:
+                raise
+            log_progress(f"SenseVoice batch failed; retrying individual chunks: {exc}")
+            payload["_sensevoice_batch_disabled"] = True
+            timings["sensevoice_batch_fallbacks"] = timings.get("sensevoice_batch_fallbacks", 0) + 1
+            # Retry after leaving the exception scope so failed CUDA tensors can be freed.
+            continue
+        for meta, result in zip(metas[offset:end], results):
+            items = normalize_model_results_with_meta([result], meta, punc_model)
+            for item in items:
+                if is_meaningless_asr_text(item.get("text", "")):
+                    item["speaker"] = None
+            output.extend(items)
+        offset = end
+    return output
+
+
 def import_vllm_pipeline(fail_fn=None):
     try:
         import vllm  # noqa: F401
@@ -271,6 +345,7 @@ def transcribe_segmented_backend(payload, audio_path, device, backend_name, Auto
     backend_started = time.perf_counter()
     payload["_timings"] = {}
     payload["_resource_peaks"] = {}
+    payload.pop("_sensevoice_batch_disabled", None)
     enable_speaker = bool(payload.get("enable_speaker", False))
     payload["_speaker_processing"] = {
         "mode": "disabled" if not enable_speaker else str(payload.get("speaker_detection_mode") or "auto"),
@@ -457,6 +532,16 @@ def transcribe_segmented_backend(payload, audio_path, device, backend_name, Auto
         def flush_batch():
             nonlocal batch_audio, batch_meta, batch_duration, raw_result, transcribed_segments
             if not batch_audio:
+                return
+            if backend_name == "sensevoice":
+                raw_result.extend(transcribe_sensevoice_batches(
+                    model, payload, batch_audio, batch_meta, punc_model_obj, device, gpu_throttle,
+                ))
+                transcribed_segments += len(batch_audio)
+                log_progress(f"SenseVoice progress: {transcribed_segments}/{total_segments}")
+                batch_audio = []
+                batch_meta = []
+                batch_duration = 0.0
                 return
             if backend_name == "paraformer" and len(batch_audio) > 1 and not is_finetuned_paraformer:
                 transcribed_segments += len(batch_audio)

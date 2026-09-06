@@ -881,6 +881,7 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
                     ),
                     gpu_throttle=gpu_throttle,
                     payload=payload,
+                    runtime_cache=cache,
                 )
                 set_timing(payload, "reference_embedding_s", time.perf_counter() - reference_started)
                 return centroids

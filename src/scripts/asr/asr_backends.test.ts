@@ -3,6 +3,13 @@ const productionConfig = require('../../../config/production.json');
 const net = require('net');
 
 describe('asr_backends', () => {
+  test('defaults SenseVoice to bounded real batches and supports scalar rollback', () => {
+    expect(asr.getAsrConfig({}).sensevoice.inference_batch_size).toBe(8);
+    expect(asr.getAsrConfig({ asr: { sensevoice: { inference_batch_size: 1 } } })
+      .sensevoice.inference_batch_size).toBe(1);
+    expect(asr.getAsrConfig(productionConfig).sensevoice.inference_batch_size).toBe(8);
+  });
+
   test('merges common and backend-specific resource guard settings', () => {
     const config = asr.getAsrConfig({
       asr: {

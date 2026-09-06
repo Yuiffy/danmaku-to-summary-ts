@@ -122,6 +122,7 @@ const DEFAULT_ASR_CONFIG = {
         use_itn: true,
         vad_max_single_segment_time_ms: 60000,
         batch_size_s: 300,
+        inference_batch_size: 8,
         batch_size_threshold_s: 60,
         process_timeout_s: 7200,
         gpu_throttle: DEFAULT_GPU_THROTTLE,

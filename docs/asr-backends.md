@@ -69,6 +69,7 @@ RTX 5080 正常时，`get_arch_list()` 应包含 `sm_120`。
       "device": "cuda",
       "use_itn": true,
       "max_vad_segment_s": 8,
+      "inference_batch_size": 8,
       "merge_length_s": 8,
       "enable_speaker": false,
       "preset_spk_num": null,
@@ -85,6 +86,10 @@ node src/scripts/enhanced_auto_summary.js --asr-backend sensevoice "D:/path/to/v
 ```
 
 SenseVoice 通过 `src/scripts/python/sensevoice_transcribe.py` 子进程运行，主程序通过 JSON stdin/stdout 通信。
+
+从 2026-09-06 起，SenseVoice 的 `inference_batch_size` 默认是 8，表示真正送入模型的最大音频段数。每批还受 `batch_size_s` 和 GPU 压力限制，按最长段乘段数限制 padding 占用；每个输出仍使用对应输入的时间区间。批量调用失败或结果数量/格式不匹配时，当前请求自动退回逐段处理。需要原来的逐段行为时设为 `1`。`timings` 中的 `sensevoice_batch_calls`、`sensevoice_single_calls`、`sensevoice_batch_fallbacks` 可用于核查实际执行路径。
+
+批量计算不承诺逐字与单段计算一致。本次参考集 CER 相同，但长录播存在少量文字和事件差异，详细范围见 [优化验证记录](asr-optimization-validation-2026-09-06.md)。
 
 ## 启用 Fun-ASR-Nano
 
@@ -144,6 +149,8 @@ node src/scripts/enhanced_auto_summary.js "D:/path/to/video.flv" --asr-backend p
 - 当前 JS adapter 不向 Paraformer `generate()` 传入 `hotword`；配置词条由 `phoneme_correction` 和统一 corrections 处理。Fun-ASR-Nano / vLLM 路径当前才会在推理时传入 `hotwords`。
 
 中央 Mikufans 队列会启动一个仅监听 `127.0.0.1`、带随机令牌的 Paraformer 常驻 worker。连续任务复用主模型、标点和独立 CAM++ cache；队列清空或父队列检测到 GPU 繁忙时终止 worker并释放显存。单独运行 `enhanced_auto_summary.js` 时会先尝试 worker，连接不可用则回退到一次性 Python 进程。
+
+常驻 worker 现在也复用参考声纹 prototypes，`timings.reference_cache_hit=1` 表示本次命中。缓存只保留最近一组，绑定实际 speaker 模型实例、device、参考配置、所有参考文件的 SHA-256 内容摘要和提取/prototype 参数。修改参考内容（即使大小与 mtime 未变）、名字、state、截取区间或相关参数后会重建；失败、不完整嵌入或提取过程中被替换的参考不会缓存。匹配阈值变化不需要重新提取声纹。worker 释放时一并清空，不写持久化 embedding 文件。
 
 ### Adaptive speaker 状态机
 

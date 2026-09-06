@@ -2256,6 +2256,7 @@
       "device": "cuda",
       "use_itn": true,
       "max_vad_segment_s": 8,
+      "inference_batch_size": 8,
       "merge_length_s": 8,
       "process_timeout_s": 7200,
       "gpu_throttle": {
