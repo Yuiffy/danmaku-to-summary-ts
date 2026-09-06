@@ -19,6 +19,7 @@ Mikufans / DDTV events -> WebhookService (one running process, one task owner)
      -> ai_comic_generator.py
         -> comic/storyboard.py / comic/prompts.py
         -> comic/screenshots.py -> local FFmpeg and image sheets
+        -> comic/image_inputs.py / image_routes.py -> injected provider adapters
         -> provider calls and image output
   -> generated JSON / Markdown / image sidecars and stdout sentinels
   -> MikufansDelayedReplyCoordinator
@@ -56,6 +57,7 @@ must be updated before using the new task-list/cancellation adapter.
 | `scripts/clipping/*_selection.js` | recall, matching, scoring, boundaries | parent workflows, rendering, uploads |
 | `scripts/comic/storyboard.py`, `prompts.py` | script contracts and prompt presentation | provider/config/process IO |
 | `scripts/comic/screenshots.py` | local frame acquisition, sheet rendering, shared FFmpeg invocation | provider calls, room configuration |
+| `scripts/comic/image_inputs.py`, `image_routes.py` | input ordering/provenance, route attempts/fallback | importing the parent, global configuration or provider clients |
 | `src/scripts/python` | ML/ASR model implementations | Node process orchestration |
 | `scripts`, `tools` | reusable operator commands and platform setup | application startup side effects |
 | `local-scripts`, `tmp` | machine/date-specific experiments | reusable product behavior |

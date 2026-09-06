@@ -189,7 +189,7 @@ There are four follow-up phases after the initial structural review. Each phase
 can contain independently tested commits; completing one does not require
 rewriting the whole pipeline at once.
 
-1. Comic generation (in progress): screenshot acquisition is extracted. Provider
+1. Comic generation (completed): screenshot acquisition is extracted. Provider
    IO and image-input assembly remain in `ai_comic_generator.py`. Extract those
    with injectable provider/file dependencies, keeping current monkeypatch
    contracts and output metadata compatible. Acceptance includes provider-failure
@@ -208,3 +208,16 @@ rewriting the whole pipeline at once.
    start a new empty history. Acceptance includes preserving historical dedupe
    records and configuration parity across both runtimes. No persistent history
    path was migrated in either completed increment.
+
+### Phase 1: image generation boundaries
+
+`comic/image_routes.py` owns provider configuration normalization, route ordering,
+bounded attempts, and failure metadata through an injected `ImageRouteIO`.
+`comic/image_inputs.py` owns identity-first reference assembly and provenance;
+configuration/path/provider access stays in the compatibility facade.
+Removed unused encoding and unreachable Google/Hugging Face implementations;
+their permanently disabled entrypoints retain the original failure behavior.
+`ai_comic_generator.py` decreased from 4,268 to 3,390 physical lines.
+
+Validation: all 230 portable Python tests passed, including new route fallback,
+recovery parameter forwarding, total failure and provider metadata cases.

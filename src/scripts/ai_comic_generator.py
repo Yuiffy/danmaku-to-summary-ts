@@ -5,6 +5,16 @@ AI漫画生成模块
 支持Google Imagen等图像生成模型
 """
 
+from comic import image_routes as comic_image_routes
+from comic.image_routes import (
+    _get_nested_provider_options,
+    _resolve_image_provider_config,
+    _int_config,
+    _route_timeout_seconds,
+    _summarize_image_generation_failure,
+    _get_image_generation_routes,
+)
+from comic import image_inputs as comic_image_inputs
 from comic import screenshots as comic_screenshots
 from comic.screenshots import (
     VIDEO_EXTENSIONS,
@@ -323,166 +333,31 @@ def is_googleimage_configured() -> bool:
     """检查Google图像生成配置是否有效（已禁用）"""
     return False
 
-def _get_nested_provider_options(provider_config: Dict[str, Any]) -> Dict[str, Any]:
-    """Normalize provider shapes like {options:{...}} or {openai:{options:{...}}}."""
-    if not isinstance(provider_config, dict):
-        return {}
 
-    candidate = provider_config
-    if isinstance(candidate.get("openai"), dict):
-        candidate = candidate.get("openai", {})
 
-    options = candidate.get("options") if isinstance(candidate.get("options"), dict) else {}
-    merged = dict(candidate)
-    merged.update(options)
-    return merged
 
-def _resolve_image_provider_config(config: Dict[str, Any], provider_name: str) -> Dict[str, Any]:
-    providers = config.get("ai", {}).get("providers", {}) or {}
-    raw_provider = providers.get(provider_name) or providers.get(str(provider_name).lower()) or {}
 
-    legacy_tuzi = {}
-    if str(provider_name).lower() in ("tuzi", "tu-zi", "tu_zi"):
-        legacy_tuzi = dict(config.get("aiServices", {}).get("tuZi", {}) or {})
 
-    provider_options = _get_nested_provider_options(raw_provider)
-    merged = dict(legacy_tuzi)
-    merged.update({k: v for k, v in provider_options.items() if v is not None and v != ""})
 
-    base_url = (
-        merged.get("baseUrl")
-        or merged.get("baseURL")
-        or merged.get("url")
-        or merged.get("endpoint")
-        or ""
+def _image_route_io() -> comic_image_routes.ImageRouteIO:
+    return comic_image_routes.ImageRouteIO(
+        compatible=call_tuzi_chat_completions_for_image,
+        images=call_tuzi_images_generations,
+        reset_metadata=reset_last_image_generation_meta,
+        read_metadata=get_last_image_generation_meta,
+        annotate_metadata=annotate_last_image_generation_meta,
+        log=print,
     )
-    api_key = merged.get("apiKey") or merged.get("key") or ""
-    provider_type = merged.get("type") or merged.get("provider") or "openai"
 
-    return {
-        "name": provider_name,
-        "displayName": merged.get("displayName") or provider_name,
-        "type": provider_type,
-        "baseUrl": base_url,
-        "apiKey": api_key,
-        "proxy": merged.get("proxy") or "",
-    }
-
-def _int_config(value: Any, default: int, minimum: int = 1) -> int:
-    try:
-        return max(minimum, int(value))
-    except (TypeError, ValueError):
-        return default
-
-def _route_timeout_seconds(route: Dict[str, Any], default_timeout_sec: float) -> float:
-    if route.get("timeoutMs") is not None:
-        return _int_config(route.get("timeoutMs"), int(default_timeout_sec * 1000), 1) / 1000
-    if route.get("timeoutSec") is not None:
-        return float(_int_config(route.get("timeoutSec"), int(default_timeout_sec), 1))
-    return default_timeout_sec
-
-def _summarize_image_generation_failure(meta: Dict[str, Any], fallback_reason: str) -> str:
-    reason = meta.get("reason")
-    if reason:
-        return str(reason)
-
-    attempts = meta.get("attempts")
-    if isinstance(attempts, list):
-        for attempt in reversed(attempts):
-            if isinstance(attempt, dict) and attempt.get("reason"):
-                endpoint = attempt.get("endpoint") or "unknown"
-                return f"{endpoint}: {attempt.get('reason')}"
-
-    status = meta.get("status")
-    endpoint = meta.get("endpoint")
-    if status and endpoint:
-        return f"{endpoint}: {status}"
-    if status and status != "not_started":
-        return str(status)
-    return fallback_reason
-
-def _get_image_generation_routes(config: Dict[str, Any], tuzi_config: Dict[str, Any], room_id: Optional[str] = None) -> list[Dict[str, Any]]:
-    image_generation = config.get("ai", {}).get("comic", {}).get("imageGeneration", {}) or {}
-    configured_routes = image_generation.get("routes")
-    if image_generation.get("enabled", True) and isinstance(configured_routes, list) and configured_routes:
-        routes = [route for route in configured_routes if isinstance(route, dict) and route.get("enabled", True)]
-    else:
-        routes = [{
-            "provider": "tuZi",
-            "model": tuzi_config.get("model", "gpt-image-2"),
-            "flow": "tuZiCompatible",
-            "maxAttempts": 1,
-        }]
-
-    room_config = {}
-    if room_id is not None:
-        room_key = str(room_id)
-        room_config = (
-            config.get("ai", {}).get("roomSettings", {}).get(room_key, {})
-            or config.get("roomSettings", {}).get(room_key, {})
-        )
-    room_image_generation = room_config.get("imageGeneration", {}) if isinstance(room_config, dict) else {}
-    room_routes = room_image_generation.get("routes") if isinstance(room_image_generation, dict) else None
-    if room_image_generation.get("enabled", True) and isinstance(room_routes, list) and room_routes:
-        return [route for route in room_routes if isinstance(route, dict) and route.get("enabled", True)]
-
-    return routes[:1]
 
 def _call_image_generation_route(
-    route: Dict[str, Any],
-    provider: Dict[str, Any],
-    prompt: str,
-    reference_image_path,
-    room_id: Optional[str],
-    timeout_sec: float,
+    route: Dict[str, Any], provider: Dict[str, Any], prompt: str,
+    reference_image_path, room_id: Optional[str], timeout_sec: float,
     recovery_state_path: Optional[str] = None,
 ) -> Optional[str]:
-    provider_name = provider.get("name") or route.get("provider") or "unknown"
-    model = route.get("model") or "gpt-image-2"
-    flow = route.get("flow") or "openaiImages"
-    proxy_url = route.get("proxy", provider.get("proxy", ""))
-
-    if (provider.get("type") or "openai").lower() not in ("openai", "openai-compatible", "openai_compatible"):
-        print(f"[IMAGE_PROVIDER] Skip unsupported provider type: {provider_name} ({provider.get('type')})")
-        return None
-
-    if not provider.get("baseUrl") or not provider.get("apiKey"):
-        print(f"[IMAGE_PROVIDER] Skip unconfigured provider: {provider_name}")
-        return None
-
-    if flow in ("tuZiCompatible", "tuziCompatible", "tuzi"):
-        return call_tuzi_chat_completions_for_image(
-            prompt=prompt,
-            reference_image_path=reference_image_path,
-            model=model,
-            base_url=provider.get("baseUrl", ""),
-            api_key=provider.get("apiKey", ""),
-            proxy_url=proxy_url,
-            timeout=timeout_sec,
-            temperature=route.get("temperature", 0.7),
-            max_tokens=route.get("maxTokens", 100000),
-            room_id=room_id,
-            strategy_mode=route.get("strategyMode"),
-            include_async_fallback=bool(route.get("includeAsyncFallback", True)),
-            async_fallback_model=route.get("asyncFallbackModel", "gemini-3-pro-image-preview-async"),
-            recovery_state_path=recovery_state_path,
-        )
-
-    return call_tuzi_images_generations(
-        prompt=prompt,
-        reference_image_path=reference_image_path,
-        model=model,
-        base_url=provider.get("baseUrl", ""),
-        api_key=provider.get("apiKey", ""),
-        proxy_url=proxy_url,
-        timeout=timeout_sec,
-        size=route.get("size", "1:1"),
-        n=_int_config(route.get("n"), 1, 1),
-        response_format=route.get("responseFormat", "b64_json"),
-        quality=route.get("quality", "high"),
-        output_format=route.get("outputFormat", "png"),
-        use_tuzi_retry=bool(route.get("useTuziRetry", False)),
-        provider_label=str(provider_name),
+    return comic_image_routes._call_image_generation_route(
+        route, provider, prompt, reference_image_path, room_id, timeout_sec,
+        recovery_state_path, io=_image_route_io(),
     )
 
 def generate_unique_filename(base_path: str) -> str:
@@ -1927,300 +1802,26 @@ def collect_all_images(
     image_manifest: Optional[list[dict]] = None,
     max_total_images: Optional[int] = None,
 ) -> list[str]:
-    """收集所有可用的图片（引用图、封面、截图）用于AI输入
-    
-    返回图片路径列表，按优先级排序：
-    1. 主播参考图（roomSettings中配置的referenceImage）
-    2. 已确认出声及脚本需要的额外人物参考图；人物身份锚点优先于直播证据
-    3. 脚本定向直播证据；超出图片额度时从低优先级截图开始截断
-    4. 直播封面（.cover文件）
-    5. 旧版固定时间截图拼图（_SCREENSHOTS.jpg，或独立关键帧失败时兜底）
-    6. 默认参考图（只有在没有主播参考图、封面、截图且配置了 defaultReferenceImage 时才使用）
-    7. 没有配置默认参考图时返回空列表，让模型无参考图生成
-    """
-    images = []
-    seen_images = set()
-
-    def add_image(image_path: str, log_message: str, **metadata: Any) -> bool:
-        real_path = os.path.abspath(image_path)
-        if real_path in seen_images:
-            print(f"[INFO]  跳过重复图片: {os.path.basename(real_path)}")
-            return False
-        images.append(real_path)
-        seen_images.add(real_path)
-        if image_manifest is not None:
-            manifest_item = {
-                "path": real_path,
-                "fileBytes": os.path.getsize(real_path),
-                **metadata,
-            }
-            try:
-                from PIL import Image
-                with Image.open(real_path) as image:
-                    width, height = image.size
-                manifest_item.update({
-                    "width": width,
-                    "height": height,
-                    "pixels": width * height,
-                })
-            except (OSError, ValueError, ImportError):
-                pass
-            image_manifest.append(manifest_item)
-        print(log_message)
-        return True
-
     config = load_config()
-    scripts_dir = os.path.dirname(__file__)
-    project_root = get_project_root()
-    multi_config = get_multi_reference_config(config, room_id)
     reference_policy = get_reference_image_policy(config)
-    exclude_screenshots = reference_policy["excludeScreenshotsForStaticVideo"] and is_static_video_recording(
-        config,
-        highlight_path,
-        os.environ.get("SOURCE_VIDEO_PATH"),
+    context = comic_image_inputs.ImageInputContext(
+        config=config,
+        scripts_dir=os.path.dirname(__file__),
+        project_root=get_project_root(),
+        multi_config=get_multi_reference_config(config, room_id),
+        reference_policy=reference_policy,
+        exclude_screenshots=reference_policy["excludeScreenshotsForStaticVideo"] and is_static_video_recording(
+            config, highlight_path, os.environ.get("SOURCE_VIDEO_PATH"),
+        ),
+        host_resolver=lambda: resolve_streamer_registry(config).get(find_host_streamer_id(config, room_id)),
+        resolve_path=resolve_configured_path,
+        cover_resolver=get_live_cover_image,
+        log=print,
     )
-    if exclude_screenshots:
-        print(f"[INFO] 房间 {room_id} 按静态视频检测跳过直播截图")
-    if not multi_config.get("enabled"):
-        extra_streamers = []
-    if max_total_images is None:
-        max_total_images = int(multi_config.get("maxTotalImages") or 4)
-    else:
-        try:
-            max_total_images = max(1, min(12, int(max_total_images)))
-        except (TypeError, ValueError):
-            max_total_images = int(multi_config.get("maxTotalImages") or 4)
-
-    directed_candidates = [
-        screenshot for screenshot in (directed_screenshots or [])
-        if isinstance(screenshot, dict)
-    ]
-    if exclude_screenshots:
-        directed_candidates = []
-
-    def directed_priority(indexed_screenshot: tuple[int, dict]) -> tuple[int, int]:
-        index, screenshot = indexed_screenshot
-        is_requested_sheet = screenshot.get("requestSource") == "script_reference_sheet"
-        is_requested_detail = screenshot.get("selectionMode") == "script_requested"
-        if is_requested_detail:
-            return (0, index)
-        if is_requested_sheet:
-            return (1, index)
-        return (2, index)
-
-    directed_candidates = [
-        screenshot
-        for _, screenshot in sorted(
-            enumerate(directed_candidates),
-            key=directed_priority,
-        )
-    ]
-    
-    # 1. 尝试获取主播参考图（roomSettings中配置的）
-    room_str = str(room_id)
-    has_anchor_image = False
-    
-    if room_str in config["roomSettings"]:
-        room_config = config["roomSettings"][room_str]
-        configured_room_images = list(room_config.get("referenceImages") or [])
-        if room_config.get("referenceImage"):
-            configured_room_images.insert(0, room_config["referenceImage"])
-        for ref_image in configured_room_images:
-            # 尝试相对于项目根目录的路径
-            absolute_path = os.path.join(project_root, ref_image) if not os.path.isabs(ref_image) else ref_image
-            if os.path.exists(absolute_path):
-                add_image(absolute_path, f"[INFO]  收集到主播参考图: {os.path.basename(absolute_path)}", role="host")
-                has_anchor_image = True
-                continue
-            else:
-                # 尝试相对于脚本目录的路径
-                script_relative = os.path.join(scripts_dir, ref_image) if not os.path.isabs(ref_image) else ref_image
-                if os.path.exists(script_relative):
-                    add_image(script_relative, f"[INFO]  收集到主播参考图: {os.path.basename(script_relative)}", role="host")
-                    has_anchor_image = True
-                    continue
-                else:
-                    print(f"[WARNING] 配置的主播参考图不存在: {ref_image}")
-    
-    # 如果没有配置主播参考图，尝试在reference_images目录中查找
-    if not has_anchor_image:
-        ref_images_dir = os.path.join(scripts_dir, "reference_images")
-        if os.path.exists(ref_images_dir):
-            possible_files = [
-                os.path.join(ref_images_dir, f"{room_id}.jpg"),
-                os.path.join(ref_images_dir, f"{room_id}.jpeg"),
-                os.path.join(ref_images_dir, f"{room_id}.png"),
-                os.path.join(ref_images_dir, f"{room_id}.webp")
-            ]
-            for file_path in possible_files:
-                if os.path.exists(file_path):
-                    add_image(file_path, f"[INFO]  收集到主播参考图: {os.path.basename(file_path)}", role="host")
-                    has_anchor_image = True
-                    break
-
-    if not has_anchor_image:
-        host_streamer_id = find_host_streamer_id(config, room_id)
-        if host_streamer_id:
-            host_streamer = resolve_streamer_registry(config).get(host_streamer_id)
-            for ref_image in (host_streamer or {}).get("referenceImages", []) or []:
-                resolved = resolve_configured_path(ref_image)
-                if resolved:
-                    add_image(resolved, f"[INFO]  收集到 streamerRegistry 主播参考图: {os.path.basename(resolved)}", role="host")
-                    has_anchor_image = True
-                    break
-                print(f"[WARNING] streamerRegistry 主播参考图不存在: {host_streamer_id} -> {ref_image}")
-
-    # 1.5 额外实际出声/文本提到主播参考图。只取每人第一张存在的图。
-    # 人物身份参考是不可替代的锚点；截图只能使用人物图加入后的剩余额度。
-    for streamer in (extra_streamers or []):
-        if len(images) >= max_total_images:
-            print(f"[INFO]  图片数量达到上限 {max_total_images}，停止加入额外主播参考图")
-            break
-        display_name = streamer.get("displayName") or streamer.get("id") or "unknown"
-        reason = streamer.get("_comicReferenceReason") or "appeared"
-        if reason == "mentioned" and not multi_config.get("includeMentionedStreamerImages", True):
-            print(f"[INFO]  已识别文本提到主播但配置为不上传参考图: {display_name}")
-            continue
-        reference_images = streamer.get("referenceImages", []) or []
-        if not reference_images:
-            print(f"[INFO]  额外主播未配置参考图，将按文字描述生成: {display_name}")
-            continue
-        added = False
-        for ref_image in reference_images:
-            resolved = resolve_configured_path(ref_image)
-            if resolved:
-                reason_label = "文本提到主播" if reason == "mentioned" else "实际出声主播"
-                added = add_image(
-                    resolved,
-                    f"[INFO]  收集到额外{reason_label}参考图: {display_name} -> {os.path.basename(resolved)}",
-                    role="mentioned_streamer" if reason == "mentioned" else "appeared_streamer",
-                    displayName=display_name,
-                    streamerId=str(streamer.get("id") or "") or None,
-                )
-                break
-            print(f"[WARNING] 额外主播参考图不存在: {display_name} -> {ref_image}")
-        if not added:
-            print(f"[WARNING] 额外主播没有可用参考图: {display_name}")
-    
-    # 2. 优先加入脚本时间点对应的定向关键帧。
-    directed_added = False
-    if screenshot_mode == "individual":
-        for screenshot in directed_candidates:
-            screenshot_path = str(screenshot.get("path") or "")
-            if not screenshot_path or not os.path.exists(screenshot_path):
-                continue
-            if len(images) >= max_total_images:
-                print(f"[INFO]  图片数量达到保守上限 {max_total_images}，停止加入定向直播关键帧")
-                break
-            directed_added = add_image(
-                screenshot_path,
-                f"[INFO]  收集到定向直播关键帧: {os.path.basename(screenshot_path)}",
-                role="directed_screenshot",
-                timestampSeconds=screenshot.get("timestampSeconds"),
-                timestampsSeconds=screenshot.get("timestampsSeconds"),
-                selectedTimestampSeconds=screenshot.get("selectedTimestampSeconds"),
-                scene=screenshot.get("scene"),
-                visualIntent=screenshot.get("visualIntent"),
-                referenceUsage=screenshot.get("referenceUsage"),
-                referenceRequestId=screenshot.get("referenceRequestId"),
-                requestSource=screenshot.get("requestSource"),
-                evidenceRole=screenshot.get("evidenceRole"),
-                mustShow=screenshot.get("mustShow"),
-                captureMode=screenshot.get("captureMode"),
-                windowStartSeconds=screenshot.get("windowStartSeconds"),
-                windowEndSeconds=screenshot.get("windowEndSeconds"),
-                candidateIndex=screenshot.get("candidateIndex"),
-                candidateCount=screenshot.get("candidateCount"),
-                selectionMode=screenshot.get("selectionMode"),
-                coverageCandidateTimestampsSeconds=screenshot.get("coverageCandidateTimestampsSeconds"),
-                bestCandidateTimestampSeconds=screenshot.get("bestCandidateTimestampSeconds"),
-                bestCandidateLabel=screenshot.get("bestCandidateLabel"),
-                bestCandidateScore=screenshot.get("bestCandidateScore"),
-                bestCandidateIndex=screenshot.get("bestCandidateIndex"),
-                bestCandidateSelectionMode=screenshot.get("bestCandidateSelectionMode"),
-                visionSelectionConfidence=screenshot.get("visionSelectionConfidence"),
-                visionSelectionReason=screenshot.get("visionSelectionReason"),
-            ) or directed_added
-
-    # 3. 独立关键帧优先于封面；旧版仍保持“角色图 -> 封面 -> 拼图”的顺序。
-    has_cover = False
-    if reference_policy["allowLiveCover"] and highlight_path and (screenshot_mode != "individual" or not directed_added or len(images) < max_total_images):
-        cover_image = get_live_cover_image(highlight_path)
-        if cover_image and len(images) < max_total_images:
-            add_image(
-                cover_image,
-                f"[INFO]  收集到直播封面: {os.path.basename(cover_image)}",
-                role="cover",
-            )
-            has_cover = True
-        elif cover_image:
-            print(f"[INFO]  图片数量达到保守上限 {max_total_images}，跳过直播封面: {os.path.basename(cover_image)}")
-
-    # 4. 没有可用定向关键帧时，降级使用固定时间截图拼图。
-    screenshot_path = os.environ.get('SCREENSHOT_PATH', '')
-    should_use_contact_sheet = not exclude_screenshots and (screenshot_mode != "individual" or not directed_added)
-    if should_use_contact_sheet and screenshot_path and os.path.exists(screenshot_path) and len(images) < max_total_images:
-        add_image(
-            screenshot_path,
-            f"[INFO]  收集到直播截图拼图: {os.path.basename(screenshot_path)}",
-            role="contact_sheet",
-        )
-    elif should_use_contact_sheet and screenshot_path and os.path.exists(screenshot_path):
-        print(f"[INFO]  图片数量达到保守上限 {max_total_images}，跳过直播截图: {os.path.basename(screenshot_path)}")
-    
-    # 如果没有截图路径，尝试从highlight_path推断
-    if should_use_contact_sheet and not screenshot_path and highlight_path:
-        dir_path = os.path.dirname(highlight_path)
-        base_name = os.path.basename(highlight_path).replace('_AI_HIGHLIGHT.txt', '')
-        inferred_screenshot = os.path.join(dir_path, f"{base_name}_SCREENSHOTS.jpg")
-        if os.path.exists(inferred_screenshot) and len(images) < max_total_images:
-            add_image(
-                inferred_screenshot,
-                f"[INFO]  收集到推断的直播截图拼图: {os.path.basename(inferred_screenshot)}",
-                role="contact_sheet",
-            )
-        elif os.path.exists(inferred_screenshot):
-            print(f"[INFO]  图片数量达到保守上限 {max_total_images}，跳过推断的直播截图: {os.path.basename(inferred_screenshot)}")
-    
-    # 4. 只有在完全没有任何图片时，才使用默认参考图（兜底）
-    # 检查是否已经收集到任何图片（主播参考图、封面、截图）
-    if len(images) == 0:
-        print("[INFO]  未找到任何图片（主播参考图、封面、截图），检查是否配置默认参考图...")
-        default_image = ""
-        if "ai" in config:
-            if config["ai"].get("defaultReferenceImage"):
-                default_image = config["ai"]["defaultReferenceImage"]
-            elif config["ai"].get("comic", {}).get("defaultReferenceImage"):
-                default_image = config["ai"]["comic"]["defaultReferenceImage"]
-        # 兼容旧格式
-        if not default_image and config.get("aiServices", {}).get("defaultReferenceImage"):
-            default_image = config["aiServices"]["defaultReferenceImage"]
-        
-        if default_image:
-            # 尝试相对于项目根目录的路径
-            absolute_path = os.path.join(project_root, default_image) if not os.path.isabs(default_image) else default_image
-            if os.path.exists(absolute_path):
-                add_image(
-                    absolute_path,
-                    f"[INFO]  收集到默认参考图（兜底）: {os.path.basename(absolute_path)}",
-                    role="default",
-                )
-            else:
-                # 尝试相对于脚本目录的路径
-                script_relative = os.path.join(scripts_dir, default_image) if not os.path.isabs(default_image) else default_image
-                if os.path.exists(script_relative):
-                    add_image(
-                        script_relative,
-                        f"[INFO]  收集到默认参考图（兜底）: {os.path.basename(script_relative)}",
-                        role="default",
-                    )
-        if not default_image:
-            print("[INFO]  未配置默认参考图，将无参考图生成")
-    else:
-        print(f"[INFO]  已有 {len(images)} 张图片，跳过默认参考图")
-    
-    print(f"[INFO]  共收集到 {len(images)} 张图片用于AI输入")
-    return images
+    return comic_image_inputs.collect_all_images(
+        room_id, highlight_path, extra_streamers, directed_screenshots,
+        screenshot_mode, image_manifest, max_total_images, context=context,
+    )
 
 
 
@@ -3102,278 +2703,11 @@ def generate_comic_content_with_ai(
     # 确保函数在所有路径都返回有效值
     return return_comic_script_failure(highlight_content, room_id, "所有AI脚本通道失败")
 
-def encode_image_to_base64(image_path: str, with_data_uri: bool = False) -> str:
-    """将图片编码为base64
-    
-    Args:
-        image_path: 图片路径
-        with_data_uri: 是否添加 data:image/xxx;base64, 前缀
-    """
-    try:
-        with open(image_path, "rb") as image_file:
-            base64_data = base64.b64encode(image_file.read()).decode('utf-8')
-        
-        if with_data_uri:
-            # 根据文件扩展名确定MIME类型
-            ext = os.path.splitext(image_path)[1].lower()
-            mime_map = {
-                '.png': 'image/png',
-                '.jpg': 'image/jpeg',
-                '.jpeg': 'image/jpeg',
-                '.webp': 'image/webp',
-                '.gif': 'image/gif'
-            }
-            mime_type = mime_map.get(ext, 'image/png')
-            return f"data:{mime_type};base64,{base64_data}"
-        
-        return base64_data
-    except Exception as e:
-        print(f"[ERROR] 图片编码失败: {e}")
-        raise
 
-def try_simpler_model(prompt: str, hf_config: Dict[str, Any], proxies: Dict[str, str]) -> Optional[str]:
-    """尝试使用更简单的模型生成图像"""
-    try:
-        # 尝试使用更小、更快的模型
-        simpler_models = [
-            "runwayml/stable-diffusion-v1-5",
-            "CompVis/stable-diffusion-v1-4",
-            "prompthero/openjourney"
-        ]
-        
-        for model_name in simpler_models:
-            print(f"[RETRY] 尝试模型: {model_name}")
-            
-            router_url = "https://router.huggingface.co/hf-inference/models"
-            headers = {
-                "Authorization": f"Bearer {hf_config['apiToken']}",
-                "Content-Type": "application/json"
-            }
-            
-            simple_prompt = f"Anime comic style: {prompt[:100]}"
-            
-            payload = {
-                "inputs": simple_prompt,
-                "parameters": {
-                    "num_inference_steps": 15,
-                    "guidance_scale": 7.0,
-                    "width": 512,
-                    "height": 512
-                }
-            }
-            
-            api_url = f"{router_url}/{model_name}"
-            response = requests.post(api_url, headers=headers, json=payload, timeout=120, proxies=proxies)
-            
-            if response.status_code == 200:
-                print(f"[OK] 图像生成成功 (模型: {model_name})")
-                
-                import tempfile
-                import uuid
-                temp_dir = tempfile.gettempdir()
-                temp_file = os.path.join(temp_dir, f"comic_{uuid.uuid4().hex[:8]}.png")
-                
-                with open(temp_file, 'wb') as f:
-                    f.write(response.content)
-                
-                print(f"[SAVE] 图像已保存: {temp_file}")
-                return temp_file
-            elif response.status_code == 503:
-                print(f"[INFO]  模型 {model_name} 正在加载，跳过")
-                continue
-            else:
-                print(f"[WARNING]  模型 {model_name} 失败: {response.status_code}")
-                continue
-        
-        print("[ERROR] 所有模型尝试都失败")
-        return None
-        
-    except Exception as e:
-        print(f"[ERROR] 尝试简单模型失败: {e}")
-        return None
 
 def call_google_image_api(prompt: str, reference_image_path: Optional[str] = None) -> Optional[str]:
-    """
-    调用Google图像生成API
-    使用Google的Imagen或其他图像生成模型
-    支持重试机制
-    """
-    config = load_config()
-    google_config = config.get("aiServices", {}).get("googleImage", {})
-
-    if not is_googleimage_configured():
-        print("[WARNING]  Google图像生成API未配置，跳过Google图像生成")
-        return None
-
-    max_retries = google_config.get("maxRetries", 3)
-    print(f"[GOOGLE] 调用Google图像生成API生成漫画... (最多重试 {max_retries} 次)")
-
-    for attempt in range(max_retries + 1):
-        try:
-            if attempt > 0:
-                print(f"[RETRY] 第 {attempt} 次重试...")
-
-            # 导入Google GenAI库 (新版本)
-            import google.genai as genai
-
-            # 创建客户端
-            ai = genai.GoogleGenAI(api_key=google_config["apiKey"])
-
-            # 设置代理
-            proxy_url = google_config.get("proxy", "")
-            if proxy_url:
-                import os
-                os.environ['http_proxy'] = proxy_url
-                os.environ['https_proxy'] = proxy_url
-                if attempt == 0:  # 只在第一次显示代理信息
-                    print(f"[PROXY] 使用代理: {proxy_url}")
-
-            # 获取模型名称
-            model_name = google_config.get("model", "imagen-3.0-generate-001")
-
-            # 构建图像生成请求
-            # 注意：Google的Imagen API可能需要不同的调用方式
-            # 这里使用GenAI的图像生成功能
-
-            # 首先尝试使用GenAI的图像生成
-            try:
-                # 构建提示词（优化为适合图像生成）
-
-                # 构建提示词（优化为适合图像生成）
-                image_prompt = prompt
-
-                if attempt == 0:
-                    print("[WAIT] 正在通过Google API生成图像...")
-
-                # 生成图像（60秒超时）
-                response = ai.models.generate_content(
-                    model=model_name,
-                    contents=image_prompt,
-                    generation_config={
-                        "temperature": 0.7,
-                        "top_p": 0.95,
-                        "top_k": 40,
-                    },
-                    safety_settings=google_config.get("safetySettings", []),
-                    timeout=60
-                )
-
-                # 处理响应
-                if response and hasattr(response, 'candidates') and response.candidates:
-                    # 检查是否有图像数据
-                    for candidate in response.candidates:
-                        if hasattr(candidate, 'content') and candidate.content:
-                            for part in candidate.content.parts:
-                                if hasattr(part, 'inline_data') and part.inline_data:
-                                    # 提取图像数据
-                                    image_data = part.inline_data.data
-                                    mime_type = part.inline_data.mime_type
-
-                                    # 保存图像
-                                    import tempfile
-                                    import uuid
-
-                                    temp_dir = tempfile.gettempdir()
-                                    extension = mime_type.split('/')[-1] if '/' in mime_type else 'png'
-                                    temp_file = os.path.join(temp_dir, f"comic_google_{uuid.uuid4().hex[:8]}.{extension}")
-
-                                    with open(temp_file, 'wb') as f:
-                                        f.write(image_data)
-
-                                    print(f"[OK] Google图像生成成功")
-                                    print(f"[SAVE] 图像已保存到临时文件: {temp_file}")
-                                    return temp_file
-
-                # 如果上面的方法不工作，尝试备用方案
-                if attempt == 0:
-                    print("[INFO]  标准图像生成方法未返回图像，尝试备用方案...")
-
-            except Exception as genai_error:
-                print(f"[WARNING]  Generative AI图像生成失败: {genai_error}")
-                if attempt == max_retries:
-                    print("   重试次数已用完，尝试备用方案...")
-                elif attempt < max_retries:
-                    print(f"   将在 {attempt + 1} 次重试时重试...")
-
-            # 如果不是最后一次重试，继续重试
-            if attempt < max_retries:
-                continue
-
-            # 备用方案：使用Google Cloud Vertex AI API
-            try:
-                if attempt == 0:
-                    print("[BACKUP] 尝试使用Vertex AI REST API...")
-
-                # 构建Vertex AI请求
-                import vertexai
-                from vertexai.preview.vision_models import ImageGenerationModel
-
-                # 初始化Vertex AI
-                vertexai.init(project="your-project-id", location="us-central1")
-
-                model = ImageGenerationModel.from_pretrained(model_name)
-
-                # 生成图像
-                images = model.generate_images(
-                    prompt=prompt[:500],
-                    number_of_images=1,
-                    aspect_ratio="1:1",
-                    safety_filter_level="block_some",
-                    person_generation="allow_adult"
-                )
-
-                if images and len(images) > 0:
-                    # 保存第一张图像
-                    import tempfile
-                    import uuid
-
-                    temp_dir = tempfile.gettempdir()
-                    temp_file = os.path.join(temp_dir, f"comic_vertex_{uuid.uuid4().hex[:8]}.png")
-
-                    images[0].save(temp_file)
-
-                    print(f"[OK] Vertex AI图像生成成功")
-                    print(f"[SAVE] 图像已保存到临时文件: {temp_file}")
-                    return temp_file
-
-            except Exception as vertex_error:
-                print(f"[WARNING]  Vertex AI失败: {vertex_error}")
-                if attempt == max_retries:
-                    print("   尝试使用简单的REST API调用...")
-
-            # 如果不是最后一次重试，继续重试
-            if attempt < max_retries:
-                continue
-
-            # 最终备用方案：使用简单的REST API调用
-            if attempt == 0:
-                print("[FINAL] 尝试使用简单的REST API调用...")
-
-            # Google Cloud Imagen API端点
-            api_endpoint = "https://us-central1-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/google/models/imagen-3.0-generate-001:predict"
-
-            # 由于需要项目ID和认证，这里简化处理
-            # 在实际使用中，用户需要配置正确的项目ID和认证
-
-            print("[INFO]  Google图像生成需要配置Google Cloud项目，请参考文档进行设置")
-            print("   提示: 您需要设置Google Cloud项目并启用Imagen API")
-
-            return None
-
-        except ImportError:
-            print("[ERROR]  google-genai库未安装")
-            print("   请安装: pip install google-genai")
-            return None
-        except Exception as e:
-            print(f"[ERROR]  Google图像生成失败 (尝试 {attempt + 1}/{max_retries + 1}): {e}")
-            if attempt < max_retries:
-                print(f"   将重试...")
-                time.sleep(2)  # 短暂等待后重试
-            else:
-                print(f"   重试次数已用完")
-                safe_print_exc()
-                return None
-
+    """Compatibility entrypoint for the permanently disabled Google image route."""
+    print("[WARNING]  Google图像生成API未配置，跳过Google图像生成")
     return None
 
 def call_tuzi_image_api(
@@ -3382,227 +2716,15 @@ def call_tuzi_image_api(
     room_id: Optional[str] = None,
     recovery_state_path: Optional[str] = None,
 ) -> Optional[str]:
-    """
-    Generate comic images through configured OpenAI-compatible image routes.
-    The legacy tuZi config is still used when no route list is configured.
-    """
-    config = load_config()
-    tuzi_config = config["aiServices"].get("tuZi", {})
-
-    if reference_image_path:
-        if isinstance(reference_image_path, list):
-            valid_images = [img for img in reference_image_path if os.path.exists(img)]
-            if valid_images:
-                print(f"[IMAGE_PROVIDER] Reference images: {len(valid_images)}")
-                for idx, img in enumerate(valid_images, 1):
-                    print(f"  {idx}. {os.path.basename(img)}")
-            else:
-                print("[IMAGE_PROVIDER] No valid reference images")
-        elif isinstance(reference_image_path, str) and os.path.exists(reference_image_path):
-            print(f"[IMAGE_PROVIDER] Reference image: {os.path.basename(reference_image_path)}")
-        else:
-            print("[IMAGE_PROVIDER] No valid reference images")
-    else:
-        print("[IMAGE_PROVIDER] No reference images")
-
-    timeout_ms = config.get("timeouts", {}).get("aiApiTimeout", 360000)
-    if tuzi_config.get("model", "gpt-image-2") in ("gpt-image-2", "gpt-image-1.5", "gpt-image-1"):
-        timeout_ms = max(timeout_ms, 1000000)
-    timeout_sec = timeout_ms / 1000
-
-    routes = _get_image_generation_routes(config, tuzi_config, room_id)
-    route_labels = [f"{route.get('provider', 'tuZi')}:{route.get('model', 'gpt-image-2')}" for route in routes]
-    route_attempts = []
-    print(f"[IMAGE_PROVIDER] Image generation routes: {route_labels}")
-
-    for index, route in enumerate(routes, 1):
-        provider_name = route.get("provider") or "tuZi"
-        provider = _resolve_image_provider_config(config, provider_name)
-        model = route.get("model") or "gpt-image-2"
-        attempts = _int_config(route.get("maxAttempts"), 1, 1)
-        route_timeout_sec = _route_timeout_seconds(route, timeout_sec)
-
-        for attempt in range(attempts):
-            print(
-                f"[IMAGE_PROVIDER] Route {index}/{len(routes)} attempt {attempt + 1}/{attempts}: "
-                f"{provider_name}:{model}, flow={route.get('flow', 'openaiImages')}, timeout={route_timeout_sec}s"
-            )
-            reset_last_image_generation_meta()
-            result = _call_image_generation_route(
-                route=route,
-                provider=provider,
-                prompt=prompt,
-                reference_image_path=reference_image_path,
-                room_id=str(room_id) if room_id else None,
-                timeout_sec=route_timeout_sec,
-                recovery_state_path=recovery_state_path,
-            )
-            last_meta = get_last_image_generation_meta()
-            failure_reason = None if result else _summarize_image_generation_failure(
-                last_meta,
-                f"{provider_name}:{model} returned no image",
-            )
-            if failure_reason:
-                print(f"[IMAGE_PROVIDER] Route failed: {provider_name}:{model} attempt {attempt + 1}/{attempts}: {failure_reason}")
-            route_attempts.append({
-                "provider": provider_name,
-                "model": model,
-                "attempt": attempt + 1,
-                "status": "success" if result else "failure",
-                "reason": failure_reason,
-            })
-            if result:
-                annotate_last_image_generation_meta(
-                    provider=provider_name,
-                    routeAttempts=route_attempts,
-                )
-                return result
-
-    annotate_last_image_generation_meta(
-        status="failure",
-        endpoint="imageGenerationRoutes",
-        reason="All configured image generation routes failed",
-        routeAttempts=route_attempts,
+    return comic_image_routes.generate_image(
+        prompt, reference_image_path, room_id, recovery_state_path,
+        config=load_config(), io=_image_route_io(),
     )
-    return None
 
 
 def call_huggingface_comic_factory(prompt: str, reference_image_path: Optional[str] = None) -> Optional[str]:
-    """
-    调用Hugging Face AI Comic Factory API
-    使用更可靠的备用方案，因为gradio_client可能有连接问题
-    """
-    config = load_config()
-    hf_config = config["aiServices"]["huggingFace"]
-    
-    if not is_huggingface_configured():
-        raise ValueError("Hugging Face API未配置，请检查config.json中的apiToken")
-    
-    print("[ART] 调用Hugging Face AI Comic Factory生成漫画...")
-    
-    # 获取代理配置
-    proxy_url = hf_config.get("proxy", "")
-    
-    # 设置代理
-    proxies = {}
-    if proxy_url:
-        proxies = {
-            "http": proxy_url,
-            "https": proxy_url
-        }
-        print(f"[PROXY] 使用代理: {proxy_url}")
-    
-    try:
-        # 方案1：尝试使用gradio_client（如果可用）
-        try:
-            from gradio_client import Client
-            
-            # 设置环境变量
-            if proxy_url:
-                import os
-                os.environ["HTTP_PROXY"] = proxy_url
-                os.environ["HTTPS_PROXY"] = proxy_url
-                os.environ["http_proxy"] = proxy_url
-                os.environ["https_proxy"] = proxy_url
-            
-            print("[GRADIO] 尝试使用gradio_client连接...")
-            client = Client(hf_config["comicFactoryModel"], verbose=False)
-            
-            # 准备参数
-            params = {
-                "prompt": prompt,
-                "style": "Japanese Manga",  # 漫画风格
-                "layout": "Neutral",        # 布局风格
-            }
-            
-            print("[WAIT] 正在生成漫画，这可能需要几分钟...")
-            result = client.predict(**params)
-            
-            # 处理返回结果
-            if result and isinstance(result, (str, list)):
-                print("[OK] 漫画生成成功 (gradio_client)")
-                return str(result[0] if isinstance(result, list) else result)
-            else:
-                print("[WARNING]  生成结果格式异常")
-                # 继续尝试备用方案
-                raise ValueError("gradio_client返回结果格式异常")
-                
-        except Exception as gradio_error:
-            print(f"[WARNING]  gradio_client失败: {gradio_error}")
-            print("   切换到备用方案...")
-            
-    except ImportError:
-        print("[WARNING]  gradio_client未安装，使用备用方案")
-    
-    # 方案2：使用Hugging Face Router API（备用方案）
-    print("[BACKUP] 使用Hugging Face Router API备用方案...")
-    
-    try:
-        # 使用新的router API端点
-        router_url = "https://router.huggingface.co/hf-inference/models"
-        
-        # 使用一个稳定的文本到图像模型
-        model_name = "stabilityai/stable-diffusion-xl-base-1.0"
-        
-        # 构建请求
-        headers = {
-            "Authorization": f"Bearer {hf_config['apiToken']}",
-            "Content-Type": "application/json"
-        }
-        
-        # 构建更简单的提示词
-        simple_prompt = f"Anime style comic panel, cute character, colorful: {prompt[:150]}"
-        
-        payload = {
-            "inputs": simple_prompt,
-            "parameters": {
-                "num_inference_steps": 20,
-                "guidance_scale": 7.5,
-                "width": 512,
-                "height": 512
-            }
-        }
-        
-        # 完整的API URL
-        api_url = f"{router_url}/{model_name}"
-        
-        print(f"[WAIT] 通过Router API生成图像 (模型: {model_name})...")
-        response = requests.post(api_url, headers=headers, json=payload, timeout=180, proxies=proxies)
-        
-        if response.status_code == 200:
-            print("[OK] 图像生成成功 (Router API)")
-            
-            # 保存图像
-            import tempfile
-            import uuid
-            
-            # 创建临时文件
-            temp_dir = tempfile.gettempdir()
-            temp_file = os.path.join(temp_dir, f"comic_{uuid.uuid4().hex[:8]}.png")
-            
-            with open(temp_file, 'wb') as f:
-                f.write(response.content)
-            
-            print(f"[SAVE] 图像已保存到临时文件: {temp_file}")
-            return temp_file
-            
-        elif response.status_code == 503:
-            print("[INFO]  模型正在加载，请稍后重试")
-            print("   响应: " + response.text[:200])
-            return None
-        else:
-            print(f"[ERROR] API调用失败: {response.status_code}")
-            print(f"   响应头: {dict(response.headers)}")
-            print(f"   响应内容: {response.text[:500]}")
-            
-            # 尝试使用更简单的模型
-            print("[RETRY] 尝试使用更简单的模型...")
-            return try_simpler_model(prompt, hf_config, proxies)
-            
-    except Exception as e:
-        print(f"[ERROR] 备用方案也失败: {e}")
-        safe_print_exc()
-        return None
+    """Compatibility entrypoint for the permanently disabled Hugging Face route."""
+    raise ValueError("Hugging Face API未配置，请检查config.json中的apiToken")
 
 def save_comic_result(output_path: str, comic_data: Any) -> str:
     """保存漫画结果"""
