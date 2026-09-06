@@ -16,8 +16,8 @@ export class DelayedReplyStore implements IDelayedReplyStore {
   private tasks: Map<string, DelayedReplyTask> = new Map();
   private initialized = false;
 
-  constructor() {
-    this.storagePath = path.join(process.cwd(), 'data', 'delayed_reply_tasks.json');
+  constructor(storagePath = path.join(process.cwd(), 'data', 'delayed_reply_tasks.json')) {
+    this.storagePath = storagePath;
   }
 
   /**
@@ -64,8 +64,14 @@ export class DelayedReplyStore implements IDelayedReplyStore {
           if (task.supplementalCompletedAt) {
             task.supplementalCompletedAt = new Date(task.supplementalCompletedAt);
           }
+          if (task.supplementalPublishingAt) {
+            task.supplementalPublishingAt = new Date(task.supplementalPublishingAt);
+          }
           if (task.summaryCompletedAt) {
             task.summaryCompletedAt = new Date(task.summaryCompletedAt);
+          }
+          if (task.summaryPublishingAt) {
+            task.summaryPublishingAt = new Date(task.summaryPublishingAt);
           }
           if (task.liveContentSummaryCompletedAt) {
             task.liveContentSummaryCompletedAt = new Date(task.liveContentSummaryCompletedAt);
@@ -211,7 +217,9 @@ export class DelayedReplyStore implements IDelayedReplyStore {
         lastUpdated: new Date().toISOString()
       };
 
-      fs.writeFileSync(this.storagePath, JSON.stringify(data, null, 2), 'utf8');
+      const temporaryPath = `${this.storagePath}.tmp`;
+      fs.writeFileSync(temporaryPath, JSON.stringify(data, null, 2), 'utf8');
+      fs.renameSync(temporaryPath, this.storagePath);
     } catch (error) {
       this.logger.error('保存延迟任务失败', undefined, error instanceof Error ? error : new Error(String(error)));
       throw error;

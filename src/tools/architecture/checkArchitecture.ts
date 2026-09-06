@@ -9,7 +9,7 @@ const codeExtensions = new Set(['.ts', '.tsx', '.js', '.mjs', '.cjs', '.py']);
 const defaultLineBudget = 1200;
 // Historical oversized modules are frozen at their reviewed size. Only lower these.
 const lineBudgets: Record<string, number> = {
-  'src/services/bilibili/DelayedReplyService.ts': 2414,
+  'src/services/bilibili/DelayedReplyService.ts': 1851,
   'src/services/webhook/handlers/MikufansWebhookHandler.ts': 1716,
   'src/scripts/ai_comic_generator.py': 3390,
   'src/scripts/clip_upload_registry.py': 2602,

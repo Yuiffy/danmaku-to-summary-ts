@@ -194,7 +194,7 @@ rewriting the whole pipeline at once.
    with injectable provider/file dependencies, keeping current monkeypatch
    contracts and output metadata compatible. Acceptance includes provider-failure
    fallback, input identity, and generated-file metadata compatibility.
-2. `DelayedReplyService.ts`: publication orchestration is still large. Preserve
+2. `DelayedReplyService.ts` (completed): publication orchestration is still large. Preserve
    idempotency state, persistence ordering, and timer ownership while extracting
    supplementary-summary/comic workflows behind typed ports. Acceptance includes
    restart recovery and retries that cannot duplicate completed publications.
@@ -221,3 +221,20 @@ their permanently disabled entrypoints retain the original failure behavior.
 
 Validation: all 230 portable Python tests passed, including new route fallback,
 recovery parameter forwarding, total failure and provider metadata cases.
+
+### Phase 2: supplementary publications
+
+`SupplementaryReplyWorkflow` owns comic follow-ups, separate live summaries,
+summary-dynamic replies and their success notifications through typed ports.
+The service retains task identity, locks, the scheduler and primary publication.
+`DelayedReplyService.ts` decreased from 2,413 to 1,851 physical lines.
+
+Comic and summary-dynamic requests now persist intent before sending, as separate
+live summaries already did. Unfinished intent after restart stops automatic
+resends. Successful publication cannot be reclassified as an API failure merely
+because persistence or notification fails. The task store replaces its JSON file
+atomically. Existing records do not require conversion.
+
+Validation: 49 focused service/workflow integration tests passed, including six
+new cases using actual temporary task files, restart recovery, retry, notification
+failure and a simulated disk failure after publication.

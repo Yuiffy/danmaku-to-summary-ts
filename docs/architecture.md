@@ -26,6 +26,7 @@ Mikufans / DDTV events -> WebhookService (one running process, one task owner)
   -> DelayedReplyService
      -> DelayedReplyPolicy / ReplyContentReader / DelayedReplyArtifactResolver
      -> LiveContentSummaryComposer / DelayedReplyDiagnostics
+     -> SupplementaryReplyWorkflow (comic, separate live summary, summary dynamic)
      -> DelayedReplyScheduler / task store
      -> Bilibili API / WeChat Work notifications
 ```
@@ -143,7 +144,8 @@ runtime imports. `--json` produces a machine-readable inventory and violation li
 | missing output path or delayed registration | `MikufansDelayedReplyCoordinator`, `DelayedReplyArtifactResolver` |
 | expiry, duplicate identity, retry classification | `DelayedReplyPolicy` |
 | front matter, body cleaning, publishability | `ReplyContentReader` |
-| publication ordering, retries, cancellation, persistence | `DelayedReplyService` |
+| primary publication, task locks, cancellation | `DelayedReplyService` |
+| supplementary publications, durable intent and independent retries | `SupplementaryReplyWorkflow` |
 | summary/comment length or generation diagnostics | `LiveContentSummaryComposer`, `DelayedReplyDiagnostics` |
 | keyword window, candidate recall, subtitle boundaries | `clipping/topic_selection.js`, `clipping/own_selection.js` |
 | storyboard JSON or comic prompt presentation | `comic/storyboard.py`, `comic/prompts.py` |

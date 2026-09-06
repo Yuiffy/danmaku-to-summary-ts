@@ -224,10 +224,13 @@ export interface DelayedReplyTask {
   supplementalReplyId?: string;
   /** 补图回复完成时间 */
   supplementalCompletedAt?: Date;
+  /** Persisted before sending; an unfinished request must not be repeated after restart. */
+  supplementalPublishingAt?: Date;
   /** 汇总动态下的回复ID */
   summaryReplyId?: string;
   /** 汇总动态回复完成时间 */
   summaryCompletedAt?: Date;
+  summaryPublishingAt?: Date;
   /** 汇总动态回复的独立重试次数，避免影响主回复/补图重试 */
   summaryRetryCount?: number;
   /** 本场直播内容梗概 JSON 路径 */

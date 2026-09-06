@@ -31,7 +31,7 @@ def collect_all_images(
     context: ImageInputContext,
 ) -> list[str]:
     """收集所有可用的图片（引用图、封面、截图）用于AI输入
-    
+
     返回图片路径列表，按优先级排序：
     1. 主播参考图（roomSettings中配置的referenceImage）
     2. 已确认出声及脚本需要的额外人物参考图；人物身份锚点优先于直播证据
@@ -114,11 +114,11 @@ def collect_all_images(
             key=directed_priority,
         )
     ]
-    
+
     # 1. 尝试获取主播参考图（roomSettings中配置的）
     room_str = str(room_id)
     has_anchor_image = False
-    
+
     if room_str in config["roomSettings"]:
         room_config = config["roomSettings"][room_str]
         configured_room_images = list(room_config.get("referenceImages") or [])
@@ -140,7 +140,7 @@ def collect_all_images(
                     continue
                 else:
                     context.log(f"[WARNING] 配置的主播参考图不存在: {ref_image}")
-    
+
     # 如果没有配置主播参考图，尝试在reference_images目录中查找
     if not has_anchor_image:
         ref_images_dir = os.path.join(scripts_dir, "reference_images")
@@ -200,7 +200,7 @@ def collect_all_images(
             context.log(f"[WARNING] 额外主播参考图不存在: {display_name} -> {ref_image}")
         if not added:
             context.log(f"[WARNING] 额外主播没有可用参考图: {display_name}")
-    
+
     # 2. 优先加入脚本时间点对应的定向关键帧。
     directed_added = False
     if screenshot_mode == "individual":
@@ -266,7 +266,7 @@ def collect_all_images(
         )
     elif should_use_contact_sheet and screenshot_path and os.path.exists(screenshot_path):
         context.log(f"[INFO]  图片数量达到保守上限 {max_total_images}，跳过直播截图: {os.path.basename(screenshot_path)}")
-    
+
     # 如果没有截图路径，尝试从highlight_path推断
     if should_use_contact_sheet and not screenshot_path and highlight_path:
         dir_path = os.path.dirname(highlight_path)
@@ -280,7 +280,7 @@ def collect_all_images(
             )
         elif os.path.exists(inferred_screenshot):
             context.log(f"[INFO]  图片数量达到保守上限 {max_total_images}，跳过推断的直播截图: {os.path.basename(inferred_screenshot)}")
-    
+
     # 4. 只有在完全没有任何图片时，才使用默认参考图（兜底）
     # 检查是否已经收集到任何图片（主播参考图、封面、截图）
     if len(images) == 0:
@@ -294,7 +294,7 @@ def collect_all_images(
         # 兼容旧格式
         if not default_image and config.get("aiServices", {}).get("defaultReferenceImage"):
             default_image = config["aiServices"]["defaultReferenceImage"]
-        
+
         if default_image:
             # 尝试相对于项目根目录的路径
             absolute_path = os.path.join(project_root, default_image) if not os.path.isabs(default_image) else default_image
@@ -317,6 +317,6 @@ def collect_all_images(
             context.log("[INFO]  未配置默认参考图，将无参考图生成")
     else:
         context.log(f"[INFO]  已有 {len(images)} 张图片，跳过默认参考图")
-    
+
     context.log(f"[INFO]  共收集到 {len(images)} 张图片用于AI输入")
     return images
