@@ -2,6 +2,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { AppConfig, ConfigLoaderOptions } from './ConfigInterface';
 import { ConfigValidator } from './ConfigValidator';
+import { deepMerge, findConfigPaths, loadConfigLayers } from './ConfigLayers';
+import { getProjectRoot } from './ProjectPaths';
 
 /**
  * 配置加载器
@@ -26,90 +28,11 @@ export class ConfigLoader {
   }
 
   /**
-   * 获取项目根目录
-   */
-  private getProjectRoot(): string {
-    // 向上查找项目根目录（包含config目录的目录）
-    let currentDir = process.cwd();
-    
-    while (currentDir && currentDir !== path.dirname(currentDir)) {
-      if (fs.existsSync(path.join(currentDir, 'config'))) {
-        return currentDir;
-      }
-      currentDir = path.dirname(currentDir);
-    }
-    
-    // 如果找不到，返回当前目录
-    return process.cwd();
-  }
-
-  /**
    * 查找配置文件路径
    * 优先级: /config/production.json > /config/default.json
    */
   private findConfigPath(): string {
-    const explicitPath = process.env.CONFIG_PATH;
-    if (explicitPath && fs.existsSync(explicitPath)) {
-      console.log(`✓ 配置路径优先级: ${explicitPath}`);
-      return explicitPath;
-    }
-    const env = process.env.NODE_ENV || 'development';
-    const projectRoot = this.getProjectRoot();
-    
-    const possiblePaths = [
-      // 优先读取外部config目录中的环境特定配置
-      path.join(projectRoot, 'config', env === 'production' ? 'production.json' : 'default.json'),
-      // 其次读取外部config目录中的默认配置
-      path.join(projectRoot, 'config', 'default.json'),
-    ];
-
-    for (const configPath of possiblePaths) {
-      if (fs.existsSync(configPath)) {
-        console.log(`✓ 配置路径优先级: ${configPath}`);
-        return configPath;
-      }
-    }
-
-    // 默认返回 config/default.json
-    const defaultPath = path.join(projectRoot, 'config', 'default.json');
-    console.warn(`⚠ 配置文件未找到，使用默认路径: ${defaultPath}`);
-    return defaultPath;
-  }
-
-  /**
-   * 读取JSON文件
-   */
-  private readJsonFile(filePath: string): any {
-    try {
-      const rawContent = fs.readFileSync(filePath, 'utf-8');
-      const content = rawContent.replace(/^\uFEFF/, '');
-      return JSON.parse(content);
-    } catch (error) {
-      throw new Error(`Failed to read JSON file ${filePath}: ${error}`);
-    }
-  }
-
-  /**
-   * 深度合并对象
-   */
-  private deepMerge(target: any, source: any): any {
-    const result = { ...target };
-
-    for (const key in source) {
-      if (source.hasOwnProperty(key)) {
-        if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
-          if (target[key] && typeof target[key] === 'object') {
-            result[key] = this.deepMerge(target[key], source[key]);
-          } else {
-            result[key] = source[key];
-          }
-        } else {
-          result[key] = source[key];
-        }
-      }
-    }
-
-    return result;
+    return findConfigPaths().at(-1) || path.join(getProjectRoot(), 'config', 'default.json');
   }
 
   /**
@@ -121,70 +44,12 @@ export class ConfigLoader {
 
     console.log(`Loading configuration from: ${configPath}`);
 
-    let config: any = {};
+    let config: any = loadConfigLayers({ configPath });
 
-    // 1. 加载主配置文件
-    if (fs.existsSync(configPath)) {
-      try {
-        config = this.readJsonFile(configPath);
-        console.log(`Configuration loaded from file: ${configPath}`);
-      } catch (error) {
-        console.warn(`Failed to load configuration from ${configPath}:`, error);
-      }
-    } else {
-      console.warn(`Configuration file not found at ${configPath}, using defaults`);
-    }
-
-    // 2. 加载secrets配置（包含敏感信息，不提交到版本控制）
-    // 位置: /config/secret.json
-    const projectRoot = this.getProjectRoot();
-    const secretsPath = path.join(projectRoot, 'config', 'secret.json');
-    if (fs.existsSync(secretsPath)) {
-      try {
-        const secretsConfig = this.readJsonFile(secretsPath);
-        // 将扁平的secrets结构映射到嵌套结构
-        const mappedSecrets: any = {};
-        
-        // gemini.apiKey -> ai.text.gemini.apiKey
-        if (secretsConfig.gemini && secretsConfig.gemini.apiKey) {
-          if (!mappedSecrets.ai) mappedSecrets.ai = {};
-          if (!mappedSecrets.ai.text) mappedSecrets.ai.text = {};
-          if (!mappedSecrets.ai.text.gemini) mappedSecrets.ai.text.gemini = {};
-          mappedSecrets.ai.text.gemini.apiKey = secretsConfig.gemini.apiKey;
-        }
-        
-        // tuZi.apiKey -> ai.comic.tuZi.apiKey
-        if (secretsConfig.tuZi && secretsConfig.tuZi.apiKey) {
-          if (!mappedSecrets.ai) mappedSecrets.ai = {};
-          if (!mappedSecrets.ai.comic) mappedSecrets.ai.comic = {};
-          if (!mappedSecrets.ai.comic.tuZi) mappedSecrets.ai.comic.tuZi = {};
-          mappedSecrets.ai.comic.tuZi.apiKey = secretsConfig.tuZi.apiKey;
-        }
-        
-        // bilibili -> bilibili
-        if (secretsConfig.bilibili) {
-          mappedSecrets.bilibili = secretsConfig.bilibili;
-        }
-
-        // wechatWork -> wechatWork
-        if (secretsConfig.wechatWork) {
-          mappedSecrets.wechatWork = secretsConfig.wechatWork;
-        }
-
-        config = this.deepMerge(config, mappedSecrets);
-        console.log(`Secrets configuration loaded from: ${secretsPath}`);
-      } catch (error) {
-        console.warn(`Failed to load secrets configuration from ${secretsPath}:`, error);
-      }
-    }
-
-    // 3. 应用环境变量覆盖
-    config = this.applyEnvironmentVariables(config);
-
-    // 4. 处理代理配置
+    // 处理代理配置
     config = this.applyProxyConfig(config);
 
-    // 5. 验证配置
+    // 验证配置
     if (validate) {
       const validationResult = ConfigValidator.validate(config);
       if (!validationResult.valid) {
@@ -199,56 +64,10 @@ export class ConfigLoader {
       this.config = config as AppConfig;
     }
 
-    // 6. 设置环境变量
+    // 设置环境变量
     this.setEnvironmentVariables();
 
     return this.config!;
-  }
-
-  /**
-   * 应用环境变量覆盖
-   */
-  private applyEnvironmentVariables(config: any): any {
-    const envConfig = { ...config };
-
-    // 应用环境变量映射
-    const envMappings = {
-      'APP_ENVIRONMENT': 'app.environment',
-      'APP_LOG_LEVEL': 'app.logLevel',
-      'WEBHOOK_PORT': 'webhook.port',
-      'WEBHOOK_HOST': 'webhook.host',
-      'GEMINI_API_KEY': 'ai.text.gemini.apiKey',
-      'OPENAI_API_KEY': 'ai.text.openai.apiKey',
-      'STORAGE_BASE_PATH': 'storage.basePath',
-      'STORAGE_TEMP_PATH': 'storage.tempPath',
-      'STORAGE_OUTPUT_PATH': 'storage.outputPath',
-    };
-
-    for (const [envVar, configPath] of Object.entries(envMappings)) {
-      if (process.env[envVar]) {
-        this.setNestedValue(envConfig, configPath, process.env[envVar]);
-      }
-    }
-
-    return envConfig;
-  }
-
-  /**
-   * 设置嵌套值
-   */
-  private setNestedValue(obj: any, path: string, value: any): void {
-    const keys = path.split('.');
-    let current = obj;
-
-    for (let i = 0; i < keys.length - 1; i++) {
-      const key = keys[i];
-      if (!current[key] || typeof current[key] !== 'object') {
-        current[key] = {};
-      }
-      current = current[key];
-    }
-
-    current[keys[keys.length - 1]] = value;
   }
 
   /**
@@ -325,7 +144,7 @@ export class ConfigLoader {
   async save(config: Partial<AppConfig>, targetPath?: string): Promise<void> {
     const savePath = targetPath || this.configPath;
     const currentConfig = this.config || ConfigValidator.getDefaultConfig();
-    const mergedConfig = this.deepMerge(currentConfig, config);
+    const mergedConfig = deepMerge(currentConfig as unknown as Record<string, unknown>, config as unknown as Record<string, unknown>);
 
     // 验证配置
     const validationResult = ConfigValidator.validate(mergedConfig);
@@ -338,7 +157,7 @@ export class ConfigLoader {
     console.log(`Configuration saved to: ${savePath}`);
 
     // 重新加载配置
-    this.config = mergedConfig;
+    this.config = mergedConfig as unknown as AppConfig;
   }
 
   /**

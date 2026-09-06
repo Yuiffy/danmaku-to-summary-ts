@@ -134,6 +134,10 @@ describe('supplementary publication persistence', () => {
     const reloaded = await restart();
     expect(reloaded.restored.liveContentSummaryState).toBe('publishing');
     await reloaded.workflow.tryPublishLiveContentSummarySeparately(reloaded.restored);
+    await reloaded.workflow.completeOrWaitForLiveContentSummary(reloaded.restored);
+    await reloaded.workflow.tryPublishLiveContentSummarySeparately(reloaded.restored);
+    reloaded.restored.liveContentSummaryDeliveryMode = 'attach_if_ready';
+    expect(ports.liveContentSummaryComposer.compose(reloaded.restored, 'reply', 'supplemental').attached).toBe(false);
     expect(publish).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,6 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 const Joi = require('joi');
+const configLayers = require('./workflow-runtime').loadWorkflow('config/layers');
+const findSecretsPath = () => configLayers.findSecretsPath();
 
 /**
  * 统一配置加载器
@@ -435,30 +437,6 @@ const ConfigSchema = Joi.object({
     roomSettings: Joi.object().pattern(Joi.string(), RoomSettingsSchema).optional()
 }).default();
 
-// Secrets Schema - 扁平结构，将转换为嵌套
-const SecretsSchema = Joi.object({
-    gemini: Joi.object({ apiKey: Joi.string().allow('') }).optional(),
-    tuZi: Joi.object({
-        apiKey: Joi.string().allow('').optional(),
-        textApiKey: Joi.string().allow('').optional()
-    }).optional(),
-    bilibili: Joi.object({
-        cookie: Joi.string().allow('').optional(),
-        csrf: Joi.string().allow('').optional()
-    }).optional(),
-    wechatWork: Joi.object({
-        webhookUrl: Joi.string().allow('').optional()
-    }).optional(),
-    tuZiBalance: Joi.object({
-        accessToken: Joi.string().allow('').optional(),
-        newApiUser: Joi.string().allow('').optional()
-    }).optional(),
-    providers: Joi.object().pattern(Joi.string(), Joi.object().unknown(true)).optional(),
-    ai: Joi.object({
-        providers: Joi.object().pattern(Joi.string(), Joi.object().unknown(true)).optional()
-    }).unknown(true).optional()
-}).default();
-
 // ============================================================================
 // 工具函数
 // ============================================================================
@@ -468,133 +446,7 @@ const SecretsSchema = Joi.object({
  * 优先级: /config/production.json > /config/default.json
  */
 function findConfigPath() {
-    const explicitPath = process.env.CONFIG_PATH;
-    if (explicitPath && fs.existsSync(explicitPath)) {
-        return explicitPath;
-    }
-    const env = process.env.NODE_ENV || 'development';
-    const possiblePaths = [
-        path.join(process.cwd(), 'config', env === 'production' ? 'production.json' : 'default.json'),
-        path.join(process.cwd(), 'config', 'default.json'),
-    ];
-
-    for (const configPath of possiblePaths) {
-        if (fs.existsSync(configPath)) {
-            return configPath;
-        }
-    }
-
-    return path.join(process.cwd(), 'config', 'default.json');
-}
-
-/**
- * 查找secrets配置文件路径
- */
-function findSecretsPath() {
-    return path.join(process.cwd(), 'config', 'secret.json');
-}
-
-/**
- * 读取并验证JSON文件
- */
-function readAndValidateJson(filePath, schema) {
-    try {
-        const content = fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
-        const data = JSON.parse(content);
-        const { error, value } = schema.validate(data, { allowUnknown: true, stripUnknown: false });
-        if (error) {
-            console.warn(`⚠ 配置验证警告 (${filePath}): ${error.message}`);
-            return data; // 使用原始数据，即使验证失败
-        }
-        return value;
-    } catch (error) {
-        throw new Error(`Failed to read JSON file ${filePath}: ${error.message}`);
-    }
-}
-
-/**
- * 将扁平的secrets转换为嵌套结构
- */
-function transformSecrets(secrets) {
-    const transformed = {};
-
-    if (secrets.gemini?.apiKey) {
-        transformed.ai = transformed.ai || {};
-        transformed.ai.text = transformed.ai.text || {};
-        transformed.ai.text.gemini = transformed.ai.text.gemini || {};
-        transformed.ai.text.gemini.apiKey = secrets.gemini.apiKey;
-    }
-
-    if (secrets.tuZi?.apiKey || secrets.tuZi?.textApiKey) {
-        transformed.ai = transformed.ai || {};
-        // tuZi API Key 用于文本生成（备用方案）
-        transformed.ai.text = transformed.ai.text || {};
-        transformed.ai.text.tuZi = transformed.ai.text.tuZi || {};
-        transformed.ai.text.tuZi.apiKey = secrets.tuZi.textApiKey || secrets.tuZi.apiKey || '';
-        // tuZi API Key 也用于漫画生成
-        transformed.ai.comic = transformed.ai.comic || {};
-        transformed.ai.comic.tuZi = transformed.ai.comic.tuZi || {};
-        if (secrets.tuZi.apiKey) {
-            transformed.ai.comic.tuZi.apiKey = secrets.tuZi.apiKey;
-        }
-    }
-
-    if (secrets.bilibili) {
-        transformed.bilibili = secrets.bilibili;
-    }
-
-    if (secrets.wechatWork) {
-        transformed.wechatWork = secrets.wechatWork;
-    }
-
-    if (secrets.tuZiBalance) {
-        transformed.ai = transformed.ai || {};
-        transformed.ai.tuZiBalance = secrets.tuZiBalance;
-    }
-
-    if (secrets.providers) {
-        transformed.ai = transformed.ai || {};
-        transformed.ai.providers = deepMerge(transformed.ai.providers || {}, secrets.providers);
-        // 从 providers.daiYu 注入 text.daiYu.apiKey
-        if (secrets.providers.daiYu?.apiKey) {
-            transformed.ai.text = transformed.ai.text || {};
-            transformed.ai.text.daiYu = transformed.ai.text.daiYu || {};
-            transformed.ai.text.daiYu.apiKey = secrets.providers.daiYu.apiKey;
-            transformed.ai.text.daiYu.baseUrl = secrets.providers.daiYu.baseURL
-                ? secrets.providers.daiYu.baseURL.replace(/\/v1$/, '')
-                : (secrets.providers.daiYu.baseUrl || 'http://localhost:8080');
-        }
-    }
-
-    if (secrets.ai?.providers) {
-        transformed.ai = transformed.ai || {};
-        transformed.ai.providers = deepMerge(transformed.ai.providers || {}, secrets.ai.providers);
-    }
-
-    return transformed;
-}
-
-/**
- * 深度合并对象
- */
-function deepMerge(target, source) {
-    const result = { ...target };
-
-    for (const key in source) {
-        if (source.hasOwnProperty(key)) {
-            if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
-                if (target[key] && typeof target[key] === 'object') {
-                    result[key] = deepMerge(target[key], source[key]);
-                } else {
-                    result[key] = source[key];
-                }
-            } else {
-                result[key] = source[key];
-            }
-        }
-    }
-
-    return result;
+    return configLayers.findConfigPaths().at(-1) || path.join(process.env.DANMAKU_PROJECT_ROOT || path.resolve(__dirname, '../..'), 'config/default.json');
 }
 
 // ============================================================================
@@ -605,47 +457,10 @@ function deepMerge(target, source) {
  * 获取完整配置（合并主配置和secrets）
  */
 function getConfig() {
-    if (cachedConfig) {
-        return cachedConfig;
-    }
-
-    const configPath = findConfigPath();
-    const secretsPath = findSecretsPath();
-
-    let config = {};
-
-    // 读取主配置
-    if (fs.existsSync(configPath)) {
-        try {
-            config = readAndValidateJson(configPath, ConfigSchema);
-            console.log(`✓ 配置文件已加载: ${configPath}`);
-        } catch (error) {
-            console.warn(`⚠ 加载配置文件失败: ${error.message}`);
-        }
-    } else {
-        console.warn(`⚠ 配置文件不存在: ${configPath}`);
-    }
-
-    // 读取secrets并合并
-    if (fs.existsSync(secretsPath)) {
-        try {
-            const secrets = readAndValidateJson(secretsPath, SecretsSchema);
-            const transformedSecrets = transformSecrets(secrets);
-            config = deepMerge(config, transformedSecrets);
-            console.log(`✓ Secrets配置文件已加载: ${secretsPath}`);
-        } catch (error) {
-            console.warn(`⚠ 加载secrets配置文件失败: ${error.message}`);
-        }
-    } else {
-        console.warn(`⚠ Secrets配置文件不存在: ${secretsPath}`);
-    }
-
-    // 最终验证合并后的配置
+    if (cachedConfig) return cachedConfig;
+    const config = configLayers.loadConfigLayers();
     const { error, value } = ConfigSchema.validate(config, { allowUnknown: true, stripUnknown: false });
-    if (error) {
-        console.warn(`⚠ 配置验证警告: ${error.message}`);
-    }
-
+    if (error) console.warn('Configuration validation warning: ' + error.message);
     cachedConfig = value || config;
     return cachedConfig;
 }

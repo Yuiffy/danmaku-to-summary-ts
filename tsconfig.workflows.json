@@ -3,15 +3,16 @@
     "target": "ES2022",
     "module": "commonjs",
     "moduleResolution": "node",
-    "rootDir": "src/workflows",
+    "rootDir": "src",
     "outDir": "build/workflows",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "noEmitOnError": true,
     "declaration": true,
+    "resolveJsonModule": true,
     "types": ["node"]
   },
-  "include": ["src/workflows/**/*.ts"],
+  "include": ["src/workflows/**/*.ts", "src/core/config/ConfigLayers.ts"],
   "exclude": ["**/*.test.ts"]
 }

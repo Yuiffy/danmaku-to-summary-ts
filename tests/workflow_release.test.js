@@ -8,9 +8,10 @@ const { test } = require('node:test');
 const root = path.resolve(__dirname, '..');
 const releaseDir = process.env.DANMAKU_WORKFLOW_RELEASE
     || JSON.parse(fs.readFileSync(path.join(root, 'build/workflow-candidate.json'), 'utf8')).releaseDir;
-const responses = require(path.join(releaseDir, 'text/response.js'));
-const requests = require(path.join(releaseDir, 'text/requests.js'));
-const diagnostics = require(path.join(releaseDir, 'summary/diagnostics.js'));
+const manifest = JSON.parse(fs.readFileSync(path.join(releaseDir, 'manifest.json'), 'utf8'));
+const responses = require(path.join(releaseDir, manifest.entries['text/response']));
+const requests = require(path.join(releaseDir, manifest.entries['text/requests']));
+const diagnostics = require(path.join(releaseDir, manifest.entries['summary/diagnostics']));
 
 test('compiled text adapters handle chat/responses and usage aliases', () => {
     assert.equal(responses.extractOpenAITextResponse({ output: [{ content: [{ type: 'output_text', text: 'Good night' }] }] }), 'Good night');
@@ -61,7 +62,7 @@ for (const cli of ['ai_text_generator.js', 'enhanced_auto_summary.js']) {
                 env: { ...process.env, NODE_PATH: '', NODE_OPTIONS: '', DANMAKU_WORKFLOW_RELEASE: path.join(directory, 'release') }
             });
             assert.equal(result.status, 0, result.stderr);
-            assert.equal(JSON.parse(result.stdout).entries.length, 3);
+            assert.deepEqual(JSON.parse(result.stdout).entries, Object.keys(manifest.entries));
         } finally { fs.rmSync(directory, { recursive: true, force: true }); }
     });
 }
@@ -70,7 +71,7 @@ test('the bridge refuses a damaged or incomplete release before loading any modu
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'workflow-integrity-'));
     try {
         fs.cpSync(releaseDir, directory, { recursive: true });
-        fs.appendFileSync(path.join(directory, 'text/response.js'), '\n// changed');
+        fs.appendFileSync(path.join(directory, manifest.entries['text/response']), '\n// changed');
         const result = spawnSync(process.execPath, ['-e', 'require(process.argv[1]).checkRuntime()', path.join(root, 'src/scripts/workflow-runtime.js')], {
             encoding: 'utf8', windowsHide: true, timeout: 10000,
             env: { ...process.env, DANMAKU_WORKFLOW_RELEASE: directory }

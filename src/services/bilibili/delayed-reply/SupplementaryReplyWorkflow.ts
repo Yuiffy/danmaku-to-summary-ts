@@ -153,7 +153,7 @@ export class SupplementaryReplyWorkflow {
     if (!task.repliedDynamicId || !task.replyId) {
       return 'waiting';
     }
-    if (task.liveContentSummaryState === 'publishing') {
+    if (task.liveContentSummaryState === 'publishing' || task.liveContentSummaryPublishingAt) {
       task.liveContentSummaryState = 'failed';
       task.liveContentSummaryError = '直播梗概发布结果不确定，为避免重启后重复评论，已停止自动重发';
       await this.ports.store.updateTask(task.taskId, this.ports.liveContentSummaryComposer.getTaskUpdates(task));
@@ -284,7 +284,7 @@ export class SupplementaryReplyWorkflow {
       return;
     }
 
-    if (task.liveContentSummaryState === 'publishing') {
+    if (task.liveContentSummaryState === 'publishing' || task.liveContentSummaryPublishingAt) {
       task.liveContentSummaryState = 'failed';
       task.liveContentSummaryError = '直播梗概发布结果不确定，为避免重复评论，已停止自动重发';
     } else {

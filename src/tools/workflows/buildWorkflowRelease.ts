@@ -4,9 +4,10 @@ import { createHash } from 'crypto';
 import * as ts from 'typescript';
 
 const entries = {
-  'text/response': 'text/response.js',
-  'text/requests': 'text/requests.js',
-  'summary/diagnostics': 'summary/diagnostics.js'
+  'text/response': 'workflows/text/response.js',
+  'text/requests': 'workflows/text/requests.js',
+  'summary/diagnostics': 'workflows/summary/diagnostics.js',
+  'config/layers': 'core/config/ConfigLayers.js'
 };
 
 function filesUnder(directory: string, relative = ''): string[] {

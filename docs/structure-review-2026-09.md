@@ -189,25 +189,15 @@ There are four follow-up phases after the initial structural review. Each phase
 can contain independently tested commits; completing one does not require
 rewriting the whole pipeline at once.
 
-1. Comic generation (completed): screenshot acquisition is extracted. Provider
-   IO and image-input assembly remain in `ai_comic_generator.py`. Extract those
-   with injectable provider/file dependencies, keeping current monkeypatch
-   contracts and output metadata compatible. Acceptance includes provider-failure
-   fallback, input identity, and generated-file metadata compatibility.
-2. `DelayedReplyService.ts` (completed): publication orchestration is still large. Preserve
-   idempotency state, persistence ordering, and timer ownership while extracting
-   supplementary-summary/comic workflows behind typed ports. Acceptance includes
-   restart recovery and retries that cannot duplicate completed publications.
-3. `enhanced_auto_summary.js` and `ai_text_generator.js` (completed increment): migrate stages to TS
-   after defining how source CLIs find a complete compiled release. Do not add a
-   runtime dependency on a dev-only TypeScript transpiler. Acceptance includes
-   executing each compatibility CLI from a production release without dev tools.
-4. Configuration readers across Node/Python and historical operator scripts need
-   further consolidation. The existing `ReplyHistoryStore` path depends on build
-   depth; any correction must preserve the actual historical file, not silently
-   start a new empty history. Acceptance includes preserving historical dedupe
-   records and configuration parity across both runtimes. No persistent history
-   path was migrated in either completed increment.
+1. Completed: comic screenshots, image routes and input assembly have explicit
+   owners and injected provider dependencies, preserving metadata and fallbacks.
+2. Completed: supplementary publication workflows have typed ports, durable
+   publication intent and restart/retry tests; task locks remain with the service.
+3. Completed increment: source CLIs load strictly typed stages from a complete,
+   verified release. Request/response handling and ASR diagnostics have migrated;
+   the remaining JS orchestration can follow this established release boundary.
+4. Completed: Node/Python share a configuration contract; reply storage has a
+   stable root and preserves the actual legacy history during migration.
 
 ### Phase 1: image generation boundaries
 
@@ -254,3 +244,36 @@ temporary directory with no TS source or development dependencies, disable Node'
 TS type stripping, and execute the runtime check. Compiled input/output checks
 cover chat/responses, prompt caching, reasoning, usage and ASR timing sentinels;
 an integrity test refuses a modified release.
+
+### Phase 4: configuration and durable history
+
+Node service/source CLIs share `ConfigLayers.ts`; Python uses the same JSON
+contract through `config_contract.py`. Selected-file precedence, secret aliases,
+environment overrides, BOM handling, array/null replacement and root resolution
+have cross-language tests. Schema defaults remain with their runtime consumers.
+The old duplicated secret mapping and merge routines were removed.
+
+A production fingerprint comparison found all 1,351 existing Node CLI fields
+unchanged. The service now receives the same provider/balance credentials already
+used by Node CLIs. Python follows the selected production file and stops reviving
+keys absent from it, including the deliberately empty anchor list. No production
+configuration or secret file was edited.
+
+Reply history now uses repository `data`, with source-preserving migration from
+the actual legacy sibling path, backups, successful-record precedence and a
+per-source import digest. Dates are restored for history sorting/cleanup. The
+delayed-task store also uses a root independent of cwd. Twelve new tests cover
+cross-language precedence and history migration/restart/failure behavior.
+
+### Final migration verification
+
+The complete gate passed after the final recovery hardening: 48 Jest suites,
+498 tests, 230 portable Python tests, ten Node tests and seven compiled goodnight
+workflow tests. The extra compiled/source test restores a future task from an
+actual task file, preserves its identity/deadline, and publishes only once through
+the mocked API. A repeated uncertain-summary recovery cannot resend or reattach
+the same content. Log: `tmp/migration-release-verify.log`.
+
+The real FFmpeg smoke passed with a five-second NVENC/CUDA subtitle clip,
+two-stage copy, no fallback and 1,161 detected subtitle pixels. The new compiled
+duration probe agreed with ffprobe. Log: `tmp/migration-media-smoke.log`.

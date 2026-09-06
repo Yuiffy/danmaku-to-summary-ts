@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { DelayedReplyHandler } from '../../src/services/webhook/handlers/DelayedReplyHandler';
 import { DelayedReplyService } from '../../src/services/bilibili/DelayedReplyService';
+import { DelayedReplyStore } from '../../src/services/bilibili/DelayedReplyStore';
 import { BilibiliConfigHelper } from '../../src/services/bilibili/BilibiliConfigHelper';
 import { DelayedReplyTask, DynamicType } from '../../src/services/bilibili/interfaces/types';
 import { LiveSessionManager } from '../../src/services/webhook/LiveSessionManager';
@@ -94,6 +95,30 @@ describe('goodnight workflow across service boundaries', () => {
     expect(service.getTasks()).toHaveLength(0);
     expect(api.publishComment).not.toHaveBeenCalled();
     await request(app).delete(`/api/delayed-reply/tasks/${id}`).expect(404);
+  });
+
+  test('restores a future task from disk with its deadline and identity intact, then publishes once', async () => {
+    await service.stop();
+    const storagePath = path.join(directory, 'delayed-tasks.json');
+    service = new DelayedReplyService(api as any, new DelayedReplyStore(storagePath));
+    await service.start();
+    const id = await service.addTask('fixture-room', textPath, undefined, 3600);
+    const deadline = service.getTasks()[0].scheduledTime.getTime();
+    await service.stop();
+    service = new DelayedReplyService(api as any, new DelayedReplyStore(storagePath));
+    await service.start();
+    expect(service.getTasks()).toHaveLength(1);
+    expect(service.getTasks()[0].scheduledTime.getTime()).toBe(deadline);
+    expect(await service.addTask('fixture-room', textPath, undefined, 3600)).toBe(id);
+    expect(api.publishComment).not.toHaveBeenCalled();
+    api.getDynamics.mockResolvedValue([{
+      id: 'dynamic-fixture', uid: 'fixture-uid', type: DynamicType.WORD,
+      content: 'goodnight', publishTime: new Date(), url: 'https://example.invalid/dynamic'
+    }]);
+    await (service as any).executeDelayedReply(service.getTasks()[0]);
+    await (service as any).executeDelayedReply(service.getTasks()[0]);
+    expect(api.publishComment).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fs.readFileSync(storagePath, 'utf8')).tasks[0]).toMatchObject({ taskId: id, status: 'completed', replyId: 'reply-fixture' });
   });
 
   test('does not cancel a task while it is publishing', async () => {

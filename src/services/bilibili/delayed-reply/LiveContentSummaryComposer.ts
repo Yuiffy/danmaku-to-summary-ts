@@ -165,6 +165,7 @@ export class LiveContentSummaryComposer {
       !task.liveContentSummaryPath ||
       task.liveContentSummaryDeliveryMode !== 'attach_if_ready' ||
       task.liveContentSummaryForceSeparate ||
+      task.liveContentSummaryPublishingAt ||
       this.isDelivered(task)
     ) {
       return { text: replyText, attached: false };

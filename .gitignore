@@ -17,6 +17,7 @@
 # production
 /build
 /dist
+/dist.next-structure/
 
 # misc
 .DS_Store
@@ -50,6 +51,7 @@ data/runtime/
 local-scripts/*
 !local-scripts/README.md
 data/delayed_reply_tasks.*
+data/reply_history*
 data/asr_speaker_refs/backup*
 output
 outputs/

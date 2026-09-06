@@ -114,6 +114,43 @@ compiled stages without contacting providers, reading production queues, or
 starting a scheduler. The larger JS orchestration is still being migrated in
 stages; these compatibility entrypoints remain the supported CLI paths.
 
+### Configuration and history
+
+`core/config/config-contract.json` defines the Node/Python contract. The readers
+select one main JSON file: explicit `CONFIG_PATH`, then `production.json` when
+`NODE_ENV` is `production` or `automation`, then `default.json`. An explicit missing
+file is an error. An absent `NODE_ENV` selects development. Production does not
+inherit keys removed from its config. This preserves the existing Node behavior
+and aligns Python with it. UTF-8 BOMs are accepted; arrays/null replace values and
+objects merge when applying secrets. Environment overrides follow secrets.
+
+`ConfigLayers.ts` is used by the service and compiled source-CLI bridge;
+`config_contract.py` interprets the same contract for Python. Runtime schemas and
+defaults remain in their respective consumers. Cross-language tests compare the
+entire merged JSON before those schemas. Relative config paths resolve against the
+repository, independent of cwd. `DANMAKU_PROJECT_ROOT` can explicitly select a root.
+
+Both reply stores now resolve `data` from the repository. `ReplyHistoryStore`
+imports the historical sibling `../data/reply_history.json`, merges by dynamic ID
+(successful records win over failed records), restores dates and preserves the
+source file. Backups live in `data/runtime/reply-history-migration`; a digest marker
+prevents unchanged records from being reimported after cleanup. Changed legacy
+files after a rollback are merged on the next start. Invalid history fails startup
+instead of silently creating an empty store.
+
+### PM2 deployment
+
+After `npm run verify:all`, stage service output with
+`node node_modules/typescript/bin/tsc -p tsconfig.build.json --outDir dist.next-structure --incremental false`.
+Activate the tested workflows with `npm run workflow:activate`, then run
+`./tools/deploy-webhook.ps1` from PowerShell. It verifies staged JS/JSON against
+`build/service`, checks both CLI releases, refuses processing/imminently due tasks,
+snapshots state, preserves future delayed-task identities and deadlines,
+restarts only `danmaku-webhook`, migrates history while the old process is stopped,
+and verifies health and historical identities. Failure restores the prior `dist`.
+This single fork-mode PM2 process has a brief restart window. The script is scoped
+to this repository's service on port 12523 and does not deploy other PM2 apps.
+
 ## Verification
 
 | Command | Purpose |

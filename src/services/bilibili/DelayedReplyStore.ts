@@ -6,6 +6,7 @@ import * as path from 'path';
 import { getLogger } from '../../core/logging/LogManager';
 import { IDelayedReplyStore } from './interfaces/IDelayedReplyStore';
 import { DelayedReplyTask } from './interfaces/types';
+import { getProjectRoot } from '../../core/config/ProjectPaths';
 
 /**
  * 延迟回复存储实现
@@ -16,7 +17,7 @@ export class DelayedReplyStore implements IDelayedReplyStore {
   private tasks: Map<string, DelayedReplyTask> = new Map();
   private initialized = false;
 
-  constructor(storagePath = path.join(process.cwd(), 'data', 'delayed_reply_tasks.json')) {
+  constructor(storagePath = path.join(getProjectRoot(), 'data', 'delayed_reply_tasks.json')) {
     this.storagePath = storagePath;
   }
 
