@@ -11,7 +11,7 @@ const defaultLineBudget = 1200;
 const lineBudgets: Record<string, number> = {
   'src/services/bilibili/DelayedReplyService.ts': 2414,
   'src/services/webhook/handlers/MikufansWebhookHandler.ts': 1716,
-  'src/scripts/ai_comic_generator.py': 4598,
+  'src/scripts/ai_comic_generator.py': 4268,
   'src/scripts/clip_upload_registry.py': 2602,
   'src/scripts/topic_clipper.js': 2378,
   'src/scripts/own_stream_clipper.js': 2265,
@@ -117,6 +117,17 @@ function resolveLocalImport(root: string, file: string, specifier: string): stri
   return resolved ? normalize(path.relative(root, resolved)) : undefined;
 }
 
+export function pythonBoundaryViolation(file: string, dependency: string): string | undefined {
+  if (!file.startsWith('src/scripts/comic/')) return undefined;
+  if (/^(ai_comic_generator|config_loader|tuzi_chat_completions|requests)(\.|$)/.test(dependency)) {
+    return 'comic components must not import parent orchestration or provider IO';
+  }
+  if (file !== 'src/scripts/comic/screenshots.py' && /^subprocess(\.|$)/.test(dependency)) {
+    return 'comic process execution belongs in screenshots.py';
+  }
+  return undefined;
+}
+
 function inspectPython(root: string, files: string[], violations: string[]): void {
   // AST-only inspection: do not import ML runtimes or execute operator diagnostics.
   const script = [
@@ -141,11 +152,9 @@ function inspectPython(root: string, files: string[], violations: string[]): voi
   }
   const imports = JSON.parse(result.stdout) as Record<string, string[]>;
   for (const [file, dependencies] of Object.entries(imports)) {
-    if (!file.startsWith('src/scripts/comic/')) continue;
     for (const dependency of dependencies) {
-      if (/^(ai_comic_generator|config_loader|tuzi_chat_completions|requests|subprocess)(\.|$)/.test(dependency)) {
-        violations.push(file + ': comic contracts/prompts must not import orchestration or provider IO: ' + dependency);
-      }
+      const reason = pythonBoundaryViolation(file, dependency);
+      if (reason) violations.push(file + ' -> ' + dependency + ': ' + reason);
     }
   }
 }

@@ -1,4 +1,4 @@
-import { boundaryViolation, findCycles, getModuleSpecifiers } from './checkArchitecture';
+import { boundaryViolation, findCycles, getModuleSpecifiers, pythonBoundaryViolation } from './checkArchitecture';
 
 test('recognizes real imports while ignoring prompt text and comments', () => {
   const source = `
@@ -30,4 +30,12 @@ test.each([
 
 test('permits service composition using shared infrastructure', () => {
   expect(boundaryViolation('src/services/ServiceManager.ts', 'src/core/config/ConfigProvider.ts')).toBeUndefined();
+});
+
+test('allows local screenshot processes without opening provider access to comic components', () => {
+  expect(pythonBoundaryViolation('src/scripts/comic/screenshots.py', 'subprocess')).toBeUndefined();
+  expect(pythonBoundaryViolation('src/scripts/comic/screenshots.py', 'requests.sessions')).toBeDefined();
+  expect(pythonBoundaryViolation('src/scripts/comic/screenshots.py', 'ai_comic_generator')).toBeDefined();
+  expect(pythonBoundaryViolation('src/scripts/comic/storyboard.py', 'subprocess')).toBeDefined();
+  expect(pythonBoundaryViolation('src/scripts/comic/prompts.py', 'subprocess')).toBeDefined();
 });

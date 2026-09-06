@@ -66,7 +66,9 @@ consume real queues, run a second production scheduler, reload PM2, or overwrite
 `dist`. Source-script extractions preserve exported names and CLI paths.
 
 Deployment of compiled changes is separate from source implementation and testing.
-The running process continues serving the original runtime during this task.
+The running process continued serving the original runtime during the initial
+review. The subsequent deployment request explicitly authorizes replacing that
+PM2 runtime; verification remains isolated from production state.
 
 ## Measured changes
 
@@ -135,18 +137,45 @@ and hashes each repository-relative Windows path (including the `dist` directory
 by the file bytes. Source JS/Python helpers retain the original entrypoints and
 take effect on future child invocations; compiled TS changes remain undeployed.
 
-## Remaining migration order
+## Follow-up implementation
 
-1. `ai_comic_generator.py`: provider IO and screenshot acquisition remain in the
-   facade; extract those only with injectable provider/file dependencies, keeping
-   current monkeypatch contracts and output metadata compatible.
+The next increment extracts local evidence acquisition into `comic/screenshots.py`.
+It owns video discovery, duration probing, requested individual frames, reference
+sheets, and one shared FFmpeg frame invocation. `ai_comic_generator.py` keeps
+compatible entrypoints and resolves its existing injectable hooks at call time.
+The module has no dependency on provider clients or application configuration.
+The main comic file drops from 4,598 to 4,268 physical lines.
+
+Validation: 75 focused comic tests passed, followed by the complete portable gate:
+45 Jest suites / 479 tests, 227 Python tests, 4 Node tests, and 6 compiled workflow
+tests. Added cases cover partial frame failure, partial sheet failure, resource
+limits, and disabled acquisition. The real FFmpeg smoke generated a 960x540 frame
+and a 1600x502 two-timestamp sheet, both decoded with nonblank pixel checks.
+Local evidence is in `tmp/structure-phase1-verify.log` and
+`tmp/structure-screenshot-smoke-7pn_md3u/`.
+
+## Follow-up phases
+
+There are four follow-up phases after the initial structural review. Each phase
+can contain independently tested commits; completing one does not require
+rewriting the whole pipeline at once.
+
+1. Comic generation (in progress): screenshot acquisition is extracted. Provider
+   IO and image-input assembly remain in `ai_comic_generator.py`. Extract those
+   with injectable provider/file dependencies, keeping current monkeypatch
+   contracts and output metadata compatible. Acceptance includes provider-failure
+   fallback, input identity, and generated-file metadata compatibility.
 2. `DelayedReplyService.ts`: publication orchestration is still large. Preserve
    idempotency state, persistence ordering, and timer ownership while extracting
-   supplementary-summary/comic workflows behind typed ports.
+   supplementary-summary/comic workflows behind typed ports. Acceptance includes
+   restart recovery and retries that cannot duplicate completed publications.
 3. `enhanced_auto_summary.js` and `ai_text_generator.js`: migrate stages to TS
    after defining how source CLIs find a complete compiled release. Do not add a
-   runtime dependency on a dev-only TypeScript transpiler.
+   runtime dependency on a dev-only TypeScript transpiler. Acceptance includes
+   executing each compatibility CLI from a production release without dev tools.
 4. Configuration readers across Node/Python and historical operator scripts need
    further consolidation. The existing `ReplyHistoryStore` path depends on build
    depth; any correction must preserve the actual historical file, not silently
-   start a new empty history. No persistent history path was migrated here.
+   start a new empty history. Acceptance includes preserving historical dedupe
+   records and configuration parity across both runtimes. No persistent history
+   path was migrated in either completed increment.

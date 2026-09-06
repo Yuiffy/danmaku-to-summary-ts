@@ -18,6 +18,7 @@ Mikufans / DDTV events -> WebhookService (one running process, one task owner)
         -> FFmpeg, subtitle/cover output, review registration
      -> ai_comic_generator.py
         -> comic/storyboard.py / comic/prompts.py
+        -> comic/screenshots.py -> local FFmpeg and image sheets
         -> provider calls and image output
   -> generated JSON / Markdown / image sidecars and stdout sentinels
   -> MikufansDelayedReplyCoordinator
@@ -53,7 +54,8 @@ must be updated before using the new task-list/cancellation adapter.
 | `bilibili/delayed-reply` | task policy, content, artifacts, diagnostics, timers | parent-service imports |
 | `src/scripts` | compatible CLIs and existing media orchestration | new long-running services |
 | `scripts/clipping/*_selection.js` | recall, matching, scoring, boundaries | parent workflows, rendering, uploads |
-| `scripts/comic` | comic script contracts and prompt presentation | provider/config/process IO |
+| `scripts/comic/storyboard.py`, `prompts.py` | script contracts and prompt presentation | provider/config/process IO |
+| `scripts/comic/screenshots.py` | local frame acquisition, sheet rendering, shared FFmpeg invocation | provider calls, room configuration |
 | `src/scripts/python` | ML/ASR model implementations | Node process orchestration |
 | `scripts`, `tools` | reusable operator commands and platform setup | application startup side effects |
 | `local-scripts`, `tmp` | machine/date-specific experiments | reusable product behavior |
@@ -143,6 +145,7 @@ runtime imports. `--json` produces a machine-readable inventory and violation li
 | summary/comment length or generation diagnostics | `LiveContentSummaryComposer`, `DelayedReplyDiagnostics` |
 | keyword window, candidate recall, subtitle boundaries | `clipping/topic_selection.js`, `clipping/own_selection.js` |
 | storyboard JSON or comic prompt presentation | `comic/storyboard.py`, `comic/prompts.py` |
+| requested screenshots, source-video resolution, local FFmpeg capture | `comic/screenshots.py` |
 
 Remaining large orchestrators and the history-path migration are tracked in the
 September review. Do not move existing persistent stores as a cosmetic cleanup.
