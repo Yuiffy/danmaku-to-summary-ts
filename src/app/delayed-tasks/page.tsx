@@ -31,7 +31,10 @@ export default function DelayedTasksPage() {
       setLoading(true);
       setError(null);
       const response = await fetch('/api/delayed-tasks');
-      const data = await response.json() as TasksResponse;
+      const data = await response.json() as TasksResponse & { error?: string };
+      if (!response.ok) {
+        throw new Error(data.error || '获取延迟任务失败');
+      }
       setTasks(data.tasks || []);
     } catch (err: any) {
       setError(err.message || '获取任务列表失败');

@@ -1,6 +1,7 @@
 import { Express, Request, Response } from 'express';
 import { IWebhookHandler } from '../IWebhookService';
 import { getLogger } from '../../../core/logging/LogManager';
+import { AppError } from '../../../core/errors/AppError';
 import { IDelayedReplyService } from '../../bilibili/interfaces/IDelayedReplyService';
 
 /**
@@ -30,6 +31,38 @@ export class DelayedReplyHandler implements IWebhookHandler {
    * 注册路由
    */
   registerRoutes(app: Express): void {
+    app.get(`${this.path}/tasks`, (_req: Request, res: Response) => {
+      if (!this.delayedReplyService) {
+        res.status(503).json({ error: 'Delayed reply service not available' });
+        return;
+      }
+      res.json({ tasks: this.delayedReplyService.getTasks() });
+    });
+
+    app.delete(`${this.path}/tasks/:taskId`, async (req: Request, res: Response) => {
+      if (!this.delayedReplyService) {
+        res.status(503).json({ error: 'Delayed reply service not available' });
+        return;
+      }
+      const taskId = String(req.params.taskId);
+      const task = this.delayedReplyService.getTasks().find(item => item.taskId === taskId);
+      if (!task) {
+        res.status(404).json({ error: 'Task not found' });
+        return;
+      }
+      if (task.status === 'processing') {
+        res.status(409).json({ error: 'Task is currently publishing' });
+        return;
+      }
+      try {
+        await this.delayedReplyService.removeTask(taskId);
+        res.json({ success: true, taskId });
+      } catch (error: unknown) {
+        const status = error instanceof AppError ? error.statusCode : 500;
+        res.status(status).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    });
+
     // POST /api/delayed-reply - 手动触发延迟回复
     app.post(this.path, async (req: Request, res: Response): Promise<any> => {
       try {

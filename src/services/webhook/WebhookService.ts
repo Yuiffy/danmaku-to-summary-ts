@@ -1,4 +1,5 @@
 import express, { Express, Request, Response } from 'express';
+import * as path from 'path';
 import { IWebhookService, IWebhookEvent, IFileProcessingResult, IWebhookHandler } from './IWebhookService';
 import { getLogger } from '../../core/logging/LogManager';
 import { ConfigProvider } from '../../core/config/ConfigProvider';
@@ -79,7 +80,7 @@ export class WebhookService implements IWebhookService {
       this.logger = getLogger('WebhookService');
 
       try {
-        const audioProcessor = require('../../../src/scripts/audio_processor');
+        const audioProcessor = require(path.join(process.cwd(), 'src/scripts/audio_processor'));
         audioProcessor.startOnlyAudioRetentionScheduler?.();
       } catch (error: any) {
         this.logger.warn(`onlyAudio retention scheduler failed to start: ${error.message}`);

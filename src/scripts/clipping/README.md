@@ -9,6 +9,10 @@ ignored `temp/` tree until its inputs and behavior are made configurable.
 
 ## Layout
 
+- `topic_selection.js`: keyword matching, context windows, deduplication, and
+  subtitle boundary decisions for topic clips.
+- `topic_config.js`: topic workflow defaults and configuration merging.
+- `own_selection.js`: own-stream candidate recall, scoring, and subtitle alignment.
 - `topic_compilation.js`: discover recordings, search SRT/XML evidence, build a
   reviewable cross-recording plan, and compile the selected windows.
 - `event_manifest.js`: normalize detector output into one event contract and
@@ -22,6 +26,10 @@ The large Sui workflows in `src/scripts/topic_clipper.js`,
 remain at their historical paths for compatibility. New shared code belongs
 here; the root files should depend on these modules instead of adding more
 cross-workflow helpers.
+
+These extracted JS modules preserve the existing source-executed Node runtime.
+They must not import their parent workflows. Pure decision changes can be tested
+without FFmpeg, an AI provider, an upload queue, or a service restart.
 
 `src/scripts/clip_resource_adaptive.js` and `src/scripts/clip_output_path.js`
 are compatibility entrypoints. New imports should use this directory.

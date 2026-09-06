@@ -51,6 +51,10 @@ Paraformer 支持 stock 和本地 fine-tuned model。`config/default.json` 保�
 
 ## 📁 项目结构
 
+开发与排障先看 [架构和语言边界](docs/architecture.md)；本次审查、改造结果和后续顺序见
+[2026-09 结构审查](docs/structure-review-2026-09.md)。日常完整验证使用 `npm run verify:all`，
+编译产物写入 `build/service`，不会清理或覆盖正在运行的 `dist`。
+
 ```
 danmaku-to-summary-ts/
 ├── src/app/main.ts                         # TypeScript 应用入口；构建后为 dist/app/main.js

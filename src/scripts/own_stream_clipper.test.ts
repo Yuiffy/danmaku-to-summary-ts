@@ -1003,22 +1003,23 @@ describe('own_stream_clipper', () => {
     expect(clips.map((clip: any) => clip.title)).toEqual(['higher', 'touching is allowed']);
   });
 
-  test('production staged own-stream clipping covers Sui and the activity rooms', () => {
-    const production = require('../../config/production.json');
+  test('merges staged clipping defaults with the configured room allowlist', () => {
+    const input = { ownStreamClips: {
+      enabled: true,
+      roomIds: ['25788785', '22470216'],
+      ai: { strategy: 'staged', model: 'fixture-model' }
+    } };
+    const config = ownStreamClipper.getOwnStreamClipsConfig(input);
 
-    expect(production.ownStreamClips.enabled).toBe(true);
-    expect(production.ownStreamClips.roomIds).toEqual([
-      '25788785',
-      '1820703922',
-      '1727074031',
-      '23771092'
-    ]);
-    expect(production.ownStreamClips.maxClips).toBe(50);
-    expect(production.ownStreamClips.maxCandidates).toBe(80);
-    expect(production.ownStreamClips.ai.strategy).toBe('staged');
-    expect(production.ownStreamClips.ai.model).toBe('gpt-5.6-luna');
-    expect(production.ownStreamClips.ai.maxCandidateLines).toBe(100);
-    expect(production.ownStreamClips.parallel.enabled).toBe(false);
+    expect(config.enabled).toBe(true);
+    expect(config.roomIds).toEqual(['25788785', '22470216']);
+    expect(config.maxClips).toBe(50);
+    expect(config.maxCandidates).toBe(80);
+    expect(config.ai.strategy).toBe('staged');
+    expect(config.ai.model).toBe('fixture-model');
+    expect(config.ai.maxCandidateLines).toBe(100);
+    expect(config.parallel.enabled).toBe(false);
+    expect(input.ownStreamClips.ai).toEqual({ strategy: 'staged', model: 'fixture-model' });
   });
 
   test('keeps activity streamer and event tags in own-stream upload metadata', () => {

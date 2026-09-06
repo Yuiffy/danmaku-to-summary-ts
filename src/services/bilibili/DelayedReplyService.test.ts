@@ -85,7 +85,7 @@ describe('DelayedReplyService duplicate reply detection', () => {
       liveEndTime: new Date('2026-08-11T17:09:31.610+08:00')
     });
 
-    const sameLive = service.isSameActiveLiveForTask(task, {
+    const sameLive = service.policy.isSameActiveLiveForTask(task, {
       isLive: true,
       liveStatus: 1,
       liveStartTime: new Date('2026-08-11T20:05:20.000+08:00')
@@ -291,8 +291,8 @@ describe('DelayedReplyService duplicate reply detection', () => {
     }), 'utf8');
 
     try {
-      const immersiveInfo = service.getComicGenerationNotificationInfo(immersiveImagePath);
-      const controlInfo = service.getComicGenerationNotificationInfo(controlImagePath);
+      const immersiveInfo = service.diagnostics.getComicGenerationInfo(immersiveImagePath);
+      const controlInfo = service.diagnostics.getComicGenerationInfo(controlImagePath);
 
       expect(immersiveInfo).toContain('漫画模式: 新版沉浸式（灰度组 immersive_v1）');
       expect(immersiveInfo).toContain('分配: 稳定灰度');
@@ -332,7 +332,7 @@ describe('DelayedReplyService duplicate reply detection', () => {
     }), 'utf8');
 
     try {
-      const info = service.getTextGenerationNotificationInfo(goodnightTextPath, comicImagePath);
+      const info = service.diagnostics.getTextGenerationInfo(goodnightTextPath, comicImagePath);
       expect(info).toContain('晚安文本: 模型: gpt-5.6-luna，服务: daiYu，输入缓存: 4608/5600 tokens，缓存写入: 1024 tokens');
       expect(info).toContain('漫画脚本文本: 模型: gpt-5.6-luna，服务: daiYu，状态: 成功，输入缓存: 5120/7200 tokens，缓存写入: 0 tokens');
     } finally {
@@ -398,20 +398,20 @@ describe('DelayedReplyService first-wave comic policy', () => {
 
     jest.spyOn(service, 'getRoomLiveStatusSafely').mockResolvedValue(null);
     jest.spyOn(service, 'deferTaskWaitingForReplacement').mockResolvedValue(false);
-    jest.spyOn(service, 'isTaskExpiredForCurrentStatus').mockReturnValue(false);
-    jest.spyOn(service, 'resolveDelayedReplyPaths').mockImplementation(
+    jest.spyOn(service.policy, 'isDelayedReplyTaskExpired').mockReturnValue(false);
+    jest.spyOn(service.artifactResolver, 'resolve').mockImplementation(
       (_roomId: string, goodnightTextPath: string, comicImagePath?: string) => ({
         goodnightTextPath,
         comicImagePath
       })
     );
     jest.spyOn(service, 'findTargetDynamic').mockResolvedValue(dynamic);
-    jest.spyOn(service, 'readReplyText').mockResolvedValue('晚安正文');
+    jest.spyOn(service.replyContent, 'readReplyText').mockResolvedValue('晚安正文');
     jest.spyOn(service, 'checkFileExists').mockResolvedValue(options.imageExists ?? false);
-    jest.spyOn(service, 'isComicGenerationTerminalFailure').mockReturnValue(options.terminalFailure ?? false);
+    jest.spyOn(service.artifactResolver, 'isComicGenerationTerminalFailure').mockReturnValue(options.terminalFailure ?? false);
     jest.spyOn(service, 'notifyComicGenerationFailure').mockResolvedValue(undefined);
     if (options.terminalFailure) {
-      jest.spyOn(service, 'shouldWaitForComicImage').mockReturnValue(false);
+      jest.spyOn(service.artifactResolver, 'shouldWaitForComicImage').mockReturnValue(false);
     }
 
     return { service, store, publishComment, scheduleTask };
@@ -421,10 +421,10 @@ describe('DelayedReplyService first-wave comic policy', () => {
     const dynamic = createDynamic(5 * 60 * 1000);
     const { service } = createHarness(dynamic);
 
-    expect(service.isWithinFirstReplyWave(dynamic, now.getTime())).toBe(true);
+    expect(service.policy.isWithinFirstReplyWave(dynamic, now.getTime())).toBe(true);
 
     dynamic.publishTime = new Date(dynamic.publishTime.getTime() - 1);
-    expect(service.isWithinFirstReplyWave(dynamic, now.getTime())).toBe(false);
+    expect(service.policy.isWithinFirstReplyWave(dynamic, now.getTime())).toBe(false);
   });
 
   it('publishes text immediately inside the first reply wave and waits to supplement the comic', async () => {
@@ -593,7 +593,7 @@ describe('DelayedReplyService summary dynamic reply', () => {
       goodnightTextPath: path.join(outputDir, '27628030-20260729-041422-001_晚安回复.md')
     });
 
-    const times = service.getSummaryLiveTimes(task);
+    const times = service.liveContentSummaryComposer.getSummaryLiveTimes(task);
 
     expect(times.startTime).toEqual(new Date('2026-07-29T04:14:22+08:00'));
   });
@@ -764,8 +764,8 @@ describe('DelayedReplyService live content summary delivery', () => {
     jest.spyOn(service, 'scheduleTask').mockImplementation(() => undefined);
     jest.spyOn(service, 'getRoomLiveStatusSafely').mockResolvedValue(null);
     jest.spyOn(service, 'deferTaskWaitingForReplacement').mockResolvedValue(false);
-    jest.spyOn(service, 'isTaskExpiredForCurrentStatus').mockReturnValue(false);
-    jest.spyOn(service, 'resolveDelayedReplyPaths').mockImplementation(
+    jest.spyOn(service.policy, 'isDelayedReplyTaskExpired').mockReturnValue(false);
+    jest.spyOn(service.artifactResolver, 'resolve').mockImplementation(
       (_roomId: string, goodnightTextPath: string, comicImagePath?: string) => ({
         goodnightTextPath,
         comicImagePath
@@ -1145,7 +1145,7 @@ describe('DelayedReplyService ASR speaker notification info', () => {
     const goodnightTextPath = path.join(outputDir, 'recording_晚安回复.md');
     const asrMetaPath = path.join(outputDir, 'recording.asr_meta.json');
     fs.writeFileSync(asrMetaPath, JSON.stringify(meta), 'utf8');
-    return service.getAsrNotificationInfo(goodnightTextPath);
+    return service.diagnostics.getAsrInfo(goodnightTextPath);
   }
 
   it('keeps legacy ASR metadata output unchanged', () => {

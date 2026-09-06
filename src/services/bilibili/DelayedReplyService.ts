@@ -5,6 +5,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { getLogger } from '../../core/logging/LogManager';
+import { AppError } from '../../core/errors/AppError';
 import { IDelayedReplyService } from './interfaces/IDelayedReplyService';
 import { IDelayedReplyStore } from './interfaces/IDelayedReplyStore';
 import { IBilibiliAPIService } from './interfaces/IBilibiliAPIService';
@@ -21,29 +22,24 @@ import { DelayedReplyArtifactResolver } from './delayed-reply/DelayedReplyArtifa
 import { DelayedReplyDiagnostics } from './delayed-reply/DelayedReplyDiagnostics';
 import { LiveContentSummaryComposer } from './delayed-reply/LiveContentSummaryComposer';
 import { DelayedReplyScheduler } from './delayed-reply/DelayedReplyScheduler';
-
-/**
- * 生成UUID
- */
-function generateUUID(): string {
-  return crypto.randomUUID();
-}
+import { DelayedReplyPolicy } from './delayed-reply/DelayedReplyPolicy';
+import { ReplyContentReader } from './delayed-reply/ReplyContentReader';
 
 /**
  * 延迟回复服务实现
  */
 export class DelayedReplyService implements IDelayedReplyService {
+  private readonly policy = new DelayedReplyPolicy();
+  private readonly replyContent = new ReplyContentReader();
   private logger = getLogger('DelayedReplyService');
   private readonly artifactResolver = new DelayedReplyArtifactResolver();
   private readonly diagnostics = new DelayedReplyDiagnostics();
   private readonly liveContentSummaryComposer = new LiveContentSummaryComposer();
   private static readonly COMIC_WAIT_INTERVAL_MS = 2 * 60 * 1000;
   private static readonly COMBINED_REPLY_COMIC_WAIT_INTERVAL_MS = 60 * 1000;
-  private static readonly FIRST_REPLY_WAVE_WINDOW_MS = 5 * 60 * 1000;
   private static readonly MAX_COMIC_WAIT_COUNT = 5;
   private static readonly MAX_SUPPLEMENTAL_COMIC_WAIT_COUNT = 30;
   private static readonly LIVE_CONTENT_WAIT_INTERVAL_MS = 60 * 1000;
-  private static readonly DEFAULT_MAX_TASK_AGE_HOURS = 24;
   private static readonly SUPPLEMENTAL_COMIC_REPLY_PREFIX = '（补图）';
   private static readonly LIVE_RECHECK_INTERVAL_MS = 2 * 60 * 1000;
   private static readonly LIVE_CONTINUATION_REPLACEMENT_MAX_WAIT_COUNT = 180;
@@ -125,11 +121,11 @@ export class DelayedReplyService implements IDelayedReplyService {
     liveContentSummaryPath?: string,
     liveContentSummaryDeliveryMode?: LiveContentSummaryDeliveryMode
   ): Promise<string> {
-    const resolvedPaths = this.resolveDelayedReplyPaths(roomId, goodnightTextPath, comicImagePath);
+    const resolvedPaths = this.artifactResolver.resolve(roomId, goodnightTextPath, comicImagePath);
     goodnightTextPath = resolvedPaths.goodnightTextPath;
     comicImagePath = resolvedPaths.comicImagePath;
 
-    const dedupeKey = this.getTaskDedupeKey(roomId, goodnightTextPath, comicImagePath);
+    const dedupeKey = this.policy.getTaskDedupeKey(roomId, goodnightTextPath, comicImagePath);
     const inFlightTask = this.addTaskLocks.get(dedupeKey);
     if (inFlightTask) {
       this.logger.info('跳过添加任务：相同延迟回复任务正在创建中', {
@@ -175,7 +171,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       liveContentSummaryPath = liveContentSummaryPath
         ? path.normalize(liveContentSummaryPath)
         : undefined;
-      liveContentSummaryDeliveryMode = this.resolveLiveContentSummaryDeliveryMode(
+      liveContentSummaryDeliveryMode = this.liveContentSummaryComposer.resolveDeliveryMode(
         roomId,
         liveContentSummaryDeliveryMode
       );
@@ -192,7 +188,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       // 检查是否已有待处理或处理中的任务（去重逻辑）
       const now = new Date();
       const exactExistingTask = Array.from(this.tasks.values()).find(
-        task => this.isSameDelayedReplyTask(task, roomId, goodnightTextPath, comicImagePath) &&
+        task => this.policy.isSameDelayedReplyTask(task, roomId, goodnightTextPath, comicImagePath) &&
                 (
                   task.status === 'pending' ||
                   task.status === 'processing' ||
@@ -232,7 +228,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       const completedTextTaskAwaitingRecoveredComic = comicImagePath
         ? Array.from(this.tasks.values()).find(task =>
             task.status === 'completed' &&
-            this.isSameDelayedReplyTextTask(task, roomId, goodnightTextPath) &&
+            this.policy.isSameDelayedReplyTextTask(task, roomId, goodnightTextPath) &&
             !!task.replyId &&
             !!task.repliedDynamicId &&
             !task.supplementalReplyId &&
@@ -272,7 +268,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       }
 
       const recentCompletedExactTask = Array.from(this.tasks.values()).find(
-        task => this.isSameDelayedReplyTask(task, roomId, goodnightTextPath, comicImagePath) &&
+        task => this.policy.isSameDelayedReplyTask(task, roomId, goodnightTextPath, comicImagePath) &&
                 task.status === 'completed'
       );
 
@@ -322,7 +318,7 @@ export class DelayedReplyService implements IDelayedReplyService {
 
         if (
           existingTask.deferredForActiveLive &&
-          !this.isSameDelayedReplyTask(existingTask, roomId, goodnightTextPath, comicImagePath)
+          !this.policy.isSameDelayedReplyTask(existingTask, roomId, goodnightTextPath, comicImagePath)
         ) {
           this.logger.info('Replacing stale delayed reply task that was waiting for the continued live recording', {
             roomId,
@@ -360,7 +356,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       const scheduledTime = new Date(Date.now() + delayMs);
 
       const task: DelayedReplyTask = {
-        taskId: generateUUID(),
+        taskId: crypto.randomUUID(),
         roomId,
         goodnightTextPath,
         comicImagePath,
@@ -380,7 +376,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       try {
         task.uid = await this.resolveUidForRoom(roomId, task.taskId);
       } catch (error) {
-        if (!this.isUidLookupRetriableError(error)) {
+        if (!this.policy.isUidLookupRetriableError(error)) {
           throw error;
         }
 
@@ -459,10 +455,15 @@ export class DelayedReplyService implements IDelayedReplyService {
    * 移除任务
    */
   async removeTask(taskId: string): Promise<void> {
+    if (this.executingTaskIds.has(taskId)) {
+      throw new AppError('Task is currently executing', 'TASK_BUSY', 409);
+    }
     try {
       this.scheduler.cancel(taskId);
 
-      // 删除任务
+      // A queued setImmediate callback can still hold this object after removal.
+      const task = this.tasks.get(taskId);
+      if (task) task.status = 'completed';
       this.tasks.delete(taskId);
       this.restoredTaskIds.delete(taskId);
       await this.store.removeTask(taskId);
@@ -561,15 +562,15 @@ export class DelayedReplyService implements IDelayedReplyService {
   ): Promise<DelayedReplyTask | null> {
     const normalizedTextPath = path.normalize(goodnightTextPath);
     const normalizedSummaryPath = path.normalize(liveContentSummaryPath);
-    const resolvedMode = this.resolveLiveContentSummaryDeliveryMode(roomId, deliveryMode);
+    const resolvedMode = this.liveContentSummaryComposer.resolveDeliveryMode(roomId, deliveryMode);
     let task = Array.from(this.tasks.values())
-      .filter(candidate => this.isSameDelayedReplyTextTask(candidate, roomId, normalizedTextPath))
+      .filter(candidate => this.policy.isSameDelayedReplyTextTask(candidate, roomId, normalizedTextPath))
       .sort((a, b) => b.createTime.getTime() - a.createTime.getTime())[0];
 
     if (!task) {
       const storedTasks = await this.store.getAllTasks();
       task = storedTasks
-        .filter(candidate => this.isSameDelayedReplyTextTask(candidate, roomId, normalizedTextPath))
+        .filter(candidate => this.policy.isSameDelayedReplyTextTask(candidate, roomId, normalizedTextPath))
         .sort((a, b) => b.createTime.getTime() - a.createTime.getTime())[0];
       if (task) {
         this.tasks.set(task.taskId, task);
@@ -597,8 +598,8 @@ export class DelayedReplyService implements IDelayedReplyService {
     task.liveContentSummaryPath = path.normalize(liveContentSummaryPath);
     task.liveContentSummaryDeliveryMode = deliveryMode;
 
-    if (!this.isLiveContentSummaryDelivered(task) && task.liveContentSummaryState !== 'publishing') {
-      const summary = this.readLiveContentSummary(task);
+    if (!this.liveContentSummaryComposer.isDelivered(task) && task.liveContentSummaryState !== 'publishing') {
+      const summary = this.liveContentSummaryComposer.read(task);
       task.liveContentSummaryState = summary.kind === 'success'
         ? 'ready'
         : summary.kind === 'failed'
@@ -608,7 +609,7 @@ export class DelayedReplyService implements IDelayedReplyService {
     }
 
     let shouldSchedule = false;
-    if (task.replyId && !this.isLiveContentSummaryDelivered(task)) {
+    if (task.replyId && !this.liveContentSummaryComposer.isDelivered(task)) {
       if (
         task.liveContentSummaryState !== 'failed' &&
         (task.status === 'completed' || task.status === 'failed')
@@ -662,66 +663,6 @@ export class DelayedReplyService implements IDelayedReplyService {
     return this.isRunningFlag;
   }
 
-  private resolveDelayedReplyPaths(
-    roomId: string,
-    goodnightTextPath: string,
-    comicImagePath?: string
-  ): { goodnightTextPath: string; comicImagePath?: string } {
-    return this.artifactResolver.resolve(roomId, goodnightTextPath, comicImagePath);
-  }
-
-  private getTaskDedupeKey(roomId: string, goodnightTextPath: string, comicImagePath?: string): string {
-    return [
-      String(roomId),
-      path.normalize(goodnightTextPath),
-      comicImagePath ? path.normalize(comicImagePath) : ''
-    ].join('|');
-  }
-
-  private getDynamicReplyDedupeKey(roomId: string, dynamicId: string): string {
-    return [String(roomId), String(dynamicId)].join('|');
-  }
-
-  private isSameDelayedReplyTask(
-    task: DelayedReplyTask,
-    roomId: string,
-    goodnightTextPath: string,
-    comicImagePath?: string
-  ): boolean {
-    return this.getTaskDedupeKey(task.roomId, task.goodnightTextPath, task.comicImagePath) ===
-      this.getTaskDedupeKey(roomId, goodnightTextPath, comicImagePath);
-  }
-
-  private isSameDelayedReplyTextTask(
-    task: DelayedReplyTask,
-    roomId: string,
-    goodnightTextPath: string
-  ): boolean {
-    return task.roomId === roomId &&
-      path.normalize(task.goodnightTextPath) === path.normalize(goodnightTextPath);
-  }
-
-  private getDelayedReplyLimitConfig() {
-    const config = BilibiliConfigHelper.getDelayedReplyConfig() as any;
-    return {
-      maxTaskAgeHours: Number(config.maxTaskAgeHours ?? DelayedReplyService.DEFAULT_MAX_TASK_AGE_HOURS)
-    };
-  }
-
-  private getTaskAgeMs(task: DelayedReplyTask, now = Date.now()): number {
-    const anchorTime = task.liveEndTime || task.createTime;
-    return now - anchorTime.getTime();
-  }
-
-  private isDelayedReplyTaskExpired(task: DelayedReplyTask, now = Date.now()): boolean {
-    const { maxTaskAgeHours } = this.getDelayedReplyLimitConfig();
-    return maxTaskAgeHours >= 0 && this.getTaskAgeMs(task, now) > maxTaskAgeHours * 60 * 60 * 1000;
-  }
-
-  private isTaskExpiredForCurrentStatus(task: DelayedReplyTask, now = Date.now()): boolean {
-    return this.isDelayedReplyTaskExpired(task, now);
-  }
-
   private async suppressStaleTask(task: DelayedReplyTask, reason: string): Promise<void> {
     task.status = 'completed';
     task.error = reason;
@@ -761,12 +702,12 @@ export class DelayedReplyService implements IDelayedReplyService {
           continue;
         }
 
-        if (this.isTaskExpiredForCurrentStatus(task)) {
+        if (this.policy.isDelayedReplyTaskExpired(task)) {
           await this.suppressStaleTask(task, 'stale delayed reply suppressed on service startup');
           continue;
         }
 
-        const resolvedPaths = this.resolveDelayedReplyPaths(task.roomId, task.goodnightTextPath, task.comicImagePath);
+        const resolvedPaths = this.artifactResolver.resolve(task.roomId, task.goodnightTextPath, task.comicImagePath);
         if (resolvedPaths.goodnightTextPath !== task.goodnightTextPath || resolvedPaths.comicImagePath !== task.comicImagePath) {
           task.goodnightTextPath = resolvedPaths.goodnightTextPath;
           task.comicImagePath = resolvedPaths.comicImagePath;
@@ -776,7 +717,7 @@ export class DelayedReplyService implements IDelayedReplyService {
           });
         }
 
-        const dedupeKey = this.getTaskDedupeKey(task.roomId, task.goodnightTextPath, task.comicImagePath);
+        const dedupeKey = this.policy.getTaskDedupeKey(task.roomId, task.goodnightTextPath, task.comicImagePath);
         if (seenTaskKeys.has(dedupeKey)) {
           await this.store.updateTask(task.taskId, {
             status: 'failed',
@@ -968,7 +909,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       this.logger.info(`未找到符合条件的目标动态`);
       return null;
     } catch (error) {
-      if (this.isCredentialError(error)) {
+      if (this.policy.isCredentialError(error)) {
         throw error;
       }
       this.logger.error(`查找目标动态失败: ${error}`, { taskId: task.taskId });
@@ -993,35 +934,6 @@ export class DelayedReplyService implements IDelayedReplyService {
       });
       return null;
     }
-  }
-
-  private isSameActiveLiveForTask(task: DelayedReplyTask, liveStatus: RoomLiveStatus | null): boolean {
-    if (!liveStatus?.isLive) {
-      return false;
-    }
-
-    const liveStart = liveStatus.liveStartTime?.getTime();
-    if (!liveStart || Number.isNaN(liveStart)) {
-      return true;
-    }
-
-    const toleranceMs = 5 * 60 * 1000;
-    const taskCreateTime = task.createTime.getTime();
-    const taskLiveStart = task.liveStartTime?.getTime();
-    const taskLiveEnd = task.liveEndTime?.getTime();
-
-    if (taskLiveEnd) {
-      const earliestSameLiveStart = taskLiveStart
-        ? taskLiveStart - toleranceMs
-        : Number.NEGATIVE_INFINITY;
-      return liveStart >= earliestSameLiveStart && liveStart <= taskLiveEnd + toleranceMs;
-    }
-
-    if (taskLiveStart) {
-      return liveStart >= taskLiveStart - toleranceMs && liveStart <= taskCreateTime + toleranceMs;
-    }
-
-    return liveStart <= taskCreateTime + toleranceMs;
   }
 
   private async deferTaskForActiveLive(task: DelayedReplyTask, liveStatus: RoomLiveStatus): Promise<void> {
@@ -1183,8 +1095,8 @@ export class DelayedReplyService implements IDelayedReplyService {
 
     const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
     const replyUrl = `https://www.bilibili.com/opus/${task.repliedDynamicId}#reply${task.supplementalReplyId}`;
-    const imageGenerationInfo = this.getComicGenerationNotificationInfo(comicImagePath);
-    const textGenerationInfo = this.getTextGenerationNotificationInfo(task.goodnightTextPath, comicImagePath);
+    const imageGenerationInfo = this.diagnostics.getComicGenerationInfo(comicImagePath);
+    const textGenerationInfo = this.diagnostics.getTextGenerationInfo(task.goodnightTextPath, comicImagePath);
     const lines = [
       '✅ 补直播图片总结已发送',
       '',
@@ -1238,51 +1150,6 @@ export class DelayedReplyService implements IDelayedReplyService {
     }
   }
 
-  private getSummaryLiveTimes(task: DelayedReplyTask): { startTime: Date; endTime: Date } {
-    return this.liveContentSummaryComposer.getSummaryLiveTimes(task);
-  }
-
-  private buildSummaryReplyText(task: DelayedReplyTask, replyText: string): string {
-    return this.liveContentSummaryComposer.buildSummaryReplyText(task, replyText);
-  }
-
-  private resolveLiveContentSummaryDeliveryMode(
-    roomId: string,
-    requestedMode?: LiveContentSummaryDeliveryMode
-  ): LiveContentSummaryDeliveryMode {
-    return this.liveContentSummaryComposer.resolveDeliveryMode(roomId, requestedMode);
-  }
-
-  private isLiveContentSummaryDelivered(task: DelayedReplyTask): boolean {
-    return this.liveContentSummaryComposer.isDelivered(task);
-  }
-
-  private getLiveContentSummaryTaskUpdates(task: DelayedReplyTask): Partial<DelayedReplyTask> {
-    return this.liveContentSummaryComposer.getTaskUpdates(task);
-  }
-
-  private readLiveContentSummary(
-    task: DelayedReplyTask
-  ): ReturnType<LiveContentSummaryComposer['read']> {
-    return this.liveContentSummaryComposer.read(task);
-  }
-
-  private composeReplyWithLiveContentSummary(
-    task: DelayedReplyTask,
-    replyText: string,
-    target: 'main' | 'supplemental'
-  ): { text: string; attached: boolean } {
-    return this.liveContentSummaryComposer.compose(task, replyText, target);
-  }
-
-  private markLiveContentSummaryAttached(
-    task: DelayedReplyTask,
-    target: 'main' | 'supplemental',
-    replyId: string
-  ): void {
-    this.liveContentSummaryComposer.markAttached(task, target, replyId);
-  }
-
   private async notifyLiveContentSummaryReplySuccess(
     task: DelayedReplyTask,
     summaryText: string
@@ -1329,7 +1196,7 @@ export class DelayedReplyService implements IDelayedReplyService {
   private async tryPublishLiveContentSummarySeparately(
     task: DelayedReplyTask
   ): Promise<'done' | 'waiting' | 'retry' | 'failed'> {
-    if (!task.liveContentSummaryPath || this.isLiveContentSummaryDelivered(task)) {
+    if (!task.liveContentSummaryPath || this.liveContentSummaryComposer.isDelivered(task)) {
       return 'done';
     }
     if (!task.repliedDynamicId || !task.replyId) {
@@ -1338,7 +1205,7 @@ export class DelayedReplyService implements IDelayedReplyService {
     if (task.liveContentSummaryState === 'publishing') {
       task.liveContentSummaryState = 'failed';
       task.liveContentSummaryError = '直播梗概发布结果不确定，为避免重启后重复评论，已停止自动重发';
-      await this.store.updateTask(task.taskId, this.getLiveContentSummaryTaskUpdates(task));
+      await this.store.updateTask(task.taskId, this.liveContentSummaryComposer.getTaskUpdates(task));
       this.logger.warn(task.liveContentSummaryError, {
         taskId: task.taskId,
         roomId: task.roomId,
@@ -1347,17 +1214,17 @@ export class DelayedReplyService implements IDelayedReplyService {
       return 'failed';
     }
 
-    const summary = this.readLiveContentSummary(task);
+    const summary = this.liveContentSummaryComposer.read(task);
     if (summary.kind === 'missing') {
       task.liveContentSummaryState = 'waiting';
       task.liveContentSummaryError = summary.error;
-      await this.store.updateTask(task.taskId, this.getLiveContentSummaryTaskUpdates(task));
+      await this.store.updateTask(task.taskId, this.liveContentSummaryComposer.getTaskUpdates(task));
       return 'waiting';
     }
     if (summary.kind === 'failed') {
       task.liveContentSummaryState = 'failed';
       task.liveContentSummaryError = summary.error;
-      await this.store.updateTask(task.taskId, this.getLiveContentSummaryTaskUpdates(task));
+      await this.store.updateTask(task.taskId, this.liveContentSummaryComposer.getTaskUpdates(task));
       this.logger.warn('直播梗概生成失败，不影响晚安回复流程', {
         taskId: task.taskId,
         roomId: task.roomId,
@@ -1369,7 +1236,7 @@ export class DelayedReplyService implements IDelayedReplyService {
     task.liveContentSummaryState = 'publishing';
     task.liveContentSummaryPublishingAt = new Date();
     task.liveContentSummaryError = undefined;
-    await this.store.updateTask(task.taskId, this.getLiveContentSummaryTaskUpdates(task));
+    await this.store.updateTask(task.taskId, this.liveContentSummaryComposer.getTaskUpdates(task));
 
     try {
       const result = await this.bilibiliAPI.publishComment({
@@ -1382,7 +1249,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       task.liveContentSummaryCompletedAt = new Date();
       task.liveContentSummaryPublishingAt = undefined;
       task.liveContentSummaryError = undefined;
-      await this.store.updateTask(task.taskId, this.getLiveContentSummaryTaskUpdates(task));
+      await this.store.updateTask(task.taskId, this.liveContentSummaryComposer.getTaskUpdates(task));
       this.logger.info('本场直播梗概已单独发布', {
         taskId: task.taskId,
         roomId: task.roomId,
@@ -1398,15 +1265,15 @@ export class DelayedReplyService implements IDelayedReplyService {
       const isBlacklistError = errorMessage.includes('黑名单') || errorMessage.includes('12035');
       const canRetry =
         !isBlacklistError &&
-        !this.isCredentialError(error) &&
-        !this.isPermanentReplyError(error) &&
+        !this.policy.isCredentialError(error) &&
+        !this.policy.isPermanentReplyError(error) &&
         (task.liveContentSummaryRetryCount || 0) < delayedReplyConfig.maxRetries;
 
       task.liveContentSummaryPublishingAt = undefined;
       task.liveContentSummaryRetryCount = (task.liveContentSummaryRetryCount || 0) + (canRetry ? 1 : 0);
       task.liveContentSummaryState = canRetry ? 'ready' : 'failed';
       task.liveContentSummaryError = `直播梗概评论发布失败: ${errorMessage}`;
-      await this.store.updateTask(task.taskId, this.getLiveContentSummaryTaskUpdates(task));
+      await this.store.updateTask(task.taskId, this.liveContentSummaryComposer.getTaskUpdates(task));
       this.logger[canRetry ? 'warn' : 'error'](
         canRetry ? '直播梗概评论发布失败，将独立重试' : '直播梗概评论发布最终失败，晚安回复不受影响',
         {
@@ -1432,7 +1299,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       await this.store.updateTask(task.taskId, {
         status: task.status,
         scheduledTime: task.scheduledTime,
-        ...this.getLiveContentSummaryTaskUpdates(task)
+        ...this.liveContentSummaryComposer.getTaskUpdates(task)
       });
       this.scheduleTask(task);
       return;
@@ -1441,12 +1308,12 @@ export class DelayedReplyService implements IDelayedReplyService {
     task.status = 'completed';
     await this.store.updateTask(task.taskId, {
       status: task.status,
-      ...this.getLiveContentSummaryTaskUpdates(task)
+      ...this.liveContentSummaryComposer.getTaskUpdates(task)
     });
   }
 
   private async completeOrWaitForLiveContentSummary(task: DelayedReplyTask): Promise<void> {
-    if (!task.liveContentSummaryPath || this.isLiveContentSummaryDelivered(task)) {
+    if (!task.liveContentSummaryPath || this.liveContentSummaryComposer.isDelivered(task)) {
       task.status = 'completed';
       await this.store.updateTask(task.taskId, {
         status: task.status,
@@ -1454,7 +1321,7 @@ export class DelayedReplyService implements IDelayedReplyService {
         summaryCompletedAt: task.summaryCompletedAt,
         summaryRetryCount: task.summaryRetryCount,
         error: task.error,
-        ...this.getLiveContentSummaryTaskUpdates(task)
+        ...this.liveContentSummaryComposer.getTaskUpdates(task)
       });
       return;
     }
@@ -1463,7 +1330,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       task.liveContentSummaryState = 'failed';
       task.liveContentSummaryError = '直播梗概发布结果不确定，为避免重复评论，已停止自动重发';
     } else {
-      const summary = this.readLiveContentSummary(task);
+      const summary = this.liveContentSummaryComposer.read(task);
       task.liveContentSummaryState = summary.kind === 'success'
         ? 'ready'
         : summary.kind === 'failed'
@@ -1482,7 +1349,7 @@ export class DelayedReplyService implements IDelayedReplyService {
         summaryCompletedAt: task.summaryCompletedAt,
         summaryRetryCount: task.summaryRetryCount,
         error: task.error,
-        ...this.getLiveContentSummaryTaskUpdates(task)
+        ...this.liveContentSummaryComposer.getTaskUpdates(task)
       });
       return;
     }
@@ -1498,7 +1365,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       summaryCompletedAt: task.summaryCompletedAt,
       summaryRetryCount: task.summaryRetryCount,
       error: task.error,
-      ...this.getLiveContentSummaryTaskUpdates(task)
+      ...this.liveContentSummaryComposer.getTaskUpdates(task)
     });
     this.scheduleTask(task);
   }
@@ -1523,9 +1390,9 @@ export class DelayedReplyService implements IDelayedReplyService {
       return;
     }
 
-    const content = this.buildSummaryReplyText(
+    const content = this.liveContentSummaryComposer.buildSummaryReplyText(
       task,
-      replyText || await this.readReplyText(task.goodnightTextPath)
+      replyText || await this.replyContent.readReplyText(task.goodnightTextPath)
     );
     const resolvedImagePath = imagePath ||
       (task.comicImagePath && await this.checkFileExists(task.comicImagePath)
@@ -1554,11 +1421,11 @@ export class DelayedReplyService implements IDelayedReplyService {
       const delayedReplyConfig = BilibiliConfigHelper.getDelayedReplyConfig();
       const errorMessage = error instanceof Error ? error.message : String(error);
       const isBlacklistError = errorMessage.includes('黑名单') || errorMessage.includes('12035');
-      const isCredentialError = this.isCredentialError(error);
+      const isCredentialError = this.policy.isCredentialError(error);
       const canRetry =
         !isBlacklistError &&
         !isCredentialError &&
-        !this.isPermanentReplyError(error) &&
+        !this.policy.isPermanentReplyError(error) &&
         (task.summaryRetryCount || 0) < delayedReplyConfig.maxRetries;
 
       if (canRetry) {
@@ -1636,7 +1503,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       return;
     }
 
-    const resolvedPaths = this.resolveDelayedReplyPaths(task.roomId, task.goodnightTextPath, task.comicImagePath);
+    const resolvedPaths = this.artifactResolver.resolve(task.roomId, task.goodnightTextPath, task.comicImagePath);
     if (resolvedPaths.goodnightTextPath !== task.goodnightTextPath || resolvedPaths.comicImagePath !== task.comicImagePath) {
       task.goodnightTextPath = resolvedPaths.goodnightTextPath;
       task.comicImagePath = resolvedPaths.comicImagePath;
@@ -1660,7 +1527,7 @@ export class DelayedReplyService implements IDelayedReplyService {
     if (!hasComicImage) {
       task.comicWaitCount = (task.comicWaitCount || 0) + 1;
 
-      if (this.isComicGenerationTerminalFailure(comicImagePath)) {
+      if (this.artifactResolver.isComicGenerationTerminalFailure(comicImagePath)) {
         await this.notifyComicGenerationFailure(task);
         task.error = '漫画图片生成已失败，补图停止';
         await this.store.updateTask(task.taskId, {
@@ -1679,7 +1546,7 @@ export class DelayedReplyService implements IDelayedReplyService {
 
       if (task.comicWaitCount >= DelayedReplyService.MAX_SUPPLEMENTAL_COMIC_WAIT_COUNT) {
         task.error = `补图等待达到上限 (${task.comicWaitCount}/${DelayedReplyService.MAX_SUPPLEMENTAL_COMIC_WAIT_COUNT})，停止等待`;
-        this.writeComicGenerationFailureMeta(
+        this.artifactResolver.writeComicGenerationFailureMeta(
           comicImagePath,
           task.error,
           task.taskId,
@@ -1723,8 +1590,8 @@ export class DelayedReplyService implements IDelayedReplyService {
     }
 
     try {
-      const baseReplyText = this.buildSupplementalComicReplyText(await this.readReplyText(task.goodnightTextPath));
-      const composition = this.composeReplyWithLiveContentSummary(task, baseReplyText, 'supplemental');
+      const baseReplyText = this.buildSupplementalComicReplyText(await this.replyContent.readReplyText(task.goodnightTextPath));
+      const composition = this.liveContentSummaryComposer.compose(task, baseReplyText, 'supplemental');
       const replyText = composition.text;
       const result = await this.bilibiliAPI.publishComment({
         dynamicId: task.repliedDynamicId,
@@ -1739,14 +1606,14 @@ export class DelayedReplyService implements IDelayedReplyService {
       task.supplementalCompletedAt = new Date();
       task.error = undefined;
       if (composition.attached) {
-        this.markLiveContentSummaryAttached(task, 'supplemental', task.supplementalReplyId);
+        this.liveContentSummaryComposer.markAttached(task, 'supplemental', task.supplementalReplyId);
       }
       await this.store.updateTask(task.taskId, {
         status: task.status,
         supplementalReplyId: task.supplementalReplyId,
         supplementalCompletedAt: task.supplementalCompletedAt,
         error: undefined,
-        ...this.getLiveContentSummaryTaskUpdates(task)
+        ...this.liveContentSummaryComposer.getTaskUpdates(task)
       });
 
       this.logger.info('补图回复发布成功', {
@@ -1769,7 +1636,7 @@ export class DelayedReplyService implements IDelayedReplyService {
 
       await this.executeSummaryDynamicReply(
         task,
-        await this.readReplyText(task.goodnightTextPath),
+        await this.replyContent.readReplyText(task.goodnightTextPath),
         comicImagePath
       );
     } catch (error) {
@@ -1777,9 +1644,9 @@ export class DelayedReplyService implements IDelayedReplyService {
       const maxRetries = delayedReplyConfig.maxRetries;
       const isBlacklistError = String(error instanceof Error ? error.message : error).includes('黑名单') ||
         String(error instanceof Error ? error.message : error).includes('12035');
-      const isCredentialError = this.isCredentialError(error);
+      const isCredentialError = this.policy.isCredentialError(error);
 
-      if (!isBlacklistError && !isCredentialError && !this.isPermanentReplyError(error) && task.retryCount < maxRetries) {
+      if (!isBlacklistError && !isCredentialError && !this.policy.isPermanentReplyError(error) && task.retryCount < maxRetries) {
         task.retryCount++;
         task.status = 'waiting_comic';
         task.scheduledTime = new Date(Date.now() + delayedReplyConfig.retryDelayMinutes * 60 * 1000);
@@ -1840,7 +1707,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       this.scheduler.cancel(task.taskId);
 
       if (task.status === 'waiting_comic') {
-        if (this.isTaskExpiredForCurrentStatus(task)) {
+        if (this.policy.isDelayedReplyTaskExpired(task)) {
           await this.suppressStaleTask(task, 'stale delayed reply suppressed before execution');
           return;
         }
@@ -1850,7 +1717,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       }
 
       if (task.status === 'waiting_summary') {
-        if (this.isTaskExpiredForCurrentStatus(task)) {
+        if (this.policy.isDelayedReplyTaskExpired(task)) {
           await this.suppressStaleTask(task, 'stale summary dynamic reply suppressed before execution');
           return;
         }
@@ -1860,7 +1727,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       }
 
       if (task.status === 'waiting_live_content') {
-        if (this.isTaskExpiredForCurrentStatus(task)) {
+        if (this.policy.isDelayedReplyTaskExpired(task)) {
           await this.suppressStaleTask(task, 'stale live content summary reply suppressed before execution');
           return;
         }
@@ -1871,7 +1738,7 @@ export class DelayedReplyService implements IDelayedReplyService {
 
       // 更新任务状态
       const liveStatus = await this.getRoomLiveStatusSafely(task.roomId);
-      if (this.isSameActiveLiveForTask(task, liveStatus)) {
+      if (this.policy.isSameActiveLiveForTask(task, liveStatus)) {
         await this.deferTaskForActiveLive(task, liveStatus!);
         return;
       }
@@ -1880,7 +1747,7 @@ export class DelayedReplyService implements IDelayedReplyService {
         return;
       }
 
-      if (this.isTaskExpiredForCurrentStatus(task)) {
+      if (this.policy.isDelayedReplyTaskExpired(task)) {
         await this.suppressStaleTask(task, 'stale delayed reply suppressed before execution');
         return;
       }
@@ -1893,7 +1760,7 @@ export class DelayedReplyService implements IDelayedReplyService {
         uid: task.uid
       });
 
-      const resolvedPaths = this.resolveDelayedReplyPaths(task.roomId, task.goodnightTextPath, task.comicImagePath);
+      const resolvedPaths = this.artifactResolver.resolve(task.roomId, task.goodnightTextPath, task.comicImagePath);
       if (resolvedPaths.goodnightTextPath !== task.goodnightTextPath || resolvedPaths.comicImagePath !== task.comicImagePath) {
         task.goodnightTextPath = resolvedPaths.goodnightTextPath;
         task.comicImagePath = resolvedPaths.comicImagePath;
@@ -1982,7 +1849,7 @@ export class DelayedReplyService implements IDelayedReplyService {
 
       // 直接发布评论，而不是通过ReplyManager
       // 读取晚安回复文本
-      const baseReplyText = await this.readReplyText(task.goodnightTextPath);
+      const baseReplyText = await this.replyContent.readReplyText(task.goodnightTextPath);
       if (!baseReplyText) {
         const errorMsg = '晚安回复文本为空';
         
@@ -2009,8 +1876,8 @@ export class DelayedReplyService implements IDelayedReplyService {
         if (hasComicImage) {
           imagePath = [task.comicImagePath];
         } else if (
-          !this.isWithinFirstReplyWave(finalDynamic) &&
-          this.shouldWaitForComicImage(task)
+          !this.policy.isWithinFirstReplyWave(finalDynamic) &&
+          this.artifactResolver.shouldWaitForComicImage(task, DelayedReplyService.MAX_COMIC_WAIT_COUNT)
         ) {
           task.comicWaitCount = (task.comicWaitCount || 0) + 1;
           task.status = 'pending';
@@ -2046,11 +1913,11 @@ export class DelayedReplyService implements IDelayedReplyService {
             taskId: task.taskId,
             roomId: task.roomId,
             dynamicId: String(finalDynamic.id),
-            withinFirstReplyWave: this.isWithinFirstReplyWave(finalDynamic),
+            withinFirstReplyWave: this.policy.isWithinFirstReplyWave(finalDynamic),
             comicImagePath: task.comicImagePath,
             comicWaitCount: task.comicWaitCount || 0
           });
-          const comicGenerationFailed = this.isComicGenerationTerminalFailure(task.comicImagePath);
+          const comicGenerationFailed = this.artifactResolver.isComicGenerationTerminalFailure(task.comicImagePath);
           if (comicGenerationFailed) {
             await this.notifyComicGenerationFailure(task);
           }
@@ -2058,10 +1925,10 @@ export class DelayedReplyService implements IDelayedReplyService {
         }
       }
 
-      const composition = this.composeReplyWithLiveContentSummary(task, baseReplyText, 'main');
+      const composition = this.liveContentSummaryComposer.compose(task, baseReplyText, 'main');
       const replyText = composition.text;
 
-      const dynamicReplyDedupeKey = this.getDynamicReplyDedupeKey(task.roomId, String(finalDynamic.id));
+      const dynamicReplyDedupeKey = this.policy.getDynamicReplyDedupeKey(task.roomId, String(finalDynamic.id));
       if (this.publishingDynamicReplyKeys.has(dynamicReplyDedupeKey)) {
         task.status = 'pending';
         task.scheduledTime = new Date(Date.now() + 15 * 1000);
@@ -2096,7 +1963,7 @@ export class DelayedReplyService implements IDelayedReplyService {
           await this.registerLiveContentSummaryForTask(
             duplicateReply,
             task.liveContentSummaryPath,
-            task.liveContentSummaryDeliveryMode || this.resolveLiveContentSummaryDeliveryMode(task.roomId)
+            task.liveContentSummaryDeliveryMode || this.liveContentSummaryComposer.resolveDeliveryMode(task.roomId)
           );
         }
         task.status = 'completed';
@@ -2146,7 +2013,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       task.completedAt = new Date();
       task.error = undefined;
       if (composition.attached) {
-        this.markLiveContentSummaryAttached(task, 'main', task.replyId);
+        this.liveContentSummaryComposer.markAttached(task, 'main', task.replyId);
       }
 
       if (shouldWaitForSupplementalComic) {
@@ -2163,7 +2030,7 @@ export class DelayedReplyService implements IDelayedReplyService {
           scheduledTime: task.scheduledTime,
           comicWaitCount: task.comicWaitCount,
           error: task.error,
-          ...this.getLiveContentSummaryTaskUpdates(task)
+          ...this.liveContentSummaryComposer.getTaskUpdates(task)
         });
 
         this.logger.info('已发送纯文字晚安回复，继续等待漫画图片生成后补图', {
@@ -2177,7 +2044,7 @@ export class DelayedReplyService implements IDelayedReplyService {
         this.scheduleTask(task);
       } else {
         const hasPendingLiveContent = !!task.liveContentSummaryPath &&
-          !this.isLiveContentSummaryDelivered(task) &&
+          !this.liveContentSummaryComposer.isDelivered(task) &&
           task.liveContentSummaryState !== 'failed';
         task.status = BilibiliConfigHelper.getSummaryDynamicSettings()
           ? 'waiting_summary'
@@ -2190,7 +2057,7 @@ export class DelayedReplyService implements IDelayedReplyService {
           replyId: task.replyId,
           completedAt: task.completedAt,
           error: undefined,
-          ...this.getLiveContentSummaryTaskUpdates(task)
+          ...this.liveContentSummaryComposer.getTaskUpdates(task)
         });
 
         this.logger.info(`延迟回复完成: ${task.taskId}`, {
@@ -2210,8 +2077,8 @@ export class DelayedReplyService implements IDelayedReplyService {
         try {
           const anchorConfig = BilibiliConfigHelper.getAnchorConfig(task.roomId);
           const anchorName = anchorConfig?.name;
-          const imageGenerationInfo = this.getComicGenerationNotificationInfo(task.comicImagePath);
-          const textGenerationInfo = this.getTextGenerationNotificationInfo(task.goodnightTextPath, task.comicImagePath);
+          const imageGenerationInfo = this.diagnostics.getComicGenerationInfo(task.comicImagePath);
+          const textGenerationInfo = this.diagnostics.getTextGenerationInfo(task.goodnightTextPath, task.comicImagePath);
           await this.notifier.notifyReplySuccess(
             String(finalDynamic.id),
             String(result.replyId),
@@ -2247,7 +2114,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       // 尝试读取回复文本用于通知
       let replyText: string | undefined;
       try {
-        replyText = await this.readReplyText(task.goodnightTextPath);
+        replyText = await this.replyContent.readReplyText(task.goodnightTextPath);
       } catch {
         // 读取失败时忽略，不影响主流程
       }
@@ -2262,7 +2129,7 @@ export class DelayedReplyService implements IDelayedReplyService {
 
       // 重试逻辑
       const isBlacklistError = task.error?.includes('黑名单') || task.error?.includes('12035');
-      const isCredentialError = this.isCredentialError(error);
+      const isCredentialError = this.policy.isCredentialError(error);
       if (isBlacklistError) {
         this.logger.warn(`检测到黑名单或禁言错误，不进行重试: ${task.taskId}`, { error: task.error });
       }
@@ -2273,7 +2140,7 @@ export class DelayedReplyService implements IDelayedReplyService {
       const delayedReplyConfig = BilibiliConfigHelper.getDelayedReplyConfig();
       const maxRetries = delayedReplyConfig.maxRetries;
 
-      if (!isBlacklistError && !isCredentialError && !this.isPermanentReplyError(error) && task.retryCount < maxRetries) {
+      if (!isBlacklistError && !isCredentialError && !this.policy.isPermanentReplyError(error) && task.retryCount < maxRetries) {
         task.retryCount++;
         task.status = 'pending';
         task.error = undefined;
@@ -2307,7 +2174,7 @@ export class DelayedReplyService implements IDelayedReplyService {
         } | null;
 
         if (failureContext) {
-          const retryInfo = isBlacklistError || isCredentialError || this.isPermanentReplyError(error)
+          const retryInfo = isBlacklistError || isCredentialError || this.policy.isPermanentReplyError(error)
             ? '不会自动重试'
             : `已达到最大重试次数 ${task.retryCount}/${maxRetries}`;
           const errorMessage = `${task.error || '未知错误'}\n\n房间ID: ${task.roomId}\n任务ID: ${task.taskId}\nUID: ${task.uid || '未知'}\n重试状态: ${retryInfo}`;
@@ -2319,8 +2186,8 @@ export class DelayedReplyService implements IDelayedReplyService {
             failureContext.replyText || replyText,
             undefined,
             failureContext.imagePath,
-            this.getComicGenerationNotificationInfo(task.comicImagePath),
-            this.getTextGenerationNotificationInfo(task.goodnightTextPath, task.comicImagePath)
+            this.diagnostics.getComicGenerationInfo(task.comicImagePath),
+            this.diagnostics.getTextGenerationInfo(task.goodnightTextPath, task.comicImagePath)
           );
         } else {
           await this.notifier.notifyProcessError(
@@ -2333,7 +2200,7 @@ export class DelayedReplyService implements IDelayedReplyService {
               uid: task.uid,
               goodnightTextPath: task.goodnightTextPath,
               comicImagePath: task.comicImagePath,
-              imageGenerationInfo: this.getComicGenerationNotificationInfo(task.comicImagePath),
+              imageGenerationInfo: this.diagnostics.getComicGenerationInfo(task.comicImagePath),
               replyText,
               error: error instanceof Error ? error.stack : String(error)
             }
@@ -2361,143 +2228,25 @@ export class DelayedReplyService implements IDelayedReplyService {
         task.taskId !== currentTaskId &&
         task.roomId === roomId &&
         !!task.replyId &&
-        (!effectiveCurrentTask || !this.isNewerRecordingTask(effectiveCurrentTask, task))
+        (!effectiveCurrentTask || !this.policy.isNewerRecordingTask(effectiveCurrentTask, task))
       )
-      .sort((a, b) => this.getTaskCompletionTime(b).getTime() - this.getTaskCompletionTime(a).getTime());
+      .sort((a, b) => this.policy.getTaskCompletionTime(b).getTime() - this.policy.getTaskCompletionTime(a).getTime());
 
     const sameDynamicTask = repliedTasks.find(task =>
       task.repliedDynamicId === dynamicId &&
-      now - this.getTaskCompletionTime(task).getTime() < recentReplyWindowMs
+      now - this.policy.getTaskCompletionTime(task).getTime() < recentReplyWindowMs
     );
     if (sameDynamicTask) {
       return sameDynamicTask;
     }
 
     return repliedTasks.find(task =>
-      now - this.getTaskCompletionTime(task).getTime() < recentReplyWindowMs
+      now - this.policy.getTaskCompletionTime(task).getTime() < recentReplyWindowMs
     ) || null;
-  }
-
-  /**
-   * A later final recording can legitimately target the same dynamic as an
-   * earlier partial recording. The later live end time identifies that case.
-   */
-  private isNewerRecordingTask(currentTask: DelayedReplyTask, previousTask: DelayedReplyTask): boolean {
-    const currentEnd = currentTask.liveEndTime?.getTime();
-    const previousEnd = previousTask.liveEndTime?.getTime();
-
-    if (!currentEnd || Number.isNaN(currentEnd)) {
-      return false;
-    }
-    if (!previousEnd || Number.isNaN(previousEnd)) {
-      return true;
-    }
-
-    return currentEnd > previousEnd;
-  }
-
-  private getTaskCompletionTime(task: DelayedReplyTask): Date {
-    return task.completedAt || task.scheduledTime || task.createTime;
-  }
-
-  /**
-   * 读取晚安回复文本
-   */
-  private async readReplyText(textPath: string): Promise<string> {
-    try {
-      this.logger.debug('开始读取晚安回复文本', { textPath });
-      
-      if (!fs.existsSync(textPath)) {
-        const errorMsg = `晚安回复文件不存在: ${textPath}`;
-        this.logger.error(errorMsg, { textPath, exists: false });
-        throw new Error(errorMsg);
-      }
-
-      this.logger.debug('文件存在，开始读取内容', { textPath });
-      
-      const content = fs.readFileSync(textPath, 'utf8');
-      this.logger.debug('文件读取成功', { textPath, contentLength: content.length });
-      
-      // 仅在文件开头存在 front matter 时才跳过元数据，避免正文中的 `---` 被误判。
-      const lines = content.split('\n');
-      const firstNonEmptyIndex = lines.findIndex(line => line.trim().length > 0);
-      
-      if (firstNonEmptyIndex >= 0 && lines[firstNonEmptyIndex].trim() === '---') {
-        const endIndex = lines.findIndex(
-          (line, index) => index > firstNonEmptyIndex && line.trim() === '---'
-        );
-
-        if (endIndex > firstNonEmptyIndex) {
-          const result = this.sanitizeReplyText(lines.slice(endIndex + 1).join('\n'));
-          this.assertReplyTextIsPublishable(result, textPath);
-          this.logger.debug('提取正文成功（跳过 front matter 元数据）', { textPath, resultLength: result.length });
-          return result;
-        }
-      }
-
-      const result = this.sanitizeReplyText(content);
-      this.assertReplyTextIsPublishable(result, textPath);
-      this.logger.debug('提取正文成功（无元数据）', { textPath, resultLength: result.length });
-      return result;
-    } catch (error) {
-      const errorInfo = {
-        textPath,
-        error: error instanceof Error ? {
-          name: error.name,
-          message: error.message,
-          stack: error.stack
-        } : String(error)
-      };
-      this.logger.error('读取晚安回复文本失败', errorInfo);
-      throw error;
-    }
-  }
-
-  private sanitizeReplyText(text: string): string {
-    return text
-      .trim()
-      .replace(/^\s*>+\s*(?:🔍\s*)?$/gmu, '')
-      .replace(/^\s*>+\s*/gmu, '')
-      .replace(/^\s*🔍\s*\*\*[^*\r\n]{2,30}\*\*/gmu, '')
-      .replace(/^\s*🔍\s*/gmu, '')
-      .replace(/\*\*([^*\r\n]+)\*\*/g, '$1')
-      .replace(/^\s{0,3}#{1,6}\s+/gmu, '')
-      .replace(/^\s*[（(]\s*共\s*\d+\s*字\s*[）)]\s*$/gmu, '')
-      .replace(/[（(]\s*共\s*\d+\s*字\s*[）)]\s*$/u, '')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim();
   }
 
   private buildSupplementalComicReplyText(replyText: string): string {
     return `${DelayedReplyService.SUPPLEMENTAL_COMIC_REPLY_PREFIX}${replyText}`;
-  }
-
-  private assertReplyTextIsPublishable(text: string, textPath: string): void {
-    const suspiciousPatterns = [
-      /word\s*count\s*check/i,
-      /(?:[\p{Script=Han}A-Za-z0-9！!？?。，、：；:;,.~～🌙☀️]\(\d+\)\s*){2,}/u,
-      /字数\s*(?:检查|统计|校验)/u
-    ];
-
-    if (suspiciousPatterns.some(pattern => pattern.test(text))) {
-      throw new Error(`晚安回复疑似模型调试/字数校验输出，拒绝发布: ${textPath}`);
-    }
-  }
-
-  private getTextGenerationNotificationInfo(goodnightTextPath: string, comicImagePath?: string): string | undefined {
-    return this.diagnostics.getTextGenerationInfo(goodnightTextPath, comicImagePath);
-  }
-
-  private getAsrNotificationInfo(goodnightTextPath: string): string | undefined {
-    return this.diagnostics.getAsrInfo(goodnightTextPath);
-  }
-
-  private getComicScriptGenerationInfo(comicImagePath?: string): string | undefined {
-    return this.diagnostics.getComicScriptGenerationInfo(comicImagePath);
-  }
-
-  private getComicGenerationNotificationInfo(comicImagePath?: string): string | undefined {
-    return this.diagnostics.getComicGenerationInfo(comicImagePath);
   }
 
   private async notifyComicGenerationFailure(task: DelayedReplyTask): Promise<void> {
@@ -2506,9 +2255,9 @@ export class DelayedReplyService implements IDelayedReplyService {
     }
 
     const anchorName = BilibiliConfigHelper.getAnchorConfig(task.roomId)?.name || '未知主播';
-    const imageGenerationInfo = this.getComicGenerationNotificationInfo(task.comicImagePath)
+    const imageGenerationInfo = this.diagnostics.getComicGenerationInfo(task.comicImagePath)
       || '图片未生成，未找到生图失败元数据';
-    const comicScriptGenerationInfo = this.getComicScriptGenerationInfo(task.comicImagePath)
+    const comicScriptGenerationInfo = this.diagnostics.getComicScriptGenerationInfo(task.comicImagePath)
       || '模型: 未知（未找到漫画脚本元数据）';
 
     try {
@@ -2542,97 +2291,6 @@ export class DelayedReplyService implements IDelayedReplyService {
       this.logger.warn('发送漫画生图失败企微通知异常', {
         taskId: task.taskId,
         roomId: task.roomId,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  }
-
-  private shouldWaitForComicImage(task: DelayedReplyTask): boolean {
-    if (!task.comicImagePath) {
-      return false;
-    }
-
-    const waitCount = task.comicWaitCount || 0;
-    if (waitCount >= DelayedReplyService.MAX_COMIC_WAIT_COUNT) {
-      return false;
-    }
-
-    const parsedPath = path.parse(task.comicImagePath);
-    const metaCandidates = [
-      path.join(parsedPath.dir, `${parsedPath.name}_META.json`),
-      path.join(parsedPath.dir, `${parsedPath.name.replace(/_COMIC_FACTORY$/i, '')}_COMIC_FACTORY_META.json`)
-    ];
-    const metaPath = metaCandidates.find(candidate => fs.existsSync(candidate));
-    if (!metaPath) {
-      return true;
-    }
-
-    try {
-      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-      return meta?.status !== 'success' && meta?.status !== 'failure';
-    } catch {
-      return true;
-    }
-  }
-
-  private isWithinFirstReplyWave(dynamic: BilibiliDynamic, now = Date.now()): boolean {
-    const dynamicAgeMs = Math.max(0, now - dynamic.publishTime.getTime());
-    return dynamicAgeMs <= DelayedReplyService.FIRST_REPLY_WAVE_WINDOW_MS;
-  }
-
-  private isComicGenerationTerminalFailure(comicImagePath?: string): boolean {
-    if (!comicImagePath || fs.existsSync(comicImagePath)) {
-      return false;
-    }
-
-    const parsedPath = path.parse(comicImagePath);
-    const metaCandidates = [
-      path.join(parsedPath.dir, `${parsedPath.name}_META.json`),
-      path.join(parsedPath.dir, `${parsedPath.name.replace(/_COMIC_FACTORY$/i, '')}_COMIC_FACTORY_META.json`)
-    ];
-    const metaPath = metaCandidates.find(candidate => fs.existsSync(candidate));
-    if (!metaPath) {
-      return false;
-    }
-
-    try {
-      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-      return meta?.status === 'failure';
-    } catch {
-      return false;
-    }
-  }
-
-  /**
-   * 检查文件是否存在
-   */
-  private writeComicGenerationFailureMeta(
-    comicImagePath: string,
-    reason: string,
-    taskId: string,
-    roomId: string,
-    dynamicId?: string
-  ): void {
-    try {
-      const parsedPath = path.parse(comicImagePath);
-      const metaPath = path.join(parsedPath.dir, `${parsedPath.name}_META.json`);
-      const payload = {
-        status: 'failure',
-        provider: null,
-        model: null,
-        endpoint: 'delayed-reply-supplemental-wait',
-        reason,
-        taskId,
-        roomId,
-        dynamicId,
-        updatedAt: new Date().toISOString()
-      };
-      fs.writeFileSync(metaPath, JSON.stringify(payload, null, 2), 'utf8');
-    } catch (error) {
-      this.logger.warn('保存补图失败元数据失败', {
-        taskId,
-        roomId,
-        comicImagePath,
         error: error instanceof Error ? error.message : String(error)
       });
     }
@@ -2682,61 +2340,12 @@ export class DelayedReplyService implements IDelayedReplyService {
       
       return validDynamics[0];
     } catch (error) {
-      if (this.isCredentialError(error)) {
+      if (this.policy.isCredentialError(error)) {
         throw error;
       }
       this.logger.error('获取最新动态失败', { error, uid });
       return null;
     }
-  }
-
-  private isCredentialError(error: unknown): boolean {
-    const maybeError = error as any;
-    const message = error instanceof Error ? error.message : String(error);
-    const normalized = message.toLowerCase();
-    if (this.isTransientNetworkError(normalized)) {
-      return false;
-    }
-
-    return (
-      maybeError?.code === 'AUTHENTICATION_ERROR' ||
-      maybeError?.statusCode === 401 ||
-      normalized.includes('sessdata') ||
-      normalized.includes('bili_jct') ||
-      normalized.includes('csrf') ||
-      normalized.includes('cookie') ||
-      normalized.includes('凭证无效') ||
-      normalized.includes('账号未登录') ||
-      normalized.includes('未登录') ||
-      normalized.includes('登录失效')
-    );
-  }
-
-  private isTransientNetworkError(message?: string): boolean {
-    const normalized = String(message || '').toLowerCase();
-    return (
-      normalized.includes('cannot connect') ||
-      normalized.includes('connect to host') ||
-      normalized.includes('timeout') ||
-      normalized.includes('timed out') ||
-      normalized.includes('etimedout') ||
-      normalized.includes('econnreset') ||
-      normalized.includes('enotfound') ||
-      normalized.includes('network') ||
-      normalized.includes('信号灯超时时间已到') ||
-      normalized.includes('淇″彿鐏秴鏃舵椂闂村凡鍒?')
-    );
-  }
-
-  private isPermanentReplyError(error: unknown): boolean {
-    const message = error instanceof Error ? error.message : String(error);
-    const normalized = message.toLowerCase();
-    return (
-      normalized.includes('晚安回复文件不存在') ||
-      normalized.includes('晚安回复文本为空') ||
-      normalized.includes('12051') ||
-      normalized.includes('重复评论，请勿刷屏')
-    );
   }
 
   /**
@@ -2799,27 +2408,5 @@ export class DelayedReplyService implements IDelayedReplyService {
       .sort((a, b) => b.createTime.getTime() - a.createTime.getTime());
 
     return historicalTasks[0]?.uid || undefined;
-  }
-
-  /**
-   * 判断UID解析失败是否适合进入队列重试
-   */
-  private isUidLookupRetriableError(error: unknown): boolean {
-    if (error instanceof Error) {
-      const message = error.message.toLowerCase();
-      return (
-        message.includes('timeout') ||
-        message.includes('timed out') ||
-        message.includes('cannot connect') ||
-        message.includes('connect to host') ||
-        message.includes('econnreset') ||
-        message.includes('etimedout') ||
-        message.includes('信号灯超时时间已到') ||
-        message.includes('网络') ||
-        message.includes('python脚本退出码')
-      );
-    }
-
-    return false;
   }
 }

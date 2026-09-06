@@ -137,7 +137,8 @@ async def replace_and_update(bvid: str, final_video: str, cover: str | None) -> 
 
     if cover:
         print(f"      更新封面: {cover}")
-        await update_cover(bvid, cover, None, ***"config/secret.json"))
+        secret_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'config', 'secret.json'))
+        await update_cover(bvid, cover, None, secret_path)
         print(f"      ✅ 封面更新完成")
 
 

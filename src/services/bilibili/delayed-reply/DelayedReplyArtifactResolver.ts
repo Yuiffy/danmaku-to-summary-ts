@@ -1,3 +1,4 @@
+import { DelayedReplyTask } from '../interfaces/types';
 import * as fs from 'fs';
 import * as path from 'path';
 import { ConfigProvider } from '../../../core/config/ConfigProvider';
@@ -142,5 +143,78 @@ export class DelayedReplyArtifactResolver {
 
   private escapeRegExp(value: string): string {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  shouldWaitForComicImage(task: DelayedReplyTask, maxWaitCount: number): boolean {
+    if (!task.comicImagePath) {
+      return false;
+    }
+
+    const waitCount = task.comicWaitCount || 0;
+    if (waitCount >= maxWaitCount) {
+      return false;
+    }
+
+    const status = this.readComicGenerationStatus(task.comicImagePath);
+    return status !== 'success' && status !== 'failure';
+  }
+
+  isComicGenerationTerminalFailure(comicImagePath?: string): boolean {
+    if (!comicImagePath || fs.existsSync(comicImagePath)) {
+      return false;
+    }
+
+    return this.readComicGenerationStatus(comicImagePath) === 'failure';
+  }
+
+  private readComicGenerationStatus(comicImagePath: string): string | undefined {
+    const parsedPath = path.parse(comicImagePath);
+    const metaCandidates = [
+      path.join(parsedPath.dir, `${parsedPath.name}_META.json`),
+      path.join(parsedPath.dir, `${parsedPath.name.replace(/_COMIC_FACTORY$/i, '')}_COMIC_FACTORY_META.json`)
+    ];
+    const metaPath = metaCandidates.find(candidate => fs.existsSync(candidate));
+    if (!metaPath) {
+      return undefined;
+    }
+
+    try {
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+      return meta?.status;
+    } catch {
+      return undefined;
+    }
+  }
+
+  writeComicGenerationFailureMeta(
+    comicImagePath: string,
+    reason: string,
+    taskId: string,
+    roomId: string,
+    dynamicId?: string
+  ): void {
+    try {
+      const parsedPath = path.parse(comicImagePath);
+      const metaPath = path.join(parsedPath.dir, `${parsedPath.name}_META.json`);
+      const payload = {
+        status: 'failure',
+        provider: null,
+        model: null,
+        endpoint: 'delayed-reply-supplemental-wait',
+        reason,
+        taskId,
+        roomId,
+        dynamicId,
+        updatedAt: new Date().toISOString()
+      };
+      fs.writeFileSync(metaPath, JSON.stringify(payload, null, 2), 'utf8');
+    } catch (error) {
+      this.logger.warn('保存补图失败元数据失败', {
+        taskId,
+        roomId,
+        comicImagePath,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
   }
 }

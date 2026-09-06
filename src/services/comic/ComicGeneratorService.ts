@@ -39,7 +39,7 @@ export class ComicGeneratorService implements IComicGeneratorService {
   constructor(notifier?: WeChatWorkNotifier) {
     this.notifier = notifier;
     // 获取脚本路径
-    const scriptsDir = path.join(__dirname, '../../../scripts');
+    const scriptsDir = path.join(process.cwd(), 'src', 'scripts');
     this.pythonScriptPath = path.join(scriptsDir, 'ai_comic_generator.py');
     this.nodeScriptPath = path.join(scriptsDir, 'ai_text_generator.js');
   }
