@@ -154,6 +154,35 @@ and a 1600x502 two-timestamp sheet, both decoded with nonblank pixel checks.
 Local evidence is in `tmp/structure-phase1-verify.log` and
 `tmp/structure-screenshot-smoke-7pn_md3u/`.
 
+## Deployment (2026-09-06)
+
+The user authorized replacing the existing PM2 runtime after the initial review.
+Deployed application commit: `83a0fed0a82cd996971885fa3de6574f77d78582`, including
+the initial structural change in `b30508b` and the screenshot extraction.
+
+- Only `danmaku-webhook` was restarted. PID changed from 24112 to 132852 at
+  `2026-09-06T07:24:13.8804714Z`; port remains 12523.
+- The stop/swap/start/verification sequence took 4.69 seconds. This is a single
+  fork-mode process, so the deployment includes a brief service restart.
+- All 74 staged JavaScript modules matched the tested isolated output byte for
+  byte. The release was staged at the same directory depth as `dist` to preserve
+  source maps and the current history-path behavior.
+- Delayed tasks, the summary queue, production configuration, and the existing
+  external reply-history file had identical hashes before and after deployment.
+  The service restored all 2,264 delayed-task records and their dedupe history;
+  no tasks were pending or processing at the switch.
+- Other PM2 process IDs and states were unchanged.
+- `/health`, `/status`, `GET /api/delayed-reply/tasks`, and the registered
+  `POST /mikufans` route (checked with `OPTIONS`) were verified. The new process
+  remained healthy two minutes later with no new timestamped ERROR log entries.
+
+The previous runtime and state snapshots are retained under
+`build/deploy-backups/20260906T072409Z/`. The local `deployment.json` there records
+the exact before/after hashes and process IDs. Source tests cover reconstruction
+from later FileClosed events and nearby disk segments when an in-memory recording
+session is lost on restart. No synthetic recording event or test comment was
+submitted to the production workflow.
+
 ## Follow-up phases
 
 There are four follow-up phases after the initial structural review. Each phase
