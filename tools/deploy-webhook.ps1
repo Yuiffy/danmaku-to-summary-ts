@@ -39,7 +39,7 @@ function Assert-Idle {
             if ($_.status -notin @('pending', 'waiting_comic', 'waiting_summary', 'waiting_live_content')) { return $false }
             if ($file -eq 'src/scripts/.whisper_queue.json') { return $true }
             # Persisted future tasks are restored with their deadline after the switch.
-            return (-not $_.scheduledTime -or [DateTimeOffset]::Parse($_.scheduledTime) -le [DateTimeOffset]::UtcNow.AddSeconds(30))
+            return (-not $_.scheduledTime -or ([DateTimeOffset]$_.scheduledTime) -le [DateTimeOffset]::UtcNow.AddSeconds(30))
         })
         if ($active.Count -gt 0) { throw "Active tasks in $file; refusing to switch runtime" }
     }
@@ -134,7 +134,7 @@ try {
     $savedTasks = Get-Content -LiteralPath (Join-Path $backupPath 'delayed_tasks.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     foreach ($savedTask in @($savedTasks.tasks | Where-Object { $_.status -in @('pending', 'waiting_comic', 'waiting_summary', 'waiting_live_content') })) {
         $restored = @($tasks.tasks | Where-Object { $_.taskId -eq $savedTask.taskId })
-        if ($restored.Count -ne 1 -or $restored[0].status -ne $savedTask.status -or [DateTimeOffset]$restored[0].scheduledTime -ne [DateTimeOffset]$savedTask.scheduledTime) {
+        if ($restored.Count -ne 1 -or $restored[0].status -ne $savedTask.status -or ([DateTimeOffset]$restored[0].scheduledTime) -ne ([DateTimeOffset]$savedTask.scheduledTime)) {
             throw 'A future delayed task was not restored with its original deadline'
         }
     }
