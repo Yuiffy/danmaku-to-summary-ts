@@ -4,7 +4,7 @@ import { spawnSync } from 'child_process';
 import * as ts from 'typescript';
 
 const sourceRoots = ['src', 'scripts', 'tools'];
-const typedRoots = ['src/app/', 'src/core/', 'src/services/', 'src/utils/', 'src/tools/'];
+const typedRoots = ['src/app/', 'src/core/', 'src/services/', 'src/utils/', 'src/tools/', 'src/workflows/'];
 const codeExtensions = new Set(['.ts', '.tsx', '.js', '.mjs', '.cjs', '.py']);
 const defaultLineBudget = 1200;
 // Historical oversized modules are frozen at their reviewed size. Only lower these.
@@ -17,8 +17,8 @@ const lineBudgets: Record<string, number> = {
   'src/scripts/own_stream_clipper.js': 2265,
   'src/scripts/python/sensevoice_speaker.py': 2331,
   'src/scripts/tuzi_chat_completions.py': 2258,
-  'src/scripts/ai_text_generator.js': 2235,
-  'src/scripts/enhanced_auto_summary.js': 2131,
+  'src/scripts/ai_text_generator.js': 2010,
+  'src/scripts/enhanced_auto_summary.js': 1941,
   'src/scripts/clipping/topic_compilation.js': 1600,
   'src/scripts/audio_processor.js': 1496,
   'src/scripts/asr/asr_backends.js': 1406,
@@ -85,6 +85,9 @@ export function findCycles(graph: Map<string, string[]>): string[][] {
 }
 
 export function boundaryViolation(file: string, dependency: string): string | undefined {
+  if (file.startsWith('src/workflows/') && /^src\/(scripts|services|app)\//.test(dependency)) {
+    return 'compiled workflow stages must not import source CLIs, services or app entrypoints';
+  }
   if ((file.startsWith('src/core/') || file.startsWith('src/utils/'))
     && /^src\/(services|app|scripts)\//.test(dependency)) {
     return 'shared infrastructure must not depend on service, app, or workflow modules';
@@ -210,6 +213,10 @@ export function inspectArchitecture(root: string) {
     violations.push('service build must exclude Next.js routes and UI');
   }
   const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  const workflows = JSON.parse(fs.readFileSync(path.join(root, 'tsconfig.workflows.json'), 'utf8'));
+  if (workflows.compilerOptions.strict !== true || workflows.compilerOptions.noEmitOnError !== true) {
+    violations.push('workflow compilation must keep strict:true and noEmitOnError:true');
+  }
   if (pkg.scripts?.prebuild) violations.push('build must not have an implicit prebuild side effect');
   const languages: Record<string, number> = {};
   for (const file of files) languages[path.extname(file)] = (languages[path.extname(file)] || 0) + 1;

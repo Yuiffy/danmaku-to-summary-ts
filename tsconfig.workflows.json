@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "rootDir": "src/workflows",
+    "outDir": "build/workflows",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmitOnError": true,
+    "declaration": true,
+    "types": ["node"]
+  },
+  "include": ["src/workflows/**/*.ts"],
+  "exclude": ["**/*.test.ts"]
+}

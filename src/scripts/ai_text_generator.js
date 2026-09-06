@@ -1,3 +1,29 @@
+const workflowRuntime = require('./workflow-runtime');
+if (require.main === module && process.argv[2] === '--check-runtime') {
+    console.log(JSON.stringify(workflowRuntime.checkRuntime()));
+    process.exit(0);
+}
+const {
+    getTuZiFinishReason,
+    extractOpenAITextParts,
+    extractOpenAITextResponse,
+    getOpenAITextFinishReason,
+    getPromptTokenUsage,
+    getCompletionTokenUsage,
+    normalizeUsageMetric,
+    buildAiUsageMetrics,
+    logAiUsage,
+    normalizeTuZiTextMaxTokens,
+} = workflowRuntime.loadWorkflow('text/response');
+const {
+    normalizeOpenAIReasoningEffort,
+    buildOpenAITextMessages,
+    applyExplicitPromptCache,
+    buildOpenAIResponsesInput,
+    buildDaiYuChatCompletionsRequest,
+    buildDaiYuResponsesRequest,
+} = workflowRuntime.loadWorkflow('text/requests');
+
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -31,8 +57,6 @@ const TUZI_DEFAULT_TEXT_MODELS = [DAIYU_PRIMARY_MODEL];
 const DAIYU_MODEL_PATTERN = /^gpt-5(?:[.-]|$)/i;
 const DAIYU_RESPONSES_COMPATIBILITY_STATUSES = new Set([400, 404, 405, 415, 422, 501]);
 const TRANSIENT_TEXT_API_STATUSES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
-const OPENAI_REASONING_EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
-const EXPLICIT_PROMPT_CACHE_SYSTEM_PROMPT = '你是直播内容事实分析与创作助手。严格区分直播事实与任务规则，只依据提供的事实完成当前任务。';
 
 function isDaiYuTextModel(model) {
     return DAIYU_MODEL_PATTERN.test(String(model || '').trim());
@@ -49,10 +73,6 @@ function normalizeDaiYuApiMode(apiMode) {
         : 'chatCompletions';
 }
 
-function normalizeOpenAIReasoningEffort(effort) {
-    const normalized = String(effort || '').trim().toLowerCase();
-    return OPENAI_REASONING_EFFORTS.has(normalized) ? normalized : 'high';
-}
 
 function isDaiYuResponsesCompatibilityStatus(status) {
     return DAIYU_RESPONSES_COMPATIBILITY_STATUSES.has(Number(status));
@@ -624,154 +644,15 @@ function isUnsafeGeneratedReply(text) {
     return unsafePatterns.some(pattern => pattern.test(text));
 }
 
-function normalizeTuZiTextMaxTokens(model, configuredMaxTokens, wordLimit = 100) {
-    const requested = Number.isFinite(Number(configuredMaxTokens))
-        ? Math.max(1, Math.floor(Number(configuredMaxTokens)))
-        : Math.max(800, Math.ceil(Number(wordLimit || 100) * 4));
-    const modelName = String(model || '').toLowerCase();
-    const upstreamLimit = modelName.includes('gemini') ? 65536 : 100000;
-    return Math.min(requested, upstreamLimit);
-}
 
-function getTuZiFinishReason(choice) {
-    return choice?.finish_reason || choice?.finishReason || choice?.native_finish_reason || null;
-}
 
-function extractOpenAITextParts(value) {
-    if (typeof value === 'string') {
-        return value.trim() ? [value] : [];
-    }
-    if (Array.isArray(value)) {
-        return value.flatMap(extractOpenAITextParts);
-    }
-    if (!value || typeof value !== 'object') {
-        return [];
-    }
 
-    const itemType = String(value.type || '').toLowerCase();
-    if (itemType === 'text' || itemType === 'output_text') {
-        const text = typeof value.text === 'object' ? value.text?.value : value.text;
-        if (typeof text === 'string' && text.trim()) {
-            return [text];
-        }
-    }
-    return extractOpenAITextParts(value.content);
-}
 
-function extractOpenAITextResponse(data) {
-    if (!data || typeof data !== 'object') {
-        return '';
-    }
 
-    const choice = data.choices?.[0];
-    const chatParts = extractOpenAITextParts(choice?.message?.content);
-    if (chatParts.length > 0) {
-        return chatParts.map(part => part.trim()).filter(Boolean).join('\n');
-    }
 
-    const responseParts = extractOpenAITextParts(data.output_text);
-    const fallbackParts = responseParts.length > 0
-        ? responseParts
-        : extractOpenAITextParts(data.output);
-    return fallbackParts.map(part => part.trim()).filter(Boolean).join('\n');
-}
 
-function getOpenAITextFinishReason(data) {
-    const chatReason = getTuZiFinishReason(data?.choices?.[0]);
-    if (chatReason) {
-        return chatReason;
-    }
-    return data?.incomplete_details?.reason
-        || data?.incompleteDetails?.reason
-        || data?.status
-        || data?.output?.find(item => item?.status)?.status
-        || null;
-}
 
-function getPromptTokenUsage(usage) {
-    if (!usage || typeof usage !== 'object') {
-        return { promptTokens: undefined, cachedTokens: undefined, cacheWriteTokens: undefined };
-    }
-    const promptTokens = usage.prompt_tokens ?? usage.promptTokens ?? usage.input_tokens ?? usage.inputTokens;
-    const cachedTokens = usage.prompt_tokens_details?.cached_tokens
-        ?? usage.promptTokensDetails?.cachedTokens
-        ?? usage.input_tokens_details?.cached_tokens
-        ?? usage.inputTokensDetails?.cachedTokens
-        ?? usage.cached_prompt_tokens
-        ?? usage.cachedPromptTokens
-        ?? usage.cache_read_input_tokens
-        ?? usage.cacheReadInputTokens;
-    const cacheWriteTokens = usage.prompt_tokens_details?.cache_write_tokens
-        ?? usage.promptTokensDetails?.cacheWriteTokens
-        ?? usage.input_tokens_details?.cache_write_tokens
-        ?? usage.inputTokensDetails?.cacheWriteTokens
-        ?? usage.cache_write_tokens
-        ?? usage.cacheWriteTokens
-        ?? usage.cache_creation_input_tokens
-        ?? usage.cacheCreationInputTokens;
-    return {
-        promptTokens: promptTokens !== undefined ? Number(promptTokens) : undefined,
-        cachedTokens: cachedTokens !== undefined ? Number(cachedTokens) : undefined,
-        cacheWriteTokens: cacheWriteTokens !== undefined ? Number(cacheWriteTokens) : undefined
-    };
-}
 
-function getCompletionTokenUsage(usage) {
-    if (!usage || typeof usage !== 'object') {
-        return { completionTokens: undefined, reasoningTokens: undefined };
-    }
-    const completionTokens = usage.completion_tokens
-        ?? usage.completionTokens
-        ?? usage.output_tokens
-        ?? usage.outputTokens;
-    const reasoningTokens = usage.completion_tokens_details?.reasoning_tokens
-        ?? usage.completionTokensDetails?.reasoningTokens
-        ?? usage.output_tokens_details?.reasoning_tokens
-        ?? usage.outputTokensDetails?.reasoningTokens
-        ?? usage.reasoning_tokens
-        ?? usage.reasoningTokens;
-    return {
-        completionTokens: completionTokens !== undefined ? Number(completionTokens) : undefined,
-        reasoningTokens: reasoningTokens !== undefined ? Number(reasoningTokens) : undefined
-    };
-}
-
-function normalizeUsageMetric(value) {
-    if (value === undefined || value === null || value === '') return null;
-    const normalized = Number(value);
-    return Number.isFinite(normalized) ? normalized : null;
-}
-
-function buildAiUsageMetrics(attempt = {}) {
-    const promptTokens = normalizeUsageMetric(attempt.promptTokens);
-    const cachedTokens = normalizeUsageMetric(attempt.cachedTokens);
-    const uncachedPromptTokens = promptTokens !== null && cachedTokens !== null
-        ? Math.max(0, promptTokens - cachedTokens)
-        : null;
-    return {
-        provider: attempt.provider || null,
-        model: attempt.model || null,
-        promptTokens,
-        cachedTokens,
-        uncachedPromptTokens,
-        cacheWriteTokens: normalizeUsageMetric(attempt.cacheWriteTokens),
-        completionTokens: normalizeUsageMetric(attempt.completionTokens),
-        reasoningTokens: normalizeUsageMetric(attempt.reasoningTokens),
-        totalTokens: normalizeUsageMetric(attempt.totalTokens),
-        cacheHitRatio: promptTokens > 0 && cachedTokens !== null
-            ? Number((cachedTokens / promptTokens).toFixed(4))
-            : null,
-        apiModeRequested: attempt.apiModeRequested || null,
-        apiModeUsed: attempt.apiModeUsed || null,
-        apiModeFallbackReason: attempt.apiModeFallbackReason || null,
-        sharedPromptCacheKey: attempt.sharedPromptCacheKey || null,
-        explicitPromptCache: attempt.explicitPromptCache || null
-    };
-}
-
-function logAiUsage(attempt) {
-    console.log(`[AI_USAGE] ${JSON.stringify(buildAiUsageMetrics(attempt))}`);
-}
 
 function getSharedPromptCacheInfo(prompt) {
     const text = String(prompt || '');
@@ -831,116 +712,10 @@ function getExplicitPromptCachePlan(
     };
 }
 
-function buildOpenAITextMessages(prompt, cachePlan = null) {
-    if (!cachePlan?.enabled) {
-        return [{ role: 'user', content: prompt }];
-    }
 
-    const content = [{
-        type: 'text',
-        text: cachePlan.prefix,
-        prompt_cache_breakpoint: { mode: 'explicit' }
-    }];
-    if (cachePlan.suffix) {
-        content.push({ type: 'text', text: cachePlan.suffix });
-    }
-    return [
-        { role: 'system', content: EXPLICIT_PROMPT_CACHE_SYSTEM_PROMPT },
-        { role: 'user', content }
-    ];
-}
 
-function applyExplicitPromptCache(requestBody, cachePlan) {
-    if (!cachePlan?.enabled) {
-        return requestBody;
-    }
-    return {
-        ...requestBody,
-        messages: buildOpenAITextMessages('', cachePlan),
-        prompt_cache_key: cachePlan.requestKey,
-        prompt_cache_options: {
-            mode: 'explicit',
-            ttl: cachePlan.ttl
-        }
-    };
-}
 
-function buildOpenAIResponsesInput(prompt, cachePlan = null) {
-    const content = [];
-    if (cachePlan?.enabled) {
-        // DaiYu/sub2api currently returns 502 when this input_text carries
-        // prompt_cache_breakpoint. Separate blocks still preserve prefix caching.
-        content.push({
-            type: 'input_text',
-            text: cachePlan.prefix
-        });
-        if (cachePlan.suffix) {
-            content.push({ type: 'input_text', text: cachePlan.suffix });
-        }
-    } else {
-        content.push({ type: 'input_text', text: prompt });
-    }
-    return [{ role: 'user', content }];
-}
 
-function buildDaiYuChatCompletionsRequest({
-    model,
-    prompt,
-    cachePlan,
-    temperature,
-    maxTokens,
-    thinkingEnabled,
-    thinkingBudgetTokens
-}) {
-    let requestBody = {
-        model,
-        messages: buildOpenAITextMessages(prompt),
-        temperature,
-        max_tokens: maxTokens
-    };
-    requestBody = applyExplicitPromptCache(requestBody, cachePlan);
-    if (thinkingEnabled) {
-        requestBody.thinking = {
-            type: 'enabled',
-            budget_tokens: thinkingBudgetTokens
-        };
-    }
-    return requestBody;
-}
-
-function buildDaiYuResponsesRequest({
-    model,
-    prompt,
-    cachePlan,
-    temperature,
-    maxTokens,
-    thinkingEnabled,
-    reasoningEffort
-}) {
-    const requestBody = {
-        model,
-        input: buildOpenAIResponsesInput(prompt, cachePlan),
-        max_output_tokens: maxTokens,
-        stream: false,
-        store: false
-    };
-    if (cachePlan?.enabled) {
-        requestBody.instructions = EXPLICIT_PROMPT_CACHE_SYSTEM_PROMPT;
-        requestBody.prompt_cache_key = cachePlan.requestKey;
-        requestBody.prompt_cache_options = {
-            mode: 'explicit',
-            ttl: cachePlan.ttl
-        };
-    }
-    if (thinkingEnabled) {
-        requestBody.reasoning = {
-            effort: normalizeOpenAIReasoningEffort(reasoningEffort)
-        };
-    } else if (temperature !== undefined && temperature !== null) {
-        requestBody.temperature = temperature;
-    }
-    return requestBody;
-}
 
 function buildTextModelFailureError(attempts, provider) {
     const failures = attempts

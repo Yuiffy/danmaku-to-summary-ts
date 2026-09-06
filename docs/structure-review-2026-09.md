@@ -198,7 +198,7 @@ rewriting the whole pipeline at once.
    idempotency state, persistence ordering, and timer ownership while extracting
    supplementary-summary/comic workflows behind typed ports. Acceptance includes
    restart recovery and retries that cannot duplicate completed publications.
-3. `enhanced_auto_summary.js` and `ai_text_generator.js`: migrate stages to TS
+3. `enhanced_auto_summary.js` and `ai_text_generator.js` (completed increment): migrate stages to TS
    after defining how source CLIs find a complete compiled release. Do not add a
    runtime dependency on a dev-only TypeScript transpiler. Acceptance includes
    executing each compatibility CLI from a production release without dev tools.
@@ -238,3 +238,19 @@ atomically. Existing records do not require conversion.
 Validation: 49 focused service/workflow integration tests passed, including six
 new cases using actual temporary task files, restart recovery, retry, notification
 failure and a simulated disk failure after publication.
+
+### Phase 3: compiled TS stages
+
+Added a strict workflow build, immutable release manifest, integrity-checked
+compatibility bridge and separate candidate/activation pointers. Migrated text
+request construction, response/usage parsing, and ASR process diagnostics to
+typed modules. The entrypoints decreased from 2,235 to 2,010 lines (text) and
+2,131 to 1,941 lines (summary). Scheduling and provider HTTP orchestration remain
+in their compatible JS entrypoints for subsequent incremental migrations.
+
+Validation: 28 text/provider/cache tests passed, two summary tests passed, and ten
+Node tests passed. Release tests copy each CLI and the compiled package into a
+temporary directory with no TS source or development dependencies, disable Node's
+TS type stripping, and execute the runtime check. Compiled input/output checks
+cover chat/responses, prompt caching, reasoning, usage and ASR timing sentinels;
+an integrity test refuses a modified release.

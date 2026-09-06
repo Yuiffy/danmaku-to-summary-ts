@@ -55,6 +55,7 @@ must be updated before using the new task-list/cancellation adapter.
 | `handlers/mikufans` | resource admission, durable summary execution, reply coordination | publishing policy |
 | `bilibili/delayed-reply` | task policy, content, artifacts, diagnostics, timers | parent-service imports |
 | `src/scripts` | compatible CLIs and existing media orchestration | new long-running services |
+| `src/workflows` | strictly typed, compiled stages called by source CLIs | importing source CLIs or services, runtime transpilers |
 | `scripts/clipping/*_selection.js` | recall, matching, scoring, boundaries | parent workflows, rendering, uploads |
 | `scripts/comic/storyboard.py`, `prompts.py` | script contracts and prompt presentation | provider/config/process IO |
 | `scripts/comic/screenshots.py` | local frame acquisition, sheet rendering, shared FFmpeg invocation | provider calls, room configuration |
@@ -91,6 +92,27 @@ The service build excludes Next.js routes and TSX. It keeps `allowJs: false`
 and `noEmitOnError: true`. The application type check still includes legacy
 JS imports during the migration. The unused `tsc-config.json` snapshot and the
 obsolete configuration-overwriting migration generator have been removed.
+
+### Compiled workflow releases
+
+`npm run build:workflows` strictly compiles migrated stages to an immutable,
+content-addressed directory under `build/workflow-releases`. It writes a candidate
+descriptor at `build/workflow-candidate.json` and does not activate that candidate.
+Jest and the Node release tests use the candidate; ordinary verification does not
+change the active workflow release or production `dist`.
+
+After validation, `npm run workflow:activate` atomically updates
+`data/runtime/workflow-release.json`. Source CLIs load all migrated stages from
+this one release. `DANMAKU_WORKFLOW_RELEASE` explicitly selects a release directory
+for isolated runs. The bridge verifies the manifest and every file digest before
+loading modules. It does not import TypeScript or ts-node. Keep prior release
+directories for rollback; restore the previous pointer to roll back activation.
+
+Both `node src/scripts/ai_text_generator.js --check-runtime` and
+`node src/scripts/enhanced_auto_summary.js --check-runtime` validate/load the
+compiled stages without contacting providers, reading production queues, or
+starting a scheduler. The larger JS orchestration is still being migrated in
+stages; these compatibility entrypoints remain the supported CLI paths.
 
 ## Verification
 
