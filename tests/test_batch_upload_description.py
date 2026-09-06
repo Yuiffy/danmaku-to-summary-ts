@@ -5,6 +5,7 @@ from pathlib import Path
 
 from src.scripts.batch_upload import (
     build_desc,
+    is_submission_rate_limit_error,
     load_generated_description,
     parse_upload_manifest,
     record_title_conflict,
@@ -14,6 +15,16 @@ from src.scripts.batch_upload import (
 
 
 class BatchUploadDescriptionTests(unittest.TestCase):
+    def test_submission_rate_limit_matches_exact_bilibili_error_code(self):
+        self.assertTrue(
+            is_submission_rate_limit_error(
+                "接口返回错误代码：137022，信息：投稿过于频繁，请稍后再试。"
+            )
+        )
+        self.assertTrue(is_submission_rate_limit_error({"code": 137022}))
+        self.assertFalse(is_submission_rate_limit_error("code=-509 请求过于频繁"))
+        self.assertFalse(is_submission_rate_limit_error("event=1370221"))
+
     def test_review_score_suffix_is_not_part_of_media_path(self):
         self.assertEqual(
             strip_review_score_suffix(

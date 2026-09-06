@@ -586,6 +586,55 @@ describe('MikufansWebhookHandler segment collection finalization', () => {
     expect(alert).not.toHaveBeenCalled();
   });
 
+  test('does not arm the stall diagnostic when an offline FileOpening arrives before SessionStarted', async () => {
+    jest.useFakeTimers();
+    const getConfig = jest.spyOn(ConfigProvider, 'getConfig').mockReturnValue({
+      storage: { tempPath: tempDir },
+      webhook: { endpoints: { mikufans: { basePath: tempDir } } },
+      monitoring: {
+        recorderStallDiagnostics: {
+          enabled: true,
+          delaySeconds: 1,
+          outputDirectory: 'diagnostics',
+          includeProcessDump: false
+        }
+      }
+    } as any);
+    const handler = new MikufansWebhookHandler() as any;
+    handlers.push(handler);
+    handler.recorderStallDiagnostics.runCommand = jest.fn().mockResolvedValue({
+      exitCode: 0,
+      stdout: '[]',
+      stderr: ''
+    });
+    const alert = ProcessingAlertService.notifyRecorderStallDiagnostics as jest.Mock;
+
+    await handler.handleFileOpening({
+      EventTimestamp: '2026-09-02T11:01:31.589+08:00',
+      EventData: {
+        RoomId: 31368705,
+        SessionId: 'offline-session',
+        Name: '米汀Nagisa',
+        Streaming: false
+      }
+    });
+    await handler.handleSessionStarted('offline-session', {
+      EventTimestamp: '2026-09-02T11:01:29.857+08:00',
+      EventData: {
+        RoomId: 31368705,
+        SessionId: 'offline-session',
+        Name: '米汀Nagisa',
+        Recording: true,
+        Streaming: true
+      }
+    });
+
+    await jest.advanceTimersByTimeAsync(1000);
+
+    expect(getConfig).toHaveBeenCalled();
+    expect(alert).not.toHaveBeenCalled();
+  });
+
   test('does not arm the missing-recorder alert when StreamStarted says Recording=false', async () => {
     jest.useFakeTimers();
     const handler = new MikufansWebhookHandler() as any;

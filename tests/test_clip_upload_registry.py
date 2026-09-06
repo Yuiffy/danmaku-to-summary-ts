@@ -1,3 +1,4 @@
+import datetime as dt
 import json
 import subprocess
 import tempfile
@@ -9,6 +10,86 @@ from src.scripts import clip_upload_registry as registry
 
 
 class ClipUploadRegistryTests(unittest.TestCase):
+    def test_queue_mutation_lock_rejects_overlapping_writer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory) / "runtime"
+            runtime.mkdir(parents=True, exist_ok=True)
+            queue_path = runtime / "queue.json"
+            with patch.object(registry, "RUNTIME_DIR", runtime), patch.object(
+                registry, "QUEUE_PATH", queue_path
+            ):
+                first = registry.acquire_queue_mutation_lock()
+                try:
+                    with self.assertRaises(registry.QueueLockTimeout):
+                        registry.acquire_queue_mutation_lock(wait_seconds=0)
+                finally:
+                    registry.release_queue_mutation_lock(first)
+
+    def test_submission_rate_limit_delay_doubles_from_twenty_minutes(self):
+        self.assertEqual(registry.submission_rate_limit_delay_seconds(1), 20 * 60)
+        self.assertEqual(registry.submission_rate_limit_delay_seconds(2), 40 * 60)
+        self.assertEqual(registry.submission_rate_limit_delay_seconds(3), 80 * 60)
+        self.assertEqual(
+            registry.submission_rate_limit_delay_seconds(99),
+            registry.SUBMISSION_RATE_LIMIT_MAX_DELAY_SECONDS,
+        )
+
+    def test_submission_rate_limit_detection_uses_exact_error_code(self):
+        self.assertTrue(
+            registry.is_bilibili_submission_rate_limit(
+                "{'code': 137022, 'message': '投稿过于频繁，请稍后再试'}"
+            )
+        )
+        self.assertFalse(
+            registry.is_bilibili_submission_rate_limit(
+                "member archives API 返回 code=-509: 请求过于频繁"
+            )
+        )
+        self.assertFalse(registry.is_bilibili_submission_rate_limit("1370221"))
+
+    def test_account_cooldown_blocks_all_pending_jobs(self):
+        now = dt.datetime.now(dt.timezone.utc)
+        queue = {
+            "submissionRateLimit": {
+                "cooldownUntil": (now + dt.timedelta(minutes=20)).isoformat()
+            },
+            "jobs": [{"id": "later", "status": "pending"}],
+        }
+        self.assertIsNone(registry.next_pending_job(queue))
+
+        queue["submissionRateLimit"]["cooldownUntil"] = (
+            now - dt.timedelta(seconds=1)
+        ).isoformat()
+        self.assertEqual(registry.next_pending_job(queue)["id"], "later")
+
+    def test_rolling_upload_guard_releases_after_oldest_of_ninety_expires(self):
+        now = dt.datetime(2026, 9, 3, 1, 0, tzinfo=dt.timezone.utc)
+        oldest = now - dt.timedelta(hours=23)
+        queue = {}
+        state = registry.ensure_account_upload_guard(queue, "test-account")
+        state["events"] = [
+            {
+                "at": (oldest + dt.timedelta(seconds=index)).isoformat(),
+                "bvid": f"BV{index}",
+            }
+            for index in range(registry.ACCOUNT_ROLLING_UPLOAD_LIMIT)
+        ]
+
+        registry.recalculate_account_upload_guard(state, now)
+
+        expected = oldest + dt.timedelta(
+            seconds=(
+                registry.ACCOUNT_ROLLING_WINDOW_SECONDS
+                + registry.ACCOUNT_ROLLING_BOUNDARY_BUFFER_SECONDS
+            )
+        )
+        self.assertEqual(state["recentCount"], 90)
+        self.assertEqual(registry.account_upload_available_slots(state), 0)
+        self.assertEqual(
+            registry.parse_utc_timestamp(state["blockedUntil"]), expected
+        )
+        self.assertTrue(registry.account_upload_limit_active(queue, now))
+
     def test_normalizes_previously_imported_scored_media_paths(self):
         registry_data = {
             "clips": {
@@ -258,17 +339,73 @@ class ClipUploadRegistryTests(unittest.TestCase):
         fixture["runtime"].mkdir(parents=True, exist_ok=True)
         registry.save_json(fixture["registry_path"], fixture["registry"])
         registry.save_json(fixture["queue_path"], fixture["queue"])
+
+        def refresh_guard(queue, registry_data, now=None, force_remote=False):
+            state = registry.ensure_account_upload_guard(queue, "test-account")
+            registry.recalculate_account_upload_guard(state, now)
+            return state, True
+
         with patch.object(registry, "RUNTIME_DIR", fixture["runtime"]), patch.object(
             registry, "REGISTRY_PATH", fixture["registry_path"]
         ), patch.object(registry, "QUEUE_PATH", fixture["queue_path"]), patch.object(
-            registry, "grouped_clips", return_value=[fixture["clips"]]
+            registry,
+            "grouped_clips",
+            side_effect=lambda registry_data, ids: [
+                [registry_data["clips"][str(clip_id)] for clip_id in ids]
+            ],
         ), patch.object(registry, "validate_groups", return_value=[]), patch.object(
             registry, "run_batch", side_effect=run_batch
+        ), patch.object(
+            registry, "configured_upload_account", return_value=("test-account", "", "")
+        ), patch.object(
+            registry, "refresh_account_upload_guard", side_effect=refresh_guard
         ):
             self.assertTrue(registry.run_one_job())
         return (
             registry.load_json(fixture["registry_path"], {}),
             registry.load_json(fixture["queue_path"], {}),
+        )
+
+    def test_worker_preserves_job_enqueued_while_upload_is_running(self):
+        fixture = self.make_fixture(count=2)
+        fixture["queue"]["jobs"][0]["clipIds"] = [1]
+        enqueue_args = type(
+            "Args",
+            (),
+            {
+                "ids": "2",
+                "force": False,
+                "dry_run": False,
+                "delay": 0,
+                "rate_limit_wait": 30,
+                "rate_limit_retries": 1,
+                "note": "concurrent enqueue",
+            },
+        )()
+
+        def run_batch(group, job):
+            self.assertEqual([clip["id"] for clip in group], [1])
+            self.assertEqual(registry.enqueue(enqueue_args), 0)
+            with registry.queue_transaction() as current_queue:
+                current_queue["concurrentMetadata"] = {
+                    "source": "enqueue",
+                    "preserve": True,
+                }
+            self.write_done(fixture, [1])
+            return subprocess.CompletedProcess([], 0, stdout="uploaded")
+
+        saved_registry, saved_queue = self.run_job_with(fixture, run_batch)
+        jobs = {job["id"]: job for job in saved_queue["jobs"]}
+        concurrent_jobs = [job for job in saved_queue["jobs"] if job["id"] != "upload-test"]
+
+        self.assertEqual(jobs["upload-test"]["status"], "done")
+        self.assertEqual(len(concurrent_jobs), 1)
+        self.assertEqual(concurrent_jobs[0]["clipIds"], [2])
+        self.assertEqual(concurrent_jobs[0]["status"], "pending")
+        self.assertEqual(saved_registry["clips"]["2"]["status"], "queued")
+        self.assertEqual(
+            saved_queue["concurrentMetadata"],
+            {"source": "enqueue", "preserve": True},
         )
 
     def test_partial_success_requeues_only_unfinished_clips(self):
@@ -286,6 +423,80 @@ class ClipUploadRegistryTests(unittest.TestCase):
         self.assertEqual(saved_queue["jobs"][0]["status"], "retry_wait")
         self.assertEqual(saved_queue["jobs"][0]["clipStatuses"]["1"], "uploaded")
         self.assertEqual(saved_queue["jobs"][0]["clipStatuses"]["2"], "queued")
+
+    def test_137022_sets_account_cooldown_even_after_many_generic_retries(self):
+        fixture = self.make_fixture(count=1)
+        fixture["queue"]["jobs"][0]["attempts"] = (
+            registry.MAX_AUTOMATIC_JOB_RETRIES + 3
+        )
+        fixture["queue"]["jobs"].append(
+            {"id": "later", "status": "pending", "clipIds": []}
+        )
+
+        def run_batch(group, job):
+            return subprocess.CompletedProcess(
+                [],
+                75,
+                stdout=(
+                    "接口返回错误代码：137022，信息：投稿过于频繁，请稍后再试。\n"
+                    "{'code': 137022, 'message': '投稿过于频繁，请稍后再试'}"
+                ),
+            )
+
+        saved_registry, saved_queue = self.run_job_with(fixture, run_batch)
+        job = saved_queue["jobs"][0]
+        cooldown = saved_queue["submissionRateLimit"]
+        self.assertEqual(saved_registry["clips"]["1"]["status"], "queued")
+        self.assertEqual(job["status"], "retry_wait")
+        self.assertEqual(job["submissionRateLimitAttempts"], 1)
+        self.assertEqual(cooldown["code"], 137022)
+        self.assertEqual(cooldown["streak"], 1)
+        self.assertEqual(cooldown["delaySeconds"], 20 * 60)
+        self.assertEqual(job["retryAt"], cooldown["cooldownUntil"])
+        self.assertIsNone(registry.next_pending_job(saved_queue))
+
+    def test_repeated_137022_doubles_the_account_cooldown(self):
+        fixture = self.make_fixture(count=1)
+        job = fixture["queue"]["jobs"][0]
+
+        registry.schedule_submission_rate_limit_retry(
+            fixture["registry"],
+            fixture["queue"],
+            job,
+            [1],
+            "接口返回错误代码：137022",
+        )
+        registry.schedule_submission_rate_limit_retry(
+            fixture["registry"],
+            fixture["queue"],
+            job,
+            [1],
+            "接口返回错误代码：137022",
+        )
+
+        cooldown = fixture["queue"]["submissionRateLimit"]
+        self.assertEqual(cooldown["streak"], 2)
+        self.assertEqual(cooldown["delaySeconds"], 40 * 60)
+        self.assertEqual(job["submissionRateLimitAttempts"], 2)
+
+    def test_success_clears_expired_account_rate_limit_streak(self):
+        fixture = self.make_fixture(count=1)
+        fixture["queue"]["submissionRateLimit"] = {
+            "code": 137022,
+            "streak": 3,
+            "delaySeconds": 80 * 60,
+            "cooldownUntil": (
+                dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)
+            ).isoformat(),
+        }
+
+        def run_batch(group, job):
+            self.write_done(fixture, [1])
+            return subprocess.CompletedProcess([], 0, stdout="uploaded")
+
+        _, saved_queue = self.run_job_with(fixture, run_batch)
+        self.assertEqual(saved_queue["jobs"][0]["status"], "done")
+        self.assertNotIn("submissionRateLimit", saved_queue)
 
     def test_timeout_with_zero_title_conflicts_is_retryable(self):
         fixture = self.make_fixture()
@@ -324,6 +535,67 @@ class ClipUploadRegistryTests(unittest.TestCase):
             )
         )
         self.assertEqual(saved_queue["jobs"][0]["status"], "done")
+
+    def test_137022_stops_later_upload_groups_immediately(self):
+        fixture = self.make_fixture(count=5)
+        fixture["queue"]["jobs"][0]["batchSize"] = 2
+        calls = []
+
+        def run_batch(group, job):
+            calls.append([clip["id"] for clip in group])
+            return subprocess.CompletedProcess(
+                [], 75, stdout="接口返回错误代码：137022"
+            )
+
+        saved_registry, saved_queue = self.run_job_with(fixture, run_batch)
+        self.assertEqual(calls, [[1, 2]])
+        self.assertTrue(
+            all(
+                clip["status"] == "queued"
+                for clip in saved_registry["clips"].values()
+            )
+        )
+        self.assertEqual(saved_queue["jobs"][0]["status"], "retry_wait")
+
+    def test_rolling_guard_allows_only_remaining_slot_then_notifies(self):
+        fixture = self.make_fixture(count=3)
+        now = dt.datetime.now(dt.timezone.utc)
+        fixture["queue"]["accountRollingUploadGuard"] = {
+            "accountId": "test-account",
+            "limit": registry.ACCOUNT_ROLLING_UPLOAD_LIMIT,
+            "windowSeconds": registry.ACCOUNT_ROLLING_WINDOW_SECONDS,
+            "events": [
+                {
+                    "at": (now - dt.timedelta(hours=1) + dt.timedelta(seconds=index)).isoformat(),
+                    "bvid": f"BV-previous-{index}",
+                }
+                for index in range(registry.ACCOUNT_ROLLING_UPLOAD_LIMIT - 1)
+            ],
+        }
+        calls = []
+
+        def run_batch(group, job):
+            ids = [clip["id"] for clip in group]
+            calls.append(ids)
+            self.write_done(fixture, ids)
+            return subprocess.CompletedProcess([], 0, stdout="uploaded")
+
+        with patch.object(
+            registry, "send_account_upload_limit_notification", return_value=True
+        ) as notify:
+            saved_registry, saved_queue = self.run_job_with(fixture, run_batch)
+
+        job = saved_queue["jobs"][0]
+        guard = saved_queue["accountRollingUploadGuard"]
+        self.assertEqual(calls, [[1]])
+        self.assertEqual(saved_registry["clips"]["1"]["status"], "uploaded")
+        self.assertEqual(saved_registry["clips"]["2"]["status"], "queued")
+        self.assertEqual(saved_registry["clips"]["3"]["status"], "queued")
+        self.assertEqual(guard["recentCount"], 90)
+        self.assertEqual(job["status"], "retry_wait")
+        self.assertEqual(job["retryKind"], "account_rolling_upload_limit")
+        self.assertEqual(job["retryAt"], guard["blockedUntil"])
+        notify.assert_called_once()
 
     def test_terminal_missing_file_does_not_retry_forever(self):
         fixture = self.make_fixture(count=1)
@@ -381,6 +653,27 @@ class ClipUploadRegistryTests(unittest.TestCase):
         saved_queue = registry.load_json(fixture["queue_path"], {})
         self.assertEqual(saved_registry["clips"]["1"]["status"], "queued")
         self.assertEqual(saved_queue["jobs"][0]["status"], "pending")
+
+    def test_worker_recovery_restores_cooldown_from_existing_137022_output(self):
+        fixture = self.make_fixture(count=1)
+        job = fixture["queue"]["jobs"][0]
+        job["status"] = "running"
+        job["lastOutput"] = "接口返回错误代码：137022"
+        fixture["registry"]["clips"]["1"]["status"] = "uploading"
+        fixture["runtime"].mkdir(parents=True, exist_ok=True)
+        registry.save_json(fixture["registry_path"], fixture["registry"])
+        registry.save_json(fixture["queue_path"], fixture["queue"])
+        with patch.object(registry, "RUNTIME_DIR", fixture["runtime"]), patch.object(
+            registry, "REGISTRY_PATH", fixture["registry_path"]
+        ), patch.object(registry, "QUEUE_PATH", fixture["queue_path"]):
+            self.assertTrue(registry.recover_interrupted_jobs())
+
+        saved_queue = registry.load_json(fixture["queue_path"], {})
+        self.assertEqual(saved_queue["jobs"][0]["status"], "pending")
+        self.assertEqual(
+            saved_queue["submissionRateLimit"]["delaySeconds"], 20 * 60
+        )
+        self.assertIsNone(registry.next_pending_job(saved_queue))
 
     def test_recovery_closes_old_failed_job_when_state_is_complete(self):
         fixture = self.make_fixture(count=1)
@@ -466,6 +759,129 @@ class ClipUploadRegistryTests(unittest.TestCase):
         saved_queue = registry.load_json(fixture["queue_path"], {})
         self.assertEqual(saved_registry["clips"]["1"]["status"], "queued")
         self.assertTrue(saved_queue["jobs"][-1]["allowDuplicateTitle"])
+
+    def test_cancelled_job_clips_can_be_enqueued_again(self):
+        fixture = self.make_fixture(count=2)
+        for clip in fixture["registry"]["clips"].values():
+            clip["status"] = "queued"
+        fixture["runtime"].mkdir(parents=True, exist_ok=True)
+        registry.save_json(fixture["registry_path"], fixture["registry"])
+        registry.save_json(fixture["queue_path"], fixture["queue"])
+
+        cancel_args = type(
+            "Args",
+            (),
+            {"job": "upload-test", "note": "defer ids 1-2"},
+        )()
+        enqueue_args = type(
+            "Args",
+            (),
+            {
+                "ids": "1,2",
+                "force": False,
+                "dry_run": False,
+                "delay": 0,
+                "rate_limit_wait": 30,
+                "rate_limit_retries": 1,
+                "note": "resume deferred clips",
+            },
+        )()
+        with patch.object(registry, "RUNTIME_DIR", fixture["runtime"]), patch.object(
+            registry, "REGISTRY_PATH", fixture["registry_path"]
+        ), patch.object(registry, "QUEUE_PATH", fixture["queue_path"]), patch.object(
+            registry, "LOCK_PATH", fixture["runtime"] / "worker.lock"
+        ), patch.object(registry, "acquire_lock", return_value=True), patch.object(
+            registry, "release_lock"
+        ) as release_lock:
+            self.assertEqual(registry.cancel_job(cancel_args), 0)
+            cancelled_registry = registry.load_json(fixture["registry_path"], {})
+            cancelled_queue = registry.load_json(fixture["queue_path"], {})
+            self.assertEqual(cancelled_queue["jobs"][0]["status"], "cancelled")
+            self.assertEqual(
+                cancelled_queue["jobs"][0]["cancellationReason"],
+                "defer ids 1-2",
+            )
+            self.assertTrue(
+                all(
+                    clip["status"] == "review"
+                    for clip in cancelled_registry["clips"].values()
+                )
+            )
+            self.assertEqual(registry.enqueue(enqueue_args), 0)
+            release_lock.assert_called_once()
+
+        resumed_registry = registry.load_json(fixture["registry_path"], {})
+        resumed_queue = registry.load_json(fixture["queue_path"], {})
+        self.assertTrue(
+            all(clip["status"] == "queued" for clip in resumed_registry["clips"].values())
+        )
+        self.assertEqual(resumed_queue["jobs"][-1]["status"], "pending")
+        self.assertEqual(resumed_queue["jobs"][-1]["clipIds"], [1, 2])
+
+    def test_manual_resume_clears_cooldown_and_releases_rate_limited_jobs(self):
+        fixture = self.make_fixture(count=1)
+        rate_limited_job = fixture["queue"]["jobs"][0]
+        rate_limited_job.update(
+            {
+                "status": "retry_wait",
+                "retryAt": "2026-09-03T03:42:35+08:00",
+                "retryKind": "bilibili_submission_rate_limit",
+                "submissionRateLimitAttempts": 5,
+                "error": "Bilibili submission rate limited (code 137022)",
+                "lastOutput": "接口返回错误代码：137022",
+            }
+        )
+        fixture["queue"]["submissionRateLimit"] = {
+            "code": 137022,
+            "streak": 7,
+            "cooldownUntil": "2026-09-03T03:42:35+08:00",
+        }
+        fixture["queue"]["jobs"].append(
+            {
+                "id": "generic-retry",
+                "status": "retry_wait",
+                "retryAt": "2026-09-03T04:00:00+08:00",
+                "retryKind": "network",
+                "clipIds": [],
+            }
+        )
+        fixture["runtime"].mkdir(parents=True, exist_ok=True)
+        registry.save_json(fixture["registry_path"], fixture["registry"])
+        registry.save_json(fixture["queue_path"], fixture["queue"])
+        args = type("Args", (), {"note": "manual upload succeeded"})()
+
+        with patch.object(registry, "RUNTIME_DIR", fixture["runtime"]), patch.object(
+            registry, "REGISTRY_PATH", fixture["registry_path"]
+        ), patch.object(
+            registry, "QUEUE_PATH", fixture["queue_path"]
+        ), patch.object(
+            registry, "LOCK_PATH", fixture["runtime"] / "worker.lock"
+        ), patch.object(registry, "acquire_lock", return_value=True), patch.object(
+            registry, "release_lock"
+        ) as release_lock:
+            self.assertEqual(registry.resume_uploads(args), 0)
+            release_lock.assert_called_once()
+
+        saved_queue = registry.load_json(fixture["queue_path"], {})
+        resumed_job = saved_queue["jobs"][0]
+        self.assertNotIn("submissionRateLimit", saved_queue)
+        self.assertEqual(resumed_job["status"], "pending")
+        self.assertEqual(resumed_job["resumeReason"], "manual upload succeeded")
+        self.assertEqual(resumed_job["previousSubmissionRateLimitAttempts"], 5)
+        self.assertNotIn("retryAt", resumed_job)
+        self.assertNotIn("retryKind", resumed_job)
+        self.assertNotIn("submissionRateLimitAttempts", resumed_job)
+        self.assertNotIn("lastOutput", resumed_job)
+        self.assertIn("137022", resumed_job["previousRateLimitOutput"])
+        self.assertEqual(saved_queue["jobs"][1]["status"], "retry_wait")
+        self.assertEqual(saved_queue["lastManualResume"]["previousCooldown"]["streak"], 7)
+
+        with patch.object(registry, "RUNTIME_DIR", fixture["runtime"]), patch.object(
+            registry, "REGISTRY_PATH", fixture["registry_path"]
+        ), patch.object(registry, "QUEUE_PATH", fixture["queue_path"]):
+            registry.recover_interrupted_jobs()
+        recovered_queue = registry.load_json(fixture["queue_path"], {})
+        self.assertNotIn("submissionRateLimit", recovered_queue)
 
 
 if __name__ == "__main__":

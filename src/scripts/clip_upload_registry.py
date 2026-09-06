@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import datetime as dt
+import errno
 import json
 import os
 import re
@@ -12,8 +14,11 @@ import secrets
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, Iterator, List, Optional
+
+import requests
 
 try:
     from .clip_upload_manifest import load_upload_manifest
@@ -25,6 +30,7 @@ RUNTIME_DIR = PROJECT_ROOT / "data" / "runtime"
 REGISTRY_PATH = RUNTIME_DIR / "clip_upload_registry.json"
 QUEUE_PATH = RUNTIME_DIR / "clip_upload_queue.json"
 LOCK_PATH = RUNTIME_DIR / "clip_upload_worker.lock"
+QUEUE_MUTATION_LOCK_WAIT_SECONDS = 30
 DEFAULT_DELAY = 60
 DEFAULT_RATE_LIMIT_WAIT = 120
 DEFAULT_RATE_LIMIT_RETRIES = 5
@@ -32,6 +38,16 @@ DEFAULT_BATCH_SIZE = 4
 DEFAULT_BATCH_TIMEOUT_SECONDS = 30 * 60
 DEFAULT_RETRY_DELAY_SECONDS = 10 * 60
 MAX_AUTOMATIC_JOB_RETRIES = 8
+BILIBILI_SUBMISSION_RATE_LIMIT_CODE = 137022
+SUBMISSION_RATE_LIMIT_BASE_DELAY_SECONDS = 20 * 60
+SUBMISSION_RATE_LIMIT_MAX_DELAY_SECONDS = 24 * 60 * 60
+ACCOUNT_ROLLING_UPLOAD_LIMIT = 90
+ACCOUNT_ROLLING_WINDOW_SECONDS = 24 * 60 * 60
+ACCOUNT_ROLLING_BOUNDARY_BUFFER_SECONDS = 5
+ACCOUNT_ARCHIVE_REFRESH_SECONDS = 5 * 60
+ACCOUNT_ARCHIVE_MAX_PAGES = 5
+DEFAULT_BILIBILI_ACCOUNT_ID = "412141275"
+CHINA_TIMEZONE = dt.timezone(dt.timedelta(hours=8))
 TERMINAL_UPLOAD_ERROR_MARKERS = (
     "视频文件不存在",
     "文件不存在:",
@@ -68,6 +84,338 @@ def hidden_subprocess_kwargs() -> Dict[str, Any]:
 
 def now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def parse_utc_timestamp(value: Any) -> Optional[dt.datetime]:
+    if not value:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def normalize_utc_now(value: Optional[dt.datetime] = None) -> dt.datetime:
+    current = value or dt.datetime.now(dt.timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=dt.timezone.utc)
+    return current.astimezone(dt.timezone.utc)
+
+
+def load_upload_runtime_config() -> Dict[str, Any]:
+    try:
+        from .config_loader import get_config
+    except ImportError:
+        from config_loader import get_config
+    return get_config()
+
+
+def configured_upload_account() -> tuple[str, str, str]:
+    """Return the active Bilibili account id, cookie, and WeChat webhook."""
+    config = load_upload_runtime_config()
+    bilibili = config.get("bilibili") or {}
+    cookie = str(bilibili.get("cookie") or "").strip()
+    account_id = ""
+    for part in cookie.split(";"):
+        if "=" not in part:
+            continue
+        key, value = part.strip().split("=", 1)
+        if key.strip().lower() == "dedeuserid":
+            account_id = value.strip()
+            break
+    webhook_url = str(
+        (config.get("wechatWork") or {}).get("webhookUrl") or ""
+    ).strip()
+    return account_id or DEFAULT_BILIBILI_ACCOUNT_ID, cookie, webhook_url
+
+
+def fetch_recent_account_submissions(
+    cookie: str,
+    account_id: str,
+    now: Optional[dt.datetime] = None,
+) -> List[Dict[str, Any]]:
+    """Read the account's current rolling-window submissions from Creator Center."""
+    if not cookie:
+        raise RuntimeError("Bilibili cookie is not configured")
+
+    current = normalize_utc_now(now)
+    cutoff = current - dt.timedelta(seconds=ACCOUNT_ROLLING_WINDOW_SECONDS)
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36"
+        ),
+        "Cookie": cookie,
+        "Referer": "https://member.bilibili.com/",
+    }
+    events: List[Dict[str, Any]] = []
+    for page in range(1, ACCOUNT_ARCHIVE_MAX_PAGES + 1):
+        response = requests.get(
+            "https://member.bilibili.com/x/web/archives",
+            params={
+                "mid": account_id,
+                "pn": page,
+                "ps": 50,
+                "typeid": 0,
+                "status": "all",
+            },
+            headers=headers,
+            timeout=15,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("code") != 0:
+            raise RuntimeError(
+                "Creator Center archives returned "
+                f"code={payload.get('code')}: {payload.get('message', '')}"
+            )
+        audits = (payload.get("data") or {}).get("arc_audits") or []
+        if not audits:
+            break
+
+        reached_cutoff = False
+        for audit in audits:
+            archive = audit.get("Archive") or audit.get("archive") or {}
+            raw_timestamp = archive.get("pubdate") or archive.get("ctime")
+            try:
+                submitted_at = dt.datetime.fromtimestamp(
+                    int(raw_timestamp), tz=dt.timezone.utc
+                )
+            except (TypeError, ValueError, OSError, OverflowError):
+                continue
+            if submitted_at <= cutoff:
+                reached_cutoff = True
+                continue
+            events.append(
+                {
+                    "at": submitted_at.isoformat(),
+                    "bvid": str(archive.get("bvid") or ""),
+                    "aid": archive.get("aid"),
+                    "title": str(archive.get("title") or ""),
+                    "source": "bilibili_creator_center",
+                }
+            )
+        if reached_cutoff or len(audits) < 50:
+            break
+    return events
+
+
+def rolling_upload_event_key(event: Dict[str, Any]) -> str:
+    if event.get("bvid"):
+        return f"bvid:{event['bvid']}"
+    if event.get("aid"):
+        return f"aid:{event['aid']}"
+    if event.get("clipId") is not None:
+        return f"clip:{event.get('jobId', '')}:{event['clipId']}"
+    return f"at:{event.get('at', '')}:{event.get('title', '')}"
+
+
+def normalize_rolling_upload_event(event: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(event, dict):
+        return None
+    submitted_at = parse_utc_timestamp(event.get("at"))
+    if submitted_at is None:
+        return None
+    normalized = {
+        key: value
+        for key, value in event.items()
+        if key
+        in (
+            "at",
+            "bvid",
+            "aid",
+            "title",
+            "source",
+            "clipId",
+            "jobId",
+        )
+        and value not in (None, "")
+    }
+    normalized["at"] = submitted_at.isoformat()
+    return normalized
+
+
+def merge_rolling_upload_events(
+    existing: Iterable[Dict[str, Any]],
+    incoming: Iterable[Dict[str, Any]],
+    now: Optional[dt.datetime] = None,
+) -> List[Dict[str, Any]]:
+    """Merge remote and local events, keeping the later timestamp conservatively."""
+    current = normalize_utc_now(now)
+    cutoff = current - dt.timedelta(seconds=ACCOUNT_ROLLING_WINDOW_SECONDS)
+    merged: Dict[str, Dict[str, Any]] = {}
+    for raw_event in [*existing, *incoming]:
+        event = normalize_rolling_upload_event(raw_event)
+        if event is None:
+            continue
+        event_at = parse_utc_timestamp(event.get("at"))
+        if event_at is None or event_at <= cutoff:
+            continue
+        key = rolling_upload_event_key(event)
+        previous = merged.get(key)
+        if previous is None:
+            merged[key] = event
+            continue
+        previous_at = parse_utc_timestamp(previous.get("at")) or event_at
+        combined = dict(previous)
+        combined.update(event)
+        combined["at"] = max(previous_at, event_at).isoformat()
+        if previous.get("source") == "upload_worker":
+            combined["source"] = previous["source"]
+        merged[key] = combined
+    return sorted(
+        merged.values(),
+        key=lambda event: parse_utc_timestamp(event.get("at"))
+        or dt.datetime.max.replace(tzinfo=dt.timezone.utc),
+    )
+
+
+def ensure_account_upload_guard(
+    queue: Dict[str, Any], account_id: str
+) -> Dict[str, Any]:
+    state = queue.get("accountRollingUploadGuard")
+    if not isinstance(state, dict) or str(state.get("accountId")) != str(account_id):
+        state = {
+            "accountId": str(account_id),
+            "limit": ACCOUNT_ROLLING_UPLOAD_LIMIT,
+            "windowSeconds": ACCOUNT_ROLLING_WINDOW_SECONDS,
+            "events": [],
+        }
+        queue["accountRollingUploadGuard"] = state
+    state["limit"] = ACCOUNT_ROLLING_UPLOAD_LIMIT
+    state["windowSeconds"] = ACCOUNT_ROLLING_WINDOW_SECONDS
+    if not isinstance(state.get("events"), list):
+        state["events"] = []
+    return state
+
+
+def registry_submission_events(registry: Dict[str, Any]) -> List[Dict[str, Any]]:
+    events: List[Dict[str, Any]] = []
+    for clip in (registry.get("clips") or {}).values():
+        if not isinstance(clip, dict) or clip.get("status") != "uploaded":
+            continue
+        upload_state = clip.get("uploadState") or {}
+        submitted_at = upload_state.get("submittedAt") or clip.get("uploadedAt")
+        if parse_utc_timestamp(submitted_at) is None:
+            continue
+        events.append(
+            {
+                "at": submitted_at,
+                "bvid": upload_state.get("bvid") or "",
+                "aid": upload_state.get("aid"),
+                "title": upload_state.get("onlineTitle")
+                or upload_state.get("title")
+                or full_title(clip),
+                "source": "upload_worker",
+                "clipId": clip.get("id"),
+            }
+        )
+    return events
+
+
+def recalculate_account_upload_guard(
+    state: Dict[str, Any], now: Optional[dt.datetime] = None
+) -> Dict[str, Any]:
+    current = normalize_utc_now(now)
+    events = merge_rolling_upload_events(state.get("events") or [], [], current)
+    state["events"] = events
+    state["recentCount"] = len(events)
+    if len(events) < ACCOUNT_ROLLING_UPLOAD_LIMIT:
+        state.pop("blockedUntil", None)
+        return state
+
+    # Enough oldest events must expire to leave at most 89 before the next submit.
+    release_index = len(events) - ACCOUNT_ROLLING_UPLOAD_LIMIT
+    release_event_at = parse_utc_timestamp(events[release_index].get("at"))
+    if release_event_at is None:
+        state.pop("blockedUntil", None)
+        return state
+    blocked_until = release_event_at + dt.timedelta(
+        seconds=(
+            ACCOUNT_ROLLING_WINDOW_SECONDS
+            + ACCOUNT_ROLLING_BOUNDARY_BUFFER_SECONDS
+        )
+    )
+    state["blockedUntil"] = blocked_until.isoformat()
+    return state
+
+
+def refresh_account_upload_guard(
+    queue: Dict[str, Any],
+    registry: Dict[str, Any],
+    now: Optional[dt.datetime] = None,
+    force_remote: bool = False,
+) -> tuple[Dict[str, Any], bool]:
+    current = normalize_utc_now(now)
+    account_id, cookie, _ = configured_upload_account()
+    before = json.dumps(
+        queue.get("accountRollingUploadGuard"),
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    state = ensure_account_upload_guard(queue, account_id)
+    state["events"] = merge_rolling_upload_events(
+        state.get("events") or [], registry_submission_events(registry), current
+    )
+
+    last_sync = parse_utc_timestamp(state.get("lastRemoteSyncAt"))
+    remote_due = (
+        force_remote
+        or last_sync is None
+        or (current - last_sync).total_seconds() >= ACCOUNT_ARCHIVE_REFRESH_SECONDS
+    )
+    if remote_due:
+        state["lastRemoteSyncAttemptAt"] = current.isoformat()
+        try:
+            remote_events = fetch_recent_account_submissions(
+                cookie, account_id, current
+            )
+            state["events"] = merge_rolling_upload_events(
+                state.get("events") or [], remote_events, current
+            )
+            state["lastRemoteSyncAt"] = current.isoformat()
+            state["remoteSnapshotCount"] = len(remote_events)
+            state.pop("lastRemoteSyncError", None)
+        except Exception as error:
+            state["lastRemoteSyncError"] = str(error)[:500]
+            print(
+                f"[worker] unable to refresh rolling upload history: {error}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    recalculate_account_upload_guard(state, current)
+    after = json.dumps(state, ensure_ascii=False, sort_keys=True)
+    return state, before != after
+
+
+def account_upload_limit_active(
+    queue: Dict[str, Any], now: Optional[dt.datetime] = None
+) -> bool:
+    state = queue.get("accountRollingUploadGuard")
+    if not isinstance(state, dict):
+        return False
+    blocked_until = parse_utc_timestamp(state.get("blockedUntil"))
+    if blocked_until is None:
+        return False
+    return blocked_until > normalize_utc_now(now)
+
+
+def account_upload_available_slots(state: Dict[str, Any]) -> int:
+    try:
+        recent_count = int(state.get("recentCount") or 0)
+    except (TypeError, ValueError):
+        recent_count = 0
+    return max(0, ACCOUNT_ROLLING_UPLOAD_LIMIT - recent_count)
+
+
+def format_china_timestamp(value: dt.datetime) -> str:
+    return normalize_utc_now(value).astimezone(CHINA_TIMEZONE).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
 
 
 def ensure_runtime_dir() -> None:
@@ -108,6 +456,146 @@ def save_json(path: Path, data: Dict[str, Any]) -> None:
                     pass
                 return
             time.sleep(0.2)
+
+
+class QueueLockTimeout(RuntimeError):
+    """Raised when another process holds the queue mutation lock too long."""
+
+
+def queue_mutation_lock_path() -> Path:
+    return QUEUE_PATH.with_name(f"{QUEUE_PATH.name}.lock")
+
+
+def _lock_file(handle: Any) -> None:
+    handle.seek(0)
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        return
+
+    import fcntl
+
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _unlock_file(handle: Any) -> None:
+    handle.seek(0)
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+
+    import fcntl
+
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _is_lock_contention(error: OSError) -> bool:
+    return error.errno in (errno.EACCES, errno.EAGAIN, errno.EDEADLK) or getattr(
+        error, "winerror", None
+    ) in (33, 36)
+
+
+def acquire_queue_mutation_lock(
+    wait_seconds: float = QUEUE_MUTATION_LOCK_WAIT_SECONDS,
+) -> Any:
+    """Acquire the short-lived cross-process lock used by every queue writer."""
+    lock_path = queue_mutation_lock_path()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+b")
+    if handle.seek(0, os.SEEK_END) == 0:
+        handle.write(b"\0")
+        handle.flush()
+
+    deadline = time.monotonic() + max(float(wait_seconds), 0.0)
+    while True:
+        try:
+            _lock_file(handle)
+            return handle
+        except OSError as error:
+            if not _is_lock_contention(error):
+                handle.close()
+                raise
+            if time.monotonic() >= deadline:
+                handle.close()
+                raise QueueLockTimeout(
+                    f"timed out waiting for upload queue lock: {lock_path}"
+                ) from error
+            time.sleep(0.05)
+
+
+def release_queue_mutation_lock(handle: Any) -> None:
+    try:
+        _unlock_file(handle)
+    finally:
+        handle.close()
+
+
+@contextmanager
+def queue_transaction() -> Iterator[Dict[str, Any]]:
+    """Reload and atomically save the queue while holding its mutation lock."""
+    handle = acquire_queue_mutation_lock()
+    try:
+        queue = load_json(QUEUE_PATH, default_queue())
+        yield queue
+        save_json(QUEUE_PATH, queue)
+    finally:
+        release_queue_mutation_lock(handle)
+
+
+def find_queue_job(queue: Dict[str, Any], job_id: Any) -> Optional[Dict[str, Any]]:
+    expected = str(job_id or "")
+    return next(
+        (
+            job
+            for job in queue.get("jobs", [])
+            if str(job.get("id") or "") == expected
+        ),
+        None,
+    )
+
+
+def commit_queue_snapshot(
+    snapshot: Dict[str, Any],
+    *,
+    job_ids: Iterable[Any] = (),
+    queue_fields: Iterable[str] = (),
+) -> Dict[str, Any]:
+    """Apply only this worker's changes onto the newest on-disk queue.
+
+    Upload subprocesses can run for minutes. During that time, enqueue may
+    append jobs to the same file. Replacing the file with the worker's old
+    in-memory snapshot would silently discard those jobs, so worker writes
+    merge only the job and queue-level fields they intentionally changed.
+    """
+    source_jobs = {
+        str(job.get("id") or ""): job
+        for job in snapshot.get("jobs", [])
+        if job.get("id") is not None
+    }
+    with queue_transaction() as latest:
+        latest_jobs = latest.setdefault("jobs", [])
+        for raw_job_id in job_ids:
+            job_id = str(raw_job_id or "")
+            source_job = source_jobs.get(job_id)
+            if source_job is None:
+                continue
+            replacement = copy.deepcopy(source_job)
+            for index, existing in enumerate(latest_jobs):
+                if str(existing.get("id") or "") == job_id:
+                    latest_jobs[index] = replacement
+                    break
+            else:
+                latest_jobs.append(replacement)
+
+        for field in queue_fields:
+            if field in snapshot:
+                latest[field] = copy.deepcopy(snapshot[field])
+            else:
+                latest.pop(field, None)
+    return latest
 
 
 def default_registry() -> Dict[str, Any]:
@@ -510,8 +998,15 @@ def sync_clip_statuses(registry: Dict[str, Any], ids: Iterable[int]) -> None:
         if not status:
             clear_mismatched_upload_state(clip)
             continue
-        clip["status"] = status.pop("status")
+        resolved_status = status.pop("status")
+        clip["status"] = resolved_status
         clip["uploadState"] = status
+        if resolved_status == "uploaded" and parse_utc_timestamp(
+            status.get("submittedAt")
+        ):
+            clip["uploadedAt"] = parse_utc_timestamp(
+                status["submittedAt"]
+            ).isoformat()
         clip.pop("failureReason", None)
         clip["updatedAt"] = now_iso()
 
@@ -583,42 +1078,239 @@ def enqueue(args: argparse.Namespace) -> int:
             print(f"{clip_id}: #{clip.get('reviewIndex')} {clip.get('prefix', '')}{clip.get('title', '')}")
         return 0
 
-    queue = load_json(QUEUE_PATH, default_queue())
-    job = {
-        "id": f"upload-{int(time.time())}",
-        "createdAt": now_iso(),
-        "updatedAt": now_iso(),
-        "status": "pending",
-        "clipIds": ids,
-        "delay": int(args.delay),
-        "rateLimitWait": int(args.rate_limit_wait),
-        "rateLimitRetries": int(args.rate_limit_retries),
-        "batchSize": batch_size,
-        "timeoutSeconds": timeout_seconds,
-        "note": args.note or "",
-        # ``--force`` is an explicit authorization to re-submit this job,
-        # including when Bilibili already has the same title.
-        "allowDuplicateTitle": bool(args.force),
-    }
-    queue.setdefault("jobs", []).append(job)
-    for clip_id in ids:
-        clip = registry["clips"][str(clip_id)]
-        if clip.get("status") != "uploaded" or args.force:
-            clip["status"] = "queued"
-            clip.pop("failureReason", None)
-            clip["updatedAt"] = now_iso()
-    save_json(QUEUE_PATH, queue)
-    save_json(REGISTRY_PATH, registry)
+    with queue_transaction() as queue:
+        # Re-read the registry under the same short lock used by every queue
+        # writer. This also serializes two enqueue commands updating statuses.
+        registry = load_json(REGISTRY_PATH, default_registry())
+        missing = [
+            clip_id
+            for clip_id in ids
+            if str(clip_id) not in registry.get("clips", {})
+        ]
+        if missing:
+            print(f"[ERROR] unknown clip ids: {missing}", file=sys.stderr)
+            return 2
+        sync_clip_statuses(registry, ids)
+        already_uploaded = [
+            clip_id
+            for clip_id in ids
+            if registry["clips"][str(clip_id)].get("status") == "uploaded"
+        ]
+        if already_uploaded and not args.force:
+            print(
+                "[ERROR] already uploaded ids (use --force to enqueue anyway): "
+                f"{already_uploaded}",
+                file=sys.stderr,
+            )
+            return 2
+
+        base_job_id = f"upload-{int(time.time())}"
+        existing_job_ids = {
+            str(existing.get("id") or "") for existing in queue.get("jobs", [])
+        }
+        job_id = base_job_id
+        suffix = 2
+        while job_id in existing_job_ids:
+            job_id = f"{base_job_id}-{suffix}"
+            suffix += 1
+        job = {
+            "id": job_id,
+            "createdAt": now_iso(),
+            "updatedAt": now_iso(),
+            "status": "pending",
+            "clipIds": ids,
+            "delay": int(args.delay),
+            "rateLimitWait": int(args.rate_limit_wait),
+            "rateLimitRetries": int(args.rate_limit_retries),
+            "batchSize": batch_size,
+            "timeoutSeconds": timeout_seconds,
+            "note": args.note or "",
+            # ``--force`` explicitly authorizes re-submission, including when
+            # Bilibili already has the same title.
+            "allowDuplicateTitle": bool(args.force),
+        }
+        queue.setdefault("jobs", []).append(job)
+        for clip_id in ids:
+            clip = registry["clips"][str(clip_id)]
+            if clip.get("status") != "uploaded" or args.force:
+                clip["status"] = "queued"
+                clip.pop("failureReason", None)
+                clip["updatedAt"] = now_iso()
+        save_json(REGISTRY_PATH, registry)
     print(f"[OK] queued {len(ids)} clips as {job['id']}: {','.join(str(i) for i in ids)}")
     return 0
 
 
+def cancel_job(args: argparse.Namespace) -> int:
+    """Cancel a waiting upload job and make its unfinished clips enqueueable again."""
+    if not acquire_lock():
+        print(
+            "[ERROR] upload worker is running; stop it before cancelling a job",
+            file=sys.stderr,
+        )
+        return 3
+
+    try:
+        queue = load_json(QUEUE_PATH, default_queue())
+        job = next(
+            (item for item in queue.get("jobs", []) if item.get("id") == args.job),
+            None,
+        )
+        if job is None:
+            print(f"[ERROR] unknown upload job: {args.job}", file=sys.stderr)
+            return 2
+        if job.get("status") == "cancelled":
+            print(f"[OK] upload job already cancelled: {args.job}")
+            return 0
+        if job.get("status") not in ("pending", "retry_wait"):
+            print(
+                f"[ERROR] job {args.job} cannot be cancelled from status "
+                f"{job.get('status')}",
+                file=sys.stderr,
+            )
+            return 2
+
+        ids = [int(clip_id) for clip_id in job.get("clipIds", [])]
+        registry = load_json(REGISTRY_PATH, default_registry())
+        missing = [
+            clip_id
+            for clip_id in ids
+            if str(clip_id) not in registry.get("clips", {})
+        ]
+        if missing:
+            print(f"[ERROR] missing registry ids: {missing}", file=sys.stderr)
+            return 2
+
+        sync_clip_statuses(registry, ids)
+        other_active_ids = {
+            int(clip_id)
+            for other in queue.get("jobs", [])
+            if other is not job
+            and other.get("status") in ("pending", "retry_wait", "running")
+            for clip_id in other.get("clipIds", [])
+        }
+        for clip_id in ids:
+            clip = registry["clips"][str(clip_id)]
+            if clip.get("status") == "uploaded" or clip_id in other_active_ids:
+                continue
+            clip["status"] = "review"
+            clip.pop("failureReason", None)
+            clip["updatedAt"] = now_iso()
+
+        clear_job_retry_metadata(job)
+        cancellation_note = str(args.note or "").strip()
+        if cancellation_note:
+            previous_note = str(job.get("note") or "").strip()
+            job["note"] = "; ".join(
+                note for note in (previous_note, cancellation_note) if note
+            )
+        cancelled_at = now_iso()
+        mark_job(
+            job,
+            "cancelled",
+            cancelledAt=cancelled_at,
+            cancellationReason=cancellation_note,
+            clipStatuses=clip_status_map(registry, ids),
+        )
+        save_json(REGISTRY_PATH, registry)
+        commit_queue_snapshot(queue, job_ids=(job.get("id"),))
+        print(
+            f"[OK] cancelled {args.job}; reusable clip ids: "
+            f"{','.join(str(clip_id) for clip_id in ids)}"
+        )
+        return 0
+    finally:
+        release_lock()
+
+
+def resume_uploads(args: argparse.Namespace) -> int:
+    """Clear a confirmed-stale 137022 cooldown and resume its waiting jobs."""
+    if not acquire_lock():
+        print(
+            "[ERROR] upload worker is running; stop it before resuming uploads",
+            file=sys.stderr,
+        )
+        return 3
+
+    try:
+        queue = load_json(QUEUE_PATH, default_queue())
+        previous_cooldown = queue.get("submissionRateLimit")
+        resumed_at = now_iso()
+        resumed_jobs: List[str] = []
+        for job in queue.get("jobs", []):
+            is_rate_limit_wait = (
+                job.get("status") == "retry_wait"
+                and job.get("retryKind") == "bilibili_submission_rate_limit"
+            )
+            is_stale_resumed_pending = (
+                job.get("status") == "pending"
+                and is_bilibili_submission_rate_limit(job.get("lastOutput", ""))
+            )
+            if not (is_rate_limit_wait or is_stale_resumed_pending):
+                continue
+            previous_attempts = job.get("submissionRateLimitAttempts")
+            previous_output = str(job.pop("lastOutput", "") or "")
+            clear_job_retry_metadata(job)
+            extra: Dict[str, Any] = {
+                "resumedAt": resumed_at,
+                "resumeReason": str(args.note or "").strip(),
+            }
+            if previous_attempts is not None:
+                extra["previousSubmissionRateLimitAttempts"] = previous_attempts
+            if previous_output:
+                extra["previousRateLimitOutput"] = previous_output[-2000:]
+            mark_job(job, "pending", **extra)
+            resumed_jobs.append(str(job.get("id")))
+
+        clear_submission_rate_limit(queue)
+        queue["lastManualResume"] = {
+            "at": resumed_at,
+            "reason": str(args.note or "").strip(),
+            "previousCooldown": previous_cooldown,
+            "jobs": resumed_jobs,
+        }
+        commit_queue_snapshot(
+            queue,
+            job_ids=resumed_jobs,
+            queue_fields=("submissionRateLimit", "lastManualResume"),
+        )
+        print(
+            f"[OK] cleared Bilibili submission cooldown; resumed "
+            f"{len(resumed_jobs)} jobs: {','.join(resumed_jobs) or '-'}"
+        )
+        return 0
+    finally:
+        release_lock()
+
+
 def queue_status(args: argparse.Namespace) -> int:
     queue = load_json(QUEUE_PATH, default_queue())
+    account_guard = queue.get("accountRollingUploadGuard")
+    if isinstance(account_guard, dict):
+        print(
+            "[queue] account rolling upload guard "
+            f"account={account_guard.get('accountId')} "
+            f"count={account_guard.get('recentCount', 0)}/"
+            f"{account_guard.get('limit', ACCOUNT_ROLLING_UPLOAD_LIMIT)} "
+            f"window={account_guard.get('windowSeconds', ACCOUNT_ROLLING_WINDOW_SECONDS)}s "
+            f"until={account_guard.get('blockedUntil', '-') }"
+        )
+    rate_limit = queue.get("submissionRateLimit")
+    if isinstance(rate_limit, dict):
+        print(
+            "[queue] bilibili submission cooldown "
+            f"code={rate_limit.get('code')} streak={rate_limit.get('streak')} "
+            f"delay={rate_limit.get('delaySeconds')}s "
+            f"until={rate_limit.get('cooldownUntil')}"
+        )
     for job in queue.get("jobs", []):
         details = []
         if job.get("attempts") is not None:
             details.append(f"attempts={job.get('attempts')}")
+        if job.get("submissionRateLimitAttempts") is not None:
+            details.append(
+                f"submitRateLimitAttempts={job.get('submissionRateLimitAttempts')}"
+            )
         if job.get("batchSize") is not None:
             details.append(f"batchSize={job.get('batchSize')}")
         if job.get("timeoutSeconds") is not None:
@@ -690,6 +1382,7 @@ def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.Co
 
     outputs: List[str] = []
     returncode = 0
+    submission_rate_limited = False
     timeout_seconds = timeout_seconds_for_job(job)
 
     # --- JSON-backed clips: use the structured manifest ---
@@ -739,8 +1432,10 @@ def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.Co
                 timeout=timeout_seconds,
                 **hidden_subprocess_kwargs(),
             )
-            outputs.append(cp.stdout or "")
+            output = cp.stdout or ""
+            outputs.append(output)
             returncode = cp.returncode
+            submission_rate_limited = is_bilibili_submission_rate_limit(output)
         except subprocess.TimeoutExpired as exc:
             output = exc.stdout or ""
             if isinstance(output, bytes):
@@ -750,7 +1445,7 @@ def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.Co
             returncode = 124
 
     # --- Historical REVIEW.md-backed clips: compatibility path ---
-    if review_clips and returncode == 0:
+    if review_clips and returncode == 0 and not submission_rate_limited:
         only = ",".join(str(int(clip["reviewIndex"])) for clip in review_clips)
         cmd = [
             sys.executable,
@@ -792,8 +1487,10 @@ def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.Co
                 timeout=timeout_seconds,
                 **hidden_subprocess_kwargs(),
             )
-            outputs.append(cp.stdout or "")
+            output = cp.stdout or ""
+            outputs.append(output)
             returncode = cp.returncode
+            submission_rate_limited = is_bilibili_submission_rate_limit(output)
         except subprocess.TimeoutExpired as exc:
             output = exc.stdout or ""
             if isinstance(output, bytes):
@@ -803,7 +1500,7 @@ def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.Co
             returncode = 124
 
     # --- Manual clips: use bilibili_upload.py one by one ---
-    if manual_clips and returncode == 0:
+    if manual_clips and returncode == 0 and not submission_rate_limited:
         state_path = Path(first["statePath"])
         for clip in manual_clips:
             clip_id = clip["id"]
@@ -839,6 +1536,9 @@ def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.Co
                 )
                 out2 = cp2.stdout or ""
                 outputs.append(out2)
+                if is_bilibili_submission_rate_limit(out2):
+                    submission_rate_limited = True
+                    break
                 if cp2.returncode != 0:
                     returncode = cp2.returncode
                     break
@@ -875,6 +1575,7 @@ def _write_manual_state(state_path: Path, clip_id: Any, clip: Dict[str, Any], ou
         "title": title,
         "submittedTitle": title,
         "onlineTitle": title,
+        "submittedAt": now_iso(),
         "bvid": bvid,
         "aid": int(aid) if aid.isdigit() else 0,
         "cid": 0,
@@ -896,17 +1597,83 @@ def _write_manual_state(state_path: Path, clip_id: Any, clip: Dict[str, Any], ou
     state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def next_pending_job(queue: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def is_bilibili_submission_rate_limit(output: str) -> bool:
+    """Detect the creator submit endpoint's account-level rate-limit code."""
+    return bool(
+        re.search(
+            rf"(?<!\d){BILIBILI_SUBMISSION_RATE_LIMIT_CODE}(?!\d)",
+            str(output or ""),
+        )
+    )
+
+
+def submission_rate_limit_delay_seconds(streak: int) -> int:
+    return min(
+        SUBMISSION_RATE_LIMIT_BASE_DELAY_SECONDS * (2 ** max(int(streak) - 1, 0)),
+        SUBMISSION_RATE_LIMIT_MAX_DELAY_SECONDS,
+    )
+
+
+def set_submission_rate_limit_cooldown(
+    queue: Dict[str, Any],
+    job_id: Any,
+    streak: int,
+    now: Optional[dt.datetime] = None,
+) -> tuple[dt.datetime, int]:
+    current = now or dt.datetime.now(dt.timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=dt.timezone.utc)
+    current = current.astimezone(dt.timezone.utc)
+    delay_seconds = submission_rate_limit_delay_seconds(streak)
+    cooldown_until = current + dt.timedelta(seconds=delay_seconds)
+    queue["submissionRateLimit"] = {
+        "code": BILIBILI_SUBMISSION_RATE_LIMIT_CODE,
+        "streak": int(streak),
+        "delaySeconds": delay_seconds,
+        "cooldownUntil": cooldown_until.isoformat(),
+        "updatedAt": current.isoformat(),
+        "jobId": job_id,
+    }
+    return cooldown_until, delay_seconds
+
+
+def submission_rate_limit_cooldown_active(
+    queue: Dict[str, Any], now: Optional[dt.datetime] = None
+) -> bool:
+    state = queue.get("submissionRateLimit")
+    if not isinstance(state, dict):
+        return False
+    cooldown_until = parse_utc_timestamp(state.get("cooldownUntil"))
+    if cooldown_until is None:
+        return False
+    current = now or dt.datetime.now(dt.timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=dt.timezone.utc)
+    return cooldown_until > current.astimezone(dt.timezone.utc)
+
+
+def clear_submission_rate_limit(queue: Dict[str, Any]) -> None:
+    queue.pop("submissionRateLimit", None)
+
+
+def next_pending_job(
+    queue: Dict[str, Any],
+    *,
+    ignore_account_upload_limit: bool = False,
+) -> Optional[Dict[str, Any]]:
     now = dt.datetime.now(dt.timezone.utc)
+    if submission_rate_limit_cooldown_active(queue, now):
+        return None
+    if not ignore_account_upload_limit and account_upload_limit_active(queue, now):
+        return None
     for job in queue.get("jobs", []):
         if job.get("status") == "pending":
             return job
         if job.get("status") == "retry_wait":
-            retry_at = job.get("retryAt")
-            try:
-                if retry_at and dt.datetime.fromisoformat(str(retry_at)) <= now:
-                    return job
-            except ValueError:
+            retry_at = parse_utc_timestamp(job.get("retryAt"))
+            if retry_at is not None and retry_at <= now:
+                return job
+            if job.get("retryAt") and retry_at is None:
                 # A malformed timestamp must not leave an otherwise retryable
                 # upload blocked forever.
                 return job
@@ -1019,8 +1786,253 @@ def schedule_retry_or_block(
     return "retry_wait"
 
 
+def schedule_submission_rate_limit_retry(
+    registry: Dict[str, Any],
+    queue: Dict[str, Any],
+    job: Dict[str, Any],
+    ids: Iterable[int],
+    output: str,
+) -> str:
+    """Apply an account-wide cooldown for Bilibili submit error 137022."""
+    previous = queue.get("submissionRateLimit")
+    previous_streak = 0
+    if isinstance(previous, dict):
+        try:
+            previous_streak = int(previous.get("streak") or 0)
+        except (TypeError, ValueError):
+            previous_streak = 0
+    streak = previous_streak + 1
+    retry_at, delay_seconds = set_submission_rate_limit_cooldown(
+        queue,
+        job.get("id"),
+        streak,
+    )
+    ids_list = [int(clip_id) for clip_id in ids]
+    attempt = int(job.get("attempts") or 0) + 1
+    submit_attempt = int(job.get("submissionRateLimitAttempts") or 0) + 1
+    reason = (
+        f"Bilibili submission rate limited (code {BILIBILI_SUBMISSION_RATE_LIMIT_CODE}); "
+        f"retry in {delay_seconds // 60} minutes"
+    )
+
+    set_unfinished_clip_statuses(registry, ids_list, "queued")
+    mark_job(
+        job,
+        "retry_wait",
+        attempts=attempt,
+        submissionRateLimitAttempts=submit_attempt,
+        retryAt=retry_at.isoformat(),
+        retryKind="bilibili_submission_rate_limit",
+        clipStatuses=clip_status_map(registry, ids_list),
+        lastOutput=str(output or "")[-12000:],
+        error=reason,
+    )
+    return "retry_wait"
+
+
+def clip_upload_snapshot(
+    registry: Dict[str, Any], ids: Iterable[int]
+) -> Dict[int, Dict[str, Any]]:
+    snapshot: Dict[int, Dict[str, Any]] = {}
+    for clip_id in ids:
+        clip = registry.get("clips", {}).get(str(clip_id)) or {}
+        upload_state = clip.get("uploadState") or {}
+        snapshot[int(clip_id)] = {
+            "status": clip.get("status"),
+            "bvid": upload_state.get("bvid") or "",
+            "submittedAt": upload_state.get("submittedAt")
+            or clip.get("uploadedAt")
+            or "",
+        }
+    return snapshot
+
+
+def record_successful_upload_events(
+    queue: Dict[str, Any],
+    registry: Dict[str, Any],
+    ids: Iterable[int],
+    job_id: Any,
+    before: Dict[int, Dict[str, Any]],
+    now: Optional[dt.datetime] = None,
+) -> List[int]:
+    """Persist newly observed successes immediately after each uploader batch."""
+    current = normalize_utc_now(now)
+    account_id, _, _ = configured_upload_account()
+    state = ensure_account_upload_guard(queue, account_id)
+    incoming: List[Dict[str, Any]] = []
+    recorded_ids: List[int] = []
+    for raw_clip_id in ids:
+        clip_id = int(raw_clip_id)
+        clip = registry.get("clips", {}).get(str(clip_id)) or {}
+        if clip.get("status") != "uploaded":
+            continue
+        upload_state = clip.get("uploadState") or {}
+        previous = before.get(clip_id) or {}
+        bvid = str(upload_state.get("bvid") or "")
+        submitted_at = upload_state.get("submittedAt") or clip.get("uploadedAt")
+        changed = (
+            previous.get("status") != "uploaded"
+            or (bvid and bvid != previous.get("bvid"))
+            or (
+                submitted_at
+                and str(submitted_at) != str(previous.get("submittedAt") or "")
+            )
+        )
+        if not changed:
+            continue
+        parsed_submitted_at = parse_utc_timestamp(submitted_at) or current
+        clip["uploadedAt"] = parsed_submitted_at.isoformat()
+        incoming.append(
+            {
+                "at": parsed_submitted_at.isoformat(),
+                "bvid": bvid,
+                "aid": upload_state.get("aid"),
+                "title": upload_state.get("onlineTitle")
+                or upload_state.get("title")
+                or full_title(clip),
+                "source": "upload_worker",
+                "clipId": clip_id,
+                "jobId": str(job_id or ""),
+            }
+        )
+        recorded_ids.append(clip_id)
+    if incoming:
+        state["events"] = merge_rolling_upload_events(
+            state.get("events") or [], incoming, current
+        )
+    recalculate_account_upload_guard(state, current)
+    return recorded_ids
+
+
+def send_account_upload_limit_notification(
+    state: Dict[str, Any],
+    job: Dict[str, Any],
+    next_clip_id: Optional[int],
+    retry_at: dt.datetime,
+) -> bool:
+    """Notify WeChat Work when the local rolling-window guard pauses uploads."""
+    _, _, webhook_url = configured_upload_account()
+    if not webhook_url:
+        print(
+            "[worker] WeChat Work webhook is not configured; upload-limit alert skipped",
+            file=sys.stderr,
+            flush=True,
+        )
+        return False
+
+    next_clip_text = str(next_clip_id) if next_clip_id is not None else "-"
+    content = "\n".join(
+        (
+            "## B站投稿频控保护",
+            (
+                f"> 账号 `{state.get('accountId', '-')}` 在滚动24小时内已有 "
+                f"**{state.get('recentCount', 0)}** 条投稿，达到保护上限 "
+                f"**{ACCOUNT_ROLLING_UPLOAD_LIMIT}** 条，队列已暂停。"
+            ),
+            (
+                "> 下一个视频预计于 "
+                f'<font color="info">{format_china_timestamp(retry_at)}</font> '
+                "开始传输（北京时间）。"
+            ),
+            f"> 待传短ID：`{next_clip_text}`；队列作业：`{job.get('id', '-')}`",
+        )
+    )
+    response = requests.post(
+        webhook_url,
+        json={"msgtype": "markdown", "markdown": {"content": content}},
+        timeout=10,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if payload.get("errcode") != 0:
+        raise RuntimeError(
+            f"WeChat Work returned {payload.get('errcode')}: "
+            f"{payload.get('errmsg', '')}"
+        )
+    return True
+
+
+def schedule_account_upload_limit_retry(
+    registry: Dict[str, Any],
+    queue: Dict[str, Any],
+    job: Dict[str, Any],
+    ids: Iterable[int],
+    state: Dict[str, Any],
+    now: Optional[dt.datetime] = None,
+) -> str:
+    current = normalize_utc_now(now)
+    recalculate_account_upload_guard(state, current)
+    retry_at = parse_utc_timestamp(state.get("blockedUntil"))
+    if retry_at is None:
+        retry_at = current + dt.timedelta(seconds=ACCOUNT_ARCHIVE_REFRESH_SECONDS)
+        state["blockedUntil"] = retry_at.isoformat()
+
+    ids_list = [int(clip_id) for clip_id in ids]
+    pending_ids = [
+        clip_id
+        for clip_id in ids_list
+        if (registry.get("clips", {}).get(str(clip_id)) or {}).get("status")
+        != "uploaded"
+    ]
+    next_clip_id = pending_ids[0] if pending_ids else None
+    set_unfinished_clip_statuses(registry, pending_ids, "queued")
+    clear_job_retry_metadata(job)
+    reason = (
+        f"account rolling upload limit reached "
+        f"({state.get('recentCount', 0)}/{ACCOUNT_ROLLING_UPLOAD_LIMIT} in 24h); "
+        f"next upload at {format_china_timestamp(retry_at)} Asia/Shanghai"
+    )
+    mark_job(
+        job,
+        "retry_wait",
+        retryAt=retry_at.isoformat(),
+        retryKind="account_rolling_upload_limit",
+        accountUploadLimitWaits=int(job.get("accountUploadLimitWaits") or 0) + 1,
+        clipStatuses=clip_status_map(registry, ids_list),
+        error=reason,
+    )
+    state["blockedJobId"] = str(job.get("id") or "")
+    state["nextClipId"] = next_clip_id
+
+    notification_key = (
+        f"{state.get('accountId', '')}:{retry_at.isoformat()}:"
+        f"{job.get('id', '')}:{next_clip_id}"
+    )
+    if state.get("lastNotificationKey") != notification_key:
+        state["lastNotificationAttemptAt"] = current.isoformat()
+        try:
+            sent = send_account_upload_limit_notification(
+                state, job, next_clip_id, retry_at
+            )
+            state["lastNotificationStatus"] = "sent" if sent else "not_configured"
+            if sent:
+                state["lastNotificationAt"] = now_iso()
+        except Exception as error:
+            state["lastNotificationStatus"] = "failed"
+            state["lastNotificationError"] = str(error)[:500]
+            print(
+                f"[worker] failed to send rolling upload-limit alert: {error}",
+                file=sys.stderr,
+                flush=True,
+            )
+        state["lastNotificationKey"] = notification_key
+
+    print(
+        "[worker] rolling 24h upload limit reached: "
+        f"{state.get('recentCount', 0)}/{ACCOUNT_ROLLING_UPLOAD_LIMIT}; "
+        f"next upload at {format_china_timestamp(retry_at)} Asia/Shanghai",
+        flush=True,
+    )
+    return "retry_wait"
+
+
 def clear_job_retry_metadata(job: Dict[str, Any]) -> None:
-    for key in ("retryAt", "error"):
+    for key in (
+        "retryAt",
+        "error",
+        "retryKind",
+        "submissionRateLimitAttempts",
+    ):
         job.pop(key, None)
 
 
@@ -1174,10 +2186,15 @@ def recover_interrupted_jobs() -> bool:
     registry = load_json(REGISTRY_PATH, default_registry())
     queue = load_json(QUEUE_PATH, default_queue())
     changed = normalize_registry_media_paths(registry)
+    interrupted_rate_limit_job_ids = set()
     for job in queue.get("jobs", []):
         job_status = job.get("status")
         if job_status not in ("running", "failed", "blocked"):
             continue
+        if job_status == "running" and is_bilibili_submission_rate_limit(
+            job.get("lastOutput", "")
+        ):
+            interrupted_rate_limit_job_ids.add(str(job.get("id")))
         ids = [int(i) for i in job.get("clipIds", [])]
         known_ids = [clip_id for clip_id in ids if str(clip_id) in registry.get("clips", {})]
         if not known_ids:
@@ -1216,9 +2233,40 @@ def recover_interrupted_jobs() -> bool:
                 clipStatuses=clip_status_map(registry, known_ids),
             )
         changed = True
+
+    if not isinstance(queue.get("submissionRateLimit"), dict):
+        for job in reversed(queue.get("jobs", [])):
+            recoverable_retry = (
+                job.get("status") == "retry_wait"
+                and job.get("retryKind") == "bilibili_submission_rate_limit"
+            )
+            recoverable_interruption = str(job.get("id")) in (
+                interrupted_rate_limit_job_ids
+            )
+            if not (recoverable_retry or recoverable_interruption):
+                continue
+            if not is_bilibili_submission_rate_limit(job.get("lastOutput", "")):
+                continue
+            _, delay_seconds = set_submission_rate_limit_cooldown(
+                queue,
+                job.get("id"),
+                1,
+            )
+            job["rateLimitRecoveredAt"] = now_iso()
+            changed = True
+            print(
+                "[worker] recovered Bilibili submission cooldown from queued output: "
+                f"{delay_seconds // 60} minutes",
+                flush=True,
+            )
+            break
     if changed:
         save_json(REGISTRY_PATH, registry)
-        save_json(QUEUE_PATH, queue)
+        commit_queue_snapshot(
+            queue,
+            job_ids=(job.get("id") for job in queue.get("jobs", [])),
+            queue_fields=("submissionRateLimit",),
+        )
     return changed
 
 
@@ -1227,9 +2275,20 @@ def run_one_job() -> bool:
     queue = load_json(QUEUE_PATH, default_queue())
     if normalize_registry_media_paths(registry):
         save_json(REGISTRY_PATH, registry)
-    job = next_pending_job(queue)
+
+    account_guard, guard_changed = refresh_account_upload_guard(queue, registry)
+    if guard_changed:
+        queue = commit_queue_snapshot(
+            queue, queue_fields=("accountRollingUploadGuard",)
+        )
+        account_guard = queue["accountRollingUploadGuard"]
+
+    # Keep the Bilibili 137022 cooldown authoritative.  Ignore only the local
+    # rolling guard here so its next waiting job can be annotated and notified.
+    job = next_pending_job(queue, ignore_account_upload_limit=True)
     if not job:
         return False
+    job_id = job.get("id")
 
     ids = [int(i) for i in job.get("clipIds", [])]
     missing = [clip_id for clip_id in ids if str(clip_id) not in registry.get("clips", {})]
@@ -1240,7 +2299,7 @@ def run_one_job() -> bool:
         clear_job_retry_metadata(job)
         mark_job(job, "failed", clipStatuses=clip_status_map(registry, known_ids), error=reason)
         save_json(REGISTRY_PATH, registry)
-        save_json(QUEUE_PATH, queue)
+        commit_queue_snapshot(queue, job_ids=(job_id,))
         return True
 
     sync_clip_statuses(registry, ids)
@@ -1253,7 +2312,19 @@ def run_one_job() -> bool:
     if not pending_ids:
         mark_job(job, "done", result="all ids already uploaded")
         save_json(REGISTRY_PATH, registry)
-        save_json(QUEUE_PATH, queue)
+        commit_queue_snapshot(queue, job_ids=(job_id,))
+        return True
+
+    if account_upload_limit_active(queue):
+        schedule_account_upload_limit_retry(
+            registry, queue, job, ids, account_guard
+        )
+        save_json(REGISTRY_PATH, registry)
+        commit_queue_snapshot(
+            queue,
+            job_ids=(job_id,),
+            queue_fields=("accountRollingUploadGuard",),
+        )
         return True
 
     groups = grouped_clips(registry, pending_ids)
@@ -1264,7 +2335,7 @@ def run_one_job() -> bool:
         clear_job_retry_metadata(job)
         mark_job(job, "failed", clipStatuses=clip_status_map(registry, ids), error=reason)
         save_json(REGISTRY_PATH, registry)
-        save_json(QUEUE_PATH, queue)
+        commit_queue_snapshot(queue, job_ids=(job_id,))
         print(f"[worker] invalid upload job: {reason}", file=sys.stderr)
         return True
 
@@ -1273,33 +2344,97 @@ def run_one_job() -> bool:
         registry["clips"][str(clip_id)]["status"] = "uploading"
         registry["clips"][str(clip_id)]["updatedAt"] = now_iso()
     save_json(REGISTRY_PATH, registry)
-    save_json(QUEUE_PATH, queue)
+    queue = commit_queue_snapshot(queue, job_ids=(job_id,))
+    job = find_queue_job(queue, job_id) or job
 
     all_outputs: List[str] = []
     failed = False
+    submission_rate_limited = False
+    account_upload_limited = False
+    made_upload_progress = False
     last_returncode = 0
     upload_groups = split_upload_groups(groups, batch_size_for_job(job))
-    for group in upload_groups:
+    group_index = 0
+    while group_index < len(upload_groups):
+        # Refresh before every subprocess so uploads made outside this queue
+        # are included before another local slot is consumed.
+        account_guard, guard_changed = refresh_account_upload_guard(
+            queue,
+            registry,
+            force_remote=True,
+        )
+        if guard_changed:
+            queue = commit_queue_snapshot(
+                queue, queue_fields=("accountRollingUploadGuard",)
+            )
+            account_guard = queue["accountRollingUploadGuard"]
+            job = find_queue_job(queue, job_id) or job
+        available_slots = account_upload_available_slots(account_guard)
+        if available_slots <= 0:
+            account_upload_limited = True
+            break
+
+        group = upload_groups[group_index]
+        if len(group) > available_slots:
+            upload_groups[group_index] = group[:available_slots]
+            upload_groups.insert(group_index + 1, group[available_slots:])
+            group = upload_groups[group_index]
+
+        group_ids = [int(clip["id"]) for clip in group]
+        before_upload = clip_upload_snapshot(registry, group_ids)
         cp = run_batch(group, job)
         last_returncode = cp.returncode
         output = cp.stdout or ""
         all_outputs.append(output[-8000:])
         print(output, end="", flush=True)
+
+        # batch_upload.py persists each success immediately.  Sync and ledger
+        # those successes even when a later item in the same batch failed.
+        registry = load_json(REGISTRY_PATH, default_registry())
+        sync_clip_statuses(registry, group_ids)
+        recorded_ids = record_successful_upload_events(
+            queue,
+            registry,
+            group_ids,
+            job.get("id"),
+            before_upload,
+        )
+        if recorded_ids:
+            made_upload_progress = True
+            clear_submission_rate_limit(queue)
+        save_json(REGISTRY_PATH, registry)
+        queue = commit_queue_snapshot(
+            queue,
+            queue_fields=(
+                "accountRollingUploadGuard",
+                "submissionRateLimit",
+            ),
+        )
+        account_guard = queue["accountRollingUploadGuard"]
+        job = find_queue_job(queue, job_id) or job
+
+        if account_upload_available_slots(account_guard) <= 0:
+            account_upload_limited = True
+        if is_bilibili_submission_rate_limit(output):
+            submission_rate_limited = True
+            break
         if cp.returncode != 0:
             failed = True
             break
-        registry = load_json(REGISTRY_PATH, default_registry())
-        sync_clip_statuses(registry, [int(clip["id"]) for clip in group])
-        save_json(REGISTRY_PATH, registry)
+        if account_upload_limited:
+            break
+        group_index += 1
 
     registry = load_json(REGISTRY_PATH, default_registry())
     sync_clip_statuses(registry, ids)
     save_json(REGISTRY_PATH, registry)
     queue = load_json(QUEUE_PATH, default_queue())
-    current = next((item for item in queue.get("jobs", []) if item.get("id") == job.get("id")), job)
+    current = find_queue_job(queue, job_id) or job
     statuses = {clip_id: registry["clips"][str(clip_id)].get("status") for clip_id in ids}
     last_output = "\n".join(all_outputs)[-12000:]
     pending_after_run = [clip_id for clip_id, status in statuses.items() if status != "uploaded"]
+    if made_upload_progress:
+        clear_submission_rate_limit(queue)
 
     # A subprocess can exit non-zero after it has already persisted the final
     # successful result (for example while attaching a collection).  The
@@ -1320,6 +2455,25 @@ def run_one_job() -> bool:
                 lastOutput=last_output,
                 error=reason,
             )
+        elif account_upload_limited:
+            account_guard = ensure_account_upload_guard(
+                queue, configured_upload_account()[0]
+            )
+            schedule_account_upload_limit_retry(
+                registry,
+                queue,
+                current,
+                ids,
+                account_guard,
+            )
+        elif submission_rate_limited:
+            schedule_submission_rate_limit_retry(
+                registry,
+                queue,
+                current,
+                ids,
+                last_output,
+            )
         elif failed:
             schedule_retry_or_block(
                 registry,
@@ -1337,7 +2491,11 @@ def run_one_job() -> bool:
                 "uploader completed without recording all requested clips",
             )
     save_json(REGISTRY_PATH, registry)
-    save_json(QUEUE_PATH, queue)
+    commit_queue_snapshot(
+        queue,
+        job_ids=(job_id,),
+        queue_fields=("accountRollingUploadGuard", "submissionRateLimit"),
+    )
     return True
 
 
@@ -1407,6 +2565,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=enqueue)
+
+    p = sub.add_parser("cancel", help="Cancel a pending upload job")
+    p.add_argument("--job", required=True)
+    p.add_argument("--note", default="")
+    p.set_defaults(func=cancel_job)
+
+    p = sub.add_parser(
+        "resume",
+        help="Clear a manually confirmed-stale Bilibili submission cooldown",
+    )
+    p.add_argument("--note", default="")
+    p.set_defaults(func=resume_uploads)
 
     p = sub.add_parser("queue", help="Show upload queue")
     p.add_argument("--verbose", action="store_true")

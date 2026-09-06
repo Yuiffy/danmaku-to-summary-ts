@@ -1024,7 +1024,7 @@
       },
       "23222837": {
         "audioOnly": true,
-        "referenceImage": "public/reference_images/sumi_standing.png",
+        "referenceImage": "public/reference_images/sumi_standing_transparent.png",
         "characterDescription": "礼墨Sumi（psplive 所属“元气阴咖东方龙”，常见称呼“礼墨/Sumi”，粉丝侧常见“礼吸湖”）。",
         "anchorName": "礼墨Sumi",
         "fanName": "礼吸湖",
@@ -1667,8 +1667,6 @@
     "mode": "local_review",
     "roomIds": [
       "25788785",
-      "1727074031",
-      "23771092",
       "22470216"
     ],
     "maxCandidates": 80,

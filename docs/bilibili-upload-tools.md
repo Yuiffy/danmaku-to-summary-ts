@@ -133,6 +133,12 @@ This bounds the impact of a hung upload while preserving order. Existing
 duplicate checks, upload state, 406 recovery, and preupload rate-limit waiting
 stay inside `batch_upload.py`.
 
+New queue jobs use `--delay 60` by default, so clips handled by the same
+uploader subprocess are submitted at least 60 seconds apart. The persistent
+worker checks for the next runnable job every 30 seconds. These are local
+scheduling values, not a guarantee that Bilibili has cleared an account-level
+posting limit.
+
 The persistent queue treats the per-clip upload state as authoritative when a
 subprocess exits. A job with partial success is retried with only unfinished
 clips; deterministic problems such as a missing video, metadata JSON, or
@@ -143,6 +149,27 @@ automatic retry limit. A zero-count summary such as `同标题冲突: 0` is not
 treated as a title conflict. On a worker restart, only jobs left in `running`
 are recovered to `pending`, while `blocked` remains a manual-review state.
 `queue --verbose` shows the last uploader output for diagnosis.
+
+Bilibili submit error `137022` (`投稿过于频繁，请稍后再试`) has a separate
+account-wide policy. The uploader stops the current subprocess immediately,
+and the queue pauses every upload job for 20, 40, 80, 160 minutes, and so on,
+doubling up to a 24-hour ceiling. A confirmed successful upload clears this
+streak. `npm run upload:clips:queue` prints the active cooldown and its expiry.
+After a manual Creator Center submission confirms recovery, stop the worker and
+run `python src\scripts\clip_upload_registry.py resume --note "..."` before
+starting it again. This clears both the cooldown and stale `137022` output from
+the released jobs.
+
+The queue also enforces a proactive account guard of at most 90 submissions in
+any rolling 24-hour window. Before each uploader subprocess it merges Creator
+Center archive timestamps for the configured `DedeUserID` with the worker's
+per-video `submittedAt` ledger. A four-clip batch is shortened when fewer than
+four slots remain, so the 90th success cannot spill into a 91st submission.
+At the limit, the unfinished job enters `retry_wait` until enough oldest events
+have aged past 24 hours (plus a five-second boundary buffer). The worker sends
+a WeChat Work markdown alert with the account, current count, next short ID,
+and planned next upload time in Asia/Shanghai. Queue status prints the rolling
+count and any active guard expiry.
 
 For persistent operation:
 

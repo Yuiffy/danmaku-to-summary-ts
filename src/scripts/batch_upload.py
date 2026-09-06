@@ -57,6 +57,7 @@ import requests
 ACCOUNT_MID = 412141275
 DEFAULT_RATE_LIMIT_WAIT = 120
 DEFAULT_RATE_LIMIT_RETRIES = 5
+BILIBILI_SUBMISSION_RATE_LIMIT_CODE = 137022
 
 
 def hidden_subprocess_kwargs():
@@ -285,9 +286,24 @@ async def probe_upload_available(credential):
         return False, f'preupload probe failed: {e}'
 
 
+def is_submission_rate_limit_error(message):
+    """Match Bilibili's submit API rate-limit code without relying on wording."""
+    return bool(
+        re.search(
+            rf'(?<!\d){BILIBILI_SUBMISSION_RATE_LIMIT_CODE}(?!\d)',
+            str(message or ''),
+        )
+    )
+
+
 def is_rate_limit_message(message):
     text = str(message or '')
-    return '上传视频过快' in text or '稍作休息' in text or 'too fast' in text.lower()
+    return (
+        is_submission_rate_limit_error(text)
+        or '上传视频过快' in text
+        or '稍作休息' in text
+        or 'too fast' in text.lower()
+    )
 
 
 def same_path(a, b):
@@ -714,6 +730,18 @@ async def upload_one(clip, credential, prefix, tags, tid, source_desc, collectio
         if cleanup_cover_tmp:
             try: os.remove(cover_tmp)
             except: pass
+        if is_submission_rate_limit_error(err):
+            print(
+                f"  [RATE_LIMIT] B站投稿限频（错误码 "
+                f"{BILIBILI_SUBMISSION_RATE_LIMIT_CODE}），交回队列延迟重试"
+            )
+            return {
+                'idx': clip['idx'],
+                'title': full_title,
+                'status': 'rate_limited',
+                'error': err[:500],
+                'errorCode': BILIBILI_SUBMISSION_RATE_LIMIT_CODE,
+            }
         if '406' in err:
             print(f"  ❌ 406 错误（可能已上传成功，需查搜索确认）")
             return {'idx': clip['idx'], 'title': full_title, 'status': 'got_406'}
@@ -1060,6 +1088,7 @@ async def main():
                 'title': full_title,
                 'submittedTitle': full_title,
                 'onlineTitle': result.get('onlineTitle') or '',
+                'submittedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 'bvid': result['bvid'],
                 'aid': result.get('aid'),
                 'cid': result.get('cid'),
@@ -1123,6 +1152,9 @@ async def main():
         bvid = r.get('bvid', '')
         print(f"  {icon} [{r['idx']}] {r['title']} {bvid}")
 
+    if rate_limited:
+        # EX_TEMPFAIL: callers should preserve state and retry after a cooldown.
+        return 75
     return 2 if title_conflicts else 0
 
 

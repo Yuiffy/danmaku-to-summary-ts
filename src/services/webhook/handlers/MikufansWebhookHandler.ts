@@ -629,6 +629,8 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     const roomKey = String(roomId);
 
     if (payload.EventData?.Streaming === false) {
+      // The file opening still disproves a pre-file stall even after the room went offline.
+      this.recorderStallDiagnostics.observe('FileOpening', payload);
       this.ignoreOfflineResumeEvent(payload, 'FileOpening');
       return;
     }
