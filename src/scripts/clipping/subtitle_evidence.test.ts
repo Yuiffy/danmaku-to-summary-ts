@@ -87,4 +87,73 @@ describe('subtitle evidence', () => {
     expect(evidence.revalidateClipEvidence({ ...window, title: raw.title,
       grounding: { ...complete, reusedRecall: true } }, source, [{ time: 5, text: '我要写进作文' }]).grounding.reusedRecall).toBe(true);
   });
+
+  test.each([
+    { comments: [{ time: 5, text: 'Original reaction.' }] },
+    { comments: [{ time: 6, text: 'Original reaction.' }] },
+    { comments: [{ time: 4, text: 'Inserted earlier comment.' }, { time: 5, text: 'Original reaction.' }] },
+    { comments: [] }
+  ])('rechecks a cited audience snapshot rather than silently rebinding its ID: %j', ({ comments }) => {
+    const source = evidence.buildSubtitleEvidence([{ start: 0, end: 10, text: 'A source fact.' }]);
+    const clip = { start: 0, end: 10, title: 'A reaction', description: 'Original reaction.' };
+    const original = [{ time: 5, text: 'Original reaction.' }];
+    const grounding = evidence.linkClipEvidence({ ...clip, evidenceCueIds: ['G1'], evidenceDanmakuIds: ['D1'], sourceKind: 'recount' },
+      clip, source, original);
+    const before = JSON.stringify(grounding);
+    const checked = evidence.revalidateClipEvidence({ ...clip, grounding }, source, comments);
+    expect(JSON.stringify(grounding)).toBe(before);
+    expect(checked.title).toBe(clip.title);
+    expect(checked.description).toBe(clip.description);
+    expect(checked.grounding.danmakuIds).toEqual(['D1']);
+    if (comments[0]?.time === 5) {
+      expect(checked.grounding).toEqual(grounding);
+    } else {
+      expect(checked.grounding.status).toBe('needs_review');
+      expect(checked.grounding.issues).toContain('danmaku_source_changed:D1');
+      expect(checked.grounding.audienceChanges).toEqual([{
+        id: 'D1', reason: 'changed', original: { id: 'D1', time: 5, text: 'Original reaction.' },
+        current: comments[0] ? { id: 'D1', ...comments[0] } : null
+      }]);
+      const again = evidence.revalidateClipEvidence(JSON.parse(JSON.stringify(checked)), source, comments);
+      expect(again.grounding).toEqual(checked.grounding);
+    }
+  });
+
+  test('a changed comment keeps its first snapshot through later changes until the citation is replaced', () => {
+    const source = evidence.buildSubtitleEvidence([{ start: 0, end: 10, text: 'A source fact.' }]);
+    const clip = { start: 0, end: 10, title: 'A reaction' };
+    const grounding = evidence.linkClipEvidence({ evidenceCueIds: ['G1'], evidenceDanmakuIds: ['D1'], sourceKind: 'recount' },
+      clip, source, [{ time: 5, text: 'Original reaction.' }]);
+    const changed = evidence.revalidateClipEvidence({ ...clip, grounding }, source, [{ time: 5, text: 'Changed reaction.' }]);
+    const changedAgain = evidence.revalidateClipEvidence(changed, source, [{ time: 5, text: 'Changed again.' }]);
+    expect(changedAgain.grounding.audienceChanges[0]).toMatchObject({
+      original: { text: 'Original reaction.' }, current: { text: 'Changed again.' }
+    });
+    expect(changedAgain.grounding.issues.filter(issue => issue === 'danmaku_source_changed:D1')).toHaveLength(1);
+    const removed = evidence.revalidateClipEvidence({ ...changedAgain,
+      grounding: { ...changedAgain.grounding, danmakuIds: [] } }, source, []);
+    expect(removed.grounding.issues).not.toContain('danmaku_source_changed:D1');
+    expect(removed.grounding.audienceChanges).toBeUndefined();
+  });
+
+  test('missing old audience snapshots remain unverifiable, not newly certified by matching IDs', () => {
+    const source = evidence.buildSubtitleEvidence([{ start: 0, end: 10, text: 'A source fact.' }]);
+    const clip = { start: 0, end: 10, title: 'A reaction', grounding: {
+      sourceSha256: source.sourceSha256, subtitleIds: ['G1'], danmakuIds: ['D1'], sourceKind: 'recount'
+    } };
+    const comments = [{ time: 5, text: 'A newly resolved comment.' }];
+    const checked = evidence.revalidateClipEvidence(clip, source, comments);
+    expect(checked.grounding.issues).toContain('danmaku_snapshot_missing:D1');
+    expect(checked.grounding.audienceChanges[0]).toMatchObject({ id: 'D1', reason: 'missing_snapshot', original: null });
+    expect(evidence.revalidateClipEvidence(JSON.parse(JSON.stringify(checked)), source, comments).grounding).toEqual(checked.grounding);
+  });
+
+  test('does not invalidate unchanged cited rows when unrelated audience rows are appended', () => {
+    const source = evidence.buildSubtitleEvidence([{ start: 0, end: 10, text: 'A source fact.' }]);
+    const clip = { start: 0, end: 10, title: 'A reaction' };
+    const comments = [{ time: 5, text: 'A reaction.' }];
+    const grounding = evidence.linkClipEvidence({ evidenceCueIds: ['G1'], evidenceDanmakuIds: ['D1'], sourceKind: 'recount' }, clip, source, comments);
+    const checked = evidence.revalidateClipEvidence({ ...clip, grounding }, source, [...comments, { time: 20, text: 'Later unrelated comment.' }]);
+    expect(checked.grounding).toEqual(grounding);
+  });
 });

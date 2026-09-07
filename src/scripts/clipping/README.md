@@ -30,6 +30,10 @@ ignored `temp/` tree until its inputs and behavior are made configurable.
   ASR alias, and generated speaker labels are not identity evidence. Checks use
   only cited, provided, in-window text and never trigger a model retry or remove
   a clip. Source-host metadata and audience mentions remain distinct from speech.
+- `subtitle_evidence.js`: final revalidation compares cited audience text and exact
+  timestamps with saved snapshots because D-IDs are positional. Changed or missing
+  snapshots remain reviewable in `audienceChanges`, preserving the original through
+  subsequent output passes. Unchanged citations do not depend on unrelated rows.
 - `selection_cache.js`, `selection_outcome.js`: share one in-flight stage across
   local processes, including its failure or uncacheable result. Attempt outcomes
   are addressed only by an observed generation ID, never used as a successful

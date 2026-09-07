@@ -129,6 +129,26 @@ function revalidateClipEvidence(clip, evidence, danmaku, personContext) {
     };
     const grounding = linkClipEvidence({ ...clip, evidenceCueIds: subtitleIds,
         evidenceDanmakuIds: danmakuIds, sourceKind: previous.sourceKind }, clip, evidence, danmaku, available);
+    const rowsById = rows => new Map((Array.isArray(rows) ? rows : []).filter(row => row && typeof row.id === 'string').map(row => [row.id, row]));
+    const previousAudience = rowsById(previous.audience);
+    const currentAudience = rowsById(grounding.audience);
+    const previousChanges = rowsById(previous.audienceChanges);
+    const snapshot = (row, id) => row && row.id === id && Number.isFinite(row.time) && typeof row.text === 'string'
+        ? { id, time: row.time, text: row.text } : null;
+    const audienceChanges = grounding.danmakuIds.flatMap(id => {
+        const change = previousChanges.get(id);
+        const original = snapshot(change ? change.original : previousAudience.get(id), id);
+        const current = snapshot(currentAudience.get(id), id);
+        if (!change && original && current && original.time === current.time && original.text === current.text) return [];
+        // D-IDs are positional. Keep the original snapshot after a later XML merge or reorder.
+        const reason = original ? 'changed' : 'missing_snapshot';
+        grounding.issues.push(`${original ? 'danmaku_source_changed' : 'danmaku_snapshot_missing'}:${id}`);
+        return [{ id, reason, original, current }];
+    });
+    if (audienceChanges.length) {
+        grounding.audienceChanges = audienceChanges;
+        grounding.status = 'needs_review';
+    }
     if (previous.sourceSha256 !== evidence.sourceSha256 || (Array.isArray(previous.issues) && previous.issues.includes('source_changed'))) {
         grounding.status = 'needs_review';
         grounding.issues.push('source_changed');
