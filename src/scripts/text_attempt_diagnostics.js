@@ -23,6 +23,12 @@ function hasIncompleteTextGeneration(meta = {}) {
         || isIncompleteTextState(lastSuccess?.finishReason);
 }
 
+function hasUnknownTextOutcome(error) {
+    const pending = value => ['queued', 'in_progress'].includes(String(value || '').toLowerCase());
+    const unknown = value => value?.outcomeUnknown === true || pending(value?.status) || pending(value?.finishReason);
+    return unknown(error) || (Array.isArray(error?.attempts) && error.attempts.some(unknown));
+}
+
 function createTextAttemptState(apiMode) {
     return { apiModeRequested: apiMode, apiModeUsed: apiMode, requestStarted: false, response: null, data: null, recorded: false };
 }
@@ -75,4 +81,4 @@ function summarizeTextAttempts(attempts = []) {
 }
 
 module.exports = { createTextAttemptState, resetTextAttempt, recordFailedTextAttempt, summarizeTextAttempts,
-    isIncompleteTextState, hasIncompleteTextGeneration, isPendingTextGeneration };
+    isIncompleteTextState, hasIncompleteTextGeneration, isPendingTextGeneration, hasUnknownTextOutcome };

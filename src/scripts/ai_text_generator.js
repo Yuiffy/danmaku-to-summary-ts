@@ -17,7 +17,7 @@ const {
     logAiUsage,
     normalizeTuZiTextMaxTokens,
 } = workflowRuntime.loadWorkflow('text/response');
-const { createTextAttemptState, resetTextAttempt, recordFailedTextAttempt, isIncompleteTextState, isPendingTextGeneration } = require('./text_attempt_diagnostics');
+const { createTextAttemptState, resetTextAttempt, recordFailedTextAttempt, isIncompleteTextState, isPendingTextGeneration, hasUnknownTextOutcome } = require('./text_attempt_diagnostics');
 const {
     normalizeOpenAIReasoningEffort,
     TEXT_REQUEST_PROTOCOL_VERSION,
@@ -459,9 +459,9 @@ ${randomMainPrompt}
 
 function countSentences(text) {
     return text
-        .split(/[。!?!?]\s*/u)
+        .split(/[。！？!?]+\s*/u)
         .map(part => part.trim())
-        .filter(Boolean).length;
+        .filter(part => /[\p{L}\p{N}]/u.test(part)).length;
 }
 
 function getMinimumReplyLength(wordLimit) {
@@ -1593,6 +1593,12 @@ async function generateGoodnightReply(highlightPath, roomId = null, options = {}
             } catch (error) {
                 lastError = error;
                 console.error(`❌ 生成晚安回复失败 (第 ${attempt}/${maxRetries} 次尝试): ${error.message}`);
+
+                if (hasUnknownTextOutcome(error)) {
+                    console.warn(`[GOODNIGHT_OUTCOME_UNKNOWN] ${JSON.stringify({ sourceHighlight: path.basename(highlightPath),
+                        attempt, outcomeUnknown: true, attempts: error.attempts || [] })}`);
+                    return null;
+                }
 
                 if (attempt < maxRetries) {
                     const waitTime = 2000 * attempt;

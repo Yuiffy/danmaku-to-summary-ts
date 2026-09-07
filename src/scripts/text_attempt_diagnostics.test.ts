@@ -1,8 +1,21 @@
 const { createTextAttemptState, resetTextAttempt, recordFailedTextAttempt, summarizeTextAttempts } = require('./text_attempt_diagnostics');
-const { hasIncompleteTextGeneration } = require('./text_attempt_diagnostics');
+const { hasIncompleteTextGeneration, hasUnknownTextOutcome } = require('./text_attempt_diagnostics');
 const completionCases = require('../../tests/fixtures/text-completion-states.json');
 
 describe('text failure accounting', () => {
+  test.each([
+    [{ outcomeUnknown: true }, true],
+    [{ attempts: [{ outcomeUnknown: true, status: 'failure' }] }, true],
+    [{ attempts: [{ finishReason: 'in_progress' }] }, true],
+    [{ status: 'QUEUED' }, true],
+    [{ attempts: [{ usageUnknown: true, status: 'failure', httpStatus: 502 }] }, false],
+    [{ attempts: [{ status: 'failure', finishReason: 'max_output_tokens' }] }, false],
+    [{ attempts: 'invalid' }, false],
+    [{ attempts: [null, {}] }, false],
+    [null, false]
+  ])('distinguishes unresolved generation from unknown billing or terminal failure: %j', (error, unknown) => {
+    expect(hasUnknownTextOutcome(error)).toBe(unknown);
+  });
   test.each(completionCases)('shares the explicit completion-state contract: $metadata', ({ metadata, incomplete }) => {
     expect(hasIncompleteTextGeneration(metadata)).toBe(incomplete);
   });
