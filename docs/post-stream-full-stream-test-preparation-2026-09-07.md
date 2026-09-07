@@ -2,14 +2,18 @@
 
 ## Status
 
-Offline preparation is complete. Full-stream transmission has **not** been
-authorized. Automatic goal continuation is not treated as approval of the prior
-request to send the complete 2026-09-05 SUI transcript and audience comments.
-The harness has no live mode; `--run` fails before any preparation or request.
+Offline preparation was completed before full-stream transmission was authorized.
+The user subsequently gave explicit permission, and the separate live executor
+completed all 32 approved requests. See
+[full-stream results](post-stream-full-stream-ab-results-2026-09-07.md): the
+comparison completed but the performance and quality gates were not passed.
+The preparation harness itself still has no live mode; automatic goal continuation
+was never treated as permission, and the original frozen preparation is unchanged.
 
-The previously authorized three windows remain the only scope approved for
-remote transcript experiments. No new model call, upload, notification, image
-generation or publication occurred during this preparation.
+At preparation time, only three windows were authorized for remote transcript
+experiments. No model call, upload, notification, image generation or publication
+occurred during that offline preparation. Later full-stream text permission did
+not authorize video/image transmission or publication.
 
 ## Frozen Inputs
 
