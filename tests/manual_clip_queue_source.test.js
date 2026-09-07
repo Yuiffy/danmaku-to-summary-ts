@@ -10,6 +10,17 @@ const {
     normalizeStreamTitle
 } = require('../src/scripts/manual_clip_queue');
 
+test('Mizuki clips retain their own title prefix and tags', () => {
+    const { resolveQueueProfile } = require('../src/scripts/manual_clip_queue');
+    for (const alias of ['mizuki', 'Mizuki', '弥月', '弥月Mizuki']) {
+        const profile = resolveQueueProfile(alias);
+        assert.equal(profile.name, 'mizuki');
+        assert.equal(profile.titlePrefix, '【弥月】');
+        assert.ok(profile.tags.includes('弥月Mizuki'));
+        assert.ok(!profile.tags.includes('小岁'));
+    }
+});
+
 test('builds a concrete source from manual task metadata', () => {
     assert.equal(
         buildUploadSource({

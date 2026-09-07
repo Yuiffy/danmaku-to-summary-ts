@@ -23,8 +23,7 @@ const xml2js = require('xml2js');
 const { spawnSync } = require('child_process');
 const {
     sendWeChatMarkdown,
-    splitWeChatMarkdown,
-    WECHAT_WORK_MARKDOWN_MAX_BYTES
+    splitWeChatMarkdown
 } = require('./wechat_work_markdown');
 const asrBackends = require('./asr/asr_backends');
 const configLoader = require('./config-loader');
@@ -75,6 +74,8 @@ const DEFAULT_OWN_STREAM_CLIPS_CONFIG = {
         idleSamples: 3
     },
     maxSubtitleCharsPerChunk: 14000,
+    chunkOverlapSeconds: 30,
+    enhancements: { enabled: false, roomIds: [], editing: false },
     maxDanmakuLinesPerChunk: 220,
     fullContextDanmakuMergeWindowSeconds: 30,
     avoidOverlappingClips: true,
@@ -105,6 +106,8 @@ const DEFAULT_OWN_STREAM_CLIPS_CONFIG = {
         strategy: 'staged',
         model: null,
         timeoutMs: 600000,
+        rerankTimeoutMs: 1200000,
+        rerankMaxAttempts: 2,
         maxCandidateLines: 100,
         maxCandidateSubtitleChars: 520,
         maxCandidateDanmakuLines: 14,
@@ -857,7 +860,7 @@ function classifyAiFallbackReason(errors = []) {
     if (/insufficient_user_quota|\u9884\u6263\u8d39\u989d\u5ea6\u5931\u8d25|\u5269\u4f59\u989d\u5ea6|\u4f59\u989d\u4e0d\u8db3/.test(text)) {
         return 'TuZi \u4f59\u989d\u4e0d\u8db3';
     }
-    if (/timeout|ETIMEDOUT|\u8d85\u65f6/i.test(text)) {
+    if (/timeout|ETIMEDOUT|aborted a request|deadline exceeded|\u8d85\u65f6/i.test(text)) {
         return 'AI \u8bf7\u6c42\u8d85\u65f6';
     }
     if (/did not return clips JSON|JSON/.test(text)) {
@@ -877,8 +880,25 @@ function recordAiDiagnostic(diagnostics, phase, error) {
 }
 
 function buildAiStatusLine(aiStatus = {}) {
-    if (!aiStatus || !aiStatus.usedFallback) return null;
-    const reason = aiStatus.fallbackReason || classifyAiFallbackReason(aiStatus.errors || []);
+    if (!aiStatus) return null;
+    const recalls = (aiStatus.requests || []).filter(request => /^recall-/.test(request.phase));
+    const successfulRecalls = recalls.filter(request => request.status === 'success').length;
+    const partialRecall = recalls.length > 0 && successfulRecalls < recalls.length;
+    if (!aiStatus.usedFallback) {
+        if (aiStatus.selectedSource !== 'staged_global_ai') return null;
+        return partialRecall
+            ? `AI状态: AI 全局重排成功（分块召回 ${successfulRecalls}/${recalls.length} 成功）`
+            : 'AI状态: AI 分块召回与全局重排成功';
+    }
+    const reason = classifyAiFallbackReason([
+        aiStatus.fallbackReason,
+        ...(aiStatus.errors || []),
+        ...(aiStatus.requests || []).filter(request => request.status === 'failure').map(request => request.error)
+    ].filter(Boolean));
+    if (aiStatus.selectedSource === 'recall_pool_fallback' && aiStatus.candidatePool?.chunkModelCandidates > 0) {
+        const progress = recalls.length ? `（${successfulRecalls}/${recalls.length}）` : '';
+        return `AI状态: AI 分块召回${partialRecall ? '部分成功' : '成功'}${progress}，全局重排未成功（${reason}），已保留模型召回和本地信号候选；尚未完成最终 AI 筛选与标题生成。`;
+    }
     return `AI\u72b6\u6001: AI \u89c4\u5212\u672a\u6210\u529f\uff08${reason}\uff09\uff0c\u5df2\u56de\u9000\u5230\u672c\u5730\u5b57\u5e55/\u5f39\u5e55/\u60c5\u7eea\u4fe1\u53f7\u5019\u9009\uff0c\u6807\u9898\u53ef\u80fd\u504f\u6cdb\u3002`;
 }
 
@@ -982,7 +1002,9 @@ async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config,
         const requestOptions = {
             wordLimit: Math.max(2400, maxClips * 140),
             primaryModel: config.ai?.model || undefined,
-            timeoutMs: config.ai?.timeoutMs
+            // Global comparison reads every candidate, unlike a single recall chunk.
+            timeoutMs: config.ai?.rerankTimeoutMs ?? config.ai?.timeoutMs,
+            daiYuTransientMaxAttempts: config.ai?.rerankMaxAttempts ?? 2
         };
         const result = await requestSelectionText(prompt, requestOptions, config, rootConfig, info,
             'global-rerank', diagnostics, value => isRerankResponseValid(value, rankedCandidates,
@@ -1237,9 +1259,11 @@ function buildReviewMarkdown(results, metadata) {
         lines.push(`   来源: ${getSelectionSourceLabel(result)}`);
         const groundingLine = buildGroundingReviewLine(result.grounding);
         if (groundingLine) lines.push(groundingLine);
-        if (uploadIds[index]) {
-            lines.push(`   上传ID: ${uploadIds[index]}`);
+        const uploadId = metadata.uploadRegistry?.clipIdsByReviewIndex?.[index + 1] ?? (!metadata.uploadRegistry?.clipIdsByReviewIndex ? uploadIds[index] : null);
+        if (uploadId) {
+            lines.push(`   上传ID: ${uploadId}`);
         }
+        if (result.qaRequired) lines.push(`   AI质检: ${result.qaResult?.status || 'pending'}`);
         if (result.output.coverPath) {
             lines.push(`   封面: ${result.output.coverPath}`);
         }
@@ -1304,34 +1328,12 @@ function buildNotifyMarkdown(results, metadata) {
         const title = result.copy.title;
         const start = formatClock(result.window.start);
         const duration = formatClock(result.window.duration);
-        const uploadId = uploadIds[index] ? `ID ${uploadIds[index]} | ` : '';
+        const id = metadata.uploadRegistry?.clipIdsByReviewIndex ? metadata.uploadRegistry.clipIdsByReviewIndex[index + 1] : uploadIds[index];
+        const uploadId = id ? `ID ${id} | ` : '';
         lines.push(`${index + 1}. ${uploadId}${title} | ${start} | ${duration}${formatRecommendationScore(result)}`);
     });
-    let markdown = lines.join('\n');
-    // 只有预计会产生很多条消息时才压缩；一两条分段消息保留完整切片列表。
-    if (
-        Buffer.byteLength(markdown, 'utf8') <= 3900
-        || splitWeChatMarkdown(markdown, WECHAT_WORK_MARKDOWN_MAX_BYTES).length <= 2
-    ) {
-        return markdown;
-    }
-
-    const clipListIndex = lines.indexOf('\u5207\u7247\u5217\u8868:');
-    const compact = lines.slice(0, clipListIndex >= 0 ? clipListIndex + 1 : 7);
-    for (const [index, result] of results.entries()) {
-        const title = result.copy.title;
-        const start = formatClock(result.window.start);
-        const duration = formatClock(result.window.duration);
-        const uploadId = uploadIds[index] ? `ID ${uploadIds[index]} | ` : '';
-        const line = `${index + 1}. ${uploadId}${title} | ${start} | ${duration}${formatRecommendationScore(result)}`;
-        const candidate = compact.length ? `${compact.join('\n')}\n${line}` : line;
-        if (Buffer.byteLength(candidate, 'utf8') + 24 > 3880) {
-            compact.push(`${index + 1}. ...还有 ${results.length - index} 段，请看 Review`);
-            break;
-        }
-        compact.push(line);
-    }
-    return compact.join('\n');
+    // The sender splits the complete list into ordered, UTF-8 byte-limited messages.
+    return lines.join('\n');
 }
 
 function parseUploadRegistryOutput(output) {
@@ -1376,10 +1378,10 @@ function writeOwnUploadManifest(manifestPath, reviewPath, results, metadata) {
         recordedAt: metadata.recordedAt || null,
         streamTitle: metadata.streamTitle || metadata.sourceFileName || null,
         upload: settings,
-        clips: results.map((result, index) => ({
+        clips: results.flatMap((result, index) => result.qaRequired && !result.uploadReady ? [] : [{
             reviewIndex: index + 1,
             metadataPath: result.output?.metadataPath || null
-        }))
+        }])
     };
     fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
     return manifestPath;
@@ -1387,6 +1389,7 @@ function writeOwnUploadManifest(manifestPath, reviewPath, results, metadata) {
 
 function registerReviewForUpload(reviewPath, results, metadata) {
     if (!reviewPath || !results.length) return null;
+    if (results.every(result => result.qaRequired && !result.uploadReady)) return null;
     const settings = buildOwnUploadSettings(metadata, results[0]?.copy || {});
     const manifestPath = metadata.uploadManifestPath
         || path.join(path.dirname(reviewPath), `${path.basename(reviewPath, path.extname(reviewPath))}_UPLOAD_MANIFEST.json`);
@@ -1418,7 +1421,11 @@ function registerReviewForUpload(reviewPath, results, metadata) {
     if (output) {
         console.log(output);
     }
-    return parseUploadRegistryOutput(output);
+    const registered = parseUploadRegistryOutput(output);
+    if (registered) registered.clipIdsByReviewIndex = Object.fromEntries(results.map((result, index) => ({ result, index }))
+        .filter(({ result }) => !result.qaRequired || result.uploadReady)
+        .map(({ index }, offset) => [index + 1, registered.clipIds[offset]]));
+    return registered;
 }
 
 async function notifyResults(results, metadata, rootConfig) {
@@ -1556,7 +1563,7 @@ async function generateOwnStreamClipJob({
         resourcePeaks,
         resource: summarizeResourcePeaks(resourcePeaks)
     };
-    const metadata = {
+    let metadata = {
         version: 1,
         generatedAt: new Date().toISOString(),
         mode: 'own_stream_fun_review',
@@ -1597,8 +1604,15 @@ async function generateOwnStreamClipJob({
             coverError
         }
     };
+    metadata = await require('./clipping/enhancement_runner').runEnhancements(metadata, { config, info, parsed, danmaku, source, options, topic: topicClipper });
+    if (metadata.qaRequired) {
+        metadata.grounding = evidenceReview(clip, metadata.copy) || null;
+        metadata.processing = { ...metadata.processing, finishedAt: new Date().toISOString(),
+            elapsedMs: Math.round(Number(process.hrtime.bigint() - processingStartedNs) / 1e6),
+            resource: summarizeResourcePeaks(metadata.processing.resourcePeaks) };
+    }
     fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2), 'utf8');
-    console.log(`${index + 1}. ${copy.title} ${formatClock(window.start)} ${formatClock(window.duration)} ${metadata.output.mediaPath}`);
+    console.log(`${index + 1}. ${metadata.copy.title} ${formatClock(window.start)} ${formatClock(metadata.window.duration)} ${metadata.output.mediaPath}`);
     return metadata;
 }
 
@@ -1925,169 +1939,12 @@ async function generateOwnStreamClips(options = {}) {
     }
     const results = [];
     for (const [index, clip] of clips.entries()) {
-        const processingStartedAt = new Date();
-        const processingStartedNs = process.hrtime.bigint();
-        const resourcePeaks = [];
-        const resourceLease = resourceScheduler.enabled
-            ? await resourceScheduler.acquire()
-            : null;
+        const resourceLease = resourceScheduler.enabled ? await resourceScheduler.acquire() : null;
         const activeMediaConfig = resourceLease
-            ? { ...mediaConfig, clipFfmpegThreads: resourceLease.profile.ffmpegThreads }
-            : mediaConfig;
+            ? { ...mediaConfig, clipFfmpegThreads: resourceLease.profile.ffmpegThreads } : mediaConfig;
         try {
-        const window = {
-            index: index + 1,
-            start: clip.start,
-            end: clip.end,
-            duration: clip.end - clip.start,
-            originalStart: clip.originalStart ?? null,
-            originalEnd: clip.originalEnd ?? null,
-            boundaryAligned: Boolean(clip.boundaryAligned),
-            boundaryTrimmedAtTrailingSilence: Boolean(clip.boundaryTrimmedAtTrailingSilence),
-            matchedKeywords: clip.base?.matchedKeywords || [],
-            matchCount: clip.base?.reactionCount || 0,
-            matchSegments: [],
-            allSegmentTexts: parsed.segments
-                .filter(segment => Number(segment.end) > clip.start && Number(segment.start) < clip.end)
-                .map(segment => segment.text),
-            preContext: parsed.segments
-                .filter(segment => Number(segment.end) <= clip.start && Number(segment.end) >= clip.start - 60)
-                .map(segment => segment.text)
-                .slice(-10),
-            postContext: parsed.segments
-                .filter(segment => Number(segment.start) >= clip.end && Number(segment.start) <= clip.end + 60)
-                .map(segment => segment.text)
-                .slice(0, 10)
-        };
-        const baseName = topicClipper.sanitizeFileName(
-            `${path.basename(options.mediaPath, path.extname(options.mediaPath))}_fun_${String(index + 1).padStart(2, '0')}_${formatClock(window.start).replace(/:/g, '')}`
-        );
-        const mediaPath = path.join(outputRoot, `${baseName}.mp4`);
-        const srtPath = path.join(outputRoot, `${baseName}.srt`);
-        const metadataPath = path.join(outputRoot, `${baseName}.json`);
-        const srtResult = topicClipper.writeClipSrt(parsed.segments, window, srtPath);
-        const rawCopy = {
-            title: clip.title,
-            coverText: topicClipper.normalizeCoverText(clip.coverText),
-            description: buildClipDescription({
-                streamerName,
-                streamTitle: info.streamTitle,
-                recordedAt: info.recordedAt,
-                start: window.start,
-                end: window.end,
-                description: clip.description,
-                emotionEvidence: clip.base?.emotionEvidence || clip.emotionEvidence || []
-            }),
-            tags: buildClipTags(options.config || {}, info.roomId, streamerName)
-        };
-        const processedCopy = postProcessAiClipMetadata(rawCopy, options.config || {});
-        const copy = { ...rawCopy, ...processedCopy };
-        let mediaResult = null;
-        let mediaError = null;
-        try {
-            mediaResult = await topicClipper.cutClipMedia(source, window, srtPath, mediaPath, {
-                ...buildCutClipMediaConfig(activeMediaConfig, options),
-                resourcePeaks
-            });
-            if (Array.isArray(mediaResult?.resourcePeaks) && mediaResult.resourcePeaks !== resourcePeaks) {
-                resourcePeaks.push(...mediaResult.resourcePeaks);
-            }
-        } catch (error) {
-            mediaError = error.message;
-            console.warn(`clip media generation failed, metadata kept: ${error.message}`);
-        }
-        let coverPath = null;
-        let coverError = null;
-        if (mediaResult?.path && source.kind !== 'audio') {
-            try {
-                coverPath = await topicClipper.generateClipCover(
-                    mediaResult.path,
-                    buildCoverTitle(copy.title, copy.coverText),
-                    outputRoot,
-                    {
-                        streamerName,
-                        coverSourcePath: mediaResult.coverSourcePath || source.mediaPath,
-                        clipStart: Number.isFinite(Number(mediaResult.coverClipStart))
-                            ? Number(mediaResult.coverClipStart)
-                            : window.start,
-                        clipDuration: window.duration,
-                        preferredTime: (() => {
-                            const absolutePeak = topicClipper.selectCoverPreferredTime(
-                                danmaku,
-                                window,
-                                config.reactionKeywords || []
-                            );
-                            return Number.isFinite(Number(mediaResult.coverTimeOrigin)) && Number.isFinite(Number(absolutePeak))
-                                ? Number(absolutePeak) - Number(mediaResult.coverTimeOrigin)
-                                : absolutePeak;
-                        })(),
-                        resourcePeaks
-                    }
-                );
-            } catch (error) {
-                coverError = error.message;
-                console.warn(`clip cover generation failed, metadata kept: ${error.message}`);
-            } finally {
-                topicClipper.cleanupTemporaryCoverSource(mediaResult);
-            }
-        }
-        const processingFinishedAt = new Date();
-        const processing = {
-            version: 1,
-            startedAt: processingStartedAt.toISOString(),
-            finishedAt: processingFinishedAt.toISOString(),
-            elapsedMs: Math.round(Number(process.hrtime.bigint() - processingStartedNs) / 1e6),
-            resourceMode: config.mode || config.resourceMode || null,
-            ffmpegThreads: Number.isFinite(Number(config.clipFfmpegThreads))
-                ? Number(config.clipFfmpegThreads)
-                : null,
-            resourcePeaks,
-            resource: summarizeResourcePeaks(resourcePeaks)
-        };
-        const metadata = {
-            version: 1,
-            generatedAt: new Date().toISOString(),
-            mode: 'own_stream_fun_review',
-            source: {
-                mediaPath: options.mediaPath,
-                srtPath: options.srtPath,
-                xmlPath: options.xmlPath || null
-            },
-            roomId: info.roomId,
-            streamerName,
-            participantInfo: participantMetadata,
-            recordedAt: info.recordedAt,
-            streamTitle: info.streamTitle,
-            recommendationScore: Number.isFinite(Number(clip.score)) ? Number(clip.score) : null,
-            window,
-            candidate: clip.base || null,
-            grounding: evidenceReview(clip, copy) || null,
-            copy,
-            upload: buildOwnUploadSettings({
-                roomId: info.roomId,
-                streamerName,
-                streamTitle: info.streamTitle,
-                recordedAt: info.recordedAt
-            }, copy),
-            processing,
-            uploadReady: Boolean(mediaResult?.path),
-            output: {
-                mediaPath: mediaResult?.path || mediaPath,
-                srtPath,
-                metadataPath,
-                burnedSubtitles: Boolean(mediaResult?.burnedSubtitles),
-                subtitleBurnFallbackUsed: Boolean(mediaResult?.fallbackUsed),
-                twoStageSubtitleBurn: mediaResult?.twoStageSubtitleBurn ?? null,
-                twoStageMode: mediaResult?.twoStageMode ?? null,
-                srtSegmentCount: srtResult.segmentCount,
-                mediaError,
-                coverPath,
-                coverError
-            }
-        };
-        fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2), 'utf8');
-        results.push(metadata);
-        console.log(`${index + 1}. ${copy.title} ${formatClock(window.start)} ${formatClock(window.duration)} ${metadata.output.mediaPath}`);
+            results.push(await generateOwnStreamClipJob({ clip, evidenceReview, index, parsed, danmaku,
+                options, outputRoot, source, streamerName, info, config: activeMediaConfig, participantMetadata }));
         } finally {
             resourceLease?.release();
         }

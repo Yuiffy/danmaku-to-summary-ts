@@ -63,6 +63,27 @@ describe('daiYu model routing', () => {
     expect(request.model).toBe('gpt-5.6-luna');
   });
 
+  test.each(['daiYu', 'tuZi'])('%s strict evaluation sends exactly one requested model/protocol/effort', async provider => {
+    const generate = provider === 'daiYu' ? generateTextWithDaiYu : generateTextWithTuZi;
+    const image = 'data:image/png;base64,YQ==';
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({
+      status: 'completed', model: 'gpt-6-astra', output_text: 'COMPLETE', usage: { input_tokens: 5, output_tokens: 10 } }) });
+    await generate('Facts', { primaryModel: 'gpt-6-astra', reasoningEffort: 'low', apiMode: 'responses',
+      strictEvaluation: true, maxTokens: 1234, images: [image] });
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body).toMatchObject({ model: 'gpt-6-astra', reasoning: { effort: 'low' }, max_output_tokens: 1234 });
+    expect(body.input[0].content[1].image_url).toBe(image);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  test('strict evaluation does not retry rejected cache hints or fall back protocols/providers', async () => {
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 400, text: async () => 'unsupported prompt_cache_key' });
+    const prompt = `${liveGenerationContext.SHARED_PROMPT_CACHE_START}\nFacts\n${liveGenerationContext.SHARED_PROMPT_CACHE_END}\nTask`;
+    await expect(generateTextWithDaiYu(prompt, { strictEvaluation: true, primaryModel: 'gpt-5.6-luna',
+      reasoningEffort: 'high', maxTokens: 100, apiMode: 'responses' })).rejects.toThrow();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   test.each(['daiYu', 'tuZi'])('%s retains reported usage when final text is empty, truncated or too short', async provider => {
     const generate = provider === 'daiYu' ? generateTextWithDaiYu : generateTextWithTuZi;
     const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);

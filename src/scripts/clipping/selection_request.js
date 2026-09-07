@@ -28,6 +28,19 @@ function recordSelectionDiagnostic(diagnostics, context, result = null, error = 
 }
 
 async function requestSelectionText(prompt, requestOptions, config, rootConfig, info, phase, diagnostics, validate) {
+    const stageName = phase.startsWith('recall-') ? 'recall' : 'rerank';
+    const stage = config.ai?.stages?.[stageName];
+    if (stage && require('./enhancement_runner').enhancementEnabled({ enabled: true, roomIds: config.ai.stageRoomIds }, info?.roomId)) {
+        const started = Date.now();
+        try {
+            const result = await require('./enhancement_runner').requestStage(stage, config.ai.stageBudget, info, phase, prompt);
+            recordSelectionDiagnostic(diagnostics, { phase, elapsedMs: Date.now() - started, provider: stage.provider, model: stage.model }, result);
+            return result;
+        } catch (error) {
+            recordSelectionDiagnostic(diagnostics, { phase, elapsedMs: Date.now() - started, provider: stage.provider, model: stage.model }, null, error);
+            throw error;
+        }
+    }
     const generator = require('../ai_text_generator');
     const provider = rootConfig.ai?.text?.provider || 'gemini';
     const textConfig = rootConfig.ai?.text || {};

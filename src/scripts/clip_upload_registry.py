@@ -21,9 +21,9 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional
 import requests
 
 try:
-    from .clip_upload_manifest import load_upload_manifest
+    from .clip_upload_manifest import load_upload_manifest, validate_registry_qa
 except ImportError:
-    from clip_upload_manifest import load_upload_manifest
+    from clip_upload_manifest import load_upload_manifest, validate_registry_qa
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_DIR = PROJECT_ROOT / "data" / "runtime"
@@ -919,7 +919,7 @@ def import_json(args: argparse.Namespace) -> int:
             "streamerName": clip.get("streamerName") or "",
             "description": clip.get("description") or "",
             "reviewIndex": int(clip.get("reviewIndex") or clip.get("idx") or len(ids) + 1),
-            "sourceFormat": "json",
+            "sourceFormat": "json", "qaRequired": bool(clip.get("qaRequired")),
         }
         if clip_id is None:
             clip_id = int(registry.get("nextClipId") or 1)
@@ -2128,7 +2128,7 @@ def validate_groups(groups: List[List[Dict[str, Any]]]) -> List[str]:
     REVIEW.md records still need the Markdown row check; manually created
     records without either source continue through the single-upload path.
     """
-    errors: List[str] = []
+    errors: List[str] = validate_registry_qa(groups)
     for group in groups:
         json_clips = [c for c in group if c.get("manifestPath")]
         legacy_clips = [c for c in group if not c.get("manifestPath")]

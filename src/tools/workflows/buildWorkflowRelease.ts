@@ -4,6 +4,9 @@ import { createHash } from 'crypto';
 import * as ts from 'typescript';
 
 const entries = {
+  'clipping/stage': 'workflows/clipping/stage.js',
+  'clipping/editPlan': 'workflows/clipping/editPlan.js',
+  'clipping/enhancement': 'workflows/clipping/enhancement.js',
   'text/response': 'workflows/text/response.js',
   'text/requests': 'workflows/text/requests.js',
   'summary/diagnostics': 'workflows/summary/diagnostics.js',

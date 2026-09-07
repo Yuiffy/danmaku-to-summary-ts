@@ -681,6 +681,9 @@ function pickGoodnightTuZiPrimaryModel() {
 
 // 调用tuZi API生成文本(备用方案)
 async function generateTextWithTuZi(prompt, options = {}) {
+    if (options.strictEvaluation) options = { ...options, exactModel: true, fallbackModelsEnabled: false,
+        allowProviderFallback: false, strictResponses: true, transientMaxAttempts: 1 };
+    if (options.reasoningEffort !== undefined) normalizeOpenAIReasoningEffort(options.reasoningEffort);
     const config = configLoader.getConfig();
     // 优先使用 ai.text.tuZi 配置(文本生成专用),其次使用 ai.comic.tuZi(兼容旧配置)
     const tuziConfig = config.ai?.text?.tuZi || config.aiServices?.tuZi || {};
@@ -746,13 +749,13 @@ async function generateTextWithTuZi(prompt, options = {}) {
                 + `请求 ${transientAttempt}/${transientMaxAttempts}, 超时: ${Math.round(timeoutMs / 1000)}s)`
             );
             const configuredMaxTokens = options.maxTokens ?? tuziConfig.maxTokens;
-            const effectiveMaxTokens = normalizeTuZiTextMaxTokens(textModel, configuredMaxTokens, wordLimit);
+            const effectiveMaxTokens = options.strictEvaluation ? configuredMaxTokens : normalizeTuZiTextMaxTokens(textModel, configuredMaxTokens, wordLimit);
             console.log(`   max_tokens: ${effectiveMaxTokens} (configured=${configuredMaxTokens || 'default'}, wordLimit=${wordLimit})`);
 
             const requestBody = apiMode === 'responses'
                 ? {
                     model: textModel,
-                    input: prompt,
+                    input: options.images?.length ? buildOpenAIResponsesInput(prompt, null, options.images) : prompt,
                     max_output_tokens: effectiveMaxTokens,
                     stream: false,
                     store: false,
@@ -760,8 +763,9 @@ async function generateTextWithTuZi(prompt, options = {}) {
                 }
                 : {
                     model: textModel,
-                    messages: [{ role: 'user', content: prompt }],
+                    messages: buildOpenAITextMessages(prompt, null, options.images),
                     temperature: tuziConfig.temperature,
+                    ...(options.reasoningEffort !== undefined ? { reasoning_effort: normalizeOpenAIReasoningEffort(options.reasoningEffort) } : {}),
                     max_tokens: effectiveMaxTokens
                 };
 
@@ -824,7 +828,7 @@ async function generateTextWithTuZi(prompt, options = {}) {
                 status: 'success',
                 requestStarted: true,
                 reasoningEffortRequested: options.reasoningEffort || null,
-                reasoningEffortSent: requestBody.reasoning?.effort || null,
+                reasoningEffortSent: requestBody.reasoning?.effort || requestBody.reasoning_effort || null,
                 reasoningEffortReturned: data.reasoning?.effort || null,
                 responseModel: data.model || null,
                 finishReason: finishReason || 'unknown',
@@ -889,6 +893,9 @@ async function generateTextWithTuZi(prompt, options = {}) {
 
 // 调用daiYu API生成文本（OpenAI兼容，支持thinking）
 async function generateTextWithDaiYu(prompt, options = {}) {
+    if (options.strictEvaluation) options = { ...options, exactModel: true, fallbackModelsEnabled: false,
+        allowProviderFallback: false, strictResponses: true, transientMaxAttempts: 1 };
+    if (options.reasoningEffort !== undefined) normalizeOpenAIReasoningEffort(options.reasoningEffort);
     const config = configLoader.getConfig();
     const daiYuConfig = config.ai?.text?.daiYu || {};
 
@@ -937,7 +944,7 @@ async function generateTextWithDaiYu(prompt, options = {}) {
     }
 
     // thinking 配置
-    const thinkingEnabled = daiYuConfig.thinking?.enabled !== false;
+    const thinkingEnabled = options.reasoningEffort !== undefined || daiYuConfig.thinking?.enabled !== false;
     const thinkingBudgetTokens = Number(options.thinkingBudgetTokens)
         || daiYuConfig.thinking?.budgetTokens
         || 10000;
@@ -954,7 +961,7 @@ async function generateTextWithDaiYu(prompt, options = {}) {
             const timeoutMs = resolveTextRequestTimeout(options, config.timeouts?.aiApiTimeout || 60000);
             console.log(`[WAIT] 正在通过daiYu API生成文本... (尝试 ${attempt + 1}/${modelSequence.length} model: ${textModel}, 超时: ${Math.round(timeoutMs / 1000)}s)`);
             const configuredMaxTokens = options.maxTokens ?? daiYuConfig.maxTokens;
-            const effectiveMaxTokens = normalizeTuZiTextMaxTokens(textModel, configuredMaxTokens, wordLimit);
+            const effectiveMaxTokens = options.strictEvaluation ? configuredMaxTokens : normalizeTuZiTextMaxTokens(textModel, configuredMaxTokens, wordLimit);
             console.log(`   max_tokens: ${effectiveMaxTokens} (configured=${configuredMaxTokens || 'default'}, wordLimit=${wordLimit})`);
 
             const cachePlan = getExplicitPromptCachePlan(
@@ -988,7 +995,8 @@ async function generateTextWithDaiYu(prompt, options = {}) {
                         temperature: daiYuConfig.temperature,
                         maxTokens: effectiveMaxTokens,
                         thinkingEnabled,
-                        reasoningEffort
+                        reasoningEffort,
+                        images: options.images
                     })
                     : buildDaiYuChatCompletionsRequest({
                         model: textModel,
@@ -997,29 +1005,45 @@ async function generateTextWithDaiYu(prompt, options = {}) {
                         temperature: daiYuConfig.temperature,
                         maxTokens: effectiveMaxTokens,
                         thinkingEnabled,
-                        thinkingBudgetTokens
+                        thinkingBudgetTokens,
+                        reasoningEffort: options.reasoningEffort,
+                        images: options.images
                     })
             );
             const postRequest = async (apiMode, body) => {
-                resetTextAttempt(attemptState, apiMode);
-                const requestTimeout = resolveTextRequestTimeout(options, timeoutMs);
-                attemptState.requestStarted = true;
-                const response = await fetch(
-                `${baseUrl}/v1/${apiMode === 'responses' ? 'responses' : 'chat/completions'}`,
-                {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${apiKey}`,
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(body),
-                agent: agent,
-                timeout: requestTimeout,
-                signal: AbortSignal.timeout(requestTimeout)
+                const maxAttempts = options.strictEvaluation ? 1
+                    : Math.min(3, Math.max(1, Math.floor(Number(options.daiYuTransientMaxAttempts) || 1)));
+                for (let requestAttempt = 1; requestAttempt <= maxAttempts; requestAttempt++) {
+                    resetTextAttempt(attemptState, apiMode);
+                    const requestTimeout = resolveTextRequestTimeout(options, timeoutMs);
+                    attemptState.requestStarted = true;
+                    const response = await fetch(
+                        `${baseUrl}/v1/${apiMode === 'responses' ? 'responses' : 'chat/completions'}`,
+                        {
+                            method: 'POST',
+                            headers: {
+                                'Authorization': `Bearer ${apiKey}`,
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify(body),
+                            agent,
+                            timeout: requestTimeout,
+                            signal: AbortSignal.timeout(requestTimeout)
+                        }
+                    );
+                    attemptState.response = response;
+                    // Only retry explicit transient responses, not a local abort whose
+                    // upstream generation may still be running and billable.
+                    if (!TRANSIENT_TEXT_API_STATUSES.has(response.status) || requestAttempt === maxAttempts
+                        || (options.deadlineAt && Date.now() >= options.deadlineAt)) return response;
+                    const error = Object.assign(new Error(`daiYu API返回错误 ${response.status}: ${await response.text()}`),
+                        { status: response.status });
+                    recordFailedTextAttempt(attempts, 'daiYu', textModel, error, attemptState);
+                    console.warn(`daiYu 临时上游错误 ${response.status}，重试同一模型（${requestAttempt + 1}/${maxAttempts}）`);
+                    const delay = Math.max(0, Number(options.transientRetryDelayMs ?? 1000) || 0);
+                    await new Promise(resolve => setTimeout(resolve,
+                        options.deadlineAt ? Math.min(delay, Math.max(0, options.deadlineAt - Date.now())) : delay));
                 }
-                );
-                attemptState.response = response;
-                return response;
             };
 
             let apiModeUsed = apiModeRequested;
@@ -1030,6 +1054,7 @@ async function generateTextWithDaiYu(prompt, options = {}) {
             let promptCacheFallbackReason;
             let responseErrorText;
             const retryWithoutCacheHints = async () => {
+                if (options.strictEvaluation) return;
                 if (response.ok || ![400, 422].includes(response.status) || (!requestBody.prompt_cache_key && !requestBody.prompt_cache_options)) return;
                 responseErrorText = await response.text();
                 if (!isPromptCacheParameterError(responseErrorText)) return;
@@ -1100,7 +1125,7 @@ async function generateTextWithDaiYu(prompt, options = {}) {
                 status: 'success',
                 requestStarted: true,
                 reasoningEffortRequested: reasoningEffort,
-                reasoningEffortSent: requestBody.reasoning?.effort || null,
+                reasoningEffortSent: requestBody.reasoning?.effort || requestBody.reasoning_effort || null,
                 reasoningEffortReturned: data.reasoning?.effort || null,
                 responseModel: data.model || null,
                 finishReason: finishReason || 'unknown',
@@ -1164,6 +1189,7 @@ async function generateTextWithDaiYu(prompt, options = {}) {
                             fallback: true,
                             attempts,
                             primaryModel: fallbackModel,
+                            reasoningEffort,
                             fallbackModelsEnabled: false,
                             wordLimit,
                             timeoutMs: options.timeoutMs,

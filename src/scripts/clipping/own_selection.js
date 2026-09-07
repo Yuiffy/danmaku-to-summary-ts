@@ -121,6 +121,30 @@ function attachEmotionEvidenceToClips(clips, analysis, config) {
     });
 }
 
+function rescoreCandidateWindow(candidate, segments, danmaku, config, emotionAnalysis) {
+    const comments = danmaku.map((item, index) => ({ ...item, id: `D${index + 1}` }))
+        .filter(item => item.time >= candidate.start && item.time < candidate.end);
+    const reactions = comments.map(item => ({ ...item,
+        hits: (config.reactionKeywords || []).filter(word => String(item.text).includes(word)) }));
+    const speech = segments.map((item, index) => ({ ...item, id: `S${index + 1}`,
+        hits: (config.subtitleKeywords || []).filter(word => String(item.text || '').includes(word)) }))
+        .filter(item => item.end > candidate.start && item.start < candidate.end && item.hits.length);
+    const emotion = getEmotionEvidenceForWindow(emotionAnalysis, candidate, config.emotionScoring || {});
+    const reactionCount = reactions.filter(item => item.hits.length).length;
+    // Each source row contributes once, even when density/keyword windows cover it twice.
+    const scores = {
+        audience: comments.length + reactions.reduce((sum, item) => sum + (item.hits.length ? 20 + item.hits.length * 8 : 0), 0),
+        speech: speech.reduce((sum, item) => sum + 16 + item.hits.length * 6, 0),
+        emotion: config.emotionScoring?.enabled === false ? 0 : emotion.maxScore
+    };
+    return { ...candidate, score: scores.audience + scores.speech + scores.emotion, scoreComponents: scores,
+        danmakuCount: comments.length, reactionCount,
+        sourceRecordIds: [...comments.map(item => item.id), ...speech.map(item => item.id)],
+        matchedKeywords: Array.from(new Set([...reactions, ...speech].flatMap(item => item.hits))),
+        danmakuSamples: uniqueTextSamples(comments, 10),
+        emotions: emotion.emotions, events: emotion.events, emotionEvidence: emotion.items };
+}
+
 function buildCandidateWindows(parsed, danmaku, config, totalDuration, emotionAnalysis = null) {
     const segments = parsed.segments || [];
     const density = buildDanmakuDensity(danmaku, totalDuration, config);
@@ -202,24 +226,14 @@ function buildCandidateWindows(parsed, danmaku, config, totalDuration, emotionAn
         ) {
             last.end = Math.max(last.end, candidate.end);
             last.duration = last.end - last.start;
-            last.score += candidate.score;
             last.reason = Array.from(new Set(String(last.reason).split('+').concat(candidate.reason))).join('+');
-            last.danmakuCount = (last.danmakuCount || 0) + (candidate.danmakuCount || 0);
-            last.reactionCount = (last.reactionCount || 0) + (candidate.reactionCount || 0);
-            last.matchedKeywords = Array.from(new Set([...(last.matchedKeywords || []), ...(candidate.matchedKeywords || [])]));
-            last.danmakuSamples = uniqueTextSamples([
-                ...(last.danmakuSamples || []).map(text => ({ text })),
-                ...(candidate.danmakuSamples || []).map(text => ({ text }))
-            ], 10);
-            last.emotions = Array.from(new Set([...(last.emotions || []), ...(candidate.emotions || [])]));
-            last.events = Array.from(new Set([...(last.events || []), ...(candidate.events || [])]));
-            last.emotionEvidence = [...(last.emotionEvidence || []), ...(candidate.emotionEvidence || [])];
             continue;
         }
         merged.push({ ...candidate });
     }
 
     return merged
+        .map(candidate => rescoreCandidateWindow(candidate, segments, danmaku, config, emotionAnalysis))
         .map((candidate, index) => ({
             ...candidate,
             index: index + 1,
@@ -447,25 +461,9 @@ function buildRecallCandidatePool(localCandidates = [], modelCandidates = [], co
     });
 
     const limit = Math.max(1, Math.floor(Number(config.ai?.maxCandidateLines) || 100));
-    const selected = [];
-    const selectedSet = new Set();
-    const add = candidate => {
-        if (!candidate || selected.length >= limit || selectedSet.has(candidate)) return;
-        selected.push(candidate);
-        selectedSet.add(candidate);
-    };
-    localRanked.forEach(add);
-    deduped
-        .filter(candidate => Number(candidate.localScore || 0) <= 0)
-        .sort((a, b) => Number(b.modelScore || 0) - Number(a.modelScore || 0))
-        .forEach(add);
-    deduped
-        .slice()
-        .sort((a, b) => Number(b.recallScore || 0) - Number(a.recallScore || 0))
-        .forEach(add);
-
-    return selected
+    return deduped
         .sort((a, b) => Number(b.recallScore || 0) - Number(a.recallScore || 0) || Number(a.start) - Number(b.start))
+        .slice(0, limit)
         .map((candidate, index) => ({
             ...candidate,
             index: index + 1,
@@ -483,14 +481,72 @@ function buildRecallCandidatePool(localCandidates = [], modelCandidates = [], co
         }));
 }
 
+function budgetSubtitleWindows(evidence, totalDuration, config) {
+    const seconds = Math.max(600, Number(config.chunkSeconds) || 2700);
+    const budget = Math.floor(Number(config.maxSubtitleCharsPerChunk) || 14000);
+    if (budget < 128) throw new Error('maxSubtitleCharsPerChunk must be at least 128');
+    const overlap = Math.min(30, Math.max(0, Number(config.chunkOverlapSeconds ?? 30)));
+    const windows = [];
+    const lineLength = cue => formatEvidenceCues([cue]).length;
+    for (let start = 0; start < totalDuration; start += seconds) {
+        const end = Math.min(start + seconds, totalDuration);
+        const original = cuesForWindow(evidence, { start, end });
+        const rows = original.flatMap(cue => {
+            if (lineLength(cue) <= budget) return [cue];
+            const pieces = [];
+            const characters = Array.from(cue.text);
+            let offset = 0;
+            while (offset < characters.length) {
+                const marker = `[text-part offset=${offset}; original cue time] `;
+                const available = budget - lineLength({ ...cue, text: marker });
+                let text = '';
+                const first = offset;
+                while (offset < characters.length && text.length + characters[offset].length <= available) text += characters[offset++];
+                if (offset === first) throw new Error('Subtitle evidence ID exceeds chunk budget');
+                pieces.push({ ...cue, text: marker + text, partial: true, textOffset: first });
+            }
+            return pieces;
+        });
+        if (!rows.length) { windows.push({ start, end, cues: [] }); continue; }
+        let cursor = 0;
+        while (cursor < rows.length) {
+            const fresh = cursor;
+            const context = [];
+            let length = 0;
+            for (let back = cursor - 1; back >= 0 && rows[back].start >= rows[cursor].start - overlap; back--) {
+                if (overlap === 0 || rows[back].partial || rows[cursor].partial) break;
+                const cost = lineLength(rows[back]) + 1;
+                if (length + cost + lineLength(rows[cursor]) > budget) break;
+                context.unshift(rows[back]);
+                length += cost;
+            }
+            const cues = [...context];
+            while (cursor < rows.length) {
+                const cost = lineLength(rows[cursor]) + (cues.length ? 1 : 0);
+                // Context already reserves a separator for the first fresh row.
+                const effective = cursor === fresh && context.length ? cost - 1 : cost;
+                if (length + effective > budget) break;
+                cues.push(rows[cursor++]);
+                length += effective;
+            }
+            windows.push({
+                start: Math.max(start, Math.min(fresh === 0 ? start : rows[fresh].start, cues[0].start)),
+                end: Math.min(end, Math.max(cursor === rows.length ? end : rows[cursor].start, ...cues.map(cue => cue.end))),
+                cues
+            });
+        }
+    }
+    return windows;
+}
+
 function buildChunkSources(parsed, danmaku, totalDuration, config, emotionAnalysis = null) {
-    const chunkSeconds = Math.max(600, Number(config.chunkSeconds) || 2700);
     const density = buildDanmakuDensity(danmaku, totalDuration, config);
     const chunks = [];
     const evidence = buildSubtitleEvidence(parsed.segments);
     const danmakuIds = new Map(danmaku.map((item, index) => [item, `D${index + 1}`]));
-    for (let start = 0, index = 1; start < totalDuration; start += chunkSeconds, index += 1) {
-        const end = Math.min(start + chunkSeconds, totalDuration);
+    for (const [order, window] of budgetSubtitleWindows(evidence, totalDuration, config).entries()) {
+        const { start, end } = window;
+        const index = order + 1;
         const chunkSegments = parsed.segments.filter(segment => Number(segment.end) > start && Number(segment.start) < end);
         const chunkDanmaku = danmaku.filter(item => item.time >= start && item.time < end);
         const buckets = density.buckets.filter(bucket => bucket.end > start && bucket.start < end);
@@ -515,7 +571,7 @@ function buildChunkSources(parsed, danmaku, totalDuration, config, emotionAnalys
                 allowedDanmakuIds.add(id);
                 return `${id} ${item.time} ${JSON.stringify(item.text)}`;
             });
-        const subtitleCues = cuesForWindow(evidence, { start, end });
+        const subtitleCues = window.cues;
         const subtitleText = formatEvidenceCues(subtitleCues);
         const emotionLines = buildEmotionContextLines(
             emotionAnalysis,
@@ -549,7 +605,7 @@ function buildChunkSources(parsed, danmaku, totalDuration, config, emotionAnalys
                 'SenseVoice 情感/声音事件（辅助线索，不作为事实）:',
                 emotionLines.join('\n') || '无',
                 '',
-                '直播音轨字幕:',
+                '直播音轨字幕（text-part 只拆文本，共用原始 ID 和时间，不是词级时间）:',
                 subtitleText || '无'
             ].join('\n')
         });
@@ -563,13 +619,9 @@ function dedupePlannedClips(clips, config) {
         .sort((a, b) => a.start - b.start);
     const out = [];
     for (const clip of sorted) {
-        const last = out[out.length - 1];
-        if (last && recallWindowOverlap(last, clip).matches) {
-            if ((clip.score || 0) > (last.score || 0)) {
-                out[out.length - 1] = clip;
-            }
-            continue;
-        }
+        const matches = out.filter(existing => recallWindowOverlap(existing, clip).matches);
+        if (matches.some(existing => (existing.score || 0) >= (clip.score || 0))) continue;
+        for (const match of matches) out.splice(out.indexOf(match), 1);
         out.push(clip);
     }
     return out

@@ -850,7 +850,7 @@ function selectCoverPreferredTime(danmaku = [], window = {}, reactionKeywords = 
 async function generateClipCover(videoPath, title, outputDir, info = {}) {
     const { spawn } = require('child_process');
     const coverBase = path.basename(videoPath, path.extname(videoPath));
-    const coverPath = path.join(outputDir, `${coverBase}_cover.jpg`);
+    const coverPath = info.outputPath || path.join(outputDir, `${coverBase}_cover.jpg`);
 
     // 用 Python 调用 cover_generator.py 生成封面
     const scriptPath = path.join(__dirname, 'cover_generator.py');
@@ -1077,6 +1077,13 @@ function resolveSubtitleBurnPlan(config = {}) {
 
 
 async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
+    const edit = config.editPlan ? require('./workflow-runtime').loadWorkflow('clipping/editPlan') : null;
+    if (edit) {
+        edit.validateEditPlan(config.editPlan, config.editSourceId, window, config.originalSubtitleSegments || [], config.editAudioEvidence || []);
+        if (source.kind === 'audio' || config.burnSubtitles === false || config.twoStageSubtitleBurn === false || config.twoStageMode === 'direct') {
+            throw new Error('Edited clips require the two-stage video subtitle path');
+        }
+    }
     const ffmpegPath = config.ffmpegPath || 'ffmpeg';
     const resourcePeaks = Array.isArray(config.resourcePeaks) ? config.resourcePeaks : [];
     const ffmpegOptions = {
@@ -1185,12 +1192,13 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                     const trimEnd = String(Number(offsetInRoughClip) + Number(duration));
                     await runFfmpeg([
                         '-y',
-                        ...buildSubtitleBurnInputArgs(config),
+                        ...buildSubtitleBurnInputArgs(config, { forceCpu: config.editCpuFallbackAttempted === true }),
                         '-i', tempPath,
-                        '-filter_complex', `[0:v]trim=start=${trimStart}:end=${trimEnd},setpts=PTS-STARTPTS[sub_v];[0:a]atrim=start=${trimStart}:end=${trimEnd},asetpts=PTS-STARTPTS[sub_a];[sub_v]subtitles='${escapeSubtitlePathForFfmpegFilter(burnAssPath)}'[vout]`,
+                        '-filter_complex', edit ? edit.buildEditFilter(config.editPlan, actualRoughStart, escapeSubtitlePathForFfmpegFilter(burnAssPath))
+                            : `[0:v]trim=start=${trimStart}:end=${trimEnd},setpts=PTS-STARTPTS[sub_v];[0:a]atrim=start=${trimStart}:end=${trimEnd},asetpts=PTS-STARTPTS[sub_a];[sub_v]subtitles='${escapeSubtitlePathForFfmpegFilter(burnAssPath)}'[vout]`,
                         '-map', '[vout]',
                         '-map', '[sub_a]',
-                        ...buildSubtitleBurnVideoArgs(config),
+                        ...buildSubtitleBurnVideoArgs(config, { forceCpu: config.editCpuFallbackAttempted === true }),
                         '-movflags', '+faststart',
                         outputPath
                     ], ffmpegOptions);
@@ -1238,6 +1246,13 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
             };
         } catch (error) {
             subtitleBurnFailure = error.message;
+            if (edit) {
+                if (isNvencSubtitleEncoder(config) && !config.editCpuFallbackAttempted) {
+                    const fallback = await cutClipMedia(source, window, srtPath, outputPath, { ...config, editCpuFallbackAttempted: true });
+                    return { ...fallback, fallbackUsed: true, fallbackReason: error.message, subtitleVideoEncoder: 'libx264', subtitleHwaccel: null };
+                }
+                throw error;
+            }
             if (useTwoStageBurn) {
                 console.warn(`⚠️  两段式字幕烧录失败,退回原始源直接烧录: ${error.message}`);
                 try {

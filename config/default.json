@@ -1434,6 +1434,8 @@
       "strategy": "staged",
       "model": "gpt-5.6-luna",
       "timeoutMs": 600000,
+      "rerankTimeoutMs": 1200000,
+      "rerankMaxAttempts": 2,
       "maxCandidateLines": 100,
       "maxCandidateSubtitleChars": 520,
       "maxCandidateDanmakuLines": 14,

@@ -7,6 +7,10 @@ import json
 import math
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+try:
+    from .clip_qa import validate_metadata_qa, validate_registry_qa
+except ImportError:
+    from clip_qa import validate_metadata_qa, validate_registry_qa
 
 
 MANIFEST_TYPE = "bilibili_clip_upload_manifest"
@@ -133,6 +137,7 @@ def load_upload_manifest(
     clips: List[Dict[str, Any]] = []
     for position, item in enumerate(items, start=1):
         wrapper, metadata, metadata_path = _unwrap_clip(item, path.parent)
+        validate_metadata_qa(metadata)
         copy = metadata.get("copy") if isinstance(metadata.get("copy"), dict) else {}
         output = metadata.get("output") if isinstance(metadata.get("output"), dict) else {}
         window = metadata.get("window") if isinstance(metadata.get("window"), dict) else {}
@@ -238,6 +243,7 @@ def load_upload_manifest(
                 "coverPath": cover_path,
                 "selectionSource": selection_source,
                 "metadataPath": metadata_path,
+                **({"qaRequired": True} if metadata.get("qaRequired") else {}),
                 "manifestPath": str(path),
                 "reviewPath": item_review_path,
                 "source": str(source or "").strip(),

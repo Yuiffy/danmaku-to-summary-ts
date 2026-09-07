@@ -16,6 +16,12 @@ const { createClipResourceAdaptiveScheduler } = require('./clipping/resource_sch
 const projectRoot = path.resolve(__dirname, '../..');
 const defaultQueuePath = path.join(projectRoot, 'data/runtime/manual_clip_queue.json');
 const QUEUE_PROFILES = {
+    mizuki: {
+        name: 'mizuki',
+        titlePrefix: '【弥月】',
+        tags: ['弥月Mizuki', '弥月', '虚拟主播', '直播切片', 'AI切片'],
+        label: '弥月手工队列'
+    },
     small_sui: {
         name: 'small_sui',
         titlePrefix: '【小岁】',
@@ -43,6 +49,7 @@ const QUEUE_PROFILES = {
 };
 function resolveQueueProfile(value) {
     const normalized = String(value || 'small_sui').trim().toLowerCase();
+    if (['mizuki', '弥月', '弥月mizuki'].includes(normalized)) return QUEUE_PROFILES.mizuki;
     if (['old', 'legacy', 'old-sui', 'old_sui', '老岁片'].includes(normalized)) {
         return QUEUE_PROFILES.old_sui;
     }

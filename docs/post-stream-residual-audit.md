@@ -41,3 +41,17 @@ node src/scripts/own_stream_clipper.js --media "录播.flv" --srt "录播.srt" -
 ## 结果解释
 
 `RESIDUAL_REVIEW.md` 中的分数用于排序，不是质量承诺。字幕摘录用于快速判断起止点；最终切片仍应补足起因和收束，并按本次任务的选材政策决定是否保留特殊内容。
+
+## AI 失败排查
+
+- `PLAN.json` 的 `aiStatus.requests` 分开记录 `recall-N` 和 `global-rerank`。分块召回成功但重排失败时，候选池仍含模型结果，不应解释为整场只用了本地规则。
+- 分块请求使用 `ownStreamClips.ai.timeoutMs`，默认 10 分钟；全局重排使用独立的 `rerankTimeoutMs`，默认 20 分钟。延长客户端等待不保证上游一定成功。
+- 全局重排的 `rerankMaxAttempts` 默认 2：daiYu 收到明确的临时 HTTP 错误时重试一次，再走既有模型/服务兜底。本地取消不在该重试范围内，避免上游仍在生成时重复提交；其他文本任务不自动增加重试。
+- `The user aborted a request.` 在当前调用链中可能来自本地 `AbortSignal.timeout`，不等于用户手动取消，也不能据此判断模型输入超限。应对照网关失败日志，不只看成功用量导出。
+- 通知保留完整候选清单，由企微发送器按 UTF-8 的 4096 字节上限顺序分段，不再因超过两条消息而省略后续候选。
+
+### 2026-09-07 场次验证
+
+9 月 8 日 00:27:59 发起的重排包含 146628 个 JavaScript 字符。客户端在 600 秒时取消；sub2api 的请求 `0067ed07-6bf7-4ef6-bdce-72193fd66e29` 最终于 00:43:02 返回 502，耗时 902874 毫秒，错误为 `stream ID 31; INTERNAL_ERROR; received from peer`。失败请求不在成功用量 CSV 中，应查网关错误/访问日志。
+
+复用六块原始 AI 返回结果、逐一核对原请求哈希后，保持同一重排输入及 `gpt-5.6-luna / high` 重试，于 356863 毫秒后成功。实际输入 95719 token，输出 19691 token（含推理 13466），生成 26 条计划，未使用本地回退。这证明该输入可完成，不能把原失败归因为输入超限。恢复计划单独保存为 `PLAN_AI_REPLANNED.json`，不改写与原成片和短 ID 对应的 `PLAN.json`。

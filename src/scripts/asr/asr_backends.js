@@ -551,6 +551,8 @@ function normalizeAsrResult(result, subtitleConfig = {}) {
                 words: segment.words,
                 asrSource: segment.asrSource || {
                     start, end,
+                    timingPrecision: 'segment',
+                    words: Array.isArray(segment.words) ? segment.words : null,
                     rawText: typeof segment.raw_text === 'string' ? segment.raw_text : null,
                     recognizedText: text,
                     phonemeCorrections: Array.isArray(segment.phoneme_corrections) ? segment.phoneme_corrections : []

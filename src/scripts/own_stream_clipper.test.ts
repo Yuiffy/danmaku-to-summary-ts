@@ -213,7 +213,8 @@ describe('own_stream_clipper', () => {
     ));
 
     expect(pool).toHaveLength(100);
-    expect(pool.filter((candidate: any) => candidate.localScore > 0)).toHaveLength(80);
+    expect(pool.filter((candidate: any) => candidate.localScore > 0)).toHaveLength(61);
+    expect(pool.filter((candidate: any) => candidate.modelScore > 0)).toHaveLength(40);
     expect(recalledTarget.recallSources).toEqual(expect.arrayContaining(['local_signals', 'model_chunked']));
     expect(recalledTarget.title).toBe('分块模型发现的持续追问话题');
   });
@@ -1165,7 +1166,7 @@ describe('own_stream_clipper', () => {
     expect(markdown).not.toContain('[模型全量]');
   });
 
-  test('keeps source labels out of compacted WeChat clip lists', () => {
+  test('keeps source labels out of complete multi-part WeChat clip lists', () => {
     const results = Array.from({ length: 30 }, (_, index) => ({
       window: { start: index * 90, duration: 60 },
       copy: { title: `模型片段 ${index + 1} ${'很有趣'.repeat(60)}` },
@@ -1181,7 +1182,9 @@ describe('own_stream_clipper', () => {
 
     expect(markdown).toContain('来源统计: 模型全量 30');
     expect(markdown).toContain('1. 模型片段 1');
-    expect(markdown).toContain('请看 Review');
+    expect(markdown).toContain('30. 模型片段 30');
+    expect(markdown).not.toContain('请看 Review');
+    expect(ownStreamClipper.splitWeChatMarkdown(markdown).length).toBeGreaterThan(2);
     expect(markdown).not.toContain('[模型全量]');
   });
 

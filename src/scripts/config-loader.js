@@ -347,6 +347,8 @@ const ConfigSchema = Joi.object({
             strategy: Joi.string().valid('staged', 'chunked', 'candidate_only', 'full_context').default('staged'),
             model: Joi.string().allow('', null).default(null),
             timeoutMs: Joi.number().min(1000).default(600000),
+            rerankTimeoutMs: Joi.number().min(1000).default(1200000),
+            rerankMaxAttempts: Joi.number().integer().min(1).max(3).default(2),
             maxCandidateLines: Joi.number().integer().min(1).default(100),
             maxCandidateSubtitleChars: Joi.number().integer().min(100).default(520),
             maxCandidateDanmakuLines: Joi.number().integer().min(1).default(14),

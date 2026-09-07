@@ -1,4 +1,4 @@
-import { buildDaiYuResponsesRequest, buildDaiYuChatCompletionsRequest, LIVE_TEXT_SYSTEM_PROMPT, TEXT_REQUEST_PROTOCOL_VERSION } from './requests';
+import { buildDaiYuResponsesRequest, buildDaiYuChatCompletionsRequest, LIVE_TEXT_SYSTEM_PROMPT, TEXT_REQUEST_PROTOCOL_VERSION, normalizeOpenAIReasoningEffort } from './requests';
 const { getExplicitPromptCachePlan } = require('../../scripts/text_generation_protocol');
 const context = require('../../scripts/live_generation_context');
 
@@ -24,10 +24,27 @@ test('preserves the uncached request role and payload after the unsuccessful rol
   expect(responses).toEqual({ model: options.model,
     input: [{ role: 'user', content: [{ type: 'input_text', text: options.prompt }] }],
     max_output_tokens: 100000, stream: false, store: false, reasoning: { effort: 'high' } });
-  const chat = buildDaiYuChatCompletionsRequest(options);
+  const chat = buildDaiYuChatCompletionsRequest({ ...options, reasoningEffort: undefined });
   expect(chat.messages).toEqual([{ role: 'user', content: options.prompt }]);
   expect(chat.thinking).toEqual({ type: 'enabled', budget_tokens: 10000 });
-  expect(TEXT_REQUEST_PROTOCOL_VERSION).toBe(5);
+  expect(TEXT_REQUEST_PROTOCOL_VERSION).toBe(6);
+});
+
+test('explicit chat reasoning and image inputs reach both protocols', () => {
+  const image = 'data:image/png;base64,aGVsbG8=';
+  const options = { model: 'fixture', prompt: 'Inspect actual cover', maxTokens: 100, reasoningEffort: 'low', images: [image] };
+  const chat = buildDaiYuChatCompletionsRequest(options);
+  expect(chat.reasoning_effort).toBe('low');
+  expect(chat.messages[0].content[1]).toEqual({ type: 'image_url', image_url: { url: image } });
+  const response = buildDaiYuResponsesRequest({ ...options, thinkingEnabled: true });
+  expect(response.input[0].content[1]).toEqual({ type: 'input_image', image_url: image, detail: 'high' });
+  expect(() => buildDaiYuResponsesRequest({ ...options, images: ['file:///private/file'] })).toThrow('image');
+});
+
+test('unknown reasoning is rejected instead of becoming high', () => {
+  expect(normalizeOpenAIReasoningEffort(undefined)).toBe('high');
+  expect(() => normalizeOpenAIReasoningEffort('ultrahigh')).toThrow('Unsupported');
+  expect(() => normalizeOpenAIReasoningEffort('')).toThrow('Unsupported');
 });
 
 test('implicit routing preserves the original input layout and task role outside explicit rollout', () => {

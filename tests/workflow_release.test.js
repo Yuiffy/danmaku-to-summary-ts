@@ -27,7 +27,7 @@ test('compiled text adapters handle chat/responses and usage aliases', () => {
 test('compiled request builders preserve explicit caching and reasoning', () => {
     const options = { model: 'model', prompt: 'prefixsuffix', maxTokens: 100, thinkingEnabled: true,
         reasoningEffort: 'high', cachePlan: { enabled: true, prefix: 'prefix', suffix: 'suffix', requestKey: 'cache', ttl: '30m' } };
-    const chat = requests.buildDaiYuChatCompletionsRequest({ ...options, thinkingBudgetTokens: 50 });
+    const chat = requests.buildDaiYuChatCompletionsRequest({ ...options, reasoningEffort: undefined, thinkingBudgetTokens: 50 });
     assert.deepEqual(chat.thinking, { type: 'enabled', budget_tokens: 50 });
     assert.deepEqual(chat.messages[1].content[0].prompt_cache_breakpoint, { mode: 'explicit' });
     const response = requests.buildDaiYuResponsesRequest(options);

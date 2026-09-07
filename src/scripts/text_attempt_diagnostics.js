@@ -48,6 +48,7 @@ function recordFailedTextAttempt(attempts, provider, model, error, state, extra 
     } : Object.fromEntries(USAGE_FIELDS.map(field => [field, 0]));
     const known = Object.fromEntries(Object.entries(counts).filter(([, value]) => Number.isFinite(value)));
     const attempt = { provider, model, status: 'failure', ...extra, ...known,
+        rawUsage: usage || null,
         requestStarted: state.requestStarted,
         usageUnknown: pending || !Number.isFinite(known.promptTokens) || !Number.isFinite(known.completionTokens),
         usageFinal: pending ? false : (!state.requestStarted || state.data ? true : null),
