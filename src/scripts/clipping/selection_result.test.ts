@@ -8,6 +8,40 @@ const { normalizeAiClips, isRerankResponseValid, reusableRecall } = require('./s
 const generator = require('../ai_text_generator');
 
 describe('selection result provenance', () => {
+  test('a model-supplied reuse field cannot authorize missing boundaries', () => {
+    const evidence = buildSubtitleEvidence([{ start: 0, end: 40, text: 'A recorded story.' }]);
+    const rejected = [];
+    const clips = normalizeAiClips([{ candidateIndex: 1, title: 'A title',
+      reuse: { startCueId: 'G1', endCueId: 'G1', sourceKind: 'recount' } }],
+      [{ index: 1, start: 0, end: 40 }], 40, { minClipSeconds: 1, maxClipSeconds: 60 },
+      'host', evidence, [], new Set(['G1']), new Set(), rejected);
+    expect(clips).toEqual([]);
+    expect(rejected).toEqual([expect.objectContaining({ reason: 'missing_explicit_boundaries',
+      candidateIndex: 1, recallReusable: false, requiredFields: ['startCueId', 'endCueId'] })]);
+  });
+
+  test('the real mixed-candidate prompt always shows the full format and candidate-local omission rules', async () => {
+    const parsed = { segments: [{ start: 0, end: 40, text: 'First story.' }, { start: 60, end: 100, text: 'Second story.' }] };
+    const evidence = buildSubtitleEvidence(parsed.segments);
+    const candidates = [{ index: 1, start: 0, end: 40 }, { index: 2, start: 60, end: 100,
+      startCueId: 'G2', endCueId: 'G2', grounding: { status: 'linked', sourceSha256: evidence.sourceSha256,
+        subtitleIds: ['G2'], danmakuIds: [], sourceKind: 'recount' } }];
+    const generate = jest.spyOn(generator, 'generateTextWithDaiYu').mockResolvedValue({ text: '{"clips":[]}', meta: {} });
+    try {
+      await own.refineCandidatesWithAI(candidates, parsed, [], {}, own.getOwnStreamClipsConfig({}),
+        { ai: { text: { provider: 'daiYu' } } });
+      expect(generate).toHaveBeenCalledTimes(1);
+      const prompt = generate.mock.calls[0][0];
+      expect(prompt).toContain('reuse=null');
+      expect(prompt).toContain('不能因为其他候选可复用而省略');
+      expect(prompt).toContain('"candidateIndex":1,"startCueId":"G1","endCueId":"G20"');
+      expect(prompt).not.toContain('"candidateIndex":1,"title":"人工风格标题');
+      const rows = prompt.split('\n').filter(line => /^#[12] /.test(line));
+      expect(rows).toHaveLength(2);
+      expect(JSON.parse(rows[0].slice(rows[0].indexOf('['))).at(-1)).toBeNull();
+      expect(JSON.parse(rows[1].slice(rows[1].indexOf('['))).at(-1)).toMatchObject({ startCueId: 'G2', endCueId: 'G2' });
+    } finally { generate.mockRestore(); }
+  });
 
   test.each([
     { name: 'default', avoidOverlappingClips: undefined, finalOverlapToleranceSeconds: 0, constrained: true, gap: 0 },

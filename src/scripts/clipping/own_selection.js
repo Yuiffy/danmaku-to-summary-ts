@@ -503,7 +503,7 @@ function buildChunkSources(parsed, danmaku, totalDuration, config, emotionAnalys
                 const top = getWindowDanmakuEvidence(items, bucket).topItems.map(({ item, count }) => {
                     const id = danmakuIds.get(item);
                     allowedDanmakuIds.add(id);
-                    return `${id} ${JSON.stringify(item.text)}${count > 1 ? `(x${count})` : ''}`;
+                    return `${id} ${item.time} ${JSON.stringify(item.text)}${count > 1 ? `(x${count})` : ''}`;
                 }).join(' / ');
                 return `${formatClock(bucket.start)} count=${bucket.count} reaction=${bucket.keywords}${top ? ` | ${top}` : ''}`;
             });
@@ -513,7 +513,7 @@ function buildChunkSources(parsed, danmaku, totalDuration, config, emotionAnalys
             .map(item => {
                 const id = danmakuIds.get(item);
                 allowedDanmakuIds.add(id);
-                return `${id} ${formatClock(item.time)} ${item.text}`;
+                return `${id} ${item.time} ${JSON.stringify(item.text)}`;
             });
         const subtitleCues = cuesForWindow(evidence, { start, end });
         const subtitleText = formatEvidenceCues(subtitleCues);
@@ -540,10 +540,10 @@ function buildChunkSources(parsed, danmaku, totalDuration, config, emotionAnalys
                 `分段 #${index} ${formatClock(start)}-${formatClock(end)}`,
                 `弹幕总数: ${chunkDanmaku.length}`,
                 '',
-                '高弹幕/高反应时间点:',
+                '高弹幕/高反应时间点（行首为统计桶起点，D-ID 后为该条弹幕的精确绝对秒数）:',
                 densityLines.slice(0, 80).join('\n') || '无',
                 '',
-                '观众反应弹幕样例:',
+                '观众反应弹幕样例（D-ID 后为精确绝对秒数，保留原始小数）:',
                 reactionLines.slice(0, Number(config.maxDanmakuLinesPerChunk) || 220).join('\n') || '无',
                 '',
                 'SenseVoice 情感/声音事件（辅助线索，不作为事实）:',

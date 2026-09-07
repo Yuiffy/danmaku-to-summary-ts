@@ -59,6 +59,9 @@ function normalizeAiClips(rawClips, candidates, totalDuration, config, streamerL
             if (!base) return reject('unknown_candidate');
             const reusable = reusableRecall(base, evidence, config, danmaku);
             const noBoundaryOverride = !['startCueId', 'endCueId', 'startTime', 'endTime'].some(key => clip[key] !== undefined);
+            if (evidence && noBoundaryOverride && !reusable) return reject('missing_explicit_boundaries', {
+                requiredFields: ['startCueId', 'endCueId'], recallReusable: false
+            });
             const resolved = reusable ? {
                 ...clip,
                 ...(noBoundaryOverride ? { startCueId: reusable.startCueId, endCueId: reusable.endCueId } : {}),

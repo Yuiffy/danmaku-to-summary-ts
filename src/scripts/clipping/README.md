@@ -25,6 +25,14 @@ ignored `temp/` tree until its inputs and behavior are made configurable.
   copy evidence. `topic_editorial_runner.js` uses the shared validated AI cache.
   See `docs/topic-event-editorial.md` for duration, attribution, and review policy.
 - `own_selection.js`: own-stream candidate recall, scoring, and subtitle alignment.
+  Model-visible audience IDs include each comment's original precise timestamp,
+  distinct from density-bucket clocks; sampling and source text are preserved.
+- `rerank_evidence.js`, `selection_result.js`: compact evidence and validated
+  selection results. Every candidate carries a validated `reuse` object or
+  explicit `null`; context range `g` is not a default cut boundary. Missing
+  boundaries on non-reusable candidates are rejected with a specific diagnostic,
+  not guessed. See `docs/post-stream-evidence-contract-fixes-2026-09-08.md` for
+  the local regression and the increased-input/unmeasured-model-cost boundary.
 - `person_evidence.js`: local configured-name citation warnings for final own-stream
   copy. Formal/search names and copy labels are matched literally; broad mention,
   ASR alias, and generated speaker labels are not identity evidence. Checks use

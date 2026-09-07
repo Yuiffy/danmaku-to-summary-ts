@@ -1,0 +1,98 @@
+# Post-stream evidence contract fixes
+
+Date: 2026-09-08 (Asia/Shanghai).
+
+Scope: the two follow-ups authorized after the
+[full-stream comparison](post-stream-full-stream-ab-results-2026-09-07.md).
+This is a local implementation and regression report, not a new live-model
+experiment or a declaration that the broader performance gate has passed.
+
+## Changes
+
+1. Every model-visible D-ID now includes that comment's original numeric
+   timestamp in absolute seconds. Recall density buckets still have a bucket
+   clock, but each exemplar has its own time; reaction samples and rerank rows
+   use the same convention. Fractional precision is not rounded or floored.
+   JSON encoding preserves comment text, including quotes and embedded newlines.
+   Sampling, IDs, order, window frequencies, and evidence availability are unchanged.
+2. Each compact rerank candidate now ends with a `reuse` column: either the
+   existing validated recall-location object or explicit `null`. This replaces
+   the separate list of reusable indices; `recallHints` remains available to
+   callers. Eligibility is calculated once per candidate and uses the same
+   validator as before. The prompt always shows the complete output schema,
+   explains candidate-local omission rules, and distinguishes context range `g`
+   from actual cut boundaries. Valid linkage does not certify factual truth.
+
+A model-supplied `reuse` field cannot grant permission to omit boundaries.
+An evidence-backed, non-reusable candidate with no boundary fields remains
+rejected, now with `missing_explicit_boundaries`,
+`requiredFields: ["startCueId", "endCueId"]`, and `recallReusable: false`.
+No validation threshold was relaxed and no old rejected proposal was repaired
+by guessing missing fields. Explicit time-based compatibility is unchanged.
+
+## Offline regression
+
+The existing frozen 2026-09-05 evidence contains 6,127 subtitles, 12,980 comments,
+and seven recall chunks. The comparison uses frozen source `650b424`, the two
+saved candidate pools, and their saved model responses. Model methods are stubbed
+and external I/O is blocked; the regression made zero network requests.
+
+- All 4,198 model-visible recall D-IDs retain their source text and exact time.
+- Chunk metadata, allowed IDs, source subtitles, candidate scores, audience rows,
+  dictionaries, frequencies, and reusable-candidate eligibility compare equal.
+- Both rerank pools have 100 candidates. Batch 2 has 25 reusable and 75 explicit
+  candidates with 1,534 audience rows; batch 3 has 38 and 62 with 1,561 rows.
+- Saved responses still accept 23 and 32 clips, respectively. The complete
+  normalized clip objects compare equal, not just the counts.
+- Batch 3 raw proposals 27 and 29, candidate IDs 45 and 17, still fail. Only their
+  diagnostic changes from `invalid_time_range` to `missing_explicit_boundaries`.
+
+The local script and report are ignored artifacts, not portable fixtures:
+
+- `tmp/verify-danmaku-time-reuse-20260907.cjs`
+- `tmp/danmaku-time-reuse-2026-09-07T16-06-35-982Z.json`
+- Frozen run: `tmp/full-stream-ab-live-20260907/live-2026-09-07T13-49-02-947Z/`
+- Evidence SHA-256: `aa42383dcf6fc987f45e733177aac701e19212c34296d7b8dde661f2611d13de`
+
+## Cost and timing limits
+
+| Actual prompt text | Before characters | After characters |
+| --- | ---: | ---: |
+| Seven recall requests combined | 263,311 | 296,433 |
+| Batch 2 rerank | 157,330 | 163,732 |
+| Batch 3 rerank | 159,979 | 166,384 |
+
+Recall input grows about 12.6% and rerank input about 4%. This is not a token
+saving claim: character counts are not billed tokens. The local preparation
+microbenchmark recorded rerank medians of 24.428ms to 23.475ms and 22.598ms to
+21.486ms, but these short measurements do not establish model latency, total
+pipeline speed, cache hit rate, or output accuracy.
+
+No new live model output was generated. The previous 32-request experiment's
+negative performance result and incomplete quality validation remain valid.
+Whether clearer evidence reduces out-of-window references or omitted fields in
+new generations remains unmeasured.
+
+## Verification and runtime boundary
+
+- Jest: 81 suites, 933 tests passed; the final focused rerun passed 3 suites and
+  25 tests after the prompt wording change.
+- Independent Node tests: 11 passed. `type-check` and `build:check` passed.
+- Architecture check still reports only the pre-existing line budgets for
+  `audio_processor.js` (1622/1496) and `sensevoice_speaker.py` (2388/2331).
+  `own_stream_clipper.js` is 2260/2265; no budget was increased.
+- Tests cover density-only/reaction timestamps, sub-millisecond fractions, zero,
+  bucket/chunk boundaries, text round-tripping, frequency exemplars, mixed
+  candidate eligibility, stale evidence, the real prompt, and forged `reuse`.
+
+Stage cache keys already include the actual prompt, so changed prompts naturally
+use different keys. No cache files were deleted and no protocol was bumped.
+Existing plans, clips, replies, and images are not regenerated by this change.
+The next source-executed selection uses the updated prompt.
+
+No model/reasoning settings, ASR/speaker settings, evidence limits, media
+parameters, upload registration, or production configuration were changed by
+this iteration. No service restart or compiled release activation was performed;
+the active compiled release remains `ecd0450cbeadd3aa9dc4`, text protocol 5,
+and comic script policy 17. The earlier 32 live requests are exhausted; this
+follow-up did not spend additional model calls.

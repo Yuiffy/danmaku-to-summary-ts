@@ -953,17 +953,14 @@ async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config,
         '说出或引用一句话不等于现场创作；没有直接证据时，不写现编、原创、亲自体验等断言。引号只放原文确有的词句，归纳性标签不用引号。',
         '出现多个人或多次事件时，保留谁先做了什么、后来谁又做了什么；不能把两次事件、互相回应或不同人的行为合成一次因果关系。',
         '文案提到观众或弹幕的反应、意图时，必须补充片内evidenceDanmakuIds，即使其他定位与引用沿用召回结果。',
-        ...(packed.recallHints.length ? [
-            '带有“可复用的召回定位”的候选：若看点和范围不变，只输出candidateIndex、文案、reason、score即可，程序沿用其边界、来源类型与引用。',
-            '若你改变了时间、引用了其他原话/弹幕或纠正来源类型，才输出对应的startCueId/endCueId、evidenceCueIds/evidenceDanmakuIds或sourceKind覆盖值。没有召回定位的候选仍必须自行填写这些字段。'
-        ] : []),
+        '先检查所选候选行的reuse字段：只有reuse为对象且沿用原看点、边界和引用时，才可省略startCueId/endCueId、evidenceCueIds/evidenceDanmakuIds和sourceKind；文案、reason、score仍须填写。',
+        'reuse=null 的候选必须显式填写边界、片内引用和sourceKind，不能因为其他候选可复用而省略。修改定位、引用或来源类型时必须显式覆盖对应字段。reuse是输入说明，不要在输出中自行设置它。',
         '请给每段 1-100 的全场相对分数，按 score 从高到低输出。',
         '输出纯 JSON，不要 Markdown：',
         ...CUE_BOUNDARY_PROMPT_LINES,
         '',
         ...buildOwnStreamClipCopyPromptLines(generator, hostName, 'startCueId/endCueId 所界定的'),
-        packed.recallHints.length ? '{"clips":[{"candidateIndex":1,"title":"人工风格标题，18-42字","coverText":"第一行\\n第二行","description":"面向观众的一句话内容简介","reason":"内部选材理由","score":95}]}。沿用召回定位时省略其他字段；需要覆盖或没有定位提示时补齐边界、引用和sourceKind。'
-                : '{"clips":[{"candidateIndex":1,"startCueId":"G1","endCueId":"G20","title":"人工风格标题，18-42字","coverText":"第一行\\n第二行","description":"面向观众的一句话内容简介","reason":"内部选材理由","evidenceCueIds":["G8"],"evidenceDanmakuIds":[],"sourceKind":"recount","score":95}]}',
+        '{"clips":[{"candidateIndex":1,"startCueId":"G1","endCueId":"G20","title":"人工风格标题，18-42字","coverText":"第一行\\n第二行","description":"面向观众的一句话内容简介","reason":"内部选材理由","evidenceCueIds":["G8"],"evidenceDanmakuIds":[],"sourceKind":"recount","score":95}]}',
         ''
     ].join('\n');
     const prompt = [
