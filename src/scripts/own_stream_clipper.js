@@ -1,6 +1,7 @@
 const { buildFallbackTitle, normalizeAiClips, isRerankResponseValid, clipsConflict, buildGroundingReviewLine } = require('./clipping/selection_result');
 const { requestSelectionText, validSelectionResponse } = require('./clipping/selection_request');
 const { buildRerankEvidence } = require('./clipping/rerank_evidence');
+const { buildPersonEvidenceContext } = require('./clipping/person_evidence');
 const {
     timeStringToSeconds,
     clamp,
@@ -1434,6 +1435,7 @@ async function notifyResults(results, metadata, rootConfig) {
 
 async function generateOwnStreamClipJob({
     clip,
+    evidenceReview,
     index,
     parsed,
     danmaku,
@@ -1574,7 +1576,7 @@ async function generateOwnStreamClipJob({
         recommendationScore: Number.isFinite(Number(clip.score)) ? Number(clip.score) : null,
         window,
         candidate: clip.base || null,
-        grounding: clip.grounding || null,
+        grounding: evidenceReview(clip, copy) || null,
         copy,
         upload: buildOwnUploadSettings({
             roomId: info.roomId,
@@ -1783,7 +1785,11 @@ async function generateOwnStreamClips(options = {}) {
     clips = attachEmotionEvidenceToClips(clips, emotionAnalysis, config.emotionScoring || {});
     clips = alignClipsToSubtitleBoundaries(clips, parsed.segments, config, totalDuration);
     const finalEvidence = buildSubtitleEvidence(parsed.segments);
-    clips = clips.map(clip => revalidateClipEvidence(clip, finalEvidence, danmaku));
+    const personContext = buildPersonEvidenceContext(rootConfig, info.roomId);
+    // Check narrative copy without the generated source/time attribution.
+    const evidenceReview = (clip, copy) => revalidateClipEvidence({ ...clip, title: copy.title,
+        coverText: copy.coverText }, finalEvidence, danmaku, personContext).grounding;
+    clips = clips.map(clip => revalidateClipEvidence(clip, finalEvidence, danmaku, personContext));
     if (config.avoidOverlappingClips !== false) {
         const beforeOverlapFilter = clips.length;
         clips = removeOverlappingClips(clips, config.finalOverlapToleranceSeconds);
@@ -1880,6 +1886,7 @@ async function generateOwnStreamClips(options = {}) {
         console.log(`Clip media concurrency: ${mediaConcurrency}`);
         const profileAwareJobs = clips.map((clip, index) => resourceProfile => generateOwnStreamClipJob({
             clip,
+            evidenceReview,
             index,
             parsed,
             danmaku,
@@ -2057,7 +2064,7 @@ async function generateOwnStreamClips(options = {}) {
             recommendationScore: Number.isFinite(Number(clip.score)) ? Number(clip.score) : null,
             window,
             candidate: clip.base || null,
-            grounding: clip.grounding || null,
+            grounding: evidenceReview(clip, copy) || null,
             copy,
             upload: buildOwnUploadSettings({
                 roomId: info.roomId,

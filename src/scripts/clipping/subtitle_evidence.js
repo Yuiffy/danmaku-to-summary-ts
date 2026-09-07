@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const { collectSpokenClockValues, supportedClockSpans } = require('./clock_evidence');
+const { reviewPersonEvidence } = require('./person_evidence');
 
 function buildSubtitleEvidence(segments = [], options = {}) {
     const maxSeconds = Number(options.maxGroupSeconds) || 12;
@@ -108,11 +109,12 @@ function linkClipEvidence(raw, clip, evidence, danmaku = [], available = {}) {
         danmakuIds: danmakuIds.filter(id => available.danmakuIds && !available.danmakuIds.has(id))
     };
     // Linking checks provenance and time bounds, not the truth of an ASR claim.
-    return { version: 1, status: issues.length ? 'needs_review' : 'linked', sourceSha256: evidence.sourceSha256,
+    const grounding = { version: 1, status: issues.length ? 'needs_review' : 'linked', sourceSha256: evidence.sourceSha256,
         sourceKind, subtitleIds, danmakuIds, subtitles, audience, unseen, issues };
+    return reviewPersonEvidence(raw, clip, evidence, grounding, available.personContext);
 }
 
-function revalidateClipEvidence(clip, evidence, danmaku) {
+function revalidateClipEvidence(clip, evidence, danmaku, personContext) {
     if (!clip.grounding) return clip;
     const previous = clip.grounding;
     const subtitleIds = Array.isArray(previous.subtitleIds) ? previous.subtitleIds.map(String) : [];
@@ -121,11 +123,13 @@ function revalidateClipEvidence(clip, evidence, danmaku) {
     const unseenDanmaku = new Set(Array.isArray(previous.unseen?.danmakuIds) ? previous.unseen.danmakuIds : []);
     const available = {
         cueIds: new Set(subtitleIds.filter(id => !unseenSubtitles.has(id))),
-        danmakuIds: new Set(danmakuIds.filter(id => !unseenDanmaku.has(id)))
+        danmakuIds: new Set(danmakuIds.filter(id => !unseenDanmaku.has(id))),
+        personContext: personContext ?? (Array.isArray(previous.personEvidence?.checks)
+            ? previous.personEvidence.checks.map(check => check?.person) : undefined)
     };
     const grounding = linkClipEvidence({ ...clip, evidenceCueIds: subtitleIds,
         evidenceDanmakuIds: danmakuIds, sourceKind: previous.sourceKind }, clip, evidence, danmaku, available);
-    if (previous.sourceSha256 !== evidence.sourceSha256) {
+    if (previous.sourceSha256 !== evidence.sourceSha256 || (Array.isArray(previous.issues) && previous.issues.includes('source_changed'))) {
         grounding.status = 'needs_review';
         grounding.issues.push('source_changed');
     }

@@ -25,6 +25,11 @@ ignored `temp/` tree until its inputs and behavior are made configurable.
   copy evidence. `topic_editorial_runner.js` uses the shared validated AI cache.
   See `docs/topic-event-editorial.md` for duration, attribution, and review policy.
 - `own_selection.js`: own-stream candidate recall, scoring, and subtitle alignment.
+- `person_evidence.js`: local configured-name citation warnings for final own-stream
+  copy. Formal/search names and copy labels are matched literally; broad mention,
+  ASR alias, and generated speaker labels are not identity evidence. Checks use
+  only cited, provided, in-window text and never trigger a model retry or remove
+  a clip. Source-host metadata and audience mentions remain distinct from speech.
 - `topic_compilation.js`: discover recordings, search SRT/XML evidence, build a
   reviewable cross-recording plan, and compile the selected windows.
 - `event_manifest.js`: normalize detector output into one event contract and
