@@ -30,6 +30,12 @@ ignored `temp/` tree until its inputs and behavior are made configurable.
   ASR alias, and generated speaker labels are not identity evidence. Checks use
   only cited, provided, in-window text and never trigger a model retry or remove
   a clip. Source-host metadata and audience mentions remain distinct from speech.
+- `selection_cache.js`, `selection_outcome.js`: share one in-flight stage across
+  local processes, including its failure or uncacheable result. Attempt outcomes
+  are addressed only by an observed generation ID, never used as a successful
+  stage cache or a failure cache for a later independent request. Missing owner
+  outcomes remain unknown without an automatic replacement submission. Journal
+  records older than 24 hours are removed when another outcome is published.
 - `topic_compilation.js`: discover recordings, search SRT/XML evidence, build a
   reviewable cross-recording plan, and compile the selected windows.
 - `event_manifest.js`: normalize detector output into one event contract and

@@ -32,7 +32,7 @@ describe('selection stage cache', () => {
     const failed = jest.fn().mockRejectedValue(new Error('upstream failure'));
     await expect(withSelectionCache(options, failed)).rejects.toThrow('upstream failure');
     expect(failed).toHaveBeenCalledTimes(1);
-    expect(fs.readdirSync(directory)).toEqual([]);
+    expect(fs.readdirSync(directory).filter(name => name !== '.attempt-outcomes')).toEqual([]);
   });
 
   test('does not persist incomplete results and selectively replaces an old incomplete cache', async () => {
@@ -40,7 +40,7 @@ describe('selection stage cache', () => {
     const unfinished = jest.fn().mockResolvedValue({ text: 'valid looking fragment', meta: { finishReason: 'max_output_tokens' } });
     await withSelectionCache(options, unfinished);
     expect(unfinished).toHaveBeenCalledTimes(1);
-    expect(fs.readdirSync(directory)).toEqual([]);
+    expect(fs.readdirSync(directory).filter(name => name !== '.attempt-outcomes')).toEqual([]);
     const complete = jest.fn().mockResolvedValue({ text: 'valid complete output', meta: { finishReason: 'stop' } });
     await withSelectionCache(options, complete);
     const file = path.join(directory, fs.readdirSync(directory).find(name => name.endsWith('.json')));

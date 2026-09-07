@@ -78,7 +78,7 @@ describe('selection usage accounting', () => {
       expect(diagnostics.requests.reduce((sum, row) => sum + row.promptTokens, 0)).toBe(100);
       expect(diagnostics.requests.reduce((sum, row) => sum + row.requestCount, 0)).toBe(1);
       expect(diagnostics.requests.every(row => row.status === 'failure')).toBe(true);
-      expect(fs.readdirSync(directory)).toEqual([]);
+      expect(fs.readdirSync(directory).filter(name => name !== '.attempt-outcomes')).toEqual([]);
     } finally { generate.mockRestore(); fs.rmSync(directory, { recursive: true, force: true }); }
   });
 

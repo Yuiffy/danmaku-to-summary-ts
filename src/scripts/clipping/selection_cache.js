@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { hasIncompleteTextGeneration } = require('../text_attempt_diagnostics');
+const { publishGenerationOutcome, readGenerationOutcome, consumeGenerationOutcome, serializeGenerationError } = require('./selection_outcome');
 const inFlight = new Map();
 
 function processAlive(pid) {
@@ -56,12 +57,28 @@ async function withSelectionCache(options, generate) {
         const existing = reusable();
         if (existing) return existing;
         const lock = `${file}.lock`;
+        const generationId = crypto.randomUUID();
         let ownsLock = false;
+        let followedOwner = null;
+        let joinedOutcome = null;
         try {
             fs.mkdirSync(options.directory, { recursive: true });
             while (!ownsLock) {
+                if (followedOwner) {
+                    joinedOutcome = readGenerationOutcome(file, followedOwner.generationId);
+                    if (joinedOutcome) break;
+                    const available = reusable();
+                    if (available) return available;
+                    try {
+                        const owner = JSON.parse(fs.readFileSync(lock, 'utf8'));
+                        if (!processAlive(owner.pid) || owner.pid !== followedOwner.pid
+                            || owner.generationId !== followedOwner.generationId || owner.createdAt !== followedOwner.createdAt) break;
+                    } catch { break; }
+                    await waitForCacheChange(file);
+                    continue;
+                }
                 try {
-                    fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, createdAt: Date.now() }), { flag: 'wx' });
+                    fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, createdAt: Date.now(), generationId }), { flag: 'wx' });
                     ownsLock = true;
                 } catch (error) {
                     if (error.code !== 'EEXIST') throw error;
@@ -70,6 +87,7 @@ async function withSelectionCache(options, generate) {
                     try {
                         const owner = JSON.parse(fs.readFileSync(lock, 'utf8'));
                         if (!processAlive(owner.pid)) { fs.unlinkSync(lock); continue; }
+                        followedOwner = owner;
                     } catch {
                         // Another writer may still be writing its lock metadata.
                         try { if (Date.now() - fs.statSync(lock).mtimeMs > 30000) fs.unlinkSync(lock); } catch { /* raced release */ }
@@ -79,24 +97,39 @@ async function withSelectionCache(options, generate) {
             }
         } catch (error) {
             (options.log || console.warn)(`Selection cache unavailable: ${error.message}`);
-            return generate();
+            if (!followedOwner) return generate();
         }
         try {
+            // A concurrent consumer must not turn its owner's failed attempt into a new submission.
+            if (followedOwner) {
+                joinedOutcome ||= readGenerationOutcome(file, followedOwner.generationId);
+                if (joinedOutcome) return consumeGenerationOutcome(joinedOutcome, key, followedOwner.generationId);
+                const available = reusable();
+                if (available) return available;
+                return consumeGenerationOutcome(null, key, followedOwner.generationId);
+            }
             const available = reusable();
             if (available) return available;
-            const result = await generate();
+            let result;
+            try { result = await generate(); } catch (error) {
+                publishGenerationOutcome(file, generationId, { kind: 'failure', error: serializeGenerationError(error) }, options.log);
+                throw error;
+            }
+            let persisted = false;
             if (!hasIncompleteTextGeneration(result?.meta) && options.validate(result)) {
                 const temporary = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
                 try {
                     fs.writeFileSync(temporary, JSON.stringify({ version: 1, key,
                         generatedAt: new Date().toISOString(), result }), 'utf8');
                     fs.renameSync(temporary, file);
+                    persisted = true;
                 } catch (error) {
                     (options.log || console.warn)(`Selection cache write failed: ${error.message}`);
                 } finally {
                     try { fs.unlinkSync(temporary); } catch { /* already renamed */ }
                 }
             }
+            if (!persisted) publishGenerationOutcome(file, generationId, { kind: 'result', result }, options.log);
             return { ...result, meta: { ...result.meta, selectionCache: { hit: false, key } } };
         } finally {
             if (ownsLock) { try { fs.unlinkSync(lock); } catch { /* already removed */ } }

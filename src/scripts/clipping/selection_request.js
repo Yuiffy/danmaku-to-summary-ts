@@ -16,7 +16,7 @@ function recordSelectionDiagnostic(diagnostics, context, result = null, error = 
     const usage = reused ? { ...zero, knownUsage: zero, usageUnknown: false, attemptCount: 0, requestCount: 0 } : originalUsage;
     diagnostics.requests ||= [];
     diagnostics.requests.push({ ...context, ...usage, status: error ? 'failure' : 'success', cacheHit,
-        ...(joinedFailure ? { joinedRequest: true } : {}),
+        ...(joinedFailure ? { joinedRequest: true, joinedGenerationId: error?.selectionCache?.generationId || null } : {}),
         model: result?.meta?.model || last.model || context.model || null,
         provider: last.provider || context.provider, apiModeUsed: last.apiModeUsed || null,
         requestId: reused ? null : last.requestId || null, responseId: reused ? null : last.responseId || null,
