@@ -584,13 +584,13 @@ describe('topic_clipper', () => {
 
   test('probes video resolution through a hidden file process without a shell', async () => {
     const childProcess = require('child_process');
-    const execFileSync = jest.spyOn(childProcess, 'execFileSync')
-      .mockReturnValue('1920,1080\n');
+    const execFile = jest.spyOn(childProcess, 'execFile')
+      .mockImplementation((...args: any[]) => { args.at(-1)(null, '1920,1080\n'); return {} as any; });
 
     try {
       await expect(topicClipper.getVideoResolution('C:/clips/clip with spaces.mp4', 'C:/Program Files/ffmpeg/ffprobe.exe'))
         .resolves.toEqual({ width: 1920, height: 1080 });
-      expect(execFileSync).toHaveBeenCalledWith(
+      expect(execFile).toHaveBeenCalledWith(
         'C:/Program Files/ffmpeg/ffprobe.exe',
         [
           '-v', 'error',
@@ -603,11 +603,42 @@ describe('topic_clipper', () => {
           encoding: 'utf8',
           timeout: 10000,
           windowsHide: true,
-          stdio: ['ignore', 'pipe', 'pipe']
-        })
+          shell: false
+        }),
+        expect.any(Function)
       );
     } finally {
-      execFileSync.mockRestore();
+      execFile.mockRestore();
+    }
+  });
+
+  test('reuses one asynchronous probe per source version and invalidates changed files and failures', async () => {
+    const childProcess = require('child_process');
+    const dir = makeTempDir();
+    const media = path.join(dir, 'source.mp4');
+    fs.writeFileSync(media, 'source');
+    let fail = false;
+    const execFile = jest.spyOn(childProcess, 'execFile').mockImplementation((...args: any[]) => {
+      setImmediate(() => args.at(-1)(fail ? new Error('probe failed') : null, '1280,720\n'));
+      return {} as any;
+    });
+    try {
+      const results = await Promise.all(Array.from({ length: 5 }, () => topicClipper.getVideoResolution(media)));
+      expect(results).toEqual(Array(5).fill({ width: 1280, height: 720 }));
+      expect(execFile).toHaveBeenCalledTimes(1);
+      await topicClipper.getVideoResolution(media);
+      expect(execFile).toHaveBeenCalledTimes(1);
+      fs.appendFileSync(media, 'changed');
+      fail = true;
+      await expect(topicClipper.getVideoResolution(media)).resolves.toEqual({ width: 1920, height: 1080 });
+      fail = false;
+      await expect(topicClipper.getVideoResolution(media)).resolves.toEqual({ width: 1280, height: 720 });
+      expect(execFile).toHaveBeenCalledTimes(3);
+      await topicClipper.getVideoResolution(media, 'another-ffprobe');
+      expect(execFile).toHaveBeenCalledTimes(4);
+    } finally {
+      execFile.mockRestore();
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 

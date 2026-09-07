@@ -444,7 +444,7 @@ export class SupplementaryReplyWorkflow {
   }
 
   async executeSupplementalComicReply(task: DelayedReplyTask): Promise<void> {
-    if (task.supplementalReplyId || task.supplementalCompletedAt) {
+    if (task.mainReplyHasImage || task.supplementalReplyId || task.supplementalCompletedAt) {
       this.logger.info('补图回复已完成，继续确认汇总动态回复', {
         taskId: task.taskId,
         dynamicId: task.repliedDynamicId,
@@ -530,13 +530,6 @@ export class SupplementaryReplyWorkflow {
 
       if (task.comicWaitCount >= SupplementaryReplyWorkflow.MAX_SUPPLEMENTAL_COMIC_WAIT_COUNT) {
         task.error = `补图等待达到上限 (${task.comicWaitCount}/${SupplementaryReplyWorkflow.MAX_SUPPLEMENTAL_COMIC_WAIT_COUNT})，停止等待`;
-        this.ports.artifactResolver.writeComicGenerationFailureMeta(
-          comicImagePath,
-          task.error,
-          task.taskId,
-          task.roomId,
-          task.repliedDynamicId
-        );
         await this.ports.store.updateTask(task.taskId, {
           error: task.error,
           comicWaitCount: task.comicWaitCount

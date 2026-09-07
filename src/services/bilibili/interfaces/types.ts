@@ -220,6 +220,10 @@ export interface DelayedReplyTask {
   repliedDynamicId?: string;
   /** 已发布的回复ID */
   replyId?: string;
+  /** Persisted before publishing so interrupted sends are not automatically repeated. */
+  mainReplyState?: 'ready' | 'publishing' | 'published' | 'unknown';
+  /** Records actual main-reply delivery, not whether an image was merely planned. */
+  mainReplyHasImage?: boolean;
   /** 补图回复ID */
   supplementalReplyId?: string;
   /** 补图回复完成时间 */

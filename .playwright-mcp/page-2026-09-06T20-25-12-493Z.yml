@@ -1,0 +1,1550 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - text: For the complete documentation index, see
+    - link "llms.txt" [ref=e3] [cursor=pointer]:
+      - /url: /llms.txt
+    - text: . Markdown versions of documentation pages are available by appending
+    - code [ref=e4]: .md
+    - text: to the page URL.
+  - banner [ref=e5]:
+    - generic [ref=e6]:
+      - link [ref=e7] [cursor=pointer]:
+        - /url: /
+        - img "OpenAI Developers" [ref=e8]
+      - generic [ref=e9]:
+        - button "Search the API docs" [ref=e10] [cursor=pointer]
+        - button "Toggle menu" [ref=e14] [cursor=pointer]
+  - generic [ref=e18]:
+    - generic [ref=e19]:
+      - generic [ref=e20]: Primary navigation
+      - generic [ref=e21]:
+        - tablist "Primary navigation" [ref=e22]:
+          - tab "API" [selected] [ref=e23] [cursor=pointer]
+          - tab "Codex" [ref=e24] [cursor=pointer]
+          - tab "ChatGPT" [ref=e25] [cursor=pointer]
+          - tab "Resources" [ref=e26] [cursor=pointer]
+        - button "Toggle light and dark theme" [ref=e28] [cursor=pointer]
+    - generic [ref=e31]:
+      - generic [ref=e35]:
+        - generic [ref=e36]:
+          - generic [ref=e37]: Search docs
+          - textbox "Search docs" [ref=e38]:
+            - /placeholder: Start searching
+        - generic [ref=e41]:
+          - heading "Suggested" [level=3] [ref=e42]
+          - generic [ref=e43]:
+            - button "responses create" [ref=e44] [cursor=pointer]
+            - button "reasoning_effort" [ref=e45] [cursor=pointer]
+            - button "realtime" [ref=e46] [cursor=pointer]
+            - button "prompt caching" [ref=e47] [cursor=pointer]
+      - generic [ref=e48]:
+        - generic [ref=e49]:
+          - button "Overview" [ref=e50] [cursor=pointer]
+          - button "Models" [ref=e51] [cursor=pointer]
+          - button "Agents" [ref=e52] [cursor=pointer]
+          - button "Tools" [ref=e53] [cursor=pointer]
+          - button "Voice & Audio" [ref=e54] [cursor=pointer]
+          - button "Production" [ref=e55] [cursor=pointer]
+          - button "API reference" [ref=e56] [cursor=pointer]
+        - generic [ref=e57]:
+          - list [ref=e59]:
+            - listitem [ref=e60]:
+              - link "Model catalog" [ref=e61] [cursor=pointer]:
+                - /url: /api/docs/models
+          - generic [ref=e62]:
+            - heading "Choose a model" [level=3] [ref=e63]
+            - list [ref=e64]:
+              - listitem [ref=e65]:
+                - link "Pricing" [ref=e66] [cursor=pointer]:
+                  - /url: /api/docs/pricing
+              - listitem [ref=e67]:
+                - link "Model selection" [ref=e68] [cursor=pointer]:
+                  - /url: /api/docs/guides/model-selection
+          - generic [ref=e69]:
+            - heading "Text and code" [level=3] [ref=e70]
+            - list [ref=e71]:
+              - listitem [ref=e72]:
+                - link "Text generation" [ref=e73] [cursor=pointer]:
+                  - /url: /api/docs/guides/text
+              - listitem [ref=e74]:
+                - link "Code generation" [ref=e75] [cursor=pointer]:
+                  - /url: /api/docs/guides/code-generation
+              - listitem [ref=e76]:
+                - link "Structured output" [ref=e77] [cursor=pointer]:
+                  - /url: /api/docs/guides/structured-outputs
+          - generic [ref=e78]:
+            - heading "Prompting" [level=3] [ref=e79]
+            - list [ref=e80]:
+              - listitem [ref=e81]:
+                - link "Overview" [ref=e82] [cursor=pointer]:
+                  - /url: /api/docs/guides/prompting
+              - listitem [ref=e83]:
+                - link "Prompt engineering" [ref=e84] [cursor=pointer]:
+                  - /url: /api/docs/guides/prompt-engineering
+              - listitem [ref=e85]:
+                - link "Citation formatting" [ref=e86] [cursor=pointer]:
+                  - /url: /api/docs/guides/citation-formatting
+              - listitem [ref=e87]:
+                - link "Migration guide" [ref=e88] [cursor=pointer]:
+                  - /url: /api/docs/guides/prompting/migrate-from-prompt-object
+              - listitem [ref=e89]:
+                - link "Prompt generation" [ref=e90] [cursor=pointer]:
+                  - /url: /api/docs/guides/prompt-generation
+              - listitem [ref=e91]:
+                - link "Frontend prompting" [ref=e92] [cursor=pointer]:
+                  - /url: /api/docs/guides/frontend-prompt
+          - generic [ref=e93]:
+            - heading "Reasoning" [level=3] [ref=e94]
+            - list [ref=e95]:
+              - listitem [ref=e96]:
+                - link "Reasoning models" [ref=e97] [cursor=pointer]:
+                  - /url: /api/docs/guides/reasoning
+              - listitem [ref=e98]:
+                - link "Reasoning best practices" [ref=e99] [cursor=pointer]:
+                  - /url: /api/docs/guides/reasoning-best-practices
+          - generic [ref=e100]:
+            - heading "Images and video" [level=3] [ref=e101]
+            - list [ref=e102]:
+              - listitem [ref=e103]:
+                - group [ref=e104]:
+                  - link "Images and vision" [ref=e106] [cursor=pointer]:
+                    - /url: /api/docs/guides/images-vision
+              - listitem [ref=e109]:
+                - link "Image generation" [ref=e110] [cursor=pointer]:
+                  - /url: /api/docs/guides/image-generation
+              - listitem [ref=e111]:
+                - link "Video generation" [ref=e112] [cursor=pointer]:
+                  - /url: /api/docs/guides/video-generation
+          - generic [ref=e113]:
+            - heading "Realtime and audio" [level=3] [ref=e114]
+            - list [ref=e115]:
+              - listitem [ref=e116]:
+                - link "Audio and speech" [ref=e117] [cursor=pointer]:
+                  - /url: /api/docs/guides/audio
+              - listitem [ref=e118]:
+                - link "Overview" [ref=e119] [cursor=pointer]:
+                  - /url: /api/docs/guides/realtime
+              - listitem [ref=e120]:
+                - link "Voice agents" [ref=e121] [cursor=pointer]:
+                  - /url: /api/docs/guides/voice-agents
+          - generic [ref=e122]:
+            - heading "Specialized models" [level=3] [ref=e123]
+            - list [ref=e124]:
+              - listitem [ref=e125]:
+                - link "Deep research" [ref=e126] [cursor=pointer]:
+                  - /url: /api/docs/guides/deep-research
+              - listitem [ref=e127]:
+                - link "Embeddings" [ref=e128] [cursor=pointer]:
+                  - /url: /api/docs/guides/embeddings
+              - listitem [ref=e129]:
+                - link "Moderation" [ref=e130] [cursor=pointer]:
+                  - /url: /api/docs/guides/moderation
+    - link "API Dashboard" [ref=e135] [cursor=pointer]:
+      - /url: https://platform.openai.com/login
+  - main [ref=e142]:
+    - generic [ref=e145]:
+      - generic [ref=e146]:
+        - button "Responses" [ref=e152] [cursor=pointer]
+        - generic [ref=e157]:
+          - heading "Structured model outputs" [level=1] [ref=e159]
+          - paragraph [ref=e160]: Ensure text responses from the model adhere to a JSON schema you define.
+          - button "Copy Page" [ref=e164] [cursor=pointer]
+      - article [ref=e169]:
+        - paragraph [ref=e170]: JSON is one of the most widely used formats in the world for applications to exchange data.
+        - paragraph [ref=e171]:
+          - text: Structured Outputs is a feature that ensures the model will always generate responses that adhere to your supplied
+          - link "JSON Schema" [ref=e172] [cursor=pointer]:
+            - /url: https://json-schema.org/overview/what-is-jsonschema
+          - text: ", so you don’t need to worry about the model omitting a required key, or hallucinating an invalid enum value."
+        - paragraph [ref=e173]: "Some benefits of Structured Outputs include:"
+        - list [ref=e174]:
+          - listitem [ref=e175]:
+            - strong [ref=e176]: "Reliable type-safety:"
+            - text: No need to validate or retry incorrectly formatted responses
+          - listitem [ref=e177]:
+            - strong [ref=e178]: "Explicit refusals:"
+            - text: Safety-based model refusals are now programmatically detectable
+          - listitem [ref=e179]:
+            - strong [ref=e180]: "Simpler prompting:"
+            - text: No need for strongly worded prompts to achieve consistent formatting
+        - paragraph [ref=e181]:
+          - text: In addition to supporting JSON Schema in the REST API, the OpenAI SDKs for
+          - link "Python" [ref=e182] [cursor=pointer]:
+            - /url: https://github.com/openai/openai-python/blob/main/helpers.md#structured-outputs-parsing-helpers
+          - text: and
+          - link "JavaScript" [ref=e183] [cursor=pointer]:
+            - /url: https://github.com/openai/openai-node/blob/master/helpers.md#structured-outputs-parsing-helpers
+          - text: also make it easy to define object schemas using
+          - link "Pydantic" [ref=e184] [cursor=pointer]:
+            - /url: https://docs.pydantic.dev/latest/
+          - text: and
+          - link "Zod" [ref=e185] [cursor=pointer]:
+            - /url: https://zod.dev/
+          - text: respectively. Below, you can see how to extract information from unstructured text that conforms to a schema defined in code.
+        - generic [ref=e188]:
+          - generic [ref=e189]:
+            - generic [ref=e190]: Getting a structured response
+            - button "Python" [ref=e192] [cursor=pointer]
+            - button "Copy code" [ref=e197] [cursor=pointer]
+          - code [ref=e207]:
+            - generic [aria-hidden] [ref=e208]:
+              - generic [ref=e209]: "1"
+              - generic [ref=e210]: "2"
+              - generic [ref=e211]: "3"
+              - generic [ref=e212]: "4"
+              - generic [ref=e213]: "5"
+              - generic [ref=e214]: "6"
+              - generic [ref=e215]: "7"
+              - generic [ref=e216]: "8"
+              - generic [ref=e217]: "9"
+              - generic [ref=e218]: "10"
+              - generic [ref=e219]: "11"
+              - generic [ref=e220]: "12"
+              - generic [ref=e221]: "13"
+              - generic [ref=e222]: "14"
+              - generic [ref=e223]: "15"
+              - generic [ref=e224]: "16"
+              - generic [ref=e225]: "17"
+              - generic [ref=e226]: "18"
+              - generic [ref=e227]: "19"
+              - generic [ref=e228]: "20"
+              - generic [ref=e229]: "21"
+              - generic [ref=e230]: "22"
+              - generic [ref=e231]: "23"
+              - generic [ref=e232]: "24"
+              - text: "25"
+            - generic [ref=e233]: from openai import OpenAI
+            - generic [ref=e234]: from pydantic import BaseModel
+            - generic [ref=e235]: client = OpenAI()
+            - generic [ref=e236]: "class CalendarEvent(BaseModel):"
+            - generic [ref=e237]: "name: str"
+            - generic [ref=e238]: "date: str"
+            - generic [ref=e239]: "participants: list[str]"
+            - generic [ref=e240]: response = client.responses.parse(
+            - generic [ref=e241]: model="gpt-6-astra",
+            - generic [ref=e242]: input=[
+            - generic [ref=e243]: "{\"role\": \"system\", \"content\": \"Extract the event information.\"},"
+            - generic [ref=e244]: "{"
+            - generic [ref=e245]: "\"role\": \"user\","
+            - generic [ref=e246]: "\"content\": \"Alice and Bob are going to a science fair on Friday.\","
+            - generic [ref=e247]: "},"
+            - generic [ref=e248]: "],"
+            - generic [ref=e249]: text_format=CalendarEvent,
+            - generic [ref=e250]: )
+            - generic [ref=e251]: event = response.output_parsed
+        - heading "Supported models Copy link to supported models" [level=3] [ref=e252]:
+          - generic [ref=e253]: Supported models
+          - button "Copy link to supported models" [ref=e254] [cursor=pointer]
+        - paragraph [ref=e257]:
+          - text: Structured Outputs is available in our
+          - link "latest large language models" [ref=e258] [cursor=pointer]:
+            - /url: /api/docs/models
+          - text: ", starting with GPT-4o. For new projects, start with"
+          - link [ref=e259] [cursor=pointer]:
+            - /url: /api/docs/models/gpt-6-astra
+            - code [ref=e260]: gpt-6-astra
+          - text: . Older models like
+          - code [ref=e261]: gpt-4-turbo
+          - text: and earlier may use
+          - link "JSON mode" [ref=e262] [cursor=pointer]:
+            - /url: "#json-mode"
+          - text: instead.
+        - heading [level=2] [ref=e265] [cursor=pointer]:
+          - paragraph [ref=e266]: When to use Structured Outputs via function calling vs via text.format
+        - paragraph [ref=e268]: "Structured Outputs is available in two forms in the OpenAI API:"
+        - list [ref=e269]:
+          - listitem [ref=e270]:
+            - text: When using
+            - link "function calling" [ref=e271] [cursor=pointer]:
+              - /url: /api/docs/guides/function-calling
+          - listitem [ref=e272]:
+            - text: When using a
+            - code [ref=e273]: json_schema
+            - text: response format
+        - paragraph [ref=e274]: Function calling is useful when you are building an application that bridges the models and functionality of your application.
+        - paragraph [ref=e275]: For example, you can give the model access to functions that query a database in order to build an AI assistant that can help users with their orders, or functions that can interact with the UI.
+        - paragraph [ref=e276]:
+          - text: Conversely, Structured Outputs via
+          - code [ref=e277]: response_format
+          - text: are more suitable when you want to indicate a structured schema for use when the model responds to the user, rather than when the model calls a tool.
+        - paragraph [ref=e278]: For example, if you are building a math tutoring application, you might want the assistant to respond to your user using a specific JSON Schema so that you can generate a UI that displays different parts of the model’s output in distinct ways.
+        - paragraph [ref=e279]: "Put simply:"
+        - list [ref=e281]:
+          - listitem [ref=e282]:
+            - text: If you are connecting the model to tools, functions, data, etc. in your system, then you should use function calling - If you want to structure the model’s output when it responds to the user, then you should use a structured
+            - code [ref=e283]: text.format
+        - generic [ref=e293]:
+          - paragraph [ref=e294]: The remainder of this guide will focus on non-function calling use cases in the Responses API. To learn more about how to use Structured Outputs with function calling, check out the
+          - link [ref=e295] [cursor=pointer]:
+            - /url: /api/docs/guides/function-calling#strict-mode
+            - paragraph [ref=e296]: Function Calling
+          - paragraph [ref=e297]: guide.
+        - heading "Structured Outputs vs JSON mode Copy link to structured outputs vs json mode" [level=3] [ref=e298]:
+          - generic [ref=e299]: Structured Outputs vs JSON mode
+          - button "Copy link to structured outputs vs json mode" [ref=e300] [cursor=pointer]
+        - paragraph [ref=e303]:
+          - text: Structured Outputs is the evolution of
+          - link "JSON mode" [ref=e304] [cursor=pointer]:
+            - /url: "#json-mode"
+          - text: . While both ensure valid JSON is produced, only Structured Outputs ensure schema adherence. Both Structured Outputs and JSON mode are supported in the Responses API, Chat Completions API, Assistants API, Fine-tuning API and Batch API.
+        - paragraph [ref=e305]: We recommend always using Structured Outputs instead of JSON mode when possible.
+        - paragraph [ref=e306]:
+          - text: However, Structured Outputs with
+          - code [ref=e307]: "response_format: {type: \"json_schema\", ...}"
+          - text: is only supported with the
+          - code [ref=e308]: gpt-4o-mini
+          - text: ","
+          - code [ref=e309]: gpt-4o-mini-2024-07-18
+          - text: ", and"
+          - code [ref=e310]: gpt-4o-2024-08-06
+          - text: model snapshots and later.
+        - table [ref=e313]:
+          - rowgroup [ref=e314]:
+            - row [ref=e315]:
+              - columnheader [ref=e316]
+              - columnheader "Structured Outputs" [ref=e317]
+              - columnheader "JSON Mode" [ref=e318]
+          - rowgroup [ref=e319]:
+            - row [ref=e320]:
+              - cell [ref=e321]:
+                - strong [ref=e322]: Outputs valid JSON
+              - cell "Yes" [ref=e323]
+              - cell "Yes" [ref=e324]
+            - row [ref=e325]:
+              - cell [ref=e326]:
+                - strong [ref=e327]: Adheres to schema
+              - cell [ref=e328]:
+                - text: Yes (see
+                - link "supported schemas" [ref=e329] [cursor=pointer]:
+                  - /url: "#supported-schemas"
+                - text: )
+              - cell "No" [ref=e330]
+            - row [ref=e331]:
+              - cell [ref=e332]:
+                - strong [ref=e333]: Compatible models
+              - cell [ref=e334]:
+                - code [ref=e335]: gpt-4o-mini
+                - text: ","
+                - code [ref=e336]: gpt-4o-2024-08-06
+                - text: ", and later"
+              - cell [ref=e337]:
+                - code [ref=e338]: gpt-3.5-turbo
+                - text: ","
+                - code [ref=e339]: gpt-4-*
+                - text: ","
+                - code [ref=e340]: gpt-4o-*
+                - text: ", and compatible GPT-5 models"
+            - row [ref=e341]:
+              - cell [ref=e342]:
+                - strong [ref=e343]: Enabling
+              - cell [ref=e344]:
+                - code [ref=e345]: "text: { format: { type: \"json_schema\", \"strict\": true, \"schema\": ... } }"
+              - cell [ref=e346]:
+                - code [ref=e347]: "text: { format: { type: \"json_object\" } }"
+        - heading "Examples Copy link to examples" [level=2] [ref=e348]:
+          - generic [ref=e349]: Examples
+          - button "Copy link to examples" [ref=e350] [cursor=pointer]
+        - generic [ref=e353]:
+          - group "Content switcher" [ref=e356]:
+            - radio "Chain of thought" [checked] [ref=e357] [cursor=pointer]
+            - radio "Structured data extraction" [ref=e358] [cursor=pointer]
+            - radio "UI generation" [ref=e359] [cursor=pointer]
+            - radio "Moderation" [ref=e360] [cursor=pointer]
+          - generic [ref=e362]:
+            - heading "Chain of thought" [level=3] [ref=e363]
+            - paragraph [ref=e364]: You can ask the model to output an answer in a structured, step-by-step way, to guide the user through the solution.
+            - generic [ref=e367]:
+              - generic [ref=e368]:
+                - generic [ref=e369]: Structured Outputs for chain-of-thought math tutoring
+                - button "Python" [ref=e371] [cursor=pointer]
+                - button "Copy code" [ref=e376] [cursor=pointer]
+              - code [ref=e386]:
+                - generic [aria-hidden] [ref=e387]:
+                  - generic [ref=e388]: "1"
+                  - generic [ref=e389]: "2"
+                  - generic [ref=e390]: "3"
+                  - generic [ref=e391]: "4"
+                  - generic [ref=e392]: "5"
+                  - generic [ref=e393]: "6"
+                  - generic [ref=e394]: "7"
+                  - generic [ref=e395]: "8"
+                  - generic [ref=e396]: "9"
+                  - generic [ref=e397]: "10"
+                  - generic [ref=e398]: "11"
+                  - generic [ref=e399]: "12"
+                  - generic [ref=e400]: "13"
+                  - generic [ref=e401]: "14"
+                  - generic [ref=e402]: "15"
+                  - generic [ref=e403]: "16"
+                  - generic [ref=e404]: "17"
+                  - generic [ref=e405]: "18"
+                  - generic [ref=e406]: "19"
+                  - generic [ref=e407]: "20"
+                  - generic [ref=e408]: "21"
+                  - generic [ref=e409]: "22"
+                  - generic [ref=e410]: "23"
+                  - generic [ref=e411]: "24"
+                  - generic [ref=e412]: "25"
+                  - generic [ref=e413]: "26"
+                  - generic [ref=e414]: "27"
+                  - generic [ref=e415]: "28"
+                  - text: "29"
+                - generic [ref=e416]: from openai import OpenAI
+                - generic [ref=e417]: from pydantic import BaseModel
+                - generic [ref=e418]: client = OpenAI()
+                - generic [ref=e419]: "class Step(BaseModel):"
+                - generic [ref=e420]: "explanation: str"
+                - generic [ref=e421]: "output: str"
+                - generic [ref=e422]: "class MathReasoning(BaseModel):"
+                - generic [ref=e423]: "steps: list[Step]"
+                - generic [ref=e424]: "final_answer: str"
+                - generic [ref=e425]: response = client.responses.parse(
+                - generic [ref=e426]: model="gpt-6-astra",
+                - generic [ref=e427]: input=[
+                - generic [ref=e428]: "{"
+                - generic [ref=e429]: "\"role\": \"system\","
+                - generic [ref=e430]: "\"content\": \"You are a helpful math tutor. Guide the user through the solution step by step.\","
+                - generic [ref=e431]: "},"
+                - generic [ref=e432]: "{\"role\": \"user\", \"content\": \"how can I solve 8x + 7 = -23\"},"
+                - generic [ref=e433]: "],"
+                - generic [ref=e434]: text_format=MathReasoning,
+                - generic [ref=e435]: )
+                - generic [ref=e436]: math_reasoning = response.output_parsed
+            - heading "Example response" [level=4] [ref=e437]
+            - generic [ref=e438]:
+              - code [ref=e439]:
+                - generic [ref=e440]: "{"
+                - generic [ref=e441]: "\"steps\": ["
+                - generic [ref=e442]: "{"
+                - generic [ref=e443]: "\"explanation\": \"Start with the equation 8x + 7 = -23.\","
+                - generic [ref=e444]: "\"output\": \"8x + 7 = -23\""
+                - generic [ref=e445]: "},"
+                - generic [ref=e446]: "{"
+                - generic [ref=e447]: "\"explanation\": \"Subtract 7 from both sides to isolate the term with the variable.\","
+                - generic [ref=e448]: "\"output\": \"8x = -23 - 7\""
+                - generic [ref=e449]: "},"
+                - generic [ref=e450]: "{"
+                - generic [ref=e451]: "\"explanation\": \"Simplify the right side of the equation.\","
+                - generic [ref=e452]: "\"output\": \"8x = -30\""
+                - generic [ref=e453]: "},"
+                - generic [ref=e454]: "{"
+                - generic [ref=e455]: "\"explanation\": \"Divide both sides by 8 to solve for x.\","
+                - generic [ref=e456]: "\"output\": \"x = -30 / 8\""
+                - generic [ref=e457]: "},"
+                - generic [ref=e458]: "{"
+                - generic [ref=e459]: "\"explanation\": \"Simplify the fraction.\","
+                - generic [ref=e460]: "\"output\": \"x = -15 / 4\""
+                - generic [ref=e461]: "}"
+                - generic [ref=e462]: "],"
+                - generic [ref=e463]: "\"final_answer\": \"x = -15 / 4\""
+                - generic [ref=e464]: "}"
+              - generic [ref=e465]:
+                - button "Copy code to clipboard" [ref=e466] [cursor=pointer]
+                - status [ref=e469]
+        - generic [ref=e470]:
+          - heading "How to use Structured Outputs with text.format" [level=2] [ref=e472] [cursor=pointer]
+          - 'button "Step 1: Define your schema" [ref=e476] [cursor=pointer]'
+          - 'button "Step 2: Supply your schema in the API call" [ref=e483] [cursor=pointer]'
+          - 'button "Step 3: Handle edge cases" [ref=e490] [cursor=pointer]'
+        - heading [level=3] [ref=e496] [cursor=pointer]:
+          - paragraph [ref=e497]: Refusals with Structured Outputs
+        - paragraph [ref=e499]:
+          - text: When using Structured Outputs with user-generated input, OpenAI models may occasionally refuse to fulfill the request for safety reasons. Since a refusal does not necessarily follow the schema you have supplied in
+          - code [ref=e500]: response_format
+          - text: ", the API response will include a new field called"
+          - code [ref=e501]: refusal
+          - text: to indicate that the model refused to fulfill the request.
+        - paragraph [ref=e502]:
+          - text: When the
+          - code [ref=e503]: refusal
+          - text: property appears in your output object, you might present the refusal in your UI, or include conditional logic in code that consumes the response to handle the case of a refused request.
+        - generic [ref=e506]:
+          - generic [ref=e507]:
+            - button "Python" [ref=e509] [cursor=pointer]
+            - button "Copy code" [ref=e514] [cursor=pointer]
+          - code [ref=e524]:
+            - generic [aria-hidden] [ref=e525]:
+              - generic [ref=e526]: "1"
+              - generic [ref=e527]: "2"
+              - generic [ref=e528]: "3"
+              - generic [ref=e529]: "4"
+              - generic [ref=e530]: "5"
+              - generic [ref=e531]: "6"
+              - generic [ref=e532]: "7"
+              - generic [ref=e533]: "8"
+              - generic [ref=e534]: "9"
+              - generic [ref=e535]: "10"
+              - generic [ref=e536]: "11"
+              - generic [ref=e537]: "12"
+              - generic [ref=e538]: "13"
+              - generic [ref=e539]: "14"
+              - generic [ref=e540]: "15"
+              - generic [ref=e541]: "16"
+              - generic [ref=e542]: "17"
+              - generic [ref=e543]: "18"
+              - generic [ref=e544]: "19"
+              - generic [ref=e545]: "20"
+              - generic [ref=e546]: "21"
+              - generic [ref=e547]: "22"
+              - generic [ref=e548]: "23"
+              - generic [ref=e549]: "24"
+              - generic [ref=e550]: "25"
+              - generic [ref=e551]: "26"
+              - generic [ref=e552]: "27"
+              - generic [ref=e553]: "28"
+              - generic [ref=e554]: "29"
+              - generic [ref=e555]: "30"
+              - generic [ref=e556]: "31"
+              - generic [ref=e557]: "32"
+              - generic [ref=e558]: "33"
+              - generic [ref=e559]: "34"
+              - generic [ref=e560]: "35"
+              - text: "36"
+            - generic [ref=e561]: "class Step(BaseModel):"
+            - generic [ref=e562]: "explanation: str"
+            - generic [ref=e563]: "output: str"
+            - generic [ref=e564]: "class MathReasoning(BaseModel):"
+            - generic [ref=e565]: "steps: list[Step]"
+            - generic [ref=e566]: "final_answer: str"
+            - generic [ref=e567]: response = client.responses.parse(
+            - generic [ref=e568]: model="gpt-6-astra",
+            - generic [ref=e569]: input=[
+            - generic [ref=e570]: "{"
+            - generic [ref=e571]: "\"role\": \"system\","
+            - generic [ref=e572]: "\"content\": \"You are a helpful math tutor. Guide the user through the solution step by step.\","
+            - generic [ref=e573]: "},"
+            - generic [ref=e574]: "{\"role\": \"user\", \"content\": \"how can I solve 8x + 7 = -23\"},"
+            - generic [ref=e575]: "],"
+            - generic [ref=e576]: text_format=MathReasoning,
+            - generic [ref=e577]: )
+            - generic [ref=e578]: "for output in response.output:"
+            - generic [ref=e579]: "if output.type != \"message\":"
+            - generic [ref=e580]: continue
+            - generic [ref=e581]: "for item in output.content:"
+            - generic [ref=e582]: "if item.type == \"refusal\":"
+            - generic [ref=e583]: "# If the model refuses to respond, you will get a refusal message"
+            - generic [ref=e584]: print(item.refusal)
+            - generic [ref=e585]: continue
+            - generic [ref=e586]: "if not item.parsed:"
+            - generic [ref=e587]: raise Exception("Could not parse response")
+            - generic [ref=e588]: print(item.parsed)
+        - paragraph [ref=e589]: "The API response from a refusal will look something like this:"
+        - generic [ref=e593]:
+          - button "Copy code" [ref=e595] [cursor=pointer]
+          - code [ref=e604]:
+            - generic [aria-hidden] [ref=e605]:
+              - generic [ref=e606]: "1"
+              - generic [ref=e607]: "2"
+              - generic [ref=e608]: "3"
+              - generic [ref=e609]: "4"
+              - generic [ref=e610]: "5"
+              - generic [ref=e611]: "6"
+              - generic [ref=e612]: "7"
+              - generic [ref=e613]: "8"
+              - generic [ref=e614]: "9"
+              - generic [ref=e615]: "10"
+              - generic [ref=e616]: "11"
+              - generic [ref=e617]: "12"
+              - generic [ref=e618]: "13"
+              - generic [ref=e619]: "14"
+              - generic [ref=e620]: "15"
+              - generic [ref=e621]: "16"
+              - generic [ref=e622]: "17"
+              - generic [ref=e623]: "18"
+              - generic [ref=e624]: "19"
+              - generic [ref=e625]: "20"
+              - generic [ref=e626]: "21"
+              - generic [ref=e627]: "22"
+              - generic [ref=e628]: "23"
+              - generic [ref=e629]: "24"
+              - generic [ref=e630]: "25"
+              - generic [ref=e631]: "26"
+              - generic [ref=e632]: "27"
+              - generic [ref=e633]: "28"
+              - generic [ref=e634]: "29"
+              - generic [ref=e635]: "30"
+              - generic [ref=e636]: "31"
+              - text: "32"
+            - generic [ref=e637]: "{"
+            - generic [ref=e638]: "\"id\": \"resp_1234567890\","
+            - generic [ref=e639]: "\"object\": \"response\","
+            - generic [ref=e640]: "\"created_at\": 1721596428,"
+            - generic [ref=e641]: "\"status\": \"completed\","
+            - generic [ref=e642]: "\"completed_at\": 1721596429,"
+            - generic [ref=e643]: "\"error\": null,"
+            - generic [ref=e644]: "\"incomplete_details\": null,"
+            - generic [ref=e645]: "\"input\": [],"
+            - generic [ref=e646]: "\"instructions\": null,"
+            - generic [ref=e647]: "\"max_output_tokens\": null,"
+            - generic [ref=e648]: "\"model\": \"gpt-4o-2024-08-06\","
+            - generic [ref=e649]: "\"output\": [{"
+            - generic [ref=e650]: "\"id\": \"msg_1234567890\","
+            - generic [ref=e651]: "\"type\": \"message\","
+            - generic [ref=e652]: "\"role\": \"assistant\","
+            - generic [ref=e653]: "\"content\": ["
+            - generic [ref=e654]: "{"
+            - generic [ref=e655]: "\"type\": \"refusal\","
+            - generic [ref=e656]: "\"refusal\": \"I'm sorry, I cannot assist with that request.\""
+            - generic [ref=e657]: "}"
+            - generic [ref=e658]: "]"
+            - generic [ref=e659]: "}],"
+            - generic [ref=e660]: "\"usage\": {"
+            - generic [ref=e661]: "\"input_tokens\": 81,"
+            - generic [ref=e662]: "\"output_tokens\": 11,"
+            - generic [ref=e663]: "\"total_tokens\": 92,"
+            - generic [ref=e664]: "\"output_tokens_details\": {"
+            - generic [ref=e665]: "\"reasoning_tokens\": 0,"
+            - generic [ref=e666]: "}"
+            - generic [ref=e667]: "},"
+            - generic [ref=e668]: "}"
+        - heading [level=3] [ref=e670] [cursor=pointer]:
+          - paragraph [ref=e671]: Tips and best practices
+        - heading "Handling user-generated input Copy link to handling user generated input" [level=4] [ref=e673]:
+          - generic [ref=e674]: Handling user-generated input
+          - button "Copy link to handling user generated input" [ref=e675] [cursor=pointer]
+        - paragraph [ref=e678]: If your application is using user-generated input, make sure your prompt includes instructions on how to handle situations where the input cannot result in a valid response.
+        - paragraph [ref=e679]: The model will always try to adhere to the provided schema, which can result in hallucinations if the input is completely unrelated to the schema.
+        - paragraph [ref=e680]: You could include language in your prompt to specify that you want to return empty parameters, or a specific sentence, if the model detects that the input is incompatible with the task.
+        - heading "Handling mistakes Copy link to handling mistakes" [level=4] [ref=e681]:
+          - generic [ref=e682]: Handling mistakes
+          - button "Copy link to handling mistakes" [ref=e683] [cursor=pointer]
+        - paragraph [ref=e686]:
+          - text: Structured Outputs can still contain mistakes. If you see mistakes, try adjusting your instructions, providing examples in the system instructions, or splitting tasks into simpler subtasks. Refer to the
+          - link "prompt engineering guide" [ref=e687] [cursor=pointer]:
+            - /url: /api/docs/guides/prompt-engineering
+          - text: for more guidance on how to tweak your inputs.
+        - heading "Avoid JSON schema divergence Copy link to avoid json schema divergence" [level=4] [ref=e688]:
+          - generic [ref=e689]: Avoid JSON schema divergence
+          - button "Copy link to avoid json schema divergence" [ref=e690] [cursor=pointer]
+        - paragraph [ref=e693]: To prevent your JSON Schema and corresponding types in your programming language from diverging, we strongly recommend using the native Pydantic/zod sdk support.
+        - paragraph [ref=e694]: If you prefer to specify the JSON schema directly, you could add CI rules that flag when either the JSON schema or underlying data objects are edited, or add a CI step that auto-generates the JSON Schema from type definitions (or vice-versa).
+        - heading "Streaming Copy link to streaming" [level=2] [ref=e695]:
+          - generic [ref=e696]: Streaming
+          - button "Copy link to streaming" [ref=e697] [cursor=pointer]
+        - paragraph [ref=e700]: You can use streaming to process model responses or function call arguments as they are being generated, and parse them as structured data.
+        - paragraph [ref=e701]: That way, you don’t have to wait for the entire response to complete before handling it. This is particularly useful if you would like to display JSON fields one by one, or handle function call arguments as soon as they are available.
+        - paragraph [ref=e702]: We recommend relying on the SDKs to handle streaming with Structured Outputs.
+        - generic [ref=e705]:
+          - generic [ref=e706]:
+            - button "Python" [ref=e708] [cursor=pointer]
+            - button "Copy code" [ref=e713] [cursor=pointer]
+          - code [ref=e723]:
+            - generic [aria-hidden] [ref=e724]:
+              - generic [ref=e725]: "1"
+              - generic [ref=e726]: "2"
+              - generic [ref=e727]: "3"
+              - generic [ref=e728]: "4"
+              - generic [ref=e729]: "5"
+              - generic [ref=e730]: "6"
+              - generic [ref=e731]: "7"
+              - generic [ref=e732]: "8"
+              - generic [ref=e733]: "9"
+              - generic [ref=e734]: "10"
+              - generic [ref=e735]: "11"
+              - generic [ref=e736]: "12"
+              - generic [ref=e737]: "13"
+              - generic [ref=e738]: "14"
+              - generic [ref=e739]: "15"
+              - generic [ref=e740]: "16"
+              - generic [ref=e741]: "17"
+              - generic [ref=e742]: "18"
+              - generic [ref=e743]: "19"
+              - generic [ref=e744]: "20"
+              - generic [ref=e745]: "21"
+              - generic [ref=e746]: "22"
+              - generic [ref=e747]: "23"
+              - generic [ref=e748]: "24"
+              - generic [ref=e749]: "25"
+              - generic [ref=e750]: "26"
+              - generic [ref=e751]: "27"
+              - generic [ref=e752]: "28"
+              - generic [ref=e753]: "29"
+              - generic [ref=e754]: "30"
+              - generic [ref=e755]: "31"
+              - generic [ref=e756]: "32"
+              - generic [ref=e757]: "33"
+              - generic [ref=e758]: "34"
+              - generic [ref=e759]: "35"
+              - generic [ref=e760]: "36"
+              - text: "37"
+            - generic [ref=e761]: from typing import List
+            - generic [ref=e762]: from openai import OpenAI
+            - generic [ref=e763]: from pydantic import BaseModel
+            - generic [ref=e764]: "class EntitiesModel(BaseModel):"
+            - generic [ref=e765]: "attributes: List[str]"
+            - generic [ref=e766]: "colors: List[str]"
+            - generic [ref=e767]: "animals: List[str]"
+            - generic [ref=e768]: client = OpenAI()
+            - generic [ref=e769]: with client.responses.stream(
+            - generic [ref=e770]: model="gpt-6-astra",
+            - generic [ref=e771]: input=[
+            - generic [ref=e772]: "{\"role\": \"system\", \"content\": \"Extract entities from the input text\"},"
+            - generic [ref=e773]: "{"
+            - generic [ref=e774]: "\"role\": \"user\","
+            - generic [ref=e775]: "\"content\": \"The quick brown fox jumps over the lazy dog with piercing blue eyes\","
+            - generic [ref=e776]: "},"
+            - generic [ref=e777]: "],"
+            - generic [ref=e778]: text_format=EntitiesModel,
+            - generic [ref=e779]: ") as stream:"
+            - generic [ref=e780]: "for event in stream:"
+            - generic [ref=e781]: "if event.type == \"response.refusal.delta\":"
+            - generic [ref=e782]: print(event.delta, end="")
+            - generic [ref=e783]: "elif event.type == \"response.output_text.delta\":"
+            - generic [ref=e784]: print(event.delta, end="")
+            - generic [ref=e785]: "elif event.type == \"response.error\":"
+            - generic [ref=e786]: print(event.error, end="")
+            - generic [ref=e787]: "elif event.type == \"response.completed\":"
+            - generic [ref=e788]: "print(\"Completed\") # print(event.response.output)"
+            - generic [ref=e789]: final_response = stream.get_final_response()
+            - generic [ref=e790]: print(final_response)
+        - heading "Supported schemas Copy link to supported schemas" [level=2] [ref=e791]:
+          - generic [ref=e792]: Supported schemas
+          - button "Copy link to supported schemas" [ref=e793] [cursor=pointer]
+        - paragraph [ref=e796]:
+          - text: Structured Outputs supports a subset of the
+          - link "JSON Schema" [ref=e797] [cursor=pointer]:
+            - /url: https://json-schema.org/docs
+          - text: language.
+        - heading "Supported types" [level=4] [ref=e798]
+        - paragraph [ref=e799]: "The following types are supported for Structured Outputs:"
+        - list [ref=e800]:
+          - listitem [ref=e801]: String
+          - listitem [ref=e802]: Number
+          - listitem [ref=e803]: Boolean
+          - listitem [ref=e804]: Integer
+          - listitem [ref=e805]: Object
+          - listitem [ref=e806]: Array
+          - listitem [ref=e807]: Enum
+          - listitem [ref=e808]: anyOf
+        - heading "Supported properties" [level=4] [ref=e809]
+        - paragraph [ref=e810]: "In addition to specifying the type of a property, you can specify a selection of additional constraints:"
+        - paragraph [ref=e811]:
+          - strong [ref=e812]:
+            - text: Supported
+            - code [ref=e813]: string
+            - text: "properties:"
+        - list [ref=e814]:
+          - listitem [ref=e815]:
+            - code [ref=e816]: pattern
+            - text: — A regular expression that the string must match.
+          - listitem [ref=e817]:
+            - code [ref=e818]: format
+            - text: "— Predefined formats for strings. Currently supported:"
+            - list [ref=e819]:
+              - listitem [ref=e820]:
+                - code [ref=e821]: date-time
+              - listitem [ref=e822]:
+                - code [ref=e823]: time
+              - listitem [ref=e824]:
+                - code [ref=e825]: date
+              - listitem [ref=e826]:
+                - code [ref=e827]: duration
+              - listitem [ref=e828]:
+                - code [ref=e829]: email
+              - listitem [ref=e830]:
+                - code [ref=e831]: hostname
+              - listitem [ref=e832]:
+                - code [ref=e833]: ipv4
+              - listitem [ref=e834]:
+                - code [ref=e835]: ipv6
+              - listitem [ref=e836]:
+                - code [ref=e837]: uuid
+        - paragraph [ref=e838]:
+          - strong [ref=e839]:
+            - text: Supported
+            - code [ref=e840]: number
+            - text: "properties:"
+        - list [ref=e841]:
+          - listitem [ref=e842]:
+            - code [ref=e843]: multipleOf
+            - text: — The number must be a multiple of this value.
+          - listitem [ref=e844]:
+            - code [ref=e845]: maximum
+            - text: — The number must be less than or equal to this value.
+          - listitem [ref=e846]:
+            - code [ref=e847]: exclusiveMaximum
+            - text: — The number must be less than this value.
+          - listitem [ref=e848]:
+            - code [ref=e849]: minimum
+            - text: — The number must be greater than or equal to this value.
+          - listitem [ref=e850]:
+            - code [ref=e851]: exclusiveMinimum
+            - text: — The number must be greater than this value.
+        - paragraph [ref=e852]:
+          - strong [ref=e853]:
+            - text: Supported
+            - code [ref=e854]: array
+            - text: "properties:"
+        - list [ref=e855]:
+          - listitem [ref=e856]:
+            - code [ref=e857]: minItems
+            - text: — The array must have at least this many items.
+          - listitem [ref=e858]:
+            - code [ref=e859]: maxItems
+            - text: — The array must have at most this many items.
+        - paragraph [ref=e860]: "Here are some examples on how you can use these type restrictions:"
+        - generic [ref=e861]:
+          - group "Content switcher" [ref=e864]:
+            - radio "String Restrictions" [checked] [ref=e865] [cursor=pointer]
+            - radio "Number Restrictions" [ref=e866] [cursor=pointer]
+          - generic [ref=e871]:
+            - button "Copy code" [ref=e873] [cursor=pointer]
+            - code [ref=e882]:
+              - generic [aria-hidden] [ref=e883]:
+                - generic [ref=e884]: "1"
+                - generic [ref=e885]: "2"
+                - generic [ref=e886]: "3"
+                - generic [ref=e887]: "4"
+                - generic [ref=e888]: "5"
+                - generic [ref=e889]: "6"
+                - generic [ref=e890]: "7"
+                - generic [ref=e891]: "8"
+                - generic [ref=e892]: "9"
+                - generic [ref=e893]: "10"
+                - generic [ref=e894]: "11"
+                - generic [ref=e895]: "12"
+                - generic [ref=e896]: "13"
+                - generic [ref=e897]: "14"
+                - generic [ref=e898]: "15"
+                - generic [ref=e899]: "16"
+                - generic [ref=e900]: "17"
+                - generic [ref=e901]: "18"
+                - generic [ref=e902]: "19"
+                - generic [ref=e903]: "20"
+                - generic [ref=e904]: "21"
+                - generic [ref=e905]: "22"
+                - generic [ref=e906]: "23"
+                - generic [ref=e907]: "24"
+                - generic [ref=e908]: "25"
+                - generic [ref=e909]: "26"
+                - text: "27"
+              - generic [ref=e910]: "{"
+              - generic [ref=e911]: "\"name\": \"user_data\","
+              - generic [ref=e912]: "\"strict\": true,"
+              - generic [ref=e913]: "\"schema\": {"
+              - generic [ref=e914]: "\"type\": \"object\","
+              - generic [ref=e915]: "\"properties\": {"
+              - generic [ref=e916]: "\"name\": {"
+              - generic [ref=e917]: "\"type\": \"string\","
+              - generic [ref=e918]: "\"description\": \"The name of the user\""
+              - generic [ref=e919]: "},"
+              - generic [ref=e920]: "\"username\": {"
+              - generic [ref=e921]: "\"type\": \"string\","
+              - generic [ref=e922]: "\"description\": \"The username of the user. Must start with @\","
+              - generic [ref=e923]: "\"pattern\": \"^@[a-zA-Z0-9_]+$\""
+              - generic [ref=e924]: "},"
+              - generic [ref=e925]: "\"email\": {"
+              - generic [ref=e926]: "\"type\": \"string\","
+              - generic [ref=e927]: "\"description\": \"The email of the user\","
+              - generic [ref=e928]: "\"format\": \"email\""
+              - generic [ref=e929]: "}"
+              - generic [ref=e930]: "},"
+              - generic [ref=e931]: "\"additionalProperties\": false,"
+              - generic [ref=e932]: "\"required\": ["
+              - generic [ref=e933]: "\"name\", \"username\", \"email\""
+              - generic [ref=e934]: "]"
+              - generic [ref=e935]: "}"
+              - generic [ref=e936]: "}"
+        - paragraph [ref=e946]:
+          - text: Note these constraints are
+          - link "not yet supported for fine-tuned models" [ref=e947] [cursor=pointer]:
+            - /url: "#some-type-specific-keywords-are-not-yet-supported"
+          - text: .
+        - heading [level=4] [ref=e948]:
+          - text: Root objects must not be
+          - code [ref=e949]: anyOf
+          - text: and must be an object
+        - paragraph [ref=e950]:
+          - text: Note that the root level object of a schema must be an object, and not use
+          - code [ref=e951]: anyOf
+          - text: . A pattern that appears in Zod (as one example) is using a discriminated union, which produces an
+          - code [ref=e952]: anyOf
+          - text: "at the top level. So code such as the following won’t work:"
+        - generic [ref=e955]:
+          - button "Copy code" [ref=e957] [cursor=pointer]
+          - code [ref=e966]:
+            - generic [aria-hidden] [ref=e967]:
+              - generic [ref=e968]: "1"
+              - generic [ref=e969]: "2"
+              - generic [ref=e970]: "3"
+              - generic [ref=e971]: "4"
+              - generic [ref=e972]: "5"
+              - generic [ref=e973]: "6"
+              - generic [ref=e974]: "7"
+              - generic [ref=e975]: "8"
+              - generic [ref=e976]: "9"
+              - generic [ref=e977]: "10"
+              - generic [ref=e978]: "11"
+              - generic [ref=e979]: "12"
+              - generic [ref=e980]: "13"
+              - generic [ref=e981]: "14"
+              - generic [ref=e982]: "15"
+              - generic [ref=e983]: "16"
+              - text: "17"
+            - generic [ref=e984]: "import { z } from \"zod\";"
+            - generic [ref=e985]: "import { zodResponseFormat } from \"openai/helpers/zod\";"
+            - generic [ref=e986]: "const BaseResponseSchema = z.object({"
+            - generic [ref=e987]: /* ... */
+            - generic [ref=e988]: "});"
+            - generic [ref=e989]: "const UnsuccessfulResponseSchema = z.object({"
+            - generic [ref=e990]: /* ... */
+            - generic [ref=e991]: "});"
+            - generic [ref=e992]: const finalSchema = z.discriminatedUnion("status", [
+            - generic [ref=e993]: BaseResponseSchema,
+            - generic [ref=e994]: UnsuccessfulResponseSchema,
+            - generic [ref=e995]: "]);"
+            - generic [ref=e996]: // Invalid JSON Schema for Structured Outputs
+            - generic [ref=e997]: const json = zodResponseFormat(finalSchema, "final_schema");
+        - heading [level=4] [ref=e998]:
+          - text: All fields must be
+          - code [ref=e999]: required
+        - paragraph [ref=e1000]:
+          - text: To use Structured Outputs, all fields or function parameters must be specified as
+          - code [ref=e1001]: required
+          - text: .
+        - generic [ref=e1004]:
+          - button "Copy code" [ref=e1006] [cursor=pointer]
+          - code [ref=e1015]:
+            - generic [aria-hidden] [ref=e1016]:
+              - generic [ref=e1017]: "1"
+              - generic [ref=e1018]: "2"
+              - generic [ref=e1019]: "3"
+              - generic [ref=e1020]: "4"
+              - generic [ref=e1021]: "5"
+              - generic [ref=e1022]: "6"
+              - generic [ref=e1023]: "7"
+              - generic [ref=e1024]: "8"
+              - generic [ref=e1025]: "9"
+              - generic [ref=e1026]: "10"
+              - generic [ref=e1027]: "11"
+              - generic [ref=e1028]: "12"
+              - generic [ref=e1029]: "13"
+              - generic [ref=e1030]: "14"
+              - generic [ref=e1031]: "15"
+              - generic [ref=e1032]: "16"
+              - generic [ref=e1033]: "17"
+              - generic [ref=e1034]: "18"
+              - generic [ref=e1035]: "19"
+              - generic [ref=e1036]: "20"
+              - text: "21"
+            - generic [ref=e1037]: "{"
+            - generic [ref=e1038]: "\"name\": \"get_weather\","
+            - generic [ref=e1039]: "\"description\": \"Fetches the weather in the given location\","
+            - generic [ref=e1040]: "\"strict\": true,"
+            - generic [ref=e1041]: "\"parameters\": {"
+            - generic [ref=e1042]: "\"type\": \"object\","
+            - generic [ref=e1043]: "\"properties\": {"
+            - generic [ref=e1044]: "\"location\": {"
+            - generic [ref=e1045]: "\"type\": \"string\","
+            - generic [ref=e1046]: "\"description\": \"The location to get the weather for\""
+            - generic [ref=e1047]: "},"
+            - generic [ref=e1048]: "\"unit\": {"
+            - generic [ref=e1049]: "\"type\": \"string\","
+            - generic [ref=e1050]: "\"description\": \"The unit to return the temperature in\","
+            - generic [ref=e1051]: "\"enum\": [\"F\", \"C\"]"
+            - generic [ref=e1052]: "}"
+            - generic [ref=e1053]: "},"
+            - generic [ref=e1054]: "\"additionalProperties\": false,"
+            - generic [ref=e1055]: "\"required\": [\"location\", \"unit\"]"
+            - generic [ref=e1056]: "}"
+            - generic [ref=e1057]: "}"
+        - paragraph [ref=e1058]:
+          - text: Although all fields must be required (and the model will return a value for each parameter), it is possible to emulate an optional parameter by using a union type with
+          - code [ref=e1059]: "null"
+          - text: .
+        - generic [ref=e1062]:
+          - button "Copy code" [ref=e1064] [cursor=pointer]
+          - code [ref=e1073]:
+            - generic [aria-hidden] [ref=e1074]:
+              - generic [ref=e1075]: "1"
+              - generic [ref=e1076]: "2"
+              - generic [ref=e1077]: "3"
+              - generic [ref=e1078]: "4"
+              - generic [ref=e1079]: "5"
+              - generic [ref=e1080]: "6"
+              - generic [ref=e1081]: "7"
+              - generic [ref=e1082]: "8"
+              - generic [ref=e1083]: "9"
+              - generic [ref=e1084]: "10"
+              - generic [ref=e1085]: "11"
+              - generic [ref=e1086]: "12"
+              - generic [ref=e1087]: "13"
+              - generic [ref=e1088]: "14"
+              - generic [ref=e1089]: "15"
+              - generic [ref=e1090]: "16"
+              - generic [ref=e1091]: "17"
+              - generic [ref=e1092]: "18"
+              - generic [ref=e1093]: "19"
+              - generic [ref=e1094]: "20"
+              - generic [ref=e1095]: "21"
+              - generic [ref=e1096]: "22"
+              - text: "23"
+            - generic [ref=e1097]: "{"
+            - generic [ref=e1098]: "\"name\": \"get_weather\","
+            - generic [ref=e1099]: "\"description\": \"Fetches the weather in the given location\","
+            - generic [ref=e1100]: "\"strict\": true,"
+            - generic [ref=e1101]: "\"parameters\": {"
+            - generic [ref=e1102]: "\"type\": \"object\","
+            - generic [ref=e1103]: "\"properties\": {"
+            - generic [ref=e1104]: "\"location\": {"
+            - generic [ref=e1105]: "\"type\": \"string\","
+            - generic [ref=e1106]: "\"description\": \"The location to get the weather for\""
+            - generic [ref=e1107]: "},"
+            - generic [ref=e1108]: "\"unit\": {"
+            - generic [ref=e1109]: "\"type\": [\"string\", \"null\"],"
+            - generic [ref=e1110]: "\"description\": \"The unit to return the temperature in\","
+            - generic [ref=e1111]: "\"enum\": [\"F\", \"C\"]"
+            - generic [ref=e1112]: "}"
+            - generic [ref=e1113]: "},"
+            - generic [ref=e1114]: "\"additionalProperties\": false,"
+            - generic [ref=e1115]: "\"required\": ["
+            - generic [ref=e1116]: "\"location\", \"unit\""
+            - generic [ref=e1117]: "]"
+            - generic [ref=e1118]: "}"
+            - generic [ref=e1119]: "}"
+        - heading "Objects have limitations on nesting depth and size" [level=4] [ref=e1120]
+        - paragraph [ref=e1121]: A schema may have up to 5000 object properties total, with up to 10 levels of nesting.
+        - heading "Limitations on total string size" [level=4] [ref=e1122]
+        - paragraph [ref=e1123]: In a schema, total string length of all property names, definition names, enum values, and const values cannot exceed 120,000 characters.
+        - heading "Limitations on enum size" [level=4] [ref=e1124]
+        - paragraph [ref=e1125]: A schema may have up to 1000 enum values across all enum properties.
+        - paragraph [ref=e1126]: For a single enum property with string values, the total string length of all enum values cannot exceed 15,000 characters when there are more than 250 enum values.
+        - heading [level=4] [ref=e1127]:
+          - code [ref=e1128]: "additionalProperties: false"
+          - text: must always be set in objects
+        - paragraph [ref=e1129]:
+          - code [ref=e1130]: additionalProperties
+          - text: controls whether it is allowable for an object to contain additional keys / values that were not defined in the JSON Schema.
+        - paragraph [ref=e1131]:
+          - text: Structured Outputs only supports generating specified keys / values, so we require developers to set
+          - code [ref=e1132]: "additionalProperties: false"
+          - text: to opt into Structured Outputs.
+        - generic [ref=e1135]:
+          - button "Copy code" [ref=e1137] [cursor=pointer]
+          - code [ref=e1146]:
+            - generic [aria-hidden] [ref=e1147]:
+              - generic [ref=e1148]: "1"
+              - generic [ref=e1149]: "2"
+              - generic [ref=e1150]: "3"
+              - generic [ref=e1151]: "4"
+              - generic [ref=e1152]: "5"
+              - generic [ref=e1153]: "6"
+              - generic [ref=e1154]: "7"
+              - generic [ref=e1155]: "8"
+              - generic [ref=e1156]: "9"
+              - generic [ref=e1157]: "10"
+              - generic [ref=e1158]: "11"
+              - generic [ref=e1159]: "12"
+              - generic [ref=e1160]: "13"
+              - generic [ref=e1161]: "14"
+              - generic [ref=e1162]: "15"
+              - generic [ref=e1163]: "16"
+              - generic [ref=e1164]: "17"
+              - generic [ref=e1165]: "18"
+              - generic [ref=e1166]: "19"
+              - generic [ref=e1167]: "20"
+              - generic [ref=e1168]: "21"
+              - generic [ref=e1169]: "22"
+              - text: "23"
+            - generic [ref=e1170]: "{"
+            - generic [ref=e1171]: "\"name\": \"get_weather\","
+            - generic [ref=e1172]: "\"description\": \"Fetches the weather in the given location\","
+            - generic [ref=e1173]: "\"strict\": true,"
+            - generic [ref=e1174]: "\"schema\": {"
+            - generic [ref=e1175]: "\"type\": \"object\","
+            - generic [ref=e1176]: "\"properties\": {"
+            - generic [ref=e1177]: "\"location\": {"
+            - generic [ref=e1178]: "\"type\": \"string\","
+            - generic [ref=e1179]: "\"description\": \"The location to get the weather for\""
+            - generic [ref=e1180]: "},"
+            - generic [ref=e1181]: "\"unit\": {"
+            - generic [ref=e1182]: "\"type\": \"string\","
+            - generic [ref=e1183]: "\"description\": \"The unit to return the temperature in\","
+            - generic [ref=e1184]: "\"enum\": [\"F\", \"C\"]"
+            - generic [ref=e1185]: "}"
+            - generic [ref=e1186]: "},"
+            - generic [ref=e1187]: "\"additionalProperties\": false,"
+            - generic [ref=e1188]: "\"required\": ["
+            - generic [ref=e1189]: "\"location\", \"unit\""
+            - generic [ref=e1190]: "]"
+            - generic [ref=e1191]: "}"
+            - generic [ref=e1192]: "}"
+        - heading "Key ordering" [level=4] [ref=e1193]
+        - paragraph [ref=e1194]: When using Structured Outputs, outputs will be produced in the same order as the ordering of keys in the schema.
+        - heading "Some type-specific keywords are not yet supported" [level=4] [ref=e1195]
+        - list [ref=e1196]:
+          - listitem [ref=e1197]:
+            - strong [ref=e1198]: "Composition:"
+            - code [ref=e1199]: allOf
+            - text: ","
+            - code [ref=e1200]: not
+            - text: ","
+            - code [ref=e1201]: dependentRequired
+            - text: ","
+            - code [ref=e1202]: dependentSchemas
+            - text: ","
+            - code [ref=e1203]: if
+            - text: ","
+            - code [ref=e1204]: then
+            - text: ","
+            - code [ref=e1205]: else
+        - paragraph [ref=e1206]: "For fine-tuned models, we additionally do not support the following:"
+        - list [ref=e1207]:
+          - listitem [ref=e1208]:
+            - strong [ref=e1209]: "For strings:"
+            - code [ref=e1210]: minLength
+            - text: ","
+            - code [ref=e1211]: maxLength
+            - text: ","
+            - code [ref=e1212]: pattern
+            - text: ","
+            - code [ref=e1213]: format
+          - listitem [ref=e1214]:
+            - strong [ref=e1215]: "For numbers:"
+            - code [ref=e1216]: minimum
+            - text: ","
+            - code [ref=e1217]: maximum
+            - text: ","
+            - code [ref=e1218]: multipleOf
+          - listitem [ref=e1219]:
+            - strong [ref=e1220]: "For objects:"
+            - code [ref=e1221]: patternProperties
+          - listitem [ref=e1222]:
+            - strong [ref=e1223]: "For arrays:"
+            - code [ref=e1224]: minItems
+            - text: ","
+            - code [ref=e1225]: maxItems
+        - paragraph [ref=e1226]:
+          - text: If you turn on Structured Outputs by supplying
+          - code [ref=e1227]: "strict: true"
+          - text: and call the API with an unsupported JSON Schema, you will receive an error.
+        - heading [level=4] [ref=e1228]:
+          - text: For
+          - code [ref=e1229]: anyOf
+          - text: ", the nested schemas must each be a valid JSON Schema per this subset"
+        - paragraph [ref=e1230]: "Here’s an example supported anyOf schema:"
+        - generic [ref=e1233]:
+          - button "Copy code" [ref=e1235] [cursor=pointer]
+          - code [ref=e1244]:
+            - generic [aria-hidden] [ref=e1245]:
+              - generic [ref=e1246]: "1"
+              - generic [ref=e1247]: "2"
+              - generic [ref=e1248]: "3"
+              - generic [ref=e1249]: "4"
+              - generic [ref=e1250]: "5"
+              - generic [ref=e1251]: "6"
+              - generic [ref=e1252]: "7"
+              - generic [ref=e1253]: "8"
+              - generic [ref=e1254]: "9"
+              - generic [ref=e1255]: "10"
+              - generic [ref=e1256]: "11"
+              - generic [ref=e1257]: "12"
+              - generic [ref=e1258]: "13"
+              - generic [ref=e1259]: "14"
+              - generic [ref=e1260]: "15"
+              - generic [ref=e1261]: "16"
+              - generic [ref=e1262]: "17"
+              - generic [ref=e1263]: "18"
+              - generic [ref=e1264]: "19"
+              - generic [ref=e1265]: "20"
+              - generic [ref=e1266]: "21"
+              - generic [ref=e1267]: "22"
+              - generic [ref=e1268]: "23"
+              - generic [ref=e1269]: "24"
+              - generic [ref=e1270]: "25"
+              - generic [ref=e1271]: "26"
+              - generic [ref=e1272]: "27"
+              - generic [ref=e1273]: "28"
+              - generic [ref=e1274]: "29"
+              - generic [ref=e1275]: "30"
+              - generic [ref=e1276]: "31"
+              - generic [ref=e1277]: "32"
+              - generic [ref=e1278]: "33"
+              - generic [ref=e1279]: "34"
+              - generic [ref=e1280]: "35"
+              - generic [ref=e1281]: "36"
+              - generic [ref=e1282]: "37"
+              - generic [ref=e1283]: "38"
+              - generic [ref=e1284]: "39"
+              - generic [ref=e1285]: "40"
+              - generic [ref=e1286]: "41"
+              - generic [ref=e1287]: "42"
+              - generic [ref=e1288]: "43"
+              - generic [ref=e1289]: "44"
+              - generic [ref=e1290]: "45"
+              - generic [ref=e1291]: "46"
+              - generic [ref=e1292]: "47"
+              - generic [ref=e1293]: "48"
+              - generic [ref=e1294]: "49"
+              - generic [ref=e1295]: "50"
+              - generic [ref=e1296]: "51"
+              - generic [ref=e1297]: "52"
+              - generic [ref=e1298]: "53"
+              - generic [ref=e1299]: "54"
+              - generic [ref=e1300]: "55"
+              - text: "56"
+            - generic [ref=e1301]: "{"
+            - generic [ref=e1302]: "\"type\": \"object\","
+            - generic [ref=e1303]: "\"properties\": {"
+            - generic [ref=e1304]: "\"item\": {"
+            - generic [ref=e1305]: "\"anyOf\": ["
+            - generic [ref=e1306]: "{"
+            - generic [ref=e1307]: "\"type\": \"object\","
+            - generic [ref=e1308]: "\"description\": \"The user object to insert into the database\","
+            - generic [ref=e1309]: "\"properties\": {"
+            - generic [ref=e1310]: "\"name\": {"
+            - generic [ref=e1311]: "\"type\": \"string\","
+            - generic [ref=e1312]: "\"description\": \"The name of the user\""
+            - generic [ref=e1313]: "},"
+            - generic [ref=e1314]: "\"age\": {"
+            - generic [ref=e1315]: "\"type\": \"number\","
+            - generic [ref=e1316]: "\"description\": \"The age of the user\""
+            - generic [ref=e1317]: "}"
+            - generic [ref=e1318]: "},"
+            - generic [ref=e1319]: "\"additionalProperties\": false,"
+            - generic [ref=e1320]: "\"required\": ["
+            - generic [ref=e1321]: "\"name\","
+            - generic [ref=e1322]: "\"age\""
+            - generic [ref=e1323]: "]"
+            - generic [ref=e1324]: "},"
+            - generic [ref=e1325]: "{"
+            - generic [ref=e1326]: "\"type\": \"object\","
+            - generic [ref=e1327]: "\"description\": \"The address object to insert into the database\","
+            - generic [ref=e1328]: "\"properties\": {"
+            - generic [ref=e1329]: "\"number\": {"
+            - generic [ref=e1330]: "\"type\": \"string\","
+            - generic [ref=e1331]: "\"description\": \"The number of the address. Eg. for 123 main st, this would be 123\""
+            - generic [ref=e1332]: "},"
+            - generic [ref=e1333]: "\"street\": {"
+            - generic [ref=e1334]: "\"type\": \"string\","
+            - generic [ref=e1335]: "\"description\": \"The street name. Eg. for 123 main st, this would be main st\""
+            - generic [ref=e1336]: "},"
+            - generic [ref=e1337]: "\"city\": {"
+            - generic [ref=e1338]: "\"type\": \"string\","
+            - generic [ref=e1339]: "\"description\": \"The city of the address\""
+            - generic [ref=e1340]: "}"
+            - generic [ref=e1341]: "},"
+            - generic [ref=e1342]: "\"additionalProperties\": false,"
+            - generic [ref=e1343]: "\"required\": ["
+            - generic [ref=e1344]: "\"number\","
+            - generic [ref=e1345]: "\"street\","
+            - generic [ref=e1346]: "\"city\""
+            - generic [ref=e1347]: "]"
+            - generic [ref=e1348]: "}"
+            - generic [ref=e1349]: "]"
+            - generic [ref=e1350]: "}"
+            - generic [ref=e1351]: "},"
+            - generic [ref=e1352]: "\"additionalProperties\": false,"
+            - generic [ref=e1353]: "\"required\": ["
+            - generic [ref=e1354]: "\"item\""
+            - generic [ref=e1355]: "]"
+            - generic [ref=e1356]: "}"
+        - heading "Definitions are supported" [level=4] [ref=e1357]
+        - paragraph [ref=e1358]: You can use definitions to define subschemas which are referenced throughout your schema. The following is a simple example.
+        - generic [ref=e1361]:
+          - button "Copy code" [ref=e1363] [cursor=pointer]
+          - code [ref=e1372]:
+            - generic [aria-hidden] [ref=e1373]:
+              - generic [ref=e1374]: "1"
+              - generic [ref=e1375]: "2"
+              - generic [ref=e1376]: "3"
+              - generic [ref=e1377]: "4"
+              - generic [ref=e1378]: "5"
+              - generic [ref=e1379]: "6"
+              - generic [ref=e1380]: "7"
+              - generic [ref=e1381]: "8"
+              - generic [ref=e1382]: "9"
+              - generic [ref=e1383]: "10"
+              - generic [ref=e1384]: "11"
+              - generic [ref=e1385]: "12"
+              - generic [ref=e1386]: "13"
+              - generic [ref=e1387]: "14"
+              - generic [ref=e1388]: "15"
+              - generic [ref=e1389]: "16"
+              - generic [ref=e1390]: "17"
+              - generic [ref=e1391]: "18"
+              - generic [ref=e1392]: "19"
+              - generic [ref=e1393]: "20"
+              - generic [ref=e1394]: "21"
+              - generic [ref=e1395]: "22"
+              - generic [ref=e1396]: "23"
+              - generic [ref=e1397]: "24"
+              - generic [ref=e1398]: "25"
+              - generic [ref=e1399]: "26"
+              - generic [ref=e1400]: "27"
+              - generic [ref=e1401]: "28"
+              - generic [ref=e1402]: "29"
+              - generic [ref=e1403]: "30"
+              - generic [ref=e1404]: "31"
+              - generic [ref=e1405]: "32"
+              - generic [ref=e1406]: "33"
+              - generic [ref=e1407]: "34"
+              - generic [ref=e1408]: "35"
+              - generic [ref=e1409]: "36"
+              - text: "37"
+            - generic [ref=e1410]: "{"
+            - generic [ref=e1411]: "\"type\": \"object\","
+            - generic [ref=e1412]: "\"properties\": {"
+            - generic [ref=e1413]: "\"steps\": {"
+            - generic [ref=e1414]: "\"type\": \"array\","
+            - generic [ref=e1415]: "\"items\": {"
+            - generic [ref=e1416]: "\"$ref\": \"#/$defs/step\""
+            - generic [ref=e1417]: "}"
+            - generic [ref=e1418]: "},"
+            - generic [ref=e1419]: "\"final_answer\": {"
+            - generic [ref=e1420]: "\"type\": \"string\""
+            - generic [ref=e1421]: "}"
+            - generic [ref=e1422]: "},"
+            - generic [ref=e1423]: "\"$defs\": {"
+            - generic [ref=e1424]: "\"step\": {"
+            - generic [ref=e1425]: "\"type\": \"object\","
+            - generic [ref=e1426]: "\"properties\": {"
+            - generic [ref=e1427]: "\"explanation\": {"
+            - generic [ref=e1428]: "\"type\": \"string\""
+            - generic [ref=e1429]: "},"
+            - generic [ref=e1430]: "\"output\": {"
+            - generic [ref=e1431]: "\"type\": \"string\""
+            - generic [ref=e1432]: "}"
+            - generic [ref=e1433]: "},"
+            - generic [ref=e1434]: "\"required\": ["
+            - generic [ref=e1435]: "\"explanation\","
+            - generic [ref=e1436]: "\"output\""
+            - generic [ref=e1437]: "],"
+            - generic [ref=e1438]: "\"additionalProperties\": false"
+            - generic [ref=e1439]: "}"
+            - generic [ref=e1440]: "},"
+            - generic [ref=e1441]: "\"required\": ["
+            - generic [ref=e1442]: "\"steps\","
+            - generic [ref=e1443]: "\"final_answer\""
+            - generic [ref=e1444]: "],"
+            - generic [ref=e1445]: "\"additionalProperties\": false"
+            - generic [ref=e1446]: "}"
+        - heading "Recursive schemas are supported" [level=4] [ref=e1447]
+        - paragraph [ref=e1448]:
+          - text: Sample recursive schema using
+          - code [ref=e1449]: "#"
+          - text: to indicate root recursion.
+        - generic [ref=e1452]:
+          - button "Copy code" [ref=e1454] [cursor=pointer]
+          - code [ref=e1463]:
+            - generic [aria-hidden] [ref=e1464]:
+              - generic [ref=e1465]: "1"
+              - generic [ref=e1466]: "2"
+              - generic [ref=e1467]: "3"
+              - generic [ref=e1468]: "4"
+              - generic [ref=e1469]: "5"
+              - generic [ref=e1470]: "6"
+              - generic [ref=e1471]: "7"
+              - generic [ref=e1472]: "8"
+              - generic [ref=e1473]: "9"
+              - generic [ref=e1474]: "10"
+              - generic [ref=e1475]: "11"
+              - generic [ref=e1476]: "12"
+              - generic [ref=e1477]: "13"
+              - generic [ref=e1478]: "14"
+              - generic [ref=e1479]: "15"
+              - generic [ref=e1480]: "16"
+              - generic [ref=e1481]: "17"
+              - generic [ref=e1482]: "18"
+              - generic [ref=e1483]: "19"
+              - generic [ref=e1484]: "20"
+              - generic [ref=e1485]: "21"
+              - generic [ref=e1486]: "22"
+              - generic [ref=e1487]: "23"
+              - generic [ref=e1488]: "24"
+              - generic [ref=e1489]: "25"
+              - generic [ref=e1490]: "26"
+              - generic [ref=e1491]: "27"
+              - generic [ref=e1492]: "28"
+              - generic [ref=e1493]: "29"
+              - generic [ref=e1494]: "30"
+              - generic [ref=e1495]: "31"
+              - generic [ref=e1496]: "32"
+              - generic [ref=e1497]: "33"
+              - generic [ref=e1498]: "34"
+              - generic [ref=e1499]: "35"
+              - generic [ref=e1500]: "36"
+              - generic [ref=e1501]: "37"
+              - generic [ref=e1502]: "38"
+              - generic [ref=e1503]: "39"
+              - generic [ref=e1504]: "40"
+              - generic [ref=e1505]: "41"
+              - generic [ref=e1506]: "42"
+              - generic [ref=e1507]: "43"
+              - generic [ref=e1508]: "44"
+              - generic [ref=e1509]: "45"
+              - generic [ref=e1510]: "46"
+              - text: "47"
+            - generic [ref=e1511]: "{"
+            - generic [ref=e1512]: "\"name\": \"ui\","
+            - generic [ref=e1513]: "\"description\": \"Dynamically generated UI\","
+            - generic [ref=e1514]: "\"strict\": true,"
+            - generic [ref=e1515]: "\"schema\": {"
+            - generic [ref=e1516]: "\"type\": \"object\","
+            - generic [ref=e1517]: "\"properties\": {"
+            - generic [ref=e1518]: "\"type\": {"
+            - generic [ref=e1519]: "\"type\": \"string\","
+            - generic [ref=e1520]: "\"description\": \"The type of the UI component\","
+            - generic [ref=e1521]: "\"enum\": [\"div\", \"button\", \"header\", \"section\", \"field\", \"form\"]"
+            - generic [ref=e1522]: "},"
+            - generic [ref=e1523]: "\"label\": {"
+            - generic [ref=e1524]: "\"type\": \"string\","
+            - generic [ref=e1525]: "\"description\": \"The label of the UI component, used for buttons or form fields\""
+            - generic [ref=e1526]: "},"
+            - generic [ref=e1527]: "\"children\": {"
+            - generic [ref=e1528]: "\"type\": \"array\","
+            - generic [ref=e1529]: "\"description\": \"Nested UI components\","
+            - generic [ref=e1530]: "\"items\": {"
+            - generic [ref=e1531]: "\"$ref\": \"#\""
+            - generic [ref=e1532]: "}"
+            - generic [ref=e1533]: "},"
+            - generic [ref=e1534]: "\"attributes\": {"
+            - generic [ref=e1535]: "\"type\": \"array\","
+            - generic [ref=e1536]: "\"description\": \"Arbitrary attributes for the UI component, suitable for any element\","
+            - generic [ref=e1537]: "\"items\": {"
+            - generic [ref=e1538]: "\"type\": \"object\","
+            - generic [ref=e1539]: "\"properties\": {"
+            - generic [ref=e1540]: "\"name\": {"
+            - generic [ref=e1541]: "\"type\": \"string\","
+            - generic [ref=e1542]: "\"description\": \"The name of the attribute, for example onClick or className\""
+            - generic [ref=e1543]: "},"
+            - generic [ref=e1544]: "\"value\": {"
+            - generic [ref=e1545]: "\"type\": \"string\","
+            - generic [ref=e1546]: "\"description\": \"The value of the attribute\""
+            - generic [ref=e1547]: "}"
+            - generic [ref=e1548]: "},"
+            - generic [ref=e1549]: "\"additionalProperties\": false,"
+            - generic [ref=e1550]: "\"required\": [\"name\", \"value\"]"
+            - generic [ref=e1551]: "}"
+            - generic [ref=e1552]: "}"
+            - generic [ref=e1553]: "},"
+            - generic [ref=e1554]: "\"required\": [\"type\", \"label\", \"children\", \"attributes\"],"
+            - generic [ref=e1555]: "\"additionalProperties\": false"
+            - generic [ref=e1556]: "}"
+            - generic [ref=e1557]: "}"
+        - paragraph [ref=e1558]: "Sample recursive schema using explicit recursion:"
+        - generic [ref=e1561]:
+          - button "Copy code" [ref=e1563] [cursor=pointer]
+          - code [ref=e1572]:
+            - generic [aria-hidden] [ref=e1573]:
+              - generic [ref=e1574]: "1"
+              - generic [ref=e1575]: "2"
+              - generic [ref=e1576]: "3"
+              - generic [ref=e1577]: "4"
+              - generic [ref=e1578]: "5"
+              - generic [ref=e1579]: "6"
+              - generic [ref=e1580]: "7"
+              - generic [ref=e1581]: "8"
+              - generic [ref=e1582]: "9"
+              - generic [ref=e1583]: "10"
+              - generic [ref=e1584]: "11"
+              - generic [ref=e1585]: "12"
+              - generic [ref=e1586]: "13"
+              - generic [ref=e1587]: "14"
+              - generic [ref=e1588]: "15"
+              - generic [ref=e1589]: "16"
+              - generic [ref=e1590]: "17"
+              - generic [ref=e1591]: "18"
+              - generic [ref=e1592]: "19"
+              - generic [ref=e1593]: "20"
+              - generic [ref=e1594]: "21"
+              - generic [ref=e1595]: "22"
+              - generic [ref=e1596]: "23"
+              - generic [ref=e1597]: "24"
+              - generic [ref=e1598]: "25"
+              - generic [ref=e1599]: "26"
+              - generic [ref=e1600]: "27"
+              - generic [ref=e1601]: "28"
+              - generic [ref=e1602]: "29"
+              - generic [ref=e1603]: "30"
+              - generic [ref=e1604]: "31"
+              - generic [ref=e1605]: "32"
+              - generic [ref=e1606]: "33"
+              - generic [ref=e1607]: "34"
+              - generic [ref=e1608]: "35"
+              - generic [ref=e1609]: "36"
+              - text: "37"
+            - generic [ref=e1610]: "{"
+            - generic [ref=e1611]: "\"type\": \"object\","
+            - generic [ref=e1612]: "\"properties\": {"
+            - generic [ref=e1613]: "\"linked_list\": {"
+            - generic [ref=e1614]: "\"$ref\": \"#/$defs/linked_list_node\""
+            - generic [ref=e1615]: "}"
+            - generic [ref=e1616]: "},"
+            - generic [ref=e1617]: "\"$defs\": {"
+            - generic [ref=e1618]: "\"linked_list_node\": {"
+            - generic [ref=e1619]: "\"type\": \"object\","
+            - generic [ref=e1620]: "\"properties\": {"
+            - generic [ref=e1621]: "\"value\": {"
+            - generic [ref=e1622]: "\"type\": \"number\""
+            - generic [ref=e1623]: "},"
+            - generic [ref=e1624]: "\"next\": {"
+            - generic [ref=e1625]: "\"anyOf\": ["
+            - generic [ref=e1626]: "{"
+            - generic [ref=e1627]: "\"$ref\": \"#/$defs/linked_list_node\""
+            - generic [ref=e1628]: "},"
+            - generic [ref=e1629]: "{"
+            - generic [ref=e1630]: "\"type\": \"null\""
+            - generic [ref=e1631]: "}"
+            - generic [ref=e1632]: "]"
+            - generic [ref=e1633]: "}"
+            - generic [ref=e1634]: "},"
+            - generic [ref=e1635]: "\"additionalProperties\": false,"
+            - generic [ref=e1636]: "\"required\": ["
+            - generic [ref=e1637]: "\"next\","
+            - generic [ref=e1638]: "\"value\""
+            - generic [ref=e1639]: "]"
+            - generic [ref=e1640]: "}"
+            - generic [ref=e1641]: "},"
+            - generic [ref=e1642]: "\"additionalProperties\": false,"
+            - generic [ref=e1643]: "\"required\": ["
+            - generic [ref=e1644]: "\"linked_list\""
+            - generic [ref=e1645]: "]"
+            - generic [ref=e1646]: "}"
+        - heading "JSON mode Copy link to json mode" [level=2] [ref=e1647]:
+          - generic [ref=e1648]: JSON mode
+          - button "Copy link to json mode" [ref=e1649] [cursor=pointer]
+        - paragraph [ref=e1661]: JSON mode is a more basic version of the Structured Outputs feature. While JSON mode ensures that model output is valid JSON, Structured Outputs reliably matches the model’s output to the schema you specify. We recommend you use Structured Outputs if it is supported for your use case.
+        - paragraph [ref=e1662]: When JSON mode is turned on, the model’s output is ensured to be valid JSON, except for in some edge cases that you should detect and handle appropriately.
+        - paragraph [ref=e1664]:
+          - text: To turn on JSON mode with the Responses API you can set the
+          - code [ref=e1665]: text.format
+          - text: to
+          - code [ref=e1666]: "{ \"type\": \"json_object\" }"
+          - text: . If you are using function calling, JSON mode is always turned on.
+        - paragraph [ref=e1667]: "Important notes:"
+        - list [ref=e1668]:
+          - listitem [ref=e1669]: When using JSON mode, you must always instruct the model to produce JSON via some message in the conversation, for example via your system message. If you don’t include an explicit instruction to generate JSON, the model may generate an unending stream of whitespace and the request may run continually until it reaches the token limit. To help ensure you don’t forget, the API will throw an error if the string “JSON” does not appear somewhere in the context.
+          - listitem [ref=e1670]: JSON mode will not guarantee the output matches any specific schema, only that it is valid and parses without errors. You should use Structured Outputs to ensure it matches your schema, or if that is not possible, you should use a validation library and potentially retries to ensure that the output matches your desired schema.
+          - listitem [ref=e1671]: Your application must detect and handle the edge cases that can result in the model output not being a complete JSON object (see below)
+        - button "Handling edge cases" [ref=e1674] [cursor=pointer]
+        - heading "Resources Copy link to resources" [level=2] [ref=e1679]:
+          - generic [ref=e1680]: Resources
+          - button "Copy link to resources" [ref=e1681] [cursor=pointer]
+        - paragraph [ref=e1684]: "To learn more about Structured Outputs, we recommend browsing the following resources:"
+        - list [ref=e1685]:
+          - listitem [ref=e1686]:
+            - text: Check out our
+            - link "introductory cookbook" [ref=e1687] [cursor=pointer]:
+              - /url: /cookbook/examples/structured_outputs_intro
+            - text: on Structured Outputs
+          - listitem [ref=e1688]:
+            - text: Learn
+            - link "how to build multi-agent systems" [ref=e1689] [cursor=pointer]:
+              - /url: /cookbook/examples/structured_outputs_multi_agent
+            - text: with Structured Outputs
+    - navigation [ref=e1692]:
+      - link "Previous Code generation" [ref=e1694] [cursor=pointer]:
+        - /url: /api/docs/guides/code-generation
+        - generic [ref=e1697]:
+          - generic [ref=e1698]: Previous
+          - generic [ref=e1699]: Code generation
+  - generic:
+    - button "Ask AI" [ref=e1700] [cursor=pointer]
+    - dialog [ref=e1702]:
+      - banner [ref=e1703]:
+        - heading "Docs agent" [level=2] [ref=e1704]
+        - generic [ref=e1705]:
+          - button "Start a new docs agent chat" [ref=e1706] [cursor=pointer]
+          - button "Close docs agent" [ref=e1709] [cursor=pointer]
+      - paragraph [ref=e1714]: Loading docs agent...

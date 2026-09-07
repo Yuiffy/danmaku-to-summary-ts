@@ -1,0 +1,15 @@
+[
+  {"metadata": {}, "incomplete": false},
+  {"metadata": {"status": "success", "finishReason": "stop"}, "incomplete": false},
+  {"metadata": {"status": "completed"}, "incomplete": false},
+  {"metadata": {"finishReason": "MAX_OUTPUT_TOKENS"}, "incomplete": true},
+  {"metadata": {"status": "incomplete"}, "incomplete": true},
+  {"metadata": {"status": "in_progress"}, "incomplete": true},
+  {"metadata": {"status": "queued"}, "incomplete": true},
+  {"metadata": {"status": "failure"}, "incomplete": true},
+  {"metadata": {"status": "cancelled"}, "incomplete": true},
+  {"metadata": {"finishReason": "content_filter"}, "incomplete": true},
+  {"metadata": {"status": "success", "attempts": [{"status": "success", "finishReason": "max_output_tokens"}]}, "incomplete": true},
+  {"metadata": {"status": "success", "attempts": [{"status": "failure", "finishReason": "max_output_tokens"}, {"status": "success", "finishReason": "stop"}]}, "incomplete": false},
+  {"metadata": {"status": "success", "attempts": [{"status": "success", "finishReason": "length"}, {"status": "success", "finishReason": "completed"}]}, "incomplete": false}
+]

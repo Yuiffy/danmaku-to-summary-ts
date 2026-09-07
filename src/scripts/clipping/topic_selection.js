@@ -219,10 +219,7 @@ function selectBurstContextSegments(candidateSegments = [], matches = [], maxSeg
         maxSegments - selected.size,
         focusNonHitIndexes.length
     ));
-    takeEvenly(focusNonHitIndexes, focusSlots).forEach(segment => {
-        const index = candidateSegments.indexOf(segment);
-        if (index >= 0) selected.add(index);
-    });
+    takeEvenly(focusNonHitIndexes, focusSlots).forEach(index => selected.add(index));
 
     const remainingSlots = Math.max(0, maxSegments - selected.size);
     const remainingIndexes = candidateSegments
@@ -553,7 +550,7 @@ function areDuplicateClipWindows(first, second, options = {}) {
     // 同一 burst 内同一句关键词命中被 AI 拆成多个不重叠区间时，仍视为同一事件。
     const firstBurstIndex = getClipBurstIndex(first);
     const secondBurstIndex = getClipBurstIndex(second);
-    if (firstBurstIndex !== null
+    if (options.dedupeMatchText !== false && firstBurstIndex !== null
         && firstBurstIndex === secondBurstIndex
         && hasSameTopicMatchText(first, second)) {
         return true;
@@ -566,9 +563,10 @@ function areDuplicateClipWindows(first, second, options = {}) {
     const shorterDuration = Math.min(firstBounds.duration, secondBounds.duration);
     const overlapRatio = shorterDuration > 0 ? overlap / shorterDuration : 0;
     const duplicateOverlapRatio = Math.min(1, Math.max(0, Number(
-        options.duplicateOverlapRatio ?? 0.5
+        options.duplicateOverlapRatio ?? 0
     )));
-    return overlapRatio >= duplicateOverlapRatio;
+    // Even a short shared tail repeats footage; touching ranges are not overlaps.
+    return overlap > 0 && overlapRatio >= duplicateOverlapRatio;
 }
 
 function compareClipQuality(first, second) {
@@ -576,34 +574,33 @@ function compareClipQuality(first, second) {
     const secondBounds = getClipWindowBounds(second);
     if (!firstBounds || !secondBounds) return 0;
 
-    // 重叠切片中保留覆盖更完整的一段；同样长时保留先进入候选列表的那段。
+    const editorialScore = Number(first.editorial?.score || 0) - Number(second.editorial?.score || 0);
+    if (editorialScore) return editorialScore;
+    // Legacy or tied assessments retain the longer range, then input order.
     return firstBounds.duration - secondBounds.duration;
 }
 
 function dedupeClipsByStart(clips = [], options = {}) {
-    const groups = [];
+    const ranked = [];
     const passthrough = [];
 
-    for (const clip of clips) {
+    for (const [order, clip] of clips.entries()) {
         if (!getClipWindowBounds(clip)) {
             passthrough.push(clip);
             continue;
         }
-
-        // AI 可能从同一事件返回不同起点的嵌套/高度重叠区间，不能只按 start 去重。
-        const group = groups.find(candidate => candidate.some(existing =>
-            areDuplicateClipWindows(existing, clip, options)
-        ));
-        if (group) {
-            group.push(clip);
-        } else {
-            groups.push([clip]);
-        }
+        ranked.push({ clip, order });
     }
 
-    const deduped = groups.map(group => group.reduce((best, candidate) =>
-        compareClipQuality(candidate, best) > 0 ? candidate : best
-    ));
+    ranked.sort((a, b) => compareClipQuality(b.clip, a.clip) || a.order - b.order);
+    const deduped = [];
+    for (const { clip } of ranked) {
+        // Check every retained range, not rejected candidates that can bridge
+        // otherwise independent clips. Keep original boundaries and copy intact.
+        if (!deduped.some(existing => areDuplicateClipWindows(existing, clip, options))) {
+            deduped.push(clip);
+        }
+    }
 
     return [...passthrough, ...deduped]
         .sort((a, b) => {

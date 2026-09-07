@@ -589,6 +589,9 @@ def restore_punctuation(punc_model, text):
 
 def _apply_hotword_correction(output, payload):
     """Apply asr-hotword PhonemeCorrector to output segments."""
+    # Keep the recognizer's actual hypothesis even when correction fails or is repeated.
+    for segment in output.get("segments", []):
+        segment.setdefault("raw_text", segment.get("text", ""))
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.normpath(os.path.join(script_dir, "..", "..", ".."))

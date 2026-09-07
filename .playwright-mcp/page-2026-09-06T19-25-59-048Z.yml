@@ -1,0 +1,604 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - text: For the complete documentation index, see
+    - link "llms.txt" [ref=e3] [cursor=pointer]:
+      - /url: /llms.txt
+    - text: . Markdown versions of documentation pages are available by appending
+    - code [ref=e4]: .md
+    - text: to the page URL.
+  - banner [ref=e5]:
+    - generic [ref=e6]:
+      - link [ref=e7] [cursor=pointer]:
+        - /url: /
+        - img "OpenAI Developers" [ref=e8]
+      - generic [ref=e9]:
+        - button "Search the API docs" [ref=e10] [cursor=pointer]
+        - button "Toggle menu" [ref=e14] [cursor=pointer]
+  - generic [ref=e18]:
+    - generic [ref=e19]:
+      - generic [ref=e20]: Primary navigation
+      - generic [ref=e21]:
+        - tablist "Primary navigation" [ref=e22]:
+          - tab "API" [selected] [ref=e23] [cursor=pointer]
+          - tab "Codex" [ref=e24] [cursor=pointer]
+          - tab "ChatGPT" [ref=e25] [cursor=pointer]
+          - tab "Resources" [ref=e26] [cursor=pointer]
+        - button "Toggle light and dark theme" [ref=e28] [cursor=pointer]
+    - generic [ref=e31]:
+      - generic [ref=e35]:
+        - generic [ref=e36]:
+          - generic [ref=e37]: Search docs
+          - textbox "Search docs" [ref=e38]:
+            - /placeholder: Start searching
+        - generic [ref=e41]:
+          - heading "Suggested" [level=3] [ref=e42]
+          - generic [ref=e43]:
+            - button "responses create" [ref=e44] [cursor=pointer]
+            - button "reasoning_effort" [ref=e45] [cursor=pointer]
+            - button "realtime" [ref=e46] [cursor=pointer]
+            - button "prompt caching" [ref=e47] [cursor=pointer]
+      - generic [ref=e48]:
+        - generic [ref=e49]:
+          - button "Overview" [ref=e50] [cursor=pointer]
+          - button "Models" [ref=e51] [cursor=pointer]
+          - button "Agents" [ref=e52] [cursor=pointer]
+          - button "Tools" [ref=e53] [cursor=pointer]
+          - button "Voice & Audio" [ref=e54] [cursor=pointer]
+          - button "Production" [ref=e55] [cursor=pointer]
+          - button "API reference" [ref=e56] [cursor=pointer]
+        - generic [ref=e57]:
+          - generic [ref=e58]:
+            - heading "Go live" [level=3] [ref=e59]
+            - list [ref=e60]:
+              - listitem [ref=e61]:
+                - link "Production best practices" [ref=e62] [cursor=pointer]:
+                  - /url: /api/docs/guides/production-best-practices
+              - listitem [ref=e63]:
+                - link "Deployment checklist" [ref=e64] [cursor=pointer]:
+                  - /url: /api/docs/guides/deployment-checklist
+          - generic [ref=e65]:
+            - heading "Performance and quality" [level=3] [ref=e66]
+            - list [ref=e67]:
+              - listitem [ref=e68]:
+                - link "Latency optimization" [ref=e69] [cursor=pointer]:
+                  - /url: /api/docs/guides/latency-optimization
+              - listitem [ref=e70]:
+                - link "Predicted Outputs" [ref=e71] [cursor=pointer]:
+                  - /url: /api/docs/guides/predicted-outputs
+              - listitem [ref=e72]:
+                - link "Fast mode" [ref=e73] [cursor=pointer]:
+                  - /url: /api/docs/guides/fast-mode
+              - listitem [ref=e74]:
+                - link "Accuracy optimization" [ref=e75] [cursor=pointer]:
+                  - /url: /api/docs/guides/optimizing-llm-accuracy
+          - generic [ref=e76]:
+            - heading "Cost and throughput" [level=3] [ref=e77]
+            - list [ref=e78]:
+              - listitem [ref=e79]:
+                - link "Cost optimization" [ref=e80] [cursor=pointer]:
+                  - /url: /api/docs/guides/cost-optimization
+              - listitem [ref=e81]:
+                - link "Prompt caching" [ref=e82] [cursor=pointer]:
+                  - /url: /api/docs/guides/prompt-caching
+              - listitem [ref=e83]:
+                - link "Batch" [ref=e84] [cursor=pointer]:
+                  - /url: /api/docs/guides/batch
+              - listitem [ref=e85]:
+                - link "Flex processing" [ref=e86] [cursor=pointer]:
+                  - /url: /api/docs/guides/flex-processing
+          - generic [ref=e87]:
+            - heading "Safety and governance" [level=3] [ref=e88]
+            - list [ref=e89]:
+              - listitem [ref=e90]:
+                - link "Safety best practices" [ref=e91] [cursor=pointer]:
+                  - /url: /api/docs/guides/safety-best-practices
+              - listitem [ref=e92]:
+                - link "Red teaming" [ref=e93] [cursor=pointer]:
+                  - /url: /api/docs/guides/red-teaming
+              - listitem [ref=e94]:
+                - group [ref=e95]:
+                  - generic "Safety checks" [ref=e96] [cursor=pointer]
+              - listitem [ref=e100]:
+                - link "Under-18 guidance" [ref=e101] [cursor=pointer]:
+                  - /url: /api/docs/guides/safety-checks/under-18-api-guidance
+              - listitem [ref=e102]:
+                - link "CSAM guidance" [ref=e103] [cursor=pointer]:
+                  - /url: /api/docs/guides/csam-guidance
+              - listitem [ref=e104]:
+                - link "Content provenance" [ref=e105] [cursor=pointer]:
+                  - /url: /api/docs/guides/content-provenance
+              - listitem [ref=e106]:
+                - link "Your data" [ref=e107] [cursor=pointer]:
+                  - /url: /api/docs/guides/your-data
+              - listitem [ref=e108]:
+                - link "Permissions" [ref=e109] [cursor=pointer]:
+                  - /url: /api/docs/guides/rbac
+          - generic [ref=e110]:
+            - heading "Infrastructure and access" [level=3] [ref=e111]
+            - list [ref=e112]:
+              - listitem [ref=e113]:
+                - group [ref=e114]:
+                  - link "Terraform provider" [ref=e116] [cursor=pointer]:
+                    - /url: /api/docs/guides/terraform
+              - listitem [ref=e119]:
+                - link "Private Link" [ref=e120] [cursor=pointer]:
+                  - /url: /api/docs/guides/private-link
+              - listitem [ref=e121]:
+                - link "IP allowlist" [ref=e122] [cursor=pointer]:
+                  - /url: /api/docs/guides/ip-allowlist
+              - listitem [ref=e123]:
+                - link "Mutual TLS" [ref=e124] [cursor=pointer]:
+                  - /url: /api/docs/guides/mutual-tls
+              - listitem [ref=e125]:
+                - group [ref=e126]:
+                  - link "Workload identity federation" [ref=e128] [cursor=pointer]:
+                    - /url: /api/docs/guides/workload-identity-federation
+              - listitem [ref=e131]:
+                - link "IP egress ranges" [ref=e132] [cursor=pointer]:
+                  - /url: /api/docs/guides/ip-addresses
+              - listitem [ref=e133]:
+                - link "Amazon Bedrock" [ref=e134] [cursor=pointer]:
+                  - /url: /api/docs/guides/amazon-bedrock
+          - generic [ref=e135]:
+            - heading "Operations" [level=3] [ref=e136]
+            - list [ref=e137]:
+              - listitem [ref=e138]:
+                - link "Rate limits" [ref=e139] [cursor=pointer]:
+                  - /url: /api/docs/guides/rate-limits
+              - listitem [ref=e140]:
+                - link "Spend limits" [ref=e141] [cursor=pointer]:
+                  - /url: /api/docs/guides/spend-limits
+              - listitem [ref=e142]:
+                - link "Admin APIs" [ref=e143] [cursor=pointer]:
+                  - /url: /api/docs/guides/admin-apis
+              - listitem [ref=e144]:
+                - link "Error codes" [ref=e145] [cursor=pointer]:
+                  - /url: /api/docs/guides/error-codes
+    - link "API Dashboard" [ref=e150] [cursor=pointer]:
+      - /url: https://platform.openai.com/login
+  - main [ref=e157]:
+    - generic [ref=e160]:
+      - generic [ref=e162]:
+        - heading "Prompt caching" [level=1] [ref=e164]
+        - paragraph [ref=e165]: Reduce latency and cost with prompt caching.
+        - button "Copy Page" [ref=e169] [cursor=pointer]
+      - article [ref=e174]:
+        - heading "Why prompt caching matters Copy link to why prompt caching matters" [level=2] [ref=e175]:
+          - generic [ref=e176]: Why prompt caching matters
+          - button "Copy link to why prompt caching matters" [ref=e177] [cursor=pointer]
+        - paragraph [ref=e180]: "Prompt caching reuses work when requests share the same prompt prefix. This provides three main benefits:"
+        - list [ref=e181]:
+          - listitem [ref=e182]:
+            - strong [ref=e183]: "Compute-efficient:"
+            - text: Avoid recalculating a prompt prefix that the model has already processed.
+          - listitem [ref=e184]:
+            - strong [ref=e185]: "Cheaper input tokens:"
+            - text: Pay the model’s reduced cached-input rate for reused tokens, discounted up to 90%.
+          - listitem [ref=e186]:
+            - strong [ref=e187]: "Faster:"
+            - text: Reduce the time spent processing input before the response starts.
+        - paragraph [ref=e188]:
+          - text: Prompt caching is enabled by default for supported OpenAI models. Use the
+          - link "Prompt Caching Dashboard" [ref=e189] [cursor=pointer]:
+            - /url: https://platform.openai.com/usage?usage_section=prompt-caching
+          - text: to monitor cache read hit rates.
+        - heading "What is the prompt cache? Copy link to what is the prompt cache" [level=2] [ref=e190]:
+          - generic [ref=e191]: What is the prompt cache?
+          - button "Copy link to what is the prompt cache" [ref=e192] [cursor=pointer]
+        - paragraph [ref=e195]: As the model processes input tokens, it calculates intermediate key-value (KV) states. These states let the model refer back to earlier tokens while processing new input and generating a response.
+        - paragraph [ref=e196]: Prompt caching preserves that state for a reusable prefix. When a later request has the same prefix and finds a matching cache entry, the model can reuse the saved state instead of processing those tokens again. It still needs to process any new input to generate a new response.
+        - paragraph [ref=e206]: The prompt cache stores key-value (KV) tensors, not the tokens themselves.
+        - link [ref=e208] [cursor=pointer]:
+          - /url: codex://threads/new?prompt=Explain+how+prompt+caching+works+inside+a+language+model.+Use+the+illustrative+token+sequence+tiny%2C+chips%2C+power%2C+big%2C+ideas+to+explain+attention%2C+key-value+%28KV%29+states%2C+and+how+saved+prefix+state+avoids+repeated+computation.+Distinguish+token-by-token+generation+from+prompt-cache+reuse+across+API+requests.+Keep+the+explanation+approachable+and+note+that+the+token+boundaries+are+illustrative.%0A%0AUse+%5B%40OpenAI+Developers%5D%28plugin%3A%2F%2Fopenai-developers%40openai-curated%29+and+https%3A%2F%2Fdevelopers.openai.com%2Fapi%2Fdocs%2Fguides%2Fprompt-caching.
+          - paragraph [ref=e211]: Ask ChatGPT for a deeper explanation
+        - img "A simplified token-by-token illustration. Step 1 shows tiny and chips as input, produces power, and saves KV state for tiny and chips. Step 2 shows tiny, chips, and power as input, reuses the saved state for tiny and chips, calculates new state only for power, and produces big. Step 3 shows tiny, chips, power, and big as input, reuses saved state for tiny, chips, and power, calculates new state only for big, and produces ideas. Each token keeps the same color as its corresponding KV state. These are illustrative inference steps, not literal API requests or tokenizer boundaries." [ref=e212]:
+          - generic [ref=e215]:
+            - generic [ref=e216]:
+              - generic [ref=e217]: Step 1
+              - generic [ref=e218]:
+                - generic [ref=e219]: tiny
+                - generic [ref=e220]: chips
+              - generic [ref=e221]: ↓
+              - generic [ref=e222]:
+                - generic [ref=e223]: Model
+                - generic [ref=e224]: Computes
+              - generic [ref=e228]:
+                - text: ↓
+                - generic [ref=e229]: Generates
+              - generic [ref=e230]: power
+            - generic [ref=e231]:
+              - generic [ref=e232]: →
+              - generic [ref=e233]:
+                - generic [ref=e234]: KV cache
+                - generic [ref=e238]: Reused
+              - generic [ref=e239]: →
+            - generic [ref=e241]:
+              - generic [ref=e242]: Step 2
+              - generic [ref=e243]:
+                - generic [ref=e244]: tiny
+                - generic [ref=e245]: chips
+                - generic [ref=e246]: power
+              - generic [ref=e247]: ↓
+              - generic [ref=e248]:
+                - generic [ref=e249]: Model
+                - generic [ref=e250]: Computes
+              - generic [ref=e253]:
+                - text: ↓
+                - generic [ref=e254]: Generates
+              - generic [ref=e255]: big
+            - generic [ref=e256]:
+              - generic [ref=e257]: →
+              - generic [ref=e258]:
+                - generic [ref=e259]: KV cache
+                - generic [ref=e264]: Reused
+              - generic [ref=e265]: →
+            - generic [ref=e267]:
+              - generic [ref=e268]: Step 3
+              - generic [ref=e269]:
+                - generic [ref=e270]: tiny
+                - generic [ref=e271]: chips
+                - generic [ref=e272]: power
+                - generic [ref=e273]: big
+              - generic [ref=e274]: ↓
+              - generic [ref=e275]:
+                - generic [ref=e276]: Model
+                - generic [ref=e277]: Computes
+              - generic [ref=e280]:
+                - text: ↓
+                - generic [ref=e281]: Generates
+              - generic [ref=e282]: ideas
+        - paragraph [ref=e283]:
+          - text: OpenAI caches the model’s full rendered context including OpenAI-provided instructions,
+          - link "developer messages" [ref=e284] [cursor=pointer]:
+            - /url: /api/docs/guides/prompt-engineering#message-roles-and-instruction-following
+          - text: ","
+          - link "tool definitions" [ref=e285] [cursor=pointer]:
+            - /url: /api/docs/guides/function-calling
+          - text: ", and"
+          - link "conversation history" [ref=e286] [cursor=pointer]:
+            - /url: /api/docs/guides/conversation-state
+          - text: containing
+          - link "text" [ref=e287] [cursor=pointer]:
+            - /url: /api/docs/guides/text
+          - text: ","
+          - link "images" [ref=e288] [cursor=pointer]:
+            - /url: /api/docs/guides/images-vision
+          - text: ","
+          - link "documents" [ref=e289] [cursor=pointer]:
+            - /url: /api/docs/guides/file-inputs
+          - text: ", and supported"
+          - link "audio" [ref=e290] [cursor=pointer]:
+            - /url: /api/docs/guides/audio
+          - text: .
+        - paragraph [ref=e291]: Cache reuse requires the entire rendered prefix to match. If content or a relevant setting changes before a breakpoint, the prefix after that change cannot match the existing cache entry.
+        - img "The rendered context includes OpenAI-provided instructions; developer instructions and tool definitions; and conversation messages containing text, images, files, and supported audio. Structured Outputs schemas and reasoning effort can also affect rendering and cache matching. The bar is illustrative, not a fixed serialization order." [ref=e292]:
+          - generic [ref=e301]:
+            - generic [ref=e302]:
+              - generic [ref=e303]: Hidden system message
+              - generic [ref=e304]: OpenAI-provided instructions
+            - generic [ref=e305]:
+              - generic [ref=e306]: Tools
+              - generic [ref=e307]: Definitions and schemas
+            - generic [ref=e308]:
+              - generic [ref=e309]: Developer message
+              - generic [ref=e310]: Application instructions
+            - generic [ref=e311]:
+              - generic [ref=e312]: Context history
+              - generic [ref=e313]: Conversation messages, tool calls and results, text and multimodal content
+        - button "Which settings affect the cached prefix?" [ref=e316] [cursor=pointer]
+        - heading "How caching works Copy link to how caching works" [level=2] [ref=e321]:
+          - generic [ref=e322]: How caching works
+          - button "Copy link to how caching works" [ref=e323] [cursor=pointer]
+        - paragraph [ref=e326]:
+          - text: A
+          - strong [ref=e327]: cache breakpoint
+          - text: marks the end of a prompt prefix that OpenAI can save to the cache and reuse in later requests. The first request writes an eligible prefix to the cache and a later request looks for the longest matching cached prefix available, working backward through eligible breakpoints until it finds a match.
+        - paragraph [ref=e328]:
+          - text: A prompt prefix must meet the model’s
+          - strong [ref=e329]: minimum cacheable token length
+          - text: before it can be cached. Tokens in the OpenAI-provided hidden system content do not count toward this minimum. The minimum cacheable prompt length is 1,024 tokens for GPT-5.6 and later and 2,048 tokens for models older than GPT-5.6. You may occasionally get cache hits below 2,048 tokens for some earlier models. See the
+          - link "model comparison" [ref=e330] [cursor=pointer]:
+            - /url: "#summary-of-model-differences"
+          - text: for other differences.
+        - paragraph [ref=e331]: After the minimum cacheable token length, you can choose where to place cache breakpoints explicitly, or let OpenAI choose their locations implicitly. The available options depend on the model.
+        - button "GPT-5.6 and later" [ref=e334] [cursor=pointer]
+        - button "Earlier models" [ref=e341] [cursor=pointer]
+        - generic [ref=e347]:
+          - generic [ref=e348]:
+            - generic [ref=e349]:
+              - generic [ref=e350]: Model generation
+              - group "Model generation" [ref=e351]:
+                - radio "Earlier models" [ref=e352] [cursor=pointer]
+                - radio "GPT-5.6+" [checked] [ref=e353] [cursor=pointer]
+            - generic [ref=e354]:
+              - generic [ref=e355]: Caching mode
+              - group "Caching mode" [ref=e356]:
+                - generic [ref=e357]:
+                  - checkbox "Implicit" [checked] [disabled] [ref=e358]
+                  - checkbox [checked] [disabled] [aria-hidden]: ✔︎
+                  - generic [ref=e359]: Implicit
+                - generic [ref=e360]:
+                  - checkbox "Explicit" [ref=e361] [cursor=pointer]
+                  - checkbox [aria-hidden]
+                  - generic [ref=e362] [cursor=pointer]: Explicit
+          - paragraph [ref=e363]: Implicit breakpoints are placed at the latest eligible user message.
+          - generic [ref=e364]:
+            - generic "Cache highlight key" [ref=e365]:
+              - generic [ref=e366]: Hidden system
+              - generic [ref=e368]: Tools
+              - generic [ref=e370]: Developer
+              - generic [ref=e372]: Context history
+              - generic [ref=e374]: Follow-up
+              - generic [ref=e376]: Cached input
+              - generic "Input not read from cache, including new cache writes" [ref=e378]: Uncached input
+            - generic [ref=e380]:
+              - generic: Minimum cacheable length (varies by model)
+              - generic [ref=e381]:
+                - generic [ref=e382]:
+                  - heading "Request 1" [level=4] [ref=e383]
+                  - generic [ref=e384]: 12,000 input tokens
+                - generic [ref=e385]:
+                  - 'generic "Hidden: 3,000 tokens" [ref=e386]':
+                    - generic [ref=e387]:
+                      - generic [ref=e388]: 3,000 tokens
+                      - generic [ref=e389]: (illustrative)
+                  - 'generic "Tools: 2,000 tokens" [ref=e390]'
+                  - 'generic "Developer: 8,000 tokens" [ref=e391]'
+                  - 'generic "User: 2,000 tokens" [ref=e392]'
+                  - generic "Implicit cache breakpoint at 15,000 rendered tokens":
+                    - generic [aria-hidden]: ▼
+                  - slider "Request 1 developer segment length" [ref=e393]:
+                    - generic [aria-hidden] [ref=e394]: ⋮
+                  - slider "Request 1 tools segment length" [ref=e395]:
+                    - generic [aria-hidden] [ref=e396]: ⋮
+                  - slider "Request 1 user segment length" [ref=e397]:
+                    - generic [aria-hidden] [ref=e398]: ⋮
+              - generic [ref=e399]:
+                - generic [ref=e400]:
+                  - heading "Request 2" [level=4] [ref=e401]
+                  - generic [ref=e402]: 15,000 input tokens
+                - generic [ref=e403]:
+                  - 'generic "Hidden: 3,000 tokens" [ref=e404]':
+                    - generic [ref=e405]:
+                      - generic [ref=e406]: 3,000 tokens
+                      - generic [ref=e407]: (illustrative)
+                  - 'generic "Tools: 2,000 tokens" [ref=e408]'
+                  - 'generic "Developer: 8,000 tokens" [ref=e409]'
+                  - 'generic "User history: 2,000 tokens" [ref=e410]'
+                  - 'generic "Follow-up: 3,000 tokens" [ref=e411]'
+                  - img "3,000 input tokens not read from cache"
+                  - img "12,000 cached input tokens"
+                  - generic "Implicit cache breakpoint at 18,000 rendered tokens":
+                    - generic [aria-hidden]: ▼
+                  - slider "Request 2 developer segment length" [ref=e412]:
+                    - generic [aria-hidden] [ref=e413]: ⋮
+                  - slider "Request 2 tools segment length" [ref=e414]:
+                    - generic [aria-hidden] [ref=e415]: ⋮
+                  - slider "Request 2 user history segment length" [ref=e416]:
+                    - generic [aria-hidden] [ref=e417]: ⋮
+                  - slider "Request 2 follow-up segment length" [ref=e418]:
+                    - generic [aria-hidden] [ref=e419]: ⋮
+              - generic "Rendered token axis" [ref=e420]:
+                - 'generic "Minimum cacheable length: 1,024 customer-visible tokens" [ref=e422]'
+                - generic [ref=e423]:
+                  - generic [ref=e424]: "0"
+                  - generic [ref=e427]: 2.5k
+                  - generic [ref=e430]: 5k
+                  - generic [ref=e433]: 7.5k
+                  - generic [ref=e436]: 10k
+                  - generic [ref=e439]: 12.5k
+                  - generic [ref=e442]: 15k
+                  - generic [ref=e445]: 17.5k
+                  - generic [ref=e448]: 20k
+                - generic [ref=e451]: Input tokens (including illustrative hidden tokens)
+          - generic "Cached-token calculation" [ref=e452]:
+            - generic [ref=e453]:
+              - generic [ref=e454]: 15,000
+              - generic [ref=e455]: Last matched breakpoint
+            - generic [ref=e456]: −
+            - generic [ref=e457]:
+              - generic [ref=e458]: 3,000
+              - generic [ref=e459]: Hidden tokens
+            - generic [ref=e460]: =
+            - generic [ref=e461]:
+              - generic [ref=e462]: 12,000
+              - generic [ref=e463]: Reported cached tokens
+          - button "Request parameters and response usage" [ref=e465] [cursor=pointer]
+        - heading "Cache lifetime Copy link to cache lifetime" [level=2] [ref=e470]:
+          - generic [ref=e471]: Cache lifetime
+          - button "Copy link to cache lifetime" [ref=e472] [cursor=pointer]
+        - paragraph [ref=e475]:
+          - text: Cache entries are not stored indefinitely. A later request can reuse a cached prefix only while its entry remains available, and reusing the prefix refreshes its lifetime without another cache-write charge. The lifetime and retention settings
+          - link "depend on the model" [ref=e476] [cursor=pointer]:
+            - /url: "#summary-of-model-differences"
+          - text: .
+        - button "GPT-5.6 and later" [ref=e479] [cursor=pointer]
+        - button "Earlier models" [ref=e486] [cursor=pointer]
+        - heading "Cache location Copy link to cache location" [level=2] [ref=e491]:
+          - generic [ref=e492]: Cache location
+          - button "Copy link to cache location" [ref=e493] [cursor=pointer]
+        - paragraph [ref=e496]: Cached states live on individual machines, where traffic above 15 requests per minute can lead to overflow routing. A request can reuse a cached prefix only if it reaches a machine holding a matching entry that has not expired. Routing requests to the right machine is therefore important for cache reuse.
+        - paragraph [ref=e506]:
+          - text: Caches are not shared across organizations and cannot be reused across
+          - link "regional processing boundaries" [ref=e507] [cursor=pointer]:
+            - /url: /api/docs/guides/your-data#data-residency-controls
+          - text: .
+        - paragraph [ref=e508]: "OpenAI handles routing automatically. Within an organization and processing region, routing for a given model depends on:"
+        - list [ref=e509]:
+          - listitem [ref=e510]: Current machine load and available capacity.
+          - listitem [ref=e511]: A hash of the initial tokens after the hidden OpenAI content, including tool definitions when present. The number of tokens hashed varies by model.
+          - listitem [ref=e512]:
+            - text: The optionally supplied
+            - link [ref=e513] [cursor=pointer]:
+              - /url: "#prompt-cache-keys"
+              - code [ref=e514]: prompt_cache_key
+            - text: that controls grouping and distribution during higher-volume traffic, to mitigate request overflow to other machines and, therefore, cache misses.
+        - button "Prompt cache keys" [ref=e517] [cursor=pointer]
+        - heading "Summary of model differences Copy link to summary of model differences" [level=2] [ref=e522]:
+          - generic [ref=e523]: Summary of model differences
+          - button "Copy link to summary of model differences" [ref=e524] [cursor=pointer]
+        - table [ref=e528]:
+          - rowgroup [ref=e529]:
+            - row [ref=e530]:
+              - columnheader "Behavior" [ref=e531]
+              - columnheader "GPT-5.6 and later" [ref=e532]
+              - columnheader "GPT-5.5 and GPT-5.5 Pro" [ref=e533]
+              - columnheader "Other earlier models" [ref=e534]
+          - rowgroup [ref=e535]:
+            - row [ref=e536]:
+              - cell "Implicit breakpoints" [ref=e537]
+              - cell "At the end of the latest eligible user or tool message." [ref=e538]
+              - cell "Spaced at regular 2,048-token intervals." [ref=e539]
+              - cell "Spaced at regular, model-dependent intervals." [ref=e540]
+            - row [ref=e541]:
+              - cell "Explicit breakpoints" [ref=e542]
+              - cell "Supported" [ref=e543]
+              - cell "Not supported" [ref=e544]
+              - cell "Not supported" [ref=e545]
+            - row [ref=e546]:
+              - cell "Minimum cacheable prefix" [ref=e547]
+              - cell "1,024 visible input tokens" [ref=e548]
+              - cell "2,048 visible input tokens; some models may cache shorter prefixes" [ref=e549]
+              - cell "2,048 visible input tokens; some models may cache shorter prefixes" [ref=e550]
+            - row [ref=e551]:
+              - cell "Cached-token reporting" [ref=e552]
+              - cell "Exact eligible boundary, excluding hidden tokens" [ref=e553]
+              - cell "Excludes hidden tokens and rounds down to a multiple of 128" [ref=e554]
+              - cell "Excludes hidden tokens and rounds down to a multiple of 128" [ref=e555]
+            - row [ref=e556]:
+              - cell "Cache read charge" [ref=e557]
+              - cell "0.1× the uncached input-token rate" [ref=e558]
+              - cell "Model-dependent cached-input rate" [ref=e559]
+              - cell "Model-dependent cached-input rate" [ref=e560]
+            - row [ref=e561]:
+              - cell "Cache write charge" [ref=e562]
+              - cell "1.25× the uncached input-token rate" [ref=e563]
+              - cell "No additional cache-write charge" [ref=e564]
+              - cell "No additional cache-write charge" [ref=e565]
+            - row [ref=e566]:
+              - cell "Cache lifetime control" [ref=e567]
+              - cell [ref=e568]:
+                - code [ref=e569]: prompt_cache_options.ttl
+              - cell [ref=e570]:
+                - code [ref=e571]: prompt_cache_retention
+              - cell [ref=e572]:
+                - code [ref=e573]: prompt_cache_retention
+            - row [ref=e574]:
+              - cell "Supported retention values" [ref=e575]
+              - cell [ref=e576]:
+                - code [ref=e577]: "\"30m\""
+              - cell [ref=e578]:
+                - code [ref=e579]: "\"24h\""
+                - text: only
+              - cell [ref=e580]:
+                - code [ref=e581]: "\"in_memory\""
+                - text: or
+                - code [ref=e582]: "\"24h\""
+                - superscript [ref=e583]:
+                  - link "*" [ref=e584] [cursor=pointer]:
+                    - /url: "#extended-retention-models"
+            - row [ref=e585]:
+              - cell "Cache lifetime" [ref=e586]
+              - cell "At least 30 minutes after the latest write or reuse" [ref=e587]
+              - cell "Typically around 30 minutes, up to 24 hours" [ref=e588]
+              - cell [ref=e589]:
+                - text: Typically 5 to 10 minutes inactive for
+                - code [ref=e590]: in_memory
+                - text: ", or up to 24 hours for"
+                - code [ref=e591]: 24h
+        - paragraph [ref=e593]:
+          - text: "* Extended retention is supported by"
+          - code [ref=e594]: gpt-5.5
+          - text: ","
+          - code [ref=e595]: gpt-5.5-pro
+          - text: ","
+          - code [ref=e596]: gpt-5.4
+          - text: ","
+          - code [ref=e597]: gpt-5.2
+          - text: ","
+          - code [ref=e598]: gpt-5.1-codex-max
+          - text: ","
+          - code [ref=e599]: gpt-5.1
+          - text: ","
+          - code [ref=e600]: gpt-5.1-codex
+          - text: ","
+          - code [ref=e601]: gpt-5.1-codex-mini
+          - text: ","
+          - code [ref=e602]: gpt-5.1-chat-latest
+          - text: ","
+          - code [ref=e603]: gpt-5
+          - text: ","
+          - code [ref=e604]: gpt-5-codex
+          - text: ", and"
+          - code [ref=e605]: gpt-4.1
+          - text: .
+        - heading "How to optimize prompt caching Copy link to how to optimize prompt caching" [level=2] [ref=e606]:
+          - generic [ref=e607]: How to optimize prompt caching
+          - button "Copy link to how to optimize prompt caching" [ref=e608] [cursor=pointer]
+        - paragraph [ref=e611]:
+          - text: Focus on
+          - link "preserving conversation history" [ref=e612] [cursor=pointer]:
+            - /url: "#preserve-conversation-history"
+          - text: ","
+          - link "keeping tool definitions stable" [ref=e613] [cursor=pointer]:
+            - /url: "#tools"
+          - text: ", and understanding the three main cache controls. Use"
+          - link [ref=e614] [cursor=pointer]:
+            - /url: "#choose-a-caching-mode"
+            - code [ref=e615]: prompt_cache_options.mode
+            - text: and
+            - code [ref=e616]: prompt_cache_breakpoint
+          - text: to choose where caching occurs, and
+          - link [ref=e617] [cursor=pointer]:
+            - /url: "#prompt-cache-key-best-practices"
+            - code [ref=e618]: prompt_cache_key
+          - text: to help related requests reach the same cache.
+        - link [ref=e620] [cursor=pointer]:
+          - /url: codex://threads/new?prompt=Use+%5B%40OpenAI+Developers%5D%28plugin%3A%2F%2Fopenai-developers%40openai-curated%29+and+the+official+prompt-caching+guide+at+https%3A%2F%2Fdevelopers.openai.com%2Fapi%2Fdocs%2Fguides%2Fprompt-caching.%0A%0AAnalyze+the+OpenAI+API+usage+in+my+selected+repository+and+suggest+how+to+optimize+prompt+caching.+If+no+repository+is+selected%2C+ask+me+to+choose+one.%0A%0AInspect+request+construction%2C+reusable+prompt+prefixes%2C+conversation+history%2C+tool+definitions%2C+cache+keys%2C+caching+modes%2C+retention%2C+and+any+available+usage+measurements.+Apply+only+guidance+supported+by+the+models+in+use.%0A%0AGive+prioritized+recommendations+with+file+references%2C+tradeoffs%2C+and+a+plan+to+measure+cache+reads%2C+writes%2C+and+input+cost.+Distinguish+measured+results+from+estimates.+Do+not+change+files+or+run+paid+API+requests+until+I+approve.
+          - paragraph [ref=e623]: Ask ChatGPT to optimize my prompt caching
+        - button "Preserve conversation history" [ref=e626] [cursor=pointer]
+        - button "Manage tools with append-only updates" [ref=e633] [cursor=pointer]
+        - button "Choose a caching mode" [ref=e640] [cursor=pointer]
+        - button "Tune prompt cache keys" [ref=e647] [cursor=pointer]
+        - button "Configure cache retention" [ref=e654] [cursor=pointer]
+        - button "Escape the minimum cacheable length cost trap" [ref=e661] [cursor=pointer]
+        - button "Monitor cache performance" [ref=e668] [cursor=pointer]
+        - button "Migrate prompt caching from an earlier model to GPT-5.6 and later" [ref=e675] [cursor=pointer]
+        - heading "Examples Copy link to examples" [level=2] [ref=e680]:
+          - generic [ref=e681]: Examples
+          - button "Copy link to examples" [ref=e682] [cursor=pointer]
+        - button "Single-turn LLM-as-a-Judge" [ref=e687] [cursor=pointer]
+        - button "Multi-turn agent" [ref=e694] [cursor=pointer]
+        - heading "Gotchas Copy link to gotchas" [level=2] [ref=e699]:
+          - generic [ref=e700]: Gotchas
+          - button "Copy link to gotchas" [ref=e701] [cursor=pointer]
+        - button "A shared prefix is not always a cached prefix" [ref=e706] [cursor=pointer]
+        - button "Minimum cacheable length varies by model" [ref=e713] [cursor=pointer]
+        - button "Compaction can reduce cache reuse" [ref=e720] [cursor=pointer]
+        - heading "Frequently asked questions Copy link to frequently asked questions" [level=2] [ref=e725]:
+          - generic [ref=e726]: Frequently asked questions
+          - button "Copy link to frequently asked questions" [ref=e727] [cursor=pointer]
+        - button "Does prompt caching affect output generation?" [ref=e732] [cursor=pointer]
+        - button "Can I manually clear the cache?" [ref=e739] [cursor=pointer]
+        - button "Do cached prompts count toward rate limits?" [ref=e746] [cursor=pointer]
+    - navigation [ref=e753]:
+      - generic [ref=e754]:
+        - link "Previous Cost optimization" [ref=e755] [cursor=pointer]:
+          - /url: /api/docs/guides/cost-optimization
+          - generic [ref=e758]:
+            - generic [ref=e759]: Previous
+            - generic [ref=e760]: Cost optimization
+        - link "Next Batch" [ref=e761] [cursor=pointer]:
+          - /url: /api/docs/guides/batch
+          - generic [ref=e762]:
+            - generic [ref=e763]: Next
+            - generic [ref=e764]: Batch
+  - generic:
+    - button "Ask AI" [ref=e767] [cursor=pointer]
+    - dialog [ref=e769]:
+      - banner [ref=e770]:
+        - heading "Docs agent" [level=2] [ref=e771]
+        - generic [ref=e772]:
+          - button "Start a new docs agent chat" [ref=e773] [cursor=pointer]
+          - button "Close docs agent" [ref=e776] [cursor=pointer]
+      - paragraph [ref=e781]: Loading docs agent...

@@ -10,7 +10,15 @@ const DEFAULT_CLIP_TOPICS_CONFIG = {
     minClipSeconds: 30,
     boundaryEndExtensionSeconds: 60,
     boundarySilenceGapSeconds: 2,
-    maxClipSeconds: 300,
+    preferredClipSeconds: 180,
+    maxClipSeconds: 480,
+    editorial: {
+        enabled: true,
+        maxGroupSeconds: 1800,
+        maxEvidenceChars: 80000
+    },
+    review: { enabled: false, mode: 'shadow', strategy: 'single', reasoningEffort: 'max',
+        maxOutputTokens: 24000, maxDanmakuRows: 120, maxEvidenceChars: 80000, timeoutMs: 240000 },
     mergeGapSeconds: 120,
     contextPaddingSeconds: 300,  // 旧版兼容:未配置不对称窗口时前后各取5分钟
     contextPrePaddingSeconds: 180,
@@ -38,13 +46,22 @@ const DEFAULT_CLIP_TOPICS_CONFIG = {
 
 function getClipTopicsConfig(config = {}) {
     const raw = config.clipTopics || {};
+    const mediaDefaults = Object.fromEntries(['subtitleVideoEncoder', 'subtitleVideoPreset', 'subtitleVideoCq', 'subtitleHwaccel',
+        'twoStageSubtitleBurn', 'twoStageMode'].filter(key => config.ownStreamClips?.[key] !== undefined)
+        .map(key => [key, config.ownStreamClips[key]]));
     return {
         ...DEFAULT_CLIP_TOPICS_CONFIG,
+        ...mediaDefaults,
         ...raw,
         keywords: Array.isArray(raw.keywords) ? raw.keywords : DEFAULT_CLIP_TOPICS_CONFIG.keywords,
         aiModel: String(raw.aiModel || DEFAULT_CLIP_TOPICS_CONFIG.aiModel),
         ignoredRoomIds: Array.isArray(raw.ignoredRoomIds) ? raw.ignoredRoomIds.map(value => String(value)).filter(Boolean) : [],
         extraTags: Array.isArray(raw.extraTags) ? raw.extraTags : DEFAULT_CLIP_TOPICS_CONFIG.extraTags,
+        editorial: {
+            ...DEFAULT_CLIP_TOPICS_CONFIG.editorial,
+            ...(raw.editorial || {})
+        },
+        review: { ...DEFAULT_CLIP_TOPICS_CONFIG.review, ...(raw.review || {}) },
         autoUpload: {
             ...DEFAULT_CLIP_TOPICS_CONFIG.autoUpload,
             ...(raw.autoUpload || {})

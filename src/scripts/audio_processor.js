@@ -131,6 +131,7 @@ function getAudioRetentionConfig() {
             ? null
             : Number(storage.maxProcessAgeDays),
         includeBak: storage.includeBak !== false,
+        deleteBakAfterConversion: storage.deleteBakAfterConversion === true,
         scanIntervalHours: Number(storage.scanIntervalHours ?? 24),
         archiveEnabled: storage.archiveEnabled === true || Boolean(storage.archiveTargetBasePath || storage.archiveBasePath),
         archiveAfterDays: toOptionalDays(storage.moveToArchiveAfterDays ?? storage.archiveAfterDays, defaultArchiveAfterDays),
@@ -229,6 +230,18 @@ function extractRoomIdFromFilename(filename) {
     return match ? parseInt(match[1]) : extractRoomIdFromMediaName(filename);
 }
 
+function getAudioConversionTimeoutMs(durationSeconds, config = configLoader.getConfig()) {
+    const configured = Number(config.audio?.ffmpeg?.timeout);
+    const durationBudget = isUsableMediaDuration(durationSeconds)
+        ? Math.ceil(durationSeconds * 1000 / 20) + 120000
+        : 0;
+    return Math.min(2147483647, Math.max(
+        300000,
+        Number.isFinite(configured) && configured > 0 ? configured : 0,
+        durationBudget
+    ));
+}
+
 // 执行ffmpeg命令
 async function runFfmpegCommand(args, timeout = 300000) {
     const config = configLoader.getConfig();
@@ -266,11 +279,12 @@ async function runFfmpegCommand(args, timeout = 300000) {
         let stdout = '';
         let stderr = '';
         let timeoutId;
+        let timeoutError = null;
 
         if (timeout > 0) {
             timeoutId = setTimeout(() => {
+                timeoutError = new Error(`ffmpeg命令超时 (${timeout}ms)`);
                 child.kill('SIGTERM');
-                reject(new Error(`ffmpeg命令超时 (${timeout}ms)`));
             }, timeout);
         }
 
@@ -289,6 +303,12 @@ async function runFfmpegCommand(args, timeout = 300000) {
         child.on('close', (code) => {
             if (timeoutId) clearTimeout(timeoutId);
             peakMonitor.stop();
+
+            // Let the child close its output before conversion failure removes it.
+            if (timeoutError) {
+                reject(timeoutError);
+                return;
+            }
             
             if (code === 0) {
                 console.log('\n✅ ffmpeg命令执行成功');
@@ -514,7 +534,7 @@ convertVideoToAudio = async function convertMediaToConfiguredAudio(mediaPath, au
 
     try {
         await stat(mediaPath);
-        await assertConvertibleAudioMedia(mediaPath);
+        const duration = await assertConvertibleAudioMedia(mediaPath);
         await rm(tempAudioPath, { force: true }).catch(() => {});
         const args = [
             '-i', mediaPath,
@@ -524,7 +544,7 @@ convertVideoToAudio = async function convertMediaToConfiguredAudio(mediaPath, au
             tempAudioPath
         ];
 
-        await runFfmpegCommand(args);
+        await runFfmpegCommand(args, getAudioConversionTimeoutMs(duration));
         await verifyConvertedAudio(mediaPath, tempAudioPath);
         await rename(tempAudioPath, audioPath);
 
@@ -699,6 +719,91 @@ async function removeBakEntries(dir) {
         }
         if (entry.isDirectory()) {
             await removeBakEntries(fullPath);
+        }
+    }
+}
+
+async function collectConvertedBackupCandidates(dayDir, retention, outputConfig, options = {}) {
+    if (retention.convertAfterDays === null) return [];
+    const now = options.now ?? Date.now();
+    const verify = options.verifyMedia || assertConvertibleAudioMedia;
+    const entries = await readdir(dayDir, { withFileTypes: true });
+    const backupDirs = entries.filter(entry => entry.isDirectory() && isBakEntryName(entry.name));
+    if (!backupDirs.length) return [];
+
+    const rootMedia = entries.filter(entry => entry.isFile() &&
+        (isVideoFile(entry.name) || isAudioFilePath(entry.name)) && !isTemporaryAudioOutput(entry.name));
+    // A remaining source, including failed/unreadable media, must retain its backups.
+    if (rootMedia.some(entry => needsConfiguredAudioConversion(entry.name, outputConfig))) return [];
+    const merged = rootMedia.filter(entry => /(?:^|[_-])merged(?:$|[_-])/i.test(
+        path.basename(entry.name, path.extname(entry.name))
+    ));
+    if (!merged.length) return [];
+
+    for (const entry of merged) {
+        const fullPath = path.join(dayDir, entry.name);
+        const stats = await stat(fullPath);
+        const ageDays = getFileAgeDays(stats, now);
+        if (ageDays < retention.convertAfterDays ||
+            (retention.maxProcessAgeDays != null && ageDays > retention.maxProcessAgeDays)) return [];
+        await verify(fullPath);
+    }
+
+    const candidates = [];
+    for (const entry of backupDirs) {
+        const fullPath = path.join(dayDir, entry.name);
+        let bytes = 0;
+        let fileCount = 0;
+        let eligible = true;
+        async function inspect(dir) {
+            const children = await readdir(dir, { withFileTypes: true });
+            for (const child of children) {
+                const childPath = path.join(dir, child.name);
+                if (child.isSymbolicLink()) {
+                    eligible = false;
+                } else if (child.isDirectory()) {
+                    await inspect(childPath);
+                } else if (child.isFile()) {
+                    const stats = await stat(childPath);
+                    if (getFileAgeDays(stats, now) < retention.convertAfterDays) eligible = false;
+                    bytes += stats.size;
+                    fileCount++;
+                } else {
+                    eligible = false;
+                }
+            }
+        }
+        await inspect(fullPath);
+        if (eligible && fileCount) candidates.push({ path: fullPath, bytes, fileCount });
+    }
+    return candidates;
+}
+
+async function pruneConvertedRoomBackups(root, retention, outputConfig, context) {
+    if (!retention.deleteBakAfterConversion || retention.convertAfterDays === null) return;
+    const days = await collectArchivableDayDirectories(root, retention);
+    for (const { dayDir, audioOnly } of days) {
+        if (context.isLimitReached()) break;
+        if (!audioOnly || getDayDirectoryAgeDays(dayDir, context.now) < retention.convertAfterDays) continue;
+        assertStrictSubPath(dayDir, root, 'converted backup day');
+        try {
+            const candidates = await collectConvertedBackupCandidates(dayDir, retention, outputConfig, { now: context.now });
+            for (const candidate of candidates) {
+                if (context.isLimitReached()) break;
+                assertStrictSubPath(candidate.path, dayDir, 'converted backup');
+                if (context.dryRun) {
+                    debugLog(`[dry-run] delete backups after verified audio conversion: ${candidate.path} (${candidate.bytes} bytes)`);
+                } else {
+                    await rm(candidate.path, { recursive: true, force: false });
+                    console.log(`deleted backups after verified audio conversion: ${candidate.path} (${candidate.bytes} bytes)`);
+                }
+                context.summary.prunedBackupDirectories++;
+                context.summary.prunedBackupBytes += candidate.bytes;
+                context.incrementAction();
+            }
+        } catch (error) {
+            context.summary.failed++;
+            console.warn(`converted backup cleanup failed: ${dayDir} (${error.message})`);
         }
     }
 }
@@ -1197,6 +1302,8 @@ applyOnlyAudioRetention = async function applyConfiguredOnlyAudioRetention(optio
         prunedClipDirectories: 0,
         prunedClipBytes: 0,
         prunedTemporaryFiles: 0,
+        prunedBackupDirectories: 0,
+        prunedBackupBytes: 0,
         failed: 0,
         roots: retention.basePaths,
         outputProfile: outputConfig.profileName,
@@ -1217,6 +1324,13 @@ applyOnlyAudioRetention = async function applyConfiguredOnlyAudioRetention(optio
     for (const root of retention.basePaths) {
         if (isLimitReached()) break;
         if (!fs.existsSync(root)) continue;
+        if (options.backupsOnly === true) {
+            await pruneConvertedRoomBackups(root, retention, outputConfig, {
+                dryRun, now, summary, isLimitReached,
+                incrementAction: () => { actionCount++; }
+            });
+            continue;
+        }
         let mediaFiles = await collectMediaFiles(root, { includeBak: retention.includeBak });
         mediaFiles = await pruneStaleTemporaryAudioOutputs(mediaFiles, {
             dryRun,
@@ -1358,6 +1472,14 @@ applyOnlyAudioRetention = async function applyConfiguredOnlyAudioRetention(optio
             }
         }
 
+        await pruneConvertedRoomBackups(root, retention, outputConfig, {
+            dryRun,
+            now,
+            summary,
+            isLimitReached,
+            incrementAction: () => { actionCount++; }
+        });
+
         await archiveEligibleDayDirectories(root, retention, outputConfig, {
             dryRun,
             now,
@@ -1371,7 +1493,7 @@ applyOnlyAudioRetention = async function applyConfiguredOnlyAudioRetention(optio
 
     summary.actionLimit = maxActions;
     summary.limitReached = isLimitReached();
-    console.log(`onlyAudio retention done: scanned=${summary.scanned}, converted=${summary.converted}, archived=${summary.archived}, prunedVideos=${summary.prunedVideos}, prunedClipDirs=${summary.prunedClipDirectories}, deleted=${summary.deleted}, skipped=${summary.skipped}, skippedOld=${summary.skippedOld}, failed=${summary.failed}, limitReached=${summary.limitReached}`);
+    console.log(`onlyAudio retention done: scanned=${summary.scanned}, converted=${summary.converted}, archived=${summary.archived}, prunedVideos=${summary.prunedVideos}, prunedClipDirs=${summary.prunedClipDirectories}, prunedBackupDirs=${summary.prunedBackupDirectories}, prunedBackupBytes=${summary.prunedBackupBytes}, deleted=${summary.deleted}, skipped=${summary.skipped}, skippedOld=${summary.skippedOld}, failed=${summary.failed}, limitReached=${summary.limitReached}`);
     return summary;
 };
 
@@ -1445,6 +1567,9 @@ module.exports = {
     startOnlyAudioRetentionScheduler,
     checkFfmpegAvailability,
     processVideoForAudio,
+    getAudioConversionTimeoutMs,
+    runFfmpegCommand,
+    collectConvertedBackupCandidates,
     isBakEntryName,
     isMergedRecordingVideo,
     collectPrunableArchiveVideos,
@@ -1462,7 +1587,8 @@ if (require.main === module) {
     if (process.argv.includes('--retention')) {
         const limitIndex = process.argv.indexOf('--limit');
         const limit = limitIndex >= 0 ? Number(process.argv[limitIndex + 1]) : null;
-        applyOnlyAudioRetention({ dryRun: process.argv.includes('--dry-run'), limit })
+        applyOnlyAudioRetention({ dryRun: process.argv.includes('--dry-run'),
+            backupsOnly: process.argv.includes('--backups-only'), limit })
             .then(summary => {
                 console.log(JSON.stringify(summary, null, 2));
             })

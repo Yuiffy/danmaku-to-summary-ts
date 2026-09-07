@@ -261,6 +261,46 @@ async function readGpuTelemetry(nvidiaSmiPath = 'nvidia-smi') {
     return parseGpuTelemetry(result.stdout || '');
 }
 
+function createGpuTelemetrySampler(readTelemetry = readGpuTelemetry) {
+    const groups = new Map();
+    return (nvidiaSmiPath, intervalMs, onSample, onError) => {
+        const key = JSON.stringify([nvidiaSmiPath, intervalMs]);
+        let group = groups.get(key);
+        if (!group) {
+            group = { listeners: new Set(), inFlight: false, timer: null };
+            const sample = async () => {
+                if (group.inFlight || group.listeners.size === 0) return;
+                group.inFlight = true;
+                try {
+                    const snapshot = await readTelemetry(nvidiaSmiPath);
+                    if (snapshot) for (const listener of group.listeners) listener.onSample(snapshot);
+                } catch (error) {
+                    for (const listener of group.listeners) listener.onError(error);
+                } finally {
+                    group.inFlight = false;
+                }
+            };
+            group.timer = setInterval(sample, intervalMs);
+            group.timer.unref?.();
+            group.sample = sample;
+            groups.set(key, group);
+        }
+        const listener = { onSample, onError };
+        group.listeners.add(listener);
+        // Each new stage gets an initial sample, coalesced with in-flight reads.
+        queueMicrotask(group.sample);
+        return () => {
+            group.listeners.delete(listener);
+            if (group.listeners.size === 0) {
+                clearInterval(group.timer);
+                if (groups.get(key) === group) groups.delete(key);
+            }
+        };
+    };
+}
+
+const subscribeGpuTelemetry = createGpuTelemetrySampler();
+
 function startResourcePeakMonitor(stage, options = {}) {
     const resourceConfig = options.resourceConfig || {};
     const peakConfig = resourceConfig.resourcePeak || {};
@@ -285,7 +325,6 @@ function startResourcePeakMonitor(stage, options = {}) {
     let hostSamples = 0;
     let nodePeak = null;
     let nodeCorePeak = null;
-    let gpuInFlight = false;
     let gpuAvailable = false;
     let gpuSum = 0;
     let gpuSamples = 0;
@@ -321,11 +360,8 @@ function startResourcePeakMonitor(stage, options = {}) {
         samples += 1;
     };
 
-    const sampleGpu = () => {
-        if (!gpuTelemetryEnabled || stopped || gpuInFlight) return;
-        gpuInFlight = true;
-        readGpuTelemetry(nvidiaSmiPath)
-            .then(snapshot => {
+    const unsubscribeGpu = gpuTelemetryEnabled
+        ? subscribeGpuTelemetry(nvidiaSmiPath, intervalMs, snapshot => {
                 if (stopped || !snapshot) return;
                 gpuAvailable = true;
                 gpuSum += snapshot.utilization;
@@ -337,25 +373,18 @@ function startResourcePeakMonitor(stage, options = {}) {
                 gpuMemoryTotal = gpuMemoryTotal === null
                     ? snapshot.memoryTotalMb
                     : Math.max(gpuMemoryTotal, snapshot.memoryTotalMb);
-            })
-            .catch(() => {
-                gpuQueryErrors += 1;
-            })
-            .finally(() => {
-                gpuInFlight = false;
-            });
-    };
+            }, () => { if (!stopped) gpuQueryErrors += 1; })
+        : () => {};
 
     const timer = setInterval(() => {
         sample();
-        sampleGpu();
     }, intervalMs);
     if (typeof timer.unref === 'function') timer.unref();
-    sampleGpu();
     return {
         stop: () => {
             if (stopped) return null;
             clearInterval(timer);
+            unsubscribeGpu();
             sample();
             stopped = true;
             const result = {
@@ -438,5 +467,6 @@ module.exports = {
     isAsrClaimActive,
     waitForAsrAvailability,
     parseGpuTelemetry,
+    createGpuTelemetrySampler,
     startResourcePeakMonitor
 };

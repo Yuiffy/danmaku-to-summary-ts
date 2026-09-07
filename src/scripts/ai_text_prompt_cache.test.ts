@@ -199,6 +199,7 @@ describe('shared text prompt cache metadata', () => {
       model: 'gpt-5.6-luna',
       fallback: false,
       attempts: [attempt],
+      textSha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
     });
   });
 

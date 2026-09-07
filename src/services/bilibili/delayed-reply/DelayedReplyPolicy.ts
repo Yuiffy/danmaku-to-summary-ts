@@ -109,8 +109,8 @@ export class DelayedReplyPolicy {
   }
 
   isWithinFirstReplyWave(dynamic: BilibiliDynamic, now = Date.now()): boolean {
-    const dynamicAgeMs = Math.max(0, now - dynamic.publishTime.getTime());
-    return dynamicAgeMs <= DelayedReplyPolicy.FIRST_REPLY_WAVE_WINDOW_MS;
+    const dynamicAgeMs = now - dynamic.publishTime.getTime();
+    return dynamicAgeMs >= 0 && dynamicAgeMs <= DelayedReplyPolicy.FIRST_REPLY_WAVE_WINDOW_MS;
   }
 
   isCredentialError(error: unknown): boolean {

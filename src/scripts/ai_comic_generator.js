@@ -374,6 +374,13 @@ async function generateComicWithPython(highlightPath, roomId = null, options = {
             writeComicGenerationFailureMeta(highlightPath, reason);
             settleReject(new Error(reason));
         });
+        pythonProcess.once('spawn', () => {
+            try { options.onProcessStarted?.(pythonProcess.pid); }
+            catch (error) {
+                pythonProcess.kill('SIGTERM');
+                settleReject(new Error(`Cannot register comic source reader: ${error.message}`));
+            }
+        });
 
         // 设置超时
         const pythonTimeoutMs = 1000 * 4 * 1000;

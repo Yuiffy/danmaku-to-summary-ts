@@ -36,6 +36,20 @@ test('compiled request builders preserve explicit caching and reasoning', () => 
     assert.equal(response.input[0].content[0].prompt_cache_breakpoint, undefined);
 });
 
+test('compiled implicit cache routing changes only the optional key outside explicit rollout', () => {
+    const options = { model: 'gpt-5.6-luna', prompt: 'Complete source facts.\nTask suffix.',
+        maxTokens: 100000, thinkingEnabled: true, reasoningEffort: 'high' };
+    const plain = requests.buildDaiYuResponsesRequest(options);
+    const routed = requests.buildDaiYuResponsesRequest({ ...options,
+        cachePlan: { enabled: false, requestKey: 'live:stable-source' } });
+    const { prompt_cache_key, ...rest } = routed;
+    assert.equal(prompt_cache_key, 'live:stable-source');
+    assert.deepEqual(rest, plain);
+    assert.equal(routed.instructions, undefined);
+    assert.deepEqual(routed.input, [{ role: 'user', content: [{ type: 'input_text', text: options.prompt }] }]);
+    assert.deepEqual(requests.buildDaiYuResponsesRequest({ ...options, cachePlan: { enabled: false } }), plain);
+});
+
 test('compiled ASR timings retain the machine-readable sentinel and emotion fields', () => {
     const output = [];
     const original = console.log;

@@ -12,8 +12,6 @@ const {
     applyCorrectionsToText,
     applyCorrectionsToSegments,
     applyCorrectionsToAsrResult,
-    makeCorrectionStats,
-    logCorrectionStats,
     buildPhonemeCorrectionPayload
 } = require('./asr_corrections');
 const speakerReferenceCatalog = require('./speaker_reference_catalog');
@@ -551,6 +549,12 @@ function normalizeAsrResult(result, subtitleConfig = {}) {
                 speaker: segment.speaker,
                 speaker_score: segment.speaker_score,
                 words: segment.words,
+                asrSource: segment.asrSource || {
+                    start, end,
+                    rawText: typeof segment.raw_text === 'string' ? segment.raw_text : null,
+                    recognizedText: text,
+                    phonemeCorrections: Array.isArray(segment.phoneme_corrections) ? segment.phoneme_corrections : []
+                },
                 emotion: segment.emotion,
                 events: Array.isArray(segment.events) ? [...segment.events] : undefined
             });
@@ -884,28 +888,9 @@ function writeAsrSpeakersSidecar(result, srtPath, config = {}, context = {}) {
 }
 
 function writeSrt(result, srtPath, subtitleConfig = {}) {
-    const cfg = { ...DEFAULT_SUBTITLE_CONFIG, ...subtitleConfig };
-    const lines = [];
-    let lineIndex = 1;
-    const segments = Array.isArray(result?.segments) ? result.segments : [];
-    const correctionStats = makeCorrectionStats();
-    const correctedTexts = applyCorrectionsToSegments(segments, cfg.corrections, correctionStats);
-    segments.forEach((segment, index) => {
-        const correctedText = correctedTexts[index] || '';
-        const content = cfg.strip_punctuation ? stripSubtitlePunctuation(correctedText) : correctedText;
-        if (!content) {
-            return;
-        }
-        const text = content;
-        const wrapped = splitTextByLength(text, cfg.max_chars_per_line).join('\n');
-        lines.push(String(lineIndex));
-        lines.push(`${formatTimestamp(segment.start)} --> ${formatTimestamp(segment.end)}`);
-        lines.push(wrapped);
-        lines.push('');
-        lineIndex += 1;
+    return require('./subtitle_writer').writeSrt(result, srtPath, { ...DEFAULT_SUBTITLE_CONFIG, ...subtitleConfig }, {
+        stripSubtitlePunctuation, splitTextByLength, formatTimestamp, parseTimestamp
     });
-    logCorrectionStats(correctionStats, 'ASR corrections');
-    fs.writeFileSync(srtPath, `${lines.join('\n').trim()}\n`, 'utf8');
 }
 
 function wrapSpeakerReviewText(prefix, content, maxChars) {

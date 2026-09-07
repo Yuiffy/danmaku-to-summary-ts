@@ -3,6 +3,8 @@ if (require.main === module && process.argv[2] === '--check-runtime') {
     console.log(JSON.stringify(workflowRuntime.checkRuntime()));
     process.exit(0);
 }
+const { resolveTextRequestTimeout, parseGenerateTextOptions, getMachineReadableGenerationMeta,
+    getSharedPromptCacheInfo, getExplicitPromptCachePlan, isPromptCacheParameterError, withoutPromptCacheHints } = require('./text_generation_protocol');
 const {
     getTuZiFinishReason,
     extractOpenAITextParts,
@@ -15,8 +17,10 @@ const {
     logAiUsage,
     normalizeTuZiTextMaxTokens,
 } = workflowRuntime.loadWorkflow('text/response');
+const { createTextAttemptState, resetTextAttempt, recordFailedTextAttempt, isIncompleteTextState, isPendingTextGeneration } = require('./text_attempt_diagnostics');
 const {
     normalizeOpenAIReasoningEffort,
+    TEXT_REQUEST_PROTOCOL_VERSION,
     buildOpenAITextMessages,
     applyExplicitPromptCache,
     buildOpenAIResponsesInput,
@@ -343,9 +347,7 @@ function buildPrompt(highlightContent, roomId, liveTimeDesc = null, liveContext 
         : '这是下播回复，不要默认写“晚安”。没有可靠时段信息时，围绕直播辛苦和休息表达。';
 
     if (customPrompt) {
-        const renderedLiveContext = sharedCacheEnabled && !usesProvidedSharedSourcePrefix
-            ? ''
-            : liveContextBlock;
+        const renderedLiveContext = liveContextBlock;
         const renderedHighlight = sharedCacheEnabled
             ? '（直播事实已在本提示最前方的共享事实输入中给出。）'
             : highlightContent;
@@ -426,7 +428,7 @@ function buildPrompt(highlightContent, roomId, liveTimeDesc = null, liveContext 
     const randomMainPrompt = mainPrompts[Math.floor(Math.random() * mainPrompts.length)];
     const sourceContext = sharedCacheEnabled
         ? `${sharedSourcePrefix}\n\n【下播回复任务】\n只使用上方共享事实输入完成本任务。${
-            usesProvidedSharedSourcePrefix && liveContextBlock ? `\n\n${liveContextBlock}` : ''
+            liveContextBlock ? `\n\n${liveContextBlock}` : ''
         }`
         : `${liveContextBlock}\n\n【直播内容(主播语音转写+观众弹幕)】\n${highlightContent}`;
 
@@ -654,63 +656,7 @@ function isUnsafeGeneratedReply(text) {
 
 
 
-function getSharedPromptCacheInfo(prompt) {
-    const text = String(prompt || '');
-    if (!text.startsWith(liveGenerationContext.SHARED_PROMPT_CACHE_START)) {
-        return {};
-    }
-    const endIndex = text.indexOf(liveGenerationContext.SHARED_PROMPT_CACHE_END);
-    if (endIndex < 0) {
-        return {};
-    }
-    const prefix = text.slice(
-        0,
-        endIndex + liveGenerationContext.SHARED_PROMPT_CACHE_END.length
-    );
-    return {
-        sharedPromptCacheKey: crypto.createHash('sha256').update(prefix, 'utf8').digest('hex'),
-        sharedPromptPrefixChars: Array.from(prefix).length
-    };
-}
 
-function getExplicitPromptCachePlan(
-    prompt,
-    config = {},
-    model = DAIYU_PRIMARY_MODEL,
-    rolloutPercentOverride = undefined
-) {
-    const info = getSharedPromptCacheInfo(prompt);
-    const cacheConfig = config.ai?.text?.sharedPromptCache || {};
-    const configuredRolloutPercent = rolloutPercentOverride !== undefined
-        ? rolloutPercentOverride
-        : cacheConfig.explicitRolloutPercent;
-    const rolloutPercent = Math.max(0, Math.min(100, Number(configuredRolloutPercent) || 0));
-    const modelEligible = /^gpt-5\.6(?:[.-]|$)/i.test(String(model || ''));
-    if (!info.sharedPromptCacheKey || cacheConfig.enabled === false || !modelEligible || rolloutPercent <= 0) {
-        return { enabled: false, rolloutPercent, modelEligible, ...info };
-    }
-
-    const bucket = parseInt(info.sharedPromptCacheKey.slice(0, 8), 16) % 10000;
-    const enabled = bucket < Math.round(rolloutPercent * 100);
-    if (!enabled) {
-        return { enabled: false, rolloutPercent, rolloutBucket: bucket, modelEligible, ...info };
-    }
-
-    const text = String(prompt || '');
-    const endIndex = text.indexOf(liveGenerationContext.SHARED_PROMPT_CACHE_END);
-    const prefixEnd = endIndex + liveGenerationContext.SHARED_PROMPT_CACHE_END.length;
-    return {
-        enabled: true,
-        rolloutPercent,
-        rolloutBucket: bucket,
-        modelEligible,
-        prefix: text.slice(0, prefixEnd),
-        suffix: text.slice(prefixEnd),
-        requestKey: `live:${info.sharedPromptCacheKey.slice(0, 48)}`,
-        ttl: cacheConfig.ttl === '30m' ? '30m' : '30m',
-        ...info
-    };
-}
 
 
 
@@ -722,12 +668,11 @@ function buildTextModelFailureError(attempts, provider) {
         .filter(attempt => attempt.provider === provider && attempt.status === 'failure')
         .map(attempt => `${attempt.model}: ${attempt.error || 'unknown error'}`);
 
-    if (failures.length === 0) {
-        return new Error(`${provider} API全部候选模型失败`);
-    }
-
-    return new Error(`${provider} API全部候选模型失败: ${failures.join(' | ')}`);
+    const error = new Error(`${provider} API全部候选模型失败${failures.length ? `: ${failures.join(' | ')}` : ''}`);
+    error.attempts = attempts;
+    return error;
 }
+
 
 function pickGoodnightTuZiPrimaryModel() {
     const randomIndex = Math.floor(Math.random() * TUZI_DEFAULT_TEXT_MODELS.length);
@@ -739,7 +684,8 @@ async function generateTextWithTuZi(prompt, options = {}) {
     const config = configLoader.getConfig();
     // 优先使用 ai.text.tuZi 配置(文本生成专用),其次使用 ai.comic.tuZi(兼容旧配置)
     const tuziConfig = config.ai?.text?.tuZi || config.aiServices?.tuZi || {};
-    const primaryModel = normalizeDaiYuTextModel(
+    const normalizeModel = options.exactModel === true ? value => String(value || '').trim() : normalizeDaiYuTextModel;
+    const primaryModel = normalizeModel(
         options.primaryModel || pickGoodnightTuZiPrimaryModel()
     );
 
@@ -790,9 +736,10 @@ async function generateTextWithTuZi(prompt, options = {}) {
             Number(options.transientMaxAttempts ?? tuziConfig.transientMaxAttempts) || 1
         );
         for (let transientAttempt = 1; transientAttempt <= transientMaxAttempts; transientAttempt++) {
+          const attemptState = createTextAttemptState(apiMode);
           try {
             // 获取超时时间 (默认 60 秒)
-            const timeoutMs = Number(options.timeoutMs) || config.timeouts?.aiApiTimeout || 60000;
+            const timeoutMs = resolveTextRequestTimeout(options, config.timeouts?.aiApiTimeout || 60000);
             console.log(
                 `[WAIT] 正在通过tu-zi.com API生成文本... `
                 + `(模型 ${attempt + 1}/${modelSequence.length}: ${textModel}, `
@@ -808,7 +755,8 @@ async function generateTextWithTuZi(prompt, options = {}) {
                     input: prompt,
                     max_output_tokens: effectiveMaxTokens,
                     stream: false,
-                    store: false
+                    store: false,
+                    ...(options.reasoningEffort ? { reasoning: { effort: normalizeOpenAIReasoningEffort(options.reasoningEffort) } } : {})
                 }
                 : {
                     model: textModel,
@@ -817,6 +765,7 @@ async function generateTextWithTuZi(prompt, options = {}) {
                     max_tokens: effectiveMaxTokens
                 };
 
+            attemptState.requestStarted = true;
             const response = await fetch(apiUrl, {
                 method: 'POST',
                 headers: {
@@ -825,9 +774,11 @@ async function generateTextWithTuZi(prompt, options = {}) {
                 },
                 body: JSON.stringify(requestBody),
                 agent: agent,
-                timeout: timeoutMs
+                timeout: timeoutMs,
+                signal: AbortSignal.timeout(timeoutMs)
             });
 
+            attemptState.response = response;
             if (!response.ok) {
                 const errorText = await response.text();
                 const error = new Error(`tuZi API返回错误 ${response.status}: ${errorText}`);
@@ -836,6 +787,7 @@ async function generateTextWithTuZi(prompt, options = {}) {
             }
 
             const data = await response.json();
+            attemptState.data = data;
             const choice = apiMode === 'responses' ? null : data.choices?.[0];
             const finishReason = apiMode === 'responses'
                 ? getOpenAITextFinishReason(data)
@@ -854,9 +806,12 @@ async function generateTextWithTuZi(prompt, options = {}) {
             if (!text || text.trim().length === 0) {
                 throw new Error('tuZi API返回空结果');
             }
+            if (options.minOutputChars && text.trim().length < options.minOutputChars) {
+                throw new Error(`Text result is shorter than ${options.minOutputChars} characters`);
+            }
 
-            if (finishReason && ['length', 'max_tokens', 'MAX_TOKENS'].includes(String(finishReason))) {
-                throw new Error(`tuZi API输出达到长度上限,疑似被截断 (finish_reason=${finishReason}, max_tokens=${effectiveMaxTokens})`);
+            if (isIncompleteTextState(finishReason) || isIncompleteTextState(data.status)) {
+                throw new Error(`tuZi API输出未完成或达到长度上限 (finish_reason=${finishReason}, max_tokens=${effectiveMaxTokens})`);
             }
 
             if (isUnsafeGeneratedReply(text)) {
@@ -867,6 +822,11 @@ async function generateTextWithTuZi(prompt, options = {}) {
                 provider: 'tuZi',
                 model: textModel,
                 status: 'success',
+                requestStarted: true,
+                reasoningEffortRequested: options.reasoningEffort || null,
+                reasoningEffortSent: requestBody.reasoning?.effort || null,
+                reasoningEffortReturned: data.reasoning?.effort || null,
+                responseModel: data.model || null,
                 finishReason: finishReason || 'unknown',
                 apiModeRequested: apiMode,
                 apiModeUsed: apiMode,
@@ -876,9 +836,11 @@ async function generateTextWithTuZi(prompt, options = {}) {
                 ...sharedPromptCacheInfo,
                 completionTokens: completionUsage.completionTokens,
                 reasoningTokens: completionUsage.reasoningTokens,
-                totalTokens: usage?.total_tokens ?? usage?.totalTokens,
+                totalTokens: normalizeUsageMetric(usage?.total_tokens) ?? normalizeUsageMetric(usage?.totalTokens) ?? undefined,
                 maxTokens: effectiveMaxTokens
             };
+            successfulAttempt.requestId = response.headers?.get?.('x-request-id') || null;
+            successfulAttempt.responseId = data.id || null;
             attempts.push(successfulAttempt);
             logAiUsage(successfulAttempt);
             console.log('✅ tuZi API调用成功');
@@ -892,13 +854,8 @@ async function generateTextWithTuZi(prompt, options = {}) {
                 maxTokens: effectiveMaxTokens
             });
           } catch (error) {
-            attempts.push({
-                provider: 'tuZi',
-                model: textModel,
-                status: 'failure',
-                apiModeRequested: apiMode,
-                error: String(error.message || error).slice(0, 300)
-            });
+            recordFailedTextAttempt(attempts, 'tuZi', textModel, error, attemptState);
+            if (isPendingTextGeneration(attemptState.data)) throw buildTextModelFailureError(attempts, 'tuZi');
             console.error(
                 `❌ tuZi API调用失败 (模型 ${attempt + 1}/${modelSequence.length}, `
                 + `请求 ${transientAttempt}/${transientMaxAttempts}): ${error.message}`
@@ -906,14 +863,14 @@ async function generateTextWithTuZi(prompt, options = {}) {
             await maybeNotifyTuZiBalanceError(error, `文本生成 ${textModel}`);
 
             const isTransient = TRANSIENT_TEXT_API_STATUSES.has(Number(error.status));
-            if (isTransient && transientAttempt < transientMaxAttempts) {
+            if (isTransient && transientAttempt < transientMaxAttempts && (!options.deadlineAt || Date.now() < options.deadlineAt)) {
                 const baseDelayMs = Math.max(
                     1000,
                     Number(options.transientRetryDelayMs ?? tuziConfig.transientRetryDelayMs) || 10000
                 );
                 const waitMs = baseDelayMs * transientAttempt;
                 console.log(`⏳ tuZi临时故障，等待 ${Math.round(waitMs / 1000)} 秒后重试同一模型...`);
-                await sleep(waitMs);
+                await sleep(options.deadlineAt ? Math.max(0, Math.min(waitMs, options.deadlineAt - Date.now())) : waitMs);
                 continue;
             }
 
@@ -941,7 +898,8 @@ async function generateTextWithDaiYu(prompt, options = {}) {
     }
 
     console.log('🤖 调用daiYu API生成文本...');
-    const primaryModel = normalizeDaiYuTextModel(
+    const normalizeModel = options.exactModel === true ? value => String(value || '').trim() : normalizeDaiYuTextModel;
+    const primaryModel = normalizeModel(
         options.primaryModel || daiYuConfig.model || DAIYU_PRIMARY_MODEL
     );
 
@@ -959,7 +917,7 @@ async function generateTextWithDaiYu(prompt, options = {}) {
         ...configuredFallbackModels,
         DAIYU_PRIMARY_MODEL,
         ...builtInFallbackModels
-    ] : [primaryModel]).map(normalizeDaiYuTextModel)
+    ] : [primaryModel]).map(normalizeModel)
         .filter((model, index, models) => model && models.indexOf(model) === index);
     console.log(`   晚安主模型: ${primaryModel}`);
     console.log(`   候选序列: ${modelSequence.join(' -> ')}`);
@@ -991,8 +949,9 @@ async function generateTextWithDaiYu(prompt, options = {}) {
     // 重试逻辑
     for (let attempt = 0; attempt < modelSequence.length; attempt++) {
         const textModel = modelSequence[attempt];
+        const attemptState = createTextAttemptState(apiModeRequested);
         try {
-            const timeoutMs = Number(options.timeoutMs) || config.timeouts?.aiApiTimeout || 60000;
+            const timeoutMs = resolveTextRequestTimeout(options, config.timeouts?.aiApiTimeout || 60000);
             console.log(`[WAIT] 正在通过daiYu API生成文本... (尝试 ${attempt + 1}/${modelSequence.length} model: ${textModel}, 超时: ${Math.round(timeoutMs / 1000)}s)`);
             const configuredMaxTokens = options.maxTokens ?? daiYuConfig.maxTokens;
             const effectiveMaxTokens = normalizeTuZiTextMaxTokens(textModel, configuredMaxTokens, wordLimit);
@@ -1002,7 +961,8 @@ async function generateTextWithDaiYu(prompt, options = {}) {
                 prompt,
                 config,
                 textModel,
-                options.promptCacheRolloutPercent
+                options.promptCacheRolloutPercent,
+                options.staticPromptCachePrefix
             );
             if (cachePlan.enabled) {
                 const cacheMode = apiModeRequested === 'responses' ? 'prefix-routed' : 'explicit';
@@ -1040,7 +1000,11 @@ async function generateTextWithDaiYu(prompt, options = {}) {
                         thinkingBudgetTokens
                     })
             );
-            const postRequest = (apiMode, body) => fetch(
+            const postRequest = async (apiMode, body) => {
+                resetTextAttempt(attemptState, apiMode);
+                const requestTimeout = resolveTextRequestTimeout(options, timeoutMs);
+                attemptState.requestStarted = true;
+                const response = await fetch(
                 `${baseUrl}/v1/${apiMode === 'responses' ? 'responses' : 'chat/completions'}`,
                 {
                 method: 'POST',
@@ -1050,44 +1014,61 @@ async function generateTextWithDaiYu(prompt, options = {}) {
                 },
                 body: JSON.stringify(body),
                 agent: agent,
-                timeout: timeoutMs
+                timeout: requestTimeout,
+                signal: AbortSignal.timeout(requestTimeout)
                 }
-            );
+                );
+                attemptState.response = response;
+                return response;
+            };
 
             let apiModeUsed = apiModeRequested;
             let apiModeFallbackReason;
             let requestBody = buildRequestBody(apiModeUsed);
+            if (!cachePlan.enabled && requestBody.prompt_cache_key) console.log(`   prompt cache: implicit-routed, prefixChars=${cachePlan.sharedPromptPrefixChars ?? cachePlan.staticPromptPrefixChars}`);
             let response = await postRequest(apiModeUsed, requestBody);
+            let promptCacheFallbackReason;
+            let responseErrorText;
+            const retryWithoutCacheHints = async () => {
+                if (response.ok || ![400, 422].includes(response.status) || (!requestBody.prompt_cache_key && !requestBody.prompt_cache_options)) return;
+                responseErrorText = await response.text();
+                if (!isPromptCacheParameterError(responseErrorText)) return;
+                promptCacheFallbackReason = `HTTP ${response.status}: ${responseErrorText}`.slice(0, 300);
+                recordFailedTextAttempt(attempts, 'daiYu', textModel, new Error(promptCacheFallbackReason), attemptState,
+                    { stage: 'prompt_cache_compatibility' });
+                console.warn(`Prompt cache hint rejected; retrying the same API without cache hints: ${promptCacheFallbackReason}`);
+                requestBody = withoutPromptCacheHints(requestBody);
+                responseErrorText = undefined;
+                response = await postRequest(apiModeUsed, requestBody);
+            };
+            await retryWithoutCacheHints();
             if (
                 !response.ok
                 && apiModeUsed === 'responses'
+                && options.strictResponses !== true
                 && isDaiYuResponsesCompatibilityStatus(response.status)
             ) {
-                const responsesErrorText = await response.text();
+                const responsesErrorText = responseErrorText ?? await response.text();
                 apiModeFallbackReason = `HTTP ${response.status}: ${responsesErrorText}`.slice(0, 300);
+                recordFailedTextAttempt(attempts, 'daiYu', textModel, new Error(apiModeFallbackReason), attemptState,
+                    { stage: 'responses_compatibility' });
                 console.warn(
                     `⚠️  daiYu Responses API不兼容，回退Chat Completions: ${apiModeFallbackReason}`
                 );
                 apiModeUsed = 'chatCompletions';
                 requestBody = buildRequestBody(apiModeUsed);
+                responseErrorText = undefined;
                 response = await postRequest(apiModeUsed, requestBody);
-            }
-
-            let promptCacheFallbackReason;
-            if (!response.ok && response.status === 400 && cachePlan.enabled) {
-                const cacheErrorText = await response.text();
-                promptCacheFallbackReason = `HTTP 400: ${cacheErrorText}`.slice(0, 300);
-                console.warn(`⚠️  显式 prompt cache 参数被上游拒绝，改用普通请求: ${promptCacheFallbackReason}`);
-                requestBody = buildRequestBody(apiModeUsed, null);
-                response = await postRequest(apiModeUsed, requestBody);
+                await retryWithoutCacheHints();
             }
 
             if (!response.ok) {
-                const errorText = await response.text();
+                const errorText = responseErrorText ?? await response.text();
                 throw new Error(`daiYu API返回错误 ${response.status}: ${errorText}`);
             }
 
             const data = await response.json();
+            attemptState.data = data;
             const finishReason = getOpenAITextFinishReason(data);
             const usage = data.usage || null;
             const promptUsage = getPromptTokenUsage(usage);
@@ -1101,9 +1082,12 @@ async function generateTextWithDaiYu(prompt, options = {}) {
             if (!text || text.trim().length === 0) {
                 throw new Error('daiYu API返回空结果');
             }
+            if (options.minOutputChars && text.trim().length < options.minOutputChars) {
+                throw new Error(`Text result is shorter than ${options.minOutputChars} characters`);
+            }
 
-            if (finishReason && ['length', 'max_tokens', 'max_output_tokens', 'MAX_TOKENS'].includes(String(finishReason))) {
-                throw new Error(`daiYu API输出达到长度上限,疑似被截断 (finish_reason=${finishReason}, max_tokens=${effectiveMaxTokens})`);
+            if (isIncompleteTextState(finishReason) || isIncompleteTextState(data.status)) {
+                throw new Error(`daiYu API输出未完成或达到长度上限 (finish_reason=${finishReason}, max_tokens=${effectiveMaxTokens})`);
             }
 
             if (isUnsafeGeneratedReply(text)) {
@@ -1114,6 +1098,11 @@ async function generateTextWithDaiYu(prompt, options = {}) {
                 provider: 'daiYu',
                 model: textModel,
                 status: 'success',
+                requestStarted: true,
+                reasoningEffortRequested: reasoningEffort,
+                reasoningEffortSent: requestBody.reasoning?.effort || null,
+                reasoningEffortReturned: data.reasoning?.effort || null,
+                responseModel: data.model || null,
                 finishReason: finishReason || 'unknown',
                 promptTokens: promptUsage.promptTokens,
                 cachedTokens: promptUsage.cachedTokens,
@@ -1122,16 +1111,20 @@ async function generateTextWithDaiYu(prompt, options = {}) {
                 apiModeUsed,
                 apiModeFallbackReason,
                 ...sharedPromptCacheInfo,
-                explicitPromptCache: cachePlan.enabled
-                    ? (apiModeUsed === 'responses' ? 'prefix_routed' : 'requested')
-                    : 'not_selected',
+                ...(cachePlan.staticPromptPrefixChars ? { staticPromptPrefixChars: cachePlan.staticPromptPrefixChars,
+                    promptCacheRequestKey: requestBody.prompt_cache_key || null } : {}),
+                explicitPromptCache: requestBody.prompt_cache_key
+                    ? (apiModeUsed === 'responses' ? 'implicit_routed' : 'requested')
+                    : (promptCacheFallbackReason ? 'rejected' : 'not_selected'),
                 promptCacheRolloutBucket: cachePlan.rolloutBucket,
                 promptCacheFallbackReason,
                 completionTokens: completionUsage.completionTokens,
                 reasoningTokens: completionUsage.reasoningTokens,
-                totalTokens: usage?.total_tokens ?? usage?.totalTokens,
+                totalTokens: normalizeUsageMetric(usage?.total_tokens) ?? normalizeUsageMetric(usage?.totalTokens) ?? undefined,
                 maxTokens: effectiveMaxTokens
             };
+            successfulAttempt.requestId = response.headers?.get?.('x-request-id') || null;
+            successfulAttempt.responseId = data.id || null;
             attempts.push(successfulAttempt);
             logAiUsage(successfulAttempt);
             console.log('✅ daiYu API调用成功');
@@ -1145,18 +1138,15 @@ async function generateTextWithDaiYu(prompt, options = {}) {
                 maxTokens: effectiveMaxTokens
             });
         } catch (error) {
-            attempts.push({
-                provider: 'daiYu',
-                model: textModel,
-                status: 'failure',
-                error: String(error.message || error).slice(0, 300)
-            });
+            recordFailedTextAttempt(attempts, 'daiYu', textModel, error, attemptState);
+            if (isPendingTextGeneration(attemptState.data)) throw buildTextModelFailureError(attempts, 'daiYu');
             console.error(`❌ daiYu API调用失败 (尝试 ${attempt + 1}/${modelSequence.length}): ${error.message}`);
 
             if (attempt === modelSequence.length - 1) {
                 const daiYuFailure = buildTextModelFailureError(attempts, 'daiYu');
                 const fallbackProvider = String(daiYuConfig.fallbackProvider || '').trim().toLowerCase();
-                if (fallbackProvider === 'tuzi' && configLoader.isTuZiTextConfigured()) {
+                if (options.allowProviderFallback !== false && fallbackProvider === 'tuzi' && configLoader.isTuZiTextConfigured()
+                    && (!options.deadlineAt || Date.now() < options.deadlineAt)) {
                     const fallbackModel = String(
                         daiYuConfig.fallbackProviderModel || DAIYU_PRIMARY_MODEL
                     ).trim() || DAIYU_PRIMARY_MODEL;
@@ -1170,6 +1160,7 @@ async function generateTextWithDaiYu(prompt, options = {}) {
                     );
                     try {
                         return await generateTextWithTuZi(prompt, {
+                            ...options,
                             fallback: true,
                             attempts,
                             primaryModel: fallbackModel,
@@ -1180,9 +1171,11 @@ async function generateTextWithDaiYu(prompt, options = {}) {
                             apiMode: fallbackApiMode
                         });
                     } catch (fallbackError) {
-                        throw new Error(
+                        const failure = new Error(
                             `${daiYuFailure.message} | tuZi/${fallbackModel} 兜底失败: ${fallbackError.message}`
                         );
+                        failure.attempts = fallbackError.attempts || attempts;
+                        throw failure;
                     }
                 }
                 throw daiYuFailure;
@@ -1546,7 +1539,11 @@ async function generateGoodnightReply(highlightPath, roomId = null, options = {}
                 console.log(`🧭 晚安回复采用本场事实上下文: 标题=${liveContext.liveTitle || '未取得'}, 近期动态=${liveContext.recentDynamics?.length || 0}条`);
                 // 构建提示词
                 const prompt = buildPrompt(highlightContent, finalRoomId, liveTimeDesc, liveContext, {
-                    sharedSourcePrefix: providedSharedSourcePrefix
+                    sharedSourcePrefix: providedSharedSourcePrefix || (
+                        liveGenerationContext.isSharedPromptCacheEnabled(config)
+                            ? liveGenerationContext.prepareSharedLiveSource(highlightPath, finalRoomId, config).payload.sharedPrefix
+                            : null
+                    )
                 });
                 const wordLimit = configLoader.getWordLimit(finalRoomId);
                 // 调用API生成文本
@@ -1869,41 +1866,11 @@ async function withConsoleDiagnosticsOnStderr(callback) {
     }
 }
 
-function parseGenerateTextOptions(rawArgs = []) {
-    let promptSource;
-    let promptCacheRolloutPercent;
 
-    for (let index = 0; index < rawArgs.length; index++) {
-        const arg = rawArgs[index];
-        if (arg === '--prompt-cache-rollout-percent') {
-            promptCacheRolloutPercent = Number(rawArgs[++index]);
-        } else if (arg.startsWith('--prompt-cache-rollout-percent=')) {
-            promptCacheRolloutPercent = Number(arg.slice('--prompt-cache-rollout-percent='.length));
-        } else if (promptSource === undefined) {
-            promptSource = arg;
-        } else {
-            throw new Error(`未知 --generate-text 参数: ${arg}`);
-        }
-    }
-
-    if (promptCacheRolloutPercent !== undefined && !Number.isFinite(promptCacheRolloutPercent)) {
-        throw new Error('--prompt-cache-rollout-percent 必须是数字');
-    }
-    return { promptSource, promptCacheRolloutPercent };
-}
-
-function getMachineReadableGenerationMeta(generated = {}) {
-    const generationMeta = generated.meta || {};
-    return {
-        provider: generationMeta.provider,
-        model: generationMeta.model,
-        fallback: Boolean(generationMeta.fallback),
-        attempts: generationMeta.attempts || []
-    };
-}
 
 // 导出函数
 module.exports = {
+    TEXT_REQUEST_PROTOCOL_VERSION,
     generateGoodnightReply,
     buildPrompt,
     generateClipTitle,
@@ -1977,8 +1944,12 @@ if (require.main === module) {
                 const provider = config.ai?.text?.provider || 'gemini';
                 const textOptions = {
                     wordLimit: 600,
-                    promptCacheRolloutPercent: generateOptions.promptCacheRolloutPercent
+                    promptCacheRolloutPercent: generateOptions.promptCacheRolloutPercent,
+                    timeoutMs: generateOptions.timeoutMs,
+                    minOutputChars: generateOptions.minOutputChars,
+                    deadlineAt: generateOptions.totalTimeoutMs ? Date.now() + generateOptions.totalTimeoutMs : undefined
                 };
+                process.stderr.write(`[[TEXT_GENERATION_STARTED]] ${JSON.stringify({ owner: 'node-text-generator', deadlineAt: textOptions.deadlineAt })}\n`);
                 const generated = await withConsoleDiagnosticsOnStderr(() => (
                     provider === 'tuZi'
                         ? generateTextWithTuZi(prompt, textOptions)
@@ -2002,6 +1973,11 @@ if (require.main === module) {
                 }
             }
         } catch (error) {
+            if (args[0] === '--generate-text') {
+                process.stderr.write(`[[TEXT_GENERATION_ERROR]] ${JSON.stringify({
+                    owner: 'node-text-generator', error: error.message, attempts: error.attempts || []
+                })}\n`);
+            }
             console.error(`💥 处理失败: ${error.message}`);
             process.exit(1);
         }

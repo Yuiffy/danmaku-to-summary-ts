@@ -4,6 +4,37 @@ const path = require('path');
 const liveContext = require('./live_generation_context');
 
 describe('live_generation_context', () => {
+  test('keeps source prefix stable when the late summary and task context change', () => {
+    const source = '[speaker 0.9] Original live words.';
+    const early = liveContext.buildSharedLiveSourcePrefix(source, '1', {}, { liveTitle: 'Live' });
+    const late = liveContext.buildSharedLiveSourcePrefix(source, '1', {}, {
+      liveTitle: 'Live', liveContent: { games: ['Verified game'] }
+    });
+    expect(late).toBe(early);
+    expect(late).toContain(source);
+    expect(late).not.toContain('Verified game');
+  });
+
+  test('writes and reuses versioned source artifacts, invalidating source and normalization changes', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shared-live-source-'));
+    const input = path.join(dir, 'stream_AI_HIGHLIGHT.txt');
+    try {
+      fs.writeFileSync(input, 'Original words.');
+      const first = liveContext.prepareSharedLiveSource(input, '1', {});
+      const write = jest.spyOn(fs, 'writeFileSync');
+      try {
+        expect(liveContext.prepareSharedLiveSource(input, '1', {})).toEqual(first);
+        expect(write).not.toHaveBeenCalled();
+      } finally { write.mockRestore(); }
+      fs.writeFileSync(input, 'Changed words.');
+      const second = liveContext.prepareSharedLiveSource(input, '1', {});
+      expect(second.payload.sourceSha256).not.toBe(first.payload.sourceSha256);
+      const third = liveContext.prepareSharedLiveSource(input, '1', { asr: { corrections: { safe: { Changed: 'Corrected' } } } });
+      expect(third.payload.sharedPrefix).toContain('Corrected words.');
+      expect(third.payload.sourceSha256).not.toBe(second.payload.sourceSha256);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
   const highlightPath = 'D:\\recordings\\录制-30655190-20260801-115716-543-明日方舟代抽⭐_AI_HIGHLIGHT.txt';
 
   test('extracts the exact live title and China-local recording time from the filename', () => {

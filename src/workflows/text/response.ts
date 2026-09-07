@@ -62,6 +62,16 @@ export function extractOpenAITextResponse(data: TextResponse | null | undefined)
         return '';
     }
 
+    const messages = Array.isArray(data.output) ? data.output.filter(item => item?.type === 'message') : [];
+    if (messages.some(item => item.phase === 'commentary' || item.phase === 'final_answer')) {
+        const assistant = messages.filter(item => item.role == null || item.role === 'assistant');
+        const final = assistant.filter(item => item.phase === 'final_answer');
+        const selected = final.length ? final : assistant.filter(item => item.phase == null);
+        // A missing or refused final answer must not fall back to progress text.
+        return selected.flatMap(item => extractOpenAITextParts(item.content))
+            .map(part => part.trim()).filter(Boolean).join('\n');
+    }
+
     const choice = data.choices?.[0];
     const chatParts = extractOpenAITextParts(choice?.message?.content);
     if (chatParts.length > 0) {
@@ -76,6 +86,14 @@ export function extractOpenAITextResponse(data: TextResponse | null | undefined)
 }
 
 export function getOpenAITextFinishReason(data?: TextResponse | null) {
+    const output = Array.isArray(data?.output) ? data.output : [];
+    const finalMessages = output.filter(item => item?.type === 'message' && item.phase === 'final_answer'
+        && (item.role == null || item.role === 'assistant'));
+    if (finalMessages.length) {
+        return data?.incomplete_details?.reason || data?.incompleteDetails?.reason || data?.status
+            || [...finalMessages].reverse().find(item => item.status)?.status
+            || getTuZiFinishReason(data?.choices?.[0]) || null;
+    }
     const chatReason = getTuZiFinishReason(data?.choices?.[0]);
     if (chatReason) {
         return chatReason;
@@ -83,35 +101,30 @@ export function getOpenAITextFinishReason(data?: TextResponse | null) {
     return data?.incomplete_details?.reason
         || data?.incompleteDetails?.reason
         || data?.status
-        || data?.output?.find(item => item?.status)?.status
+        || (Array.isArray(data?.output) ? data.output.find(item => item?.status)?.status : null)
         || null;
+}
+
+function firstUsageMetric(...values: unknown[]) {
+    for (const value of values) {
+        const normalized = normalizeUsageMetric(value);
+        if (normalized !== null) return normalized;
+    }
+    return undefined;
 }
 
 export function getPromptTokenUsage(usage?: TokenUsage | null) {
     if (!usage || typeof usage !== 'object') {
         return { promptTokens: undefined, cachedTokens: undefined, cacheWriteTokens: undefined };
     }
-    const promptTokens = usage.prompt_tokens ?? usage.promptTokens ?? usage.input_tokens ?? usage.inputTokens;
-    const cachedTokens = usage.prompt_tokens_details?.cached_tokens
-        ?? usage.promptTokensDetails?.cachedTokens
-        ?? usage.input_tokens_details?.cached_tokens
-        ?? usage.inputTokensDetails?.cachedTokens
-        ?? usage.cached_prompt_tokens
-        ?? usage.cachedPromptTokens
-        ?? usage.cache_read_input_tokens
-        ?? usage.cacheReadInputTokens;
-    const cacheWriteTokens = usage.prompt_tokens_details?.cache_write_tokens
-        ?? usage.promptTokensDetails?.cacheWriteTokens
-        ?? usage.input_tokens_details?.cache_write_tokens
-        ?? usage.inputTokensDetails?.cacheWriteTokens
-        ?? usage.cache_write_tokens
-        ?? usage.cacheWriteTokens
-        ?? usage.cache_creation_input_tokens
-        ?? usage.cacheCreationInputTokens;
     return {
-        promptTokens: promptTokens !== undefined ? Number(promptTokens) : undefined,
-        cachedTokens: cachedTokens !== undefined ? Number(cachedTokens) : undefined,
-        cacheWriteTokens: cacheWriteTokens !== undefined ? Number(cacheWriteTokens) : undefined
+        promptTokens: firstUsageMetric(usage.prompt_tokens, usage.promptTokens, usage.input_tokens, usage.inputTokens),
+        cachedTokens: firstUsageMetric(usage.prompt_tokens_details?.cached_tokens, usage.promptTokensDetails?.cachedTokens,
+            usage.input_tokens_details?.cached_tokens, usage.inputTokensDetails?.cachedTokens,
+            usage.cached_prompt_tokens, usage.cachedPromptTokens, usage.cache_read_input_tokens, usage.cacheReadInputTokens),
+        cacheWriteTokens: firstUsageMetric(usage.prompt_tokens_details?.cache_write_tokens, usage.promptTokensDetails?.cacheWriteTokens,
+            usage.input_tokens_details?.cache_write_tokens, usage.inputTokensDetails?.cacheWriteTokens,
+            usage.cache_write_tokens, usage.cacheWriteTokens, usage.cache_creation_input_tokens, usage.cacheCreationInputTokens)
     };
 }
 
@@ -119,26 +132,17 @@ export function getCompletionTokenUsage(usage?: TokenUsage | null) {
     if (!usage || typeof usage !== 'object') {
         return { completionTokens: undefined, reasoningTokens: undefined };
     }
-    const completionTokens = usage.completion_tokens
-        ?? usage.completionTokens
-        ?? usage.output_tokens
-        ?? usage.outputTokens;
-    const reasoningTokens = usage.completion_tokens_details?.reasoning_tokens
-        ?? usage.completionTokensDetails?.reasoningTokens
-        ?? usage.output_tokens_details?.reasoning_tokens
-        ?? usage.outputTokensDetails?.reasoningTokens
-        ?? usage.reasoning_tokens
-        ?? usage.reasoningTokens;
     return {
-        completionTokens: completionTokens !== undefined ? Number(completionTokens) : undefined,
-        reasoningTokens: reasoningTokens !== undefined ? Number(reasoningTokens) : undefined
+        completionTokens: firstUsageMetric(usage.completion_tokens, usage.completionTokens, usage.output_tokens, usage.outputTokens),
+        reasoningTokens: firstUsageMetric(usage.completion_tokens_details?.reasoning_tokens, usage.completionTokensDetails?.reasoningTokens,
+            usage.output_tokens_details?.reasoning_tokens, usage.outputTokensDetails?.reasoningTokens, usage.reasoning_tokens, usage.reasoningTokens)
     };
 }
 
 export function normalizeUsageMetric(value: unknown) {
-    if (value === undefined || value === null || value === '') return null;
+    if ((typeof value !== 'number' && typeof value !== 'string') || String(value).trim() === '') return null;
     const normalized = Number(value);
-    return Number.isFinite(normalized) ? normalized : null;
+    return Number.isFinite(normalized) && normalized >= 0 ? normalized : null;
 }
 
 export function buildAiUsageMetrics(attempt: Record<string, unknown> = {}) {
@@ -164,7 +168,14 @@ export function buildAiUsageMetrics(attempt: Record<string, unknown> = {}) {
         apiModeUsed: attempt.apiModeUsed || null,
         apiModeFallbackReason: attempt.apiModeFallbackReason || null,
         sharedPromptCacheKey: attempt.sharedPromptCacheKey || null,
-        explicitPromptCache: attempt.explicitPromptCache || null
+        explicitPromptCache: attempt.explicitPromptCache || null,
+        ...(attempt.status === 'failure' ? { status: 'failure', usageUnknown: attempt.usageUnknown !== false,
+            requestStarted: typeof attempt.requestStarted === 'boolean' ? attempt.requestStarted : null,
+            ...(attempt.usageFinal !== undefined ? { usageFinal: attempt.usageFinal } : {}),
+            ...(attempt.outcomeUnknown ? { outcomeUnknown: true } : {}),
+            httpStatus: normalizeUsageMetric(attempt.httpStatus), ...(attempt.stage ? { stage: attempt.stage } : {}) } : {}),
+        ...(attempt.requestId ? { requestId: attempt.requestId } : {}),
+        ...(attempt.responseId ? { responseId: attempt.responseId } : {})
     };
 }
 

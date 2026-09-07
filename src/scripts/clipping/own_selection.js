@@ -1,6 +1,7 @@
 // Candidate recall and subtitle alignment, independent of queue and rendering IO.
 const { formatClock } = require('./topic_selection');
-const { notableEmotionEvents, emotionMomentScore, buildDanmakuDensity } = require('../full_live_context');
+const { notableEmotionEvents, emotionMomentScore, buildDanmakuDensity, buildEmotionContextLines } = require('../full_live_context');
+const { buildSubtitleEvidence, cuesForWindow, formatEvidenceCues } = require('./subtitle_evidence');
 function timeStringToSeconds(value) {
     const match = String(value || '').trim().match(/^(\d{1,2}):(\d{2}):(\d{2})(?:\.\d+)?$/);
     if (!match) return NaN;
@@ -241,6 +242,27 @@ function getWindowText(segments, window, maxChars = 700) {
     return `${text.slice(0, headChars)}${marker}${text.slice(-tailChars)}`;
 }
 
+function createWindowDanmakuReader(danmaku, reactionKeywords = []) {
+    // This snapshot belongs to one synchronous planning pass, never a global cache.
+    const rows = danmaku.map(item => ({ item, time: Number(item.time) }))
+        .filter(row => !Number.isNaN(row.time)).sort((a, b) => a.time - b.time);
+    const boundary = (time, afterEqual) => {
+        let low = 0, high = rows.length;
+        while (low < high) {
+            const middle = Math.floor((low + high) / 2);
+            if (rows[middle].time < time || (afterEqual && rows[middle].time === time)) low = middle + 1;
+            else high = middle;
+        }
+        return low;
+    };
+    return (window, max = 14) => {
+        const start = Number(window.start), end = Number(window.end);
+        const items = Number.isNaN(start) || Number.isNaN(end) || end < start ? []
+            : rows.slice(boundary(start, false), boundary(end, true)).map(row => row.item);
+        return getWindowDanmakuEvidence(items, window, reactionKeywords, max);
+    };
+}
+
 function getWindowDanmakuEvidence(danmaku, window, reactionKeywords = [], max = 14) {
     const items = (danmaku || [])
         .filter(item => Number(item.time) >= Number(window.start) && Number(item.time) <= Number(window.end))
@@ -257,7 +279,7 @@ function getWindowDanmakuEvidence(danmaku, window, reactionKeywords = [], max = 
     for (const item of items) {
         const text = String(item.text || '').trim();
         if (!text) continue;
-        const current = counts.get(text) || { count: 0, first: item };
+        const current = counts.get(text) || { text, count: 0, first: item };
         current.count += 1;
         counts.set(text, current);
     }
@@ -284,6 +306,7 @@ function getWindowDanmakuEvidence(danmaku, window, reactionKeywords = [], max = 
     reactionRows.slice(0, Math.ceil(limit / 2)).forEach(row => add(row.item));
     frequentRows.slice(0, Math.min(4, limit)).forEach(row => add(row.first));
     evenlySpaced.forEach(add);
+    const sampleItems = Array.from(selected.values()).sort((a, b) => Number(a.time) - Number(b.time));
 
     return {
         totalCount: items.length,
@@ -295,24 +318,11 @@ function getWindowDanmakuEvidence(danmaku, window, reactionKeywords = [], max = 
         activeSpanSeconds: items.length > 1
             ? Number((Number(items.at(-1).time) - Number(items[0].time)).toFixed(1))
             : 0,
-        topTexts: topDanmakuTexts(items, 6),
-        sampleLines: Array.from(selected.values())
-            .sort((a, b) => Number(a.time) - Number(b.time))
-            .map(item => `${formatClock(item.time)} ${item.text}`)
+        topTexts: frequentRows.slice(0, 6).map(({ text, count }) => count > 1 ? `${text}(x${count})` : text),
+        topItems: frequentRows.slice(0, 6).map(row => ({ item: row.first, count: row.count })),
+        sampleItems,
+        sampleLines: sampleItems.map(item => `${formatClock(item.time)} ${item.text}`)
     };
-}
-
-function topDanmakuTexts(items, max = 8) {
-    const counts = new Map();
-    for (const item of items) {
-        const text = String(item.text || '').trim();
-        if (!text) continue;
-        counts.set(text, (counts.get(text) || 0) + 1);
-    }
-    return Array.from(counts.entries())
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, max)
-        .map(([text, count]) => count > 1 ? `${text}(x${count})` : text);
 }
 
 function recallWindowOverlap(first, second) {
@@ -477,29 +487,36 @@ function buildChunkSources(parsed, danmaku, totalDuration, config, emotionAnalys
     const chunkSeconds = Math.max(600, Number(config.chunkSeconds) || 2700);
     const density = buildDanmakuDensity(danmaku, totalDuration, config);
     const chunks = [];
+    const evidence = buildSubtitleEvidence(parsed.segments);
+    const danmakuIds = new Map(danmaku.map((item, index) => [item, `D${index + 1}`]));
     for (let start = 0, index = 1; start < totalDuration; start += chunkSeconds, index += 1) {
         const end = Math.min(start + chunkSeconds, totalDuration);
         const chunkSegments = parsed.segments.filter(segment => Number(segment.end) > start && Number(segment.start) < end);
         const chunkDanmaku = danmaku.filter(item => item.time >= start && item.time < end);
         const buckets = density.buckets.filter(bucket => bucket.end > start && bucket.start < end);
+        const allowedDanmakuIds = new Set();
         const densityLines = buckets
             .filter(bucket => bucket.count >= density.threshold || bucket.keywords > 0)
+            .slice(0, 80)
             .map(bucket => {
                 const items = chunkDanmaku.filter(item => item.time >= bucket.start && item.time < bucket.end);
-                const top = topDanmakuTexts(items, 6).join(' / ');
+                const top = getWindowDanmakuEvidence(items, bucket).topItems.map(({ item, count }) => {
+                    const id = danmakuIds.get(item);
+                    allowedDanmakuIds.add(id);
+                    return `${id} ${JSON.stringify(item.text)}${count > 1 ? `(x${count})` : ''}`;
+                }).join(' / ');
                 return `${formatClock(bucket.start)} count=${bucket.count} reaction=${bucket.keywords}${top ? ` | ${top}` : ''}`;
             });
         const reactionLines = chunkDanmaku
             .filter(item => (config.reactionKeywords || []).some(keyword => item.text.includes(keyword)))
-            .slice(0, Math.max(20, Number(config.maxDanmakuLinesPerChunk) || 220))
-            .map(item => `${formatClock(item.time)} ${item.text}`);
-        let subtitleText = chunkSegments
-            .map(segment => `${formatClock(segment.start)} ${String(segment.text || '').trim()}`)
-            .join('\n');
-        const maxSubtitleChars = Math.max(2000, Number(config.maxSubtitleCharsPerChunk) || 14000);
-        if (subtitleText.length > maxSubtitleChars) {
-            subtitleText = subtitleText.slice(0, maxSubtitleChars) + '\n...(字幕过长已截断)';
-        }
+            .slice(0, Math.max(1, Number(config.maxDanmakuLinesPerChunk) || 220))
+            .map(item => {
+                const id = danmakuIds.get(item);
+                allowedDanmakuIds.add(id);
+                return `${id} ${formatClock(item.time)} ${item.text}`;
+            });
+        const subtitleCues = cuesForWindow(evidence, { start, end });
+        const subtitleText = formatEvidenceCues(subtitleCues);
         const emotionLines = buildEmotionContextLines(
             emotionAnalysis,
             config.emotionScoring || {},
@@ -514,6 +531,11 @@ function buildChunkSources(parsed, danmaku, totalDuration, config, emotionAnalys
             segments: chunkSegments,
             danmaku: chunkDanmaku,
             emotionLines,
+            evidence,
+            allowedDanmakuIds,
+            subtitleCues,
+            subtitleChars: subtitleText.length,
+            omittedSubtitleChars: 0,
             sourceText: [
                 `分段 #${index} ${formatClock(start)}-${formatClock(end)}`,
                 `弹幕总数: ${chunkDanmaku.length}`,
@@ -542,7 +564,7 @@ function dedupePlannedClips(clips, config) {
     const out = [];
     for (const clip of sorted) {
         const last = out[out.length - 1];
-        if (last && clip.start - last.end <= 12) {
+        if (last && recallWindowOverlap(last, clip).matches) {
             if ((clip.score || 0) > (last.score || 0)) {
                 out[out.length - 1] = clip;
             }
@@ -607,6 +629,7 @@ function collectTextAfterGap(segments, startIndex, maxSeconds) {
 }
 
 function alignClipToSubtitleBoundaries(clip, segments = [], config = {}, totalDuration = Number.POSITIVE_INFINITY) {
+    if (clip.boundaryFromEvidence) return clip;
     if (!config.alignBoundaries) return clip;
     const start = Number(clip.start);
     const end = Number(clip.end);
@@ -741,6 +764,7 @@ module.exports = {
     attachEmotionEvidenceToClips,
     buildCandidateWindows,
     getWindowText,
+    createWindowDanmakuReader,
     getWindowDanmakuEvidence,
     buildRecallCandidatePool,
     buildChunkSources,

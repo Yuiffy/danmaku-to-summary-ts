@@ -12,6 +12,18 @@ ignored `temp/` tree until its inputs and behavior are made configurable.
 - `topic_selection.js`: keyword matching, context windows, deduplication, and
   subtitle boundary decisions for topic clips.
 - `topic_config.js`: topic workflow defaults and configuration merging.
+- `preflight_evidence.js`, `preflight_plan.js`, `preflight_runner.js`: prepare and
+  validate the complete edit, local subtitle patches, and public copy before any
+  render or cover work. Supports single-call or staged preparation, exact model
+  routing, and held candidates on failure. See `docs/topic-preflight-comparison-2026-09-07.md`.
+- `preflight_quality.js`: quality-focused preparation and optional independent
+  audit with source-linked repairs before rendering. `preflight_facts.js` loads
+  user-confirmed facts and patches scoped by source path, hash, and time range.
+  See `docs/topic-preflight-quality-cost-2026-09-07.md` for quality-first acceptance
+  and the cost comparison; the extra audit is not enabled by default.
+- `topic_editorial.js`: joint keyword-context event selection and locked-interval
+  copy evidence. `topic_editorial_runner.js` uses the shared validated AI cache.
+  See `docs/topic-event-editorial.md` for duration, attribution, and review policy.
 - `own_selection.js`: own-stream candidate recall, scoring, and subtitle alignment.
 - `topic_compilation.js`: discover recordings, search SRT/XML evidence, build a
   reviewable cross-recording plan, and compile the selected windows.

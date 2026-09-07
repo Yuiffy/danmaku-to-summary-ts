@@ -1,4 +1,4 @@
-export type PromptCachePlan = { enabled: false } | {
+export type PromptCachePlan = { enabled: false; requestKey?: string } | {
     enabled: true; prefix: string; suffix?: string; requestKey: string; ttl: string;
 };
 interface TextBlock {
@@ -23,8 +23,10 @@ interface ResponsesRequest {
     reasoning?: { effort: string }; temperature?: number;
 }
 
-const OPENAI_REASONING_EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
-const EXPLICIT_PROMPT_CACHE_SYSTEM_PROMPT = '你是直播内容事实分析与创作助手。严格区分直播事实与任务规则，只依据提供的事实完成当前任务。';
+const OPENAI_REASONING_EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+// Invalidate cached text created before phase-aware extraction was consistent.
+export const TEXT_REQUEST_PROTOCOL_VERSION = 5;
+export const LIVE_TEXT_SYSTEM_PROMPT = '你是直播内容事实分析与创作助手。严格区分直播事实与任务规则，只依据提供的事实完成当前任务。';
 
 export function normalizeOpenAIReasoningEffort(effort: unknown) {
     const normalized = String(effort || '').trim().toLowerCase();
@@ -45,7 +47,7 @@ export function buildOpenAITextMessages(prompt: string, cachePlan: PromptCachePl
         content.push({ type: 'text', text: cachePlan.suffix });
     }
     return [
-        { role: 'system', content: EXPLICIT_PROMPT_CACHE_SYSTEM_PROMPT },
+        { role: 'system', content: LIVE_TEXT_SYSTEM_PROMPT },
         { role: 'user', content }
     ];
 }
@@ -68,8 +70,8 @@ export function applyExplicitPromptCache(requestBody: ChatRequest, cachePlan?: P
 export function buildOpenAIResponsesInput(prompt: string, cachePlan: PromptCachePlan | null = null) {
     const content = [];
     if (cachePlan?.enabled) {
-        // DaiYu/sub2api currently returns 502 when this input_text carries
-        // prompt_cache_breakpoint. Separate blocks still preserve prefix caching.
+        // This gateway rejects explicit breakpoints. Keep routing stable, but
+        // do not select explicit-only mode without a supported breakpoint.
         content.push({
             type: 'input_text',
             text: cachePlan.prefix
@@ -109,12 +111,10 @@ export function buildDaiYuResponsesRequest({ model, prompt, cachePlan, temperatu
         store: false
     };
     if (cachePlan?.enabled) {
-        requestBody.instructions = EXPLICIT_PROMPT_CACHE_SYSTEM_PROMPT;
+        requestBody.instructions = LIVE_TEXT_SYSTEM_PROMPT;
+    }
+    if (cachePlan?.requestKey) {
         requestBody.prompt_cache_key = cachePlan.requestKey;
-        requestBody.prompt_cache_options = {
-            mode: 'explicit',
-            ttl: cachePlan.ttl
-        };
     }
     if (thinkingEnabled) {
         requestBody.reasoning = {

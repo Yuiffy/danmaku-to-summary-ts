@@ -123,6 +123,7 @@
       "convertAfterDays": 3,
       "maxProcessAgeDays": null,
       "includeBak": false,
+      "deleteBakAfterConversion": true,
       "scanIntervalHours": 24,
       "maxFileAgeDays": null,
       "archiveEnabled": true,
@@ -205,6 +206,7 @@
       "enabled": true,
       "provider": "python",
       "outputLockEnabled": false,
+      "overlapClips": false,
       "storytellingExperiment": {
         "enabled": true,
         "immersivePercent": 60,
@@ -1321,7 +1323,7 @@
         "enableComicGeneration": true,
         "enableDelayedReply": true,
         "wordLimit": 200,
-        "comicGenerationProbability": 0.8,
+        "comicGenerationProbability": 1,
         "multiReferenceImages": {
           "enabled": true,
           "maxExtraCharacters": 2,
@@ -1631,7 +1633,25 @@
     "minClipSeconds": 30,
     "boundaryEndExtensionSeconds": 60,
     "boundarySilenceGapSeconds": 3,
-    "maxClipSeconds": 180,
+    "preferredClipSeconds": 180,
+    "maxClipSeconds": 480,
+    "editorial": {
+      "enabled": true,
+      "maxGroupSeconds": 1800,
+      "maxEvidenceChars": 80000
+    },
+    "review": {
+      "enabled": true,
+      "mode": "preflight",
+      "strategy": "single",
+      "qualityRules": true,
+      "model": "gpt-5.6-sol",
+      "reasoningEffort": "high",
+      "maxOutputTokens": 24000,
+      "maxDanmakuRows": 120,
+      "maxEvidenceChars": 80000,
+      "timeoutMs": 240000
+    },
     "mergeGapSeconds": 45,
     "burnSubtitles": true,
     "ffmpegTimeoutMs": 600000,
@@ -2000,7 +2020,9 @@
           "小碎钻"
         ],
         "小四": [
-          "小四历"
+          "小四历",
+          "小四十小鹿",
+          "小四个小鹿"
         ],
         "小c": [
           "小case",
@@ -2033,6 +2055,7 @@
         ]
       },
       "exclude_pattern": {
+        "小四": ["小四位(?![于列居置])"],
         "碎即": [
           "[击打折破摔碾撕咬切压]碎即"
         ],

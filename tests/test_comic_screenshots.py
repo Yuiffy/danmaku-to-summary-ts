@@ -22,6 +22,18 @@ class ComicScreenshotTests(unittest.TestCase):
         self.highlight = str(self.root / "recording_AI_HIGHLIGHT.txt")
         self.video = str(self.root / "source.mp4")
 
+    def test_preserved_source_env_is_used_after_original_name_is_deleted(self):
+        original = Path(self.video)
+        original.write_bytes(b"fixture video bytes")
+        alias_dir = self.root / "retained"
+        alias_dir.mkdir()
+        alias = alias_dir / "source.mp4"
+        os.link(original, alias)
+        original.unlink()
+        with mock.patch.dict(os.environ, {"SOURCE_VIDEO_PATH": str(alias)}):
+            self.assertEqual(screenshots.infer_source_video_path(self.highlight), str(alias))
+        self.assertEqual(alias.read_bytes(), b"fixture video bytes")
+
     def collect(self, requests, log):
         return screenshots.generate_directed_storyboard_screenshots(
             self.highlight, json.dumps(requests), {"directedScreenshots": {"maxImages": 4}},

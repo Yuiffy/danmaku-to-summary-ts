@@ -18,6 +18,7 @@ import traceback
 import tempfile
 import uuid
 from contextlib import contextmanager
+from comic.text_response import extract_text_parts as _extract_text_parts, extract_text_content as extract_tuzi_text_content
 
 
 def hidden_subprocess_kwargs():
@@ -278,56 +279,6 @@ def extract_token_usage(usage: Any) -> Dict[str, int]:
         "totalTokens": first_number(usage.get("total_tokens"), usage.get("totalTokens")),
     }
     return {key: value for key, value in fields.items() if value is not None}
-
-
-def _extract_text_parts(value: Any) -> list[str]:
-    """Extract final text from OpenAI-compatible string or content-part values."""
-    if isinstance(value, str):
-        return [value] if value.strip() else []
-
-    if isinstance(value, list):
-        parts = []
-        for item in value:
-            parts.extend(_extract_text_parts(item))
-        return parts
-
-    if not isinstance(value, dict):
-        return []
-
-    item_type = str(value.get("type") or "").lower()
-    if item_type in ("text", "output_text"):
-        text = value.get("text")
-        if isinstance(text, dict):
-            text = text.get("value")
-        if isinstance(text, str) and text.strip():
-            return [text]
-
-    content = value.get("content")
-    if isinstance(content, (str, list, dict)):
-        return _extract_text_parts(content)
-
-    return []
-
-
-def extract_tuzi_text_content(result: Any) -> str:
-    """Extract final assistant text from Chat Completions or Responses-style bodies."""
-    if not isinstance(result, dict):
-        return ""
-
-    choices = result.get("choices")
-    if isinstance(choices, list) and choices:
-        choice = choices[0] if isinstance(choices[0], dict) else {}
-        message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
-        parts = _extract_text_parts(message.get("content"))
-        if not parts:
-            parts = _extract_text_parts(choice.get("text"))
-        if parts:
-            return "\n".join(part.strip() for part in parts if part.strip()).strip()
-
-    parts = _extract_text_parts(result.get("output_text"))
-    if not parts:
-        parts = _extract_text_parts(result.get("output"))
-    return "\n".join(part.strip() for part in parts if part.strip()).strip()
 
 
 def extract_text_finish_reason(result: Any) -> str:
@@ -1273,8 +1224,8 @@ def call_tuzi_chat_completions(
 
         def build_responses_input(use_cache: bool):
             if use_cache:
-                # DaiYu/sub2api currently returns 502 when input_text includes
-                # prompt_cache_breakpoint. Split parts still preserve prefix caching.
+                # The gateway rejects explicit breakpoints; do not disable
+                # implicit caching by selecting explicit-only mode without one.
                 user_content = [{
                     "type": "input_text",
                     "text": prompt_cache["prefix"],
@@ -1325,10 +1276,8 @@ def call_tuzi_chat_completions(
 
             if use_cache:
                 payload["prompt_cache_key"] = prompt_cache["requestKey"]
-                payload["prompt_cache_options"] = {
-                    "mode": "explicit",
-                    "ttl": prompt_cache.get("ttl") or "30m",
-                }
+                if selected_api_mode != "responses":
+                    payload["prompt_cache_options"] = {"mode": "explicit", "ttl": prompt_cache.get("ttl") or "30m"}
             return payload
 
         def perform_request(selected_api_mode: str, use_cache: bool, operation_suffix: str = ""):
@@ -1403,7 +1352,7 @@ def call_tuzi_chat_completions(
                     "sharedPromptCacheKey": (prompt_cache or {}).get("sharedPromptCacheKey"),
                     "sharedPromptPrefixChars": (prompt_cache or {}).get("sharedPromptPrefixChars"),
                     "explicitPromptCache": (
-                        "prefix_routed"
+                        "implicit_routed"
                         if cache_enabled and api_mode_used == "responses"
                         else "requested" if cache_enabled else "not_selected"
                     ),

@@ -480,19 +480,15 @@ describe('DelayedReplyService first-wave comic policy', () => {
     expect(scheduleTask).not.toHaveBeenCalled();
   });
 
-  it('falls back to text first after five extra wait checks', async () => {
+  it('continues waiting for a combined reply after five extra wait checks', async () => {
     const task = createTask({ comicWaitCount: 5 });
     const { service, publishComment, scheduleTask } = createHarness(createDynamic(14 * 60 * 1000));
 
     await service.executeDelayedReplyLocked(task);
 
-    expect(publishComment).toHaveBeenCalledWith({
-      dynamicId: 'dynamic-1',
-      content: '晚安正文',
-      images: undefined
-    });
-    expect(task.status).toBe('waiting_comic');
-    expect(task.comicWaitCount).toBe(0);
+    expect(publishComment).not.toHaveBeenCalled();
+    expect(task.status).toBe('pending');
+    expect(task.comicWaitCount).toBe(6);
     expect(scheduleTask).toHaveBeenCalledWith(task);
   });
 

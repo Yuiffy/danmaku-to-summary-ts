@@ -27,6 +27,7 @@ const configLoader = require('./config-loader');
 const audioProcessor = require('./audio_processor');
 const aiTextGenerator = require('./ai_text_generator');
 const aiComicGenerator = require('./ai_comic_generator');
+const { runComicWithConcurrentClips, resolveComicSourceVideo, automaticComicOptions } = require('./comic/pipeline');
 const queueManager = require('./whisper_queue_manager');
 const asrBackends = require('./asr/asr_backends');
 const topicClipper = require('./topic_clipper');
@@ -781,6 +782,7 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
                 normalized = asrBackends.normalizeAsrResult(asrResult, subtitleConfig);
                 asrBackends.writeSrt(normalized, srtPath, {
                     ...subtitleConfig,
+                    write_evidence: true,
                     corrections: asrRuntime.corrections
                 });
                 asrBackends.writeSpeakerReviewSrt(normalized, srtPath, {
@@ -1794,43 +1796,29 @@ const main = async () => {
                         console.log(`🎲 概率抓取未命中 (${roll.toFixed(3)} > ${prob})，跳过图片生成`);
                     } else {
                         emitDelayedReplyReady(expectedComicImagePath);
-                        await waitForLiveContentCacheWarmup();
-                        if (liveContentSummaryPromise && liveContentSummaryEnabled) {
-                            console.log('⏳ 等待同场直播梗概完成，再启动漫画生成，确保游戏名和活动类型进入漫画事实约束');
-                            await liveContentSummaryPromise;
-                        }
                         console.log(`🎲 概率抓取命中 (${roll.toFixed(3)} ≤ ${prob})，开始生成图片`);
                         console.log(`🎨 开始AI漫画生成...`);
-                        const isSuiRoom = String(finalRoomId) === SUI_ROOM_ID;
-                        const tuziRetryMaxAttempts = isSuiRoom ? 4 : 2;
-                        const suiImageOptions = isSuiRoom
-                            ? {
-                                tuziRetryMaxTotalSeconds: 1500,
-                                tuziRetryMaxCooldownWaitSeconds: 300,
-                                tuziSkipChatFallbackOnImageApiFailure: true,
-                                allowComicScriptFallback: true
-                            }
-                            : {};
-                        console.log(`🎨 生图路由: 使用 ai.comic.imageGeneration.routes；文本/兜底重试最多 ${tuziRetryMaxAttempts} 次${isSuiRoom ? '，同步策略限时25分钟，冷却最多等待5分钟，脚本失败启用本地兜底' : ''}`);
-                        const sourceVideos = mediaFiles.filter(file => !isAudioFile(file));
-                        const normalizedHighlightBase = highlightBase
-                            .replace(/\.speaker$/iu, '')
-                            .replace(/_fix$/iu, '');
-                        const sourceVideoPath = sourceVideos.find(file =>
-                            path.basename(file, path.extname(file))
-                                .replace(/\.speaker$/iu, '')
-                                .replace(/_fix$/iu, '') === normalizedHighlightBase
-                        ) || (sourceVideos.length === 1 ? sourceVideos[0] : null);
-                        comicImagePath = await generateAiComic(highlightPath, finalRoomId, {
-                            tuziRetryMaxAttempts,
-                            tuziBypassCooldown: false,
+                        const imageOptions = automaticComicOptions(finalRoomId);
+                        const sourceVideoPath = resolveComicSourceVideo(mediaFiles, highlightPath, isAudioFile);
+                        comicImagePath = await runComicWithConcurrentClips({
                             sourceVideoPath,
-                            onComicScriptReady: () => startBackgroundClipsOnce('comic-script-ready'),
-                            ...(liveContentSummary.isExperimentTaskEnabled(
-                                preparedFullLiveContext?.experiment,
-                                'comic'
-                            ) ? { fullLiveContextPath: preparedFullLiveContext.outputPath } : {}),
-                            ...suiImageOptions
+                            tempRoot: path.resolve(__dirname, '../../tmp/comic-source-reads'),
+                            overlapEnabled: pendingBackgroundClipPayloads.length > 0
+                                && configLoader.getConfig().ai?.comic?.overlapClips === true,
+                            startClips: startBackgroundClipsOnce,
+                            onSchedule: timing => console.log(`[COMIC_CLIP_SCHEDULE] ${JSON.stringify({ roomId: finalRoomId, recording: highlightFile, ...timing })}`),
+                            prepareComic: async () => {
+                                await waitForLiveContentCacheWarmup();
+                                if (liveContentSummaryPromise && liveContentSummaryEnabled) {
+                                    console.log('⏳ 等待同场直播梗概完成，再启动漫画生成，确保游戏名和活动类型进入漫画事实约束');
+                                    await liveContentSummaryPromise;
+                                }
+                            },
+                            generateComic: sourceOptions => generateAiComic(highlightPath, finalRoomId, {
+                                ...imageOptions, ...sourceOptions,
+                                ...(liveContentSummary.isExperimentTaskEnabled(preparedFullLiveContext?.experiment, 'comic')
+                                    ? { fullLiveContextPath: preparedFullLiveContext.outputPath } : {})
+                            })
                         });
                         console.log(`🎨 AI漫画生成结果: ${comicImagePath || 'null'}`);
                     }

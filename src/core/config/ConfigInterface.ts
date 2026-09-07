@@ -72,6 +72,8 @@ export interface AudioStorageConfig {
   convertAfterDays?: number;
   maxProcessAgeDays?: number | null | false;
   includeBak?: boolean;
+  /** Delete old backups only after the audio-only day's merged audio is verified. */
+  deleteBakAfterConversion?: boolean;
   scanIntervalHours?: number;
   maxFileAgeDays?: number | null | false;
   archiveEnabled?: boolean;
@@ -518,7 +520,7 @@ export interface TextAIConfig {
     thinking?: {
       enabled?: boolean;
       budgetTokens?: number;
-      reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+      reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
     };
   };
   openai?: OpenAIConfig;
@@ -575,6 +577,7 @@ export interface ComicAIConfig {
   enabled: boolean;
   provider: 'python' | 'huggingface' | 'local';
   outputLockEnabled?: boolean;
+  overlapClips?: boolean;
   storytellingExperiment?: ComicStorytellingExperimentConfig;
   python?: {
     script: string;
@@ -659,7 +662,28 @@ export interface ClipTopicsConfig {
   minClipSeconds?: number;
   boundaryEndExtensionSeconds?: number;
   boundarySilenceGapSeconds?: number;
+  preferredClipSeconds?: number;
   maxClipSeconds: number;
+  editorial?: {
+    enabled?: boolean;
+    maxGroupSeconds?: number;
+    maxEvidenceChars?: number;
+  };
+  review?: {
+    enabled?: boolean;
+    mode?: 'shadow' | 'preflight';
+    strategy?: 'single' | 'staged' | 'audited';
+    qualityRules?: boolean;
+    auditModel?: string;
+    auditReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    verifiedFactsPath?: string;
+    model?: string;
+    reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    maxOutputTokens?: number;
+    maxDanmakuRows?: number;
+    maxEvidenceChars?: number;
+    timeoutMs?: number;
+  };
   mergeGapSeconds: number;
   burnSubtitles: boolean;
   ffmpegTimeoutMs?: number;

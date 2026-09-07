@@ -80,6 +80,10 @@ def test_phoneme_correction_uses_exclude_when_and_keeps_standalone_homophone():
     assert output["segments"][2]["text"] == "用石头去把这个粉碎机在这个粉碎机里研"
     assert output["segments"][3]["text"] == "岁己前辈今天来了"
     assert output["segments"][4]["text"] == "小碎步走过来"
+    assert output["segments"][3]["raw_text"] == "碎机前辈今天来了"
+    _apply_hotword_correction(output, payload)
+    assert output["segments"][3]["raw_text"] == "碎机前辈今天来了"
+    assert output["segments"][3]["text"] == "岁己前辈今天来了"
 
 
 def test_exclude_pattern_blocks_overlapping_phoneme_match():

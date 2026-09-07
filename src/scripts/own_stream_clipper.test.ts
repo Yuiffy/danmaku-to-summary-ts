@@ -10,6 +10,61 @@ function makeTempDir() {
 }
 
 describe('own_stream_clipper', () => {
+  test('builds recall chunks with and without an emotion sidecar', () => {
+    const parsed = { segments: [{ start: 0, end: 60, text: 'A complete story.' }] };
+    const config = ownStreamClipper.getOwnStreamClipsConfig({});
+    const plain = ownStreamClipper.buildChunkSources(parsed, [], 60, config);
+    expect(plain).toHaveLength(1);
+    expect(plain[0].sourceText).toContain('A complete story.');
+    const enriched = ownStreamClipper.buildChunkSources(parsed, [], 60, config, {
+      status: 'completed',
+      timeline: [{ start: 1, end: 3, emotion: 'HAPPY', events: ['Laughter'] }]
+    });
+    expect(enriched[0].sourceText).toContain('Laughter');
+  });
+
+  test('staged selection retains complete speech, links final copy, and reuses successful stages', async () => {
+    const generator = require('./ai_text_generator');
+    const directory = makeTempDir();
+    const parsed = { segments: Array.from({ length: 80 }, (_, i) => ({ start: i * 3, end: i * 3 + 3, text: `fact-${i}` })) };
+    const selected = { startCueId: 'G1', endCueId: 'G21', evidenceCueIds: ['G9'], sourceKind: 'recount', score: 90 };
+    const generate = jest.spyOn(generator, 'generateTextWithDaiYu').mockImplementation(async (prompt: string) => ({
+      text: JSON.stringify({ clips: prompt.includes('完整候选池')
+        ? [{ ...selected, candidateIndex: 1, title: 'A grounded story', description: 'The host recounts an incident.', coverText: 'A story' }]
+        : [{ ...selected, event: 'A source-grounded incident' }] }),
+      meta: { model: 'test-model' }
+    }));
+    const config = ownStreamClipper.getOwnStreamClipsConfig({ ownStreamClips: { ai: { model: 'test-model' } } });
+    const info = { streamTitle: 'fixture', selectionCacheDirectory: directory };
+    const root = { ai: { text: { provider: 'daiYu' } } };
+    try {
+      const first = await ownStreamClipper.planClipsWithStagedAI([], parsed, [], info, 240, config, root);
+      expect(first.clips).toHaveLength(1);
+      expect(first.clips[0]).toMatchObject({ start: 0, end: 72, boundaryFromEvidence: true, grounding: { status: 'linked' } });
+      expect(ownStreamClipper.alignClipToSubtitleBoundaries(first.clips[0], parsed.segments, config, 240).end).toBe(72);
+      expect(generate.mock.calls[0][0]).toContain('fact-79');
+      expect(generate.mock.calls[0][0]).not.toContain('字幕过长已截断');
+      expect(generate.mock.calls[0][0]).toContain('最多允许5秒边界容差');
+      expect(generate.mock.calls[1][0]).toContain('最多允许5秒边界容差');
+      expect(generate.mock.calls[1][0]).toContain('fact-15');
+      const second = await ownStreamClipper.planClipsWithStagedAI([], parsed, [], info, 240, config, root);
+      expect(second.clips).toEqual(first.clips);
+      expect(generate).toHaveBeenCalledTimes(2);
+    } finally { generate.mockRestore(); fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
+
+  test('chunk audience references identify only text included in the model input', () => {
+    const config = ownStreamClipper.getOwnStreamClipsConfig({ ownStreamClips: { chunkSeconds: 600, reactionKeywords: ['react'] } });
+    const comments = [{ time: 10, text: 'react first' }, { time: 650, text: 'react second' }];
+    const chunks = ownStreamClipper.buildChunkSources({ segments: [{ start: 0, end: 900, text: 'speech' }] }, comments, 900, config);
+    expect(chunks[0].allowedDanmakuIds.has('D1')).toBe(true);
+    expect(chunks[0].allowedDanmakuIds.has('D2')).toBe(false);
+    expect(chunks[0].sourceText).toContain('D1');
+    expect(chunks[1].allowedDanmakuIds.has('D2')).toBe(true);
+    expect(chunks[1].sourceText).toContain('D2');
+  });
+
   test('uses upload aliases and AI切片 for clip tags without the full streamer name', () => {
     const tags = ownStreamClipper.buildClipTags({
       ai: {

@@ -154,6 +154,7 @@ export class ConfigValidator {
           convertAfterDays: 3,
           maxProcessAgeDays: null,
           includeBak: false,
+          deleteBakAfterConversion: false,
           scanIntervalHours: 24,
           maxFileAgeDays: null,
           archiveEnabled: true,
@@ -515,6 +516,7 @@ export class ConfigValidator {
         comic: {
           enabled: true,
           provider: 'python',
+          overlapClips: false,
           python: {
             script: 'ai_comic_generator.py',
           },
@@ -547,7 +549,14 @@ export class ConfigValidator {
         minClipSeconds: 30,
         boundaryEndExtensionSeconds: 60,
         boundarySilenceGapSeconds: 3,
-        maxClipSeconds: 180,
+        preferredClipSeconds: 180,
+        maxClipSeconds: 480,
+        editorial: {
+          enabled: true,
+          maxGroupSeconds: 1800,
+          maxEvidenceChars: 80000,
+        },
+        review: { enabled: false, maxEvidenceChars: 40000, timeoutMs: 120000 },
         mergeGapSeconds: 45,
         burnSubtitles: true,
         ffmpegTimeoutMs: 600000,

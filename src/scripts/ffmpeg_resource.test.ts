@@ -2,12 +2,79 @@ const {
   applyFfmpegProcessPriority,
   waitForAsrAvailability,
   waitForCpuAvailability,
-  parseGpuTelemetry
+  parseGpuTelemetry,
+  createGpuTelemetrySampler
 } = require('./ffmpeg_resource');
 const os = require('os');
 
 
 describe('topic clip CPU resource guard', () => {
+  test('shares GPU queries across stages without reducing sample frequency', async () => {
+    jest.useFakeTimers();
+    const read = jest.fn().mockResolvedValue({ utilization: 50, memoryUsedMb: 2000, memoryTotalMb: 16000 });
+    const subscribe = createGpuTelemetrySampler(read);
+    const first = jest.fn();
+    const second = jest.fn();
+    const error = jest.fn();
+    const stopFirst = subscribe('nvidia-smi', 1000, first, error);
+    const stopSecond = subscribe('nvidia-smi', 1000, second, error);
+    try {
+      await jest.advanceTimersByTimeAsync(0);
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(first).toHaveBeenCalledTimes(1);
+      expect(second).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(2000);
+      expect(read).toHaveBeenCalledTimes(3);
+      expect(first).toHaveBeenCalledTimes(3);
+      stopFirst();
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(first).toHaveBeenCalledTimes(3);
+      expect(second).toHaveBeenCalledTimes(4);
+      stopSecond();
+      await jest.advanceTimersByTimeAsync(2000);
+      expect(read).toHaveBeenCalledTimes(4);
+    } finally {
+      stopFirst(); stopSecond(); jest.useRealTimers();
+    }
+  });
+
+  test('GPU sampler recovers from errors and does not overlap slow queries', async () => {
+    jest.useFakeTimers();
+    let rejectRead: (error: Error) => void;
+    const read = jest.fn().mockImplementationOnce(() => new Promise((_, reject) => { rejectRead = reject; }))
+      .mockResolvedValue({ utilization: 80 });
+    const sample = jest.fn();
+    const error = jest.fn();
+    const stop = createGpuTelemetrySampler(read)('nvidia-smi', 1000, sample, error);
+    try {
+      await jest.advanceTimersByTimeAsync(3000);
+      expect(read).toHaveBeenCalledTimes(1);
+      rejectRead(new Error('temporary failure'));
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(sample).toHaveBeenCalledWith({ utilization: 80 });
+      expect(read).toHaveBeenCalledTimes(2);
+    } finally { stop(); jest.useRealTimers(); }
+  });
+
+  test('a short stage joining an existing sampler still gets a fresh initial sample', async () => {
+    jest.useFakeTimers();
+    const read = jest.fn().mockResolvedValue({ utilization: 50 });
+    const subscribe = createGpuTelemetrySampler(read);
+    const first = jest.fn();
+    const second = jest.fn();
+    const stopFirst = subscribe('nvidia-smi', 1000, first, jest.fn());
+    let stopSecond = () => {};
+    try {
+      await jest.advanceTimersByTimeAsync(500);
+      read.mockResolvedValue({ utilization: 95 });
+      stopSecond = subscribe('nvidia-smi', 1000, second, jest.fn());
+      await jest.advanceTimersByTimeAsync(0);
+      expect(second).toHaveBeenCalledWith({ utilization: 95 });
+      expect(read).toHaveBeenCalledTimes(2);
+    } finally { stopFirst(); stopSecond(); jest.useRealTimers(); }
+  });
+
   test('waits briefly for an active ASR lease, then resumes after it is released', async () => {
     const activeSamples = [true, true, false];
     const sleep = jest.fn().mockResolvedValue(undefined);

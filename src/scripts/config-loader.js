@@ -72,7 +72,7 @@ const AISchema = Joi.object({
                 enabled: Joi.boolean().default(true),
                 budgetTokens: Joi.number().integer().min(1024).default(10000),
                 reasoningEffort: Joi.string()
-                    .valid('none', 'minimal', 'low', 'medium', 'high', 'xhigh')
+                    .valid('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')
                     .default('high')
             }).default(),
             temperature: Joi.number().default(0.7),
@@ -83,6 +83,7 @@ const AISchema = Joi.object({
     comic: Joi.object({
         enabled: Joi.boolean().default(true),
         provider: Joi.string().default('python'),
+        overlapClips: Joi.boolean().default(false),
         python: Joi.object({
             script: Joi.string().default('ai_comic_generator.py')
         }).default(),
@@ -199,6 +200,7 @@ const ConfigSchema = Joi.object({
             convertAfterDays: Joi.number().default(3),
             maxProcessAgeDays: Joi.number().allow(null, false).default(null),
             includeBak: Joi.boolean().default(false),
+            deleteBakAfterConversion: Joi.boolean().default(false),
             scanIntervalHours: Joi.number().default(24),
             maxFileAgeDays: Joi.number().allow(null, false).default(null),
             archiveEnabled: Joi.boolean().default(true),
@@ -235,7 +237,28 @@ const ConfigSchema = Joi.object({
         minClipSeconds: Joi.number().default(30),
         boundaryEndExtensionSeconds: Joi.number().default(60),
         boundarySilenceGapSeconds: Joi.number().default(3),
-        maxClipSeconds: Joi.number().default(180),
+        preferredClipSeconds: Joi.number().min(1).default(180),
+        maxClipSeconds: Joi.number().min(1).default(480),
+        editorial: Joi.object({
+            enabled: Joi.boolean().default(true),
+            maxGroupSeconds: Joi.number().min(1).default(1800),
+            maxEvidenceChars: Joi.number().integer().min(1).default(80000)
+        }).default(),
+        review: Joi.object({
+            enabled: Joi.boolean().default(false),
+            mode: Joi.string().valid('shadow', 'preflight').default('shadow'),
+            strategy: Joi.string().valid('single', 'staged', 'audited').default('single'),
+            qualityRules: Joi.boolean().default(false),
+            auditModel: Joi.string().optional(),
+            auditReasoningEffort: Joi.string().valid('low', 'medium', 'high', 'xhigh', 'max').optional(),
+            verifiedFactsPath: Joi.string().optional(),
+            model: Joi.string().optional(),
+            reasoningEffort: Joi.string().valid('low', 'medium', 'high', 'xhigh', 'max').default('max'),
+            maxOutputTokens: Joi.number().integer().min(1024).max(128000).default(24000),
+            maxDanmakuRows: Joi.number().integer().min(0).max(1000).default(120),
+            maxEvidenceChars: Joi.number().integer().min(1).default(40000),
+            timeoutMs: Joi.number().integer().min(1000).default(120000)
+        }).default(),
         mergeGapSeconds: Joi.number().default(45),
         burnSubtitles: Joi.boolean().default(true),
         ffmpegTimeoutMs: Joi.number().integer().min(1000).default(600000),

@@ -101,6 +101,39 @@ class TuziTextCompletionTests(unittest.TestCase):
         self.assertEqual(kwargs["json"]["messages"][0]["role"], "system")
         self.assertEqual(kwargs["json"]["messages"][1]["role"], "user")
 
+    def test_phase_aware_response_extraction_matches_node_behavior(self):
+        def message(phase, text, role="assistant"):
+            return {"type": "message", "role": role, "phase": phase,
+                    "content": [{"type": "output_text", "text": text}]}
+        cases = [
+            ({"output": [message("commentary", "Progress"), message("final_answer", "Final")]}, "Final"),
+            ({"output_text": "Progress\nFinal", "choices": [{"message": {"content": "Other"}}],
+              "output": [message("commentary", "Progress"), message("final_answer", "Final")]}, "Final"),
+            ({"output": [message("final_answer", "I will first quote the source."),
+                         message("commentary", "Progress"), message("final_answer", "Part two")]},
+             "I will first quote the source.\nPart two"),
+            ({"output_text": "Progress", "output": [message("commentary", "Progress")]}, ""),
+            ({"output": [message("commentary", "Progress"), message(None, "Legacy final")]}, "Legacy final"),
+            ({"output": [message("final_answer", "Input", role="user"), message("commentary", "Progress")]}, ""),
+        ]
+        for response, expected in cases:
+            with self.subTest(expected=expected, response=response):
+                self.assertEqual(tuzi.extract_tuzi_text_content(response), expected)
+
+    def test_refused_final_never_falls_back_to_progress_text(self):
+        result = {"output_text": "Progress", "output": [
+            {"type": "message", "role": "assistant", "phase": "commentary",
+             "content": [{"type": "output_text", "text": "Progress"}]},
+            {"type": "message", "role": "assistant", "phase": "final_answer",
+             "content": [{"type": "refusal", "refusal": "Unavailable"}]},
+        ]}
+        self.assertEqual(tuzi.extract_tuzi_text_content(result), "")
+
+    def test_non_array_output_preserves_legacy_aggregate_text(self):
+        for output in ({}, "unexpected", 1, False, None):
+            with self.subTest(output=output):
+                self.assertEqual(tuzi.extract_tuzi_text_content({"output_text": "Valid final", "output": output}), "Valid final")
+
     def test_chat_request_supports_local_multimodal_images(self):
         response = FakeResponse({
             "choices": [{
@@ -258,7 +291,8 @@ class TuziTextCompletionTests(unittest.TestCase):
         self.assertEqual(content_parts[2]["image_url"], "data:image/jpeg;base64,AA==")
         self.assertEqual(metadata["apiModeRequested"], "responses")
         self.assertEqual(metadata["apiModeUsed"], "responses")
-        self.assertEqual(metadata["explicitPromptCache"], "prefix_routed")
+        self.assertEqual(metadata["explicitPromptCache"], "implicit_routed")
+        self.assertNotIn("prompt_cache_options", payload)
         self.assertEqual(metadata["cachedTokens"], 10000)
         self.assertEqual(metadata["cacheWriteTokens"], 2000)
 

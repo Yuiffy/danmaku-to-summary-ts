@@ -39,3 +39,9 @@ test('allows local screenshot processes without opening provider access to comic
   expect(pythonBoundaryViolation('src/scripts/comic/storyboard.py', 'subprocess')).toBeDefined();
   expect(pythonBoundaryViolation('src/scripts/comic/prompts.py', 'subprocess')).toBeDefined();
 });
+
+test('permits the managed Node text bridge without granting it direct provider access', () => {
+  expect(pythonBoundaryViolation('src/scripts/comic/text_client.py', 'subprocess')).toBeUndefined();
+  expect(pythonBoundaryViolation('src/scripts/comic/text_client.py', 'requests')).toBeDefined();
+  expect(pythonBoundaryViolation('src/scripts/comic/text_client.py', 'tuzi_chat_completions')).toBeDefined();
+});

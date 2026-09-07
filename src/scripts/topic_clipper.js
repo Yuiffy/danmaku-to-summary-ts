@@ -1,3 +1,11 @@
+const { normalizeCoverText, buildGroundingReviewLine } = require('./clipping/selection_result');
+const { getVideoResolution } = require('./clipping/video_probe');
+const { buildSubtitleEvidence } = require('./clipping/subtitle_evidence');
+const { isTopicEditorialEnabled, buildTopicEditorialGroups, buildTopicClipWindow } = require('./clipping/topic_editorial');
+const { planTopicEventGroup, generateTopicEventCopy } = require('./clipping/topic_editorial_runner');
+const { runTopicShadowReview, topicReviewLines } = require('./clipping/topic_review_runner');
+const { buildPreflightEvidence } = require('./clipping/preflight_evidence');
+const { isPreflightEnabled, prepareTopicGroup, preflightSelections, sourceFileHash, persistPreflightPlan } = require('./clipping/preflight_runner');
 const {
     findKeywordMatches,
     clamp,
@@ -89,93 +97,7 @@ const VIDEO_EXTENSIONS = new Set(['.mp4', '.flv', '.mkv', '.ts', '.mov']);
  * AI 验证:判断关键词匹配是否为真正的提到/谈论目标人物。
  * 过滤掉唱歌、哼旋律、ASR 误识别等造成的假命中。
  */
-async function verifyClipWithAI(window, keywords, config = {}) {
-    const aiEnabled = config.ai?.text?.enabled !== false;
-    const verifyEnabled = config.clipTopics?.aiVerify !== false; // default true
-    if (!aiEnabled || !verifyEnabled) {
-        return { verified: true, reason: 'AI验证未启用,默认通过' };
-    }
-
-    // Collect all segment texts in the window
-    const sampleText = window.matchSegments
-        ? window.matchSegments.map(m => m.text).join('\n')
-        : '';
-
-    // Also get broader context from all segments in the window
-    const fullText = (window.allSegmentTexts || []).join('\n');
-
-    if (!sampleText && !fullText) {
-        return { verified: false, reason: '无字幕内容' };
-    }
-
-    const keywordList = (keywords || []).join('、') || '岁己';
-
-    const prompt = [
-        '你是一个直播字幕审核助手。以下是一段直播字幕片段,其中 ASR(语音识别)在部分句子里检测到了关键词。',
-        '但 ASR 常常在以下情况产生误识别:',
-        '- 主播在唱歌或哼旋律时,歌词被误识别为包含关键词',
-        '- 日文/英文歌词被错误识别为中文并凑巧包含关键词',
-        '- 语速快或含糊时的发音被错误识别',
-        '- 感谢观众礼物时的乱码碰巧包含关键词',
-        '',
-        `关键词: ${keywordList}`,
-        '请判断:这段字幕是否真的在**提到或谈论**关键词所指的虚拟主播?',
-        '',
-        '判断标准:',
-        '- 主播明确说出该主播的名字(如"给你们看岁己"、"岁己今天直播了吗")→ 是',
-        '- 主播在唱歌,歌词碰巧被识别为包含关键词 → 否',
-        '- 上下文完全不涉及该主播,只是发音相似 → 否',
-        '- 游戏道具"粉碎机"被音素纠正写成"粉岁己/粉粉岁己"(采石场/升级/石头/研磨等语境) → 否',
-        '- 感谢礼物时的乱码碰巧包含关键词 → 否',
-        '',
-        '请只回复 JSON:{"verified": true/false, "reason": "一句话解释"}',
-        '不要输出其他内容。',
-        '',
-        '命中关键词的句子:',
-        sampleText || '(无)',
-        '',
-        '完整上下文:',
-        (fullText || sampleText).slice(0, 500)
-    ].join('\n');
-
-    try {
-        const provider = config.ai?.text?.provider || 'gemini';
-        // Use the existing AI infrastructure
-        const { generateTextWithTuZi, generateTextWithGemini, generateTextWithDaiYu } = require('./ai_text_generator');
-        const result = provider === 'tuZi'
-            ? await generateTextWithTuZi(prompt, {
-                wordLimit: 100,
-                primaryModel: getTopicClipAiModel(config)
-            })
-            : provider === 'daiYu'
-            ? await generateTextWithDaiYu(prompt, {
-                wordLimit: 100,
-                primaryModel: getTopicClipAiModel(config)
-            })
-            : await generateTextWithGemini(prompt, { wordLimit: 100 });
-
-        const text = (result.text || '').trim();
-        // Parse JSON from response
-        const jsonMatch = text.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-            const parsed = JSON.parse(jsonMatch[0]);
-            return {
-                verified: !!parsed.verified,
-                reason: parsed.reason || '',
-                model: result.meta?.model || getTopicClipAiModel(config)
-            };
-        }
-        // If can't parse, be conservative and keep the clip
-        return {
-            verified: true,
-            reason: 'AI响应解析失败,保留切片',
-            model: result.meta?.model || getTopicClipAiModel(config)
-        };
-    } catch (error) {
-        console.warn(`⚠️  AI验证失败,保留切片: ${error.message}`);
-        return { verified: true, reason: `AI调用失败: ${error.message}`, model: getTopicClipAiModel(config) };
-    }
-}
+const { verifyClipWithAI } = require('./clipping/legacy_keyword_verifier');
 
 function isVideoFile(filePath) {
     return VIDEO_EXTENSIONS.has(path.extname(filePath || '').toLowerCase());
@@ -340,17 +262,12 @@ function parseSpeakerReviewText(text) {
 function parseTopicSrt(srtPath) {
     const parsed = asrBackends.parseSrt(srtPath, 'topic_clip');
     const isSpeakerReviewSrt = /\.speaker\.srt$/i.test(String(srtPath || ''));
-    if (!isSpeakerReviewSrt) {
-        return parsed;
+    if (isSpeakerReviewSrt) {
+        parsed.segments = parsed.segments.map(segment => ({ ...segment, ...parseSpeakerReviewText(segment.text) }));
     }
-
-    return {
-        ...parsed,
-        segments: parsed.segments.map(segment => ({
-            ...segment,
-            ...parseSpeakerReviewText(segment.text)
-        }))
-    };
+    const evidenceSrtPath = isSpeakerReviewSrt ? srtPath.replace(/\.speaker\.srt$/i, '.srt') : srtPath;
+    const provenance = require('./asr/evidence_sidecar').loadAsrEvidence(evidenceSrtPath, parsed.segments);
+    return { ...parsed, segments: provenance.segments, asrEvidenceStatus: provenance.status };
 }
 
 function writeClipSrt(segments = [], window, outputPath, options = {}) {
@@ -639,15 +556,6 @@ function normalizeTitle(value, fallback) {
     return title;
 }
 
-function normalizeCoverText(value) {
-    const lines = String(value || '')
-        .replace(/\\n/g, '\n')
-        .split(/\r?\n/)
-        .map(line => line.replace(/[【】]/g, '').replace(/\s+/g, '').trim())
-        .filter(Boolean)
-        .slice(0, 2);
-    return lines.length >= 2 ? lines.join('\n') : '';
-}
 
 async function buildClipCopy(window, info, streamerName, config, titleGenerator = null, descriptionGenerator = null, extraTagList = null, coverText = null) {
     const defaultTitle = buildDefaultTitle(window, info);
@@ -1165,33 +1073,8 @@ function resolveSubtitleBurnPlan(config = {}) {
     };
 }
 
-/**
- * 获取视频分辨率
- * @param {string} mediaPath
- * @returns {Promise<{width: number, height: number}>}
- */
-async function getVideoResolution(mediaPath, ffprobePath = 'ffprobe') {
-    try {
-        const result = childProcess.execFileSync(ffprobePath, [
-            '-v', 'error',
-            '-select_streams', 'v:0',
-            '-show_entries', 'stream=width,height',
-            '-of', 'csv=p=0',
-            String(mediaPath)
-        ], {
-            encoding: 'utf8',
-            timeout: 10000,
-            windowsHide: true,
-            shell: false,
-            stdio: ['ignore', 'pipe', 'pipe']
-        }).trim();
-        const [width, height] = result.split(',').map(Number);
-        if (width > 0 && height > 0) return { width, height };
-    } catch {
-        // fallback
-    }
-    return { width: 1920, height: 1080 };
-}
+
+
 
 async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
     const ffmpegPath = config.ffmpegPath || 'ffmpeg';
@@ -1592,6 +1475,9 @@ function buildClipNotifyBlock(result = {}, notifyConfig = {}) {
     if (title) {
         lines.push(`  - 标题: ${title}`);
     }
+    if (result.aiReview) lines.push(result.aiReview.mode === 'preflight'
+        ? `  - 烧录前复核: ${result.aiReview.status}; 字幕校对 ${result.aiReview.subtitleEdits.length} 处`
+        : `  - AI复核: 关键词=${result.aiReview.keyword.status}, 文案=${result.aiReview.quality.status}; 建议未自动应用`);
 
     if (notifyConfig.includeSubtitleContext !== false) {
         const subtitleContext = buildSubtitleContextLines(
@@ -1756,6 +1642,7 @@ function buildTopicReviewMarkdown(results = [], metadata = {}) {
         `直播: ${metadata.streamTitle || metadata.sourceFileName || '未知'}`,
         `录制时间: ${metadata.recordedAt || '未知'}`,
         `输出目录: ${metadata.outputRoot || ''}`,
+        metadata.planPath ? `事件编排记录: ${metadata.planPath}` : null,
         uploadIds.length ? `上传短ID: ${uploadIds.join(',')}` : null,
         '',
         '## 切片列表',
@@ -1772,6 +1659,13 @@ function buildTopicReviewMarkdown(results = [], metadata = {}) {
         if (result.output?.coverPath) {
             lines.push(`   封面: ${result.output.coverPath}`);
         }
+        if (result.editorial) {
+            lines.push(`   事件编排: ${result.editorial.status} | ${result.editorial.event || result.editorial.reason}`);
+            if (result.editorial.extensionReason) lines.push(`   完整性延长: ${result.editorial.extensionReason}`);
+            const grounding = buildGroundingReviewLine(result.editorial.copyGrounding);
+            if (grounding) lines.push(grounding);
+        }
+        lines.push(...topicReviewLines(result.aiReview));
     });
     if (uploadableResults.length === 0) {
         lines.push('- 无可上传切片');
@@ -1780,6 +1674,8 @@ function buildTopicReviewMarkdown(results = [], metadata = {}) {
         lines.push('', '## 仅本地结果', '');
         localOnlyResults.forEach(result => {
             lines.push(`- ${result.copy?.title || '话题切片'} | ${formatClock(result.window?.start || 0)} | ${result.output?.mediaPath || ''}`);
+            if (result.status === 'pending_preflight') lines.push(`   待烧录前审核: ${result.output?.metadataPath || ''}`);
+            lines.push(...topicReviewLines(result.aiReview));
         });
     }
     if (failures.length > 0) {
@@ -1937,6 +1833,8 @@ async function generateTopicClips(options = {}) {
         return [];
     }
 
+    const usePreflight = isPreflightEnabled(config);
+    const sourceSrtHash = usePreflight ? sourceFileHash(options.srtPath) : null;
     const parsed = parseTopicSrt(options.srtPath);
     const matches = findKeywordMatches(parsed.segments, config.keywords);
     if (matches.length === 0) {
@@ -1964,7 +1862,7 @@ async function generateTopicClips(options = {}) {
     }
 
     let danmaku = [];
-    if (config.notify?.includeDanmakuContext !== false && options.xmlPath) {
+    if ((usePreflight || config.notify?.includeDanmakuContext !== false) && options.xmlPath) {
         try {
             danmaku = await parseDanmakuXml(options.xmlPath);
         } catch (error) {
@@ -1984,15 +1882,27 @@ async function generateTopicClips(options = {}) {
     const outputRoot = resolveClipOutputRoot(source.mediaPath, config);
     fs.mkdirSync(outputRoot, { recursive: true });
 
-    // AI 分段:对每个 burst 决定切 1-3 段
+    const useEditorial = usePreflight || isTopicEditorialEnabled(aiConfig);
+    const editorialEvidence = usePreflight ? buildPreflightEvidence(parsed.segments)
+        : useEditorial ? buildSubtitleEvidence(parsed.segments) : null;
+    const planningGroups = useEditorial ? buildTopicEditorialGroups(bursts, editorialEvidence, config) : bursts;
+    info.selectionCacheDirectory = path.join(path.dirname(outputRoot), 'temp', path.basename(source.mediaPath), 'topic_selection');
+    const planPath = useEditorial ? path.join(outputRoot, `${path.basename(source.mediaPath, path.extname(source.mediaPath))}_TOPIC_PLAN.json`) : null;
     const aiSegmentedClips = [];
     const aiModelsUsed = new Set();
     const failures = [];
-    for (const burst of bursts) {
+    const diagnostics = { requests: [], failures };
+    if (useEditorial) console.log(`📝 ${bursts.length} 个关键词候选合为 ${planningGroups.length} 组完整上下文,按独立事件编排`);
+    for (const burst of planningGroups) {
         try {
-            console.log(`  🔍 [${formatClock(burst.matchStart)}] 命中 ${burst.matchCount} 次,上下文窗口 ${formatClock(burst.start)}-${formatClock(burst.end)} (${burst.allSegments.length}/${burst.contextCandidateCount} 条字幕${burst.contextSampled ? ',均匀抽样' : ''})`);
+            console.log(`  🔍 [${formatClock(burst.matchStart)}] 命中 ${burst.matchCount} 次,上下文窗口 ${formatClock(burst.start)}-${formatClock(burst.end)}`);
 
-            const segments = await segmentBurstWithAI(burst, parsed, streamerName, info, aiConfig);
+            const segments = usePreflight
+                ? preflightSelections(await prepareTopicGroup(burst, editorialEvidence, config, aiConfig,
+                    { ...info, streamerName, srtPath: options.srtPath }, diagnostics, { danmaku }), burst, config)
+                : useEditorial
+                ? await planTopicEventGroup(burst, editorialEvidence, config, aiConfig, streamerName, info, diagnostics)
+                : await segmentBurstWithAI(burst, parsed, streamerName, info, aiConfig);
 
             if (segments.length === 0) {
                 console.log(`  ⏭️  AI 判定跳过(可能是唱歌/误识别)`);
@@ -2003,39 +1913,7 @@ async function generateTopicClips(options = {}) {
                 if (seg.aiModel) {
                     aiModelsUsed.add(seg.aiModel);
                 }
-                const matchKeys = new Set((burst.matchSegments || []).map(segmentKey));
-                const contextSegments = parsed.segments
-                    .map((s, index) => ({
-                        index,
-                        start: s.start,
-                        end: s.end,
-                        text: s.text,
-                        hit: matchKeys.has(segmentKey(s))
-                    }))
-                    .filter(s => Number(s.end) >= seg.start - 20 && Number(s.start) <= seg.end + 20);
-                const clipMatchSegments = (burst.matchSegments || []).filter(match =>
-                    Number(match.end) >= seg.start && Number(match.start) <= seg.end
-                );
-                // 构造一个兼容旧代码的 window 对象
-                const w = {
-                    index: `${burst.index}-${seg.sliceIndex || 1}`,
-                    start: seg.start,
-                    end: seg.end,
-                    duration: seg.end - seg.start,
-                    matchedKeywords: burst.matchedKeywords,
-                    matchCount: burst.matchCount,
-                    matchSegments: clipMatchSegments.length > 0 ? clipMatchSegments : burst.matchSegments,
-                    contextSegments,
-                    allSegmentTexts: parsed.segments
-                        .filter(s => Number(s.start) >= seg.start - 5 && Number(s.end) <= seg.end + 5)
-                        .map(s => s.text),
-                    preContext: parsed.segments
-                        .filter(s => Number(s.end) <= seg.start && Number(s.end) >= seg.start - 60)
-                        .map(s => s.text).slice(-10),
-                    postContext: parsed.segments
-                        .filter(s => Number(s.start) >= seg.end && Number(s.start) <= seg.end + 60)
-                        .map(s => s.text).slice(0, 10),
-                };
+                const w = buildTopicClipWindow(seg, burst, parsed.segments);
                 w.danmakuContext = buildDanmakuContextLines(danmaku, w, config.notify || {});
                 aiSegmentedClips.push({
                     window: w,
@@ -2044,6 +1922,9 @@ async function generateTopicClips(options = {}) {
                     aiCoverText: seg.aiCoverText,
                     aiDescription: seg.aiDescription,
                     aiModel: seg.aiModel || null,
+                    editorial: seg.editorial || null,
+                    preflight: seg.preflight || null,
+                    subtitleSegments: seg.subtitleSegments,
                     boundaryAdjusted: Boolean(seg.boundaryAdjusted)
                 });
             }
@@ -2059,17 +1940,36 @@ async function generateTopicClips(options = {}) {
         }
     }
 
-    if (aiSegmentedClips.length === 0 && failures.length === 0) {
+    if (!useEditorial && aiSegmentedClips.length === 0 && failures.length === 0) {
         console.log('i️  AI 分段后无有效切片');
         return [];
     }
 
-    const clipsToGenerate = dedupeClipsByStart(aiSegmentedClips);
+    const renderableClips = usePreflight ? aiSegmentedClips.filter(clip => clip.preflight?.status === 'ready') : aiSegmentedClips;
+    const clipsToGenerate = dedupeClipsByStart(renderableClips, { dedupeMatchText: !useEditorial });
+    if (usePreflight) clipsToGenerate.push(...aiSegmentedClips.filter(clip => clip.preflight?.status !== 'ready'));
+    clipsToGenerate.sort((a, b) => a.window.start - b.window.start);
     if (clipsToGenerate.length < aiSegmentedClips.length) {
         console.log(`i️  已过滤 ${aiSegmentedClips.length - clipsToGenerate.length} 段重复/重叠切片`);
+        if (useEditorial) failures.push({ stage: 'planning', severity: 'warning',
+            error: '事件编排仍存在冲突,已兜底去重;未保留的候选和独有内容请核对 TOPIC_PLAN.json' });
     }
 
-    console.log(`\n🎬 共 ${clipsToGenerate.length} 段切片,开始生成视频...\n`);
+    if (usePreflight) {
+        try {
+            if (sourceFileHash(options.srtPath) !== sourceSrtHash) throw new Error('Source subtitles changed during preflight');
+            persistPreflightPlan(planPath, source.mediaPath, sourceSrtHash,
+                diagnostics.preflightGroups, clipsToGenerate, diagnostics);
+        } catch (error) {
+            failures.push({ stage: 'preflight', severity: 'warning', error: error.message });
+            for (const clip of clipsToGenerate) {
+                clip.preflight.status = 'needs_review';
+                clip.preflight.applied = false;
+                clip.preflight.quality.issues.push(error.message);
+            }
+        }
+    }
+    console.log(`\n🎬 共 ${clipsToGenerate.length} 段候选,仅执行已完成前置审核的切片...\n`);
 
     const results = [];
     const clipResourceConfig = getFfmpegResourceConfig(options.config || configLoader.getConfig());
@@ -2094,6 +1994,7 @@ async function generateTopicClips(options = {}) {
             tags: Array.isArray(config.extraTags) ? [...config.extraTags] : []
         };
         let mediaResult = null;
+        let aiReview = clip.preflight || null;
         let mediaError = null;
         let coverPath = null;
         const clipFailures = [];
@@ -2119,6 +2020,7 @@ async function generateTopicClips(options = {}) {
                 sourceKind: source.kind,
                 sourceReason: source.reason,
                 srtPath: options.srtPath,
+                asrEvidenceStatus: parsed.asrEvidenceStatus,
                 originalMediaPath: options.originalMediaPath || null,
                 processedMediaPath: options.processedMediaPath || null
             },
@@ -2128,6 +2030,8 @@ async function generateTopicClips(options = {}) {
             recordedAt: info.recordedAt,
             streamTitle: info.streamTitle,
             window,
+            editorial: clip.editorial,
+            aiReview,
             copy,
             upload: buildTopicUploadSettings({
                 config: options.config || {},
@@ -2140,7 +2044,8 @@ async function generateTopicClips(options = {}) {
             ai: {
                 segmentationModel: clip.aiModel || null,
                 boundaryAdjusted: Boolean(clip.boundaryAdjusted),
-                requestedModel: getTopicClipAiModel(options.config || {})
+                requestedModel: usePreflight ? (config.review.model || config.aiModel) : getTopicClipAiModel(options.config || {}),
+                ...(usePreflight ? { reasoningEffort: config.review.reasoningEffort, preflightStrategy: config.review.strategy } : {})
             },
             issues: clipFailures,
             uploadReady: source.uploadReady && Boolean(mediaResult?.path) && !mediaError,
@@ -2160,21 +2065,47 @@ async function generateTopicClips(options = {}) {
         });
 
         try {
-            srtResult = writeClipSrt(parsed.segments, window, srtPath, {
+            if (usePreflight && clip.preflight?.status !== 'ready') {
+                const metadata = createMetadata();
+                metadata.status = 'pending_preflight';
+                metadata.uploadReady = false;
+                metadata.output.mediaPath = metadata.output.srtPath = metadata.output.copyPath = null;
+                fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2), 'utf8');
+                results.push(metadata);
+                continue;
+            }
+            srtResult = writeClipSrt(usePreflight ? clip.subtitleSegments : parsed.segments, window, srtPath, {
                 maxCharsPerLine: config.subtitleMaxCharsPerLine ?? 18
             });
+            if (usePreflight) aiReview.applied = true;
             stage = 'copy';
+            if (useEditorial && !usePreflight) {
+                try {
+                    const finalCopy = await generateTopicEventCopy(clip, editorialEvidence, config, aiConfig, streamerName, info, diagnostics);
+                    clip.aiTitle = finalCopy.title;
+                    clip.aiDescription = finalCopy.description;
+                    clip.aiCoverText = finalCopy.coverText;
+                    Object.assign(clip.editorial, { copyStatus: 'generated', copyModel: finalCopy.model,
+                        copyGrounding: finalCopy.grounding, copyWindow: { start: window.start, end: window.end } });
+                    aiModelsUsed.add(finalCopy.model);
+                } catch (error) {
+                    clip.aiTitle = clip.aiDescription = clip.aiCoverText = null;
+                    clip.editorial.copyStatus = 'fallback';
+                    recordFailure('copy', error, 'warning');
+                }
+            }
             // 优先用 AI 分段时生成的标题/简介,其次调用独立的标题/简介生成器
             const titleGen = clip.aiTitle
                 ? async () => clip.aiTitle
-                : options.titleGenerator;
+                : (useEditorial ? null : options.titleGenerator);
             const descGen = clip.aiDescription
                 ? async () => clip.aiDescription
-                : options.descriptionGenerator;
+                : (useEditorial ? null : options.descriptionGenerator);
             // 从 streamerRegistry 解析正式标签(如 米汀Nagisa)
             const registryTags = resolveStreamerTags(options.config || {}, info.roomId);
             const metadataConfig = { ...config, ai: options.config?.ai };
             copy = await buildClipCopy(window, info, streamerName, metadataConfig, titleGen, descGen, registryTags, clip.aiCoverText);
+            if (!usePreflight) aiReview = await runTopicShadowReview({ ...clip, copy, streamerName }, parsed.segments, config, aiConfig, info, diagnostics);
 
             stage = 'media';
             try {
@@ -2268,9 +2199,24 @@ async function generateTopicClips(options = {}) {
         outputRoot,
         sourceFileName: info.fileName,
         reviewPath,
+        planPath,
         uploadManifestPath: path.join(outputRoot, `${reviewStem}_UPLOAD_MANIFEST.json`),
         failures
     };
+    try {
+        if (planPath && !usePreflight) fs.writeFileSync(planPath, JSON.stringify({
+            version: 1, strategy: 'event_editorial_v1', source: source.mediaPath,
+            sourceSha256: editorialEvidence.sourceSha256,
+            preferredClipSeconds: config.preferredClipSeconds, maxClipSeconds: config.maxClipSeconds,
+            groups: planningGroups.map(group => ({ index: group.index, start: group.start, end: group.end,
+                sourceBurstIndices: group.bursts.map(burst => burst.index), matchSegments: group.matchSegments })),
+            candidates: aiSegmentedClips.map(clip => ({ window: clip.window, editorial: clip.editorial,
+                selected: clipsToGenerate.includes(clip) })),
+            requests: diagnostics.requests, failures
+        }, null, 2), 'utf8');
+    } catch (error) {
+        failures.push({ stage: 'review', error: `事件编排记录写入失败: ${error.message}` });
+    }
     try {
         fs.writeFileSync(reviewPath, buildTopicReviewMarkdown(results, reviewMetadata), 'utf8');
     } catch (error) {
@@ -2340,6 +2286,7 @@ module.exports = {
     dedupeClipsByStart,
     verifyClipWithAI,
     parseTopicSrt,
+    parseDanmakuXml,
     writeClipSrt,
     buildBurnAssContentFromSrt,
     writeTemporaryBurnAssFromSrt,

@@ -125,8 +125,9 @@ export function pythonBoundaryViolation(file: string, dependency: string): strin
   if (/^(ai_comic_generator|config_loader|tuzi_chat_completions|requests)(\.|$)/.test(dependency)) {
     return 'comic components must not import parent orchestration or provider IO';
   }
-  if (file !== 'src/scripts/comic/screenshots.py' && /^subprocess(\.|$)/.test(dependency)) {
-    return 'comic process execution belongs in screenshots.py';
+  if (!['src/scripts/comic/screenshots.py', 'src/scripts/comic/text_client.py'].includes(file)
+    && /^subprocess(\.|$)/.test(dependency)) {
+    return 'comic subprocesses belong in screenshot capture or the managed text client';
   }
   return undefined;
 }
