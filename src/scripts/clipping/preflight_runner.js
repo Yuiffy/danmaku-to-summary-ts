@@ -8,6 +8,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { loadVerifiedTopicFacts } = require('./preflight_facts');
 const { buildQualityDraftPrompt, buildQualityAuditPrompt, applyQualityAudit } = require('./preflight_quality');
+const { DEFAULT_CLIP_TOPICS_CONFIG } = require('./topic_config');
 
 function sourceFileHash(file) {
     return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -32,7 +33,8 @@ function preflightRequestOptions(config) {
     return { primaryModel: config.review.model || config.aiModel, exactModel: true,
         reasoningEffort: config.review.reasoningEffort || 'max', apiMode: 'responses', strictResponses: true,
         allowProviderFallback: false, fallbackModelsEnabled: false, transientMaxAttempts: 1,
-        timeoutMs: config.review.timeoutMs || 180000, maxTokens: config.review.maxOutputTokens || 24000, wordLimit: 2500 };
+        timeoutMs: config.review.timeoutMs || DEFAULT_CLIP_TOPICS_CONFIG.review.timeoutMs,
+        maxTokens: config.review.maxOutputTokens || 24000, wordLimit: 2500 };
 }
 
 function requestMatches(result, settings) {

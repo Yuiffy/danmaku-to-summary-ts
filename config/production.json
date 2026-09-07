@@ -1650,7 +1650,7 @@
       "maxOutputTokens": 24000,
       "maxDanmakuRows": 120,
       "maxEvidenceChars": 80000,
-      "timeoutMs": 240000
+      "timeoutMs": 600000
     },
     "mergeGapSeconds": 45,
     "burnSubtitles": true,

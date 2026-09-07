@@ -5,6 +5,17 @@ const path = require('path');
 const asr = require('../asr/asr_backends');
 const topic = require('../topic_clipper');
 const generator = require('../ai_text_generator');
+const { preflightRequestOptions } = require('./preflight_runner');
+
+test('preflight allows ten minutes by default and preserves explicit timeout overrides', () => {
+  expect(preflightRequestOptions({ review: {} }).timeoutMs).toBe(600000);
+  expect(preflightRequestOptions(topic.getClipTopicsConfig({})).timeoutMs).toBe(600000);
+  for (const environment of ['default', 'production']) {
+    const root = JSON.parse(fs.readFileSync(path.resolve(__dirname, `../../../config/${environment}.json`), 'utf8'));
+    expect(preflightRequestOptions(topic.getClipTopicsConfig(root)).timeoutMs).toBe(600000);
+  }
+  expect(preflightRequestOptions({ review: { timeoutMs: 720000 } }).timeoutMs).toBe(720000);
+});
 
 describe('pre-render topic workflow', () => {
   let dir: string;
@@ -70,6 +81,7 @@ describe('pre-render topic workflow', () => {
     const results = await job.promise;
     expect(results).toHaveLength(2);
     expect(request).toHaveBeenCalledTimes(2);
+    expect(request.mock.calls.every((call: any[]) => call[1].timeoutMs === 600000)).toBe(true);
     expect(job.mediaGenerator).toHaveBeenCalledTimes(2);
     expect(job.coverGenerator).toHaveBeenCalledTimes(2);
     expect(results.every(result => result.aiReview.mode === 'preflight' && result.aiReview.status === 'ready')).toBe(true);

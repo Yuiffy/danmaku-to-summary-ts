@@ -18,7 +18,7 @@ const DEFAULT_CLIP_TOPICS_CONFIG = {
         maxEvidenceChars: 80000
     },
     review: { enabled: false, mode: 'shadow', strategy: 'single', reasoningEffort: 'max',
-        maxOutputTokens: 24000, maxDanmakuRows: 120, maxEvidenceChars: 80000, timeoutMs: 240000 },
+        maxOutputTokens: 24000, maxDanmakuRows: 120, maxEvidenceChars: 80000, timeoutMs: 600000 },
     mergeGapSeconds: 120,
     contextPaddingSeconds: 300,  // 旧版兼容:未配置不对称窗口时前后各取5分钟
     contextPrePaddingSeconds: 180,
