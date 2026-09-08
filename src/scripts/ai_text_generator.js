@@ -1364,56 +1364,21 @@ function buildTextFrontMatter(highlightPath, generationMeta = {}) {
             lines.push(`  - provider: ${yamlQuote(attempt.provider || 'unknown')}`);
             lines.push(`    model: ${yamlQuote(attempt.model || 'unknown')}`);
             lines.push(`    status: ${yamlQuote(attempt.status || 'unknown')}`);
-            if (attempt.finishReason) {
-                lines.push(`    finishReason: ${yamlQuote(attempt.finishReason)}`);
+            const numericFields = new Set(['maxTokens', 'completionTokens', 'promptTokens', 'cachedTokens',
+                'cacheWriteTokens', 'reasoningTokens', 'sharedPromptPrefixChars', 'promptCacheRolloutBucket', 'totalTokens']);
+            const fields = ['finishReason', 'maxTokens', 'completionTokens', 'promptTokens', 'cachedTokens',
+                'cacheWriteTokens', 'reasoningTokens', 'apiModeRequested', 'apiModeUsed', 'apiModeFallbackReason',
+                'sharedPromptCacheKey', 'sharedPromptPrefixChars', 'explicitPromptCache', 'promptCacheRolloutBucket',
+                'promptCacheFallbackReason', 'totalTokens', 'error', 'requestId', 'responseId', 'phase'];
+            for (const field of fields) {
+                const value = attempt[field];
+                if (numericFields.has(field)) {
+                    if (value === null) lines.push(`    ${field}: null`);
+                    else if (value !== undefined && Number.isFinite(Number(value))) lines.push(`    ${field}: ${Number(value)}`);
+                } else if (value) lines.push(`    ${field}: ${yamlQuote(value)}`);
             }
-            if (attempt.maxTokens !== undefined) {
-                lines.push(`    maxTokens: ${Number(attempt.maxTokens)}`);
-            }
-            if (attempt.completionTokens !== undefined) {
-                lines.push(`    completionTokens: ${Number(attempt.completionTokens)}`);
-            }
-            if (attempt.promptTokens !== undefined) {
-                lines.push(`    promptTokens: ${Number(attempt.promptTokens)}`);
-            }
-            if (attempt.cachedTokens !== undefined) {
-                lines.push(`    cachedTokens: ${Number(attempt.cachedTokens)}`);
-            }
-            if (attempt.cacheWriteTokens !== undefined) {
-                lines.push(`    cacheWriteTokens: ${Number(attempt.cacheWriteTokens)}`);
-            }
-            if (attempt.reasoningTokens !== undefined) {
-                lines.push(`    reasoningTokens: ${Number(attempt.reasoningTokens)}`);
-            }
-            if (attempt.apiModeRequested) {
-                lines.push(`    apiModeRequested: ${yamlQuote(attempt.apiModeRequested)}`);
-            }
-            if (attempt.apiModeUsed) {
-                lines.push(`    apiModeUsed: ${yamlQuote(attempt.apiModeUsed)}`);
-            }
-            if (attempt.apiModeFallbackReason) {
-                lines.push(`    apiModeFallbackReason: ${yamlQuote(attempt.apiModeFallbackReason)}`);
-            }
-            if (attempt.sharedPromptCacheKey) {
-                lines.push(`    sharedPromptCacheKey: ${yamlQuote(attempt.sharedPromptCacheKey)}`);
-            }
-            if (attempt.sharedPromptPrefixChars !== undefined) {
-                lines.push(`    sharedPromptPrefixChars: ${Number(attempt.sharedPromptPrefixChars)}`);
-            }
-            if (attempt.explicitPromptCache) {
-                lines.push(`    explicitPromptCache: ${yamlQuote(attempt.explicitPromptCache)}`);
-            }
-            if (attempt.promptCacheRolloutBucket !== undefined) {
-                lines.push(`    promptCacheRolloutBucket: ${Number(attempt.promptCacheRolloutBucket)}`);
-            }
-            if (attempt.promptCacheFallbackReason) {
-                lines.push(`    promptCacheFallbackReason: ${yamlQuote(attempt.promptCacheFallbackReason)}`);
-            }
-            if (attempt.totalTokens !== undefined) {
-                lines.push(`    totalTokens: ${Number(attempt.totalTokens)}`);
-            }
-            if (attempt.error) {
-                lines.push(`    error: ${yamlQuote(attempt.error)}`);
+            for (const field of ['usageUnknown', 'usageFinal', 'outcomeUnknown', 'requestStarted']) {
+                if (typeof attempt[field] === 'boolean') lines.push(`    ${field}: ${attempt[field]}`);
             }
         }
     }
@@ -1423,6 +1388,9 @@ function buildTextFrontMatter(highlightPath, generationMeta = {}) {
     }
     if (generationMeta.maxTokens !== undefined) {
         lines.push(`maxTokens: ${Number(generationMeta.maxTokens)}`);
+    }
+    for (const field of ['generationMode', 'sharedUsagePath', 'sharedGenerationId']) {
+        if (generationMeta[field]) lines.push(`${field}: ${yamlQuote(generationMeta[field])}`);
     }
 
     lines.push('---', '');
@@ -1824,7 +1792,7 @@ function saveFailedGeneratedText(outputPath, text, highlightPath, generationMeta
             `---`,
             ``
         ].join('\n');
-        fs.writeFileSync(debugPath, `${metaInfo}${String(text || '')}`, 'utf8');
+        fs.writeFileSync(debugPath, `${buildTextFrontMatter(highlightPath, generationMeta)}${metaInfo}${String(text || '')}`, 'utf8');
         console.log(`🧪 诊断稿已保存: ${path.basename(debugPath)}`);
         return debugPath;
     } catch (error) {

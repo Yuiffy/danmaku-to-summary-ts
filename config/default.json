@@ -933,6 +933,10 @@
       "provider": "python",
       "outputLockEnabled": false,
       "overlapClips": false,
+      "textGeneration": {
+        "requestTimeoutMs": 600000,
+        "totalTimeoutMs": 1200000
+      },
       "storytellingExperiment": {
         "enabled": true,
         "immersivePercent": 60,
@@ -1354,6 +1358,7 @@
       "mode": "preflight",
       "strategy": "single",
       "qualityRules": true,
+      "transientMaxAttempts": 2,
       "model": "gpt-5.6-sol",
       "reasoningEffort": "high",
       "maxOutputTokens": 24000,

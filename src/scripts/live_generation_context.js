@@ -232,11 +232,9 @@ function getContentHints(config, roomId) {
     const roomSettings = getRoomSettings(config, roomId);
     const streamer = findStreamerConfig(config, roomId);
     const rawHints = roomSettings.contentHints ?? streamer?.contentHints;
-    if (Array.isArray(rawHints)) {
-        return rawHints.map(normalizeText).filter(Boolean);
-    }
-    const hint = normalizeText(rawHints);
-    return hint ? [hint] : [];
+    const hints = Array.isArray(rawHints) ? rawHints.map(normalizeText).filter(Boolean) : [normalizeText(rawHints)].filter(Boolean);
+    return roomSettings.fullLiveContextExperiment?.enabled === true && roomSettings.fullLiveContextExperiment?.replySummary?.enabled === true
+        ? Array.from(new Set([...hints, ...require('./reply_summary_policy.json')])) : hints;
 }
 
 function filterRecentDynamics(dynamics, recordingStartTime, options = {}) {

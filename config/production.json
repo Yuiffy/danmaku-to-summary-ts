@@ -207,6 +207,10 @@
       "provider": "python",
       "outputLockEnabled": false,
       "overlapClips": false,
+      "textGeneration": {
+        "requestTimeoutMs": 600000,
+        "totalTimeoutMs": 1200000
+      },
       "storytellingExperiment": {
         "enabled": true,
         "immersivePercent": 60,
@@ -1301,7 +1305,30 @@
         "fanName": "小博兔",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
-        "enableDelayedReply": true
+        "enableDelayedReply": true,
+        "wordLimit": 250,
+        "preferSpeakerReviewSrtWhenMultipleSpeakers": true,
+        "fullLiveContextExperiment": {
+          "enabled": true,
+          "replySummary": {
+            "enabled": true
+          },
+          "tasks": [
+            "goodnight",
+            "comic",
+            "summary"
+          ],
+          "summaryDeliveryMode": "attach_if_ready",
+          "promptCacheRolloutPercent": 100,
+          "model": "gpt-5.6-luna",
+          "cacheWarmupWaitMs": 45000,
+          "cachePropagationWaitMs": 3000,
+          "timeoutMs": 180000,
+          "maxAttempts": 1,
+          "failureRetryCooldownMs": 1800000,
+          "maxTokens": 2000,
+          "thinkingBudgetTokens": 2000
+        }
       },
       "31368686": {
         "audioOnly": false,
@@ -1322,7 +1349,29 @@
         "enableTextGeneration": true,
         "enableComicGeneration": true,
         "enableDelayedReply": true,
-        "wordLimit": 200,
+        "wordLimit": 250,
+        "preferSpeakerReviewSrtWhenMultipleSpeakers": true,
+        "fullLiveContextExperiment": {
+          "enabled": true,
+          "replySummary": {
+            "enabled": true
+          },
+          "tasks": [
+            "goodnight",
+            "comic",
+            "summary"
+          ],
+          "summaryDeliveryMode": "attach_if_ready",
+          "promptCacheRolloutPercent": 100,
+          "model": "gpt-5.6-luna",
+          "cacheWarmupWaitMs": 45000,
+          "cachePropagationWaitMs": 3000,
+          "timeoutMs": 180000,
+          "maxAttempts": 1,
+          "failureRetryCooldownMs": 1800000,
+          "maxTokens": 2000,
+          "thinkingBudgetTokens": 2000
+        },
         "comicGenerationProbability": 1,
         "multiReferenceImages": {
           "enabled": true,
@@ -1466,6 +1515,7 @@
         "referenceImage": "public/reference_images/mofu_standing_sheet.png",
         "characterDescription": "犬绒Mofu（棕粉渐变长发、黄蓝异瞳犬娘），可爱小女孩，立绘胸部较大，被称为大奶狗。粉丝绒绒民是白色小狗戴着粉色蝴蝶结",
         "anchorName": "犬绒Mofu",
+        "clipTitlePrefix": "小绒",
         "fanName": "绒绒民",
         "enableTextGeneration": true,
         "enableComicGeneration": true,
@@ -1645,6 +1695,7 @@
       "mode": "preflight",
       "strategy": "single",
       "qualityRules": true,
+      "transientMaxAttempts": 2,
       "model": "gpt-5.6-sol",
       "reasoningEffort": "high",
       "maxOutputTokens": 24000,

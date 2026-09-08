@@ -392,10 +392,10 @@ describe('own_stream_clipper', () => {
     });
 
     expect(markdown).toContain('来源统计: 本地规则 2');
-    expect(markdown).toContain('1. 岁己：弹幕觉得这里很有趣 | 00:01:15 | 00:01:30');
-    expect(markdown).toContain('2. 岁己：很有岁己想法的一段 | 00:03:00 | 00:00:45');
-    expect(markdown).toContain('1. 岁己：弹幕觉得这里很有趣 | 00:01:15 | 00:01:30 | 86分');
-    expect(markdown).toContain('2. 岁己：很有岁己想法的一段 | 00:03:00 | 00:00:45 | 72分');
+    expect(markdown).toContain('1. 未登记ID 岁己：弹幕觉得这里很有趣 | 00:01:15 | 00:01:30');
+    expect(markdown).toContain('2. 未登记ID 岁己：很有岁己想法的一段 | 00:03:00 | 00:00:45');
+    expect(markdown).toContain('1. 未登记ID 岁己：弹幕觉得这里很有趣 | 00:01:15 | 00:01:30 | 86分');
+    expect(markdown).toContain('2. 未登记ID 岁己：很有岁己想法的一段 | 00:03:00 | 00:00:45 | 72分');
     expect(markdown).not.toContain('D:/clips/one.mp4');
   });
 
@@ -428,7 +428,7 @@ describe('own_stream_clipper', () => {
       outputRoot: 'D:/clips'
     });
 
-    expect(plan).toContain('1. 高分候选 | 00:01:15-00:02:45 | 00:01:30 | 事件完整');
+    expect(plan).toContain('1. 未生成ID（仅规划） 高分候选 | 00:01:15-00:02:45 | 00:01:30 | 事件完整');
     expect(plan).toContain('推荐分数: 95分');
     expect(review).toContain('1. 高分成片 | 00:01:15 | 00:01:30 | D:/clips/one.mp4');
     expect(review).toContain('推荐分数: 95分');
@@ -491,8 +491,68 @@ describe('own_stream_clipper', () => {
     expect(review).toContain('   上传ID: 17');
     expect(review).toContain('   上传ID: 18');
     expect(notify).toContain('上传短ID: 17,18');
-    expect(notify).toContain('1. ID 17 | 岁己：弹幕觉得这里很有趣 | 00:01:15 | 00:01:30');
-    expect(notify).toContain('2. ID 18 | 岁己：很有岁己想法的一段 | 00:03:00 | 00:00:45');
+    expect(notify).toContain('1. ID17 岁己：弹幕觉得这里很有趣 | 00:01:15 | 00:01:30');
+    expect(notify).toContain('2. ID18 岁己：很有岁己想法的一段 | 00:03:00 | 00:00:45');
+  });
+
+  test('shows actual nonconsecutive ids next to every title instead of deriving them from the first id', () => {
+    const results = ['First clip', 'Second clip'].map(title => ({
+      window: { start: 75, duration: 90 }, copy: { title }
+    }));
+    const lines = ownStreamClipper.buildNotifyClipLines(results, {
+      uploadRegistry: { clipIds: [1234, 1289] }
+    });
+
+    expect(lines).toEqual([
+      '1. ID1234 First clip | 00:01:15 | 00:01:30',
+      '2. ID1289 Second clip | 00:01:15 | 00:01:30'
+    ]);
+  });
+
+  test('uses sparse review-index mappings without borrowing ids for unregistered clips', () => {
+    const results = ['Pending clip', 'Second clip', 'Third clip'].map(title => ({
+      window: { start: 75, duration: 90 }, copy: { title }
+    }));
+    const lines = ownStreamClipper.buildNotifyClipLines(results, {
+      uploadRegistry: { clipIds: [1234, 1289], clipIdsByReviewIndex: { 2: 1289, 3: 1234 } }
+    });
+
+    expect(lines).toEqual([
+      '1. 未登记ID Pending clip | 00:01:15 | 00:01:30',
+      '2. ID1289 Second clip | 00:01:15 | 00:01:30',
+      '3. ID1234 Third clip | 00:01:15 | 00:01:30'
+    ]);
+    expect(ownStreamClipper.buildNotifyClipLines(results, {
+      uploadRegistry: { clipIds: [1234, 1289], clipIdsByReviewIndex: {} }
+    }).every((line: string) => line.includes('未登记ID'))).toBe(true);
+  });
+
+  test.each([undefined, null, 0, -1, 1.5, 'invalid'])('labels an invalid or absent upload id as unregistered (%s)', id => {
+    expect(ownStreamClipper.buildNotifyClipLines([
+      { window: { start: 0, duration: 60 }, copy: { title: 'Clip' } }
+    ], { uploadRegistry: { clipIds: [id] } })).toEqual([
+      '1. 未登记ID Clip | 00:00:00 | 00:01:00'
+    ]);
+  });
+
+  test('plan-only notifications never present previous upload ids as ids for new candidates', () => {
+    const clips = [{ start: 75, end: 165, duration: 90, title: 'New plan', score: 97 }];
+    const metadata = {
+      planOnly: true,
+      outputRoot: 'D:/clips',
+      uploadRegistry: { clipIds: [2184], clipIdsByReviewIndex: { 1: 2184 } }
+    };
+    const markdown = ownStreamClipper.buildNotifyMarkdown(clips, metadata);
+    const review = ownStreamClipper.buildPlanReviewMarkdown(clips, metadata);
+
+    expect(markdown).toContain('直播有趣切片计划');
+    expect(markdown).toContain('1. 未生成ID（仅规划） New plan | 00:01:15 | 00:01:30 | 97分');
+    expect(review).toContain('1. 未生成ID（仅规划） New plan');
+    for (const text of [markdown, review]) {
+      expect(text).toContain('候选序号不是上传ID');
+      expect(text).not.toContain('2184');
+      expect(text).not.toContain('上传短ID:');
+    }
   });
 
   test('normalizes Windows backslashes in own-stream notification paths', () => {
@@ -1160,8 +1220,8 @@ describe('own_stream_clipper', () => {
     });
 
     expect(markdown).toContain('来源统计: 弹幕热度 1，模型全量 1');
-    expect(markdown).toContain('1. 弹幕热度片段');
-    expect(markdown).toContain('2. 模型决定片段');
+    expect(markdown).toContain('1. 未登记ID 弹幕热度片段');
+    expect(markdown).toContain('2. 未登记ID 模型决定片段');
     expect(markdown).not.toContain('[弹幕热度]');
     expect(markdown).not.toContain('[模型全量]');
   });
@@ -1181,8 +1241,8 @@ describe('own_stream_clipper', () => {
     });
 
     expect(markdown).toContain('来源统计: 模型全量 30');
-    expect(markdown).toContain('1. 模型片段 1');
-    expect(markdown).toContain('30. 模型片段 30');
+    expect(markdown).toContain('1. 未登记ID 模型片段 1');
+    expect(markdown).toContain('30. 未登记ID 模型片段 30');
     expect(markdown).not.toContain('请看 Review');
     expect(ownStreamClipper.splitWeChatMarkdown(markdown).length).toBeGreaterThan(2);
     expect(markdown).not.toContain('[模型全量]');
@@ -1202,7 +1262,7 @@ describe('own_stream_clipper', () => {
       outputRoot: 'D:/clips'
     });
 
-    expect(markdown).toContain('32. 小岁片段 32');
+    expect(markdown).toContain('32. 未登记ID 小岁片段 32');
     expect(markdown).not.toContain('请看 Review');
     expect(ownStreamClipper.splitWeChatMarkdown(markdown).length).toBeLessThanOrEqual(2);
     expect(ownStreamClipper.splitWeChatMarkdown(markdown).every((part: string) => (

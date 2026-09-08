@@ -898,6 +898,8 @@ async function processAudioIfNeeded(mediaPath, roomId = null) {
 // AI文本生成
 async function generateAiText(highlightPath, roomId = null, options = {}) {
     console.log('\n🤖 开始AI文本生成...');
+    const combinedReply = await require('./full_reply_workflow').tryGenerateCombinedReply(highlightPath, roomId, options);
+    if (combinedReply.handled) return combinedReply.goodnightTextPath;
     
     try {
         const result = await aiTextGenerator.generateGoodnightReply(highlightPath, roomId, options);
@@ -943,7 +945,8 @@ async function prepareFullLiveContextForExperiment(options = {}) {
 
     const parsed = asrBackends.parseSrt(srtPath, 'full_live_context');
     const danmaku = await ownStreamClipper.parseDanmakuXml(xmlPath);
-    const clipConfig = ownStreamClipper.getOwnStreamClipsConfig(config);
+    const clipConfig = { ...ownStreamClipper.getOwnStreamClipsConfig(config),
+        ...(experiment.replySummary?.enabled === true ? { compactEvidence: true } : {}) };
     const emotionAnalysis = ownStreamClipper.loadEmotionAnalysisForSrt(srtPath);
     const info = ownStreamClipper.parseRecordingInfo(mediaPath || srtPath, {
         ...context,

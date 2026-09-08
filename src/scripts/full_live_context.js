@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const liveGenerationContext = require('./live_generation_context');
+const { buildSubtitleEvidence } = require('./clipping/subtitle_evidence');
 
 const FULL_LIVE_CONTEXT_SCHEMA_VERSION = 1;
 const FULL_LIVE_SHARED_PREFIX_VERSION = 1;
@@ -173,18 +174,18 @@ function buildFullContextHeatLines(danmaku = [], totalDuration = 0, config = {})
 function buildFullContextSource(parsed, danmaku, config = {}, emotionAnalysis = null) {
     const segments = Array.isArray(parsed?.segments) ? parsed.segments : [];
     const danmakuItems = Array.isArray(danmaku) ? danmaku : [];
-    const subtitleLines = segments.map(segment =>
-        `${formatClock(Number(segment.start))}-${formatClock(Number(segment.end))} ${String(segment.text || '').replace(/\s+/g, ' ').trim()}`
+    const subtitleLines = segments.map((segment, index) =>
+        `${formatClock(Number(segment.start))}-${formatClock(Number(segment.end))} ${config.includeEvidenceIds ? `T${index + 1} ` : ''}${String(segment.text || '').replace(/\s+/g, ' ').trim()}`
     );
     const aggregatedDanmaku = aggregateDanmakuForFullContext(
         danmakuItems,
         config.fullContextDanmakuMergeWindowSeconds
     );
-    const danmakuLines = aggregatedDanmaku.map(item => {
+    const danmakuLines = aggregatedDanmaku.map((item, index) => {
         const time = item.lastTime > item.firstTime
             ? `${formatClock(item.firstTime)}-${formatClock(item.lastTime)}`
             : formatClock(item.firstTime);
-        return `${time} ${item.text}${item.count > 1 ? ` (x${item.count})` : ''}`;
+        return `${time} ${config.includeEvidenceIds ? `D${index + 1} ` : ''}${item.text}${item.count > 1 ? ` (x${item.count})` : ''}`;
     });
     const lastSubtitleEnd = Number(segments.at(-1)?.end || 0);
     const lastDanmakuTime = Number(danmakuItems.at(-1)?.time || 0);
@@ -196,7 +197,11 @@ function buildFullContextSource(parsed, danmaku, config = {}, emotionAnalysis = 
         0,
         totalDuration
     );
+    if (config.compactEvidence === true && segments.every(s => Number.isFinite(s.start) && Number.isFinite(s.end) && s.end > s.start)) {
+        return buildCompactEvidenceSource(segments, aggregatedDanmaku, heatLines, emotionLines, totalDuration);
+    }
     return {
+        evidenceVersion: config.includeEvidenceIds ? 1 : undefined,
         subtitleLines,
         danmakuLines,
         heatLines,
@@ -220,6 +225,41 @@ function buildFullContextSource(parsed, danmaku, config = {}, emotionAnalysis = 
     };
 }
 
+function buildCompactEvidenceSource(segments, audience, heatLines, emotionLines, totalDuration) {
+    const prepared = segments.map(segment => {
+        const match = String(segment.text).match(/^\[([^\]]+)\]\s*/u);
+        const speaker = match?.[1].replace(/\s+\d*\.?\d+$/u, '').trim() || '';
+        return { ...segment, speaker, text: match ? segment.text.slice(match[0].length) : segment.text };
+    });
+    const grouped = buildSubtitleEvidence(prepared, { maxGroupSeconds: 20, maxGroupChars: 500, gapSeconds: 2 });
+    const speech = grouped.cues.map(cue => ({ id: cue.id.replace(/^G/u, 'T'), source: 'speech',
+        start: cue.start, end: cue.end, speaker: cue.speaker, text: cue.text,
+        sourceIndices: cue.items.map(item => item.index) }));
+    const reactions = audience.map((item,index) => ({ id: `D${index + 1}`, source: 'audience',
+        start: item.firstTime, end: item.lastTime, text: item.text, count: item.count }));
+    const subtitles = speech.map(row => `${row.id} ${Math.floor(row.start)}-${Math.ceil(row.end)}${row.speaker ? ` [${row.speaker}]` : ''} ${row.text}`);
+    const buckets = new Map();
+    for (const row of reactions) {
+        const bucket = Math.floor(row.start / 30) * 30;
+        if (!buckets.has(bucket)) buckets.set(bucket, []);
+        buckets.get(bucket).push(row);
+    }
+    const danmakuLines = [...buckets].map(([start,rows]) => `${start}s: ${rows.map(row =>
+        `${row.id} ${JSON.stringify(row.text)}${row.count > 1 ? ` x${row.count}` : ''}`).join(' | ')}`);
+    const counts = [...buckets].map(([start,rows]) => `${start}:${rows.reduce((n,row)=>n+row.count,0)}`).join(',');
+    return { evidenceVersion: 2, subtitleLines: subtitles, danmakuLines, heatLines, emotionLines,
+        aggregatedDanmaku: audience, totalDuration, evidence: { speech, audience: reactions },
+        sourceText: [
+            'Compact complete source: every spoken text and every 30s-merged audience message is retained.',
+            'T IDs are subtitle evidence IDs, D IDs are audience evidence IDs, never identities. All numeric times are SECONDS from recording start.',
+            'Speaker labels are acoustic metadata, not infallible identity; anonymous labels must not be assigned to the host by name.',
+            'Speech (adjacent same-speaker segments grouped; exact boundaries remain in the source sidecar):',
+            subtitles.join('\n'), '', 'Audience only (bucket start in seconds; xN is repetition count, not a quote):',
+            danmakuLines.join('\n'), '', 'Audience count timeline, seconds:count:', counts,
+            '', 'Emotion/audio events are auxiliary cues, not facts:', emotionLines.join('\n') || 'none'
+        ].join('\n') };
+}
+
 function normalizeMetadataValue(value, fallback = '未知') {
     const normalized = String(value || '').replace(/\s+/g, ' ').trim();
     return normalized || fallback;
@@ -241,7 +281,7 @@ function buildFullLiveSharedPrefix(source, options = {}) {
         `直播总时长: ${formatClock(resolvedDuration)}`,
         `字幕条数: ${source?.subtitleLines?.length || 0}`,
         `原始弹幕条数: ${rawDanmakuCount}`,
-        `合并后弹幕条数: ${source?.danmakuLines?.length || 0}`,
+        `合并后弹幕条数: ${source?.aggregatedDanmaku?.length ?? source?.danmakuLines?.length ?? 0}`,
         '',
         String(source?.sourceText || ''),
         liveGenerationContext.SHARED_PROMPT_CACHE_END
@@ -260,6 +300,7 @@ function buildFullLiveSharedContext({
     const rawDanmakuCount = Array.isArray(danmaku) ? danmaku.length : 0;
     return {
         ...source,
+        ...(source.evidence ? { roomId: info.roomId ? String(info.roomId) : null } : {}),
         rawDanmakuCount,
         sharedPrefix: buildFullLiveSharedPrefix(source, {
             info,
@@ -303,6 +344,9 @@ function createFullLiveContextSidecar(context, options = {}) {
     );
     return {
         schemaVersion: FULL_LIVE_CONTEXT_SCHEMA_VERSION,
+        ...(context?.evidenceVersion ? { evidenceVersion: context.evidenceVersion } : {}),
+        ...(context?.evidence ? { evidence: context.evidence,
+            evidenceSha256: sha256Text(JSON.stringify(context.evidence)), roomId: context.roomId || null } : {}),
         fullLiveSharedPrefixVersion: FULL_LIVE_SHARED_PREFIX_VERSION,
         sharedPromptCacheVersion: liveGenerationContext.SHARED_PROMPT_CACHE_VERSION,
         sourceSha256: sha256Text(sourceText),
@@ -310,7 +354,7 @@ function createFullLiveContextSidecar(context, options = {}) {
         counts: {
             subtitleLines: context?.subtitleLines?.length || 0,
             rawDanmaku: rawDanmakuCount,
-            mergedDanmaku: context?.danmakuLines?.length || 0,
+            mergedDanmaku: context?.aggregatedDanmaku?.length ?? context?.danmakuLines?.length ?? 0,
             heatLines: context?.heatLines?.length || 0,
             emotionLines: context?.emotionLines?.length || 0
         },
@@ -339,6 +383,9 @@ function loadFullLiveContextSidecar(highlightPath) {
     }
     if (sha256Text(payload.sharedPrefix) !== payload.sharedPrefixSha256) {
         throw new Error(`full live context shared prefix hash mismatch: ${inputPath}`);
+    }
+    if (payload.evidence && sha256Text(JSON.stringify(payload.evidence)) !== payload.evidenceSha256) {
+        throw new Error(`full live context evidence hash mismatch: ${inputPath}`);
     }
     return payload;
 }

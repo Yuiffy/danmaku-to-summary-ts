@@ -62,9 +62,9 @@ describe('own-stream planning recovery', () => {
       { window: { start: 0, duration: 60 }, copy: { title: 'Pending clip' } },
       { window: { start: 60, duration: 60 }, copy: { title: 'Ready clip' } }
     ], { uploadRegistry: { clipIds: [2184], clipIdsByReviewIndex: { 2: 2184 } } });
-    expect(markdown).toContain('1. Pending clip');
-    expect(markdown).toContain('2. ID 2184 | Ready clip');
-    expect(markdown).not.toContain('1. ID 2184');
+    expect(markdown).toContain('1. 未登记ID Pending clip');
+    expect(markdown).toContain('2. ID2184 Ready clip');
+    expect(markdown).not.toContain('1. ID2184');
   });
 
   test('sends every clip and upload ID in order across more than two WeChat messages', async () => {
@@ -85,7 +85,7 @@ describe('own-stream planning recovery', () => {
     expect(messages.every(message => Buffer.byteLength(message, 'utf8') <= 4096)).toBe(true);
     const complete = messages.join('\n');
     expect(complete).not.toContain('请看 Review');
-    const indices = Array.from(complete.matchAll(/^(\d+)\. ID (\d+) \| /gm));
+    const indices = Array.from(complete.matchAll(/^(\d+)\. ID(\d+) /gm));
     expect(indices.map(match => Number(match[1]))).toEqual(results.map((_, index) => index + 1));
     expect(indices.map(match => Number(match[2]))).toEqual(results.map((_, index) => 2184 + index));
     for (const result of results) expect(complete).toContain(result.copy.title);

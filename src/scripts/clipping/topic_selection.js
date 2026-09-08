@@ -731,6 +731,7 @@ module.exports = {
     buildTopicBursts,
     normalizeAiClipSelection,
     dedupeClipsByStart,
+    areDuplicateClipWindows,
     buildFallbackAiClipSelection,
     buildTopicBurstPrompt,
     formatClock,

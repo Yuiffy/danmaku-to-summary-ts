@@ -37,6 +37,27 @@ class ClipQualityGateTest(unittest.TestCase):
         clips = load_upload_manifest(self.file)
         self.assertTrue(clips[0]['qaRequired'])
 
+    def test_pending_public_copy_is_blocked_even_without_optional_ai_qa(self):
+        self.metadata.update(qaRequired=False, publicCopyPending=True, uploadReady=False)
+        self.file.write_text(json.dumps(self.metadata), encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'public copy'):
+            load_upload_manifest(self.file)
+        errors = validate_registry_qa([[{'metadataPath': str(self.file)}]])
+        self.assertTrue(errors)
+        self.assertIn('public copy', errors[0])
+
+    def test_legacy_recall_event_used_as_title_requires_repair(self):
+        event = 'She recounts a long incident that was never written as a title.'
+        metadata = {'mode': 'own_stream_fun_review', 'copy': {'title': event},
+                    'candidate': {'selectionSource': 'recall_pool_fallback', 'event': event}}
+        with self.assertRaisesRegex(ValueError, 'recall event'):
+            validate_metadata_qa(metadata)
+        metadata['copy']['title'] = 'A corrected publishing title'
+        validate_metadata_qa(metadata)
+        metadata['copy']['title'] = event
+        metadata['candidate']['selectionSource'] = 'model_global_rerank'
+        validate_metadata_qa(metadata)
+
     def test_changed_media_copy_cover_or_subtitles_require_new_review(self):
         for field in ('mediaPath', 'coverPath', 'srtPath'):
             file = Path(self.metadata['output'][field])

@@ -13,6 +13,17 @@ def _file_digest(value):
 
 
 def validate_metadata_qa(metadata):
+    if metadata.get("publicCopyPending"):
+        raise ValueError("clip public copy is pending; generate and review publishing copy before upload")
+    candidate = metadata.get("candidate") or {}
+    copy = metadata.get("copy") or {}
+    # Old recall-only batches promoted the internal event directly into title.
+    if (metadata.get("mode") == "own_stream_fun_review"
+            and candidate.get("selectionSource") == "recall_pool_fallback"
+            and str(candidate.get("event") or "").strip()
+            and str(copy.get("title") or "").strip() == str(candidate["event"]).strip()
+            and not candidate.get("description") and not candidate.get("coverText")):
+        raise ValueError("clip title is an internal recall event; repair publishing copy before upload")
     if not metadata.get("qaRequired"):
         return
     qa = metadata.get("qaResult") or {}

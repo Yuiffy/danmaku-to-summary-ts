@@ -14,12 +14,12 @@ function sourceFileHash(file) {
     return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 }
 
-function persistPreflightPlan(file, source, sourceHash, groups, candidates, diagnostics) {
+function persistPreflightPlan(file, source, sourceHash, groups, candidates, diagnostics, selectedCandidates = candidates) {
     const temporary = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
     try {
         fs.writeFileSync(temporary, JSON.stringify({ version: 1, strategy: 'preflight_v1', status: 'prepared_before_render',
             source, sourceSrtSha256: sourceHash, groups, candidates: candidates.map(clip => ({
-                window: clip.window, editorial: clip.editorial, preflight: clip.preflight })),
+                window: clip.window, editorial: clip.editorial, preflight: clip.preflight, selected: selectedCandidates.includes(clip) })),
             requests: diagnostics.requests, failures: diagnostics.failures }, null, 2), 'utf8');
         fs.renameSync(temporary, file);
     } finally { try { fs.unlinkSync(temporary); } catch { /* already renamed */ } }
@@ -33,6 +33,7 @@ function preflightRequestOptions(config) {
     return { primaryModel: config.review.model || config.aiModel, exactModel: true,
         reasoningEffort: config.review.reasoningEffort || 'max', apiMode: 'responses', strictResponses: true,
         allowProviderFallback: false, fallbackModelsEnabled: false, transientMaxAttempts: 1,
+        daiYuTransientMaxAttempts: config.review.transientMaxAttempts ?? DEFAULT_CLIP_TOPICS_CONFIG.review.transientMaxAttempts,
         timeoutMs: config.review.timeoutMs || DEFAULT_CLIP_TOPICS_CONFIG.review.timeoutMs,
         maxTokens: config.review.maxOutputTokens || 24000, wordLimit: 2500 };
 }

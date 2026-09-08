@@ -257,6 +257,7 @@ const ConfigSchema = Joi.object({
             maxOutputTokens: Joi.number().integer().min(1024).max(128000).default(24000),
             maxDanmakuRows: Joi.number().integer().min(0).max(1000).default(120),
             maxEvidenceChars: Joi.number().integer().min(1).default(40000),
+            transientMaxAttempts: Joi.number().integer().min(1).max(3).default(2),
             timeoutMs: Joi.number().integer().min(1000).default(120000)
         }).default(),
         mergeGapSeconds: Joi.number().default(45),

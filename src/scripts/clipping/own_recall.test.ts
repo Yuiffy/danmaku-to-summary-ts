@@ -6,6 +6,58 @@ const os = require('os');
 const path = require('path');
 
 describe('own-stream recall preservation', () => {
+  test.each([[1, false], [2, false], [1, true]])('rerank failure keeps unfinished copy out of publishable artifacts (workers=%s, localOnly=%s)', async (clipConcurrency, localOnly) => {
+    const register = jest.spyOn(require('child_process'), 'spawnSync').mockReturnValue({ status: 0, stdout: '', stderr: '' });
+    let own, topic;
+    jest.isolateModules(() => {
+      own = require('../own_stream_clipper');
+      topic = require('../topic_clipper');
+    });
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'recall-public-copy-'));
+    const mediaPath = path.join(directory, 'source.flv');
+    const srtPath = path.join(directory, 'source.srt');
+    fs.writeFileSync(mediaPath, 'fixture');
+    fs.writeFileSync(srtPath, '1\n00:00:00,000 --> 00:01:00,000\nA complete recorded incident.\n');
+    const event = 'She recounts the entire incident, including its setup and every reaction.';
+    const generate = jest.spyOn(generator, 'generateTextWithDaiYu').mockImplementation(async prompt => {
+      if (String(prompt).includes('完整候选池')) throw new Error('rerank unavailable');
+      return { text: JSON.stringify({ clips: localOnly ? [] : [{ startCueId: 'G1', endCueId: 'G1', evidenceCueIds: ['G1'],
+        sourceKind: 'recount', event, score: 90,
+        ...(clipConcurrency === 2 ? { title: event, coverText: 'Internal\nsummary', description: event } : {})
+      }] }), meta: { model: 'fixture' } };
+    });
+    const cut = jest.spyOn(topic, 'cutClipMedia').mockImplementation(async (_source, _window, _srt, output) => {
+      fs.writeFileSync(output, 'rendered fixture');
+      return { path: output, burnedSubtitles: true };
+    });
+    const cover = jest.spyOn(topic, 'generateClipCover').mockResolvedValue(null);
+    try {
+      const results = await own.generateOwnStreamClips({ mediaPath, srtPath, totalDurationSeconds: 60,
+        config: { ai: { text: { provider: 'daiYu' } }, ownStreamClips: { enabled: true, clipConcurrency,
+          ...(localOnly ? { subtitleKeywords: ['incident'] } : {}),
+          clipResourceAdaptive: { enabled: false }, ai: { enabled: true, strategy: 'staged' }, notify: { enabled: false } } } });
+      expect(results).toHaveLength(1);
+      const result = results[0];
+      if (localOnly) expect(result.candidate.recallSources).toEqual(['local_signals']);
+      else expect(result.candidate).toMatchObject({ event, title: '', publicCopyPending: true });
+      expect(result).toMatchObject({ publicCopyPending: true, uploadReady: false });
+      expect(result.copy.title).not.toBe(event);
+      expect(result.copy.description).not.toContain(event);
+      expect(cover).not.toHaveBeenCalled();
+      const saved = JSON.parse(fs.readFileSync(result.output.metadataPath, 'utf8'));
+      expect(saved.publicCopyPending).toBe(true);
+      const root = path.dirname(result.output.metadataPath);
+      expect(fs.readFileSync(path.join(root, 'REVIEW.md'), 'utf8')).toContain('发布文案待生成，禁止上传');
+      expect(own.buildNotifyMarkdown(results, {})).toContain('发布文案待生成');
+      expect(fs.existsSync(path.join(root, 'UPLOAD_MANIFEST.json'))).toBe(false);
+      expect(register).not.toHaveBeenCalled();
+      expect(generate).toHaveBeenCalledTimes(2);
+    } finally {
+      generate.mockRestore(); cut.mockRestore(); cover.mockRestore(); register.mockRestore();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test.each([60, 62, 72])('retains independent non-overlapping events beginning at %s', start => {
     const clips = [{ start: 0, end: 60, score: 90, event: 'First incident' },
       { start, end: start + 60, score: 95, event: 'A different incident' }];

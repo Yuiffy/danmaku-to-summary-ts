@@ -1912,6 +1912,13 @@ def get_room_character_description(room_id: Optional[str] = None) -> str:
         if room_id:
             room_cfg = config.get("roomSettings", {}).get(str(room_id), {})
             desc = room_cfg.get("characterDescription") or room_cfg.get("characterDesc", "")
+            if not desc:
+                host_id = find_host_streamer_id(config, room_id)
+                host = resolve_streamer_registry(config).get(host_id, {}) if host_id else {}
+                desc = host.get("characterDescription", "")
+                host_name = host.get("displayName") or room_cfg.get("anchorName")
+                if not desc and host_name:
+                    desc = f"{host_name}。人物外观严格遵循本房间主播参考图，不借用其他主播的形象。"
 
         if not desc:
             # 新格式：从 ai.defaultCharacterDescription 读取

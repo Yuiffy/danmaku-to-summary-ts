@@ -84,6 +84,27 @@ copy grounding, the copy model, and its locked `copyWindow`. `REVIEW.md` links t
 plan and exposes long-event and attribution review notes. All results still need
 the existing human approval before upload.
 
+WeChat notifications also list every pending preflight candidate with its time
+range, title, blocking evidence checks, and relevant source excerpts. Pending
+candidates are counted separately from generated media. Overlap suppression
+records identify the omitted candidate and retained replacements, and subtract
+retained time intervals to report any uncovered ranges directly in the message.
+Full coverage means no unique footage was omitted; partial coverage remains a
+potential missed-clip issue, not an automatic editorial approval.
+
+Preflight plans preserve both selected and suppressed candidates with an explicit
+`selected` flag. `clipTopics.review.transientMaxAttempts` defaults to 2 for daiYu:
+explicit transient HTTP errors are retried once on the same model before holding
+the group. Local aborts are not retried while the upstream outcome may be unknown.
+This does not change the configured model, reasoning effort, evidence validation,
+or approval gate, and retry-only changes do not invalidate successful model caches.
+
+Recovery callers can pass `planningGroupIds: ['E9']` to `generateTopicClips` to
+retry only a failed group using the same complete source evidence. Unknown or
+empty selectors fail before AI requests. Use a separate `clipTopics.outputDirName`
+such as `topic_clips/retry_E9` so the partial retry cannot replace the original
+whole-stream plan, review, or successful media.
+
 Set `clipTopics.editorial.enabled` to `false` to use legacy per-burst AI planning.
 Disabling AI text or `aiSegmentBurst` still uses the existing rule-based path.
 These switches do not independently restore the former 180-second hard ceiling.

@@ -570,6 +570,8 @@ export interface FullLiveContextExperimentConfig {
   failureRetryCooldownMs?: number;
   maxTokens?: number;
   thinkingBudgetTokens?: number;
+  /** Generate the reply and overview together, then check their source evidence. */
+  replySummary?: { enabled: boolean };
 }
 
 // 漫画AI配置

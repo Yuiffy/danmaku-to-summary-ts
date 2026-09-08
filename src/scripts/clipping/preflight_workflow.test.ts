@@ -101,6 +101,28 @@ describe('pre-render topic workflow', () => {
     expect(job.register).not.toHaveBeenCalled();
   });
 
+  test('retries only selected planning groups without regenerating successful groups', async () => {
+    const mediaGenerator = jest.fn(async (_source, _window, _subtitles, output) => {
+      fs.writeFileSync(output, 'selected group clip');
+      return { path: output, burnedSubtitles: true };
+    });
+    const job = run({ planningGroupIds: ['E2'], mediaGenerator });
+    const results = await job.promise;
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(timeline.filter(item => item.startsWith('model:'))).toEqual(['model:E2']);
+    expect(mediaGenerator).toHaveBeenCalledTimes(1);
+    expect(results.map(result => result.window.index)).toEqual(['E2-1']);
+    const plan = JSON.parse(fs.readFileSync(path.join(dir, 'topic_clips/recording_TOPIC_PLAN.json'), 'utf8'));
+    expect(plan.groups.map(group => group.groupId)).toEqual(['E2']);
+  });
+
+  test.each([{ planningGroupIds: [] }, { planningGroupIds: ['missing-group'] }])('rejects invalid retry selectors before making AI requests (%j)', async ({ planningGroupIds }) => {
+    const job = run({ planningGroupIds });
+    await expect(job.promise).rejects.toThrow(/planningGroupIds|Unknown planning group IDs/);
+    expect(request).not.toHaveBeenCalled();
+    expect(job.mediaGenerator).not.toHaveBeenCalled();
+  });
+
   test('source-scoped user facts and host rules reach planning and only patch clip copies', async () => {
     const crypto = require('crypto');
     const originalSrt = fs.readFileSync(srt, 'utf8');

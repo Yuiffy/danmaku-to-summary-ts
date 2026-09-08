@@ -49,8 +49,8 @@ async function requestSelectionText(prompt, requestOptions, config, rootConfig, 
         return rest;
     };
     const startedAt = Date.now();
-    // A routing-only hint must not invalidate already verified model output.
-    const { staticPromptCachePrefix, ...semanticRequestOptions } = requestOptions;
+    // Routing and transport retry limits do not change verified model output.
+    const { staticPromptCachePrefix, daiYuTransientMaxAttempts, ...semanticRequestOptions } = requestOptions;
     const record = (result, error = null) => recordSelectionDiagnostic(diagnostics,
         { phase, promptChars: prompt.length, elapsedMs: Date.now() - startedAt, provider, model: requestOptions.primaryModel }, result, error);
     let result;

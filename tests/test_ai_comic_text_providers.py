@@ -19,6 +19,29 @@ comic = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(comic)
 
 class ComicTextProviderTests(unittest.TestCase):
+    def test_known_host_without_room_description_does_not_inherit_another_character(self):
+        config = {"ai": {"defaultCharacterDescription": "Wrong default character", "streamerRegistry": {
+            "host": {"displayName": "Correct Host", "roomIds": ["1"], "referenceImages": ["host.png"]}
+        }}, "roomSettings": {"1": {"anchorName": "Host nickname"}}}
+        with patch.object(comic, "load_config", return_value=config):
+            description = comic.get_room_character_description("1")
+        self.assertIn("Correct Host", description)
+        self.assertNotIn("Wrong default character", description)
+
+    def test_registry_character_description_is_used_before_global_default(self):
+        config = {"ai": {"defaultCharacterDescription": "Wrong default character", "streamerRegistry": {
+            "host": {"displayName": "Correct Host", "roomIds": ["1"], "characterDescription": "Verified host appearance"}
+        }}, "roomSettings": {}}
+        with patch.object(comic, "load_config", return_value=config):
+            self.assertEqual(comic.get_room_character_description("1"), "Verified host appearance")
+
+    def test_room_character_description_still_overrides_registry(self):
+        config = {"ai": {"streamerRegistry": {
+            "host": {"displayName": "Correct Host", "roomIds": ["1"], "characterDescription": "Registry appearance"}
+        }}, "roomSettings": {"1": {"characterDescription": "Room appearance"}}}
+        with patch.object(comic, "load_config", return_value=config):
+            self.assertEqual(comic.get_room_character_description("1"), "Room appearance")
+
     def test_shared_explicit_completion_states_match_the_node_contract(self):
         cases = json.loads((ROOT / "tests" / "fixtures" / "text-completion-states.json").read_text(encoding="utf-8"))
         for case in cases:
@@ -47,8 +70,8 @@ class ComicTextProviderTests(unittest.TestCase):
             artifact.write_text("[]", encoding="utf-8")
             self.assertIsNone(comic.load_shared_live_source_prefix(highlight, source, "1", config))
 
-    def run_managed_node(self, result=None, error=None):
-        config = {"ai": {"text": {}, "comic": {}}, "roomSettings": {}, "asr": {}}
+    def run_managed_node(self, result=None, error=None, text_policy=None):
+        config = {"ai": {"text": {}, "comic": {"textGeneration": text_policy or {}}}, "roomSettings": {}, "asr": {}}
         with (
             patch.object(comic, "load_config", return_value=config),
             patch.object(comic.shutil, "which", return_value="node"),
@@ -83,6 +106,23 @@ class ComicTextProviderTests(unittest.TestCase):
         self.assertEqual(output, ("", False))
         fallback.assert_not_called()
         self.assertEqual(failure.call_args.args[-1], attempts)
+
+    def test_deployed_comic_deadlines_reach_node_and_its_parent_process(self):
+        script = "A complete drawable storyboard with source-grounded scenes and a closing scene."
+        result = subprocess.CompletedProcess([], 0, script.encode(), b"")
+        for filename in ("default.json", "production.json"):
+            with self.subTest(config=filename):
+                config = json.loads((ROOT / "config" / filename).read_text(encoding="utf-8"))
+                policy = config["ai"]["comic"]["textGeneration"]
+                self.assertEqual(policy, {"requestTimeoutMs": 600000, "totalTimeoutMs": 1200000})
+                output, run, fallback, failure = self.run_managed_node(result, text_policy=policy)
+                args = run.call_args.args[0]
+                self.assertEqual(args[args.index("--timeout-ms") + 1], "600000")
+                self.assertEqual(args[args.index("--total-timeout-ms") + 1], "1200000")
+                self.assertEqual(run.call_args.kwargs["timeout"], 1205)
+                self.assertEqual(output, (script, True))
+                fallback.assert_not_called()
+                failure.assert_not_called()
 
     def test_all_node_attempts_are_logged_on_success_or_failure_without_new_requests(self):
         attempts = [

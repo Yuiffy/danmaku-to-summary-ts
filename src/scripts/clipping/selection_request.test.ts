@@ -82,7 +82,7 @@ describe('selection usage accounting', () => {
     } finally { generate.mockRestore(); fs.rmSync(directory, { recursive: true, force: true }); }
   });
 
-  test('adding or changing a static routing hint reuses the existing semantic result cache', async () => {
+  test('routing hints and transport retry limits reuse the existing semantic result cache', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'selection-static-route-'));
     const generate = jest.spyOn(generator, 'generateTextWithDaiYu').mockResolvedValue({ text: 'valid', meta: {} });
     const prompt = 'Stable rules.\nSource facts.';
@@ -92,6 +92,8 @@ describe('selection usage accounting', () => {
       await request({});
       await request({ staticPromptCachePrefix: 'Stable rules.\n' });
       await request({ staticPromptCachePrefix: 'Stable' });
+      await request({ daiYuTransientMaxAttempts: 2 });
+      await request({ daiYuTransientMaxAttempts: 3 });
       expect(generate).toHaveBeenCalledTimes(1);
       await request({ staticPromptCachePrefix: 'Stable rules.\n', reasoningEffort: 'high' });
       expect(generate).toHaveBeenCalledTimes(2);

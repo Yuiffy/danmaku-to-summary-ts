@@ -6,6 +6,8 @@ const { planTopicEventGroup, generateTopicEventCopy } = require('./clipping/topi
 const { runTopicShadowReview, topicReviewLines } = require('./clipping/topic_review_runner');
 const { buildPreflightEvidence } = require('./clipping/preflight_evidence');
 const { isPreflightEnabled, prepareTopicGroup, preflightSelections, sourceFileHash, persistPreflightPlan } = require('./clipping/preflight_runner');
+const { buildTopicDedupeFailures, isPendingTopicResult, buildPendingTopicBlock,
+    buildTopicDedupeDetailLines } = require('./clipping/topic_failure_details');
 const {
     findKeywordMatches,
     clamp,
@@ -1519,6 +1521,7 @@ function buildClipNotifyBlock(result = {}, notifyConfig = {}) {
 }
 
 const TOPIC_FAILURE_STAGE_LABELS = {
+    preflight: '烧录前预审',
     planning: 'AI 分段',
     subtitle: '字幕生成',
     subtitle_burn: '字幕烧录降级',
@@ -1553,7 +1556,7 @@ function collectTopicFailures(results = [], failures = []) {
     return collected;
 }
 
-function buildTopicFailureBlock(failure = {}) {
+function buildTopicFailureBlock(failure = {}, results = []) {
     const stage = TOPIC_FAILURE_STAGE_LABELS[failure.stage] || failure.stage || '未知阶段';
     const window = failure.window || {};
     const hasWindow = Number.isFinite(Number(window.start)) || Number.isFinite(Number(window.end));
@@ -1562,7 +1565,8 @@ function buildTopicFailureBlock(failure = {}) {
         : '';
     const severity = failure.severity === 'warning' ? '降级' : '失败';
     const error = compactNotifyText(failure.error || failure.message || '未知错误', 360);
-    return `- [${severity}/${stage}] ${range}${error}`;
+    return [`- [${severity}/${stage}] ${range}${error}`,
+        ...buildTopicDedupeDetailLines(failure, results)].join('\n');
 }
 
 function cleanupTemporaryCoverSource(mediaResult = {}) {
@@ -1583,14 +1587,16 @@ function buildTopicNotifyMarkdown(results = [], metadata = {}) {
         ? metadata.aiModels.join(', ')
         : '规则兜底（未调用 AI）';
     const failures = collectTopicFailures(results, metadata.failures);
-    const successfulResults = results.filter(result => !result?.output?.mediaError && result?.output?.mediaPath);
+    const successfulResults = results.filter(result => !isPendingTopicResult(result) && !result?.output?.mediaError && result?.output?.mediaPath);
+    const pendingResults = results.filter(isPendingTopicResult);
     const windowSummary = successfulResults
         .map(result => buildClipNotifyBlock(result, notifyConfig))
         .join('\n');
-    const failureSummary = failures.map(buildTopicFailureBlock).join('\n');
-    const title = failures.length > 0 ? '## 话题切片提醒（存在失败）' : '## 话题切片提醒';
-    const outcome = failures.length > 0
-        ? `本次候选 **${results.length}** 段,成功生成 **${successfulResults.length}** 段,另有 **${failures.length}** 条失败或降级记录。`
+    const failureSummary = failures.map(failure => buildTopicFailureBlock(failure, results)).join('\n');
+    const incomplete = failures.length > 0 || pendingResults.length > 0;
+    const title = incomplete ? '## 话题切片提醒（存在失败）' : '## 话题切片提醒';
+    const outcome = incomplete
+        ? `本次候选 **${results.length}** 段,成功生成 **${successfulResults.length}** 段${pendingResults.length ? `,待预审 **${pendingResults.length}** 段` : ''}${failures.length ? `,另有 **${failures.length}** 条失败或降级记录` : ''}。`
         : `找到其中 **${results.length}** 段提到岁己的地方,已分别切为切片。`;
 
     return [
@@ -1608,6 +1614,8 @@ function buildTopicNotifyMarkdown(results = [], metadata = {}) {
         '',
         '成功切片:',
         windowSummary || '- 无',
+        pendingResults.length ? '待预审候选（未生成视频、未登记上传ID）:' : null,
+        ...pendingResults.map(buildPendingTopicBlock),
         failures.length > 0 ? '' : null,
         failures.length > 0 ? '失败与降级详情:' : null,
         failures.length > 0 ? failureSummary : null
@@ -1695,7 +1703,7 @@ function buildTopicReviewMarkdown(results = [], metadata = {}) {
     }
     if (failures.length > 0) {
         lines.push('', '## 失败与降级记录', '');
-        lines.push(...failures.map(buildTopicFailureBlock));
+        lines.push(...failures.map(failure => buildTopicFailureBlock(failure, results)));
     }
     lines.push('');
     return `${lines.join('\n')}\n`;
@@ -1900,14 +1908,25 @@ async function generateTopicClips(options = {}) {
     const useEditorial = usePreflight || isTopicEditorialEnabled(aiConfig);
     const editorialEvidence = usePreflight ? buildPreflightEvidence(parsed.segments)
         : useEditorial ? buildSubtitleEvidence(parsed.segments) : null;
-    const planningGroups = useEditorial ? buildTopicEditorialGroups(bursts, editorialEvidence, config) : bursts;
+    const allPlanningGroups = useEditorial ? buildTopicEditorialGroups(bursts, editorialEvidence, config) : bursts;
+    let planningGroups = allPlanningGroups;
+    if (options.planningGroupIds !== undefined) {
+        if (!Array.isArray(options.planningGroupIds) || options.planningGroupIds.length === 0) {
+            throw new Error('planningGroupIds must be a nonempty array');
+        }
+        const requested = new Set(options.planningGroupIds.map(String));
+        const unknown = [...requested].filter(id => !allPlanningGroups.some(group => String(group.index) === id));
+        if (unknown.length) throw new Error(`Unknown planning group IDs: ${unknown.join(', ')}`);
+        planningGroups = allPlanningGroups.filter(group => requested.has(String(group.index)));
+        console.log(`仅处理选定分组: ${[...requested].join(', ')} (${planningGroups.length}/${allPlanningGroups.length})`);
+    }
     info.selectionCacheDirectory = path.join(path.dirname(outputRoot), 'temp', path.basename(source.mediaPath), 'topic_selection');
     const planPath = useEditorial ? path.join(outputRoot, `${path.basename(source.mediaPath, path.extname(source.mediaPath))}_TOPIC_PLAN.json`) : null;
     const aiSegmentedClips = [];
     const aiModelsUsed = new Set();
     const failures = [];
     const diagnostics = { requests: [], failures };
-    if (useEditorial) console.log(`📝 ${bursts.length} 个关键词候选合为 ${planningGroups.length} 组完整上下文,按独立事件编排`);
+    if (useEditorial) console.log(`📝 ${bursts.length} 个关键词候选合为 ${allPlanningGroups.length} 组完整上下文,本次处理 ${planningGroups.length} 组`);
     for (const burst of planningGroups) {
         try {
             console.log(`  🔍 [${formatClock(burst.matchStart)}] 命中 ${burst.matchCount} 次,上下文窗口 ${formatClock(burst.start)}-${formatClock(burst.end)}`);
@@ -1961,20 +1980,20 @@ async function generateTopicClips(options = {}) {
     }
 
     const renderableClips = usePreflight ? aiSegmentedClips.filter(clip => clip.preflight?.status === 'ready') : aiSegmentedClips;
-    const clipsToGenerate = dedupeClipsByStart(renderableClips, { dedupeMatchText: !useEditorial });
+    const selectedRenderableClips = dedupeClipsByStart(renderableClips, { dedupeMatchText: !useEditorial });
+    const clipsToGenerate = [...selectedRenderableClips];
     if (usePreflight) clipsToGenerate.push(...aiSegmentedClips.filter(clip => clip.preflight?.status !== 'ready'));
     clipsToGenerate.sort((a, b) => a.window.start - b.window.start);
     if (clipsToGenerate.length < aiSegmentedClips.length) {
         console.log(`i️  已过滤 ${aiSegmentedClips.length - clipsToGenerate.length} 段重复/重叠切片`);
-        if (useEditorial) failures.push({ stage: 'planning', severity: 'warning',
-            error: '事件编排仍存在冲突,已兜底去重;未保留的候选和独有内容请核对 TOPIC_PLAN.json' });
+        if (useEditorial) failures.push(...buildTopicDedupeFailures(renderableClips, selectedRenderableClips, { dedupeMatchText: false }));
     }
 
     if (usePreflight) {
         try {
             if (sourceFileHash(options.srtPath) !== sourceSrtHash) throw new Error('Source subtitles changed during preflight');
             persistPreflightPlan(planPath, source.mediaPath, sourceSrtHash,
-                diagnostics.preflightGroups, clipsToGenerate, diagnostics);
+                diagnostics.preflightGroups, aiSegmentedClips, diagnostics, clipsToGenerate);
         } catch (error) {
             failures.push({ stage: 'preflight', severity: 'warning', error: error.message });
             for (const clip of clipsToGenerate) {

@@ -707,12 +707,13 @@ async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, confi
                     start,
                     end,
                     duration,
-                    title: String(clip.title || clip.event || '').trim() || `${clipLabel}：直播有趣片段`,
+                    title: config.recallOnly ? '' : String(clip.title || '').trim() || `${clipLabel}：直播有趣片段`,
                     event: String(clip.event || '').trim(),
+                    ...(config.recallOnly ? { publicCopyPending: true } : {}),
                     grounding: linkClipEvidence(clip, { start, end }, chunk.evidence, danmaku,
                         { cueIds: allowedIds, danmakuIds: chunk.allowedDanmakuIds }),
-                    coverText: topicClipper.normalizeCoverText(clip.coverText),
-                    description: String(clip.description || '').trim(),
+                    coverText: config.recallOnly ? '' : topicClipper.normalizeCoverText(clip.coverText),
+                    description: config.recallOnly ? '' : String(clip.description || '').trim(),
                     reason: String(clip.reason || clip.event || '').trim(),
                     score: Number(clip.score || 0) + 100 - index,
                     modelScore: Number(clip.score || 0),
@@ -1078,13 +1079,18 @@ function fallbackClipsFromCandidates(candidates, config, streamerLabel = '小岁
         .map(candidate => {
             const fromRecallPool = Array.isArray(candidate.recallSources);
             const selectionSource = fromRecallPool ? 'recall_pool_fallback' : 'local_rules';
+            const event = String(candidate.event || '').trim();
+            const title = String(candidate.title || '').trim();
+            const publicCopyPending = candidate.publicCopyPending === true
+                || (fromRecallPool && (!title || (Boolean(event) && title === event)));
             return {
                 start: candidate.start,
                 end: candidate.end,
                 duration: candidate.duration,
-                title: String(candidate.title || '').trim() || buildFallbackTitle(candidate, streamerLabel),
-                coverText: topicClipper.normalizeCoverText(candidate.coverText),
-                description: String(candidate.description || '').trim(),
+                title: publicCopyPending ? `${streamerLabel}：待生成发布文案` : title || buildFallbackTitle(candidate, streamerLabel),
+                coverText: publicCopyPending ? '' : topicClipper.normalizeCoverText(candidate.coverText),
+                description: publicCopyPending ? '' : String(candidate.description || '').trim(),
+                ...(publicCopyPending ? { publicCopyPending: true, event } : {}),
                 reason: candidate.reason,
                 candidateIndex: candidate.index,
                 score: candidate.score,
@@ -1264,6 +1270,7 @@ function buildReviewMarkdown(results, metadata) {
             lines.push(`   上传ID: ${uploadId}`);
         }
         if (result.qaRequired) lines.push(`   AI质检: ${result.qaResult?.status || 'pending'}`);
+        if (result.publicCopyPending) lines.push('   发布文案待生成，禁止上传；事件摘要仅供选材审核。');
         if (result.output.coverPath) {
             lines.push(`   封面: ${result.output.coverPath}`);
         }
@@ -1282,6 +1289,7 @@ function buildPlanReviewMarkdown(clips, metadata) {
         `录制时间: ${metadata.recordedAt || '未知'}`,
         `输出目录: ${metadata.outputRoot}`,
         clips.length ? `来源统计: ${formatSelectionSourceCounts(clips)}` : null,
+        '状态: 仅规划，尚未生成上传ID；候选序号不是上传ID。',
         aiStatusLine,
         '',
         '## 候选列表',
@@ -1289,7 +1297,7 @@ function buildPlanReviewMarkdown(clips, metadata) {
     ].filter(line => line !== null);
     clips.forEach((clip, index) => {
         const sourceLabel = getSelectionSourceLabel(clip);
-        lines.push(`${index + 1}. ${clip.title} | ${formatClock(clip.start)}-${formatClock(clip.end)} | ${formatClock(clip.duration)} | ${clip.reason || ''}`);
+        lines.push(`${index + 1}. 未生成ID（仅规划） ${clip.title} | ${formatClock(clip.start)}-${formatClock(clip.end)} | ${formatClock(clip.duration)} | ${clip.reason || ''}`);
         const scoreLine = buildRecommendationScoreLine(clip);
         if (scoreLine) lines.push(scoreLine);
         lines.push(`   来源: ${sourceLabel}`);
@@ -1304,14 +1312,30 @@ function toFwdSlash(s) {
     return String(s || '').replace(/\\+/g, '/');
 }
 
+function buildNotifyClipLines(results, metadata = {}) {
+    const registry = metadata.uploadRegistry || {};
+    return results.map((result, index) => {
+        // Explicit review-index mappings may be sparse after QA filtering.
+        const id = Number(registry.clipIdsByReviewIndex
+            ? registry.clipIdsByReviewIndex[index + 1]
+            : registry.clipIds?.[index]);
+        const idLabel = metadata.planOnly
+            ? '未生成ID（仅规划）'
+            : (Number.isSafeInteger(id) && id > 0 ? `ID${id}` : '未登记ID');
+        const window = result.window || result;
+        const title = result.copy?.title ?? result.title;
+        return `${index + 1}. ${idLabel} ${title} | ${formatClock(window.start)} | ${formatClock(window.duration)}${formatRecommendationScore(result)}${result.publicCopyPending ? ' | 发布文案待生成，禁止上传' : ''}`;
+    });
+}
+
 function buildNotifyMarkdown(results, metadata) {
     const aiStatusLine = buildAiStatusLine(metadata.aiStatus);
-    const uploadIds = Array.isArray(metadata.uploadRegistry?.clipIds)
+    const uploadIds = !metadata.planOnly && Array.isArray(metadata.uploadRegistry?.clipIds)
         ? metadata.uploadRegistry.clipIds
         : [];
     const streamerName = String(metadata.streamerName || '岁己').trim() || '岁己';
     const lines = [
-        `## ${streamerName}直播有趣切片候选`,
+        `## ${streamerName}直播有趣切片${metadata.planOnly ? '计划' : '候选'}`,
         '',
         `直播: **${metadata.streamTitle || metadata.sourceFileName || '未知'}**`,
         `录制时间: ${metadata.recordedAt || '未知'}`,
@@ -1319,19 +1343,13 @@ function buildNotifyMarkdown(results, metadata) {
         metadata.reviewPath ? `Review: ${toFwdSlash(metadata.reviewPath)}` : null,
         results.length ? `来源统计: ${formatSelectionSourceCounts(results)}` : null,
         uploadIds.length ? `上传短ID: ${uploadIds.join(',')}` : null,
+        metadata.planOnly ? '状态: 仅规划，尚未生成上传ID；候选序号不是上传ID。' : null,
         aiStatusLine,
         ...buildProcessingSummaryLines(metadata.processingStats),
         '',
         '\u5207\u7247\u5217\u8868:'
     ].filter(line => line !== null);
-    results.forEach((result, index) => {
-        const title = result.copy.title;
-        const start = formatClock(result.window.start);
-        const duration = formatClock(result.window.duration);
-        const id = metadata.uploadRegistry?.clipIdsByReviewIndex ? metadata.uploadRegistry.clipIdsByReviewIndex[index + 1] : uploadIds[index];
-        const uploadId = id ? `ID ${id} | ` : '';
-        lines.push(`${index + 1}. ${uploadId}${title} | ${start} | ${duration}${formatRecommendationScore(result)}`);
-    });
+    lines.push(...buildNotifyClipLines(results, metadata));
     // The sender splits the complete list into ordered, UTF-8 byte-limited messages.
     return lines.join('\n');
 }
@@ -1366,6 +1384,10 @@ function buildOwnUploadSettings(metadata, copy = {}) {
     };
 }
 
+function isOwnClipUploadEligible(result) {
+    return !result.publicCopyPending && (!result.qaRequired || result.uploadReady);
+}
+
 function writeOwnUploadManifest(manifestPath, reviewPath, results, metadata) {
     const settings = buildOwnUploadSettings(metadata, results[0]?.copy || {});
     const manifest = {
@@ -1378,7 +1400,7 @@ function writeOwnUploadManifest(manifestPath, reviewPath, results, metadata) {
         recordedAt: metadata.recordedAt || null,
         streamTitle: metadata.streamTitle || metadata.sourceFileName || null,
         upload: settings,
-        clips: results.flatMap((result, index) => result.qaRequired && !result.uploadReady ? [] : [{
+        clips: results.flatMap((result, index) => !isOwnClipUploadEligible(result) ? [] : [{
             reviewIndex: index + 1,
             metadataPath: result.output?.metadataPath || null
         }])
@@ -1389,7 +1411,7 @@ function writeOwnUploadManifest(manifestPath, reviewPath, results, metadata) {
 
 function registerReviewForUpload(reviewPath, results, metadata) {
     if (!reviewPath || !results.length) return null;
-    if (results.every(result => result.qaRequired && !result.uploadReady)) return null;
+    if (!results.some(isOwnClipUploadEligible)) return null;
     const settings = buildOwnUploadSettings(metadata, results[0]?.copy || {});
     const manifestPath = metadata.uploadManifestPath
         || path.join(path.dirname(reviewPath), `${path.basename(reviewPath, path.extname(reviewPath))}_UPLOAD_MANIFEST.json`);
@@ -1423,7 +1445,7 @@ function registerReviewForUpload(reviewPath, results, metadata) {
     }
     const registered = parseUploadRegistryOutput(output);
     if (registered) registered.clipIdsByReviewIndex = Object.fromEntries(results.map((result, index) => ({ result, index }))
-        .filter(({ result }) => !result.qaRequired || result.uploadReady)
+        .filter(({ result }) => isOwnClipUploadEligible(result))
         .map(({ index }, offset) => [index + 1, registered.clipIds[offset]]));
     return registered;
 }
@@ -1517,7 +1539,7 @@ async function generateOwnStreamClipJob({
     }
     let coverPath = null;
     let coverError = null;
-    if (mediaResult?.path && source.kind !== 'audio') {
+    if (mediaResult?.path && source.kind !== 'audio' && !clip.publicCopyPending) {
         try {
             coverPath = await topicClipper.generateClipCover(
                 mediaResult.path,
@@ -1582,6 +1604,7 @@ async function generateOwnStreamClipJob({
         candidate: clip.base || null,
         grounding: evidenceReview(clip, copy) || null,
         copy,
+        ...(clip.publicCopyPending ? { publicCopyPending: true } : {}),
         upload: buildOwnUploadSettings({
             roomId: info.roomId,
             streamerName,
@@ -1589,7 +1612,7 @@ async function generateOwnStreamClipJob({
             recordedAt: info.recordedAt
         }, copy),
         processing,
-        uploadReady: Boolean(mediaResult?.path),
+        uploadReady: Boolean(mediaResult?.path) && !clip.publicCopyPending,
         output: {
             mediaPath: mediaResult?.path || mediaPath,
             srtPath,
@@ -1605,6 +1628,9 @@ async function generateOwnStreamClipJob({
         }
     };
     metadata = await require('./clipping/enhancement_runner').runEnhancements(metadata, { config, info, parsed, danmaku, source, options, topic: topicClipper });
+    if (metadata.publicCopyPending && metadata.qaResult?.status === 'passed' && metadata.uploadReady) {
+        metadata.publicCopyPending = false;
+    }
     if (metadata.qaRequired) {
         metadata.grounding = evidenceReview(clip, metadata.copy) || null;
         metadata.processing = { ...metadata.processing, finishedAt: new Date().toISOString(),
@@ -2100,6 +2126,7 @@ module.exports = {
     summarizeResourcePeaks,
     buildClipProcessingStats,
     buildProcessingSummaryLines,
+    buildNotifyClipLines,
     buildNotifyMarkdown,
     buildReviewMarkdown,
     buildPlanReviewMarkdown,

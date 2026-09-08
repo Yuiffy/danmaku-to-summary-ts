@@ -1,3 +1,4 @@
 faster-whisper
 requests[socks]
 google-genai
+PyYAML>=6.0
