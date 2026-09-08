@@ -1,7 +1,8 @@
 # Architecture and language policy
 
-Start here before changing production workflows. The implementation and measured
-results of the September review are in [structure-review-2026-09.md](structure-review-2026-09.md).
+Start here before changing production workflows. This page describes maintained
+contracts and operating procedures; task-specific reviews and measured results
+belong in ignored local storage under the [file-placement rules](../AGENTS.md).
 
 ## Runtime map
 
@@ -62,7 +63,8 @@ must be updated before using the new task-list/cancellation adapter.
 | `scripts/comic/image_inputs.py`, `image_routes.py` | input ordering/provenance, route attempts/fallback | importing the parent, global configuration or provider clients |
 | `src/scripts/python` | ML/ASR model implementations | Node process orchestration |
 | `scripts`, `tools` | reusable operator commands and platform setup | application startup side effects |
-| `local-scripts`, `tmp` | machine/date-specific experiments | reusable product behavior |
+| `docs`, `plans` | maintained guides, contracts, architecture decisions and roadmaps | task diaries, experiment results, deployment snapshots |
+| `local-scripts`, `temp`, `tmp` | task-specific scripts, reports, captures and experiments (ignored) | reusable product behavior |
 | `data/runtime`, `logs`, `output`, `build`, `dist` | mutable state or generated artifacts | hand-maintained source |
 
 Dependencies point from entrypoints to services to shared infrastructure. Leaf
@@ -210,5 +212,8 @@ runtime imports. `--json` produces a machine-readable inventory and violation li
 | storyboard JSON or comic prompt presentation | `comic/storyboard.py`, `comic/prompts.py` |
 | requested screenshots, source-video resolution, local FFmpeg capture | `comic/screenshots.py` |
 
-Remaining large orchestrators and the history-path migration are tracked in the
-September review. Do not move existing persistent stores as a cosmetic cleanup.
+Continue decomposing large orchestrators at the ownership boundaries above;
+line budgets are maintained in the architecture checker. The history migration
+contract is described under Configuration and history. Do not move existing
+persistent stores as a cosmetic cleanup; untrack ignored logs without relocating
+the paths used by running processes.

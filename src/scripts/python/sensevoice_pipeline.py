@@ -1,6 +1,7 @@
 import os
 import time
 import traceback
+from speaker_identity import attach_speaker_evidence
 
 from sensevoice_paraformer import (
     normalize_model_results_with_meta,
@@ -305,6 +306,7 @@ def transcribe_with_vllm_pipeline(payload, audio_path, device, gpu_throttle=None
                         item["speaker"] = speaker
                     if score:
                         item["speaker_score"] = score
+                    attach_speaker_evidence(item, timeline, payload.get("speaker_identity_policy", "legacy"))
                 payload["_speaker_processing"] = adaptive.get("processing", {})
                 adaptive_timings = payload["_speaker_processing"].get("timings", {})
                 set_timing(payload, "speaker_probe_embedding_s", adaptive_timings.get("probe_embedding_s", 0))
@@ -735,6 +737,7 @@ def transcribe_segmented_backend(payload, audio_path, device, backend_name, Auto
                         item["speaker"] = speaker
                     if speaker_score:
                         item["speaker_score"] = speaker_score
+                    attach_speaker_evidence(item, speaker_timeline, payload.get("speaker_identity_policy", "legacy"))
                 payload["_speaker_processing"] = adaptive.get("processing", {})
                 adaptive_timings = payload["_speaker_processing"].get("timings", {})
                 set_timing(payload, "speaker_probe_embedding_s", adaptive_timings.get("probe_embedding_s", 0))

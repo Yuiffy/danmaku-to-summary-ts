@@ -359,13 +359,17 @@ export class BilibiliAPIService implements IBilibiliAPIService {
    */
   async publishComment(request: PublishCommentRequest): Promise<PublishCommentResponse> {
     try {
+      if (request.replyToId !== undefined && (typeof request.replyToId !== 'string' || !/^[1-9]\d*$/u.test(request.replyToId))) {
+        throw new AppError('Invalid parent comment ID', 'VALIDATION_ERROR', 400);
+      }
       await this.refreshConfigIfChanged();
       // 确保 dynamicId 以字符串形式记录日志，避免大数精度丢失
       this.logger.info(`发布评论: ${request.dynamicId}`, {
         dynamicId: String(request.dynamicId),
         contentLength: request.content.length,
         hasImages: !!(request.images && request.images.length > 0),
-        images: request.images
+        images: request.images,
+        replyToId: request.replyToId
       });
 
       // 解析 Cookie 获取必要的参数
@@ -398,6 +402,7 @@ export class BilibiliAPIService implements IBilibiliAPIService {
         args.push('');
       }
       args.push(this.buildCredentialPayload());
+      if (request.replyToId !== undefined) args.push(request.replyToId);
 
       this.logger.info('调用Python脚本发布评论', { scriptPath, argsCount: args.length });
 

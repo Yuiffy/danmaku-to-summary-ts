@@ -4,6 +4,16 @@
 
 队列文件是 `data/runtime/manual_clip_queue.json`，已被 `.gitignore` 忽略。
 
+话题预审候选与普通成片共用数字编号。候选在 REVIEW、企微和上传列表中标为
+`pending_cut`，进入待定前已有独立 SRT；`npm run upload:clips -- enqueue --ids 123`
+只保存授权并立即入队，由后台 worker 先烧录候选，再用原编号投稿。普通成片直接上传，
+不会重复烧录。用户确认改词并投稿时用
+`npm run upload:clips -- correct --id 123 --from "zzz" --to "睡睡睡" --enqueue`；
+旧候选的 SRT 可通过 `npm run upload:clips -- subtitles --id 123` 补生成和查看。
+自动发现不会提前烧录待定候选，也不会授权投稿。仅想先切出来检查，可使用
+`npm run upload:clips -- cut --ids 123 --review-note "已核对片段证据"`。
+证据或文案问题未解决时仍会停止投稿；详见 `docs/topic-event-editorial.md`。
+
 ## GPU 性能档位
 
 手工队列和岁己自动切片共用 `ownStreamClips` 的媒体配置。默认优先使用 `h264_nvenc + p4`，并使用 `cuda` 解码；NVENC 或 CUDA 不可用时，烧录器会自动回退到 `libx264`，不会生成无字幕成片作为首选结果。

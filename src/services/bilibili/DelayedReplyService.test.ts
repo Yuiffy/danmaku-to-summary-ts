@@ -778,7 +778,7 @@ describe('DelayedReplyService live content summary delivery', () => {
     return { service, store, publishComment };
   }
 
-  it('always publishes Sui live content as a separate comment', async () => {
+  it('publishes separate Sui live content under the completed goodnight comment', async () => {
     const task = createTask({
       roomId: '25788785',
       liveContentSummaryPath: writeSummary(),
@@ -796,9 +796,12 @@ describe('DelayedReplyService live content summary delivery', () => {
     });
     expect(publishComment.mock.calls[1][0]).toEqual({
       dynamicId: 'owner-dynamic',
-      content: '本场直播内容：杂谈、唱歌；歌曲：夜航星；游戏：星露谷物语；话题：妈妈做火烧云、最喜欢的前辈'
+      content: '本场直播内容：杂谈、唱歌；歌曲：夜航星；游戏：星露谷物语；话题：妈妈做火烧云、最喜欢的前辈',
+      replyToId: 'reply-1'
     });
-    expect(task.liveContentSummaryState).toBe('published_separate');
+    expect(task.liveContentSummaryState).toBe('published_thread');
+    expect(task.liveContentSummaryAttachedTo).toBe('main_reply');
+    expect(task.liveContentSummaryParentReplyId).toBe('reply-1');
     expect(task.liveContentSummaryReplyId).toBe('reply-2');
     expect(task.status).toBe('completed');
   });
@@ -932,7 +935,7 @@ describe('DelayedReplyService live content summary delivery', () => {
     expect(task.liveContentSummaryReplyId).toBe('supplemental-reply');
   });
 
-  it('publishes Shiori live content separately after both reply opportunities have passed', async () => {
+  it('replies to the original goodnight rather than the supplemental image when the summary arrives late', async () => {
     const task = createTask({
       status: 'waiting_live_content',
       liveContentSummaryPath: writeSummary(),
@@ -950,7 +953,8 @@ describe('DelayedReplyService live content summary delivery', () => {
     await service.executeLiveContentSummaryReply(task);
 
     expect(publishComment).toHaveBeenCalledTimes(1);
-    expect(task.liveContentSummaryState).toBe('published_separate');
+    expect(publishComment).toHaveBeenCalledWith(expect.objectContaining({ replyToId: 'main-reply' }));
+    expect(task.liveContentSummaryState).toBe('published_thread');
     expect(task.liveContentSummaryReplyId).toBe('summary-reply');
     expect(task.status).toBe('completed');
   });
@@ -976,11 +980,12 @@ describe('DelayedReplyService live content summary delivery', () => {
 
     expect(publishComment).toHaveBeenCalledTimes(2);
     expect(publishComment.mock.calls[1][0].content).toMatch(/^本场直播内容：/u);
-    expect(task.liveContentSummaryState).toBe('published_separate');
+    expect(publishComment.mock.calls[1][0].replyToId).toBe('reply-1');
+    expect(task.liveContentSummaryState).toBe('published_thread');
     expect(task.status).toBe('completed');
   });
 
-  it('splits a ready summary into a separate comment when the combined text exceeds 1000 characters', async () => {
+  it('threads an oversized attached summary below the main goodnight', async () => {
     const task = createTask({ liveContentSummaryPath: writeSummary() });
     const longReply = '晚'.repeat(960);
     const { service, publishComment } = createInitialReplyHarness(task, longReply);
@@ -990,8 +995,9 @@ describe('DelayedReplyService live content summary delivery', () => {
     expect(publishComment).toHaveBeenCalledTimes(2);
     expect(publishComment.mock.calls[0][0].content).toBe(longReply);
     expect(publishComment.mock.calls[1][0].content).toMatch(/^本场直播内容：/u);
+    expect(publishComment.mock.calls[1][0].replyToId).toBe('reply-1');
     expect(task.liveContentSummaryForceSeparate).toBe(true);
-    expect(task.liveContentSummaryState).toBe('published_separate');
+    expect(task.liveContentSummaryState).toBe('published_thread');
   });
 
   it('does not block the main reply when live content generation failed', async () => {
@@ -1069,7 +1075,7 @@ describe('DelayedReplyService live content summary delivery', () => {
     expect(outcome).toBe('done');
     expect(publishComment).toHaveBeenCalledTimes(1);
     expect(notifier.sendMarkdown).toHaveBeenCalledTimes(1);
-    expect(task.liveContentSummaryState).toBe('published_separate');
+    expect(task.liveContentSummaryState).toBe('published_thread');
     expect(task.liveContentSummaryReplyId).toBe('summary-reply');
   });
 

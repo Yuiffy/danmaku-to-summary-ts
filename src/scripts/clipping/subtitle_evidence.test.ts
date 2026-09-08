@@ -1,6 +1,14 @@
 const evidence = require('./subtitle_evidence');
 
 describe('subtitle evidence', () => {
+  test('restores punctuation without changing words, aliases or partial-text overrides', () => {
+    const pack = evidence.buildSubtitleEvidence([{ start: 0, end: 4, text: 'Like me no',
+      asrEvidence: { correctedText: 'Like me? No.' } }]);
+    expect(evidence.formatEvidenceCues(pack.cues)).toContain('Like me? No.');
+    expect(evidence.formatEvidenceCues([{ ...pack.cues[0], text: 'only part', partial: true }])).toContain('only part');
+    const changed = evidence.buildSubtitleEvidence([{ start: 0, end: 4, text: 'SUI', asrEvidence: { correctedText: 'sleep?' } }]);
+    expect(evidence.formatEvidenceCues(changed.cues)).not.toContain('sleep');
+  });
   test('parses JSON without losing valid responses to a harmless prose wrapper', () => {
     expect(evidence.parseClipResponse('Result:\n{"clips":[{"event":"literal } in speech"}]}\nDone.'))
       .toEqual([{ event: 'literal } in speech' }]);

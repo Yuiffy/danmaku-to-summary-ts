@@ -1,5 +1,22 @@
 [
   {
+    "speaker": "犬绒Mofu",
+    "key": "mofu_official_chat",
+    "audio_path": "data/asr_speaker_refs/mofu_official_chat.wav",
+    "state": "official_solo_chat",
+    "seconds": 16,
+    "source_count": 1,
+    "source_media": "https://www.bilibili.com/video/BV1QesSzzE4z/",
+    "source_segments": "00:00:00-00:00:16",
+    "chunk_s": 8,
+    "max_chunks": 2,
+    "preserve_exemplars": true,
+    "sha256": "eb2ec38e8a01725dbd097224984635e4517f24c5eba00712e4886853356c0a5c",
+    "enrollment_manifest": "data/asr_speaker_refs/enrollment_candidates/mofu_official_chat.enrollment.json",
+    "verification_status": "source_context_cross_checked",
+    "human_audited": false
+  },
+  {
     "speaker": "岁己SUI",
     "key": "sui",
     "audio_path": "data/asr_speaker_refs/sui.wav",

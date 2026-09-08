@@ -54,6 +54,12 @@ No tutorial-style explanation unless requested.
 
 ## Repository navigation
 
+Follow the file-placement and Git-hygiene rules in `AGENTS.md`. Task-specific
+Markdown reports, plans, probes, and captures belong in ignored `temp/<date>-<task>/`
+or `local-scripts/`, not tracked `docs/`, `plans/`, `scripts/`, or `tools/`.
+Only maintained, reusable material belongs in shared directories; retain automated
+fixtures and required runtime assets. See `local-scripts/README.md` for local storage.
+
 Use a docs-first approach before broad code search. If prose conflicts with the current runtime, code and live config win.
 
 - Project/runtime overview: `README.md`, then `docs/runtime-notes.md`.

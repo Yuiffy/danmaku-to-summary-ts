@@ -341,10 +341,10 @@ async function cutTask(task, rootConfig, resourceSchedulerOverride = null) {
     const outputSrt = path.join(task.outputDir, `${task.outputStem}.srt`);
     const metadataPath = path.join(task.outputDir, `${task.outputStem}.json`);
     const copyPath = path.join(task.outputDir, `${task.outputStem}_投稿文案.md`);
-    const window = { start: task.start, end: task.end, duration: task.end - task.start };
+    const window = { ...task.sourceMetadata?.window, start: task.start, end: task.end, duration: task.end - task.start };
     const subtitleConfig = rootConfig.subtitle || {};
     const clipTopicsConfig = rootConfig.clipTopics || {};
-    const srtResult = topicClipper.writeClipSrt(sourceSrt.segments, window, outputSrt, {
+    const srtResult = topicClipper.writeClipSrt(task.subtitleSegments || sourceSrt.segments, window, outputSrt, {
         maxCharsPerLine: clipTopicsConfig.subtitleMaxCharsPerLine
             ?? subtitleConfig.max_chars_per_line
             ?? 18,
@@ -371,6 +371,10 @@ async function cutTask(task, rootConfig, resourceSchedulerOverride = null) {
     } finally {
         resourceLease?.release();
     }
+    if (task.sourceMetadata && !mediaResult.burnedSubtitles) {
+        topicClipper.cleanupTemporaryCoverSource(mediaResult);
+        throw new Error('Candidate subtitle burn failed; upload remains blocked');
+    }
     let coverPath = null;
     try {
         coverPath = await topicClipper.generateClipCover(
@@ -389,22 +393,24 @@ async function cutTask(task, rootConfig, resourceSchedulerOverride = null) {
     } finally {
         topicClipper.cleanupTemporaryCoverSource(mediaResult);
     }
-    const profile = resolveQueueProfile(task.profile);
+    const profile = task.upload ? { name: 'topic', titlePrefix: task.upload.prefix, tags: task.upload.tags }
+        : resolveQueueProfile(task.profile);
     const metadata = {
+        ...task.sourceMetadata,
         version: 1,
         generatedAt: nowIso(),
-        mode: 'manual_clip_queue',
+        mode: task.sourceMetadata ? 'topic_candidate_manual_cut' : 'manual_clip_queue',
         profile: profile.name,
         status: 'success',
-        source: { mediaPath: task.mediaPath, srtPath: task.srtPath, sourceKind: 'video' },
+        source: { ...task.sourceMetadata?.source, mediaPath: task.mediaPath, srtPath: task.srtPath, sourceKind: 'video' },
         roomId: task.roomId || '25788785',
         streamerName: task.streamerName || '岁己SUI',
         recordedAt: task.recordedAt || null,
         streamTitle: task.streamTitle || null,
-        uploadSource: buildUploadSource(task),
+        uploadSource: task.upload?.source || buildUploadSource(task),
         window,
         copy: { title: task.title, coverText: task.coverText, description: task.description, tags: profile.tags },
-        upload: {
+        upload: task.upload || {
             source: buildUploadSource(task),
             prefix: profile.titlePrefix,
             tags: profile.tags,
@@ -422,6 +428,7 @@ async function cutTask(task, rootConfig, resourceSchedulerOverride = null) {
             burnedSubtitles: Boolean(mediaResult.burnedSubtitles),
             twoStageMode: mediaResult.twoStageMode || 'copy',
             subtitleSegmentCount: srtResult.segmentCount,
+            srtSegmentCount: srtResult.segmentCount,
             resourceMode: resourceProfile.mode,
             ffmpegThreads: cutConfig.clipFfmpegThreads,
             subtitleVideoEncoder: mediaResult.subtitleVideoEncoder || cutConfig.subtitleVideoEncoder,
@@ -429,7 +436,7 @@ async function cutTask(task, rootConfig, resourceSchedulerOverride = null) {
         }
     };
     fs.writeFileSync(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, 'utf8');
-    const uploadSource = buildUploadSource(task);
+    const uploadSource = task.upload?.source || buildUploadSource(task);
     const recordedAt = formatRecordedAt(task.recordedAt, task.mediaPath);
     fs.writeFileSync(copyPath, [
         `# ${task.title}`,

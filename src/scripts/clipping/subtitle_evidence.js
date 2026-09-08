@@ -15,7 +15,8 @@ function buildSubtitleEvidence(segments = [], options = {}) {
         end: Number(segment.end),
         text: String(segment.text || ''),
         ...(segment.asrEvidence ? { asrEvidence: segment.asrEvidence } : {}),
-        speaker: String(segment.speaker ?? segment.speaker_id ?? segment.text?.match(/^\[([^\]]+)\]/u)?.[1] ?? '')
+        ...(segment.speakerEvidence ? { speakerEvidence: segment.speakerEvidence } : {}),
+        speaker: String(segment.speakerEvidence?.label ?? segment.speaker ?? segment.speaker_id ?? segment.text?.match(/^\[([^\]]+)\]/u)?.[1] ?? '')
     })).filter(item => Number.isFinite(item.start) && Number.isFinite(item.end) && item.end > item.start);
     for (const item of source) {
         const last = cues.at(-1);
@@ -44,7 +45,30 @@ function cuesForWindow(evidence, window) {
 
 function formatEvidenceCues(cues) {
     // Display seconds are compact; cue IDs retain exact source boundaries.
-    return cues.map(cue => `${cue.id} ${Math.floor(cue.start)}-${Math.ceil(cue.end)} ${cue.text}`).join('\n');
+    return cues.map(cue => `${cue.id} ${Math.floor(cue.start)}-${Math.ceil(cue.end)} ${speakerHint(cue)}${punctuatedCueText(cue)}`).join('\n');
+}
+
+function punctuatedCueText(cue) {
+    if (!cue.items?.length || cue.partial) return cue.text;
+    if (cue.text !== cue.items.map(item => item.text.trim()).join(' ')) return cue.text;
+    const normalize = text => String(text).normalize('NFKC').replace(/[\s\p{P}\p{S}]/gu, '').toLowerCase();
+    return cue.items.map(item => {
+        const raw = item.asrEvidence?.correctedText ?? item.asrEvidence?.recognizedText;
+        // Restore punctuation only; do not undo aliases or import a larger ASR source span.
+        return typeof raw === 'string' && normalize(raw) === normalize(item.text) ? raw.trim() : item.text.trim();
+    }).join(' ');
+}
+
+function speakerHint(cue) {
+    const sources = (cue.items || []).map(item => item.speakerEvidence).filter(Boolean);
+    if (!sources.length) return '';
+    const labels = new Set(sources.map(source => source.label));
+    const rows = sources.flatMap(source => source.observations || []);
+    if (sources.length !== cue.items.length || labels.size !== 1 || !sources[0].label
+        || sources.some(source => source.status !== 'row_supported')) return '[V=?] ';
+    const scores = rows.map(row => row.row?.score).filter(value => Number.isFinite(value));
+    const margins = rows.map(row => row.row?.margin).filter(value => Number.isFinite(value));
+    return `[V=${JSON.stringify(sources[0].label)};sim=${scores.length ? Math.min(...scores).toFixed(2) : '?'};gap=${margins.length ? Math.min(...margins).toFixed(2) : '?'};row/window] `;
 }
 
 function resolveEvidenceBoundaries(raw, evidence) {
@@ -179,5 +203,5 @@ function parseClipResponse(text) {
     return clips;
 }
 
-module.exports = { buildSubtitleEvidence, cuesForWindow, formatEvidenceCues,
+module.exports = { buildSubtitleEvidence, cuesForWindow, formatEvidenceCues, punctuatedCueText,
     resolveEvidenceBoundaries, linkClipEvidence, revalidateClipEvidence, parseClipResponse, parseJsonResponse };

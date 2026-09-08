@@ -35,7 +35,7 @@ function postProcessAiClipMetadata({ title = '', tags = [] } = {}, config = {}) 
         if (replacement) {
             for (const name of names) {
                 if (name === replacement) continue;
-                safeTitle = safeTitle.split(name).join(replacement);
+                safeTitle = safeTitle.split(replacement).map(part => part.split(name).join(replacement)).join(replacement);
             }
         }
     }

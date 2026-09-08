@@ -15,6 +15,7 @@ from sensevoice_runtime import (
     suppress_model_output,
 )
 from sensevoice_emotion import analyze_paraformer_emotions
+from speaker_identity import attach_speaker_evidence
 from sensevoice_speaker import (
     build_speaker_reference_centroids,
     dominant_speaker_for_interval,
@@ -1041,6 +1042,8 @@ def transcribe_paraformer_builtin(payload, audio_path, device, gpu_throttle=None
             segments.append(segment)
             cursor = seg_end
 
+    for segment in segments:
+        attach_speaker_evidence(segment, speaker_timeline, payload.get("speaker_identity_policy", "legacy"))
     set_timing(payload, "postprocess_s", time.perf_counter() - postprocess_started)
     emotion_analysis = analyze_paraformer_emotions(
         payload,

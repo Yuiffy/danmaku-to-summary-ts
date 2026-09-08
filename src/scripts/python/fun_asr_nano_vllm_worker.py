@@ -14,6 +14,7 @@ from sensevoice_transcribe import (
     suppress_model_output,
 )
 from sensevoice_runtime import set_timing
+from speaker_identity import attach_speaker_evidence
 from sensevoice_speaker import (
     build_speaker_reference_centroids,
     dominant_speaker_for_interval,
@@ -195,6 +196,7 @@ def transcribe(model, config, job, gpu_throttle=None, spk_model_obj=None):
                     item["speaker"] = speaker
                 if score:
                     item["speaker_score"] = score
+                attach_speaker_evidence(item, adaptive.get("timeline", []), payload.get("speaker_identity_policy", "legacy"))
             payload["_speaker_processing"] = adaptive.get("processing", {})
             timing = payload["_speaker_processing"].get("timings", {})
             set_timing(payload, "speaker_probe_embedding_s", timing.get("probe_embedding_s", 0))

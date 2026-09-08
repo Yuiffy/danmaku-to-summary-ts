@@ -96,6 +96,7 @@ function buildReferenceCollectionIndex(config = configLoader.getConfig(), manife
             end_s: entry.end_s,
             chunk_s: entry.chunk_s,
             max_chunks: entry.max_chunks,
+            preserve_exemplars: entry.preserve_exemplars === true,
             seconds: entry.seconds,
             source_count: entry.source_count,
             state: entry.state ? String(entry.state).trim() : null
@@ -230,6 +231,7 @@ function buildSpeakerReferencesForParticipants(participants = [], config = confi
                 ...(ref.end_s !== undefined ? { end_s: ref.end_s } : {}),
                 ...(ref.chunk_s !== undefined ? { chunk_s: ref.chunk_s } : {}),
                 ...(ref.max_chunks !== undefined ? { max_chunks: ref.max_chunks } : {}),
+                ...(ref.preserve_exemplars ? { preserve_exemplars: true } : {}),
                 ...(ref.state ? { state: ref.state } : {})
             });
         }

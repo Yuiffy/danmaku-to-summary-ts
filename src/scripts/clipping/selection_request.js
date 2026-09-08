@@ -28,7 +28,8 @@ function recordSelectionDiagnostic(diagnostics, context, result = null, error = 
 }
 
 async function requestSelectionText(prompt, requestOptions, config, rootConfig, info, phase, diagnostics, validate) {
-    const stageName = phase.startsWith('recall-') ? 'recall' : 'rerank';
+    const stageName = phase.startsWith('recall-') ? 'recall' : phase.startsWith('actor-review-') ? 'actorReview'
+        : phase.startsWith('dialogue-evidence-') ? 'dialogueEvidence' : 'rerank';
     const stage = config.ai?.stages?.[stageName];
     if (stage && require('./enhancement_runner').enhancementEnabled({ enabled: true, roomIds: config.ai.stageRoomIds }, info?.roomId)) {
         const started = Date.now();

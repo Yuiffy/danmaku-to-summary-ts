@@ -29,7 +29,9 @@ function writeSrt(result, srtPath, cfg, helpers) {
                     recognizedText: String(segment.text || ''),
                     correctedText,
                     aliasChanged: correctedText !== String(segment.text || '')
-                }
+                },
+                ...(segment.speakerEvidence || segment.speaker_evidence
+                    ? { speaker: segment.speakerEvidence || segment.speaker_evidence } : {})
             });
         }
         lines.push(String(lineIndex));
@@ -51,4 +53,3 @@ function writeSrt(result, srtPath, cfg, helpers) {
 }
 
 module.exports = { writeSrt };
-

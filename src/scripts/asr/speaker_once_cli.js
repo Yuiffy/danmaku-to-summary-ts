@@ -108,6 +108,7 @@ function printUsage() {
     console.log('  npm run asr:speaker-once -- enable <直播间ID|主播名> [--participants 名字1,名字2] [--start-at ISO时间] [--window-hours 24] [--expires-hours 24] [--reason 文本] [--requested-by openclaw]');
     console.log('  npm run asr:speaker-once -- precheck <直播间ID|主播名> --participants 名字1,名字2');
     console.log('  npm run asr:speaker-once -- prepare --speaker 名字 --audio-path 文件路径 [--key speaker_key]');
+    console.log('  npm run asr:speaker-once -- attach-recording <直播间ID|主播名> --media 录播 --srt 字幕 --participants 名字1,名字2');
     console.log('  npm run asr:speaker-once -- cancel <直播间ID|主播名>');
     console.log('  npm run asr:speaker-once -- status [直播间ID|主播名] [--json]');
 }
@@ -116,6 +117,14 @@ function main(argv = process.argv.slice(2)) {
     const { positional, flags } = parseArgs(argv);
     const action = String(positional[0] || '').toLowerCase();
     const target = positional[1];
+
+    if (action === 'attach-recording') {
+        const { resolved, roster } = buildRosterForTarget(target, flags, configLoader.getConfig());
+        const result = require('./recording_roster').writeRecordingParticipants({ srtPath: flags.srt, mediaPath: flags.media,
+            roomId: resolved.roomId, participantIds: roster.plannedParticipantIds });
+        console.log(JSON.stringify(result, null, 2));
+        return result;
+    }
 
     if (action === 'enable' || action === 'arm') {
         const config = configLoader.getConfig();

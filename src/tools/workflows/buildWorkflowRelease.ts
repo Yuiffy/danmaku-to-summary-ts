@@ -7,6 +7,7 @@ const entries = {
   'clipping/stage': 'workflows/clipping/stage.js',
   'clipping/editPlan': 'workflows/clipping/editPlan.js',
   'clipping/enhancement': 'workflows/clipping/enhancement.js',
+  'clipping/experiment': 'workflows/clipping/experiment.js',
   'text/response': 'workflows/text/response.js',
   'text/requests': 'workflows/text/requests.js',
   'summary/diagnostics': 'workflows/summary/diagnostics.js',

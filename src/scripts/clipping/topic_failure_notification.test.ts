@@ -53,13 +53,14 @@ describe('topic failure visibility', () => {
   test('does not say every candidate was rendered when only human review is pending', () => {
     const markdown = topic.buildTopicNotifyMarkdown([{
       window: { index: 'E4-1', start: 2470.05, end: 2541.434 },
-      status: 'pending_preflight', copy: { title: '人见人爱但人人叫错名字' }, output: { mediaPath: null },
+      status: 'pending_preflight', candidateId: 712, copy: { title: '人见人爱但人人叫错名字' }, output: { mediaPath: null },
       aiReview: { mode: 'preflight', status: 'needs_review', quality: { issues: ['unsupported_number:description:67'] },
         warnings: ['字幕未能确认投票百分比。'] }
     }]);
     expect(markdown).toContain('成功生成 **0** 段');
     expect(markdown).toContain('待预审 **1** 段');
     expect(markdown).toContain('E4-1');
+    expect(markdown).toContain('候选ID 712');
     expect(markdown).toContain('00:41:10-00:42:21');
     expect(markdown).toContain('简介中的数字缺少证据：67');
     expect(markdown).toContain('字幕未能确认投票百分比。');

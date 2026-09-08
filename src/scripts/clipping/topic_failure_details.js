@@ -62,8 +62,9 @@ function buildPendingTopicBlock(result) {
     const issues = [...new Set((review.quality?.issues || []).map(describeTopicIssue))];
     const warnings = [...new Set((review.warnings || []).filter(Boolean))];
     const lines = [
-        `- [待预审/未生成] ${window.index || ''} | ${formatClock(window.start)}-${formatClock(window.end)} | ${result.copy?.title || result.editorial?.event || '未生成标题'}`,
+        `- [待预审/未生成] ${result.candidateId ? `候选ID ${result.candidateId} | ` : ''}${window.index || ''} | ${formatClock(window.start)}-${formatClock(window.end)} | ${result.copy?.title || result.editorial?.event || '未生成标题'}`,
         `  原因: ${issues.length ? issues.join('；') : describeTopicIssue(review.reason)}`,
+        ...(result.candidateSubtitles?.path ? [`  待定字幕: ${result.candidateSubtitles.path}`] : []),
         ...warnings.map(warning => `  说明: ${warning}`),
         ...(window.matchSegments || []).slice(0, 3).map(segment => `  命中字幕: [${formatClock(segment.start)}] ${segment.text}`)
     ];

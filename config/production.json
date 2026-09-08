@@ -317,6 +317,16 @@
       }
     },
     "streamerRegistry": {
+      "mofu": {
+        "displayName": "犬绒Mofu",
+        "aiClipName": "小绒",
+        "roomIds": ["1791260716"],
+        "searchTags": ["犬绒", "犬绒Mofu"],
+        "mentionLabels": ["犬绒", "小绒", "犬绒Mofu"],
+        "speakerLabels": ["犬绒Mofu", "Mofu"],
+        "aliases": ["犬绒", "小绒"],
+        "referenceImages": ["public/reference_images/mofu_standing_sheet.png"]
+      },
       "sui": {
         "displayName": "岁己SUI",
         "aiClipName": "小岁",
@@ -1735,6 +1745,47 @@
   },
   "ownStreamClips": {
     "enabled": true,
+    "enhancements": {
+      "enabled": true,
+      "roomIds": ["25788785"],
+      "editing": true,
+      "experiment": { "enabled": true, "ratio": 0.25, "maxClips": 5 },
+      "budget": { "mode": "log_only", "ledgerPath": "data/runtime/clip-enhancement-ledger.json" },
+      "stageDefaults": {
+        "provider": "daiYu",
+        "model": "gpt-5.6-luna",
+        "apiMode": "responses",
+        "reasoningEffort": "high",
+        "maxTokens": 16000,
+        "maxInputTokens": 1000000,
+        "timeoutMs": 600000,
+        "capabilities": { "reasoningEfforts": ["high"], "images": true, "imageTokenUpperBound": 65536 }
+      },
+      "stages": {
+        "selection": { "maxTokens": 8000 },
+        "edit": { "maxTokens": 8000 },
+        "packaging": { "maxTokens": 16000 },
+        "cover": { "maxTokens": 8000 },
+        "qa": { "maxTokens": 12000 }
+      }
+    },
+    "attribution": {
+      "enabled": true,
+      "roomIds": ["25788785"],
+      "identityCommentsPerClip": 4,
+      "identityCommentsPerChunk": 12,
+      "contextSeconds": 12,
+      "batchSize": 4,
+      "concurrency": 2,
+      "maxBatchChars": 36000,
+      "maxRequests": 12,
+      "maxElapsedMs": 1200000,
+      "repairAttempts": 1,
+      "dialogueEnabled": true,
+      "evidenceEncoding": "legacy",
+      "timeoutMs": 600000,
+      "maxTokens": 12000
+    },
     "mode": "local_review",
     "roomIds": [
       "25788785",
@@ -1934,6 +1985,11 @@
   },
   "asr": {
     "default_backend": "paraformer",
+    "speaker_identity": {
+      "policy": "row_verified",
+      "room_ids": ["25788785"],
+      "min_seconds": 2
+    },
     "gray_rollout": {
       "enabled": true,
       "finetuned_ratio": 0.01,
@@ -2790,6 +2846,14 @@
       "preset_spk_num": 5,
       "speaker_merge_threshold": 0.78,
       "speaker_references": [
+        {
+          "speaker": "犬绒Mofu",
+          "audio_path": "data/asr_speaker_refs/mofu_official_chat.wav",
+          "state": "official_solo_chat",
+          "chunk_s": 8,
+          "max_chunks": 2,
+          "preserve_exemplars": true
+        },
         {
           "speaker": "岁己SUI",
           "audio_path": "data/asr_speaker_refs/sui.wav",

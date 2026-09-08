@@ -29,3 +29,10 @@ test('keeps explicitly configured upload tags even when they are official names'
     tags: ['花礼Harei', '芙娅之魂', '直播切片']
   });
 });
+test('preferred clip names remain idempotent when they contain a formal name', () => {
+  const { postProcessAiClipMetadata } = require('./ai_clip_metadata');
+  const config = { ai: { streamerRegistry: { guest: { displayName: 'Guest', aiClipName: 'GuestClip' } } } };
+  const first = postProcessAiClipMetadata({ title: 'Guest asked GuestClip' }, config);
+  expect(first.title).toBe('GuestClip asked GuestClip');
+  expect(postProcessAiClipMetadata(first, config).title).toBe(first.title);
+});

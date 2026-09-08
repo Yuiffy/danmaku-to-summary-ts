@@ -11,6 +11,7 @@ import asyncio
 import io
 import os
 import base64
+import re
 from bilibili_api import comment, Credential, dynamic
 from bilibili_api.comment import CommentResourceType
 from bilibili_api.utils.picture import Picture
@@ -225,7 +226,7 @@ async def get_dynamic_comment_id(dynamic_id: str, credential: Credential) -> tup
     return comment_id_str, comment_resource_type
 
 
-async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct: str, dedeuserid: str, image_path: str = None, credential_options: dict | None = None) -> dict:
+async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct: str, dedeuserid: str, image_path: str = None, credential_options: dict | None = None, reply_to_id: str | None = None) -> dict:
     """
     发布动态评论
 
@@ -236,6 +237,7 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
         bili_jct: CSRF Token
         dedeuserid: DedeUserID
         image_path: 图片路径（可选）
+        reply_to_id: Existing top-level comment to reply under (optional).
 
     Returns:
         dict: 包含评论结果的字典
@@ -246,6 +248,9 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
         log(f"[INFO] 图片路径: {image_path}")
 
     try:
+        if reply_to_id is not None and (not isinstance(reply_to_id, str) or not re.fullmatch(r'[1-9][0-9]*', reply_to_id)):
+            raise ValueError('Invalid parent comment ID')
+        reply_target = {} if reply_to_id is None else {'root': int(reply_to_id), 'parent': int(reply_to_id)}
         # 创建 Credential 对象
         log(f"[INFO] 创建凭证对象...")
         credential = build_credential(sessdata, bili_jct, dedeuserid, credential_options)
@@ -311,10 +316,11 @@ async def publish_comment(dynamic_id: str, content: str, sessdata: str, bili_jct
             oid=int(comment_id),
             type_=comment_type,
             credential=credential,
-            pic=pic
+            pic=pic,
+            **reply_target
         )
 
-        reply_id = str(result.get('rpid', ''))
+        reply_id = str(result.get('rpid_str') or result.get('rpid', ''))
         log(f"[OK] 评论发布成功，回复ID: {reply_id}")
         log(f"[INFO] 完整返回结果: {result}")
 
@@ -357,6 +363,7 @@ def main():
     bili_jct = sys.argv[4]
     dedeuserid = sys.argv[5]
     image_path = sys.argv[6] if len(sys.argv) > 6 else None
+    reply_to_id = sys.argv[8] if len(sys.argv) > 8 else None
     credential_options = {}
     if len(sys.argv) > 7 and sys.argv[7]:
         try:
@@ -371,7 +378,7 @@ def main():
     print(f"[INFO] 接收到参数: dynamic_id={dynamic_id}, content_length={len(content)}, has_image={image_path is not None}")
 
     # 发布评论
-    result = asyncio.run(publish_comment(dynamic_id, content, sessdata, bili_jct, dedeuserid, image_path, credential_options))
+    result = asyncio.run(publish_comment(dynamic_id, content, sessdata, bili_jct, dedeuserid, image_path, credential_options, reply_to_id))
 
     # 输出JSON结果到stdout（仅JSON，不带日志前缀）
     print(f"[INFO] 输出结果: {json.dumps(result, ensure_ascii=False)}")

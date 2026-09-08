@@ -15,12 +15,13 @@ ignored `temp/` tree until its inputs and behavior are made configurable.
 - `preflight_evidence.js`, `preflight_plan.js`, `preflight_runner.js`: prepare and
   validate the complete edit, local subtitle patches, and public copy before any
   render or cover work. Supports single-call or staged preparation, exact model
-  routing, and held candidates on failure. See `docs/topic-preflight-comparison-2026-09-07.md`.
+  routing, and held candidates on failure. See
+  [Preflight Review](../../../docs/topic-event-editorial.md#preflight-review).
 - `preflight_quality.js`: quality-focused preparation and optional independent
   audit with source-linked repairs before rendering. `preflight_facts.js` loads
   user-confirmed facts and patches scoped by source path, hash, and time range.
-  See `docs/topic-preflight-quality-cost-2026-09-07.md` for quality-first acceptance
-  and the cost comparison; the extra audit is not enabled by default.
+  Acceptance checks are documented in the same preflight contract; per-run
+  quality/cost comparisons stay local. The extra audit is not enabled by default.
 - `topic_editorial.js`: joint keyword-context event selection and locked-interval
   copy evidence. `topic_editorial_runner.js` uses the shared validated AI cache.
   See `docs/topic-event-editorial.md` for duration, attribution, and review policy.
@@ -31,8 +32,10 @@ ignored `temp/` tree until its inputs and behavior are made configurable.
   selection results. Every candidate carries a validated `reuse` object or
   explicit `null`; context range `g` is not a default cut boundary. Missing
   boundaries on non-reusable candidates are rejected with a specific diagnostic,
-  not guessed. See `docs/post-stream-evidence-contract-fixes-2026-09-08.md` for
-  the local regression and the increased-input/unmeasured-model-cost boundary.
+  not guessed. A model-supplied `reuse` cannot grant omission permission; the
+  diagnostic is `missing_explicit_boundaries`. Tests cover exact audience times,
+  stale evidence and forged reuse. More explicit evidence can increase input;
+  do not infer live-model speed or cost savings from offline preparation checks.
 - `person_evidence.js`: local configured-name citation warnings for final own-stream
   copy. Formal/search names and copy labels are matched literally; broad mention,
   ASR alias, and generated speaker labels are not identity evidence. Checks use
@@ -69,7 +72,109 @@ without FFmpeg, an AI provider, an upload queue, or a service restart.
 `src/scripts/clip_resource_adaptive.js` and `src/scripts/clip_output_path.js`
 are compatibility entrypoints. New imports should use this directory.
 
-## Event contract
+## Optional Own-Stream Enhancements
+
+`enhancement_runner.js` owns media/provider IO around strictly compiled stages in
+`src/workflows/clipping`. `ownStreamClips.enhancements` requires `enabled: true`
+and an explicit `roomIds` allowlist, plus `editing`, `budget` and `stages` for
+`edit`, `packaging`, `cover` and `qa`. Enhancements are opt-in; building a candidate
+workflow release does not activate it. Follow the deployment procedure in
+[Architecture](../../../docs/architecture.md#compiled-workflow-releases).
+
+The versioned edit plan binds source identity, ordered keep intervals, removals
+and evidence. Removal requires trusted `<source.srt>.edit-evidence.json` containing
+`version: 1`, `sourceId` and `events` with `id`, `sourceId`, `kind`, `start`, `end`,
+`verified` and `precisionSeconds`. Precision must be at most 50 ms; source speech
+and timing margins are protected. Subtitle gaps and SenseVoice event labels alone
+are not verified deletion evidence. Missing evidence leaves the source intact.
+
+Packaging uses the actual rendered covers. Independent QA checks source context,
+retained subtitles, public copy, the cover, final frames and media integrity. One
+packaging repair is allowed before restoring the continuous artifact and neutral
+copy for another audit. Still-failing media receives no upload ID. QA binds hashes
+of video, SRT, cover and copy; registration and upload validate them again.
+`uploadReady` means eligibility, never permission to upload.
+
+Strict stage configurations require confirmed channel prices and capabilities,
+explicit model/protocol/effort and input/output limits. Cover/QA also require
+verified image support and `imageTokenUpperBound`. Budgets use an absolute shared
+`ledgerPath`, `globalCny`, `roomCny`, `sessionCny` and optional `holdoutReserveCny`.
+Unknown outcomes keep their reservation; inspect stale locks and reconcile usage
+before retrying. There is no implicit provider/model fallback or automatic retry.
+
+Portable evaluation and synthetic media verification entrypoints:
+
+```powershell
+npm run build:workflows
+npm run clips:eval
+npm run clips:eval -- --environment production --srt "path/to/source.srt" --xml "path/to/source.xml"
+node -r ts-node/register/transpile-only src/tools/clipping/verifyEditMedia.ts
+```
+
+Evaluation is offline by default. `--manifest` selects frozen prompts, references
+and optional images; split samples by whole session. `--execute-paid` additionally
+requires explicit spending authorization and confirmed prices/capabilities. Its
+cumulative ledger is `data/runtime/clip-evaluation-ledger.json`, with a 100 CNY
+ceiling and 40 CNY reserved for holdout work; changing output directories does not
+reset it. Run-specific inputs, requests, results and reports belong in ignored
+`temp/` or `tmp/`, not shared fixtures unless reduced to portable regression cases.
+
+## Actor Attribution Review
+
+Own-stream attribution is configured separately from image/editing enhancements.
+`ownStreamClips.attribution.enabled` plus an explicit `roomIds` allowlist is
+required. Defaults are disabled. `participant_context.js` adds source-bound
+planned participants, repeated local voice matches, and mentioned-only people;
+none of those alone is proof of an action. It retains bounded additional identity
+comments with exact D-IDs in recall and rerank without removing existing samples.
+
+`actor_review_runner.js` requests independent, local-window claim review only for
+high-risk clips. Complete speech is retained. `batchSize`, `maxBatchChars`,
+`maxRequests`, `maxElapsedMs`, `timeoutMs`, and `maxTokens` bound the work; one validation repair
+is allowed by `repairAttempts: 1`. Transport retries and provider/model fallback
+are disabled for these calls. Oversized, failed or unresolved records retain
+`publicCopyPending` and do not become upload-eligible. Actual usage appears under
+`aiStatus.requests` with `actor-review-*` phases; no cached/replayed call is billed
+again. The channel's reported usage, not a nominal output-limit setting, is the
+accounting authority.
+
+Batches run at bounded `concurrency` (default 2, maximum 3). The shared elapsed
+budget defaults to 20 minutes and stops starting new batches, dialogue analyses
+or repairs after that point; already-started requests finish under their own
+timeout. Exceeding either budget never approves the remaining clips.
+
+Each approved action records narrator, actor, target, source kind and in-window
+speech IDs. Voice identity citations must match structured acoustic evidence;
+room metadata and audience mentions do not prove the speaker. Known guest
+actions use their configured `aiClipName` in the title. Voice is still probabilistic,
+and citation validation is not a substitute for semantic/human review.
+
+The final `attributionReview.artifactCopyDigest` binds the actual title, cover
+text and source-prefixed description. `artifactDigests` also binds the generated
+video and SRT, while `artifactWindow` binds the source interval. Subsequent changes or removal of required
+review metadata are rejected by JSON import and upload-queue validation. This
+gate grants eligibility only, never upload authorization. Enable production only
+for explicit room allowlists after real multi-person and single-person comparisons;
+do not generalize small-sample results into a global accuracy guarantee.
+
+`evidenceEncoding: "compact"` is an experimental lossless representation of all
+audience records using shared rows and an optional repeated-text dictionary.
+Every clip retains its own allowed D-IDs. `legacy` remains the default; reduced
+character count alone does not establish token savings or equal model quality.
+
+`dialogueEnabled: true` adds an independent text-turn analysis only after the first
+actor review leaves identity unresolved in a plausible multi-person window,
+within the same request budget. Local text mentions can trigger analysis without
+a planned roster, but do not certify presence. The analyzer receives source speech,
+audience comments and name metadata, never prior titles or acoustic labels.
+High-confidence turn hypotheses need at least two source anchors; ambiguous
+multi-speaker cues cannot establish identity. The final reviewer rechecks these
+hypotheses against the original text and may use `identityBasis: "dialogue"`
+without a voice reference. Conflicts with direct local acoustic evidence stay
+pending. Static avatars indicate visible participation, not proof of speaking;
+visual turn inference remains an isolated experiment, not a default identity source.
+
+## Event Contract
 
 Detectors may use their own internal measurements, but the handoff to a
 compiler should be a JSON object with `source.mediaPath` and canonical events:

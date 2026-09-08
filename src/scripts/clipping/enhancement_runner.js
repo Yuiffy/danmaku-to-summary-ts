@@ -4,6 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { loadWorkflow } = require('../workflow-runtime');
+const { withSelectionCache } = require('./selection_cache');
 
 function enhancementEnabled(config, roomId) {
     return config?.enabled === true && Array.isArray(config.roomIds) && config.roomIds.map(String).includes(String(roomId));
@@ -11,7 +12,9 @@ function enhancementEnabled(config, roomId) {
 
 function requestStage(config, budget, info, phase, prompt, images = []) {
     const generator = require('../ai_text_generator');
-    return loadWorkflow('clipping/stage').runStage(config, budget, {
+    const accounting = { ...budget, ledgerPath: typeof budget?.ledgerPath === 'string'
+        ? path.resolve(__dirname, '../../..', budget.ledgerPath) : '' };
+    return loadWorkflow('clipping/stage').runStage(config, accounting, {
         stage: phase, roomId: String(info.roomId || ''), sessionId: info.sessionId || info.selectionCacheDirectory || info.recordedAt,
         split: info.evaluationSplit || 'screening'
     }, prompt, images, (provider, text, options) => provider === 'daiYu'
@@ -24,6 +27,34 @@ function probeMedia(file, ffprobe) {
             if (error) return reject(error);
             try { resolve(JSON.parse(stdout)); } catch (parseError) { reject(parseError); }
         }));
+}
+
+async function selectExperimentBatch(clips, parsed, config, rootConfig, info) {
+    const settings = config.enhancements;
+    if (!enhancementEnabled(settings, info.roomId) || settings.experiment?.enabled !== true
+        || !config.ai?.enabled || rootConfig.ai?.text?.enabled === false) return { clips };
+    const { buildExperimentSelection, parseExperimentSelection, assignExperiment } = loadWorkflow('clipping/experiment');
+    const packet = buildExperimentSelection(clips, parsed.segments, settings.experiment);
+    const summary = { version: 1, batchId: packet.batchId, total: clips.length, maxSelected: packet.maxSelected,
+        selected: [], status: 'ordinary_control', selectionLog: null };
+    if (!packet.maxSelected || !packet.eligibleIds.length) return { clips: assignExperiment(clips, packet, []), summary };
+    const stageConfig = { ...settings.stageDefaults, ...settings.stages?.selection };
+    try {
+        const response = await withSelectionCache({ directory: info.selectionCacheDirectory,
+            phase: 'precision-experiment-selection-v1', prompt: packet.prompt, signature: { stageConfig, batchId: packet.batchId },
+            validate: result => { try { parseExperimentSelection(result.text, packet); return true; } catch { return false; } }
+        }, () => requestStage(stageConfig, settings.budget, info, 'precision-experiment-selection', packet.prompt));
+        const choices = parseExperimentSelection(response.text, packet);
+        summary.selected = choices;
+        summary.status = 'selected';
+        summary.selectionLog = { ledgerId: response.meta?.ledgerId, usage: response.meta?.usage,
+            elapsedMs: response.meta?.elapsedMs, cacheHit: response.meta?.selectionCache?.hit === true };
+        return { clips: assignExperiment(clips, packet, choices, response.meta?.ledgerId), summary };
+    } catch (error) {
+        summary.status = 'selection_failed_control';
+        summary.error = error.message;
+        return { clips: assignExperiment(clips, packet, [], error.ledgerId || null, error.message), summary };
+    }
 }
 
 async function enhance(metadata, { config, info, parsed, danmaku, source, options, topic }) {
@@ -50,11 +81,25 @@ async function enhance(metadata, { config, info, parsed, danmaku, source, option
     const scratch = path.join(directory, 'temp', `${name}-enhancement`);
     fs.mkdirSync(scratch, { recursive: true });
     let inspection = 0;
+    const generationLogs = [];
     const result = await enhanceArtifact(metadata, { sourceId, window: metadata.window, speech: segments,
         audience: danmaku.map((row, index) => ({ ...row, id: `D${index + 1}` })), audioEvidence,
-        allowEditing: settings.editing === true, streamerName: metadata.streamerName }, {
-        request: async (stage, prompt, images = []) => (await requestStage(settings.stages?.[stage], settings.budget, info,
-            `${stage}-${metadata.window.index}`, prompt, images)).text,
+        allowEditing: settings.editing === true, streamerName: metadata.streamerName,
+        experimentSelected: metadata.precisionExperiment?.selected === true }, {
+        request: async (stage, prompt, images = []) => {
+            const stageConfig = { ...settings.stageDefaults, ...settings.stages?.[stage] };
+            try {
+                const response = await requestStage(stageConfig, settings.budget, info,
+                    `${stage}-${metadata.window.index}`, prompt, images);
+                generationLogs.push({ stage, ledgerId: response.meta?.ledgerId, status: 'success',
+                    costCny: response.meta?.costCny, usageUnknown: response.meta?.usageUnknown,
+                    usage: response.meta?.usage, elapsedMs: response.meta?.elapsedMs });
+                return response.text;
+            } catch (error) {
+                generationLogs.push({ stage, ledgerId: error.ledgerId || null, status: 'failure', error: error.message });
+                throw error;
+            }
+        },
         renderEdit: async plan => {
             validateEditPlan(plan, sourceId, metadata.window, segments, audioEvidence);
             const mapped = mapSubtitles(segments, plan);
@@ -101,8 +146,20 @@ async function enhance(metadata, { config, info, parsed, danmaku, source, option
             return { passed: true, issues, frames };
         }
     });
+    result.enhancement = { version: 1, enabled: true, accountingMode: settings.budget?.mode || 'enforce',
+        ledgerPath: path.resolve(__dirname, '../../..', settings.budget.ledgerPath), generationLogs,
+        editingRequested: settings.editing === true,
+        editDecision: result.editPlan?.removed?.length ? 'multi_cut' : audioEvidence.length ? 'retained_after_review' : 'no_precise_audio_evidence',
+        removedSeconds: result.editPlan?.removed?.reduce((sum, span) => sum + span.end - span.start, 0) || 0,
+        baseline: { copy: metadata.copy, mediaPath: metadata.output.mediaPath, srtPath: metadata.output.srtPath,
+            duration: metadata.window.duration, coverPath: metadata.output.coverPath } };
     if (result.uploadReady && result.output.coverPath) {
         const finalCover = path.join(directory, `${name}_cover.jpg`);
+        if (metadata.output.coverPath && fs.existsSync(metadata.output.coverPath)) {
+            const baselineCover = path.join(scratch, 'baseline-cover.jpg');
+            fs.copyFileSync(metadata.output.coverPath, baselineCover);
+            result.enhancement.baseline.coverPath = baselineCover;
+        }
         fs.copyFileSync(result.output.coverPath, finalCover);
         result.output.coverPath = finalCover;
     }
@@ -112,6 +169,7 @@ async function enhance(metadata, { config, info, parsed, danmaku, source, option
 
 async function runEnhancements(metadata, context) {
     if (!enhancementEnabled(context.config?.enhancements, context.info?.roomId)) return metadata;
+    if (context.config.enhancements.experiment?.enabled === true && metadata.precisionExperiment?.selected !== true) return metadata;
     const pending = { ...metadata, qaRequired: true, uploadReady: false, qaResult: { version: 1, status: 'pending' } };
     fs.writeFileSync(pending.output.metadataPath, JSON.stringify(pending, null, 2), 'utf8');
     try {
@@ -124,4 +182,4 @@ async function runEnhancements(metadata, context) {
     }
 }
 
-module.exports = { enhancementEnabled, requestStage, runEnhancements };
+module.exports = { enhancementEnabled, requestStage, runEnhancements, selectExperimentBatch };

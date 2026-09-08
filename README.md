@@ -51,9 +51,14 @@ Paraformer 支持 stock 和本地 fine-tuned model。`config/default.json` 保�
 
 ## 📁 项目结构
 
-开发与排障先看 [架构和语言边界](docs/architecture.md)；本次审查、改造结果和后续顺序见
-[2026-09 结构审查](docs/structure-review-2026-09.md)。日常完整验证使用 `npm run verify:all`，
+开发与排障先看 [架构和语言边界](docs/architecture.md)，文件放置遵循
+[AGENTS.md](AGENTS.md)。日常完整验证使用 `npm run verify:all`，
 编译产物写入 `build/service`，不会清理或覆盖正在运行的 `dist`。
+
+`docs/`、`plans/` 和通用代码目录只放准备长期维护并提交 Git 的内容。单次任务的计划、
+实验与验收报告、交接记录、页面快照和临时数据放在忽略的 `temp/<日期>-<任务>/`；
+一次性脚本也可放在 [local-scripts/](local-scripts/README.md)。通用结论提炼进现有文档，
+不要把整份任务过程记录提交到公共目录。
 
 ```
 danmaku-to-summary-ts/
@@ -71,7 +76,9 @@ danmaku-to-summary-ts/
 │   ├── production.json                     # 生产配置
 │   ├── secret.example.json                 # 密钥配置示例
 │   └── secret.json                         # 本地密钥，不应提交
-├── docs/                                   # 当前架构、运行说明与历史实验
+├── docs/                                   # 长期维护的架构、契约和运行说明
+├── temp/                                   # 单次任务脚本、报告与素材，不提交 Git
+├── local-scripts/                          # 本机一次性工具，仅 README 提交 Git
 ├── ecosystem.config.js                     # PM2 进程配置
 └── package.json                            # 命令入口
 ```

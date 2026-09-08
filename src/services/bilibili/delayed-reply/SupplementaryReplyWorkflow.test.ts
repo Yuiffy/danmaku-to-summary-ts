@@ -140,4 +140,53 @@ describe('supplementary publication persistence', () => {
     expect(ports.liveContentSummaryComposer.compose(reloaded.restored, 'reply', 'supplemental').attached).toBe(false);
     expect(publish).toHaveBeenCalledTimes(1);
   });
+
+  it('persists the parent before publishing and never repeats the child after restart', async () => {
+    task.liveContentSummaryPath = 'summary.json';
+    task.replyId = '12345678901234567890';
+    task.supplementalReplyId = 'unrelated-image-comment';
+    jest.spyOn(ports.liveContentSummaryComposer, 'read').mockReturnValue({ kind: 'success', text: 'Live summary' });
+    publish.mockImplementation(async request => {
+      const { restored } = await restart();
+      expect(restored.liveContentSummaryState).toBe('publishing');
+      expect(restored.liveContentSummaryParentReplyId).toBe(task.replyId);
+      expect(request).toEqual({ dynamicId: 'dynamic', content: 'Live summary', replyToId: task.replyId });
+      return { replyId: 'child-comment', replyTime: Date.now() };
+    });
+    expect(await new SupplementaryReplyWorkflow(ports).tryPublishLiveContentSummarySeparately(task)).toBe('done');
+    const { workflow, restored } = await restart();
+    expect(restored.liveContentSummaryState).toBe('published_thread');
+    expect(restored.liveContentSummaryAttachedTo).toBe('main_reply');
+    expect(restored.liveContentSummaryReplyId).toBe('child-comment');
+    await workflow.tryPublishLiveContentSummarySeparately(restored);
+    expect(publish).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['replyId', 'repliedDynamicId'] as const)('waits without falling back to a top-level comment when %s is absent', async field => {
+    task.liveContentSummaryPath = 'summary.json';
+    task[field] = undefined;
+    expect(await new SupplementaryReplyWorkflow(ports).tryPublishLiveContentSummarySeparately(task)).toBe('waiting');
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('retries a failed child using the same parent without publishing another main comment', async () => {
+    task.liveContentSummaryPath = 'summary.json';
+    jest.spyOn(ports.liveContentSummaryComposer, 'read').mockReturnValue({ kind: 'success', text: 'Live summary' });
+    publish.mockRejectedValueOnce(new Error('temporary rejection'));
+    expect(await new SupplementaryReplyWorkflow(ports).tryPublishLiveContentSummarySeparately(task)).toBe('retry');
+    const { workflow, restored } = await restart();
+    expect(restored.liveContentSummaryParentReplyId).toBe('main');
+    expect(await workflow.tryPublishLiveContentSummarySeparately(restored)).toBe('done');
+    expect(publish).toHaveBeenCalledTimes(2);
+    for (const [request] of publish.mock.calls) expect(request.replyToId).toBe('main');
+  });
+
+  it('leaves a historical top-level summary delivered rather than reposting it as a child', async () => {
+    task.liveContentSummaryPath = 'summary.json';
+    task.liveContentSummaryState = 'published_separate';
+    task.liveContentSummaryReplyId = 'historical-comment';
+    expect(await new SupplementaryReplyWorkflow(ports).tryPublishLiveContentSummarySeparately(task)).toBe('done');
+    expect(publish).not.toHaveBeenCalled();
+    expect(task.liveContentSummaryState).toBe('published_separate');
+  });
 });

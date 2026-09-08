@@ -5,6 +5,7 @@ const { isTopicEditorialEnabled, buildTopicEditorialGroups, buildTopicClipWindow
 const { planTopicEventGroup, generateTopicEventCopy } = require('./clipping/topic_editorial_runner');
 const { runTopicShadowReview, topicReviewLines } = require('./clipping/topic_review_runner');
 const { buildPreflightEvidence } = require('./clipping/preflight_evidence');
+const { ensureCandidateDraft } = require('./clipping/candidate_subtitles');
 const { isPreflightEnabled, prepareTopicGroup, preflightSelections, sourceFileHash, persistPreflightPlan } = require('./clipping/preflight_runner');
 const { buildTopicDedupeFailures, isPendingTopicResult, buildPendingTopicBlock,
     buildTopicDedupeDetailLines } = require('./clipping/topic_failure_details');
@@ -1594,7 +1595,7 @@ function buildTopicNotifyMarkdown(results = [], metadata = {}) {
         .join('\n');
     const failureSummary = failures.map(failure => buildTopicFailureBlock(failure, results)).join('\n');
     const incomplete = failures.length > 0 || pendingResults.length > 0;
-    const title = incomplete ? '## 话题切片提醒（存在失败）' : '## 话题切片提醒';
+    const title = failures.length ? '## 话题切片提醒（存在失败）' : pendingResults.length ? '## 话题切片提醒（含待切候选）' : '## 话题切片提醒';
     const outcome = incomplete
         ? `本次候选 **${results.length}** 段,成功生成 **${successfulResults.length}** 段${pendingResults.length ? `,待预审 **${pendingResults.length}** 段` : ''}${failures.length ? `,另有 **${failures.length}** 条失败或降级记录` : ''}。`
         : `找到其中 **${results.length}** 段提到岁己的地方,已分别切为切片。`;
@@ -1611,10 +1612,11 @@ function buildTopicNotifyMarkdown(results = [], metadata = {}) {
         `- 切片目录: ${toFwdSlash(metadata.outputRoot || '未知')}`,
         metadata.reviewPath ? `- 审核文件: ${toFwdSlash(metadata.reviewPath)}` : null,
         metadata.uploadRegistry?.clipIds?.length ? `- 投稿短id: ${metadata.uploadRegistry.clipIds.join(',')}` : null,
+        metadata.candidateIds?.length ? `- 待切候选ID: ${metadata.candidateIds.join(',')}` : null,
         '',
         '成功切片:',
         windowSummary || '- 无',
-        pendingResults.length ? '待预审候选（未生成视频、未登记上传ID）:' : null,
+        pendingResults.length ? '待预审候选（未生成视频，可按候选ID下令切片）:' : null,
         ...pendingResults.map(buildPendingTopicBlock),
         failures.length > 0 ? '' : null,
         failures.length > 0 ? '失败与降级详情:' : null,
@@ -1667,6 +1669,7 @@ function buildTopicReviewMarkdown(results = [], metadata = {}) {
         `输出目录: ${metadata.outputRoot || ''}`,
         metadata.planPath ? `事件编排记录: ${metadata.planPath}` : null,
         uploadIds.length ? `上传短ID: ${uploadIds.join(',')}` : null,
+        metadata.candidateIds?.length ? `待切候选ID: ${metadata.candidateIds.join(',')}` : null,
         '',
         '## 切片列表',
         ''
@@ -1688,7 +1691,7 @@ function buildTopicReviewMarkdown(results = [], metadata = {}) {
             const grounding = buildGroundingReviewLine(result.editorial.copyGrounding);
             if (grounding) lines.push(grounding);
         }
-        lines.push(...topicReviewLines(result.aiReview));
+        lines.push(...topicReviewLines(result.aiReview, result.humanReview));
     });
     if (uploadableResults.length === 0) {
         lines.push('- 无可上传切片');
@@ -1697,8 +1700,10 @@ function buildTopicReviewMarkdown(results = [], metadata = {}) {
         lines.push('', '## 仅本地结果', '');
         localOnlyResults.forEach(result => {
             lines.push(`- ${result.copy?.title || '话题切片'} | ${formatClock(result.window?.start || 0)} | ${result.output?.mediaPath || ''}`);
+            if (result.candidateId) lines.push(`   候选ID: ${result.candidateId} | ${result.window?.index || ''}`);
+            if (result.candidateSubtitles?.path) lines.push(`   待定字幕: ${result.candidateSubtitles.path}`);
             if (result.status === 'pending_preflight') lines.push(`   待烧录前审核: ${result.output?.metadataPath || ''}`);
-            lines.push(...topicReviewLines(result.aiReview));
+            lines.push(...topicReviewLines(result.aiReview, result.humanReview));
         });
     }
     if (failures.length > 0) {
@@ -2103,7 +2108,8 @@ async function generateTopicClips(options = {}) {
                 const metadata = createMetadata();
                 metadata.status = 'pending_preflight';
                 metadata.uploadReady = false;
-                metadata.output.mediaPath = metadata.output.srtPath = metadata.output.copyPath = null;
+                metadata.output.mediaPath = metadata.output.copyPath = null;
+                ensureCandidateDraft(metadata, metadataPath, editorialEvidence, config);
                 fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2), 'utf8');
                 results.push(metadata);
                 continue;
@@ -2259,19 +2265,24 @@ async function generateTopicClips(options = {}) {
     }
 
     const uploadableResults = results.filter(result => result?.uploadReady && !result?.output?.mediaError);
+    const registrableResults = results.filter(result => uploadableResults.includes(result) || isPendingTopicResult(result));
     let uploadRegistry = null;
-    if (uploadableResults.length > 0) {
+    if (registrableResults.length > 0) {
         try {
-            uploadRegistry = await Promise.resolve(reviewRegistrar(reviewPath, uploadableResults, reviewMetadata));
-            if (!Array.isArray(uploadRegistry?.clipIds)) {
+            const registered = await Promise.resolve(reviewRegistrar(reviewPath, registrableResults, reviewMetadata));
+            if (!Array.isArray(registered?.clipIds)) {
                 throw new Error('上传注册未返回切片短 ID');
             }
-            if (uploadRegistry.clipIds.length !== uploadableResults.length) {
-                throw new Error(`上传注册返回 ${uploadRegistry.clipIds.length} 个短 ID,预期 ${uploadableResults.length} 个`);
+            if (registered.clipIds.length !== registrableResults.length) {
+                throw new Error(`上传注册返回 ${registered.clipIds.length} 个短 ID,预期 ${registrableResults.length} 个`);
             }
-            uploadableResults.forEach((result, index) => {
-                result.uploadId = uploadRegistry.clipIds[index];
+            registrableResults.forEach((result, index) => {
+                if (isPendingTopicResult(result)) result.candidateId = registered.clipIds[index];
+                else result.uploadId = registered.clipIds[index];
+                fs.writeFileSync(result.output.metadataPath, JSON.stringify(result, null, 2), 'utf8');
             });
+            uploadRegistry = { ...registered, clipIds: uploadableResults.map(result => result.uploadId) };
+            reviewMetadata.candidateIds = registrableResults.filter(isPendingTopicResult).map(result => result.candidateId);
             reviewMetadata.uploadRegistry = uploadRegistry;
         } catch (error) {
             failures.push({ stage: 'registry', error: error.message });

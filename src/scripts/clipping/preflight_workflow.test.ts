@@ -96,9 +96,17 @@ describe('pre-render topic workflow', () => {
     const results = await job.promise;
     expect(results.length).toBeGreaterThan(0);
     expect(results.every(result => result.status === 'pending_preflight' && !result.uploadReady && !result.output.mediaPath)).toBe(true);
+    expect(results.every(result => fs.existsSync(result.candidateSubtitles.path))).toBe(true);
+    expect(results.every(result => result.output.srtPath === result.candidateSubtitles.path && !result.candidateSubtitles.approval)).toBe(true);
     expect(job.mediaGenerator).not.toHaveBeenCalled();
     expect(job.coverGenerator).not.toHaveBeenCalled();
-    expect(job.register).not.toHaveBeenCalled();
+    expect(job.register).toHaveBeenCalledTimes(1);
+    expect(results.map(result => result.candidateId)).toEqual(results.map((_result, index) => 700 + index));
+    expect(results.every(result => !result.uploadId)).toBe(true);
+    const review = fs.readFileSync(path.join(dir, 'topic_clips/REVIEW.md'), 'utf8');
+    expect(review).toContain('候选ID: 700');
+    expect(review).not.toContain('上传短ID:');
+    expect(JSON.parse(fs.readFileSync(results[0].output.metadataPath, 'utf8')).candidateId).toBe(700);
   });
 
   test('retries only selected planning groups without regenerating successful groups', async () => {

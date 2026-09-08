@@ -7,7 +7,7 @@ it overwrote current configuration and startup scripts with obsolete defaults.
 Use the maintained documentation:
 
 - [Architecture and language policy](../../docs/architecture.md)
-- [September structure review](../../docs/structure-review-2026-09.md)
+- [Runtime commands and endpoints](../../docs/runtime-notes.md)
 - [Project commands and setup](../../README.md)
 
 For development, run `npm run verify:all`. Its compiled workflow tests emit to

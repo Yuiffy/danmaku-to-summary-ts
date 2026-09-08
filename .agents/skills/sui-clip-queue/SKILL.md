@@ -18,6 +18,26 @@ Use this skill for the whole path from a selected timestamp to a reviewable, upl
 
 ## Workflow
 
+### Numeric candidate corrections
+
+For an existing numeric candidate ID, use the upload registry directly; do not
+create another manual task or run ASR/FFmpeg yourself. Candidate SRTs exist before
+the pending stage (older candidates are prepared lazily):
+
+```powershell
+python src/scripts/clip_upload_registry.py subtitles --id 123
+python src/scripts/clip_upload_registry.py correct --id 123 --from "zzz" --to "睡睡睡" --enqueue --note "用户确认改词并要求投稿"
+```
+
+Use the actual ID and exact user-confirmed words. Omit `--enqueue` unless the user
+requested upload. `--cue 7` limits a correction to one local subtitle cue; otherwise
+all literal matches in that candidate are replaced. The same word in its public
+copy is synchronized. A missing match fails without enqueueing. Do not edit the
+original recording SRT, approval hashes or queue JSON. The command returns after
+queueing; the existing upload worker burns subtitles, makes the cover, audits and
+uploads using the same ID. Confirm the worker is online and report queued; do not
+wait or poll repeatedly. See `docs/topic-event-editorial.md` for the full recipe.
+
 ### 1. Find and verify the source
 
 - Use this search order for Sui recordings:

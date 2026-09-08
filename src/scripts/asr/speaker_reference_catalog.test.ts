@@ -5,6 +5,16 @@ const path = require('path');
 const catalog = require('./speaker_reference_catalog');
 
 describe('speaker_reference_catalog', () => {
+  test('preserves explicit exemplar metadata without enabling it on other references', () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'speaker-exemplars-'));
+    try {
+      const audio = path.join(tempDir, 'voice.wav');
+      const manifest = path.join(tempDir, 'manifest.json');
+      fs.writeFileSync(audio, 'fixture');
+      fs.writeFileSync(manifest, JSON.stringify([{ speaker: 'Guest', audio_path: audio, preserve_exemplars: true }]));
+      expect(catalog.buildSpeakerReferencesForParticipants([{ displayName: 'Guest' }], {}, manifest)[0].preserve_exemplars).toBe(true);
+    } finally { fs.rmSync(tempDir, { recursive: true, force: true }); }
+  });
   test('returns every supported state reference for the same speaker', () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'speaker-reference-catalog-'));
     const calmPath = path.join(tempDir, 'shiori-calm.wav');

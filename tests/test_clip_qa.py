@@ -46,6 +46,52 @@ class ClipQualityGateTest(unittest.TestCase):
         self.assertTrue(errors)
         self.assertIn('public copy', errors[0])
 
+    def test_actor_review_is_required_without_optional_image_qa(self):
+        self.metadata.update(qaRequired=False, attributionRequired=True, window={'start': 0, 'end': 10},
+            attributionReview={'version': 1, 'status': 'passed',
+                'artifactWindow': {'start': 0, 'end': 10},
+                'artifactDigests': {key: self.metadata['qaResult']['digests'][key] for key in ('video', 'subtitles')},
+                'artifactCopyDigest': self.metadata['qaResult']['digests']['copy']})
+        validate_metadata_qa(self.metadata)
+        self.file.write_text(json.dumps(self.metadata), encoding='utf-8')
+        self.assertTrue(load_upload_manifest(self.file)[0]['attributionRequired'])
+        clip = {'metadataPath': str(self.file), 'attributionRequired': True,
+                **self.metadata['copy'], **self.metadata['output']}
+        self.assertEqual(validate_registry_qa([[clip]]), [])
+        clip['title'] = 'Changed actor'
+        self.assertTrue(validate_registry_qa([[clip]]))
+        self.metadata['copy']['title'] = 'Changed actor'
+        with self.assertRaisesRegex(ValueError, 'attribution'):
+            validate_metadata_qa(self.metadata)
+        self.file.unlink()
+        self.assertTrue(validate_registry_qa([[clip]]))
+
+    def test_incomplete_or_removed_actor_review_cannot_be_imported(self):
+        self.metadata.update(qaRequired=False, attributionRequired=True,
+            attributionReview={'version': 1, 'status': 'needs_review'})
+        with self.assertRaisesRegex(ValueError, 'attribution'):
+            validate_metadata_qa(self.metadata)
+        self.metadata.pop('attributionRequired')
+        self.file.write_text(json.dumps(self.metadata), encoding='utf-8')
+        self.assertTrue(validate_registry_qa([[{'metadataPath': str(self.file), 'attributionRequired': True}]]))
+
+    def test_actor_review_binds_video_subtitles_and_source_window_not_just_copy(self):
+        self.metadata.update(qaRequired=False, attributionRequired=True, window={'start': 10, 'end': 20},
+            attributionReview={'version': 1, 'status': 'passed', 'artifactWindow': {'start': 10, 'end': 20},
+                'artifactCopyDigest': self.metadata['qaResult']['digests']['copy'],
+                'artifactDigests': {key: self.metadata['qaResult']['digests'][key] for key in ('video', 'subtitles')}})
+        validate_metadata_qa(self.metadata)
+        for field in ('mediaPath', 'srtPath'):
+            file = Path(self.metadata['output'][field])
+            original = file.read_bytes()
+            file.write_bytes(b'different clip')
+            with self.assertRaisesRegex(ValueError, 'attribution'):
+                validate_metadata_qa(self.metadata)
+            file.write_bytes(original)
+        self.metadata['window']['end'] = 25
+        with self.assertRaisesRegex(ValueError, 'attribution'):
+            validate_metadata_qa(self.metadata)
+
     def test_legacy_recall_event_used_as_title_requires_repair(self):
         event = 'She recounts a long incident that was never written as a title.'
         metadata = {'mode': 'own_stream_fun_review', 'copy': {'title': event},

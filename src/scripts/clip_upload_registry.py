@@ -22,8 +22,10 @@ import requests
 
 try:
     from .clip_upload_manifest import load_upload_manifest, validate_registry_qa
+    from . import clip_candidate_queue
 except ImportError:
     from clip_upload_manifest import load_upload_manifest, validate_registry_qa
+    import clip_candidate_queue
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_DIR = PROJECT_ROOT / "data" / "runtime"
@@ -832,129 +834,24 @@ def import_review(args: argparse.Namespace) -> int:
 
 def import_json(args: argparse.Namespace) -> int:
     """Import generated clip metadata without parsing the human review file."""
-    manifest_path = Path(args.manifest).expanduser().resolve()
-    if not manifest_path.exists():
-        print(f"[ERROR] upload manifest not found: {manifest_path}", file=sys.stderr)
-        return 2
-
     try:
-        clips = load_upload_manifest(
-            manifest_path,
-            default_source=args.source or "",
-            default_tags=parse_tags(args.tags),
-            default_prefix=args.prefix or "",
-            default_tid=int(args.tid or 21),
-            review_path=args.review or "",
-        )
-    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
-        print(f"[ERROR] cannot read upload JSON {manifest_path}: {exc}", file=sys.stderr)
-        return 2
-    if not clips:
-        print(f"[ERROR] no clips found in upload JSON: {manifest_path}", file=sys.stderr)
-        return 2
+        from .clip_upload_json import import_json as run_import
+    except ImportError:
+        from clip_upload_json import import_json as run_import
+    handle = acquire_queue_mutation_lock()
+    try:
+        return run_import(args, sys.modules[__name__])
+    finally:
+        release_queue_mutation_lock(handle)
 
-    first = clips[0]
-    source = str(args.source or first.get("source") or "").strip()
-    tags = parse_tags(args.tags) if args.tags else parse_tags(first.get("tags") or [])
-    prefix = str(args.prefix or first.get("prefix") or "").strip()
-    tid = int(args.tid or first.get("tid") or 21)
-    state_path = (
-        Path(args.state).expanduser().resolve()
-        if args.state
-        else manifest_path.parent / "upload_state.json"
-    )
-    review_value = args.review or first.get("reviewPath") or ""
-    review_str = normalize_path(review_value) if review_value else ""
-    manifest_str = normalize_path(manifest_path)
-    state_str = normalize_path(state_path)
-    key = batch_key(manifest_str, source, prefix, tags, tid, state_str)
-    batch_id = args.batch_id or key
-    registry = load_json(REGISTRY_PATH, default_registry())
-    normalize_registry_media_paths(registry)
 
-    def find_existing_id(clip: Dict[str, Any]) -> Optional[int]:
-        metadata_path = clip.get("metadataPath") or ""
-        review_index = int(clip.get("reviewIndex") or clip.get("idx") or 0)
-        media_path = clip.get("mediaPath") or clip.get("path") or ""
-        for existing_id, record in registry.get("clips", {}).items():
-            if not isinstance(record, dict):
-                continue
-            if metadata_path and paths_match(record.get("metadataPath") or "", metadata_path):
-                return int(existing_id)
-            if (
-                record.get("manifestPath") == manifest_str
-                and int(record.get("reviewIndex") or 0) == review_index
-                and paths_match(record.get("mediaPath") or "", media_path)
-            ):
-                return int(existing_id)
-            if (
-                review_str
-                and record.get("reviewPath") == review_str
-                and int(record.get("reviewIndex") or 0) == review_index
-                and paths_match(record.get("mediaPath") or "", media_path)
-            ):
-                return int(existing_id)
-        return None
+def cut_candidates(args: argparse.Namespace) -> int:
+    """Render selected held candidates, keeping their reserved upload IDs."""
+    return clip_candidate_queue.cut_candidates(args, sys.modules[__name__])
 
-    ids: List[int] = []
-    for clip in clips:
-        clip_id = find_existing_id(clip)
-        record_data = {
-            "batchId": batch_id,
-            "manifestPath": manifest_str,
-            "metadataPath": normalize_path(clip["metadataPath"]) if clip.get("metadataPath") else "",
-            "reviewPath": review_str or clip.get("reviewPath") or "",
-            "statePath": state_str,
-            "source": clip.get("source") or source,
-            "prefix": clip.get("prefix") or prefix,
-            "tags": parse_tags(clip.get("tags") or tags),
-            "tid": int(clip.get("tid") or tid),
-            "title": clip.get("title") or "",
-            "start": clip.get("start") or "00:00:00",
-            "duration": clip.get("duration") or "00:00:00",
-            "mediaPath": clip.get("mediaPath") or clip.get("path") or "",
-            "coverPath": clip.get("coverPath") or clip.get("cover") or "",
-            "selectionSource": clip.get("selectionSource") or "",
-            "roomId": clip.get("roomId") or "",
-            "streamerName": clip.get("streamerName") or "",
-            "description": clip.get("description") or "",
-            "reviewIndex": int(clip.get("reviewIndex") or clip.get("idx") or len(ids) + 1),
-            "sourceFormat": "json", "qaRequired": bool(clip.get("qaRequired")),
-        }
-        if clip_id is None:
-            clip_id = int(registry.get("nextClipId") or 1)
-            registry["nextClipId"] = clip_id + 1
-            registry.setdefault("clips", {})[str(clip_id)] = {
-                "id": clip_id,
-                "createdAt": now_iso(),
-                "updatedAt": now_iso(),
-                "status": "review",
-                **record_data,
-            }
-        else:
-            record = registry["clips"][str(clip_id)]
-            record.update({"updatedAt": now_iso(), **record_data})
-        ids.append(clip_id)
 
-    registry.setdefault("batches", {})[batch_id] = {
-        "id": batch_id,
-        "label": args.label or source,
-        "createdAt": registry.get("batches", {}).get(batch_id, {}).get("createdAt") or now_iso(),
-        "updatedAt": now_iso(),
-        "manifestPath": manifest_str,
-        "reviewPath": review_str or first.get("reviewPath") or "",
-        "statePath": state_str,
-        "source": source,
-        "prefix": prefix,
-        "tags": tags,
-        "tid": tid,
-        "clipIds": ids,
-        "sourceFormat": "json",
-    }
-    save_json(REGISTRY_PATH, registry)
-    print(f"[OK] imported {len(ids)} clips from {manifest_path}")
-    print("IDs:", ",".join(str(i) for i in ids))
-    return 0
+def edit_candidate(args: argparse.Namespace) -> int:
+    return clip_candidate_queue.edit_candidate(args, sys.modules[__name__])
 
 
 def clip_status_from_state(clip: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -1075,7 +972,8 @@ def enqueue(args: argparse.Namespace) -> int:
     if args.dry_run:
         for clip_id in ids:
             clip = registry["clips"][str(clip_id)]
-            print(f"{clip_id}: #{clip.get('reviewIndex')} {clip.get('prefix', '')}{clip.get('title', '')}")
+            action = "cut_then_upload" if clip.get("pendingCut") else "upload"
+            print(f"{clip_id}: [{action}] #{clip.get('reviewIndex')} {clip.get('prefix', '')}{clip.get('title', '')}")
         return 0
 
     with queue_transaction() as queue:
@@ -1104,6 +1002,18 @@ def enqueue(args: argparse.Namespace) -> int:
             )
             return 2
 
+        active = clip_candidate_queue.active_ids(queue)
+        ids = [clip_id for clip_id in ids if clip_id not in active]
+        if not ids:
+            print("[OK] requested IDs are already queued; no duplicate job created")
+            return 0
+        try:
+            snapshots = clip_candidate_queue.approve_for_queue(sys.modules[__name__], registry, ids, args.note,
+                getattr(args, "expected_candidate_drafts", None))
+        except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+            print(f"[ERROR] {error}", file=sys.stderr)
+            return 2
+
         base_job_id = f"upload-{int(time.time())}"
         existing_job_ids = {
             str(existing.get("id") or "") for existing in queue.get("jobs", [])
@@ -1119,6 +1029,7 @@ def enqueue(args: argparse.Namespace) -> int:
             "updatedAt": now_iso(),
             "status": "pending",
             "clipIds": ids,
+            "candidateSubtitles": snapshots,
             "delay": int(args.delay),
             "rateLimitWait": int(args.rate_limit_wait),
             "rateLimitRetries": int(args.rate_limit_retries),
@@ -2130,6 +2041,7 @@ def validate_groups(groups: List[List[Dict[str, Any]]]) -> List[str]:
     """
     errors: List[str] = validate_registry_qa(groups)
     for group in groups:
+        errors.extend(f"candidate {clip.get('id')} needs cutting first" for clip in group if clip.get("pendingCut"))
         json_clips = [c for c in group if c.get("manifestPath")]
         legacy_clips = [c for c in group if not c.get("manifestPath")]
         if json_clips and not legacy_clips:
@@ -2327,6 +2239,11 @@ def run_one_job() -> bool:
         )
         return True
 
+    prepared = clip_candidate_queue.render_for_job(sys.modules[__name__], registry, queue, job, pending_ids)
+    if prepared is None:
+        return True
+    registry, queue = prepared
+    job = find_queue_job(queue, job_id) or job
     groups = grouped_clips(registry, pending_ids)
     validation_errors = validate_groups(groups)
     if validation_errors:
@@ -2339,7 +2256,7 @@ def run_one_job() -> bool:
         print(f"[worker] invalid upload job: {reason}", file=sys.stderr)
         return True
 
-    mark_job(job, "running", startedAt=now_iso())
+    mark_job(job, "running", phase="uploading", startedAt=now_iso())
     for clip_id in pending_ids:
         registry["clips"][str(clip_id)]["status"] = "uploading"
         registry["clips"][str(clip_id)]["updatedAt"] = now_iso()
@@ -2549,7 +2466,28 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("ids")
     p.set_defaults(func=show_clips)
 
-    p = sub.add_parser("enqueue", help="Queue registered clips for upload by short ids")
+    p = sub.add_parser("subtitles", help="Show or prepare the editable candidate SRT by numeric ID")
+    p.add_argument("--id", required=True, type=int)
+    p.set_defaults(func=edit_candidate)
+
+    p = sub.add_parser("correct", help="Correct a user's literal word in one candidate; optionally queue rendering and upload")
+    p.add_argument("--id", required=True, type=int)
+    p.add_argument("--from", dest="from_text", required=True)
+    p.add_argument("--to", dest="to_text", required=True)
+    p.add_argument("--cue", type=int, default=None)
+    p.add_argument("--note", default="")
+    p.add_argument("--enqueue", action="store_true")
+    p.set_defaults(func=edit_candidate)
+
+    p = sub.add_parser("cut", help="Render held topic candidates by their reserved short IDs; never auto-upload")
+    p.add_argument("--ids", required=True)
+    p.add_argument("--review-note", required=True)
+    p.add_argument("--title", default=None)
+    p.add_argument("--description", default=None)
+    p.add_argument("--cover-text", default=None)
+    p.set_defaults(func=cut_candidates)
+
+    p = sub.add_parser("enqueue", help="Queue upload by ID; the background worker renders approved candidates first")
     p.add_argument("--ids", required=True)
     p.add_argument("--delay", type=int, default=DEFAULT_DELAY)
     p.add_argument("--rate-limit-wait", type=int, default=DEFAULT_RATE_LIMIT_WAIT)

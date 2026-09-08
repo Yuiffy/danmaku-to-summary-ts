@@ -2,6 +2,10 @@ const { buildFallbackTitle, normalizeAiClips, isRerankResponseValid, clipsConfli
 const { requestSelectionText, validSelectionResponse } = require('./clipping/selection_request');
 const { buildRerankEvidence } = require('./clipping/rerank_evidence');
 const { buildPersonEvidenceContext } = require('./clipping/person_evidence');
+const { attributionEnabled, loadRecordingParticipants, buildParticipantContext, participantPromptLines } = require('./clipping/participant_context');
+const { reviewClipActors } = require('./clipping/actor_review_runner');
+const { finalizeActorReview } = require('./clipping/actor_review');
+const { bindActorArtifacts } = require('./clipping/actor_artifact_binding');
 const {
     timeStringToSeconds,
     clamp,
@@ -655,6 +659,7 @@ async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, confi
         const promptPrefix = [
             `你是直播切片编辑。下面是一段${hostName}自己直播的字幕和弹幕摘要。`,
             OWN_STREAM_SOURCE_ATTRIBUTION_RULE,
+            ...participantPromptLines(parsed.participantContext),
             `请直接找这个分段里所有可能值得本地 review 的切片：有趣、弹幕很多、弹幕很在意、体现${hostName}想法与众不同、${hostName}傻事，或弹幕觉得她傻/特别/有趣/可爱。`,
             '不要只看关键词；弹幕密度、弹幕反应和上下文都要考虑。没有独立看点的片段降低优先级，但不要按内容类型一刀切排除。',
             ...buildSelectionPolicyPromptLines(config.selectionPolicy),
@@ -775,6 +780,7 @@ async function planClipsWithAIFullContext(
     const taskSuffix = [
         `你是资深直播切片主编。共享事实输入提供了${hostName}本场直播的全量带时间戳字幕和全量弹幕。`,
         OWN_STREAM_SOURCE_ATTRIBUTION_RULE,
+        ...participantPromptLines(parsed.participantContext),
         `请通读整场，从全局比较后选出最多 ${maxClips} 个最有趣、最适合独立发布的片段。数量不必凑满，质量优先。`,
         '模型必须同时评估内容质量和弹幕热度：先根据字幕判断事件是否完整、有趣、适合独立发布，再结合30秒热度表、反应弹幕数、重复刷屏和全量弹幕判断观众反应强度。',
         '热度是重要证据但不是唯一标准：高热度但没有明确内容看点的片段不要选；低热度但故事完整、观点独特、反差强或特别可爱的内容仍可选。',
@@ -955,6 +961,7 @@ async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config,
     const promptPrefix = [
         `你是直播切片主编。下面是${hostName}本场直播经过分块模型、字幕、弹幕和情绪信号共同召回并去重后的完整候选池。`,
         OWN_STREAM_SOURCE_ATTRIBUTION_RULE,
+        ...participantPromptLines(parsed.participantContext),
         `请一次性全局比较所有候选，输出最多 ${maxClips} 个适合本地 review、能够独立发布的最终片段。${maxClips} 是硬上限而不是数量目标，有多少合格题材就返回多少。`,
         ...(config.avoidOverlappingClips !== false ? [
             '所有输出片段必须互不重叠；同一话题可以有多个片段，只要各自独立成立且时间不重叠。',
@@ -1270,6 +1277,8 @@ function buildReviewMarkdown(results, metadata) {
             lines.push(`   上传ID: ${uploadId}`);
         }
         if (result.qaRequired) lines.push(`   AI质检: ${result.qaResult?.status || 'pending'}`);
+        if (result.precisionExperiment?.selected) lines.push('   模式: 精切实验模式');
+        if (result.attributionRequired) lines.push(`   人物动作复核: ${result.attributionReview?.status || 'pending'}`);
         if (result.publicCopyPending) lines.push('   发布文案待生成，禁止上传；事件摘要仅供选材审核。');
         if (result.output.coverPath) {
             lines.push(`   封面: ${result.output.coverPath}`);
@@ -1303,6 +1312,8 @@ function buildPlanReviewMarkdown(clips, metadata) {
         lines.push(`   来源: ${sourceLabel}`);
         const groundingLine = buildGroundingReviewLine(clip.grounding);
         if (groundingLine) lines.push(groundingLine);
+        if (clip.attributionRequired) lines.push(`   人物动作复核: ${clip.attributionReview?.status || 'pending'}`);
+        if (clip.precisionExperiment?.selected) lines.push('   模式: 精切实验模式');
     });
     lines.push('');
     return `${lines.join('\n')}\n`;
@@ -1324,7 +1335,7 @@ function buildNotifyClipLines(results, metadata = {}) {
             : (Number.isSafeInteger(id) && id > 0 ? `ID${id}` : '未登记ID');
         const window = result.window || result;
         const title = result.copy?.title ?? result.title;
-        return `${index + 1}. ${idLabel} ${title} | ${formatClock(window.start)} | ${formatClock(window.duration)}${formatRecommendationScore(result)}${result.publicCopyPending ? ' | 发布文案待生成，禁止上传' : ''}`;
+        return `${index + 1}. ${idLabel} ${title} | ${formatClock(window.start)} | ${formatClock(window.duration)}${formatRecommendationScore(result)}${result.precisionExperiment?.selected ? ' | 精切' : ''}${result.publicCopyPending ? ' | 发布文案待生成，禁止上传' : ''}`;
     });
 }
 
@@ -1385,7 +1396,7 @@ function buildOwnUploadSettings(metadata, copy = {}) {
 }
 
 function isOwnClipUploadEligible(result) {
-    return !result.publicCopyPending && (!result.qaRequired || result.uploadReady);
+    return !result.publicCopyPending && (!(result.qaRequired || result.attributionRequired) || result.uploadReady);
 }
 
 function writeOwnUploadManifest(manifestPath, reviewPath, results, metadata) {
@@ -1456,12 +1467,16 @@ async function notifyResults(results, metadata, rootConfig) {
     }
     const webhookUrl = String(rootConfig.wechatWork?.webhookUrl || '').trim();
     if (!webhookUrl || results.length === 0) return false;
-    return sendWeChatMarkdown(webhookUrl, buildNotifyMarkdown(results, metadata));
+    const sent = await sendWeChatMarkdown(webhookUrl, buildNotifyMarkdown(results, metadata));
+    if (!results.some(result => result.precisionExperiment?.selected)) return sent;
+    const details = require('./workflow-runtime').loadWorkflow('clipping/experiment').experimentDetailMarkdown(results, metadata);
+    return details ? (await sendWeChatMarkdown(webhookUrl, details)) && sent : sent;
 }
 
 async function generateOwnStreamClipJob({
     clip,
     evidenceReview,
+    subtitleEvidence,
     index,
     parsed,
     danmaku,
@@ -1602,6 +1617,7 @@ async function generateOwnStreamClipJob({
         recommendationScore: Number.isFinite(Number(clip.score)) ? Number(clip.score) : null,
         window,
         candidate: clip.base || null,
+        ...(clip.precisionExperiment ? { precisionExperiment: clip.precisionExperiment } : {}),
         grounding: evidenceReview(clip, copy) || null,
         copy,
         ...(clip.publicCopyPending ? { publicCopyPending: true } : {}),
@@ -1637,6 +1653,8 @@ async function generateOwnStreamClipJob({
             elapsedMs: Math.round(Number(process.hrtime.bigint() - processingStartedNs) / 1e6),
             resource: summarizeResourcePeaks(metadata.processing.resourcePeaks) };
     }
+    metadata = finalizeActorReview(metadata, clip, copy, subtitleEvidence);
+    metadata = await bindActorArtifacts(metadata);
     fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2), 'utf8');
     console.log(`${index + 1}. ${metadata.copy.title} ${formatClock(window.start)} ${formatClock(metadata.window.duration)} ${metadata.output.mediaPath}`);
     return metadata;
@@ -1688,6 +1706,14 @@ async function generateOwnStreamClips(options = {}) {
     });
     const clipLabel = getOwnStreamClipLabel(rootConfig, info.roomId, streamerName);
     const participantMetadata = topicClipper.buildParticipantMetadata(topicClipper.loadAsrSpeakerSidecarForMediaPath(options.srtPath || options.mediaPath));
+    if (attributionEnabled(config, info.roomId)) {
+        const provenance = require('./asr/evidence_sidecar').loadAsrEvidence(options.srtPath, parsed.segments);
+        parsed.segments = provenance.segments;
+        parsed.asrEvidenceStatus = provenance.status;
+        const roster = loadRecordingParticipants(options.srtPath, options.mediaPath, info.roomId,
+            topicClipper.loadAsrSpeakerSidecarForMediaPath(options.srtPath));
+        parsed.participantContext = buildParticipantContext(rootConfig, info, parsed, danmaku, roster);
+    }
     const outputRoot = resolveClipOutputRoot(options.mediaPath, config);
     fs.mkdirSync(outputRoot, { recursive: true });
     info.selectionCacheDirectory = options.selectionCacheDirectory || path.join(outputRoot, '.selection-cache');
@@ -1698,7 +1724,8 @@ async function generateOwnStreamClips(options = {}) {
         recordedAt: info.recordedAt,
         outputRoot,
         sourceFileName: info.fileName,
-        participantInfo: participantMetadata
+        participantInfo: participantMetadata,
+        ...(parsed.participantContext ? { participantContext: parsed.participantContext } : {})
     };
     if (emotionAnalysis.status === 'completed') {
         reviewMetadata.emotionAnalysis = {
@@ -1834,6 +1861,12 @@ async function generateOwnStreamClips(options = {}) {
             console.log(`Removed ${beforeOverlapFilter - clips.length} overlapping clip candidate(s) after subtitle boundary alignment.`);
         }
     }
+    clips = await reviewClipActors(clips, parsed, danmaku, finalEvidence, info, config, rootConfig, aiDiagnostics);
+    const experiment = await require('./clipping/enhancement_runner').selectExperimentBatch(clips, parsed, config, rootConfig, info);
+    clips = experiment.clips;
+    if (experiment.summary) reviewMetadata.precisionExperiment = experiment.summary;
+    reviewMetadata.aiStatus.requests = aiDiagnostics.requests || [];
+    if (aiDiagnostics.attribution) reviewMetadata.aiStatus.attribution = aiDiagnostics.attribution;
     const inputPlanBase = options.planPath
         ? topicClipper.sanitizeFileName(path.basename(options.planPath, path.extname(options.planPath)))
         : null;
@@ -1873,6 +1906,8 @@ async function generateOwnStreamClips(options = {}) {
             parallel: config.parallel
         },
         aiStatus: reviewMetadata.aiStatus,
+        ...(experiment.summary ? { precisionExperiment: experiment.summary } : {}),
+        ...(parsed.participantContext ? { participantContext: parsed.participantContext } : {}),
         clips
     }, null, 2), 'utf8');
     if (options.planOnly) {
@@ -1924,6 +1959,7 @@ async function generateOwnStreamClips(options = {}) {
         const profileAwareJobs = clips.map((clip, index) => resourceProfile => generateOwnStreamClipJob({
             clip,
             evidenceReview,
+            subtitleEvidence: finalEvidence,
             index,
             parsed,
             danmaku,
@@ -1950,7 +1986,7 @@ async function generateOwnStreamClips(options = {}) {
             clips
         });
         if (residualReview) reviewMetadata.residualAuditPath = residualReview.outputPath;
-        const uploadRegistry = registerReviewForUpload(reviewPath, results, reviewMetadata);
+        const uploadRegistry = options.registerUpload === false ? null : registerReviewForUpload(reviewPath, results, reviewMetadata);
         if (uploadRegistry) {
             reviewMetadata.uploadRegistry = uploadRegistry;
             fs.writeFileSync(reviewPath, buildReviewMarkdown(results, reviewMetadata), 'utf8');
@@ -1970,7 +2006,7 @@ async function generateOwnStreamClips(options = {}) {
             ? { ...mediaConfig, clipFfmpegThreads: resourceLease.profile.ffmpegThreads } : mediaConfig;
         try {
             results.push(await generateOwnStreamClipJob({ clip, evidenceReview, index, parsed, danmaku,
-                options, outputRoot, source, streamerName, info, config: activeMediaConfig, participantMetadata }));
+                options, outputRoot, source, streamerName, info, config: activeMediaConfig, participantMetadata, subtitleEvidence: finalEvidence }));
         } finally {
             resourceLease?.release();
         }
@@ -1986,7 +2022,7 @@ async function generateOwnStreamClips(options = {}) {
         clips
     });
     if (residualReview) reviewMetadata.residualAuditPath = residualReview.outputPath;
-    const uploadRegistry = registerReviewForUpload(reviewPath, results, reviewMetadata);
+    const uploadRegistry = options.registerUpload === false ? null : registerReviewForUpload(reviewPath, results, reviewMetadata);
     if (uploadRegistry) {
         reviewMetadata.uploadRegistry = uploadRegistry;
         fs.writeFileSync(reviewPath, buildReviewMarkdown(results, reviewMetadata), 'utf8');

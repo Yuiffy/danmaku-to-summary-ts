@@ -59,4 +59,4 @@ function reviewPersonEvidence(raw, clip, evidence, grounding, people) {
         personEvidence: { version: 1, scope: 'configured_names_only', identityVerified: false, checks } };
 }
 
-module.exports = { buildPersonEvidenceContext, reviewPersonEvidence };
+module.exports = { buildPersonEvidenceContext, reviewPersonEvidence, nameMatcher };

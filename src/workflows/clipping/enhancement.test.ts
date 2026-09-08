@@ -70,4 +70,13 @@ describe('independent clip QA', () => {
         expect(evidence.sourceAudience).toHaveLength(2);
         expect(evidence.retainedAudience).toEqual([{ id: 'D2', time: 45, text: 'retained', outputTime: 25 }]);
     });
+
+    test('experiment disclosure is present during final QA and included in its content binding', async () => {
+        const hooks = io();
+        const result = await enhanceArtifact(artifact, { ...input, experimentSelected: true }, hooks);
+        expect(result.copy.description).toContain('\u7cbe\u5207\u5b9e\u9a8c\u6a21\u5f0f');
+        const audit = (hooks.request as jest.Mock).mock.calls.find(call => call[0] === 'qa');
+        expect(audit[1]).toContain(result.copy.description.split('\n')[0]);
+        expect(await qaIsCurrent(result)).toBe(true);
+    });
 });

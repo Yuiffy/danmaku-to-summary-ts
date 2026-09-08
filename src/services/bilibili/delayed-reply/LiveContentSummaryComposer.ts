@@ -82,6 +82,7 @@ export class LiveContentSummaryComposer {
     return task.liveContentSummaryState === 'attached_main' ||
       task.liveContentSummaryState === 'attached_supplemental' ||
       task.liveContentSummaryState === 'published_separate' ||
+      task.liveContentSummaryState === 'published_thread' ||
       !!task.liveContentSummaryCompletedAt;
   }
 
@@ -91,6 +92,7 @@ export class LiveContentSummaryComposer {
       liveContentSummaryDeliveryMode: task.liveContentSummaryDeliveryMode,
       liveContentSummaryState: task.liveContentSummaryState,
       liveContentSummaryReplyId: task.liveContentSummaryReplyId,
+      liveContentSummaryParentReplyId: task.liveContentSummaryParentReplyId,
       liveContentSummaryAttachedTo: task.liveContentSummaryAttachedTo,
       liveContentSummaryCompletedAt: task.liveContentSummaryCompletedAt,
       liveContentSummaryRetryCount: task.liveContentSummaryRetryCount,
@@ -188,7 +190,7 @@ export class LiveContentSummaryComposer {
     const combined = `${replyText}\n\n${summary.text}`;
     if (combined.length > LiveContentSummaryComposer.MAX_COMMENT_CHARACTERS) {
       task.liveContentSummaryForceSeparate = true;
-      this.logger.info('晚安回复拼接直播梗概后超过 B 站评论上限，改为独立发布', {
+      this.logger.info('晚安回复拼接直播梗概后超过 B 站评论上限，改为晚安评论下的回复', {
         taskId: task.taskId,
         roomId: task.roomId,
         target,

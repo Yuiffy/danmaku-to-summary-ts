@@ -119,6 +119,7 @@ export class SupplementaryReplyWorkflow {
         anchorConfig?.name ? `主播: ${anchorConfig.name}` : undefined,
         `动态ID: ${task.repliedDynamicId}`,
         `梗概回复ID: ${task.liveContentSummaryReplyId}`,
+        task.liveContentSummaryParentReplyId ? `晚安主回复ID: ${task.liveContentSummaryParentReplyId}` : undefined,
         '',
         `梗概内容:\n${summaryText}`,
         '',
@@ -187,25 +188,28 @@ export class SupplementaryReplyWorkflow {
     task.liveContentSummaryState = 'publishing';
     task.liveContentSummaryPublishingAt = new Date();
     task.liveContentSummaryError = undefined;
+    task.liveContentSummaryParentReplyId = task.liveContentSummaryParentReplyId || task.replyId;
     await this.ports.store.updateTask(task.taskId, this.ports.liveContentSummaryComposer.getTaskUpdates(task));
 
     try {
       const result = await this.ports.bilibiliAPI.publishComment({
         dynamicId: task.repliedDynamicId,
-        content: summary.text
+        content: summary.text,
+        replyToId: task.liveContentSummaryParentReplyId
       });
-      task.liveContentSummaryState = 'published_separate';
-      task.liveContentSummaryAttachedTo = 'separate';
+      task.liveContentSummaryState = 'published_thread';
+      task.liveContentSummaryAttachedTo = 'main_reply';
       task.liveContentSummaryReplyId = String(result.replyId);
       task.liveContentSummaryCompletedAt = new Date();
       task.liveContentSummaryPublishingAt = undefined;
       task.liveContentSummaryError = undefined;
       await this.ports.store.updateTask(task.taskId, this.ports.liveContentSummaryComposer.getTaskUpdates(task));
-      this.logger.info('本场直播梗概已单独发布', {
+      this.logger.info('本场直播梗概已回复到晚安评论下', {
         taskId: task.taskId,
         roomId: task.roomId,
         dynamicId: task.repliedDynamicId,
         replyId: task.liveContentSummaryReplyId,
+        parentReplyId: task.liveContentSummaryParentReplyId,
         contentLength: summary.text.length
       });
       await this.notifyLiveContentSummaryReplySuccess(task, summary.text);

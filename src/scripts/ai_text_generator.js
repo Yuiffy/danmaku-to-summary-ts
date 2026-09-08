@@ -824,6 +824,7 @@ async function generateTextWithTuZi(prompt, options = {}) {
 
             const successfulAttempt = {
                 provider: 'tuZi',
+                rawUsage: usage,
                 model: textModel,
                 status: 'success',
                 requestStarted: true,
@@ -1121,6 +1122,7 @@ async function generateTextWithDaiYu(prompt, options = {}) {
 
             const successfulAttempt = {
                 provider: 'daiYu',
+                rawUsage: usage,
                 model: textModel,
                 status: 'success',
                 requestStarted: true,

@@ -39,17 +39,20 @@ async function runTopicShadowReview(clip, segments, config, rootConfig, info, di
     return review;
 }
 
-function topicReviewLines(review) {
+function topicReviewLines(review, humanReview = null) {
     if (!review) return [];
+    const resolved = humanReview?.sourceSha256 === review.sourceSha256
+        && humanReview?.copyGrounding?.issues?.length === 0 && Boolean(humanReview?.note);
     if (review.mode === 'preflight') return [
         `   烧录前复核: ${review.status} | ${review.model} ${review.reasoningEffort} | ${review.strategy}`,
+        ...(resolved ? [`   人工复核: 已核对 | ${humanReview.note}`] : []),
         ...(review.qualityAudit ? [`   独立校审: ${review.qualityAudit.model} | ${review.qualityAudit.verdict}`,
             ...review.qualityAudit.issues.map(issue => `   ${issue.kind}: ${issue.reason}`)] : []),
         `   选片理由: ${review.reason || ''}`,
         `   字幕校对: ${(review.subtitleEdits || []).length} 处${review.applied ? '已应用到切片副本' : '未应用，等待审核'}`,
         ...(review.subtitleEdits || []).map(edit => `   ${edit.cueId}: ${edit.original} -> ${edit.replacement} | ${edit.reason}`),
         ...(review.rejectedSubtitleEdits || []).map(edit => `   未应用校对 ${edit.cueId}: ${edit.original} -> ${edit.replacement} | ${edit.validationError}`),
-        ...(review.quality?.issues || []).map(issue => `   待核查: ${issue}`),
+        ...(review.quality?.issues || []).map(issue => `   ${resolved ? '预审历史问题（已复核）' : '待核查'}: ${issue}`),
         ...(review.warnings || []).map(warning => `   提示: ${warning}`)
     ];
     const lines = [`   AI复核（仅建议）: 关键词=${review.keyword?.status || 'unavailable'}; 文案=${review.quality?.status || 'unavailable'}; 未自动修改`];

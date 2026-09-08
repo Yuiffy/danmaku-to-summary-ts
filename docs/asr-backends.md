@@ -89,7 +89,9 @@ SenseVoice 通过 `src/scripts/python/sensevoice_transcribe.py` 子进程运行�
 
 从 2026-09-06 起，SenseVoice 的 `inference_batch_size` 默认是 8，表示真正送入模型的最大音频段数。每批还受 `batch_size_s` 和 GPU 压力限制，按最长段乘段数限制 padding 占用；每个输出仍使用对应输入的时间区间。批量调用失败或结果数量/格式不匹配时，当前请求自动退回逐段处理。需要原来的逐段行为时设为 `1`。`timings` 中的 `sensevoice_batch_calls`、`sensevoice_single_calls`、`sensevoice_batch_fallbacks` 可用于核查实际执行路径。
 
-批量计算不承诺逐字与单段计算一致。本次参考集 CER 相同，但长录播存在少量文字和事件差异，详细范围见 [优化验证记录](asr-optimization-validation-2026-09-06.md)。
+批量计算不承诺逐字与单段计算一致；参考集 CER 相同也不能证明长录播的文字和事件完全一致。上线前应使用独立录播比较文字、时间轴、speaker 和情感结果。
+
+`scripts/benchmark_asr_optimizations.py` 可比较批量 SenseVoice 和常驻 Paraformer 的参考缓存；通过 `--sensevoice-audio`、`--paraformer-audio`、可选 `--reference-manifest` 指定输入，并用 `--output-dir temp/<日期>-<任务>/asr-benchmark` 保存结果。该工具采用固定的对照配置和房间选择，运行前应核对与素材的匹配关系；单次日志、指纹和结果报告不提交到 `docs/`。
 
 ## 启用 Fun-ASR-Nano
 
@@ -700,6 +702,46 @@ Python adaptive tests 不在 Jest 的 TypeScript `testMatch` 内，必须单独�
    结果应为 `mode=always`、`full_run=true`。手工验证看到 `[[ASR_PHASE_DONE]]` 后应停止进程，避免继续执行 AI、发布、回复或其他外部副作用。
 
 首次模型下载和 CUDA cache 可能耗时；真实运行会在样本旁写 SRT/sidecar。单元测试和 type-check 不是 model loading、device placement、pipeline ordering 与 metadata wiring 的运行证据。
+
+## 逐段身份与切片证据
+
+`asr.speaker_identity` 支持 `policy: "row_verified"`、`room_ids` 和
+`min_seconds`（默认2秒）。只有白名单房间传入新策略；默认继续使用既有策略。
+新策略不把整簇多数身份或最高分覆盖到未通过局部阈值/间隔校验的片段。
+短语音、局部拒识、覆盖不足或混合说话人保留 `UNKNOWN`，且不会被原有平滑器重新实名。
+不要通过降低声纹阈值或把房间主人当真值来减少 unknown。
+
+ASR结果的 `speaker_evidence` 保留原始声学窗口、逐窗口label/score/margin、
+threshold、参考数量、cluster、scope和policy，经JS规范化写入与普通SRT哈希绑定的
+`.asr_evidence.json`。切片使用这些结构化信息，不把旧 `[名字 分数]` 字符串当逐句真值。
+声学窗口不等于逐词时间；跨不同人或未知窗口的字幕不得涂成单人。
+
+经人工听审，或经明确授权的独立来源交叉核验后的少量参考可显式使用 `preserve_exemplars: true`，保留2-24个独立音频样本，
+避免原型压缩删除稀少但真实的声音状态。默认参考仍走原型压缩和同一缓存机制。
+该开关不是身份认证：必须保留参考来源、音频哈希、核验方式、跨日期留出与误认负例。
+来源交叉核验应核对本人账号、投稿者或原录播资料、画面和连续内容，并以其他来源验证声纹；必须明确 `humanAudited: false`，不得冒充人工听审。
+未经核验的录播房主片段不得仅因标题/目录名匹配而正式入库。
+
+下一场名单继续使用 `asr:speaker-once -- enable ... --participants ...`。
+为指定既有录播登记名单可运行：
+
+```powershell
+npm run asr:speaker-once -- attach-recording 岁己 --media "录播.flv" --srt "录播.srt" --participants 小绒
+```
+
+生成同名 `.participants.json`，绑定媒体绝对路径、roomId和SRT哈希。相同输入可重复执行；
+已有不同名单或字幕变化时拒绝覆盖，应先人工核对旧侧车。登记名单不触发转写、选材或上传。
+自动选材需要另外启用 `ownStreamClips.attribution` 才使用新的人物与动作复核路径。
+
+人物目录缺声纹时可显式开启 `attribution.dialogueEnabled` 做独立文本对话推断。
+首次动作复核仍有身份歧义，且局部文本或已登记参与者提示可能多人时才追加分析；不要求先有场次名单。
+它与声纹证据分开保存，不会改写ASR标签。身份锚点和被支持的动作句均检查声纹冲突，冲突继续待核。
+静态立绘只作为同场线索，不直接赋予某句发言者身份。`auto`探测认为单人时仍可能跳过完整speaker阶段，此时不能冒充已实名。
+
+生产可按同一房间白名单分别启用 `asr.speaker_identity` 与 `ownStreamClips.attribution`。
+源CLI由下播处理进程新启动时读取配置；只修改这些JS/Python能力和配置无需替换compiled workflow或重启Webhook。
+切换前检查是否有正在运行的ASR/选材进程，既有进程不保证重新加载配置；不要中断正在处理的录播。
+回退只关闭对应的attribution开关、将speaker policy改回legacy，不删除已产生的证据或审核记录。
 
 ## 常见问题
 

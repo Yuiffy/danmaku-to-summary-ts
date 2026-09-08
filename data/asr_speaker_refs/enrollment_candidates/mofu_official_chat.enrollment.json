@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "speaker": "犬绒Mofu",
+  "key": "mofu_official_chat",
+  "audio_path": "data/asr_speaker_refs/mofu_official_chat.wav",
+  "sha256": "eb2ec38e8a01725dbd097224984635e4517f24c5eba00712e4886853356c0a5c",
+  "sampleRate": 16000,
+  "channels": 1,
+  "seconds": 16,
+  "source": {
+    "url": "https://www.bilibili.com/video/BV1QesSzzE4z/",
+    "bvid": "BV1QesSzzE4z",
+    "cid": 33450102452,
+    "title": "我能活着长大，已经已经很不容易了......",
+    "ownerUid": 1125641408,
+    "ownerName": "犬绒Mofu",
+    "ownerProfileUrl": "https://space.bilibili.com/1125641408",
+    "roomId": 1791260716,
+    "publishedAtUnix": 1761624300,
+    "startSeconds": 0,
+    "endSeconds": 16,
+    "audioDownloadSha256": "491c8a73998ee2a822ec6424d84a00840141a98cfcd98875fa700b9ab0dc9852"
+  },
+  "verification": {
+    "status": "source_context_cross_checked",
+    "humanAudited": false,
+    "authorizedMethod": "User allowed independent verification by source account, title, contents and solo clips.",
+    "sourceChecks": [
+      "Public room API maps room 1791260716 to UID 1125641408.",
+      "Public profile and video metadata identify the verified uploader as 犬绒Mofu.",
+      "Creator description introduces herself as 犬绒Mofu, and the video has her watermark and single-character layout.",
+      "Selected first 16 seconds are a continuous first-person childhood anecdote; later inserted effects and other segments are excluded."
+    ],
+    "model": "cam++",
+    "referenceMode": "two_normalized_8_second_exemplars",
+    "threshold": 0.55,
+    "marginThreshold": 0.08,
+    "topK": 2,
+    "heldOutSource": "https://www.bilibili.com/video/BV1mCi2BKEo3/",
+    "heldOutIntervals": [[0, 8], [8, 16], [16, 24], [24, 32]],
+    "heldOutMatched": 4,
+    "heldOutTotal": 4,
+    "oldControlCount": 244,
+    "oldControlIdentityChanges": 0,
+    "limitations": "Small source-checked corpus, not human word-level labels or full-stream DER. Normal chat only; unknowns and conflicts still require review."
+  }
+}

@@ -7,6 +7,7 @@ import sys
 import time
 
 from sensevoice_runtime import ResourcePeakMonitor, log_progress, set_timing, suppress_model_output
+from speaker_identity import timeline_from_chunk_labels
 
 
 def _load_audio_with_ffmpeg(audio_path):
@@ -325,6 +326,8 @@ def build_speaker_reference_centroids(
     chunk_counts = {}
     state_chunk_counts = {}
     default_max_chunks = 24
+    exemplar_speakers = {str(ref.get("speaker") or ref.get("label") or "").strip()
+        for ref in references if isinstance(ref, dict) and ref.get("preserve_exemplars") is True}
     for ref in references:
         if not isinstance(ref, dict):
             continue
@@ -403,6 +406,12 @@ def build_speaker_reference_centroids(
             for state_embeddings in embeddings_by_state.values()
             for embedding in state_embeddings
         ]
+        if speaker in exemplar_speakers:
+            if not 2 <= len(all_speaker_embeddings) <= 24:
+                raise ValueError("Audited exemplar references require 2-24 acoustic samples per speaker")
+            centroids[speaker] = torch.nn.functional.normalize(torch.cat(all_speaker_embeddings, dim=0).to("cpu"), dim=1)
+            log_progress(f"Speaker reference exemplars preserved: speaker={speaker}, samples={len(all_speaker_embeddings)}")
+            continue
         state_prototypes = []
         state_summaries = {}
         for state, state_embeddings in embeddings_by_state.items():
@@ -990,6 +999,9 @@ def classify_speaker_rows(
             "second_score": second_score,
             "margin": margin,
             "accepted": accepted,
+            "threshold": float(threshold),
+            "margin_threshold": float(margin_threshold),
+            "reference_samples": int(references[best_label].shape[0]),
             "scoring_strategy": f"row_top_{requested_top_k}_reference_mean",
         })
     return results
@@ -1108,117 +1120,12 @@ def _timeline_from_chunk_labels(
     strict_row_reference_labels=None,
     row_reference_cluster_min_support_chunks=2,
     row_reference_cluster_inherit_threshold=0.45,
+    identity_policy="legacy",
+    min_identity_seconds=2.0,
 ):
-    timeline = []
-    matches = reference_matches or {}
-    row_matches = list(row_reference_matches or [])
-    strict_labels = {
-        str(label)
-        for label in (strict_row_reference_labels or [])
-        if str(label)
-    }
-    for index, (candidate, raw_label) in enumerate(
-        zip(candidates, _cluster_label_values(labels))
-    ):
-        cluster_label = f"SPEAKER_{int(raw_label):02d}" if str(raw_label).isdigit() else str(raw_label)
-        match = matches.get(cluster_label, {})
-        row_match = row_matches[index] if index < len(row_matches) else {}
-        direct_match = row_match if row_match.get("accepted") else {}
-        direct_match_rejected = False
-        direct_label = str(direct_match.get("label") or "")
-        direct_support = (
-            match.get("reference_support", {}).get(direct_label, {})
-            if direct_label
-            else {}
-        )
-        if (
-            direct_match
-            and direct_label in strict_labels
-            and int(direct_support.get("support_count", 0) or 0)
-            < max(1, int(row_reference_cluster_min_support_chunks or 1))
-        ):
-            direct_match = {}
-            direct_match_rejected = True
-        cluster_match_label = match.get("label", cluster_label)
-        cluster_has_reference_identity = bool(
-            match.get("accepted")
-            and str(cluster_match_label) in strict_labels
-        )
-        if (
-            direct_match
-            and cluster_has_reference_identity
-            and str(direct_match.get("label")) != str(cluster_match_label)
-        ):
-            direct_label_support = match.get("reference_support", {}).get(
-                str(direct_match.get("label")),
-                {},
-            )
-            if int(direct_label_support.get("support_count", 0) or 0) < max(
-                1,
-                int(row_reference_cluster_min_support_chunks or 1),
-            ):
-                direct_match = {}
-                direct_match_rejected = True
-        cluster_label_by_default = bool(
-            cluster_has_reference_identity
-            and match.get("cluster_label_by_default") is True
-        )
-        requires_row_match = bool(
-            str(cluster_match_label) in strict_labels
-            and not cluster_label_by_default
-        )
-        cluster_row_match = bool(
-            cluster_has_reference_identity
-            and str(row_match.get("best_label") or "") == str(cluster_match_label)
-            and float(row_match.get("score", -1.0) or -1.0)
-            >= float(row_reference_cluster_inherit_threshold)
-        )
-        speaker = (
-            direct_match.get("label")
-            or (cluster_match_label if cluster_label_by_default else None)
-            or (cluster_match_label if cluster_row_match else None)
-            or (cluster_label if requires_row_match else cluster_match_label)
-        )
-        speaker_score = (
-            direct_match.get("score")
-            if direct_match
-            else match.get("score")
-            if cluster_label_by_default
-            else row_match.get("score")
-            if cluster_row_match
-            else row_match.get("score")
-            if requires_row_match
-            else match.get("score")
-        )
-        timeline.append({
-            "start": candidate["start"],
-            "end": candidate["end"],
-            "speaker": speaker,
-            "speaker_score": speaker_score,
-            "speaker_cluster": cluster_label,
-            "speaker_best_label": (
-                direct_match.get("best_label")
-                or (
-                    row_match.get("best_label")
-                    if requires_row_match or cluster_label_by_default
-                    else None
-                )
-                or match.get("best_label")
-            ),
-            "speaker_best_score": speaker_score,
-            "speaker_match_scope": (
-                "row"
-                if direct_match
-                else "cluster_high_confidence"
-                if cluster_label_by_default
-                else "cluster_with_row_corroboration"
-                if cluster_row_match
-                else "cluster_rejected_by_row"
-                if requires_row_match or direct_match_rejected
-                else "cluster"
-            ),
-        })
-    return timeline
+    return timeline_from_chunk_labels(candidates, _cluster_label_values(labels), reference_matches,
+        row_reference_matches, strict_row_reference_labels, row_reference_cluster_min_support_chunks,
+        row_reference_cluster_inherit_threshold, identity_policy, min_identity_seconds)
 
 
 def run_adaptive_speaker_engine(
@@ -1264,6 +1171,7 @@ def run_adaptive_speaker_engine(
         "intervalSource": str(
             payload.get("speaker_interval_source") or "asr_intervals"
         ),
+        "identityPolicy": payload.get("speaker_identity_policy", "legacy"),
         "timings": timings,
     }
 
@@ -1769,6 +1677,8 @@ def run_adaptive_speaker_engine(
             row_reference_cluster_inherit_threshold=float(
                 payload.get("speaker_reference_threshold", 0.45) or 0.45
             ),
+            identity_policy=str(payload.get("speaker_identity_policy", "legacy")),
+            min_identity_seconds=float(payload.get("speaker_identity_min_seconds", 2.0)),
         )
         processing["status"] = "full_completed"
         if mode == "always":
@@ -2344,6 +2254,8 @@ def smooth_speaker_timeline(speaker_timeline, fill_gap_s, max_unknown_duration_s
         return None
 
     for index, item in enumerate(items):
+        if item.get("speaker_identity_policy") == "row_verified":
+            continue
         if item.get("speaker") != "UNKNOWN":
             continue
 

@@ -41,7 +41,9 @@ function loadAsrEvidence(srtPath, segments) {
                 || !row.asr || typeof row.asr.recognizedText !== 'string') {
                 throw new Error('ASR evidence does not match the subtitle row');
             }
-            return { ...segment, asrEvidence: row.asr };
+            return { ...segment, asrEvidence: row.asr,
+                ...(row.speaker?.version === 1 && Array.isArray(row.speaker.observations)
+                    ? { speakerEvidence: row.speaker } : {}) };
         });
         return { status: 'available', backend: data.backend, segments: linked };
     } catch (error) {

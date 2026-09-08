@@ -3,15 +3,19 @@ import * as path from 'path';
 import { createHash, randomUUID } from 'crypto';
 import { normalizeOpenAIReasoningEffort, validateImageInputs } from '../text/requests';
 
+export interface StagePrice {
+    confirmed: boolean; version: string; inputCnyPerMillion: number;
+    cachedInputCnyPerMillion: number; outputCnyPerMillion: number;
+}
 export interface StageConfig {
     provider: 'daiYu' | 'tuZi'; model: string; apiMode: 'responses' | 'chatCompletions';
     reasoningEffort: string; maxTokens: number; maxInputTokens: number; timeoutMs: number;
     capabilities: { reasoningEfforts: string[]; images: boolean; imageTokenUpperBound?: number };
-    price: { confirmed: boolean; version: string; inputCnyPerMillion: number;
-        cachedInputCnyPerMillion: number; outputCnyPerMillion: number };
+    price?: StagePrice;
 }
 export interface BudgetConfig {
-    ledgerPath: string; globalCny: number; roomCny: number; sessionCny: number;
+    mode?: 'enforce' | 'log_only';
+    ledgerPath: string; globalCny?: number; roomCny?: number; sessionCny?: number;
     holdoutReserveCny?: number;
 }
 export interface StageContext { stage: string; roomId: string; sessionId: string; split?: 'screening' | 'holdout' }
@@ -20,9 +24,10 @@ export interface Generation {
 }
 export type Generate = (provider: StageConfig['provider'], prompt: string, options: Record<string, unknown>) => Promise<Generation>;
 interface LedgerRow extends StageContext {
-    id: string; attempt: number; startedAt: string; reservedCny: number; chargedCny: number;
+    id: string; attempt: number; startedAt: string; reservedCny: number | null; chargedCny: number | null;
+    accountingMode?: 'enforce' | 'log_only';
     status: 'reserved' | 'success' | 'failure'; request: Record<string, unknown>;
-    price: StageConfig['price']; elapsedMs?: number; rawUsage?: unknown; costCny?: number | null;
+    price: StagePrice | null; elapsedMs?: number; rawUsage?: unknown; costCny?: number | null;
     usageUnknown?: boolean; response?: Record<string, unknown>; error?: string;
     reconciliationRequired?: boolean;
 }
@@ -31,7 +36,7 @@ const sha = (value: string) => createHash('sha256').update(value).digest('hex');
 const roundUp = (value: number) => Math.ceil(value * 1e8) / 1e8;
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0;
 
-export function validateStage(config: StageConfig, prompt: string, images: string[] = [], live = true): number {
+export function validateStageRequest(config: StageConfig, prompt: string, images: string[] = []): void {
     if (!config || !['daiYu', 'tuZi'].includes(config.provider) || !config.model?.trim()
         || !['responses', 'chatCompletions'].includes(config.apiMode)) throw new Error('Explicit provider, model and protocol required');
     if (typeof config.reasoningEffort !== 'string' || !config.reasoningEffort.trim()) throw new Error('Explicit reasoning effort required');
@@ -46,6 +51,10 @@ export function validateStage(config: StageConfig, prompt: string, images: strin
     // UTF-8 bytes deliberately overestimate text tokens; image encoding bytes are not token counts.
     const inputBound = Buffer.byteLength(prompt, 'utf8') + 512 + images.length * (config.capabilities.imageTokenUpperBound || 0);
     if (inputBound > config.maxInputTokens) throw new Error('Stage input exceeds reserved token bound');
+}
+
+export function validateStage(config: StageConfig, prompt: string, images: string[] = [], live = true): number {
+    validateStageRequest(config, prompt, images);
     if (!config.price?.version || (live && config.price.confirmed !== true)
         || ![config.price.inputCnyPerMillion, config.price.cachedInputCnyPerMillion, config.price.outputCnyPerMillion].every(finite)) {
         throw new Error('Confirmed channel pricing required before paid requests');
@@ -71,7 +80,8 @@ async function updateLedger<T>(config: BudgetConfig, update: (ledger: Ledger) =>
         const ledger: Ledger = fs.existsSync(config.ledgerPath)
             ? JSON.parse(fs.readFileSync(config.ledgerPath, 'utf8')) : { version: 1, rows: [] };
         if (ledger.version !== 1 || !Array.isArray(ledger.rows)
-            || ledger.rows.some(row => !finite(row.chargedCny) || !finite(row.reservedCny))) throw new Error('Invalid budget ledger');
+            || ledger.rows.some(row => (!finite(row.chargedCny) && !(row.accountingMode === 'log_only' && row.chargedCny === null))
+                || (!finite(row.reservedCny) && !(row.accountingMode === 'log_only' && row.reservedCny === null)))) throw new Error('Invalid budget ledger');
         const result = update(ledger);
         fs.writeFileSync(temporary, JSON.stringify(ledger, null, 2) + '\n', 'utf8');
         fs.renameSync(temporary, config.ledgerPath);
@@ -84,6 +94,8 @@ async function updateLedger<T>(config: BudgetConfig, update: (ledger: Ledger) =>
 }
 
 export function calculateCost(usage: any, price: StageConfig['price']): number | null {
+    if (!price || price.confirmed !== true || !price.version
+        || ![price.inputCnyPerMillion, price.cachedInputCnyPerMillion, price.outputCnyPerMillion].every(finite)) return null;
     const input = usage?.input_tokens ?? usage?.prompt_tokens;
     const output = usage?.output_tokens ?? usage?.completion_tokens;
     const cached = usage?.input_tokens_details?.cached_tokens ?? usage?.prompt_tokens_details?.cached_tokens ?? 0;
@@ -95,28 +107,34 @@ export function calculateCost(usage: any, price: StageConfig['price']): number |
 
 export async function runStage(config: StageConfig, budget: BudgetConfig, context: StageContext,
     prompt: string, images: string[], generate: Generate): Promise<Generation> {
-    const reservation = validateStage(config, prompt, images);
+    if (!budget || (budget.mode !== undefined && !['enforce', 'log_only'].includes(budget.mode))) throw new Error('Invalid stage accounting mode');
+    const logOnly = budget.mode === 'log_only';
+    validateStageRequest(config, prompt, images);
+    const reservation = logOnly ? null : validateStage(config, prompt, images);
     config = { ...config, reasoningEffort: normalizeOpenAIReasoningEffort(config.reasoningEffort) };
-    if (![budget.globalCny, budget.roomCny, budget.sessionCny, budget.holdoutReserveCny ?? 0].every(finite)
-        || (budget.holdoutReserveCny || 0) > budget.globalCny
+    if ((!logOnly && (![budget.globalCny, budget.roomCny, budget.sessionCny, budget.holdoutReserveCny ?? 0].every(finite)
+        || (budget.holdoutReserveCny || 0) > budget.globalCny!))
         || !context.roomId || !context.sessionId || !context.stage) throw new Error('Explicit finite budgets and scope required');
     const request = { provider: config.provider, model: config.model, apiMode: config.apiMode,
         reasoningEffort: config.reasoningEffort, maxTokens: config.maxTokens, maxInputTokens: config.maxInputTokens,
-        timeoutMs: config.timeoutMs, promptSha256: sha(prompt), imageSha256: images.map(sha) };
+        timeoutMs: config.timeoutMs, promptChars: prompt.length, imageCount: images.length,
+        promptSha256: sha(prompt), imageSha256: images.map(sha) };
     const row = await updateLedger(budget, ledger => {
-        if (ledger.rows.some(item => item.reconciliationRequired)) throw new Error('Budget reconciliation required before more paid requests');
-        const sum = (predicate: (item: LedgerRow) => boolean) => ledger.rows.filter(predicate).reduce((n, item) => n + item.chargedCny, 0);
-        const allowed = [
-            [sum(() => true), budget.globalCny],
-            [sum(item => item.roomId === context.roomId), budget.roomCny],
-            [sum(item => item.roomId === context.roomId && item.sessionId === context.sessionId), budget.sessionCny],
-            ...(context.split === 'holdout' ? [] : [[sum(item => item.split !== 'holdout'), budget.globalCny - (budget.holdoutReserveCny || 0)]])
-        ];
-        if (allowed.some(([used, limit]) => used + reservation > limit + 1e-9)) throw new Error('Concurrent stage budget exhausted');
+        if (!logOnly) {
+            if (ledger.rows.some(item => item.reconciliationRequired || item.chargedCny === null)) throw new Error('Budget reconciliation required before more paid requests');
+            const sum = (predicate: (item: LedgerRow) => boolean) => ledger.rows.filter(predicate).reduce((n, item) => n + item.chargedCny!, 0);
+            const allowed = [
+                [sum(() => true), budget.globalCny!],
+                [sum(item => item.roomId === context.roomId), budget.roomCny!],
+                [sum(item => item.roomId === context.roomId && item.sessionId === context.sessionId), budget.sessionCny!],
+                ...(context.split === 'holdout' ? [] : [[sum(item => item.split !== 'holdout'), budget.globalCny! - (budget.holdoutReserveCny || 0)]])
+            ];
+            if (allowed.some(([used, limit]) => used + reservation! > limit + 1e-9)) throw new Error('Concurrent stage budget exhausted');
+        }
         const entry: LedgerRow = { ...context, id: randomUUID(),
             attempt: ledger.rows.filter(item => item.roomId === context.roomId && item.sessionId === context.sessionId && item.stage === context.stage).length + 1,
             startedAt: new Date().toISOString(), reservedCny: reservation, chargedCny: reservation,
-            status: 'reserved', request, price: config.price };
+            status: 'reserved', accountingMode: logOnly ? 'log_only' : 'enforce', request, price: config.price || null };
         ledger.rows.push(entry);
         return entry;
     });
@@ -144,18 +162,28 @@ export async function runStage(config: StageConfig, budget: BudgetConfig, contex
     const reconciliationRequired = attempts.length > 1 || Boolean(last.responseModel && last.responseModel !== config.model)
         || String(failure?.message || '').startsWith('Strict stage');
     const cost = reconciliationRequired || last.usageFinal === false || last.outcomeUnknown === true ? null : calculateCost(usage, config.price);
+    const usageUnknown = !finite(usage?.input_tokens ?? usage?.prompt_tokens)
+        || !finite(usage?.output_tokens ?? usage?.completion_tokens) || last.usageFinal === false || last.outcomeUnknown === true;
     await updateLedger(budget, ledger => {
         const current = ledger.rows.find(item => item.id === row.id);
         if (!current || current.status !== 'reserved') throw new Error('Missing budget reservation');
         Object.assign(current, { status: failure ? 'failure' : 'success', elapsedMs: Date.now() - started,
-            rawUsage: usage, costCny: cost, chargedCny: cost ?? reservation, usageUnknown: cost === null,
+            rawUsage: usage, costCny: cost, chargedCny: cost ?? reservation, usageUnknown,
+            costUnknown: cost === null,
+            costUnknownReason: cost !== null ? null : reconciliationRequired ? 'unverified_routing'
+                : usageUnknown ? 'unknown_or_nonfinal_usage' : 'unconfirmed_price',
             reconciliationRequired,
             response: { model: last.responseModel || null, reasoningEffort: last.reasoningEffortReturned || null,
                 capabilityVerified: Boolean(last.responseModel && last.reasoningEffortReturned),
                 requestId: last.requestId || null, responseId: last.responseId || null, attempts },
             ...(failure ? { error: String(failure.message || failure) } : {}) });
     });
-    if (cost !== null && cost > reservation) throw new Error('Provider exceeded reserved usage; ledger reconciled, stop this run');
-    if (failure) throw failure;
-    return { ...result!, meta: { ...result!.meta, ledgerId: row.id, costCny: cost, usageUnknown: cost === null } };
+    if (!logOnly && cost !== null && cost > reservation!) throw new Error('Provider exceeded reserved usage; ledger reconciled, stop this run');
+    if (failure) {
+        failure.ledgerId = row.id;
+        throw failure;
+    }
+    return { ...result!, meta: { ...result!.meta, ledgerId: row.id, accountingMode: row.accountingMode,
+        costCny: cost, costUnknown: cost === null, usageUnknown, elapsedMs: Date.now() - started,
+        usage } };
 }

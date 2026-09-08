@@ -548,6 +548,7 @@ function normalizeAsrResult(result, subtitleConfig = {}) {
                 text: part,
                 speaker: segment.speaker,
                 speaker_score: segment.speaker_score,
+                speakerEvidence: segment.speakerEvidence || segment.speaker_evidence,
                 words: segment.words,
                 asrSource: segment.asrSource || {
                     start, end,
@@ -1275,6 +1276,11 @@ function buildRuntimeSpeakerOverrides(config = {}, context = {}) {
     const hostOverride = hostReference?.speaker
         ? { speaker_host_label: String(hostReference.speaker) }
         : {};
+    const identity = config.asr?.speaker_identity || {};
+    if (identity.policy === 'row_verified' && Array.isArray(identity.room_ids) && identity.room_ids.map(String).includes(String(roomId))) {
+        hostOverride.speaker_identity_policy = 'row_verified';
+        hostOverride.speaker_identity_min_seconds = Number(identity.min_seconds ?? 2);
+    }
     const plannedParticipantIds = Array.isArray(speakerRequest?.plannedParticipantIds)
         ? speakerRequest.plannedParticipantIds.map(value => String(value)).filter(Boolean)
         : [];

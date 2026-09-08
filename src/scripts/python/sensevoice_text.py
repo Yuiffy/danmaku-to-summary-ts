@@ -476,6 +476,8 @@ def normalize_segments(raw_result):
             segment["speaker"] = str(speaker)
         if item.get("speaker_score"):
             segment["speaker_score"] = item.get("speaker_score")
+        if isinstance(item.get("speaker_evidence"), dict):
+            segment["speaker_evidence"] = item["speaker_evidence"]
         segments.append(segment)
 
     return segments

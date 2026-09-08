@@ -136,6 +136,8 @@ export interface PublishCommentRequest {
   content: string;
   /** 图片URL列表 */
   images?: string[];
+  /** Existing top-level comment to reply under; kept as a string to preserve precision. */
+  replyToId?: string;
 }
 
 /**
@@ -159,6 +161,7 @@ export type LiveContentSummaryDeliveryState =
   | 'attached_main'
   | 'attached_supplemental'
   | 'published_separate'
+  | 'published_thread'
   | 'failed';
 
 /**
@@ -239,21 +242,23 @@ export interface DelayedReplyTask {
   summaryRetryCount?: number;
   /** 本场直播内容梗概 JSON 路径 */
   liveContentSummaryPath?: string;
-  /** 梗概发布方式：始终单发，或在主回复/补图就绪时拼接 */
+  /** 梗概发布方式：单独回到晚安评论下，或在主回复/补图就绪时拼接 */
   liveContentSummaryDeliveryMode?: LiveContentSummaryDeliveryMode;
   /** 梗概发布子状态；与固定汇总动态的 summaryReplyId 相互独立 */
   liveContentSummaryState?: LiveContentSummaryDeliveryState;
   /** 梗概最终所在的评论 ID（拼接时等于主回复或补图回复 ID） */
   liveContentSummaryReplyId?: string;
   /** 梗概最终投递位置 */
-  liveContentSummaryAttachedTo?: 'main' | 'supplemental' | 'separate';
+  liveContentSummaryAttachedTo?: 'main' | 'supplemental' | 'separate' | 'main_reply';
+  /** Parent goodnight comment for a separately delivered summary. */
+  liveContentSummaryParentReplyId?: string;
   /** 梗概投递完成时间 */
   liveContentSummaryCompletedAt?: Date;
   /** 梗概单独发布重试次数 */
   liveContentSummaryRetryCount?: number;
   /** 梗概读取或发布错误，不影响主晚安回复/补图 */
   liveContentSummaryError?: string;
-  /** 主回复拼接超过 B 站上限后强制改为单独评论 */
+  /** 主回复拼接超过 B 站上限后强制改为晚安下的子回复 */
   liveContentSummaryForceSeparate?: boolean;
   /** 单独发布请求发出前的持久化时间；重启后用于避免不确定请求重复发送 */
   liveContentSummaryPublishingAt?: Date;

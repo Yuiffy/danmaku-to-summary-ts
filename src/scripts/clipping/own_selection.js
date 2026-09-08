@@ -2,6 +2,7 @@
 const { formatClock } = require('./topic_selection');
 const { notableEmotionEvents, emotionMomentScore, buildDanmakuDensity, buildEmotionContextLines } = require('../full_live_context');
 const { buildSubtitleEvidence, cuesForWindow, formatEvidenceCues } = require('./subtitle_evidence');
+const { identityDanmaku } = require('./participant_context');
 function timeStringToSeconds(value) {
     const match = String(value || '').trim().match(/^(\d{1,2}):(\d{2}):(\d{2})(?:\.\d+)?$/);
     if (!match) return NaN;
@@ -571,6 +572,12 @@ function buildChunkSources(parsed, danmaku, totalDuration, config, emotionAnalys
                 allowedDanmakuIds.add(id);
                 return `${id} ${item.time} ${JSON.stringify(item.text)}`;
             });
+        const identityLines = identityDanmaku(chunkDanmaku, window, parsed.participantContext,
+            Number(config.attribution?.identityCommentsPerChunk ?? 12)).map(item => {
+            const id = danmakuIds.get(item);
+            allowedDanmakuIds.add(id);
+            return `${id} ${item.time} ${JSON.stringify(item.text)}`;
+        });
         const subtitleCues = window.cues;
         const subtitleText = formatEvidenceCues(subtitleCues);
         const emotionLines = buildEmotionContextLines(
@@ -601,6 +608,7 @@ function buildChunkSources(parsed, danmaku, totalDuration, config, emotionAnalys
                 '',
                 '观众反应弹幕样例（D-ID 后为精确绝对秒数，保留原始小数）:',
                 reactionLines.slice(0, Number(config.maxDanmakuLinesPerChunk) || 220).join('\n') || '无',
+                ...(identityLines.length ? ['人物线索弹幕（仍是观众评论，不是说话人或动作真值）:', identityLines.join('\n')] : []),
                 '',
                 'SenseVoice 情感/声音事件（辅助线索，不作为事实）:',
                 emotionLines.join('\n') || '无',

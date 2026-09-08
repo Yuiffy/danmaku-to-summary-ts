@@ -46,6 +46,7 @@ __pycache__/
 # local tool/runtime state
 .gemini/
 .claude/
+/.playwright-mcp/
 /artifacts/
 data/runtime/
 local-scripts/*
@@ -79,5 +80,6 @@ config/secret.json
 config/cookies*.txt
 data/delayed_reply_tasks.json
 src/scripts/.whisper_lock
-tmp/*
-temp/*
+# Task-local scripts, reports, captures, and scratch output (see AGENTS.md).
+/tmp/
+/temp/

@@ -51,7 +51,7 @@ describe('stage accounting and admission', () => {
 
     test('unconfirmed prices, unsupported reasoning and failed image inputs never send', async () => {
         const generate = jest.fn();
-        await expect(runStage({ ...config, price: { ...config.price, confirmed: false } }, budget(), context, 'facts', [], generate)).rejects.toThrow('pricing');
+        await expect(runStage({ ...config, price: { ...config.price!, confirmed: false } }, budget(), context, 'facts', [], generate)).rejects.toThrow('pricing');
         expect(() => validateStage({ ...config, reasoningEffort: 'low' }, 'facts')).toThrow('Unverified');
         expect(() => validateStage(config, 'facts', ['data:image/png;base64,YQ=='])).toThrow('Image capability');
         expect(() => validateStage(config, 'x'.repeat(3000))).toThrow('input');
@@ -86,5 +86,37 @@ describe('stage accounting and admission', () => {
         const results = await Promise.all([run(), run()]);
         expect(results.sort()).toEqual(['admitted', 'blocked']);
         expect(JSON.parse(fs.readFileSync(budget().ledgerPath, 'utf8')).rows).toHaveLength(1);
+    });
+
+    test('log-only mode records full usage without prices or monetary limits', async () => {
+        const accounting = { mode: 'log_only' as const, ledgerPath: budget().ledgerPath };
+        const generate = jest.fn(async () => result());
+        await runStage({ ...config, price: undefined }, accounting, context, 'facts', [], generate);
+        await runStage({ ...config, price: undefined }, { ...accounting, globalCny: 0 }, context, 'facts', [], generate);
+        const rows = JSON.parse(fs.readFileSync(accounting.ledgerPath, 'utf8')).rows;
+        expect(generate).toHaveBeenCalledTimes(2);
+        expect(rows).toHaveLength(2);
+        expect(rows[0]).toMatchObject({ accountingMode: 'log_only', status: 'success', reservedCny: null,
+            chargedCny: null, costCny: null, usageUnknown: false, costUnknown: true, costUnknownReason: 'unconfirmed_price',
+            rawUsage: { input_tokens: 100, output_tokens: 100 } });
+        expect(rows[1].attempt).toBe(2);
+    });
+
+    test('log-only failures stay logged without treating unknown usage as free or blocking later work', async () => {
+        const accounting = { mode: 'log_only' as const, ledgerPath: budget().ledgerPath };
+        await expect(runStage(config, accounting, context, 'facts', [], async () => { throw new Error('timeout'); })).rejects.toThrow('timeout');
+        await runStage(config, accounting, context, 'facts', [], async () => result());
+        const rows = JSON.parse(fs.readFileSync(accounting.ledgerPath, 'utf8')).rows;
+        expect(rows[0]).toMatchObject({ status: 'failure', costCny: null, chargedCny: null, usageUnknown: true });
+        expect(rows[1]).toMatchObject({ status: 'success', costCny: 0.3 });
+        await expect(runStage(config, budget(), context, 'facts', [], async () => result())).rejects.toThrow('reconciliation');
+    });
+
+    test('log-only mode does not relax request capability or routing checks', async () => {
+        const accounting = { mode: 'log_only' as const, ledgerPath: budget().ledgerPath };
+        const generate = jest.fn(async () => result());
+        await expect(runStage({ ...config, reasoningEffort: 'unknown' }, accounting, context, 'facts', [], generate)).rejects.toThrow('Unsupported');
+        await expect(runStage(config, accounting, context, 'facts', ['data:image/png;base64,YQ=='], generate)).rejects.toThrow('Image');
+        expect(generate).not.toHaveBeenCalled();
     });
 });

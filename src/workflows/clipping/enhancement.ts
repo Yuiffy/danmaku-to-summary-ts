@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import { createHash } from 'crypto';
 import { AudioEvidence, EditPlan, Span, Subtitle, continuousPlan, mapSubtitles, planFromEvidenceIds } from './editPlan';
+import { labelExperimentDescription } from './experiment';
 
 export interface Copy { title: string; coverText: string; description: string; [key: string]: unknown }
 export interface Artifact {
@@ -12,6 +13,7 @@ export interface EnhancementInput {
     sourceId: string; window: Span; speech: Subtitle[];
     audience: Array<{ time: number; text: string; id?: string }>;
     audioEvidence: AudioEvidence[]; allowEditing: boolean; streamerName: string;
+    experimentSelected?: boolean;
 }
 export interface EnhancementIO {
     request(stage: 'edit' | 'packaging' | 'cover' | 'qa', prompt: string, images?: string[]): Promise<string>;
@@ -78,6 +80,8 @@ export async function enhanceArtifact(baseline: Artifact, input: EnhancementInpu
     let issues: string[] = [];
     const evidence = () => fullEvidence(input, plan);
     const review = async (): Promise<boolean> => {
+        current.copy = { ...current.copy, description: labelExperimentDescription(current.copy.description,
+            input.experimentSelected === true, plan.removed.length > 0) };
         const expected = plan.keep.reduce((n, span) => n + span.end - span.start, 0);
         const media = await io.inspectMedia(current, expected);
         if (!media.passed || !current.output.burnedSubtitles || !current.output.coverPath) {
@@ -88,6 +92,7 @@ export async function enhanceArtifact(baseline: Artifact, input: EnhancementInpu
         }
         const before = await artifactDigests(current);
         const raw = json(await io.request('qa', RULES + 'Independently audit the final edited clip and rendered cover. '
+            + 'The precision-experiment status line is pipeline disclosure, not source dialogue. '
             + 'Use the complete source context, retained subtitles and final-video keyframes. Do not trust prior scores. '
             + 'Return JSON {"approved":boolean,"checks":{"meaning":boolean,"attribution":boolean,"title":boolean,'
             + '"cover":boolean,"subtitles":boolean,"completeStory":boolean},"issues":["specific issue"]}. '

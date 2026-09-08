@@ -6,6 +6,22 @@ const asr = require('./asr_backends');
 const { evidencePath, loadAsrEvidence } = require('./evidence_sidecar');
 
 describe('ASR replacement provenance', () => {
+  test('preserves speaker observations through normalization, plain SRT and hash-bound sidecar', () => {
+    const speaker = { version: 1, label: null, status: 'unknown', observations: [
+      { start: 0, end: 8, label: 'UNKNOWN', scope: 'row_rejected', row: { score: .44, margin: .02, accepted: false },
+        cluster: { label: 'Host', score: .83 } }
+    ] };
+    const normalized = asr.normalizeAsrResult({ backend: 'paraformer', segments: [
+      { start: 0, end: 8, text: 'A rejected identity.', speaker_evidence: speaker }
+    ] }, { max_chars_per_segment: 8 });
+    asr.writeSrt(normalized, file, { write_evidence: true });
+    const loaded = loadAsrEvidence(file, asr.parseSrt(file).segments);
+    expect(loaded.status).toBe('available');
+    expect(loaded.segments.every((row: any) => JSON.stringify(row.speakerEvidence) === JSON.stringify(speaker))).toBe(true);
+    expect(fs.readFileSync(file, 'utf8')).not.toContain('Host');
+    fs.appendFileSync(file, '\n');
+    expect(loadAsrEvidence(file, asr.parseSrt(file).segments).status).toBe('stale');
+  });
   let dir: string;
   let file: string;
   beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'asr-evidence-')); file = path.join(dir, 'source.srt'); });

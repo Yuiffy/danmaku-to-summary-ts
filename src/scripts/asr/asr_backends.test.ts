@@ -3,6 +3,34 @@ const productionConfig = require('../../../config/production.json');
 const net = require('net');
 
 describe('asr_backends', () => {
+  test.each(['1', '2'])('passes row-verified policy only for an allowed room (%s)', async roomId => {
+    const payloads: any[] = [];
+    const server = net.createServer((socket: any) => {
+      let buffer = '';
+      socket.on('data', (data: Buffer) => {
+        buffer += data.toString();
+        if (!buffer.includes('\n')) return;
+        payloads.push(JSON.parse(buffer.split('\n', 1)[0]).payload);
+        socket.end(JSON.stringify({ ok: true, result: { backend: 'paraformer', segments: [] } }) + '\n');
+      });
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const oldPort = process.env.ASR_PERSISTENT_WORKER_PORT, oldToken = process.env.ASR_PERSISTENT_WORKER_TOKEN;
+    process.env.ASR_PERSISTENT_WORKER_PORT = String(server.address().port);
+    process.env.ASR_PERSISTENT_WORKER_TOKEN = 'fixture';
+    try {
+      await asr.transcribeParaformer('fixture.wav', { asr: {
+        speaker_identity: { policy: 'row_verified', room_ids: ['1'], min_seconds: 2.5 }, paraformer: { process_timeout_s: 10 }
+      } }, { routingContext: { roomId } });
+      expect(payloads).toHaveLength(1);
+      if (roomId === '1') expect(payloads[0]).toMatchObject({ speaker_identity_policy: 'row_verified', speaker_identity_min_seconds: 2.5 });
+      else expect(payloads[0]).not.toHaveProperty('speaker_identity_policy');
+    } finally {
+      if (oldPort === undefined) delete process.env.ASR_PERSISTENT_WORKER_PORT; else process.env.ASR_PERSISTENT_WORKER_PORT = oldPort;
+      if (oldToken === undefined) delete process.env.ASR_PERSISTENT_WORKER_TOKEN; else process.env.ASR_PERSISTENT_WORKER_TOKEN = oldToken;
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
   test('defaults SenseVoice to bounded real batches and supports scalar rollback', () => {
     expect(asr.getAsrConfig({}).sensevoice.inference_batch_size).toBe(8);
     expect(asr.getAsrConfig({ asr: { sensevoice: { inference_batch_size: 1 } } })

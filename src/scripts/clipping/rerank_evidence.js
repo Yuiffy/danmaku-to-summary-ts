@@ -4,6 +4,7 @@ const { getWindowDanmakuEvidence, createWindowDanmakuReader } = require('./own_s
 const { formatClock } = require('./topic_selection');
 const { buildSubtitleEvidence, cuesForWindow, formatEvidenceCues } = require('./subtitle_evidence');
 const { reusableRecall } = require('./selection_result');
+const { identityDanmaku } = require('./participant_context');
 const CANDIDATE_COLUMNS = ['q', 's', 'l', 'm', 'a', 'r', 'e', 'v', 'g', 'd', 'top', 'reuse'];
 const SOURCE_CODES = new Map([['local_signals', 0], ['model_chunked', 1]]);
 
@@ -34,6 +35,9 @@ function buildRerankEvidence(candidates, parsed, danmaku, config) {
         cues.forEach(cue => uniqueCues.set(cue.id, cue));
         const samples = audience.sampleItems || [];
         samples.forEach(item => uniqueDanmaku.set(danmakuIds.get(item), item));
+        const identitySamples = identityDanmaku(danmaku, candidate, parsed.participantContext,
+            Number(config.attribution?.identityCommentsPerClip ?? 4));
+        identitySamples.forEach(item => uniqueDanmaku.set(danmakuIds.get(item), item));
         const top = audience.topItems || [];
         top.forEach(({ item }) => uniqueDanmaku.set(danmakuIds.get(item), item));
         if (reuse) {
@@ -57,7 +61,7 @@ function buildRerankEvidence(candidates, parsed, danmaku, config) {
             r: reasonCodes.map(reasonId),
             e: candidate.emotions || [], v: candidate.events || [],
             g: [cues[0]?.id || null, cues.at(-1)?.id || null],
-            d: samples.map(item => danmakuIds.get(item)),
+            d: Array.from(new Set([...samples, ...identitySamples].map(item => danmakuIds.get(item)))),
             top: top.map(({ item, count }) => [danmakuIds.get(item), count]),
             reuse
         };

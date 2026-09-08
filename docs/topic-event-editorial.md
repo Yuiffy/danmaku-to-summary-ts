@@ -1,14 +1,116 @@
 # Topic Clip Event Editing
 
 The keyword workflow also supports a pre-render review path controlled by
-`clipTopics.review.mode: "preflight"`. Its preparation, validation, and model
-comparison are documented in [Preflight Comparison](topic-preflight-comparison-2026-09-07.md).
+`clipTopics.review.mode: "preflight"`. Its maintained contract is described under
+[Preflight Review](#preflight-review); per-run comparisons belong in ignored task storage.
 When that path is enabled it replaces the event/copy calls below, rather than
 adding two shadow review calls after them. The legacy path remains available.
 
 The keyword topic workflow now treats a publishable event, not a keyword hit or
 an arbitrary duration, as the unit of selection. This applies to `clipTopics`;
 own-stream and manual-queue selection keep their existing policies.
+
+## 按编号改词并投稿
+
+用户说“把 123 号待定的不确定词 zzz 改为睡睡睡，然后烧录并投稿”时，执行：
+
+```powershell
+python src/scripts/clip_upload_registry.py correct --id 123 --from "zzz" --to "睡睡睡" --enqueue --note "用户确认 zzz 应为睡睡睡，并要求烧录投稿"
+```
+
+这里的 `123` 是全局数字 ID，不能使用每场重复的 `E1-1` 或 REVIEW 行号。
+这条命令只改该候选的字幕、保存用户确认并入队，立即返回；后台
+`clip-upload-queue-runner` 自动烧录、制作封面、审计、投稿并回写同一个 ID。
+不需要代理生成脚本、手改 JSON 状态、重新 ASR、执行 FFmpeg 或直接调用上传器。
+
+- 想先看待定字幕：`python src/scripts/clip_upload_registry.py subtitles --id 123`。
+  老候选没有 SRT 时会补生成，不会烧录或投稿。
+- 只改字幕不投稿：上面的 `correct` 命令去掉 `--enqueue`。
+- 用户明确只改第 7 条字幕时加 `--cue 7`。否则替换当前候选内所有字面匹配，
+  不把 `--from` 当正则表达式；原词找不到则失败，不会偷偷入队。
+- 同一文字若出现在该候选的标题、简介或封面文案中，也做同样的字面替换，
+  避免字幕与投稿文案不一致，不会重写其他文案。
+- 字幕已确认、只需投稿：`python src/scripts/clip_upload_registry.py enqueue --ids 123`。
+  普通成片直接排队上传；待定候选由 worker 先烧录，再上传。
+- 收到入队成功后，确认 `npm run pm2:status:clip-upload` 在线即可报告“已入队”。
+  不要在当前会话等待烧录或不断轮询；未在线时运行 `npm run pm2:clip-upload:start`。
+- 字幕修正本身不等于投稿授权。只有用户明确说投稿，才添加 `--enqueue`。
+  用户没有确认的其他不确定词不得猜改，也不要把例子里的编号和词用于真实稿件。
+
+候选在进入待定区之前就有独立的 `*_candidate.srt`。每次修正写入新的
+`*_candidate_r0001.srt` 等版本，保留旧版本和逐条修改记录；源录播 SRT 不动。
+`subtitles` 与 `show` 始终给出当前字幕版本，不必手动寻找长路径。
+确认记录绑定源证据、时间范围、字幕哈希、版本号和文案哈希；worker 不会重新生成
+未经确认的字幕覆盖改词。上传重试复用已完成成片，重复入队不会新增同一 ID 的活动任务。
+
+注册表状态：`pending_cut`（待定，有 SRT）→ `queued`（已授权）→ `rendering`
+→ `uploading` → `uploaded`。媒体或证据校验失败会保留候选和错误信息，停止投稿；
+在 `show` / `queue` 中查看原因，修正后重新入队。已排队或正在烧录的字幕版本不能再修改。
+
+## Preflight Review
+
+Enable `clipTopics.review.enabled` with `mode: "preflight"` to prepare all
+candidate groups before rendering. `strategy: "single"` produces event boundaries,
+keyword decisions, local subtitle corrections and final public copy in one call
+per group. `strategy: "staged"` is an explicit alternative, not an automatic retry.
+`review.enabled: false` returns to event editing; `mode: "shadow"` is advisory.
+Read model, reasoning effort, evidence limits and timeouts from the current
+configuration instead of copying the settings of an old experiment.
+
+The request includes complete source subtitles with IDs, ASR/correction provenance
+when available, nearby audience evidence and source-host metadata. A keyword hit
+does not itself establish identity. Exact model/protocol routing is validated;
+failures must not silently switch providers, protocols or reasoning effort.
+
+Persist and validate the complete `_TOPIC_PLAN.json` before media work. Only
+`ready` candidates receive rendered media and covers. Every held candidate gets
+an editable, clip-relative SRT before registration, including already corroborated
+AI corrections but not rejected guesses. Failed or `needs_review` candidates retain
+evidence and reasons without rendering, and reserve globally unique numeric IDs in the same
+upload registry (`pending_cut`). REVIEW and WeChat show those IDs beside the
+per-stream labels such as `E1-1`; a candidate keeps its numeric ID after rendering.
+Source changes, unsaved plans and exceeded evidence budgets hold the
+affected candidates rather than truncating their subtitles. Never overwrite the
+recording's original SRT. Upload approval remains a separate human decision.
+
+Normal clips and candidates share one numeric ID space. An explicit upload request,
+`npm run upload:clips -- enqueue --ids 123`, snapshots the approved candidate SRT
+and creates a background job. The command never waits for rendering. The existing
+single-instance worker renders candidates before grouping and validating uploads;
+ordinary clips skip rendering. `--dry-run` only reports the intended action and
+never prepares, approves, renders or enqueues. `--force` does not bypass evidence checks.
+
+For a render-only review or a public-copy repair, inspect the candidate with
+`npm run upload:clips -- show 123`, then run
+`npm run upload:clips -- cut --ids 123 --review-note "Source checked"`.
+Use `--title`, `--description`, or `--cover-text` for evidence-backed public-copy
+corrections (one candidate per command when overriding copy). The command checks
+the source fingerprint, keyword identity, accepted subtitle corrections and final
+copy before using the shared GPU manual-cut path. Explicit user approval can
+resolve model uncertainty without another model/ASR call. Original-source drift,
+modified unapproved SRT bytes, out-of-window evidence and unsupported public copy
+still block upload. Approval does not invent missing plans or public copy after
+an AI service failure. The original AI review remains alongside the user correction
+history and approval snapshot.
+After checking the video and cover, run `npm run upload:clips -- enqueue --ids 123`
+to publish. The standalone `cut` command never enqueues; only `enqueue` carries
+upload authorization. Automatic discovery and ID reservation never render held
+candidates or authorize upload.
+
+`review.qualityRules` enables the source-grounded quality constraints; an extra
+independent audit is optional, not required on every single-call preparation.
+`preflight_facts.js` reads user-confirmed facts from
+`data/runtime/topic_verified_facts.json`. Each correction is bound to the exact
+source path, SHA-256, time range and user authorization; stale or mismatched entries
+do not apply and must not become global ASR replacements. In ordinary host speech,
+use the source host by default; distinguish guests, quotations, audience messages
+and playback when the source contains evidence for those exceptions.
+
+Acceptance checks cover complete setup and ending, attribution, conditional and
+negative wording, subtitle corrections, final copy and the rendered media. Tokens,
+elapsed time, model self-approval and unit-test results are not substitutes for
+editorial quality review. Keep recordings, prompts, cost ledgers, failed attempts
+and visual checks for each comparison under `temp/<date>-<task>/`.
 
 ## Pipeline
 
