@@ -1,5 +1,5 @@
 'use strict';
-const { attributionEnabled } = require('./participant_context');
+const { attributionEnabled, buildParticipantContext } = require('./participant_context');
 const { requestSelectionText } = require('./selection_request');
 const { dialoguePrompt, parseDialogueEvidence } = require('./dialogue_evidence');
 const { attributionRisk, buildActorReviewPacket, actorReviewPrompt, parseActorReviews,
@@ -14,7 +14,7 @@ async function reviewClipActors(clips, parsed, danmaku, evidence, info, config, 
     const deadline = Date.now() + Math.max(0, Number(settings.maxElapsedMs ?? 1200000));
     const result = [...clips];
     const packets = [];
-    const context = parsed.participantContext;
+    const context = parsed.participantContext || buildParticipantContext(rootConfig, info, parsed, danmaku, {}, settings);
     const promptFor = packets => actorReviewPrompt(packets, context, settings);
     clips.forEach((clip, index) => {
         const risks = attributionRisk(clip, evidence, context);
@@ -63,7 +63,7 @@ async function reviewClipActors(clips, parsed, danmaku, evidence, info, config, 
                     const issues = validateActorReview(review, packet);
                     const genericPerson = /(?:连麦对象|嘉宾|对方|有人|\b(?:someone|guest)\b)/iu.test(
                         [review.copy?.title, review.copy?.description].join('\n'));
-                    const multipleContext = packet.risks.some(reason => /(?:multiple|copy_voice_conflict|other_person_in_context)/u.test(reason))
+                    const multipleContext = packet.risks.some(reason => /(?:multiple|copy_voice_conflict|other_person_in_context|conversational_context)/u.test(reason))
                         || context?.people?.some(person => !person.sourceHost && ['planned', 'voice_matched'].includes(person.presence));
                     return multipleContext && (review.decision === 'needs_review'
                         || issues.some(issue => /(?:speaker|narrator|actor|question_action)/u.test(issue))

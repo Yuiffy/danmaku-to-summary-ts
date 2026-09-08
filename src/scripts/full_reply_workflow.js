@@ -110,7 +110,8 @@ async function tryGenerateCombinedReply(highlightPath, roomId, options = {}) {
     const wordLimit = room.wordLimit ?? config.ai?.defaultWordLimit ?? 100;
     const model = experiment.model || 'gpt-5.6-luna';
     const fingerprint = sha(JSON.stringify({ mode: MODE, source: payload.sharedPrefixSha256, model, wordLimit,
-        context: live.formatLiveGenerationContext(context), room: { anchorName: room.anchorName, fanName: room.fanName,
+        context: live.formatLiveGenerationContext(context), replyDynamic: live.getReplyDynamicEvidence(context),
+        room: { anchorName: room.anchorName, fanName: room.fanName,
             customPrompts: room.customPrompts }, promptVersion: combined.PROMPT_VERSION, reviewVersion: review.REVIEW_VERSION }));
     const release = acquireLocks([files.artifact, files.reply, files.summary]);
     try {
@@ -120,11 +121,11 @@ async function tryGenerateCombinedReply(highlightPath, roomId, options = {}) {
         if (fs.existsSync(files.reply) || fs.existsSync(files.summary)) return { handled: false, reason: 'preserve-existing-artifacts' };
         if (previous?.status === 'failed' && previous.fingerprint === fingerprint) return { handled: false, reason: 'reuse-terminal-fallback' };
         const source = combined.evidenceContext(payload.evidence.speech,
-            payload.evidence.audience.map(row => ({time:row.start,text:row.text})), roomId, config, payload.evidence);
+            payload.evidence.audience.map(row => ({time:row.start,text:row.text})), roomId, config, payload.evidence, context);
         let state = { schemaVersion: 1, mode: MODE, status: 'in_progress', generationId: crypto.randomUUID(),
             roomId: String(roomId), provider: 'daiYu', model, fingerprint, ownerPid: process.pid,
             startedAt: now(), sourceSha256: payload.sourceSha256, sharedPrefixSha256: payload.sharedPrefixSha256,
-            attempts: previous?.attempts || [], phases: [], wordLimit };
+            attempts: previous?.attempts || [], phases: [], wordLimit, replyDynamic: context.replyDynamic || null };
         atomicJson(files.artifact,state);
         const generate = options.generateText || ai.generateTextWithDaiYu;
         const requestOptions = { primaryModel: model, exactModel: true, strictEvaluation: true, apiMode: 'responses',

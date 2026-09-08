@@ -313,6 +313,7 @@ function buildPrompt(highlightContent, roomId, liveTimeDesc = null, liveContext 
     );
     const anchorNameList = anchorNames.map(name => `“${name}”`).join('、');
     const liveContextBlock = liveGenerationContext.formatLiveGenerationContext(liveContext);
+    const replyDynamicBlock = liveGenerationContext.formatReplyDynamicContext(liveContext);
     const providedSharedSourcePrefix = String(options.sharedSourcePrefix || '');
     if (providedSharedSourcePrefix && (
         !providedSharedSourcePrefix.startsWith(liveGenerationContext.SHARED_PROMPT_CACHE_START)
@@ -364,7 +365,7 @@ function buildPrompt(highlightContent, roomId, liveTimeDesc = null, liveContext 
         const sourcePrefix = sharedCacheEnabled
             ? `${sharedSourcePrefix}\n\n【下播回复任务】\n只使用上方共享事实输入完成本任务。\n\n`
             : '';
-        return `${sourcePrefix}${namingGuidance}\n\n${speakerGuidance}\n\n${contextPrefix}${renderedPrompt}\n\n【下播时段】\n${timingGuidance}`;
+        return `${sourcePrefix}${namingGuidance}\n\n${speakerGuidance}\n\n${contextPrefix}${renderedPrompt}\n\n【下播时段】\n${timingGuidance}${replyDynamicBlock ? `\n\n${replyDynamicBlock}` : ''}`;
     }
 
     // --- 核心修改:全肯定萌萌人 2.0 ---
@@ -454,7 +455,7 @@ ${randomMainPrompt}
 请根据直播内容,从“${fan}”粉丝的视角写一篇动态回复。记住:只使用提供的直播内容,不要添加任何外部信息。直接输出回复内容,不要输出任何其他内容。`;
 
     console.log('晚安动态prompt主要内容:', randomMainPrompt.substring(0, 100), '直播内容长度:', highlightContent.length);
-    return result;
+    return replyDynamicBlock ? `${result}\n\n${replyDynamicBlock}` : result;
 }
 
 function countSentences(text) {

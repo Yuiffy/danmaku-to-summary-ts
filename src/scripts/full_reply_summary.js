@@ -7,7 +7,7 @@ const configLoader = require('./config-loader');
 const policy = require('./reply_summary_policy.json');
 const full = require('./full_live_context');
 
-const PROMPT_VERSION = 3;
+const PROMPT_VERSION = 4;
 const evidenceTargets = new Set(['reply', 'game', 'song']);
 const actorKinds = new Set(['host', 'team', 'audience', 'uncertain', 'performance']);
 const normalize = value => String(value || '').normalize('NFKC').replace(/[\p{P}\p{S}\s]/gu, '').toLowerCase();
@@ -17,7 +17,7 @@ function speakerLabel(text) {
     return String(text || '').match(/^\[([^\]\n]+)\]/u)?.[1].replace(/\s+\d*\.?\d+$/u, '').trim() || null;
 }
 
-function evidenceContext(segments, danmaku, roomId, config = configLoader.getConfig(), evidence = null) {
+function evidenceContext(segments, danmaku, roomId, config = configLoader.getConfig(), evidence = null, context = null) {
     const room = config.ai?.roomSettings?.[String(roomId)] || {};
     const streamer = Object.values(config.ai?.streamerRegistry || {}).find(s =>
         (s.roomIds || []).some(id => String(id) === String(roomId)));
@@ -30,6 +30,8 @@ function evidenceContext(segments, danmaku, roomId, config = configLoader.getCon
         ...audience.map((d, index) => [`D${index + 1}`, { id: `D${index + 1}`, source: 'audience', text: d.text,
             start: d.firstTime, end: d.lastTime, count: d.count }])
     ]);
+    const replyDynamic = live.getReplyDynamicEvidence(context);
+    if (replyDynamic) byId.set(replyDynamic.id, replyDynamic);
     return { segments, danmaku, hostLabels, multipleSpeakers: labels.size > 1,
         byId, duration: [...segments.map(s => s.end), ...danmaku.map(d => d.time)].reduce((max,value)=>Math.max(max,value),0) };
 }
@@ -53,6 +55,7 @@ content: the overview object required below. Overview must be a complete sentenc
 evidence: 2-24 records covering every concrete factual assertion in the reply and every listed song/game. Each record has exactly these required fields:
 {"target":"reply|game|song","value":"exact reply phrase, or exact listed song/game name","sourceIds":["T123","D456"],"actor":"host|team|audience|uncertain|performance"}.
 T-IDs identify original subtitle segments and D-IDs identify merged audience messages, never speaker identities. Return 1-6 existing source IDs per record; the program will retrieve exact text. Do not retype, repair or paraphrase evidence quotes. value for reply must occur verbatim in reply. Actor host requires supporting named-host T-IDs, not only D-IDs or guest/unknown T-IDs. For canonical song/game names also include a nearby D-ID or T-ID that confirms the spelling, and a T-ID proving actual performance/play instead of a mere mention. If uncertain, omit the name.
+${source?.byId?.has('P1') ? 'P1 is the already-published post in the reply section, not speech or audience. Cite P1 only for target reply when directly responding to what the host posted (actor host is allowed for that post). It cannot prove a live event, played game, performed song or any overview field. Keep at least one T/D-grounded live detail in the reply; P1 does not replace the live source.' : ''}
 Do not invent evidence. If an attractive detail cannot be supported, choose a different detail or remove that claim before returning.
 REPLY CONTENT RULES:\n${replyRules}\nOVERVIEW CONTENT RULES:\n${overviewRules}`;
 }
@@ -82,11 +85,13 @@ function validateCombinedResult(text, source, roomId, wordLimit = configLoader.g
         }
         const rows = [...new Set(record.sourceIds)].map(id => source.byId.get(id));
         const speech = rows.filter(r => r.source === 'speech');
+        const hasReplyDynamic = rows.some(r => r.source === 'reply_dynamic');
+        if (hasReplyDynamic && record.target !== 'reply') throw new Error('Post evidence is only valid for a reply');
         const namedOther = speech.some(s => {
             const label = s.speaker || speakerLabel(s.text);
             return label && !/^(?:UNKNOWN|SPEAKER_\d+)$/iu.test(label) && !source.hostLabels.has(normalize(label));
         });
-        if (record.actor === 'host' && (!speech.length || namedOther)) {
+        if (record.actor === 'host' && ((!speech.length && !hasReplyDynamic) || namedOther)) {
             throw new Error('Host attribution lacks a recognized source speaker');
         }
         const hostAttributionUnverified = record.actor === 'host' && source.multipleSpeakers
@@ -104,7 +109,9 @@ function validateCombinedResult(text, source, roomId, wordLimit = configLoader.g
         }
         return { ...record, sources: rows, corroboration, hostAttributionUnverified, linked: true };
     });
-    if (!linked.some(r => r.target === 'reply')) throw new Error('Reply has no linked evidence');
+    if (!linked.some(r => r.target === 'reply' && r.sources.some(row => row.source !== 'reply_dynamic'))) {
+        throw new Error('Reply has no linked live evidence');
+    }
     for (const [field,target] of [['games','game'],['songs','song']]) {
         for (const value of normalized[field]) if (!linked.some(r => r.target === target && r.value === value)) {
             throw new Error(`Listed ${target} has no evidence`);

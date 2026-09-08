@@ -5,7 +5,9 @@ const { cuesForWindow, formatEvidenceCues, linkClipEvidence, parseJsonResponse }
 const { participantPromptLines } = require('./participant_context');
 const { postProcessAiClipMetadata } = require('../ai_clip_metadata');
 const { packActorEvidence } = require('./actor_evidence_encoding');
-const { supportsDialogueSpeaker } = require('./dialogue_evidence');
+const { supportsDialogueSpeaker, localDialoguePerson } = require('./dialogue_evidence');
+const { buildEntityContext, referenceNames } = require('./entity_context');
+const { validateRoleReference, roleReferencePromptLines } = require('./role_reference');
 
 const COPY_FIELDS = ['title', 'coverText', 'description'];
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
@@ -13,6 +15,7 @@ const copyDigest = copy => hash(COPY_FIELDS.map(key => String(copy[key] || '')).
 const normalized = value => String(value || '').normalize('NFKC').replace(/[\s\p{P}\p{S}]/gu, '').toLowerCase();
 const personForName = (name, context) => context?.people?.find(person =>
     [person.label, person.preferredName, ...person.names].some(value => normalized(value) === normalized(name)));
+const claimPerson = (name, packet) => personForName(name, packet.context) || localDialoguePerson(name, packet);
 
 function attributionRisk(clip, evidence, context) {
     const windowCues = cuesForWindow(evidence, clip);
@@ -23,10 +26,10 @@ function attributionRisk(clip, evidence, context) {
     const cues = validCitations ? cited : windowCues;
     const publicCopy = [clip.title, clip.description, clip.coverText].join('\n');
     const text = [publicCopy, ...cues.map(cue => cue.text)].join('\n');
-    const people = (context?.people || []).filter(person => nameMatcher(person.names)(text));
+    const people = (context?.people || []).filter(person => nameMatcher(referenceNames(person))(text));
     const observed = cues.flatMap(cue => cue.items.flatMap(item => item.speakerEvidence?.observations || []));
     const names = new Set(observed.filter(row => row.scope === 'row').map(row => row.label).filter(Boolean));
-    const namedCopy = (context?.people || []).filter(person => nameMatcher(person.names)(publicCopy));
+    const namedCopy = (context?.people || []).filter(person => nameMatcher(referenceNames(person))(publicCopy));
     const attributedCopy = namedCopy.length > 0 || /(?:连麦|对方|她|他|嘉宾|朋友|前辈|\b(?:he|she|guest)\b)/iu.test(publicCopy);
     const reasons = [];
     const voiceIds = new Set([...names].map(name => personForName(name, context)?.id).filter(Boolean));
@@ -35,6 +38,8 @@ function attributionRisk(clip, evidence, context) {
     if (attributedCopy && observed.some(row => row.scope !== 'row' || row.smoothed)) reasons.push('uncertain_speaker');
     if (attributedCopy && !observed.length && (context?.people || []).some(person => !person.sourceHost
         && ['planned', 'voice_matched'].includes(person.presence))) reasons.push('multiple_participants_without_local_voice');
+    if (context?.entityReferencesEnabled && attributedCopy && !observed.length
+        && /(?:连麦|联动|嘉宾|对话|\b(?:cohost|collab|conversation)\b)/iu.test(text)) reasons.push('conversational_context_without_voice');
     if (attributedCopy && people.some(person => !person.sourceHost)) reasons.push('other_person_in_context');
     if (['playback', 'uncertain'].includes(clip.grounding?.sourceKind)
         || (clip.grounding?.sourceKind === 'recount' && /(?:他|她|对方|有人|朋友|前辈|司机|店员|师傅|工作人员|转述)/u.test(
@@ -54,7 +59,10 @@ function buildActorReviewPacket(clip, id, evidence, danmaku, context, settings =
         copy: Object.fromEntries(COPY_FIELDS.map(field => [field, String(clip[field] || '')])),
         sourceKind: clip.grounding?.sourceKind || 'uncertain', inRangeCueIds: inRange.map(cue => cue.id),
         speech: formatEvidenceCues(cues), audience };
-    return { id, clip, evidence, danmaku, context, data, cueIds: new Set(data.inRangeCueIds), contextCueIds: new Set(cues.map(cue => cue.id)),
+    const entityContext = buildEntityContext(clip, evidence, danmaku, context, settings.entityReferences);
+    if (entityContext) data.entityContext = entityContext;
+    return { id, clip, evidence, danmaku, context, data, ...(entityContext ? { entityContext } : {}),
+        cueIds: new Set(data.inRangeCueIds), contextCueIds: new Set(cues.map(cue => cue.id)),
         danmakuIds: new Set(audience.map(row => row.id)), sourceSha256: evidence.sourceSha256,
         digest: hash(JSON.stringify({ source: evidence.sourceSha256, data, people: context?.people || [] })) };
 }
@@ -83,6 +91,7 @@ function actorReviewPrompt(packets, context, options = {}) {
         ] : []),
         'evidenceDanmakuIds只填本窗口内实际用到的D-ID；引号只保留原文确有的字句。标题18-42字、简介简洁、封面两行，不带发布前缀或来源落款。',
         'claims中的人名也必须在引用原话中有依据；人名有ASR变体时，补充本窗口含正确称呼的原话ID，不能只有拼写不同的一个残句。',
+        ...(packets.some(packet => packet.entityContext) ? roleReferencePromptLines() : []),
         '只输出JSON：{"reviews":[{"clipId":"c1","decision":"repair","copy":{"title":"标题","coverText":"第一行\\n第二行","description":"内容简介"},"claims":[{"fields":["title","coverText","description"],"action":"提问","narrator":"人名或null","actor":"人名或null","target":"人名或null","sourceKind":"recount","identityBasis":"voice","speakerCueIds":["G1"],"cueIds":["G1"]}],"evidenceDanmakuIds":[],"reason":"简短核验依据"}]}',
         ...(encoding === 'compact' ? [
             '以下clips保留每片完整字幕和允许引用范围。audienceRows列为[id,精确绝对秒数,textOrRef]；ref对象引用textDictionary，字面文本保留原样。',
@@ -102,6 +111,10 @@ function validateActorReview(review, packet) {
     const covered = new Set();
     const refs = new Set();
     const onlyRecount = review.claims.every(claim => claim?.sourceKind === 'recount');
+    if (packet.entityContext && /(?:我|\bI\b|\bmy\b)/iu.test(copy.title)
+        && review.claims.some(claim => claim?.fields?.includes('title') && !claim.narrator && !claim.actor)) {
+        issues.push('unresolved_first_person:title');
+    }
     if (onlyRecount) COPY_FIELDS.forEach(field => {
         if (/(?:直播中|现在|刚刚|现场|当场)/u.test(copy[field]) && !/(?:回忆|当时|那次|以前|之前|曾经)/u.test(copy[field])) {
             issues.push(`recount_as_live:${field}`);
@@ -126,13 +139,13 @@ function validateActorReview(review, packet) {
             if (claim[role] !== null && (typeof claim[role] !== 'string' || !claim[role].trim())) fail(`invalid_${role}`);
         }
         if (claim.identityBasis === 'voice') {
-            const person = personForName(claim.narrator, packet.context);
+            const person = claimPerson(claim.narrator, packet);
             if (!person || !Array.isArray(claim.speakerCueIds) || !claim.speakerCueIds.length
                 || claim.speakerCueIds.some(id => !packet.cueIds.has(id) || !claim.cueIds.includes(id))) fail('missing_speaker_citation');
             else if (!claim.speakerCueIds.every(id => packet.evidence.byId.get(id).items.every(item =>
                 item.speakerEvidence?.status === 'row_supported' && personForName(item.speakerEvidence.label, packet.context)?.id === person.id))) fail('speaker_citation_conflict');
         } else if (claim.identityBasis === 'dialogue') {
-            const person = personForName(claim.narrator, packet.context);
+            const person = claimPerson(claim.narrator, packet);
             if (!supportsDialogueSpeaker(claim, packet, person?.id)) fail('unproven_dialogue_narrator');
             else {
                 const identityCues = new Set([...claim.speakerCueIds, ...claim.cueIds.filter(id =>
@@ -144,17 +157,28 @@ function validateActorReview(review, packet) {
         } else if (claim.narrator && !nameMatcher(personForName(claim.narrator, packet.context)?.names || [claim.narrator])(rawSpeech)) {
             fail('unproven_narrator');
         }
-        if (claim.identityBasis === 'unresolved' && (claim.narrator || claim.actor)) fail('unresolved_named_actor');
-        const actor = personForName(claim.actor, packet.context);
-        const narrator = personForName(claim.narrator, packet.context);
-        if (claim.actor && !(actor && narrator && actor.id === narrator.id && ['voice', 'dialogue'].includes(claim.identityBasis))
-            && !nameMatcher(actor?.names || [claim.actor])(rawSpeech)) fail('unproven_actor');
-        const target = personForName(claim.target, packet.context);
-        if (claim.target && !(target && narrator && target.id === narrator.id && ['voice', 'dialogue'].includes(claim.identityBasis))
-            && !nameMatcher(target?.names || [claim.target])(rawSpeech)) fail('unproven_target');
+        if (claim.identityBasis === 'unresolved' && (claim.narrator || (!packet.entityContext && claim.actor))) fail('unresolved_named_actor');
+        const actor = claimPerson(claim.actor, packet);
+        const narrator = claimPerson(claim.narrator, packet);
+        const target = claimPerson(claim.target, packet);
+        for (const [role, person] of [['actor', actor], ['target', target]]) {
+            if (packet.entityContext && claim.roleEvidence?.[role] && !claim[role]) fail(`role_reference_without_role:${role}`);
+            const sameNarrator = person && narrator && person.id === narrator.id && ['voice', 'dialogue'].includes(claim.identityBasis);
+            if (packet.entityContext && claim[role] && (!sameNarrator || claim.roleEvidence?.[role])) {
+                validateRoleReference(claim, role, packet).forEach(fail);
+            } else if (claim[role] && !sameNarrator && !nameMatcher(person?.names || [claim[role]])(rawSpeech)) fail(`unproven_${role}`);
+        }
         if (actor && !actor.sourceHost && claim.fields.includes('title') && !copy.title.includes(actor.preferredName)) fail('guest_name_missing_from_title');
     });
     COPY_FIELDS.filter(field => copy[field] && !covered.has(field)).forEach(field => issues.push(`uncovered_copy_field:${field}`));
+    if (packet.entityContext) packet.entityContext.people.forEach(person => {
+        for (const field of COPY_FIELDS) {
+            if (nameMatcher(person.names)(copy[field]) && !review.claims.some(claim => claim?.fields?.includes(field)
+                && ['narrator', 'actor', 'target'].some(role => [person.name, person.copyName, ...person.names].includes(claim[role])))) {
+                issues.push(`unclaimed_entity:${field}:${person.id}`);
+            }
+        }
+    });
     if (!Array.isArray(review.evidenceDanmakuIds)) issues.push('missing_audience_citations');
     const grounding = linkClipEvidence({ ...copy, sourceKind: packet.clip.grounding?.sourceKind || 'uncertain',
         evidenceCueIds: [...refs], evidenceDanmakuIds: review.evidenceDanmakuIds || [] }, packet.clip,
@@ -188,6 +212,7 @@ function applyActorReview(packet, review, issues = validateActorReview(review, p
             proposedCopy: review?.copy || null, decision: review?.decision || null,
             claims: review?.claims || [], issues, reason: review?.reason || '',
             ...(packet.dialogueEvidence ? { dialogueEvidence: packet.dialogueEvidence } : {}),
+            ...(packet.entityContext ? { entityContext: packet.entityContext } : {}),
             start: packet.clip.start, end: packet.clip.end } };
     if (passed) {
         const cueIds = Array.from(new Set(review.claims.flatMap(claim => claim.cueIds)));

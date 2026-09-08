@@ -147,6 +147,26 @@ module.exports = {
       min_uptime: '10s',
       restart_delay: 5000,
       kill_timeout: 10000
+    },
+    {
+      name: 'recorder-watchdog',
+      script: 'scripts/recorder_watchdog.js',
+      args: 'run',
+      cwd: __dirname,
+      instances: 1,
+      exec_mode: 'fork',
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '256M',
+      env: { NODE_ENV: 'production' },
+      env_production: { NODE_ENV: 'production' },
+      error_file: path.join(__dirname, 'logs', 'recorder-watchdog-error.log'),
+      out_file: path.join(__dirname, 'logs', 'recorder-watchdog-out.log'),
+      time: false,
+      min_uptime: '10s',
+      max_restarts: 10,
+      restart_delay: 10000,
+      kill_timeout: 5000
     }
   ],
 

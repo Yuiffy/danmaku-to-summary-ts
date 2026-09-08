@@ -7,6 +7,7 @@ const summary = require('./live_content_summary');
 const loader = require('./config-loader');
 const combined = require('./full_reply_summary');
 const review = require('./reply_summary_review');
+const live = require('./live_generation_context');
 
 describe('combined reply/summary publication workflow', () => {
   let dir: string;
@@ -63,6 +64,45 @@ describe('combined reply/summary publication workflow', () => {
     const second=await workflow.tryGenerateCombinedReply(highlight,'1',{config,generateText:generate});
     expect(second.handled).toBe(true);
     expect(generate).toHaveBeenCalledTimes(2);
+  });
+
+  test('carries the same post through generation and evidence review without changing the shared live source', async () => {
+    const context = { schemaVersion: live.SCHEMA_VERSION, roomId: '1', replyDynamic: {
+      id: 'post-1', publishTime: '2026-08-01T15:15:00.000Z', content: 'Going to eat noodles before bed.'
+    } };
+    fs.writeFileSync(live.getLiveContextPath(highlight), JSON.stringify(context));
+    const withPost = draft();
+    withPost.reply += ' Enjoy your noodles!';
+    withPost.evidence.push({ target: 'reply', value: 'Enjoy your noodles', sourceIds: ['P1'], actor: 'host' });
+    const generate = jest.fn().mockResolvedValueOnce(result(JSON.stringify(withPost), 'draft'))
+      .mockResolvedValueOnce(result('{"verdict":"pass","issues":[]}', 'review'));
+    expect((await workflow.tryGenerateCombinedReply(highlight, '1', { config, generateText: generate })).handled).toBe(true);
+    expect(generate).toHaveBeenCalledTimes(2);
+    expect(generate.mock.calls[0][0].startsWith(payload.sharedPrefix)).toBe(true);
+    expect(payload.sharedPrefix).not.toContain(context.replyDynamic.content);
+    expect(generate.mock.calls[0][0]).toContain(context.replyDynamic.content);
+    expect(generate.mock.calls[1][0]).toContain(context.replyDynamic.content);
+    expect(generate.mock.calls[1][0]).toContain('do not delete it merely because it was not spoken on stream');
+    expect(generate.mock.calls[1][0]).not.toContain('NaN');
+    const state = JSON.parse(fs.readFileSync(workflow.pathsFor(highlight).artifact, 'utf8'));
+    expect(state.replyDynamic).toEqual(context.replyDynamic);
+    expect(state.output.reply).toBe(withPost.reply);
+    expect(state.output.content.games).toEqual(['Chess']);
+
+    const source = combined.evidenceContext(payload.evidence.speech, [], '1', config, payload.evidence, context);
+    const packet = review.buildReviewPacket(state.output, source);
+    expect(packet.byId.has('P1')).toBe(true);
+    const repaired = review.applyReview(JSON.stringify({ verdict: 'corrected',
+      issues: [{ target: 'reply', reason: 'Post says noodles before bed.', sourceIds: ['P1'] }], corrected: withPost
+    }), state.output, packet, source, '1', 250);
+    expect(repaired.output.reply).toBe(withPost.reply);
+
+    context.replyDynamic.content = 'A different post arrived after generation.';
+    fs.writeFileSync(live.getLiveContextPath(highlight), JSON.stringify(context));
+    expect((await workflow.tryGenerateCombinedReply(highlight, '1', { config, generateText: generate })).reason)
+      .toBe('existing-artifacts');
+    expect(generate).toHaveBeenCalledTimes(2);
+    expect(fs.readFileSync(workflow.pathsFor(highlight).reply, 'utf8')).toContain(withPost.reply);
   });
 
   test('preserves existing human or legacy output and does not spend a combined request', async () => {

@@ -93,6 +93,50 @@ SenseVoice 通过 `src/scripts/python/sensevoice_transcribe.py` 子进程运行�
 
 `scripts/benchmark_asr_optimizations.py` 可比较批量 SenseVoice 和常驻 Paraformer 的参考缓存；通过 `--sensevoice-audio`、`--paraformer-audio`、可选 `--reference-manifest` 指定输入，并用 `--output-dir temp/<日期>-<任务>/asr-benchmark` 保存结果。该工具采用固定的对照配置和房间选择，运行前应核对与素材的匹配关系；单次日志、指纹和结果报告不提交到 `docs/`。
 
+### 中文疑句的局部复听
+
+中文切片的疑句复听优先使用已配置的 FunASR-family 模型。先区分项目的字幕分段路径与
+[SenseVoice 官方示例](https://github.com/QwenAudio/SenseVoice)：项目会在 VAD 合并后通过
+`max_vad_segment_s` 和 `asr_max_segment_s` 再限制转写块，后者未配置时默认8秒。
+因此只增大 `merge_length_s` 不等于改用了官方长语音调用方式。
+
+短音频严格控制在30秒以内时，可以不加载VAD，让完整问答进入一次推理：
+
+```python
+from funasr import AutoModel
+from funasr.utils.postprocess_utils import rich_transcription_postprocess
+
+model = AutoModel(model="iic/SenseVoiceSmall", device="cpu", ncpu=2, disable_update=True)
+result = model.generate(
+    input="under_30s.wav", cache={}, language="zh", use_itn=False, batch_size=1,
+)
+print(rich_transcription_postprocess(result[0]["text"]))
+```
+
+这是独立转写示例，不触发选材、通知或上传。使用匹配本地CUDA环境且当前负载允许的GPU时，
+可换用 `device="cuda:0"`。`ncpu` 应显式传入：FunASR模型构造会设置PyTorch线程数，
+不能仅凭构造前的 `torch.set_num_threads` 判断整个流程的实际线程上限。
+使用安装包已注册的SenseVoice实现时无需指定 `remote_code`；如按官方仓库示例加载自定义实现，
+必须给出真实存在的 `model.py` 路径，并记录实际加载的实现，不能混淆两种来源。
+
+较长音频的官方VAD配方为构造时 `vad_model="fsmn-vad"`、
+`vad_kwargs={"max_single_segment_time": 30000}`，推理时
+`cache={}`、`language="auto"`、`use_itn=True`、`batch_size_s=60`、
+`merge_vad=True`、`merge_length_s=15`。合并参数不是强行切成15秒；实际VAD边界要检查输出。
+短窗起止位置也会改变识别，不能认为多给上下文必然更准确。
+
+局部复听保留原始模型输出、音频哈希与源时间区间；不提供希望模型听到的答案。
+ITN开关用于对照，不保证关闭后每个口吃或改口都更准确。
+只有整段文本、没有可靠词级时间戳时，将结果作为补充证据，不自动覆盖原SRT或重分配说话人。
+SenseVoice的情绪/声音事件标签不是speaker身份；匿名speaker需要单独的CAM++等模型，
+真人姓名仍需声纹参考或独立身份线索。
+
+复听的验收应同时记录转写内容、切块边界和剩余歧义。不同ASR对同一段音频给出相近字词，
+不等于独立证实同一种语义；更多上下文或不同ITN设置也不保证能恢复口吃、否定或自我修正。
+不要提供希望听到的答案，也不要把重复推理的一致性当作人工听审或独立标注。
+比较耗时时分开模型加载、标点加载与实际推理，并核实构造后的线程数；
+旧流程的冷启动总时长不能直接与已加载模型的一次推理比较。记录局部有效结果，但不足以推广时保持原生产配置。
+
 ## 启用 Fun-ASR-Nano
 
 这个 backend 适合做热词验证，因为官方模型代码明确支持 `hotwords=["..."]`，热词会直接进入 prompt。

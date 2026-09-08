@@ -11,6 +11,7 @@ const os = require('os');
 const path = require('path');
 const fetchMock = require('node-fetch');
 const loader = require('./config-loader');
+const liveContext = require('./live_generation_context');
 const { generateGoodnightReply, inspectGeneratedReply } = require('./ai_text_generator');
 const sentence = '今天从一开始摸不清方向到最后配合越来越顺畅，认真研究机制的过程也很有意思，感谢大家陪伴';
 const valid = `${sentence}！${sentence}。`;
@@ -79,6 +80,25 @@ describe('goodnight generator entry point', () => {
     expect(body.max_output_tokens).toBe(100000);
     expect(fs.readFileSync(file, 'utf8').endsWith(valid)).toBe(true);
     expect(fs.readdirSync(directory).filter(name => name.includes('ATTEMPT'))).toEqual([]);
+    expect(await generateGoodnightReply(highlight, 'fixture')).toBe(file);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  test('uses the prepared post in the first model call and preserves the reply after a later post arrives', async () => {
+    const contextPath = liveContext.getLiveContextPath(highlight);
+    const context = { schemaVersion: liveContext.SCHEMA_VERSION, roomId: 'fixture', replyDynamic: {
+      id: 'post-1', publishTime: '2026-08-01T15:15:00.000Z', content: 'Going to eat noodles now.'
+    } };
+    fs.writeFileSync(contextPath, JSON.stringify(context));
+    fetchMock.mockResolvedValue(completedResponse(valid));
+    const pending = generateGoodnightReply(highlight, 'fixture');
+    await jest.runAllTimersAsync();
+    const file = await pending;
+    expect(file).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(JSON.parse(fetchMock.mock.calls[0][1].body).input)).toContain(context.replyDynamic.content);
+    context.replyDynamic.content = 'A different, later post.';
+    fs.writeFileSync(contextPath, JSON.stringify(context));
     expect(await generateGoodnightReply(highlight, 'fixture')).toBe(file);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });

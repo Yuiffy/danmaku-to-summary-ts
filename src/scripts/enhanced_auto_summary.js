@@ -1619,23 +1619,6 @@ const main = async () => {
             console.log(`   图片最短时长: ${aiSettings.minComicDurationMinutes} 分钟`);
             console.log(`   图片生成概率: ${(aiSettings.comicGenerationProbability * 100).toFixed(0)}%`);
 
-            try {
-                const preparedContext = await liveGenerationContext.prepareLiveGenerationContext(
-                    highlightPath,
-                    finalRoomId,
-                    configLoader.getConfig()
-                );
-                const liveContext = preparedContext.context;
-                console.log(`🧭 本场事实上下文已保存: ${path.basename(preparedContext.outputPath)}`);
-                console.log(`   直播标题: ${liveContext.liveTitle || '未取得'}`);
-                console.log(`   开播前近期动态: ${liveContext.recentDynamics.length} 条 (${liveContext.sources.recentDynamics})`);
-                if (liveContext.recentDynamicsError) {
-                    console.warn(`   ⚠️ 近期动态获取失败，已降级为标题上下文: ${liveContext.recentDynamicsError}`);
-                }
-            } catch (error) {
-                console.warn(`⚠️  准备本场事实上下文失败，将由生成器从文件名降级解析: ${error.message}`);
-            }
-
             const normalizedSrtPath = srtFile ? path.normalize(srtFile) : null;
             const fullInputPayload = pendingBackgroundClipPayloads.find(payload => (
                 String(payload.roomId || '') === String(finalRoomId || '')
@@ -1666,6 +1649,24 @@ const main = async () => {
                 });
             } catch (error) {
                 console.warn(`⚠️  准备全量直播共享输入失败，实验任务降级且不影响原流程: ${error.message}`);
+            }
+
+            try {
+                const preparedContext = await liveGenerationContext.prepareLiveGenerationContext(
+                    highlightPath,
+                    finalRoomId,
+                    configLoader.getConfig(), { srtPath: srtFile }
+                );
+                const liveContext = preparedContext.context;
+                console.log(`🧭 本场事实上下文已保存: ${path.basename(preparedContext.outputPath)}`);
+                console.log(`   直播标题: ${liveContext.liveTitle || '未取得'}`);
+                console.log(`   开播前近期动态: ${liveContext.recentDynamics.length} 条 (${liveContext.sources.recentDynamics})`);
+                console.log(`   下播动态上下文: ${liveContext.replyDynamic?.id || '未采用'} (${liveContext.sources.replyDynamic})`);
+                if (liveContext.recentDynamicsError) {
+                    console.warn(`   ⚠️ 近期动态获取失败，已降级为标题上下文: ${liveContext.recentDynamicsError}`);
+                }
+            } catch (error) {
+                console.warn(`⚠️  准备本场事实上下文失败，将由生成器从文件名降级解析: ${error.message}`);
             }
             
             // AI文本生成

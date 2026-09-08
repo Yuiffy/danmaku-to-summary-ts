@@ -89,4 +89,27 @@ describe('independent text speaker inference', () => {
     expect(validateActorReview({ clipId: 'c1', decision: 'repair', copy: { title: 'Guest asked Mimi', coverText: 'Question', description: 'Guest asked Mimi.' },
       claims: [claim], evidenceDanmakuIds: [] }, p)).toContain('speaker_dialogue_conflict:1');
   });
+  test('discovers a literal local speaker without a preconfigured roster or voice reference', () => {
+    const evidence = buildSubtitleEvidence([{ start: 0, end: 4, text: 'I am Nova. Host, can you hear me?' },
+      { start: 4, end: 8, text: 'Yes, Nova, I can hear you.' }, { start: 8, end: 12, text: 'I asked about the game.' }], { groupSegments: false });
+    const p = buildActorReviewPacket(clip, 'c1', evidence, [], context, { entityReferences: { enabled: true } });
+    const value: any = answer();
+    value.windows[0].localPeople = [{ id: 'local:1', name: 'Nova', anchorCueIds: ['G1','G2'] }];
+    value.windows[0].turns[0].speakerId = 'local:1';
+    p.dialogueEvidence = parse(value, p);
+    expect(p.dialogueEvidence.localPeople[0]).toMatchObject({ label: 'Nova', scope: 'this_window_only', presence: 'dialogue_inferred' });
+    const claim = { fields: ['title','coverText','description'], action: 'asked', actor: 'Nova', narrator: 'Nova', target: null,
+      identityBasis: 'dialogue', sourceKind: 'recount', speakerCueIds: ['G3'], cueIds: ['G3'] };
+    expect(validateActorReview({ clipId: 'c1', decision: 'repair', copy: { title: 'Nova asked about the game',
+      coverText: 'Game question', description: 'Nova recalled a question.' }, claims: [claim], evidenceDanmakuIds: [] }, p)).toEqual([]);
+  });
+  test('rejects local names invented from labels, audience-only mentions, or duplicate IDs', () => {
+    const p = buildActorReviewPacket(clip, 'c1', source, [{ time: 2, text: 'Nova!' }], context, { entityReferences: { enabled: true } });
+    const value: any = answer(); value.windows[0].localPeople = [{ id: 'local:1', name: 'Nova', anchorCueIds: ['G1'] }];
+    expect(() => parse(value, p)).toThrow('Unproven');
+    value.windows[0].localPeople[0].name = 'SPEAKER_01';
+    expect(() => parse(value, p)).toThrow('Unproven');
+    value.windows[0].localPeople[0].name = 'Guest';
+    expect(() => parse(value, p)).toThrow('duplicate');
+  });
 });

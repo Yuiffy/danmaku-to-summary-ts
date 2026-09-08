@@ -1453,6 +1453,13 @@
       "maxElapsedMs": 1200000,
       "repairAttempts": 1,
       "dialogueEnabled": false,
+      "entityReferences": {
+        "enabled": false,
+        "contextSeconds": 90,
+        "maxContextRows": 24,
+        "maxContextChars": 6000,
+        "maxReferenceGapSeconds": 120
+      },
       "evidenceEncoding": "legacy",
       "timeoutMs": 600000,
       "maxTokens": 12000

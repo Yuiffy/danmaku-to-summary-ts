@@ -174,6 +174,80 @@ without a voice reference. Conflicts with direct local acoustic evidence stay
 pending. Static avatars indicate visible participation, not proof of speaking;
 visual turn inference remains an isolated experiment, not a default identity source.
 
+### Automatic Entity References
+
+This is an experimental, default-off path, not an extension implicitly enabled
+by `attribution.enabled` or `dialogueEnabled`. Check the effective production
+configuration before describing it as deployed. A successful isolated name
+match, source-bound prototype, or passing schema test is not rollout acceptance.
+
+`attribution.entityReferences.enabled` is a separate opt-in for referenced-person
+resolution. No per-session roster is required. `participant_context.js` collects
+candidate nicknames from configured room names and mention labels, and keeps ASR
+variant hints separate. These candidates never enter unconditional title/SRT
+replacement rules, and mentions do not become speaker or attendance evidence.
+
+`entity_context.js` retrieves bounded nearby source speech and name-related
+comments, including names just outside a selected window. Its `N` references have
+`purpose: name_resolution_only`; they cannot support actions, quotations or wider
+clip boundaries. Defaults are 90 seconds per side, 24 rows, 6000 characters and a
+120-second maximum gap between an action and its in-clip name anchor. Complete
+selected rows, source IDs, times, candidate provenance and a digest are retained.
+Omitted context causes abstention when evidence is insufficient, not guessed IDs.
+
+Each named actor/target other than the independently verified narrator provides
+`roleEvidence[role]`: `entityId`, literal `mention`, in-clip name `cueIds`, optional
+name-only `contextIds`, `confidence` and `reason`. The action retains its own
+`claim.cueIds`. Known entities use configured IDs and public names. Unregistered
+people can use `entityId: null` and a source-supported literal name or role;
+unknown names do not need an operator-created profile. This does not let reference
+evidence establish who spoke the audio.
+
+`role_reference.js` rejects missing, stale, fabricated, out-of-range, conflicting
+or ambiguous bindings. Nicknames need independent support; ASR spelling candidates
+need source-speech corroboration. Audience-only name mentions cannot certify a
+role. These checks validate evidence structure and catch common contradictions,
+not general semantic truth; the model must still read the full local discourse.
+Literal name references may include a bounded conventional honorific such as
+`前辈`, `老师`, or `Dr.`. Only the comparison with configured names uses this
+form; the original citation is preserved. Corroboration may refer to the base
+nickname, but negation and collisions still apply, including honorific-bearing
+names that belong to a different catalog entry. A duplicated canonical name is
+not unique evidence for choosing one of its catalog IDs.
+An empty actor/target cannot carry a confident role binding. An unresolved
+questioner also cannot be packaged as an ambiguous first-person title.
+
+The independent dialogue analyzer can propose bounded, window-local people from
+original self-introductions/direct addresses using `localPeople`. Their names
+must appear in supplied speech and each supported turn still needs two distinct
+anchors. They are never written to the global registry or a planned roster.
+All new analysis shares the existing actor-review request/time limits. Name
+context itself requires no additional model call. Saved reviews retain both
+`roleEvidence` and the bound `entityContext` for inspection and artifact QA.
+
+### Evaluation Lessons
+
+- Separate audio-speaker identity, referenced-person identity, and action roles.
+  Knowing both names does not prove who asked whom. A missing catalog ID should
+  not erase a locally identified role, but a complete role graph can still be wrong.
+- Review only facts used by the public copy. Explicitly check negation, self-repair,
+  quoted speech, inner thoughts and present commentary about past events. Do not
+  add declarations, agreement or spoken confrontations inferred from fragments.
+- Name presence, valid citations and model-reported high confidence are not
+  semantic truth. Report wrong identities, correct-name coverage and abstention
+  separately; neither anonymity nor changing the tested event counts as a fix.
+- Keep synthetic controls, real recording holdouts and repaired-response replays
+  distinct. When a validator changes, preserve the original outcome and identify
+  offline revalidation as such; it is not a new independent model success.
+- Preserve complete request/response and source provenance. Missing usage after
+  rejection, HTTP failure or timeout is unknown, not zero. Cached input and
+  reasoning output are subsets, not additional token totals. Development costs
+  and previous selection-only A/B results do not establish deployed per-stream cost.
+- End bounded experiments with an explicit adopt/defer decision. Keep uncertain
+  features off; do not resume paid probes or promote them merely because code or
+  notes remain in the workspace. Store run-specific results and closure state in
+  ignored `temp/`, not in shared workflow instructions.
+
 ## Event Contract
 
 Detectors may use their own internal measurements, but the handoff to a

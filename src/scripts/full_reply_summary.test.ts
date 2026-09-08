@@ -52,6 +52,23 @@ describe('combined full reply and summary evidence', () => {
     expect(() => combined.validateCombinedResult(JSON.stringify(p), source(), '1', 250)).toThrow('Host attribution');
   });
 
+  it('links a post response without allowing the post to prove a played game or replace live evidence', () => {
+    const withPost = source();
+    withPost.byId.set('P1', live.getReplyDynamicEvidence({ replyDynamic: {
+      id: 'post-1', publishTime: '2026-08-01T15:15:00.000Z', content: 'Going to eat noodles and play Chess tomorrow.'
+    } }));
+    const p = payload();
+    p.reply += ' Enjoy your noodles!';
+    p.evidence.push({ target: 'reply', value: 'Enjoy your noodles', sourceIds: ['P1'], actor: 'host' });
+    const output = combined.validateCombinedResult(JSON.stringify(p), withPost, '1', 250);
+    expect(output.evidence[2].sources[0].source).toBe('reply_dynamic');
+    expect(output.evidence[2].hostAttributionUnverified).toBe(false);
+    p.evidence[1].sourceIds.push('P1');
+    expect(() => combined.validateCombinedResult(JSON.stringify(p), withPost, '1', 250)).toThrow('only valid for a reply');
+    p.evidence = [p.evidence[2], p.evidence[2]];
+    expect(() => combined.validateCombinedResult(JSON.stringify(p), withPost, '1', 250)).toThrow('no linked live evidence');
+  });
+
   it('keeps all source text ahead of task suffixes for cache reuse', () => {
     const fullPrefix = `${live.SHARED_PROMPT_CACHE_START}\nFULL SOURCE including the last topic\n${live.SHARED_PROMPT_CACHE_END}`;
     const prompt = combined.buildCombinedPrompt({ fullPrefix, highlight: 'original highlight', roomId: '1',
