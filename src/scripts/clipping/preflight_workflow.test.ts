@@ -51,6 +51,10 @@ describe('pre-render topic workflow', () => {
         event: 'A complete event', reason: 'Complete setup and payoff', score: 80, extensionReason: '', sourceKind: 'live_speech',
         evidenceCueIds: input.hits.map(hit => hit.cueId), evidenceDanmakuIds: [], warnings: [],
         title: 'Prepared title', description: 'Prepared description', coverText: 'Prepared\nCover',
+        ...(input.boundaryReviewRequired ? { boundaryReview: {
+          setupCueId: input.subtitles[0].id, closureCueId: input.subtitles.at(-1).id,
+          startReason: 'The setup introduces the event', endReason: 'The answer closes this event',
+          dependencies: [], unresolvedCueIds: [] } } : {}),
         subtitleEdits: input.groupId === 'E1' ? [{ cueId: input.hits[0].cueId, original: 'prise', replacement: 'price',
           reason: 'Original ASR corroborates the word', evidenceCueIds: [input.hits[0].cueId] }] : []
       }] }), meta: { model: 'gpt-5.6-luna', attempts: [{ model: 'gpt-5.6-luna',
@@ -69,9 +73,16 @@ describe('pre-render topic workflow', () => {
       return { path: output, burnedSubtitles: true };
     });
     const coverGenerator = jest.fn(async () => { timeline.push('cover'); return null; });
+    const previewGenerator = jest.fn(async metadata => {
+      const preview = path.join(dir, `${metadata.window.start}_preview.mp4`);
+      fs.writeFileSync(preview, 'rough preview');
+      fs.copyFileSync(metadata.candidateSubtitles.path, preview.replace('.mp4', '.srt'));
+      metadata.reviewPreview = { status: 'ready', mediaPath: preview, srtPath: preview.replace('.mp4', '.srt'),
+        clipStart: 0, clipEnd: metadata.window.end - metadata.window.start };
+    });
     const register = jest.fn((_path, results) => ({ clipIds: results.map((_r, i) => 700 + i) }));
-    return { mediaGenerator, coverGenerator, register, promise: topic.generateTopicClips({ config,
-      originalMediaPath: media, srtPath: srt, mediaGenerator, coverGenerator,
+    return { mediaGenerator, coverGenerator, previewGenerator, register, promise: topic.generateTopicClips({ config,
+      originalMediaPath: media, srtPath: srt, mediaGenerator, coverGenerator, previewGenerator,
       registerReviewForUpload: register, notifyTopicClipResults: async () => true, ...overrides }) };
   }
 
@@ -90,7 +101,7 @@ describe('pre-render topic workflow', () => {
     expect(fs.readFileSync(srt, 'utf8')).toBe(original);
   });
 
-  test('provider failure does not silently render unreviewed fallback clips', async () => {
+  test('provider failure prepares review previews but does not burn or approve fallback clips', async () => {
     request.mockRejectedValue(new Error('provider failed'));
     const job = run();
     const results = await job.promise;
@@ -99,14 +110,48 @@ describe('pre-render topic workflow', () => {
     expect(results.every(result => fs.existsSync(result.candidateSubtitles.path))).toBe(true);
     expect(results.every(result => result.output.srtPath === result.candidateSubtitles.path && !result.candidateSubtitles.approval)).toBe(true);
     expect(job.mediaGenerator).not.toHaveBeenCalled();
+    expect(job.previewGenerator).toHaveBeenCalledTimes(results.length);
+    expect(results.every(result => fs.existsSync(result.reviewPreview.mediaPath))).toBe(true);
     expect(job.coverGenerator).not.toHaveBeenCalled();
     expect(job.register).toHaveBeenCalledTimes(1);
     expect(results.map(result => result.candidateId)).toEqual(results.map((_result, index) => 700 + index));
     expect(results.every(result => !result.uploadId)).toBe(true);
     const review = fs.readFileSync(path.join(dir, 'topic_clips/REVIEW.md'), 'utf8');
     expect(review).toContain('候选ID: 700');
+    expect(review).toContain('打开视频');
     expect(review).not.toContain('上传短ID:');
     expect(JSON.parse(fs.readFileSync(results[0].output.metadataPath, 'utf8')).candidateId).toBe(700);
+  });
+
+  test('preview failure keeps candidates registered and does not prevent other previews', async () => {
+    request.mockRejectedValue(new Error('provider failed'));
+    const previewGenerator = jest.fn().mockRejectedValueOnce(new Error('disk unavailable')).mockResolvedValueOnce(null);
+    const job = run({ previewGenerator });
+    const results = await job.promise;
+    expect(previewGenerator).toHaveBeenCalledTimes(2);
+    expect(results[0].reviewPreview).toMatchObject({ status: 'failed', error: 'disk unavailable' });
+    expect(results.every(result => result.status === 'pending_preflight' && result.candidateId && !result.uploadReady)).toBe(true);
+    expect(job.mediaGenerator).not.toHaveBeenCalled();
+    expect(fs.readFileSync(path.join(dir, 'topic_clips/REVIEW.md'), 'utf8')).toContain('粗剪失败: disk unavailable');
+  });
+
+  test('single-call quality preparation preserves unresolved dependencies and never burns them', async () => {
+    const original = request.getMockImplementation();
+    request.mockImplementation(async (prompt: string, options) => {
+      const result = await original(prompt, options);
+      const data = JSON.parse(result.text);
+      data.clips[0].boundaryReview.unresolvedCueIds = [data.clips[0].endCueId];
+      return { ...result, text: JSON.stringify(data) };
+    });
+    const job = run({ config: { ...config, clipTopics: { ...config.clipTopics,
+      review: { ...config.clipTopics.review, qualityRules: true } } } });
+    const results = await job.promise;
+    expect(request).toHaveBeenCalledTimes(2); // One request per group, with no extra reviewer round.
+    expect(job.mediaGenerator).not.toHaveBeenCalled();
+    expect(results.every(result => result.status === 'pending_preflight'
+      && result.aiReview.boundaryReview.status === 'needs_review')).toBe(true);
+    const plan = JSON.parse(fs.readFileSync(path.join(dir, 'topic_clips', 'recording_TOPIC_PLAN.json'), 'utf8'));
+    expect(plan.groups.every(group => group.clips[0].boundaryReview.unresolvedCueIds.length === 1)).toBe(true);
   });
 
   test('retries only selected planning groups without regenerating successful groups', async () => {

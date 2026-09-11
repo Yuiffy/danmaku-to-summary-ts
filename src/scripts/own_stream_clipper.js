@@ -1,4 +1,5 @@
 const { buildFallbackTitle, normalizeAiClips, isRerankResponseValid, clipsConflict, buildGroundingReviewLine } = require('./clipping/selection_result');
+const ownReview = require('./clipping/own_review_report');
 const { requestSelectionText, validSelectionResponse } = require('./clipping/selection_request');
 const { buildRerankEvidence } = require('./clipping/rerank_evidence');
 const { buildPersonEvidenceContext } = require('./clipping/person_evidence');
@@ -64,6 +65,7 @@ const DEFAULT_OWN_STREAM_CLIPS_CONFIG = {
     chunkSeconds: 2700,
     aiConcurrency: 3,
     clipConcurrency: 2,
+    enhancementConcurrency: 3,
     clipFfmpegThreads: 2,
     clipResourceAdaptive: {
         enabled: true,
@@ -202,6 +204,8 @@ function buildOwnStreamClipCopyPromptLines(generator, streamerName = '岁己SUI'
         ...generator.buildClipDescriptionPromptLines(),
         '字段必须分工：description 是公开简介，只写片中具体内容；reason 是内部选材理由，可记录字幕完整性、弹幕反应和情绪信号。不得把 reason 复述或改写进 description。',
         '听闻或转述不等于亲历；说出或引用一句话不等于现场创作。回忆/转述要交代语境，没有直接证据不要写现编、原创、亲自体验。',
+        '人物指代要具体：片内原话和指代链已能确认被提及的人或转述对象时，title、description优先写其公开称呼，不能把可确认的人名泛化成对方、有人或某位朋友；coverText涉及该人时也保留称呼。',
+        '已确认的人名优先采用人物资料的copyName（如栞栞对应小栞）；本人未在现场出声不等于其作为故事对象的身份未知。姓名已在同一字段交代后可自然使用代词；泛指、假设或无法消歧时保持中性，不凭同音ASR、弹幕喊名或名单硬套身份。',
         '多个人或多次事件必须保留谁先做什么、后来谁回应什么；不合并成同一次因果关系。观众意见不是主播行为。'
     ];
 }
@@ -437,6 +441,8 @@ function buildClipProcessingStats(results = [], elapsedMs, startedAt = null, fin
             ? Math.round(totalClipElapsedMs / timings.length)
             : null,
         totalClipElapsedMs: Math.round(totalClipElapsedMs),
+        mediaElapsedMs: results.reduce((n, result) => n + (Number(result?.processing?.mediaElapsedMs) || 0), 0),
+        enhancementElapsedMs: results.reduce((n, result) => n + (Number(result?.processing?.enhancementElapsedMs) || 0), 0),
         clipCount: Array.isArray(results) ? results.length : 0,
         timedClipCount: timings.length,
         resource: summarizeResourcePeaks(resourcePeaks)
@@ -454,6 +460,7 @@ function buildProcessingSummaryLines(stats = null) {
         : '不可用';
     return [
         `切片耗时: 总耗时 ${total}，平均每个切片 ${average}（${clipCount} 段）`,
+        ...(stats.mediaElapsedMs ? [`阶段累计耗时（含并发重叠）: 媒体 ${formatProcessingDuration(stats.mediaElapsedMs)}，AI增强 ${formatProcessingDuration(stats.enhancementElapsedMs)}`] : []),
         `资源占用: CPU 平均 ${formatPercent(resource.hostCpuAvgPct)} / 峰值 ${formatPercent(resource.hostCpuPeakPct)}；GPU 平均 ${formatPercent(resource.gpuUtilAvgPct)} / 峰值 ${formatPercent(resource.gpuUtilPeakPct)}；显存峰值 ${memory}`
     ];
 }
@@ -627,6 +634,7 @@ async function runJobsWithConcurrency(jobs = [], concurrency = 1, options = {}) 
                 // 一个切片失败不应终止同一场直播的其余切片；保留已完成结果，
                 // 让 review/企微通知至少覆盖成功生成的部分。
                 console.warn(`clip job ${index + 1} failed, continuing remaining jobs: ${error.message}`);
+                options.onError?.(error, index);
                 results[index] = null;
             } finally {
                 lease?.release();
@@ -1241,6 +1249,8 @@ function buildRecommendationScoreLine(value = {}) {
 
 
 function buildReviewMarkdown(results, metadata) {
+    metadata = ownReview.withRegistryIndices(results, metadata);
+    results = ownReview.chronologicalResults(results);
     const aiStatusLine = buildAiStatusLine(metadata.aiStatus);
     const uploadIds = Array.isArray(metadata.uploadRegistry?.clipIds)
         ? metadata.uploadRegistry.clipIds
@@ -1248,34 +1258,38 @@ function buildReviewMarkdown(results, metadata) {
     const streamerName = String(metadata.streamerName || '小岁').trim() || '小岁';
     const lines = [
         `# ${streamerName}直播有趣切片 review`,
+        '<!-- own-stream-review:v2; machine uploads must use the JSON manifest -->',
         '',
         `直播: ${metadata.streamTitle || metadata.sourceFileName || '未知'}`,
         `录制时间: ${metadata.recordedAt || '未知'}`,
         `输出目录: ${metadata.outputRoot}`,
         results.length ? `来源统计: ${formatSelectionSourceCounts(results)}` : null,
-        uploadIds.length ? `上传短ID: ${uploadIds.join(',')}` : null,
+        uploadIds.length ? `全部候选ID: ${uploadIds.join(',')}` : null,
+        ...ownReview.summaryLines(results, metadata),
         aiStatusLine,
         ...buildProcessingSummaryLines(metadata.processingStats),
         '',
-        '## 切片列表',
+        '## 切片总清单（按时间排序）',
         ''
     ].filter(line => line !== null);
     results.forEach((result, index) => {
-        const start = formatClock(result.window.start);
-        const duration = formatClock(result.window.duration);
-        const filePath = result.output.mediaPath;
+        const start = Number.isFinite(result.window.start) ? formatClock(result.window.start) : '未知';
+        const duration = Number.isFinite(result.window.duration) ? formatClock(result.window.duration) : '未知';
+        const filePath = result.output.mediaPath || '未生成视频';
+        const uploadId = ownReview.clipId(result, metadata, index);
         // Keep the upload manifest's path field pure.  Scores belong to the
         // structured result and are rendered separately for human review.
-        lines.push(`${index + 1}. ${result.copy.title} | ${start} | ${duration} | ${filePath}`);
+        lines.push(`${index + 1}. ${uploadId ? `ID${uploadId} ` : ''}${result.copy.title} | ${start} | ${duration} | ${filePath}`);
         const scoreLine = buildRecommendationScoreLine(result);
         if (scoreLine) lines.push(scoreLine);
         lines.push(`   来源: ${getSelectionSourceLabel(result)}`);
         const groundingLine = buildGroundingReviewLine(result.grounding);
         if (groundingLine) lines.push(groundingLine);
-        const uploadId = metadata.uploadRegistry?.clipIdsByReviewIndex?.[index + 1] ?? (!metadata.uploadRegistry?.clipIdsByReviewIndex ? uploadIds[index] : null);
         if (uploadId) {
-            lines.push(`   上传ID: ${uploadId}`);
+            lines.push(`   候选ID: ${uploadId}`);
+            if (ownReview.uploadEligible(result)) lines.push(`   上传ID: ${uploadId}`);
         }
+        lines.push(`   状态: ${ownReview.reviewStatus(result, metadata)}`);
         if (result.qaRequired) lines.push(`   AI质检: ${result.qaResult?.status || 'pending'}`);
         if (result.precisionExperiment?.selected) lines.push('   模式: 精切实验模式');
         if (result.attributionRequired) lines.push(`   人物动作复核: ${result.attributionReview?.status || 'pending'}`);
@@ -1283,7 +1297,11 @@ function buildReviewMarkdown(results, metadata) {
         if (result.output.coverPath) {
             lines.push(`   封面: ${result.output.coverPath}`);
         }
+        if (result.output.srtPath) lines.push(`   字幕: ${result.output.srtPath}`);
+        lines.push(...ownReview.reviewDetailLines(result, metadata));
     });
+    const diagnostics = ownReview.diagnosticLines(metadata);
+    if (diagnostics.length) lines.push('', '## 批次告警', ...diagnostics);
     lines.push('');
     return `${lines.join('\n')}\n`;
 }
@@ -1328,18 +1346,22 @@ function buildNotifyClipLines(results, metadata = {}) {
     return results.map((result, index) => {
         // Explicit review-index mappings may be sparse after QA filtering.
         const id = Number(registry.clipIdsByReviewIndex
-            ? registry.clipIdsByReviewIndex[index + 1]
+            ? registry.clipIdsByReviewIndex[ownReview.reviewIndex(result, index)]
             : registry.clipIds?.[index]);
         const idLabel = metadata.planOnly
             ? '未生成ID（仅规划）'
             : (Number.isSafeInteger(id) && id > 0 ? `ID${id}` : '未登记ID');
         const window = result.window || result;
         const title = result.copy?.title ?? result.title;
-        return `${index + 1}. ${idLabel} ${title} | ${formatClock(window.start)} | ${formatClock(window.duration)}${formatRecommendationScore(result)}${result.precisionExperiment?.selected ? ' | 精切' : ''}${result.publicCopyPending ? ' | 发布文案待生成，禁止上传' : ''}`;
+        const pendingLabel = result.selectionRejection ? ' | 已剔除，未切' : result.publicCopyPending
+            ? (result.copy?.description && result.copy?.coverText ? ' | 文案待复核，禁止上传' : ' | 发布文案待生成，禁止上传') : '';
+        return `${index + 1}. ${idLabel} ${title} | ${window.start === null ? '未知' : formatClock(window.start)} | ${window.duration === null ? '未知' : formatClock(window.duration)}${formatRecommendationScore(result)}${result.precisionExperiment?.selected ? ' | 精切' : ''}${pendingLabel}`;
     });
 }
 
 function buildNotifyMarkdown(results, metadata) {
+    metadata = ownReview.withRegistryIndices(results, metadata);
+    results = ownReview.chronologicalResults(results);
     const aiStatusLine = buildAiStatusLine(metadata.aiStatus);
     const uploadIds = !metadata.planOnly && Array.isArray(metadata.uploadRegistry?.clipIds)
         ? metadata.uploadRegistry.clipIds
@@ -1353,19 +1375,31 @@ function buildNotifyMarkdown(results, metadata) {
         `切片目录: ${toFwdSlash(metadata.outputRoot)}`,
         metadata.reviewPath ? `Review: ${toFwdSlash(metadata.reviewPath)}` : null,
         results.length ? `来源统计: ${formatSelectionSourceCounts(results)}` : null,
-        uploadIds.length ? `上传短ID: ${uploadIds.join(',')}` : null,
+        uploadIds.length ? `全部候选ID: ${uploadIds.join(',')}` : null,
+        ...ownReview.summaryLines(results, metadata),
         metadata.planOnly ? '状态: 仅规划，尚未生成上传ID；候选序号不是上传ID。' : null,
         aiStatusLine,
         ...buildProcessingSummaryLines(metadata.processingStats),
         '',
         '\u5207\u7247\u5217\u8868:'
     ].filter(line => line !== null);
-    lines.push(...buildNotifyClipLines(results, metadata));
+    const entries = buildNotifyClipLines(results, metadata);
+    results.forEach((result, index) => {
+        lines.push(entries[index]);
+        if (!metadata.planOnly) lines.push(`   状态: ${ownReview.reviewStatus(result, metadata)}`);
+        lines.push(...ownReview.reviewDetailLines(result, metadata, { includeIssues: false }));
+    });
+    const diagnostics = ownReview.diagnosticLines(metadata);
+    if (diagnostics.length) lines.push('', '批次告警:', ...diagnostics);
     // The sender splits the complete list into ordered, UTF-8 byte-limited messages.
     return lines.join('\n');
 }
 
 function parseUploadRegistryOutput(output) {
+    const receipt = String(output || '').split(/\r?\n/).find(line => line.startsWith('REGISTRY_RESULT: '));
+    if (receipt) {
+        try { return JSON.parse(receipt.slice('REGISTRY_RESULT: '.length)); } catch { return null; }
+    }
     const match = String(output || '').match(/^IDs:\s*([0-9,\s]+)$/m);
     if (!match) {
         return null;
@@ -1396,11 +1430,13 @@ function buildOwnUploadSettings(metadata, copy = {}) {
 }
 
 function isOwnClipUploadEligible(result) {
-    return !result.publicCopyPending && (!(result.qaRequired || result.attributionRequired) || result.uploadReady);
+    return ownReview.uploadEligible(result);
 }
 
 function writeOwnUploadManifest(manifestPath, reviewPath, results, metadata) {
     const settings = buildOwnUploadSettings(metadata, results[0]?.copy || {});
+    const indices = results.map((result, index) => ownReview.reviewIndex(result, index));
+    if (new Set(indices).size !== indices.length) throw new Error('Duplicate review indices; refusing ambiguous ID registration');
     const manifest = {
         version: 1,
         type: 'bilibili_clip_upload_manifest',
@@ -1411,10 +1447,11 @@ function writeOwnUploadManifest(manifestPath, reviewPath, results, metadata) {
         recordedAt: metadata.recordedAt || null,
         streamTitle: metadata.streamTitle || metadata.sourceFileName || null,
         upload: settings,
-        clips: results.flatMap((result, index) => !isOwnClipUploadEligible(result) ? [] : [{
-            reviewIndex: index + 1,
+        planPath: metadata.planPath || null,
+        clips: results.map((result, index) => ({
+            reviewIndex: ownReview.reviewIndex(result, index),
             metadataPath: result.output?.metadataPath || null
-        }])
+        }))
     };
     fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
     return manifestPath;
@@ -1422,7 +1459,6 @@ function writeOwnUploadManifest(manifestPath, reviewPath, results, metadata) {
 
 function registerReviewForUpload(reviewPath, results, metadata) {
     if (!reviewPath || !results.length) return null;
-    if (!results.some(isOwnClipUploadEligible)) return null;
     const settings = buildOwnUploadSettings(metadata, results[0]?.copy || {});
     const manifestPath = metadata.uploadManifestPath
         || path.join(path.dirname(reviewPath), `${path.basename(reviewPath, path.extname(reviewPath))}_UPLOAD_MANIFEST.json`);
@@ -1431,6 +1467,7 @@ function registerReviewForUpload(reviewPath, results, metadata) {
     const args = [
         scriptPath,
         'import-json',
+        '--include-pending',
         '--manifest', manifestPath,
         '--review', reviewPath,
         '--source', settings.source,
@@ -1444,10 +1481,12 @@ function registerReviewForUpload(reviewPath, results, metadata) {
         encoding: 'utf8',
         windowsHide: true,
         shell: false,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
         stdio: ['ignore', 'pipe', 'pipe']
     });
     const output = `${result.stdout || ''}${result.stderr || ''}`.trim();
     if (result.status !== 0) {
+        metadata.registrationError = output || `registry process exit ${result.status}`;
         console.warn(`Upload registry import failed: ${output}`);
         return null;
     }
@@ -1455,9 +1494,17 @@ function registerReviewForUpload(reviewPath, results, metadata) {
         console.log(output);
     }
     const registered = parseUploadRegistryOutput(output);
-    if (registered) registered.clipIdsByReviewIndex = Object.fromEntries(results.map((result, index) => ({ result, index }))
-        .filter(({ result }) => isOwnClipUploadEligible(result))
-        .map(({ index }, offset) => [index + 1, registered.clipIds[offset]]));
+    if (!registered || registered.clipIds?.length !== results.length) {
+        metadata.registrationError = 'Registry did not return one ID for every candidate';
+        return null;
+    }
+    if (registered && !registered.clipIdsByReviewIndex) registered.clipIdsByReviewIndex = Object.fromEntries(
+        results.map((result, index) => [ownReview.reviewIndex(result, index), registered.clipIds[index]]));
+    const mapped = results.map((result, index) => registered.clipIdsByReviewIndex[ownReview.reviewIndex(result, index)]);
+    if (new Set(mapped).size !== results.length || mapped.some(id => !Number.isSafeInteger(id) || id < 1)) {
+        metadata.registrationError = 'Registry returned missing or ambiguous candidate IDs';
+        return null;
+    }
     return registered;
 }
 
@@ -1466,9 +1513,11 @@ async function notifyResults(results, metadata, rootConfig) {
         return false;
     }
     const webhookUrl = String(rootConfig.wechatWork?.webhookUrl || '').trim();
-    if (!webhookUrl || results.length === 0) return false;
+    if (!webhookUrl || (results.length === 0 && !ownReview.diagnosticLines(metadata).length && !metadata.precisionExperiment)) return false;
+    metadata = ownReview.withRegistryIndices(results, metadata);
+    results = ownReview.chronologicalResults(results);
     const sent = await sendWeChatMarkdown(webhookUrl, buildNotifyMarkdown(results, metadata));
-    if (!results.some(result => result.precisionExperiment?.selected)) return sent;
+    if (!metadata.precisionExperiment && !results.some(result => result.precisionExperiment?.selected)) return sent;
     const details = require('./workflow-runtime').loadWorkflow('clipping/experiment').experimentDetailMarkdown(results, metadata);
     return details ? (await sendWeChatMarkdown(webhookUrl, details)) && sent : sent;
 }
@@ -1486,7 +1535,8 @@ async function generateOwnStreamClipJob({
     streamerName,
     info,
     config,
-    participantMetadata
+    participantMetadata,
+    execution
 }) {
     const processingStartedAt = new Date();
     const processingStartedNs = process.hrtime.bigint();
@@ -1619,6 +1669,8 @@ async function generateOwnStreamClipJob({
         candidate: clip.base || null,
         ...(clip.precisionExperiment ? { precisionExperiment: clip.precisionExperiment } : {}),
         grounding: evidenceReview(clip, copy) || null,
+        ...(require('./asr/subtitle_proofreading').resolveProofreadingOptions(options.config || {}, { roomId: info.roomId }).enabled
+            ? { subtitleProofreading: require('./asr/subtitle_proofreading').summarizeSubtitleProofreading(parsed.segments, window) } : {}),
         copy,
         ...(clip.publicCopyPending ? { publicCopyPending: true } : {}),
         upload: buildOwnUploadSettings({
@@ -1643,24 +1695,35 @@ async function generateOwnStreamClipJob({
             coverError
         }
     };
-    metadata = await require('./clipping/enhancement_runner').runEnhancements(metadata, { config, info, parsed, danmaku, source, options, topic: topicClipper });
+    metadata.processing.mediaElapsedMs = metadata.processing.elapsedMs;
+    const enhancer = require('./clipping/enhancement_runner');
+    const needsEnhancement = enhancer.enhancementEnabled(config.enhancements, info.roomId)
+        && (config.enhancements.experiment?.enabled !== true || metadata.precisionExperiment?.selected === true);
+    const enhancementQueued = Date.now();
+    await execution?.finishMedia(needsEnhancement);
+    metadata.processing.enhancementQueueMs = Date.now() - enhancementQueued;
+    const enhancementStarted = Date.now();
+    metadata = await require('./clipping/enhancement_runner').runEnhancements(metadata, { config, info, parsed, danmaku, source, options, topic: topicClipper, clip, subtitleEvidence, execution });
+    metadata.processing.enhancementElapsedMs = Date.now() - enhancementStarted;
     if (metadata.publicCopyPending && metadata.qaResult?.status === 'passed' && metadata.uploadReady) {
         metadata.publicCopyPending = false;
     }
-    if (metadata.qaRequired) {
-        metadata.grounding = evidenceReview(clip, metadata.copy) || null;
+    if (metadata.qaRequired || metadata.pacingResult) {
+        if (metadata.attributionReview?.phase !== 'precision_final_copy') metadata.grounding = evidenceReview(clip, metadata.copy) || null;
         metadata.processing = { ...metadata.processing, finishedAt: new Date().toISOString(),
             elapsedMs: Math.round(Number(process.hrtime.bigint() - processingStartedNs) / 1e6),
             resource: summarizeResourcePeaks(metadata.processing.resourcePeaks) };
     }
-    metadata = finalizeActorReview(metadata, clip, copy, subtitleEvidence);
+    metadata = clip.attributionRequired && metadata.precisionExperiment?.selected
+        ? require('./clipping/precision_actor_review').finalizePrecisionActors(metadata, clip, subtitleEvidence)
+        : finalizeActorReview(metadata, clip, copy, subtitleEvidence);
     metadata = await bindActorArtifacts(metadata);
     fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2), 'utf8');
     console.log(`${index + 1}. ${metadata.copy.title} ${formatClock(window.start)} ${formatClock(metadata.window.duration)} ${metadata.output.mediaPath}`);
     return metadata;
 }
 
-async function generateOwnStreamClips(options = {}) {
+async function generateOwnStreamClipsInternal(options = {}) {
     const rootConfig = options.config || {};
     const config = getOwnStreamClipsConfig(rootConfig);
     const clipConcurrency = Math.max(
@@ -1706,10 +1769,13 @@ async function generateOwnStreamClips(options = {}) {
     });
     const clipLabel = getOwnStreamClipLabel(rootConfig, info.roomId, streamerName);
     const participantMetadata = topicClipper.buildParticipantMetadata(topicClipper.loadAsrSpeakerSidecarForMediaPath(options.srtPath || options.mediaPath));
-    if (attributionEnabled(config, info.roomId)) {
+    if (attributionEnabled(config, info.roomId)
+        || require('./asr/subtitle_proofreading').resolveProofreadingOptions(rootConfig, { roomId: info.roomId }).enabled) {
         const provenance = require('./asr/evidence_sidecar').loadAsrEvidence(options.srtPath, parsed.segments);
         parsed.segments = provenance.segments;
         parsed.asrEvidenceStatus = provenance.status;
+    }
+    if (attributionEnabled(config, info.roomId)) {
         const roster = loadRecordingParticipants(options.srtPath, options.mediaPath, info.roomId,
             topicClipper.loadAsrSpeakerSidecarForMediaPath(options.srtPath));
         parsed.participantContext = buildParticipantContext(rootConfig, info, parsed, danmaku, roster);
@@ -1840,6 +1906,7 @@ async function generateOwnStreamClips(options = {}) {
         fallbackReason: aiDiagnostics.fallbackReason,
         selectedSource: aiDiagnostics.selectedSource,
         errorCount: aiDiagnostics.errors.length,
+        errors: aiDiagnostics.errors.map(error => typeof error === 'string' ? error : String(error?.message || JSON.stringify(error))),
         requests: aiDiagnostics.requests || [],
         ...(aiDiagnostics.skippedChunks?.length ? { skippedChunks: aiDiagnostics.skippedChunks } : {}),
         ...(aiDiagnostics.validation ? { validation: aiDiagnostics.validation } : {}),
@@ -1855,14 +1922,18 @@ async function generateOwnStreamClips(options = {}) {
         coverText: copy.coverText }, finalEvidence, danmaku, personContext).grounding;
     clips = clips.map(clip => revalidateClipEvidence(clip, finalEvidence, danmaku, personContext));
     if (config.avoidOverlappingClips !== false) {
+        const before = [...clips];
         const beforeOverlapFilter = clips.length;
         clips = removeOverlappingClips(clips, config.finalOverlapToleranceSeconds);
+        const kept = new Set(clips.map(clip => `${clip.start}:${clip.end}:${clip.candidateIndex}`));
+        reviewMetadata.aiStatus.rejectedAfterAlignment = before.filter(clip => !kept.has(`${clip.start}:${clip.end}:${clip.candidateIndex}`))
+            .map(clip => ({ ...clip, reason: 'overlap_after_alignment' }));
         if (clips.length < beforeOverlapFilter) {
             console.log(`Removed ${beforeOverlapFilter - clips.length} overlapping clip candidate(s) after subtitle boundary alignment.`);
         }
     }
     clips = await reviewClipActors(clips, parsed, danmaku, finalEvidence, info, config, rootConfig, aiDiagnostics);
-    const experiment = await require('./clipping/enhancement_runner').selectExperimentBatch(clips, parsed, config, rootConfig, info);
+    const experiment = await require('./clipping/enhancement_runner').selectExperimentBatch(clips, parsed, config, rootConfig, info, options);
     clips = experiment.clips;
     if (experiment.summary) reviewMetadata.precisionExperiment = experiment.summary;
     reviewMetadata.aiStatus.requests = aiDiagnostics.requests || [];
@@ -1880,6 +1951,7 @@ async function generateOwnStreamClips(options = {}) {
     reviewMetadata.uploadManifestPath = inputPlanBase
         ? path.join(outputRoot, `${inputPlanBase}_UPLOAD_MANIFEST.json`)
         : path.join(outputRoot, 'UPLOAD_MANIFEST.json');
+    reviewMetadata.planPath = planPath;
     fs.writeFileSync(planPath, JSON.stringify({
         version: 1,
         generatedAt: new Date().toISOString(),
@@ -1954,66 +2026,26 @@ async function generateOwnStreamClips(options = {}) {
         reason: 'own_stream_media',
         uploadReady: true
     };
-    if (mediaConcurrency > 1) {
-        console.log(`Clip media concurrency: ${mediaConcurrency}`);
-        const profileAwareJobs = clips.map((clip, index) => resourceProfile => generateOwnStreamClipJob({
-            clip,
-            evidenceReview,
-            subtitleEvidence: finalEvidence,
-            index,
-            parsed,
-            danmaku,
-            options,
-            outputRoot,
-            source,
-            streamerName,
-            info,
-            config: resourceProfile
-                ? { ...mediaConfig, clipFfmpegThreads: resourceProfile.ffmpegThreads }
-                : mediaConfig,
-            participantMetadata
-        }));
-        const results = await runJobsWithConcurrency(profileAwareJobs, mediaConcurrency, {
-            scheduler: resourceScheduler
-        });
-        completeClipProcessingStats(results);
-        fs.writeFileSync(reviewPath, buildReviewMarkdown(results, reviewMetadata), 'utf8');
-        const residualReview = writeResidualAuditForOwnStream({
-            options,
-            config,
-            outputRoot,
-            planPath,
-            clips
-        });
-        if (residualReview) reviewMetadata.residualAuditPath = residualReview.outputPath;
-        const uploadRegistry = options.registerUpload === false ? null : registerReviewForUpload(reviewPath, results, reviewMetadata);
-        if (uploadRegistry) {
-            reviewMetadata.uploadRegistry = uploadRegistry;
-            fs.writeFileSync(reviewPath, buildReviewMarkdown(results, reviewMetadata), 'utf8');
+    const jobs = clips.map((clip, index) => execution => generateOwnStreamClipJob({
+        clip, evidenceReview, subtitleEvidence: finalEvidence, index, parsed, danmaku, options,
+        outputRoot, source, streamerName, info, participantMetadata, execution,
+        config: execution.profile ? { ...mediaConfig, clipFfmpegThreads: execution.profile.ffmpegThreads } : mediaConfig
+    }));
+    const results = await require('./clipping/clip_pipeline').runClipPipeline(jobs, {
+        scheduler: resourceScheduler, mediaConcurrency,
+        enhancementConcurrency: Number(config.enhancementConcurrency) || 3,
+        onError: (error, index) => {
+            console.warn(`clip job ${index + 1} failed: ${error.message}`);
+            reviewMetadata.aiStatus.renderErrors ||= [];
+            reviewMetadata.aiStatus.renderErrors.push({ index: index + 1, title: clips[index].title,
+                start: clips[index].start, end: clips[index].end, error: error.message });
         }
-        try {
-            await notifyResults(results, reviewMetadata, { ...rootConfig, ownStreamClips: config });
-        } catch (error) {
-            console.warn(`WeChat Work notification failed, local review kept: ${error.message}`);
-        }
-        console.log(`Review list: ${reviewPath}`);
-        return results;
-    }
-    const results = [];
-    for (const [index, clip] of clips.entries()) {
-        const resourceLease = resourceScheduler.enabled ? await resourceScheduler.acquire() : null;
-        const activeMediaConfig = resourceLease
-            ? { ...mediaConfig, clipFfmpegThreads: resourceLease.profile.ffmpegThreads } : mediaConfig;
-        try {
-            results.push(await generateOwnStreamClipJob({ clip, evidenceReview, index, parsed, danmaku,
-                options, outputRoot, source, streamerName, info, config: activeMediaConfig, participantMetadata, subtitleEvidence: finalEvidence }));
-        } finally {
-            resourceLease?.release();
-        }
-    }
+    });
 
     completeClipProcessingStats(results);
-    fs.writeFileSync(reviewPath, buildReviewMarkdown(results, reviewMetadata), 'utf8');
+    const artifacts = require('./clipping/own_review_artifacts');
+    const reviewResults = artifacts.prepareReviewResults(results, JSON.parse(fs.readFileSync(planPath, 'utf8')), parsed, outputRoot);
+    artifacts.saveReviewState(reviewPath, reviewResults, reviewMetadata);
     const residualReview = writeResidualAuditForOwnStream({
         options,
         config,
@@ -2022,18 +2054,30 @@ async function generateOwnStreamClips(options = {}) {
         clips
     });
     if (residualReview) reviewMetadata.residualAuditPath = residualReview.outputPath;
-    const uploadRegistry = options.registerUpload === false ? null : registerReviewForUpload(reviewPath, results, reviewMetadata);
+    const uploadRegistry = options.registerUpload === false ? null : registerReviewForUpload(reviewPath, reviewResults, reviewMetadata);
     if (uploadRegistry) {
         reviewMetadata.uploadRegistry = uploadRegistry;
-        fs.writeFileSync(reviewPath, buildReviewMarkdown(results, reviewMetadata), 'utf8');
     }
+    artifacts.saveReviewState(reviewPath, reviewResults, reviewMetadata);
     try {
-        await notifyResults(results, reviewMetadata, { ...rootConfig, ownStreamClips: config });
+        await notifyResults(reviewResults, reviewMetadata, { ...rootConfig, ownStreamClips: config });
     } catch (error) {
         console.warn(`WeChat Work notification failed, local review kept: ${error.message}`);
     }
     console.log(`Review list: ${reviewPath}`);
     return results;
+}
+
+async function generateOwnStreamClips(options = {}) {
+    try { return await generateOwnStreamClipsInternal(options); }
+    catch (error) {
+        try {
+            const info = parseRecordingInfo(options.mediaPath || '', options.context || {});
+            await notifyResults([], { ...info, sourceFileName: path.basename(options.mediaPath || ''),
+                fatalError: error.message }, options.config || {});
+        } catch (notificationError) { console.warn(`Own-stream failure notification unavailable: ${notificationError.message}`); }
+        throw error;
+    }
 }
 
 function parseCliArgs(argv) {
@@ -2166,6 +2210,9 @@ module.exports = {
     buildNotifyMarkdown,
     buildReviewMarkdown,
     buildPlanReviewMarkdown,
+    writeOwnUploadManifest,
+    registerReviewForUpload,
+    isOwnClipUploadEligible,
     buildClipDescription,
     buildEmotionComposition,
     buildClipTags,

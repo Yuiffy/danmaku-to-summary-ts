@@ -51,7 +51,7 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src', 'scripts'))
 from config_loader import get_config, find_secrets_path
 from bilibili_upload import attach_video_to_collection, extract_room_id, get_collection_section_id
 from bilibili_api import Credential, video_uploader, Picture, video, get_client
-from clip_upload_manifest import load_upload_manifest
+from clip_upload_manifest import load_upload_manifest, find_review_manifest
 import requests
 
 ACCOUNT_MID = 412141275
@@ -448,7 +448,7 @@ def parse_review(review_path):
     return clips
 
 
-def parse_upload_manifest(manifest_path, source='', tags=None, prefix='', tid=21, review_path=''):
+def parse_upload_manifest(manifest_path, source='', tags=None, prefix='', tid=21, review_path='', selected_indices=None):
     """Parse structured upload JSON into the historical uploader clip shape."""
     return load_upload_manifest(
         manifest_path,
@@ -457,6 +457,7 @@ def parse_upload_manifest(manifest_path, source='', tags=None, prefix='', tid=21
         default_prefix=prefix,
         default_tid=tid,
         review_path=review_path,
+        selected_indices=selected_indices,
     )
 
 
@@ -869,6 +870,15 @@ async def main():
 
     if not args.review and not args.manifest:
         parser.error('必须提供 --manifest 或 --review')
+    if args.review and not args.manifest:
+        structured = find_review_manifest(args.review)
+        if structured:
+            args.manifest = str(structured)
+        else:
+            with open(args.review, encoding='utf-8-sig') as review_file:
+                if '<!-- own-stream-review:v2;' in review_file.read():
+                    print('[ERROR] generated review requires its JSON upload manifest')
+                    return 1
 
     tag_override = [t.strip() for t in args.tags.split(',') if t.strip()]
     if args.manifest:
@@ -880,6 +890,7 @@ async def main():
                 prefix=args.prefix,
                 tid=args.tid or 21,
                 review_path=args.review or '',
+                selected_indices={int(value) for value in args.only.split(',') if value.strip()} if args.only else None,
             )
         except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
             print(f'[ERROR] 无法读取上传 JSON: {exc}')

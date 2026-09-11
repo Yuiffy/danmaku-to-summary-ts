@@ -1,10 +1,11 @@
 #!/usr/bin/env python
 """Generate readable, editorial-style Bilibili clip covers from a video frame.
 
-The public upload title can be 18-42 Chinese characters long.  A cover cannot:
-it needs one short setup line and one large punchline.  New clip planners should
+The public upload title can be 18-42 Chinese characters long. A cover uses two
+short text levels, which may form one utterance or an exchange. New clip planners should
 pass ``--title`` as two lines (``coverText``); older callers can keep passing the
-full upload title and this module will derive a conservative two-line fallback.
+full upload title and this module will derive a conservative fallback.  Each
+text level can wrap to preserve complete copy and quotation marks.
 """
 
 import argparse
@@ -14,6 +15,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -87,28 +89,38 @@ class CoverGenerator:
 
     @staticmethod
     def _clean_line(value: str) -> str:
-        return re.sub(r"\s+", "", str(value or "")).strip(" \t\r\n\"'“”‘’【】")
+        # Quotes are content, not transport escaping. Stripping them independently
+        # removes the closing quote in copy such as: 随后宣布“拯救成功”.
+        return re.sub(r"\s+", " ", str(value or "")).strip()
 
-    @classmethod
-    def _shorten_line(cls, value: str, limit: int) -> str:
-        """Shorten only expendable connective words; do not invent new copy."""
-        text = cls._clean_line(value)
-        if len(text) <= limit:
-            return text
-        for pattern in ("身残志坚的", "终于还是", "从我身上", "这个", "这种", "直接", "当场"):
-            candidate = text.replace(pattern, "")
-            if len(candidate) >= 4:
-                text = candidate
-            if len(text) <= limit:
-                return text
-        return text[: max(1, limit - 1)].rstrip("，、：:；;") + "…"
+    @staticmethod
+    def _split_clauses(text: str, separators: str) -> list[str]:
+        """Split legacy titles only outside quotations and paired punctuation."""
+        pairs = {"“": "”", "‘": "’", "「": "」", "『": "』", "（": "）", "(": ")",
+                 "【": "】", "《": "》", '"': '"', "'": "'"}
+        stack, parts, start = [], [], 0
+        for index, char in enumerate(text):
+            if char == "'" and 0 < index < len(text) - 1 and text[index - 1].isascii() \
+                    and text[index - 1].isalnum() and text[index + 1].isalnum():
+                continue
+            if stack and char == stack[-1]:
+                stack.pop()
+            elif char in pairs:
+                stack.append(pairs[char])
+            elif char in separators and not stack:
+                if text[start:index].strip():
+                    parts.append(text[start:index].strip())
+                start = index + 1
+        if text[start:].strip():
+            parts.append(text[start:].strip())
+        return parts
 
     @classmethod
     def build_cover_lines(cls, title: str) -> Tuple[str, str]:
         """Return a setup and punchline for the cover.
 
         ``title`` may already contain a deliberate newline from the AI planner.
-        Explicit copy is respected (with only hard display limits); otherwise the
+        Explicit copy is preserved without word deletion or ellipses; otherwise the
         fallback prefers the two clauses after a colon, then the first/last
         sentence.  This keeps legacy jobs usable without silently making up text.
         """
@@ -116,76 +128,189 @@ class CoverGenerator:
         supplied = [cls._clean_line(line) for line in raw.splitlines()]
         supplied = [line for line in supplied if line]
         if len(supplied) >= 2:
-            return cls._shorten_line(supplied[0], 11), cls._shorten_line(supplied[1], 12)
+            return supplied[0], "\n".join(supplied[1:])
 
         source = cls._clean_line(raw)
         source = re.sub(r"^【[^】]+】", "", source)
-        source = re.sub(r"^(?:小岁|岁己SUI|岁己)[：:，,\s]*", "", source)
+        streamer_prefix = r"^(?:小岁|岁己SUI|岁己)[：:，,\s]*"
+        source = re.sub(streamer_prefix, "", source)
         if not source:
             return "直播里发生了什么", "点进来看看"
 
-        before_colon, separator, after_colon = source.rpartition("：")
-        if not separator:
-            before_colon, separator, after_colon = source.rpartition(":")
-
-        if separator and after_colon:
-            tail_parts = [cls._clean_line(part) for part in re.split(r"[，,。！!?？；;]", after_colon)]
-            tail_parts = [part for part in tail_parts if part]
+        colon_parts = cls._split_clauses(source, "：:")
+        if len(colon_parts) >= 2:
+            tail_parts = cls._split_clauses(colon_parts[-1], "，,。！!?？；;")
             if len(tail_parts) >= 2:
                 kicker, headline = tail_parts[-2], tail_parts[-1]
             else:
-                prefix_parts = [cls._clean_line(part) for part in re.split(r"[，,。！!?？；;]", before_colon)]
-                kicker = next((part for part in reversed(prefix_parts) if part), before_colon)
-                headline = tail_parts[0] if tail_parts else after_colon
+                prefix_parts = [part for prefix in colon_parts[:-1]
+                                for part in cls._split_clauses(prefix, "，,。！!?？；;")]
+                # A bare speaker label in "setup? SUI: reply" is not the setup.
+                kicker = next((part for part in reversed(prefix_parts)
+                               if re.sub(streamer_prefix, "", part)), "")
+                headline = tail_parts[0] if tail_parts else colon_parts[-1]
         else:
-            parts = [cls._clean_line(part) for part in re.split(r"(?<=[，,。！!?？；;])", source)]
-            parts = [part for part in parts if part]
+            parts = cls._split_clauses(source, "，,。！!?？；;")
             if len(parts) >= 2:
                 kicker, headline = parts[0], parts[-1]
             else:
-                pivot = max(4, len(source) // 2)
-                kicker, headline = source[:pivot], source[pivot:]
+                return "", source
 
-        kicker = re.sub(r"^(?:小岁|岁己SUI|岁己)[：:，,\s]*", "", kicker)
-        headline = re.sub(r"^(?:小岁|岁己SUI|岁己)[：:，,\s]*", "", headline)
-        if not headline:
-            headline = kicker
-        if not kicker or kicker == headline:
-            kicker = cls._shorten_line(source, 11)
-        return cls._shorten_line(kicker, 11), cls._shorten_line(headline, 12)
+        kicker = re.sub(streamer_prefix, "", kicker)
+        headline = re.sub(streamer_prefix, "", headline)
+        return kicker, headline or kicker
 
     @staticmethod
-    def _fit_font(draw: ImageDraw.ImageDraw, text: str, font_loader, size: int, max_width: int):
-        """Reduce type size only when necessary; never crop a headline."""
-        for candidate_size in range(size, 47, -4):
-            font = font_loader(candidate_size)
-            bbox = draw.textbbox((0, 0), text, font=font, stroke_width=0)
-            if bbox[2] - bbox[0] <= max_width:
-                return font
-        return font_loader(48)
+    def _ink_bbox(draw, text, font, stroke_width, shadow_offset) -> tuple[int, int, int, int]:
+        main = draw.textbbox((0, 0), text, font=font, stroke_width=stroke_width, anchor="lm")
+        shadow = draw.textbbox(shadow_offset, text, font=font, stroke_width=stroke_width + 5, anchor="lm")
+        return (min(main[0], shadow[0]), min(main[1], shadow[1]),
+                max(main[2], shadow[2]), max(main[3], shadow[3]))
+
+    @staticmethod
+    @lru_cache(maxsize=256)
+    def _word_spans(text: str) -> tuple:
+        try:
+            import jieba
+        except ImportError:
+            return ()
+        return tuple(jieba.tokenize(text, HMM=False))
+
+    @classmethod
+    def _wrap_text(cls, text: str, measure, max_width: int) -> Optional[list[str]]:
+        """Balance measured rows without orphaned closing marks or broken tokens."""
+        rows = []
+        for paragraph in text.splitlines():
+            forbidden = set()
+            for index in range(1, len(paragraph)):
+                if paragraph[index] in "，。！？；：、,.!?;:’”」』）】》)]}%％…" \
+                        or paragraph[index - 1] in "‘“「『（【《([{":
+                    forbidden.add(index)
+            for quote in ('"', "'"):
+                opening = True
+                for index, char in enumerate(paragraph):
+                    if char == quote:
+                        if quote == "'" and 0 < index < len(paragraph) - 1 \
+                                and paragraph[index - 1].isascii() and paragraph[index - 1].isalnum() \
+                                and paragraph[index + 1].isalnum():
+                            continue
+                        forbidden.add(index + 1 if opening else index)
+                        opening = not opening
+            for pattern in (r"[A-Za-z0-9]+(?:[./'_’-][A-Za-z0-9]+)*[%％]?",
+                            r'“[^“”]*”|‘[^‘’]*’|「[^「」]*」|『[^『』]*』|"[^"]*"'):
+                for token in re.finditer(pattern, paragraph):
+                    if measure(token.group()) <= max_width:
+                        forbidden.update(range(token.start() + 1, token.end()))
+            for word, start, end in cls._word_spans(paragraph):
+                if measure(word) <= max_width:
+                    forbidden.update(range(start + 1, end))
+            # A quote can span the caller's explicit lines. Paragraph edges are
+            # already fixed, even when a straight quote looks like an opener.
+            forbidden.discard(0)
+            forbidden.discard(len(paragraph))
+
+            # Minimize row count first, then raggedness. Counting glyphs cannot
+            # distinguish a narrow ASCII label from the same length in Chinese.
+            best = {len(paragraph): (0, 0, [])}
+            for start in range(len(paragraph) - 1, -1, -1):
+                if paragraph[start].isspace():
+                    if start + 1 in best:
+                        best[start] = best[start + 1]
+                    continue
+                for end in range(start + 1, len(paragraph) + 1):
+                    line = paragraph[start:end].rstrip()
+                    width = measure(line)
+                    if width > max_width:
+                        break
+                    if end in forbidden or end not in best:
+                        continue
+                    count, cost, rest = best[end]
+                    candidate = (count + 1, cost + (max_width - width) ** 2, [line, *rest])
+                    if start not in best or candidate[:2] < best[start][:2]:
+                        best[start] = candidate
+            if 0 not in best:
+                return None
+            rows.extend(best[0][2])
+        return rows
 
     def _text_layout(self, width: int, height: int, text_position: str = "center") -> dict:
         """Place all copy inside the centered 4:3 crop of a 16:9 cover."""
         safe_width = min(width, int(round(height * 4 / 3)))
         safe_left = (width - safe_width) // 2
         safe_right = safe_left + safe_width
-        inner_margin = max(32, int(round(width * 0.025)))
+        scale = min(width / 1920, height / 1080)
+        inner_margin = max(8, int(round(width * 0.025)))
         kicker_x = safe_left + inner_margin
-        headline_x = kicker_x + max(20, int(round(width * 0.014)))
+        headline_x = kicker_x + max(5, int(round(width * 0.014)))
         max_width = min(
-            self.config["text_max_width"],
+            int(round(self.config["text_max_width"] * scale)),
             safe_right - headline_x - inner_margin,
         )
-        kicker_y = 106 if text_position != "bottom" else 570
         return {
             "safe_left": safe_left,
             "safe_right": safe_right,
             "kicker_x": kicker_x,
             "headline_x": headline_x,
             "max_width": max_width,
-            "kicker_y": kicker_y,
-            "headline_y": kicker_y + 146,
+            "scale": scale,
+            "top": int(round(height * (0.46 if text_position == "bottom" else 0.04))),
+            "bottom": int(round(height * (0.96 if text_position == "bottom" else 0.58))),
         }
+
+    def _layout_text(self, draw, title: str, width: int, height: int, text_position: str = "center") -> list[dict]:
+        layout = self._text_layout(width, height, text_position)
+        scale = layout["scale"]
+        kicker, headline = self.build_cover_lines(title)
+        roles = [("kicker", kicker, (255, 255, 255), 10, (7, 8), 64),
+                 ("headline", headline, (255, 222, 52), 14, (10, 11), 96)]
+        for reduction in range(8):
+            rows, used_height = [], 0
+            for role, text, fill, stroke, shadow, minimum in roles:
+                if not text:
+                    continue
+                stroke = max(1, round(stroke * scale))
+                shadow = tuple(round(offset * scale) for offset in shadow)
+                configured_size = self.config[f"{role}_font_size"]
+                minimum = max(1, round(min(minimum, configured_size) * scale))
+                size = max(minimum, round(configured_size * scale * (1 - reduction * 0.05)))
+                font = self._load_font(role, size)
+
+                def measure(line, font=font):
+                    box = self._ink_bbox(draw, line, font, stroke, shadow)
+                    return box[2] - box[0]
+
+                lines = None
+                if "\n" not in text:
+                    # Small adjustments keep ordinary short copy on one row;
+                    # long copy wraps before we make the headline unreadable.
+                    for candidate_size in range(size, max(minimum, round(size * 0.76)) - 1, -2):
+                        candidate = self._load_font(role, candidate_size)
+                        if measure(text, candidate) <= layout["max_width"]:
+                            font, lines = candidate, [text]
+                            break
+                if lines is None:
+                    lines = self._wrap_text(text, measure, layout["max_width"])
+                if not lines or len(lines) > (2 if kicker else 4):
+                    break
+                for line in lines:
+                    bbox = self._ink_bbox(draw, line, font, stroke, shadow)
+                    gap = round((18 if rows and rows[-1]["role"] != role else 10) * scale) if rows else 0
+                    used_height += gap
+                    rows.append({"role": role, "text": line, "font": font, "fill": fill,
+                                 "stroke_width": stroke, "shadow_offset": shadow,
+                                 "relative_bbox": bbox, "top": used_height})
+                    used_height += bbox[3] - bbox[1]
+            else:
+                if used_height <= layout["bottom"] - layout["top"]:
+                    top = layout["bottom"] - used_height if text_position == "bottom" else layout["top"]
+                    for row in rows:
+                        left = layout[f'{row["role"]}_x']
+                        y = top + row["top"]
+                        x0, y0, x1, y1 = row.pop("relative_bbox")
+                        row["position"] = (left - x0, y - y0)
+                        row["bbox"] = (left, y, left + x1 - x0, y + y1 - y0)
+                    return rows
+        raise ValueError("Cover text is too long to fit legibly; supply shorter coverText (封面文案过长，请精简).")
 
     def extract_frame(self, video_path: str, timestamp: float = 0.0, output_path: str = None) -> str:
         if not os.path.exists(video_path):
@@ -374,7 +499,7 @@ class CoverGenerator:
         with_shadow: bool = False,
         with_bg_bar: bool = False,
     ) -> str:
-        """Add two direct-on-image text levels with no panel or backing bar."""
+        """Add two wrapping text levels with no panel or backing bar."""
         if not os.path.exists(image_path):
             raise FileNotFoundError(f"图片不存在: {image_path}")
 
@@ -382,35 +507,20 @@ class CoverGenerator:
         width, height = img.size
         draw = ImageDraw.Draw(img)
 
-        kicker, headline = self.build_cover_lines(title)
-        layout = self._text_layout(width, height, text_position)
-        max_width = layout["max_width"]
-        kicker_font = self._fit_font(
-            draw, kicker, lambda size: self._load_font("kicker", size), self.config["kicker_font_size"], max_width
-        )
-        headline_font = self._fit_font(
-            draw, headline, lambda size: self._load_font("headline", size), self.config["headline_font_size"], max_width
-        )
-
-        kicker_y = layout["kicker_y"]
-        headline_y = layout["headline_y"]
+        rows = self._layout_text(draw, title, width, height, text_position)
         # High-performing clip covers in the supplied references use a simple
         # hierarchy: white setup, yellow hook, heavy black outline, no panel.
-        self._draw_outlined_text(
-            draw, (layout["kicker_x"], kicker_y), kicker, kicker_font,
-            fill=(255, 255, 255), stroke_width=10,
-        )
-        self._draw_outlined_text(
-            draw, (layout["headline_x"], headline_y), headline, headline_font,
-            fill=(255, 222, 52), stroke_width=14,
-            shadow_offset=(10, 11),
-        )
+        for row in rows:
+            self._draw_outlined_text(
+                draw, row["position"], row["text"], row["font"], row["fill"],
+                row["stroke_width"], row["shadow_offset"],
+            )
 
         if output_path is None:
             output_path = os.path.join(os.path.dirname(image_path), "_cover_with_text.jpg")
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         img.save(output_path, "JPEG", quality=95, subsampling=0)
-        print(f"[INFO] 封面文案: {kicker} / {headline}")
+        print(f"[INFO] 封面文案: {' / '.join(row['text'] for row in rows)}")
         print(f"[INFO] 封面已生成: {output_path}")
         return output_path
 
@@ -425,6 +535,7 @@ class CoverGenerator:
         clip_duration: Optional[float] = None,
         preferred_time: Optional[float] = None,
         sample_count: int = 7,
+        text_position: str = "center",
     ) -> str:
         if use_key_frame:
             frame_path, _ = self.select_best_frame(
@@ -437,7 +548,7 @@ class CoverGenerator:
         else:
             frame_path = self.extract_frame(video_path, max(0.0, clip_start))
         try:
-            return self.add_text_to_cover(frame_path, title, subtitle, output_path=output_path)
+            return self.add_text_to_cover(frame_path, title, subtitle, output_path=output_path, text_position=text_position)
         finally:
             if os.path.exists(frame_path):
                 try:
@@ -453,7 +564,7 @@ def main() -> int:
     parser.add_argument("--subtitle", default=None, help="兼容旧参数；当前样式不绘制固定品牌字")
     parser.add_argument("--output", default=None, help="输出 JPG 路径")
     parser.add_argument("--font-size", type=int, default=None, help="兼容旧参数：主钩子字体大小")
-    parser.add_argument("--position", default="center", choices=["top", "center", "bottom"], help="兼容旧调用；默认使用左下排版")
+    parser.add_argument("--position", default="center", choices=["top", "center", "bottom"], help="文字区域；默认使用画面上部，兼容旧调用")
     parser.add_argument("--no-shadow", action="store_true", help="兼容旧参数")
     parser.add_argument("--no-bg", action="store_true", help="兼容旧参数")
     parser.add_argument("--key-frame", action="store_true", help="在切片范围内多帧采样并自动选优")
@@ -475,6 +586,7 @@ def main() -> int:
         clip_duration=args.clip_duration,
         preferred_time=args.preferred_time,
         sample_count=args.sample_count,
+        text_position=args.position,
     )
     print(f"\n✅ 封面生成成功: {output}")
     return 0

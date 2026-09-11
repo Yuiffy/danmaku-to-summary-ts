@@ -49,8 +49,12 @@ describe('own-stream recall preservation', () => {
       const root = path.dirname(result.output.metadataPath);
       expect(fs.readFileSync(path.join(root, 'REVIEW.md'), 'utf8')).toContain('发布文案待生成，禁止上传');
       expect(own.buildNotifyMarkdown(results, {})).toContain('发布文案待生成');
-      expect(fs.existsSync(path.join(root, 'UPLOAD_MANIFEST.json'))).toBe(false);
-      expect(register).not.toHaveBeenCalled();
+      const manifest = JSON.parse(fs.readFileSync(path.join(root, 'UPLOAD_MANIFEST.json'), 'utf8'));
+      expect(manifest.clips).toHaveLength(1);
+      expect(manifest.clips[0].metadataPath).toBe(result.output.metadataPath);
+      expect(register).toHaveBeenCalledTimes(1);
+      expect(register.mock.calls[0][1]).toContain('--include-pending');
+      expect(register.mock.calls[0][1]).not.toContain('enqueue');
       expect(generate).toHaveBeenCalledTimes(2);
     } finally {
       generate.mockRestore(); cut.mockRestore(); cover.mockRestore(); register.mockRestore();

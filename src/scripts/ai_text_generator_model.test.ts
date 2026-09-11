@@ -54,6 +54,18 @@ describe('daiYu model routing', () => {
     });
   });
 
+  test.each(['daiYu', 'tuZi'])('%s configured HTTP retries preserve failure and success diagnostics', async provider => {
+    const generate = provider === 'daiYu' ? generateTextWithDaiYu : generateTextWithTuZi;
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 502, headers: { get: () => null }, text: async () => 'transient' })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ status: 'completed', output_text: 'RECOVERED',
+        usage: { input_tokens: 10, output_tokens: 3 } }) });
+    const result = await generate('facts', { primaryModel: 'gpt-5.6-luna', apiMode: 'responses',
+      fallbackModelsEnabled: false, allowProviderFallback: false, retry: { maxAttempts: 2, baseDelayMs: 0 } });
+    expect(result.text).toBe('RECOVERED'); expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.meta.attempts.map(attempt => attempt.status)).toEqual(['failure', 'success']);
+    expect(result.meta.attempts[0].httpStatus).toBe(502);
+  });
+
   test('normalizes a legacy daiYu configuration before sending the request', async () => {
     const result = await generateTextWithDaiYu('只回复 LUNA_OK');
 
@@ -61,6 +73,15 @@ describe('daiYu model routing', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const request = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(request.model).toBe('gpt-5.6-luna');
+  });
+
+  test('forwards strict nested output schemas through the actual daiYu request path', async () => {
+    const responseFormat={type:'json_schema',name:'content',strict:true,schema:{type:'object',
+      required:['content'],additionalProperties:false,properties:{content:{type:'object',properties:{},required:[],additionalProperties:false}}}};
+    await generateTextWithDaiYu('Return JSON.', {strictEvaluation:true,primaryModel:'gpt-5.6-luna',apiMode:'responses',
+      reasoningEffort:'high',maxTokens:2000,responseFormat});
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).text).toEqual({format:responseFormat});
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   test.each(['daiYu', 'tuZi'])('%s strict evaluation sends exactly one requested model/protocol/effort', async provider => {

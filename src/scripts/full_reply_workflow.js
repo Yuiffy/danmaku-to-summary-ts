@@ -9,6 +9,7 @@ const summary = require('./live_content_summary');
 const combined = require('./full_reply_summary');
 const review = require('./reply_summary_review');
 const loader = require('./config-loader');
+const material = require('./live_material');
 
 const MODE = 'compact_full_reply_summary_reviewed_v1';
 const sha = text => crypto.createHash('sha256').update(text).digest('hex');
@@ -71,7 +72,8 @@ function outcomeUnknown(error, attempts) {
 function materialize(state, files, highlightPath, fullPayload, reused = true) {
     if (state.outputSha256 !== sha(JSON.stringify(state.output))) throw new Error('Combined output integrity check failed');
     const metadata = { provider: state.provider, model: state.model, fallback: false, attempts: state.attempts,
-        finishReason: 'completed', generationMode: MODE, sharedUsagePath: path.basename(files.artifact), sharedGenerationId: state.generationId };
+        finishReason: 'completed', generationMode: MODE, generationProfile: state.generationProfile,
+        sharedUsagePath: path.basename(files.artifact), sharedGenerationId: state.generationId };
     const replyText = ai.buildTextFrontMatter(highlightPath, metadata) + state.output.reply;
     const summaryPayload = {
         schemaVersion: summary.LIVE_CONTENT_SCHEMA_VERSION, status: 'success', roomId: state.roomId,
@@ -109,10 +111,12 @@ async function tryGenerateCombinedReply(highlightPath, roomId, options = {}) {
     const context = live.loadLiveGenerationContext(highlightPath, roomId, config);
     const wordLimit = room.wordLimit ?? config.ai?.defaultWordLimit ?? 100;
     const model = experiment.model || 'gpt-5.6-luna';
+    const materialOptions = material.getMaterialOptions(experiment);
     const fingerprint = sha(JSON.stringify({ mode: MODE, source: payload.sharedPrefixSha256, model, wordLimit,
         context: live.formatLiveGenerationContext(context), replyDynamic: live.getReplyDynamicEvidence(context),
         room: { anchorName: room.anchorName, fanName: room.fanName,
-            customPrompts: room.customPrompts }, promptVersion: combined.PROMPT_VERSION, reviewVersion: review.REVIEW_VERSION }));
+            customPrompts: room.customPrompts }, promptVersion: combined.PROMPT_VERSION, reviewVersion: review.REVIEW_VERSION,
+        ...(materialOptions ? { materialOptions, materialVersion: material.MATERIAL_VERSION } : {}) }));
     const release = acquireLocks([files.artifact, files.reply, files.summary]);
     try {
         previous = readState(files.artifact);
@@ -125,7 +129,8 @@ async function tryGenerateCombinedReply(highlightPath, roomId, options = {}) {
         let state = { schemaVersion: 1, mode: MODE, status: 'in_progress', generationId: crypto.randomUUID(),
             roomId: String(roomId), provider: 'daiYu', model, fingerprint, ownerPid: process.pid,
             startedAt: now(), sourceSha256: payload.sourceSha256, sharedPrefixSha256: payload.sharedPrefixSha256,
-            attempts: previous?.attempts || [], phases: [], wordLimit, replyDynamic: context.replyDynamic || null };
+            attempts: previous?.attempts || [], phases: [], wordLimit, replyDynamic: context.replyDynamic || null,
+            generationProfile: room.generationMode || null };
         atomicJson(files.artifact,state);
         const generate = options.generateText || ai.generateTextWithDaiYu;
         const requestOptions = { primaryModel: model, exactModel: true, strictEvaluation: true, apiMode: 'responses',
@@ -151,10 +156,12 @@ async function tryGenerateCombinedReply(highlightPath, roomId, options = {}) {
         };
         try {
             const prompt = combined.buildCombinedPrompt({ fullPrefix: payload.sharedPrefix,
-                highlight: fs.readFileSync(highlightPath,'utf8'), roomId, context, source });
+                highlight: fs.readFileSync(highlightPath,'utf8'), roomId, context, source })
+                + (materialOptions ? material.materialSelectionPrompt(materialOptions) : '');
             const reusableDraft = previous?.draft && previous.sourceSha256 === payload.sourceSha256
                 && previous.phases?.some(p=>p.name==='reply-summary' && ['success','reused'].includes(p.status) && p.promptSha256===sha(prompt));
-            const draft = reusableDraft ? {text:previous.draft} : await phase('reply-summary',prompt,{});
+            const draft = reusableDraft ? {text:previous.draft} : await phase('reply-summary',prompt,
+                {responseFormat:combined.buildCombinedResponseFormat(materialOptions)});
             if (reusableDraft) state.phases.push({name:'reply-summary',status:'reused',elapsedMs:0,promptSha256:sha(prompt)});
             state.draft = draft.text;
             const output = combined.validateCombinedResult(draft.text,source,roomId,wordLimit);
@@ -162,6 +169,15 @@ async function tryGenerateCombinedReply(highlightPath, roomId, options = {}) {
             const checked = await phase('evidence-review',review.buildReviewPrompt(output,packet,source,context,wordLimit),
                 {maxTokens:6000,timeoutMs:180000});
             const result = review.applyReview(checked.text,output,packet,source,roomId,wordLimit);
+            if (materialOptions) {
+                try {
+                    state.sharedMaterial = material.buildMaterial(summary.parseJsonObject(draft.text),result.output,source,payload,materialOptions);
+                } catch (error) {
+                    state.sharedMaterial = { version: material.MATERIAL_VERSION, status: 'fallback', reason: error.message };
+                }
+                console.log(`[LIVE_MATERIAL_READY] ${JSON.stringify({roomId,status:state.sharedMaterial.status,
+                    selectedChars:state.sharedMaterial.selectedChars,fullChars:payload.sharedPrefix.length,reason:state.sharedMaterial.reason})}`);
+            }
             state = {...state,status:'success',output:result.output,semanticReview:result.review,
                 reviewSourceChars:packet.text.length,reviewSourceRows:packet.rowCount,finishedAt:now(),
                 replyBodySha256:sha(result.output.reply),outputSha256:sha(JSON.stringify(result.output)),activePhase:null};

@@ -79,4 +79,36 @@ describe('Node/Python configuration contract', () => {
     expect(result.status).toBe(0);
     expect(JSON.parse(result.stdout).marker).toBe('explicit');
   });
+
+  it('expands inherited modes with identical precedence in Node and Python', () => {
+    fs.writeFileSync(path.join(root, 'config/generation-modes.json'), JSON.stringify({ schemaVersion: 1, modes: {
+      base: { settings: { wordLimit: 250, fullLiveContextExperiment: { enabled: true, tasks: ['goodnight', 'summary'] } } },
+      rich: { extends: 'base', label: 'Rich mode', settings: { wordLimit: 800 } }
+    } }));
+    fs.writeFileSync(path.join(root, 'explicit.json'), JSON.stringify({ ai: { defaultGenerationMode: 'base',
+      generationModes: { rich: { settings: { fullLiveContextExperiment: { compactEvidence: true } } } },
+      roomSettings: { one: { generationMode: 'rich', anchorName: 'Unique host' },
+        two: { wordLimit: 180, fullLiveContextExperiment: { enabled: false, tasks: [] } }, three: { generationMode: 'base' } }
+    } }));
+    const env = { CONFIG_PATH: 'explicit.json' };
+    const node: any = loadConfigLayers({ root, env });
+    expect(node).toEqual(python(env));
+    expect(node.ai.roomSettings.one).toMatchObject({ generationMode: 'rich', anchorName: 'Unique host', wordLimit: 800,
+      fullLiveContextExperiment: { enabled: true, tasks: ['goodnight', 'summary'], compactEvidence: true } });
+    expect(node.ai.roomSettings.two).toMatchObject({ wordLimit: 180, fullLiveContextExperiment: { enabled: false, tasks: [] } });
+    expect(node.ai.roomSettings.three.wordLimit).toBe(250);
+    node.ai.roomSettings.one.fullLiveContextExperiment.tasks.push('comic');
+    expect(node.ai.roomSettings.three.fullLiveContextExperiment.tasks).toEqual(['goodnight', 'summary']);
+  });
+
+  it.each(['unknown', 'cycle', 'identity'])('rejects %s mode errors in both languages', kind => {
+    const modes: any = { base: { settings: { wordLimit: 100 } } };
+    if (kind === 'cycle') modes.base.extends = 'base';
+    if (kind === 'identity') modes.base.settings.anchorName = 'Must remain room-specific';
+    fs.writeFileSync(path.join(root, 'explicit.json'), JSON.stringify({ ai: { generationModes: modes,
+      roomSettings: { one: { generationMode: kind === 'unknown' ? 'typo' : 'base' } } } }));
+    const env = { CONFIG_PATH: 'explicit.json' };
+    expect(() => loadConfigLayers({ root, env })).toThrow(/generation mode|Generation mode/);
+    expect(() => python(env)).toThrow(/generation mode|Generation mode/);
+  });
 });

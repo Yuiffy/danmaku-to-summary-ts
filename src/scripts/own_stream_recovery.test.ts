@@ -21,6 +21,11 @@ describe('own-stream planning recovery', () => {
     expect(generate.mock.calls[0][1].daiYuTransientMaxAttempts).toBeUndefined();
     expect(generate.mock.calls[1][1].timeoutMs).toBe(override || 1200000);
     expect(generate.mock.calls[1][1].daiYuTransientMaxAttempts).toBe(2);
+    for (const [prompt] of generate.mock.calls) {
+      expect(prompt).toContain('不能把可确认的人名泛化成对方');
+      expect(prompt).toContain('如栞栞对应小栞');
+      expect(prompt).toContain('不凭同音ASR、弹幕喊名或名单硬套身份');
+    }
   });
 
   test('reports successful recall separately from a timed-out rerank', () => {

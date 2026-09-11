@@ -1,8 +1,9 @@
 export interface Span { start: number; end: number }
 export interface Subtitle extends Span { text: string; [key: string]: any }
 export interface AudioEvidence extends Span {
-    id: string; kind: 'silence' | 'cough' | 'throat_clear'; precisionSeconds: number;
+    id: string; kind: 'silence' | 'non_speech' | 'cough' | 'throat_clear'; precisionSeconds: number;
     verified: boolean; sourceId: string;
+    verification?: { method: string; pcmSha256: string; nonSpeech: boolean; speechIntervalsMs: unknown[][] };
 }
 export interface EditPlan {
     version: 1; sourceId: string; sourceWindow: Span; keep: Span[];
@@ -35,13 +36,18 @@ export function validateEditPlan(plan: EditPlan, sourceId: string, window: Span,
         if (speech.some(row => overlaps(row, window) && !valid(row.asrEvidence?.sourceSpan))) {
             throw new Error('Original ASR timing provenance required for automatic edits');
         }
-        if (!['silence', 'cough', 'throat_clear'].includes(deletion.reason) || !deletion.evidenceIds?.length) throw new Error('Unsupported removal reason');
+        if (!['silence', 'non_speech', 'cough', 'throat_clear'].includes(deletion.reason) || !deletion.evidenceIds?.length) throw new Error('Unsupported removal reason');
         const proof = deletion.evidenceIds.map(id => evidence.find(item => item.id === id));
         if (proof.some(item => !item || !item.verified || item.sourceId !== sourceId || !valid(item)
             || !Number.isFinite(item.precisionSeconds) || item.precisionSeconds < 0 || item.precisionSeconds > 0.05
             || item.kind !== deletion.reason)
             || !proof.some(item => item!.start <= deletion.start && item!.end >= deletion.end)) throw new Error('Insufficient precise audio evidence');
-        if (deletion.reason === 'silence' && deletion.end - deletion.start < 3) throw new Error('Normal breathing and short pauses are protected');
+        if (deletion.reason === 'non_speech' && proof.some(item => item?.verification?.method !== 'protected_asr_gap_and_two_channel_fsmn'
+            || !/^[a-f0-9]{64}$/u.test(item.verification.pcmSha256) || item.verification.nonSpeech !== true
+            || item.verification.speechIntervalsMs.length !== 2 || item.verification.speechIntervalsMs.some(rows => !Array.isArray(rows) || rows.length))) {
+            throw new Error('Missing independent two-channel non-speech verification');
+        }
+        if (['silence', 'non_speech'].includes(deletion.reason) && deletion.end - deletion.start < 3) throw new Error('Normal breathing and short pauses are protected');
         if (speech.some(row => {
             const source = row.asrEvidence?.sourceSpan;
             const rawSpan = valid(source) ? source : row;
@@ -57,7 +63,7 @@ export function planFromEvidenceIds(sourceId: string, window: Span, ids: string[
         const item = evidence.find(row => row.id === id);
         if (!item) throw new Error(`Unknown audio evidence: ${id}`);
         // Leave transitions around an otherwise long, verified silent interval.
-        return { start: item.start + (item.kind === 'silence' ? 0.3 : 0), end: item.end - (item.kind === 'silence' ? 0.3 : 0),
+        return { start: item.start + (['silence', 'non_speech'].includes(item.kind) ? 0.3 : 0), end: item.end - (['silence', 'non_speech'].includes(item.kind) ? 0.3 : 0),
             reason: item.kind, evidenceIds: [id] };
     }).sort((a, b) => a.start - b.start);
     const plan = continuousPlan(sourceId, window);

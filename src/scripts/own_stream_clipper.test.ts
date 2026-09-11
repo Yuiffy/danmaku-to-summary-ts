@@ -487,7 +487,7 @@ describe('own_stream_clipper', () => {
     const notify = ownStreamClipper.buildNotifyMarkdown(results, metadata);
 
     expect(review).toContain('上传短ID: 17,18');
-    expect(review).toContain('1. 岁己：弹幕觉得这里很有趣 | 00:01:15 | 00:01:30 | D:/clips/one.mp4');
+    expect(review).toContain('1. ID17 岁己：弹幕觉得这里很有趣 | 00:01:15 | 00:01:30 | D:/clips/one.mp4');
     expect(review).toContain('   上传ID: 17');
     expect(review).toContain('   上传ID: 18');
     expect(notify).toContain('上传短ID: 17,18');
@@ -1248,7 +1248,7 @@ describe('own_stream_clipper', () => {
     expect(markdown).not.toContain('[模型全量]');
   });
 
-  test('keeps a normal multibyte clip list complete when it only needs two messages', () => {
+  test('keeps a normal multibyte clip list complete with every review status', () => {
     const results = Array.from({ length: 32 }, (_, index) => ({
       window: { start: index * 90, duration: 60 },
       copy: { title: `小岁片段 ${index + 1} ${'很有趣'.repeat(20)}` },
@@ -1264,7 +1264,7 @@ describe('own_stream_clipper', () => {
 
     expect(markdown).toContain('32. 未登记ID 小岁片段 32');
     expect(markdown).not.toContain('请看 Review');
-    expect(ownStreamClipper.splitWeChatMarkdown(markdown).length).toBeLessThanOrEqual(2);
+    expect(markdown.match(/状态: 成片待审核/g)).toHaveLength(32);
     expect(ownStreamClipper.splitWeChatMarkdown(markdown).every((part: string) => (
       Buffer.byteLength(part, 'utf8') <= 4096
     ))).toBe(true);

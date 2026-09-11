@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { createHash, randomUUID } from 'crypto';
 import { normalizeOpenAIReasoningEffort, validateImageInputs } from '../text/requests';
+import { RetryPolicy, resolveRetryPolicy, retryReason, retryDelay } from '../text/retry';
 
 export interface StagePrice {
     confirmed: boolean; version: string; inputCnyPerMillion: number;
@@ -12,6 +13,7 @@ export interface StageConfig {
     reasoningEffort: string; maxTokens: number; maxInputTokens: number; timeoutMs: number;
     capabilities: { reasoningEfforts: string[]; images: boolean; imageTokenUpperBound?: number };
     price?: StagePrice;
+    retry?: RetryPolicy;
 }
 export interface BudgetConfig {
     mode?: 'enforce' | 'log_only';
@@ -107,6 +109,37 @@ export function calculateCost(usage: any, price: StageConfig['price']): number |
 
 export async function runStage(config: StageConfig, budget: BudgetConfig, context: StageContext,
     prompt: string, images: string[], generate: Generate): Promise<Generation> {
+    const policy = resolveRetryPolicy(config.retry);
+    const deadlineAt = Date.now() + config.timeoutMs;
+    const retryLedgerIds: string[] = [], retryAttempts: Array<Record<string, any>> = [];
+    for (let attempt = 1; ; attempt++) {
+        if (Date.now() >= deadlineAt) throw new Error('Text generation deadline exceeded');
+        try {
+            const result = await runStageAttempt(config, budget, context, prompt, images, generate, deadlineAt);
+            return { ...result, meta: { ...result.meta, retryLedgerIds,
+                ...(retryAttempts.length ? { retryAttempts, retryUsageUnknown: retryAttempts.some(row => row.usageUnknown !== false) } : {}) } };
+        } catch (error: any) {
+            const last = error.attempts?.at(-1);
+            const reason = retryReason(last ? { status: last.httpStatus, code: last.code, message: last.error,
+                outcomeUnknown: last.outcomeUnknown } : error, policy);
+            if (!error.ledgerId || !reason || attempt >= policy.maxAttempts) {
+                error.retryLedgerIds = retryLedgerIds;
+                if (retryAttempts.length) error.attempts = [...retryAttempts, ...(error.attempts || [])];
+                throw error;
+            }
+            const delay = retryDelay(policy, attempt, last?.retryAfter || null);
+            if (delay > policy.maxDelayMs || Date.now() + delay >= deadlineAt) throw error;
+            retryLedgerIds.push(error.ledgerId);
+            retryAttempts.push(...(error.attempts || []));
+            console.warn(`[TEXT_RETRY] ${JSON.stringify({ stage: context.stage, provider: config.provider,
+                model: config.model, nextAttempt: attempt + 1, waitMs: delay, reason, ledgerId: error.ledgerId })}`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+        }
+    }
+}
+
+async function runStageAttempt(config: StageConfig, budget: BudgetConfig, context: StageContext,
+    prompt: string, images: string[], generate: Generate, deadlineAt: number): Promise<Generation> {
     if (!budget || (budget.mode !== undefined && !['enforce', 'log_only'].includes(budget.mode))) throw new Error('Invalid stage accounting mode');
     const logOnly = budget.mode === 'log_only';
     validateStageRequest(config, prompt, images);
@@ -144,7 +177,7 @@ export async function runStage(config: StageConfig, budget: BudgetConfig, contex
     try {
         result = await generate(config.provider, prompt, { primaryModel: config.model, reasoningEffort: config.reasoningEffort,
             apiMode: config.apiMode, maxTokens: config.maxTokens, timeoutMs: config.timeoutMs,
-            deadlineAt: Date.now() + config.timeoutMs, images, strictEvaluation: true,
+            deadlineAt, images, strictEvaluation: true,
             exactModel: true, fallbackModelsEnabled: false, allowProviderFallback: false, strictResponses: true,
             transientMaxAttempts: 1, promptCacheRolloutPercent: 0 });
         if (!result?.text?.trim()) throw new Error('Empty stage output');

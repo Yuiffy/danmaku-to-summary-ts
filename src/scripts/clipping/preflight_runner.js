@@ -84,7 +84,7 @@ async function prepareTopicGroup(group, evidence, config, rootConfig, source, di
             phase, ...(lockedClip ? { lockedClip, lockedHits: hits } : {})
         });
         const result = await requestSelectionText(prompt, requestSettings, config, rootConfig, source,
-            `topic_preflight_${phase}_v3`, diagnostics, result => {
+            `topic_preflight_${phase}_v4`, diagnostics, result => {
                 try { normalize(result.text); return requestMatches(result, requestSettings); } catch { return false; }
             });
         record.responses.push({ phase, clipId: lockedClip?.id || null, text: result.text,
@@ -158,6 +158,7 @@ function preflightSelections(plan, group, config) {
             keyword: { status: clip.hits?.some(hit => hit.verdict === 'mention') ? 'confirmed' : 'needs_review', hits: clip.hits },
             quality: { status: clip.status === 'ready' ? 'pass' : 'needs_review', issues: clip.issues },
             qualityAudit: clip.qualityAudit || null,
+            boundaryReview: clip.boundaryReview || null,
             subtitleEdits: clip.subtitleEdits, rejectedSubtitleEdits: clip.rejectedSubtitleEdits || [], warnings: clip.warnings, applied: false,
             window: { start: clip.start, end: clip.end }, reason: clip.reason } }));
 }

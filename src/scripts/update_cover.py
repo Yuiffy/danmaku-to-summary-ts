@@ -132,6 +132,24 @@ async def submit_cover(
     await editor._fetch_configs()
     old_configs = editor._VideoEditor__old_configs
     old_archive = old_configs["archive"]
+    for field in ("title", "copyright", "source", "tag", "desc_format_id", "desc", "dynamic", "tid", "no_reprint"):
+        if old_archive.get(field) != archive.get(field):
+            raise RuntimeError(f"Archive {field} changed while preparing cover update; reload before retrying")
+
+    # Cover-only edits must not reset switches to the uploader's defaults.
+    editor.meta.update({
+        "origin_state": old_configs.get("origin_state", 0),
+        "act_reserve_create": old_configs.get("act_reserve_create", False),
+        # The read API uses 0 for enabled; the edit API uses 1.
+        "open_elec": int(old_configs.get("arc_elec", {}).get("state", 1) == 0),
+        "up_selection_reply": old_configs.get("reply", {}).get("up_selection", False),
+        "subtitles": {
+            "lan": old_configs.get("subtitle", {}).get("lan", ""),
+            "open": int(bool(old_configs.get("subtitle", {}).get("allow", False))),
+        },
+    })
+    if old_configs.get("reply", {}).get("state", 0) != 0 or old_archive.get("attribute", 0) != 0:
+        raise RuntimeError("Non-default reply/archive controls require an explicit cover-only edit mapping")
 
     videos = []
     for index, old_video in enumerate(old_configs.get("videos", [])):

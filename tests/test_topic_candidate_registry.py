@@ -40,6 +40,33 @@ class TopicCandidateRegistryTests(unittest.TestCase):
     def records(self):
         return registry.load_json(registry.REGISTRY_PATH, {})["clips"]
 
+    def test_preview_retains_id_status_and_never_approves_or_enqueues(self):
+        file, metadata = self.candidate()
+        self.assertEqual(self.import_file(file), 0)
+        result = self.subtitle_result(metadata)
+        result['reviewPreview'] = {'status': 'ready', 'mediaPath': str(self.root / 'preview.mp4'),
+                                   'srtPath': str(self.root / 'preview.srt')}
+        with patch.object(registry.clip_candidate_queue, 'candidate_action', return_value=result) as action, patch.object(registry, 'enqueue') as enqueue:
+            self.assertEqual(registry.main(['preview', '--ids', '1']), 0)
+        self.assertEqual(action.call_args.args[2], 'preview')
+        enqueue.assert_not_called()
+        saved = self.records()['1']
+        self.assertEqual(saved['status'], 'pending_cut')
+        self.assertTrue(saved['pendingCut'])
+        self.assertFalse(saved['mediaPath'])
+        self.assertEqual(saved['reviewPreview'], result['reviewPreview'])
+        self.assertFalse(registry.QUEUE_PATH.exists())
+
+    def test_preview_skips_active_uploads_and_continues_after_failure(self):
+        for name in ('first', 'second'):
+            file, metadata = self.candidate(name)
+            self.assertEqual(self.import_file(file), 0)
+        registry.save_json(registry.QUEUE_PATH, {'jobs': [{'status': 'running', 'clipIds': [1]}]})
+        with patch.object(registry.clip_candidate_queue, 'candidate_action', side_effect=ValueError('missing video')) as action:
+            self.assertEqual(registry.main(['preview', '--ids', '1,2']), 2)
+        self.assertEqual(action.call_count, 1)
+        self.assertEqual(action.call_args.args[1]['id'], 2)
+
     def test_reserves_distinct_global_ids_and_reuses_them_on_reimport(self):
         first, _ = self.candidate("first")
         second, _ = self.candidate("second")
@@ -247,6 +274,83 @@ class TopicCandidateRegistryTests(unittest.TestCase):
         upload.assert_not_called()
         self.assertTrue(self.records()["1"]["pendingCut"])
         self.assertEqual(self.records()["1"]["status"], "failed")
+        self.assertEqual(registry.load_json(registry.QUEUE_PATH, {})["jobs"][0]["status"], "failed")
+
+    def mixed_render_job(self):
+        files = []
+        for name in ("blocked", "renderable", "ready"):
+            file, metadata = self.candidate(name)
+            if name == "ready":
+                metadata["status"] = "success"
+                metadata["output"]["mediaPath"] = str(self.root / "ready.mp4")
+                file.write_text(json.dumps(metadata), encoding="utf-8")
+            registry.main(["import-json", "--manifest", str(file), "--state", str(self.root / f"{name}_state.json")])
+            files.append((file, metadata))
+        with patch.object(registry.clip_candidate_queue, "candidate_action", return_value=self.subtitle_result(files[0][1])):
+            self.assertEqual(registry.main(["enqueue", "--ids", "1,2,3"]), 0)
+        return files
+
+    def test_worker_isolates_failed_render_and_uploads_remaining_candidates_and_ready_media(self):
+        files = self.mixed_render_job()
+        rendered, uploaded = [], []
+
+        def render(args):
+            rendered.append(args.ids)
+            if args.ids == "1":
+                data = registry.load_json(registry.REGISTRY_PATH, {})
+                data["clips"]["1"]["candidateError"] = "unsupported date"
+                registry.save_json(registry.REGISTRY_PATH, data)
+                return 2
+            self.assertEqual(args.ids, "2")
+            file, metadata = files[1]
+            metadata["status"] = "success"
+            metadata["output"]["mediaPath"] = str(self.root / "renderable.mp4")
+            file.write_text(json.dumps(metadata), encoding="utf-8")
+            return registry.main(["import-json", "--manifest", str(file), "--state", str(self.root / "renderable_state.json")])
+
+        def upload(group, job):
+            for clip in group:
+                uploaded.append(clip["id"])
+                Path(clip["statePath"]).write_text(json.dumps({"done": {str(clip["reviewIndex"]): {
+                    "title": registry.full_title(clip), "mediaPath": clip["mediaPath"], "bvid": "BV_OFFLINE_TEST"}}}), encoding="utf-8")
+            return subprocess.CompletedProcess([], 0, "uploaded", "")
+
+        self.run_worker(render, upload)
+        self.assertEqual(rendered, ["1", "2"])
+        self.assertCountEqual(uploaded, [2, 3])
+        self.assertEqual([self.records()[str(i)]["status"] for i in (1, 2, 3)], ["failed", "uploaded", "uploaded"])
+        self.assertEqual(self.records()["1"]["failureReason"], "unsupported date")
+        job = registry.load_json(registry.QUEUE_PATH, {})["jobs"][0]
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["renderFailures"], {"1": "unsupported date"})
+        self.assertNotIn("retryAt", job)
+
+    def test_render_failure_survives_upload_retry_and_worker_recovery(self):
+        self.mixed_render_job()
+        # Both candidates fail; the already-rendered clip has a transient upload error.
+        self.run_worker(lambda args: 2, lambda group, job: subprocess.CompletedProcess([], 1, "network timeout", ""))
+        queue = registry.load_json(registry.QUEUE_PATH, {})
+        self.assertEqual(queue["jobs"][0]["status"], "retry_wait")
+        self.assertEqual([self.records()[str(i)]["status"] for i in (1, 2)], ["failed", "failed"])
+        queue["jobs"][0].update(status="running", phase="uploading")
+        registry.save_json(registry.QUEUE_PATH, queue)
+        self.assertTrue(registry.recover_interrupted_jobs())
+        self.assertEqual([self.records()[str(i)]["status"] for i in (1, 2, 3)], ["failed", "failed", "queued"])
+        queue = registry.load_json(registry.QUEUE_PATH, {})
+        queue["jobs"][0].pop("retryAt", None)
+        registry.save_json(registry.QUEUE_PATH, queue)
+        render = unittest.mock.Mock()
+
+        def upload(group, job):
+            self.assertEqual([clip["id"] for clip in group], [3])
+            clip = group[0]
+            Path(clip["statePath"]).write_text(json.dumps({"done": {str(clip["reviewIndex"]): {
+                "title": registry.full_title(clip), "mediaPath": clip["mediaPath"], "bvid": "BV_OFFLINE_TEST"}}}), encoding="utf-8")
+            return subprocess.CompletedProcess([], 0, "uploaded", "")
+
+        self.run_worker(render, upload)
+        render.assert_not_called()
+        self.assertEqual(self.records()["3"]["status"], "uploaded")
         self.assertEqual(registry.load_json(registry.QUEUE_PATH, {})["jobs"][0]["status"], "failed")
 
     def test_interrupted_render_job_recovers_with_the_same_approved_revision(self):

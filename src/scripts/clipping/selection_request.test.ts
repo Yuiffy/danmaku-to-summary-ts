@@ -94,6 +94,7 @@ describe('selection usage accounting', () => {
       await request({ staticPromptCachePrefix: 'Stable' });
       await request({ daiYuTransientMaxAttempts: 2 });
       await request({ daiYuTransientMaxAttempts: 3 });
+      await request({ retry: { maxAttempts: 2, baseDelayMs: 50 } });
       expect(generate).toHaveBeenCalledTimes(1);
       await request({ staticPromptCachePrefix: 'Stable rules.\n', reasoningEffort: 'high' });
       expect(generate).toHaveBeenCalledTimes(2);

@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "profiles": {
+    "25788785": {
+      "provenance": "Curated from explicit user corrections; aliases are text-normalization rules, not speaker identity evidence.",
+      "rules": [
+        { "id": "shiori-full", "from": "看看雪莉", "to": "栞栞Shiori", "nearby": ["栞栞", "同事", "报备", "MIXUP", "mixup"], "exclude": ["不是栞栞", "不是小栞", "另一位雪莉"] },
+        { "id": "shiori-alias", "from": "看看小妮", "to": "栞栞Shiori", "nearby": ["栞栞", "同事", "太远", "远的要死", "报备"], "exclude": ["不是栞栞", "不是小栞"] },
+        { "id": "rei-alias-1", "from": "冰冰百灵", "to": "病院坂Rei", "nearby": ["报备", "MIXUP", "mixup", "栞栞", "看看雪莉"] },
+        { "id": "rei-alias-2", "from": "冰冰月灵灵", "to": "病院坂Rei", "nearby": ["报备", "切片", "MIXUP", "mixup", "栞栞"] },
+        { "id": "cat-hat-outfit", "from": "小猫猫", "to": "小猫帽", "nearby": ["下一套衣服", "衣装", "Live2D", "live2d", "cos服"], "exclude": ["我家猫", "逗猫", "猫粮", "猫咪"] },
+        { "id": "doudou-interjection", "from": "我这个兜豆呀", "to": "我了个豆豆呀" },
+        { "id": "galgame-1", "from": "嘎了个game", "to": "galgame" },
+        { "id": "galgame-2", "from": "打了game可能是不是会喜欢", "to": "galgame可能是不是会喜欢", "nearby": ["二游", "角色", "温柔", "大姐姐"] },
+        { "id": "workbuddy", "from": "workbody", "to": "WorkBuddy", "nearby": ["打开", "软件", "电脑"], "latinBoundary": true },
+        { "id": "mechanical-disk", "from": "机械盆", "to": "机械盘", "nearby": ["电脑", "机械盘", "E盘", "e盘", "软件"], "exclude": ["浇水", "盆栽", "种花", "花盆"] },
+        { "id": "e-disk-full", "from": "我的衣盆爆满", "to": "我的E盘爆满", "nearby": ["机械盘", "e盘", "E盘"] },
+        { "id": "e-disk-not-red", "from": "我一盘玫红", "to": "我E盘没红", "nearby": ["e盘没红", "E盘没红"], "exclude": ["颜料", "染料", "色卡"] },
+        { "id": "boot-phrase", "from": "就是我刚开资", "to": "就是我刚开机", "nearby": ["电脑", "机械盘", "软件"], "exclude": ["工资", "发薪"] },
+        { "id": "home-page", "from": "刷手眼", "to": "刷首页", "nearby": ["首页", "网页", "封面"] },
+        { "id": "instant-load", "from": "秒夫", "to": "秒出", "nearby": ["秒出"], "contextSeconds": 30 },
+        { "id": "sui-fans", "from": "平安岁", "to": "饼干岁", "nearby": ["我跟你说", "饼干岁"], "exclude": ["平安岁岁", "平安岁末", "祝你", "祝大家", "年年"] }
+      ],
+      "superchatAliases": [
+        { "id": "sc-jiajia", "from": "佳佳", "to": "嘉嘉" },
+        { "id": "sc-sui", "from": "小孙", "to": "小岁" },
+        { "id": "sc-several-responses", "from": "一呼己应", "to": "一呼几应" },
+        { "id": "sc-stream-stall", "from": "你看了", "to": "你卡了" }
+      ],
+      "reviewOnly": [
+        { "id": "ambiguous-shiori", "from": "砍小丽", "suggestion": "栞栞Shiori", "nearby": ["栞栞", "同事", "节奏", "报备"] },
+        { "id": "ambiguous-sui", "from": "小蔡", "suggestion": "小岁", "nearby": ["朋友圈", "饼干岁"] },
+        { "id": "ambiguous-food-or-name", "from": "小菜", "suggestion": "小岁", "nearby": ["回来了", "饼干岁"], "exclude": ["吃", "炒", "一碟", "下饭"] },
+        { "id": "ambiguous-slang", "from": "大人", "suggestion": "大扔", "nearby": ["二游", "角色", "御姐", "穿衣"], "exclude": ["成年人", "未成年人"] },
+        { "id": "ambiguous-english", "from": "quizy", "suggestion": "crazy" },
+        { "id": "ambiguous-english-short", "from": "zzy", "suggestion": "crazy", "latinBoundary": true }
+      ]
+    }
+  }
+}

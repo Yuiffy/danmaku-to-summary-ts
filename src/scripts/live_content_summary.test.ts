@@ -41,8 +41,8 @@ function writeFullContext(highlightPath: string) {
 }
 
 describe('live_content_summary', () => {
-  test('scopes the two full-input experiments without widening the global cache rollout', () => {
-    const production = require('../../config/production.json');
+  test('keeps complete-source inputs and nested summary delivery scoped to the four rooms', () => {
+    const production = require('./workflow-runtime').loadWorkflow('config/layers').loadConfigLayers({ env: { NODE_ENV: 'production' } });
 
     expect(production.ai.text.sharedPromptCache.explicitRolloutPercent).toBe(10);
     expect(production.ai.comic.storytellingExperiment.immersivePercent).toBe(60);
@@ -51,25 +51,38 @@ describe('live_content_summary', () => {
       expect.objectContaining({
         tasks: ['summary', 'ownStreamClips'],
         summaryDeliveryMode: 'separate',
+        compactEvidence: true,
         promptCacheRolloutPercent: 100
       })
     );
     expect(production.ai.roomSettings['25788785'].fullLiveContextExperiment.cachePropagationWaitMs)
-      .toBeUndefined();
+      .toBe(0);
     expect(production.ai.roomSettings['26966466'].fullLiveContextExperiment).toEqual(
       expect.objectContaining({
         tasks: ['goodnight', 'comic', 'summary'],
-        summaryDeliveryMode: 'attach_if_ready',
+        summaryDeliveryMode: 'separate',
+        compactEvidence: true,
         promptCacheRolloutPercent: 100,
         cachePropagationWaitMs: 3000
       })
     );
+    for (const room of ['30655190', '31368705']) {
+      expect(production.ai.roomSettings[room].fullLiveContextExperiment).toEqual(expect.objectContaining({
+        summaryDeliveryMode: 'separate', compactEvidence: true, replySummary: expect.objectContaining({ enabled: true })
+      }));
+    }
   });
 
-  test('waits for cache propagation only in the attached goodnight-summary mode', () => {
+  test('waits after a full-source goodnight independently of comment delivery mode', () => {
     expect(liveContentSummary.getCachePropagationWaitMs(makeExperiment({
       tasks: ['goodnight', 'comic', 'summary'],
       summaryDeliveryMode: 'attach_if_ready',
+      cachePropagationWaitMs: 3000
+    }))).toBe(3000);
+
+    expect(liveContentSummary.getCachePropagationWaitMs(makeExperiment({
+      tasks: ['goodnight', 'comic', 'summary'],
+      summaryDeliveryMode: 'separate',
       cachePropagationWaitMs: 3000
     }))).toBe(3000);
 

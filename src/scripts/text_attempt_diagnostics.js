@@ -41,7 +41,7 @@ function recordFailedTextAttempt(attempts, provider, model, error, state, extra 
     if (state.recorded) return;
     const { getPromptTokenUsage, getCompletionTokenUsage, normalizeUsageMetric, logAiUsage, getOpenAITextFinishReason } = textResponseHelpers();
     const usage = state.data?.usage;
-    const pending = isPendingTextGeneration(state.data);
+    const pending = isPendingTextGeneration(state.data) || error.outcomeUnknown === true;
     const counts = state.requestStarted ? {
         ...getPromptTokenUsage(usage), ...getCompletionTokenUsage(usage),
         totalTokens: normalizeUsageMetric(usage?.total_tokens) ?? normalizeUsageMetric(usage?.totalTokens)
@@ -55,6 +55,8 @@ function recordFailedTextAttempt(attempts, provider, model, error, state, extra 
         ...(pending ? { outcomeUnknown: true } : {}),
         apiModeRequested: state.apiModeRequested, apiModeUsed: state.apiModeUsed,
         httpStatus: state.response?.status ?? error.status ?? null,
+        ...(error.code ? { code: error.code } : {}),
+        ...(state.response?.headers?.get?.('retry-after') ? { retryAfter: state.response.headers.get('retry-after') } : {}),
         requestId: state.response?.headers?.get?.('x-request-id') || error.requestId || null,
         responseId: state.data?.id || null, responseModel: state.data?.model || null,
         finishReason: getOpenAITextFinishReason(state.data),

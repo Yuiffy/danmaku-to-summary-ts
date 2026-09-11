@@ -10,6 +10,7 @@ const { ensureCandidateDraft, correctCandidateDraft, approveCandidateDraft, hasD
     candidateDraftEvidence, writeJsonAtomic } = require('./clipping/candidate_subtitles');
 const { linkClipEvidence } = require('./clipping/subtitle_evidence');
 const { topicReviewLines } = require('./clipping/topic_review_runner');
+const { ensureCandidatePreview, syncPreviewSubtitles } = require('./clipping/candidate_preview');
 
 function prepareCandidate(metadata, metadataPath, options, rootConfig) {
     if (!['pending_preflight', 'render_queued'].includes(metadata.status)) throw new Error('Not a pending preflight candidate');
@@ -52,7 +53,8 @@ function prepareCandidate(metadata, metadataPath, options, rootConfig) {
     for (const row of grounding.audience || []) audience[Number(row.id.slice(1)) - 1] = row;
     const reviewedGrounding = linkClipEvidence({ ...copy, sourceKind: grounding.sourceKind,
         evidenceCueIds: grounding.subtitleIds, evidenceDanmakuIds: grounding.danmakuIds }, window,
-    corrected.evidence, audience, { cueIds: new Set(grounding.subtitleIds), danmakuIds: new Set(grounding.danmakuIds) });
+    corrected.evidence, audience, { cueIds: new Set(grounding.subtitleIds), danmakuIds: new Set(grounding.danmakuIds),
+        referenceYear: Number(String(metadata.recordedAt || '').match(/^(\d{4})-/u)?.[1]) });
     if (reviewedGrounding.issues.length) throw new Error(`Public copy still needs review: ${reviewedGrounding.issues.join('; ')}`);
     const outputDir = path.dirname(metadataPath);
     const outputStem = path.basename(metadataPath, path.extname(metadataPath));
@@ -145,6 +147,7 @@ function updateCandidate(metadataPath, options, rootConfig = configLoader.getCon
             approveCandidateDraft(metadata, evidence, options.reviewNote);
         }
         metadata.candidateId = Number(options.candidateId);
+        syncPreviewSubtitles(metadata, evidence);
         writeJsonAtomic(metadataPath, metadata);
         if (options.registryPath && options.sourceReview) {
             try { refreshSourceReview(options.registryPath, options.sourceReview); }
@@ -153,8 +156,37 @@ function updateCandidate(metadataPath, options, rootConfig = configLoader.getCon
         const draft = metadata.candidateSubtitles;
         return { candidateId: metadata.candidateId, status: metadata.status, candidateSrtPath: draft.path,
             candidateSrtSha256: draft.sha256, candidateRevision: draft.revision,
+            reviewPreview: metadata.reviewPreview || null,
             edits: draft.edits, approval: draft.approval || null, copy: metadata.copy,
             cues: draft.cues.map((cue, index) => ({ number: index + 1, start: cue.start, end: cue.end, text: cue.text })) };
+    } finally { fs.closeSync(lock); fs.unlinkSync(lockPath); }
+}
+
+async function previewCandidate(metadataPath, options, rootConfig = configLoader.getConfig()) {
+    metadataPath = path.resolve(metadataPath);
+    const { lock, lockPath } = acquireCandidateLock(metadataPath, options.candidateId);
+    try {
+        const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8').replace(/^\uFEFF/, ''));
+        if (!['pending_preflight', 'render_queued'].includes(metadata.status) || metadata.output?.mediaPath) {
+            throw new Error('Only unrendered candidates can have a review preview prepared');
+        }
+        if (!Number.isSafeInteger(Number(options.candidateId)) || Number(options.candidateId) < 1
+            || (metadata.candidateId && Number(metadata.candidateId) !== Number(options.candidateId))) {
+            throw new Error('Candidate ID does not match metadata');
+        }
+        metadata.candidateId = Number(options.candidateId);
+        const evidence = buildPreflightEvidence(topic.parseTopicSrt(metadata.source.srtPath).segments);
+        ensureCandidateDraft(metadata, metadataPath, evidence, topic.getClipTopicsConfig(rootConfig));
+        try {
+            await ensureCandidatePreview(metadata, metadataPath, evidence, manual.buildQueueMediaConfig(rootConfig));
+        } finally { writeJsonAtomic(metadataPath, metadata); }
+        if (options.registryPath && options.sourceReview) {
+            refreshSourceReview(options.registryPath, options.sourceReview);
+        }
+        const draft = metadata.candidateSubtitles;
+        return { candidateId: metadata.candidateId, status: metadata.status, copy: metadata.copy,
+            candidateSrtPath: draft.path, candidateSrtSha256: draft.sha256, candidateRevision: draft.revision,
+            reviewPreview: metadata.reviewPreview };
     } finally { fs.closeSync(lock); fs.unlinkSync(lockPath); }
 }
 
@@ -192,6 +224,7 @@ if (require.main === module) {
     const options = manual.parseArgs(process.argv.slice(2));
     if (!options.metadata) throw new Error('Missing --metadata');
     Promise.resolve().then(() => {
+        if (options.action === 'preview') return previewCandidate(path.resolve(options.metadata), options);
         if (options.action && options.action !== 'render') {
             if (!['draft', 'correct', 'approve'].includes(options.action)) throw new Error('Unknown candidate action');
             return updateCandidate(options.metadata, options);
@@ -202,4 +235,4 @@ if (require.main === module) {
     }).catch(error => { console.error(error.message); process.exitCode = 1; });
 }
 
-module.exports = { prepareCandidate, renderCandidate, refreshSourceReview, updateCandidate };
+module.exports = { prepareCandidate, renderCandidate, refreshSourceReview, updateCandidate, previewCandidate, acquireCandidateLock };

@@ -112,6 +112,19 @@ describe('automatic entity references', () => {
     expect(result.attributionReview.entityContext.digest).toBe(p.entityContext.digest);
     expect(result.attributionReview.claims[0].roleEvidence.target.entityId).toBe('person');
   });
+  test('validated nickname references must keep the named target in public copy', () => {
+    const p = packet();
+    const value = review(p);
+    value.copy.title = 'Host asked the other person';
+    value.copy.description = 'Host recalled asking her.';
+    expect(validateActorReview(value, p)).toEqual([
+      'known_person_anonymized:target:title:person:1',
+      'known_person_anonymized:target:description:person:1'
+    ]);
+    value.claims[0].roleEvidence.target.contextIds = [];
+    expect(validateActorReview(value, p)).toContain('uncorroborated_role_alias:target:1');
+    expect(validateActorReview(value, p).some(issue => issue.startsWith('known_person_anonymized'))).toBe(false);
+  });
   test('supports a pronoun action through a separate in-clip named antecedent', () => {
     const p = packet(); const claim = { actor: 'Lin Lan', cueIds: ['G4'], roleEvidence: { actor: reference(p) } };
     expect(validateRoleReference(claim, 'actor', p)).toEqual([]);

@@ -5,7 +5,7 @@ const { summarizeTextAttempts, hasIncompleteTextGeneration } = require('../text_
 
 function recordSelectionDiagnostic(diagnostics, context, result = null, error = null) {
     if (!diagnostics) return;
-    const rawAttempts = error?.attempts || result?.meta?.attempts;
+    const rawAttempts = error?.attempts || [...(result?.meta?.retryAttempts || []), ...(result?.meta?.attempts || [])];
     const attempts = Array.isArray(rawAttempts) ? rawAttempts : [];
     const last = attempts.at(-1) || {};
     const cacheHit = result?.meta?.selectionCache?.hit === true;
@@ -30,11 +30,13 @@ function recordSelectionDiagnostic(diagnostics, context, result = null, error = 
 async function requestSelectionText(prompt, requestOptions, config, rootConfig, info, phase, diagnostics, validate) {
     const stageName = phase.startsWith('recall-') ? 'recall' : phase.startsWith('actor-review-') ? 'actorReview'
         : phase.startsWith('dialogue-evidence-') ? 'dialogueEvidence' : 'rerank';
+    const retry = { ...config.ai?.retry, ...config.ai?.retryByStage?.[stageName], ...requestOptions.retry };
+    requestOptions = { ...requestOptions, ...(Object.keys(retry).length ? { retry } : {}) };
     const stage = config.ai?.stages?.[stageName];
     if (stage && require('./enhancement_runner').enhancementEnabled({ enabled: true, roomIds: config.ai.stageRoomIds }, info?.roomId)) {
         const started = Date.now();
         try {
-            const result = await require('./enhancement_runner').requestStage(stage, config.ai.stageBudget, info, phase, prompt);
+            const result = await require('./enhancement_runner').requestStage({ ...stage, retry: { ...retry, ...stage.retry } }, config.ai.stageBudget, info, phase, prompt);
             recordSelectionDiagnostic(diagnostics, { phase, elapsedMs: Date.now() - started, provider: stage.provider, model: stage.model }, result);
             return result;
         } catch (error) {
@@ -46,15 +48,25 @@ async function requestSelectionText(prompt, requestOptions, config, rootConfig, 
     const provider = rootConfig.ai?.text?.provider || 'gemini';
     const textConfig = rootConfig.ai?.text || {};
     const settings = name => {
-        const { apiKey, proxy, ...rest } = textConfig[name] || {};
+        const { apiKey, proxy, retry, transientMaxAttempts, transientRetryDelayMs, ...rest } = textConfig[name] || {};
         return rest;
     };
     const startedAt = Date.now();
     // Routing and transport retry limits do not change verified model output.
-    const { staticPromptCachePrefix, daiYuTransientMaxAttempts, ...semanticRequestOptions } = requestOptions;
+    const { staticPromptCachePrefix, daiYuTransientMaxAttempts, retry: retryPolicy, transientMaxAttempts, transientRetryDelayMs, ...semanticRequestOptions } = requestOptions;
     const record = (result, error = null) => recordSelectionDiagnostic(diagnostics,
         { phase, promptChars: prompt.length, elapsedMs: Date.now() - startedAt, provider, model: requestOptions.primaryModel }, result, error);
     let result;
+    const generate = () => {
+        const call = options => provider === 'tuZi' ? generator.generateTextWithTuZi(prompt, options)
+            : provider === 'daiYu' ? generator.generateTextWithDaiYu(prompt, options)
+                : generator.generateTextWithGemini(prompt, { wordLimit: options.wordLimit });
+        if (!requestOptions.strictEvaluation || !Object.keys(retry).length) return call(requestOptions);
+        const { resolveRetryPolicy } = require('../workflow-runtime').loadWorkflow('text/response');
+        const deadlineAt = requestOptions.deadlineAt || Date.now() + (requestOptions.timeoutMs || 600000);
+        return require('../text/request_transport').strictGenerationWithRetry(() => call({ ...requestOptions, deadlineAt }),
+            resolveRetryPolicy(retry), { deadlineAt, onRetry: (_error, event) => console.warn(`[TEXT_RETRY] ${JSON.stringify({ phase, ...event })}`) });
+    };
     try {
         result = await withSelectionCache({
             directory: config.ai?.selectionCacheEnabled === false ? null : info?.selectionCacheDirectory,
@@ -62,11 +74,7 @@ async function requestSelectionText(prompt, requestOptions, config, rootConfig, 
             signature: { provider, requestProtocolVersion: generator.TEXT_REQUEST_PROTOCOL_VERSION || 1,
                 requestOptions: semanticRequestOptions, daiYu: settings('daiYu'), tuZi: settings('tuZi'), gemini: settings('gemini') },
             validate
-        }, () => provider === 'tuZi'
-            ? generator.generateTextWithTuZi(prompt, requestOptions)
-            : provider === 'daiYu'
-                ? generator.generateTextWithDaiYu(prompt, requestOptions)
-                : generator.generateTextWithGemini(prompt, { wordLimit: requestOptions.wordLimit }));
+        }, generate);
         if (hasIncompleteTextGeneration(result?.meta)) {
             throw Object.assign(new Error('Text generation did not complete'), { attempts: result.meta?.attempts || [],
                 selectionCache: result.meta?.selectionCache });

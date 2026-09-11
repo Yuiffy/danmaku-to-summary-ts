@@ -1,6 +1,10 @@
 """Image-route policy and bounded attempts with injected provider operations."""
 
 import os
+import json
+import random
+import time
+import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 
@@ -121,9 +125,23 @@ def _get_image_generation_routes(config: Dict[str, Any], tuzi_config: Dict[str, 
     room_image_generation = room_config.get("imageGeneration", {}) if isinstance(room_config, dict) else {}
     room_routes = room_image_generation.get("routes") if isinstance(room_image_generation, dict) else None
     if room_image_generation.get("enabled", True) and isinstance(room_routes, list) and room_routes:
-        return [route for route in room_routes if isinstance(route, dict) and route.get("enabled", True)]
+        routes = [route for route in room_routes if isinstance(route, dict) and route.get("enabled", True)]
+    else:
+        routes = routes[:1]
 
-    return routes[:1]
+    # Pick once per image, not once per retry. Room policy can pin a variant.
+    rollout = room_image_generation.get("rollout", image_generation.get("rollout", {})) or {}
+    if routes and rollout.get("enabled", False):
+        variants = rollout.get("variants") or []
+        if not variants:
+            raise ValueError("Image rollout requires at least one variant")
+        selected = random.choice(variants)
+        if not selected.get("model") or selected.get("quality") not in ("low", "medium", "high", "xhigh", "max", "auto"):
+            raise ValueError("Invalid image rollout model/quality")
+        routes = [dict(routes[0], model=selected["model"], quality=selected["quality"],
+                       flow="openaiImages", useTuziRetry=False,
+                       rolloutVariant=f"{selected['model']}:{selected['quality']}")] + routes[1:]
+    return routes
 
 
 def _call_image_generation_route(
@@ -194,6 +212,7 @@ def generate_image(
     *,
     config: Dict[str, Any],
     io: ImageRouteIO,
+    selected_routes: Optional[list[Dict[str, Any]]] = None,
 ) -> Optional[str]:
     """
     Generate comic images through configured OpenAI-compatible image routes.
@@ -222,9 +241,12 @@ def generate_image(
         timeout_ms = max(timeout_ms, 1000000)
     timeout_sec = timeout_ms / 1000
 
-    routes = _get_image_generation_routes(config, tuzi_config, room_id)
+    routes = selected_routes if selected_routes is not None else _get_image_generation_routes(config, tuzi_config, room_id)
     route_labels = [f"{route.get('provider', 'tuZi')}:{route.get('model', 'gpt-image-2')}" for route in routes]
     route_attempts = []
+    all_attempts = []
+    generation_id = uuid.uuid4().hex
+    started = time.monotonic()
     io.log(f"[IMAGE_PROVIDER] Image generation routes: {route_labels}")
 
     for index, route in enumerate(routes, 1):
@@ -240,6 +262,7 @@ def generate_image(
                 f"{provider_name}:{model}, flow={route.get('flow', 'openaiImages')}, timeout={route_timeout_sec}s"
             )
             io.reset_metadata()
+            attempt_started = time.monotonic()
             result = _call_image_generation_route(
                 route=route,
                 provider=provider,
@@ -251,19 +274,45 @@ def generate_image(
                 io=io,
             )
             last_meta = io.read_metadata()
+            elapsed_ms = round((time.monotonic() - attempt_started) * 1000)
+            quality = route.get("quality", "high") if route.get("flow", "openaiImages") == "openaiImages" else (
+                "high" if last_meta.get("endpoint") in ("images/edits", "images/generations") else None
+            )
             failure_reason = None if result else _summarize_image_generation_failure(
                 last_meta,
                 f"{provider_name}:{model} returned no image",
             )
             if failure_reason:
                 io.log(f"[IMAGE_PROVIDER] Route failed: {provider_name}:{model} attempt {attempt + 1}/{attempts}: {failure_reason}")
-            route_attempts.append({
+            record = {
+                "generationId": generation_id,
+                "roomId": str(room_id) if room_id is not None else None,
                 "provider": provider_name,
-                "model": model,
+                "model": last_meta.get("model") or model,
+                "requestedModel": model,
+                "quality": quality,
+                "size": route.get("size", "1:1"),
+                "rolloutVariant": route.get("rolloutVariant"),
+                "elapsedMs": elapsed_ms,
+                "usage": last_meta.get("usage"),
+                "requestId": last_meta.get("lastRequestId"),
+                "endpoint": last_meta.get("endpoint"),
                 "attempt": attempt + 1,
                 "status": "success" if result else "failure",
                 "reason": failure_reason,
-            })
+            }
+            route_attempts.append(record)
+            nested_attempts = last_meta.get("attempts") or []
+            all_attempts.extend([dict(record, **dict(item, usage=item.get("usage"))) for item in nested_attempts] or [record])
+            io.log("[IMAGE_EXPERIMENT] " + json.dumps(dict(record, attempts=nested_attempts), ensure_ascii=False))
+            io.annotate_metadata(
+                provider=provider_name,
+                generationId=generation_id, roomId=record["roomId"],
+                model=record["model"], quality=quality,
+                size=record["size"], rolloutVariant=routes[0].get("rolloutVariant"),
+                elapsedMs=round((time.monotonic() - started) * 1000),
+                attempts=all_attempts, routeAttempts=route_attempts,
+            )
             if result:
                 io.annotate_metadata(
                     provider=provider_name,

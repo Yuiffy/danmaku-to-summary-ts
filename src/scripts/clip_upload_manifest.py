@@ -16,6 +16,20 @@ except ImportError:
 MANIFEST_TYPE = "bilibili_clip_upload_manifest"
 
 
+def find_review_manifest(review_path: str | Path) -> Optional[Path]:
+    review = Path(review_path).expanduser().resolve()
+    for candidate in (review.with_name("UPLOAD_MANIFEST.json"), review.with_name(review.stem + "_UPLOAD_MANIFEST.json"),
+                      review.with_name(review.stem.removesuffix("_REVIEW") + "_UPLOAD_MANIFEST.json"),
+                      review.with_name(review.stem.removeprefix("REVIEW_") + "_UPLOAD_MANIFEST.json")):
+        if not candidate.is_file():
+            continue
+        payload = _read_json(candidate)
+        if (isinstance(payload, dict) and payload.get("type") == MANIFEST_TYPE
+                and _resolve_optional_path(payload.get("reviewPath"), candidate.parent) == str(review)):
+            return candidate
+    return None
+
+
 def _read_json(path: Path) -> Any:
     with path.open("r", encoding="utf-8-sig") as handle:
         return json.load(handle)
@@ -106,6 +120,8 @@ def load_upload_manifest(
     default_prefix: str = "",
     default_tid: int = 21,
     review_path: str = "",
+    allow_pending_review: bool = False,
+    selected_indices: Optional[Iterable[int]] = None,
 ) -> List[Dict[str, Any]]:
     """Load a batch manifest or a single generated clip metadata JSON.
 
@@ -125,7 +141,7 @@ def load_upload_manifest(
         or isinstance(payload.get("output"), dict)
     ):
         context = {}
-        items = [payload]
+        items = [{"metadataPath": str(path), "reviewIndex": payload.get("reviewIndex") or 1}]
     else:
         raise ValueError(f"unsupported upload JSON shape: {path}")
 
@@ -135,9 +151,25 @@ def load_upload_manifest(
     context_review_path = context.get("reviewPath") or review_path
     resolved_review_path = _resolve_optional_path(context_review_path, path.parent)
     clips: List[Dict[str, Any]] = []
+    selected = None if selected_indices is None else {int(index) for index in selected_indices}
     for position, item in enumerate(items, start=1):
+        hint = item if isinstance(item, dict) else {}
+        hinted_index = _int_or(hint.get("reviewIndex") or hint.get("idx") or position, position)
+        if selected is not None and hinted_index not in selected:
+            continue
         wrapper, metadata, metadata_path = _unwrap_clip(item, path.parent)
-        validate_metadata_qa(metadata)
+        review_errors = []
+        try:
+            validate_metadata_qa(metadata)
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            if not allow_pending_review:
+                raise
+            if not metadata_path:
+                raise ValueError("pending review registration requires a persisted metadataPath") from error
+            review_errors.append(str(error))
+        if review_errors:
+            review_errors.extend((metadata.get("attributionReview") or {}).get("issues") or [])
+            review_errors.extend((metadata.get("grounding") or {}).get("issues") or [])
         copy = metadata.get("copy") if isinstance(metadata.get("copy"), dict) else {}
         output = metadata.get("output") if isinstance(metadata.get("output"), dict) else {}
         window = metadata.get("window") if isinstance(metadata.get("window"), dict) else {}
@@ -243,14 +275,26 @@ def load_upload_manifest(
                 "coverPath": cover_path,
                 "selectionSource": selection_source,
                 "metadataPath": metadata_path,
+                "srtPath": _resolve_optional_path(output.get("srtPath"), path.parent),
+                "sourceMediaPath": _resolve_optional_path((metadata.get("source") or {}).get("mediaPath"), path.parent)
+                    if isinstance(metadata.get("source"), dict) else "",
+                "reviewPending": bool(review_errors),
+                "reviewIssues": list(dict.fromkeys(str(error) for error in review_errors)),
+                "publicCopyPending": bool(metadata.get("publicCopyPending")),
+                "attributionStatus": (metadata.get("attributionReview") or {}).get("status"),
+                "humanReviewRequired": bool(metadata.get("ownStreamHumanReview")),
                 "pendingCut": metadata.get("status") in ("pending_preflight", "render_queued") and not media_path,
                 "candidateIndex": str(window.get("index") or ""),
-                "candidateSrtPath": (metadata.get("candidateSubtitles") or {}).get("path", ""),
-                "candidateRevision": (metadata.get("candidateSubtitles") or {}).get("revision"),
-                "candidateSrtSha256": (metadata.get("candidateSubtitles") or {}).get("sha256", ""),
+                "reviewPreview": metadata.get("reviewPreview"),
+                "pendingRebuild": bool(metadata.get("rebuildRequired")),
+                "subtitleRevisionKind": "own_stream" if metadata.get("renderedSubtitles") else "",
+                "candidateSrtPath": (metadata.get("renderedSubtitles") or metadata.get("candidateSubtitles") or {}).get("path", ""),
+                "candidateRevision": (metadata.get("renderedSubtitles") or metadata.get("candidateSubtitles") or {}).get("revision"),
+                "candidateSrtSha256": (metadata.get("renderedSubtitles") or metadata.get("candidateSubtitles") or {}).get("sha256", ""),
                 **({"qaRequired": True} if metadata.get("qaRequired") else {}),
                 **({"attributionRequired": True} if metadata.get("attributionRequired") else {}),
                 "manifestPath": str(path),
+                "reviewPlanPath": _resolve_optional_path(context.get("planPath"), path.parent),
                 "reviewPath": item_review_path,
                 "source": str(source or "").strip(),
                 "prefix": str(prefix or "").strip(),

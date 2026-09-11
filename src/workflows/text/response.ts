@@ -1,3 +1,5 @@
+export { parseModelJson } from './json';
+export { resolveRetryPolicy, retryReason, retryDelay } from './retry';
 export interface TextChoice {
     finish_reason?: string; finishReason?: string; native_finish_reason?: string;
     message?: { content?: unknown };
@@ -169,6 +171,13 @@ export function buildAiUsageMetrics(attempt: Record<string, unknown> = {}) {
         apiModeFallbackReason: attempt.apiModeFallbackReason || null,
         sharedPromptCacheKey: attempt.sharedPromptCacheKey || null,
         explicitPromptCache: attempt.explicitPromptCache || null,
+        ...(attempt.promptCacheRequestFingerprint ? {
+            promptCacheRequestFingerprint: attempt.promptCacheRequestFingerprint,
+            promptCacheRequestKey: attempt.promptCacheRequestKey || null,
+            promptCacheSourceBoundary: attempt.promptCacheSourceBoundary || null,
+            reasoningEffortSent: attempt.reasoningEffortSent || null,
+            responseModel: attempt.responseModel || null
+        } : {}),
         ...(attempt.status === 'failure' ? { status: 'failure', usageUnknown: attempt.usageUnknown !== false,
             requestStarted: typeof attempt.requestStarted === 'boolean' ? attempt.requestStarted : null,
             ...(attempt.usageFinal !== undefined ? { usageFinal: attempt.usageFinal } : {}),

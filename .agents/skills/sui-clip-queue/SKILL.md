@@ -20,6 +20,28 @@ Use this skill for the whole path from a selected timestamp to a reviewable, upl
 
 ### Numeric candidate corrections
 
+Own-stream rendered clips, including held/failed clips and rejected candidates,
+also reserve numeric IDs. Their single chronological review lists the blocking
+issues beside each ID. Read `docs/topic-event-editorial.md#own-stream-review-ids`
+for `clips:review`, rendered `subtitles`, and explicit `approve-review` commands.
+Registering or refreshing IDs never approves or uploads a clip. `correct` now
+routes own-stream clips to a separate versioned rebuild path; it never edits an
+already burned video in place or treats a changed SRT as a changed video.
+
+For an own-stream rendered clip, `correct --id ... --from ... --to ...` preserves
+the original media/SRT and prepares a revision under the same ID. `cut --ids ...
+--review-note ...` renders that revision from the source recording without uploading.
+`correct --enqueue` or a later `enqueue` snapshots the revision for the existing
+worker to rebuild, audit and upload. Unconfirmed attribution/public copy first
+requires `rebuild --id ... --review-note ... --source-kind ...` with reviewed copy.
+For rejected overlong own-stream candidates, `rebuild` also accepts a per-clip
+`--allow-long --duration-note ...`; optional `--start` and `--end` are absolute
+recording seconds and must be chosen before correcting words. Length alone is not
+an editorial rejection: retain a coherent longer topic when its setup, development
+and ending justify it. Never use a duration note to bypass another rejection.
+Published IDs may be revised/rebuilt locally but cannot be enqueued again, even
+with `--force`; replacing the existing submission is a separate operation.
+
 For an existing numeric candidate ID, use the upload registry directly; do not
 create another manual task or run ASR/FFmpeg yourself. Candidate SRTs exist before
 the pending stage (older candidates are prepared lazily):
@@ -37,6 +59,31 @@ original recording SRT, approval hashes or queue JSON. The command returns after
 queueing; the existing upload worker burns subtitles, makes the cover, audits and
 uploads using the same ID. Confirm the worker is online and report queued; do not
 wait or poll repeatedly. See `docs/topic-event-editorial.md` for the full recipe.
+
+### Automatic subtitle preparation
+
+New Sui ASR outputs use the room-scoped `asr.subtitleProofreading` stage before
+writing SRT. Read `docs/asr-backends.md#自动字幕预校对` for its contract. It applies
+curated, context-bound aliases and only uses a unique prior SC with unchanged
+anchors for approved SC aliases. Raw ASR, rule IDs and SC provenance remain in
+the hash-bound evidence sidecar. Normalization never identifies a speaker or
+grants upload approval.
+
+Before asking the user about every unusual word, inspect the clip's
+`subtitleProofreading.automaticEdits` and `reviewGroups`. Avoid re-asking an already
+confirmed mapping when its local evidence agrees; reopen it when the current
+context contradicts the rule. Present repeated ambiguous terms once with all relevant
+times, and present a likely foreign-audio span as one grouped issue rather than
+inventing separate Chinese questions for each corrupted English word. Include the
+matched SC text when available. Keep hesitation/sound effects distinct from words
+that change identity, negation, numbers or the main claim.
+
+The generated <=30-second review windows are advisory inputs for a multilingual
+audio check, not completed listening or ASR results. This first stage does not
+automatically run a second ASR, translate/delete playback, learn global rules from
+all correction history, or revisit queued/published clips. Promote new reusable
+aliases only with room/context restrictions and negative regression examples;
+keep ambiguous short words and one-off full sentences source-bound.
 
 ### 1. Find and verify the source
 

@@ -78,6 +78,41 @@ export function findSecretsPath(root = getProjectRoot()): string {
   return path.join(root, 'config', contract.secretFile);
 }
 
+/** Resolve presets before any language-specific defaults. Room overrides win. */
+export function resolveGenerationModes(config: ConfigObject, catalog: ConfigObject = {}): ConfigObject {
+  if (!isObject(config.ai)) return config;
+  const ai = config.ai;
+  const modes = deepMerge(catalog, isObject(ai.generationModes) ? ai.generationModes : {});
+  const rooms = isObject(ai.roomSettings) ? ai.roomSettings : {};
+  const allowed = new Set(['wordLimit', 'minComicDurationMinutes', 'comicGenerationProbability',
+    'fullLiveContextExperiment', 'imageGeneration']);
+  const resolved = new Map<string, ConfigObject>();
+  const resolve = (name: unknown, visiting: string[] = []): ConfigObject => {
+    if (typeof name !== 'string' || !name || !Object.prototype.hasOwnProperty.call(modes, name)) {
+      throw new Error(`Unknown generation mode: ${String(name)}`);
+    }
+    if (visiting.includes(name)) throw new Error(`Generation mode inheritance cycle: ${[...visiting, name].join(' -> ')}`);
+    const cached = resolved.get(name);
+    if (cached) return cached;
+    const mode = modes[name];
+    if (!isObject(mode) || !isObject(mode.settings)) throw new Error(`Invalid generation mode: ${name}`);
+    for (const key of Object.keys(mode.settings)) if (!allowed.has(key)) throw new Error(`Invalid generation mode setting: ${name}.${key}`);
+    const parent = mode.extends === undefined ? {} : resolve(mode.extends, [...visiting, name]);
+    const settings = deepMerge(parent, mode.settings);
+    resolved.set(name, settings);
+    return settings;
+  };
+  for (const name of Object.keys(modes)) resolve(name);
+  if (ai.defaultGenerationMode !== undefined) resolve(ai.defaultGenerationMode);
+  const expanded = Object.fromEntries(Object.entries(rooms).map(([id, room]) => {
+    if (!isObject(room)) throw new Error(`Invalid room settings: ${id}`);
+    const name = room.generationMode ?? ai.defaultGenerationMode;
+    return [id, name === undefined ? room : { ...deepMerge(structuredClone(resolve(name)), room), generationMode: name }];
+  }));
+  return { ...config, ai: { ...ai, ...(Object.keys(modes).length ? { generationModes: modes } : {}),
+    ...(ai.roomSettings !== undefined ? { roomSettings: expanded } : {}) } };
+}
+
 /** Shared precedence before runtime-specific schema validation/defaults. */
 export function loadConfigLayers(options: LayerOptions = {}): ConfigObject {
   const root = options.root || getProjectRoot();
@@ -89,5 +124,12 @@ export function loadConfigLayers(options: LayerOptions = {}): ConfigObject {
   for (const [variable, target] of Object.entries(contract.environmentMappings)) {
     if (env[variable]) setValue(config, target, env[variable]);
   }
-  return config;
+  const modesFile = path.join(root, 'config', 'generation-modes.json');
+  let modes: ConfigObject = {};
+  if (fs.existsSync(modesFile)) {
+    const catalog = readJsonObject(modesFile);
+    if (catalog.schemaVersion !== 1 || !isObject(catalog.modes)) throw new Error('Invalid generation mode catalog');
+    modes = catalog.modes;
+  }
+  return resolveGenerationModes(config, modes);
 }

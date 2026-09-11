@@ -1,9 +1,37 @@
 import { assignExperiment, buildExperimentSelection, parseExperimentSelection, labelExperimentDescription,
     PRECISION_EXPERIMENT_NAME, PRECISION_EXPERIMENT_MARKER, experimentDetailMarkdown } from './experiment';
+import { createHash } from 'crypto';
 
 const clips = Array.from({ length: 20 }, (_, i) => ({ start: i * 100, end: i * 100 + 80, title: `Story ${i}` }));
 const speech = clips.map(clip => ({ start: clip.start, end: clip.end, text: `${clip.title}: setup, correction, ending` }));
 const settings = { ratio: 0.25, maxClips: 5 };
+const copyHash = (copy: any) => createHash('sha256').update(['title', 'coverText', 'description']
+    .map(key => String(copy[key] || '')).join('\0')).digest('hex');
+
+test('a fully attribution-reviewed batch still offers its passed clips for precision selection', () => {
+    const reviewed = Array.from({ length: 23 }, (_, i) => {
+        const clip = { start: i * 100, end: i * 100 + 80, title: `Story ${i}`, coverText: 'Story', description: 'Complete story',
+            attributionRequired: true, publicCopyPending: i >= 14 };
+        return { ...clip, attributionReview: { version: 1, status: i < 14 ? 'passed' : 'needs_review',
+            copyDigest: copyHash(clip), start: clip.start, end: clip.end, sourceSha256: 'source-v1' } };
+    });
+    const packet = (buildExperimentSelection as any)(reviewed, reviewed.map(clip => ({ ...clip, text: 'Complete source story' })), settings, 'source-v1');
+    expect(packet.eligibleIds).toEqual(Array.from({ length: 14 }, (_, i) => i + 1));
+    expect(packet.maxSelected).toBe(5);
+    for (const changed of [{ title: 'Changed copy' }, { end: 90 }, { attributionReview: { ...reviewed[0].attributionReview, sourceSha256: 'stale' } }]) {
+        const invalid = (buildExperimentSelection as any)([{ ...reviewed[0], ...changed }], speech, settings, 'source-v1');
+        expect(invalid.eligibleIds).toEqual([]);
+    }
+});
+
+test.each(['no_eligible_candidates', 'batch_below_minimum', 'selection_failed', 'model_selected_none'])(
+    'zero selection explicitly reports %s without inventing a model decision', reason => {
+        const detail = experimentDetailMarkdown([], { precisionExperiment: { total: 23, selected: [], reason,
+            status: reason === 'selection_failed' ? 'selection_failed_control' : 'ordinary_control',
+            excludedCounts: { attribution_not_passed: 9 }, error: reason === 'selection_failed' ? 'upstream timeout' : undefined } });
+        expect(detail).toContain('本批精切 0 条');
+        if (reason === 'selection_failed') expect(detail).toContain('upstream timeout');
+    });
 
 test('a batch of twenty lets AI choose five, leaving the other fifteen unchanged', () => {
     const packet = buildExperimentSelection(clips, speech, settings);

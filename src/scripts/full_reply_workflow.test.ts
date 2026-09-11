@@ -45,6 +45,9 @@ describe('combined reply/summary publication workflow', () => {
     const got=await workflow.tryGenerateCombinedReply(highlight,'1',{config,generateText:generate});
     expect(got.handled).toBe(true);
     expect(generate).toHaveBeenCalledTimes(2);
+    expect(generate.mock.calls[0][1].responseFormat).toMatchObject({type:'json_schema',strict:true,
+      schema:{properties:{content:{type:'object'}}}});
+    expect(generate.mock.calls[1][1]).not.toHaveProperty('responseFormat');
     const files=workflow.pathsFor(highlight);
     const state=JSON.parse(fs.readFileSync(files.artifact,'utf8'));
     expect(state.status).toBe('success');
@@ -55,6 +58,34 @@ describe('combined reply/summary publication workflow', () => {
     expect(overview.generation.attempts).toEqual([]);
     expect(overview.generation.sharedUsagePath).toBe(path.basename(files.artifact));
     expect(fs.readdirSync(dir).some((n:string)=>n.endsWith('.lock')||n.endsWith('.tmp'))).toBe(false);
+  });
+
+  test('keeps accepted replies when optional material is invalid and requests complete-source fallback', async () => {
+    config.ai.roomSettings['1'].fullLiveContextExperiment.replySummary.sharedMaterial = { enabled: true };
+    const generate = jest.fn().mockResolvedValueOnce(result(JSON.stringify(draft()), 'draft'))
+      .mockResolvedValueOnce(result('{"verdict":"pass","issues":[]}', 'review'));
+    const got = await workflow.tryGenerateCombinedReply(highlight, '1', { config, generateText: generate });
+    expect(got.handled).toBe(true);
+    const state = JSON.parse(fs.readFileSync(workflow.pathsFor(highlight).artifact, 'utf8'));
+    expect(state.sharedMaterial.status).toBe('fallback');
+    expect(state.output.reply).toBe(reply);
+    expect(state.attempts).toHaveLength(2);
+    expect(generate.mock.calls[0][0]).toContain('Shared source selection');
+    expect(generate.mock.calls[0][1].responseFormat.schema.required).toContain('moments');
+  });
+
+  test('still refuses malformed content from a nonconforming gateway and retains its charged attempt', async () => {
+    const malformed = {...draft(),content:'Team practice and Chess.'};
+    const generate = jest.fn().mockResolvedValue(result(JSON.stringify(malformed),'bad-content'));
+    expect((await workflow.tryGenerateCombinedReply(highlight,'1',{config,generateText:generate})).handled).toBe(false);
+    const files=workflow.pathsFor(highlight);
+    const saved=JSON.parse(fs.readFileSync(files.artifact,'utf8'));
+    expect(saved.error).toContain('Invalid content: expected an object');
+    expect(saved.attempts[0]).toMatchObject({responseId:'bad-content',promptTokens:1000,completionTokens:100});
+    expect(fs.existsSync(files.reply)).toBe(false);
+    expect(fs.existsSync(files.summary)).toBe(false);
+    expect((await workflow.tryGenerateCombinedReply(highlight,'1',{config,generateText:generate})).reason).toBe('reuse-terminal-fallback');
+    expect(generate).toHaveBeenCalledTimes(1);
   });
 
   test('recovers a missing reply from the committed artifact without another model call', async () => {
@@ -157,7 +188,7 @@ describe('combined reply/summary publication workflow', () => {
   });
 
   test('production enables the recipe only in the two requested rooms', () => {
-    const production=require('../../config/production.json');
+    const production=require('./workflow-runtime').loadWorkflow('config/layers').loadConfigLayers({env:{NODE_ENV:'production'}});
     expect(Object.entries(production.ai.roomSettings).filter(([,r]:any)=>r.fullLiveContextExperiment?.replySummary?.enabled)
       .map(([id])=>id).sort()).toEqual(['30655190','31368705']);
     expect(production.ai.roomSettings['26966466'].wordLimit).toBe(250);

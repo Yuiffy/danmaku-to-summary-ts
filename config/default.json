@@ -96,6 +96,12 @@
   },
   "asr": {
     "default_backend": "paraformer",
+    "subtitleProofreading": {
+      "enabled": true,
+      "roomIds": ["25788785"],
+      "contextSeconds": 20,
+      "maxContextChars": 400
+    },
     "common_hotwords": [
       "东爱璃Lovely",
       "星汐Seki",
@@ -1045,7 +1051,56 @@
             "responseFormat": "b64_json",
             "useTuziRetry": true
           }
-        ]
+        ],
+        "rollout": {
+          "enabled": true,
+          "variants": [
+            {
+              "model": "gpt-image-2",
+              "quality": "high"
+            },
+            {
+              "model": "gpt-image-2.5-sunburst",
+              "quality": "low"
+            },
+            {
+              "model": "gpt-image-2.5-sunburst",
+              "quality": "medium"
+            },
+            {
+              "model": "gpt-image-2.5-sunburst",
+              "quality": "high"
+            },
+            {
+              "model": "gpt-image-2.5-sunburst",
+              "quality": "xhigh"
+            },
+            {
+              "model": "gpt-image-2.5-sunburst",
+              "quality": "max"
+            },
+            {
+              "model": "gpt-image-2.5-flare",
+              "quality": "low"
+            },
+            {
+              "model": "gpt-image-2.5-flare",
+              "quality": "medium"
+            },
+            {
+              "model": "gpt-image-2.5-flare",
+              "quality": "high"
+            },
+            {
+              "model": "gpt-image-2.5-flare",
+              "quality": "xhigh"
+            },
+            {
+              "model": "gpt-image-2.5-flare",
+              "quality": "max"
+            }
+          ]
+        }
       }
     },
     "streamerRegistry": {
@@ -1338,7 +1393,66 @@
         "enableDelayedReply": true,
         "wordLimit": 800,
         "minComicDurationMinutes": 0,
-        "comicGenerationProbability": 1.0
+        "comicGenerationProbability": 1.0,
+        "imageGeneration": {
+          "enabled": true,
+          "routes": [
+            {
+              "provider": "daiYu",
+              "model": "gpt-image-2.5-sunburst",
+              "flow": "openaiImages",
+              "maxAttempts": 1,
+              "timeoutMs": 1200000,
+              "size": "1:1",
+              "quality": "max",
+              "outputFormat": "png",
+              "responseFormat": "b64_json",
+              "useTuziRetry": false
+            },
+            {
+              "provider": "tuZi",
+              "model": "gpt-image-2",
+              "flow": "tuZiCompatible",
+              "maxAttempts": 1,
+              "timeoutMs": 1200000,
+              "size": "1:1",
+              "quality": "high",
+              "outputFormat": "png",
+              "responseFormat": "b64_json",
+              "useTuziRetry": true,
+              "includeAsyncFallback": false
+            },
+            {
+              "provider": "daiYu",
+              "model": "gpt-image-2",
+              "flow": "openaiImages",
+              "maxAttempts": 1,
+              "timeoutMs": 1200000,
+              "size": "1:1",
+              "quality": "high",
+              "outputFormat": "png",
+              "responseFormat": "b64_json",
+              "useTuziRetry": false
+            },
+            {
+              "provider": "tuZi",
+              "model": "gpt-image-2",
+              "flow": "tuZiCompatible",
+              "strategyMode": "asyncOnly",
+              "asyncFallbackModel": "gemini-3-pro-image-preview-async",
+              "maxAttempts": 1,
+              "timeoutMs": 1200000,
+              "size": "1:1",
+              "quality": "high",
+              "outputFormat": "png",
+              "responseFormat": "b64_json",
+              "useTuziRetry": true
+            }
+          ],
+          "rollout": {
+            "enabled": false
+          }
+        }
       }
     }
   },
@@ -1418,11 +1532,14 @@
     "enabled": true,
     "enhancements": {
       "enabled": true,
+      "workflow": "pacing",
+      "pacing": { "noiseDb": -40, "nonSpeechVad": true, "minRemovedSeconds": 3, "minRemovedRatio": 0.02, "maxRemovedRatio": 0.2, "maxPausesPerClip": 2, "maxScannedSeconds": 120 },
       "roomIds": ["25788785"],
       "editing": true,
       "experiment": { "enabled": true, "ratio": 0.25, "maxClips": 5 },
       "budget": { "mode": "log_only", "ledgerPath": "data/runtime/clip-enhancement-ledger.json" },
       "stageDefaults": {
+        "retry": { "maxAttempts": 2, "baseDelayMs": 1000, "maxDelayMs": 10000, "jitterRatio": 0.2 },
         "provider": "daiYu",
         "model": "gpt-5.6-luna",
         "apiMode": "responses",
@@ -1471,6 +1588,7 @@
     "chunkSeconds": 2700,
     "aiConcurrency": 3,
     "clipConcurrency": 2,
+    "enhancementConcurrency": 3,
     "clipFfmpegThreads": 2,
     "clipResourceAdaptive": {
       "enabled": true,
@@ -1507,6 +1625,7 @@
       "timeoutMs": 600000,
       "rerankTimeoutMs": 1200000,
       "rerankMaxAttempts": 2,
+      "retry": { "maxAttempts": 2, "baseDelayMs": 1000, "maxDelayMs": 10000, "jitterRatio": 0.2 },
       "maxCandidateLines": 100,
       "maxCandidateSubtitleChars": 520,
       "maxCandidateDanmakuLines": 14,

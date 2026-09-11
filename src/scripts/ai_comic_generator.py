@@ -8,6 +8,7 @@ AI漫画生成模块
 from comic import image_routes as comic_image_routes
 from comic.text_client import run_node_text_generation
 from comic.text_response import has_incomplete_text_generation
+from comic.live_material import select_comic_material
 from comic.image_routes import (
     _get_nested_provider_options,
     _resolve_image_provider_config,
@@ -1097,11 +1098,11 @@ def load_full_live_context_sidecar(
                 raise ValueError("sidecar sourceSha256 校验失败")
             if sidecar.get("sharedPrefixSha256") != shared_prefix_sha256:
                 raise ValueError("sidecar sharedPrefixSha256 校验失败")
-            return {
+            return select_comic_material(highlight_path, room_id, config, {
                 **sidecar,
                 "path": candidate,
                 "sourceSha256": source_sha256,
-            }
+            }, log=print) if task == 'comic' else {**sidecar, "path": candidate, "sourceSha256": source_sha256}
         except Exception as error:
             print(f"[WARNING] 读取全量直播上下文失败，将回退到 AI_HIGHLIGHT: {error}")
 
@@ -1395,7 +1396,7 @@ def log_comic_script_token_usage(attempt: Optional[Dict[str, Any]]) -> None:
         "sharedPromptCacheKey": attempt.get("sharedPromptCacheKey"),
         "explicitPromptCache": attempt.get("explicitPromptCache"),
     }
-    payload.update({key: attempt[key] for key in ("status", "usageUnknown", "usageFinal", "outcomeUnknown", "requestStarted", "httpStatus", "requestId", "responseId", "stage") if key in attempt})
+    payload.update({key: attempt[key] for key in ("status", "usageUnknown", "usageFinal", "outcomeUnknown", "requestStarted", "httpStatus", "requestId", "responseId", "stage", "promptCacheRequestFingerprint", "promptCacheRequestKey", "promptCacheSourceBoundary", "reasoningEffortSent", "responseModel") if key in attempt})
     print(f"[COMIC_SCRIPT_USAGE] {json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}")
 
 
@@ -2263,6 +2264,8 @@ def build_comic_generation_prompt(
             f"{live_context_block}\n\n"
             f"{base}"
         )
+        if "Original live excerpts selected from a full-stream reading." in resolved_shared_source_prefix:
+            base += "\n素材规则：各个投稿必须分别呈现；严禁把一篇的意象、评分或反应移植到另一篇，多篇拼贴必须明确标作不同投稿。不要把隔开的摘录拼成连续对话。"
     else:
         base = base.replace("{live_context}", live_context_block)
         base = base.replace("{highlight_content}", highlight_content)
@@ -2710,10 +2713,12 @@ def call_tuzi_image_api(
     reference_image_path=None,
     room_id: Optional[str] = None,
     recovery_state_path: Optional[str] = None,
+    selected_routes: Optional[list[Dict[str, Any]]] = None,
 ) -> Optional[str]:
     return comic_image_routes.generate_image(
         prompt, reference_image_path, room_id, recovery_state_path,
         config=load_config(), io=_image_route_io(),
+        selected_routes=selected_routes,
     )
 
 
@@ -2791,6 +2796,12 @@ def write_comic_generation_meta(output_path: str, meta: Dict[str, Any]) -> None:
             "reason": meta.get("reason"),
             "attempts": meta.get("attempts") or [],
             "usage": meta.get("usage"),
+            "quality": meta.get("quality"),
+            "size": meta.get("size"),
+            "elapsedMs": meta.get("elapsedMs"),
+            "generationId": meta.get("generationId"),
+            "roomId": meta.get("roomId"),
+            "rolloutVariant": meta.get("rolloutVariant"),
             "requestIds": meta.get("requestIds") or [],
             "lastRequestId": meta.get("lastRequestId"),
             "lastResponseId": meta.get("lastResponseId"),
@@ -2833,6 +2844,7 @@ def write_comic_script_meta(
     storyboard_shots: Optional[list[dict]] = None,
     reference_requests: Optional[list[dict]] = None,
     full_live_source_sha256: Optional[str] = None,
+    source_coverage: Optional[str] = None,
 ) -> None:
     try:
         payload = {
@@ -2848,6 +2860,7 @@ def write_comic_script_meta(
             "highlightSha256": hashlib.sha256((highlight_content or "").encode("utf-8")).hexdigest() if highlight_content is not None else None,
             "liveContextSha256": hash_live_generation_context(live_context),
             "fullLiveSourceSha256": full_live_source_sha256,
+            "sourceCoverage": source_coverage or ("full" if full_live_source_sha256 else "filtered"),
             "appearedStreamerIds": sorted({
                 str(streamer_id)
                 for streamer_id in (appeared_streamer_ids or [])
@@ -2960,7 +2973,7 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
         )
         if full_live_context_sidecar:
             print(
-                f"[FULL_CONTEXT] 漫画脚本采用全量直播上下文: "
+                f"[FULL_CONTEXT] 漫画脚本来源={full_live_context_sidecar.get('coverage', 'full')}: "
                 f"{os.path.basename(full_live_context_sidecar['path'])}, "
                 f"sourceSha256={full_live_source_sha256}"
             )
@@ -3128,6 +3141,7 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
                     storyboard_shots,
                     reference_requests,
                     full_live_source_sha256,
+                    (full_live_context_sidecar or {}).get("coverage"),
                 )
             elif os.path.exists(text_output_path) and not os.path.exists(comic_script_meta_path(text_output_path)):
                 write_comic_script_meta(
@@ -3141,6 +3155,7 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
                     storyboard_shots,
                     reference_requests,
                     full_live_source_sha256,
+                    (full_live_context_sidecar or {}).get("coverage"),
                 )
         except Exception as e:
             print(f"[WARNING] 保存漫画脚本失败: {e}")
@@ -3187,6 +3202,8 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
             "status": "in_progress",
             "provider": first_route.get("provider"),
             "model": first_route.get("model"),
+            "quality": first_route.get("quality"),
+            "rolloutVariant": first_route.get("rolloutVariant"),
             "endpoint": first_route.get("flow") or "openaiImages",
             "reason": "image request submitted; interruption before response persistence has unknown outcome",
             "attempts": [],
@@ -3215,6 +3232,7 @@ def generate_comic_from_highlight(highlight_path: str, room_id: Optional[str] = 
                 all_images if all_images else None,
                 room_id=str(room_id) if room_id else None,
                 recovery_state_path=request_state_path,
+                selected_routes=configured_routes,
             )
             if comic_result:
                 print(f"[DEBUG] tu-zi.com返回结果: {comic_result}")

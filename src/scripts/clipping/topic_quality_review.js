@@ -21,6 +21,7 @@ function buildTopicQualityEvidence(clip, evidence, options = {}) {
 function buildTopicQualityPrompt(input) {
     return [
         'Independently fact-check ONE finalized Chinese Bilibili keyword clip. Do not praise or justify the draft. It may contain ASR replacement errors, mistaken people, confused food/song names, reversed roles, or unrelated topics.',
+        ...require('./audience_copy').copyPackagePromptLines({ review: true }),
         'First understand the actual event and speaker/retelling/playback attribution from the evidence; then check title, description and cover against that event. Every named person, action, quotation and outcome needs in-clip support. Do not force SUI into copy when the actual keyword identity is uncertain.',
         'Outside context is supplied ONLY to resolve ambiguity and assess whether setup or closure was cut off. It is NOT footage in the locked clip, and cannot license new public claims or quotations. If an essential fact exists only outside, flag boundaries instead of smuggling it into copy.',
         'All subtitles may have undergone automatic phonetic/alias replacement. Explicit original ASR provenance and unpromptedChecks are alternative recognizer hypotheses, not human truth. Never overwrite uncertain speech just to make a smooth story. Neither a corrected target spelling nor a draft claim establishes identity.',

@@ -22,7 +22,10 @@ async function reviewClipActors(clips, parsed, danmaku, evidence, info, config, 
         const packet = buildActorReviewPacket(clip, `c${index + 1}`, evidence, danmaku, context, settings);
         packets.push({ ...packet, index, risks });
     });
-    diagnostics.attribution = { totalClips: clips.length, highRiskClips: packets.length, passed: 0, pending: 0, requests: 0 };
+    diagnostics.attribution = { totalClips: clips.length, highRiskClips: packets.length, passed: 0, pending: 0, requests: 0, maxRequests, events: [] };
+    const recordEvent = (phase, current, details) => diagnostics.attribution.events.push({
+        phase, clipIds: current.map(packet => packet.id), ...details
+    });
     const store = (packet, review, issues) => {
         const updated = applyActorReview(packet, review, issues);
         updated.attributionReview.risks = packet.risks;
@@ -32,10 +35,12 @@ async function reviewClipActors(clips, parsed, danmaku, evidence, info, config, 
     const processBatch = async current => {
         if (!current.length) return;
         if (Date.now() >= deadline) {
+            recordEvent('actor-review', current, { status: 'unavailable', reason: 'time_budget_exhausted' });
             current.forEach(packet => store(packet, null, ['actor_review_time_budget_exhausted']));
             return;
         }
         if (diagnostics.attribution.requests >= maxRequests || !config.ai?.enabled || rootConfig.ai?.text?.enabled === false) {
+            recordEvent('actor-review', current, { status: 'unavailable', reason: diagnostics.attribution.requests >= maxRequests ? 'request_budget_exhausted' : 'ai_disabled' });
             current.forEach(packet => store(packet, null, ['actor_review_unavailable']));
             return;
         }
@@ -84,7 +89,10 @@ async function reviewClipActors(clips, parsed, danmaku, evidence, info, config, 
                                     requestId: last.requestId || null, responseId: last.responseId || null } };
                                 packet.data.dialogueEvidence = packet.dialogueEvidence;
                             });
-                        } catch (error) { diagnostics.attribution.dialogueError = error.message; }
+                        } catch (error) {
+                            diagnostics.attribution.dialogueError = error.message;
+                            recordEvent('dialogue-evidence', needsDialogue, { status: 'failed', error: error.message });
+                        }
                     }
                 }
             }
@@ -105,6 +113,7 @@ async function reviewClipActors(clips, parsed, danmaku, evidence, info, config, 
                         parseActorReviews(repaired, repair).forEach(review => { reviews.set(review.clipId, review); responses.set(review.clipId, repaired); });
                     } catch (error) {
                         diagnostics.attribution.repairError = error.message;
+                        recordEvent('actor-review-repair', repair, { status: 'failed', error: error.message });
                     }
                 }
             }
@@ -117,6 +126,7 @@ async function reviewClipActors(clips, parsed, danmaku, evidence, info, config, 
                     reasoningEffort: last.reasoningEffortSent || null, cacheHit: used.meta?.selectionCache?.hit === true };
             });
         } catch (error) {
+            recordEvent('actor-review', current, { status: 'failed', error: error.message });
             current.forEach(packet => store(packet, null, [`actor_review_failed:${error.message}`]));
         }
     };
@@ -124,6 +134,7 @@ async function reviewClipActors(clips, parsed, danmaku, evidence, info, config, 
     let batch = [];
     for (const packet of packets) {
         if (promptFor([packet]).length > maxChars) {
+            recordEvent('actor-review', [packet], { status: 'unavailable', reason: 'evidence_exceeds_budget' });
             store(packet, null, ['actor_evidence_exceeds_budget']);
             continue;
         }

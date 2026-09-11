@@ -947,7 +947,8 @@ function writeSpeakerReviewSrt(result, srtPath, subtitleConfig = {}, asrConfig =
         const lines = [];
         let lineIndex = 1;
         const segments = Array.isArray(result?.segments) ? result.segments : [];
-        const correctedTexts = applyCorrectionsToSegments(segments, cfg.corrections);
+        const correctedTexts = require('./subtitle_proofreading').proofreadSubtitleTexts(segments,
+            applyCorrectionsToSegments(segments, cfg.corrections), cfg.proofreading).texts;
 
         segments.forEach((segment, index) => {
             const correctedText = correctedTexts[index] || '';

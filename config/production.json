@@ -136,6 +136,7 @@
     }
   },
   "ai": {
+    "defaultGenerationMode": "standard",
     "providers": {
       "daiYu": {
         "type": "openai",
@@ -309,7 +310,56 @@
             "responseFormat": "b64_json",
             "useTuziRetry": true
           }
-        ]
+        ],
+        "rollout": {
+          "enabled": true,
+          "variants": [
+            {
+              "model": "gpt-image-2",
+              "quality": "high"
+            },
+            {
+              "model": "gpt-image-2.5-sunburst",
+              "quality": "low"
+            },
+            {
+              "model": "gpt-image-2.5-sunburst",
+              "quality": "medium"
+            },
+            {
+              "model": "gpt-image-2.5-sunburst",
+              "quality": "high"
+            },
+            {
+              "model": "gpt-image-2.5-sunburst",
+              "quality": "xhigh"
+            },
+            {
+              "model": "gpt-image-2.5-sunburst",
+              "quality": "max"
+            },
+            {
+              "model": "gpt-image-2.5-flare",
+              "quality": "low"
+            },
+            {
+              "model": "gpt-image-2.5-flare",
+              "quality": "medium"
+            },
+            {
+              "model": "gpt-image-2.5-flare",
+              "quality": "high"
+            },
+            {
+              "model": "gpt-image-2.5-flare",
+              "quality": "xhigh"
+            },
+            {
+              "model": "gpt-image-2.5-flare",
+              "quality": "max"
+            }
+          ]
+        }
       },
       "defaults": {
         "minDurationMinutes": 0,
@@ -1147,25 +1197,7 @@
         "enableTextGeneration": true,
         "enableComicGeneration": true,
         "enableDelayedReply": true,
-        "wordLimit": 800,
-        "minComicDurationMinutes": 0,
-        "comicGenerationProbability": 1,
-        "fullLiveContextExperiment": {
-          "enabled": true,
-          "tasks": [
-            "summary",
-            "ownStreamClips"
-          ],
-          "summaryDeliveryMode": "separate",
-          "promptCacheRolloutPercent": 100,
-          "model": "gpt-5.6-luna",
-          "cacheWarmupWaitMs": 45000,
-          "timeoutMs": 180000,
-          "maxAttempts": 1,
-          "failureRetryCooldownMs": 1800000,
-          "maxTokens": 2000,
-          "thinkingBudgetTokens": 2000
-        },
+        "generationMode": "sui",
         "multiReferenceImages": {
           "enabled": true,
           "maxExtraCharacters": 2,
@@ -1178,62 +1210,6 @@
           "filterExtraImagesByComicScript": false,
           "filterMentionedImagesByComicScript": false,
           "appendCharacterDescriptions": true
-        },
-        "imageGeneration": {
-          "enabled": true,
-          "routes": [
-            {
-              "provider": "daiYu",
-              "model": "gpt-image-2",
-              "flow": "openaiImages",
-              "maxAttempts": 1,
-              "timeoutMs": 1200000,
-              "size": "1:1",
-              "quality": "high",
-              "outputFormat": "png",
-              "responseFormat": "b64_json",
-              "useTuziRetry": false
-            },
-            {
-              "provider": "tuZi",
-              "model": "gpt-image-2",
-              "flow": "tuZiCompatible",
-              "maxAttempts": 1,
-              "timeoutMs": 1200000,
-              "size": "1:1",
-              "quality": "high",
-              "outputFormat": "png",
-              "responseFormat": "b64_json",
-              "useTuziRetry": true,
-              "includeAsyncFallback": false
-            },
-            {
-              "provider": "daiYu",
-              "model": "gpt-image-2",
-              "flow": "openaiImages",
-              "maxAttempts": 1,
-              "timeoutMs": 1200000,
-              "size": "1:1",
-              "quality": "high",
-              "outputFormat": "png",
-              "responseFormat": "b64_json",
-              "useTuziRetry": false
-            },
-            {
-              "provider": "tuZi",
-              "model": "gpt-image-2",
-              "flow": "tuZiCompatible",
-              "strategyMode": "asyncOnly",
-              "asyncFallbackModel": "gemini-3-pro-image-preview-async",
-              "maxAttempts": 1,
-              "timeoutMs": 1200000,
-              "size": "1:1",
-              "quality": "high",
-              "outputFormat": "png",
-              "responseFormat": "b64_json",
-              "useTuziRetry": true
-            }
-          ]
         }
       },
       "25971921": {
@@ -1255,25 +1231,7 @@
         "enableTextGeneration": true,
         "enableComicGeneration": true,
         "enableDelayedReply": true,
-        "wordLimit": 250,
-        "fullLiveContextExperiment": {
-          "enabled": true,
-          "tasks": [
-            "goodnight",
-            "comic",
-            "summary"
-          ],
-          "summaryDeliveryMode": "attach_if_ready",
-          "promptCacheRolloutPercent": 100,
-          "model": "gpt-5.6-luna",
-          "cacheWarmupWaitMs": 45000,
-          "cachePropagationWaitMs": 3000,
-          "timeoutMs": 180000,
-          "maxAttempts": 1,
-          "failureRetryCooldownMs": 1800000,
-          "maxTokens": 2000,
-          "thinkingBudgetTokens": 2000
-        },
+        "generationMode": "shiori",
         "anchorNicknames": ["栞栞", "栞栞Shiori", "Shiori"],
         "preferSpeakerReviewSrtWhenMultipleSpeakers": true,
         "multiReferenceImages": {
@@ -1316,29 +1274,8 @@
         "enableTextGeneration": true,
         "enableComicGeneration": true,
         "enableDelayedReply": true,
-        "wordLimit": 250,
-        "preferSpeakerReviewSrtWhenMultipleSpeakers": true,
-        "fullLiveContextExperiment": {
-          "enabled": true,
-          "replySummary": {
-            "enabled": true
-          },
-          "tasks": [
-            "goodnight",
-            "comic",
-            "summary"
-          ],
-          "summaryDeliveryMode": "attach_if_ready",
-          "promptCacheRolloutPercent": 100,
-          "model": "gpt-5.6-luna",
-          "cacheWarmupWaitMs": 45000,
-          "cachePropagationWaitMs": 3000,
-          "timeoutMs": 180000,
-          "maxAttempts": 1,
-          "failureRetryCooldownMs": 1800000,
-          "maxTokens": 2000,
-          "thinkingBudgetTokens": 2000
-        }
+        "generationMode": "paired",
+        "preferSpeakerReviewSrtWhenMultipleSpeakers": true
       },
       "31368686": {
         "audioOnly": false,
@@ -1359,29 +1296,8 @@
         "enableTextGeneration": true,
         "enableComicGeneration": true,
         "enableDelayedReply": true,
-        "wordLimit": 250,
+        "generationMode": "shared-material",
         "preferSpeakerReviewSrtWhenMultipleSpeakers": true,
-        "fullLiveContextExperiment": {
-          "enabled": true,
-          "replySummary": {
-            "enabled": true
-          },
-          "tasks": [
-            "goodnight",
-            "comic",
-            "summary"
-          ],
-          "summaryDeliveryMode": "attach_if_ready",
-          "promptCacheRolloutPercent": 100,
-          "model": "gpt-5.6-luna",
-          "cacheWarmupWaitMs": 45000,
-          "cachePropagationWaitMs": 3000,
-          "timeoutMs": 180000,
-          "maxAttempts": 1,
-          "failureRetryCooldownMs": 1800000,
-          "maxTokens": 2000,
-          "thinkingBudgetTokens": 2000
-        },
         "comicGenerationProbability": 1,
         "multiReferenceImages": {
           "enabled": true,
@@ -1747,11 +1663,14 @@
     "enabled": true,
     "enhancements": {
       "enabled": true,
+      "workflow": "pacing",
+      "pacing": { "noiseDb": -40, "nonSpeechVad": true, "minRemovedSeconds": 3, "minRemovedRatio": 0.02, "maxRemovedRatio": 0.2, "maxPausesPerClip": 2, "maxScannedSeconds": 120 },
       "roomIds": ["25788785"],
       "editing": true,
       "experiment": { "enabled": true, "ratio": 0.25, "maxClips": 5 },
       "budget": { "mode": "log_only", "ledgerPath": "data/runtime/clip-enhancement-ledger.json" },
       "stageDefaults": {
+        "retry": { "maxAttempts": 2, "baseDelayMs": 1000, "maxDelayMs": 10000, "jitterRatio": 0.2 },
         "provider": "daiYu",
         "model": "gpt-5.6-luna",
         "apiMode": "responses",
@@ -1796,6 +1715,7 @@
     "chunkSeconds": 2700,
     "aiConcurrency": 3,
     "clipConcurrency": 2,
+    "enhancementConcurrency": 3,
     "clipFfmpegThreads": 2,
     "clipResourceAdaptive": {
       "enabled": true,
@@ -1831,6 +1751,7 @@
       "timeoutMs": 600000,
       "rerankTimeoutMs": 1200000,
       "rerankMaxAttempts": 2,
+      "retry": { "maxAttempts": 2, "baseDelayMs": 1000, "maxDelayMs": 10000, "jitterRatio": 0.2 },
       "maxCandidateLines": 100,
       "maxCandidateSubtitleChars": 520,
       "maxCandidateDanmakuLines": 14,
@@ -1985,6 +1906,12 @@
   },
   "asr": {
     "default_backend": "paraformer",
+    "subtitleProofreading": {
+      "enabled": true,
+      "roomIds": ["25788785"],
+      "contextSeconds": 20,
+      "maxContextChars": 400
+    },
     "speaker_identity": {
       "policy": "row_verified",
       "room_ids": ["25788785"],

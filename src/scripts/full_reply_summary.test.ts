@@ -27,6 +27,34 @@ describe('combined full reply and summary evidence', () => {
     expect(result.validation.semanticTruthProven).toBe(false);
   });
 
+  it.each(['A flattened overview', null, [], 42])('identifies a malformed content object without filling missing facts: %p', content => {
+    const p: any = payload(); p.content = content;
+    expect(() => combined.validateCombinedResult(JSON.stringify(p), source(), '1', 250)).toThrow('Invalid content: expected an object');
+  });
+
+  it('distinguishes missing overview, missing arrays and length errors', () => {
+    const p: any = payload();
+    delete p.content.overview;
+    expect(() => combined.validateCombinedResult(JSON.stringify(p), source(), '1', 250)).toThrow('content.overview: expected a non-empty string');
+    p.content.overview = 'x'.repeat(81);
+    expect(() => combined.validateCombinedResult(JSON.stringify(p), source(), '1', 250)).toThrow('exceeds 80 characters');
+    p.content.overview = 'Team practice'; delete p.content.games;
+    expect(() => combined.validateCombinedResult(JSON.stringify(p), source(), '1', 250)).toThrow('Invalid content.games');
+  });
+
+  it('requires the nested content fields and keeps optional material at the outer level', () => {
+    const normal = combined.buildCombinedResponseFormat();
+    expect(normal.strict).toBe(true);
+    expect(normal.schema.required).toEqual(['reply', 'content', 'evidence']);
+    expect(normal.schema.properties.content).toMatchObject({ type: 'object', additionalProperties: false,
+      required: ['overview', 'activityTypes', 'songs', 'games', 'topics'] });
+    const selected = combined.buildCombinedResponseFormat({ maxMoments: 8 });
+    expect(selected.schema.required).toContain('moments');
+    expect(selected.schema.properties.moments).toMatchObject({ type: 'array', maxItems: 8 });
+    expect(selected.schema.properties.content.properties).not.toHaveProperty('moments');
+    expect(normal.schema.properties).not.toHaveProperty('moments');
+  });
+
   it.each([
     ['invalid ID', (p: any) => { p.evidence[0].sourceIds = ['G1']; }],
     ['outside ID', (p: any) => { p.evidence[0].sourceIds = ['T9999']; }],
@@ -77,5 +105,6 @@ describe('combined full reply and summary evidence', () => {
     expect(prompt).toContain('including the last topic');
     expect(prompt).toContain('Do not generate a comic script');
     expect(prompt).toContain('Only these source speaker labels identify the host: ["host"]');
+    expect(prompt).toContain('Never replace content with the overview string');
   });
 });

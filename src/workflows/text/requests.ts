@@ -6,17 +6,22 @@ interface TextBlock {
     prompt_cache_breakpoint?: { mode: string };
 }
 interface ChatMessage { role: string; content: string | TextBlock[] }
+export interface JsonSchemaResponseFormat {
+    type: 'json_schema'; name: string; strict: boolean; schema: Record<string, unknown>;
+}
 export interface TextRequestOptions {
     model: string; prompt: string; cachePlan?: PromptCachePlan | null;
     temperature?: number | null; maxTokens: number; thinkingEnabled?: boolean;
     thinkingBudgetTokens?: number; reasoningEffort?: unknown;
     images?: string[];
+    responseFormat?: JsonSchemaResponseFormat;
 }
 interface ChatRequest {
     model: string; messages: ChatMessage[]; temperature?: number | null; max_tokens: number;
     thinking?: { type: string; budget_tokens?: number };
     reasoning_effort?: string;
     prompt_cache_key?: string; prompt_cache_options?: { mode: string; ttl: string };
+    response_format?: { type: 'json_schema'; json_schema: Omit<JsonSchemaResponseFormat, 'type'> };
 }
 interface ResponsesRequest {
     model: string; input: Array<{ role: string; content: TextBlock[] }>;
@@ -24,6 +29,7 @@ interface ResponsesRequest {
     instructions?: string; prompt_cache_key?: string;
     prompt_cache_options?: { mode: string; ttl: string };
     reasoning?: { effort: string }; temperature?: number;
+    text?: { format: JsonSchemaResponseFormat };
 }
 
 const OPENAI_REASONING_EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
@@ -102,7 +108,7 @@ export function buildOpenAIResponsesInput(prompt: string, cachePlan: PromptCache
     return [{ role: 'user', content }];
 }
 
-export function buildDaiYuChatCompletionsRequest({ model, prompt, cachePlan, temperature, maxTokens, thinkingEnabled, thinkingBudgetTokens, reasoningEffort, images }: TextRequestOptions) {
+export function buildDaiYuChatCompletionsRequest({ model, prompt, cachePlan, temperature, maxTokens, thinkingEnabled, thinkingBudgetTokens, reasoningEffort, images, responseFormat }: TextRequestOptions) {
     let requestBody: ChatRequest = {
         model,
         messages: buildOpenAITextMessages(prompt),
@@ -111,6 +117,10 @@ export function buildDaiYuChatCompletionsRequest({ model, prompt, cachePlan, tem
     };
     requestBody = applyExplicitPromptCache(requestBody, cachePlan);
     if (images?.length) requestBody.messages = buildOpenAITextMessages(prompt, cachePlan, images);
+    if (responseFormat) {
+        const { type, ...json_schema } = responseFormat;
+        requestBody.response_format = { type, json_schema };
+    }
     if (reasoningEffort !== undefined) {
         requestBody.reasoning_effort = normalizeOpenAIReasoningEffort(reasoningEffort);
     } else if (thinkingEnabled) {
@@ -122,7 +132,7 @@ export function buildDaiYuChatCompletionsRequest({ model, prompt, cachePlan, tem
     return requestBody;
 }
 
-export function buildDaiYuResponsesRequest({ model, prompt, cachePlan, temperature, maxTokens, thinkingEnabled, reasoningEffort, images }: TextRequestOptions) {
+export function buildDaiYuResponsesRequest({ model, prompt, cachePlan, temperature, maxTokens, thinkingEnabled, reasoningEffort, images, responseFormat }: TextRequestOptions) {
     const requestBody: ResponsesRequest = {
         model,
         input: buildOpenAIResponsesInput(prompt, cachePlan, images),
@@ -136,6 +146,7 @@ export function buildDaiYuResponsesRequest({ model, prompt, cachePlan, temperatu
     if (cachePlan?.requestKey) {
         requestBody.prompt_cache_key = cachePlan.requestKey;
     }
+    if (responseFormat) requestBody.text = { format: responseFormat };
     if (thinkingEnabled) {
         requestBody.reasoning = {
             effort: normalizeOpenAIReasoningEffort(reasoningEffort)

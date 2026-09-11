@@ -56,5 +56,15 @@ async function getVideoResolution(mediaPath, ffprobePath = 'ffprobe') {
     return { ...await entry.promise };
 }
 
-module.exports = { getVideoResolution };
+function probeMediaDuration(mediaPath, ffprobePath = 'ffprobe') {
+    return new Promise((resolve, reject) => childProcess.execFile(ffprobePath, [
+        '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', String(mediaPath)
+    ], { encoding: 'utf8', timeout: 10000, windowsHide: true, shell: false, maxBuffer: 65536 },
+    (error, stdout) => {
+        const duration = Number(String(stdout).trim());
+        if (error || !Number.isFinite(duration) || duration <= 0) reject(error || new Error('Invalid media duration'));
+        else resolve(duration);
+    }));
+}
 
+module.exports = { getVideoResolution, probeMediaDuration };

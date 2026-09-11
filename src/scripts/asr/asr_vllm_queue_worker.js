@@ -563,12 +563,16 @@ async function runQueue(options) {
                 const runtime = asrBackends.resolveAsrHotwords(config, context);
                 const response = await worker.transcribe(buildJobPayload(task, config, runtime));
                 const normalized = asrBackends.normalizeAsrResult(response.result, asrBackends.getSubtitleConfig(config));
+                const proofreading = await require('./subtitle_proofreading').loadProofreadingContext(config, context, task.mediaPath);
                 asrBackends.writeSrt(normalized, srtPath, {
                     ...asrBackends.getSubtitleConfig(config),
+                    write_evidence: true,
+                    proofreading,
                     corrections: runtime.corrections
                 });
                 asrBackends.writeSpeakerReviewSrt(normalized, srtPath, {
                     ...asrBackends.getSubtitleConfig(config),
+                    proofreading,
                     corrections: runtime.corrections
                 }, config, context);
                 asrBackends.writeAsrSpeakersSidecar(normalized, srtPath, config, context);

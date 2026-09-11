@@ -46,10 +46,11 @@ function reusableRecall(candidate, evidence, config, danmaku = []) {
 
 function normalizeAiClips(rawClips, candidates, totalDuration, config, streamerLabel = '小岁', evidence = null, danmaku = [], allowedCueIds = null, allowedDanmakuIds = null, rejections = null) {
     const candidateByIndex = new Map(candidates.map(candidate => [String(candidate.index), candidate]));
-    return (Array.isArray(rawClips) ? rawClips : [])
+    const normalized = (Array.isArray(rawClips) ? rawClips : [])
         .map((clip, index) => {
             const reject = (reason, extra = {}) => {
                 rejections?.push({ index: index + 1, candidateIndex: clip.candidateIndex, reason,
+                    title: typeof clip.title === 'string' ? clip.title : null, score: clip.score ?? null,
                     startCueId: clip.startCueId, endCueId: clip.endCueId, startTime: clip.startTime, endTime: clip.endTime, ...extra });
                 return null;
             };
@@ -79,7 +80,8 @@ function normalizeAiClips(rawClips, candidates, totalDuration, config, streamerL
             const boundedStart = clamp(start, 0, totalDuration);
             const boundedEnd = clamp(end, 0, totalDuration);
             const duration = boundedEnd - boundedStart;
-            if (duration < config.minClipSeconds || duration > config.maxClipSeconds + 5) return reject('duration_out_of_bounds', { duration });
+            if (duration < config.minClipSeconds || duration > config.maxClipSeconds + 5) return reject('duration_out_of_bounds', {
+                duration, start: boundedStart, end: boundedEnd, minClipSeconds: config.minClipSeconds, maxClipSeconds: config.maxClipSeconds });
             if (boundedStart >= base.end || boundedEnd <= base.start) return reject('no_candidate_overlap');
             if (boundedStart < base.start - (Number(config.boundaryStartBacktrackSeconds) || 12) - 12
                 || boundedEnd > base.end + (Number(config.boundaryEndExtendSeconds) || 45) + 12) return reject('outside_candidate_context');
@@ -106,9 +108,10 @@ function normalizeAiClips(rawClips, candidates, totalDuration, config, streamerL
             };
         })
         .filter(Boolean)
-        .sort((a, b) => Number(b.score || 0) - Number(a.score || 0) || Number(a.start) - Number(b.start))
-        .slice(0, Math.max(1, Number(config.maxClips) || 50))
-        .sort((a, b) => Number(a.start) - Number(b.start));
+        .sort((a, b) => Number(b.score || 0) - Number(a.score || 0) || Number(a.start) - Number(b.start));
+    const limit = Math.max(1, Number(config.maxClips) || 50);
+    normalized.slice(limit).forEach(clip => rejections?.push({ ...clip, reason: 'max_clips_limit' }));
+    return normalized.slice(0, limit).sort((a, b) => Number(a.start) - Number(b.start));
 }
 
 function isRerankResponseValid(result, candidates, totalDuration, config, evidence, danmaku, allowedCueIds, allowedDanmakuIds = null) {

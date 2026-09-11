@@ -1,10 +1,12 @@
 const workflowRuntime = require('./workflow-runtime');
+const { requestRetryPolicy, postWithRetry } = require('./text/request_transport');
 if (require.main === module && process.argv[2] === '--check-runtime') {
     console.log(JSON.stringify(workflowRuntime.checkRuntime()));
     process.exit(0);
 }
 const { resolveTextRequestTimeout, parseGenerateTextOptions, getMachineReadableGenerationMeta,
-    getSharedPromptCacheInfo, getExplicitPromptCachePlan, isPromptCacheParameterError, withoutPromptCacheHints } = require('./text_generation_protocol');
+    getSharedPromptCacheInfo, getExplicitPromptCachePlan, getPromptCacheRequestDiagnostics,
+    isPromptCacheParameterError, withoutPromptCacheHints } = require('./text_generation_protocol');
 const {
     getTuZiFinishReason,
     extractOpenAITextParts,
@@ -60,7 +62,6 @@ const DAIYU_PRIMARY_MODEL = 'gpt-5.6-luna';
 const TUZI_DEFAULT_TEXT_MODELS = [DAIYU_PRIMARY_MODEL];
 const DAIYU_MODEL_PATTERN = /^gpt-5(?:[.-]|$)/i;
 const DAIYU_RESPONSES_COMPATIBILITY_STATUSES = new Set([400, 404, 405, 415, 422, 501]);
-const TRANSIENT_TEXT_API_STATUSES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 
 function isDaiYuTextModel(model) {
     return DAIYU_MODEL_PATTERN.test(String(model || '').trim());
@@ -735,10 +736,7 @@ async function generateTextWithTuZi(prompt, options = {}) {
     // 重试逻辑
     for (let attempt = 0; attempt < modelSequence.length; attempt++) {
         const textModel = modelSequence[attempt];
-        const transientMaxAttempts = Math.max(
-            1,
-            Number(options.transientMaxAttempts ?? tuziConfig.transientMaxAttempts) || 1
-        );
+        const transientMaxAttempts = 1; // Transport retries are shared with daiYu below.
         for (let transientAttempt = 1; transientAttempt <= transientMaxAttempts; transientAttempt++) {
           const attemptState = createTextAttemptState(apiMode);
           try {
@@ -770,8 +768,11 @@ async function generateTextWithTuZi(prompt, options = {}) {
                     max_tokens: effectiveMaxTokens
                 };
 
-            attemptState.requestStarted = true;
-            const response = await fetch(apiUrl, {
+            const policy = requestRetryPolicy(config, tuziConfig, options);
+            const response = await postWithRetry(async () => {
+              resetTextAttempt(attemptState, apiMode);
+              attemptState.requestStarted = true;
+              return await fetch(apiUrl, {
                 method: 'POST',
                 headers: {
                     'Authorization': `Bearer ${textApiKey}`,
@@ -779,9 +780,14 @@ async function generateTextWithTuZi(prompt, options = {}) {
                 },
                 body: JSON.stringify(requestBody),
                 agent: agent,
-                timeout: timeoutMs,
-                signal: AbortSignal.timeout(timeoutMs)
-            });
+                timeout: resolveTextRequestTimeout(options, timeoutMs),
+                signal: AbortSignal.timeout(resolveTextRequestTimeout(options, timeoutMs))
+              });
+            }, policy, { deadlineAt: options.deadlineAt, onRetry: (error, retry) => {
+                attemptState.response = error.response || null;
+                recordFailedTextAttempt(attempts, 'tuZi', textModel, error, attemptState);
+                console.warn(`[TEXT_RETRY] ${JSON.stringify({ provider: 'tuZi', model: textModel, ...retry })}`);
+            } });
 
             attemptState.response = response;
             if (!response.ok) {
@@ -840,6 +846,7 @@ async function generateTextWithTuZi(prompt, options = {}) {
                 cachedTokens: promptUsage.cachedTokens,
                 cacheWriteTokens: promptUsage.cacheWriteTokens,
                 ...sharedPromptCacheInfo,
+                ...getPromptCacheRequestDiagnostics(requestBody),
                 completionTokens: completionUsage.completionTokens,
                 reasoningTokens: completionUsage.reasoningTokens,
                 totalTokens: normalizeUsageMetric(usage?.total_tokens) ?? normalizeUsageMetric(usage?.totalTokens) ?? undefined,
@@ -861,24 +868,12 @@ async function generateTextWithTuZi(prompt, options = {}) {
             });
           } catch (error) {
             recordFailedTextAttempt(attempts, 'tuZi', textModel, error, attemptState);
-            if (isPendingTextGeneration(attemptState.data)) throw buildTextModelFailureError(attempts, 'tuZi');
+            if (isPendingTextGeneration(attemptState.data) || error.outcomeUnknown) throw buildTextModelFailureError(attempts, 'tuZi');
             console.error(
                 `❌ tuZi API调用失败 (模型 ${attempt + 1}/${modelSequence.length}, `
                 + `请求 ${transientAttempt}/${transientMaxAttempts}): ${error.message}`
             );
             await maybeNotifyTuZiBalanceError(error, `文本生成 ${textModel}`);
-
-            const isTransient = TRANSIENT_TEXT_API_STATUSES.has(Number(error.status));
-            if (isTransient && transientAttempt < transientMaxAttempts && (!options.deadlineAt || Date.now() < options.deadlineAt)) {
-                const baseDelayMs = Math.max(
-                    1000,
-                    Number(options.transientRetryDelayMs ?? tuziConfig.transientRetryDelayMs) || 10000
-                );
-                const waitMs = baseDelayMs * transientAttempt;
-                console.log(`⏳ tuZi临时故障，等待 ${Math.round(waitMs / 1000)} 秒后重试同一模型...`);
-                await sleep(options.deadlineAt ? Math.max(0, Math.min(waitMs, options.deadlineAt - Date.now())) : waitMs);
-                continue;
-            }
 
             // 如果是最后一次尝试,抛出包含所有候选模型失败原因的错误
             if (attempt === modelSequence.length - 1) {
@@ -998,7 +993,7 @@ async function generateTextWithDaiYu(prompt, options = {}) {
                         maxTokens: effectiveMaxTokens,
                         thinkingEnabled,
                         reasoningEffort,
-                        images: options.images
+                        images: options.images, responseFormat: options.responseFormat
                     })
                     : buildDaiYuChatCompletionsRequest({
                         model: textModel,
@@ -1009,13 +1004,12 @@ async function generateTextWithDaiYu(prompt, options = {}) {
                         thinkingEnabled,
                         thinkingBudgetTokens,
                         reasoningEffort: options.reasoningEffort,
-                        images: options.images
+                        images: options.images, responseFormat: options.responseFormat
                     })
             );
             const postRequest = async (apiMode, body) => {
-                const maxAttempts = options.strictEvaluation ? 1
-                    : Math.min(3, Math.max(1, Math.floor(Number(options.daiYuTransientMaxAttempts) || 1)));
-                for (let requestAttempt = 1; requestAttempt <= maxAttempts; requestAttempt++) {
+                const policy = requestRetryPolicy(config, daiYuConfig, options);
+                return postWithRetry(async () => {
                     resetTextAttempt(attemptState, apiMode);
                     const requestTimeout = resolveTextRequestTimeout(options, timeoutMs);
                     attemptState.requestStarted = true;
@@ -1034,18 +1028,12 @@ async function generateTextWithDaiYu(prompt, options = {}) {
                         }
                     );
                     attemptState.response = response;
-                    // Only retry explicit transient responses, not a local abort whose
-                    // upstream generation may still be running and billable.
-                    if (!TRANSIENT_TEXT_API_STATUSES.has(response.status) || requestAttempt === maxAttempts
-                        || (options.deadlineAt && Date.now() >= options.deadlineAt)) return response;
-                    const error = Object.assign(new Error(`daiYu API返回错误 ${response.status}: ${await response.text()}`),
-                        { status: response.status });
+                    return response;
+                }, policy, { deadlineAt: options.deadlineAt, onRetry: (error, retry) => {
+                    attemptState.response = error.response || null;
                     recordFailedTextAttempt(attempts, 'daiYu', textModel, error, attemptState);
-                    console.warn(`daiYu 临时上游错误 ${response.status}，重试同一模型（${requestAttempt + 1}/${maxAttempts}）`);
-                    const delay = Math.max(0, Number(options.transientRetryDelayMs ?? 1000) || 0);
-                    await new Promise(resolve => setTimeout(resolve,
-                        options.deadlineAt ? Math.min(delay, Math.max(0, options.deadlineAt - Date.now())) : delay));
-                }
+                    console.warn(`[TEXT_RETRY] ${JSON.stringify({ provider: 'daiYu', model: textModel, ...retry })}`);
+                } });
             };
 
             let apiModeUsed = apiModeRequested;
@@ -1139,6 +1127,7 @@ async function generateTextWithDaiYu(prompt, options = {}) {
                 apiModeUsed,
                 apiModeFallbackReason,
                 ...sharedPromptCacheInfo,
+                ...getPromptCacheRequestDiagnostics(requestBody),
                 ...(cachePlan.staticPromptPrefixChars ? { staticPromptPrefixChars: cachePlan.staticPromptPrefixChars,
                     promptCacheRequestKey: requestBody.prompt_cache_key || null } : {}),
                 explicitPromptCache: requestBody.prompt_cache_key
@@ -1167,7 +1156,7 @@ async function generateTextWithDaiYu(prompt, options = {}) {
             });
         } catch (error) {
             recordFailedTextAttempt(attempts, 'daiYu', textModel, error, attemptState);
-            if (isPendingTextGeneration(attemptState.data)) throw buildTextModelFailureError(attempts, 'daiYu');
+            if (isPendingTextGeneration(attemptState.data) || error.outcomeUnknown) throw buildTextModelFailureError(attempts, 'daiYu');
             console.error(`❌ daiYu API调用失败 (尝试 ${attempt + 1}/${modelSequence.length}): ${error.message}`);
 
             if (attempt === modelSequence.length - 1) {
@@ -1392,7 +1381,7 @@ function buildTextFrontMatter(highlightPath, generationMeta = {}) {
     if (generationMeta.maxTokens !== undefined) {
         lines.push(`maxTokens: ${Number(generationMeta.maxTokens)}`);
     }
-    for (const field of ['generationMode', 'sharedUsagePath', 'sharedGenerationId']) {
+    for (const field of ['generationMode', 'generationProfile', 'sharedUsagePath', 'sharedGenerationId']) {
         if (generationMeta[field]) lines.push(`${field}: ${yamlQuote(generationMeta[field])}`);
     }
 
@@ -1675,8 +1664,8 @@ async function generateClipTitle(context = {}) {
  */
 function buildClipTitlePromptLines(options = {}) {
     const outputFormat = options.outputMode === 'jsonTitle'
-        ? '输出格式：每个 clips 元素的 title 字段只写标题本身，不要解释、不要引号、不要以"【"开头。18-42字为宜，最多52字，宁可稍长换信息量，也不要写成空泛短句。'
-        : '输出格式：只输出标题本身，不要解释、不要引号、不要以"【"开头。18-42字为宜，最多52字，宁可稍长换信息量，也不要写成空泛短句。';
+        ? '输出格式：每个 clips 元素的 title 字段只写标题本身，不要解释、不要给整个标题套引号、不要以"【"开头；标题内部可引用有证据的原话。18-42字为宜，最多52字，不为凑字数补摘要。'
+        : '输出格式：只输出标题本身，不要解释、不要给整个标题套引号、不要以"【"开头；标题内部可引用有证据的原话。18-42字为宜，最多52字，不为凑字数补摘要。';
     const streamerName = String(options.streamerName || '').trim();
     const speakerRule = streamerName
         ? `主播身份：本段录播的主播是“${streamerName}”。标题中描述“主播/她/其发言”时必须指向${streamerName}；字幕中出现的其他名字或团体名称，除非上下文明确说明，否则只能视为被提及对象，不能改写为本段主播、其粉丝团体或其发言。`
@@ -1685,7 +1674,8 @@ function buildClipTitlePromptLines(options = {}) {
     return [
         '给一个B站直播切片生成投稿标题，风格要像人工编辑挑出来的切片标题——一眼能看出"发生了什么好玩/离谱的事"，让人想点进去看，而不是平铺直叙的内容摘要。',
         '',
-        '核心写法：找这段切片里最值得点开的那一个具体看点（一个疑问、一句原话、一个反差、一个翻车或结果），用"具体事件/疑问 + 原话/反差/结果"的结构写成一句话，可以用问句、冒号或感叹句。只抓一个点，不要试图概括整段内容。',
+        '核心写法：标题先交代一个具体的事情或疑问，让未看过直播的人知道会看到什么；把最鲜活的本人反应留给封面也可以。原话已经特别自然时可直接作标题，不强制套结构，也不把整段写成话题目录。',
+        ...require('./clipping/audience_copy').audienceCopyPromptLines(),
         '',
         '真实性要求：标题里的事实、人物关系、结果，必须能被下面的字幕或弹幕内容逐句对应，不能编造或夸大。ASR可能有同音错字，要结合上下文推断说话人真实的意思。"炸锅""破防""社死""离谱"这类情绪词，只有内容明确支持时才用，不要当万能后缀套上去；也不要写成"聊到了XX""锐评XX引发热议"这种谁都能套用的弱标题。',
         '',
@@ -1693,13 +1683,15 @@ function buildClipTitlePromptLines(options = {}) {
         '',
         outputFormat,
         '',
-        '人工标题参考风格：',
-        '- 第二次复活怎么还往回走，弹幕急死了，路痴实锤',
-        '- 如果我捡到死亡笔记，比夜神月用得好！和AI辩论，被骂生气了',
-        '- 妈妈突然进房间，赶紧把电脑画面切到桌面',
-        '- 主播每天受长文回复感动，今天才发现竟然是AI！看完识破AI的视频，问到底是谁做的',
-        '- 两个男的在阳台是什么动画？原来是格里菲斯，弹幕怎么不知道',
-        '- 读打抛猪猪包，烫嘴，谁想的名字。然后开麦当劳会员',
+        '标题参考（事实标题与口语标题均可，须与封面成组选择；仅学习写法，不能借用示例事实）：',
+        '- 事实标题：同样一份DQ小料，分量有时能差三分之一；封面可补本人对分量的抱怨。',
+        '- 事实标题：小岁换低沉声线，担心太冷淡会没人理；封面可补片内回应，前提是本片确有此事。',
+        '- 用户示例：备注生日多加点料，外卖员祝我生日快乐，好愧疚哦',
+        '- B站已观察标题：腿卡椅子扶手下面 直播间一堆人笑话我一晚上',
+        '- B站已观察标题：收到了超级有格调的夜灯，好开心🙂🔪',
+        '- B站已观察标题节选：没吃过有茄子的地三鲜啊! 不是土豆青椒跟那个什么胡萝卜吗',
+        '- 假设片内确有对应原话：这boss也太简单了，想要教程吗？我都不知道怎么出',
+        '- 假设片内确有对应原话：为什么我身上有个臭臭的光晕啊，感觉像个霉豆腐',
     ];
 }
 
@@ -1710,11 +1702,19 @@ function buildClipTitlePromptLines(options = {}) {
  */
 function buildCoverTextPromptLines() {
     return [
-        '同时为每段切片提供 coverText（封面文案）。它不是投稿标题的截断版，而是给 16:9 缩略图看的两行大字：第一行给铺垫，第二行给最想点开的结果/原话/反差。',
-        'coverText 格式：必须恰好两行，在 JSON 字符串中用 \\n 表示换行；第一行 4-9 个汉字（可含很短数字），第二行 5-11 个汉字，总字数尽量不超过 18。',
+        '同时为每段切片提供 coverText（封面文案），与 title 围绕同一个看点成组选择。默认让清楚的事实标题交代事情，两行大字补本人语气；也可用自然口语标题配情景封面。封面两行是一组，可按语意分行、呈现问答或触发与回应，不强制铺垫加反转。',
+        'coverText 格式：必须恰好两行，在 JSON 字符串中用 \\n 表示换行；第一行 4-9 个字符，第二行 5-11 个字符，合计尽量不超过 18、最多 20 个字符。汉字、标点、数字、英文字母与引号均逐个计数，换行不计。',
+        '提交前逐行自查长度；超长就围绕同一个事实改写成更短的完整短句，不要照搬长投稿标题，不要机械截断或用省略号掩盖超长。',
+        '引用原话时引号必须成对，左右引号都计入长度；若为精简而删改原话，改用不带引号的事实概括，不得把改写当成逐字引用。',
         '封面文案只抓一个可验证的钩子，保留原话、疑问或结果，不要复述整段；不要写“小岁/岁己”、直播切片、tag、表情、书名号、括号或营销套话。',
+        '封面优先用本人会说的短句，保留我、你、哦、啊等有意义的口气，不改成“让人愧疚”“引发热议”等第三方总结。允许复用标题中最有力的短句，不为追求互补另造一个包装概念。直接引用观众时封面自身也要能辨认观众视角；只是借弹幕理解情景时不必把“弹幕：”印上去。',
+        '成组自查：两行读在一起要顺，不能与标题各讲一件事。两人问答必要时标明角色；假设、计划、反问不能因删掉万一/想/是不是而变成事实。缩到手机小图时仍应一眼看到具体词，避免用笼统反应占满两行。',
+        '以下示例仅示范有对应片内证据时的组合，不是当前片段的事实：',
+        '示例：投稿标题“同样一份DQ小料，分量有时能差三分之一” → coverText “花这么多钱加料\\n就给我这么一点点？”',
+        '示例：投稿标题“小岁换低沉声线，担心太冷淡会没人理” → coverText “我平时就这声线\\n没在装高手啊”',
+        '示例：投稿标题“备注生日多加点料，外卖员祝我生日快乐，好愧疚哦” → coverText “外卖员祝我\\n生日快乐，好愧疚哦”',
         '示例：投稿标题“提建议被当成找茬？小岁委屈控诉：你们不宠我了，只会从我身上找问题！” → coverText “你们不宠我了\\n只会找我问题！”',
-        '示例：投稿标题“充电一小时电量仅剩22%？蓝色充电头终于寿终正寝” → coverText “充一小时只剩22%\\n蓝头寿终正寝”',
+        '示例：投稿标题“充电一小时电量仅剩22%？蓝色充电头终于寿终正寝” → coverText “充一小时剩22%\\n蓝头寿终正寝”',
     ];
 }
 

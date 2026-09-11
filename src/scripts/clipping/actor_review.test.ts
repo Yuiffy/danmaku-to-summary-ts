@@ -1,7 +1,7 @@
 export {};
 const { buildSubtitleEvidence } = require('./subtitle_evidence');
 const { attributionRisk, buildActorReviewPacket, validateActorReview, parseActorReviews,
-  applyActorReview, finalizeActorReview, copyDigest } = require('./actor_review');
+  applyActorReview, finalizeActorReview, copyDigest, actorReviewPrompt } = require('./actor_review');
 const { reviewClipActors } = require('./actor_review_runner');
 const generator = require('../ai_text_generator');
 const context = { people: [
@@ -22,6 +22,15 @@ const good = () => ({ clipId: 'c1', decision: 'repair', copy: { title: 'GuestCli
     sourceKind: 'recount', identityBasis: 'voice', speakerCueIds: ['G1'], cueIds: ['G1'] }], evidenceDanmakuIds: [] });
 
 describe('independent action attribution review', () => {
+  test('carries automatic word normalization as data, without promoting it to speaker identity proof', () => {
+    const evidence = buildSubtitleEvidence([{ start: 0, end: 10, text: 'Guest asked Mimi.',
+      asrEvidence: { proofreading: { edits: [{ from: 'Gust', to: 'Guest', method: 'curated_context' }] } } }]);
+    const prepared = buildActorReviewPacket(clip, 'c1', evidence, [], context);
+    expect(prepared.data.automaticNormalizations[0]).toMatchObject({ cueId: 'G1', method: 'curated_context' });
+    expect(actorReviewPrompt([prepared], context)).toContain('不是人工听写真值或声纹身份凭据');
+    const review = good();
+    expect(validateActorReview(review, prepared)).toContain('speaker_citation_conflict:1');
+  });
   test('repairs actor without altering boundaries, with a content-bound review record', () => {
     expect(validateActorReview(good(), packet())).toEqual([]);
     const updated = applyActorReview(packet(), good());
@@ -48,6 +57,65 @@ describe('independent action attribution review', () => {
     const [normalized] = parseActorReviews({ text: JSON.stringify({ reviews: [review] }) }, [packet()]);
     expect(normalized.copy.title).toBe('GuestClip asked Mimi');
     expect(validateActorReview(normalized, packet())).toEqual([]);
+  });
+  test('known retelling targets must not be anonymized just because they are not present or speaking', () => {
+    const namedContext = { people: [context.people[0], { id: 'shiori', label: '栞栞', preferredName: '小栞',
+      names: ['栞栞', '小栞'], sourceHost: false, presence: 'mentioned_only' }] };
+    const evidence = buildSubtitleEvidence([{ start: 0, end: 10, text: '我问栞栞要不要去韩国，她答应了。',
+      speakerEvidence: voice('Host') }]);
+    const p = buildActorReviewPacket({ ...clip, title: 'Host invited someone', description: 'Host recalled an invitation.' }, 'c1', evidence, [], namedContext);
+    const review = { clipId: 'c1', decision: 'repair', copy: { title: 'Host邀请对方去韩国', description: 'Host回忆邀请朋友去韩国。', coverText: '韩国之行\n一次邀约' },
+      claims: [{ fields: ['title', 'coverText', 'description'], action: 'asked', narrator: 'Host', actor: 'Host', target: '栞栞',
+        sourceKind: 'recount', identityBasis: 'voice', speakerCueIds: ['G1'], cueIds: ['G1'] }], evidenceDanmakuIds: [] };
+    expect(validateActorReview(review, p)).toEqual([
+      'known_person_anonymized:target:title:shiori:1', 'known_person_anonymized:target:description:shiori:1'
+    ]);
+    expect(applyActorReview(p, review).publicCopyPending).toBe(true);
+    for (const name of ['小栞', '栞栞']) {
+      review.copy.title = `Host邀请${name}去韩国`;
+      review.copy.description = `Host回忆邀请${name}去韩国，对方答应了。`;
+      expect(validateActorReview(review, p)).toEqual([]);
+    }
+    const prompt = actorReviewPrompt([p], namedContext);
+    expect(prompt).toContain('被提及者、转述对象');
+    expect(prompt).toContain('本人未出声不意味着故事对象无法具名');
+    expect(prompt).toContain('不机械替换代词');
+  });
+  test('unproven targets and genuinely generic references never force a known name into copy', () => {
+    const namedContext = { people: [context.people[0], { id: 'shiori', label: '栞栞', preferredName: '小栞',
+      names: ['栞栞', '小栞'], sourceHost: false, presence: 'mentioned_only' }] };
+    const evidence = buildSubtitleEvidence([{ start: 0, end: 10, text: '我问一个朋友要不要一起去，朋友答应了。', speakerEvidence: voice('Host') }]);
+    const p = buildActorReviewPacket({ ...clip, title: 'Host invited someone', description: 'Host recalled an invitation.' }, 'c1', evidence,
+      [{ time: 2, text: '栞栞?' }], namedContext);
+    const review = { clipId: 'c1', decision: 'repair', copy: { title: 'Host邀请朋友同行', description: 'Host回忆邀请对方一起去。', coverText: '一起出行\n一次邀约' },
+      claims: [{ fields: ['title', 'coverText', 'description'], action: 'asked', narrator: 'Host', actor: 'Host', target: '栞栞',
+        sourceKind: 'recount', identityBasis: 'voice', speakerCueIds: ['G1'], cueIds: ['G1'] }], evidenceDanmakuIds: [] };
+    expect(validateActorReview(review, p)).toContain('unproven_target:1');
+    expect(validateActorReview(review, p).some(issue => issue.startsWith('known_person_anonymized'))).toBe(false);
+    review.claims[0].target = null;
+    expect(validateActorReview(review, p)).toEqual([]);
+  });
+  test('known target anonymity uses the existing bounded repair step', async () => {
+    const namedContext = { people: [context.people[0], { id: 'guest', label: 'Guest', names: ['Guest', 'GuestClip'],
+      preferredName: 'GuestClip', sourceHost: false, presence: 'mentioned_only' }] };
+    const evidence = buildSubtitleEvidence([{ start: 0, end: 10, text: 'I asked Guest about it.', speakerEvidence: voice('Host') }]);
+    const input = { ...clip, title: 'Host asked someone', description: 'Host recalled a question.', grounding: { sourceKind: 'recount' } };
+    const first = { ...good(), copy: { title: 'Host asked someone', description: 'Host recalled asking the other person.', coverText: 'A question' },
+      claims: [{ ...good().claims[0], narrator: 'Host', actor: 'Host', target: 'Guest' }] };
+    const repaired = { ...first, copy: { ...first.copy, title: 'Host asked GuestClip', description: 'Host recalled asking GuestClip.' } };
+    const calls: string[] = [];
+    const spy = jest.spyOn(generator, 'generateTextWithDaiYu').mockImplementation(async (prompt: string) => {
+      calls.push(prompt); return { text: JSON.stringify({ reviews: [calls.length === 1 ? first : repaired] }), meta: { attempts: [] } };
+    });
+    try {
+      const result = await reviewClipActors([input], { participantContext: namedContext }, [], evidence, { roomId: '1' },
+        { attribution: { enabled: true, roomIds: ['1'], maxRequests: 2, dialogueEnabled: false }, ai: { enabled: true, selectionCacheEnabled: false } },
+        { ai: { text: { provider: 'daiYu' } } }, {});
+      expect(calls).toHaveLength(2);
+      expect(calls[1]).toContain('known_person_anonymized:target:title:guest:1');
+      expect(result[0].title).toBe('Host asked GuestClip');
+      expect(result[0].attributionReview.status).toBe('passed');
+    } finally { spy.mockRestore(); }
   });
   test('metadata and comments alone cannot verify a narrator', () => {
     const bad = good(); bad.claims[0].identityBasis = 'explicit_text';

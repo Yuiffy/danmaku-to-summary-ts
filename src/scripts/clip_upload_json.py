@@ -17,7 +17,8 @@ def import_json(args: argparse.Namespace, api: ModuleType) -> int:
     try:
         clips = api.load_upload_manifest(
             manifest_path, default_source=args.source or "", default_tags=api.parse_tags(args.tags),
-            default_prefix=args.prefix or "", default_tid=int(args.tid or 21), review_path=args.review or "")
+            default_prefix=args.prefix or "", default_tid=int(args.tid or 21), review_path=args.review or "",
+            allow_pending_review=bool(getattr(args, "include_pending", False)))
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
         print(f"[ERROR] cannot read upload JSON {manifest_path}: {exc}", file=sys.stderr)
         return 2
@@ -62,6 +63,7 @@ def import_json(args: argparse.Namespace, api: ModuleType) -> int:
             "batchId": batch_id, "manifestPath": manifest_str,
             "metadataPath": api.normalize_path(clip["metadataPath"]) if clip.get("metadataPath") else "",
             "reviewPath": review_str or clip.get("reviewPath") or "", "statePath": state_str,
+            "reviewPlanPath": clip.get("reviewPlanPath") or "",
             "source": clip.get("source") or source, "prefix": clip.get("prefix") or prefix,
             "tags": api.parse_tags(clip.get("tags") or tags), "tid": int(clip.get("tid") or tid),
             "title": clip.get("title") or "", "start": clip.get("start") or "00:00:00",
@@ -73,24 +75,42 @@ def import_json(args: argparse.Namespace, api: ModuleType) -> int:
             "reviewIndex": int(clip.get("reviewIndex") or clip.get("idx") or len(ids) + 1),
             "sourceFormat": "json", "qaRequired": bool(clip.get("qaRequired")),
             "attributionRequired": bool(clip.get("attributionRequired")),
+            "humanReviewRequired": bool(clip.get("humanReviewRequired")),
+            "reviewPending": bool(clip.get("reviewPending")),
+            "reviewIssues": clip.get("reviewIssues") or [],
+            "publicCopyPending": bool(clip.get("publicCopyPending")),
+            "attributionStatus": clip.get("attributionStatus"),
+            "srtPath": clip.get("srtPath") or "",
+            "sourceMediaPath": clip.get("sourceMediaPath") or "",
             "pendingCut": bool(clip.get("pendingCut")), "candidateIndex": clip.get("candidateIndex") or "",
+            "pendingRebuild": bool(clip.get("pendingRebuild")), "subtitleRevisionKind": clip.get("subtitleRevisionKind") or "",
             **{key: clip.get(key) for key in ("candidateSrtPath", "candidateRevision", "candidateSrtSha256")},
+            "reviewPreview": clip.get("reviewPreview"),
         }
         if clip_id is None:
             clip_id = int(registry.get("nextClipId") or 1)
             registry["nextClipId"] = clip_id + 1
             registry.setdefault("clips", {})[str(clip_id)] = {
                 "id": clip_id, "createdAt": api.now_iso(), "updatedAt": api.now_iso(),
-                "status": "pending_cut" if clip.get("pendingCut") else "review", **record_data,
+                "status": "pending_rebuild" if clip.get("pendingRebuild") else (
+                    "needs_review" if clip.get("reviewPending") else ("pending_cut" if clip.get("pendingCut") else "review")), **record_data,
             }
         else:
             record = registry["clips"][str(clip_id)]
+            if not record_data["reviewPlanPath"]:
+                record_data["reviewPlanPath"] = record.get("reviewPlanPath") or ""
+            for required in ("qaRequired", "attributionRequired", "humanReviewRequired"):
+                if record.get(required) and not record_data.get(required):
+                    record_data[required] = True
+                    record_data["reviewPending"] = True
+                    record_data["reviewIssues"].append(f"required review flag removed: {required}")
             # A stale preflight import must not erase an already rendered clip.
             if not clip.get("pendingCut") or not record.get("mediaPath"):
                 if record.get("pendingCut") and not clip.get("pendingCut") and record.get("reviewPath"):
                     record.setdefault("candidateReviewPath", record["reviewPath"])
-                if record.get("status") in ("review", "pending_cut"):
-                    record["status"] = "pending_cut" if clip.get("pendingCut") else "review"
+                if record.get("status") in ("review", "pending_cut", "pending_rebuild", "needs_review"):
+                    record["status"] = "pending_rebuild" if clip.get("pendingRebuild") else (
+                        "needs_review" if record_data["reviewPending"] else ("pending_cut" if clip.get("pendingCut") else "review"))
                 record.update({"updatedAt": api.now_iso(), **record_data})
         ids.append(clip_id)
 
@@ -104,4 +124,12 @@ def import_json(args: argparse.Namespace, api: ModuleType) -> int:
     api.save_json(api.REGISTRY_PATH, registry)
     print(f"[OK] imported {len(ids)} clips from {manifest_path}")
     print("IDs:", ",".join(str(i) for i in ids))
+    records = [registry["clips"][str(clip_id)] for clip_id in ids]
+    print("REGISTRY_RESULT:", json.dumps({
+        "clipIds": ids,
+        "clipIdsByReviewIndex": {str(record["reviewIndex"]): record["id"] for record in records},
+        "reviewPendingByReviewIndex": {str(record["reviewIndex"]): bool(record.get("reviewPending")) for record in records},
+        "reviewIssuesByReviewIndex": {str(record["reviewIndex"]): record.get("reviewIssues") or [] for record in records},
+        "clipStatusByReviewIndex": {str(record["reviewIndex"]): record.get("status") for record in records},
+    }, ensure_ascii=False))
     return 0

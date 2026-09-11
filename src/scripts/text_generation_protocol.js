@@ -129,6 +129,38 @@ function isPromptCacheParameterError(errorText) {
         && /unsupported|unknown|unrecognized|invalid|not (?:supported|allowed)|不支持|未知参数/iu.test(message);
 }
 
+function getPromptCacheRequestDiagnostics(body) {
+    const messages = body.input || body.messages;
+    if (!Array.isArray(messages)) return {};
+    const prefixMessages = [];
+    for (const message of messages) {
+        const parts = Array.isArray(message.content) ? message.content : [{ type: 'text', text: message.content }];
+        const prefixParts = [];
+        for (let index = 0; index < parts.length; index++) {
+            const part = parts[index];
+            const end = typeof part.text === 'string' ? part.text.indexOf(liveGenerationContext.SHARED_PROMPT_CACHE_END) : -1;
+            if (end < 0) {
+                prefixParts.push(part);
+                continue;
+            }
+            const boundaryOffset = end + liveGenerationContext.SHARED_PROMPT_CACHE_END.length;
+            prefixParts.push({ ...part, text: part.text.slice(0, boundaryOffset) });
+            prefixMessages.push({ role: message.role, content: prefixParts });
+            const boundary = boundaryOffset < part.text.length ? 'inline'
+                : index < parts.length - 1 ? 'content_block' : 'message';
+            const requestPrefix = { model: body.model, instructions: body.instructions, messages: prefixMessages,
+                reasoning: body.reasoning, thinking: body.thinking, reasoningEffort: body.reasoning_effort,
+                tools: body.tools, parallelToolCalls: body.parallel_tool_calls, text: body.text,
+                contextManagement: body.context_management, cacheKey: body.prompt_cache_key,
+                cacheOptions: body.prompt_cache_options, boundary };
+            return { promptCacheRequestFingerprint: crypto.createHash('sha256').update(JSON.stringify(requestPrefix), 'utf8').digest('hex'),
+                promptCacheRequestKey: body.prompt_cache_key || null, promptCacheSourceBoundary: boundary };
+        }
+        prefixMessages.push({ role: message.role, content: prefixParts });
+    }
+    return {};
+}
+
 function withoutPromptCacheHints(body) {
     const stripPart = part => {
         if (!part || typeof part !== 'object' || Array.isArray(part)) return part;
@@ -144,4 +176,5 @@ function withoutPromptCacheHints(body) {
 }
 
 module.exports = { resolveTextRequestTimeout, parseGenerateTextOptions, getMachineReadableGenerationMeta,
-    getSharedPromptCacheInfo, getExplicitPromptCachePlan, isPromptCacheParameterError, withoutPromptCacheHints };
+    getSharedPromptCacheInfo, getExplicitPromptCachePlan, getPromptCacheRequestDiagnostics,
+    isPromptCacheParameterError, withoutPromptCacheHints };

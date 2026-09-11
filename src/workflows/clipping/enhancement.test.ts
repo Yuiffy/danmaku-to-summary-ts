@@ -45,9 +45,28 @@ describe('independent clip QA', () => {
         const hooks = io([{ approved: false, issues: ['bad'] }, { approved: false, issues: ['still bad'] }, approved]);
         const result = await enhanceArtifact(artifact, input, hooks);
         expect(result.enhancementFallback).toBe(true);
+        expect(result.copy.title).toBe(artifact.copy.title);
         expect(result.editPlan?.removed).toEqual([]);
         expect(result.qaResult.history.filter(row => row.phase === 'independent_qa')).toHaveLength(3);
         expect((hooks.request as jest.Mock).mock.calls.filter(call => call[0] === 'packaging')).toHaveLength(2);
+    });
+
+    test('JSON punctuation repair keeps the same generation and QA separates producer tags from event claims', async () => {
+        const hooks = io();
+        artifact.copy.tags = ['AI切片'];
+        const original = hooks.request;
+        hooks.request = jest.fn(async (stage, prompt, images) => {
+            if (stage === 'packaging') return '{"variants":[{"title":"准确标题"，"coverText":"第一行\\n第二行"，"description":"准确描述"}]}';
+            if (stage === 'qa') {
+                const copy = prompt.split('FINAL COPY ')[1].split('\nPRODUCER METADATA')[0];
+                expect(JSON.parse(copy)).not.toHaveProperty('tags');
+                expect(prompt).toContain('"tags":["AI切片"]');
+            }
+            return original(stage, prompt, images);
+        });
+        const result = await enhanceArtifact(artifact, input, hooks);
+        expect(result.qaResult.status).toBe('passed');
+        expect(hooks.request).toHaveBeenCalledTimes(3);
     });
 
     test('persistent rejection or media/image failure never produces an upload-ready clip', async () => {
@@ -78,5 +97,29 @@ describe('independent clip QA', () => {
         const audit = (hooks.request as jest.Mock).mock.calls.find(call => call[0] === 'qa');
         expect(audit[1]).toContain(result.copy.description.split('\n')[0]);
         expect(await qaIsCurrent(result)).toBe(true);
+    });
+
+    test('actor approval for changed copy precedes final QA, and a rejection enters bounded repair', async () => {
+        const hooks = io();
+        const order: string[] = [];
+        const request = hooks.request;
+        hooks.request = async (stage, prompt, images) => { if (stage === 'qa') order.push('qa'); return request(stage, prompt, images); };
+        hooks.reviewAttribution = jest.fn(async current => {
+            order.push('actor');
+            expect(current.copy.description).toContain('精切实验模式');
+            return { passed: order.length > 1, issues: order.length === 1 ? ['wrong_actor'] : [],
+                attributionReview: { status: order.length === 1 ? 'needs_review' : 'passed' } };
+        });
+        const result = await enhanceArtifact(artifact, { ...input, experimentSelected: true, attributionRequired: true }, hooks);
+        expect(order).toEqual(['actor', 'actor', 'qa']);
+        expect(result.attributionReview.status).toBe('passed');
+        expect(result.uploadReady).toBe(true);
+    });
+
+    test('unavailable final actor review cannot be bypassed by a permissive visual reviewer', async () => {
+        const hooks = io();
+        const result = await enhanceArtifact(artifact, { ...input, experimentSelected: true, attributionRequired: true }, hooks);
+        expect(result.uploadReady).toBe(false);
+        expect((hooks.request as jest.Mock).mock.calls.filter(call => call[0] === 'qa')).toHaveLength(0);
     });
 });

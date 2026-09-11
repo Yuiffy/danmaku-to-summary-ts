@@ -34,6 +34,19 @@ test('preserves per-row boundaries and raw provenance without modifying source s
   expect(JSON.stringify(segments)).toBe(before);
 });
 
+test('normalizes a spoken purchase date during initial preflight using recording context', () => {
+  const rows = [{ start: 10, end: 42, text: 'SUI说这是二零年十二月买的' }];
+  const refs = buildPreflightEvidence(rows);
+  const packet = buildPreflightInput({ index: 'E1', start: 10, end: 42, cues: refs.cues,
+    matchSegments: [{ ...rows[0], matchedKeywords: ['SUI'] }] }, refs, config, { recordedAt: '2026-09-11 10:08:50' });
+  const result = normalizePreflightResponse(JSON.stringify({
+    hits: [{ ...hit, evidenceCueIds: ['G1'] }], clips: [{ ...clip, startCueId: 'G1', endCueId: 'G1',
+      evidenceCueIds: ['G1'], subtitleEdits: [], description: '购于2020年12月' }]
+  }), packet, refs, config);
+  expect(result.clips[0].status).toBe('ready');
+  expect(result.clips[0].grounding.referenceYear).toBe(2026);
+});
+
 test.each([
   { hits: [], clips: [] },
   { hits: [hit, hit], clips: [] },

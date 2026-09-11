@@ -61,9 +61,13 @@ def request_record(attempt, stage, artifact, index, defaults=None):
     image_input = number(details.get('image_tokens'))
     text_input = number(details.get('text_tokens'))
     image_output = number(output_details.get('image_tokens'))
-    if stage == 'image' and model == 'gpt-image-2' and None not in (image_input, text_input, image_output):
+    if stage == 'image' and model in ('gpt-image-2', 'gpt-image-2.5-sunburst', 'gpt-image-2.5-flare') and None not in (image_input, text_input, image_output):
         image_estimate = (image_input * 8.0 + text_input * 5.0 + image_output * 30.0) / 1e6
     return {'stage': stage, 'phase': attempt.get('phase'), 'model': model, 'provider': attempt.get('provider') or defaults.get('provider'),
+            'quality': attempt.get('quality', defaults.get('quality')),
+            'elapsedMs': number(attempt.get('elapsedMs', defaults.get('elapsedMs'))),
+            'rolloutVariant': attempt.get('rolloutVariant', defaults.get('rolloutVariant')),
+            'generationId': attempt.get('generationId', defaults.get('generationId')),
             'status': attempt.get('status'), 'promptTokens': prompt, 'cachedTokens': cached,
             'outputTokens': output, 'reasoningTokens': number(attempt.get('reasoningTokens', output_details.get('reasoning_tokens'))),
             'knownTokenTotal': prompt + output if None not in (prompt, output) else None,
@@ -93,6 +97,7 @@ def inspect_recording(reply_path):
     files = {'reply': str(reply_path) if reply_path.exists() else None}
     summary_content = None
     comic_full = False
+    comic_coverage = None
     for suffix, stage in [('_LIVE_CONTENT.json', 'summary'), ('_COMIC_SCRIPT_META.json', 'comic-script'), ('_COMIC_FACTORY_META.json', 'image')]:
         artifact = Path(base + suffix)
         if not artifact.exists():
@@ -102,6 +107,7 @@ def inspect_recording(reply_path):
         generation = data.get('generation') or data
         if stage == 'comic-script':
             comic_full = bool(data.get('fullLiveSourceSha256'))
+            comic_coverage = data.get('sourceCoverage')
         if stage == 'summary':
             summary_content = data.get('content')
             if canonical and generation.get('sharedUsagePath') == canonical_path.name:
@@ -137,7 +143,9 @@ def inspect_recording(reply_path):
             'status': canonical.get('status') if canonical else 'legacy-artifacts' if reply_path.exists() else 'incomplete',
             'reply': body, 'overview': summary_content, 'files': files, 'requests': unique,
             'inputModes': {'reply': 'combined-full' if shared_reply else 'full' if reply_full else 'filtered-or-unverified',
-                           'comicScript': 'full' if comic_full else 'filtered-or-unverified', 'summary': 'present' if summary_content else 'absent'},
+                           'comicScript': comic_coverage or ('full' if comic_full else 'filtered-or-unverified'), 'summary': 'present' if summary_content else 'absent'},
+            'generationProfile': canonical.get('generationProfile') if canonical else reply_meta.get('generationProfile'),
+            'sharedMaterialStatus': (canonical.get('sharedMaterial') or {}).get('status') if canonical else None,
             'inputTokens': tokens(text, 'promptTokens'), 'cachedTokens': tokens(text, 'cachedTokens'),
             'outputTokens': tokens(text, 'outputTokens'), 'estimatedTextUsd': sum(r['estimatedTextUsd'] or 0 for r in text),
             'estimatedUncachedImageUsd': sum(r['estimatedUncachedImageUsd'] or 0 for r in images),
@@ -189,7 +197,7 @@ def main():
     records, errors = collect(root, since, until, set(args.rooms.split(',')))
     result = {'generatedAt': dt.datetime.now().astimezone().isoformat(), 'sourceRoot': root,
               'since': args.since, 'until': args.until, 'records': records, 'errors': errors,
-              'pricing': '2026-09-08 official USD equivalents, not gateway billing. Images priced as uncached gpt-image-2 inputs. Missing cache-write usage assumes zero writes.',
+              'pricing': '2026-09-09 official USD equivalents, not gateway billing. GPT Image 2/2.5 images priced as uncached inputs. Missing cache-write usage assumes zero writes.',
               'pricingSource': 'https://developers.openai.com/api/docs/pricing',
               'limits': ['Known saved attempts only; absent usage is not free.', 'Historical anonymous retries cannot always be deduplicated.',
                          'No source artifacts were modified and no network requests were made.']}

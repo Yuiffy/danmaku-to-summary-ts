@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const { collectSpokenClockValues, supportedClockSpans } = require('./clock_evidence');
+const { collectSpokenDates, supportedDateSpans } = require('./date_evidence');
 const { reviewPersonEvidence } = require('./person_evidence');
 
 function buildSubtitleEvidence(segments = [], options = {}) {
@@ -106,21 +107,25 @@ function linkClipEvidence(raw, clip, evidence, danmaku = [], available = {}) {
     const sourceText = [...subtitles, ...audience].map(row => row.text).join(' ');
     const quotedEvidence = normalize(sourceText);
     const sourceNumbers = new Set(Array.from(sourceText.matchAll(/\d+(?:\.\d+)?/gu), match => match[0]));
-    const clockValues = /\d{1,2}:\d{2}/u.test(publicCopy) ? collectSpokenClockValues([
+    const numericSourceTexts = [
         ...subtitles.filter(row => row.start >= clip.start - 0.001 && row.end <= clip.end + 0.001
             && (!available.cueIds || available.cueIds.has(row.id))),
         ...audience.filter(row => row.time >= clip.start && row.time <= clip.end
             && (!available.danmakuIds || available.danmakuIds.has(row.id)))
-    ].map(row => row.text)) : null;
+    ].map(row => row.text);
+    const clockValues = /\d{1,2}:\d{2}/u.test(publicCopy) ? collectSpokenClockValues(numericSourceTexts) : null;
+    const sourceDates = /\d+\s*[年月]/u.test(publicCopy) ? collectSpokenDates(numericSourceTexts, available.referenceYear) : [];
     for (const field of ['title', 'description', 'coverText']) {
         const copy = String(raw[field] || '');
         const clocks = clockValues?.size ? supportedClockSpans(copy, clockValues) : null;
+        const dates = supportedDateSpans(copy, sourceDates);
         for (const match of copy.matchAll(/["“「]([^"”」\n]{2,80})["”」]/gu)) {
             const quote = normalize(match[1]);
             if (quote && !quotedEvidence.includes(quote)) issues.push(`unsupported_quote:${field}:${match[1]}`);
         }
         for (const match of copy.matchAll(/\d{2,}(?:\.\d+)?/gu)) {
-            if (!sourceNumbers.has(match[0]) && !clocks?.some(span => span.start <= match.index && span.end >= match.index + match[0].length)) {
+            if (!sourceNumbers.has(match[0]) && ![...(clocks || []), ...dates]
+                .some(span => span.start <= match.index && span.end >= match.index + match[0].length)) {
                 issues.push(`unsupported_number:${field}:${match[0]}`);
             }
         }
@@ -135,6 +140,7 @@ function linkClipEvidence(raw, clip, evidence, danmaku = [], available = {}) {
     // Linking checks provenance and time bounds, not the truth of an ASR claim.
     const grounding = { version: 1, status: issues.length ? 'needs_review' : 'linked', sourceSha256: evidence.sourceSha256,
         sourceKind, subtitleIds, danmakuIds, subtitles, audience, unseen, issues };
+    if (sourceDates.length && Number.isInteger(available.referenceYear)) grounding.referenceYear = available.referenceYear;
     return reviewPersonEvidence(raw, clip, evidence, grounding, available.personContext);
 }
 
@@ -146,6 +152,7 @@ function revalidateClipEvidence(clip, evidence, danmaku, personContext) {
     const unseenSubtitles = new Set(Array.isArray(previous.unseen?.subtitleIds) ? previous.unseen.subtitleIds : []);
     const unseenDanmaku = new Set(Array.isArray(previous.unseen?.danmakuIds) ? previous.unseen.danmakuIds : []);
     const available = {
+        referenceYear: previous.referenceYear,
         cueIds: new Set(subtitleIds.filter(id => !unseenSubtitles.has(id))),
         danmakuIds: new Set(danmakuIds.filter(id => !unseenDanmaku.has(id))),
         personContext: personContext ?? (Array.isArray(previous.personEvidence?.checks)
@@ -182,13 +189,14 @@ function revalidateClipEvidence(clip, evidence, danmaku, personContext) {
 }
 
 function parseJsonResponse(text) {
+    const { parseModelJson } = require('../workflow-runtime').loadWorkflow('text/response');
     const value = String(text || '').trim().replace(/^```(?:json)?\s*/iu, '').replace(/\s*```$/u, '');
     let parsed;
-    try { parsed = JSON.parse(value); } catch {
+    try { parsed = parseModelJson(value); } catch {
         const start = value.indexOf('{');
         const end = value.lastIndexOf('}');
         if (start < 0 || end < start) throw new Error('Missing clips JSON');
-        parsed = JSON.parse(value.slice(start, end + 1));
+        parsed = parseModelJson(value.slice(start, end + 1));
     }
     return parsed;
 }

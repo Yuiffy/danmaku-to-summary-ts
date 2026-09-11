@@ -2,6 +2,17 @@ import { buildDaiYuResponsesRequest, buildDaiYuChatCompletionsRequest, LIVE_TEXT
 const { getExplicitPromptCachePlan } = require('../../scripts/text_generation_protocol');
 const context = require('../../scripts/live_generation_context');
 
+test('serializes the requested strict schema in each protocol and omits it for ordinary text', () => {
+  const format = {type:'json_schema' as const,name:'nested_content',strict:true,
+    schema:{type:'object',required:['content'],additionalProperties:false,properties:{content:{type:'object',
+      required:['overview'],additionalProperties:false,properties:{overview:{type:'string'}}}}}};
+  const options={model:'gpt-5.6-luna',prompt:'Return the summary.',maxTokens:2000,responseFormat:format};
+  expect(buildDaiYuResponsesRequest(options).text).toEqual({format});
+  expect(buildDaiYuChatCompletionsRequest(options).response_format).toEqual({type:'json_schema',json_schema:{
+    name:format.name,strict:true,schema:format.schema}});
+  expect(buildDaiYuResponsesRequest({...options,responseFormat:undefined})).not.toHaveProperty('text');
+});
+
 test('selected cache routing preserves the existing role and full source without unsupported Responses fields', () => {
   const prompt = `${context.SHARED_PROMPT_CACHE_START}\nExact source facts.\n${context.SHARED_PROMPT_CACHE_END}\nTask instructions.`;
   const config = { ai: { text: { sharedPromptCache: { enabled: true, explicitRolloutPercent: 0 } } } };

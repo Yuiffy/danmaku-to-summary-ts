@@ -16,6 +16,15 @@ test('retains valid numeric aliases, reported zero and partial usage', () => {
   expect(getPromptTokenUsage({ input_tokens: 'invalid' }).promptTokens).toBeUndefined();
 });
 
+test('retains comparable request fingerprints in cache usage logs without changing token accounting', () => {
+  expect(buildAiUsageMetrics({ promptTokens: 10000, cachedTokens: 8000, completionTokens: 150,
+    promptCacheRequestFingerprint: 'fingerprint', promptCacheRequestKey: 'live:source',
+    promptCacheSourceBoundary: 'content_block', reasoningEffortSent: 'high', responseModel: 'gpt-5.6-luna' }))
+    .toMatchObject({ promptTokens: 10000, cachedTokens: 8000, uncachedPromptTokens: 2000, completionTokens: 150,
+      promptCacheRequestFingerprint: 'fingerprint', promptCacheRequestKey: 'live:source',
+      promptCacheSourceBoundary: 'content_block', reasoningEffortSent: 'high', responseModel: 'gpt-5.6-luna' });
+});
+
 test('failure usage logs distinguish unknown use and never disguise it as success', () => {
   expect(buildAiUsageMetrics({ status: 'failure', requestStarted: true, httpStatus: 502, usageUnknown: true, requestId: 'failed-request' }))
     .toMatchObject({ status: 'failure', requestStarted: true, httpStatus: 502, usageUnknown: true,

@@ -3,6 +3,7 @@ const { formatClock } = require('./topic_selection');
 const { notableEmotionEvents, emotionMomentScore, buildDanmakuDensity, buildEmotionContextLines } = require('../full_live_context');
 const { buildSubtitleEvidence, cuesForWindow, formatEvidenceCues } = require('./subtitle_evidence');
 const { identityDanmaku } = require('./participant_context');
+const { selectEditorialComments } = require('./audience_copy');
 function timeStringToSeconds(value) {
     const match = String(value || '').trim().match(/^(\d{1,2}):(\d{2}):(\d{2})(?:\.\d+)?$/);
     if (!match) return NaN;
@@ -335,6 +336,7 @@ function getWindowDanmakuEvidence(danmaku, window, reactionKeywords = [], max = 
             : 0,
         topTexts: frequentRows.slice(0, 6).map(({ text, count }) => count > 1 ? `${text}(x${count})` : text),
         topItems: frequentRows.slice(0, 6).map(row => ({ item: row.first, count: row.count })),
+        editorialItems: selectEditorialComments(items),
         sampleItems,
         sampleLines: sampleItems.map(item => `${formatClock(item.time)} ${item.text}`)
     };

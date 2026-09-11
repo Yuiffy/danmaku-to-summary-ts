@@ -62,7 +62,59 @@ The handler source under `src/services/webhook/handlers/` is authoritative for r
   or supplemental reply when it fits, and already-published historical summaries
   are not reposted or moved.
 
+## Goodnight Image Model Rollout
+
+`ai.comic.imageGeneration.rollout` selects one equally weighted `model` / `quality`
+variant per new image request. The selected route is saved before submission and
+reused across its retries. The control is `gpt-image-2/high`; both
+`gpt-image-2.5-sunburst` and `gpt-image-2.5-flare` participate at `low`, `medium`,
+`high`, `xhigh`, and `max`. Size, references and prompt construction are unchanged.
+Room-specific rollout settings override the global policy. Room `25788785` disables
+the lottery and prioritizes `gpt-image-2.5-sunburst/max`. Its bounded fallback chain
+continues through tuZi's synchronous `gpt-image-2` strategies, daiYu `gpt-image-2/high`,
+then tuZi's asynchronous Gemini route. Keep this chain in the shared `sui` preset
+and the default room override: route arrays replace inherited arrays, so pinning
+the primary model must include the fallback entries. The asynchronous route runs
+only at the end and retains recovery state for resuming an existing remote task.
+Other existing room fallback routes remain available; distinguish the drawn
+`rolloutVariant` from the final model when reviewing a fallback result.
+
+`[IMAGE_EXPERIMENT]` logs and `*_COMIC_FACTORY_META.json` retain model, quality,
+provider, request IDs, raw usage and timing, including failed route attempts.
+`elapsedMs` at the top level measures the whole image stage including retries;
+each route attempt also has its own duration. Missing usage is unknown, never zero.
+WeCom goodnight/supplemental-image notifications display the final model, quality,
+usage and duration. `poststream:usage` exports the variant and quality for comparison.
+To end the experiment, disable `rollout.enabled` and set the primary route's model
+and quality; room overrides must be updated separately.
+
+Model names and quality settings: [OpenAI image generation guide](https://developers.openai.com/api/docs/guides/image-generation).
+
 ## Full-Input Reply And Overview
+
+Generation presets live in `config/generation-modes.json`. Select a room's preset
+with `ai.roomSettings.<room>.generationMode`; `ai.defaultGenerationMode` supplies
+the default for other configured rooms. Node services, Node scripts and Python
+scripts resolve the same catalog before schema defaults. Preset inheritance is
+expanded first, then explicit room settings override it recursively; arrays replace
+instead of appending. Unknown names and inheritance cycles fail configuration loading.
+Names, identities, reference art, speaker policies and delivery enablement remain
+room settings. Presets cannot overwrite these identities or credentials.
+
+| Preset | Label | Behavior |
+| --- | --- | --- |
+| `standard` | 标准模式 | Filtered source, 100-character reply and normal comic |
+| `sui` | 岁模式 | 800-character reply, max-quality image first with fallback routes, existing filtered reply/comic and full overview/clip source |
+| `shiori` | 栞模式 | Complete compact source, 250-character reply, separate overview and complete-source comic |
+| `paired` | 全文合并模式 | Complete source produces reply/overview together; evidence review and full-source comic |
+| `shared-material` | 共享素材模式 | Combined generation also selects original excerpts for comic reuse; full-source fallback |
+
+The labels describe quality/budget preferences, not measured model rankings.
+Inspect effective modes with `npm run generation:modes` or
+`npm run generation:modes -- <roomId>`. This read-only command defaults to production
+unless `NODE_ENV` is set explicitly, and prints generation settings only.
+Per-environment overrides may be placed in `ai.generationModes`; source-level mode
+defaults remain in the shared catalog.
 
 The opt-in combined workflow is controlled by
 `ai.roomSettings.<room>.fullLiveContextExperiment.replySummary.enabled` within
@@ -78,6 +130,37 @@ locations; provenance linkage does not prove identity or semantic truth.
 The comic workflow still reads the complete source and accepted overview through
 the existing storyboard, screenshot and image pipeline.
 
+Combined generation requests strict JSON Schema output: `content` must be an
+object containing `overview`, `activityTypes`, `songs`, `games` and `topics`;
+material mode additionally requires top-level `moments`. The schema does not
+replace source-ID, attribution, activity-name or semantic checks. Incompatible
+gateways and nonconforming output still take the existing recorded fallback.
+Missing fields are never filled with empty arrays just to pass validation; type,
+missing-overview and length errors have distinct messages.
+
+`fullLiveContextExperiment.compactEvidence` enables the same complete-source
+format without enabling combined generation. It groups adjacent speech from the
+same speaker and shortens timestamps while retaining every parsed speech segment
+and merged audience message. Invalid speech timing falls back to the original
+full format. The overview still precedes the comic so confirmed activities can
+constrain its script; delaying it until after drawing would remove that check.
+
+`summaryDeliveryMode: "separate"` publishes the overview under the saved goodnight
+reply ID. Delivery does not require another generation call: combined generation
+continues to reuse its accepted overview. Cache propagation waits apply to shared
+full-source requests independently of comment delivery mode.
+
+Prompt-cache keys and sequential requests cannot guarantee cache hits. Sui's
+filtered reply/comic source differs from its complete overview source. Reuse
+requires the same rendered prefix, model, settings, cache backend and a live cache
+entry. The current gateway rejects explicit cache breakpoints; do not enable
+explicit-only mode without a supported breakpoint. Actual request fingerprints,
+source-boundary layout, reasoning effort and returned model are recorded in
+`AI_USAGE` and `COMIC_SCRIPT_USAGE`, without logging source text. Compare these
+with `cachedTokens` before attributing a miss to scheduling. The fingerprint only
+covers application-visible fields, not hidden upstream instructions. See the
+[OpenAI prompt caching guide](https://developers.openai.com/api/docs/guides/prompt-caching).
+
 `*_REPLY_SUMMARY.json` owns the draft, accepted result, review, source fingerprint,
 request IDs, timings and recorded usage. `*_LIVE_CONTENT.json` references shared
 usage instead of generating the overview again. Existing replies are not
@@ -86,6 +169,20 @@ model call. Concurrent writers are locked. Queued or ambiguous transport outcome
 must be resolved before another request; failed attempts remain in accounting.
 Disabling the room flag affects future tasks, not permission to resubmit an
 unresolved request.
+
+The optional `replySummary.sharedMaterial` recipe asks the full-source generation
+for cross-stream T/D citations in addition to the reply and overview. After the
+existing semantic review accepts the reply, original context around these citations
+and all repaired reply/activity citations is collected into `sharedMaterial` inside
+`*_REPLY_SUMMARY.json`. AI-written interest labels never become source facts.
+Different time ranges retain timestamps, and submitted stories must stay distinct.
+Long streams require three time quarters including the last quarter; source budget
+overflow falls back to full input without truncation. The comic loader validates
+room, parent source hashes, review status, exact original text and budget again.
+`sourceCoverage` records whether the comic used full input or selected original
+excerpts. Terminal combined failure retains the existing fallback; unresolved
+requests still block new requests. Changing comment placement does not regenerate
+accepted material.
 
 Read-only usage inspection:
 

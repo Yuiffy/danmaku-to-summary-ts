@@ -60,8 +60,7 @@ function getSummaryDeliveryMode(experiment) {
 
 function getCachePropagationWaitMs(experiment) {
     if (
-        getSummaryDeliveryMode(experiment) !== 'attach_if_ready'
-        || !isExperimentTaskEnabled(experiment, 'goodnight')
+        !isExperimentTaskEnabled(experiment, 'goodnight')
         || !isExperimentTaskEnabled(experiment, 'summary')
     ) {
         return 0;

@@ -447,6 +447,7 @@ export interface GeminiConfig {
 
 // tuZi配置
 export interface TuZiConfig {
+  retry?: TextRetryConfig;
   enabled: boolean;
   apiKey: string;
   baseUrl: string;
@@ -500,8 +501,17 @@ export interface ImageGenerationRouteConfig {
 export interface ImageGenerationConfig {
   enabled: boolean;
   routes: ImageGenerationRouteConfig[];
+  rollout?: {
+    enabled: boolean;
+    variants?: Array<{ model: string; quality: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'auto' }>;
+  };
 }
-export interface TextAIConfig {
+  export interface TextRetryConfig {
+    maxAttempts?: number; baseDelayMs?: number; maxDelayMs?: number; jitterRatio?: number;
+    statusCodes?: number[]; retryConnectionErrors?: boolean;
+  }
+  export interface TextAIConfig {
+    retry?: TextRetryConfig;
   enabled: boolean;
   provider: 'gemini' | 'openai' | 'claude' | 'daiYu' | 'tuZi';
   /** Reuse one exact live-facts prefix across goodnight and comic-script requests. */
@@ -557,6 +567,8 @@ export interface FullLiveContextExperimentConfig {
   enabled: boolean;
   tasks: Array<'summary' | 'goodnight' | 'comic' | 'ownStreamClips'>;
   summaryDeliveryMode: 'separate' | 'attach_if_ready';
+  /** Preserve the complete source using grouped speech and compact timestamps. */
+  compactEvidence?: boolean;
   /** Per-request explicit prompt-cache rollout for this room experiment. */
   promptCacheRolloutPercent?: number;
   /** Maximum time to delay cache-dependent work while the summary seeds the prefix. */
@@ -571,7 +583,9 @@ export interface FullLiveContextExperimentConfig {
   maxTokens?: number;
   thinkingBudgetTokens?: number;
   /** Generate the reply and overview together, then check their source evidence. */
-  replySummary?: { enabled: boolean };
+  replySummary?: { enabled: boolean; sharedMaterial?: {
+    enabled: boolean; maxMoments?: number; contextSeconds?: number; maxSourceChars?: number; maxSourceRatio?: number;
+  } };
 }
 
 // 漫画AI配置
@@ -605,6 +619,10 @@ export interface ComicAIConfig {
 
 // 房间AI配置
 export interface RoomAIConfig {
+  /** Named generation preset; explicit room settings override the preset. */
+  generationMode?: string;
+  wordLimit?: number;
+  imageGeneration?: ImageGenerationConfig;
   audioOnly?: boolean;
   referenceImage?: string;
   characterDescription?: string;
@@ -629,7 +647,25 @@ export interface RoomAIConfig {
 }
 
 // AI配置
+export interface GenerationModeConfig {
+  label?: string;
+  description?: string;
+  extends?: string;
+  experimental?: boolean;
+  settings: {
+    wordLimit?: number;
+    minComicDurationMinutes?: number;
+    comicGenerationProbability?: number;
+    imageGeneration?: Partial<ImageGenerationConfig>;
+    fullLiveContextExperiment?: Omit<Partial<FullLiveContextExperimentConfig>, 'replySummary'> & {
+      replySummary?: Partial<NonNullable<FullLiveContextExperimentConfig['replySummary']>>;
+    };
+  };
+}
+
 export interface AIConfig {
+  defaultGenerationMode?: string;
+  generationModes?: Record<string, GenerationModeConfig>;
   providers?: Record<string, AIProviderConfig>;
   text: TextAIConfig;
   comic: ComicAIConfig;

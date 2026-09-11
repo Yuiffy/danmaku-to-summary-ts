@@ -709,6 +709,7 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
             : options.forceBackend
             ? { backend: options.forceBackend, reason: options.forceReason || `实验模式指定 ${options.forceBackend}` }
             : asrBackends.resolveAsrBackend(config, context, options.asrBackend);
+        const proofreading = await require('./asr/subtitle_proofreading').loadProofreadingContext(config, context, mediaPath);
         const asrRuntime = {
             ...asrBackends.resolveAsrHotwords(config, context),
             // 让具体 ASR backend 复用这里已经完成灰度/房间路由的结果，
@@ -783,10 +784,12 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
                 asrBackends.writeSrt(normalized, srtPath, {
                     ...subtitleConfig,
                     write_evidence: true,
+                    proofreading,
                     corrections: asrRuntime.corrections
                 });
                 asrBackends.writeSpeakerReviewSrt(normalized, srtPath, {
                     ...subtitleConfig,
+                    proofreading,
                     corrections: asrRuntime.corrections
                 }, config, { ...context, mediaPath });
                 asrBackends.writeAsrSpeakersSidecar(normalized, srtPath, config, {
@@ -946,7 +949,8 @@ async function prepareFullLiveContextForExperiment(options = {}) {
     const parsed = asrBackends.parseSrt(srtPath, 'full_live_context');
     const danmaku = await ownStreamClipper.parseDanmakuXml(xmlPath);
     const clipConfig = { ...ownStreamClipper.getOwnStreamClipsConfig(config),
-        ...(experiment.replySummary?.enabled === true ? { compactEvidence: true } : {}) };
+        ...((experiment.compactEvidence === true || experiment.replySummary?.enabled === true)
+            ? { compactEvidence: true } : {}) };
     const emotionAnalysis = ownStreamClipper.loadEmotionAnalysisForSrt(srtPath);
     const info = ownStreamClipper.parseRecordingInfo(mediaPath || srtPath, {
         ...context,
@@ -1421,7 +1425,7 @@ const main = async () => {
         let asrContext = null;
         let asrOptions = null;
         try {
-            asrContext = buildAsrRoutingContext(processedFile, mediaRoomId);
+            asrContext = { ...buildAsrRoutingContext(processedFile, mediaRoomId), xmlPath: findXmlForMedia(mediaFile, xmlFiles) };
             asrOptions = {
                 bypassQueueTurn,
                 asrBackend: cliOptions.asrBackend,
@@ -1616,6 +1620,8 @@ const main = async () => {
             console.log(`🏠 房间ID: ${finalRoomId}`);
             console.log(`   AI文本生成: ${aiSettings.text ? '启用' : '禁用'}`);
             console.log(`   AI漫画生成: ${aiSettings.comic ? '启用' : '禁用'}`);
+            const generationMode = configLoader.getConfig().ai?.roomSettings?.[String(finalRoomId)]?.generationMode;
+            if (generationMode) console.log(`[GENERATION_MODE] ${JSON.stringify({roomId:finalRoomId,mode:generationMode})}`);
             console.log(`   图片最短时长: ${aiSettings.minComicDurationMinutes} 分钟`);
             console.log(`   图片生成概率: ${(aiSettings.comicGenerationProbability * 100).toFixed(0)}%`);
 

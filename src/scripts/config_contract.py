@@ -2,6 +2,7 @@
 
 import json
 import os
+import copy
 from pathlib import Path
 
 CONTRACT = json.loads((Path(__file__).resolve().parents[1] / "core/config/config-contract.json").read_text(encoding="utf-8-sig"))
@@ -83,4 +84,50 @@ def load_config_layers(root, env=None, config_path=None):
     for variable, target in CONTRACT["environmentMappings"].items():
         if env.get(variable):
             set_value(config, target, env[variable])
-    return config
+    modes_file = Path(root) / 'config' / 'generation-modes.json'
+    modes = {}
+    if modes_file.exists():
+        catalog = read_json_object(modes_file)
+        if catalog.get('schemaVersion') != 1 or not isinstance(catalog.get('modes'), dict):
+            raise ValueError('Invalid generation mode catalog')
+        modes = catalog['modes']
+    return resolve_generation_modes(config, modes)
+
+
+def resolve_generation_modes(config, catalog=None):
+    ai = config.get('ai')
+    if not isinstance(ai, dict):
+        return config
+    modes = deep_merge(catalog or {}, ai.get('generationModes') if isinstance(ai.get('generationModes'), dict) else {})
+    rooms = ai.get('roomSettings') if isinstance(ai.get('roomSettings'), dict) else {}
+    allowed = {'wordLimit', 'minComicDurationMinutes', 'comicGenerationProbability', 'fullLiveContextExperiment', 'imageGeneration'}
+    resolved = {}
+
+    def resolve(name, visiting=()):
+        if not isinstance(name, str) or not name or name not in modes:
+            raise ValueError(f'Unknown generation mode: {name}')
+        if name in visiting:
+            raise ValueError('Generation mode inheritance cycle: ' + ' -> '.join((*visiting, name)))
+        if name in resolved:
+            return resolved[name]
+        mode = modes[name]
+        if not isinstance(mode, dict) or not isinstance(mode.get('settings'), dict):
+            raise ValueError(f'Invalid generation mode: {name}')
+        for key in mode['settings']:
+            if key not in allowed:
+                raise ValueError(f'Invalid generation mode setting: {name}.{key}')
+        parent = resolve(mode['extends'], (*visiting, name)) if 'extends' in mode else {}
+        resolved[name] = deep_merge(parent, mode['settings'])
+        return resolved[name]
+
+    for name in modes:
+        resolve(name)
+    if 'defaultGenerationMode' in ai:
+        resolve(ai['defaultGenerationMode'])
+    expanded = {}
+    for room_id, room in rooms.items():
+        if not isinstance(room, dict):
+            raise ValueError(f'Invalid room settings: {room_id}')
+        name = room.get('generationMode') if room.get('generationMode') is not None else ai.get('defaultGenerationMode')
+        expanded[room_id] = {**deep_merge(copy.deepcopy(resolve(name)), room), 'generationMode': name} if name is not None else room
+    return {**config, 'ai': {**ai, **({'generationModes': modes} if modes else {}), **({'roomSettings': expanded} if 'roomSettings' in ai else {})}}

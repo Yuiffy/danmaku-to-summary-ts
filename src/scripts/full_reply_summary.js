@@ -7,7 +7,7 @@ const configLoader = require('./config-loader');
 const policy = require('./reply_summary_policy.json');
 const full = require('./full_live_context');
 
-const PROMPT_VERSION = 4;
+const PROMPT_VERSION = 5;
 const evidenceTargets = new Set(['reply', 'game', 'song']);
 const actorKinds = new Set(['host', 'team', 'audience', 'uncertain', 'performance']);
 const normalize = value => String(value || '').normalize('NFKC').replace(/[\p{P}\p{S}\s]/gu, '').toLowerCase();
@@ -36,6 +36,28 @@ function evidenceContext(segments, danmaku, roomId, config = configLoader.getCon
         byId, duration: [...segments.map(s => s.end), ...danmaku.map(d => d.time)].reduce((max,value)=>Math.max(max,value),0) };
 }
 
+function buildCombinedResponseFormat(materialOptions = null) {
+    const object = properties => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
+    const array = (items, maxItems, minItems = 0) => ({ type: 'array', items, minItems, maxItems });
+    const string = { type: 'string' };
+    const sourceIds = array({ type: 'string', pattern: '^(?:[TD][0-9]+|P1)$' }, 6, 1);
+    const properties = {
+        reply: { type: 'string', description: 'Final natural reply within the configured character limit.' },
+        content: object({
+            overview: { type: 'string', description: 'A complete Chinese overview, at most 80 characters.' },
+            activityTypes: array({ type: 'string', enum: [...summary.ACTIVITY_TYPES] }, 7),
+            songs: array(string, 40), games: array(string, 12), topics: array(string, 10)
+        }),
+        evidence: array(object({ target: { type: 'string', enum: [...evidenceTargets] }, value: string,
+            sourceIds, actor: { type: 'string', enum: [...actorKinds] } }), 24, 2)
+    };
+    if (materialOptions) properties.moments = array(object({
+        sourceIds: array({ type: 'string', pattern: '^[TD][0-9]+$' }, 6, 1), interest: string
+    }), materialOptions.maxMoments, 4);
+    return { type: 'json_schema', name: materialOptions ? 'live_reply_summary_material' : 'live_reply_summary',
+        strict: true, schema: object(properties) };
+}
+
 function buildCombinedPrompt({ fullPrefix, highlight, roomId, context, source }) {
     if (!fullPrefix.startsWith(live.SHARED_PROMPT_CACHE_START) || !fullPrefix.endsWith(live.SHARED_PROMPT_CACHE_END)) {
         throw new Error('Combined generation requires a complete shared source prefix');
@@ -51,7 +73,8 @@ Only these source speaker labels identify the host: ${JSON.stringify([...(source
 For multi-speaker source quotes without a recognized host label, actor must be team or uncertain, and the corresponding reply phrase must stay team-level. Do not name who led, healed, commanded or performed the action.
 Return exactly one JSON object with keys reply, content, evidence. Prose is Chinese.
 reply: the final natural comment, within the configured character limit, without a title or Markdown.
-content: the overview object required below. Overview must be a complete sentence of at most 80 Chinese characters. Do not call it exhaustive. Include actual later activity changes, but list only confidently supported performed songs and played games; empty lists are allowed.
+content: a JSON OBJECT with exactly overview, activityTypes, songs, games, topics. Never replace content with the overview string or move its fields to the outer object. overview is a complete sentence of at most 80 Chinese characters; the other four fields are arrays. Do not call it exhaustive. Include actual later activity changes, but list only confidently supported performed songs and played games; empty lists are allowed when supported.
+Required nesting: {"reply":"final comment","content":{"overview":"complete overview","activityTypes":[],"songs":[],"games":[],"topics":[]},"evidence":[...]}.
 evidence: 2-24 records covering every concrete factual assertion in the reply and every listed song/game. Each record has exactly these required fields:
 {"target":"reply|game|song","value":"exact reply phrase, or exact listed song/game name","sourceIds":["T123","D456"],"actor":"host|team|audience|uncertain|performance"}.
 T-IDs identify original subtitle segments and D-IDs identify merged audience messages, never speaker identities. Return 1-6 existing source IDs per record; the program will retrieve exact text. Do not retype, repair or paraphrase evidence quotes. value for reply must occur verbatim in reply. Actor host requires supporting named-host T-IDs, not only D-IDs or guest/unknown T-IDs. For canonical song/game names also include a nearby D-ID or T-ID that confirms the spelling, and a T-ID proving actual performance/play instead of a mere mention. If uncertain, omit the name.
@@ -66,9 +89,9 @@ function validateCombinedResult(text, source, roomId, wordLimit = configLoader.g
     const inspection = ai.inspectGeneratedReply(raw.reply, wordLimit, roomId);
     if (!inspection.ok) throw new Error(inspection.reason);
     const content = raw.content;
-    if (!content || typeof content.overview !== 'string' || !content.overview.trim() || chars(content.overview) > 80) {
-        throw new Error('Overview must be complete and at most 80 characters; truncation is forbidden');
-    }
+    if (!content || typeof content !== 'object' || Array.isArray(content)) throw new Error('Invalid content: expected an object with overview, activityTypes, songs, games, topics');
+    if (typeof content.overview !== 'string' || !content.overview.trim()) throw new Error('Invalid content.overview: expected a non-empty string');
+    if (chars(content.overview) > 80) throw new Error('Invalid content.overview: exceeds 80 characters; truncation is forbidden');
     const limits = { activityTypes: [7,24], songs: [40,80], games: [12,80], topics: [10,32] };
     for (const [field,[maxItems,maxChars]] of Object.entries(limits)) {
         if (!Array.isArray(content[field]) || content[field].length > maxItems || content[field].some(v =>
@@ -121,4 +144,4 @@ function validateCombinedResult(text, source, roomId, wordLimit = configLoader.g
         validation: { status: 'source-linked', semanticTruthProven: false, promptVersion: PROMPT_VERSION } };
 }
 
-module.exports = { PROMPT_VERSION, policy, evidenceContext, buildCombinedPrompt, validateCombinedResult };
+module.exports = { PROMPT_VERSION, policy, evidenceContext, buildCombinedPrompt, buildCombinedResponseFormat, validateCombinedResult };

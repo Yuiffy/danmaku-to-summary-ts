@@ -5,6 +5,7 @@ import path from 'path';
 import {
   appendReview,
   buildProfileDescription,
+  cutTask,
   deriveOutputDir,
   deriveSrt,
   formatRecordedDate,
@@ -14,6 +15,38 @@ import {
 } from './manual_clip_queue';
 
 describe('manual_clip_queue', () => {
+  test.each([
+    '旅行搭子', '正常同事交往', '攻击方式单一', '蜘蛛侠宿命', '',
+    '想找旅行搭子\\n“必须一起玩”', '想找旅行搭子\n“必须一起玩”',
+  ])('uses the same two-level copy fallback for manual and rebuilt clips: %s', async coverText => {
+    const topic = require('./topic_clipper');
+    const own = require('./own_stream_clipper');
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'manual-cover-copy-'));
+    const title = '想找旅行搭子又怕吵架？小岁：我必须要跟别人一起玩才好玩';
+    const task = {
+      mediaPath: path.join(directory, 'source.mp4'), srtPath: path.join(directory, 'source.srt'),
+      start: 0, end: 5, title, coverText, description: '已经核对的文案',
+      outputDir: path.join(directory, 'render'), outputStem: 'clip', reviewPath: path.join(directory, 'REVIEW.md'),
+      sourceMetadata: { mode: 'own_stream_fun_review' },
+    } as any;
+    fs.writeFileSync(task.mediaPath, 'source');
+    fs.writeFileSync(task.srtPath, '1\n00:00:00,000 --> 00:00:04,000\nSource speech.\n');
+    const cut = jest.spyOn(topic, 'cutClipMedia').mockResolvedValue({ burnedSubtitles: true });
+    const cover = jest.spyOn(topic, 'generateClipCover').mockResolvedValue(path.join(directory, 'cover.jpg'));
+    try {
+      const rendered = await cutTask(task, {}, { enabled: false, getProfile: () => ({ mode: 'idle' }) });
+      expect(cover.mock.calls[0][1]).toBe(own.buildCoverTitle(title, coverText));
+      expect(cover.mock.calls[0][1]).toBe(coverText.includes('\\n') || coverText.includes('\n')
+        ? coverText.replace(/\\n/g, '\n') : title);
+      expect(rendered.copy.coverText).toBe(coverText);
+      expect(rendered.copy.title).toBe(title);
+    } finally {
+      cut.mockRestore();
+      cover.mockRestore();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test('parses auto-upload task options', () => {
     const options = parseArgs([
       'add', '--media', 'recording.flv', '--start', '1', '--end', '10',

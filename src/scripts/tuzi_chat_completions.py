@@ -1481,6 +1481,7 @@ def call_tuzi_images_edits(
     调用 /v1/images/edits 端点生成参考图编辑/多图融合结果。
     gpt-image-2 的参考图输入必须以 multipart/form-data 的 image[] 文件上传。
     """
+    usage = {}
     try:
         proxies = {}
         if proxy_url:
@@ -1590,6 +1591,7 @@ def call_tuzi_images_edits(
         ids = log_tuzi_response_identifiers(operation_name, resp, result)
         print(f"[DEBUG] images/edits 响应结构: {list(result.keys())}")
         usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+        annotate_last_image_generation_meta(usage=usage)
         if usage:
             print(f"[IMAGE_USAGE] {json.dumps(usage, ensure_ascii=False, separators=(',', ':'))}")
 
@@ -1622,7 +1624,7 @@ def call_tuzi_images_edits(
 
     except Exception as e:
         print(f"[ERROR] images/edits 异常: {e}")
-        append_image_generation_attempt(model or "unknown", "images/edits", "failure", e)
+        append_image_generation_attempt(model or "unknown", "images/edits", "failure", e, usage=usage)
         traceback.print_exc()
         return None
 
@@ -1662,6 +1664,7 @@ def call_tuzi_images_generations(
     Returns:
         生成的图像文件路径，如果失败返回None
     """
+    usage = {}
     try:
         proxies = {}
         if proxy_url:
@@ -1704,10 +1707,12 @@ def call_tuzi_images_generations(
             "prompt": prompt,
             "n": n,
             "size": normalize_gpt_image_size(size),
-            "response_format": response_format,
             "quality": quality,
             "output_format": output_format,
         }
+
+        if not model.startswith("gpt-image-"):
+            payload["response_format"] = response_format
 
         print(f"[INFO] [images/generations] 调用 {model}, size={payload['size']}, prompt长度={len(prompt)}")
         print(f"[DEBUG] payload: model={model}, size={payload['size']}, n={n}, response_format={response_format}, quality={quality}, output_format={output_format}")
@@ -1735,12 +1740,17 @@ def call_tuzi_images_generations(
                 f"HTTP {resp.status_code}: {resp.text[:500]}",
                 ids.get("requestId"),
                 ids.get("responseId"),
+                usage=usage,
             )
             return None
 
         result = resp.json()
         ids = log_tuzi_response_identifiers(operation_name, resp, result)
         print(f"[DEBUG] 响应结构: {list(result.keys())}")
+
+        usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+        annotate_last_image_generation_meta(usage=usage)
+        print(f"[IMAGE_USAGE] {json.dumps(usage, ensure_ascii=False)}")
 
         # 标准返回格式: { "data": [ { "b64_json": "...", "url": "..." } ] }
         data_list = result.get("data", [])
@@ -1753,6 +1763,7 @@ def call_tuzi_images_generations(
                 "响应中无 data 字段",
                 ids.get("requestId"),
                 ids.get("responseId"),
+                usage=usage,
             )
             return None
 
@@ -1773,6 +1784,7 @@ def call_tuzi_images_generations(
                     "生成成功",
                     ids.get("requestId"),
                     ids.get("responseId"),
+                    usage=usage,
                 )
                 print(f"[OK] images/generations 成功，保存到: {output_path}")
                 return output_path
@@ -1790,6 +1802,7 @@ def call_tuzi_images_generations(
                     "生成成功（URL模式）",
                     ids.get("requestId"),
                     ids.get("responseId"),
+                    usage=usage,
                 )
                 print(f"[OK] images/generations 成功（URL模式），保存到: {downloaded}")
                 return downloaded
@@ -1802,12 +1815,13 @@ def call_tuzi_images_generations(
             "data[0] 中无 b64_json 也无 url",
             ids.get("requestId"),
             ids.get("responseId"),
+            usage=usage,
         )
         return None
 
     except Exception as e:
         print(f"[ERROR] images/generations 异常: {e}")
-        append_image_generation_attempt(model or "unknown", "images/generations", "failure", e)
+        append_image_generation_attempt(model or "unknown", "images/generations", "failure", e, usage=usage)
         traceback.print_exc()
         return None
 

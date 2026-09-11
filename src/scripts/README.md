@@ -5,6 +5,7 @@
 
 - `asr/`：ASR backend、队列、speaker 识别和字幕重处理。
 - `clipping/`：跨工作流复用的切片能力、事件契约、资源调度和输出路径。
+- `text/`：文本请求的共享传输适配器，重试与 JSON 规则由编译后的 `src/workflows/text/` 提供。
 - `python/`：被 Node 工作流调用的 Python ASR/runtime 实现及其依赖文件。
 - `reference_images/`、`test_data/`：测试或运行时需要随代码分发的静态素材。
 - 根目录：稳定的历史 CLI、服务入口或仍被外部脚本直接引用的兼容入口。

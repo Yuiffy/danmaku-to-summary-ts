@@ -49,6 +49,21 @@ describe('stage accounting and admission', () => {
         expect(calculateCost({}, config.price)).toBeNull();
     });
 
+    test('configured transient retries create separate ledger rows and retain failed request usage uncertainty', async () => {
+        const generate = jest.fn().mockRejectedValueOnce(Object.assign(Error('upstream 502'), { attempts: [
+            { provider: 'daiYu', model: 'fixture', status: 'failure', httpStatus: 502, requestId: 'failed-1', usageUnknown: true }
+        ] })).mockResolvedValueOnce(result());
+        const value = await runStage({ ...config, retry: { maxAttempts: 2, baseDelayMs: 0, jitterRatio: 0 } },
+            { ...budget(), mode: 'log_only' }, context, 'facts', [], generate);
+        expect(generate).toHaveBeenCalledTimes(2);
+        expect(generate.mock.calls[1][2]).toMatchObject({ primaryModel: 'fixture', apiMode: 'responses', strictEvaluation: true });
+        const rows = JSON.parse(fs.readFileSync(budget().ledgerPath, 'utf8')).rows;
+        expect(rows.map(row => row.status)).toEqual(['failure', 'success']);
+        expect(value.meta?.retryLedgerIds).toEqual([rows[0].id]);
+        expect(value.meta?.retryUsageUnknown).toBe(true);
+        expect(rows[0].response.requestId).toBe('failed-1');
+    });
+
     test('unconfirmed prices, unsupported reasoning and failed image inputs never send', async () => {
         const generate = jest.fn();
         await expect(runStage({ ...config, price: { ...config.price!, confirmed: false } }, budget(), context, 'facts', [], generate)).rejects.toThrow('pricing');

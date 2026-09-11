@@ -5,7 +5,7 @@ const path = require('path');
 const topic = require('./topic_clipper');
 const manual = require('./manual_clip_queue');
 const { buildPreflightEvidence } = require('./clipping/preflight_evidence');
-const { prepareCandidate, renderCandidate, refreshSourceReview, updateCandidate } = require('./render_topic_candidate');
+const { prepareCandidate, renderCandidate, refreshSourceReview, updateCandidate, previewCandidate } = require('./render_topic_candidate');
 
 describe('render held topic candidate by reserved ID', () => {
   let dir, metadata, parse;
@@ -33,6 +33,26 @@ describe('render held topic candidate by reserved ID', () => {
   });
   afterEach(() => { jest.restoreAllMocks(); fs.rmSync(dir, { recursive: true, force: true }); });
 
+  test('preview tolerates unresolved copy, never approves, and tracks later corrections', async () => {
+    metadata.source.mediaPath = path.join(dir, 'source.mp4');
+    fs.writeFileSync(metadata.source.mediaPath, 'source');
+    fs.writeFileSync(metadata.output.metadataPath, JSON.stringify(metadata));
+    const run = jest.spyOn(topic, 'runFfmpeg').mockImplementation(async args => fs.writeFileSync(args.at(-1), 'preview'));
+    jest.spyOn(topic, 'probeRoughCutSourceStart').mockResolvedValue(0);
+    jest.spyOn(topic, 'probeVideoPacketsWithHashes').mockResolvedValue([{ pts_time: '0' }]);
+    jest.spyOn(topic, 'probeMediaDuration').mockResolvedValue(32);
+    const result = await previewCandidate(metadata.output.metadataPath, { candidateId: 17, approveUpload: 'yes' }, {});
+    const saved = JSON.parse(fs.readFileSync(metadata.output.metadataPath, 'utf8'));
+    expect(saved.status).toBe('pending_preflight');
+    expect(saved.copy).toEqual(metadata.copy);
+    expect(saved.candidateSubtitles.approval).toBeUndefined();
+    expect(saved.output.mediaPath).toBeNull();
+    expect(fs.existsSync(`${metadata.output.metadataPath}.cut.lock`)).toBe(false);
+    updateCandidate(metadata.output.metadataPath, { candidateId: 17, action: 'correct', from: 'price', to: 'cost' }, {});
+    expect(fs.readFileSync(result.reviewPreview.srtPath, 'utf8')).toContain('The cost is clear.');
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
   test('keeps the candidate ID and source host and applies only corroborated edits', () => {
     const task = prepareCandidate(metadata, metadata.output.metadataPath, options, {});
     expect(task.upload).toEqual(metadata.upload);
@@ -44,6 +64,26 @@ describe('render held topic candidate by reserved ID', () => {
     expect(task.sourceMetadata.humanReview.copyGrounding.issues).toEqual([]);
     expect(task.sourceMetadata.humanReview.originalCopy.description).toBe('"Unsupported quote"');
     expect(segments[1].text).toBe('The prise is clear.');
+  });
+
+  test('checks an approved spoken date using the recording year without changing subtitles or copy', () => {
+    const rows = [{ start: 0, end: 30, text: '不对不对二零年十二月的时候买的' }];
+    parse.mockReturnValue({ segments: rows });
+    metadata.recordedAt = '2026-09-11 10:08:50';
+    metadata.aiReview.sourceSha256 = buildPreflightEvidence(rows).sourceSha256;
+    metadata.aiReview.subtitleEdits = [];
+    metadata.editorial.copyGrounding.subtitleIds = ['G1'];
+    metadata.copy.description = '购于2020年12月';
+    fs.writeFileSync(metadata.output.metadataPath, JSON.stringify(metadata));
+    const approved = updateCandidate(metadata.output.metadataPath, { candidateId: 17, action: 'approve',
+      reviewNote: 'User requested upload' }, {});
+    metadata = JSON.parse(fs.readFileSync(metadata.output.metadataPath, 'utf8'));
+    const before = fs.readFileSync(approved.candidateSrtPath);
+    const task = prepareCandidate(metadata, metadata.output.metadataPath, { candidateId: 17,
+      reviewNote: 'User requested upload', requireApproval: true, expectedSha256: approved.candidateSrtSha256 }, {});
+    expect(task.description).toBe(metadata.copy.description);
+    expect(task.sourceMetadata.humanReview.copyGrounding.issues).toEqual([]);
+    expect(fs.readFileSync(approved.candidateSrtPath).equals(before)).toBe(true);
   });
 
   test('rejects changed source, unresolved copy, unknown identity and blank review notes', () => {

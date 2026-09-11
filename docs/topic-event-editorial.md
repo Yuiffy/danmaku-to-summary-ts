@@ -43,9 +43,147 @@ python src/scripts/clip_upload_registry.py correct --id 123 --from "zzz" --to "�
 确认记录绑定源证据、时间范围、字幕哈希、版本号和文案哈希；worker 不会重新生成
 未经确认的字幕覆盖改词。上传重试复用已完成成片，重复入队不会新增同一 ID 的活动任务。
 
-注册表状态：`pending_cut`（待定，有 SRT）→ `queued`（已授权）→ `rendering`
+注册表状态：`pending_cut`（待定，有粗剪预览和 SRT）→ `queued`（已授权）→ `rendering`
 → `uploading` → `uploaded`。媒体或证据校验失败会保留候选和错误信息，停止投稿；
 在 `show` / `queue` 中查看原因，修正后重新入队。已排队或正在烧录的字幕版本不能再修改。
+
+制作阶段按 ID 隔离失败：某条字幕、文案或媒体校验失败，只停止该条；同任务内
+其他候选继续制作，已通过的成片继续上传。`queue` 的 `renderFailures` 保留各 ID
+的原因，重启或上传限流重试不会重新处理这些失败条目。其他条目结束后，含失败项
+的任务仍显示 `failed`，成功条目保持 `uploaded`；修复后仅重新入队失败 ID。
+
+文案数字校验支持同一条片内证据中的中文日期与阿拉伯数字日期等价，例如
+“二零二零年十二月”对应“2020年12月”。逐字读出的两位年份加月份（如“二零年
+十二月”）以原录播年份为基准，解释为最近一次已到达的对应年份；录播年份缺失
+时不补全世纪。月份、日期须成组匹配，不能跨字幕或不同日期拼接，也不能用日期
+数字支持金额或次数。该规则用于初次选材和队列制作，不改写字幕或文案，不解除
+来源、归属和媒体校验。
+
+## Own-Stream Review IDs
+
+岁己整场自动切片使用一份按起始时间排序的 `REVIEW.md` / 企微总清单。
+每条都显示全局候选 ID、时间和状态；已成片、待复核、复核不可用、
+制作失败及被规则剔除的候选不会因为状态不同而打乱时间顺序。
+剔除项只保存元数据和可定位的字幕，不自动切视频。批次级模型异常附在清单末尾。
+企微只保留有助人工判断的复核说明、原文节选和剔除说明，不逐项展开机器校验码；
+完整“核对项”仍保存在本地 REVIEW/JSON，不改变复核状态或上传拦截。
+
+文案应保留已经核实的人名：现场嘉宾、被提及者、转述中的执行者和对象一视同仁，
+优先使用配置的公开称呼（例如“小栞”），不因为本人未出声就退化成“对方”。
+每个字段先交代姓名后可自然使用代词，抽象封面不强塞名字；真正泛指、重名或只有
+同音 ASR/弹幕猜测时仍保留未知。复核已经证实角色姓名但文案仍匿名时，走现有的
+有限次文案修订或保持待复核，不做脱离证据的全文替换，也不自动改已投稿内容。
+
+ID 是定位依据，不是通过审核或授权投稿。`UPLOAD_MANIFEST.json` 也会包含被保留的
+待复核记录；注册时使用 `import-json --include-pending`，对应状态为 `needs_review`。
+普通上传读取仍严格校验，仅对 `--only` 选中的条目加载质量门禁；未选中的待复核条目
+不会阻塞同批已通过的条目。`--force` 不会解除复核限制。
+
+已存在的录播可不重跑模型、不重剪，只补 ID、更新总清单并按需补发企微：
+
+```powershell
+npm run clips:review -- --plan "D:\recordings\own_stream_fun_clips\PLAN.json"
+npm run clips:review -- --plan "D:\recordings\own_stream_fun_clips\PLAN.json" --notify
+python src/scripts/clip_upload_registry.py show 123
+python src/scripts/clip_upload_registry.py subtitles --id 123
+```
+
+重复刷新保留原 ID，不把重新排列后的行号当作全局 ID。未变化的通知不会重复发送；
+网络调用结果不明确时保留通知回执，禁止直接重发整批。
+
+对**已经生成且烧好字幕**的自有直播片段，人工核对视频与原文后，可明确保存复核：
+
+```powershell
+python src/scripts/clip_upload_registry.py approve-review --id 123 --review-note "已核对片中人物、原话及文案" --title "核对后的标题" --description "只描述片中事实" --cover-text "第一行\n第二行" --source-kind live_speech
+```
+
+该命令不调用 AI、不重做 ASR，也不投稿；只验证文案出处、生成对应封面并保存绑定
+视频、字幕、封面、文案、窗口和原始来源的人工确认。原 AI 复核结果不覆盖。
+原文不支持的引号/数字、来源变动、缺失或失败的媒体仍会拦截。
+已剔除但未切出的项必须先确认窗口并重新生成；连贯长片可使用下文的逐条时长授权，不能仅凭确认文字直接发布。
+这里不修改已烧录的字幕；字幕有误时不能用文案确认替代字幕修正。
+确认后再次明确 `enqueue --ids 123` 才是上传授权。编号命令会区分自有直播修订与
+未渲染的关键词候选，两种元数据协议仍独立。
+
+### 已成片字幕校对与重压
+
+`correct` 也支持 `own_stream_fun_review` 成片，包括待复核或制作失败项。
+它只保存逐条字面修订，不运行 AI/ASR、不覆盖原视频或源录播 SRT：
+
+```powershell
+python src/scripts/clip_upload_registry.py subtitles --id 123
+python src/scripts/clip_upload_registry.py correct --id 123 --from "原词" --to "核实后的词" --cue 4 --note "已核听第4条"
+python src/scripts/clip_upload_registry.py cut --ids 123 --review-note "已核对字幕与文案，重压待查看"
+```
+
+新字幕、旧版本及元数据历史保存在成片目录下 `subtitle_revisions/<ID>/`。
+重压从源录播按原窗口生成新的 MP4、SRT 和封面，复用标准 NVENC/CUDA 两阶段
+copy 模式及 CPU 回退；绝不在已烧字的视频上再叠一次字幕。批准的 SRT 字节直接
+送入压制，避免二次改词、重分句或修改时间戳。编号、复核索引和投稿状态文件不变。
+
+若文案或人物归属仍需确认，先准备修订：
+
+```powershell
+python src/scripts/clip_upload_registry.py rebuild --id 123 --review-note "已核对原话和归属" --source-kind live_speech --title "核对后的标题" --description "只描述片中事实" --cover-text "第一行\n第二行"
+```
+
+`rebuild` 只准备待重压资料，不立即压制或投稿。按需在校对之前同时传入
+`--start` / `--end` 调整源录播的绝对秒数；已保存改词后拒绝改窗，以免丢弃修订。
+`approve-review` 仍只确认已生成的视频；存在待重压字幕时不能用它批准旧视频。
+
+用户明确要求校对后投稿时，最后一条 `correct` 可附加 `--enqueue`，或单独执行
+`enqueue --ids 123`。已有文案/来源复核可继承，未确认的归属须先通过 `rebuild`
+明确保存。队列绑定字幕版本、哈希、文案和原始来源，worker 重压并通过媒体审计
+后才能投稿。入队命令立即返回；确认 worker 在线即可，不在会话里反复轮询。
+字幕修改会使旧视频暂不可上传；改词失败不入队，排队中的版本不可修改，重试复用
+已成功生成的版本。已投稿 ID 允许本地校对重压，但禁止 `enqueue`（包括 `--force`）
+再次投稿，需走原稿替换流程。
+
+已经成片的关键词切片（`local_review` / `topic_candidate_manual_cut`）也通过同一
+`rebuild` / `cut` 入口按原 ID 补齐话题上下文。先核对起因、指代、讨论和收尾，
+再以源录播绝对秒数保存完整窗口及对应文案：
+
+```powershell
+python src/scripts/clip_upload_registry.py rebuild --id 123 --start 1200 --end 1290 --review-note "已核对完整话题、人物和发布文案" --source-kind live_speech --title "完整主题标题" --description "片内事实概述" --cover-text "主题封面" --xml "D:\录播\原录播.xml"
+python src/scripts/clip_upload_registry.py subtitles --id 123
+python src/scripts/clip_upload_registry.py cut --ids 123 --review-note "已检查修订字幕，生成完整窗口待查看"
+```
+
+`--xml` 仅在旧元数据漏存原弹幕路径时显式补充；保存后绑定文件哈希，不能替换
+已有路径或忽略之后的源文件变动。不指定时，旧关键词稿件可继续使用原复核保存
+且仍位于新窗口内的弹幕证据。原 `aiReview` / `editorial` 留作历史，新窗口的
+文案、字幕与人工复核独立绑定；旧窗口的 ready 状态不会批准新视频。重压保留
+原视频、数字 ID、复核索引、已投稿 BV 及状态文件，复用标准 GPU 压制和媒体审计。
+已投稿稿件最后须替换原线上稿件，不能通过 `enqueue` 新投一次。
+
+### 连贯长片的逐条授权
+
+自动选材时长上限不是对长内容价值的否定。若一个完整事件或连贯主题确实需要
+较长铺垫、讨论和收尾，可以保留完整长度，同时让标题、简介概括全段，而不是仅
+描述开头的笑点。若中途已换嘉宾、开始新游戏或进入独立事件，应重新选窗。
+
+对仅因 `duration_out_of_bounds` 被剔除的自有直播候选，可保留原 ID 和原窗口：
+
+```powershell
+python src/scripts/clip_upload_registry.py rebuild --id 123 --allow-long --duration-note "同一主题的完整铺垫、讨论和收尾，缩短会丢失必要上下文" --review-note "已检查完整选材范围和发布文案" --source-kind live_speech --title "涵盖全段的标题" --description "全段内容的事实概述" --cover-text "主题封面"
+```
+
+这会保存绑定当前起止时间的 `durationApproval`，保留原剔除理由及证据，不提高
+全局自动选材上限。`--allow-long` 必须有非空理由；源证据、最小时长、片内引文/
+数字、人物归属和媒体校验仍生效。仅改时长授权不能解除重叠等其他剔除原因。
+之后照常 `subtitles` / `correct` / `cut`；确有投稿授权时才附加 `--enqueue`。
+
+回归验证：
+
+```powershell
+python -m unittest tests.test_own_revision_registry tests.test_topic_candidate_registry tests.test_review_pending_registry
+npm test -- --runInBand src/scripts/render_own_revision.test.ts src/scripts/review_rendered_clip.test.ts
+```
+
+可选真实媒体测试：设置 `DANMAKU_TEST_REAL_MEDIA=1` 后运行
+`tests.test_own_revision_registry.OwnRevisionRegistryTests.test_real_source_render_and_media_audit_without_upload`。
+该测试使用隔离注册表和合成源录播，不投稿。`DANMAKU_MEDIA_TEST_OUTPUT` 可指定本地
+测试产物目录（在仓库内应使用被忽略的 `temp/`）。
 
 ## Preflight Review
 
@@ -63,10 +201,10 @@ does not itself establish identity. Exact model/protocol routing is validated;
 failures must not silently switch providers, protocols or reasoning effort.
 
 Persist and validate the complete `_TOPIC_PLAN.json` before media work. Only
-`ready` candidates receive rendered media and covers. Every held candidate gets
-an editable, clip-relative SRT before registration, including already corroborated
-AI corrections but not rejected guesses. Failed or `needs_review` candidates retain
-evidence and reasons without rendering, and reserve globally unique numeric IDs in the same
+`ready` candidates receive burned final media and covers. Every held candidate gets
+an editable, clip-relative SRT and an unburned stream-copy review preview before
+registration, including already corroborated AI corrections but not rejected guesses.
+Failed or `needs_review` candidates retain evidence and reasons, and reserve globally unique numeric IDs in the same
 upload registry (`pending_cut`). REVIEW and WeChat show those IDs beside the
 per-stream labels such as `E1-1`; a candidate keeps its numeric ID after rendering.
 Source changes, unsaved plans and exceeded evidence budgets hold the
@@ -94,11 +232,56 @@ an AI service failure. The original AI review remains alongside the user correct
 history and approval snapshot.
 After checking the video and cover, run `npm run upload:clips -- enqueue --ids 123`
 to publish. The standalone `cut` command never enqueues; only `enqueue` carries
-upload authorization. Automatic discovery and ID reservation never render held
-candidates or authorize upload.
+upload authorization. Automatic discovery prepares rough previews for held
+candidates without burning subtitles, approving content or authorizing upload.
+
+### 待预审粗剪视频
+
+待预审候选自动生成 `*_preview_rNNNN_*.mp4` 和同名 `.srt`，在同一目录打开视频即可
+由支持外挂字幕自动加载的播放器载入。`REVIEW.md` 提供可点击链接，并显示候选在
+粗剪中的起止秒数。默认保留前 8 秒、后 2 秒上下文；copy 模式可能多保留一个关键帧
+间隔。字幕按实际视频包时间戳校准，包含上下文及当前候选已确认的改词。
+候选的版本化 SRT 仍以候选起点计时；预览 SRT 以粗剪起点计时，二者不能互换。
+
+旧候选或粗剪失败项可按原编号补生成，支持逗号分隔的多个编号：
+
+```powershell
+python src/scripts/clip_upload_registry.py preview --ids 123,124
+```
+
+命令不需要预先批准文案或人物归属，不调用 AI/ASR、不烧字、不生成封面、不投稿。
+失败按 ID 隔离，保留可重试原因；上传队列正在处理的编号不能同时生成预览。
+粗剪保存在独立 `reviewPreview` 元数据中，不填写成片 `output.mediaPath`，不改变
+`pendingCut`、字幕确认或上传状态。`show` 也能查看粗剪路径。
+
+重复准备复用现有视频；`correct` 会同步更新同名预览 SRT，保留原候选字幕修订历史。
+后续 `cut` 或已授权 worker 校验源文件、视频文件和窗口后，直接使用粗剪完成精确
+裁边及标准 GPU 字幕烧录，封面清理不会删除预览。重新选窗或源媒体变化会使旧粗剪
+失效，重新生成时保留旧预览。源字幕证据变化仍须重新预审，不能用粗剪绕过证据校验。
 
 `review.qualityRules` enables the source-grounded quality constraints; an extra
 independent audit is optional, not required on every single-call preparation.
+Quality preparation also returns a `boundaryReview`: setup/closure cue IDs,
+reasons for both boundaries, dependencies from delayed answers or pronouns to
+their prerequisite cues, and any unresolved cue IDs. The editor must follow the
+earlier incident across intervening chat, include all necessary source footage,
+or hold the candidate. Local validation holds missing, unseen, out-of-window or
+unresolved prerequisites; it does not silently expand a clip or turn outside
+evidence into public copy. Linked IDs establish traceability, not semantic proof.
+The review is preserved in the plan and per-clip `aiReview`; staged final copy
+keeps the locked review. Legacy configurations without quality rules retain the
+optional schema. Request version changes invalidate old selection caches without
+revisiting already rendered or published candidates. This adds no model round.
+
+Within the existing audience-row budget, target-name messages and messages
+closely repeated in nearby speech receive shared priority; remaining slots keep
+context coverage. A flood of keyword messages must not erase a delayed question.
+This affects evidence recall only, never speech attribution or identity approval.
+Candidate 2268 exposed both failures: uniform sampling dropped the introduction
+and delayed question, and the selected answer lost its earlier group-chat setup.
+Regression coverage lives in `preflight_boundaries.test.ts`; live semantic quality
+still requires editorial inspection.
+
 `preflight_facts.js` reads user-confirmed facts from
 `data/runtime/topic_verified_facts.json`. Each correction is bound to the exact
 source path, SHA-256, time range and user authorization; stale or mismatched entries

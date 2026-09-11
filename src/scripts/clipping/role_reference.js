@@ -74,6 +74,7 @@ function roleReferencePromptLines() {
         '资料ID的人名使用name或copyName。目录外人物可用entityId=null及原话中的真实称呼，不需要预先登记，但不能编造实名。',
         '区分角色名称与目录ID：原话已明确姓名或角色称呼时，actor/target仍填该姓名或称呼（如司机）；只有entityId填null。roleEvidence不为空而对应actor/target为空是矛盾，必须修正或needs_review。',
         '先核查自动候选：若原话称呼、配置中的昵称对应及姓名上下文相互印证，应使用已知entityId和公开名；不要因为本人未出声而把已可核验的名字降成匿名。仍不能排除重名则needs_review或明确保留未知。',
+        'roleEvidence已确认actor/target时，涉及该角色的title/description及具象coverText也应写明copyName或原文公开称呼，不只在内部claims具名、对外仍写对方；同字段先交代姓名后可自然使用代词。',
         '昵称需要片内明确称呼加独立名字证据（另一条称呼原话、全名原话或有配置对应且同句解释昵称/全名的评论）；ASR误听候选必须另有原话名字印证。',
         '仅被提到的人也可成为过去故事的动作执行者/对象，不需要现场声纹；不得因此说她当前连麦、出声或在场。'
     ];

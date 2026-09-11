@@ -41,6 +41,17 @@ class PostStreamUsageTest(unittest.TestCase):
             'output_tokens': 1372, 'output_tokens_details': {'image_tokens': 1372}}}, 'image', 'file', 0)
         self.assertAlmostEqual(row['estimatedUncachedImageUsd'], 0.09783)
 
+    def test_image_rollout_comparison_fields_and_new_model_prices(self):
+        for model in ('gpt-image-2.5-sunburst', 'gpt-image-2.5-flare'):
+            row = usage.request_record({'model': model, 'quality': 'max', 'elapsedMs': 120000,
+                'rolloutVariant': model + ':max', 'usage': {'input_tokens': 8214,
+                'input_tokens_details': {'image_tokens': 5200, 'text_tokens': 3014},
+                'output_tokens': 1372, 'output_tokens_details': {'image_tokens': 1372}}}, 'image', 'file', 0)
+            self.assertAlmostEqual(row['estimatedUncachedImageUsd'], 0.09783)
+            self.assertEqual(row['quality'], 'max')
+            self.assertEqual(row['elapsedMs'], 120000)
+            self.assertEqual(row['rolloutVariant'], model + ':max')
+
     def test_failed_recording_without_reply_keeps_its_known_cost(self):
         with tempfile.TemporaryDirectory() as directory:
             day = Path(directory) / '123_host' / '2026_09_08'
@@ -69,11 +80,13 @@ class PostStreamUsageTest(unittest.TestCase):
                 'replyBodySha256': hashlib.sha256(body.encode()).hexdigest(), 'attempts': attempts}), encoding='utf8')
             Path(str(base) + '_LIVE_CONTENT.json').write_text(json.dumps({'status': 'success', 'content': {'overview': 'test'},
                 'generation': {'attempts': attempts, 'sharedUsagePath': artifact.name}}), encoding='utf8')
-            Path(str(base) + '_COMIC_SCRIPT_META.json').write_text(json.dumps({'attempts': [dict(attempts[0], responseId='response-2')]}), encoding='utf8')
+            Path(str(base) + '_COMIC_SCRIPT_META.json').write_text(json.dumps({'sourceCoverage': 'selected_original_excerpts_with_context',
+                'attempts': [dict(attempts[0], responseId='response-2')]}), encoding='utf8')
             diagnostic = root / (reply.stem + '_ATTEMPT1_old.md')
             diagnostic.write_text('# Historical diagnostic without usage', encoding='utf8')
             result = usage.inspect_recording(reply)
             self.assertEqual(result['mode'], 'paired')
+            self.assertEqual(result['inputModes']['comicScript'], 'selected_original_excerpts_with_context')
             self.assertEqual(result['inputTokens'], 2000)
             self.assertEqual(result['outputTokens'], 200)
             self.assertEqual(result['unknownTextUsageRequests'], 1)

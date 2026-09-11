@@ -389,6 +389,83 @@ npm run asr:vllm-doctor
 
 日志会打印本次选择的 backend 和原因。backend 名称写错或 routing 配置不完整时会直接报错，不会静默 fallback。
 
+## 自动字幕预校对
+
+新录播可以在统一 corrections 之后、写出 SRT 之前执行 `subtitleProofreading`。
+默认配置和生产配置目前仅对岁己房间开启，不改变主 ASR backend，也不改写已经存在、
+排队或已投稿的 SRT/视频。普通 SRT 与 speaker SRT 走相同的文字预校对，时间轴和
+speaker 标签不由此阶段重新分配。
+
+```json
+{
+  "asr": {
+    "subtitleProofreading": {
+      "enabled": true,
+      "roomIds": ["25788785"],
+      "contextSeconds": 20,
+      "maxContextChars": 400
+    }
+  }
+}
+```
+
+实现为 `src/scripts/asr/subtitle_proofreading.js`，维护词表为同目录的
+`subtitle_lexicon.json`。主录播处理器传入已经匹配的 XML，vLLM 队列也接入同一层。
+独立调用 `writeSrt` 时须显式传入经 `loadProofreadingContext` 构造的 `proofreading`
+选项；未传入或关闭时保持原行为。手工候选修订不会再次触发自动改词。
+
+- **稳定词限定上下文**：例如完整的栞栞/病院坂 ASR 变体、WorkBuddy、galgame、
+  机械盘和常用感叹句。除极窄的固定词形外，需要近邻语境；默认前后20秒、每侧
+  最多400字符，少量规则使用30秒。跨很久的另一段谈话不算支持。正反例均须维护。
+- **SC 作为独立文字来源**：使用 XML 解析器单独读取 `sc`，不插入普通弹幕数组，
+  不改变已有 D-ID。只使用90秒内、字幕发生前、唯一匹配的 SC。已审核 alias 还需
+  左右各至少4个不变字符的锚点才自动应用；存在另一条支持原拼法的 SC 时不改。
+  仅单侧锚点支持或同时有多处错误时，显示 SC 原文供比较，不强行修成整条 SC。
+- **歧义词只建议**：如“小菜/小蔡”“大人”“砍小丽”，不能通过本次案例生成不受限的
+  全局替换，更不能把 `爸爸 -> 妈妈` 或 `升级 -> 岁己` 变成裸词规则。
+- **复核按问题分组**：同一疑词列出所有出现位置；长段粘连拉丁文字作为可能的外语
+  音频提示，整组保留所有位置，并生成不超过30秒的局部核对窗口。它不是可靠的
+  语言识别器，不保证发现中文形式的外语幻觉，也不把零条提示等同于字幕准确。
+
+`.asr_evidence.json` 继续绑定最终 SRT 哈希，并保留 `recognizedText`、原始 ASR span、
+规则 ID、改前改后文字和 SC 的时间/内容/XML 哈希。自动修字记录保存在各行
+`asr.proofreading` 中。人物与关键词复核能看到自动规范化记录，但这些记录不等于
+人工真值、实名声纹或新的用户确认事实。自有直播成片元数据的 `subtitleProofreading`
+汇总已改词和 `reviewGroups`；REVIEW/企微给出合并提示，详细出现位置仍完整保留。
+该阶段不更改发布授权或现有质量门禁。
+
+### 模型选择与后续验证
+
+这层词表不替代音频识别。对于看电影、游戏演示时的中英日混杂，下一步应对候选
+窗口做自动多语言第二次转写，再与第一遍比较；目前只生成窗口，尚未自动调用第二
+个模型。不要用 LLM 将乱码润色为流畅中文，也不要把两次 ASR 相同当作人工听写。
+
+- [SenseVoice 官方说明](https://github.com/FunAudioLLM/SenseVoice)：已发布 Small
+  checkpoint 支持普通话、粤语、英语、日语、韩语及语言/声音事件标签，适合低成本
+  局部核对；不具有原生实名说话人识别，仍需单独的 VAD/CAM++ 流程。
+- [FunASR 官方说明](https://github.com/modelscope/FunASR)：Paraformer 保留时间轴与
+  吞吐优势；Nano 与多语言 MLT-Nano 是不同 checkpoint，不能混用语言覆盖结论。
+  本项目 Nano/vLLM 路径支持真正的模型 hotwords，当前 Paraformer adapter 没有将
+  hotword 直接传给 generate；只扩充热词配置不代表模型识别就会改变。
+- [Qwen3-ASR 官方说明](https://github.com/QwenLM/Qwen3-ASR)：提供0.6B/1.7B模型，
+  支持30种语言和22种中文方言的识别与语言判断；单独的 ForcedAligner 提供时间戳。
+  可作为多语言对照方案，但本项目尚未接入，需实测 Windows/显存/吞吐和分歧样本。
+
+第二遍候选仍优先复用已配置的 FunASR-family 模型和资源调度：限制音频窗口、调用
+数量和总耗时，不给模型预设答案；有可靠词级对齐才考虑自动应用跨词改写。仅有
+段级文本时保留为补充证据。VAD/LID/对齐分数均不能替代语义校验，尤其要检查人名、
+否定、亲属关系、数字和背景播放归属。
+
+评估时区分：同批已保存修订回放、真正独立的保留样本、整场端到端实测。只在具有
+完整人工真值时报告 CER/WER；否则报告明确的规则覆盖、额外差异和待确认窗口。
+新词表样本不能同时被称作独立测试集。逐次确认不会自动变成全局学习记录。
+
+回归测试：
+
+```powershell
+npm test -- --runInBand src/scripts/asr/subtitle_proofreading.test.ts src/scripts/asr/evidence_sidecar.test.ts src/scripts/clipping/actor_review.test.ts src/scripts/clipping/own_review_report.test.ts
+```
+
 ## 热词与错识别修正
 
 ASR 配置支持全局热词、按 routing 命中的房间/主播热词，以及统一的后处理 corrections。

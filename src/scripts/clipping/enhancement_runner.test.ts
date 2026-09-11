@@ -53,3 +53,15 @@ test('global no-AI configuration cannot be bypassed by enhancement stages', asyn
         expect(result.qaResult).toMatchObject({ status: 'failed', error: 'AI is disabled; required QA cannot run' });
     } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('disabled AI reports an explicit zero-selection reason without requesting a model', async () => {
+    const model = jest.spyOn(require('../ai_text_generator'), 'generateTextWithDaiYu');
+    try {
+        const result = await selectExperimentBatch([{ start: 0, end: 60, title: 'Story' }],
+            { segments: [{ start: 0, end: 60, text: 'Source' }] }, { ai: { enabled: false },
+                enhancements: { enabled: true, roomIds: ['room'], experiment: { enabled: true, ratio: .25, maxClips: 5 } } }, {}, { roomId: 'room' });
+        expect(result.summary.reason).toBe('ai_disabled');
+        expect(result.summary.selected).toEqual([]);
+        expect(model).not.toHaveBeenCalled();
+    } finally { model.mockRestore(); }
+});

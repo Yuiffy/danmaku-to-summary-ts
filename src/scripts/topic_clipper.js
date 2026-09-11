@@ -1,11 +1,12 @@
 const { normalizeCoverText, buildGroundingReviewLine } = require('./clipping/selection_result');
-const { getVideoResolution } = require('./clipping/video_probe');
+const { getVideoResolution, probeMediaDuration } = require('./clipping/video_probe');
 const { buildSubtitleEvidence } = require('./clipping/subtitle_evidence');
 const { isTopicEditorialEnabled, buildTopicEditorialGroups, buildTopicClipWindow } = require('./clipping/topic_editorial');
 const { planTopicEventGroup, generateTopicEventCopy } = require('./clipping/topic_editorial_runner');
 const { runTopicShadowReview, topicReviewLines } = require('./clipping/topic_review_runner');
 const { buildPreflightEvidence } = require('./clipping/preflight_evidence');
 const { ensureCandidateDraft } = require('./clipping/candidate_subtitles');
+const { ensureCandidatePreview, reusablePreview, previewReviewLines } = require('./clipping/candidate_preview');
 const { isPreflightEnabled, prepareTopicGroup, preflightSelections, sourceFileHash, persistPreflightPlan } = require('./clipping/preflight_runner');
 const { buildTopicDedupeFailures, isPendingTopicResult, buildPendingTopicBlock,
     buildTopicDedupeDetailLines } = require('./clipping/topic_failure_details');
@@ -1106,6 +1107,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
     let subtitleBurnFailure = null;
     let roughSourceStart = null;
     let roughTrimOffset = null;
+    let reusedReviewPreview = false;
 
     if (source.kind === 'audio') {
         await runFfmpeg([
@@ -1146,10 +1148,18 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                 let actualRoughStart = roughStart;
                 let offsetInRoughClip = Math.max(0, Number(window.start) - actualRoughStart);
                 const roughDuration = Math.max(0.1, Number(window.duration) + offsetInRoughClip + postRollSeconds);
-                const tempPath = path.join(parsedOutput.dir, `${parsedOutput.name}.source.tmp${parsedOutput.ext || '.mp4'}`);
+                const cachedRough = twoStageMode === 'copy' && reusablePreview(config.reviewPreview, source.mediaPath, window)
+                    ? config.reviewPreview : null;
+                const tempPath = cachedRough?.mediaPath || path.join(parsedOutput.dir, `${parsedOutput.name}.source.tmp${parsedOutput.ext || '.mp4'}`);
                 let keepTempForCover = false;
                 try {
-                    if (twoStageMode === 'copy') {
+                    if (cachedRough) {
+                        reusedReviewPreview = true;
+                        actualRoughStart = cachedRough.sourceTimeOrigin;
+                        offsetInRoughClip = Number(window.start) - actualRoughStart;
+                        roughSourceStart = actualRoughStart;
+                        roughTrimOffset = offsetInRoughClip;
+                    } else if (twoStageMode === 'copy') {
                         await runFfmpeg([
                             '-y',
                             '-ss', String(roughStart),
@@ -1213,7 +1223,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                     }
                 } finally {
                     try {
-                        if (!keepTempForCover && fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+                        if (!cachedRough && !keepTempForCover && fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
                     } catch {
                         // Best-effort cleanup; the final clip is already written or fallback will run.
                     }
@@ -1237,7 +1247,8 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                 burnedSubtitles: true,
                 fallbackUsed: false,
                 coverSourcePath,
-                coverSourceTemporary: Boolean(coverSourcePath),
+                coverSourceTemporary: Boolean(coverSourcePath) && !reusedReviewPreview,
+                reusedReviewPreview,
                 coverClipStart,
                 coverTimeOrigin,
                 twoStageSubtitleBurn: useTwoStageBurn,
@@ -1616,7 +1627,7 @@ function buildTopicNotifyMarkdown(results = [], metadata = {}) {
         '',
         '成功切片:',
         windowSummary || '- 无',
-        pendingResults.length ? '待预审候选（未生成视频，可按候选ID下令切片）:' : null,
+        pendingResults.length ? '待预审候选（粗剪视频配同名 SRT，确认后可按候选ID烧录）:' : null,
         ...pendingResults.map(buildPendingTopicBlock),
         failures.length > 0 ? '' : null,
         failures.length > 0 ? '失败与降级详情:' : null,
@@ -1702,6 +1713,7 @@ function buildTopicReviewMarkdown(results = [], metadata = {}) {
             lines.push(`- ${result.copy?.title || '话题切片'} | ${formatClock(result.window?.start || 0)} | ${result.output?.mediaPath || ''}`);
             if (result.candidateId) lines.push(`   候选ID: ${result.candidateId} | ${result.window?.index || ''}`);
             if (result.candidateSubtitles?.path) lines.push(`   待定字幕: ${result.candidateSubtitles.path}`);
+            lines.push(...previewReviewLines(result));
             if (result.status === 'pending_preflight') lines.push(`   待烧录前审核: ${result.output?.metadataPath || ''}`);
             lines.push(...topicReviewLines(result.aiReview, result.humanReview));
         });
@@ -2110,6 +2122,12 @@ async function generateTopicClips(options = {}) {
                 metadata.uploadReady = false;
                 metadata.output.mediaPath = metadata.output.copyPath = null;
                 ensureCandidateDraft(metadata, metadataPath, editorialEvidence, config);
+                try {
+                    await (options.previewGenerator || ensureCandidatePreview)(metadata, metadataPath, editorialEvidence, config);
+                } catch (error) {
+                    metadata.reviewPreview = { ...metadata.reviewPreview, status: 'failed', error: error.message };
+                    recordFailure('preview', error, 'warning');
+                }
                 fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2), 'utf8');
                 results.push(metadata);
                 continue;
@@ -2346,6 +2364,8 @@ module.exports = {
     buildClipCopy,
     findMatchingPacketTime,
     probeRoughCutSourceStart,
+    probeVideoPacketsWithHashes,
+    probeMediaDuration,
     resolveSubtitleBurnPlan,
     resolveFfprobePath,
     getVideoResolution,

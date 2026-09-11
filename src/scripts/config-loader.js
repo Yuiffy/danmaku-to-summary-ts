@@ -22,6 +22,15 @@ const RoomSettingsSchema = Joi.object({
     wordLimit: Joi.number().optional()
 }).pattern(Joi.string(), Joi.any());
 
+const TextRetrySchema = Joi.object({
+    maxAttempts: Joi.number().integer().min(1).max(5),
+    baseDelayMs: Joi.number().integer().min(0).max(60000),
+    maxDelayMs: Joi.number().integer().min(0).max(60000),
+    jitterRatio: Joi.number().min(0).max(1),
+    statusCodes: Joi.array().items(Joi.number().integer().min(400).max(599)),
+    retryConnectionErrors: Joi.boolean()
+});
+
 const AISchema = Joi.object({
     providers: Joi.object().pattern(
         Joi.string(),
@@ -36,6 +45,7 @@ const AISchema = Joi.object({
         }).unknown(true)
     ).default({}),
     text: Joi.object({
+        retry: TextRetrySchema.optional(),
         enabled: Joi.boolean().default(true),
         provider: Joi.string().default('daiYu'),
         sharedPromptCache: Joi.object({
@@ -52,6 +62,7 @@ const AISchema = Joi.object({
             proxy: Joi.string().allow('', null).default('')
         }).default(),
         tuZi: Joi.object({
+            retry: TextRetrySchema.optional(),
             enabled: Joi.boolean().default(true),
             apiKey: Joi.string().allow('').default(''),
             baseUrl: Joi.string().default('https://api.tu-zi.com'),
@@ -62,6 +73,7 @@ const AISchema = Joi.object({
             proxy: Joi.string().allow('', null).default('')
         }).default(),
         daiYu: Joi.object({
+            retry: TextRetrySchema.optional(),
             enabled: Joi.boolean().default(true),
             apiKey: Joi.string().allow('').default(''),
             baseUrl: Joi.string().default('http://localhost:8080'),
@@ -102,6 +114,13 @@ const AISchema = Joi.object({
         }).default(),
         imageGeneration: Joi.object({
             enabled: Joi.boolean().default(true),
+            rollout: Joi.object({
+                enabled: Joi.boolean().default(false),
+                variants: Joi.array().items(Joi.object({
+                    model: Joi.string().required(),
+                    quality: Joi.string().valid('low', 'medium', 'high', 'xhigh', 'max', 'auto').required()
+                })).min(1).required()
+            }).optional(),
             routes: Joi.array().items(Joi.object({
                 enabled: Joi.boolean().default(true),
                 provider: Joi.string().required(),
@@ -296,6 +315,14 @@ const ConfigSchema = Joi.object({
         chunkSeconds: Joi.number().default(2700),
         aiConcurrency: Joi.number().default(3),
         clipConcurrency: Joi.number().integer().min(1).default(3),
+        enhancementConcurrency: Joi.number().integer().min(1).max(16).default(3),
+        enhancements: Joi.object({
+            workflow: Joi.string().valid('pacing', 'legacy_packaging').optional(),
+            pacing: Joi.object({ noiseDb: Joi.number().min(-80).max(-35), nonSpeechVad: Joi.boolean(),
+                minRemovedSeconds: Joi.number().min(3), minRemovedRatio: Joi.number().min(0).max(.2),
+                maxRemovedRatio: Joi.number().min(0).max(.4), maxPausesPerClip: Joi.number().integer().min(1).max(2),
+                maxScannedSeconds: Joi.number().min(1).max(600), vadModelPath: Joi.string(), pythonPath: Joi.string() }).optional()
+        }).unknown(true).optional(),
         clipFfmpegThreads: Joi.number().integer().min(0).default(4),
         clipResourceAdaptive: Joi.object({
             enabled: Joi.boolean().default(true),
@@ -346,6 +373,8 @@ const ConfigSchema = Joi.object({
         ai: Joi.object({
             enabled: Joi.boolean().default(true),
             strategy: Joi.string().valid('staged', 'chunked', 'candidate_only', 'full_context').default('staged'),
+            retry: TextRetrySchema.optional(),
+            retryByStage: Joi.object().pattern(Joi.string().valid('recall', 'rerank', 'actorReview', 'dialogueEvidence'), TextRetrySchema).optional(),
             model: Joi.string().allow('', null).default(null),
             timeoutMs: Joi.number().min(1000).default(600000),
             rerankTimeoutMs: Joi.number().min(1000).default(1200000),

@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "modes": {
+    "standard": {
+      "label": "标准模式",
+      "description": "筛选素材、简短晚安与漫画；控制日常用量。",
+      "settings": {
+        "wordLimit": 100,
+        "fullLiveContextExperiment": { "enabled": false, "tasks": [], "summaryDeliveryMode": "separate" }
+      }
+    },
+    "shiori": {
+      "label": "栞模式",
+      "description": "完整字幕弹幕、250字晚安、独立梗概与全文漫画；质量优先，允许较高用量。",
+      "settings": {
+        "wordLimit": 250,
+        "fullLiveContextExperiment": {
+          "enabled": true,
+          "tasks": ["goodnight", "comic", "summary"],
+          "summaryDeliveryMode": "separate",
+          "compactEvidence": true,
+          "promptCacheRolloutPercent": 100,
+          "model": "gpt-5.6-luna",
+          "cacheWarmupWaitMs": 45000,
+          "cachePropagationWaitMs": 3000,
+          "timeoutMs": 180000,
+          "maxAttempts": 1,
+          "failureRetryCooldownMs": 1800000,
+          "maxTokens": 2000,
+          "thinkingBudgetTokens": 2000
+        }
+      }
+    },
+    "sui": {
+      "extends": "shiori",
+      "label": "岁模式",
+      "description": "长回复与最高档漫画优先，允许高消耗；沿用岁己的筛选晚安/漫画与全文梗概、切片输入。",
+      "settings": {
+        "wordLimit": 800,
+        "minComicDurationMinutes": 0,
+        "comicGenerationProbability": 1,
+        "fullLiveContextExperiment": { "tasks": ["summary", "ownStreamClips"], "cachePropagationWaitMs": 0 },
+        "imageGeneration": {
+          "enabled": true,
+          "routes": [
+            { "provider": "daiYu", "model": "gpt-image-2.5-sunburst", "flow": "openaiImages", "maxAttempts": 1, "timeoutMs": 1200000, "size": "1:1", "quality": "max", "outputFormat": "png", "responseFormat": "b64_json", "useTuziRetry": false },
+            { "provider": "tuZi", "model": "gpt-image-2", "flow": "tuZiCompatible", "maxAttempts": 1, "timeoutMs": 1200000, "size": "1:1", "quality": "high", "outputFormat": "png", "responseFormat": "b64_json", "useTuziRetry": true, "includeAsyncFallback": false },
+            { "provider": "daiYu", "model": "gpt-image-2", "flow": "openaiImages", "maxAttempts": 1, "timeoutMs": 1200000, "size": "1:1", "quality": "high", "outputFormat": "png", "responseFormat": "b64_json", "useTuziRetry": false },
+            { "provider": "tuZi", "model": "gpt-image-2", "flow": "tuZiCompatible", "strategyMode": "asyncOnly", "asyncFallbackModel": "gemini-3-pro-image-preview-async", "maxAttempts": 1, "timeoutMs": 1200000, "size": "1:1", "quality": "high", "outputFormat": "png", "responseFormat": "b64_json", "useTuziRetry": true }
+          ],
+          "rollout": { "enabled": false }
+        }
+      }
+    },
+    "paired": {
+      "extends": "shiori",
+      "label": "全文合并模式",
+      "description": "全文一次生成晚安与梗概，再复核；漫画仍读取全文。",
+      "settings": { "fullLiveContextExperiment": { "replySummary": { "enabled": true } } }
+    },
+    "shared-material": {
+      "extends": "paired",
+      "label": "共享素材模式（实验）",
+      "experimental": true,
+      "description": "全文合并生成时选择跨时段素材，漫画复用带原文上下文的素材池；素材不合格则回退全文。",
+      "settings": {
+        "fullLiveContextExperiment": {
+          "replySummary": {
+            "sharedMaterial": { "enabled": true, "maxMoments": 8, "contextSeconds": 30, "maxSourceChars": 80000, "maxSourceRatio": 0.7 }
+          }
+        }
+      }
+    }
+  }
+}

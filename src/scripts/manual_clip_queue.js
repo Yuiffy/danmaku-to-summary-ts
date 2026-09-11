@@ -344,7 +344,19 @@ async function cutTask(task, rootConfig, resourceSchedulerOverride = null) {
     const window = { ...task.sourceMetadata?.window, start: task.start, end: task.end, duration: task.end - task.start };
     const subtitleConfig = rootConfig.subtitle || {};
     const clipTopicsConfig = rootConfig.clipTopics || {};
-    const srtResult = topicClipper.writeClipSrt(task.subtitleSegments || sourceSrt.segments, window, outputSrt, {
+    const srtResult = task.approvedSubtitlePath ? (() => {
+        const bytes = fs.readFileSync(task.approvedSubtitlePath);
+        const hash = require('crypto').createHash('sha256').update(bytes).digest('hex');
+        if (!task.approvedSubtitleSha256 || hash !== task.approvedSubtitleSha256) {
+            throw new Error('Approved subtitle bytes changed before rendering');
+        }
+        const cues = topicClipper.parseTopicSrt(task.approvedSubtitlePath).segments;
+        if (!cues.length || cues.some(cue => cue.start < 0 || cue.end <= cue.start || cue.end > window.duration + 0.001)) {
+            throw new Error('Approved subtitles fall outside the clip window');
+        }
+        fs.writeFileSync(outputSrt, bytes);
+        return { segmentCount: cues.length };
+    })() : topicClipper.writeClipSrt(task.subtitleSegments || sourceSrt.segments, window, outputSrt, {
         maxCharsPerLine: clipTopicsConfig.subtitleMaxCharsPerLine
             ?? subtitleConfig.max_chars_per_line
             ?? 18,
@@ -359,6 +371,7 @@ async function cutTask(task, rootConfig, resourceSchedulerOverride = null) {
         : null;
     const resourceProfile = resourceLease?.profile || resourceScheduler.getProfile();
     const cutConfig = buildQueueMediaConfig(rootConfig, resourceProfile);
+    cutConfig.reviewPreview = task.sourceMetadata?.reviewPreview;
     let mediaResult;
     try {
         mediaResult = await topicClipper.cutClipMedia(
@@ -379,7 +392,7 @@ async function cutTask(task, rootConfig, resourceSchedulerOverride = null) {
     try {
         coverPath = await topicClipper.generateClipCover(
             outputVideo,
-            task.coverText || task.title,
+            topicClipper.normalizeCoverText(task.coverText) || task.title,
             task.outputDir,
             {
                 streamerName: task.streamerName || '岁己SUI',
@@ -427,6 +440,7 @@ async function cutTask(task, rootConfig, resourceSchedulerOverride = null) {
             coverPath,
             burnedSubtitles: Boolean(mediaResult.burnedSubtitles),
             twoStageMode: mediaResult.twoStageMode || 'copy',
+            reusedReviewPreview: Boolean(mediaResult.reusedReviewPreview),
             subtitleSegmentCount: srtResult.segmentCount,
             srtSegmentCount: srtResult.segmentCount,
             resourceMode: resourceProfile.mode,

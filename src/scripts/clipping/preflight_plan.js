@@ -2,6 +2,7 @@
 
 const { parseJsonResponse, resolveEvidenceBoundaries, linkClipEvidence } = require('./subtitle_evidence');
 const { normalizeCoverText } = require('./selection_result');
+const { requiresBoundaryReview, reviewPreflightBoundaries } = require('./preflight_boundaries');
 
 const SOURCE_KINDS = ['live_speech', 'recount', 'playback', 'audience', 'uncertain'];
 const nonempty = value => typeof value === 'string' && value.trim().length > 0;
@@ -143,6 +144,9 @@ function normalizePreflightResponse(text, input, evidence, config, options = {})
             throw new Error('Finishing changed the locked edit');
         }
         const issues = [];
+        const boundary = reviewPreflightBoundaries(locked ? locked.boundaryReview : raw.boundaryReview,
+            bounds, input, requiresBoundaryReview(config));
+        issues.push(...boundary.issues);
         if (locked?.status === 'needs_review') issues.push(...locked.issues, 'The locked plan still requires human review');
         if (raw.status === 'needs_review' || raw.sourceKind === 'uncertain'
             || !selectedHits.some(hit => hit.verdict === 'mention')) issues.push('Model requests human review or identity remains uncertain');
@@ -165,12 +169,14 @@ function normalizePreflightResponse(text, input, evidence, config, options = {})
         for (const row of input.audience) audience[Number(row.id.slice(1)) - 1] = row;
         const grounding = linkClipEvidence(finalizing && copy ? { ...raw, ...copy } : {
             evidenceCueIds: raw.evidenceCueIds, evidenceDanmakuIds: raw.evidenceDanmakuIds, sourceKind: raw.sourceKind
-        }, bounds, subtitle.evidence, audience, { cueIds: allowed, danmakuIds: new Set(input.audience.map(row => row.id)) });
+        }, bounds, subtitle.evidence, audience, { cueIds: allowed, danmakuIds: new Set(input.audience.map(row => row.id)),
+            referenceYear: Number(String(input.source?.recordedAt || '').match(/^(\d{4})-/u)?.[1]) });
         issues.push(...grounding.issues);
         return { ...bounds, id: raw.id, status: issues.length ? 'needs_review' : 'ready', event: raw.event,
             reason: raw.reason, score: raw.score, sourceKind: raw.sourceKind, extensionReason: raw.extensionReason || '',
             hitIds: raw.hitIds, hits: selectedHits, warnings: raw.warnings, issues, grounding,
             copy, subtitleEdits: subtitle.edits, rejectedSubtitleEdits: subtitle.rejected, subtitleSegments: subtitle.segments,
+            boundaryReview: boundary.review,
             sourceSha256: evidence.sourceSha256, raw };
     }).sort((a, b) => a.start - b.start);
     if (clips.some((clip, index) => index && clip.start < clips[index - 1].end)) throw new Error('Preflight clips overlap');

@@ -124,6 +124,8 @@ export class DelayedReplyDiagnostics {
       const successfulRoute = routeAttempts.find((attempt: any) => attempt?.status === 'success');
       const provider = meta.provider || successfulRoute?.provider || '未知服务';
       const model = meta.model || successfulRoute?.model || '未知模型';
+      const quality = meta.quality || successfulRoute?.quality || '未记录';
+      const elapsedMs = this.getFiniteNumber(meta.elapsedMs);
       const endpoint = meta.endpoint || '未知接口';
       const reason = meta.reason ? String(meta.reason) : '';
       const attempts = Array.isArray(meta.attempts) ? meta.attempts : [];
@@ -141,7 +143,7 @@ export class DelayedReplyDiagnostics {
             textInputTokens !== undefined ? `文字 ${textInputTokens}` : undefined,
             outputTokens !== undefined ? `输出 ${outputTokens}` : undefined
           ].filter(Boolean).join('，') + ' tokens'
-        : undefined;
+        : '未返回（不可按 0 计）';
       const combinedAttempts = routeAttempts.length > 0 ? routeAttempts : attempts;
       const formatRoute = (routeProvider: string, routeModel: string, routeEndpoint: string) =>
         `${routeProvider}/${routeModel}${routeEndpoint !== '未知接口' && routeEndpoint !== 'unknown' ? ` (${routeEndpoint})` : ''}`;
@@ -151,14 +153,18 @@ export class DelayedReplyDiagnostics {
         const attemptEndpoint = attempt?.endpoint || '未知接口';
         const attemptStatus = attempt?.status || 'unknown';
         const attemptReason = attempt?.reason ? `: ${String(attempt.reason).slice(0, 120)}` : '';
-        return `- ${formatRoute(attemptProvider, attemptModel, attemptEndpoint)} / ${attemptStatus}${attemptReason}`;
+        const attemptElapsed = this.getFiniteNumber(attempt?.elapsedMs);
+        return `- ${formatRoute(attemptProvider, attemptModel, attemptEndpoint)} / ${attempt?.quality || '质量未记录'} / ${attemptStatus}${attemptElapsed !== undefined ? ` / ${(attemptElapsed / 1000).toFixed(1)}s` : ''}${attemptReason}`;
       });
       const summary = `${formatRoute(provider, model, endpoint)}: ${status}`;
 
       return [
         modeInfo,
         `模型: ${summary}`,
+        `质量: ${quality}`,
+        meta.rolloutVariant ? `灰度抽中: ${meta.rolloutVariant}` : undefined,
         usageInfo ? `用量: ${usageInfo}` : undefined,
+        `生图耗时: ${elapsedMs !== undefined ? `${(elapsedMs / 1000).toFixed(1)}s（含重试）` : '未记录'}`,
         reason ? `原因: ${reason}` : undefined,
         lastAttempts.length > 1 || status !== '成功' ? `尝试:\n${lastAttempts.join('\n')}` : undefined
       ].filter(Boolean).join('\n');

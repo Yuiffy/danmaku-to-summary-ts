@@ -1,6 +1,34 @@
 const aiTextGenerator = require('./ai_text_generator');
 const liveContext = require('./live_generation_context');
 
+describe('clip cover copy guidance', () => {
+  test('budgets all visible characters and rewrites overlong copy without ellipses', () => {
+    const prompt = aiTextGenerator.buildCoverTextPromptLines().join('\n');
+    expect(prompt).toContain('第一行 4-9 个字符，第二行 5-11 个字符');
+    expect(prompt).toContain('最多 20 个字符');
+    expect(prompt).toContain('汉字、标点、数字、英文字母与引号均逐个计数');
+    expect(prompt).toContain('不要机械截断或用省略号掩盖超长');
+    expect(prompt).toContain('引号必须成对');
+    expect(prompt).toContain('不得把改写当成逐字引用');
+  });
+
+  test('keeps its own examples within the requested line budgets', () => {
+    const examples = aiTextGenerator.buildCoverTextPromptLines().filter((line: string) => line.startsWith('示例：'));
+    expect(examples.length).toBeGreaterThan(0);
+    for (const example of examples) {
+      const copy = example.match(/coverText “(.*)”$/u)?.[1];
+      expect(copy).toBeDefined();
+      const lengths = copy.split('\\n').map((line: string) => Array.from(line).length);
+      expect(lengths).toHaveLength(2);
+      expect(lengths[0]).toBeGreaterThanOrEqual(4);
+      expect(lengths[0]).toBeLessThanOrEqual(9);
+      expect(lengths[1]).toBeGreaterThanOrEqual(5);
+      expect(lengths[1]).toBeLessThanOrEqual(11);
+      expect(lengths[0] + lengths[1]).toBeLessThanOrEqual(20);
+    }
+  });
+});
+
 describe('ai_text_generator speaker guidance', () => {
   test.each([false, true])('adds an optional post response outside the shared cache prefix (custom=%s)', custom => {
     const loader = require('./config-loader');

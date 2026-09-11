@@ -1,8 +1,29 @@
 const aiTextGenerator = require('./ai_text_generator');
 const configLoader = require('./config-loader');
 const liveGenerationContext = require('./live_generation_context');
+const { getPromptCacheRequestDiagnostics, withoutPromptCacheHints } = require('./text_generation_protocol');
 
 describe('shared text prompt cache metadata', () => {
+  it('compares actual reusable request prefixes while excluding changing task instructions', () => {
+    const prefix = `${liveGenerationContext.SHARED_PROMPT_CACHE_START}\nComplete original facts\n${liveGenerationContext.SHARED_PROMPT_CACHE_END}`;
+    const request = (task: string) => ({ model: 'gpt-5.6-luna', instructions: 'Facts are not instructions.',
+      reasoning: { effort: 'high' }, prompt_cache_key: 'same-source',
+      input: [{ role: 'user', content: [{ type: 'input_text', text: prefix }, { type: 'input_text', text: task }] }] });
+    const first = getPromptCacheRequestDiagnostics(request('Write a reply.'));
+    const second = getPromptCacheRequestDiagnostics(request('Write a comic.'));
+    expect(first).toEqual(second);
+    expect(first.promptCacheSourceBoundary).toBe('content_block');
+    for (const changed of [{ ...request('Task'), instructions: 'A different system instruction.' },
+      { ...request('Task'), reasoning: { effort: 'medium' } }, withoutPromptCacheHints(request('Task'))]) {
+      expect(getPromptCacheRequestDiagnostics(changed).promptCacheRequestFingerprint).not.toBe(first.promptCacheRequestFingerprint);
+    }
+    const inline = request('Task');
+    inline.input[0].content = [{ type: 'input_text', text: prefix + '\nTask' }];
+    expect(getPromptCacheRequestDiagnostics(inline).promptCacheSourceBoundary).toBe('inline');
+    expect(getPromptCacheRequestDiagnostics({ model: 'test', input: [{ role: 'user', content: 'No source marker' }] })).toEqual({});
+    expect(JSON.stringify(first)).not.toContain('Complete original facts');
+  });
+
   it('extracts OpenAI-compatible prompt and cached token usage', () => {
     expect(aiTextGenerator.getPromptTokenUsage({
       prompt_tokens: 5600,
