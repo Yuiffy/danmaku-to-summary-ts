@@ -21,6 +21,10 @@ function parseGenerateTextOptions(rawArgs = []) {
             const value = Number(rawArgs[++index]);
             if (!Number.isFinite(value) || value <= 0) throw new Error(`Invalid ${arg}`);
             requestOptions[numericOptions[arg]] = Math.floor(value);
+        } else if (arg === '--shared-output-task') {
+            const task = rawArgs[++index];
+            if (task !== 'comic') throw new Error('CLI shared output task must be comic');
+            requestOptions.sharedOutputTask = task;
         } else if (arg === '--prompt-cache-rollout-percent') {
             promptCacheRolloutPercent = Number(rawArgs[++index]);
         } else if (arg.startsWith('--prompt-cache-rollout-percent=')) {

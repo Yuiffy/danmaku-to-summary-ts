@@ -7,7 +7,18 @@ import shutil
 import subprocess
 
 
-def run_node_text_generation(prompt, script_path, config, rollout_percent, validate, log=print):
+def shared_output_options(config, room_id):
+    room = (config or {}).get('ai', {}).get('roomSettings', {}).get(str(room_id), {})
+    experiment = room.get('fullLiveContextExperiment') or {}
+    recipe = experiment.get('replySummary') or {}
+    if (experiment.get('enabled') is True and experiment.get('sharedOutputCache') is True
+            and recipe.get('enabled') is True and not (recipe.get('sharedMaterial') or {}).get('enabled')
+            and 'comic' in (experiment.get('tasks') or [])):
+        return {'shared_output_task': 'comic'}
+    return {}
+
+
+def run_node_text_generation(prompt, script_path, config, rollout_percent, validate, log=print, shared_output_task=None):
     node = shutil.which("node")
     if not node or not os.path.exists(script_path):
         return None
@@ -25,6 +36,10 @@ def run_node_text_generation(prompt, script_path, config, rollout_percent, valid
             "--total-timeout-ms", str(total_timeout), "--min-output-chars", "40"]
     if rollout_percent is not None:
         args.extend(["--prompt-cache-rollout-percent", str(rollout_percent)])
+    if shared_output_task is not None:
+        if shared_output_task != 'comic':
+            raise ValueError('Shared output task must be comic')
+        args.extend(['--shared-output-task', shared_output_task])
     log(f"[AI] Node text owner: timeout={request_timeout}ms, total={total_timeout}ms")
     try:
         result = subprocess.run(

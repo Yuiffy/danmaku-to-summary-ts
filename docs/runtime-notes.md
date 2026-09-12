@@ -92,6 +92,18 @@ Model names and quality settings: [OpenAI image generation guide](https://develo
 
 ## Full-Input Reply And Overview
 
+`fullLiveContextExperiment.sharedOutputCache` is an optional, default-off experiment
+for paired replies and full-source comics. Both tasks use one strict JSON envelope;
+the client checks the task discriminator and unwraps the result before existing
+reply/source validation or comic parsing. Material-pool comics are excluded because
+they read a different prefix. Refusal, malformed output and usage accounting keep
+their normal failure behavior; the experiment does not add retries or warm-up calls.
+
+Matching schema is necessary when sharing a rendered prefix, but is not sufficient
+to guarantee an upstream cache hit. Keep the flag disabled until fresh full-stream
+tests show stable first-use reuse, not merely hits after repeated identical calls.
+Task-specific cache experiments and token comparisons belong under ignored `temp/`.
+
 Generation presets live in `config/generation-modes.json`. Select a room's preset
 with `ai.roomSettings.<room>.generationMode`; `ai.defaultGenerationMode` supplies
 the default for other configured rooms. Node services, Node scripts and Python

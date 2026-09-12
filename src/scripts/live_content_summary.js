@@ -14,15 +14,7 @@ const DEFAULT_MAX_ATTEMPTS = 2;
 const DEFAULT_PROMPT_CACHE_ROLLOUT_PERCENT = 100;
 const DEFAULT_FAILURE_RETRY_COOLDOWN_MS = 30 * 60 * 1000;
 const LOCK_STALE_MS = 30 * 60 * 1000;
-const ACTIVITY_TYPES = new Set([
-    'chat',
-    'singing',
-    'watch_movie',
-    'watch_anime',
-    'watch_bilibili',
-    'game',
-    'other'
-]);
+const ACTIVITY_TYPES = new Set(require('./text/live_output_schema').ACTIVITY_TYPES);
 
 function sha256Text(value) {
     return crypto.createHash('sha256').update(String(value || ''), 'utf8').digest('hex');

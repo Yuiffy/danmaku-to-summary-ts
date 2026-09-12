@@ -74,6 +74,15 @@ describe('combined reply/summary publication workflow', () => {
     expect(generate.mock.calls[0][1].responseFormat.schema.required).toContain('moments');
   });
 
+  test('opts only complete-source paired generation into the common output format',async()=>{
+    config.ai.roomSettings['1'].fullLiveContextExperiment.sharedOutputCache=true;
+    const generate=jest.fn().mockResolvedValueOnce(result(JSON.stringify(draft()),'draft'))
+      .mockResolvedValueOnce(result('{"verdict":"pass","issues":[]}','review'));
+    expect((await workflow.tryGenerateCombinedReply(highlight,'1',{config,generateText:generate})).handled).toBe(true);
+    expect(generate.mock.calls[0][1]).toMatchObject({sharedOutputTask:'reply-summary'});
+    expect(generate.mock.calls[1][1]).not.toHaveProperty('sharedOutputTask');
+  });
+
   test('still refuses malformed content from a nonconforming gateway and retains its charged attempt', async () => {
     const malformed = {...draft(),content:'Team practice and Chess.'};
     const generate = jest.fn().mockResolvedValue(result(JSON.stringify(malformed),'bad-content'));

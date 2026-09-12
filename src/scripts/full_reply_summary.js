@@ -6,10 +6,11 @@ const summary = require('./live_content_summary');
 const configLoader = require('./config-loader');
 const policy = require('./reply_summary_policy.json');
 const full = require('./full_live_context');
+const { buildCombinedResponseFormat, EVIDENCE_TARGETS, ACTOR_KINDS } = require('./text/live_output_schema');
 
 const PROMPT_VERSION = 5;
-const evidenceTargets = new Set(['reply', 'game', 'song']);
-const actorKinds = new Set(['host', 'team', 'audience', 'uncertain', 'performance']);
+const evidenceTargets = new Set(EVIDENCE_TARGETS);
+const actorKinds = new Set(ACTOR_KINDS);
 const normalize = value => String(value || '').normalize('NFKC').replace(/[\p{P}\p{S}\s]/gu, '').toLowerCase();
 const chars = value => Array.from(value).length;
 
@@ -34,28 +35,6 @@ function evidenceContext(segments, danmaku, roomId, config = configLoader.getCon
     if (replyDynamic) byId.set(replyDynamic.id, replyDynamic);
     return { segments, danmaku, hostLabels, multipleSpeakers: labels.size > 1,
         byId, duration: [...segments.map(s => s.end), ...danmaku.map(d => d.time)].reduce((max,value)=>Math.max(max,value),0) };
-}
-
-function buildCombinedResponseFormat(materialOptions = null) {
-    const object = properties => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
-    const array = (items, maxItems, minItems = 0) => ({ type: 'array', items, minItems, maxItems });
-    const string = { type: 'string' };
-    const sourceIds = array({ type: 'string', pattern: '^(?:[TD][0-9]+|P1)$' }, 6, 1);
-    const properties = {
-        reply: { type: 'string', description: 'Final natural reply within the configured character limit.' },
-        content: object({
-            overview: { type: 'string', description: 'A complete Chinese overview, at most 80 characters.' },
-            activityTypes: array({ type: 'string', enum: [...summary.ACTIVITY_TYPES] }, 7),
-            songs: array(string, 40), games: array(string, 12), topics: array(string, 10)
-        }),
-        evidence: array(object({ target: { type: 'string', enum: [...evidenceTargets] }, value: string,
-            sourceIds, actor: { type: 'string', enum: [...actorKinds] } }), 24, 2)
-    };
-    if (materialOptions) properties.moments = array(object({
-        sourceIds: array({ type: 'string', pattern: '^[TD][0-9]+$' }, 6, 1), interest: string
-    }), materialOptions.maxMoments, 4);
-    return { type: 'json_schema', name: materialOptions ? 'live_reply_summary_material' : 'live_reply_summary',
-        strict: true, schema: object(properties) };
 }
 
 function buildCombinedPrompt({ fullPrefix, highlight, roomId, context, source }) {

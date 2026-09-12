@@ -10,6 +10,7 @@ const combined = require('./full_reply_summary');
 const review = require('./reply_summary_review');
 const loader = require('./config-loader');
 const material = require('./live_material');
+const { VERSION: SHARED_OUTPUT_VERSION } = require('./text/shared_live_output');
 
 const MODE = 'compact_full_reply_summary_reviewed_v1';
 const sha = text => crypto.createHash('sha256').update(text).digest('hex');
@@ -112,11 +113,13 @@ async function tryGenerateCombinedReply(highlightPath, roomId, options = {}) {
     const wordLimit = room.wordLimit ?? config.ai?.defaultWordLimit ?? 100;
     const model = experiment.model || 'gpt-5.6-luna';
     const materialOptions = material.getMaterialOptions(experiment);
+    const sharedOutputCache = experiment.sharedOutputCache === true && !materialOptions;
     const fingerprint = sha(JSON.stringify({ mode: MODE, source: payload.sharedPrefixSha256, model, wordLimit,
         context: live.formatLiveGenerationContext(context), replyDynamic: live.getReplyDynamicEvidence(context),
         room: { anchorName: room.anchorName, fanName: room.fanName,
             customPrompts: room.customPrompts }, promptVersion: combined.PROMPT_VERSION, reviewVersion: review.REVIEW_VERSION,
-        ...(materialOptions ? { materialOptions, materialVersion: material.MATERIAL_VERSION } : {}) }));
+        ...(materialOptions ? { materialOptions, materialVersion: material.MATERIAL_VERSION } : {}),
+        ...(sharedOutputCache ? { sharedOutputCacheVersion: SHARED_OUTPUT_VERSION } : {}) }));
     const release = acquireLocks([files.artifact, files.reply, files.summary]);
     try {
         previous = readState(files.artifact);
@@ -161,7 +164,7 @@ async function tryGenerateCombinedReply(highlightPath, roomId, options = {}) {
             const reusableDraft = previous?.draft && previous.sourceSha256 === payload.sourceSha256
                 && previous.phases?.some(p=>p.name==='reply-summary' && ['success','reused'].includes(p.status) && p.promptSha256===sha(prompt));
             const draft = reusableDraft ? {text:previous.draft} : await phase('reply-summary',prompt,
-                {responseFormat:combined.buildCombinedResponseFormat(materialOptions)});
+                sharedOutputCache ? {sharedOutputTask:'reply-summary'} : {responseFormat:combined.buildCombinedResponseFormat(materialOptions)});
             if (reusableDraft) state.phases.push({name:'reply-summary',status:'reused',elapsedMs:0,promptSha256:sha(prompt)});
             state.draft = draft.text;
             const output = combined.validateCombinedResult(draft.text,source,roomId,wordLimit);

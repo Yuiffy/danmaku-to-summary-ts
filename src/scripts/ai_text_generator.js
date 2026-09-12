@@ -1,5 +1,6 @@
 const workflowRuntime = require('./workflow-runtime');
 const { requestRetryPolicy, postWithRetry } = require('./text/request_transport');
+const { prepareSharedLiveOutput, unwrapSharedLiveOutput } = require('./text/shared_live_output');
 if (require.main === module && process.argv[2] === '--check-runtime') {
     console.log(JSON.stringify(workflowRuntime.checkRuntime()));
     process.exit(0);
@@ -683,6 +684,7 @@ function pickGoodnightTuZiPrimaryModel() {
 
 // 调用tuZi API生成文本(备用方案)
 async function generateTextWithTuZi(prompt, options = {}) {
+    ({prompt,options}=prepareSharedLiveOutput(prompt,options));
     if (options.strictEvaluation) options = { ...options, exactModel: true, fallbackModelsEnabled: false,
         allowProviderFallback: false, strictResponses: true, transientMaxAttempts: 1 };
     if (options.reasoningEffort !== undefined) normalizeOpenAIReasoningEffort(options.reasoningEffort);
@@ -758,12 +760,15 @@ async function generateTextWithTuZi(prompt, options = {}) {
                     max_output_tokens: effectiveMaxTokens,
                     stream: false,
                     store: false,
+                    ...(options.responseFormat ? { text: { format: options.responseFormat } } : {}),
                     ...(options.reasoningEffort ? { reasoning: { effort: normalizeOpenAIReasoningEffort(options.reasoningEffort) } } : {})
                 }
                 : {
                     model: textModel,
                     messages: buildOpenAITextMessages(prompt, null, options.images),
                     temperature: tuziConfig.temperature,
+                    ...(options.responseFormat ? { response_format: { type: options.responseFormat.type,
+                        json_schema: Object.fromEntries(Object.entries(options.responseFormat).filter(([key]) => key !== 'type')) } } : {}),
                     ...(options.reasoningEffort !== undefined ? { reasoning_effort: normalizeOpenAIReasoningEffort(options.reasoningEffort) } : {}),
                     max_tokens: effectiveMaxTokens
                 };
@@ -806,7 +811,7 @@ async function generateTextWithTuZi(prompt, options = {}) {
             const usage = data.usage || null;
             const promptUsage = getPromptTokenUsage(usage);
             const completionUsage = getCompletionTokenUsage(usage);
-            const text = apiMode === 'responses'
+            let text = apiMode === 'responses'
                 ? extractOpenAITextResponse(data)
                 : choice?.message?.content;
             console.log(
@@ -825,6 +830,8 @@ async function generateTextWithTuZi(prompt, options = {}) {
                 throw new Error(`tuZi API输出未完成或达到长度上限 (finish_reason=${finishReason}, max_tokens=${effectiveMaxTokens})`);
             }
 
+            text = unwrapSharedLiveOutput(text, options.sharedOutputTask);
+            if (options.minOutputChars && text.trim().length < options.minOutputChars) throw new Error(`Text result is shorter than ${options.minOutputChars} characters`);
             if (isUnsafeGeneratedReply(text)) {
                 throw new Error('tuZi API返回疑似拒绝/身份自述内容,跳过该模型');
             }
@@ -890,6 +897,7 @@ async function generateTextWithTuZi(prompt, options = {}) {
 
 // 调用daiYu API生成文本（OpenAI兼容，支持thinking）
 async function generateTextWithDaiYu(prompt, options = {}) {
+    ({prompt,options}=prepareSharedLiveOutput(prompt,options));
     if (options.strictEvaluation) options = { ...options, exactModel: true, fallbackModelsEnabled: false,
         allowProviderFallback: false, strictResponses: true, transientMaxAttempts: 1 };
     if (options.reasoningEffort !== undefined) normalizeOpenAIReasoningEffort(options.reasoningEffort);
@@ -1088,7 +1096,7 @@ async function generateTextWithDaiYu(prompt, options = {}) {
             const usage = data.usage || null;
             const promptUsage = getPromptTokenUsage(usage);
             const completionUsage = getCompletionTokenUsage(usage);
-            const text = extractOpenAITextResponse(data);
+            let text = extractOpenAITextResponse(data);
             console.log(
                 `   api_mode: ${apiModeUsed}, finish_reason: ${finishReason || 'unknown'}, ` +
                 `usage: ${usage ? JSON.stringify(usage) : 'unknown'}`
@@ -1105,6 +1113,8 @@ async function generateTextWithDaiYu(prompt, options = {}) {
                 throw new Error(`daiYu API输出未完成或达到长度上限 (finish_reason=${finishReason}, max_tokens=${effectiveMaxTokens})`);
             }
 
+            text = unwrapSharedLiveOutput(text, options.sharedOutputTask);
+            if (options.minOutputChars && text.trim().length < options.minOutputChars) throw new Error(`Text result is shorter than ${options.minOutputChars} characters`);
             if (isUnsafeGeneratedReply(text)) {
                 throw new Error('daiYu API返回疑似拒绝/身份自述内容,跳过该模型');
             }
@@ -1947,6 +1957,7 @@ if (require.main === module) {
                 const provider = config.ai?.text?.provider || 'gemini';
                 const textOptions = {
                     wordLimit: 600,
+                    sharedOutputTask: generateOptions.sharedOutputTask,
                     promptCacheRolloutPercent: generateOptions.promptCacheRolloutPercent,
                     timeoutMs: generateOptions.timeoutMs,
                     minOutputChars: generateOptions.minOutputChars,

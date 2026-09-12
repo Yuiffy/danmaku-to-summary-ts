@@ -6,7 +6,7 @@ AI漫画生成模块
 """
 
 from comic import image_routes as comic_image_routes
-from comic.text_client import run_node_text_generation
+from comic.text_client import run_node_text_generation, shared_output_options
 from comic.text_response import has_incomplete_text_generation
 from comic.live_material import select_comic_material
 from comic.image_routes import (
@@ -2481,7 +2481,7 @@ def generate_comic_content_with_ai(
         content_prompt, os.path.join(os.path.dirname(__file__), "ai_text_generator.js"),
         config, prompt_cache_rollout_percent,
         validate=lambda text: bool(text) and not is_gemini_error(text) and is_valid_comic_script(text),
-        log=print,
+        log=print, **shared_output_options(config, room_id),
     )
     if node_result is not None:
         generation_meta = node_result.get("metadata") or node_result

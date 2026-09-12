@@ -569,6 +569,8 @@ export interface FullLiveContextExperimentConfig {
   summaryDeliveryMode: 'separate' | 'attach_if_ready';
   /** Preserve the complete source using grouped speech and compact timestamps. */
   compactEvidence?: boolean;
+  /** Share a strict reply/comic envelope when both use the same complete source. */
+  sharedOutputCache?: boolean;
   /** Per-request explicit prompt-cache rollout for this room experiment. */
   promptCacheRolloutPercent?: number;
   /** Maximum time to delay cache-dependent work while the summary seeds the prefix. */

@@ -75,6 +75,22 @@ describe('daiYu model routing', () => {
     expect(request.model).toBe('gpt-5.6-luna');
   });
 
+  test.each(['daiYu','tuZi'])('%s returns unwrapped scripts with original usage and rejects a wrong task',async provider=>{
+    const generate=provider==='daiYu'?generateTextWithDaiYu:generateTextWithTuZi;
+    const script='Panel one: factual scene.\nPanel two: original reaction.\n{"kind":"reference","timestampsSeconds":[20]}';
+    const response=(task:string)=>({ok:true,status:200,json:async()=>({status:'completed',id:'response-envelope',
+      output_text:JSON.stringify({result:{task,payload:script}}),usage:{input_tokens:300,output_tokens:100,total_tokens:400}})});
+    fetchMock.mockResolvedValueOnce(response('comic'));
+    const options={strictEvaluation:true,primaryModel:'gpt-5.6-luna',apiMode:'responses',maxTokens:1000,sharedOutputTask:'comic',minOutputChars:40};
+    const result=await generate('Source facts',options);
+    expect(result.text).toBe(script);
+    expect(result.meta.attempts[0]).toMatchObject({promptTokens:300,completionTokens:100});
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).text.format.name).toBe('live_reply_comic_shared_v1');
+    fetchMock.mockResolvedValueOnce(response('reply-summary'));
+    await expect(generate('Source facts',options)).rejects.toThrow('requested task');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   test('forwards strict nested output schemas through the actual daiYu request path', async () => {
     const responseFormat={type:'json_schema',name:'content',strict:true,schema:{type:'object',
       required:['content'],additionalProperties:false,properties:{content:{type:'object',properties:{},required:[],additionalProperties:false}}}};
