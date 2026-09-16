@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "autoRestart": true,
+  "executablePath": "C:\\Tools\\BililiveRecorder\\BililiveRecorder.WPF.exe",
+  "arguments": [],
+  "workingDirectory": "C:\\Tools\\BililiveRecorder",
+  "powershellPath": "pwsh.exe",
+  "pollIntervalMs": 5000,
+  "missingGraceMs": 15000,
+  "startupGraceMs": 60000,
+  "stableMs": 15000,
+  "restartCooldownMs": 60000,
+  "maxRestarts": 3,
+  "restartWindowMs": 900000,
+  "notificationRetryMs": 60000
+}

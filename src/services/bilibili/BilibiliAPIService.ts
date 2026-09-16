@@ -4,16 +4,18 @@
 import fetch from 'node-fetch';
 import * as fs from 'fs';
 import * as path from 'path';
-import { spawn } from 'child_process';
 import { getLogger } from '../../core/logging/LogManager';
 import { ConfigProvider } from '../../core/config/ConfigProvider';
 import { AppError } from '../../core/errors/AppError';
+import { WeChatWorkNotifier } from '../notification/WeChatWorkNotifier';
 import { IBilibiliAPIService } from './interfaces/IBilibiliAPIService';
+import { spawnPython } from '../../utils/pythonProcess';
 import {
   BilibiliDynamic,
   PublishCommentRequest,
   PublishCommentResponse,
-  BilibiliAPIResponse
+  BilibiliAPIResponse,
+  RoomLiveStatus
 } from './interfaces/types';
 import { parseDynamicItems } from './DynamicParser';
 
@@ -24,11 +26,15 @@ export class BilibiliAPIService implements IBilibiliAPIService {
   private logger = getLogger('BilibiliAPIService');
   private cookie!: string;
   private csrf!: string;
+  private acTimeValue = '';
   private baseUrl = 'https://api.bilibili.com';
   private webUrl = 'https://www.bilibili.com';
   private secretConfigMtimeMs = 0;
+  private notifier?: WeChatWorkNotifier;
+  private lastCredentialAlertAt = 0;
 
-  constructor() {
+  constructor(notifier?: WeChatWorkNotifier) {
+    this.notifier = notifier;
     this.loadConfig();
   }
 
@@ -46,6 +52,7 @@ export class BilibiliAPIService implements IBilibiliAPIService {
 
       this.cookie = bilibiliSecret.cookie;
       this.csrf = this.extractCookieValue(this.cookie, 'bili_jct') || bilibiliSecret.csrf || '';
+      this.acTimeValue = bilibiliSecret.ac_time_value || bilibiliSecret.acTimeValue || this.extractCookieValue(this.cookie, 'ac_time_value') || '';
 
       if (!this.csrf) {
         throw new AppError('无法从Cookie中提取CSRF Token (bili_jct)', 'CONFIGURATION_ERROR', 400);
@@ -83,22 +90,29 @@ export class BilibiliAPIService implements IBilibiliAPIService {
 
       // 使用 spawn 替代 exec，避免弹出黑窗口
       const result = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-        const pythonProcess = spawn('python', args, {
+        const pythonProcess = spawnPython(args, {
           windowsHide: true
         });
 
         let stdout = '';
         let stderr = '';
 
+        // 30秒超时：B站 API 偶尔卡住，不能无限等
+        const timeout = setTimeout(() => {
+          pythonProcess.kill();
+          reject(this.buildPythonFailureError('', -1, '获取直播间信息超时(30s)'));
+        }, 30000);
+
         pythonProcess.stdout.on('data', (data) => {
-          stdout += data.toString();
+          stdout += data.toString('utf-8');
         });
 
         pythonProcess.stderr.on('data', (data) => {
-          stderr += data.toString();
+          stderr += data.toString('utf-8');
         });
 
         pythonProcess.on('close', (code) => {
+          clearTimeout(timeout);
           // 无论成功还是失败,都先输出日志
           if (stderr) {
             const logLines = stderr.trim().split('\n');
@@ -120,13 +134,18 @@ export class BilibiliAPIService implements IBilibiliAPIService {
             return;
           }
 
+          // exit code != 0：记录 stdout 和 stderr 用于排查
           if (stdout.trim()) {
-            this.logger.error(`Python stdout: ${stdout.trim()}`);
+            this.logger.error(`Python stdout: ${stdout.trim().slice(0, 500)}`);
           }
-          reject(this.buildPythonFailureError(stdout, code, '获取直播间信息失败'));
+          if (stderr.trim()) {
+            this.logger.error(`Python stderr: ${stderr.trim().slice(0, 500)}`);
+          }
+          reject(this.buildPythonFailureError(stdout, code, '获取直播间信息失败', stderr));
         });
 
         pythonProcess.on('error', (err) => {
+          clearTimeout(timeout);
           reject(err);
         });
       });
@@ -160,6 +179,77 @@ export class BilibiliAPIService implements IBilibiliAPIService {
   /**
    * 获取主播动态列表
    */
+  async getRoomLiveStatus(roomId: string): Promise<RoomLiveStatus> {
+    try {
+      await this.refreshConfigIfChanged();
+
+      const url = 'https://api.live.bilibili.com/xlive/web-room/v1/index/getInfoByRoom';
+      const params = new URLSearchParams({ room_id: roomId });
+      const response = await fetch(`${url}?${params}`, {
+        method: 'GET',
+        headers: {
+          'Cookie': this.cookie,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Referer': `${this.webUrl}/`
+        }
+      });
+
+      if (!response.ok) {
+        throw new AppError(`Failed to get room live status: HTTP ${response.status}`, 'API_ERROR', response.status);
+      }
+
+      const data: BilibiliAPIResponse = await response.json();
+      if (data.code !== 0) {
+        throw new AppError(`Failed to get room live status: ${data.message}`, 'API_ERROR', data.code);
+      }
+
+      const roomInfo = data.data?.room_info || {};
+      const liveStatus = Number(roomInfo.live_status ?? 0);
+
+      return {
+        roomId: String(roomInfo.room_id || roomInfo.short_id || roomId),
+        uid: roomInfo.uid !== undefined ? String(roomInfo.uid) : undefined,
+        liveStatus,
+        isLive: liveStatus === 1,
+        title: roomInfo.title,
+        liveStartTime: this.parseBilibiliLiveStartTime(roomInfo.live_start_time),
+        rawData: data.data
+      };
+    } catch (error) {
+      if (error instanceof AppError) {
+        throw error;
+      }
+      throw new AppError(
+        `Failed to get room live status: ${error instanceof Error ? error.message : error}`,
+        'API_ERROR',
+        500
+      );
+    }
+  }
+
+  private parseBilibiliLiveStartTime(value: unknown): Date | undefined {
+    if (value === undefined || value === null || value === '' || value === 0 || value === '0') {
+      return undefined;
+    }
+
+    if (typeof value === 'number') {
+      const millis = value > 1000000000000 ? value : value * 1000;
+      const parsed = new Date(millis);
+      return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+    }
+
+    const text = String(value).trim();
+    const numeric = Number(text);
+    if (!Number.isNaN(numeric)) {
+      const millis = numeric > 1000000000000 ? numeric : numeric * 1000;
+      const parsed = new Date(millis);
+      return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+    }
+
+    const parsed = new Date(text.replace(' ', 'T'));
+    return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+  }
+
   async getDynamics(uid: string, offset?: string): Promise<BilibiliDynamic[]> {
     try {
       await this.refreshConfigIfChanged();
@@ -269,13 +359,17 @@ export class BilibiliAPIService implements IBilibiliAPIService {
    */
   async publishComment(request: PublishCommentRequest): Promise<PublishCommentResponse> {
     try {
+      if (request.replyToId !== undefined && (typeof request.replyToId !== 'string' || !/^[1-9]\d*$/u.test(request.replyToId))) {
+        throw new AppError('Invalid parent comment ID', 'VALIDATION_ERROR', 400);
+      }
       await this.refreshConfigIfChanged();
       // 确保 dynamicId 以字符串形式记录日志，避免大数精度丢失
       this.logger.info(`发布评论: ${request.dynamicId}`, {
         dynamicId: String(request.dynamicId),
         contentLength: request.content.length,
         hasImages: !!(request.images && request.images.length > 0),
-        images: request.images
+        images: request.images,
+        replyToId: request.replyToId
       });
 
       // 解析 Cookie 获取必要的参数
@@ -304,13 +398,17 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       // 如果有图片，添加图片路径参数
       if (request.images && request.images.length > 0) {
         args.push(request.images[0]);
+      } else {
+        args.push('');
       }
+      args.push(this.buildCredentialPayload());
+      if (request.replyToId !== undefined) args.push(request.replyToId);
 
       this.logger.info('调用Python脚本发布评论', { scriptPath, argsCount: args.length });
 
       // 使用 Promise 包装 spawn
       const result = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-        const pythonProcess = spawn('python', args, {
+        const pythonProcess = spawnPython(args, {
           windowsHide: true
         });
 
@@ -318,11 +416,11 @@ export class BilibiliAPIService implements IBilibiliAPIService {
         let stderr = '';
 
         pythonProcess.stdout.on('data', (data) => {
-          stdout += data.toString();
+          stdout += data.toString('utf-8');
         });
 
         pythonProcess.stderr.on('data', (data) => {
-          stderr += data.toString();
+          stderr += data.toString('utf-8');
         });
 
         pythonProcess.on('close', (code) => {
@@ -359,7 +457,11 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       });
 
       // 解析 Python 脚本的输出（stdout只包含JSON）
-      const jsonResult = JSON.parse(result.stdout);
+      const jsonResult = this.parsePythonJsonResult(result.stdout) || JSON.parse(result.stdout);
+
+      if (jsonResult.refreshed_credential) {
+        await this.persistRefreshedCredential(jsonResult.refreshed_credential);
+      }
 
       if (!jsonResult.success) {
         this.logger.error('Python脚本返回错误', { result: jsonResult });
@@ -369,6 +471,17 @@ export class BilibiliAPIService implements IBilibiliAPIService {
           ? 'AUTHENTICATION_ERROR'
           : 'API_ERROR';
         const status = code === 'AUTHENTICATION_ERROR' ? 401 : 500;
+        if (
+          (code === 'AUTHENTICATION_ERROR' || jsonResult.credential_invalid || jsonResult.credential_refresh_failed) &&
+          !this.isTransientNetworkError(detailedError)
+        ) {
+          await this.notifyCredentialIssue(detailedError, {
+            dynamicId: String(request.dynamicId),
+            credentialInvalid: !!jsonResult.credential_invalid,
+            credentialRefreshFailed: !!jsonResult.credential_refresh_failed,
+            credentialRefreshed: !!jsonResult.credential_refreshed
+          });
+        }
         throw new AppError(`发布评论失败: ${detailedError}`, code, status);
       }
 
@@ -381,6 +494,9 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       };
     } catch (error) {
       if (error instanceof AppError) {
+        if (error.code === 'AUTHENTICATION_ERROR' && !this.isTransientNetworkError(error.message)) {
+          await this.notifyCredentialIssue(error.message, { dynamicId: String(request.dynamicId) });
+        }
         throw error;
       }
       this.logger.error('发布评论异常', undefined, error instanceof Error ? error : new Error(String(error)));
@@ -592,6 +708,94 @@ export class BilibiliAPIService implements IBilibiliAPIService {
     }
   }
 
+  private buildCredentialPayload(): string {
+    return Buffer.from(JSON.stringify({
+      buvid3: this.extractCookieValue(this.cookie, 'buvid3'),
+      buvid4: this.extractCookieValue(this.cookie, 'buvid4'),
+      ac_time_value: this.acTimeValue
+    }), 'utf-8').toString('base64');
+  }
+
+  private async persistRefreshedCredential(refreshed: any): Promise<void> {
+    const secretPath = path.join(process.cwd(), 'config', 'secret.json');
+    try {
+      if (!refreshed || !refreshed.sessdata || !refreshed.bili_jct || !refreshed.dedeuserid) {
+        this.logger.warn('Bilibili cookie refresh result is missing required fields; skip secret writeback');
+        return;
+      }
+
+      const secretConfig = JSON.parse(fs.readFileSync(secretPath, 'utf-8').replace(/^\uFEFF/u, ''));
+      secretConfig.bilibili = secretConfig.bilibili || {};
+
+      let nextCookie = String(secretConfig.bilibili.cookie || this.cookie);
+      nextCookie = this.upsertCookieValue(nextCookie, 'SESSDATA', refreshed.sessdata);
+      nextCookie = this.upsertCookieValue(nextCookie, 'bili_jct', refreshed.bili_jct);
+      nextCookie = this.upsertCookieValue(nextCookie, 'DedeUserID', refreshed.dedeuserid);
+      if (refreshed.buvid3) nextCookie = this.upsertCookieValue(nextCookie, 'buvid3', refreshed.buvid3);
+      if (refreshed.buvid4) nextCookie = this.upsertCookieValue(nextCookie, 'buvid4', refreshed.buvid4);
+
+      secretConfig.bilibili.cookie = nextCookie;
+      secretConfig.bilibili.csrf = refreshed.bili_jct;
+      if (refreshed.ac_time_value) {
+        secretConfig.bilibili.ac_time_value = refreshed.ac_time_value;
+      }
+
+      fs.writeFileSync(secretPath, `${JSON.stringify(secretConfig, null, 2)}\n`, 'utf-8');
+      this.secretConfigMtimeMs = fs.statSync(secretPath).mtimeMs;
+      await ConfigProvider.reload();
+      this.loadConfig();
+      this.logger.info('Bilibili cookie refreshed and written back to config/secret.json');
+    } catch (error) {
+      this.logger.error('Failed to write refreshed Bilibili cookie', undefined, error instanceof Error ? error : new Error(String(error)));
+      await this.notifyCredentialIssue(`Cookie refreshed but secret writeback failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private upsertCookieValue(cookie: string, name: string, value: string): string {
+    const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`(^|;\\s*)${escapedName}=[^;]*`);
+    if (pattern.test(cookie)) {
+      return cookie.replace(pattern, `$1${name}=${value}`);
+    }
+    return cookie ? `${cookie.replace(/;\s*$/, '')}; ${name}=${value}` : `${name}=${value}`;
+  }
+
+  private async notifyCredentialIssue(message: string, details?: Record<string, any>): Promise<void> {
+    const now = Date.now();
+    if (now - this.lastCredentialAlertAt < 30 * 60 * 1000) return;
+    this.lastCredentialAlertAt = now;
+
+    const notifier = this.getNotifier();
+    if (!notifier) return;
+
+    const lines = [
+      'Bilibili comment cookie needs attention',
+      '',
+      `Error: ${message}`,
+      `Time: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
+    ];
+
+    if (details) {
+      lines.push('', 'Context:');
+      for (const [key, value] of Object.entries(details)) {
+        lines.push(`${key}: ${String(value)}`);
+      }
+    }
+
+    lines.push('', 'Update config/secret.json bilibili.cookie and bilibili.ac_time_value from browser localStorage if refresh cannot recover it.');
+    await notifier.sendMarkdown(lines.join('\n'));
+  }
+
+  private getNotifier(): WeChatWorkNotifier | undefined {
+    if (this.notifier) return this.notifier;
+    try {
+      const webhookUrl = ConfigProvider.getConfig().wechatWork?.webhookUrl;
+      if (webhookUrl) this.notifier = new WeChatWorkNotifier(webhookUrl);
+    } catch {
+      return undefined;
+    }
+    return this.notifier;
+  }
   private parsePythonJsonResult(stdout: string): any | null {
     const lines = stdout
       .split(/\r?\n/)
@@ -614,7 +818,12 @@ export class BilibiliAPIService implements IBilibiliAPIService {
     return null;
   }
 
-  private buildPythonFailureError(stdout: string, exitCode: number | null, fallbackPrefix: string): Error {
+  private buildPythonFailureError(
+    stdout: string,
+    exitCode: number | null,
+    fallbackPrefix: string,
+    stderr?: string,
+  ): Error {
     const jsonResult = this.parsePythonJsonResult(stdout);
     if (jsonResult) {
       const detailedError = this.normalizePythonResultError(jsonResult);
@@ -625,7 +834,9 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       return new AppError(`${fallbackPrefix}: ${detailedError}`, code, status);
     }
 
-    return new Error(`Python脚本退出码: ${exitCode}`);
+    // stdout 解析不出 JSON：带上 stderr 帮助排查
+    const stderrInfo = stderr ? ` stderr=${stderr.trim().slice(0, 200)}` : '';
+    return new Error(`Python脚本退出码: ${exitCode}${stderrInfo}`);
   }
 
   private normalizePythonResultError(result: any): string {
@@ -638,6 +849,10 @@ export class BilibiliAPIService implements IBilibiliAPIService {
 
   private isCredentialErrorMessage(message?: string, code?: number): boolean {
     const normalized = String(message || '').toLowerCase();
+    if (this.isTransientNetworkError(normalized)) {
+      return false;
+    }
+
     return (
       code === -101 ||
       code === 401 ||
@@ -649,6 +864,22 @@ export class BilibiliAPIService implements IBilibiliAPIService {
       normalized.includes('账号未登录') ||
       normalized.includes('未登录') ||
       normalized.includes('登录失效')
+    );
+  }
+
+  private isTransientNetworkError(message?: string): boolean {
+    const normalized = String(message || '').toLowerCase();
+    return (
+      normalized.includes('cannot connect') ||
+      normalized.includes('connect to host') ||
+      normalized.includes('timeout') ||
+      normalized.includes('timed out') ||
+      normalized.includes('etimedout') ||
+      normalized.includes('econnreset') ||
+      normalized.includes('enotfound') ||
+      normalized.includes('network') ||
+      normalized.includes('信号灯超时时间已到') ||
+      normalized.includes('淇″彿鐏秴鏃舵椂闂村凡鍒?')
     );
   }
 

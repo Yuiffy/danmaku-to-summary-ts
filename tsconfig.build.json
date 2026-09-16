@@ -33,15 +33,18 @@
       "@tests/*": ["tests/*"]
     },
     "noEmit": false,
-    "noEmitOnError": false,
+    "noEmitOnError": true,
     "resolveJsonModule": true,
-    "allowJs": true,
+    "allowJs": false,
     "checkJs": false,
     "jsx": "preserve"
   },
   "include": [
-    "src/**/*.ts",
-    "src/**/*.tsx"
+    "src/app/main.ts",
+    "src/core/**/*.ts",
+    "src/services/**/*.ts",
+    "src/utils/**/*.ts",
+    "src/tools/**/*.ts"
   ],
   "exclude": [
     "node_modules",

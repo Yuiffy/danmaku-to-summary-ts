@@ -1,547 +1,259 @@
-# 直播摘要自动生成系统
+# 直播摘要与自动切片系统
 
-**弹幕转总结 TypeScript 重构版**
+将直播录播、字幕和弹幕转成 AI 直播梗概、下播回复、漫画与可审核的切片，并通过队列管理 B 站回复和切片投稿。
 
-> 自动化处理录播视频，生成 AI 总结、图片漫画，并回复到 B 站动态。
+主要面向 Windows 本地录播工作站，接入 Mikufans / DDTV 的 Webhook。TypeScript 负责服务、生命周期和调度，JavaScript 编排媒体流程，Python 负责 ASR、说话人识别和媒体工具。
 
----
+## 能做什么
 
-## 🚀 系统概述
+- **录播后处理**：管理分段、断流重连和直播结束事件，合并视频，按房间策略保留视频或音频。
+- **语音识别**：默认 Paraformer，可选 Whisper、SenseVoice、Fun-ASR-Nano；支持本地微调模型、自适应说话人识别和字幕预校对。
+- **直播梗概与下播回复**：融合字幕、弹幕和房间设定，生成文字；按配置使用完整直播上下文并复用缓存。
+- **漫画与视频生成**：结合直播截图、人物参考图和故事脚本生成漫画，支持独立的视频生成队列。
+- **自动切片**：整场分块召回、全局排序和详细编辑，结合字幕、弹幕及情绪线索选材；也支持关键词话题切片、手工时间段和跨录播话题合集。
+- **切片制作与审核**：生成大字幕成片、封面、标题、简介及审核清单；用全局数字 ID 查看证据、改词、重压和登记审核。
+- **B 站发布**：延迟回复、补图和独立梗概回复；切片通过持久化单实例队列上传，支持重试、频控、去重和合集归档。
+- **资源与运行监控**：ASR/GPU 队列、游戏期间资源降档、企微通知、录播看门狗和用量统计。
 
-本系统是一套围绕直播录播后处理的全自动化管线，通过 Mikufans 录播姬的 Webhook 接收录播完成事件，自动完成从「视频合并」到「B 站动态回复」的全流程处理。
+自动发现或制作切片不会自动获得投稿授权。候选的来源、人物归属、字幕和媒体检查通过后，按编号确认并入队投稿。
 
-### 主要功能
+## 主流程
 
-- **Webhook 服务**：接收 DDTV / Mikufans 录播姬的事件并自动触发处理
-- **视频合并**：多分段自动合并为完整视频
-- **音频提取**：将视频转换为音频（ASMR / 仅需音频的房间）
-- **多 ASR 后端语音识别**：默认 `faster-whisper` + GPU 加速生成 SRT 字幕，可选 SenseVoice/FunASR
-- **字幕与弹幕融合**：按弹幕热力密度提取高光时刻，生成 `_AI_HIGHLIGHT.txt`
-- **AI 晚安总结**：调用 Gemini/TuZi API 生成晚安回复 Markdown
-- **AI 图片生成**：调用 TuZi 图片 API 生成卡通漫画图
-- **B 站动态回复**：将晚安回复 + 图片发布到 B 站评论区
-
----
-
-## ASR 后端
-
-默认仍使用 Whisper；可通过配置或命令行切换 SenseVoice/FunASR：
-
-```bash
-node src/scripts/enhanced_auto_summary.js --asr-backend whisper "D:/path/to/video.flv"
-node src/scripts/enhanced_auto_summary.js --asr-backend sensevoice "D:/path/to/video.flv"
-node src/scripts/enhanced_auto_summary.js --asr-compare whisper,sensevoice "D:/path/to/video.flv"
+```text
+Mikufans / DDTV 录播事件
+  → Webhook 服务：会话、分段、断流重连与持久化任务
+  → 中央处理队列：资源准入、视频合并、音频准备
+  → ASR：字幕、说话人及情绪 sidecar
+  → 字幕 / 弹幕融合
+      ├─ 直播梗概、下播回复、漫画 → 延迟回复服务 → B 站动态评论
+      └─ 整场 / 关键词选材 → 候选与成片 → 审核清单
+                                             → 按编号确认 → 投稿队列
 ```
 
-按房间/主播灰度、SenseVoice 安装和常见问题见 [docs/asr-backends.md](docs/asr-backends.md)。
+Mikufans 通常由 `StreamEnded` 收口；缺少该事件时，`Streaming:false` 的最终 `FileClosed` 可在分段等待超时后兜底。普通中间分段不会立即触发整场处理。
 
-## 📁 项目结构
+## 安装与配置
 
-```
-danmaku-to-summary-ts/
-├── src/scripts/                # 核心脚本（主要处理逻辑）
-│   ├── webhook_server.js       # Webhook 服务入口（监听 DDTV / mikufans）
-│   ├── enhanced_auto_summary.js# 主处理流程（音频→Whisper→融合→AI生成）
-│   ├── do_fusion_summary.js    # 字幕 + 弹幕融合，生成 AI_HIGHLIGHT.txt
-│   ├── audio_processor.js      # 音频处理（视频转音频）
-│   ├── ai_text_generator.js    # AI 文本生成（晚安回复）
-│   ├── ai_comic_generator.js   # AI 图片生成（漫画）
-│   ├── whisper_queue_manager.js# Whisper 任务队列管理
-│   ├── config-loader.js        # 配置加载器
-│   ├── config.json             # 主配置文件（房间设置、超时、录播姬）
-│   ├── config.secrets.json     # 🔑 密钥配置文件（API Key、B站Cookie）
-│   ├── config.secrets.example.json # 密钥配置示例
-│   └── python/
-│       └── batch_whisper.py    # Whisper 语音识别脚本（需 GPU）
-├── ecosystem.config.js         # PM2 生态系统配置
-├── package.json
-└── logs/                       # 运行日志
-```
+### 环境
 
----
+| 依赖 | 用途 |
+| --- | --- |
+| Node.js 20+、npm | TypeScript 服务和媒体编排 |
+| Python 3.10+ | ASR、说话人识别和 Python 工具 |
+| FFmpeg / ffprobe，加入 PATH | 音视频处理、字幕烧录和封面截帧 |
+| NVIDIA GPU / 匹配的 PyTorch、CUDA | 推荐用于 ASR 与 NVENC 加速；安装组合见 ASR 文档 |
+| PM2 | 可选，用于后台服务和队列守护 |
 
-## 🛠️ 部署准备
+在仓库根目录执行：
 
-### 1. 环境要求
-
-| 依赖 | 版本要求 | 说明 |
-|------|----------|------|
-| Node.js | 18+ | 运行 JS 脚本 |
-| Python | 3.10+ | 运行 Whisper 脚本 |
-| FFmpeg | 任意 | 视频/音频处理，需在 PATH 中 |
-| CUDA | 推荐 12.x | Whisper GPU 加速（无 GPU 会自动降为 CPU） |
-| PM2 | 全局安装 | 进程守护 |
-| pnpm / npm | - | 包管理器 |
-
-### 2. 安装 Python 依赖
-
-```bash
-# 安装 faster-whisper（需要 CUDA 环境）
-pip install faster-whisper
-```
-
-> **注意**：首次运行时，Whisper 会自动下载模型 `deepdml/faster-whisper-large-v3-turbo-ct2`，约 1.5GB，请确保网络畅通或提前下载。
-
-### 3. 安装 Node.js 依赖
-
-```bash
-# 使用 pnpm（推荐）
-pnpm install
-
-# 或使用 npm
+```powershell
 npm install
+python -m pip install -r src/scripts/python/requirements-sensevoice.txt
+python -m pip install -r src/scripts/python/requirements.txt
 ```
 
-### 4. 安装 PM2
+首次 ASR 会下载模型。GPU wheel、模型缓存与各后端的额外依赖见 [ASR 安装与配置](docs/asr-backends.md)；漫画和上传工具的依赖见各自文档。
 
-```bash
+首次配置时复制密钥示例，再填写实际凭据：
+
+```powershell
+Copy-Item config/secret.example.json config/secret.json
+```
+
+已有 `secret.json` 时直接编辑本地文件，保留现有凭据。
+
+### 配置如何生效
+
+1. 显式 `CONFIG_PATH` 选择主配置；路径不存在会报错，相对路径按仓库根目录解析。
+2. 未指定时，`NODE_ENV=production` 或 `automation` 读取 `config/production.json`；其他环境读取 `config/default.json`。
+3. 合并本地 `config/secret.json`，再应用支持的环境变量覆盖。
+
+生产配置是独立主配置，不会自动继承 `default.json`。仓库中的房间、录播目录、模型路径和代理是现有部署设置，使用前应改为自己的环境。密钥、Cookie 和企微 Webhook 放在被 Git 忽略的 `secret.json` 中。
+
+| 配置位置 | 主要内容 |
+| --- | --- |
+| `webhook` | 监听地址、端口和录播路径 |
+| `asr` | 默认后端、房间路由、微调模型、说话人和字幕预校对 |
+| `ai.roomSettings`、`config/generation-modes.json` | 房间生成策略、直播上下文和漫画设置 |
+| `ownStreamClips` | 整场自动选材、排序、编辑、烧录与审核 |
+| `clipTopics` | 关键词话题、窗口、预审和通知 |
+| `bilibili` | 动态回复、监测与发布相关设置 |
+
+字段以配置文件和 [统一配置契约](docs/architecture.md#configuration-and-history) 为准。
+
+## 启动与升级
+
+### 首次启动
+
+源码 CLI 依赖编译后的工作流模块；先验证，再激活工作流和构建服务：
+
+```powershell
+npm run verify:all
+npm run workflow:activate
+npm run build
+npm run dev
+```
+
+`npm run dev` 运行 `dist/app/main.js`，监听 `0.0.0.0:12522`，不是自动重编译模式。开发改动后需要重新构建；Next.js 任务页面另用 `npm run dev:next` 启动。
+
+需要生产守护时：
+
+```powershell
 npm install -g pm2
-```
-
----
-
-## ⚙️ 配置文件说明
-
-### 主配置文件：`src/scripts/config.json`
-
-控制房间设置、超时时间、录播姬端点等核心参数。
-
-```json
-{
-  "audioProcessing": {
-    "enabled": true,
-    "audioOnlyRooms": [26966466],   // 仅提取音频的房间（ASMR等）
-    "keepOriginalVideo": false,      // 提取音频后是否保留原视频
-    "ffmpegPath": "ffmpeg"          // ffmpeg 路径（默认使用 PATH 中的）
-  },
-  "aiServices": {
-    "gemini": {
-      "enabled": true,
-      "model": "gemini-3-flash-preview",
-      "proxy": "socks5://127.0.0.1:7890"   // 代理（访问 Gemini 需要）
-    },
-    "tuZi": {
-      "enabled": true,
-      "baseUrl": "https://api.tu-zi.com",
-      "model": "gemini-3-pro-image-preview-async",
-      "proxy": "http://127.0.0.1:7890"
-    },
-    "defaultReferenceImage": "../public/reference_images/岁己小红帽立绘.png",
-    "defaultCharacterDescription": "岁己SUI（白发红瞳女生）",
-    "defaultAnchorName": "岁己SUI",
-    "defaultFanName": "饼干岁"
-  },
-  "roomSettings": {
-    "26966466": {                    // 房间ID（字符串）
-      "audioOnly": true,            // 是否为纯音频房间
-      "anchorName": "栞栞Shiori",
-      "fanName": "獭獭栞",
-      "enableTextGeneration": true, // 是否生成晚安回复
-      "enableComicGeneration": true // 是否生成 AI 图片
-    }
-  },
-  "timeouts": {
-    "fixVideoWait": 30000,          // 等待 fix 视频生成超时（ms）
-    "fileStableCheck": 30000,       // 文件大小稳定检查超时（ms）
-    "processTimeout": 1800000       // 整体处理超时（ms，默认30分钟）
-  },
-  "recorders": {
-    "mikufans": {
-      "enabled": true,
-      "endpoint": "/mikufans",
-      "basePath": "D:/files/videos/DDTV录播"  // 录播姬的视频存储根目录
-    }
-  }
-}
-```
-
-### 密钥配置文件：`src/scripts/config.secrets.json`
-
-> ⚠️ **此文件不应提交到 Git，已在 `.gitignore` 中排除。**
-
-```bash
-# 从示例文件复制
-cp src/scripts/config.secrets.example.json src/scripts/config.secrets.json
-```
-
-然后编辑 `config.secrets.json`，填入真实密钥：
-
-```json
-{
-  "gemini": {
-    "apiKey": "YOUR_GEMINI_API_KEY_HERE"
-  },
-  "tuZi": {
-    "apiKey": "YOUR_TUZI_API_KEY_HERE"
-  },
-  "bilibili": {
-    "cookie": "YOUR_BILIBILI_COOKIE_HERE",
-    "csrf": "YOUR_BILIBILI_CSRF_HERE"
-  }
-}
-```
-
-> **B 站 Cookie 获取方法**：浏览器登录 B 站后，打开开发者工具 → Network → 找任意请求 → 复制 `Cookie` 请求头；`csrf` 对应 Cookie 中的 `bili_jct` 字段。
-
----
-
-## 🚦 启动服务
-
-### 生产环境（PM2 守护）
-
-```bash
-# 构建项目（首次或代码更新后）
-pnpm build
-
-# 使用 PM2 启动
-npm run pm2:start
-
-# 查看运行状态
+pm2 start ecosystem.config.js --only danmaku-webhook --env production
 npm run pm2:status
-
-# 实时查看日志
 npm run pm2:logs
-
-# 重启服务
-npm run pm2:restart
-
-# 停止服务
-npm run pm2:stop
 ```
 
-**常用 PM2 命令速查：**
+生产默认端口为 `12523`，由 `webhook.port` 决定，也可通过 `WEBHOOK_PORT` / `WEBHOOK_HOST` 或显式 CLI 参数覆盖。
 
-```bash
-pm2 list                         # 查看所有进程
-pm2 monit                        # 实时监控面板
-pm2 show danmaku-webhook         # 查看详细状态
-pm2 flush                        # 清空日志
-pm2 startup                      # 配置开机自启
-pm2 save                         # 保存当前进程列表
+按需启动独立任务：
+
+```powershell
+npm run pm2:clip-upload:start
+npm run pm2:seedance:start
+npm run pm2:recorder:start
 ```
 
-> PM2 配置文件位于项目根目录 `ecosystem.config.js`，生产端口默认 `15121`。
+`npm run pm2:start` / `pm2:restart` 操作整个 `ecosystem.config.js`；仅管理 Webhook 时使用指定进程的 PM2 命令。
 
-### 开发模式（直接运行）
+### 已有服务升级
 
-```bash
-# 启动 Webhook 服务（不编译，直接用 Node 运行 JS 脚本）
-node src/scripts/webhook_server.js
+`npm run verify:all` 使用候选工作流和隔离构建，不覆盖正在运行的 `dist`，也不激活工作流。线上升级的暂存、队列检查、状态备份和回滚步骤见 [部署流程](docs/architecture.md#pm2-deployment)。源码 JS/Python 会在下一次子进程调用时生效，更新运行目录时也应遵循该流程。
+
+## 自动切片与审核
+
+### 整场自动选材
+
+在 `ownStreamClips` 中配置启用范围、AI 策略和媒体参数。当前分阶段选材先按块召回，再结合本地线索全局排序，最后逐候选编辑边界和文案。AI 片长按话题完整性决定；字幕、弹幕引用及人物归属分别校验。
+
+处理后查看 `PLAN.json`、按时间排列的 `REVIEW.md` 和上传清单。待复核、制作失败及被剔除项也保留数字 ID 和原因，便于继续处理。
+
+已有录播可直接运行选材，使用其字幕与弹幕：
+
+```powershell
+node src/scripts/own_stream_clipper.js --media "D:/recordings/live.flv" --srt "D:/recordings/live.srt" --xml "D:/recordings/live.xml" --no-notify
 ```
 
----
+选材与编辑会调用配置的 AI。分阶段策略、诊断和可选残余审计见 [自动选材说明](docs/post-stream-residual-audit.md)。
 
-## 🔄 主链路处理流程
+### 关键词、指定时间段与跨录播合集
 
-```
-Mikufans 录播姬 FileClosed 事件
-    │
-    ▼
-[1] Webhook 接收 (webhook_server.js, POST /mikufans)
-    │  - 提取 EventData.RelativePath + basePath 拼成完整路径
-    │  - 等待文件大小稳定（10s延迟+轮询检查）
-    │
-    ▼
-[2] 视频文件合并（如分段录制）
-    │  - Mikufans 会话内多分段 -> enhanced_auto_summary.js 合并处理
-    │
-    ▼
-[3] 音频处理 (audio_processor.js)
-    │  - 判断是否为「音频专用房间」（audioOnly: true）
-    │  - 若是：ffmpeg 提取音频 (.m4a)，可选删除原视频
-    │  - 若否：直接使用原始视频
-    │
-    ▼
-[4] Whisper 语音识别 (python/batch_whisper.py)
-    │  - 自动获取 Whisper GPU 锁（防并发冲突）
-    │  - 三级策略：极速 Batch → 稳健 Sequential → 核弹（关VAD）
-    │  - 输出 .srt 字幕文件（同目录下）
-    │  - 自动过滤幻听内容（字幕志愿者、优优独播剧场等）
-    │
-    ▼
-[5] 字幕 + 弹幕融合 (do_fusion_summary.js)
-    │  - 读取 .srt 字幕 + .xml 弹幕
-    │  - 计算弹幕密度热力图
-    │  - 保留高热度时段字幕 + 低热度随机采样
-    │  - 输出 _AI_HIGHLIGHT.txt（精简版，适合直接投喂 AI）
-    │
-    ▼
-[6] AI 晚安回复生成 (ai_text_generator.js)
-    │  - 读取 _AI_HIGHLIGHT.txt
-    │  - 调用 Gemini API 生成晚安总结 Markdown
-    │  - 输出 _晚安回复.md
-    │
-    ▼
-[7] AI 图片生成 (ai_comic_generator.js)
-    │  - 按房间配置的最短时长 / 概率决定是否生成
-    │  - 调用 TuZi API 生成卡通漫画图片
-    │  - 输出 _COMIC_FACTORY.png/webp
-    │
-    ▼
-[8] 回复到 B 站动态 (bilibili_comment.py / ai_text_generator.js)
-    │  - 获取主播最新动态
-    │  - 上传图片
-    │  - 发布带图片的评论回复
-    │
-    ▼
-✅ 完成
+- **关键词话题**：在 `clipTopics` 配置关键词和房间，生成带原文证据、粗剪预览与字幕的候选包，进入同一编号审核流程。
+- **指定时间段**：通过手工队列提交媒体、SRT、起止秒数和文案，统一制作 MP4、大字幕、封面及 REVIEW。
+- **跨录播合集**：`topic:compile` 按发现来源、搜索证据、生成计划、编译成片四阶段执行。
+
+手工队列示例（起止时间为原录播秒数）：
+
+```powershell
+npm run manual:clips -- add --media "D:/recordings/live.flv" --srt "D:/recordings/live.srt" --start 120 --end 240 --title "片中发生的故事" --description "依据原片填写简介" --cover-text "封面文案"
+npm run manual:clips -- list
+npm run manual:clips -- worker
 ```
 
----
+默认只制作、等待审核。profile、旧录播路径和完整参数见 [手工切片队列](docs/manual-clip-queue.md)；多场拼接见 [跨录播话题合集](docs/topic-compilation.md)。
 
-## 🔌 Webhook 端点
+### 按编号查看、改词与投稿
 
-服务默认监听端口：`15121`
+下面的 `123` 仅为示例，使用审核清单中的真实全局 ID：
 
-### Mikufans 录播姬（主入口）
+```powershell
+npm run upload:clips:list
+npm run upload:clips -- show 123
+npm run upload:clips -- subtitles --id 123
 
-```
-POST http://localhost:15121/mikufans
-```
+# 仅修正已核实的词，不投稿
+npm run upload:clips -- correct --id 123 --from "原词" --to "核实后的词"
 
-- `SessionStarted`：直播开始，初始化会话
-- `FileClosed`：文件关闭（分段完成），**触发主处理流程**
-- `SessionEnded`：会话结束（忽略）
-
-**在 Mikufans 录播姬中配置 Webhook 地址：**
-```
-http://你的机器IP:15121/mikufans
-```
-
-### DDTV 录播姬（辅助入口）
-
-```
-POST http://localhost:15121/ddtv
+# 已完成审核、明确需要投稿时入队
+npm run upload:clips -- enqueue --ids 123
+npm run upload:clips:queue
+npm run pm2:status:clip-upload
 ```
 
-- `SaveBulletScreenFile`：弹幕保存事件，等待 fix 视频生成后处理
-- `InvalidLoginStatus`：登录失效，弹出 Windows 提醒弹窗
+确认改词并要求投稿时，可在 `correct` 命令上加 `--enqueue`，由后台 worker 按同一 ID 重建、烧录、检查并上传。字幕修订保留版本和原媒体；有证据或文案问题的候选须先完成对应复核，不能仅凭入队解除阻塞。
 
----
+具体的 `approve-review`、`rebuild`、`cut` 和已投稿限制见 [候选审核与改词](docs/topic-event-editorial.md)、[B 站上传工具](docs/bilibili-upload-tools.md)。
 
-## 🧪 其他调用入口
+## ASR 与独立处理入口
 
-### 通过 Postman / curl 调用单个功能
+以下命令需要先激活工作流；无需启动 Webhook 服务：
 
-> 所有 REST API 都在 Webhook 服务器运行时可用。
+```powershell
+# 完整处理：视频 + 可选弹幕
+node src/scripts/enhanced_auto_summary.js "D:/recordings/live.flv" "D:/recordings/live.xml"
 
-#### 健康检查
+# 已有字幕，直接进入融合与后续生成
+node src/scripts/enhanced_auto_summary.js "D:/recordings/live.srt" "D:/recordings/live.xml"
 
-```bash
-GET http://localhost:15121/health
-GET http://localhost:15121/status
-GET http://localhost:15121/history
-GET http://localhost:15121/processing-files
+# 显式选择 ASR 后端
+node src/scripts/enhanced_auto_summary.js "D:/recordings/live.flv" --asr-backend sensevoice
+
+# 仅字幕与弹幕融合
+node src/scripts/do_fusion_summary.js "D:/recordings/live.srt" "D:/recordings/live.xml"
 ```
 
-#### B 站相关 API
+ASR 路由优先级是 CLI 覆盖、首条匹配的 routing、`default_backend`。Paraformer 支持 `default` / `finetuned` 模型配置和灰度路由；模型目录属于本机配置。输出包括普通 `.srt`、`.asr_meta.json`，按需生成说话人 sidecar 和 `.speaker.srt` 审阅字幕。
 
-```bash
-# 健康检查
-GET  http://localhost:15121/api/bilibili/health
+完整处理会依房间设置触发 AI、切片及通知。后端、模型安装、自动字幕预校对和设备排障见 [ASR 文档](docs/asr-backends.md)，训练见 [Paraformer 微调](docs/funasr-finetune.md)。
 
-# 检查 Cookie 是否有效
-GET  http://localhost:15121/api/bilibili/check-cookie
+## Webhook 与 API
 
-# 获取主播动态（按 UID）
-GET  http://localhost:15121/api/bilibili/dynamics/:uid
+录播姬配置的生产地址：
 
-# 获取主播动态（按房间ID）
-GET  http://localhost:15121/api/bilibili/room/:roomId/dynamics
-
-# 发布评论
-POST http://localhost:15121/api/bilibili/comment
-Content-Type: application/json
-{
-  "oid": "动态ID",
-  "text": "评论内容"
-}
-
-# 上传图片
-POST http://localhost:15121/api/bilibili/upload
-Content-Type: multipart/form-data
-{ "file": <图片文件> }
-
-# 发布带图片的评论
-POST http://localhost:15121/api/bilibili/comment-with-image
-Content-Type: application/json
-{
-  "oid": "动态ID",
-  "text": "评论内容",
-  "imagePath": "/path/to/image.png"
-}
-
-# 触发延迟回复
-POST http://localhost:15121/api/bilibili/delayed-reply
-Content-Type: application/json
-{
-  "roomId": "26966466",
-  "goodnightTextPath": "/path/to/_晚安回复.md",
-  "comicImagePath": "/path/to/_COMIC_FACTORY.png"
-}
+```text
+Mikufans: http://localhost:12523/mikufans
+DDTV:     http://localhost:12523/ddtv
 ```
 
-#### 手动触发 Mikufans Webhook（模拟录播姬推送）
+| 方法与路径 | 用途 |
+| --- | --- |
+| `GET /health`、`GET /status` | 健康和处理状态 |
+| `GET /history`、`GET /processing-files` | 处理记录和正在处理的文件 |
+| `POST /mikufans`、`POST /ddtv` | 录播事件 |
+| `GET /api/bilibili/check-cookie` | Cookie 检查 |
+| `GET /api/delayed-reply/tasks` | 延迟回复任务列表 |
+| `POST /api/delayed-reply` | 提交延迟回复任务 |
+| `DELETE /api/delayed-reply/tasks/:taskId` | 取消延迟回复任务 |
 
-```bash
-POST http://localhost:15121/mikufans
-Content-Type: application/json
-{
-  "EventType": "FileClosed",
-  "EventData": {
-    "RoomId": 26966466,
-    "Name": "栞栞Shiori",
-    "SessionId": "test-session-001",
-    "RelativePath": "栞栞Shiori/2024-01-01/录制-26966466-20240101-120000.mp4"
-  }
-}
+端口、请求约定、PM2 和常见运行问题见 [运行说明](docs/runtime-notes.md)。当前 handler 源码是请求格式的依据；旧 standalone 脚本文档仅用于历史参考。
+
+## 开发与验证
+
+```powershell
+npm run verify:all        # 完整便携验证
+npm run verify:core       # 工作流构建、类型检查、架构门禁、Jest
+npm run test:node         # Node 测试
+npm run test:python       # Python 便携测试
+npm run test:compiled     # 隔离服务构建及编译产物集成测试
+npm run test:python:asr   # 额外 ASR 设备/资源测试，需要 ML 依赖
 ```
 
----
+便携测试使用模拟依赖，不代表真实模型效果、GPU 性能或 B 站投稿已验收。不要批量执行历史 `src/scripts/test_*`，其中有调用付费服务或发布评论的诊断脚本。
 
-### 本地命令行调用单个功能
+| 目录 | 职责 |
+| --- | --- |
+| `src/app`、`src/services` | TypeScript 入口、HTTP、录播生命周期和调度 |
+| `src/workflows` | 编译并按版本加载的工作流模块 |
+| `src/scripts` | 媒体 CLI、ASR、切片、漫画和 Python 工具 |
+| `scripts`、`tools` | 可复用运维、部署与队列命令 |
+| `config` | 配置、生成预设和本地密钥示例 |
+| `tests`、源码旁测试 | 便携、集成及回归测试 |
+| `docs`、`.agents/skills` | 长期维护的文档与代理工作流 |
+| `data/runtime`、`logs`、`build`、`dist` | 本地运行状态、日志及生成产物 |
+| `temp/<日期>-<任务>`、`local-scripts` | 被忽略的单次任务资料与脚本 |
 
-所有脚本均可直接通过命令行测试，无需启动 Webhook 服务。
+模块边界、编译工作流、配置契约和升级约束见 [架构说明](docs/architecture.md)；文件放置遵循 [AGENTS.md](AGENTS.md)。
 
-#### 完整处理流程（视频 → AI 总结）
+## 更多文档
 
-```bash
-# 处理单个视频 + 弹幕 XML
-node src/scripts/enhanced_auto_summary.js \
-  D:/录播/视频.mp4 \
-  D:/录播/弹幕.xml
+- [录播补下载与回填](docs/bilibili-recovery-flow.md)
+- [旧录播选材](docs/old-sui-clip-search-playbook.md)
+- [B 站切片验收](docs/bilibili-clip-verification.md)
+- [vLLM 独立 ASR 队列](docs/asr-vllm-queue.md)
+- [自定义 AI Prompts](自定义AI_Prompts说明.md)
+- [脚本目录与迁移约定](src/scripts/README.md)
 
-# 仅处理视频（无弹幕）
-node src/scripts/enhanced_auto_summary.js D:/录播/视频.mp4
-
-# 已有字幕，直接跳到融合 + AI 生成
-node src/scripts/enhanced_auto_summary.js \
-  D:/录播/视频.srt \
-  D:/录播/弹幕.xml
-```
-
-#### 仅运行 Whisper 语音识别
-
-```bash
-# 处理单个视频或目录
-python src/scripts/python/batch_whisper.py D:/录播/视频.mp4
-
-# 批量处理整个目录
-python src/scripts/python/batch_whisper.py D:/录播/2024-01-01/
-```
-
-#### 仅运行字幕 + 弹幕融合
-
-```bash
-# 需要 .srt 和 .xml 文件
-node src/scripts/do_fusion_summary.js \
-  D:/录播/视频.srt \
-  D:/录播/弹幕.xml
-```
-
-#### 仅运行音频提取
-
-```bash
-node src/scripts/audio_processor.js D:/录播/视频.mp4
-```
-
-#### 通过拖拽运行（Windows）
-
-项目根目录提供了 `.bat` 快捷方式：
-
-```
-拖拽文件夹到我身上生成总结.bat    ← 拖入录播目录，运行完整流程
-drag_generate_goodnight.bat        ← 生成晚安回复
-drag_generate_comic.bat            ← 生成漫画图片
-```
-
----
-
-## 📊 监控与日志
-
-### PM2 日志
-
-```bash
-# 实时日志（合并输出）
-npm run pm2:logs
-
-# 实时监控面板
-npm run pm2:monitor
-```
-
-### 日志文件位置
-
-```
-logs/
-├── pm2-out.log        # 标准输出日志
-├── pm2-error.log      # 错误日志
-└── pm2-combined.log   # 合并日志
-```
-
-### 服务状态检查
-
-```bash
-curl http://localhost:15121/health
-curl http://localhost:15121/status
-curl http://localhost:15121/history
-```
-
----
-
-## 🔧 故障排除
-
-### 常见问题
-
-#### 1. Whisper 处理卡住 / GPU 显存不足
-
-Whisper 有排队锁机制，同时只允许一个进程使用 GPU。若卡住超长时间，可手动删除锁文件：
-
-```bash
-del src/scripts/.whisper_lock
-```
-
-#### 2. 服务启动后端口被占用
-
-```bash
-# 查看占用 15121 端口的进程
-netstat -ano | findstr 15121
-```
-
-#### 3. AI 生成失败
-
-- 检查 `config.secrets.json` 中的 API Key 是否正确
-- 检查代理配置（`config.json` 中的 `proxy` 字段）
-- 查看 PM2 日志获取详细错误信息
-
-#### 4. 找不到弹幕 XML 文件
-
-Webhook 会自动查找与视频同名的 `.xml` 文件（同目录）。确认 Mikufans 录播姬已开启弹幕录制，且保存路径与配置中的 `basePath` 一致。
-
-#### 5. B 站回复失败
-
-- 使用 `GET /api/bilibili/check-cookie` 检查 Cookie 是否有效
-- B 站 Cookie 有效期有限，需定期更新 `config.secrets.json`
-
----
-
-## 📚 延伸阅读
-
-- [Webhook 详细说明](src/scripts/WEBHOOK_README.md)
-- [B站 API 说明](src/scripts/BILIBILI_API_README.md)
-- [Whisper 队列说明](src/scripts/QUEUE_README.md)
-- [增强功能说明](src/scripts/ENHANCED_FEATURES_README.md)
-- [自定义 AI Prompts 说明](自定义AI_Prompts说明.md)
-
----
-
-## 📄 许可证
+## 许可证
 
 MIT License
-
----
-
-> **注意**：本项目仍在积极开发中，配置格式可能随版本更新而变化，升级前请备份配置文件。
-
-## 未来路线
-
-本项目开发得比较随意，本来是分别开发的整理输入给AI的文本的ts，和语音识别的py，然后为了全自动，合到一起了。所以代码里又有ts又有py。后续有机会的话重构？

@@ -1,0 +1,63 @@
+{
+  "speaker": "栞栞",
+  "key": "shiori_singing_august_24",
+  "state": "singing_august_24",
+  "clips": [
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_24/录制-26966466-20260824-100721-324-早安獭獭栞！.flv",
+      "startSeconds": 7053.85,
+      "durationSeconds": 8,
+      "kind": "singing",
+      "reviewed": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_24/录制-26966466-20260824-100721-324-早安獭獭栞！.flv",
+      "startSeconds": 7071.27,
+      "durationSeconds": 8,
+      "kind": "singing",
+      "reviewed": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_24/录制-26966466-20260824-100721-324-早安獭獭栞！.flv",
+      "startSeconds": 7091.09,
+      "durationSeconds": 8,
+      "kind": "singing",
+      "reviewed": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_24/录制-26966466-20260824-100721-324-早安獭獭栞！.flv",
+      "startSeconds": 7106.77,
+      "durationSeconds": 8,
+      "kind": "singing",
+      "reviewed": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_24/录制-26966466-20260824-100721-324-早安獭獭栞！.flv",
+      "startSeconds": 7149.84,
+      "durationSeconds": 8,
+      "kind": "singing",
+      "reviewed": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_24/录制-26966466-20260824-100721-324-早安獭獭栞！.flv",
+      "startSeconds": 7180.92,
+      "durationSeconds": 8,
+      "kind": "singing",
+      "reviewed": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_24/录制-26966466-20260824-100721-324-早安獭獭栞！.flv",
+      "startSeconds": 7201.35,
+      "durationSeconds": 8,
+      "kind": "singing",
+      "reviewed": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_24/录制-26966466-20260824-100721-324-早安獭獭栞！.flv",
+      "startSeconds": 7230.079,
+      "durationSeconds": 8,
+      "kind": "singing",
+      "reviewed": true
+    }
+  ]
+}

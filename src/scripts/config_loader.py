@@ -3,13 +3,14 @@
 """
 统一配置加载器 - Python版本
 用于所有Python脚本加载配置
-读取优先级: config/production.json > config/default.json，然后合并 config/secret.json
+读取优先级和密钥映射由 core/config/config-contract.json 定义。
 """
 
 import os
 import sys
 import json
 from typing import Dict, Any, Optional
+import config_contract
 
 # 禁用输出缓冲，确保日志实时输出到Node.js
 import io
@@ -61,34 +62,19 @@ print = safe_print
 
 
 def get_project_root() -> str:
-    """获取项目根目录"""
-    # 脚本在 src/scripts 目录
-    scripts_dir = os.path.dirname(os.path.abspath(__file__))
-    return os.path.dirname(os.path.dirname(scripts_dir))
+    return os.path.abspath(os.environ.get("DANMAKU_PROJECT_ROOT") or os.path.join(os.path.dirname(__file__), "../.."))
+
+
+def find_config_paths() -> list:
+    return config_contract.find_config_paths(get_project_root())
 
 
 def find_config_path() -> str:
     """
-    查找配置文件路径
-    优先级: /config/production.json > /config/default.json
+    查找主配置文件路径（返回最后一个，即最高优先级）
     """
-    env = os.environ.get('NODE_ENV', 'development')
-    project_root = get_project_root()
-    config_dir = os.path.join(project_root, 'config')
-    
-    possible_paths = [
-        # 优先读取外部config目录中的环境特定配置
-        os.path.join(config_dir, 'production.json' if env == 'production' else 'default.json'),
-        # 其次读取外部config目录中的默认配置
-        os.path.join(config_dir, 'default.json'),
-    ]
-    
-    for config_path in possible_paths:
-        if os.path.exists(config_path):
-            return config_path
-    
-    # 默认返回 config/default.json
-    return os.path.join(config_dir, 'default.json')
+    paths = find_config_paths()
+    return paths[-1] if paths else os.path.join(get_project_root(), 'config', 'default.json')
 
 
 def find_secrets_path() -> str:
@@ -101,87 +87,15 @@ def find_secrets_path() -> str:
 
 
 def deep_merge(target: Dict[str, Any], source: Dict[str, Any]) -> Dict[str, Any]:
-    """深度合并两个字典"""
-    result = target.copy()
-    
-    for key, value in source.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = deep_merge(result[key], value)
-        else:
-            result[key] = value
-    
-    return result
+    return config_contract.deep_merge(target, source)
 
 
 def read_json_file(file_path: str) -> Dict[str, Any]:
-    """读取JSON文件"""
-    try:
-        # 兼容带 BOM 的 UTF-8 JSON 配置文件
-        with open(file_path, 'r', encoding='utf-8-sig') as f:
-            return json.load(f)
-    except Exception as e:
-        raise Exception(f"Failed to read JSON file {file_path}: {e}")
+    return config_contract.read_json_object(file_path)
 
 
 def get_config(force_reload: bool = False) -> Dict[str, Any]:
-    """
-    获取完整配置（合并主配置和secrets）
-    
-    Args:
-        force_reload: 是否强制重新加载，忽略缓存
-    """
-    config_path = find_config_path()
-    secrets_path = find_secrets_path()
-    
-    # 读取主配置
-    config = {}
-    if os.path.exists(config_path):
-        config = read_json_file(config_path)
-        # print(f"✓ 配置文件已加载: {config_path}")
-    else:
-        print(f"⚠ 配置文件不存在: {config_path}")
-    
-    # 读取secrets并合并
-    if os.path.exists(secrets_path):
-        secrets = read_json_file(secrets_path)
-        # 将扁平的secrets结构映射到嵌套结构
-        mapped_secrets = {}
-        
-        # gemini.apiKey -> ai.text.gemini.apiKey
-        if 'gemini' in secrets and 'apiKey' in secrets['gemini']:
-            if 'ai' not in mapped_secrets:
-                mapped_secrets['ai'] = {}
-            if 'text' not in mapped_secrets['ai']:
-                mapped_secrets['ai']['text'] = {}
-            if 'gemini' not in mapped_secrets['ai']['text']:
-                mapped_secrets['ai']['text']['gemini'] = {}
-            mapped_secrets['ai']['text']['gemini']['apiKey'] = secrets['gemini']['apiKey']
-        
-        # tuZi.apiKey -> ai.comic.tuZi.apiKey
-        if 'tuZi' in secrets and 'apiKey' in secrets['tuZi']:
-            if 'ai' not in mapped_secrets:
-                mapped_secrets['ai'] = {}
-            if 'comic' not in mapped_secrets['ai']:
-                mapped_secrets['ai']['comic'] = {}
-            if 'tuZi' not in mapped_secrets['ai']['comic']:
-                mapped_secrets['ai']['comic']['tuZi'] = {}
-            mapped_secrets['ai']['comic']['tuZi']['apiKey'] = secrets['tuZi']['apiKey']
-        
-        # bilibili -> bilibili
-        if 'bilibili' in secrets:
-            mapped_secrets['bilibili'] = secrets['bilibili']
-
-        # wechatWork -> wechatWork，用于 Python 侧图片限流告警
-        if 'wechatWork' in secrets:
-            mapped_secrets['wechatWork'] = secrets['wechatWork']
-        
-        # 合并映射后的secrets
-        config = deep_merge(config, mapped_secrets)
-        # print(f"✓ Secrets配置文件已加载: {secrets_path}")
-    else:
-        print(f"⚠ Secrets配置文件不存在: {secrets_path}")
-    
-    return config
+    return config_contract.load_config_layers(get_project_root())
 
 
 def get_gemini_api_key() -> str:
@@ -194,6 +108,18 @@ def get_tuzi_api_key() -> str:
     """获取tuZi API Key"""
     config = get_config()
     return config.get('ai', {}).get('comic', {}).get('tuZi', {}).get('apiKey', '')
+
+
+def get_tuzi_text_api_key() -> str:
+    """获取 tuZi 文本生成 API Key"""
+    config = get_config()
+    text_config = config.get('ai', {}).get('text', {}).get('tuZi', {})
+    return text_config.get('apiKey', '') or get_tuzi_api_key()
+
+
+def is_tuzi_text_configured() -> bool:
+    api_key = get_tuzi_text_api_key()
+    return bool(api_key and api_key.strip())
 
 
 def is_gemini_configured() -> bool:

@@ -21,6 +21,8 @@ async function testPythonScript() {
     return new Promise((resolve, reject) => {
       const pythonProcess = spawn('python', [pythonScriptPath, testHighlightPath], {
         stdio: 'pipe',
+        windowsHide: true,
+        shell: false,
         env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
       });
       
@@ -78,10 +80,12 @@ async function testComicService() {
     
     console.log(`   执行命令: python ${pythonScriptPath} ${testHighlightPath}`);
     
-    const { execSync } = require('child_process');
-    const result = execSync(`python "${pythonScriptPath}" "${testHighlightPath}"`, {
+    const { execFileSync } = require('child_process');
+    const result = execFileSync('python', [pythonScriptPath, testHighlightPath], {
       encoding: 'utf-8',
       stdio: 'pipe',
+      windowsHide: true,
+      shell: false,
       env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
     });
     

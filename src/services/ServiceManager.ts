@@ -136,7 +136,7 @@ export class ServiceManager {
       // 启动弹幕风控监控
       if (this.danmuRiskControlMonitor) {
         await this.startService('danmu-risk-control', async () => {
-          this.danmuRiskControlMonitor!.start();
+          await this.danmuRiskControlMonitor!.start();
         });
       }
       
@@ -529,7 +529,7 @@ export class ServiceManager {
 
     // B站API服务
     await this.initializeService('bilibili-api', async () => {
-      this.bilibiliAPIService = new BilibiliAPIService();
+      this.bilibiliAPIService = new BilibiliAPIService(this.weChatWorkNotifier);
     });
 
     // 回复历史存储
@@ -576,6 +576,18 @@ export class ServiceManager {
         this.getLogger().info('弹幕风控监控未启用，跳过初始化');
       }
     });
+
+    if (this.webhookService && this.bilibiliAPIService) {
+      const setBilibiliAPIService = (this.webhookService as any).setBilibiliAPIService;
+      if (typeof setBilibiliAPIService === 'function') {
+        setBilibiliAPIService.call(this.webhookService, this.bilibiliAPIService);
+        this.getLogger().info('B站房间状态服务已注入到WebhookService');
+      } else {
+        this.getLogger().warn('当前WebhookService不支持B站房间状态注入，跳过Mikufans离线兜底');
+      }
+    } else {
+      this.getLogger().warn('B站房间状态服务注入失败: webhookService=' + !!this.webhookService + ', bilibiliAPIService=' + !!this.bilibiliAPIService);
+    }
 
     // 将延迟回复服务注入到WebhookService
     if (this.webhookService && this.delayedReplyService) {

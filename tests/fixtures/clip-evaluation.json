@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "stage": {
+    "provider": "daiYu", "apiMode": "responses", "maxTokens": 4000, "maxInputTokens": 16000, "timeoutMs": 600000,
+    "capabilities": { "images": false },
+    "price": { "confirmed": false, "version": "unconfirmed-no-paid-evaluation", "inputCnyPerMillion": 0, "cachedInputCnyPerMillion": 0, "outputCnyPerMillion": 0 }
+  },
+  "matrix": [
+    { "model": "gpt-5.6-luna", "efforts": ["none", "low", "medium", "high"], "verifiedEfforts": [] },
+    { "model": "gpt-5.6-sol", "efforts": ["low", "medium", "high"], "verifiedEfforts": [] },
+    { "model": "gpt-6-astra", "efforts": ["low", "medium", "high"], "verifiedEfforts": [] }
+  ],
+  "samples": [
+    { "id": "selection-correction", "sessionId": "synthetic-screening", "roomId": "fixture", "split": "screening", "stage": "recall",
+      "prompt": "Fixture only. G1 0-10 I thought it was broken. G2 20-30 Correction: it was unplugged. G3 40-50 I plugged it in and it works. Return JSON clips with startCueId/endCueId and a factual event.", "reference": { "type": "synthetic", "requiresCueIds": ["G2"] } },
+    { "id": "edit-protected-speech", "sessionId": "synthetic-screening", "roomId": "fixture", "split": "screening", "stage": "edit",
+      "prompt": "Fixture only. A1 cough 5-7 with coarse precision 2 seconds overlaps dialogue 4-9. Return {\"removeEvidenceIds\":[]} unless precise, independently verified evidence justifies a deletion.", "reference": { "type": "synthetic", "removeEvidenceIds": [] } },
+    { "id": "packaging-attribution", "sessionId": "synthetic-screening", "roomId": "fixture", "split": "screening", "stage": "packaging",
+      "prompt": "Fixture only. Streamer: I am not buying it. Audience: I bought three! Return a factual Chinese title; do not attribute audience statements to the streamer.", "reference": { "type": "synthetic" } },
+    { "id": "qa-known-bad", "sessionId": "synthetic-holdout", "roomId": "fixture", "split": "holdout", "stage": "qa",
+      "prompt": "Fixture only. Streamer: I am not buying it. Audience: I bought three! Final title: The streamer bought three. Audit attribution, returning JSON {\"approved\":boolean,\"issues\":[\"...\"]}.", "reference": { "type": "synthetic", "knownBad": true } }
+  ]
+}

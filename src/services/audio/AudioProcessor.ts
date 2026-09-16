@@ -6,6 +6,13 @@ import { getLogger } from '../../core/logging/LogManager';
 import { ConfigProvider } from '../../core/config/ConfigProvider';
 import { AppError, TimeoutError } from '../../core/errors/AppError';
 import {
+  applyFfmpegProcessPriority,
+  getFfmpegResourceConfig,
+  startFfmpegResourcePeakMonitor,
+  waitForAsrAvailability,
+  withFfmpegResourceLimits
+} from '../../utils/ffmpegResource';
+import {
   IAudioProcessor,
   AudioProcessingConfig,
   FfmpegResult
@@ -36,7 +43,19 @@ export class AudioProcessor implements IAudioProcessor {
       audioOnlyRooms: [],
       keepOriginalVideo: false,
       ffmpegPath: 'ffmpeg',
-      defaultFormat: '.m4a',
+      defaultFormat: '.opus',
+      defaultProfile: 'opus48k',
+      outputProfiles: {
+        opus48k: {
+          format: '.opus',
+          ffmpegArgs: ['-c:a', 'libopus', '-b:a', '48k']
+        },
+        aac64k: {
+          format: '.m4a',
+          outputSuffix: '_64k',
+          ffmpegArgs: ['-c:a', 'aac', '-b:a', '64k']
+        }
+      },
       timeouts: {
         ffmpegTimeout: 300000 // 5分钟
       }
@@ -54,6 +73,8 @@ export class AudioProcessor implements IAudioProcessor {
         keepOriginalVideo: audioConfig.storage?.keepOriginalVideo ?? defaultConfig.keepOriginalVideo,
         ffmpegPath: audioConfig.ffmpeg?.path ?? defaultConfig.ffmpegPath,
         defaultFormat: audioConfig.defaultFormat ?? defaultConfig.defaultFormat,
+        defaultProfile: audioConfig.defaultProfile ?? defaultConfig.defaultProfile,
+        outputProfiles: audioConfig.outputProfiles ?? defaultConfig.outputProfiles,
         timeouts: {
           ffmpegTimeout: audioConfig.ffmpeg?.timeout ?? defaultConfig.timeouts.ffmpegTimeout
         }
@@ -72,7 +93,7 @@ export class AudioProcessor implements IAudioProcessor {
    */
   isAudioOnlyRoom(roomId: number): boolean {
     // 优先检查房间特定的audioOnly设置
-    const roomConfig = ConfigProvider.getRoomAIConfig(roomId.toString());
+    const roomConfig = (ConfigProvider.getRoomAIConfig(roomId.toString()) || {}) as { audioOnly?: boolean };
     if (roomConfig.audioOnly !== undefined) {
       const isAudioRoom = this.config.enabled && roomConfig.audioOnly;
       this.logger.debug('检查房间特定音频专用设置', { roomId, isAudioRoom, roomAudioOnly: roomConfig.audioOnly });
@@ -105,17 +126,41 @@ export class AudioProcessor implements IAudioProcessor {
   private async runFfmpegCommand(args: string[], timeout?: number): Promise<FfmpegResult> {
     const ffmpegPath = this.config.ffmpegPath || 'ffmpeg';
     const timeoutMs = timeout || this.config.timeouts.ffmpegTimeout;
+    const resourceConfig = getFfmpegResourceConfig();
+    const asrState = args.includes('-version')
+      ? { asrActive: false }
+      : await waitForAsrAvailability(
+        'AudioProcessor ffmpeg',
+        resourceConfig,
+        message => this.logger.info(message)
+      );
+    const effectiveResourceConfig = { ...resourceConfig };
+    if (asrState.asrActive && Number(effectiveResourceConfig.threads) > 0) {
+      effectiveResourceConfig.threads = Math.min(
+        Number(effectiveResourceConfig.threads),
+        Math.max(1, Number(effectiveResourceConfig.asrGuard?.overlapThreads) || 1)
+      );
+      this.logger.info(`AudioProcessor ffmpeg 与 ASR 重叠，threads=${effectiveResourceConfig.threads}`);
+    }
+    const commandArgs = args.includes('-version') ? [...args] : withFfmpegResourceLimits(args, effectiveResourceConfig);
     
     this.logger.info('执行FFmpeg命令', { 
-      command: `${ffmpegPath} ${args.join(' ')}`,
+      command: `${ffmpegPath} ${commandArgs.join(' ')}`,
       timeout: timeoutMs 
     });
 
     return new Promise((resolve, reject) => {
-      const child = spawn(ffmpegPath, args, {
+      const child = spawn(ffmpegPath, commandArgs, {
         stdio: ['ignore', 'pipe', 'pipe'],
-        windowsHide: true
+        windowsHide: true,
+        shell: false
       });
+      applyFfmpegProcessPriority(child.pid, effectiveResourceConfig.priority);
+      const peakMonitor = startFfmpegResourcePeakMonitor(
+        'AudioProcessor ffmpeg',
+        effectiveResourceConfig,
+        message => this.logger.info(message)
+      );
 
       let stdout = '';
       let stderr = '';
@@ -150,6 +195,7 @@ export class AudioProcessor implements IAudioProcessor {
       // 处理命令完成
       child.on('close', (code) => {
         if (timeoutId) clearTimeout(timeoutId);
+        peakMonitor.stop();
         
         if (code === 0) {
           this.logger.info('FFmpeg命令执行成功');
@@ -172,6 +218,7 @@ export class AudioProcessor implements IAudioProcessor {
       // 处理命令错误
       child.on('error', (err) => {
         if (timeoutId) clearTimeout(timeoutId);
+        peakMonitor.stop();
         this.logger.error('FFmpeg命令执行错误', { error: err.message });
         reject(new AppError(
           `FFmpeg命令执行错误: ${err.message}`,
@@ -199,15 +246,52 @@ export class AudioProcessor implements IAudioProcessor {
   /**
    * 转换视频为音频
    */
-  async convertVideoToAudio(videoPath: string, audioFormat: string = '.m4a'): Promise<string> {
+  private normalizeExt(ext: string | undefined, fallback = '.m4a'): string {
+    const value = String(ext || fallback).trim();
+    if (!value) return fallback;
+    return (value.startsWith('.') ? value : `.${value}`).toLowerCase();
+  }
+
+  private getAudioOutputConfig(profileOrFormat?: string): {
+    profileName: string;
+    format: string;
+    outputSuffix: string;
+    ffmpegArgs: string[];
+  } {
+    const profiles = this.config.outputProfiles || {};
+    const selector = profileOrFormat || this.config.defaultProfile || this.config.defaultFormat || '.m4a';
+    const selectedProfile = profiles[selector];
+    const profileName = selectedProfile ? selector : selector;
+    const profile = selectedProfile || { format: selector, ffmpegArgs: ['-c:a', 'copy'] };
+    const format = this.normalizeExt(profile.format || profile.extension || selector);
+    let ffmpegArgs = profile.ffmpegArgs ? [...profile.ffmpegArgs] : undefined;
+
+    if (!ffmpegArgs) {
+      ffmpegArgs = ['-c:a', profile.codec || profile.audioCodec || 'copy'];
+      if (profile.bitrate) {
+        ffmpegArgs.push('-b:a', profile.bitrate);
+      }
+    }
+
+    return {
+      profileName,
+      format,
+      outputSuffix: profile.outputSuffix || '',
+      ffmpegArgs
+    };
+  }
+
+  async convertVideoToAudio(videoPath: string, audioFormat: string = this.config.defaultProfile || this.config.defaultFormat): Promise<string> {
+    const outputConfig = this.getAudioOutputConfig(audioFormat);
     const videoDir = path.dirname(videoPath);
     const videoName = path.basename(videoPath, path.extname(videoPath));
-    const audioPath = path.join(videoDir, `${videoName}${audioFormat}`);
+    const audioPath = path.join(videoDir, `${videoName}${outputConfig.outputSuffix}${outputConfig.format}`);
     
     this.logger.info('开始转换视频为音频', {
       input: path.basename(videoPath),
       output: path.basename(audioPath),
-      format: audioFormat
+      format: outputConfig.format,
+      profile: outputConfig.profileName
     });
 
     try {
@@ -220,6 +304,7 @@ export class AudioProcessor implements IAudioProcessor {
         '-vn',                    // 禁用视频流
         '-c:a', 'copy',           // 复制音频流，不重新编码
         '-y',                     // 覆盖输出文件
+        ...outputConfig.ffmpegArgs,
         audioPath
       ];
 
@@ -273,6 +358,11 @@ export class AudioProcessor implements IAudioProcessor {
 
     try {
       // 获取音频格式配置
+      this.logger.info('onlyAudio room keeps video for clipping; retention scan converts after 3 days and deletes after 30 days', {
+        roomId: actualRoomId,
+        file: path.basename(videoPath)
+      });
+      return videoPath;
       const audioFormat = this.config.defaultFormat || '.m4a';
       
       // 转换视频为音频
@@ -284,7 +374,7 @@ export class AudioProcessor implements IAudioProcessor {
         try {
           await unlink(videoPath);
           this.logger.info('原始视频已删除');
-        } catch (deleteError) {
+        } catch (deleteError: any) {
           this.logger.warn('删除原始视频失败', {
             error: deleteError instanceof Error ? deleteError.message : deleteError
           });

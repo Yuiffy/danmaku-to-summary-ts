@@ -6,6 +6,7 @@ const { promisify } = require('util');
 const stat = promisify(fs.stat);
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const configLoader = require('./config-loader');
+const audioProcessor = require('./audio_processor');
 
 function getRecorderConfig(recorderName) {
     const config = configLoader.getConfig();
@@ -96,7 +97,15 @@ async function waitFileStable(filePath) {
  */
 function showWindowsNotification(title, message) {
     const psCommand = `[void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms'); [System.Windows.Forms.MessageBox]::Show('${message}', '${title}', 'OK', 'Warning')`;
-    spawn('powershell.exe', ['-Command', psCommand], { windowsHide: true });
+    spawn('powershell.exe', [
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-WindowStyle',
+        'Hidden',
+        '-Command',
+        psCommand
+    ], { windowsHide: true, shell: false, stdio: 'ignore' });
 }
 
 /**
@@ -606,4 +615,5 @@ app.listen(PORT, () => {
     console.log(`DDTV 端点: http://localhost:${PORT}/ddtv`);
     console.log(`mikufans 端点: http://localhost:${PORT}/mikufans`);
     console.log(`==================================================\n`);
+    audioProcessor.startOnlyAudioRetentionScheduler?.();
  });

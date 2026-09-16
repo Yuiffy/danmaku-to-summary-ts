@@ -1,0 +1,14 @@
+{
+  "speaker": "米汀",
+  "key": "miting_v2",
+  "clips": [
+    {"source": "D:/files/videos/DDTV录播/31368705_米汀Nagisa/2026_07_21/录制-31368705-20260721-080617-620-早安一会儿.flv", "startSeconds": 120, "durationSeconds": 8, "kind": "speech", "reviewed": false},
+    {"source": "D:/files/videos/DDTV录播/31368705_米汀Nagisa/2026_07_21/录制-31368705-20260721-080617-620-早安一会儿.flv", "startSeconds": 360, "durationSeconds": 8, "kind": "speech", "reviewed": false},
+    {"source": "D:/files/videos/DDTV录播/31368705_米汀Nagisa/2026_07_21/录制-31368705-20260721-080617-620-早安一会儿.flv", "startSeconds": 600, "durationSeconds": 8, "kind": "speech", "reviewed": false},
+    {"source": "D:/files/videos/DDTV录播/31368705_米汀Nagisa/2026_07_21/录制-31368705-20260721-080617-620-早安一会儿.flv", "startSeconds": 840, "durationSeconds": 8, "kind": "speech", "reviewed": false},
+    {"source": "D:/files/videos/DDTV录播/31368705_米汀Nagisa/2026_07_20/录制-31368705-20260720-090507-891-早安一会儿.flv", "startSeconds": 120, "durationSeconds": 8, "kind": "speech", "reviewed": false},
+    {"source": "D:/files/videos/DDTV录播/31368705_米汀Nagisa/2026_07_20/录制-31368705-20260720-090507-891-早安一会儿.flv", "startSeconds": 360, "durationSeconds": 8, "kind": "speech", "reviewed": false},
+    {"source": "D:/files/videos/DDTV录播/31368705_米汀Nagisa/2026_07_20/录制-31368705-20260720-090507-891-早安一会儿.flv", "startSeconds": 600, "durationSeconds": 8, "kind": "speech", "reviewed": false},
+    {"source": "D:/files/videos/DDTV录播/31368705_米汀Nagisa/2026_07_20/录制-31368705-20260720-090507-891-早安一会儿.flv", "startSeconds": 840, "durationSeconds": 8, "kind": "speech", "reviewed": false}
+  ]
+}

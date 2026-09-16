@@ -6,6 +6,7 @@ import * as path from 'path';
 import { getLogger } from '../../core/logging/LogManager';
 import { IDelayedReplyStore } from './interfaces/IDelayedReplyStore';
 import { DelayedReplyTask } from './interfaces/types';
+import { getProjectRoot } from '../../core/config/ProjectPaths';
 
 /**
  * 延迟回复存储实现
@@ -16,8 +17,8 @@ export class DelayedReplyStore implements IDelayedReplyStore {
   private tasks: Map<string, DelayedReplyTask> = new Map();
   private initialized = false;
 
-  constructor() {
-    this.storagePath = path.join(process.cwd(), 'data', 'delayed_reply_tasks.json');
+  constructor(storagePath = path.join(getProjectRoot(), 'data', 'delayed_reply_tasks.json')) {
+    this.storagePath = storagePath;
   }
 
   /**
@@ -61,6 +62,24 @@ export class DelayedReplyStore implements IDelayedReplyStore {
           if (task.completedAt) {
             task.completedAt = new Date(task.completedAt);
           }
+          if (task.supplementalCompletedAt) {
+            task.supplementalCompletedAt = new Date(task.supplementalCompletedAt);
+          }
+          if (task.supplementalPublishingAt) {
+            task.supplementalPublishingAt = new Date(task.supplementalPublishingAt);
+          }
+          if (task.summaryCompletedAt) {
+            task.summaryCompletedAt = new Date(task.summaryCompletedAt);
+          }
+          if (task.summaryPublishingAt) {
+            task.summaryPublishingAt = new Date(task.summaryPublishingAt);
+          }
+          if (task.liveContentSummaryCompletedAt) {
+            task.liveContentSummaryCompletedAt = new Date(task.liveContentSummaryCompletedAt);
+          }
+          if (task.liveContentSummaryPublishingAt) {
+            task.liveContentSummaryPublishingAt = new Date(task.liveContentSummaryPublishingAt);
+          }
           
           this.tasks.set(task.taskId, task);
         }
@@ -96,16 +115,33 @@ export class DelayedReplyStore implements IDelayedReplyStore {
     return this.tasks.get(taskId) || null;
   }
 
+  async getAllTasks(): Promise<DelayedReplyTask[]> {
+    return Array.from(this.tasks.values());
+  }
+
   /**
    * 获取待处理任务
    */
   async getPendingTasks(): Promise<DelayedReplyTask[]> {
     const now = new Date();
-    return Array.from(this.tasks.values()).filter(
-      task => task.status === 'pending' && 
-      // 预计发送时间没有过期太久（24小时）
-      task.scheduledTime >= new Date(now.getTime() - 24 * 60 * 60 * 1000)
-    );
+    return Array.from(this.tasks.values()).filter(task => {
+      if (
+        task.status !== 'pending' &&
+        task.status !== 'waiting_comic' &&
+        task.status !== 'waiting_summary' &&
+        task.status !== 'waiting_live_content'
+      ) {
+        return false;
+      }
+
+      const maxAgeMs = task.status === 'waiting_comic' ||
+        task.status === 'waiting_summary' ||
+        task.status === 'waiting_live_content'
+        ? 7 * 24 * 60 * 60 * 1000
+        : 24 * 60 * 60 * 1000;
+
+      return task.scheduledTime >= new Date(now.getTime() - maxAgeMs);
+    });
   }
 
   /**
@@ -182,7 +218,9 @@ export class DelayedReplyStore implements IDelayedReplyStore {
         lastUpdated: new Date().toISOString()
       };
 
-      fs.writeFileSync(this.storagePath, JSON.stringify(data, null, 2), 'utf8');
+      const temporaryPath = `${this.storagePath}.tmp`;
+      fs.writeFileSync(temporaryPath, JSON.stringify(data, null, 2), 'utf8');
+      fs.renameSync(temporaryPath, this.storagePath);
     } catch (error) {
       this.logger.error('保存延迟任务失败', undefined, error instanceof Error ? error : new Error(String(error)));
       throw error;

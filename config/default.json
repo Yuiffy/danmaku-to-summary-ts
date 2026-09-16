@@ -1,4 +1,4 @@
-﻿{
+{
   "app": {
     "name": "danmaku-to-summary",
     "version": "0.2.0",
@@ -24,99 +24,292 @@
       "fixVideoWait": 30000,
       "fileStableCheck": 30000,
       "processTimeout": 1800000
+    },
+    "streamMerge": {
+      "enabled": true,
+      "maxSegments": 20,
+      "fillGaps": true,
+      "backupOriginals": true,
+      "copyCover": true,
+      "nearbySegmentRecovery": true,
+      "nearbySegmentMaxGapSeconds": 1800
+    },
+    "mikufansOfflineFallback": {
+      "enabled": true,
+      "pollIntervalSeconds": 60,
+      "offlineConfirmations": 3,
+      "offlineGraceSeconds": 180,
+      "apiTimeoutMs": 10000
     }
   },
   "audio": {
     "enabled": true,
     "audioOnlyRooms": [],
-    "formats": [".m4a", ".aac", ".mp3", ".wav", ".ogg", ".flac"],
-    "defaultFormat": ".m4a",
+    "formats": [".m4a", ".aac", ".mp3", ".wav", ".ogg", ".flac", ".opus"],
+    "defaultFormat": ".opus",
+    "defaultProfile": "opus48k",
+    "outputProfiles": {
+      "opus48k": {
+        "format": ".opus",
+        "ffmpegArgs": ["-c:a", "libopus", "-b:a", "48k"]
+      },
+      "aac64k": {
+        "format": ".m4a",
+        "outputSuffix": "_64k",
+        "ffmpegArgs": ["-c:a", "aac", "-b:a", "64k"]
+      }
+    },
     "ffmpeg": {
       "path": "ffmpeg",
-      "timeout": 300000
+      "timeout": 300000,
+      "threads": 2,
+      "priority": "belowNormal",
+      "asrGuard": {
+        "enabled": true,
+        "staleMs": 15000,
+        "pollMs": 1000,
+        "maxWaitMs": 15000,
+        "overlapThreads": 1
+      },
+      "resourcePeak": {
+        "enabled": true,
+        "sampleIntervalMs": 1000
+      }
     },
     "storage": {
       "keepOriginalVideo": false,
-      "maxFileAgeDays": 30
+      "retentionEnabled": true,
+      "convertAfterDays": 3,
+      "maxProcessAgeDays": null,
+      "includeBak": false,
+      "deleteBakAfterConversion": false,
+      "scanIntervalHours": 24,
+      "maxFileAgeDays": null,
+      "archiveEnabled": true,
+      "moveToArchiveAfterDays": 33,
+      "archiveTargetBasePath": "E:/EFiles/Evideo/DDTV录播-E",
+      "deleteBakBeforeArchive": true,
+      "additionalArchiveRoomIds": [],
+      "archiveAllRoomDirectories": false,
+      "pruneNonMergedVideosBeforeArchiveRoomIds": []
     }
   },
   "asr": {
-    "default_backend": "whisper",
+    "participantDiscovery": {
+      "enabled": true,
+      "visual": {
+        "enabled": true,
+        "provider": "daiYu",
+        "model": "gpt-5.6-luna",
+        "maxFrames": 6,
+        "timeoutMs": 120000,
+        "maxTokens": 7000,
+        "reasoningEffort": "low"
+      }
+    },
+    "default_backend": "paraformer",
+    "subtitleProofreading": {
+      "enabled": true,
+      "roomIds": ["25788785"],
+      "contextSeconds": 20,
+      "maxContextChars": 400
+    },
     "common_hotwords": [
+      "东爱璃Lovely",
+      "星汐Seki",
+      "礼墨Sumi",
+      "笙歌",
+      "伊索尔Sol",
+      "南町Nightin",
+      "MIXUP2026",
+      "PSP",
+      "VirtuaReal",
+      "岁己",
+      "岁己SUI",
+      "小岁",
+      "饼干岁",
+      "栞栞",
+      "米汀",
+      "瑞娅",
+      "时守星沙"
+    ],
+    "corrections": {
+      "safe": {
+        "小随": "小岁",
+        "小翠": "小岁",
+        "吓头": "下头",
+        "c级": "岁己",
+        "C级": "岁己",
+        "c 级": "岁己",
+        "C 级": "岁己",
+        "c自己": "岁己",
+        "C自己": "岁己",
+        "c 自己": "岁己",
+        "C 自己": "岁己",
+        "c 大叔": "岁大叔",
+        "C 大叔": "岁大叔",
+        "拜血": "败犬",
+        "花脸": "花礼",
+        "花里": "花礼",
+        "花梨": "花礼",
+        "南天起": "南町",
+        "难亭": "南町",
+        "南亭": "南町",
+        "男你": "南町你",
+        "婚姿板": "灰泽满",
+        "灰色本": "灰泽满",
+        "饼干脆": "饼干岁",
+        "饼干碎": "饼干岁",
+        "碎戟": "岁己",
+        "碎机": "岁己",
+        "碎几": "岁己",
+        "碎姐": "岁己",
+        "小碎": "小岁",
+        "小c": "小岁",
+        "小四": "小岁",
+        "会在卖": "灰泽满",
+        "会在买": "灰泽满",
+        "灰色板": "灰泽满",
+        "瑞评": "锐评",
+        "贵子": "柜子",
+        "黑家": "回家",
+        "会这么": "灰泽满",
+        "小睡": "小岁",
+        "小咖": "小果",
+        "叶子鸡": "椰子鸡",
+        "小凯": "小琴",
+        "灰精版": "灰泽满",
+        "芈月": "弥月",
+        "老民": "老弥",
+        "老明": "老弥",
+        "优瓦": "Yua",
+        "玉瓦": "Yua",
+        "月瓦": "Yua",
+        "红味": "虹味"
+      },
+      "exclude_when": {
+        "碎机": [
+          "粉碎机"
+        ],
+        "小碎": [
+          "小碎步",
+          "小碎片",
+          "小碎石",
+          "小碎花",
+          "小碎块",
+          "小碎屑",
+          "小碎发",
+          "小碎钻"
+        ],
+        "小四": [
+          "小四历",
+          "小四十小鹿",
+          "小四个小鹿"
+        ]
+      },
+      "exclude_pattern": {
+        "小四": ["小四位(?![于列居置])"]
+      }
+    },
+    "routing": [
       {
-        "word": "东爱璃Lovely",
-        "weight": 20,
-        "aliases": ["东爱璃", "Lovely", "爱璃", "东爱丽", "爱丽", "东艾璃", "东艾丽"]
+        "match": {
+          "room_id": "26966466"
+        },
+        "backend": "paraformer",
+        "corrections": {
+          "safe": {
+            "雀帮": "粤帮",
+            "投户": "投沪",
+            "投护": "投沪",
+            "费姐": "岁己",
+            "克洛亚": "克罗雅",
+            "克利亚": "克罗雅"
+          }
+        }
       },
       {
-        "word": "星汐Seki",
-        "weight": 20,
-        "aliases": ["星汐", "Seki", "seki", "星夕", "星西", "星希"]
+        "match": {
+          "room_id": "1713546334"
+        },
+        "backend": "paraformer",
+        "corrections": {
+          "safe": {
+            "克罗亚": "克罗雅",
+            "克罗娅": "克罗雅",
+            "克洛雅": "克罗雅",
+            "克莱雅": "克罗雅",
+            "柯莱雅": "克罗雅",
+            "牙小妹": "雅小妹",
+            "牙小妹儿": "雅小妹",
+            "兔小妹": "莉蔻",
+            "兔小妹儿": "莉蔻",
+            "牙牙": "雅雅",
+            "雅牙": "雅雅",
+            "石榴": "十六",
+            "十六营": "十六",
+            "十六姨": "十六"
+          }
+        }
       },
       {
-        "word": "礼墨Sumi",
-        "weight": 20,
-        "aliases": ["礼墨", "Sumi", "sumi", "里墨", "礼沫", "李墨"]
+        "match": {
+          "room_id": "1713548468"
+        },
+        "backend": "paraformer",
+        "corrections": {
+          "safe": {
+            "克罗亚": "克罗雅",
+            "克罗娅": "克罗雅",
+            "克洛雅": "克罗雅",
+            "克莱雅": "克罗雅",
+            "柯莱雅": "克罗雅",
+            "妮蔻": "莉蔻",
+            "妮口": "莉蔻",
+            "妮狗": "莉蔻",
+            "石榴": "十六",
+            "十六营": "十六",
+            "十六姨": "十六"
+          }
+        }
       },
       {
-        "word": "笙歌",
-        "weight": 20,
-        "aliases": ["帅比笙歌超可爱OvO", "笙歌OvO", "shengge", "生哥", "声歌", "升哥"]
+        "match": {
+          "room_id": "1986461465"
+        },
+        "backend": "paraformer",
+        "corrections": {
+          "safe": {
+            "克罗亚": "克罗雅",
+            "克罗娅": "克罗雅",
+            "克洛雅": "克罗雅",
+            "克莱雅": "克罗雅",
+            "柯莱雅": "克罗雅",
+            "石榴": "十六",
+            "十六营": "十六",
+            "十六姨": "十六"
+          }
+        }
       },
       {
-        "word": "伊索尔Sol",
-        "weight": 20,
-        "aliases": ["伊索尔", "Sol", "sol", "索尔", "伊索", "一索尔"]
-      },
-      {
-        "word": "南町Nightin",
-        "weight": 20,
-        "aliases": ["南町", "Nightin", "nightin", "南丁", "南町Night in", "南町奈汀"]
-      },
-      {
-        "word": "MIXUP2026",
-        "weight": 18,
-        "aliases": ["MIXUP", "mixup", "mix up", "Mixup2026", "MIXUP 2026"]
-      },
-      {
-        "word": "PSP",
-        "weight": 18,
-        "aliases": ["P S P", "psp"]
-      },
-      {
-        "word": "VirtuaReal",
-        "weight": 18,
-        "aliases": ["VR", "V R", "虚拟Real", "维阿", "微阿"]
-      },
-      {
-        "word": "岁己SUI",
-        "weight": 20,
-        "aliases": ["岁己", "岁几", "碎己"],
-        "contextual_aliases": ["随机", "随即"]
-      },
-      {
-        "word": "栞栞",
-        "weight": 20,
-        "aliases": ["堪堪", "栞", "Shiori"]
-      },
-      {
-        "word": "米汀",
-        "weight": 18,
-        "aliases": ["Miting", "米丁", "米婷"]
-      },
-      {
-        "word": "瑞娅",
-        "weight": 18,
-        "aliases": ["Rhea", "瑞亚", "蕊娅"]
-      },
-      {
-        "word": "时守星沙",
-        "weight": 18,
-        "aliases": ["星沙", "时守", "时守星砂", "星砂"]
+        "match": {
+          "room_id": "1741667419"
+        },
+        "backend": "paraformer",
+        "corrections": {
+          "safe": {
+            "克罗亚": "克罗雅",
+            "克罗娅": "克罗雅",
+            "克洛雅": "克罗雅",
+            "克莱雅": "克罗雅",
+            "柯莱雅": "克罗雅",
+            "石榴": "十六",
+            "十六营": "十六",
+            "十六姨": "十六"
+          }
+        }
       }
     ],
-    "corrections": [],
-    "routing": [],
     "whisper": {
       "model": "deepdml/faster-whisper-large-v3-turbo-ct2",
       "language": "zh"
@@ -130,10 +323,22 @@
       "device": "cuda",
       "use_itn": true,
       "max_vad_segment_s": 8,
+      "inference_batch_size": 8,
       "merge_length_s": 8,
-      "process_timeout_s": 1800,
+      "process_timeout_s": 7200,
+      "gpu_throttle": {
+        "enabled": true,
+        "busy_sm_threshold": 25,
+        "busy_mem_threshold": 25,
+        "busy_fb_threshold_mb": 512,
+        "check_interval_s": 10,
+        "wait_s": 20,
+        "max_wait_s": 0,
+        "pmon_sample_count": 2,
+        "segment_paraformer": true
+      },
       "enable_speaker": true,
-      "preset_spk_num": 3,
+      "preset_spk_num": 5,
       "speaker_merge_threshold": 0.78,
       "speaker_references": [
         {
@@ -146,16 +351,538 @@
           "speaker": "栞栞",
           "audio_path": "data/asr_speaker_refs/shiori.wav",
           "chunk_s": 8,
-          "max_chunks": 20
+          "max_chunks": 20,
+          "state": "calm_chat"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_excited_game.wav",
+          "chunk_s": 8,
+          "max_chunks": 20,
+          "state": "excited_game"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_recent_solo.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "recent_solo_chat"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_recent_august.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "recent_chat_august"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_recent_august_alt.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "alternate_chat_august"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_singing.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "singing_karaoke"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_singing_august_24.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "singing_august_24"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_recent_august_24.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "recent_chat_august_24"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_august_24_fragmented.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "fragmented_state_august_24"
         },
         {
           "speaker": "瑞娅",
           "audio_path": "data/asr_speaker_refs/rhea.wav",
           "chunk_s": 8,
           "max_chunks": 20
+        },
+        {
+          "speaker": "三理",
+          "audio_path": "data/asr_speaker_refs/mit3uri.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
+          "speaker": "米汀",
+          "audio_path": "data/asr_speaker_refs/miting.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
+          "speaker": "弥月Mizuki",
+          "audio_path": "data/asr_speaker_refs/mizuki.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
         }
       ],
-      "speaker_reference_threshold": 0.45
+      "speaker_reference_threshold": 0.45,
+      "speaker_reference_margin": 0.06,
+      "speaker_reference_max_sample_chunks": 24,
+      "speaker_reference_min_support_chunks": 2,
+      "speaker_reference_min_support_ratio": 0.5,
+      "speaker_reference_prototype_merge_threshold": 0.72,
+      "speaker_reference_max_prototypes": 10,
+      "speaker_reference_prototype_min_support_chunks": 2,
+      "speaker_row_reference_threshold": 0.55,
+      "speaker_row_reference_margin": 0.08,
+      "speaker_row_reference_top_k": 2,
+      "speaker_embedding_batch_size": 64,
+      "speaker_detection_mode": "auto",
+      "speaker_min_segment_s": 0.8,
+      "speaker_max_segment_s": 8,
+      "speaker_probe_max_chunks": 256,
+      "speaker_probe_max_assignment_clusters": 12,
+      "speaker_probe_min_valid_chunks": 6,
+      "speaker_probe_min_speech_s": 20,
+      "speaker_probe_min_cluster_chunks": 2,
+      "speaker_probe_min_cluster_s": 6,
+      "speaker_probe_min_cohesion": 0.7,
+      "speaker_probe_separation_margin": 0.03,
+      "speaker_probe_fail_open": true,
+      "speaker_full_refine_enabled": true,
+      "speaker_full_refine_iterations": 8
+    },
+    "fun_asr_nano": {
+      "model": "FunAudioLLM/Fun-ASR-Nano-2512",
+      "vad_model": "fsmn-vad",
+      "punc_model": null,
+      "spk_model": null,
+      "language": "中文",
+      "device": "cuda",
+      "python_executable": null,
+      "python_args": [],
+      "python_path_map": [],
+      "use_itn": true,
+      "max_vad_segment_s": 8,
+      "merge_length_s": 8,
+      "process_timeout_s": 7200,
+      "gpu_throttle": {
+        "enabled": true,
+        "busy_sm_threshold": 25,
+        "busy_mem_threshold": 25,
+        "busy_fb_threshold_mb": 512,
+        "check_interval_s": 10,
+        "wait_s": 20,
+        "max_wait_s": 0,
+        "pmon_sample_count": 2,
+        "segment_paraformer": true
+      },
+      "enable_speaker": false,
+      "preset_spk_num": null,
+      "speaker_merge_threshold": 0.78,
+      "speaker_references": [],
+      "speaker_reference_threshold": 0.45,
+      "speaker_reference_margin": 0.06,
+      "speaker_reference_max_sample_chunks": 24,
+      "speaker_reference_min_support_chunks": 2,
+      "speaker_reference_min_support_ratio": 0.5,
+      "speaker_reference_prototype_merge_threshold": 0.72,
+      "speaker_reference_max_prototypes": 10,
+      "speaker_reference_prototype_min_support_chunks": 2,
+      "speaker_row_reference_threshold": 0.55,
+      "speaker_row_reference_margin": 0.08,
+      "speaker_row_reference_top_k": 2,
+      "speaker_embedding_batch_size": 64,
+      "speaker_detection_mode": "auto",
+      "speaker_min_segment_s": 0.8,
+      "speaker_max_segment_s": 8,
+      "speaker_probe_max_chunks": 256,
+      "speaker_probe_max_assignment_clusters": 12,
+      "speaker_probe_min_valid_chunks": 6,
+      "speaker_probe_min_speech_s": 20,
+      "speaker_probe_min_cluster_chunks": 2,
+      "speaker_probe_min_cluster_s": 6,
+      "speaker_probe_min_cohesion": 0.7,
+      "speaker_probe_separation_margin": 0.03,
+      "speaker_probe_fail_open": true,
+      "speaker_full_refine_enabled": true,
+      "speaker_full_refine_iterations": 8
+    },
+    "fun_asr_nano_vllm": {
+      "model": "FunAudioLLM/Fun-ASR-Nano-2512",
+      "vad_model": "fsmn-vad",
+      "punc_model": null,
+      "spk_model": "cam++",
+      "language": "中文",
+      "device": "cuda",
+      "python_executable": null,
+      "python_args": [],
+      "python_path_map": [],
+      "use_itn": true,
+      "process_timeout_s": 10800,
+      "gpu_throttle": {
+        "enabled": true,
+        "busy_sm_threshold": 25,
+        "busy_mem_threshold": 25,
+        "busy_fb_threshold_mb": 512,
+        "check_interval_s": 10,
+        "wait_s": 20,
+        "max_wait_s": 0,
+        "pmon_sample_count": 2,
+        "segment_paraformer": true
+      },
+      "enable_speaker": true,
+      "preset_spk_num": 5,
+      "speaker_merge_threshold": 0.78,
+      "speaker_references": [
+        {
+          "speaker": "岁己SUI",
+          "audio_path": "data/asr_speaker_refs/sui.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori.wav",
+          "chunk_s": 8,
+          "max_chunks": 20,
+          "state": "calm_chat"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_excited_game.wav",
+          "chunk_s": 8,
+          "max_chunks": 20,
+          "state": "excited_game"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_recent_solo.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "recent_solo_chat"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_recent_august.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "recent_chat_august"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_recent_august_alt.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "alternate_chat_august"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_singing.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "singing_karaoke"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_singing_august_24.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "singing_august_24"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_recent_august_24.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "recent_chat_august_24"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_august_24_fragmented.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "fragmented_state_august_24"
+        },
+        {
+          "speaker": "瑞娅",
+          "audio_path": "data/asr_speaker_refs/rhea.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
+          "speaker": "三理",
+          "audio_path": "data/asr_speaker_refs/mit3uri.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
+          "speaker": "米汀",
+          "audio_path": "data/asr_speaker_refs/miting.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
+          "speaker": "弥月Mizuki",
+          "audio_path": "data/asr_speaker_refs/mizuki.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        }
+      ],
+      "speaker_reference_threshold": 0.45,
+      "speaker_reference_margin": 0.06,
+      "speaker_reference_max_sample_chunks": 24,
+      "speaker_reference_min_support_chunks": 2,
+      "speaker_reference_min_support_ratio": 0.5,
+      "speaker_reference_prototype_merge_threshold": 0.72,
+      "speaker_reference_max_prototypes": 10,
+      "speaker_reference_prototype_min_support_chunks": 2,
+      "speaker_row_reference_threshold": 0.55,
+      "speaker_row_reference_margin": 0.08,
+      "speaker_row_reference_top_k": 2,
+      "speaker_detection_mode": "auto",
+      "speaker_min_segment_s": 0.8,
+      "speaker_max_segment_s": 8,
+      "speaker_probe_max_chunks": 256,
+      "speaker_probe_max_assignment_clusters": 12,
+      "speaker_probe_min_valid_chunks": 6,
+      "speaker_probe_min_speech_s": 20,
+      "speaker_probe_min_cluster_chunks": 2,
+      "speaker_probe_min_cluster_s": 6,
+      "speaker_probe_min_cohesion": 0.7,
+      "speaker_probe_separation_margin": 0.03,
+      "speaker_probe_fail_open": true,
+      "speaker_full_refine_enabled": true,
+      "speaker_full_refine_iterations": 8,
+      "hub": "ms",
+      "dtype": "bf16",
+      "tensor_parallel_size": 1,
+      "gpu_memory_utilization": 0.8,
+      "max_model_len": 4096,
+      "max_new_tokens": 512,
+      "batch_size_s": 300,
+      "enforce_eager": false
+    },
+    "paraformer": {
+      "model_profile": "default",
+      "model": "paraformer-zh",
+      "base_model": "paraformer-zh",
+      "finetuned_model": "D:/files/videos/asr_finetune_runs/paraformer_standard_20260712_official_example",
+      "vad_model": "fsmn-vad",
+      "punc_model": "ct-punc",
+      "spk_model": "cam++",
+      "language": "auto",
+      "device": "cuda",
+      "vad_device": "cpu",
+      "python_executable": null,
+      "python_args": [],
+      "python_path_map": [],
+      "use_itn": true,
+      "vad_max_single_segment_time_ms": 60000,
+      "max_vad_segment_s": 15,
+      "asr_max_segment_s": 15,
+      "batch_size_s": 600,
+      "batch_size_threshold_s": 60,
+      "process_timeout_s": 7200,
+      "emotion_analysis": {
+        "enabled": false,
+        "room_ids": [
+          "25788785"
+        ],
+        "model": "iic/SenseVoiceSmall",
+        "device": "cuda",
+        "chunk_s": 12,
+        "max_gap_s": 1.5,
+        "batch_size_s": 300,
+        "max_batch_chunks": 64,
+        "inference_batch_size": 8,
+        "precision": "bf16",
+        "tf32": true,
+        "include_events": true,
+        "fail_open": true
+      },
+      "persistent_worker": {
+        "enabled": true,
+        "startup_timeout_s": 60
+      },
+      "resource_guard": {
+        "enabled": false,
+        "game_process_names": [
+          "DeltaForceClient-Win64-Shipping.exe"
+        ],
+        "pause_when_game_running": false,
+        "poll_interval_s": 3,
+        "wait_s": 15,
+        "max_wait_s": 0,
+        "priority": "belowNormal",
+        "eco_qos": true,
+        "prefer_e_cores": false,
+        "torch_num_threads": 4,
+        "torch_num_interop_threads": 1,
+        "claim_enabled": true,
+        "claim_heartbeat_s": 2
+      },
+      "gpu_throttle": {
+        "enabled": true,
+        "busy_sm_threshold": 80,
+        "busy_mem_threshold": 80,
+        "busy_fb_threshold_mb": 12000,
+        "check_interval_s": 10,
+        "wait_s": 20,
+        "max_wait_s": 0,
+        "pmon_sample_count": 2,
+        "segment_paraformer": true
+      },
+      "enable_speaker": true,
+      "preset_spk_num": 5,
+      "speaker_merge_threshold": 0.78,
+      "speaker_references": [
+        {
+          "speaker": "犬绒Mofu",
+          "audio_path": "data/asr_speaker_refs/mofu_official_chat.wav",
+          "state": "official_solo_chat",
+          "chunk_s": 8,
+          "max_chunks": 2,
+          "preserve_exemplars": true
+        },
+        {
+          "speaker": "灰泽满Hazel",
+          "audio_path": "data/asr_speaker_refs/hazel_official_game_chat.wav",
+          "state": "official_game_chat",
+          "chunk_s": 8,
+          "max_chunks": 4,
+          "preserve_exemplars": true
+        },
+        {
+          "speaker": "岁己SUI",
+          "audio_path": "data/asr_speaker_refs/sui.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori.wav",
+          "chunk_s": 8,
+          "max_chunks": 20,
+          "state": "calm_chat"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_excited_game.wav",
+          "chunk_s": 8,
+          "max_chunks": 20,
+          "state": "excited_game"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_recent_solo.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "recent_solo_chat"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_recent_august.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "recent_chat_august"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_recent_august_alt.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "alternate_chat_august"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_singing.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "singing_karaoke"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_singing_august_24.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "singing_august_24"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_recent_august_24.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "recent_chat_august_24"
+        },
+        {
+          "speaker": "栞栞",
+          "audio_path": "data/asr_speaker_refs/shiori_august_24_fragmented.wav",
+          "chunk_s": 8,
+          "max_chunks": 8,
+          "state": "fragmented_state_august_24"
+        },
+        {
+          "speaker": "瑞娅",
+          "audio_path": "data/asr_speaker_refs/rhea.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
+          "speaker": "三理",
+          "audio_path": "data/asr_speaker_refs/mit3uri.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
+          "speaker": "米汀",
+          "audio_path": "data/asr_speaker_refs/miting.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        },
+        {
+          "speaker": "弥月Mizuki",
+          "audio_path": "data/asr_speaker_refs/mizuki.wav",
+          "chunk_s": 8,
+          "max_chunks": 20
+        }
+      ],
+      "speaker_reference_threshold": 0.45,
+      "speaker_reference_margin": 0.06,
+      "speaker_reference_max_sample_chunks": 24,
+      "speaker_reference_min_support_chunks": 2,
+      "speaker_reference_min_support_ratio": 0.5,
+      "speaker_reference_prototype_merge_threshold": 0.72,
+      "speaker_reference_max_prototypes": 10,
+      "speaker_reference_prototype_min_support_chunks": 2,
+      "speaker_row_reference_threshold": 0.55,
+      "speaker_row_reference_margin": 0.08,
+      "speaker_row_reference_top_k": 2,
+      "speaker_embedding_batch_size": 64,
+      "speaker_detection_mode": "auto",
+      "speaker_min_segment_s": 0.8,
+      "speaker_max_segment_s": 8,
+      "speaker_probe_max_chunks": 256,
+      "speaker_probe_max_assignment_clusters": 12,
+      "speaker_probe_min_valid_chunks": 6,
+      "speaker_probe_min_speech_s": 20,
+      "speaker_probe_min_cluster_chunks": 2,
+      "speaker_probe_min_cluster_s": 6,
+      "speaker_probe_min_cohesion": 0.7,
+      "speaker_probe_separation_margin": 0.03,
+      "speaker_probe_fail_open": true,
+      "speaker_full_refine_enabled": true,
+      "speaker_full_refine_iterations": 8
     }
   },
   "subtitle": {
@@ -169,9 +896,31 @@
     "strip_punctuation": true
   },
   "ai": {
+    "providers": {
+      "daiYu": {
+        "type": "openai",
+        "displayName": "带鱼",
+        "baseURL": "http://localhost:8080/v1",
+        "apiKey": "",
+        "proxy": ""
+      },
+      "tuZi": {
+        "type": "openai",
+        "displayName": "tuZi",
+        "baseUrl": "https://api.tu-zi.com",
+        "apiKey": "",
+        "proxy": ""
+      }
+    },
     "text": {
       "enabled": true,
-      "provider": "tuZi",
+      "provider": "daiYu",
+      "sharedPromptCache": {
+        "enabled": true,
+        "continuationEnabled": false,
+        "explicitRolloutPercent": 0,
+        "ttl": "30m"
+      },
       "gemini": {
         "enabled": true,
         "apiKey": "",
@@ -184,10 +933,31 @@
         "enabled": true,
         "apiKey": "",
         "baseUrl": "https://api.tu-zi.com",
-        "model": "gpt-5.4-mini",
-        "fallbackModels": [
-          "gemini-3-flash-preview"
-        ],
+        "model": "gpt-5.6-luna",
+        "fallbackModels": [],
+        "includeBuiltInFallbackModels": false,
+        "apiMode": "responses",
+        "transientMaxAttempts": 3,
+        "transientRetryDelayMs": 10000,
+        "temperature": 0.7,
+        "maxTokens": 100000,
+        "proxy": ""
+      },
+      "daiYu": {
+        "enabled": true,
+        "baseUrl": "http://localhost:8080",
+        "apiMode": "chatCompletions",
+        "model": "gpt-5.6-luna",
+        "fallbackModels": [],
+        "includeBuiltInFallbackModels": false,
+        "fallbackProvider": "tuZi",
+        "fallbackProviderModel": "gpt-5.6-luna",
+        "fallbackProviderApiMode": "responses",
+        "thinking": {
+          "enabled": true,
+          "budgetTokens": 10000,
+          "reasoningEffort": "high"
+        },
         "temperature": 0.7,
         "maxTokens": 100000,
         "proxy": ""
@@ -197,6 +967,59 @@
       "enabled": true,
       "provider": "python",
       "outputLockEnabled": false,
+      "overlapClips": false,
+      "textGeneration": {
+        "requestTimeoutMs": 600000,
+        "totalTimeoutMs": 1200000
+      },
+      "storytellingExperiment": {
+        "enabled": true,
+        "immersivePercent": 60,
+        "salt": "comic-immersive-v1",
+        "directedScreenshots": {
+          "enabled": true,
+          "maxImages": 4,
+          "maxRequests": 4,
+          "maxFramesPerRequest": 4,
+          "maxTotalReferenceImages": 12,
+          "coverageSheetsEnabled": true,
+          "coverageSheetMaxCandidates": 4,
+          "coverageSheetWidth": 1600,
+          "maxWidth": 1600,
+          "jpegQuality": 2
+        }
+      },
+      "referenceImagePolicy": {
+        "allowLiveCover": false,
+        "excludeScreenshotsForStaticVideo": true,
+        "staticVideoDetection": {
+          "enabled": true,
+          "referencePixels": 921600,
+          "maxFormatBitrateKbpsAtReference": 500,
+          "missingVideoStreamIsStatic": true
+        }
+      },
+      "multiReferenceImages": {
+        "enabled": false,
+        "discoveryEnabled": true,
+        "maxExtraCharacters": 2,
+        "minSpeakerScore": 0.64,
+        "minSpeechSeconds": 8,
+        "minSpeakerMaxScore": 0.8,
+        "minSpeakerSecondsWhenLowScore": 900,
+        "includeUnknownSpeakers": false,
+        "useMentionedOnlyAsContext": true,
+        "filterExtraImagesByComicScript": true,
+        "filterMentionedImagesByComicScript": true,
+        "appendCharacterDescriptions": true,
+        "imageOrder": [
+          "host",
+          "appeared_streamers",
+          "cover",
+          "screenshots",
+          "default"
+        ]
+      },
       "concurrency": {
         "maxConcurrentGenerations": 10,
         "lockTimeoutMinutes": 180
@@ -222,6 +1045,290 @@
         "baseUrl": "https://api.tu-zi.com",
         "model": "gpt-image-2",
         "proxy": ""
+      },
+      "imageGeneration": {
+        "enabled": true,
+        "routes": [
+          {
+            "provider": "daiYu",
+            "model": "gpt-image-2",
+            "flow": "openaiImages",
+            "maxAttempts": 1,
+            "timeoutMs": 1200000,
+            "size": "1:1",
+            "quality": "high",
+            "outputFormat": "png",
+            "responseFormat": "b64_json",
+            "useTuziRetry": false
+          },
+          {
+            "provider": "tuZi",
+            "model": "gpt-image-2",
+            "flow": "tuZiCompatible",
+            "maxAttempts": 1,
+            "timeoutMs": 1200000,
+            "size": "1:1",
+            "quality": "high",
+            "outputFormat": "png",
+            "responseFormat": "b64_json",
+            "useTuziRetry": true
+          }
+        ],
+        "rollout": {
+          "enabled": true,
+          "variants": [
+            {
+              "model": "gpt-image-2",
+              "quality": "high"
+            },
+            {
+              "model": "gpt-image-2.5-sunburst",
+              "quality": "low"
+            },
+            {
+              "model": "gpt-image-2.5-sunburst",
+              "quality": "medium"
+            },
+            {
+              "model": "gpt-image-2.5-sunburst",
+              "quality": "high"
+            },
+            {
+              "model": "gpt-image-2.5-sunburst",
+              "quality": "xhigh"
+            },
+            {
+              "model": "gpt-image-2.5-sunburst",
+              "quality": "max"
+            },
+            {
+              "model": "gpt-image-2.5-flare",
+              "quality": "low"
+            },
+            {
+              "model": "gpt-image-2.5-flare",
+              "quality": "medium"
+            },
+            {
+              "model": "gpt-image-2.5-flare",
+              "quality": "high"
+            },
+            {
+              "model": "gpt-image-2.5-flare",
+              "quality": "xhigh"
+            },
+            {
+              "model": "gpt-image-2.5-flare",
+              "quality": "max"
+            }
+          ]
+        }
+      }
+    },
+    "streamerRegistry": {
+      "mit3uri": {
+        "displayName": "三理Mit3uri",
+        "uid": "2030198123",
+        "roomIds": ["1967216004"],
+        "speakerLabels": ["三理", "三理Mit3uri", "Mit3uri"],
+        "mentionLabels": ["三理Mit3uri", "三理", "Mit3uri"],
+        "referenceImages": ["public/reference_images/mit3uri_standing.png"]
+      },
+      "mofu": {
+        "displayName": "犬绒Mofu",
+        "aiClipName": "小绒",
+        "roomIds": ["1791260716"],
+        "searchTags": ["犬绒", "犬绒Mofu"],
+        "mentionLabels": ["犬绒", "小绒", "犬绒Mofu"],
+        "speakerLabels": ["犬绒Mofu", "Mofu"],
+        "aliases": ["犬绒", "小绒"],
+        "referenceImages": ["public/reference_images/mofu_standing_sheet.png"]
+      },
+      "sui": {
+        "displayName": "岁己SUI",
+        "aiClipName": "小岁",
+        "roomIds": ["25788785"],
+        "searchTags": ["岁己", "岁己SUI"],
+        "mentionLabels": ["岁己", "岁己SUI"],
+        "speakerLabels": ["岁己SUI", "sui", "SUI"],
+                "aliases": ["岁己", "SUI", "岁几", "碎己", "碎几", "碎机", "碎即", "穗即", "岁机", "岁已", "小岁"],
+        "referenceImages": [
+          "src/scripts/reference_images/25788785.png"
+        ],
+        "characterDescription": "岁己SUI，白发红瞳女生，虚拟主播，气质可爱又有点帅气。"
+      },
+      "shiori": {
+        "displayName": "栞栞",
+        "aiClipName": "小栞",
+        "roomIds": ["26966466"],
+        "mentionLabels": ["栞栞", "栞栞Shiori", "小栞", "Shiori"],
+        "speakerLabels": ["栞栞", "Shiori"],
+        "aliases": ["栞", "签签", "千千", "浅浅"],
+        "referenceImages": [
+          "public/reference_images/栞栞制服加獭獭栞.png"
+        ],
+        "characterDescription": "栞栞Shiori，有兽耳的女生，浅黄色头发小孩。"
+      },
+      "rhea": {
+        "displayName": "瑞娅",
+        "roomIds": ["23260993"],
+        "uploadTags": ["瑞瑞"],
+        "mentionLabels": ["瑞娅", "瑞亚", "蕊娅", "Rhea"],
+        "speakerLabels": ["瑞娅", "Rhea"],
+        "aliases": ["瑞亚", "蕊娅"],
+        "referenceImages": [
+          "public/reference_images/瑞娅.png"
+        ],
+        "characterDescription": "瑞娅_Rhea，白发紫瞳的北欧魔法学院少女。粉丝“瑞世糖”是她的魔法小助手，外形是方形的瑞士糖。"
+      },
+      "seki": {
+        "displayName": "星汐Seki",
+        "roomIds": ["1603600"],
+        "speakerLabels": ["星汐Seki", "星汐", "Seki", "seki"],
+        "aliases": ["星夕", "星西", "星希"],
+        "referenceImages": [
+          "public/reference_images/seki_standing.png"
+        ],
+        "characterDescription": "星汐Seki，PSPlive所属虚拟UP主，蓝发带粉色挑染、紫瞳、爆炸双马尾的网瘾少女，喜欢打游戏、唱歌、聊天和土味内容。"
+      },
+      "mizuki": {
+        "displayName": "弥月Mizuki",
+        "uid": "1789460279",
+        "roomIds": ["30655190"],
+        "searchTags": ["弥月Mizuki", "弥月"],
+        "mentionLabels": ["弥月Mizuki", "弥月", "老弥", "Mizuki"],
+        "speakerLabels": ["弥月Mizuki", "弥月", "Mizuki"],
+        "aliases": ["兔川弥月", "小弥", "老弥"],
+        "referenceImages": [
+          "public/reference_images/弥月Mizuki参考图.png"
+        ],
+        "characterDescription": "兔川弥月Mizuki，亚麻发异瞳少女，有两个浮游炮机械兔耳。",
+        "contentHints": [
+          "当本场正文只出现孤立的“启动”且直播标题、明确语音、开播前动态均未指向其他游戏时，可将其理解为“原神启动”梗。它不是本场正在玩原神的证据；任何更强证据指向其他游戏时，都禁止据此写成或画成原神。"
+        ]
+      },
+      "miting": {
+        "displayName": "米汀",
+        "roomIds": ["31368705"],
+        "speakerLabels": ["米汀", "Miting"],
+        "aliases": ["米丁", "米婷"],
+        "referenceImages": [
+          "public/reference_images/miting_official_standing.png"
+        ],
+        "characterDescription": "米汀Nagisa，银发灰瞳，戴帽子的女性推理社社员。粉丝“旁汀生”是白色猫头鹰形象。"
+      },
+      "harei": {
+        "displayName": "花礼Harei",
+        "roomIds": ["1820703922"],
+        "mentionLabels": ["花礼Harei", "花礼", "Harei"],
+        "speakerLabels": ["花礼Harei", "花礼", "Harei"],
+        "aliases": ["礼礼", "小礼"],
+        "referenceImages": [
+          "public/reference_images/花礼新衣抱小礼猫.png"
+        ],
+        "characterDescription": "花礼Harei，黑发蓝瞳鼠耳的女生。粉丝是戴帽子的小猫（小礼猫、猫们）。"
+      },
+      "nightin": {
+        "displayName": "南町Nightin",
+        "roomIds": ["24872476"],
+        "searchTags": ["南町Nightin", "南町"],
+        "mentionLabels": ["南町Nightin", "南町", "Nightin", "大N", "大N老师"],
+        "speakerLabels": ["南町Nightin", "南町", "Nightin"],
+        "aliases": ["大N", "大N老师"],
+        "referenceImages": [
+          "public/reference_images/Nightin_南町_赛车自拍.jpg"
+        ],
+        "characterDescription": "南町Nightin，青绿色双马尾，黄瞳，赛车服饰与护目镜造型的歌势主播。"
+      },
+      "hazel": {
+        "displayName": "灰泽满Hazel",
+        "roomIds": ["1713546334"],
+        "searchTags": ["灰泽满Hazel", "灰泽满"],
+        "mentionLabels": ["灰泽满Hazel", "灰泽满", "满满", "满神", "Hazel"],
+        "speakerLabels": ["灰泽满Hazel", "灰泽满", "Hazel"],
+        "aliases": ["满满", "满神", "会在卖", "会在买"],
+        "referenceImages": [
+          "public/reference_images/Hazel_灰泽满_立绘.png"
+        ],
+        "characterDescription": "灰泽满Hazel，灰色短发、绿瞳，带绿色线条的螺旋马尾，风纪委员，常带果冻饰品。"
+      },
+      "liko": {
+        "displayName": "莉蔻Liko",
+        "roomIds": ["1713548468"],
+        "searchTags": ["莉蔻Liko", "莉蔻"],
+        "mentionLabels": ["莉蔻Liko", "莉蔻", "莉可", "Liko", "侏儒兔"],
+        "speakerLabels": ["莉蔻Liko", "莉蔻", "Liko"],
+        "aliases": ["莉可", "莉蔻酱"],
+        "referenceImages": [
+          "public/reference_images/Liko_莉蔻_立绘.png"
+        ],
+        "characterDescription": "莉蔻Liko，长着兔耳的深棕发少女，手里常拿胡萝卜棒冰，背着胡萝卜包。"
+      },
+      "kloa": {
+        "displayName": "克罗雅Kloa",
+        "roomIds": ["1986461465"],
+        "searchTags": ["克罗雅Kloa", "克罗雅"],
+        "mentionLabels": ["雅小妹"],
+        "speakerLabels": ["克罗雅Kloa", "克罗雅", "Kloa"],
+        "aliases": ["克莱雅", "柯莱雅", "克洛雅", "克罗娅", "雅小妹", "雅雅"],
+        "referenceImages": [
+          "public/reference_images/克罗雅无头罩3.jpg"
+        ],
+        "characterDescription": "克罗雅Kloa，粉色头发、恶魔角，头顶天使光环，背后是黑色恶魔翅膀。"
+      },
+      "izayoi": {
+        "displayName": "十六萤Izayoi",
+        "roomIds": ["1741667419"],
+        "searchTags": ["十六萤Izayoi", "十六萤"],
+        "mentionLabels": ["十六萤Izayoi", "十六萤", "十六", "Izayoi"],
+        "speakerLabels": ["十六萤Izayoi", "十六萤", "Izayoi"],
+        "aliases": ["萤萤", "16萤"],
+        "referenceImages": [
+          "public/reference_images/十六萤Izayoi.png"
+        ],
+        "characterDescription": "十六萤Izayoi，浅绿色浣熊耳朵和浅色毛茸茸大尾巴，浅发色黄瞳少女，咖啡馆馆长。"
+      },
+      "komichi": {
+        "displayName": "四时小路Komichi",
+        "aiClipName": "小路",
+        "roomIds": ["1700301235"],
+        "searchTags": ["四时小路Komichi", "四时小路"],
+        "uploadTags": ["小路边"],
+        "referenceImages": [
+          "public/reference_images/komichi_official_standing.png",
+          "public/reference_images/komichi_official_sign.png"
+        ],
+        "characterDescription": "四时小路Komichi，黑色长发、紫色眼睛，红色发带，左侧有黄色警示牌发饰和蓝白方向标发饰；使用官方置顶动态发布的全身立绘和签名素材。"
+      },
+      "viridis": {
+        "displayName": "小松绿Viridis",
+        "aiClipName": "小松",
+        "roomIds": ["1727071052"],
+        "searchTags": ["小松绿Viridis", "小松绿"],
+        "uploadTags": ["Viridis"],
+        "referenceImages": [
+          "public/reference_images/viridis_official_standing.png"
+        ]
+      },
+      "chu2u": {
+        "displayName": "羽啾chu2u",
+        "aiClipName": "小羽",
+        "roomIds": ["1727074031"],
+        "searchTags": ["羽啾chu2u", "羽啾"],
+        "uploadTags": ["chu2u"],
+        "referenceImages": [
+          "public/reference_images/chu2u_standing.png"
+        ]
+      },
+      "sumire": {
+        "displayName": "枝堇Sumire",
+        "aiClipName": "小枝",
+        "roomIds": ["1727076670"],
+        "searchTags": ["枝堇Sumire", "枝堇"],
+        "uploadTags": ["Sumire"],
+        "referenceImages": [
+          "public/reference_images/sumire_vr_official_standing.png"
+        ]
       }
     },
     "tuziRetry": {
@@ -267,6 +1374,14 @@
         "maxCooldownMs": 300000
       }
     },
+    "tuZiBalance": {
+      "enabled": true,
+      "accessToken": "",
+      "newApiUser": "",
+      "lowBalanceThreshold": 5,
+      "notifyOnSuccess": true,
+      "alertCooldownMinutes": 30
+    },
     "defaultNames": {
       "anchor": "主播",
       "fan": "粉丝"
@@ -281,10 +1396,26 @@
         "enableComicGeneration": true,
         "enableDelayedReply": true
       },
+      "26966466": {
+        "audioOnly": true,
+        "anchorName": "小栞",
+        "anchorNicknames": ["栞栞", "栞栞Shiori", "Shiori"],
+        "fanName": "獭獭栞",
+        "enableTextGeneration": true,
+        "enableComicGeneration": true,
+        "enableDelayedReply": true,
+        "wordLimit": 250
+      },
       "25788785": {
         "audioOnly": false,
         "referenceImage": "public/reference_images/岁己SUI小猫帽带饼干岁紫色外套双马尾.png",
         "characterDescription": "岁己SUI（白发红瞳女生），饼干岁（有细细四肢的小小的饼干状生物）",
+        "multiReferenceImages": {
+          "enabled": false,
+          "maxExtraCharacters": 2,
+          "minSpeakerScore": 0.64,
+          "minSpeechSeconds": 8
+        },
         "anchorName": "小岁",
         "fanName": "饼干岁",
         "enableTextGeneration": true,
@@ -292,7 +1423,66 @@
         "enableDelayedReply": true,
         "wordLimit": 800,
         "minComicDurationMinutes": 0,
-        "comicGenerationProbability": 1.0
+        "comicGenerationProbability": 1.0,
+        "imageGeneration": {
+          "enabled": true,
+          "routes": [
+            {
+              "provider": "daiYu",
+              "model": "gpt-image-2.5-sunburst",
+              "flow": "openaiImages",
+              "maxAttempts": 1,
+              "timeoutMs": 1200000,
+              "size": "1:1",
+              "quality": "max",
+              "outputFormat": "png",
+              "responseFormat": "b64_json",
+              "useTuziRetry": false
+            },
+            {
+              "provider": "tuZi",
+              "model": "gpt-image-2",
+              "flow": "tuZiCompatible",
+              "maxAttempts": 1,
+              "timeoutMs": 1200000,
+              "size": "1:1",
+              "quality": "high",
+              "outputFormat": "png",
+              "responseFormat": "b64_json",
+              "useTuziRetry": true,
+              "includeAsyncFallback": false
+            },
+            {
+              "provider": "daiYu",
+              "model": "gpt-image-2",
+              "flow": "openaiImages",
+              "maxAttempts": 1,
+              "timeoutMs": 1200000,
+              "size": "1:1",
+              "quality": "high",
+              "outputFormat": "png",
+              "responseFormat": "b64_json",
+              "useTuziRetry": false
+            },
+            {
+              "provider": "tuZi",
+              "model": "gpt-image-2",
+              "flow": "tuZiCompatible",
+              "strategyMode": "asyncOnly",
+              "asyncFallbackModel": "gemini-3-pro-image-preview-async",
+              "maxAttempts": 1,
+              "timeoutMs": 1200000,
+              "size": "1:1",
+              "quality": "high",
+              "outputFormat": "png",
+              "responseFormat": "b64_json",
+              "useTuziRetry": true
+            }
+          ],
+          "rollout": {
+            "enabled": false
+          }
+        }
       }
     }
   },
@@ -303,6 +1493,224 @@
     "myUserId": "14279",
     "stopWords": ["晚上好", "晚安", "来了", "打call", "拜拜", "卡了", "嗯", "好", "草", "哈哈", "确实", "牛", "可爱", "感谢观看", "谢谢观看", "优优独播剧场——YoYo Television Series Exclusive", "杨茜茜", "李宗盛"],
     "fillerRegex": "^(呃|那个|就是|然后|哪怕|其实|我觉得|算是|哎呀|有点|怎么说呢|所以|这种|啊|哦)+"
+  },
+  "clipTopics": {
+    "enabled": false,
+    "mode": "local_review",
+    "keywords": ["岁己", "小岁", "饼干岁", "岁岁", "SUI"],
+    "aiModel": "gpt-5.6-luna",
+    "ignoredRoomIds": [],
+    "prePaddingSeconds": 20,
+    "postPaddingSeconds": 35,
+    "contextPrePaddingSeconds": 180,
+    "contextPostPaddingSeconds": 300,
+    "maxSegmentsPerBurst": 200,
+    "minClipSeconds": 30,
+    "boundaryEndExtensionSeconds": 60,
+    "boundarySilenceGapSeconds": 3,
+    "preferredClipSeconds": 180,
+    "maxClipSeconds": 480,
+    "editorial": {
+      "enabled": true,
+      "maxGroupSeconds": 1800,
+      "maxEvidenceChars": 80000
+    },
+    "review": {
+      "enabled": true,
+      "mode": "preflight",
+      "strategy": "single",
+      "qualityRules": true,
+      "transientMaxAttempts": 2,
+      "model": "gpt-5.6-sol",
+      "reasoningEffort": "high",
+      "maxOutputTokens": 24000,
+      "maxDanmakuRows": 120,
+      "maxEvidenceChars": 80000,
+      "timeoutMs": 600000
+    },
+    "mergeGapSeconds": 45,
+    "burnSubtitles": true,
+    "ffmpegTimeoutMs": 600000,
+    "backgroundQueue": {
+      "enabled": true,
+      "pollMs": 500,
+      "idleGraceMs": 1000,
+      "staleLockMs": 60000
+    },
+    "subtitleFontSizeRatio": 0.094,
+    "subtitlePortraitFontSizeRatio": 0.044,
+    "subtitleMinFontSize": 30,
+    "subtitleMaxFontSize": 72,
+    "subtitleMaxCharsPerLine": 18,
+    "outputDirName": "topic_clips",
+    "archiveSourceRoot": "E:/EFiles/Evideo/DDTV录播-E",
+    "activeOutputRoot": "D:/files/videos/DDTV录播",
+    "extraTags": [],
+    "autoUpload": {
+      "enabled": false
+    },
+    "notify": {
+      "enabled": true,
+      "includeSubtitleContext": true,
+      "subtitleContextLines": 3,
+      "includeDanmakuContext": true,
+      "maxDanmakuLines": 6,
+      "danmakuContextSeconds": 45
+    }
+  },
+  "ownStreamClips": {
+    "enabled": true,
+    "enhancements": {
+      "enabled": true,
+      "workflow": "pacing",
+      "pacing": { "noiseDb": -40, "nonSpeechVad": true, "minRemovedSeconds": 3, "minRemovedRatio": 0.02, "maxRemovedRatio": 0.2, "maxPausesPerClip": 2, "maxScannedSeconds": 120 },
+      "roomIds": ["25788785"],
+      "editing": true,
+      "experiment": { "enabled": true, "ratio": 0.25, "maxClips": 5 },
+      "budget": { "mode": "log_only", "ledgerPath": "data/runtime/clip-enhancement-ledger.json" },
+      "stageDefaults": {
+        "retry": { "maxAttempts": 2, "baseDelayMs": 1000, "maxDelayMs": 10000, "jitterRatio": 0.2 },
+        "provider": "daiYu",
+        "model": "gpt-5.6-luna",
+        "apiMode": "responses",
+        "reasoningEffort": "high",
+        "maxTokens": 16000,
+        "maxInputTokens": 1000000,
+        "timeoutMs": 600000,
+        "capabilities": { "reasoningEfforts": ["high"], "images": true, "imageTokenUpperBound": 65536 }
+      },
+      "stages": {
+        "selection": { "maxTokens": 8000 },
+        "edit": { "maxTokens": 8000 },
+        "packaging": { "maxTokens": 16000 },
+        "cover": { "maxTokens": 8000 },
+        "qa": { "maxTokens": 12000 }
+      }
+    },
+    "attribution": {
+      "enabled": false,
+      "roomIds": [],
+      "identityCommentsPerClip": 4,
+      "identityCommentsPerChunk": 12,
+      "contextSeconds": 12,
+      "batchSize": 4,
+      "concurrency": 3,
+      "maxBatchChars": 36000,
+      "maxRequests": 12,
+      "maxElapsedMs": 1200000,
+      "repairAttempts": 1,
+      "dialogueEnabled": false,
+      "entityReferences": {
+        "enabled": false,
+        "contextSeconds": 90,
+        "maxContextRows": 24,
+        "maxContextChars": 6000,
+        "maxReferenceGapSeconds": 120
+      },
+      "evidenceEncoding": "compact",
+      "timeoutMs": 600000,
+      "maxTokens": 12000
+    },
+    "mode": "local_review",
+    "roomIds": ["25788785"],
+    "maxCandidates": 80,
+    "maxClips": 50,
+    "chunkSeconds": 2700,
+    "aiConcurrency": 4,
+    "streamReviewRendering": true,
+    "clipConcurrency": 2,
+    "enhancementConcurrency": 3,
+    "clipFfmpegThreads": 2,
+    "clipResourceAdaptive": {
+      "enabled": true,
+      "busyConcurrency": 1,
+      "busyFfmpegThreads": 1,
+      "pollIntervalMs": 3000,
+      "busyCpuPercentThreshold": 70,
+      "busyGpuUtilizationThreshold": 35,
+      "foregroundGpuUtilizationThreshold": 20,
+      "externalGpuActivityThreshold": 25,
+      "busySamples": 2,
+      "idleSamples": 3
+    },
+    "burnSubtitles": true,
+    "subtitleVideoEncoder": "h264_nvenc",
+    "subtitleVideoPreset": "p4",
+    "subtitleVideoCrf": 23,
+    "subtitleVideoCq": 23,
+    "subtitleHwaccel": "cuda",
+    "outputDirName": "own_stream_fun_clips",
+    "archiveSourceRoot": "E:/EFiles/Evideo/DDTV录播-E",
+    "activeOutputRoot": "D:/files/videos/DDTV录播",
+    "alignBoundaries": true,
+    "boundaryStartBacktrackSeconds": 12,
+    "boundaryEndExtendSeconds": 45,
+    "boundarySilenceGapSeconds": 2.0,
+    "boundaryTrailingSilenceLookbackSeconds": 14,
+    "avoidOverlappingClips": true,
+    "finalOverlapToleranceSeconds": 0,
+    "ai": {
+      "enabled": true,
+      "strategy": "staged",
+      "model": "gpt-5.6-luna",
+      "timeoutMs": 600000,
+      "rerankTimeoutMs": 1200000,
+      "rerankMaxAttempts": 2,
+      "rankThenEdit": { "enabled": true, "cardChars": 700, "rankMaxTokens": 12000, "detailBatchSize": 3, "detailConcurrency": 3 },
+      "recallMaxClipsPerChunk": 12,
+      "retry": { "maxAttempts": 2, "baseDelayMs": 1000, "maxDelayMs": 10000, "jitterRatio": 0.2 },
+      "maxCandidateLines": 100,
+      "maxCandidateSubtitleChars": 520,
+      "maxCandidateDanmakuLines": 14,
+      "fallbackToLocalRules": true
+    },
+    "parallel": {
+      "enabled": false,
+      "danmakuHeatClips": 6,
+      "modelClips": 12,
+      "dedupeAcrossSources": true,
+      "overlapToleranceSeconds": 12,
+      "preferModelOnOverlap": true
+    },
+    "emotionScoring": {
+      "enabled": true,
+      "minCandidateScore": 20,
+      "transitionScore": 20,
+      "maxContextLines": 160,
+      "emotionScores": {
+        "SURPRISE": 38,
+        "FEAR": 36,
+        "SAD": 32,
+        "DISGUST": 32,
+        "CONTEMPT": 26,
+        "ANGRY": 14,
+        "HAPPY": 6,
+        "NEUTRAL": 0
+      },
+      "eventScores": {
+        "Cry": 44,
+        "Laughter": 34,
+        "Applause": 28,
+        "Sneeze": 8,
+        "BGM": 0,
+        "Speech": 0
+      }
+    },
+    "selectionPolicy": {
+      "requireTimeCoverage": false,
+      "excludedCategories": [],
+      "priorityCategories": []
+    },
+    "residualAudit": {
+      "enabled": false,
+      "reviewOnly": true,
+      "windowSeconds": 90,
+      "stepSeconds": 45,
+      "maxCandidates": 12
+    },
+    "notify": {
+      "enabled": true
+    }
   },
   "storage": {
     "basePath": "./output",
@@ -316,6 +1724,29 @@
   },
   "monitoring": {
     "enabled": false,
+    "recorderStallDiagnostics": {
+      "enabled": true,
+      "delaySeconds": 480,
+      "outputDirectory": "recorder-diagnostics",
+      "includeProcessDump": true,
+      "analyzeDump": true,
+      "dumpTool": "auto",
+      "dumpTimeoutSeconds": 180,
+      "logDirectory": "",
+      "maxLogBytes": 262144,
+      "maxFileEntries": 300
+    },
+    "processingAlerts": {
+      "enabled": true,
+      "cpuHighPercent": 85,
+      "mergeSlowSeconds": 480,
+      "screenshotSlowSeconds": 300,
+      "asrSlowSeconds": 900,
+      "streamStartNoFileOpeningSeconds": 480,
+      "streamEndNoSegmentGraceSeconds": 60,
+      "finalizationWatchdogGraceSeconds": 60,
+      "cooldownMs": 1800000
+    },
     "metrics": {
       "enabled": false,
       "port": 9090
@@ -347,11 +1778,20 @@
         "delayedReplyEnabled": true
       }
     },
+    "upload": {
+      "collectionSectionId": null,
+      "collectionSeriesId": null
+    },
     "delayedReply": {
       "enabled": true,
       "delayMinutes": 10,
       "maxRetries": 3,
-      "retryDelayMinutes": 5
+      "retryDelayMinutes": 5,
+      "maxTaskAgeHours": 24,
+      "summaryDynamic": {
+        "enabled": false,
+        "dynamicId": "1230474195813531666"
+      }
     },
     "danmuRiskControl": {
       "enabled": false,
@@ -363,8 +1803,8 @@
   "whisper": {
     "gpuDetection": {
       "enabled": false,
-      "gpuUtilizationThreshold": 40,
-      "vramUsageThreshold": 40,
+      "gpuUtilizationThreshold": 60,
+      "vramUsageThreshold": 70,
       "checkIntervalSeconds": 30
     }
   },
@@ -373,4 +1813,3 @@
     "enabled": true
   }
 }
-

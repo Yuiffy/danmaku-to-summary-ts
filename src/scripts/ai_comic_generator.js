@@ -6,6 +6,21 @@ const configLoader = require('./config-loader');
 
 const GENERATION_LOCK_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_CONCURRENCY_LOCK_TIMEOUT_MS = 3 * 60 * 60 * 1000;
+const COMIC_SCRIPT_READY_SENTINEL = '[[COMIC_SCRIPT_READY]]';
+const FULL_LIVE_CONTEXT_SUFFIX = '_FULL_LIVE_CONTEXT.json';
+
+function getFullLiveContextPath(highlightPath) {
+    const parsed = path.parse(highlightPath);
+    const baseName = parsed.name.replace(/_AI_HIGHLIGHT$/iu, '');
+    return path.join(parsed.dir, `${baseName}${FULL_LIVE_CONTEXT_SUFFIX}`);
+}
+
+function resolveFullLiveContextPath(highlightPath, options = {}) {
+    const candidate = options.fullLiveContextPath
+        ? path.resolve(options.fullLiveContextPath)
+        : getFullLiveContextPath(highlightPath);
+    return candidate && fs.existsSync(candidate) ? candidate : null;
+}
 
 // 检查配置是否有效
 function isComicGenerationEnabled() {
@@ -221,6 +236,10 @@ async function generateComicWithPython(highlightPath, roomId = null, options = {
 
     // 使用正确的Python路径（优先使用环境变量，否则使用默认路径）
     const pythonPath = process.env.PYTHON_PATH || 'D:\\develop\\Python\\python.exe';
+    const fullLiveContextPath = resolveFullLiveContextPath(highlightPath, options);
+    if (fullLiveContextPath) {
+        console.log(`📚 漫画脚本将复用全量直播上下文: ${path.basename(fullLiveContextPath)}`);
+    }
 
     return new Promise((resolve, reject) => {
         // 构建命令行参数
@@ -232,6 +251,7 @@ async function generateComicWithPython(highlightPath, roomId = null, options = {
         const pythonProcess = spawn(pythonPath, args, {
             stdio: 'pipe',
             windowsHide: true,
+            shell: false,
             env: {
                 ...process.env,
                 PYTHONUTF8: '1',
@@ -253,6 +273,15 @@ async function generateComicWithPython(highlightPath, roomId = null, options = {
                     : {}),
                 ...(options.allowComicScriptFallback
                     ? { ALLOW_COMIC_SCRIPT_FALLBACK: 'true' }
+                    : {}),
+                ...(options.sourceVideoPath
+                    ? { SOURCE_VIDEO_PATH: path.resolve(options.sourceVideoPath) }
+                    : {}),
+                ...(fullLiveContextPath
+                    ? { FULL_LIVE_CONTEXT_PATH: fullLiveContextPath }
+                    : {}),
+                ...(options.storytellingVariant
+                    ? { COMIC_STORYTELLING_VARIANT: String(options.storytellingVariant) }
                     : {})
             }
         });
@@ -260,6 +289,19 @@ async function generateComicWithPython(highlightPath, roomId = null, options = {
         let stdout = '';
         let stderr = '';
         let settled = false;
+        let comicScriptReadyNotified = false;
+
+        const notifyComicScriptReady = (line = '') => {
+            if (comicScriptReadyNotified) {
+                return;
+            }
+            comicScriptReadyNotified = true;
+            if (typeof options.onComicScriptReady === 'function') {
+                Promise.resolve(options.onComicScriptReady(line)).catch(error => {
+                    console.warn(`⚠️  漫画脚本文本完成回调失败: ${error.message}`);
+                });
+            }
+        };
 
         const settleResolve = (value) => {
             if (settled) return;
@@ -276,8 +318,13 @@ async function generateComicWithPython(highlightPath, roomId = null, options = {
         };
 
         pythonProcess.stdout.on('data', (data) => {
-            stdout += data.toString();
-            process.stdout.write(data.toString());
+            const text = data.toString();
+            stdout += text;
+            process.stdout.write(text);
+            if (text.includes(COMIC_SCRIPT_READY_SENTINEL)) {
+                const line = text.split(/\r?\n/).find(item => item.includes(COMIC_SCRIPT_READY_SENTINEL)) || text.trim();
+                notifyComicScriptReady(line);
+            }
         });
 
         pythonProcess.stderr.on('data', (data) => {
@@ -286,6 +333,10 @@ async function generateComicWithPython(highlightPath, roomId = null, options = {
         });
 
         pythonProcess.on('close', (code) => {
+            if (stdout.includes(COMIC_SCRIPT_READY_SENTINEL)) {
+                const line = stdout.split(/\r?\n/).find(item => item.includes(COMIC_SCRIPT_READY_SENTINEL)) || '';
+                notifyComicScriptReady(line);
+            }
             if (code === 0) {
                 // 从输出中提取生成的文件路径
                 const match = stdout.match(/输出文件:\s*(.+\.(png|jpg|jpeg|txt))/);
@@ -322,6 +373,13 @@ async function generateComicWithPython(highlightPath, roomId = null, options = {
             const reason = `启动Python进程失败: ${err.message}`;
             writeComicGenerationFailureMeta(highlightPath, reason);
             settleReject(new Error(reason));
+        });
+        pythonProcess.once('spawn', () => {
+            try { options.onProcessStarted?.(pythonProcess.pid); }
+            catch (error) {
+                pythonProcess.kill('SIGTERM');
+                settleReject(new Error(`Cannot register comic source reader: ${error.message}`));
+            }
         });
 
         // 设置超时
@@ -402,7 +460,7 @@ async function generateComicFromHighlight(highlightPath, roomId = null, options 
 }
 
 // 批量生成漫画
-async function batchGenerateComics(directory) {
+async function batchGenerateComics(directory, roomId = null, options = {}) {
     try {
         const files = fs.readdirSync(directory);
         const highlightFiles = files.filter(f => f.endsWith('_AI_HIGHLIGHT.txt'));
@@ -415,7 +473,7 @@ async function batchGenerateComics(directory) {
             console.log(`\n--- 处理: ${file} ---`);
 
             try {
-                const result = await generateComicFromHighlight(filePath);
+                const result = await generateComicFromHighlight(filePath, roomId, options);
                 if (result) {
                     results.push({ file, success: true, output: result });
                 } else {
@@ -446,8 +504,47 @@ async function batchGenerateComics(directory) {
 module.exports = {
     isComicGenerationEnabled,
     generateComicFromHighlight,
-    batchGenerateComics
+    batchGenerateComics,
+    getFullLiveContextPath,
+    resolveFullLiveContextPath
 };
+
+function parseCliArgs(rawArgs) {
+    const parsed = {
+        highlightPath: null,
+        batchDirectory: null,
+        roomId: null,
+        options: {}
+    };
+
+    for (let i = 0; i < rawArgs.length; i++) {
+        const arg = rawArgs[i];
+
+        if (arg === '--batch') {
+            parsed.batchDirectory = rawArgs[++i] || null;
+        } else if (arg === '--room-id') {
+            parsed.roomId = rawArgs[++i] || null;
+        } else if (arg === '--tuzi-retry-max-attempts') {
+            parsed.options.tuziRetryMaxAttempts = rawArgs[++i];
+        } else if (arg === '--tuzi-bypass-cooldown' || arg === '--bypass-cooldown') {
+            parsed.options.tuziBypassCooldown = true;
+        } else if (arg === '--tuzi-retry-max-total-seconds') {
+            parsed.options.tuziRetryMaxTotalSeconds = rawArgs[++i];
+        } else if (arg === '--tuzi-max-cooldown-wait-seconds') {
+            parsed.options.tuziRetryMaxCooldownWaitSeconds = rawArgs[++i];
+        } else if (arg === '--tuzi-skip-chat-fallback-on-image-api-failure') {
+            parsed.options.tuziSkipChatFallbackOnImageApiFailure = true;
+        } else if (arg === '--allow-comic-script-fallback') {
+            parsed.options.allowComicScriptFallback = true;
+        } else if (!arg.startsWith('-') && !parsed.highlightPath) {
+            parsed.highlightPath = arg;
+        } else {
+            throw new Error(`未知参数: ${arg}`);
+        }
+    }
+
+    return parsed;
+}
 
 // 命令行测试
 if (require.main === module) {
@@ -455,17 +552,28 @@ if (require.main === module) {
 
     if (args.length === 0) {
         console.log('用法:');
-        console.log('  1. 处理单个文件: node ai_comic_generator.js <AI_HIGHLIGHT.txt路径>');
-        console.log('  2. 批量处理目录: node ai_comic_generator.js --batch <目录路径>');
+        console.log('  1. 处理单个文件: node ai_comic_generator.js <AI_HIGHLIGHT.txt路径> [--room-id <房间ID>]');
+        console.log('  2. 批量处理目录: node ai_comic_generator.js --batch <目录路径> [--room-id <房间ID>]');
+        console.log('可选:');
+        console.log('  --tuzi-bypass-cooldown                         本次绕过 tuZi 跨进程冷却');
+        console.log('  --tuzi-max-cooldown-wait-seconds <秒>          限制本次最多等待冷却秒数，0 表示不等');
+        console.log('  --tuzi-retry-max-attempts <次数>               覆盖 tuZi 单策略最大重试次数');
+        console.log('  --tuzi-retry-max-total-seconds <秒>            限制本次 tuZi 重试总预算');
         process.exit(1);
     }
 
     (async () => {
         try {
-            if (args[0] === '--batch' && args[1]) {
-                await batchGenerateComics(args[1]);
+            const cli = parseCliArgs(args);
+
+            if (cli.batchDirectory) {
+                await batchGenerateComics(cli.batchDirectory, cli.roomId, cli.options);
             } else {
-                const result = await generateComicFromHighlight(args[0]);
+                if (!cli.highlightPath) {
+                    throw new Error('缺少 AI_HIGHLIGHT.txt 路径');
+                }
+
+                const result = await generateComicFromHighlight(cli.highlightPath, cli.roomId, cli.options);
                 if (result) {
                     console.log(`\n🎉 处理完成，输出文件: ${result}`);
                 } else {

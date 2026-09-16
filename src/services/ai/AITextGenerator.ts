@@ -13,16 +13,22 @@ import {
   TextGenerationOptions,
   BatchGenerationResult,
   AITextGeneratorStats,
-  RoomAIConfig,
   NamesConfig,
   PromptBuildingOptions
 } from './IAITextGenerator';
+import {
+  GoodnightReplyInspection,
+  GoodnightReplyPolicy
+} from './goodnight/GoodnightReplyPolicy';
 
 /**
  * AI文本生成服务实现
  */
 export class AITextGenerator implements IAITextGenerator {
   private logger = getLogger('AITextGenerator');
+  private static readonly GOODNIGHT_DAIYU_MODELS = ['gpt-5.6-luna'] as const;
+  private static readonly DAIYU_PRIMARY_MODEL = 'gpt-5.6-luna';
+  private static readonly DAIYU_MODEL_PATTERN = /^gpt-5(?:[.-]|$)/i;
   private config: any;
   private provider: AIProvider;
   private providerConfig: AIProviderConfig | null = null;
@@ -56,11 +62,23 @@ export class AITextGenerator implements IAITextGenerator {
             tuZi: {
               enabled: false,
               apiKey: '',
-              model: 'default',
+              model: 'gemini-3-flash-preview',
               textModel: 'gemini-3-flash-preview',
               baseUrl: 'https://api.tu-zi.com',
               temperature: 0.7,
               maxTokens: 2000
+            },
+            daiYu: {
+              enabled: true,
+              apiKey: '',
+              baseUrl: 'http://localhost:8080',
+              model: 'gpt-5.6-luna',
+              temperature: 0.7,
+              maxTokens: 100000,
+              thinking: {
+                enabled: true,
+                budgetTokens: 10000
+              }
             }
           },
           defaultNames: {
@@ -110,6 +128,18 @@ export class AITextGenerator implements IAITextGenerator {
           maxTokens: aiConfig.openai?.maxTokens || 2000,
           proxy: aiConfig.openai?.proxy
         };
+      case 'daiYu': {
+        const daiYuConfig = aiConfig.daiYu || {};
+        const providerConfig = this.config.ai?.providers?.daiYu || {};
+        return {
+          enabled: daiYuConfig.enabled ?? true,
+          apiKey: daiYuConfig.apiKey || providerConfig.apiKey,
+          model: daiYuConfig.model || 'gpt-5.6-luna',
+          temperature: daiYuConfig.temperature ?? providerConfig.textTemperature ?? 0.7,
+          maxTokens: daiYuConfig.maxTokens ?? providerConfig.textMaxTokens ?? 100000,
+          proxy: daiYuConfig.proxy ?? providerConfig.proxy
+        };
+      }
       default:
         return null;
     }
@@ -126,17 +156,193 @@ export class AITextGenerator implements IAITextGenerator {
   }
 
   /**
+   * 检查daiYu配置是否有效
+   */
+  private isDaiYuConfigured(): boolean {
+    const daiYuConfig = this.config.ai?.text?.daiYu;
+    const providerApiKey = this.config.ai?.providers?.daiYu?.apiKey;
+    return (daiYuConfig?.enabled !== false) &&
+           (daiYuConfig?.apiKey || providerApiKey) &&
+           String(daiYuConfig?.apiKey || providerApiKey || '').trim() !== '';
+  }
+
+  private static isDaiYuModel(model: unknown): boolean {
+    return AITextGenerator.DAIYU_MODEL_PATTERN.test(String(model || '').trim());
+  }
+
+  private static normalizeDaiYuModel(model: unknown): string {
+    const normalized = String(model || '').trim();
+    return AITextGenerator.isDaiYuModel(normalized)
+      ? AITextGenerator.DAIYU_PRIMARY_MODEL
+      : normalized;
+  }
+
+  private pickGoodnightDaiYuModel(): string {
+    const candidates = AITextGenerator.GOODNIGHT_DAIYU_MODELS;
+    const randomIndex = Math.floor(Math.random() * candidates.length);
+    return candidates[randomIndex];
+  }
+
+  private async generateGoodnightText(prompt: string): Promise<{ text: string; model: string; route: string }> {
+    // 优先走 daiYu (本地带鱼代理 + thinking)
+    if (this.isDaiYuConfigured()) {
+      const selectedModel = this.pickGoodnightDaiYuModel();
+      this.logger.info('晚安回复命中 daiYu 文本模型', {
+        selectedModel,
+        candidates: AITextGenerator.GOODNIGHT_DAIYU_MODELS
+      });
+
+      try {
+        const text = await this.generateWithDaiYu(prompt, { model: selectedModel });
+        return {
+          text,
+          model: selectedModel,
+          route: 'daiYu-primary'
+        };
+      } catch (error) {
+        this.logger.warn('daiYu 晚安回复主链路失败，回退到常规文本生成链路', {
+          selectedModel,
+          error: error instanceof Error ? error.message : String(error)
+        });
+        const text = await this.generateText(prompt);
+        return {
+          text,
+          model: this.providerConfig?.model || 'unknown',
+          route: `${this.provider}-fallback`
+        };
+      }
+    }
+
+    const text = await this.generateText(prompt);
+    return {
+      text,
+      model: this.providerConfig?.model || 'unknown',
+      route: this.provider
+    };
+  }
+
+  /**
+   * 使用daiYu API生成文本（本地代理，支持thinking）
+   */
+  private async generateWithDaiYu(prompt: string, options?: TextGenerationOptions): Promise<string> {
+    const daiYuConfig = this.config.ai?.text?.daiYu || {};
+    const providerConfig = this.config.ai?.providers?.daiYu || {};
+    const apiKey = daiYuConfig.apiKey || providerConfig.apiKey;
+    if (!apiKey) {
+      throw new AppError('daiYu API密钥未配置', 'CONFIGURATION_ERROR', 400);
+    }
+
+    const temperature = options?.temperature ?? daiYuConfig.temperature;
+    const maxTokens = options?.maxTokens ?? daiYuConfig.maxTokens;
+    const modelName = AITextGenerator.normalizeDaiYuModel(
+      options?.model ?? daiYuConfig.model ?? AITextGenerator.DAIYU_PRIMARY_MODEL
+    );
+    const proxy = options?.proxy ?? daiYuConfig.proxy;
+    const baseUrlRaw = daiYuConfig.baseUrl || (providerConfig.baseURL || 'http://localhost:8080');
+    const baseUrl = baseUrlRaw.replace(/\/v1$/, '');
+
+    // thinking 配置
+    const thinkingEnabled = daiYuConfig.thinking?.enabled !== false;
+    const thinkingBudgetTokens = daiYuConfig.thinking?.budgetTokens || 10000;
+
+    this.logger.info('调用daiYu API生成文本', {
+      model: modelName,
+      temperature,
+      maxTokens,
+      baseUrl,
+      thinking: thinkingEnabled ? `enabled(budget=${thinkingBudgetTokens})` : 'disabled',
+      proxy: proxy ? '已配置' : '未配置'
+    });
+
+    try {
+      const apiUrl = `${baseUrl}/v1/chat/completions`;
+
+      let agent: any = null;
+      if (proxy) {
+        agent = new HttpsProxyAgent(proxy);
+      }
+
+      const requestBody: any = {
+        model: modelName,
+        messages: [
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        temperature: temperature,
+        max_tokens: maxTokens
+      };
+
+      if (thinkingEnabled) {
+        requestBody.thinking = {
+          type: 'enabled',
+          budget_tokens: thinkingBudgetTokens
+        };
+      }
+
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(requestBody),
+        agent: agent,
+        timeout: 60000
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new AppError(`daiYu API返回错误 ${response.status}: ${errorText}`, 'AI_SERVICE_ERROR', response.status);
+      }
+
+      const data = await response.json();
+      const text = data.choices?.[0]?.message?.content;
+      const reasoningTokens = data.usage?.completion_tokens_details?.reasoning_tokens;
+      if (reasoningTokens) {
+        this.logger.info('daiYu thinking tokens', { reasoningTokens });
+      }
+
+      if (!text) {
+        throw new AppError('daiYu API返回空结果', 'AI_SERVICE_ERROR', 500);
+      }
+
+      this.logger.info('daiYu API调用成功', { textLength: text.length });
+      return text;
+    } catch (error) {
+      if (error instanceof AppError) {
+        throw error;
+      }
+      throw new AppError(
+        `daiYu API调用失败: ${error instanceof Error ? error.message : error}`,
+        'AI_SERVICE_ERROR',
+        500
+      );
+    }
+  }
+
+  /**
    * 使用tuZi API生成文本（备用方案）
    */
   private async generateWithTuZi(prompt: string, options?: TextGenerationOptions): Promise<string> {
     const tuziConfig = this.config.ai?.text?.tuZi;
+    const configuredModel = options?.model ?? tuziConfig?.textModel ?? tuziConfig?.model ?? 'gemini-3-flash-preview';
+
+    if (AITextGenerator.isDaiYuModel(configuredModel)) {
+      return this.generateWithDaiYu(prompt, {
+        ...options,
+        model: AITextGenerator.DAIYU_PRIMARY_MODEL
+      });
+    }
+
     if (!tuziConfig?.apiKey) {
       throw new AppError('tuZi API密钥未配置', 'CONFIGURATION_ERROR', 400);
     }
 
     const temperature = options?.temperature ?? tuziConfig.temperature;
     const maxTokens = options?.maxTokens ?? tuziConfig.maxTokens;
-    const modelName = options?.model ?? tuziConfig.textModel ?? 'gemini-3-flash-preview';
+    const modelName = configuredModel;
     const proxy = options?.proxy ?? tuziConfig.proxy;
     const baseUrl = tuziConfig.baseUrl || 'https://api.tu-zi.com';
 
@@ -235,6 +441,57 @@ export class AITextGenerator implements IAITextGenerator {
   }
 
   /**
+   * 从文件名提取录制开始时间
+   * 格式：录制-ROOMID-YYYYMMDD-HHMMSS-...
+   */
+  private extractRecordTime(filename: string): { hour: number; minute: number } | null {
+    const m = String(filename || '').match(/20\d{2}(\d{2})(\d{2})-(\d{2})(\d{2})\d{2}/);
+    if (!m) return null;
+    return { hour: parseInt(m[3], 10), minute: parseInt(m[4], 10) };
+  }
+
+  /**
+   * 从 SRT 最后一行提取时长（秒）
+   */
+  private extractDurationFromSrt(highlightPath: string): number | null {
+    try {
+      const dir = path.dirname(highlightPath);
+      const baseName = path.basename(highlightPath, '_AI_HIGHLIGHT.txt');
+      const srtPath = path.join(dir, `${baseName}.srt`);
+      if (!fs.existsSync(srtPath)) return null;
+      const stat = fs.statSync(srtPath);
+      const fd = fs.openSync(srtPath, 'r');
+      const buf = Buffer.alloc(Math.min(500, stat.size));
+      fs.readSync(fd, buf, 0, buf.length, Math.max(0, stat.size - buf.length));
+      fs.closeSync(fd);
+      const tail = buf.toString('utf8');
+      const matches = [...tail.matchAll(/(\d{2}):(\d{2}):(\d{2})[,.]\d{3}\s*-->\s*(\d{2}):(\d{2}):(\d{2})/g)];
+      if (matches.length === 0) return null;
+      const last = matches[matches.length - 1];
+      return parseInt(last[4], 10) * 3600 + parseInt(last[5], 10) * 60 + parseInt(last[6], 10);
+    } catch {
+      return null;
+    }
+  }
+
+  private buildLiveTimeDesc(highlightPath: string): string | null {
+    const recordTime = this.extractRecordTime(path.basename(highlightPath));
+    if (!recordTime) return null;
+    const dur = this.extractDurationFromSrt(highlightPath);
+    const startStr = `${recordTime.hour}:${String(recordTime.minute).padStart(2,'0')}`;
+    if (dur && dur > 60) {
+      const totalStartSec = recordTime.hour * 3600 + recordTime.minute * 60 + dur;
+      const endHour = Math.floor(totalStartSec / 3600) % 24;
+      const endMin = Math.floor((totalStartSec % 3600) / 60);
+      const h = Math.floor(dur / 3600);
+      const m = Math.floor((dur % 3600) / 60);
+      const durStr = h > 0 ? `${h}小时${m}分钟` : `${m}分钟`;
+      return `${startStr}~${endHour}:${String(endMin).padStart(2,'0')}（约${durStr}）`;
+    }
+    return `${startStr}左右开始`;
+  }
+
+  /**
    * 从文件名提取房间ID
    */
   private extractRoomIdFromFilename(filename: string): string | null {
@@ -245,89 +502,30 @@ export class AITextGenerator implements IAITextGenerator {
   /**
    * 获取名称配置
    */
+  private getGoodnightReplyPolicy(): GoodnightReplyPolicy {
+    return new GoodnightReplyPolicy(this.config);
+  }
+
   private getNames(roomId?: string): NamesConfig {
-    const defaultNames = this.config.ai?.defaultNames || { anchor: '岁己SUI', fan: '饼干岁' };
-    
-    if (!roomId) {
-      return defaultNames;
-    }
-
-    const roomConfig = this.config.ai?.roomSettings?.[roomId] as RoomAIConfig | undefined;
-    if (!roomConfig) {
-      return defaultNames;
-    }
-
-    return {
-      anchor: roomConfig.anchorName || defaultNames.anchor,
-      fan: roomConfig.fanName || defaultNames.fan
-    };
+    return this.getGoodnightReplyPolicy().getNames(roomId);
   }
 
   /**
    * 获取字数限制
    */
   private getWordLimit(roomId?: string): number {
-    const defaultWordLimit = this.config.ai?.defaultWordLimit ?? 100;
-
-    if (!roomId) {
-      return defaultWordLimit;
-    }
-
-    const roomConfig = this.config.ai?.roomSettings?.[roomId] as RoomAIConfig | undefined;
-    if (roomConfig?.wordLimit !== undefined) {
-      return roomConfig.wordLimit;
-    }
-
-    return defaultWordLimit;
+    return this.getGoodnightReplyPolicy().getWordLimit(roomId);
   }
 
   /**
    * 构建晚安回复提示词
    */
-  private buildGoodnightPrompt(highlightContent: string, roomId?: string): string {
-    const names = this.getNames(roomId);
-    const anchor = names.anchor;
-    const fan = names.fan;
-
-    return `【角色设定】
-
-身份：${anchor}的铁粉（自称"${fan}"或"${fan.replace(/岁$/, '')}"）。
-
-性格：喜欢调侃、宠溺主播，有点话痨，对主播的生活琐事和梗如数家珍。
-
-语气：亲昵、幽默、像老朋友一样聊天。常用语气词（如：哈哈、捏、嘛、呜呜），会使用直播间黑话（如：老己、漂亮饭、阿肯苦力等）。
-
-【核心原则（最重要！）】
-
-严格限定素材：只根据用户当前提供的文档/文本内容进行创作。绝对禁止混入该文档以外的任何已知信息、历史直播内容或互联网搜索结果（因为${anchor}的梗很多，AI容易串台，这一点必须强调）。
-
-时效性：根据文档内容判断是早播、午播还是晚播，分别对应"早安"、"午安"或"晚安"的场景。
-
-【写作结构与要素】
-
-开场白：
-格式：晚安/早安${anchor}！🌙/☀️
-内容：一句话总结今天直播的整体感受（如：含金量极高、含梗量爆炸、辛苦了、被治愈了等）。
-
-正文（核心内容回顾）：
-抓细节：从文档中提取3-5个具体的直播亮点。
-生活碎碎念（如：洗碗、吃东西、身体不舒服、猫咪的趣事）。
-直播事故/趣事（如：迟到理由、设备故障、口误、奇怪的脑洞）。
-鉴赏/游戏环节（如：看了什么电影/视频、玩了什么游戏，主播的反应和吐槽）。
-歌回：提到了哪些歌，唱得怎么样（好听/糊弄/搞笑）。
-互动吐槽：针对上述细节进行粉丝视角的吐槽或夸奖（如:"只有你能干出这事"、"心疼小笨蛋"、"笑死我了")。
-
-结尾（情感升华）：
-关怀：叮嘱主播注意身体（嗓子、睡眠、吃饭），不要太累。
-期待：确认下一次直播的时间（如果文档里提到了）。
-落款：—— 永远爱你的/支持你的/陪着你的${fan} 🍪
-
-字数要求：800字以内。
-
-【直播内容摘要】
-${highlightContent}
-
-请根据以上直播内容，以${fan}的身份写一篇晚安回复。记住：只使用提供的直播内容，不要添加任何外部信息。`;
+  private buildGoodnightPrompt(highlightContent: string, roomId?: string, liveTimeDesc?: string | null): string {
+    return this.getGoodnightReplyPolicy().buildPrompt(
+      highlightContent,
+      roomId,
+      liveTimeDesc
+    );
   }
 
   /**
@@ -360,81 +558,12 @@ ${highlightContent}
   /**
    * 解析生成结果是否通过质量校验
    */
-  private inspectGeneratedReply(text: string, wordLimit: number): {
-    ok: boolean;
-    reason?: string;
-    cleaned: string;
-    minLength: number;
-    sentenceCount: number;
-  } {
-    const cleaned = this.cleanGeneratedReply(text);
-    const minLength = this.getMinimumReplyLength(wordLimit);
-    const sentenceCount = this.countSentences(cleaned);
-
-    if (!cleaned) {
-      return {
-        ok: false,
-        reason: '生成的文本为空',
-        cleaned,
-        minLength,
-        sentenceCount
-      };
-    }
-
-    if (cleaned.length < minLength) {
-      return {
-        ok: false,
-        reason: `生成的文本过短（${cleaned.length} < ${minLength}）`,
-        cleaned,
-        minLength,
-        sentenceCount
-      };
-    }
-
-    if (wordLimit >= 250 && sentenceCount < 2) {
-      return {
-        ok: false,
-        reason: `生成的文本句子数过少（${sentenceCount} < 2）`,
-        cleaned,
-        minLength,
-        sentenceCount
-      };
-    }
-
-    return {
-      ok: true,
-      cleaned,
-      minLength,
-      sentenceCount
-    };
-  }
-
-  private cleanGeneratedReply(text: string): string {
-    let cleaned = String(text || '').trim();
-    cleaned = cleaned.replace(/^```(?:markdown|md)?\s*/i, '');
-    cleaned = cleaned.replace(/```$/i, '');
-    cleaned = cleaned.replace(/^.*?(?=^#|^[^\s#])/ms, match => {
-      const lines = match.split('\n').filter(line => line.trim() !== '');
-      return lines.length <= 1 ? match : '';
-    });
-    cleaned = cleaned.replace(/^\s*>\s*/gmu, '');
-    cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
-    return cleaned.trim();
-  }
-
-  private countSentences(text: string): number {
-    const normalized = String(text || '').trim();
-    if (!normalized) {
-      return 0;
-    }
-    const matches = normalized.match(/[。！？.!?]+/g);
-    return matches ? matches.length : 1;
-  }
-
-  private getMinimumReplyLength(wordLimit: number): number {
-    if (wordLimit >= 500) return 120;
-    if (wordLimit >= 250) return 80;
-    return 40;
+  private inspectGeneratedReply(
+    text: string,
+    wordLimit: number,
+    roomId?: string
+  ): GoodnightReplyInspection {
+    return this.getGoodnightReplyPolicy().inspect(text, wordLimit, roomId);
   }
 
   private saveFailedGeneratedText(
@@ -476,11 +605,26 @@ ${highlightContent}
   /**
    * 保存生成的文本
    */
-  private saveGeneratedText(outputPath: string, text: string, highlightPath: string): string {
+  private saveGeneratedText(
+    outputPath: string,
+    text: string,
+    highlightPath: string,
+    generationMeta: { provider?: string; model?: string; route?: string; fallback?: boolean } = {}
+  ): string {
     try {
       const highlightName = path.basename(highlightPath);
       const timestamp = new Date().toLocaleString('zh-CN');
-      const metaInfo = `# 晚安回复（基于${highlightName}）
+      const frontMatter = [
+        '---',
+        `provider: ${generationMeta.provider || 'unknown'}`,
+        `model: ${generationMeta.model || 'unknown'}`,
+        `route: ${generationMeta.route || 'unknown'}`,
+        `fallback: ${generationMeta.fallback ? 'true' : 'false'}`,
+        `generatedAt: ${new Date().toISOString()}`,
+        '---',
+        ''
+      ].join('\n');
+      const metaInfo = `${frontMatter}\n# 晚安回复（基于${highlightName}）
 生成时间: ${timestamp}
 ---
         
@@ -488,7 +632,7 @@ ${highlightContent}
 
       const fullText = metaInfo + text;
       fs.writeFileSync(outputPath, fullText, 'utf8');
-      this.logger.info('晚安回复已保存', { outputPath });
+      this.logger.info('晚安回复已保存', { outputPath, generationMeta });
       return outputPath;
     } catch (error) {
       throw new AppError(
@@ -600,7 +744,22 @@ ${highlightContent}
                         errorMessage.includes('RESOURCE_EXHAUSTED') ||
                         errorMessage.includes('quota');
 
-      // 如果是429错误且配置了tuZi API，尝试使用tuZi API作为备用方案
+      // 如果是429错误且配置了daiYu API，优先使用daiYu API作为备用方案
+      if (is429Error && this.isDaiYuConfigured()) {
+        this.logger.warn('Gemini API超频 (429)，尝试使用daiYu API作为备用方案');
+        try {
+          return await this.generateWithDaiYu(prompt, options);
+        } catch (daiyuError) {
+          this.logger.error('daiYu API备用方案也失败', { error: daiyuError });
+          throw new AppError(
+            `Gemini和daiYu API都失败: Gemini - ${errorMessage}, daiYu - ${daiyuError instanceof Error ? daiyuError.message : daiyuError}`,
+            'AI_SERVICE_ERROR',
+            500
+          );
+        }
+      }
+
+      // 如果是429错误且配置了tuZi API，尝试使用tuZi API作为次级备用方案
       if (is429Error && this.isTuZiConfigured()) {
         this.logger.warn('Gemini API超频 (429)，尝试使用tuZi API作为备用方案');
         try {
@@ -636,6 +795,8 @@ ${highlightContent}
         return await this.generateWithGemini(prompt, options);
       case 'openai':
         throw new AppError('OpenAI提供者暂未实现', 'NOT_IMPLEMENTED_ERROR', 501);
+      case 'daiYu':
+        return await this.generateWithDaiYu(prompt, options);
       default:
         throw new AppError(`不支持的AI提供者: ${this.provider}`, 'CONFIGURATION_ERROR', 400);
     }
@@ -678,7 +839,8 @@ ${highlightContent}
         }
       }
 
-      const prompt = this.buildGoodnightPrompt(highlightContent, actualRoomId);
+      const liveTimeDesc = this.buildLiveTimeDesc(highlightPath);
+      const prompt = this.buildGoodnightPrompt(highlightContent, actualRoomId, liveTimeDesc);
       const dir = path.dirname(highlightPath);
       const baseName = path.basename(highlightPath, '_AI_HIGHLIGHT.txt');
       const outputPath = path.join(dir, `${baseName}_晚安回复.md`);
@@ -687,12 +849,27 @@ ${highlightContent}
 
       for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
         try {
-          let generatedText = await this.generateText(prompt);
-          const inspection = this.inspectGeneratedReply(generatedText, this.getWordLimit(actualRoomId));
+          const attemptPrompt = attempt === 1
+            ? prompt
+            : `${prompt}
+
+【失败重试纠错】上一版未通过发布前校验。再次生成时可以直接从本场具体内容起笔，不必补主播称呼；绝不能以粉丝昵称“${this.getNames(actualRoomId).fan}”开头。只输出最终评论。`;
+          const generation = await this.generateGoodnightText(attemptPrompt);
+          let generatedText = generation.text;
+          const inspection = this.inspectGeneratedReply(
+            generatedText,
+            this.getWordLimit(actualRoomId),
+            actualRoomId
+          );
 
           if (!inspection.ok) {
             if (generatedText.trim().length > 0) {
-              this.saveFailedGeneratedText(outputPath, generatedText, highlightPath, { provider: this.provider }, {
+              this.saveFailedGeneratedText(outputPath, generatedText, highlightPath, {
+                provider: generation.route.startsWith('tuZi') ? 'tuZi' : generation.route.startsWith('daiYu') ? 'daiYu' : this.provider,
+                route: generation.route,
+                model: generation.model,
+                fallback: generation.route.includes('fallback')
+              }, {
                 attempt,
                 maxRetries,
                 reason: inspection.reason,
@@ -704,8 +881,18 @@ ${highlightContent}
           }
 
           generatedText = inspection.cleaned;
-          this.logger.info('文本长度校验通过', { textLength: generatedText.length, wordLimit: this.getWordLimit(actualRoomId) });
-          return this.saveGeneratedText(outputPath, generatedText, highlightPath);
+          this.logger.info('文本长度校验通过', {
+            textLength: generatedText.length,
+            wordLimit: this.getWordLimit(actualRoomId),
+            route: generation.route,
+            model: generation.model
+          });
+          return this.saveGeneratedText(outputPath, generatedText, highlightPath, {
+            provider: generation.route.startsWith('tuZi') ? 'tuZi' : generation.route.startsWith('daiYu') ? 'daiYu' : this.provider,
+            model: generation.model,
+            route: generation.route,
+            fallback: generation.route.includes('fallback')
+          });
         } catch (error) {
           lastError = error;
           const errorMessage = error instanceof Error ? error.message : String(error);
@@ -714,6 +901,7 @@ ${highlightContent}
           const isRetriable = errorMessage.includes('过短') ||
             errorMessage.includes('为空') ||
             errorMessage.includes('句子数过少') ||
+            errorMessage.includes('粉丝昵称') ||
             errorMessage.includes('429') ||
             errorMessage.includes('Too Many Requests') ||
             errorMessage.includes('RESOURCE_EXHAUSTED') ||

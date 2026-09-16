@@ -17,6 +17,7 @@
 # production
 /build
 /dist
+/dist.next-structure/
 
 # misc
 .DS_Store
@@ -44,8 +45,17 @@ __pycache__/
 
 # local tool/runtime state
 .gemini/
+.claude/
+/.playwright-mcp/
+/artifacts/
+data/runtime/
+local-scripts/*
+!local-scripts/README.md
 data/delayed_reply_tasks.*
+data/reply_history*
+data/asr_speaker_refs/backup*
 output
+outputs/
 src/temp/
 src/scripts/.whisper_queue.json
 nul
@@ -67,6 +77,9 @@ trigger_reply_0209.js
 src/scripts/config.secrets.json
 config/secrets.json
 config/secret.json
+config/cookies*.txt
 data/delayed_reply_tasks.json
 src/scripts/.whisper_lock
-tmp/*
+# Task-local scripts, reports, captures, and scratch output (see AGENTS.md).
+/tmp/
+/temp/

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://danmaku-to-summary-ts.local/schemas/clip-event-manifest.json",
+  "title": "Clip event manifest",
+  "type": "object",
+  "required": ["version", "type", "source", "events"],
+  "properties": {
+    "version": { "const": 1 },
+    "type": { "const": "clip-event-manifest" },
+    "source": {
+      "type": "object",
+      "required": ["id", "mediaPath"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "mediaPath": { "type": "string", "minLength": 1 },
+        "srtPath": { "type": ["string", "null"] },
+        "xmlPath": { "type": ["string", "null"] },
+        "recordedAt": { "type": ["string", "null"] },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "sourceId", "start", "end", "duration", "evidence", "metadata"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "sourceId": { "type": "string", "minLength": 1 },
+          "start": { "type": "number", "minimum": 0 },
+          "end": { "type": "number", "exclusiveMinimum": 0 },
+          "duration": { "type": "number", "exclusiveMinimum": 0 },
+          "score": { "type": ["number", "null"] },
+          "label": { "type": ["string", "null"] },
+          "evidence": { "type": "array", "items": { "type": "string" } },
+          "metadata": { "type": "object" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "metadata": { "type": "object" }
+  },
+  "additionalProperties": false
+}

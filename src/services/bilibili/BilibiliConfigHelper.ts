@@ -37,6 +37,12 @@ export interface DelayedReplySettings {
   maxRetries: number;
   /** 重试延迟（分钟） */
   retryDelayMinutes: number;
+  maxTaskAgeHours?: number;
+}
+
+export interface SummaryDynamicSettings {
+  enabled: boolean;
+  dynamicId: string;
 }
 
 /**
@@ -95,10 +101,10 @@ export class BilibiliConfigHelper {
     const roomAIConfig = this.getRoomAIConfig(roomId);
     if (roomAIConfig) {
       return {
-        uid: '', // AI 配置中没有 UID，需要通过 API 获取
+        uid: roomAIConfig.uid || '',
         name: roomAIConfig.anchorName || '未知主播',
         roomId: normalizedRoomId,
-        enabled: true, // AI 配置默认启用
+        enabled: true,
         delayedReplyEnabled: roomAIConfig.enableDelayedReply ?? false,
       };
     }
@@ -133,6 +139,19 @@ export class BilibiliConfigHelper {
       delayMinutes: 10,
       maxRetries: 3,
       retryDelayMinutes: 5,
+      maxTaskAgeHours: 24,
+    };
+  }
+
+  static getSummaryDynamicSettings(): SummaryDynamicSettings | null {
+    const summaryDynamic = this.getDelayedReplyConfig().summaryDynamic;
+    if (!summaryDynamic?.enabled || !String(summaryDynamic.dynamicId || '').trim()) {
+      return null;
+    }
+
+    return {
+      enabled: true,
+      dynamicId: String(summaryDynamic.dynamicId).trim(),
     };
   }
 
@@ -180,6 +199,7 @@ export class BilibiliConfigHelper {
       delayMinutes: globalConfig.delayMinutes,
       maxRetries: globalConfig.maxRetries,
       retryDelayMinutes: globalConfig.retryDelayMinutes,
+      maxTaskAgeHours: globalConfig.maxTaskAgeHours,
     };
   }
 

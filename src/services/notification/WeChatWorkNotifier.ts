@@ -7,7 +7,10 @@ import FormData = require('form-data');
 import { createReadStream, readFileSync, statSync } from 'fs';
 import { basename, join } from 'path';
 import * as crypto from 'crypto';
+import { splitWeChatMarkdown, WECHAT_WORK_MARKDOWN_MAX_BYTES } from './wechatWorkMarkdown';
 import sharp = require('sharp');
+
+export const WECHAT_WORK_REQUEST_TIMEOUT_MS = 10 * 1000;
 
 /**
  * 企业微信消息类型
@@ -45,6 +48,10 @@ interface UploadMediaResponse {
   created_at: number;
 }
 
+export function normalizeWeChatWorkContent(content: string): string {
+  return String(content || '').replace(/\\+/g, '/');
+}
+
 /**
  * 企业微信通知服务
  */
@@ -52,9 +59,13 @@ export class WeChatWorkNotifier {
   private logger = getLogger('WeChatWorkNotifier');
   private webhookUrl: string;
   private uploadUrl: string;
+  private requestTimeoutMs: number;
 
-  constructor(webhookUrl: string) {
+  constructor(webhookUrl: string, requestTimeoutMs = WECHAT_WORK_REQUEST_TIMEOUT_MS) {
     this.webhookUrl = webhookUrl;
+    this.requestTimeoutMs = Number.isFinite(requestTimeoutMs) && requestTimeoutMs > 0
+      ? requestTimeoutMs
+      : WECHAT_WORK_REQUEST_TIMEOUT_MS;
     // 从webhook URL中提取key，构建上传URL
     const keyMatch = webhookUrl.match(/key=([^&]+)/);
     const key = keyMatch ? keyMatch[1] : '';
@@ -85,14 +96,25 @@ export class WeChatWorkNotifier {
    */
   async sendMarkdown(content: string): Promise<boolean> {
     try {
-      const message: WeChatWorkMessage = {
-        msgtype: 'markdown',
-        markdown: {
-          content
+      // 企微按 UTF-8 字节限制 Markdown；长通知必须拆成多条顺序发送。
+      const messages = splitWeChatMarkdown(normalizeWeChatWorkContent(content), WECHAT_WORK_MARKDOWN_MAX_BYTES);
+      for (const [index, messageContent] of messages.entries()) {
+        const sent = await this.sendMessage({
+          msgtype: 'markdown',
+          markdown: {
+            content: messageContent
+          }
+        });
+        if (!sent) {
+          this.logger.warn('企业微信Markdown分段发送失败', {
+            part: index + 1,
+            totalParts: messages.length,
+            bytes: Buffer.byteLength(messageContent, 'utf8')
+          });
+          return false;
         }
-      };
-
-      return await this.sendMessage(message);
+      }
+      return true;
     } catch (error) {
       this.logger.error('发送企业微信Markdown消息失败', undefined, error instanceof Error ? error : new Error(String(error)));
       return false;
@@ -189,7 +211,7 @@ export class WeChatWorkNotifier {
     });
 
     // 3. 发起请求
-    const response = await fetch(this.uploadUrl, {
+    const { response, result } = await this.fetchJsonWithTimeout<UploadMediaResponse>(this.uploadUrl, {
       method: 'POST',
       body: form,
       headers: form.getHeaders() // 这里会自动包含正确的 Content-Length (因为是Buffer)
@@ -203,12 +225,10 @@ export class WeChatWorkNotifier {
       return null;
     }
 
-    const result: UploadMediaResponse = await response.json() as UploadMediaResponse;
-
-    if (result.errcode !== 0) {
+    if (!result || result.errcode !== 0) {
       this.logger.error('企业微信上传图片返回错误', {
-        errcode: result.errcode,
-        errmsg: result.errmsg
+        errcode: result?.errcode,
+        errmsg: result?.errmsg || 'empty response body'
       });
       return null;
     }
@@ -382,13 +402,14 @@ export class WeChatWorkNotifier {
   private async sendMessage(message: WeChatWorkMessage): Promise<boolean> {
     try {
       this.logger.debug('发送企业微信消息', { msgtype: message.msgtype });
+      const normalizedMessage = this.normalizeMessage(message);
 
-      const response = await fetch(this.webhookUrl, {
+      const { response, result } = await this.fetchJsonWithTimeout<{ errcode: number; errmsg?: string }>(this.webhookUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify(message)
+        body: JSON.stringify(normalizedMessage)
       });
 
       if (!response.ok) {
@@ -399,12 +420,10 @@ export class WeChatWorkNotifier {
         return false;
       }
 
-      const result = await response.json();
-
-      if (result.errcode !== 0) {
+      if (!result || result.errcode !== 0) {
         this.logger.error('企业微信API返回错误', {
-          errcode: result.errcode,
-          errmsg: result.errmsg
+          errcode: result?.errcode,
+          errmsg: result?.errmsg || 'empty response body'
         });
         return false;
       }
@@ -415,5 +434,50 @@ export class WeChatWorkNotifier {
       this.logger.error('发送企业微信消息异常', undefined, error instanceof Error ? error : new Error(String(error)));
       return false;
     }
+  }
+
+  private async fetchJsonWithTimeout<T>(
+    url: string,
+    init: fetch.RequestInit
+  ): Promise<{ response: fetch.Response; result?: T }> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+    timeoutId.unref?.();
+
+    try {
+      const response = await fetch(url, {
+        ...init,
+        // node-fetch v2 的类型声明使用自有 AbortSignal 接口，运行时支持 Node 标准 signal。
+        signal: controller.signal as unknown as fetch.RequestInit['signal']
+      });
+      const result = response.ok ? await response.json() as T : undefined;
+      return { response, result };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  private normalizeMessage(message: WeChatWorkMessage): WeChatWorkMessage {
+    if (message.msgtype === 'text' && message.text) {
+      return {
+        ...message,
+        text: {
+          ...message.text,
+          content: normalizeWeChatWorkContent(message.text.content)
+        }
+      };
+    }
+
+    if (message.msgtype === 'markdown' && message.markdown) {
+      return {
+        ...message,
+        markdown: {
+          ...message.markdown,
+          content: normalizeWeChatWorkContent(message.markdown.content)
+        }
+      };
+    }
+
+    return message;
   }
 }

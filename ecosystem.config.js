@@ -5,6 +5,13 @@
 
 const path = require('path');
 
+const gpuTdrEnv = {
+  NODE_ENV: 'production',
+  GPU_TDR_CAPTURE_DIR: 'D:\\diagnostics\\gpu-tdr',
+  GPU_TDR_EVENT_POLL_MS: '5000',
+  GPU_TDR_DUMP_POLL_MS: '1500'
+};
+
 module.exports = {
   apps: [
     {
@@ -59,6 +66,107 @@ module.exports = {
       wait_ready: false,
       // 禁用自动重启计数（避免无限重启）
       exp_backoff_restart_delay: 100
+    },
+    {
+      name: 'tuzi-balance-daily',
+      script: 'src/scripts/tuzi_balance_check.js',
+      cwd: __dirname,
+      instances: 1,
+      exec_mode: 'fork',
+      autorestart: false,
+      watch: false,
+      cron_restart: '0 9 * * *',
+      env: {
+        NODE_ENV: 'production'
+      },
+      log_date_format: '',
+      error_file: path.join(__dirname, 'logs', 'tuzi-balance-error.log'),
+      out_file: path.join(__dirname, 'logs', 'tuzi-balance-out.log'),
+      time: false
+    },
+    {
+      name: 'seedance-queue-runner',
+      script: 'scripts/seedance_queue_runner.js',
+      cwd: __dirname,
+      args: '--loop --max-vip-inflight 24 --max-normal-inflight 1 --max-submissions-per-pass 24 --submit-delay 2 --submit-interval 15 --error-interval 300',
+      instances: 1,
+      exec_mode: 'fork',
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '512M',
+      env: {
+        NODE_ENV: 'production',
+        PYTHONIOENCODING: 'utf-8'
+      },
+      log_date_format: '',
+      error_file: path.join(__dirname, 'logs', 'seedance-queue-error.log'),
+      out_file: path.join(__dirname, 'logs', 'seedance-queue-out.log'),
+      log_file: path.join(__dirname, 'logs', 'seedance-queue-combined.log'),
+      time: false,
+      min_uptime: '10s',
+      restart_delay: 10000
+    },
+    {
+      name: 'clip-upload-queue-runner',
+      script: 'scripts/clip_upload_queue_runner.js',
+      cwd: __dirname,
+      args: '--loop --interval 30 --idle-interval 30',
+      instances: 1,
+      exec_mode: 'fork',
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '512M',
+      env: {
+        NODE_ENV: 'production',
+        PYTHONIOENCODING: 'utf-8'
+      },
+      log_date_format: '',
+      error_file: path.join(__dirname, 'logs', 'clip-upload-queue-error.log'),
+      out_file: path.join(__dirname, 'logs', 'clip-upload-queue-out.log'),
+      log_file: path.join(__dirname, 'logs', 'clip-upload-queue-combined.log'),
+      time: false,
+      min_uptime: '10s',
+      restart_delay: 10000
+    },
+    {
+      name: 'gpu-tdr-capture',
+      script: 'scripts/gpu_tdr_capture.js',
+      cwd: __dirname,
+      instances: 1,
+      exec_mode: 'fork',
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '256M',
+      env: gpuTdrEnv,
+      env_production: gpuTdrEnv,
+      log_date_format: '',
+      error_file: path.join(__dirname, 'logs', 'gpu-tdr-capture-error.log'),
+      out_file: path.join(__dirname, 'logs', 'gpu-tdr-capture-out.log'),
+      log_file: path.join(__dirname, 'logs', 'gpu-tdr-capture-combined.log'),
+      time: false,
+      min_uptime: '10s',
+      restart_delay: 5000,
+      kill_timeout: 10000
+    },
+    {
+      name: 'recorder-watchdog',
+      script: 'scripts/recorder_watchdog.js',
+      args: 'run',
+      cwd: __dirname,
+      instances: 1,
+      exec_mode: 'fork',
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '256M',
+      env: { NODE_ENV: 'production' },
+      env_production: { NODE_ENV: 'production' },
+      error_file: path.join(__dirname, 'logs', 'recorder-watchdog-error.log'),
+      out_file: path.join(__dirname, 'logs', 'recorder-watchdog-out.log'),
+      time: false,
+      min_uptime: '10s',
+      max_restarts: 10,
+      restart_delay: 10000,
+      kill_timeout: 5000
     }
   ],
 

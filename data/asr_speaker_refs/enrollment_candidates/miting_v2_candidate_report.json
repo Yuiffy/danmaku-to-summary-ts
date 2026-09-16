@@ -1,0 +1,112 @@
+{
+  "schemaVersion": 1,
+  "speaker": "米汀",
+  "sourceManifest": "D:\\workspace\\myrepo\\danmaku-to-summary-ts\\data\\asr_speaker_refs\\enrollment_candidates\\miting_v2.enrollment.json",
+  "processing": {
+    "sampleRate": 16000,
+    "channels": 1,
+    "audioFilter": "highpass=f=80,lowpass=f=7600,loudnorm=I=-20:TP=-2:LRA=11"
+  },
+  "clips": [
+    {
+      "source": "D:/files/videos/DDTV录播/31368705_米汀Nagisa/2026_07_21/录制-31368705-20260721-080617-620-早安一会儿.flv",
+      "startSeconds": 120,
+      "durationSeconds": 8.0,
+      "kind": "speech",
+      "reviewed": false,
+      "rms": 0.066455,
+      "clippingRatio": 0.0,
+      "accepted": true,
+      "reasons": [],
+      "embeddingValid": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/31368705_米汀Nagisa/2026_07_21/录制-31368705-20260721-080617-620-早安一会儿.flv",
+      "startSeconds": 360,
+      "durationSeconds": 8.0,
+      "kind": "speech",
+      "reviewed": false,
+      "rms": 0.062927,
+      "clippingRatio": 0.0,
+      "accepted": true,
+      "reasons": [],
+      "embeddingValid": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/31368705_米汀Nagisa/2026_07_21/录制-31368705-20260721-080617-620-早安一会儿.flv",
+      "startSeconds": 600,
+      "durationSeconds": 8.0,
+      "kind": "speech",
+      "reviewed": false,
+      "rms": 0.067848,
+      "clippingRatio": 0.0,
+      "accepted": true,
+      "reasons": [],
+      "embeddingValid": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/31368705_米汀Nagisa/2026_07_21/录制-31368705-20260721-080617-620-早安一会儿.flv",
+      "startSeconds": 840,
+      "durationSeconds": 8.0,
+      "kind": "speech",
+      "reviewed": false,
+      "rms": 0.062068,
+      "clippingRatio": 0.0,
+      "accepted": true,
+      "reasons": [],
+      "embeddingValid": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/31368705_米汀Nagisa/2026_07_20/录制-31368705-20260720-090507-891-早安一会儿.flv",
+      "startSeconds": 120,
+      "durationSeconds": 8.0,
+      "kind": "speech",
+      "reviewed": false,
+      "rms": 0.074645,
+      "clippingRatio": 0.0,
+      "accepted": true,
+      "reasons": [],
+      "embeddingValid": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/31368705_米汀Nagisa/2026_07_20/录制-31368705-20260720-090507-891-早安一会儿.flv",
+      "startSeconds": 360,
+      "durationSeconds": 8.0,
+      "kind": "speech",
+      "reviewed": false,
+      "rms": 0.067728,
+      "clippingRatio": 0.0,
+      "accepted": true,
+      "reasons": [],
+      "embeddingValid": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/31368705_米汀Nagisa/2026_07_20/录制-31368705-20260720-090507-891-早安一会儿.flv",
+      "startSeconds": 600,
+      "durationSeconds": 8.0,
+      "kind": "speech",
+      "reviewed": false,
+      "rms": 0.070568,
+      "clippingRatio": 0.0,
+      "accepted": true,
+      "reasons": [],
+      "embeddingValid": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/31368705_米汀Nagisa/2026_07_20/录制-31368705-20260720-090507-891-早安一会儿.flv",
+      "startSeconds": 840,
+      "durationSeconds": 8.0,
+      "kind": "speech",
+      "reviewed": false,
+      "rms": 0.070322,
+      "clippingRatio": 0.0,
+      "accepted": true,
+      "reasons": [],
+      "embeddingValid": true
+    }
+  ],
+  "candidatePath": "D:\\workspace\\myrepo\\danmaku-to-summary-ts\\data\\asr_speaker_refs\\enrollment_candidates\\miting_v2_candidate.wav",
+  "candidateSha256": "309ca0d9235cf076f7de4d5112df1aeb1a75cf056271b606f999f8a2a5460059",
+  "acceptedClipCount": 8,
+  "candidateSeconds": 64.0
+}

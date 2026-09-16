@@ -7,6 +7,26 @@ import * as fs from 'fs';
 import { spawn } from 'child_process';
 import { getLogger } from '../../core/logging/LogManager';
 import { LiveSegment } from './LiveSessionManager';
+import { ProcessingAlertService } from '../monitoring/ProcessingAlertService';
+import {
+  applyFfmpegProcessPriority,
+  getFfmpegResourceConfig,
+  startFfmpegResourcePeakMonitor,
+  waitForAsrAvailability,
+  withFfmpegResourceLimits
+} from '../../utils/ffmpegResource';
+
+export interface MergeVideoOptions {
+  fillGaps?: boolean;
+}
+
+interface MediaProfile {
+  width: number;
+  height: number;
+  frameRate: string;
+  audioSampleRate: string;
+  audioChannelLayout: string;
+}
 
 /**
  * 文件合并器
@@ -17,8 +37,10 @@ export class FileMerger {
   /**
    * 合并视频文件
    */
-  async mergeVideos(segments: LiveSegment[], outputPath: string, fillGaps: boolean = true): Promise<void> {
+  async mergeVideos(segments: LiveSegment[], outputPath: string, options: boolean | MergeVideoOptions = {}): Promise<void> {
     try {
+      const mergeOptions = typeof options === 'boolean' ? { fillGaps: options } : options;
+      const fillGaps = mergeOptions.fillGaps ?? true;
       this.logger.info(`开始合并视频文件: ${segments.length} 个片段`);
 
       const dir = path.dirname(outputPath);
@@ -40,7 +62,7 @@ export class FileMerger {
 
           if (gapTime > 0) {
             // 创建空白片段
-            const blankPath = await this.createBlankVideo(dir, gapTime);
+            const blankPath = await this.createBlankVideo(dir, gapTime, segment.videoPath);
             // 将路径中的反斜杠替换为正斜杠（ffmpeg concat协议要求）
             const normalizedBlankPath = blankPath.replace(/\\/g, '/');
             fileList.push(`file '${normalizedBlankPath}'`);
@@ -56,10 +78,29 @@ export class FileMerger {
       // 注意：视频流直接复制，音频流重新编码为AAC以确保不同片段间的音频格式一致性
       // 直接 -c copy 会因为空白片段（libx264+AAC）与原始FLV流参数不匹配导致音频流断裂
       this.logger.info(`开始执行ffmpeg合并: ${path.basename(outputPath)}`);
-      await this.runFfmpeg([
+      await ProcessingAlertService.notifyHighCpuAtMergeStart(outputPath);
+      const mergeStartedAt = Date.now();
+      const copyMergeArgs = [
         '-f', 'concat',
         '-safe', '0',
         '-i', fileListPath,
+        '-c', 'copy',
+        '-avoid_negative_ts', 'make_zero',
+        '-fflags', '+genpts',
+        '-y',
+        outputPath
+      ];
+      if (!fillGaps) {
+        await this.runFfmpeg(copyMergeArgs, `merge video ${path.basename(outputPath)}`);
+      } else {
+        try {
+          await this.runFfmpeg(copyMergeArgs, `merge video ${path.basename(outputPath)}`);
+        } catch (error: any) {
+          this.logger.warn(`Stream-copy merge failed, retrying with audio transcode: ${error.message}`);
+          await this.runFfmpeg([
+            '-f', 'concat',
+            '-safe', '0',
+            '-i', fileListPath,
         '-c:v', 'copy',          // 视频流直接复制（无损）
         '-c:a', 'aac',           // 音频流重新编码为AAC（确保格式统一）
         '-ar', '44100',          // 统一采样率 44100Hz
@@ -67,9 +108,20 @@ export class FileMerger {
         '-avoid_negative_ts', 'make_zero', // 处理时间戳跳变
         '-y',
         outputPath
-      ], `合并视频 ${path.basename(outputPath)}`);
+        ], `merge video fallback ${path.basename(outputPath)}`);
+        }
+      }
 
       // 删除临时文件列表
+      const mergeElapsedSeconds = (Date.now() - mergeStartedAt) / 1000;
+      await ProcessingAlertService.notifyIfSlowStage(
+        '合并',
+        mergeElapsedSeconds,
+        ProcessingAlertService.getThresholds().mergeSlowSeconds,
+        outputPath,
+        { segments: segments.length }
+      );
+
       fs.unlinkSync(fileListPath);
 
       // 清理空白片段临时文件
@@ -88,8 +140,109 @@ export class FileMerger {
       }
 
       this.logger.info(`视频合并完成: ${path.basename(outputPath)}`);
+
+      // 合并后视频流健康检测：检测黑屏，如有问题则自动转码修复
+      await this.verifyAndFixIfNeeded(outputPath);
     } catch (error) {
       this.logger.error('合并视频文件失败', { error });
+      throw error;
+    }
+  }
+
+  /**
+   * 验证合并后视频流健康度，如果黑屏比例过高则重新编码修复
+   */
+  private async verifyAndFixIfNeeded(outputPath: string): Promise<void> {
+    try {
+      // 获取音视频流各自的时长，检测不一致
+      const durations = await this.getStreamDurations(outputPath);
+      if (!durations.video || !durations.audio) {
+        this.logger.warn(`无法获取音视频流时长，跳过健康检测`);
+        return;
+      }
+
+      const diff = Math.abs(durations.video - durations.audio);
+      const maxDuration = Math.max(durations.video, durations.audio);
+      const diffRatio = maxDuration > 0 ? diff / maxDuration : 0;
+
+      this.logger.info(`
+        合并后音视频流检测: ${path.basename(outputPath)}\n` +
+        `  视频: ${durations.video.toFixed(1)}s\n` +
+        `  音频: ${durations.audio.toFixed(1)}s\n` +
+        `  差值: ${diff.toFixed(1)}s (${(diffRatio * 100).toFixed(1)}%)
+      `.replace(/^\s+/gm, '').trim());
+
+      // 阈值：音视频时长差超过 2 秒（或占比超过 0.5%）则触发重编码
+      const thresholdSeconds = 2;
+      const thresholdRatio = 0.005;
+      if (diff > thresholdSeconds && diffRatio > thresholdRatio) {
+        this.logger.warn(`音视频流时长差异 ${diff.toFixed(1)}s 超过阈值，触发重新编码修复`);
+        await this.reencodeVideo(outputPath);
+        this.logger.info(`重新编码修复完成: ${path.basename(outputPath)}`);
+      } else {
+        this.logger.info(`音视频流时长一致（差值 ${diff.toFixed(1)}s），无需转码`);
+      }
+    } catch (error) {
+      this.logger.warn(`合并后健康检测失败，跳过（不影响合并结果）: ${error}`);
+    }
+  }
+
+  /**
+   * 获取音视频流各自时长（分别查询）
+   */
+  private async getStreamDurations(videoPath: string): Promise<{ video: number; audio: number }> {
+    const getDuration = (streamType: string): Promise<number> => {
+      return new Promise((resolve) => {
+        const ffprobe = spawn('ffprobe', [
+          '-v', 'error',
+          '-select_streams', streamType,
+          '-show_entries', 'stream=duration',
+          '-of', 'csv=p=0',
+          videoPath
+        ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: false });
+
+        let output = '';
+        ffprobe.stdout.on('data', (data: Buffer) => { output += data.toString(); });
+        ffprobe.on('close', () => {
+          const val = parseFloat(output.trim());
+          resolve(Number.isFinite(val) ? val : 0);
+        });
+        ffprobe.on('error', () => resolve(0));
+      });
+    };
+
+    const [video, audio] = await Promise.all([
+      getDuration('v:0'),
+      getDuration('a:0')
+    ]);
+    return { video, audio };
+  }
+
+  /**
+   * 重新编码视频以修复视频流问题
+   */
+  private async reencodeVideo(videoPath: string): Promise<void> {
+    const tempPath = videoPath + '.reencoding.tmp';
+    try {
+      await this.runFfmpeg([
+        '-i', videoPath,
+        '-c:v', 'libx264',
+        '-crf', '23',
+        '-preset', 'fast',
+        '-c:a', 'copy',
+        '-movflags', '+faststart',
+        '-y',
+        tempPath
+      ], `reencode fix ${path.basename(videoPath)}`);
+
+      // 用重新编码的文件替换原文件
+      fs.unlinkSync(videoPath);
+      fs.renameSync(tempPath, videoPath);
+    } catch (error) {
+      // 清理临时文件
+      if (fs.existsSync(tempPath)) {
+        try { fs.unlinkSync(tempPath); } catch { /* ignore */ }
+      }
       throw error;
     }
   }
@@ -190,23 +343,30 @@ export class FileMerger {
   /**
    * 创建空白视频片段
    */
-  async createBlankVideo(dir: string, durationMs: number): Promise<string> {
+  async createBlankVideo(dir: string, durationMs: number, referenceVideoPath?: string): Promise<string> {
     const durationSec = durationMs / 1000;
     const ext = path.extname(dir === '.' ? '' : 'video.flv'); // 默认flv，但在mergeVideos里会根据情况传参
     // 实际上我们在 mergeVideos 里动态决定后缀更好
     const blankPath = path.join(dir, `blank_${durationMs}_${Date.now()}.flv`);
+    const profile = referenceVideoPath
+      ? await this.getMediaProfile(referenceVideoPath)
+      : this.getDefaultMediaProfile();
 
     // 使用ffmpeg创建空白视频（黑屏，静音）
     // 对于FLV，我们需要确保编码参数兼容
     await this.runFfmpeg([
       '-f', 'lavfi',
-      '-i', `color=c=black:s=1920x1080:d=${durationSec}`,
+      '-i', `color=c=black:s=${profile.width}x${profile.height}:r=${profile.frameRate}:d=${durationSec}`,
       '-f', 'lavfi',
-      '-i', `anullsrc=r=48000:cl=stereo`,
+      '-i', `anullsrc=r=${profile.audioSampleRate}:cl=${profile.audioChannelLayout}`,
       '-c:v', 'libx264',
       '-preset', 'ultrafast',
-      '-r', '60',
+      '-crf', '35',
+      '-pix_fmt', 'yuv420p',
+      '-r', profile.frameRate,
       '-c:a', 'aac',
+      '-b:a', '64k',
+      '-threads', '1',
       '-t', String(durationSec),
       '-f', 'flv', // 明确指定格式
       '-y',
@@ -214,6 +374,74 @@ export class FileMerger {
     ], `创建空白片段 ${path.basename(blankPath)}`);
 
     return blankPath;
+  }
+
+  private getDefaultMediaProfile(): MediaProfile {
+    return {
+      width: 1920,
+      height: 1080,
+      frameRate: '60',
+      audioSampleRate: '48000',
+      audioChannelLayout: 'stereo'
+    };
+  }
+
+  private async getMediaProfile(videoPath: string): Promise<MediaProfile> {
+    return new Promise((resolve) => {
+      const ffprobe = spawn('ffprobe', [
+        '-v', 'error',
+        '-print_format', 'json',
+        '-show_streams',
+        videoPath
+      ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: false });
+
+      let output = '';
+      const fallback = this.getDefaultMediaProfile();
+
+      ffprobe.stdout.on('data', (data: Buffer) => {
+        output += data.toString();
+      });
+
+      ffprobe.on('close', (code: number | null) => {
+        if (code !== 0 || !output.trim()) {
+          resolve(fallback);
+          return;
+        }
+
+        try {
+          const parsed = JSON.parse(output);
+          const streams = Array.isArray(parsed.streams) ? parsed.streams : [];
+          const video = streams.find((stream: any) => stream.codec_type === 'video') || {};
+          const audio = streams.find((stream: any) => stream.codec_type === 'audio') || {};
+          resolve({
+            width: Number(video.width) || fallback.width,
+            height: Number(video.height) || fallback.height,
+            frameRate: this.normalizeFrameRate(video.avg_frame_rate || video.r_frame_rate),
+            audioSampleRate: String(audio.sample_rate || fallback.audioSampleRate),
+            audioChannelLayout: this.normalizeChannelLayout(audio.channel_layout, audio.channels)
+          });
+        } catch {
+          resolve(fallback);
+        }
+      });
+
+      ffprobe.on('error', () => resolve(fallback));
+    });
+  }
+
+  private normalizeFrameRate(frameRate?: string): string {
+    if (!frameRate || frameRate === '0/0') return '60';
+    const [num, den] = frameRate.split('/').map(Number);
+    if (!Number.isFinite(num) || !Number.isFinite(den) || den === 0) return '60';
+    const value = num / den;
+    if (!Number.isFinite(value) || value <= 0) return '60';
+    return frameRate;
+  }
+
+  private normalizeChannelLayout(channelLayout?: string, channels?: number): string {
+    if (channelLayout) return channelLayout;
+    if (Number(channels) === 1) return 'mono';
+    return 'stereo';
   }
 
   /**
@@ -226,7 +454,7 @@ export class FileMerger {
         '-show_entries', 'format=duration',
         '-of', 'default=noprint_wrappers=1:nokey=1',
         videoPath
-      ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+      ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: false });
 
       let output = '';
       let error = '';
@@ -367,17 +595,39 @@ export class FileMerger {
    * 运行ffmpeg命令
    */
   private async runFfmpeg(args: string[], operationLabel?: string): Promise<void> {
+    const label = operationLabel || 'ffmpeg任务';
+    const resourceConfig = getFfmpegResourceConfig();
+    const asrState = await waitForAsrAvailability(
+      label,
+      resourceConfig,
+      message => this.logger.info(message)
+    );
+    const effectiveResourceConfig = { ...resourceConfig };
+    if (asrState.asrActive && Number(effectiveResourceConfig.threads) > 0) {
+      effectiveResourceConfig.threads = Math.min(
+        Number(effectiveResourceConfig.threads),
+        Math.max(1, Number(effectiveResourceConfig.asrGuard?.overlapThreads) || 1)
+      );
+      this.logger.info(`文件合并 ffmpeg 与 ASR 重叠，threads=${effectiveResourceConfig.threads}`);
+    }
     return new Promise((resolve, reject) => {
-      const label = operationLabel || 'ffmpeg任务';
       const startedAt = Date.now();
-      const ffmpeg = spawn('ffmpeg', args, { windowsHide: true });
+      const limitedArgs = withFfmpegResourceLimits(args, effectiveResourceConfig);
+      const ffmpeg = spawn('ffmpeg', limitedArgs, { windowsHide: true, shell: false });
+      applyFfmpegProcessPriority(ffmpeg.pid, effectiveResourceConfig.priority);
+      const peakMonitor = startFfmpegResourcePeakMonitor(
+        label,
+        effectiveResourceConfig,
+        message => this.logger.info(message)
+      );
 
       let stderrOutput = '';
       let lastProgressLogAt = 0;
       let latestTimestamp = '';
 
       this.logger.info(`启动ffmpeg: ${label}`, {
-        args: args.join(' ')
+        args: limitedArgs.join(' '),
+        resourceLimits: resourceConfig
       });
 
       const heartbeatTimer = setInterval(() => {
@@ -404,6 +654,7 @@ export class FileMerger {
 
       ffmpeg.on('close', (code: number | null) => {
         clearInterval(heartbeatTimer);
+        peakMonitor.stop();
         if (code === 0) {
           const elapsedSec = Math.floor((Date.now() - startedAt) / 1000);
           this.logger.info(`ffmpeg执行成功: ${label} (耗时 ${elapsedSec}s)`);
@@ -412,7 +663,7 @@ export class FileMerger {
           const errorMsg = stderrOutput || `Unknown error`;
           this.logger.error(`ffmpeg执行失败`, {
             code,
-            args: args.join(' '),
+            args: limitedArgs.join(' '),
             stderr: errorMsg.substring(0, 500) // 只记录前500字符
           });
           reject(new Error(`ffmpeg exited with code ${code}: ${errorMsg.substring(0, 200)}`));
@@ -421,6 +672,7 @@ export class FileMerger {
 
       ffmpeg.on('error', (error) => {
         clearInterval(heartbeatTimer);
+        peakMonitor.stop();
         this.logger.error(`ffmpeg进程错误`, { error: error.message });
         reject(error);
       });
@@ -485,14 +737,18 @@ export class FileMerger {
 
       // 移动视频文件
       if (fs.existsSync(segment.videoPath)) {
-        fs.renameSync(segment.videoPath, videoDest);
-        this.logger.info(`备份视频文件: ${videoBasename}`);
+        if (path.resolve(segment.videoPath).toLowerCase() !== path.resolve(videoDest).toLowerCase()) {
+          fs.renameSync(segment.videoPath, videoDest);
+          this.logger.info(`备份视频文件: ${videoBasename}`);
+        }
       }
 
       // 移动XML文件
       if (fs.existsSync(segment.xmlPath)) {
-        fs.renameSync(segment.xmlPath, xmlDest);
-        this.logger.info(`备份XML文件: ${xmlBasename}`);
+        if (path.resolve(segment.xmlPath).toLowerCase() !== path.resolve(xmlDest).toLowerCase()) {
+          fs.renameSync(segment.xmlPath, xmlDest);
+          this.logger.info(`备份XML文件: ${xmlBasename}`);
+        }
       }
     }
   }

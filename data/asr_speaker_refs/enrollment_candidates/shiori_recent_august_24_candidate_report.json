@@ -1,0 +1,112 @@
+{
+  "schemaVersion": 1,
+  "speaker": "栞栞",
+  "sourceManifest": "D:\\workspace\\myrepo\\danmaku-to-summary-ts\\data\\asr_speaker_refs\\enrollment_candidates\\shiori_recent_august_24.enrollment.json",
+  "processing": {
+    "sampleRate": 16000,
+    "channels": 1,
+    "audioFilter": "highpass=f=80,lowpass=f=7600,loudnorm=I=-20:TP=-2:LRA=11"
+  },
+  "clips": [
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_24/录制-26966466-20260824-100721-324-早安獭獭栞！.flv",
+      "startSeconds": 145.93,
+      "durationSeconds": 8.0,
+      "kind": "speech",
+      "reviewed": true,
+      "rms": 0.058173,
+      "clippingRatio": 0.0,
+      "accepted": true,
+      "reasons": [],
+      "embeddingValid": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_24/录制-26966466-20260824-100721-324-早安獭獭栞！.flv",
+      "startSeconds": 1910.99,
+      "durationSeconds": 8.0,
+      "kind": "speech",
+      "reviewed": true,
+      "rms": 0.047677,
+      "clippingRatio": 0.0,
+      "accepted": true,
+      "reasons": [],
+      "embeddingValid": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_24/录制-26966466-20260824-100721-324-早安獭獭栞！.flv",
+      "startSeconds": 3055.949,
+      "durationSeconds": 8.0,
+      "kind": "speech",
+      "reviewed": true,
+      "rms": 0.058592,
+      "clippingRatio": 0.0,
+      "accepted": true,
+      "reasons": [],
+      "embeddingValid": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_24/录制-26966466-20260824-100721-324-早安獭獭栞！.flv",
+      "startSeconds": 3074.23,
+      "durationSeconds": 8.0,
+      "kind": "speech",
+      "reviewed": true,
+      "rms": 0.052527,
+      "clippingRatio": 0.0,
+      "accepted": true,
+      "reasons": [],
+      "embeddingValid": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_24/录制-26966466-20260824-100721-324-早安獭獭栞！.flv",
+      "startSeconds": 4541.42,
+      "durationSeconds": 8.0,
+      "kind": "speech",
+      "reviewed": true,
+      "rms": 0.047751,
+      "clippingRatio": 0.0,
+      "accepted": true,
+      "reasons": [],
+      "embeddingValid": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_24/录制-26966466-20260824-100721-324-早安獭獭栞！.flv",
+      "startSeconds": 4631.93,
+      "durationSeconds": 8.0,
+      "kind": "speech",
+      "reviewed": true,
+      "rms": 0.057971,
+      "clippingRatio": 0.0,
+      "accepted": true,
+      "reasons": [],
+      "embeddingValid": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_24/录制-26966466-20260824-100721-324-早安獭獭栞！.flv",
+      "startSeconds": 5301.119,
+      "durationSeconds": 8.0,
+      "kind": "speech",
+      "reviewed": true,
+      "rms": 0.046803,
+      "clippingRatio": 0.0,
+      "accepted": true,
+      "reasons": [],
+      "embeddingValid": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_24/录制-26966466-20260824-100721-324-早安獭獭栞！.flv",
+      "startSeconds": 6467.489,
+      "durationSeconds": 8.0,
+      "kind": "speech",
+      "reviewed": true,
+      "rms": 0.047146,
+      "clippingRatio": 0.0,
+      "accepted": true,
+      "reasons": [],
+      "embeddingValid": true
+    }
+  ],
+  "candidatePath": "D:\\workspace\\myrepo\\danmaku-to-summary-ts\\data\\asr_speaker_refs\\enrollment_candidates\\shiori_recent_august_24_candidate.wav",
+  "candidateSha256": "692db8c83ca45209fa6365bf76d192a4ed97842d9eae54a64f8552fd1d33a146",
+  "acceptedClipCount": 8,
+  "candidateSeconds": 64.0
+}

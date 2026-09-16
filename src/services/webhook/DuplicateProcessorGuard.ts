@@ -210,9 +210,10 @@ export class DuplicateProcessorGuard implements IDuplicateProcessorGuard {
    * 启动清理定时器
    */
   private startCleanupTimer(): void {
-    setInterval(() => {
+    const timer = setInterval(() => {
       this.cleanup();
     }, this.defaultConfig.cleanupIntervalMs);
+    timer.unref?.();
     
     this.logger.debug(`启动清理定时器，间隔: ${this.defaultConfig.cleanupIntervalMs / 1000} 秒`);
   }

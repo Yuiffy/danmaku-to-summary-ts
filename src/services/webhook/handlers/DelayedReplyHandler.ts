@@ -1,6 +1,7 @@
 import { Express, Request, Response } from 'express';
 import { IWebhookHandler } from '../IWebhookService';
 import { getLogger } from '../../../core/logging/LogManager';
+import { AppError } from '../../../core/errors/AppError';
 import { IDelayedReplyService } from '../../bilibili/interfaces/IDelayedReplyService';
 
 /**
@@ -30,10 +31,49 @@ export class DelayedReplyHandler implements IWebhookHandler {
    * 注册路由
    */
   registerRoutes(app: Express): void {
+    app.get(`${this.path}/tasks`, (_req: Request, res: Response) => {
+      if (!this.delayedReplyService) {
+        res.status(503).json({ error: 'Delayed reply service not available' });
+        return;
+      }
+      res.json({ tasks: this.delayedReplyService.getTasks() });
+    });
+
+    app.delete(`${this.path}/tasks/:taskId`, async (req: Request, res: Response) => {
+      if (!this.delayedReplyService) {
+        res.status(503).json({ error: 'Delayed reply service not available' });
+        return;
+      }
+      const taskId = String(req.params.taskId);
+      const task = this.delayedReplyService.getTasks().find(item => item.taskId === taskId);
+      if (!task) {
+        res.status(404).json({ error: 'Task not found' });
+        return;
+      }
+      if (task.status === 'processing') {
+        res.status(409).json({ error: 'Task is currently publishing' });
+        return;
+      }
+      try {
+        await this.delayedReplyService.removeTask(taskId);
+        res.json({ success: true, taskId });
+      } catch (error: unknown) {
+        const status = error instanceof AppError ? error.statusCode : 500;
+        res.status(status).json({ error: error instanceof Error ? error.message : String(error) });
+      }
+    });
+
     // POST /api/delayed-reply - 手动触发延迟回复
     app.post(this.path, async (req: Request, res: Response): Promise<any> => {
       try {
-        const { roomId, delaySeconds, goodnightTextPath, comicImagePath } = req.body;
+        const {
+          roomId,
+          delaySeconds,
+          goodnightTextPath,
+          comicImagePath,
+          liveStartTime,
+          liveEndTime,
+        } = req.body;
         
         if (!roomId) {
           return res.status(400).json({
@@ -46,6 +86,18 @@ export class DelayedReplyHandler implements IWebhookHandler {
           return res.status(500).json({
             success: false,
             error: 'Delayed reply service not available'
+          });
+        }
+
+        const parsedLiveStartTime = liveStartTime ? new Date(liveStartTime) : undefined;
+        const parsedLiveEndTime = liveEndTime ? new Date(liveEndTime) : undefined;
+        if (
+          (parsedLiveStartTime && Number.isNaN(parsedLiveStartTime.getTime())) ||
+          (parsedLiveEndTime && Number.isNaN(parsedLiveEndTime.getTime()))
+        ) {
+          return res.status(400).json({
+            success: false,
+            error: 'liveStartTime and liveEndTime must be valid dates'
           });
         }
         
@@ -61,12 +113,21 @@ export class DelayedReplyHandler implements IWebhookHandler {
         }
         
         // 添加延迟回复任务（直接传递 delaySeconds）
-        const taskId = await this.delayedReplyService.addTask(roomId, textPath, imagePath || '', delaySeconds);
+        const taskId = await this.delayedReplyService.addTask(
+          roomId,
+          textPath,
+          imagePath || '',
+          delaySeconds,
+          parsedLiveStartTime,
+          parsedLiveEndTime
+        );
         
         this.logger.info(`手动触发延迟回复任务:`, {
           taskId,
           roomId,
           delaySeconds: delaySeconds || '使用配置的延迟时间',
+          liveStartTime: parsedLiveStartTime?.toISOString(),
+          liveEndTime: parsedLiveEndTime?.toISOString(),
           textPath,
           imagePath
         });
@@ -76,11 +137,76 @@ export class DelayedReplyHandler implements IWebhookHandler {
           taskId,
           roomId,
           delaySeconds: delaySeconds || '使用配置的延迟时间',
+          liveStartTime: parsedLiveStartTime?.toISOString(),
+          liveEndTime: parsedLiveEndTime?.toISOString(),
           textPath,
           imagePath
         });
       } catch (error: any) {
         this.logger.error(`手动触发延迟回复失败: ${error.message}`, { error });
+        return res.status(500).json({
+          success: false,
+          error: error.message
+        });
+      }
+    });
+
+    app.post(`${this.path}/live-content-summary`, async (req: Request, res: Response): Promise<any> => {
+      try {
+        const {
+          roomId,
+          goodnightTextPath,
+          liveContentSummaryPath,
+          deliveryMode,
+        } = req.body;
+
+        if (!roomId || !goodnightTextPath || !liveContentSummaryPath) {
+          return res.status(400).json({
+            success: false,
+            error: 'roomId, goodnightTextPath and liveContentSummaryPath are required'
+          });
+        }
+        if (deliveryMode && deliveryMode !== 'separate' && deliveryMode !== 'attach_if_ready') {
+          return res.status(400).json({
+            success: false,
+            error: 'deliveryMode must be separate or attach_if_ready'
+          });
+        }
+        if (!this.delayedReplyService) {
+          return res.status(500).json({
+            success: false,
+            error: 'Delayed reply service not available'
+          });
+        }
+
+        const task = await this.delayedReplyService.registerLiveContentSummary(
+          String(roomId),
+          String(goodnightTextPath),
+          String(liveContentSummaryPath),
+          deliveryMode
+        );
+        if (!task) {
+          return res.status(404).json({
+            success: false,
+            error: 'Matching delayed reply task not found'
+          });
+        }
+
+        this.logger.info('已为延迟回复任务注册直播梗概', {
+          taskId: task.taskId,
+          roomId: String(roomId),
+          deliveryMode: task.liveContentSummaryDeliveryMode,
+          liveContentSummaryPath: task.liveContentSummaryPath
+        });
+        return res.json({
+          success: true,
+          taskId: task.taskId,
+          status: task.status,
+          liveContentSummaryState: task.liveContentSummaryState,
+          deliveryMode: task.liveContentSummaryDeliveryMode
+        });
+      } catch (error: any) {
+        this.logger.error(`注册直播梗概失败: ${error.message}`, { error });
         return res.status(500).json({
           success: false,
           error: error.message

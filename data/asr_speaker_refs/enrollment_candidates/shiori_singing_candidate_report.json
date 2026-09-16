@@ -1,0 +1,112 @@
+{
+  "schemaVersion": 1,
+  "speaker": "栞栞",
+  "sourceManifest": "D:\\workspace\\myrepo\\danmaku-to-summary-ts\\data\\asr_speaker_refs\\enrollment_candidates\\shiori_singing.enrollment.json",
+  "processing": {
+    "sampleRate": 16000,
+    "channels": 1,
+    "audioFilter": "highpass=f=80,lowpass=f=7600,loudnorm=I=-20:TP=-2:LRA=11"
+  },
+  "clips": [
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_19/录制-26966466-20260819-210645-562-七夕唱唱歌(_^▽^_).opus",
+      "startSeconds": 414,
+      "durationSeconds": 8.0,
+      "kind": "singing",
+      "reviewed": true,
+      "rms": 0.070305,
+      "clippingRatio": 0.0,
+      "accepted": true,
+      "reasons": [],
+      "embeddingValid": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_19/录制-26966466-20260819-210645-562-七夕唱唱歌(_^▽^_).opus",
+      "startSeconds": 482,
+      "durationSeconds": 8.0,
+      "kind": "singing",
+      "reviewed": true,
+      "rms": 0.074444,
+      "clippingRatio": 0.0,
+      "accepted": true,
+      "reasons": [],
+      "embeddingValid": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_19/录制-26966466-20260819-210645-562-七夕唱唱歌(_^▽^_).opus",
+      "startSeconds": 544,
+      "durationSeconds": 8.0,
+      "kind": "singing",
+      "reviewed": true,
+      "rms": 0.068632,
+      "clippingRatio": 0.0,
+      "accepted": true,
+      "reasons": [],
+      "embeddingValid": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_19/录制-26966466-20260819-210645-562-七夕唱唱歌(_^▽^_).opus",
+      "startSeconds": 657,
+      "durationSeconds": 8.0,
+      "kind": "singing",
+      "reviewed": true,
+      "rms": 0.07194,
+      "clippingRatio": 0.0,
+      "accepted": true,
+      "reasons": [],
+      "embeddingValid": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_19/录制-26966466-20260819-210645-562-七夕唱唱歌(_^▽^_).opus",
+      "startSeconds": 1930,
+      "durationSeconds": 8.0,
+      "kind": "singing",
+      "reviewed": true,
+      "rms": 0.068298,
+      "clippingRatio": 0.0,
+      "accepted": true,
+      "reasons": [],
+      "embeddingValid": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_19/录制-26966466-20260819-210645-562-七夕唱唱歌(_^▽^_).opus",
+      "startSeconds": 2581,
+      "durationSeconds": 8.0,
+      "kind": "singing",
+      "reviewed": true,
+      "rms": 0.061133,
+      "clippingRatio": 0.0,
+      "accepted": true,
+      "reasons": [],
+      "embeddingValid": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_19/录制-26966466-20260819-210645-562-七夕唱唱歌(_^▽^_).opus",
+      "startSeconds": 3082,
+      "durationSeconds": 8.0,
+      "kind": "singing",
+      "reviewed": true,
+      "rms": 0.074668,
+      "clippingRatio": 0.0,
+      "accepted": true,
+      "reasons": [],
+      "embeddingValid": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_19/录制-26966466-20260819-210645-562-七夕唱唱歌(_^▽^_).opus",
+      "startSeconds": 3591,
+      "durationSeconds": 8.0,
+      "kind": "singing",
+      "reviewed": true,
+      "rms": 0.063048,
+      "clippingRatio": 0.0,
+      "accepted": true,
+      "reasons": [],
+      "embeddingValid": true
+    }
+  ],
+  "candidatePath": "D:\\workspace\\myrepo\\danmaku-to-summary-ts\\data\\asr_speaker_refs\\enrollment_candidates\\shiori_singing_candidate.wav",
+  "candidateSha256": "fa8a6ec29f71debcfa01b20970569417610c9b8c95495e557b89297165d44285",
+  "acceptedClipCount": 8,
+  "candidateSeconds": 64.0
+}

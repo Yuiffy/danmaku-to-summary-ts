@@ -1,5 +1,7 @@
 # B站动态回复API服务器
 
+> **历史 standalone API 文档**。当前 `package.json` 没有 `bilibili:api` 脚本；B站路由现由 `dist/app/main.js` 中的 `BilibiliAPIHandler` 注册在 `/api/bilibili/*`。当前启动方式、端口和路由入口见根 [README](../../README.md) 与 [runtime notes](../../docs/runtime-notes.md)。下方 `npm run bilibili:api`、端口 `3000` 和旧 secrets 路径不可直接照用。
+
 用于调试B站动态回复功能的HTTP接口服务。
 
 ## 启动服务

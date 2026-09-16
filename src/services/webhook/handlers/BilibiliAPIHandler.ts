@@ -86,6 +86,12 @@ export class BilibiliAPIHandler implements IWebhookHandler {
     // 触发延迟回复任务
     app.post(`${this.path}/delayed-reply`, this.handleTriggerDelayedReply.bind(this));
 
+    // 仅允许本机为历史成功任务补发汇总动态评论
+    app.post(`${this.path}/delayed-reply/summary`, this.handlePublishSummaryForTask.bind(this));
+
+    // 仅允许本机按原任务 ID 为历史文字回复补图
+    app.post(`${this.path}/delayed-reply/comic`, this.handleRecoverComicForTask.bind(this));
+
     this.logger.info(`注册${this.name}处理器，路径: ${this.path}`);
   }
 
@@ -457,6 +463,95 @@ export class BilibiliAPIHandler implements IWebhookHandler {
       res.status(500).json({
         success: false,
         error: error.message || '触发延迟回复失败'
+      });
+    }
+  }
+
+  private async handlePublishSummaryForTask(req: Request, res: Response): Promise<void> {
+    try {
+      const remoteAddress = req.socket.remoteAddress || '';
+      const isLoopback =
+        remoteAddress === '127.0.0.1' ||
+        remoteAddress === '::1' ||
+        remoteAddress === '::ffff:127.0.0.1';
+      if (!isLoopback) {
+        res.status(403).json({ success: false, error: '该接口仅允许本机调用' });
+        return;
+      }
+
+      const taskId = String(req.body?.taskId || '').trim();
+      if (!taskId) {
+        res.status(400).json({ success: false, error: '缺少必要参数: taskId' });
+        return;
+      }
+      if (!this.delayedReplyService) {
+        res.status(503).json({ success: false, error: '延迟回复服务未设置' });
+        return;
+      }
+
+      const task = await this.delayedReplyService.publishSummaryForTask(taskId);
+      res.json({
+        success: true,
+        data: {
+          taskId: task.taskId,
+          status: task.status,
+          summaryReplyId: task.summaryReplyId || null,
+          error: task.error || null
+        }
+      });
+    } catch (error: any) {
+      this.logger.error('历史汇总动态回复发布失败', { error });
+      res.status(500).json({
+        success: false,
+        error: error.message || '历史汇总动态回复发布失败'
+      });
+    }
+  }
+
+  private async handleRecoverComicForTask(req: Request, res: Response): Promise<void> {
+    try {
+      const remoteAddress = req.socket.remoteAddress || '';
+      const isLoopback =
+        remoteAddress === '127.0.0.1' ||
+        remoteAddress === '::1' ||
+        remoteAddress === '::ffff:127.0.0.1';
+      if (!isLoopback) {
+        res.status(403).json({ success: false, error: '该接口仅允许本机调用' });
+        return;
+      }
+
+      const taskId = String(req.body?.taskId || '').trim();
+      const comicImagePath = String(req.body?.comicImagePath || '').trim();
+      if (!taskId || !comicImagePath) {
+        res.status(400).json({
+          success: false,
+          error: '缺少必要参数: taskId, comicImagePath'
+        });
+        return;
+      }
+      if (!this.delayedReplyService) {
+        res.status(503).json({ success: false, error: '延迟回复服务未设置' });
+        return;
+      }
+
+      const task = await this.delayedReplyService.recoverComicForTask(taskId, comicImagePath);
+      res.json({
+        success: true,
+        data: {
+          taskId: task.taskId,
+          status: task.status,
+          repliedDynamicId: task.repliedDynamicId || null,
+          replyId: task.replyId || null,
+          supplementalReplyId: task.supplementalReplyId || null,
+          supplementalCompletedAt: task.supplementalCompletedAt || null,
+          error: task.error || null
+        }
+      });
+    } catch (error: any) {
+      this.logger.error('历史晚安回复补图失败', { error });
+      res.status(500).json({
+        success: false,
+        error: error.message || '历史晚安回复补图失败'
       });
     }
   }

@@ -1,0 +1,216 @@
+'use strict';
+
+const crypto = require('crypto');
+const { collectSpokenClockValues, supportedClockSpans } = require('./clock_evidence');
+const { collectSpokenDates, supportedDateSpans } = require('./date_evidence');
+const { reviewPersonEvidence } = require('./person_evidence');
+const { speakerForSegment } = require('../asr/speaker_attribution');
+
+function buildSubtitleEvidence(segments = [], options = {}) {
+    const maxSeconds = Number(options.maxGroupSeconds) || 12;
+    const gapSeconds = Number(options.gapSeconds) || 2;
+    const maxChars = Number(options.maxGroupChars) || 400;
+    const cues = [];
+    const source = segments.map((segment, index) => ({
+        index,
+        start: Number(segment.start),
+        end: Number(segment.end),
+        text: String(segment.text || ''),
+        ...(segment.asrEvidence ? { asrEvidence: segment.asrEvidence } : {}),
+        ...(segment.speakerEvidence ? { speakerEvidence: segment.speakerEvidence } : {}),
+        speaker: speakerForSegment({ ...segment, speaker: segment.speaker ?? segment.speaker_id })
+    })).filter(item => Number.isFinite(item.start) && Number.isFinite(item.end) && item.end > item.start);
+    for (const item of source) {
+        const last = cues.at(-1);
+        if (options.groupSegments !== false && last && item.start >= last.start && item.start - last.end < gapSeconds
+            && item.end - last.start <= maxSeconds && item.speaker === last.speaker
+            && last.text.length + item.text.length + 1 <= maxChars) {
+            last.end = Math.max(last.end, item.end);
+            last.items.push(item);
+            last.text = last.items.map(row => row.text.trim()).join(' ');
+        } else {
+            cues.push({ id: `G${item.index + 1}`, start: item.start, end: item.end,
+                speaker: item.speaker, text: item.text.trim(), items: [item] });
+        }
+    }
+    return {
+        version: 1,
+        sourceSha256: crypto.createHash('sha256').update(JSON.stringify(source)).digest('hex'),
+        cues,
+        byId: new Map(cues.map(cue => [cue.id, cue]))
+    };
+}
+
+function cuesForWindow(evidence, window) {
+    return evidence.cues.filter(cue => cue.end > window.start && cue.start < window.end);
+}
+
+function formatEvidenceCues(cues) {
+    // Display seconds are compact; cue IDs retain exact source boundaries.
+    return cues.map(cue => `${cue.id} ${Math.floor(cue.start)}-${Math.ceil(cue.end)} ${speakerHint(cue)}${punctuatedCueText(cue)}`).join('\n');
+}
+
+function punctuatedCueText(cue) {
+    if (!cue.items?.length || cue.partial) return cue.text;
+    if (cue.text !== cue.items.map(item => item.text.trim()).join(' ')) return cue.text;
+    const normalize = text => String(text).normalize('NFKC').replace(/[\s\p{P}\p{S}]/gu, '').toLowerCase();
+    return cue.items.map(item => {
+        const raw = item.asrEvidence?.correctedText ?? item.asrEvidence?.recognizedText;
+        // Restore punctuation only; do not undo aliases or import a larger ASR source span.
+        return typeof raw === 'string' && normalize(raw) === normalize(item.text) ? raw.trim() : item.text.trim();
+    }).join(' ');
+}
+
+function speakerHint(cue) {
+    const sources = (cue.items || []).map(item => item.speakerEvidence).filter(Boolean);
+    if (!sources.length) return '';
+    const labels = new Set(sources.map(source => source.label));
+    const rows = sources.flatMap(source => source.observations || []);
+    if (sources.length !== cue.items.length || labels.size !== 1 || !sources[0].label
+        || sources.some(source => source.status !== 'row_supported')) return '[V=?] ';
+    const scores = rows.map(row => row.row?.score).filter(value => Number.isFinite(value));
+    const margins = rows.map(row => row.row?.margin).filter(value => Number.isFinite(value));
+    return `[V=${JSON.stringify(sources[0].label)};sim=${scores.length ? Math.min(...scores).toFixed(2) : '?'};gap=${margins.length ? Math.min(...margins).toFixed(2) : '?'};row/window] `;
+}
+
+function resolveEvidenceBoundaries(raw, evidence) {
+    if (!raw.startCueId && !raw.endCueId) return null;
+    const start = evidence.byId.get(String(raw.startCueId));
+    const end = evidence.byId.get(String(raw.endCueId));
+    if (!start || !end || end.end <= start.start) throw new Error('Unknown or reversed boundary cue IDs');
+    return { start: start.start, end: end.end, boundaryFromEvidence: true,
+        startCueId: start.id, endCueId: end.id };
+}
+
+function linkClipEvidence(raw, clip, evidence, danmaku = [], available = {}) {
+    const subtitleIds = Array.from(new Set((Array.isArray(raw.evidenceCueIds) ? raw.evidenceCueIds : []).map(String)));
+    const danmakuIds = Array.from(new Set((Array.isArray(raw.evidenceDanmakuIds) ? raw.evidenceDanmakuIds : []).map(String)));
+    const issues = [];
+    const subtitles = subtitleIds.map(id => {
+        const cue = evidence.byId.get(id);
+        if (available.cueIds && !available.cueIds.has(id)) issues.push(`unseen_subtitle:${id}`);
+        if (!cue) issues.push(`unknown_subtitle:${id}`);
+        else if (cue.start < clip.start - 0.001 || cue.end > clip.end + 0.001) issues.push(`subtitle_outside_clip:${id}`);
+        return cue ? { id, start: cue.start, end: cue.end, text: cue.text, sourceIndices: cue.items.map(item => item.index) } : null;
+    }).filter(Boolean);
+    const audience = danmakuIds.map(id => {
+        const index = /^D[1-9]\d*$/u.test(id) ? Number(id.slice(1)) - 1 : -1;
+        const row = danmaku[index];
+        if (available.danmakuIds && !available.danmakuIds.has(id)) issues.push(`unseen_danmaku:${id}`);
+        if (!row) issues.push(`unknown_danmaku:${id}`);
+        else if (row.time < clip.start || row.time > clip.end) issues.push(`danmaku_outside_clip:${id}`);
+        return row ? { id, time: row.time, text: row.text } : null;
+    }).filter(Boolean);
+    if (subtitles.length === 0) issues.push('missing_speech_evidence');
+    const publicCopy = ['title', 'description', 'coverText'].map(field => String(raw[field] || '')).join(' ');
+    if (/(?:观众|弹幕)/u.test(publicCopy) && audience.length === 0) issues.push('audience_attribution_needs_review');
+    const normalize = text => String(text).replace(/[\s\p{P}\p{S}]/gu, '').toLowerCase();
+    const sourceText = [...subtitles, ...audience].map(row => row.text).join(' ');
+    const quotedEvidence = normalize(sourceText);
+    const sourceNumbers = new Set(Array.from(sourceText.matchAll(/\d+(?:\.\d+)?/gu), match => match[0]));
+    const numericSourceTexts = [
+        ...subtitles.filter(row => row.start >= clip.start - 0.001 && row.end <= clip.end + 0.001
+            && (!available.cueIds || available.cueIds.has(row.id))),
+        ...audience.filter(row => row.time >= clip.start && row.time <= clip.end
+            && (!available.danmakuIds || available.danmakuIds.has(row.id)))
+    ].map(row => row.text);
+    const clockValues = /\d{1,2}:\d{2}/u.test(publicCopy) ? collectSpokenClockValues(numericSourceTexts) : null;
+    const sourceDates = /\d+\s*[年月]/u.test(publicCopy) ? collectSpokenDates(numericSourceTexts, available.referenceYear) : [];
+    for (const field of ['title', 'description', 'coverText']) {
+        const copy = String(raw[field] || '');
+        const clocks = clockValues?.size ? supportedClockSpans(copy, clockValues) : null;
+        const dates = supportedDateSpans(copy, sourceDates);
+        for (const match of copy.matchAll(/["“「]([^"”」\n]{2,80})["”」]/gu)) {
+            const quote = normalize(match[1]);
+            if (quote && !quotedEvidence.includes(quote)) issues.push(`unsupported_quote:${field}:${match[1]}`);
+        }
+        for (const match of copy.matchAll(/\d{2,}(?:\.\d+)?/gu)) {
+            if (!sourceNumbers.has(match[0]) && ![...(clocks || []), ...dates]
+                .some(span => span.start <= match.index && span.end >= match.index + match[0].length)) {
+                issues.push(`unsupported_number:${field}:${match[0]}`);
+            }
+        }
+    }
+    const kinds = ['live_speech', 'recount', 'playback', 'audience', 'uncertain'];
+    const sourceKind = kinds.includes(raw.sourceKind) ? raw.sourceKind : 'uncertain';
+    if (sourceKind === 'uncertain') issues.push('uncertain_source');
+    const unseen = {
+        subtitleIds: subtitleIds.filter(id => available.cueIds && !available.cueIds.has(id)),
+        danmakuIds: danmakuIds.filter(id => available.danmakuIds && !available.danmakuIds.has(id))
+    };
+    // Linking checks provenance and time bounds, not the truth of an ASR claim.
+    const grounding = { version: 1, status: issues.length ? 'needs_review' : 'linked', sourceSha256: evidence.sourceSha256,
+        sourceKind, subtitleIds, danmakuIds, subtitles, audience, unseen, issues };
+    if (sourceDates.length && Number.isInteger(available.referenceYear)) grounding.referenceYear = available.referenceYear;
+    return reviewPersonEvidence(raw, clip, evidence, grounding, available.personContext);
+}
+
+function revalidateClipEvidence(clip, evidence, danmaku, personContext) {
+    if (!clip.grounding) return clip;
+    const previous = clip.grounding;
+    const subtitleIds = Array.isArray(previous.subtitleIds) ? previous.subtitleIds.map(String) : [];
+    const danmakuIds = Array.isArray(previous.danmakuIds) ? previous.danmakuIds.map(String) : [];
+    const unseenSubtitles = new Set(Array.isArray(previous.unseen?.subtitleIds) ? previous.unseen.subtitleIds : []);
+    const unseenDanmaku = new Set(Array.isArray(previous.unseen?.danmakuIds) ? previous.unseen.danmakuIds : []);
+    const available = {
+        referenceYear: previous.referenceYear,
+        cueIds: new Set(subtitleIds.filter(id => !unseenSubtitles.has(id))),
+        danmakuIds: new Set(danmakuIds.filter(id => !unseenDanmaku.has(id))),
+        personContext: personContext ?? (Array.isArray(previous.personEvidence?.checks)
+            ? previous.personEvidence.checks.map(check => check?.person) : undefined)
+    };
+    const grounding = linkClipEvidence({ ...clip, evidenceCueIds: subtitleIds,
+        evidenceDanmakuIds: danmakuIds, sourceKind: previous.sourceKind }, clip, evidence, danmaku, available);
+    const rowsById = rows => new Map((Array.isArray(rows) ? rows : []).filter(row => row && typeof row.id === 'string').map(row => [row.id, row]));
+    const previousAudience = rowsById(previous.audience);
+    const currentAudience = rowsById(grounding.audience);
+    const previousChanges = rowsById(previous.audienceChanges);
+    const snapshot = (row, id) => row && row.id === id && Number.isFinite(row.time) && typeof row.text === 'string'
+        ? { id, time: row.time, text: row.text } : null;
+    const audienceChanges = grounding.danmakuIds.flatMap(id => {
+        const change = previousChanges.get(id);
+        const original = snapshot(change ? change.original : previousAudience.get(id), id);
+        const current = snapshot(currentAudience.get(id), id);
+        if (!change && original && current && original.time === current.time && original.text === current.text) return [];
+        // D-IDs are positional. Keep the original snapshot after a later XML merge or reorder.
+        const reason = original ? 'changed' : 'missing_snapshot';
+        grounding.issues.push(`${original ? 'danmaku_source_changed' : 'danmaku_snapshot_missing'}:${id}`);
+        return [{ id, reason, original, current }];
+    });
+    if (audienceChanges.length) {
+        grounding.audienceChanges = audienceChanges;
+        grounding.status = 'needs_review';
+    }
+    if (previous.sourceSha256 !== evidence.sourceSha256 || (Array.isArray(previous.issues) && previous.issues.includes('source_changed'))) {
+        grounding.status = 'needs_review';
+        grounding.issues.push('source_changed');
+    }
+    if (previous.reusedRecall !== undefined) grounding.reusedRecall = Boolean(previous.reusedRecall);
+    return { ...clip, grounding };
+}
+
+function parseJsonResponse(text) {
+    const { parseModelJson } = require('../workflow-runtime').loadWorkflow('text/response');
+    const value = String(text || '').trim().replace(/^```(?:json)?\s*/iu, '').replace(/\s*```$/u, '');
+    let parsed;
+    try { parsed = parseModelJson(value); } catch {
+        const start = value.indexOf('{');
+        const end = value.lastIndexOf('}');
+        if (start < 0 || end < start) throw new Error('Missing clips JSON');
+        parsed = parseModelJson(value.slice(start, end + 1));
+    }
+    return parsed;
+}
+
+function parseClipResponse(text) {
+    const parsed = parseJsonResponse(text);
+    const clips = Array.isArray(parsed) ? parsed : parsed?.clips;
+    if (!Array.isArray(clips)) throw new Error('Missing clips array');
+    if (clips.some(clip => !clip || typeof clip !== 'object' || Array.isArray(clip))) {
+        throw new Error('Invalid clip record');
+    }
+    return clips;
+}
+
+module.exports = { buildSubtitleEvidence, cuesForWindow, formatEvidenceCues, punctuatedCueText,
+    resolveEvidenceBoundaries, linkClipEvidence, revalidateClipEvidence, parseClipResponse, parseJsonResponse };

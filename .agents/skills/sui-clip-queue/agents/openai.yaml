@@ -1,0 +1,4 @@
+interface:
+  display_name: "岁己选材切片队列"
+  short_description: "为岁己直播选材、排队切片、字幕烧录和上传准备统一流程"
+  default_prompt: "Use $sui-clip-queue to turn a selected Sui livestream window into a queued, burned-subtitle clip."

@@ -3,6 +3,7 @@ import { ConfigProvider } from '../core/config/ConfigProvider';
 import { WebhookService } from './webhook/WebhookService';
 import { IAudioProcessor } from './audio/IAudioProcessor';
 import { IAITextGenerator } from './ai/IAITextGenerator';
+import { getLogger, LogManager } from '../core/logging/LogManager';
 
 // Mock dependencies
 jest.mock('../core/logging/LogManager');
@@ -10,6 +11,13 @@ jest.mock('../core/config/ConfigProvider');
 jest.mock('./webhook/WebhookService');
 jest.mock('./audio/AudioProcessor');
 jest.mock('./ai/AITextGenerator');
+jest.mock('./bilibili/BilibiliAPIService');
+jest.mock('./bilibili/ReplyManager');
+jest.mock('./bilibili/ReplyHistoryStore');
+jest.mock('./bilibili/DelayedReplyStore');
+jest.mock('./bilibili/DelayedReplyService');
+jest.mock('./notification/WeChatWorkNotifier');
+jest.mock('./bilibili/DanmuRiskControlMonitor');
 
 describe('ServiceManager', () => {
   let serviceManager: ServiceManager;
@@ -18,10 +26,26 @@ describe('ServiceManager', () => {
   let mockAudioProcessor: any;
   let mockAITextGenerator: any;
 
+  let mockLogger: any;
+
   beforeEach(() => {
     // Reset mocks
     jest.clearAllMocks();
-    
+
+    mockLogger = {
+      info: jest.fn(),
+      error: jest.fn(),
+      warn: jest.fn(),
+      debug: jest.fn(),
+      trace: jest.fn(),
+      verbose: jest.fn(),
+      child: jest.fn().mockReturnThis(),
+      flush: jest.fn().mockResolvedValue(undefined),
+      close: jest.fn().mockResolvedValue(undefined)
+    };
+    (getLogger as jest.Mock).mockReturnValue(mockLogger);
+    (LogManager.initialize as jest.Mock).mockResolvedValue(undefined);
+
     // Setup mock config
     mockConfig = {
       app: {
@@ -79,7 +103,9 @@ describe('ServiceManager', () => {
     // Setup mock services
     mockWebhookService = {
       start: jest.fn().mockResolvedValue(undefined),
-      stop: jest.fn().mockResolvedValue(undefined)
+      stop: jest.fn().mockResolvedValue(undefined),
+      setDelayedReplyService: jest.fn(),
+      getHandlers: jest.fn().mockReturnValue([])
     };
 
     mockAudioProcessor = {
@@ -159,15 +185,13 @@ describe('ServiceManager', () => {
     it('should start and stop all services', async () => {
       await serviceManager.initialize();
       await serviceManager.startAll();
-      
+
       expect(mockWebhookService.start).toHaveBeenCalled();
-      
-      const services = serviceManager.getAllServiceStatus();
-      expect(services.get('webhook')?.status).toBe(ServiceStatus.RUNNING);
-      
+      expect(serviceManager.getAllServiceStatus().get('webhook')?.status).toBe(ServiceStatus.RUNNING);
+
       await serviceManager.stopAll();
       expect(mockWebhookService.stop).toHaveBeenCalled();
-      expect(services.get('webhook')?.status).toBe(ServiceStatus.STOPPED);
+      expect(serviceManager.getAllServiceStatus().get('webhook')?.status).toBe(ServiceStatus.STOPPED);
     });
   });
 
@@ -278,10 +302,10 @@ describe('ServiceManager', () => {
   describe('getServiceStatistics', () => {
     it('should return service statistics', async () => {
       await serviceManager.initialize();
-      
+
       const stats = serviceManager.getServiceStatistics();
-      expect(stats.totalServices).toBe(3); // webhook, audio, ai-text
-      expect(stats.stoppedServices).toBe(3);
+      expect(stats.totalServices).toBe(10);
+      expect(stats.stoppedServices).toBe(10);
       expect(stats.runningServices).toBe(0);
       expect(stats.errorServices).toBe(0);
     });

@@ -1,0 +1,1120 @@
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const topicClipper = require('./topic_clipper');
+const aiTextGenerator = require('./ai_text_generator');
+const defaultConfig = require('../../config/default.json');
+const productionConfig = require('../../config/production.json');
+
+function makeTempDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'topic-clipper-'));
+}
+
+function writeSrt(filePath: string) {
+  fs.writeFileSync(filePath, [
+    '1',
+    '00:00:10,000 --> 00:00:12,000',
+    '今天提到了岁己',
+    '',
+    '2',
+    '00:00:40,000 --> 00:00:42,000',
+    '也可以叫小岁姐',
+    '',
+    '3',
+    '00:03:20,000 --> 00:03:22,000',
+    '这句没有关键词',
+    ''
+  ].join('\n'), 'utf8');
+}
+
+describe('topic_clipper', () => {
+  test('builds participant metadata from ASR speaker sidecar', () => {
+    const participantInfo = topicClipper.buildParticipantMetadata({
+      hostStreamerId: 'sui',
+      plannedParticipantIds: ['shiori'],
+      rosterStreamerIds: ['sui', 'shiori'],
+      participants: [
+        { streamerId: 'sui', displayName: '岁己SUI', appeared: true },
+        { streamerId: 'shiori', displayName: '栞栞', appeared: false }
+      ]
+    });
+
+    expect(participantInfo).toMatchObject({
+      hostStreamerId: 'sui',
+      plannedParticipantIds: ['shiori'],
+      rosterStreamerIds: ['sui', 'shiori'],
+      appearedDisplayNames: ['岁己SUI']
+    });
+  });
+
+  test('keeps a mentioned streamer separate from the current streamer in title prompts', () => {
+    const prompt = aiTextGenerator.buildClipTitlePromptLines({
+      outputMode: 'jsonTitle',
+      streamerName: '瑞娅'
+    }).join('\n');
+
+    expect(prompt).toContain('本段录播的主播是“瑞娅”');
+    expect(prompt).toContain('不能改写为本段主播、其粉丝团体或其发言');
+    expect(prompt).not.toContain('小岁');
+    expect(prompt).not.toContain('饼干岁');
+  });
+
+  test('topic burst prompt asks AI for independent, non-overlapping events only', () => {
+    const prompt = topicClipper.buildTopicBurstPrompt({
+      allSegments: [{ start: 10, end: 12, text: '小岁让我来救你' }],
+      matchSegments: [{ start: 10, end: 12, text: '小岁让我来救你' }],
+      matchedKeywords: ['小岁'],
+      minClipSeconds: 30,
+      maxClipSeconds: 180
+    }, '栞栞', { streamTitle: '测试直播', recordedAt: '2026-07-17' }, aiTextGenerator);
+
+    expect(prompt).toContain('默认只返回 1 段');
+    expect(prompt).toContain('时间区间必须互不重叠');
+    expect(prompt).toContain('不能只是同一事件的不同起止时间');
+    expect(prompt).toContain('没有重复/嵌套切片');
+    expect(prompt).toContain('前后扩展上下文只用于理解语境和决定切片边界');
+    expect(prompt).toContain('不得把区间外的事件、弹幕或说法写进文案');
+    expect(prompt).toContain('每个具体事实都能在最终区间字幕中找到');
+    expect(prompt).toContain('简介面向观众，只陈述片中内容');
+    expect(prompt).toContain('不要写选片理由或效果评估');
+    expect(prompt).toContain('弹幕统计');
+    expect(prompt).toContain('内部判据');
+    expect(prompt).toContain('只描述互动内容，不概括反应数量或强度');
+  });
+
+  test('writes manual clip subtitles with production punctuation and line-length options', () => {
+    const root = makeTempDir();
+    const outputPath = path.join(root, 'clip.srt');
+    topicClipper.writeClipSrt([
+      { start: 0, end: 2, text: '小栞打游戏这么厉害，DLC打了吗？话说。' }
+    ], { start: 0, end: 2, duration: 2 }, outputPath, {
+      maxCharsPerLine: 18,
+      stripPunctuation: true
+    });
+
+    const subtitleText = fs.readFileSync(outputPath, 'utf8');
+    const textLines = subtitleText
+      .split(/\r?\n/)
+      .filter(line => line && !/^\d+$/.test(line) && !line.includes('-->'));
+    expect(textLines.join('')).not.toMatch(/[，。！？：；、,.?!;:]/);
+    expect(textLines.every(line => Array.from(line).length <= 18)).toBe(true);
+  });
+
+  test('uses configured upload prefix and upload tags for a room', () => {
+    const config = {
+      ai: {
+        roomSettings: { '23260993': { clipTitlePrefix: '小瑞' } },
+        streamerRegistry: {
+          rhea: {
+            roomIds: ['23260993'],
+            displayName: '瑞娅',
+            speakerLabels: ['瑞娅', 'Rhea'],
+            uploadTags: ['瑞瑞']
+          }
+        }
+      }
+    };
+    expect(topicClipper.resolveUploadPrefix(config, '23260993', '瑞瑞')).toBe('【小瑞】');
+    expect(topicClipper.resolveStreamerTags(config, '23260993')).toEqual(['瑞瑞']);
+  });
+
+  test('derives 小X upload prefixes by default for every streamer', () => {
+    expect(topicClipper.deriveUploadPrefix('瑞瑞')).toBe('【小瑞】');
+    expect(topicClipper.deriveUploadPrefix('岁己SUI')).toBe('【小岁】');
+    expect(topicClipper.deriveUploadPrefix('米汀Nagisa')).toBe('【小米】');
+    expect(topicClipper.deriveUploadPrefix('小栞')).toBe('【小栞】');
+    expect(topicClipper.deriveUploadPrefix('小松绿Viridis')).toBe('【小松】');
+  });
+
+  test('uses newcomer nicknames for upload prefixes and tags', () => {
+    const config = {
+      ai: {
+        streamerRegistry: {
+          komichi: {
+            roomIds: ['1700301235'],
+            displayName: '四时小路Komichi',
+            aiClipName: '小路',
+            uploadTags: ['小路边']
+          },
+          viridis: {
+            roomIds: ['1727071052'],
+            displayName: '小松绿Viridis',
+            aiClipName: '小松',
+            uploadTags: ['Viridis']
+          }
+        }
+      }
+    };
+
+    expect(topicClipper.resolveUploadPrefix(config, '1700301235', '四时小路Komichi')).toBe('【小路】');
+    expect(topicClipper.resolveStreamerTags(config, '1700301235')).toEqual(['小路边']);
+    expect(topicClipper.resolveUploadPrefix(config, '1727071052', '小松绿Viridis')).toBe('【小松】');
+    expect(topicClipper.resolveStreamerTags(config, '1727071052')).toEqual(['Viridis']);
+  });
+
+  test('always includes AI切片 in generated topic clip tags', async () => {
+    const copy = await topicClipper.buildClipCopy({
+      start: 10,
+      end: 20,
+      matchSegments: [],
+      allSegmentTexts: [],
+      preContext: [],
+      postContext: [],
+      matchedKeywords: []
+    }, {
+      recordedAt: '2026-08-11',
+      streamTitle: '测试直播'
+    }, '小松绿Viridis', {
+      ai: {
+        streamerRegistry: {
+          viridis: {
+            displayName: '小松绿Viridis',
+            searchTags: ['小松绿'],
+            aiClipName: '小松'
+          }
+        }
+      }
+    }, null, null, ['Viridis']);
+
+    expect(copy.tags).toContain('AI切片');
+    expect(copy.tags).toContain('Viridis');
+    expect(copy.tags).not.toContain('小松绿Viridis');
+  });
+
+  test('finds keyword matches and ignores unrelated segments', () => {
+    const segments = [
+      { start: 0, end: 1, text: '普通内容' },
+      { start: 2, end: 3, text: '提到岁己和小岁' }
+    ];
+
+    const matches = topicClipper.findKeywordMatches(segments, ['岁己', '小岁']);
+
+    expect(matches).toHaveLength(1);
+    expect(matches[0].matchedKeywords).toEqual(['岁己', '小岁']);
+  });
+
+  test('ignores embedded and low-signal topic keyword hits', () => {
+    const segments = [
+      { start: 0, end: 1, text: '今天晚上是瑞瑞和小小岁小康三里' },
+      { start: 2, end: 3, text: '谢谢小岁的灯牌' },
+      { start: 4, end: 5, text: '小岁今天直播了吗' }
+    ];
+
+    const matches = topicClipper.findKeywordMatches(segments, ['小岁']);
+
+    expect(matches).toHaveLength(1);
+    expect(matches[0].segment.text).toBe('小岁今天直播了吗');
+  });
+
+  test('ignores phoneme-corrupted 粉碎机 as 粉岁己', () => {
+    const segments = [
+      { start: 0, end: 1, text: '我已经做了会个粉岁己升一下级' },
+      { start: 2, end: 3, text: 'ok ok 粉粉岁己你有了是吧' },
+      { start: 4, end: 5, text: '用石头去把这个粉岁己在这个粉岁己里研' },
+      { start: 6, end: 7, text: '岁己今天直播了吗' }
+    ];
+
+    const matches = topicClipper.findKeywordMatches(segments, ['岁己']);
+
+    expect(matches).toHaveLength(1);
+    expect(matches[0].segment.text).toBe('岁己今天直播了吗');
+  });
+
+  test('topic burst prompt calls out 粉碎机 ASR false positives', () => {
+    const prompt = topicClipper.buildTopicBurstPrompt({
+      allSegments: [{ start: 10, end: 12, text: '粉岁己升一下级' }],
+      matchSegments: [{ start: 10, end: 12, text: '粉岁己升一下级' }],
+      matchedKeywords: ['岁己'],
+      minClipSeconds: 30,
+      maxClipSeconds: 180
+    }, '南町Nightin', { streamTitle: '测试直播', recordedAt: '2026-07-20' }, aiTextGenerator);
+
+    expect(prompt).toContain('粉碎机');
+    expect(prompt).toContain('粉岁己');
+  });
+
+  test('AI clip selections must include the matched segment', () => {
+    const burst = {
+      start: 100,
+      end: 500,
+      matchSegments: [
+        { start: 300, end: 305, text: '小岁今天直播了吗', matchedKeywords: ['小岁'] }
+      ]
+    };
+
+    expect(topicClipper.normalizeAiClipSelection(
+      { startTime: '00:02:00', endTime: '00:02:40', title: 'unrelated' },
+      burst
+    )).toBeNull();
+
+    expect(topicClipper.normalizeAiClipSelection(
+      { startTime: '00:04:50', endTime: '00:05:20', title: 'related' },
+      burst
+    )).toMatchObject({ start: 290, end: 320 });
+  });
+
+  test('extends an AI end past unfinished ASR lines and the minimum clip duration', () => {
+    const burst = {
+      start: 5760,
+      end: 6060,
+      minClipSeconds: 30,
+      boundaryEndExtensionSeconds: 60,
+      boundarySilenceGapSeconds: 3,
+      maxClipSeconds: 180,
+      matchSegments: [
+        { start: 5770.699, end: 5773.212, text: '我和小康还有小岁三个人在睡在那个频道', matchedKeywords: ['小岁'] },
+        { start: 5779.84, end: 5782.6, text: '小岁就说那我我没接话', matchedKeywords: ['小岁'] }
+      ],
+      allSegments: [
+        { start: 5770.699, end: 5773.212, text: '我和小康还有小岁三个人在睡在那个频道' },
+        { start: 5773.212, end: 5775.725, text: '里面' },
+        { start: 5776.25, end: 5778.954, text: '然后他说你今晚播什么' },
+        { start: 5779.399, end: 5779.829, text: '然后呢' },
+        { start: 5779.84, end: 5782.6, text: '小岁就说那我我没接话' },
+        { start: 5782.8, end: 5783.309, text: '然后呢' },
+        { start: 5783.319, end: 5786.234, text: '小翠就说你在跟谁说话呀' },
+        { start: 5786.579, end: 5789.845, text: '然后那个小康就说你呀这好' },
+        { start: 5792.43, end: 5794.199, text: '夏天因为我太尴尬啊' }
+      ]
+    };
+
+    const selection = topicClipper.normalizeAiClipSelection(
+      { startTime: '01:36:01', endTime: '01:36:23.309', title: '完整对话' },
+      burst
+    );
+
+    expect(selection).toMatchObject({
+      start: 5761,
+      end: 5794.199,
+      boundaryAdjusted: true
+    });
+  });
+
+  test('dedupes same-start and highly overlapping AI clips, keeping the longer range', () => {
+    const clips = [
+      { window: { index: '1-1', start: 3044, end: 3114 } },
+      { window: { index: '1-2', start: 3044, end: 3130 } },
+      { window: { index: '1-3', start: 3058, end: 3120 } },
+      { window: { index: '2-1', start: 3300, end: 3360 } }
+    ];
+
+    const deduped = topicClipper.dedupeClipsByStart(clips);
+
+    expect(deduped).toHaveLength(2);
+    expect(deduped[0].window).toMatchObject({ index: '1-2', start: 3044, end: 3130 });
+    expect(deduped[1].window).toMatchObject({ index: '2-1', start: 3300, end: 3360 });
+  });
+
+  test('dedupes repeated identical keyword hits within the same burst', () => {
+    const clips = [
+      {
+        burst: { index: 4 },
+        window: {
+          index: '4-1',
+          start: 100,
+          end: 160,
+          matchSegments: [{ start: 110, end: 112, text: '小岁让我来救你' }]
+        }
+      },
+      {
+        burst: { index: 4 },
+        window: {
+          index: '4-2',
+          start: 220,
+          end: 300,
+          matchSegments: [{ start: 230, end: 232, text: '小岁让我来救你！' }]
+        }
+      },
+      {
+        burst: { index: 4 },
+        window: {
+          index: '4-3',
+          start: 320,
+          end: 380,
+          matchSegments: [{ start: 330, end: 332, text: '小岁去救你' }]
+        }
+      }
+    ];
+
+    const deduped = topicClipper.dedupeClipsByStart(clips);
+
+    expect(deduped).toHaveLength(2);
+    expect(deduped[0].window.index).toBe('4-2');
+    expect(deduped[1].window.index).toBe('4-3');
+  });
+
+  test('merges nearby hit windows and respects max clip duration', () => {
+    const segments = [
+      { start: 10, end: 12, text: '岁己' },
+      { start: 40, end: 42, text: '小岁' },
+      { start: 220, end: 222, text: '饼干岁' }
+    ];
+    const matches = topicClipper.findKeywordMatches(segments, ['岁己', '小岁', '饼干岁']);
+
+    const windows = topicClipper.buildClipWindows(segments, matches, {
+      prePaddingSeconds: 20,
+      postPaddingSeconds: 35,
+      mergeGapSeconds: 45,
+      maxClipSeconds: 180
+    });
+
+    expect(windows).toHaveLength(2);
+    expect(windows[0]).toMatchObject({
+      start: 0,
+      end: 77,
+      matchedKeywords: ['岁己', '小岁'],
+      matchCount: 2
+    });
+    expect(windows[1].duration).toBeLessThanOrEqual(180);
+  });
+
+  test('clamps padding to media duration boundaries', () => {
+    const segments = [{ start: 4, end: 6, text: '小岁' }];
+    const matches = topicClipper.findKeywordMatches(segments, ['小岁']);
+
+    const windows = topicClipper.buildClipWindows(segments, matches, {
+      prePaddingSeconds: 20,
+      postPaddingSeconds: 35,
+      totalDurationSeconds: 25
+    });
+
+    expect(windows[0].start).toBe(0);
+    expect(windows[0].end).toBe(25);
+  });
+
+  test('centers oversized burst context around the keyword and keeps following subtitles', () => {
+    const segments = Array.from({ length: 260 }, (_, index) => ({
+      start: index * 2,
+      end: index * 2 + 1,
+      text: index === 150 ? '这里提到小岁然后继续说' : `普通内容${index}`
+    }));
+    const matches = topicClipper.findKeywordMatches(segments, ['小岁']);
+    const bursts = topicClipper.buildTopicBursts(segments, matches, {
+      contextPaddingSeconds: 200,
+      mergeGapSeconds: 10,
+      maxSegmentsPerBurst: 100
+    });
+
+    expect(bursts).toHaveLength(1);
+    expect(bursts[0].allSegments).toHaveLength(100);
+    expect(bursts[0].boundarySegments).toHaveLength(201);
+    expect(bursts[0].contextSampled).toBe(true);
+    expect(bursts[0].contextCandidateCount).toBe(201);
+    expect(bursts[0].allSegments.some(segment => /^普通内容2[0-9]{2}$/.test(segment.text))).toBe(true);
+    expect(bursts[0].allSegments.some(segment => segment.text === '这里提到小岁然后继续说')).toBe(true);
+  });
+
+  test('parses recording metadata and falls back to template title', () => {
+    const info = topicClipper.parseRecordingInfo('D:/录制-25788785-20260603-201530-001-聊天回.flv');
+    const title = topicClipper.buildDefaultTitle({ start: 15 }, info);
+
+    expect(info).toMatchObject({
+      roomId: '25788785',
+      recordedAt: '2026-06-03 20:15:30',
+      streamTitle: '聊天回'
+    });
+    expect(title).toBe('提到岁己的小片段 06-03 20:15');
+  });
+
+  test('writes shifted clip srt for overlapping segments', () => {
+    const dir = makeTempDir();
+    const srtPath = path.join(dir, 'clip.srt');
+
+    const result = topicClipper.writeClipSrt([
+      { start: 10, end: 12, text: '提到岁己' },
+      { start: 20, end: 22, text: '后续内容' }
+    ], { start: 8, end: 18, duration: 10 }, srtPath);
+
+    const content = fs.readFileSync(srtPath, 'utf8');
+    expect(result.segmentCount).toBe(1);
+    expect(content).toContain('00:00:02,000 --> 00:00:04,000');
+    expect(content).toContain('提到岁己');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('subtitle wrapping preserves English words while keeping long tokens bounded', () => {
+    const dir = makeTempDir();
+    const output = path.join(dir, 'english.srt');
+    try {
+      const original = '我听说那个Big Walk特别特别特别';
+      topicClipper.writeClipSrt([{ start: 0, end: 2, text: original }],
+        { start: 0, end: 2 }, output, { maxCharsPerLine: 18 });
+      const lines = fs.readFileSync(output, 'utf8').trim().split('\n').slice(2);
+      expect(lines.join('')).toBe(original);
+      expect(lines.some((line: string) => line.includes('Walk'))).toBe(true);
+      expect(lines.every((line: string) => Array.from(line).length <= 18)).toBe(true);
+      const longToken = 'abcdefghijklmnopqrstuvwxyz0123456789';
+      topicClipper.writeClipSrt([{ start: 0, end: 2, text: longToken }],
+        { start: 0, end: 2 }, output, { maxCharsPerLine: 8 });
+      const longLines = fs.readFileSync(output, 'utf8').trim().split('\n').slice(2);
+      expect(longLines.join('')).toBe(longToken);
+      expect(longLines.every((line: string) => line.length <= 8)).toBe(true);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('removes speaker review prefixes and colors speakers in burned ASS', () => {
+    const dir = makeTempDir();
+    const inputSrtPath = path.join(dir, 'source.speaker.srt');
+    const outputSrtPath = path.join(dir, 'clip.srt');
+    const assPath = path.join(dir, 'clip.burn.ass');
+    fs.writeFileSync(inputSrtPath, [
+      '1',
+      '00:00:01,000 --> 00:00:02,000',
+      '[栞栞 0.86] 你好',
+      '',
+      '2',
+      '00:00:03,000 --> 00:00:04,000',
+      '[UNKNOWN] 对呀',
+      ''
+    ].join('\n'), 'utf8');
+
+    const parsed = topicClipper.parseTopicSrt(inputSrtPath);
+    expect(parsed.segments).toMatchObject([
+      { text: '你好', speaker: '栞栞', speaker_score: 0.86 },
+      { text: '对呀', speaker: 'UNKNOWN' }
+    ]);
+
+    const srtResult = topicClipper.writeClipSrt(
+      parsed.segments,
+      { start: 0, end: 5, duration: 5 },
+      outputSrtPath
+    );
+    const srtContent = fs.readFileSync(outputSrtPath, 'utf8');
+    expect(srtContent).toContain('你好');
+    expect(srtContent).toContain('对呀');
+    expect(srtContent).not.toContain('[栞栞 0.86]');
+    expect(srtContent).not.toContain('[UNKNOWN]');
+
+    topicClipper.writeTemporaryBurnAssFromSrt(outputSrtPath, assPath, {
+      speakerSegments: srtResult.segments
+    });
+    const assContent = fs.readFileSync(assPath, 'utf8');
+    expect(assContent).not.toContain('[栞栞 0.86]');
+    expect(assContent).toContain('Style: Speaker_');
+    expect(assContent).toMatch(/Dialogue: 0,0:00:01\.00,0:00:02\.00,Speaker_/);
+    expect(assContent).toContain('Dialogue: 0,0:00:03.00,0:00:04.00,Speaker_UNKNOWN');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('builds temporary burn ass from srt without changing subtitle content format', () => {
+    const dir = makeTempDir();
+    const srtPath = path.join(dir, 'clip.srt');
+    const assPath = path.join(dir, 'clip.burn.ass');
+    writeSrt(srtPath);
+
+    topicClipper.writeTemporaryBurnAssFromSrt(srtPath, assPath, {
+      fontName: '汉仪有圆 85简',
+      fontSize: 31,
+      outline: 2,
+      playResX: 1280,
+      playResY: 720,
+      marginV: 24
+    });
+
+    const content = fs.readFileSync(assPath, 'utf8');
+    expect(content).toContain('PlayResX: 1280');
+    expect(content).toContain('PlayResY: 720');
+    expect(content).toContain('Style: Default,汉仪有圆 85简,31');
+    expect(content).toContain('Dialogue: 0,0:00:10.00,0:00:12.00,Default,,0,0,0,,今天提到了岁己');
+    expect(fs.readFileSync(srtPath, 'utf8')).toContain('00:00:10,000 --> 00:00:12,000');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('balances long subtitle lines instead of leaving a one-character final line', () => {
+    const dir = makeTempDir();
+    const srtPath = path.join(dir, 'wrapped.srt');
+
+    topicClipper.writeClipSrt([
+      { start: 0, end: 2, text: '123456789012345678901' }
+    ], { start: 0, end: 2, duration: 2 }, srtPath, { maxCharsPerLine: 20 });
+
+    expect(fs.readFileSync(srtPath, 'utf8')).toContain('12345678901\n2345678901');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('rewraps burned ASS text to the portrait safe width', () => {
+    const dir = makeTempDir();
+    const srtPath = path.join(dir, 'portrait.srt');
+    const assPath = path.join(dir, 'portrait.ass');
+    fs.writeFileSync(srtPath, [
+      '1',
+      '00:00:00,000 --> 00:00:02,000',
+      '123456789012345678',
+      '90',
+      ''
+    ].join('\n'), 'utf8');
+
+    const style = topicClipper.calculateSubtitleStyle(
+      720,
+      1280,
+      topicClipper.getClipTopicsConfig(defaultConfig)
+    );
+    topicClipper.writeTemporaryBurnAssFromSrt(srtPath, assPath, style);
+
+    const content = fs.readFileSync(assPath, 'utf8');
+    expect(style).toMatchObject({
+      fontSize: 32,
+      playResX: 405,
+      playResY: 720,
+      maxCharsPerLine: 10,
+      marginL: 32,
+      marginR: 32
+    });
+    expect(content).toContain('1234567890\\N1234567890');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test.each([
+    ['default', defaultConfig],
+    ['production', productionConfig]
+  ])('keeps %s config landscape subtitles large while sizing portrait subtitles separately', (_name, rootConfig) => {
+    const config = topicClipper.getClipTopicsConfig(rootConfig);
+    expect(config).toMatchObject({
+      subtitleFontSizeRatio: 0.094,
+      subtitlePortraitFontSizeRatio: 0.044
+    });
+    expect(topicClipper.calculateSubtitleStyle(1920, 1080, config)).toMatchObject({
+      fontSize: 68,
+      maxCharsPerLine: 18,
+      playResX: 1280,
+      playResY: 720
+    });
+    expect(topicClipper.calculateSubtitleStyle(720, 1280, config)).toMatchObject({
+      fontSize: 32,
+      maxCharsPerLine: 10,
+      playResX: 405,
+      playResY: 720
+    });
+  });
+
+  test('keeps explicit landscape and portrait font size overrides independent', () => {
+    const config = {
+      subtitleFontSizeRatio: 0.039,
+      subtitlePortraitFontSizeRatio: 0.05
+    };
+    expect(topicClipper.calculateSubtitleStyle(1920, 1080, config)).toMatchObject({
+      fontSize: 30,
+      maxCharsPerLine: 42
+    });
+    expect(topicClipper.calculateSubtitleStyle(720, 1280, config)).toMatchObject({
+      fontSize: 36,
+      maxCharsPerLine: 9
+    });
+  });
+
+  test('probes video resolution through a hidden file process without a shell', async () => {
+    const childProcess = require('child_process');
+    const execFile = jest.spyOn(childProcess, 'execFile')
+      .mockImplementation((...args: any[]) => { args.at(-1)(null, '1920,1080\n'); return {} as any; });
+
+    try {
+      await expect(topicClipper.getVideoResolution('C:/clips/clip with spaces.mp4', 'C:/Program Files/ffmpeg/ffprobe.exe'))
+        .resolves.toEqual({ width: 1920, height: 1080 });
+      expect(execFile).toHaveBeenCalledWith(
+        'C:/Program Files/ffmpeg/ffprobe.exe',
+        [
+          '-v', 'error',
+          '-select_streams', 'v:0',
+          '-show_entries', 'stream=width,height',
+          '-of', 'csv=p=0',
+          'C:/clips/clip with spaces.mp4'
+        ],
+        expect.objectContaining({
+          encoding: 'utf8',
+          timeout: 10000,
+          windowsHide: true,
+          shell: false
+        }),
+        expect.any(Function)
+      );
+    } finally {
+      execFile.mockRestore();
+    }
+  });
+
+  test('reuses one asynchronous probe per source version and invalidates changed files and failures', async () => {
+    const childProcess = require('child_process');
+    const dir = makeTempDir();
+    const media = path.join(dir, 'source.mp4');
+    fs.writeFileSync(media, 'source');
+    let fail = false;
+    const execFile = jest.spyOn(childProcess, 'execFile').mockImplementation((...args: any[]) => {
+      setImmediate(() => args.at(-1)(fail ? new Error('probe failed') : null, '1280,720\n'));
+      return {} as any;
+    });
+    try {
+      const results = await Promise.all(Array.from({ length: 5 }, () => topicClipper.getVideoResolution(media)));
+      expect(results).toEqual(Array(5).fill({ width: 1280, height: 720 }));
+      expect(execFile).toHaveBeenCalledTimes(1);
+      await topicClipper.getVideoResolution(media);
+      expect(execFile).toHaveBeenCalledTimes(1);
+      fs.appendFileSync(media, 'changed');
+      fail = true;
+      await expect(topicClipper.getVideoResolution(media)).resolves.toEqual({ width: 1920, height: 1080 });
+      fail = false;
+      await expect(topicClipper.getVideoResolution(media)).resolves.toEqual({ width: 1280, height: 720 });
+      expect(execFile).toHaveBeenCalledTimes(3);
+      await topicClipper.getVideoResolution(media, 'another-ffprobe');
+      expect(execFile).toHaveBeenCalledTimes(4);
+    } finally {
+      execFile.mockRestore();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps stream-copy rough cuts enabled when burning subtitles', () => {
+    expect(topicClipper.resolveSubtitleBurnPlan({
+      twoStageSubtitleBurn: true,
+      twoStageMode: 'copy'
+    })).toEqual({
+      useTwoStageBurn: true,
+      mode: 'copy',
+      requestedMode: 'copy'
+    });
+
+    expect(topicClipper.resolveSubtitleBurnPlan({
+      twoStageSubtitleBurn: true,
+      twoStageMode: 'transcode'
+    })).toEqual({
+      useTwoStageBurn: true,
+      mode: 'transcode',
+      requestedMode: 'transcode'
+    });
+  });
+
+  test('calibrates a rough cut to the matching source packet instead of the predicted GOP', () => {
+    const roughPacket = {
+      pts_time: '0.033000',
+      flags: 'K__',
+      data_hash: 'MD5:bfb57c5441b5ad6b27a47d27db58e169'
+    };
+    const sourcePackets = [
+      { pts_time: '1912.532000', flags: 'K__', data_hash: 'MD5:other' },
+      { pts_time: '1916.699000', flags: 'K__', data_hash: roughPacket.data_hash },
+      { pts_time: '1920.866000', flags: 'K__', data_hash: 'MD5:predicted-but-not-used' }
+    ];
+
+    expect(topicClipper.findMatchingPacketTime(roughPacket, sourcePackets, 1920.91)).toBe(1916.699);
+    expect(1928.91 - topicClipper.findMatchingPacketTime(roughPacket, sourcePackets, 1920.91)).toBeCloseTo(12.211, 3);
+  });
+
+  test('terminates a hung ffmpeg process at the configured timeout', async () => {
+    const startedAt = Date.now();
+
+    await expect(topicClipper.runFfmpeg([
+      '-e',
+      'setInterval(() => {}, 1000)'
+    ], {
+      ffmpegPath: process.execPath,
+      timeoutMs: 100,
+      resourceConfig: {
+        threads: 0,
+        cpuGuard: { enabled: false }
+      }
+    })).rejects.toThrow('ffmpeg timed out after 100ms');
+
+    expect(Date.now() - startedAt).toBeLessThan(5000);
+  });
+
+  test('disabled config does not generate topic clips', async () => {
+    const dir = makeTempDir();
+    const mediaPath = path.join(dir, '录制-25788785-20260603-201530-001-聊天回.m4a');
+    const srtPath = path.join(dir, '录制-25788785-20260603-201530-001-聊天回.srt');
+    fs.writeFileSync(mediaPath, 'not real media');
+    writeSrt(srtPath);
+
+    const results = await topicClipper.generateTopicClips({
+      config: { clipTopics: { enabled: false } },
+      originalMediaPath: mediaPath,
+      processedMediaPath: mediaPath,
+      srtPath
+    });
+
+    expect(results).toEqual([]);
+    expect(fs.existsSync(path.join(dir, 'topic_clips'))).toBe(false);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('ignored room id skips clip generation even when keywords match', async () => {
+    const dir = makeTempDir();
+    const mediaPath = path.join(dir, '录制-25788785-20260603-201530-001-聊天回.m4a');
+    const srtPath = path.join(dir, '录制-25788785-20260603-201530-001-聊天回.srt');
+    fs.writeFileSync(mediaPath, 'not real media');
+    writeSrt(srtPath);
+
+    const results = await topicClipper.generateTopicClips({
+      config: {
+        clipTopics: {
+          enabled: true,
+          ignoredRoomIds: ['25788785'],
+          keywords: ['岁己', '小岁']
+        }
+      },
+      originalMediaPath: mediaPath,
+      processedMediaPath: mediaPath,
+      srtPath
+    });
+
+    expect(results).toEqual([]);
+    expect(fs.existsSync(path.join(dir, 'topic_clips'))).toBe(false);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('passes independent landscape and portrait subtitle sizes to the media generator', async () => {
+    const dir = makeTempDir();
+    const mediaPath = path.join(dir, '录制-26966466-20260805-102031-440-字幕配置.mp4');
+    const srtPath = path.join(dir, '录制-26966466-20260805-102031-440-字幕配置.srt');
+    fs.writeFileSync(mediaPath, 'fake video', 'utf8');
+    writeSrt(srtPath);
+    let receivedMediaConfig: Record<string, unknown> | null = null;
+
+    const results = await topicClipper.generateTopicClips({
+      config: {
+        clipTopics: {
+          enabled: true,
+          aiSegmentBurst: false,
+          keywords: ['岁己', '小岁'],
+          subtitleFontSizeRatio: 0.094,
+          subtitlePortraitFontSizeRatio: 0.044,
+          notify: { enabled: false }
+        },
+        ai: { text: { enabled: false } }
+      },
+      originalMediaPath: mediaPath,
+      processedMediaPath: mediaPath,
+      srtPath,
+      titleGenerator: async () => '字幕配置透传测试',
+      mediaGenerator: async (_source: unknown, _window: unknown, _srt: string, outputPath: string, mediaConfig: Record<string, unknown>) => {
+        receivedMediaConfig = mediaConfig;
+        fs.writeFileSync(outputPath, 'generated clip', 'utf8');
+        return { path: outputPath, burnedSubtitles: true, fallbackUsed: false };
+      },
+      coverGenerator: async () => null,
+      registerReviewForUpload: () => ({ clipIds: [999] }),
+      notifyTopicClipResults: async () => true
+    });
+
+    expect(results).toHaveLength(1);
+    expect(receivedMediaConfig).toMatchObject({
+      subtitleFontSizeRatio: 0.094,
+      subtitlePortraitFontSizeRatio: 0.044
+    });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('audio-only input keeps review metadata and marks upload as not ready', async () => {
+    const dir = makeTempDir();
+    const mediaPath = path.join(dir, '录制-25788785-20260603-201530-001-聊天回.m4a');
+    const srtPath = path.join(dir, '录制-25788785-20260603-201530-001-聊天回.srt');
+    fs.writeFileSync(mediaPath, 'not real media');
+    writeSrt(srtPath);
+
+    const results = await topicClipper.generateTopicClips({
+      config: {
+        clipTopics: {
+          enabled: true,
+          aiSegmentBurst: false,
+          burnSubtitles: true,
+          keywords: ['岁己', '小岁'],
+          prePaddingSeconds: 1,
+          postPaddingSeconds: 1,
+          mergeGapSeconds: 45
+        },
+        ai: {
+          roomSettings: {
+            '25788785': { anchorName: '小岁' }
+          }
+        }
+      },
+      originalMediaPath: mediaPath,
+      processedMediaPath: mediaPath,
+      srtPath,
+      ffmpegPath: 'ffmpeg-command-that-does-not-exist',
+      titleGenerator: async () => '岁己话题小切片'
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].uploadReady).toBe(false);
+    expect(results[0].copy.title).toBe('岁己话题小切片');
+    expect(results[0].output.mediaError).toBeTruthy();
+    expect(fs.existsSync(results[0].output.srtPath)).toBe(true);
+    expect(fs.existsSync(results[0].output.metadataPath)).toBe(true);
+    expect(fs.existsSync(results[0].output.copyPath)).toBe(true);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('isolates one failed clip, registers the successful clip, and still finalizes the batch', async () => {
+    const dir = makeTempDir();
+    const mediaPath = path.join(dir, '录制-26966466-20260805-102031-440-早安獭獭栞！.flv');
+    const srtPath = path.join(dir, '录制-26966466-20260805-102031-440-早安獭獭栞！.srt');
+    fs.writeFileSync(mediaPath, 'fake video', 'utf8');
+    fs.writeFileSync(srtPath, [
+      '1',
+      '00:00:10,000 --> 00:00:12,000',
+      '这里第一次提到岁己',
+      '',
+      '2',
+      '00:20:00,000 --> 00:20:02,000',
+      '这里第二次提到小岁',
+      ''
+    ].join('\n'), 'utf8');
+
+    let mediaCalls = 0;
+    const registerReviewForUpload = jest.fn(() => ({ clipIds: [901] }));
+    const notifyTopicClipResults = jest.fn(async () => true);
+
+    const results = await topicClipper.generateTopicClips({
+      config: {
+        clipTopics: {
+          enabled: true,
+          aiSegmentBurst: false,
+          keywords: ['岁己', '小岁'],
+          contextPrePaddingSeconds: 30,
+          contextPostPaddingSeconds: 30,
+          mergeGapSeconds: 10,
+          minClipSeconds: 10,
+          maxClipSeconds: 60,
+          notify: { enabled: true }
+        },
+        ai: {
+          roomSettings: {
+            '26966466': { anchorName: '小栞' }
+          }
+        }
+      },
+      originalMediaPath: mediaPath,
+      processedMediaPath: mediaPath,
+      srtPath,
+      titleGenerator: async () => '测试话题切片',
+      descriptionGenerator: async () => '测试简介',
+      mediaGenerator: async (_source: unknown, _window: unknown, _srt: string, outputPath: string) => {
+        mediaCalls += 1;
+        if (mediaCalls === 2) {
+          throw new Error('simulated ffmpeg timeout');
+        }
+        fs.writeFileSync(outputPath, 'generated clip', 'utf8');
+        return {
+          path: outputPath,
+          burnedSubtitles: true,
+          fallbackUsed: false
+        };
+      },
+      coverGenerator: async () => null,
+      registerReviewForUpload,
+      notifyTopicClipResults
+    });
+
+    expect(results).toHaveLength(2);
+    expect(results[0]).toMatchObject({ uploadReady: true, uploadId: 901, status: 'success' });
+    expect(results[1]).toMatchObject({ uploadReady: false, status: 'failed' });
+    expect(results[1].output.mediaError).toContain('simulated ffmpeg timeout');
+    expect(registerReviewForUpload).toHaveBeenCalledTimes(1);
+    expect(registerReviewForUpload.mock.calls[0][1]).toHaveLength(1);
+    expect(notifyTopicClipResults).toHaveBeenCalledTimes(1);
+    expect(notifyTopicClipResults.mock.calls[0][1].failures).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: 'media', error: 'simulated ffmpeg timeout' })
+    ]));
+
+    const outputDir = path.join(dir, 'topic_clips');
+    const uniqueReviews = fs.readdirSync(outputDir).filter((name: string) => name.endsWith('_REVIEW.md'));
+    expect(uniqueReviews).toHaveLength(1);
+    expect(fs.existsSync(path.join(outputDir, 'REVIEW.md'))).toBe(true);
+    const review = fs.readFileSync(path.join(outputDir, uniqueReviews[0]), 'utf8');
+    expect(review.match(/^\d+\./gm)).toHaveLength(1);
+    expect(review).toContain('## 失败与降级记录');
+    expect(review).toContain('simulated ffmpeg timeout');
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('reports an upload registry result with the wrong number of clip IDs', async () => {
+    const dir = makeTempDir();
+    const mediaPath = path.join(dir, '录制-26966466-20260805-102031-440-早安獭獭栞！.flv');
+    const srtPath = path.join(dir, '录制-26966466-20260805-102031-440-早安獭獭栞！.srt');
+    fs.writeFileSync(mediaPath, 'fake video', 'utf8');
+    writeSrt(srtPath);
+
+    const notifyTopicClipResults = jest.fn(async () => true);
+    const results = await topicClipper.generateTopicClips({
+      config: {
+        clipTopics: {
+          enabled: true,
+          aiSegmentBurst: false,
+          keywords: ['岁己', '小岁'],
+          notify: { enabled: true }
+        },
+        ai: {
+          roomSettings: {
+            '26966466': { anchorName: '小栞' }
+          }
+        }
+      },
+      originalMediaPath: mediaPath,
+      processedMediaPath: mediaPath,
+      srtPath,
+      mediaGenerator: async (_source: unknown, _window: unknown, _srt: string, outputPath: string) => {
+        fs.writeFileSync(outputPath, 'generated clip', 'utf8');
+        return { path: outputPath, burnedSubtitles: true, fallbackUsed: false };
+      },
+      coverGenerator: async () => null,
+      registerReviewForUpload: () => ({ clipIds: [901, 902] }),
+      notifyTopicClipResults
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].uploadId).toBeUndefined();
+    expect(notifyTopicClipResults).toHaveBeenCalledTimes(1);
+    expect(notifyTopicClipResults.mock.calls[0][1].failures).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 'registry',
+        error: expect.stringContaining('返回 2 个短 ID,预期 1 个')
+      })
+    ]));
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('topic notification reports partial failures with their stage and reason', () => {
+    const markdown = topicClipper.buildTopicNotifyMarkdown([
+      {
+        window: { start: 10, end: 42 },
+        copy: { title: '成功片段' },
+        output: { mediaPath: 'D:/clips/success.mp4', mediaError: null }
+      },
+      {
+        window: { start: 100, end: 140 },
+        copy: { title: '失败片段' },
+        output: { mediaPath: 'D:/clips/failed.mp4', mediaError: 'ffmpeg timed out after 600000ms' }
+      }
+    ], {
+      streamerName: '小栞',
+      streamTitle: '早安獭獭栞！',
+      outputRoot: 'D:/clips'
+    });
+
+    expect(markdown).toContain('话题切片提醒（存在失败）');
+    expect(markdown).toContain('成功生成 **1** 段');
+    expect(markdown).toContain('[失败/媒体生成]');
+    expect(markdown).toContain('ffmpeg timed out after 600000ms');
+    expect(markdown).toContain('success.mp4');
+  });
+
+  test('builds a compact topic notification markdown', () => {
+    const markdown = topicClipper.buildTopicNotifyMarkdown([
+      {
+        window: {
+          start: 10,
+          end: 42,
+          matchedKeywords: ['岁己', '小岁'],
+          matchSegments: [{ index: 1, start: 20, end: 22, text: '这里提到了小岁', matchedKeywords: ['小岁'] }],
+          contextSegments: [
+            { index: 0, start: 18, end: 20, text: '前一句解释背景' },
+            { index: 1, start: 20, end: 22, text: '这里提到了小岁', hit: true },
+            { index: 2, start: 22, end: 24, text: '后一句继续补充' }
+          ],
+          danmakuContext: [
+            '[00:00:21] 原来是在说小岁',
+            '[00:00:23] 这段可以切'
+          ]
+        },
+        copy: { title: '小岁原来变成饼干了？' },
+        output: { mediaPath: 'D:/clips/one.mp4', copyPath: 'D:/clips/one_投稿文案.md' }
+      },
+      {
+        window: { start: 100, end: 140, matchedKeywords: ['岁己'] },
+        output: { mediaPath: 'D:/clips/two.mp4', copyPath: 'D:/clips/two_投稿文案.md' }
+      }
+    ], {
+      streamerName: '岁己SUI',
+      streamTitle: '今天聊点什么',
+      roomId: '25788785',
+      recordedAt: '2026-06-03 20:15:30',
+      aiModels: ['gpt-5.6-luna'],
+      outputRoot: 'D:/clips',
+      sourceFileName: '录制-25788785-20260603-201530-001-聊天回.flv'
+    });
+
+    expect(markdown).toContain('话题切片提醒');
+    expect(markdown).toContain('岁己SUI');
+    expect(markdown).toContain('今天聊点什么');
+    expect(markdown).toContain('AI模型: gpt-5.6-luna');
+    expect(markdown).toContain('找到其中 **2** 段提到岁己的地方');
+    expect(markdown).toContain('D:/clips');
+    expect(markdown).toContain('one.mp4');
+    expect(markdown).toContain('two.mp4');
+    expect(markdown).toContain('标题: 小岁原来变成饼干了？');
+    expect(markdown).not.toContain('D:/clips/one.mp4');
+    expect(markdown).not.toContain('投稿文案');
+    expect(markdown).toContain('字幕上下文');
+    expect(markdown).toContain('[00:00:18] 前一句解释背景');
+    expect(markdown).toContain('★ [00:00:20] 这里提到了小岁');
+    expect(markdown).toContain('附近弹幕');
+    expect(markdown).toContain('[00:00:21] 原来是在说小岁');
+  });
+  test('respects disabled topic notification context options', () => {
+    const markdown = topicClipper.buildTopicNotifyMarkdown([
+      {
+        window: {
+          start: 10,
+          end: 42,
+          matchSegments: [{ start: 20, end: 22, text: '这里提到了小岁' }],
+          danmakuContext: ['[00:00:21] 原来是在说小岁']
+        },
+        output: { mediaPath: 'D:/clips/one.mp4' }
+      }
+    ], {
+      notify: {
+        includeSubtitleContext: false,
+        includeDanmakuContext: false
+      }
+    });
+
+    expect(markdown).not.toContain('字幕上下文');
+    expect(markdown).not.toContain('附近弹幕');
+    expect(markdown).not.toContain('这里提到了小岁');
+    expect(markdown).not.toContain('原来是在说小岁');
+  });
+  test('normalizes Windows backslashes in topic notification paths', () => {
+    const markdown = topicClipper.buildTopicNotifyMarkdown([
+      {
+        window: { start: 10, end: 42, matchedKeywords: ['keyword'] },
+        output: {
+          mediaPath: 'D:\\files\\videos\\topic_clips\\one.mp4',
+          copyPath: 'D:\\files\\videos\\topic_clips\\one.md'
+        }
+      }
+    ], {
+      outputRoot: 'D:\\files\\videos\\topic_clips'
+    });
+
+    expect(markdown).toContain('D:/files/videos/topic_clips');
+    expect(markdown).toContain('one.mp4');
+    expect(markdown).not.toContain('D:/files/videos/topic_clips/one.mp4');
+    expect(markdown).not.toContain('one.md');
+    expect(markdown).not.toContain('D:\\files');
+  });
+
+  test('splits long WeChat markdown without exceeding the content limit', () => {
+    const content = [
+      '## topic clips',
+      '- first',
+      '- second',
+      '- third'
+    ].join('\n');
+
+    const messages = topicClipper.splitWeChatMarkdown(content, 16);
+
+    expect(messages.length).toBeGreaterThan(1);
+    expect(messages.every((message: string) => Buffer.byteLength(message, 'utf8') <= 16)).toBe(true);
+    expect(messages.join('\n')).toBe(content);
+  });
+
+  test('splits WeChat markdown by UTF-8 bytes rather than JavaScript characters', () => {
+    const content = `字幕上下文：${'栞'.repeat(2000)}`;
+    const messages = topicClipper.splitWeChatMarkdown(content, 4096);
+
+    expect(messages.length).toBeGreaterThan(1);
+    expect(messages.every((message: string) => Buffer.byteLength(message, 'utf8') <= 4096)).toBe(true);
+    expect(messages.join('')).toBe(content);
+  });
+});

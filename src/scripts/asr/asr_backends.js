@@ -1,15 +1,108 @@
 ﻿const fs = require('fs');
 const path = require('path');
+const net = require('net');
 const { spawn } = require('child_process');
+const {
+    applyFfmpegProcessPriority,
+    getFfmpegResourceConfig
+} = require('../ffmpeg_resource');
+const {
+    resolveAsrHotwords: resolveAsrHotwordsImpl,
+    resolveApplicableCorrections,
+    applyCorrectionsToText,
+    applyCorrectionsToSegments,
+    applyCorrectionsToAsrResult,
+    buildPhonemeCorrectionPayload
+} = require('./asr_corrections');
+const speakerReferenceCatalog = require('./speaker_reference_catalog');
 
-const SUPPORTED_BACKENDS = new Set(['whisper', 'sensevoice']);
+const SUPPORTED_BACKENDS = new Set(['whisper', 'sensevoice', 'fun_asr_nano', 'fun_asr_nano_vllm', 'paraformer']);
+const BACKEND_ALIASES = new Map([
+    ['fun-asr-nano', 'fun_asr_nano'],
+    ['fun-asr-nano-vllm', 'fun_asr_nano_vllm'],
+    ['fun_asr_nano-vllm', 'fun_asr_nano_vllm'],
+    ['paraformer-zh', 'paraformer']
+]);
+
+const DEFAULT_GPU_THROTTLE = {
+    enabled: true,
+    busy_sm_threshold: 25,
+    busy_mem_threshold: 25,
+    busy_fb_threshold_mb: 512,
+    check_interval_s: 10,
+    wait_s: 20,
+    max_wait_s: 0,
+    pmon_sample_count: 2,
+    segment_paraformer: true
+};
+
+const DEFAULT_RESOURCE_GUARD = {
+    enabled: false,
+    game_process_names: ['DeltaForceClient-Win64-Shipping.exe'],
+    pause_when_game_running: false,
+    poll_interval_s: 3,
+    wait_s: 15,
+    max_wait_s: 0,
+    priority: 'belowNormal',
+    eco_qos: true,
+    prefer_e_cores: false,
+    torch_num_threads: 4,
+    torch_num_interop_threads: 1,
+    claim_enabled: true,
+    claim_heartbeat_s: 2
+};
+
+const DEFAULT_ADAPTIVE_SPEAKER_CONFIG = {
+    speaker_detection_mode: 'auto',
+    speaker_min_segment_s: 0.8,
+    speaker_max_segment_s: 8,
+    speaker_probe_max_chunks: 256,
+    speaker_probe_max_assignment_clusters: 12,
+    speaker_probe_min_valid_chunks: 6,
+    speaker_probe_min_speech_s: 20,
+    speaker_probe_min_cluster_chunks: 2,
+    speaker_probe_min_cluster_s: 6,
+    speaker_probe_min_cohesion: 0.70,
+    speaker_probe_separation_margin: 0.03,
+    speaker_probe_fail_open: true,
+    speaker_full_refine_enabled: true,
+    speaker_full_refine_iterations: 8,
+    speaker_reference_max_sample_chunks: 24,
+    speaker_reference_min_support_chunks: 2,
+    speaker_reference_min_support_ratio: 0.5,
+    speaker_reference_prototype_merge_threshold: 0.72,
+    speaker_reference_max_prototypes: 10,
+    speaker_reference_prototype_min_support_chunks: 2,
+    speaker_row_reference_threshold: 0.55,
+    speaker_row_reference_margin: 0.08,
+    speaker_row_reference_top_k: 2,
+    speaker_reference_consensus_enabled: true,
+    speaker_reference_consensus_min_score: 0.50,
+    speaker_reference_consensus_min_margin: 0.06,
+    speaker_reference_consensus_min_support_chunks: 2,
+    speaker_reference_consensus_min_support_ratio: 0.20,
+    speaker_reference_consensus_min_support_mean_score: 0.46,
+    // A fragmented same-speaker cluster can have a lower centroid cosine
+    // than its repeated row/reference evidence; independent score and
+    // support checks still remain mandatory.
+    speaker_reference_consensus_min_cluster_similarity: 0.60,
+    speaker_reference_consensus_min_anchor_similarity: 0.70
+};
 
 const DEFAULT_ASR_CONFIG = {
-    default_backend: 'whisper',
+    default_backend: 'paraformer',
     backend: undefined,
+    resource_guard: DEFAULT_RESOURCE_GUARD,
     common_hotwords: [],
     corrections: [],
     routing: [],
+    gray_rollout: {
+        enabled: false,
+        finetuned_ratio: 0.1,
+        finetuned_room_ids: [],
+        finetuned_model: null,
+        base_model: 'paraformer-zh'
+    },
     whisper: {
         model: 'deepdml/faster-whisper-large-v3-turbo-ct2',
         language: 'zh'
@@ -21,15 +114,125 @@ const DEFAULT_ASR_CONFIG = {
         spk_model: 'cam++', 
         language: 'auto',
         device: 'cuda',
+        python_executable: null,
+        python_args: [],
+        python_path_map: [],
         use_itn: true,
-        max_vad_segment_s: 8,
-        merge_length_s: 8,
-        process_timeout_s: 1800,
-        enable_speaker: false,
+        vad_max_single_segment_time_ms: 60000,
+        batch_size_s: 300,
+        inference_batch_size: 8,
+        batch_size_threshold_s: 60,
+        process_timeout_s: 7200,
+        gpu_throttle: DEFAULT_GPU_THROTTLE,
+        resource_guard: DEFAULT_RESOURCE_GUARD,
+        enable_speaker: true,
         preset_spk_num: null,
         speaker_merge_threshold: 0.78,
         speaker_references: [],
-        speaker_reference_threshold: 0.45
+        speaker_reference_threshold: 0.45,
+        speaker_reference_margin: 0.06,
+        speaker_embedding_batch_size: 64,
+        ...DEFAULT_ADAPTIVE_SPEAKER_CONFIG
+    },
+    fun_asr_nano: {
+        model: 'FunAudioLLM/Fun-ASR-Nano-2512',
+        vad_model: 'fsmn-vad',
+        punc_model: null,
+        spk_model: null,
+        language: '中文',
+        device: 'cuda',
+        python_executable: null,
+        python_args: [],
+        python_path_map: [],
+        use_itn: true,
+        vad_max_single_segment_time_ms: 60000,
+        batch_size_s: 300,
+        batch_size_threshold_s: 60,
+        process_timeout_s: 7200,
+        gpu_throttle: DEFAULT_GPU_THROTTLE,
+        resource_guard: DEFAULT_RESOURCE_GUARD,
+        enable_speaker: true,
+        preset_spk_num: null,
+        speaker_merge_threshold: 0.78,
+        speaker_references: [],
+        speaker_reference_threshold: 0.45,
+        speaker_reference_margin: 0.06,
+        speaker_embedding_batch_size: 64,
+        ...DEFAULT_ADAPTIVE_SPEAKER_CONFIG
+    },
+    fun_asr_nano_vllm: {
+        model: 'FunAudioLLM/Fun-ASR-Nano-2512',
+        vad_model: 'fsmn-vad',
+        punc_model: null,
+        spk_model: 'cam++',
+        language: '中文',
+        device: 'cuda',
+        python_executable: null,
+        python_args: [],
+        python_path_map: [],
+        use_itn: true,
+        process_timeout_s: 10800,
+        gpu_throttle: DEFAULT_GPU_THROTTLE,
+        resource_guard: DEFAULT_RESOURCE_GUARD,
+        enable_speaker: true,
+        preset_spk_num: null,
+        speaker_merge_threshold: 0.78,
+        speaker_references: [],
+        speaker_reference_threshold: 0.45,
+        speaker_reference_margin: 0.06,
+        ...DEFAULT_ADAPTIVE_SPEAKER_CONFIG,
+        hub: 'ms',
+        dtype: 'bf16',
+        tensor_parallel_size: 1,
+        gpu_memory_utilization: 0.8,
+        max_model_len: 4096,
+        max_new_tokens: 512,
+        batch_size_s: 300,
+        enforce_eager: false
+    },
+    paraformer: {
+        model_profile: 'default',
+        model: 'paraformer-zh',
+        base_model: 'paraformer-zh',
+        finetuned_model: null,
+        vad_model: 'fsmn-vad',
+        punc_model: 'ct-punc',
+        spk_model: 'cam++',
+        language: 'auto',
+        device: 'cuda',
+        python_executable: null,
+        python_args: [],
+        python_path_map: [],
+        use_itn: true,
+        vad_max_single_segment_time_ms: 60000,
+        batch_size_s: 300,
+        batch_size_threshold_s: 60,
+        process_timeout_s: 7200,
+        gpu_throttle: DEFAULT_GPU_THROTTLE,
+        resource_guard: DEFAULT_RESOURCE_GUARD,
+        enable_speaker: true,
+        preset_spk_num: null,
+        speaker_merge_threshold: 0.78,
+        speaker_references: [],
+        speaker_reference_threshold: 0.45,
+        speaker_reference_margin: 0.06,
+        speaker_embedding_batch_size: 64,
+        emotion_analysis: {
+            enabled: false,
+            room_ids: [],
+            model: 'iic/SenseVoiceSmall',
+            device: 'cuda',
+            chunk_s: 12,
+            max_gap_s: 1.5,
+            batch_size_s: 300,
+            max_batch_chunks: 64,
+            inference_batch_size: 8,
+            precision: 'bf16',
+            tf32: true,
+            include_events: true,
+            fail_open: true
+        },
+        ...DEFAULT_ADAPTIVE_SPEAKER_CONFIG
     }
 };
 
@@ -45,9 +248,18 @@ const DEFAULT_SUBTITLE_CONFIG = {
 };
 
 function getAsrConfig(config = {}) {
+    const commonResourceGuard = {
+        ...DEFAULT_RESOURCE_GUARD,
+        ...(config.asr?.resource_guard || {})
+    };
+    const resourceGuardFor = backend => ({
+        ...commonResourceGuard,
+        ...(config.asr?.[backend]?.resource_guard || {})
+    });
     return {
         ...DEFAULT_ASR_CONFIG,
         ...(config.asr || {}),
+        resource_guard: commonResourceGuard,
         whisper: {
             ...DEFAULT_ASR_CONFIG.whisper,
             ...(config.whisper || {}),
@@ -55,11 +267,81 @@ function getAsrConfig(config = {}) {
         },
         sensevoice: {
             ...DEFAULT_ASR_CONFIG.sensevoice,
-            ...(config.asr?.sensevoice || {})
+            ...(config.asr?.sensevoice || {}),
+            resource_guard: resourceGuardFor('sensevoice')
+        },
+        fun_asr_nano: {
+            ...DEFAULT_ASR_CONFIG.fun_asr_nano,
+            ...(config.asr?.fun_asr_nano || {}),
+            resource_guard: resourceGuardFor('fun_asr_nano')
+        },
+        fun_asr_nano_vllm: {
+            ...DEFAULT_ASR_CONFIG.fun_asr_nano_vllm,
+            ...(config.asr?.fun_asr_nano_vllm || {}),
+            resource_guard: resourceGuardFor('fun_asr_nano_vllm')
+        },
+        paraformer: {
+            ...DEFAULT_ASR_CONFIG.paraformer,
+            ...(config.asr?.paraformer || {}),
+            resource_guard: resourceGuardFor('paraformer')
+        },
+        gray_rollout: {
+            ...DEFAULT_ASR_CONFIG.gray_rollout,
+            ...(config.asr?.gray_rollout || {})
         },
         common_hotwords: Array.isArray(config.asr?.common_hotwords) ? config.asr.common_hotwords : [],
         corrections: config.asr?.corrections || [],
         routing: Array.isArray(config.asr?.routing) ? config.asr.routing : []
+    };
+}
+
+function stableHashString(input) {
+    const text = String(input || '');
+    let hash = 2166136261;
+    for (let i = 0; i < text.length; i += 1) {
+        hash ^= text.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+    }
+    return hash >>> 0;
+}
+
+function applyParaformerGrayRollout(asrConfig, context = {}, resolved) {
+    if (!resolved || resolved.backend !== 'paraformer') {
+        return resolved;
+    }
+    const rollout = asrConfig.gray_rollout || {};
+    if (!rollout.enabled) {
+        return resolved;
+    }
+    const finetunedModel = String(rollout.finetuned_model || '').trim();
+    if (!finetunedModel) {
+        return resolved;
+    }
+    const roomId = String(context.room_id || context.roomId || '').trim();
+    const fileKey = String(context.filename || context.input || '').trim();
+    const forcedRooms = new Set((Array.isArray(rollout.finetuned_room_ids) ? rollout.finetuned_room_ids : []).map(v => String(v)));
+    const roomRatios = rollout.finetuned_room_ratios || {};
+    const roomRatioOverride = roomId && roomRatios[roomId] != null ? Math.max(0, Math.min(1, Number(roomRatios[roomId]))) : null;
+    const ratio = Math.max(0, Math.min(1, Number(rollout.finetuned_ratio ?? 0)));
+    const effectiveRatio = roomRatioOverride != null ? roomRatioOverride : ratio;
+    const sampled = effectiveRatio > 0 && (stableHashString(`${roomId}|${fileKey}`) % 10000) < Math.floor(effectiveRatio * 10000);
+    // Room in forcedRooms with a ratio override uses the override instead of 100%
+    const forceFinetuned = roomId && forcedRooms.has(roomId) && roomRatioOverride == null;
+    if (!forceFinetuned && !sampled) {
+        return resolved;
+    }
+    return {
+        ...resolved,
+        backendOptionsOverride: {
+            paraformer: {
+                model_profile: 'finetuned',
+                base_model: String(rollout.base_model || 'paraformer-zh').trim() || 'paraformer-zh',
+                finetuned_model: finetunedModel
+            }
+        },
+        reason: forceFinetuned
+            ? `${resolved.reason}; gray_rollout=finetuned(room=100%)`
+            : `${resolved.reason}; gray_rollout=finetuned(sample=${effectiveRatio}${roomRatioOverride != null ? `,room=${roomId}` : ''})`
     };
 }
 
@@ -75,11 +357,16 @@ function validateBackendName(backend, source) {
         throw new Error(`ASR backend 配置无效 (${source}): 必须是字符串`);
     }
 
-    const normalized = backend.toLowerCase();
+    const normalized = normalizeBackendName(backend);
     if (!SUPPORTED_BACKENDS.has(normalized)) {
         throw new Error(`ASR backend 配置无效 (${source}): ${backend}，支持: ${Array.from(SUPPORTED_BACKENDS).join(', ')}`);
     }
     return normalized;
+}
+
+function normalizeBackendName(backend) {
+    const normalized = String(backend || '').trim().toLowerCase();
+    return BACKEND_ALIASES.get(normalized) || normalized;
 }
 
 function matchesRule(match = {}, context = {}) {
@@ -114,237 +401,26 @@ function resolveAsrBackend(config, context = {}, cliBackend = null) {
         }
         const backend = validateBackendName(rule.backend, `asr.routing[${index}].backend`);
         if (matchesRule(rule.match, context)) {
-            return {
+            return applyParaformerGrayRollout(asrConfig, context, {
                 backend,
                 reason: `routing[${index}] 命中 ${JSON.stringify(rule.match)}`
-            };
+            });
         }
     }
 
     const fallback = asrConfig.default_backend || asrConfig.backend || 'whisper';
     const backend = validateBackendName(fallback, 'asr.default_backend');
-    return {
+    return applyParaformerGrayRollout(asrConfig, context, {
         backend,
         reason: `未命中 routing，使用 default_backend=${backend}`
-    };
-}
-
-function normalizeHotwordEntry(entry) {
-    if (typeof entry === 'string') {
-        const word = entry.trim();
-        return word ? { word, weight: undefined, aliases: [] } : null;
-    }
-    if (!entry || typeof entry !== 'object') {
-        return null;
-    }
-    const word = String(entry.word || entry.text || '').trim();
-    if (!word) {
-        return null;
-    }
-    const aliases = Array.isArray(entry.aliases)
-        ? entry.aliases.map(alias => String(alias || '').trim()).filter(Boolean)
-        : [];
-    const contextualAliases = Array.isArray(entry.contextual_aliases)
-        ? entry.contextual_aliases.map(alias => String(alias || '').trim()).filter(Boolean)
-        : [];
-    const weight = Number(entry.weight);
-    return {
-        word,
-        weight: Number.isFinite(weight) ? weight : undefined,
-        aliases,
-        contextual_aliases: contextualAliases,
-        require_nearby: Array.isArray(entry.require_nearby)
-            ? entry.require_nearby.map(value => String(value || '').trim()).filter(Boolean)
-            : undefined
-    };
-}
-
-function addHotword(target, entry) {
-    const normalized = normalizeHotwordEntry(entry);
-    if (!normalized) {
-        return;
-    }
-    const existing = target.get(normalized.word);
-    if (!existing) {
-        target.set(normalized.word, normalized);
-        return;
-    }
-    if (normalized.weight !== undefined && (existing.weight === undefined || normalized.weight > existing.weight)) {
-        existing.weight = normalized.weight;
-    }
-    existing.aliases = Array.from(new Set([...(existing.aliases || []), ...normalized.aliases]));
-    existing.contextual_aliases = Array.from(new Set([...(existing.contextual_aliases || []), ...normalized.contextual_aliases]));
-    if (!existing.require_nearby && normalized.require_nearby) {
-        existing.require_nearby = normalized.require_nearby;
-    }
-}
-
-function addCorrection(target, from, to, extra = {}) {
-    const source = String(from || '').trim();
-    const replacement = String(to || '').trim();
-    if (!source || !replacement || source === replacement) {
-        return;
-    }
-    target.set(source, {
-        from: source,
-        to: replacement,
-        ...extra
     });
-}
-
-function addSafeCorrections(target, corrections) {
-    if (!corrections) {
-        return;
-    }
-    if (Array.isArray(corrections)) {
-        corrections.forEach((item) => {
-            if (Array.isArray(item) && item.length >= 2) {
-                addCorrection(target, item[0], item[1]);
-            } else if (item && typeof item === 'object') {
-                addCorrection(
-                    target,
-                    item.from || item.alias || item.source || item.wrong,
-                    item.to || item.word || item.target || item.correct
-                );
-            }
-        });
-        return;
-    }
-    if (typeof corrections === 'object') {
-        Object.entries(corrections).forEach(([from, to]) => addCorrection(target, from, to));
-    }
-}
-
-function addContextualCorrections(target, corrections) {
-    if (!Array.isArray(corrections)) {
-        return;
-    }
-    corrections.forEach((item) => {
-        if (!item || typeof item !== 'object') {
-            return;
-        }
-        const requireNearby = Array.isArray(item.require_nearby)
-            ? item.require_nearby.map(value => String(value || '').trim()).filter(Boolean)
-            : [];
-        addCorrection(target, item.from || item.alias || item.source || item.wrong, item.to || item.word || item.target || item.correct, {
-            require_nearby: requireNearby
-        });
-    });
-}
-
-function addCorrections(targets, corrections) {
-    if (!corrections) {
-        return;
-    }
-    if (corrections.safe || corrections.contextual) {
-        addSafeCorrections(targets.safe, corrections.safe);
-        addContextualCorrections(targets.contextual, corrections.contextual);
-        return;
-    }
-    addSafeCorrections(targets.safe, corrections);
 }
 
 function resolveAsrHotwords(config, context = {}) {
-    const asrConfig = getAsrConfig(config);
-    const hotwordsByWord = new Map();
-    const corrections = {
-        safe: new Map(),
-        contextual: new Map()
-    };
-
-    asrConfig.common_hotwords.forEach(entry => addHotword(hotwordsByWord, entry));
-    addCorrections(corrections, asrConfig.corrections);
-
-    for (const rule of asrConfig.routing) {
-        if (!rule || typeof rule !== 'object' || !rule.match || typeof rule.match !== 'object') {
-            continue;
-        }
-        if (!matchesRule(rule.match, context)) {
-            continue;
-        }
-        if (Array.isArray(rule.hotwords)) {
-            rule.hotwords.forEach(entry => addHotword(hotwordsByWord, entry));
-        }
-        addCorrections(corrections, rule.corrections);
-    }
-
-    const hotwords = Array.from(hotwordsByWord.values());
-    hotwords.forEach((entry) => {
-        (entry.aliases || []).forEach(alias => addCorrection(corrections.safe, alias, entry.word));
-        (entry.contextual_aliases || []).forEach(alias => addCorrection(corrections.contextual, alias, entry.word, {
-            require_nearby: entry.require_nearby || DEFAULT_CONTEXTUAL_NEARBY_WORDS
-        }));
+    return resolveAsrHotwordsImpl(config, context, {
+        getAsrConfig,
+        matchesRule
     });
-
-    return {
-        hotwords,
-        corrections: {
-            safe: Array.from(corrections.safe.values()),
-            contextual: Array.from(corrections.contextual.values())
-        },
-        hotwordText: hotwords.map(entry => entry.word).join(' '),
-        hotwordTextWeighted: hotwords
-            .map(entry => entry.weight !== undefined ? `${entry.word} ${entry.weight}` : entry.word)
-            .join('\n')
-    };
-}
-
-function escapeRegExp(value) {
-    return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-const DEFAULT_CONTEXTUAL_NEARBY_WORDS = ['主播', '直播', '开播', 'SUI', '岁己', '饼干岁', 'VR', 'VirtuaReal'];
-
-function normalizeCorrectionsForApply(corrections = []) {
-    if (Array.isArray(corrections)) {
-        return { safe: corrections, contextual: [] };
-    }
-    if (corrections && typeof corrections === 'object') {
-        return {
-            safe: Array.isArray(corrections.safe) ? corrections.safe : [],
-            contextual: Array.isArray(corrections.contextual) ? corrections.contextual : []
-        };
-    }
-    return { safe: [], contextual: [] };
-}
-
-function applyCorrectionList(text, corrections = []) {
-    let output = String(text || '');
-    const normalized = Array.isArray(corrections) ? corrections : [];
-    const ordered = normalized
-        .filter(item => item && item.from && item.to)
-        .sort((a, b) => String(b.from).length - String(a.from).length);
-    for (const correction of ordered) {
-        output = output.replace(new RegExp(escapeRegExp(correction.from), 'g'), correction.to);
-    }
-    return output;
-}
-
-function applyCorrectionsToText(text, corrections = []) {
-    const grouped = normalizeCorrectionsForApply(corrections);
-    let output = applyCorrectionList(text, grouped.safe);
-    const contextual = grouped.contextual.filter((item) => {
-        const nearby = Array.isArray(item.require_nearby)
-            ? item.require_nearby.map(value => String(value || '').trim()).filter(Boolean)
-            : [];
-        return nearby.length > 0 && nearby.some(keyword => output.includes(keyword));
-    });
-    output = applyCorrectionList(output, contextual);
-    return output;
-}
-
-function applyCorrectionsToAsrResult(result, corrections = []) {
-    const grouped = normalizeCorrectionsForApply(corrections);
-    if (grouped.safe.length === 0 && grouped.contextual.length === 0) {
-        return result;
-    }
-    return {
-        ...result,
-        segments: (Array.isArray(result?.segments) ? result.segments : []).map(segment => ({
-            ...segment,
-            text: applyCorrectionsToText(segment.text, corrections)
-        }))
-    };
 }
 
 function parseCliArgs(args) {
@@ -471,7 +547,19 @@ function normalizeAsrResult(result, subtitleConfig = {}) {
                 end: Math.max(partEnd, partStart + cfg.min_duration),
                 text: part,
                 speaker: segment.speaker,
-                words: segment.words
+                speaker_score: segment.speaker_score,
+                speakerEvidence: segment.speakerEvidence || segment.speaker_evidence,
+                words: segment.words,
+                asrSource: segment.asrSource || {
+                    start, end,
+                    timingPrecision: 'segment',
+                    words: Array.isArray(segment.words) ? segment.words : null,
+                    rawText: typeof segment.raw_text === 'string' ? segment.raw_text : null,
+                    recognizedText: text,
+                    phonemeCorrections: Array.isArray(segment.phoneme_corrections) ? segment.phoneme_corrections : []
+                },
+                emotion: segment.emotion,
+                events: Array.isArray(segment.events) ? [...segment.events] : undefined
             });
         });
     }
@@ -490,45 +578,484 @@ function normalizeAsrResult(result, subtitleConfig = {}) {
         backend: result?.backend || 'unknown',
         language: result?.language,
         segments: normalized,
-        raw: result?.raw
+        raw: result?.raw,
+        timings: result?.timings,
+        resource_peaks: result?.resource_peaks || result?.resourcePeaks,
+        speaker_processing: result?.speaker_processing || result?.speakerProcessing,
+        emotion_analysis: result?.emotion_analysis || result?.emotionAnalysis
     };
 }
 
+function resolveEmotionAnalysisOptions(rawConfig, context = {}) {
+    const config = rawConfig && typeof rawConfig === 'object' ? rawConfig : {};
+    const roomId = String(context.room_id || context.roomId || '').trim();
+    const roomIds = Array.isArray(config.room_ids)
+        ? config.room_ids.map(value => String(value)).filter(Boolean)
+        : [];
+    const roomAllowed = roomIds.length === 0 || (roomId && roomIds.includes(roomId));
+    return {
+        ...config,
+        enabled: config.enabled === true && Boolean(roomAllowed),
+        room_id: roomId || null
+    };
+}
+
+function normalizeLabel(value) {
+    return String(value || '').trim().toLowerCase();
+}
+
+function isUnknownSpeakerLabel(label) {
+    const value = String(label || '').trim();
+    return !value || value === 'UNKNOWN' || value === '-1' || /^SPEAKER_\d+$/i.test(value);
+}
+
+function hasMultipleSpeakerLabels(result) {
+    const labels = new Set(
+        (Array.isArray(result?.segments) ? result.segments : [])
+            .map(segment => String(segment?.speaker || '').trim())
+            .filter(label => label && !/^(?:UNKNOWN|-1)$/i.test(label))
+    );
+    return labels.size >= 2;
+}
+
+function resolveStreamerRegistry(config = {}) {
+    const raw = config.ai?.streamerRegistry || {};
+    const registry = {};
+    Object.entries(raw).forEach(([streamerId, entry]) => {
+        if (!entry || typeof entry !== 'object') {
+            return;
+        }
+        const displayName = String(entry.displayName || streamerId).trim();
+        const labels = new Set([
+            streamerId,
+            displayName,
+            ...(Array.isArray(entry.speakerLabels) ? entry.speakerLabels : []),
+            ...(Array.isArray(entry.aliases) ? entry.aliases : [])
+        ].map(value => String(value || '').trim()).filter(Boolean));
+        registry[streamerId] = {
+            id: streamerId,
+            ...entry,
+            displayName,
+            speakerLabels: Array.from(labels)
+        };
+    });
+    return registry;
+}
+
+function mapSpeakerLabelToStreamerId(label, registry = {}) {
+    const normalized = normalizeLabel(label);
+    if (!normalized || isUnknownSpeakerLabel(label)) {
+        return null;
+    }
+    for (const [streamerId, entry] of Object.entries(registry)) {
+        const labels = Array.isArray(entry.speakerLabels) ? entry.speakerLabels : [];
+        if (labels.some(candidate => normalizeLabel(candidate) === normalized)) {
+            return streamerId;
+        }
+    }
+    return null;
+}
+
+function getMultiReferenceConfig(config = {}, roomId = null) {
+    const globalConfig = config.ai?.comic?.multiReferenceImages || {};
+    const roomConfig = roomId
+        ? (config.ai?.roomSettings?.[String(roomId)]?.multiReferenceImages || {})
+        : {};
+    return {
+        enabled: false,
+        maxExtraCharacters: 2,
+        minSpeakerScore: 0.64,
+        minSpeechSeconds: 8,
+        minSpeakerMaxScore: 0.80,
+        minSpeakerSecondsWhenLowScore: 900,
+        speakerThresholdOverrides: {},
+        includeUnknownSpeakers: false,
+        useMentionedOnlyAsContext: true,
+        appendCharacterDescriptions: true,
+        imageOrder: ['host', 'appeared_streamers', 'cover', 'screenshots', 'default'],
+        ...globalConfig,
+        ...roomConfig
+    };
+}
+
+function getSpeakerRequest(context = {}) {
+    return context?.speakerRequest && typeof context.speakerRequest === 'object'
+        ? context.speakerRequest
+        : null;
+}
+
+function buildParticipantSummary(participants = [], appearedStreamerIds = [], speakersByStreamerId = new Map()) {
+    return (Array.isArray(participants) ? participants : [])
+        .filter((participant) => participant && typeof participant === 'object' && participant.streamerId)
+        .map((participant) => {
+            const streamerId = String(participant.streamerId);
+            const matchedSpeaker = speakersByStreamerId.get(streamerId) || null;
+            return {
+                streamerId,
+                displayName: participant.displayName || streamerId,
+                role: participant.role || 'participant',
+                planned: participant.planned !== false,
+                appeared: appearedStreamerIds.includes(streamerId),
+                totalSpeechSeconds: matchedSpeaker?.totalSpeechSeconds ?? 0,
+                avgScore: matchedSpeaker?.avgScore ?? null,
+                maxScore: matchedSpeaker?.maxScore ?? null,
+                speakerLabel: matchedSpeaker?.label || null,
+                ...(participant.status ? { discoveryStatus: participant.status } : {}),
+                ...(participant.evidence ? { presenceEvidence: participant.evidence } : {})
+            };
+        });
+}
+
+function findHostStreamerId(roomId, registry = {}) {
+    const room = String(roomId || '').trim();
+    if (!room) {
+        return null;
+    }
+    for (const [streamerId, entry] of Object.entries(registry)) {
+        const roomIds = Array.isArray(entry.roomIds) ? entry.roomIds.map(value => String(value)) : [];
+        if (roomIds.includes(room)) {
+            return streamerId;
+        }
+    }
+    return null;
+}
+
+function getSpeakerProcessing(result) {
+    return result?.speaker_processing || result?.speakerProcessing || {};
+}
+
+function getSpeakerAcceptanceThresholds(multiConfig, streamerId) {
+    const configuredOverrides = multiConfig?.speakerThresholdOverrides;
+    const override = configuredOverrides && typeof configuredOverrides === 'object' && !Array.isArray(configuredOverrides)
+        ? configuredOverrides[streamerId]
+        : null;
+    const scoped = override && typeof override === 'object' && !Array.isArray(override)
+        ? override
+        : {};
+    const numberOrFallback = (value, fallback) => {
+        if (value === undefined || value === null || value === '') {
+            return Number(fallback || 0);
+        }
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : Number(fallback || 0);
+    };
+    return {
+        minSpeechSeconds: numberOrFallback(scoped.minSpeechSeconds, multiConfig.minSpeechSeconds),
+        minSpeakerScore: numberOrFallback(scoped.minSpeakerScore, multiConfig.minSpeakerScore),
+        minSpeakerMaxScore: numberOrFallback(scoped.minSpeakerMaxScore, multiConfig.minSpeakerMaxScore),
+        minSpeakerSecondsWhenLowScore: numberOrFallback(
+            scoped.minSpeakerSecondsWhenLowScore,
+            multiConfig.minSpeakerSecondsWhenLowScore
+        )
+    };
+}
+
+function summarizeAsrSpeakers(result, config = {}, context = {}) {
+    return require('./speaker_summary').summarizeAsrSpeakers(result, config, context, {
+        resolveStreamerRegistry, getMultiReferenceConfig, getSpeakerRequest, isUnknownSpeakerLabel, mapSpeakerLabelToStreamerId, findHostStreamerId, getSpeakerAcceptanceThresholds, buildParticipantSummary
+    });
+}
+
+function writeAsrSpeakersSidecar(result, srtPath, config = {}, context = {}) {
+    try {
+        if (!srtPath) {
+            return null;
+        }
+        const summary = summarizeAsrSpeakers(result, config, {
+            ...context,
+            input: context.input || context.mediaPath
+        });
+        const parsed = path.parse(srtPath);
+        const sidecarPath = path.join(parsed.dir, `${parsed.name}.asr_speakers.json`);
+        fs.writeFileSync(sidecarPath, JSON.stringify(summary, null, 2), 'utf8');
+        console.log(`[ASR] speaker summary sidecar: ${path.basename(sidecarPath)} (extra=${summary.extraAppearedStreamerIds.join(', ') || 'none'})`);
+        return sidecarPath;
+    } catch (error) {
+        console.warn(`⚠️  写入 ASR speaker summary 失败，继续后续流程: ${error.message}`);
+        return null;
+    }
+}
+
 function writeSrt(result, srtPath, subtitleConfig = {}) {
-    const cfg = { ...DEFAULT_SUBTITLE_CONFIG, ...subtitleConfig };
-    const lines = [];
-    const uniqueSpeakers = new Set(
-        Array.isArray(result.segments)
+    return require('./subtitle_writer').writeSrt(result, srtPath, { ...DEFAULT_SUBTITLE_CONFIG, ...subtitleConfig }, {
+        stripSubtitlePunctuation, splitTextByLength, formatTimestamp, parseTimestamp
+    });
+}
+
+function wrapSpeakerReviewText(prefix, content, maxChars) {
+    // Speaker review SRT is for readability, so the speaker tag should not
+    // consume the line width budget for the actual dialogue text.
+    const contentMax = Math.max(Number(maxChars) || 30, 12);
+    const parts = splitTextByLength(content, contentMax);
+    if (parts.length === 0) {
+        return [prefix.trim()];
+    }
+    return [
+        `${prefix}${parts[0]}`,
+        ...parts.slice(1)
+    ];
+}
+
+function getUniqueSpeakerLabels(result) {
+    return new Set(
+        Array.isArray(result?.segments)
             ? result.segments.map(segment => String(segment.speaker || '').trim()).filter(Boolean)
             : []
     );
-    const includeSpeakerLabels = uniqueSpeakers.size > 1;
-    let lineIndex = 1;
-    result.segments.forEach((segment) => {
-        const correctedText = applyCorrectionsToText(segment.text, cfg.corrections);
-        const content = cfg.strip_punctuation ? stripSubtitlePunctuation(correctedText) : correctedText;
-        if (!content) {
-            return;
-        }
-        const text = includeSpeakerLabels && segment.speaker ? `[${segment.speaker}] ${content}` : content;
-        const wrapped = splitTextByLength(text, cfg.max_chars_per_line).join('\n');
-        lines.push(String(lineIndex));
-        lines.push(`${formatTimestamp(segment.start)} --> ${formatTimestamp(segment.end)}`);
-        lines.push(wrapped);
-        lines.push('');
-        lineIndex += 1;
-    });
-    fs.writeFileSync(srtPath, `${lines.join('\n').trim()}\n`, 'utf8');
 }
 
-function runJsonPython(scriptPath, payload) {
+function writeSpeakerReviewSrt(result, srtPath, subtitleConfig = {}, asrConfig = {}, context = {}) {
+    try {
+        const uniqueSpeakers = getUniqueSpeakerLabels(result);
+        if (uniqueSpeakers.size === 0 || !srtPath) {
+            return null;
+        }
+
+        // Summary qualification controls which mapped labels are safe for
+        // downstream consumers.
+        const summary = summarizeAsrSpeakers(result, asrConfig, {
+            ...context,
+            input: context.input || context.mediaPath
+        });
+        const filteredLabels = new Set(
+            summary.speakers
+                .filter((speaker) => (
+                    speaker.streamerId
+                    && !summary.appearedStreamerIds.includes(speaker.streamerId)
+                    && !speaker.isUnknown
+                ))
+                .map(speaker => speaker.label)
+        );
+
+        const parsed = path.parse(srtPath);
+        const reviewPath = path.join(parsed.dir, `${parsed.name}.speaker.srt`);
+        const cfg = { ...DEFAULT_SUBTITLE_CONFIG, ...subtitleConfig };
+        const lines = [];
+        const evidenceRows = [];
+        let lineIndex = 1;
+        const segments = Array.isArray(result?.segments) ? result.segments : [];
+        const prepared = require('./subtitle_proofreading').proofreadSubtitleTexts(segments,
+            applyCorrectionsToSegments(segments, cfg.corrections), cfg.proofreading);
+        const correctedTexts = prepared.texts;
+
+        segments.forEach((segment, index) => {
+            const correctedText = correctedTexts[index] || '';
+            const content = cfg.strip_punctuation ? stripSubtitlePunctuation(correctedText) : correctedText;
+            if (!content) {
+                return;
+            }
+            let speaker = require('./speaker_attribution').speakerForSegment(segment);
+            let localEvidence = segment.speakerEvidence || segment.speaker_evidence;
+            if (filteredLabels.has(speaker)) {
+                speaker = 'UNKNOWN';
+                if (localEvidence) localEvidence = { ...localEvidence, status: 'unqualified', label: null,
+                    summaryQualification: 'rejected' };
+            }
+            const score = segment.speaker_score === undefined || segment.speaker_score === null || segment.speaker_score === ''
+                ? ''
+                : ` ${Number(segment.speaker_score).toFixed(2)}`;
+            const prefix = `[${speaker}${score}] `;
+            const wrapped = wrapSpeakerReviewText(prefix, content, cfg.max_chars_per_line).join('\n');
+            evidenceRows.push(require('./subtitle_writer').makeSubtitleEvidenceRow(
+                { ...segment, ...(localEvidence ? { speakerEvidence: localEvidence } : {}) },
+                index, correctedText, wrapped, prepared, { parseTimestamp, formatTimestamp }));
+            lines.push(String(lineIndex));
+            lines.push(`${formatTimestamp(segment.start)} --> ${formatTimestamp(segment.end)}`);
+            lines.push(wrapped);
+            lines.push('');
+            lineIndex += 1;
+        });
+
+        const reviewContent = `${lines.join('\n').trim()}\n`;
+        fs.writeFileSync(reviewPath, reviewContent, 'utf8');
+        require('./evidence_sidecar').writeAsrEvidence(reviewPath, reviewContent, evidenceRows, result?.backend || 'unknown');
+        console.log(`[ASR] speaker review SRT: ${path.basename(reviewPath)} (speakers=${Array.from(uniqueSpeakers).join(', ')})`);
+        return reviewPath;
+    } catch (error) {
+        console.warn(`⚠️  写入 speaker review SRT 失败，继续后续流程: ${error.message}`);
+        return null;
+    }
+}
+
+function resolvePythonCommand(options = {}) {
+    const executable = String(
+        options.python_executable
+        || options.pythonPath
+        || options.python_path
+        || process.env.ASR_PYTHON
+        || 'python'
+    ).trim() || 'python';
+    const args = Array.isArray(options.python_args)
+        ? options.python_args.map(value => String(value || '').trim()).filter(Boolean)
+        : [];
+    return { executable, args };
+}
+
+function normalizePathForMap(value) {
+    return String(value || '').replace(/\\/g, '/');
+}
+
+function getPythonPathMap(options = {}) {
+    const raw = options.python_path_map || options.pythonPathMap || [];
+    if (Array.isArray(raw)) {
+        return raw
+            .map((item) => {
+                if (Array.isArray(item) && item.length >= 2) {
+                    return { from: item[0], to: item[1] };
+                }
+                if (item && typeof item === 'object') {
+                    return { from: item.from || item.source, to: item.to || item.target };
+                }
+                return null;
+            })
+            .filter(item => item && item.from && item.to)
+            .map(item => ({
+                from: normalizePathForMap(item.from),
+                to: normalizePathForMap(item.to)
+            }))
+            .sort((a, b) => b.from.length - a.from.length);
+    }
+    if (raw && typeof raw === 'object') {
+        return Object.entries(raw)
+            .map(([from, to]) => ({ from: normalizePathForMap(from), to: normalizePathForMap(to) }))
+            .sort((a, b) => b.from.length - a.from.length);
+    }
+    return [];
+}
+
+function translatePythonPath(value, options = {}) {
+    if (typeof value !== 'string' || !value.trim()) {
+        return value;
+    }
+    const normalized = normalizePathForMap(value);
+    const normalizedLower = normalized.toLowerCase();
+    for (const mapping of getPythonPathMap(options)) {
+        const from = mapping.from;
+        const fromLower = from.toLowerCase();
+        if (normalizedLower === fromLower || normalizedLower.startsWith(fromLower)) {
+            const suffix = normalized.slice(from.length).replace(/^\/+/, '');
+            const target = mapping.to.replace(/\/+$/, '');
+            return suffix ? `${target}/${suffix}` : target;
+        }
+    }
+    return value;
+}
+
+function shouldTranslatePayloadKey(key) {
+    return /(^|_)(path|file)$/i.test(String(key || '')) || /Path$|File$/i.test(String(key || ''));
+}
+
+function translatePythonPayloadPaths(value, options = {}, key = '') {
+    if (Array.isArray(value)) {
+        return value.map(item => translatePythonPayloadPaths(item, options, key));
+    }
+    if (value && typeof value === 'object') {
+        return Object.fromEntries(
+            Object.entries(value).map(([entryKey, entryValue]) => [
+                entryKey,
+                translatePythonPayloadPaths(entryValue, options, entryKey)
+            ])
+        );
+    }
+    if (typeof value === 'string' && shouldTranslatePayloadKey(key)) {
+        return translatePythonPath(value, options);
+    }
+    return value;
+}
+
+function runPersistentAsrWorker(payload, label = 'ASR backend') {
+    const port = Number(process.env.ASR_PERSISTENT_WORKER_PORT || 0);
+    const token = String(process.env.ASR_PERSISTENT_WORKER_TOKEN || '');
+    if (!Number.isInteger(port) || port <= 0 || !token) {
+        return null;
+    }
+
+    return new Promise((resolve, reject) => {
+        const socket = net.createConnection({ host: '127.0.0.1', port });
+        const timeoutSeconds = Number(payload?.process_timeout_s || 0);
+        const timeoutMs = Math.max(30_000, (timeoutSeconds > 0 ? timeoutSeconds : 7200) * 1000);
+        let buffer = '';
+        let settled = false;
+
+        const finishReject = (error) => {
+            if (settled) return;
+            settled = true;
+            socket.destroy();
+            reject(error);
+        };
+
+        socket.setTimeout(timeoutMs, () => {
+            finishReject(new Error(`${label} 常驻 worker 超时: ${timeoutMs / 1000}s`));
+        });
+        socket.on('error', finishReject);
+        socket.on('connect', () => {
+            socket.write(`${JSON.stringify({
+                type: 'transcribe',
+                token,
+                payload: translatePythonPayloadPaths(payload, payload)
+            })}\n`, 'utf8');
+        });
+        socket.on('data', (data) => {
+            buffer += data.toString();
+            const newlineIndex = buffer.indexOf('\n');
+            if (newlineIndex < 0 || settled) return;
+            let message;
+            try {
+                message = JSON.parse(buffer.slice(0, newlineIndex));
+            } catch (error) {
+                finishReject(new Error(`${label} 常驻 worker 输出不是有效 JSON: ${error.message}`));
+                return;
+            }
+            settled = true;
+            socket.end();
+            if (!message.ok) {
+                const error = new Error(`${label} 常驻 worker 失败: ${message.error || 'unknown'}\n${message.detail || ''}`);
+                error.persistentWorkerResponse = true;
+                reject(error);
+                return;
+            }
+            resolve(message.result);
+        });
+        socket.on('close', () => {
+            if (!settled) {
+                finishReject(new Error(`${label} 常驻 worker 在返回结果前断开`));
+            }
+        });
+    });
+}
+
+function runJsonPython(scriptPath, payload, label = 'ASR backend') {
+    if (payload?.backend === 'paraformer') {
+        const persistentRequest = runPersistentAsrWorker(payload, label);
+        if (persistentRequest) {
+            return persistentRequest.catch((error) => {
+                if (error?.persistentWorkerResponse) {
+                    throw error;
+                }
+                console.warn(`⚠️  ${label} 常驻 worker 不可用，降级为单次 Python 进程: ${error.message}`);
+                return runJsonPythonProcess(scriptPath, payload, label);
+            });
+        }
+    }
+    return runJsonPythonProcess(scriptPath, payload, label);
+}
+
+function runJsonPythonProcess(scriptPath, payload, label = 'ASR backend') {
     return new Promise((resolve, reject) => {
         let settled = false;
-        const child = spawn('python', [scriptPath], {
+        const pythonCommand = resolvePythonCommand(payload);
+        const pythonScriptPath = translatePythonPath(scriptPath, payload);
+        const resourceConfig = getFfmpegResourceConfig(payload);
+        const child = spawn(pythonCommand.executable, [...pythonCommand.args, pythonScriptPath], {
             stdio: ['pipe', 'pipe', 'pipe'],
             windowsHide: true,
+            shell: false,
             env: { ...process.env, PYTHONUTF8: '1' }
         });
+        applyFfmpegProcessPriority(
+            child.pid,
+            String(payload?.resource_guard?.priority || resourceConfig.priority || 'belowNormal')
+        );
         const timeoutSeconds = Number(payload?.process_timeout_s || 0);
         const timeout = timeoutSeconds > 0
             ? setTimeout(() => {
@@ -537,7 +1064,7 @@ function runJsonPython(scriptPath, payload) {
                 try {
                     child.kill('SIGTERM');
                 } catch {}
-                reject(new Error(`SenseVoice backend 超时: ${timeoutSeconds}s`));
+                reject(new Error(`${label} 超时: ${timeoutSeconds}s`));
             }, timeoutSeconds * 1000)
             : null;
         let stdout = '';
@@ -551,7 +1078,7 @@ function runJsonPython(scriptPath, payload) {
             const lines = stderrLineBuffer.split(/\r?\n/);
             stderrLineBuffer = lines.pop() || '';
             for (const line of lines) {
-                if (line.startsWith('[SenseVoice]')) {
+                if (line.startsWith('[ASR]')) {
                     process.stdout.write(`${line}\n`);
                 }
             }
@@ -574,37 +1101,172 @@ function runJsonPython(scriptPath, payload) {
             if (timeout) {
                 clearTimeout(timeout);
             }
-            if (stderrLineBuffer.startsWith('[SenseVoice]')) {
+            if (stderrLineBuffer.startsWith('[ASR]')) {
                 process.stdout.write(`${stderrLineBuffer}\n`);
             }
             if (code !== 0) {
-                reject(new Error(`SenseVoice backend failed with exit code ${code}: ${stderr || stdout}`));
+                reject(new Error(`${label} failed with exit code ${code}: ${stderr || stdout}`));
                 return;
             }
             try {
                 resolve(JSON.parse(stdout));
             } catch (error) {
-                reject(new Error(`SenseVoice backend 输出不是有效 JSON: ${error.message}\nstdout=${stdout}\nstderr=${stderr}`));
+                reject(new Error(`${label} 输出不是有效 JSON: ${error.message}\nstdout=${stdout}\nstderr=${stderr}`));
             }
         });
-        child.stdin.end(JSON.stringify(payload));
+        child.stdin.end(JSON.stringify(translatePythonPayloadPaths(payload, payload)));
     });
 }
 
-async function transcribeSenseVoice(mediaPath, config = {}, runtimeOptions = {}) {
+function buildHotwordWords(runtimeOptions = {}) {
+    if (Array.isArray(runtimeOptions.hotwordWords)) {
+        return runtimeOptions.hotwordWords.map(word => String(word || '').trim()).filter(Boolean);
+    }
+    if (Array.isArray(runtimeOptions.hotwordTokens)) {
+        return runtimeOptions.hotwordTokens.map(item => String(item?.word || '').trim()).filter(Boolean);
+    }
+    if (Array.isArray(runtimeOptions.hotwords)) {
+        return runtimeOptions.hotwords.map(item => String(item?.word || item || '').trim()).filter(Boolean);
+    }
+    return [];
+}
+
+function resolveParaformerModelOption(options = {}) {
+    const profile = String(options.model_profile || '').trim().toLowerCase();
+    if (profile === 'default') {
+        return options.base_model || options.model || 'paraformer-zh';
+    }
+    if (profile === 'finetuned') {
+        return options.finetuned_model || options.model || options.base_model || 'paraformer-zh';
+    }
+    return options.model || options.finetuned_model || options.base_model || 'paraformer-zh';
+}
+
+function buildRuntimeSpeakerOverrides(config = {}, context = {}) {
+    const speakerRequest = getSpeakerRequest(context);
+    const registry = resolveStreamerRegistry(config);
+    const roomId = context.room_id || context.roomId || context.hostRoomId || null;
+    const hostStreamerId = speakerRequest?.hostStreamerId || findHostStreamerId(roomId, registry);
+    const requestedParticipants = Array.isArray(speakerRequest?.participants)
+        ? speakerRequest.participants
+        : [];
+    const hostParticipant = requestedParticipants.find(
+        participant => String(participant?.streamerId || participant?.id || '') === String(hostStreamerId || '')
+    );
+    const hostStreamer = hostStreamerId
+        ? (registry[hostStreamerId] || hostParticipant || null)
+        : null;
+    const hostLabels = speakerReferenceCatalog.collectSpeakerLabels(hostStreamer || {});
+    const constrainedReferences = Array.isArray(speakerRequest?.constrainedSpeakerReferences)
+        ? speakerRequest.constrainedSpeakerReferences
+        : [];
+    const constrainedHostReference = constrainedReferences.find(
+        reference => hostLabels.some(
+            label => speakerReferenceCatalog.normalizeLabel(label)
+                === speakerReferenceCatalog.normalizeLabel(reference?.speaker)
+        )
+    );
+    const catalogHostReference = hostStreamer
+        ? speakerReferenceCatalog.getStreamerReferenceStatus(hostStreamer, config).reference
+        : null;
+    const hostReference = constrainedHostReference || catalogHostReference;
+    const hostOverride = hostReference?.speaker
+        ? { speaker_host_label: String(hostReference.speaker) }
+        : {};
+    const identity = config.asr?.speaker_identity || {};
+    if (identity.policy === 'row_verified' && Array.isArray(identity.room_ids) && identity.room_ids.map(String).includes(String(roomId))) {
+        hostOverride.speaker_identity_policy = 'row_verified';
+        hostOverride.speaker_identity_min_seconds = Number(identity.min_seconds ?? 2);
+    }
+    const discovery = speakerRequest?.participantDiscovery;
+    if (discovery?.mode === 'multi' && ['candidate', 'planned', 'confirmed'].includes(discovery.modeStatus)) {
+        // A likely collaboration warrants complete acoustic analysis, never forced names.
+        hostOverride.enable_speaker = true;
+        hostOverride.speaker_detection_mode = 'always';
+        hostOverride.speaker_identity_policy = 'row_verified';
+        hostOverride.speaker_identity_min_seconds = Number(identity.min_seconds ?? 2);
+    }
+    const plannedParticipantIds = Array.isArray(speakerRequest?.plannedParticipantIds)
+        ? speakerRequest.plannedParticipantIds.map(value => String(value)).filter(Boolean)
+        : [];
+    const rosterStreamerIds = Array.isArray(speakerRequest?.rosterStreamerIds)
+        ? speakerRequest.rosterStreamerIds.map(value => String(value)).filter(Boolean)
+        : [];
+    if (!speakerRequest) {
+        return hostOverride;
+    }
+
+    // Roster data is evaluation context, not a speaker-recognition whitelist.
+    // Keep every reference configured on the selected ASR backend in competition.
+    return {
+        ...hostOverride,
+        speaker_constrain_to_references: false,
+        speaker_request_mode: speakerRequest.mode || 'planned_roster',
+        planned_participant_ids: plannedParticipantIds,
+        roster_streamer_ids: rosterStreamerIds
+    };
+}
+
+async function transcribeFunAsrBackend(mediaPath, config = {}, runtimeOptions = {}, backend = 'sensevoice') {
     const asrConfig = getAsrConfig(config);
+    const context = runtimeOptions.routingContext || {};
+    const resolved = backend === 'paraformer'
+        ? (
+            runtimeOptions.resolvedBackend?.backend === backend
+                ? runtimeOptions.resolvedBackend
+                : resolveAsrBackend(config, context, 'paraformer')
+        )
+        : { backend, reason: runtimeOptions.forceReason || `direct backend=${backend}` };
     const scriptPath = path.join(__dirname, '..', 'python', 'sensevoice_transcribe.py');
     if (!fs.existsSync(scriptPath)) {
-        throw new Error(`SenseVoice Python script not found at: ${scriptPath}`);
+        throw new Error(`ASR Python script not found at: ${scriptPath}`);
     }
+    const backendConfig = asrConfig[backend] || asrConfig.sensevoice;
+    const nanoLike = backend === 'fun_asr_nano' || backend === 'fun_asr_nano_vllm';
     const options = {
-        ...asrConfig.sensevoice,
+        ...backendConfig,
+        ...((resolved.backendOptionsOverride && resolved.backendOptionsOverride[backend]) || {}),
+        ...buildRuntimeSpeakerOverrides(config, context),
+        backend,
         audio_path: mediaPath,
-        hotwords: runtimeOptions.hotwords || [],
-        hotword: runtimeOptions.hotwordTextWeighted || runtimeOptions.hotwordText || '',
-        hotword_unweighted: runtimeOptions.hotwordText || ''
+        hotwords: nanoLike
+            ? buildHotwordWords(runtimeOptions)
+            : (runtimeOptions.hotwords || []),
+        hotword: '', // 不传热词给模型，全部走 phoneme_correction 后处理
+        hotword_unweighted: '',
+        phoneme_correction: buildPhonemeCorrectionPayload(
+            asrConfig.phoneme_correction || null,
+            runtimeOptions.corrections || {},
+            asrConfig.corrections || null
+        ),
+        model_profile: ((resolved.backendOptionsOverride && resolved.backendOptionsOverride[backend]?.model_profile) || backendConfig.model_profile || null),
+        finetuned_model: ((resolved.backendOptionsOverride && resolved.backendOptionsOverride[backend]?.finetuned_model) || backendConfig.finetuned_model || null)
     };
-    return runJsonPython(scriptPath, options);
+    if (backend === 'paraformer') {
+        options.model = resolveParaformerModelOption(options);
+        options.room_id = String(context.room_id || context.roomId || '').trim() || null;
+        options.emotion_analysis = resolveEmotionAnalysisOptions(options.emotion_analysis, context);
+    }
+    const label = backend === 'fun_asr_nano_vllm'
+        ? 'Fun-ASR-Nano vLLM backend'
+        : (backend === 'fun_asr_nano' ? 'Fun-ASR-Nano backend' : (backend === 'paraformer' ? 'Paraformer backend' : 'SenseVoice backend'));
+    return runJsonPython(scriptPath, options, label);
+}
+
+async function transcribeSenseVoice(mediaPath, config = {}, runtimeOptions = {}) {
+    return transcribeFunAsrBackend(mediaPath, config, runtimeOptions, 'sensevoice');
+}
+
+async function transcribeFunAsrNano(mediaPath, config = {}, runtimeOptions = {}) {
+    return transcribeFunAsrBackend(mediaPath, config, runtimeOptions, 'fun_asr_nano');
+}
+
+async function transcribeFunAsrNanoVllm(mediaPath, config = {}, runtimeOptions = {}) {
+    return transcribeFunAsrBackend(mediaPath, config, runtimeOptions, 'fun_asr_nano_vllm');
+}
+
+async function transcribeParaformer(mediaPath, config = {}, runtimeOptions = {}) {
+    return transcribeFunAsrBackend(mediaPath, config, runtimeOptions, 'paraformer');
 }
 
 module.exports = {
@@ -620,10 +1282,23 @@ module.exports = {
     parseCliArgs,
     parseSrt,
     normalizeAsrResult,
+    hasMultipleSpeakerLabels,
+    resolveStreamerRegistry,
+    mapSpeakerLabelToStreamerId,
+    summarizeAsrSpeakers,
+    writeAsrSpeakersSidecar,
+    writeSpeakerReviewSrt,
     writeSrt,
+    resolvePythonCommand,
+    translatePythonPath,
+    translatePythonPayloadPaths,
     transcribeSenseVoice,
+    transcribeFunAsrNano,
+    transcribeFunAsrNanoVllm,
+    transcribeParaformer,
     formatTimestamp,
     parseTimestamp,
+    buildPhonemeCorrectionPayload,
+    resolveEmotionAnalysisOptions,
     stripSubtitlePunctuation
 };
-

@@ -1,7 +1,7 @@
 /**
  * B站API服务接口
  */
-import { BilibiliDynamic, PublishCommentRequest, PublishCommentResponse } from './types';
+import { BilibiliDynamic, PublishCommentRequest, PublishCommentResponse, RoomLiveStatus } from './types';
 
 export interface IBilibiliAPIService {
   /**
@@ -18,6 +18,11 @@ export interface IBilibiliAPIService {
    * @returns 主播UID
    */
   getUidByRoomId(roomId: string): Promise<string>;
+
+  /**
+   * Get current live status for a room.
+   */
+  getRoomLiveStatus?(roomId: string): Promise<RoomLiveStatus>;
 
   /**
    * 发布动态评论

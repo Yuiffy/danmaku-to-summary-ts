@@ -1,15 +1,109 @@
+const workflowRuntime = require('./workflow-runtime');
+if (require.main === module && process.argv[2] === '--check-runtime') {
+    console.log(JSON.stringify(workflowRuntime.checkRuntime()));
+    process.exit(0);
+}
+const { classifyGeneratedOutput, assertGeneratedOutput } = require('./text/generated_output');
+const { prepareSharedLiveOutput, unwrapSharedLiveOutput } = require('./text/shared_live_output');
+const liveCache = require('./text/live_cache_continuation');
+const { requestRetryPolicy, postWithRetry } = require('./text/request_transport');
+const { resolveTextRequestTimeout, parseGenerateTextOptions, getMachineReadableGenerationMeta,
+    getSharedPromptCacheInfo, getExplicitPromptCachePlan, getPromptCacheRequestDiagnostics,
+    isPromptCacheParameterError, withoutPromptCacheHints } = require('./text_generation_protocol');
+const {
+    getTuZiFinishReason,
+    extractOpenAITextParts,
+    extractOpenAITextResponse,
+    getOpenAITextFinishReason,
+    getPromptTokenUsage,
+    getCompletionTokenUsage,
+    normalizeUsageMetric,
+    buildAiUsageMetrics,
+    logAiUsage,
+    normalizeTuZiTextMaxTokens,
+} = workflowRuntime.loadWorkflow('text/response');
+const { createTextAttemptState, resetTextAttempt, recordFailedTextAttempt, isIncompleteTextState, isPendingTextGeneration, hasUnknownTextOutcome } = require('./text_attempt_diagnostics');
+const {
+    normalizeOpenAIReasoningEffort,
+    TEXT_REQUEST_PROTOCOL_VERSION,
+    buildOpenAITextMessages,
+    applyExplicitPromptCache,
+    buildOpenAIResponsesInput,
+    buildDaiYuChatCompletionsRequest,
+    buildDaiYuResponsesRequest,
+} = workflowRuntime.loadWorkflow('text/requests');
+
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const fetch = require('node-fetch');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 const configLoader = require('./config-loader');
+const liveGenerationContext = require('./live_generation_context');
+const fullLiveContext = require('./full_live_context');
+const { notifyLowBalanceIfNeeded } = require('./tuzi_balance_check');
 
 const GENERATION_LOCK_TIMEOUT_MS = 30 * 60 * 1000;
 const GENERATION_LOCK_WAIT_MS = 10 * 60 * 1000;
 const GENERATION_LOCK_POLL_MS = 2000;
+const TUZI_BALANCE_ERROR_MARKERS = [
+    '余额不足',
+    '余额不够',
+    '余额已用尽',
+    '额度不足',
+    '额度已用尽',
+    'quota exceeded',
+    'insufficient balance',
+    'insufficient quota',
+    'not enough balance',
+    'not enough quota',
+    'credit exhausted',
+    'billing'
+];
+const DAIYU_PRIMARY_MODEL = 'gpt-5.6-luna';
+const TUZI_DEFAULT_TEXT_MODELS = [DAIYU_PRIMARY_MODEL];
+const DAIYU_MODEL_PATTERN = /^gpt-5(?:[.-]|$)/i;
+const DAIYU_RESPONSES_COMPATIBILITY_STATUSES = new Set([400, 404, 405, 415, 422, 501]);
 
-// 生成不重复的文件名（如果文件已存在，添加 _1, _2 等后缀）
+function isDaiYuTextModel(model) {
+    return DAIYU_MODEL_PATTERN.test(String(model || '').trim());
+}
+
+function normalizeDaiYuTextModel(model) {
+    const normalized = String(model || '').trim();
+    return isDaiYuTextModel(normalized) ? DAIYU_PRIMARY_MODEL : normalized;
+}
+
+function normalizeDaiYuApiMode(apiMode) {
+    return String(apiMode || '').trim().toLowerCase() === 'responses'
+        ? 'responses'
+        : 'chatCompletions';
+}
+
+
+function isDaiYuResponsesCompatibilityStatus(status) {
+    return DAIYU_RESPONSES_COMPATIBILITY_STATUSES.has(Number(status));
+}
+
+function isTuZiBalanceError(text) {
+    const lowered = String(text || '').toLowerCase();
+    return TUZI_BALANCE_ERROR_MARKERS.some(marker => lowered.includes(marker.toLowerCase()));
+}
+
+async function maybeNotifyTuZiBalanceError(error, context) {
+    const message = error instanceof Error ? error.message : String(error || '');
+    if (!isTuZiBalanceError(message)) {
+        return;
+    }
+    try {
+        await notifyLowBalanceIfNeeded(`${context}: ${message}`.slice(0, 500));
+    } catch (notifyError) {
+        console.warn(`⚠️  tuZi低余额告警检查失败: ${notifyError.message}`);
+    }
+}
+
+// 生成不重复的文件名(如果文件已存在,添加 _1, _2 等后缀)
 function generateUniqueFilename(basePath) {
     if (!fs.existsSync(basePath)) {
         return basePath;
@@ -132,14 +226,80 @@ function readHighlightFile(highlightPath) {
     }
 }
 
-// 从文件名提取房间ID（如 26966466_...）
+// 从文件名提取房间ID(如 26966466_...)
 function extractRoomIdFromFilename(filename) {
     const m = filename.match(/^(\d+)_/);
     return m ? m[1] : null;
 }
 
-// 构建提示词（支持传入 roomId 以使用房间级名称覆盖）
-function buildPrompt(highlightContent, roomId) {
+// 从文件名提取录制开始时间（格式：录制-ROOMID-YYYYMMDD-HHMMSS-...）
+function extractRecordTime(filename) {
+    // 严格要求 20YYMMDD-HHMMSS 格式，避免误匹配 roomId
+    const m = String(filename || '').match(/20\d{2}(\d{2})(\d{2})-(\d{2})(\d{2})\d{2}/);
+    if (!m) return null;
+    return { year: 2000 + (+m[0].substring(2, 4)), month: +m[1], day: +m[2], hour: +m[3], minute: +m[4] };
+}
+
+// 从 SRT 最后一行提取时长（返回秒数）
+function extractDurationFromSrt(highlightPath) {
+    try {
+        const dir = path.dirname(highlightPath);
+        const baseName = path.basename(highlightPath, '_AI_HIGHLIGHT.txt');
+        const srtPath = path.join(dir, `${baseName}.srt`);
+        if (!fs.existsSync(srtPath)) return null;
+        // 读最后 500 字节即可
+        const stat = fs.statSync(srtPath);
+        const fd = fs.openSync(srtPath, 'r');
+        const buf = Buffer.alloc(Math.min(500, stat.size));
+        fs.readSync(fd, buf, 0, buf.length, Math.max(0, stat.size - buf.length));
+        fs.closeSync(fd);
+        const tail = buf.toString('utf8');
+        // 匹配最后一个时间戳 HH:MM:SS,mmm --> HH:MM:SS,mmm
+        const matches = [...tail.matchAll(/(\d{2}):(\d{2}):(\d{2})[,.]\d{3}\s*-->\s*(\d{2}):(\d{2}):(\d{2})/g)];
+        if (matches.length === 0) return null;
+        const last = matches[matches.length - 1];
+        return (+last[4]) * 3600 + (+last[5]) * 60 + (+last[6]);
+    } catch {
+        return null;
+    }
+}
+
+function formatDuration(totalSeconds) {
+    const h = Math.floor(totalSeconds / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60);
+    if (h > 0) return `${h}小时${m}分钟`;
+    return `${m}分钟`;
+}
+
+function buildLiveTimeDesc(highlightPath) {
+    const recordTime = extractRecordTime(path.basename(highlightPath));
+    if (!recordTime) return null;
+    const dur = extractDurationFromSrt(highlightPath);
+    const startStr = `${recordTime.hour}:${String(recordTime.minute).padStart(2, '0')}`;
+    if (dur && dur > 60) {
+        const endHour = Math.floor((recordTime.hour * 3600 + recordTime.minute * 60 + dur) / 3600) % 24;
+        const endMin = Math.floor(((recordTime.hour * 3600 + recordTime.minute * 60 + dur) % 3600) / 60);
+        const endStr = `${endHour}:${String(endMin).padStart(2, '0')}`;
+        return `${startStr}~${endStr}（约${formatDuration(dur)}）`;
+    }
+    return `${startStr}左右开始`;
+}
+
+function getAnchorNameCandidates(anchor, configuredNicknames = []) {
+    const normalizedAnchor = String(anchor || '').trim();
+    const nicknames = configuredNicknames
+        .map(name => String(name || '').trim())
+        .filter(Boolean);
+    const nativePrefix = normalizedAnchor.match(/^([\p{Script=Han}]{1,12})(?=[A-Za-z])/u)?.[1];
+    const orderedNames = nativePrefix
+        ? [...nicknames, nativePrefix, normalizedAnchor]
+        : [normalizedAnchor, ...nicknames];
+
+    return Array.from(new Set(orderedNames.filter(Boolean)));
+}
+
+// 构建提示词(支持传入 roomId 以使用房间级名称覆盖)
+function buildPrompt(highlightContent, roomId, liveTimeDesc = null, liveContext = null, options = {}) {
     const names = configLoader.getNames(roomId);
     const anchor = names.anchor;
     const fan = names.fan;
@@ -151,98 +311,162 @@ function buildPrompt(highlightContent, roomId) {
     const roomSettings = config?.ai?.roomSettings || {};
     const roomConfig = roomId ? roomSettings[String(roomId)] : null;
     const customPrompt = roomConfig?.customPrompts?.goodnightReply;
+    const anchorNames = getAnchorNameCandidates(
+        anchor,
+        Array.isArray(roomConfig?.anchorNicknames) ? roomConfig.anchorNicknames : []
+    );
+    const anchorNameList = anchorNames.map(name => `“${name}”`).join('、');
+    const liveContextBlock = liveGenerationContext.formatLiveGenerationContext(liveContext);
+    const replyDynamicBlock = liveGenerationContext.formatReplyDynamicContext(liveContext);
+    const providedSharedSourcePrefix = String(options.sharedSourcePrefix || '');
+    if (providedSharedSourcePrefix && (
+        !providedSharedSourcePrefix.startsWith(liveGenerationContext.SHARED_PROMPT_CACHE_START)
+        || !providedSharedSourcePrefix.endsWith(liveGenerationContext.SHARED_PROMPT_CACHE_END)
+    )) {
+        throw new Error('provided sharedSourcePrefix has invalid prompt-cache boundaries');
+    }
+    const usesProvidedSharedSourcePrefix = Boolean(providedSharedSourcePrefix);
+    const sharedCacheEnabled = usesProvidedSharedSourcePrefix
+        || liveGenerationContext.isSharedPromptCacheEnabled(config);
+    let sharedSourcePrefix = '';
+    if (usesProvidedSharedSourcePrefix) {
+        sharedSourcePrefix = providedSharedSourcePrefix;
+    } else if (sharedCacheEnabled) {
+        sharedSourcePrefix = liveGenerationContext.buildSharedLiveSourcePrefix(
+            highlightContent,
+            roomId,
+            config,
+            liveContext
+        );
+    }
+    const speakerGuidance = `【说话人标签规则】
+直播摘要可能带有“[说话人标签 分数]”或“[说话人标签]”前缀。不同标签代表不同的声学说话人；回复对象始终是房主${anchor}。其他标签说“我是XX”时，需要结合是否引用、表演或播放内容理解，不能把房主改叫XX，也不能把该标签的经历或台词归给${anchor}。“UNKNOWN”、无标签和“SPEAKER_nn”表示身份未确定的声音；即使全场只有一个标签，也不能凭房间归属认作房主。讲述者、转述中的说话人、事件执行者与对象分别判断，不同人的问答不能合成房主的连续经历。标题、动态、封面和画面里的候选人物不证明发言归属或实际出场。`;
+    const namingGuidance = `【主播与粉丝称谓边界（最高优先级）】
+- 回复对象是主播“${anchor}”。主播可用称呼只有：${anchorNameList}。
+- 粉丝昵称是“${fan}”，它表示粉丝/评论者所属的粉丝群体，不是主播名字。
+- 绝对不能用“${fan}”称呼主播，不能写“${fan}！”、“晚安${fan}”或让“${fan}”出现在开头称呼位置。
+- 开头不必每次直呼主播名字，可以直接从本场具体内容起笔。若写称呼，优先选上面列表中较短、口语化的称呼，不要每条都固定照抄“${anchor}”。
+- 如需表达评论者身份，“${fan}”只能作为粉丝自称/群体名自然出现，也可以完全不提。`;
+    const timingGuidance = liveTimeDesc
+        ? `直播时段为北京时间 ${liveTimeDesc}。这是下播回复，不要默认写“晚安”；只有明确是夜间或深夜时，才自然使用“晚安”。其他时段围绕直播辛苦和休息表达。`
+        : '这是下播回复，不要默认写“晚安”。没有可靠时段信息时，围绕直播辛苦和休息表达。';
 
     if (customPrompt) {
-        return customPrompt
+        const renderedLiveContext = liveContextBlock;
+        const renderedHighlight = sharedCacheEnabled
+            ? '（直播事实已在本提示最前方的共享事实输入中给出。）'
+            : highlightContent;
+        const hasLiveContextPlaceholder = customPrompt.includes('{liveContext}');
+        const renderedPrompt = customPrompt
             .replace(/{anchor}/g, anchor)
             .replace(/{fan}/g, fan)
             .replace(/{wordLimit}/g, wordLimit)
-            .replace(/{highlightContent}/g, highlightContent);
+            .replace(/{liveContext}/g, renderedLiveContext)
+            .replace(/{highlightContent}/g, renderedHighlight);
+        const contextPrefix = !hasLiveContextPlaceholder && renderedLiveContext
+            ? `${renderedLiveContext}\n\n`
+            : '';
+        const sourcePrefix = sharedCacheEnabled
+            ? `${sharedSourcePrefix}\n\n【下播回复任务】\n只使用上方共享事实输入完成本任务。\n\n`
+            : '';
+        return `${sourcePrefix}${namingGuidance}\n\n${speakerGuidance}\n\n${contextPrefix}${renderedPrompt}\n\n【下播时段】\n${timingGuidance}${replyDynamicBlock ? `\n\n${replyDynamicBlock}` : ''}`;
     }
 
-    // --- 核心修改：全肯定萌萌人 2.0 ---
+    // --- 核心修改:全肯定萌萌人 2.0 ---
 
-    // 定义几种不同的“夸奖角度”，防止每天都只会说“含金量”
+    // 随机改变具体切入方式，减少连续回复使用相同开场结构。
     const praiseAngles = [
-        '角度A（心疼路线）：侧重于觉得主播今天很辛苦/很努力，表达关心和陪伴。',
-        '角度B（爆笑路线）：侧重于觉得今天节目效果太好了，全是梗，笑得肚子疼。',
-        '角度C（细节路线）：侧重于捕捉主播无意间的一个可爱小动作或一句话进行“过度解读”和夸奖。',
-        '角度D（崇拜路线）：侧重于夸赞主播的歌力/游戏技术/杂谈能力，带有粉丝滤镜的彩虹屁。'
+        '角度A(关心路线):从摘要里一个能体现辛苦、疲惫或努力的具体事实切入,再表达关心和陪伴。',
+        '角度B(反应路线):从最好笑的一个具体场面切入,直接写自己的反应或吐槽,不要给整场贴抽象标签。',
+        '角度C(原话路线):挑一句主播原话或弹幕括号里的现场反应接梗,让开场只属于这一场直播。',
+        '角度D(欣赏路线):选一段具体的歌、操作或聊天内容来夸,说明到底好在哪里,不要泛泛吹捧。'
     ];
     const randomAngle = praiseAngles[Math.floor(Math.random() * praiseAngles.length)];
 
-    const mainPrompts = [`性格：
-1. **全肯定**：自带800米厚的粉丝滤镜，主播干啥都觉得可爱/厉害。
-2. **宠溺**：语气要软，要有亲切感，把主播当成家里人或特别亲近的朋友。
-3. **萌萌人**：可以使用颜文字 ( ´∀\`)，语气词（捏、呀、嘛、呜呜），但要自然点。
+    const mainPrompts = [`性格:
+1. **全肯定**:自带800米厚的粉丝滤镜,主播干啥都觉得可爱/厉害。
+2. **宠溺**:语气要软,要有亲切感,把主播当成家里人或特别亲近的朋友。
+3. **萌萌人**:可以使用颜文字 (  ́∀\`),语气词(捏、呀、嘛、呜呜),但要自然点。
 
 【当前任务】
-根据提供的直播内容，写一段晚安回复。
-**今日夸奖切入点**：${randomAngle}
+时效性:${timingGuidance}
+根据提供的直播内容,写一段下播回复。
+**今日夸奖切入点**:${randomAngle}
 
 【写作要求】
-1. **拒绝机械感**：不要像写总结报告一样列123点。要像在发朋友圈或发弹幕一样，把几个亮点揉在一起说。
-2. **要有画面感**：如果文档里提到了具体的梗，一定要提一句，证明你真的看了。
-3. **情感浓度**：虽然禁止了某些词，但"喜欢"和"支持"的情绪要给足。如果主播今天很累，就多安慰；如果很开心，就跟着一起傻乐。
+1. **拒绝机械感**:不要像写总结报告一样列123点。要像在发朋友圈或发弹幕一样,把几个亮点揉在一起说。
+2. **要有画面感**:如果文档里提到了具体的梗,一定要提一句,证明你真的看了。
+3. **情感浓度**:虽然禁止了某些词,但"喜欢"和"支持"的情绪要给足。如果主播今天很累,就多安慰;如果很开心,就跟着一起傻乐。
 `,
-`
+    `
 
-性格：喜欢调侃、宠溺主播，有点话痨，对主播的生活琐事和梗如数家珍。
+性格:喜欢调侃、宠溺主播,有点话痨,对主播的生活琐事和梗如数家珍。
 
-语气：亲昵、幽默、像老朋友一样聊天。常用语气词（如：哈哈、捏、嘛、呜呜），会使用直播间弹幕黑话。
+语气:亲昵、幽默、像老朋友一样聊天。常用语气词(如:哈哈、捏、嘛、呜呜),会使用直播间弹幕黑话。
 
-【核心原则（最重要！）】
+【核心原则(最重要!)】
 
-严格限定素材：只根据用户当前提供的文档/文本内容进行创作。绝对禁止混入该文档以外的任何已知信息、历史直播内容或互联网搜索结果（因为${anchor}的梗很多，AI容易串台，这一点必须强调）。
+严格限定素材:只根据用户当前提供的文档/文本内容进行创作。绝对禁止混入该文档以外的任何已知信息、历史直播内容或互联网搜索结果(因为${anchor}的梗很多,AI容易串台,这一点必须强调)。
 
-时效性：根据文档内容判断是早播、午播还是晚播，分别对应"早安"、"午安"或"晚安"的场景。
+时效性:${timingGuidance}
 
 【写作结构与要素】
 
-开场白：
-格式：晚安/早安xx（用昵称）！🌙/☀️
-内容：一句话总结今天直播的整体感受（如：含金量极高、含梗量爆炸、辛苦了、被治愈了等）。
+开场白:
+- 可以直接接入本场第一个具体细节或直播梗,不必先写称呼或问候。
+- 如果称呼主播,遵守上面的称谓边界,不要把粉丝昵称当作主播称呼。
 
-正文（核心内容回顾）：
-抓细节：从文档中提取3-5个具体的直播亮点。
-生活碎碎念（如：洗碗、吃东西、身体不舒服、猫咪的趣事）。
-直播事故/趣事（如：迟到理由、设备故障、口误、奇怪的脑洞）。
-鉴赏/游戏环节（如：看了什么电影/视频、玩了什么游戏，主播的反应和吐槽）。
-歌回：提到了哪些歌，唱得怎么样（好听/糊弄/搞笑）。
-互动吐槽：针对上述细节进行粉丝视角的吐槽或夸奖（如:"只有你能干出这事"、"心疼小笨蛋"、"笑死我了")。
+正文(核心内容回顾):
+抓细节:从文档中提取3-5个具体的直播亮点。
+生活碎碎念(如:洗碗、吃东西、身体不舒服、猫咪的趣事)。
+直播事故/趣事(如:迟到理由、设备故障、口误、奇怪的脑洞)。
+鉴赏/游戏环节(如:看了什么电影/视频、玩了什么游戏,主播的反应和吐槽)。
+歌回:提到了哪些歌,唱得怎么样(好听/糊弄/搞笑)。
+互动吐槽:针对上述细节进行粉丝视角的吐槽或夸奖(如:"只有你能干出这事"、"心疼小笨蛋"、"笑死我了")。
 
-结尾（情感升华）：
-关怀：叮嘱主播注意身体（嗓子、睡眠、吃饭），不要太累。
-期待：确认下一次直播的时间（如果文档里提到了）。`
-];
+结尾(情感升华):
+关怀:叮嘱主播注意身体(嗓子、睡眠、吃饭),不要太累。
+期待:确认下一次直播的时间(如果文档里提到了)。
+如果需要落款或自称,只能把“${fan}”当作粉丝身份使用,不要把它写成主播称呼；也可以不写落款。`
+    ];
 
     const randomMainPrompt = mainPrompts[Math.floor(Math.random() * mainPrompts.length)];
+    const sourceContext = sharedCacheEnabled
+        ? `${sharedSourcePrefix}\n\n【下播回复任务】\n只使用上方共享事实输入完成本任务。${
+            liveContextBlock ? `\n\n${liveContextBlock}` : ''
+        }`
+        : `${liveContextBlock}\n\n【直播内容(主播语音转写+观众弹幕)】\n${highlightContent}`;
 
-    const result = `【角色设定】
-身份：${anchor}的铁粉（自称"${fan}"）。
+    const result = `${sourceContext}
+
+【角色设定】
+${namingGuidance}
+
+身份:${anchor}的粉丝,属于“${fan}”粉丝群体；“${fan}”是评论者身份,不是主播称呼。
+
+${speakerGuidance}
 
 ${randomMainPrompt}
 
-【字数与格式（必须严格遵守！）】
-字数限制：${wordLimit}字以内。这是硬性要求，超过会被系统拒绝！
-建议长度：至少 ${minLengthHint} 字，不能只写一句话、不能只写一个问句。
-格式：一段完整的自然文字回复，适合手机阅读。不要使用markdown格式，不要使用加粗、标题、列表等。
-禁止输出思考过程：直接输出最终的回复内容，不要输出任何分析、推理、计划等中间过程。
+优先直接回应本场一个具体细节、主播原话或弹幕反应；如需称呼主播,自然嵌入即可,不必固定放在开头。
 
-【直播内容（主播语音转写+观众弹幕）】
-${highlightContent}
+【字数与格式(必须严格遵守!)】
+字数限制:${wordLimit}字以内。这是硬性要求,超过会被系统拒绝!
+建议长度:至少 ${minLengthHint} 字,不能只写一句话、不能只写一个问句。
+格式:一段完整的自然文字回复,适合手机阅读。不要使用markdown格式,不要使用加粗、标题、列表等。
+禁止输出思考过程:直接输出最终的回复内容,不要输出任何分析、推理、计划等中间过程。
 
-请根据直播内容，以${fan}的身份写一篇晚安回复。记住：只使用提供的直播内容，不要添加任何外部信息。直接输出回复内容，不要输出任何其他内容。`;
+请根据直播内容,从“${fan}”粉丝的视角写一篇动态回复。记住:只使用提供的直播内容,不要添加任何外部信息。直接输出回复内容,不要输出任何其他内容。`;
 
     console.log('晚安动态prompt主要内容:', randomMainPrompt.substring(0, 100), '直播内容长度:', highlightContent.length);
-    return result;
+    return replyDynamicBlock ? `${result}\n\n${replyDynamicBlock}` : result;
 }
 
 function countSentences(text) {
     return text
-        .split(/[。！？!?]\s*/u)
+        .split(/[。！？!?]+\s*/u)
         .map(part => part.trim())
-        .filter(Boolean).length;
+        .filter(part => /[\p{L}\p{N}]/u.test(part)).length;
 }
 
 function getMinimumReplyLength(wordLimit) {
@@ -255,61 +479,61 @@ function getMinimumReplyLength(wordLimit) {
 
 function cleanGeneratedReply(text) {
     let cleaned = text.trim();
-    
-    // 移除 Gemini thinking/reasoning 输出（常见格式）
-    // 匹配 **xxx** 标题块 + 下面的内容（思考过程）
+
+    // 移除 Gemini thinking/reasoning 输出(常见格式)
+    // 匹配 **xxx** 标题块 + 下面的内容(思考过程)
     cleaned = cleaned.replace(/\*\*[A-Z][a-zA-Z\s]+\*\*\n*[\s\S]*?(?=\n\n晚安|\n\n早安|\n\n午安|\n\n[^\*])/gi, '');
-    
+
     // 移除 <details>...</details> 标签及内容
     cleaned = cleaned.replace(/<details[\s\S]*?<\/details>/gi, '');
-    
+
     // 移除 <think...</think 或 <thinking>...</thinking> 标签
     cleaned = cleaned.replace(/<think[\s\S]*?<\/think>/gi, '');
     cleaned = cleaned.replace(/<thinking[\s\S]*?<\/thinking>/gi, '');
-    
+
     // 移除 ```thinking...``` 代码块
     cleaned = cleaned.replace(/```thinking[\s\S]*?```/gi, '');
-    
-    // 移除以 ** 开头的思考步骤标题（如 "**Defining the Parameters**"）
+
+    // 移除以 ** 开头的思考步骤标题(如 "**Defining the Parameters**")
     cleaned = cleaned.replace(/^\*\*[A-Z][a-zA-Z\s]+\*\*\s*$/gim, '');
-    
+
     // 移除 "I've ..." 开头的英文思考句子
     cleaned = cleaned.replace(/^(?:I've |I |Let me |First, |Now, |The |This ).+$/gim, '');
 
-    // 移除模型偶发输出的 Markdown 引用/标题/字数统计，避免直接发到评论区。
+    // 移除模型偶发输出的 Markdown 引用/标题/字数统计,避免直接发到评论区。
     cleaned = cleaned.replace(/^\s*>+\s*(?:🔍\s*)?$/gmu, '');
     cleaned = cleaned.replace(/^\s*>+\s*/gmu, '');
     cleaned = cleaned.replace(/^\s*🔍\s*\*\*[^*\r\n]{2,30}\*\*/gmu, '');
     cleaned = cleaned.replace(/^\s*🔍\s*/gmu, '');
     cleaned = cleaned.replace(/\*\*([^*\r\n]+)\*\*/g, '$1');
     cleaned = cleaned.replace(/^\s{0,3}#{1,6}\s+/gmu, '');
-    cleaned = cleaned.replace(/^\s*[（(]\s*共\s*\d+\s*字\s*[）)]\s*$/gmu, '');
-    cleaned = cleaned.replace(/[（(]\s*共\s*\d+\s*字\s*[）)]\s*$/u, '');
-    
+    cleaned = cleaned.replace(/^\s*[((]\s*共\s*\d+\s*字\s*[))]\s*$/gmu, '');
+    cleaned = cleaned.replace(/[((]\s*共\s*\d+\s*字\s*[))]\s*$/u, '');
+
     // 移除连续空行
     cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
-    
+
     return cleaned.trim();
 }
 
-function validateGeneratedReply(text, wordLimit) {
+function validateGeneratedReply(text, wordLimit, roomId = null) {
     // 先清理思考过程
-    const inspection = inspectGeneratedReply(text, wordLimit);
+    const inspection = inspectGeneratedReply(text, wordLimit, roomId);
     if (!inspection.ok) {
         throw new Error(inspection.reason);
     }
 
-    // 硬性截断保护：B站评论最多1000字
+    // 硬性截断保护:B站评论最多1000字
     const bilibiliMaxChars = 1000;
     let cleaned = inspection.cleaned;
     if (cleaned.length > bilibiliMaxChars) {
-        console.warn(`⚠️  生成文本超长（${cleaned.length}字），截断到${bilibiliMaxChars}字`);
+        console.warn(`⚠️  生成文本超长(${cleaned.length}字),截断到${bilibiliMaxChars}字`);
         // 尝试在句号处截断
         const truncated = cleaned.substring(0, bilibiliMaxChars);
         const lastSentence = Math.max(
             truncated.lastIndexOf('。'),
-            truncated.lastIndexOf('！'),
-            truncated.lastIndexOf('？'),
+            truncated.lastIndexOf('!'),
+            truncated.lastIndexOf('?'),
             truncated.lastIndexOf('.')
         );
         if (lastSentence > bilibiliMaxChars * 0.5) {
@@ -318,15 +542,15 @@ function validateGeneratedReply(text, wordLimit) {
             cleaned = truncated;
         }
     }
-    
-    // 按配置的 wordLimit 二次截断（保留一些余量，因为字数限制通常指字符数）
+
+    // 按配置的 wordLimit 二次截断(保留一些余量,因为字数限制通常指字符数)
     if (cleaned.length > wordLimit * 1.5) {
-        console.warn(`⚠️  生成文本超过wordLimit的1.5倍（${cleaned.length}字 > ${wordLimit * 1.5}），截断`);
+        console.warn(`⚠️  生成文本超过wordLimit的1.5倍(${cleaned.length}字 > ${wordLimit * 1.5}),截断`);
         const truncated = cleaned.substring(0, wordLimit);
         const lastSentence = Math.max(
             truncated.lastIndexOf('。'),
-            truncated.lastIndexOf('！'),
-            truncated.lastIndexOf('？')
+            truncated.lastIndexOf('!'),
+            truncated.lastIndexOf('?')
         );
         if (lastSentence > wordLimit * 0.5) {
             cleaned = truncated.substring(0, lastSentence + 1);
@@ -338,7 +562,7 @@ function validateGeneratedReply(text, wordLimit) {
     return cleaned;
 }
 
-function inspectGeneratedReply(text, wordLimit) {
+function inspectGeneratedReply(text, wordLimit, roomId = null) {
     const cleaned = cleanGeneratedReply(text);
     const minLength = getMinimumReplyLength(wordLimit);
     const sentenceCount = countSentences(cleaned);
@@ -353,10 +577,29 @@ function inspectGeneratedReply(text, wordLimit) {
         };
     }
 
+    const fan = String(configLoader.getNames(roomId).fan || '').trim();
+    const fanNames = Array.from(new Set([fan, fan.replace(/岁$/u, '')].filter(Boolean)));
+    const startsWithFanName = fanNames.some(name => {
+        const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return new RegExp(
+            `^(?:晚安|早安|午安|下午好|晚上好)?\\s*${escaped}(?=\\s|[!！?？,，。:：、~～🌙☀️]|$)`,
+            'u'
+        ).test(cleaned);
+    });
+    if (startsWithFanName) {
+        return {
+            ok: false,
+            reason: `开头误把粉丝昵称“${fan}”当成主播称呼`,
+            cleaned,
+            minLength,
+            sentenceCount
+        };
+    }
+
     if (cleaned.length < minLength) {
         return {
             ok: false,
-            reason: `生成的文本过短（${cleaned.length} < ${minLength}）`,
+            reason: `生成的文本过短(${cleaned.length} < ${minLength})`,
             cleaned,
             minLength,
             sentenceCount
@@ -366,7 +609,7 @@ function inspectGeneratedReply(text, wordLimit) {
     if (wordLimit >= 250 && sentenceCount < 2) {
         return {
             ok: false,
-            reason: `生成的文本句子数过少（${sentenceCount} < 2）`,
+            reason: `生成的文本句子数过少(${sentenceCount} < 2)`,
             cleaned,
             minLength,
             sentenceCount
@@ -394,28 +637,59 @@ function createGenerationResult(text, meta) {
 }
 
 function isUnsafeGeneratedReply(text) {
-    const unsafePatterns = [
-        /I'm Claude/i,
-        /Anthropic/i,
-        /I (?:can't|cannot) (?:complete|comply|help|assist)/i,
-        /我不能(?:完成|协助|帮助|满足)/,
-        /无法(?:完成|协助|满足)这个请求/,
-        /作为(?:一个)?AI(?:语言)?模型/,
-        /系统提示/,
-        /system prompt/i
-    ];
-
-    return unsafePatterns.some(pattern => pattern.test(text));
+    return classifyGeneratedOutput(text).rejected;
 }
 
-// 调用tuZi API生成文本（备用方案）
-async function generateTextWithTuZi(prompt, options = {}) {
-    const config = configLoader.getConfig();
-    // 优先使用 ai.text.tuZi 配置（文本生成专用），其次使用 ai.comic.tuZi（兼容旧配置）
-    const tuziConfig = config.ai?.text?.tuZi || config.aiServices?.tuZi || {};
 
-    if (!configLoader.isTuZiConfigured()) {
-        throw new Error('tuZi API未配置，请检查secrets.json中的apiKey');
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+function buildTextModelFailureError(attempts, provider) {
+    const failures = attempts
+        .filter(attempt => attempt.provider === provider && attempt.status === 'failure')
+        .map(attempt => `${attempt.model}: ${attempt.error || 'unknown error'}`);
+
+    const error = new Error(`${provider} API全部候选模型失败${failures.length ? `: ${failures.join(' | ')}` : ''}`);
+    error.attempts = attempts;
+    return error;
+}
+
+
+function pickGoodnightTuZiPrimaryModel() {
+    const randomIndex = Math.floor(Math.random() * TUZI_DEFAULT_TEXT_MODELS.length);
+    return TUZI_DEFAULT_TEXT_MODELS[randomIndex];
+}
+
+// 调用tuZi API生成文本(备用方案)
+async function generateTextWithTuZi(prompt, options = {}) {
+    ({prompt,options}=prepareSharedLiveOutput(prompt,options));
+    if (options.strictEvaluation) options = { ...options, exactModel: true, fallbackModelsEnabled: false,
+        allowProviderFallback: false, strictResponses: true, transientMaxAttempts: 1 };
+    if (options.reasoningEffort !== undefined) normalizeOpenAIReasoningEffort(options.reasoningEffort);
+    const config = configLoader.getConfig();
+    // 优先使用 ai.text.tuZi 配置(文本生成专用),其次使用 ai.comic.tuZi(兼容旧配置)
+    const tuziConfig = config.ai?.text?.tuZi || config.aiServices?.tuZi || {};
+    const normalizeModel = options.exactModel === true ? value => String(value || '').trim() : normalizeDaiYuTextModel;
+    const primaryModel = normalizeModel(
+        options.primaryModel || pickGoodnightTuZiPrimaryModel()
+    );
+
+    const textApiKey = configLoader.getTuZiTextApiKey();
+    if (!configLoader.isTuZiTextConfigured()) {
+        throw new Error('tuZi API未配置,请检查secrets.json中的apiKey');
     }
 
     console.log('🤖 调用tuZi API生成文本...');
@@ -423,18 +697,27 @@ async function generateTextWithTuZi(prompt, options = {}) {
     const configuredFallbackModels = Array.isArray(tuziConfig.fallbackModels)
         ? tuziConfig.fallbackModels
         : [];
-    const modelSequence = [
-        tuziConfig.model || 'gpt-5.4-mini',
+    const builtInFallbackModels = tuziConfig.includeBuiltInFallbackModels === true
+        ? ['qwen2.5-72b-instruct', 'grok-4.1']
+        : [];
+    const fallbackModelsEnabled = options.fallbackModelsEnabled !== false;
+    const modelSequence = (fallbackModelsEnabled ? [
+        primaryModel,
+        tuziConfig.textModel,
+        tuziConfig.model,
         ...configuredFallbackModels,
-        'gemini-3-flash-preview',
-        'o4-mini',
-        'qwen2.5-72b-instruct',
-        'grok-4.1'
-    ].filter((model, index, models) => model && models.indexOf(model) === index);
+        ...builtInFallbackModels
+    ] : [primaryModel]).filter((model, index, models) => model && models.indexOf(model) === index);
+    console.log(`   tuZi主模型: ${primaryModel}`);
+    console.log(`   候选序列: ${modelSequence.join(' -> ')}`);
     const baseUrl = tuziConfig.baseUrl || 'https://api.tu-zi.com';
-    const apiUrl = `${baseUrl}/v1/chat/completions`;
+    const apiMode = normalizeDaiYuApiMode(options.apiMode || tuziConfig.apiMode);
+    const apiUrl = `${baseUrl}/v1/${apiMode === 'responses' ? 'responses' : 'chat/completions'}`;
+    console.log(`   API模式: ${apiMode}`);
     const attempts = Array.isArray(options.attempts) ? [...options.attempts] : [];
+    const sharedPromptCacheInfo = getSharedPromptCacheInfo(prompt);
     const fallbackFromPrimary = Boolean(options.fallback);
+    const wordLimit = Number(options.wordLimit || configLoader.getByPath('ai.defaultWordLimit', 100));
 
     // 设置代理
     let agent = null;
@@ -446,84 +729,496 @@ async function generateTextWithTuZi(prompt, options = {}) {
     // 重试逻辑
     for (let attempt = 0; attempt < modelSequence.length; attempt++) {
         const textModel = modelSequence[attempt];
-        try {
-            console.log(`[WAIT] 正在通过tu-zi.com API生成文本... (尝试 ${attempt + 1}/${modelSequence.length} model: ${textModel}, 超时: 60s)`);
-
+        const transientMaxAttempts = 1; // Transport retries are shared with daiYu below.
+        for (let transientAttempt = 1; transientAttempt <= transientMaxAttempts; transientAttempt++) {
+          const attemptState = createTextAttemptState(apiMode);
+          try {
             // 获取超时时间 (默认 60 秒)
-            const timeoutMs = config.timeouts?.aiApiTimeout || 60000;
+            const timeoutMs = resolveTextRequestTimeout(options, config.timeouts?.aiApiTimeout || 60000);
+            console.log(
+                `[WAIT] 正在通过tu-zi.com API生成文本... `
+                + `(模型 ${attempt + 1}/${modelSequence.length}: ${textModel}, `
+                + `请求 ${transientAttempt}/${transientMaxAttempts}, 超时: ${Math.round(timeoutMs / 1000)}s)`
+            );
+            const configuredMaxTokens = options.maxTokens ?? tuziConfig.maxTokens;
+            const effectiveMaxTokens = options.strictEvaluation ? configuredMaxTokens : normalizeTuZiTextMaxTokens(textModel, configuredMaxTokens, wordLimit);
+            console.log(`   max_tokens: ${effectiveMaxTokens} (configured=${configuredMaxTokens || 'default'}, wordLimit=${wordLimit})`);
 
-            const response = await fetch(apiUrl, {
+            const requestBody = apiMode === 'responses'
+                ? {
+                    model: textModel,
+                    input: options.images?.length ? buildOpenAIResponsesInput(prompt, null, options.images) : prompt,
+                    max_output_tokens: effectiveMaxTokens,
+                    stream: false,
+                    store: false,
+                    ...(options.responseFormat ? { text: { format: options.responseFormat } } : {}),
+                    ...(options.reasoningEffort ? { reasoning: { effort: normalizeOpenAIReasoningEffort(options.reasoningEffort) } } : {})
+                }
+                : {
+                    model: textModel,
+                    messages: buildOpenAITextMessages(prompt, null, options.images),
+                    temperature: tuziConfig.temperature,
+                    ...(options.responseFormat ? { response_format: { type: options.responseFormat.type,
+                        json_schema: Object.fromEntries(Object.entries(options.responseFormat).filter(([key]) => key !== 'type')) } } : {}),
+                    ...(options.reasoningEffort !== undefined ? { reasoning_effort: normalizeOpenAIReasoningEffort(options.reasoningEffort) } : {}),
+                    max_tokens: effectiveMaxTokens
+                };
+
+            const policy = requestRetryPolicy(config, tuziConfig, options);
+            const response = await postWithRetry(async () => {
+              resetTextAttempt(attemptState, apiMode);
+              attemptState.requestStarted = true;
+              return await fetch(apiUrl, {
                 method: 'POST',
                 headers: {
-                    'Authorization': `Bearer ${tuziConfig.apiKey}`,
+                    'Authorization': `Bearer ${textApiKey}`,
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({
-                    model: textModel,
-                    messages: [
-                        {
-                            role: 'user',
-                            content: prompt
-                        }
-                    ],
-                    temperature: tuziConfig.temperature,
-                    max_tokens: Math.min(tuziConfig.maxTokens || 800, 800)
-                }),
+                body: JSON.stringify(requestBody),
                 agent: agent,
-                timeout: timeoutMs
-            });
+                timeout: resolveTextRequestTimeout(options, timeoutMs),
+                signal: AbortSignal.timeout(resolveTextRequestTimeout(options, timeoutMs))
+              });
+            }, policy, { deadlineAt: options.deadlineAt, onRetry: (error, retry) => {
+                attemptState.response = error.response || null;
+                recordFailedTextAttempt(attempts, 'tuZi', textModel, error, attemptState);
+                console.warn(`[TEXT_RETRY] ${JSON.stringify({ provider: 'tuZi', model: textModel, ...retry })}`);
+            } });
 
+            attemptState.response = response;
             if (!response.ok) {
                 const errorText = await response.text();
-                throw new Error(`tuZi API返回错误 ${response.status}: ${errorText}`);
+                const error = new Error(`tuZi API返回错误 ${response.status}: ${errorText}`);
+                error.status = response.status;
+                throw error;
             }
 
             const data = await response.json();
-            const text = data.choices?.[0]?.message?.content;
+            attemptState.data = data;
+            const choice = apiMode === 'responses' ? null : data.choices?.[0];
+            const finishReason = apiMode === 'responses'
+                ? getOpenAITextFinishReason(data)
+                : getTuZiFinishReason(choice);
+            const usage = data.usage || null;
+            const promptUsage = getPromptTokenUsage(usage);
+            const completionUsage = getCompletionTokenUsage(usage);
+            let text = apiMode === 'responses'
+                ? extractOpenAITextResponse(data)
+                : choice?.message?.content;
+            console.log(
+                `   api_mode: ${apiMode}, finish_reason: ${finishReason || 'unknown'}, `
+                + `usage: ${usage ? JSON.stringify(usage) : 'unknown'}`
+            );
 
             if (!text || text.trim().length === 0) {
+                if (options.structuredOutputKey) assertGeneratedOutput(text, options, data, { provider: 'tuZi', requestId: response.headers?.get?.('x-request-id') || null });
                 throw new Error('tuZi API返回空结果');
             }
-
-            if (isUnsafeGeneratedReply(text)) {
-                throw new Error('tuZi API返回疑似拒绝/身份自述内容，跳过该模型');
+            if (options.minOutputChars && text.trim().length < options.minOutputChars) {
+                throw new Error(`Text result is shorter than ${options.minOutputChars} characters`);
             }
 
-            attempts.push({ provider: 'tuZi', model: textModel, status: 'success' });
+            if (isIncompleteTextState(finishReason) || isIncompleteTextState(data.status)) {
+                throw new Error(`tuZi API输出未完成或达到长度上限 (finish_reason=${finishReason}, max_tokens=${effectiveMaxTokens})`);
+            }
+
+            text = unwrapSharedLiveOutput(text, options.sharedOutputTask);
+            if (options.minOutputChars && text.trim().length < options.minOutputChars) throw new Error(`Text result is shorter than ${options.minOutputChars} characters`);
+            assertGeneratedOutput(text, options, data, { provider: 'tuZi', requestId: response.headers?.get?.('x-request-id') || null,
+                promptSha256: crypto.createHash('sha256').update(prompt).digest('hex') });
+
+            const successfulAttempt = {
+                provider: 'tuZi',
+                rawUsage: usage,
+                model: textModel,
+                status: 'success',
+                requestStarted: true,
+                reasoningEffortRequested: options.reasoningEffort || null,
+                reasoningEffortSent: requestBody.reasoning?.effort || requestBody.reasoning_effort || null,
+                reasoningEffortReturned: data.reasoning?.effort || null,
+                responseModel: data.model || null,
+                finishReason: finishReason || 'unknown',
+                apiModeRequested: apiMode,
+                apiModeUsed: apiMode,
+                promptTokens: promptUsage.promptTokens,
+                cachedTokens: promptUsage.cachedTokens,
+                cacheWriteTokens: promptUsage.cacheWriteTokens,
+                ...sharedPromptCacheInfo,
+                ...getPromptCacheRequestDiagnostics(requestBody),
+                completionTokens: completionUsage.completionTokens,
+                reasoningTokens: completionUsage.reasoningTokens,
+                totalTokens: normalizeUsageMetric(usage?.total_tokens) ?? normalizeUsageMetric(usage?.totalTokens) ?? undefined,
+                maxTokens: effectiveMaxTokens
+            };
+            successfulAttempt.requestId = response.headers?.get?.('x-request-id') || null;
+            successfulAttempt.responseId = data.id || null;
+            attempts.push(successfulAttempt);
+            logAiUsage(successfulAttempt);
             console.log('✅ tuZi API调用成功');
             return createGenerationResult(text, {
                 provider: 'tuZi',
                 model: textModel,
                 fallback: fallbackFromPrimary || attempt > 0,
-                attempts
+                attempts,
+                finishReason: finishReason || 'unknown',
+                usage,
+                maxTokens: effectiveMaxTokens
             });
-        } catch (error) {
-            attempts.push({
-                provider: 'tuZi',
-                model: textModel,
-                status: 'failure',
-                error: String(error.message || error).slice(0, 300)
-            });
-            console.error(`❌ tuZi API调用失败 (尝试 ${attempt + 1}/${modelSequence.length}): ${error.message}`);
+          } catch (error) {
+            recordFailedTextAttempt(attempts, 'tuZi', textModel, error, attemptState);
+            if (isPendingTextGeneration(attemptState.data) || error.outcomeUnknown) throw buildTextModelFailureError(attempts, 'tuZi');
+            console.error(
+                `❌ tuZi API调用失败 (模型 ${attempt + 1}/${modelSequence.length}, `
+                + `请求 ${transientAttempt}/${transientMaxAttempts}): ${error.message}`
+            );
+            await maybeNotifyTuZiBalanceError(error, `文本生成 ${textModel}`);
 
-            // 如果是最后一次尝试，抛出错误
+            // 如果是最后一次尝试,抛出包含所有候选模型失败原因的错误
             if (attempt === modelSequence.length - 1) {
-                throw error;
+                throw buildTextModelFailureError(attempts, 'tuZi');
             }
 
             // 等待一小段时间后重试
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            break;
+          }
+        }
+    }
+}
+
+// 调用daiYu API生成文本（OpenAI兼容，支持thinking）
+async function generateTextWithDaiYu(prompt, options = {}) {
+    ({prompt,options}=prepareSharedLiveOutput(prompt,options));
+    if (options.strictEvaluation) options = { ...options, exactModel: true, fallbackModelsEnabled: false,
+        allowProviderFallback: false, strictResponses: true, transientMaxAttempts: 1 };
+    if (options.reasoningEffort !== undefined) normalizeOpenAIReasoningEffort(options.reasoningEffort);
+    const config = configLoader.getConfig();
+    const daiYuConfig = config.ai?.text?.daiYu || {};
+
+    const apiKey = configLoader.getDaiYuApiKey();
+    if (!configLoader.isDaiYuTextConfigured()) {
+        throw new Error('daiYu API未配置,请检查secret.json中的providers.daiYu.apiKey');
+    }
+
+    console.log('🤖 调用daiYu API生成文本...');
+    const normalizeModel = options.exactModel === true ? value => String(value || '').trim() : normalizeDaiYuTextModel;
+    const primaryModel = normalizeModel(
+        options.primaryModel || daiYuConfig.model || DAIYU_PRIMARY_MODEL
+    );
+
+    const configuredFallbackModels = Array.isArray(daiYuConfig.fallbackModels)
+        ? daiYuConfig.fallbackModels
+        : [];
+    const builtInFallbackModels = daiYuConfig.includeBuiltInFallbackModels === true
+        ? ['qwen2.5-72b-instruct', 'grok-4.1']
+        : [];
+    const fallbackModelsEnabled = options.fallbackModelsEnabled !== false;
+    const modelSequence = (fallbackModelsEnabled ? [
+        primaryModel,
+        daiYuConfig.textModel,
+        daiYuConfig.model,
+        ...configuredFallbackModels,
+        DAIYU_PRIMARY_MODEL,
+        ...builtInFallbackModels
+    ] : [primaryModel]).map(normalizeModel)
+        .filter((model, index, models) => model && models.indexOf(model) === index);
+    console.log(`   晚安主模型: ${primaryModel}`);
+    console.log(`   候选序列: ${modelSequence.join(' -> ')}`);
+    const baseUrl = (daiYuConfig.baseUrl || 'http://localhost:8080').replace(/\/v1$/, '');
+    const apiModeRequested = normalizeDaiYuApiMode(options.apiMode || daiYuConfig.apiMode);
+    console.log(`   API模式: ${apiModeRequested}`);
+    const attempts = Array.isArray(options.attempts) ? [...options.attempts] : [];
+    const sharedPromptCacheInfo = getSharedPromptCacheInfo(prompt);
+    const fallbackFromPrimary = Boolean(options.fallback);
+    const wordLimit = Number(options.wordLimit || configLoader.getByPath('ai.defaultWordLimit', 100));
+
+    // 设置代理
+    let agent = null;
+    if (daiYuConfig.proxy) {
+        console.log(`   使用代理: ${daiYuConfig.proxy}`);
+        agent = new HttpsProxyAgent(daiYuConfig.proxy);
+    }
+
+    // thinking 配置
+    const thinkingEnabled = options.reasoningEffort !== undefined || daiYuConfig.thinking?.enabled !== false;
+    const thinkingBudgetTokens = Number(options.thinkingBudgetTokens)
+        || daiYuConfig.thinking?.budgetTokens
+        || 10000;
+    const reasoningEffort = options.reasoningEffort
+        || daiYuConfig.thinking?.reasoningEffort
+        || daiYuConfig.thinking?.effort
+        || 'high';
+
+    // 重试逻辑
+    for (let attempt = 0; attempt < modelSequence.length; attempt++) {
+        const textModel = modelSequence[attempt];
+        const attemptState = createTextAttemptState(apiModeRequested);
+        try {
+            const timeoutMs = resolveTextRequestTimeout(options, config.timeouts?.aiApiTimeout || 60000);
+            console.log(`[WAIT] 正在通过daiYu API生成文本... (尝试 ${attempt + 1}/${modelSequence.length} model: ${textModel}, 超时: ${Math.round(timeoutMs / 1000)}s)`);
+            const configuredMaxTokens = options.maxTokens ?? daiYuConfig.maxTokens;
+            const effectiveMaxTokens = options.strictEvaluation ? configuredMaxTokens : normalizeTuZiTextMaxTokens(textModel, configuredMaxTokens, wordLimit);
+            console.log(`   max_tokens: ${effectiveMaxTokens} (configured=${configuredMaxTokens || 'default'}, wordLimit=${wordLimit})`);
+
+            const cachePlan = getExplicitPromptCachePlan(
+                prompt,
+                config,
+                textModel,
+                options.promptCacheRolloutPercent,
+                options.staticPromptCachePrefix
+            );
+            if (cachePlan.enabled) {
+                const cacheMode = apiModeRequested === 'responses' ? 'prefix-routed' : 'explicit';
+                console.log(
+                    `   prompt cache: ${cacheMode}, rollout=${cachePlan.rolloutPercent}%, ` +
+                    `bucket=${cachePlan.rolloutBucket}, prefixChars=${cachePlan.sharedPromptPrefixChars}`
+                );
+            }
+
+            if (thinkingEnabled) {
+                const thinkingDescription = apiModeRequested === 'responses'
+                    ? `reasoning effort=${normalizeOpenAIReasoningEffort(reasoningEffort)}`
+                    : `budget=${thinkingBudgetTokens}`;
+                console.log(`   thinking: enabled (${thinkingDescription})`);
+            }
+
+            const buildRequestBody = (apiMode, selectedCachePlan = cachePlan) => (
+                apiMode === 'responses'
+                    ? buildDaiYuResponsesRequest({
+                        model: textModel,
+                        prompt,
+                        cachePlan: selectedCachePlan,
+                        temperature: daiYuConfig.temperature,
+                        maxTokens: effectiveMaxTokens,
+                        thinkingEnabled,
+                        reasoningEffort,
+                        images: options.images, responseFormat: options.responseFormat
+                    })
+                    : buildDaiYuChatCompletionsRequest({
+                        model: textModel,
+                        prompt,
+                        cachePlan: selectedCachePlan,
+                        temperature: daiYuConfig.temperature,
+                        maxTokens: effectiveMaxTokens,
+                        thinkingEnabled,
+                        thinkingBudgetTokens,
+                        reasoningEffort: options.reasoningEffort,
+                        images: options.images, responseFormat: options.responseFormat
+                    })
+            );
+            const postRequest = async (apiMode, body) => {
+                const policy = requestRetryPolicy(config, daiYuConfig, options);
+                return postWithRetry(async () => {
+                    resetTextAttempt(attemptState, apiMode);
+                    const requestTimeout = resolveTextRequestTimeout(options, timeoutMs);
+                    attemptState.requestStarted = true;
+                    const response = await fetch(
+                        `${baseUrl}/v1/${apiMode === 'responses' ? 'responses' : 'chat/completions'}`,
+                        {
+                            method: 'POST',
+                            headers: {
+                                'Authorization': `Bearer ${apiKey}`,
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify(body),
+                            agent,
+                            timeout: requestTimeout,
+                            signal: AbortSignal.timeout(requestTimeout)
+                        }
+                    );
+                    attemptState.response = response;
+                    return response;
+                }, policy, { deadlineAt: options.deadlineAt, onRetry: (error, retry) => {
+                    attemptState.response = error.response || null;
+                    recordFailedTextAttempt(attempts, 'daiYu', textModel, error, attemptState);
+                    console.warn(`[TEXT_RETRY] ${JSON.stringify({ provider: 'daiYu', model: textModel, ...retry })}`);
+                } });
+            };
+
+            let apiModeUsed = apiModeRequested;
+            let apiModeFallbackReason;
+            let requestBody = buildRequestBody(apiModeUsed);
+            if (apiModeUsed === 'responses') requestBody = liveCache.prepareContinuation(requestBody, config);
+            if (apiModeUsed === 'responses' && requestBody.input.length > 1) {
+                console.log(`[LIVE_TEXT_CACHE_REUSE] ${JSON.stringify({ model: textModel, sourceSha256: cachePlan.sharedPromptCacheKey })}`);
+            }
+            if (!cachePlan.enabled && requestBody.prompt_cache_key) console.log(`   prompt cache: implicit-routed, prefixChars=${cachePlan.sharedPromptPrefixChars ?? cachePlan.staticPromptPrefixChars}`);
+            let response = await postRequest(apiModeUsed, requestBody);
+            let promptCacheFallbackReason;
+            let responseErrorText;
+            const retryWithoutCacheHints = async () => {
+                if (options.strictEvaluation) return;
+                if (response.ok || ![400, 422].includes(response.status) || (!requestBody.prompt_cache_key && !requestBody.prompt_cache_options)) return;
+                responseErrorText = await response.text();
+                if (!isPromptCacheParameterError(responseErrorText)) return;
+                promptCacheFallbackReason = `HTTP ${response.status}: ${responseErrorText}`.slice(0, 300);
+                recordFailedTextAttempt(attempts, 'daiYu', textModel, new Error(promptCacheFallbackReason), attemptState,
+                    { stage: 'prompt_cache_compatibility' });
+                console.warn(`Prompt cache hint rejected; retrying the same API without cache hints: ${promptCacheFallbackReason}`);
+                requestBody = withoutPromptCacheHints(requestBody);
+                responseErrorText = undefined;
+                response = await postRequest(apiModeUsed, requestBody);
+            };
+            await retryWithoutCacheHints();
+            if (
+                !response.ok
+                && apiModeUsed === 'responses'
+                && options.strictResponses !== true
+                && isDaiYuResponsesCompatibilityStatus(response.status)
+            ) {
+                const responsesErrorText = responseErrorText ?? await response.text();
+                apiModeFallbackReason = `HTTP ${response.status}: ${responsesErrorText}`.slice(0, 300);
+                recordFailedTextAttempt(attempts, 'daiYu', textModel, new Error(apiModeFallbackReason), attemptState,
+                    { stage: 'responses_compatibility' });
+                console.warn(
+                    `⚠️  daiYu Responses API不兼容，回退Chat Completions: ${apiModeFallbackReason}`
+                );
+                apiModeUsed = 'chatCompletions';
+                requestBody = buildRequestBody(apiModeUsed);
+                responseErrorText = undefined;
+                response = await postRequest(apiModeUsed, requestBody);
+                await retryWithoutCacheHints();
+            }
+
+            if (!response.ok) {
+                const errorText = responseErrorText ?? await response.text();
+                throw new Error(`daiYu API返回错误 ${response.status}: ${errorText}`);
+            }
+
+            const data = await response.json();
+            attemptState.data = data;
+            const finishReason = getOpenAITextFinishReason(data);
+            const usage = data.usage || null;
+            const promptUsage = getPromptTokenUsage(usage);
+            const completionUsage = getCompletionTokenUsage(usage);
+            let text = extractOpenAITextResponse(data);
+            console.log(
+                `   api_mode: ${apiModeUsed}, finish_reason: ${finishReason || 'unknown'}, ` +
+                `usage: ${usage ? JSON.stringify(usage) : 'unknown'}`
+            );
+
+            if (!text || text.trim().length === 0) {
+                if (options.structuredOutputKey) assertGeneratedOutput(text, options, data, { provider: 'daiYu', requestId: response.headers?.get?.('x-request-id') || null });
+                throw new Error('daiYu API返回空结果');
+            }
+            if (options.minOutputChars && text.trim().length < options.minOutputChars) {
+                throw new Error(`Text result is shorter than ${options.minOutputChars} characters`);
+            }
+
+            if (isIncompleteTextState(finishReason) || isIncompleteTextState(data.status)) {
+                throw new Error(`daiYu API输出未完成或达到长度上限 (finish_reason=${finishReason}, max_tokens=${effectiveMaxTokens})`);
+            }
+
+            text = unwrapSharedLiveOutput(text, options.sharedOutputTask);
+            if (options.minOutputChars && text.trim().length < options.minOutputChars) throw new Error(`Text result is shorter than ${options.minOutputChars} characters`);
+            assertGeneratedOutput(text, options, data, { provider: 'daiYu', requestId: response.headers?.get?.('x-request-id') || null,
+                promptSha256: crypto.createHash('sha256').update(prompt).digest('hex') });
+
+            const successfulAttempt = {
+                provider: 'daiYu',
+                rawUsage: usage,
+                model: textModel,
+                status: 'success',
+                requestStarted: true,
+                reasoningEffortRequested: reasoningEffort,
+                reasoningEffortSent: requestBody.reasoning?.effort || requestBody.reasoning_effort || null,
+                reasoningEffortReturned: data.reasoning?.effort || null,
+                responseModel: data.model || null,
+                finishReason: finishReason || 'unknown',
+                promptTokens: promptUsage.promptTokens,
+                cachedTokens: promptUsage.cachedTokens,
+                cacheWriteTokens: promptUsage.cacheWriteTokens,
+                apiModeRequested,
+                apiModeUsed,
+                apiModeFallbackReason,
+                ...sharedPromptCacheInfo,
+                ...getPromptCacheRequestDiagnostics(requestBody),
+                liveCacheContinuation: apiModeUsed === 'responses' && requestBody.input.length > 1,
+                ...(cachePlan.staticPromptPrefixChars ? { staticPromptPrefixChars: cachePlan.staticPromptPrefixChars,
+                    promptCacheRequestKey: requestBody.prompt_cache_key || null } : {}),
+                explicitPromptCache: requestBody.prompt_cache_key
+                    ? (apiModeUsed === 'responses' ? 'implicit_routed' : 'requested')
+                    : (promptCacheFallbackReason ? 'rejected' : 'not_selected'),
+                promptCacheRolloutBucket: cachePlan.rolloutBucket,
+                promptCacheFallbackReason,
+                completionTokens: completionUsage.completionTokens,
+                reasoningTokens: completionUsage.reasoningTokens,
+                totalTokens: normalizeUsageMetric(usage?.total_tokens) ?? normalizeUsageMetric(usage?.totalTokens) ?? undefined,
+                maxTokens: effectiveMaxTokens
+            };
+            successfulAttempt.requestId = response.headers?.get?.('x-request-id') || null;
+            successfulAttempt.responseId = data.id || null;
+            attempts.push(successfulAttempt);
+            logAiUsage(successfulAttempt);
+            console.log('✅ daiYu API调用成功');
+            const generated = createGenerationResult(text, {
+                provider: 'daiYu',
+                model: textModel,
+                fallback: fallbackFromPrimary || attempt > 0,
+                attempts,
+                finishReason: finishReason || 'unknown',
+                usage,
+                maxTokens: effectiveMaxTokens
+            });
+            if (options.captureLiveCache && apiModeUsed === 'responses') generated.cacheSeed = liveCache.captureSeed(requestBody, data, config);
+            return generated;
+        } catch (error) {
+            recordFailedTextAttempt(attempts, 'daiYu', textModel, error, attemptState);
+            if (isPendingTextGeneration(attemptState.data) || error.outcomeUnknown) throw buildTextModelFailureError(attempts, 'daiYu');
+            console.error(`❌ daiYu API调用失败 (尝试 ${attempt + 1}/${modelSequence.length}): ${error.message}`);
+
+            if (attempt === modelSequence.length - 1) {
+                const daiYuFailure = buildTextModelFailureError(attempts, 'daiYu');
+                const fallbackProvider = String(daiYuConfig.fallbackProvider || '').trim().toLowerCase();
+                if (options.allowProviderFallback !== false && fallbackProvider === 'tuzi' && configLoader.isTuZiTextConfigured()
+                    && (!options.deadlineAt || Date.now() < options.deadlineAt)) {
+                    const fallbackModel = String(
+                        daiYuConfig.fallbackProviderModel || DAIYU_PRIMARY_MODEL
+                    ).trim() || DAIYU_PRIMARY_MODEL;
+                    const fallbackApiMode = normalizeDaiYuApiMode(
+                        daiYuConfig.fallbackProviderApiMode
+                        || config.ai?.text?.tuZi?.apiMode
+                    );
+                    console.warn(
+                        `⚠️  daiYu全部候选失败，改走 tuZi/${fallbackModel} `
+                        + `${fallbackApiMode} 兜底`
+                    );
+                    try {
+                        return await generateTextWithTuZi(prompt, {
+                            ...options,
+                            fallback: true,
+                            attempts,
+                            primaryModel: fallbackModel,
+                            reasoningEffort,
+                            fallbackModelsEnabled: false,
+                            wordLimit,
+                            timeoutMs: options.timeoutMs,
+                            maxTokens: options.maxTokens,
+                            apiMode: fallbackApiMode
+                        });
+                    } catch (fallbackError) {
+                        const failure = new Error(
+                            `${daiYuFailure.message} | tuZi/${fallbackModel} 兜底失败: ${fallbackError.message}`
+                        );
+                        failure.attempts = fallbackError.attempts || attempts;
+                        throw failure;
+                    }
+                }
+                throw daiYuFailure;
+            }
+
             await new Promise(resolve => setTimeout(resolve, 1000));
         }
     }
 }
 
 // 调用Gemini API生成文本
-async function generateTextWithGemini(prompt) {
+async function generateTextWithGemini(prompt, options = {}) {
     const config = configLoader.getConfig();
     const geminiConfig = config.aiServices?.gemini || config.ai?.text?.gemini || {};
 
     if (!configLoader.isGeminiConfigured()) {
-        throw new Error('Gemini API未配置，请检查secrets.json中的apiKey');
+        throw new Error('Gemini API未配置,请检查secrets.json中的apiKey');
     }
 
     console.log('🤖 调用Gemini API生成文本...');
@@ -537,12 +1232,12 @@ async function generateTextWithGemini(prompt) {
         console.log(`   超时设置: ${timeoutMs / 1000}s`);
 
         // --- 核心修改开始 ---
-        // SDK 不支持在构造函数传 agent，我们需要劫持全局 fetch 来注入代理
+        // SDK 不支持在构造函数传 agent,我们需要劫持全局 fetch 来注入代理
         if (geminiConfig.proxy) {
             console.log(`   使用代理: ${geminiConfig.proxy}`);
             const agent = new HttpsProxyAgent(geminiConfig.proxy);
 
-            // 临时覆盖全局 fetch，强制让 SDK 走 node-fetch 并带上 agent 和 timeout
+            // 临时覆盖全局 fetch,强制让 SDK 走 node-fetch 并带上 agent 和 timeout
             originalFetch = global.fetch;
             global.fetch = (url, init) => {
                 return fetch(url, {
@@ -562,8 +1257,8 @@ async function generateTextWithGemini(prompt) {
                 maxOutputTokens: geminiConfig.maxTokens,
             }
         });
-        
-        // 使用 Promise.race 实现外部超时控制，双重保障
+
+        // 使用 Promise.race 实现外部超时控制,双重保障
         const timeoutPromise = new Promise((_, reject) => {
             setTimeout(() => reject(new Error(`Gemini API 调用超时 (${timeoutMs / 1000}s)`)), timeoutMs);
         });
@@ -584,7 +1279,7 @@ async function generateTextWithGemini(prompt) {
             throw new Error('Gemini API返回疑似拒绝/身份自述内容');
         }
 
-        // 恢复原始 fetch（如果被覆盖了）
+        // 恢复原始 fetch(如果被覆盖了)
         if (originalFetch !== null) {
             global.fetch = originalFetch;
         }
@@ -597,17 +1292,37 @@ async function generateTextWithGemini(prompt) {
             attempts: [{ provider: 'gemini', model: geminiConfig.model, status: 'success' }]
         });
     } catch (error) {
-        // 恢复原始 fetch（如果被覆盖了）
+        // 恢复原始 fetch(如果被覆盖了)
         if (originalFetch !== null) {
             global.fetch = originalFetch;
         }
 
-        // 不管什么 Gemini 错误，都尝试使用 tuZi API 重试
+        // Gemini 失败时优先回退到 daiYu，避免再走旧的 Tuzi 文本模型。
+        if (configLoader.isDaiYuTextConfigured()) {
+            console.warn(`⚠️  Gemini API调用失败 (${error.message}),尝试使用daiYu API作为备用方案...`);
+            try {
+                return await generateTextWithDaiYu(prompt, {
+                    fallback: true,
+                    wordLimit: options.wordLimit,
+                    attempts: [{
+                        provider: 'gemini',
+                        model: geminiConfig.model || 'unknown',
+                        status: 'failure',
+                        error: String(error.message || error).slice(0, 300)
+                    }]
+                });
+            } catch (daiyuError) {
+                console.error(`❌ daiYu API备用方案也失败: ${daiyuError.message}`);
+                throw new Error(`Gemini和daiYu API都失败: Gemini - ${error.message}, daiYu - ${daiyuError.message}`);
+            }
+        }
+
         if (configLoader.isTuZiConfigured()) {
-            console.warn(`⚠️  Gemini API调用失败 (${error.message})，尝试使用tuZi API作为备用方案...`);
+            console.warn(`⚠️  daiYu未配置，Gemini失败后尝试旧tuZi备用方案...`);
             try {
                 return await generateTextWithTuZi(prompt, {
                     fallback: true,
+                    wordLimit: options.wordLimit,
                     attempts: [{
                         provider: 'gemini',
                         model: geminiConfig.model || 'unknown',
@@ -649,10 +1364,33 @@ function buildTextFrontMatter(highlightPath, generationMeta = {}) {
             lines.push(`  - provider: ${yamlQuote(attempt.provider || 'unknown')}`);
             lines.push(`    model: ${yamlQuote(attempt.model || 'unknown')}`);
             lines.push(`    status: ${yamlQuote(attempt.status || 'unknown')}`);
-            if (attempt.error) {
-                lines.push(`    error: ${yamlQuote(attempt.error)}`);
+            const numericFields = new Set(['maxTokens', 'completionTokens', 'promptTokens', 'cachedTokens',
+                'cacheWriteTokens', 'reasoningTokens', 'sharedPromptPrefixChars', 'promptCacheRolloutBucket', 'totalTokens']);
+            const fields = ['finishReason', 'maxTokens', 'completionTokens', 'promptTokens', 'cachedTokens',
+                'cacheWriteTokens', 'reasoningTokens', 'apiModeRequested', 'apiModeUsed', 'apiModeFallbackReason',
+                'sharedPromptCacheKey', 'sharedPromptPrefixChars', 'explicitPromptCache', 'promptCacheRolloutBucket',
+                'promptCacheFallbackReason', 'totalTokens', 'error', 'requestId', 'responseId', 'phase'];
+            for (const field of fields) {
+                const value = attempt[field];
+                if (numericFields.has(field)) {
+                    if (value === null) lines.push(`    ${field}: null`);
+                    else if (value !== undefined && Number.isFinite(Number(value))) lines.push(`    ${field}: ${Number(value)}`);
+                } else if (value) lines.push(`    ${field}: ${yamlQuote(value)}`);
+            }
+            for (const field of ['usageUnknown', 'usageFinal', 'outcomeUnknown', 'requestStarted']) {
+                if (typeof attempt[field] === 'boolean') lines.push(`    ${field}: ${attempt[field]}`);
             }
         }
+    }
+
+    if (generationMeta.finishReason) {
+        lines.push(`finishReason: ${yamlQuote(generationMeta.finishReason)}`);
+    }
+    if (generationMeta.maxTokens !== undefined) {
+        lines.push(`maxTokens: ${Number(generationMeta.maxTokens)}`);
+    }
+    for (const field of ['generationMode', 'generationProfile', 'sharedUsagePath', 'sharedGenerationId']) {
+        if (generationMeta[field]) lines.push(`${field}: ${yamlQuote(generationMeta[field])}`);
     }
 
     lines.push('---', '');
@@ -679,7 +1417,7 @@ function saveGeneratedText(outputPath, text, highlightPath, generationMeta = {})
 }
 
 // 生成晚安回复
-async function generateGoodnightReply(highlightPath, roomId = null) {
+async function generateGoodnightReply(highlightPath, roomId = null, options = {}) {
     const config = configLoader.getConfig();
     const dir = path.dirname(highlightPath);
     const baseName = path.basename(highlightPath, '_AI_HIGHLIGHT.txt');
@@ -688,20 +1426,20 @@ async function generateGoodnightReply(highlightPath, roomId = null) {
     const existingOutput = getExistingGeneratedFile(outputPath);
 
     if (existingOutput) {
-        console.log(`ℹ️  晚安回复已存在，跳过重复生成: ${path.basename(existingOutput)}`);
+        console.log(`i️  晚安回复已存在,跳过重复生成: ${path.basename(existingOutput)}`);
         return existingOutput;
     }
 
     const lockAcquired = acquireGenerationLock(lockPath);
     if (!lockAcquired) {
-        console.log(`⏳ 晚安回复正在由其他进程生成，等待结果: ${path.basename(outputPath)}`);
+        console.log(`⏳ 晚安回复正在由其他进程生成,等待结果: ${path.basename(outputPath)}`);
         const generatedByOtherProcess = await waitForGeneratedFile(outputPath, lockPath);
         if (generatedByOtherProcess) {
             console.log(`✅ 复用其他进程生成的晚安回复: ${path.basename(generatedByOtherProcess)}`);
             return generatedByOtherProcess;
         }
 
-        console.log('⚠️  等待晚安回复生成超时，跳过本次重复生成');
+        console.log('⚠️  等待晚安回复生成超时,跳过本次重复生成');
         return null;
     }
 
@@ -718,19 +1456,19 @@ async function generateGoodnightReply(highlightPath, roomId = null) {
         console.log(`   isTuZiConfigured: ${configLoader.isTuZiConfigured()}`);
 
         if (!textEnabled || (!geminiEnabled && config.ai?.text?.provider === 'gemini')) {
-            console.log('ℹ️  AI文本生成功能已禁用 (或当前服务商已禁用)');
+            console.log('i️  AI文本生成功能已禁用 (或当前服务商已禁用)');
             return null;
         }
 
         if (!configLoader.isGeminiConfigured()) {
-            console.log('⚠️  Gemini API未配置，使用本地回退生成晚安回复');
+            console.log('⚠️  Gemini API未配置,使用本地回退生成晚安回复');
 
-            // 本地回退：简单根据文本摘取亮点并生成一段固定模板的晚安回复，便于无API时验证流程
+            // 本地回退:简单根据文本摘取亮点并生成一段固定模板的晚安回复,便于无API时验证流程
             try {
                 const highlightContent = readHighlightFile(highlightPath);
                 const lines = highlightContent.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-                const picks = lines.slice(0, 5).map((l, i) => `${i+1}. ${l}`);
-                const fallback = `# 晚安（本地回退）\n\n今天的直播亮点:\n${picks.join('\n')}\n\n谢谢今天的陪伴，晚安~`;
+                const picks = lines.slice(0, 5).map((l, i) => `${i + 1}. ${l}`);
+                const fallback = `# 晚安(本地回退)\n\n今天的直播亮点:\n${picks.join('\n')}\n\n谢谢今天的陪伴,晚安~`;
                 return saveGeneratedText(outputPath, fallback, highlightPath, {
                     provider: 'local',
                     model: 'local-template',
@@ -745,70 +1483,123 @@ async function generateGoodnightReply(highlightPath, roomId = null) {
 
         console.log(`📄 处理AI_HIGHLIGHT文件: ${path.basename(highlightPath)}`);
 
+        let providedSharedSourcePrefix = null;
+        if (options.fullLiveContextPath) {
+            try {
+                const fullContextPayload = fullLiveContext.loadFullLiveContextSidecar(
+                    options.fullLiveContextPath
+                );
+                providedSharedSourcePrefix = fullContextPayload?.sharedPrefix || null;
+                if (providedSharedSourcePrefix) {
+                    console.log(
+                        `🧱 晚安回复采用全量直播共享输入: ${path.basename(options.fullLiveContextPath)}, `
+                        + `sourceSha256=${fullContextPayload.sourceSha256}`
+                    );
+                }
+            } catch (error) {
+                console.warn(`⚠️  晚安回复读取全量直播共享输入失败，回退到原 AI_HIGHLIGHT: ${error.message}`);
+            }
+        }
+
         const maxRetries = 3;
         let lastError = null;
 
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
-            // 检查输入文件
-            if (!fs.existsSync(highlightPath)) {
-                throw new Error(`AI_HIGHLIGHT文件不存在: ${highlightPath}`);
-            }
-
-            // 读取内容
-            const highlightContent = readHighlightFile(highlightPath);
-            if (!highlightContent || highlightContent.trim().length < 10) {
-                 console.log(`⚠️  AI_HIGHLIGHT内容过短 (${highlightContent?.length || 0} 字符)，跳过AI生成`);
-                 return null;
-            }
-            console.log(`📖 读取内容完成 (${highlightContent.length} 字符)`);
-
-            // 构建提示词（优先使用传入的 roomId，其次从文件名提取）
-            const finalRoomId = roomId || extractRoomIdFromFilename(path.basename(highlightPath));
-            // 构建提示词
-            const prompt = buildPrompt(highlightContent, finalRoomId);
-            const wordLimit = configLoader.getWordLimit(finalRoomId);
-
-            // 调用API生成文本
-            let generationResult;
-            const provider = config.ai?.text?.provider || 'gemini';
-
-            if (provider === 'tuZi') {
-                generationResult = await generateTextWithTuZi(prompt);
-            } else {
-                // 默认使用 Gemini
-                generationResult = await generateTextWithGemini(prompt);
-            }
-
-            const rawGeneratedText = generationResult.text;
-            const inspection = inspectGeneratedReply(rawGeneratedText, wordLimit);
-            if (!inspection.ok) {
-                if (String(rawGeneratedText || '').trim()) {
-                    saveFailedGeneratedText(outputPath, rawGeneratedText, highlightPath, generationResult.meta, {
-                        attempt,
-                        maxRetries,
-                        reason: inspection.reason,
-                        rawLength: String(rawGeneratedText).length,
-                        cleanedLength: inspection.cleaned.length
-                    });
+                // 检查输入文件
+                if (!fs.existsSync(highlightPath)) {
+                    throw new Error(`AI_HIGHLIGHT文件不存在: ${highlightPath}`);
                 }
-                throw new Error(inspection.reason);
-            }
 
-            const generatedText = validateGeneratedReply(rawGeneratedText, wordLimit);
-            console.log(`✅ 文本长度校验通过: ${generatedText.length} 字符 (wordLimit=${wordLimit})`);
+                // 读取内容
+                const highlightContent = readHighlightFile(highlightPath);
+                if ((!highlightContent || highlightContent.trim().length < 10) && !providedSharedSourcePrefix) {
+                    console.log(`⚠️  AI_HIGHLIGHT内容过短 (${highlightContent?.length || 0} 字符),跳过AI生成`);
+                    return null;
+                }
+                if ((!highlightContent || highlightContent.trim().length < 10) && providedSharedSourcePrefix) {
+                    console.log('🧪 AI_HIGHLIGHT内容虽短，但已有全量直播共享输入，继续生成晚安回复');
+                }
+                console.log(`📖 读取内容完成 (${highlightContent.length} 字符)`);
 
-            // 确定输出路径
-            // 保存结果
-            return saveGeneratedText(outputPath, generatedText, highlightPath, generationResult.meta);
+                // 构建提示词(优先使用传入的 roomId,其次从文件名提取)
+                const finalRoomId = roomId || extractRoomIdFromFilename(path.basename(highlightPath));
+                const liveTimeDesc = buildLiveTimeDesc(highlightPath);
+                const liveContext = liveGenerationContext.loadLiveGenerationContext(
+                    highlightPath,
+                    finalRoomId,
+                    config
+                );
+                console.log(`🧭 晚安回复采用本场事实上下文: 标题=${liveContext.liveTitle || '未取得'}, 近期动态=${liveContext.recentDynamics?.length || 0}条`);
+                // 构建提示词
+                const prompt = buildPrompt(highlightContent, finalRoomId, liveTimeDesc, liveContext, {
+                    sharedSourcePrefix: providedSharedSourcePrefix || (
+                        liveGenerationContext.isSharedPromptCacheEnabled(config)
+                            ? liveGenerationContext.prepareSharedLiveSource(highlightPath, finalRoomId, config).payload.sharedPrefix
+                            : null
+                    )
+                });
+                const wordLimit = configLoader.getWordLimit(finalRoomId);
+                // 调用API生成文本
+                let generationResult;
+                const provider = config.ai?.text?.provider || 'gemini';
+                const attemptPrompt = attempt === 1
+                    ? prompt
+                    : `${prompt}
+
+【失败重试纠错】上一版未通过发布前校验。再次生成时可以直接从本场具体内容起笔，不必补主播称呼；绝不能以粉丝昵称“${configLoader.getNames(finalRoomId).fan}”开头。只输出最终评论。`;
+
+                const generationOptions = {
+                    wordLimit,
+                    captureLiveCache: true,
+                    promptCacheRolloutPercent: options.promptCacheRolloutPercent
+                };
+                if (provider === 'tuZi') {
+                    generationResult = await generateTextWithTuZi(attemptPrompt, generationOptions);
+                } else if (provider === 'daiYu') {
+                    generationResult = await generateTextWithDaiYu(attemptPrompt, generationOptions);
+                } else {
+                    // 默认使用 Gemini
+                    generationResult = await generateTextWithGemini(attemptPrompt, generationOptions);
+                }
+
+                const rawGeneratedText = generationResult.text;
+                const inspection = inspectGeneratedReply(rawGeneratedText, wordLimit, finalRoomId);
+                if (!inspection.ok) {
+                    if (String(rawGeneratedText || '').trim()) {
+                        saveFailedGeneratedText(outputPath, rawGeneratedText, highlightPath, generationResult.meta, {
+                            attempt,
+                            maxRetries,
+                            reason: inspection.reason,
+                            rawLength: String(rawGeneratedText).length,
+                            cleanedLength: inspection.cleaned.length
+                        });
+                    }
+                    throw new Error(inspection.reason);
+                }
+
+                const generatedText = validateGeneratedReply(rawGeneratedText, wordLimit, finalRoomId);
+                console.log(`✅ 文本长度校验通过: ${generatedText.length} 字符 (wordLimit=${wordLimit})`);
+
+                // 确定输出路径
+                // 保存结果
+                const savedPath = saveGeneratedText(outputPath, generatedText, highlightPath, generationResult.meta);
+                liveCache.acceptSeed(generationResult.cacheSeed, config);
+                return savedPath;
 
             } catch (error) {
                 lastError = error;
                 console.error(`❌ 生成晚安回复失败 (第 ${attempt}/${maxRetries} 次尝试): ${error.message}`);
 
+                if (hasUnknownTextOutcome(error)) {
+                    console.warn(`[GOODNIGHT_OUTCOME_UNKNOWN] ${JSON.stringify({ sourceHighlight: path.basename(highlightPath),
+                        attempt, outcomeUnknown: true, attempts: error.attempts || [] })}`);
+                    return null;
+                }
+
                 if (attempt < maxRetries) {
                     const waitTime = 2000 * attempt;
-                    console.log(`⏳ 等待 ${waitTime/1000} 秒后重试...`);
+                    console.log(`⏳ 等待 ${waitTime / 1000} 秒后重试...`);
                     await new Promise(resolve => setTimeout(resolve, waitTime));
                 }
             }
@@ -821,6 +1612,181 @@ async function generateGoodnightReply(highlightPath, roomId = null) {
     }
 }
 
+function cleanShortTitle(text, fallback) {
+    const cleaned = String(text || '')
+        .trim()
+        .replace(/^["""'']+|["""'']+$/g, '')
+        .replace(/^标题[::]\s*/u, '')
+        .replace(/\s+/g, ' ');
+    if (!cleaned || cleaned.length > 70 || /\n/.test(cleaned)) {
+        return fallback;
+    }
+    return cleaned;
+}
+
+async function generateClipTitle(context = {}) {
+    const fallback = context.defaultTitle || '提到岁己的小片段';
+    const config = configLoader.getConfig();
+    const textEnabled = config.ai?.text?.enabled !== false;
+    if (!textEnabled) {
+        return fallback;
+    }
+
+    const preCtx = context.preContext || '';
+    const postCtx = context.postContext || '';
+    const fullCtx = context.fullClipText || context.sampleText || '';
+
+    const prompt = [
+        ...buildClipTitlePromptLines({ streamerName: context.streamerName }),
+        '',
+        `主播: ${context.streamerName || '主播'}`,
+        `原直播标题: ${context.streamTitle || '未知'}`,
+        `录制时间: ${context.recordedAt || '未知'}`,
+        `片段时间: ${context.startTime || ''}-${context.endTime || ''}`,
+        '',
+        '=== 切片之前的上下文（帮助理解前因） ===',
+        (preCtx || '（无）').slice(0, 600),
+        '',
+        '=== 切片字幕内容 ===',
+        fullCtx.slice(0, 800),
+        '',
+        '=== 切片之后的上下文（帮助理解后续） ===',
+        (postCtx || '（无）').slice(0, 600),
+    ].join('\n');
+
+    try {
+        const provider = config.ai?.text?.provider || 'gemini';
+        const result = provider === 'tuZi'
+            ? await generateTextWithTuZi(prompt, { wordLimit: 80 })
+            : provider === 'daiYu'
+            ? await generateTextWithDaiYu(prompt, { wordLimit: 80 })
+            : await generateTextWithGemini(prompt, { wordLimit: 80 });
+        return cleanShortTitle(result.text, fallback);
+    } catch (error) {
+        console.warn(`⚠️  AI切片标题生成失败，使用模板标题: ${error.message}`);
+        return fallback;
+    }
+}
+
+/**
+ * Shared title-writing instructions for every clip workflow.
+ * Keep this as the single source of truth: callers only provide their output
+ * contract (plain title vs. a JSON title field) and their clip-specific context.
+ */
+function buildClipTitlePromptLines(options = {}) {
+    const outputFormat = options.outputMode === 'jsonTitle'
+        ? '输出格式：每个 clips 元素的 title 字段只写标题本身，不要解释、不要给整个标题套引号、不要以"【"开头；标题内部可引用有证据的原话。18-42字为宜，最多52字，不为凑字数补摘要。'
+        : '输出格式：只输出标题本身，不要解释、不要给整个标题套引号、不要以"【"开头；标题内部可引用有证据的原话。18-42字为宜，最多52字，不为凑字数补摘要。';
+    const streamerName = String(options.streamerName || '').trim();
+    const speakerRule = streamerName
+        ? `主播身份：本段录播的主播是“${streamerName}”。标题中描述“主播/她/其发言”时必须指向${streamerName}；字幕中出现的其他名字或团体名称，除非上下文明确说明，否则只能视为被提及对象，不能改写为本段主播、其粉丝团体或其发言。`
+        : '主播身份：以随后的“主播”字段为准。字幕中出现的其他名字或团体名称，除非上下文明确说明，否则只能视为被提及对象，不能改写为本段主播、其粉丝团体或其发言。';
+
+    return [
+        '给一个B站直播切片生成投稿标题，风格要像人工编辑挑出来的切片标题——一眼能看出"发生了什么好玩/离谱的事"，让人想点进去看，而不是平铺直叙的内容摘要。',
+        '',
+        '核心写法：标题先交代一个具体的事情或疑问，让未看过直播的人知道会看到什么；把最鲜活的本人反应留给封面也可以。原话已经特别自然时可直接作标题，不强制套结构，也不把整段写成话题目录。',
+        ...require('./clipping/audience_copy').audienceCopyPromptLines(),
+        '',
+        '真实性要求：标题里的事实、人物关系、结果，必须能被下面的字幕或弹幕内容逐句对应，不能编造或夸大。ASR可能有同音错字，要结合上下文推断说话人真实的意思。"炸锅""破防""社死""离谱"这类情绪词，只有内容明确支持时才用，不要当万能后缀套上去；也不要写成"聊到了XX""锐评XX引发热议"这种谁都能套用的弱标题。',
+        '',
+        speakerRule,
+        '',
+        outputFormat,
+        '',
+        '标题参考（事实标题与口语标题均可，须与封面成组选择；仅学习写法，不能借用示例事实）：',
+        '- 事实标题：同样一份DQ小料，分量有时能差三分之一；封面可补本人对分量的抱怨。',
+        `- 事实标题：${streamerName || '主播'}换低沉声线，担心太冷淡会没人理；封面可补片内回应，前提是本片确有此事。`,
+        '- 用户示例：备注生日多加点料，外卖员祝我生日快乐，好愧疚哦',
+        '- B站已观察标题：腿卡椅子扶手下面 直播间一堆人笑话我一晚上',
+        '- B站已观察标题：收到了超级有格调的夜灯，好开心🙂🔪',
+        '- B站已观察标题节选：没吃过有茄子的地三鲜啊! 不是土豆青椒跟那个什么胡萝卜吗',
+        '- 假设片内确有对应原话：这boss也太简单了，想要教程吗？我都不知道怎么出',
+        '- 假设片内确有对应原话：为什么我身上有个臭臭的光晕啊，感觉像个霉豆腐',
+    ];
+}
+
+/**
+ * Instructions for a second, deliberately short piece of copy used only on
+ * the cover.  Upload titles carry context; cover text has to work as a
+ * thumbnail and therefore needs a different length and hierarchy.
+ */
+function buildCoverTextPromptLines() {
+    return [
+        '同时为每段切片提供 coverText（封面文案），与 title 围绕同一个看点成组选择。默认让清楚的事实标题交代事情，两行大字补本人语气；也可用自然口语标题配情景封面。封面两行是一组，可按语意分行、呈现问答或触发与回应，不强制铺垫加反转。',
+        'coverText 格式：必须恰好两行，在 JSON 字符串中用 \\n 表示换行；第一行 4-9 个字符，第二行 5-11 个字符，合计尽量不超过 18、最多 20 个字符。汉字、标点、数字、英文字母与引号均逐个计数，换行不计。',
+        '提交前逐行自查长度；超长就围绕同一个事实改写成更短的完整短句，不要照搬长投稿标题，不要机械截断或用省略号掩盖超长。',
+        '引用原话时引号必须成对，左右引号都计入长度；若为精简而删改原话，改用不带引号的事实概括，不得把改写当成逐字引用。',
+        '封面文案只抓一个可验证的钩子，保留原话、疑问或结果，不要复述整段；不要写“小岁/岁己”、直播切片、tag、表情、书名号、括号或营销套话。',
+        '封面优先用本人会说的短句，保留我、你、哦、啊等有意义的口气，不改成“让人愧疚”“引发热议”等第三方总结。允许复用标题中最有力的短句，不为追求互补另造一个包装概念。直接引用观众时封面自身也要能辨认观众视角；只是借弹幕理解情景时不必把“弹幕：”印上去。',
+        '成组自查：两行读在一起要顺，不能与标题各讲一件事。两人问答必要时标明角色；假设、计划、反问不能因删掉万一/想/是不是而变成事实。缩到手机小图时仍应一眼看到具体词，避免用笼统反应占满两行。',
+        '以下示例仅示范有对应片内证据时的组合，不是当前片段的事实：',
+        '示例：投稿标题“同样一份DQ小料，分量有时能差三分之一” → coverText “花这么多钱加料\\n就给我这么一点点？”',
+        '示例：投稿标题“小岁换低沉声线，担心太冷淡会没人理” → coverText “我平时就这声线\\n没在装高手啊”',
+        '示例：投稿标题“备注生日多加点料，外卖员祝我生日快乐，好愧疚哦” → coverText “外卖员祝我\\n生日快乐，好愧疚哦”',
+        '示例：投稿标题“提建议被当成找茬？小岁委屈控诉：你们不宠我了，只会从我身上找问题！” → coverText “你们不宠我了\\n只会找我问题！”',
+        '示例：投稿标题“充电一小时电量仅剩22%？蓝色充电头终于寿终正寝” → coverText “充一小时剩22%\\n蓝头寿终正寝”',
+    ];
+}
+
+function buildClipDescriptionPromptLines() {
+    return [
+        '简介要求：',
+        '- 50字以内，一句话写清片中发生的具体事件，优先交代人物、做法和结果。',
+        '- 简介面向观众，只陈述片中内容；不要写选片理由或效果评估，也不要暴露弹幕统计、关键词命中、情绪或声音标签等内部判据。',
+        '- 若弹幕的具体发言推动了事件，只描述互动内容，不概括反应数量或强度。',
+        '- 准确自然，不夸大，不写广告腔。',
+    ];
+}
+
+async function generateClipDescription(context = {}) {
+    const config = configLoader.getConfig();
+    const textEnabled = config.ai?.text?.enabled !== false;
+    if (!textEnabled) {
+        return null;
+    }
+
+    const preCtx = context.preContext || '';
+    const postCtx = context.postContext || '';
+    const fullCtx = context.fullClipText || context.sampleText || '';
+
+    const prompt = [
+        '给一个B站直播切片写一句简介（50字以内）。',
+        ...buildClipDescriptionPromptLines(),
+        '- 只输出简介文字，不要解释，不要引号。',
+        '- 准确基于上下文；ASR可能有同音错字，要根据语境推断。',
+        '- 提到其他主播时直接用名字。',
+        '',
+        `主播: ${context.streamerName || '主播'}`,
+        '',
+        '=== 前因 ===',
+        (preCtx || '（无）').slice(0, 400),
+        '',
+        '=== 切片内容 ===',
+        fullCtx.slice(0, 600),
+        '',
+        '=== 后续 ===',
+        (postCtx || '（无）').slice(0, 400),
+    ].join('\n');
+
+    try {
+        const provider = config.ai?.text?.provider || 'gemini';
+        const result = provider === 'tuZi'
+            ? await generateTextWithTuZi(prompt, { wordLimit: 80 })
+            : provider === 'daiYu'
+            ? await generateTextWithDaiYu(prompt, { wordLimit: 80 })
+            : await generateTextWithGemini(prompt, { wordLimit: 80 });
+        const text = (result.text || '').trim();
+        if (text && text.length > 5 && text.length < 100) {
+            return text;
+        }
+        return null;
+    } catch (error) {
+        console.warn(`⚠️  AI切片简介生成失败: ${error.message}`);
+        return null;
+    }
+}
+
 function saveFailedGeneratedText(outputPath, text, highlightPath, generationMeta = {}, attemptInfo = {}) {
     try {
         const basePath = outputPath.replace(/_晚安回复\.md$/i, '');
@@ -830,7 +1796,7 @@ function saveFailedGeneratedText(outputPath, text, highlightPath, generationMeta
         const debugPath = generateUniqueFilename(`${basePath}_晚安回复_ATTEMPT${attemptInfo.attempt || 0}_${safeReason}.md`);
         const highlightName = path.basename(highlightPath);
         const metaInfo = [
-            `# 晚安回复诊断稿（未通过校验）`,
+            `# 晚安回复诊断稿(未通过校验)`,
             `基于: ${highlightName}`,
             `尝试: ${attemptInfo.attempt || 0}/${attemptInfo.maxRetries || 0}`,
             `失败原因: ${attemptInfo.reason || 'unknown'}`,
@@ -840,7 +1806,7 @@ function saveFailedGeneratedText(outputPath, text, highlightPath, generationMeta
             `---`,
             ``
         ].join('\n');
-        fs.writeFileSync(debugPath, `${metaInfo}${String(text || '')}`, 'utf8');
+        fs.writeFileSync(debugPath, `${buildTextFrontMatter(highlightPath, generationMeta)}${metaInfo}${String(text || '')}`, 'utf8');
         console.log(`🧪 诊断稿已保存: ${path.basename(debugPath)}`);
         return debugPath;
     } catch (error) {
@@ -890,12 +1856,64 @@ async function batchGenerateGoodnightReplies(directory) {
     }
 }
 
+async function withConsoleDiagnosticsOnStderr(callback) {
+    const original = {
+        log: console.log,
+        info: console.info,
+        warn: console.warn,
+        debug: console.debug,
+        error: console.error
+    };
+    const writeDiagnostic = (...args) => original.error.call(console, ...args);
+
+    console.log = writeDiagnostic;
+    console.info = writeDiagnostic;
+    console.warn = writeDiagnostic;
+    console.debug = writeDiagnostic;
+    try {
+        return await callback();
+    } finally {
+        console.log = original.log;
+        console.info = original.info;
+        console.warn = original.warn;
+        console.debug = original.debug;
+    }
+}
+
+
+
 // 导出函数
 module.exports = {
+    TEXT_REQUEST_PROTOCOL_VERSION,
     generateGoodnightReply,
+    buildPrompt,
+    generateClipTitle,
+    generateClipDescription,
+    buildClipTitlePromptLines,
+    buildCoverTextPromptLines,
+    buildClipDescriptionPromptLines,
+    inspectGeneratedReply,
     generateTextWithGemini,
     generateTextWithTuZi,
-    batchGenerateGoodnightReplies
+    generateTextWithDaiYu,
+    getPromptTokenUsage,
+    getCompletionTokenUsage,
+    buildAiUsageMetrics,
+    logAiUsage,
+    getSharedPromptCacheInfo,
+    getExplicitPromptCachePlan,
+    buildOpenAITextMessages,
+    applyExplicitPromptCache,
+    buildOpenAIResponsesInput,
+    buildDaiYuResponsesRequest,
+    extractOpenAITextResponse,
+    getOpenAITextFinishReason,
+    normalizeDaiYuApiMode,
+    buildTextFrontMatter,
+    batchGenerateGoodnightReplies,
+    withConsoleDiagnosticsOnStderr,
+    parseGenerateTextOptions,
+    getMachineReadableGenerationMeta
 };
 
 // 命令行测试
@@ -915,8 +1933,9 @@ if (require.main === module) {
             if (args[0] === '--batch' && args[1]) {
                 await batchGenerateGoodnightReplies(args[1]);
             } else if (args[0] === '--generate-text') {
-                // args[1] may be a file path, '-' for stdin, or omitted (read stdin)
-                const promptSource = args[1];
+                const generateOptions = parseGenerateTextOptions(args.slice(1));
+                // promptSource may be a file path, '-' for stdin, or omitted (read stdin)
+                const promptSource = generateOptions.promptSource;
                 let prompt = '';
                 if (!promptSource || promptSource === '-') {
                     // read from stdin
@@ -935,20 +1954,45 @@ if (require.main === module) {
                     prompt = fs.readFileSync(promptSource, 'utf8');
                 }
 
-                const generated = await generateTextWithGemini(prompt);
-                // print raw generated text to stdout
+                const config = configLoader.getConfig();
+                const provider = config.ai?.text?.provider || 'gemini';
+                const textOptions = {
+                    wordLimit: 600,
+                    sharedOutputTask: generateOptions.sharedOutputTask,
+                    promptCacheRolloutPercent: generateOptions.promptCacheRolloutPercent,
+                    timeoutMs: generateOptions.timeoutMs,
+                    minOutputChars: generateOptions.minOutputChars,
+                    deadlineAt: generateOptions.totalTimeoutMs ? Date.now() + generateOptions.totalTimeoutMs : undefined
+                };
+                process.stderr.write(`[[TEXT_GENERATION_STARTED]] ${JSON.stringify({ owner: 'node-text-generator', deadlineAt: textOptions.deadlineAt })}\n`);
+                const generated = await withConsoleDiagnosticsOnStderr(() => (
+                    provider === 'tuZi'
+                        ? generateTextWithTuZi(prompt, textOptions)
+                        : provider === 'daiYu'
+                        ? generateTextWithDaiYu(prompt, textOptions)
+                        : generateTextWithGemini(prompt, textOptions)
+                ));
+                const generationMeta = getMachineReadableGenerationMeta(generated);
+                // Keep stdout script-only for the Python caller; provenance is
+                // emitted as a terminal stderr sentinel for machine parsing.
                 process.stdout.write(generated.text + '\n');
+                process.stderr.write(`[[TEXT_GENERATION_META]] ${JSON.stringify(generationMeta)}\n`);
             } else {
                 const roomIdArgIndex = args.indexOf('--room-id');
                 const roomId = roomIdArgIndex >= 0 ? args[roomIdArgIndex + 1] : null;
                 const result = await generateGoodnightReply(args[0], roomId);
                 if (result) {
-                    console.log(`\n🎉 处理完成，输出文件: ${result}`);
+                    console.log(`\n🎉 处理完成,输出文件: ${result}`);
                 } else {
-                    console.log('\nℹ️  未生成任何文件');
+                    console.log('\ni️  未生成任何文件');
                 }
             }
         } catch (error) {
+            if (args[0] === '--generate-text') {
+                process.stderr.write(`[[TEXT_GENERATION_ERROR]] ${JSON.stringify({
+                    owner: 'node-text-generator', error: error.message, attempts: error.attempts || []
+                })}\n`);
+            }
             console.error(`💥 处理失败: ${error.message}`);
             process.exit(1);
         }

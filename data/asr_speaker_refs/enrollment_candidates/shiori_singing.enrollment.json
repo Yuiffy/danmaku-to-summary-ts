@@ -1,0 +1,63 @@
+{
+  "speaker": "栞栞",
+  "key": "shiori_singing",
+  "state": "singing_karaoke",
+  "clips": [
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_19/录制-26966466-20260819-210645-562-七夕唱唱歌(_^▽^_).opus",
+      "startSeconds": 414,
+      "durationSeconds": 8,
+      "kind": "singing",
+      "reviewed": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_19/录制-26966466-20260819-210645-562-七夕唱唱歌(_^▽^_).opus",
+      "startSeconds": 482,
+      "durationSeconds": 8,
+      "kind": "singing",
+      "reviewed": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_19/录制-26966466-20260819-210645-562-七夕唱唱歌(_^▽^_).opus",
+      "startSeconds": 544,
+      "durationSeconds": 8,
+      "kind": "singing",
+      "reviewed": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_19/录制-26966466-20260819-210645-562-七夕唱唱歌(_^▽^_).opus",
+      "startSeconds": 657,
+      "durationSeconds": 8,
+      "kind": "singing",
+      "reviewed": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_19/录制-26966466-20260819-210645-562-七夕唱唱歌(_^▽^_).opus",
+      "startSeconds": 1930,
+      "durationSeconds": 8,
+      "kind": "singing",
+      "reviewed": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_19/录制-26966466-20260819-210645-562-七夕唱唱歌(_^▽^_).opus",
+      "startSeconds": 2581,
+      "durationSeconds": 8,
+      "kind": "singing",
+      "reviewed": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_19/录制-26966466-20260819-210645-562-七夕唱唱歌(_^▽^_).opus",
+      "startSeconds": 3082,
+      "durationSeconds": 8,
+      "kind": "singing",
+      "reviewed": true
+    },
+    {
+      "source": "D:/files/videos/DDTV录播/26966466_栞栞Shiori/2026_08_19/录制-26966466-20260819-210645-562-七夕唱唱歌(_^▽^_).opus",
+      "startSeconds": 3591,
+      "durationSeconds": 8,
+      "kind": "singing",
+      "reviewed": true
+    }
+  ]
+}

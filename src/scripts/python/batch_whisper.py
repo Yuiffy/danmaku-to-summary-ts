@@ -45,6 +45,13 @@ ACTIVE_RESOURCES = {
 SHUTDOWN_REQUESTED = False
 
 
+def hidden_subprocess_kwargs():
+    """Prevent console applications from flashing a window on Windows."""
+    if os.name == 'nt' and hasattr(subprocess, 'CREATE_NO_WINDOW'):
+        return {'creationflags': subprocess.CREATE_NO_WINDOW}
+    return {}
+
+
 def get_duration_fast(file_path):
     """
     使用 ffprobe 瞬间读取视频时长，无需解码音频。
@@ -57,7 +64,13 @@ def get_duration_fast(file_path):
             '-of', 'default=noprint_wrappers=1:nokey=1',
             file_path
         ]
-        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        result = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            **hidden_subprocess_kwargs()
+        )
         return float(result.stdout.strip())
     except Exception as e:
         print(f"   ⚠️ ffprobe 读取失败，回退到慢速模式: {e}")
@@ -421,7 +434,11 @@ def process_one_video(model, video_path, file_idx, total_files):
 def main():
     signal.signal(signal.SIGINT, handle_shutdown_signal)
     signal.signal(signal.SIGTERM, handle_shutdown_signal)
-    os.system('cls' if os.name == 'nt' else 'clear')
+    # Clearing through os.system starts cmd.exe on Windows and can flash a
+    # console when this legacy backend is launched from a hidden worker.
+    if sys.stdout.isatty():
+        sys.stdout.write('\033[2J\033[H')
+        sys.stdout.flush()
     if len(sys.argv) < 2:
         print("❌ 请拖拽文件！")
         return
@@ -443,10 +460,11 @@ def main():
         if os.path.exists(check_script):
             print("🔍 检查GPU显存状态...")
             result = subprocess.run(
-                ['python', check_script],
+                [sys.executable, check_script],
                 capture_output=True,
                 text=True,
-                timeout=10
+                timeout=10,
+                **hidden_subprocess_kwargs()
             )
             
             if result.returncode != 0:
@@ -455,8 +473,9 @@ def main():
                 
                 # 等待显存释放(最多24小时)
                 wait_result = subprocess.run(
-                    ['python', check_script, '--wait', str(GPU_WAIT_TIMEOUT_SECONDS)],
-                    timeout=GPU_WAIT_TIMEOUT_SECONDS + 100  # 比等待时间多100秒
+                    [sys.executable, check_script, '--wait', str(GPU_WAIT_TIMEOUT_SECONDS)],
+                    timeout=GPU_WAIT_TIMEOUT_SECONDS + 100,  # 比等待时间多100秒
+                    **hidden_subprocess_kwargs()
                 )
                 
                 if wait_result.returncode != 0:

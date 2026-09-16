@@ -1,10 +1,25 @@
 #!/usr/bin/env node
+const workflowRuntime = require('./workflow-runtime');
+if (require.main === module && process.argv[2] === '--check-runtime') {
+    console.log(JSON.stringify(workflowRuntime.checkRuntime()));
+    process.exit(0);
+}
+const {
+    runCommand,
+    getVideoDuration,
+    logAsrTimings,
+    getGpuUsage,
+    execFileAsync,
+    getRelevantProcessSnapshot,
+    getGpuProcessSnapshot,
+    logWhisperResourceSnapshot,
+} = workflowRuntime.loadWorkflow('summary/diagnostics');
+
 
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawn, execFile } = require('child_process');
-const crypto = require('crypto');
+const { spawn } = require('child_process');
 const http = require('http');
 
 // 导入新模块
@@ -12,8 +27,16 @@ const configLoader = require('./config-loader');
 const audioProcessor = require('./audio_processor');
 const aiTextGenerator = require('./ai_text_generator');
 const aiComicGenerator = require('./ai_comic_generator');
+const { runComicWithConcurrentClips, resolveComicSourceVideo, automaticComicOptions } = require('./comic/pipeline');
 const queueManager = require('./whisper_queue_manager');
 const asrBackends = require('./asr/asr_backends');
+const topicClipper = require('./topic_clipper');
+const ownStreamClipper = require('./own_stream_clipper');
+const backgroundClipRunner = require('./background_clip_runner');
+const speakerReferenceCatalog = require('./asr/speaker_reference_catalog');
+const liveGenerationContext = require('./live_generation_context');
+const fullLiveContext = require('./full_live_context');
+const liveContentSummary = require('./live_content_summary');
 
 // 获取音频格式配置
 function getAudioFormats() {
@@ -42,57 +65,8 @@ function isAudioFile(filePath) {
     return audioFormats.includes(ext);
 }
 
-function runCommand(command, args, options = {}) {
-    return new Promise((resolve, reject) => {
-        const child = spawn(command, args, { windowsHide: true, ...options, stdio: 'inherit' });
-        child.on('close', (code) => {
-            if (code === 0) {
-                resolve();
-            } else {
-                reject(new Error(`Command failed with exit code ${code}`));
-            }
-        });
-        child.on('error', reject);
-    });
-}
 
 // 获取视频时长（秒）
-async function getVideoDuration(filePath) {
-    return new Promise((resolve, reject) => {
-        const ffprobe = spawn('ffprobe', [
-            '-v', 'error',
-            '-show_entries', 'format=duration',
-            '-of', 'default=noprint_wrappers=1:nokey=1',
-            filePath
-        ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-        
-        let output = '';
-        let error = '';
-        
-        ffprobe.stdout.on('data', (data) => {
-            output += data.toString();
-        });
-        
-        ffprobe.stderr.on('data', (data) => {
-            error += data.toString();
-        });
-        
-        ffprobe.on('close', (code) => {
-            if (code === 0 && output.trim()) {
-                const duration = parseFloat(output.trim());
-                if (!isNaN(duration)) {
-                    resolve(duration);
-                } else {
-                    reject(new Error(`Invalid duration: ${output}`));
-                }
-            } else {
-                reject(new Error(`ffprobe failed: ${error || 'unknown error'}`));
-            }
-        });
-        
-        ffprobe.on('error', reject);
-    });
-}
 
 // ASR 文件锁 - 防止并发调用导致 GPU 冲突
 const WHISPER_LOCK_FILE = path.join(__dirname, '.whisper_lock');
@@ -104,6 +78,83 @@ const WHISPER_QUEUE_TURN_RETRY_INTERVAL = 5000; // 5秒检查一次是否轮到�
 const ASR_PHASE_DONE_SENTINEL = '[[ASR_PHASE_DONE]]';
 const DELAYED_REPLY_READY_SENTINEL = '[[DELAYED_REPLY_READY]]';
 const SUI_ROOM_ID = '25788785';
+
+function writeAsrMetaSidecar(srtPath, data) {
+    try {
+        if (!srtPath || !data) return null;
+        const parsed = path.parse(srtPath);
+        const metaPath = path.join(parsed.dir, `${parsed.name}.asr_meta.json`);
+        fs.writeFileSync(metaPath, JSON.stringify(data, null, 2), 'utf8');
+        return metaPath;
+    } catch (error) {
+        console.warn(`⚠️  写入 ASR meta sidecar 失败: ${error.message}`);
+        return null;
+    }
+}
+
+function parseSpeakerRequestFromEnv() {
+    const encoded = String(process.env.ASR_SPEAKER_REQUEST_JSON || '').trim();
+    if (!encoded) {
+        return null;
+    }
+    try {
+        const raw = Buffer.from(encoded, 'base64').toString('utf8');
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch (error) {
+        console.warn(`⚠️  解析 ASR_SPEAKER_REQUEST_JSON 失败: ${error.message}`);
+        return null;
+    }
+}
+
+function enrichAsrContextWithSpeakerRequest(context = {}, request = null, config = configLoader.getConfig()) {
+    if (!request || typeof request !== 'object') {
+        return context;
+    }
+    const participants = Array.isArray(request.participants) ? request.participants : [];
+    const referencePreparation = request.referencePreparation && typeof request.referencePreparation === 'object'
+        ? request.referencePreparation
+        : null;
+    const resolvedParticipants = participants.map((participant) => ({
+        ...participant,
+        streamerId: participant.streamerId ? String(participant.streamerId) : null,
+        displayName: participant.displayName ? String(participant.displayName) : null,
+        role: participant.role ? String(participant.role) : 'participant',
+        planned: participant.planned !== false,
+        roomIds: Array.isArray(participant.roomIds) ? participant.roomIds.map(value => String(value)).filter(Boolean) : [],
+        speakerLabels: Array.isArray(participant.speakerLabels) ? participant.speakerLabels.map(value => String(value)).filter(Boolean) : [],
+        aliases: Array.isArray(participant.aliases) ? participant.aliases.map(value => String(value)).filter(Boolean) : [],
+        mentionLabels: Array.isArray(participant.mentionLabels) ? participant.mentionLabels.map(value => String(value)).filter(Boolean) : []
+    })).filter((participant) => participant.streamerId);
+    const constrainedSpeakerReferences = speakerReferenceCatalog.buildSpeakerReferencesForParticipants(
+        resolvedParticipants.map((participant) => ({
+            id: participant.streamerId,
+            displayName: participant.displayName,
+            speakerLabels: participant.speakerLabels,
+            aliases: participant.aliases
+        })),
+        config
+    );
+
+    return {
+        ...context,
+        speakerRequest: {
+            ...request,
+            hostStreamerId: request.hostStreamerId ? String(request.hostStreamerId) : null,
+            plannedParticipantIds: Array.isArray(request.plannedParticipantIds)
+                ? request.plannedParticipantIds.map(value => String(value)).filter(Boolean)
+                : [],
+            rosterStreamerIds: Array.isArray(request.rosterStreamerIds)
+                ? request.rosterStreamerIds.map(value => String(value)).filter(Boolean)
+                : [],
+            participants: resolvedParticipants,
+            constrainToRoster: false,
+            referencePreparation,
+            constrainedSpeakerReferences
+        }
+    };
+}
+
 let hasLoggedGpuDetectionConfig = false;
 let activeWhisperProcess = null;
 let whisperCleanupInProgress = null;
@@ -177,111 +228,10 @@ function getInvalidLockReason(lock) {
  * 通过 nvidia-smi 查询 GPU 占用情况
  * @returns {{ gpuUtil: number, vramUsed: number, vramTotal: number } | null} 返回 null 表示不可用
  */
-async function getGpuUsage() {
-    return new Promise((resolve) => {
-        const child = require('child_process').spawn(
-            'nvidia-smi',
-            ['--query-gpu=utilization.gpu,memory.used,memory.total', '--format=csv,noheader,nounits'],
-            { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }
-        );
 
-        let stdout = '';
-        child.stdout.on('data', (d) => { stdout += d.toString(); });
 
-        child.on('close', (code) => {
-            if (code !== 0) {
-                resolve(null); // nvidia-smi 不可用
-                return;
-            }
-            try {
-                // 可能有多个 GPU，取第一个
-                const line = stdout.trim().split('\n')[0];
-                const parts = line.split(',').map(s => parseFloat(s.trim()));
-                if (parts.length >= 3 && parts.every(n => !isNaN(n))) {
-                    resolve({ gpuUtil: parts[0], vramUsed: parts[1], vramTotal: parts[2] });
-                } else {
-                    resolve(null);
-                }
-            } catch {
-                resolve(null);
-            }
-        });
 
-        child.on('error', () => resolve(null)); // nvidia-smi 不存在
-    });
-}
 
-function execFileAsync(command, args, options = {}) {
-    return new Promise((resolve, reject) => {
-        execFile(command, args, { windowsHide: true, ...options }, (error, stdout, stderr) => {
-            if (error) {
-                reject(error);
-                return;
-            }
-            resolve({ stdout, stderr });
-        });
-    });
-}
-
-async function getRelevantProcessSnapshot() {
-    try {
-        const { stdout } = await execFileAsync('powershell', [
-            '-NoProfile',
-            '-Command',
-            'Get-Process python,node,ffmpeg -ErrorAction SilentlyContinue | Select-Object Id,ProcessName,Path | ConvertTo-Json -Compress'
-        ]);
-        const trimmed = stdout.trim();
-        if (!trimmed) {
-            return [];
-        }
-
-        const parsed = JSON.parse(trimmed);
-        const rows = Array.isArray(parsed) ? parsed : [parsed];
-        return rows.map(row => `pid=${row.Id} name=${row.ProcessName} path=${row.Path || 'unknown'}`);
-    } catch {
-        return [];
-    }
-}
-
-async function getGpuProcessSnapshot() {
-    try {
-        const { stdout } = await execFileAsync('nvidia-smi', [
-            '--query-compute-apps=pid,process_name,used_memory',
-            '--format=csv,noheader,nounits'
-        ]);
-        return stdout
-            .trim()
-            .split(/\r?\n/)
-            .map(line => line.trim())
-            .filter(Boolean);
-    } catch {
-        return [];
-    }
-}
-
-async function logWhisperResourceSnapshot(stage) {
-    const usage = await getGpuUsage();
-    if (usage) {
-        const vramPct = usage.vramTotal > 0 ? (usage.vramUsed / usage.vramTotal * 100) : 0;
-        console.log(`📸 [Whisper资源快照:${stage}] GPU=${usage.gpuUtil.toFixed(0)}%, VRAM=${usage.vramUsed.toFixed(0)}/${usage.vramTotal.toFixed(0)}MB (${vramPct.toFixed(1)}%)`);
-    } else {
-        console.log(`📸 [Whisper资源快照:${stage}] GPU占用数据不可用`);
-    }
-
-    const gpuProcesses = await getGpuProcessSnapshot();
-    if (gpuProcesses.length > 0) {
-        console.log(`📸 [Whisper资源快照:${stage}] GPU进程: ${gpuProcesses.join(' | ')}`);
-    } else {
-        console.log(`📸 [Whisper资源快照:${stage}] GPU进程: 无或不可获取`);
-    }
-
-    const relevantProcesses = await getRelevantProcessSnapshot();
-    if (relevantProcesses.length > 0) {
-        console.log(`📸 [Whisper资源快照:${stage}] 相关进程: ${relevantProcesses.join(' | ')}`);
-    } else {
-        console.log(`📸 [Whisper资源快照:${stage}] 相关进程: 无`);
-    }
-}
 
 function waitForChildExit(child, timeoutMs) {
     return new Promise((resolve) => {
@@ -657,6 +607,7 @@ async function runWhisperWithLifecycle(pythonScript, mediaPath) {
         const child = spawn('python', [pythonScript, mediaPath], {
             env: { ...process.env, PYTHONUTF8: '1' },
             windowsHide: true,
+            shell: false,
             stdio: ['ignore', 'pipe', 'pipe']
         });
 
@@ -711,10 +662,13 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
     const pythonScript = path.join(__dirname, 'python', 'batch_whisper.py');
 
     if (!fs.existsSync(srtPath)) {
+        let mediaDurationSeconds = 0;
+
         // 检查媒体文件时长，小于30秒则跳过Whisper处理
         try {
             console.log(`🔍 分析媒体文件时长...`);
             const duration = await getVideoDuration(mediaPath);
+            mediaDurationSeconds = duration;
             const minDurationSeconds = 30; // 最小媒体文件时长：30秒
             
             if (duration < minDurationSeconds) {
@@ -737,17 +691,44 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
         }
 
         const config = configLoader.getConfig();
+        const enableSpeakerOnce = String(process.env.ASR_ENABLE_SPEAKER_ONCE || '').toLowerCase() === 'true';
+        const speakerRequest = await require('./asr/participant_collection').prepareAsrSpeakerRequest(
+            mediaPath, config, options.asrContext || {}, mediaDurationSeconds, parseSpeakerRequestFromEnv());
+        if (enableSpeakerOnce) {
+            config.asr = config.asr || {};
+            config.asr.paraformer = {
+                ...(config.asr.paraformer || {}),
+                enable_speaker: true,
+                spk_model: config.asr.paraformer?.spk_model || 'cam++',
+                speaker_detection_mode: 'always'
+            };
+            console.log('🎙️  本任务已启用一次性说话人识别（Paraformer + CAM++）');
+        }
         const subtitleConfig = asrBackends.getSubtitleConfig(config);
-        const context = options.asrContext || {};
-        const selected = options.forceBackend
+        const context = enrichAsrContextWithSpeakerRequest(options.asrContext || {}, speakerRequest, config);
+        const selected = enableSpeakerOnce
+            ? { backend: 'paraformer', reason: '一次性说话人识别开关' }
+            : options.forceBackend
             ? { backend: options.forceBackend, reason: options.forceReason || `实验模式指定 ${options.forceBackend}` }
             : asrBackends.resolveAsrBackend(config, context, options.asrBackend);
-        const asrRuntime = asrBackends.resolveAsrHotwords(config, context);
+        const proofreading = await require('./asr/subtitle_proofreading').loadProofreadingContext(config, context, mediaPath);
+        const asrRuntime = {
+            ...asrBackends.resolveAsrHotwords(config, context),
+            // 让具体 ASR backend 复用这里已经完成灰度/房间路由的结果，
+            // 避免 transcribeParaformer 再次按“直接指定 backend”解析并丢失微调模型覆盖。
+            routingContext: context,
+            resolvedBackend: selected
+        };
         const fileType = isAudioFile(mediaPath) ? 'Audio' : 'Video';
         console.log(`\n-> [ASR] Generating Subtitles (${selected.backend})...`);
         console.log(`   Target: ${path.basename(mediaPath)} (${fileType})`);
         console.log(`   ASR backend: ${selected.backend} (${selected.reason})`);
-        if (asrRuntime.hotwords.length > 0) {
+        if ((asrRuntime.hotwordTokens || []).length > 0) {
+            const hotwordLog = asrRuntime.hotwordTokens
+                .map(item => item.weight !== undefined ? `${item.word}(${item.weight})` : item.word)
+                .join(', ');
+            console.log(`   ASR hotwords: ${hotwordLog}`);
+        } else if (asrRuntime.hotwords.length > 0) {
             const hotwordLog = asrRuntime.hotwords
                 .map(item => item.weight !== undefined ? `${item.word}(${item.weight})` : item.word)
                 .join(', ');
@@ -760,10 +741,12 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
         try {
             // 获取 ASR 锁，防止 GPU 后端并发调用导致资源冲突。
             await acquireWhisperLock(taskId, options);
+            const asrStartTime = Date.now();
 
             let completedWithCleanupCrash = false;
             let completionWarning = null;
             let asrResult = null;
+            let normalized = null;
 
             try {
                 if (selected.backend === 'whisper') {
@@ -777,14 +760,67 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
                     asrResult = asrBackends.parseSrt(srtPath, 'whisper');
                 } else if (selected.backend === 'sensevoice') {
                     asrResult = await asrBackends.transcribeSenseVoice(mediaPath, config, asrRuntime);
+                } else if (selected.backend === 'fun_asr_nano') {
+                    asrResult = await asrBackends.transcribeFunAsrNano(mediaPath, config, asrRuntime);
+                } else if (selected.backend === 'fun_asr_nano_vllm') {
+                    asrResult = await asrBackends.transcribeFunAsrNanoVllm(mediaPath, config, asrRuntime);
+                } else if (selected.backend === 'paraformer') {
+                    asrResult = await asrBackends.transcribeParaformer(mediaPath, config, asrRuntime);
                 } else {
                     throw new Error(`未实现的 ASR backend: ${selected.backend}`);
                 }
 
-                const normalized = asrBackends.normalizeAsrResult(asrResult, subtitleConfig);
+                const speakerProcessing = asrResult?.speaker_processing || asrResult?.speakerProcessing || null;
+                if (speakerProcessing?.timings && asrResult?.timings) {
+                    speakerProcessing.timings = {
+                        ...speakerProcessing.timings,
+                        reference_embedding_s: Number(asrResult.timings.reference_embedding_s || 0)
+                    };
+                }
+                const asrTimingSummary = logAsrTimings(
+                    asrResult?.timings,
+                    mediaDurationSeconds,
+                    speakerProcessing
+                );
+                normalized = asrBackends.normalizeAsrResult(asrResult, subtitleConfig);
                 asrBackends.writeSrt(normalized, srtPath, {
                     ...subtitleConfig,
+                    write_evidence: true,
+                    proofreading,
                     corrections: asrRuntime.corrections
+                });
+                asrBackends.writeSpeakerReviewSrt(normalized, srtPath, {
+                    ...subtitleConfig,
+                    proofreading,
+                    corrections: asrRuntime.corrections
+                }, config, { ...context, mediaPath });
+                asrBackends.writeAsrSpeakersSidecar(normalized, srtPath, config, {
+                    ...context,
+                    mediaPath
+                });
+                const asrElapsedSeconds = (Date.now() - asrStartTime) / 1000;
+                const selectedBackendOptions = selected.backendOptionsOverride?.[selected.backend] || {};
+                const selectedModelProfile = String(selectedBackendOptions.model_profile || config.asr?.paraformer?.model_profile || 'default');
+                const selectedFinetunedModel = String(selectedBackendOptions.finetuned_model || config.asr?.gray_rollout?.finetuned_model || config.asr?.paraformer?.finetuned_model || '');
+                const selectedModel = selectedModelProfile === 'finetuned'
+                    ? (selectedFinetunedModel || config.asr?.paraformer?.model || 'paraformer-zh')
+                    : String(config.asr?.paraformer?.base_model || config.asr?.paraformer?.model || 'paraformer-zh');
+                const realtimeFactor = mediaDurationSeconds > 0 ? (asrElapsedSeconds / mediaDurationSeconds) : null;
+                writeAsrMetaSidecar(srtPath, {
+                    backend: normalized.backend,
+                    routingReason: selected.reason,
+                    modelProfile: selectedModelProfile,
+                    model: selectedModel,
+                    finetunedModel: selectedFinetunedModel || null,
+                    elapsedSeconds: Number(asrElapsedSeconds.toFixed(3)),
+                    mediaDurationSeconds: mediaDurationSeconds > 0 ? Number(mediaDurationSeconds.toFixed(3)) : null,
+                    realtimeFactor: realtimeFactor === null ? null : Number(realtimeFactor.toFixed(4)),
+                    stageTimings: asrResult?.timings || null,
+                    timingSummary: asrTimingSummary || null,
+                    speakerProcessing,
+                    emotionAnalysis: normalized.emotion_analysis || asrResult?.emotion_analysis || asrResult?.emotionAnalysis || null,
+                    segments: normalized.segments.length,
+                    generatedAt: new Date().toISOString()
                 });
                 console.log(`✅ ASR完成: backend=${normalized.backend}, segments=${normalized.segments.length}, output=${path.basename(srtPath)}`);
             } catch (error) {
@@ -805,6 +841,9 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
 
             return {
                 srtPath: fs.existsSync(srtPath) ? srtPath : null,
+                speakerReviewSrtPath: fs.existsSync(srtPath) ? path.join(path.dirname(srtPath), `${path.parse(srtPath).name}.speaker.srt`) : null,
+                asrResult,
+                normalized,
                 completionOptions
             };
         } catch (error) {
@@ -820,6 +859,9 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
         clearActiveQueueTask(taskId);
         return {
             srtPath,
+            speakerReviewSrtPath: path.join(path.dirname(srtPath), `${path.parse(srtPath).name}.speaker.srt`),
+            asrResult: null,
+            normalized: null,
             completionOptions: {
                 warning: `字幕已存在，跳过Whisper: ${path.basename(srtPath)}`
             }
@@ -828,6 +870,9 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
 
     return {
         srtPath: fs.existsSync(srtPath) ? srtPath : null,
+        speakerReviewSrtPath: fs.existsSync(srtPath) ? path.join(path.dirname(srtPath), `${path.parse(srtPath).name}.speaker.srt`) : null,
+        asrResult: null,
+        normalized: null,
         completionOptions: null
     };
 }
@@ -839,22 +884,30 @@ async function processAudioIfNeeded(mediaPath, roomId = null) {
     try {
         const result = await audioProcessor.processVideoForAudio(mediaPath, roomId);
         if (result) {
-            console.log(`✅ 音频处理完成，使用音频文件: ${path.basename(result)}`);
-            return result; // 返回音频文件路径
+            // 新格式: { audioPath, videoPathToDelete }
+            const audioPath = result.audioPath || result;
+            const videoPathToDelete = result.videoPathToDelete || null;
+            console.log(`✅ 音频处理完成，使用音频文件: ${path.basename(audioPath)}`);
+            if (videoPathToDelete) {
+                console.log(`📋 将在切片完成后删除视频: ${path.basename(videoPathToDelete)}`);
+            }
+            return { audioPath, videoPathToDelete };
         }
     } catch (error) {
         console.error(`⚠️  音频处理失败: ${error.message}`);
     }
     
-    return mediaPath; // 返回原始文件路径
+    return { audioPath: mediaPath, videoPathToDelete: null };
 }
 
 // AI文本生成
-async function generateAiText(highlightPath, roomId = null) {
+async function generateAiText(highlightPath, roomId = null, options = {}) {
     console.log('\n🤖 开始AI文本生成...');
+    const combinedReply = await require('./full_reply_workflow').tryGenerateCombinedReply(highlightPath, roomId, options);
+    if (combinedReply.handled) return combinedReply.goodnightTextPath;
     
     try {
-        const result = await aiTextGenerator.generateGoodnightReply(highlightPath, roomId);
+        const result = await aiTextGenerator.generateGoodnightReply(highlightPath, roomId, options);
         if (result) {
             console.log(`✅ AI文本生成完成: ${path.basename(result)}`);
             return result;
@@ -864,6 +917,219 @@ async function generateAiText(highlightPath, roomId = null) {
     }
     
     return null;
+}
+
+async function prepareFullLiveContextForExperiment(options = {}) {
+    const {
+        highlightPath,
+        roomId,
+        srtPath,
+        xmlPath,
+        mediaPath,
+        context = {},
+        pendingPayload = null
+    } = options;
+    const config = options.config || configLoader.getConfig();
+    const experiment = liveContentSummary.getFullLiveContextExperiment(config, roomId);
+    if (!experiment) {
+        return null;
+    }
+
+    const enabledTasks = Array.isArray(experiment.tasks)
+        ? experiment.tasks.map(value => String(value))
+        : [];
+    if (enabledTasks.length === 0) {
+        return null;
+    }
+    if (!srtPath || !fs.existsSync(srtPath)) {
+        throw new Error('全量输入实验缺少 SRT 文件');
+    }
+    if (!xmlPath || !fs.existsSync(xmlPath)) {
+        throw new Error('全量输入实验缺少弹幕 XML 文件');
+    }
+
+    const parsed = require('./asr/speaker_attribution').loadSrtWithSpeakerEvidence(srtPath, asrBackends.parseSrt, 'full_live_context');
+    const danmaku = await ownStreamClipper.parseDanmakuXml(xmlPath);
+    const clipConfig = { ...ownStreamClipper.getOwnStreamClipsConfig(config),
+        ...((experiment.compactEvidence === true || experiment.replySummary?.enabled === true)
+            ? { compactEvidence: true } : {}) };
+    const emotionAnalysis = ownStreamClipper.loadEmotionAnalysisForSrt(srtPath);
+    const info = ownStreamClipper.parseRecordingInfo(mediaPath || srtPath, {
+        ...context,
+        roomId: roomId ? String(roomId) : null
+    });
+    const totalDuration = Number(parsed.segments?.at(-1)?.end || 0);
+    const sharedContext = fullLiveContext.buildFullLiveSharedContext({
+        parsed,
+        danmaku,
+        config: clipConfig,
+        emotionAnalysis,
+        info,
+        totalDuration
+    });
+    const saved = fullLiveContext.saveFullLiveContextSidecar(highlightPath, sharedContext);
+    if (pendingPayload) {
+        pendingPayload.fullLiveContextPath = saved.outputPath;
+    }
+
+    console.log(`🧱 全量直播共享输入已保存: ${path.basename(saved.outputPath)}`);
+    console.log(
+        `   字幕=${saved.payload.counts.subtitleLines}, `
+        + `弹幕=${saved.payload.counts.rawDanmaku}->${saved.payload.counts.mergedDanmaku}, `
+        + `prefixChars=${Array.from(saved.payload.sharedPrefix).length}`
+    );
+    console.log(`   sourceSha256=${saved.payload.sourceSha256}, sharedPrefixSha256=${saved.payload.sharedPrefixSha256}`);
+    return {
+        experiment,
+        enabledTasks,
+        outputPath: saved.outputPath,
+        payload: saved.payload
+    };
+}
+
+async function waitForPromiseWithin(promise, timeoutMs) {
+    let timeoutHandle;
+    const timeout = new Promise(resolve => {
+        timeoutHandle = setTimeout(() => resolve(false), Math.max(1, Number(timeoutMs) || 1));
+    });
+    try {
+        return await Promise.race([
+            Promise.resolve(promise).then(() => true),
+            timeout
+        ]);
+    } finally {
+        clearTimeout(timeoutHandle);
+    }
+}
+
+async function generateTopicClipsForMedia(originalMediaPath, processedMediaPath, srtPath, roomId = null, context = {}, xmlPath = null) {
+    const config = configLoader.getConfig();
+    const clipConfig = topicClipper.getClipTopicsConfig(config);
+    if (!clipConfig.enabled) {
+        return [];
+    }
+
+    console.log('\n✂️  开始话题切片检测...');
+    try {
+        const ffmpegPath = config.audio?.ffmpeg?.path || 'ffmpeg';
+        const results = await topicClipper.generateTopicClips({
+            config,
+            originalMediaPath,
+            processedMediaPath,
+            srtPath,
+            xmlPath,
+            ffmpegPath,
+            context: {
+                ...context,
+                roomId: roomId ? String(roomId) : null
+            },
+            titleGenerator: aiTextGenerator.generateClipTitle,
+            descriptionGenerator: aiTextGenerator.generateClipDescription
+        });
+        if (results.length > 0) {
+            console.log(`✅ 话题切片完成: ${results.length} 个本地 review 包`);
+        } else {
+            console.log('ℹ️  话题切片未生成候选');
+        }
+        return results;
+    } catch (error) {
+        console.warn(`⚠️  话题切片阶段失败，继续后续流程: ${error.message}`);
+        return [];
+    }
+}
+
+function findXmlForMedia(mediaPath, xmlFiles = []) {
+    if (!mediaPath || !Array.isArray(xmlFiles) || xmlFiles.length === 0) {
+        return null;
+    }
+    const mediaDir = path.dirname(mediaPath);
+    const mediaBase = path.basename(mediaPath, path.extname(mediaPath));
+    const exact = xmlFiles.find(file => (
+        path.dirname(file) === mediaDir &&
+        path.basename(file, path.extname(file)) === mediaBase
+    ));
+    if (exact) {
+        return exact;
+    }
+    return xmlFiles.find(file => path.dirname(file) === mediaDir) || null;
+}
+
+async function generateOwnStreamClipsForMedia(mediaPath, srtPath, xmlPath, roomId = null, context = {}) {
+    const config = configLoader.getConfig();
+    const clipConfig = ownStreamClipper.getOwnStreamClipsConfig(config);
+    if (!clipConfig.enabled) {
+        return [];
+    }
+
+    const roomKey = roomId ? String(roomId) : null;
+    const enabledRoomIds = Array.isArray(clipConfig.roomIds)
+        ? clipConfig.roomIds.map(value => String(value)).filter(Boolean)
+        : [];
+    if (enabledRoomIds.length > 0 && (!roomKey || !enabledRoomIds.includes(roomKey))) {
+        return [];
+    }
+
+    if (!xmlPath || !fs.existsSync(xmlPath)) {
+        console.warn('⚠️  ownStreamClips 已启用，但未找到 XML 弹幕文件，跳过岁己直播有趣切片');
+        return [];
+    }
+
+    console.log('\n🎞️  开始岁己直播有趣切片...');
+    try {
+        const results = await ownStreamClipper.generateOwnStreamClips({
+            config,
+            mediaPath,
+            srtPath,
+            xmlPath,
+            ffmpegPath: config.audio?.ffmpeg?.path || 'ffmpeg',
+            context: {
+                ...context,
+                roomId: roomKey
+            },
+            streamerName: context.streamerName || context.streamer_name || null
+        });
+        if (results.length > 0) {
+            console.log(`✅ 岁己直播有趣切片完成: ${results.length} 段`);
+        } else {
+            console.log('ℹ️  岁己直播有趣切片未生成候选');
+        }
+        return results;
+    } catch (error) {
+        console.warn(`⚠️  岁己直播有趣切片阶段失败，继续后续流程: ${error.message}`);
+        return [];
+    }
+}
+
+async function deleteVideoAfterSkippedBackgroundClips(videoPathToDelete) {
+    if (!videoPathToDelete) {
+        return;
+    }
+
+    try {
+        const { unlink: unlinkAsync } = require('fs/promises');
+        if (fs.existsSync(videoPathToDelete)) {
+            await unlinkAsync(videoPathToDelete);
+            console.log(`Deleted original video after skipped background clips: ${path.basename(videoPathToDelete)}`);
+        }
+    } catch (deleteError) {
+        console.error(`Failed to delete original video after skipped background clips: ${deleteError.message}`);
+    }
+}
+
+async function startPendingBackgroundClips(pendingPayloads, reason = 'goodnight-text-ready') {
+    if (!Array.isArray(pendingPayloads) || pendingPayloads.length === 0) {
+        return;
+    }
+
+    console.log(`\nStarting deferred background clips (${pendingPayloads.length}) after ${reason}...`);
+    for (const payload of pendingPayloads) {
+        try {
+            backgroundClipRunner.spawnBackgroundClipProcess(payload);
+        } catch (clipSpawnError) {
+            console.warn(`Failed to start deferred background clips, skipping clips and continuing: ${clipSpawnError.message}`);
+            await deleteVideoAfterSkippedBackgroundClips(payload.videoPathToDelete);
+        }
+    }
 }
 
 // AI漫画生成
@@ -898,7 +1164,7 @@ function shouldGenerateAiForRoom(roomId) {
 
     // 获取全局默认图片生成配置
     const comicDefaults = config.ai?.comic?.defaults || {};
-    const defaultMinDuration = comicDefaults.minDurationMinutes ?? 60;      // 默认 60 分钟
+    const defaultMinDuration = comicDefaults.minDurationMinutes ?? 0;       // 晚安文本生成时默认也生成配图
     const defaultProbability = comicDefaults.generationProbability ?? 1.0;  // 默认 100%
 
     let roomConfig = null;
@@ -925,6 +1191,23 @@ function shouldGenerateAiForRoom(roomId) {
         minComicDurationMinutes: defaultMinDuration,
         comicGenerationProbability: defaultProbability,
     };
+}
+
+function shouldPreferSpeakerReviewSrtForRoom(roomId, asrResult = null) {
+    const config = configLoader.getConfig();
+    const roomStr = String(roomId);
+    const roomConfig = (config.ai?.roomSettings && config.ai.roomSettings[roomStr])
+        || (config.roomSettings && config.roomSettings[roomStr])
+        || null;
+
+    if (!roomConfig || roomConfig.preferSpeakerReviewSrtWhenMultipleSpeakers !== true) {
+        return false;
+    }
+
+    // Anonymous acoustic clusters are still distinct speakers. Keeping their
+    // labels lets the summary model distinguish a guest self-introduction from
+    // the room owner without forcing an unreliable real-name match.
+    return asrBackends.hasMultipleSpeakerLabels(asrResult);
 }
 
 // 从文件名提取房间ID
@@ -1067,10 +1350,10 @@ const main = async () => {
     // 显示队列状态
     queueManager.printStatus();
 
-    let mediaFiles = [];
-    let xmlFiles = [];
-    let filesToProcess = [];
-    let fileSnapshots = new Map();  // 用于记录文件快照
+    const mediaFiles = [];
+    const xmlFiles = [];
+    const filesToProcess = [];
+    const fileSnapshots = new Map();  // 用于记录文件快照
 
     console.log('-> Analyzing input files...');
 
@@ -1098,6 +1381,15 @@ const main = async () => {
     const processedMediaFiles = [];
     const queueTaskRecords = [];
     const completionOptionsByTaskId = new Map();
+    const pendingBackgroundClipPayloads = [];
+    let backgroundClipsStarted = false;
+    const startBackgroundClipsOnce = async (reason) => {
+        if (backgroundClipsStarted) {
+            return;
+        }
+        backgroundClipsStarted = true;
+        await startPendingBackgroundClips(pendingBackgroundClipPayloads, reason);
+    };
     for (const mediaFile of mediaFiles) {
         console.log(`\n--- 处理媒体文件: ${path.basename(mediaFile)} ---`);
         const mediaRoomId = resolveRoomIdForFile(mediaFile, envRoomId);
@@ -1113,16 +1405,18 @@ const main = async () => {
             queueTaskRecords.push({ id: task.id, mediaPath: mediaFile });
         }
         
-        // 1. 音频处理（如果需要）
-        let processedFile;
+        // 1. 音频处理（如果需要）— 只转换不删除，切片后再删
+        let processedResult;
         try {
-            processedFile = await processAudioIfNeeded(mediaFile, mediaRoomId);
+            processedResult = await processAudioIfNeeded(mediaFile, mediaRoomId);
         } catch (error) {
             if (task?.id) {
                 queueManager.markFailed(task.id, error.message);
             }
             throw error;
         }
+        const processedFile = processedResult.audioPath;
+        let videoToDeleteAfterClips = processedResult.videoPathToDelete;
         queueManager.updateTaskMediaPath(task.id, processedFile);
         if (task?.id) {
             setActiveQueueTask(task.id, processedFile);
@@ -1130,9 +1424,11 @@ const main = async () => {
         
         // 2. ASR生成字幕（传递 taskId）
         let mediaResult;
+        let asrContext = null;
+        let asrOptions = null;
         try {
-            const asrContext = buildAsrRoutingContext(processedFile, mediaRoomId);
-            const asrOptions = {
+            asrContext = { ...buildAsrRoutingContext(processedFile, mediaRoomId), sourceMediaPath: mediaFile, xmlPath: findXmlForMedia(mediaFile, xmlFiles) };
+            asrOptions = {
                 bypassQueueTurn,
                 asrBackend: cliOptions.asrBackend,
                 asrCompare: cliOptions.asrCompare,
@@ -1155,10 +1451,43 @@ const main = async () => {
         }
 
         const srtPath = mediaResult?.srtPath || null;
+        const speakerReviewSrtPath = mediaResult?.speakerReviewSrtPath || null;
+        const preferredSrtPath = shouldPreferSpeakerReviewSrtForRoom(mediaRoomId, mediaResult?.asrResult)
+            ? (speakerReviewSrtPath || srtPath)
+            : srtPath;
         
-        if (srtPath) {
+        if (preferredSrtPath) {
+            const clipContext = {
+                ...(asrOptions.asrContext || {}),
+                streamerName: asrOptions.asrContext?.streamer_name || null
+            };
+            const xmlPathForMedia = findXmlForMedia(mediaFile, xmlFiles);
+            if (backgroundClipRunner.shouldRunAnyClipper(mediaRoomId, xmlPathForMedia)) {
+                pendingBackgroundClipPayloads.push({
+                    originalMediaPath: mediaFile,
+                    processedMediaPath: processedFile,
+                    srtPath: preferredSrtPath,
+                    xmlPath: xmlPathForMedia,
+                    roomId: mediaRoomId ? String(mediaRoomId) : null,
+                    context: clipContext,
+                    videoPathToDelete: videoToDeleteAfterClips
+                });
+                videoToDeleteAfterClips = null;
+                console.log(`Deferred background clips until goodnight text is ready: ${path.basename(preferredSrtPath)}`);
+            }
             processedMediaFiles.push(processedFile); // 记录处理后的文件
-            filesToProcess.push(srtPath);
+            filesToProcess.push(preferredSrtPath);
+        }
+
+        // 切片完成后删除原始视频（音频专用房间 & keepOriginalVideo=false）
+        if (videoToDeleteAfterClips) {
+            try {
+                const { unlink: unlinkAsync } = require('fs/promises');
+                await unlinkAsync(videoToDeleteAfterClips);
+                console.log(`🗑️  切片完成，已删除原始视频: ${path.basename(videoToDeleteAfterClips)}`);
+            } catch (deleteError) {
+                console.error(`⚠️  删除原始视频失败: ${deleteError.message}`);
+            }
         }
     }
 
@@ -1201,7 +1530,10 @@ const main = async () => {
             console.error(`X Error: Node.js script not found at: ${nodeScript}`);
         } else {
             // 获取输出目录和基础名称
-            const baseName = path.basename(filesToProcess[0]).replace(/\.(srt|xml|mp4|flv|mkv)$/i, '').replace(/_fix$/, '');
+            const baseName = path.basename(filesToProcess[0])
+                .replace(/\.speaker$/i, '')
+                .replace(/\.(srt|xml|mp4|flv|mkv)$/i, '')
+                .replace(/_fix$/, '');
             generatedHighlightFile = path.join(outputDir, `${baseName}_AI_HIGHLIGHT.txt`);
             
             try {
@@ -1236,12 +1568,30 @@ const main = async () => {
             console.log(`📊 AI_HIGHLIGHT文件大小: ${highlightSizeKB.toFixed(2)}KB`);
             
             if (highlightSizeKB < minHighlightSizeKB) {
-                console.log(`⏭️  AI_HIGHLIGHT文件过小 (${highlightSizeKB.toFixed(2)}KB < ${minHighlightSizeKB}KB)，跳过AI生成`);
-                return;
+                const fullInputExperiment = liveContentSummary.getFullLiveContextExperiment(
+                    configLoader.getConfig(),
+                    finalRoomId
+                );
+                if (!fullInputExperiment) {
+                    console.log(`⏭️  AI_HIGHLIGHT文件过小 (${highlightSizeKB.toFixed(2)}KB < ${minHighlightSizeKB}KB)，跳过AI生成`);
+                    await startBackgroundClipsOnce('highlight-too-small');
+                    return;
+                }
+                console.log(
+                    `🧪 AI_HIGHLIGHT虽小 (${highlightSizeKB.toFixed(2)}KB)，`
+                    + '但本房间启用了全量输入实验，继续从完整 SRT + 弹幕构建任务'
+                );
             }
             
             // 检查视频时长（从SRT文件获取）
-            const srtFile = filesToProcess.find(f => f.endsWith('.srt'));
+            // In single-file (webhook) path, mediaResult may not be defined;
+            // fall back to checking room config directly.
+            const preferSpeakerSrt = (typeof mediaResult !== 'undefined' && mediaResult?.asrResult)
+                ? shouldPreferSpeakerReviewSrtForRoom(finalRoomId, mediaResult.asrResult)
+                : shouldPreferSpeakerReviewSrtForRoom(finalRoomId, null);
+            const srtFile = preferSpeakerSrt
+                ? (filesToProcess.find(f => f.endsWith('.speaker.srt')) || filesToProcess.find(f => f.endsWith('.srt')))
+                : filesToProcess.find(f => f.endsWith('.srt'));
             if (srtFile && fs.existsSync(srtFile)) {
                 const srtContent = fs.readFileSync(srtFile, 'utf8');
                 const timeMatches = srtContent.match(/\d{2}:\d{2}:\d{2},\d{3}/g);
@@ -1256,6 +1606,7 @@ const main = async () => {
                     
                     if (totalSeconds < minDurationSeconds) {
                         console.log(`⏭️  视频时长过短 (${totalSeconds}秒 < ${minDurationSeconds}秒)，跳过AI生成`);
+                        await startBackgroundClipsOnce('media-too-short');
                         return;
                     }
                 }
@@ -1271,26 +1622,161 @@ const main = async () => {
             console.log(`🏠 房间ID: ${finalRoomId}`);
             console.log(`   AI文本生成: ${aiSettings.text ? '启用' : '禁用'}`);
             console.log(`   AI漫画生成: ${aiSettings.comic ? '启用' : '禁用'}`);
+            const generationMode = configLoader.getConfig().ai?.roomSettings?.[String(finalRoomId)]?.generationMode;
+            if (generationMode) console.log(`[GENERATION_MODE] ${JSON.stringify({roomId:finalRoomId,mode:generationMode})}`);
             console.log(`   图片最短时长: ${aiSettings.minComicDurationMinutes} 分钟`);
             console.log(`   图片生成概率: ${(aiSettings.comicGenerationProbability * 100).toFixed(0)}%`);
+
+            const normalizedSrtPath = srtFile ? path.normalize(srtFile) : null;
+            const fullInputPayload = pendingBackgroundClipPayloads.find(payload => (
+                String(payload.roomId || '') === String(finalRoomId || '')
+                && normalizedSrtPath
+                && path.normalize(payload.srtPath || '') === normalizedSrtPath
+            )) || pendingBackgroundClipPayloads.find(payload => (
+                String(payload.roomId || '') === String(finalRoomId || '')
+            )) || null;
+            const fullInputMediaPath = fullInputPayload?.originalMediaPath
+                || mediaFiles[mediaFiles.length - 1]
+                || processedMediaFiles[processedMediaFiles.length - 1]
+                || srtFile;
+            const fullInputXmlPath = fullInputPayload?.xmlPath
+                || (fullInputMediaPath ? findXmlForMedia(fullInputMediaPath, xmlFiles) : null)
+                || xmlFiles.find(file => !srtFile || path.dirname(file) === path.dirname(srtFile))
+                || null;
+            let preparedFullLiveContext = null;
+            try {
+                preparedFullLiveContext = await prepareFullLiveContextForExperiment({
+                    highlightPath,
+                    roomId: finalRoomId,
+                    srtPath: srtFile,
+                    xmlPath: fullInputXmlPath,
+                    mediaPath: fullInputMediaPath,
+                    context: fullInputPayload?.context || {},
+                    pendingPayload: fullInputPayload,
+                    config: configLoader.getConfig()
+                });
+            } catch (error) {
+                console.warn(`⚠️  准备全量直播共享输入失败，实验任务降级且不影响原流程: ${error.message}`);
+            }
+
+            try {
+                const preparedContext = await liveGenerationContext.prepareLiveGenerationContext(
+                    highlightPath,
+                    finalRoomId,
+                    configLoader.getConfig(), { srtPath: srtFile }
+                );
+                const liveContext = preparedContext.context;
+                console.log(`🧭 本场事实上下文已保存: ${path.basename(preparedContext.outputPath)}`);
+                console.log(`   直播标题: ${liveContext.liveTitle || '未取得'}`);
+                console.log(`   开播前近期动态: ${liveContext.recentDynamics.length} 条 (${liveContext.sources.recentDynamics})`);
+                console.log(`   下播动态上下文: ${liveContext.replyDynamic?.id || '未采用'} (${liveContext.sources.replyDynamic})`);
+                if (liveContext.recentDynamicsError) {
+                    console.warn(`   ⚠️ 近期动态获取失败，已降级为标题上下文: ${liveContext.recentDynamicsError}`);
+                }
+            } catch (error) {
+                console.warn(`⚠️  准备本场事实上下文失败，将由生成器从文件名降级解析: ${error.message}`);
+            }
             
             // AI文本生成
             let goodnightTextPath = null;
             if (aiSettings.text) {
                 console.log(`📝 开始AI文本生成...`);
-                goodnightTextPath = await generateAiText(highlightPath, finalRoomId);
+                const useFullInputForGoodnight = liveContentSummary.isExperimentTaskEnabled(
+                    preparedFullLiveContext?.experiment,
+                    'goodnight'
+                );
+                goodnightTextPath = await generateAiText(highlightPath, finalRoomId, useFullInputForGoodnight
+                    ? {
+                        fullLiveContextPath: preparedFullLiveContext.outputPath,
+                        promptCacheRolloutPercent: preparedFullLiveContext.experiment.promptCacheRolloutPercent
+                    }
+                    : {});
                 console.log(`📝 AI文本生成结果: ${goodnightTextPath || 'null'}`);
             } else {
                 console.log('ℹ️  跳过AI文本生成（房间设置禁用）');
             }
-            
+
+            const liveContentSummaryEnabled = liveContentSummary.isExperimentTaskEnabled(
+                preparedFullLiveContext?.experiment,
+                'summary'
+            );
+            const liveContentSummaryPath = liveContentSummaryEnabled
+                ? liveContentSummary.getLiveContentSummaryPath(highlightPath)
+                : null;
+            const liveContentSummaryDeliveryMode = liveContentSummaryEnabled
+                ? liveContentSummary.getSummaryDeliveryMode(preparedFullLiveContext.experiment)
+                : null;
+            const cachePropagationWaitMs = liveContentSummary.getCachePropagationWaitMs(
+                preparedFullLiveContext?.experiment
+            );
+            if (goodnightTextPath && cachePropagationWaitMs > 0) {
+                console.log(
+                    `⏳ 等待 ${cachePropagationWaitMs}ms 让晚安请求建立的共享前缀缓存传播，`
+                    + '再启动直播梗概与后续生成任务'
+                );
+                await new Promise(resolve => setTimeout(resolve, cachePropagationWaitMs));
+            }
+            let delayedReplyReadyEmitted = false;
+
+            const emitDelayedReplyReady = (comicImagePathForReply = null) => {
+                if (!goodnightTextPath) {
+                    return;
+                }
+
+                const payload = {
+                    roomId: finalRoomId,
+                    goodnightTextPath,
+                    mediaPath: processedMediaFiles.length > 0 ? processedMediaFiles[processedMediaFiles.length - 1] : undefined
+                };
+                if (comicImagePathForReply) {
+                    payload.comicImagePath = comicImagePathForReply;
+                }
+                if (liveContentSummaryPath) {
+                    payload.liveContentSummaryPath = liveContentSummaryPath;
+                    payload.liveContentSummaryDeliveryMode = liveContentSummaryDeliveryMode;
+                }
+
+                delayedReplyReadyEmitted = true;
+                console.log(`${DELAYED_REPLY_READY_SENTINEL} ${JSON.stringify(payload)}`);
+            };
+
+            const liveContentSummaryPromise = liveContentSummaryEnabled
+                ? liveContentSummary.generateLiveContentSummary({
+                    highlightPath,
+                    fullLiveContextPath: preparedFullLiveContext.outputPath,
+                    roomId: finalRoomId,
+                    experiment: preparedFullLiveContext.experiment,
+                    config: configLoader.getConfig()
+                }).catch(error => {
+                    console.warn(`⚠️  直播梗概实验失败，不影响晚安、漫画或切片: ${error.message}`);
+                    return null;
+                })
+                : null;
+            let liveContentSummaryWarmupAttempted = false;
+            const waitForLiveContentCacheWarmup = async () => {
+                if (
+                    !liveContentSummaryPromise
+                    || liveContentSummaryDeliveryMode !== 'separate'
+                    || liveContentSummaryWarmupAttempted
+                ) {
+                    return;
+                }
+                liveContentSummaryWarmupAttempted = true;
+                const warmupWaitMs = Number(preparedFullLiveContext.experiment.cacheWarmupWaitMs) || 45000;
+                const completed = await waitForPromiseWithin(liveContentSummaryPromise, warmupWaitMs);
+                if (!completed) {
+                    console.warn(
+                        `⚠️  直播梗概在 ${Math.round(warmupWaitMs / 1000)} 秒缓存预热窗口内未完成，`
+                        + '继续漫画与自动切片；梗概完成后仍会由延迟回复任务发布'
+                    );
+                }
+            };
+
             // AI漫画生成
             let comicImagePath = null;
             const highlightDir = path.dirname(highlightPath);
             const highlightBase = path.basename(highlightPath).replace('_AI_HIGHLIGHT.txt', '');
-            const expectedComicImagePath = aiSettings.comic
-                ? path.join(highlightDir, `${highlightBase}_COMIC_FACTORY.png`)
-                : null;
+            const expectedComicImagePath = path.join(highlightDir, `${highlightBase}_COMIC_FACTORY.png`);
             if (aiSettings.comic) {
                 // --- 检查图片生成条件 ---
 
@@ -1321,23 +1807,30 @@ const main = async () => {
                     if (roll > prob) {
                         console.log(`🎲 概率抓取未命中 (${roll.toFixed(3)} > ${prob})，跳过图片生成`);
                     } else {
+                        emitDelayedReplyReady(expectedComicImagePath);
                         console.log(`🎲 概率抓取命中 (${roll.toFixed(3)} ≤ ${prob})，开始生成图片`);
                         console.log(`🎨 开始AI漫画生成...`);
-                        const isSuiRoom = String(finalRoomId) === SUI_ROOM_ID;
-                        const tuziRetryMaxAttempts = isSuiRoom ? 4 : 2;
-                        const suiImageOptions = isSuiRoom
-                            ? {
-                                tuziRetryMaxTotalSeconds: 1500,
-                                tuziRetryMaxCooldownWaitSeconds: 300,
-                                tuziSkipChatFallbackOnImageApiFailure: true,
-                                allowComicScriptFallback: true
-                            }
-                            : {};
-                        console.log(`🎨 生图尝试策略: tuzi最多尝试 ${tuziRetryMaxAttempts} 次${isSuiRoom ? '，同步策略限时25分钟，冷却最多等待5分钟，脚本失败启用本地兜底' : ''}`);
-                        comicImagePath = await generateAiComic(highlightPath, finalRoomId, {
-                            tuziRetryMaxAttempts,
-                            tuziBypassCooldown: false,
-                            ...suiImageOptions
+                        const imageOptions = automaticComicOptions(finalRoomId);
+                        const sourceVideoPath = resolveComicSourceVideo(mediaFiles, highlightPath, isAudioFile);
+                        comicImagePath = await runComicWithConcurrentClips({
+                            sourceVideoPath,
+                            tempRoot: path.resolve(__dirname, '../../tmp/comic-source-reads'),
+                            overlapEnabled: pendingBackgroundClipPayloads.length > 0
+                                && configLoader.getConfig().ai?.comic?.overlapClips === true,
+                            startClips: startBackgroundClipsOnce,
+                            onSchedule: timing => console.log(`[COMIC_CLIP_SCHEDULE] ${JSON.stringify({ roomId: finalRoomId, recording: highlightFile, ...timing })}`),
+                            prepareComic: async () => {
+                                await waitForLiveContentCacheWarmup();
+                                if (liveContentSummaryPromise && liveContentSummaryEnabled) {
+                                    console.log('⏳ 等待同场直播梗概完成，再启动漫画生成，确保游戏名和活动类型进入漫画事实约束');
+                                    await liveContentSummaryPromise;
+                                }
+                            },
+                            generateComic: sourceOptions => generateAiComic(highlightPath, finalRoomId, {
+                                ...imageOptions, ...sourceOptions,
+                                ...(liveContentSummary.isExperimentTaskEnabled(preparedFullLiveContext?.experiment, 'comic')
+                                    ? { fullLiveContextPath: preparedFullLiveContext.outputPath } : {})
+                            })
                         });
                         console.log(`🎨 AI漫画生成结果: ${comicImagePath || 'null'}`);
                     }
@@ -1346,13 +1839,15 @@ const main = async () => {
                 console.log('ℹ️  跳过AI漫画生成（房间设置禁用）');
             }
 
-            if (goodnightTextPath) {
-                console.log(`${DELAYED_REPLY_READY_SENTINEL} ${JSON.stringify({
-                    roomId: finalRoomId,
-                    goodnightTextPath,
-                    comicImagePath: expectedComicImagePath,
-                    mediaPath: processedMediaFiles.length > 0 ? processedMediaFiles[processedMediaFiles.length - 1] : undefined
-                })}`);
+            if (goodnightTextPath && !delayedReplyReadyEmitted) {
+                emitDelayedReplyReady();
+            }
+
+            await waitForLiveContentCacheWarmup();
+            await startBackgroundClipsOnce(aiSettings.comic ? 'comic-generation-finished' : 'comic-disabled');
+
+            if (liveContentSummaryPromise) {
+                await liveContentSummaryPromise;
             }
 
             // 触发延迟回复任务（现在由父进程 MikufansWebhookHandler 处理）
@@ -1366,6 +1861,8 @@ const main = async () => {
         console.error(`⚠️  AI生成阶段出错: ${error.message}`);
         console.error(error.stack);
     }
+
+    await startBackgroundClipsOnce('ai-generation-finished');
 
     console.log('');
     console.log('===========================================');
@@ -1391,7 +1888,9 @@ const main = async () => {
                     // 只显示AI相关的文件
                     const isAiFile = f.includes('_晚安回复.md') ||
                                    f.includes('_COMIC_FACTORY.') ||
-                                   f.includes('_AI_HIGHLIGHT.txt');
+                                   f.includes('_AI_HIGHLIGHT.txt') ||
+                                   f.includes('_FULL_LIVE_CONTEXT.json') ||
+                                   f.includes('_LIVE_CONTENT.json');
                     return isAiFile && isNew;
                 } catch (e) {
                     return false;
