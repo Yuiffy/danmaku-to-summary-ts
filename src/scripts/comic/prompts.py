@@ -112,6 +112,10 @@ def format_image_reference_manifest(image_manifest: Optional[list[dict]]) -> str
         elif role in {"appeared_streamer", "mentioned_streamer"}:
             display_name = item.get("displayName") or "额外人物"
             description = f"{display_name}的外观参考；仅在漫画脚本明确需要该人物时使用。"
+            if role == "mentioned_streamer":
+                description += "仅被提及，不代表到场；只可置于原文支持的回忆、想象或被观看屏幕中，不能参与本场现场互动。"
+            else:
+                description += "声纹出声只确认音频身份；若原文是观看视频或回放，人物留在被观看内容中，不能据此变成现场嘉宾。"
         elif role == "directed_screenshot":
             timestamp = item.get("timestampSeconds")
             selected_timestamp = item.get("selectedTimestampSeconds")
@@ -157,7 +161,7 @@ def format_image_reference_manifest(image_manifest: Optional[list[dict]]) -> str
         elif role == "contact_sheet":
             description = "固定时间点的直播截图拼图，只用于核对直播内容，不要求逐格复刻。"
         elif role == "cover":
-            description = "直播封面，只用于主题、色彩或场景线索，不作为人物外观依据。"
+            description = "直播封面，只用于主题、色彩或场景线索，不作为人物外观依据；封面人物不是本场参与者证明。"
         else:
             description = item.get("description") or "辅助参考图。"
         lines.append(f"- 参考图{index}：{description}")
@@ -170,9 +174,13 @@ def format_comic_identity_context(context: Dict[str, Any]) -> str:
     appeared_lines = []
     for item in context.get("appeared") or []:
         name = item.get("displayName") or item.get("id")
-        appeared_lines.append(
-            f"- {name}：ASR 已确认在本场直播中实际出声，是现场互动角色。"
-        )
+        presence = item.get("_comicPresence")
+        if presence == "live_confirmed":
+            appeared_lines.append(f"- {name}：ASR 已确认在本场直播中实际出声，另有本场参与证据，可按正文共同事件呈现联动。")
+        elif presence == "unresolved_presence":
+            appeared_lines.append(f"- {name}：声纹匹配到音频，但本场存在观看、回放或其他非现场线索，到场未确认。按各事件时间和正文区分，不能把该声音直接写成现场嘉宾，也不能据某个观看片段断言整场未参与。")
+        else:
+            appeared_lines.append(f"- {name}：ASR 已确认在本场直播中实际出声；这是音频身份依据，是否现场互动仍需正文证据，观看视频/回放中的声音不代表连麦。")
     appeared = "\n".join(appeared_lines) if appeared_lines else "- 无其他已确认出声角色。"
     mention_lines = []
     for item in context.get("mentions") or []:
@@ -182,10 +190,13 @@ def format_comic_identity_context(context: Dict[str, Any]) -> str:
     mentions = "\n".join(mention_lines) if mention_lines else "- 无其他已验证人物提及。"
     return f"""人物事实边界（必须遵守）：
 - 本场直播主人唯一是：{host_name}。不要把 ASR、弹幕或模型记忆里的其他名字改写成主播。
+- 房间归属不能代替语音归属。UNKNOWN、SPEAKER_nn、未实名、混合或无可靠标签的话语保持未确认；不能因为只有一位已知主播，就把未知说话人的姓名、经历、观点或台词套给房主。
+- 对已命名说话人也逐条保留归属，不把另一人的第一人称经历改写成房主经历，不跨说话人拼接一句话。
 - 已确认在本场实际出声的互动角色：
 {appeared}
 - 已验证的文字提及：
 {mentions}
-- 已确认出声的互动角色应按正文中的共同事件参与画面，不要用粉丝吉祥物或路人替代。
+- 已确认出声并有本场互动依据的角色应按正文中的共同事件参与画面，不要用粉丝吉祥物或路人替代；单纯声音匹配不是实时连麦或线下同处的证明。
 - 被提到的人只能按照原文明确的事件画成回忆/游戏画面/屏幕内容；绝不能自动成为嘉宾、连麦者、合唱者或本场直播角色。
+- 直播间标题、封面、动态、预告和截图中的人名/头像只提供参与候选；未来约定、拒绝/缺席、观看别人的视频和作品人物不能变成本场联动。确认单播时只画房主与有事实依据的屏幕内容。
 - 不要在画面中生成“主播”“嘉宾”“主持”“连麦”等身份牌，也不要生成或翻译人名（包括中文名、英文名、拼音）。人名不是必要画面文字时一律省略。"""

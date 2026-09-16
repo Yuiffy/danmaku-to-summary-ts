@@ -110,6 +110,10 @@ function reviewDetailLines(result, metadata = {}, options = {}) {
     const includeIssues = options.includeIssues !== false;
     const lines = includeIssues ? reviewIssues(result, metadata).map(issue => `   核对项: ${explainIssue(issue)}`) : [];
     const proofreading = result.subtitleProofreading;
+    const angles = result.viewingAngles || [];
+    if (angles.length) lines.push(`   看点线索（待核）: ${angles.map(angle => `${angle.label}：${angle.hook}`).join(' / ')}`);
+    if (result.quoteEchoes?.length) lines.push(`   台词线索（字幕/弹幕重合）: ${result.quoteEchoes.map(row =>
+        `${Math.max(0, row.start - result.window.start).toFixed(1)}秒 ${row.quote}`).join(' / ')}`);
     if (proofreading?.automaticEdits?.length) lines.push(`   自动字幕校对: ${proofreading.automaticEdits.length}处（保留原ASR与修订依据）`);
     for (const group of proofreading?.reviewGroups || []) {
         const label = group.type === 'possible_foreign_audio' ? '疑似外语串音，建议局部多语言转写核对'

@@ -18,10 +18,16 @@ interface PythonResult {
   error?: string;
 }
 
+interface RiskControlIncident {
+  startedAt: Date;
+  lastNotifyTime?: number;
+  recovery?: DanmuCheckResult;
+}
+
 export class DanmuRiskControlMonitor {
   private logger = getLogger('DanmuRiskControlMonitor');
   private timer: ReturnType<typeof setInterval> | null = null;
-  private lastNotifyTime: Map<string, number> = new Map();
+  private incidents: Map<string, RiskControlIncident> = new Map();
   private notifier: WeChatWorkNotifier | null = null;
   private isChecking = false;
 
@@ -90,16 +96,39 @@ export class DanmuRiskControlMonitor {
         if (result.isRiskControl) {
           this.logger.warn(`房间 ${roomId} 弹幕API触发风控 (code: ${result.code})`);
 
+          let incident = this.incidents.get(roomId);
+          // A successful check ends an incident even if its recovery notification
+          // failed. A relapse must alert immediately, without the old cooldown.
+          if (!incident || incident.recovery) {
+            incident = { startedAt: result.timestamp };
+            this.incidents.set(roomId, incident);
+          }
           const now = Date.now();
-          const lastTime = this.lastNotifyTime.get(roomId) || 0;
-          if (now - lastTime > cooldownMs) {
-            await this.notify(result);
-            this.lastNotifyTime.set(roomId, now);
+          const lastTime = incident.lastNotifyTime;
+          if (lastTime === undefined || now - lastTime >= cooldownMs) {
+            if (await this.notify(result, incident.startedAt)) {
+              incident.lastNotifyTime = now;
+            }
           } else {
             this.logger.info(`房间 ${roomId} 风控通知冷却中，跳过通知（上次通知: ${new Date(lastTime).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}）`);
           }
-        } else {
+        } else if (result.code === 0) {
           this.logger.debug(`房间 ${roomId} 弹幕API正常 (code: ${result.code})`);
+          const incident = this.incidents.get(roomId);
+          if (incident) {
+            if (!incident.recovery) {
+              incident.recovery = result;
+              this.logger.info(`房间 ${roomId} 弹幕API风控已恢复 (code: 0)`);
+            }
+            // Retry failed delivery on the next healthy check, keeping the first
+            // recovery time. Do not send a recovery for an undelivered alert.
+            if (incident.lastNotifyTime === undefined ||
+                await this.notifyRecovery(incident.recovery, incident.startedAt)) {
+              this.incidents.delete(roomId);
+            }
+          }
+        } else {
+          this.logger.warn(`房间 ${roomId} 弹幕API检查失败，无法确认风控恢复 (code: ${result.code}): ${result.message}`);
         }
       } catch (error) {
         this.logger.error(`检查房间 ${roomId} 弹幕风控失败`, undefined, error instanceof Error ? error : new Error(String(error)));
@@ -222,17 +251,18 @@ export class DanmuRiskControlMonitor {
     return match ? match[1] : null;
   }
 
-  private async notify(result: DanmuCheckResult): Promise<void> {
+  private async notify(result: DanmuCheckResult, startedAt: Date): Promise<boolean> {
     if (!this.notifier) {
       this.logger.warn('无法发送风控通知: 企业微信通知服务未初始化');
-      return;
+      return false;
     }
 
-    const timeStr = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+    const timeStr = result.timestamp.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
     const content = `⚠️ B站弹幕API风控告警\n\n` +
       `房间ID: ${result.roomId}\n` +
       `返回码: ${result.code}\n` +
       `消息: ${result.message}\n` +
+      `告警开始时间: ${startedAt.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}\n` +
       `检测时间: ${timeStr}\n\n` +
       `录播软件可能无法获取弹幕信息，请检查账号状态`;
 
@@ -242,5 +272,30 @@ export class DanmuRiskControlMonitor {
     } else {
       this.logger.error(`风控通知发送失败: 房间 ${result.roomId}`);
     }
+    return success;
+  }
+
+  private async notifyRecovery(result: DanmuCheckResult, startedAt: Date): Promise<boolean> {
+    if (!this.notifier) {
+      this.logger.warn('无法发送风控恢复通知: 企业微信通知服务未初始化');
+      return false;
+    }
+
+    const durationSeconds = Math.max(0, Math.floor((result.timestamp.getTime() - startedAt.getTime()) / 1000));
+    const content = `✅ B站弹幕API风控恢复\n\n` +
+      `房间ID: ${result.roomId}\n` +
+      `返回码: ${result.code}\n` +
+      `告警开始时间: ${startedAt.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}\n` +
+      `检测恢复时间: ${result.timestamp.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}\n` +
+      `告警持续时间（按检测）: ${Math.floor(durationSeconds / 60)}分${durationSeconds % 60}秒\n\n` +
+      `本次检测已成功获取弹幕连接信息。`;
+
+    const success = await this.notifier.sendMarkdown(content);
+    if (success) {
+      this.logger.info(`风控恢复通知已发送: 房间 ${result.roomId}`);
+    } else {
+      this.logger.error(`风控恢复通知发送失败，下次检测正常时重试: 房间 ${result.roomId}`);
+    }
+    return success;
   }
 }

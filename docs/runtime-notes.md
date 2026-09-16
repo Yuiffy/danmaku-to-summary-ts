@@ -35,6 +35,18 @@ npm run pm2:logs
 
 The handler source under `src/services/webhook/handlers/` is authoritative for request shapes.
 
+## 弹幕 API 风控通知
+
+`bilibili.danmuRiskControl` 按房间检测弹幕连接信息。首次检测到风控立即发送企微告警；
+同一轮持续风控按 `notifyCooldownMs`（默认 30 分钟）重复提醒。只有接口明确成功
+（返回码 0）才发送一次恢复通知，包含开始时间、检测恢复时间和按检测计算的持续时间。
+网络错误、脚本异常和其它 API 错误不会被当作恢复。恢复后再次风控会开启新一轮告警，
+不受上一轮冷却限制。检测间隔默认 5 分钟，恢复时间是检测时间。
+
+发送成功才记入告警冷却；恢复通知失败时，在后续成功检测时重试。若期间再次风控，
+立即发送新告警，取消旧恢复消息，避免在仍有风控时补发过期恢复。未成功发送过开始告警
+的情况不单独发送恢复通知。状态保存在监控进程内存中，进程重启后从首次检测重新建立。
+
 ## Delayed Reply Workflow
 
 - Before AI reply generation, the existing one-shot dynamics lookup also captures
@@ -92,7 +104,7 @@ Model names and quality settings: [OpenAI image generation guide](https://develo
 
 ## Full-Input Reply And Overview
 
-`fullLiveContextExperiment.sharedOutputCache` is an optional, default-off experiment
+`fullLiveContextExperiment.sharedOutputCache` is enabled by the `paired` preset
 for paired replies and full-source comics. Both tasks use one strict JSON envelope;
 the client checks the task discriminator and unwraps the result before existing
 reply/source validation or comic parsing. Material-pool comics are excluded because
@@ -100,8 +112,34 @@ they read a different prefix. Refusal, malformed output and usage accounting kee
 their normal failure behavior; the experiment does not add retries or warm-up calls.
 
 Matching schema is necessary when sharing a rendered prefix, but is not sufficient
-to guarantee an upstream cache hit. Keep the flag disabled until fresh full-stream
-tests show stable first-use reuse, not merely hits after repeated identical calls.
+to guarantee an upstream cache hit.
+
+`ai.text.sharedPromptCache.continuationEnabled` enables accepted Responses history
+reuse (production on, default configuration off). The first normal business request
+is captured in memory. Only after its existing output checks succeed is its exact
+request and actual assistant message saved under `data/runtime/live-text-cache/`.
+Paired generation waits for semantic review; rejected drafts are never promoted.
+The next request retains that prefix and appends its current task as user content.
+Earlier generated text is explicitly not source evidence; the original full source
+and current reviewed activity constraints remain authoritative. No transcript,
+dynamic post or generated summary is promoted to developer instructions.
+
+Reuse requires identical source, endpoint, model, instructions, output schema,
+reasoning and cache settings. Cache files have integrity checks, an 8 MiB bound and
+a 25-minute lifetime measured from the original response; successful writes clean
+expired files. Continued responses do not grow another stored history chain.
+Missing, expired, incompatible or unreadable state uses the original full request;
+cache writes cannot trigger a new generation or invalidate an accepted output.
+No prewarming calls or extra model retries are added. `LIVE_TEXT_CACHE_REUSE` logs
+the model and source hash; per-attempt metadata records `liveCacheContinuation`.
+Actual `cachedTokens` remains the evidence of a hit, not the reuse log alone.
+
+Shiori's standalone outputs can reuse matching plain-text history. Mizuki's paired
+outputs share the strict envelope. Miting retains the existing original-excerpt
+pool and its full-source fallback; incompatible pool/full-source schemas do not
+reuse history. Sui's filtered and complete sources remain separate.
+Disable `continuationEnabled` to restore original requests without deleting accepted
+artifacts; `sharedOutputCache` can independently be disabled per paired room.
 Task-specific cache experiments and token comparisons belong under ignored `temp/`.
 
 Generation presets live in `config/generation-modes.json`. Select a room's preset

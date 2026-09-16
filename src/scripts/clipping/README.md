@@ -28,6 +28,10 @@ ignored `temp/` tree until its inputs and behavior are made configurable.
 - `own_selection.js`: own-stream candidate recall, scoring, and subtitle alignment.
   Model-visible audience IDs include each comment's original precise timestamp,
   distinct from density-bucket clocks; sampling and source text are preserved.
+- `viewing_angles.js`: optional, source-bound editorial angles, nearby audience
+  context and literal subtitle/comment overlaps. These hints never establish
+  identity, voice quality, causality or upload approval. See the soft-label and
+  recall-diagnostics contract in `docs/post-stream-residual-audit.md`.
 - `rerank_evidence.js`, `selection_result.js`: compact evidence and validated
   selection results. Every candidate carries a validated `reuse` object or
   explicit `null`; context range `g` is not a default cut boundary. Missing

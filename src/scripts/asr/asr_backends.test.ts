@@ -3,7 +3,8 @@ const productionConfig = require('../../../config/production.json');
 const net = require('net');
 
 describe('asr_backends', () => {
-  test.each(['1', '2'])('passes row-verified policy only for an allowed room (%s)', async roomId => {
+  test.each([{ roomId: '1', discovery: false }, { roomId: '2', discovery: false }, { roomId: '2', discovery: true }])
+  ('passes row verification for an allowed room or discovered collaboration (%j)', async ({ roomId, discovery }) => {
     const payloads: any[] = [];
     const server = net.createServer((socket: any) => {
       let buffer = '';
@@ -21,10 +22,14 @@ describe('asr_backends', () => {
     try {
       await asr.transcribeParaformer('fixture.wav', { asr: {
         speaker_identity: { policy: 'row_verified', room_ids: ['1'], min_seconds: 2.5 }, paraformer: { process_timeout_s: 10 }
-      } }, { routingContext: { roomId } });
+      } }, { routingContext: { roomId, ...(discovery ? { speakerRequest: {
+        participantDiscovery: { mode: 'multi', modeStatus: 'planned' }, plannedParticipantIds: ['guest']
+      } } : {}) } });
       expect(payloads).toHaveLength(1);
-      if (roomId === '1') expect(payloads[0]).toMatchObject({ speaker_identity_policy: 'row_verified', speaker_identity_min_seconds: 2.5 });
+      if (roomId === '1' || discovery) expect(payloads[0]).toMatchObject({ speaker_identity_policy: 'row_verified', speaker_identity_min_seconds: 2.5 });
       else expect(payloads[0]).not.toHaveProperty('speaker_identity_policy');
+      if (discovery) expect(payloads[0]).toMatchObject({ enable_speaker: true, speaker_detection_mode: 'always',
+        speaker_constrain_to_references: false });
     } finally {
       if (oldPort === undefined) delete process.env.ASR_PERSISTENT_WORKER_PORT; else process.env.ASR_PERSISTENT_WORKER_PORT = oldPort;
       if (oldToken === undefined) delete process.env.ASR_PERSISTENT_WORKER_TOKEN; else process.env.ASR_PERSISTENT_WORKER_TOKEN = oldToken;
@@ -285,7 +290,7 @@ describe('asr_backends', () => {
       hostStreamerId: 'sui',
       plannedParticipantIds: ['shiori'],
       rosterStreamerIds: ['sui', 'shiori'],
-      constrainedToRoster: true
+      constrainedToRoster: false
     });
     expect(parsed.participants).toEqual(expect.arrayContaining([
       expect.objectContaining({ streamerId: 'sui', appeared: true, role: 'host' }),
@@ -1493,7 +1498,7 @@ describe('asr_backends', () => {
     );
   });
 
-  test('summarizes speakers allowing missing score when duration passes', () => {
+  test('does not confirm an unscored name just because its duration passes', () => {
     const config = {
       ai: {
         comic: {
@@ -1513,7 +1518,7 @@ describe('asr_backends', () => {
       segments: [{ start: 0, end: 12, text: 'hello', speaker: '栞栞' }]
     }, config, {});
 
-    expect(result.appearedStreamerIds).toEqual(['shiori']);
+    expect(result.appearedStreamerIds).toEqual([]);
     expect(result.speakers[0].avgScore).toBeNull();
   });
 });

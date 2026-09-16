@@ -5,8 +5,12 @@ const { dialoguePrompt, parseDialogueEvidence } = require('./dialogue_evidence')
 const { attributionRisk, buildActorReviewPacket, actorReviewPrompt, parseActorReviews,
     validateActorReview, applyActorReview } = require('./actor_review');
 
-async function reviewClipActors(clips, parsed, danmaku, evidence, info, config, rootConfig, diagnostics) {
-    if (!attributionEnabled(config, info.roomId)) return clips;
+async function reviewClipActors(clips, parsed, danmaku, evidence, info, config, rootConfig, diagnostics, hooks = {}) {
+    const publish = items => hooks.onBatchReviewed?.(items.map(({ clip, index }) => ({ clip, index })));
+    if (!attributionEnabled(config, info.roomId)) {
+        await publish(clips.map((clip, index) => ({ clip, index })));
+        return clips;
+    }
     const settings = config.attribution;
     const maxChars = Math.max(1024, Number(settings.maxBatchChars ?? 36000));
     const batchSize = Math.max(1, Math.min(8, Number(settings.batchSize ?? 4)));
@@ -23,6 +27,7 @@ async function reviewClipActors(clips, parsed, danmaku, evidence, info, config, 
         packets.push({ ...packet, index, risks });
     });
     diagnostics.attribution = { totalClips: clips.length, highRiskClips: packets.length, passed: 0, pending: 0, requests: 0, maxRequests, events: [] };
+    let remainingInitialBatches = 0;
     const recordEvent = (phase, current, details) => diagnostics.attribution.events.push({
         phase, clipIds: current.map(packet => packet.id), ...details
     });
@@ -34,6 +39,7 @@ async function reviewClipActors(clips, parsed, danmaku, evidence, info, config, 
     };
     const processBatch = async current => {
         if (!current.length) return;
+        remainingInitialBatches--;
         if (Date.now() >= deadline) {
             recordEvent('actor-review', current, { status: 'unavailable', reason: 'time_budget_exhausted' });
             current.forEach(packet => store(packet, null, ['actor_review_time_budget_exhausted']));
@@ -62,7 +68,7 @@ async function reviewClipActors(clips, parsed, danmaku, evidence, info, config, 
             const reviews = new Map(parseActorReviews(response, current).map(review => [review.clipId, review]));
             const responses = new Map(current.map(packet => [packet.id, response]));
             if (settings.dialogueEnabled === true && settings.repairAttempts !== 0 && Date.now() < deadline
-                && diagnostics.attribution.requests + 1 < maxRequests) {
+                && diagnostics.attribution.requests + remainingInitialBatches + 1 < maxRequests) {
                 const needsDialogue = current.filter(packet => {
                     const review = reviews.get(packet.id);
                     const issues = validateActorReview(review, packet);
@@ -101,7 +107,7 @@ async function reviewClipActors(clips, parsed, danmaku, evidence, info, config, 
                 return (review.decision !== 'needs_review' && validateActorReview(review, packet).length > 0)
                     || packet.dialogueEvidence?.turns.some(turn => turn.supported);
             });
-            if (repair.length && Date.now() < deadline && diagnostics.attribution.requests < maxRequests) {
+            if (repair.length && Date.now() < deadline && diagnostics.attribution.requests + remainingInitialBatches < maxRequests) {
                 const repairPrompt = promptFor(repair) + '\n只修订以下明确校验问题，不改变原事件，仍无法核验就needs_review：\n'
                     + JSON.stringify(repair.map(packet => ({ clipId: packet.id, previous: reviews.get(packet.id),
                         issues: validateActorReview(reviews.get(packet.id), packet),
@@ -145,10 +151,18 @@ async function reviewClipActors(clips, parsed, danmaku, evidence, info, config, 
         batch.push(packet);
     }
     if (batch.length) batches.push(batch);
+    remainingInitialBatches = batches.length;
+    diagnostics.attribution.initialBatches = batches.length;
+    const pendingIndices = new Set(batches.flatMap(items => items.map(packet => packet.index)));
+    await publish(result.flatMap((clip, index) => pendingIndices.has(index) ? [] : [{ clip, index }]));
     let next = 0;
     const concurrency = Math.max(1, Math.min(3, Math.floor(Number(settings.concurrency) || 2)));
     await Promise.all(Array.from({ length: Math.min(concurrency, batches.length) }, async () => {
-        while (next < batches.length) await processBatch(batches[next++]);
+        while (next < batches.length) {
+            const current = batches[next++];
+            await processBatch(current);
+            await publish(current.map(packet => ({ clip: result[packet.index], index: packet.index })));
+        }
     }));
     return result;
 }

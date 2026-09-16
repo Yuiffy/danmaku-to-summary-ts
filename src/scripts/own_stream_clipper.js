@@ -1,6 +1,7 @@
 const { buildFallbackTitle, normalizeAiClips, isRerankResponseValid, clipsConflict, buildGroundingReviewLine } = require('./clipping/selection_result');
 const ownReview = require('./clipping/own_review_report');
 const { requestSelectionText, validSelectionResponse } = require('./clipping/selection_request');
+const { anglePromptLines, normalizeViewingAngles, anglesForWindow, quoteEchoes } = require('./clipping/viewing_angles');
 const { buildRerankEvidence } = require('./clipping/rerank_evidence');
 const { buildPersonEvidenceContext } = require('./clipping/person_evidence');
 const { attributionEnabled, loadRecordingParticipants, buildParticipantContext, participantPromptLines } = require('./clipping/participant_context');
@@ -58,6 +59,7 @@ const DEFAULT_OWN_STREAM_CLIPS_CONFIG = {
     prePaddingSeconds: 18,
     postPaddingSeconds: 26,
     mergeGapSeconds: 45,
+    // Local signal window construction only; AI selections use complete source-backed topics.
     maxClipSeconds: 210,
     minClipSeconds: 35,
     maxCandidates: 80,
@@ -115,6 +117,7 @@ const DEFAULT_OWN_STREAM_CLIPS_CONFIG = {
         rerankTimeoutMs: 1200000,
         rerankMaxAttempts: 2,
         maxCandidateLines: 100,
+        recallMaxClipsPerChunk: 12,
         maxCandidateSubtitleChars: 520,
         maxCandidateDanmakuLines: 14,
         fallbackToLocalRules: true
@@ -656,6 +659,7 @@ async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, confi
     const hostName = String(streamerName || '主播').trim() || '主播';
     const clipLabel = getOwnStreamClipLabel(rootConfig, info?.roomId, hostName);
     const chunks = buildChunkSources(parsed, danmaku, totalDuration, config, emotionAnalysis);
+    const recallLimit = Math.max(1, Math.min(24, Math.floor(Number(config.ai?.recallMaxClipsPerChunk) || 12)));
     const worker = async (chunk) => {
         if (!chunk.segments.length && !chunk.danmaku.length && !chunk.emotionLines.length) {
             if (diagnostics) {
@@ -672,7 +676,8 @@ async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, confi
             '不要只看关键词；弹幕密度、弹幕反应和上下文都要考虑。没有独立看点的片段降低优先级，但不要按内容类型一刀切排除。',
             ...buildSelectionPolicyPromptLines(config.selectionPolicy),
             'SenseVoice 情感和声音事件只能作为寻找反差、爆笑、惊讶、委屈等时刻的辅助线索；必须结合字幕确认具体内容，不能仅凭标签下结论。',
-            `每段目标 ${config.minClipSeconds}-${config.maxClipSeconds} 秒，句尾最多允许5秒边界容差，由程序校验。一个分段最多返回8段，没有就返回空数组。`,
+            `时长由内容完整性决定，不设固定最短或最长秒数；保留必要铺垫、发展、反应和收尾，不为凑时长截断或灌水，也不把无关话题拼成长片。一个分段最多返回${recallLimit}段，不要求填满，没有就返回空数组。`,
+            ...anglePromptLines(true),
             '输出纯 JSON，不要 Markdown：',
             ...CUE_BOUNDARY_PROMPT_LINES,
             '',
@@ -706,15 +711,25 @@ async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, confi
                 `recall-${chunk.index}`, diagnostics, value => validSelectionResponse(value, chunk.evidence, null, config, allowedIds, danmaku, chunk.allowedDanmakuIds));
             const text = String(result.text || '').trim();
             const cueIds = new Set(chunk.subtitleCues.map(cue => cue.id));
-            return parseClipResponse(text).map((clip, index) => {
+            const proposals = parseClipResponse(text);
+            if (diagnostics) {
+                diagnostics.recallChunks ||= [];
+                diagnostics.recallChunks.push({ index: chunk.index, start: chunk.start, end: chunk.end,
+                    proposed: proposals.length, limit: recallLimit, atLimit: proposals.length >= recallLimit,
+                    proposals: proposals.map((clip, i) => ({ sourceCandidateId: `chunk-${chunk.index}-${i + 1}`,
+                        startCueId: clip.startCueId, endCueId: clip.endCueId, event: clip.event || clip.title,
+                        viewingAngles: clip.viewingAngles || [], overLimit: i >= recallLimit })) });
+            }
+            return proposals.slice(0, recallLimit).map((clip, index) => {
                 let boundaries;
                 try { boundaries = resolveEvidenceBoundaries(clip, chunk.evidence); } catch { return null; }
                 if (boundaries && (!cueIds.has(boundaries.startCueId) || !cueIds.has(boundaries.endCueId))) return null;
                 const start = boundaries?.start ?? Math.max(chunk.start, timeStringToSeconds(clip.startTime));
                 const end = boundaries?.end ?? Math.min(chunk.end, timeStringToSeconds(clip.endTime));
-                if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+                if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || end > totalDuration) return null;
                 const duration = end - start;
-                if (duration < config.minClipSeconds || duration > config.maxClipSeconds + 5) return null;
+                const angles = normalizeViewingAngles(clip.viewingAngles, { start, end }, chunk.evidence, danmaku,
+                    { cueIds, danmakuIds: chunk.allowedDanmakuIds });
                 return {
                     ...boundaries,
                     start,
@@ -722,6 +737,8 @@ async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, confi
                     duration,
                     title: config.recallOnly ? '' : String(clip.title || '').trim() || `${clipLabel}：直播有趣片段`,
                     event: String(clip.event || '').trim(),
+                    viewingAngles: angles.angles,
+                    viewingAngleIssues: angles.issues,
                     ...(config.recallOnly ? { publicCopyPending: true } : {}),
                     grounding: linkClipEvidence(clip, { start, end }, chunk.evidence, danmaku,
                         { cueIds: allowedIds, danmakuIds: chunk.allowedDanmakuIds }),
@@ -748,7 +765,9 @@ async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, confi
         }
     };
     const nested = await runPool(chunks, config.aiConcurrency, worker);
-    return dedupePlannedClips(nested.flat(), config);
+    // Staged recall retains every proposal until the single pool merge, so its
+    // alternate hooks and pre-ranking disposition remain inspectable.
+    return config.recallOnly ? nested.flat() : dedupePlannedClips(nested.flat(), config);
 }
 
 async function planClipsWithAIFullContext(
@@ -796,7 +815,7 @@ async function planClipsWithAIFullContext(
         `优先：完整有起承转合的趣事；${hostName}独特/离谱/可爱的想法；口误或操作事故及后续反应；弹幕明显在意且字幕能说明原因的内容。`,
         '没有独立看点的片段降低优先级；电影、感谢、唱歌和普通聊天不做默认排除，有完整事件、观点、反应或反差时可以选择。',
         ...buildSelectionPolicyPromptLines(config.selectionPolicy),
-        `每段 ${config.minClipSeconds}-${config.maxClipSeconds} 秒。时间必须取自输入，不能编造。`,
+        '时长由内容完整性决定，不设固定最短或最长秒数；保留必要铺垫、发展、反应和收尾，不为凑时长截断或灌水，也不把无关话题拼成长片。时间必须取自输入，不能编造。',
         '边界要求：startTime 包含铺垫；endTime 包含解释、弹幕后续反应和收尾句；不要从笑点中间开始，也不要在句子或故事中间结束。',
         '所有输出片段必须互不重叠；同一话题可以有多个片段，只要各自独立成立且时间不重叠。',
         '请给每段 1-100 的全场相对分数，并按 score 从高到低输出。',
@@ -833,11 +852,10 @@ async function planClipsWithAIFullContext(
         const clips = (Array.isArray(parsedJson.clips) ? parsedJson.clips : []).map((clip, index) => {
             const start = timeStringToSeconds(clip.startTime);
             const end = timeStringToSeconds(clip.endTime);
-            if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+            if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || end > totalDuration) return null;
             const boundedStart = clamp(start, 0, totalDuration);
             const boundedEnd = clamp(end, 0, totalDuration);
             const duration = boundedEnd - boundedStart;
-            if (duration < config.minClipSeconds || duration > config.maxClipSeconds + 5) return null;
             return {
                 start: boundedStart,
                 end: boundedEnd,
@@ -900,6 +918,7 @@ function buildAiStatusLine(aiStatus = {}) {
     const successfulRecalls = recalls.filter(request => request.status === 'success').length;
     const partialRecall = recalls.length > 0 && successfulRecalls < recalls.length;
     if (!aiStatus.usedFallback) {
+        if (aiStatus.ranking) return `AI状态: 轻量全局排序完成，详细编辑 ${aiStatus.validation?.accepted ?? 0}/${aiStatus.ranking.selected.length} 条；分块召回 ${successfulRecalls}/${recalls.length} 成功`;
         if (aiStatus.selectedSource !== 'staged_global_ai') return null;
         return partialRecall
             ? `AI状态: AI 全局重排成功（分块召回 ${successfulRecalls}/${recalls.length} 成功）`
@@ -942,7 +961,7 @@ function parseRecordingInfo(mediaPath, context = {}) {
 }
 
 
-async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config, rootConfig = {}, diagnostics = null, streamerName = '岁己SUI') {
+async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config, rootConfig = {}, diagnostics = null, streamerName = '岁己SUI', stage = {}) {
     if (!config.ai?.enabled || rootConfig.ai?.text?.enabled === false || candidates.length === 0) {
         return [];
     }
@@ -967,7 +986,9 @@ async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config,
 
     const overlapGap = Math.max(0, Number(config.finalOverlapToleranceSeconds) || 0);
     const promptPrefix = [
-        `你是直播切片主编。下面是${hostName}本场直播经过分块模型、字幕、弹幕和情绪信号共同召回并去重后的完整候选池。`,
+        stage.selectedOnly ? `你是直播切片编辑。下面是全局排序已选中的${hostName}候选及其完整原文。本步骤只对这些候选完成边界、文案和引用，不重新做全场取舍。`
+            : `你是直播切片主编。下面是${hostName}本场直播经过分块模型、字幕、弹幕和情绪信号共同召回并去重后的完整候选池。`,
+        ...(stage.selectedOnly ? [`本组只允许 candidateIndex=${rankedCandidates.map(candidate => candidate.index).join(',')}；保持这些全局ID，不按本组顺序重编号。每个候选最多一段。`] : []),
         OWN_STREAM_SOURCE_ATTRIBUTION_RULE,
         ...participantPromptLines(parsed.participantContext),
         `请一次性全局比较所有候选，输出最多 ${maxClips} 个适合本地 review、能够独立发布的最终片段。${maxClips} 是硬上限而不是数量目标，有多少合格题材就返回多少。`,
@@ -979,7 +1000,10 @@ async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config,
         `重点识别：完整趣事或观点、明显反差/口误/事故、弹幕持续追问或要求细说、观众对一句没说完的话持续在意、以及弹幕觉得${hostName}特别/有趣/可爱的片段。持续讨论本身是通用信号，不要求命中特定题材词。`,
         '没有独立看点的片段降低优先级；内容类型不做默认排除。',
         ...buildSelectionPolicyPromptLines(config.selectionPolicy),
-        `每段目标 ${config.minClipSeconds}-${config.maxClipSeconds} 秒，句尾最多允许5秒边界容差，由程序校验；不要为了整数时长截断完整句子。`,
+        '时长由内容完整性决定，不设固定最短或最长秒数；保留必要铺垫、发展、反应和收尾，不为凑时长截断或灌水，也不把无关话题拼成长片。',
+        ...anglePromptLines(),
+        '候选va字段是带原文锚点的多个看点线索，逐项对照完整字幕；选择其中具体、独立的看点组织本片，别把摘要当唯一看点。结束于本看点收束，不把后续另一场事件或战斗当必需结尾。',
+        ...(stage.selectedOnly ? ['本阶段必须守住focus给出的全局选中理由；起因与结尾服务于该看点。不要把主要角色互动改写为途中操作教程，不用旁枝替代无法证实的主看点。'] : []),
         '必须从给出的 candidateIndex 中选择；startCueId/endCueId 从该候选的完整字幕范围中选择，补齐铺垫、解释和收束，不得跨无关话题。',
         '字幕表每行是 G 开头的 ID、绝对秒数时间范围、原话。程序用 ID 映射精确时间，不会再任意缩短结尾；选择包含完整收束的 endCueId。',
         'title/coverText/description 中的人物、数字、引号原话和事件必须有本片 evidenceCueIds 或 evidenceDanmakuIds 支撑；不得把本表其他片段的信息借给本片。',
@@ -1018,12 +1042,14 @@ async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config,
         const requestOptions = {
             wordLimit: Math.max(2400, maxClips * 140),
             primaryModel: config.ai?.model || undefined,
+            ...(stage.selectedOnly ? { maxTokens: config.ai?.rankThenEdit?.detailMaxTokens || 16000,
+                responseFormat: require('./clipping/ranked_editorial').detailResponseFormat(rankedCandidates) } : {}),
             // Global comparison reads every candidate, unlike a single recall chunk.
-            timeoutMs: config.ai?.rerankTimeoutMs ?? config.ai?.timeoutMs,
+            timeoutMs: stage.selectedOnly ? (config.ai?.rankThenEdit?.detailTimeoutMs || config.ai?.timeoutMs) : (config.ai?.rerankTimeoutMs ?? config.ai?.timeoutMs),
             daiYuTransientMaxAttempts: config.ai?.rerankMaxAttempts ?? 2
         };
         const result = await requestSelectionText(prompt, requestOptions, config, rootConfig, info,
-            'global-rerank', diagnostics, value => isRerankResponseValid(value, rankedCandidates,
+            stage.phase || 'global-rerank', diagnostics, value => isRerankResponseValid(value, rankedCandidates,
                 parsed.segments.at(-1)?.end || 0, config, subtitleEvidence, danmaku, packed.cueIds, packed.danmakuIds));
         const text = String(result.text || '').trim();
         const proposed = parseClipResponse(text);
@@ -1072,7 +1098,13 @@ async function planClipsWithStagedAI(
         emotionAnalysis,
         streamerName
     );
-    const pool = buildRecallCandidatePool(localCandidates, modelCandidates, config);
+    const pool = buildRecallCandidatePool(localCandidates, modelCandidates, config, diagnostics);
+    if (config.ai?.rankThenEdit?.enabled) {
+        const localDiagnostics = diagnostics || { requests: [], errors: [] };
+        const clips = await require('./clipping/ranked_editorial').rankThenEdit(pool, parsed, danmaku, info, config,
+            rootConfig, localDiagnostics, streamerName, refineCandidatesWithAI);
+        return { clips, pool, modelCandidates };
+    }
     const clips = await refineCandidatesWithAI(
         pool,
         parsed,
@@ -1325,6 +1357,8 @@ function buildPlanReviewMarkdown(clips, metadata) {
     clips.forEach((clip, index) => {
         const sourceLabel = getSelectionSourceLabel(clip);
         lines.push(`${index + 1}. 未生成ID（仅规划） ${clip.title} | ${formatClock(clip.start)}-${formatClock(clip.end)} | ${formatClock(clip.duration)} | ${clip.reason || ''}`);
+        if (clip.viewingAngles?.length) lines.push(`   看点线索（待核）: ${clip.viewingAngles.map(angle => `${angle.label}：${angle.hook}`).join(' / ')}`);
+        if (clip.quoteEchoes?.length) lines.push(`   台词线索（字幕/弹幕重合）: ${clip.quoteEchoes.map(row => `${formatClock(row.start)} ${row.quote}`).join(' / ')}`);
         const scoreLine = buildRecommendationScoreLine(clip);
         if (scoreLine) lines.push(scoreLine);
         lines.push(`   来源: ${sourceLabel}`);
@@ -1667,6 +1701,8 @@ async function generateOwnStreamClipJob({
         recommendationScore: Number.isFinite(Number(clip.score)) ? Number(clip.score) : null,
         window,
         candidate: clip.base || null,
+        viewingAngles: anglesForWindow(clip, window, subtitleEvidence, danmaku),
+        quoteEchoes: quoteEchoes(danmaku, window, subtitleEvidence.cues),
         ...(clip.precisionExperiment ? { precisionExperiment: clip.precisionExperiment } : {}),
         grounding: evidenceReview(clip, copy) || null,
         ...(require('./asr/subtitle_proofreading').resolveProofreadingOptions(options.config || {}, { roomId: info.roomId }).enabled
@@ -1873,7 +1909,7 @@ async function generateOwnStreamClipsInternal(options = {}) {
                 aiDiagnostics.selectedSource = 'chunked_ai';
             }
         }
-        if (clips.length === 0 && !config.parallel?.enabled) {
+        if (clips.length === 0 && !config.parallel?.enabled && !aiDiagnostics.ranking) {
             const clipsFromAi = candidateRefinementAttempted
                 ? []
                 : await refineCandidatesWithAI(candidates, parsed, danmaku, info, config, rootConfig, aiDiagnostics, streamerName);
@@ -1910,7 +1946,10 @@ async function generateOwnStreamClipsInternal(options = {}) {
         requests: aiDiagnostics.requests || [],
         ...(aiDiagnostics.skippedChunks?.length ? { skippedChunks: aiDiagnostics.skippedChunks } : {}),
         ...(aiDiagnostics.validation ? { validation: aiDiagnostics.validation } : {}),
-        ...(aiDiagnostics.candidatePool ? { candidatePool: aiDiagnostics.candidatePool } : {})
+        ...(aiDiagnostics.candidatePool ? { candidatePool: aiDiagnostics.candidatePool } : {}),
+        ...(aiDiagnostics.ranking ? { ranking: aiDiagnostics.ranking, detailBatches: aiDiagnostics.detailBatches } : {}),
+        ...(aiDiagnostics.recallChunks ? { recallChunks: aiDiagnostics.recallChunks.sort((a, b) => a.index - b.index) } : {}),
+        ...(aiDiagnostics.recallPool ? { recallPool: aiDiagnostics.recallPool } : {})
     };
     clips = filterClipsBySelection(clips, options.selectedIndices);
     clips = attachEmotionEvidenceToClips(clips, emotionAnalysis, config.emotionScoring || {});
@@ -1932,117 +1971,20 @@ async function generateOwnStreamClipsInternal(options = {}) {
             console.log(`Removed ${beforeOverlapFilter - clips.length} overlapping clip candidate(s) after subtitle boundary alignment.`);
         }
     }
-    clips = await reviewClipActors(clips, parsed, danmaku, finalEvidence, info, config, rootConfig, aiDiagnostics);
-    const experiment = await require('./clipping/enhancement_runner').selectExperimentBatch(clips, parsed, config, rootConfig, info, options);
-    clips = experiment.clips;
-    if (experiment.summary) reviewMetadata.precisionExperiment = experiment.summary;
-    reviewMetadata.aiStatus.requests = aiDiagnostics.requests || [];
-    if (aiDiagnostics.attribution) reviewMetadata.aiStatus.attribution = aiDiagnostics.attribution;
-    const inputPlanBase = options.planPath
-        ? topicClipper.sanitizeFileName(path.basename(options.planPath, path.extname(options.planPath)))
-        : null;
-    const planPath = inputPlanBase
-        ? path.join(outputRoot, `${inputPlanBase}_ALIGNED.json`)
-        : path.join(outputRoot, 'PLAN.json');
-    const reviewPath = inputPlanBase
-        ? path.join(outputRoot, `REVIEW_${inputPlanBase}.md`)
-        : path.join(outputRoot, 'REVIEW.md');
-    reviewMetadata.reviewPath = reviewPath;
-    reviewMetadata.uploadManifestPath = inputPlanBase
-        ? path.join(outputRoot, `${inputPlanBase}_UPLOAD_MANIFEST.json`)
-        : path.join(outputRoot, 'UPLOAD_MANIFEST.json');
-    reviewMetadata.planPath = planPath;
-    fs.writeFileSync(planPath, JSON.stringify({
-        version: 1,
-        generatedAt: new Date().toISOString(),
-        source: {
-            mediaPath: options.mediaPath,
-            srtPath: options.srtPath,
-            xmlPath: options.xmlPath || null
-        },
-        config: {
-            maxCandidates: config.maxCandidates,
-            maxClips: config.maxClips,
-            minClipSeconds: config.minClipSeconds,
-            maxClipSeconds: config.maxClipSeconds,
-            chunkSeconds: config.chunkSeconds,
-            aiConcurrency: config.aiConcurrency,
-            clipConcurrency,
-            clipFfmpegThreads,
-            aiStrategy: config.ai?.strategy || null,
-            aiModel: config.ai?.model || null,
-            maxCandidateLines: config.ai?.maxCandidateLines || null,
-            subtitleEvidenceFormat: `complete_grouped_v${finalEvidence.version}`,
-            subtitleTruncation: false,
-            maxCandidateDanmakuLines: config.ai?.maxCandidateDanmakuLines || null,
-            parallel: config.parallel
-        },
-        aiStatus: reviewMetadata.aiStatus,
-        ...(experiment.summary ? { precisionExperiment: experiment.summary } : {}),
-        ...(parsed.participantContext ? { participantContext: parsed.participantContext } : {}),
-        clips
-    }, null, 2), 'utf8');
-    if (options.planOnly) {
-        fs.writeFileSync(reviewPath, buildPlanReviewMarkdown(clips, reviewMetadata), 'utf8');
-        console.log(`Plan only: ${planPath}`);
-        console.log(`Review list: ${reviewPath}`);
-        clips.forEach((clip, index) => {
-            console.log(`${index + 1}. ${clip.title} ${formatClock(clip.start)} ${formatClock(clip.duration)} ${clip.reason || ''}`);
-        });
-        return clips;
-    }
-
-    const clipProcessingStartedAt = new Date();
-    const clipProcessingStartedNs = process.hrtime.bigint();
-    const completeClipProcessingStats = results => {
-        const finishedAt = new Date();
-        reviewMetadata.processingStats = buildClipProcessingStats(
-            results,
-            Number(process.hrtime.bigint() - clipProcessingStartedNs) / 1e6,
-            clipProcessingStartedAt.toISOString(),
-            finishedAt.toISOString()
-        );
-    };
-    const resourceScheduler = createClipResourceAdaptiveScheduler({
-        ownConfig: config,
-        rootConfig
+    const source = { mediaPath: options.mediaPath,
+        kind: topicClipper.chooseClipSource(options.mediaPath, options.mediaPath)?.kind || 'video', uploadReady: true };
+    const production = await require('./clipping/own_production').produceOwnClips({ clips, options, config, rootConfig,
+        parsed, danmaku, evidence: finalEvidence, info, outputRoot, diagnostics: aiDiagnostics, metadata: reviewMetadata }, {
+        review: (batch, hooks) => reviewClipActors(batch, parsed, danmaku, finalEvidence, info, config, rootConfig, aiDiagnostics, hooks),
+        prepare: (batch, batchOptions) => require('./clipping/enhancement_runner').selectExperimentBatch(batch, parsed, config, rootConfig, info, batchOptions),
+        render: (clip, index, execution) => generateOwnStreamClipJob({ clip, evidenceReview, subtitleEvidence: finalEvidence,
+            index, parsed, danmaku, options, outputRoot, source, streamerName, info, participantMetadata, execution,
+            config: execution.profile ? { ...mediaConfig, clipFfmpegThreads: execution.profile.ffmpegThreads } : mediaConfig }),
+        planReview: buildPlanReviewMarkdown, stats: buildClipProcessingStats
     });
-    const initialResourceProfile = await resourceScheduler.refresh(true);
-    const mediaConcurrency = resourceScheduler.enabled
-        ? resourceScheduler.maxConcurrency
-        : clipConcurrency;
-    if (resourceScheduler.enabled) {
-        console.log(
-            `[resource] 自动切片资源检测: mode=${initialResourceProfile.mode}; `
-            + `concurrency=${initialResourceProfile.concurrency}; `
-            + `threads=${initialResourceProfile.ffmpegThreads}`
-            + (initialResourceProfile.reason ? `; reason=${initialResourceProfile.reason}` : '')
-        );
-    }
-
-    const source = {
-        mediaPath: options.mediaPath,
-        kind: topicClipper.chooseClipSource(options.mediaPath, options.mediaPath)?.kind || 'video',
-        reason: 'own_stream_media',
-        uploadReady: true
-    };
-    const jobs = clips.map((clip, index) => execution => generateOwnStreamClipJob({
-        clip, evidenceReview, subtitleEvidence: finalEvidence, index, parsed, danmaku, options,
-        outputRoot, source, streamerName, info, participantMetadata, execution,
-        config: execution.profile ? { ...mediaConfig, clipFfmpegThreads: execution.profile.ffmpegThreads } : mediaConfig
-    }));
-    const results = await require('./clipping/clip_pipeline').runClipPipeline(jobs, {
-        scheduler: resourceScheduler, mediaConcurrency,
-        enhancementConcurrency: Number(config.enhancementConcurrency) || 3,
-        onError: (error, index) => {
-            console.warn(`clip job ${index + 1} failed: ${error.message}`);
-            reviewMetadata.aiStatus.renderErrors ||= [];
-            reviewMetadata.aiStatus.renderErrors.push({ index: index + 1, title: clips[index].title,
-                start: clips[index].start, end: clips[index].end, error: error.message });
-        }
-    });
-
-    completeClipProcessingStats(results);
+    clips = production.clips;
+    if (options.planOnly) return clips;
+    const { results, planPath, reviewPath } = production;
     const artifacts = require('./clipping/own_review_artifacts');
     const reviewResults = artifacts.prepareReviewResults(results, JSON.parse(fs.readFileSync(planPath, 'utf8')), parsed, outputRoot);
     artifacts.saveReviewState(reviewPath, reviewResults, reviewMetadata);

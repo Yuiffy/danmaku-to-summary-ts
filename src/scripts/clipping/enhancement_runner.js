@@ -17,6 +17,8 @@ function requestStage(config, budget, info, phase, prompt, images = []) {
         ? path.resolve(__dirname, '../../..', budget.ledgerPath) : '' };
     return loadWorkflow('clipping/stage').runStage(config, accounting, {
         stage: phase, roomId: String(info.roomId || ''), sessionId: info.sessionId || info.selectionCacheDirectory || info.recordedAt,
+        outputContract: info.outputContract || require('../text/generated_output').stageOutputContract(phase),
+        responseDiagnosticsDirectory: info.selectionCacheDirectory ? path.join(info.selectionCacheDirectory, 'rejected-responses') : undefined,
         split: info.evaluationSplit || 'screening'
     }, prompt, images, (provider, text, options) => provider === 'daiYu'
         ? generator.generateTextWithDaiYu(text, options) : generator.generateTextWithTuZi(text, options));

@@ -42,6 +42,21 @@ describe('participant context', () => {
     expect(attributionEnabled({ attribution: { enabled: true, roomIds: ['1'] } }, '1')).toBe(true);
     expect(attributionEnabled({ attribution: { enabled: true, roomIds: ['1'] } }, '2')).toBe(false);
   });
+  test('preserves discovery when ASR used extracted audio and the clip uses original video', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'recording-people-audio-'));
+    try {
+      const media = path.join(dir, 'source.flv'), srt = path.join(dir, 'source.srt');
+      const participantDiscovery = { roomId: '1', rosterStreamerIds: ['host', 'guest'], mode: 'multi', modeStatus: 'candidate' };
+      const roster = loadRecordingParticipants(srt, media, '1', {
+        input: path.join(dir, 'source.m4a'), sourceMediaPath: media, hostRoomId: '1', participantDiscovery
+      });
+      const context = buildParticipantContext(registry, { roomId: '1' }, { segments: [] }, [], roster);
+      expect(context.people.find((person: any) => person.id === 'guest').presence).toBe('candidate');
+      expect(loadRecordingParticipants(srt, media, '2', {
+        input: media, hostRoomId: '1', participantDiscovery
+      }).participantDiscovery).toBeUndefined();
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
   test('writes an idempotent explicit recording roster and refuses changed sources', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'recording-people-writer-'));
     try {

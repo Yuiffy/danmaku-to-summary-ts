@@ -7,8 +7,9 @@ const configLoader = require('./config-loader');
 const policy = require('./reply_summary_policy.json');
 const full = require('./full_live_context');
 const { buildCombinedResponseFormat, EVIDENCE_TARGETS, ACTOR_KINDS } = require('./text/live_output_schema');
+const { speakerForSegment } = require('./asr/speaker_attribution');
 
-const PROMPT_VERSION = 5;
+const PROMPT_VERSION = 6;
 const evidenceTargets = new Set(EVIDENCE_TARGETS);
 const actorKinds = new Set(ACTOR_KINDS);
 const normalize = value => String(value || '').normalize('NFKC').replace(/[\p{P}\p{S}\s]/gu, '').toLowerCase();
@@ -49,7 +50,7 @@ The outer JSON format below overrides standalone-text formatting in the two task
 GROUNDING RULES:\n${policy.join('\n')}
 The source contains multiple speaker labels: ${Boolean(source?.multipleSpeakers)}.
 Only these source speaker labels identify the host: ${JSON.stringify([...(source?.hostLabels || [])])}.
-For multi-speaker source quotes without a recognized host label, actor must be team or uncertain, and the corresponding reply phrase must stay team-level. Do not name who led, healed, commanded or performed the action.
+For any source quote without a recognized host label, actor must be team or uncertain, even if the source contains only one anonymous speaker. A single acoustic cluster, room ownership, a title or a planned guest list cannot identify the speaker. Keep the reply phrase neutral. Do not name who led, healed, commanded or performed the action.
 Return exactly one JSON object with keys reply, content, evidence. Prose is Chinese.
 reply: the final natural comment, within the configured character limit, without a title or Markdown.
 content: a JSON OBJECT with exactly overview, activityTypes, songs, games, topics. Never replace content with the overview string or move its fields to the outer object. overview is a complete sentence of at most 80 Chinese characters; the other four fields are arrays. Do not call it exhaustive. Include actual later activity changes, but list only confidently supported performed songs and played games; empty lists are allowed when supported.
@@ -89,15 +90,11 @@ function validateCombinedResult(text, source, roomId, wordLimit = configLoader.g
         const speech = rows.filter(r => r.source === 'speech');
         const hasReplyDynamic = rows.some(r => r.source === 'reply_dynamic');
         if (hasReplyDynamic && record.target !== 'reply') throw new Error('Post evidence is only valid for a reply');
-        const namedOther = speech.some(s => {
-            const label = s.speaker || speakerLabel(s.text);
-            return label && !/^(?:UNKNOWN|SPEAKER_\d+)$/iu.test(label) && !source.hostLabels.has(normalize(label));
-        });
-        if (record.actor === 'host' && ((!speech.length && !hasReplyDynamic) || namedOther)) {
+        const allSpeechIsHost = speech.every(s => source.hostLabels.has(normalize(speakerForSegment(s))));
+        if (record.actor === 'host' && ((!speech.length && !hasReplyDynamic) || !allSpeechIsHost)) {
             throw new Error('Host attribution lacks a recognized source speaker');
         }
-        const hostAttributionUnverified = record.actor === 'host' && source.multipleSpeakers
-            && !speech.every(s => source.hostLabels.has(normalize(s.speaker || speakerLabel(s.text))));
+        const hostAttributionUnverified = false;
         if (record.target === 'reply' && !inspection.cleaned.includes(record.value)) throw new Error('Evidence does not refer to the reply');
         let corroboration = [];
         if (record.target !== 'reply') {

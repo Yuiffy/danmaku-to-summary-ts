@@ -5,6 +5,10 @@ import { ConfigProvider } from '../../../core/config/ConfigProvider';
 import { ProcessingAlertService } from '../../monitoring/ProcessingAlertService';
 import { MikufansWebhookHandler } from './MikufansWebhookHandler';
 
+jest.mock('../../../scripts/asr/participant_visual', () => ({
+  captureParticipantRoomSnapshot: jest.fn().mockResolvedValue({ status: 'ready' })
+}));
+
 function writeSegment(dir: string, roomId: string): { videoPath: string; xmlPath: string } {
   fs.mkdirSync(dir, { recursive: true });
   const videoPath = path.join(dir, `record-${roomId}-${Date.now()}.flv`);
@@ -113,6 +117,22 @@ describe('MikufansWebhookHandler segment collection finalization', () => {
     expect(handler.delayedActions.get(String(roomId))?.has('segment_collection')).not.toBe(true);
     expect(handler.delayedActions.get(String(roomId))?.has('recording_start_alert')).toBe(true);
     expect(handler.activeLiveRooms.has(String(roomId))).toBe(true);
+  });
+
+  test('captures a session-bound room snapshot without blocking or repeating StreamStarted', async () => {
+    const capture = require('../../../scripts/asr/participant_visual').captureParticipantRoomSnapshot;
+    capture.mockClear();
+    capture.mockImplementationOnce(() => new Promise(() => {}));
+    const config = { asr: { participantDiscovery: { enabled: true, visual: { enabled: true } } } };
+    jest.spyOn(ConfigProvider, 'getConfig').mockReturnValue(config as any);
+    const handler = new MikufansWebhookHandler() as any;
+    handlers.push(handler);
+    const event = { EventTimestamp: '2026-09-12T20:00:00+08:00', EventData: { RoomId: 1, Recording: false } };
+    await handler.handleStreamStarted(event);
+    await handler.handleStreamStarted(event);
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(capture).toHaveBeenCalledWith(config, { roomId: '1', startedAt: '2026-09-12T12:00:00.000Z' });
+    expect(handler.activeLiveRooms.has('1')).toBe(true);
   });
 
   test('removes a fired action from pending without deleting a replacement timer', async () => {

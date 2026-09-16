@@ -2,6 +2,7 @@
 const { withSelectionCache } = require('./selection_cache');
 const { parseClipResponse, resolveEvidenceBoundaries, linkClipEvidence } = require('./subtitle_evidence');
 const { summarizeTextAttempts, hasIncompleteTextGeneration } = require('../text_attempt_diagnostics');
+const path = require('path');
 
 function recordSelectionDiagnostic(diagnostics, context, result = null, error = null) {
     if (!diagnostics) return;
@@ -28,15 +29,20 @@ function recordSelectionDiagnostic(diagnostics, context, result = null, error = 
 }
 
 async function requestSelectionText(prompt, requestOptions, config, rootConfig, info, phase, diagnostics, validate) {
+    const key = phase.startsWith('actor-review-') ? 'reviews' : phase.startsWith('dialogue-evidence-') ? 'windows'
+        : phase === 'global-rank' ? 'decisions' : 'clips';
+    requestOptions = { ...requestOptions, structuredOutputKey: key, requestPhase: phase,
+        ...(info?.selectionCacheDirectory ? { responseDiagnosticsDirectory: path.join(info.selectionCacheDirectory, 'rejected-responses') } : {}) };
     const stageName = phase.startsWith('recall-') ? 'recall' : phase.startsWith('actor-review-') ? 'actorReview'
-        : phase.startsWith('dialogue-evidence-') ? 'dialogueEvidence' : 'rerank';
+        : phase.startsWith('dialogue-evidence-') ? 'dialogueEvidence' : phase.startsWith('detail-') ? 'detail' : 'rerank';
     const retry = { ...config.ai?.retry, ...config.ai?.retryByStage?.[stageName], ...requestOptions.retry };
     requestOptions = { ...requestOptions, ...(Object.keys(retry).length ? { retry } : {}) };
     const stage = config.ai?.stages?.[stageName];
     if (stage && require('./enhancement_runner').enhancementEnabled({ enabled: true, roomIds: config.ai.stageRoomIds }, info?.roomId)) {
         const started = Date.now();
         try {
-            const result = await require('./enhancement_runner').requestStage({ ...stage, retry: { ...retry, ...stage.retry } }, config.ai.stageBudget, info, phase, prompt);
+            const result = await require('./enhancement_runner').requestStage({ ...stage, retry: { ...retry, ...stage.retry } }, config.ai.stageBudget,
+                { ...info, outputContract: { key, type: 'records' } }, phase, prompt);
             recordSelectionDiagnostic(diagnostics, { phase, elapsedMs: Date.now() - started, provider: stage.provider, model: stage.model }, result);
             return result;
         } catch (error) {
@@ -53,7 +59,8 @@ async function requestSelectionText(prompt, requestOptions, config, rootConfig, 
     };
     const startedAt = Date.now();
     // Routing and transport retry limits do not change verified model output.
-    const { staticPromptCachePrefix, daiYuTransientMaxAttempts, retry: retryPolicy, transientMaxAttempts, transientRetryDelayMs, ...semanticRequestOptions } = requestOptions;
+    const { staticPromptCachePrefix, daiYuTransientMaxAttempts, retry: retryPolicy, transientMaxAttempts, transientRetryDelayMs,
+        responseDiagnosticsDirectory, requestPhase, structuredOutputKey, ...semanticRequestOptions } = requestOptions;
     const record = (result, error = null) => recordSelectionDiagnostic(diagnostics,
         { phase, promptChars: prompt.length, elapsedMs: Date.now() - startedAt, provider, model: requestOptions.primaryModel }, result, error);
     let result;
@@ -94,8 +101,7 @@ function validSelectionResponse(result, evidence, candidateIds = null, config = 
             const bounds = resolveEvidenceBoundaries(clip, evidence);
             if (!bounds) return false;
             if (allowedCueIds && (!allowedCueIds.has(bounds.startCueId) || !allowedCueIds.has(bounds.endCueId))) return false;
-            if (bounds.end - bounds.start < (Number(config.minClipSeconds) || 0)
-                || bounds.end - bounds.start > (Number(config.maxClipSeconds) || Infinity) + 5) return false;
+            if (!Number.isFinite(bounds.start) || !Number.isFinite(bounds.end) || bounds.start < 0 || bounds.end <= bounds.start) return false;
             const label = clip.event || clip.title;
             if (typeof label !== 'string' || !label.trim()) return false;
             const linked = linkClipEvidence(clip, bounds, evidence, danmaku, { cueIds: allowedCueIds, danmakuIds: allowedDanmakuIds });

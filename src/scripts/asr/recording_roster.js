@@ -8,10 +8,16 @@ const subtitleHash = srtPath => crypto.createHash('sha256').update(fs.readFileSy
 
 function loadRecordingParticipants(srtPath, mediaPath, roomId, speakerSidecar = {}) {
     const metadata = { plannedParticipantIds: [], source: 'none', issues: [] };
-    if (speakerSidecar.input && path.resolve(speakerSidecar.input) === path.resolve(mediaPath)) {
+    const sameSource = [speakerSidecar.input, speakerSidecar.sourceMediaPath]
+        .some(source => typeof source === 'string' && path.resolve(source) === path.resolve(mediaPath));
+    if (sameSource
+        && (!speakerSidecar.hostRoomId || String(speakerSidecar.hostRoomId) === String(roomId))) {
         metadata.plannedParticipantIds = Array.isArray(speakerSidecar.plannedParticipantIds)
             ? speakerSidecar.plannedParticipantIds.map(String) : [];
         if (metadata.plannedParticipantIds.length) metadata.source = 'asr_planned_roster';
+        if (speakerSidecar.participantDiscovery?.roomId === String(roomId)) {
+            metadata.participantDiscovery = speakerSidecar.participantDiscovery;
+        }
     }
     const file = rosterPath(srtPath);
     if (!fs.existsSync(file)) return metadata;
@@ -21,7 +27,7 @@ function loadRecordingParticipants(srtPath, mediaPath, roomId, speakerSidecar = 
         if (data.version !== 1 || String(data.roomId) !== String(roomId) || data.subtitleSha256 !== hash
             || typeof data.sourceMediaPath !== 'string' || path.resolve(data.sourceMediaPath) !== path.resolve(mediaPath)
             || !Array.isArray(data.plannedParticipantIds) || !data.source) throw new Error('participant_source_mismatch');
-        return { plannedParticipantIds: Array.from(new Set(data.plannedParticipantIds.map(String))),
+        return { ...metadata, plannedParticipantIds: Array.from(new Set(data.plannedParticipantIds.map(String))),
             source: data.source, subtitleSha256: hash, issues: [] };
     } catch (error) {
         return { ...metadata, issues: [error.message] };

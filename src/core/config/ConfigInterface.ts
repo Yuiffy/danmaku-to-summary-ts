@@ -321,6 +321,18 @@ export interface AsrAdaptiveSpeakerConfig {
 }
 
 export interface AsrConfig {
+  participantDiscovery?: {
+    enabled?: boolean;
+    visual?: {
+      enabled?: boolean;
+      provider?: 'daiYu' | 'tuZi';
+      model?: string;
+      maxFrames?: number;
+      timeoutMs?: number;
+      maxTokens?: number;
+      reasoningEffort?: string;
+    };
+  };
   default_backend: AsrBackendName;
   backend?: AsrBackendName;
   common_hotwords?: AsrHotword[];
@@ -517,6 +529,8 @@ export interface ImageGenerationConfig {
   /** Reuse one exact live-facts prefix across goodnight and comic-script requests. */
   sharedPromptCache?: {
     enabled?: boolean;
+    /** Reuse accepted Responses history for matching source/model/format requests. */
+    continuationEnabled?: boolean;
     explicitRolloutPercent?: number;
     ttl?: '30m';
   };

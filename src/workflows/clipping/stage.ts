@@ -20,7 +20,8 @@ export interface BudgetConfig {
     ledgerPath: string; globalCny?: number; roomCny?: number; sessionCny?: number;
     holdoutReserveCny?: number;
 }
-export interface StageContext { stage: string; roomId: string; sessionId: string; split?: 'screening' | 'holdout' }
+export interface StageContext { stage: string; roomId: string; sessionId: string; split?: 'screening' | 'holdout';
+    outputContract?: { key: string; type: string } | null; responseDiagnosticsDirectory?: string }
 export interface Generation {
     text: string; meta?: { usage?: unknown; attempts?: Array<Record<string, any>>; [key: string]: any };
 }
@@ -178,6 +179,8 @@ async function runStageAttempt(config: StageConfig, budget: BudgetConfig, contex
         result = await generate(config.provider, prompt, { primaryModel: config.model, reasoningEffort: config.reasoningEffort,
             apiMode: config.apiMode, maxTokens: config.maxTokens, timeoutMs: config.timeoutMs,
             deadlineAt, images, strictEvaluation: true,
+            structuredOutputKey: context.outputContract?.key, structuredOutputType: context.outputContract?.type,
+            responseDiagnosticsDirectory: context.responseDiagnosticsDirectory, requestPhase: context.stage,
             exactModel: true, fallbackModelsEnabled: false, allowProviderFallback: false, strictResponses: true,
             transientMaxAttempts: 1, promptCacheRolloutPercent: 0 });
         if (!result?.text?.trim()) throw new Error('Empty stage output');

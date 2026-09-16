@@ -12,6 +12,8 @@ function attributionEnabled(config = {}, roomId) {
 
 function buildParticipantContext(rootConfig, info, parsed, danmaku, metadata = {}, settings = rootConfig.ownStreamClips?.attribution) {
     const planned = new Set(metadata.plannedParticipantIds || []);
+    const discovery = metadata.participantDiscovery;
+    const discovered = new Set(discovery?.rosterStreamerIds || []);
     const registry = rootConfig.ai?.streamerRegistry || {};
     const people = buildPersonEvidenceContext(rootConfig, info?.roomId).map(person => {
         const entry = registry[person.id] || {};
@@ -28,11 +30,12 @@ function buildParticipantContext(rootConfig, info, parsed, danmaku, metadata = {
         const speechMentions = (parsed.segments || []).filter(row => matches(row.text));
         const audienceMentions = danmaku.filter(row => matches(row.text));
         return { ...person, ...(referenceHints.length ? { referenceHints } : {}), preferredName: preferredName(entry) || person.label,
-            presence: person.sourceHost ? 'source_host' : planned.has(person.id) ? 'planned'
-                : qualifiedVoice ? 'voice_matched' : 'mentioned_only',
+            presence: person.sourceHost ? 'source_host' : qualifiedVoice ? 'voice_matched'
+                : planned.has(person.id) ? 'planned' : discovered.has(person.id) ? 'candidate' : 'mentioned_only',
             voiceRows: voiceObservations.length, voiceSeconds, speechMentions: speechMentions.length, audienceMentions: audienceMentions.length };
-    }).filter(person => person.sourceHost || planned.has(person.id) || person.presence === 'voice_matched' || person.speechMentions || person.audienceMentions);
+    }).filter(person => person.sourceHost || planned.has(person.id) || discovered.has(person.id) || person.presence === 'voice_matched' || person.speechMentions || person.audienceMentions);
     return { version: 1, people, rosterSource: metadata.source || 'none',
+        ...(discovery ? { participantDiscovery: discovery } : {}),
         ...(settings?.entityReferences?.enabled === true ? { entityReferencesEnabled: true } : {}),
         issues: [...(metadata.issues || []), ...[...planned].filter(id => !registry[id]).map(id => `unknown_participant:${id}`)] };
 }
@@ -45,6 +48,7 @@ function participantPromptLines(context) {
             names: person.names, presence: person.presence,
             ...(person.referenceHints?.length ? { referenceHints: person.referenceHints, hintsAreCandidatesOnly: true } : {}) })),
         '声纹V标记是局部音频窗口匹配，分数/间隔不是概率，不是逐词标注；?或mixed保留未知，不能用房主身份补全。',
+        'candidate只表示标题、动态、封面或画面发现的候选；名单/画面不能给某句语音署名。voice_matched只证明音轨里匹配到声音，被观看视频也可能有该声音；实际互动仍须同时间的对话/画面支持。',
         '逐项区分当前讲述者、转述内的说话人、动作执行者和对象；第一人称我不能默认归给房主，提到谁不代表谁执行动作。',
         '不同人说的提问、回应和反问不得合并成同一个人的连续动作。身份不确定就写中性事件并注明待核。',
         '事件中已确认的执行者或对象，无论现场嘉宾、仅被提及的人还是转述对象，公开文案优先使用其copyName，不因缺少现场声纹把已确认人名改成对方、有人或朋友。',

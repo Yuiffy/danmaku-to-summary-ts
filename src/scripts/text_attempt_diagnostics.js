@@ -59,6 +59,8 @@ function recordFailedTextAttempt(attempts, provider, model, error, state, extra 
         ...(state.response?.headers?.get?.('retry-after') ? { retryAfter: state.response.headers.get('retry-after') } : {}),
         requestId: state.response?.headers?.get?.('x-request-id') || error.requestId || null,
         responseId: state.data?.id || null, responseModel: state.data?.model || null,
+        ...(error.rejectionDiagnosticPath ? { rejectionDiagnosticPath: error.rejectionDiagnosticPath } : {}),
+        ...(error.outputRejection ? { outputRejection: error.outputRejection } : {}),
         finishReason: getOpenAITextFinishReason(state.data),
         error: String(error.message || error).slice(0, 300) };
     attempts.push(attempt);

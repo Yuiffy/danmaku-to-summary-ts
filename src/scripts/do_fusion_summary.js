@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const xml2js = require('xml2js');
+const { speakerForSegment } = require('./asr/speaker_attribution');
 
 // ====== 🎛️ 核心参数配置 (可调整) ======
 
@@ -185,6 +186,7 @@ function buildParticipantSummaryLines(sidecar) {
     return [
         `【参与者】计划参与: ${plannedText}`,
         `【参与者】实际出声: ${appearedText}`,
+        '【归属说明】名单不证明逐句身份；实际出声仅指音轨匹配，也可能来自被观看内容。UNKNOWN和匿名标签不可归给房主。',
         '---'
     ];
 }
@@ -296,19 +298,13 @@ async function processLiveData(inputFiles) {
             if (participantSummaryLines.length === 0) {
                 participantSummaryLines.push(...buildParticipantSummaryLines(sidecar));
             }
-            const content = fs.readFileSync(srtPath, 'utf8');
-            const blocks = content.split(/\n\s*\n/);
-
-            for (const block of blocks) {
-                const lines = block.split('\n').map(l => l.trim()).filter(l => l);
-                if (lines.length < 3) continue;
-
-                const timeLine = lines.find(l => l.includes('-->'));
-                if (!timeLine) continue;
-
-                const [startStr] = timeLine.split(' --> ');
-                const ms = parseSrtTimestamp(startStr);
-                const rawText = lines.slice(lines.indexOf(timeLine) + 1).join('');
+            const parsed = require('./asr/asr_backends').parseSrt(srtPath);
+            const provenance = require('./asr/evidence_sidecar').loadAsrEvidence(srtPath, parsed.segments);
+            for (const row of provenance.segments) {
+                const ms = row.start * 1000;
+                const speaker = speakerForSegment(row);
+                const rawText = row.speakerEvidence || !/^\[[^\]]+\]/u.test(row.text)
+                    ? `[${speaker}] ${row.text.replace(/^\[[^\]]+\]\s*/u, '')}` : row.text;
                 const text = aggressiveClean(rawText);
 
                 if (text.length < 2 || STOP_WORDS.has(text) || HALLUCINATION_REGEX.test(text)) continue;
@@ -328,6 +324,7 @@ async function processLiveData(inputFiles) {
                     subtitles.push({
                         ms,
                         text: text,
+                        speaker,
                         isHighEnergy, // 标记一下，方便后面排版
                         emotionAnalysis
                     });
@@ -399,7 +396,7 @@ async function processLiveData(inputFiles) {
 
     for (const sub of subtitles) {
         // 如果跟上一句时间差太多（超过60秒），说明中间被大量删减了，强制分段
-        if (currentBlock.startTime !== -1 && (sub.ms - currentBlock.lastMs > 60000)) {
+        if (currentBlock.startTime !== -1 && (sub.ms - currentBlock.lastMs > 60000 || currentBlock.speaker !== sub.speaker)) {
             flushBlock();
         }
 
@@ -407,6 +404,7 @@ async function processLiveData(inputFiles) {
             currentBlock.startTime = sub.ms;
             currentBlock.isHighlight = sub.isHighEnergy; // 以段首定性
             currentBlock.emotionAnalysis = sub.emotionAnalysis;
+            currentBlock.speaker = sub.speaker;
         }
 
         currentBlock.lines.push(sub.text);

@@ -699,7 +699,9 @@ function buildParticipantSummary(participants = [], appearedStreamerIds = [], sp
                 totalSpeechSeconds: matchedSpeaker?.totalSpeechSeconds ?? 0,
                 avgScore: matchedSpeaker?.avgScore ?? null,
                 maxScore: matchedSpeaker?.maxScore ?? null,
-                speakerLabel: matchedSpeaker?.label || null
+                speakerLabel: matchedSpeaker?.label || null,
+                ...(participant.status ? { discoveryStatus: participant.status } : {}),
+                ...(participant.evidence ? { presenceEvidence: participant.evidence } : {})
             };
         });
 }
@@ -749,125 +751,9 @@ function getSpeakerAcceptanceThresholds(multiConfig, streamerId) {
 }
 
 function summarizeAsrSpeakers(result, config = {}, context = {}) {
-    const registry = resolveStreamerRegistry(config);
-    const roomId = context.room_id || context.roomId || context.hostRoomId || null;
-    const multiConfig = getMultiReferenceConfig(config, roomId);
-    const speakerRequest = getSpeakerRequest(context);
-    const stats = new Map();
-    const segments = Array.isArray(result?.segments) ? result.segments : [];
-
-    segments.forEach((segment) => {
-        const label = String(segment.speaker || '').trim() || 'UNKNOWN';
-        const start = Number(segment.start);
-        const end = Number(segment.end);
-        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
-            return;
-        }
-        const duration = end - start;
-        const rawScore = segment.speaker_score;
-        const score = rawScore === undefined || rawScore === null || rawScore === ''
-            ? NaN
-            : Number(rawScore);
-        if (!stats.has(label)) {
-            stats.set(label, {
-                label,
-                totalSpeechSeconds: 0,
-                segmentCount: 0,
-                scoreSum: 0,
-                scoreCount: 0,
-                maxScore: null,
-                isUnknown: isUnknownSpeakerLabel(label)
-            });
-        }
-        const item = stats.get(label);
-        item.totalSpeechSeconds += duration;
-        item.segmentCount += 1;
-        if (Number.isFinite(score)) {
-            item.scoreSum += score;
-            item.scoreCount += 1;
-            item.maxScore = item.maxScore === null ? score : Math.max(item.maxScore, score);
-        }
+    return require('./speaker_summary').summarizeAsrSpeakers(result, config, context, {
+        resolveStreamerRegistry, getMultiReferenceConfig, getSpeakerRequest, isUnknownSpeakerLabel, mapSpeakerLabelToStreamerId, findHostStreamerId, getSpeakerAcceptanceThresholds, buildParticipantSummary
     });
-
-    const speakers = Array.from(stats.values())
-        .map(item => ({
-            label: item.label,
-            totalSpeechSeconds: Number(item.totalSpeechSeconds.toFixed(3)),
-            segmentCount: item.segmentCount,
-            avgScore: item.scoreCount > 0 ? Number((item.scoreSum / item.scoreCount).toFixed(4)) : null,
-            maxScore: item.maxScore === null ? null : Number(item.maxScore.toFixed(4)),
-            isUnknown: item.isUnknown,
-            streamerId: null
-        }))
-        .sort((a, b) => b.totalSpeechSeconds - a.totalSpeechSeconds);
-
-    const hostStreamerId = speakerRequest?.hostStreamerId || findHostStreamerId(roomId, registry);
-    const appearedStreamerIds = [];
-    const speakersByStreamerId = new Map();
-    speakers.forEach((speaker) => {
-        const streamerId = mapSpeakerLabelToStreamerId(speaker.label, registry);
-        speaker.streamerId = streamerId;
-        if (!streamerId) {
-            if (speaker.isUnknown) {
-                console.log(`[ASR] speaker summary: 跳过未映射 speaker=${speaker.label}`);
-            } else {
-                console.log(`[ASR] speaker summary: speaker=${speaker.label} 未命中 streamerRegistry`);
-            }
-            return;
-        }
-        const thresholds = getSpeakerAcceptanceThresholds(multiConfig, streamerId);
-        const enoughSpeech = speaker.totalSpeechSeconds >= thresholds.minSpeechSeconds;
-        const scoreMissing = speaker.avgScore === null;
-        const enoughScore = scoreMissing || speaker.avgScore >= thresholds.minSpeakerScore;
-        const minSpeakerMaxScore = thresholds.minSpeakerMaxScore;
-        const lowScoreSeconds = thresholds.minSpeakerSecondsWhenLowScore;
-        const lowMaxScore = speaker.maxScore !== null && minSpeakerMaxScore > 0 && speaker.maxScore < minSpeakerMaxScore;
-        const enoughDurationForLowScore = speaker.totalSpeechSeconds >= lowScoreSeconds;
-        if (!enoughSpeech) {
-            console.log(`[ASR] speaker summary: 过滤 ${speaker.label} -> ${streamerId}，出声 ${speaker.totalSpeechSeconds.toFixed(1)}s < ${thresholds.minSpeechSeconds}s`);
-            return;
-        }
-        if (!enoughScore) {
-            console.log(`[ASR] speaker summary: 过滤 ${speaker.label} -> ${streamerId}，avgScore ${speaker.avgScore} < ${thresholds.minSpeakerScore}`);
-            return;
-        }
-        if (lowMaxScore && !enoughDurationForLowScore) {
-            console.log(`[ASR] speaker summary: 过滤低置信 ${speaker.label} -> ${streamerId}，maxScore ${speaker.maxScore} < ${minSpeakerMaxScore} 且出声 ${speaker.totalSpeechSeconds.toFixed(1)}s < ${lowScoreSeconds}s`);
-            return;
-        }
-        if (scoreMissing) {
-            console.log(`[ASR] speaker summary: ${speaker.label} -> ${streamerId} 无 speaker_score，仅按出声时长通过`);
-        } else {
-            console.log(`[ASR] speaker summary: ${speaker.label} -> ${streamerId} 通过，出声 ${speaker.totalSpeechSeconds.toFixed(1)}s, avgScore=${speaker.avgScore}`);
-        }
-        if (!appearedStreamerIds.includes(streamerId)) {
-            appearedStreamerIds.push(streamerId);
-        }
-        speakersByStreamerId.set(streamerId, speaker);
-    });
-
-    const extraAppearedStreamerIds = appearedStreamerIds
-        .filter(streamerId => streamerId !== hostStreamerId)
-        .slice(0, Math.max(0, Number(multiConfig.maxExtraCharacters || 0)));
-
-    return {
-        version: 2,
-        input: context.input || context.mediaPath || null,
-        backend: result?.backend || 'unknown',
-        hostRoomId: roomId ? String(roomId) : null,
-        hostStreamerId: hostStreamerId || null,
-        plannedParticipantIds: Array.isArray(speakerRequest?.plannedParticipantIds)
-            ? speakerRequest.plannedParticipantIds.map(value => String(value)).filter(Boolean)
-            : [],
-        rosterStreamerIds: Array.isArray(speakerRequest?.rosterStreamerIds)
-            ? speakerRequest.rosterStreamerIds.map(value => String(value)).filter(Boolean)
-            : [],
-        constrainedToRoster: speakerRequest?.constrainToRoster === true,
-        speakers,
-        appearedStreamerIds,
-        extraAppearedStreamerIds,
-        participants: buildParticipantSummary(speakerRequest?.participants, appearedStreamerIds, speakersByStreamerId)
-    };
 }
 
 function writeAsrSpeakersSidecar(result, srtPath, config = {}, context = {}) {
@@ -945,10 +831,12 @@ function writeSpeakerReviewSrt(result, srtPath, subtitleConfig = {}, asrConfig =
         const reviewPath = path.join(parsed.dir, `${parsed.name}.speaker.srt`);
         const cfg = { ...DEFAULT_SUBTITLE_CONFIG, ...subtitleConfig };
         const lines = [];
+        const evidenceRows = [];
         let lineIndex = 1;
         const segments = Array.isArray(result?.segments) ? result.segments : [];
-        const correctedTexts = require('./subtitle_proofreading').proofreadSubtitleTexts(segments,
-            applyCorrectionsToSegments(segments, cfg.corrections), cfg.proofreading).texts;
+        const prepared = require('./subtitle_proofreading').proofreadSubtitleTexts(segments,
+            applyCorrectionsToSegments(segments, cfg.corrections), cfg.proofreading);
+        const correctedTexts = prepared.texts;
 
         segments.forEach((segment, index) => {
             const correctedText = correctedTexts[index] || '';
@@ -956,15 +844,21 @@ function writeSpeakerReviewSrt(result, srtPath, subtitleConfig = {}, asrConfig =
             if (!content) {
                 return;
             }
-            let speaker = String(segment.speaker || 'UNKNOWN').trim() || 'UNKNOWN';
+            let speaker = require('./speaker_attribution').speakerForSegment(segment);
+            let localEvidence = segment.speakerEvidence || segment.speaker_evidence;
             if (filteredLabels.has(speaker)) {
                 speaker = 'UNKNOWN';
+                if (localEvidence) localEvidence = { ...localEvidence, status: 'unqualified', label: null,
+                    summaryQualification: 'rejected' };
             }
             const score = segment.speaker_score === undefined || segment.speaker_score === null || segment.speaker_score === ''
                 ? ''
                 : ` ${Number(segment.speaker_score).toFixed(2)}`;
             const prefix = `[${speaker}${score}] `;
             const wrapped = wrapSpeakerReviewText(prefix, content, cfg.max_chars_per_line).join('\n');
+            evidenceRows.push(require('./subtitle_writer').makeSubtitleEvidenceRow(
+                { ...segment, ...(localEvidence ? { speakerEvidence: localEvidence } : {}) },
+                index, correctedText, wrapped, prepared, { parseTimestamp, formatTimestamp }));
             lines.push(String(lineIndex));
             lines.push(`${formatTimestamp(segment.start)} --> ${formatTimestamp(segment.end)}`);
             lines.push(wrapped);
@@ -972,7 +866,9 @@ function writeSpeakerReviewSrt(result, srtPath, subtitleConfig = {}, asrConfig =
             lineIndex += 1;
         });
 
-        fs.writeFileSync(reviewPath, `${lines.join('\n').trim()}\n`, 'utf8');
+        const reviewContent = `${lines.join('\n').trim()}\n`;
+        fs.writeFileSync(reviewPath, reviewContent, 'utf8');
+        require('./evidence_sidecar').writeAsrEvidence(reviewPath, reviewContent, evidenceRows, result?.backend || 'unknown');
         console.log(`[ASR] speaker review SRT: ${path.basename(reviewPath)} (speakers=${Array.from(uniqueSpeakers).join(', ')})`);
         return reviewPath;
     } catch (error) {
@@ -1279,6 +1175,14 @@ function buildRuntimeSpeakerOverrides(config = {}, context = {}) {
         : {};
     const identity = config.asr?.speaker_identity || {};
     if (identity.policy === 'row_verified' && Array.isArray(identity.room_ids) && identity.room_ids.map(String).includes(String(roomId))) {
+        hostOverride.speaker_identity_policy = 'row_verified';
+        hostOverride.speaker_identity_min_seconds = Number(identity.min_seconds ?? 2);
+    }
+    const discovery = speakerRequest?.participantDiscovery;
+    if (discovery?.mode === 'multi' && ['candidate', 'planned', 'confirmed'].includes(discovery.modeStatus)) {
+        // A likely collaboration warrants complete acoustic analysis, never forced names.
+        hostOverride.enable_speaker = true;
+        hostOverride.speaker_detection_mode = 'always';
         hostOverride.speaker_identity_policy = 'row_verified';
         hostOverride.speaker_identity_min_seconds = Number(identity.min_seconds ?? 2);
     }

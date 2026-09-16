@@ -25,7 +25,8 @@ function checkedSource(metadata) {
     const expected = sourceEvidenceHash(metadata);
     if (!expected || expected !== evidence.sourceSha256) throw new Error('Original source evidence changed; review the source first');
     const snapshot = sourceSnapshot(metadata);
-    const previous = metadata.renderedSubtitles?.sourceSnapshot || metadata.ownStreamHumanReview?.source;
+    const previous = metadata.renderedSubtitles?.sourceSnapshot || metadata.ownStreamHumanReview?.source
+        || metadata.manualRevisionSource?.snapshot;
     if (previous && !same(previous, snapshot)) throw new Error('Original recording or sidecars changed since review');
     const exception = metadata.durationApproval;
     if (exception && (exception.authority !== 'user' || !String(exception.note || '').trim()
@@ -39,6 +40,36 @@ function adapter(metadata) {
     return { ...metadata, output: { ...metadata.output }, copy: { ...metadata.copy,
         description: require('./review_rendered_clip').publicDescription(metadata, metadata.copy?.description) },
         candidateSubtitles: metadata.renderedSubtitles };
+}
+
+// Legacy manual cuts did not store a source evidence hash. Adopt them only during
+// an explicit rebuild, after matching the source projection to the saved clip SRT.
+function bindLegacyManualSource(metadata, options) {
+    if (metadata.mode !== 'manual_clip_queue' || sourceEvidenceHash(metadata)) return;
+    if (metadata.manualRevisionSource || metadata.renderedSubtitles || options.action !== 'prepare'
+        || !String(options.reviewNote || '').trim() || !options.sourceKind) {
+        throw new Error('Legacy manual clips require rebuild with an explicit source review');
+    }
+    if (!metadata.output?.burnedSubtitles || !fs.statSync(metadata.output.mediaPath).size) {
+        throw new Error('An existing burned manual clip is required');
+    }
+    const { start, end } = metadata.window || {};
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) throw new Error('Invalid existing source window');
+    const snapshot = sourceSnapshot(metadata);
+    const segments = topic.parseTopicSrt(metadata.source.srtPath).segments;
+    const projected = segments.filter(cue => cue.end > start && cue.start < end).map(cue => ({
+        start: Math.max(cue.start, start) - start, end: Math.min(cue.end, end) - start, text: cue.text
+    }));
+    const existing = asr.parseSrt(metadata.output.srtPath).segments;
+    const text = value => asr.stripSubtitlePunctuation(String(value)).replace(/\s/g, '');
+    if (!existing.length || existing.length !== projected.length || existing.some((cue, index) =>
+        Math.abs(cue.start - projected[index].start) > 0.003 || Math.abs(cue.end - projected[index].end) > 0.003
+        || text(cue.text) !== text(projected[index].text))) {
+        throw new Error('Manual source subtitles no longer match the existing clip; review the source first');
+    }
+    if (!same(snapshot, sourceSnapshot(metadata))) throw new Error('Source changed during manual source review');
+    metadata.manualRevisionSource = { version: 1, sourceSha256: buildSubtitleEvidence(segments).sourceSha256,
+        snapshot, note: options.reviewNote.trim(), at: new Date().toISOString() };
 }
 
 function checkedDraft(metadata, evidence) {
@@ -182,6 +213,7 @@ async function updateRevision(metadataPath, options, config = require('./config-
         const before = fs.readFileSync(metadataPath, 'utf8');
         const metadata = JSON.parse(before);
         const id = identity(metadata, metadataPath, options);
+        bindLegacyManualSource(metadata, options);
         const checked = checkedSource(metadata);
         const evidence = checked.evidence;
         let snapshot = checked.snapshot;

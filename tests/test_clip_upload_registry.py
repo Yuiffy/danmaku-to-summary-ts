@@ -237,7 +237,7 @@ class ClipUploadRegistryTests(unittest.TestCase):
             )()
             with patch.object(registry, "RUNTIME_DIR", runtime), patch.object(
                 registry, "REGISTRY_PATH", registry_path
-            ):
+            ), patch.object(registry, "QUEUE_PATH", runtime / "clip_upload_queue.json"):
                 self.assertEqual(registry.import_json(args), 0)
                 saved = registry.load_json(registry_path, {})
                 clip = saved["clips"]["1"]

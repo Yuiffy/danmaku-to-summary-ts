@@ -231,15 +231,22 @@ function wrapSubtitleText(text, maxCharsPerLine = 20) {
         const trimmed = line.trim();
         const characters = Array.from(trimmed);
         if (!trimmed || characters.length <= limit) return [trimmed];
-        const lineCount = Math.ceil(characters.length / limit);
-        const baseLineLength = Math.floor(characters.length / lineCount);
-        const longerLineCount = characters.length % lineCount;
         const wrapped = [];
         let offset = 0;
-        for (let index = 0; index < lineCount; index += 1) {
-            const lineLength = baseLineLength + (index < longerLineCount ? 1 : 0);
-            wrapped.push(characters.slice(offset, offset + lineLength).join(''));
-            offset += lineLength;
+        const isWordChar = char => Boolean(char && /[A-Za-z0-9]/.test(char));
+        while (offset < characters.length) {
+            const remaining = characters.length - offset;
+            let end = offset + Math.ceil(remaining / Math.ceil(remaining / limit));
+            if (isWordChar(characters[end - 1]) && isWordChar(characters[end])) {
+                let wordStart = end - 1, wordEnd = end;
+                while (wordStart > offset && isWordChar(characters[wordStart - 1])) wordStart--;
+                while (wordEnd < characters.length && isWordChar(characters[wordEnd])) wordEnd++;
+                if (wordEnd - offset <= limit) end = wordEnd;
+                else if (wordStart > offset) end = wordStart;
+                // A token longer than the whole line still has to be split.
+            }
+            wrapped.push(characters.slice(offset, end).join(''));
+            offset = end;
         }
         return wrapped;
     }).join('\n');

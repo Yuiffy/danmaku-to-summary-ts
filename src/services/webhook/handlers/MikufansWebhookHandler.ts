@@ -23,6 +23,7 @@ import {
 } from '../MikufansOfflineFallbackMonitor';
 import { MikufansDelayedReplyCoordinator } from './mikufans/MikufansDelayedReplyCoordinator';
 import { MikufansSummaryQueueWorker } from './mikufans/MikufansSummaryQueueWorker';
+import { captureParticipantSnapshot } from './mikufans/participant_snapshot';
 
 /**
  * 延迟动作类型
@@ -527,13 +528,12 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     }
     this.markLiveResumed(roomKey, 'StreamStarted');
 
-    this.streamTimestamps.set(roomKey, {
-      startTime,
-      endTime: undefined
-    });
+    this.streamTimestamps.set(roomKey, { startTime, endTime: undefined });
     this.recorderStallDiagnostics.observe('StreamStarted', payload);
 
     this.logger.info(`📅 记录直播开始时间: ${roomId} -> ${startTime.toISOString()}`);
+
+    captureParticipantSnapshot(roomKey, startTime, previousTimestamps?.startTime, this.logger);
 
     if (payload.EventData?.Recording === false) {
       this.logger.info(`跳过缺录制告警: ${roomKey} 的 StreamStarted 明确标记 Recording=false`);

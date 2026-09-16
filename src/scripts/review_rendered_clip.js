@@ -9,12 +9,12 @@ const { buildSubtitleEvidence, linkClipEvidence } = require('./clipping/subtitle
 const { copyDigest } = require('./clipping/actor_review');
 const { writeJsonAtomic } = require('./clipping/candidate_subtitles');
 
-const RENDERED_CLIP_MODES = new Set(['own_stream_fun_review', 'local_review', 'topic_candidate_manual_cut']);
+const RENDERED_CLIP_MODES = new Set(['own_stream_fun_review', 'local_review', 'topic_candidate_manual_cut', 'manual_clip_queue']);
 
 function sourceEvidenceHash(metadata) {
     return metadata.attributionReview?.sourceSha256 || metadata.grounding?.sourceSha256
         || metadata.selectionRejection?.sourceSha256 || metadata.aiReview?.sourceSha256
-        || metadata.editorial?.copyGrounding?.sourceSha256;
+        || metadata.editorial?.copyGrounding?.sourceSha256 || metadata.manualRevisionSource?.sourceSha256;
 }
 
 function fileDigest(file) {

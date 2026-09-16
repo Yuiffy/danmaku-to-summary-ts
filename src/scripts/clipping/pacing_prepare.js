@@ -57,6 +57,8 @@ async function preparePacingBatch(clips, parsed, config, info, options, dependen
             }
             if (!scan) {
                 if (summary.scannedSeconds + duration > settings.maxScannedSeconds) continue;
+                if (options.pacingScanBudget && options.pacingScanBudget.remainingSeconds < duration) continue;
+                if (options.pacingScanBudget) options.pacingScanBudget.remainingSeconds -= duration;
                 summary.scannedSeconds += duration;
                 try {
                     const pcm = dependencies.decode ? await dependencies.decode(gap) : await run(ffmpeg,

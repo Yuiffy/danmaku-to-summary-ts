@@ -80,6 +80,22 @@ describe('combined full reply and summary evidence', () => {
     expect(() => combined.validateCombinedResult(JSON.stringify(p), source(), '1', 250)).toThrow('Host attribution');
   });
 
+  it.each(['[UNKNOWN] ', '[SPEAKER_00 0.9] ', ''])('does not identify a lone anonymous voice as the room owner: %s', prefix => {
+    const anonymous = combined.evidenceContext([
+      { start: 30, end: 35, text: prefix + 'We are playing Chess now.' }
+    ], [], '1', { ai: { roomSettings: { '1': { anchorName: 'Host' } } } });
+    const p = payload();
+    p.evidence = p.evidence.map(row => ({ ...row, sourceIds: ['T1'], actor: 'host' }));
+    expect(anonymous.multipleSpeakers).toBe(false);
+    expect(() => combined.validateCombinedResult(JSON.stringify(p), anonymous, '1', 250)).toThrow('Host attribution');
+  });
+
+  it('lets local mixed-speaker evidence override an embedded host name', () => {
+    const input = source();
+    input.byId.get('T3').speakerEvidence = { version: 1, status: 'mixed', label: null };
+    expect(() => combined.validateCombinedResult(JSON.stringify(payload()), input, '1', 250)).toThrow('Host attribution');
+  });
+
   it('links a post response without allowing the post to prove a played game or replace live evidence', () => {
     const withPost = source();
     withPost.byId.set('P1', live.getReplyDynamicEvidence({ replyDynamic: {

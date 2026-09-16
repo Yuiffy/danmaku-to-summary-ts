@@ -432,6 +432,26 @@ describe('topic_clipper', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  test('subtitle wrapping preserves English words while keeping long tokens bounded', () => {
+    const dir = makeTempDir();
+    const output = path.join(dir, 'english.srt');
+    try {
+      const original = '我听说那个Big Walk特别特别特别';
+      topicClipper.writeClipSrt([{ start: 0, end: 2, text: original }],
+        { start: 0, end: 2 }, output, { maxCharsPerLine: 18 });
+      const lines = fs.readFileSync(output, 'utf8').trim().split('\n').slice(2);
+      expect(lines.join('')).toBe(original);
+      expect(lines.some((line: string) => line.includes('Walk'))).toBe(true);
+      expect(lines.every((line: string) => Array.from(line).length <= 18)).toBe(true);
+      const longToken = 'abcdefghijklmnopqrstuvwxyz0123456789';
+      topicClipper.writeClipSrt([{ start: 0, end: 2, text: longToken }],
+        { start: 0, end: 2 }, output, { maxCharsPerLine: 8 });
+      const longLines = fs.readFileSync(output, 'utf8').trim().split('\n').slice(2);
+      expect(longLines.join('')).toBe(longToken);
+      expect(longLines.every((line: string) => line.length <= 8)).toBe(true);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
   test('removes speaker review prefixes and colors speakers in burned ASS', () => {
     const dir = makeTempDir();
     const inputSrtPath = path.join(dir, 'source.speaker.srt');

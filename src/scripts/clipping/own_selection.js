@@ -4,6 +4,7 @@ const { notableEmotionEvents, emotionMomentScore, buildDanmakuDensity, buildEmot
 const { buildSubtitleEvidence, cuesForWindow, formatEvidenceCues } = require('./subtitle_evidence');
 const { identityDanmaku } = require('./participant_context');
 const { selectEditorialComments } = require('./audience_copy');
+const { mergeViewingAngles, contextualComments } = require('./viewing_angles');
 function timeStringToSeconds(value) {
     const match = String(value || '').trim().match(/^(\d{1,2}):(\d{2}):(\d{2})(?:\.\d+)?$/);
     if (!match) return NaN;
@@ -401,6 +402,7 @@ function mergeRecallCandidateEvidence(first, second) {
     return {
         ...other,
         ...preferred,
+        viewingAngles: mergeViewingAngles(preferred, other, preferred),
         recallSources: Array.from(new Set([...(first.recallSources || []), ...(second.recallSources || [])])),
         recallReasons: reasonParts,
         reason: reasonParts.join(' | '),
@@ -421,7 +423,7 @@ function mergeRecallCandidateEvidence(first, second) {
     };
 }
 
-function buildRecallCandidatePool(localCandidates = [], modelCandidates = [], config = {}) {
+function buildRecallCandidatePool(localCandidates = [], modelCandidates = [], config = {}, diagnostics = null) {
     const normalized = [
         ...localCandidates.map((candidate, index) => normalizeRecallCandidate(candidate, 'local_signals', index)),
         ...modelCandidates.map((candidate, index) => normalizeRecallCandidate(candidate, 'model_chunked', index))
@@ -464,9 +466,9 @@ function buildRecallCandidatePool(localCandidates = [], modelCandidates = [], co
     });
 
     const limit = Math.max(1, Math.floor(Number(config.ai?.maxCandidateLines) || 100));
-    return deduped
-        .sort((a, b) => Number(b.recallScore || 0) - Number(a.recallScore || 0) || Number(a.start) - Number(b.start))
-        .slice(0, limit)
+    const ranked = deduped
+        .sort((a, b) => Number(b.recallScore || 0) - Number(a.recallScore || 0) || Number(a.start) - Number(b.start));
+    const pool = ranked.slice(0, limit)
         .map((candidate, index) => ({
             ...candidate,
             index: index + 1,
@@ -482,6 +484,17 @@ function buildRecallCandidatePool(localCandidates = [], modelCandidates = [], co
                 sourceCandidateIndices: candidate.sourceCandidateIndices
             }
         }));
+    if (diagnostics) diagnostics.recallPool = { version: 1, limit, beforeMerge: normalized.length, afterMerge: ranked.length,
+        candidates: normalized.map(candidate => {
+            const merged = ranked.find(row => candidate.sourceCandidateIndices.some(id => row.sourceCandidateIndices.includes(id)));
+            const kept = pool.find(row => merged && row.sourceCandidateIndices.some(id => merged.sourceCandidateIndices.includes(id)));
+            return { sourceCandidateIds: candidate.sourceCandidateIndices, start: candidate.start, end: candidate.end,
+                event: candidate.event || null, viewingAngles: candidate.viewingAngles || [],
+                viewingAngleIssues: candidate.viewingAngleIssues || [], recallSources: candidate.recallSources,
+                modelScore: candidate.modelScore, localScore: candidate.localScore, candidateIndex: kept?.index ?? null,
+                disposition: kept ? 'passed_to_ranking' : 'candidate_pool_limit', mergedWith: merged?.sourceCandidateIndices || [] };
+        }) };
+    return pool;
 }
 
 function budgetSubtitleWindows(evidence, totalDuration, config) {
@@ -582,6 +595,8 @@ function buildChunkSources(parsed, danmaku, totalDuration, config, emotionAnalys
         });
         const subtitleCues = window.cues;
         const subtitleText = formatEvidenceCues(subtitleCues);
+        const contextRows = contextualComments(danmaku, window, subtitleCues, [], 12);
+        contextRows.forEach(row => allowedDanmakuIds.add(row.id));
         const emotionLines = buildEmotionContextLines(
             emotionAnalysis,
             config.emotionScoring || {},
@@ -611,6 +626,8 @@ function buildChunkSources(parsed, danmaku, totalDuration, config, emotionAnalys
                 '观众反应弹幕样例（D-ID 后为精确绝对秒数，保留原始小数）:',
                 reactionLines.slice(0, Number(config.maxDanmakuLinesPerChunk) || 220).join('\n') || '无',
                 ...(identityLines.length ? ['人物线索弹幕（仍是观众评论，不是说话人或动作真值）:', identityLines.join('\n')] : []),
+                ...(contextRows.length ? ['原话呼应与情境解释弹幕（局部词语匹配的线索，不是事实结论）:',
+                    ...contextRows.map(row => `${row.id} ${row.time} ${JSON.stringify(row.text)}`)] : []),
                 '',
                 'SenseVoice 情感/声音事件（辅助线索，不作为事实）:',
                 emotionLines.join('\n') || '无',

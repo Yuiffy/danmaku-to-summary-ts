@@ -32,4 +32,4 @@ async function bindActorArtifacts(metadata) {
     }
 }
 
-module.exports = { bindActorArtifacts };
+module.exports = { bindActorArtifacts, fileDigest };

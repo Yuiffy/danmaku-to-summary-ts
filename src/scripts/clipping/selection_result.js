@@ -1,6 +1,7 @@
 'use strict';
-const { timeStringToSeconds, clamp } = require('./own_selection');
+const { timeStringToSeconds } = require('./own_selection');
 const { resolveEvidenceBoundaries, linkClipEvidence, parseClipResponse } = require('./subtitle_evidence');
+const { anglesForWindow, quoteEchoes } = require('./viewing_angles');
 
 function normalizeCoverText(value) {
     const lines = String(value || '')
@@ -27,7 +28,7 @@ function reusableRecall(candidate, evidence, config, danmaku = []) {
     try {
         const bounds = resolveEvidenceBoundaries(candidate, evidence);
         if (!bounds || Math.abs(bounds.start - candidate.start) > 0.001 || Math.abs(bounds.end - candidate.end) > 0.001) return null;
-        if (bounds.end - bounds.start < (config.minClipSeconds || 0) || bounds.end - bounds.start > (config.maxClipSeconds || Infinity) + 5) return null;
+        if (!Number.isFinite(bounds.start) || !Number.isFinite(bounds.end) || bounds.start < 0 || bounds.end <= bounds.start) return null;
         const ids = grounding.subtitleIds || [];
         if (!ids.length || ids.some(id => {
             const cue = evidence.byId.get(id);
@@ -77,11 +78,10 @@ function normalizeAiClips(rawClips, candidates, totalDuration, config, streamerL
             const start = boundaries?.start ?? timeStringToSeconds(clip.startTime);
             const end = boundaries?.end ?? timeStringToSeconds(clip.endTime);
             if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return reject('invalid_time_range');
-            const boundedStart = clamp(start, 0, totalDuration);
-            const boundedEnd = clamp(end, 0, totalDuration);
+            if (start < 0 || !Number.isFinite(totalDuration) || end > totalDuration) return reject('outside_source_range', { start, end, totalDuration });
+            const boundedStart = start;
+            const boundedEnd = end;
             const duration = boundedEnd - boundedStart;
-            if (duration < config.minClipSeconds || duration > config.maxClipSeconds + 5) return reject('duration_out_of_bounds', {
-                duration, start: boundedStart, end: boundedEnd, minClipSeconds: config.minClipSeconds, maxClipSeconds: config.maxClipSeconds });
             if (boundedStart >= base.end || boundedEnd <= base.start) return reject('no_candidate_overlap');
             if (boundedStart < base.start - (Number(config.boundaryStartBacktrackSeconds) || 12) - 12
                 || boundedEnd > base.end + (Number(config.boundaryEndExtendSeconds) || 45) + 12) return reject('outside_candidate_context');
@@ -97,6 +97,8 @@ function normalizeAiClips(rawClips, candidates, totalDuration, config, streamerL
                 candidateIndex: base?.index || clip.candidateIndex || index + 1,
                 score: Number(clip.score ?? base?.recallScore ?? base?.score ?? 0),
                 selectionSource: 'model_global_rerank',
+                viewingAngles: evidence ? anglesForWindow(base, { start: boundedStart, end: boundedEnd }, evidence, danmaku) : [],
+                quoteEchoes: evidence ? quoteEchoes(danmaku, { start: boundedStart, end: boundedEnd }, evidence.cues) : [],
                 ...(evidence ? { grounding: { ...linkClipEvidence(resolved, { start: boundedStart, end: boundedEnd }, evidence, danmaku,
                     { cueIds: allowedCueIds, danmakuIds: allowedDanmakuIds }), reusedRecall: Boolean(reusable && (
                         noBoundaryOverride || clip.evidenceCueIds === undefined || clip.evidenceDanmakuIds === undefined || clip.sourceKind === undefined

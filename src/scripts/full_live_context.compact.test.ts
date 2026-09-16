@@ -33,7 +33,7 @@ describe('compact full-source evidence format', () => {
     const disabled=full.buildFullLiveSharedContext({parsed,danmaku:audience,config:{compactEvidence:false}});
     expect(full.createFullLiveContextSidecar(disabled)).toEqual(full.createFullLiveContextSidecar(old));
     expect(old.evidence).toBeUndefined();
-    expect(old.subtitleLines[0]).toBe('00:00:01-00:00:03 [Host 0.8] First complete thought.');
+    expect(old.subtitleLines[0]).toBe('00:00:01-00:00:03 [Host] First complete thought.');
   });
 
   test('falls back to original full input rather than dropping malformed-timing speech', () => {

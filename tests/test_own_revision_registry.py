@@ -97,6 +97,17 @@ class OwnRevisionRegistryTests(unittest.TestCase):
                 api, "refresh_account_upload_guard", side_effect=guard), patch.object(api, "configured_upload_account", return_value=("test", "", "")), contextlib.redirect_stdout(io.StringIO()):
             self.assertTrue(api.run_one_job())
 
+    def test_reviewed_manual_clip_reimports_under_same_id_and_rejects_source_drift(self):
+        metadata = self.metadata()
+        metadata.update(mode="manual_clip_queue", status="success")
+        self.write_metadata(metadata)
+        command = ["import-json", "--manifest", str(self.file), "--review", str(self.root / "REVIEW.md")]
+        self.assertEqual(self.command(command), 0)
+        self.assertEqual(list(self.records()), ["1"])
+        self.assertEqual(self.queue(), [])
+        Path(metadata["source"]["srtPath"]).write_text("changed source", encoding="utf-8")
+        self.assertNotEqual(self.command(command), 0)
+
     def test_correct_and_enqueue_records_own_revision_without_rendering_and_deduplicates(self):
         with patch.object(api, "cut_candidates") as render:
             self.assertEqual(self.correct(enqueue=True), 0)

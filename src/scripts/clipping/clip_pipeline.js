@@ -17,12 +17,13 @@ function createLimiter(limit) {
 }
 
 /** Media leases end before network enhancement. Enhancement media reacquires the same GPU budget. */
-async function runClipPipeline(jobs, { scheduler, mediaConcurrency, enhancementConcurrency, onError }) {
+function createClipPipeline({ scheduler, mediaConcurrency, enhancementConcurrency, onError }) {
     const fallbackMedia = createLimiter(mediaConcurrency);
     const enhancement = createLimiter(enhancementConcurrency);
     const acquireMedia = async () => scheduler?.enabled ? scheduler.acquire()
         : { ...await fallbackMedia.acquire(), profile: scheduler?.getProfile?.() || null };
-    const results = await Promise.all(jobs.map(async (job, index) => {
+    const pending = new Map();
+    const execute = async (job, index) => {
         let media, ai;
         try {
             media = await acquireMedia();
@@ -38,7 +39,17 @@ async function runClipPipeline(jobs, { scheduler, mediaConcurrency, enhancementC
             });
         } catch (error) { onError?.(error, index); return null; }
         finally { media?.release(); ai?.release(); }
-    }));
-    return results.filter(Boolean);
+    };
+    return { submit(job, index) {
+        if (pending.has(index)) throw new Error(`Duplicate clip job index: ${index}`);
+        const promise = execute(job, index); pending.set(index, promise); return promise;
+    }, async drain() {
+        return (await Promise.all([...pending].sort((a, b) => a[0] - b[0]).map(([, promise]) => promise))).filter(Boolean);
+    } };
 }
-module.exports = { createLimiter, runClipPipeline };
+async function runClipPipeline(jobs, options) {
+    const pipeline = createClipPipeline(options);
+    jobs.forEach((job, index) => pipeline.submit(job, index));
+    return pipeline.drain();
+}
+module.exports = { createLimiter, createClipPipeline, runClipPipeline };

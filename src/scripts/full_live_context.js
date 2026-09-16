@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const liveGenerationContext = require('./live_generation_context');
 const { buildSubtitleEvidence } = require('./clipping/subtitle_evidence');
+const { prepareSpeakerSegments } = require('./asr/speaker_attribution');
 
 const FULL_LIVE_CONTEXT_SCHEMA_VERSION = 1;
 const FULL_LIVE_SHARED_PREFIX_VERSION = 1;
@@ -174,8 +175,8 @@ function buildFullContextHeatLines(danmaku = [], totalDuration = 0, config = {})
 function buildFullContextSource(parsed, danmaku, config = {}, emotionAnalysis = null) {
     const segments = Array.isArray(parsed?.segments) ? parsed.segments : [];
     const danmakuItems = Array.isArray(danmaku) ? danmaku : [];
-    const subtitleLines = segments.map((segment, index) =>
-        `${formatClock(Number(segment.start))}-${formatClock(Number(segment.end))} ${config.includeEvidenceIds ? `T${index + 1} ` : ''}${String(segment.text || '').replace(/\s+/g, ' ').trim()}`
+    const subtitleLines = prepareSpeakerSegments(segments).map((segment, index) =>
+        `${formatClock(Number(segment.start))}-${formatClock(Number(segment.end))} ${config.includeEvidenceIds ? `T${index + 1} ` : ''}[${segment.speaker}] ${String(segment.text || '').replace(/\s+/g, ' ').trim()}`
     );
     const aggregatedDanmaku = aggregateDanmakuForFullContext(
         danmakuItems,
@@ -226,15 +227,16 @@ function buildFullContextSource(parsed, danmaku, config = {}, emotionAnalysis = 
 }
 
 function buildCompactEvidenceSource(segments, audience, heatLines, emotionLines, totalDuration) {
-    const prepared = segments.map(segment => {
-        const match = String(segment.text).match(/^\[([^\]]+)\]\s*/u);
-        const speaker = match?.[1].replace(/\s+\d*\.?\d+$/u, '').trim() || '';
-        return { ...segment, speaker, text: match ? segment.text.slice(match[0].length) : segment.text };
-    });
+    const prepared = prepareSpeakerSegments(segments);
     const grouped = buildSubtitleEvidence(prepared, { maxGroupSeconds: 20, maxGroupChars: 500, gapSeconds: 2 });
     const speech = grouped.cues.map(cue => ({ id: cue.id.replace(/^G/u, 'T'), source: 'speech',
         start: cue.start, end: cue.end, speaker: cue.speaker, text: cue.text,
-        sourceIndices: cue.items.map(item => item.index) }));
+        sourceIndices: cue.items.map(item => item.index),
+        ...(cue.items.some(item => item.speakerEvidence) ? { speakerEvidence: {
+            version: 1, status: cue.items.every(item => item.speakerEvidence?.status === 'row_supported') ? 'row_supported' : 'unknown',
+            label: cue.speaker === 'UNKNOWN' ? null : cue.speaker, identityVerified: false,
+            timingPrecision: 'acoustic_window'
+        } } : {}) }));
     const reactions = audience.map((item,index) => ({ id: `D${index + 1}`, source: 'audience',
         start: item.firstTime, end: item.lastTime, text: item.text, count: item.count }));
     const subtitles = speech.map(row => `${row.id} ${Math.floor(row.start)}-${Math.ceil(row.end)}${row.speaker ? ` [${row.speaker}]` : ''} ${row.text}`);

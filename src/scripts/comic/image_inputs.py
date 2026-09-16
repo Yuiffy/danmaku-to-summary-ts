@@ -171,6 +171,10 @@ def collect_all_images(
 
     # 1.5 额外实际出声/文本提到主播参考图。只取每人第一张存在的图。
     # 人物身份参考是不可替代的锚点；截图只能使用人物图加入后的剩余额度。
+    if multi_config.get("_sessionDiscoveryActive"):
+        # A legacy four-image setting must not drop the fourth guest of a
+        # five-person collaboration after the earlier selection accepted them.
+        max_total_images = max(max_total_images, len(images) + min(4, len(extra_streamers or [])))
     for streamer in (extra_streamers or []):
         if len(images) >= max_total_images:
             context.log(f"[INFO]  图片数量达到上限 {max_total_images}，停止加入额外主播参考图")

@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const { collectSpokenClockValues, supportedClockSpans } = require('./clock_evidence');
 const { collectSpokenDates, supportedDateSpans } = require('./date_evidence');
 const { reviewPersonEvidence } = require('./person_evidence');
+const { speakerForSegment } = require('../asr/speaker_attribution');
 
 function buildSubtitleEvidence(segments = [], options = {}) {
     const maxSeconds = Number(options.maxGroupSeconds) || 12;
@@ -17,7 +18,7 @@ function buildSubtitleEvidence(segments = [], options = {}) {
         text: String(segment.text || ''),
         ...(segment.asrEvidence ? { asrEvidence: segment.asrEvidence } : {}),
         ...(segment.speakerEvidence ? { speakerEvidence: segment.speakerEvidence } : {}),
-        speaker: String(segment.speakerEvidence?.label ?? segment.speaker ?? segment.speaker_id ?? segment.text?.match(/^\[([^\]]+)\]/u)?.[1] ?? '')
+        speaker: speakerForSegment({ ...segment, speaker: segment.speaker ?? segment.speaker_id })
     })).filter(item => Number.isFinite(item.start) && Number.isFinite(item.end) && item.end > item.start);
     for (const item of source) {
         const last = cues.at(-1);

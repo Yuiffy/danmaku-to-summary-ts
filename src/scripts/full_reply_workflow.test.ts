@@ -8,6 +8,7 @@ const loader = require('./config-loader');
 const combined = require('./full_reply_summary');
 const review = require('./reply_summary_review');
 const live = require('./live_generation_context');
+const liveCache = require('./text/live_cache_continuation');
 
 describe('combined reply/summary publication workflow', () => {
   let dir: string;
@@ -58,6 +59,28 @@ describe('combined reply/summary publication workflow', () => {
     expect(overview.generation.attempts).toEqual([]);
     expect(overview.generation.sharedUsagePath).toBe(path.basename(files.artifact));
     expect(fs.readdirSync(dir).some((n:string)=>n.endsWith('.lock')||n.endsWith('.tmp'))).toBe(false);
+  });
+
+  test('only promotes a cache seed after the semantic review succeeds', async () => {
+    const accept=jest.spyOn(liveCache,'acceptSeed').mockReturnValue(true);
+    const seed={test:'original request and actual response'};
+    const generate=jest.fn().mockResolvedValueOnce({...result(JSON.stringify(draft()),'draft'),cacheSeed:seed})
+      .mockImplementationOnce(async()=>{
+        expect(accept).not.toHaveBeenCalled();
+        return result('{"verdict":"pass","issues":[]}','review');
+      });
+    await workflow.tryGenerateCombinedReply(highlight,'1',{config,generateText:generate});
+    expect(accept).toHaveBeenCalledWith(seed,config);
+    expect(JSON.parse(fs.readFileSync(workflow.pathsFor(highlight).artifact,'utf8'))).not.toHaveProperty('cacheSeed');
+  });
+
+  test('does not promote an unreviewed draft when semantic review rejects it',async()=>{
+    const accept=jest.spyOn(liveCache,'acceptSeed').mockReturnValue(true);
+    const generate=jest.fn().mockResolvedValueOnce({...result(JSON.stringify(draft()),'draft'),cacheSeed:{test:'draft'}})
+      .mockResolvedValueOnce(result('{"verdict":"reject","issues":[]}','review'));
+    const got=await workflow.tryGenerateCombinedReply(highlight,'1',{config,generateText:generate});
+    expect(got.handled).toBe(false);
+    expect(accept).not.toHaveBeenCalled();
   });
 
   test('keeps accepted replies when optional material is invalid and requests complete-source fallback', async () => {

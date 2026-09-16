@@ -65,6 +65,16 @@ describe('daiYu model routing', () => {
     expect(result.meta.attempts.map(attempt => attempt.status)).toEqual(['failure', 'success']);
     expect(result.meta.attempts[0].httpStatus).toBe(502);
   });
+  test.each(['daiYu', 'tuZi'])('%s sends the constrained detail schema and accepts keywords inside structured facts', async provider => {
+    const format = { type: 'json_schema', name: 'fixture', strict: true, schema: { type: 'object' } };
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ status: 'completed',
+      output_text: '{"clips":[{"title":"谈论 system prompt"}]}', usage: {} }) });
+    const generate = provider === 'daiYu' ? generateTextWithDaiYu : generateTextWithTuZi;
+    const result = await generate('Source', { apiMode: 'responses', primaryModel: 'gpt-5.6-luna',
+      responseFormat: format, structuredOutputKey: 'clips', fallbackModelsEnabled: false, allowProviderFallback: false });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).text.format).toEqual(format);
+    expect(result.text).toContain('system prompt'); expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 
   test('normalizes a legacy daiYu configuration before sending the request', async () => {
     const result = await generateTextWithDaiYu('只回复 LUNA_OK');
@@ -73,6 +83,36 @@ describe('daiYu model routing', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const request = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(request.model).toBe('gpt-5.6-luna');
+  });
+
+  test('transports accepted history once without leaking it into usage metadata',async()=>{
+    const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+    const cache=require('./text/live_cache_continuation');
+    const directory=fs.mkdtempSync(path.join(os.tmpdir(),'text-cache-transport-'));
+    const enabled={...config,ai:{text:{...config.ai.text,sharedPromptCache:{enabled:true,continuationEnabled:true}}}};
+    configLoader.getConfig.mockReturnValue(enabled);
+    const prepare=cache.prepareContinuation;
+    const spy=jest.spyOn(cache,'prepareContinuation').mockImplementation((body,cfg)=>prepare(body,cfg,{directory}));
+    const message={type:'message',role:'assistant',status:'completed',id:'real-output',
+      content:[{type:'output_text',text:'Complete factual response.',annotations:[]}]};
+    fetchMock.mockResolvedValue({ok:true,status:200,json:async()=>({model:'gpt-5.6-luna',status:'completed',output:[message],
+      usage:{input_tokens:1000,input_tokens_details:{cached_tokens:900},output_tokens:30}})});
+    const prefix=`${liveGenerationContext.SHARED_PROMPT_CACHE_START}\nFull original stream.\n${liveGenerationContext.SHARED_PROMPT_CACHE_END}`;
+    const options={primaryModel:'gpt-5.6-luna',apiMode:'responses',captureLiveCache:true,promptCacheRolloutPercent:100};
+    try {
+      const first=await generateTextWithDaiYu(prefix+'\nReply task.',options);
+      expect(first.cacheSeed.messages).toEqual([message]);
+      expect(first.meta).not.toHaveProperty('cacheSeed');
+      expect(cache.acceptSeed(first.cacheSeed,enabled,{directory})).toBe(true);
+      const next=await generateTextWithDaiYu(prefix+'\nComic task.',options);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const body=JSON.parse(fetchMock.mock.calls[1][1].body);
+      expect(body.input[0]).toEqual(JSON.parse(fetchMock.mock.calls[0][1].body).input[0]);
+      expect(body.input[1]).toEqual(message);
+      expect(body.input[2].content.at(-1).text).toBe('\nComic task.');
+      expect(next.meta.attempts[0].liveCacheContinuation).toBe(true);
+      expect(next.cacheSeed).toBeNull();
+    } finally {spy.mockRestore();fs.rmSync(directory,{recursive:true,force:true});}
   });
 
   test.each(['daiYu','tuZi'])('%s returns unwrapped scripts with original usage and rejects a wrong task',async provider=>{

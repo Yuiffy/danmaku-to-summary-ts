@@ -158,6 +158,7 @@
       "provider": "daiYu",
       "sharedPromptCache": {
         "enabled": true,
+        "continuationEnabled": true,
         "explicitRolloutPercent": 10,
         "ttl": "30m"
       },
@@ -241,6 +242,7 @@
       },
       "multiReferenceImages": {
         "enabled": false,
+        "discoveryEnabled": true,
         "maxExtraCharacters": 2,
         "minSpeakerScore": 0.64,
         "minSpeechSeconds": 8,
@@ -367,6 +369,14 @@
       }
     },
     "streamerRegistry": {
+      "mit3uri": {
+        "displayName": "三理Mit3uri",
+        "uid": "2030198123",
+        "roomIds": ["1967216004"],
+        "speakerLabels": ["三理", "三理Mit3uri", "Mit3uri"],
+        "mentionLabels": ["三理Mit3uri", "三理", "Mit3uri"],
+        "referenceImages": ["public/reference_images/mit3uri_standing.png"]
+      },
       "mofu": {
         "displayName": "犬绒Mofu",
         "aiClipName": "小绒",
@@ -1695,13 +1705,13 @@
       "identityCommentsPerChunk": 12,
       "contextSeconds": 12,
       "batchSize": 4,
-      "concurrency": 2,
+      "concurrency": 3,
       "maxBatchChars": 36000,
       "maxRequests": 12,
       "maxElapsedMs": 1200000,
       "repairAttempts": 1,
       "dialogueEnabled": true,
-      "evidenceEncoding": "legacy",
+      "evidenceEncoding": "compact",
       "timeoutMs": 600000,
       "maxTokens": 12000
     },
@@ -1713,7 +1723,8 @@
     "maxCandidates": 80,
     "maxClips": 50,
     "chunkSeconds": 2700,
-    "aiConcurrency": 3,
+    "aiConcurrency": 4,
+    "streamReviewRendering": true,
     "clipConcurrency": 2,
     "enhancementConcurrency": 3,
     "clipFfmpegThreads": 2,
@@ -1751,6 +1762,8 @@
       "timeoutMs": 600000,
       "rerankTimeoutMs": 1200000,
       "rerankMaxAttempts": 2,
+      "rankThenEdit": { "enabled": true, "cardChars": 700, "rankMaxTokens": 12000, "detailBatchSize": 3, "detailConcurrency": 3 },
+      "recallMaxClipsPerChunk": 12,
       "retry": { "maxAttempts": 2, "baseDelayMs": 1000, "maxDelayMs": 10000, "jitterRatio": 0.2 },
       "maxCandidateLines": 100,
       "maxCandidateSubtitleChars": 520,
@@ -1792,7 +1805,7 @@
     "selectionPolicy": {
       "requireTimeCoverage": false,
       "excludedCategories": [],
-      "priorityCategories": []
+      "priorityCategories": ["有辨识度的短台词与语气", "角色相遇、起昵称和求助互动"]
     },
     "residualAudit": {
       "enabled": false,
@@ -1905,6 +1918,18 @@
     }
   },
   "asr": {
+    "participantDiscovery": {
+      "enabled": true,
+      "visual": {
+        "enabled": true,
+        "provider": "daiYu",
+        "model": "gpt-5.6-luna",
+        "maxFrames": 6,
+        "timeoutMs": 120000,
+        "maxTokens": 7000,
+        "reasoningEffort": "low"
+      }
+    },
     "default_backend": "paraformer",
     "subtitleProofreading": {
       "enabled": true,
@@ -2779,6 +2804,14 @@
           "state": "official_solo_chat",
           "chunk_s": 8,
           "max_chunks": 2,
+          "preserve_exemplars": true
+        },
+        {
+          "speaker": "灰泽满Hazel",
+          "audio_path": "data/asr_speaker_refs/hazel_official_game_chat.wav",
+          "state": "official_game_chat",
+          "chunk_s": 8,
+          "max_chunks": 4,
           "preserve_exemplars": true
         },
         {

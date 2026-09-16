@@ -11,6 +11,27 @@ jest.mock('xml2js', () => ({
 const fusion = require('./do_fusion_summary');
 
 describe('do_fusion_summary speaker sidecar support', () => {
+  test('keeps different voices in separate blocks and respects a local rejected identity', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fusion-speaker-evidence-'));
+    try {
+      const srt = path.join(dir, 'sample.srt'); const xml = path.join(dir, 'sample.xml');
+      const text = '1\n00:00:00,000 --> 00:00:04,000\n[Host 0.99] 我打算明天继续\n\n2\n00:00:04,000 --> 00:00:08,000\n我明天要去医院\n';
+      fs.writeFileSync(srt, text); fs.writeFileSync(xml, '<i></i>');
+      const parsed = require('./asr/asr_backends').parseSrt(srt);
+      require('./asr/evidence_sidecar').writeAsrEvidence(srt, text, parsed.segments.map((row: any, index: number) => ({
+        ...row, asr: { recognizedText: row.text }, speaker: { version: 1, observations: [],
+          status: index ? 'row_supported' : 'mixed', label: index ? 'Guest' : null }
+      })), 'paraformer');
+      await fusion.processLiveData([srt, xml]);
+      const highlight = fs.readFileSync(path.join(dir, 'sample_AI_HIGHLIGHT.txt'), 'utf8');
+      expect(highlight).toContain('[UNKNOWN] 我打算明天继续');
+      expect(highlight).toContain('[Guest] 我明天要去医院');
+      expect(highlight).not.toContain('[Host');
+      const speechLines = highlight.split('\n').filter((line: string) => /\[(?:UNKNOWN|Guest)\]/u.test(line));
+      expect(speechLines).toHaveLength(2);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
   test('includes participant summary when speaker sidecar exists', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fusion-summary-'));
     const srtPath = path.join(dir, 'sample.speaker.srt');

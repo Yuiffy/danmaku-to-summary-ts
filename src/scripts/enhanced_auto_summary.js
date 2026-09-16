@@ -116,6 +116,7 @@ function enrichAsrContextWithSpeakerRequest(context = {}, request = null, config
         ? request.referencePreparation
         : null;
     const resolvedParticipants = participants.map((participant) => ({
+        ...participant,
         streamerId: participant.streamerId ? String(participant.streamerId) : null,
         displayName: participant.displayName ? String(participant.displayName) : null,
         role: participant.role ? String(participant.role) : 'participant',
@@ -147,7 +148,7 @@ function enrichAsrContextWithSpeakerRequest(context = {}, request = null, config
                 ? request.rosterStreamerIds.map(value => String(value)).filter(Boolean)
                 : [],
             participants: resolvedParticipants,
-            constrainToRoster: request.constrainToRoster !== false,
+            constrainToRoster: false,
             referencePreparation,
             constrainedSpeakerReferences
         }
@@ -691,7 +692,8 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
 
         const config = configLoader.getConfig();
         const enableSpeakerOnce = String(process.env.ASR_ENABLE_SPEAKER_ONCE || '').toLowerCase() === 'true';
-        const speakerRequest = parseSpeakerRequestFromEnv();
+        const speakerRequest = await require('./asr/participant_collection').prepareAsrSpeakerRequest(
+            mediaPath, config, options.asrContext || {}, mediaDurationSeconds, parseSpeakerRequestFromEnv());
         if (enableSpeakerOnce) {
             config.asr = config.asr || {};
             config.asr.paraformer = {
@@ -946,7 +948,7 @@ async function prepareFullLiveContextForExperiment(options = {}) {
         throw new Error('全量输入实验缺少弹幕 XML 文件');
     }
 
-    const parsed = asrBackends.parseSrt(srtPath, 'full_live_context');
+    const parsed = require('./asr/speaker_attribution').loadSrtWithSpeakerEvidence(srtPath, asrBackends.parseSrt, 'full_live_context');
     const danmaku = await ownStreamClipper.parseDanmakuXml(xmlPath);
     const clipConfig = { ...ownStreamClipper.getOwnStreamClipsConfig(config),
         ...((experiment.compactEvidence === true || experiment.replySummary?.enabled === true)
@@ -1425,7 +1427,7 @@ const main = async () => {
         let asrContext = null;
         let asrOptions = null;
         try {
-            asrContext = { ...buildAsrRoutingContext(processedFile, mediaRoomId), xmlPath: findXmlForMedia(mediaFile, xmlFiles) };
+            asrContext = { ...buildAsrRoutingContext(processedFile, mediaRoomId), sourceMediaPath: mediaFile, xmlPath: findXmlForMedia(mediaFile, xmlFiles) };
             asrOptions = {
                 bypassQueueTurn,
                 asrBackend: cliOptions.asrBackend,

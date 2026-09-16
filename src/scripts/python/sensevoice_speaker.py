@@ -147,55 +147,63 @@ def _generate_speaker_embeddings(
     payload=None,
     stage="说话人嵌入 (CUDA)",
 ):
-    """Extract one embedding row per clip, shrinking batches only under pressure."""
+    """Extract embeddings in equal-length batches, preserving input row order.
+
+    CAM++'s FunASR frontend pads features but its statistics pooling ignores
+    lengths. Mixing durations therefore changes a voice with its batch partners.
+    Exact sample-length groups avoid padding without cropping audio or moving
+    speaker boundaries; normal equal-duration reference chunks still batch.
+    """
     if not chunks:
         return []
 
     import torch
 
-    embeddings = []
+    embeddings = [None] * len(chunks)
+    length_groups = {}
+    for index, chunk in enumerate(chunks):
+        # File paths/opaque inputs do not expose duration: infer them separately.
+        try:
+            key = len(chunk) if not isinstance(chunk, (str, bytes)) else ("opaque", index)
+        except TypeError:
+            key = ("opaque", index)
+        length_groups.setdefault(key, []).append(index)
     requested_batch_size = max(1, int(batch_size or 64))
-    offset = 0
-    while offset < len(chunks):
-        if gpu_throttle:
-            gpu_throttle.wait_if_busy(stage)
-        choose_batch = getattr(gpu_throttle, "batch_size_for", None) if gpu_throttle else None
-        effective_batch_size = (
-            choose_batch("speaker", requested_batch_size)
-            if callable(choose_batch)
-            else requested_batch_size
-        )
-        effective_batch_size = max(1, int(effective_batch_size or requested_batch_size))
-        current_chunks = chunks[offset:offset + effective_batch_size]
-        with ResourcePeakMonitor(
-            payload,
-            stage,
-            gpu_throttle=gpu_throttle,
-        ):
-            with suppress_model_output():
-                results = spk_model_obj.generate(
-                    input=current_chunks,
-                    cache={},
-                    is_final=True,
-                    batch_size=effective_batch_size,
+    # One stage monitor avoids a forced GPU telemetry query for every tiny bucket.
+    with ResourcePeakMonitor(payload, stage, gpu_throttle=gpu_throttle):
+        for indices in length_groups.values():
+            offset = 0
+            while offset < len(indices):
+                if gpu_throttle:
+                    gpu_throttle.wait_if_busy(stage)
+                choose_batch = getattr(gpu_throttle, "batch_size_for", None) if gpu_throttle else None
+                effective_batch_size = (
+                    choose_batch("speaker", requested_batch_size)
+                    if callable(choose_batch)
+                    else requested_batch_size
                 )
-        if not isinstance(results, list):
-            results = [results]
-
-        for result in results:
-            embedding = result.get("spk_embedding") if isinstance(result, dict) else None
-            rows = _split_speaker_embedding_rows(embedding)
-            if not rows:
-                embeddings.append(None)
-                continue
-            for row in rows:
-                embeddings.append(
-                    row if row is not None and torch.isfinite(row).all() else None
-                )
-        offset += len(current_chunks)
-    if len(embeddings) < len(chunks):
-        embeddings.extend([None] * (len(chunks) - len(embeddings)))
-    return embeddings[:len(chunks)]
+                effective_batch_size = max(1, int(effective_batch_size or requested_batch_size))
+                batch_indices = indices[offset:offset + effective_batch_size]
+                with suppress_model_output():
+                    results = spk_model_obj.generate(
+                        input=[chunks[index] for index in batch_indices],
+                        cache={},
+                        is_final=True,
+                        batch_size=effective_batch_size,
+                    )
+                if not isinstance(results, list):
+                    results = [results]
+                batch_rows = []
+                for result in results:
+                    embedding = result.get("spk_embedding") if isinstance(result, dict) else None
+                    rows = _split_speaker_embedding_rows(embedding)
+                    batch_rows.extend(rows if rows else [None])
+                # A malformed response must not shift embeddings onto other voices.
+                if len(batch_rows) == len(batch_indices):
+                    for index, row in zip(batch_indices, batch_rows):
+                        embeddings[index] = row if row is not None and torch.isfinite(row).all() else None
+                offset += len(batch_indices)
+    return embeddings
 
 
 def build_speaker_reference_prototypes(
@@ -306,7 +314,8 @@ def build_speaker_reference_centroids(
             cache.pop("speaker_reference_centroids", None)
         return None
 
-    parameters = (batch_size, prototype_merge_threshold, max_prototypes, prototype_min_support_chunks)
+    parameters = ("equal_sample_length_v1", batch_size, prototype_merge_threshold,
+                  max_prototypes, prototype_min_support_chunks)
     cache_key = None
     if cache is not None:
         cache_key = _speaker_reference_cache_key(references, device, parameters)

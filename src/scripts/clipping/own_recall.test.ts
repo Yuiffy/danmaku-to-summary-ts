@@ -6,6 +6,38 @@ const os = require('os');
 const path = require('path');
 
 describe('own-stream recall preservation', () => {
+  test('new plan-only runs keep grounded viewing angles and every pre-ranking proposal without media or upload', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'viewing-angle-plan-'));
+    const mediaPath = path.join(directory, 'source.flv'), srtPath = path.join(directory, 'source.srt');
+    fs.writeFileSync(mediaPath, 'fixture');
+    fs.writeFileSync(srtPath, '1\n00:00:01,000 --> 00:00:10,000\n你怎么在这里，找到你了\n\n2\n00:00:20,000 --> 00:00:30,000\n天气真好\n');
+    const generate = jest.spyOn(generator, 'generateTextWithDaiYu').mockImplementation(async prompt => ({
+      text: JSON.stringify({ clips: String(prompt).includes('完整候选池') ? [{ candidateIndex: 1,
+        startCueId: 'G1', endCueId: 'G1', title: '终于找到你了', description: '找到你了', coverText: '你怎么在这里\n终于找到你了',
+        evidenceCueIds: ['G1'], sourceKind: 'live_speech', score: 90 }] : [
+          { startCueId: 'G1', endCueId: 'G1', evidenceCueIds: ['G1'], sourceKind: 'live_speech', event: '寻找后相遇', score: 90,
+            viewingAngles: [{ label: '角色互动', hook: '找到对方后的招呼', evidenceCueIds: ['G1'], evidenceDanmakuIds: [] }] },
+          { startCueId: 'G2', endCueId: 'G2', evidenceCueIds: ['G2'], sourceKind: 'live_speech', event: '平静聊天', score: 50,
+            viewingAngles: [{ label: '编造标签', hook: '不存在的事件', evidenceCueIds: ['G99'] }] }
+        ] }), meta: { model: 'fixture' }
+    }));
+    const cut = jest.spyOn(require('../topic_clipper'), 'cutClipMedia');
+    const register = jest.spyOn(require('child_process'), 'spawnSync');
+    try {
+      await own.generateOwnStreamClips({ mediaPath, srtPath, totalDurationSeconds: 35, planOnly: true,
+        config: { ai: { text: { provider: 'daiYu' } }, ownStreamClips: { enabled: true,
+          ai: { enabled: true, strategy: 'staged', maxCandidateLines: 1, recallMaxClipsPerChunk: 12 }, notify: { enabled: false } } } });
+      const plan = JSON.parse(fs.readFileSync(path.join(directory, 'own_stream_fun_clips', 'PLAN.json'), 'utf8'));
+      expect(plan.config).toMatchObject({ viewingAnglesVersion: 1, recallMaxClipsPerChunk: 12 });
+      expect(plan.aiStatus.recallChunks[0]).toMatchObject({ proposed: 2, atLimit: false, limit: 12 });
+      expect(plan.aiStatus.recallPool.candidates).toHaveLength(2);
+      expect(plan.aiStatus.recallPool.candidates[1]).toMatchObject({ disposition: 'candidate_pool_limit', viewingAngles: [],
+        viewingAngleIssues: ['invalid_viewing_angle:1'] });
+      expect(plan.clips[0].viewingAngles[0]).toMatchObject({ label: '角色互动', evidenceCueIds: ['G1'] });
+      expect(cut).not.toHaveBeenCalled(); expect(register).not.toHaveBeenCalled();
+    } finally { generate.mockRestore(); cut.mockRestore(); register.mockRestore(); fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
   test.each([[1, false], [2, false], [1, true]])('rerank failure keeps unfinished copy out of publishable artifacts (workers=%s, localOnly=%s)', async (clipConcurrency, localOnly) => {
     const register = jest.spyOn(require('child_process'), 'spawnSync').mockReturnValue({ status: 0, stdout: '', stderr: '' });
     let own, topic;
@@ -140,7 +172,7 @@ describe('own-stream recall preservation', () => {
           chunkSeconds: 600, ai: { enabled: true, strategy: 'staged' }, notify: { enabled: false } } } });
       const plan = JSON.parse(fs.readFileSync(path.join(directory, 'own_stream_fun_clips', 'PLAN.json'), 'utf8'));
       expect(plan.aiStatus.skippedChunks.map(row => row.index)).toEqual([1, 3]);
-      expect(plan.config).toMatchObject({ minClipSeconds: 35, maxClipSeconds: 210 });
+      expect(plan.config).toMatchObject({ minClipSeconds: 35, maxClipSeconds: 210, aiDurationPolicy: 'content_complete' });
       expect(plan.aiStatus.requests).toHaveLength(2);
       expect(plan.aiStatus.errorCount).toBe(0);
       expect(plan.aiStatus.usedFallback).toBe(false);

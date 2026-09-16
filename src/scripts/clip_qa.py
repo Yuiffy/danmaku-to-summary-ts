@@ -92,7 +92,7 @@ def validate_attribution(metadata):
 
 def validate_human_review(metadata):
     review = metadata.get("ownStreamHumanReview") or {}
-    if (metadata.get("mode") not in ("own_stream_fun_review", "local_review", "topic_candidate_manual_cut") or metadata.get("selectionRejection")
+    if (metadata.get("mode") not in ("own_stream_fun_review", "local_review", "topic_candidate_manual_cut", "manual_clip_queue") or metadata.get("selectionRejection")
             or metadata.get("uploadReady") is not True or review.get("version") != 1
             or review.get("status") != "approved" or review.get("authority") != "human"
             or not str(review.get("note") or "").strip()):

@@ -44,8 +44,8 @@ describe('own_stream_clipper', () => {
       expect(ownStreamClipper.alignClipToSubtitleBoundaries(first.clips[0], parsed.segments, config, 240).end).toBe(72);
       expect(generate.mock.calls[0][0]).toContain('fact-79');
       expect(generate.mock.calls[0][0]).not.toContain('字幕过长已截断');
-      expect(generate.mock.calls[0][0]).toContain('最多允许5秒边界容差');
-      expect(generate.mock.calls[1][0]).toContain('最多允许5秒边界容差');
+      expect(generate.mock.calls[0][0]).toContain('时长由内容完整性决定');
+      expect(generate.mock.calls[1][0]).toContain('时长由内容完整性决定');
       expect(generate.mock.calls[1][0]).toContain('fact-15');
       const second = await ownStreamClipper.planClipsWithStagedAI([], parsed, [], info, 240, config, root);
       expect(second.clips).toEqual(first.clips);

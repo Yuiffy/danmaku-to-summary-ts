@@ -6,9 +6,11 @@ AI漫画生成模块
 """
 
 from comic import image_routes as comic_image_routes
+from comic import identity as comic_identity
 from comic.text_client import run_node_text_generation, shared_output_options
 from comic.text_response import has_incomplete_text_generation
 from comic.live_material import select_comic_material
+from comic.identity import participant_presence, validated_recording_discovery
 from comic.image_routes import (
     _get_nested_provider_options,
     _resolve_image_provider_config,
@@ -120,7 +122,7 @@ import subprocess
 import shutil
 import uuid
 
-COMIC_SCRIPT_POLICY_VERSION = 17
+COMIC_SCRIPT_POLICY_VERSION = 19
 COMIC_SCRIPT_META_SCHEMA_VERSION = 7
 COMIC_STORYTELLING_VARIANTS = {"control", "immersive_v1"}
 DEFAULT_COMIC_STORYTELLING_SALT = "comic-immersive-v1"
@@ -666,39 +668,22 @@ def resolve_configured_path(file_path: str) -> Optional[str]:
             return os.path.abspath(candidate)
     return None
 
-def get_multi_reference_config(config: Dict[str, Any], room_id: Optional[str]) -> Dict[str, Any]:
-    """Return global multi-reference config with room overrides applied."""
-    ai_config = config.get("ai", {})
-    global_config = ai_config.get("comic", {}).get("multiReferenceImages", {})
-    room_config = {}
-    if room_id:
-        room_config = (config.get("ai", {}).get("roomSettings", {}).get(str(room_id), {}).get("multiReferenceImages", {})
-                       or config.get("roomSettings", {}).get(str(room_id), {}).get("multiReferenceImages", {}))
-    merged = {
-        "enabled": False,
-        "maxExtraCharacters": 2,
-        "maxMentionedContextCharacters": 2,
-        "minSpeakerScore": 0.64,
-        "minSpeechSeconds": 8,
-        "minSpeakerMaxScore": 0.80,
-        "minSpeakerSecondsWhenLowScore": 900,
-        "speakerThresholdOverrides": {},
-        "includeUnknownSpeakers": False,
-        "includeMentionedStreamers": True,
-        "includeMentionedStreamerImages": True,
-        "useMentionedOnlyAsContext": True,
-        "filterExtraImagesByComicScript": True,
-        "filterMentionedImagesByComicScript": True,
-        "appendCharacterDescriptions": True,
-        "imageOrder": ["host", "appeared_streamers", "cover", "screenshots", "default"],
-        "requirePlannedRosterForAppearedCharacters": False,
-        "mentionCharacterMode": "allowed",
-    }
-    if isinstance(global_config, dict):
-        merged.update(global_config)
-    if isinstance(room_config, dict):
-        merged.update(room_config)
-    return merged
+def get_multi_reference_config(
+    config: Dict[str, Any], room_id: Optional[str], highlight_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    return comic_identity.get_multi_reference_config(
+        config, room_id, highlight_path, load_discovery=load_comic_participant_discovery, find_host=find_host_streamer_id,
+    )
+
+
+def load_comic_participant_discovery(highlight_path, room_id, config):
+    context = load_live_generation_context(highlight_path, room_id, config)
+    if context.get("participantDiscovery"):
+        return context["participantDiscovery"]
+    sidecar = load_asr_speakers_for_highlight(highlight_path)
+    if sidecar.get("hostRoomId") and str(sidecar["hostRoomId"]) != str(room_id):
+        return None
+    return validated_recording_discovery(sidecar.get("participantDiscovery"), highlight_path, room_id)
 
 def get_allowed_extra_streamer_ids(multi_config: Dict[str, Any]) -> set[str]:
     allowed = multi_config.get("allowedExtraStreamerIds") or multi_config.get("allowedExtraStreamers") or []
@@ -931,9 +916,10 @@ def apply_configured_asr_corrections_for_comic(text: str, room_id: Optional[str]
 
 def sanitize_highlight_for_comic_script(highlight_content: str, room_id: Optional[str] = None, config: Optional[Dict[str, Any]] = None) -> str:
     """Keep factual text while removing non-semantic subtitle-review annotations."""
-    # `.speaker.srt` prefixes are diagnostic CAM++ labels, not source facts.
-    without_speaker_prefixes = re.sub(r"\[(?:[^\]\n]+?)\s+(?:\d+(?:\.\d+)?)\]\s*", "", highlight_content or "")
-    cleaned = apply_configured_asr_corrections_for_comic(strip_danmaku_sticker_tokens(without_speaker_prefixes), room_id, config)
+    # Remove scores, never the ownership boundary: an unnamed speaker must not
+    # turn into an unlabelled first-person claim that the model assigns to host.
+    with_speaker_labels = re.sub(r"\[([^\]\n]+?)\s+(?:\d+(?:\.\d+)?)\]", r"[\1]", highlight_content or "")
+    cleaned = apply_configured_asr_corrections_for_comic(strip_danmaku_sticker_tokens(with_speaker_labels), room_id, config)
     lines = [re.sub(r"[ \t]+", " ", line).strip() for line in cleaned.splitlines()]
     return "\n".join(line for line in lines if line).strip()
 
@@ -1169,7 +1155,8 @@ def load_live_generation_context(
         try:
             with open(context_path, "r", encoding="utf-8") as context_file:
                 loaded_context = json.load(context_file)
-            if isinstance(loaded_context, dict) and loaded_context.get("schemaVersion") == 1:
+            if (isinstance(loaded_context, dict) and loaded_context.get("schemaVersion") == 1
+                    and str(loaded_context.get("roomId") or "") == str(room_id or "")):
                 context = loaded_context
         except Exception as error:
             print(f"[WARNING] 读取直播事实上下文失败，将仅使用文件名: {error}")
@@ -1177,6 +1164,11 @@ def load_live_generation_context(
     if context is None:
         context = parse_recording_live_context(highlight_path, room_id)
         context["contentHints"] = get_room_content_hints(config or load_config(), context.get("roomId"))
+
+    if context.get("participantDiscovery") is not None:
+        context["participantDiscovery"] = validated_recording_discovery(
+            context["participantDiscovery"], highlight_path, room_id, context,
+        )
 
     live_content_summary = load_live_content_summary(highlight_path)
     if live_content_summary:
@@ -1235,6 +1227,19 @@ def format_live_generation_context(context: Optional[Dict[str, Any]]) -> str:
     if content_hints:
         lines.append("- 主播内容歧义提示（只用于解释本场已经出现的词句，不得主动补写）：")
         lines.extend(f"  - {hint}" for hint in content_hints)
+    discovery = context.get("participantDiscovery")
+    if isinstance(discovery, dict):
+        lines.append("【本场参与者线索】候选/计划不是到场证明；到场证明也不能代替逐句声纹身份。")
+        lines.append(f"- 播出形式：{discovery.get('mode') or 'unknown'}；证据状态：{discovery.get('modeStatus') or 'unknown'}。计划单播不能抹去后来确实加入的联动者。")
+        for person in discovery.get("participants") or []:
+            if isinstance(person, dict):
+                name = person.get("displayName") or person.get("streamerId") or "未确认人物"
+                lines.append(f"- {name}：参与状态 {person.get('status') or 'candidate'}；仅按同一事件时间的正文证据安排行动和台词。")
+        for mention in discovery.get("mentions") or []:
+            if isinstance(mention, dict):
+                name = mention.get("name") or mention.get("streamerId") or "未确认人物"
+                when = mention.get("offsetSeconds", mention.get("observedAt") or "未确定")
+                lines.append(f"- 非现场线索 {name}：{mention.get('relation') or 'mentioned'}，观察时间 {when}；此条只约束对应片段，不证明整场参与或缺席。")
     lines.extend([
         "【事实证据优先级】直播标题与明确语音 > 同场弹幕 > 开播前近期动态 > 稳定人设、兴趣、口头禅与模型常识。",
         "稳定人设、兴趣和口头禅不是本场发生的事实，只能消解正文中确实存在且没有冲突证据的歧义；一旦高优先级证据指向其他游戏、活动或人物，必须服从高优先级证据。",
@@ -1410,6 +1415,7 @@ def hash_live_generation_context(context: Optional[Dict[str, Any]]) -> Optional[
         "contentHints": context.get("contentHints") or [],
         "recentDynamics": context.get("recentDynamics") or [],
         "liveContent": context.get("liveContent") or {},
+        "participantDiscovery": context.get("participantDiscovery") or {},
     }
     serialized = json.dumps(relevant, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
@@ -1529,81 +1535,24 @@ def get_speaker_acceptance_thresholds(
     multi_config: Dict[str, Any],
     streamer_id: str,
 ) -> Dict[str, float]:
-    configured_overrides = multi_config.get("speakerThresholdOverrides")
-    override = configured_overrides.get(streamer_id, {}) if isinstance(configured_overrides, dict) else {}
-    if not isinstance(override, dict):
-        override = {}
-
-    thresholds = {}
-    for key in (
-        "minSpeechSeconds",
-        "minSpeakerScore",
-        "minSpeakerMaxScore",
-        "minSpeakerSecondsWhenLowScore",
-    ):
-        parsed = to_optional_float(override.get(key, multi_config.get(key)))
-        thresholds[key] = parsed if parsed is not None else 0.0
-    return thresholds
+    return comic_identity.get_speaker_acceptance_thresholds(multi_config, streamer_id, number=to_optional_float)
 
 
 def find_sidecar_participant_for_streamer(sidecar: dict, streamer: Dict[str, Any]) -> Optional[dict]:
-    participants = sidecar.get("participants", []) if isinstance(sidecar, dict) else []
-    streamer_id = str(streamer.get("id") or "")
-    for participant in participants:
-        if str(participant.get("streamerId") or "") == streamer_id:
-            return participant
-    return None
+    return comic_identity.find_sidecar_participant_for_streamer(sidecar, streamer)
 
 
 def find_sidecar_speaker_for_streamer(sidecar: dict, streamer: Dict[str, Any]) -> Optional[dict]:
-    speakers = sidecar.get("speakers", []) if isinstance(sidecar, dict) else []
-    labels = []
-    for value in [
-        streamer.get("displayName"),
-        *(streamer.get("speakerLabels", []) or []),
-        *(streamer.get("aliases", []) or []),
-    ]:
-        label = str(value or "").strip()
-        if label and label not in labels:
-            labels.append(label)
-    normalized_labels = {normalize_mention_text(label) for label in labels}
-    for speaker in speakers:
-        speaker_label = normalize_mention_text(str(speaker.get("label") or "").strip())
-        if speaker_label in normalized_labels:
-            return speaker
-    return None
+    return comic_identity.find_sidecar_speaker_for_streamer(sidecar, streamer, normalize=normalize_mention_text)
 
 def sidecar_speaker_passes_reference_thresholds(
     speaker: Optional[dict],
     streamer: Dict[str, Any],
     multi_config: Dict[str, Any],
 ) -> bool:
-    if not speaker:
-        return True
-
-    display_name = streamer.get("displayName") or streamer.get("id") or speaker.get("label") or "unknown"
-    total_seconds = to_optional_float(speaker.get("totalSpeechSeconds")) or 0.0
-    avg_score = to_optional_float(speaker.get("avgScore"))
-    max_score = to_optional_float(speaker.get("maxScore"))
-    thresholds = get_speaker_acceptance_thresholds(multi_config, str(streamer.get("id") or ""))
-    min_seconds = thresholds["minSpeechSeconds"]
-    min_avg_score = thresholds["minSpeakerScore"]
-    min_max_score = thresholds["minSpeakerMaxScore"]
-    low_score_seconds = thresholds["minSpeakerSecondsWhenLowScore"]
-
-    if total_seconds < min_seconds:
-        print(f"[INFO]  过滤额外出声主播参考图: {display_name} 出声 {total_seconds:.1f}s < {min_seconds:.1f}s")
-        return False
-    if avg_score is not None and avg_score < min_avg_score:
-        print(f"[INFO]  过滤额外出声主播参考图: {display_name} avgScore {avg_score:.4f} < {min_avg_score:.4f}")
-        return False
-    if max_score is not None and min_max_score > 0 and max_score < min_max_score and total_seconds < low_score_seconds:
-        print(
-            f"[INFO]  过滤低置信额外出声主播参考图: {display_name} "
-            f"maxScore {max_score:.4f} < {min_max_score:.4f} 且出声 {total_seconds:.1f}s < {low_score_seconds:.1f}s"
-        )
-        return False
-    return True
+    return comic_identity.sidecar_speaker_passes_reference_thresholds(
+        speaker, streamer, multi_config, number=to_optional_float, thresholds_for=get_speaker_acceptance_thresholds, log=print,
+    )
 
 def resolve_mentioned_streamers(
     config: Dict[str, Any],
@@ -1670,7 +1619,7 @@ def resolve_extra_appeared_streamers(
     highlight_path: Optional[str],
     include_mentioned_streamers: bool = True,
 ) -> list[dict]:
-    multi_config = get_multi_reference_config(config, room_id)
+    multi_config = get_multi_reference_config(config, room_id, highlight_path)
     print(f"[INFO]  multiReferenceImages.enabled={bool(multi_config.get('enabled'))} room={room_id}")
     if not multi_config.get("enabled"):
         return []
@@ -1682,6 +1631,8 @@ def resolve_extra_appeared_streamers(
     host_streamer_id = find_host_streamer_id(config, room_id)
     max_extra = max(0, int(multi_config.get("maxExtraCharacters") or 0))
     allowed_extra_ids = get_allowed_extra_streamer_ids(multi_config)
+    discovery_candidate_ids = set(multi_config.get("_discoveryCandidateIds") or [])
+    discovery_only = multi_config.get("_sessionDiscoveryActive") and not multi_config.get("_baseEnabled")
     extra_streamers = []
 
     host_has_reference, host_reference_skip_reason = host_has_asr_speaker_reference(config, room_id)
@@ -1693,20 +1644,46 @@ def resolve_extra_appeared_streamers(
             "[INFO]  跳过 ASR 出声触发漫画参考图: "
             f"{host_reference_skip_reason}；无法可靠区分房间主人和其他说话人"
         )
+    if sidecar.get("hostRoomId") and str(sidecar["hostRoomId"]) != str(room_id):
+        print("[WARNING] ASR speaker summary 属于其他房间，忽略额外角色")
+        sidecar = {}
+
+    context_discovery = multi_config.get("_participantDiscovery") or load_live_generation_context(highlight_path, room_id, config).get("participantDiscovery")
+    speaker_discovery = validated_recording_discovery(sidecar.get("participantDiscovery"), highlight_path, room_id)
+    if context_discovery or speaker_discovery:
+        sidecar["participantDiscovery"] = context_discovery or speaker_discovery
+    else:
+        sidecar.pop("participantDiscovery", None)
 
     require_planned_roster = bool(multi_config.get("requirePlannedRosterForAppearedCharacters"))
     has_explicit_roster = bool(sidecar and sidecar.get("constrainedToRoster"))
     if require_planned_roster and not has_explicit_roster:
         print("[INFO]  房间要求已规划名单才允许额外实际出声角色，忽略非约束 ASR 标签")
 
-    for streamer_id in sidecar.get("extraAppearedStreamerIds", []) if sidecar else []:
+    candidate_ids = list(sidecar.get("extraAppearedStreamerIds") or [])
+    candidate_ids.extend(sidecar.get("appearedStreamerIds") or [])
+    candidate_ids.extend(
+        item.get("streamerId") for item in (sidecar.get("participants") or [])
+        if isinstance(item, dict) and item.get("appeared") is True
+    )
+    # Discovery can recover a candidate omitted by an older sidecar's short
+    # appeared-ID list, but the per-speaker acoustic checks below still apply.
+    candidate_ids = sorted(discovery_candidate_ids) + candidate_ids
+    seen_ids = set()
+    for streamer_id in candidate_ids:
         streamer_id = str(streamer_id)
+        if not streamer_id or streamer_id in seen_ids:
+            continue
+        seen_ids.add(streamer_id)
+        discovered_candidate = streamer_id in discovery_candidate_ids
+        if discovery_only and not discovered_candidate:
+            continue
         if require_planned_roster and not has_explicit_roster:
             continue
         if streamer_id == host_streamer_id:
             print(f"[INFO]  跳过房间主人额外参考图: {streamer_id}")
             continue
-        if allowed_extra_ids and streamer_id not in allowed_extra_ids:
+        if allowed_extra_ids and streamer_id not in allowed_extra_ids and not discovered_candidate:
             print(f"[INFO]  跳过未在 allowedExtraStreamerIds 中的额外参考图: {streamer_id}")
             continue
         entry = registry.get(streamer_id)
@@ -1714,39 +1691,20 @@ def resolve_extra_appeared_streamers(
             print(f"[WARNING] ASR sidecar 中的主播未配置 streamerRegistry: {streamer_id}")
             continue
         participant = find_sidecar_participant_for_streamer(sidecar, entry)
-        if participant and participant.get("appeared") is False:
-            print(f"[INFO]  跳过未实际出声的参与者: {streamer_id}")
-            continue
         speaker = find_sidecar_speaker_for_streamer(sidecar, entry)
+        presence = participant_presence(sidecar, streamer_id, participant, speaker)
+        if presence == "excluded":
+            print(f"[INFO]  跳过非本场互动的参与者: {streamer_id}")
+            continue
         if not sidecar_speaker_passes_reference_thresholds(speaker, entry, multi_config):
             continue
         if len(extra_streamers) >= max_extra:
             print(f"[INFO]  额外主播达到上限 maxExtraCharacters={max_extra}，跳过 {streamer_id}")
             continue
-        extra_streamers.append({**entry, "_comicReferenceReason": "appeared"})
+        extra_streamers.append({**entry, "_comicReferenceReason": "appeared", "_comicPresence": presence,
+                               "_comicDiscoveryQualified": discovered_candidate})
 
-    if sidecar and not extra_streamers:
-        for participant in sidecar.get("participants", []) or []:
-            if participant.get("appeared") is not True:
-                continue
-            streamer_id = str(participant.get("streamerId") or "")
-            if not streamer_id or streamer_id == host_streamer_id:
-                continue
-            if any(str(item.get("id") or "") == streamer_id for item in extra_streamers):
-                continue
-            if allowed_extra_ids and streamer_id not in allowed_extra_ids:
-                continue
-            entry = registry.get(streamer_id)
-            if not entry:
-                continue
-            speaker = find_sidecar_speaker_for_streamer(sidecar, entry)
-            if not sidecar_speaker_passes_reference_thresholds(speaker, entry, multi_config):
-                continue
-            if len(extra_streamers) >= max_extra:
-                break
-            extra_streamers.append({**entry, "_comicReferenceReason": "planned_appeared"})
-
-    if include_mentioned_streamers:
+    if include_mentioned_streamers and not discovery_only:
         already_ids = {streamer.get("id") for streamer in extra_streamers if streamer.get("id")}
         for streamer in resolve_mentioned_streamers(config, room_id, highlight_path, already_ids):
             if len(extra_streamers) >= max_extra:
@@ -1773,7 +1731,7 @@ def resolve_image_prompt_extra_streamers(
     an unrelated mention cannot be promoted into a different scene merely
     because its reference image was available first.
     """
-    multi_config = get_multi_reference_config(config, room_id)
+    multi_config = get_multi_reference_config(config, room_id, highlight_path)
     max_extra = max(0, int(multi_config.get("maxExtraCharacters") or 0))
     detected_streamers = resolve_extra_appeared_streamers(
         config,
@@ -1799,7 +1757,8 @@ def resolve_image_prompt_extra_streamers(
     # A generated storyboard is never evidence that a new streamer should be
     # drawn. Resolve mentions from the source highlight first, then require the
     # approved storyboard to actually use that source-backed mention.
-    source_mentions = resolve_mentioned_streamers(
+    discovery_only = multi_config.get("_sessionDiscoveryActive") and not multi_config.get("_baseEnabled")
+    source_mentions = [] if discovery_only else resolve_mentioned_streamers(
         config,
         room_id,
         highlight_path,
@@ -1838,7 +1797,7 @@ def collect_all_images(
         config=config,
         scripts_dir=os.path.dirname(__file__),
         project_root=get_project_root(),
-        multi_config=get_multi_reference_config(config, room_id),
+        multi_config=get_multi_reference_config(config, room_id, highlight_path),
         reference_policy=reference_policy,
         exclude_screenshots=reference_policy["excludeScreenshotsForStaticVideo"] and is_static_video_recording(
             config, highlight_path, os.environ.get("SOURCE_VIDEO_PATH"),
@@ -1949,7 +1908,10 @@ def get_multi_character_description(room_id: Optional[str] = None, extra_streame
     try:
         config = load_config()
         multi_config = get_multi_reference_config(config, room_id)
-        if not multi_config.get("enabled") or not multi_config.get("appendCharacterDescriptions", True):
+        discovered_cast = multi_config.get("discoveryEnabled") and any(
+            streamer.get("_comicDiscoveryQualified") for streamer in (extra_streamers or [])
+        )
+        if (not multi_config.get("enabled") and not discovered_cast) or not multi_config.get("appendCharacterDescriptions", True):
             return base_desc
         if not extra_streamers:
             return base_desc
@@ -2124,6 +2086,9 @@ def build_comic_prompt(
     room_config = config.get("roomSettings", {}).get(str(room_id), {}) if room_id else {}
     custom_image_prompt = room_config.get("customPrompts", {}).get("comicImage")
     live_context_block = format_live_generation_context(live_context)
+    image_identity_context = format_comic_identity_context(build_comic_identity_context(
+        highlight_content, room_id, config, appeared_streamers=extra_streamers,
+    ))
     storytelling_variant = (storytelling or {}).get("variant") or "control"
     reference_manifest_block = format_image_reference_manifest(image_manifest)
     shared_image_evidence_rules = COMMON_IMAGE_EVIDENCE_PROMPT_RULES
@@ -2170,6 +2135,11 @@ def build_comic_prompt(
 下面是根据直播内容生成的漫画脚本，请根据这个脚本绘制漫画：
 {comic_content}"""
 
+    # Identity rules also apply when reusing a cached script or a room-specific
+    # image template, including single-host images without extra references.
+    base_prompt = base_prompt.replace("{identity_context}", image_identity_context)
+    if image_identity_context not in base_prompt:
+        base_prompt = f"{base_prompt}\n\n{image_identity_context}"
     return base_prompt, comic_content, is_generated
 
 
@@ -2184,7 +2154,8 @@ def build_comic_identity_context(
     registry = resolve_streamer_registry(cfg)
     host_id = find_host_streamer_id(cfg, room_id)
     host = registry.get(host_id) if host_id else None
-    appeared = list(appeared_streamers or [])
+    appeared = [item for item in (appeared_streamers or [])
+                if item.get("_comicReferenceReason") != "mentioned"]
     appeared_ids = {
         str(item.get("id") or "")
         for item in appeared
@@ -2249,6 +2220,8 @@ def build_comic_generation_prompt(
     has_live_context_placeholder = "{live_context}" in template
     base = template.replace("{character_desc}", character_desc)
     base = base.replace("{identity_context}", identity_context)
+    if "{identity_context}" not in template:
+        base = f"{identity_context}\n\n{base}"
     if shared_cache_enabled or shared_source_prefix:
         resolved_shared_source_prefix = shared_source_prefix or build_shared_live_source_prefix(
             shared_source_content if shared_source_content is not None else highlight_content,
@@ -2330,10 +2303,9 @@ def build_local_fallback_comic_script(highlight_content: str, room_id: Optional[
         lines = [compact[i:i + 70] for i in range(0, min(len(compact), 280), 70) if compact[i:i + 70]]
 
     while len(lines) < 4:
-        lines.append("主播和观众温柔互动，直播间氛围轻松热闹。")
+        lines.append("以直播间收束气氛呈现，不添加无来源人物、台词或经历。")
 
     selected = lines[:4]
-    anchor_name = "岁己" if str(room_id or "") == "25788785" else "主播"
     panels = []
     panel_styles = [
         "开场",
@@ -2342,7 +2314,7 @@ def build_local_fallback_comic_script(highlight_content: str, room_id: Optional[
         "晚安收束",
     ]
     for index, line in enumerate(selected, start=1):
-        panels.append(f"分镜{index}（{panel_styles[index - 1]}）：{anchor_name}在直播间里延续今晚的高光片段：{line[:120]}")
+        panels.append(f"分镜{index}（{panel_styles[index - 1]}）：按原文说话人归属呈现直播片段；未实名话语保持匿名旁白，不转为房主经历：{line[:120]}")
 
     return "\n".join(panels)
 

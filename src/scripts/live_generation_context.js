@@ -453,6 +453,19 @@ async function prepareLiveGenerationContext(highlightPath, roomId, config, optio
         context.recentDynamicsError = String(error?.message || error);
     }
 
+    const discoveryInput = options.srtPath || String(highlightPath).replace(/_AI_HIGHLIGHT\.txt$/iu, '.srt');
+    context.participantDiscovery = require('./asr/participant_storage').loadParticipantDiscovery(discoveryInput, context.roomId, config);
+    if (!context.participantDiscovery && config.asr?.participantDiscovery?.enabled !== false) {
+        const evidence = context.liveTitle ? [{ id: 'recording-title', source: 'room_title',
+            roomId: context.roomId, observedAt: context.recordingStartTime, text: context.liveTitle }] : [];
+        evidence.push(...context.recentDynamics.map(item => ({ id: `dynamic:${item.id}`, source: 'dynamic',
+            roomId: context.roomId, observedAt: context.generatedAt, publishedAt: item.publishTime, text: item.content })));
+        context.participantDiscovery = require('./asr/participant_discovery').discoverParticipants({
+            roomId: context.roomId, sessionId: path.resolve(discoveryInput), startedAt: context.recordingStartTime,
+            endedAt: context.recordingEndTime, evidence
+        }, config);
+    }
+
     const outputPath = writeLiveGenerationContext(highlightPath, context);
     return { context, outputPath };
 }
@@ -532,6 +545,14 @@ function formatLiveGenerationContext(context) {
         context.contentHints.forEach((hint) => lines.push(`  - ${hint}`));
     }
 
+    if (context.participantDiscovery) {
+        const discovery = context.participantDiscovery;
+        lines.push('【本场参与者线索】标题、动态、封面和画面只提供出场候选，不能据此给某句字幕署名。');
+        lines.push(`- 场次判断：${discovery.mode}；依据级别：${discovery.modeStatus}`);
+        for (const person of discovery.participants || []) lines.push(`- ${person.displayName}：${person.status}；房主标记=${person.role === 'host'}`);
+        lines.push('planned/candidate 不代表实际到场；confirmed 也不代表每句发言归属。仅被提到或被观看的人物不能作为现场联动嘉宾；单声道、单个聚类或房间归属均不能把未知发言变成房主发言。');
+    }
+
     lines.push(
         '【事实证据优先级】直播标题与明确语音 > 同场弹幕 > 开播前近期动态 > 稳定人设、兴趣、口头禅与模型常识。',
         '稳定人设、兴趣和口头禅不是本场发生的事实，只能消解正文中确实存在且没有冲突证据的歧义；一旦高优先级证据指向其他游戏、活动或人物，必须服从高优先级证据。',
@@ -554,6 +575,7 @@ module.exports = {
     getRoomUid,
     getContentHints,
     filterRecentDynamics,
+    fetchRecentDynamics,
     resolveRecordingEndTime,
     selectReplyDynamic,
     getReplyDynamicEvidence,

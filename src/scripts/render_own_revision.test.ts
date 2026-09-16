@@ -208,7 +208,7 @@ describe('own-stream subtitle revisions', () => {
     await expect(updateRevision(file, { ...options, action: 'prepare', start: 2, end: 62, sourceKind: 'live_speech' }, config)).rejects.toThrow('before correcting');
   });
 
-  test.each(['local_review', 'topic_candidate_manual_cut'])('rebuilds rendered %s topics while preserving the original review, ID and source', async mode => {
+  test.each(['local_review', 'topic_candidate_manual_cut', 'manual_clip_queue'])('rebuilds rendered %s topics while preserving the original review, ID and source', async mode => {
     metadata.mode = mode; metadata.status = 'success'; metadata.uploadId = 7;
     delete metadata.reviewIndex; delete metadata.ownStreamHumanReview; delete metadata.attributionReview;
     metadata.window.index = 'E1-1';
@@ -244,6 +244,34 @@ describe('own-stream subtitle revisions', () => {
     expect(JSON.parse(fs.readFileSync(registryPath, 'utf8'))).toEqual(registry);
     const history = path.join(directory, 'subtitle_revisions', '7', 'history');
     expect(fs.readdirSync(history).map(name => fs.readFileSync(path.join(history, name), 'utf8'))).toContain(initial);
+  });
+
+  test('legacy manual cuts bind matching source subtitles on rebuild and reject subsequent source drift', async () => {
+    metadata.mode = 'manual_clip_queue'; metadata.status = 'success';
+    delete metadata.grounding; delete metadata.attributionReview; delete metadata.ownStreamHumanReview;
+    save();
+    const initial = fs.readFileSync(file, 'utf8');
+    await expect(correct()).rejects.toThrow('explicit source review');
+    expect(fs.readFileSync(file, 'utf8')).toBe(initial);
+    await updateRevision(file, { ...options, action: 'prepare', start: 2, end: 50, sourceKind: 'live_speech' }, config);
+    expect(load().manualRevisionSource.snapshot).toEqual(sourceSnapshot(metadata));
+    expect(load().renderedSubtitles.cues.map(cue => cue.text)).toEqual(['Hello world']);
+    await renderRevision(file, options, config);
+    expect(load()).toMatchObject({ mode: 'manual_clip_queue', uploadId: 7, rebuildRequired: false });
+    expect(fs.readFileSync(metadata.output.srtPath, 'utf8')).toContain('Hello world');
+    fs.appendFileSync(metadata.source.srtPath, ' changed');
+    await expect(updateRevision(file, { ...options, action: 'draft' }, config)).rejects.toThrow('source evidence changed');
+  });
+
+  test('legacy manual source adoption rejects a mismatch against the saved clip', async () => {
+    metadata.mode = 'manual_clip_queue'; metadata.status = 'success';
+    delete metadata.grounding; delete metadata.attributionReview; delete metadata.ownStreamHumanReview;
+    save();
+    const initial = fs.readFileSync(file, 'utf8');
+    fs.writeFileSync(metadata.source.srtPath, '1\n00:00:01,000 --> 00:10:01,000\nChanged words\n');
+    await expect(updateRevision(file, { ...options, action: 'prepare', sourceKind: 'live_speech' }, config)).rejects.toThrow('no longer match');
+    expect(fs.readFileSync(file, 'utf8')).toBe(initial);
+    expect(render).not.toHaveBeenCalled();
   });
 
   test('topic review rejects source drift and cannot inherit old keyword approval for new copy', async () => {

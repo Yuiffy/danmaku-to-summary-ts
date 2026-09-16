@@ -158,11 +158,17 @@ python src/scripts/clip_upload_registry.py cut --ids 123 --review-note "已检�
 
 ### 连贯长片的逐条授权
 
-自动选材时长上限不是对长内容价值的否定。若一个完整事件或连贯主题确实需要
-较长铺垫、讨论和收尾，可以保留完整长度，同时让标题、简介概括全段，而不是仅
-描述开头的笑点。若中途已换嘉宾、开始新游戏或进入独立事件，应重新选窗。
+岁己自动 AI 选材已取消固定秒数的淘汰条件。分块召回、全场选材、全局重排、
+详细编辑及缓存校验均保留来源有效的完整话题，由 AI 根据内容决定长短；新选中的
+长片不需要额外时长授权即可进入正常制作与复核。程序继续检查时间有效性、来源
+范围、引用、重叠和媒体质量。`minClipSeconds/maxClipSeconds` 仍用于本地信号候选
+窗口与下述旧稿修订，不能用来判断新 AI 片段是否合格。
 
-对仅因 `duration_out_of_bounds` 被剔除的自有直播候选，可保留原 ID 和原窗口：
+若一个完整事件或连贯主题确实需要较长铺垫、讨论和收尾，应保留完整长度，
+同时让标题、简介概括全段。若中途已换嘉宾、开始新游戏或进入独立事件，应重新选窗。
+
+历史上仅因 `duration_out_of_bounds` 被剔除的自有直播候选保留原记录，不自动复活或投稿；
+需要恢复时，可保留原 ID 和原窗口：
 
 ```powershell
 python src/scripts/clip_upload_registry.py rebuild --id 123 --allow-long --duration-note "同一主题的完整铺垫、讨论和收尾，缩短会丢失必要上下文" --review-note "已检查完整选材范围和发布文案" --source-kind live_speech --title "涵盖全段的标题" --description "全段内容的事实概述" --cover-text "主题封面"

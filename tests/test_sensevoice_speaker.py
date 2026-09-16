@@ -121,7 +121,7 @@ class SenseVoiceSpeakerBatchingTests(unittest.TestCase):
         with patch.dict(sys.modules, {"torch": make_fake_torch()}):
             embeddings = sensevoice_speaker._generate_speaker_embeddings(
                 model,
-                ["first", "second", "third"],
+                [[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]],
                 batch_size=8,
             )
 
@@ -132,6 +132,54 @@ class SenseVoiceSpeakerBatchingTests(unittest.TestCase):
             [[1, 2]],
             [[2, 3]],
         ])
+
+    def test_variable_duration_batch_partners_cannot_change_an_embedding(self):
+        class UnmaskedPoolingModel:
+            def __init__(self):
+                self.calls = []
+
+            def generate(self, **kwargs):
+                chunks = kwargs["input"]
+                self.calls.append(chunks)
+                padded_length = max(len(chunk) for chunk in chunks)
+                return {"spk_embedding": FakeTensor([
+                    [sum(chunk) / padded_length] for chunk in chunks
+                ])}
+
+        chunks = [[1.0, 1.0], [9.0] * 6, [2.0, 2.0]]
+        with patch.dict(sys.modules, {"torch": make_fake_torch()}):
+            independent = sensevoice_speaker._generate_speaker_embeddings(
+                UnmaskedPoolingModel(), chunks, batch_size=1)
+            model = UnmaskedPoolingModel()
+            batched = sensevoice_speaker._generate_speaker_embeddings(model, chunks, batch_size=8)
+        self.assertEqual([row.rows for row in batched], [row.rows for row in independent])
+        self.assertEqual([row.rows for row in batched], [[[1.0]], [[9.0]], [[2.0]]])
+        self.assertLess(len(model.calls), len(chunks))
+
+    def test_missing_batch_rows_do_not_shift_another_duration_group(self):
+        class IncompleteModel:
+            def generate(self, **kwargs):
+                return {"spk_embedding": FakeTensor([[sum(kwargs["input"][0])]])}
+
+        with patch.dict(sys.modules, {"torch": make_fake_torch()}):
+            rows = sensevoice_speaker._generate_speaker_embeddings(
+                IncompleteModel(), [[1.0, 1.0], [3.0] * 6, [2.0, 2.0]], batch_size=8)
+        self.assertEqual([row.rows if row is not None else None for row in rows],
+                         [None, [[18.0]], None])
+
+    def test_length_buckets_keep_throttling_without_restarting_stage_telemetry(self):
+        throttle = types.SimpleNamespace(
+            wait_if_busy=lambda stage: None,
+            batch_size_for=lambda kind, requested: requested,
+        )
+        with patch.dict(sys.modules, {"torch": make_fake_torch()}), patch(
+                "sensevoice_speaker.ResourcePeakMonitor") as monitor, patch.object(
+                throttle, "wait_if_busy") as wait:
+            sensevoice_speaker._generate_speaker_embeddings(
+                FakeSpeakerModel(), [[0.0] * 2, [0.0] * 4, [0.0] * 6],
+                batch_size=8, gpu_throttle=throttle, payload={})
+        self.assertEqual(wait.call_count, 3)
+        self.assertEqual(monitor.call_count, 1)
 
     def test_reference_files_are_embedded_in_one_batch_and_max_chunks_does_not_leak(self):
         model = FakeSpeakerModel()

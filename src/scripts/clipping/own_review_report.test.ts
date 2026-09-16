@@ -23,6 +23,19 @@ function clip(index, start, pending = false) {
 describe('one chronological own-stream review with durable IDs', () => {
   afterEach(() => jest.restoreAllMocks());
 
+  test('shows only final-window editorial hints without changing public copy or approval', () => {
+    const value = { ...clip(1, 10, true), viewingAngles: [{ label: '角色互动', hook: '寻找伙伴' }],
+      quoteEchoes: [{ start: 12, quote: '妈妈来了' }],
+      candidate: { viewingAngles: [{ label: '战斗', hook: '已排除的后续战斗' }] } };
+    const before = JSON.stringify(value.copy);
+    const text = report.reviewDetailLines(value).join('\n');
+    expect(text).toContain('看点线索（待核）: 角色互动：寻找伙伴');
+    expect(text).not.toContain('已排除的后续战斗');
+    expect(text).toContain('台词线索（字幕/弹幕重合）: 2.0秒 妈妈来了');
+    expect(JSON.stringify(value.copy)).toBe(before);
+    expect(report.uploadEligible(value)).toBe(false);
+  });
+
   test('groups subtitle review suggestions without granting upload approval or hiding occurrences', () => {
     const value = { ...clip(1, 10, true), subtitleProofreading: { automaticEdits: [{ ruleId: 'name' }],
       reviewGroups: [{ type: 'possible_foreign_audio', occurrences: [11, 12, 13, 14, 15].map(start => ({ start, end: start + 1 })) }] } };

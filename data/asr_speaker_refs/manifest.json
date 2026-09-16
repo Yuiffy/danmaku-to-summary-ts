@@ -189,5 +189,22 @@
     "enrollment_manifest": "data/asr_speaker_refs/enrollment_candidates/shiori_singing_august_24.enrollment.json",
     "validation_report": "data/asr_speaker_refs/enrollment_candidates/shiori_singing_august_24_candidate_report.json",
     "sha256": "b8c28e0cd42ac57997330727776b3faa8b5f71ae4ca9eef75308688fb6d8e92f"
+  },
+  {
+    "speaker": "灰泽满Hazel",
+    "key": "hazel_official_game_chat",
+    "audio_path": "data/asr_speaker_refs/hazel_official_game_chat.wav",
+    "state": "official_game_chat",
+    "seconds": 32,
+    "source_count": 4,
+    "source_media": "https://www.bilibili.com/video/BV1zCAqzbEDM/",
+    "source_segments": "00:00:51-00:00:59; 00:01:46-00:01:54; 00:02:39-00:02:47; 00:02:47-00:02:55",
+    "chunk_s": 8,
+    "max_chunks": 4,
+    "preserve_exemplars": true,
+    "sha256": "a83d7b2533e50b32c1efe9bd697f1076d180364cab713d810b2e50d262c10b27",
+    "enrollment_manifest": "data/asr_speaker_refs/enrollment_candidates/hazel_official_game_chat.enrollment.json",
+    "verification_status": "source_context_cross_checked",
+    "human_audited": false
   }
 ]

@@ -2,6 +2,24 @@
 const fs = require('fs');
 const { applyCorrectionsToSegments, makeCorrectionStats, logCorrectionStats } = require('./asr_corrections');
 
+function makeSubtitleEvidenceRow(segment, index, correctedText, wrapped, prepared, helpers) {
+    const { parseTimestamp, formatTimestamp } = helpers;
+    return {
+        start: parseTimestamp(formatTimestamp(segment.start)), end: parseTimestamp(formatTimestamp(segment.end)),
+        text: wrapped.split('\n').map(line => line.trim()).join(''),
+        asr: {
+            status: typeof segment.asrSource?.rawText === 'string' ? 'available' : 'raw_unavailable',
+            sourceSpan: segment.asrSource || null, recognizedText: String(segment.text || ''), correctedText,
+            aliasChanged: correctedText !== String(segment.text || ''),
+            ...(prepared.enabled ? { proofreading: { version: 1,
+                edits: prepared.edits.filter(edit => edit.cue === index + 1),
+                checks: prepared.checks.filter(check => check.cue === index + 1) } } : {})
+        },
+        ...(segment.speakerEvidence || segment.speaker_evidence
+            ? { speaker: segment.speakerEvidence || segment.speaker_evidence } : {})
+    };
+}
+
 function writeSrt(result, srtPath, cfg, helpers) {
     const { stripSubtitlePunctuation, splitTextByLength, formatTimestamp, parseTimestamp } = helpers;
     const lines = [];
@@ -21,23 +39,7 @@ function writeSrt(result, srtPath, cfg, helpers) {
         const text = content;
         const wrapped = splitTextByLength(text, cfg.max_chars_per_line).join('\n');
         if (cfg.write_evidence === true) {
-            evidenceRows.push({
-                start: parseTimestamp(formatTimestamp(segment.start)),
-                end: parseTimestamp(formatTimestamp(segment.end)),
-                text: wrapped.split('\n').map(line => line.trim()).join(''),
-                asr: {
-                    status: typeof segment.asrSource?.rawText === 'string' ? 'available' : 'raw_unavailable',
-                    sourceSpan: segment.asrSource || null,
-                    recognizedText: String(segment.text || ''),
-                    correctedText,
-                    aliasChanged: correctedText !== String(segment.text || ''),
-                    ...(prepared.enabled ? { proofreading: { version: 1,
-                        edits: prepared.edits.filter(edit => edit.cue === index + 1),
-                        checks: prepared.checks.filter(check => check.cue === index + 1) } } : {})
-                },
-                ...(segment.speakerEvidence || segment.speaker_evidence
-                    ? { speaker: segment.speakerEvidence || segment.speaker_evidence } : {})
-            });
+            evidenceRows.push(makeSubtitleEvidenceRow(segment, index, correctedText, wrapped, prepared, helpers));
         }
         lines.push(String(lineIndex));
         lines.push(`${formatTimestamp(segment.start)} --> ${formatTimestamp(segment.end)}`);
@@ -58,4 +60,4 @@ function writeSrt(result, srtPath, cfg, helpers) {
     }
 }
 
-module.exports = { writeSrt };
+module.exports = { writeSrt, makeSubtitleEvidenceRow };

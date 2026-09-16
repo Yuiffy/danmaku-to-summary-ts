@@ -106,6 +106,14 @@ class MultiReferenceComicTests(unittest.TestCase):
 
     def write_sidecar(self, extra_ids, speakers=None):
         sidecar = self.root / "25788785_20260101_120000.asr_speakers.json"
+        if speakers is None:
+            speakers = [{
+                "label": self.config["ai"]["streamerRegistry"][streamer_id]["displayName"],
+                "totalSpeechSeconds": 300,
+                "avgScore": 0.88,
+                "maxScore": 0.94,
+                "isUnknown": False,
+            } for streamer_id in extra_ids if streamer_id in self.config["ai"]["streamerRegistry"]]
         sidecar.write_text(json.dumps({
             "hostRoomId": "25788785",
             "speakers": speakers or [],

@@ -826,11 +826,53 @@ Python adaptive tests 不在 Jest 的 TypeScript `testMatch` 内，必须单独�
 
 ## 逐段身份与切片证据
 
+### 本场参与者自动发现
+
+新 ASR 任务在转写前运行 `asr/participant_collection.js`：读取录播文件名的标题和开播时间，
+复用本机动态接口取得近期预告，按房间和实际场次日期解析联动候选。复合排期按带日期的分句核对；
+“今晚和甲联动，明天和乙联动”只把甲纳入今晚。未找到嘉宾线索不等于已证明单播。
+`asr.participantDiscovery.enabled: false` 可关闭采集；已有字幕的晚安流程仍可从同场标题和动态建立候选背景。
+
+`asr.participantDiscovery.visual` 控制稀疏画面采集，支持 `enabled`、`provider`、`model`、
+`maxFrames`、`timeoutMs`、`maxTokens` 和 `reasoningEffort`。启用后在原始视频被转成音频、清理前
+均匀抽取画面，复用既有多模态文本客户端。角色对照图属于登记参考，不属于直播画面证据；
+纯外貌相似只产生候选。两个不同时间、不同画面中的具名现场面板才支持视觉在场，不能给语音署名。
+单张立绘、弹幕提及、游戏人物、被观看内容和封面海报均不会直接确认嘉宾到场。
+开播事件非阻塞保存房间标题、封面及哈希到 `data/runtime/participant-room-snapshots`，延迟的 ASR
+优先使用同场快照。缺快照时，只在仍在直播或已知下播后十分钟内、API 开播时间仍与录播相符时采集；
+旧录播不能使用今天的房间封面。开播事件处理器属于常驻服务，部署新的服务版本后才开始积累快照；
+ASR/晚安的脚本改动则由后续新启动任务读取。
+少量画面无法证明全场单播，也可能漏掉短暂或只有声音的嘉宾。
+
+同名 `.participant_discovery.json` 保存 `candidate/planned/confirmed`、场次判断、时间、来源、
+拒绝原因、媒体绑定和人物目录摘要；模型请求和图片证据留在忽略的 `temp/` 目录。
+相同图片、模型、设置和来源的视觉结果复用；未决请求不因调用端超时而自动重发。
+候选多人场次会强制完整 CAM++ 处理并启用 `row_verified`，仍使用整个已启用参考库竞争，
+不会把候选名单当作声纹白名单，也不会降低阈值。仅在 manifest 登记的音频不自动启用；
+新参考经独立来源与负例验证后，还需加入生产 backend 的 `speaker_references`。
+
+`.asr_speakers.json` 同时保存发现线索和音轨中实际通过声纹统计的人物，包括名单外的命中。
+`constrainedToRoster` 为 false；缺少匹配分数或局部证据拒绝的名字不会因时长足够而算作出声。
+普通 SRT 和 `.speaker.srt` 都有独立哈希绑定的 `.asr_evidence.json`，避免选用审核字幕后丢失
+局部 mixed/unknown。晚安完整输入、浓缩输入和切片保留不同说话人边界；房主身份不能补全未知发言。
+配图还区分声纹确认、现场确认和在场待核：被观看的一帧不能证明某人整场缺席，但也不能用其声音
+直接声称她在现场互动。`ai.comic.multiReferenceImages.discoveryEnabled` 允许同场多人线索自动启用
+最多四位额外人物；每位仍必须通过房主参考可用、声纹分数、出声时长和在场排除规则。
+只有本场发现且通过上述声纹条件的人可越过历史 `allowedExtraStreamerIds`；无声纹的候选、
+只有提及的人物和无关的全库匹配不因此取得绘制资格。普通/unknown/solo 场次沿用原规则。
+
 `asr.speaker_identity` 支持 `policy: "row_verified"`、`room_ids` 和
 `min_seconds`（默认2秒）。只有白名单房间传入新策略；默认继续使用既有策略。
 新策略不把整簇多数身份或最高分覆盖到未通过局部阈值/间隔校验的片段。
 短语音、局部拒识、覆盖不足或混合说话人保留 `UNKNOWN`，且不会被原有平滑器重新实名。
 不要通过降低声纹阈值或把房间主人当真值来减少 unknown。
+
+CAM++ 嵌入按精确音频样本长度分桶后批量推理，再恢复原始窗口顺序。当前 FunASR CAM++
+前端虽然计算了长度，但统计池化没有使用补齐掩码；混合长度批次会让同一声音的分数随其他窗口
+长度变化。等长分桶不裁剪音频、不改变说话人边界，也不修改匹配阈值。固定八秒参考仍可批量处理；
+实际对白长短不同，可能退化成较多单条推理，所以必须同时记录 speaker 阶段耗时与拒识变化。
+对无效返回数不向后错位分配嵌入，保持对应窗口未知。常驻 worker 在队列清空后释放，下次新 worker
+才载入新的 Python 实现，运行中的转写不会热替换算法。
 
 ASR结果的 `speaker_evidence` 保留原始声学窗口、逐窗口label/score/margin、
 threshold、参考数量、cluster、scope和policy，经JS规范化写入与普通SRT哈希绑定的

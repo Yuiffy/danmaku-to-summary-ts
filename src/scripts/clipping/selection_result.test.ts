@@ -38,8 +38,10 @@ describe('selection result provenance', () => {
       expect(prompt).not.toContain('"candidateIndex":1,"title":"人工风格标题');
       const rows = prompt.split('\n').filter(line => /^#[12] /.test(line));
       expect(rows).toHaveLength(2);
-      expect(JSON.parse(rows[0].slice(rows[0].indexOf('['))).at(-1)).toBeNull();
-      expect(JSON.parse(rows[1].slice(rows[1].indexOf('['))).at(-1)).toMatchObject({ startCueId: 'G2', endCueId: 'G2' });
+      const columns = JSON.parse(prompt.match(/候选数组列顺序=(\[[^\n]+?\])/)[1]);
+      const reuseIndex = columns.indexOf('reuse');
+      expect(JSON.parse(rows[0].slice(rows[0].indexOf('[')))[reuseIndex]).toBeNull();
+      expect(JSON.parse(rows[1].slice(rows[1].indexOf('[')))[reuseIndex]).toMatchObject({ startCueId: 'G2', endCueId: 'G2' });
     } finally { generate.mockRestore(); }
   });
 

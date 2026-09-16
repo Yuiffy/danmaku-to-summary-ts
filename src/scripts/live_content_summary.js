@@ -350,6 +350,7 @@ async function generateLiveContentSummary(options = {}) {
                     ? prompt
                     : `${prompt}\n\n【格式纠错】上一版不是合法结构。所有五个字段都必须存在，songs、games、topics、activityTypes 必须是 JSON 数组。`;
                 const result = await generateText(attemptPrompt, {
+                    captureLiveCache: true,
                     primaryModel: model,
                     wordLimit: 800,
                     timeoutMs: Number(experiment.timeoutMs) || 600000,
@@ -374,6 +375,7 @@ async function generateLiveContentSummary(options = {}) {
                     generatedAt: new Date().toISOString()
                 };
                 writeJsonAtomic(outputPath, payload);
+                require('./text/live_cache_continuation').acceptSeed(result.cacheSeed, config);
                 logGenerationMetrics(generation, roomId);
                 console.log(`直播梗概已保存: ${path.basename(outputPath)}`);
                 return { outputPath, payload, reused: false };

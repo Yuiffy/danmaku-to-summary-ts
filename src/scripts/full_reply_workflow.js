@@ -10,6 +10,7 @@ const combined = require('./full_reply_summary');
 const review = require('./reply_summary_review');
 const loader = require('./config-loader');
 const material = require('./live_material');
+const liveCache = require('./text/live_cache_continuation');
 const { VERSION: SHARED_OUTPUT_VERSION } = require('./text/shared_live_output');
 
 const MODE = 'compact_full_reply_summary_reviewed_v1';
@@ -164,7 +165,7 @@ async function tryGenerateCombinedReply(highlightPath, roomId, options = {}) {
             const reusableDraft = previous?.draft && previous.sourceSha256 === payload.sourceSha256
                 && previous.phases?.some(p=>p.name==='reply-summary' && ['success','reused'].includes(p.status) && p.promptSha256===sha(prompt));
             const draft = reusableDraft ? {text:previous.draft} : await phase('reply-summary',prompt,
-                sharedOutputCache ? {sharedOutputTask:'reply-summary'} : {responseFormat:combined.buildCombinedResponseFormat(materialOptions)});
+                sharedOutputCache ? {sharedOutputTask:'reply-summary',captureLiveCache:true} : {responseFormat:combined.buildCombinedResponseFormat(materialOptions),captureLiveCache:true});
             if (reusableDraft) state.phases.push({name:'reply-summary',status:'reused',elapsedMs:0,promptSha256:sha(prompt)});
             state.draft = draft.text;
             const output = combined.validateCombinedResult(draft.text,source,roomId,wordLimit);
@@ -185,6 +186,7 @@ async function tryGenerateCombinedReply(highlightPath, roomId, options = {}) {
                 reviewSourceChars:packet.text.length,reviewSourceRows:packet.rowCount,finishedAt:now(),
                 replyBodySha256:sha(result.output.reply),outputSha256:sha(JSON.stringify(result.output)),activePhase:null};
             atomicJson(files.artifact,state);
+            liveCache.acceptSeed(draft.cacheSeed, config);
             return materialize(state,files,highlightPath,payload,false);
         } catch(error) {
             if (state.status === 'success') throw error;

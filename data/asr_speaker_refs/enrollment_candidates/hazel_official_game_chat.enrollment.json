@@ -1,0 +1,197 @@
+{
+  "version": 1,
+  "speaker": "灰泽满Hazel",
+  "key": "hazel_official_game_chat",
+  "audio_path": "data/asr_speaker_refs/hazel_official_game_chat.wav",
+  "sha256": "a83d7b2533e50b32c1efe9bd697f1076d180364cab713d810b2e50d262c10b27",
+  "sampleRate": 16000,
+  "channels": 1,
+  "seconds": 32,
+  "source": {
+    "url": "https://www.bilibili.com/video/BV1zCAqzbEDM/",
+    "bvid": "BV1zCAqzbEDM",
+    "cid": 36365272493,
+    "title": "五子棋\"高\"手",
+    "ownerUid": 1298779265,
+    "ownerName": "灰泽满Hazel",
+    "ownerProfileUrl": "https://space.bilibili.com/1298779265",
+    "roomId": 1713546334,
+    "publishedAtUnix": 1772337600,
+    "intervalsSeconds": [
+      [
+        51,
+        59
+      ],
+      [
+        106,
+        114
+      ],
+      [
+        159,
+        167
+      ],
+      [
+        167,
+        175
+      ]
+    ],
+    "audioDownloadSha256": "30a00f05216847586e1c71bc0c515dba2d5c78d32ff0618d818361d168921c13"
+  },
+  "processing": {
+    "sampleRate": 16000,
+    "channels": 1,
+    "audioFilter": "highpass=f=80,lowpass=f=7600,loudnorm=I=-20:TP=-2:LRA=11"
+  },
+  "verification": {
+    "status": "source_context_cross_checked",
+    "humanAudited": false,
+    "method": "independent_source_account_visual_and_continuous_content_cross_check",
+    "sourceChecks": [
+      "Public room API maps room1713546334 to UID1298779265; public profile identifies the verified VirtuaReal creator as 灰泽满Hazel.",
+      "Both public official video records have owner UID1298779265. Their visible watermarks and single streamer character match the account and local recordings.",
+      "Enrollment uses spoken commentary from a solo computer five-in-a-row game; opening repeats, inserted effects and musical-only intervals are excluded.",
+      "Held-out September8 official horse-game commentary uses the same voice across a different publication date; neither it nor September10 opening-chat source is used as a reference.",
+      "September10 opening-chat screenshots show the same character and watermark while continuous speech discusses her roommate and late start; room host or old ASR speaker labels are not used alone as truth."
+    ],
+    "model": "cam++",
+    "threshold": 0.55,
+    "marginThreshold": 0.08,
+    "topK": 2,
+    "referenceMode": "four_normalized_8_second_exemplars",
+    "heldOutSources": [
+      {
+        "sourceId": "BV1xubM6gE4y",
+        "url": "https://www.bilibili.com/video/BV1xubM6gE4y/",
+        "sourceDate": "2026-09-08",
+        "intervalsSeconds": [
+          [
+            18,
+            26
+          ],
+          [
+            44,
+            52
+          ],
+          [
+            114,
+            122
+          ],
+          [
+            124,
+            132
+          ],
+          [
+            161,
+            169
+          ],
+          [
+            181,
+            187
+          ]
+        ],
+        "matched": 5,
+        "total": 6,
+        "otherNamed": 0,
+        "unknown": 1,
+        "audioDownloadSha256": "cf91e3603eec20c1903b151913af5364744077a62becde1e67bd4ea90d0dad51",
+        "sourceSha256": "2b9079ec82e2a715ad7798507d40b6cf68ded4561ec54d0d2100dffaddef3255",
+        "ownerUid": 1298779265,
+        "publishedAtUnix": 1788840000
+      },
+      {
+        "sourceId": "room1713546334-20260910",
+        "sourceDate": "2026-09-10",
+        "sourcePath": "D:/files/videos/DDTV录播/1713546334_灰泽满Hazel/2026_09_10/录制-1713546334-20260910-183632-344-诡异广告调查事件_merged.flv",
+        "sourceSha256": "925e2ac9ffb1309f21ff9ebea9ce3d1daf5060241e3cd61d42d61ea92b4ba25d",
+        "intervalsSeconds": [
+          [
+            132,
+            140
+          ],
+          [
+            139,
+            147
+          ],
+          [
+            146,
+            154
+          ],
+          [
+            164,
+            172
+          ],
+          [
+            170,
+            178
+          ],
+          [
+            190,
+            198
+          ],
+          [
+            210,
+            218
+          ],
+          [
+            218,
+            226
+          ]
+        ],
+        "matched": 7,
+        "total": 8,
+        "otherNamed": 0,
+        "unknown": 1,
+        "note": "Two adjacent interval pairs overlap by one second; these are acoustic windows, not eight independent sessions."
+      }
+    ],
+    "legacyControls": {
+      "count": 244,
+      "identityChanges": 0,
+      "unknownToHazel": 0,
+      "knownToUnknown": 8,
+      "affectedExistingSpeaker": "米汀",
+      "affectedUnderlyingReferenceChunks": 4,
+      "changedWindowIds": [
+        "miting:15:2",
+        "miting:15:4",
+        "miting:15:8",
+        "miting:16:1",
+        "miting:17:2",
+        "miting:17:4",
+        "miting:17:8",
+        "miting:19:2"
+      ],
+      "purpose": "regression consistency only; legacy labels are not independent identity truth"
+    },
+    "recentProbe": {
+      "sourceId": "room1713546334-20260911",
+      "matched": 8,
+      "unknown": 2,
+      "total": 10,
+      "purpose": "unlabelled probe, not identity accuracy"
+    },
+    "quality": {
+      "acceptedAudioChunks": 4,
+      "validEmbeddings": 4
+    },
+    "limitations": "Small source-checked chat corpus, not human audition, word-level labels or full-stream DER. Eight legacy Miting windows become UNKNOWN because the additional similar voice narrows the margin. No threshold is reduced and no control changes to another named person. Other acoustic states remain unverified.",
+    "runtimeValidation": {
+      "sourceId": "room1713546334-20260910",
+      "sourceStartSeconds": 120,
+      "sourceDurationSeconds": 120,
+      "audioSha256": "093b637b390dcb8fec6b13208a2d445f3f8da645324d777c7750a6d4a0adf29f",
+      "backend": "paraformer",
+      "identityPolicy": "row_verified",
+      "status": "full_completed",
+      "totalNormalizedSubtitles": 46,
+      "hazelSubtitles": 24,
+      "unknownSubtitles": 22,
+      "otherNamedSubtitles": 0,
+      "acousticWindows": 40,
+      "rowReferenceMatches": 16,
+      "minimumIdentitySeconds": 2,
+      "evidenceStatus": "available",
+      "note": "Conservative source-checked sample only: 13 acoustic rows pass both matching and duration gates; 3 matched rows remain unknown because they are shorter than 2 seconds. This is not full-stream accuracy."
+    }
+  }
+}
