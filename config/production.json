@@ -301,16 +301,16 @@
             "useTuziRetry": false
           },
           {
-            "provider": "tuZi",
+            "provider": "daiYu",
             "model": "gpt-image-2",
-            "flow": "tuZiCompatible",
+            "flow": "openaiImages",
             "maxAttempts": 1,
             "timeoutMs": 1200000,
             "size": "1:1",
             "quality": "high",
             "outputFormat": "png",
             "responseFormat": "b64_json",
-            "useTuziRetry": true
+            "useTuziRetry": false
           }
         ],
         "rollout": {
@@ -1155,6 +1155,18 @@
               "useTuziRetry": false
             },
             {
+              "provider": "daiYu",
+              "model": "gpt-image-2",
+              "flow": "openaiImages",
+              "maxAttempts": 1,
+              "timeoutMs": 1200000,
+              "size": "1:1",
+              "quality": "high",
+              "outputFormat": "png",
+              "responseFormat": "b64_json",
+              "useTuziRetry": false
+            },
+            {
               "provider": "tuZi",
               "model": "gpt-image-2",
               "flow": "tuZiCompatible",
@@ -1707,9 +1719,10 @@
       "batchSize": 4,
       "concurrency": 3,
       "maxBatchChars": 36000,
-      "maxRequests": 12,
+      "maxRequests": 32,
       "maxElapsedMs": 1200000,
       "repairAttempts": 1,
+      "holdUnresolvedBeforeRender": true,
       "dialogueEnabled": true,
       "evidenceEncoding": "compact",
       "timeoutMs": 600000,
@@ -1876,7 +1889,10 @@
     },
     "danmuRiskControl": {
       "enabled": true,
-      "intervalMs": 300000,
+      "intervalMs": 1800000,
+      "logDirectory": "",
+      "recorderStatePath": "data/runtime/recorder_watchdog.state.json",
+      "monitorStatePath": "data/runtime/recorder_log_monitor.json",
       "roomIds": [
         "25788785"
       ],

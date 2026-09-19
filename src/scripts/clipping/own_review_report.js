@@ -28,13 +28,16 @@ function summaryLines(results, metadata = {}) {
         && !uploaded.includes(result) && !uploadActive.includes(result));
     const rejected = results.filter(result => result.selectionRejection);
     const readyIds = ready.map((result, index) => clipId(result, metadata, index)).filter(Boolean);
+    const deferred = results.filter(result => result.preRenderHold).length;
     return [`总候选 ${results.length}${uploaded.length ? ` | 已上传 ${uploaded.length}` : ''}${uploadActive.length ? ` | 投稿处理中 ${uploadActive.length}` : ''} | 成片待审核 ${ready.length} | 待复核或异常 ${results.length - ready.length - rejected.length - uploaded.length - uploadActive.length} | 剔除 ${rejected.length}`,
         ...(readyIds.length ? [`上传短ID: ${readyIds.join(',')}`] : []),
+        ...(deferred ? [`${deferred}条已暂缓烧录，确认后按原编号制作。`] : []),
+        ...(metadata.aiStatus?.attribution?.automaticallyRepaired ? [`AI复查已自动解决${metadata.aiStatus.attribution.automaticallyRepaired}条候选的问题。`] : []),
         '候选 ID 用于定位，不代表已审核或已授权上传。'];
 }
 
 function uploadEligible(result) {
-    return !result.rebuildRequired && !result.publicCopyPending && !result.selectionRejection && result.uploadReady !== false
+    return !result.preRenderHold && !result.rebuildRequired && !result.publicCopyPending && !result.selectionRejection && result.uploadReady !== false
         && !result.output?.mediaError && !result.output?.coverError
         && (!(result.qaRequired || result.attributionRequired) || result.uploadReady === true);
 }
@@ -64,6 +67,7 @@ function reviewStatus(result, metadata = {}) {
     if (state === 'failed') return '投稿失败';
     if (result.rebuildRequired) return '字幕已修订（待重压）';
     if (result.selectionRejection) return '已剔除（未切）';
+    if (result.preRenderHold) return '待确认（已暂缓烧录）';
     if (result.output?.mediaError || result.output?.coverError) return '制作异常';
     if (reviewIssues(result).some(issue => /actor_review_(unavailable|failed|time_budget)|actor_evidence_exceeds_budget/.test(issue))) return '复核不可用';
     if (!uploadEligible(result) || metadata.uploadRegistry?.reviewPendingByReviewIndex?.[result.reviewIndex]) return '待复核';
@@ -108,11 +112,15 @@ function clipId(result, metadata = {}, index = 0) {
 
 function reviewDetailLines(result, metadata = {}, options = {}) {
     const includeIssues = options.includeIssues !== false;
-    const lines = includeIssues ? reviewIssues(result, metadata).map(issue => `   核对项: ${explainIssue(issue)}`) : [];
+    const issues = reviewIssues(result, metadata);
+    const lines = require('./review_brief').briefLines(result, issues);
+    if (includeIssues) lines.push(...issues.map(issue => `   核对项: ${explainIssue(issue)}`));
+    if (result.preRenderHold) lines.push(`   审核方式: 先看字幕或打开源录播 ${result.source?.mediaPath || ''}；回复编号和改法，确认后再制作。`);
     const proofreading = result.subtitleProofreading;
     const angles = result.viewingAngles || [];
-    if (angles.length) lines.push(`   看点线索（待核）: ${angles.map(angle => `${angle.label}：${angle.hook}`).join(' / ')}`);
-    if (result.quoteEchoes?.length) lines.push(`   台词线索（字幕/弹幕重合）: ${result.quoteEchoes.map(row =>
+    const concise = !includeIssues && result.attributionReview?.humanChecks?.length > 0;
+    if (angles.length && !concise) lines.push(`   看点线索（待核）: ${angles.map(angle => `${angle.label}：${angle.hook}`).join(' / ')}`);
+    if (result.quoteEchoes?.length && !concise) lines.push(`   台词线索（字幕/弹幕重合）: ${result.quoteEchoes.map(row =>
         `${Math.max(0, row.start - result.window.start).toFixed(1)}秒 ${row.quote}`).join(' / ')}`);
     if (proofreading?.automaticEdits?.length) lines.push(`   自动字幕校对: ${proofreading.automaticEdits.length}处（保留原ASR与修订依据）`);
     for (const group of proofreading?.reviewGroups || []) {
@@ -126,15 +134,15 @@ function reviewDetailLines(result, metadata = {}, options = {}) {
     if (result.durationApproval) lines.push(`   长片保留理由: ${result.durationApproval.note}`);
     if (result.ownStreamHumanReview?.status === 'approved') lines.push(`   人工复核记录: ${result.ownStreamHumanReview.note}`);
     if (!uploadEligible(result) || metadata.uploadRegistry?.reviewPendingByReviewIndex?.[result.reviewIndex]) {
-        if (result.attributionReview?.reason) lines.push(`   复核说明: ${result.attributionReview.reason}`);
-        else if (!includeIssues && !result.selectionRejection) {
+        if (result.attributionReview?.reason && !concise) lines.push(`   复核说明: ${result.attributionReview.reason}`);
+        else if (!includeIssues && !concise && !result.selectionRejection) {
             const status = reviewStatus(result, metadata);
             const explanation = result.output?.mediaError || result.output?.coverError
                 || (status === '复核不可用' ? '未获得可用的人物复核结果，需要人工确认片中人物和动作。' : '发布文案或证据尚未通过复核，请结合原文和视频确认。');
             lines.push(`   复核说明: ${explanation}`);
         }
         const excerpts = result.grounding?.subtitles?.slice(0, 2) || [];
-        if (excerpts.length) {
+        if (excerpts.length && !concise) {
             lines.push(`   原文节选: ${excerpts.map(row => `${row.id} ${Array.from(String(row.text || '')).slice(0, 180).join('')}`).join(' / ')}`);
         }
         if (result.selectionRejection) {
@@ -145,6 +153,21 @@ function reviewDetailLines(result, metadata = {}, options = {}) {
         lines.push(includeIssues ? '   暂不可上传；需先解决以上核对项。' : '   暂不可上传，待人工复核。');
     }
     return lines;
+}
+
+function quickReviewLines(results, metadata = {}) {
+    const lines = [];
+    for (const result of chronologicalResults(results)) {
+        if (result.selectionRejection || (result.ownStreamHumanReview?.status === 'approved' && !result.rebuildRequired)) continue;
+        const brief = require('./review_brief').briefLines(result, reviewIssues(result, metadata));
+        const groups = result.subtitleProofreading?.reviewGroups || [];
+        if (!brief.length && !groups.length) continue;
+        const id = clipId(result, metadata);
+        lines.push(`- ${id ? `ID${id}` : `候选${result.reviewIndex}`} ${String(result.copy?.title || '').slice(0, 60)}`);
+        lines.push(...brief.map(line => `  ${line.trim()}`));
+        if (groups.length) lines.push(`  字幕还有${groups.length}组疑点，见该编号下的字幕复核建议。`);
+    }
+    return lines.length ? ['## 快速确认', '', '回复“编号＋改法”即可，例如“ID123：这里是转述，标题加上回忆”。', '', ...lines, ''] : [];
 }
 
 function diagnosticLines(metadata = {}) {
@@ -172,4 +195,4 @@ function diagnosticLines(metadata = {}) {
     return [...new Set(values)].map(value => `- ${String(value).replace(/(https?:\/\/[^\s?]+)\?[^\s]+/g, '$1?[redacted]')}`);
 }
 
-module.exports = { reviewIndex, chronologicalResults, withRegistryIndices, summaryLines, uploadEligible, reviewIssues, reviewStatus, explainIssue, clipId, reviewDetailLines, diagnosticLines };
+module.exports = { reviewIndex, chronologicalResults, withRegistryIndices, summaryLines, uploadEligible, reviewIssues, reviewStatus, explainIssue, clipId, reviewDetailLines, quickReviewLines, diagnosticLines };

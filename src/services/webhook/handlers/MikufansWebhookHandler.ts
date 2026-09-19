@@ -12,6 +12,7 @@ import { LIVE_RECONNECT_GRACE_MS, LiveSession, LiveSessionManager, LiveSegment }
 import { FileMerger } from '../FileMerger';
 import { VideoScreenshotService } from '../../video/VideoScreenshotService';
 import { ProcessingAlertService } from '../../monitoring/ProcessingAlertService';
+import { recorderLogSource } from '../../monitoring/RecorderLogSource';
 import {
   RecorderStallDiagnostics,
   RecorderStallDiagnosticSnapshot
@@ -1527,18 +1528,9 @@ export class MikufansWebhookHandler implements IWebhookHandler {
     this.logger.info('延迟回复服务已设置');
   }
 
-  setBilibiliAPIService(service: IBilibiliAPIService): void {
-    const getRoomLiveStatus = service.getRoomLiveStatus;
-    if (typeof getRoomLiveStatus !== 'function') {
-      this.logger.warn('Bilibili API service does not expose room live status; offline fallback is unavailable');
-      this.offlineFallbackMonitor.setProvider(undefined);
-      return;
-    }
-
-    this.offlineFallbackMonitor.setProvider({
-      getRoomLiveStatus: roomId => getRoomLiveStatus.call(service, roomId)
-    });
-    this.logger.info('Bilibili room status provider injected into Mikufans handler');
+  setBilibiliAPIService(_service: IBilibiliAPIService): void {
+    this.offlineFallbackMonitor.setProvider(recorderLogSource);
+    this.logger.info('Mikufans 下播兜底已使用录播日志，不额外请求 B 站房间状态');
   }
 
   stop(): void {

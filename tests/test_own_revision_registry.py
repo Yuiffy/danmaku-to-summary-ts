@@ -37,7 +37,7 @@ class OwnRevisionRegistryTests(unittest.TestCase):
         Path(output["mediaPath"]).write_bytes(b"old video")
         Path(output["srtPath"]).write_text("1\n00:00:00,000 --> 00:01:00,000\nHello world\n", encoding="utf-8")
         Path(output["coverPath"]).write_bytes(b"old cover")
-        source_hash = digest(json.dumps([{"index": 0, "start": 1, "end": 61, "text": "Hello world", "speaker": ""}],
+        source_hash = digest(json.dumps([{"index": 0, "start": 1, "end": 61, "text": "Hello world", "speaker": "UNKNOWN"}],
                                        separators=(",", ":")).encode())
         metadata = {"mode": "own_stream_fun_review", "source": source, "output": output, "reviewIndex": 3,
                     "window": {"index": 3, "start": 1, "end": 61, "duration": 60},
@@ -61,6 +61,24 @@ class OwnRevisionRegistryTests(unittest.TestCase):
 
     def records(self):
         return api.load_json(api.REGISTRY_PATH, {})["clips"]
+
+    def test_replan_cli_preserves_rejected_id_and_requires_new_window(self):
+        metadata = self.metadata()
+        metadata["selectionRejection"] = {"reason": "outside_candidate_context"}
+        metadata["publicCopyPending"] = True
+        metadata["output"]["mediaPath"] = None
+        metadata["output"]["burnedSubtitles"] = False
+        metadata.pop("ownStreamHumanReview", None)
+        self.write_metadata(metadata)
+        command = ["rebuild", "--id", "1", "--replan", "--start", "2", "--end", "60",
+                   "--review-note", "New complete event checked", "--source-kind", "live_speech",
+                   "--title", "Hello world", "--description", "Hello world", "--cover-text", "Hello world"]
+        self.assertEqual(self.command(command), 0)
+        self.assertTrue(self.records()["1"]["pendingRebuild"])
+        self.assertEqual(self.metadata()["editorialReplan"]["clipId"], 1)
+        self.assertEqual(self.metadata()["originalSelectionRejection"]["reason"], "outside_candidate_context")
+        self.assertEqual(self.command(["enqueue", "--ids", "1"]), 0)
+        self.assertEqual(self.queue()[0]["clipIds"], [1])
 
     def queue(self):
         return api.load_json(api.QUEUE_PATH, {}).get("jobs", [])

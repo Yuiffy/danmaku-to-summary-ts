@@ -12,5 +12,11 @@
   "restartCooldownMs": 60000,
   "maxRestarts": 3,
   "restartWindowMs": 900000,
-  "notificationRetryMs": 60000
+  "notificationRetryMs": 60000,
+  "cookieSync": {
+    "enabled": false,
+    "intervalMs": 60000,
+    "sourcePath": "C:\\Projects\\danmaku-to-summary-ts\\config\\secret.json",
+    "recorderConfigPath": "C:\\Recordings\\config.json"
+  }
 }

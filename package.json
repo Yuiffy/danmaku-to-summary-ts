@@ -89,7 +89,7 @@
     "recorder:status": "node scripts/recorder_watchdog.js status",
     "recorder:pause": "node scripts/recorder_watchdog.js pause",
     "recorder:resume": "node scripts/recorder_watchdog.js resume",
-    "recorder:test": "node --test tests/recorder_watchdog.test.js",
+    "recorder:test": "node --test tests/recorder_watchdog.test.js tests/recorder_cookie_sync.test.js",
     "pm2:recorder:start": "pm2 start ecosystem.config.js --only recorder-watchdog --env production",
     "pm2:recorder:stop": "pm2 stop recorder-watchdog",
     "pm2:recorder:logs": "pm2 logs recorder-watchdog",

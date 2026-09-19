@@ -37,6 +37,7 @@ interface OfflineObservation {
   consecutiveConfirmations: number;
   latestSegmentActivityMs?: number;
   triggered: boolean;
+  lastObservedAt?: number;
 }
 
 const DEFAULT_CONFIG: MikufansOfflineFallbackConfig = {
@@ -165,7 +166,7 @@ export class MikufansOfflineFallbackMonitor {
     try {
       status = await this.getRoomLiveStatusWithTimeout(provider, candidate.roomId, config.apiTimeoutMs);
     } catch (error) {
-      this.logger.warn('Bilibili room status check failed; offline confirmation was not counted', {
+      this.logger.warn('Recorder room status unavailable; offline confirmation was not counted', {
         roomId: candidate.roomId,
         error: error instanceof Error ? error.message : String(error)
       });
@@ -182,16 +183,22 @@ export class MikufansOfflineFallbackMonitor {
     const latestSegmentActivityMs = candidate.latestSegmentActivityAt?.getTime();
     const previous = this.observations.get(candidate.roomId);
     const segmentChanged = previous?.latestSegmentActivityMs !== latestSegmentActivityMs;
+    const observedAt = (status as RoomLiveStatus & { observedAt?: number }).observedAt;
+    // Reading one cached log entry three times is still one observation.
+    if (!segmentChanged && previous?.streamKey === streamKey && observedAt !== undefined &&
+        previous.lastObservedAt !== undefined && observedAt <= previous.lastObservedAt) return;
     const observation = !previous || previous.streamKey !== streamKey || segmentChanged
       ? {
           streamKey,
           offlineSinceMs: nowMs,
           consecutiveConfirmations: 1,
           latestSegmentActivityMs,
+          lastObservedAt: observedAt,
           triggered: false
         }
       : {
           ...previous,
+          lastObservedAt: observedAt,
           consecutiveConfirmations: previous.consecutiveConfirmations + 1
         };
 

@@ -78,7 +78,8 @@ function createIncrementalRender({ outputRoot, source, config, initialClips, pip
                                 mediaError: `Rendering failed for clip ${index + 1}; inspect batch diagnostics` } };
                         writeJsonAtomic(metadataPath, result);
                     }
-                    if (!result.output.mediaError && (!result.output.burnedSubtitles || !result.output.mediaPath
+                    const held = result.preRenderHold === true && result.uploadReady === false && !result.output.mediaPath;
+                    if (!held && !result.output.mediaError && (!result.output.burnedSubtitles || !result.output.mediaPath
                         || !fs.existsSync(result.output.mediaPath) || !fs.statSync(result.output.mediaPath).size)) {
                         result = { ...result, uploadReady: false, output: { ...result.output, mediaError: 'Missing, empty or unburned rendered video' } };
                         writeJsonAtomic(result.output.metadataPath, result);

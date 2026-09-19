@@ -61,6 +61,40 @@ python src/scripts/clip_upload_registry.py correct --id 123 --from "zzz" --to "�
 
 ## Own-Stream Review IDs
 
+### 切片前自动复核与快速确认
+
+岁己自动切片先用原文、片内声纹证据和弹幕校对发布文案，再决定是否烧录。
+人物复核输入附带可引用的片内字幕编号和已通过局部声纹校验的编号表；有问题的
+引号、数字、动作引用以及模型主动返回的 `needs_review` 都有一次自动修订机会。
+修订接收逐条校验错误和上一轮结果；单人转述缺少讲述者依据时也可先做独立对话
+分析。模型必须重新引用证据，通过原有校验才能放行，不能靠自报置信度通过。
+结构化输出按每条候选限制动作、说话人、弹幕及人工问题的引用编号，禁止在不连续的
+分组编号之间自行补号；不同候选的证据列表不能混用。程序仍独立校验返回结果。
+观众评论的 claim 使用独立 `evidenceDanmakuIds`，不再被迫在字幕 `cueIds` 中引用弹幕
+或无关字幕；它必须标为 `audience`，公开字段说明观众视角，且不能填写音轨讲述者。
+字幕引用仍须来自片内语音，弹幕不能用来证明主播说过或做过某事。
+
+`ownStreamClips.attribution.maxRequests` 是整批首次复核、对话分析和修订的共同上限；
+生产设置为 32，仍为未复核批次保留请求。`maxElapsedMs` 限制启动后续请求的总时限。
+已通过项不额外重审；自动修订保留 `attributionReview.history`、最终模型信息和
+`aiStatus.attribution.automaticallyRepaired` 计数。`repairAttempts: 0` 可关闭自动修订。
+默认沿用现有模型和思考级别；需要定向比较时可设置 `repairModel` /
+`repairReasoningEffort`，只影响修订请求，不自动尝试其他提供方或协议。
+
+生产岁己启用 `holdUnresolvedBeforeRender`：修订后仍未通过的项标为
+`held_before_render` / `preRenderHold`，只保存独立 SRT 和元数据，保留全局编号，
+不烧录、不生成封面。这是待确认候选，不是被丢弃的选材，也不是关键词预审协议。
+确认后沿用该编号 `rebuild --id ... --review-note ... --source-kind ...`，再用
+`cut --ids ... --review-note ...` 制作；恢复制作仍验证源文件、字幕版本和媒体质量。
+已经制作、排队或投稿的旧项不因新配置自动改动。关闭该开关可恢复旧的成片待核方式。
+
+`REVIEW.md` 开头的“快速确认”汇总剩余疑点。模型写简短问题和候选说法，程序从
+实际引用生成片内时间、原录播时间和原话；引用无效时不展示虚构的时间位置。
+重复疑点合并，例如“片内0:12：这里是小岁自己说的，还是在转述朋友？”；人工可以
+直接回复“编号＋改法”。企微展示这些简短说明，本地明细保留完整机器校验和历史。
+字幕疑词仍按词/外语音轨分组；缺少原音证据的字词保持待听，不把文案修订当成听写结果。
+自动复核和人工反馈均不等于投稿授权。
+
 岁己整场自动切片使用一份按起始时间排序的 `REVIEW.md` / 企微总清单。
 每条都显示全局候选 ID、时间和状态；已成片、待复核、复核不可用、
 制作失败及被规则剔除的候选不会因为状态不同而打乱时间顺序。
@@ -155,6 +189,21 @@ python src/scripts/clip_upload_registry.py cut --ids 123 --review-note "已检�
 文案、字幕与人工复核独立绑定；旧窗口的 ready 状态不会批准新视频。重压保留
 原视频、数字 ID、复核索引、已投稿 BV 及状态文件，复用标准 GPU 压制和媒体审计。
 已投稿稿件最后须替换原线上稿件，不能通过 `enqueue` 新投一次。
+
+### 被上下文或重叠规则剔除后的重新选窗
+
+对 `outside_candidate_context` 或 `overlap_after_alignment` / `overlap` 剔除项，
+先检查完整源字幕和相邻已保留稿件，再通过原编号准备一个新的完整事件窗口：
+
+```powershell
+python src/scripts/clip_upload_registry.py rebuild --id 123 --replan --start 1200 --end 1290 --review-note "重新核对了起因、讨论和收尾，与已保留片段不重叠" --source-kind live_speech --title "新窗口的标题" --description "片内事实概述" --cover-text "新窗口封面"
+```
+
+`--replan` 必须同时提供新起止时间、完整文案和来源复核，不能原窗不变直接放行。
+程序检查源证据与同一录播其他保留 ID 的窗口，保留原剔除记录及新编辑计划；
+字幕修订、入队确认、重压时仍检查来源和重叠。其他剔除原因不因此解除。
+之后使用原编号 `subtitles` / `correct` / `cut`，有投稿授权时再 `enqueue`。
+已经烧录且窗口不变的短片允许校对重压，不套用新选窗的最短时长限制。
 
 ### 连贯长片的逐条授权
 

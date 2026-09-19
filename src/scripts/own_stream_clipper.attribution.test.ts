@@ -10,7 +10,11 @@ const { buildSubtitleEvidence, linkClipEvidence } = require('./clipping/subtitle
 const { writeRecordingParticipants } = require('./asr/recording_roster');
 
 describe('own-stream actor review workflow', () => {
-  test.each([true, false])('review outcome %s reaches metadata and publication eligibility', async accepted => {
+  test.each([
+    { accepted: true, hold: false, streaming: false }, { accepted: false, hold: false, streaming: false },
+    { accepted: true, hold: true, streaming: true }, { accepted: false, hold: true, streaming: true },
+    { accepted: false, hold: true, streaming: false }
+  ])('review outcome %j reaches metadata and publication eligibility', async ({ accepted, hold, streaming }) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'actor-review-workflow-'));
     const mediaPath = path.join(dir, 'source.flv'), srtPath = path.join(dir, 'source.srt'), planPath = path.join(dir, 'input.json');
     const cut = jest.spyOn(topic, 'cutClipMedia').mockImplementation(async (_source, _window, _srt, media) => {
@@ -40,8 +44,9 @@ describe('own-stream actor review workflow', () => {
       const config = { ai: { text: { provider: 'daiYu', enabled: true }, streamerRegistry: {
         host: { displayName: 'Host', aiClipName: 'Host', roomIds: ['1'] }, guest: { displayName: 'Guest', aiClipName: 'GuestClip' }
       } }, ownStreamClips: { enabled: true, minClipSeconds: 1, clipConcurrency: 1,
+        streamReviewRendering: streaming,
         clipResourceAdaptive: { enabled: false }, notify: { enabled: false },
-        attribution: { enabled: true, roomIds: ['1'], maxRequests: 1 }, ai: { enabled: true } } };
+        attribution: { enabled: true, roomIds: ['1'], maxRequests: 1, holdUnresolvedBeforeRender: hold }, ai: { enabled: true } } };
       const results = await own.generateOwnStreamClips({ config, context: { roomId: '1' }, mediaPath, srtPath, planPath, registerUpload: false });
       expect(require('child_process').spawnSync).not.toHaveBeenCalled();
       expect(results).toHaveLength(1);
@@ -50,6 +55,13 @@ describe('own-stream actor review workflow', () => {
       expect(metadata.attributionReview.status).toBe(accepted ? 'passed' : 'needs_review');
       expect(metadata.uploadReady).toBe(accepted);
       expect(metadata.publicCopyPending).toBe(!accepted);
+      if (!accepted && hold) {
+        expect(cut).not.toHaveBeenCalled(); expect(cover).not.toHaveBeenCalled();
+        expect(metadata).toMatchObject({ preRenderHold: true, uploadReady: false,
+          output: { mediaPath: null, burnedSubtitles: false, mediaError: null } });
+        expect(fs.readFileSync(metadata.output.srtPath, 'utf8')).toContain('I asked Mimi');
+        expect(own.buildReviewMarkdown(results, {})).toContain('已暂缓烧录');
+      }
       if (accepted) {
         expect(metadata.copy.title).toBe('GuestClip asked Mimi');
         const { copyDigest } = require('./clipping/actor_review');

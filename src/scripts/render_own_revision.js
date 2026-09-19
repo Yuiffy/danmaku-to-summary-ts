@@ -16,7 +16,7 @@ const { sourceSnapshot, fileDigest, RENDERED_CLIP_MODES, sourceEvidenceHash } = 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const pending = metadata => Boolean(metadata.rebuildRequired);
 
-function checkedSource(metadata) {
+function checkedSource(metadata, options = {}) {
     const window = metadata.window;
     if (!Number.isFinite(window?.start) || !Number.isFinite(window?.end) || window.start < 0 || window.end <= window.start) {
         throw new Error('Invalid existing source window');
@@ -26,13 +26,14 @@ function checkedSource(metadata) {
     if (!expected || expected !== evidence.sourceSha256) throw new Error('Original source evidence changed; review the source first');
     const snapshot = sourceSnapshot(metadata);
     const previous = metadata.renderedSubtitles?.sourceSnapshot || metadata.ownStreamHumanReview?.source
-        || metadata.manualRevisionSource?.snapshot;
+        || metadata.manualRevisionSource?.snapshot || metadata.preRenderSource;
     if (previous && !same(previous, snapshot)) throw new Error('Original recording or sidecars changed since review');
     const exception = metadata.durationApproval;
     if (exception && (exception.authority !== 'user' || !String(exception.note || '').trim()
         || exception.start !== metadata.window.start || exception.end !== metadata.window.end)) {
         throw new Error('Long-clip approval no longer matches this window');
     }
+    require('./clipping/rejected_replan').validateEditorialReplan(metadata, options, evidence);
     return { evidence, snapshot };
 }
 
@@ -159,22 +160,26 @@ function ensureDraft(metadata, metadataPath, id, evidence, snapshot, regenerated
 
 function prepareWindow(metadata, metadataPath, options, config, evidence) {
     const rejection = metadata.selectionRejection || metadata.originalSelectionRejection;
-    if (rejection && rejection.reason !== 'duration_out_of_bounds') throw new Error('This rejection needs a new editorial plan, not a duration override');
     if ((options.start === undefined) !== (options.end === undefined)) throw new Error('Supply both --start and --end');
     const start = Number(options.start ?? metadata.window.start);
     const end = Number(options.end ?? metadata.window.end);
+    const changed = start !== metadata.window.start || end !== metadata.window.end;
+    const editorialPlan = rejection && rejection.reason !== 'duration_out_of_bounds'
+        ? require('./clipping/rejected_replan').reviewEditorialReplan(metadata, options, evidence, start, end) : null;
     const limits = metadata.mode === 'own_stream_fun_review'
         ? require('./own_stream_clipper').getOwnStreamClipsConfig(config) : topic.getClipTopicsConfig(config);
     const minimum = Number(rejection?.minClipSeconds ?? limits.minClipSeconds);
     const maximum = Number(rejection?.maxClipSeconds ?? limits.maxClipSeconds);
-    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end - start < minimum
+    const existingRenderedWindow = !rejection && !changed && metadata.output?.burnedSubtitles
+        && metadata.output.mediaPath && fs.existsSync(metadata.output.mediaPath);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start
+        || (!existingRenderedWindow && end - start < minimum)
         || end > Math.max(...evidence.cues.map(cue => cue.end)) + 0.001) throw new Error('Invalid or out-of-source clip window');
     if (end - start > maximum + 0.001) {
         if (!(options.allowLong === true || options.allowLong === 'yes') || !String(options.durationNote || '').trim()) throw new Error('Long clips require --allow-long and an editorial --duration-note');
         metadata.durationApproval = { authority: 'user', at: new Date().toISOString(),
             note: options.durationNote.trim(), start, end, automaticMaxSeconds: maximum };
     } else delete metadata.durationApproval;
-    const changed = start !== metadata.window.start || end !== metadata.window.end;
     if (changed && (metadata.renderedSubtitles?.edits?.length || metadata.candidateSubtitles?.edits?.length)) throw new Error('Choose the window before correcting subtitles; existing corrections must not be discarded');
     if (changed) {
         const directory = revisionDirectory(metadataPath, metadata.uploadId);
@@ -190,6 +195,7 @@ function prepareWindow(metadata, metadataPath, options, config, evidence) {
         metadata.originalSelectionRejection = rejection;
         delete metadata.selectionRejection;
     }
+    if (editorialPlan) metadata.editorialReplan = editorialPlan;
     metadata.window.duration = end - start;
     return changed;
 }
@@ -214,7 +220,7 @@ async function updateRevision(metadataPath, options, config = require('./config-
         const metadata = JSON.parse(before);
         const id = identity(metadata, metadataPath, options);
         bindLegacyManualSource(metadata, options);
-        const checked = checkedSource(metadata);
+        const checked = checkedSource(metadata, options);
         const evidence = checked.evidence;
         let snapshot = checked.snapshot;
         if (options.xml !== undefined) {
@@ -273,7 +279,7 @@ async function renderRevision(metadataPath, options, config = require('./config-
         const before = fs.readFileSync(metadataPath, 'utf8');
         const metadata = JSON.parse(before);
         const id = identity(metadata, metadataPath, options);
-        const { evidence, snapshot } = checkedSource(metadata);
+        const { evidence, snapshot } = checkedSource(metadata, options);
         const draft = checkedDraft(metadata, evidence);
         if (options.requireApproval && !hasDraftApproval(adapter(metadata), evidence, options.expectedSha256)) {
             throw new Error('Subtitle revision or public copy does not match queued approval');
@@ -301,6 +307,7 @@ async function renderRevision(metadataPath, options, config = require('./config-
         const updated = { ...metadata, rebuildRequired: false, status: 'success', publicCopyPending: false,
             output: { ...rendered.output, metadataPath, mediaError: null, coverError: null },
             renderedSubtitles: { ...draft, renderedSha256: draft.sha256, renderedRevision: draft.revision } };
+        delete updated.preRenderHold;
         writeJsonAtomic(staging, updated);
         const audit = childProcess.spawnSync('python', [path.join(__dirname, 'audit_bilibili_clip.py'),
             '--video', updated.output.mediaPath, '--srt', updated.output.srtPath, '--metadata', staging,

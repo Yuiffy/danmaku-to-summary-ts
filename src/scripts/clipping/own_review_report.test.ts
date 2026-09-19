@@ -141,6 +141,20 @@ describe('one chronological own-stream review with durable IDs', () => {
     expect(value.attributionReview.issues).toEqual(['actor_review_unavailable']);
   });
 
+  test('quick review prioritizes plain questions, actual time and stable ID without showing internal codes', () => {
+    const held = { ...clip(4, 50, true), preRenderHold: true, attributionReview: { status: 'needs_review',
+      issues: ['model_requires_review'], humanChecks: [{ question: '这是在转述朋友吗？', suggestion: '标题注明回忆',
+        evidence: [{ id: 'G9', start: 52, end: 54, text: '朋友当时和我说。' }] }] } };
+    const metadata = { uploadRegistry: { clipIdsByReviewIndex: { 4: 912 } } };
+    const text = report.quickReviewLines([held, clip(5, 80)], metadata).join('\n');
+    expect(text).toContain('ID912');
+    expect(text).toContain('片内0:02（录播0:52）');
+    expect(text).toContain('这是在转述朋友吗');
+    expect(text).not.toContain('model_requires_review');
+    expect(text).not.toContain('Clip 5');
+    expect(report.uploadEligible(held)).toBe(false);
+  });
+
   test('pending subtitle revisions cannot reuse an old human-approved display status', () => {
     const value = { ...clip(1, 0), uploadReady: true, rebuildRequired: true,
       ownStreamHumanReview: { status: 'approved', note: 'Old review' },

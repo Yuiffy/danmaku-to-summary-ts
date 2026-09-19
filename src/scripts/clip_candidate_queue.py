@@ -186,6 +186,7 @@ def prepare_rebuild(args, api):
         options = {key: getattr(args, key, None) for key in (
             "review_note", "title", "description", "cover_text", "source_kind", "start", "end", "duration_note", "xml")}
         options["allow_long"] = "yes" if args.allow_long else None
+        options["replan"] = "yes" if getattr(args, "replan", False) else None
         result = candidate_action(api, clip, "prepare", options, timeout=120)
         update_record(clip, result, api)
         api.save_json(api.REGISTRY_PATH, registry)

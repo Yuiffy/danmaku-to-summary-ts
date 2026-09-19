@@ -46,6 +46,7 @@ function attributionRisk(clip, evidence, context) {
         || (clip.grounding?.sourceKind === 'recount' && /(?:他|她|对方|有人|朋友|前辈|司机|店员|师傅|工作人员|转述)/u.test(
             [publicCopy, ...windowCues.map(cue => cue.text)].join('\n')))) reasons.push('nontrivial_source_kind');
     if (clip.publicCopyPending) reasons.push('pending_public_copy');
+    if (clip.grounding?.issues?.length) reasons.push('copy_grounding_issues');
     return reasons;
 }
 
@@ -60,6 +61,8 @@ function buildActorReviewPacket(clip, id, evidence, danmaku, context, settings =
         copy: Object.fromEntries(COPY_FIELDS.map(field => [field, String(clip[field] || '')])),
         sourceKind: clip.grounding?.sourceKind || 'uncertain', inRangeCueIds: inRange.map(cue => cue.id),
         speech: formatEvidenceCues(cues), audience };
+    data.voiceCitations = require('./actor_review_feedback').voiceCitationGuide({
+        cueIds: new Set(data.inRangeCueIds), evidence, context });
     const normalizations = cues.flatMap(cue => cue.items.flatMap(item => (item.asrEvidence?.proofreading?.edits || [])
         .map(edit => ({ ...edit, cueId: cue.id }))));
     if (normalizations.length) data.automaticNormalizations = normalizations;
@@ -95,11 +98,15 @@ function actorReviewPrompt(packets, context, options = {}) {
         '每段返回accept、repair或needs_review。accept/repair都给最终copy和claims；未能核实的命名动作不要批准。',
         'claims覆盖所有非空公开字段，每个独立动作单独一条；fields指这个动作出现在哪些字段。narrator/actor/target填人名或null；sourceKind填live_speech/recount/playback/audience/uncertain。',
         'identityBasis填voice/explicit_text/unresolved；speakerCueIds支持当前讲述者身份，cueIds支持具体动作。不要把未被识别的匿名人硬写实名。',
+        '输出前自查：每个claim的cueIds必须逐个存在于本片inRangeCueIds。voice时speakerCueIds必须同时属于该claim的cueIds，且来自voiceCitations中同一speaker的行；可以把确有身份依据的行补入cueIds，不能借上下文编号或改造编号。voiceCitations为空不允许凭名单填写voice。',
+        '先自行修好引用、引号、数字、问句和转述关系，再决定是否需要人。能用片内证据修正文案就repair；不要把程序可指出的引用错误交给人，也不要为了通过而删掉核心看点或猜词猜人。',
+        '仍需人工时返回humanChecks，按同一个疑点合并成最多3个短问题：question用40字以内日常中文说清要确认什么，cueIds给需要听的片内原话，suggestion用35字以内给具体候选说法或留空，不重复提问。不要用G编号、校验码或“核对归属”代替具体问题；不要声称已经听过音频。通过时humanChecks为[]。',
         ...(packets.some(packet => packet.dialogueEvidence) ? [
             '另附dialogueEvidence是未看到声纹标签和旧文案的独立对话分析。supported=true的轮次可用identityBasis=dialogue，speakerCueIds必须引用其中同一speakerId的原话。',
             '对话推断仍非真值。正文复核需重新读锚点，不能照抄推断。若与直接局部声纹冲突，标记needs_review；旧整簇标签和无声纹不构成反证。'
         ] : []),
         'evidenceDanmakuIds只填本窗口内实际用到的D-ID；引号只保留原文确有的字句。标题18-42字、简介简洁、封面两行，不带发布前缀或来源落款。',
+        '观众评论也是独立claim：sourceKind=audience，该claim的evidenceDanmakuIds填D-ID并同步到reviews顶层同名字段；cueIds可为空，绝不能把D-ID放入cueIds或借无关G-ID凑数。narrator/actor填null，speakerCueIds为空，identityBasis=explicit_text。每个使用这条评论的公开字段标明观众/弹幕视角；它只能证明观众这样说，不能证明主播说过或做过。非观众claim的evidenceDanmakuIds填[]。',
         'claims中的人名也必须在引用原话中有依据；人名有ASR变体时，补充本窗口含正确称呼的原话ID，不能只有拼写不同的一个残句。',
         ...(packets.some(packet => packet.entityContext) ? roleReferencePromptLines() : []),
         '只输出JSON：{"reviews":[{"clipId":"c1","decision":"repair","copy":{"title":"标题","coverText":"第一行\\n第二行","description":"内容简介"},"claims":[{"fields":["title","coverText","description"],"action":"提问","narrator":"人名或null","actor":"人名或null","target":"人名或null","sourceKind":"recount","identityBasis":"voice","speakerCueIds":["G1"],"cueIds":["G1"]}],"evidenceDanmakuIds":[],"reason":"简短核验依据"}]}',
@@ -141,8 +148,13 @@ function validateActorReview(review, packet) {
         if (!claim || typeof claim.action !== 'string' || !claim.action.trim() || !Array.isArray(claim.fields)
             || !claim.fields.length || claim.fields.some(field => !COPY_FIELDS.includes(field))) { fail('invalid_action'); return; }
         claim.fields.forEach(field => covered.add(field));
-        if (!Array.isArray(claim.cueIds) || !claim.cueIds.length || claim.cueIds.some(id => !packet.cueIds.has(id))) { fail('invalid_action_citation'); return; }
+        if (!Array.isArray(claim.cueIds) || (claim.sourceKind !== 'audience' && !claim.cueIds.length)
+            || claim.cueIds.some(id => !packet.cueIds.has(id))) { fail('invalid_action_citation'); return; }
         claim.cueIds.forEach(id => refs.add(id));
+        if (claim.sourceKind === 'audience') {
+            require('./audience_claim').validateAudienceClaim(claim, review, packet).forEach(fail);
+            return;
+        }
         if (!['live_speech', 'recount', 'playback', 'audience', 'uncertain'].includes(claim.sourceKind)) fail('invalid_action_source');
         if (!['voice', 'dialogue', 'explicit_text', 'unresolved'].includes(claim.identityBasis)) fail('invalid_identity_basis');
         const rawSpeech = claim.cueIds.map(id => packet.evidence.byId.get(id).text).join('\n');
@@ -235,6 +247,7 @@ function applyActorReview(packet, review, issues = validateActorReview(review, p
             originalCopy: packet.data.copy, originalCopyPending: Boolean(packet.clip.publicCopyPending),
             proposedCopy: review?.copy || null, decision: review?.decision || null,
             claims: review?.claims || [], issues, reason: review?.reason || '',
+            humanChecks: passed ? [] : require('./actor_review_feedback').humanChecks(packet, review),
             ...(packet.dialogueEvidence ? { dialogueEvidence: packet.dialogueEvidence } : {}),
             ...(packet.entityContext ? { entityContext: packet.entityContext } : {}),
             start: packet.clip.start, end: packet.clip.end } };

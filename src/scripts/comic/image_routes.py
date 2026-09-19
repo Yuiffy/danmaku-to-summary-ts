@@ -126,8 +126,6 @@ def _get_image_generation_routes(config: Dict[str, Any], tuzi_config: Dict[str, 
     room_routes = room_image_generation.get("routes") if isinstance(room_image_generation, dict) else None
     if room_image_generation.get("enabled", True) and isinstance(room_routes, list) and room_routes:
         routes = [route for route in room_routes if isinstance(route, dict) and route.get("enabled", True)]
-    else:
-        routes = routes[:1]
 
     # Pick once per image, not once per retry. Room policy can pin a variant.
     rollout = room_image_generation.get("rollout", image_generation.get("rollout", {})) or {}

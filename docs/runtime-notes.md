@@ -35,17 +35,30 @@ npm run pm2:logs
 
 The handler source under `src/services/webhook/handlers/` is authoritative for request shapes.
 
-## 弹幕 API 风控通知
+## 录播日志状态监控
 
-`bilibili.danmuRiskControl` 按房间检测弹幕连接信息。首次检测到风控立即发送企微告警；
-同一轮持续风控按 `notifyCooldownMs`（默认 30 分钟）重复提醒。只有接口明确成功
-（返回码 0）才发送一次恢复通知，包含开始时间、检测恢复时间和按检测计算的持续时间。
-网络错误、脚本异常和其它 API 错误不会被当作恢复。恢复后再次风控会开启新一轮告警，
-不受上一轮冷却限制。检测间隔默认 5 分钟，恢复时间是检测时间。
+`bilibili.danmuRiskControl` 默认每 30 分钟读取 mikufans 的 JSONL 日志，不再启动
+Python 弹幕探针，也不主动调用 B 站 API。`roomIds` 限定弹幕连接告警房间；共享
+API 的 `-352` 按接口告警，不会冒充某个房间独有的问题。API 恢复与弹幕认证恢复
+分别通知：获取令牌不等于弹幕已连上，既有连接仍能收消息也不证明接口风控解除。
+连接异常持续至少一分钟才通知，读取周期决定通知延迟；短暂掉线后立即恢复不告警。
 
-发送成功才记入告警冷却；恢复通知失败时，在后续成功检测时重试。若期间再次风控，
-立即发送新告警，取消旧恢复消息，避免在仍有风控时补发过期恢复。未成功发送过开始告警
-的情况不单独发送恢复通知。状态保存在监控进程内存中，进程重启后从首次检测重新建立。
+`recorderStatePath` 默认 `data/runtime/recorder_watchdog.state.json`。每次读取核对
+守护心跳、当前 PID、启动时间及进程是否存在；不根据日志中的最大 PID 猜测当前进程。
+`logDirectory` 留空时使用该进程 EXE 旁的 logs；支持日志追加、未写完的行和轮转。
+当前构建须保留结构化日志中的 `ProcessId`、`@t`、`@mt` 和相关事件字段。
+
+`monitorStatePath` 默认 `data/runtime/recorder_log_monitor.json`，持久化读取位置、
+事件和待发通知。首次启用从当前时间开始，不重放历史告警；服务重启后续读。
+开始与恢复通知按发生顺序补发，恢复时间使用日志事件时间，不宣称补发时仍为当前状态。
+通知成功后移出队列。文件丢失、身份过期或没有明确恢复记录时，状态为未知，绝不报恢复。
+极端情况下通知已送达但落盘前进程崩溃，仍可能补发一次。
+
+下播兜底 `MikufansOfflineFallbackMonitor` 也复用这个日志读取器的房间状态，不再
+每分钟逐房间请求 getInfoByRoom。同一条日志不会算作多次下播确认；确认速度由录播姬
+自身的查询频率决定（其他房间每六分钟一条新状态时，三次确认会相应延后）。超过十分钟
+的房间状态不再用于判断。无法读取日志时不降级成网络请求；录播姬本身停止更新状态的
+情况交由进程守护、文件和停录诊断处理。业务所需的动态查询、评论和上传不受此项影响。
 
 ## Delayed Reply Workflow
 
@@ -74,21 +87,30 @@ The handler source under `src/services/webhook/handlers/` is authoritative for r
   or supplemental reply when it fits, and already-published historical summaries
   are not reposted or moved.
 
-## Goodnight Image Model Rollout
+## Goodnight Image Model Policy
 
-`ai.comic.imageGeneration.rollout` selects one equally weighted `model` / `quality`
-variant per new image request. The selected route is saved before submission and
-reused across its retries. The control is `gpt-image-2/high`; both
-`gpt-image-2.5-sunburst` and `gpt-image-2.5-flare` participate at `low`, `medium`,
-`high`, `xhigh`, and `max`. Size, references and prompt construction are unchanged.
-Room-specific rollout settings override the global policy. Room `25788785` disables
-the lottery and prioritizes `gpt-image-2.5-sunburst/max`. Its bounded fallback chain
+New image requests outside Sui's room draw one equally weighted variant through
+daiYu: `gpt-image-2/high`, or `gpt-image-2.5-sunburst` / `gpt-image-2.5-flare` at
+`low`, `medium`, `high`, `xhigh`, or `max`. If that attempt fails, the next route
+tries `gpt-image-2/high` once, including when the initial draw was image-2/high.
+A successful first attempt skips the fallback; the fallback does not draw again.
+Both default and production configs enable `ai.comic.imageGeneration.rollout`.
+Rooms inherit the full global route list unless they define their own. Room
+`25034104` inserts the same image-2/high retry before its existing fallback chain.
+Room `25788785` continues to prioritize `gpt-image-2.5-sunburst/max` with rollout
+disabled. Its bounded fallback chain
 continues through tuZi's synchronous `gpt-image-2` strategies, daiYu `gpt-image-2/high`,
 then tuZi's asynchronous Gemini route. Keep this chain in the shared `sui` preset
 and the default room override: route arrays replace inherited arrays, so pinning
 the primary model must include the fallback entries. The asynchronous route runs
 only at the end and retains recovery state for resuming an existing remote task.
-Other existing room fallback routes remain available; distinguish the drawn
+The image worker reads the current config for each new generation, so these
+config-only policy changes do not require a service restart. Requests that already
+selected their routes retain that selection.
+
+The rollout mechanism selects the primary `model` / `quality` variant once per
+image and leaves fallback routes fixed. Room rollout settings override the global
+policy. Distinguish the drawn
 `rolloutVariant` from the final model when reviewing a fallback result.
 
 `[IMAGE_EXPERIMENT]` logs and `*_COMIC_FACTORY_META.json` retain model, quality,
@@ -284,8 +306,21 @@ npm run recorder:resume
 
 升级 EXE 路径后需重新 `configure`，并确认该目录的 `path.json` 指向正确录播目录且
 `SkipAsking` 为 true，录播目录配置里的目标房间开启 `AutoRecord`。守护使用配置的
-EXE、参数数组和工作目录启动，不自动改录播姬设置。暂停控制和重启限额均持久化。
-本守护只处理进程消失，不解决“进程仍在但录制卡住”的情况。
+EXE、参数数组和工作目录启动；默认不改录播姬设置。暂停控制和重启限额均持久化。
+进程守护不解决“进程仍在但录制卡住”的情况。
+
+同一账号的 Cookie 被多个程序使用时，应只由一个程序负责刷新会话。summary-ts 的
+自动刷新会写回 `config/secret.json`，旧会话可能被撤销；录播姬保存的静态 Cookie
+不会自行跟随更新。可在守护配置中启用 `cookieSync`，设置 `sourcePath` 为该
+secret.json 的绝对路径，`recorderConfigPath` 为录播目录内 config.json 的绝对路径。
+源文件使用 `bilibili.cookie`，目标使用 `global.Cookie.Value`；两边账号必须一致。
+
+启用后，守护按 `cookieSync.intervalMs` 比较本地会话与设备凭据，默认每分钟一次，
+独立于每 5 秒的进程检查。发生变化时先核对文件摘要、
+EXE 路径、PID 和启动时间，只替换 Cookie，并重启该录播进程一次；会短暂中断录制。
+目标文件旁保存上一份配置 `config.json.before-cookie-sync`，不把 Cookie 写进守护状态、
+命令行或通知。暂停、只通知模式、重启冷却和次数上限均有效；正常一致时不重启。
+该检查只读取本地文件，不增加 B 站请求。修改守护配置后单独重启 `recorder-watchdog`。
 
 `npm run recorder:test` 运行单元测试；Windows 设置 `RECORDER_WATCHDOG_NATIVE_TEST=1`
 可额外验证一个临时测试进程的退出、重启和恢复，测试不会停止真实录播姬。

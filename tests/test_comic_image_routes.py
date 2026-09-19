@@ -93,7 +93,7 @@ class ImageRoutesTest(unittest.TestCase):
         self.assertGreaterEqual(self.metadata['elapsedMs'], 0)
         self.assertEqual(self.metadata['rolloutVariant'], 'gpt-image-2.5-flare:xhigh')
 
-    def test_real_configs_cover_all_variants_and_pin_sui(self):
+    def test_real_configs_draw_variants_then_retry_image_2_and_preserve_sui(self):
         import json
         root = Path(__file__).resolve().parents[1]
         expected = {('gpt-image-2', 'high')} | {
@@ -102,7 +102,9 @@ class ImageRoutesTest(unittest.TestCase):
         modes = json.loads((root / 'config' / 'generation-modes.json').read_text(encoding='utf-8'))['modes']
         for name in ('default', 'production'):
             config = resolve_generation_modes(json.loads((root / 'config' / f'{name}.json').read_text(encoding='utf-8')), modes)
-            variants = config['ai']['comic']['imageGeneration']['rollout']['variants']
+            policy = config['ai']['comic']['imageGeneration']
+            self.assertTrue(policy['rollout']['enabled'])
+            variants = policy['rollout']['variants']
             self.assertEqual({(v['model'], v['quality']) for v in variants}, expected)
             self.assertEqual(len(variants), 11)
             with patch('comic.image_routes.random.choice') as choose:
@@ -117,11 +119,64 @@ class ImageRoutesTest(unittest.TestCase):
             self.assertEqual(routes[0]['quality'], 'max')
             self.assertFalse(routes[1]['includeAsyncFallback'])
             self.assertEqual(routes[-1]['strategyMode'], 'asyncOnly')
-            for variant in variants:
-                with patch('comic.image_routes.random.choice', return_value=variant):
-                    for room in ('other', '25034104'):
-                        route = _get_image_generation_routes(config, {}, room)[0]
-                        self.assertEqual((route['model'], route['quality']), (variant['model'], variant['quality']))
+            rooms = set(config['ai']['roomSettings']) | {'other', '25034104', None}
+            for room in rooms - {'25788785'}:
+                for variant in variants:
+                    with self.subTest(config=name, room=room, variant=variant):
+                        with patch('comic.image_routes.random.choice', return_value=variant) as choose:
+                            routes = _get_image_generation_routes(config, {}, room)
+                            choose.assert_called_once()
+                        self.assertEqual((routes[0]['model'], routes[0]['quality']), (variant['model'], variant['quality']))
+                        retry = routes[1]
+                        self.assertEqual((retry['provider'], retry['flow']), ('daiYu', 'openaiImages'))
+                        self.assertEqual((retry['model'], retry['quality']), ('gpt-image-2', 'high'))
+                        self.assertEqual(retry['maxAttempts'], 1)
+                        self.assertFalse(retry['useTuziRetry'])
+                        self.assertNotIn('rolloutVariant', retry)
+                        room_image = config['ai']['roomSettings'].get(room, {}).get('imageGeneration', {})
+                        self.assertEqual(routes[2:], room_image.get('routes', policy['routes'])[2:])
+                        self.assertEqual(len(routes), 5 if name == 'production' and room == '25034104' else 2)
+
+    def test_global_fallback_runs_once_only_after_failure_without_redrawing(self):
+        variants = [
+            {'model': 'gpt-image-2.5-sunburst', 'quality': 'max'},
+            {'model': 'gpt-image-2.5-flare', 'quality': 'low'},
+            {'model': 'gpt-image-2', 'quality': 'high'},
+        ]
+        self.config['ai']['comic'] = {'imageGeneration': {
+            'routes': [
+                {'provider': 'primary', 'model': 'gpt-image-2', 'flow': 'openaiImages', 'maxAttempts': 1},
+                {'provider': 'fallback', 'model': 'gpt-image-2', 'quality': 'high',
+                 'flow': 'openaiImages', 'maxAttempts': 1, 'useTuziRetry': False},
+            ],
+            'rollout': {'enabled': True, 'variants': variants},
+        }}
+        references = ['host.png', 'evidence.jpg']
+        for variant in variants:
+            for responses in (['first.png'], [None, 'recovered.png'], [None, None]):
+                with self.subTest(variant=variant, responses=responses):
+                    self.io.images.reset_mock()
+                    self.io.images.side_effect = responses
+                    with patch('comic.image_routes.random.choice', return_value=variant) as choose:
+                        result = generate_image('original comic script', references, 'other',
+                                                config=self.config, io=self.io)
+                        choose.assert_called_once()
+                    self.assertEqual(result, responses[-1])
+                    self.assertEqual(self.io.images.call_count, len(responses))
+                    self.io.compatible.assert_not_called()
+                    calls = self.io.images.call_args_list
+                    self.assertEqual((calls[0].kwargs['model'], calls[0].kwargs['quality']),
+                                     (variant['model'], variant['quality']))
+                    for call in calls:
+                        self.assertEqual(call.kwargs['prompt'], 'original comic script')
+                        self.assertIs(call.kwargs['reference_image_path'], references)
+                    if len(calls) == 2:
+                        self.assertEqual((calls[1].kwargs['model'], calls[1].kwargs['quality']),
+                                         ('gpt-image-2', 'high'))
+                        self.assertFalse(calls[1].kwargs['use_tuzi_retry'])
+                    self.assertEqual([a['status'] for a in self.metadata['routeAttempts']],
+                                     ['success' if value else 'failure' for value in responses])
+                    self.assertEqual(self.metadata['rolloutVariant'], f"{variant['model']}:{variant['quality']}")
 
     def test_sui_502_reaches_backup_and_keeps_original_request(self):
         import json

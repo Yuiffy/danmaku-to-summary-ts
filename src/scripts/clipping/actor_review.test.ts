@@ -280,7 +280,7 @@ describe('independent action attribution review', () => {
       const result = await reviewClipActors([clip], { participantContext: mentioned }, [], evidence, { roomId: '1' },
         { attribution: { enabled: true, roomIds: ['1'], dialogueEnabled: true, maxRequests: 3 }, ai: { enabled: true, selectionCacheEnabled: false } },
         { ai: { text: { provider: 'daiYu' } } }, diagnostics);
-      expect(diagnostics.requests.map((row: any) => row.phase)).toEqual(['actor-review-1', 'dialogue-evidence-2']);
+      expect(diagnostics.requests.map((row: any) => row.phase)).toEqual(['actor-review-1', 'dialogue-evidence-2', 'actor-review-3-repair']);
       expect(result[0].publicCopyPending).toBe(true);
       expect(mentioned.people[1].presence).toBe('mentioned_only');
     } finally { spy.mockRestore(); }

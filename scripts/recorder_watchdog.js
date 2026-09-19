@@ -6,6 +6,7 @@ const readline = require('node:readline');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { parseArgs } = require('node:util');
+const { readCookieSyncPlan } = require('./recorder_cookie_sync');
 
 const ROOT = path.resolve(__dirname, '..');
 const WINDOWS_HELPER = path.join(__dirname, 'recorder_watchdog_windows.ps1');
@@ -13,9 +14,12 @@ const DEFAULTS = {
   enabled: false, autoRestart: false, executablePath: '', arguments: [], workingDirectory: '',
   powershellPath: 'pwsh.exe', pollIntervalMs: 5000, missingGraceMs: 15000,
   startupGraceMs: 60000, stableMs: 15000, restartCooldownMs: 60000,
-  maxRestarts: 3, restartWindowMs: 900000, notificationRetryMs: 60000
+  maxRestarts: 3, restartWindowMs: 900000, notificationRetryMs: 60000,
+  cookieSync: null
 };
 const LABELS = {
+  credential_sync_required: '录播姬凭据需要同步',
+  credential_sync_failed: '录播姬凭据同步失败',
   missing: '\u5f55\u64ad\u59ec\u8fdb\u7a0b\u6d88\u5931',
   recovered: '\u5f55\u64ad\u59ec\u8fdb\u7a0b\u5df2\u6062\u590d',
   launch_failed: '\u5f55\u64ad\u59ec\u91cd\u542f\u5931\u8d25',
@@ -55,6 +59,17 @@ function normalizeConfig(raw = {}) {
   config.workingDirectory ||= path.win32.dirname(config.executablePath);
   config.processName = path.win32.basename(config.executablePath, path.win32.extname(config.executablePath));
   if (config.enabled && !path.win32.isAbsolute(config.workingDirectory)) throw new Error('workingDirectory must be absolute');
+  if (config.cookieSync != null) {
+    if (typeof config.cookieSync !== 'object' || typeof config.cookieSync.enabled !== 'boolean') throw new Error('Invalid cookieSync settings');
+    config.cookieSync = { intervalMs: 60000, ...config.cookieSync };
+    if (!Number.isSafeInteger(config.cookieSync.intervalMs) || config.cookieSync.intervalMs < 1000) throw new Error('cookieSync.intervalMs must be an integer of at least 1000');
+    if (config.cookieSync.enabled) {
+      for (const key of ['sourcePath', 'recorderConfigPath']) {
+        if (typeof config.cookieSync[key] !== 'string' || !path.win32.isAbsolute(config.cookieSync[key])) throw new Error(`cookieSync.${key} must be absolute`);
+      }
+      if (sameExecutable(config.cookieSync.sourcePath, config.cookieSync.recorderConfigPath)) throw new Error('Cookie source and target must differ');
+    }
+  }
   return config;
 }
 
@@ -81,6 +96,11 @@ class RecorderWatchdog {
     this.notify = dependencies.notify || (async () => false);
     this.control = dependencies.control || (() => ({}));
     this.log = dependencies.log || (() => {});
+    this.cookiePlan = dependencies.cookiePlan || (() => readCookieSyncPlan(config.cookieSync));
+    this.syncCookie = dependencies.syncCookie || ((current, plan) => runHelper('SyncCookie', config, {
+      executablePath: config.executablePath, workingDirectory: config.workingDirectory, arguments: config.arguments,
+      ...config.cookieSync, ...plan, expectedPid: current.pid, expectedStartedAt: current.startedAt
+    }));
     this.state = {
       version: 1, phase: 'initializing', attempts: [], notices: [], incident: null,
       blocked: false, launchUntil: 0, lastSeen: null, resetToken: null, ...persisted,
@@ -105,6 +125,48 @@ class RecorderWatchdog {
   notice(kind, key, details) {
     if (this.state.notices.some(notice => notice.key === key)) return;
     this.state.notices.push({ key, kind, content: noticeContent(kind, this.config, this.now(), details), nextAttemptAt: 0 });
+  }
+
+  async syncCredentialIfNeeded(current) {
+    if (!this.config.cookieSync?.enabled) return false;
+    const now = this.now();
+    if (this.state.cookieSyncNextCheckAt > now || this.state.cookieSync?.retryAt > now) return false;
+    this.state.cookieSyncNextCheckAt = now + this.config.cookieSync.intervalMs;
+    try {
+      const plan = this.cookiePlan();
+      if (!plan.changed) {
+        this.state.cookieSync = { status: 'current', fingerprint: plan.fingerprint, checkedAt: now, retryAt: 0,
+          completedAt: this.state.cookieSync?.completedAt, newPid: this.state.cookieSync?.newPid };
+        return false;
+      }
+      if (!this.config.autoRestart) {
+        this.state.cookieSync = { status: 'pending', checkedAt: now, fingerprint: plan.fingerprint };
+        this.notice('credential_sync_required', `credential-pending-${plan.fingerprint}`, 'The shared account session changed. Enable automatic restart or synchronize the recorder cookie manually.');
+        return false;
+      }
+      const attempts = this.state.attempts.filter(at => now - at < this.config.restartWindowMs);
+      this.state.attempts = attempts;
+      if (attempts.length >= this.config.maxRestarts || (attempts.length && now - attempts.at(-1) < this.config.restartCooldownMs)) {
+        this.state.cookieSync = { status: 'waiting', checkedAt: now, failedAt: this.state.cookieSync?.failedAt, retryAt: now + this.config.restartCooldownMs };
+        return false;
+      }
+      this.state.attempts.push(now);
+      this.state.cookieSync = { status: 'applying', fingerprint: plan.fingerprint, failedAt: this.state.cookieSync?.failedAt, attemptedAt: now, retryAt: now + this.config.restartCooldownMs };
+      this.phase('syncing_credential');
+      this.persist();
+      const result = await this.syncCookie(current, plan);
+      this.state.cookieSync = { ...this.state.cookieSync, status: result.changed ? 'applied' : 'current', completedAt: this.now(), newPid: result.pid };
+      this.log(`credential sync ${result.changed ? 'applied' : 'already current'}`);
+      this.persist();
+      return true;
+    } catch {
+      // Do not include errors that might contain JSON snippets or credentials.
+      const firstFailure = this.state.cookieSync?.failedAt || now;
+      this.state.cookieSync = { status: 'failed', failedAt: firstFailure, retryAt: now + this.config.restartCooldownMs };
+      this.notice('credential_sync_failed', `credential-failed-${firstFailure}`, 'Credential synchronization could not be completed. Check the configured paths, account identity and recorder process; no credential values are included in this notification.');
+      this.persist();
+      return false;
+    }
   }
 
   async observe(snapshot) {
@@ -152,6 +214,7 @@ class RecorderWatchdog {
       const current = snapshot.processes[0];
       state.lastSeen = { ...current, observedAt: now };
       state.launchUntil = 0;
+      if (!state.blocked && await this.syncCredentialIfNeeded(current)) return;
       if (state.incident || state.blocked) {
         const identity = `${current.pid}:${current.startedAt}`;
         if (state.candidate?.identity !== identity) state.candidate = { identity, since: now };
@@ -247,7 +310,7 @@ function runHelper(mode, config, input) {
   return new Promise((resolve, reject) => {
     const child = spawn(config.powershellPath, helperArguments(mode, config), { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
-    const timer = setTimeout(() => { child.kill(); reject(new Error(`${mode} helper timed out`)); }, 15000);
+    const timer = setTimeout(() => { child.kill(); reject(new Error(`${mode} helper timed out`)); }, mode === 'SyncCookie' ? 30000 : 15000);
     child.stdout.on('data', chunk => { stdout += chunk.toString('utf8'); });
     child.stderr.on('data', chunk => { stderr = (stderr + chunk.toString('utf8')).slice(-2000); });
     child.on('error', error => { clearTimeout(timer); reject(error); });

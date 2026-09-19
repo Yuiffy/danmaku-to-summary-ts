@@ -2530,6 +2530,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--end", type=float, default=None)
     p.add_argument("--allow-long", action="store_true")
     p.add_argument("--duration-note", default=None)
+    p.add_argument("--replan", action="store_true", help="Replan a rejected own-stream window with complete copy; validates overlap against retained clips")
     p.add_argument("--xml", default=None, help="Explicit original danmaku XML to bind when legacy topic metadata omitted it")
     p.add_argument("--enqueue", action="store_true")
     p.set_defaults(func=lambda args: clip_candidate_queue.prepare_rebuild(args, sys.modules[__name__]))

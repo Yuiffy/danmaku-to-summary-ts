@@ -1301,6 +1301,7 @@ function buildReviewMarkdown(results, metadata) {
         aiStatusLine,
         ...buildProcessingSummaryLines(metadata.processingStats),
         '',
+        ...ownReview.quickReviewLines(results, metadata),
         '## 切片总清单（按时间排序）',
         ''
     ].filter(line => line !== null);
@@ -1622,10 +1623,13 @@ async function generateOwnStreamClipJob({
     };
     const processedCopy = postProcessAiClipMetadata(rawCopy, options.config || {});
     const copy = { ...rawCopy, ...processedCopy };
+    const preRenderHold = config.attribution?.holdUnresolvedBeforeRender === true
+        && attributionEnabled(config, info.roomId)
+        && (clip.publicCopyPending || (clip.attributionRequired && clip.attributionReview?.status !== 'passed'));
     let mediaResult = null;
     let mediaError = null;
     try {
-        mediaResult = await topicClipper.cutClipMedia(source, window, srtPath, mediaPath, {
+        if (!preRenderHold) mediaResult = await topicClipper.cutClipMedia(source, window, srtPath, mediaPath, {
             ...buildCutClipMediaConfig(config, options),
             resourcePeaks
         });
@@ -1708,6 +1712,7 @@ async function generateOwnStreamClipJob({
         ...(require('./asr/subtitle_proofreading').resolveProofreadingOptions(options.config || {}, { roomId: info.roomId }).enabled
             ? { subtitleProofreading: require('./asr/subtitle_proofreading').summarizeSubtitleProofreading(parsed.segments, window) } : {}),
         copy,
+        ...(preRenderHold ? { preRenderHold: true, status: 'held_before_render' } : {}),
         ...(clip.publicCopyPending ? { publicCopyPending: true } : {}),
         upload: buildOwnUploadSettings({
             roomId: info.roomId,
@@ -1718,7 +1723,7 @@ async function generateOwnStreamClipJob({
         processing,
         uploadReady: Boolean(mediaResult?.path) && !clip.publicCopyPending,
         output: {
-            mediaPath: mediaResult?.path || mediaPath,
+            mediaPath: preRenderHold ? null : mediaResult?.path || mediaPath,
             srtPath,
             metadataPath,
             burnedSubtitles: Boolean(mediaResult?.burnedSubtitles),
@@ -1731,15 +1736,16 @@ async function generateOwnStreamClipJob({
             coverError
         }
     };
+    if (preRenderHold) metadata.preRenderSource = require('./clipping/source_snapshot').sourceSnapshot(metadata);
     metadata.processing.mediaElapsedMs = metadata.processing.elapsedMs;
     const enhancer = require('./clipping/enhancement_runner');
-    const needsEnhancement = enhancer.enhancementEnabled(config.enhancements, info.roomId)
+    const needsEnhancement = !preRenderHold && enhancer.enhancementEnabled(config.enhancements, info.roomId)
         && (config.enhancements.experiment?.enabled !== true || metadata.precisionExperiment?.selected === true);
     const enhancementQueued = Date.now();
     await execution?.finishMedia(needsEnhancement);
     metadata.processing.enhancementQueueMs = Date.now() - enhancementQueued;
     const enhancementStarted = Date.now();
-    metadata = await require('./clipping/enhancement_runner').runEnhancements(metadata, { config, info, parsed, danmaku, source, options, topic: topicClipper, clip, subtitleEvidence, execution });
+    if (!preRenderHold) metadata = await require('./clipping/enhancement_runner').runEnhancements(metadata, { config, info, parsed, danmaku, source, options, topic: topicClipper, clip, subtitleEvidence, execution });
     metadata.processing.enhancementElapsedMs = Date.now() - enhancementStarted;
     if (metadata.publicCopyPending && metadata.qaResult?.status === 'passed' && metadata.uploadReady) {
         metadata.publicCopyPending = false;
