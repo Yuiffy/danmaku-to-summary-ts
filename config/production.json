@@ -1685,11 +1685,12 @@
     "enabled": true,
     "enhancements": {
       "enabled": true,
-      "workflow": "pacing",
+      "workflow": "creative",
+      "creative": { "style": "compact", "avatarMode": "auto", "focusPlacement": "source", "faceInsetDiameter": 0.60, "laughAsset": "sitcom_laugh", "laughAssets": ["sitcom_laugh", "sitcom_laugh_chuckle", "sitcom_laugh_warm", "sitcom_laugh_applause"], "maxMoments": 24, "maxZoom": 5, "soundEffects": true, "filters": true, "variety": true, "assetManifest": "config/clip-creative-assets.json" },
       "pacing": { "noiseDb": -40, "nonSpeechVad": true, "minRemovedSeconds": 3, "minRemovedRatio": 0.02, "maxRemovedRatio": 0.2, "maxPausesPerClip": 2, "maxScannedSeconds": 120 },
       "roomIds": ["25788785"],
       "editing": true,
-      "experiment": { "enabled": true, "ratio": 0.25, "maxClips": 5 },
+      "experiment": { "enabled": true, "ratio": 1, "maxClips": 1 },
       "budget": { "mode": "log_only", "ledgerPath": "data/runtime/clip-enhancement-ledger.json" },
       "stageDefaults": {
         "retry": { "maxAttempts": 2, "baseDelayMs": 1000, "maxDelayMs": 10000, "jitterRatio": 0.2 },

@@ -1,0 +1,107 @@
+{
+  "version": 1,
+  "cacheDirectory": "data/runtime/clip-creative-assets",
+  "maxIrasutoyaPerVideo": 20,
+  "assets": [
+    {
+      "id": "sitcom_laugh",
+      "family": "laughter",
+      "intensity": "light",
+      "kind": "sound",
+      "label": "情景喜剧罐头笑声（小观众席）",
+      "usage": "轻松反转或嘴硬之后的经典情景喜剧笑声；保留短笑声的起落，不用在人身羞辱或真实苦恼上",
+      "file": "sitcom-laughter-kinoton.mp3",
+      "sourceUrl": "https://freesound.org/people/Kinoton/sounds/383207/",
+      "downloadUrl": "https://cdn.freesound.org/previews/383/383207_2247456-hq.mp3",
+      "license": "CC0 1.0",
+      "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "creator": "Kinoton / Freesound",
+      "sha256": "444cad82636ee0f1c7a6e35ce7f330c64e5fb26851786ca9ebf8a88abb5057c8",
+      "sampleStart": 7.5,
+      "sampleSeconds": 2.6,
+      "gainDb": -2
+    },
+    {
+      "id": "sitcom_laugh_chuckle", "family": "laughter", "intensity": "medium", "kind": "sound",
+      "label": "情景喜剧短笑声", "usage": "短促反差、嘴硬后的另一组自然笑声",
+      "file": "sitcom-laughter-kinoton.mp3",
+      "sourceUrl": "https://freesound.org/people/Kinoton/sounds/383207/",
+      "downloadUrl": "https://cdn.freesound.org/previews/383/383207_2247456-hq.mp3",
+      "license": "CC0 1.0", "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/", "creator": "Kinoton / Freesound",
+      "sha256": "444cad82636ee0f1c7a6e35ce7f330c64e5fb26851786ca9ebf8a88abb5057c8", "sampleStart": 15.15, "sampleSeconds": 2.8, "gainDb": -2
+    },
+    {
+      "id": "sitcom_laugh_warm", "family": "laughter", "intensity": "medium", "kind": "sound",
+      "label": "情景喜剧起伏笑声", "usage": "较完整反转后的笑声，与短笑声轮换",
+      "file": "sitcom-laughter-kinoton.mp3",
+      "sourceUrl": "https://freesound.org/people/Kinoton/sounds/383207/",
+      "downloadUrl": "https://cdn.freesound.org/previews/383/383207_2247456-hq.mp3",
+      "license": "CC0 1.0", "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/", "creator": "Kinoton / Freesound",
+      "sha256": "444cad82636ee0f1c7a6e35ce7f330c64e5fb26851786ca9ebf8a88abb5057c8", "sampleStart": 35.75, "sampleSeconds": 3.25, "gainDb": -2
+    },
+    {
+      "id": "sitcom_laugh_applause", "family": "laughter", "intensity": "big", "kind": "sound",
+      "label": "情景喜剧欢笑带掌声", "usage": "结尾回扣、明显得意或成功反转，避免对小反应用太大的声势",
+      "file": "sitcom-laughter-applause-kinoton.mp3",
+      "sourceUrl": "https://freesound.org/people/Kinoton/sounds/371562/",
+      "downloadUrl": "https://cdn.freesound.org/previews/371/371562_2247456-hq.mp3",
+      "license": "CC0 1.0", "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/", "creator": "Kinoton / Freesound",
+      "sha256": "9b8129273534e3199a48360c462b3a33a903f2328051b2cda6689b698475a53f", "sampleStart": 0.25, "sampleSeconds": 3.6, "gainDb": -2
+    },
+    {
+      "id": "irasutoya_laugh_woman",
+      "kind": "sticker",
+      "label": "捂嘴偷笑",
+      "usage": "主播自嘲、揭晓操作失误后的轻松笑点",
+      "file": "irasutoya-laugh-woman.png",
+      "sourceUrl": "https://www.irasutoya.com/2020/02/blog-post_29.html",
+      "downloadUrl": "https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEjcvG8dSMeaYmFJoGqw3HSlnp1-j3PhOpOjReTMEDcFmsclkM81tri32wjWOHN23TpeuTE6Kexi4jgmMPMViJVfz2o8s1A3mLdaggrLrpNmXotAhYzB_FkCo9U-SN4BW-Pob0QRo_TOOms8/s1600/pose_warau_kuchi_kakusu_woman.png",
+      "license": "irasutoya-terms",
+      "licenseUrl": "https://www.irasutoya.com/p/terms.html",
+      "creator": "みふねたかし / いらすとや",
+      "sha256": "9b280f0b223d32a614bed6e83b6a76f0a1981de5aa850c5925223a08e7954fda"
+    },
+    {
+      "id": "irasutoya_drink",
+      "kind": "sticker",
+      "label": "能量饮料",
+      "usage": "明确提到喝饮料、补给或连续喝药的夸张类比",
+      "file": "irasutoya-drink.png",
+      "sourceUrl": "https://www.irasutoya.com/2016/05/blog-post_423.html",
+      "downloadUrl": "https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEgq9SfnT5GD5u8pIcLdavo7CUx9imX1HbWSTy-6g_-6Z5eaVIFJr82U4Ndw8R3DddCrTKEZdEz_2qS9e9AoRWPhD4x3Ze5ZoctfYMO9D1eY89mwkpgKcFKSwgrzodbfP-1c9WZ7VzweAq3F/s800/drink_energy.png",
+      "license": "irasutoya-terms",
+      "licenseUrl": "https://www.irasutoya.com/p/terms.html",
+      "creator": "みふねたかし / いらすとや",
+      "sha256": "a783e93ed245f05191b8ad23dd019a10e6492470fe7012c4c0ee195c4da458f5"
+    },
+    {
+      "id": "irasutoya_dizzy",
+      "kind": "sticker",
+      "label": "头晕眼花",
+      "usage": "明确提到眩晕、转圈、晕3D时的情景贴图",
+      "file": "irasutoya-dizzy.png",
+      "sourceUrl": "https://www.irasutoya.com/2021/09/blog-post_677.html",
+      "downloadUrl": "https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEiEkZ8P1hMxDgrn_kJQf1FkdhKanELDHSb9QoDWgvHKx7avEZfz1Dol5_lYkVf-EYr2WzSyfKBCWQXWI7mXTiea8n4EWP9ONEFZUwa7Ry5pHdNECP8ajvSZMZOtQ1Oji59hGD3dVmV-m5L7/s768/guruguru_megamawaru_woman.png",
+      "license": "irasutoya-terms",
+      "licenseUrl": "https://www.irasutoya.com/p/terms.html",
+      "creator": "みふねたかし / いらすとや",
+      "sha256": "3dd992a3d29a8fcc183b34cd0ad506e372aae4d3308eff15fcae7a09b881567d"
+    },
+    {
+      "id": "audience_laugh",
+      "kind": "sound",
+      "label": "观众罐头笑声",
+      "usage": "在已经成立的轻松笑点后短促加入，不用于严肃、悲伤或羞辱语境，不当成现场观众原声",
+      "file": "audience-laughing.mp3",
+      "sourceUrl": "https://pixabay.com/sound-effects/people-audience-laughing-6323/",
+      "downloadUrl": "https://cdn.pixabay.com/download/audio/2021/08/04/audio_e31388735c.mp3?filename=freesound_community-audience-laughing-6323.mp3",
+      "license": "Pixabay Content License",
+      "licenseUrl": "https://pixabay.com/service/license-summary/",
+      "creator": "Soundeffects4You (Freesound) / Pixabay",
+      "sha256": "0ae91ab28babfdea92bb4631880d1bac99bfca63ef0661397dc6e3692d2c603b",
+      "sampleStart": 2.0,
+      "sampleSeconds": 1.8,
+      "gainDb": -14
+    }
+  ]
+}

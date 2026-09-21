@@ -22,10 +22,10 @@ import requests
 
 try:
     from .clip_upload_manifest import load_upload_manifest, validate_registry_qa, find_review_manifest
-    from . import clip_candidate_queue
+    from . import clip_candidate_queue, precision_publish
 except ImportError:
     from clip_upload_manifest import load_upload_manifest, validate_registry_qa, find_review_manifest
-    import clip_candidate_queue
+    import clip_candidate_queue, precision_publish
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_DIR = PROJECT_ROOT / "data" / "runtime"
@@ -2505,6 +2505,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("show", help="Show clip records as JSON")
     p.add_argument("ids")
     p.set_defaults(func=show_clips)
+
+    precision_publish.register_commands(sub, sys.modules[__name__])
 
     p = sub.add_parser("subtitles", help="Show or prepare the editable candidate SRT by numeric ID")
     p.add_argument("--id", required=True, type=int)

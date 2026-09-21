@@ -1544,6 +1544,7 @@ function registerReviewForUpload(reviewPath, results, metadata) {
 }
 
 async function notifyResults(results, metadata, rootConfig) {
+    if (metadata.precisionDelivery) return require('./clipping/precision_delivery').notifyPrecisionDelivery(results, metadata, rootConfig, buildNotifyMarkdown);
     if (!rootConfig.ownStreamClips?.notify?.enabled && rootConfig.ownStreamClips?.notify?.enabled !== undefined) {
         return false;
     }
@@ -1557,7 +1558,8 @@ async function notifyResults(results, metadata, rootConfig) {
     return details ? (await sendWeChatMarkdown(webhookUrl, details)) && sent : sent;
 }
 
-async function generateOwnStreamClipJob({
+async function generateOwnStreamClipJob(context) {
+    const {
     clip,
     evidenceReview,
     subtitleEvidence,
@@ -1572,7 +1574,7 @@ async function generateOwnStreamClipJob({
     config,
     participantMetadata,
     execution
-}) {
+    } = context;
     const processingStartedAt = new Date();
     const processingStartedNs = process.hrtime.bigint();
     const resourcePeaks = [];
@@ -1738,30 +1740,37 @@ async function generateOwnStreamClipJob({
     };
     if (preRenderHold) metadata.preRenderSource = require('./clipping/source_snapshot').sourceSnapshot(metadata);
     metadata.processing.mediaElapsedMs = metadata.processing.elapsedMs;
+    return finishOwnStreamClipJob(metadata, context, processingStartedNs);
+}
+
+async function finishOwnStreamClipJob(metadata, { clip, config, info, parsed, danmaku, source, options,
+    subtitleEvidence, evidenceReview, execution, index }, processingStartedNs = process.hrtime.bigint()) {
+    const copy = metadata.copy, preRenderHold = metadata.preRenderHold;
+    const previousElapsedMs = execution?.resumeEnhancement ? metadata.processing.elapsedMs : 0;
     const enhancer = require('./clipping/enhancement_runner');
-    const needsEnhancement = !preRenderHold && enhancer.enhancementEnabled(config.enhancements, info.roomId)
+    const needsEnhancement = !execution?.deferEnhancement && !preRenderHold && enhancer.enhancementEnabled(config.enhancements, info.roomId)
         && (config.enhancements.experiment?.enabled !== true || metadata.precisionExperiment?.selected === true);
     const enhancementQueued = Date.now();
     await execution?.finishMedia(needsEnhancement);
     metadata.processing.enhancementQueueMs = Date.now() - enhancementQueued;
     const enhancementStarted = Date.now();
-    if (!preRenderHold) metadata = await require('./clipping/enhancement_runner').runEnhancements(metadata, { config, info, parsed, danmaku, source, options, topic: topicClipper, clip, subtitleEvidence, execution });
+    if (!preRenderHold && !execution?.deferEnhancement) metadata = await enhancer.runEnhancements(metadata, { config, info, parsed, danmaku, source, options, topic: topicClipper, clip, subtitleEvidence, execution });
     metadata.processing.enhancementElapsedMs = Date.now() - enhancementStarted;
     if (metadata.publicCopyPending && metadata.qaResult?.status === 'passed' && metadata.uploadReady) {
         metadata.publicCopyPending = false;
     }
-    if (metadata.qaRequired || metadata.pacingResult) {
+    if (metadata.qaRequired || metadata.pacingResult || metadata.creativeResult) {
         if (metadata.attributionReview?.phase !== 'precision_final_copy') metadata.grounding = evidenceReview(clip, metadata.copy) || null;
         metadata.processing = { ...metadata.processing, finishedAt: new Date().toISOString(),
-            elapsedMs: Math.round(Number(process.hrtime.bigint() - processingStartedNs) / 1e6),
+            elapsedMs: previousElapsedMs + Math.round(Number(process.hrtime.bigint() - processingStartedNs) / 1e6),
             resource: summarizeResourcePeaks(metadata.processing.resourcePeaks) };
     }
     metadata = clip.attributionRequired && metadata.precisionExperiment?.selected
         ? require('./clipping/precision_actor_review').finalizePrecisionActors(metadata, clip, subtitleEvidence)
         : finalizeActorReview(metadata, clip, copy, subtitleEvidence);
     metadata = await bindActorArtifacts(metadata);
-    fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2), 'utf8');
-    console.log(`${index + 1}. ${metadata.copy.title} ${formatClock(window.start)} ${formatClock(metadata.window.duration)} ${metadata.output.mediaPath}`);
+    fs.writeFileSync(metadata.output.metadataPath, JSON.stringify(metadata, null, 2), 'utf8');
+    console.log(`${index + 1}. ${metadata.copy.title} ${formatClock(metadata.window.start)} ${formatClock(metadata.window.duration)} ${metadata.output.mediaPath}`);
     return metadata;
 }
 
@@ -1986,6 +1995,19 @@ async function generateOwnStreamClipsInternal(options = {}) {
         render: (clip, index, execution) => generateOwnStreamClipJob({ clip, evidenceReview, subtitleEvidence: finalEvidence,
             index, parsed, danmaku, options, outputRoot, source, streamerName, info, participantMetadata, execution,
             config: execution.profile ? { ...mediaConfig, clipFfmpegThreads: execution.profile.ffmpegThreads } : mediaConfig }),
+        enhance: (baseline, clip, index, execution) => finishOwnStreamClipJob({ ...baseline, processing: { ...baseline.processing } },
+            { clip, index, execution: { ...execution, resumeEnhancement: true }, evidenceReview, subtitleEvidence: finalEvidence,
+                parsed, danmaku, options, source, info, config: mediaConfig }),
+        ordinaryReady: async results => {
+            const artifacts = require('./clipping/own_review_artifacts');
+            const rows = artifacts.prepareReviewResults(results, JSON.parse(fs.readFileSync(reviewMetadata.planPath, 'utf8')), parsed, outputRoot);
+            artifacts.saveReviewState(reviewMetadata.reviewPath, rows, reviewMetadata);
+            const registry = options.registerUpload === false ? null : registerReviewForUpload(reviewMetadata.reviewPath, rows, reviewMetadata);
+            if (registry) reviewMetadata.uploadRegistry = registry;
+            artifacts.saveReviewState(reviewMetadata.reviewPath, rows, reviewMetadata);
+            try { reviewMetadata.precisionDelivery.ordinaryNotification = await notifyResults(rows, reviewMetadata, { ...rootConfig, ownStreamClips: config }) ? 'sent' : 'not_sent'; }
+            catch (error) { reviewMetadata.precisionDelivery.ordinaryNotification = 'unknown'; console.warn(`Ordinary clips saved; notification failed: ${error.message}`); }
+        },
         planReview: buildPlanReviewMarkdown, stats: buildClipProcessingStats
     });
     clips = production.clips;

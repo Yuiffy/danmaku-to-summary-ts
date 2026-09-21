@@ -14,6 +14,8 @@ import os
 import asyncio
 import json
 import subprocess
+import tempfile
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 
@@ -21,7 +23,7 @@ from bilibili_upload import build_credential
 from bilibili_api import video_uploader, video
 
 
-async def replace_video(bvid: str, new_video_path: str):
+async def replace_video(bvid: str, new_video_path: str, *, cover_path=None, receipt_path=None, before_submit=None):
     cred = build_credential()
     
     # 1. 用 VideoEditor._fetch_configs 获取原稿件信息
@@ -49,6 +51,25 @@ async def replace_video(bvid: str, new_video_path: str):
     old_tags = old_archive["tag"]
     old_cover = old_archive["cover"]
     old_videos = old_configs.get("videos", [])
+    if old_archive.get('bvid') != bvid or not old_videos:
+        raise ValueError('Fetched archive does not match the requested replacement BV')
+    receipt = {}
+    if receipt_path and Path(receipt_path).exists():
+        receipt = json.loads(Path(receipt_path).read_text(encoding='utf-8'))
+        if receipt.get('bvid') != bvid or receipt.get('mediaPath') != str(Path(new_video_path).resolve()):
+            raise ValueError('Replacement receipt belongs to a different video')
+        if receipt.get('status') == 'submitted':
+            return receipt
+        if receipt.get('status') in ('submitting', 'unknown'):
+            raise ValueError('Previous edit outcome is uncertain; inspect the online archive before retrying')
+
+    def checkpoint(status, **fields):
+        receipt.update(bvid=bvid, mediaPath=str(Path(new_video_path).resolve()), status=status, **fields)
+        if receipt_path:
+            target = Path(receipt_path)
+            temporary = target.with_suffix('.tmp')
+            temporary.write_text(json.dumps(receipt, ensure_ascii=False, indent=2), encoding='utf-8')
+            temporary.replace(target)
     
     print(f"[INFO] 原标题: {old_title}")
     print(f"[INFO] 原描述: {old_desc[:80]}")
@@ -61,11 +82,14 @@ async def replace_video(bvid: str, new_video_path: str):
     print(f"[INFO] 文件大小: {size_mb:.1f}MB")
     
     # Extract cover frame
-    temp_cover = os.path.join(os.environ.get('TEMP', '/tmp'), 'replace_cover.jpg')
-    subprocess.run([
-        'ffmpeg', '-y', '-i', new_video_path,
-        '-frames:v', '1', '-q:v', '2', temp_cover, '-loglevel', 'error'
-    ], timeout=15, check=True)
+    temp_cover = cover_path
+    if not temp_cover:
+        handle, temp_cover = tempfile.mkstemp(suffix='.jpg', prefix='replace-cover-')
+        os.close(handle)
+        subprocess.run([
+            'ffmpeg', '-y', '-i', new_video_path,
+            '-frames:v', '1', '-q:v', '2', temp_cover, '-loglevel', 'error'
+        ], timeout=15, check=True, **({'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}))
     
     page = video_uploader.VideoUploaderPage(
         path=new_video_path,
@@ -84,13 +108,12 @@ async def replace_video(bvid: str, new_video_path: str):
     )
     
     # Monkey-patch _submit on the uploader to capture filename instead of submitting new post
-    uploaded_data = {}
-    original_main = video_uploader.VideoUploader._main
+    uploaded_data = dict(receipt.get('uploaded') or {})
     
-    async def capture_main(self):
+    async def capture_main():
         videos = []
-        for p in self.pages:
-            data = await self._upload_page(p)
+        for p in uploader.pages:
+            data = await uploader._upload_page(p)
             videos.append(data)
             uploaded_data["filename"] = data["filename"]
             uploaded_data["cid"] = data["cid"]
@@ -100,8 +123,6 @@ async def replace_video(bvid: str, new_video_path: str):
         # Don't actually submit - we just wanted to upload
         return {"bvid": "UPLOAD_ONLY", "videos": videos}
     
-    video_uploader.VideoUploader._main = capture_main
-    
     uploader = video_uploader.VideoUploader(
         pages=[page],
         meta=meta,
@@ -109,10 +130,15 @@ async def replace_video(bvid: str, new_video_path: str):
     )
     
     print("[INFO] 开始上传视频文件...")
-    await uploader.start()
-    
-    # Restore original
-    video_uploader.VideoUploader._main = original_main
+    uploader._main = capture_main
+    try:
+        if not uploaded_data.get('filename'):
+            checkpoint('uploading', originalCid=old_videos[0].get('cid'), originalFilename=old_videos[0].get('filename'))
+            await uploader.start()
+            checkpoint('uploaded_file', uploaded=uploaded_data)
+    finally:
+        if not cover_path and temp_cover and os.path.exists(temp_cover):
+            os.remove(temp_cover)
     
     new_filename = uploaded_data["filename"]
     new_cid = uploaded_data["cid"]
@@ -146,6 +172,7 @@ async def replace_video(bvid: str, new_video_path: str):
         "tag": old_tags,
         "desc": old_desc,
         "copyright": old_archive.get("copyright", 1),
+        "source": old_archive.get("source", ""),
         "videos": videos,
         "cover": old_cover,
         "tid": old_tid,
@@ -153,8 +180,16 @@ async def replace_video(bvid: str, new_video_path: str):
     
     # Override _main to skip re-fetching and just submit
     async def custom_main():
-        await editor._submit()
-        return {"bvid": bvid}
+        if before_submit:
+            before_submit()
+        checkpoint('submitting')
+        try:
+            await editor._submit()
+        except Exception as error:
+            checkpoint('unknown', error=str(error))
+            raise
+        checkpoint('submitted', cid=new_cid, filename=new_filename, aid=old_archive.get('aid'))
+        return dict(receipt)
     
     editor._main = custom_main
     

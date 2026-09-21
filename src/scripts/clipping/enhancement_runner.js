@@ -41,8 +41,13 @@ async function selectExperimentBatch(clips, parsed, config, rootConfig, info, op
             reason: 'pacing_source_unavailable', error: error.message } }; }
     }
     const { buildExperimentSelection, parseExperimentSelection, assignExperiment } = loadWorkflow('clipping/experiment');
-    const packet = buildExperimentSelection(clips, parsed.segments, settings.experiment, buildSubtitleEvidence(parsed.segments).sourceSha256);
-    const summary = { version: 1, batchId: packet.batchId, total: clips.length, maxSelected: packet.maxSelected,
+    const creative = settings.workflow === 'creative';
+    const packet = buildExperimentSelection(clips, parsed.segments, creative ? { ratio: 1, maxClips: Math.min(1, settings.experiment.maxClips) } : settings.experiment, buildSubtitleEvidence(parsed.segments).sourceSha256);
+    if (creative) packet.prompt = packet.prompt.replace('conservative pacing edits or stronger factual title/cover packaging',
+        settings.creative?.style === 'compact'
+            ? 'content-aware precision editing: preserve gameplay actions, conversation context, tutorial steps or continuous performance as appropriate; remove only redundant complete exchanges, emphasize the actual subject or text in place, and use music/laughter only when the tone supports it; titles stay unchanged'
+            : 'a few source-grounded reaction zooms, gameplay detail emphasis, restrained stickers and sound accents; silence removal is not required and titles stay unchanged');
+    const summary = { version: 1, ...(creative ? { workflow: 'creative' } : {}), batchId: packet.batchId, total: clips.length, maxSelected: packet.maxSelected,
         selected: [], status: 'ordinary_control', selectionLog: null, eligibleCount: packet.eligibleIds.length,
         excludedCounts: packet.excludedCounts };
     if (!config.ai?.enabled || rootConfig.ai?.text?.enabled === false) {
@@ -233,6 +238,10 @@ async function enhance(metadata, { config, info, parsed, danmaku, source, option
 async function runEnhancements(metadata, context) {
     if (!enhancementEnabled(context.config?.enhancements, context.info?.roomId)) return metadata;
     if (context.config.enhancements.experiment?.enabled === true && metadata.precisionExperiment?.selected !== true) return metadata;
+    if (context.config.enhancements.workflow === 'creative') {
+        if (metadata.precisionExperiment?.selected !== true) return metadata;
+        return require('./creative_runner').runCreativeEnhancement(metadata, context, { requestStage, probeMedia });
+    }
     if (context.config.enhancements.workflow === 'pacing') {
         try {
             if (context.config.ai?.enabled === false || context.options?.config?.ai?.text?.enabled === false) throw new Error('AI disabled');

@@ -78,6 +78,19 @@ are compatibility entrypoints. New imports should use this directory.
 
 ## Optional Own-Stream Enhancements
 
+`creative_plan.js` validates source-cited moments and a closed effect vocabulary, and compiles zooms,
+ASS stickers and synthesized audio accents before the regular subtitle burn. `creative_runner.js`
+owns visual evidence capture, measured rendering, unchanged-copy attribution binding and final QA.
+`creative_profile.js` chooses content-appropriate pacing/music/humor and rotates distinct laughter excerpts.
+`creative_layout.js` anchors enlargements and reaction stickers to their original subject and reflows
+burned captions around them without changing SRT words or font size. `focus_inset.js` supports in-place
+chat/text/object emphasis; `face_inset.js` provides circular portrait rendering. These rules run in the
+shared creative pipeline for fresh jobs and numeric revisions, with actual frame dimensions rather
+than fixed avatar corners. See the content profile and layout contracts in the precision guide.
+`precision_delivery.js` sends ordinary results before the selected creative job and reports its
+completion or preserved ordinary fallback separately. See [precision workflows](../../../docs/clip-precision-experiment.md).
+`subtitle_encoding.js` shares the existing NVENC/CUDA settings and CPU fallback without changing ordinary output.
+
 `enhancement_runner.js` owns media/provider IO around strictly compiled stages in
 `src/workflows/clipping`. `ownStreamClips.enhancements` requires `enabled: true`
 and an explicit `roomIds` allowlist, plus `editing`, `budget` and `stages` for

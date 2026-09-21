@@ -318,7 +318,11 @@ const ConfigSchema = Joi.object({
         clipConcurrency: Joi.number().integer().min(1).default(3),
         enhancementConcurrency: Joi.number().integer().min(1).max(16).default(3),
         enhancements: Joi.object({
-            workflow: Joi.string().valid('pacing', 'legacy_packaging').optional(),
+            workflow: Joi.string().valid('pacing', 'creative', 'legacy_packaging').optional(),
+            creative: Joi.object({ style: Joi.string().valid('accent', 'compact'), avatarMode: Joi.string().valid('auto', 'circle', 'closeup'),
+                focusPlacement: Joi.string().valid('source', 'free'), faceInsetDiameter: Joi.number().min(.28).max(.72), laughAsset: Joi.string().pattern(/^[a-z][a-z0-9_]{1,60}$/),
+                laughAssets: Joi.array().items(Joi.string().pattern(/^[a-z][a-z0-9_]{1,60}$/)).min(1).max(20).unique(), maxMoments: Joi.number().integer().min(1).max(24), maxZoom: Joi.number().min(1.15).max(5),
+                soundEffects: Joi.boolean(), filters: Joi.boolean(), variety: Joi.boolean(), assetManifest: Joi.string() }).optional(),
             pacing: Joi.object({ noiseDb: Joi.number().min(-80).max(-35), nonSpeechVad: Joi.boolean(),
                 minRemovedSeconds: Joi.number().min(3), minRemovedRatio: Joi.number().min(0).max(.2),
                 maxRemovedRatio: Joi.number().min(0).max(.4), maxPausesPerClip: Joi.number().integer().min(1).max(2),

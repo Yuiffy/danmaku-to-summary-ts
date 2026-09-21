@@ -139,7 +139,9 @@ node src/scripts/own_stream_clipper.js --media "录播.flv" --srt "录播.srt" -
 
 `streamReviewRendering=true` 且使用日常 pacing 或未启用增强时，每批人物复核确定后即可进入制作，
 其他批次继续请求模型。各批共享同一个媒体/增强并发限制；pacing 音频扫描仍共享整场预算。
-精切名额按复核批次计算并合计，不超过全场原比例上限；旧包装实验保留全场抽选路径。
+`pacing` 精切名额按复核批次计算并合计，不超过全场原比例上限；旧包装实验保留全场抽选路径。
+岁己 `creative` 同样边审核边压普通底版，全批完成后最多选一条：普通片先通知，再复用选中底版做画面效果与独立质检，
+完成或回退后单独通知。其他房间保持原渐进渲染。详见[视觉精切与两段交付](clip-precision-experiment.md#视觉精切与两段交付)。
 
 制作之前先保存 `temp/reviewed_batches/` 中的不可变批次快照。`PLAN_PROGRESS.json`
 （使用输入计划时为 `<计划名>_PROGRESS.json`）记录等待复核、制作中、待核或完成状态。

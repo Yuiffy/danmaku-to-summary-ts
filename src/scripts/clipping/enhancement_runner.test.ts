@@ -65,3 +65,24 @@ test('disabled AI reports an explicit zero-selection reason without requesting a
         expect(model).not.toHaveBeenCalled();
     } finally { model.mockRestore(); }
 });
+
+test.each([1, 20])('creative selects at most one clip even for a batch of %s and does not require pauses', async count => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-selection-'));
+    const generate = jest.spyOn(require('../ai_text_generator'), 'generateTextWithDaiYu').mockResolvedValue({
+        text: '{"selected":[{"id":1,"reason":"表情反差值得放大"}]}', meta: { usage: { input_tokens: 50 }, attempts: [
+            { provider: 'daiYu', model: 'fixture', apiModeUsed: 'responses', reasoningEffortSent: 'high' }
+        ] } });
+    const clips = Array.from({ length: count }, (_, i) => ({ start: i * 60, end: (i + 1) * 60, title: '完整故事' }));
+    const config = { ai: { enabled: true }, enhancements: { enabled: true, workflow: 'creative', roomIds: ['room'],
+        experiment: { enabled: true, ratio: .25, maxClips: 5 }, budget: { mode: 'log_only', ledgerPath: path.join(directory, 'ledger.json') },
+        stageDefaults: { provider: 'daiYu', model: 'fixture', apiMode: 'responses', reasoningEffort: 'high', maxTokens: 1000,
+            maxInputTokens: 50000, timeoutMs: 1000, capabilities: { reasoningEfforts: ['high'], images: false } } } };
+    try {
+        const result = await selectExperimentBatch(clips, { segments: clips.map(clip => ({ ...clip, text: '没有静音的完整故事' })) },
+            config, {}, { roomId: 'room', selectionCacheDirectory: path.join(directory, 'cache') });
+        expect(result.summary.maxSelected).toBe(1);
+        expect(result.summary.error).toBeUndefined();
+        expect(result.clips.filter(row => row.precisionExperiment.selected)).toHaveLength(1);
+        expect(generate.mock.calls[0][0]).toContain('silence removal is not required');
+    } finally { generate.mockRestore(); fs.rmSync(directory, { recursive: true, force: true }); }
+});

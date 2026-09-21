@@ -1,6 +1,6 @@
 ---
 name: sui-clip-queue
-description: Manage Sui livestream clip selection from local SRT/XML evidence through queued cutting, trusted ASR correction, universal large-subtitle burning, cover generation, review, and optional Bilibili upload registration. Use when the user asks to find a Sui livestream topic, make a normal 小岁 clip, make an old-recording 老岁片, queue a selected time range, burn subtitles, or improve post-stream automatic clip selection.
+description: Manage Sui livestream selection, queued clipping, subtitle correction/burning, AI precision editing and reviewed Bilibili publication. Use for 小岁/老岁 clips, livestream topic search, 精剪/精切 feedback, or improvements to post-stream automatic selection.
 ---
 
 # 岁己选材切片队列
@@ -17,6 +17,12 @@ Use this skill for the whole path from a selected timestamp to a reviewable, upl
 - Recording search roots are split by lifecycle: search the active D-drive root first, then the E-drive archive for older or already-moved recordings. The archive is a source location only; manual clip outputs remain mapped to D for easy cleanup.
 
 ## Workflow
+
+### Precision editing and feedback
+
+For 精剪/精切, read [references/precision-editing.md](references/precision-editing.md) for how AI chooses
+content, cuts, visual emphasis, placement, audio and final review. The shared automated pipeline uses
+these same rules; a one-clip experiment must not become a hardcoded rule for unrelated material.
 
 ### Numeric candidate corrections
 
@@ -41,6 +47,46 @@ an editorial rejection: retain a coherent longer topic when its setup, developme
 and ending justify it. Never use a duration note to bypass another rejection.
 Published IDs may be revised/rebuilt locally but cannot be enqueued again, even
 with `--force`; replacing the existing submission is a separate operation.
+
+For a failed creative precision attempt that retained its ordinary own-stream
+video, use `python src/scripts/clip_upload_registry.py precision --id ... --note ...`.
+It verifies the source and reviewed baseline, then renders a separate local
+revision under `precision_revisions/<ID>/`. Read the returned `RESULT.json` and
+QA evidence; a fallback is a failed attempt, not a completed precision clip.
+This command does not upload, replace published media, or send notifications.
+See `docs/clip-precision-experiment.md` for its contract.
+Use `--style compact` when the user wants tight story editing, face/key-object
+closeups, denser effects and background music. It keeps approved subtitle words,
+maps complete retained cue groups to the shortened timeline, and separately
+reviews story continuity, visual focus and actual audio levels. A local retry may
+use `--resume-from <revision-directory>` to reuse matching story/moment drafts;
+an unchanged timeline and moment list may also reuse the visual draft. Source
+and baseline identities are checked again; validation, rendering and final QA rerun.
+When gameplay/routes are important, use `--avatar-mode circle` to keep the main
+scene visible and enlarge the face in a round inset. Review its three-frame
+placement against the character, route, HUD and subtitles. Default
+`creative.focusPlacement: source` keeps the enlargement at the original subject
+and groups reaction stickers nearby; subtitles move/reflow around it without
+shrinking the standard font or changing SRT words. Do not relocate an avatar over
+chat merely because a free corner looks convenient. `focusInset` also supports
+in-place text/chat or object emphasis, using actual frame dimensions.
+For edge avatars, the configured larger face inset may extend beyond the canvas;
+keep all source padding outside the visible screen and preserve eyes, mouth and
+chin. Do not shrink/reposition a full circle merely to fit its border. During a
+full-frame detail zoom, use `faceInset.mode: retain` when the face is cropped out:
+sample the original source separately at 1:1 size so the main detail remains dominant.
+
+New compact plans must choose an `editorialProfile` from the content: gameplay,
+conversation, story, tutorial, performance or mixed, with matching tone and
+density. Preserve tutorial steps and continuous performance; neutral/serious
+material must not inherit canned laughter or playful BGM. Do not use a fixed
+compression ratio to reject a coherent new plan. Reuse a reviewed legacy comic
+profile only for the same bound source and timeline.
+
+The configured `creative.laughAssets` pool rotates distinct approved excerpts,
+prioritizing unused material and avoiding adjacent repeats. Check actual source
+hash plus excerpt boundaries, not just different asset names. Store the chosen
+asset and excerpt in the result and keep source attribution with the catalog.
 
 For an existing numeric candidate ID, use the upload registry directly; do not
 create another manual task or run ASR/FFmpeg yourself. Candidate SRTs exist before

@@ -19,6 +19,16 @@ def digest(value):
 
 
 class OwnRevisionRegistryTests(unittest.TestCase):
+    def test_precision_command_propagates_render_failure_without_uploading(self):
+        args = api.build_parser().parse_args(["precision", "--id", "17", "--note", "重新渲染"])
+        with patch.object(api.subprocess, "run", return_value=subprocess.CompletedProcess([], 1)) as run:
+            self.assertEqual(args.func(args), 1)
+        command = run.call_args.args[0]
+        self.assertEqual(command[0], "node")
+        self.assertTrue(command[1].endswith("precision_revision.js"))
+        self.assertEqual(command[2:], ["--id", "17", "--registry", str(api.REGISTRY_PATH), "--note", "重新渲染"])
+        self.assertFalse(api.QUEUE_PATH.exists())
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

@@ -1,3 +1,4 @@
+const { buildSubtitleBurnVideoArgs, buildSubtitleBurnInputArgs, isNvencSubtitleEncoder } = require('./clipping/subtitle_encoding');
 const { normalizeCoverText, buildGroundingReviewLine } = require('./clipping/selection_result');
 const { getVideoResolution, probeMediaDuration } = require('./clipping/video_probe');
 const { buildSubtitleEvidence } = require('./clipping/subtitle_evidence');
@@ -961,48 +962,6 @@ async function generateClipCover(videoPath, title, outputDir, info = {}) {
     });
 }
 
-function buildSubtitleBurnVideoArgs(config = {}, options = {}) {
-    const forceCpu = options.forceCpu === true;
-    const encoder = forceCpu
-        ? 'libx264'
-        : String(process.env.FFMPEG_SUBTITLE_VIDEO_ENCODER || config.subtitleVideoEncoder || 'libx264').trim();
-    const cq = String(config.subtitleVideoCq ?? process.env.FFMPEG_SUBTITLE_VIDEO_CQ ?? 23);
-    const crf = String(config.subtitleVideoCrf ?? process.env.FFMPEG_SUBTITLE_VIDEO_CRF ?? 23);
-
-    if (!forceCpu && (encoder === 'h264_nvenc' || encoder === 'hevc_nvenc')) {
-        const rawPreset = String(process.env.FFMPEG_SUBTITLE_VIDEO_PRESET || config.subtitleVideoPreset || 'p4').trim();
-        const preset = rawPreset === 'ultrafast' ? 'p4' : rawPreset;
-        return ['-c:v', encoder, '-preset', preset || 'p4', '-cq', cq];
-    }
-
-    const preset = forceCpu
-        ? String(process.env.FFMPEG_SUBTITLE_CPU_FALLBACK_PRESET || config.subtitleCpuFallbackPreset || 'ultrafast').trim()
-        : String(process.env.FFMPEG_SUBTITLE_VIDEO_PRESET || config.subtitleVideoPreset || 'ultrafast').trim();
-    return ['-c:v', encoder || 'libx264', '-preset', preset || 'ultrafast', '-crf', crf];
-}
-
-function buildSubtitleBurnInputArgs(config = {}, options = {}) {
-    if (options.forceCpu === true) return [];
-    const hwaccel = String(
-        config.subtitleHwaccel
-        ?? process.env.FFMPEG_SUBTITLE_HWACCEL
-        ?? ''
-    ).trim().toLowerCase();
-    if (!hwaccel || ['none', 'off', 'false'].includes(hwaccel)) return [];
-    // Keep frames in system memory after decode: libass/subtitles is a CPU
-    // filter and cannot consume cuda frames directly.
-    return ['-hwaccel', hwaccel];
-}
-
-function isNvencSubtitleEncoder(config = {}) {
-    const encoder = String(
-        process.env.FFMPEG_SUBTITLE_VIDEO_ENCODER
-        || config.subtitleVideoEncoder
-        || 'libx264'
-    ).trim().toLowerCase();
-    return encoder === 'h264_nvenc' || encoder === 'hevc_nvenc';
-}
-
 /**
  * 根据视频分辨率动态计算字幕样式
  * @param {number} width - 视频宽度
@@ -1089,6 +1048,10 @@ function resolveSubtitleBurnPlan(config = {}) {
 
 async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
     const edit = config.editPlan ? require('./workflow-runtime').loadWorkflow('clipping/editPlan') : null;
+    const creative = config.creativePlan ? require('./clipping/creative_plan') : null;
+    const creativeInputs = creative ? require('./clipping/creative_assets').creativeInputs(config.creativePlan, config.creativeAssets) : null;
+    if (creative && (edit || source.kind === 'audio' || config.burnSubtitles === false
+        || config.twoStageSubtitleBurn === false || config.twoStageMode === 'direct')) throw new Error('Creative effects require continuous two-stage video rendering');
     if (edit) {
         edit.validateEditPlan(config.editPlan, config.editSourceId, window, config.originalSubtitleSegments || [], config.editAudioEvidence || []);
         if (source.kind === 'audio' || config.burnSubtitles === false || config.twoStageSubtitleBurn === false || config.twoStageMode === 'direct') {
@@ -1111,6 +1074,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
     let coverClipStart = null;
     let coverTimeOrigin = null;
     let burnAssPath = null;
+    let stickerPath = null;
     let subtitleBurnFailure = null;
     let roughSourceStart = null;
     let roughTrimOffset = null;
@@ -1144,6 +1108,12 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
             ...subtitleStyle,
             speakerSegments: config.subtitleSegments
         });
+        if (creative) {
+            creative.assertRenderPlan(config.creativePlan, window.duration, config.creativeSettings, config.creativeAssets);
+            require('./clipping/creative_layout').writeLayoutSubtitles(burnAssPath, config.creativePlan, subtitleStyle);
+            stickerPath = path.join(parsedOutput.dir, `${parsedOutput.name}.effects.ass`);
+            fs.writeFileSync(stickerPath, creative.stickerAss(config.creativePlan, videoRes.width, videoRes.height), 'utf8');
+        }
         const subtitleBurnPlan = resolveSubtitleBurnPlan(config);
         const useTwoStageBurn = subtitleBurnPlan.useTwoStageBurn;
         try {
@@ -1214,7 +1184,9 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                         '-y',
                         ...buildSubtitleBurnInputArgs(config, { forceCpu: config.editCpuFallbackAttempted === true }),
                         '-i', tempPath,
-                        '-filter_complex', edit ? edit.buildEditFilter(config.editPlan, actualRoughStart, escapeSubtitlePathForFfmpegFilter(burnAssPath))
+                        ...(creativeInputs?.args || []),
+                        '-filter_complex', creative ? creative.buildCreativeFilter(config.creativePlan, videoRes, Number(trimStart), Number(trimEnd), burnAssPath, stickerPath, creativeInputs.bindings)
+                            : edit ? edit.buildEditFilter(config.editPlan, actualRoughStart, escapeSubtitlePathForFfmpegFilter(burnAssPath))
                             : `[0:v]trim=start=${trimStart}:end=${trimEnd},setpts=PTS-STARTPTS[sub_v];[0:a]atrim=start=${trimStart}:end=${trimEnd},asetpts=PTS-STARTPTS[sub_a];[sub_v]subtitles='${escapeSubtitlePathForFfmpegFilter(burnAssPath)}'[vout]`,
                         '-map', '[vout]',
                         '-map', '[sub_a]',
@@ -1252,6 +1224,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
             return {
                 path: outputPath,
                 burnedSubtitles: true,
+                ...(creative ? { creativeEffectsApplied: config.creativePlan.effects.length } : {}),
                 fallbackUsed: false,
                 coverSourcePath,
                 coverSourceTemporary: Boolean(coverSourcePath) && !reusedReviewPreview,
@@ -1267,7 +1240,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
             };
         } catch (error) {
             subtitleBurnFailure = error.message;
-            if (edit) {
+            if (edit || creative) {
                 if (isNvencSubtitleEncoder(config) && !config.editCpuFallbackAttempted) {
                     const fallback = await cutClipMedia(source, window, srtPath, outputPath, { ...config, editCpuFallbackAttempted: true });
                     return { ...fallback, fallbackUsed: true, fallbackReason: error.message, subtitleVideoEncoder: 'libx264', subtitleHwaccel: null };
@@ -1337,6 +1310,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
         } finally {
             try {
                 if (burnAssPath && fs.existsSync(burnAssPath)) fs.unlinkSync(burnAssPath);
+                if (stickerPath && fs.existsSync(stickerPath)) fs.unlinkSync(stickerPath);
             } catch {
                 // Best-effort cleanup for temporary ASS files.
             }
