@@ -52,6 +52,7 @@
     "bilibili:clip-audit": "python src/scripts/audit_bilibili_clip.py",
     "manual:clips": "node src/scripts/manual_clip_queue.js",
     "clips:eval": "node -r ts-node/register/transpile-only src/tools/clipping/evaluate.ts",
+    "clips:publication": "node src/scripts/clipping/publication_cli.js",
     "topic:compile": "node src/scripts/clipping/topic_compilation.js",
     "clips:review": "node src/scripts/own_stream_review.js",
     "asr:hotword-benchmark": "node src/scripts/asr/hotword_benchmark.js",

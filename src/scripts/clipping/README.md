@@ -69,6 +69,12 @@ remain at their historical paths for compatibility. New shared code belongs
 here; the root files should depend on these modules instead of adding more
 cross-workflow helpers.
 
+`publication_policy.js` separates the recall ceiling from the number of standalone
+clips to produce. It retains the deferred pool and protects high scoring singles.
+`publication_bundles.js` proposes optional source-cited related groups for review;
+`publication_cli.js` previews policies, restores candidates, and builds reviewed
+groups through the shared compilation renderer. See [publication policy](../../../docs/clip-publication-policy.md).
+
 These extracted JS modules preserve the existing source-executed Node runtime.
 They must not import their parent workflows. Pure decision changes can be tested
 without FFmpeg, an AI provider, an upload queue, or a service restart.

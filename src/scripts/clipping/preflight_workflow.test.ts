@@ -25,7 +25,7 @@ describe('pre-render topic workflow', () => {
   let timeline: string[];
   const config = { ai: { text: { provider: 'daiYu' } }, clipTopics: {
     enabled: true, keywords: ['SUI'], review: { enabled: true, mode: 'preflight', strategy: 'single',
-      model: 'gpt-5.6-luna', reasoningEffort: 'max' }, ai: { selectionCacheEnabled: false } } };
+      model: 'gpt-6-luna', reasoningEffort: 'max' }, ai: { selectionCacheEnabled: false } } };
 
   beforeEach(() => {
     timeline = [];
@@ -57,8 +57,8 @@ describe('pre-render topic workflow', () => {
           dependencies: [], unresolvedCueIds: [] } } : {}),
         subtitleEdits: input.groupId === 'E1' ? [{ cueId: input.hits[0].cueId, original: 'prise', replacement: 'price',
           reason: 'Original ASR corroborates the word', evidenceCueIds: [input.hits[0].cueId] }] : []
-      }] }), meta: { model: 'gpt-5.6-luna', attempts: [{ model: 'gpt-5.6-luna',
-        reasoningEffortSent: 'max', apiModeUsed: 'responses', responseModel: 'gpt-5.6-luna' }] } };
+      }] }), meta: { model: 'gpt-6-luna', attempts: [{ model: 'gpt-6-luna',
+        reasoningEffortSent: 'max', apiModeUsed: 'responses', responseModel: 'gpt-6-luna' }] } };
     });
   });
   afterEach(() => { request.mockRestore(); fs.rmSync(dir, { recursive: true, force: true }); });
@@ -266,7 +266,7 @@ describe('pre-render topic workflow', () => {
       const drafts = JSON.parse(prompt.split('DRAFTS: ')[1].split('\n')[0]);
       return { text: JSON.stringify({ reviews: drafts.map(clip => ({ clipId: clip.id,
         verdict: 'pass', issues: [], replacement: null })), missedEvent: false, missedEvidenceCueIds: [] }),
-      meta: { model: 'gpt-5.6-luna', attempts: [{ model: 'gpt-5.6-luna', responseModel: 'gpt-5.6-luna',
+      meta: { model: 'gpt-6-luna', attempts: [{ model: 'gpt-6-luna', responseModel: 'gpt-6-luna',
         reasoningEffortSent: 'max', apiModeUsed: 'responses' }] } };
     });
     const burns = jest.fn(async (_source, _window, _srt, output) => {

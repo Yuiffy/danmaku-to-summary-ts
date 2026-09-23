@@ -26,8 +26,8 @@ import {
  */
 export class AITextGenerator implements IAITextGenerator {
   private logger = getLogger('AITextGenerator');
-  private static readonly GOODNIGHT_DAIYU_MODELS = ['gpt-5.6-luna'] as const;
-  private static readonly DAIYU_PRIMARY_MODEL = 'gpt-5.6-luna';
+  private static readonly GOODNIGHT_DAIYU_MODELS = ['gpt-6-luna'] as const;
+  private static readonly DAIYU_PRIMARY_MODEL = 'gpt-6-luna';
   private static readonly DAIYU_MODEL_PATTERN = /^gpt-5(?:[.-]|$)/i;
   private config: any;
   private provider: AIProvider;
@@ -72,7 +72,7 @@ export class AITextGenerator implements IAITextGenerator {
               enabled: true,
               apiKey: '',
               baseUrl: 'http://localhost:8080',
-              model: 'gpt-5.6-luna',
+              model: 'gpt-6-luna',
               temperature: 0.7,
               maxTokens: 100000,
               thinking: {
@@ -134,7 +134,7 @@ export class AITextGenerator implements IAITextGenerator {
         return {
           enabled: daiYuConfig.enabled ?? true,
           apiKey: daiYuConfig.apiKey || providerConfig.apiKey,
-          model: daiYuConfig.model || 'gpt-5.6-luna',
+          model: daiYuConfig.model || 'gpt-6-luna',
           temperature: daiYuConfig.temperature ?? providerConfig.textTemperature ?? 0.7,
           maxTokens: daiYuConfig.maxTokens ?? providerConfig.textMaxTokens ?? 100000,
           proxy: daiYuConfig.proxy ?? providerConfig.proxy

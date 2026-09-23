@@ -39,6 +39,9 @@ async function renderPrecisionRevision(options, dependencies = {}) {
             if (!['auto', 'circle', 'closeup'].includes(options.avatarMode)) throw new Error('Unknown avatar presentation');
             config.enhancements = { ...config.enhancements, creative: { ...config.enhancements.creative, avatarMode: options.avatarMode } };
         }
+        if (options.coverTextPosition && !['center', 'bottom'].includes(options.coverTextPosition)) {
+            throw new Error('Unknown cover text position');
+        }
         if (config.enhancements?.workflow !== 'creative'
             || !require('./enhancement_runner').enhancementEnabled(config.enhancements, original.roomId)) {
             throw new Error('Creative enhancement is not enabled for this room');
@@ -61,17 +64,35 @@ async function renderPrecisionRevision(options, dependencies = {}) {
                 throw new Error('Resume source does not match this ID, baseline and original evidence');
             }
         }
+        let soundLevelOverrides;
+        if (options.soundLevelOverridesPath) {
+            if (!resumeDirectory) throw new Error('Sound level overrides require a matching resume revision');
+            const overrides = JSON.parse(fs.readFileSync(options.soundLevelOverridesPath, 'utf8'));
+            const priorPlanPath = path.join(resumeDirectory, 'temp', 'clip-creative', 'creative-plan.json');
+            if (overrides.version !== 1 || overrides.clipId !== id || overrides.planSha256 !== fileDigest(priorPlanPath)
+                || !Array.isArray(overrides.sounds) || !overrides.sounds.length
+                || overrides.sounds.some(row => !/^M[1-9][0-9]*$/.test(row.momentId)
+                    || !Number.isFinite(row.levelDb) || row.levelDb < -12 || row.levelDb > 0)
+                || new Set(overrides.sounds.map(row => row.momentId)).size !== overrides.sounds.length) {
+                throw new Error('Sound level overrides are not bound to the previous plan');
+            }
+            const priorPlan = JSON.parse(fs.readFileSync(priorPlanPath, 'utf8')).plan;
+            if (overrides.sounds.some(row => !priorPlan.effects.some(effect => effect.id === row.momentId && effect.sound))) {
+                throw new Error('Sound level override does not target an existing effect');
+            }
+            soundLevelOverrides = overrides.sounds;
+        }
         const parsed = topic.parseTopicSrt(original.source.srtPath);
         const evidence = buildSubtitleEvidence(parsed.segments);
         const plan = JSON.parse(fs.readFileSync(record.reviewPlanPath, 'utf8'));
         const clip = plan.clips?.find(row => row.start === original.window.start && row.end === original.window.end);
-        if (!clip || evidence.sourceSha256 !== original.attributionReview?.sourceSha256
+        if (!clip || (clip.attributionRequired && evidence.sourceSha256 !== original.attributionReview?.sourceSha256)
             || loadWorkflow('clipping/experiment').experimentEligibility(clip, evidence.sourceSha256)) {
             throw new Error('Source evidence or original attribution review is stale');
         }
         const digests = { video: fileDigest(original.output.mediaPath), subtitles: fileDigest(original.output.srtPath),
             cover: fileDigest(original.output.coverPath) };
-        for (const [key, value] of Object.entries(original.attributionReview.artifactDigests || {})) {
+        for (const [key, value] of Object.entries(original.attributionReview?.artifactDigests || {})) {
             if (digests[key] && value !== digests[key]) throw new Error(`Original ${key} changed since review`);
         }
         const subtitles = topic.parseTopicSrt(original.output.srtPath).segments;
@@ -112,7 +133,8 @@ async function renderPrecisionRevision(options, dependencies = {}) {
         let result = await enhance(baseline, { config, info: { roomId: original.roomId, recordedAt: original.recordedAt,
             sessionId: directory, selectionCacheDirectory: path.join(directory, 'temp') }, parsed, danmaku,
             source: { kind: 'video', mediaPath: original.source.mediaPath }, options: { ...original.source, config: rootConfig,
-                creativeResumeDirectory: resumeDirectory, creativeInsetPlan: insetPlan },
+                creativeResumeDirectory: resumeDirectory, creativeInsetPlan: insetPlan, creativeSoundLevelOverrides: soundLevelOverrides,
+                creativeCoverTextPosition: options.coverTextPosition },
             topic, clip, subtitleEvidence: evidence, execution });
         if (fs.readFileSync(metadataPath, 'utf8') !== before || JSON.stringify(sourceSnapshot(original)) !== JSON.stringify(snapshot)
             || fileDigest(original.output.mediaPath) !== digests.video || fileDigest(revisionSrt) !== digests.subtitles) {
@@ -144,9 +166,9 @@ async function renderPrecisionRevision(options, dependencies = {}) {
 
 module.exports = { renderPrecisionRevision };
 if (require.main === module) {
-    const { values } = parseArgs({ options: { id: { type: 'string' }, registry: { type: 'string' }, note: { type: 'string' }, style: { type: 'string' }, 'avatar-mode': { type: 'string' }, 'inset-plan': { type: 'string' }, 'resume-from': { type: 'string' } } });
+    const { values } = parseArgs({ options: { id: { type: 'string' }, registry: { type: 'string' }, note: { type: 'string' }, style: { type: 'string' }, 'avatar-mode': { type: 'string' }, 'inset-plan': { type: 'string' }, 'resume-from': { type: 'string' }, 'sound-level-overrides': { type: 'string' }, 'cover-text-position': { type: 'string' } } });
     renderPrecisionRevision({ id: values.id, registryPath: values.registry, note: values.note, style: values.style,
-        avatarMode: values['avatar-mode'], insetPlanPath: values['inset-plan'], resumeFrom: values['resume-from'] })
+        avatarMode: values['avatar-mode'], insetPlanPath: values['inset-plan'], resumeFrom: values['resume-from'], soundLevelOverridesPath: values['sound-level-overrides'], coverTextPosition: values['cover-text-position'] })
         .then(result => { console.log('PRECISION_RESULT: ' + JSON.stringify(result)); if (result.status !== 'pending_review') process.exitCode = 1; })
         .catch(error => { console.error(error.stack || error.message); process.exitCode = 1; });
 }

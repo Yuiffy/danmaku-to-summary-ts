@@ -46,6 +46,7 @@
 ## 防漏选和防重复
 
 - 自动 `maxClips` 是最终清单硬上限，当前默认 50；候选池上限独立维护，残余审计的 `maxCandidates` 只在审计启用时生效。
+- 岁己在边界去重后还有独立的 `publicationPolicy`：默认 80 分底线、18 条优先独立稿，92 分以上保护；其余完整候选留在 PLAN 的待选库。`mode=all` 恢复全量制作，`shadow` 只观察，合辑建议默认关闭。离线比较、恢复及合辑制作见[发布取舍](../../../../docs/clip-publication-policy.md)。
 - 不强制时间覆盖；如果本次任务要求覆盖不同时间段，通过 `selectionPolicy.requireTimeCoverage` 打开。
 - 已选窗口及其直接相邻覆盖范围只有在残余审计启用时才排除，防止同一句话进入两个队列。
 - 需要排除特定内容时，通过 `selectionPolicy.excludedCategories` 指定，而不是把规则硬编码进通用 prompt。

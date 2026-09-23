@@ -9,7 +9,7 @@ const liveGenerationContext = require('./live_generation_context');
 
 const LIVE_CONTENT_SCHEMA_VERSION = 1;
 const LIVE_CONTENT_PROMPT_VERSION = 1;
-const DEFAULT_MODEL = 'gpt-5.6-luna';
+const DEFAULT_MODEL = 'gpt-6-luna';
 const DEFAULT_MAX_ATTEMPTS = 2;
 const DEFAULT_PROMPT_CACHE_ROLLOUT_PERCENT = 100;
 const DEFAULT_FAILURE_RETRY_COOLDOWN_MS = 30 * 60 * 1000;

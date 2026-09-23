@@ -189,6 +189,36 @@ class CoverGeneratorTests(unittest.TestCase):
             layout["safe_right"],
         )
 
+    def test_protected_avatar_and_subtitles_choose_clear_cover_position(self):
+        generator = CoverGenerator()
+        canvas = Image.new("RGB", (1920, 1080))
+        title = "你付车费了吗\n还想走栏杆"
+        boxes = [{"x": .025, "y": .63, "width": .15, "height": .18}]
+        self.assertEqual(generator._clear_text_position(canvas, title, ("bottom", "center"), boxes, True), "center")
+        rows = generator._layout_text(ImageDraw.Draw(canvas), title, 1920, 1080, "center")
+        regions = generator._protected_regions(1920, 1080, boxes, True)
+        self.assertTrue(generator._layout_is_clear(rows, regions))
+        self.assertFalse(generator._layout_is_clear(generator._layout_text(
+            ImageDraw.Draw(canvas), title, 1920, 1080, "bottom"), regions))
+
+    def test_rejects_cover_when_no_position_avoids_protected_region(self):
+        generator = CoverGenerator()
+        canvas = Image.new("RGB", (1920, 1080))
+        boxes = [{"x": .1, "y": 0, "width": .8, "height": .79}]
+        self.assertIsNone(generator._clear_text_position(canvas, "遮挡全部\n没有安全区",
+                                                         ("bottom", "center"), boxes, True))
+
+    def test_safe_frame_selection_does_not_silently_fall_back_to_unsafe_cover(self):
+        generator = CoverGenerator()
+        with tempfile.TemporaryDirectory() as directory:
+            frame = Path(directory) / "frame.jpg"
+            Image.new("RGB", (640, 360), (80, 90, 100)).save(frame)
+            with patch.object(generator, "extract_frame", side_effect=lambda _video, _time, output: shutil.copy(frame, output)):
+                with self.assertRaisesRegex(RuntimeError, "No cover frame has a safe text position"):
+                    generator.select_best_frame("input.mp4", clip_duration=3, title="遮挡全部\n没有安全区",
+                                                protected_boxes=[{"x": .1, "y": 0, "width": .8, "height": .79}],
+                                                protect_subtitle_band=True)
+
     def test_long_copy_wraps_completely_with_nonoverlapping_ink_inside_safe_crop(self):
         generator = CoverGenerator()
         if not all(generator.font_paths.values()):

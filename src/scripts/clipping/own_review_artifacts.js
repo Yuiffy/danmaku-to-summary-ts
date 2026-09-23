@@ -117,6 +117,7 @@ async function refreshReviewUnlocked(planPath, options = {}) {
         streamTitle: first.streamTitle, sourceFileName: path.basename(plan.source.mediaPath),
         source: plan.source, outputRoot, reviewPath, planPath, uploadManifestPath: manifestPath,
         aiStatus: plan.aiStatus,
+        ...(plan.publication ? { publication: plan.publication } : {}),
         ...(plan.precisionExperiment ? { precisionExperiment: plan.precisionExperiment } : {}),
         ...(starts.length && ends.length ? { processingStats: own.buildClipProcessingStats(results,
             Math.max(...ends) - Math.min(...starts), new Date(Math.min(...starts)).toISOString(), new Date(Math.max(...ends)).toISOString()) } : {})

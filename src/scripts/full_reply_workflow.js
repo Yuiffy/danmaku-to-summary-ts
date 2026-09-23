@@ -112,7 +112,7 @@ async function tryGenerateCombinedReply(highlightPath, roomId, options = {}) {
     if (payload.roomId && payload.roomId !== String(roomId)) throw new Error('Combined source belongs to another room');
     const context = live.loadLiveGenerationContext(highlightPath, roomId, config);
     const wordLimit = room.wordLimit ?? config.ai?.defaultWordLimit ?? 100;
-    const model = experiment.model || 'gpt-5.6-luna';
+    const model = experiment.model || 'gpt-6-luna';
     const materialOptions = material.getMaterialOptions(experiment);
     const sharedOutputCache = experiment.sharedOutputCache === true && !materialOptions;
     const fingerprint = sha(JSON.stringify({ mode: MODE, source: payload.sharedPrefixSha256, model, wordLimit,

@@ -47,8 +47,15 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
             const sameTimeline = value => JSON.stringify(value && { duration: value.duration, keep: value.keep.map(({ start, end }) => ({ start, end })) });
             const oldMoments = previous.creativeResult?.history?.find(row => row.stage === 'moments')?.moments;
             const matchingMoments = activeMoments && JSON.stringify(activeMoments) === JSON.stringify(oldMoments);
+            const oldStory = previous.creativeResult?.history?.find(row => row.stage === 'story');
+            const oldProfile = previous.editorialProfile || (() => {
+                const oldScratch = path.join(options.creativeResumeDirectory, 'temp', 'clip-creative');
+                const storyFile = ['story-qa-repair', 'story-repair', 'story'].map(name => path.join(oldScratch, `${name}-response.json`))
+                    .find(file => fs.existsSync(file));
+                return storyFile ? parse(JSON.parse(fs.readFileSync(storyFile, 'utf8')).text).profile : null;
+            })();
             if (stage === 'story' || (activeTimeline && sameTimeline(activeTimeline) === sameTimeline(oldTimeline)
-                && sameEditorialProfile(profile, previous.editorialProfile)
+                && oldStory?.qa?.approved === true && sameEditorialProfile(profile, oldProfile)
                 && (stage !== 'visual-plan' || matchingMoments))) {
                 const oldScratch = path.join(options.creativeResumeDirectory, 'temp', 'clip-creative');
                 const names = stage === 'story' ? ['story-qa-repair', 'story-repair', 'story']
@@ -268,12 +275,16 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
         const visuals = [...visualPages, ...(assetSheet ? [assetSheet] : [])];
         const preferredLaugh = draft => rotateLaughter(draft, assets, settings.creative, moments, profile);
         let raw = preferredLaugh(await request('visual-plan', 'effects', prompt, visuals)), plan;
-        try { plan = validateCreativePlan(raw, moments, sourceId, duration, limits, assets); }
+        const validateDraft = draft => {
+            const checked = require('./creative_layout').validateAnchoredFaceInsets(draft, sourceResolution, limits);
+            return validateCreativePlan(checked, moments, sourceId, duration, limits, assets);
+        };
+        try { plan = validateDraft(raw); }
         catch (error) {
             history.push({ stage: 'plan_repair', reason: error.message });
             raw = preferredLaugh(await request('visual-plan-repair', 'effects', prompt + '\n只修复校验指出的节点和字段，保留其他有效效果。不能安全裁切的节点设zoom=null，不要通过改动无关坐标或安全标记来修复。具体问题：'
                 + error.message + '\n上次输出：' + JSON.stringify(raw), visuals));
-            plan = validateCreativePlan(raw, moments, sourceId, duration, limits, assets);
+            plan = validateDraft(raw);
         }
         const needsInset = row => row.zoom?.target === 'avatar' && (limits.avatarMode === 'circle'
             || (limits.avatarMode === 'auto' && limits.focusPlacement === 'source' && row.zoom.targetBox?.width * row.zoom.targetBox?.height < .15));
@@ -304,15 +315,15 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
             const insetResolution = await require('sharp')(sourceFrames[0]).metadata();
             const apply = draft => {
                 const value = require('./face_inset').applyInsetLayout(raw, draft, [...targetIds]);
-                for (const row of value.effects.filter(row => row.faceInset)) require('./face_inset').insetGeometry(row.faceInset, insetResolution.width, insetResolution.height);
+                require('./creative_layout').validateAnchoredFaceInsets(value, insetResolution, limits);
                 return value;
             };
-            try { adapted = apply(layout); plan = validateCreativePlan(adapted, moments, sourceId, duration, limits, assets); }
+            try { adapted = apply(layout); plan = validateDraft(adapted); }
             catch (error) {
                 if (options.creativeInsetPlan) throw error;
                 history.push({ stage: 'inset_layout_repair', reason: error.message });
                 layout = await request('inset-layout-repair', 'insets', insetPrompt + '\n修复具体错误：' + error.message + '\n上次：' + JSON.stringify(layout), visualPages);
-                adapted = apply(layout); plan = validateCreativePlan(adapted, moments, sourceId, duration, limits, assets);
+                adapted = apply(layout); plan = validateDraft(adapted);
             }
             raw = adapted;
             history.push({ stage: 'inset_layout', origin: options.creativeInsetPlan ? 'editorial_file' : reusableLayout ? 'approved_source_boxes' : 'model', layout });
@@ -369,6 +380,15 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
             history.push({ stage: 'retained_faces', origin: previousFaces ? 'approved_source_boxes' : 'model', response });
         }
         if (timeline) { plan.timeline = timeline; if (profile.music === 'playful') plan.music = { id: 'playful_plucks', levelDb: -27 }; }
+        if (options.creativeSoundLevelOverrides) {
+            for (const override of options.creativeSoundLevelOverrides) {
+                const effect = plan.effects.find(row => row.id === override.momentId && row.sound);
+                if (!effect) throw new Error('Sound level override no longer matches the creative plan');
+                effect.sound = { ...(typeof effect.sound === 'string' ? { id: effect.sound } : effect.sound), levelDb: override.levelDb };
+            }
+            history.push({ stage: 'sound_level_overrides', sounds: options.creativeSoundLevelOverrides });
+        }
+        plan = require('./creative_layout').validateAnchoredFaceInsets(plan, sourceResolution, limits);
         plan = require('./creative_layout').anchorSpatialPlan(plan, sourceResolution, limits, assets);
         plan.editorialProfile = profile;
         plan.assetDigests = Object.fromEntries(Object.values(assets).filter(asset => plan.music?.id === asset.id || plan.effects.some(row => row.sticker?.id === asset.id || soundId(row.sound) === asset.id)).map(asset => [asset.id, asset.sha256]));
@@ -392,9 +412,15 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
             if (!review.passed) throw new Error(`Creative attribution rebind failed: ${review.issues.join(',')}`);
             current = { ...current, attributionReview: review.attributionReview, grounding: review.grounding };
         }
+        const coverLayout = require('./creative_layout');
+        const coverWindow = coverLayout.coverWindowWithoutInset(plan);
         current.output.coverPath = await withMedia(() => topic.generateClipCover(mediaPath, current.copy.coverText || current.copy.title, directory,
             { outputPath: path.join(directory, `${name}.creative_cover.jpg`), streamerName: baseline.streamerName,
-                coverSourcePath: mediaPath, clipStart: 0, clipDuration: duration, preferredTime: plan.effects[0].start,
+                coverSourcePath: mediaPath, clipStart: coverWindow?.start ?? 0,
+                clipDuration: coverWindow ? coverWindow.end - coverWindow.start : duration,
+                preferredTime: coverWindow ? (coverWindow.start + coverWindow.end) / 2 : plan.effects[0].start,
+                textPosition: options.creativeCoverTextPosition,
+                protectedBoxes: coverLayout.coverProtectedBoxes(plan), protectSubtitleBand: true,
                 resourcePeaks: baseline.processing?.resourcePeaks }));
         await withMedia(async profile => {
             const mc = mediaConfig(profile);
@@ -440,7 +466,8 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
             + (limits.variety ? '同时核对impact：是否有可感知且合乎情景的剪辑表达，仅几次轻微推近不算合格。贴纸是后期插图，不能当成主播实体或现场观众。' : '')
             + '返回 {"approved":true,"checks":{"meaning":true,"focus":true,"subtitles":true,"restraint":true,"impact":true},"issues":[]}。\n'
             + (compact ? '按editorialProfile核对节奏、完整性和语气；不是每种素材都要喜剧效果。放大应在原头像、弹幕或关键点附近，不能搬到无关位置挡弹幕。关联贴图靠近主体但不挡脸/文字/操作。字幕可换行及移到主体旁边，不能盖住嘴部或裁出屏幕；保持原字号。圆形特写边框允许自然出屏，不能仅因圆圈不完整拒绝；关键眼睛/嘴/下巴仍须可见且无人工黑色补边。全屏细节放大时小圆窗mode=retain是保持原像素大小的人脸，不要求它产生放大效果。人物眼睛嘴部完整，文字放大不截断原话，教学步骤/连续表演不能被剪坏。' : '')
-            + JSON.stringify({ plan, speech, ...(timeline ? { originalSpeech, storyTimeline: timeline } : {}), sourceFrames: frameMap, qaTimes, copy: current.copy, audioQa: current.audioQa || null }),
+            + '封面实际文字以copy.coverText为准；若图中文字与该字段不一致，请明确报告逐字差异，不要根据猜读提出不存在的文案。'
+            + JSON.stringify({ plan, speech, ...(timeline ? { originalSpeech, storyTimeline: timeline } : {}), sourceFrames: frameMap, qaTimes, copy: current.copy, cover: { text: current.copy.coverText || current.copy.title }, audioQa: current.audioQa || null }),
         [...comparisonPages, current.output.coverPath]);
         history.push({ stage: 'qa', qa });
         const after = await artifactDigests(current);

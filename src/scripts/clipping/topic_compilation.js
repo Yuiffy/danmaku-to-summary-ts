@@ -1288,7 +1288,7 @@ function writeReview(plan, outputPath, mediaPath, srtPath, manifestPath, options
 }
 
 function buildDefaultCompilationMediaConfig(rootConfig = {}, args = {}) {
-    const ownConfig = ownStreamClipper.getOwnStreamClipsConfig(rootConfig.ownStreamClips || {});
+    const ownConfig = ownStreamClipper.getOwnStreamClipsConfig(rootConfig);
     return {
         ...ownStreamClipper.buildCutClipMediaConfig(ownConfig, { ffmpegPath: args.ffmpegPath || 'ffmpeg' }),
         burnSubtitles: args.noBurn ? false : true,
@@ -1306,7 +1306,7 @@ function resolveCompilationMediaAdapter(options = {}) {
     const args = options.args || {};
     const clipper = options.clipper || topicClipper;
     const ownConfig = options.ownConfig
-        || ownStreamClipper.getOwnStreamClipsConfig(rootConfig.ownStreamClips || {});
+        || ownStreamClipper.getOwnStreamClipsConfig(rootConfig);
     return {
         ownConfig,
         parseSrt: options.parseSrt || clipper.parseTopicSrt,

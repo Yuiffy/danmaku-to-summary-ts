@@ -174,7 +174,7 @@
         "enabled": true,
         "apiKey": "",
         "baseUrl": "https://api.tu-zi.com",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "fallbackModels": [],
         "includeBuiltInFallbackModels": false,
         "apiMode": "responses",
@@ -188,11 +188,11 @@
         "enabled": true,
         "baseUrl": "http://localhost:8080",
         "apiMode": "responses",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "fallbackModels": [],
         "includeBuiltInFallbackModels": false,
         "fallbackProvider": "tuZi",
-        "fallbackProviderModel": "gpt-5.6-luna",
+        "fallbackProviderModel": "gpt-6-luna",
         "fallbackProviderApiMode": "responses",
         "thinking": {
           "enabled": true,
@@ -537,7 +537,7 @@
         "referenceImages": [
           "public/reference_images/弥月Mizuki参考图.png"
         ],
-        "characterDescription": "兔川弥月Mizuki，亚麻发异瞳少女，有两个浮游炮机械兔耳。",
+        "characterDescription": "兔川弥月Mizuki，亚麻发异瞳少女，有时有兔耳。",
         "contentHints": [
           "当本场正文只出现孤立的“启动”且直播标题、明确语音、开播前动态均未指向其他游戏时，可将其理解为“原神启动”梗。它不是本场正在玩原神的证据；任何更强证据指向其他游戏时，都禁止据此写成或画成原神。"
         ]
@@ -1612,7 +1612,7 @@
   "clipTopics": {
     "enabled": true,
     "aiVerify": false,
-    "aiModel": "gpt-5.6-luna",
+    "aiModel": "gpt-6-luna",
     "mode": "local_review",
     "keywords": [
       "岁己",
@@ -1644,7 +1644,7 @@
       "strategy": "single",
       "qualityRules": true,
       "transientMaxAttempts": 2,
-      "model": "gpt-5.6-sol",
+      "model": "gpt-6-sol",
       "reasoningEffort": "high",
       "maxOutputTokens": 24000,
       "maxDanmakuRows": 120,
@@ -1695,7 +1695,7 @@
       "stageDefaults": {
         "retry": { "maxAttempts": 2, "baseDelayMs": 1000, "maxDelayMs": 10000, "jitterRatio": 0.2 },
         "provider": "daiYu",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "apiMode": "responses",
         "reasoningEffort": "high",
         "maxTokens": 16000,
@@ -1736,6 +1736,14 @@
     ],
     "maxCandidates": 80,
     "maxClips": 50,
+    "publicationPolicy": {
+      "mode": "curated",
+      "roomIds": ["25788785"],
+      "minScore": 80,
+      "maxStandalone": 18,
+      "standoutScore": 92,
+      "bundles": { "enabled": false, "minScore": 70, "protectScore": 90, "maxGroups": 2, "maxMembers": 3, "maxSeconds": 300, "minCombinedScore": 85, "minScoreGain": 5, "maxCandidates": 20 }
+    },
     "chunkSeconds": 2700,
     "aiConcurrency": 4,
     "streamReviewRendering": true,
@@ -1772,7 +1780,7 @@
     "ai": {
       "enabled": true,
       "strategy": "staged",
-      "model": "gpt-5.6-luna",
+      "model": "gpt-6-luna",
       "timeoutMs": 600000,
       "rerankTimeoutMs": 1200000,
       "rerankMaxAttempts": 2,
@@ -1940,7 +1948,7 @@
       "visual": {
         "enabled": true,
         "provider": "daiYu",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "maxFrames": 6,
         "timeoutMs": 120000,
         "maxTokens": 7000,

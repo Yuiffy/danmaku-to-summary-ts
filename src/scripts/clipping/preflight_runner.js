@@ -40,9 +40,10 @@ function preflightRequestOptions(config) {
 
 function requestMatches(result, settings) {
     const actual = result.meta?.attempts?.at(-1);
+    // Providers may resolve the requested model alias to a newer model. Keep the
+    // returned name in request diagnostics, without rejecting that response.
     return Boolean(actual && !result.meta?.fallback && actual.model === settings.primaryModel
         && actual.apiModeUsed === 'responses' && actual.reasoningEffortSent === settings.reasoningEffort
-        && (!actual.responseModel || actual.responseModel === settings.primaryModel)
         && (!actual.reasoningEffortReturned || actual.reasoningEffortReturned === settings.reasoningEffort));
 }
 

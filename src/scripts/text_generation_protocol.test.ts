@@ -4,34 +4,41 @@ const { buildDaiYuResponsesRequest } = require('./workflow-runtime').loadWorkflo
 
 test.each([0, 100])('static task routing never changes role or input layout at explicit rollout %s', rollout => {
   const prefix = 'Task rules.\n';
-  const plan = getExplicitPromptCachePlan(prefix + 'Source A.', {}, 'gpt-5.6-luna', rollout, prefix);
+  const plan = getExplicitPromptCachePlan(prefix + 'Source A.', {}, 'gpt-6-luna', rollout, prefix);
   expect(plan.enabled).toBe(false);
   expect(plan.requestKey).toMatch(/^task:[a-f0-9]{48}$/);
   expect(plan.staticPromptPrefixChars).toBe(prefix.length);
-  const options = { model: 'gpt-5.6-luna', prompt: prefix + 'Source A.', maxTokens: 100000, thinkingEnabled: true, reasoningEffort: 'high' };
+  const options = { model: 'gpt-6-luna', prompt: prefix + 'Source A.', maxTokens: 100000, thinkingEnabled: true, reasoningEffort: 'high' };
   const routed = buildDaiYuResponsesRequest({ ...options, cachePlan: plan });
   const { prompt_cache_key, ...rest } = routed;
   expect(prompt_cache_key).toBe(plan.requestKey);
   expect(rest).toEqual(buildDaiYuResponsesRequest(options));
-  expect(getExplicitPromptCachePlan(prefix + 'Source B.', {}, 'gpt-5.6-luna', rollout, prefix).requestKey).toBe(plan.requestKey);
-  expect(getExplicitPromptCachePlan('Other rules.\nSource A.', {}, 'gpt-5.6-luna', rollout, 'Other rules.\n').requestKey).not.toBe(plan.requestKey);
+  expect(getExplicitPromptCachePlan(prefix + 'Source B.', {}, 'gpt-6-luna', rollout, prefix).requestKey).toBe(plan.requestKey);
+  expect(getExplicitPromptCachePlan('Other rules.\nSource A.', {}, 'gpt-6-luna', rollout, 'Other rules.\n').requestKey).not.toBe(plan.requestKey);
 });
 
 test.each(['disabled', 'unsupported', 'mismatch', 'empty', 'whitespace'])('static routing is omitted for %s', mode => {
   const prompt = '   Task rules.\nSource.';
   const prefix = mode === 'mismatch' ? 'Different.' : mode === 'empty' ? '' : mode === 'whitespace' ? '   ' : '   Task rules.\n';
   const config = { ai: { text: { sharedPromptCache: { enabled: mode !== 'disabled' } } } };
-  const model = mode === 'unsupported' ? 'other-model' : 'gpt-5.6-luna';
+  const model = mode === 'unsupported' ? 'other-model' : 'gpt-6-luna';
   expect(getExplicitPromptCachePlan(prompt, config, model, 100, prefix)).toEqual(getExplicitPromptCachePlan(prompt, config, model, 100));
 });
 
 test('an existing shared-fact prefix retains its original route and explicit role policy', () => {
   const prompt = `${liveContext.SHARED_PROMPT_CACHE_START}\nSource facts.\n${liveContext.SHARED_PROMPT_CACHE_END}\nTask.`;
   for (const rollout of [0, 100]) {
-    expect(getExplicitPromptCachePlan(prompt, {}, 'gpt-5.6-luna', rollout, prompt.slice(0, 12)))
-      .toEqual(getExplicitPromptCachePlan(prompt, {}, 'gpt-5.6-luna', rollout));
+    expect(getExplicitPromptCachePlan(prompt, {}, 'gpt-6-luna', rollout, prompt.slice(0, 12)))
+      .toEqual(getExplicitPromptCachePlan(prompt, {}, 'gpt-6-luna', rollout));
   }
 });
+
+test.each(['gpt-5.6-luna', 'gpt-6-luna', 'gpt-6-sol'])(
+  'retains cache eligibility for %s', model => {
+    const prompt = `${liveContext.SHARED_PROMPT_CACHE_START}\nSource facts.\n${liveContext.SHARED_PROMPT_CACHE_END}\nTask.`;
+    expect(getExplicitPromptCachePlan(prompt, {}, model, 100)).toMatchObject({ enabled: true, modelEligible: true });
+  }
+);
 
 test('identifies optional cache parameters without masking other parameter errors', () => {
   expect(isPromptCacheParameterError(JSON.stringify({ error: { param: 'input[0].content[0].prompt_cache_breakpoint' } }))).toBe(true);

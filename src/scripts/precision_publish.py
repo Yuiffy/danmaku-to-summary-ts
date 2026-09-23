@@ -8,7 +8,7 @@ from pathlib import Path
 def render_precision(args, api):
     script = Path(__file__).parent / 'clipping' / 'precision_revision.js'
     command = ['node', str(script), '--id', str(args.id), '--registry', str(api.REGISTRY_PATH), '--note', args.note]
-    for field in ('style', 'avatar_mode', 'inset_plan', 'resume_from'):
+    for field in ('style', 'avatar_mode', 'inset_plan', 'resume_from', 'sound_level_overrides', 'cover_text_position'):
         if getattr(args, field, None):
             command.extend(['--' + field.replace('_', '-'), getattr(args, field)])
     return api.subprocess.run(command, cwd=str(api.PROJECT_ROOT), check=False).returncode
@@ -22,6 +22,8 @@ def register_commands(sub, api):
     p.add_argument('--avatar-mode', choices=('auto', 'circle', 'closeup'), default=None)
     p.add_argument('--inset-plan', default=None, help='Source-bound editorial layout; final media QA still runs')
     p.add_argument('--resume-from', default=None, help='Reuse matching drafts; validate, render and review again')
+    p.add_argument('--sound-level-overrides', default=None, help='Source-bound sound levels for a matching local revision')
+    p.add_argument('--cover-text-position', choices=('center', 'bottom'), default=None)
     p.set_defaults(func=lambda args: render_precision(args, api))
     p = sub.add_parser('replace-precision', help='Replace an uploaded BV with a user-reviewed precision revision')
     p.add_argument('--id', required=True, type=int)

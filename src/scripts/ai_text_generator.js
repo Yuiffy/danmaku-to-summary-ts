@@ -61,7 +61,7 @@ const TUZI_BALANCE_ERROR_MARKERS = [
     'credit exhausted',
     'billing'
 ];
-const DAIYU_PRIMARY_MODEL = 'gpt-5.6-luna';
+const DAIYU_PRIMARY_MODEL = 'gpt-6-luna';
 const TUZI_DEFAULT_TEXT_MODELS = [DAIYU_PRIMARY_MODEL];
 const DAIYU_MODEL_PATTERN = /^gpt-5(?:[.-]|$)/i;
 const DAIYU_RESPONSES_COMPATIBILITY_STATUSES = new Set([400, 404, 405, 415, 422, 501]);

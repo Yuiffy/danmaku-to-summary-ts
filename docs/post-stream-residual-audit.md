@@ -42,6 +42,10 @@ node src/scripts/own_stream_clipper.js --media "录播.flv" --srt "录播.srt" -
 
 ## 后续调参建议
 
+岁己在召回和边界去重后增加独立的发布取舍：默认 80 分底线、18 条优先独立稿，92 分以上全部独立保留。
+其余候选保存在 `PLAN.json.publication.deferred`，不默认压制；`publicationPolicy.mode=all` 可回退。
+其他房间不受此策略影响。模式、离线比较、待选片恢复与可选关联合辑见[发布取舍说明](clip-publication-policy.md)。
+
 - 自动最终清单的 `maxClips` 与残余审计的 `maxCandidates` 分开维护；当前最终数量上限为 50，不要求凑满，也可通过 `--max-clips` 临时覆盖；
 - 岁己 AI 选材不再按固定最短/最长秒数淘汰：分块召回、全场选材、全局重排和详细编辑均由模型按话题完整性决定长度，缓存验证也不重做时长筛选。完整长话题与短小但独立成立的看点均可保留；不要为凑时长截断、灌水或拼接无关话题；
 - `ownStreamClips.minClipSeconds/maxClipSeconds` 仍供本地信号候选窗口构造及旧候选的显式修订流程使用，不再是 AI 输出的发布时长门槛。新 `PLAN.json` 用 `config.aiDurationPolicy: "content_complete"` 标明这一政策；时间正向、来源范围、字幕/弹幕引用、人物归属、重复片段和媒体检查继续执行；

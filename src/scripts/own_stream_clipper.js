@@ -1,5 +1,6 @@
 const { buildFallbackTitle, normalizeAiClips, isRerankResponseValid, clipsConflict, buildGroundingReviewLine } = require('./clipping/selection_result');
 const ownReview = require('./clipping/own_review_report');
+const publicationPolicy = require('./clipping/publication_policy');
 const { requestSelectionText, validSelectionResponse } = require('./clipping/selection_request');
 const { anglePromptLines, normalizeViewingAngles, anglesForWindow, quoteEchoes } = require('./clipping/viewing_angles');
 const { buildRerankEvidence } = require('./clipping/rerank_evidence');
@@ -1298,6 +1299,7 @@ function buildReviewMarkdown(results, metadata) {
         results.length ? `来源统计: ${formatSelectionSourceCounts(results)}` : null,
         uploadIds.length ? `全部候选ID: ${uploadIds.join(',')}` : null,
         ...ownReview.summaryLines(results, metadata),
+        ...publicationPolicy.summaryLines(metadata.publication),
         aiStatusLine,
         ...buildProcessingSummaryLines(metadata.processingStats),
         '',
@@ -1350,6 +1352,7 @@ function buildPlanReviewMarkdown(clips, metadata) {
         `输出目录: ${metadata.outputRoot}`,
         clips.length ? `来源统计: ${formatSelectionSourceCounts(clips)}` : null,
         '状态: 仅规划，尚未生成上传ID；候选序号不是上传ID。',
+        ...publicationPolicy.summaryLines(metadata.publication),
         aiStatusLine,
         '',
         '## 候选列表',
@@ -1412,6 +1415,7 @@ function buildNotifyMarkdown(results, metadata) {
         results.length ? `来源统计: ${formatSelectionSourceCounts(results)}` : null,
         uploadIds.length ? `全部候选ID: ${uploadIds.join(',')}` : null,
         ...ownReview.summaryLines(results, metadata),
+        ...publicationPolicy.summaryLines(metadata.publication),
         metadata.planOnly ? '状态: 仅规划，尚未生成上传ID；候选序号不是上传ID。' : null,
         aiStatusLine,
         ...buildProcessingSummaryLines(metadata.processingStats),
@@ -1705,6 +1709,7 @@ async function generateOwnStreamClipJob(context) {
         recordedAt: info.recordedAt,
         streamTitle: info.streamTitle,
         recommendationScore: Number.isFinite(Number(clip.score)) ? Number(clip.score) : null,
+        ...(clip.publication ? { publication: clip.publication } : {}),
         window,
         candidate: clip.base || null,
         viewingAngles: anglesForWindow(clip, window, subtitleEvidence, danmaku),
@@ -1814,6 +1819,8 @@ async function generateOwnStreamClipsInternal(options = {}) {
     }
     const candidates = buildCandidateWindows(parsed, danmaku, config, totalDuration, emotionAnalysis);
     const info = parseRecordingInfo(options.mediaPath, options.context || {});
+    publicationPolicy.resolvePolicy({ ...config.publicationPolicy,
+        ...(options.publicationMode ? { mode: options.publicationMode } : {}) }, info.roomId);
     const requestedStreamerName = String(options.streamerName || '').trim();
     const streamerName = topicClipper.resolveStreamerName(rootConfig, info.roomId, {
         streamerName: requestedStreamerName || (info.roomId ? null : '岁己SUI')
@@ -1986,6 +1993,18 @@ async function generateOwnStreamClipsInternal(options = {}) {
             console.log(`Removed ${beforeOverlapFilter - clips.length} overlapping clip candidate(s) after subtitle boundary alignment.`);
         }
     }
+    const publication = publicationPolicy.selectPublication(clips, {
+        ...config.publicationPolicy, ...(options.publicationMode ? { mode: options.publicationMode } : {})
+    }, info.roomId);
+    clips = publication.clips;
+    if (publication.report.policy.mode !== 'all') {
+        const report = publication.report;
+        const label = options.planPath ? path.basename(options.planPath, path.extname(options.planPath)) + '_' : '';
+        report.reviewPath = path.join(outputRoot, `${label}PUBLICATION_REVIEW.md`);
+        report.bundles = await require('./clipping/publication_bundles').proposeBundles(report, parsed, info, config, rootConfig, aiDiagnostics);
+        reviewMetadata.publication = report;
+        fs.writeFileSync(report.reviewPath, publicationPolicy.publicationMarkdown(report), 'utf8');
+    }
     const source = { mediaPath: options.mediaPath,
         kind: topicClipper.chooseClipSource(options.mediaPath, options.mediaPath)?.kind || 'video', uploadReady: true };
     const production = await require('./clipping/own_production').produceOwnClips({ clips, options, config, rootConfig,
@@ -2086,6 +2105,8 @@ function parseCliArgs(argv) {
         else if (arg === '--output-dir-name') options.outputDirName = argv[++i];
         else if (arg.startsWith('--output-dir-name=')) options.outputDirName = arg.slice('--output-dir-name='.length);
         else if (arg === '--max-clips') options.maxClips = Number(argv[++i]);
+        else if (arg === '--publication-mode') options.publicationMode = argv[++i];
+        else if (arg.startsWith('--publication-mode=')) options.publicationMode = arg.slice('--publication-mode='.length);
         else if (arg === '--chunk-seconds') options.chunkSeconds = Number(argv[++i]);
         else if (arg === '--ai-concurrency') options.aiConcurrency = Number(argv[++i]);
         else if (arg === '--clip-concurrency') options.clipConcurrency = Number(argv[++i]);
@@ -2129,6 +2150,7 @@ if (require.main === module) {
             ffmpegPath: cli.ffmpegPath,
             planOnly: cli.planOnly,
             planPath: cli.planPath,
+            publicationMode: cli.publicationMode,
             selectedIndices: cli.selectedIndices
         });
     })().catch(error => {

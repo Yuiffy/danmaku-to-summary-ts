@@ -883,7 +883,7 @@ async function generateClipCover(videoPath, title, outputDir, info = {}) {
         const args = ['python', scriptPath, coverSourcePath,
             '--title', title,
             '--output', coverPath,
-            '--position', 'center',
+            '--position', info.textPosition === 'bottom' ? 'bottom' : 'center',
             '--key-frame',
         ];
         if (Number.isFinite(Number(info.clipStart))) {
@@ -898,6 +898,10 @@ async function generateClipCover(videoPath, title, outputDir, info = {}) {
         if (Number.isFinite(Number(info.sampleCount))) {
             args.push('--sample-count', String(Number(info.sampleCount)));
         }
+        if (Array.isArray(info.protectedBoxes) && info.protectedBoxes.length) {
+            args.push('--protected-boxes', JSON.stringify(info.protectedBoxes));
+        }
+        if (info.protectSubtitleBand) args.push('--protect-subtitle-band');
         if (subtitle) {
             args.push('--subtitle', subtitle);
         }

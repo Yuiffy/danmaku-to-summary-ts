@@ -109,13 +109,15 @@ test('an unrelated repeated word does not authorize negation, number or pronoun 
   }
 });
 
-test('a missing, downgraded or substituted runtime cannot pass model verification', () => {
-  const settings = { primaryModel: 'gpt-5.6-sol', reasoningEffort: 'max' };
-  const attempt = { model: 'gpt-5.6-sol', responseModel: 'gpt-5.6-sol', apiModeUsed: 'responses',
+test('preflight accepts provider model aliases but preserves request, protocol and reasoning checks', () => {
+  const settings = { primaryModel: 'gpt-6-sol', reasoningEffort: 'max' };
+  const attempt = { model: 'gpt-6-sol', responseModel: 'gpt-6-sol', apiModeUsed: 'responses',
     reasoningEffortSent: 'max', reasoningEffortReturned: 'max' };
   expect(requestMatches({ meta: { attempts: [attempt] } }, settings)).toBe(true);
+  expect(requestMatches({ meta: { attempts: [{ ...attempt, responseModel: 'gpt-6-sol' }] } }, settings)).toBe(true);
+  expect(requestMatches({ meta: { fallback: true, attempts: [attempt] } }, settings)).toBe(false);
   expect(requestMatches({}, settings)).toBe(false);
-  for (const patch of [{ model: 'gpt-5.6-luna' }, { reasoningEffortSent: 'high' },
+  for (const patch of [{ model: 'gpt-6-luna' }, { reasoningEffortSent: 'high' },
     { reasoningEffortReturned: 'high' }, { apiModeUsed: 'chatCompletions' }]) {
     expect(requestMatches({ meta: { attempts: [{ ...attempt, ...patch }] } }, settings)).toBe(false);
   }

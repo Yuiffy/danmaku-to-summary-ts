@@ -3,7 +3,7 @@ const DEFAULT_CLIP_TOPICS_CONFIG = {
     enabled: false,
     mode: 'local_review',
     keywords: ['岁己', '小岁', '小岁姐', '岁己姐', '饼干岁', 'SUI'],
-    aiModel: 'gpt-5.6-luna',
+    aiModel: 'gpt-6-luna',
     aiVerify: true,  // AI 验证:过滤唱歌/ASR误识别的假命中
     prePaddingSeconds: 20,
     postPaddingSeconds: 35,

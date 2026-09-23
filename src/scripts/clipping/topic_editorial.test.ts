@@ -227,7 +227,7 @@ describe('topic event workflow', () => {
       expect(mediaGenerator.mock.calls.map(call => [call[1].start, call[1].end])).toEqual([[sourceStart, 7087], [7090, 7159]]);
       expect(results.every(result => result.autoUploadEnabled === false && result.editorial.status === 'planned')).toBe(true);
       const firstSubtitle = fs.readFileSync(results[0].output.srtPath, 'utf8');
-      expect(firstSubtitle).toContain('roles reverse');
+      expect(firstSubtitle.replace(/\s+/g, ' ')).toMatch(/roles\s+reverse/);
       expect(firstSubtitle).not.toContain('NEW TOPIC');
       expect(registerReviewForUpload.mock.calls[0][1]).toHaveLength(2);
       expect(notifyTopicClipResults.mock.calls[0][0]).toHaveLength(2);

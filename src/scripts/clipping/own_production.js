@@ -24,11 +24,13 @@ async function produceOwnClips(context, hooks) {
                 aiStrategy: config.ai?.strategy, aiModel: config.ai?.model,
                 viewingAnglesVersion: 1, recallMaxClipsPerChunk: config.ai?.recallMaxClipsPerChunk,
                 selectionPolicy: config.selectionPolicy,
+                publicationPolicy: metadata.publication?.policy || config.publicationPolicy || null,
                 maxCandidateLines: config.ai?.maxCandidateLines, subtitleEvidenceFormat: `complete_grouped_v${evidence.version}`,
                 subtitleTruncation: false, maxCandidateDanmakuLines: config.ai?.maxCandidateDanmakuLines, parallel: config.parallel,
                 rankThenEdit: config.ai?.rankThenEdit || null, streamReviewRendering: config.streamReviewRendering === true,
                 attribution: config.attribution },
-            aiStatus: metadata.aiStatus, ...(experiment?.summary ? { precisionExperiment: experiment.summary } : {}),
+            aiStatus: metadata.aiStatus, ...(metadata.publication ? { publication: metadata.publication } : {}),
+            ...(experiment?.summary ? { precisionExperiment: experiment.summary } : {}),
             ...(parsed.participantContext ? { participantContext: parsed.participantContext } : {}), clips: current });
     };
     const scheduler = createClipResourceAdaptiveScheduler({ ownConfig: config, rootConfig });

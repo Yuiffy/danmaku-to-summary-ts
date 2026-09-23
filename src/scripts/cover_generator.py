@@ -371,6 +371,45 @@ class CoverGenerator:
         exposure_penalty = abs(brightness - 138.0) * 0.18
         return contrast * 1.15 + edge_mean * 1.8 + saturation * 0.22 - exposure_penalty
 
+    @staticmethod
+    def _protected_regions(width: int, height: int, boxes: list[dict], subtitle_band: bool) -> list[tuple[int, int, int, int]]:
+        regions = []
+        for box in boxes:
+            if not all(isinstance(box.get(key), (int, float)) for key in ("x", "y", "width", "height")):
+                raise ValueError("Invalid protected cover box")
+            x, y, w, h = (float(box[key]) for key in ("x", "y", "width", "height"))
+            if x < 0 or y < 0 or w <= 0 or h <= 0 or x + w > 1 or y + h > 1:
+                raise ValueError("Invalid protected cover box")
+            # Protect the entire avatar, not just the measured face inside it.
+            pad_x, pad_y = max(w * .25, .015), max(h * .25, .015)
+            regions.append((int(max(0, x - pad_x) * width), int(max(0, y - pad_y) * height),
+                            int(min(1, x + w + pad_x) * width), int(min(1, y + h + pad_y) * height)))
+        if subtitle_band:
+            regions.append((0, int(height * .80), width, height))
+        return regions
+
+    @staticmethod
+    def _layout_is_clear(rows: list[dict], regions: list[tuple[int, int, int, int]]) -> bool:
+        for row in rows:
+            x0, y0, x1, y1 = row["bbox"]
+            if any(x0 < right and x1 > left and y0 < bottom and y1 > top
+                   for left, top, right, bottom in regions):
+                return False
+        return True
+
+    def _clear_text_position(self, image: Image.Image, title: str, positions: tuple[str, ...],
+                             boxes: list[dict], subtitle_band: bool) -> Optional[str]:
+        regions = self._protected_regions(*image.size, boxes, subtitle_band)
+        draw = ImageDraw.Draw(image)
+        for position in positions:
+            try:
+                rows = self._layout_text(draw, title, *image.size, position)
+            except ValueError:
+                continue
+            if self._layout_is_clear(rows, regions):
+                return position
+        return None
+
     def select_best_frame(
         self,
         video_path: str,
@@ -379,7 +418,11 @@ class CoverGenerator:
         preferred_time: Optional[float] = None,
         sample_count: int = 7,
         output_path: Optional[str] = None,
-    ) -> Tuple[str, float]:
+        title: Optional[str] = None,
+        text_position: str = "center",
+        protected_boxes: Optional[list[dict]] = None,
+        protect_subtitle_band: bool = False,
+    ) -> Tuple[str, float] | Tuple[str, float, str]:
         """Sample a clip range and materialise its best-looking candidate.
 
         Times are absolute in ``video_path``.  ``preferred_time`` normally comes
@@ -410,6 +453,8 @@ class CoverGenerator:
         best_image = None
         best_timestamp = timestamps[0]
         best_score = float("-inf")
+        best_position = text_position
+        safe_cover = protected_boxes is not None or protect_subtitle_band
         with tempfile.TemporaryDirectory(prefix="cover_candidates_") as directory:
             for index, timestamp in enumerate(timestamps):
                 candidate_path = os.path.join(directory, f"candidate_{index:02d}.jpg")
@@ -417,6 +462,14 @@ class CoverGenerator:
                     self.extract_frame(video_path, timestamp, candidate_path)
                     with Image.open(candidate_path) as candidate:
                         score = self._score_frame(candidate)
+                        position = text_position
+                        if safe_cover:
+                            canvas = self._prepare_canvas(candidate_path)
+                            positions = (text_position, "center" if text_position == "bottom" else "bottom")
+                            position = self._clear_text_position(canvas, title or "", positions,
+                                                                 protected_boxes or [], protect_subtitle_band)
+                            if position is None:
+                                continue
                         if preferred is not None:
                             distance = abs(timestamp - preferred)
                             score += max(0.0, 20.0 - distance * 3.0)
@@ -424,18 +477,21 @@ class CoverGenerator:
                             best_score = score
                             best_timestamp = timestamp
                             best_image = candidate.convert("RGB").copy()
+                            best_position = position
+                except (ValueError, TypeError):
+                    raise
                 except Exception as error:
                     print(f"[WARN] 候选帧 {timestamp:.2f}s 读取失败: {error}")
 
         if best_image is None:
-            raise RuntimeError("未能从切片范围提取任何候选封面帧")
+            raise RuntimeError("No cover frame has a safe text position" if safe_cover else "未能从切片范围提取任何候选封面帧")
         if output_path is None:
             handle = tempfile.NamedTemporaryFile(prefix="cover_best_", suffix=".jpg", delete=False)
             output_path = handle.name
             handle.close()
         best_image.save(output_path, "JPEG", quality=95, subsampling=0)
         print(f"[INFO] 最佳封面帧: {best_timestamp:.2f}s (候选 {len(timestamps)} 帧, score={best_score:.1f})")
-        return output_path, best_timestamp
+        return (output_path, best_timestamp, best_position) if safe_cover else (output_path, best_timestamp)
 
     def _prepare_canvas(self, image_path: str) -> Image.Image:
         img = Image.open(image_path).convert("RGB")
@@ -536,15 +592,24 @@ class CoverGenerator:
         preferred_time: Optional[float] = None,
         sample_count: int = 7,
         text_position: str = "center",
+        protected_boxes: Optional[list[dict]] = None,
+        protect_subtitle_band: bool = False,
     ) -> str:
         if use_key_frame:
-            frame_path, _ = self.select_best_frame(
+            selection = self.select_best_frame(
                 video_path,
                 clip_start=clip_start,
                 clip_duration=clip_duration,
                 preferred_time=preferred_time,
                 sample_count=sample_count,
+                title=title,
+                text_position=text_position,
+                protected_boxes=protected_boxes,
+                protect_subtitle_band=protect_subtitle_band,
             )
+            frame_path = selection[0]
+            if len(selection) == 3:
+                text_position = selection[2]
         else:
             frame_path = self.extract_frame(video_path, max(0.0, clip_start))
         try:
@@ -572,6 +637,8 @@ def main() -> int:
     parser.add_argument("--clip-duration", type=float, default=None, help="切片持续时间（秒）")
     parser.add_argument("--preferred-time", type=float, default=None, help="弹幕/事件峰值的绝对时间（秒）")
     parser.add_argument("--sample-count", type=int, default=7, help="全段均匀采样候选帧数量")
+    parser.add_argument("--protected-boxes", type=json.loads, default=None, help="源画面中不允许文字覆盖的归一化矩形 JSON")
+    parser.add_argument("--protect-subtitle-band", action="store_true", help="避免文字覆盖底部已烧录字幕")
     args = parser.parse_args()
 
     config = {"headline_font_size": args.font_size} if args.font_size else {}
@@ -587,6 +654,8 @@ def main() -> int:
         preferred_time=args.preferred_time,
         sample_count=args.sample_count,
         text_position=args.position,
+        protected_boxes=args.protected_boxes,
+        protect_subtitle_band=args.protect_subtitle_band,
     )
     print(f"\n✅ 封面生成成功: {output}")
     return 0

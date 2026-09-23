@@ -30,6 +30,30 @@ function groupSticker(sticker, box, width, height, assets) {
         anchor: 'subject', anchorSide: p.side };
 }
 
+
+function checkedFaceGeometry(row, resolution) {
+    try {
+        return insetGeometry(row.faceInset, resolution.width, resolution.height);
+    } catch (error) {
+        const box = row.faceInset.sourceBox;
+        const side = Math.round(Math.max(box.width * resolution.width, box.height * resolution.height) * 1.55 / 2) * 2;
+        const diameter = row.faceInset.diameter;
+        const size = diameter == null ? side : Math.round(Math.min(resolution.height * diameter,
+            row.faceInset.placement === 'source' ? resolution.width * .5 : resolution.width,
+            row.faceInset.edgeOverflow ? side * 4.5 : Infinity) / 2) * 2;
+        throw new Error(`${row.id || row.momentId}: ${error.message} (effective diameter=${diameter ?? 'retain'}, magnification=${(size / side).toFixed(2)}x)`);
+    }
+}
+
+function sourceFaceDiameter(inset, resolution, settings) {
+    if (inset.mode === 'retain' || !settings.faceInsetDiameter) return inset.diameter;
+    const side = Math.round(Math.max(inset.sourceBox.width * resolution.width,
+        inset.sourceBox.height * resolution.height) * 1.55 / 2) * 2;
+    // Keep the face visibly larger without turning a gameplay inset into a second canvas.
+    const minimum = Math.ceil(side * 1.2 / 2) * 2 / resolution.height;
+    return Math.min(settings.faceInsetDiameter, Math.max(inset.diameter ?? .28, minimum));
+}
+
 function anchorSpatialPlan(plan, resolution, settings, assets = {}) {
     if (settings.focusPlacement !== 'source') return plan;
     const { width, height } = resolution;
@@ -37,15 +61,45 @@ function anchorSpatialPlan(plan, resolution, settings, assets = {}) {
         const next = { ...row };
         if (row.faceInset) next.faceInset = { ...row.faceInset, placement: 'source',
             ...(row.faceInset.mode === 'retain' || settings.faceInsetDiameter ? { edgeOverflow: true } : {}),
-            ...(row.faceInset.mode !== 'retain' && settings.faceInsetDiameter ? { diameter: Math.max(row.faceInset.diameter, settings.faceInsetDiameter) } : {}) };
+            ...(row.faceInset.mode !== 'retain' && settings.faceInsetDiameter
+                ? { diameter: sourceFaceDiameter(row.faceInset, resolution, settings) } : {}) };
         if (row.focusInset) next.focusInset = { ...row.focusInset, placement: 'source',
             ...(row.focusInset.shape === 'circle' && ['avatar', 'person'].includes(row.focusInset.target) && settings.faceInsetDiameter
                 ? { edgeOverflow: true, diameter: Math.max(row.focusInset.diameter, settings.faceInsetDiameter) } : {}) };
-        const bounds = focusBounds(next, width, height);
+        const face = next.faceInset && row.sticker ? checkedFaceGeometry(next, resolution) : null;
+        const bounds = face ? { ...face, outputWidth: face.size, outputHeight: face.size }
+            : row.sticker ? focusBounds(next, width, height) : null;
         if (row.sticker && bounds) next.sticker = groupSticker(row.sticker, bounds, width, height, assets);
         return next;
     });
     return { ...plan, effects, spatialLayout: { version: 1, focusPlacement: 'source', stickers: 'near_subject', subtitles: 'avoid_focus' } };
+}
+
+function validateAnchoredFaceInsets(plan, resolution, settings) {
+    const anchored = anchorSpatialPlan(plan, resolution, settings);
+    for (const row of anchored.effects.filter(row => row.faceInset)) {
+        checkedFaceGeometry(row, resolution);
+    }
+    return anchored;
+}
+
+function coverWindowWithoutInset(plan) {
+    const windows = [...plan.effects].filter(row => row.faceInset || row.focusInset)
+        .map(row => ({ start: row.start, end: row.end })).sort((a, b) => a.start - b.start);
+    let cursor = Math.min(1, plan.duration), best = null;
+    for (const window of [...windows, { start: plan.duration, end: plan.duration }]) {
+        const start = cursor, end = Math.min(plan.duration, window.start);
+        if (end - start >= 1.2 && (!best || end - start > best.end - best.start)) best = { start, end };
+        cursor = Math.max(cursor, window.end);
+    }
+    return best;
+}
+
+function coverProtectedBoxes(plan) {
+    const boxes = plan.effects.map(row => row.faceInset?.sourceBox)
+        .filter(box => box && [box.x, box.y, box.width, box.height].every(Number.isFinite));
+    // These are source-frame coordinates, including the avatar even outside an inset effect.
+    return boxes.filter((box, index) => boxes.findIndex(other => JSON.stringify(other) === JSON.stringify(box)) === index);
 }
 
 function subtitleZone(row, width, height, marginV) {
@@ -111,4 +165,4 @@ function layoutSubtitleAss(content, plan, style) {
 }
 
 function writeLayoutSubtitles(file, plan, style) { fs.writeFileSync(file, layoutSubtitleAss(fs.readFileSync(file, 'utf8'), plan, style), 'utf8'); }
-module.exports = { focusBounds, groupSticker, anchorSpatialPlan, subtitleZone, reflowAssText, layoutSubtitleAss, writeLayoutSubtitles };
+module.exports = { focusBounds, groupSticker, anchorSpatialPlan, validateAnchoredFaceInsets, coverWindowWithoutInset, coverProtectedBoxes, subtitleZone, reflowAssText, layoutSubtitleAss, writeLayoutSubtitles };

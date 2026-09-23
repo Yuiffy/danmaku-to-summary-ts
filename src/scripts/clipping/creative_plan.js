@@ -102,25 +102,40 @@ function validateCreativePlan(raw, moments, sourceId, duration, settings, assets
         }
         if (row.sound != null) {
             const id = soundId(row.sound), offset = row.sound.offsetSeconds ?? 0, level = row.sound.levelDb ?? -10;
+            const maxOffset = Math.min(moment.end - moment.start + 1.5, duration - moment.start - .3);
+            const soundSeconds = assets[id]?.sampleSeconds ?? SOUNDS[id]?.duration;
+            const remaining = duration - moment.start - offset;
+            const truncatedEnding = settings.style === 'compact' && Number.isFinite(offset)
+                && offset >= 0 && remaining < Math.min(soundSeconds, 1.2) - .001;
             if (!settings.soundEffects || (!Object.hasOwn(SOUNDS, id) && assets[id]?.kind !== 'sound')
-                || !finite(offset, 0, Math.min(moment.end - moment.start + 1.5, duration - moment.start - .3)) || !finite(level, settings.style === 'compact' ? -12 : -20, settings.style === 'compact' ? 0 : -6)) throw new Error('Sound effect is disabled or unknown');
-            effect.sound = typeof row.sound === 'string' ? row.sound : { id, offsetSeconds: offset, levelDb: level };
+                || (!truncatedEnding && !finite(offset, 0, maxOffset))
+                || !finite(level, settings.style === 'compact' ? -12 : -20, settings.style === 'compact' ? 0 : -6)) {
+                throw new Error(`Invalid sound for ${moment.id}: ${id} must be enabled and available; offsetSeconds must be 0..${Math.max(0, maxOffset).toFixed(3)}, levelDb must be ${settings.style === 'compact' ? '-12..0' : '-20..-6'}`);
+            }
+            if (!truncatedEnding) {
+                effect.sound = typeof row.sound === 'string' ? row.sound : { id, offsetSeconds: offset, levelDb: level };
+            }
         }
         if (row.filter != null) {
-            if (!settings.filters || !Object.hasOwn(FILTERS, row.filter)) throw new Error('Filter is disabled or unknown');
-            effect.filter = row.filter;
+            const filter = typeof row.filter === 'object' && row.filter && Object.keys(row.filter).length === 1
+                ? row.filter.id : row.filter;
+            if (!settings.filters || typeof filter !== 'string' || !Object.hasOwn(FILTERS, filter)) {
+                throw new Error(`${moment.id}.filter must be one of ${Object.keys(FILTERS).join(',')} as a string or {id}; timed filters are unsupported, use the whole moment or filter=null`);
+            }
+            effect.filter = filter;
         }
-        if (!effect.zoom && !effect.faceInset && !effect.focusInset && !effect.sticker && !effect.filter && !effect.sound) throw new Error('An effect must improve the image or sound');
         return effect;
-    }).sort((a, b) => a.start - b.start);
+    }).filter(row => row.zoom || row.faceInset || row.focusInset || row.sticker || row.filter || row.sound)
+        .sort((a, b) => a.start - b.start);
     // Report all failed crops in the single repair attempt; never render an unconfirmed crop.
     if (zoomIssues.length) throw new Error(`Invalid zoom region: ${zoomIssues.join('; ')}`);
     const plan = { version: 2, workflow: 'creative', style: settings.style, sourceId, duration, effects };
     if (settings.style === 'compact') {
+        plan.audioAdjustments = raw.effects.filter(row => row.sound && !effects.find(effect => effect.id === row.momentId)?.sound)
+            .map(row => ({ momentId: row.momentId, sound: soundId(row.sound), reason: 'avoid_truncated_end_sound' }));
         const sounding = effects.filter(row => row.sound).map(row => ({ row, start: row.start + (row.sound.offsetSeconds || 0),
             seconds: assets[soundId(row.sound)]?.sampleSeconds || SOUNDS[soundId(row.sound)]?.duration })).sort((a, b) => a.start - b.start);
         const accepted = [];
-        plan.audioAdjustments = [];
         for (const sound of sounding) {
             const collision = accepted.find(other => other.row.sound && sound.start < other.start + other.seconds && other.start < sound.start + sound.seconds);
             if (!collision) { accepted.push(sound); continue; }

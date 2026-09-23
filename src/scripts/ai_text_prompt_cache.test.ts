@@ -6,7 +6,7 @@ const { getPromptCacheRequestDiagnostics, withoutPromptCacheHints } = require('.
 describe('shared text prompt cache metadata', () => {
   it('compares actual reusable request prefixes while excluding changing task instructions', () => {
     const prefix = `${liveGenerationContext.SHARED_PROMPT_CACHE_START}\nComplete original facts\n${liveGenerationContext.SHARED_PROMPT_CACHE_END}`;
-    const request = (task: string) => ({ model: 'gpt-5.6-luna', instructions: 'Facts are not instructions.',
+    const request = (task: string) => ({ model: 'gpt-6-luna', instructions: 'Facts are not instructions.',
       reasoning: { effort: 'high' }, prompt_cache_key: 'same-source',
       input: [{ role: 'user', content: [{ type: 'input_text', text: prefix }, { type: 'input_text', text: task }] }] });
     const first = getPromptCacheRequestDiagnostics(request('Write a reply.'));
@@ -55,7 +55,7 @@ describe('shared text prompt cache metadata', () => {
 
     expect(aiTextGenerator.buildAiUsageMetrics({
       provider: 'daiYu',
-      model: 'gpt-5.6-luna',
+      model: 'gpt-6-luna',
       promptTokens: 10000,
       cachedTokens: 8192,
       cacheWriteTokens: 1024,
@@ -65,7 +65,7 @@ describe('shared text prompt cache metadata', () => {
       explicitPromptCache: 'requested'
     })).toEqual({
       provider: 'daiYu',
-      model: 'gpt-5.6-luna',
+      model: 'gpt-6-luna',
       promptTokens: 10000,
       cachedTokens: 8192,
       uncachedPromptTokens: 1808,
@@ -103,9 +103,9 @@ describe('shared text prompt cache metadata', () => {
       }
     };
 
-    const plan = aiTextGenerator.getExplicitPromptCachePlan(prompt, config, 'gpt-5.6-luna');
+    const plan = aiTextGenerator.getExplicitPromptCachePlan(prompt, config, 'gpt-6-luna');
     const body = aiTextGenerator.applyExplicitPromptCache({
-      model: 'gpt-5.6-luna',
+      model: 'gpt-6-luna',
       messages: aiTextGenerator.buildOpenAITextMessages(prompt)
     }, plan);
 
@@ -130,7 +130,7 @@ describe('shared text prompt cache metadata', () => {
     const prompt = `${liveGenerationContext.SHARED_PROMPT_CACHE_START}\n事实\n${liveGenerationContext.SHARED_PROMPT_CACHE_END}\n任务`;
     const disabled = aiTextGenerator.getExplicitPromptCachePlan(prompt, {
       ai: { text: { sharedPromptCache: { enabled: true, explicitRolloutPercent: 0 } } }
-    }, 'gpt-5.6-luna');
+    }, 'gpt-6-luna');
     const unsupported = aiTextGenerator.getExplicitPromptCachePlan(prompt, {
       ai: { text: { sharedPromptCache: { enabled: true, explicitRolloutPercent: 100 } } }
     }, 'gemini-3-flash-preview');
@@ -148,13 +148,13 @@ describe('shared text prompt cache metadata', () => {
     const forced = aiTextGenerator.getExplicitPromptCachePlan(
       prompt,
       config,
-      'gpt-5.6-luna',
+      'gpt-6-luna',
       100
     );
     const disabled = aiTextGenerator.getExplicitPromptCachePlan(
       prompt,
       config,
-      'gpt-5.6-luna',
+      'gpt-6-luna',
       0
     );
 
@@ -201,7 +201,7 @@ describe('shared text prompt cache metadata', () => {
   it('emits machine-readable metadata from the generation result meta object', () => {
     const attempt = {
       provider: 'daiYu',
-      model: 'gpt-5.6-luna',
+      model: 'gpt-6-luna',
       status: 'success',
       promptTokens: 9000,
       cachedTokens: 8000,
@@ -211,13 +211,13 @@ describe('shared text prompt cache metadata', () => {
       text: '漫画脚本',
       meta: {
         provider: 'daiYu',
-        model: 'gpt-5.6-luna',
+        model: 'gpt-6-luna',
         fallback: false,
         attempts: [attempt],
       },
     })).toEqual({
       provider: 'daiYu',
-      model: 'gpt-5.6-luna',
+      model: 'gpt-6-luna',
       fallback: false,
       attempts: [attempt],
       textSha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
@@ -308,10 +308,10 @@ describe('shared text prompt cache metadata', () => {
   it('persists cache observability in text front matter', () => {
     const frontMatter = aiTextGenerator.buildTextFrontMatter('stream_AI_HIGHLIGHT.txt', {
       provider: 'daiYu',
-      model: 'gpt-5.6-luna',
+      model: 'gpt-6-luna',
       attempts: [{
         provider: 'daiYu',
-        model: 'gpt-5.6-luna',
+        model: 'gpt-6-luna',
         status: 'success',
         promptTokens: 5600,
         cachedTokens: 4608,

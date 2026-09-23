@@ -88,7 +88,7 @@ class ComicTextProviderTests(unittest.TestCase):
 
     def test_node_owns_the_retry_deadline_and_returns_success_without_python_retry(self):
         script = "A complete drawable storyboard with source-grounded scenes and a closing scene."
-        meta = {"provider": "daiYu", "model": "gpt-5.6-luna", "attempts": [{"status": "success"}]}
+        meta = {"provider": "daiYu", "model": "gpt-6-luna", "attempts": [{"status": "success"}]}
         result = subprocess.CompletedProcess([], 0, script.encode(), ("[[TEXT_GENERATION_META]] " + json.dumps(meta)).encode())
         output, run, fallback, failure = self.run_managed_node(result)
         self.assertEqual(output, (script, True))
@@ -175,7 +175,7 @@ class ComicTextProviderTests(unittest.TestCase):
 
     def test_parent_timeout_reuses_a_completed_hash_verified_result(self):
         script = "A complete source-grounded storyboard that has already been generated before process exit."
-        metadata = {"provider": "daiYu", "model": "gpt-5.6-luna", "attempts": [{"status": "success"}],
+        metadata = {"provider": "daiYu", "model": "gpt-6-luna", "attempts": [{"status": "success"}],
                     "textSha256": hashlib.sha256(script.encode()).hexdigest()}
         timeout = subprocess.TimeoutExpired("node", 245, output=script.encode(),
                     stderr=("[[TEXT_GENERATION_META]] " + json.dumps(metadata)).encode())
@@ -197,7 +197,7 @@ class ComicTextProviderTests(unittest.TestCase):
         script = "A tiny script with a desk and a smile in it."
         self.assertGreaterEqual(len(script), 40)
         self.assertFalse(comic.is_valid_comic_script(script))
-        attempts = [{"provider": "daiYu", "model": "gpt-5.6-luna", "status": "success",
+        attempts = [{"provider": "daiYu", "model": "gpt-6-luna", "status": "success",
                      "promptTokens": 1200, "completionTokens": 40, "requestId": "completed-request"}]
         metadata = {"attempts": attempts, "textSha256": hashlib.sha256(script.encode()).hexdigest()}
         result = subprocess.CompletedProcess([], 0, script.encode(),
@@ -323,7 +323,7 @@ class ComicTextProviderTests(unittest.TestCase):
                         "apiKey": "daiyu-key",
                         "baseUrl": "https://daiyu.example/v1",
                         "apiMode": "responses",
-                        "model": "gpt-5.6-luna",
+                        "model": "gpt-6-luna",
                         "temperature": 0.25,
                         "maxTokens": 12345,
                         "thinking": {
@@ -351,7 +351,7 @@ class ComicTextProviderTests(unittest.TestCase):
 
         usage_attempt = {
             "provider": "daiYu",
-            "model": "gpt-5.6-luna",
+            "model": "gpt-6-luna",
             "status": "success",
             "promptTokens": 10000,
             "cachedTokens": 8000,
@@ -383,7 +383,7 @@ class ComicTextProviderTests(unittest.TestCase):
         self.assertEqual(call_text.call_count, 1)
 
         daiyu_call = call_text.call_args.kwargs
-        self.assertEqual(daiyu_call["model"], "gpt-5.6-luna")
+        self.assertEqual(daiyu_call["model"], "gpt-6-luna")
         self.assertEqual(daiyu_call["max_tokens"], 12345)
         self.assertEqual(daiyu_call["temperature"], 0.25)
         self.assertTrue(daiyu_call["thinking"])

@@ -1320,7 +1320,7 @@ def load_shared_live_source_prefix(highlight_path: str, highlight_content: str, 
 def build_explicit_prompt_cache_plan(
     prompt: str,
     config: Optional[Dict[str, Any]] = None,
-    model: str = "gpt-5.6-luna",
+    model: str = "gpt-6-luna",
     rollout_percent_override: Optional[float] = None,
 ) -> Dict[str, Any]:
     text = str(prompt or "")
@@ -1335,7 +1335,7 @@ def build_explicit_prompt_cache_plan(
     except (TypeError, ValueError):
         rollout_percent = 0.0
     end_index = text.find(SHARED_PROMPT_CACHE_END)
-    model_eligible = bool(re.match(r"^gpt-5\.6(?:[.-]|$)", str(model or ""), re.IGNORECASE))
+    model_eligible = bool(re.match(r"^gpt-(?:5\.6|6)(?:[.-]|$)", str(model or ""), re.IGNORECASE))
     if (
         cache_config.get("enabled", True) is False
         or rollout_percent <= 0
@@ -2573,8 +2573,8 @@ def generate_comic_content_with_ai(
                     print("[ERROR] Gemini重试次数已用完，尝试备用方案")
                     break
     
-    # Gemini失败后，使用 daiYu/gpt-5.6-luna 作为备用方案，并开启思考。
-    print("[COMIC_SCRIPT] Google文本生成失败，尝试 daiYu/gpt-5.6-luna 生成漫画脚本...")
+    # Gemini失败后，使用 daiYu/gpt-6-luna 作为备用方案，并开启思考。
+    print("[COMIC_SCRIPT] Google文本生成失败，尝试 daiYu/gpt-6-luna 生成漫画脚本...")
 
     # content_prompt 已经包含完整直播高光；不要在 user/system 两个角色里重复发送。
     system_prompt = "你是直播总结漫画编剧。请严格依据用户提供的直播内容，只输出完整、可绘制的分镜脚本。"
@@ -2593,7 +2593,7 @@ def generate_comic_content_with_ai(
             or provider_config.get("baseUrl")
             or "http://localhost:8080"
         )
-        daiyu_model = normalize_daiyu_model(daiyu_config.get("model", "gpt-5.6-luna"))
+        daiyu_model = normalize_daiyu_model(daiyu_config.get("model", "gpt-6-luna"))
         daiyu_thinking = daiyu_config.get("thinking", {}) or {}
         thinking_enabled = daiyu_thinking.get("enabled", True) is not False
         thinking_budget_tokens = daiyu_thinking.get("budgetTokens", 10000)

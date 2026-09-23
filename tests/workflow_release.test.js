@@ -37,7 +37,7 @@ test('compiled request builders preserve explicit caching and reasoning', () => 
 });
 
 test('compiled implicit cache routing changes only the optional key outside explicit rollout', () => {
-    const options = { model: 'gpt-5.6-luna', prompt: 'Complete source facts.\nTask suffix.',
+    const options = { model: 'gpt-6-luna', prompt: 'Complete source facts.\nTask suffix.',
         maxTokens: 100000, thinkingEnabled: true, reasoningEffort: 'high' };
     const plain = requests.buildDaiYuResponsesRequest(options);
     const routed = requests.buildDaiYuResponsesRequest({ ...options,

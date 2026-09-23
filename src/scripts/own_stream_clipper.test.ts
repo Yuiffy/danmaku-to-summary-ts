@@ -777,8 +777,8 @@ describe('own_stream_clipper', () => {
       { time: 1.8, text: '笑死' }
     ], { fullContextDanmakuMergeWindowSeconds: 30 });
 
-    expect(source.sourceText).toContain('00:00:01-00:00:02 第一句');
-    expect(source.sourceText).toContain('00:01:01-00:01:03 最后一句');
+    expect(source.sourceText).toContain('00:00:01-00:00:02 [UNKNOWN] 第一句');
+    expect(source.sourceText).toContain('00:01:01-00:01:03 [UNKNOWN] 最后一句');
     expect(source.sourceText).toContain('笑死 (x2)');
     expect(source.sourceText).toContain('=== 30秒弹幕热度表 ===');
     expect(source.sourceText).toContain('=== 全量直播音轨字幕（时间均相对直播开头） ===');
@@ -825,8 +825,8 @@ describe('own_stream_clipper', () => {
     expect(first.sharedPrefix.startsWith(liveGenerationContext.SHARED_PROMPT_CACHE_START)).toBe(true);
     expect(first.sharedPrefix.endsWith(liveGenerationContext.SHARED_PROMPT_CACHE_END)).toBe(true);
     expect(first.sharedPrefix).toContain(fullLiveContext.FULL_LIVE_SHARED_PREFIX_LABEL);
-    expect(first.sharedPrefix).toContain('00:00:01-00:00:02 第一句完整字幕');
-    expect(first.sharedPrefix).toContain('00:01:01-00:01:03 最后一句完整字幕');
+    expect(first.sharedPrefix).toContain('00:00:01-00:00:02 [UNKNOWN] 第一句完整字幕');
+    expect(first.sharedPrefix).toContain('00:01:01-00:01:03 [UNKNOWN] 最后一句完整字幕');
     expect(first.sharedPrefix).toContain('00:00:01-00:00:01 笑死 (x2)');
     expect(first.sharedPrefix).toContain('00:01:02 结尾也很好笑');
     expect(first.sharedPrefix).toContain('emotion=SURPRISE events=Laughter');
@@ -914,7 +914,7 @@ describe('own_stream_clipper', () => {
       const callOptions = generateSpy.mock.calls[0][1];
       const cachePlan = generator.getExplicitPromptCachePlan(prompt, {
         ai: { text: { sharedPromptCache: { enabled: true, explicitRolloutPercent: 100 } } }
-      }, 'gpt-5.6-luna');
+      }, 'gpt-6-luna');
       expect(prompt.startsWith(liveGenerationContext.SHARED_PROMPT_CACHE_START)).toBe(true);
       expect(prompt.indexOf(liveGenerationContext.SHARED_PROMPT_CACHE_END))
         .toBeLessThan(prompt.indexOf('你是资深直播切片主编'));
@@ -939,7 +939,7 @@ describe('own_stream_clipper', () => {
       expect(prompt).not.toContain('时间覆盖要求：不要把名额全部用在同一话题或同一小段时间内');
       expect(prompt).not.toContain('遗漏的非重叠窗口会由残余高光审计单独召回');
       expect(prompt).toContain('不要写选片理由或效果评估');
-      expect(prompt).toContain('=== 全量直播音轨字幕（时间均相对直播开头） ===\n00:00:01-00:00:03 他是毒液啊原来如此');
+      expect(prompt).toContain('=== 全量直播音轨字幕（时间均相对直播开头） ===\n00:00:01-00:00:03 [UNKNOWN] 他是毒液啊原来如此');
       expect(prompt).toContain('=== 全量观众弹幕（相同文本在短时间窗口内合并，xN 为重复次数） ===\n00:00:02 我是毒液！我是毒液！');
       expect(clips[0].description).toBe('小岁从只想换显卡一路列出五个必须更换的部件。');
       expect(clips[0].reason).toBe('字幕有完整铺垫和反转，相关窗口出现多轮刷屏。');

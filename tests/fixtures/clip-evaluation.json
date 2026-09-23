@@ -6,8 +6,8 @@
     "price": { "confirmed": false, "version": "unconfirmed-no-paid-evaluation", "inputCnyPerMillion": 0, "cachedInputCnyPerMillion": 0, "outputCnyPerMillion": 0 }
   },
   "matrix": [
-    { "model": "gpt-5.6-luna", "efforts": ["none", "low", "medium", "high"], "verifiedEfforts": [] },
-    { "model": "gpt-5.6-sol", "efforts": ["low", "medium", "high"], "verifiedEfforts": [] },
+    { "model": "gpt-6-luna", "efforts": ["none", "low", "medium", "high"], "verifiedEfforts": [] },
+    { "model": "gpt-6-sol", "efforts": ["low", "medium", "high"], "verifiedEfforts": [] },
     { "model": "gpt-6-astra", "efforts": ["low", "medium", "high"], "verifiedEfforts": [] }
   ],
   "samples": [

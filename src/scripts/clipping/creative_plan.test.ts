@@ -65,6 +65,45 @@ test('repair diagnostics identify every unsafe crop and allow the remaining effe
     expect(plan.effects.slice(1).every(row => !row.zoom && row.filter === 'monochrome')).toBe(true);
 });
 
+test('a repaired empty moment is omitted while visual evidence and invalid operations remain checked', () => {
+    const nodes = [moments()[0], { ...moments()[0], id: 'M2', start: 14, end: 16 }];
+    const rows = [{ ...effect(), zoom: null, sticker: null, sound: null },
+        { ...effect(), momentId: 'M2', frameIds: ['M2F0', 'M2F1', 'M2F2'] }];
+    const plan = validateCreativePlan({ effects: rows }, nodes, 'source', 60, limits);
+    expect(plan.effects).toHaveLength(1);
+    expect(plan.effects[0].sound).toBe('pop');
+    expect(() => validateCreativePlan({ effects: [{ ...rows[0], visualConfirmed: false }] }, moments(), 'source', 60, limits)).toThrow('visual evidence');
+    expect(() => validateCreativePlan({ effects: [{ ...rows[0], sticker: { id: 'missing', x: .2, y: .2,
+        motion: 'pop', clearOfSubject: true } }] }, moments(), 'source', 60, limits)).toThrow('sticker');
+});
+
+test('known filter id object is normalized to the closed string vocabulary', () => {
+    const settings = creativeSettings({ filters: true, soundEffects: true });
+    const row = { ...effect(), filter: { id: 'monochrome' } };
+    expect(validateCreativePlan({ effects: [row] }, moments(), 'source', 60, settings).effects[0].filter).toBe('monochrome');
+    expect(() => validateCreativePlan({ effects: [{ ...row, filter: { id: 'other' } }] }, moments(), 'source', 60, settings)).toThrow('M1.filter');
+    expect(() => validateCreativePlan({ effects: [{ ...row, filter: { id: 'monochrome', args: 'unsafe' } }] }, moments(), 'source', 60, settings)).toThrow('M1.filter');
+    expect(() => validateCreativePlan({ effects: [{ ...row, filter: { id: 'monochrome', offsetSeconds: 1.6, durationSeconds: .5 } }] },
+        moments(), 'source', 60, settings)).toThrow('M1.filter');
+});
+
+test('compact sound needs enough remaining playback time at the end of a clip', () => {
+    const settings = creativeSettings({ style: 'compact', soundEffects: true });
+    const node = { id: 'M1', start: 8, end: 9.8 };
+    const row = { ...effect(), sound: { id: 'laugh', offsetSeconds: 1.5, levelDb: -1 }, zoom: null };
+    const assets = { laugh: { kind: 'sound', sampleSeconds: 2.6 } };
+    const trimmed = validateCreativePlan({ effects: [row] }, [node], 'source', 10, settings, assets);
+    expect(trimmed.effects[0].sound).toBeUndefined();
+    expect(trimmed.audioAdjustments).toEqual([{ momentId: 'M1', sound: 'laugh', reason: 'avoid_truncated_end_sound' }]);
+    expect(validateCreativePlan({ effects: [{ ...row, sound: { ...row.sound, offsetSeconds: .6 } }] },
+        [node], 'source', 10, settings, assets).effects[0].sound.offsetSeconds).toBe(.6);
+    const late = { ...row, sound: { ...row.sound, offsetSeconds: 2, levelDb: -2 } };
+    const omitted = validateCreativePlan({ effects: [late] }, [node], 'source', 10, settings, assets);
+    expect(omitted.effects).toHaveLength(1);
+    expect(omitted.effects[0].sound).toBeUndefined();
+    expect(omitted.audioAdjustments).toEqual([{ momentId: 'M1', sound: 'laugh', reason: 'avoid_truncated_end_sound' }]);
+});
+
 test('compact closeups require a real target box inside the crop rather than an arbitrary gameplay center', () => {
     const settings = creativeSettings({ style: 'compact', soundEffects: true });
     const row = { ...effect(), zoom: { scale: 4, x: .8, y: .9, target: 'avatar', safeToCrop: true,

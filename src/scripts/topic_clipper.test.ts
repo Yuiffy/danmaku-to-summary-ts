@@ -1029,7 +1029,7 @@ describe('topic_clipper', () => {
       streamTitle: '今天聊点什么',
       roomId: '25788785',
       recordedAt: '2026-06-03 20:15:30',
-      aiModels: ['gpt-5.6-luna'],
+      aiModels: ['gpt-6-luna'],
       outputRoot: 'D:/clips',
       sourceFileName: '录制-25788785-20260603-201530-001-聊天回.flv'
     });
@@ -1037,7 +1037,7 @@ describe('topic_clipper', () => {
     expect(markdown).toContain('话题切片提醒');
     expect(markdown).toContain('岁己SUI');
     expect(markdown).toContain('今天聊点什么');
-    expect(markdown).toContain('AI模型: gpt-5.6-luna');
+    expect(markdown).toContain('AI模型: gpt-6-luna');
     expect(markdown).toContain('找到其中 **2** 段提到岁己的地方');
     expect(markdown).toContain('D:/clips');
     expect(markdown).toContain('one.mp4');

@@ -4,10 +4,10 @@ const cache = require('./live_cache_continuation');
 const live = require('../live_generation_context');
 const config = {ai:{text:{sharedPromptCache:{enabled:true,continuationEnabled:true},daiYu:{baseUrl:'https://example.invalid'}}}};
 const prefix = `${live.SHARED_PROMPT_CACHE_START}\nAll original evidence [T1].\n${live.SHARED_PROMPT_CACHE_END}`;
-const makeBody = (task = 'reply') => ({model:'gpt-5.6-luna',instructions:'Stable source policy',reasoning:{effort:'high'},
+const makeBody = (task = 'reply') => ({model:'gpt-6-luna',instructions:'Stable source policy',reasoning:{effort:'high'},
     store:false,stream:false,prompt_cache_key:'same-stream',input:[{role:'user',content:[
         {type:'input_text',text:prefix},{type:'input_text',text:task}]}]});
-const response = () => ({status:'completed',model:'gpt-5.6-luna',output:[{type:'reasoning',id:'reasoning'},
+const response = () => ({status:'completed',model:'gpt-6-luna',output:[{type:'reasoning',id:'reasoning'},
     {type:'message',role:'assistant',status:'completed',id:'actual-message',content:[{type:'output_text',text:'Actual accepted response',annotations:[]}]}]});
 let directory: string;
 beforeEach(() => {directory=fs.mkdtempSync(path.join(os.tmpdir(),'live-cache-test-'));});
@@ -55,7 +55,7 @@ test('skips disabled caching, incomplete responses, unexpected models, images an
     const body:any=makeBody(),data:any=response();
     expect(cache.captureSeed(body,data,{})).toBeNull();
     expect(cache.prepareContinuation(body,{}, {directory})).toBe(body);
-    for(const changed of [{...data,status:'incomplete'},{...data,model:'gpt-5.6-sol'},{...data,output:[]}]) {
+    for(const changed of [{...data,status:'incomplete'},{...data,model:'gpt-6-sol'},{...data,output:[]}]) {
         expect(cache.captureSeed(body,changed,config)).toBeNull();
     }
     expect(cache.captureSeed({...body,tools:[]},data,config)).toBeNull();

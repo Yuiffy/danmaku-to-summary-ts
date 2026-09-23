@@ -7,7 +7,7 @@ jest.mock('./config-loader', () => ({
 const fetchMock = require('node-fetch');
 const loader = require('./config-loader');
 const { generateTextWithDaiYu } = require('./ai_text_generator');
-const options = { primaryModel: 'gpt-5.6-luna', apiMode: 'responses', fallbackModelsEnabled: false,
+const options = { primaryModel: 'gpt-6-luna', apiMode: 'responses', fallbackModelsEnabled: false,
   daiYuTransientMaxAttempts: 2, transientRetryDelayMs: 0 };
 const failure = status => ({ ok: false, status, headers: { get: () => `request-${status}` },
   text: async () => 'Upstream request failed' });
@@ -18,9 +18,9 @@ describe('daiYu opt-in transient retries', () => {
   beforeEach(() => {
     fetchMock.mockReset();
     loader.getConfig.mockReturnValue({ ai: { text: {
-      daiYu: { baseUrl: 'http://localhost:8080', model: 'gpt-5.6-luna', apiMode: 'responses',
-        fallbackModels: [], fallbackProvider: 'tuZi', fallbackProviderModel: 'gpt-5.6-luna' },
-      tuZi: { baseUrl: 'https://fallback.test', model: 'gpt-5.6-luna', apiMode: 'responses', transientMaxAttempts: 1 }
+      daiYu: { baseUrl: 'http://localhost:8080', model: 'gpt-6-luna', apiMode: 'responses',
+        fallbackModels: [], fallbackProvider: 'tuZi', fallbackProviderModel: 'gpt-6-luna' },
+      tuZi: { baseUrl: 'https://fallback.test', model: 'gpt-6-luna', apiMode: 'responses', transientMaxAttempts: 1 }
     } } });
   });
 

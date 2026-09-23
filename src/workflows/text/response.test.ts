@@ -19,10 +19,10 @@ test('retains valid numeric aliases, reported zero and partial usage', () => {
 test('retains comparable request fingerprints in cache usage logs without changing token accounting', () => {
   expect(buildAiUsageMetrics({ promptTokens: 10000, cachedTokens: 8000, completionTokens: 150,
     promptCacheRequestFingerprint: 'fingerprint', promptCacheRequestKey: 'live:source',
-    promptCacheSourceBoundary: 'content_block', reasoningEffortSent: 'high', responseModel: 'gpt-5.6-luna' }))
+    promptCacheSourceBoundary: 'content_block', reasoningEffortSent: 'high', responseModel: 'gpt-6-luna' }))
     .toMatchObject({ promptTokens: 10000, cachedTokens: 8000, uncachedPromptTokens: 2000, completionTokens: 150,
       promptCacheRequestFingerprint: 'fingerprint', promptCacheRequestKey: 'live:source',
-      promptCacheSourceBoundary: 'content_block', reasoningEffortSent: 'high', responseModel: 'gpt-5.6-luna' });
+      promptCacheSourceBoundary: 'content_block', reasoningEffortSent: 'high', responseModel: 'gpt-6-luna' });
 });
 
 test('failure usage logs distinguish unknown use and never disguise it as success', () => {

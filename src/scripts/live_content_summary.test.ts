@@ -150,10 +150,10 @@ describe('live_content_summary', () => {
       }),
       meta: {
         provider: 'daiYu',
-        model: 'gpt-5.6-luna',
+        model: 'gpt-6-luna',
         attempts: [{
           provider: 'daiYu',
-          model: 'gpt-5.6-luna',
+          model: 'gpt-6-luna',
           status: 'success',
           promptTokens: 10000,
           cachedTokens: 8000,

@@ -106,8 +106,8 @@ describe('topic failure visibility', () => {
   });
 
   test('opts preflight into one bounded daiYu retry without changing model or reasoning', () => {
-    const options = preflightRequestOptions({ review: { model: 'gpt-5.6-sol', reasoningEffort: 'high' } });
-    expect(options).toMatchObject({ primaryModel: 'gpt-5.6-sol', reasoningEffort: 'high',
+    const options = preflightRequestOptions({ review: { model: 'gpt-6-sol', reasoningEffort: 'high' } });
+    expect(options).toMatchObject({ primaryModel: 'gpt-6-sol', reasoningEffort: 'high',
       daiYuTransientMaxAttempts: 2, allowProviderFallback: false });
     expect(preflightRequestOptions({ review: { transientMaxAttempts: 1 } }).daiYuTransientMaxAttempts).toBe(1);
   });

@@ -1,5 +1,5 @@
 export {};
-const { anchorSpatialPlan, focusBounds, subtitleZone, layoutSubtitleAss } = require('./creative_layout');
+const { anchorSpatialPlan, validateAnchoredFaceInsets, coverWindowWithoutInset, coverProtectedBoxes, focusBounds, subtitleZone, layoutSubtitleAss } = require('./creative_layout');
 const { focusGeometry, validateFocusInset } = require('./focus_inset');
 const topic = require('../topic_clipper');
 
@@ -52,4 +52,47 @@ test('the large circle setting does not enlarge a retained face during a detail 
     expect(box.size).toBe(box.side);
     expect(plan.effects[0].faceInset.diameter).toBeUndefined();
     expect(box.top + box.outputHeight).toBeGreaterThan(1080);
+});
+
+test('preflight checks production diameter, including existing face insets outside the requested conversion', () => {
+    const resolution = { width: 1920, height: 1080 };
+    const settings = { focusPlacement: 'source', faceInsetDiameter: .6 };
+    const sourceBox = { x: .015, y: .66, width: .14, height: .2 };
+    const draft = { effects: [{ id: 'M2', faceInset: { sourceBox, placement: 'source', diameter: .36, clearOfAction: true } },
+        { id: 'M12', faceInset: { sourceBox: { x: .045, y: .77, width: .09, height: .18 }, placement: 'source', diameter: .4, clearOfAction: true } }] };
+    expect(() => focusBounds(draft.effects[0], resolution.width, resolution.height)).toThrow('magnify');
+    const production = validateAnchoredFaceInsets(draft, resolution, settings);
+    expect(production.effects.map(row => row.faceInset.diameter)).toEqual([500 / 1080, .4]);
+    expect(focusBounds(production.effects[0], resolution.width, resolution.height).size /
+        focusBounds(production.effects[0], resolution.width, resolution.height).side).toBeGreaterThan(1.2);
+    expect(draft.effects[0].faceInset.diameter).toBe(.36);
+});
+
+test('preflight reports the offending moment and effective magnification without lowering the safety floor', () => {
+    const draft = { effects: [{ id: 'M4', faceInset: { sourceBox: { x: .3, y: .3, width: .3, height: .4 },
+        placement: 'source', diameter: .36, clearOfAction: true } }] };
+    expect(() => validateAnchoredFaceInsets(draft, { width: 1920, height: 1080 },
+        { focusPlacement: 'source', faceInsetDiameter: .6 })).toThrow(/M4: Face inset must magnify.*effective diameter=0.6, magnification=0.7\dx/);
+});
+
+test('cover preference selects a long clean gap between inset effects', () => {
+    expect(coverWindowWithoutInset({ duration: 30, effects: [{ start: 1, end: 9, faceInset: {} },
+        { start: 12, end: 16, faceInset: {} }, { start: 22, end: 28, focusInset: {} }] })).toEqual({ start: 16, end: 22 });
+    expect(coverWindowWithoutInset({ duration: 3, effects: [{ start: 0, end: 3, faceInset: {} }] })).toBeNull();
+});
+
+test('cover protection retains the source avatar area beyond inset timestamps', () => {
+    const sourceBox = { x: .025, y: .63, width: .15, height: .18 };
+    expect(coverProtectedBoxes({ effects: [{ faceInset: { sourceBox } }, { faceInset: { sourceBox } }, { sticker: {} }] }))
+        .toEqual([sourceBox]);
+});
+
+test('missing draft diameter is derived only for source-anchored inset with configured cap', () => {
+    const value = { effects: [{ id: 'M3', faceInset: { sourceBox: { x: .012, y: .68, width: .105, height: .21 },
+        placement: 'source', clearOfAction: true } }] };
+    const result = validateAnchoredFaceInsets(value, { width: 1920, height: 1080 },
+        { focusPlacement: 'source', faceInsetDiameter: .6 });
+    expect(result.effects[0].faceInset.diameter).toBeGreaterThan(.36);
+    expect(result.effects[0].faceInset.diameter).toBeLessThan(.6);
+    expect(value.effects[0].faceInset.diameter).toBeUndefined();
 });
