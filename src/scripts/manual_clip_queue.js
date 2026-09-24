@@ -557,6 +557,20 @@ async function main(argv = process.argv.slice(2)) {
         for (const task of queue.tasks) console.log(`${task.id}\t${task.status}\t${task.title}`);
         return;
     }
+    if (options.command === 'cancel') {
+        const task = queue.tasks.find(item => item.id === options.id);
+        if (!task) throw new Error(`task not found: ${options.id}`);
+        if (!['pending_cut', 'pending_review', 'pending_upload', 'cancelled'].includes(task.status)) {
+            throw new Error(`task ${task.id} is ${task.status}; cancel registered upload IDs first`);
+        }
+        task.status = 'cancelled';
+        task.autoUpload = false;
+        task.cancellationReason = requireOption(options, 'note');
+        task.updatedAt = nowIso();
+        writeQueue(queuePath, queue);
+        console.log(`cancelled ${task.id}: ${task.title}`);
+        return;
+    }
     if (options.command === 'approve') {
         const task = queue.tasks.find(item => item.id === options.id);
         if (!task) throw new Error(`task not found: ${options.id}`);
@@ -587,7 +601,7 @@ async function main(argv = process.argv.slice(2)) {
         } while (options.loop);
         return;
     }
-    throw new Error('usage: manual_clip_queue.js add|list|worker|approve <id>');
+    throw new Error('usage: manual_clip_queue.js add|list|worker|approve|cancel <id>');
 }
 
 if (require.main === module) {

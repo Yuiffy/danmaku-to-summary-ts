@@ -141,6 +141,7 @@ keep ambiguous short words and one-off full sentences source-bound.
 - Search local `.srt`, `.xml`, `.asr_meta.json`, and related metadata before opening video. For old Sui topics, search years/months broadly and use ASR variants plus danmaku corrections (for example `CPU`, `12400F`, `3050`, `显卡`, `内存`, `任务管理器`, `拔智齿`).
 - Use SRT for the streamer's words and XML for viewer reactions. Do not attribute danmaku text to the streamer.
 - Expand a hit into an origin-to-reaction-to-close window. If the old SRT is unreliable, use a deliberately wide rough window and re-ASR only that clip before final boundary adjustment.
+- Before manual or automatic selection, read `ownStreamClips.selectionPolicy` and its `roomOverrides[roomId].excludedCategories`. Honor the resolved global and room exclusions for new clips, old-recording clips and residual candidates. Sui's real family/relationship content is excluded; do not repackage it under another title or select it from another streamer's retelling.
 - Do not apply blanket content exclusions. Treat films, advertisements, greetings, gifts, songs, and ordinary chat according to whether the requested task gives them independent value; only exclude a category when the task explicitly says so.
 
 ### 2. Add a queue task

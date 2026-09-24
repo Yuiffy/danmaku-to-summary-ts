@@ -1,0 +1,6 @@
+{
+  "roomId": "628684",
+  "authorizedUids": ["123456789", "987654321"],
+  "botUid": "1122334455",
+  "maxMessageChars": 20
+}

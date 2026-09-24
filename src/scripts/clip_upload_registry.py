@@ -903,7 +903,7 @@ def clear_mismatched_upload_state(clip: Dict[str, Any]) -> bool:
 def sync_clip_statuses(registry: Dict[str, Any], ids: Iterable[int]) -> None:
     for clip_id in ids:
         clip = registry.get("clips", {}).get(str(clip_id))
-        if not clip:
+        if not clip or clip.get("editorialExclusion"):
             continue
         status = clip_status_from_state(clip)
         if not status:
@@ -978,10 +978,11 @@ def enqueue(args: argparse.Namespace) -> int:
     if missing:
         print(f"[ERROR] unknown clip ids: {missing}", file=sys.stderr)
         return 2
-    held = [clip_id for clip_id in ids if registry["clips"][str(clip_id)].get("reviewPending")
-            and not registry["clips"][str(clip_id)].get("pendingRebuild")]
+    held = [clip_id for clip_id in ids if registry["clips"][str(clip_id)].get("editorialExclusion") or (
+            registry["clips"][str(clip_id)].get("reviewPending")
+            and not registry["clips"][str(clip_id)].get("pendingRebuild"))]
     if held:
-        print(f"[ERROR] IDs need review before upload (force cannot bypass): {held}. Use show/subtitles to inspect their reviewIssues.", file=sys.stderr)
+        print(f"[ERROR] IDs excluded or need review before upload (force cannot bypass): {held}. Use show/subtitles to inspect their reviewIssues.", file=sys.stderr)
         return 2
     sync_clip_statuses(registry, ids)
     already_uploaded = [clip_id for clip_id in ids if registry["clips"][str(clip_id)].get("status") == "uploaded"]
@@ -1012,10 +1013,11 @@ def enqueue(args: argparse.Namespace) -> int:
         if missing:
             print(f"[ERROR] unknown clip ids: {missing}", file=sys.stderr)
             return 2
-        held = [clip_id for clip_id in ids if registry["clips"][str(clip_id)].get("reviewPending")
-                and not registry["clips"][str(clip_id)].get("pendingRebuild")]
+        held = [clip_id for clip_id in ids if registry["clips"][str(clip_id)].get("editorialExclusion") or (
+                registry["clips"][str(clip_id)].get("reviewPending")
+                and not registry["clips"][str(clip_id)].get("pendingRebuild"))]
         if held:
-            print(f"[ERROR] IDs need review before upload (force cannot bypass): {held}", file=sys.stderr)
+            print(f"[ERROR] IDs excluded or need review before upload (force cannot bypass): {held}", file=sys.stderr)
             return 2
         sync_clip_statuses(registry, ids)
         revised_published = [clip_id for clip_id in ids if registry["clips"][str(clip_id)].get("subtitleRevisionKind") == "own_stream"
@@ -1084,6 +1086,49 @@ def enqueue(args: argparse.Namespace) -> int:
         save_json(REGISTRY_PATH, registry)
     print(f"[OK] queued {len(ids)} clips as {job['id']}: {','.join(str(i) for i in ids)}")
     return 0
+
+
+def exclude_clips(args: argparse.Namespace) -> int:
+    """Cancel selected local candidates and persist an editorial upload veto."""
+    ids = parse_int_list(args.ids)
+    reason = str(args.note or "").strip()
+    if not ids or not reason:
+        print("[ERROR] exclusion requires IDs and a reason", file=sys.stderr)
+        return 2
+    if not acquire_lock():
+        print("[ERROR] stop the upload worker before excluding clips", file=sys.stderr)
+        return 3
+    try:
+        with queue_transaction() as queue:
+            registry = load_json(REGISTRY_PATH, default_registry())
+            missing = [i for i in ids if str(i) not in registry.get("clips", {})]
+            if missing:
+                print(f"[ERROR] unknown clip ids: {missing}", file=sys.stderr)
+                return 2
+            sync_clip_statuses(registry, ids)
+            for i in ids:
+                clip = registry["clips"][str(i)]
+                clip["editorialExclusion"] = {"reason": reason, "excludedAt": now_iso()}
+                if clip.get("status") != "uploaded":
+                    clip["status"] = "cancelled"
+                clip["updatedAt"] = now_iso()
+            for job in queue.get("jobs", []):
+                if job.get("status") not in ("pending", "retry_wait", "running"):
+                    continue
+                removed = [int(i) for i in job.get("clipIds", []) if int(i) in ids]
+                if not removed:
+                    continue
+                job["clipIds"] = [i for i in job["clipIds"] if int(i) not in ids]
+                job.setdefault("editorialExclusions", []).append({"clipIds": removed, "reason": reason})
+                job["updatedAt"] = now_iso()
+                if not job["clipIds"]:
+                    clear_job_retry_metadata(job)
+                    mark_job(job, "cancelled", cancelledAt=now_iso(), cancellationReason=reason)
+            save_json(REGISTRY_PATH, registry)
+        print(f"[OK] excluded clip ids: {','.join(map(str, ids))}; future enqueue is blocked")
+        return 0
+    finally:
+        release_lock()
 
 
 def cancel_job(args: argparse.Namespace) -> int:
@@ -2078,6 +2123,8 @@ def validate_groups(groups: List[List[Dict[str, Any]]]) -> List[str]:
     """
     errors: List[str] = validate_registry_qa(groups)
     for group in groups:
+        errors.extend(f"clip {clip.get('id')} is editorially excluded: {clip['editorialExclusion'].get('reason')}"
+                      for clip in group if clip.get("editorialExclusion"))
         errors.extend(f"candidate {clip.get('id')} needs cutting first" for clip in group if clip.get("pendingCut"))
         json_clips = [c for c in group if c.get("manifestPath")]
         legacy_clips = [c for c in group if not c.get("manifestPath")]
@@ -2575,6 +2622,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=enqueue)
+
+    p = sub.add_parser("exclude", help="Cancel selected candidates and block future uploads, including --force")
+    p.add_argument("--ids", required=True)
+    p.add_argument("--note", required=True)
+    p.set_defaults(func=exclude_clips)
 
     p = sub.add_parser("cancel", help="Cancel a pending upload job")
     p.add_argument("--job", required=True)

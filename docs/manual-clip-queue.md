@@ -143,3 +143,39 @@ npm run manual:clips -- worker --once
 ```
 
 切完后脚本会导入成片 metadata JSON、取得上传短 ID并调用现有上传队列；`REVIEW.md` 只用于人工审核展示。仍由单实例上传 worker 负责 B 站重复检查、限流和状态回写。企微通知默认开启，可用 `--no-notify` 关闭。
+
+## 内容排除与取消
+
+主播要求不再剪某类内容时，在 `ownStreamClips.selectionPolicy.roomOverrides` 配置自然语言限制：
+
+```json
+{
+  "25788785": {
+    "excludedCategories": ["不切本人现实家庭及家庭关系相关，避免片段脱离具体情况引人误解"]
+  }
+}
+```
+
+房间排除项与全局 `selectionPolicy.excludedCategories` 合并，不影响其他直播间。
+有排除项的房间禁止本地热度规则绕过 AI 选材。已有稿件、候选和历史 PLAN 需另行审查；
+改配置不代表已隐藏线上稿件，也不会自动语义扫描历史候选。
+
+对已核对的数字 ID，停止上传 worker 后用 `exclude` 取消并保存永久投稿否决，再恢复 worker：
+
+```powershell
+npm run pm2:clip-upload:stop
+python src/scripts/clip_upload_registry.py exclude --ids 123,124 --note "主播内容限制：已核对相关内容不再投稿"
+npm run pm2:clip-upload:start
+```
+
+命令从活跃上传任务移除这些 ID，空任务标为 cancelled；未发布候选标为 cancelled，已发布记录保留投稿历史。
+`editorialExclusion` 会阻止再次 enqueue（包括 `--force`）和 worker 投稿，不会被旧上传状态同步复活。
+这和可重新入队的 `cancel --job` 不同；不调用 B 站删除或隐藏接口。
+
+手工队列旧入口可在手工 worker 未运行时取消：
+
+```powershell
+npm run manual:clips -- cancel mcq-00001 --note "已按内容限制取消"
+```
+
+这只取消待切或待审入口；已有数字 ID 应同时使用 `exclude`，已入上传队列的任务先处理注册表。

@@ -422,6 +422,9 @@ const ConfigSchema = Joi.object({
             eventScores: Joi.object().pattern(Joi.string(), Joi.number()).default()
         }).default(),
         selectionPolicy: Joi.object({
+            roomOverrides: Joi.object().pattern(Joi.string().pattern(/^\d+$/), Joi.object({
+                excludedCategories: Joi.array().items(Joi.string()).default([])
+            })).default({}),
             requireTimeCoverage: Joi.boolean().default(false),
             excludedCategories: Joi.array().items(Joi.string()).default([]),
             priorityCategories: Joi.array().items(Joi.string()).default([])

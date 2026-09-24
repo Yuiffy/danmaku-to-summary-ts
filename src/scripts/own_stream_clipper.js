@@ -214,7 +214,7 @@ function buildOwnStreamClipCopyPromptLines(generator, streamerName = '岁己SUI'
     ];
 }
 
-function getOwnStreamClipsConfig(config = {}) {
+function getOwnStreamClipsConfig(config = {}, roomId = null) {
     const raw = config.ownStreamClips || {};
     return {
         ...DEFAULT_OWN_STREAM_CLIPS_CONFIG,
@@ -252,7 +252,7 @@ function getOwnStreamClipsConfig(config = {}) {
                 ...(raw.emotionScoring?.eventScores || {})
             }
         },
-        selectionPolicy: {
+        selectionPolicy: require('./clipping/selection_policy').resolveSelectionPolicy({
             ...DEFAULT_OWN_STREAM_CLIPS_CONFIG.selectionPolicy,
             ...(raw.selectionPolicy || {}),
             excludedCategories: Array.isArray(raw.selectionPolicy?.excludedCategories)
@@ -261,7 +261,7 @@ function getOwnStreamClipsConfig(config = {}) {
             priorityCategories: Array.isArray(raw.selectionPolicy?.priorityCategories)
                 ? raw.selectionPolicy.priorityCategories
                 : DEFAULT_OWN_STREAM_CLIPS_CONFIG.selectionPolicy.priorityCategories
-        },
+        }, roomId),
         residualAudit: {
             ...DEFAULT_OWN_STREAM_CLIPS_CONFIG.residualAudit,
             ...(raw.residualAudit || {})
@@ -304,7 +304,8 @@ function buildCutClipMediaConfig(config = {}, options = {}) {
     };
 }
 
-function buildSelectionPolicyPromptLines(policy = {}) {
+function buildSelectionPolicyPromptLines(policy = {}, roomId = null) {
+    policy = require('./clipping/selection_policy').resolveSelectionPolicy(policy, roomId);
     const lines = [
         '内容类型不做默认排除：电影、感谢、唱歌、普通聊天等，只按是否有独立内容价值、完整事件、观点、反应或反差判断。'
     ];
@@ -675,7 +676,7 @@ async function planClipsWithAIChunks(parsed, danmaku, info, totalDuration, confi
             ...participantPromptLines(parsed.participantContext),
             `请直接找这个分段里所有可能值得本地 review 的切片：有趣、弹幕很多、弹幕很在意、体现${hostName}想法与众不同、${hostName}傻事，或弹幕觉得她傻/特别/有趣/可爱。`,
             '不要只看关键词；弹幕密度、弹幕反应和上下文都要考虑。没有独立看点的片段降低优先级，但不要按内容类型一刀切排除。',
-            ...buildSelectionPolicyPromptLines(config.selectionPolicy),
+            ...buildSelectionPolicyPromptLines(config.selectionPolicy, info?.roomId),
             'SenseVoice 情感和声音事件只能作为寻找反差、爆笑、惊讶、委屈等时刻的辅助线索；必须结合字幕确认具体内容，不能仅凭标签下结论。',
             `时长由内容完整性决定，不设固定最短或最长秒数；保留必要铺垫、发展、反应和收尾，不为凑时长截断或灌水，也不把无关话题拼成长片。一个分段最多返回${recallLimit}段，不要求填满，没有就返回空数组。`,
             ...anglePromptLines(true),
@@ -815,7 +816,7 @@ async function planClipsWithAIFullContext(
         'SenseVoice 情感和笑声/哭声等事件是辅助证据，可用于定位反差或强反应；必须结合字幕和弹幕验证，不能只凭标签选段或描述事实。',
         `优先：完整有起承转合的趣事；${hostName}独特/离谱/可爱的想法；口误或操作事故及后续反应；弹幕明显在意且字幕能说明原因的内容。`,
         '没有独立看点的片段降低优先级；电影、感谢、唱歌和普通聊天不做默认排除，有完整事件、观点、反应或反差时可以选择。',
-        ...buildSelectionPolicyPromptLines(config.selectionPolicy),
+        ...buildSelectionPolicyPromptLines(config.selectionPolicy, info?.roomId),
         '时长由内容完整性决定，不设固定最短或最长秒数；保留必要铺垫、发展、反应和收尾，不为凑时长截断或灌水，也不把无关话题拼成长片。时间必须取自输入，不能编造。',
         '边界要求：startTime 包含铺垫；endTime 包含解释、弹幕后续反应和收尾句；不要从笑点中间开始，也不要在句子或故事中间结束。',
         '所有输出片段必须互不重叠；同一话题可以有多个片段，只要各自独立成立且时间不重叠。',
@@ -1000,7 +1001,7 @@ async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config,
         '候选阶段追求高召回，recallScore 和召回来源不是最终质量结论；不要按来源分配固定名额，最终只按内容价值、完整性、观众反应和独立发布价值排序。',
         `重点识别：完整趣事或观点、明显反差/口误/事故、弹幕持续追问或要求细说、观众对一句没说完的话持续在意、以及弹幕觉得${hostName}特别/有趣/可爱的片段。持续讨论本身是通用信号，不要求命中特定题材词。`,
         '没有独立看点的片段降低优先级；内容类型不做默认排除。',
-        ...buildSelectionPolicyPromptLines(config.selectionPolicy),
+        ...buildSelectionPolicyPromptLines(config.selectionPolicy, info?.roomId),
         '时长由内容完整性决定，不设固定最短或最长秒数；保留必要铺垫、发展、反应和收尾，不为凑时长截断或灌水，也不把无关话题拼成长片。',
         ...anglePromptLines(),
         '候选va字段是带原文锚点的多个看点线索，逐项对照完整字幕；选择其中具体、独立的看点组织本片，别把摘要当唯一看点。结束于本看点收束，不把后续另一场事件或战斗当必需结尾。',
@@ -1781,7 +1782,9 @@ async function finishOwnStreamClipJob(metadata, { clip, config, info, parsed, da
 
 async function generateOwnStreamClipsInternal(options = {}) {
     const rootConfig = options.config || {};
-    const config = getOwnStreamClipsConfig(rootConfig);
+    const recordingInfo = parseRecordingInfo(options.mediaPath, options.context || {});
+    const config = getOwnStreamClipsConfig(rootConfig, recordingInfo.roomId);
+    const hasContentExclusions = config.selectionPolicy.excludedCategories.length > 0;
     const clipConcurrency = Math.max(
         1,
         Math.floor(Number(config.clipConcurrency) || 1)
@@ -1865,7 +1868,7 @@ async function generateOwnStreamClipsInternal(options = {}) {
         usedFallback: false,
         fallbackReason: null,
         selectedSource: null,
-        localFallbackEnabled: config.ai?.fallbackToLocalRules !== false,
+        localFallbackEnabled: config.ai?.fallbackToLocalRules !== false && !hasContentExclusions,
         errors: []
     };
     if ((parsed.segments || []).length === 0 && danmaku.length === 0) {
@@ -1881,7 +1884,8 @@ async function generateOwnStreamClipsInternal(options = {}) {
         clips = Array.isArray(plan.clips) ? plan.clips : [];
     } else {
         if (config.parallel?.enabled) {
-            const heatCandidates = buildDanmakuHeatClips(candidates, candidates.length, clipLabel);
+            // Local rules cannot assess semantic content exclusions.
+            const heatCandidates = hasContentExclusions ? [] : buildDanmakuHeatClips(candidates, candidates.length, clipLabel);
             const modelLimit = Math.max(0, Math.floor(Number(config.parallel.modelClips) || 0));
             const modelConfig = {
                 ...config,

@@ -1707,6 +1707,11 @@
       }
     },
     "selectionPolicy": {
+      "roomOverrides": {
+        "25788785": {
+          "excludedCategories": ["不切岁己本人现实家庭及家庭关系相关内容，包括父母亲戚相处、冷战争执、道歉和好、家庭责任、金钱往来、涉及家人的成长经历和家人日常，避免片段脱离具体情况引人误解；不得以改标题、搞笑包装或拆短片段绕过。游戏虚构角色、明确的角色扮演及无关的他人新闻不因出现家庭称谓而误排除。"]
+        }
+      },
       "requireTimeCoverage": false,
       "excludedCategories": [],
       "priorityCategories": []

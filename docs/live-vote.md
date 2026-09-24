@@ -1,0 +1,79 @@
+# 直播弹幕投票机器人
+
+## 现有方案取舍
+
+| 项目 | 已公开的定位 | 对本需求的取舍 |
+| --- | --- | --- |
+| [LiveLink](https://github.com/Mr-Salticidae/livelink) | README 自述为 Windows/Electron 主播助手，含 2-6 选项、实时柱状图和 OBS 展示 | 已有较完整的可视化体验；若只需 OBS 投票可优先试用。这里仍做轻量弹幕口令、UID 授权和本机录播姬共用来源。README 的功能状态不代表我们已独立验收。 |
+| [弹幕姬投票基](https://github.com/mittwillson/danmuji-plugin-tpj) | 弹幕姬的投票插件 | 依赖弹幕姬宿主，不是此仓库可直接运行的独立机器人。 |
+| [DanmakuVote](https://github.com/Decision2016/DanmakuVote) | B 站弹幕投票驱动 Minecraft/Bukkit 事件 | 证明弹幕投票玩法可行，但输出是游戏内事件，而非直播间定时播报。 |
+| [JVote](https://github.com/Xinrea/JVote) | H5 投票展示项目 | 可参考展示方式；不替代本需求的授权口令和录播姬消息转发。 |
+
+## 设计与边界
+
+- 默认独立监听一个 B 站长房间号 (`source` 省略或设为 `bilibili`)。这是只读的直播弹幕连接，和录播姬各占一条连接；不自动改用录播姬或 XML。依赖 `blive-message-listener` 的 UID、文本与连接事件，不自行实现弹幕协议。
+- 直连投票需要登录监听：设置 `BILIBILI_VOTE_LISTEN_COOKIE`，或复用显式设置的 `BILIBILI_VOTE_COOKIE`。监听 Cookie 须含 `SESSDATA`、`DedeUserID`、`buvid3`，HTTP 与弹幕握手使用同一个账号及已有设备标识。匿名连接虽然能收到文本，观众 UID 可能全部为 0，不能用于授权或每人一票，因此 CLI 缺少监听凭据时直接报错；dry-run 同样需要监听凭据，但不会发言。
+- `source: "recorder"` 连接本机 BililiveRecorder WPF 转发，复用该进程已有的弹幕连接。服务只绑定 `127.0.0.1`，需要房间匹配和至少 16 位的随机字母数字 token；转发 UID、文本与收到时间，不包含 Cookie。这个模式需要部署并重启**改过源码的** WPF 录播姬；当前运行进程不会因为源码编译自动获得转发功能。
+- `source: "xml"` 追踪录播姬弹幕 XML，仅适用于本机落盘且时间戳/UID 可用的场景。首次从文件末尾读，切换文件后从新文件开头读；来源停止更新时它无法识别断线，不推荐无人值守发言。
+- 直连显式传入 User-Agent、Referer、Origin 和 Accept，避免 `tiny-bilibili-ws 1.1.0` 请求头合并时丢失默认 User-Agent。`getDanmuInfo` 返回 `-352` 只说明该次接口请求被拒绝，不能单凭它判断账号被封、整个 IP 被限制或需要验证码；应先核对请求头、签名和登录/设备状态。启动握手失败后机器人停止自动重试并以非零状态退出；录播姬自身的连接也受 B 站策略约束，复用不能绕过平台限制。
+- 默认 **dry-run**：只打印拟发送文字。真实发弹幕必须加 `--send` 且提供独立 `BILIBILI_VOTE_COOKIE`，其中 `DedeUserID` 必须与配置 `botUid` 一致；切勿提交 Cookie。发送走 B 站直播发送接口，可能因账号资格、字数、频率或接口策略失败；失败就停止机器人，不补发或无限重试。
+
+## 运行
+
+需要 Node.js 22+；依赖用本项目的 pnpm lockfile 安装。先复制 `src/services/live-vote/config.example.json` 为本地 JSON 配置，换成实际**长房间号**和授权发起人的 UID，`botUid` 是鹿饼账号 UID。`source` 默认 `bilibili`，不需要录播姬端口。
+
+启动前将监听 Cookie 注入 `BILIBILI_VOTE_LISTEN_COOKIE`（仅接收），或将同一账号 Cookie 注入 `BILIBILI_VOTE_COOKIE`（接收；加 `--send` 后才发送）。凭据不写进示例配置，也不会自动从本项目生产配置读取。
+
+```powershell
+pnpm install --frozen-lockfile
+npm run build
+npm run vote:run -- --config temp/live-vote.json
+```
+
+确认来源、UID 和输出后，才配置 `BILIBILI_VOTE_COOKIE` 并在命令末尾加 `--send`。生产运行请设置进程管理器和独立日志；不要在日志中输出 Cookie。不要拿现有录播/投稿 Cookie 当默认发言凭证。
+
+本机转发模式的配置示例：
+
+```json
+{
+  "roomId": "628684",
+  "authorizedUids": ["123456789", "987654321"],
+  "botUid": "1122334455",
+  "source": "recorder",
+  "recorderSocketUrl": "ws://127.0.0.1:17896/api/local/danmaku/628684",
+  "maxMessageChars": 20
+}
+```
+
+推荐在改版 WPF 录播姬 EXE 同目录放置 `local-danmaku-relay.json`，这样手工或守护程序重启均可启用：
+
+```json
+{
+  "enabled": true,
+  "roomId": 628684,
+  "port": 17896,
+  "token": "替换为至少16位随机英文字母或数字"
+}
+```
+
+房间必须已配置在录播姬中；当前版本一次转发一个配置房间。token 属于本机凭据，不要提交 Git。启动投票机器人前，将文件的 `token` 读入 `BILILIVE_LOCAL_DANMAKU_TOKEN`；`roomId` 和 URL 中的房间号须与文件一致。环境变量 `BILILIVE_LOCAL_DANMAKU_ROOM_ID`、`BILILIVE_LOCAL_DANMAKU_TOKEN` 和可选 `BILILIVE_LOCAL_DANMAKU_PORT` 仍可覆盖文件配置。配置在进程启动时读取，修改后需重启录播姬。
+
+转发器只订阅已有房间的弹幕和连接状态事件，不主动开启录制、额外连接 B 站或回放历史消息。未开播且录播姬没有监听时，WebSocket 握手仍可成功，但状态帧会是 `connected: false`；不能将本机端口已连接当成 B 站弹幕已连接。
+
+WebSocket 以 token 作为子协议认证。连接后先发 `{"type":"status","roomId":628684,"connected":false}`；普通弹幕格式为 `{"type":"danmaku","roomId":628684,"uid":"123","text":"1","sentAt":1790259000000}`，时间是录播姬接收时的毫秒时间戳。每个客户端队列最多 256 条，积压溢出时断开该客户端，避免丢票后继续输出结果。
+
+XML 回退示例：`"source": "xml", "recorderRoot": "D:\\recordings"`，目录必须是绝对路径。
+
+## 弹幕规则
+
+- 授权 UID 发 `#投票 1.复联2 2.法环`，默认 30 秒；`#投票60 1复联2 2法环` 或 `#投票 60 1、复联2 2、法环` 设置 60 秒。只能有两个选项，时长 30-120 秒，选项名不超过 16 个字符。单独 `#投票60` 不会启动，因为没有选项。
+- 开始时分别发 `投票60秒：发1投复联2` 与 `发2投法环`，各自不超配置上限；默认每条最多 20 字。每 10 秒更新一次票型，到点后留 3 秒接收已发送在截止前的延迟消息，最后公布票数和胜者。
+- 观众的 `1`、`1111`、全角 `１１１` 都算 1；`2`、`2222` 算 2。每 UID 只计**第一张**有效票，不接受夹杂其他文字，鹿饼自己的 UID 不参与。断线时取消当前投票且不宣布不完整结果；重连后须重新发起。授权 UID 可发 `#取消投票`。
+- 发弹幕节流至少 3 秒。文字在排队期间若断线/取消，会跳过尚未发送的旧公告；已经发到 B 站的消息无法撤回。票数只保留内存，重启或断线后不恢复。
+
+## 参考
+
+- B 站[直播开放平台文档](https://open-live.bilibili.com/document/)：正式互动玩法需走平台授权和对应接入流程；这份简版目前使用社区直播弹幕监听和直播消息发送接口，非官方开放平台应用。
+- [`blive-message-listener`](https://github.com/ddiu8081/blive-message-listener)：开源 TypeScript 监听库，提供 UID/文本解析和监听事件；其 README 提醒短房间号、登录状态影响消息信息。
+- [`JVote`](https://github.com/Xinrea/JVote)：另一种直播 H5 投票展示项目，可参考展示体验；此实现侧重弹幕内的口令、授权与结果播报。
+- [`BililiveRecorder`](https://github.com/BililiveRecorder/BililiveRecorder)：录播姬源码的本机转发修改需与机器人独立编译、测试和部署；不要以投票机器人启动/测试为由自动重启生产录播进程。

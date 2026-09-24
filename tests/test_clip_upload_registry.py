@@ -760,6 +760,34 @@ class ClipUploadRegistryTests(unittest.TestCase):
         self.assertEqual(saved_registry["clips"]["1"]["status"], "queued")
         self.assertTrue(saved_queue["jobs"][-1]["allowDuplicateTitle"])
 
+    def test_editorial_exclusion_cancels_only_selected_ids_and_blocks_force(self):
+        fixture = self.make_fixture(count=2)
+        fixture["runtime"].mkdir(parents=True, exist_ok=True)
+        registry.save_json(fixture["registry_path"], fixture["registry"])
+        registry.save_json(fixture["queue_path"], fixture["queue"])
+        args = type("Args", (), {"ids": "1", "note": "streamer content restriction"})()
+        with patch.object(registry, "RUNTIME_DIR", fixture["runtime"]), patch.object(
+            registry, "REGISTRY_PATH", fixture["registry_path"]
+        ), patch.object(registry, "QUEUE_PATH", fixture["queue_path"]), patch.object(
+            registry, "acquire_lock", return_value=True
+        ), patch.object(registry, "release_lock"):
+            self.assertEqual(registry.exclude_clips(args), 0)
+            saved = registry.load_json(fixture["registry_path"], {})
+            queue = registry.load_json(fixture["queue_path"], {})
+            self.assertEqual(saved["clips"]["1"]["status"], "cancelled")
+            self.assertEqual(queue["jobs"][0]["clipIds"], [2])
+            self.assertEqual(queue["jobs"][0]["status"], "pending")
+            self.write_done(fixture, [1])
+            registry.sync_clip_statuses(saved, [1])
+            self.assertEqual(saved["clips"]["1"]["status"], "cancelled")
+            upload = type("Args", (), {"ids": "1", "force": True, "dry_run": True})()
+            self.assertEqual(registry.enqueue(upload), 2)
+            self.assertTrue(any("editorially excluded" in e for e in registry.validate_groups([[saved["clips"]["1"]]])))
+            args.ids = "2"
+            self.assertEqual(registry.exclude_clips(args), 0)
+            queue = registry.load_json(fixture["queue_path"], {})
+            self.assertEqual(queue["jobs"][0]["status"], "cancelled")
+
     def test_cancelled_job_clips_can_be_enqueued_again(self):
         fixture = self.make_fixture(count=2)
         for clip in fixture["registry"]["clips"].values():
