@@ -109,6 +109,7 @@ async function renderPrecisionRevision(options, dependencies = {}) {
         const revision = { version: 1, clipId: id, createdAt: new Date().toISOString(), note: String(options.note || ''),
             originalMetadataPath: metadataPath, originalDigests: digests, sourceSnapshot: snapshot, style: config.enhancements.creative?.style || 'accent',
             avatarMode: config.enhancements.creative?.avatarMode || 'auto',
+            ...(options.allowCoverFaceOverlap ? { coverFaceOverlapApproved: true } : {}),
             ...(resumeDirectory ? { resumeFrom: resumeDirectory } : {}), uploadAuthorized: false };
         const baseline = { ...original, uploadId: id, reviewIndex: record.reviewIndex,
             output: { ...original.output, metadataPath: outputMetadata, srtPath: revisionSrt },
@@ -134,7 +135,8 @@ async function renderPrecisionRevision(options, dependencies = {}) {
             sessionId: directory, selectionCacheDirectory: path.join(directory, 'temp') }, parsed, danmaku,
             source: { kind: 'video', mediaPath: original.source.mediaPath }, options: { ...original.source, config: rootConfig,
                 creativeResumeDirectory: resumeDirectory, creativeInsetPlan: insetPlan, creativeSoundLevelOverrides: soundLevelOverrides,
-                creativeCoverTextPosition: options.coverTextPosition },
+                creativeCoverTextPosition: options.coverTextPosition,
+                creativeAllowCoverFaceOverlap: options.allowCoverFaceOverlap === true },
             topic, clip, subtitleEvidence: evidence, execution });
         if (fs.readFileSync(metadataPath, 'utf8') !== before || JSON.stringify(sourceSnapshot(original)) !== JSON.stringify(snapshot)
             || fileDigest(original.output.mediaPath) !== digests.video || fileDigest(revisionSrt) !== digests.subtitles) {
@@ -166,9 +168,9 @@ async function renderPrecisionRevision(options, dependencies = {}) {
 
 module.exports = { renderPrecisionRevision };
 if (require.main === module) {
-    const { values } = parseArgs({ options: { id: { type: 'string' }, registry: { type: 'string' }, note: { type: 'string' }, style: { type: 'string' }, 'avatar-mode': { type: 'string' }, 'inset-plan': { type: 'string' }, 'resume-from': { type: 'string' }, 'sound-level-overrides': { type: 'string' }, 'cover-text-position': { type: 'string' } } });
+    const { values } = parseArgs({ options: { id: { type: 'string' }, registry: { type: 'string' }, note: { type: 'string' }, style: { type: 'string' }, 'avatar-mode': { type: 'string' }, 'inset-plan': { type: 'string' }, 'resume-from': { type: 'string' }, 'sound-level-overrides': { type: 'string' }, 'cover-text-position': { type: 'string' }, 'allow-cover-face-overlap': { type: 'boolean' } } });
     renderPrecisionRevision({ id: values.id, registryPath: values.registry, note: values.note, style: values.style,
-        avatarMode: values['avatar-mode'], insetPlanPath: values['inset-plan'], resumeFrom: values['resume-from'], soundLevelOverridesPath: values['sound-level-overrides'], coverTextPosition: values['cover-text-position'] })
+        avatarMode: values['avatar-mode'], insetPlanPath: values['inset-plan'], resumeFrom: values['resume-from'], soundLevelOverridesPath: values['sound-level-overrides'], coverTextPosition: values['cover-text-position'], allowCoverFaceOverlap: values['allow-cover-face-overlap'] })
         .then(result => { console.log('PRECISION_RESULT: ' + JSON.stringify(result)); if (result.status !== 'pending_review') process.exitCode = 1; })
         .catch(error => { console.error(error.stack || error.message); process.exitCode = 1; });
 }

@@ -11,6 +11,8 @@ def render_precision(args, api):
     for field in ('style', 'avatar_mode', 'inset_plan', 'resume_from', 'sound_level_overrides', 'cover_text_position'):
         if getattr(args, field, None):
             command.extend(['--' + field.replace('_', '-'), getattr(args, field)])
+    if args.allow_cover_face_overlap:
+        command.append('--allow-cover-face-overlap')
     return api.subprocess.run(command, cwd=str(api.PROJECT_ROOT), check=False).returncode
 
 
@@ -24,6 +26,7 @@ def register_commands(sub, api):
     p.add_argument('--resume-from', default=None, help='Reuse matching drafts; validate, render and review again')
     p.add_argument('--sound-level-overrides', default=None, help='Source-bound sound levels for a matching local revision')
     p.add_argument('--cover-text-position', choices=('center', 'bottom'), default=None)
+    p.add_argument('--allow-cover-face-overlap', action='store_true', help='User-approved cover-only face/text overlap; other QA remains active')
     p.set_defaults(func=lambda args: render_precision(args, api))
     p = sub.add_parser('replace-precision', help='Replace an uploaded BV with a user-reviewed precision revision')
     p.add_argument('--id', required=True, type=int)

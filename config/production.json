@@ -1860,6 +1860,10 @@
     "anchors": {},
     "upload": {
       "collectionSectionId": 10015117,
+      "autoCollectionRollover": {
+        "enabled": true,
+        "sectionId": 9482593
+      },
       "collectionRouting": {
         "fuyasoul": {
           "seasonId": 8956269,

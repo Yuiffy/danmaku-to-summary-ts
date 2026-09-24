@@ -3,6 +3,23 @@ const crypto = require('crypto');
 const { soundId } = require('./creative_assets');
 const { SOUNDS } = require('./creative_plan');
 
+function chooseMusicForDialogue(profile, dialogueRms) {
+    if (profile.music !== 'playful') return { enabled: false, reason: 'Editorial profile does not call for music' };
+    if (Number.isFinite(dialogueRms) && dialogueRms < .055) return { enabled: false, reason: `Quiet source dialogue (RMS ${dialogueRms.toFixed(4)}) takes priority over background music` };
+    return { enabled: true, reason: 'Dialogue level does not block background music' };
+}
+
+function dialogueRmsFromPcm(pcm) {
+    if (pcm.length % 4) throw new Error('Incomplete dialogue PCM sample');
+    const samples = new Float32Array(pcm.buffer, pcm.byteOffset, pcm.length / 4);
+    let sum = 0;
+    for (const sample of samples) {
+        if (!Number.isFinite(sample)) throw new Error('Invalid dialogue PCM sample');
+        sum += sample * sample;
+    }
+    return samples.length ? Math.sqrt(sum / samples.length) : 0;
+}
+
 /** Compare decoded stereo PCM. This verifies technical preservation, not whether a joke sounds good. */
 function analyzeCreativeAudio(original, rendered, plan, assets = {}, sampleRate = 16000) {
     const channels = 2, bytesPerFrame = channels * 4;
@@ -16,6 +33,7 @@ function analyzeCreativeAudio(original, rendered, plan, assets = {}, sampleRate 
         return { id, start, end: Math.min(plan.duration, start + seconds), count: 0, error: 0, source: 0 };
     });
     let count = 0, aa = 0, bb = 0, ab = 0, error = 0, peak = 0, finite = true;
+    const blocks = new Map();
     for (let frame = 0; frame < frames; frame++) {
         const time = frame / sampleRate;
         const activeEffects = windows.filter(row => time >= row.start - .05 && time < row.end + .05);
@@ -24,7 +42,11 @@ function analyzeCreativeAudio(original, rendered, plan, assets = {}, sampleRate 
             if (!Number.isFinite(x) || !Number.isFinite(y)) { finite = false; continue; }
             peak = Math.max(peak, Math.abs(y));
             if (activeEffects.length) for (const effect of activeEffects) { effect.count++; effect.error += (x - y) ** 2; effect.source += x * x; }
-            else { count++; aa += x * x; bb += y * y; ab += x * y; error += (x - y) ** 2; }
+            else {
+                count++; aa += x * x; bb += y * y; ab += x * y; error += (x - y) ** 2;
+                const key = Math.floor(time * 2), block = blocks.get(key) || { aa: 0, ab: 0 };
+                block.aa += x * x; block.ab += x * y; blocks.set(key, block);
+            }
         }
     }
     const correlation = aa > 1e-8 && bb > 1e-8 ? ab / Math.sqrt(aa * bb) : null;
@@ -41,7 +63,9 @@ function analyzeCreativeAudio(original, rendered, plan, assets = {}, sampleRate 
     if (Math.abs(a.length - b.length) / channels / sampleRate > .08 || Math.abs(frames / sampleRate - plan.duration) > .08) issues.push('audio_duration_changed');
     // Music intentionally lowers correlation; regression gain still checks that dialogue was retained at its original level.
     const originalGain = aa > 1e-8 ? ab / aa : null;
-    if (correlation === null || correlation < (plan.music ? .75 : .98)
+    const activeBlocks = [...blocks.values()].filter(block => block.aa > sampleRate * channels * .5 * .000025);
+    const missingDialogue = plan.music && activeBlocks.some(block => block.ab / block.aa < .75);
+    if (correlation === null || (plan.music ? missingDialogue : correlation < .98)
         || (plan.music ? originalGain < .94 || originalGain > 1.06 : gain < .85 || gain > 1.15)) issues.push('original_audio_changed_outside_effects');
     if (effects.some(row => row.differenceRms < Math.max(.0005, outsideErrorRms * 1.4))) issues.push('added_sound_not_measurable');
     if (plan.style === 'compact' && effects.some(row => row.addedRms < .006 || (row.relativeDb !== null && row.relativeDb < -11))) issues.push('sound_effect_too_quiet');
@@ -49,6 +73,6 @@ function analyzeCreativeAudio(original, rendered, plan, assets = {}, sampleRate 
     const digest = data => crypto.createHash('sha256').update(data).digest('hex');
     return { version: 1, status: issues.length ? 'failed' : 'passed', issues, sampleRate, channels,
         originalPcmSha256: digest(original), renderedPcmSha256: digest(rendered), peak, correlation, gain, originalGain, outsideErrorRms,
-        seconds: frames / sampleRate, effects, listeningReview: 'pending_human_review' };
+        seconds: frames / sampleRate, effects, dialogueBlocksChecked: activeBlocks.length, listeningReview: 'pending_human_review' };
 }
-module.exports = { analyzeCreativeAudio };
+module.exports = { analyzeCreativeAudio, chooseMusicForDialogue, dialogueRmsFromPcm };

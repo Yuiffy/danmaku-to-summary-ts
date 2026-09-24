@@ -83,6 +83,27 @@ function validateAnchoredFaceInsets(plan, resolution, settings) {
     return anchored;
 }
 
+function fallbackUndersizedFaceInsets(original, converted, resolution, settings) {
+    const originalById = new Map(original.effects.map(row => [row.momentId, row]));
+    const fallbackIds = [];
+    const effects = converted.effects.map(row => {
+        if (!row.faceInset) return row;
+        try {
+            checkedFaceGeometry(anchorSpatialPlan({ effects: [row] }, resolution, settings).effects[0], resolution);
+            return row;
+        } catch (error) {
+            const before = originalById.get(row.momentId);
+            const magnification = /magnification=(\d+(?:\.\d+)?)x/.exec(error.message);
+            if (!/^M\d+: Face inset must magnify/.test(error.message)
+                || !magnification || Number(magnification[1]) >= 1.2
+                || !before?.zoom || before.zoom.safeToCrop !== true || row.zoom !== null) throw error;
+            fallbackIds.push(row.momentId);
+            return before;
+        }
+    });
+    return { plan: { ...converted, effects }, fallbackIds };
+}
+
 function coverWindowWithoutInset(plan) {
     const windows = [...plan.effects].filter(row => row.faceInset || row.focusInset)
         .map(row => ({ start: row.start, end: row.end })).sort((a, b) => a.start - b.start);
@@ -96,10 +117,22 @@ function coverWindowWithoutInset(plan) {
 }
 
 function coverProtectedBoxes(plan) {
-    const boxes = plan.effects.map(row => row.faceInset?.sourceBox)
+    const boxes = plan.effects.map(row => row.faceInset?.sourceBox || (row.zoom?.target === 'avatar' ? row.zoom.targetBox : null))
         .filter(box => box && [box.x, box.y, box.width, box.height].every(Number.isFinite));
     // These are source-frame coordinates, including the avatar even outside an inset effect.
     return boxes.filter((box, index) => boxes.findIndex(other => JSON.stringify(other) === JSON.stringify(box)) === index);
+}
+
+function coverWindowWithFaceEvidence(plan) {
+    const windows = [...plan.effects].filter(row => row.faceInset || row.focusInset || row.zoom)
+        .map(row => ({ start: row.start, end: row.end })).sort((a, b) => a.start - b.start);
+    let cursor = Math.min(1, plan.duration), best = null;
+    for (const window of [...windows, { start: plan.duration, end: plan.duration }]) {
+        const start = cursor, end = Math.min(plan.duration, window.start);
+        if (end - start >= 1.2 && (!best || end - start > best.end - best.start)) best = { start, end };
+        cursor = Math.max(cursor, window.end);
+    }
+    return best;
 }
 
 function subtitleZone(row, width, height, marginV) {
@@ -165,4 +198,4 @@ function layoutSubtitleAss(content, plan, style) {
 }
 
 function writeLayoutSubtitles(file, plan, style) { fs.writeFileSync(file, layoutSubtitleAss(fs.readFileSync(file, 'utf8'), plan, style), 'utf8'); }
-module.exports = { focusBounds, groupSticker, anchorSpatialPlan, validateAnchoredFaceInsets, coverWindowWithoutInset, coverProtectedBoxes, subtitleZone, reflowAssText, layoutSubtitleAss, writeLayoutSubtitles };
+module.exports = { focusBounds, groupSticker, anchorSpatialPlan, validateAnchoredFaceInsets, fallbackUndersizedFaceInsets, coverWindowWithoutInset, coverWindowWithFaceEvidence, coverProtectedBoxes, subtitleZone, reflowAssText, layoutSubtitleAss, writeLayoutSubtitles };

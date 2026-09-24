@@ -27,6 +27,26 @@ test.each([
     expect(() => validateMoments({ moments: [{ ...moments()[0], ...change }] }, speech, 60, limits)).toThrow();
 });
 
+test('compact continuous speech can use a justified longer node while preserving a hard upper bound', () => {
+    const settings = creativeSettings({ style: 'compact', editorialDensity: 'dense' });
+    const cues = [{ id: 'S1', start: 1, end: 13, text: '连续表达' }, { id: 'S2', start: 15, end: 29, text: '第二段连续表达' }];
+    const raw = { moments: [{ start: 1, end: 10.415, speechIds: ['S1'], reason: '完整的转折' }] };
+    expect(settings.maxEffectSeconds).toBe(12);
+    expect(validateMoments(raw, cues, 30, settings)[0].end).toBe(10.415);
+    expect(() => validateMoments({ moments: [
+        { ...raw.moments[0], end: 13.1 }, { start: 15, end: 27.5, speechIds: ['S2'], reason: '完整的接话' }
+    ] }, cues, 30, settings)).toThrow('M1: 12.1s exceeds 12s; M2: 12.5s exceeds 12s');
+});
+
+test('compact long node can cite six nearby cues without weakening the ordinary evidence limit', () => {
+    const cues = Array.from({ length: 6 }, (_, i) => ({ id: `S${i + 1}`, start: i * 1.5, end: i * 1.5 + 1, text: '连续表达' }));
+    const row = { start: 0, end: 10, speechIds: cues.map(cue => cue.id), reason: '完整的表述' };
+    expect(validateMoments({ moments: [row] }, cues, 20, creativeSettings({ style: 'compact' }))).toHaveLength(1);
+    expect(() => validateMoments({ moments: [{ ...row, end: 5 }] }, cues, 20, limits)).toThrow('invalid timing or speech evidence');
+    expect(() => validateMoments({ moments: [{ ...row, speechIds: [...row.speechIds, 'S999'] }] }, cues, 20,
+        creativeSettings({ style: 'compact' }))).toThrow('invalid timing or speech evidence');
+});
+
 test.each([
     { frameIds: ['M1F0', 'M1F0', 'M1F0'] }, { visualConfirmed: false },
     { zoom: { scale: 4, x: .5, y: .5, target: 'avatar', safeToCrop: true } },

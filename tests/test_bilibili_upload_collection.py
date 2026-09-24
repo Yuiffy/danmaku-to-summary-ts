@@ -1,7 +1,119 @@
 import unittest
+from unittest.mock import patch
+import asyncio
 
 from src.scripts.batch_upload import infer_room_id
-from src.scripts.bilibili_upload import extract_room_id, get_collection_section_id
+from src.scripts.bilibili_upload import (extract_room_id, get_collection_section_id,
+                                        resolve_auto_collection_section, attach_video_to_collection,
+                                        create_collection_season, list_collection_seasons)
+
+
+def volume(number, section_id, count):
+    return {'season': {'id': 800 + number, 'title': f'岁己AI自动切片{number}',
+                       'cover': 'https://example.com/cover.jpg', 'desc': '自动切片'},
+            'sections': {'sections': [{'id': section_id, 'epCount': count}]}}
+
+
+class AutoCollectionRolloverTests(unittest.TestCase):
+    def setUp(self):
+        self.credential = type('CredentialStub', (), {'bili_jct': 'csrf', 'sessdata': 'cookie'})()
+
+    @patch('src.scripts.bilibili_upload.requests.get')
+    def test_list_paginates_and_reads_live_shape(self, get):
+        get.side_effect = [type('Response', (), {'raise_for_status': lambda self: None,
+            'json': lambda self: {'code': 0, 'data': {'total': 2, 'seasons': [volume(1, 11, 1000)]}}})(),
+            type('Response', (), {'raise_for_status': lambda self: None,
+            'json': lambda self: {'code': 0, 'data': {'total': 2, 'seasons': [volume(2, 22, 1)]}}})()]
+        self.assertEqual(len(list_collection_seasons(self.credential)), 2)
+
+    @patch('src.scripts.bilibili_upload.requests.post')
+    def test_create_uses_season_add_contract(self, post):
+        post.return_value.raise_for_status.return_value = None
+        post.return_value.json.return_value = {'code': 0, 'data': 802}
+        self.assertEqual(create_collection_season('岁己AI自动切片2', '',
+                         'https://example.com/cover.jpg', self.credential), 802)
+        self.assertEqual(post.call_args.kwargs['data']['csrf'], 'csrf')
+
+    @patch('src.scripts.bilibili_upload.create_collection_season')
+    @patch('src.scripts.bilibili_upload.list_collection_seasons')
+    def test_full_first_volume_creates_second_and_uses_its_section(self, listing, create):
+        listing.side_effect = [[volume(1, 11, 1000)], [volume(1, 11, 1000), volume(2, 22, 0)]]
+        create.return_value = 802
+        self.assertEqual(resolve_auto_collection_section(11, self.credential, enabled=True), 22)
+        create.assert_called_once_with('岁己AI自动切片2', '自动切片',
+                                       'https://example.com/cover.jpg', self.credential)
+
+    @patch('src.scripts.bilibili_upload.create_collection_season')
+    @patch('src.scripts.bilibili_upload.list_collection_seasons')
+    def test_reuses_second_then_rolls_to_third(self, listing, create):
+        listing.return_value = [volume(1, 11, 1000), volume(2, 22, 999)]
+        self.assertEqual(resolve_auto_collection_section(11, self.credential, enabled=True), 22)
+        create.assert_not_called()
+        listing.side_effect = [[volume(1, 11, 1000), volume(2, 22, 1000)],
+                               [volume(1, 11, 1000), volume(2, 22, 1000), volume(3, 33, 0)]]
+        create.return_value = 803
+        self.assertEqual(resolve_auto_collection_section(11, self.credential, enabled=True), 33)
+
+    @patch('src.scripts.bilibili_upload.list_collection_seasons')
+    def test_other_collection_is_unchanged(self, listing):
+        listing.return_value = [volume(1, 11, 1000)]
+        self.assertEqual(resolve_auto_collection_section(99, self.credential), 99)
+        listing.assert_not_called()
+
+    @patch('src.scripts.bilibili_upload.create_collection_season')
+    @patch('src.scripts.bilibili_upload.list_collection_seasons')
+    def test_unknown_count_does_not_create(self, listing, create):
+        item = volume(1, 11, 1000)
+        del item['sections']['sections'][0]['epCount']
+        listing.return_value = [item]
+        with self.assertRaisesRegex(RuntimeError, '视频数量不可用'):
+            resolve_auto_collection_section(11, self.credential, enabled=True)
+        create.assert_not_called()
+
+    @patch('src.scripts.bilibili_upload.create_collection_season')
+    @patch('src.scripts.bilibili_upload.list_collection_seasons')
+    def test_new_season_missing_section_does_not_create_again(self, listing, create):
+        listing.return_value = [volume(1, 11, 1000)]
+        create.return_value = 802
+        with patch('src.scripts.bilibili_upload.time.sleep'):
+            with self.assertRaisesRegex(RuntimeError, '尚未查询到小节 ID'):
+                resolve_auto_collection_section(11, self.credential, enabled=True)
+        create.assert_called_once()
+
+    @patch('src.scripts.bilibili_upload.add_episode_to_section')
+    @patch('src.scripts.bilibili_upload.resolve_auto_collection_section')
+    def test_attachment_records_new_section(self, resolve, add):
+        resolve.return_value = 22
+        add.return_value = {'code': 0}
+        result = {'aid': 1, 'cid': 2, 'title': 'clip'}
+        config = {'bilibili': {'upload': {'autoCollectionRollover': {'enabled': True, 'sectionId': 11}}}}
+        asyncio.run(attach_video_to_collection(result, self.credential, 11, config=config))
+        self.assertEqual((result['collectionStatus'], result['collectionSectionId']), ('ok', 22))
+        add.assert_called_once_with(22, 1, 2, 'clip', self.credential)
+        resolve.assert_called_once_with(11, self.credential, enabled=True)
+
+    @patch('src.scripts.bilibili_upload.add_episode_to_section')
+    @patch('src.scripts.bilibili_upload.resolve_auto_collection_section')
+    def test_unrelated_add_failure_does_not_retry(self, resolve, add):
+        resolve.return_value = 11
+        add.return_value = {'code': -1, 'message': 'permission denied'}
+        result = {'aid': 1, 'cid': 2, 'title': 'clip'}
+        config = {'bilibili': {'upload': {'autoCollectionRollover': {'enabled': True, 'sectionId': 11}}}}
+        asyncio.run(attach_video_to_collection(result, self.credential, 11, config=config))
+        self.assertEqual(result['collectionStatus'], 'failed')
+        resolve.assert_called_once()
+        add.assert_called_once()
+
+    @patch('src.scripts.bilibili_upload.add_episode_to_section')
+    @patch('src.scripts.bilibili_upload.resolve_auto_collection_section')
+    def test_live_full_error_rechecks_and_retries_next_volume(self, resolve, add):
+        resolve.side_effect = [11, 22]
+        add.side_effect = [{'code': 20091, 'message': '您在这个合集中添加的单集太多了。'}, {'code': 0}]
+        config = {'bilibili': {'upload': {'autoCollectionRollover': {'enabled': True, 'sectionId': 11}}}}
+        result = {'aid': 1, 'cid': 2, 'title': 'clip'}
+        asyncio.run(attach_video_to_collection(result, self.credential, 11, config=config))
+        self.assertEqual((result['collectionStatus'], result['collectionSectionId']), ('ok', 22))
+        self.assertEqual(add.call_count, 2)
 
 
 class CollectionRoutingTests(unittest.TestCase):

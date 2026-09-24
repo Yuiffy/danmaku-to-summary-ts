@@ -29,6 +29,12 @@ class OwnRevisionRegistryTests(unittest.TestCase):
         self.assertEqual(command[2:], ["--id", "17", "--registry", str(api.REGISTRY_PATH), "--note", "重新渲染"])
         self.assertFalse(api.QUEUE_PATH.exists())
 
+    def test_precision_cover_face_exception_is_explicit_and_cover_only(self):
+        args = api.build_parser().parse_args(["precision", "--id", "2828", "--allow-cover-face-overlap"])
+        with patch.object(api.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
+            self.assertEqual(args.func(args), 0)
+        self.assertEqual(run.call_args.args[0][-1], "--allow-cover-face-overlap")
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

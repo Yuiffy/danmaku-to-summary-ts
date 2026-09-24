@@ -24,6 +24,9 @@ from bilibili_api import Credential, Picture, video_uploader
 import requests
 
 DEFAULT_TID = 21
+AUTO_COLLECTION_LIMIT = 1000
+AUTO_COLLECTION_NAME = '岁己AI自动切片'
+AUTO_COLLECTION_PATTERN = re.compile(r'^岁己AI自动切片([1-9]\d*)$')
 ACCOUNT_MID = 412141275
 GENERIC_COLLECTION_LABELS = {'老岁片', 'AI老岁片'}
 ROOM_ID_PATTERN = re.compile(r'(?:录制-|[\\/])(\d{5,})[-_]')
@@ -270,6 +273,116 @@ def _build_cookie_str(credential: Credential) -> str:
     return '; '.join(parts)
 
 
+def list_collection_seasons(credential: Credential) -> list[dict]:
+    """Read creator-center seasons, including their section IDs and counts."""
+    headers = {'cookie': _build_cookie_str(credential),
+               'referer': 'https://member.bilibili.com/platform/upload-manager',
+               'user-agent': 'Mozilla/5.0'}
+    seasons = []
+    page = 1
+    while True:
+        response = requests.get('https://member.bilibili.com/x2/creative/web/seasons',
+                                params={'pn': page, 'ps': 30}, headers=headers, timeout=20)
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get('code') != 0:
+            raise RuntimeError(f"查询合集失败: code={payload.get('code')} message={payload.get('message', '')}")
+        data = payload.get('data') or {}
+        items = data.get('seasons')
+        total = data.get('total')
+        if not isinstance(items, list) or not isinstance(total, int) or total < 0:
+            raise RuntimeError('合集列表缺少有效的 seasons/total')
+        seasons.extend(items)
+        if len(seasons) >= total:
+            return seasons
+        if not items:
+            raise RuntimeError('合集列表分页提前结束')
+        page += 1
+
+
+def create_collection_season(title: str, description: str, cover: str, credential: Credential) -> int:
+    csrf = getattr(credential, 'bili_jct', '')
+    response = requests.post('https://member.bilibili.com/x2/creative/web/season/add',
+                             data={'title': title, 'desc': description, 'cover': cover,
+                                   'season_price': 0, 'csrf': csrf},
+                             headers={'cookie': _build_cookie_str(credential),
+                                      'referer': 'https://member.bilibili.com/platform/upload-manager',
+                                      'user-agent': 'Mozilla/5.0'}, timeout=20)
+    response.raise_for_status()
+    payload = response.json()
+    result = payload.get('data')
+    season_id = _positive_collection_id(
+        (result.get('id') or (result.get('season') or {}).get('id')) if isinstance(result, dict) else result
+    )
+    if payload.get('code') != 0 or not season_id:
+        raise RuntimeError(f"创建合集失败: code={payload.get('code')} message={payload.get('message', '')}")
+    return season_id
+
+
+def _auto_collection_entries(seasons: list[dict]) -> dict[int, tuple[dict, int, int]]:
+    entries = {}
+    for item in seasons:
+        season = item.get('season') or item
+        match = AUTO_COLLECTION_PATTERN.fullmatch(str(season.get('title') or ''))
+        if not match:
+            continue
+        section_data = item.get('sections') or {}
+        sections = section_data.get('sections') if isinstance(section_data, dict) else section_data
+        sections = sections or []
+        if not isinstance(sections, list) or not sections or any(not isinstance(section, dict) for section in sections):
+            raise RuntimeError(f"合集 {season.get('title')} 的小节结构异常")
+        section_ids = [_positive_collection_id(section.get('id')) for section in sections]
+        if any(value is None for value in section_ids):
+            raise RuntimeError(f"合集 {season.get('title')} 的小节 ID 不可用")
+        count = season.get('epCount')
+        if not isinstance(count, int) or count < 0:
+            counts = [section.get('epCount') for section in sections]
+            if any(not isinstance(value, int) or value < 0 for value in counts):
+                raise RuntimeError(f"合集 {season.get('title')} 的视频数量不可用")
+            count = sum(counts)
+        number = int(match.group(1))
+        if number in entries:
+            raise RuntimeError(f"合集 {season.get('title')} 重名")
+        entries[number] = (season, section_ids[0], count)
+    return entries
+
+
+def resolve_auto_collection_section(section_id: int, credential: Credential, *, enabled: bool = False) -> int:
+    """Advance only the numbered Sui auto-clip series, reusing existing volumes."""
+    if not enabled:
+        return section_id
+    entries = _auto_collection_entries(list_collection_seasons(credential))
+    if section_id not in {entry[1] for entry in entries.values()}:
+        raise RuntimeError(f'配置的自动切片 section_id={section_id} 未出现在合集列表中')
+    number = next(number for number, entry in entries.items() if entry[1] == section_id)
+    while number in entries and entries[number][2] >= AUTO_COLLECTION_LIMIT:
+        number += 1
+    if number in entries:
+        return entries[number][1]
+
+    previous = entries[number - 1][0]
+    cover = previous.get('cover')
+    if not isinstance(cover, str) or not cover.startswith(('https://', 'http://')):
+        raise RuntimeError(f"合集 {previous.get('title')} 没有可复用的封面")
+    title = f'{AUTO_COLLECTION_NAME}{number}'
+    try:
+        new_id = create_collection_season(title, str(previous.get('desc') or ''), cover, credential)
+    except requests.RequestException:
+        # A timed-out write may still have succeeded. Do not blindly create twice.
+        existing = _auto_collection_entries(list_collection_seasons(credential)).get(number)
+        if existing:
+            return existing[1]
+        raise
+    for attempt in range(3):
+        if attempt:
+            time.sleep(2)
+        created = _auto_collection_entries(list_collection_seasons(credential)).get(number)
+        if created and _positive_collection_id(created[0].get('id')) == new_id:
+            print(f'[INFO] 已创建合集 {title}: season_id={new_id}, section_id={created[1]}')
+            return created[1]
+    raise RuntimeError(f'合集 {title} 已创建 season_id={new_id}，但尚未查询到小节 ID')
+
+
 def add_episode_to_section(
     section_id: int,
     aid: int,
@@ -366,6 +479,10 @@ async def attach_video_to_collection(
     if not section_id:
         return None
 
+    upload_cfg = ((config or get_config()).get('bilibili') or {}).get('upload') or {}
+    auto_cfg = upload_cfg.get('autoCollectionRollover') or {}
+    auto_enabled = bool(auto_cfg.get('enabled')) and int(section_id) == _positive_collection_id(auto_cfg.get('sectionId'))
+
     aid = upload_result.get('aid')
     cid = upload_result.get('cid')
     bvid = upload_result.get('bvid')
@@ -413,12 +530,26 @@ async def attach_video_to_collection(
         return None
 
     try:
+        section_id = resolve_auto_collection_section(int(section_id), credential, enabled=auto_enabled)
         data = add_episode_to_section(int(section_id), int(aid), int(cid), title, credential)
         if data.get('code') == 0:
             upload_result['collectionSectionId'] = int(section_id)
             upload_result['collectionStatus'] = 'ok'
             print(f'[INFO] 已加入合集 section_id={section_id}, aid={aid}, cid={cid}')
         else:
+            # Another uploader may have filled the last slot since the list read.
+            message = str(data.get('message') or '').casefold()
+            if data.get('code') == 20091 or any(marker in message for marker in
+                    ('上限', '已满', '数量限制', '单集太多', '1000', 'full', 'limit')):
+                next_section = resolve_auto_collection_section(int(section_id), credential, enabled=auto_enabled)
+                if next_section != section_id:
+                    section_id = next_section
+                    data = add_episode_to_section(int(section_id), int(aid), int(cid), title, credential)
+                    if data.get('code') == 0:
+                        upload_result['collectionSectionId'] = int(section_id)
+                        upload_result['collectionStatus'] = 'ok'
+                        print(f'[INFO] 已加入合集 section_id={section_id}, aid={aid}, cid={cid}')
+                        return upload_result
             upload_result['collectionSectionId'] = int(section_id)
             upload_result['collectionStatus'] = 'failed'
             upload_result['collectionError'] = f"code={data.get('code')}, message={data.get('message', '')}"

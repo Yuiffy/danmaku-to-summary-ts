@@ -13,7 +13,7 @@ function creativeSettings(raw = {}) {
     const compact = raw.style === 'compact';
     const density = raw.editorialDensity || 'dense', cap = density === 'light' ? 6 : density === 'moderate' ? 12 : 24;
     return { style: compact ? 'compact' : 'accent', editorialDensity: density, maxMoments: Math.max(1, Math.min(compact ? cap : 8, Math.floor(Number(raw.maxMoments) || (compact ? 24 : 6)))),
-        maxEffectSeconds: compact ? 8 : 6, maxCoverage: compact ? density === 'light' ? .3 : density === 'moderate' ? .6 : .9 : .30,
+        maxEffectSeconds: compact ? 12 : 6, maxCoverage: compact ? density === 'light' ? .3 : density === 'moderate' ? .6 : .9 : .30,
         maxTotalEffectSeconds: compact ? 150 : 40, minGapSeconds: compact ? density === 'light' ? 2 : density === 'moderate' ? 1 : .15 : 4,
         maxZoom: Math.max(1.15, Math.min(compact ? 5 : 2.6, Number(raw.maxZoom) || (compact ? 5 : 2.4))), variety: raw.variety === true,
         soundEffects: raw.soundEffects === true, filters: raw.filters === true, avatarMode: raw.avatarMode || 'auto',
@@ -28,11 +28,15 @@ function speechForCreative(segments, window) {
 
 function validateMoments(raw, speech, duration, settings) {
     if (!Array.isArray(raw?.moments) || raw.moments.length > settings.maxMoments) throw new Error('Invalid creative moment count');
+    const overlong = raw.moments.flatMap((row, index) => row && Number.isFinite(row.start) && Number.isFinite(row.end)
+        && row.end - row.start > settings.maxEffectSeconds + .0005
+        ? [`M${index + 1}: ${round(row.end - row.start)}s exceeds ${settings.maxEffectSeconds}s`] : []);
+    if (overlong.length) throw new Error(`Creative moments exceed the per-node duration limit: ${overlong.join('; ')}`);
     const moments = raw.moments.map((row, index) => {
         if (!row || !finite(row.start, 0, duration + .0005) || !finite(row.end, 0, duration + .0005)
             || round(row.end - row.start) < .6 || round(row.end - row.start) > settings.maxEffectSeconds
             || typeof row.reason !== 'string' || !row.reason.trim() || row.reason.length > 300
-            || !Array.isArray(row.speechIds) || !row.speechIds.length || row.speechIds.length > 5
+            || !Array.isArray(row.speechIds) || !row.speechIds.length || row.speechIds.length > (settings.style === 'compact' ? 8 : 5)
             || row.speechIds.some(id => !speech.some(cue => cue.id === id && cue.end > row.start - 1 && cue.start < row.end + 1))) {
             throw new Error(`Creative moment has invalid timing or speech evidence: M${index + 1} ${JSON.stringify(row)}; nearby speech IDs: `
                 + speech.filter(cue => cue.end > row?.start - 1 && cue.start < row?.end + 1).map(cue => cue.id).join(','));

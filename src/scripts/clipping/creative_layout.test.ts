@@ -1,5 +1,5 @@
 export {};
-const { anchorSpatialPlan, validateAnchoredFaceInsets, coverWindowWithoutInset, coverProtectedBoxes, focusBounds, subtitleZone, layoutSubtitleAss } = require('./creative_layout');
+const { anchorSpatialPlan, validateAnchoredFaceInsets, fallbackUndersizedFaceInsets, coverWindowWithoutInset, coverWindowWithFaceEvidence, coverProtectedBoxes, focusBounds, subtitleZone, layoutSubtitleAss } = require('./creative_layout');
 const { focusGeometry, validateFocusInset } = require('./focus_inset');
 const topic = require('../topic_clipper');
 
@@ -75,6 +75,30 @@ test('preflight reports the offending moment and effective magnification without
         { focusPlacement: 'source', faceInsetDiameter: .6 })).toThrow(/M4: Face inset must magnify.*effective diameter=0.6, magnification=0.7\dx/);
 });
 
+test('undersized circular inset keeps only the already validated original zoom', () => {
+    const zoom = { target: 'avatar', scale: 1.45, x: .5, y: .5, safeToCrop: true };
+    const original = { effects: ['M1', 'M2'].map(momentId => ({ momentId, zoom, reason: 'reaction' })) };
+    const converted = { effects: [
+        { momentId: 'M1', zoom: null, faceInset: { sourceBox: { x: .39, y: .39, width: .21, height: .27 }, placement: 'source', diameter: .46, clearOfAction: true } },
+        { momentId: 'M2', zoom: null, faceInset: { sourceBox: { x: .75, y: .8, width: .1, height: .15 }, placement: 'source', diameter: .4, clearOfAction: true } }
+    ] };
+    const resolution = { width: 1920, height: 1080 }, settings = { focusPlacement: 'source', faceInsetDiameter: .6 };
+    const result = fallbackUndersizedFaceInsets(original, converted, resolution, settings);
+    expect(result.fallbackIds).toEqual(['M1']);
+    expect(result.plan.effects[0]).toBe(original.effects[0]);
+    expect(result.plan.effects[1].faceInset).toBeDefined();
+    expect(validateAnchoredFaceInsets(result.plan, resolution, settings).effects[1].faceInset).toBeDefined();
+});
+
+test('circular inset fallback does not hide invalid geometry or unsafe original zoom', () => {
+    const resolution = { width: 1920, height: 1080 }, settings = { focusPlacement: 'source', faceInsetDiameter: .6 };
+    const inset = { sourceBox: { x: .39, y: .39, width: .21, height: .27 }, placement: 'source', diameter: .46, clearOfAction: true };
+    const converted = { effects: [{ momentId: 'M1', zoom: null, faceInset: inset }] };
+    expect(() => fallbackUndersizedFaceInsets({ effects: [{ momentId: 'M1', zoom: { safeToCrop: false } }] }, converted, resolution, settings)).toThrow('magnify');
+    expect(() => fallbackUndersizedFaceInsets({ effects: [{ momentId: 'M1', zoom: { safeToCrop: true } }] },
+        { effects: [{ ...converted.effects[0], faceInset: { ...inset, clearOfAction: false } }] }, resolution, settings)).toThrow('safe area');
+});
+
 test('cover preference selects a long clean gap between inset effects', () => {
     expect(coverWindowWithoutInset({ duration: 30, effects: [{ start: 1, end: 9, faceInset: {} },
         { start: 12, end: 16, faceInset: {} }, { start: 22, end: 28, focusInset: {} }] })).toEqual({ start: 16, end: 22 });
@@ -85,6 +109,14 @@ test('cover protection retains the source avatar area beyond inset timestamps', 
     const sourceBox = { x: .025, y: .63, width: .15, height: .18 };
     expect(coverProtectedBoxes({ effects: [{ faceInset: { sourceBox } }, { faceInset: { sourceBox } }, { sticker: {} }] }))
         .toEqual([sourceBox]);
+});
+
+test('cover protects reviewed avatar face but selects an unzoomed frame window', () => {
+    const face = { x: .36, y: .3, width: .25, height: .36 };
+    const plan = { duration: 80, effects: [{ start: 10, end: 18, zoom: { target: 'avatar', targetBox: face } },
+        { start: 40, end: 48, sticker: {} }, { start: 60, end: 68, zoom: { target: 'avatar', targetBox: face } }] };
+    expect(coverProtectedBoxes(plan)).toEqual([face]);
+    expect(coverWindowWithFaceEvidence(plan)).toEqual({ start: 18, end: 60 });
 });
 
 test('missing draft diameter is derived only for source-anchored inset with configured cap', () => {

@@ -1,5 +1,5 @@
 export {};
-const { analyzeCreativeAudio } = require('./creative_audio_audit');
+const { analyzeCreativeAudio, chooseMusicForDialogue, dialogueRmsFromPcm } = require('./creative_audio_audit');
 const rate = 1000;
 const plan = { duration: 6, effects: [{ start: 1, end: 2, sound: { id: 'laugh', offsetSeconds: .2 } }] };
 const assets = { laugh: { sampleSeconds: .5 } };
@@ -35,4 +35,24 @@ test('compact mode rejects measurable but masked laughter instead of claiming au
     const audited = analyzeCreativeAudio(normal, tooQuiet, { ...plan, style: 'compact' }, assets, rate);
     expect(audited.issues).toContain('sound_effect_too_quiet');
     expect(audited.effects[0].relativeDb).toBeLessThan(-20);
+});
+
+test('music may lower correlation while original dialogue remains, but a missing half-second is rejected', () => {
+    const original = pcm(), withMusic = pcm();
+    const samples = new Float32Array(withMusic.buffer, withMusic.byteOffset, withMusic.length / 4);
+    for (let i = 0; i < samples.length; i++) samples[i] += .22 * Math.sin(2 * Math.PI * 113 * Math.floor(i / 2) / rate);
+    const musicPlan = { duration: 6, effects: [], music: { id: 'music' } };
+    const preserved = analyzeCreativeAudio(original, withMusic, musicPlan, {}, rate);
+    expect(preserved.correlation).toBeLessThan(.75);
+    expect(preserved.status).toBe('passed');
+    for (let i = 4 * rate * 2; i < 4.5 * rate * 2; i++) samples[i] -= new Float32Array(original.buffer)[i];
+    expect(analyzeCreativeAudio(original, withMusic, musicPlan, {}, rate).issues).toContain('original_audio_changed_outside_effects');
+});
+
+test('weak source dialogue suppresses optional music without suppressing sound effects', () => {
+    const profile = { music: 'playful' };
+    expect(chooseMusicForDialogue(profile, .036).enabled).toBe(false);
+    expect(chooseMusicForDialogue(profile, .08).enabled).toBe(true);
+    expect(chooseMusicForDialogue({ music: 'none' }, .08).enabled).toBe(false);
+    expect(dialogueRmsFromPcm(Buffer.from(new Float32Array([.03, -.03]).buffer))).toBeCloseTo(.03);
 });

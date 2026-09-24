@@ -55,6 +55,13 @@ The user-facing season IDs are recorded alongside the section IDs in
 `sectionId` required by the creator-center API. Historical registry entries can
 be previewed and migrated with:
 
+For the Sui auto-clip series, `bilibili.upload.autoCollectionRollover` enables
+capacity checks on the configured first `sectionId` (`9482593`). At 1000
+episodes, upload attachment reuses the next numbered `岁己AI自动切片N` season or
+creates it with the previous season's cover and description, then looks up its
+new section ID. This repeats for later volumes. Failed collection attachment
+remains recorded on the upload result; a successful video upload is not retried.
+
 ```powershell
 python src\scripts\migrate_clip_collections.py
 python src\scripts\migrate_clip_collections.py --apply

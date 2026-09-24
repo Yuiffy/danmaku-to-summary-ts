@@ -7,6 +7,7 @@ const { writeJsonAtomic } = require('./candidate_subtitles');
 const { creativeSettings, speechForCreative, validateMoments, validateCreativePlan, STICKERS, SOUNDS, FILTERS } = require('./creative_plan');
 const { loadCreativeAssets, assetChoices, soundId } = require('./creative_assets');
 const { editorialProfile, rotateLaughter, sameEditorialProfile } = require('./creative_profile');
+const { chooseMusicForDialogue, dialogueRmsFromPcm } = require('./creative_audio_audit');
 
 const image = file => `data:image/jpeg;base64,${fs.readFileSync(file).toString('base64')}`;
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
@@ -17,12 +18,14 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
     const { config, info, parsed, danmaku, source, options, topic, clip, subtitleEvidence, execution } = context;
     const settings = config.enhancements, limits = creativeSettings(settings.creative);
     const compact = limits.style === 'compact';
+    const allowCoverFaceOverlap = options.creativeAllowCoverFaceOverlap === true && baseline.precisionRevision?.coverFaceOverlapApproved === true;
     const timelineTools = require('./creative_timeline');
     const directory = path.dirname(baseline.output.metadataPath);
     const name = path.basename(baseline.output.metadataPath, '.json');
     const scratch = path.join(directory, 'temp', `${name}-creative`);
     fs.mkdirSync(scratch, { recursive: true });
     const logs = [], history = [];
+    if (allowCoverFaceOverlap) history.push({ stage: 'cover_face_overlap_exception', scope: 'cover_text_over_face_only', approvedByUser: true });
     let assets = {}, activeTimeline = null, activeMoments = null, profile = null;
     const start = Date.now();
     const withMedia = work => execution?.withMedia ? execution.withMedia(work) : work(null);
@@ -54,8 +57,12 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
                     .find(file => fs.existsSync(file));
                 return storyFile ? parse(JSON.parse(fs.readFileSync(storyFile, 'utf8')).text).profile : null;
             })();
+            const sameVisualProfile = sameEditorialProfile(profile, oldProfile)
+                || (oldProfile?.music === 'playful' && profile?.music === 'none'
+                    && previous.creativeResult?.history?.some(row => row.stage === 'music_suitability' && row.enabled === false)
+                    && sameEditorialProfile({ ...profile, music: 'playful' }, oldProfile));
             if (stage === 'story' || (activeTimeline && sameTimeline(activeTimeline) === sameTimeline(oldTimeline)
-                && oldStory?.qa?.approved === true && sameEditorialProfile(profile, oldProfile)
+                && oldStory?.qa?.approved === true && sameVisualProfile
                 && (stage !== 'visual-plan' || matchingMoments))) {
                 const oldScratch = path.join(options.creativeResumeDirectory, 'temp', 'clip-creative');
                 const names = stage === 'story' ? ['story-qa-repair', 'story-repair', 'story']
@@ -160,6 +167,19 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
                 profile = editorialProfile(draft.profile, { legacy: Boolean(options.creativeResumeDirectory && logs.at(-1)?.status === 'reused_draft') });
                 return timelineTools.validateStoryPlan(draft, sourceCues, sourceDuration, protectedSpans, profile);
             };
+            const applyMusicSuitability = async () => {
+                if (profile.music !== 'playful') return;
+                const sample = path.join(scratch, 'dialogue-sample.pcm');
+                let dialogueRms;
+                try {
+                    await withMedia(mediaProfile => topic.runFfmpeg(['-v', 'error', '-y', '-ss', String(Math.max(0, sourceDuration * .2)),
+                        '-i', baseline.output.mediaPath, '-t', '20', '-map', '0:a:0', '-vn', '-ar', '16000', '-ac', '2', '-f', 'f32le', sample], mediaConfig(mediaProfile)));
+                    dialogueRms = dialogueRmsFromPcm(fs.readFileSync(sample));
+                } finally { if (fs.existsSync(sample)) fs.unlinkSync(sample); }
+                const decision = chooseMusicForDialogue(profile, dialogueRms);
+                if (!decision.enabled) profile = { ...profile, music: 'none' };
+                history.push({ stage: 'music_suitability', dialogueRms, ...decision });
+            };
             let draft = await request('story', 'keep', storyPrompt);
             try { timeline = acceptStory(draft); }
             catch (error) {
@@ -167,6 +187,7 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
                 draft = await request('story-repair', 'keep', storyPrompt + '\n修复：' + error.message + '\n上次：' + JSON.stringify(draft));
                 timeline = acceptStory(draft);
             }
+            await applyMusicSuitability();
             const reviewStory = stage => {
                 if (stage === 'story-qa' && options.creativeResumeDirectory) {
                     const previous = JSON.parse(fs.readFileSync(path.join(options.creativeResumeDirectory, 'clip.json'), 'utf8'));
@@ -190,6 +211,7 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
                 draft = await request('story-qa-repair', 'keep', storyPrompt + '\n独立审核发现下述必要上下文问题，请修复，同时保留原来的有效删减：'
                     + JSON.stringify(storyQa) + '\n上次计划：' + JSON.stringify(draft));
                 timeline = acceptStory(draft);
+                await applyMusicSuitability();
                 storyQa = await reviewStory('story-qa-final');
             }
             history.push({ stage: 'story', timeline, qa: storyQa });
@@ -210,7 +232,7 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
             '找出最值得强调的反应、反差或游戏重点。这里只选时刻，下一步看画面后才能选位置。'
             + '所有时间为片内秒数，必须由邻近原话ID支撑。无明确收益可返回空数组。'
             + `最多${limits.maxMoments}处；每处0.6–${limits.maxEffectSeconds}秒；两处之间至少${limits.minGapSeconds}秒；总时长不超过${Math.min(limits.maxTotalEffectSeconds, duration * limits.maxCoverage).toFixed(2)}秒。`
-            + (compact ? `按内容profile选择关键反应、接话、讲解步骤或视觉信息，密度=${profile.density}。喜剧dense可每4–8秒一处；中性/严肃/表演只强调有具体收益的位置，不凑固定数量。` : limits.variety ? '这是综艺精剪：完整故事通常选择铺垫后的首次笑点、升级、反问/自嘲和结尾回扣，约每30–45秒一个有内容依据的节点。长于两分钟时争取4–6处有明显收益的节拍，不只选重复讲同一句话的时刻。' : '')
+            + (compact ? `按内容profile选择关键反应、接话、讲解步骤或视觉信息，密度=${profile.density}。常见重点为4–8秒；只有同一段连续表达确实需要时才延长至12秒，不要为了填满上限持续遮挡画面。中性/严肃/表演不凑固定数量。` : limits.variety ? '这是综艺精剪：完整故事通常选择铺垫后的首次笑点、升级、反问/自嘲和结尾回扣，约每30–45秒一个有内容依据的节点。长于两分钟时争取4–6处有明显收益的节拍，不只选重复讲同一句话的时刻。' : '')
             + '只返回 {"moments":[{"start":12,"end":14,"speechIds":["S1"],"reason":"中文具体理由"}]}。\n'
             + JSON.stringify({ profile, duration, copy: baseline.copy, speech, audience });
         let momentDraft = await request('moments', 'moments', momentPrompt), moments;
@@ -313,10 +335,12 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
             }
             let layout = options.creativeInsetPlan || reusableLayout || await request('inset-layout', 'insets', insetPrompt, visualPages), adapted;
             const insetResolution = await require('sharp')(sourceFrames[0]).metadata();
+            let fallbackIds = [];
             const apply = draft => {
                 const value = require('./face_inset').applyInsetLayout(raw, draft, [...targetIds]);
-                require('./creative_layout').validateAnchoredFaceInsets(value, insetResolution, limits);
-                return value;
+                const fallback = require('./creative_layout').fallbackUndersizedFaceInsets(raw, value, insetResolution, limits);
+                fallbackIds = fallback.fallbackIds;
+                return fallback.plan;
             };
             try { adapted = apply(layout); plan = validateDraft(adapted); }
             catch (error) {
@@ -326,6 +350,8 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
                 adapted = apply(layout); plan = validateDraft(adapted);
             }
             raw = adapted;
+            if (fallbackIds.length) history.push({ stage: 'inset_magnification_fallback', momentIds: fallbackIds,
+                reason: 'Circular face inset cannot reach 1.2x at the configured diameter; retained validated original zoom' });
             history.push({ stage: 'inset_layout', origin: options.creativeInsetPlan ? 'editorial_file' : reusableLayout ? 'approved_source_boxes' : 'model', layout });
         }
         if (limits.variety && limits.soundEffects && profile?.laughter !== false && plan.effects.length && !plan.effects.some(row => row.sound)
@@ -413,14 +439,14 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
             current = { ...current, attributionReview: review.attributionReview, grounding: review.grounding };
         }
         const coverLayout = require('./creative_layout');
-        const coverWindow = coverLayout.coverWindowWithoutInset(plan);
+        const coverWindow = coverLayout.coverWindowWithFaceEvidence(plan);
         current.output.coverPath = await withMedia(() => topic.generateClipCover(mediaPath, current.copy.coverText || current.copy.title, directory,
             { outputPath: path.join(directory, `${name}.creative_cover.jpg`), streamerName: baseline.streamerName,
                 coverSourcePath: mediaPath, clipStart: coverWindow?.start ?? 0,
                 clipDuration: coverWindow ? coverWindow.end - coverWindow.start : duration,
                 preferredTime: coverWindow ? (coverWindow.start + coverWindow.end) / 2 : plan.effects[0].start,
                 textPosition: options.creativeCoverTextPosition,
-                protectedBoxes: coverLayout.coverProtectedBoxes(plan), protectSubtitleBand: true,
+                protectedBoxes: allowCoverFaceOverlap ? [] : coverLayout.coverProtectedBoxes(plan), protectSubtitleBand: true,
                 resourcePeaks: baseline.processing?.resourcePeaks }));
         await withMedia(async profile => {
             const mc = mediaConfig(profile);
@@ -467,6 +493,7 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
             + '返回 {"approved":true,"checks":{"meaning":true,"focus":true,"subtitles":true,"restraint":true,"impact":true},"issues":[]}。\n'
             + (compact ? '按editorialProfile核对节奏、完整性和语气；不是每种素材都要喜剧效果。放大应在原头像、弹幕或关键点附近，不能搬到无关位置挡弹幕。关联贴图靠近主体但不挡脸/文字/操作。字幕可换行及移到主体旁边，不能盖住嘴部或裁出屏幕；保持原字号。圆形特写边框允许自然出屏，不能仅因圆圈不完整拒绝；关键眼睛/嘴/下巴仍须可见且无人工黑色补边。全屏细节放大时小圆窗mode=retain是保持原像素大小的人脸，不要求它产生放大效果。人物眼睛嘴部完整，文字放大不截断原话，教学步骤/连续表演不能被剪坏。' : '')
             + '封面实际文字以copy.coverText为准；若图中文字与该字段不一致，请明确报告逐字差异，不要根据猜读提出不存在的文案。'
+            + (allowCoverFaceOverlap ? '用户已明确接受本次封面文字遮挡人脸：仅此封面遮脸不算focus或restraint失败，也不要将其列入issues。正文成片的人脸、操作和字幕遮挡，以及封面文字准确性和可读性仍须正常检查。' : '')
             + JSON.stringify({ plan, speech, ...(timeline ? { originalSpeech, storyTimeline: timeline } : {}), sourceFrames: frameMap, qaTimes, copy: current.copy, cover: { text: current.copy.coverText || current.copy.title }, audioQa: current.audioQa || null }),
         [...comparisonPages, current.output.coverPath]);
         history.push({ stage: 'qa', qa });
