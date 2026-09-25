@@ -20,7 +20,7 @@
 - **AI 晚安总结**：调用 Gemini/TuZi API 生成晚安回复 Markdown
 - **AI 图片生成**：调用 TuZi 图片 API 生成卡通漫画图
 - **B 站动态回复**：将晚安回复 + 图片发布到 B 站评论区
-- **直播弹幕投票（独立工具）**：支持各房间主播及全局管理员发起双选项投票，推荐通过 [Yuiffy 的 mikufans fork](https://github.com/Yuiffy/BililiveRecorder) 复用已有弹幕连接；独立模式可直连，但多房间会增加 B 站连接数量和风控风险。详见 [直播投票运行指南](docs/live-vote.md)
+- **直播弹幕投票（独立工具）**：支持各房间主播及全局管理员发起 2～9 选项投票，推荐通过 [Yuiffy 的 mikufans fork](https://github.com/Yuiffy/BililiveRecorder) 复用已有弹幕连接；独立模式可直连，但多房间会增加 B 站连接数量和风控风险。详见 [直播投票运行指南](docs/live-vote.md)
 
 ---
 

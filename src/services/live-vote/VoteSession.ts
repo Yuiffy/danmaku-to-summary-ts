@@ -12,37 +12,41 @@ export interface VoteConfig {
 }
 
 interface ActiveVote {
-  labels: [string, string];
+  labels: string[];
   startedAt: number;
   deadline: number;
   nextUpdate: number;
-  votes: Map<string, 1 | 2>;
+  votes: Map<string, number>;
 }
 
 const DEFAULT_DURATION = 30;
 const SETTLE_MS = 3000;
 const MAX_COMMAND_LAG_MS = 10000;
 
-export function parseVoteCommand(text: string): { duration: number; labels: [string, string] } | null {
+export function parseVoteCommand(text: string): { duration: number; labels: string[] } | null {
   const normalized = text.normalize('NFKC').trim();
-  const prefix = /^#投票\s*(?:(\d{2,3})\s+)?1[.、:：]?\s*/u.exec(normalized);
+  if (/[\r\n]/u.test(normalized)) return null;
+  const prefix = /^#投票\s*(?:(\d{2,3})\s+)?/u.exec(normalized);
   if (!prefix) return null;
   const duration = prefix[1] ? Number(prefix[1]) : DEFAULT_DURATION;
   if (duration < 30 || duration > 120) return null;
   const rest = normalized.slice(prefix[0].length);
-  const separator = /\s+2[.、:：]?\s*/u.exec(rest);
-  if (!separator || separator.index === undefined) return null;
-  const first = rest.slice(0, separator.index).trim();
-  const second = rest.slice(separator.index + separator[0].length).trim();
-  if (!first || !second || first.length > 16 || second.length > 16 || /[\r\n]/u.test(normalized)) return null;
-  return { duration, labels: [first, second] };
+  const markers = [...rest.matchAll(/(?:^|\s+)(\d+)[.、:：]?/gu)];
+  if (markers.length < 2 || markers.length > 9 || markers[0].index !== 0) return null;
+  const labels: string[] = [];
+  for (const [index, marker] of markers.entries()) {
+    if (marker[1] !== String(index + 1)) return null;
+    const label = rest.slice(marker.index! + marker[0].length, markers[index + 1]?.index ?? rest.length).trim();
+    if (!label || Array.from(label).length > 16) return null;
+    labels.push(label);
+  }
+  return { duration, labels };
 }
 
-export function parseVoteChoice(text: string): 1 | 2 | null {
+export function parseVoteChoice(text: string, optionCount = 9): number | null {
   const value = text.normalize('NFKC').trim();
-  if (/^1+$/u.test(value)) return 1;
-  if (/^2+$/u.test(value)) return 2;
-  return null;
+  const match = /^([1-9])\1*$/u.exec(value);
+  return match && Number(match[1]) <= optionCount ? Number(match[1]) : null;
 }
 
 export class VoteSession {
@@ -53,7 +57,7 @@ export class VoteSession {
   constructor(private readonly config: VoteConfig, private readonly announce: (message: string) => void,
     private readonly onCancel: () => void = () => {}) {
     this.authorized = new Set(config.authorizedUids);
-    this.maxChars = config.maxMessageChars ?? 20;
+    this.maxChars = config.maxMessageChars ?? 40;
     if (!this.authorized.size || !Number.isInteger(this.maxChars) || this.maxChars < 20 || this.maxChars > 40)
       throw new Error('authorizedUids and maxMessageChars between 20 and 40 are required');
   }
@@ -61,6 +65,15 @@ export class VoteSession {
   ingest(message: VoteDanmaku, now = Date.now()): void {
     if (!/^[1-9]\d*$/u.test(message.uid) || message.uid === this.config.botUid) return;
     const text = message.text.normalize('NFKC').trim();
+    if (this.authorized.has(message.uid) && text === '#结束投票') {
+      const vote = this.active;
+      if (!vote || !Number.isFinite(message.sentAt) || message.sentAt < vote.startedAt ||
+          Math.abs(now - message.sentAt) > MAX_COMMAND_LAG_MS) return;
+      // Discard queued progress before enqueuing the final tally.
+      this.cancel();
+      this.emitCounts(vote, true);
+      return;
+    }
     if (this.authorized.has(message.uid) && text === '#取消投票') {
       if (this.active) {
         this.active = null;
@@ -72,11 +85,8 @@ export class VoteSession {
     if (this.authorized.has(message.uid) && text.startsWith('#投票')) {
       if (this.active || Math.abs(now - message.sentAt) > MAX_COMMAND_LAG_MS) return;
       const command = parseVoteCommand(text);
-      if (!command) return;
-      const first = `投票${command.duration}秒：发1投${command.labels[0]}`;
-      const second = `发2投${command.labels[1]}`;
-      if ([first, second].some(text => Array.from(text).length > this.maxChars)) {
-        this.emit('投票选项太长，请缩短后重试');
+      if (!command) {
+        this.emit('投票格式有误，请连续编号1至9');
         return;
       }
       this.active = {
@@ -86,13 +96,12 @@ export class VoteSession {
         nextUpdate: now + 10000,
         votes: new Map()
       };
-      this.emit(first);
-      this.emit(second);
+      this.emitPacked(`投票${command.duration}秒，发序号：`, command.labels.map((label, index) => `${index + 1}.${label}`));
       return;
     }
     const vote = this.active;
     if (!vote || now > vote.deadline + SETTLE_MS || message.sentAt > vote.deadline || message.sentAt < vote.startedAt) return;
-    const choice = parseVoteChoice(text);
+    const choice = parseVoteChoice(text, vote.labels.length);
     if (choice && !vote.votes.has(message.uid)) vote.votes.set(message.uid, choice);
   }
 
@@ -100,14 +109,11 @@ export class VoteSession {
     const vote = this.active;
     if (!vote) return;
     if (now >= vote.deadline + SETTLE_MS) {
-      const [one, two] = this.count(vote);
       this.active = null;
-      const result = one === two ? '平票' : `${one > two ? 1 : 2}胜`;
-      this.emitCounts(`结束 1:${one}票 2:${two}票 ${result}`, one, two);
+      this.emitCounts(vote, true);
     } else if (now >= vote.nextUpdate && now < vote.deadline) {
-      const [one, two] = this.count(vote);
       vote.nextUpdate += (Math.floor((now - vote.nextUpdate) / 10000) + 1) * 10000;
-      this.emitCounts(`票型 1:${one}票 2:${two}票`, one, two);
+      this.emitCounts(vote, false);
     }
   }
 
@@ -118,21 +124,38 @@ export class VoteSession {
     }
   }
 
-  private count(vote: ActiveVote): [number, number] {
-    let one = 0;
-    let two = 0;
-    for (const choice of vote.votes.values()) choice === 1 ? one++ : two++;
-    return [one, two];
+  private count(vote: ActiveVote): number[] {
+    const counts = vote.labels.map(() => 0);
+    for (const choice of vote.votes.values()) counts[choice - 1]++;
+    return counts;
   }
 
-  private emitCounts(text: string, one: number, two: number): void {
-    if (Array.from(text).length <= this.maxChars) {
-      this.emit(text);
-    } else {
-      this.emit(text.startsWith('结束') ? '投票结束' : '当前票型');
-      this.emit(`1:${one}票`);
-      this.emit(`2:${two}票`);
+  private emitCounts(vote: ActiveVote, final: boolean): void {
+    const counts = this.count(vote);
+    const parts = vote.labels.flatMap((label, index) => {
+      const text = `${index + 1}.${label}:${counts[index]}票`;
+      // A lower account limit may require separating a long label from its count.
+      return Array.from(text).length <= this.maxChars ? [text] : [`${index + 1}.${label}`, `${index + 1}号：${counts[index]}票`];
+    });
+    if (final) {
+      const highest = Math.max(...counts);
+      const winners = counts.map((count, index) => count === highest ? index : -1).filter(index => index >= 0);
+      parts.push(highest === 0 ? '无人投票' : winners.length > 1 ? '平票' : `${vote.labels[winners[0]]}胜`);
     }
+    this.emitPacked(final ? '结束：' : '票型：', parts);
+  }
+
+  private emitPacked(prefix: string, parts: string[]): void {
+    let line = prefix;
+    for (const part of parts) {
+      const next = line === prefix ? line + part : `${line} ${part}`;
+      if (Array.from(next).length <= this.maxChars) line = next;
+      else {
+        if (line) this.emit(line);
+        line = Array.from(prefix + part).length <= this.maxChars ? prefix + part : part;
+      }
+    }
+    if (line) this.emit(line);
   }
 
   private emit(text: string): void {
