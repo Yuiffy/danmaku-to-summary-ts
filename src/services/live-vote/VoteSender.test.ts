@@ -16,7 +16,7 @@ describe('vote sender safeguards', () => {
       await sender.send('投票30秒', () => false);
       expect(log).not.toHaveBeenCalled();
       await sender.send('投票30秒');
-      expect(log).toHaveBeenCalledWith('[dry-run] 投票30秒');
+      expect(log).toHaveBeenCalledWith('[dry-run room 628684] 投票30秒');
     } finally {
       log.mockRestore();
     }

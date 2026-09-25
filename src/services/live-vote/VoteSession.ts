@@ -1,4 +1,5 @@
 export interface VoteDanmaku {
+  roomId?: string;
   uid: string;
   text: string;
   sentAt: number;
@@ -58,7 +59,7 @@ export class VoteSession {
   }
 
   ingest(message: VoteDanmaku, now = Date.now()): void {
-    if (!/^\d+$/u.test(message.uid) || message.uid === this.config.botUid) return;
+    if (!/^[1-9]\d*$/u.test(message.uid) || message.uid === this.config.botUid) return;
     const text = message.text.normalize('NFKC').trim();
     if (this.authorized.has(message.uid) && text === '#取消投票') {
       if (this.active) {

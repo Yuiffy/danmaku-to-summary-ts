@@ -1,0 +1,8 @@
+{
+  "source": "recorder",
+  "rooms": "auto-record",
+  "recorderSocketUrl": "ws://127.0.0.1:17896/api/local/danmaku",
+  "globalAdminUids": ["14279"],
+  "botUid": "412141275",
+  "maxMessageChars": 20
+}

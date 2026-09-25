@@ -1,5 +1,34 @@
 # 直播弹幕投票机器人
 
+**推荐使用 [Yuiffy 的改版 mikufans / BililiveRecorder](https://github.com/Yuiffy/BililiveRecorder) 转发弹幕。**需要使用包含 `LocalDanmakuRelay` 和多房间转发功能的构建；官方原版和 fork 的旧安装包不一定提供这个接口。
+
+如果不依赖改版 mikufans，独立运行需要使用 B 站直连来源。每个被独立监听的房间都会增加一条弹幕连接；与录播软件重复监听、多房间同时连接或频繁重连，都可能增加风控风险。推荐让 mikufans 维护已有连接，投票机器人仅通过一条本机 WebSocket 接收转发；这不会替录播姬新增 B 站连接。模式由配置显式选择，不会在转发断开后自动改为直连。
+
+## 多房间模式（推荐）
+
+录播姬 EXE 同目录的 `local-danmaku-relay.json` 使用 `"roomSelection": "auto-record"`（替代单房间 `roomId`），并设置 `enabled`、`port`、`token`。范围跟随录播姬有效的 `AutoRecord` 设置：勾选自动录制的房间纳入，取消勾选或删除房间立即移除，不替用户勾选其他房间。
+
+投票机器人配置参考 `src/services/live-vote/config.recorder.example.json`：
+
+```json
+{
+  "source": "recorder",
+  "rooms": "auto-record",
+  "recorderSocketUrl": "ws://127.0.0.1:17896/api/local/danmaku",
+  "globalAdminUids": ["14279"],
+  "botUid": "412141275",
+  "maxMessageChars": 20
+}
+```
+
+`14279` 为带鱼 UID，`412141275` 为鹿饼 UID；其他部署请改成自己的账号。无需手工维护各主播名单：本房间的主播 UID 来自录播姬已获取的房间信息，仅能发起/取消自己房间的投票；`globalAdminUids` 中的带鱼可在所有已纳入房间操作。房管和其他房间的主播不自动获得权限。主播 UID 尚未确定或弹幕断开时，不启动该房间投票。
+
+各房间计时、选项和投票人去重互相独立；同一个观众可在不同房间各投一票。房间被移除、取消自动录制、主播身份变化或连接中断，会取消该房间投票并丢弃其待发公告；本机 WebSocket 断开会取消所有投票。所有房间共用发送队列，账号发言间隔至少 3 秒，多房间同时投票时播报可能排队延后，计票仍按各自截止时间结束。
+
+认证可通过环境变量配置，也可显式提供绝对路径 `recorderSettingsFile` 读取录播姬转发配置的 token；真实发送可显式提供 `credentialConfigPath`，读取其中的 `bilibili.cookie`，环境变量 `BILIBILI_VOTE_COOKIE` 优先。程序不会自动寻找生产凭据。`statePath` 可设为绝对路径，输出当前房间列表和连接状态，不含凭据。配置文件路径和凭据属于本机配置，不提交 Git。
+
+多房间协议：`/api/local/danmaku` 首先发送 `rooms` 完整快照（`version: 1`，每房间含 `roomId`、`ownerUid` 字符串、`connected`），随后发送带 `roomId` 的 `danmaku` 帧；房间增删、自动录制开关、主播 UID 或连接状态变化会推送新快照。单房间端点 `/api/local/danmaku/{roomId}` 仍可使用，但只能连接当前纳入范围内的房间。
+
 ## 现有方案取舍
 
 | 项目 | 已公开的定位 | 对本需求的取舍 |
@@ -56,7 +85,7 @@ npm run vote:run -- --config temp/live-vote.json
 }
 ```
 
-房间必须已配置在录播姬中；当前版本一次转发一个配置房间。token 属于本机凭据，不要提交 Git。启动投票机器人前，将文件的 `token` 读入 `BILILIVE_LOCAL_DANMAKU_TOKEN`；`roomId` 和 URL 中的房间号须与文件一致。环境变量 `BILILIVE_LOCAL_DANMAKU_ROOM_ID`、`BILILIVE_LOCAL_DANMAKU_TOKEN` 和可选 `BILILIVE_LOCAL_DANMAKU_PORT` 仍可覆盖文件配置。配置在进程启动时读取，修改后需重启录播姬。
+这是兼容的单房间配置，房间必须已配置在录播姬中；多房间部署使用前文的 `roomSelection`。token 属于本机凭据，不要提交 Git。启动投票机器人前，将文件的 `token` 读入 `BILILIVE_LOCAL_DANMAKU_TOKEN`，或显式配置 `recorderSettingsFile`；单房间的 `roomId` 和 URL 中的房间号须与文件一致。环境变量 `BILILIVE_LOCAL_DANMAKU_ROOM_ID`、`BILILIVE_LOCAL_DANMAKU_TOKEN` 和可选 `BILILIVE_LOCAL_DANMAKU_PORT` 仍可覆盖文件配置。文件配置在进程启动时读取，修改后需重启录播姬；多房间模式下在 UI 增删房间和切换自动录制会即时更新，无需重启。
 
 转发器只订阅已有房间的弹幕和连接状态事件，不主动开启录制、额外连接 B 站或回放历史消息。未开播且录播姬没有监听时，WebSocket 握手仍可成功，但状态帧会是 `connected: false`；不能将本机端口已连接当成 B 站弹幕已连接。
 
@@ -76,4 +105,4 @@ XML 回退示例：`"source": "xml", "recorderRoot": "D:\\recordings"`，目录�
 - B 站[直播开放平台文档](https://open-live.bilibili.com/document/)：正式互动玩法需走平台授权和对应接入流程；这份简版目前使用社区直播弹幕监听和直播消息发送接口，非官方开放平台应用。
 - [`blive-message-listener`](https://github.com/ddiu8081/blive-message-listener)：开源 TypeScript 监听库，提供 UID/文本解析和监听事件；其 README 提醒短房间号、登录状态影响消息信息。
 - [`JVote`](https://github.com/Xinrea/JVote)：另一种直播 H5 投票展示项目，可参考展示体验；此实现侧重弹幕内的口令、授权与结果播报。
-- [`BililiveRecorder`](https://github.com/BililiveRecorder/BililiveRecorder)：录播姬源码的本机转发修改需与机器人独立编译、测试和部署；不要以投票机器人启动/测试为由自动重启生产录播进程。
+- [Yuiffy 的 BililiveRecorder fork](https://github.com/Yuiffy/BililiveRecorder)：推荐的改版 mikufans 来源，须使用包含本机转发功能的版本。原项目为 [BililiveRecorder](https://github.com/BililiveRecorder/BililiveRecorder)，转发修改需与机器人独立编译、测试和部署。

@@ -1,4 +1,47 @@
 describe('recorder relay vote source', () => {
+  it('routes only snapshot-listed connected rooms and clears membership on socket loss', () => {
+    const previous = globalThis.WebSocket;
+    const sockets: any[] = [];
+    class Socket {
+      onmessage: any;
+      onclose: any;
+      onerror: any;
+      close = jest.fn();
+      constructor() { sockets.push(this); }
+      frame(value: object) { this.onmessage({ data: JSON.stringify(value) }); }
+    }
+    globalThis.WebSocket = Socket as any;
+    jest.useFakeTimers();
+    try {
+      jest.isolateModules(() => {
+        const { LocalDanmakuClient } = require('./LocalDanmakuClient');
+        const receive = jest.fn();
+        const disconnect = jest.fn();
+        const rooms = jest.fn();
+        const client = new LocalDanmakuClient('ws://127.0.0.1:17896/api/local/danmaku', '0123456789abcdef', '*', receive, disconnect, rooms);
+        client.start();
+        const message = { type: 'danmaku', roomId: 100, uid: '10', text: '1', sentAt: 123 };
+        sockets[0].frame(message);
+        expect(receive).not.toHaveBeenCalled();
+        sockets[0].frame({ type: 'rooms', version: 1, rooms: [{ roomId: 100, ownerUid: '10', connected: true }, { roomId: 200, ownerUid: '20', connected: false }] });
+        expect(rooms).toHaveBeenCalledWith([{ roomId: '100', ownerUid: '10', connected: true }, { roomId: '200', ownerUid: '20', connected: false }]);
+        sockets[0].frame({ ...message, roomId: 200 });
+        sockets[0].frame({ ...message, roomId: 300 });
+        sockets[0].frame(message);
+        expect(receive).toHaveBeenCalledTimes(1);
+        expect(receive).toHaveBeenCalledWith({ roomId: '100', uid: '10', text: '1', sentAt: 123 });
+        sockets[0].frame({ type: 'rooms', version: 1, rooms: [] });
+        sockets[0].frame(message);
+        sockets[0].onclose();
+        expect(disconnect).toHaveBeenCalledTimes(1);
+        jest.advanceTimersByTime(3000);
+        sockets[0].frame(message);
+        sockets[1].frame(message);
+        expect(receive).toHaveBeenCalledTimes(1);
+        client.stop();
+      });
+    } finally { globalThis.WebSocket = previous; jest.useRealTimers(); }
+  });
   it('requires loopback authentication and accepts only connected matching-room UID frames', () => {
     const previous = globalThis.WebSocket;
     const sockets: FakeSocket[] = [];
