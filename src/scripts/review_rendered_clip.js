@@ -10,20 +10,14 @@ const { copyDigest } = require('./clipping/actor_review');
 const { writeJsonAtomic } = require('./clipping/candidate_subtitles');
 const { fileDigest, sourceSnapshot } = require('./clipping/source_snapshot');
 
+const { publicDescription, revisionEvidence } = require('./clipping/rendered_revision_evidence');
+
 const RENDERED_CLIP_MODES = new Set(['own_stream_fun_review', 'local_review', 'topic_candidate_manual_cut', 'manual_clip_queue']);
 
 function sourceEvidenceHash(metadata) {
     return metadata.attributionReview?.sourceSha256 || metadata.grounding?.sourceSha256
         || metadata.selectionRejection?.sourceSha256 || metadata.aiReview?.sourceSha256
         || metadata.editorial?.copyGrounding?.sourceSha256 || metadata.manualRevisionSource?.sourceSha256;
-}
-
-function publicDescription(metadata, value) {
-    if (metadata.mode !== 'own_stream_fun_review') return value;
-    const prefix = require('./own_stream_clipper').buildClipDescription({ streamerName: metadata.streamerName,
-        streamTitle: metadata.streamTitle, recordedAt: metadata.recordedAt,
-        start: metadata.window.start, end: metadata.window.end, description: '' });
-    return String(value || '').startsWith(prefix + '\n\n') ? String(value).slice(prefix.length + 2) : value;
 }
 
 function assertRenderedRevision(metadata) {
@@ -83,7 +77,7 @@ async function approveRenderedClip(metadataPath, options, config = require('./co
     const expected = sourceEvidenceHash(metadata);
     if (!expected || expected !== evidence.sourceSha256) throw new Error('Original subtitle evidence changed; re-plan/review against the current source first');
     const reviewedEvidence = metadata.renderedSubtitles
-        ? require('./render_own_revision').revisionEvidence(metadata, evidence) : evidence;
+        ? revisionEvidence(metadata, evidence) : evidence;
     const { copy, grounding, sourceKind } = await reviewCopy(metadata, options, reviewedEvidence);
     const own = require('./own_stream_clipper');
     const videoHash = fileDigest(output.mediaPath);

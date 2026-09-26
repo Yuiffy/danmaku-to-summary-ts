@@ -8,10 +8,12 @@ const topic = require('./topic_clipper');
 const manual = require('./manual_clip_queue');
 const asr = require('./asr/asr_backends');
 const { buildSubtitleEvidence } = require('./clipping/subtitle_evidence');
-const { readCandidateDraft, correctCandidateDraft, approveCandidateDraft, hasDraftApproval,
+const { correctCandidateDraft, approveCandidateDraft, hasDraftApproval,
     writeJsonAtomic, digest } = require('./clipping/candidate_subtitles');
 const { acquireCandidateLock } = require('./render_topic_candidate');
 const { sourceSnapshot, fileDigest, RENDERED_CLIP_MODES, sourceEvidenceHash } = require('./review_rendered_clip');
+
+const { adapter, checkedDraft, revisionEvidence } = require('./clipping/rendered_revision_evidence');
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const pending = metadata => Boolean(metadata.rebuildRequired);
@@ -35,12 +37,6 @@ function checkedSource(metadata, options = {}) {
     }
     require('./clipping/rejected_replan').validateEditorialReplan(metadata, options, evidence);
     return { evidence, snapshot };
-}
-
-function adapter(metadata) {
-    return { ...metadata, output: { ...metadata.output }, copy: { ...metadata.copy,
-        description: require('./review_rendered_clip').publicDescription(metadata, metadata.copy?.description) },
-        candidateSubtitles: metadata.renderedSubtitles };
 }
 
 // Legacy manual cuts did not store a source evidence hash. Adopt them only during
@@ -71,21 +67,6 @@ function bindLegacyManualSource(metadata, options) {
     if (!same(snapshot, sourceSnapshot(metadata))) throw new Error('Source changed during manual source review');
     metadata.manualRevisionSource = { version: 1, sourceSha256: buildSubtitleEvidence(segments).sourceSha256,
         snapshot, note: options.reviewNote.trim(), at: new Date().toISOString() };
-}
-
-function checkedDraft(metadata, evidence) {
-    const draft = readCandidateDraft(adapter(metadata), evidence);
-    if (draft.clipId !== metadata.uploadId) throw new Error('Subtitle revision belongs to a different clip ID');
-    return draft;
-}
-
-function revisionEvidence(metadata, evidence) {
-    const draft = checkedDraft(metadata, evidence);
-    const revised = buildSubtitleEvidence(draft.cues.map(cue => ({
-        start: metadata.window.start + cue.start, end: metadata.window.start + cue.end, text: cue.text
-    })), { groupSegments: false });
-    const cues = revised.cues.map((cue, index) => ({ ...cue, id: `R${index + 1}` }));
-    return { ...revised, sourceSha256: evidence.sourceSha256, cues, byId: new Map(cues.map(cue => [cue.id, cue])) };
 }
 
 function revisionDirectory(metadataPath, id) {

@@ -71,6 +71,14 @@ Dependencies point from entrypoints to services to shared infrastructure. Leaf
 components must not import their parent. Existing script paths remain facades;
 internal helpers are not exported unless their callers need them.
 
+Clip previews and cutting share `clipping/media_runtime.js` for FFmpeg execution
+and packet probing. `clipping/own_review_state.js` persists review artifacts using
+an injected Markdown renderer; `own_review_artifacts.js` owns refresh orchestration.
+Subtitle rebuilding and approval share `clipping/rendered_revision_evidence.js`
+instead of importing each other's entrypoints. Audio configuration policy lives
+in `audio_config.js`, and legacy REVIEW parsing lives in `clip_review_parser.py`;
+the original entrypoints retain their public exports.
+
 ## Language decision
 
 Keep TypeScript and Python. They serve different runtime/ecosystem needs.

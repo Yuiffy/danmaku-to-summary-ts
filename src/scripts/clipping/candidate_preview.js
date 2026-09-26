@@ -52,7 +52,7 @@ function syncPreviewSubtitles(metadata, evidence) {
     return true;
 }
 
-async function ensureCandidatePreview(metadata, metadataPath, evidence, config = {}, mediaApi = require('../topic_clipper')) {
+async function ensureCandidatePreview(metadata, metadataPath, evidence, config = {}, mediaApi = require('./media_runtime')) {
     if (metadata.source?.sourceKind !== 'video') throw new Error('Review preview requires source video');
     const window = metadata.window;
     if (!Number.isFinite(window?.start) || !Number.isFinite(window?.end) || window.start < 0 || window.end <= window.start) {

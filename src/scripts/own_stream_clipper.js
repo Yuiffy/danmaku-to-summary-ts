@@ -2022,12 +2022,12 @@ async function generateOwnStreamClipsInternal(options = {}) {
             { clip, index, execution: { ...execution, resumeEnhancement: true }, evidenceReview, subtitleEvidence: finalEvidence,
                 parsed, danmaku, options, source, info, config: mediaConfig }),
         ordinaryReady: async results => {
-            const artifacts = require('./clipping/own_review_artifacts');
+            const artifacts = require('./clipping/own_review_state');
             const rows = artifacts.prepareReviewResults(results, JSON.parse(fs.readFileSync(reviewMetadata.planPath, 'utf8')), parsed, outputRoot);
-            artifacts.saveReviewState(reviewMetadata.reviewPath, rows, reviewMetadata);
+            artifacts.saveReviewState(reviewMetadata.reviewPath, rows, reviewMetadata, buildReviewMarkdown);
             const registry = options.registerUpload === false ? null : registerReviewForUpload(reviewMetadata.reviewPath, rows, reviewMetadata);
             if (registry) reviewMetadata.uploadRegistry = registry;
-            artifacts.saveReviewState(reviewMetadata.reviewPath, rows, reviewMetadata);
+            artifacts.saveReviewState(reviewMetadata.reviewPath, rows, reviewMetadata, buildReviewMarkdown);
             try { reviewMetadata.precisionDelivery.ordinaryNotification = await notifyResults(rows, reviewMetadata, { ...rootConfig, ownStreamClips: config }) ? 'sent' : 'not_sent'; }
             catch (error) { reviewMetadata.precisionDelivery.ordinaryNotification = 'unknown'; console.warn(`Ordinary clips saved; notification failed: ${error.message}`); }
         },
@@ -2036,9 +2036,9 @@ async function generateOwnStreamClipsInternal(options = {}) {
     clips = production.clips;
     if (options.planOnly) return clips;
     const { results, planPath, reviewPath } = production;
-    const artifacts = require('./clipping/own_review_artifacts');
+    const artifacts = require('./clipping/own_review_state');
     const reviewResults = artifacts.prepareReviewResults(results, JSON.parse(fs.readFileSync(planPath, 'utf8')), parsed, outputRoot);
-    artifacts.saveReviewState(reviewPath, reviewResults, reviewMetadata);
+    artifacts.saveReviewState(reviewPath, reviewResults, reviewMetadata, buildReviewMarkdown);
     const residualReview = writeResidualAuditForOwnStream({
         options,
         config,
@@ -2051,7 +2051,7 @@ async function generateOwnStreamClipsInternal(options = {}) {
     if (uploadRegistry) {
         reviewMetadata.uploadRegistry = uploadRegistry;
     }
-    artifacts.saveReviewState(reviewPath, reviewResults, reviewMetadata);
+    artifacts.saveReviewState(reviewPath, reviewResults, reviewMetadata, buildReviewMarkdown);
     try {
         await notifyResults(reviewResults, reviewMetadata, { ...rootConfig, ownStreamClips: config });
     } catch (error) {
