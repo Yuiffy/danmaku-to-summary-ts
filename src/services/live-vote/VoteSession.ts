@@ -113,7 +113,7 @@ export class VoteSession {
       this.emitCounts(vote, true);
     } else if (now >= vote.nextUpdate && now < vote.deadline) {
       vote.nextUpdate += (Math.floor((now - vote.nextUpdate) / 10000) + 1) * 10000;
-      this.emitCounts(vote, false);
+      this.emitCounts(vote, false, Math.ceil((vote.deadline - now) / 1000));
     }
   }
 
@@ -130,7 +130,7 @@ export class VoteSession {
     return counts;
   }
 
-  private emitCounts(vote: ActiveVote, final: boolean): void {
+  private emitCounts(vote: ActiveVote, final: boolean, remainingSeconds?: number): void {
     const counts = this.count(vote);
     const parts = vote.labels.flatMap((label, index) => {
       const text = `${index + 1}.${label}:${counts[index]}票`;
@@ -140,7 +140,14 @@ export class VoteSession {
     if (final) {
       const highest = Math.max(...counts);
       const winners = counts.map((count, index) => count === highest ? index : -1).filter(index => index >= 0);
-      parts.push(highest === 0 ? '无人投票' : winners.length > 1 ? '平票' : `${vote.labels[winners[0]]}胜`);
+      parts.push(highest === 0 ? '无人投票' : winners.length > 1 ? '平票' : `【${vote.labels[winners[0]]}】胜~`);
+    }
+    if (!final && remainingSeconds !== undefined) {
+      const timed = `剩余${remainingSeconds}秒~${parts.join(' ')}`;
+      if (Array.from(timed).length <= this.maxChars) {
+        this.emit(timed);
+        return;
+      }
     }
     this.emitPacked(final ? '结束：' : '票型：', parts);
   }

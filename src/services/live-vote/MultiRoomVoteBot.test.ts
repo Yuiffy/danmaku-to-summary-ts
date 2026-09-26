@@ -22,8 +22,8 @@ it('finishes only the commanded room and discards its queued progress while pres
   expect(sent).toEqual([
     ['100', '投票30秒，发序号：1.甲 2.乙'],
     ['200', '投票30秒，发序号：1.丙 2.丁'],
-    ['200', '票型：1.丙:0票 2.丁:0票'],
-    ['100', '结束：1.甲:1票 2.乙:0票 甲胜']
+    ['200', '剩余20秒~1.丙:0票 2.丁:0票'],
+    ['100', '结束：1.甲:1票 2.乙:0票 【甲】胜~']
   ]);
   bot.ingest(message('200', '42', '#结束投票', now + 11000), now + 11000);
   await bot.flush();
@@ -50,8 +50,8 @@ it('authorizes each owner only in their room and counts viewers independently ac
   bot.ingest(message('200', '10', '#取消投票'), now);
   bot.tick(now + 33000);
   await bot.flush();
-  expect(sent).toContainEqual(['100', '结束：1.甲:1票 2.乙:0票 甲胜']);
-  expect(sent).toContainEqual(['200', '结束：1.丙:0票 2.丁:1票 丁胜']);
+  expect(sent).toContainEqual(['100', '结束：1.甲:1票 2.乙:0票 【甲】胜~']);
+  expect(sent).toContainEqual(['200', '结束：1.丙:0票 2.丁:1票 【丁】胜~']);
   expect(sent.map(([id]) => id)).toEqual(['100', '200', '100', '200']);
 });
 

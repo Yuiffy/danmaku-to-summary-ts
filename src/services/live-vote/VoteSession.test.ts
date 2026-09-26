@@ -20,7 +20,7 @@ describe('live vote', () => {
     session.ingest(message('42', ' ＃结束投票 ', now + 11000), now + 11000);
     expect(notices).toEqual([
       '投票60秒，发序号：1.复联2 2.老头环 3.美队3',
-      '结束：1.复联2:0票 2.老头环:0票 3.美队3:1票 美队3胜'
+      '结束：1.复联2:0票 2.老头环:0票 3.美队3:1票 【美队3】胜~'
     ]);
     expect(invalidate).toHaveBeenCalledTimes(1);
     session.ingest(message('11', '2', now + 12000), now + 12000);
@@ -58,7 +58,7 @@ describe('live vote', () => {
     session.ingest(message('10', '１１１'), now);
     session.tick(now + 10000);
     session.tick(now + 63000);
-    expect(notices).toEqual(['投票60秒，发序号：1.复联2 2.法环', '票型：1.复联2:1票 2.法环:0票', '结束：1.复联2:1票 2.法环:0票 复联2胜']);
+    expect(notices).toEqual(['投票60秒，发序号：1.复联2 2.法环', '剩余50秒~1.复联2:1票 2.法环:0票', '结束：1.复联2:1票 2.法环:0票 【复联2】胜~']);
     expect(notices.every(text => Array.from(text).length <= 40)).toBe(true);
   });
 
@@ -81,8 +81,8 @@ describe('live vote', () => {
     session.tick(now + 63000);
     expect(notices).toEqual([
       '投票60秒，发序号：1.甲 2.乙',
-      '票型：1.甲:1票 2.乙:1票',
-      '结束：1.甲:2票 2.乙:1票 甲胜'
+      '剩余50秒~1.甲:1票 2.乙:1票',
+      '结束：1.甲:2票 2.乙:1票 【甲】胜~'
     ]);
   });
 
@@ -115,8 +115,8 @@ describe('live vote', () => {
     session.tick(now + 33000);
     expect(notices).toEqual([
       '投票30秒，发序号：1.复联2 2.老头环 3.美队3',
-      '票型：1.复联2:0票 2.老头环:1票 3.美队3:2票',
-      '结束：1.复联2:0票 2.老头环:1票 3.美队3:2票 美队3胜'
+      '剩余20秒~1.复联2:0票 2.老头环:1票 3.美队3:2票',
+      '结束：1.复联2:0票 2.老头环:1票 3.美队3:2票 【美队3】胜~'
     ]);
   });
 
@@ -132,6 +132,51 @@ describe('live vote', () => {
     session.tick(now + 33000);
     expect(notices.join('\n')).toContain('无人投票');
     expect(notices.every(text => Array.from(text).length <= maxMessageChars)).toBe(true);
+  });
+
+  it.each([20, 40])('keeps a maximum-length bracketed winner intact within %i characters', maxMessageChars => {
+    const notices: string[] = [];
+    const label = '甲'.repeat(16);
+    const session = new VoteSession({ authorizedUids: ['42'], maxMessageChars }, text => notices.push(text));
+    session.ingest(message('42', `#投票 1${label} 2乙`), now);
+    session.ingest(message('10', '1', now + 100), now + 100);
+    notices.length = 0;
+    session.tick(now + 33000);
+    expect(notices[notices.length - 1]).toBe(`${maxMessageChars === 20 ? '' : '结束：'}【${label}】胜~`);
+    expect(notices.every(text => Array.from(text).length <= maxMessageChars)).toBe(true);
+  });
+
+  it('shows remaining time from the deadline and named counts, including delayed ticks', () => {
+    const notices: string[] = [];
+    const session = new VoteSession({ authorizedUids: ['42'] }, text => notices.push(text));
+    session.ingest(message('42', '#投票 1第三集 2法环'), now);
+    for (let i = 0; i < 13; i++) session.ingest(message(String(100 + i), '1', now + 100), now + 100);
+    for (let i = 0; i < 10; i++) session.ingest(message(String(200 + i), '2', now + 100), now + 100);
+    notices.length = 0;
+    session.tick(now + 10450);
+    session.tick(now + 22450);
+    session.tick(now + 30000);
+    expect(notices).toEqual([
+      '剩余20秒~1.第三集:13票 2.法环:10票',
+      '剩余8秒~1.第三集:13票 2.法环:10票'
+    ]);
+    session.tick(now + 33000);
+    expect(notices[2]).toBe('结束：1.第三集:13票 2.法环:10票 【第三集】胜~');
+  });
+
+  it.each([
+    { limit: 40, first: '甲'.repeat(12), second: '乙'.repeat(11), timed: true },
+    { limit: 40, first: '甲'.repeat(12), second: '乙'.repeat(12), timed: false },
+    { limit: 40, first: '🍪'.repeat(12), second: '乙'.repeat(11), timed: true },
+    { limit: 20, first: '甲甲', second: '乙乙', timed: false }
+  ])('adds the countdown only if the whole tally fits one $limit-character message', ({ limit, first, second, timed }) => {
+    const notices: string[] = [];
+    const session = new VoteSession({ authorizedUids: ['42'], maxMessageChars: limit }, text => notices.push(text));
+    session.ingest(message('42', `#投票 1${first} 2${second}`), now);
+    notices.length = 0;
+    session.tick(now + 10000);
+    expect(notices).toEqual([`${timed ? '剩余20秒~' : '票型：'}1.${first}:0票 2.${second}:0票`]);
+    expect(Array.from(notices[0]).length).toBeLessThanOrEqual(limit);
   });
 
   it('counts repeated digits for the ninth option and reports a tie with named counts', () => {
