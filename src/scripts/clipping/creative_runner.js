@@ -18,14 +18,16 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
     const { config, info, parsed, danmaku, source, options, topic, clip, subtitleEvidence, execution } = context;
     const settings = config.enhancements, limits = creativeSettings(settings.creative);
     const compact = limits.style === 'compact';
-    const allowCoverFaceOverlap = options.creativeAllowCoverFaceOverlap === true && baseline.precisionRevision?.coverFaceOverlapApproved === true;
+    const allowCoverFaceOverlap = settings.creative?.allowCoverFaceOverlap === true
+        || (options.creativeAllowCoverFaceOverlap === true && baseline.precisionRevision?.coverFaceOverlapApproved === true);
     const timelineTools = require('./creative_timeline');
     const directory = path.dirname(baseline.output.metadataPath);
     const name = path.basename(baseline.output.metadataPath, '.json');
     const scratch = path.join(directory, 'temp', `${name}-creative`);
     fs.mkdirSync(scratch, { recursive: true });
     const logs = [], history = [];
-    if (allowCoverFaceOverlap) history.push({ stage: 'cover_face_overlap_exception', scope: 'cover_text_over_face_only', approvedByUser: true });
+    if (allowCoverFaceOverlap) history.push({ stage: 'cover_face_overlap_exception', scope: 'cover_text_over_face_only', approvedByUser: true,
+        source: settings.creative?.allowCoverFaceOverlap === true ? 'creative_config' : 'revision_option' });
     let assets = {}, activeTimeline = null, activeMoments = null, profile = null;
     const start = Date.now();
     const withMedia = work => execution?.withMedia ? execution.withMedia(work) : work(null);
@@ -66,7 +68,7 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
                 && (stage !== 'visual-plan' || matchingMoments))) {
                 const oldScratch = path.join(options.creativeResumeDirectory, 'temp', 'clip-creative');
                 const names = stage === 'story' ? ['story-qa-repair', 'story-repair', 'story']
-                    : stage === 'moments' ? ['moments-repair', 'moments'] : ['visual-plan-repair', 'visual-plan'];
+                    : stage === 'moments' ? ['moments-repair', 'moments'] : ['visual-plan-repair-2', 'visual-plan-repair', 'visual-plan'];
                 const file = names.map(name => path.join(oldScratch, `${name}-response.json`)).find(file => fs.existsSync(file));
                 if (file) {
                     const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -76,7 +78,7 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
                 }
             }
         }
-        const phase = stage === 'qa' ? 'qa' : 'edit';
+        const phase = ['qa', 'qa-final'].includes(stage) ? 'qa' : 'edit';
         const stageConfig = { ...settings.stageDefaults, ...settings.stages?.[phase],
             retry: { ...settings.stageDefaults?.retry, ...settings.stages?.[phase]?.retry } };
         stageConfig.maxTokens = compact ? Math.max(12000, Math.min(Number(stageConfig.maxTokens) || 12000, 16000)) : Math.min(Number(stageConfig.maxTokens) || 8000, 8000);
@@ -250,7 +252,9 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
             .map((time, index) => ({ id: `${row.id}F${index}`, time, momentId: row.id })));
         const sourceFrames = await capture(baseline.output.mediaPath, frameMap.map(row => timelineTools.sourceTimeForOutput(row.time, timeline)), 'source');
         const sourceStrips = await strips(sourceFrames, 'source-strip');
-        const sourceResolution = await require('sharp')(sourceFrames[0]).metadata();
+        const sourceResolution = await topic.getVideoResolution(source.mediaPath, topic.resolveFfprobePath(mediaConfig().ffmpegPath));
+        const subtitleStyle = topic.calculateSubtitleStyle(sourceResolution.width, sourceResolution.height, config);
+        const subtitleAss = topic.buildBurnAssContentFromSrt(fs.readFileSync(renderSrt, 'utf8'), subtitleStyle);
         const stickerAssets = Object.values(assets).filter(asset => asset.kind === 'sticker');
         let assetSheet;
         if (stickerAssets.length) {
@@ -277,6 +281,7 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
                 + '音效现在先做响度归一化，levelDb是归一化后的相对增益，笑声用-3到0，短提示音用-8到-4。BGM会在对白下方自动铺底。' : '')
             + '放大默认锚定原主体位置，不把右侧头像搬去左侧挡弹幕；问号/反应贴纸也要围绕同一主体。字幕会自动避开放大区域，原头像在底部时不必为字幕把头像搬到别处。'
             + 'faceInset与zoom二选一。faceInset.sourceBox标出单帧中脸部（眼睛、嘴部和下巴，尽量不含帽子与身体），归一化x/y/width/height；placement填source时程序在原头像处放大，并按实际画幅适配。'
+            + `圆窗上限为画面高度的${limits.faceInsetDiameter || .46}，且不超过画面宽度的一半；完整脸框留圆形边距后仍须达到1.2倍。居中的大头像聊天优先用已确认安全的全屏特写、贴图或滤镜；不要为了保留无关背景强套圆窗，也不能缩小真实脸框来凑倍率。字幕保持原字号，需要保留可读空间。`
             + 'faceInset.x/y是自由摆放时的左上角坐标，直径0.28–0.46且y+diameter<=0.84；原位模式由程序按配置增大并允许圆框出屏，只需完整保留眼睛嘴部下巴，不要强行把整个圆圈塞回画内露出黑色补边。必须clearOfAction=true，避开角色、路线、HUD。'
             + '弹幕、聊天文字、物体、操作细节可以用focusInset原地放大：target=chat/detail/person/avatar，shape=rectangle或circle，placement=source，sourceBox为真实目标框；rectangle填magnification=1.2–3，circle填diameter=0.28–0.46，clearOfAction=true。不要截断被强调的文字。'
             + '无放大但有反应贴纸时，可用sticker.anchorBox引用当前关联主体，程序会把贴纸靠近它排放，不能遮挡主体本身。'
@@ -297,19 +302,20 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
         const visuals = [...visualPages, ...(assetSheet ? [assetSheet] : [])];
         const preferredLaugh = draft => rotateLaughter(draft, assets, settings.creative, moments, profile);
         let raw = preferredLaugh(await request('visual-plan', 'effects', prompt, visuals)), plan;
-        const validateDraft = draft => {
-            const checked = require('./creative_layout').validateAnchoredFaceInsets(draft, sourceResolution, limits);
-            return validateCreativePlan(checked, moments, sourceId, duration, limits, assets);
-        };
-        try { plan = validateDraft(raw); }
-        catch (error) {
-            history.push({ stage: 'plan_repair', reason: error.message });
-            raw = preferredLaugh(await request('visual-plan-repair', 'effects', prompt + '\n只修复校验指出的节点和字段，保留其他有效效果。不能安全裁切的节点设zoom=null，不要通过改动无关坐标或安全标记来修复。具体问题：'
-                + error.message + '\n上次输出：' + JSON.stringify(raw), visuals));
-            plan = validateDraft(raw);
+        const { prepareCreativeDraft, shouldConvertAvatarZoom } = require('./creative_preflight');
+        const validateDraft = draft => prepareCreativeDraft(draft, { moments, sourceId, duration, settings: limits, assets,
+            resolution: sourceResolution, subtitleAss, subtitleStyle });
+        for (let attempt = 0; ; attempt++) {
+            try { plan = validateDraft(raw); break; }
+            catch (error) {
+                if (attempt === 2) throw error;
+                history.push({ stage: 'plan_repair', attempt: attempt + 1, reason: error.message });
+                raw = preferredLaugh(await request(attempt === 0 ? 'visual-plan-repair' : 'visual-plan-repair-2', 'effects', prompt
+                    + '\n一次修复列出的所有节点，保留有效节点和完整故事。圆窗尺寸达不到倍率或放不下字幕时，改用三帧已确认安全的全屏zoom，或删除该圆窗、保留该节点其他安全效果；不能裁切时设zoom=null。必要时省略该节点，不要整条放弃。禁止仅为通过校验缩小真实脸框或改安全标记。具体问题：'
+                    + error.message + '\n上次输出：' + JSON.stringify(raw), visuals));
+            }
         }
-        const needsInset = row => row.zoom?.target === 'avatar' && (limits.avatarMode === 'circle'
-            || (limits.avatarMode === 'auto' && limits.focusPlacement === 'source' && row.zoom.targetBox?.width * row.zoom.targetBox?.height < .15));
+        const needsInset = row => shouldConvertAvatarZoom(row, limits, profile, sourceResolution);
         if (raw.effects.some(needsInset)) {
             const targets = raw.effects.filter(needsInset);
             const targetIds = new Set(targets.map(row => row.momentId));
@@ -334,7 +340,7 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
                 }
             }
             let layout = options.creativeInsetPlan || reusableLayout || await request('inset-layout', 'insets', insetPrompt, visualPages), adapted;
-            const insetResolution = await require('sharp')(sourceFrames[0]).metadata();
+            const insetResolution = sourceResolution;
             let fallbackIds = [];
             const apply = draft => {
                 const value = require('./face_inset').applyInsetLayout(raw, draft, [...targetIds]);
@@ -393,7 +399,11 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
                     && observations?.faces?.length === ids.length && observations.faces.every(row => ids.includes(row.momentId))) previousFaces = observations;
             }
             let response = previousFaces || await request('retain-face', 'faces', retentionPrompt, frames);
-            const apply = draft => require('./face_inset').applyFaceRetention(raw, draft, sourceResolution);
+            const apply = draft => {
+                const value = require('./face_inset').applyFaceRetention(raw, draft, sourceResolution);
+                validateDraft(value);
+                return value;
+            };
             let adapted;
             try { adapted = apply(response); }
             catch (error) {
@@ -405,6 +415,8 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
             plan = validateCreativePlan(raw, moments, sourceId, duration, limits, assets);
             history.push({ stage: 'retained_faces', origin: previousFaces ? 'approved_source_boxes' : 'model', response });
         }
+        // Retained faces and late sound decisions pass the same preflight as the initial draft.
+        plan = validateDraft(raw);
         if (timeline) { plan.timeline = timeline; if (profile.music === 'playful') plan.music = { id: 'playful_plucks', levelDb: -27 }; }
         if (options.creativeSoundLevelOverrides) {
             for (const override of options.creativeSoundLevelOverrides) {
@@ -414,96 +426,120 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
             }
             history.push({ stage: 'sound_level_overrides', sounds: options.creativeSoundLevelOverrides });
         }
-        plan = require('./creative_layout').validateAnchoredFaceInsets(plan, sourceResolution, limits);
-        plan = require('./creative_layout').anchorSpatialPlan(plan, sourceResolution, limits, assets);
         plan.editorialProfile = profile;
         plan.assetDigests = Object.fromEntries(Object.values(assets).filter(asset => plan.music?.id === asset.id || plan.effects.some(row => row.sticker?.id === asset.id || soundId(row.sound) === asset.id)).map(asset => [asset.id, asset.sha256]));
-        writeJsonAtomic(path.join(scratch, 'creative-plan.json'), { plan, frameMap, sourceFrames });
-        if (!plan.effects.length) return restore('visual_review_kept_original');
-        if (await sourceIdentity() !== sourceId) throw new Error('Creative source changed');
-        const mediaPath = path.join(directory, `${name}.creative.mp4`);
-        const rendered = await withMedia(profile => topic.cutClipMedia(source, baseline.window, renderSrt, mediaPath,
-            { ...mediaConfig(profile), creativePlan: plan, creativeSettings: limits, creativeAssets: assets,
-                burnSubtitles: true, twoStageSubtitleBurn: true, twoStageMode: 'copy', preserveCoverSource: false }));
-        if (!rendered.burnedSubtitles || !rendered.creativeEffectsApplied) throw new Error('Creative render did not apply the approved plan');
-        const editPlan = timeline ? timelineTools.absoluteEditPlan(timeline, sourceId, baseline.window) : loadWorkflow('clipping/editPlan').continuousPlan(sourceId, baseline.window);
-        let current = { ...baseline, window: { ...baseline.window, duration }, editorialProfile: profile, qaRequired: true, uploadReady: false, creativePlan: plan, editPlan,
-            copy: { ...baseline.copy, description: loadWorkflow('clipping/experiment').labelExperimentDescription(baseline.copy.description, true, editPlan.removed.length > 0) },
-            output: { ...baseline.output, mediaPath, srtPath: renderSrt, srtSegmentCount: topic.parseTopicSrt ? topic.parseTopicSrt(renderSrt).segments.length : baseline.output.srtSegmentCount,
-                subtitleVideoEncoder: rendered.subtitleVideoEncoder || config.subtitleVideoEncoder,
-                subtitleBurnFallbackUsed: rendered.fallbackUsed, subtitleHwaccel: rendered.subtitleHwaccel === null ? null : config.subtitleHwaccel } };
-        if (clip.attributionRequired) {
-            const review = require('./precision_actor_review').rebindUnchangedPrecisionCopy(current, editPlan,
-                { clip, evidence: subtitleEvidence, danmaku }, baseline.copy);
-            if (!review.passed) throw new Error(`Creative attribution rebind failed: ${review.issues.join(',')}`);
-            current = { ...current, attributionReview: review.attributionReview, grounding: review.grounding };
-        }
-        const coverLayout = require('./creative_layout');
-        const coverWindow = coverLayout.coverWindowWithFaceEvidence(plan);
-        current.output.coverPath = await withMedia(() => topic.generateClipCover(mediaPath, current.copy.coverText || current.copy.title, directory,
-            { outputPath: path.join(directory, `${name}.creative_cover.jpg`), streamerName: baseline.streamerName,
-                coverSourcePath: mediaPath, clipStart: coverWindow?.start ?? 0,
-                clipDuration: coverWindow ? coverWindow.end - coverWindow.start : duration,
-                preferredTime: coverWindow ? (coverWindow.start + coverWindow.end) / 2 : plan.effects[0].start,
-                textPosition: options.creativeCoverTextPosition,
-                protectedBoxes: allowCoverFaceOverlap ? [] : coverLayout.coverProtectedBoxes(plan), protectSubtitleBand: true,
-                resourcePeaks: baseline.processing?.resourcePeaks }));
-        await withMedia(async profile => {
-            const mc = mediaConfig(profile);
-            const probe = await dependencies.probeMedia(mediaPath, topic.resolveFfprobePath(mc.ffmpegPath));
-            const video = probe.streams?.find(row => row.codec_type === 'video'), audio = probe.streams?.find(row => row.codec_type === 'audio');
-            if (!video || !audio || !Number.isFinite(Number(probe.format?.duration)) || Math.abs(Number(probe.format.duration) - duration) > .5
-                || !Number.isFinite(Number(video.start_time)) || !Number.isFinite(Number(audio.start_time))
-                || Math.abs(Number(video.start_time) - Number(audio.start_time)) > .15) throw new Error('Creative duration/audio sync validation failed');
-            await topic.runFfmpeg(['-v', 'error', '-xerror', '-i', mediaPath, '-map', '0:v:0', '-map', '0:a:0', '-f', 'null', '-'], mc);
-        });
-        if (plan.effects.some(row => row.sound) || plan.music) {
-            current.audioQa = await withMedia(async profile => {
-                const files = ['audio-original.pcm', 'audio-rendered.pcm'].map(file => path.join(scratch, file));
-                try {
-                    for (const [index, input] of [baseline.output.mediaPath, mediaPath].entries()) await topic.runFfmpeg(
-                        ['-v', 'error', '-y', '-i', input, ...(index === 0 && timeline ? ['-filter_complex', timelineTools.audioTimelineFilter(timeline), '-map', '[baseaudio]'] : ['-map', '0:a:0']),
-                            '-vn', '-ar', '16000', '-ac', '2', '-f', 'f32le', files[index]], mediaConfig(profile));
-                    return require('./creative_audio_audit').analyzeCreativeAudio(fs.readFileSync(files[0]), fs.readFileSync(files[1]), plan, assets);
-                } finally { for (const file of files) if (fs.existsSync(file)) fs.unlinkSync(file); }
+        for (let visualAttempt = 0; ; visualAttempt++) {
+            writeJsonAtomic(path.join(scratch, 'creative-plan.json'), { plan, frameMap, sourceFrames });
+            if (!plan.effects.length) return restore('visual_review_kept_original');
+            if (await sourceIdentity() !== sourceId) throw new Error('Creative source changed');
+            const mediaPath = path.join(directory, `${name}.creative.mp4`);
+            const mediaReview = await require('./creative_media_review').renderAndAuditCreative(plan, {
+                history,
+                render: checkedPlan => withMedia(mediaProfile => topic.cutClipMedia(source, baseline.window, renderSrt, mediaPath,
+                    { ...mediaConfig(mediaProfile), creativePlan: checkedPlan, creativeSettings: limits, creativeAssets: assets,
+                        burnSubtitles: true, twoStageSubtitleBurn: true, twoStageMode: 'copy', preserveCoverSource: false })),
+                inspect: rendered => withMedia(async mediaProfile => {
+                    if (!rendered.burnedSubtitles || !rendered.creativeEffectsApplied) throw new Error('Creative render did not apply the approved plan');
+                    const mc = mediaConfig(mediaProfile);
+                    const probe = await dependencies.probeMedia(mediaPath, topic.resolveFfprobePath(mc.ffmpegPath));
+                    const video = probe.streams?.find(row => row.codec_type === 'video'), audio = probe.streams?.find(row => row.codec_type === 'audio');
+                    if (!video || !audio || !Number.isFinite(Number(probe.format?.duration)) || Math.abs(Number(probe.format.duration) - duration) > .5
+                        || !Number.isFinite(Number(video.start_time)) || !Number.isFinite(Number(audio.start_time))
+                        || Math.abs(Number(video.start_time) - Number(audio.start_time)) > .15) throw new Error('Creative duration/audio sync validation failed');
+                    await topic.runFfmpeg(['-v', 'error', '-xerror', '-i', mediaPath, '-map', '0:v:0', '-map', '0:a:0', '-f', 'null', '-'], mc);
+                }),
+                audit: checkedPlan => withMedia(async mediaProfile => {
+                    const files = ['audio-original.pcm', 'audio-rendered.pcm'].map(file => path.join(scratch, file));
+                    try {
+                        for (const [index, input] of [baseline.output.mediaPath, mediaPath].entries()) await topic.runFfmpeg(
+                            ['-v', 'error', '-y', '-i', input, ...(index === 0 && timeline ? ['-filter_complex', timelineTools.audioTimelineFilter(timeline), '-map', '[baseaudio]'] : ['-map', '0:a:0']),
+                                '-vn', '-ar', '16000', '-ac', '2', '-f', 'f32le', files[index]], mediaConfig(mediaProfile));
+                        return require('./creative_audio_audit').analyzeCreativeAudio(fs.readFileSync(files[0]), fs.readFileSync(files[1]), checkedPlan, assets);
+                    } finally { for (const file of files) if (fs.existsSync(file)) fs.unlinkSync(file); }
+                })
             });
-            history.push({ stage: 'audio_technical_qa', result: current.audioQa });
-            if (current.audioQa.status !== 'passed') throw new Error(`Audio technical QA failed: ${current.audioQa.issues.join(',')}`);
+            const { rendered } = mediaReview;
+            plan = mediaReview.plan;
+            profile = plan.editorialProfile;
+            writeJsonAtomic(path.join(scratch, 'creative-plan.json'), { plan, frameMap, sourceFrames });
+            const editPlan = timeline ? timelineTools.absoluteEditPlan(timeline, sourceId, baseline.window) : loadWorkflow('clipping/editPlan').continuousPlan(sourceId, baseline.window);
+            let current = { ...baseline, window: { ...baseline.window, duration }, editorialProfile: profile, qaRequired: true, uploadReady: false, creativePlan: plan, editPlan,
+                ...(mediaReview.audioQa ? { audioQa: mediaReview.audioQa } : {}),
+                copy: { ...baseline.copy, description: loadWorkflow('clipping/experiment').labelExperimentDescription(baseline.copy.description, true, editPlan.removed.length > 0) },
+                output: { ...baseline.output, mediaPath, srtPath: renderSrt, srtSegmentCount: topic.parseTopicSrt ? topic.parseTopicSrt(renderSrt).segments.length : baseline.output.srtSegmentCount,
+                    subtitleVideoEncoder: rendered.subtitleVideoEncoder || config.subtitleVideoEncoder,
+                    subtitleBurnFallbackUsed: rendered.fallbackUsed, subtitleHwaccel: rendered.subtitleHwaccel === null ? null : config.subtitleHwaccel } };
+            if (clip.attributionRequired) {
+                const review = require('./precision_actor_review').rebindUnchangedPrecisionCopy(current, editPlan,
+                    { clip, evidence: subtitleEvidence, danmaku }, baseline.copy);
+                if (!review.passed) throw new Error(`Creative attribution rebind failed: ${review.issues.join(',')}`);
+                current = { ...current, attributionReview: review.attributionReview, grounding: review.grounding };
+            }
+            const coverLayout = require('./creative_layout');
+            const coverWindow = coverLayout.coverWindowWithFaceEvidence(plan);
+            current.output.coverPath = await withMedia(() => topic.generateClipCover(mediaPath, current.copy.coverText || current.copy.title, directory,
+                { outputPath: path.join(directory, `${name}.creative${visualAttempt ? '-repair' : ''}_cover.jpg`), streamerName: baseline.streamerName,
+                    coverSourcePath: mediaPath, clipStart: coverWindow?.start ?? 0,
+                    clipDuration: coverWindow ? coverWindow.end - coverWindow.start : duration,
+                    preferredTime: coverWindow ? (coverWindow.start + coverWindow.end) / 2 : plan.effects[0].start,
+                    textPosition: options.creativeCoverTextPosition,
+                    protectedBoxes: allowCoverFaceOverlap ? [] : coverLayout.coverProtectedBoxes(plan), protectSubtitleBand: true,
+                    resourcePeaks: baseline.processing?.resourcePeaks }));
+            const qaTimes = plan.effects.flatMap(row => [row.start + .12, (row.start + row.end) / 2, row.end - .12]);
+            const qaPrefix = visualAttempt ? 'qa-final' : 'qa';
+            const outputFrames = await capture(mediaPath, qaTimes, qaPrefix);
+            const outputStrips = await strips(outputFrames, `${qaPrefix}-strip`);
+            const comparisons = [];
+            const stripHeight = (await require('sharp')(sourceStrips[0]).metadata()).height;
+            for (const [index, effect] of plan.effects.entries()) {
+                const file = path.join(scratch, `comparison-${visualAttempt ? 'final-' : ''}${index}.jpg`);
+                await require('sharp')({ create: { width: 1920, height: stripHeight * 2, channels: 3, background: '#16161b' } })
+                    .composite([{ input: sourceStrips[moments.findIndex(row => row.id === effect.id)], left: 0, top: 0 },
+                        { input: outputStrips[index], left: 0, top: stripHeight }]).jpeg().toFile(file);
+                comparisons.push(file);
+            }
+            const before = await artifactDigests(current);
+            const comparisonPages = await contactPages(comparisons, plan.effects.map(row => row.id), visualAttempt ? 'comparison-final-page' : 'comparison-page');
+            const qa = await request(visualAttempt === 0 ? 'qa' : 'qa-final', 'approved',
+                '独立核对实际成片效果。对比拼图按节点顺序，长图每个带M编号的区块有两行，上排源画面、下排成片；短图是一处节点。每行从左到右是开始/中间/结束；最后一张是封面。'
+                + '检查放大是否准确、贴纸是否挡脸/关键操作、字幕可读、特效是否误导语气或改变含义。'
+                + '本轮只审画面和文字。音效技术校验由程序解码实际音轨后完成，audioQa提供原声相关性、长度、峰值及音效能量证据；听感另留人工复核。'
+                + '不要要求静帧证明淡入淡出、侧链、音轨或听感，也不要因此将视觉restraint判失败；只在画面/语义不确定时拒绝。'
+                + (limits.variety ? '同时核对impact：是否有可感知且合乎情景的剪辑表达，仅几次轻微推近不算合格。贴纸是后期插图，不能当成主播实体或现场观众。' : '')
+                + '返回 {"approved":true,"checks":{"meaning":true,"focus":true,"subtitles":true,"restraint":true,"impact":true},"issues":[]}。\n'
+                + (compact ? '按editorialProfile核对节奏、完整性和语气；不是每种素材都要喜剧效果。放大应在原头像、弹幕或关键点附近，不能搬到无关位置挡弹幕。关联贴图靠近主体但不挡脸/文字/操作。字幕可换行及移到主体旁边，不能盖住嘴部或裁出屏幕；保持原字号。圆形特写边框允许自然出屏，不能仅因圆圈不完整拒绝；关键眼睛/嘴/下巴仍须可见且无人工黑色补边。全屏细节放大时小圆窗mode=retain是保持原像素大小的人脸，不要求它产生放大效果。人物眼睛嘴部完整，文字放大不截断原话，教学步骤/连续表演不能被剪坏。' : '')
+                + '封面实际文字以copy.coverText为准；若图中文字与该字段不一致，请明确报告逐字差异，不要根据猜读提出不存在的文案。'
+                + (allowCoverFaceOverlap ? '用户已明确接受本次封面文字遮挡人脸：仅此封面遮脸不算focus或restraint失败，也不要将其列入issues。正文成片的人脸、操作和字幕遮挡，以及封面文字准确性和可读性仍须正常检查。' : '')
+                + JSON.stringify({ plan, speech, ...(timeline ? { originalSpeech, storyTimeline: timeline } : {}), sourceFrames: frameMap, qaTimes, copy: current.copy, cover: { text: current.copy.coverText || current.copy.title }, audioQa: current.audioQa || null }),
+            [...comparisonPages, current.output.coverPath]);
+            history.push({ stage: 'qa', attempt: visualAttempt + 1, qa });
+            const after = await artifactDigests(current);
+            if (Object.entries(before).some(([key, value]) => after[key] !== value)
+                || await sourceIdentity() !== sourceId) return restore('creative_qa_rejected');
+            if (qa.approved !== true || !['meaning', 'focus', 'subtitles', 'restraint'].every(key => qa.checks?.[key] === true)
+                || (limits.variety && qa.checks?.impact !== true)
+                || !Array.isArray(qa.issues) || qa.issues.length) {
+                if (visualAttempt !== 0 || !Array.isArray(qa.issues) || !qa.issues.length) return restore('creative_qa_rejected');
+                const repair = await request('qa-repair', 'repairs',
+                    '依据独立成片审核意见做最小修复，只允许移除造成问题的可选filter或sticker。不得修改时间轴、对白、取景、安全标记或音效。'
+                    + '保留其他有效效果；不能通过移除滤镜/贴纸解决时返回空repairs。每个节点至多一项，返回'
+                    + ' {"repairs":[{"momentId":"M1","remove":["filter"],"reason":"审核指出滤镜误导语气，恢复原色"}]}。\n'
+                    + JSON.stringify({ qa, plan, speech, profile }), [...comparisonPages, current.output.coverPath]);
+                raw = require('./creative_qa_repair').applyVisualQaRepair(raw, repair);
+                const repaired = validateDraft(raw);
+                for (const row of repaired.effects) {
+                    const previous = plan.effects.find(effect => effect.id === row.id);
+                    if (previous?.sound) row.sound = previous.sound;
+                }
+                plan = { ...repaired, ...(timeline ? { timeline } : {}), ...(plan.music ? { music: plan.music } : {}), editorialProfile: profile };
+                plan.assetDigests = Object.fromEntries(Object.values(assets).filter(asset => plan.music?.id === asset.id
+                    || plan.effects.some(row => row.sticker?.id === asset.id || soundId(row.sound) === asset.id)).map(asset => [asset.id, asset.sha256]));
+                history.push({ stage: 'visual_qa_repair', repair, note: 'Rerender and repeat all media and visual checks' });
+                continue;
+            }
+            return finish({ ...current, uploadReady: baseline.uploadReady,
+                qaResult: { version: 1, status: 'passed', digests: after, history } }, 'edited', 'visual_effects_verified');
         }
-        const qaTimes = plan.effects.flatMap(row => [row.start + .12, (row.start + row.end) / 2, row.end - .12]);
-        const outputFrames = await capture(mediaPath, qaTimes, 'qa');
-        const outputStrips = await strips(outputFrames, 'qa-strip');
-        const comparisons = [];
-        const stripHeight = (await require('sharp')(sourceStrips[0]).metadata()).height;
-        for (const [index, effect] of plan.effects.entries()) {
-            const file = path.join(scratch, `comparison-${index}.jpg`);
-            await require('sharp')({ create: { width: 1920, height: stripHeight * 2, channels: 3, background: '#16161b' } })
-                .composite([{ input: sourceStrips[moments.findIndex(row => row.id === effect.id)], left: 0, top: 0 },
-                    { input: outputStrips[index], left: 0, top: stripHeight }]).jpeg().toFile(file);
-            comparisons.push(file);
-        }
-        const before = await artifactDigests(current);
-        const comparisonPages = await contactPages(comparisons, plan.effects.map(row => row.id), 'comparison-page');
-        const qa = await request('qa', 'approved',
-            '独立核对实际成片效果。对比拼图按节点顺序，长图每个带M编号的区块有两行，上排源画面、下排成片；短图是一处节点。每行从左到右是开始/中间/结束；最后一张是封面。'
-            + '检查放大是否准确、贴纸是否挡脸/关键操作、字幕可读、特效是否误导语气或改变含义。'
-            + '本轮只审画面和文字。音效技术校验由程序解码实际音轨后完成，audioQa提供原声相关性、长度、峰值及音效能量证据；听感另留人工复核。'
-            + '不要要求静帧证明淡入淡出、侧链、音轨或听感，也不要因此将视觉restraint判失败；只在画面/语义不确定时拒绝。'
-            + (limits.variety ? '同时核对impact：是否有可感知且合乎情景的剪辑表达，仅几次轻微推近不算合格。贴纸是后期插图，不能当成主播实体或现场观众。' : '')
-            + '返回 {"approved":true,"checks":{"meaning":true,"focus":true,"subtitles":true,"restraint":true,"impact":true},"issues":[]}。\n'
-            + (compact ? '按editorialProfile核对节奏、完整性和语气；不是每种素材都要喜剧效果。放大应在原头像、弹幕或关键点附近，不能搬到无关位置挡弹幕。关联贴图靠近主体但不挡脸/文字/操作。字幕可换行及移到主体旁边，不能盖住嘴部或裁出屏幕；保持原字号。圆形特写边框允许自然出屏，不能仅因圆圈不完整拒绝；关键眼睛/嘴/下巴仍须可见且无人工黑色补边。全屏细节放大时小圆窗mode=retain是保持原像素大小的人脸，不要求它产生放大效果。人物眼睛嘴部完整，文字放大不截断原话，教学步骤/连续表演不能被剪坏。' : '')
-            + '封面实际文字以copy.coverText为准；若图中文字与该字段不一致，请明确报告逐字差异，不要根据猜读提出不存在的文案。'
-            + (allowCoverFaceOverlap ? '用户已明确接受本次封面文字遮挡人脸：仅此封面遮脸不算focus或restraint失败，也不要将其列入issues。正文成片的人脸、操作和字幕遮挡，以及封面文字准确性和可读性仍须正常检查。' : '')
-            + JSON.stringify({ plan, speech, ...(timeline ? { originalSpeech, storyTimeline: timeline } : {}), sourceFrames: frameMap, qaTimes, copy: current.copy, cover: { text: current.copy.coverText || current.copy.title }, audioQa: current.audioQa || null }),
-        [...comparisonPages, current.output.coverPath]);
-        history.push({ stage: 'qa', qa });
-        const after = await artifactDigests(current);
-        if (qa.approved !== true || !['meaning', 'focus', 'subtitles', 'restraint'].every(key => qa.checks?.[key] === true)
-            || (limits.variety && qa.checks?.impact !== true)
-            || !Array.isArray(qa.issues) || qa.issues.length || Object.entries(before).some(([key, value]) => after[key] !== value)
-            || await sourceIdentity() !== sourceId) return restore('creative_qa_rejected');
-        return finish({ ...current, uploadReady: baseline.uploadReady,
-            qaResult: { version: 1, status: 'passed', digests: after, history } }, 'edited', 'visual_effects_verified');
     } catch (error) {
         history.push({ stage: 'error', error: error.message });
         return restore(`creative_failed: ${error.message}`);

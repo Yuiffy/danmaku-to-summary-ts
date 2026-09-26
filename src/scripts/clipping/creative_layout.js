@@ -36,12 +36,14 @@ function checkedFaceGeometry(row, resolution) {
         return insetGeometry(row.faceInset, resolution.width, resolution.height);
     } catch (error) {
         const box = row.faceInset.sourceBox;
+        if (!box) throw new Error(`${row.id || row.momentId}: ${error.message}`);
         const side = Math.round(Math.max(box.width * resolution.width, box.height * resolution.height) * 1.55 / 2) * 2;
         const diameter = row.faceInset.diameter;
         const size = diameter == null ? side : Math.round(Math.min(resolution.height * diameter,
             row.faceInset.placement === 'source' ? resolution.width * .5 : resolution.width,
             row.faceInset.edgeOverflow ? side * 4.5 : Infinity) / 2) * 2;
-        throw new Error(`${row.id || row.momentId}: ${error.message} (effective diameter=${diameter ?? 'retain'}, magnification=${(size / side).toFixed(2)}x)`);
+        const minimum = Math.ceil(side * 1.2 / 2) * 2 / resolution.height;
+        throw new Error(`${row.id || row.momentId}: ${error.message} (effective diameter=${diameter ?? 'retain'}, magnification=${(size / side).toFixed(2)}x, required diameter>=${minimum.toFixed(3)}). Keep the observed face box intact; if it cannot fit, choose a visually verified full-frame zoom or omit this inset.`);
     }
 }
 

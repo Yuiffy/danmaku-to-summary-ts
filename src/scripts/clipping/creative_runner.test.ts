@@ -2,7 +2,7 @@ export {};
 const fs = require('fs'), os = require('os'), path = require('path'), sharp = require('sharp');
 const { runCreativeEnhancement } = require('./creative_runner');
 
-test.each(['passed', 'qa_rejected', 'render_failed', 'source_changed', 'sound_plan', 'crop_repaired', 'crop_still_unsafe', 'many_moments', 'tutorial', 'performance'])('creative pipeline %s binds the final artifact or returns the exact ordinary media/copy', async outcome => {
+test.each(['passed', 'qa_rejected', 'render_failed', 'source_changed', 'sound_plan', 'crop_repaired', 'crop_still_unsafe', 'many_moments', 'tutorial', 'performance', 'spatial_repaired', 'spatial_repair_twice', 'cover_protected', 'cover_allowed', 'cover_allowed_qa_rejected', 'visual_qa_repaired', 'visual_qa_persistent'])('creative pipeline %s binds the final artifact or returns the exact ordinary media/copy', async outcome => {
     const profileCase = ['tutorial', 'performance'].includes(outcome);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-runner-'));
     const sourcePath = path.join(dir, 'source.mp4'), sourceSrt = path.join(dir, 'source.srt');
@@ -18,6 +18,8 @@ test.each(['passed', 'qa_rejected', 'render_failed', 'source_changed', 'sound_pl
         info: { roomId: 'room' }, parsed: { segments: [{ start: 101, end: 106, text: '等一下，这里有东西' }] }, danmaku: [],
         source: { kind: 'video', mediaPath: sourcePath }, options: { srtPath: sourceSrt }, clip: {}, subtitleEvidence: {},
         topic: {
+            calculateSubtitleStyle: require('../topic_clipper').calculateSubtitleStyle,
+            buildBurnAssContentFromSrt: require('../topic_clipper').buildBurnAssContentFromSrt,
             runFfmpeg: jest.fn(async args => {
                 if (args.at(-1).endsWith('.jpg')) fs.writeFileSync(args.at(-1), jpeg);
                 if (args.at(-1).endsWith('.pcm')) {
@@ -43,7 +45,8 @@ test.each(['passed', 'qa_rejected', 'render_failed', 'source_changed', 'sound_pl
                 fs.writeFileSync(target, 'edited artifact'); return { path: target, burnedSubtitles: true, creativeEffectsApplied: 1 };
             }),
             generateClipCover: jest.fn(async (_video, _copy, _dir, options) => { fs.writeFileSync(options.outputPath, jpeg); return options.outputPath; }),
-            resolveFfprobePath: () => 'ffprobe'
+            resolveFfprobePath: () => 'ffprobe',
+            getVideoResolution: jest.fn(async () => ({ width: 1920, height: 1080 }))
         } };
     if (outcome === 'sound_plan') {
         const bytes = Buffer.from('fixture audio'), assetManifest = path.join(dir, 'assets.json');
@@ -59,6 +62,10 @@ test.each(['passed', 'qa_rejected', 'render_failed', 'source_changed', 'sound_pl
         context.config.enhancements.creative.maxMoments = 8;
         context.parsed.segments[0].end = 159;
     }
+    const spatialCase = outcome.startsWith('spatial_');
+    if (spatialCase) context.config.enhancements.creative.focusPlacement = 'source';
+    const coverCase = outcome.startsWith('cover_'), coverAllowed = outcome.startsWith('cover_allowed');
+    if (coverCase) Object.assign(context.config.enhancements.creative, { focusPlacement: 'source', faceInsetDiameter: .6, allowCoverFaceOverlap: coverAllowed });
     if (profileCase) {
         context.config.enhancements.creative.style = 'compact';
         context.parsed.segments = [{ start: 100, end: 160, text: '完整的说明或表演内容' }];
@@ -98,7 +105,7 @@ test.each(['passed', 'qa_rejected', 'render_failed', 'source_changed', 'sound_pl
                     expect(prompt).toContain('zoom=null');
                 }
                 value = { effects: [{ momentId: 'M1', frameIds: ['M1F0', 'M1F1', 'M1F2'], visualConfirmed: true,
-                    reason: '三帧清楚显示重点', filter: cropCase ? 'monochrome' : null,
+                    reason: '三帧清楚显示重点', filter: cropCase || outcome.startsWith('visual_qa_') ? 'monochrome' : null,
                     zoom: outcome === 'crop_repaired' && repair ? null
                         : { scale: 1.3, x: .5, y: .4, target: 'detail', safeToCrop: !cropCase } }] };
                 if (outcome === 'many_moments') {
@@ -109,12 +116,42 @@ test.each(['passed', 'qa_rejected', 'render_failed', 'source_changed', 'sound_pl
                 if (profileCase) value.effects[0] = { momentId: 'M1', frameIds: ['M1F0', 'M1F1', 'M1F2'], visualConfirmed: true, reason: '关键细节保持上下文',
                     focusInset: { target: outcome === 'tutorial' ? 'chat' : 'detail', shape: 'rectangle', placement: 'source',
                         sourceBox: { x: .2, y: .2, width: .2, height: .1 }, magnification: 1.5, clearOfAction: true } };
+                if (spatialCase) {
+                    if (repair) {
+                        expect(prompt).toContain('M1: Focus leaves no readable subtitle area');
+                        expect(context.topic.cutClipMedia).not.toHaveBeenCalled();
+                    }
+                    value.effects[0].zoom = null;
+                    value.effects[0].filter = 'monochrome';
+                    if (!repair || (outcome === 'spatial_repair_twice' && !phase.includes('repair-2-'))) {
+                        value.effects[0].focusInset = { target: 'person', shape: 'rectangle', placement: 'source',
+                            sourceBox: { x: .3, y: .25, width: .4, height: .4 }, magnification: 2, clearOfAction: true };
+                    }
+                }
+                if (coverCase) {
+                    value.effects[0].zoom = null;
+                    value.effects[0].faceInset = { sourceBox: { x: .75, y: .8, width: .1, height: .17 },
+                        placement: 'source', diameter: .4, clearOfAction: true };
+                }
             }
             else if (phase.includes('sound-plan')) value = { sounds: [{ momentId: 'M1', id: 'audience_laugh', offsetSeconds: 2.2, levelDb: -8 }] };
+            else if (phase.includes('qa-repair')) {
+                expect(prompt).toContain('滤镜语气不协调');
+                value = { repairs: [{ momentId: 'M1', remove: ['filter'] }] };
+            }
             else {
+                if (coverCase) {
+                    expect(prompt.includes('用户已明确接受本次封面文字遮挡人脸')).toBe(coverAllowed);
+                    const coverOptions = context.topic.generateClipCover.mock.calls[0][3];
+                    expect(coverOptions.protectedBoxes).toHaveLength(coverAllowed ? 0 : 1);
+                    expect(coverOptions.protectSubtitleBand).toBe(true);
+                }
                 if (outcome === 'many_moments') expect(images).toHaveLength(3);
                 if (outcome === 'source_changed') fs.appendFileSync(sourceSrt, 'changed');
-                value = { approved: outcome !== 'qa_rejected', checks: { meaning: true, focus: true, subtitles: true, restraint: true, impact: true }, issues: [] };
+                value = { approved: !outcome.endsWith('qa_rejected'), checks: { meaning: true, focus: true, subtitles: true, restraint: true, impact: true }, issues: [] };
+                if (outcome.startsWith('visual_qa_') && (!phase.includes('qa-final') || outcome === 'visual_qa_persistent')) {
+                    value.approved = false; value.checks.restraint = false; value.issues = ['滤镜语气不协调'];
+                }
             }
             return { text: JSON.stringify(value), meta: { ledgerId: 'id', usage: { input_tokens: 100 }, elapsedMs: 10 } };
         }),
@@ -123,7 +160,8 @@ test.each(['passed', 'qa_rejected', 'render_failed', 'source_changed', 'sound_pl
     };
     try {
         const result = await runCreativeEnhancement(original, context, dependencies);
-        if (['passed', 'sound_plan', 'crop_repaired', 'many_moments', 'tutorial', 'performance'].includes(outcome)) {
+        if (outcome.startsWith('visual_qa_')) expect(result.creativeResult.history.filter(row => row.stage === 'error')).toEqual([]);
+        if (spatialCase || ['passed', 'sound_plan', 'crop_repaired', 'many_moments', 'tutorial', 'performance', 'cover_allowed', 'cover_protected', 'visual_qa_repaired'].includes(outcome)) {
             expect(result.creativeResult.status).toBe('edited'); expect(result.qaResult.status).toBe('passed');
             expect(result.qaResult.digests.video).toMatch(/^[a-f0-9]{64}$/);
             expect(result.editPlan.removed).toEqual([]);
@@ -145,6 +183,13 @@ test.each(['passed', 'qa_rejected', 'render_failed', 'source_changed', 'sound_pl
             expect(context.topic.cutClipMedia).not.toHaveBeenCalled();
         }
         if (outcome === 'tutorial') expect(stages.some(stage => stage.includes('story-qa'))).toBe(true);
-        expect(stages).toHaveLength(outcome === 'tutorial' ? 4 : profileCase ? 5 : outcome === 'render_failed' ? 2 : ['sound_plan', 'crop_repaired'].includes(outcome) ? 4 : 3);
+        if (outcome.startsWith('visual_qa_')) {
+            expect(context.topic.cutClipMedia).toHaveBeenCalledTimes(2);
+            expect(dependencies.probeMedia).toHaveBeenCalledTimes(2);
+            expect(context.topic.cutClipMedia.mock.calls[1][4].creativePlan.effects[0].filter).toBeUndefined();
+            expect(context.topic.cutClipMedia.mock.calls[1][4].creativePlan.effects[0].zoom).toBeDefined();
+            expect(result.creativeResult.history.filter(row => row.stage === 'qa')).toHaveLength(2);
+        }
+        expect(stages).toHaveLength(outcome.startsWith('visual_qa_') ? 5 : spatialCase ? outcome === 'spatial_repair_twice' ? 5 : 4 : outcome === 'tutorial' ? 4 : profileCase ? 5 : outcome === 'render_failed' ? 2 : ['sound_plan', 'crop_repaired', 'crop_still_unsafe'].includes(outcome) ? 4 : 3);
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
-});
+}, 15000);

@@ -5,6 +5,21 @@ const cues = Array.from({ length: 6 }, (_, i) => ({ id: `C${i + 1}`, start: i * 
 const draft = { keep: [{ fromCue: 'C1', toCue: 'C1', role: 'setup', reason: '起因' },
     { fromCue: 'C4', toCue: 'C4', role: 'reaction', reason: '反差' }, { fromCue: 'C6', toCue: 'C6', role: 'payoff', reason: '回扣' }] };
 
+test('adjacent complete cue groups merge overlapping padding without duplicating speech or accepting repeated cues', () => {
+    const close = [{ id: 'C1', start: 1, end: 4, text: '起因' }, { id: 'C2', start: 4.1, end: 7, text: '反应' },
+        { id: 'C3', start: 8, end: 9, text: '删除的支线' }, { id: 'C4', start: 10, end: 12, text: '收尾' }];
+    const plan = { keep: [{ fromCue: 'C1', toCue: 'C1', role: 'setup', reason: '起因' },
+        { fromCue: 'C2', toCue: 'C2', role: 'reaction', reason: '反应' }, { fromCue: 'C4', toCue: 'C4', role: 'payoff', reason: '收尾' }] };
+    const result = validateStoryPlan(plan, close, 15, [close[0], close[1], close[3]]);
+    expect(result.keep).toHaveLength(2);
+    expect(result.keep[0].start).toBe(.88);
+    expect(result.keep[0].end).toBe(7.22);
+    expect(result.duration).toBe(8.68);
+    expect(mapTimelineCues(close, result).map(c => c.id)).toEqual(['C1', 'C2', 'C4']);
+    expect(() => validateStoryPlan({ keep: [plan.keep[0], plan.keep[0], plan.keep[2]] }, close, 15)).toThrow('chronological');
+    expect(() => validateStoryPlan({ keep: [plan.keep[1], plan.keep[0], plan.keep[2]] }, close, 15)).toThrow('chronological');
+});
+
 test('story edit preserves complete approved cues, order and public-copy evidence while removing unrelated dialogue', () => {
     const timeline = validateStoryPlan(draft, cues, 60, [cues[0], cues[5]]);
     expect(timeline.removedSeconds).toBeGreaterThan(45);

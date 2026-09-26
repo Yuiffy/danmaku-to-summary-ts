@@ -28,20 +28,26 @@ function assertTimeline(timeline, sourceDuration) {
 
 function validateStoryPlan(raw, cues, sourceDuration, protectedSpans = [], profile = null) {
     if (!Array.isArray(raw?.keep) || !raw.keep.length || raw.keep.length > 32) throw new Error('Missing story keep ranges');
+    let lastCue = -1;
     const keep = raw.keep.map(row => {
         const a = cues.findIndex(c => c.id === row.fromCue), b = cues.findIndex(c => c.id === row.toCue);
         if (a < 0 || b < a || !String(row.reason || '').trim()
             || !['setup', 'escalation', 'reaction', 'payoff', 'context', 'step', 'explanation', 'performance', 'closing'].includes(row.role)) throw new Error('Story ranges require ordered real cue IDs, reason and role');
+        if (a <= lastCue) throw new Error(`Keep ranges must be chronological and disjoint: ${row.fromCue} repeats or precedes C${lastCue + 1}`);
+        lastCue = b;
         // Only complete approved subtitle cues; adjacent boundaries never split another cue.
         const start = Math.max(0, cues[a].start - .12, a ? cues[a - 1].end : 0);
         const end = Math.min(sourceDuration, cues[b].end + .22, cues[b + 1]?.start ?? sourceDuration);
-        return { start: round(start), end: Math.min(sourceDuration, round(end)), reason: row.reason, role: row.role };
+        return { start: round(start), end: Math.min(sourceDuration, round(end)), reason: row.reason, role: row.role, firstCue: a, lastCue: b };
     });
-    if (keep.some((s, i) => i && s.start < keep[i - 1].end - .001)) throw new Error('Keep ranges must be chronological and disjoint');
+    if (keep.some((s, i) => i && s.start < keep[i - 1].end - .001 && s.firstCue !== keep[i - 1].lastCue + 1)) {
+        throw new Error('Keep ranges overlap across omitted speech');
+    }
     const merged = [];
-    for (const span of keep) {
+    // Adjacent retained cue groups can share padding in a short pause. Union it once.
+    for (const { firstCue, lastCue, ...span } of keep) {
         const previous = merged.at(-1);
-        if (previous && span.start - previous.end < .06) { previous.end = span.end; previous.reason += `；${span.reason}`; }
+        if (previous && span.start - previous.end < .06) { previous.end = Math.max(previous.end, span.end); previous.reason += `；${span.reason}`; }
         else merged.push({ ...span });
     }
     for (const cue of cues) if (merged.some(span => overlap(cue, span))

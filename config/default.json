@@ -1563,7 +1563,7 @@
     "enhancements": {
       "enabled": true,
       "workflow": "creative",
-      "creative": { "style": "compact", "avatarMode": "auto", "focusPlacement": "source", "faceInsetDiameter": 0.60, "laughAsset": "sitcom_laugh", "laughAssets": ["sitcom_laugh", "sitcom_laugh_chuckle", "sitcom_laugh_warm", "sitcom_laugh_applause"], "maxMoments": 24, "maxZoom": 5, "soundEffects": true, "filters": true, "variety": true, "assetManifest": "config/clip-creative-assets.json" },
+      "creative": { "style": "compact", "avatarMode": "auto", "focusPlacement": "source", "faceInsetDiameter": 0.60, "allowCoverFaceOverlap": true, "laughAsset": "sitcom_laugh", "laughAssets": ["sitcom_laugh", "sitcom_laugh_chuckle", "sitcom_laugh_warm", "sitcom_laugh_applause"], "maxMoments": 24, "maxZoom": 5, "soundEffects": true, "filters": true, "variety": true, "assetManifest": "config/clip-creative-assets.json" },
       "pacing": { "noiseDb": -40, "nonSpeechVad": true, "minRemovedSeconds": 3, "minRemovedRatio": 0.02, "maxRemovedRatio": 0.2, "maxPausesPerClip": 2, "maxScannedSeconds": 120 },
       "roomIds": ["25788785"],
       "editing": true,
