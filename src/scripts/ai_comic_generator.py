@@ -1726,10 +1726,9 @@ def resolve_image_prompt_extra_streamers(
 ) -> list[dict]:
     """Choose extra character references only after the storyboard is available.
 
-    ASR-confirmed speakers remain eligible directly. Text-only candidates are
-    resolved from the completed storyboard rather than the whole highlight, so
-    an unrelated mention cannot be promoted into a different scene merely
-    because its reference image was available first.
+    ASR-confirmed speakers remain eligible directly unless the room opts into
+    storyboard filtering. Text-only candidates must also occur in the completed
+    storyboard, so unrelated source mentions cannot add reference images.
     """
     multi_config = get_multi_reference_config(config, room_id, highlight_path)
     max_extra = max(0, int(multi_config.get("maxExtraCharacters") or 0))
@@ -1739,6 +1738,10 @@ def resolve_image_prompt_extra_streamers(
         highlight_path,
         include_mentioned_streamers=False,
     )
+    if multi_config.get("filterAppearedImagesByComicScript", False):
+        detected_streamers = filter_extra_streamers_for_image_prompt(
+            detected_streamers, comic_text, config, room_id,
+        )
 
     selected: list[dict] = []
     selected_ids: set[str] = set()

@@ -1229,8 +1229,9 @@
           ],
           "includeMentionedStreamers": true,
           "includeMentionedStreamerImages": true,
-          "filterExtraImagesByComicScript": false,
-          "filterMentionedImagesByComicScript": false,
+          "filterExtraImagesByComicScript": true,
+          "filterMentionedImagesByComicScript": true,
+          "filterAppearedImagesByComicScript": true,
           "appendCharacterDescriptions": true
         }
       },

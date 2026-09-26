@@ -748,6 +748,37 @@ class MultiReferenceComicTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in selected], ["shiori"])
         self.assertEqual(selected[0]["_comicReferenceReason"], "appeared")
 
+    def test_sui_only_uploads_shiori_reference_when_storyboard_uses_her(self):
+        production = json.loads((ROOT / "config" / "production.json").read_text(encoding="utf-8"))
+        policy = production["ai"]["roomSettings"]["25788785"]["multiReferenceImages"]
+        self.assertTrue(policy["filterExtraImagesByComicScript"])
+        self.assertTrue(policy["filterMentionedImagesByComicScript"])
+        self.assertTrue(policy["filterAppearedImagesByComicScript"])
+        self.config["roomSettings"]["25788785"]["multiReferenceImages"] = policy
+        self.config["ai"]["streamerRegistry"]["shiori"]["mentionLabels"] = ["Shiori"]
+        self.highlight.write_text("The host mentioned Shiori, but played alone.", encoding="utf-8")
+        solo_script = "Panel 1: Sui plays alone."
+        shiori_script = "Panel 1: Sui and Shiori play together."
+
+        self.assertEqual([], comic.resolve_image_prompt_extra_streamers(
+            self.config, "25788785", str(self.highlight), solo_script,
+        ))
+        selected = comic.resolve_image_prompt_extra_streamers(
+            self.config, "25788785", str(self.highlight), shiori_script,
+        )
+        self.assertEqual([item["id"] for item in selected], ["shiori"])
+        self.assertEqual(selected[0]["_comicReferenceReason"], "mentioned")
+
+        self.write_sidecar(["shiori"])
+        self.assertEqual([], comic.resolve_image_prompt_extra_streamers(
+            self.config, "25788785", str(self.highlight), solo_script,
+        ))
+        selected = comic.resolve_image_prompt_extra_streamers(
+            self.config, "25788785", str(self.highlight), shiori_script,
+        )
+        self.assertEqual([item["id"] for item in selected], ["shiori"])
+        self.assertEqual(selected[0]["_comicReferenceReason"], "appeared")
+
     def test_asr_confirmed_speaker_is_injected_into_first_storyboard_prompt(self):
         self.highlight.write_text(
             "岁己和栞栞一起玩双人自行车，互相提醒左右方向。",
