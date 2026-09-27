@@ -857,6 +857,7 @@ async def main():
     parser.add_argument('--prefix', default='', help='标题前缀')
     parser.add_argument('--streamer-name', default=None, help='主播名，用于合集路由')
     parser.add_argument('--room-id', default=None, help='直播间号，用于合集路由；未提供时从媒体路径识别')
+    parser.add_argument('--collection-section-id', type=int, default=None, help='本次投稿指定的合集小节 ID')
     parser.add_argument('--tid', type=int, default=None, help='分区ID')
     parser.add_argument('--delay', type=int, default=30, help='上传间隔秒数')
     parser.add_argument('--skip', default='', help='跳过序号（逗号分隔）')
@@ -1062,16 +1063,19 @@ async def main():
     print(f"\n=== 第2步：开始上传（间隔 {args.delay}s）===")
     print("[INFO] 凭证已创建\n")
 
-    collection_section_id = None
-    try:
-        collection_section_id = get_collection_section_id(
-            room_id=room_id,
-            streamer_name=args.streamer_name,
-            source_desc=args.source,
-            prefix=args.prefix,
-        )
-    except Exception as e:
-        print(f"[WARN] 获取合集 section_id 失败，跳过合集：{e}")
+    collection_section_id = args.collection_section_id
+    if collection_section_id is not None and collection_section_id <= 0:
+        parser.error('--collection-section-id must be positive')
+    if collection_section_id is None:
+        try:
+            collection_section_id = get_collection_section_id(
+                room_id=room_id,
+                streamer_name=args.streamer_name,
+                source_desc=args.source,
+                prefix=args.prefix,
+            )
+        except Exception as e:
+            print(f"[WARN] 获取合集 section_id 失败，跳过合集：{e}")
 
     results = []
     for i, clip in enumerate(to_upload):

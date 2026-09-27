@@ -123,6 +123,19 @@ describe('render held topic candidate by reserved ID', () => {
       reviewNote: 'Changed snapshot', requireApproval: true, expectedSha256: 'different' }, {})).toThrow('matching upload approval');
   });
 
+  test('saves reviewed public copy and tags with a candidate subtitle correction', () => {
+    fs.writeFileSync(metadata.output.metadataPath, JSON.stringify(metadata));
+    const result = updateCandidate(metadata.output.metadataPath, { candidateId: 17, action: 'correct',
+      from: 'price', to: 'cost', cue: 1, reviewNote: 'Checked the spoken name',
+      title: 'Revised source title', description: 'Revised source description',
+      tags: 'Host,VR clips' }, {});
+    const saved = JSON.parse(fs.readFileSync(metadata.output.metadataPath, 'utf8'));
+    expect(saved.candidateSubtitles.cues[0].text).toContain('cost');
+    expect(saved.copy.title).toBe('Revised source title');
+    expect(saved.upload.tags).toEqual(['Host', 'VR clips']);
+    expect(result.uploadTags).toEqual(['Host', 'VR clips']);
+  });
+
   test('uses the shared media path and releases the per-candidate lock after failure', async () => {
     const file = metadata.output.metadataPath;
     fs.writeFileSync(file, JSON.stringify(metadata));

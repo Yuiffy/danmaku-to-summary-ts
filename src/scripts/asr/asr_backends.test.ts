@@ -313,6 +313,46 @@ describe('asr_backends', () => {
     expect(result.reason).toContain('default_backend');
   });
 
+  test('assigns MOSS to a stable half of Sui collaboration recordings', () => {
+    const config = { asr: { default_backend: 'paraformer', moss_rollout: {
+      enabled: true, ratio: 0.5, room_ids: ['25788785']
+    } } };
+    const speakerRequest = { participantDiscovery: { mode: 'multi', modeStatus: 'planned' } };
+    const assignments = Array.from({ length: 100 }, (_, index) => asr.resolveAsrBackend(config, {
+      room_id: '25788785', filename: `recording-${index}.flv`, speakerRequest
+    }).backend);
+    expect(assignments.filter(backend => backend === 'moss').length).toBeGreaterThan(35);
+    expect(assignments.filter(backend => backend === 'moss').length).toBeLessThan(65);
+    expect(asr.resolveAsrBackend(config, { room_id: '25788785', filename: 'recording-4.flv', speakerRequest }))
+      .toEqual(asr.resolveAsrBackend(config, { room_id: '25788785', filename: 'recording-4.flv', speakerRequest }));
+    expect(asr.resolveAsrBackend(config, { room_id: '25788785', filename: 'solo.flv' }).backend).toBe('paraformer');
+    expect(asr.resolveAsrBackend(config, { room_id: 'other', filename: 'collab.flv', speakerRequest }).backend).toBe('paraformer');
+    expect(asr.resolveAsrBackend(config, { room_id: '25788785', filename: 'collab.flv', speakerRequest }, 'paraformer').backend)
+      .toBe('paraformer');
+  });
+
+  test('MOSS rollout keeps the previously selected Paraformer profile for fallback', () => {
+    const resolved = asr.resolveAsrBackend({ asr: {
+      default_backend: 'paraformer',
+      gray_rollout: { enabled: true, finetuned_ratio: 1, finetuned_model: 'local-finetuned' },
+      moss_rollout: { enabled: true, ratio: 1, room_ids: ['25788785'] }
+    } }, { room_id: '25788785', filename: 'collab.flv',
+      speakerRequest: { plannedParticipantIds: ['guest'] } });
+    expect(resolved.backend).toBe('moss');
+    expect(resolved.fallbackBackend.backendOptionsOverride.paraformer.finetuned_model).toBe('local-finetuned');
+  });
+
+  test('preserves overlapping MOSS turns through subtitle normalization', () => {
+    const result = asr.normalizeAsrResult({ backend: 'moss', segments: [
+      { start: 17.44, end: 19.28, speaker: 'S01', text: '发表情比大家多' },
+      { start: 17.94, end: 20.44, speaker: 'S02', text: '发的表情也加分' },
+      { start: 21, end: 21.3, speaker: 'S03', text: '好' }
+    ] });
+    expect(result.segments.map((row: any) => [row.start, row.end, row.speaker])).toEqual([
+      [17.44, 19.28, 'S01'], [17.94, 20.44, 'S02'], [21, 21.3, 'S03']
+    ]);
+  });
+
   test('matches routing by room id', () => {
     const result = asr.resolveAsrBackend({
       asr: {

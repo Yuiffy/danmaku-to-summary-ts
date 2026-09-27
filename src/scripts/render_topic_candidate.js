@@ -58,7 +58,11 @@ function prepareCandidate(metadata, metadataPath, options, rootConfig) {
     if (reviewedGrounding.issues.length) throw new Error(`Public copy still needs review: ${reviewedGrounding.issues.join('; ')}`);
     const outputDir = path.dirname(metadataPath);
     const outputStem = path.basename(metadataPath, path.extname(metadataPath));
-    const upload = metadata.upload;
+    const upload = { ...metadata.upload };
+    if (options.tags !== undefined) {
+        if (options.requireApproval) throw new Error('Queued upload tags cannot be overridden during rendering');
+        upload.tags = String(options.tags).split(',').map(tag => tag.trim()).filter(Boolean);
+    }
     if (!upload?.prefix || !upload?.source || !upload.tags?.length) throw new Error('Candidate lacks upload identity');
     return {
         id: String(options.candidateId), mediaPath: metadata.source.mediaPath, srtPath: metadata.source.srtPath,
@@ -73,7 +77,7 @@ function prepareCandidate(metadata, metadataPath, options, rootConfig) {
                 originalIssues: metadata.aiReview.quality?.issues || [],
                 copyGrounding: reviewedGrounding, appliedSubtitleEdits: metadata.aiReview.subtitleEdits || [],
                 userSubtitleEdits: draft.edits, subtitleApproval: approved ? draft.approval : null },
-            aiReview: { ...metadata.aiReview, applied: true }, autoUploadEnabled: false }
+            aiReview: { ...metadata.aiReview, applied: true }, upload, autoUploadEnabled: false }
     };
 }
 
@@ -143,6 +147,13 @@ function updateCandidate(metadataPath, options, rootConfig = configLoader.getCon
                 metadata.status = 'pending_preflight';
             }
         }
+        if (options.tags !== undefined) {
+            const tags = String(options.tags).split(',').map(tag => tag.trim()).filter(Boolean);
+            if (!tags.length) throw new Error('At least one reviewed upload tag is required');
+            metadata.upload.tags = tags;
+            metadata.candidateSubtitles.approval = null;
+            metadata.status = 'pending_preflight';
+        }
         if (options.action === 'approve' || options.approveUpload === 'yes') {
             approveCandidateDraft(metadata, evidence, options.reviewNote);
         }
@@ -158,6 +169,7 @@ function updateCandidate(metadataPath, options, rootConfig = configLoader.getCon
             candidateSrtSha256: draft.sha256, candidateRevision: draft.revision,
             reviewPreview: metadata.reviewPreview || null,
             edits: draft.edits, approval: draft.approval || null, copy: metadata.copy,
+            uploadTags: metadata.upload.tags,
             cues: draft.cues.map((cue, index) => ({ number: index + 1, start: cue.start, end: cue.end, text: cue.text })) };
     } finally { fs.closeSync(lock); fs.unlinkSync(lockPath); }
 }

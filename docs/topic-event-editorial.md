@@ -31,6 +31,7 @@ python src/scripts/clip_upload_registry.py correct --id 123 --from "zzz" --to "�
 - 同一文字若出现在该候选的标题、简介或封面文案中，也做同样的字面替换，
   避免字幕与投稿文案不一致，不会重写其他文案。
 - 字幕已确认、只需投稿：`python src/scripts/clip_upload_registry.py enqueue --ids 123`。
+- 候选里的人名误识别同时影响文案/标签时，`correct` 可附加 `--title`、`--description`、`--cover-text`、`--tags`；这些修订与字幕版本一起保存。单条 JSON 切片需要进入指定合集时，`enqueue --ids 123 --collection-section-id <小节ID>`，不改该直播间的默认合集路由。
   普通成片直接排队上传；待定候选由 worker 先烧录，再上传。
 - 收到入队成功后，确认 `npm run pm2:status:clip-upload` 在线即可报告“已入队”。
   不要在当前会话等待烧录或不断轮询；未在线时运行 `npm run pm2:clip-upload:start`。

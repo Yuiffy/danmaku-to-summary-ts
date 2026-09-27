@@ -104,7 +104,7 @@ export class ConfigValidator {
           backupOriginals: true,
           copyCover: true,
           nearbySegmentRecovery: true,
-          nearbySegmentMaxGapSeconds: 1800,
+          nearbySegmentMaxGapSeconds: 300,
         },
         mikufansOfflineFallback: {
           enabled: true,

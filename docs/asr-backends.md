@@ -1,10 +1,24 @@
 # ASR Backend 配置
 
-> **当前状态（2026-07-16）**：默认 backend 是 `paraformer`，生产 Paraformer 已启用 post-ASR adaptive speaker（`enable_speaker: true`、`speaker_detection_mode: "auto"`）。本页是 ASR 当前架构和验证的权威文档；具体部署值仍以 `config/default.json`、`config/production.json` 与 `DEFAULT_ASR_CONFIG` 为准。
+> **当前状态（2026-09-27）**：默认 backend 是 `paraformer`，生产 Paraformer 已启用 post-ASR adaptive speaker（`enable_speaker: true`、`speaker_detection_mode: "auto"`）；岁己联动任务另有 MOSS 50% 灰度。本页是 ASR 当前架构和验证的权威文档；具体部署值仍以 `config/default.json`、`config/production.json` 与 `DEFAULT_ASR_CONFIG` 为准。
 
-项目支持 Paraformer、Whisper、SenseVoice、Fun-ASR-Nano 和 Fun-ASR-Nano vLLM。Nano 的热词接口是官方 `hotwords: list[str]`，更适合做“岁己 / 小岁”这种词的真实热词测试。
+项目支持 Paraformer、Whisper、SenseVoice、Fun-ASR-Nano、Fun-ASR-Nano vLLM 和 MOSS-Transcribe-Diarize。Nano 的热词接口是官方 `hotwords: list[str]`，更适合做“岁己 / 小岁”这种词的真实热词测试。
 
 岁己房间的生产 Paraformer 流程还支持后置 SenseVoiceSmall 情感分析。它复用 Paraformer 时间轴，不重复 VAD/标点，并把结果提供给晚安回复、漫画脚本和自动切片。配置、输出契约与评分规则见 [sui-emotion-analysis.md](./sui-emotion-analysis.md)。
+
+## MOSS 说话人灰度
+
+生产 `asr.moss_rollout` 只对岁己房间 `25788785` 且已识别为多人联动的录播生效。对 `room_id|filename` 做稳定哈希，50% 选 MOSS、其余继续 Paraformer + CAM++；显式 `--asr-backend` 和一次性 CAM++ 请求优先。相同文件重跑保持分组；关闭 `moss_rollout.enabled` 可立即停止新任务分流。MOSS 失败时当前任务回退 Paraformer，`.asr_meta.json` 的 `routingReason` 记录回退原因。
+
+MOSS 是联合转写与匿名说话人识别，因此灰度组的**文字与时间轴也来自 MOSS**。`S01` 等标签没有实名含义，不用于自动确认参与者。模型按 300 秒窗口运行，窗口间保留 20 秒重复音频；仅通过重复语句与时间重合来延续匿名标签，无法确认时使用新标签。原始并行说话区间会保留在普通 `.srt` 与 `.speaker.srt`，播放器可能同时显示两条字幕。长录播窗口衔接仍需人工抽查，尤其是没有人在窗口交界处持续说话时。
+
+运行环境安装固定版本的上游推理包：
+
+```powershell
+python -m pip install -r src/scripts/python/requirements-moss.txt
+```
+
+生产模型权重使用 `config/production.json` 中的本机路径，版本固定为 Hugging Face revision `e8681d68e7042738ffca8ac8212bc8fcb1131ab8`。复制或下载该 revision 的完整模型目录后再启用灰度；不要把模型放在任务专用 `temp/` 下。运行时需要 RTX CUDA、PyTorch、Transformers 5.6–5.x、FFmpeg 和 FFprobe。一次性验证可用 `--asr-backend moss`，无需命中灰度。
 
 ## 默认 Paraformer 与显式 Whisper
 

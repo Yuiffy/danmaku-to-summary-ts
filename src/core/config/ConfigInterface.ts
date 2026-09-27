@@ -131,7 +131,8 @@ export type AsrBackendName =
   | 'fun-asr-nano'
   | 'fun_asr_nano_vllm'
   | 'fun-asr-nano-vllm'
-  | 'paraformer';
+  | 'paraformer'
+  | 'moss';
 
 export interface AsrHotword {
   word: string;
@@ -335,6 +336,19 @@ export interface AsrConfig {
   };
   default_backend: AsrBackendName;
   backend?: AsrBackendName;
+  moss_rollout?: {
+    enabled: boolean;
+    ratio: number;
+    room_ids: Array<string | number>;
+  };
+  moss?: AsrPythonRuntimeConfig & {
+    model?: string;
+    revision?: string;
+    device?: string;
+    chunk_seconds?: number;
+    overlap_seconds?: number;
+    process_timeout_s?: number;
+  };
   common_hotwords?: AsrHotword[];
   corrections?: AsrCorrectionsConfig;
   routing: AsrRoutingRule[];

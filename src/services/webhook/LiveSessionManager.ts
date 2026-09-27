@@ -200,10 +200,12 @@ export class LiveSessionManager {
       return 0;
     }
 
-    const maxGapSeconds = Number.isFinite(options.maxGapSeconds)
-      ? Number(options.maxGapSeconds)
-      : 1800;
-    const maxGapMs = Math.max(0, maxGapSeconds) * 1000;
+    // A segment finalized after the reconnect grace period belongs to a different session.
+    const maxGapSeconds = Math.min(
+      Math.max(0, Number.isFinite(options.maxGapSeconds) ? Number(options.maxGapSeconds) : LIVE_RECONNECT_GRACE_MS / 1000),
+      LIVE_RECONNECT_GRACE_MS / 1000
+    );
+    const maxGapMs = maxGapSeconds * 1000;
     const maxSegments = Math.max(1, Number(options.maxSegments) || 20);
     const minSizeBytes = Number.isFinite(options.minSizeBytes)
       ? Math.max(0, Number(options.minSizeBytes))
@@ -555,7 +557,7 @@ export class LiveSessionManager {
       backupOriginals: true,
       copyCover: true,
       nearbySegmentRecovery: true,
-      nearbySegmentMaxGapSeconds: 1800,
+      nearbySegmentMaxGapSeconds: LIVE_RECONNECT_GRACE_MS / 1000,
       ...config
     };
   }

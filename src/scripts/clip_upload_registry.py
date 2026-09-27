@@ -913,6 +913,11 @@ def enqueue(args: argparse.Namespace) -> int:
     if already_uploaded and not args.force:
         print(f"[ERROR] already uploaded ids (use --force to enqueue anyway): {already_uploaded}", file=sys.stderr)
         return 2
+    collection_section_id = getattr(args, "collection_section_id", None)
+    if collection_section_id is not None and (collection_section_id <= 0 or len(ids) != 1
+            or not registry["clips"][str(ids[0])].get("manifestPath")):
+        print("[ERROR] --collection-section-id requires one JSON-backed clip and a positive ID", file=sys.stderr)
+        return 2
     if args.dry_run:
         for clip_id in ids:
             clip = registry["clips"][str(clip_id)]
@@ -991,6 +996,7 @@ def enqueue(args: argparse.Namespace) -> int:
             "batchSize": batch_size,
             "timeoutSeconds": timeout_seconds,
             "note": args.note or "",
+            "collectionSectionId": collection_section_id,
             # ``--force`` explicitly authorizes re-submission, including when
             # Bilibili already has the same title.
             "allowDuplicateTitle": bool(args.force),
@@ -1331,6 +1337,8 @@ def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.Co
         ]
         if job.get("allowDuplicateTitle"):
             cmd.append("--force")
+        if job.get("collectionSectionId"):
+            cmd.extend(["--collection-section-id", str(job["collectionSectionId"])])
         print("[worker] run:", " ".join(f'"{c}"' if " " in c else c for c in cmd), flush=True)
         try:
             cp = subprocess.run(
@@ -2484,6 +2492,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--to", dest="to_text", required=True)
     p.add_argument("--cue", type=int, default=None)
     p.add_argument("--note", default="")
+    p.add_argument("--title", default=None)
+    p.add_argument("--description", default=None)
+    p.add_argument("--cover-text", default=None)
+    p.add_argument("--tags", default=None, help="Comma-separated reviewed upload tags (unrendered topic candidates)")
     p.add_argument("--enqueue", action="store_true")
     p.set_defaults(func=edit_candidate)
 
@@ -2514,6 +2526,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--title", default=None)
     p.add_argument("--description", default=None)
     p.add_argument("--cover-text", default=None)
+    p.add_argument("--tags", default=None, help="Comma-separated reviewed upload tags for this candidate")
     p.set_defaults(func=cut_candidates)
 
     p = sub.add_parser("approve-review", help="Save explicit human review for a rendered own-stream clip; never uploads")
@@ -2539,6 +2552,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--note", default="")
     p.add_argument("--force", action="store_true")
+    p.add_argument("--collection-section-id", type=int, default=None,
+                   help="Use this collection section for one JSON-backed clip")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=enqueue)
 

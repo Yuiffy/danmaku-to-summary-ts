@@ -263,7 +263,8 @@ class ClipUploadRegistryTests(unittest.TestCase):
             "roomId": "1820703922",
             "streamerName": "花礼 Harei",
         }
-        job = {"delay": 0, "rateLimitWait": 30, "rateLimitRetries": 1}
+        job = {"delay": 0, "rateLimitWait": 30, "rateLimitRetries": 1,
+               "collectionSectionId": 9974272}
         completed = subprocess.CompletedProcess([], 0, stdout="uploaded")
         with patch.object(registry.subprocess, "run", return_value=completed) as run:
             result = registry.run_batch([clip], job)
@@ -273,6 +274,7 @@ class ClipUploadRegistryTests(unittest.TestCase):
         self.assertIn("--manifest", command)
         self.assertIn(clip["manifestPath"], command)
         self.assertNotIn("--review", command)
+        self.assertEqual(command[command.index("--collection-section-id") + 1], "9974272")
 
     def make_fixture(self, count=2):
         temp_dir = tempfile.TemporaryDirectory()

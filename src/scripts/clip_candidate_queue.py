@@ -38,6 +38,8 @@ def update_record(clip, result, api):
         clip["reviewPreview"] = result["reviewPreview"]
     clip["title"] = result["copy"].get("title", "")
     clip["description"] = result["copy"].get("description", "")
+    if "uploadTags" in result:
+        clip["tags"] = result["uploadTags"]
     if "pendingRebuild" in result:
         clip["pendingRebuild"] = result["pendingRebuild"]
         clip["publicCopyPending"] = bool(result.get("publicCopyPending"))
@@ -130,6 +132,10 @@ def edit_candidate(args, api):
         options = {"review_note": note}
         if action == "correct":
             options.update(signature)
+            if clip.get("pendingCut"):
+                options.update({key: getattr(args, key, None) for key in ("title", "description", "cover_text", "tags")})
+            elif any(getattr(args, key, None) is not None for key in ("title", "description", "cover_text", "tags")):
+                raise ValueError("Public copy and tag overrides are only supported for unrendered topic candidates")
         result = candidate_action(api, clip, action, options, timeout=120)
         update_record(clip, result, api)
         if action == "correct":
@@ -208,7 +214,7 @@ def cut_candidates(args, api):
     if not ids or not str(args.review_note or "").strip():
         print("[ERROR] candidate IDs and --review-note are required", file=sys.stderr)
         return 2
-    overrides = {field: getattr(args, field, None) for field in ("title", "description", "cover_text")}
+    overrides = {field: getattr(args, field, None) for field in ("title", "description", "cover_text", "tags")}
     if len(ids) != 1 and any(value is not None for value in overrides.values()):
         print("[ERROR] copy overrides require exactly one candidate", file=sys.stderr)
         return 2
