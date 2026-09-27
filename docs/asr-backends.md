@@ -1,6 +1,6 @@
 # ASR Backend 配置
 
-> **当前状态（2026-09-27）**：默认 backend 是 `paraformer`，生产 Paraformer 已启用 post-ASR adaptive speaker（`enable_speaker: true`、`speaker_detection_mode: "auto"`）；岁己联动任务另有 MOSS 50% 灰度。本页是 ASR 当前架构和验证的权威文档；具体部署值仍以 `config/default.json`、`config/production.json` 与 `DEFAULT_ASR_CONFIG` 为准。
+> **当前状态（2026-09-27）**：默认 backend 是 `paraformer`，生产 Paraformer 已启用 post-ASR adaptive speaker（`enable_speaker: true`、`speaker_detection_mode: "auto"`）；岁己房间录播另有 MOSS 50% 灰度。本页是 ASR 当前架构和验证的权威文档；具体部署值仍以 `config/default.json`、`config/production.json` 与 `DEFAULT_ASR_CONFIG` 为准。
 
 项目支持 Paraformer、Whisper、SenseVoice、Fun-ASR-Nano、Fun-ASR-Nano vLLM 和 MOSS-Transcribe-Diarize。Nano 的热词接口是官方 `hotwords: list[str]`，更适合做“岁己 / 小岁”这种词的真实热词测试。
 
@@ -8,7 +8,7 @@
 
 ## MOSS 说话人灰度
 
-生产 `asr.moss_rollout` 只对岁己房间 `25788785` 且已识别为多人联动的录播生效。对 `room_id|filename` 做稳定哈希，50% 选 MOSS、其余继续 Paraformer + CAM++；显式 `--asr-backend` 和一次性 CAM++ 请求优先。相同文件重跑保持分组；关闭 `moss_rollout.enabled` 可立即停止新任务分流。MOSS 失败时当前任务回退 Paraformer，`.asr_meta.json` 的 `routingReason` 记录回退原因。
+生产 `asr.moss_rollout` 对岁己房间 `25788785` 的录播生效，不依赖转写前的参与人数判断。对 `room_id|filename` 做稳定哈希，50% 选 MOSS、其余继续 Paraformer + CAM++，因此部分单播也会落入 MOSS 灰度；显式 `--asr-backend` 和一次性 CAM++ 请求优先。相同文件重跑保持分组；关闭 `moss_rollout.enabled` 可立即停止新任务分流。MOSS 失败时当前任务回退 Paraformer，`.asr_meta.json` 的 `routingReason` 记录回退原因。
 
 MOSS 灰度录播也使用同一房间的 `row_verified` 策略及 Paraformer 的全量 `speaker_references`。MOSS 转写后释放模型，再用 CAM++ 对至少2秒、没有其他字幕行重叠的语句逐句提取声纹；匹配沿用 `speaker_row_reference_threshold` / `margin` / `top_k` 和参考原型配置。每个 MOSS 匿名组内，同一姓名至少两条独立语句通过阈值才实名。没有参考、短句、重叠语音及局部匹配失败的行保留 `Sxx`，不会按整个匿名组传播姓名。`.speaker.srt` 展示局部姓名或匿名组，哈希绑定的 `.asr_evidence.json` 保存逐句阈值、分数、原始匿名组和拒识状态；自动切片与人物配图仍只把 `row_supported` 真人姓名当作出声证据。参考模型失败时转写可继续，但 `speakerProcessing.referenceIdentity.status` 标记 `unavailable`。既有 SRT 不会自动回填实名。
 

@@ -313,11 +313,11 @@ describe('asr_backends', () => {
     expect(result.reason).toContain('default_backend');
   });
 
-  test('assigns MOSS to a stable half of Sui collaboration recordings', () => {
+  test('assigns MOSS to a stable half of Sui recordings regardless of pre-ASR speaker discovery', () => {
     const config = { asr: { default_backend: 'paraformer', moss_rollout: {
       enabled: true, ratio: 0.5, room_ids: ['25788785']
     } } };
-    const speakerRequest = { participantDiscovery: { mode: 'multi', modeStatus: 'planned' } };
+    const speakerRequest = { participantDiscovery: { mode: 'unknown', modeStatus: 'unknown' } };
     const assignments = Array.from({ length: 100 }, (_, index) => asr.resolveAsrBackend(config, {
       room_id: '25788785', filename: `recording-${index}.flv`, speakerRequest
     }).backend);
@@ -325,7 +325,17 @@ describe('asr_backends', () => {
     expect(assignments.filter(backend => backend === 'moss').length).toBeLessThan(65);
     expect(asr.resolveAsrBackend(config, { room_id: '25788785', filename: 'recording-4.flv', speakerRequest }))
       .toEqual(asr.resolveAsrBackend(config, { room_id: '25788785', filename: 'recording-4.flv', speakerRequest }));
-    expect(asr.resolveAsrBackend(config, { room_id: '25788785', filename: 'solo.flv' }).backend).toBe('paraformer');
+    expect(asr.resolveAsrBackend(config, { room_id: '25788785', filename: 'recording-4.flv' }).backend)
+      .toBe(asr.resolveAsrBackend(config, { room_id: '25788785', filename: 'recording-4.flv', speakerRequest }).backend);
+    expect(asr.resolveAsrBackend(config, { room_id: '25788785', filename: 'recording-4.flv',
+      speakerRequest: { participantDiscovery: { mode: 'solo', modeStatus: 'confirmed' } } }).backend)
+      .toBe(asr.resolveAsrBackend(config, { room_id: '25788785', filename: 'recording-4.flv' }).backend);
+    expect(asr.resolveAsrBackend(config, { room_id: '25788785', filename: 'recording-4.flv',
+      speakerRequest: { participantDiscovery: { mode: 'multi', modeStatus: 'planned' } } }).backend)
+      .toBe(asr.resolveAsrBackend(config, { room_id: '25788785', filename: 'recording-4.flv' }).backend);
+    expect(asr.resolveAsrBackend(config, { room_id: '25788785', filename: 'recording-4.flv',
+      speakerRequest: { participantDiscovery: { mode: 'solo', modeStatus: 'candidate' } } }).backend)
+      .toBe(asr.resolveAsrBackend(config, { room_id: '25788785', filename: 'recording-4.flv', speakerRequest }).backend);
     expect(asr.resolveAsrBackend(config, { room_id: 'other', filename: 'collab.flv', speakerRequest }).backend).toBe('paraformer');
     expect(asr.resolveAsrBackend(config, { room_id: '25788785', filename: 'collab.flv', speakerRequest }, 'paraformer').backend)
       .toBe('paraformer');

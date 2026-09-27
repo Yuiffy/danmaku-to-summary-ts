@@ -371,11 +371,6 @@ function applyMossRollout(asrConfig, context = {}, resolved) {
     const roomId = String(context.room_id || context.roomId || '').trim();
     const rooms = Array.isArray(rollout.room_ids) ? rollout.room_ids.map(String) : [];
     if (!roomId || (rooms.length && !rooms.includes(roomId))) return resolved;
-    const request = getSpeakerRequest(context);
-    const discovery = request?.participantDiscovery;
-    const collaboration = (discovery?.mode === 'multi' && ['candidate', 'planned', 'confirmed'].includes(discovery.modeStatus))
-        || (Array.isArray(request?.plannedParticipantIds) && request.plannedParticipantIds.length > 0);
-    if (!collaboration) return resolved;
     const fileKey = String(context.filename || context.input || '').trim();
     if (!fileKey) return resolved;
     const ratio = Number(rollout.ratio);
