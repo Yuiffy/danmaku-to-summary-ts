@@ -4,6 +4,8 @@ import { Subtitle } from './editPlan';
 
 export const PRECISION_EXPERIMENT_NAME = '\u7cbe\u5207\u5b9e\u9a8c\u6a21\u5f0f';
 export const PRECISION_EXPERIMENT_MARKER = `\u3010${PRECISION_EXPERIMENT_NAME}\u3011`;
+export const PRECISION_TITLE_SUFFIX = '（AI精切）';
+export const PRECISION_DETAIL_MARKER = '【AI精切说明】';
 export interface ExperimentSettings { ratio: number; maxClips: number }
 export interface ExperimentClip {
     start: number; end: number; title?: string; description?: string; publicCopyPending?: boolean;
@@ -78,12 +80,33 @@ export function assignExperiment<T extends ExperimentClip>(clips: T[], packet: R
     });
 }
 
-export function labelExperimentDescription(description: string, selected: boolean, edited: boolean): string {
+export function labelExperimentTitle(title: string, selected: boolean): string {
+    if (!selected) return title;
+    const base = String(title || '').trim();
+    const marked = base.endsWith(PRECISION_TITLE_SUFFIX) ? base : base + PRECISION_TITLE_SUFFIX;
+    if (Array.from(marked).length > 80) throw new Error('Precision title exceeds the Bilibili 80-character limit');
+    return marked;
+}
+
+export function stripExperimentTitle(title: string): string {
+    return String(title || '').endsWith(PRECISION_TITLE_SUFFIX)
+        ? String(title).slice(0, -PRECISION_TITLE_SUFFIX.length) : String(title || '');
+}
+
+export function labelExperimentDescription(description: string, selected: boolean, edited: boolean, detail = ''): string {
     if (!selected) return description;
     const lines = String(description || '').split(/\r?\n/);
-    const body = lines.filter(line => !line.startsWith(PRECISION_EXPERIMENT_MARKER)).join('\n').trim();
+    const body = lines.filter(line => !line.startsWith(PRECISION_EXPERIMENT_MARKER)).join('\n')
+        .split(`\n\n${PRECISION_DETAIL_MARKER}`)[0].trim();
     const status = edited ? '\u5df2\u6309\u8bc1\u636e\u6267\u884c\u591a\u6bb5\u526a\u8f91\u3002' : '\u672c\u7247\u4fdd\u7559\u8fde\u7eed\u65f6\u95f4\u8f74\u3002';
-    return `${PRECISION_EXPERIMENT_MARKER}${status}\n${body}`;
+    return `${PRECISION_EXPERIMENT_MARKER}${status}\n${body}${detail ? `\n\n${detail.trim()}` : ''}`;
+}
+
+export function stripExperimentDescription(description: string, edited: boolean): string {
+    const disclosure = labelExperimentDescription('', true, edited).trimEnd();
+    const value = String(description || '');
+    if (!value.startsWith(`${disclosure}\n`)) throw new Error('Precision disclosure does not match the edit plan');
+    return value.slice(disclosure.length + 1).split(`\n\n${PRECISION_DETAIL_MARKER}`)[0];
 }
 
 export function experimentDetailMarkdown(results: Array<Record<string, any>>, metadata: Record<string, any>): string | null {

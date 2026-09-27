@@ -8,12 +8,9 @@ const { copyDigest, buildActorReviewPacket, actorReviewPrompt, parseActorReviews
 const keepDigest = plan => crypto.createHash('sha256').update(JSON.stringify(plan.keep)).digest('hex');
 
 function factualCopy(artifact, plan) {
-    const { labelExperimentDescription } = loadWorkflow('clipping/experiment');
-    const disclosure = labelExperimentDescription('', true, plan.removed.length > 0).trimEnd();
-    const description = String(artifact.copy.description || '');
-    if (!description.startsWith(`${disclosure}\n`)) throw new Error('Precision disclosure does not match the edit plan');
-    return { title: artifact.copy.title, coverText: artifact.copy.coverText,
-        description: description.slice(disclosure.length + 1) };
+    const { stripExperimentTitle, stripExperimentDescription } = loadWorkflow('clipping/experiment');
+    return { title: stripExperimentTitle(artifact.copy.title), coverText: artifact.copy.coverText,
+        description: stripExperimentDescription(artifact.copy.description, plan.removed.length > 0) };
 }
 
 async function reviewPrecisionActors(artifact, plan, context, request) {

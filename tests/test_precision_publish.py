@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from src.scripts.precision_publish import validate_revision
+from src.scripts.precision_publish import validate_revision, precision_public_copy
 from src.scripts import replace_video as transport
 
 
@@ -68,7 +68,20 @@ class PrecisionPublicationTests(unittest.TestCase):
     def test_uncertain_edit_is_not_submitted_again(self):
         self.run_transport(True)
 
-    def run_transport(self, fail):
+    def test_precision_replacement_updates_public_copy_and_binds_it_to_receipt(self):
+        self.run_transport(False, precision=True)
+
+    def test_shared_generator_preserves_online_copy_and_uses_actual_audio_offset(self):
+        metadata = {'creativeResult': {'status': 'edited'}, 'qaResult': {'status': 'passed'},
+            'creativePlan': {'workflow': 'creative', 'duration': 20,
+                'effects': [{'start': 2, 'end': 6, 'sound': {'id': 'sitcom_laugh', 'offsetSeconds': 3}}]},
+            'audioQa': {'status': 'passed', 'effects': [{'id': 'sitcom_laugh', 'start': 5, 'end': 7.6}]}}
+        result = precision_public_copy(metadata, {'title': '【小岁】标题', 'description': '线上原有来源'})
+        self.assertEqual(result['title'], '【小岁】标题（AI精切）')
+        self.assertIn('线上原有来源', result['description'])
+        self.assertIn('00:05.00-00:07.60 后期罐头笑声', result['description'])
+
+    def run_transport(self, fail, precision=False):
         media = self.root / 'new.mp4'
         cover = self.root / 'cover.jpg'
         media.write_bytes(b'video')
@@ -122,7 +135,11 @@ class PrecisionPublicationTests(unittest.TestCase):
              patch.object(transport.video_uploader, 'VideoMeta', return_value=object()), \
              patch.object(transport.video_uploader, 'VideoUploaderPage', return_value=object()), \
              patch.object(transport.video, 'Video', Video):
-            call = lambda: asyncio.run(transport.replace_video('BVfixture', str(media), cover_path=str(cover), receipt_path=receipt))
+            def transform(current):
+                self.assertEqual(current, {'title': 'kept title', 'description': 'kept desc'})
+                return {'title': current['title'] + '（AI精切）', 'description': current['description'] + '\n\n【AI精切说明】'}
+            call = lambda: asyncio.run(transport.replace_video('BVfixture', str(media), cover_path=str(cover), receipt_path=receipt,
+                copy_transform=transform if precision else None))
             if fail:
                 with self.assertRaises(TimeoutError):
                     call()
@@ -133,7 +150,15 @@ class PrecisionPublicationTests(unittest.TestCase):
                 result = call()
                 self.assertEqual(result['cid'], 99)
                 self.assertEqual(result['status'], 'submitted')
-                self.assertEqual(instances[0].meta['title'], 'kept title')
+                expected = transform({'title': 'kept title', 'description': 'kept desc'}) if precision else {
+                    'title': 'kept title', 'description': 'kept desc'}
+                self.assertEqual(instances[0].meta['title'], expected['title'])
+                self.assertEqual(instances[0].meta['desc'], expected['description'])
+                self.assertEqual(result['publicCopy'], expected)
+                if precision:
+                    self.assertEqual(instances[0].meta['desc_v2'][0]['raw_text'], expected['description'])
+                self.assertEqual(instances[0].meta['cover'], archive['archive']['cover'])
+                self.assertEqual(instances[0].meta['tag'], 'one,two')
                 self.assertEqual(instances[0].meta['videos'][1]['filename'], 'old2')
                 self.assertEqual(call()['status'], 'submitted')
         self.assertIs(Uploader._main, base_main)

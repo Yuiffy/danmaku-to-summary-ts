@@ -23,7 +23,7 @@ from bilibili_upload import build_credential
 from bilibili_api import video_uploader, video
 
 
-async def replace_video(bvid: str, new_video_path: str, *, cover_path=None, receipt_path=None, before_submit=None):
+async def replace_video(bvid: str, new_video_path: str, *, cover_path=None, receipt_path=None, before_submit=None, copy_transform=None):
     cred = build_credential()
     
     # 1. 用 VideoEditor._fetch_configs 获取原稿件信息
@@ -63,6 +63,10 @@ async def replace_video(bvid: str, new_video_path: str, *, cover_path=None, rece
         if receipt.get('status') in ('submitting', 'unknown'):
             raise ValueError('Previous edit outcome is uncertain; inspect the online archive before retrying')
 
+    public_copy = copy_transform({'title': old_title, 'description': old_desc}) if copy_transform else {
+        'title': old_title, 'description': old_desc}
+    new_title, new_desc = public_copy['title'], public_copy['description']
+
     def checkpoint(status, **fields):
         receipt.update(bvid=bvid, mediaPath=str(Path(new_video_path).resolve()), status=status, **fields)
         if receipt_path:
@@ -99,8 +103,8 @@ async def replace_video(bvid: str, new_video_path: str, *, cover_path=None, rece
     
     meta = video_uploader.VideoMeta(
         tid=old_tid,
-        title=old_title,
-        desc=old_desc,
+        title=new_title,
+        desc=new_desc,
         cover=temp_cover,
         tags=old_tags.split(','),
         original=False,
@@ -168,21 +172,23 @@ async def replace_video(bvid: str, new_video_path: str, *, cover_path=None, rece
         })
     
     editor.meta.update({
-        "title": old_title,
+        "title": new_title,
         "tag": old_tags,
-        "desc": old_desc,
+        "desc": new_desc,
         "copyright": old_archive.get("copyright", 1),
         "source": old_archive.get("source", ""),
         "videos": videos,
         "cover": old_cover,
         "tid": old_tid,
     })
+    if new_desc != old_desc:
+        editor.meta.update(desc_format_id=9999, desc_v2=[{'raw_text': new_desc, 'type': 1, 'biz_id': ''}])
     
     # Override _main to skip re-fetching and just submit
     async def custom_main():
         if before_submit:
             before_submit()
-        checkpoint('submitting')
+        checkpoint('submitting', publicCopy={'title': new_title, 'description': new_desc})
         try:
             await editor._submit()
         except Exception as error:

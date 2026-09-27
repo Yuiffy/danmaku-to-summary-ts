@@ -167,6 +167,11 @@ test.each(['passed', 'qa_rejected', 'render_failed', 'source_changed', 'sound_pl
             expect(result.editPlan.removed).toEqual([]);
             expect(result.output.mediaPath).toContain('.creative.mp4');
             expect(result.copy.description).toContain('精切实验模式');
+            expect(result.copy.title).toBe(original.copy.title + '（AI精切）');
+            expect(result.copy.description).toContain('【AI精切说明】');
+            expect(await require('../workflow-runtime').loadWorkflow('clipping/enhancement').qaIsCurrent(result)).toBe(true);
+            if (outcome === 'sound_plan') expect(result.copy.description).toContain('00:05.20-00:07.00 后期罐头笑声');
+            if (outcome === 'visual_qa_repaired') expect(result.copy.description).not.toContain('黑白滤镜');
         } else {
             expect(result.creativeResult.status).toBe('kept_original'); expect(result.precisionExperiment.selected).toBe(false);
             expect(result.copy).toEqual(original.copy); expect(result.output).toEqual(original.output);

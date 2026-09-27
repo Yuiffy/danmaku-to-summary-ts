@@ -2,7 +2,19 @@
 import asyncio
 import copy
 import json
+import subprocess
 from pathlib import Path
+
+
+def precision_public_copy(metadata, public_copy=None):
+    script = Path(__file__).parent / 'clipping' / 'precision_copy.js'
+    result = subprocess.run(['node', str(script)],
+        input=json.dumps({'metadata': metadata, 'copy': public_copy}, ensure_ascii=False),
+        text=True, encoding='utf-8', capture_output=True, timeout=30, check=False,
+        **({'creationflags': subprocess.CREATE_NO_WINDOW} if hasattr(subprocess, 'CREATE_NO_WINDOW') else {}))
+    if result.returncode != 0:
+        raise ValueError(f'Cannot generate precision disclosure: {result.stderr.strip()}')
+    return json.loads(result.stdout)
 
 
 def render_precision(args, api):
@@ -83,11 +95,13 @@ def publish_precision(args, api):
     if record.get('status') != 'uploaded' or not bvid:
         raise ValueError('This edit command requires an existing uploaded BV; use the normal registry upload flow for a new submission')
     metadata, directory = validate_revision(record, args.revision)
+    preview = precision_public_copy(metadata)
     approval = {'version': 1, 'clipId': args.id, 'bvid': bvid, 'authority': 'user',
                 'note': args.review_note, 'approvedAt': api.now_iso(), 'qaDigests': metadata['qaResult']['digests'],
                 'metadataPath': str(directory / 'clip.json')}
     if args.dry_run:
-        print(json.dumps({'action': 'replace_existing_bv', **approval}, ensure_ascii=False, indent=2))
+        print(json.dumps({'action': 'replace_existing_bv', **approval, 'precisionCopyPreview': preview,
+                         'copyPolicy': 'Append precision label and rendered edit details to current online copy'}, ensure_ascii=False, indent=2))
         return 0
     approval_path = directory / 'PUBLICATION_APPROVAL.json'
     if approval_path.exists():
@@ -101,7 +115,8 @@ def publish_precision(args, api):
     except ImportError:
         from replace_video import replace_video
     result = asyncio.run(replace_video(bvid, metadata['output']['mediaPath'], cover_path=metadata['output']['coverPath'],
-        receipt_path=directory / 'REPLACEMENT_RECEIPT.json', before_submit=lambda: validate_revision(record, directory)))
+        receipt_path=directory / 'REPLACEMENT_RECEIPT.json', before_submit=lambda: validate_revision(record, directory),
+        copy_transform=lambda current: precision_public_copy(metadata, current)))
     if result.get('status') != 'submitted' or result.get('bvid') != bvid:
         raise RuntimeError('No confirmed replacement submission was returned')
     # Preserve ordinary media as the re-rendering baseline and preserve the original upload's identity.

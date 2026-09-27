@@ -617,6 +617,7 @@ def build_desc(clip_title, source_desc, start_str, dur_str, generated_descriptio
     start_min = start_sec // 60
     sections = []
     generated = clean_generated_description(generated_description, clip_title)
+    generated, detail_separator, precision_detail = generated.partition('\n\n【AI精切说明】')
     if generated:
         sections.append(generated)
     source_name, recorded_at = split_source_description(source_desc)
@@ -631,6 +632,8 @@ def build_desc(clip_title, source_desc, start_str, dur_str, generated_descriptio
         f"切片时间：{clip_start_time} - {clip_end_time}"
         f"（直播开始后第{start_min}分钟）"
     )
+    if detail_separator:
+        sections.append('【AI精切说明】' + precision_detail)
     return '\n\n'.join(sections)
 
 

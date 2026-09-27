@@ -71,7 +71,9 @@ python src/scripts/clip_upload_registry.py replace-precision --id 123 --revision
 python src/scripts/clip_upload_registry.py replace-precision --id 123 --revision "D:\clips\precision_revisions\123\r-example" --review-note "用户已确认成片并要求替换原稿"
 ```
 
-替换验证编号、原素材、版本和 QA 摘要，编辑原 BV，保留原标题、简介、标签、封面及其他分 P。
+替换验证编号、原素材、版本和 QA 摘要，编辑原 BV。线上原标题追加 `（AI精切）`，简介正文后附
+程序从最终渲染计划与音轨记录生成的精切说明，列出成片时间下的 BGM、放大、贴图、滤镜和后期笑声。
+不额外请求 AI 写说明，不列出已取消的效果；标签、封面及其他分 P 保留。
 `PUBLICATION_APPROVAL.json` 保存本次授权，`REPLACEMENT_RECEIPT.json` 保存文件上传和编辑回执。
 提交成功后读取创作中心确认新 CID／文件；“修改内容待审核”不是已公开生效。
 编辑响应超时留下 unknown 时先检查线上状态，不自动重发。未投稿 ID 继续走正常审核和上传队列，

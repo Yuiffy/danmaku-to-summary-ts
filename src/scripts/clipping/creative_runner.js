@@ -41,7 +41,7 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
             ledgerPath: settings.budget?.ledgerPath, removedSeconds: result.creativePlan?.timeline?.removedSeconds || 0,
             effectCount: result.creativePlan?.effects.length || 0,
             assetSources: Object.values(assets).filter(asset => result.creativePlan?.music?.id === asset.id || result.creativePlan?.effects.some(row => row.sticker?.id === asset.id || soundId(row.sound) === asset.id))
-                .map(({ id, sourceUrl, license, licenseUrl, creator, sha256, sampleStart, sampleSeconds }) => ({ id, sourceUrl, license, licenseUrl, creator, sha256, sampleStart, sampleSeconds })),
+                .map(({ id, family, sourceUrl, license, licenseUrl, creator, sha256, sampleStart, sampleSeconds }) => ({ id, family, sourceUrl, license, licenseUrl, creator, sha256, sampleStart, sampleSeconds })),
             baseline: { copy: baseline.copy, ...baseline.output, duration: baseline.window.duration } } });
     const restore = reason => finish({ ...baseline, precisionExperiment: { ...baseline.precisionExperiment,
         selected: false, attempted: true, reason } }, 'kept_original', reason);
@@ -465,7 +465,7 @@ async function runCreativeEnhancement(baseline, context, dependencies) {
             const editPlan = timeline ? timelineTools.absoluteEditPlan(timeline, sourceId, baseline.window) : loadWorkflow('clipping/editPlan').continuousPlan(sourceId, baseline.window);
             let current = { ...baseline, window: { ...baseline.window, duration }, editorialProfile: profile, qaRequired: true, uploadReady: false, creativePlan: plan, editPlan,
                 ...(mediaReview.audioQa ? { audioQa: mediaReview.audioQa } : {}),
-                copy: { ...baseline.copy, description: loadWorkflow('clipping/experiment').labelExperimentDescription(baseline.copy.description, true, editPlan.removed.length > 0) },
+                copy: require('./precision_copy').labelCreativeCopy(baseline.copy, { creativePlan: plan, editPlan, audioQa: mediaReview.audioQa }, assets),
                 output: { ...baseline.output, mediaPath, srtPath: renderSrt, srtSegmentCount: topic.parseTopicSrt ? topic.parseTopicSrt(renderSrt).segments.length : baseline.output.srtSegmentCount,
                     subtitleVideoEncoder: rendered.subtitleVideoEncoder || config.subtitleVideoEncoder,
                     subtitleBurnFallbackUsed: rendered.fallbackUsed, subtitleHwaccel: rendered.subtitleHwaccel === null ? null : config.subtitleHwaccel } };

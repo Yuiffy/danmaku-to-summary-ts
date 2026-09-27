@@ -1,4 +1,5 @@
-import { assignExperiment, buildExperimentSelection, parseExperimentSelection, labelExperimentDescription,
+import { assignExperiment, buildExperimentSelection, parseExperimentSelection, labelExperimentDescription, labelExperimentTitle,
+    stripExperimentTitle, stripExperimentDescription,
     PRECISION_EXPERIMENT_NAME, PRECISION_EXPERIMENT_MARKER, experimentDetailMarkdown } from './experiment';
 import { createHash } from 'crypto';
 
@@ -64,6 +65,13 @@ test('public disclosure is deterministic and does not claim a deletion when timi
     expect(labelExperimentDescription(description, true, false)).toBe(description);
     expect(labelExperimentDescription('Story', false, true)).toBe('Story');
     expect(labelExperimentDescription(description, true, true).split(PRECISION_EXPERIMENT_MARKER)).toHaveLength(2);
+    const title = labelExperimentTitle('Story', true);
+    expect(title).toBe('Story（AI精切）');
+    expect(labelExperimentTitle(title, true)).toBe(title);
+    expect(stripExperimentTitle(title)).toBe('Story');
+    const withDetail = labelExperimentDescription('Story', true, true, '【AI精切说明】\n00:01-00:03 头像放大');
+    expect(stripExperimentDescription(withDetail, true)).toBe('Story');
+    expect(() => stripExperimentDescription(withDetail, false)).toThrow();
 });
 
 test('detail messages use the same sparse upload IDs and report usage separately', () => {

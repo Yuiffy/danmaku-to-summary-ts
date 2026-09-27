@@ -2,7 +2,7 @@ export {};
 const { buildSubtitleEvidence } = require('./subtitle_evidence');
 const { buildActorReviewPacket, applyActorReview, copyDigest } = require('./actor_review');
 const { reviewPrecisionActors, finalizePrecisionActors, rebindUnchangedPrecisionCopy } = require('./precision_actor_review');
-const { continuousPlan, labelExperimentDescription } = {
+const { continuousPlan, labelExperimentDescription, labelExperimentTitle } = {
     ...require('../workflow-runtime').loadWorkflow('clipping/editPlan'),
     ...require('../workflow-runtime').loadWorkflow('clipping/experiment')
 };
@@ -97,7 +97,8 @@ test('unchanged copy can reuse only original claims whose speech and audience ev
     const edited = { ...plan, keep: [{ start: 0, end: 20 }, { start: 30, end: 60 }],
         removed: [{ start: 20, end: 30, reason: 'silence', evidenceIds: ['P1'] }] };
     const current = { ...artifact, editPlan: edited, copy: { ...baselineCopy,
-        description: labelExperimentDescription(baselineCopy.description, true, true) } };
+        title: labelExperimentTitle(baselineCopy.title, true),
+        description: labelExperimentDescription(baselineCopy.description, true, true, '【AI精切说明】\n00:01.00-00:03.00 头像放大') } };
     const rebound = rebindUnchangedPrecisionCopy(current, edited, context, baselineCopy);
     expect(rebound.passed).toBe(true);
     expect(finalizePrecisionActors({ ...current, ...rebound }, context.clip, context.evidence).uploadReady).toBe(true);
