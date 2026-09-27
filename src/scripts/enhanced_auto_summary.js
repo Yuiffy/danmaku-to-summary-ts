@@ -768,7 +768,7 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
                     asrResult = await asrBackends.transcribeParaformer(mediaPath, config, asrRuntime);
                 } else if (selected.backend === 'moss') {
                     try {
-                        asrResult = await asrBackends.transcribeMoss(mediaPath, config);
+                        asrResult = await asrBackends.transcribeMoss(mediaPath, config, asrRuntime);
                     } catch (error) {
                         if (!selected.fallbackBackend) throw error;
                         console.warn(`MOSS 灰度任务失败，回退 Paraformer + CAM++: ${error.message}`);

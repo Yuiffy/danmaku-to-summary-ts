@@ -29,3 +29,20 @@ test('speaker review SRT retains hash-bound local rejections, identities and raw
     expect(loadAsrEvidence(review, asr.parseSrt(review).segments).status).toBe('stale');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('MOSS review subtitle preserves a rejected anonymous group', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'moss-review-evidence-'));
+  try {
+    const result = { backend: 'moss', segments: [{ start: 0, end: 4, text: 'A voice',
+      speaker: 'Guest', speaker_score: 0.6,
+      speakerEvidence: { version: 1, status: 'row_supported', label: 'Guest', anonymousLabel: 'S02',
+        observations: [] } }] };
+    const config = { ai: { comic: { multiReferenceImages: { minSpeechSeconds: 8,
+      minSpeakerScore: 0.64 } }, streamerRegistry: { guest: { displayName: 'Guest' } } } };
+    const review = asr.writeSpeakerReviewSrt(result, path.join(dir, 'source.srt'), {}, config, {});
+    expect(fs.readFileSync(review, 'utf8')).toContain('[S02] A voice');
+    const evidence = loadAsrEvidence(review, asr.parseSrt(review).segments);
+    expect(evidence.segments[0].speakerEvidence.status).toBe('unqualified');
+    expect(evidence.segments[0].speakerEvidence.anonymousLabel).toBe('S02');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

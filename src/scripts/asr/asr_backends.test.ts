@@ -342,6 +342,33 @@ describe('asr_backends', () => {
     expect(resolved.fallbackBackend.backendOptionsOverride.paraformer.finetuned_model).toBe('local-finetuned');
   });
 
+  test('MOSS receives the full reference library and row verification for an allowed room', async () => {
+    const capture = `let input='';process.stdin.on('data',part=>input+=part);` +
+      `process.stdin.on('end',()=>process.stdout.write(JSON.stringify({backend:'moss',segments:[],payload:JSON.parse(input)})));`;
+    const config = { asr: {
+      speaker_identity: { policy: 'row_verified', room_ids: ['25788785'], min_seconds: 2 },
+      moss: { python_executable: process.execPath, python_args: ['-e', capture] },
+      paraformer: { spk_model: 'cam++', speaker_references: [
+        { speaker: 'Host', audio_path: 'host.wav' }, { speaker: 'Guest', audio_path: 'guest.wav' }
+      ], speaker_row_reference_threshold: 0.6, speaker_row_reference_margin: 0.1 }
+    } };
+    const result: any = await asr.transcribeMoss('sample.wav', config,
+      { routingContext: { room_id: '25788785' } });
+    expect(result.payload).toMatchObject({ speaker_identity_policy: 'row_verified',
+      speaker_identity_min_seconds: 2, spk_model: 'cam++',
+      speaker_row_reference_threshold: 0.6, speaker_row_reference_margin: 0.1,
+      speaker_references: config.asr.paraformer.speaker_references });
+  });
+
+  test('anonymous MOSS groups never qualify as named participants', () => {
+    const config = { ai: { streamerRegistry: { fake: { displayName: 'S01' } },
+      comic: { multiReferenceImages: { minSpeechSeconds: 1, minSpeakerScore: 0 } } } };
+    const result = { backend: 'moss', segments: [{ start: 0, end: 10, speaker: 'S01',
+      speaker_score: 0.99, speakerEvidence: { status: 'unknown', anonymousLabel: 'S01',
+        label: null, observations: [] } }] };
+    expect(asr.summarizeAsrSpeakers(result, config).appearedStreamerIds).toEqual([]);
+  });
+
   test('preserves overlapping MOSS turns through subtitle normalization', () => {
     const result = asr.normalizeAsrResult({ backend: 'moss', segments: [
       { start: 17.44, end: 19.28, speaker: 'S01', text: '发表情比大家多' },

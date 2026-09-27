@@ -3,7 +3,11 @@
 // A structured local rejection must win over a legacy name embedded in SRT text.
 function speakerForSegment(segment = {}) {
     const evidence = segment.speakerEvidence || segment.speaker_evidence;
-    if (evidence) return evidence.status === 'row_supported' && evidence.label ? String(evidence.label) : 'UNKNOWN';
+    if (evidence) {
+        if (evidence.status === 'row_supported' && evidence.label) return String(evidence.label);
+        const anonymous = String(evidence.anonymousLabel || '').trim();
+        return /^S\d+$/u.test(anonymous) ? anonymous : 'UNKNOWN';
+    }
     const embedded = String(segment.text || '').match(/^\[([^\]\n]+)\]\s*/u);
     return String(segment.speaker || embedded?.[1] || 'UNKNOWN').replace(/\s+\d*\.?\d+$/u, '').trim() || 'UNKNOWN';
 }

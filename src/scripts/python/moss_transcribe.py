@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from difflib import SequenceMatcher
+import gc
 import json
 import math
 import os
@@ -104,6 +105,105 @@ def combine_windows(results, duration: float):
     return sorted(segments, key=lambda row: (row["start"], row["end"]))
 
 
+def clean_reference_rows(segments, min_seconds=2.0):
+    """Only isolated MOSS turns can supply a single-voice acoustic sample."""
+    eligible = []
+    for index, row in enumerate(segments):
+        start, end = float(row["start"]), float(row["end"])
+        if end - start < min_seconds or not re.fullmatch(r"S\d+", str(row.get("speaker", ""))):
+            continue
+        if any(index != other_index and min(end, float(other["end"])) >
+               max(start, float(other["start"])) + 0.05
+               for other_index, other in enumerate(segments)):
+            continue
+        eligible.append(index)
+    return eligible
+
+
+def apply_reference_matches(segments, matches, min_support_rows=2):
+    """Use local evidence; never propagate a name across a whole MOSS cluster."""
+    support = {}
+    for index, match in matches.items():
+        if match.get("accepted") is True:
+            key = (segments[index]["speaker"], match["label"])
+            support[key] = support.get(key, 0) + 1
+    for index, row in enumerate(segments):
+        anonymous = row["speaker"]
+        match = matches.get(index, {})
+        accepted = (match.get("accepted") is True and
+                    support.get((anonymous, match.get("label")), 0) >= min_support_rows)
+        label = match["label"] if accepted else anonymous
+        row["speaker"] = label
+        row["speaker_score"] = match.get("score") if accepted else None
+        row["speaker_evidence"] = {
+            "version": 1, "status": "row_supported" if accepted else "unknown",
+            "label": label if accepted else None, "anonymousLabel": anonymous,
+            "coverage": 1.0, "timingPrecision": "acoustic_window", "identityVerified": False,
+            "observations": [{
+                "start": row["start"], "end": row["end"], "label": label,
+                "scope": "row" if accepted else "row_rejected",
+                "policy": "row_verified", "smoothed": False,
+                "row": {"label": match.get("label") if accepted else None,
+                        "bestLabel": match.get("best_label"), "score": match.get("score"),
+                        "margin": match.get("margin"), "accepted": accepted,
+                        "threshold": match.get("threshold"),
+                        "marginThreshold": match.get("margin_threshold"),
+                        "referenceSamples": match.get("reference_samples"),
+                        "scoringStrategy": match.get("scoring_strategy")},
+                "cluster": {"id": anonymous, "label": anonymous, "accepted": False},
+            }],
+        }
+    return {"eligibleRows": len(matches), "namedRows": sum(
+        row["speaker_evidence"]["status"] == "row_supported" for row in segments)}
+
+
+def identify_moss_speakers(source, segments, payload):
+    import torch
+    from funasr import AutoModel
+    from sensevoice_speaker import (load_audio_16k_mono, _generate_speaker_embeddings,
+                                   build_speaker_reference_centroids, classify_speaker_rows)
+    from sensevoice_text import resolve_cached_model_name
+
+    eligible = clean_reference_rows(segments, float(payload.get("speaker_identity_min_seconds", 2)))
+    if not eligible:
+        return apply_reference_matches(segments, {})
+    model = AutoModel(model=resolve_cached_model_name(payload.get("spk_model") or "cam++"),
+                      device=str(payload.get("speaker_device") or "cuda"), disable_update=True)
+    references = build_speaker_reference_centroids(
+        model, payload["speaker_references"], str(payload.get("speaker_device") or "cuda"),
+        batch_size=int(payload.get("speaker_embedding_batch_size", 64)),
+        prototype_merge_threshold=float(payload.get("speaker_reference_prototype_merge_threshold", 0.72)),
+        max_prototypes=int(payload.get("speaker_reference_max_prototypes", 10)),
+        prototype_min_support_chunks=int(payload.get("speaker_reference_prototype_min_support_chunks", 2)))
+    if not references:
+        return apply_reference_matches(segments, {})
+    audio, rate = load_audio_16k_mono(source)
+    chunks = []
+    for index in eligible:
+        row = segments[index]
+        start = max(0, int(float(row["start"]) * rate))
+        end = min(len(audio), int(min(float(row["end"]), float(row["start"]) + 8) * rate))
+        chunks.append(audio[start:end])
+    embeddings = _generate_speaker_embeddings(
+        model, chunks, batch_size=int(payload.get("speaker_embedding_batch_size", 64)))
+    valid = [(index, embedding) for index, embedding in zip(eligible, embeddings)
+             if embedding is not None]
+    matches = {}
+    if valid:
+        matrix = torch.cat([embedding for _, embedding in valid], dim=0)
+        classified = classify_speaker_rows(
+            matrix, references, float(payload.get("speaker_row_reference_threshold", 0.55)),
+            float(payload.get("speaker_row_reference_margin", 0.08)),
+            top_k=int(payload.get("speaker_row_reference_top_k", 2)))
+        matches = {index: match for (index, _), match in zip(valid, classified)}
+    outcome = apply_reference_matches(segments, matches,
+                                      int(payload.get("speaker_reference_min_support_rows", 2)))
+    outcome["eligibleRows"] = len(eligible)
+    outcome["embeddedRows"] = len(valid)
+    outcome["referenceLabels"] = list(references)
+    return outcome
+
+
 def transcribe(payload):
     import torch
     from transformers import AutoModelForCausalLM, AutoProcessor
@@ -155,14 +255,34 @@ def transcribe(payload):
     segments = combine_windows(results, duration)
     if not segments:
         raise RuntimeError("MOSS produced no usable segments")
+    del model, processor
+    gc.collect()
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    identity = {"status": "disabled"}
+    if payload.get("speaker_references") and payload.get("speaker_identity_policy") == "row_verified":
+        identity_started = time.perf_counter()
+        anonymous_labels = [row["speaker"] for row in segments]
+        try:
+            identity = {"status": "completed", **identify_moss_speakers(source, segments, payload)}
+        except Exception as exc:
+            identity = {"status": "unavailable", "reason": f"{type(exc).__name__}: {exc}"}
+            print(f"[ASR] MOSS reference matching unavailable: {exc}", file=sys.stderr, flush=True)
+            for row, anonymous in zip(segments, anonymous_labels):
+                row["speaker"] = anonymous
+            apply_reference_matches(segments, {})
+        identity["elapsedSeconds"] = round(time.perf_counter() - identity_started, 3)
+    clusters = {row.get("speaker_evidence", {}).get("anonymousLabel", row["speaker"]) for row in segments}
     return {
         "backend": "moss", "segments": segments,
         "timings": {"model_load_s": load_seconds, "asr_inference_s": inference_seconds,
-                    "backend_total_s": load_seconds + inference_seconds, "generated_tokens": generated_tokens},
-        "speaker_processing": {"mode": "moss", "status": "full_completed", "decision": "multiple" if len({row["speaker"] for row in segments}) > 1 else "single",
+                    "speaker_reference_s": identity.get("elapsedSeconds", 0),
+                    "backend_total_s": load_seconds + inference_seconds + identity.get("elapsedSeconds", 0),
+                    "generated_tokens": generated_tokens},
+        "speaker_processing": {"mode": "moss", "status": "full_completed", "decision": "multiple" if len(clusters) > 1 else "single",
                                "reason": "joint_transcription_diarization", "full_run": True,
-                               "detectedClusters": len({row["speaker"] for row in segments}), "windowCount": len(spans),
-                               "windowStitching": "overlap_utterance_match"},
+                               "detectedClusters": len(clusters), "windowCount": len(spans),
+                               "windowStitching": "overlap_utterance_match", "referenceIdentity": identity},
     }
 
 

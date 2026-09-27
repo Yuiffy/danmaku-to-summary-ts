@@ -1,4 +1,5 @@
 'use strict';
+const { speakerForSegment } = require('./speaker_attribution');
 
 // Summarize acoustic identities separately from session discovery and roster metadata.
 function summarizeAsrSpeakers(result, config = {}, context = {}, helpers) {
@@ -11,10 +12,7 @@ function summarizeAsrSpeakers(result, config = {}, context = {}, helpers) {
     const segments = Array.isArray(result?.segments) ? result.segments : [];
 
     segments.forEach((segment) => {
-        const localEvidence = segment.speakerEvidence || segment.speaker_evidence;
-        const label = localEvidence
-            ? (localEvidence.status === 'row_supported' && localEvidence.label ? String(localEvidence.label) : 'UNKNOWN')
-            : String(segment.speaker || '').trim() || 'UNKNOWN';
+        const label = speakerForSegment(segment);
         const start = Number(segment.start);
         const end = Number(segment.end);
         if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
@@ -62,7 +60,7 @@ function summarizeAsrSpeakers(result, config = {}, context = {}, helpers) {
     const appearedStreamerIds = [];
     const speakersByStreamerId = new Map();
     speakers.forEach((speaker) => {
-        const streamerId = mapSpeakerLabelToStreamerId(speaker.label, registry);
+        const streamerId = speaker.isUnknown ? null : mapSpeakerLabelToStreamerId(speaker.label, registry);
         speaker.streamerId = streamerId;
         if (!streamerId) {
             if (speaker.isUnknown) {

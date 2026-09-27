@@ -651,7 +651,7 @@ function normalizeLabel(value) {
 
 function isUnknownSpeakerLabel(label) {
     const value = String(label || '').trim();
-    return !value || value === 'UNKNOWN' || value === '-1' || /^SPEAKER_\d+$/i.test(value);
+    return !value || value === 'UNKNOWN' || value === '-1' || /^(?:SPEAKER_|S)\d+$/i.test(value);
 }
 
 function hasMultipleSpeakerLabels(result) {
@@ -892,11 +892,14 @@ function writeSpeakerReviewSrt(result, srtPath, subtitleConfig = {}, asrConfig =
             let speaker = require('./speaker_attribution').speakerForSegment(segment);
             let localEvidence = segment.speakerEvidence || segment.speaker_evidence;
             if (filteredLabels.has(speaker)) {
-                speaker = 'UNKNOWN';
                 if (localEvidence) localEvidence = { ...localEvidence, status: 'unqualified', label: null,
                     summaryQualification: 'rejected' };
+                speaker = localEvidence?.anonymousLabel
+                    ? require('./speaker_attribution').speakerForSegment({ ...segment, speakerEvidence: localEvidence })
+                    : 'UNKNOWN';
             }
-            const score = segment.speaker_score === undefined || segment.speaker_score === null || segment.speaker_score === ''
+            const score = (localEvidence?.anonymousLabel === speaker || segment.speaker_score === undefined
+                || segment.speaker_score === null || segment.speaker_score === '')
                 ? ''
                 : ` ${Number(segment.speaker_score).toFixed(2)}`;
             const prefix = `[${speaker}${score}] `;
@@ -1314,8 +1317,22 @@ async function transcribeParaformer(mediaPath, config = {}, runtimeOptions = {})
     return transcribeFunAsrBackend(mediaPath, config, runtimeOptions, 'paraformer');
 }
 
-async function transcribeMoss(mediaPath, config = {}) {
-    const options = { ...getAsrConfig(config).moss, backend: 'moss', audio_path: mediaPath };
+async function transcribeMoss(mediaPath, config = {}, runtimeOptions = {}) {
+    const asrConfig = getAsrConfig(config);
+    const paraformer = asrConfig.paraformer;
+    const options = { ...asrConfig.moss,
+        ...buildRuntimeSpeakerOverrides(config, runtimeOptions.routingContext || {}),
+        spk_model: paraformer.spk_model,
+        speaker_device: paraformer.device,
+        speaker_references: paraformer.speaker_references,
+        speaker_embedding_batch_size: paraformer.speaker_embedding_batch_size,
+        speaker_reference_prototype_merge_threshold: paraformer.speaker_reference_prototype_merge_threshold,
+        speaker_reference_max_prototypes: paraformer.speaker_reference_max_prototypes,
+        speaker_reference_prototype_min_support_chunks: paraformer.speaker_reference_prototype_min_support_chunks,
+        speaker_row_reference_threshold: paraformer.speaker_row_reference_threshold,
+        speaker_row_reference_margin: paraformer.speaker_row_reference_margin,
+        speaker_row_reference_top_k: paraformer.speaker_row_reference_top_k,
+        backend: 'moss', audio_path: mediaPath };
     return runJsonPython(path.join(__dirname, '..', 'python', 'moss_transcribe.py'), options, 'MOSS backend');
 }
 

@@ -10,6 +10,8 @@
 
 生产 `asr.moss_rollout` 只对岁己房间 `25788785` 且已识别为多人联动的录播生效。对 `room_id|filename` 做稳定哈希，50% 选 MOSS、其余继续 Paraformer + CAM++；显式 `--asr-backend` 和一次性 CAM++ 请求优先。相同文件重跑保持分组；关闭 `moss_rollout.enabled` 可立即停止新任务分流。MOSS 失败时当前任务回退 Paraformer，`.asr_meta.json` 的 `routingReason` 记录回退原因。
 
+MOSS 灰度录播也使用同一房间的 `row_verified` 策略及 Paraformer 的全量 `speaker_references`。MOSS 转写后释放模型，再用 CAM++ 对至少2秒、没有其他字幕行重叠的语句逐句提取声纹；匹配沿用 `speaker_row_reference_threshold` / `margin` / `top_k` 和参考原型配置。每个 MOSS 匿名组内，同一姓名至少两条独立语句通过阈值才实名。没有参考、短句、重叠语音及局部匹配失败的行保留 `Sxx`，不会按整个匿名组传播姓名。`.speaker.srt` 展示局部姓名或匿名组，哈希绑定的 `.asr_evidence.json` 保存逐句阈值、分数、原始匿名组和拒识状态；自动切片与人物配图仍只把 `row_supported` 真人姓名当作出声证据。参考模型失败时转写可继续，但 `speakerProcessing.referenceIdentity.status` 标记 `unavailable`。既有 SRT 不会自动回填实名。
+
 MOSS 是联合转写与匿名说话人识别，因此灰度组的**文字与时间轴也来自 MOSS**。`S01` 等标签没有实名含义，不用于自动确认参与者。模型按 300 秒窗口运行，窗口间保留 20 秒重复音频；仅通过重复语句与时间重合来延续匿名标签，无法确认时使用新标签。原始并行说话区间会保留在普通 `.srt` 与 `.speaker.srt`，播放器可能同时显示两条字幕。长录播窗口衔接仍需人工抽查，尤其是没有人在窗口交界处持续说话时。
 
 运行环境安装固定版本的上游推理包：
