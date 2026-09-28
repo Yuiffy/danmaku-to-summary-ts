@@ -4,6 +4,70 @@ const now = 1790259000000;
 const message = (uid: string, text: string, sentAt = now) => ({ uid, text, sentAt });
 
 describe('live vote', () => {
+  it.each([
+    ['#投票 A复联2 B法环 C美队3 D第三集', 30, ['A', 'B', 'C', 'D'], ['复联2', '法环', '美队3', '第三集']],
+    ['#投票60 b.法环 c.美队3', 60, ['B', 'C'], ['法环', '美队3']],
+    ['＃投票 Ｂ、法环 Ｃ：美队3', 30, ['B', 'C'], ['法环', '美队3']],
+    ['#投票 C.甲 A.乙 I.丙', 30, ['C', 'A', 'I'], ['甲', '乙', '丙']],
+    ['#投票 A.Apple Pie B.Banana', 30, ['A', 'B'], ['Apple Pie', 'Banana']]
+  ])('parses letter keys without renumbering: %s', (text, duration, keys, labels) => {
+    expect(parseVoteCommand(text as string)).toEqual({ duration, keys, labels, numbering: 'letter' });
+  });
+
+  it.each(['#投票 B甲', '#投票 B甲 b乙', '#投票 B C乙', '#投票 B甲 2乙',
+    '#投票 1甲 B乙', '#投票 J甲 K乙', '#投票 A甲 B乙 C丙 D丁 E戊 F己 G庚 H辛 I壬 J癸'])
+  ('rejects invalid letter options: %s', text => {
+    expect(parseVoteCommand(text)).toBeNull();
+  });
+
+  it('matches only the actual keys and accepts fullwidth, mixed-case repeated letters', () => {
+    for (const text of ['b', 'BBB', 'bBb', ' ＢｂＢ ']) expect(parseVoteChoice(text, 2, ['B', 'C'])).toBe(1);
+    expect(parseVoteChoice('ccc', 2, ['B', 'C'])).toBe(2);
+    for (const text of ['A', 'D', '1', '2', 'BC', 'B B', 'B法环', '']) {
+      expect(parseVoteChoice(text, 2, ['B', 'C'])).toBeNull();
+    }
+    expect(parseVoteChoice('B', 2)).toBeNull();
+    expect(parseVoteChoice('333', 2, ['2', '3'])).toBe(2);
+    expect(parseVoteChoice('1', 2, ['2', '3'])).toBeNull();
+  });
+
+  it.each([false, true])('keeps subset keys in announcements and final results (early=%s)', early => {
+    const notices: string[] = [];
+    const session = new VoteSession({ authorizedUids: ['42'], botUid: '99' }, text => notices.push(text));
+    session.ingest(message('7', '#投票 B法环 C美队3'), now);
+    expect(notices).toEqual([]);
+    session.ingest(message('42', '#投票 B法环 C美队3'), now);
+    session.ingest(message('10', 'bBb'), now);
+    session.ingest(message('10', 'ccc'), now);
+    session.ingest(message('11', 'ＣＣＣ'), now);
+    session.ingest(message('12', 'c'), now);
+    for (const [uid, text] of [['13', 'A'], ['14', 'D'], ['15', '2'], ['99', 'B']]) {
+      session.ingest(message(uid, text), now);
+    }
+    session.tick(now + 10000);
+    if (early) session.ingest(message('42', '#结束投票', now + 11000), now + 11000);
+    session.tick(now + 33000);
+    expect(notices).toEqual([
+      '投票30秒，发字母：B.法环 C.美队3',
+      '剩余20秒~B.法环:1票 C.美队3:2票',
+      '结束：B.法环:1票 C.美队3:2票 【美队3】胜~'
+    ]);
+  });
+
+  it.each([20, 40])('packs long letter options within %i characters without renumbering', maxMessageChars => {
+    const notices: string[] = [];
+    const label = '甲'.repeat(16);
+    const session = new VoteSession({ authorizedUids: ['42'], maxMessageChars }, text => notices.push(text));
+    session.ingest(message('42', `#投票 C${label} B乙`), now);
+    session.ingest(message('10', 'CCC'), now);
+    session.tick(now + 10000);
+    session.tick(now + 33000);
+    expect(notices.join(' ')).toContain(`C.${label}`);
+    expect(notices.join(' ')).toContain(`【${label}】胜~`);
+    expect(notices.join(' ')).toContain(maxMessageChars === 20 ? 'C号：1票' : `C.${label}:1票`);
+    expect(notices.every(text => Array.from(text).length <= maxMessageChars)).toBe(true);
+  });
+
   it('allows an authorized fresh end command to publish one immediate result and close voting', () => {
     const notices: string[] = [];
     const invalidate = jest.fn();
@@ -31,11 +95,11 @@ describe('live vote', () => {
     expect(notices[2]).toBe('投票30秒，发序号：1.甲 2.乙');
   });
   it('accepts concise numbered options with bounded duration and preserves digits in names', () => {
-    expect(parseVoteCommand('#投票 1.复联2 2.法环')).toEqual({ duration: 30, labels: ['复联2', '法环'] });
-    expect(parseVoteCommand('#投票60 1复联2 2法环')).toEqual({ duration: 60, labels: ['复联2', '法环'] });
-    expect(parseVoteCommand('#投票 60 1、甲 2、乙')).toEqual({ duration: 60, labels: ['甲', '乙'] });
-    expect(parseVoteCommand('#投票 1复联2 2老头环 3美队3')).toEqual({ duration: 30, labels: ['复联2', '老头环', '美队3'] });
-    expect(parseVoteCommand('#投票 1.2048 2.法环')).toEqual({ duration: 30, labels: ['2048', '法环'] });
+    expect(parseVoteCommand('#投票 1.复联2 2.法环')).toEqual({ duration: 30, labels: ['复联2', '法环'], keys: ['1', '2'], numbering: 'number' });
+    expect(parseVoteCommand('#投票60 1复联2 2法环')).toEqual({ duration: 60, labels: ['复联2', '法环'], keys: ['1', '2'], numbering: 'number' });
+    expect(parseVoteCommand('#投票 60 1、甲 2、乙')).toEqual({ duration: 60, labels: ['甲', '乙'], keys: ['1', '2'], numbering: 'number' });
+    expect(parseVoteCommand('#投票 1复联2 2老头环 3美队3')).toEqual({ duration: 30, labels: ['复联2', '老头环', '美队3'], keys: ['1', '2', '3'], numbering: 'number' });
+    expect(parseVoteCommand('#投票 1.2048 2.法环')).toEqual({ duration: 30, labels: ['2048', '法环'], keys: ['1', '2'], numbering: 'number' });
     expect(parseVoteCommand('#投票999 1甲 2乙')).toBeNull();
     expect(parseVoteCommand('#投票 1甲')).toBeNull();
     expect(parseVoteChoice(' １１１１ ')).toBe(1);
@@ -45,7 +109,7 @@ describe('live vote', () => {
     expect(parseVoteChoice('３３３', 3)).toBe(3);
     expect(parseVoteChoice('333', 2)).toBeNull();
     expect(parseVoteChoice('444', 3)).toBeNull();
-    expect(parseVoteCommand('#投票 1甲 3乙')).toBeNull();
+    expect(parseVoteCommand('#投票 1甲 3乙')).toEqual({ duration: 30, labels: ['甲', '乙'], keys: ['1', '3'], numbering: 'number' });
     expect(parseVoteCommand('#投票 1甲 2 3丙')).toBeNull();
     expect(parseVoteCommand('#投票 1甲 2乙 2丙')).toBeNull();
     expect(parseVoteCommand('#投票 ' + Array.from({ length: 10 }, (_, i) => `${i + 1}.选项`).join(' '))).toBeNull();
@@ -93,7 +157,7 @@ describe('live vote', () => {
     session.ingest(message('42', '#投票 1甲 2乙', now - 11000), now);
     expect(notices).toEqual([]);
     session.ingest(message('42', '#投票 1甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲 2乙'), now);
-    expect(notices).toEqual(['投票格式有误，请连续编号1至9']);
+    expect(notices).toEqual(['格式有误，用1-9或A-I，勿重复']);
     session.ingest(message('42', '#投票 1甲 2乙'), now);
     session.ingest(message('42', '#取消投票', now + 1), now + 1);
     session.tick(now + 40000);
@@ -189,7 +253,41 @@ describe('live vote', () => {
     session.tick(now + 33000);
     expect(notices.join(' ')).toContain('8.选项8:1票');
     expect(notices.join(' ')).toContain('9.选项9:1票');
-    expect(notices.join(' ')).toContain('平票');
+    expect(notices.join(' ')).toContain('【选项8和选项9平票】');
     expect(notices.every(text => Array.from(text).length <= 40)).toBe(true);
+  });
+
+  it.each([false, true])('names both winners in the reported four-option tie (early=%s)', early => {
+    const notices: string[] = [];
+    const session = new VoteSession({ authorizedUids: ['42'] }, text => notices.push(text));
+    session.ingest(message('42', '#投票 A股票喵喵 B银护 C美队3 D法环'), now);
+    const counts = [26, 11, 26, 20];
+    let uid = 100;
+    for (const [index, count] of counts.entries()) {
+      for (let i = 0; i < count; i++) session.ingest(message(String(uid++), 'ABCD'[index], now + 100), now + 100);
+    }
+    notices.length = 0;
+    if (early) session.ingest(message('42', '#结束投票', now + 11000), now + 11000);
+    else session.tick(now + 33000);
+    expect(notices).toEqual([
+      '结束：A.股票喵喵:26票 B.银护:11票 C.美队3:26票',
+      '结束：D.法环:20票 【股票喵喵和美队3平票】'
+    ]);
+    expect(notices.every(text => Array.from(text).length <= 40)).toBe(true);
+  });
+
+  it.each([20, 40])('keeps all tied names when the summary exceeds %i characters', maxMessageChars => {
+    const notices: string[] = [];
+    const labels = ['甲'.repeat(16), '乙'.repeat(16), '丙'.repeat(16)];
+    const session = new VoteSession({ authorizedUids: ['42'], maxMessageChars }, text => notices.push(text));
+    session.ingest(message('42', '#投票 ' + labels.map((label, index) => `${index + 1}.${label}`).join(' ')), now);
+    session.ingest(message('10', '1', now + 100), now + 100);
+    session.ingest(message('11', '2', now + 100), now + 100);
+    session.ingest(message('12', '3', now + 100), now + 100);
+    notices.length = 0;
+    session.tick(now + 33000);
+    for (const label of labels) expect(notices.join(' ')).toContain(`【${label}】`);
+    expect(notices.join(' ')).toContain('平票');
+    expect(notices.every(text => Array.from(text).length <= maxMessageChars)).toBe(true);
   });
 });

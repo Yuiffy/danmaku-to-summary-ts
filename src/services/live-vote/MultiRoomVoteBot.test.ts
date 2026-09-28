@@ -55,6 +55,23 @@ it('authorizes each owner only in their room and counts viewers independently ac
   expect(sent.map(([id]) => id)).toEqual(['100', '200', '100', '200']);
 });
 
+it('isolates letter subsets and numeric keys across rooms', async () => {
+  const sent: Array<[string, string]> = [];
+  const bot = new MultiRoomVoteBot({ globalAdminUids: ['42'] }, async (id, text) => { sent.push([id, text]); }, jest.fn());
+  bot.updateRooms(rooms);
+  bot.ingest(message('100', '10', '#投票 B甲 C乙'), now);
+  bot.ingest(message('200', '20', '#投票 2丙 3丁'), now);
+  await bot.flush();
+  for (const roomId of ['100', '200']) {
+    bot.ingest(message(roomId, '30', 'bbb'), now);
+    bot.ingest(message(roomId, '30', '333'), now);
+  }
+  bot.tick(now + 33000);
+  await bot.flush();
+  expect(sent).toContainEqual(['100', '结束：B.甲:1票 C.乙:0票 【甲】胜~']);
+  expect(sent).toContainEqual(['200', '结束：2.丙:0票 3.丁:1票 【丁】胜~']);
+});
+
 it('allows a configured global administrator in every known room and waits for trustworthy owner metadata', async () => {
   const sent = jest.fn(async () => {});
   const bot = new MultiRoomVoteBot({ globalAdminUids: ['42'] }, sent, jest.fn());

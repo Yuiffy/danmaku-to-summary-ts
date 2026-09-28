@@ -11,8 +11,11 @@ export interface VoteConfig {
   maxMessageChars?: number;
 }
 
+type VoteNumbering = 'number' | 'letter';
+
 interface ActiveVote {
   labels: string[];
+  keys: string[];
   startedAt: number;
   deadline: number;
   nextUpdate: number;
@@ -23,7 +26,7 @@ const DEFAULT_DURATION = 30;
 const SETTLE_MS = 3000;
 const MAX_COMMAND_LAG_MS = 10000;
 
-export function parseVoteCommand(text: string): { duration: number; labels: string[] } | null {
+export function parseVoteCommand(text: string): { duration: number; labels: string[]; keys: string[]; numbering: VoteNumbering } | null {
   const normalized = text.normalize('NFKC').trim();
   if (/[\r\n]/u.test(normalized)) return null;
   const prefix = /^#投票\s*(?:(\d{2,3})\s+)?/u.exec(normalized);
@@ -31,22 +34,29 @@ export function parseVoteCommand(text: string): { duration: number; labels: stri
   const duration = prefix[1] ? Number(prefix[1]) : DEFAULT_DURATION;
   if (duration < 30 || duration > 120) return null;
   const rest = normalized.slice(prefix[0].length);
-  const markers = [...rest.matchAll(/(?:^|\s+)(\d+)[.、:：]?/gu)];
+  // Do not mistake the first letter of an English word for an option marker.
+  const markers = [...rest.matchAll(/(?:^|\s+)(\d+|[a-z](?![a-z]))[.、:：]?/giu)];
   if (markers.length < 2 || markers.length > 9 || markers[0].index !== 0) return null;
+  const numbering: VoteNumbering = /^[a-z]$/iu.test(markers[0][1]) ? 'letter' : 'number';
+  const keys = markers.map(marker => marker[1].toUpperCase());
+  const keyPattern = numbering === 'letter' ? /^[A-I]$/u : /^[1-9]$/u;
+  if (keys.some(key => !keyPattern.test(key)) || new Set(keys).size !== keys.length) return null;
   const labels: string[] = [];
   for (const [index, marker] of markers.entries()) {
-    if (marker[1] !== String(index + 1)) return null;
     const label = rest.slice(marker.index! + marker[0].length, markers[index + 1]?.index ?? rest.length).trim();
     if (!label || Array.from(label).length > 16) return null;
     labels.push(label);
   }
-  return { duration, labels };
+  return { duration, labels, keys, numbering };
 }
 
-export function parseVoteChoice(text: string, optionCount = 9): number | null {
-  const value = text.normalize('NFKC').trim();
-  const match = /^([1-9])\1*$/u.exec(value);
-  return match && Number(match[1]) <= optionCount ? Number(match[1]) : null;
+export function parseVoteChoice(text: string, optionCount = 9, keys = Array.from({ length: optionCount }, (_, i) => String(i + 1))): number | null {
+  const value = text.normalize('NFKC').trim().toUpperCase();
+  const match = /^([1-9A-I])\1*$/u.exec(value);
+  if (!match) return null;
+  // Counts use positions, while public keys may be a subset such as B and C.
+  const index = keys.indexOf(match[1]);
+  return index >= 0 && index < optionCount ? index + 1 : null;
 }
 
 export class VoteSession {
@@ -86,22 +96,24 @@ export class VoteSession {
       if (this.active || Math.abs(now - message.sentAt) > MAX_COMMAND_LAG_MS) return;
       const command = parseVoteCommand(text);
       if (!command) {
-        this.emit('投票格式有误，请连续编号1至9');
+        this.emit('格式有误，用1-9或A-I，勿重复');
         return;
       }
       this.active = {
         labels: command.labels,
+        keys: command.keys,
         startedAt: now,
         deadline: now + command.duration * 1000,
         nextUpdate: now + 10000,
         votes: new Map()
       };
-      this.emitPacked(`投票${command.duration}秒，发序号：`, command.labels.map((label, index) => `${index + 1}.${label}`));
+      this.emitPacked(`投票${command.duration}秒，发${command.numbering === 'letter' ? '字母' : '序号'}：`,
+        command.labels.map((label, index) => `${command.keys[index]}.${label}`));
       return;
     }
     const vote = this.active;
     if (!vote || now > vote.deadline + SETTLE_MS || message.sentAt > vote.deadline || message.sentAt < vote.startedAt) return;
-    const choice = parseVoteChoice(text, vote.labels.length);
+    const choice = parseVoteChoice(text, vote.labels.length, vote.keys);
     if (choice && !vote.votes.has(message.uid)) vote.votes.set(message.uid, choice);
   }
 
@@ -133,14 +145,21 @@ export class VoteSession {
   private emitCounts(vote: ActiveVote, final: boolean, remainingSeconds?: number): void {
     const counts = this.count(vote);
     const parts = vote.labels.flatMap((label, index) => {
-      const text = `${index + 1}.${label}:${counts[index]}票`;
+      const key = vote.keys[index];
+      const text = `${key}.${label}:${counts[index]}票`;
       // A lower account limit may require separating a long label from its count.
-      return Array.from(text).length <= this.maxChars ? [text] : [`${index + 1}.${label}`, `${index + 1}号：${counts[index]}票`];
+      return Array.from(text).length <= this.maxChars ? [text] : [`${key}.${label}`, `${key}号：${counts[index]}票`];
     });
     if (final) {
       const highest = Math.max(...counts);
       const winners = counts.map((count, index) => count === highest ? index : -1).filter(index => index >= 0);
-      parts.push(highest === 0 ? '无人投票' : winners.length > 1 ? '平票' : `【${vote.labels[winners[0]]}】胜~`);
+      if (highest === 0) parts.push('无人投票');
+      else if (winners.length === 1) parts.push(`【${vote.labels[winners[0]]}】胜~`);
+      else {
+        const tie = `【${winners.map(index => vote.labels[index]).join('和')}平票】`;
+        if (Array.from(tie).length <= this.maxChars) parts.push(tie);
+        else parts.push(...winners.map(index => `【${vote.labels[index]}】`), '平票');
+      }
     }
     if (!final && remainingSeconds !== undefined) {
       const timed = `剩余${remainingSeconds}秒~${parts.join(' ')}`;
