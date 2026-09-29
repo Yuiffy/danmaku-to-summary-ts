@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from contextlib import ExitStack, redirect_stdout
 from difflib import SequenceMatcher
 import gc
 import json
@@ -205,60 +206,92 @@ def identify_moss_speakers(source, segments, payload):
 
 
 def transcribe(payload):
-    import torch
-    from transformers import AutoModelForCausalLM, AutoProcessor
-    from moss_transcribe_diarize import parse_transcript
-    from moss_transcribe_diarize.inference_utils import build_transcription_messages, generate_transcription
-
+    total_started = time.perf_counter()
     source = str(payload["audio_path"])
     duration = media_duration(source)
     chunk_seconds = float(payload.get("chunk_seconds", 300))
     overlap_seconds = float(payload.get("overlap_seconds", 20))
     spans = list(windows(duration, chunk_seconds, overlap_seconds))
-    device = torch.device(str(payload.get("device") or "cuda:0"))
-    if device.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("MOSS CUDA device unavailable")
-    torch.set_num_threads(4)
-    model_path = str(payload.get("model") or "OpenMOSS-Team/MOSS-Transcribe-Diarize")
-    revision = str(payload.get("revision") or "e8681d68e7042738ffca8ac8212bc8fcb1131ab8")
-    load_started = time.perf_counter()
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path, revision=revision, trust_remote_code=True, dtype="auto", attn_implementation="sdpa",
-    ).to(device=device, dtype=torch.bfloat16).eval()
-    processor = AutoProcessor.from_pretrained(model_path, revision=revision, trust_remote_code=True)
-    load_seconds = time.perf_counter() - load_started
+    engine = str(payload.get('inference_backend', 'transformers'))
+    if engine not in ('transformers', 'vllm'):
+        raise ValueError(f'Unsupported MOSS inference backend: {engine}')
     results = []
     generated_tokens = 0
     inference_seconds = 0.0
-    with tempfile.TemporaryDirectory(prefix="moss-asr-") as work:
+    extract_seconds = 0.0
+    with ExitStack() as resources:
+        load_started = time.perf_counter()
+        if engine == 'vllm':
+            from moss_http import transcribe_http
+            options = dict(payload)
+            if payload.get('managed_server'):
+                from moss_service import ManagedMossServer
+                service = resources.enter_context(ManagedMossServer(payload))
+                options['base_url'] = service.base_url
+            if not options.get('base_url'):
+                raise ValueError('MOSS vLLM requires base_url or managed_server')
+
+            def infer(wav, limit, seconds):
+                return transcribe_http(wav, options, limit, seconds)
+        else:
+            import torch
+            from transformers import AutoModelForCausalLM, AutoProcessor
+            from moss_transcribe_diarize import parse_transcript
+            from moss_transcribe_diarize.inference_utils import build_transcription_messages, generate_transcription
+
+            device = torch.device(str(payload.get('device') or 'cuda:0'))
+            if device.type == 'cuda' and not torch.cuda.is_available():
+                raise RuntimeError('MOSS CUDA device unavailable')
+            torch.set_num_threads(4)
+            model_path = str(payload.get('model') or 'OpenMOSS-Team/MOSS-Transcribe-Diarize')
+            revision = str(payload.get('revision') or 'e8681d68e7042738ffca8ac8212bc8fcb1131ab8')
+            model = AutoModelForCausalLM.from_pretrained(
+                model_path, revision=revision, trust_remote_code=True, dtype='auto', attn_implementation='sdpa',
+            ).to(device=device, dtype=torch.bfloat16).eval()
+            processor = AutoProcessor.from_pretrained(model_path, revision=revision, trust_remote_code=True)
+
+            def release_model():
+                nonlocal model, processor
+                model = processor = None
+                gc.collect()
+                if device.type == 'cuda':
+                    torch.cuda.empty_cache()
+            resources.callback(release_model)
+
+            def infer(wav, limit, seconds):
+                generated = generate_transcription(
+                    model, processor, build_transcription_messages(wav), max_new_tokens=limit,
+                    do_sample=False, device=device, dtype=torch.bfloat16,
+                )
+                if int(generated['generated_tokens']) >= limit:
+                    raise RuntimeError('MOSS output truncated')
+                return {'segments': [asdict(row) for row in parse_transcript(generated['text'])],
+                        'generated_tokens': int(generated['generated_tokens'])}
+
+        load_seconds = time.perf_counter() - load_started
+        print(f'[ASR] MOSS inference backend: {engine}; startup {load_seconds:.2f}s', file=sys.stderr, flush=True)
+        work = resources.enter_context(tempfile.TemporaryDirectory(prefix='moss-asr-'))
         for index, (start, end) in enumerate(spans):
             wav = str(Path(work) / f"window-{index:04d}.wav")
+            extract_started = time.perf_counter()
             subprocess.run([
                 "ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", str(start), "-i", source,
                 "-t", str(end - start), "-vn", "-ac", "1", "-ar", "16000", "-y", wav,
             ], check=True, capture_output=True)
+            extract_seconds += time.perf_counter() - extract_started
             limit = max(2048, math.ceil((end - start) * 18))
             started = time.perf_counter()
-            generated = generate_transcription(
-                model, processor, build_transcription_messages(wav), max_new_tokens=limit,
-                do_sample=False, device=device, dtype=torch.bfloat16,
-            )
+            generated = infer(wav, limit, end - start)
             inference_seconds += time.perf_counter() - started
-            generated_tokens += int(generated["generated_tokens"])
-            if int(generated["generated_tokens"]) >= limit:
-                raise RuntimeError(f"MOSS output truncated in window {index}")
-            rows = [asdict(row) for row in parse_transcript(generated["text"])]
+            tokens = generated.get('generated_tokens')
+            generated_tokens = generated_tokens + tokens if generated_tokens is not None and tokens is not None else None
+            rows = generated['segments']
             results.append((start, end, rows))
             print(f"[ASR] MOSS window {index + 1}/{len(spans)}: {len(rows)} turns", file=sys.stderr, flush=True)
-            if device.type == "cuda":
-                torch.cuda.empty_cache()
+            Path(wav).unlink()
     segments = combine_windows(results, duration)
     if not segments:
         raise RuntimeError("MOSS produced no usable segments")
-    del model, processor
-    gc.collect()
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
     identity = {"status": "disabled"}
     if payload.get("speaker_references") and payload.get("speaker_identity_policy") == "row_verified":
         identity_started = time.perf_counter()
@@ -274,10 +307,11 @@ def transcribe(payload):
         identity["elapsedSeconds"] = round(time.perf_counter() - identity_started, 3)
     clusters = {row.get("speaker_evidence", {}).get("anonymousLabel", row["speaker"]) for row in segments}
     return {
-        "backend": "moss", "segments": segments,
+        "backend": "moss", "inference_backend": engine, "segments": segments,
         "timings": {"model_load_s": load_seconds, "asr_inference_s": inference_seconds,
                     "speaker_reference_s": identity.get("elapsedSeconds", 0),
-                    "backend_total_s": load_seconds + inference_seconds + identity.get("elapsedSeconds", 0),
+                    "audio_extract_s": extract_seconds,
+                    "backend_total_s": time.perf_counter() - total_started,
                     "generated_tokens": generated_tokens},
         "speaker_processing": {"mode": "moss", "status": "full_completed", "decision": "multiple" if len(clusters) > 1 else "single",
                                "reason": "joint_transcription_diarization", "full_run": True,
@@ -286,9 +320,17 @@ def transcribe(payload):
     }
 
 
+def main():
+    # FunASR and model imports may print banners. stdout is the JSON protocol.
+    payload = json.load(sys.stdin)
+    with redirect_stdout(sys.stderr):
+        result = transcribe(payload)
+    print(json.dumps(result, ensure_ascii=False))
+
+
 if __name__ == "__main__":
     try:
-        print(json.dumps(transcribe(json.load(sys.stdin)), ensure_ascii=False))
+        main()
     except Exception as exc:
         print(f"MOSS backend failed: {exc}", file=sys.stderr)
         raise

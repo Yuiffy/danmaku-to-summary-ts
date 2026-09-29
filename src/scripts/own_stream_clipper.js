@@ -981,6 +981,8 @@ async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config,
             || Number(a.start) - Number(b.start)
         ))
         .slice(0, candidateLimit);
+    // Detailed selection plans the whole topic before either ordinary or precision rendering.
+    config = { ...config, requireTopicEditPlan: true };
     const packed = buildRerankEvidence(rankedCandidates, parsed, danmaku, config);
     const { subtitleEvidence } = packed;
 
@@ -990,7 +992,7 @@ async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config,
     const promptPrefix = [
         stage.selectedOnly ? `你是直播切片编辑。下面是全局排序已选中的${hostName}候选及其完整原文。本步骤只对这些候选完成边界、文案和引用，不重新做全场取舍。`
             : `你是直播切片主编。下面是${hostName}本场直播经过分块模型、字幕、弹幕和情绪信号共同召回并去重后的完整候选池。`,
-        ...(stage.selectedOnly ? [`本组只允许 candidateIndex=${rankedCandidates.map(candidate => candidate.index).join(',')}；保持这些全局ID，不按本组顺序重编号。每个候选最多一段。`] : []),
+        ...(stage.selectedOnly ? [`本组只允许 candidateIndex=${rankedCandidates.map(candidate => candidate.index).join(',')}；保持这些全局ID，不按本组顺序重编号。每个候选最多一个成片，可由同话题多个按原顺序保留的段落组成。`] : []),
         OWN_STREAM_SOURCE_ATTRIBUTION_RULE,
         ...participantPromptLines(parsed.participantContext),
         `请一次性全局比较所有候选，输出最多 ${maxClips} 个适合本地 review、能够独立发布的最终片段。${maxClips} 是硬上限而不是数量目标，有多少合格题材就返回多少。`,
@@ -1003,6 +1005,9 @@ async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config,
         '没有独立看点的片段降低优先级；内容类型不做默认排除。',
         ...buildSelectionPolicyPromptLines(config.selectionPolicy, info?.roomId),
         '时长由内容完整性决定，不设固定最短或最长秒数；保留必要铺垫、发展、反应和收尾，不为凑时长截断或灌水，也不把无关话题拼成长片。',
+        ...require('./clipping/topic_edit_plan').promptLines(),
+        ...(stage.topicRepair ? ['上次计划校验未通过，只修复下列具体问题；已确认仍属本题的后续不能重新称为另一话题来缩短窗口。文案引用只列真正支持文案且保留的少量证据，不要枚举全窗口字幕。',
+            JSON.stringify(stage.topicRepair)] : []),
         ...anglePromptLines(),
         '候选va字段是带原文锚点的多个看点线索，逐项对照完整字幕；选择其中具体、独立的看点组织本片，别把摘要当唯一看点。结束于本看点收束，不把后续另一场事件或战斗当必需结尾。',
         ...(stage.selectedOnly ? ['本阶段必须守住focus给出的全局选中理由；起因与结尾服务于该看点。不要把主要角色互动改写为途中操作教程，不用旁枝替代无法证实的主看点。'] : []),
@@ -1045,7 +1050,7 @@ async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config,
             wordLimit: Math.max(2400, maxClips * 140),
             primaryModel: config.ai?.model || undefined,
             ...(stage.selectedOnly ? { maxTokens: config.ai?.rankThenEdit?.detailMaxTokens || 16000,
-                responseFormat: require('./clipping/ranked_editorial').detailResponseFormat(rankedCandidates) } : {}),
+                responseFormat: require('./clipping/ranked_editorial').detailResponseFormat(rankedCandidates, packed.cueIds) } : {}),
             // Global comparison reads every candidate, unlike a single recall chunk.
             timeoutMs: stage.selectedOnly ? (config.ai?.rankThenEdit?.detailTimeoutMs || config.ai?.timeoutMs) : (config.ai?.rerankTimeoutMs ?? config.ai?.timeoutMs),
             daiYuTransientMaxAttempts: config.ai?.rerankMaxAttempts ?? 2
@@ -1058,6 +1063,61 @@ async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config,
         const rejected = [];
         const normalized = normalizeAiClips(proposed, rankedCandidates, parsed.segments.at(-1)?.end || 0,
             config, clipLabel, subtitleEvidence, danmaku, packed.cueIds, packed.danmakuIds, rejected);
+        if (stage.selectedOnly) for (const candidate of rankedCandidates) {
+            if (!proposed.some(row => String(row.candidateIndex) === String(candidate.index))) {
+                rejected.push({ candidateIndex: candidate.index, reason: 'missing_selected_candidate_detail' });
+            }
+        }
+        for (let i = normalized.length - 1; i >= 0; i--) {
+            const minimum = stage.topicMinimumEnds?.[String(normalized[i].candidateIndex)];
+            if (minimum && normalized[i].end < minimum) {
+                rejected.push({ candidateIndex: normalized[i].candidateIndex, reason: 'topic_repair_lost_known_continuation', minimumEnd: minimum });
+                normalized.splice(i, 1);
+            }
+        }
+        if (normalized.length) {
+            const { boundaryReviewConfig, boundaryReviewPrompt, parseBoundaryReviews } = require('./clipping/topic_boundary_review');
+            const parseReview = text => parseBoundaryReviews(text, normalized, subtitleEvidence, packed.cueIds);
+            const reviewPhase = `${stage.phase || 'global-rerank'}-boundary-review`;
+            const review = await requestSelectionText(boundaryReviewPrompt(normalized, packed.subtitleLines, subtitleEvidence),
+                { ...requestOptions, responseFormat: undefined }, boundaryReviewConfig(config, info, reviewPhase), rootConfig, info,
+                reviewPhase, diagnostics, value => {
+                    try { parseReview(value.text); return true; } catch { return false; }
+                });
+            for (const row of parseReview(review.text)) {
+                const i = normalized.findIndex(c => String(c.candidateIndex) === String(row.candidateIndex));
+                if (row.approved) normalized[i].boundaryReview = { ...row, sourceSha256: subtitleEvidence.sourceSha256 };
+                else {
+                    rejected.push({ candidateIndex: row.candidateIndex, reason: 'topic_boundary_incomplete', issues: row.issues,
+                        minimumEnd: row.requiredEndCueId ? subtitleEvidence.byId.get(row.requiredEndCueId).end : null });
+                    normalized.splice(i, 1);
+                }
+            }
+        }
+        if (rejected.length && Number(stage.topicRepairAttempt || 0) < 2) {
+            const retryIds = new Set(rejected.map(row => String(row.candidateIndex)));
+            const more = rejected.some(row => row.reason === 'topic_needs_more_context');
+            const topicMinimumEnds = { ...stage.topicMinimumEnds };
+            for (const row of rejected) if (row.minimumEnd) {
+                topicMinimumEnds[String(row.candidateIndex)] = Math.max(topicMinimumEnds[String(row.candidateIndex)] || 0, row.minimumEnd);
+            }
+            for (const row of proposed.filter(row => row.topicEditPlan?.continuation === 'needs_more')) {
+                const end = subtitleEvidence.byId.get(row.endCueId)?.end;
+                if (end) topicMinimumEnds[String(row.candidateIndex)] = Math.max(topicMinimumEnds[String(row.candidateIndex)] || 0, end);
+            }
+            const retryDiagnostics = { requests: [], errors: [] };
+            const repaired = await refineCandidatesWithAI(rankedCandidates.filter(c => retryIds.has(String(c.index))), parsed, danmaku, info,
+                { ...config, ...(more ? { ai: { ...config.ai, topicContextSeconds: 600 } } : {}) }, rootConfig, retryDiagnostics, streamerName,
+                { ...stage, topicMinimumEnds, topicRepairAttempt: Number(stage.topicRepairAttempt || 0) + 1,
+                    topicRepair: { issues: rejected, previousPlans: proposed.filter(row => retryIds.has(String(row.candidateIndex))) },
+                    phase: `${stage.phase || 'global-rerank'}-topic-repair` });
+            diagnostics?.requests?.push(...retryDiagnostics.requests);
+            diagnostics?.errors?.push(...retryDiagnostics.errors);
+            normalized.push(...repaired);
+            const unresolved = rejected.filter(row => !repaired.some(c => String(c.candidateIndex) === String(row.candidateIndex)));
+            rejected.splice(0, rejected.length, ...unresolved.map(row => retryDiagnostics.validation?.rejected?.find(r => String(r.candidateIndex) === String(row.candidateIndex)) || row));
+            normalized.sort((a, b) => a.start - b.start);
+        }
         if (diagnostics) diagnostics.validation = { proposed: proposed.length, accepted: normalized.length, rejected };
         if (rejected.length) console.warn(`AI clip validation rejected ${rejected.length}/${proposed.length}: ${JSON.stringify(rejected)}`);
         return normalized;
@@ -1716,6 +1776,8 @@ async function generateOwnStreamClipJob(context) {
         viewingAngles: anglesForWindow(clip, window, subtitleEvidence, danmaku),
         quoteEchoes: quoteEchoes(danmaku, window, subtitleEvidence.cues),
         ...(clip.precisionExperiment ? { precisionExperiment: clip.precisionExperiment } : {}),
+        ...(clip.topicEditPlan ? { topicEditPlan: clip.topicEditPlan } : {}),
+        ...(clip.endingHold ? { endingHold: clip.endingHold } : {}),
         grounding: evidenceReview(clip, copy) || null,
         ...(require('./asr/subtitle_proofreading').resolveProofreadingOptions(options.config || {}, { roomId: info.roomId }).enabled
             ? { subtitleProofreading: require('./asr/subtitle_proofreading').summarizeSubtitleProofreading(parsed.segments, window) } : {}),

@@ -31,6 +31,9 @@ python src/scripts/clip_upload_registry.py correct --id 123 --from "zzz" --to "�
 - 同一文字若出现在该候选的标题、简介或封面文案中，也做同样的字面替换，
   避免字幕与投稿文案不一致，不会重写其他文案。
 - 字幕已确认、只需投稿：`python src/scripts/clip_upload_registry.py enqueue --ids 123`。
+- 确认整条为背景外语误识别或无效字幕时，可用 `correct --id 123 --cue 7 --from "该条完整原文" --drop-cue --note "原音核对依据"`。
+  与 `--to` 互斥，必须指定完整文本、编号与依据；仅删除本片该条叠加字幕，不剪音画，不改源SRT。
+  保存可追溯修订、使旧烧录和批准失效，不能删空全片。删除后编号会顺移，批量处理应从后往前。
 - 候选里的人名误识别同时影响文案/标签时，`correct` 可附加 `--title`、`--description`、`--cover-text`、`--tags`；这些修订与字幕版本一起保存。单条 JSON 切片需要进入指定合集时，`enqueue --ids 123 --collection-section-id <小节ID>`，不改该直播间的默认合集路由。
   普通成片直接排队上传；待定候选由 worker 先烧录，再上传。
 - 收到入队成功后，确认 `npm run pm2:status:clip-upload` 在线即可报告“已入队”。
@@ -204,6 +207,8 @@ python src/scripts/clip_upload_registry.py rebuild --id 123 --replan --start 120
 程序检查源证据与同一录播其他保留 ID 的窗口，保留原剔除记录及新编辑计划；
 字幕修订、入队确认、重压时仍检查来源和重叠。其他剔除原因不因此解除。
 之后使用原编号 `subtitles` / `correct` / `cut`，有投稿授权时再 `enqueue`。
+完整事件低于自动最短时长时，`rebuild --allow-short --duration-note "完整起因、回应与结尾的审核依据"`
+可保存只适用于该窗口的编辑复核。仍须核验源范围、上下文、人物与媒体，不加入无关片段凑时长。
 已经烧录且窗口不变的短片允许校对重压，不套用新选窗的最短时长限制。
 
 ### 连贯长片的逐条授权

@@ -5,6 +5,16 @@ const cues = Array.from({ length: 6 }, (_, i) => ({ id: `C${i + 1}`, start: i * 
 const draft = { keep: [{ fromCue: 'C1', toCue: 'C1', role: 'setup', reason: '起因' },
     { fromCue: 'C4', toCue: 'C4', role: 'reaction', reason: '反差' }, { fromCue: 'C6', toCue: 'C6', role: 'payoff', reason: '回扣' }] };
 
+test('a real chronological content edit renders without inventing decorative effects', () => {
+    const timeline = validateStoryPlan(draft, cues, 60);
+    const plan = { version: 2, workflow: 'creative', duration: timeline.duration, timeline, effects: [] };
+    expect(() => assertRenderPlan(plan, 60, {})).not.toThrow();
+    const graph = buildCreativeFilter(plan, { width: 640, height: 360 }, 0, 60, 'caption.ass', null);
+    expect(graph).toContain('concat=n=3:v=1:a=0');
+    expect(graph).toContain('concat=n=3:v=0:a=1');
+    expect(() => assertRenderPlan({ ...plan, timeline: null, duration: 60 }, 60, {})).toThrow();
+});
+
 test('adjacent complete cue groups merge overlapping padding without duplicating speech or accepting repeated cues', () => {
     const close = [{ id: 'C1', start: 1, end: 4, text: '起因' }, { id: 'C2', start: 4.1, end: 7, text: '反应' },
         { id: 'C3', start: 8, end: 9, text: '删除的支线' }, { id: 'C4', start: 10, end: 12, text: '收尾' }];

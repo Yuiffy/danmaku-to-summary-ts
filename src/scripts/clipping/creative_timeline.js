@@ -5,13 +5,20 @@ const overlap = (a, b) => a.start < b.end - .0005 && b.start < a.end - .0005;
 function protectedStorySpans(clip, evidence, danmaku, window) {
     const ids = new Set((clip.attributionReview?.claims || []).flatMap(row => [...(row.cueIds || []), ...(row.speakerCueIds || [])]));
     for (const id of clip.grounding?.danmakuIds || []) ids.add(id);
-    return [...ids].map(id => {
+    return [...(clip.topicEditPlan ? require('./topic_edit_plan').storyConstraints(clip.topicEditPlan, evidence, window) : []), ...[...ids].map(id => {
         const cue = evidence.byId.get(id);
         const audience = /^D[1-9]\d*$/.test(id) ? danmaku[Number(id.slice(1)) - 1] : null;
         if (!cue && !audience) throw new Error(`Missing protected story evidence: ${id}`);
         return { id, start: Math.max(0, (cue?.start ?? audience.time) - window.start),
             end: Math.min(window.end - window.start, (cue?.end ?? audience.time + .05) - window.start), text: cue?.text ?? audience.text };
-    });
+    })];
+}
+
+// Evidence groups (G/D IDs) and editable subtitle cues (C IDs) use different
+// boundaries. Expose their relationship without weakening the original spans.
+function protectedStoryCues(protectedSpans, cues) {
+    return protectedSpans.map(span => ({ ...span,
+        cueIds: cues.filter(cue => overlap(cue, span)).map(cue => cue.id) }));
 }
 
 function assertTimeline(timeline, sourceDuration) {
@@ -26,10 +33,10 @@ function assertTimeline(timeline, sourceDuration) {
     if (Math.abs(duration - timeline.duration) > .002) throw new Error('Editorial duration does not match retained spans');
 }
 
-function validateStoryPlan(raw, cues, sourceDuration, protectedSpans = [], profile = null) {
+function validateStoryPlan(raw, cues, sourceDuration, protectedSpans = [], profile = null, endingHoldSeconds = .22) {
     if (!Array.isArray(raw?.keep) || !raw.keep.length || raw.keep.length > 32) throw new Error('Missing story keep ranges');
     let lastCue = -1;
-    const keep = raw.keep.map(row => {
+    const keep = raw.keep.map((row, index) => {
         const a = cues.findIndex(c => c.id === row.fromCue), b = cues.findIndex(c => c.id === row.toCue);
         if (a < 0 || b < a || !String(row.reason || '').trim()
             || !['setup', 'escalation', 'reaction', 'payoff', 'context', 'step', 'explanation', 'performance', 'closing'].includes(row.role)) throw new Error('Story ranges require ordered real cue IDs, reason and role');
@@ -37,7 +44,7 @@ function validateStoryPlan(raw, cues, sourceDuration, protectedSpans = [], profi
         lastCue = b;
         // Only complete approved subtitle cues; adjacent boundaries never split another cue.
         const start = Math.max(0, cues[a].start - .12, a ? cues[a - 1].end : 0);
-        const end = Math.min(sourceDuration, cues[b].end + .22, cues[b + 1]?.start ?? sourceDuration);
+        const end = Math.min(sourceDuration, cues[b].end + (index === raw.keep.length - 1 ? endingHoldSeconds : .22), cues[b + 1]?.start ?? sourceDuration);
         return { start: round(start), end: Math.min(sourceDuration, round(end)), reason: row.reason, role: row.role, firstCue: a, lastCue: b };
     });
     if (keep.some((s, i) => i && s.start < keep[i - 1].end - .001 && s.firstCue !== keep[i - 1].lastCue + 1)) {
@@ -74,6 +81,18 @@ function mapTimelineCues(cues, timeline) {
     });
 }
 
+function storyReviewEvidence(cues, timeline, protectedSpans) {
+    assertTimeline(timeline, timeline.sourceDuration);
+    const kept = mapTimelineCues(cues.map(cue => ({ ...cue, sourceStart: cue.start, sourceEnd: cue.end })), timeline);
+    const protectedCoverage = protectedStoryCues(protectedSpans, cues).map(span => ({ ...span,
+        retainedCueIds: kept.filter(cue => span.cueIds.includes(cue.id)).map(cue => cue.id),
+        covered: timeline.keep.some(range => span.start >= range.start - .002 && span.end <= range.end + .002) }));
+    if (protectedCoverage.some(span => !span.covered)) throw new Error('Story review requires complete protected evidence coverage');
+    return { timebases: { original: 'source-relative seconds', kept: 'edited-output seconds; sourceStart/sourceEnd refer to original',
+        timeline: 'source-relative seconds', protectedCoverage: 'source-relative seconds; coverage verified by code' },
+    original: cues, kept, timeline, protectedCoverage };
+}
+
 function sourceTimeForOutput(time, timeline) {
     if (!timeline) return time;
     let offset = 0;
@@ -103,4 +122,4 @@ function srtText(cues) {
     const clock = time => { const n = Math.round(time * 1000); return `${String(Math.floor(n / 3600000)).padStart(2, '0')}:${String(Math.floor(n / 60000) % 60).padStart(2, '0')}:${String(Math.floor(n / 1000) % 60).padStart(2, '0')},${String(n % 1000).padStart(3, '0')}`; };
     return cues.map((c, i) => `${i + 1}\n${clock(c.start)} --> ${clock(c.end)}\n${c.text}\n`).join('\n');
 }
-module.exports = { protectedStorySpans, assertTimeline, validateStoryPlan, mapTimelineCues, sourceTimeForOutput, absoluteEditPlan, audioTimelineFilter, srtText };
+module.exports = { protectedStorySpans, protectedStoryCues, storyReviewEvidence, assertTimeline, validateStoryPlan, mapTimelineCues, sourceTimeForOutput, absoluteEditPlan, audioTimelineFilter, srtText };

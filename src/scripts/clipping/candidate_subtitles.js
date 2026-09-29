@@ -76,21 +76,33 @@ function correctCandidateDraft(metadata, metadataPath, evidence, options) {
     const draft = readCandidateDraft(metadata, evidence);
     const original = String(options.from || '');
     const replacement = String(options.to || '');
-    if (!original || !replacement || original === replacement || /[\r\n\x00-\x1f]/u.test(original + replacement)) {
+    const drop = options.dropCue === true || options.dropCue === 'yes';
+    if (drop && (options.cue == null || !String(options.reviewNote || '').trim() || options.to != null)) {
+        throw new Error('Dropping a cue requires its number, exact text and review note, without --to');
+    }
+    if (!original || (!drop && (!replacement || original === replacement))
+        || (drop ? /[\x00-\x09\x0b-\x1f]/u : /[\r\n\x00-\x1f]/u).test(original + replacement)) {
         throw new Error('Correction needs distinct nonempty literal words without control characters');
     }
     const cueIndex = options.cue == null ? null : Number(options.cue);
+    const previous = draft.edits.at(-1);
+    if (drop && previous?.operation === 'drop_cue' && previous.original === original && previous.cue === cueIndex) return draft;
     if (cueIndex !== null && (!Number.isSafeInteger(cueIndex) || cueIndex < 1 || cueIndex > draft.cues.length)) {
         throw new Error('Unknown candidate subtitle cue number');
     }
     const changes = [];
     const cues = draft.cues.map((cue, index) => {
-        if ((cueIndex !== null && cueIndex !== index + 1) || !cue.text.includes(original)) return cue;
-        const text = cue.text.split(original).join(replacement);
+        if (cueIndex !== null && cueIndex !== index + 1) return cue;
+        if (drop && cue.text.replace(/\s+/g, ' ').trim() !== original.replace(/\s+/g, ' ').trim()) {
+            throw new Error('Dropping a cue requires its exact complete text');
+        }
+        if (!drop && !cue.text.includes(original)) return cue;
+        const text = drop ? '' : cue.text.split(original).join(replacement);
         changes.push({ cue: index + 1, cueId: cue.cueId, before: cue.text, after: text,
             start: cue.sourceStart, end: cue.sourceEnd });
-        return { ...cue, text };
-    });
+        return drop ? null : { ...cue, text };
+    }).filter(Boolean);
+    if (!cues.length) throw new Error('Cannot remove all subtitle cues');
     if (!changes.length) {
         const previous = draft.edits.at(-1);
         if (previous?.original === original && previous?.replacement === replacement && previous?.cue === cueIndex) return draft;
@@ -102,13 +114,14 @@ function correctCandidateDraft(metadata, metadataPath, evidence, options) {
     const copyChanges = {};
     for (const key of ['title', 'description', 'coverText']) {
         const before = metadata.copy?.[key];
-        if (typeof before === 'string' && before.includes(original)) {
+        if (!drop && typeof before === 'string' && before.includes(original)) {
             metadata.copy[key] = before.split(original).join(replacement);
             copyChanges[key] = { before, after: metadata.copy[key] };
         }
     }
     metadata.candidateSubtitles = { ...draft, path: file, revision, ...written, approval: null,
         edits: [...draft.edits, { authority: 'user', at: new Date().toISOString(), note: options.reviewNote,
+            ...(drop ? { operation: 'drop_cue' } : {}),
             original, replacement, cue: cueIndex, changes, copyChanges, sourceSha256: evidence.sourceSha256 }] };
     metadata.status = 'pending_preflight';
     metadata.output.srtPath = file;
@@ -135,7 +148,8 @@ function hasDraftApproval(metadata, evidence, expectedSha256 = null) {
 function candidateDraftEvidence(metadata, evidence) {
     const draft = readCandidateDraft(metadata, evidence);
     const byId = new Map(draft.cues.map(cue => [cue.cueId, cue]));
-    const cues = evidence.cues.map(cue => {
+    const removed = new Set(draft.edits.filter(edit => edit.operation === 'drop_cue').flatMap(edit => edit.changes.map(row => row.cueId)));
+    const cues = evidence.cues.filter(cue => !removed.has(cue.id)).map(cue => {
         const row = byId.get(cue.id);
         return row ? { ...cue, text: row.text, items: cue.items.map(item => ({ ...item, text: row.text })) } : cue;
     });

@@ -352,6 +352,95 @@ describe('asr_backends', () => {
     expect(resolved.fallbackBackend.backendOptionsOverride.paraformer.finetuned_model).toBe('local-finetuned');
   });
 
+  test('speaker-enabled rollout reaches other rooms while keeping each original fallback', () => {
+    for (const backend of ['paraformer', 'sensevoice', 'fun_asr_nano', 'fun_asr_nano_vllm']) {
+      const config = { asr: { default_backend: backend,
+        [backend]: { enable_speaker: true, speaker_detection_mode: 'auto' },
+        moss_rollout: { enabled: true, ratio: 1, room_ids: [], eligibility: 'speaker_enabled' }
+      } };
+      const context = { room_id: 'other-room', filename: 'collaboration.flv' };
+      const resolved = asr.resolveAsrBackend(config, context);
+      expect(resolved.backend).toBe('moss');
+      expect(resolved.fallbackBackend.backend).toBe(backend);
+      expect(asr.resolveAsrBackend(config, context, backend).backend).toBe(backend);
+      expect(asr.resolveAsrBackend(config, { ...context, speakerRequest: {
+        participantDiscovery: { mode: 'solo', modeStatus: 'confirmed' }
+      } }).backend).toBe(backend);
+      config.asr[backend].enable_speaker = false;
+      expect(asr.resolveAsrBackend(config, context).backend).toBe(backend);
+      expect(asr.resolveAsrBackend(config, { ...context, speakerRequest: {
+        participantDiscovery: { mode: 'multi', modeStatus: 'planned' }
+      } }).backend).toBe('moss');
+    }
+  });
+
+  test('speaker-enabled rollout honors room exclusions, off mode and disabled rollout', () => {
+    const config = { asr: { default_backend: 'paraformer',
+      paraformer: { enable_speaker: true, speaker_detection_mode: 'off' },
+      moss_rollout: { enabled: true, ratio: 1, room_ids: ['allowed'], eligibility: 'speaker_enabled' }
+    } };
+    const context = { room_id: 'allowed', filename: 'sample.flv' };
+    expect(asr.resolveAsrBackend(config, context).backend).toBe('paraformer');
+    config.asr.paraformer.speaker_detection_mode = 'auto';
+    expect(asr.resolveAsrBackend(config, { ...context, room_id: 'excluded' }).backend).toBe('paraformer');
+    expect(asr.resolveAsrBackend(config, context).backend).toBe('moss');
+    config.asr.moss_rollout.enabled = false;
+    expect(asr.resolveAsrBackend(config, context).backend).toBe('paraformer');
+  });
+
+  test('confirmed-multi rollout excludes unknown, planned and candidate sessions even with speakers enabled', () => {
+    const config = { asr: { default_backend: 'paraformer',
+      paraformer: { enable_speaker: true, speaker_detection_mode: 'auto' },
+      moss_rollout: { enabled: true, ratio: 1, room_ids: [], eligibility: 'confirmed_multi' }
+    } };
+    const context = { room_id: '1', filename: 'sample.flv' };
+    expect(asr.resolveAsrBackend(config, context).backend).toBe('paraformer');
+    for (const mode of ['unknown', 'solo', 'multi']) {
+      for (const modeStatus of ['unknown', 'candidate', 'planned', 'confirmed']) {
+        const result = asr.resolveAsrBackend(config, { ...context, speakerRequest: {
+          plannedParticipantIds: ['guest'], participantDiscovery: { mode, modeStatus }
+        } });
+        expect(result.backend).toBe(mode === 'multi' && modeStatus === 'confirmed' ? 'moss' : 'paraformer');
+      }
+    }
+  });
+
+  test('confirmed-multi rollout samples a stable twenty percent and retains routing controls', () => {
+    const config = { asr: { default_backend: 'paraformer',
+      gray_rollout: { enabled: true, finetuned_ratio: 1, finetuned_model: 'local-finetuned' },
+      moss_rollout: { enabled: true, ratio: 0.2, room_ids: ['1'], eligibility: 'confirmed_multi' }
+    } };
+    const contexts = Array.from({ length: 1000 }, (_, index) => ({
+      room_id: '1', filename: `recording-${index}.flv`,
+      speakerRequest: { participantDiscovery: { mode: 'multi', modeStatus: 'confirmed' } }
+    }));
+    const selected = contexts.filter(context => asr.resolveAsrBackend(config, context).backend === 'moss');
+    expect(selected.length).toBeGreaterThan(150);
+    expect(selected.length).toBeLessThan(250);
+    const context = selected[0];
+    const result = asr.resolveAsrBackend(config, context);
+    expect(asr.resolveAsrBackend(config, context)).toEqual(result);
+    expect(result.reason).toContain('eligibility=confirmed_multi');
+    expect(result.fallbackBackend.backendOptionsOverride.paraformer.finetuned_model).toBe('local-finetuned');
+    expect(asr.resolveAsrBackend(config, { ...context, room_id: 'excluded' }).backend).toBe('paraformer');
+    expect(asr.resolveAsrBackend(config, { ...context, filename: '' }).backend).toBe('paraformer');
+    expect(asr.resolveAsrBackend(config, context, 'paraformer').backend).toBe('paraformer');
+    config.asr.moss_rollout.enabled = false;
+    expect(asr.resolveAsrBackend(config, context).backend).toBe('paraformer');
+  });
+
+  test('confirmed-multi rollout retains each room backend as fallback', () => {
+    for (const backend of ['paraformer', 'sensevoice', 'fun_asr_nano', 'fun_asr_nano_vllm']) {
+      const resolved = asr.resolveAsrBackend({ asr: { default_backend: backend,
+        moss_rollout: { enabled: true, ratio: 1, room_ids: [], eligibility: 'confirmed_multi' }
+      } }, { room_id: '1', filename: 'sample.flv', speakerRequest: {
+        participantDiscovery: { mode: 'multi', modeStatus: 'confirmed' }
+      } });
+      expect(resolved.backend).toBe('moss');
+      expect(resolved.fallbackBackend.backend).toBe(backend);
+    }
+  });
+
   test('MOSS receives the full reference library and row verification for an allowed room', async () => {
     const capture = `let input='';process.stdin.on('data',part=>input+=part);` +
       `process.stdin.on('end',()=>process.stdout.write(JSON.stringify({backend:'moss',segments:[],payload:JSON.parse(input)})));`;
@@ -368,6 +457,65 @@ describe('asr_backends', () => {
       speaker_identity_min_seconds: 2, spk_model: 'cam++',
       speaker_row_reference_threshold: 0.6, speaker_row_reference_margin: 0.1,
       speaker_references: config.asr.paraformer.speaker_references });
+  });
+
+  test('managed MOSS releases the idle resident ASR worker before starting its process', async () => {
+    const requests: any[] = [];
+    const server = net.createServer((socket: any) => {
+      let buffer = '';
+      socket.on('data', (data: Buffer) => {
+        buffer += data.toString();
+        if (!buffer.includes('\n')) return;
+        requests.push(JSON.parse(buffer.split('\n', 1)[0]));
+        socket.end(JSON.stringify({ ok: true, released: true }) + '\n');
+      });
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const oldPort = process.env.ASR_PERSISTENT_WORKER_PORT, oldToken = process.env.ASR_PERSISTENT_WORKER_TOKEN;
+    process.env.ASR_PERSISTENT_WORKER_PORT = String(server.address().port);
+    process.env.ASR_PERSISTENT_WORKER_TOKEN = 'fixture';
+    try {
+      const capture = `process.stdin.resume();process.stdin.on('end',()=>process.stdout.write('{"segments":[]}'));`;
+      await asr.transcribeMoss('fixture.wav', { asr: { moss: {
+        inference_backend: 'vllm', managed_server: true,
+        python_executable: process.execPath, python_args: ['-e', capture]
+      } } });
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({ type: 'shutdown', token: 'fixture' });
+    } finally {
+      if (oldPort === undefined) delete process.env.ASR_PERSISTENT_WORKER_PORT; else process.env.ASR_PERSISTENT_WORKER_PORT = oldPort;
+      if (oldToken === undefined) delete process.env.ASR_PERSISTENT_WORKER_TOKEN; else process.env.ASR_PERSISTENT_WORKER_TOKEN = oldToken;
+      await new Promise<void>(resolve => server.close(resolve));
+    }
+  });
+
+  test('MOSS failure actually invokes the selected original backend and retains its override', async () => {
+    const capture = `let input='';process.stdin.on('data',c=>input+=c);` +
+      `process.stdin.on('end',()=>process.stdout.write(JSON.stringify({segments:[],payload:JSON.parse(input)})));`;
+    const fail = `process.stdin.resume();process.stdin.on('end',()=>{console.error('injected MOSS failure');process.exit(1);});`;
+    const warning = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      for (const backend of ['paraformer', 'sensevoice', 'fun_asr_nano', 'fun_asr_nano_vllm']) {
+        const config = { asr: {
+          moss: { python_executable: process.execPath, python_args: ['-e', fail] },
+          [backend]: { python_executable: process.execPath, python_args: ['-e', capture] }
+        } };
+        const fallbackBackend = { backend, reason: 'original room route',
+          backendOptionsOverride: { [backend]: { model: 'preserved-model', base_model: 'preserved-model' } } };
+        const runtime: any = { resolvedBackend: { backend: 'moss', reason: 'gray route', fallbackBackend } };
+        const outcome = await asr.transcribeMossWithFallback('sample.wav', config, runtime);
+        expect(outcome.resolved.backend).toBe(backend);
+        expect(outcome.resolved.backendOptionsOverride).toEqual(fallbackBackend.backendOptionsOverride);
+        expect(outcome.resolved.reason).toContain('moss_fallback=');
+        expect(outcome.result.payload.model).toBe('preserved-model');
+        expect(runtime.resolvedBackend).toEqual(outcome.resolved);
+      }
+      const config = { asr: { moss: { python_executable: process.execPath, python_args: ['-e', fail] } } };
+      await expect(asr.transcribeMossWithFallback('sample.wav', config,
+        { resolvedBackend: { backend: 'moss', reason: 'explicit' } })).rejects.toThrow('injected MOSS failure');
+    } finally {
+      warning.mockRestore();
+    }
   });
 
   test('anonymous MOSS groups never qualify as named participants', () => {

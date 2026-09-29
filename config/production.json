@@ -1968,13 +1968,25 @@
     "default_backend": "paraformer",
     "moss_rollout": {
       "enabled": true,
-      "ratio": 0.5,
-      "room_ids": ["25788785"]
+      "ratio": 0.2,
+      "room_ids": [],
+      "eligibility": "confirmed_multi"
     },
     "moss": {
       "model": "D:/files/videos/asr_eval/models/moss_transcribe_diarize",
       "revision": "e8681d68e7042738ffca8ac8212bc8fcb1131ab8",
       "device": "cuda:0",
+      "inference_backend": "vllm",
+      "managed_server": true,
+      "docker_image": "sha256:9f4f4f01b1cc17f4ce9ad0dddfa8e078e4c7a3c185c2c6892e16e19d67533e5c",
+      "cache_dir": "D:/files/videos/asr_eval/vllm_cache",
+      "v2_model_runner": true,
+      "wsl2_pin_memory": true,
+      "max_model_len": 12288,
+      "kv_cache_memory_mb": 1536,
+      "gpu_memory_utilization": 0.4,
+      "startup_timeout_s": 600,
+      "request_timeout_s": 600,
       "chunk_seconds": 300,
       "overlap_seconds": 20,
       "process_timeout_s": 10800

@@ -154,12 +154,15 @@ function prepareWindow(metadata, metadataPath, options, config, evidence) {
     const existingRenderedWindow = !rejection && !changed && metadata.output?.burnedSubtitles
         && metadata.output.mediaPath && fs.existsSync(metadata.output.mediaPath);
     if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start
-        || (!existingRenderedWindow && end - start < minimum)
         || end > Math.max(...evidence.cues.map(cue => cue.end)) + 0.001) throw new Error('Invalid or out-of-source clip window');
-    if (end - start > maximum + 0.001) {
-        if (!(options.allowLong === true || options.allowLong === 'yes') || !String(options.durationNote || '').trim()) throw new Error('Long clips require --allow-long and an editorial --duration-note');
+    const short = !existingRenderedWindow && end - start < minimum;
+    if (short || end - start > maximum + 0.001) {
+        const allowed = short ? options.allowShort : options.allowLong;
+        if (!(allowed === true || allowed === 'yes') || !String(options.durationNote || '').trim()) throw new Error(short
+            ? 'Short clips require --allow-short and an editorial --duration-note' : 'Long clips require --allow-long and an editorial --duration-note');
         metadata.durationApproval = { authority: 'user', at: new Date().toISOString(),
-            note: options.durationNote.trim(), start, end, automaticMaxSeconds: maximum };
+            note: options.durationNote.trim(), start, end, automaticMaxSeconds: maximum,
+            ...(short ? { kind: 'short', automaticMinSeconds: minimum } : {}) };
     } else delete metadata.durationApproval;
     if (changed && (metadata.renderedSubtitles?.edits?.length || metadata.candidateSubtitles?.edits?.length)) throw new Error('Choose the window before correcting subtitles; existing corrections must not be discarded');
     if (changed) {

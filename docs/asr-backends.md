@@ -1,6 +1,6 @@
 # ASR Backend 配置
 
-> **当前状态（2026-09-27）**：默认 backend 是 `paraformer`，生产 Paraformer 已启用 post-ASR adaptive speaker（`enable_speaker: true`、`speaker_detection_mode: "auto"`）；岁己房间录播另有 MOSS 50% 灰度。本页是 ASR 当前架构和验证的权威文档；具体部署值仍以 `config/default.json`、`config/production.json` 与 `DEFAULT_ASR_CONFIG` 为准。
+> **当前状态（2026-09-29）**：默认 backend 是 `paraformer`，生产 Paraformer 已启用 post-ASR adaptive speaker（`enable_speaker: true`、`speaker_detection_mode: "auto"`）。生产仅对已确认多人联动的场次启用 20% MOSS 灰度，其余按原房间路由运行（默认 Paraformer + CAM++）。本页是 ASR 当前架构和验证的权威文档；具体部署值仍以 `config/default.json`、`config/production.json` 与 `DEFAULT_ASR_CONFIG` 为准。
 
 项目支持 Paraformer、Whisper、SenseVoice、Fun-ASR-Nano、Fun-ASR-Nano vLLM 和 MOSS-Transcribe-Diarize。Nano 的热词接口是官方 `hotwords: list[str]`，更适合做“岁己 / 小岁”这种词的真实热词测试。
 
@@ -8,19 +8,56 @@
 
 ## MOSS 说话人灰度
 
-生产 `asr.moss_rollout` 对岁己房间 `25788785` 的录播生效，不依赖转写前的参与人数判断。对 `room_id|filename` 做稳定哈希，50% 选 MOSS、其余继续 Paraformer + CAM++，因此部分单播也会落入 MOSS 灰度；显式 `--asr-backend` 和一次性 CAM++ 请求优先。相同文件重跑保持分组；关闭 `moss_rollout.enabled` 可立即停止新任务分流。MOSS 失败时当前任务回退 Paraformer，`.asr_meta.json` 的 `routingReason` 记录回退原因。
+生产设置 `asr.moss_rollout.enabled=true`、`ratio=0.2`、`eligibility="confirmed_multi"`、`room_ids=[]`，覆盖所有房间的已确认多人联动场次。只有转写前的 `participantDiscovery.mode="multi"` 且 `modeStatus="confirmed"` 才参与稳定哈希抽样；单播、未知、候选及仅有联动计划都跳过，仅开启 `enable_speaker` 或配置嘉宾名单也不会触发。确认可来自现有参与者发现流程的多帧现场证据或人工确认；这不等于声纹实名验证。没有确认依据时保留原后端，不先运行 MOSS 来决定是否运行 MOSS，也不追加整场 Paraformer 探测。此严格策略可能漏掉未被确认的真实联动。
 
-MOSS 灰度录播也使用同一房间的 `row_verified` 策略及 Paraformer 的全量 `speaker_references`。MOSS 转写后释放模型，再用 CAM++ 对至少2秒、没有其他字幕行重叠的语句逐句提取声纹；匹配沿用 `speaker_row_reference_threshold` / `margin` / `top_k` 和参考原型配置。每个 MOSS 匿名组内，同一姓名至少两条独立语句通过阈值才实名。没有参考、短句、重叠语音及局部匹配失败的行保留 `Sxx`，不会按整个匿名组传播姓名。`.speaker.srt` 展示局部姓名或匿名组，哈希绑定的 `.asr_evidence.json` 保存逐句阈值、分数、原始匿名组和拒识状态；自动切片与人物配图仍只把 `row_supported` 真人姓名当作出声证据。参考模型失败时转写可继续，但 `speakerProcessing.referenceIdentity.status` 标记 `unavailable`。既有 SRT 不会自动回填实名。
+对 `room_id|filename` 稳定哈希抽取约 20%，相同文件分组固定，并非每五场必有一场。符合条件的 Paraformer、SenseVoice、Fun-ASR-Nano 及其 vLLM 后端均可参与，失败回退至该任务原后端；显式 CLI 后端和一次性 Paraformer 说话人开关仍优先。`routingReason` 的命中记录包含 `eligibility=confirmed_multi`。`room_ids` 非空时是白名单。兼容的 `speaker_enabled` 策略会放宽到开启说话人处理或有多人线索的任务，生产当前不使用它。
 
-MOSS 是联合转写与匿名说话人识别，因此灰度组的**文字与时间轴也来自 MOSS**。`S01` 等标签没有实名含义，不用于自动确认参与者。模型按 300 秒窗口运行，窗口间保留 20 秒重复音频；仅通过重复语句与时间重合来延续匿名标签，无法确认时使用新标签。原始并行说话区间会保留在普通 `.srt` 与 `.speaker.srt`，播放器可能同时显示两条字幕。长录播窗口衔接仍需人工抽查，尤其是没有人在窗口交界处持续说话时。
+灰度命中后，MOSS 负责整场**文字、独立分句、匿名说话人及时间轴**，保留同时说话的独立字幕行。仅把标签贴到 Paraformer 字幕上不能获得这种分句能力，独立 speaker sidecar 仍是另一条尚未实现的方案。模型为自回归联合转写，丢弃生成文字不会减少解码计算；官方 `Speaker-Only Transcription` 提示仍生成文字，只省略时间戳。不要通过缩小 token 上限截断输出来提速。
 
-运行环境安装固定版本的上游推理包：
+`moss.inference_backend` 可选 `transformers`（兼容默认）或 `vllm`。两者均使用同一本地模型，维持 300 秒窗口、20 秒重叠及原有跨窗重复语句关联。没有交界语句依据时使用新的匿名标签；整场匿名组数量不等于实际人数。普通 `.srt` 与 `.speaker.srt` 均保留重叠行，长场衔接及分离质量仍需抽查。
+
+### 本机 vLLM 运行环境
+
+使用独立 Linux GPU 容器，不修改 Windows 的 PyTorch/Transformers 环境。基础镜像固定为 vLLM 0.27.1 的 digest；官方基础镜像缺少音频解码依赖，因此必须使用仓库 Dockerfile 安装固定版本的 soundfile、PyAV、soxr：
+
+```powershell
+docker build --file src/scripts/python/moss-vllm.Dockerfile --tag danmaku-moss-vllm:0.27.1-audio src/scripts/python
+docker image inspect --format '{{.Id}}' danmaku-moss-vllm:0.27.1-audio
+```
+
+将返回的不可变 `sha256:...` image ID 配入 `asr.moss.docker_image`；也支持仓库 digest，禁止用浮动 tag。生产任务只使用已安装镜像，不自动拉取或升级。设置 `inference_backend: "vllm"`、`managed_server: true`、本地 `model` 和持久化 `cache_dir`。模型目录以只读方式挂载，服务仅绑定随机的 `127.0.0.1` 端口。外置服务实验可用 `managed_server: false` 和 `base_url`，其生命周期由调用方负责。
+
+受管服务按任务启动并复用所有窗口；`startup_timeout_s` 和 `request_timeout_s` 分别限制启动与单窗请求，`process_timeout_s` 也作为容器硬寿命，限制主进程异常退出后的占用。成功、异常均清理本任务自己的容器，且在 CAM++ 实名匹配前释放 MOSS 显存。不要把受管容器改成常驻，也不要删除其他任务的容器。
+
+调用方沿用全局 ASR 锁。受管 MOSS 启动前通过已认证的本地接口退出空闲的 Paraformer 常驻 worker，避免其上一任务保留的 CUDA 分配与 vLLM 同时占用显存。队列下次按需重建该 worker；同一任务的失败回退在旧端口不可用时走原有单次 Python 路径。
+
+服务为 BF16，单请求、2048 prefill token 分块。生产使用 12288 上下文和 1536 MiB 固定 KV 缓存，通用默认上下文为 16384；按真实的最多 300 秒输入进行多模态内存预估，不使用上游默认的 90 分钟假音频。可通过 `max_model_len` 调整上下文，通过 `kv_cache_memory_mb` 固定 KV 缓存；设置固定缓存后上游不再按 `gpu_memory_utilization` 推算 KV 容量。后者只是 vLLM 预算参数，不是整个系统的硬显存上限，CUDA Graph 和其他应用仍有额外占用。加载权重使用 eager 方式以减少 Windows 挂载目录上的随机读；编译缓存落在任务目录之外。启动时间和纯推理时间必须分别报告，短音频可能被启动成本主导。
+
+本机 625 秒实际岁己录音通过 JS→Python→vLLM 三窗口→CAM++→JSON 解析完整验证：95 条字幕，推理 19.6 秒，声纹匹配 21.9 秒，服务启动 248.0 秒，调用总计 292.6 秒。缓存不消除每次启动的图捕获与预热开销；不能把纯推理加速比当成短任务的端到端加速比，也不能据此承诺整场耗时或说话人准确率。
+
+### WSL2、UVA 与 V2 runner
+
+vLLM 0.27.1 的 CUDA 平台提供官方开关 `VLLM_WSL2_ENABLE_PIN_MEMORY=1`；仅在 WSL2 内核至少为 4.19.121 时允许启用。受管服务对应 `wsl2_pin_memory: true`；`v2_model_runner: true` 对应 `VLLM_USE_V2_MODEL_RUNNER=1`。兼容模式可同时设为 false，继续用 V1 runner。
+
+本机 WSL 2.4.13、内核 5.15.167.4 已满足版本条件；开启该开关后，已实测 pinned CPU tensor 的 GPU 映射读写通过，因此本次 UVA 报错不能解释成“WSL 不支持 UVA”或“必须升级 WSL”。不需要绕过上游检测，也未为此升级/重启 WSL。UVA 与完整 Unified Managed Memory 不同；NVIDIA 仍列出 WSL 的完整托管内存、并发 CPU/GPU 访问及 pinned 内存容量限制，不能把这个小缓冲测试外推为全部 UVM 功能可用。
+
+依据：[固定版本 CUDA 平台实现](https://github.com/vllm-project/vllm/blob/v0.27.1/vllm/platforms/cuda.py)、[NVIDIA WSL 限制](https://docs.nvidia.com/cuda/wsl-user-guide/index.html#known-limitations-for-linux-cuda-applications)、[OpenMOSS 部署入口](https://github.com/OpenMOSS/MOSS-Transcribe-Diarize#quickstart)。
+
+### 结果、身份及失败契约
+
+vLLM 的非流式 `diarized_json` 不提供完整的停止原因/token 用量，不能可靠识别恰好在句末达到输出上限的情况。客户端使用流式 JSON 接口收集原始 `[start][Sxx]text[end]`，要求唯一正常停止、完整结束事件和明确 token 数；逐句完整解析时间戳，任何截断/流错误/无法解析的尾部都失败，绝不把不完整字幕静默写为成功。原始重叠区间不扁平化。每窗请求不自动重试，避免无声重复全量推理。
+
+Python 的 stdout 专用于单个 JSON 结果，依赖导入及推理日志重定向到 stderr。此约束覆盖 FunASR 参考匹配的版本横幅；否则整场 MOSS 虽已完成，主进程仍会因 `funasr version:` 前缀解析失败而回退。`.asr_meta.json` 保存实际 `backend`、`inferenceBackend`、阶段耗时、实际模型及路由原因；灰度失败只回退该任务原先解析出的后端与模型覆盖，不会一律改为 Paraformer。显式指定 MOSS 的失败仍显式报错。
+
+实名继续沿用 `row_verified` 与原后端全量 `speaker_references`。MOSS 转写后释放模型，再用 CAM++ 对至少 2 秒且无其他字幕行重叠的语句逐句验证；同一匿名组中的姓名至少有两条独立语句通过阈值才落名，绝不按整个匿名组传播身份。短句、重叠语音、无参考及局部证据不足保留 `Sxx`，不会据此确认真实参与者。证据 sidecar 保留逐句阈值、分数、匿名组和拒识状态；参考模型失败时保留转写并标记 `referenceIdentity.status=unavailable`。
+
+模型目录使用 Hugging Face revision `e8681d68e7042738ffca8ac8212bc8fcb1131ab8`。原生 Transformers 实验入口仍需固定 helper：
 
 ```powershell
 python -m pip install -r src/scripts/python/requirements-moss.txt
 ```
 
-生产模型权重使用 `config/production.json` 中的本机路径，版本固定为 Hugging Face revision `e8681d68e7042738ffca8ac8212bc8fcb1131ab8`。复制或下载该 revision 的完整模型目录后再启用灰度；不要把模型放在任务专用 `temp/` 下。运行时需要 RTX CUDA、PyTorch、Transformers 5.6–5.x、FFmpeg 和 FFprobe。一次性验证可用 `--asr-backend moss`，无需命中灰度。
+Windows 侧需要 requests、FFmpeg/FFprobe；CAM++ 实名匹配继续使用现有 FunASR 环境。具体部署值以 `config/production.json` 为准。已有字幕不因灰度配置变化而重写，正在运行的旧 Python 子进程也不受源码更新影响。
 
 ## 默认 Paraformer 与显式 Whisper
 

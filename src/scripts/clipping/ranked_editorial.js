@@ -123,10 +123,10 @@ function rankResponseFormat(candidates) {
                     selected: { type: 'boolean' }, score: { type: 'number', minimum: 0, maximum: 100 }, reason: { type: 'string' } } } } } } };
 }
 
-function detailResponseFormat(candidates) {
+function detailResponseFormat(candidates, cueIds) {
     const string = { type: 'string' }, strings = { type: 'array', items: string };
     const properties = { candidateIndex: { type: 'integer', enum: candidates.map(c => Number(c.index)) },
-        startCueId: string, endCueId: string, title: string, coverText: string, description: string, reason: string,
+        startCueId: string, endCueId: string, topicEditPlan: require('./topic_edit_plan').planSchema(cueIds), title: string, coverText: string, description: string, reason: string,
         evidenceCueIds: strings, evidenceDanmakuIds: strings,
         sourceKind: { type: 'string', enum: ['live_speech', 'recount', 'playback', 'audience', 'uncertain'] }, score: { type: 'number' } };
     return { type: 'json_schema', name: 'selected_clip_details', strict: true,

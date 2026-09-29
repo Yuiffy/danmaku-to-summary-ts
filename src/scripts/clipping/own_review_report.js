@@ -131,6 +131,11 @@ function reviewDetailLines(result, metadata = {}, options = {}) {
         lines.push(`   字幕复核建议: ${label}；${group.occurrences.length}处，片内${times}${group.occurrences.length > 3 ? '等' : ''}`);
     }
     if (result.renderedSubtitles) lines.push(`   字幕修订: r${result.renderedSubtitles.revision} | ${result.renderedSubtitles.path}`);
+    if (includeIssues && result.topicEditPlan) {
+        lines.push(`   话题收束: ${result.topicEditPlan.closingReason}`);
+        for (const row of result.topicEditPlan.ranges) lines.push(`   ${row.action === 'keep' ? '保留' : '删去'} ${row.start.toFixed(2)}-${row.end.toFixed(2)}秒（源录播）: ${row.reason}`);
+    }
+    if (includeIssues && result.endingHold) lines.push(`   结尾余韵: ${result.endingHold.seconds.toFixed(2)}秒`);
     if (result.durationApproval) lines.push(`   长片保留理由: ${result.durationApproval.note}`);
     if (result.ownStreamHumanReview?.status === 'approved') lines.push(`   人工复核记录: ${result.ownStreamHumanReview.note}`);
     if (!uploadEligible(result) || metadata.uploadRegistry?.reviewPendingByReviewIndex?.[result.reviewIndex]) {

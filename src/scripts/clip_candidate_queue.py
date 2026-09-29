@@ -100,6 +100,10 @@ def edit_candidate(args, api):
     note = getattr(args, "note", "") or "User-requested literal subtitle correction"
     signature = {"from": getattr(args, "from_text", None), "to": getattr(args, "to_text", None),
                  "cue": getattr(args, "cue", None)}
+    if getattr(args, "drop_cue", False):
+        if args.cue is None or not str(args.note).strip():
+            raise ValueError("--drop-cue requires --cue and --note")
+        signature["drop_cue"] = "yes"
     handle = api.acquire_queue_mutation_lock()
     try:
         registry = api.load_json(api.REGISTRY_PATH, api.default_registry())
@@ -192,6 +196,7 @@ def prepare_rebuild(args, api):
         options = {key: getattr(args, key, None) for key in (
             "review_note", "title", "description", "cover_text", "source_kind", "start", "end", "duration_note", "xml")}
         options["allow_long"] = "yes" if args.allow_long else None
+        options["allow_short"] = "yes" if getattr(args, "allow_short", False) else None
         options["replan"] = "yes" if getattr(args, "replan", False) else None
         result = candidate_action(api, clip, "prepare", options, timeout=120)
         update_record(clip, result, api)

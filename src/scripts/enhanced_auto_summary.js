@@ -767,16 +767,9 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
                 } else if (selected.backend === 'paraformer') {
                     asrResult = await asrBackends.transcribeParaformer(mediaPath, config, asrRuntime);
                 } else if (selected.backend === 'moss') {
-                    try {
-                        asrResult = await asrBackends.transcribeMoss(mediaPath, config, asrRuntime);
-                    } catch (error) {
-                        if (!selected.fallbackBackend) throw error;
-                        console.warn(`MOSS 灰度任务失败，回退 Paraformer + CAM++: ${error.message}`);
-                        selected = { ...selected.fallbackBackend,
-                            reason: `${selected.reason}; moss_fallback=${error.message}` };
-                        asrRuntime.resolvedBackend = selected;
-                        asrResult = await asrBackends.transcribeParaformer(mediaPath, config, asrRuntime);
-                    }
+                    const outcome = await asrBackends.transcribeMossWithFallback(mediaPath, config, asrRuntime);
+                    asrResult = outcome.result;
+                    selected = outcome.resolved;
                 } else {
                     throw new Error(`未实现的 ASR backend: ${selected.backend}`);
                 }
@@ -810,20 +803,23 @@ async function processMedia(mediaPath, taskId = null, options = {}) {
                     mediaPath
                 });
                 const asrElapsedSeconds = (Date.now() - asrStartTime) / 1000;
-                const selectedBackendOptions = selected.backendOptionsOverride?.[selected.backend] || {};
+                const selectedBackendOptions = {
+                    ...asrBackends.getAsrConfig(config)[selected.backend],
+                    ...selected.backendOptionsOverride?.[selected.backend]
+                };
                 const selectedModelProfile = selected.backend === 'moss'
-                    ? 'moss'
-                    : String(selectedBackendOptions.model_profile || config.asr?.paraformer?.model_profile || 'default');
-                const selectedFinetunedModel = selected.backend === 'moss' ? ''
-                    : String(selectedBackendOptions.finetuned_model || config.asr?.gray_rollout?.finetuned_model || config.asr?.paraformer?.finetuned_model || '');
-                const selectedModel = selected.backend === 'moss'
-                    ? String(config.asr?.moss?.model || 'OpenMOSS-Team/MOSS-Transcribe-Diarize')
-                    : selectedModelProfile === 'finetuned'
-                    ? (selectedFinetunedModel || config.asr?.paraformer?.model || 'paraformer-zh')
-                    : String(config.asr?.paraformer?.base_model || config.asr?.paraformer?.model || 'paraformer-zh');
+                    ? 'moss' : String(selectedBackendOptions.model_profile || 'default');
+                const selectedFinetunedModel = selected.backend === 'paraformer'
+                    ? String(selectedBackendOptions.finetuned_model || config.asr?.gray_rollout?.finetuned_model || '') : '';
+                const selectedModel = selected.backend === 'paraformer'
+                    ? String(selectedModelProfile === 'finetuned'
+                        ? (selectedFinetunedModel || selectedBackendOptions.model)
+                        : (selectedBackendOptions.base_model || selectedBackendOptions.model))
+                    : String(selectedBackendOptions.model || '');
                 const realtimeFactor = mediaDurationSeconds > 0 ? (asrElapsedSeconds / mediaDurationSeconds) : null;
                 writeAsrMetaSidecar(srtPath, {
                     backend: normalized.backend,
+                    inferenceBackend: asrResult?.inference_backend || null,
                     routingReason: selected.reason,
                     modelProfile: selectedModelProfile,
                     model: selectedModel,

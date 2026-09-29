@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from src.scripts.precision_publish import validate_revision, precision_public_copy
+from src.scripts.precision_publish import validate_revision, precision_public_copy, select_precision
+from types import SimpleNamespace
 from src.scripts import replace_video as transport
 
 
@@ -61,6 +62,45 @@ class PrecisionPublicationTests(unittest.TestCase):
         Path(metadata['source']['srtPath']).write_bytes(b'changed')
         with self.assertRaisesRegex(ValueError, 'source subtitles changed'):
             validate_revision(record, directory)
+
+    def test_select_unpublished_revision_preserves_id_and_original_and_rejects_queue_or_publication(self):
+        from src.scripts import clip_upload_registry as api
+        record, directory, metadata = self.fixture()
+        record.update(reviewIndex=4, status='review')
+        metadata.update(reviewIndex=4, window={'start': 0, 'end': 10, 'duration': 10})
+        (directory / 'clip.json').write_text(json.dumps(metadata), encoding='utf8')
+        original = Path(record['metadataPath']).read_bytes()
+        registry_path, queue_path = self.root / 'registry.json', self.root / 'queue.json'
+        api.save_json(registry_path, {'clips': {'17': record}, 'nextClipId': 18})
+        api.save_json(queue_path, {'jobs': []})
+        args = SimpleNamespace(id=17, revision=str(directory), review_note='User requests publication')
+        with patch.object(api, 'REGISTRY_PATH', registry_path), patch.object(api, 'QUEUE_PATH', queue_path), \
+                patch.object(api, 'acquire_queue_mutation_lock', return_value=None), \
+                patch.object(api, 'release_queue_mutation_lock'), patch.object(api, 'sync_clip_statuses'):
+            select_precision(args, api)
+            saved = api.load_json(registry_path, {})
+            self.assertEqual(saved['nextClipId'], 18)
+            self.assertEqual(saved['clips']['17']['metadataPath'], str(directory / 'publication.json'))
+            self.assertEqual(saved['clips']['17']['manifestPath'], str(directory / 'publication.json'))
+            self.assertEqual(Path(record['metadataPath']).read_bytes(), original)
+            self.assertFalse(json.loads((directory / 'clip.json').read_text())['uploadReady'])
+            self.assertEqual(saved['clips']['17']['mediaPath'], metadata['output']['mediaPath'])
+            from src.scripts.clip_upload_json import import_json
+            imported_args = SimpleNamespace(manifest=record['metadataPath'], source='', tags='', prefix='', tid=21,
+                review='', state=str(self.root / 'upload_state.json'), batch_id='', label='', include_pending=False)
+            with patch.object(api, 'load_upload_manifest', return_value=[{'metadataPath': record['metadataPath'],
+                    'reviewIndex': 4, 'mediaPath': 'old.mp4', 'title': 'old'}]):
+                import_json(imported_args, api)
+            refreshed = api.load_json(registry_path, {})
+            self.assertEqual(refreshed['nextClipId'], 18)
+            self.assertEqual(refreshed['clips']['17']['mediaPath'], metadata['output']['mediaPath'])
+            with patch.object(api.clip_candidate_queue, 'active_ids', return_value={17}):
+                with self.assertRaisesRegex(ValueError, 'queued'):
+                    select_precision(args, api)
+            saved['clips']['17']['uploadState'] = {'bvid': 'BV_existing'}
+            api.save_json(registry_path, saved)
+            with self.assertRaisesRegex(ValueError, 'Published'):
+                select_precision(args, api)
 
     def test_transport_never_submits_a_new_post_and_preserves_other_pages(self):
         self.run_transport(False)

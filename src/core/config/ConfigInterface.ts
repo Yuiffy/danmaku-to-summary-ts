@@ -340,6 +340,7 @@ export interface AsrConfig {
     enabled: boolean;
     ratio: number;
     room_ids: Array<string | number>;
+    eligibility?: 'speaker_enabled' | 'confirmed_multi';
   };
   moss?: AsrPythonRuntimeConfig & {
     model?: string;

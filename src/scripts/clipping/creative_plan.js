@@ -185,7 +185,8 @@ function assertRenderPlan(plan, duration, rawSettings, assets = {}, allowEmpty =
         duration = plan.duration;
     }
     if (![1, 2].includes(plan?.version) || plan.workflow !== 'creative' || !finite(plan.duration, .6, 86400)
-        || Math.abs(plan.duration - duration) > .001 || !Array.isArray(plan.effects) || (!allowEmpty && !plan.effects.length)
+        || Math.abs(plan.duration - duration) > .001 || !Array.isArray(plan.effects)
+        || (!allowEmpty && !plan.effects.length && !(plan.timeline?.sourceDuration - plan.timeline?.duration > .001))
         || plan.effects.length > limits.maxMoments) throw new Error('Invalid creative render plan');
     for (const [index, row] of plan.effects.entries()) {
         if (!finite(row.start, 0, duration) || !finite(row.end, row.start + .6 - 1e-6, Math.min(duration, row.start + limits.maxEffectSeconds + 1e-6))

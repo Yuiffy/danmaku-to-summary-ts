@@ -46,6 +46,56 @@ def register_commands(sub, api):
     p.add_argument('--review-note', required=True)
     p.add_argument('--dry-run', action='store_true')
     p.set_defaults(func=lambda args: publish_precision(args, api))
+    p = sub.add_parser('select-precision', help='Select a reviewed local precision revision for the existing unpublished ID')
+    p.add_argument('--id', required=True, type=int)
+    p.add_argument('--revision', required=True)
+    p.add_argument('--review-note', required=True)
+    p.set_defaults(func=lambda args: select_precision(args, api))
+
+
+def select_precision(args, api):
+    """Bind an unpublished ID to a checked revision; enqueue remains a separate command."""
+    if not str(args.review_note).strip():
+        raise ValueError('A publication review note is required')
+    handle = api.acquire_queue_mutation_lock()
+    try:
+        registry = api.load_json(api.REGISTRY_PATH, api.default_registry())
+        record = registry.get('clips', {}).get(str(args.id))
+        if not record:
+            raise ValueError('Unknown numeric clip ID')
+        api.sync_clip_statuses(registry, [args.id])
+        queue = api.load_json(api.QUEUE_PATH, api.default_queue())
+        if (api.clip_candidate_queue.is_published(record) or args.id in api.clip_candidate_queue.active_ids(queue)
+                or record.get('editorialExclusion') or record.get('pendingRebuild')):
+            raise ValueError('Published, queued, excluded or pending-rebuild clips cannot select another media revision')
+        previous = record.get('precisionSelection') or {}
+        original_path = previous.get('originalMetadataPath') or record['metadataPath']
+        metadata, directory = validate_revision({**record, 'metadataPath': original_path}, args.revision)
+        approved = copy.deepcopy(metadata)
+        approved['uploadReady'] = True
+        approved.pop('ownStreamHumanReview', None)
+        approved['precisionRevision']['uploadAuthorized'] = True
+        approved['precisionPublicationReview'] = {'authority': 'user', 'note': args.review_note,
+            'approvedAt': api.now_iso(), 'qaDigests': approved['qaResult']['digests']}
+        publication_path = directory / 'publication.json'
+        approved['output']['metadataPath'] = str(publication_path)
+        api.save_json(publication_path, approved)
+        entry = api.load_upload_manifest(publication_path)[0]
+        if int(entry.get('reviewIndex') or entry.get('idx') or 0) != int(record['reviewIndex']):
+            raise ValueError('Precision review index does not match the existing ID')
+        for key in ('title', 'description', 'start', 'duration', 'mediaPath', 'coverPath', 'srtPath',
+                    'qaRequired', 'attributionRequired', 'humanReviewRequired', 'reviewPending', 'reviewIssues',
+                    'publicCopyPending', 'attributionStatus', 'pendingCut', 'pendingRebuild'):
+            if key in entry:
+                record[key] = entry[key]
+        record.update(metadataPath=str(publication_path), manifestPath=str(publication_path), status='review', updatedAt=api.now_iso(),
+            precisionSelection={'originalMetadataPath': original_path, 'revisionPath': str(directory),
+                'metadataPath': str(publication_path), 'qaDigests': approved['qaResult']['digests']})
+        api.save_json(api.REGISTRY_PATH, registry)
+        print(f'[OK] {args.id}: reviewed precision selected; upload is NOT queued')
+        return 0
+    finally:
+        api.release_queue_mutation_lock(handle)
 
 
 def validate_revision(record, revision_path):

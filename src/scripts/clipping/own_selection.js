@@ -708,7 +708,7 @@ function collectTextAfterGap(segments, startIndex, maxSeconds) {
 }
 
 function alignClipToSubtitleBoundaries(clip, segments = [], config = {}, totalDuration = Number.POSITIVE_INFINITY) {
-    if (clip.boundaryFromEvidence) return clip;
+    if (clip.boundaryFromEvidence) return require('./topic_edit_plan').withEndingHold(clip, segments, totalDuration);
     if (!config.alignBoundaries) return clip;
     const start = Number(clip.start);
     const end = Number(clip.end);

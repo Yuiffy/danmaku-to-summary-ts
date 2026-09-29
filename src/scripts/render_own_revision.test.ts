@@ -70,6 +70,16 @@ describe('own-stream subtitle revisions', () => {
     expect(render).not.toHaveBeenCalled();
   });
 
+  test('a new short event requires a bound explicit duration review and still rejects out-of-source windows', async () => {
+    const prepare = { ...options, action: 'prepare', start: 1, end: 7, sourceKind: 'live_speech' };
+    await expect(updateRevision(file, prepare, config)).rejects.toThrow('Short clips require');
+    await expect(updateRevision(file, { ...prepare, allowShort: 'yes' }, config)).rejects.toThrow('duration-note');
+    await updateRevision(file, { ...prepare, allowShort: 'yes', durationNote: 'Complete two-sentence exchange' }, config);
+    expect(load().durationApproval).toMatchObject({ kind: 'short', start: 1, end: 7, authority: 'user' });
+    const saved = load(); saved.window.end = 8; fs.writeFileSync(file, JSON.stringify(saved));
+    await expect(renderRevision(file, options, config)).rejects.toThrow('no longer matches');
+  });
+
   test('a held-before-render candidate can be explicitly reviewed and rendered under its original ID', async () => {
     metadata.preRenderHold = true; metadata.status = 'held_before_render';
     metadata.publicCopyPending = true; metadata.uploadReady = false;
@@ -233,7 +243,7 @@ describe('own-stream subtitle revisions', () => {
     expect(load().window.duration).toBe(21);
     expect(load().renderedSubtitles.cues[0].text).toBe('Hello friend');
     await expect(updateRevision(file, { ...options, action: 'prepare', start: 2, end: 20,
-      sourceKind: 'live_speech' }, config)).rejects.toThrow('Invalid or out-of-source');
+      sourceKind: 'live_speech' }, config)).rejects.toThrow('Short clips require');
   });
 
   test('replanning a rejected window preserves its ID and history, then uses the normal render gates', async () => {

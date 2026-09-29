@@ -105,6 +105,10 @@ const DEFAULT_ASR_CONFIG = {
     },
     moss_rollout: { enabled: false, ratio: 0, room_ids: [] },
     moss: {
+        inference_backend: 'transformers',
+        managed_server: false,
+        request_timeout_s: 600,
+        startup_timeout_s: 600,
         model: 'OpenMOSS-Team/MOSS-Transcribe-Diarize',
         revision: 'e8681d68e7042738ffca8ac8212bc8fcb1131ab8',
         device: 'cuda:0',
@@ -367,17 +371,34 @@ function applyParaformerGrayRollout(asrConfig, context = {}, resolved) {
 
 function applyMossRollout(asrConfig, context = {}, resolved) {
     const rollout = asrConfig.moss_rollout || {};
-    if (!rollout.enabled || resolved.backend !== 'paraformer') return resolved;
+    const eligibleBackends = ['paraformer', 'sensevoice', 'fun_asr_nano', 'fun_asr_nano_vllm'];
+    if (!rollout.enabled || !eligibleBackends.includes(resolved.backend)) return resolved;
     const roomId = String(context.room_id || context.roomId || '').trim();
     const rooms = Array.isArray(rollout.room_ids) ? rollout.room_ids.map(String) : [];
     if (!roomId || (rooms.length && !rooms.includes(roomId))) return resolved;
+    if (rollout.eligibility === 'confirmed_multi') {
+        const discovery = getSpeakerRequest(context)?.participantDiscovery;
+        if (discovery?.mode !== 'multi' || discovery.modeStatus !== 'confirmed') return resolved;
+    } else if (rollout.eligibility === 'speaker_enabled') {
+        const request = getSpeakerRequest(context);
+        const discovery = request?.participantDiscovery;
+        const hasMultiEvidence = discovery?.mode === 'multi'
+            && ['candidate', 'planned', 'confirmed'].includes(discovery.modeStatus);
+        const options = { ...asrConfig[resolved.backend], ...resolved.backendOptionsOverride?.[resolved.backend] };
+        if (discovery?.mode === 'solo' && discovery.modeStatus === 'confirmed') return resolved;
+        if (!hasMultiEvidence && (options.enable_speaker !== true || options.speaker_detection_mode === 'off')) return resolved;
+    } else if (resolved.backend !== 'paraformer') {
+        // Legacy rollout remains Paraformer-only unless the new eligibility is explicit.
+        return resolved;
+    }
     const fileKey = String(context.filename || context.input || '').trim();
     if (!fileKey) return resolved;
     const ratio = Number(rollout.ratio);
     if (!Number.isFinite(ratio) || ratio <= 0) return resolved;
     const bucket = stableHashString(`${roomId}|${fileKey}`) % 10000;
     if (bucket >= Math.floor(Math.min(1, ratio) * 10000)) return resolved;
-    return { backend: 'moss', reason: `${resolved.reason}; moss_rollout=${ratio} bucket=${bucket}`,
+    const eligibilityReason = rollout.eligibility === 'confirmed_multi' ? ' eligibility=confirmed_multi' : '';
+    return { backend: 'moss', reason: `${resolved.reason}; moss_rollout=${ratio} bucket=${bucket}${eligibilityReason}`,
         fallbackBackend: resolved };
 }
 
@@ -1006,7 +1027,7 @@ function translatePythonPayloadPaths(value, options = {}, key = '') {
     return value;
 }
 
-function runPersistentAsrWorker(payload, label = 'ASR backend') {
+function runPersistentAsrWorker(payload, label = 'ASR backend', requestType = 'transcribe') {
     const port = Number(process.env.ASR_PERSISTENT_WORKER_PORT || 0);
     const token = String(process.env.ASR_PERSISTENT_WORKER_TOKEN || '');
     if (!Number.isInteger(port) || port <= 0 || !token) {
@@ -1033,7 +1054,7 @@ function runPersistentAsrWorker(payload, label = 'ASR backend') {
         socket.on('error', finishReject);
         socket.on('connect', () => {
             socket.write(`${JSON.stringify({
-                type: 'transcribe',
+                type: requestType,
                 token,
                 payload: translatePythonPayloadPaths(payload, payload)
             })}\n`, 'utf8');
@@ -1057,7 +1078,7 @@ function runPersistentAsrWorker(payload, label = 'ASR backend') {
                 reject(error);
                 return;
             }
-            resolve(message.result);
+            resolve(requestType === 'transcribe' ? message.result : message);
         });
         socket.on('close', () => {
             if (!settled) {
@@ -1253,12 +1274,10 @@ function buildRuntimeSpeakerOverrides(config = {}, context = {}) {
 async function transcribeFunAsrBackend(mediaPath, config = {}, runtimeOptions = {}, backend = 'sensevoice') {
     const asrConfig = getAsrConfig(config);
     const context = runtimeOptions.routingContext || {};
-    const resolved = backend === 'paraformer'
-        ? (
-            runtimeOptions.resolvedBackend?.backend === backend
-                ? runtimeOptions.resolvedBackend
-                : resolveAsrBackend(config, context, 'paraformer')
-        )
+    const resolved = runtimeOptions.resolvedBackend?.backend === backend
+        ? runtimeOptions.resolvedBackend
+        : backend === 'paraformer'
+        ? resolveAsrBackend(config, context, 'paraformer')
         : { backend, reason: runtimeOptions.forceReason || `direct backend=${backend}` };
     const scriptPath = path.join(__dirname, '..', 'python', 'sensevoice_transcribe.py');
     if (!fs.existsSync(scriptPath)) {
@@ -1314,21 +1333,54 @@ async function transcribeParaformer(mediaPath, config = {}, runtimeOptions = {})
 
 async function transcribeMoss(mediaPath, config = {}, runtimeOptions = {}) {
     const asrConfig = getAsrConfig(config);
-    const paraformer = asrConfig.paraformer;
+    if (asrConfig.moss.inference_backend === 'vllm' && asrConfig.moss.managed_server) {
+        // The caller holds the ASR lock. Release the idle resident worker before
+        // reserving vLLM memory; its CUDA allocator may retain an entire prior job.
+        // The queue owner restarts it on demand; a same-job fallback uses one shot.
+        const release = runPersistentAsrWorker({ process_timeout_s: 30 }, 'MOSS GPU handoff', 'shutdown');
+        if (release) {
+            await release;
+            console.log('[ASR] MOSS 已释放空闲 Paraformer 常驻模型与显存');
+        }
+    }
+    const referenceBackend = runtimeOptions.resolvedBackend?.fallbackBackend?.backend || 'paraformer';
+    const referenceOptions = asrConfig[referenceBackend] || asrConfig.paraformer;
     const options = { ...asrConfig.moss,
         ...buildRuntimeSpeakerOverrides(config, runtimeOptions.routingContext || {}),
-        spk_model: paraformer.spk_model,
-        speaker_device: paraformer.device,
-        speaker_references: paraformer.speaker_references,
-        speaker_embedding_batch_size: paraformer.speaker_embedding_batch_size,
-        speaker_reference_prototype_merge_threshold: paraformer.speaker_reference_prototype_merge_threshold,
-        speaker_reference_max_prototypes: paraformer.speaker_reference_max_prototypes,
-        speaker_reference_prototype_min_support_chunks: paraformer.speaker_reference_prototype_min_support_chunks,
-        speaker_row_reference_threshold: paraformer.speaker_row_reference_threshold,
-        speaker_row_reference_margin: paraformer.speaker_row_reference_margin,
-        speaker_row_reference_top_k: paraformer.speaker_row_reference_top_k,
+        spk_model: referenceOptions.spk_model,
+        speaker_device: referenceOptions.device,
+        speaker_references: referenceOptions.speaker_references,
+        speaker_embedding_batch_size: referenceOptions.speaker_embedding_batch_size,
+        speaker_reference_prototype_merge_threshold: referenceOptions.speaker_reference_prototype_merge_threshold,
+        speaker_reference_max_prototypes: referenceOptions.speaker_reference_max_prototypes,
+        speaker_reference_prototype_min_support_chunks: referenceOptions.speaker_reference_prototype_min_support_chunks,
+        speaker_row_reference_threshold: referenceOptions.speaker_row_reference_threshold,
+        speaker_row_reference_margin: referenceOptions.speaker_row_reference_margin,
+        speaker_row_reference_top_k: referenceOptions.speaker_row_reference_top_k,
         backend: 'moss', audio_path: mediaPath };
     return runJsonPython(path.join(__dirname, '..', 'python', 'moss_transcribe.py'), options, 'MOSS backend');
+}
+
+async function transcribeMossWithFallback(mediaPath, config = {}, runtimeOptions = {}) {
+    const selected = runtimeOptions.resolvedBackend;
+    try {
+        return { result: await transcribeMoss(mediaPath, config, runtimeOptions), resolved: selected };
+    } catch (error) {
+        if (!selected?.fallbackBackend) throw error;
+        const fallbackTranscriber = {
+            paraformer: transcribeParaformer,
+            sensevoice: transcribeSenseVoice,
+            fun_asr_nano: transcribeFunAsrNano,
+            fun_asr_nano_vllm: transcribeFunAsrNanoVllm
+        }[selected.fallbackBackend.backend];
+        if (!fallbackTranscriber) throw error;
+        const reason = String(error.message || error).slice(0, 2000);
+        console.warn(`MOSS 灰度任务失败，回退 ${selected.fallbackBackend.backend}: ${reason}`);
+        const resolved = { ...selected.fallbackBackend,
+            reason: `${selected.reason}; moss_fallback=${reason}` };
+        runtimeOptions.resolvedBackend = resolved;
+        return { result: await fallbackTranscriber(mediaPath, config, runtimeOptions), resolved };
+    }
 }
 
 module.exports = {
@@ -1359,6 +1411,7 @@ module.exports = {
     transcribeFunAsrNanoVllm,
     transcribeParaformer,
     transcribeMoss,
+    transcribeMossWithFallback,
     formatTimestamp,
     parseTimestamp,
     buildPhonemeCorrectionPayload,

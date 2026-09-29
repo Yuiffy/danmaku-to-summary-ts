@@ -1,10 +1,24 @@
 import unittest
+import io
+import json
+from unittest.mock import patch
 
 from moss_transcribe import (apply_reference_matches, clean_reference_rows,
-                             combine_windows, match_previous_speakers, windows)
+                             combine_windows, main, match_previous_speakers, transcribe, windows)
 
 
 class MossWindowTests(unittest.TestCase):
+    def test_cli_keeps_dependency_banners_out_of_json_stdout(self):
+        def noisy_transcribe(payload):
+            print('funasr version: 1.4.3.')
+            return {'backend': 'moss', 'segments': [{'text': 'verified'}]}
+        output, errors = io.StringIO(), io.StringIO()
+        with patch('sys.stdin', io.StringIO('{}')), patch('sys.stdout', output), \
+                patch('sys.stderr', errors), patch('moss_transcribe.transcribe', noisy_transcribe):
+            main()
+        self.assertEqual(json.loads(output.getvalue())['backend'], 'moss')
+        self.assertIn('funasr version:', errors.getvalue())
+
     def test_windows_cover_long_recording_with_overlap(self):
         self.assertEqual(list(windows(625, 300, 20)), [(0.0, 300.0), (280.0, 580.0), (560.0, 625)])
 
@@ -59,6 +73,32 @@ class MossWindowTests(unittest.TestCase):
         })
         self.assertEqual([row["speaker"] for row in rows], ["S01"] * 3)
         self.assertFalse(rows[0]["speaker_evidence"]["observations"][0]["row"]["accepted"])
+
+    def test_http_path_keeps_overlap_without_loading_transformers(self):
+        rows = [{'start': 1, 'end': 4, 'speaker': 'S01', 'text': 'voice one'},
+                {'start': 2, 'end': 3, 'speaker': 'S02', 'text': 'voice two'}]
+        with patch('moss_transcribe.media_duration', return_value=5), \
+             patch('moss_transcribe.subprocess.run'), \
+             patch('moss_transcribe.Path.unlink'), \
+             patch('moss_http.transcribe_http', return_value={'segments': rows, 'generated_tokens': None}) as request:
+            result = transcribe({'audio_path': 'test.wav', 'inference_backend': 'vllm',
+                                 'base_url': 'http://127.0.0.1:123/v1'})
+        self.assertEqual(result['segments'], rows)
+        self.assertEqual(result['inference_backend'], 'vllm')
+        self.assertEqual(result['speaker_processing']['detectedClusters'], 2)
+        self.assertIsNone(result['timings']['generated_tokens'])
+        request.assert_called_once()
+
+    def test_failed_managed_inference_releases_service_and_returns_no_partial_result(self):
+        with patch('moss_transcribe.media_duration', return_value=5), \
+             patch('moss_transcribe.subprocess.run'), \
+             patch('moss_service.ManagedMossServer') as server, \
+             patch('moss_http.transcribe_http', side_effect=RuntimeError('incomplete transcript')):
+            server.return_value.__enter__.return_value.base_url = 'http://127.0.0.1:123/v1'
+            server.return_value.__exit__.return_value = False
+            with self.assertRaisesRegex(RuntimeError, 'incomplete transcript'):
+                transcribe({'audio_path': 'test.wav', 'inference_backend': 'vllm', 'managed_server': True})
+            server.return_value.__exit__.assert_called_once()
 
 
 if __name__ == "__main__":

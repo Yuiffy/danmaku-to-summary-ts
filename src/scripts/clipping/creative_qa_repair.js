@@ -1,6 +1,6 @@
 'use strict';
 
-/** A final-review repair may remove decoration, never rewrite evidence or crop safety. */
+/** Remove optional visuals to restore the source frame; never invent new crop coordinates or safety. */
 function applyVisualQaRepair(raw, response) {
     if (!Array.isArray(response?.repairs) || !response.repairs.length) throw new Error('No removable visual QA issue');
     const effects = raw.effects.map(row => ({ ...row })), seen = new Set();
@@ -9,7 +9,7 @@ function applyVisualQaRepair(raw, response) {
         if (!effect || seen.has(repair.momentId) || !Array.isArray(repair.remove) || !repair.remove.length
             || Object.keys(repair).some(key => !['momentId', 'remove', 'reason'].includes(key))
             || new Set(repair.remove).size !== repair.remove.length
-            || repair.remove.some(key => !['filter', 'sticker'].includes(key) || !effect[key])) {
+            || repair.remove.some(key => !['filter', 'sticker', 'zoom', 'faceInset', 'focusInset'].includes(key) || !effect[key])) {
             throw new Error('Invalid visual QA removal');
         }
         seen.add(repair.momentId);

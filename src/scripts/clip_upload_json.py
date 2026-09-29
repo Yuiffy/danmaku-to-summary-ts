@@ -49,6 +49,8 @@ def import_json(args: argparse.Namespace, api: ModuleType) -> int:
                 continue
             if metadata_path and api.paths_match(record.get("metadataPath") or "", metadata_path):
                 return int(existing_id)
+            if metadata_path and api.paths_match((record.get("precisionSelection") or {}).get("originalMetadataPath") or "", metadata_path):
+                return int(existing_id)
             same_index = int(record.get("reviewIndex") or 0) == review_index
             same_media = bool(media_path) and api.paths_match(record.get("mediaPath") or "", media_path)
             if same_index and same_media and (record.get("manifestPath") == manifest_str
@@ -97,6 +99,10 @@ def import_json(args: argparse.Namespace, api: ModuleType) -> int:
             }
         else:
             record = registry["clips"][str(clip_id)]
+            if record.get("precisionSelection") and not api.paths_match(record["metadataPath"], record_data["metadataPath"]):
+                # Refreshing the ordinary manifest must not revert a selected precision revision or allocate a duplicate ID.
+                ids.append(clip_id)
+                continue
             if not record_data["reviewPlanPath"]:
                 record_data["reviewPlanPath"] = record.get("reviewPlanPath") or ""
             for required in ("qaRequired", "attributionRequired", "humanReviewRequired"):

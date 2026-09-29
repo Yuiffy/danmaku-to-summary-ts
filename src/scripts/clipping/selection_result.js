@@ -83,10 +83,26 @@ function normalizeAiClips(rawClips, candidates, totalDuration, config, streamerL
             const boundedEnd = end;
             const duration = boundedEnd - boundedStart;
             if (boundedStart >= base.end || boundedEnd <= base.start) return reject('no_candidate_overlap');
-            if (boundedStart < base.start - (Number(config.boundaryStartBacktrackSeconds) || 12) - 12
-                || boundedEnd > base.end + (Number(config.boundaryEndExtendSeconds) || 45) + 12) return reject('outside_candidate_context');
+            const context = config.requireTopicEditPlan ? require('./topic_edit_plan').contextSeconds(config) : null;
+            if (boundedStart < base.start - (context ?? (Number(config.boundaryStartBacktrackSeconds) || 12)) - 12
+                || boundedEnd > base.end + (context ?? (Number(config.boundaryEndExtendSeconds) || 45)) + 12) return reject('outside_candidate_context');
+            let topicEditPlan;
+            if (config.requireTopicEditPlan || resolved.topicEditPlan) {
+                try {
+                    topicEditPlan = require('./topic_edit_plan').normalizePlan(resolved.topicEditPlan, boundaries, evidence, allowedCueIds);
+                    const kept = topicEditPlan.ranges.filter(r => r.action === 'keep');
+                    if ((resolved.evidenceCueIds || []).some(id => {
+                        const c = evidence.byId.get(id);
+                        return !c || !kept.some(r => c.start >= r.start && c.end <= r.end);
+                    }) || (resolved.evidenceDanmakuIds || []).some(id => {
+                        const c = danmaku[Number(String(id).slice(1)) - 1];
+                        return !c || !kept.some(r => c.time >= r.start && c.time <= r.end);
+                    })) return reject('public_copy_evidence_dropped');
+                } catch (error) { return reject(error.message); }
+            }
             return {
                 ...boundaries,
+                ...(topicEditPlan ? { topicEditPlan } : {}),
                 start: boundedStart,
                 end: boundedEnd,
                 duration,
