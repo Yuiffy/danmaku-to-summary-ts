@@ -3,6 +3,7 @@
 Start here before changing production workflows. This page describes maintained
 contracts and operating procedures; task-specific reviews and measured results
 belong in ignored local storage under the [file-placement rules](../AGENTS.md).
+For setup and focused test commands, use the [development guide](development.md).
 
 ## Runtime map
 
@@ -165,7 +166,8 @@ to this repository's service on port 12523 and does not deploy other PM2 apps.
 
 | Command | Purpose |
 | --- | --- |
-| `npm run verify:core` | strict application types, service types, architecture, Jest |
+| `npm run verify:quick` | strict application types, service types, lint, architecture |
+| `npm run verify:core` | quick checks, candidate workflow build, Jest |
 | `npm run test:node` | portable Node test-runner cases |
 | `npm run test:python` | portable Python suite under `tests` |
 | `npm run test:integration` | service-owned HTTP and generated-file/reply workflow |

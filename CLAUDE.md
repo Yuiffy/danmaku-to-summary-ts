@@ -54,6 +54,10 @@ No tutorial-style explanation unless requested.
 
 ## Repository navigation
 
+Start with `AGENTS.md` and `docs/development.md` for the shared editing and
+verification workflow. Module ownership and the change guide live in
+`docs/architecture.md`; do not duplicate those contracts here.
+
 Follow the file-placement and Git-hygiene rules in `AGENTS.md`. Task-specific
 Markdown reports, plans, probes, and captures belong in ignored `temp/<date>-<task>/`
 or `local-scripts/`, not tracked `docs/`, `plans/`, `scripts/`, or `tools/`.

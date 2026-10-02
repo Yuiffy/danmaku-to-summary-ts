@@ -12,16 +12,16 @@ const lineBudgets: Record<string, number> = {
   'src/services/bilibili/DelayedReplyService.ts': 1851,
   'src/services/webhook/handlers/MikufansWebhookHandler.ts': 1716,
   'src/scripts/ai_comic_generator.py': 3390,
-  'src/scripts/clip_upload_registry.py': 2583,
+  'src/scripts/clip_upload_registry.py': 2550,
   'src/scripts/topic_clipper.js': 2210,
-  'src/scripts/own_stream_clipper.js': 2265,
+  'src/scripts/own_stream_clipper.js': 2168,
   'src/scripts/python/sensevoice_speaker.py': 2331,
   'src/scripts/tuzi_chat_completions.py': 2258,
   'src/scripts/ai_text_generator.js': 2010,
   'src/scripts/enhanced_auto_summary.js': 1941,
   'src/scripts/clipping/topic_compilation.js': 1600,
   'src/scripts/audio_processor.js': 1450,
-  'src/scripts/asr/asr_backends.js': 1406,
+  'src/scripts/asr/asr_backends.js': 1355,
   'src/scripts/asr/asr_corrections.js': 1243,
   'src/scripts/python/sensevoice_runtime.py': 1214
 };
@@ -89,7 +89,7 @@ export function boundaryViolation(file: string, dependency: string): string | un
     return 'compiled workflow stages must not import source CLIs, services or app entrypoints';
   }
   if ((file.startsWith('src/core/') || file.startsWith('src/utils/'))
-    && /^src\/(services|app|scripts)\//.test(dependency)) {
+    && /^src\/(services|app|scripts|workflows)\//.test(dependency)) {
     return 'shared infrastructure must not depend on service, app, or workflow modules';
   }
   if (file.startsWith('src/services/') && dependency.startsWith('src/app/')) {

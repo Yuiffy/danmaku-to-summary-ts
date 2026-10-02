@@ -1,4 +1,5 @@
 'use strict';
+const { srtText } = require('./creative_subtitles');
 const round = n => Math.round(n * 1000) / 1000;
 const overlap = (a, b) => a.start < b.end - .0005 && b.start < a.end - .0005;
 
@@ -120,8 +121,4 @@ function audioTimelineFilter(timeline, origin = 0, input = '0:a:0', output = 'ba
     return rows.join(';');
 }
 
-function srtText(cues) {
-    const clock = time => { const n = Math.round(time * 1000); return `${String(Math.floor(n / 3600000)).padStart(2, '0')}:${String(Math.floor(n / 60000) % 60).padStart(2, '0')}:${String(Math.floor(n / 1000) % 60).padStart(2, '0')},${String(n % 1000).padStart(3, '0')}`; };
-    return cues.map((c, i) => `${i + 1}\n${clock(c.start)} --> ${clock(c.end)}\n${c.text}\n`).join('\n');
-}
 module.exports = { protectedStorySpans, protectedStoryCues, storyReviewEvidence, assertTimeline, validateStoryPlan, mapTimelineCues, sourceTimeForOutput, absoluteEditPlan, audioTimelineFilter, srtText };

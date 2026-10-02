@@ -6,7 +6,7 @@ export interface RetryPolicy {
     statusCodes?: number[];
     retryConnectionErrors?: boolean;
 }
-export interface ResolvedRetryPolicy extends Required<RetryPolicy> {}
+export type ResolvedRetryPolicy = Required<RetryPolicy>;
 export function resolveRetryPolicy(...layers: Array<RetryPolicy | undefined>): ResolvedRetryPolicy {
     const value = Object.assign({ maxAttempts: 1, baseDelayMs: 1000, maxDelayMs: 10000, jitterRatio: .2,
         statusCodes: [408, 409, 425, 429, 500, 502, 503, 504], retryConnectionErrors: true },

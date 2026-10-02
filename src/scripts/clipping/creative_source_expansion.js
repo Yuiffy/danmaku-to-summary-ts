@@ -245,7 +245,7 @@ async function rebuildExpandedSource(baseline, original, context, request, depen
     const window = { ...baseline.window, ...plan.window, duration: round(plan.window.end - plan.window.start) };
     const approved = topic.parseTopicSrt(original.output.srtPath).segments;
     const srtPath = path.join(directory, 'expanded.srt'), mediaPath = path.join(directory, 'expanded.mp4');
-    fs.writeFileSync(srtPath, require('./creative_timeline').srtText(expandedSubtitles(cues, approved, original.window, window)), 'utf8');
+    fs.writeFileSync(srtPath, require('./creative_subtitles').srtText(expandedSubtitles(cues, approved, original.window, window)), 'utf8');
     const withMedia = work => execution?.withMedia ? execution.withMedia(work) : work(null);
     const mediaConfig = profile => ({ ...config, ffmpegPath: options.ffmpegPath || config.ffmpegPath || 'ffmpeg',
         ffmpegThreads: profile?.ffmpegThreads ?? config.clipFfmpegThreads, resourcePeaks: original.processing?.resourcePeaks,

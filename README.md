@@ -4,6 +4,9 @@
 
 > 自动化处理录播视频，生成 AI 总结、图片漫画，并回复到 B 站动态。
 
+开发或让 AI 修改代码，从 [开发与 AI 协作](docs/development.md) 开始：包含环境准备、
+按改动选择测试的方法，以及验证与生产运行的区别。职责边界见 [架构指南](docs/architecture.md)。
+
 ---
 
 ## 🚀 系统概述
@@ -92,7 +95,7 @@ danmaku-to-summary-ts/
 
 | 依赖 | 版本要求 | 说明 |
 |------|----------|------|
-| Node.js | 18+ | 运行 JS 脚本 |
+| Node.js | 22.18+，推荐 24 | 运行 JS 脚本与测试 |
 | Python | 3.10+ | 运行 Whisper / FunASR 系列脚本 |
 | FFmpeg | 任意 | 视频/音频处理，需在 PATH 中 |
 | CUDA | 推荐 12.x | Paraformer / Whisper GPU 加速；具体设备配置见 ASR 文档 |
@@ -112,11 +115,8 @@ Whisper 仍是可选 backend；需要时单独安装 `faster-whisper`。RTX 5080
 ### 3. 安装 Node.js 依赖
 
 ```bash
-# 使用 pnpm（推荐）
-pnpm install
-
-# 或使用 npm
-npm install
+# 使用 package.json 指定的 pnpm 版本和仓库锁文件
+pnpm install --frozen-lockfile
 ```
 
 ### 4. 安装 PM2
@@ -129,7 +129,7 @@ npm install -g pm2
 
 ## ⚙️ 配置文件说明
 
-配置加载优先级为：存在且有效的显式 `CONFIG_PATH`；否则 production 环境读取 `config/production.json`，其他环境读取 `config/default.json`。不存在或拼错的 `CONFIG_PATH` 当前会被忽略并回退。敏感信息由本地 `config/secret.json` 合并；示例见 `config/secret.example.json`。
+配置加载优先级为：显式 `CONFIG_PATH`；否则 production/automation 环境读取 `config/production.json`，其他环境读取 `config/default.json`。显式路径不存在会报错，不会悄悄回退。敏感信息由本地 `config/secret.json` 合并；示例见 `config/secret.example.json`。
 
 - `config/default.json`：仓库和开发默认值。
 - `config/production.json`：生产运行值，不会自动叠加到 default 之上。
@@ -442,7 +442,7 @@ drag_generate_comic.bat                      ← 生成漫画图片
 npm run verify:core
 ```
 
-其中包含 TypeScript 类型检查、生产构建只读检查、生产目录架构检查和串行 Jest。Python ASR、说话人和
+其中包含 TypeScript 类型检查、生产构建只读检查、lint、生产目录架构检查和串行 Jest；自动准备候选 workflows。快速静态检查可用 `npm run verify:quick`。Python ASR、说话人和
 媒体工具保持独立运行时，使用：
 
 ```powershell

@@ -5,14 +5,19 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const topicPlan = (id, next = '') => ({ ranges: [{ startCueId: id, endCueId: id, action: 'keep', role: 'closing', reason: 'Complete exchange' }],
+  closingReason: 'The exchange is complete', continuation: next ? 'next_topic' : 'source_end', nextCueId: next });
+const approved = id => ({ candidateIndex: id, approved: true, issues: [], requiredEndCueId: '' });
+
 describe('own-stream recall preservation', () => {
   test('new plan-only runs keep grounded viewing angles and every pre-ranking proposal without media or upload', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'viewing-angle-plan-'));
     const mediaPath = path.join(directory, 'source.flv'), srtPath = path.join(directory, 'source.srt');
     fs.writeFileSync(mediaPath, 'fixture');
     fs.writeFileSync(srtPath, '1\n00:00:01,000 --> 00:00:10,000\n你怎么在这里，找到你了\n\n2\n00:00:20,000 --> 00:00:30,000\n天气真好\n');
-    const generate = jest.spyOn(generator, 'generateTextWithDaiYu').mockImplementation(async prompt => ({
-      text: JSON.stringify({ clips: String(prompt).includes('完整候选池') ? [{ candidateIndex: 1,
+    const generate = jest.spyOn(generator, 'generateTextWithDaiYu').mockImplementation(async (prompt, options) => ({
+      text: JSON.stringify({ clips: options.requestPhase.endsWith('-boundary-review') ? [approved(1)]
+        : String(prompt).includes('完整候选池') ? [{ candidateIndex: 1, topicEditPlan: topicPlan('G1', 'G2'),
         startCueId: 'G1', endCueId: 'G1', title: '终于找到你了', description: '找到你了', coverText: '你怎么在这里\n终于找到你了',
         evidenceCueIds: ['G1'], sourceKind: 'live_speech', score: 90 }] : [
           { startCueId: 'G1', endCueId: 'G1', evidenceCueIds: ['G1'], sourceKind: 'live_speech', event: '寻找后相遇', score: 90,
@@ -118,9 +123,10 @@ describe('own-stream recall preservation', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'adjacent-recall-'));
     const proposals = [1, 2].map(index => ({ startCueId: `G${index}`, endCueId: `G${index}`,
       evidenceCueIds: [`G${index}`], sourceKind: 'recount', event: `Incident ${index}`, score: 91 - index }));
-    const generate = jest.spyOn(generator, 'generateTextWithDaiYu').mockImplementation(async prompt => ({
-      text: JSON.stringify({ clips: String(prompt).includes('完整候选池')
-        ? proposals.map((clip, index) => ({ ...clip, candidateIndex: index + 1, title: clip.event, description: clip.event }))
+    const generate = jest.spyOn(generator, 'generateTextWithDaiYu').mockImplementation(async (prompt, options) => ({
+      text: JSON.stringify({ clips: options.requestPhase.endsWith('-boundary-review') ? [approved(1), approved(2)]
+        : String(prompt).includes('完整候选池')
+        ? proposals.map((clip, index) => ({ ...clip, candidateIndex: index + 1, topicEditPlan: topicPlan(`G${index + 1}`, index === 0 ? 'G2' : ''), title: clip.event, description: clip.event }))
         : proposals }), meta: { model: 'fixture' }
     }));
     const config = own.getOwnStreamClipsConfig({ ownStreamClips: { chunkSeconds: 600 } });
@@ -131,9 +137,9 @@ describe('own-stream recall preservation', () => {
       const first = await run();
       expect(first.modelCandidates).toHaveLength(2);
       expect(first.clips).toHaveLength(2);
-      expect(generate).toHaveBeenCalledTimes(2);
+      expect(generate).toHaveBeenCalledTimes(3);
       expect((await run()).clips).toEqual(first.clips);
-      expect(generate).toHaveBeenCalledTimes(2);
+      expect(generate).toHaveBeenCalledTimes(3);
     } finally { generate.mockRestore(); fs.rmSync(directory, { recursive: true, force: true }); }
   });
 
@@ -161,9 +167,10 @@ describe('own-stream recall preservation', () => {
     fs.writeFileSync(srtPath, '1\n00:10:50,000 --> 00:11:50,000\nRecorded incident.\n');
     const clip = { startCueId: 'G1', endCueId: 'G1', evidenceCueIds: ['G1'],
       sourceKind: 'recount', score: 90, event: 'Recorded incident' };
-    const generate = jest.spyOn(generator, 'generateTextWithDaiYu').mockImplementation(async prompt => ({
-      text: JSON.stringify({ clips: [String(prompt).includes('完整候选池')
-        ? { ...clip, candidateIndex: 1, title: 'Recorded incident', description: 'A recorded recollection.' }
+    const generate = jest.spyOn(generator, 'generateTextWithDaiYu').mockImplementation(async (prompt, options) => ({
+      text: JSON.stringify({ clips: [options.requestPhase.endsWith('-boundary-review') ? approved(1)
+        : String(prompt).includes('完整候选池')
+        ? { ...clip, candidateIndex: 1, topicEditPlan: topicPlan('G1'), title: 'Recorded incident', description: 'A recorded recollection.' }
         : clip] }), meta: { model: 'fixture' }
     }));
     try {
@@ -173,10 +180,10 @@ describe('own-stream recall preservation', () => {
       const plan = JSON.parse(fs.readFileSync(path.join(directory, 'own_stream_fun_clips', 'PLAN.json'), 'utf8'));
       expect(plan.aiStatus.skippedChunks.map(row => row.index)).toEqual([1, 3]);
       expect(plan.config).toMatchObject({ minClipSeconds: 35, maxClipSeconds: 210, aiDurationPolicy: 'content_complete' });
-      expect(plan.aiStatus.requests).toHaveLength(2);
+      expect(plan.aiStatus.requests.map(row => row.phase)).toEqual(['recall-2', 'global-rerank', 'global-rerank-boundary-review']);
       expect(plan.aiStatus.errorCount).toBe(0);
       expect(plan.aiStatus.usedFallback).toBe(false);
-      expect(generate).toHaveBeenCalledTimes(2);
+      expect(generate).toHaveBeenCalledTimes(3);
     } finally { generate.mockRestore(); fs.rmSync(directory, { recursive: true, force: true }); }
   });
 

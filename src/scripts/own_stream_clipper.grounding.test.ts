@@ -51,7 +51,8 @@ describe('final own-stream copy grounding', () => {
       expect(savedPlan.clips[1].grounding.issues).toEqual(['unreferenced_person:description:GuestName', 'danmaku_source_changed:D1']);
       expect(savedPlan.clips[1].grounding.audienceChanges[0]).toMatchObject({ id: 'D1',
         original: { text: 'Original reaction.' }, current: { text: 'A replacement reaction.' } });
-      expect(savedPlan.clips.map(({ start, end }) => ({ start, end }))).toEqual([{ start: 0, end: 10 }, { start: 20, end: 30 }]);
+      // The default ending hold adds three seconds, bounded by the next cue/source end.
+      expect(savedPlan.clips.map(({ start, end }) => ({ start, end }))).toEqual([{ start: 0, end: 13 }, { start: 20, end: 30 }]);
       const review = fs.readFileSync(path.join(outputRoot, 'REVIEW_input-plan.md'), 'utf8');
       expect(review).toContain('unreferenced_person:description:GuestName');
       expect(review).toContain('danmaku_source_changed:D1');
