@@ -40,6 +40,28 @@ import re
 import time
 import datetime
 import subprocess
+from pathlib import Path
+
+
+def save_upload_state(state_path, state):
+    """Preserve subtitle updates made while the next large video is uploading."""
+    import clip_upload_registry as registry_api
+    handle = registry_api.acquire_queue_mutation_lock()
+    try:
+        path = Path(state_path)
+        latest = registry_api.load_json(path, {})
+        for index, current in state.get('done', {}).items():
+            previous = latest.get('done', {}).get(index) or {}
+            if current.get('bvid') != previous.get('bvid'):
+                continue
+            if current.get('subtitleStatus') == 'complete' and previous.get('subtitleStatus') != 'complete':
+                continue
+            for key in ('subtitleStatus', 'subtitleTaskPath', 'subtitleError', 'subtitlePages'):
+                if key in previous:
+                    current[key] = previous[key]
+        registry_api.save_json(path, state)
+    finally:
+        registry_api.release_queue_mutation_lock(handle)
 
 INTERNAL_REVIEW_LABEL_RE = re.compile(r'^\[(?:模型全量|模型分块|弹幕热度|本地规则)\]\s*')
 REVIEW_SCORE_SUFFIX_RE = re.compile(r'\s+\|\s+\d+(?:\.\d+)?分\s*$')
@@ -646,13 +668,21 @@ async def upload_one(clip, credential, prefix, tags, tid, source_desc, collectio
         print(f"  [SKIP] 文件不存在: {filepath}")
         return {'idx': clip['idx'], 'title': full_title, 'status': 'no_file'}
 
-    video_ok, video_error = validate_video_stream(filepath)
-    if not video_ok:
-        print(f"  [ERROR] 拒绝上传异常视频: {video_error}")
-        return {'idx': clip['idx'], 'title': full_title, 'status': 'invalid_video', 'error': video_error}
+    parts = clip.get('parts') or [{'mediaPath': filepath, 'title': full_title}]
+    if clip.get('gameReviewRequired') or clip.get('activityReviewRequired'):
+        from bilibili_upload_capabilities import validate_upload_parts
+        try:
+            validate_upload_parts(parts, require_subtitles=bool(clip.get('gameReviewRequired')))
+        except Exception as error:
+            return {'idx': clip['idx'], 'title': full_title, 'status': 'capability_blocked', 'error': str(error)[:300]}
+    for part in parts:
+        video_ok, video_error = validate_video_stream(part['mediaPath'])
+        if not video_ok:
+            print(f"  [ERROR] 拒绝上传异常视频: {video_error}")
+            return {'idx': clip['idx'], 'title': full_title, 'status': 'invalid_video', 'error': video_error}
 
     generated_description = load_generated_description(clip)
-    desc = build_desc(
+    desc = generated_description if clip.get('parts') else build_desc(
         clip['title'],
         source_desc,
         clip['start'],
@@ -688,15 +718,18 @@ async def upload_one(clip, credential, prefix, tags, tid, source_desc, collectio
         return {'idx': clip['idx'], 'title': full_title, 'status': 'no_cover'}
 
     # 创建投稿页
-    page = video_uploader.VideoUploaderPage(path=filepath, title=full_title, description=desc)
+    pages = [video_uploader.VideoUploaderPage(path=part['mediaPath'], title=part['title'],
+        description=part.get('description') or ('' if clip.get('parts') else desc)) for part in parts]
 
     try:
         meta = video_uploader.VideoMeta(
             tid=tid, title=full_title, desc=desc, cover=cover,
             tags=tags, original=False, source="直播切片",
+            **({"subtitle": {"open": 1, "lan": clip.get("subtitleLanguage") or "zh-CN"}}
+               if clip.get("externalSubtitles") else {}),
         )
         uploader = video_uploader.VideoUploader(
-            pages=[page], meta=meta, credential=credential,
+            pages=pages, meta=meta, credential=credential,
         )
         print(f"  开始上传...")
         result = await uploader.start()
@@ -768,6 +801,7 @@ async def upload_one_guarded(
     allow_duplicate_title=False,
 ):
     full_title = f"{prefix}{clip['title']}"
+    collection_section_id = clip.get('collectionSectionId') or collection_section_id
 
     async def enrich_and_attach(result):
         """Resolve archive ids before attaching to a collection.
@@ -784,6 +818,13 @@ async def upload_one_guarded(
                 credential,
                 collection_section_id=collection_section_id,
             )
+            if clip.get('externalSubtitles'):
+                from game_subtitle_upload import after_upload
+                try:
+                    result = await after_upload(clip, result, credential, cookie_str)
+                except Exception as error:
+                    result['subtitleStatus'] = 'failed'
+                    result['subtitleError'] = str(error)[:300]
         return result
 
     for attempt in range(rate_limit_retries + 1):
@@ -1027,8 +1068,7 @@ async def main():
     )
 
     # 保存查重结果到状态
-    with open(state_path, 'w', encoding='utf-8') as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+    save_upload_state(state_path, state)
 
     if args.dry_run:
         print("\n[DRY-RUN] 不实际上传。")
@@ -1088,10 +1128,10 @@ async def main():
         result = await upload_one_guarded(
             clip,
             credential,
-            args.prefix,
-            tags,
-            args.tid,
-            args.source,
+            clip.get('prefix', args.prefix) if clip.get('parts') else args.prefix,
+            clip.get('tags', tags) if clip.get('parts') else tags,
+            clip.get('tid', args.tid) if clip.get('parts') else args.tid,
+            clip.get('source', args.source) if clip.get('parts') else args.source,
             cookie_str,
             max(30, args.rate_limit_wait),
             max(0, args.rate_limit_retries),
@@ -1117,6 +1157,10 @@ async def main():
                 'collectionSectionId': result.get('collectionSectionId'),
                 'collectionStatus': result.get('collectionStatus'),
                 'collectionError': result.get('collectionError'),
+                'subtitleStatus': result.get('subtitleStatus'),
+                'subtitleTaskPath': result.get('subtitleTaskPath'),
+                'subtitleError': result.get('subtitleError'),
+                'subtitlePages': result.get('subtitlePages'),
             }
             state.setdefault('title_conflicts', {}).pop(str(clip['idx']), None)
             state.get('got_406', {}).pop(str(clip['idx']), None)
@@ -1141,8 +1185,7 @@ async def main():
             }
 
         # 保存状态
-        with open(state_path, 'w', encoding='utf-8') as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
+        save_upload_state(state_path, state)
 
         if result['status'] == 'rate_limited':
             print("  [STOP] B站仍在限速，停止本批次，避免后续条目重复触发风控。")

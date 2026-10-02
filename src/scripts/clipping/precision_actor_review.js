@@ -7,6 +7,27 @@ const { copyDigest, buildActorReviewPacket, actorReviewPrompt, parseActorReviews
 
 const keepDigest = plan => crypto.createHash('sha256').update(JSON.stringify(plan.keep)).digest('hex');
 
+function precisionSourceWindow(artifact, plan, clip, evidence) {
+    const window = plan.sourceWindow;
+    if (artifact.window.start !== window.start || artifact.window.end !== window.end) throw new Error('Artifact source window changed');
+    if (!artifact.sourceExpansion) {
+        if (window.start !== clip.start || window.end !== clip.end) throw new Error('Source window changed');
+        return null;
+    }
+    const expansion = require('./creative_source_expansion');
+    const protectedSpans = expansion.validateSourceExpansion(artifact.sourceExpansion, clip, evidence, window, plan.sourceId);
+    if (clip.topicEditPlan) {
+        protectedSpans.push(...require('./topic_edit_plan').storyConstraints(clip.topicEditPlan, evidence, window, clip));
+        require('./topic_edit_plan').assertDroppedRanges({ keep: plan.keep.map(s => ({ start: s.start - window.start, end: s.end - window.start })) }, clip.topicEditPlan, window);
+    }
+    for (const span of protectedSpans) {
+        if (!plan.keep.some(s => s.start <= window.start + span.start + .002 && s.end >= window.start + span.end - .002)) {
+            throw new Error(`Expanded precision edit lost protected source evidence: ${span.id}`);
+        }
+    }
+    return expansion.expansionDigest(artifact.sourceExpansion);
+}
+
 function factualCopy(artifact, plan) {
     const { stripExperimentTitle, stripExperimentDescription } = loadWorkflow('clipping/experiment');
     return { title: stripExperimentTitle(artifact.copy.title), coverText: artifact.copy.coverText,
@@ -23,10 +44,12 @@ async function reviewPrecisionActors(artifact, plan, context, request) {
         keepDigest: keepDigest(plan), artifactCopyDigest: null };
     try {
         if (!clip.attributionRequired || experimentEligibility(clip, evidence.sourceSha256)) throw new Error('Initial actor review is not current');
-        if (plan.sourceWindow.start !== clip.start || plan.sourceWindow.end !== clip.end) throw new Error('Source window changed before final actor review');
+        const expansionDigest = precisionSourceWindow(artifact, plan, clip, evidence);
+        Object.assign(base, { start: plan.sourceWindow.start, end: plan.sourceWindow.end },
+            expansionDigest ? { sourceExpansionDigest: expansionDigest } : {});
         const copy = factualCopy(artifact, plan);
         const people = parsed.participantContext || buildParticipantContext(rootConfig, info, parsed, danmaku, {}, config.attribution);
-        const packet = buildActorReviewPacket({ ...clip, ...copy }, 'precision-final', evidence, danmaku, people, config.attribution);
+        const packet = buildActorReviewPacket({ ...clip, ...plan.sourceWindow, ...copy }, 'precision-final', evidence, danmaku, people, config.attribution);
         const retained = cue => plan.keep.some(span => cue.start >= span.start - .001 && cue.end <= span.end + .001);
         packet.cueIds = new Set([...packet.cueIds].filter(id => retained(evidence.byId.get(id))));
         packet.data.inRangeCueIds = [...packet.cueIds];
@@ -71,11 +94,16 @@ function finalizePrecisionActors(metadata, clip, evidence) {
     const review = metadata.attributionReview || {};
     let valid = false;
     try {
+        const expansionDigest = precisionSourceWindow(metadata, metadata.editPlan, clip, evidence);
+        const recoveredStory = metadata.creativeResult?.history?.filter(row => row.stage === 'story').at(-1);
         valid = !experimentEligibility(clip, evidence.sourceSha256) && review.version === 1
             && review.phase === 'precision_final_copy' && review.status === 'passed' && !review.issues?.length
             && review.initialCopyDigest === clip.attributionReview.copyDigest
-            && review.sourceSha256 === evidence.sourceSha256 && review.start === clip.start && review.end === clip.end
-            && metadata.window.start === clip.start && metadata.window.end === clip.end
+            && review.sourceSha256 === evidence.sourceSha256 && review.start === metadata.window.start && review.end === metadata.window.end
+            && (expansionDigest ? review.sourceExpansionDigest === expansionDigest && metadata.qaResult?.status === 'passed'
+                && recoveredStory?.sourceAttempt === metadata.sourceExpansion.attempts.length
+                && recoveredStory.qa?.approved === true && Array.isArray(recoveredStory.qa.issues) && !recoveredStory.qa.issues.length
+                : !review.sourceExpansionDigest)
             && review.keepDigest === keepDigest(metadata.editPlan)
             && review.copyDigest === copyDigest(factualCopy(metadata, metadata.editPlan))
             && review.artifactCopyDigest === copyDigest(metadata.copy);
@@ -91,7 +119,7 @@ function rebindUnchangedPrecisionCopy(artifact, plan, context, baselineCopy) {
     const previous = clip.attributionReview;
     try {
         if (loadWorkflow('clipping/experiment').experimentEligibility(clip, evidence.sourceSha256)) throw new Error('Initial review is stale');
-        if (plan.sourceWindow.start !== clip.start || plan.sourceWindow.end !== clip.end) throw new Error('Source window changed');
+        const expansionDigest = precisionSourceWindow(artifact, plan, clip, evidence);
         const copy = factualCopy(artifact, plan);
         if (copyDigest(copy) !== copyDigest(baselineCopy)) throw new Error('Factual copy changed');
         if (!previous.claims?.length) throw new Error('No original verified claims');
@@ -105,6 +133,8 @@ function rebindUnchangedPrecisionCopy(artifact, plan, context, baselineCopy) {
         }
         return { passed: true, issues: [], grounding: clip.grounding,
             attributionReview: { ...previous, phase: 'precision_final_copy', previousReview: previous,
+                start: plan.sourceWindow.start, end: plan.sourceWindow.end,
+                ...(expansionDigest ? { sourceExpansionDigest: expansionDigest } : {}),
                 initialCopyDigest: previous.copyDigest, copyDigest: copyDigest(copy), artifactCopyDigest: copyDigest(artifact.copy),
                 keepDigest: keepDigest(plan), reason: '原文案未改，原审核引用全部保留；仅重新绑定剪辑后的成片',
                 reviewer: { method: 'unchanged_copy_retained_citations', sourceReview: previous.reviewer || null } } };

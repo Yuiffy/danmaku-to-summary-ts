@@ -88,6 +88,8 @@ def import_json(args: argparse.Namespace, api: ModuleType) -> int:
             "pendingRebuild": bool(clip.get("pendingRebuild")), "subtitleRevisionKind": clip.get("subtitleRevisionKind") or "",
             **{key: clip.get(key) for key in ("candidateSrtPath", "candidateRevision", "candidateSrtSha256")},
             "reviewPreview": clip.get("reviewPreview"),
+            **({key: clip.get(key) for key in ("parts", "activityReviewRequired", "gameReviewRequired", "externalSubtitles", "subtitleLanguage", "collectionSectionId")}
+               if clip.get("activityReviewRequired") or clip.get("gameReviewRequired") else {}),
         }
         if clip_id is None:
             clip_id = int(registry.get("nextClipId") or 1)
@@ -105,7 +107,7 @@ def import_json(args: argparse.Namespace, api: ModuleType) -> int:
                 continue
             if not record_data["reviewPlanPath"]:
                 record_data["reviewPlanPath"] = record.get("reviewPlanPath") or ""
-            for required in ("qaRequired", "attributionRequired", "humanReviewRequired"):
+            for required in ("qaRequired", "attributionRequired", "humanReviewRequired", "activityReviewRequired"):
                 if record.get(required) and not record_data.get(required):
                     record_data[required] = True
                     record_data["reviewPending"] = True

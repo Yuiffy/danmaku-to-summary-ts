@@ -6,6 +6,8 @@ const aiTextGenerator = require('./ai_text_generator');
 const configLoader = require('./config-loader');
 const fullLiveContext = require('./full_live_context');
 const liveGenerationContext = require('./live_generation_context');
+const activitySummary = require('./clipping/stream_activity_timeline');
+const { activityEnabled } = require('./clipping/stream_activity_plan');
 
 const LIVE_CONTENT_SCHEMA_VERSION = 1;
 const LIVE_CONTENT_PROMPT_VERSION = 1;
@@ -80,10 +82,13 @@ function loadFullContextPayload(highlightPath, explicitPath = null) {
     if (sha256Text(payload.sharedPrefix) !== payload.sharedPrefixSha256) {
         throw new Error(`full live context shared prefix hash mismatch: ${explicitPath}`);
     }
+    if (payload.evidence && sha256Text(JSON.stringify(payload.evidence)) !== payload.evidenceSha256) {
+        throw new Error(`full live context evidence hash mismatch: ${explicitPath}`);
+    }
     return payload;
 }
 
-function buildLiveContentSummaryPrompt(sharedPrefix) {
+function buildLiveContentSummaryPrompt(sharedPrefix, options = {}) {
     if (!String(sharedPrefix || '').startsWith(liveGenerationContext.SHARED_PROMPT_CACHE_START)) {
         throw new Error('sharedPrefix is missing the prompt-cache start marker');
     }
@@ -104,7 +109,7 @@ function buildLiveContentSummaryPrompt(sharedPrefix) {
         '只输出一个合法 JSON 对象，不要 Markdown、代码围栏、解释或额外文字：',
         '{"overview":"杂谈、唱歌、玩《xx》","activityTypes":["chat","singing","game"],"songs":[],"games":["xx"],"topics":["话题一","话题二"]}'
     ].join('\n');
-    return `${sharedPrefix}\n\n${taskSuffix}`;
+    return `${sharedPrefix}\n\n${taskSuffix}${options.includeActivityTimeline ? `\n\n${activitySummary.timelineInstructions()}` : ''}`;
 }
 
 function parseJsonObject(text) {
@@ -225,6 +230,9 @@ function readReusableSummary(outputPath, sourceSha256, sharedPrefixSha256, optio
             && existing?.source?.sourceSha256 === sourceSha256
             && existing?.source?.sharedPrefixSha256 === sharedPrefixSha256
             && existing?.source?.promptVersion === LIVE_CONTENT_PROMPT_VERSION
+            && (!options.activityTimelineVersion || (existing?.source?.activityTimelineVersion === options.activityTimelineVersion
+                && existing.source.inputSources?.srtSha256 === options.inputSources?.srtSha256
+                && existing.source.inputSources?.xmlSha256 === options.inputSources?.xmlSha256))
         );
         if (sourceMatches && existing?.status === 'success') {
             return existing;
@@ -287,14 +295,15 @@ function releaseLock(lockPath) {
     }
 }
 
-function buildSourceMetadata(fullContextPayload) {
+function buildSourceMetadata(fullContextPayload, activityOptions = {}) {
     return {
         coverage: 'full_srt_and_merged_danmaku',
         sourceSha256: fullContextPayload.sourceSha256,
         sharedPrefixSha256: fullContextPayload.sharedPrefixSha256,
         fullLiveSharedPrefixVersion: fullContextPayload.fullLiveSharedPrefixVersion,
         promptVersion: LIVE_CONTENT_PROMPT_VERSION,
-        counts: fullContextPayload.counts || null
+        counts: fullContextPayload.counts || null,
+        ...(activityOptions.activityTimelineVersion ? activityOptions : {})
     };
 }
 
@@ -312,11 +321,15 @@ async function generateLiveContentSummary(options = {}) {
     if (!fullContextPayload) {
         throw new Error('full live context sidecar is not ready');
     }
+    const includeActivityTimeline = options.includeActivityTimeline ?? activityEnabled(config, roomId);
+    const activityOptions = includeActivityTimeline ? { activityTimelineVersion: activitySummary.TIMELINE_VERSION,
+        inputSources: options.srtPath ? activitySummary.sourceInputs(options.srtPath, options.xmlPath)
+            : fullContextPayload.inputSources || null } : {};
     const reusable = readReusableSummary(
         outputPath,
         fullContextPayload.sourceSha256,
         fullContextPayload.sharedPrefixSha256,
-        experiment
+        { ...experiment, ...activityOptions }
     );
     if (reusable) {
         console.log(
@@ -333,8 +346,8 @@ async function generateLiveContentSummary(options = {}) {
         return { outputPath, payload: null, reused: false, pending: true };
     }
 
-    const source = buildSourceMetadata(fullContextPayload);
-    const prompt = buildLiveContentSummaryPrompt(fullContextPayload.sharedPrefix);
+    const source = buildSourceMetadata(fullContextPayload, activityOptions);
+    const prompt = buildLiveContentSummaryPrompt(fullContextPayload.sharedPrefix, { includeActivityTimeline });
     const generationAttempts = [];
     try {
         const maxAttempts = Math.max(1, Number(experiment.maxAttempts) || DEFAULT_MAX_ATTEMPTS);
@@ -352,15 +365,21 @@ async function generateLiveContentSummary(options = {}) {
                 const result = await generateText(attemptPrompt, {
                     captureLiveCache: true,
                     primaryModel: model,
-                    wordLimit: 800,
+                    wordLimit: includeActivityTimeline ? 2500 : 800,
                     timeoutMs: Number(experiment.timeoutMs) || 600000,
-                    maxTokens: Number(experiment.maxTokens) || 2000,
+                    maxTokens: Math.max(includeActivityTimeline ? 4000 : 0, Number(experiment.maxTokens) || 2000),
                     thinkingBudgetTokens: Number(experiment.thinkingBudgetTokens) || 2000,
                     fallbackModelsEnabled: false,
                     promptCacheRolloutPercent
                 });
                 generationAttempts.push(...(Array.isArray(result?.meta?.attempts) ? result.meta.attempts : []));
-                const content = normalizeLiveContent(parseJsonObject(result?.text));
+                const raw = parseJsonObject(result?.text);
+                const content = normalizeLiveContent(raw);
+                let activityTimeline;
+                if (includeActivityTimeline) {
+                    try { activityTimeline = activitySummary.normalizeTimeline(raw.activityTimeline, fullContextPayload); }
+                    catch (error) { activityTimeline = { version: activitySummary.TIMELINE_VERSION, status: 'incomplete', error: error.message }; }
+                }
                 const generation = extractGenerationMetrics({
                     ...(result?.meta || {}),
                     attempts: generationAttempts
@@ -371,6 +390,7 @@ async function generateLiveContentSummary(options = {}) {
                     roomId,
                     source,
                     content,
+                    ...(includeActivityTimeline ? { activityTimeline } : {}),
                     generation,
                     generatedAt: new Date().toISOString()
                 };

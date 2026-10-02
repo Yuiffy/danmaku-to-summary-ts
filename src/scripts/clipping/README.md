@@ -60,6 +60,13 @@ ignored `temp/` tree until its inputs and behavior are made configurable.
 - `event_manifest.js`: normalize detector output into one event contract and
   perform score-aware overlap selection.
 - `resource_scheduler.js`: adaptive FFmpeg worker and thread scheduling.
+- `stream_activity_timeline.js`, `stream_activity_summary.js`, `stream_activity_summary_plan.js`,
+  `stream_activity_boundaries.js`: reuse recap activity timestamps and batch only nearby
+  audio/energy calibration, with one attempt and a per-stream request budget.
+- `stream_activity_plan.js`, `stream_activity_transcript.js`, `stream_activity_verification.js`, `stream_activity_media.js`,
+  `stream_activity_clipper.js`: complete per-stream singing/viewing planning,
+  source audio/frame verification, continuous parts and multipart archive manifests.
+  See [stream activity clips](../../../docs/stream-activity-clips.md).
 - `output_path.js`: map archive recordings to the active output tree.
 - `*.schema.json`: machine-readable contracts for detector/compiler boundaries.
 

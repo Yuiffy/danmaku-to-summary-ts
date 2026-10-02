@@ -1558,6 +1558,42 @@
       "danmakuContextSeconds": 45
     }
   },
+  "streamGameClips": {
+    "enabled": false,
+    "roomIds": ["25788785"],
+    "outputDirName": "stream_game_clips",
+    "autoUpload": false,
+    "authorizationNote": "",
+    "maxSingleVideoSeconds": 3600,
+    "games": [{
+      "id": "elden-ring", "name": "艾尔登法环",
+      "aliases": ["艾尔登法环", "艾登法环", "法环", "老头环", "ELDEN RING"],
+      "tid": 17, "tags": ["岁己", "小岁", "艾尔登法环", "老头环", "游戏实况", "虚拟主播"],
+      "collection": { "seasonId": null, "sectionId": null }
+    }]
+  },
+  "streamActivityClips": {
+    "enabled": false,
+    "detectionMode": "summary",
+    "roomIds": ["25788785"],
+    "outputDirName": "stream_activity_clips",
+    "chunkSeconds": 1800,
+    "contextSeconds": 180,
+    "maxEvidenceChars": 90000,
+    "ai": { "model": "gpt-6-luna", "timeoutMs": 600000, "maxTokens": 16000 },
+    "verification": { "enabled": true, "provider": "tuZi", "apiMode": "gemini_native", "model": "gemini-3-flash-preview", "contextSeconds": 180, "maxAudioSeconds": 1200, "timeoutMs": 180000,
+      "boundaryContextSeconds": 45, "batchMaxEvents": 8, "batchMaxAudioSeconds": 600, "maxBatchRequests": 3, "boundaryTimeoutMs": 60000 },
+    "songs": {
+      "enabled": true, "paddingSeconds": 2, "tid": 31,
+      "tags": ["岁己", "小岁", "歌切", "虚拟主播"],
+      "collection": { "seasonId": null, "sectionId": null }
+    },
+    "watch": {
+      "enabled": true, "targetPartSeconds": 1500, "maxPartSeconds": 1800, "tid": 21,
+      "tags": ["岁己", "小岁", "同步视听", "虚拟主播"],
+      "collection": { "seasonId": null, "sectionId": null }
+    }
+  },
   "ownStreamClips": {
     "enabled": true,
     "enhancements": {

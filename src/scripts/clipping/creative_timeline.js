@@ -2,10 +2,12 @@
 const round = n => Math.round(n * 1000) / 1000;
 const overlap = (a, b) => a.start < b.end - .0005 && b.start < a.end - .0005;
 
-function protectedStorySpans(clip, evidence, danmaku, window) {
+function protectedStorySpans(clip, evidence, danmaku, window, sourceExpansion = null) {
     const ids = new Set((clip.attributionReview?.claims || []).flatMap(row => [...(row.cueIds || []), ...(row.speakerCueIds || [])]));
     for (const id of clip.grounding?.danmakuIds || []) ids.add(id);
-    return [...(clip.topicEditPlan ? require('./topic_edit_plan').storyConstraints(clip.topicEditPlan, evidence, window) : []), ...[...ids].map(id => {
+    const expanded = sourceExpansion ? require('./creative_source_expansion').validateSourceExpansion(sourceExpansion, clip, evidence, window) : [];
+    return [...expanded, ...(clip.topicEditPlan ? require('./topic_edit_plan').storyConstraints(clip.topicEditPlan, evidence, window,
+        sourceExpansion?.originalWindow || window) : []), ...[...ids].map(id => {
         const cue = evidence.byId.get(id);
         const audience = /^D[1-9]\d*$/.test(id) ? danmaku[Number(id.slice(1)) - 1] : null;
         if (!cue && !audience) throw new Error(`Missing protected story evidence: ${id}`);

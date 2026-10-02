@@ -20,16 +20,24 @@ interface RuntimeConfig extends Omit<VoteConfig, 'authorizedUids'> {
   source?: 'bilibili' | 'recorder' | 'xml';
 }
 
+type VoteCookie = string | (() => string);
+
 export class VoteSender {
   constructor(private readonly roomId: string, private readonly botUid: string, private readonly live: boolean,
-    private readonly cookie = process.env.BILIBILI_VOTE_COOKIE || '',
+    private readonly cookie: VoteCookie = process.env.BILIBILI_VOTE_COOKIE || '',
     private readonly rateLimit = { lastSentAt: 0 }) {
-    if (live) {
+    if (live) this.readCookie();
+  }
+
+  private readCookie(): string {
+    const cookie = typeof this.cookie === 'function' ? this.cookie() : this.cookie;
+    if (this.live) {
       const uid = /(?:^|;\s*)DedeUserID=(\d+)/u.exec(cookie)?.[1];
-      if (!uid || uid !== botUid || !/(?:^|;\s*)SESSDATA=/u.test(cookie) || !/(?:^|;\s*)bili_jct=/u.test(cookie)) {
+      if (!uid || uid !== this.botUid || !/(?:^|;\s*)SESSDATA=/u.test(cookie) || !/(?:^|;\s*)bili_jct=/u.test(cookie)) {
         throw new Error('BILIBILI_VOTE_COOKIE must contain SESSDATA, bili_jct and matching DedeUserID');
       }
     }
+    return cookie;
   }
 
   async send(message: string, isCurrent = () => true): Promise<void> {
@@ -41,7 +49,8 @@ export class VoteSender {
     const delay = Math.max(0, 3000 - (Date.now() - this.rateLimit.lastSentAt));
     if (delay) await new Promise(resolve => setTimeout(resolve, delay));
     if (!isCurrent()) return;
-    const csrf = /(?:^|;\s*)bili_jct=([^;]+)/u.exec(this.cookie)![1];
+    const cookie = this.readCookie();
+    const csrf = /(?:^|;\s*)bili_jct=([^;]+)/u.exec(cookie)![1];
     const body = new URLSearchParams({
       roomid: this.roomId, msg: message, csrf, csrf_token: csrf,
       rnd: String(Math.floor(Date.now() / 1000)), color: '16777215', fontsize: '25', mode: '1'
@@ -52,7 +61,7 @@ export class VoteSender {
     try {
       const response = await fetch('https://api.live.bilibili.com/msg/send', {
         method: 'POST', body, signal: controller.signal as any,
-        headers: { Cookie: this.cookie, Referer: `https://live.bilibili.com/${this.roomId}` }
+        headers: { Cookie: cookie, Referer: `https://live.bilibili.com/${this.roomId}` }
       });
       const data = await response.json() as { code?: number; message?: string };
       if (!response.ok || data.code !== 0) throw new Error(`send failed: HTTP ${response.status}, code ${data.code}, ${data.message || ''}`);
@@ -74,7 +83,7 @@ function relayToken(config: RuntimeConfig): string {
     (config.recorderSettingsFile ? readLocalSettings(config.recorderSettingsFile).token : '') || '';
 }
 
-function runAllRecorderRooms(config: RuntimeConfig, live: boolean, cookie: string): void {
+function runAllRecorderRooms(config: RuntimeConfig, live: boolean, cookie: VoteCookie): void {
   if (!config.recorderSocketUrl || !Array.isArray(config.globalAdminUids) ||
       config.globalAdminUids.some(uid => typeof uid !== 'string' || !/^[1-9]\d*$/u.test(uid)) ||
       (config.statePath && !path.isAbsolute(config.statePath))) {
@@ -127,7 +136,7 @@ export async function runVoteBot(configPath: string, live = false): Promise<void
   if (config.maxMessageChars !== undefined && (!Number.isInteger(config.maxMessageChars) || config.maxMessageChars < 20 || config.maxMessageChars > 40)) {
     throw new Error('maxMessageChars must be between 20 and 40');
   }
-  const cookie = process.env.BILIBILI_VOTE_COOKIE ||
+  const cookie = () => process.env.BILIBILI_VOTE_COOKIE ||
     (live && config.credentialConfigPath ? readLocalSettings(config.credentialConfigPath).bilibili?.cookie : '') || '';
   if (config.rooms !== undefined) {
     if (config.rooms !== 'auto-record' || config.source !== 'recorder') throw new Error('Multi-room mode requires the recorder source');

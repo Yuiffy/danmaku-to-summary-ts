@@ -11,9 +11,11 @@ const people = { people: [
     { id: 'guest', label: 'Guest', names: ['Guest'], preferredName: 'Guest', sourceHost: false, presence: 'mentioned_only' }
 ] };
 
-function fixture() {
+function fixture(withContinuation = false) {
     const segments = [{ start: 0, end: 10, text: 'Host recalled asking Guest about a book.' },
-        { start: 40, end: 50, text: 'Host said the answer was helpful.' }].map(row => ({ ...row,
+        { start: 40, end: 50, text: 'Host said the answer was helpful.' },
+        ...(withContinuation ? [{ start: 65, end: 70, text: 'Host completed the necessary clarification.' },
+            { start: 78, end: 80, text: 'An unrelated topic begins.' }] : [])].map(row => ({ ...row,
         speakerEvidence: { version: 1, status: 'row_supported', label: 'Host', observations: [{ ...row,
             label: 'Host', scope: 'row', row: { label: 'Host', accepted: true, score: .8, margin: .2 } }] } }));
     const evidence = buildSubtitleEvidence(segments);
@@ -108,3 +110,40 @@ test('unchanged copy can reuse only original claims whose speech and audience ev
     current.copy.title = 'Changed claim';
     expect(rebindUnchangedPrecisionCopy(current, edited, context, baselineCopy).passed).toBe(false);
 });
+
+test.each(['passed', 'unbound_window', 'changed_proof', 'removed_new_citation', 'failed_story', 'failed_media', 'changed_digest'])(
+    'expanded final actor binding %s checks the new window while preserving the original approval', async outcome => {
+        const { context, artifact } = fixture(true);
+        const { expandedWindow, sourceCues } = require('./creative_source_expansion');
+        const expansionPlan = { startCueId: '', endCueId: 'R3', requiredCueIds: ['R3'], reason: '补全窗外必要澄清' };
+        const checked = expandedWindow(expansionPlan, sourceCues(context.parsed.segments), context.clip, 180);
+        const proof = { version: 1, sourceSha256: context.evidence.sourceSha256, sourceId: 'video',
+            originalWindow: { start: 0, end: 60 }, attempts: [{ fromWindow: { start: 0, end: 60 }, toWindow: checked.window,
+                plan: expansionPlan, requiredCueIds: checked.requiredCueIds, contextSeconds: 180,
+                boundaryQa: { window: checked.window, review: { approved: true, issues: [], requiredStartCueId: '', requiredEndCueId: '' } },
+                qa: { approved: false, needsSourceExpansion: true, issues: ['必要澄清在窗外'] } }] };
+        const plan = { ...continuousPlan('video', checked.window), keep: [{ start: 0, end: 20 }, { start: 30, end: 73 }],
+            removed: [{ start: 20, end: 30, reason: 'irrelevant pause' }] };
+        const baselineCopy = { title: context.clip.title, coverText: context.clip.coverText, description: context.clip.description };
+        const current = { ...artifact, window: { ...checked.window, duration: 63 }, editPlan: plan, sourceExpansion: proof,
+            copy: { ...baselineCopy, title: labelExperimentTitle(baselineCopy.title, true),
+                description: labelExperimentDescription(baselineCopy.description, true, true) },
+            creativeResult: { status: 'edited', history: [{ stage: 'story', sourceAttempt: 1, qa: { approved: true, issues: [] } }] },
+            qaResult: { status: 'passed' } };
+        if (outcome === 'unbound_window') delete current.sourceExpansion;
+        if (outcome === 'changed_proof') proof.attempts[0].plan.endCueId = 'R4';
+        if (outcome === 'removed_new_citation') plan.keep[1].end = 69;
+        const rebound = rebindUnchangedPrecisionCopy(current, plan, context, baselineCopy);
+        if (['unbound_window', 'changed_proof', 'removed_new_citation'].includes(outcome)) {
+            expect(rebound.passed).toBe(false); return;
+        }
+        expect(rebound.passed).toBe(true);
+        expect(rebound.attributionReview.end).toBe(73);
+        expect(rebound.attributionReview.previousReview.end).toBe(60);
+        if (outcome === 'failed_story') current.creativeResult.history[0].qa.approved = false;
+        if (outcome === 'failed_media') current.qaResult.status = 'failed';
+        if (outcome === 'changed_digest') rebound.attributionReview.sourceExpansionDigest = 'changed';
+        const finalized = finalizePrecisionActors({ ...current, ...rebound }, context.clip, context.evidence);
+        expect(finalized.uploadReady).toBe(outcome === 'passed');
+        expect(context.clip.end).toBe(60);
+    });

@@ -42,6 +42,15 @@ Useful options:
 - `--state <path>`: keep upload state separate for supplemental batches whose
   review indices overlap with an earlier batch.
 
+Complete Sui performances and viewing sessions use the separate
+[stream activity workflow](stream-activity-clips.md). Each kind occupies one
+multipart submission and one queue ID per recording, with a dedicated collection.
+
+Complete allowlisted gameplay uses the [game workflow](stream-game-clips.md).
+It checks current account multipart permissions and file limits before grouping
+and upload. Videos keep the original audio mix; hash-bound external SRTs are
+submitted to verified CIDs through a separate retry service after the BV exists.
+
 To auto-attach uploads to a Bilibili合集/series after success, set:
 
 - `bilibili.upload.collectionSectionId`: the collection section `section_id` to

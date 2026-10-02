@@ -346,6 +346,7 @@ function createFullLiveContextSidecar(context, options = {}) {
     );
     return {
         schemaVersion: FULL_LIVE_CONTEXT_SCHEMA_VERSION,
+        ...(options.inputSources ? { inputSources: options.inputSources } : {}),
         ...(context?.evidenceVersion ? { evidenceVersion: context.evidenceVersion } : {}),
         ...(context?.evidence ? { evidence: context.evidence,
             evidenceSha256: sha256Text(JSON.stringify(context.evidence)), roomId: context.roomId || null } : {}),

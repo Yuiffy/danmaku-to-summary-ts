@@ -18,7 +18,36 @@ Use this skill for the whole path from a selected timestamp to a reviewable, upl
 
 ## Workflow
 
+### Complete song cuts and synchronous viewing
+
+For complete per-stream 歌切 or 同步视听, read `docs/stream-activity-clips.md` and
+use `npm run activity:clips -- run` with the recording/SRT/XML. This dedicated
+workflow preserves full performances and continuous viewing Ps, the original
+audio mix, a per-stream `SONGS.json`, and one multipart submission per kind.
+The daily default reuses `LIVE_CONTENT.json.activityTimeline` from the existing
+summary request and calibrates short boundary audio/energy data in bounded batches.
+Do not repeat a full-stream scan or whole-recording ASR for each normal stream;
+`--scan` is an explicit diagnostic workflow, never an automatic fallback.
+Use the dedicated `【岁己歌切】` / `【岁己同步视听】` title prefixes and local
+music/cinema cover templates, separate from ordinary `【小岁】` highlights.
+For pending bundles, `activity:clips restyle --manifest <UPLOAD_MANIFEST.json>`
+updates presentation under the same IDs without AI, ASR or video re-encoding.
+Inspect original audio/frame verification and unknown title/boundary warnings.
+Use its `approve --metadata ... --note ... [--enqueue]` command after review.
+Keep the dedicated collections separate from ordinary topic/highlight routing;
+do not enqueue each song or viewing P as a standalone short clip.
+
 ### Precision editing and feedback
+
+For complete game archives and future automatic game submissions, read
+`docs/stream-game-clips.md` and use `npm run game:clips -- run`. Preserve the full
+allowlisted gameplay, perform full text and visual coverage checks, verify original
+boundary audio and every public chapter, and query the account's current multi-P
+permission. Keep long complete sessions in a few submissions with chapter timelines
+when multi-P is unavailable. Follow explicit user preferences for external subtitles;
+do not burn them merely because ordinary highlight clips use burned subtitles.
+Upload authorization comes from the user/configured allowlist, not detection.
+Subtitle or collection retry never authorizes resubmitting an already successful BV.
 
 For 精剪/精切, read [references/precision-editing.md](references/precision-editing.md) for how AI chooses
 content, cuts, visual emphasis, placement, audio and final review. The shared automated pipeline uses

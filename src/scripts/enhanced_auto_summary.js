@@ -932,71 +932,7 @@ async function generateAiText(highlightPath, roomId = null, options = {}) {
 }
 
 async function prepareFullLiveContextForExperiment(options = {}) {
-    const {
-        highlightPath,
-        roomId,
-        srtPath,
-        xmlPath,
-        mediaPath,
-        context = {},
-        pendingPayload = null
-    } = options;
-    const config = options.config || configLoader.getConfig();
-    const experiment = liveContentSummary.getFullLiveContextExperiment(config, roomId);
-    if (!experiment) {
-        return null;
-    }
-
-    const enabledTasks = Array.isArray(experiment.tasks)
-        ? experiment.tasks.map(value => String(value))
-        : [];
-    if (enabledTasks.length === 0) {
-        return null;
-    }
-    if (!srtPath || !fs.existsSync(srtPath)) {
-        throw new Error('全量输入实验缺少 SRT 文件');
-    }
-    if (!xmlPath || !fs.existsSync(xmlPath)) {
-        throw new Error('全量输入实验缺少弹幕 XML 文件');
-    }
-
-    const parsed = require('./asr/speaker_attribution').loadSrtWithSpeakerEvidence(srtPath, asrBackends.parseSrt, 'full_live_context');
-    const danmaku = await ownStreamClipper.parseDanmakuXml(xmlPath);
-    const clipConfig = { ...ownStreamClipper.getOwnStreamClipsConfig(config),
-        ...((experiment.compactEvidence === true || experiment.replySummary?.enabled === true)
-            ? { compactEvidence: true } : {}) };
-    const emotionAnalysis = ownStreamClipper.loadEmotionAnalysisForSrt(srtPath);
-    const info = ownStreamClipper.parseRecordingInfo(mediaPath || srtPath, {
-        ...context,
-        roomId: roomId ? String(roomId) : null
-    });
-    const totalDuration = Number(parsed.segments?.at(-1)?.end || 0);
-    const sharedContext = fullLiveContext.buildFullLiveSharedContext({
-        parsed,
-        danmaku,
-        config: clipConfig,
-        emotionAnalysis,
-        info,
-        totalDuration
-    });
-    const saved = fullLiveContext.saveFullLiveContextSidecar(highlightPath, sharedContext);
-    if (pendingPayload) {
-        pendingPayload.fullLiveContextPath = saved.outputPath;
-    }
-
-    console.log(`🧱 全量直播共享输入已保存: ${path.basename(saved.outputPath)}`);
-    console.log(
-        `   字幕=${saved.payload.counts.subtitleLines}, `
-        + `弹幕=${saved.payload.counts.rawDanmaku}->${saved.payload.counts.mergedDanmaku}, `
-        + `prefixChars=${Array.from(saved.payload.sharedPrefix).length}`
-    );
-    console.log(`   sourceSha256=${saved.payload.sourceSha256}, sharedPrefixSha256=${saved.payload.sharedPrefixSha256}`);
-    return {
-        experiment,
-        enabledTasks,
-        outputPath: saved.outputPath,
-        payload: saved.payload
-    };
+    return require('./live_content_preparation').prepareFullLiveContextForExperiment(options);
 }
 
 async function waitForPromiseWithin(promise, timeoutMs) {
@@ -1394,8 +1330,10 @@ const main = async () => {
     const queueTaskRecords = [];
     const completionOptionsByTaskId = new Map();
     const pendingBackgroundClipPayloads = [];
+    let activitySummaryReady = null;
     let backgroundClipsStarted = false;
     const startBackgroundClipsOnce = async (reason) => {
+        await activitySummaryReady;
         if (backgroundClipsStarted) {
             return;
         }
@@ -1758,12 +1696,17 @@ const main = async () => {
                     fullLiveContextPath: preparedFullLiveContext.outputPath,
                     roomId: finalRoomId,
                     experiment: preparedFullLiveContext.experiment,
+                    srtPath: preparedFullLiveContext.payload.inputSources?.srtPath,
+                    xmlPath: preparedFullLiveContext.payload.inputSources?.xmlPath,
                     config: configLoader.getConfig()
                 }).catch(error => {
                     console.warn(`⚠️  直播梗概实验失败，不影响晚安、漫画或切片: ${error.message}`);
                     return null;
                 })
                 : null;
+            if (require('./clipping/stream_activity_plan').activityEnabled(configLoader.getConfig(), finalRoomId)) {
+                activitySummaryReady = liveContentSummaryPromise;
+            }
             let liveContentSummaryWarmupAttempted = false;
             const waitForLiveContentCacheWarmup = async () => {
                 if (

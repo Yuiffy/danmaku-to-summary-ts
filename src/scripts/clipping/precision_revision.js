@@ -154,11 +154,14 @@ async function renderPrecisionRevision(options, dependencies = {}) {
         const summary = { id, status: result.precisionRevision.status, metadataPath: outputMetadata,
             mediaPath: result.output.mediaPath, srtPath: result.output.srtPath, coverPath: result.output.coverPath,
             effectCount: result.creativePlan?.effects.length || 0, duration: result.window.duration,
+            sourceWindow: { start: result.window.start, end: result.window.end },
+            sourceExpansionCount: result.sourceExpansion?.attempts.length
+                || result.creativeResult?.history?.filter(row => row.stage === 'source_expanded').length || 0,
             removedSeconds: result.creativePlan?.timeline?.removedSeconds || 0, reason: result.creativeResult?.reason,
             qaStatus: result.qaResult?.status || null, uploadAuthorized: false };
         writeJsonAtomic(path.join(directory, 'RESULT.json'), summary);
         writeJsonAtomic(path.join(parent, 'latest.json'), summary);
-        fs.writeFileSync(path.join(directory, 'REVIEW.md'), `# ID${id} 精切重渲染\n\n状态：${summary.status}\n\n视频：${summary.mediaPath}\n\n效果节点：${summary.effectCount}\n\n质检：${summary.qaStatus}\n\n原稿与线上投稿保留，新版待人工查看。\n`, 'utf8');
+        fs.writeFileSync(path.join(directory, 'REVIEW.md'), `# ID${id} 精切重渲染\n\n状态：${summary.status}\n\n视频：${summary.mediaPath}\n\n素材窗口：${summary.sourceWindow.start}–${summary.sourceWindow.end}秒，扩窗 ${summary.sourceExpansionCount} 次\n\n效果节点：${summary.effectCount}\n\n质检：${summary.qaStatus}\n\n原稿与线上投稿保留，新版待人工查看。\n`, 'utf8');
         return summary;
     } catch (error) {
         if (directory) writeJsonAtomic(path.join(directory, 'ERROR.json'), { id, error: error.message, uploadAuthorized: false });

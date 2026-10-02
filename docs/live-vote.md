@@ -25,7 +25,7 @@
 
 各房间计时、选项和投票人去重互相独立；同一个观众可在不同房间各投一票。房间被移除、取消自动录制、主播身份变化或连接中断，会取消该房间投票并丢弃其待发公告；本机 WebSocket 断开会取消所有投票。所有房间共用发送队列，账号发言间隔至少 3 秒，多房间同时投票时播报可能排队延后，计票仍按各自截止时间结束。
 
-认证可通过环境变量配置，也可显式提供绝对路径 `recorderSettingsFile` 读取录播姬转发配置的 token；真实发送可显式提供 `credentialConfigPath`，读取其中的 `bilibili.cookie`，环境变量 `BILIBILI_VOTE_COOKIE` 优先。程序不会自动寻找生产凭据。`statePath` 可设为绝对路径，输出当前房间列表和连接状态，不含凭据。配置文件路径和凭据属于本机配置，不提交 Git。
+认证可通过环境变量配置，也可显式提供绝对路径 `recorderSettingsFile` 读取录播姬转发配置的 token；真实发送可显式提供 `credentialConfigPath`，读取其中的 `bilibili.cookie`，环境变量 `BILIBILI_VOTE_COOKIE` 优先。发送前会重新读取显式配置的凭据文件，Cookie 更新后无需重启投票机器人；每次读取都验证账号与 `botUid` 一致。环境变量由进程管理器注入时，更新后仍需重启进程并更新环境。程序不会自动寻找生产凭据。`statePath` 可设为绝对路径，输出当前房间列表和连接状态，不含凭据。配置文件路径和凭据属于本机配置，不提交 Git。
 
 多房间协议：`/api/local/danmaku` 首先发送 `rooms` 完整快照（`version: 1`，每房间含 `roomId`、`ownerUid` 字符串、`connected`），随后发送带 `roomId` 的 `danmaku` 帧；房间增删、自动录制开关、主播 UID 或连接状态变化会推送新快照。单房间端点 `/api/local/danmaku/{roomId}` 仍可使用，但只能连接当前纳入范围内的房间。
 

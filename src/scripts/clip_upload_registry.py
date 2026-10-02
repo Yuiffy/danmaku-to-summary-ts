@@ -1301,7 +1301,7 @@ def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.Co
     outputs: List[str] = []
     returncode = 0
     submission_rate_limited = False
-    timeout_seconds = timeout_seconds_for_job(job)
+    timeout_seconds = max(timeout_seconds_for_job(job), 4 * 60 * 60 if any(c.get("activityReviewRequired") for c in group) else 60)
 
     # --- JSON-backed clips: use the structured manifest ---
     if json_clips:

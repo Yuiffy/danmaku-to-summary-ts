@@ -81,11 +81,11 @@ function validatePlanBinding(plan, evidence, window) {
     return valid;
 }
 
-function storyConstraints(plan, evidence, window) {
-    validatePlanBinding(plan, evidence, window);
+function storyConstraints(plan, evidence, window, originalWindow = window) {
+    validatePlanBinding(plan, evidence, originalWindow);
     return plan.ranges.filter(row => row.action === 'keep').map((row, i) => ({ id: `topic-${i + 1}`,
         start: row.start - window.start,
-        end: (row === plan.ranges.at(-1) ? window.end : row.end) - window.start,
+        end: (row === plan.ranges.at(-1) ? originalWindow.end : row.end) - window.start,
         text: row.reason }));
 }
 

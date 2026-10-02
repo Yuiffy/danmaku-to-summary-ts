@@ -7,6 +7,10 @@ const configLoader = require('./config-loader');
 const aiTextGenerator = require('./ai_text_generator');
 const topicClipper = require('./topic_clipper');
 const ownStreamClipper = require('./own_stream_clipper');
+const streamActivities = require('./clipping/stream_activity_clipper');
+const { activityEnabled } = require('./clipping/stream_activity_plan');
+const streamGames = require('./clipping/stream_game_clipper');
+const { gameEnabled } = require('./clipping/stream_game_plan');
 const backgroundClipQueue = require('./background_clip_queue');
 const {
     applyFfmpegProcessPriority,
@@ -130,7 +134,7 @@ function shouldRunAnyClipper(roomId = null, xmlPath = null) {
         && !!xmlPath
         && fs.existsSync(xmlPath);
 
-    return Boolean(topicConfig.enabled || ownEnabledForRoom);
+    return Boolean(topicConfig.enabled || ownEnabledForRoom || activityEnabled(config, roomKey) || gameEnabled(config, roomKey));
 }
 
 function installBackgroundClipLogger(logPath) {
@@ -328,6 +332,39 @@ async function runBackgroundClipsFromPayload(payloadPath) {
         console.log(`   srt=${payload.srtPath}`);
         console.log(`   roomId=${payload.roomId || 'unknown'}`);
         const context = payload.context || {};
+        let activityNeedsSource = false;
+        try {
+            const result = await streamActivities.generateStreamActivities({
+                mediaPath: payload.originalMediaPath || payload.processedMediaPath,
+                srtPath: payload.srtPath, xmlPath: payload.xmlPath,
+                fullLiveContextPath: payload.fullLiveContextPath || null,
+                summaryPath: payload.liveContentSummaryPath || null,
+                context: { ...context, roomId: payload.roomId }
+            });
+            console.log(`歌切/同步视听: ${JSON.stringify(result)}`);
+            if (result.pendingReview) {
+                activityNeedsSource = true;
+                console.log('歌切/同步视听等待审核，保留原始视频供边界核对及修订');
+            }
+        } catch (error) {
+            activityNeedsSource = true;
+            console.warn(`歌切/同步视听处理失败，保留原始视频供恢复: ${error.message}`);
+        }
+        // Failed or pending activity submissions still need the recording for review/recovery.
+        if (activityNeedsSource) payload.videoPathToDelete = null;
+        try {
+            const result = await streamGames.generateStreamGames({
+                mediaPath: payload.originalMediaPath || payload.processedMediaPath,
+                srtPath: payload.srtPath, xmlPath: payload.xmlPath,
+                context: { ...context, roomId: payload.roomId }
+            });
+            console.log(`游戏完整切片: ${JSON.stringify(result)}`);
+            // Upload/subtitle retries verify the original source snapshot again.
+            if (result.status === 'rendered') payload.videoPathToDelete = null;
+        } catch (error) {
+            payload.videoPathToDelete = null;
+            console.warn(`游戏切片处理失败，保留原始视频供恢复: ${error.message}`);
+        }
         await generateTopicClipsForMedia(
             payload.originalMediaPath,
             payload.processedMediaPath,

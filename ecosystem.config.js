@@ -129,6 +129,20 @@ module.exports = {
       restart_delay: 10000
     },
     {
+      name: 'game-subtitle-queue-runner',
+      script: 'scripts/game_subtitle_queue_runner.js',
+      cwd: __dirname,
+      instances: 1,
+      exec_mode: 'fork',
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '256M',
+      env: { NODE_ENV: 'production', PYTHONIOENCODING: 'utf-8' },
+      error_file: path.join(__dirname, 'logs/game-subtitle-error.log'),
+      out_file: path.join(__dirname, 'logs/game-subtitle-out.log'),
+      restart_delay: 10000
+    },
+    {
       name: 'gpu-tdr-capture',
       script: 'scripts/gpu_tdr_capture.js',
       cwd: __dirname,

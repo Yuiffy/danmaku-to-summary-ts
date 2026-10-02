@@ -14,6 +14,20 @@ def _file_digest(value):
 
 
 def validate_metadata_qa(metadata):
+    if metadata.get("type") == "stream_game_submission":
+        try:
+            from .stream_game_review import validate_game_review
+        except ImportError:
+            from stream_game_review import validate_game_review
+        validate_game_review(metadata)
+        return
+    if metadata.get("type") == "stream_activity_submission" or (metadata.get("output") or {}).get("parts"):
+        try:
+            from .stream_activity_review import validate_activity_review
+        except ImportError:
+            from stream_activity_review import validate_activity_review
+        validate_activity_review(metadata)
+        return
     duration_approval = metadata.get("durationApproval")
     bounds = metadata.get("window") or {}
     rejection = metadata.get("originalSelectionRejection") or {}
@@ -130,13 +144,17 @@ def validate_registry_qa(groups):
                 continue
             metadata_path = clip.get("metadataPath")
             if not metadata_path:
-                if clip.get("qaRequired") or clip.get("attributionRequired") or clip.get("humanReviewRequired"):
+                if clip.get("qaRequired") or clip.get("attributionRequired") or clip.get("humanReviewRequired") or clip.get("activityReviewRequired") or clip.get("gameReviewRequired"):
                     errors.append("reviewed clip is missing metadataPath")
                 continue
-            if not Path(metadata_path).exists() and not (clip.get("qaRequired") or clip.get("attributionRequired") or clip.get("humanReviewRequired")):
+            if not Path(metadata_path).exists() and not (clip.get("qaRequired") or clip.get("attributionRequired") or clip.get("humanReviewRequired") or clip.get("activityReviewRequired") or clip.get("gameReviewRequired")):
                 continue
             try:
                 metadata = json.loads(Path(metadata_path).read_text(encoding="utf-8-sig"))
+                if clip.get("activityReviewRequired") and metadata.get("type") != "stream_activity_submission":
+                    raise ValueError("required activity review was removed")
+                if clip.get("gameReviewRequired") and metadata.get("type") != "stream_game_submission":
+                    raise ValueError("required game review was removed")
                 if clip.get("qaRequired") and not metadata.get("qaRequired"):
                     raise ValueError("required AI quality review was removed")
                 if clip.get("attributionRequired") and not metadata.get("attributionRequired"):
@@ -146,7 +164,7 @@ def validate_registry_qa(groups):
                 if clip.get("humanReviewRequired") and metadata["ownStreamHumanReview"].get("clipId") != clip.get("id"):
                     raise ValueError("human review belongs to a different clip ID")
                 validate_metadata_qa(metadata)
-                if metadata.get("qaRequired") or metadata.get("attributionRequired") or metadata.get("ownStreamHumanReview"):
+                if metadata.get("qaRequired") or metadata.get("attributionRequired") or metadata.get("ownStreamHumanReview") or metadata.get("type") == "stream_game_submission" or clip.get("activityReviewRequired") or clip.get("gameReviewRequired"):
                     expected = {"title": metadata["copy"]["title"], "description": metadata["copy"]["description"],
                                 "mediaPath": metadata["output"]["mediaPath"], "coverPath": metadata["output"]["coverPath"]}
                     for key, value in expected.items():
@@ -154,6 +172,12 @@ def validate_registry_qa(groups):
                         same = Path(actual).resolve() == Path(value).resolve() if key.endswith("Path") and actual else actual == value
                         if not same:
                             raise ValueError(f"registry {key} differs from reviewed artifact")
+                    if (clip.get("activityReviewRequired") or clip.get("gameReviewRequired")) and (clip.get("parts") != metadata["output"]["parts"]
+                        or clip.get("collectionSectionId") != metadata["upload"]["collectionSectionId"]):
+                        raise ValueError("registry multipart pages or collection differ from reviewed artifact")
+                    if metadata.get("type") == "stream_game_submission" and (clip.get("gameReviewRequired") is not True
+                        or clip.get("externalSubtitles") is not True or clip.get("subtitleLanguage") != metadata["upload"]["subtitleLanguage"]):
+                        raise ValueError("registry game review or external subtitle settings differ from reviewed artifact")
             except (OSError, ValueError, TypeError, KeyError) as error:
                 errors.append(f"clip quality gate {metadata_path}: {error}")
     return errors

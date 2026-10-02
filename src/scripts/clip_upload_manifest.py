@@ -273,6 +273,11 @@ def load_upload_manifest(
                 "mediaPath": media_path,
                 "cover": cover_path,
                 "coverPath": cover_path,
+                **({"parts": output["parts"], "activityReviewRequired": metadata.get("type") != "stream_game_submission",
+                    "gameReviewRequired": metadata.get("type") == "stream_game_submission",
+                    "externalSubtitles": upload.get("externalSubtitles") is True, "subtitleLanguage": upload.get("subtitleLanguage") or "zh-CN",
+                    "collectionSectionId": upload.get("collectionSectionId")}
+                   if metadata.get("type") == "stream_activity_submission" or output.get("parts") else {}),
                 "selectionSource": selection_source,
                 "metadataPath": metadata_path,
                 "srtPath": _resolve_optional_path(output.get("srtPath"), path.parent),

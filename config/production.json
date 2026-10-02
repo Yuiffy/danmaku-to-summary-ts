@@ -1682,6 +1682,27 @@
       "danmakuContextSeconds": 45
     }
   },
+  "streamGameClips": {
+    "enabled": true,
+    "roomIds": ["25788785"],
+    "maxSingleVideoSeconds": 3600,
+    "autoUpload": true,
+    "ai": { "boundaryEvidenceMethod": "independent_local_asr", "boundaryModel": "gemini-3.1-pro-preview", "frameProvider": "daiYu", "frameApiMode": "openai_chat", "frameModel": "gpt-6-luna" },
+    "authorizationNote": "用户授权切出并投稿岁己所有艾尔登法环游玩内容，并让以后的艾尔登法环自动投稿；保留游戏音画，上传外挂字幕。",
+    "games": [{
+      "id": "elden-ring", "name": "艾尔登法环",
+      "aliases": ["艾尔登法环", "艾登法环", "法环", "老头环", "ELDEN RING"],
+      "tid": 17, "tags": ["岁己", "小岁", "艾尔登法环", "老头环", "游戏实况", "虚拟主播"],
+      "collection": { "seasonId": 9223925, "sectionId": 10312687 }
+    }]
+  },
+  "streamActivityClips": {
+    "enabled": true,
+    "detectionMode": "summary",
+    "roomIds": ["25788785"],
+    "songs": { "collection": { "seasonId": 9223796, "sectionId": 10312547 } },
+    "watch": { "collection": { "seasonId": 9223831, "sectionId": 10312582 } }
+  },
   "ownStreamClips": {
     "enabled": true,
     "enhancements": {

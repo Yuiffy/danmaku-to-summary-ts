@@ -96,7 +96,7 @@ test.each(['recovered', 'invalid_again', 'qa_rejected', 'resumed', 'source_incom
             expect(stages).toEqual(['story', 'story-qa']);
             expect(result.creativeResult.reason).toContain('source_window_incomplete');
             expect(result.creativeResult.reason).toContain('结尾后半句');
-            expect(result.creativeResult.history.at(-1).qa.needsSourceExpansion).toBe(true);
+            expect(result.creativeResult.history.find(row => row.stage === 'source_window_incomplete').qa.needsSourceExpansion).toBe(true);
             expect(context.topic.cutClipMedia).not.toHaveBeenCalled();
             return;
         }
@@ -109,7 +109,7 @@ test.each(['recovered', 'invalid_again', 'qa_rejected', 'resumed', 'source_incom
             expect(stages).not.toContain('story-qa-final');
         } else {
             expect(stages).toContain('story-qa-final');
-            expect(result.creativeResult.reason).toBe(outcome === 'qa_rejected' ? 'story_qa_rejected' : 'creative_failed: test_media_boundary');
+            expect(result.creativeResult.reason).toContain(outcome === 'qa_rejected' ? 'story_qa_rejected' : 'creative_failed: test_media_boundary');
             expect(stages.includes('moments')).toBe(outcome !== 'qa_rejected');
         }
         if (outcome === 'resumed') {

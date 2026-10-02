@@ -881,6 +881,47 @@ export interface WeChatWorkConfig {
   webhookUrl?: string;
 }
 
+/** Complete per-stream performances and viewing sessions, published as multipart archives. */
+export interface StreamActivityClipsConfig {
+  enabled: boolean;
+  detectionMode?: 'summary' | 'standalone_scan';
+  roomIds: Array<string | number>;
+  outputDirName?: string;
+  chunkSeconds?: number;
+  contextSeconds?: number;
+  maxEvidenceChars?: number;
+  ai?: { model?: string; boundaryModel?: string; timeoutMs?: number; maxTokens?: number };
+  verification?: { enabled?: boolean; provider?: 'tuZi' | 'gemini'; apiMode?: 'gemini_native' | 'openai_chat'; model?: string; contextSeconds?: number; maxAudioSeconds?: number; timeoutMs?: number;
+    boundaryContextSeconds?: number; batchMaxEvents?: number; batchMaxAudioSeconds?: number; maxBatchRequests?: number; boundaryTimeoutMs?: number };
+  songs?: { enabled?: boolean; paddingSeconds?: number; tid?: number; tags?: string[];
+    collection?: { seasonId?: number | null; sectionId?: number | null } };
+  watch?: { enabled?: boolean; targetPartSeconds?: number; maxPartSeconds?: number; tid?: number; tags?: string[];
+    collection?: { seasonId?: number | null; sectionId?: number | null } };
+}
+
+/** Complete allowlisted gameplay, with optional external subtitles and account-aware grouping. */
+export interface StreamGameClipsConfig {
+  enabled: boolean;
+  roomIds: Array<string | number>;
+  outputDirName?: string;
+  chunkSeconds?: number;
+  contextSeconds?: number;
+  maxEvidenceChars?: number;
+  targetPartSeconds?: number;
+  maxPartSeconds?: number;
+  maxSingleVideoSeconds?: number;
+  maxPartsPerSubmission?: number;
+  autoUpload?: boolean;
+  authorizationNote?: string;
+  ai?: { model?: string; boundaryEvidenceMethod?: 'native_audio' | 'independent_local_asr';
+    boundaryModel?: string; boundaryProvider?: 'tuZi' | 'gemini' | 'daiYu';
+    boundaryApiMode?: 'gemini_native' | 'openai_chat'; frameModel?: string; frameProvider?: 'tuZi' | 'gemini' | 'daiYu';
+    frameApiMode?: 'gemini_native' | 'openai_chat'; timeoutMs?: number; maxTokens?: number };
+  visual?: { provider?: 'tuZi' | 'gemini' | 'daiYu'; apiMode?: 'gemini_native' | 'openai_chat'; model?: string; sampleSeconds?: number; timeoutMs?: number };
+  games: Array<{ id: string; name: string; aliases: string[]; tid?: number; tags?: string[];
+    collection?: { seasonId?: number | null; sectionId?: number | null } }>;
+}
+
 export interface RecorderStallDiagnosticsConfig {
   /** 是否在 SessionStarted 后自动诊断迟迟没有 FileOpening 的录制会话。 */
   enabled?: boolean;
@@ -949,6 +990,8 @@ export interface AppConfig {
   ai: AIConfig;
   fusion: FusionConfig;
   clipTopics: ClipTopicsConfig;
+  streamActivityClips?: StreamActivityClipsConfig;
+  streamGameClips?: StreamGameClipsConfig;
   storage: StorageConfig;
   monitoring: MonitoringConfig;
   bilibili: BilibiliConfig;

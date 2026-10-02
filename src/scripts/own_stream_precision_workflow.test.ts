@@ -2,7 +2,8 @@ export {};
 jest.mock('child_process', () => ({ ...jest.requireActual('child_process'),
     spawnSync: jest.fn(() => ({ status: 0, stdout: '', stderr: '' })),
     execFile: jest.fn((_file, _args, _options, callback) => callback(null, JSON.stringify({
-        format: { duration: 60 }, streams: [{ codec_type: 'video', width: 640, height: 360, start_time: 0 },
+        // The selection pipeline adds the verified three-second closing hold.
+        format: { duration: 63 }, streams: [{ codec_type: 'video', width: 640, height: 360, start_time: 0 },
             { codec_type: 'audio', start_time: 0 }] }))) }));
 const fs = require('fs');
 const path = require('path');
