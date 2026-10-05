@@ -49,6 +49,7 @@ async function refreshReviewUnlocked(planPath, options = {}) {
         ...(starts.length && ends.length ? { processingStats: own.buildClipProcessingStats(results,
             Math.max(...ends) - Math.min(...starts), new Date(Math.min(...starts)).toISOString(), new Date(Math.max(...ends)).toISOString()) } : {})
     };
+    Object.assign(metadata, require('../workflow-runtime').loadWorkflow('clipping/reviewSelectionHistory').preserveDeferredSelection(previous?.metadata, metadata));
     delete metadata.registrationError;
     const registered = own.registerReviewForUpload(reviewPath, all, metadata);
     if (!registered || registered.clipIds.length !== all.length) throw new Error(metadata.registrationError || 'Incomplete ID registration');

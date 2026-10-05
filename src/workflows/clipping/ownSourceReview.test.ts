@@ -33,6 +33,9 @@ test('minor homophone errors are judged by factual impact without rewriting or g
         expect(prompt).toContain('不要求额外ASR');
         expect(prompt).toContain('整段语境无歧义');
         expect(prompt).toContain('不因省略同义的“考虑”再次阻塞');
+        expect(prompt).toContain('文案不依赖疑句时通过');
+        expect(prompt).toContain('普通家人提及、童年坐车和无冲突的日常回忆允许');
+        expect(prompt).toContain('若本房间明确有更广排除');
         return {text:JSON.stringify({reviews:[
             {clipId:'s1',status:'passed',checks:{content:true,subtitles:true,policy:true},issues:[]},
             {clipId:'s2',status:'passed',checks:{content:true,subtitles:true,policy:true},issues:[]}]})};

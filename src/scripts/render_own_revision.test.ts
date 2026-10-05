@@ -278,8 +278,8 @@ describe('own-stream subtitle revisions', () => {
       sourceKind: 'live_speech' }, config)).rejects.toThrow('Short clips require');
   });
 
-  test('replanning a rejected window preserves its ID and history, then uses the normal render gates', async () => {
-    metadata.selectionRejection = { reason: 'outside_candidate_context' };
+  test.each(['outside_candidate_context', 'public_copy_evidence_dropped'])('replanning %s preserves its ID and history, then uses the normal render gates', async reason => {
+    metadata.selectionRejection = { reason };
     metadata.output.mediaPath = null; metadata.output.burnedSubtitles = false;
     delete metadata.ownStreamHumanReview; save();
     const registryPath = path.join(directory, 'registry.json');
@@ -292,7 +292,7 @@ describe('own-stream subtitle revisions', () => {
     expect(fs.readFileSync(file, 'utf8')).toBe(before);
     const draft = await updateRevision(file, replan, config);
     expect(load()).toMatchObject({ uploadId: 7, reviewIndex: 4, rebuildRequired: true,
-      originalSelectionRejection: { reason: 'outside_candidate_context' },
+      originalSelectionRejection: { reason },
       editorialReplan: { clipId: 7, start: 2, end: 60, originalWindow: { start: 1, end: 61 } } });
     expect(load().selectionRejection).toBeUndefined();
     await updateRevision(file, { ...options, registryPath, action: 'approve' }, config);
@@ -300,7 +300,7 @@ describe('own-stream subtitle revisions', () => {
       expectedSha256: draft.candidateSrtSha256 }, config);
     expect(load().output.burnedSubtitles).toBe(true);
     expect(load().uploadId).toBe(7);
-    expect(load().originalSelectionRejection.reason).toBe('outside_candidate_context');
+    expect(load().originalSelectionRejection.reason).toBe(reason);
   });
 
   test('replanning refuses overlap with retained clips, including new overlap before queue approval', async () => {

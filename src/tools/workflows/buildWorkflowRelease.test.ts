@@ -8,7 +8,7 @@ test('repeat builds and failed builds clean their staging files without activati
   try {
     const entries = ['clipping/stage', 'clipping/editPlan', 'clipping/enhancement', 'clipping/experiment',
       'clipping/activityStages', 'clipping/activityAudio', 'clipping/activityTitles', 'clipping/activityPublication', 'clipping/ownTimingRecovery',
-      'clipping/reviewDigest', 'clipping/ownSourceReview',
+      'clipping/reviewDigest', 'clipping/reviewSelectionHistory', 'clipping/ownSourceReview',
       'clipping/ownPublicationRepair', 'clipping/ownRequiredReview', 'clipping/subtitleWindowEvidence', 'clipping/ownPublicationRecheck',
       'clipping/ownSubtitleRepairRuntime',
       'clipping/gameOpening', 'clipping/publicationReview', 'clipping/publicationRuntime', 'clipping/topicRecovery',

@@ -5,6 +5,7 @@ const publicationPolicy = require('./publication_policy');
 // Presentation extracted from the CLI; all existing formatting helpers remain compatible exports there.
 function buildNotifyMarkdown(results, metadata, hooks) {
     metadata = ownReview.withRegistryIndices(results, metadata);
+    results = require('../workflow-runtime').loadWorkflow('clipping/reviewSelectionHistory').reviewDisplayRows(results);
     results = ownReview.chronologicalResults(results);
     const aiStatusLine = hooks.buildAiStatusLine(metadata.aiStatus);
     const uploadIds = !metadata.planOnly && Array.isArray(metadata.uploadRegistry?.clipIds) ? metadata.uploadRegistry.clipIds : [];
@@ -28,14 +29,14 @@ function buildNotifyMarkdown(results, metadata, hooks) {
         if (!metadata.planOnly) lines.push(`   状态: ${ownReview.reviewStatus(result, metadata)}`);
         lines.push(...ownReview.reviewDetailLines(result, metadata, { includeIssues: false }));
     });
-    lines.push(...require('../workflow-runtime').loadWorkflow('clipping/reviewDigest').deferredReviewLines(metadata));
+    lines.push(...require('../workflow-runtime').loadWorkflow('clipping/reviewDigest').deferredReviewLines(metadata, results));
     const diagnostics = require('../workflow-runtime').loadWorkflow('clipping/reviewDigest').compactDiagnosticLines(metadata);
     if (diagnostics.length) lines.push('', '批次告警:', ...diagnostics);
     return lines.join('\n');
 }
 async function withNotifyExcerpts(results) {
     const brief = require('../workflow-runtime').loadWorkflow('clipping/reviewDigest');
-    return brief.withReviewExcerpts(results, {
+    return brief.withReviewExcerpts(require('../workflow-runtime').loadWorkflow('clipping/reviewSelectionHistory').reviewDisplayRows(results), {
         exists: file => require('fs').existsSync(file),
         subtitles: file => require('../asr/asr_backends').parseSrt(file).segments,
         audience: brief.readReviewAudience

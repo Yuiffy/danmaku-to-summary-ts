@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const REPLANNABLE = new Set(['outside_candidate_context', 'overlap_after_alignment', 'overlap']);
+const REPLANNABLE = new Set(['outside_candidate_context', 'overlap_after_alignment', 'overlap', 'public_copy_evidence_dropped']);
 const samePath = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
 
 function checkRegistryOverlap(metadata, options, start, end) {

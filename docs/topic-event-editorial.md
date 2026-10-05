@@ -405,6 +405,11 @@ python src/scripts/clip_upload_registry.py cut --ids 123 --review-note "已检�
 python src/scripts/clip_upload_registry.py rebuild --id 123 --replan --start 1200 --end 1290 --review-note "重新核对了起因、讨论和收尾，与已保留片段不重叠" --source-kind live_speech --title "新窗口的标题" --description "片内事实概述" --cover-text "新窗口封面"
 ```
 
+因 `public_copy_evidence_dropped` 被筛掉的自有直播候选也可明确 `--replan`：重新选定
+不同且不与保留片段重叠的完整窗口，提供有当前片内依据的全部文案，保留原 ID 和拒绝历史。
+这只准备修订，不批准旧草稿；重建和成片独立复核仍按原门禁执行。来源/证据本身无效的
+拒绝不能走此路径，字幕时间轴异常仍须提供校准转写并重建核对原音。
+
 `--replan` 必须同时提供新起止时间、完整文案和来源复核，不能原窗不变直接放行。
 程序检查源证据与同一录播其他保留 ID 的窗口，保留原剔除记录及新编辑计划；
 字幕修订、入队确认、重压时仍检查来源和重叠。其他剔除原因不因此解除。

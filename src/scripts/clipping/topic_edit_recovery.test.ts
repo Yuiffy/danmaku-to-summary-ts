@@ -73,5 +73,8 @@ test('persistent boundary rejection stops after two repairs without returning th
         expect(result).toEqual([]);
         expect(generate).toHaveBeenCalledTimes(6);
         expect(diagnostics.validation.rejected[0].reason).toBe('topic_boundary_incomplete');
+        expect(diagnostics.validation.rejected[0].title).toBeTruthy();
+        expect(diagnostics.validation.rejected[0].start).toBe(0);
+        expect(diagnostics.validation.rejected[0].end).toBe(10);
     } finally { generate.mockRestore(); }
 });

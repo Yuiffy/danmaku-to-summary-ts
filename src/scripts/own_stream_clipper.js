@@ -315,7 +315,7 @@ function buildSelectionPolicyPromptLines(policy = {}, roomId = null) {
     const priority = Array.isArray(policy.priorityCategories)
         ? policy.priorityCategories.map(value => String(value).trim()).filter(Boolean)
         : [];
-    if (excluded.length) lines.push(`本次任务明确排除这些类型：${excluded.join('、')}。`);
+    if (excluded.length) lines.push(`本次任务明确排除这些类型：${excluded.join('、')}。`, require('./workflow-runtime').loadWorkflow('clipping/publicationReview').SELECTION_SCOPE_STANDARD);
     if (priority.length) lines.push(`本次任务优先关注这些类型：${priority.join('、')}。`);
     if (policy.requireTimeCoverage === true) {
         lines.push('本次任务要求覆盖不同时间段；不要把名额全部集中在同一小段话题内。');
@@ -970,7 +970,7 @@ async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config,
                 const i = normalized.findIndex(c => String(c.candidateIndex) === String(row.candidateIndex));
                 if (row.approved) normalized[i].boundaryReview = { ...row, sourceSha256: subtitleEvidence.sourceSha256 };
                 else {
-                    rejected.push({ candidateIndex: row.candidateIndex, reason: 'topic_boundary_incomplete', issues: row.issues,
+                    rejected.push({ ...normalized[i], candidateIndex: row.candidateIndex, reason: 'topic_boundary_incomplete', issues: row.issues,
                         minimumEnd: row.requiredEndCueId ? subtitleEvidence.byId.get(row.requiredEndCueId).end : null });
                     normalized.splice(i, 1);
                 }

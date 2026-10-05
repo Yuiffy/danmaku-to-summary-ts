@@ -143,6 +143,20 @@ describe('one chronological own-stream review with durable IDs', () => {
     expect(message).toContain('成片待审核 0');
   });
 
+  test('editorially skipped candidates show the retained topic and no request for another approval', () => {
+    const text = own.buildNotifyMarkdown([{ ...clip(1, 0, true), selectionRejection: { reason: 'public_copy_evidence_dropped' } }], {
+      automaticPublication: { enabled: true }, uploadRegistry: { clipIdsByReviewIndex: { 1: 3106 },
+        clipStatusByReviewIndex: { 1: 'cancelled' }, editorialExclusionsByReviewIndex: {
+          1: { reason: '同属雷神理发主题，本场只保留ID3107' }
+        } }
+    });
+    expect(text).toContain('已跳过 1');
+    expect(text).toContain('待人工复核或异常 0');
+    expect(text).toContain('同属雷神理发主题，本场只保留编号3107');
+    expect(text).not.toContain('回复编号');
+    expect(text).not.toContain('暂不可上传');
+  });
+
   test('automatic list uses durable uploaded and queued states, and asks only unresolved clips for review', () => {
     const passed = index => ({ ...clip(index, index * 20), automaticPublicationRequired: true,
       publicationReview: { status: 'passed', issues: [] }, publicationDecision: { action: 'auto_queue', reasons: [] } });
@@ -306,12 +320,19 @@ describe('one chronological own-stream review with durable IDs', () => {
       expect(second.clipIds).toEqual(first.clipIds);
       expect(fetch).toHaveBeenCalledTimes(delivered);
       const changedPlan = JSON.parse(fs.readFileSync(planPath, 'utf8'));
+      const statePath = path.join(directory, 'REVIEW_STATE.json');
+      const saved = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+      saved.metadata.aiStatus.ranking = { sourceSha256: 'original', skipped: [{ candidateIndex: 77,
+        title: '没找到奶茶', start: 40, end: 50, score: 60, reason: '看点偏弱' }] };
+      fs.writeFileSync(statePath, JSON.stringify(saved));
       changedPlan.precisionExperiment.reason = 'selection_failed';
       changedPlan.precisionExperiment.error = 'Selection transport failed';
       fs.writeFileSync(planPath, JSON.stringify(changedPlan));
       await artifacts.refreshReview(planPath, { notify: true, config });
       expect(fetch.mock.calls.length).toBeGreaterThan(delivered);
       expect(fetch.mock.calls.map(([, options]) => JSON.parse(options.body).markdown.content).join('\n')).toContain('审核服务连接失败');
+      expect(JSON.parse(fs.readFileSync(statePath, 'utf8')).metadata.deferredSelectionHistory.rows)
+        .toEqual(expect.arrayContaining([expect.objectContaining({ label: 'R77', title: '没找到奶茶', score: 60 })]));
       expect(cut).not.toHaveBeenCalled();
       expect(model).not.toHaveBeenCalled();
       const review = fs.readFileSync(path.join(directory, 'REVIEW.md'), 'utf8');

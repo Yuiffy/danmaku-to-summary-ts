@@ -49,11 +49,12 @@ function summaryLines(results, metadata = {}) {
         const queued = results.filter(result => status(result) === 'queued');
         const processing = results.filter(result => ['uploading', 'rendering'].includes(status(result)));
         const remaining = results.filter(result => !uploaded.includes(result) && !queued.includes(result) && !processing.includes(result));
-        const rejected = remaining.filter(result => result.selectionRejection || result.publicationDecision?.action === 'rejected');
-        const duplicates = remaining.filter(result => !rejected.includes(result) && automaticEnqueueIssue(result, metadata)?.kind === 'duplicate');
-        const ready = remaining.filter(result => !rejected.includes(result) && uploadEligible(result)
+        const cancelled = remaining.filter(result => status(result) === 'cancelled');
+        const rejected = remaining.filter(result => !cancelled.includes(result) && (result.selectionRejection || result.publicationDecision?.action === 'rejected'));
+        const duplicates = remaining.filter(result => !cancelled.includes(result) && !rejected.includes(result) && automaticEnqueueIssue(result, metadata)?.kind === 'duplicate');
+        const ready = remaining.filter(result => !cancelled.includes(result) && !rejected.includes(result) && uploadEligible(result)
             && !automaticEnqueueIssue(result, metadata) && !metadata.uploadRegistry?.reviewPendingByReviewIndex?.[result.reviewIndex] && status(result) !== 'failed');
-        return [`总候选 ${results.length} | 已投稿 ${uploaded.length} | 已排队 ${queued.length}${processing.length ? ` | 投稿处理中 ${processing.length}` : ''} | 待入队 ${ready.length} | 待人工复核或异常 ${remaining.length - ready.length - rejected.length - duplicates.length}${duplicates.length ? ` | 重复已跳过 ${duplicates.length}` : ''} | 未通过 ${rejected.length}`,
+        return [`总候选 ${results.length} | 已投稿 ${uploaded.length} | 已排队 ${queued.length}${processing.length ? ` | 投稿处理中 ${processing.length}` : ''} | 待入队 ${ready.length} | 待人工复核或异常 ${remaining.length - ready.length - rejected.length - duplicates.length - cancelled.length}${duplicates.length ? ` | 重复已跳过 ${duplicates.length}` : ''}${cancelled.length ? ` | 已跳过 ${cancelled.length}` : ''} | 未通过 ${rejected.length}`,
             'AI审核通过的切片自动入队，只需处理待复核或异常项。投稿状态在清单内展示，不另发成功通知。'];
     }
     const uploaded = results.filter(result => metadata.uploadRegistry?.clipStatusByReviewIndex?.[result.reviewIndex] === 'uploaded');
@@ -105,6 +106,7 @@ function reviewStatus(result, metadata = {}) {
     if (state === 'queued') return metadata.automaticPublication?.enabled ? '已排队投稿' : '已排队上传';
     if (state === 'uploading') return '正在上传';
     if (state === 'rendering') return '上传队列正在制作';
+    if (state === 'cancelled') return '已跳过投稿';
     if (state === 'failed') return '投稿失败';
     const enqueueIssue = automaticEnqueueIssue(result, metadata);
     if (enqueueIssue?.kind === 'duplicate') return `重复已跳过（${enqueueIssue.message}）`;
@@ -179,6 +181,7 @@ function clipId(result, metadata = {}, index = 0) {
 function reviewDetailLines(result, metadata = {}, options = {}) {
     const includeIssues = options.includeIssues !== false;
     const state = metadata.uploadRegistry?.clipStatusByReviewIndex?.[result.reviewIndex];
+    if (!includeIssues && state === 'cancelled') return [`   理由: ${require('../workflow-runtime').loadWorkflow('clipping/reviewDigest').shortChineseReason(metadata.uploadRegistry?.editorialExclusionsByReviewIndex?.[result.reviewIndex]?.reason, '已取消本候选的投稿')}`];
     const enqueueIssue = automaticEnqueueIssue(result, metadata);
     if (!includeIssues && enqueueIssue?.kind === 'duplicate') return [];
     if (!includeIssues && metadata.automaticPublication?.enabled
@@ -188,7 +191,7 @@ function reviewDetailLines(result, metadata = {}, options = {}) {
     if (!includeIssues) {
         const pending = !uploadEligible(result) || metadata.uploadRegistry?.reviewPendingByReviewIndex?.[result.reviewIndex];
         const brief = require('../workflow-runtime').loadWorkflow('clipping/reviewDigest');
-        const lines = pending ? result.selectionRejection ? [`   理由: ${brief.shortReviewReasons(issues).join('；')}`] : brief.compactReviewLines(result, issues) : [];
+        const lines = pending ? brief.compactReviewLines(result, issues) : [];
         if (enqueueIssue && enqueueIssue.kind !== 'duplicate') lines.unshift(`   自动投稿: ${brief.shortChineseReason(enqueueIssue.message, '入队条件待核')}`);
         if (pending) lines.push(state === 'uploaded' ? '   已投稿；如有异常请在B站修改。' : '   暂不可上传，回复编号＋改法。');
         return lines;

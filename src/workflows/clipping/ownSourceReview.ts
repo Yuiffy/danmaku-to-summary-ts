@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { parseModelJson } from '../text/json';
 import * as path from 'path';
-import { SUBTITLE_MATERIALITY_STANDARD, PUBLIC_COPY_MATERIALITY_STANDARD } from './reviewStandards';
+import { SUBTITLE_MATERIALITY_STANDARD, PUBLIC_COPY_MATERIALITY_STANDARD, SELECTION_SCOPE_STANDARD } from './reviewStandards';
 
 type Data = Record<string, any>;
 const CHECKS = ['content', 'subtitles', 'policy'];
@@ -53,6 +53,7 @@ export async function reviewOwnSourceCandidates(clips: Data[], input: OwnSourceR
                 '逐片核查完整起因、发展与收尾、发布文案条件/数字/引用，以及待烧字幕是否实质影响主要内容。',
                 SUBTITLE_MATERIALITY_STANDARD,
                 PUBLIC_COPY_MATERIALITY_STANDARD,
+                SELECTION_SCOPE_STANDARD,
                 `主播：${input.streamerName}；明确排除的选材范围：${JSON.stringify(input.excludedCategories)}。区分影视对白、假设与主播现实经历；触及排除范围为rejected。`,
                 '不能用窗口外原话撑文案；没有首尾完整依据为needs_review。此前人物复核通过不等于字幕、故事和选材已通过。没有视频/音频时不声称看过或听过。',
                 '每片只给1–2条具体中文阻塞理由，每条60字以内，保留疑词/数字/时间并说明事实影响；通过时issues为空，不写小错、英文审核标签或重复的通过说明。',

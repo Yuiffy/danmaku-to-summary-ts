@@ -84,6 +84,7 @@ describe('independent action attribution review', () => {
     }
     const prompt = actorReviewPrompt([p], namedContext);
     expect(prompt).toContain('允许有原文依据的自然概括');
+    expect(prompt).toContain('不得新增“当面”');
     expect(prompt).toContain('动物、昆虫、物品不是待实名的人物');
     expect(prompt).toContain('被提及者、转述对象');
     expect(prompt).toContain('本人未出声不意味着故事对象无法具名');

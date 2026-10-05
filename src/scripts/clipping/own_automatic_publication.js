@@ -9,7 +9,9 @@ async function inspectFinals(results, { runtime, automatic, config, rootConfig, 
     const reviewContext = {
             config: automatic, roomId: String(info.roomId), streamerName, excludedCategories: config.selectionPolicy.excludedCategories,
             ffmpegPath: options.ffmpegPath || 'ffmpeg', ffprobePath: topic.resolveFfprobePath(options.ffmpegPath || 'ffmpeg'),
-            aiEnabled: config.ai?.enabled !== false && rootConfig.ai?.text?.enabled !== false, persist
+            aiEnabled: config.ai?.enabled !== false && rootConfig.ai?.text?.enabled !== false, persist,
+            configuredPeople: require('./person_evidence').buildPersonEvidenceContext(rootConfig, info.roomId)
+                .map(({ id, label, names }) => ({ id, label, names }))
         };
     const request = (artifact, phase, prompt, images) => require('./enhancement_runner').requestStage(
         { ...settings.stageDefaults, ...settings.stages?.qa }, settings.budget,

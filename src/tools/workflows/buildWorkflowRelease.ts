@@ -13,6 +13,7 @@ const entries = {
   'clipping/activityTitles': 'workflows/clipping/activityTitles.js',
   'clipping/activityPublication': 'workflows/clipping/activityPublication.js',
   'clipping/reviewDigest': 'workflows/clipping/reviewDigest.js',
+  'clipping/reviewSelectionHistory': 'workflows/clipping/reviewSelectionHistory.js',
   'clipping/ownSourceReview': 'workflows/clipping/ownSourceReview.js',
   'clipping/ownTimingRecovery': 'workflows/clipping/ownTimingRecovery.js',
   'clipping/ownPublicationRepair': 'workflows/clipping/ownPublicationRepair.js',

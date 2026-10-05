@@ -9,6 +9,20 @@ const { chronologicalResults } = require('./own_review_report');
 function prepareReviewResults(results, plan, parsed, outputRoot) {
     const topic = require('../topic_clipper');
     const evidence = buildSubtitleEvidence(parsed.segments);
+    const presentation = require('../workflow-runtime').loadWorkflow('clipping/reviewSelectionHistory');
+    const candidates = [];
+    const requestsDirectory = path.join(outputRoot, '.selection-cache/requests');
+    if (fs.existsSync(requestsDirectory)) for (const name of fs.readdirSync(requestsDirectory).filter(name => /^global-rank-.*\.json$/u.test(name))) {
+        try {
+            const request = JSON.parse(fs.readFileSync(path.join(requestsDirectory, name), 'utf8'));
+            const ranking = plan.aiStatus?.ranking;
+            if (request.sourceSha256 === evidence.sourceSha256 && ranking
+                && (ranking.promptSha256 ? request.promptSha256 === ranking.promptSha256 : request.prompt?.length === ranking.promptChars)) candidates.push(...(request.candidates || []));
+        } catch { /* An unrelated or invalid request cannot supply a review label. */ }
+    }
+    if (plan.aiStatus?.ranking?.sourceSha256 === evidence.sourceSha256) {
+        plan.aiStatus.ranking = presentation.enrichSkippedRanking(plan.aiStatus.ranking, candidates);
+    }
     const rejected = [...(plan.aiStatus?.validation?.rejected || []), ...(plan.aiStatus?.rejectedAfterAlignment || [])];
     const requestId = plan.aiStatus?.requests?.find(request => request.phase === 'global-rerank')?.requestId;
     if (requestId && rejected.some(item => !item.title)) {
@@ -38,12 +52,20 @@ function prepareReviewResults(results, plan, parsed, outputRoot) {
         })).digest('hex').slice(0, 20);
         const directory = path.join(outputRoot, 'rejected_candidates');
         const metadataPath = path.join(directory, `rejected-${key}.json`);
+        const reviewPresentation = { ...presentation.recoverRejectedPresentation(rejection, candidates), sourceSha256: evidence.sourceSha256 };
         if (fs.existsSync(metadataPath)) {
             const existing = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+            let changed = false;
             if (!existing.selectionSource) {
                 existing.selectionSource = rejection.selectionSource || 'model_global_rerank';
-                fs.writeFileSync(metadataPath, `${JSON.stringify(existing, null, 2)}\n`, 'utf8');
+                changed = true;
             }
+            if (existing.selectionRejection?.sourceSha256 === evidence.sourceSha256 && !existing.output?.mediaPath
+                && reviewPresentation.title && JSON.stringify(existing.reviewPresentation) !== JSON.stringify(reviewPresentation)) {
+                existing.reviewPresentation = reviewPresentation;
+                changed = true;
+            }
+            if (changed) fs.writeFileSync(metadataPath, `${JSON.stringify(existing, null, 2)}\n`, 'utf8');
             return existing;
         }
         const start = Number.isFinite(rejection.start) ? rejection.start : evidence.byId.get(rejection.startCueId)?.start;
@@ -57,7 +79,7 @@ function prepareReviewResults(results, plan, parsed, outputRoot) {
         const metadata = {
             version: 1, mode: 'own_stream_fun_review', status: 'selection_rejected', reviewIndex: index,
             generatedAt: new Date().toISOString(), source, window,
-            selectionSource: rejection.selectionSource || 'model_global_rerank',
+            selectionSource: rejection.selectionSource || 'model_global_rerank', reviewPresentation,
             copy: { title: rejection.title || `\u88ab\u5254\u9664\u5019\u9009 ${rejection.candidateIndex ?? rejection.index ?? '?'}`, description: '', coverText: '' },
             recommendationScore: rejection.score ?? null, publicCopyPending: true, uploadReady: false,
             selectionRejection: { minClipSeconds: plan.config?.minClipSeconds, maxClipSeconds: plan.config?.maxClipSeconds,
@@ -74,8 +96,13 @@ function prepareReviewResults(results, plan, parsed, outputRoot) {
 }
 
 function saveReviewState(reviewPath, results, metadata, buildReviewMarkdown) {
-    fs.writeFileSync(reviewPath, buildReviewMarkdown(results, metadata), 'utf8');
-    fs.writeFileSync(reviewPath.replace(/\.md$/i, '_STATE.json'), `${JSON.stringify({
+    const statePath = reviewPath.replace(/\.md$/i, '_STATE.json');
+    const previous = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, 'utf8')).metadata : null;
+    const presentation = require('../workflow-runtime').loadWorkflow('clipping/reviewSelectionHistory');
+    Object.assign(metadata, presentation.preserveDeferredSelection(previous, metadata));
+    const display = presentation.reviewDisplayRows(results);
+    fs.writeFileSync(reviewPath, buildReviewMarkdown(display, metadata) + '\n' + require('../workflow-runtime').loadWorkflow('clipping/reviewDigest').deferredReviewLines(metadata, display).join('\n'), 'utf8');
+    fs.writeFileSync(statePath, `${JSON.stringify({
         version: 1, type: 'own_stream_review_state', metadata,
         entries: results.map(result => ({ reviewIndex: result.reviewIndex ?? result.window?.index,
             metadataPath: result.output.metadataPath }))

@@ -1,8 +1,8 @@
 import { parseModelJson } from '../text/json';
 import type { Artifact } from './enhancement';
 import type { Subtitle } from './editPlan';
-import { SUBTITLE_MATERIALITY_STANDARD, PUBLIC_COPY_MATERIALITY_STANDARD } from './reviewStandards';
-export { PUBLIC_COPY_MATERIALITY_STANDARD } from './reviewStandards';
+import { SUBTITLE_MATERIALITY_STANDARD, PUBLIC_COPY_MATERIALITY_STANDARD, SELECTION_SCOPE_STANDARD } from './reviewStandards';
+export { PUBLIC_COPY_MATERIALITY_STANDARD, SUBTITLE_MATERIALITY_STANDARD, SELECTION_SCOPE_STANDARD } from './reviewStandards';
 
 export const PUBLICATION_POLICY_VERSION = 'own-stream-v1';
 export const TOPIC_PUBLICATION_POLICY_VERSION = 'topic-v1';
@@ -274,10 +274,12 @@ function reviewPrompt(artifact: Artifact, input: PublicationInput, inspection: P
         'content: the complete setup, reaction and ending survive; no misleading excerpt, removed qualification, negation, correction or reversed question/answer. Source context outside retained content may explain but cannot prove a published event claim.',
         'attribution: distinguish speaker/narrator, actor and target, retelling/playback/audience versus live action. Source host and tags are production metadata, not evidence that the host performed or said something.',
         'Current evidence.cues preserves exact G IDs, original ASR rows and speakerEvidence. status=row_supported with accepted unsmoothed row observations is measured local voice evidence for the cited cue only; identityVerified=false means it is not human-certified identity, not that the row test failed. Unknown/rejected rows remain unknown. A personEvidence configured_names_only flag is lexical checking, never a rejection or verification of independent acoustic evidence. Read current cited rows instead of assuming every row has the host identity or rejecting every measured match.',
+        'evidence.configuredPeople maps voice reference labels/IDs to their configured public names and aliases. It only resolves names; it does not prove anyone spoke. Read speakerEvidence on each original cue.items row as well as on the grouped cue. When accepted unsmoothed row observations support a registered voice label, its public alias is the same person; do not demand separate identity proof merely because copy uses an alias. Unknown/rejected rows and names found only in chat remain unverified.',
         'subtitles: retained text is intelligible, materially faithful to source and consistent with the final edit. Reuse original ASR evidence; do not claim to have listened to audio. Bound localAudioChecks contain independent unprompted model transcripts of specific original-audio windows; they can support the recorded literal edits and confirmed wording only in those windows, never other words or speaker identity. Unresolved identity, names, key numbers, negation, conditions, foreign speech or sound-dependent claims require needs_review when material to the main content or public copy.',
         SUBTITLE_MATERIALITY_STANDARD,
         PUBLIC_COPY_MATERIALITY_STANDARD,
-        'A film playing in the background does not contradict clearly spoken plans to watch a different film next. Distinguish current playback, future discussion and analysis (拉片). Viewer chat or fictional parents/relationships are not the host\'s real family history; apply the real-family exclusion to the actual speaker and topic, not any isolated kinship word in a frame.',
+        'A film playing in the background does not contradict clearly spoken plans to watch a different film next. Distinguish current playback, future discussion and analysis (拉片).',
+        SELECTION_SCOPE_STANDARD,
         'visuals: image 1 is the rendered cover; subsequent images are samples of the actual final video, not proof of unseen frames. Verify readable and correctly placed subtitles/copy, subject visibility, no obvious corruption and factual cover wording. If the central claim needs unavailable motion or audio evidence, require needs_review.',
         'policy: apply ALL supplied excludedCategories to the actual content, including material not named in the title; do not evade exclusions through title changes. Clear prohibited/excluded content is rejected; ambiguity is needs_review.',
         ...(topic ? [

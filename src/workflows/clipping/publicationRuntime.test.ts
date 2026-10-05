@@ -105,19 +105,30 @@ test('preserves exact cue-to-row acoustic evidence without treating unverified h
     const f = fixture();
     try {
         const cue = { id: 'G1', start: 1, end: 15, text: '完整原话',
-            speakerEvidence: { version: 1, status: 'row_supported', label: '岁己SUI', identityVerified: false,
-                observations: [{ row: { accepted: true, smoothed: false, score: .78, margin: .25, policy: 'row_verified' } }] },
-            items: [{ asrEvidence: { recognizedText: '完整原话' } }] };
+            items: [{ asrEvidence: { recognizedText: '完整原话' },
+                speakerEvidence: { version: 1, status: 'row_supported', label: '岁己SUI', identityVerified: false,
+                    observations: [{ row: { accepted: true, smoothed: false, score: .78, margin: .25, policy: 'row_verified' } }] } }] };
         f.adapters.evidence = () => ({ sourceSha256: 'a'.repeat(64), cues: [cue] });
+        f.context.configuredPeople = [{ id: 'sui', label: '岁己SUI', names: ['岁己SUI', '小岁'] }];
         f.adapters.request = jest.fn(async (_artifact, prompt) => {
             const evidence = JSON.parse(prompt.split('EVIDENCE_JSON ')[1]);
             expect(evidence.evidence.cues).toEqual([cue]);
+            expect(evidence.evidence.configuredPeople).toEqual(f.context.configuredPeople);
+            expect(prompt).toContain('It only resolves names; it does not prove anyone spoke');
+            expect(prompt).toContain('cue.items row');
             expect(prompt).toContain('not that the row test failed');
             expect(prompt).toContain('Return resolvedGroundingIssues:[]');
             return { text: JSON.stringify(passed) };
         });
         const [result] = await reviewOwnPublications([f.artifact(1)], f.context, f.adapters);
         expect(result.publicationDecision.action).toBe('auto_queue');
+        f.adapters.evidence = () => ({ sourceSha256: 'a'.repeat(64), cues: [{ ...cue,
+            items: [{ asrEvidence: cue.items[0].asrEvidence, speakerEvidence: undefined }] }] });
+        f.adapters.request = jest.fn(async () => ({ text: JSON.stringify({ ...passed, status: 'needs_review',
+            checks: { ...passed.checks, attribution: false }, issues: ['本行没有人物声纹依据'] }) }));
+        const [unknown] = await reviewOwnPublications([f.artifact(2)], f.context, f.adapters);
+        expect(unknown.publicationDecision.action).toBe('needs_human');
+        expect(unknown.publicationReview.issues).toContain('本行没有人物声纹依据');
     } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
 });
 

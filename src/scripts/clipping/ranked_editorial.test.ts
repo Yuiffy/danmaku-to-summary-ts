@@ -1,5 +1,5 @@
 export {};
-const { buildCandidateCards, rankPrompt, parseRanking, rankThenEdit, packCandidateCards, unpackCandidateCards, detailResponseFormat } = require('./ranked_editorial');
+const { buildCandidateCards, rankPrompt, parseRanking, rankThenEdit, packCandidateCards, unpackCandidateCards, detailResponseFormat, rankResponseFormat } = require('./ranked_editorial');
 const generator = require('../ai_text_generator');
 const parsed = { segments: Array.from({ length: 120 }, (_, i) => ({ start: i * 2, end: i * 2 + 2, text: `Full source fact ${i}` })) };
 const candidates = Array.from({ length: 6 }, (_, i) => ({ index: i + 1, start: i * 40, end: i * 40 + 38,
@@ -62,5 +62,23 @@ test('details run concurrently, receive full original evidence and return global
             { ai: { text: { provider: 'daiYu' } } }, diagnostics, 'Host', refine);
         expect(peak).toBe(2); expect(result.map(c => c.candidateIndex)).toEqual([1, 2, 3, 4, 5, 6]);
         expect(result[0].score).toBe(89); expect(diagnostics.detailBatches).toHaveLength(3);
+    } finally { generate.mockRestore(); }
+});
+
+test('unselected local-only topics receive a short label in the existing ranking request without extra detail generation', async () => {
+    const generate = jest.spyOn(generator, 'generateTextWithDaiYu').mockResolvedValue({ text: JSON.stringify({ decisions:
+        candidates.map(c => ({ candidateIndex: c.index, selected: false, topic: `原话中的话题${c.index}`, score: 40, reason: '看点偏弱' })) }), meta: {} });
+    const refine = jest.fn();
+    try {
+        const diagnostics = { requests: [], errors: [] };
+        expect(await rankThenEdit(candidates, parsed, [], {}, { maxClips: 6, ai: { model: 'fixture', rankThenEdit: {} } },
+            { ai: { text: { provider: 'daiYu' } } }, diagnostics, 'Host', refine)).toEqual([]);
+        expect(generate).toHaveBeenCalledTimes(1);
+        expect(refine).not.toHaveBeenCalled();
+        expect(diagnostics.ranking.skipped[0]).toMatchObject({ candidateIndex: 1, title: '原话中的话题1', score: 40, reason: '看点偏弱' });
+        const item = rankResponseFormat(candidates).schema.properties.decisions.items;
+        expect(item.required).toContain('topic');
+        expect(item.properties.topic.maxLength).toBe(24);
+        expect(item.properties.reason.maxLength).toBe(36);
     } finally { generate.mockRestore(); }
 });

@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { deferredSelectionRows } from './reviewSelectionHistory';
 
 type Data = Record<string, any>;
 const short = (text: unknown, limit = 80): string => {
@@ -54,7 +55,7 @@ export function shortChineseReason(value: unknown, fallback = '发布文案或�
     const text = String(value || '').trim();
     const label = labels.find(([pattern]) => pattern.test(text))?.[1];
     if (label) return label;
-    const translated = text.replace(/\bASR\b/giu, '语音识别').replace(/\bSC\b/gu, '醒目留言').replace(/\bQA\b/giu, '质检');
+    const translated = text.replace(/\bASR\b/giu, '语音识别').replace(/\bSC\b/gu, '醒目留言').replace(/\bQA\b/giu, '质检').replace(/\bID(?=\d)/giu, '编号');
     if (/[a-z]{2,}/iu.test(translated)) {
         if (/字幕|错识|识别|乱码|断句/u.test(translated)) return '字幕含疑似乱码或错词，需核对原音';
         return fallback;
@@ -76,6 +77,17 @@ export function shortReviewReasons(issues: unknown[], fallback = '发布文案�
 
 export function compactReviewLines(result: Data, issues: unknown[]): string[] {
     const lines = [`   理由: ${shortReviewReasons(issues).join('；')}`];
+    if (result.reviewPresentation?.windowAuthority === 'recall_context') lines.push('   主题来自原召回记录；展示窗口供查找，裁切边界仍待核。');
+    if (result.reviewExcerpt?.timingAuthority === 'recall_context') {
+        const topic = String(result.reviewPresentation?.title || result.copy?.title || '');
+        const terms = [...new Set([...topic.matchAll(/[\u3400-\u9fff]{2,}/gu)]
+            .flatMap(match => Array.from(match[0]).slice(1).map((char, index) => match[0][index] + char)))];
+        const affinity = (cue: Data) => terms.filter(term => String(cue.text).includes(term)).length;
+        const excerpts = [...(result.reviewExcerpt.subtitles || [])].sort((a, b) => affinity(b) - affinity(a)).slice(0, 2);
+        lines.push(excerpts.length ? `   SRT（原召回，时间待校准）: ${excerpts.map((cue: Data) => `“${short(cue.text, 100)}”`).join(' / ')}` : '   SRT: 原召回无完整字幕，待校准后检查');
+        lines.push('   弹幕: 范围待校准，暂不引用');
+        return lines;
+    }
     const window = result.window || {};
     const bounded = Number.isFinite(window.start) && Number.isFinite(window.end);
     const humanEvidence = (result.attributionReview?.humanChecks || []).flatMap((check: Data) => check.evidence || []);
@@ -122,6 +134,9 @@ export async function readReviewAudience(file: string): Promise<Data[]> {
 export async function withReviewExcerpts(results: Data[], readers: ReviewContextReaders): Promise<Data[]> {
     const chats = new Map<string, Promise<Data[]>>();
     return Promise.all(results.map(async result => {
+        if (result.selectionRejection && !result.output?.mediaPath && result.reviewPresentation?.windowAuthority === 'recall_context') {
+            return { ...result, reviewExcerpt: { subtitles: result.reviewPresentation.recallSubtitles || [], audience: [], timingAuthority: 'recall_context' } };
+        }
         const window = result.window;
         if (!window || !Number.isFinite(window.start) || !Number.isFinite(window.end)) return result;
         let subtitles = result.grounding?.subtitles || [], audience = result.grounding?.audience || [];
@@ -144,16 +159,25 @@ export async function withReviewExcerpts(results: Data[], readers: ReviewContext
     }));
 }
 
-export function deferredReviewLines(metadata: Data): string[] {
-    const rows = [
-        ...(metadata.aiStatus?.ranking?.skipped || []).map((row: Data) => ({ ...row, label: `R${row.candidateIndex}`, reason: row.reason })),
-        ...(metadata.publication?.decisions || []).filter((row: Data) => !row.selected && metadata.publication.policy?.mode !== 'shadow')
-            .map((row: Data) => ({ ...row, label: `P${row.index}`, reason: ({below_score:'低于分数线', batch_budget:'本场优先名额以外', unscored:'缺少可比较分数'} as Data)[row.reason] || row.reason }))
-    ];
+export function deferredReviewLines(metadata: Data, results: Data[] = []): string[] {
+    const rows: Data[] = deferredSelectionRows(metadata).map(row => ({ ...row,
+        reason: row.phase === 'publication' ? ({below_score:'低于分数线', batch_budget:'本场优先名额以外', unscored:'缺少可比较分数'} as Data)[row.reason] || row.reason : row.reason }));
     if (!rows.length) return [];
     rows.sort((a, b) => (a.start ?? Infinity) - (b.start ?? Infinity));
-    return ['', '备选话题（未制作）:', '回复“补切备选编号”可选择；R是初选编号，P是发布筛选编号，均不是上传ID。',
-        ...rows.map(row => `- ${row.label} | ${Number.isFinite(row.start) ? `${clock(row.start)}–${clock(row.end)}` : '时间待查'} | ${row.score ?? '未评分'}分 | ${short(row.title || `初选话题 ${row.candidateIndex}`, 40)} | ${shortChineseReason(row.reason, '本场暂未优先选择')}`)];
+    const pathKey = (value: unknown) => String(value || '').replace(/\\/gu, '/').toLowerCase();
+    return ['', '低分及其他未入选话题:', '回复“补切备选编号”可选择；R是初选编号，P是发布筛选编号，均不是上传ID。已补切项仍保留原筛选记录。',
+        ...rows.map(row => {
+            const changedTiming = row.sourceSrtPath && metadata.source?.srtPath && pathKey(row.sourceSrtPath) !== pathKey(metadata.source.srtPath);
+            const window = Number.isFinite(row.start) && Number.isFinite(row.end) ? `${clock(row.start)}–${clock(row.end)}` : '时间待查';
+            const made = results.find(result => !changedTiming && result.output?.burnedSubtitles === true
+                && !result.rebuildRequired && Number.isFinite(row.start) && Number.isFinite(row.end)
+                && pathKey(result.source?.srtPath) === pathKey(row.sourceSrtPath || metadata.source?.srtPath)
+                && result.window?.start <= row.start && result.window?.end >= row.end);
+            const id = made && metadata.uploadRegistry?.clipIdsByReviewIndex?.[made.reviewIndex ?? made.window?.index];
+            const resolved = metadata.deferredResolutions?.find((resolution: Data) => resolution.selectionKey === row.selectionKey);
+            const resolvedId = id || resolved?.clipId;
+            return `- ${row.label} | ${changedTiming ? `原窗口${window}（待校准）` : window} | ${row.score ?? '未评分'}分 | ${short(row.title || `初选话题 ${row.candidateIndex}`, 40)} | ${shortChineseReason(row.reason, '本场暂未优先选择')}${resolvedId ? ` | 已补切ID${resolvedId}` : ''}`;
+        })];
 }
 
 export function compactDiagnosticLines(metadata: Data): string[] {

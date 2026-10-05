@@ -68,6 +68,28 @@ test('current rendered SRT uses local time, source SRT uses absolute time and XM
     expect(JSON.stringify(rows)).toBe(before);
 });
 
+test('unresolved recall windows show stored speech without borrowing subtitles or chat at uncertain times', async () => {
+    const readers = { exists: jest.fn(() => true), subtitles: jest.fn(() => [{ start: 100, end: 105, text: '错误时间的别的话题' }]),
+        audience: jest.fn(async () => [{ time: 100, text: '无关弹幕' }]) };
+    const original = { window: { start: 100, end: 150 }, source: { srtPath: 'old.srt', xmlPath: 'chat.xml' },
+        selectionRejection: { reason: 'topic_boundary_incomplete' }, publicCopyPending: true, uploadReady: false,
+        reviewPresentation: { title: '吐槽反派讲自己的计划', windowAuthority: 'recall_context', recallSubtitles: [
+            { id: 'G1', text: '这搞笑你知道吗' }, { id: 'G2', text: '背景对白和转场' },
+            { id: 'G8', text: '反派为什么要讲自己的计划' }] } };
+    const before = JSON.stringify(original), [row] = await withReviewExcerpts([original], readers);
+    const text = compactReviewLines(row, ['话题边界未闭合']).join('\n');
+    expect(text).toContain('SRT（原召回，时间待校准）: “反派为什么要讲自己的计划”');
+    expect(text).toContain('弹幕: 范围待校准，暂不引用');
+    expect(text).not.toContain('录播');
+    expect(text).not.toContain('错误时间');
+    expect(text).not.toContain('背景对白和转场');
+    expect(readers.exists).not.toHaveBeenCalled();
+    expect(readers.subtitles).not.toHaveBeenCalled();
+    expect(readers.audience).not.toHaveBeenCalled();
+    expect(row.uploadReady).toBe(false);
+    expect(JSON.stringify(original)).toBe(before);
+});
+
 test('activity package excerpts keep source evidence when there is no single clip window', () => {
     const lines = compactReviewLines({ reviewExcerpt: {
         subtitles: [{ id: 'T8', start: 14200, end: 14204, text: '直接复联三呀也可以的呀' }],

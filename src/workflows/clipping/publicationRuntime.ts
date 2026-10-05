@@ -18,6 +18,7 @@ export interface PublicationContext {
     config: AutomaticPublicationConfig; roomId: string; streamerName: string;
     excludedCategories: string[]; ffmpegPath: string; ffprobePath: string;
     planPath?: string; aiEnabled: boolean; persist?: boolean;
+    configuredPeople?: Array<{ id: string; label: string; names: string[] }>;
 }
 export interface PublicationAdapters {
     parse(file: string): Subtitle[];
@@ -160,7 +161,7 @@ export async function reviewOwnPublications(artifacts: Artifact[], context: Publ
                     speech: speech.filter(row => row.end > start - 30 && row.start < end + 60),
                     retainedSubtitles: retained,
                     audience: audience.filter(row => row.time >= start && row.time <= end),
-                    evidence: { cues: evidence.cues?.filter(row => row.end > start - 30 && row.start < end + 60)
+                    evidence: { configuredPeople: context.configuredPeople || [], cues: evidence.cues?.filter(row => row.end > start - 30 && row.start < end + 60)
                         .map(cue => ({ ...cue })) || [] },
                     sourceEvidenceSha256, evidenceSnapshot: initial, now
                 }, {
