@@ -1,5 +1,13 @@
-import { enrichSkippedRanking, preserveDeferredSelection, recoverRejectedPresentation, reviewDisplayRows } from './reviewSelectionHistory';
+import { enrichSkippedRanking, preserveDeferredSelection, recoverRejectedPresentation, reviewDisplayRows, uniqueRejectedArtifacts } from './reviewSelectionHistory';
 import { deferredReviewLines } from './reviewDigest';
+
+test('repeated rejection artifacts collapse without hiding distinct records sharing a review index', () => {
+    const first = { reviewIndex: 123, output: { metadataPath: 'D:\\clips\\rejected-a.json' } };
+    const duplicate = { ...first, output: { metadataPath: 'd:/clips/rejected-a.json' } };
+    const other = { reviewIndex: 123, output: { metadataPath: 'D:/clips/rejected-b.json' } };
+    expect(uniqueRejectedArtifacts([first, duplicate, other])).toEqual([first, other]);
+    expect(uniqueRejectedArtifacts([{}, {}])).toHaveLength(2);
+});
 
 test('a timing revision retains old skipped topics without inheriting old QA or publication authority', () => {
     const previous = { source: { mediaPath: 'stream.flv', srtPath: 'old.srt' },

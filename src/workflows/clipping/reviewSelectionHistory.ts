@@ -2,6 +2,18 @@ type Data = Record<string, any>;
 const pathKey = (value: unknown): string => String(value || '').replace(/\\/gu, '/').toLowerCase();
 const placeholder = (value: unknown): boolean => !value || /^(?:被剔除候选|待复核候选|初选话题)\s*[\d?]+$/u.test(String(value));
 
+/** Repeated validation attempts may refer to the same persisted rejection, including a recovered clip. */
+export function uniqueRejectedArtifacts(rows: Data[]): Data[] {
+    const seen = new Set<string>();
+    return rows.filter(row => {
+        const key = pathKey(row.output?.metadataPath);
+        if (!key) return true;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+}
+
 /** Recall summaries are review labels, never approved public copy or final boundaries. */
 export function recoverRejectedPresentation(rejection: Data, candidates: Data[]): Data {
     const candidate = candidates.find(row => String(row.index) === String(rejection.candidateIndex));

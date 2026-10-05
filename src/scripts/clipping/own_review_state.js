@@ -92,7 +92,7 @@ function prepareReviewResults(results, plan, parsed, outputRoot) {
         fs.writeFileSync(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, 'utf8');
         return metadata;
     });
-    return chronologicalResults([...results, ...held]);
+    return chronologicalResults([...results, ...presentation.uniqueRejectedArtifacts(held)]);
 }
 
 function saveReviewState(reviewPath, results, metadata, buildReviewMarkdown) {

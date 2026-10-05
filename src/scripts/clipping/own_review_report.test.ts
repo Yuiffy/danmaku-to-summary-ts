@@ -297,9 +297,10 @@ describe('one chronological own-stream review with durable IDs', () => {
         return value;
       });
       const planPath = path.join(directory, 'PLAN.json');
+      const rejection = { candidateIndex: 9, title: 'Long source', startCueId: 'G1', endCueId: 'G2', reason: 'duration_out_of_bounds' };
       fs.writeFileSync(planPath, JSON.stringify({ source, clips: results.map(result => result.window), config: { maxClipSeconds: 15 },
         precisionExperiment: { total: 2, maxSelected: 0, eligibleCount: 2, selected: [], status: 'ordinary_control', reason: 'batch_below_minimum' },
-        aiStatus: { validation: { rejected: [{ candidateIndex: 9, title: 'Long source', startCueId: 'G1', endCueId: 'G2', reason: 'duration_out_of_bounds' }] } } }));
+        aiStatus: { validation: { rejected: [rejection, { ...rejection }] }, rejectedAfterAlignment: [{ ...rejection }] } }));
       const ids = new Map();
       child.spawnSync.mockImplementation((_python, args) => {
         expect(args).toContain('--include-pending');
@@ -322,6 +323,9 @@ describe('one chronological own-stream review with durable IDs', () => {
       const changedPlan = JSON.parse(fs.readFileSync(planPath, 'utf8'));
       const statePath = path.join(directory, 'REVIEW_STATE.json');
       const saved = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+      // Old failed batches also persisted the duplicated rejection in REVIEW_STATE.
+      const rejectedEntry = saved.entries.find(entry => entry.metadataPath.includes('rejected_candidates'));
+      saved.entries.push({ ...rejectedEntry });
       saved.metadata.aiStatus.ranking = { sourceSha256: 'original', skipped: [{ candidateIndex: 77,
         title: '没找到奶茶', start: 40, end: 50, score: 60, reason: '看点偏弱' }] };
       fs.writeFileSync(statePath, JSON.stringify(saved));
