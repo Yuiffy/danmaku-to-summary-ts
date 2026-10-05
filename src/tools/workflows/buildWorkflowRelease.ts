@@ -22,6 +22,7 @@ const entries = {
   'clipping/ownPublicationRecheck': 'workflows/clipping/ownPublicationRecheck.js',
   'clipping/ownSubtitleRepairRuntime': 'workflows/clipping/ownSubtitleRepairRuntime.js',
   'clipping/gameOpening': 'workflows/clipping/gameOpening.js',
+  'clipping/gameEditorial': 'workflows/clipping/gameEditorial.js',
   'clipping/publicationReview': 'workflows/clipping/publicationReview.js',
   'clipping/publicationRuntime': 'workflows/clipping/publicationRuntime.js',
   'clipping/topicRecovery': 'workflows/clipping/topicRecovery.js',

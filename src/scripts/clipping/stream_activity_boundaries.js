@@ -13,13 +13,13 @@ const { promisify } = require('util');
 const execFile = promisify(require('child_process').execFile);
 const localStage = () => require('../workflow-runtime').loadWorkflow('clipping/activityAudio');
 
-const VERSION = 2;
+const VERSION = 3;
 function boundaryIntervals(event, duration, settings, reviewPrelude = false) {
     const context = settings.boundaryContextSeconds;
     if (reviewPrelude && event.kind === 'song') return [{ start: Math.max(0, event.start - context), end: Math.min(duration, event.end + context) }];
     const inside = Math.min(15, (event.end - event.start) / 2);
     if (event.kind === 'song' && event.performance === 'fragment' && event.end - event.start <= 90) return [
-        { start: Math.max(0, event.start - Math.min(context, 15)), end: Math.min(duration, event.end + Math.min(context, 15)) }
+        localStage().shortSongInterval(event, duration, context)
     ];
     const intervals = [{ start: Math.max(0, event.start - context), end: Math.min(duration, event.start + inside) },
         { start: Math.max(0, event.end - inside), end: Math.min(duration, event.end + context) }];

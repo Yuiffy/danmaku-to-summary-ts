@@ -67,6 +67,10 @@ export async function prepareLocalEvidence(packet: Data, source: Data, settings:
   }
 }
 
+export function shortSongInterval(event: Data, duration: number, context: number): Data {
+  return { start: Math.max(0, event.start - context), end: Math.min(duration, event.end + context) };
+}
+
 export function localBoundaryPrompt(batch: Data, packet: Data, evidence: Data, info: Data, rows: Data[]): string {
   const candidates = batch.events.map(({ event, audioIndices }: Data) => ({ id: event.id, kind: event.kind,
     performance: event.performance, mediaKind: event.mediaKind, roughStart: event.start, roughEnd: event.end, audioIndices }));

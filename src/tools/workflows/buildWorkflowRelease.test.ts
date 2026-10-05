@@ -11,7 +11,7 @@ test('repeat builds and failed builds clean their staging files without activati
       'clipping/reviewDigest', 'clipping/reviewSelectionHistory', 'clipping/ownSourceReview',
       'clipping/ownPublicationRepair', 'clipping/ownRequiredReview', 'clipping/subtitleWindowEvidence', 'clipping/ownPublicationRecheck',
       'clipping/ownSubtitleRepairRuntime',
-      'clipping/gameOpening', 'clipping/publicationReview', 'clipping/publicationRuntime', 'clipping/topicRecovery',
+      'clipping/gameOpening', 'clipping/gameEditorial', 'clipping/publicationReview', 'clipping/publicationRuntime', 'clipping/topicRecovery',
       'clipping/quantityEvidence', 'clipping/preflightEnding',
       'ai/usage', 'text/response', 'text/requests', 'summary/diagnostics'].map(name => `workflows/${name}`);
     entries.push('core/config/ConfigLayers');

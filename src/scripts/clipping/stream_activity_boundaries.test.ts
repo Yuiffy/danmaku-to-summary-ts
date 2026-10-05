@@ -34,7 +34,7 @@ test('one bounded batch calibrates several candidates using short audio and reta
     const f = fixture();
     try {
         const result = await b.calibrateBoundaries(f.events, f.args);
-        expect(result).toMatchObject({ requests: 1, audioSeconds: 285, rejected: [] });
+        expect(result).toMatchObject({ requests: 1, audioSeconds: 345, rejected: [] });
         expect(result.events.map(e => [e.start, e.end])).toEqual([[98, 402], [998, 5002], [5198, 5217]]);
         expect(f.request).toHaveBeenCalledTimes(1);
         expect(f.request.mock.calls[0][0]).toContain('rmsDb');
@@ -127,6 +127,22 @@ test('a configured audio limit is enforced even when one candidate cannot fit', 
         expect(result.requests).toBe(0); expect(f.extract).not.toHaveBeenCalled();
         expect(result.events[0].verification.reason).toContain('audio budget');
     } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
+
+test('a short fragment encloses earlier lyrics and a later reprise within the configured context in one request', async () => {
+    const f = fixture();
+    const request = jest.fn(async (...args) => {
+        const response = await f.request(...args), raw = JSON.parse(response.text);
+        raw.results[0].events[0].start.seconds = 25;
+        raw.results[0].events[0].end.seconds = 85;
+        return { ...response, text: JSON.stringify(raw) };
+    });
+    try {
+        const result = await b.calibrateBoundaries([f.events[2]], { ...f.args, request });
+        expect(result).toMatchObject({requests:1,audioSeconds:105});
+        expect(result.events[0]).toMatchObject({start:5180,end:5240,verification:{decision:'keep'}});
+        expect(request).toHaveBeenCalledTimes(1);
+    } finally { fs.rmSync(f.directory,{recursive:true,force:true}); }
 });
 
 test('later stages share the spent request budget while completed boundary cache entries remain reusable', async () => {

@@ -37,4 +37,25 @@ describe('factual game chapter repair proposals',()=>{
       expect(verification.decision).toBe('uncertain');
     } finally {fs.rmSync(directory,{recursive:true,force:true});}
   });
+  test('a rejected legacy rewrite gets one concise repair and retains its history without granting approval', async () => {
+    const directory=fs.mkdtempSync(path.join(os.tmpdir(),'game-editorial-legacy-'));
+    try {
+      const srtPath=path.join(directory,'source.srt'), imagePath=path.join(directory,'frame.jpg');
+      fs.writeFileSync(srtPath,'1\n00:00:20,000 --> 00:00:23,000\n我要去找狼人\n\n2\n00:00:25,000 --> 00:00:28,000\n是不是坐风上去\n');
+      fs.writeFileSync(imagePath,'original phase frame');
+      const previousRevision={version:1,newCopy:{title:'地下路线',description:'骑乘经过崖边小径，随后查看地图。'},proposalSha256:'old-proposal'};
+      const event={start:20,end:40,chapters:[{start:20,title:'地下路线',kind:'phase',description:previousRevision.newCopy.description,
+        evidenceIds:['T1'],editorialRevision:previousRevision}]};
+      const verification={decision:'uncertain',chapterReviews:[{index:1,supported:false,reason:'原文和画面没有证实骑乘经过崖边小径'}],
+        originalFrameEvidence:[{index:1,time:25,path:imagePath,sha256:fileDigest(imagePath)}]};
+      const editorialRequest=jest.fn(async () => ({text:JSON.stringify({title:'寻找狼人与路线讨论',description:'讨论寻找狼人及向上的路线。',reason:'原字幕两句只支持寻找和路线讨论。'})}));
+      const options={srtPath,config:{},editorialRequest};
+      expect(await repairUnsupportedChapters(event,{source:{id:'original'}},verification,options,{directory},{})).toBe(true);
+      expect(event.chapters[0]).toMatchObject({start:20,description:'讨论寻找狼人及向上的路线。',editorialRevision:{policyVersion:2,previousRevision}});
+      expect(verification.decision).toBe('uncertain');
+      expect(await repairUnsupportedChapters(event,{source:{id:'original'}},verification,options,{directory},{})).toBe(false);
+      expect(editorialRequest).toHaveBeenCalledTimes(1);
+      expect(()=>parse({...proposal,description:'绕路探索'.repeat(20)})).toThrow(/Invalid factual/);
+    } finally { fs.rmSync(directory,{recursive:true,force:true}); }
+  });
 });
