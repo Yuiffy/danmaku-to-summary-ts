@@ -5,7 +5,7 @@ import asyncio
 from src.scripts.batch_upload import infer_room_id
 from src.scripts.bilibili_upload import (extract_room_id, get_collection_section_id,
                                         resolve_auto_collection_section, attach_video_to_collection,
-                                        create_collection_season, list_collection_seasons)
+                                        create_collection_season, list_collection_seasons, collection_episode_title)
 
 
 def volume(number, section_id, count):
@@ -91,6 +91,21 @@ class AutoCollectionRolloverTests(unittest.TestCase):
         self.assertEqual((result['collectionStatus'], result['collectionSectionId']), ('ok', 22))
         add.assert_called_once_with(22, 1, 2, 'clip', self.credential)
         resolve.assert_called_once_with(11, self.credential, enabled=True)
+
+    @patch('src.scripts.bilibili_upload.add_episode_to_section', return_value={'code': 0})
+    @patch('src.scripts.bilibili_upload.resolve_auto_collection_section', return_value=11)
+    def test_song_collection_label_keeps_names_and_date_without_changing_archive_title(self, resolve, add):
+        title = "【岁己歌切】Don't Look Back in Anger / Moon River-2026.10.2"
+        result = {'aid': 1, 'cid': 2, 'title': title}
+        asyncio.run(attach_video_to_collection(result, self.credential, 11, config={'bilibili': {'upload': {}}}))
+        add.assert_called_once_with(11, 1, 2, "Don't Look Back in Anger / Moon River-2026.10.2", self.credential)
+        self.assertEqual(result['title'], title)
+        self.assertEqual(result['collectionStatus'], 'ok')
+
+    def test_viewing_collection_label_is_the_work_and_date_and_ordinary_labels_are_unchanged(self):
+        self.assertEqual(collection_episode_title('【岁己同步视听】《雷神3》｜2026.10.4'), '《雷神3》｜2026.10.4')
+        for title in ('【小岁】标题', '歌名-2026.10.2'):
+            self.assertEqual(collection_episode_title(title), title)
 
     @patch('src.scripts.bilibili_upload.add_episode_to_section')
     @patch('src.scripts.bilibili_upload.resolve_auto_collection_section')

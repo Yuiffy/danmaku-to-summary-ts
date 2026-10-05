@@ -13,6 +13,29 @@ test('explicit provider refusal cannot be concealed by an otherwise correct shap
     expect(classifyGeneratedOutput('{"clips":[]}', { structuredOutputKey: 'clips' },
         { output: [{ content: [{ type: 'refusal', refusal: 'no' }] }] }).reason).toBe('provider_refusal');
 });
+test('a typed final-review object accepts approval and explicitly allowed domain rejection', () => {
+    const options = { structuredOutputKey: 'checks', structuredOutputType: 'object' };
+    const checks = { content: true, attribution: true, subtitles: true, visuals: true, policy: true };
+    expect(classifyGeneratedOutput(JSON.stringify({ status: 'passed', checks, issues: [] }), options).rejected).toBe(false);
+    const rejected = JSON.stringify({ status: 'rejected', checks: { ...checks, policy: false }, issues: ['涉及排除内容'] });
+    expect(classifyGeneratedOutput(rejected, options).reason).toBe('structured_refusal');
+    expect(classifyGeneratedOutput(rejected, { ...options, structuredOutputAllowDomainRejected: true }).rejected).toBe(false);
+    expect(classifyGeneratedOutput('{"status":"rejected","clips":[]}', {
+        structuredOutputKey: 'clips', structuredOutputAllowDomainRejected: true }).reason).toBe('structured_refusal');
+});
+test.each([null, [], 'true', true, 1])('object contracts reject invalid checks shape %s', checks => {
+    expect(classifyGeneratedOutput(JSON.stringify({ status: 'passed', checks }), {
+        structuredOutputKey: 'checks', structuredOutputType: 'object', structuredOutputAllowDomainRejected: true
+    }).reason).toBe('unexpected_structured_shape');
+});
+test('domain rejection permission does not allow actual structured or provider refusals', () => {
+    const options = { structuredOutputKey: 'checks', structuredOutputType: 'object', structuredOutputAllowDomainRejected: true };
+    for (const extra of [{ refusal: 'no' }, { error: 'provider failed' }, { status: 'refused' }]) {
+        expect(classifyGeneratedOutput(JSON.stringify({ checks: {}, ...extra }), options).reason).toBe('structured_refusal');
+    }
+    expect(classifyGeneratedOutput('{"status":"rejected","checks":{}}', options,
+        { output: [{ content: [{ type: 'refusal', refusal: 'no' }] }] }).reason).toBe('provider_refusal');
+});
 test('compatible JSON wrappers and bare clip arrays work without masking a refusal preamble', () => {
     expect(classifyGeneratedOutput('结果如下：\n{"clips":[{"reason":"system prompt"}]}', { structuredOutputKey: 'clips' }).rejected).toBe(false);
     expect(classifyGeneratedOutput('[{"title":"片段"}]', { structuredOutputKey: 'clips' }).rejected).toBe(false);

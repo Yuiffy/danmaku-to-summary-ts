@@ -10,8 +10,7 @@ const { buildPreflightEvidence } = require('./clipping/preflight_evidence');
 const { ensureCandidateDraft } = require('./clipping/candidate_subtitles');
 const { ensureCandidatePreview, reusablePreview, previewReviewLines } = require('./clipping/candidate_preview');
 const { isPreflightEnabled, prepareTopicGroup, preflightSelections, sourceFileHash, persistPreflightPlan } = require('./clipping/preflight_runner');
-const { buildTopicDedupeFailures, isPendingTopicResult, buildPendingTopicBlock,
-    buildTopicDedupeDetailLines } = require('./clipping/topic_failure_details');
+const { buildTopicDedupeFailures, isPendingTopicResult } = require('./clipping/topic_failure_details');
 const {
     findKeywordMatches,
     clamp,
@@ -1310,96 +1309,9 @@ function buildDanmakuContextLines(danmaku = [], window = {}, notifyConfig = {}) 
     return samples.map(item => `[${formatClock(item.time)}] ${item.text}`);
 }
 
-function buildClipNotifyBlock(result = {}, notifyConfig = {}) {
-    const window = result.window || {};
-    const uploadId = Number.isFinite(Number(result.uploadId)) ? Number(result.uploadId) : null;
-    const idPrefix = uploadId ? `ID ${uploadId} | ` : '';
-    const mediaPath = toFwdSlash(result.output?.mediaPath || '');
-    const fileName = mediaPath ? path.basename(mediaPath) : '文件未生成';
-    const title = compactNotifyText(result.copy?.title || '', 120);
-    const lines = [
-        `- ${idPrefix}${formatClock(window.start || 0)}-${formatClock(window.end || 0)} | ${fileName}`
-    ];
-
-    if (title) {
-        lines.push(`  - 标题: ${title}`);
-    }
-    if (result.aiReview) lines.push(result.aiReview.mode === 'preflight'
-        ? `  - 烧录前复核: ${result.aiReview.status}; 字幕校对 ${result.aiReview.subtitleEdits.length} 处`
-        : `  - AI复核: 关键词=${result.aiReview.keyword.status}, 文案=${result.aiReview.quality.status}; 建议未自动应用`);
-
-    if (notifyConfig.includeSubtitleContext !== false) {
-        const subtitleContext = buildSubtitleContextLines(
-            window,
-            notifyConfig.subtitleContextLines
-        );
-        if (subtitleContext.length > 0) {
-            lines.push('  - 字幕上下文:');
-            lines.push(...subtitleContext.map(line => `    ${line}`));
-        }
-    }
-
-    if (notifyConfig.includeDanmakuContext !== false) {
-        const danmakuContext = Array.isArray(window.danmakuContext)
-            ? window.danmakuContext.filter(Boolean)
-            : [];
-        if (danmakuContext.length > 0) {
-            lines.push('  - 附近弹幕:');
-            lines.push(...danmakuContext.map(line => `    ${line}`));
-        }
-    }
-
-    return lines.join('\n');
-}
-
-const TOPIC_FAILURE_STAGE_LABELS = {
-    preflight: '烧录前预审',
-    planning: 'AI 分段',
-    subtitle: '字幕生成',
-    subtitle_burn: '字幕烧录降级',
-    copy: '文案生成',
-    media: '媒体生成',
-    cover: '封面生成',
-    metadata: '元数据写入',
-    review: '审核文件写入',
-    registry: '上传注册',
-    topic_clipper: '话题切片'
-};
-
-function collectTopicFailures(results = [], failures = []) {
-    const collected = Array.isArray(failures) ? [...failures] : [];
-    for (const result of results) {
-        const mediaError = result?.output?.mediaError;
-        if (!mediaError) continue;
-        const duplicate = collected.some(item =>
-            item?.stage === 'media'
-            && Number(item?.window?.start) === Number(result?.window?.start)
-            && String(item?.error || '') === String(mediaError)
-        );
-        if (!duplicate) {
-            collected.push({
-                stage: 'media',
-                window: result.window,
-                title: result.copy?.title || null,
-                error: mediaError
-            });
-        }
-    }
-    return collected;
-}
-
-function buildTopicFailureBlock(failure = {}, results = []) {
-    const stage = TOPIC_FAILURE_STAGE_LABELS[failure.stage] || failure.stage || '未知阶段';
-    const window = failure.window || {};
-    const hasWindow = Number.isFinite(Number(window.start)) || Number.isFinite(Number(window.end));
-    const range = hasWindow
-        ? `${formatClock(window.start || 0)}-${formatClock(window.end || window.start || 0)} | `
-        : '';
-    const severity = failure.severity === 'warning' ? '降级' : '失败';
-    const error = compactNotifyText(failure.error || failure.message || '未知错误', 360);
-    return [`- [${severity}/${stage}] ${range}${error}`,
-        ...buildTopicDedupeDetailLines(failure, results)].join('\n');
-}
+const { buildTopicNotifyMarkdown, buildTopicReviewMarkdown, collectTopicFailures } = require('./clipping/topic_review_report').createTopicReviewReport({
+    compactNotifyText, toFwdSlash, buildSubtitleContextLines, buildGroundingReviewLine, topicReviewLines, previewReviewLines
+});
 
 function cleanupTemporaryCoverSource(mediaResult = {}) {
     const tempPath = mediaResult?.coverSourceTemporary ? mediaResult.coverSourcePath : null;
@@ -1411,48 +1323,6 @@ function cleanupTemporaryCoverSource(mediaResult = {}) {
         console.warn(`⚠️  清理封面临时无字幕切片失败: ${error.message}`);
         return false;
     }
-}
-
-function buildTopicNotifyMarkdown(results = [], metadata = {}) {
-    const notifyConfig = metadata.notify || {};
-    const aiModels = Array.isArray(metadata.aiModels) && metadata.aiModels.length > 0
-        ? metadata.aiModels.join(', ')
-        : '规则兜底（未调用 AI）';
-    const failures = collectTopicFailures(results, metadata.failures);
-    const successfulResults = results.filter(result => !isPendingTopicResult(result) && !result?.output?.mediaError && result?.output?.mediaPath);
-    const pendingResults = results.filter(isPendingTopicResult);
-    const windowSummary = successfulResults
-        .map(result => buildClipNotifyBlock(result, notifyConfig))
-        .join('\n');
-    const failureSummary = failures.map(failure => buildTopicFailureBlock(failure, results)).join('\n');
-    const incomplete = failures.length > 0 || pendingResults.length > 0;
-    const title = failures.length ? '## 话题切片提醒（存在失败）' : pendingResults.length ? '## 话题切片提醒（含待切候选）' : '## 话题切片提醒';
-    const outcome = incomplete
-        ? `本次候选 **${results.length}** 段,成功生成 **${successfulResults.length}** 段${pendingResults.length ? `,待预审 **${pendingResults.length}** 段` : ''}${failures.length ? `,另有 **${failures.length}** 条失败或降级记录` : ''}。`
-        : `找到其中 **${results.length}** 段提到岁己的地方,已分别切为切片。`;
-
-    return [
-        title,
-        '',
-        `在 **${metadata.streamerName || '主播'}** 的直播 **${metadata.streamTitle || metadata.sourceFileName || '未知直播'}** 结束后,`,
-        outcome,
-        '',
-        `- 直播间: ${metadata.roomId || '未知'}`,
-        `- 录制时间: ${metadata.recordedAt || '未知'}`,
-        `- AI模型: ${aiModels}`,
-        `- 切片目录: ${toFwdSlash(metadata.outputRoot || '未知')}`,
-        metadata.reviewPath ? `- 审核文件: ${toFwdSlash(metadata.reviewPath)}` : null,
-        metadata.uploadRegistry?.clipIds?.length ? `- 投稿短id: ${metadata.uploadRegistry.clipIds.join(',')}` : null,
-        metadata.candidateIds?.length ? `- 待切候选ID: ${metadata.candidateIds.join(',')}` : null,
-        '',
-        '成功切片:',
-        windowSummary || '- 无',
-        pendingResults.length ? '待预审候选（粗剪视频配同名 SRT，确认后可按候选ID烧录）:' : null,
-        ...pendingResults.map(buildPendingTopicBlock),
-        failures.length > 0 ? '' : null,
-        failures.length > 0 ? '失败与降级详情:' : null,
-        failures.length > 0 ? failureSummary : null
-    ].filter(Boolean).join('\n');
 }
 
 function deriveUploadPrefix(streamerName = null) {
@@ -1485,68 +1355,11 @@ function resolveUploadPrefix(config = {}, roomId = null, streamerName = null) {
     return deriveUploadPrefix(streamerName);
 }
 
-function buildTopicReviewMarkdown(results = [], metadata = {}) {
-    const uploadIds = Array.isArray(metadata.uploadRegistry?.clipIds)
-        ? metadata.uploadRegistry.clipIds
-        : [];
-    const failures = collectTopicFailures(results, metadata.failures);
-    const uploadableResults = results.filter(result => result?.uploadReady && !result?.output?.mediaError);
-    const localOnlyResults = results.filter(result => !result?.output?.mediaError && !result?.uploadReady);
-    const lines = [
-        '# 话题切片 review',
-        '',
-        `直播: ${metadata.streamTitle || metadata.sourceFileName || '未知'}`,
-        `录制时间: ${metadata.recordedAt || '未知'}`,
-        `输出目录: ${metadata.outputRoot || ''}`,
-        metadata.planPath ? `事件编排记录: ${metadata.planPath}` : null,
-        uploadIds.length ? `上传短ID: ${uploadIds.join(',')}` : null,
-        metadata.candidateIds?.length ? `待切候选ID: ${metadata.candidateIds.join(',')}` : null,
-        '',
-        '## 切片列表',
-        ''
-    ].filter(line => line !== null);
-
-    uploadableResults.forEach((result, index) => {
-        const start = formatClock(result.window?.start || 0);
-        const duration = formatClock(result.window?.duration || ((result.window?.end || 0) - (result.window?.start || 0)));
-        lines.push(`${index + 1}. ${result.copy?.title || '话题切片'} | ${start} | ${duration} | ${result.output?.mediaPath || ''}`);
-        if (uploadIds[index]) {
-            lines.push(`   上传ID: ${uploadIds[index]}`);
-        }
-        if (result.output?.coverPath) {
-            lines.push(`   封面: ${result.output.coverPath}`);
-        }
-        if (result.editorial) {
-            lines.push(`   事件编排: ${result.editorial.status} | ${result.editorial.event || result.editorial.reason}`);
-            if (result.editorial.extensionReason) lines.push(`   完整性延长: ${result.editorial.extensionReason}`);
-            const grounding = buildGroundingReviewLine(result.editorial.copyGrounding);
-            if (grounding) lines.push(grounding);
-        }
-        lines.push(...topicReviewLines(result.aiReview, result.humanReview));
-    });
-    if (uploadableResults.length === 0) {
-        lines.push('- 无可上传切片');
-    }
-    if (localOnlyResults.length > 0) {
-        lines.push('', '## 仅本地结果', '');
-        localOnlyResults.forEach(result => {
-            lines.push(`- ${result.copy?.title || '话题切片'} | ${formatClock(result.window?.start || 0)} | ${result.output?.mediaPath || ''}`);
-            if (result.candidateId) lines.push(`   候选ID: ${result.candidateId} | ${result.window?.index || ''}`);
-            if (result.candidateSubtitles?.path) lines.push(`   待定字幕: ${result.candidateSubtitles.path}`);
-            lines.push(...previewReviewLines(result));
-            if (result.status === 'pending_preflight') lines.push(`   待烧录前审核: ${result.output?.metadataPath || ''}`);
-            lines.push(...topicReviewLines(result.aiReview, result.humanReview));
-        });
-    }
-    if (failures.length > 0) {
-        lines.push('', '## 失败与降级记录', '');
-        lines.push(...failures.map(failure => buildTopicFailureBlock(failure, results)));
-    }
-    lines.push('');
-    return `${lines.join('\n')}\n`;
-}
-
 function parseUploadRegistryOutput(output) {
+    const receipt = String(output || '').split(/\r?\n/u).find(line => line.startsWith('REGISTRY_RESULT:'));
+    if (receipt) {
+        try { return JSON.parse(receipt.slice('REGISTRY_RESULT:'.length)); } catch { return null; }
+    }
     const match = String(output || '').match(/^IDs:\s*([0-9,\s]+)$/m);
     if (!match) {
         return null;
@@ -1586,7 +1399,7 @@ function writeTopicUploadManifest(manifestPath, reviewPath, results, metadata) {
         streamTitle: metadata.streamTitle || metadata.sourceFileName || null,
         upload: settings,
         clips: results.map((result, index) => ({
-            reviewIndex: index + 1,
+            reviewIndex: result.reviewIndex || index + 1,
             metadataPath: result.output?.metadataPath || null
         }))
     };
@@ -1612,10 +1425,12 @@ function registerReviewForUpload(reviewPath, results, metadata) {
         '--tid', '21',
         '--label', `${metadata.streamerName || '主播'} ${metadata.recordedAt || ''}`.trim()
     ];
+    if (metadata.automaticPublication?.enabled) args.push('--include-pending');
     let result;
     try {
         result = require('child_process').spawnSync('python', args, {
             cwd: path.dirname(path.dirname(__dirname)),
+            env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
             encoding: 'utf8',
             windowsHide: true,
             shell: false,
@@ -1673,14 +1488,12 @@ async function notifyTopicClipFailure(error, metadata = {}, config = {}) {
 
 async function generateTopicClips(options = {}) {
     const config = getClipTopicsConfig(options.config || {});
-    if (!config.enabled) {
-        return [];
-    }
+    if (!config.enabled) return [];
     if (config.mode !== 'local_review') {
         console.warn(`⚠️  clipTopics.mode=${config.mode} 暂未实现,按 local_review 处理`);
     }
-    if (config.autoUpload?.enabled) {
-        console.warn('⚠️  clipTopics.autoUpload.enabled=true 但 v1 不执行自动投稿,仅生成本地 review 包');
+    if (config.autoUpload?.enabled && config.automaticPublication?.mode !== 'auto') {
+        console.warn('⚠️  clipTopics.autoUpload 不授予投稿授权；自动投稿需配置 automaticPublication 最终审核策略');
     }
 
     const source = chooseClipSource(options.originalMediaPath, options.processedMediaPath);
@@ -1692,11 +1505,14 @@ async function generateTopicClips(options = {}) {
         console.warn('⚠️  话题切片跳过: 未找到 SRT 字幕');
         return [];
     }
-
     const usePreflight = isPreflightEnabled(config);
     const sourceSrtHash = usePreflight ? sourceFileHash(options.srtPath) : null;
     const parsed = parseTopicSrt(options.srtPath);
-    const matches = findKeywordMatches(parsed.segments, config.keywords);
+    const info = parseRecordingInfo(source.mediaPath, options.context || {});
+    const literalMatches = findKeywordMatches(parsed.segments, config.keywords);
+    const recall = usePreflight && config.ambiguousRecall.enabled
+        ? require('./workflow-runtime').loadWorkflow('clipping/topicRecovery') : null;
+    const matches = recall?.mergeTopicRecallMatches?.(parsed.segments, literalMatches, config, info) || literalMatches;
     if (matches.length === 0) {
         console.log('i️  话题切片: 未命中关键词');
         return [];
@@ -1732,12 +1548,16 @@ async function generateTopicClips(options = {}) {
 
     console.log(`\n📦 ${bursts.length} 个话题爆发段 (burst),调用 AI 决定切在哪...`);
 
-    const info = parseRecordingInfo(source.mediaPath, options.context || {});
     if (isIgnoredRoom(info.roomId, config)) {
         console.log(`i️  话题切片跳过: roomId=${info.roomId} 命中忽略名单`);
         return [];
     }
     const streamerName = resolveStreamerName(options.config || {}, info.roomId, options.context || {});
+    const publicationRuntime = config.automaticPublication?.mode === 'auto' && options.planningGroupIds === undefined && !options.planPath
+        ? require('./workflow-runtime').loadWorkflow('clipping/publicationRuntime') : null;
+    const publicationConfig = publicationRuntime
+        ? require('./workflow-runtime').loadWorkflow('clipping/publicationReview').resolveTopicPublicationConfig(options.config || {}) : null;
+    const publicationActive = publicationRuntime?.automaticContextEnabled({ config: publicationConfig, roomId: info.roomId }) === true;
     const participantMetadata = buildParticipantMetadata(loadAsrSpeakerSidecarForMediaPath(options.srtPath || source.mediaPath));
     const outputRoot = resolveClipOutputRoot(source.mediaPath, config);
     fs.mkdirSync(outputRoot, { recursive: true });
@@ -1770,7 +1590,7 @@ async function generateTopicClips(options = {}) {
 
             const segments = usePreflight
                 ? preflightSelections(await prepareTopicGroup(burst, editorialEvidence, config, aiConfig,
-                    { ...info, streamerName, srtPath: options.srtPath }, diagnostics, { danmaku }), burst, config)
+                    { ...info, streamerName, mediaPath: source.mediaPath, srtPath: options.srtPath }, diagnostics, { danmaku, recallMatches: bursts.flatMap(item => item.matchSegments) }), burst, config)
                 : useEditorial
                 ? await planTopicEventGroup(burst, editorialEvidence, config, aiConfig, streamerName, info, diagnostics)
                 : await segmentBurstWithAI(burst, parsed, streamerName, info, aiConfig);
@@ -1885,12 +1705,14 @@ async function generateTopicClips(options = {}) {
             version: 1,
             generatedAt: new Date().toISOString(),
             mode: 'local_review',
+            ...(publicationActive ? { publicationKind: 'keyword_topic' } : {}),
             status: mediaError ? 'failed' : (clipFailures.length > 0 ? 'partial' : 'success'),
             source: {
                 mediaPath: source.mediaPath,
                 sourceKind: source.kind,
                 sourceReason: source.reason,
                 srtPath: options.srtPath,
+                xmlPath: options.xmlPath || null,
                 asrEvidenceStatus: parsed.asrEvidenceStatus,
                 originalMediaPath: options.originalMediaPath || null,
                 processedMediaPath: options.processedMediaPath || null
@@ -2064,6 +1886,33 @@ async function generateTopicClips(options = {}) {
         }
     }
 
+    if (publicationActive) {
+        const rootConfig = options.config || {};
+        const scheduler = require('./clipping/resource_scheduler').createClipResourceAdaptiveScheduler({ ownConfig: rootConfig.ownStreamClips || {}, rootConfig });
+        const settings = rootConfig.ownStreamClips?.enhancements || {};
+        const selection = require('./clipping/selection_policy').resolveSelectionPolicy;
+        const excludedCategories = [...new Set([
+            ...selection(rootConfig.ownStreamClips?.selectionPolicy, info.roomId).excludedCategories,
+            ...selection(rootConfig.ownStreamClips?.selectionPolicy, '25788785').excludedCategories
+        ])];
+        const finals = results.filter(result => !isPendingTopicResult(result));
+        const reviewed = await publicationRuntime.reviewOwnPublications(finals, {
+            config: publicationConfig, roomId: String(info.roomId), streamerName, excludedCategories,
+            ffmpegPath: options.ffmpegPath || 'ffmpeg', ffprobePath: resolveFfprobePath(options.ffmpegPath || 'ffmpeg'),
+            aiEnabled: rootConfig.ai?.text?.enabled !== false
+        }, {
+            parse: file => parseTopicSrt(file).segments, evidence: buildPreflightEvidence, audience: parseDanmakuXml,
+            request: (artifact, prompt, images) => require('./clipping/enhancement_runner').requestStage(
+                { ...settings.stageDefaults, ...settings.stages?.qa }, settings.budget,
+                { ...info, outputContract: { key: 'checks', type: 'object', allowDomainRejected: true } }, `topic-publication-${artifact.window.index}`, prompt, images),
+            withMedia: async work => { const lease = await scheduler.acquire(); try { return await work(lease.profile); } finally { lease.release(); } },
+            runFfmpeg: (args, profile) => runFfmpeg(args, { ffmpegPath: options.ffmpegPath || 'ffmpeg', resourceConfig: clipResourceConfig, threads: profile?.ffmpegThreads }),
+            ...(options.publicationAdapters || {})
+        });
+        finals.forEach((result, index) => { results[results.indexOf(result)] = reviewed[index]; });
+    }
+
+    results.forEach((result, index) => { result.reviewIndex = index + 1; });
     const reviewStem = sanitizeFileName(path.basename(source.mediaPath, path.extname(source.mediaPath)));
     const reviewPath = path.join(outputRoot, `${reviewStem}_REVIEW.md`);
     const latestReviewPath = path.join(outputRoot, 'REVIEW.md');
@@ -2079,6 +1928,7 @@ async function generateTopicClips(options = {}) {
         reviewPath,
         planPath,
         uploadManifestPath: path.join(outputRoot, `${reviewStem}_UPLOAD_MANIFEST.json`),
+        ...(publicationActive ? { automaticPublication: { enabled: true, mode: 'auto' } } : {}),
         failures
     };
     try {
@@ -2122,6 +1972,16 @@ async function generateTopicClips(options = {}) {
             uploadRegistry = { ...registered, clipIds: uploadableResults.map(result => result.uploadId) };
             reviewMetadata.candidateIds = registrableResults.filter(isPendingTopicResult).map(result => result.candidateId);
             reviewMetadata.uploadRegistry = uploadRegistry;
+            if (publicationActive) {
+                const registryIndices = { ...registered, clipIdsByReviewIndex: Object.fromEntries(
+                    registrableResults.map((result, index) => [result.reviewIndex, registered.clipIds[index]])) };
+                reviewMetadata.automaticPublication = await publicationRuntime.enqueueOwnPublications(registrableResults,
+                    registryIndices, path.resolve(__dirname, '../..'), options.automaticEnqueue);
+                const refreshed = await Promise.resolve(reviewRegistrar(reviewPath, registrableResults, reviewMetadata));
+                if (refreshed?.clipStatusByReviewIndex) uploadRegistry = { ...uploadRegistry, ...refreshed,
+                    clipIds: uploadableResults.map(result => result.uploadId) };
+                reviewMetadata.uploadRegistry = uploadRegistry;
+            }
         } catch (error) {
             failures.push({ stage: 'registry', error: error.message });
             console.warn(`⚠️  话题切片上传注册失败,本地结果仍保留: ${error.message}`);

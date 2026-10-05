@@ -287,6 +287,17 @@ async function runCreativeAttempt(baseline, context, dependencies) {
                     dialogueRms = dialogueRmsFromPcm(fs.readFileSync(sample));
                 } finally { if (fs.existsSync(sample)) fs.unlinkSync(sample); }
                 const decision = chooseMusicForDialogue(profile, dialogueRms);
+                if (options.creativeResumeDirectory) {
+                    const previous = JSON.parse(fs.readFileSync(path.join(options.creativeResumeDirectory, 'clip.json'), 'utf8'));
+                    const spans = value => JSON.stringify(value?.keep.map(({ start, end }) => ({ start, end })));
+                    if (previous.qaResult?.status === 'passed' && previous.audioQa?.status === 'passed'
+                        && previous.creativePlan?.sourceId === sourceId && spans(previous.creativePlan.timeline) === spans(timeline)
+                        && previous.creativeResult?.history?.some(row => row.stage === 'audio_mix_repair' && row.action === 'omit_optional_music')
+                        && sameEditorialProfile({ ...profile, music: 'none' }, previous.editorialProfile)) {
+                        decision.enabled = false;
+                        decision.reason = 'Reuse verified mix without optional music; all audio checks rerun';
+                    }
+                }
                 if (!decision.enabled) profile = { ...profile, music: 'none' };
                 history.push({ stage: 'music_suitability', dialogueRms, ...decision });
             };
@@ -377,8 +388,8 @@ async function runCreativeAttempt(baseline, context, dependencies) {
             .map((time, index) => ({ id: `${row.id}F${index}`, time, momentId: row.id })));
         if (!frameMap.length) frameMap.push(...[.12, duration / 2, duration - .12]
             .map((time, index) => ({ id: `T1F${index}`, time, momentId: 'T1' })));
-        const sourceFrames = await capture(baseline.output.mediaPath, frameMap.map(row => timelineTools.sourceTimeForOutput(row.time, timeline)), 'source');
-        const sourceStrips = await strips(sourceFrames, 'source-strip');
+        let sourceFrames = await capture(baseline.output.mediaPath, frameMap.map(row => timelineTools.sourceTimeForOutput(row.time, timeline)), 'source');
+        let sourceStrips = await strips(sourceFrames, 'source-strip');
         const sourceResolution = await topic.getVideoResolution(source.mediaPath, topic.resolveFfprobePath(mediaConfig().ffmpegPath));
         const subtitleStyle = topic.calculateSubtitleStyle(sourceResolution.width, sourceResolution.height, config);
         const subtitleAss = topic.buildBurnAssContentFromSrt(fs.readFileSync(renderSrt, 'utf8'), subtitleStyle);
@@ -414,6 +425,7 @@ async function runCreativeAttempt(baseline, context, dependencies) {
             + '无放大但有反应贴纸时，可用sticker.anchorBox引用当前关联主体，程序会把贴纸靠近它排放，不能遮挡主体本身。'
             + (profile ? `内容策略=${JSON.stringify(profile)}；不允许笑声/音乐时不要强加。` : '')
             + (settings.creative?.laughAssets?.length ? `可用笑声轮换池=${settings.creative.laughAssets.join(',')}，按反应强弱选择intensity=light/medium/big；程序避免相邻重复并先用未使用的真实片段。` : settings.creative?.laughAsset ? `本批罐头笑声使用 ${settings.creative.laughAsset}。` : '')
+            + '罐头笑声须在完整笑话、最后一字和紧接的收尾说完后立刻开始；允许最多0.08秒的尾字重合，不能抢在铺垫、数字或后半句之前。不要把字幕拆分点当句尾。后续问答保留自然停顿，短暂留白比急着接下一句更合适。'
             + (limits.variety && !compact ? '本版需要明确的剪辑表达，不能全部只有1.15倍轻微放大。适合时用1.6–2.2倍大特写与回全景，挑合适的实体贴图/音效/滤镜建立变化。至少两种有依据的效果类型，允许单独音效；不要每处都叠全部效果。黑白用于自嘲/愣住，cold用于疑惑，warm用于轻松强调，vignette用于短暂强调。' : '')
             + `zoom.scale=1.15..${limits.maxZoom}；sticker.x=0.1..0.9，y=0.12..0.65，width=0.08..0.30（画面宽度占比），motion=static/pop/slide。`
             + `基础sticker=${JSON.stringify(STICKERS)}；基础sound=${limits.soundEffects ? JSON.stringify(Object.keys(SOUNDS)) : '只能null'}；filter=${limits.filters ? JSON.stringify(Object.keys(FILTERS)) : '只能null'}。`
@@ -491,7 +503,7 @@ async function runCreativeAttempt(baseline, context, dependencies) {
             && Object.values(assets).some(asset => asset.kind === 'sound')) {
             const soundPlan = await request('sound-plan', 'sounds',
                 '独立设计后期声音：视觉方案没有使用音效。读取台词，选择至多两处适合罐头笑声的轻松自嘲或操作反转。'
-                + '笑声放在笑点说完后，不嘲讽真实苦恼。offsetSeconds相对该节点start，可延后到节点end之后1.5秒以内；音效约1.8秒，程序会在对白时自动压低。'
+                + '笑声放在完整笑点和末字说完后立刻开始，最多重合尾字0.08秒，不嘲讽真实苦恼。offsetSeconds相对该节点start，可延后到节点end之后1.5秒以内；给笑声留短暂停顿，不以压低对白代替正确落点。'
                 + '只选给出的节点和素材ID，严肃或没有自然落点时返回空数组。返回 {"sounds":[{"momentId":"M1","id":"audience_laugh","offsetSeconds":3.2,"levelDb":-10,"reason":"具体依据"}]}。\n'
                 + JSON.stringify({ speech, duration, moments: plan.effects, assets: assetChoices(assets).filter(row => row.kind === 'sound') }));
             if (!Array.isArray(soundPlan.sounds) || soundPlan.sounds.length > 2
@@ -554,6 +566,32 @@ async function runCreativeAttempt(baseline, context, dependencies) {
             history.push({ stage: 'sound_level_overrides', sounds: options.creativeSoundLevelOverrides });
         }
         plan.editorialProfile = profile;
+        const reaction = loadWorkflow('clipping/enhancement');
+        if (compact && typeof reaction.planLaughterTiming === 'function') {
+            const timed = reaction.planLaughterTiming(plan, speech, assets, profile);
+            if (timed.changes.length) {
+                plan = timed.plan;
+                history.push({ stage: 'laughter_timing', changes: timed.changes, insertions: timed.insertions });
+                if (timed.insertions.length) {
+                    timeline = plan.timeline; activeTimeline = timeline; duration = plan.duration;
+                    speech = timelineTools.mapTimelineCues(originalSpeech, timeline);
+                    const subtitleCues = topic.parseTopicSrt(baseline.output.srtPath).segments;
+                    fs.writeFileSync(renderSrt, timelineTools.srtText(timelineTools.mapTimelineCues(subtitleCues, timeline)), 'utf8');
+                    for (const moment of moments) {
+                        const adjusted = plan.effects.find(row => row.id === moment.id);
+                        moment.start = adjusted?.start ?? reaction.shiftReactionTime(moment.start, timed.insertions);
+                        moment.end = adjusted?.end ?? reaction.shiftReactionTime(moment.end, timed.insertions, 'end');
+                    }
+                    for (const frame of frameMap) {
+                        const moment = moments.find(row => row.id === frame.momentId), position = Number(frame.id.slice(-1));
+                        frame.time = [moment.start + .12, (moment.start + moment.end) / 2, moment.end - .12][position];
+                    }
+                    sourceFrames = await capture(baseline.output.mediaPath, frameMap.map(row => timelineTools.sourceTimeForOutput(row.time, timeline)), 'reaction-source');
+                    sourceStrips = await strips(sourceFrames, 'reaction-source-strip');
+                }
+                raw.effects = raw.effects.map(row => ({ ...row, sound: plan.effects.find(effect => effect.id === row.momentId)?.sound || null }));
+            }
+        }
         plan.assetDigests = Object.fromEntries(Object.values(assets).filter(asset => plan.music?.id === asset.id || plan.effects.some(row => row.sticker?.id === asset.id || soundId(row.sound) === asset.id)).map(asset => [asset.id, asset.sha256]));
         for (let visualAttempt = 0; ; visualAttempt++) {
             writeJsonAtomic(path.join(scratch, 'creative-plan.json'), { plan, frameMap, sourceFrames });
@@ -645,6 +683,7 @@ async function runCreativeAttempt(baseline, context, dependencies) {
                 '独立核对实际成片效果。对比拼图按节点顺序，长图每个带M编号的区块有两行，上排源画面、下排成片；短图是一处节点。每行从左到右是开始/中间/结束；最后一张是封面。'
                 + '检查放大是否准确、贴纸是否挡脸/关键操作、字幕可读、特效是否误导语气或改变含义。'
                 + '本轮只审画面和文字。音效技术校验由程序解码实际音轨后完成，audioQa提供原声相关性、长度、峰值及音效能量证据；听感另留人工复核。'
+                + 'timeline.holds是说完话后的后期短暂画面停顿，音轨对应段为静音后叠加笑声，不删字、不循环对白。按新的成片时间核对字幕和问答，不能把声明的短暂停顿误判为原录播卡顿。'
                 + '不要要求静帧证明淡入淡出、侧链、音轨或听感，也不要因此将视觉restraint判失败；只在画面/语义不确定时拒绝。'
                 + 'appliedVisualRepairs是实际执行的可选效果撤销记录。plan.effects的现有字段才是本轮生效方案，reason保留原设计依据，可能描述已撤销的效果。'
                 + '不要因已明确撤销的效果未出现而判计划不符；仍须根据当前真实成片独立评估主体可辨识、内容完整及整体表达收益，若确实不足请说明实际缺陷。'

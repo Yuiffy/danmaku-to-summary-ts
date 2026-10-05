@@ -9,6 +9,28 @@ describe('complete game recordings', () => {
   const event = (start: number, end: number, extra = {}) => ({ id: 'game-1', gameId: 'elden-ring', start, end,
     startObserved: true, endObserved: true, evidenceIds: ['T1'], chapters: [], excludedRanges: [], windows: [1], ...extra });
 
+  test('missing game routing uses daiYu and independent local audio while preserving explicit routes', () => {
+    expect(config.ai).toMatchObject({ provider: 'daiYu', boundaryEvidenceMethod: 'independent_local_asr' });
+    expect(plan.getGameConfig({ streamGameClips: { ai: { provider: 'tuZi', boundaryEvidenceMethod: 'native_audio' } } }).ai)
+      .toMatchObject({ provider: 'tuZi', boundaryEvidenceMethod: 'native_audio' });
+  });
+
+  test('invalid game providers and boundary methods fail before selecting another route', () => {
+    for (const provider of ['daiyu', 'unknown', '', null, 42]) {
+      expect(() => plan.getGameConfig({ streamGameClips: { ai: { provider } } })).toThrow(/provider/);
+    }
+    for (const boundaryEvidenceMethod of ['independant_local_asr', 'native', '', null, 42]) {
+      expect(() => plan.getGameConfig({ streamGameClips: { ai: { boundaryEvidenceMethod } } }))
+        .toThrow(/boundaryEvidenceMethod/);
+    }
+  });
+
+  test('requiring original streams accepts only an explicit boolean', () => {
+    expect(plan.getGameConfig({ streamGameClips: { requireOriginalStreamCopy: true } }).requireOriginalStreamCopy).toBe(true);
+    expect(() => plan.getGameConfig({ streamGameClips: { requireOriginalStreamCopy: 'true' } }))
+      .toThrow(/Invalid streamGameClips.requireOriginalStreamCopy/);
+  });
+
   test('keeps gameplay across detection windows and a short unconfirmed break', () => {
     const merged = plan.mergeEvents([event(10, 2000, { endObserved: false }), event(2010, 4000, { startObserved: false })]);
     expect(merged).toHaveLength(1);
@@ -94,7 +116,8 @@ describe('complete game recordings', () => {
       const mediaPath = path.join(directory, 'source.flv'), srtPath = path.join(directory, 'source.srt');
       fs.writeFileSync(mediaPath, 'source');
       fs.writeFileSync(srtPath, '1\n00:00:00,000 --> 00:03:20,000\n游戏\n\n');
-      const root = { ownStreamClips: { subtitleVideoEncoder: 'h264_nvenc', subtitleCrf: 23 } };
+      const root = { ownStreamClips: { subtitleVideoEncoder: 'h264_nvenc', subtitleCrf: 23 },
+        streamGameClips: { requireOriginalStreamCopy: true } };
       const options: any = { mediaPath, srtPath, config: root, registerUpload: false,
         episodeRegistryPath: path.join(directory, 'episodes.json'),
         capabilities: { collectionAllowed: true, externalSubtitlesAllowed: true, multipartAllowed: false,
@@ -113,7 +136,7 @@ describe('complete game recordings', () => {
         events: [event(0, 200, { verification: { version: 3, protocolVersion: require('./stream_game_verification').PROTOCOL_VERSION,
           decision: 'keep', publicCopySupported: true } })] };
       const files = { directory, plan: path.join(directory, 'PLAN.json'), review: path.join(directory, 'REVIEW.md') };
-      const shortConfig = { ...config, maxSingleVideoSeconds: 100 };
+      const shortConfig = { ...config, ai: { ...config.ai, boundaryEvidenceMethod: 'native_audio' }, maxSingleVideoSeconds: 100 };
       const result = await render.renderGames(gamePlan, options, shortConfig, files);
       expect(result.submissions).toBe(4);
       expect(gamePlan.renderDurationLimit).toBe(50);

@@ -121,6 +121,49 @@ class ActivityUploadTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '30 minutes'):
             self.approved()
 
+    def test_new_song_titles_require_verified_names_and_dates_and_reject_uncertain_performances(self):
+        self.data.update(kind='songs', activities=[{'id': 'a1', 'kind': 'song', 'start': 0, 'end': 1500, 'name': '泡泡',
+            'verification': {'decision': 'keep'}}], presentation={'version': 2, 'titleFormat': 'song_name_recording_date', 'recordingDate': '2026.10.1'})
+        self.data['output']['parts'] = [self.parts[0]]
+        self.data['output']['parts'][0]['title'] = '泡泡-2026.10.1'
+        self.data['copy']['title'] = '泡泡-2026.10.1'
+        self.save(); self.approved()
+        for mutate in (lambda d: d['activities'][0].update(name=None),
+                       lambda d: d['output']['parts'][0].update(title='演唱 01'),
+                       lambda d: d['activities'][0]['verification'].update(decision='uncertain')):
+            before = copy.deepcopy(self.data); mutate(self.data); self.save()
+            with self.assertRaises(ValueError): self.approved()
+            self.data = before
+
+    def test_new_viewing_titles_require_the_work_name_and_preserve_order_and_recording_date(self):
+        self.data['activities'][0]['name'] = '雷神3'
+        self.data['presentation'] = {'version': 3, 'titleFormat': 'work_name_recording_date', 'recordingDate': '2026.10.1'}
+        self.data['copy']['title'] = '《雷神3》｜2026.10.1'
+        for index, part in enumerate(self.data['output']['parts']):
+            part['title'] = f'《雷神3》 {index+1:02d}/03'
+        self.save(); self.approved()
+        for mutate in (lambda d: d['activities'][0].update(name=None),
+                       lambda d: d['activities'][0].update(name='电影同看'),
+                       lambda d: d['output']['parts'][0].update(title='电影同看 01/03'),
+                       lambda d: d['copy'].update(title='2026-10-01 20:38｜电影同看'),
+                       lambda d: d['presentation'].update(recordingDate='2026.10.2')):
+            before = copy.deepcopy(self.data); mutate(self.data); self.save()
+            with self.assertRaises(ValueError): self.approved()
+            self.data = before
+
+    def test_transcript_title_names_are_replayed_from_original_rows_before_publication(self):
+        self.srt.write_text('1\n00:00:00,000 --> 00:00:01,000\n现在唱泡泡\n', encoding='utf-8')
+        digest = hashlib.sha256(self.srt.read_bytes()).hexdigest()
+        self.data['sourceSnapshot']['srtSha256'] = digest
+        self.data['transcript'] = {'path': str(self.srt), 'sha256': digest}
+        self.data['presentation'] = {'titleEvidence': {'version': 1, 'items': [{'activityId': 'a1', 'name': '泡泡',
+            'sourceAlias': '泡泡', 'method': 'source_transcript_reading', 'transcriptPath': str(self.srt), 'transcriptSha256': digest,
+            'segments': [{'index': 1, 'start': 0, 'end': 1, 'text': '现在唱泡泡'}], 'note': '原录播报歌名'}]}}
+        self.save(); self.approved()
+        self.data['presentation']['titleEvidence']['items'][0]['segments'][0]['text'] = '现在唱另一首'
+        self.save()
+        with self.assertRaisesRegex(ValueError, 'original transcript rows'): self.approved()
+
     @patch('bilibili_upload_capabilities.fetch_capabilities', return_value={
         'maxParts': 100, 'collectionAllowed': True, 'multipartCollectionAllowed': True, 'externalSubtitlesAllowed': False,
         'maxFileBytes': 16*1024**3, 'maxVideoSeconds': 10800})

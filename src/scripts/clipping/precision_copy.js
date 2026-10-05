@@ -39,7 +39,7 @@ function precisionDetail(metadata, assets = {}) {
             const id = soundId(effect.sound), asset = assets[id] || sources[id];
             const start = effect.start + (effect.sound.offsetSeconds || 0);
             const measured = metadata.audioQa?.effects?.find(row => row.id === id && Math.abs(row.start - start) < .001);
-            const end = measured?.end ?? start + (asset?.sampleSeconds ?? SOUNDS[id]?.duration);
+            const end = measured?.end ?? start + (effect.sound.durationSeconds ?? asset?.sampleSeconds ?? SOUNDS[id]?.duration);
             const laughter = asset?.family === 'laughter' || LAUGHTER.has(id);
             add(start, end, laughter ? '后期罐头笑声' : '后期提示音效');
         }
@@ -48,6 +48,7 @@ function precisionDetail(metadata, assets = {}) {
         '以下时间为本视频进度；音乐、笑声、音效和贴图如有列出，均为后期添加。'];
     const removed = plan.timeline?.removedSeconds || 0;
     if (removed > 0) lines.push(`节奏剪辑：删减 ${round(removed)} 秒，成片 ${round(plan.duration)} 秒。`);
+    if (plan.timeline?.addedSeconds) lines.push(`笑点后添加短暂画面停顿 ${round(plan.timeline.addedSeconds)} 秒，原对白保留。`);
     lines.push(...rows.sort((a, b) => a.start - b.start).map(row => row.text));
     return lines.join('\n');
 }

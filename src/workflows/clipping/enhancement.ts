@@ -6,6 +6,7 @@ import { parseModelJson } from '../text/json';
 import { compactEnhancementEvidence } from './enhancement_evidence';
 import { usefulPauseEvidence, pacingSettings, PacingSettings } from './pacing_evidence';
 export { protectedPauseWindows, detectQuietPcm, usefulPauseEvidence, pacingSettings } from './pacing_evidence';
+export { planLaughterTiming, reactionPieces, reactionSourceTime, reactionOutputTime, shiftReactionTime } from './reactionTiming';
 
 export interface Copy { title: string; coverText: string; description: string; [key: string]: unknown }
 export interface Artifact {

@@ -24,6 +24,8 @@ TERMINAL_UPLOAD_ERROR_MARKERS = (
     "video too short",
     "无法创建封面",
     "no_cover",
+    "automatic submission outcome unknown",
+    "automatic publication authorization invalid",
 )
 
 

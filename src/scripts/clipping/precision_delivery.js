@@ -5,9 +5,14 @@ const { writeJsonAtomic } = require('./candidate_subtitles');
 const { clipId } = require('./own_review_report');
 const { sendWeChatMarkdown } = require('../wechat_work_markdown');
 
-function completionMarkdown(results, metadata) {
+function completionMarkdown(results, metadata, buildList) {
     const selected = metadata.precisionDelivery.selected;
     const rows = selected.map(item => ({ item, result: results.find(row => (row.reviewIndex ?? row.window?.index) === item.index) }));
+    if (metadata.automaticPublication?.enabled) {
+        const completed = rows.filter(({ result }) => result?.creativeResult?.status === 'edited' && result?.qaResult?.status === 'passed').length;
+        return [buildList ? buildList(results, metadata) : `完整清单：${metadata.reviewPath}`,
+            ...(rows.length ? [`精切处理：${completed}条通过，${rows.length - completed}条保留普通版或待处理；投稿状态见各编号。`] : [])].join('\n\n');
+    }
     const passed = rows.every(({ result }) => result?.creativeResult?.status === 'edited' && result?.qaResult?.status === 'passed');
     const lines = [passed ? '## 精切完成' : '## 精切处理结束', `直播: ${metadata.streamTitle || metadata.sourceFileName || '未知'}`];
     if (['not_sent', 'unknown'].includes(metadata.precisionDelivery.ordinaryNotification)) lines.push('此前普通清单通知未确认送达，普通成片和编号可在下方完整清单中查看。');
@@ -21,7 +26,7 @@ function completionMarkdown(results, metadata) {
             lines.push(`已完成：${counts}；耗时 ${(result.creativeResult.elapsedMs / 60000).toFixed(1)} 分钟。`,
                 result.uploadReady ? '状态：成片待审核。' : '状态：成片已生成，仍需复核。');
         } else lines.push(result?.output?.mediaPath && !result.output.mediaError ? '精切未通过或无合适效果，已保留普通版供审核。' : '精切制作失败，待处理。',
-            `原因：${result?.creativeResult?.reason || result?.output?.mediaError || '渲染任务未返回成片'}`);
+            `原因：${require('../workflow-runtime').loadWorkflow('clipping/reviewDigest').shortChineseReason(result?.creativeResult?.reason || result?.output?.mediaError, '渲染任务未返回成片')}`);
         if (result?.output?.mediaPath) lines.push(`视频：${result.output.mediaPath}`);
     }
     lines.push('', `完整清单：${metadata.reviewPath}`, '本次仅制作并登记审核编号，未自动投稿。');
@@ -33,11 +38,13 @@ async function notifyPrecisionDelivery(results, metadata, rootConfig, buildList)
     if (rootConfig.ownStreamClips?.notify?.enabled === false || !webhook) return false;
     const phase = metadata.precisionDelivery.phase;
     const ordinary = phase === 'ordinary_ready';
+    if (ordinary && metadata.automaticPublication?.enabled) return false;
+    if (buildList) results = await require('./own_notify').withNotifyExcerpts(results);
     let content;
     if (ordinary) {
         const pending = metadata.precisionDelivery.selected.map(row => `正在把候选${row.index}《${row.title}》制作成精切，完成后另行通知。`).join('\n');
         content = `## 普通切片已完成\n${pending}\n\n${buildList(results, metadata)}`;
-    } else content = completionMarkdown(results, metadata);
+    } else content = completionMarkdown(results, metadata, buildList);
     const receiptPath = metadata.reviewPath.replace(/\.md$/i, `_DELIVERY_${phase}.json`);
     const digest = crypto.createHash('sha256').update(content).digest('hex');
     let previous;

@@ -52,6 +52,38 @@ describe('own-stream subtitle revisions', () => {
   });
   afterEach(() => { jest.restoreAllMocks(); fs.rmSync(directory, { recursive: true, force: true }); });
 
+  test('timing rebuild renders calibrated subtitles under the same ID and records independent AI authority', async () => {
+    const snapshot = sourceSnapshot(metadata);
+    const aligned = path.join(directory, 'aligned.srt');
+    fs.writeFileSync(aligned, '1\n00:01:01,000 --> 00:02:01,000\nHello world\n');
+    const descriptor = { mode: 'repaired_source_audio', originalSrtPath: snapshot.srtPath, originalSrtSha256: snapshot.srtSha256, path: aligned };
+    const record = path.join(directory, 'bound-record.json');
+    fs.writeFileSync(record, JSON.stringify(descriptor));
+    const readTranscript = jest.spyOn(require('./clipping/stream_activity_transcript'), 'readTimingTranscript').mockReturnValue(descriptor);
+    metadata.qaRequired = true; save();
+    const publication = require('./clipping/own_automatic_publication');
+    jest.spyOn(publication, 'reviewArtifactCopy').mockImplementation(async value => ({ ...value, attributionReview: { status: 'passed' } }));
+    jest.spyOn(publication, 'inspectFinals').mockImplementation(async values => values.map(value => ({ ...value,
+      publicationReview: { status: 'passed' }, publicationDecision: { action: 'auto_queue' } })));
+    jest.spyOn(require('./workflow-runtime').loadWorkflow('clipping/ownTimingRecovery'), 'verifyRenderedTimingAudio')
+      .mockImplementation(async value => value);
+    await updateRevision(file, { ...options, action: 'prepare', transcriptRecord: record,
+      start: 61, end: 121, sourceKind: 'live_speech' }, config);
+    expect(load()).toMatchObject({ uploadId: 7, rebuildRequired: true, uploadReady: false, source: { srtPath: aligned } });
+    expect(load().publicationReview).toBeUndefined(); expect(load().ownStreamHumanReview).toBeUndefined();
+    await renderRevision(file, { ...options, automaticReview: 'yes' }, config);
+    expect(render).toHaveBeenCalledWith(expect.objectContaining({ start: 61, end: 121, srtPath: aligned }), config);
+    const revised = load();
+    expect(revised.ownStreamHumanReview).toBeUndefined(); expect(revised.publicationReview.status).toBe('passed');
+    expect(revised.renderedTimingRepair.rendered.video).toBe(fileDigest(revised.output.mediaPath));
+    expect(fs.readFileSync(revised.renderedTimingRepair.originalOutput.mediaPath, 'utf8')).toBe('original burned clip');
+    await updateRevision(file, { ...options, action: 'prepare', transcriptRecord: record,
+      start: 62, end: 120, sourceKind: 'live_speech' }, config);
+    expect(readTranscript).toHaveBeenLastCalledWith(record, snapshot, config, true);
+    expect(load()).toMatchObject({ qaRequired: true, attributionRequired: true, rebuildRequired: true,
+      renderedTimingRepair: { originalSource: snapshot }, source: { srtPath: aligned } });
+  });
+
   test('literal corrections preserve old artifacts, cue times, ID and revision history', async () => {
     const before = fs.readFileSync(file, 'utf8');
     const result = await correct({ cue: 1 });

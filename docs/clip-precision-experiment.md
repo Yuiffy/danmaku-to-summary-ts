@@ -35,6 +35,11 @@ python src/scripts/clip_upload_registry.py precision --id 123 --avatar-mode circ
 不重新生成 ASR，不发送通知，也不入队或替换线上稿件。存在待重压字幕或活动上传的 ID 须先完成原任务。
 画面修复反馈逐项标出有问题的缩放节点与字段；无法确认安全裁切时撤掉该处缩放，保留其余有效效果，
 不能把 `safeToCrop` 改成 `true` 来绕过校验。
+已成功自动精切的编号也可用同一 `precision` 命令修订。它验证现有成片 QA 摘要与原源身份，
+从 `enhancement.baseline` 取回保留的普通底版，复用匹配的选材和构图草案；不复用 QA 结果。
+没有可信底版、成片已变或源已变时停止；`originalDigests` 仍绑定注册表原成片，
+`baselineDigests` 单独绑定普通底版。新版只写入本地修订目录，原稿与线上投稿保留。
+
 修复后重试可加 `--resume-from <旧修订目录>`：工具核对同一 ID、普通底版及源文件快照，
 复用旧故事/节点草案，重新执行结构校验和审核。若故事保留区间变化，不复用旧时间轴上的节点；
 若节点与时间轴均完全一致，也可复用画面草案后按当前规则重新校验。实际渲染和成片审核始终重跑。
@@ -132,6 +137,13 @@ python src/scripts/clip_upload_registry.py precision --id 123 --avatar-mode circ
 
 `creative.laughAssets` 是可轮换的笑声池，按轻／中／强反应选择合适素材，优先用本片未使用过的片段，
 避免相邻重复。以文件摘要＋起止片段区分素材，给同一片段换 ID 不算新的笑声。
+笑声落点由保留字幕与节点引用再次校验：先说完完整笑点及紧接的收尾，最多与末字重合
+40 毫秒，不能在字幕拆分处抢笑。优先使用原有停顿；轻松聊天的停顿不足时，添加每处最多
+1 秒的画面定格与静音留白，缩短笑声片段以免压住下一句。中性、严肃或连续表演不插入停顿。
+`timeline.holds` 用原素材相对秒记录 `after/seconds/cueId`，`addedSeconds` 单独计入成片时长；
+keep/drop 保持原绝对区间，`removedSeconds` 不减去新增留白。字幕、后续效果、取帧与音轨参考
+都映射到新时间轴；`sound.durationSeconds/afterCueId` 保存实际片段长度与句尾引用，混音与审核
+使用同一长度。静音留白不循环或修改原对白，最终媒体与独立审核仍须重跑。
 默认四种为 Kinoton 的短笑、另一组短笑、起伏笑声和带掌声的笑声；前三种来自
 [Sitcom Laughter 9x](https://freesound.org/people/Kinoton/sounds/383207/) 的不同片段，第四种来自
 [Sitcom Laughter with Applause](https://freesound.org/people/Kinoton/sounds/371562/)，均为 CC0。

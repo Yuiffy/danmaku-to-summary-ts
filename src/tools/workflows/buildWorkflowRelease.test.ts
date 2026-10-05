@@ -7,7 +7,13 @@ test('repeat builds and failed builds clean their staging files without activati
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workflow-builder-'));
   try {
     const entries = ['clipping/stage', 'clipping/editPlan', 'clipping/enhancement', 'clipping/experiment',
-      'text/response', 'text/requests', 'summary/diagnostics'].map(name => `workflows/${name}`);
+      'clipping/activityStages', 'clipping/activityAudio', 'clipping/activityTitles', 'clipping/activityPublication', 'clipping/ownTimingRecovery',
+      'clipping/reviewDigest', 'clipping/ownSourceReview',
+      'clipping/ownPublicationRepair', 'clipping/ownRequiredReview', 'clipping/subtitleWindowEvidence', 'clipping/ownPublicationRecheck',
+      'clipping/ownSubtitleRepairRuntime',
+      'clipping/gameOpening', 'clipping/publicationReview', 'clipping/publicationRuntime', 'clipping/topicRecovery',
+      'clipping/quantityEvidence', 'clipping/preflightEnding',
+      'ai/usage', 'text/response', 'text/requests', 'summary/diagnostics'].map(name => `workflows/${name}`);
     entries.push('core/config/ConfigLayers');
     for (const entry of entries) {
       const file = path.join(root, 'src', `${entry}.ts`);

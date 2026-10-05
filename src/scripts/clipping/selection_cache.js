@@ -28,6 +28,21 @@ function waitForCacheChange(file) {
 }
 
 async function withSelectionCache(options, generate) {
+    const usage = require('../workflow-runtime').getLoadedWorkflow('ai/usage');
+    if (!usage) return runSelectionCache(options, generate);
+    return usage.withUsagePhase(options.phase || 'selection', async () => {
+        try {
+            const result = await runSelectionCache(options, generate);
+            if (result.meta?.selectionCache?.hit) usage.recordUsageReuse(options.phase, 'selection_cache');
+            return result;
+        } catch (error) {
+            if (error.selectionCache?.hit || error.selectionCache?.joined) usage.recordUsageReuse(options.phase, 'joined_generation');
+            throw error;
+        }
+    });
+}
+
+async function runSelectionCache(options, generate) {
     if (!options.directory) return generate();
     const key = crypto.createHash('sha256').update(JSON.stringify({
         version: 1, phase: options.phase, signature: options.signature, prompt: options.prompt

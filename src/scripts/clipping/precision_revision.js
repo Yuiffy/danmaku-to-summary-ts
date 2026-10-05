@@ -18,11 +18,27 @@ async function renderPrecisionRevision(options, dependencies = {}) {
     const { lock, lockPath } = require('../render_topic_candidate').acquireCandidateLock(metadataPath, id);
     let directory;
     try {
-        const before = fs.readFileSync(metadataPath, 'utf8'), original = JSON.parse(before);
+        const before = fs.readFileSync(metadataPath, 'utf8'), registered = JSON.parse(before);
+        let original = registered;
         if (original.mode !== 'own_stream_fun_review' || !original.uploadReady || original.rebuildRequired
             || original.publicCopyPending || original.output?.mediaError || !original.output?.burnedSubtitles
             || (original.uploadId && original.uploadId !== id)) throw new Error('A reviewed ordinary own-stream clip is required');
-        if (original.creativeResult?.status === 'edited' || original.editPlan?.removed?.length) {
+        const successfulAutomatic = original.creativeResult?.status === 'edited';
+        if (successfulAutomatic) {
+            const saved = original.enhancement?.baseline;
+            if (original.qaResult?.status !== 'passed' || original.audioQa?.status !== 'passed' || !saved?.window
+                || !saved.copy || !saved.burnedSubtitles || saved.mediaPath === original.output.mediaPath
+                || saved.srtPath === original.output.srtPath || saved.window.start !== original.editPlan?.sourceWindow.start
+                || saved.window.end !== original.editPlan?.sourceWindow.end || original.sourceExpansion
+                || Math.abs(saved.window.duration - (saved.window.end - saved.window.start)) > .002) {
+                throw new Error('Successful precision clip has no current ordinary baseline');
+            }
+            const priorDigests = await loadWorkflow('clipping/enhancement').artifactDigests(original);
+            if (Object.entries(priorDigests).some(([key, value]) => value !== original.qaResult.digests?.[key])) throw new Error('Reviewed precision artifacts changed');
+            original = { ...original, window: saved.window, copy: saved.copy,
+                output: { ...saved, metadataPath }, attributionReview: original.attributionReview?.previousReview || original.attributionReview };
+            delete original.editPlan;
+        } else if (original.editPlan?.removed?.length) {
             throw new Error('Use the original ordinary clip; an edited artifact cannot serve as the baseline');
         }
         const topic = dependencies.topic || require('../topic_clipper');
@@ -92,6 +108,8 @@ async function renderPrecisionRevision(options, dependencies = {}) {
         }
         const digests = { video: fileDigest(original.output.mediaPath), subtitles: fileDigest(original.output.srtPath),
             cover: fileDigest(original.output.coverPath) };
+        const registeredDigests = successfulAutomatic ? { video: fileDigest(registered.output.mediaPath),
+            subtitles: fileDigest(registered.output.srtPath), cover: fileDigest(registered.output.coverPath) } : digests;
         for (const [key, value] of Object.entries(original.attributionReview?.artifactDigests || {})) {
             if (digests[key] && value !== digests[key]) throw new Error(`Original ${key} changed since review`);
         }
@@ -103,11 +121,25 @@ async function renderPrecisionRevision(options, dependencies = {}) {
         fs.mkdirSync(parent, { recursive: true });
         directory = fs.mkdtempSync(path.join(parent, 'r-'));
         fs.writeFileSync(path.join(directory, 'original.json'), before, { flag: 'wx' });
+        if (successfulAutomatic && !resumeDirectory) {
+            if (await require('./creative_source_expansion').creativeSourceIdentity({ mediaPath: original.source.mediaPath }, original.source) !== registered.creativePlan.sourceId) {
+                throw new Error('Successful precision source changed');
+            }
+            resumeDirectory = path.join(directory, 'resume');
+            const resumeScratch = path.join(resumeDirectory, 'temp', 'clip-creative');
+            fs.mkdirSync(resumeScratch, { recursive: true });
+            writeJsonAtomic(path.join(resumeDirectory, 'clip.json'), registered);
+            const priorScratch = path.join(path.dirname(metadataPath), 'temp', `${path.basename(metadataPath, '.json')}-creative`);
+            for (const file of fs.readdirSync(priorScratch)) {
+                if (/^(story|moments|visual-plan)(?:-[\w-]+)?-response\.json$/.test(file)) fs.copyFileSync(path.join(priorScratch, file), path.join(resumeScratch, file));
+            }
+        }
         if (insetPlan) writeJsonAtomic(path.join(directory, 'inset-editorial-plan.json'), insetPlan);
         const outputMetadata = path.join(directory, 'clip.json'), revisionSrt = path.join(directory, 'clip.srt');
         fs.copyFileSync(original.output.srtPath, revisionSrt);
         const revision = { version: 1, clipId: id, createdAt: new Date().toISOString(), note: String(options.note || ''),
-            originalMetadataPath: metadataPath, originalDigests: digests, sourceSnapshot: snapshot, style: config.enhancements.creative?.style || 'accent',
+            originalMetadataPath: metadataPath, originalDigests: registeredDigests, baselineDigests: digests,
+            sourceSnapshot: snapshot, style: config.enhancements.creative?.style || 'accent',
             avatarMode: config.enhancements.creative?.avatarMode || 'auto',
             ...(options.allowCoverFaceOverlap ? { coverFaceOverlapApproved: true } : {}),
             ...(resumeDirectory ? { resumeFrom: resumeDirectory } : {}), uploadAuthorized: false };
@@ -139,7 +171,8 @@ async function renderPrecisionRevision(options, dependencies = {}) {
                 creativeAllowCoverFaceOverlap: options.allowCoverFaceOverlap === true },
             topic, clip, subtitleEvidence: evidence, execution });
         if (fs.readFileSync(metadataPath, 'utf8') !== before || JSON.stringify(sourceSnapshot(original)) !== JSON.stringify(snapshot)
-            || fileDigest(original.output.mediaPath) !== digests.video || fileDigest(revisionSrt) !== digests.subtitles) {
+            || fileDigest(original.output.mediaPath) !== digests.video || fileDigest(revisionSrt) !== digests.subtitles
+            || Object.entries(registeredDigests).some(([key, value]) => fileDigest(registered.output[{ video: 'mediaPath', subtitles: 'srtPath', cover: 'coverPath' }[key]]) !== value)) {
             throw new Error('Source or baseline changed during precision rendering');
         }
         if (clip.attributionRequired && result.creativeResult?.status === 'edited' && result.qaResult?.status === 'passed') {

@@ -27,7 +27,7 @@ try:
         strip_review_score_suffix, normalize_registry_media_paths, parse_review,
         INTERNAL_REVIEW_LABEL_RE, REVIEW_SCORE_SUFFIX_RE)
     from .clip_upload_manifest import load_upload_manifest, validate_registry_qa, find_review_manifest
-    from . import clip_candidate_queue, precision_publish
+    from . import clip_candidate_queue, precision_publish, clip_auto_publication, clip_auto_recheck, clip_media_replace, clip_upload_state
 except ImportError:
     from clip_upload_errors import (TERMINAL_UPLOAD_ERROR_MARKERS, has_terminal_upload_error,
         terminal_upload_error_reason, format_upload_failure)
@@ -35,7 +35,7 @@ except ImportError:
         strip_review_score_suffix, normalize_registry_media_paths, parse_review,
         INTERNAL_REVIEW_LABEL_RE, REVIEW_SCORE_SUFFIX_RE)
     from clip_upload_manifest import load_upload_manifest, validate_registry_qa, find_review_manifest
-    import clip_candidate_queue, precision_publish
+    import clip_candidate_queue, precision_publish, clip_auto_publication, clip_auto_recheck, clip_media_replace, clip_upload_state
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_DIR = PROJECT_ROOT / "data" / "runtime"
@@ -860,139 +860,13 @@ def show_clips(args: argparse.Namespace) -> int:
 
 
 def enqueue(args: argparse.Namespace) -> int:
-    ids = parse_int_list(args.ids)
-    if not ids:
-        print("[ERROR] --ids is empty", file=sys.stderr)
-        return 2
-    batch_size = int(getattr(args, "batch_size", DEFAULT_BATCH_SIZE))
-    timeout_seconds = int(
-        getattr(args, "timeout_seconds", DEFAULT_BATCH_TIMEOUT_SECONDS)
-    )
-    if batch_size < 1:
-        print("[ERROR] --batch-size must be at least 1", file=sys.stderr)
-        return 2
-    if timeout_seconds < 60:
-        print("[ERROR] --timeout-seconds must be at least 60", file=sys.stderr)
-        return 2
-    registry = load_json(REGISTRY_PATH, default_registry())
-    missing = [clip_id for clip_id in ids if str(clip_id) not in registry.get("clips", {})]
-    if missing:
-        print(f"[ERROR] unknown clip ids: {missing}", file=sys.stderr)
-        return 2
-    held = [clip_id for clip_id in ids if registry["clips"][str(clip_id)].get("editorialExclusion") or (
-            registry["clips"][str(clip_id)].get("reviewPending")
-            and not registry["clips"][str(clip_id)].get("pendingRebuild"))]
-    if held:
-        print(f"[ERROR] IDs excluded or need review before upload (force cannot bypass): {held}. Use show/subtitles to inspect their reviewIssues.", file=sys.stderr)
-        return 2
-    sync_clip_statuses(registry, ids)
-    already_uploaded = [clip_id for clip_id in ids if registry["clips"][str(clip_id)].get("status") == "uploaded"]
-    revised_published = [clip_id for clip_id in ids if registry["clips"][str(clip_id)].get("subtitleRevisionKind") == "own_stream"
-                         and clip_candidate_queue.is_published(registry["clips"][str(clip_id)])]
-    if revised_published:
-        print(f"[ERROR] revised published IDs require replacing their original submissions, not duplicate uploads: {revised_published}", file=sys.stderr)
-        return 2
-    if already_uploaded and not args.force:
-        print(f"[ERROR] already uploaded ids (use --force to enqueue anyway): {already_uploaded}", file=sys.stderr)
-        return 2
-    collection_section_id = getattr(args, "collection_section_id", None)
-    if collection_section_id is not None and (collection_section_id <= 0 or len(ids) != 1
-            or not registry["clips"][str(ids[0])].get("manifestPath")):
-        print("[ERROR] --collection-section-id requires one JSON-backed clip and a positive ID", file=sys.stderr)
-        return 2
-    if args.dry_run:
-        for clip_id in ids:
-            clip = registry["clips"][str(clip_id)]
-            action = "cut_then_upload" if clip.get("pendingCut") or clip.get("pendingRebuild") else "upload"
-            print(f"{clip_id}: [{action}] #{clip.get('reviewIndex')} {clip.get('prefix', '')}{clip.get('title', '')}")
-        return 0
-
-    with queue_transaction() as queue:
-        # Re-read the registry under the same short lock used by every queue
-        # writer. This also serializes two enqueue commands updating statuses.
-        registry = load_json(REGISTRY_PATH, default_registry())
-        missing = [
-            clip_id
-            for clip_id in ids
-            if str(clip_id) not in registry.get("clips", {})
-        ]
-        if missing:
-            print(f"[ERROR] unknown clip ids: {missing}", file=sys.stderr)
-            return 2
-        held = [clip_id for clip_id in ids if registry["clips"][str(clip_id)].get("editorialExclusion") or (
-                registry["clips"][str(clip_id)].get("reviewPending")
-                and not registry["clips"][str(clip_id)].get("pendingRebuild"))]
-        if held:
-            print(f"[ERROR] IDs excluded or need review before upload (force cannot bypass): {held}", file=sys.stderr)
-            return 2
-        sync_clip_statuses(registry, ids)
-        revised_published = [clip_id for clip_id in ids if registry["clips"][str(clip_id)].get("subtitleRevisionKind") == "own_stream"
-                             and clip_candidate_queue.is_published(registry["clips"][str(clip_id)])]
-        if revised_published:
-            print(f"[ERROR] revised published IDs cannot be re-enqueued: {revised_published}", file=sys.stderr)
-            return 2
-        already_uploaded = [
-            clip_id
-            for clip_id in ids
-            if registry["clips"][str(clip_id)].get("status") == "uploaded"
-        ]
-        if already_uploaded and not args.force:
-            print(
-                "[ERROR] already uploaded ids (use --force to enqueue anyway): "
-                f"{already_uploaded}",
-                file=sys.stderr,
-            )
-            return 2
-
-        active = clip_candidate_queue.active_ids(queue)
-        ids = [clip_id for clip_id in ids if clip_id not in active]
-        if not ids:
-            print("[OK] requested IDs are already queued; no duplicate job created")
-            return 0
-        try:
-            snapshots = clip_candidate_queue.approve_for_queue(sys.modules[__name__], registry, ids, args.note,
-                getattr(args, "expected_candidate_drafts", None))
-        except (OSError, ValueError, subprocess.TimeoutExpired) as error:
-            print(f"[ERROR] {error}", file=sys.stderr)
-            return 2
-
-        base_job_id = f"upload-{int(time.time())}"
-        existing_job_ids = {
-            str(existing.get("id") or "") for existing in queue.get("jobs", [])
-        }
-        job_id = base_job_id
-        suffix = 2
-        while job_id in existing_job_ids:
-            job_id = f"{base_job_id}-{suffix}"
-            suffix += 1
-        job = {
-            "id": job_id,
-            "createdAt": now_iso(),
-            "updatedAt": now_iso(),
-            "status": "pending",
-            "clipIds": ids,
-            "candidateSubtitles": snapshots,
-            "delay": int(args.delay),
-            "rateLimitWait": int(args.rate_limit_wait),
-            "rateLimitRetries": int(args.rate_limit_retries),
-            "batchSize": batch_size,
-            "timeoutSeconds": timeout_seconds,
-            "note": args.note or "",
-            "collectionSectionId": collection_section_id,
-            # ``--force`` explicitly authorizes re-submission, including when
-            # Bilibili already has the same title.
-            "allowDuplicateTitle": bool(args.force),
-        }
-        queue.setdefault("jobs", []).append(job)
-        for clip_id in ids:
-            clip = registry["clips"][str(clip_id)]
-            if clip.get("status") != "uploaded" or args.force:
-                clip["status"] = "queued"
-                clip.pop("failureReason", None)
-                clip["updatedAt"] = now_iso()
-        save_json(REGISTRY_PATH, registry)
-    print(f"[OK] queued {len(ids)} clips as {job['id']}: {','.join(str(i) for i in ids)}")
-    return 0
+    if getattr(args, "automatic", False):
+        return clip_auto_publication.enqueue_automatic(args, sys.modules[__name__])
+    try:
+        from .clip_upload_enqueue import enqueue as run_enqueue
+    except ImportError:
+        from clip_upload_enqueue import enqueue as run_enqueue
+    return run_enqueue(args, sys.modules[__name__])
 
 
 def exclude_clips(args: argparse.Namespace) -> int:
@@ -1275,6 +1149,10 @@ def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.Co
     bilibili_upload.py individually, then their results are merged into the
     group's state file so sync_clip_statuses picks them up.
     """
+    if job.get("automaticPublication"):
+        errors = validate_groups([group]) + clip_auto_publication.validate_job_authorizations([group], job, load_upload_runtime_config)
+        if errors:
+            return subprocess.CompletedProcess([], 2, stdout="automatic publication authorization invalid: " + "; ".join(errors))
     first = group[0]
     json_clips = [c for c in group if c.get("manifestPath")]
     review_clips = [c for c in group if not c.get("manifestPath") and _clip_in_review(c)]
@@ -1319,6 +1197,8 @@ def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.Co
         ]
         if job.get("allowDuplicateTitle"):
             cmd.append("--force")
+        if job.get("automaticPublication"):
+            cmd.extend(["--automatic-job", str(job["id"])])
         if job.get("collectionSectionId"):
             cmd.extend(["--collection-section-id", str(job["collectionSectionId"])])
         print("[worker] run:", " ".join(f'"{c}"' if " " in c else c for c in cmd), flush=True)
@@ -2143,11 +2023,7 @@ def recover_interrupted_jobs() -> bool:
 
 
 def run_one_job() -> bool:
-    registry = load_json(REGISTRY_PATH, default_registry())
-    queue = load_json(QUEUE_PATH, default_queue())
-    if normalize_registry_media_paths(registry):
-        save_json(REGISTRY_PATH, registry)
-
+    registry, queue = clip_upload_state.load_worker_snapshot(sys.modules[__name__])
     account_guard, guard_changed = refresh_account_upload_guard(queue, registry)
     if guard_changed:
         queue = commit_queue_snapshot(
@@ -2170,7 +2046,7 @@ def run_one_job() -> bool:
         set_unfinished_clip_statuses(registry, known_ids, "failed", reason)
         clear_job_retry_metadata(job)
         mark_job(job, "failed", clipStatuses=clip_status_map(registry, known_ids), error=reason)
-        save_json(REGISTRY_PATH, registry)
+        registry = clip_upload_state.commit_worker_statuses(sys.modules[__name__], registry, known_ids)
         commit_queue_snapshot(queue, job_ids=(job_id,))
         return True
 
@@ -2184,7 +2060,7 @@ def run_one_job() -> bool:
     ]
     if not pending_ids:
         clip_candidate_queue.finish_job(sys.modules[__name__], registry, job, result="all eligible ids already uploaded")
-        save_json(REGISTRY_PATH, registry)
+        registry = clip_upload_state.commit_worker_statuses(sys.modules[__name__], registry, ids)
         commit_queue_snapshot(queue, job_ids=(job_id,))
         return True
 
@@ -2192,7 +2068,7 @@ def run_one_job() -> bool:
         schedule_account_upload_limit_retry(
             registry, queue, job, ids, account_guard
         )
-        save_json(REGISTRY_PATH, registry)
+        registry = clip_upload_state.commit_worker_statuses(sys.modules[__name__], registry, ids)
         commit_queue_snapshot(
             queue,
             job_ids=(job_id,),
@@ -2209,12 +2085,13 @@ def run_one_job() -> bool:
     pending_ids = [i for i in pending_ids if i in ids]
     groups = grouped_clips(registry, pending_ids)
     validation_errors = validate_groups(groups)
+    validation_errors.extend(clip_auto_publication.validate_job_authorizations(groups, job, load_upload_runtime_config))
     if validation_errors:
         reason = "; ".join(validation_errors)
         set_unfinished_clip_statuses(registry, pending_ids, "failed", reason)
         clear_job_retry_metadata(job)
         mark_job(job, "failed", clipStatuses=clip_status_map(registry, ids), error=reason)
-        save_json(REGISTRY_PATH, registry)
+        registry = clip_upload_state.commit_worker_statuses(sys.modules[__name__], registry, pending_ids)
         commit_queue_snapshot(queue, job_ids=(job_id,))
         print(f"[worker] invalid upload job: {reason}", file=sys.stderr)
         return True
@@ -2223,7 +2100,7 @@ def run_one_job() -> bool:
     for clip_id in pending_ids:
         registry["clips"][str(clip_id)]["status"] = "uploading"
         registry["clips"][str(clip_id)]["updatedAt"] = now_iso()
-    save_json(REGISTRY_PATH, registry)
+    registry = clip_upload_state.commit_worker_statuses(sys.modules[__name__], registry, pending_ids)
     queue = commit_queue_snapshot(queue, job_ids=(job_id,))
     job = find_queue_job(queue, job_id) or job
 
@@ -2282,7 +2159,7 @@ def run_one_job() -> bool:
         if recorded_ids:
             made_upload_progress = True
             clear_submission_rate_limit(queue)
-        save_json(REGISTRY_PATH, registry)
+        registry = clip_upload_state.commit_worker_statuses(sys.modules[__name__], registry, group_ids)
         queue = commit_queue_snapshot(
             queue,
             queue_fields=(
@@ -2307,7 +2184,7 @@ def run_one_job() -> bool:
 
     registry = load_json(REGISTRY_PATH, default_registry())
     sync_clip_statuses(registry, ids)
-    save_json(REGISTRY_PATH, registry)
+    registry = clip_upload_state.commit_worker_statuses(sys.modules[__name__], registry, ids)
     queue = load_json(QUEUE_PATH, default_queue())
     current = find_queue_job(queue, job_id) or job
     statuses = {clip_id: registry["clips"][str(clip_id)].get("status") for clip_id in ids}
@@ -2369,7 +2246,7 @@ def run_one_job() -> bool:
                 last_output,
                 "uploader completed without recording all requested clips",
             )
-    save_json(REGISTRY_PATH, registry)
+    registry = clip_upload_state.commit_worker_statuses(sys.modules[__name__], registry, ids)
     commit_queue_snapshot(
         queue,
         job_ids=(job_id,),
@@ -2430,7 +2307,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=show_clips)
 
     precision_publish.register_commands(sub, sys.modules[__name__])
-
+    clip_auto_recheck.register_commands(sub, sys.modules[__name__])
     p = sub.add_parser("subtitles", help="Show or prepare the editable candidate SRT by numeric ID")
     p.add_argument("--id", required=True, type=int)
     p.set_defaults(func=edit_candidate)
@@ -2464,15 +2341,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--duration-note", default=None)
     p.add_argument("--replan", action="store_true", help="Replan a rejected own-stream window with complete copy; validates overlap against retained clips")
     p.add_argument("--xml", default=None, help="Explicit original danmaku XML to bind when legacy topic metadata omitted it")
+    p.add_argument("--transcript-record", default=None, help="Verified repaired transcript; requires a fresh render/review")
     p.add_argument("--enqueue", action="store_true")
     p.set_defaults(func=lambda args: clip_candidate_queue.prepare_rebuild(args, sys.modules[__name__]))
-
     p = sub.add_parser("preview", help="Prepare reusable unburned rough video and matching SRT for held candidates; never approve or upload")
     p.add_argument("--ids", required=True)
     p.add_argument("--timeout-seconds", type=int, default=1800)
     p.set_defaults(func=lambda args: clip_candidate_queue.preview_candidates(args, sys.modules[__name__]))
-
     p = sub.add_parser("cut", help="Render held topic candidates by their reserved short IDs; never auto-upload")
+    p.add_argument("--automatic-review", action="store_true", help="Fresh independent AI review; do not record human approval")
     p.add_argument("--ids", required=True)
     p.add_argument("--review-note", required=True)
     p.add_argument("--title", default=None)
@@ -2480,7 +2357,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cover-text", default=None)
     p.add_argument("--tags", default=None, help="Comma-separated reviewed upload tags for this candidate")
     p.set_defaults(func=cut_candidates)
-
+    clip_media_replace.add_command(sub, sys.modules[__name__])
     p = sub.add_parser("approve-review", help="Save explicit human review for a rendered own-stream clip; never uploads")
     p.add_argument("--id", required=True, type=int)
     p.add_argument("--review-note", required=True)
@@ -2504,6 +2381,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--note", default="")
     p.add_argument("--force", action="store_true")
+    p.add_argument("--automatic", action="store_true", help="Require the enabled ordinary own-stream publication policy and final review")
     p.add_argument("--collection-section-id", type=int, default=None,
                    help="Use this collection section for one JSON-backed clip")
     p.add_argument("--dry-run", action="store_true")

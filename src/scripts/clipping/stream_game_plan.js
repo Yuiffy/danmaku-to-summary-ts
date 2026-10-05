@@ -4,15 +4,18 @@ const activity = require('./stream_activity_plan');
 const VERSION = 1;
 const DEFAULTS = Object.freeze({ enabled: false, roomIds: ['25788785'], outputDirName: 'stream_game_clips',
     chunkSeconds: 1800, contextSeconds: 180, maxEvidenceChars: 85000, targetPartSeconds: 1500, maxPartSeconds: 1800,
-    maxPartsPerSubmission: 60, maxSingleVideoSeconds: 3600, autoUpload: false, authorizationNote: '',
-    ai: { model: 'gpt-6-luna', timeoutMs: 600000, maxTokens: 12000 },
+    maxPartsPerSubmission: 60, maxSingleVideoSeconds: 3600, requireOriginalStreamCopy: false, autoUpload: false, authorizationNote: '',
+    ai: { provider: 'daiYu', model: 'gpt-6-luna', timeoutMs: 600000, maxTokens: 12000,
+        boundaryEvidenceMethod: 'independent_local_asr' },
     games: [{ id: 'elden-ring', name: '艾尔登法环', aliases: ['艾尔登法环', '艾登法环', '法环', '老头环', 'ELDEN RING'],
         tid: 17, tags: ['岁己', '小岁', '艾尔登法环', '老头环', '游戏实况', '虚拟主播'], collection: {} }] });
 const sha = value => crypto.createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex');
 function getGameConfig(root = {}) {
     const raw = root.streamGameClips || {};
     const c = { ...DEFAULTS, ...raw, ai: { ...DEFAULTS.ai, ...raw.ai } };
-    for (const key of ['enabled', 'autoUpload']) if (typeof c[key] !== 'boolean') throw new Error(`Invalid streamGameClips.${key}`);
+    if (!['daiYu', 'tuZi', 'gemini'].includes(c.ai.provider)) throw new Error('Invalid game ai.provider');
+    if (!['independent_local_asr', 'native_audio'].includes(c.ai.boundaryEvidenceMethod)) throw new Error('Invalid game boundaryEvidenceMethod');
+    for (const key of ['enabled', 'autoUpload', 'requireOriginalStreamCopy']) if (typeof c[key] !== 'boolean') throw new Error(`Invalid streamGameClips.${key}`);
     if (!Array.isArray(c.roomIds) || !c.roomIds.length) throw new Error('Games need an explicit room allowlist');
     for (const key of ['chunkSeconds', 'contextSeconds', 'maxEvidenceChars', 'targetPartSeconds', 'maxPartSeconds', 'maxPartsPerSubmission', 'maxSingleVideoSeconds']) {
         if (!Number.isFinite(c[key]) || c[key] <= 0) throw new Error(`Invalid game ${key}`);
@@ -126,6 +129,11 @@ function mergeEvents(events) {
             ...(!row.startObserved ? ['start_boundary_unconfirmed'] : []), ...(!row.endObserved ? ['end_boundary_unconfirmed'] : []) ] };
     });
 }
+function chapterPhaseEnd(event, index) {
+    const chapter = event.chapters[index];
+    return event.chapters.slice(index + 1).find(c => c.start > chapter.start)?.start
+        ?? (event.sourceWindow || event).end;
+}
 function includedRanges(event) {
     const excludes = [];
     for (const range of [...event.excludedRanges].sort((a, b) => a.start - b.start)) {
@@ -169,4 +177,4 @@ function resolvedExclusions(root, roomId) {
     return [...(p.excludedCategories || []), ...(p.roomOverrides?.[String(roomId)]?.excludedCategories || [])];
 }
 module.exports = { VERSION, DEFAULTS, sha, getGameConfig, gameEnabled, promptFor, parseEvents, mergeEvents,
-    includedRanges, buildParts, resolvedExclusions, evidenceRows: activity.evidenceRows, detectionWindows };
+    chapterPhaseEnd, includedRanges, buildParts, resolvedExclusions, evidenceRows: activity.evidenceRows, detectionWindows };

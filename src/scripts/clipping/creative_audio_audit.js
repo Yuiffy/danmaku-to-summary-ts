@@ -29,7 +29,7 @@ function analyzeCreativeAudio(original, rendered, plan, assets = {}, sampleRate 
     const frames = Math.min(a.length, b.length) / channels;
     const windows = plan.effects.filter(row => row.sound).map(row => {
         const id = soundId(row.sound), start = row.start + (row.sound.offsetSeconds ?? 0);
-        const seconds = assets[id]?.sampleSeconds ?? SOUNDS[id]?.duration;
+        const seconds = row.sound.durationSeconds ?? assets[id]?.sampleSeconds ?? SOUNDS[id]?.duration;
         return { id, start, end: Math.min(plan.duration, start + seconds), count: 0, error: 0, source: 0 };
     });
     let count = 0, aa = 0, bb = 0, ab = 0, error = 0, peak = 0, finite = true;

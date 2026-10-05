@@ -1526,7 +1526,10 @@
       "maxOutputTokens": 24000,
       "maxDanmakuRows": 120,
       "maxEvidenceChars": 80000,
-      "timeoutMs": 600000
+      "timeoutMs": 600000,
+      "audioChecks": {
+        "enabled": false
+      }
     },
     "mergeGapSeconds": 45,
     "burnSubtitles": true,
@@ -1549,6 +1552,14 @@
     "autoUpload": {
       "enabled": false
     },
+    "automaticPublication": {
+      "mode": "off",
+      "scope": "configured_keywords",
+      "policyVersion": "topic-v1",
+      "activatedAt": null,
+      "authorizationNote": "",
+      "concurrency": 2
+    },
     "notify": {
       "enabled": true,
       "includeSubtitleContext": true,
@@ -1565,6 +1576,7 @@
     "autoUpload": false,
     "authorizationNote": "",
     "maxSingleVideoSeconds": 3600,
+    "requireOriginalStreamCopy": false,
     "games": [{
       "id": "elden-ring", "name": "艾尔登法环",
       "aliases": ["艾尔登法环", "艾登法环", "法环", "老头环", "ELDEN RING"],
@@ -1573,6 +1585,7 @@
     }]
   },
   "streamActivityClips": {
+    "automaticPublication": { "mode": "off", "roomIds": ["25788785"], "policyVersion": "stream-activity-v1", "activatedAt": null, "authorizationNote": "" },
     "enabled": false,
     "detectionMode": "summary",
     "roomIds": ["25788785"],
@@ -1581,7 +1594,14 @@
     "contextSeconds": 180,
     "maxEvidenceChars": 90000,
     "ai": { "model": "gpt-6-luna", "timeoutMs": 600000, "maxTokens": 16000 },
-    "verification": { "enabled": true, "provider": "tuZi", "apiMode": "gemini_native", "model": "gemini-3-flash-preview", "contextSeconds": 180, "maxAudioSeconds": 1200, "timeoutMs": 180000,
+    "verification": { "enabled": true, "provider": "daiYu", "apiMode": "openai_chat", "model": "gpt-6.1-sol",
+      "evidenceMethod": "independent_local_asr",
+      "localAsr": {
+        "sensevoiceModel": "iic/SenseVoiceSmall",
+        "whisperModel": "deepdml/faster-whisper-large-v3-turbo-ct2",
+        "device": "cuda",
+        "chunkSeconds": 8
+      }, "contextSeconds": 180, "maxAudioSeconds": 1200, "timeoutMs": 180000,
       "boundaryContextSeconds": 45, "batchMaxEvents": 8, "batchMaxAudioSeconds": 600, "maxBatchRequests": 3, "boundaryTimeoutMs": 60000 },
     "songs": {
       "enabled": true, "paddingSeconds": 2, "tid": 31,
@@ -1596,6 +1616,10 @@
   },
   "ownStreamClips": {
     "enabled": true,
+    "automaticPublication": {
+      "mode": "off", "roomIds": ["25788785"], "policyVersion": "own-stream-v1",
+      "activatedAt": null, "authorizationNote": "", "concurrency": 2
+    },
     "enhancements": {
       "enabled": true,
       "workflow": "creative",
@@ -1637,6 +1661,7 @@
       "maxElapsedMs": 1200000,
       "repairAttempts": 1,
       "holdUnresolvedBeforeRender": false,
+      "sourceReviewBeforeRender": false,
       "dialogueEnabled": false,
       "entityReferences": {
         "enabled": false,

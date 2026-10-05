@@ -72,3 +72,19 @@ test('a 150ms beat gap is accepted at millisecond precision despite binary float
     expect(() => assertRenderPlan({ version: 2, workflow: 'creative', duration: 60,
         effects: moments.map(row => ({ ...row, filter: 'monochrome' })) }, 60, settings)).not.toThrow();
 });
+
+test('a post-speech reaction pause shifts captions, media and audio reference together without replaying words', () => {
+    const timeline = { version: 1, sourceDuration: 8, duration: 8.8, keep: [{ start: 0, end: 8 }],
+        holds: [{ after: 2, seconds: .8, cueId: 'S1' }], addedSeconds: .8 };
+    const words = [{ id: 'S1', start: 0, end: 2, text: '完整笑话' }, { id: 'S2', start: 2, end: 4, text: '下句回答' }];
+    const mapped = mapTimelineCues(words, timeline);
+    expect(mapped).toEqual([{ ...words[0] }, { ...words[1], start: 2.8, end: 4.8 }]);
+    expect(sourceTimeForOutput(2.4, timeline)).toBe(2);
+    expect(() => mapTimelineCues([{ id: 'S3', start: 1, end: 3 }], timeline)).toThrow('split speech');
+    expect(() => assertTimeline(timeline, 8)).not.toThrow();
+    const plan = { version: 2, workflow: 'creative', duration: 8.8, timeline, effects: [] };
+    const graph = buildCreativeFilter(plan, { width: 640, height: 360 }, 0, 8, 'caption.ass', null, {});
+    expect(graph).toContain('tpad=stop_mode=clone:stop_duration=0.8');
+    expect(graph).toContain('apad=pad_dur=0.8');
+    expect(require('./creative_timeline').audioTimelineFilter(timeline)).toContain('apad=pad_dur=0.8');
+});

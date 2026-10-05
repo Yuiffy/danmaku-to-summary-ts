@@ -8,9 +8,10 @@ const fullLiveContext = require('./full_live_context');
 const liveGenerationContext = require('./live_generation_context');
 const activitySummary = require('./clipping/stream_activity_timeline');
 const { activityEnabled } = require('./clipping/stream_activity_plan');
+const { buildLiveContentResponseFormat } = require('./text/live_output_schema');
 
 const LIVE_CONTENT_SCHEMA_VERSION = 1;
-const LIVE_CONTENT_PROMPT_VERSION = 1;
+const LIVE_CONTENT_PROMPT_VERSION = 2;
 const DEFAULT_MODEL = 'gpt-6-luna';
 const DEFAULT_MAX_ATTEMPTS = 2;
 const DEFAULT_PROMPT_CACHE_ROLLOUT_PERCENT = 100;
@@ -100,12 +101,20 @@ function buildLiveContentSummaryPrompt(sharedPrefix, options = {}) {
         `【本场直播极简梗概任务 v${LIVE_CONTENT_PROMPT_VERSION}】`,
         '通读上方整场字幕和弹幕，提取可供每日搬运汇总使用的结构化梗概。',
         '只依据明确证据，不补充常识，不把观众弹幕说成主播实际做过的事。',
+        '先区分“本场实际发生”“只聊到/观众推荐”“以后计划”“明确拒绝或取消”。overview 和 activityTypes 只写本场实际发生的活动；其余只能作为讨论话题写入 topics。',
+        '判断观影要结合前后语境和主播最后的决定：要看、下次看、是否有必要看、不看、困了不看，都不能改写成已经看了或开始看。观众催看、剧透和讨论剧情也不是实际播放证据。',
+        '查询片名、认角色/演员、找资源、测试画质、看预告或拉片解说，不等于观看了对应正片；若实际看的是解说/视频，只描述这个实际活动，不把解说涉及的电影列为已观看。',
+        '为以后观影打开资源、试播开头或拖进度条检查清晰度，属于资源准备，不能写成观看该片或观看该片片段。即使顺便猜测开头剧情，也须结合“到时候看这个”“还没决定什么时候看”等后文判断；正式观影须有已选定影片并持续同步观看的上下文。',
+        '只有本场实际播放的持续上下文或明确开始/结束观看的证据，才能确认观影；“看一眼”“直接看”这类孤立短句不能单独证明已经观看。否定、取消、下次安排优先于此前的提议。',
         'overview：一句极简中文概括本场做了什么，例如“杂谈、唱歌、看B站视频、玩《游戏名》”；不超过80字。',
         'activityTypes：只能从 chat、singing、watch_movie、watch_anime、watch_bilibili、game、other 中选择并去重。',
         'songs：只列本场明确实际演唱或播放表演的歌曲名；仅提到、点歌未唱、无法确认歌名时不要列。',
         'games：只列本场明确实际游玩的游戏名；只聊天提到时不要列。',
         'topics：列出0-10个今天明确聊到的极简话题，每项尽量4-14字，例如“妈妈做火烧云”“男人打架”“最喜欢的前辈”；纯歌回或没有明确话题时可为空数组，不要写空泛的“日常杂谈”。',
+        'songs、games、topics、activityTypes 的每个元素必须是字符串，不能是对象或 null。'
+            + (options.includeActivityTimeline ? '演唱的时间、证据和未知歌名只放在 activityTimeline.events。' : ''),
         '确实没有歌曲或游戏时必须使用空数组。无法确认的项目宁可不写，不要猜。',
+        ...(options.includeActivityTimeline ? ['overview、activityTypes 与 activityTimeline 中的实际活动必须一致；先核对实际活动及其证据，再写梗概，不能把时间线的 incomplete 当作事实已经核实。'] : []),
         '只输出一个合法 JSON 对象，不要 Markdown、代码围栏、解释或额外文字：',
         '{"overview":"杂谈、唱歌、玩《xx》","activityTypes":["chat","singing","game"],"songs":[],"games":["xx"],"topics":["话题一","话题二"]}'
     ].join('\n');
@@ -234,7 +243,9 @@ function readReusableSummary(outputPath, sourceSha256, sharedPrefixSha256, optio
                 && existing.source.inputSources?.srtSha256 === options.inputSources?.srtSha256
                 && existing.source.inputSources?.xmlSha256 === options.inputSources?.xmlSha256))
         );
-        if (sourceMatches && existing?.status === 'success') {
+        if (sourceMatches && existing?.status === 'success'
+            && (!options.activityTimelineVersion || (existing.activityTimeline?.version === options.activityTimelineVersion
+                && existing.activityTimeline?.status === 'complete' && Array.isArray(existing.activityTimeline.events)))) {
             return existing;
         }
         const cooldownMs = Math.max(
@@ -358,12 +369,15 @@ async function generateLiveContentSummary(options = {}) {
         const generateText = options.generateText || aiTextGenerator.generateTextWithDaiYu;
 
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            let responseText;
             try {
                 const attemptPrompt = attempt === 1
                     ? prompt
-                    : `${prompt}\n\n【格式纠错】上一版不是合法结构。所有五个字段都必须存在，songs、games、topics、activityTypes 必须是 JSON 数组。`;
+                    : `${prompt}\n\n【校验纠错】上一版未通过校验：${generationAttempts.at(-1)?.error || '输出结构不合法'}。重新核对原始证据并输出完整合法结构；所有五个梗概字段都必须存在，数组元素必须是字符串，要求的 activityTimeline 必须完整且引用真实存在的 T/D 行。`;
                 const result = await generateText(attemptPrompt, {
                     captureLiveCache: true,
+                    responseFormat: buildLiveContentResponseFormat({ includeActivityTimeline,
+                        timelineVersion: activitySummary.TIMELINE_VERSION }),
                     primaryModel: model,
                     wordLimit: includeActivityTimeline ? 2500 : 800,
                     timeoutMs: Number(experiment.timeoutMs) || 600000,
@@ -372,13 +386,13 @@ async function generateLiveContentSummary(options = {}) {
                     fallbackModelsEnabled: false,
                     promptCacheRolloutPercent
                 });
+                responseText = result?.text;
                 generationAttempts.push(...(Array.isArray(result?.meta?.attempts) ? result.meta.attempts : []));
-                const raw = parseJsonObject(result?.text);
+                const raw = parseJsonObject(responseText);
                 const content = normalizeLiveContent(raw);
                 let activityTimeline;
                 if (includeActivityTimeline) {
-                    try { activityTimeline = activitySummary.normalizeTimeline(raw.activityTimeline, fullContextPayload); }
-                    catch (error) { activityTimeline = { version: activitySummary.TIMELINE_VERSION, status: 'incomplete', error: error.message }; }
+                    activityTimeline = activitySummary.normalizeTimeline(raw.activityTimeline, fullContextPayload);
                 }
                 const generation = extractGenerationMetrics({
                     ...(result?.meta || {}),
@@ -405,7 +419,8 @@ async function generateLiveContentSummary(options = {}) {
                     model: experiment.model || DEFAULT_MODEL,
                     status: 'failure',
                     error: String(error?.message || error).slice(0, 500),
-                    summaryAttempt: attempt
+                    summaryAttempt: attempt,
+                    ...(typeof responseText === 'string' ? { responseText, responseSha256: sha256Text(responseText) } : {})
                 });
                 console.warn(`直播梗概生成失败 (${attempt}/${maxAttempts}): ${error.message}`);
                 if (attempt < maxAttempts) {

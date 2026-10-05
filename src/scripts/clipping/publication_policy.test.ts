@@ -72,3 +72,15 @@ test('preview and explicit restoration preserve candidates and never modify the 
         await expect(run({ command: 'preview', plan: planFile, output }, { rootConfig: {} })).rejects.toThrow('already exists');
     } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('recall backup restoration keeps original candidate identity and schedules detail planning without granting publication',async()=>{
+    const directory=fs.mkdtempSync(path.join(os.tmpdir(),'recall-restore-'));
+    try {
+        const file=path.join(directory,'PLAN.json'),candidate={index:8,start:100,end:150,event:'未选话题'};
+        fs.writeFileSync(file,JSON.stringify({source:{mediaPath:'source.mp4'},clips:[],aiStatus:{ranking:{sourceSha256:'fixture',skipped:[{candidateIndex:8,candidate}]}}}));
+        const result=await run({command:'restore',plan:file,'recall-indices':'8',output:path.join(directory,'restored.json')});
+        expect(result.recallCandidates).toEqual([candidate]);expect(result.requiresDetailPlanning).toBe(true);
+        expect(result.clips).toEqual([]);expect(result.uploadReady).toBeUndefined();
+        await expect(run({command:'restore',plan:file,'recall-indices':'9',output:path.join(directory,'missing.json')})).rejects.toThrow('unavailable');
+    } finally{fs.rmSync(directory,{recursive:true,force:true});}
+});

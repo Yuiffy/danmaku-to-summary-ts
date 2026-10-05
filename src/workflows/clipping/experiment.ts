@@ -111,8 +111,22 @@ export function stripExperimentDescription(description: string, edited: boolean)
     return value.slice(disclosure.length + 1).split(`\n\n${PRECISION_DETAIL_MARKER}`)[0];
 }
 
-export function experimentDetailMarkdown(results: Array<Record<string, any>>, metadata: Record<string, any>): string | null {
+export function experimentDetailMarkdown(results: Array<Record<string, any>>, metadata: Record<string, any>, options: { compact?: boolean } = {}): string | null {
     const selected = results.map((result, index) => ({ result, index })).filter(({ result }) => result.precisionExperiment?.selected);
+    if (options.compact) {
+        if (!selected.length && !metadata.precisionExperiment) return null;
+        const brief = require('./reviewDigest') as typeof import('./reviewDigest');
+        const lines = [`## ${PRECISION_EXPERIMENT_NAME}详情`, `本批精切 ${selected.length} 条。`];
+        const error = metadata.precisionExperiment?.error;
+        if (error) lines.push(`精切抽选：${brief.shortChineseReason(error, '抽选未完成，保留普通版')}`);
+        else if (!selected.length) lines.push(`精切说明：${brief.shortChineseReason(metadata.precisionExperiment?.reason, '本批保留普通版')}`);
+        for (const { result, index } of selected) {
+            const id = metadata.uploadRegistry?.clipIdsByReviewIndex?.[result.reviewIndex ?? result.window?.index ?? index + 1];
+            const passed = result.qaResult?.status === 'passed';
+            lines.push(`${index + 1}. ${id ? `ID${id}` : '未登记ID'} ${result.copy?.title || result.title || ''}：${passed ? '质检通过' : '保留普通版或待复核'}；${brief.shortChineseReason(result.precisionExperiment.reason, '按片内看点选中')}`);
+        }
+        return lines.join('\n');
+    }
     if (!selected.length) {
         const summary = metadata.precisionExperiment;
         if (!summary) return null;

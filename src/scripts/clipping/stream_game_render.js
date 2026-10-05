@@ -146,10 +146,11 @@ async function renderGames(plan, options, config, files) {
     const root = options.config, capabilities = await accountCapabilities(options, files.directory);
     if (!capabilities.collectionAllowed || !capabilities.externalSubtitlesAllowed) throw new Error('Game collection/subtitle account permissions are unavailable');
     for (const event of plan.events) {
-        const method = options.boundaryEvidenceMethod || config.ai.boundaryEvidenceMethod || 'native_audio';
-        if ([3, 4].includes(event.verification?.version) && event.verification.protocolVersion === PROTOCOL_VERSION
+        const method = options.boundaryEvidenceMethod || config.ai.boundaryEvidenceMethod || 'independent_local_asr';
+        if ([3, 4].includes(event.verification?.version) && event.verification.protocolVersion >= 11 && event.verification.protocolVersion <= PROTOCOL_VERSION
             && (event.verification.evidenceMethod || 'native_audio') === method
-            && ['keep', 'exclude'].includes(event.verification.decision)) continue;
+            && ['keep', 'exclude'].includes(event.verification.decision)
+            && !options.reviewEventIds?.includes(event.id)) continue;
         await restoreFrameNamedChapters(event, plan, options, config, files, mediaSettings(root, config, 'frames'));
         event.verification = await (options.verify || verifyGame)(event, plan, options, config, files);
         if (event.verification.decision === 'uncertain' && (event.verification.frameObservations || []).some(f => f.activity === 'gameplay')

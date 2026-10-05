@@ -6,6 +6,27 @@ const { requestSelectionText, validSelectionResponse } = require('./selection_re
 const { buildSubtitleEvidence } = require('./subtitle_evidence');
 
 describe('selection usage accounting', () => {
+  test('game detection defaults to daiYu despite a global tuZi provider and preserves failures', async () => {
+    const config = require('./stream_game_plan').getGameConfig({});
+    const daiYu = jest.spyOn(generator, 'generateTextWithDaiYu').mockResolvedValue({ text: '{"events":[]}', meta: {} });
+    const tuZi = jest.spyOn(generator, 'generateTextWithTuZi').mockRejectedValue(new Error('Unexpected paid provider'));
+    const root = { ai: { text: { provider: 'tuZi' } } };
+    const request = () => requestSelectionText('Game source.', { strictEvaluation: true }, config, root,
+      {}, 'stream-games-v1', {}, () => true);
+    try {
+      await expect(request()).resolves.toMatchObject({ text: '{"events":[]}' });
+      const failure = new Error('daiYu unavailable');
+      daiYu.mockRejectedValueOnce(failure);
+      await expect(request()).rejects.toBe(failure);
+      expect(daiYu).toHaveBeenCalledTimes(2);
+      expect(daiYu.mock.calls[0][1]).toMatchObject({ strictEvaluation: true });
+      expect(tuZi).not.toHaveBeenCalled();
+      await expect(requestSelectionText('Explicit alternative.', {}, { ai: { provider: 'tuZi' } }, root,
+        {}, 'stream-games-v1', {}, () => true)).rejects.toThrow('Unexpected paid provider');
+      expect(tuZi).toHaveBeenCalledTimes(1);
+    } finally { daiYu.mockRestore(); tuZi.mockRestore(); }
+  });
+
   test('retains failed request diagnostics and known subtotals without replacing unknown totals with zero', async () => {
     const failure = Object.assign(new Error('Request failed'), { attempts: [
       { provider: 'daiYu', model: 'same-model', status: 'failure', requestStarted: true, usageUnknown: true, requestId: 'unknown-use' },

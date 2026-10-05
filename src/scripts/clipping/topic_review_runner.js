@@ -45,7 +45,7 @@ function topicReviewLines(review, humanReview = null) {
         && humanReview?.copyGrounding?.issues?.length === 0 && Boolean(humanReview?.note);
     if (review.mode === 'preflight') return [
         `   烧录前复核: ${review.status} | ${review.model} ${review.reasoningEffort} | ${review.strategy}`,
-        ...(resolved ? [`   人工复核: 已核对 | ${humanReview.note}`] : []),
+        ...(resolved ? [`   ${humanReview.authority === 'ai_replan' ? 'AI重新选窗复核' : '人工复核'}: 已核对 | ${humanReview.note}`] : []),
         ...(review.qualityAudit ? [`   独立校审: ${review.qualityAudit.model} | ${review.qualityAudit.verdict}`,
             ...review.qualityAudit.issues.map(issue => `   ${issue.kind}: ${issue.reason}`)] : []),
         `   选片理由: ${review.reason || ''}`,

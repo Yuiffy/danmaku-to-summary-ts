@@ -10,7 +10,7 @@ function parseArgs(argv) {
     const [command = 'help', ...args] = argv, options = {};
     for (let i = 0; i < args.length; i++) {
         const key = args[i];
-        if (['--no-register', '--enqueue', '--scan'].includes(key)) options[key.slice(2)] = true;
+        if (['--no-register', '--enqueue', '--scan', '--retry-boundaries', '--revise-verifier', '--review-prelude', '--repair-timing', '--retry-publication'].includes(key)) options[key.slice(2)] = true;
         else if (/^--[a-z-]+$/u.test(key) && args[i + 1] && !args[i + 1].startsWith('--')) options[key.slice(2)] = args[++i];
         else throw new Error(`Unknown or incomplete argument: ${key}`);
     }
@@ -54,7 +54,8 @@ async function main(argv = process.argv.slice(2)) {
         const result = await workflow.restyleStreamActivities({
             metadataPath: options.metadata ? path.resolve(options.metadata) : null,
             manifestPath: options.manifest ? path.resolve(options.manifest) : null, registerUpload: !options['no-register'],
-            contentName: options['content-name'], evidenceFrame: options['evidence-frame'], evidenceNote: options['evidence-note'] });
+            contentName: options['content-name'], evidenceFrame: options['evidence-frame'], evidenceNote: options['evidence-note'],
+            titleEvidencePath: options['title-evidence'] ? path.resolve(options['title-evidence']) : null });
         console.log(JSON.stringify(result, null, 2)); return result;
     }
     if (['run', 'plan'].includes(command)) {
@@ -63,6 +64,12 @@ async function main(argv = process.argv.slice(2)) {
             xmlPath: options.xml ? path.resolve(options.xml) : null, context: { roomId: options['room-id'] },
             summaryPath: options.summary ? path.resolve(options.summary) : null,
             fullLiveContextPath: options['full-context'] ? path.resolve(options['full-context']) : null, scan: options.scan === true,
+            kind: options.kind, retryBoundaries: options['retry-boundaries'] === true,
+            reviseVerifier: options['revise-verifier'] === true, revisionNote: options['revision-note'],
+            reviewPrelude: options['review-prelude'] === true,
+            repairTiming: options['repair-timing'] === true,
+            retryPublication: options['retry-publication'] === true,
+            transcriptRecordPath: options['transcript-record'] ? path.resolve(options['transcript-record']) : null,
             planOnly: command === 'plan', registerUpload: !options['no-register'] });
         console.log(JSON.stringify(result, null, 2)); return result;
     }
@@ -93,7 +100,7 @@ async function main(argv = process.argv.slice(2)) {
         const result = songStatistics(options.root); console.log(JSON.stringify(result, null, 2)); return result;
     }
     if (command !== 'help') throw new Error(`Unknown command: ${command}`);
-    console.log('activity:clips run|plan --media <recording> --srt <SRT> [--xml <XML>] [--summary <LIVE_CONTENT.json>] [--full-context <FULL_LIVE_CONTEXT.json>] [--scan] [--room-id 25788785] [--no-register]\n'
+    console.log('activity:clips run|plan --media <recording> --srt <SRT> [--xml <XML>] [--summary <LIVE_CONTENT.json>] [--full-context <FULL_LIVE_CONTEXT.json>] [--kind songs|watch] [--retry-boundaries [--revise-verifier --revision-note <note>]] [--scan] [--room-id 25788785] [--no-register]\n'
         + 'activity:clips approve --metadata <songs.json|watch.json> --note <review note> [--enqueue]\n'
         + 'activity:clips restyle --manifest <UPLOAD_MANIFEST.json> | --metadata <songs.json|watch.json> [--no-register]\n'
         + 'activity:clips stats --root <recording root>');

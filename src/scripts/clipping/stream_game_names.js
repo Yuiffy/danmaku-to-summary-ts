@@ -1,7 +1,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { sha } = require('./stream_game_plan');
+const { sha, chapterPhaseEnd } = require('./stream_game_plan');
 const { fileDigest } = require('./source_snapshot');
 const { writeJsonAtomic } = require('./candidate_subtitles');
 const { runFfmpeg } = require('./media_runtime');
@@ -23,7 +23,7 @@ function parseNameReview(response, chapter, frames) {
 async function restoreFrameNamedChapters(event, plan, options, config, files, settings) {
     for (const [index, chapter] of event.chapters.entries()) {
         if (chapter.titleIssue !== 'proper_name_not_grounded' || !String(chapter.proposedTitle || '').trim()) continue;
-        const end = event.chapters[index + 1]?.start || event.end, duration = end - chapter.start;
+        const end = chapterPhaseEnd(event, index), duration = end - chapter.start;
         if (duration < 2) continue;
         const times = [...new Set([chapter.start + Math.min(15, duration / 6), ...[.25, .5, .75].map(f => chapter.start + duration * f),
             Math.max(chapter.start, end - 15), Math.max(chapter.start, end - 5)])].filter(t => t >= chapter.start && t < end);

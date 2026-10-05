@@ -6,6 +6,15 @@ function requiresBoundaryReview(config) {
     return config.review?.qualityRules === true || config.review?.strategy === 'audited';
 }
 
+// Source CLIs keep working against an older active release until explicit activation.
+function endingWorkflow() {
+    try { return require('../workflow-runtime').loadWorkflow('clipping/preflightEnding'); }
+    catch (error) {
+        if (error.message !== 'Unknown compiled workflow: clipping/preflightEnding') throw error;
+        return null;
+    }
+}
+
 function reviewPreflightBoundaries(raw, bounds, input, required) {
     const issues = [];
     if (!raw) return { review: null, issues: required ? ['缺少起因、收尾及回指依赖复核'] : [] };
@@ -65,4 +74,4 @@ function reviewPreflightBoundaries(raw, bounds, input, required) {
     return { review: { ...raw, status: issues.length ? 'needs_review' : 'linked' }, issues: [...new Set(issues)] };
 }
 
-module.exports = { BOUNDARY_REVIEW_SCHEMA, requiresBoundaryReview, reviewPreflightBoundaries };
+module.exports = { BOUNDARY_REVIEW_SCHEMA, requiresBoundaryReview, reviewPreflightBoundaries, endingWorkflow };

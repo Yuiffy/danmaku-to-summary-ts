@@ -64,6 +64,35 @@ test('an uncertain webhook result is recorded and not automatically sent twice',
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('automatic publication sends one final complete list without early delivery or individual success receipts', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-auto-list-'));
+    fetch.mockReset(); fetch.mockResolvedValue({ ok: true, json: async () => ({ errcode: 0 }) });
+    const metadata: any = { reviewPath: path.join(dir, 'REVIEW.md'), automaticPublication: { enabled: true, mode: 'auto' },
+        precisionDelivery: { phase: 'ordinary_ready', selected: [{ index: 2, title: '画面重点' }] } };
+    const config = { wechatWork: { webhookUrl: 'https://example.test/robot' } };
+    const rows = [{ window: { index: 2 }, creativeResult: { status: 'edited' }, qaResult: { status: 'passed' } }];
+    const buildList = jest.fn(() => 'ID320 普通片 状态: 已投稿\nID321 精切 状态: 已排队投稿\nID322 疑点 状态: 待人工复核');
+    try {
+        expect(await notifyPrecisionDelivery(rows, metadata, config, buildList)).toBe(false);
+        expect(fetch).not.toHaveBeenCalled();
+        expect(buildList).not.toHaveBeenCalled();
+        metadata.precisionDelivery.phase = 'precision_complete';
+        await notifyPrecisionDelivery(rows, metadata, config, buildList);
+        await notifyPrecisionDelivery(rows, metadata, config, buildList);
+        expect(fetch).toHaveBeenCalledTimes(1);
+        expect(buildList).toHaveBeenCalledWith(rows, metadata);
+        const content = JSON.parse(fetch.mock.calls[0][1].body).markdown.content;
+        expect(content).toContain('ID320 普通片 状态: 已投稿');
+        expect(content).toContain('ID321 精切 状态: 已排队投稿');
+        expect(content).toContain('ID322 疑点 状态: 待人工复核');
+        expect(content).toContain('精切处理：1条通过');
+        expect(content).not.toContain('未自动投稿');
+        expect(content).not.toContain('成片待审核');
+        expect(content).not.toContain('另行通知');
+        expect(content).not.toContain('bilibili.com');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test.each([false, true])('streaming creative reuses its baseline after ordinary delivery and preserves it on failure (%s)', async fails => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'creative-stream-delivery-'));
     const mediaPath = path.join(dir, 'source.mp4'), srtPath = path.join(dir, 'source.srt');

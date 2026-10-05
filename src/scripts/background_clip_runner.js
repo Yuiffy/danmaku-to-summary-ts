@@ -324,6 +324,15 @@ async function runBackgroundClipsFromPayload(payloadPath) {
     }
 
     const payload = JSON.parse(fs.readFileSync(payloadPath, 'utf8'));
+    const runtimeConfig = configLoader.getConfig();
+    const automatic = runtimeConfig.ownStreamClips?.automaticPublication;
+    const topicAutomatic = runtimeConfig.clipTopics?.automaticPublication?.mode === 'auto'
+        && require('./workflow-runtime').loadWorkflow('clipping/publicationReview').publicationEnabled(
+            require('./workflow-runtime').loadWorkflow('clipping/publicationReview').resolveTopicPublicationConfig(runtimeConfig), payload.roomId);
+    if (topicAutomatic || automatic?.mode === 'auto' && automatic.roomIds?.map(String).includes(String(payload.roomId))) {
+        // Asynchronous upload and pending human review both revalidate the original source.
+        payload.videoPathToDelete = null;
+    }
     const restoreLogger = installBackgroundClipLogger(payload.logPath);
 
     try {
@@ -332,39 +341,6 @@ async function runBackgroundClipsFromPayload(payloadPath) {
         console.log(`   srt=${payload.srtPath}`);
         console.log(`   roomId=${payload.roomId || 'unknown'}`);
         const context = payload.context || {};
-        let activityNeedsSource = false;
-        try {
-            const result = await streamActivities.generateStreamActivities({
-                mediaPath: payload.originalMediaPath || payload.processedMediaPath,
-                srtPath: payload.srtPath, xmlPath: payload.xmlPath,
-                fullLiveContextPath: payload.fullLiveContextPath || null,
-                summaryPath: payload.liveContentSummaryPath || null,
-                context: { ...context, roomId: payload.roomId }
-            });
-            console.log(`歌切/同步视听: ${JSON.stringify(result)}`);
-            if (result.pendingReview) {
-                activityNeedsSource = true;
-                console.log('歌切/同步视听等待审核，保留原始视频供边界核对及修订');
-            }
-        } catch (error) {
-            activityNeedsSource = true;
-            console.warn(`歌切/同步视听处理失败，保留原始视频供恢复: ${error.message}`);
-        }
-        // Failed or pending activity submissions still need the recording for review/recovery.
-        if (activityNeedsSource) payload.videoPathToDelete = null;
-        try {
-            const result = await streamGames.generateStreamGames({
-                mediaPath: payload.originalMediaPath || payload.processedMediaPath,
-                srtPath: payload.srtPath, xmlPath: payload.xmlPath,
-                context: { ...context, roomId: payload.roomId }
-            });
-            console.log(`游戏完整切片: ${JSON.stringify(result)}`);
-            // Upload/subtitle retries verify the original source snapshot again.
-            if (result.status === 'rendered') payload.videoPathToDelete = null;
-        } catch (error) {
-            payload.videoPathToDelete = null;
-            console.warn(`游戏切片处理失败，保留原始视频供恢复: ${error.message}`);
-        }
         await generateTopicClipsForMedia(
             payload.originalMediaPath,
             payload.processedMediaPath,
@@ -381,6 +357,30 @@ async function runBackgroundClipsFromPayload(payloadPath) {
             context,
             payload.fullLiveContextPath || null
         );
+        // Complete ordinary highlights before the longer archive workflows.
+        for (const kind of ['songs', 'games', 'watch']) {
+            const label = { songs: '歌切', games: '游戏完整切片', watch: '同步视听' }[kind];
+            try {
+                const options = {
+                    mediaPath: payload.originalMediaPath || payload.processedMediaPath,
+                    srtPath: payload.srtPath, xmlPath: payload.xmlPath,
+                    fullLiveContextPath: payload.fullLiveContextPath || null,
+                    summaryPath: payload.liveContentSummaryPath || null,
+                    context: { ...context, roomId: payload.roomId }
+                };
+                const result = kind === 'games'
+                    ? await streamGames.generateStreamGames(options)
+                    : await streamActivities.generateStreamActivities({ ...options, kind });
+                console.log(`${label}: ${JSON.stringify(result)}`);
+                // Review, upload and subtitle recovery still verify the original source.
+                if (result.pendingReview || result.retainSource || (kind === 'games' && result.status === 'rendered')) {
+                    payload.videoPathToDelete = null;
+                }
+            } catch (error) {
+                payload.videoPathToDelete = null;
+                console.warn(`${label}处理失败，保留原始视频供恢复: ${error.message}`);
+            }
+        }
         console.log('✅ 后台自动切片子进程完成');
     } finally {
         await deleteOriginalVideoAfterBackgroundClips(payload.videoPathToDelete);

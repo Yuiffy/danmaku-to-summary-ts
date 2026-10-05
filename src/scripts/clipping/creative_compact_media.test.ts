@@ -5,6 +5,38 @@ const { audioTimelineFilter } = require('./creative_timeline');
 const { analyzeCreativeAudio } = require('./creative_audio_audit');
 const realMedia = process.env.DANMAKU_TEST_REAL_MEDIA === '1' ? test : test.skip;
 
+realMedia('a short reaction freeze adds silence and shifts the next sentence without changing original audio', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reaction-media-'));
+    const config = require('../own_stream_clipper').getOwnStreamClipsConfig(require('../config-loader').getConfig());
+    const source = path.join(dir, 'source.mp4'), base = path.join(dir, 'base.mp4'), output = path.join(dir, 'edited.mp4');
+    const srt = path.join(dir, 'caption.srt'), accent = path.join(dir, 'laugh.wav');
+    try {
+        fs.writeFileSync(srt, '1\n00:00:00,000 --> 00:00:01,000\nPunchline\n\n2\n00:00:01,800 --> 00:00:02,800\nReply\n');
+        await topic.runFfmpeg(['-y', '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=30:duration=4', '-f', 'lavfi', '-i',
+            'sine=frequency=230:sample_rate=48000:duration=4', '-c:v', config.subtitleVideoEncoder, '-c:a', 'aac', source], config);
+        await topic.runFfmpeg(['-y', '-f', 'lavfi', '-i', 'sine=frequency=710:sample_rate=48000:duration=1', accent], config);
+        const assets = { laugh: { id: 'laugh', kind: 'sound', family: 'laughter', filePath: accent, sampleStart: 0, sampleSeconds: 1,
+            sha256: crypto.createHash('sha256').update(fs.readFileSync(accent)).digest('hex') } };
+        const timeline = { version: 1, sourceDuration: 4, duration: 4.8, keep: [{ start: 0, end: 4 }],
+            holds: [{ after: 1, seconds: .8, cueId: 'S1' }], addedSeconds: .8 };
+        const plan = { version: 2, workflow: 'creative', style: 'compact', duration: 4.8, timeline,
+            effects: [{ id: 'M1', start: 0, end: 1, sound: { id: 'laugh', offsetSeconds: .96, levelDb: -3, durationSeconds: .8 } }] };
+        await topic.cutClipMedia({ kind: 'video', mediaPath: source }, { start: 0, end: 4, duration: 4 }, srt, base, config);
+        await topic.cutClipMedia({ kind: 'video', mediaPath: source }, { start: 0, end: 4, duration: 4 }, srt, output,
+            { ...config, creativePlan: plan, creativeAssets: assets, creativeSettings: { style: 'compact', soundEffects: true } });
+        for (const [i, file] of [base, output].entries()) await topic.runFfmpeg(['-v', 'error', '-y', '-i', file,
+            ...(i === 0 ? ['-filter_complex', audioTimelineFilter(timeline), '-map', '[baseaudio]'] : ['-map', '0:a:0']),
+            '-vn', '-ar', '16000', '-ac', '2', '-f', 'f32le', path.join(dir, `${i}.pcm`)], config);
+        const audit = analyzeCreativeAudio(fs.readFileSync(path.join(dir, '0.pcm')), fs.readFileSync(path.join(dir, '1.pcm')), plan, assets);
+        if (audit.status !== 'passed') throw new Error(JSON.stringify(audit));
+        expect(audit).toMatchObject({ status: 'passed', issues: [] });
+        expect(audit.seconds).toBeCloseTo(4.8, 1);
+        expect(audit.effects[0].end).toBeCloseTo(1.76, 2);
+        expect(audit.originalGain).toBeCloseTo(1, 1);
+        expect(audit.outsideErrorRms).toBeLessThan(.01);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}, 60000);
+
 realMedia('compact multi-cut mix keeps original dialogue level and adds audible normalized accents plus music', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'compact-media-'));
     const config = require('../own_stream_clipper').getOwnStreamClipsConfig(require('../config-loader').getConfig());

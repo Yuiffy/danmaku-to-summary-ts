@@ -56,7 +56,7 @@ async function refreshReviewUnlocked(planPath, options = {}) {
     saveReviewState(reviewPath, all, metadata);
     const notification = own.buildNotifyMarkdown(all, metadata);
     const detail = metadata.precisionExperiment || all.some(result => result.precisionExperiment?.selected)
-        ? require('../workflow-runtime').loadWorkflow('clipping/experiment').experimentDetailMarkdown(all, metadata) : null;
+        ? require('../workflow-runtime').loadWorkflow('clipping/experiment').experimentDetailMarkdown(all, metadata, { compact: true }) : null;
     const digest = crypto.createHash('sha256').update(detail ? JSON.stringify([notification, detail]) : notification).digest('hex');
     const receiptPath = reviewPath.replace(/\.md$/i, '_NOTIFICATION.json');
     const receipt = fs.existsSync(receiptPath) ? JSON.parse(fs.readFileSync(receiptPath, 'utf8')) : null;

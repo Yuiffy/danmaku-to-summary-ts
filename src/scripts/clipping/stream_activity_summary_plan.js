@@ -8,52 +8,108 @@ const { prepareActivityTranscript } = require('./stream_activity_transcript');
 const { getActivitySummary } = require('./stream_activity_summary');
 const { calibrateBoundaries } = require('./stream_activity_boundaries');
 const p = require('./stream_activity_plan');
+const stages = require('../workflow-runtime').loadWorkflow('clipping/activityStages');
 const digest = plan => p.sha({ events: plan.events, parts: plan.parts, coverage: plan.coverage,
-    rejectedActivities: plan.rejectedActivities || [] });
+    rejectedActivities: plan.rejectedActivities || [], ...(plan.calibratedKinds ? { calibratedKinds: plan.calibratedKinds, rawEvents: plan.rawEvents } : {}),
+    ...(plan.verificationSignature ? { verificationSignature: plan.verificationSignature, verificationSettings: plan.verificationSettings,
+        boundaryBudget: plan.boundaryBudget, verifierRevisions: plan.verifierRevisions } : {}),
+    ...(plan.timingSignature ? { timingSignature: plan.timingSignature, timingRevisions: plan.timingRevisions } : {}) });
 
 async function detectSummaryActivities(options, config, source, info, files, audience) {
     const started = Date.now();
+    const previous = fs.existsSync(files.plan) ? JSON.parse(fs.readFileSync(files.plan, 'utf8')) : null;
+    if (previous && previous.contentSha256 !== digest(previous)) throw new Error('Activity plan changed outside the reviewed workflow');
     const duration = await (options.probe || probeMediaDuration)(options.mediaPath, resolveFfprobePath(options.config.audio?.ffmpeg?.path || 'ffmpeg'));
-    const plan = { version: p.VERSION, type: 'sui_stream_activity_plan', status: 'awaiting_summary', sessionId: p.sha(source),
+    let plan = { version: p.VERSION, type: 'sui_stream_activity_plan', status: 'awaiting_summary', sessionId: p.sha(source),
         ...info, source, duration, events: [], coverage: { status: 'incomplete', duration, windows: [] }, diagnostics: { requests: [] } };
+    const selected = stages.activityKinds(options.kind).filter(kind => config[kind].enabled);
     const save = () => { plan.contentSha256 = digest(plan); writeJsonAtomic(files.plan, plan); writeJsonAtomic(files.songs, p.songRecord(plan)); };
     try {
-        plan.transcript = await (options.prepareTranscript || prepareActivityTranscript)({ source, root: options.config, directory: files.directory, duration, reuseOnly: true });
+        plan.transcript = options.transcriptRecordPath
+            ? require('./stream_activity_transcript').readTimingTranscript(options.transcriptRecordPath, source, options.config, true)
+            : await (options.prepareTranscript || prepareActivityTranscript)({ source, root: options.config, directory: require('path').dirname(source.mediaPath),
+                duration, reuseOnly: true, speakerEvidence: true });
         const summary = await getActivitySummary({ options, source, transcript: plan.transcript, info, directory: files.directory, duration, audience });
         plan.summary = { path: summary.summaryPath, sha256: summary.sha256, sourceSha256: summary.context.sourceSha256,
             timelineVersion: summary.timeline.version, reused: summary.reused };
-        plan.signature = p.sha({ version: p.VERSION, source, transcript: plan.transcript, summarySha256: summary.sha256,
-            verification: config.verification, parts: { songs: config.songs.enabled, padding: config.songs.paddingSeconds,
+        const signatureFor = verification => p.sha({ version: p.VERSION, source, transcript: plan.transcript, summarySha256: summary.sha256,
+            verification, parts: { songs: config.songs.enabled, padding: config.songs.paddingSeconds,
                 watch: config.watch.enabled, target: config.watch.targetPartSeconds, max: config.watch.maxPartSeconds } });
+        plan.signature = signatureFor(config.verification);
+        plan.verificationSettings = config.verification;
+        const currentSignature = previous?.timingSignature || previous?.verificationSignature || previous?.signature;
+        if (options.timingRevision) {
+            plan = stages.activityTimingRevision(previous, plan, options.timingRevision);
+        } else if (options.reviseVerifier) {
+            const oldSettings = previous?.verificationSettings || p.LEGACY_NATIVE_VERIFICATION;
+            if (!previous?.uploadManifestPath || !options.boundaryRetry || currentSignature !== signatureFor(oldSettings)
+                || currentSignature === plan.signature || previous.verifierRevisions?.some(r => r.toSignature === plan.signature)) {
+                throw Object.assign(new Error('Verifier revision must change only a pending, source-bound route once; source, summary and parts must match'), { preserveActivityPlan: true });
+            }
+            const nextSignature = plan.signature;
+            plan = { ...previous, verificationSignature: nextSignature, verificationSettings: config.verification,
+                boundaryBudget: { limit: (previous.boundaryBudget?.limit || config.verification.maxBatchRequests) + config.verification.maxBatchRequests },
+                verifierRevisions: [...(previous.verifierRevisions || []), { id: options.boundaryRetry.id, kind: options.kind,
+                    note: options.revisionNote, fromSignature: currentSignature, toSignature: nextSignature, fromSettings: oldSettings,
+                    toSettings: config.verification, spentRequests: previous.efficiency?.boundaryRequests || 0,
+                    additionalRequests: config.verification.maxBatchRequests, createdAt: new Date().toISOString() }] };
+        } else if (previous?.uploadManifestPath && currentSignature !== plan.signature) {
+            throw Object.assign(new Error('Rendered activity plan parameters or shared summary changed; use an explicit reviewed revision'), { preserveActivityPlan: true });
+        }
         if (fs.existsSync(files.plan)) {
             const old = JSON.parse(fs.readFileSync(files.plan, 'utf8'));
-            if (old.signature === plan.signature && ['planned', 'rendered'].includes(old.status)) {
+            if (!options.timingRevision && !options.reviseVerifier && (old.timingSignature || old.verificationSignature || old.signature) === plan.signature) {
+                if (JSON.stringify(old.source) !== JSON.stringify(source)) {
+                    throw Object.assign(new Error('Activity plan source differs from its signature'), { preserveActivityPlan: true });
+                }
                 if (old.contentSha256 !== digest(old)) throw new Error('Activity plan changed outside the reviewed workflow');
-                return old;
+                if (!options.retryBoundaries && !stages.pendingKinds(old, selected).length) return old;
+                plan = old;
             }
         }
-        plan.events = summary.timeline.events;
-        if (plan.events.some(e => e.end > duration + .01)) throw new Error('Summary activity exceeds the source recording duration');
+        const pending = options.retryBoundaries ? selected : stages.pendingKinds(plan, selected);
+        plan.calibratedKinds = stages.calibratedKinds(plan);
+        plan.rawEvents ||= summary.timeline.events;
+        if (plan.rawEvents.some(e => e.end > duration + .01)) throw new Error('Summary activity exceeds the source recording duration');
         plan.coverage = { status: 'complete', duration, method: 'summary_shared_input',
             windows: [{ start: 0, end: duration, status: 'inspected', evidenceRows: summary.rows.length }] };
+        const retryEvents = options.retryBoundaries ? stages.retryBoundaryEvents(plan.rawEvents, plan.events, pending, plan.rejectedActivities || []) : null;
+        const retriedIds = retryEvents?.map(event => event.id);
         plan.status = 'verifying'; save();
-        const checked = await (options.calibrate || calibrateBoundaries)(plan.events, { config, root: options.config, source,
+        const checked = await (options.calibrate || calibrateBoundaries)(retryEvents || stages.selectEvents(plan.rawEvents, pending), { config, root: options.config, source,
             transcriptSha256: plan.transcript.sha256, info, directory: files.directory, rows: summary.rows, duration,
-            diagnostics: plan.diagnostics, request: options.boundaryRequest, extract: options.extractBoundary });
-        plan.events = p.mergeEvents(checked.events); plan.rejectedActivities = checked.rejected;
-        if (plan.transcript.timingReliable === false) for (const event of plan.events) event.reviewIssues.push('source_transcript_timing_unreliable');
+            diagnostics: plan.diagnostics, request: options.boundaryRequest, extract: options.extractBoundary,
+            usedRequests: plan.efficiency?.boundaryRequests || 0, retryId: options.boundaryRetry?.id,
+            maxRequests: plan.boundaryBudget?.limit, localDecode: options.localDecode, reviewPrelude: options.reviewPrelude });
+        if (plan.transcript.timingReliable === false) for (const event of checked.events) event.reviewIssues.push('source_transcript_timing_unreliable');
+        plan.events = p.mergeEvents(retriedIds ? stages.replaceRetriedEvents(plan.events, checked.events, retriedIds)
+            : stages.combineEvents(plan.events, checked.events, pending), true);
+        plan.rejectedActivities = retriedIds ? stages.replaceRetriedEvents(plan.rejectedActivities || [], checked.rejected, retriedIds)
+            : stages.combineEvents(plan.rejectedActivities || [], checked.rejected, pending);
         for (let i = 1; i < plan.events.length; i++) {
             const a = plan.events[i - 1], b = plan.events[i];
             if (a.end > b.start) { a.reviewIssues.push('overlapping_activity'); b.reviewIssues.push('overlapping_activity'); }
         }
-        plan.parts = p.buildParts(plan.events, duration, config);
+        const parts = p.buildParts(plan.events, duration, config);
+        plan.parts ||= { songs: [], watch: [] };
+        for (const kind of pending) plan.parts[kind] = parts[kind];
         const current = sourceSnapshot({ source: { mediaPath: options.mediaPath, srtPath: options.srtPath, xmlPath: options.xmlPath } });
         if (JSON.stringify(current) !== JSON.stringify(source) || fileDigest(plan.transcript.path) !== plan.transcript.sha256
             || fileDigest(summary.summaryPath) !== summary.sha256) throw new Error('Activity source or shared summary changed during calibration');
         plan.efficiency = { detection: 'summary', summaryReused: summary.reused, fullScanRequests: 0, wholeRecordingAsrRuns: 0,
-            boundaryRequests: checked.requests, boundaryCacheHits: checked.cacheHits, boundaryAudioSeconds: checked.audioSeconds,
-            maxBoundaryRequests: config.verification.maxBatchRequests, elapsedMs: Date.now() - started };
+            boundaryRequests: (plan.efficiency?.boundaryRequests || 0) + checked.requests,
+            boundaryCacheHits: (plan.efficiency?.boundaryCacheHits || 0) + checked.cacheHits,
+            boundaryAudioSeconds: (plan.efficiency?.boundaryAudioSeconds || 0) + checked.audioSeconds,
+            maxBoundaryRequests: plan.boundaryBudget?.limit || config.verification.maxBatchRequests, elapsedMs: (plan.efficiency?.elapsedMs || 0) + Date.now() - started };
+        plan.calibratedKinds = stages.completeKinds(plan, pending);
+        if (options.boundaryRetry) plan.boundaryRetry = options.boundaryRetry;
+        delete plan.error;
         plan.status = 'planned'; plan.finishedAt = new Date().toISOString(); save(); return plan;
-    } catch (error) { plan.status = 'failed'; plan.error = error.message; save(); throw error; }
+    } catch (error) {
+        if (error.preserveActivityPlan) throw error;
+        if (previous && !plan.calibratedKinds && JSON.stringify(previous.source) === JSON.stringify(source)) plan = previous;
+        if (plan.calibratedKinds || ['planned', 'rendered'].includes(plan.status)) plan.calibratedKinds = stages.calibratedKinds(plan);
+        plan.status = 'failed'; plan.error = error.message; save(); throw error;
+    }
 }
 module.exports = { digest, detectSummaryActivities };

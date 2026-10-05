@@ -32,6 +32,11 @@ async function renderGamePart(mediaPath, part, outputPath, config, profile, hook
                 hwaccel: null, fallbackUsed: false, originalStreamCopy: true, boundaryCheck: 'matching_first_decoded_frames' },
             audio: 'original_recording_mix', burnedSubtitles: false };
     } catch (error) {
+        if (config.streamGameClips?.requireOriginalStreamCopy === true) {
+            const stopped = new Error(`Original-stream game cut failed; streamGameClips.requireOriginalStreamCopy forbids re-encoding: ${error.message}`, { cause: error });
+            stopped.code = 'GAME_ORIGINAL_STREAM_COPY_REQUIRED';
+            throw stopped;
+        }
         const result = await (hooks.renderFallback || renderActivityPart)(mediaPath, part, outputPath, config, profile, hooks);
         return { ...result, processing: { ...result.processing, originalStreamCopy: false, copyFallbackReason: error.message } };
     }

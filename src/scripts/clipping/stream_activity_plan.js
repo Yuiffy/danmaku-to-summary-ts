@@ -2,11 +2,17 @@
 const crypto = require('crypto');
 
 const VERSION = 9;
+// Exact historical settings permit a hash-checked route-only pending revision.
+const LEGACY_NATIVE_VERIFICATION = Object.freeze({ enabled: true, provider: 'tuZi', apiMode: 'gemini_native', model: 'gemini-3-flash-preview',
+    contextSeconds: 180, maxAudioSeconds: 1200, timeoutMs: 180000, boundaryContextSeconds: 45, batchMaxEvents: 8,
+    batchMaxAudioSeconds: 600, maxBatchRequests: 3, boundaryTimeoutMs: 60000 });
 const DEFAULTS = Object.freeze({ enabled: false, roomIds: ['25788785'], outputDirName: 'stream_activity_clips',
     detectionMode: 'summary',
     chunkSeconds: 1800, contextSeconds: 180, maxEvidenceChars: 90000,
     ai: { model: 'gpt-6-luna', timeoutMs: 600000, maxTokens: 16000 },
-    verification: { enabled: true, provider: 'tuZi', apiMode: 'gemini_native', model: 'gemini-3-flash-preview', contextSeconds: 180, maxAudioSeconds: 1200, timeoutMs: 180000,
+    verification: { enabled: true, provider: 'daiYu', apiMode: 'openai_chat', model: 'gpt-6.1-sol', evidenceMethod: 'independent_local_asr',
+        localAsr: { sensevoiceModel: 'iic/SenseVoiceSmall', whisperModel: 'deepdml/faster-whisper-large-v3-turbo-ct2', device: 'cuda', chunkSeconds: 8 },
+        contextSeconds: 180, maxAudioSeconds: 1200, timeoutMs: 180000,
         boundaryContextSeconds: 45, batchMaxEvents: 8, batchMaxAudioSeconds: 600, maxBatchRequests: 3, boundaryTimeoutMs: 60000 },
     songs: { enabled: true, paddingSeconds: 2, tid: 31, tags: ['岁己', '小岁', '歌切', '虚拟主播'], collection: {} },
     watch: { enabled: true, targetPartSeconds: 1500, maxPartSeconds: 1800, tid: 21,
@@ -16,11 +22,16 @@ const sha = value => crypto.createHash('sha256').update(typeof value === 'string
 function getActivityConfig(root = {}) {
     const raw = root.streamActivityClips || {};
     const config = { ...DEFAULTS, ...raw, ai: { ...DEFAULTS.ai, ...raw.ai },
-        verification: { ...DEFAULTS.verification, ...raw.verification },
+        verification: { ...DEFAULTS.verification, ...raw.verification,
+            localAsr: { ...DEFAULTS.verification.localAsr, ...raw.verification?.localAsr } },
         songs: { ...DEFAULTS.songs, ...raw.songs }, watch: { ...DEFAULTS.watch, ...raw.watch } };
     if (!Array.isArray(config.roomIds) || !config.roomIds.length) throw new Error('streamActivityClips.roomIds needs an explicit allowlist');
     for (const field of ['enabled']) if (typeof config[field] !== 'boolean') throw new Error(`Invalid activity ${field}`);
     if (!['summary', 'standalone_scan'].includes(config.detectionMode)) throw new Error('Invalid activity detection mode');
+    if (!['independent_local_asr', 'native_audio'].includes(config.verification.evidenceMethod)) throw new Error('Invalid activity evidence method');
+    if (config.verification.evidenceMethod === 'independent_local_asr' && (config.verification.provider !== 'daiYu' || config.verification.apiMode !== 'openai_chat')) {
+        throw new Error('Local activity audio reasoning requires the explicit DaiYu image/text route');
+    }
     for (const field of ['boundaryContextSeconds', 'batchMaxEvents', 'batchMaxAudioSeconds', 'maxBatchRequests', 'boundaryTimeoutMs']) {
         if (!Number.isFinite(config.verification[field]) || config.verification[field] <= 0) throw new Error(`Invalid activity verification ${field}`);
     }
@@ -105,23 +116,26 @@ function parseEvents(value, window, duration) {
         if (name && name.length > 64) name = null;
         const titleIds = Array.isArray(raw.titleEvidenceIds) ? raw.titleEvidenceIds : [];
         const namedRows = titleIds.map(id => byId.get(id)).filter(Boolean).sort((a, b) => a.start - b.start);
+        const containsTitle = text => raw.kind === 'watch'
+            ? require('../workflow-runtime').loadWorkflow('clipping/activityTitles').watchTitleAppears(name, text) : text.includes(name);
         const contiguousTitle = namedRows.length > 0 && namedRows.every((row, i) => !i || row.start - namedRows[i - 1].end <= 3)
-            && namedRows.map(row => row.text.replace(/^\[[^\]]+\]\s*/u, '')).join('').includes(name);
+            && containsTitle(namedRows.map(row => row.text.replace(/^\[[^\]]+\]\s*/u, '')).join(''));
         const titleContext = namedRows.map(row => row.text.replace(/^\[[^\]]+\]\s*/u, '')).join('');
         const songTitleContext = raw.kind !== 'song' || (namedRows.some(row => row.end <= raw.start || row.start >= raw.end)
             ? /歌|唱|听|伴奏|点歌|《/u.test(titleContext) : /歌名|歌曲|这首歌叫|唱(?:一首|一下)|《/u.test(titleContext));
         if (name && (!titleIds.length || titleIds.some(id => !byId.has(id) || !raw.evidenceIds.includes(id))
-            || !songTitleContext || !(titleIds.some(id => byId.get(id).text.includes(name)) || contiguousTitle))) name = null;
+            || !songTitleContext || !(titleIds.some(id => containsTitle(byId.get(id).text)) || contiguousTitle))) name = null;
         return { kind: raw.kind, start: raw.start, end: Math.min(duration, raw.end), name: name || null,
             ...(raw.kind === 'song' ? { performance: raw.performance } : { mediaKind: raw.mediaKind }),
             startObserved: raw.startObserved, endObserved: raw.endObserved, evidenceIds: [...new Set(raw.evidenceIds)],
             titleEvidenceIds: name ? titleIds : [], note: String(raw.note || '').slice(0, 1000), windows: [window.index] };
     });
 }
-function mergeEvents(events) {
+function mergeEvents(events, preserveIds = false) {
     const result = [];
     for (const event of [...events].sort((a, b) => a.start - b.start || a.end - b.end)) {
-        const old = result.find(row => row.kind === event.kind && (!row.name || !event.name || row.name === event.name)
+        const old = result.find(row => (!preserveIds || !row.id || !event.id || row.id === event.id)
+            && row.kind === event.kind && (!row.name || !event.name || row.name === event.name)
             && (event.kind === 'watch' && row.mediaKind === event.mediaKind && Math.min(row.end, event.end) > Math.max(row.start, event.start)
                 || Math.min(row.end, event.end) - Math.max(row.start, event.start) > Math.min(row.end - row.start, event.end - event.start) * .5
                 || (row.end >= event.start - .01 && !row.endObserved && !event.startObserved)));
@@ -135,7 +149,7 @@ function mergeEvents(events) {
             reviewIssues: [...new Set([...(old.reviewIssues || []), ...(event.reviewIssues || [])])],
             windows: [...new Set([...old.windows, ...event.windows])] });
     }
-    return result.sort((a, b) => a.start - b.start).map((event, i) => ({ ...event, id: `activity-${i + 1}`,
+    return result.sort((a, b) => a.start - b.start).map((event, i) => ({ ...event, id: preserveIds && event.id ? event.id : `activity-${i + 1}`,
         reviewIssues: [ ...(event.reviewIssues || []).filter(issue => !['start_boundary_unconfirmed', 'end_boundary_unconfirmed'].includes(issue)),
             ...(!event.startObserved ? ['start_boundary_unconfirmed'] : []), ...(!event.endObserved ? ['end_boundary_unconfirmed'] : []) ] }));
 }
@@ -172,7 +186,7 @@ function buildParts(events, duration, config) {
     return { songs, watch };
 }
 function songRecord(plan) {
-    return { schemaVersion: VERSION, type: 'sui_stream_song_record', status: plan.status, sessionId: plan.sessionId,
+    return { schemaVersion: VERSION, type: 'sui_stream_song_record', status: require('../workflow-runtime').loadWorkflow('clipping/activityStages').songRecordStatus(plan), sessionId: plan.sessionId,
         recordedAt: plan.recordedAt, roomId: plan.roomId, streamerName: plan.streamerName, source: plan.source,
         transcript: plan.transcript,
         summary: plan.summary, efficiency: plan.efficiency,
@@ -184,5 +198,5 @@ function songRecord(plan) {
             evidenceIds: e.evidenceIds, titleEvidenceIds: e.titleEvidenceIds, reviewIssues: e.reviewIssues,
             part: plan.parts?.songs.findIndex(p => p.activityId === e.id) + 1 || null })) };
 }
-module.exports = { VERSION, sha, getActivityConfig, activityEnabled, evidenceRows, formatEvidence, detectionWindows,
+module.exports = { VERSION, LEGACY_NATIVE_VERIFICATION, sha, getActivityConfig, activityEnabled, evidenceRows, formatEvidence, detectionWindows,
     detectionPrompt, parseEvents, mergeEvents, splitWatch, buildParts, songRecord };

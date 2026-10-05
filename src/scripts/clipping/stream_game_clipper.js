@@ -95,6 +95,11 @@ async function generateStreamGames(options = {}) {
     options = { ...options, config: root };
     const config = tools.getGameConfig(root), files = pathsFor(options.mediaPath, root, config), release = acquire(files.lock);
     try {
+        return await require('../workflow-runtime').loadWorkflow('ai/usage').runClipUsage({
+            kind: 'games', directory: files.directory, mediaPath: options.mediaPath, recording: info,
+            webhookUrl: root.wechatWork?.webhookUrl, notifyEnabled: root.streamGameClips?.notify?.enabled !== false,
+            sendMarkdown: options.notifyUsage || require('../wechat_work_markdown').sendWeChatMarkdown, io: options.usageIO
+        }, async () => {
         const source = sourceSnapshot({ source: options });
         const plan = await detectGames(options, config, source, info, files);
         if (options.planOnly) return { status: plan.status, events: plan.events.length, parts: plan.parts.length, planPath: files.plan };
@@ -118,6 +123,7 @@ async function generateStreamGames(options = {}) {
         }
         // Kept in a separate module so detection can resume before media/upload infrastructure is needed.
         return await require('./stream_game_render').renderGames(plan, options, config, files);
+        });
     } finally { release(); }
 }
 module.exports = { pathsFor, acquire, detectGames, generateStreamGames, execFileAsync };

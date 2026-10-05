@@ -5,6 +5,7 @@ const DEFAULT_CLIP_TOPICS_CONFIG = {
     keywords: ['岁己', '小岁', '小岁姐', '岁己姐', '饼干岁', 'SUI'],
     aiModel: 'gpt-6-luna',
     aiVerify: true,  // AI 验证:过滤唱歌/ASR误识别的假命中
+    ambiguousRecall: { enabled: false, contextSeconds: 45, rules: [] },
     prePaddingSeconds: 20,
     postPaddingSeconds: 35,
     minClipSeconds: 30,
@@ -18,7 +19,8 @@ const DEFAULT_CLIP_TOPICS_CONFIG = {
         maxEvidenceChars: 80000
     },
     review: { enabled: false, mode: 'shadow', strategy: 'single', reasoningEffort: 'max',
-        maxOutputTokens: 24000, maxDanmakuRows: 120, maxEvidenceChars: 80000, timeoutMs: 600000, transientMaxAttempts: 2 },
+        maxOutputTokens: 24000, maxDanmakuRows: 120, maxEvidenceChars: 80000, timeoutMs: 600000, transientMaxAttempts: 2,
+        audioChecks: { enabled: false } },
     mergeGapSeconds: 120,
     contextPaddingSeconds: 300,  // 旧版兼容:未配置不对称窗口时前后各取5分钟
     contextPrePaddingSeconds: 180,
@@ -62,6 +64,7 @@ function getClipTopicsConfig(config = {}) {
             ...(raw.editorial || {})
         },
         review: { ...DEFAULT_CLIP_TOPICS_CONFIG.review, ...(raw.review || {}) },
+        ambiguousRecall: { ...DEFAULT_CLIP_TOPICS_CONFIG.ambiguousRecall, ...(raw.ambiguousRecall || {}) },
         autoUpload: {
             ...DEFAULT_CLIP_TOPICS_CONFIG.autoUpload,
             ...(raw.autoUpload || {})

@@ -22,6 +22,12 @@ const good = () => ({ clipId: 'c1', decision: 'repair', copy: { title: 'GuestCli
     sourceKind: 'recount', identityBasis: 'voice', speakerCueIds: ['G1'], cueIds: ['G1'] }], evidenceDanmakuIds: [] });
 
 describe('independent action attribution review', () => {
+  test('a required review survives a revision even when the new copy has no heuristic risk', () => {
+    const value = { start: 10, end: 20, title: '普通聊天', description: '今天聊天', coverText: '聊天',
+      attributionRequired: true, grounding: { sourceKind: 'live_speech' } };
+    expect(attributionRisk(value, source, context)).toContain('required_attribution_review');
+    expect(attributionRisk({ ...value, attributionRequired: false }, source, context)).not.toContain('required_attribution_review');
+  });
   test('carries automatic word normalization as data, without promoting it to speaker identity proof', () => {
     const evidence = buildSubtitleEvidence([{ start: 0, end: 10, text: 'Guest asked Mimi.',
       asrEvidence: { proofreading: { edits: [{ from: 'Gust', to: 'Guest', method: 'curated_context' }] } } }]);
@@ -77,6 +83,8 @@ describe('independent action attribution review', () => {
       expect(validateActorReview(review, p)).toEqual([]);
     }
     const prompt = actorReviewPrompt([p], namedContext);
+    expect(prompt).toContain('允许有原文依据的自然概括');
+    expect(prompt).toContain('动物、昆虫、物品不是待实名的人物');
     expect(prompt).toContain('被提及者、转述对象');
     expect(prompt).toContain('本人未出声不意味着故事对象无法具名');
     expect(prompt).toContain('不机械替换代词');

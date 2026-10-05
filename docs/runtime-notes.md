@@ -217,6 +217,20 @@ and merged audience message. Invalid speech timing falls back to the original
 full format. The overview still precedes the comic so confirmed activities can
 constrain its script; delaying it until after drawing would remove that check.
 
+Standalone overview prompt v2 distinguishes activities that happened from
+recommendations, future plans and cancelled ideas. Film/character discussion,
+resource checks (including brief playback previews), trailers and recap videos do
+not establish that the corresponding feature film was watched. Decisions must
+retain negation and subsequent context;
+topics may describe those discussions without promoting them to actual activities.
+The complete shared source prefix and public content fields stay compatible.
+When an activity timeline is requested, missing, incomplete or invalid evidence
+fails the summary attempt and retains its raw response/hash for diagnosis. Such
+drafts are not accepted as cache history or published as successful overviews.
+Only complete timelines can be reused for that request; prompt v1 summaries are
+regenerated under the new prompt. Existing bounded retries and failure cooldowns
+still apply, without adding full-stream scans or ASR calls.
+
 `summaryDeliveryMode: "separate"` publishes the overview under the saved goodnight
 reply ID. Delivery does not require another generation call: combined generation
 continues to reuse its accepted overview. Cache propagation waits apply to shared

@@ -3,7 +3,7 @@ const fs = require('fs'), os = require('os'), path = require('path');
 const b = require('./stream_activity_boundaries'), p = require('./stream_activity_plan');
 function fixture(overrides = {}) {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'activity-boundaries-'));
-    const config = p.getActivityConfig({ streamActivityClips: { verification: overrides } });
+    const config = p.getActivityConfig({ streamActivityClips: { verification: { provider: 'tuZi', apiMode: 'gemini_native', model: 'gemini-3-flash-preview', evidenceMethod: 'native_audio', ...overrides } } });
     const events = [
         { id: 'song', kind: 'song', start: 100, end: 400, performance: 'full', evidenceIds: ['T1'] },
         { id: 'watch', kind: 'watch', start: 1000, end: 5000, mediaKind: 'movie', evidenceIds: ['T2'] },
@@ -77,6 +77,40 @@ test('unavailable media verification does no extraction or AI work', async () =>
         expect(result.requests).toBe(0); expect(result.events).toHaveLength(3); expect(f.extract).not.toHaveBeenCalled();
     } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
 });
+
+test('local activity verification sends only original images to DaiYu and reuses the bound decoder and remote result', async () => {
+    const f = fixture(), config = p.getActivityConfig({});
+    const localDecode = jest.fn(async (input, output) => {
+        const request = JSON.parse(fs.readFileSync(input, 'utf8'));
+        fs.writeFileSync(output, JSON.stringify({ version: 1, method: 'independent_local_asr', source: request.source, settings: request.settings,
+            audio: request.audio.map((a, i) => ({ index: i + 1, start: a.start, end: a.end, sha256: a.sha256, transcript: [],
+                chunks: Array.from({ length: Math.ceil((a.end-a.start)/8) }, (_, j) => ({ index: j + 1, start: j*8,
+                    end: Math.min(a.end-a.start, (j+1)*8), raw: '真实听见第1段歌词', text: '真实听见第1段歌词', tags: ['BGM'] })) })) }));
+    });
+    const extract = jest.fn(async args => {
+        const out = args.at(-1);
+        if (out.endsWith('.pcm')) fs.writeFileSync(out, Buffer.alloc(60 * 8000 * 2));
+        else fs.writeFileSync(out, Buffer.alloc(2000));
+    });
+    const request = jest.fn(async (...args) => {
+        expect(args[0]).toContain('NO audio');
+        expect(args[1].every(input => input.mimeType.startsWith('image/'))).toBe(true);
+        expect(args[3]).toMatchObject({ provider: 'daiYu', apiMode: 'openai_chat' });
+        const response = await f.request(...args), raw = JSON.parse(response.text);
+        Object.assign(raw.results[0], { performer: 'host', startContextClosed: true, endContextClosed: true,
+            evidenceRefs: [{ audioIndex: 1, chunkIndex: 7, quote: '真实听见第1段歌词' }] });
+        return { ...response, text: JSON.stringify(raw) };
+    });
+    try {
+        const args = { ...f.args, config, extract, request, localDecode };
+        const result = await b.calibrateBoundaries([f.events[0]], args);
+        expect(result.events[0].verification).toMatchObject({ decision: 'keep', method: 'independent_local_asr',
+            boundaryPolicy: 'complete_context_enclosure', responseSha256: expect.any(String) });
+        expect(localDecode).toHaveBeenCalledTimes(1);
+        expect(await b.calibrateBoundaries([f.events[0]], args)).toMatchObject({ requests: 0, cacheHits: 1 });
+        expect(localDecode).toHaveBeenCalledTimes(1); expect(request).toHaveBeenCalledTimes(1);
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
 test('long partial performances also use only boundary excerpts and the batch requests minimal thinking', async () => {
     const f = fixture();
     try {
@@ -92,5 +126,42 @@ test('a configured audio limit is enforced even when one candidate cannot fit', 
         const result = await b.calibrateBoundaries([f.events[0]], f.args);
         expect(result.requests).toBe(0); expect(f.extract).not.toHaveBeenCalled();
         expect(result.events[0].verification.reason).toContain('audio budget');
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
+
+test('later stages share the spent request budget while completed boundary cache entries remain reusable', async () => {
+    const f = fixture({ maxBatchRequests: 1 });
+    try {
+        const songs = await b.calibrateBoundaries([f.events[0]], f.args);
+        expect(songs.events[0].id).toBe('song');
+        const watch = await b.calibrateBoundaries([f.events[1]], { ...f.args, usedRequests: songs.requests });
+        expect(watch.requests).toBe(0);
+        expect(watch.events[0].verification.reason).toBe('Per-stream AI budget reached');
+        const cached = await b.calibrateBoundaries([f.events[0]], { ...f.args, usedRequests: 1 });
+        expect(cached).toMatchObject({ requests: 0, cacheHits: 1 });
+        expect(cached.events[0].verification.decision).toBe('keep');
+        expect(f.request).toHaveBeenCalledTimes(1);
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
+
+test('legacy calibrated caches without IDs bind the cached raw reply to current candidates without extracting or requesting again', async () => {
+    const f = fixture();
+    try {
+        const first = await b.calibrateBoundaries(f.events, f.args);
+        const cacheDirectory = path.join(f.directory, 'temp', 'boundary-cache');
+        const cachePath = path.join(cacheDirectory, fs.readdirSync(cacheDirectory).find(name => name.endsWith('.json')));
+        const cached = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+        for (const event of cached.result.calibrated.events) {
+            delete event.id;
+            event.start = -1;
+        }
+        fs.writeFileSync(cachePath, JSON.stringify(cached));
+        const extracted = f.extract.mock.calls.length;
+        const resumed = await b.calibrateBoundaries(f.events, { ...f.args, usedRequests: f.config.verification.maxBatchRequests });
+        expect(resumed).toMatchObject({ requests: 0, cacheHits: 1 });
+        expect(resumed.events).toEqual(first.events);
+        expect(resumed.events.map(event => event.id)).toEqual(['song', 'watch', 'fragment']);
+        expect(f.request).toHaveBeenCalledTimes(1);
+        expect(f.extract).toHaveBeenCalledTimes(extracted);
     } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
 });

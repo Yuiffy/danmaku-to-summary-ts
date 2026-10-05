@@ -54,6 +54,31 @@ test('global no-AI configuration cannot be bypassed by enhancement stages', asyn
     } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
+test.each(['passed', 'rejected'])('publication stage carries the final object contract through provider classification (%s)', async status => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'publication-stage-contract-'));
+    const text = JSON.stringify({ status, checks: { content: true, attribution: true, subtitles: true, visuals: true, policy: status === 'passed' },
+        issues: status === 'passed' ? [] : ['涉及明确排除内容'] });
+    const generate = jest.spyOn(require('../ai_text_generator'), 'generateTextWithDaiYu').mockImplementation(async (_prompt, options) => {
+        // Exercise the same output classifier used by the real HTTP provider adapter.
+        require('../text/generated_output').assertGeneratedOutput(text, options, { status: 'completed' });
+        return { text, meta: { usage: { input_tokens: 20, output_tokens: 15 }, attempts: [
+            { provider: 'daiYu', model: 'fixture', apiModeUsed: 'responses', reasoningEffortSent: 'high' }
+        ] } };
+    });
+    try {
+        const result = await require('./enhancement_runner').requestStage({ provider: 'daiYu', model: 'fixture', apiMode: 'responses',
+            reasoningEffort: 'high', maxTokens: 1000, maxInputTokens: 5000, timeoutMs: 1000,
+            capabilities: { reasoningEfforts: ['high'], images: false } }, { mode: 'log_only', ledgerPath: path.join(directory, 'ledger.json') },
+        { roomId: 'room', sessionId: 'session', outputContract: { key: 'checks', type: 'object', allowDomainRejected: true } },
+        'publication-1', 'Review actual final artifacts', []);
+        expect(result.text).toBe(text);
+        expect(generate).toHaveBeenCalledTimes(1);
+        expect(generate.mock.calls[0][1]).toMatchObject({ structuredOutputKey: 'checks', structuredOutputType: 'object',
+            structuredOutputAllowDomainRejected: true });
+        expect(JSON.parse(fs.readFileSync(path.join(directory, 'ledger.json'), 'utf8')).rows[0].status).toBe('success');
+    } finally { generate.mockRestore(); fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('disabled AI reports an explicit zero-selection reason without requesting a model', async () => {
     const model = jest.spyOn(require('../ai_text_generator'), 'generateTextWithDaiYu');
     try {

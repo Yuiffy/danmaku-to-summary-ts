@@ -7,7 +7,7 @@ const manual = require('./manual_clip_queue');
 const configLoader = require('./config-loader');
 const { buildPreflightEvidence } = require('./clipping/preflight_evidence');
 const { ensureCandidateDraft, correctCandidateDraft, approveCandidateDraft, hasDraftApproval,
-    candidateDraftEvidence, writeJsonAtomic } = require('./clipping/candidate_subtitles');
+    candidateDraftEvidence, writeJsonAtomic, writeRevision } = require('./clipping/candidate_subtitles');
 const { linkClipEvidence } = require('./clipping/subtitle_evidence');
 const { topicReviewLines } = require('./clipping/topic_review_runner');
 const { ensureCandidatePreview, syncPreviewSubtitles } = require('./clipping/candidate_preview');
@@ -73,6 +73,7 @@ function prepareCandidate(metadata, metadataPath, options, rootConfig) {
         subtitleSegments: corrected.segments,
         sourceMetadata: { ...metadata, candidateId: Number(options.candidateId), uploadId: Number(options.candidateId),
             humanReview: { reviewedAt: new Date().toISOString(), note: options.reviewNote.trim(),
+                authority: metadata.candidateRecovery?.status === 'ready' ? 'ai_replan' : 'user',
                 sourceSha256: evidence.sourceSha256, originalCopy: metadata.copy, copy,
                 originalIssues: metadata.aiReview.quality?.issues || [],
                 copyGrounding: reviewedGrounding, appliedSubtitleEdits: metadata.aiReview.subtitleEdits || [],
@@ -89,10 +90,34 @@ async function renderCandidate(metadataPath, options, rootConfig = configLoader.
         // Recover an interrupted registry import without overwriting completed media.
         if (metadata.mode === 'topic_candidate_manual_cut' && metadata.status === 'success'
             && Number(metadata.candidateId) === Number(options.candidateId) && fs.existsSync(metadata.output?.mediaPath || '')) {
-            if (options.requireApproval && (metadata.candidateSubtitles?.approval?.sha256 !== options.expectedSha256
-                || !metadata.output.burnedSubtitles || !fs.existsSync(metadata.output.srtPath || '')
-                || !fs.existsSync(metadata.output.coverPath || ''))) throw new Error('Rendered artifact does not match queued approval');
+            if (options.requireApproval) {
+                const evidence = buildPreflightEvidence(topic.parseTopicSrt(metadata.source.srtPath).segments);
+                if (!hasDraftApproval(metadata, evidence, options.expectedSha256) || !metadata.output.burnedSubtitles
+                    || !fs.existsSync(metadata.output.srtPath || '') || !fs.existsSync(metadata.output.coverPath || '')) {
+                    throw new Error('Rendered artifact does not match queued approval');
+                }
+            }
             return metadata;
+        }
+        if (!metadata.editorial?.copyGrounding || metadata.aiReview?.boundaryReview?.status === 'needs_review') {
+            const recovery = require('./workflow-runtime').loadWorkflow('clipping/topicRecovery');
+            const { prepareTopicGroup, preflightSelections } = require('./clipping/preflight_runner');
+            const config = topic.getClipTopicsConfig(rootConfig);
+            const evidence = () => buildPreflightEvidence(topic.parseTopicSrt(metadata.source.srtPath).segments);
+            const source = { ...metadata.source, roomId: metadata.roomId, streamerName: metadata.streamerName,
+                recordedAt: metadata.recordedAt };
+            await recovery.recoverCandidatePlan(metadata, metadataPath, options, config, {
+                evidence, ensureDraft: item => ensureCandidateDraft(item, metadataPath, evidence(), config),
+                approved: item => hasDraftApproval(item, evidence(), options.expectedSha256),
+                corrected: (item, input) => candidateDraftEvidence(item, input).evidence,
+                prepare: async (group, input, diagnostics, retainedContext) => {
+                    const xml = metadata.source.xmlPath || metadata.source.srtPath.replace(/(?:\.speaker)?\.srt$/iu, '.xml');
+                    const danmaku = fs.existsSync(xml) ? await topic.parseDanmakuXml(xml) : [];
+                    return prepareTopicGroup(group, input, config, rootConfig, source, diagnostics,
+                        { danmaku, boundaryRepair: false, retainedContext });
+                }, selections: (plan, group) => preflightSelections(plan, group, config), writeRevision,
+                save: item => writeJsonAtomic(metadataPath, item), now: () => new Date().toISOString()
+            });
         }
         const task = prepareCandidate(metadata, metadataPath, options, rootConfig);
         const result = await manual.cutTask(task, rootConfig);
@@ -155,6 +180,10 @@ function updateCandidate(metadataPath, options, rootConfig = configLoader.getCon
             metadata.status = 'pending_preflight';
         }
         if (options.action === 'approve' || options.approveUpload === 'yes') {
+            if (['running', 'failed'].includes(metadata.candidateRecovery?.status)) {
+                metadata.candidateRecoveryHistory = [...(metadata.candidateRecoveryHistory || []), metadata.candidateRecovery];
+                metadata.candidateRecovery = null;
+            }
             approveCandidateDraft(metadata, evidence, options.reviewNote);
         }
         metadata.candidateId = Number(options.candidateId);

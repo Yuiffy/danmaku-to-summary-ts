@@ -147,9 +147,29 @@ class GameUploadTests(unittest.TestCase):
                    'spokenEnd': 50, 'scanEnd': 56, 'sampleSeconds': 2, 'resolutionSeconds': .25, 'end': 53,
                    'reason': 'Exit menu and fade finish after the closing sentence', 'samples': samples, 'frames': frames}}
         self.assertEqual(review.check_closing_frames(verdict, 60), 50)
+        retained_dark_frame = copy.deepcopy(verdict)
+        retained_dark_frame['endFrameReview']['frames'][1]['activity'] = 'uncertain'
+        self.assertEqual(review.check_closing_frames(retained_dark_frame, 60), 50)
+        contextual = copy.deepcopy(verdict)
+        original = copy.deepcopy(contextual['endFrameReview']['samples'][3])
+        full_image = self.root / 'closing-original-resolution.jpg'
+        full_image.write_bytes(b'actual exit menu at original resolution')
+        contextual['endFrameReview']['samples'][3].update(path=str(full_image), sha256=review.file_digest(full_image))
+        context_samples = copy.deepcopy(contextual['endFrameReview']['samples'][2:5])
+        response_path = self.root / 'closing-context-response.json'
+        response_path.write_text(json.dumps({'text': json.dumps({'reason': 'Faint matching exit menu remains',
+            'frames': contextual['endFrameReview']['frames'][2:5]})}), encoding='utf-8')
+        contextual['endFrameReview']['contextReviews'] = [{'time': 52.5, 'originalSample': original,
+            'samples': context_samples, 'responsePath': str(response_path), 'responseSha256': review.file_digest(response_path)}]
+        self.assertEqual(review.check_closing_frames(contextual, 60), 50)
+        contradictory = copy.deepcopy(contextual)
+        contradictory['endFrameReview']['frames'][3]['description'] = 'Changed without an independent original review'
+        with self.assertRaisesRegex(ValueError, 'context differs'): review.check_closing_frames(contradictory, 60)
+        response_path.write_text('changed response', encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'context evidence changed'): review.check_closing_frames(contextual, 60)
         for mutate, message in [
             (lambda v: v.update(end=50), 'ending differs'),
-            (lambda v: v['endFrameReview']['frames'][1].update(activity='uncertain'), 'remain uncertain'),
+            (lambda v: v['endFrameReview']['frames'][5].update(activity='uncertain'), 'remain uncertain'),
             (lambda v: v['endFrameReview']['samples'][0].update(sha256='changed'), 'evidence changed'),
             (lambda v: v['endFrameReview']['frames'][-1].update(activity='game'), 'remains visible')]:
             changed = copy.deepcopy(verdict); mutate(changed)
@@ -159,11 +179,12 @@ class GameUploadTests(unittest.TestCase):
         self.source_srt.write_text('1\n00:00:05,000 --> 00:00:07,000\n我要打开游戏了\n\n'
                                    '2\n00:00:48,000 --> 00:00:50,000\n今天游戏先玩到这里\n', encoding='utf-8')
         identity = {k: self.data['sourceSnapshot'][k] for k in ('mediaPath', 'mediaBytes', 'mediaMtimeNs')}
-        def extraction(file, start, end=None):
+        def extraction(file, start, end=None, original_resolution=False):
             file.write_bytes(b'actual original evidence')
             args = ['-y', '-ss', str(start), '-i', str(self.source)]
             args += (['-t', str(end-start), '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'libmp3lame', '-b:a', '64k']
-                     if end is not None else ['-frames:v', '1', '-vf', 'scale=960:-2', '-q:v', '3'])
+                     if end is not None else ['-frames:v', '1', '-q:v', '2'] if original_resolution
+                     else ['-frames:v', '1', '-vf', 'scale=960:-2', '-q:v', '3'])
             args += [str(file)]
             receipt = {'version': 3, 'source': identity, 'args': args, 'sha256': review.file_digest(file)}
             receipt['signature'] = hashlib.sha256(json.dumps({'args': args, 'source': identity},
@@ -207,6 +228,70 @@ class GameUploadTests(unittest.TestCase):
                             'reason': 'Closing shows an unobstructed talking scene', 'samples': closing,
                              'frames': [{'index': i+1, 'activity': 'other', 'description': 'Unobstructed talking scene'} for i in range(4)]})
         review.check_artifacts(self.data)
+        resolution_data = copy.deepcopy(self.data)
+        resolution_review = resolution_data['activities'][0]['verification']['endFrameReview']
+        original_sample = copy.deepcopy(resolution_review['samples'][0])
+        full_file = self.root/'closing-full-resolution.jpg'; extraction(full_file, 50, original_resolution=True)
+        resolution_review['samples'][0].update(path=str(full_file), sha256=review.file_digest(full_file))
+        context_response = self.root/'full-resolution-response.json'
+        context_response.write_text(json.dumps({'text': json.dumps({'reason': 'Original room scene is clear',
+            'frames': resolution_review['frames'][:2]})}), encoding='utf-8')
+        resolution_review['contextReviews'] = [{'time': 50, 'originalSample': original_sample,
+            'samples': copy.deepcopy(resolution_review['samples'][:2]), 'responsePath': str(context_response),
+            'responseSha256': review.file_digest(context_response)}]
+        review.check_artifacts(resolution_data)
+        no_context = copy.deepcopy(resolution_data)
+        no_context['activities'][0]['verification']['endFrameReview']['contextReviews'] = []
+        with self.assertRaisesRegex(ValueError, 'frame extraction differs'): review.check_artifacts(no_context)
+
+        merged_srt = self.root/'merged-source.srt'
+        merged_srt.write_text('1\n00:00:05,000 --> 00:00:09,000\n我还知道呢我要打开游戏了\n\n'
+                              '2\n00:00:48,000 --> 00:00:50,000\n今天游戏先玩到这里\n', encoding='utf-8')
+        for filler, mode in [('', 'whole_cues'), ('嗯嗯', 'leading_cue_prefix')]:
+            sentence_verdict = copy.deepcopy(verdict)
+            launch = sentence_verdict['boundaryReview']['excerptReviews'][0]
+            primary = launch['localAudioEvidence']['primary']
+            sentence_asr = self.root/f'sentence-{mode}.json'
+            sentence_asr.write_text(json.dumps({'segments': [
+                {'start': 5, 'end': 8.2, 'text': '我还知道呢'+filler},
+                {'start': 8.21, 'end': 9, 'text': '我要打开游戏了'}]}), encoding='utf-8')
+            primary.update(asrPath=str(sentence_asr), asrSha256=review.file_digest(sentence_asr))
+            provenance = self.root/f'sentence-{mode}-source.json'
+            provenance.write_text(json.dumps({k:v for k,v in primary.items() if k not in ('provenancePath','provenanceSha256')}), encoding='utf-8')
+            primary.update(provenancePath=str(provenance), provenanceSha256=review.file_digest(provenance))
+            launch['quoteSource'] = {'start': 5, 'end': 9}
+            launch['independentlyTranscribedQuote'] = {'contextIndex': 0, 'quoteSource': {'start': 8.21, 'end': 9},
+                'alignedSourceContext': {'mode': mode, 'words': '我还知道呢我要打开游戏了' if not filler else '我还知道呢',
+                    'quoteSource': {'start': 5, 'end': 9 if not filler else 8.2}}}
+            review.check_boundary_quotes(sentence_verdict, merged_srt, 60, identity)
+            launch['independentlyTranscribedQuote']['alignedSourceContext']['words'] = '没有实际听到的话'
+            with self.assertRaisesRegex(ValueError, 'sentence context differs'):
+                review.check_boundary_quotes(sentence_verdict, merged_srt, 60, identity)
+        refined_verdict = copy.deepcopy(verdict)
+        refined_launch = refined_verdict['boundaryReview']['excerptReviews'][0]
+        coarse = refined_launch['localAudioEvidence']['primary']
+        coarse_asr = self.root/'coarse-sentence.json'
+        coarse_asr.write_text(json.dumps({'segments': [{'start': .5, 'end': 7, 'text': '谢礼物我要打开游戏了'}]}), encoding='utf-8')
+        coarse.update(asrPath=str(coarse_asr), asrSha256=review.file_digest(coarse_asr))
+        coarse_source = self.root/'coarse-source.json'
+        coarse_source.write_text(json.dumps({k:v for k,v in coarse.items() if k not in ('provenancePath','provenanceSha256')}), encoding='utf-8')
+        coarse.update(provenancePath=str(coarse_source), provenanceSha256=review.file_digest(coarse_source))
+        narrow_file = self.root/'narrow-audio.mp3'; narrow_receipt_path, narrow_receipt = extraction(narrow_file, 4, 9.9)
+        narrow_asr = self.root/'narrow-asr.json'
+        narrow_asr.write_text(json.dumps({'segments': [{'start': 1, 'end': 3, 'text': '我要打开游戏了'}]}), encoding='utf-8')
+        narrow = {'version': 1, 'method': 'independent_local_asr', 'backend': 'paraformer', 'source': identity,
+            'start': 4, 'end': 9.9, 'audioPath': str(narrow_file), 'audioSha256': narrow_receipt['sha256'],
+            'receiptPath': str(narrow_receipt_path), 'receiptSha256': review.file_digest(narrow_receipt_path),
+            'asrPath': str(narrow_asr), 'asrSha256': review.file_digest(narrow_asr), 'settingsSignature': 'decoder-settings'}
+        narrow_source = self.root/'narrow-source.json'; narrow_source.write_text(json.dumps(narrow), encoding='utf-8')
+        narrow.update(provenancePath=str(narrow_source), provenanceSha256=review.file_digest(narrow_source))
+        refined_launch['localAudioEvidence']['retranscriptions'] = [narrow]
+        refined_launch['independentlyTranscribedQuote'] = {'contextIndex': 1, 'quoteSource': {'start': 5, 'end': 7},
+            'resolvedCoarseQuotes': [{'contextIndex': 0, 'quoteSource': {'start': .5, 'end': 7}}]}
+        review.check_boundary_quotes(refined_verdict, self.source_srt, 60, identity)
+        refined_launch['independentlyTranscribedQuote']['resolvedCoarseQuotes'][0]['quoteSource']['start'] = 1
+        with self.assertRaisesRegex(ValueError, 'coarse evidence'):
+            review.check_boundary_quotes(refined_verdict, self.source_srt, 60, identity)
         proposal = self.root/'copy-proposal.json'
         new_copy = {'title': '原场景探索', 'description': '查看原游戏场景。'}
         proposal.write_text(json.dumps({'text': json.dumps({**new_copy, 'reason': 'Original frames support this brief scene description'})}), encoding='utf-8')
@@ -216,6 +301,13 @@ class GameUploadTests(unittest.TestCase):
             'newCopy': new_copy, 'rejectionReason': 'No visible victory', 'phaseStart': 5, 'phaseEnd': 50,
             'frames': frames, 'proposalPath': str(proposal), 'proposalSha256': review.file_digest(proposal)}}]
         review.check_artifacts(editorial_data)
+        overlap = copy.deepcopy(editorial_data)
+        overlap['activities'][0]['chapters'].append({'start': 5, 'title': '同一阶段的另一标题', 'description': '观察同一场景。'})
+        # Same-time labels share a real phase; they do not truncate the first label's original-frame proof to zero seconds.
+        review.check_artifacts(overlap)
+        overlap['activities'][0]['chapters'].append({'start': 30, 'title': '后续阶段', 'description': '后续场景。'})
+        with self.assertRaisesRegex(ValueError, 'original frame changed or exceeds chapter'):
+            review.check_artifacts(overlap)
         altered_copy = copy.deepcopy(editorial_data)
         altered_copy['activities'][0]['chapters'][0]['title'] = 'edited after proposal'
         with self.assertRaisesRegex(ValueError, 'editorial copy differs'): review.check_artifacts(altered_copy)
@@ -237,6 +329,191 @@ class GameUploadTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, message): review.check_artifacts(changed)
         Path(excerpts[0]['localAudioEvidence']['primary']['audioPath']).write_bytes(b'changed original sound')
         with self.assertRaisesRegex(ValueError, 'differs from original recording'): review.check_artifacts(self.data)
+
+    def silent_start_fixture(self):
+        self.source_srt.write_text('1\n00:00:00,500 --> 00:00:03,000\n今天聊聊日常安排\n\n'
+                                   '2\n00:00:48,000 --> 00:00:50,000\n今天游戏先玩到这里\n', encoding='utf-8')
+        self.data['sourceSnapshot']['srtSha256'] = review.file_digest(self.source_srt)
+        identity = {k: self.data['sourceSnapshot'][k] for k in ('mediaPath', 'mediaBytes', 'mediaMtimeNs')}
+        def extraction(name, start, end=None):
+            file = self.root/name; file.write_bytes(f'original {name} {start}'.encode())
+            args = ['-y', '-ss', str(start), '-i', str(self.source)]
+            args += (['-t', str(end-start), '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'libmp3lame', '-b:a', '64k']
+                     if end is not None else ['-frames:v', '1', '-vf', 'scale=960:-2', '-q:v', '3'])
+            args.append(str(file))
+            receipt = {'version': 3, 'source': identity, 'args': args, 'sha256': review.file_digest(file)}
+            receipt['signature'] = hashlib.sha256(json.dumps({'args': args, 'source': identity},
+                ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+            receipt_path = Path(str(file)+'.complete.json'); receipt_path.write_text(json.dumps(receipt), encoding='utf-8')
+            return {'time': start, 'path': str(file), 'sha256': receipt['sha256'],
+                    'receiptPath': str(receipt_path), 'receiptSha256': review.file_digest(receipt_path)}
+        bundles = []
+        windows = [{'start': 0, 'end': 10}, {'start': 45, 'end': 60}]
+        for i, (window, segment) in enumerate(zip(windows, [
+                {'start': .5, 'end': 3, 'text': '今天聊聊日常安排'},
+                {'start': 3, 'end': 5, 'text': '今天游戏先玩到这里'}])):
+            original = extraction(f'audio-{i+1}.mp3', window['start'], window['end'])
+            asr_path = self.root/f'visual-asr-{i}.json'; asr_path.write_text(json.dumps({'segments': [segment]}), encoding='utf-8')
+            bundle = {'version': 1, 'method': 'independent_local_asr', 'backend': 'paraformer', 'source': identity,
+                **window, 'audioPath': original['path'], 'audioSha256': original['sha256'], 'receiptPath': original['receiptPath'],
+                'receiptSha256': original['receiptSha256'], 'settingsSignature': 'independent-decoder-settings',
+                'asrPath': str(asr_path), 'asrSha256': review.file_digest(asr_path)}
+            provenance = self.root/f'visual-asr-{i}-source.json'; provenance.write_text(json.dumps(bundle), encoding='utf-8')
+            bundle.update(provenancePath=str(provenance), provenanceSha256=review.file_digest(provenance)); bundles.append(bundle)
+        evidence = lambda i: {'version': 1, 'method': 'independent_local_asr', 'primary': bundles[i], 'retranscriptions': []}
+        def response(name, row, binding):
+            file = self.root/name; file.write_text(json.dumps({'text': json.dumps(row), 'requestBinding': binding}), encoding='utf-8')
+            return {'responsePath': str(file), 'responseSha256': review.file_digest(file)}
+        samples = [{**extraction(f'opening-{i}.jpg', time), 'index': index}
+                   for i, (time, index) in enumerate(zip([0, 2, 4, 5, 5.25, 6, 8], [1, 2, 3, 6, 7, 4, 5]))]
+        frames = [{'index': s['index'], 'activity': 'other' if s['time'] <= 5 else 'game',
+                   'description': 'Original unobscured chat' if s['time'] <= 5 else 'Actual live game title and character'} for s in samples]
+        context = {'decision': 'keep', 'reason': 'The full independent lead-in is unrelated discussion, then a silent launch',
+                   'windowStartsUnrelated': True, 'noEarlierSetup': True, 'noAmbiguousSetup': True, 'silentTransition': True}
+        sample_binding = [{k: s[k] for k in ('index', 'time', 'sha256')} for s in samples]
+        batches = []
+        for i, indices in enumerate([[1, 2, 3, 4, 5], [6, 7]]):
+            batch_frames = [next(f for f in frames if f['index'] == index) for index in indices]
+            batches.append({'indices': indices, **response(f'opening-frames-response-{i}.json',
+                {'reason': 'Observed original frames', 'frames': batch_frames},
+                {'version': 1, 'source': identity, 'samples': [next(s for s in sample_binding if s['index'] == index) for index in indices]})})
+        opening = {'version': 1, 'timingSource': 'original_visual_transition', 'window': windows[0], 'bracket': {'start': 4, 'end': 8},
+            'sampleSeconds': 2, 'resolutionSeconds': .25, 'start': 5, 'source': identity, 'localAudioEvidence': evidence(0),
+            'samples': samples, 'frames': frames,
+            'batches': batches,
+            'contextReview': {**context, **response('opening-context-response.json', context,
+                {'version': 1, 'source': identity, 'window': windows[0], 'localAudioEvidence': evidence(0), 'samples': sample_binding})}}
+        observations = [{'index': 1, 'timingSource': 'original_visual_transition', 'heardWords': None},
+                        {'index': 2, 'heardWords': '今天游戏先玩到这里'}]
+        excerpts = [{'decision': 'keep', 'observed': True, 'timingSource': 'original_visual_transition',
+                     'boundaryAnchor': 'before_visual_transition', 'heardWords': None, 'seconds': 5, 'reason': context['reason']},
+                    {'decision': 'keep', 'observed': True, 'timingSource': 'original_transcript_quote',
+                     'boundaryAnchor': 'after_phrase', 'heardWords': observations[1]['heardWords'], 'seconds': 5,
+                     'quoteSource': {'start': 48, 'end': 50}, 'localAudioEvidence': evidence(1),
+                     'independentlyTranscribedQuote': {'contextIndex': 0, 'quoteSource': {'start': 48, 'end': 50}}}]
+        original_frames = [{**extraction(f'frame-{i+1}.jpg', time), 'index': i+1} for i, time in enumerate([8, 48])]
+        closing = [{**extraction(f'closing-{i}.jpg', time), 'index': i+1} for i, time in enumerate([50, 52, 54, 56])]
+        verdict = {'decision': 'keep', 'publicCopySupported': True, 'version': 4, 'protocolVersion': 12,
+            'evidenceMethod': 'independent_local_asr', 'evidenceDirectory': str(self.root), 'start': 5, 'end': 50,
+            'audioObservations': observations, 'audioWindows': windows, 'frameTimes': [8, 48], 'originalFrameEvidence': original_frames,
+            'frameObservations': [{'index': i+1, 'activity': 'gameplay', 'description': 'Actual live gameplay'} for i in range(2)],
+            'boundaryReview': {'version': 1, 'decision': 'keep', 'timeBasis': 'audio_local_seconds', 'startObserved': True,
+                'endObserved': True, 'start': 5, 'end': 50, 'spokenEnd': 50, 'audioObservations': observations, 'excerptReviews': excerpts},
+            'startFrameReview': opening,
+            'endFrameReview': {'version': 1, 'spokenEnd': 50, 'scanEnd': 56, 'sampleSeconds': 2, 'resolutionSeconds': .25,
+                'end': 50, 'reason': 'Original closing is unrelated chat', 'samples': closing,
+                'frames': [{'index': i+1, 'activity': 'other', 'description': 'Unobscured chat'} for i in range(4)]}}
+        self.data['activities'][0]['verification'] = verdict
+        return verdict
+
+    def test_protocol12_silent_start_recomputes_original_visual_cut_and_keeps_spoken_end(self):
+        verdict = self.silent_start_fixture()
+        self.assertIsNone(verdict['audioObservations'][0]['heardWords'])
+        review.check_artifacts(self.data)
+        self.save(); self.approve(); review.validate_game_review(self.data)
+        verdict = self.data['activities'][0]['verification']
+        verdict['boundaryReview']['excerptReviews'][1]['heardWords'] = '没有听到的结束语'
+        with self.assertRaisesRegex(ValueError, 'differs from audio observation'):
+            review.check_artifacts(self.data)
+
+    def test_protocol13_retains_original_possible_setup_before_game_pixels(self):
+        verdict = self.silent_start_fixture()
+        opening = verdict['startFrameReview']; context = opening['contextReview']
+        row = review.read_independent_audio(opening['localAudioEvidence']['primary'], self.data['sourceSnapshot'])[0]
+        parsed = {'decision': 'keep', 'reason': 'Retain all possible preparation; excluded earlier context is unrelated',
+            'windowStartsUnrelated': True, 'earlierContextClosed': True, 'allPossibleSetupRetained': True,
+            'ownGameTransition': True, 'retainedContentAllowed': True,
+            'retainedLeadIn': {'transcriptIndex': 1, **row}}
+        original = json.loads(Path(context['responsePath']).read_text(encoding='utf-8'))
+        original['text'] = json.dumps(parsed)
+        Path(context['responsePath']).write_text(json.dumps(original), encoding='utf-8')
+        opening['contextReview'] = {**parsed, 'responsePath': context['responsePath'], 'responseSha256': review.file_digest(context['responsePath'])}
+        opening.update(version=2, timingSource='original_visual_context', start=row['start'])
+        verdict.update(protocolVersion=13, start=row['start'])
+        excerpt = verdict['boundaryReview']['excerptReviews'][0]
+        excerpt.update(timingSource='original_visual_context', boundaryAnchor='before_retained_context', seconds=row['start'])
+        verdict['audioObservations'][0]['timingSource'] = 'original_visual_context'
+        self.assertEqual(review.check_visual_start(verdict, opening['window'], excerpt, 60, self.data['sourceSnapshot']), row['start'])
+        opening['contextReview']['retainedLeadIn']['start'] += 1
+        with self.assertRaises(ValueError):
+            review.check_visual_start(verdict, opening['window'], excerpt, 60, self.data['sourceSnapshot'])
+
+    def test_protocol12_visual_start_rejects_metadata_or_original_evidence_tampering(self):
+        self.silent_start_fixture()
+        original = copy.deepcopy(self.data)
+        for name, mutate in [
+            ('old protocol', lambda v: v.update(protocolVersion=11)),
+            ('fake speech', lambda v: v['boundaryReview']['excerptReviews'][0].update(heardWords='我开始游戏了')),
+            ('fake quote clock', lambda v: v['boundaryReview']['excerptReviews'][0].update(quoteSource={'start': 5, 'end': 6})),
+            ('fake audio observation', lambda v: v['audioObservations'][0].update(heardWords='我开始游戏了')),
+            ('changed cut', lambda v: v['startFrameReview'].update(start=5.25)),
+            ('changed visual clock', lambda v: v['boundaryReview']['excerptReviews'][0].update(seconds=4)),
+            ('changed image time', lambda v: v['startFrameReview']['samples'][2].update(time=4.5)),
+            ('changed image hash', lambda v: v['startFrameReview']['samples'][2].update(sha256='changed')),
+            ('changed extraction receipt', lambda v: v['startFrameReview']['samples'][2].update(receiptSha256='changed')),
+            ('changed source', lambda v: v['startFrameReview']['source'].update(mediaBytes='123')),
+            ('missing full lead-in', lambda v: v['startFrameReview']['localAudioEvidence']['primary'].update(start=1)),
+            ('unchecked frame', lambda v: v['startFrameReview'].update(batches=[])),
+            ('image batch over eight', lambda v: v['startFrameReview']['batches'][0].update(indices=[1]*9)),
+            ('more than 64 samples', lambda v: v['startFrameReview'].update(
+                samples=v['startFrameReview']['samples']*10, frames=v['startFrameReview']['frames']*10)),
+            ('image after bracket', lambda v: v['startFrameReview']['bracket'].update(end=6)),
+            ('missing bracket endpoint', lambda v: v['startFrameReview']['bracket'].update(end=9)),
+            ('duplicate batch', lambda v: v['startFrameReview']['batches'].append(copy.deepcopy(v['startFrameReview']['batches'][0]))),
+            ('changed frame description', lambda v: v['startFrameReview']['frames'][2].update(description='Unsupported later claim')),
+            ('changed context verdict', lambda v: v['startFrameReview']['contextReview'].update(reason='A replaced decision')),
+            ('missing overall visual coverage', lambda v: self.data['visualTimeline'].update(status='uncertain')),
+        ]:
+            with self.subTest(name=name):
+                self.data = copy.deepcopy(original); mutate(self.data['activities'][0]['verification'])
+                with self.assertRaises(ValueError): review.check_artifacts(self.data)
+        self.data = copy.deepcopy(original)
+        Path(self.data['activities'][0]['verification']['startFrameReview']['contextReview']['responsePath']).write_text('changed response', encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'response changed'): review.check_artifacts(self.data)
+
+    def test_protocol12_visual_start_requires_unambiguous_earlier_context_and_dense_transition(self):
+        for field in ['windowStartsUnrelated', 'noEarlierSetup', 'noAmbiguousSetup', 'silentTransition']:
+            with self.subTest(field=field):
+                verdict = self.silent_start_fixture(); context = verdict['startFrameReview']['contextReview']
+                context[field] = False
+                path = Path(context['responsePath'])
+                raw = json.loads(path.read_text(encoding='utf-8')); parsed = json.loads(raw['text']); parsed[field] = False
+                raw['text'] = json.dumps(parsed); path.write_text(json.dumps(raw), encoding='utf-8')
+                context['responseSha256'] = review.file_digest(path)
+                with self.assertRaisesRegex(ValueError, 'unresolved earlier setup'): review.check_artifacts(self.data)
+        for name, mutate in [
+            ('unknown', lambda r: r['frames'][2].update(activity='uncertain')),
+            ('black', lambda r: r['frames'][2].update(activity='black')),
+            ('already playing', lambda r: r['frames'][0].update(activity='game')),
+            ('earlier game', lambda r: r['frames'][1].update(activity='game')),
+            ('later hidden transition', lambda r: r['frames'][-1].update(activity='other')),
+            ('coarse final gap', lambda r: r['frames'][3].update(activity='game')),
+            ('unobserved bracket', lambda r: r['bracket'].update(start=3)),
+        ]:
+            with self.subTest(name=name):
+                verdict = self.silent_start_fixture(); opening = verdict['startFrameReview']; mutate(opening)
+                for batch in opening['batches']:
+                    path = Path(batch['responsePath']); raw = json.loads(path.read_text(encoding='utf-8'))
+                    raw['text'] = json.dumps({'reason': 'Original model assessment',
+                        'frames': [next(f for f in opening['frames'] if f['index'] == index) for index in batch['indices']]})
+                    path.write_text(json.dumps(raw), encoding='utf-8'); batch['responseSha256'] = review.file_digest(path)
+                with self.assertRaises(ValueError): review.check_artifacts(self.data)
+
+    def test_protocol12_visual_start_binds_review_to_its_actual_request_inputs(self):
+        for target, alter in [
+            ('context', lambda b: b['window'].update(start=1)),
+            ('context', lambda b: b['localAudioEvidence']['primary'].update(asrSha256='other-transcription')),
+            ('context', lambda b: b['samples'][0].update(sha256='other-frame')),
+            ('batch', lambda b: b['source'].update(mediaBytes='other-recording')),
+            ('batch', lambda b: b['samples'][0].update(time=1)),
+        ]:
+            with self.subTest(target=target):
+                verdict = self.silent_start_fixture(); opening = verdict['startFrameReview']
+                saved = opening['contextReview'] if target == 'context' else opening['batches'][0]
+                path = Path(saved['responsePath']); raw = json.loads(path.read_text(encoding='utf-8'))
+                alter(raw['requestBinding']); path.write_text(json.dumps(raw), encoding='utf-8')
+                saved['responseSha256'] = review.file_digest(path)
+                with self.assertRaisesRegex(ValueError, 'request binding changed'): review.check_artifacts(self.data)
 
     def test_subtitles_wait_for_cids_then_submit_once_per_correct_page(self):
         self.approve()

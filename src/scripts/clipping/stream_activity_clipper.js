@@ -19,6 +19,7 @@ const planTools = require('./stream_activity_plan');
 const presentationTools = require('./stream_activity_presentation');
 const { verifyActivity } = require('./stream_activity_verification');
 const { prepareActivityTranscript } = require('./stream_activity_transcript');
+const stages = require('../workflow-runtime').loadWorkflow('clipping/activityStages');
 const execFileAsync = promisify(execFile);
 
 async function readAudience(xmlPath) {
@@ -57,7 +58,10 @@ function acquire(file) {
 }
 function sameSource(source, snapshot) { return JSON.stringify(source) === JSON.stringify(snapshot); }
 function planDigest(plan) { return planTools.sha({ events: plan.events, parts: plan.parts, coverage: plan.coverage,
-    rejectedActivities: plan.rejectedActivities || [] }); }
+    rejectedActivities: plan.rejectedActivities || [], ...(plan.calibratedKinds ? { calibratedKinds: plan.calibratedKinds, rawEvents: plan.rawEvents } : {}),
+    ...(plan.verificationSignature ? { verificationSignature: plan.verificationSignature, verificationSettings: plan.verificationSettings,
+        boundaryBudget: plan.boundaryBudget, verifierRevisions: plan.verifierRevisions } : {}),
+    ...(plan.timingSignature ? { timingSignature: plan.timingSignature, timingRevisions: plan.timingRevisions } : {}) }); }
 
 async function detectActivities(options, config, source, info, files) {
     if (config.detectionMode === 'summary' && !options.scan) {
@@ -67,8 +71,12 @@ async function detectActivities(options, config, source, info, files) {
     let transcript;
     try { transcript = await (options.prepareTranscript || prepareActivityTranscript)({ source, root: options.config, directory: files.directory, duration }); }
     catch (error) {
-        const failed = { type: 'sui_stream_activity_plan', status: 'failed', ...info, source, duration, events: [],
-            sessionId: planTools.sha(source), coverage: { status: 'incomplete', duration, windows: [] }, error: error.message };
+        const previous = fs.existsSync(files.plan) ? JSON.parse(fs.readFileSync(files.plan, 'utf8')) : null;
+        if (previous && previous.contentSha256 !== planDigest(previous)) throw new Error('Activity plan changed outside the reviewed workflow');
+        const failed = previous && sameSource(previous.source, source)
+            ? { ...previous, calibratedKinds: stages.calibratedKinds(previous), status: 'failed', error: error.message }
+            : { type: 'sui_stream_activity_plan', status: 'failed', ...info, source, duration, events: [],
+                sessionId: planTools.sha(source), coverage: { status: 'incomplete', duration, windows: [] }, error: error.message };
         failed.contentSha256 = planDigest(failed);
         writeJsonAtomic(files.plan, failed); writeJsonAtomic(files.songs, planTools.songRecord(failed)); throw error;
     }
@@ -80,22 +88,28 @@ async function detectActivities(options, config, source, info, files) {
             verification: config.verification, verificationModel: rootVerificationModel(options.config, config) },
         parts: { songsEnabled: config.songs.enabled, songPadding: config.songs.paddingSeconds, watchEnabled: config.watch.enabled,
             target: config.watch.targetPartSeconds, max: config.watch.maxPartSeconds } });
+    let previous;
+    const selected = stages.activityKinds(options.kind).filter(kind => config[kind].enabled);
     if (fs.existsSync(files.plan)) {
         const old = JSON.parse(fs.readFileSync(files.plan, 'utf8'));
-        if (old.signature === signature && ['planned', 'rendered'].includes(old.status) && sameSource(old.source, source)) {
+        if (old.uploadManifestPath && old.signature !== signature) throw new Error('Rendered activity plan parameters changed; use an explicit reviewed revision');
+        if (old.signature === signature && sameSource(old.source, source)) {
             if (old.contentSha256 !== planDigest(old)) throw new Error('Activity plan changed outside the reviewed workflow');
-            return old;
+            if (!stages.pendingKinds(old, selected).length) return old;
+            if (old.rawEvents) previous = old;
         }
     }
-    const coverage = { status: 'incomplete', duration, windows: [] };
-    const diagnostics = { requests: [] };
-    const plan = { version: planTools.VERSION, type: 'sui_stream_activity_plan', status: 'detecting', signature,
-        sessionId: planTools.sha(source), ...info, source, transcript, duration, events: [], coverage, diagnostics };
+    const coverage = previous?.coverage || { status: 'incomplete', duration, windows: [] };
+    const diagnostics = previous?.diagnostics || { requests: [] };
+    const plan = previous || { version: planTools.VERSION, type: 'sui_stream_activity_plan', status: 'detecting', signature,
+        sessionId: planTools.sha(source), ...info, source, transcript, duration, events: [], rawEvents: [], calibratedKinds: [], coverage, diagnostics };
+    const pending = stages.pendingKinds(plan, selected);
     const save = () => { plan.contentSha256 = planDigest(plan); writeJsonAtomic(files.plan, plan); writeJsonAtomic(files.songs, planTools.songRecord(plan)); };
     save();
-    const events = [];
+    const events = plan.rawEvents || [];
     try {
         for (const window of windows) {
+            if (coverage.windows.some(row => row.start === window.start && row.end === window.end && row.status === 'inspected')) continue;
             const initialPrompt = planTools.detectionPrompt(window, info);
             let prompt = initialPrompt, parsedEvents;
             const validate = result => { try { planTools.parseEvents(result, window, duration); return true; } catch { return false; } };
@@ -119,19 +133,26 @@ async function detectActivities(options, config, source, info, files) {
             }
             events.push(...parsedEvents);
             coverage.windows.push({ start: window.start, end: window.end, status: 'inspected', evidenceRows: window.rows.length });
-            plan.events = planTools.mergeEvents(events); save();
+            plan.rawEvents = events; save();
         }
         if (!sameSource(sourceSnapshot({ source: { mediaPath: options.mediaPath, srtPath: options.srtPath, xmlPath: options.xmlPath } }), source)) throw new Error('Activity source changed during detection');
-        plan.events = planTools.mergeEvents(events);
-        plan.status = 'verifying'; plan.rejectedActivities = []; save();
+        plan.rawEvents = planTools.mergeEvents(events);
+        plan.status = 'verifying'; plan.rejectedActivities ||= []; save();
         const verifiedEvents = [];
-        for (const event of plan.events) {
+        const rejected = [];
+        if (!options.verify && config.verification.evidenceMethod === 'independent_local_asr') {
+            const checked = await require('./stream_activity_boundaries').calibrateBoundaries(stages.selectEvents(plan.rawEvents, pending),
+                { config, root: options.config, source, info, directory: files.directory, rows, duration, diagnostics,
+                    request: options.boundaryRequest, extract: options.extractBoundary, localDecode: options.localDecode });
+            verifiedEvents.push(...checked.events); rejected.push(...checked.rejected);
+        } else for (const event of stages.selectEvents(plan.rawEvents, pending)) {
             const verified = await (options.verify || verifyActivity)(event, { root: options.config, config, source, info,
                 directory: files.directory, rows, duration, diagnostics });
-            if (verified.decision === 'exclude') plan.rejectedActivities.push({ ...event, verification: verified });
-            else verifiedEvents.push(...verified.events);
+            if (verified.decision === 'exclude') rejected.push({ ...event, verification: verified });
+            else verifiedEvents.push(...verified.events.map(row => ({ ...row, id: event.id })));
         }
-        plan.events = planTools.mergeEvents(verifiedEvents);
+        plan.events = planTools.mergeEvents(stages.combineEvents(plan.events, verifiedEvents, pending), true);
+        plan.rejectedActivities = stages.combineEvents(plan.rejectedActivities, rejected, pending);
         if (!sameSource(sourceSnapshot({ source: { mediaPath: options.mediaPath, srtPath: options.srtPath, xmlPath: options.xmlPath } }), source)) throw new Error('Activity source changed during media verification');
         if (fileDigest(transcript.path) !== transcript.sha256) throw new Error('Activity transcript changed during verification');
         // Conflicting simultaneous activities must be reviewed, never silently dropped.
@@ -139,7 +160,10 @@ async function detectActivities(options, config, source, info, files) {
             const a = plan.events[i - 1], b = plan.events[i];
             if (a.end > b.start) { a.reviewIssues.push('overlapping_activity'); b.reviewIssues.push('overlapping_activity'); }
         }
-        plan.parts = planTools.buildParts(plan.events, duration, config);
+        const parts = planTools.buildParts(plan.events, duration, config);
+        plan.parts ||= { songs: [], watch: [] };
+        for (const kind of pending) plan.parts[kind] = parts[kind];
+        plan.calibratedKinds = stages.completeKinds(plan, pending); delete plan.error;
         plan.status = 'planned'; coverage.status = 'complete'; plan.finishedAt = new Date().toISOString(); save();
         return plan;
     } catch (error) { plan.status = 'failed'; plan.error = error.message; save(); throw error; }
@@ -161,22 +185,41 @@ function reviewText(plan, metadata, files) {
     for (const event of plan.events) lines.push(`- ${event.kind === 'song' ? '演唱' : '视听'} ${event.start.toFixed(2)}–${event.end.toFixed(2)}: ${event.name || '标题待确认'}${event.reviewIssues.length ? `；待核 ${event.reviewIssues.join(', ')}` : ''}`);
     for (const row of metadata) lines.push('', `## ${row.kind === 'songs' ? '歌切' : '同步视听'}：一个投稿，${row.output.parts.length} P`,
         `投稿标题: ${row.upload.prefix}${row.copy.title}`, `栏目封面: ${row.output.coverPath}`,
+        `状态: ${activitySubmissionStatus(row, plan)}`,
         `元数据: ${row.output.metadataPath}`, `专用合集: season=${row.upload.collectionSeasonId || '未配置'} section=${row.upload.collectionSectionId || '未配置'}`,
         ...row.output.parts.map((part, i) => `- P${i + 1} ${part.title} (${part.duration.toFixed(2)} 秒): ${part.mediaPath}`),
-        '', `审核命令: npm run activity:clips -- approve --metadata "${row.output.metadataPath}" --note "已检查完整演唱/观看边界、演唱者及标题"`,
+        ...(row.activityReview?.issues || []).map(issue => `待核: ${issue}`),
+        '', row.activities.length && row.activityReview?.status !== 'approved' ? `审核命令: npm run activity:clips -- approve --metadata "${row.output.metadataPath}" --note "已检查完整演唱/观看边界、演唱者及标题"`
+            : row.activities.length ? '最终审核已通过，投稿状态以注册表为准。'
+            : `已排除：${row.activityReview.reason}；上列视频仅为保留的旧版本，不可上传。`,
         '审核后可用上传短 ID 加入已有单实例投稿队列；本场每类只占一个投稿名额。');
     return lines.join('\n') + '\n';
 }
 
+function activitySubmissionStatus(row, plan) {
+    const index = plan.manifestClips?.find(clip => clip.metadataPath === row.output.metadataPath)?.reviewIndex;
+    const status = plan.uploadRegistry?.clipStatusByReviewIndex?.[String(index)];
+    if (status === 'uploaded') return '已投稿';
+    if (['queued', 'uploading'].includes(status)) return '已排队投稿';
+    const receipt = plan.automaticPublication?.results?.find(result => result.kind === row.kind);
+    if (receipt?.status === 'unknown') return `入队结果待确认：${receipt.reason}`;
+    if (receipt?.status === 'blocked') return `待入队：${receipt.reason}`;
+    return row.activityReview?.status === 'approved' ? '审核通过，待入队' : '待人工复核';
+}
+
 async function register(manifestPath, options = {}) {
     const result = await execFileAsync(options.pythonPath || 'python', [path.resolve(__dirname, '../clip_upload_registry.py'),
-        'import-json', '--manifest', manifestPath, '--include-pending'], { windowsHide: true, shell: false, timeout: 120000, maxBuffer: 1024 * 1024 });
+        'import-json', '--manifest', manifestPath, '--include-pending'], { windowsHide: true, shell: false, timeout: 120000, maxBuffer: 1024 * 1024,
+            encoding: 'utf8', env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
     console.log(result.stdout.trim());
     return result.stdout;
 }
 async function refreshPresentation(row, plan, root, options = {}) {
     const titleEvidence = options.titleEvidence || row.presentation?.titleEvidence || null;
-    if (titleEvidence && fileDigest(titleEvidence.framePath) !== titleEvidence.frameSha256) throw new Error('Reviewed activity title frame changed');
+    for (const item of require('../workflow-runtime').loadWorkflow('clipping/activityTitles').titleItems(titleEvidence)) {
+        if (item.method === 'source_frame_reading' && fileDigest(item.framePath) !== item.frameSha256
+            || item.method === 'source_transcript_reading' && fileDigest(item.transcriptPath) !== item.transcriptSha256) throw new Error('Reviewed activity title evidence changed');
+    }
     const presentation = presentationTools.presentationFor(plan, row.kind, row.output.parts, titleEvidence);
     if (row.presentation?.version === presentation.version && row.presentation?.signature === presentation.signature) return row;
     if (row.activityReview?.status === 'approved') throw new Error('Approved activity presentation requires an explicit reviewed revision');
@@ -185,6 +228,7 @@ async function refreshPresentation(row, plan, root, options = {}) {
     return { ...row, copy: presentation.copy, upload: { ...row.upload, prefix: presentation.profile.prefix },
         output: { ...row.output, parts: presentation.parts, coverPath }, coverSha256: fileDigest(coverPath),
         presentation: { version: presentation.version, style: presentation.profile.style, signature: presentation.signature,
+            titleFormat: row.kind === 'songs' ? 'song_name_recording_date' : 'work_name_recording_date', recordingDate: presentation.recordingDate,
             ...(titleEvidence ? { titleEvidence } : {}) },
         uploadReady: false, activityReview: { version: 1, status: 'pending', checks: ['host_performance_or_actual_viewing', 'complete_boundaries', 'part_titles', 'public_copy', 'column_cover'] } };
 }
@@ -214,6 +258,13 @@ async function restyleStreamActivities(options = {}) {
             options = { ...options, titleEvidence: { name: String(options.contentName).trim(),
                 activityId: selected[0].activities[0].id, framePath, frameSha256: fileDigest(framePath),
                 method: 'source_frame_reading', note: options.evidenceNote } };
+        }
+        if (options.titleEvidencePath) {
+            if (options.contentName || selected.length !== 1 || fileDigest(plan.transcript.path) !== plan.transcript.sha256) throw new Error('Transcript title review requires one unchanged source submission');
+            const requested = JSON.parse(fs.readFileSync(options.titleEvidencePath, 'utf8'));
+            const transcriptRows = asr.parseSrt(plan.transcript.path).segments.map((row, index) => ({ index: index + 1, ...row }));
+            options = { ...options, titleEvidence: require('../workflow-runtime').loadWorkflow('clipping/activityTitles')
+                .bindTranscriptTitles(requested.items, selected[0].activities, transcriptRows, plan.transcript) };
         }
         const registryPath = path.resolve(__dirname, '../../../data/runtime/clip_upload_registry.json');
         const registry = fs.existsSync(registryPath) ? JSON.parse(fs.readFileSync(registryPath, 'utf8')) : { clips: {} };
@@ -245,30 +296,130 @@ async function restyleStreamActivities(options = {}) {
     } finally { release(); }
 }
 async function generateStreamActivities(options = {}) {
+    const selected = stages.activityKinds(options.kind);
     const root = options.config || loader.getConfig();
     const info = recordingInfo(options.mediaPath, options.context);
     if (!planTools.activityEnabled(root, info.roomId)) return { status: 'disabled' };
     options = { ...options, config: root };
     const config = planTools.getActivityConfig(root), files = pathsFor(options.mediaPath, root, config);
+    const publication = root.streamActivityClips?.automaticPublication?.mode === 'auto'
+        ? require('../workflow-runtime').loadWorkflow('clipping/activityPublication') : null;
+    const publicationActive = publication?.activityPublicationEnabled(root, info.roomId) && !options.scan
+        && !options.retryBoundaries && config.detectionMode === 'summary';
+    if (options.retryPublication && (!publicationActive || options.planOnly || options.scan || options.retryBoundaries
+        || options.repairTiming || !String(options.revisionNote || '').trim())) {
+        throw new Error('Publication retry requires enabled automatic publication and a substantive --revision-note; it cannot redetect or rebuild');
+    }
+    if (options.repairTiming && (options.kind || options.scan || options.retryBoundaries || options.planOnly
+        || !options.transcriptRecordPath || !String(options.revisionNote || '').trim() || config.detectionMode !== 'summary')) {
+        throw new Error('Timing repair requires run for both kinds, --transcript-record and a substantive --revision-note');
+    }
+    if (options.transcriptRecordPath && !options.repairTiming && !fs.existsSync(files.plan)) throw new Error('A supplied timing repair requires an existing pending plan');
+    if (options.retryBoundaries && (!options.kind || options.scan || options.planOnly || config.detectionMode !== 'summary')) {
+        throw new Error('Boundary retry requires run --kind songs|watch in summary mode');
+    }
+    if (options.reviseVerifier && (!options.retryBoundaries || !String(options.revisionNote || '').trim())) {
+        throw new Error('Verifier revision requires --retry-boundaries and a substantive --revision-note');
+    }
+    if (options.reviewPrelude && (!options.retryBoundaries || options.kind !== 'songs' || config.verification.evidenceMethod !== 'independent_local_asr')) {
+        throw new Error('Prelude review requires a pending song boundary retry using independent local audio');
+    }
     const release = acquire(files.lock);
     let scheduler;
     try {
+        return await require('../workflow-runtime').loadWorkflow('ai/usage').runClipUsage({
+            kind: options.kind || 'activities', directory: files.directory, mediaPath: options.mediaPath, recording: info,
+            webhookUrl: root.wechatWork?.webhookUrl, notifyEnabled: root.streamActivityClips?.notify?.enabled !== false,
+            sendMarkdown: options.notifyUsage || require('../wechat_work_markdown').sendWeChatMarkdown,
+            io: options.usageIO
+        }, async () => {
         const source = sourceSnapshot({ source: { mediaPath: options.mediaPath, srtPath: options.srtPath, xmlPath: options.xmlPath } });
-        const plan = await detectActivities(options, config, source, info, files);
+        if (options.retryPublication && !fs.existsSync(files.plan)) throw new Error('Publication retry requires an existing rendered plan');
+        if (options.repairTiming && !fs.existsSync(files.plan)) throw new Error('Timing revision requires an existing pending plan');
+        if (options.retryBoundaries && !fs.existsSync(files.plan)) throw new Error('Boundary retry requires an existing pending plan');
+        if (fs.existsSync(files.plan)) {
+            const previous = JSON.parse(fs.readFileSync(files.plan, 'utf8'));
+            if (previous.contentSha256 !== planDigest(previous)) throw new Error('Activity plan changed outside the reviewed workflow');
+            if (options.retryPublication && (!previous.uploadManifestPath || previous.status !== 'rendered')) throw new Error('Publication retry requires an existing rendered submission');
+            if (options.retryBoundaries && !previous.uploadManifestPath) throw new Error('Boundary retry requires an existing pending submission');
+            if (previous.uploadManifestPath) {
+                if (!sameSource(previous.source, source)) throw new Error('Activity source changed after rendering; use an explicit reviewed revision');
+                const manifest = JSON.parse(fs.readFileSync(previous.uploadManifestPath, 'utf8'));
+                for (const clip of manifest.clips) {
+                    const row = JSON.parse(fs.readFileSync(clip.metadataPath, 'utf8'));
+                    if (row.planSignature !== previous.signature || !sameSource(row.sourceSnapshot, source)) {
+                        throw new Error('Existing activity submission differs from its plan or source');
+                    }
+                }
+                if (options.retryPublication) {
+                    const registry = options.readRegistry ? options.readRegistry()
+                        : JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../../data/runtime/clip_upload_registry.json'), 'utf8'));
+                    const rows = manifest.clips.map(clip => JSON.parse(fs.readFileSync(clip.metadataPath, 'utf8'))).filter(row => selected.includes(row.kind));
+                    if (!rows.length) throw new Error('Publication retry has no pending submission for the selected kind');
+                    for (const row of rows) publication.assertActivityPublicationRetry(row, Object.values(registry.clips).find(clip => clip.metadataPath
+                        && path.resolve(clip.metadataPath).toLowerCase() === path.resolve(row.output.metadataPath).toLowerCase()));
+                    const id = crypto.randomUUID(), backupDirectory = path.join(files.directory, 'temp', 'publication-retries', id);
+                    fs.mkdirSync(backupDirectory, { recursive: true });
+                    for (const row of rows) fs.copyFileSync(row.output.metadataPath, path.join(backupDirectory, `${row.kind}.json`));
+                    options.publicationRetryPlan = { ...previous, publicationRetries: [...(previous.publicationRetries || []),
+                        { id, note: options.revisionNote, kinds: selected, backupDirectory, startedAt: new Date().toISOString() }] };
+                }
+                if (options.retryBoundaries || options.repairTiming) {
+                    const candidates = options.retryBoundaries ? stages.retryBoundaryEvents(previous.rawEvents || [], previous.events, selected, previous.rejectedActivities || []) : [];
+                    if (options.retryBoundaries && !options.reviseVerifier && (previous.efficiency?.boundaryRequests || 0) >= (previous.boundaryBudget?.limit || config.verification.maxBatchRequests)) throw new Error('Per-stream AI budget reached; boundary retry is refused');
+                    const registryPath = path.resolve(__dirname, '../../../data/runtime/clip_upload_registry.json');
+                    const registry = options.readRegistry ? options.readRegistry()
+                        : fs.existsSync(registryPath) ? JSON.parse(fs.readFileSync(registryPath, 'utf8')) : { clips: {} };
+                    const selectedRows = manifest.clips.map(clip => JSON.parse(fs.readFileSync(clip.metadataPath, 'utf8'))).filter(row => selected.includes(row.kind));
+                    if (!selectedRows.length) throw new Error('Boundary retry has no pending submission for the selected kind');
+                    for (const row of selectedRows) {
+                        const registered = Object.values(registry.clips).find(clip => clip.metadataPath
+                            && path.resolve(clip.metadataPath).toLowerCase() === path.resolve(row.output.metadataPath).toLowerCase());
+                        stages.assertPendingBoundaryRetry(row, registered);
+                        for (const part of row.output.parts) if (fs.statSync(part.mediaPath).size !== part.bytes || fileDigest(part.mediaPath) !== part.sha256) throw new Error('Activity video changed before boundary retry');
+                        if (fileDigest(row.output.coverPath) !== row.coverSha256) throw new Error('Activity cover changed before boundary retry');
+                    }
+                    const id = crypto.randomUUID(), backupDirectory = path.join(files.directory, 'temp', 'boundary-revisions', id);
+                    fs.mkdirSync(backupDirectory, { recursive: true });
+                    for (const file of [files.plan, files.songs, files.review, previous.uploadManifestPath]) {
+                        if (fs.existsSync(file)) fs.copyFileSync(file, path.join(backupDirectory, path.basename(file)));
+                    }
+                    fs.mkdirSync(path.join(backupDirectory, 'submissions'));
+                    for (const row of selectedRows) fs.copyFileSync(row.output.metadataPath, path.join(backupDirectory, 'submissions', `${row.kind}.json`));
+                    if (options.repairTiming) options.timingRevision = { id, note: options.revisionNote, backupDirectory, startedAt: new Date().toISOString() };
+                    else options.boundaryRetry = { id, kind: options.kind, eventIds: candidates.map(event => event.id), backupDirectory, startedAt: new Date().toISOString() };
+                }
+            }
+        }
+        const plan = options.publicationRetryPlan || await detectActivities(options, config, source, info, files);
         if (options.planOnly) return { status: plan.status, planPath: files.plan, songsPath: files.songs };
-        const runDirectory = path.join(files.directory, plan.signature.slice(0, 16));
+        const runDirectory = plan.timingSignature ? path.dirname(plan.uploadManifestPath) : path.join(files.directory, plan.signature.slice(0, 16));
         fs.mkdirSync(runDirectory, { recursive: true });
+        const manifestPath = path.join(runDirectory, 'UPLOAD_MANIFEST.json');
+        const previousClips = fs.existsSync(manifestPath) ? JSON.parse(fs.readFileSync(manifestPath, 'utf8')).clips : [];
         scheduler = (options.scheduler || createClipResourceAdaptiveScheduler)({ ownConfig: root.ownStreamClips || {}, rootConfig: root });
-        const metadata = [];
-        for (const kind of ['songs', 'watch']) {
-            if (!plan.parts[kind].length) continue;
+        let metadata = [];
+        for (const kind of selected) {
             const metadataPath = path.join(runDirectory, `${kind}.json`);
+            if (!plan.parts[kind].length) {
+                if ((plan.boundaryRetry?.kind === kind || plan.timingRevision) && fs.existsSync(metadataPath)) {
+                    const old = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+                    stages.assertPendingBoundaryRetry(old);
+                    const excluded = { ...old, activities: [], uploadReady: false,
+                        activityReview: { version: 1, status: 'pending', reason: 'All activities excluded by boundary verification' } };
+                    writeJsonAtomic(metadataPath, excluded); metadata.push(excluded);
+                }
+                continue;
+            }
+            const events = plan.events.filter(e => e.kind === (kind === 'songs' ? 'song' : 'watch'));
             // An unchanged finished bundle is retained, including its review and publication state.
             if (fs.existsSync(metadataPath)) {
                 let old = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
-                if (old.planSignature === plan.signature && old.output.parts.every(p => fs.existsSync(p.mediaPath)
+                if (old.planSignature === plan.signature && stages.samePlannedParts(plan.parts[kind], old.output.parts)
+                    && JSON.stringify(old.activities) === JSON.stringify(events) && old.output.parts.every(p => fs.existsSync(p.mediaPath)
                     && fs.statSync(p.mediaPath).size === p.bytes && fileDigest(p.mediaPath) === p.sha256)
                     && fs.existsSync(old.output.coverPath) && fileDigest(old.output.coverPath) === old.coverSha256) {
+                    if (options.retryPublication) { metadata.push(old); continue; }
                     if (old.activityReview?.status !== 'approved') {
                         old = await refreshPresentation(old, plan, root, options);
                         const route = config[kind].collection || {};
@@ -278,27 +429,33 @@ async function generateStreamActivities(options = {}) {
                     }
                     metadata.push(old); continue;
                 }
+                if (options.retryPublication) throw new Error('Publication retry artifacts changed; an explicit reviewed revision is required');
                 if (old.activityReview?.status === 'approved') throw new Error('Reviewed activity artifacts changed; create a reviewed revision before rebuilding');
             }
+            // Preserve provisional videos and covers; only the pending metadata keeps its ID/path.
+            const mediaDirectory = plan.timingRevision ? path.join(runDirectory, 'timing-revisions', plan.timingRevision.id) : plan.boundaryRetry?.kind === kind
+                ? path.join(runDirectory, 'boundary-revisions', plan.boundaryRetry.id) : runDirectory;
+            fs.mkdirSync(mediaDirectory, { recursive: true });
             const parts = [];
             for (const [index, part] of plan.parts[kind].entries()) {
-                const outputPath = path.join(runDirectory, `${kind}_P${String(index + 1).padStart(3, '0')}.mp4`);
+                const outputPath = path.join(mediaDirectory, `${kind}_P${String(index + 1).padStart(3, '0')}.mp4`);
                 const lease = await scheduler.acquire();
                 try { parts.push(await (options.renderPart || media.renderActivityPart)(options.mediaPath, part, outputPath, root, lease.profile)); }
                 finally { lease.release(); }
             }
             const presentation = presentationTools.presentationFor(plan, kind, parts);
-            const coverPath = presentationTools.coverPathFor(metadataPath, presentation);
+            const coverPath = presentationTools.coverPathFor(path.join(mediaDirectory, `${kind}.json`), presentation);
             const lease = await scheduler.acquire();
             try { await (options.cover || media.activityCover)(parts[0], coverPath, root, presentation.cover); } finally { lease.release(); }
-            const events = plan.events.filter(e => e.kind === (kind === 'songs' ? 'song' : 'watch'));
             const collection = config[kind].collection || {};
-            const row = { version: 1, type: 'stream_activity_submission', kind, roomId: info.roomId,
+            const row = { version: 1, type: 'stream_activity_submission', kind, roomId: info.roomId, generatedAt: new Date().toISOString(),
+                ...(publicationActive ? { activityAutomaticPublicationRequired: true } : {}),
                 streamerName: info.streamerName, source: { mediaPath: options.mediaPath, srtPath: options.srtPath, xmlPath: options.xmlPath || null },
                 sourceSnapshot: source, transcript: plan.transcript, planSignature: plan.signature, planPath: files.plan, coverage: plan.coverage,
                 window: { start: parts[0].start, end: parts.at(-1).end, duration: parts.reduce((n, p) => n + p.duration, 0) },
                 activities: events, copy: presentation.copy,
-                presentation: { version: presentation.version, style: presentation.profile.style, signature: presentation.signature },
+                presentation: { version: presentation.version, style: presentation.profile.style, signature: presentation.signature,
+                    titleFormat: kind === 'songs' ? 'song_name_recording_date' : 'work_name_recording_date', recordingDate: presentation.recordingDate },
                 output: { mediaPath: parts[0].mediaPath, coverPath, metadataPath, parts: presentation.parts }, coverSha256: fileDigest(coverPath),
                 activityReview: { version: 1, status: 'pending', checks: ['host_performance_or_actual_viewing', 'complete_boundaries', 'part_titles', 'public_copy'] },
                 uploadReady: false, upload: { prefix: presentation.profile.prefix, tid: config[kind].tid, tags: config[kind].tags,
@@ -307,25 +464,62 @@ async function generateStreamActivities(options = {}) {
             writeJsonAtomic(metadataPath, row); metadata.push(row);
         }
         if (!sameSource(sourceSnapshot({ source: { mediaPath: options.mediaPath, srtPath: options.srtPath, xmlPath: options.xmlPath } }), source)) throw new Error('Activity source changed while rendering');
-        const manifestPath = path.join(runDirectory, 'UPLOAD_MANIFEST.json');
+        const clips = stages.mergeManifestClips(previousClips, metadata.map(row => row.output.metadataPath));
+        for (const clip of clips) if (!metadata.some(row => row.output.metadataPath === clip.metadataPath)) {
+            metadata.push(JSON.parse(fs.readFileSync(clip.metadataPath, 'utf8')));
+        }
+        let publicationAdapters;
+        if (publicationActive) {
+            const settings = root.ownStreamClips?.enhancements || {};
+            publicationAdapters = options.publicationAdapters || publication.activityPublicationProcessAdapters(path.resolve(__dirname, '../../..'),
+                (row, prompt, images) => require('./enhancement_runner').requestStage(
+                    { ...settings.stageDefaults, ...settings.stages?.qa }, settings.budget,
+                    { ...info, outputContract: { key: 'checks', type: 'object', allowDomainRejected: true } },
+                    `activity-publication-${row.kind}`, prompt, images),
+                (row, parts) => publication.inspectActivityPublication(row, parts,
+                    resolveFfprobePath(root.audio?.ffmpeg?.path || 'ffmpeg'), async args => {
+                        const lease = await scheduler.acquire();
+                        try { return await require('./media_runtime').runFfmpeg(args, { ffmpegPath: root.audio?.ffmpeg?.path || 'ffmpeg',
+                            threads: lease.profile.ffmpegThreads, timeoutMs: 1800000, stage: '活动成片发布审核' }); }
+                        finally { lease.release(); }
+                    }), { parse: file => asr.parseSrt(file).segments, audience: readAudience });
+            metadata = await publication.reviewActivityPublications(metadata, root, publicationAdapters,
+                { retryUnavailable: options.retryPublication === true, kinds: selected });
+        }
         writeJsonAtomic(manifestPath, { version: 1, type: 'bilibili_clip_upload_manifest', reviewPath: files.review,
-            planPath: files.plan, roomId: info.roomId, clips: metadata.map((row, i) => ({ reviewIndex: i + 1, metadataPath: row.output.metadataPath })) });
-        plan.status = 'rendered'; plan.uploadManifestPath = manifestPath; writeJsonAtomic(files.plan, plan);
+            planPath: files.plan, roomId: info.roomId, clips });
+        plan.status = 'rendered'; plan.uploadManifestPath = manifestPath; plan.manifestClips = clips; writeJsonAtomic(files.plan, plan);
         writeJsonAtomic(files.songs, planTools.songRecord(plan));
         fs.writeFileSync(files.review, reviewText(plan, metadata, files), 'utf8');
         if (metadata.length && options.registerUpload !== false) {
-            const output = await (options.register || register)(manifestPath, options);
-            const marker = typeof output === 'string' && output.match(/REGISTRY_RESULT:\s*(\{[^\n]+\})/u);
-            if (marker) {
-                const ids = JSON.parse(marker[1]).clipIdsByReviewIndex;
-                const lines = metadata.map((row, i) => `${row.kind === 'songs' ? '歌切' : '同步视听'}上传短 ID: ${ids[String(i + 1)]}`);
+            const importRegistry = async () => {
+                const output = await (options.register || register)(manifestPath, options);
+                const marker = typeof output === 'string' && output.match(/REGISTRY_RESULT:\s*(\{[^\n]+\})/u);
+                return marker ? JSON.parse(marker[1]) : typeof output === 'object' ? output : null;
+            };
+            let registry = await importRegistry();
+            if (registry && publicationActive) {
+                plan.automaticPublication = await publication.enqueueActivityPublications(metadata, clips, registry, publicationAdapters, plan.automaticPublication);
+                registry = await importRegistry() || registry;
+            }
+            if (registry) {
+                plan.uploadRegistry = registry;
+                const ids = registry.clipIdsByReviewIndex;
+                const lines = metadata.map(row => `${row.kind === 'songs' ? '歌切' : '同步视听'}上传短 ID: ${ids[String(clips.find(clip => clip.metadataPath === row.output.metadataPath).reviewIndex)]}`);
+                fs.writeFileSync(files.review, reviewText(plan, metadata, files), 'utf8');
                 fs.appendFileSync(files.review, '\n' + lines.join('\n') + '\n', 'utf8');
                 plan.uploadIds = ids; writeJsonAtomic(files.plan, plan);
             }
         }
-        return { status: 'rendered', submissions: metadata.length, parts: metadata.reduce((n, row) => n + row.output.parts.length, 0),
+        const selectedMetadata = metadata.filter(row => selected.includes(row.kind));
+        return { status: 'rendered', submissions: selectedMetadata.length, parts: selectedMetadata.reduce((n, row) => n + row.output.parts.length, 0),
             pendingReview: metadata.some(row => row.activityReview?.status !== 'approved'),
+            retainSource: metadata.some(row => row.activityReview?.authority === 'automatic'),
+            ...(publicationActive ? { publicationResults: metadata.map(row => ({ kind: row.kind,
+                id: plan.uploadIds?.[String(clips.find(clip => clip.metadataPath === row.output.metadataPath).reviewIndex)],
+                title: row.upload.prefix+row.copy.title, status: activitySubmissionStatus(row, plan), issues: row.activityReview?.issues || [], reviewBrief: publication.activityReviewBrief(row) })) } : {}),
             manifestPath, planPath: files.plan, songsPath: files.songs, reviewPath: files.review };
+        });
     } finally { await scheduler?.stop?.(); release(); }
 }
 module.exports = { readAudience, recordingInfo, pathsFor, detectActivities, publicCopy, reviewText, register, generateStreamActivities,

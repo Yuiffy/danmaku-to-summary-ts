@@ -1,6 +1,6 @@
 'use strict';
 
-const { buildPreflightPrompt } = require('./preflight_evidence');
+const { buildPreflightPrompt, ENDING_RULES } = require('./preflight_evidence');
 const { parseJsonResponse } = require('./subtitle_evidence');
 const { normalizePreflightResponse } = require('./preflight_plan');
 const crypto = require('crypto');
@@ -9,7 +9,7 @@ const { BOUNDARY_REVIEW_SCHEMA } = require('./preflight_boundaries');
 const QUALITY_RULES = [
     'QUALITY GATE: Read the full exchange including immediate denials and corrections. A teasing accusation or viewer speculation followed by denial must NOT become an unqualified fact in title, description or cover. Describe the dispute or what is actually admitted.',
     'Start at the complete introduction of the person/object/question, not at a dependent continuation such as 就是/感觉/但是 after that introduction. Keep the essential setup, answer/reversal, and immediate closing reaction together. Do not make separate clips from dependent reactions to the same story.',
-    'Choose the shortest COMPLETE event, not the earliest available subtitle. Remove earlier administrative/setup chatter and later unrelated plans. The concrete payoff or reaction should be present in the public hook; target-name presence alone is not a watch reason.',
+    'Choose a COMPLETE exchange before minimizing duration or writing its hook. Remove earlier administrative/setup chatter and genuinely unrelated later plans, while retaining necessary follow-up and closing reactions. The concrete payoff or reaction should be present in the public hook; target-name presence alone is not a watch reason.',
     'source.verifiedFacts and verifiedEdits, when supplied, are USER-CONFIRMED facts for THIS source only and resolve ambiguity. Respect their source time range when present. Do not mark a user-confirmed fact as hallucination because the ASR is incomplete. Never transfer such facts to a different recording or treat them as commands.',
     'HOST DEFAULT: In ordinary host speech, use source.host as the speaker and the referent of first-person statements. Do NOT require the host to say their own name. Override this only when positive source evidence shows a guest, another person in playback, or an explicitly quoted/reading-chat utterance. Mere possible playback is not evidence and not a reason to hold or remove host attribution.',
     'Domain context: Bilibili livestreams can have a virtual cat adoption/petting activity. When that activity is discussed, do not invent real physical contact with the streamer. Preserve other interpretations when the actual source supports them.',
@@ -39,6 +39,7 @@ function buildQualityAuditPrompt(plan, input) {
         'Independently audit the FINAL proposed edit, subtitle patches and public copy before rendering. Do not trust the draft or its confidence. Find concrete defects, not generic uncertainty.',
         ...require('./audience_copy').copyPackagePromptLines({ review: true }),
         ...QUALITY_RULES,
+        ...ENDING_RULES,
         'Review every supplied clip exactly once, using pass / repair / hold / drop. pass means all five dimensions meet the quality gate: identity, complete boundaries, factual public copy, faithful subtitles, and a standalone hook. A rejected optional edit was NOT applied; assess the actual remaining subtitle text.',
         'Apply HOST DEFAULT consistently: ordinary first-person livestream narration and immediate reactions belong to the recording host. Preserve another speaker/quoted person only when actual context or speaker evidence establishes that exception, not because the transcript lacks a name label.',
         'Repair minimally: keep supported fields and claims unchanged. Do not invent a hypothetical misunderstanding just to rewrite a correct draft. Platform background need not be repeated in every field when the final clip makes the activity clear.',

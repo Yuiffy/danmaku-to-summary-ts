@@ -26,7 +26,8 @@ function parseSampleReview(response, games) {
 }
 
 async function resolveUncertainSamples(timeline, plan, options, config, files, settings, saved) {
-    const localAudio = config.ai?.boundaryEvidenceMethod === LOCAL_AUDIO_METHOD, version = localAudio ? 3 : 2;
+    const localAudio = (options.boundaryEvidenceMethod || config.ai?.boundaryEvidenceMethod || LOCAL_AUDIO_METHOD) === LOCAL_AUDIO_METHOD,
+        version = localAudio ? 3 : 2;
     const sampleSettings = localAudio ? settings : mediaSettings(options.config, config, 'boundary');
     const stale = new Set((timeline.temporalReviews || []).filter(r => r.version !== version).map(r => r.index));
     if (stale.size) timeline = { ...timeline, ranges: timeline.ranges.flatMap(span =>
@@ -116,10 +117,8 @@ function parseTimeline(response, count, games) {
 
 async function auditGameTimeline(plan, options, config, files) {
     const interval = config.visual?.sampleSeconds || 120;
-    const provider = config.visual?.provider || config.ai?.frameProvider || 'tuZi';
-    const settings = { provider, model: config.visual?.model || config.ai?.frameModel || options.config.ai?.text?.gemini?.model,
-        apiMode: provider === 'gemini' ? 'gemini_native' : config.visual?.apiMode || config.ai?.frameApiMode || 'gemini_native',
-        timeoutMs: config.visual?.timeoutMs || 600000 };
+    const { provider, model, apiMode } = mediaSettings(options.config, config, 'visual');
+    const settings = { provider, model, apiMode, timeoutMs: config.visual?.timeoutMs || 600000 };
     const key = sha({ version: 1, source: plan.source, duration: plan.duration, interval, settings });
     const scratch = path.join(files.directory, 'temp', 'game-timeline', key.slice(0, 16));
     const saved = path.join(scratch, 'TIMELINE.json');

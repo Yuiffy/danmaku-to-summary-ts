@@ -173,6 +173,10 @@ def build_credential(room_id=None, streamer_name=None, source_desc=None, prefix=
     )
 
 
+class ArchiveLookupUnavailable(RuntimeError):
+    """The archive lookup is unknown; an incomplete result cannot authorize upload."""
+
+
 def fetch_member_archive_rows(cookie_str, mid=ACCOUNT_MID, pages=5):
     """通过 member API 实时查询已上传稿件列表（零延迟，不走搜索索引）。"""
     headers = {
@@ -191,9 +195,11 @@ def fetch_member_archive_rows(cookie_str, mid=ACCOUNT_MID, pages=5):
             )
             data = r.json()
             if data.get('code') != 0:
-                print(f"  [WARN] member archives API 返回 code={data.get('code')}: {data.get('message', '')}")
-                break
-            audits = (data.get('data') or {}).get('arc_audits') or []
+                raise ArchiveLookupUnavailable(f"archive lookup unavailable: API code={data.get('code')}")
+            payload = data.get('data')
+            if not isinstance(payload, dict) or not isinstance(payload.get('arc_audits'), list):
+                raise ArchiveLookupUnavailable("archive lookup unavailable: malformed archive response")
+            audits = payload['arc_audits']
             if not audits:
                 break
             for a in audits:
@@ -209,8 +215,7 @@ def fetch_member_archive_rows(cookie_str, mid=ACCOUNT_MID, pages=5):
                         'pubdate': arc.get('pubdate') or arc.get('ctime') or 0,
                     })
         except Exception as e:
-            print(f"  [WARN] member archives 第{pn}页失败: {e}")
-            break
+            raise ArchiveLookupUnavailable(f"archive lookup unavailable on page {pn}: {e}") from e
     return rows
 
 
@@ -555,7 +560,7 @@ def load_generated_description(clip):
     return ''
 
 
-async def upload_one(clip, credential, prefix, tags, tid, source_desc, collection_section_id=None):
+async def upload_one(clip, credential, prefix, tags, tid, source_desc, collection_section_id=None, before_submit=None):
     """上传单个切片，返回结果 dict"""
     full_title = f"{prefix}{clip['title']}"
     filepath = clip['path']
@@ -627,6 +632,8 @@ async def upload_one(clip, credential, prefix, tags, tid, source_desc, collectio
         uploader = video_uploader.VideoUploader(
             pages=pages, meta=meta, credential=credential,
         )
+        if before_submit:
+            before_submit()
         print(f"  开始上传...")
         result = await uploader.start()
 
@@ -695,6 +702,7 @@ async def upload_one_guarded(
     rate_limit_retries,
     collection_section_id=None,
     allow_duplicate_title=False,
+    before_submit=None,
 ):
     full_title = f"{prefix}{clip['title']}"
     collection_section_id = clip.get('collectionSectionId') or collection_section_id
@@ -751,6 +759,7 @@ async def upload_one_guarded(
             tid,
             source_desc,
             collection_section_id=collection_section_id,
+            before_submit=before_submit,
         )
         if result.get('status') == 'ok' and result.get('bvid'):
             result = await enrich_and_attach(result)
@@ -766,6 +775,10 @@ async def upload_one_guarded(
             result['status'] = 'ok_after_406'
             result['bvid'] = bvid
             return await enrich_and_attach(result)
+
+        if clip.get('automaticPublicationRequired'):
+            print("  [STOP] automatic submission outcome unknown; reconcile the existing attempt before retrying")
+            return result
 
         available, message = await probe_upload_available(credential)
         if not is_rate_limit_message(message):
@@ -803,6 +816,7 @@ async def main():
     parser.add_argument('--skip', default='', help='跳过序号（逗号分隔）')
     parser.add_argument('--only', default='', help='只传指定序号（逗号分隔）')
     parser.add_argument('--force', action='store_true', help='允许明确授权的修正版跳过同标题查重并重新投稿')
+    parser.add_argument('--automatic-job', default=None, help='Revalidate a running automatic job immediately before each submission')
     parser.add_argument('--dry-run', action='store_true', help='只查重不上传')
     parser.add_argument('--state', default=None, help='状态文件路径')
     parser.add_argument('--rate-limit-wait', type=int, default=DEFAULT_RATE_LIMIT_WAIT, help='B站提示上传过快后的等待秒数')
@@ -927,6 +941,19 @@ async def main():
         elif done_record is not None and args.force:
             print(f"  [{clip['idx']}] [FORCE] 忽略已有状态，准备重新投稿: {full_title}")
 
+        if (clip.get('automaticPublicationRequired') and not args.force
+                and state.get('submission_intents', {}).get(str(clip['idx']))):
+            try:
+                from .clip_automatic_retry import consume_reconciled_intent
+            except ImportError:
+                from clip_automatic_retry import consume_reconciled_intent
+            reconciled = bool(args.automatic_job and not args.dry_run
+                and consume_reconciled_intent(state, clip, args.automatic_job))
+            if not reconciled:
+                print(f"  [STOP] automatic submission outcome unknown for #{clip['idx']}; inspect the existing attempt")
+                return 2
+            save_upload_state(state_path, state)
+
         if full_title in planned_titles:
             print(f"  [{clip['idx']}] SKIP (REVIEW 内同标题重复): {full_title}")
             skipped_review_dup.append(clip)
@@ -1021,6 +1048,19 @@ async def main():
         full_title = f"{args.prefix}{clip['title']}"
         print(f"[{i+1}/{len(to_upload)}] #{clip['idx']} {full_title}")
 
+        def before_submit():
+            if args.automatic_job:
+                import clip_upload_registry as registry_api
+                registry_api.clip_auto_publication.validate_submission_authorization(
+                    {**clip, 'prefix': args.prefix, 'source': args.source, 'tags': tags, 'tid': args.tid},
+                    args.automatic_job, registry_api)
+            if clip.get('automaticPublicationRequired'):
+                state.setdefault('submission_intents', {})[str(clip['idx'])] = {
+                    'title': full_title, 'mediaPath': clip.get('path') or '',
+                    'startedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                }
+                save_upload_state(state_path, state)
+
         result = await upload_one_guarded(
             clip,
             credential,
@@ -1033,11 +1073,18 @@ async def main():
             max(0, args.rate_limit_retries),
             collection_section_id,
             allow_duplicate_title=args.force,
+            before_submit=before_submit,
         )
         results.append(result)
 
+        # An explicit server rejection is known not to have created an archive.
+        # Preserve the existing account cooldown; only ambiguous submission outcomes stay held.
+        if result.get('status') == 'rate_limited' and result.get('errorCode') == BILIBILI_SUBMISSION_RATE_LIMIT_CODE:
+            state.get('submission_intents', {}).pop(str(clip['idx']), None)
+
         # 记录到状态
         if result['status'] in ('ok', 'ok_after_406'):
+            state.get('submission_intents', {}).pop(str(clip['idx']), None)
             state.setdefault('done', {})[str(clip['idx'])] = {
                 'title': full_title,
                 'submittedTitle': full_title,
@@ -1082,6 +1129,11 @@ async def main():
 
         # 保存状态
         save_upload_state(state_path, state)
+
+        if (clip.get('automaticPublicationRequired')
+                and state.get('submission_intents', {}).get(str(clip['idx']))):
+            print(f"  [STOP] automatic submission outcome unknown for #{clip['idx']}; inspect the existing attempt")
+            return 2
 
         if result['status'] == 'rate_limited':
             print("  [STOP] B站仍在限速，停止本批次，避免后续条目重复触发风控。")

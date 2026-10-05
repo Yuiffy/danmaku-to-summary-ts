@@ -12,8 +12,14 @@ const MEDIA_PACKET_VERSION = 7;
 
 async function requestMediaVerification(prompt, inputs, root, settings) {
     const provider = settings.provider || 'tuZi';
+    if (provider === 'daiYu' && inputs.some(input => input.mimeType.startsWith('audio/'))) {
+        throw new Error('DaiYu GPT audio inputs are unsupported; use independent_local_asr evidence with text/images');
+    }
     const credentials = root.ai?.text?.[provider] || {};
     if (!credentials.apiKey) throw new Error(`${provider} audio/video verification is not configured`);
+    if (provider !== 'gemini' && provider !== 'tuZi' && !credentials.baseUrl) {
+        throw new Error(`${provider} audio/video verification baseUrl is not configured`);
+    }
     const model = settings.model || root.ai?.text?.gemini?.model;
     if (!model || !/^[a-zA-Z0-9._-]+$/u.test(model)) throw new Error('Invalid activity verification model');
     const contents = [{ role: 'user', parts: [{ text: prompt }, ...inputs.map(input => ({ inlineData: {
@@ -26,7 +32,15 @@ async function requestMediaVerification(prompt, inputs, root, settings) {
     const baseUrl = String(credentials.baseUrl || 'https://api.tu-zi.com').replace(/\/(?:v1)?\/?$/u, '');
     const url = provider === 'gemini' ? `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`
         : native ? `${baseUrl}/v1beta/models/${model}:generateContent` : `${baseUrl}/v1/chat/completions`;
-    const response = await fetch(url, {
+    const { mediaUsage, recordAiUsage } = require('../workflow-runtime').loadWorkflow('ai/usage');
+    const started = Date.now(), audios = inputs.filter(input => input.mimeType.startsWith('audio/'));
+    const attempt = { provider, model, requestStarted: true,
+        inputImages: inputs.filter(input => input.mimeType.startsWith('image/')).length, inputAudioFiles: audios.length,
+        inputAudioSeconds: audios.every(input => Number.isFinite(input.start) && Number.isFinite(input.end))
+            ? audios.reduce((total, input) => total + input.end - input.start, 0) : null };
+    let response, data;
+    try {
+    response = await fetch(url, {
         method: 'POST', headers: { 'Content-Type': 'application/json', ...(provider === 'gemini'
             ? { 'x-goog-api-key': credentials.apiKey } : { Authorization: `Bearer ${credentials.apiKey}` }) },
         body: JSON.stringify(native ? { contents, generationConfig: {
@@ -35,21 +49,29 @@ async function requestMediaVerification(prompt, inputs, root, settings) {
         agent: credentials.proxy ? new HttpsProxyAgent(credentials.proxy) : undefined, timeout: settings.timeoutMs });
     if (!response.ok) {
         let message = '';
-        try { message = String((await response.json()).error?.message || '').replaceAll(credentials.apiKey, '[redacted]').slice(0, 400); } catch { /* status still explains the failure */ }
+        try { data = await response.json(); message = String(data.error?.message || '').replaceAll(credentials.apiKey, '[redacted]').slice(0, 400); } catch { /* status still explains the failure */ }
         throw new Error(`Activity media verification HTTP ${response.status}${message ? `: ${message}` : ''}`);
     }
-    const data = await response.json();
+    data = await response.json();
     const candidate = native ? data.candidates?.[0] : data.choices?.[0];
     const finish = candidate?.finishReason || candidate?.finish_reason;
     if (!['STOP', 'stop'].includes(finish)) throw new Error(`Activity verification incomplete: ${finish || 'missing candidate'}`);
     const text = native ? candidate.content?.parts?.filter(p => typeof p.text === 'string').map(p => p.text).join('') : candidate.message?.content;
     if (!text) throw new Error('Activity verification returned no JSON');
-    const usage = data.usageMetadata || data.usage || {};
-    return { text, meta: { model, apiMode: native ? 'gemini_native' : 'openai_chat', attempts: [{ provider, model, status: 'success', finishReason: 'completed',
-        inputAudioTokens: usage.promptTokensDetails?.filter(p => p.modality === 'AUDIO').reduce((sum, p) => sum + p.tokenCount, 0),
-        promptTokens: usage.promptTokenCount ?? usage.prompt_tokens, completionTokens: usage.candidatesTokenCount ?? usage.completion_tokens,
-        reasoningTokens: usage.thoughtsTokenCount ?? usage.completion_tokens_details?.reasoning_tokens,
-        totalTokens: usage.totalTokenCount ?? usage.total_tokens, usageFinal: true }] } };
+    Object.assign(attempt, mediaUsage(data.usageMetadata || data.usage), { status: 'success', finishReason: 'completed',
+        elapsedMs: Date.now() - started, requestId: response.headers?.get?.('x-request-id') || null,
+        responseId: data.responseId || data.id || null, usageFinal: true });
+    recordAiUsage(attempt);
+    return { text, meta: { model, apiMode: native ? 'gemini_native' : 'openai_chat', attempts: [attempt] } };
+    } catch (error) {
+        Object.assign(attempt, mediaUsage(data?.usageMetadata || data?.usage), { status: 'failure',
+            elapsedMs: Date.now() - started, requestId: response?.headers?.get?.('x-request-id') || null,
+            responseId: data?.responseId || data?.id || null, httpStatus: response?.status || null,
+            usageFinal: data ? true : null });
+        recordAiUsage(attempt);
+        error.attempts = [attempt];
+        throw error;
+    }
 }
 function parseVerification(response, event, window, duration, audio = []) {
     const raw = JSON.parse(response.text.trim().replace(/^```(?:json)?\s*/u, '').replace(/\s*```$/u, ''));
@@ -98,6 +120,7 @@ async function verifyActivity(event, { root, config, source, info, directory, ro
                 ...(preserveContext ? ['performance_boundary_provisional'] : [])])] }] };
     };
     if (!settings.enabled) return fallback('Media verification disabled');
+    if (settings.evidenceMethod === 'independent_local_asr') return fallback('Local audio verification requires the bounded activity batch workflow');
     if (!root.ai?.text?.[settings.provider || 'tuZi']?.apiKey && !request) return fallback('Audio/video verifier unavailable');
     const completeSong = event.kind === 'song' && event.performance === 'full';
     const beforeSong = Math.min(settings.contextSeconds, completeSong ? 90 : 30);

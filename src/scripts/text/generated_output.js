@@ -25,9 +25,14 @@ function classifyGeneratedOutput(text, options = {}, data = {}) {
             try { parsed = parseModelJson(String(text).slice(first, last + 1)); }
             catch { return { rejected: true, reason: 'invalid_structured_json', matches }; }
         }
-        if (parsed?.refusal || parsed?.error || ['refused', 'rejected'].includes(parsed?.status)) return { rejected: true, reason: 'structured_refusal', matches };
+        // A final-review rejection is a completed domain decision, not a provider refusal.
+        const domainRejection = options.structuredOutputAllowDomainRejected === true && options.structuredOutputType === 'object';
+        if (parsed?.refusal || parsed?.error || parsed?.status === 'refused' || parsed?.status === 'rejected' && !domainRejection) {
+            return { rejected: true, reason: 'structured_refusal', matches };
+        }
         const rows = options.structuredOutputKey === 'clips' && Array.isArray(parsed) ? parsed : parsed?.[options.structuredOutputKey], type = options.structuredOutputType || 'records';
         const valid = type === 'boolean' ? typeof rows === 'boolean' : type === 'number' ? Number.isFinite(rows)
+            : type === 'object' ? rows !== null && typeof rows === 'object' && !Array.isArray(rows)
             : Array.isArray(rows) && rows.every(row => type === 'strings' ? typeof row === 'string' : row && typeof row === 'object' && !Array.isArray(row));
         if (!valid) {
             return { rejected: true, reason: 'unexpected_structured_shape', matches };

@@ -513,6 +513,68 @@ speaker 标签不由此阶段重新分配。
 完整人工真值时报告 CER/WER；否则报告明确的规则覆盖、额外差异和待确认窗口。
 新词表样本不能同时被称作独立测试集。逐次确认不会自动变成全局学习记录。
 
+#### 局部热词对照的验收方法
+
+诊断实验先核对音频内容与字幕时间轴；同名 Opus 和 SRT 不能证明逐段同步。
+当相邻普通对白也对不上时，标记为时间轴未验证并从识别率分母排除，保留原始
+截取参数和哈希。改变 FFmpeg 的 seek 位置不能自动修复源字幕漂移，也不能仅凭
+一次内容匹配给整场应用固定偏移。先解决对齐，再讨论该片段的模型漏词。
+
+用相同窗口分别保存无热词转写和少量规范姓名热词转写；缩短窗口、改变名单的
+试验单列，避免把反复挑出的最佳输出算作独立准确率。热词输出是带提示的假设，
+不得写进 `unpromptedChecks`，也不能单靠出现正确姓名就批准身份或字幕改写。
+至少同时检查普通“随机／随即／自己”用法、静音、句中其他词是否退化；有名字
+但句意、否定或数量仍错时继续待核。只有完整人工真值才能报告总体 CER/WER。
+
+纯静音在送入生成式 ASR 前应由 VAD 门禁跳过；这不等于已经验证背景音乐、低声
+对白或稀疏人声。热词解码与 `postprocess_hotwords` 的拼音模糊替换分开验收：后者
+即使修好了标点和数字边界，也不能区分“随机应变”和人名“岁己”。不得把通用
+模糊替换接成全局人名纠错。升级库或下载新 checkpoint 前，先在隔离环境复查
+这些行为，不能把上游主分支修复当作 PyPI 发布版本已经具备的能力。
+
+参考：[热词导致截断和误替换的社区反馈](https://github.com/modelscope/FunASR/issues/3302)、
+[稀疏电话语音与静音插词反馈](https://github.com/modelscope/FunASR/issues/3718)、
+[拼音后处理边界修复](https://github.com/modelscope/FunASR/pull/3744)。
+这些报告提供负例方向，不代表本项目每个模型都会复现同样问题。
+
+#### 关键词预审的自动局部音频复核
+
+`clipTopics.review.audioChecks.enabled` 显式启用关键词预审中的局部复核，默认关闭。
+它仅处理 `recall.requiresSemanticConfirmation` 的歧义命中，独立于整场 ASR 和上述
+Sui 字幕预校对。`topicAudio.ts` 选择一次固定上下文窗口；`topicAudioRuntime.ts`
+绑定源媒体大小/mtime、原 SRT 哈希、证据哈希及 Python 实现哈希，调用
+`python/topic_audio_checks.py`。没有全场重新转写、自动改变窗口重试或原 SRT 覆盖。
+
+默认单窗上限30秒，每组3窗，每次录播处理最多6窗/180秒音频；单组进程上限180秒，
+每次录播累计耗时上限360秒。配置不能突破代码的硬上限。相邻命中共用窗口；数量、
+时长或耗时用尽的命中继续待核。预算作用域是本次 `generateTopicClips` 调用，人工
+重跑是新调用，不承诺跨重跑累计。只使用本地缓存模型，不自动下载或升级依赖。
+
+先用 FSMN-VAD 判定是否存在语音；无语音不调用 Nano。存在语音时，Nano 先不带
+热词转写，再用两条有足够普通文字、按顺序匹配且不复用转写字符的邻近字幕核对
+局部内容一致性。歧义命中所在 cue 和规范热词不能提供这项对齐依据。少于两条
+可用旁证为 `inconclusive`，未匹配为 `mismatch`；这只是保守的一致性筛查，不能
+证明精确时间戳、完整字幕正确或说话人身份。只有 `aligned` 才运行第二次规范
+热词转写，默认名单为“岁己、小岁”，且必须属于本次配置的目标关键词。
+
+两路文本分别存入 `audioChecks.windows[].unprompted` 和 `biased`，标明提示名单与
+`timingPrecision: window`；不把整窗文本塞进可用于逐词纠错的 `unpromptedChecks.segments`。
+AI 只能把它们当补充假设，带热词结果不能作为独立身份旁证。既有局部改词和人物
+语义门禁仍生效；新音频不会自动授予改词、渲染或投稿许可。
+
+`no_speech/mismatch/inconclusive/unavailable` 会将受影响命中强制保留为 `uncertain`，
+即使模型回答 `mention` 或 `false_match`。空模型选窗由既有未决候选保留路径处理。
+只依赖这些命中的切片保持 `needs_review`。独立、已核对的其他事件仍可按原规则审核。
+`TOPIC_PLAN.json` 的分组和最终候选 `aiReview.audioChecks` 保存证据及错误状态；
+每次尝试的输入、日志、WAV和结果写入源素材旁的 `temp/.../topic_selection/audio_checks/`。
+成功结果经过请求、窗口、热词身份、原始文件复验及 WAV 哈希校验；失败不会重用旧结果。
+
+Python 使用既有 `prepare_asr_runtime`/`GpuThrottle` 的游戏保护、进程策略与GPU节流，
+复用 Nano backend 的配置并限制模型线程为2。已有活动 ASR 资源租约或另一局部复核
+持有系统锁时立即保留待核；等待也受外层进程总超时限制。源执行 JS/Python 由下一次
+子进程读取，新增 TypeScript 需通过 `workflow:activate` 激活；回退可关闭
+`clipTopics.review.audioChecks.enabled`，保留证据文件供复查，不重放历史生产队列。
+
 回归测试：
 
 ```powershell
@@ -590,6 +652,17 @@ ASR 配置支持全局热词、按 routing 命中的房间/主播热词，以及
 ```
 
 当前 dispatch 行为：Fun-ASR-Nano / vLLM 会在推理时接收 `hotwords` 数组；Paraformer/SenseVoice 的 `hotword` 字符串当前由 JS adapter 留空，依赖 `phoneme_correction` 与统一 corrections。所有 backend 的 SRT 写出前都会应用 corrections。
+
+生产的会话人名补漏分为受限纠错与疑似召回。栞栞房间只在“支持赛吉斯”局部语境
+纠正为岁己；犬绒房间只在附近有海獭、且同 cue 为“给小碎看／买／送”的收礼人
+句式时纠正“小碎”。后者显式保护小碎步、片、石等普通词及打碎动作，不跨 cue
+拼接词组猜改。“随机／随即／自己／这一集／c机”不加入生产全局替换表，而由
+[关键词预审的疑似召回](topic-event-editorial.md#疑似-asr-人名召回)标记原词再判断语义。
+
+合并顺序为全局 corrections、房间 routing corrections、common/route hotword 派生
+别名。生产“小碎”从 common hotword 的 `ambiguous_aliases` 移至显式全局
+`corrections.ambiguous`，使犬绒的局部覆盖不会被派生别名盖回。全局词条保留原解析
+行为；房间覆盖显式声明排除项。高歧义词不要放进 `safe` 或整场 `contextual` 规则。
 
 `punc_model` 是 best-effort：配置后会尝试加载 FunASR 标点模型并对 SenseVoice 输出文本恢复标点；加载或调用失败只会写 warning 到 stderr，不会中断 ASR。不同 FunASR/SenseVoice 版本对标点模型返回结构支持不完全一致，需要用真实音频验证。
 

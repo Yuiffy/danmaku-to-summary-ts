@@ -31,6 +31,37 @@ describe('silent game exit handling', () => {
     expect(() => closing.closingBoundary(review(['game', 'uncertain', 'other', 'other', 'other']))).toThrow(/remain uncertain/);
     expect(() => closing.closingBoundary(review(['game', 'other', 'other']))).toThrow(/coverage is incomplete/);
     expect(closing.closingBoundary(review(['other', 'other', 'other', 'other', 'other']))).toBe(100);
+    expect(closing.closingBoundary(review(['uncertain', 'game', 'other', 'other', 'other']))).toBe(104);
+    expect(() => closing.closingBoundary(review(['other', 'uncertain', 'other', 'other', 'other']))).toThrow(/remain uncertain/);
     expect(() => closing.closingBoundary(review(['game', 'other', 'other', 'game', 'other']))).toThrow(/remains visible/);
+  });
+  test.each([false, true])('rechecks a dark exit frame at original resolution and retains unresolved ambiguity (%s)', async (remainsUncertain) => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'game-closing-context-'));
+    try {
+      const mediaPath = path.join(directory, 'original.flv');
+      const extracts: string[][] = [];
+      const request = jest.fn(async (prompt: string, inputs: any[]) => ({
+        text: JSON.stringify({ reason: 'Compare the original exit-menu outline with the adjacent scenes',
+          frames: inputs.map(i => ({ index: i.index,
+            activity: i.time === 104 && (!prompt.includes('original resolution') || remainsUncertain) ? 'uncertain'
+              : i.time < 104.5 ? 'game' : 'other',
+            description: i.time < 104.5 ? 'Faint remaining exit menu' : 'Unobstructed talking scene' })) })
+      }));
+      const run = closing.verifyClosingFrames({ spokenEnd: 100, scanEnd: 110, gameName: 'Game', host: 'Host',
+        source: { mediaPath, mediaBytes: '100', mediaMtimeNs: '1' }, mediaPath, directory,
+        root: {}, settings: { provider: 'image-service', model: 'image-model' }, request,
+        extract: async (args: string[]) => { extracts.push(args); fs.writeFileSync(args.at(-1), Buffer.alloc(1280)); } });
+      if (remainsUncertain) await expect(run).rejects.toThrow(/remain uncertain/);
+      else {
+        const result = await run;
+        expect(result.end).toBe(104.5);
+        expect(result.contextReviews).toHaveLength(1);
+        expect(closing.validateClosingReview(result, result.end)).toBe(104.5);
+        fs.appendFileSync(result.contextReviews[0].responsePath, 'changed');
+        expect(() => closing.validateClosingReview(result, result.end)).toThrow(/context evidence changed/);
+      }
+      expect(extracts.some(args => args.at(-1).includes('closing-context-') && !args.includes('-vf'))).toBe(true);
+      expect(request.mock.calls.some(([prompt]) => prompt.includes('Black images with no identifiable game content'))).toBe(true);
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
   });
 });

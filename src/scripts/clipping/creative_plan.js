@@ -117,7 +117,10 @@ function validateCreativePlan(raw, moments, sourceId, duration, settings, assets
                 throw new Error(`Invalid sound for ${moment.id}: ${id} must be enabled and available; offsetSeconds must be 0..${Math.max(0, maxOffset).toFixed(3)}, levelDb must be ${settings.style === 'compact' ? '-12..0' : '-20..-6'}`);
             }
             if (!truncatedEnding) {
-                effect.sound = typeof row.sound === 'string' ? row.sound : { id, offsetSeconds: offset, levelDb: level };
+                if (row.sound.durationSeconds !== undefined && !finite(row.sound.durationSeconds, .1, soundSeconds)) throw new Error('Invalid sound excerpt duration');
+                effect.sound = typeof row.sound === 'string' ? row.sound : { id, offsetSeconds: offset, levelDb: level,
+                    ...(row.sound.durationSeconds !== undefined ? { durationSeconds: row.sound.durationSeconds } : {}),
+                    ...(row.sound.afterCueId ? { afterCueId: row.sound.afterCueId } : {}) };
             }
         }
         if (row.filter != null) {
@@ -138,7 +141,7 @@ function validateCreativePlan(raw, moments, sourceId, duration, settings, assets
         plan.audioAdjustments = raw.effects.filter(row => row.sound && !effects.find(effect => effect.id === row.momentId)?.sound)
             .map(row => ({ momentId: row.momentId, sound: soundId(row.sound), reason: 'avoid_truncated_end_sound' }));
         const sounding = effects.filter(row => row.sound).map(row => ({ row, start: row.start + (row.sound.offsetSeconds || 0),
-            seconds: assets[soundId(row.sound)]?.sampleSeconds || SOUNDS[soundId(row.sound)]?.duration })).sort((a, b) => a.start - b.start);
+            seconds: row.sound.durationSeconds ?? assets[soundId(row.sound)]?.sampleSeconds ?? SOUNDS[soundId(row.sound)]?.duration })).sort((a, b) => a.start - b.start);
         const accepted = [];
         for (const sound of sounding) {
             const collision = accepted.find(other => other.row.sound && sound.start < other.start + other.seconds && other.start < sound.start + sound.seconds);
@@ -201,6 +204,7 @@ function assertRenderPlan(plan, duration, rawSettings, assets = {}, allowEmpty =
             || !['static', 'pop', 'slide'].includes(row.sticker.motion))) throw new Error('Invalid render sticker');
         if (row.sound && (!limits.soundEffects || (!Object.hasOwn(SOUNDS, soundId(row.sound)) && assets[soundId(row.sound)]?.kind !== 'sound')
             || !finite(row.sound.offsetSeconds ?? 0, 0, Math.min(row.end - row.start + 1.5, duration - row.start - .3)) || !finite(row.sound.levelDb ?? -10, limits.style === 'compact' ? -12 : -20, limits.style === 'compact' ? 0 : -6))) throw new Error('Invalid render sound');
+        if (row.sound?.durationSeconds !== undefined && !finite(row.sound.durationSeconds, .1, assets[soundId(row.sound)]?.sampleSeconds ?? SOUNDS[soundId(row.sound)]?.duration)) throw new Error('Invalid render sound excerpt');
         if (row.filter && (!limits.filters || !Object.hasOwn(FILTERS, row.filter))) throw new Error('Invalid render filter');
     }
     if (plan.effects.reduce((n, row) => n + row.end - row.start, 0) > Math.min(limits.maxTotalEffectSeconds, duration * limits.maxCoverage)) throw new Error('Excess creative render coverage');
@@ -218,12 +222,16 @@ function buildCreativeFilter(plan, resolution, trimStart, trimEnd, subtitlePath,
     const graph = [];
     if (plan.timeline) {
         require('./creative_timeline').assertTimeline(plan.timeline, trimEnd - trimStart);
-        plan.timeline.keep.forEach((s, i) => graph.push(
-            `[0:v:0]trim=start=${trimStart + s.start}:end=${trimStart + s.end},setpts=PTS-STARTPTS,setsar=1[tv${i}]`,
-            `[0:a:0]atrim=start=${trimStart + s.start}:end=${trimStart + s.end},asetpts=PTS-STARTPTS[ta${i}]`));
+        const pieces = plan.timeline.holds?.length ? require('../workflow-runtime').loadWorkflow('clipping/enhancement').reactionPieces(plan.timeline)
+            : plan.timeline.keep.map(s => ({ ...s, hold: 0 }));
+        pieces.forEach((s, i) => graph.push(
+            `[0:v:0]trim=start=${trimStart + s.start}:end=${trimStart + s.end},setpts=PTS-STARTPTS,setsar=1`
+                + (s.hold ? `,tpad=stop_mode=clone:stop_duration=${s.hold},trim=duration=${round(s.end - s.start + s.hold)}` : '') + `[tv${i}]`,
+            `[0:a:0]atrim=start=${trimStart + s.start}:end=${trimStart + s.end},asetpts=PTS-STARTPTS`
+                + (s.hold ? `,apad=pad_dur=${s.hold}` : '') + `[ta${i}]`));
         // Joint A/V concat pads each audio section to the last video frame, accumulating dialogue drift.
-        graph.push(`${plan.timeline.keep.map((_, i) => `[tv${i}]`).join('')}concat=n=${plan.timeline.keep.length}:v=1:a=0[cv0]`,
-            `${plan.timeline.keep.map((_, i) => `[ta${i}]`).join('')}concat=n=${plan.timeline.keep.length}:v=0:a=1[ca0]`);
+        graph.push(`${pieces.map((_, i) => `[tv${i}]`).join('')}concat=n=${pieces.length}:v=1:a=0[cv0]`,
+            `${pieces.map((_, i) => `[ta${i}]`).join('')}concat=n=${pieces.length}:v=0:a=1[ca0]`);
     } else graph.push(`[0:v:0]trim=start=${trimStart}:end=${trimEnd},setpts=PTS-STARTPTS,setsar=1[cv0]`,
         `[0:a:0]atrim=start=${trimStart}:end=${trimEnd},asetpts=PTS-STARTPTS[ca0]`);
     let video = 'cv0';
@@ -279,7 +287,7 @@ function buildCreativeFilter(plan, resolution, trimStart, trimEnd, subtitlePath,
     sounds.forEach(({ row, index }, soundIndex) => {
         const asset = bindings[`${index}:sound`], sound = SOUNDS[soundId(row.sound)];
         const offset = row.sound.offsetSeconds ?? 0;
-        const duration = Math.min(asset ? asset.asset.sampleSeconds : sound.duration, plan.duration - row.start - offset);
+        const duration = Math.min(row.sound.durationSeconds ?? (asset ? asset.asset.sampleSeconds : sound.duration), plan.duration - row.start - offset);
         const compact = plan.style === 'compact';
         const input = asset ? `[${asset.inputIndex}:a:0]atrim=start=${asset.asset.sampleStart}:duration=${duration},asetpts=PTS-STARTPTS,`
             + (compact ? `loudnorm=I=-16:TP=-2:LRA=7,volume=${row.sound.levelDb ?? -3}dB` : `volume=${row.sound.levelDb ?? -10}dB`)

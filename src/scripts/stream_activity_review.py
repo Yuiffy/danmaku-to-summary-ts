@@ -24,6 +24,10 @@ def content_digest(metadata):
     title_evidence = (metadata.get("presentation") or {}).get("titleEvidence")
     if title_evidence:
         payload["titleEvidence"] = title_evidence
+    if (metadata.get('presentation') or {}).get('version', 1) >= 2:
+        payload['presentation'] = metadata['presentation']
+    if metadata.get('activityAutomaticPublicationRequired'):
+        payload.update(activityAutomaticPublicationRequired=True, generatedAt=metadata.get('generatedAt'), roomId=metadata.get('roomId'))
     return hashlib.sha256(json.dumps(payload, sort_keys=True,
         ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
 
@@ -50,13 +54,11 @@ def check_artifacts(metadata):
     activities = {row["id"]: row for row in metadata.get("activities") or []}
     if not activities:
         raise ValueError("activity submission has no source activities")
-    title_evidence = (metadata.get("presentation") or {}).get("titleEvidence")
-    if title_evidence and (title_evidence.get("method") != "source_frame_reading"
-            or title_evidence.get("activityId") not in activities
-            or not str(title_evidence.get("name") or "").strip()
-            or not str(title_evidence.get("note") or "").strip()
-            or file_digest(title_evidence["framePath"]) != title_evidence.get("frameSha256")):
-        raise ValueError("activity public title evidence changed or is invalid")
+    if __package__:
+        from .activity_titles_review import check_title_evidence, check_song_titles, check_watch_titles
+    else:
+        from activity_titles_review import check_title_evidence, check_song_titles, check_watch_titles
+    names = check_title_evidence(metadata, activities, file_digest)
     by_activity = {}
     previous = -1
     for part in parts:
@@ -77,10 +79,19 @@ def check_artifacts(metadata):
         if metadata["kind"] == "watch" and part["duration"] > 1800 + .01:
             raise ValueError("viewing P exceeds 30 minutes")
     for activity_id, event in activities.items():
+        if (event.get('verification') or {}).get('method') == 'independent_local_asr':
+            if __package__:
+                from .activity_audio_review import check_local_activity
+            else:
+                from activity_audio_review import check_local_activity
+            check_local_activity(event, metadata['sourceSnapshot'])
         selected = by_activity.get(activity_id) or []
         if not selected:
             raise ValueError("a source activity is missing from this submission")
         if metadata["kind"] == "songs":
+            if (event.get('verification') or {}).get('decision') == 'uncertain' or any(issue in (event.get('reviewIssues') or [])
+                    for issue in ('media_verification_unconfirmed', 'performance_boundary_provisional', 'start_boundary_unconfirmed', 'end_boundary_unconfirmed')):
+                raise ValueError('song performance or complete boundaries are unresolved')
             if event.get("kind") != "song" or len(selected) != 1 or selected[0]["start"] > event["start"] or selected[0]["end"] < event["end"]:
                 raise ValueError("one complete performance must occupy exactly one P")
         else:
@@ -88,6 +99,10 @@ def check_artifacts(metadata):
                 raise ValueError("viewing session is not completely covered")
             if any(abs(a["end"] - b["start"]) > .01 for a, b in zip(selected, selected[1:])):
                 raise ValueError("viewing Ps have a gap or duplicated interval")
+    if metadata['kind'] == 'songs':
+        check_song_titles(metadata, activities, names)
+    else:
+        check_watch_titles(metadata, activities, names)
     output = metadata["output"]
     transcript = metadata.get("transcript")
     if transcript and file_digest(transcript["path"]) != transcript.get("sha256"):
@@ -100,6 +115,17 @@ def check_artifacts(metadata):
 
 def validate_activity_review(metadata):
     review = metadata.get("activityReview") or {}
+    if review.get('authority') == 'automatic' or (metadata.get('activityAutomaticPublicationRequired') and review.get('authority') != 'human'):
+        if metadata.get('uploadReady') is not True or review.get('version') != 1 or review.get('status') != 'approved':
+            raise ValueError('automatic activity approval is required')
+        try:
+            from .activity_auto_publication import validate
+            from .config_loader import get_config
+        except ImportError:
+            from activity_auto_publication import validate
+            from config_loader import get_config
+        validate(metadata, get_config(), check_artifacts, content_digest)
+        return
     if (metadata.get("uploadReady") is not True or review.get("version") != 1 or review.get("status") != "approved"
         or review.get("authority") != "human" or not str(review.get("note") or "").strip()):
         raise ValueError("complete song/viewing boundaries and public copy need review")
@@ -134,9 +160,23 @@ def approve(path, note):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--metadata", required=True)
-    parser.add_argument("--note", required=True)
+    parser.add_argument("--note")
+    parser.add_argument('--check-automatic', action='store_true')
+    parser.add_argument('--automatic-proof')
     args = parser.parse_args()
     try:
+        if args.check_automatic or args.automatic_proof:
+            from activity_auto_publication import ready, approve as approve_automatic
+            from config_loader import get_config
+            if args.check_automatic:
+                metadata = json.loads(Path(args.metadata).read_text(encoding='utf-8-sig'))
+                print('ACTIVITY_AUTOMATIC_BINDING: '+json.dumps(ready(metadata, get_config(), check_artifacts, content_digest)))
+            else:
+                print('[OK] automatically reviewed: '+str(approve_automatic(args.metadata, args.automatic_proof,
+                    get_config(), check_artifacts, content_digest)))
+            return
+        if not args.note:
+            raise ValueError('activity human review needs a substantive note')
         approved = approve(args.metadata, args.note)
         print(f"[OK] reviewed multipart submission: {approved}")
     except (OSError, ValueError, KeyError, TypeError) as error:

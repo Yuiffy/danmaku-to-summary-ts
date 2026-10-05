@@ -23,11 +23,29 @@ test('known sentence_info fallback rebuilds a source-bound transcript and reuses
         expect(fs.readFileSync(repaired.path, 'utf8')).toContain('00:04:10,000');
         expect(f.transcribe.mock.calls[0][1].asr.paraformer).toMatchObject({ model_profile: 'default', finetuned_model: null,
             enable_speaker: false, max_vad_segment_s: 8, gpu_throttle: { enabled: true, segment_paraformer: true } });
+        expect(f.extract.mock.calls[0][0]).toEqual(expect.arrayContaining(['-af', 'aresample=async=1:first_pts=0,apad', '-t', '500']));
+        expect(fs.existsSync(repaired.evidencePath)).toBe(true);
         expect(await t.prepareActivityTranscript(f.options)).toEqual(repaired);
         expect(f.transcribe).toHaveBeenCalledTimes(1);
         fs.appendFileSync(repaired.path, 'changed');
         await t.prepareActivityTranscript(f.options);
         expect(f.transcribe).toHaveBeenCalledTimes(2);
+    } finally { fs.rmSync(f.dir, { recursive: true, force: true }); }
+});
+
+test('speaker-enabled timing repair saves reusable row provenance and refuses another original source', async () => {
+    const f = fixture();
+    try {
+        const record = await t.prepareActivityTranscript({ ...f.options, speakerEvidence: true });
+        expect(f.transcribe.mock.calls[0][1].asr.paraformer.enable_speaker).toBe(true);
+        expect(fs.existsSync(record.speakerPath)).toBe(true);
+        expect(t.readTimingTranscript(path.join(path.dirname(record.path), 'RESULT.json'), f.source, {}, true)).toEqual(record);
+        expect(() => t.readTimingTranscript(path.join(path.dirname(record.path), 'RESULT.json'), { ...f.source, mediaBytes: '99' }, {}, true)).toThrow('current original source');
+        expect(await t.prepareActivityTranscript({ ...f.options, speakerEvidence: true, reuseOnly: true })).toEqual(record);
+        expect(f.transcribe).toHaveBeenCalledTimes(1);
+        fs.writeFileSync(record.evidencePath, 'changed');
+        const pending = await t.prepareActivityTranscript({ ...f.options, speakerEvidence: true, reuseOnly: true });
+        expect(pending.timingReliable).toBe(false);
     } finally { fs.rmSync(f.dir, { recursive: true, force: true }); }
 });
 test('an incompatible decoded timeline fails before producing claimed repaired timestamps', async () => {

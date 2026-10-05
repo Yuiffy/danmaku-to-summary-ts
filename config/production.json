@@ -1624,6 +1624,38 @@
     "ignoredRoomIds": [
       "25788785"
     ],
+    "ambiguousRecall": {
+      "enabled": true,
+      "contextSeconds": 45,
+      "rules": [
+        {
+          "id": "sui-ambiguous-conversation",
+          "keyword": "岁己",
+          "forms": ["随即", "随机", "最急", "最级", "c机", "赛吉斯", "就己", "废级"],
+          "requireNearby": ["秒回", "吐槽", "怀里", "口癖", "口屁", "吃醋", "好起来", "暴龙", "攻击", "支持", "新衣"],
+          "excludePatterns": ["随机(?:抽取|抽奖|数|种子|生成|匹配|分配|选择)"]
+        },
+        {
+          "id": "sui-reflexive-person-reference",
+          "keyword": "岁己",
+          "forms": ["自己"],
+          "cuePattern": "(?:和|跟|被|对)自己(?:好起来|睡|吐槽|发消息)"
+        },
+        {
+          "id": "sui-episode-message-reference",
+          "keyword": "岁己",
+          "forms": ["这一集"],
+          "cuePattern": "这一集.{0,12}(?:消息|秒回)"
+        },
+        {
+          "id": "sui-small-gift-reference",
+          "keyword": "小岁",
+          "forms": ["小碎"],
+          "requireNearby": ["海獭", "栞栞", "弥月", "小弥", "前辈", "主播"],
+          "excludePatterns": ["小小碎", "小碎(?:步|片|石|花|块|屑|发|钻|机)", "[击打折破摔碾撕咬切压]小碎"]
+        }
+      ]
+    },
     "prePaddingSeconds": 20,
     "postPaddingSeconds": 35,
     "contextPrePaddingSeconds": 180,
@@ -1650,7 +1682,17 @@
       "maxOutputTokens": 24000,
       "maxDanmakuRows": 120,
       "maxEvidenceChars": 80000,
-      "timeoutMs": 600000
+      "timeoutMs": 600000,
+      "audioChecks": {
+        "enabled": true,
+        "windowSeconds": 30,
+        "maxWindowsPerGroup": 3,
+        "maxWindowsPerRecording": 6,
+        "maxAudioSecondsPerRecording": 180,
+        "timeoutMs": 180000,
+        "maxElapsedMsPerRecording": 360000,
+        "hotwords": ["岁己", "小岁"]
+      }
     },
     "mergeGapSeconds": 45,
     "burnSubtitles": true,
@@ -1673,6 +1715,14 @@
     "autoUpload": {
       "enabled": false
     },
+    "automaticPublication": {
+      "mode": "auto",
+      "scope": "configured_keywords",
+      "policyVersion": "topic-v1",
+      "activatedAt": "2026-10-04T01:17:26Z",
+      "authorizationNote": "用户授权关键词切片通过最终审核后自动入队投稿；沿用现有关键词与忽略房间配置，仅在现有企微列表汇总状态，不单发成功或BV通知。",
+      "concurrency": 2
+    },
     "notify": {
       "enabled": true,
       "includeSubtitleContext": true,
@@ -1686,9 +1736,10 @@
     "enabled": true,
     "roomIds": ["25788785"],
     "maxSingleVideoSeconds": 3600,
+    "requireOriginalStreamCopy": true,
     "autoUpload": true,
-    "ai": { "boundaryEvidenceMethod": "independent_local_asr", "boundaryModel": "gemini-3.1-pro-preview", "frameProvider": "daiYu", "frameApiMode": "openai_chat", "frameModel": "gpt-6-luna" },
-    "authorizationNote": "用户授权切出并投稿岁己所有艾尔登法环游玩内容，并让以后的艾尔登法环自动投稿；保留游戏音画，上传外挂字幕。",
+    "ai": { "boundaryEvidenceMethod": "independent_local_asr", "boundaryModel": "gemini-3.1-pro-preview", "frameProvider": "daiYu", "frameApiMode": "openai_chat", "frameModel": "gpt-6.1-sol" },
+    "authorizationNote": "用户授权切出并投稿岁己所有艾尔登法环游玩内容，并让以后的艾尔登法环自动投稿；保留游戏音画，上传外挂字幕。用户要求不降码率，超限切短，保留原视频与音频码流。",
     "games": [{
       "id": "elden-ring", "name": "艾尔登法环",
       "aliases": ["艾尔登法环", "艾登法环", "法环", "老头环", "ELDEN RING"],
@@ -1697,14 +1748,30 @@
     }]
   },
   "streamActivityClips": {
+    "automaticPublication": {
+      "mode": "auto",
+      "roomIds": [
+        "25788785"
+      ],
+      "policyVersion": "stream-activity-v1",
+      "activatedAt": "2026-10-05T04:47:39.731Z",
+      "authorizationNote": "用户明确要求岁己歌切与同步视听也自动投稿；通过当前原音边界与成片最终审核后进入既有单实例上传队列，仅在既有企微列表汇总状态，不逐条发送成功或BV消息。"
+    },
     "enabled": true,
     "detectionMode": "summary",
+    "verification": { "provider": "daiYu", "apiMode": "openai_chat", "model": "gpt-6.1-sol", "evidenceMethod": "independent_local_asr" },
     "roomIds": ["25788785"],
     "songs": { "collection": { "seasonId": 9223796, "sectionId": 10312547 } },
     "watch": { "collection": { "seasonId": 9223831, "sectionId": 10312582 } }
   },
   "ownStreamClips": {
     "enabled": true,
+    "automaticPublication": {
+      "mode": "auto", "roomIds": ["25788785"], "policyVersion": "own-stream-v1",
+      "activatedAt": "2026-10-02T19:05:41Z",
+      "authorizationNote": "用户授权普通岁己切片审核明确通过后自动入队投稿；仅在现有企微列表汇总状态，不单发成功或BV通知。",
+      "concurrency": 2
+    },
     "enhancements": {
       "enabled": true,
       "workflow": "creative",
@@ -1746,6 +1813,7 @@
       "maxElapsedMs": 1200000,
       "repairAttempts": 1,
       "holdUnresolvedBeforeRender": true,
+      "sourceReviewBeforeRender": true,
       "dialogueEnabled": true,
       "evidenceEncoding": "compact",
       "timeoutMs": 600000,
@@ -2075,9 +2143,6 @@
           "小紫",
           "小sei"
         ],
-        "ambiguous_aliases": [
-          "小碎"
-        ],
         "hotword_terms": [
           "小岁"
         ]
@@ -2132,6 +2197,16 @@
         "红味": "虹味"
       },
       "ambiguous": [
+        {
+          "from": "小碎",
+          "to": "小岁",
+          "require_nearby": ["主播", "直播", "开播", "SUI", "岁己", "饼干岁", "VR", "VirtuaReal"],
+          "context_window_tokens": 6,
+          "match_mode": "token",
+          "boundary_sensitive": true,
+          "exclude_when": [],
+          "exclude_pattern": []
+        },
         {
           "from": "碎几",
           "to": "岁己",
@@ -2290,7 +2365,36 @@
             "费姐": "岁己",
             "克洛亚": "克罗雅",
             "克利亚": "克罗雅"
-          }
+          },
+          "ambiguous": [
+            {
+              "from": "赛吉斯",
+              "to": "岁己",
+              "require_nearby": ["支持"],
+              "context_window_tokens": 6,
+              "match_mode": "token",
+              "boundary_sensitive": true,
+              "exclude_pattern": ["(?<!支持)赛吉斯"]
+            }
+          ]
+        }
+      },
+      {
+        "match": { "room_id": "1791260716" },
+        "backend": "paraformer",
+        "corrections": {
+          "ambiguous": [
+            {
+              "from": "小碎",
+              "to": "小岁",
+              "require_nearby": ["海獭"],
+              "context_window_tokens": 6,
+              "match_mode": "token",
+              "boundary_sensitive": false,
+              "exclude_when": ["小碎步", "小碎片", "小碎石", "小碎花", "小碎块", "小碎屑", "小碎发", "小碎钻", "小碎机"],
+              "exclude_pattern": ["[击打折破摔碾撕咬切压]小碎", "(?<!给)小碎", "小碎(?!看|买|送)"]
+            }
+          ]
         }
       },
       {

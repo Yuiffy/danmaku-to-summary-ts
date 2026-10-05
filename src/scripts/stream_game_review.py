@@ -2,6 +2,7 @@
 from __future__ import annotations
 import hashlib
 import json
+import re
 import math
 from pathlib import Path
 try:
@@ -60,12 +61,30 @@ def check_closing_frames(verification, duration):
         previous = time
     if abs(samples[0]["time"] - spoken) > .001 or abs(samples[-1]["time"] - scan) > .001:
         raise ValueError("game original closing frame coverage is incomplete")
-    if any(f["activity"] == "uncertain" for f in frames):
-        raise ValueError("game original closing frames remain uncertain")
     games = [i for i, frame in enumerate(frames) if frame["activity"] == "game"]
+    last = games[-1] if games else -1
+    if any(f["activity"] == "uncertain" for f in frames[last + 1:]):
+        raise ValueError("game original closing frames remain uncertain")
+    for context in review.get("contextReviews") or []:
+        response_path = Path(context.get("responsePath") or "")
+        original = context.get("originalSample") or {}
+        context_samples = context.get("samples") or []
+        if (not response_path.is_file() or file_digest(response_path) != context.get("responseSha256")
+                or not Path(original.get("path") or "").is_file() or file_digest(original["path"]) != original.get("sha256")
+                or not context_samples or any(not Path(s.get("path") or "").is_file()
+                    or file_digest(s["path"]) != s.get("sha256") for s in context_samples)):
+            raise ValueError("game original closing context evidence changed")
+        raw = json.loads(response_path.read_text(encoding="utf-8"))
+        parsed = json.loads(re.sub(r"\s*```$", "", re.sub(r"^```(?:json)?\s*", "", raw["text"].strip())))
+        results = parsed.get("frames") or []
+        target = next((i for i, s in enumerate(context_samples) if abs(s["time"] - context.get("time", -1)) < .001), -1)
+        accepted = next((i for i, s in enumerate(samples) if abs(s["time"] - context.get("time", -1)) < .001), -1)
+        if (len(results) != len(context_samples) or any(f.get("index") != s.get("index") for f, s in zip(results, context_samples))
+                or target < 0 or accepted < 0 or samples[accepted]["sha256"] != context_samples[target]["sha256"]
+                or any(frames[accepted][k] != results[target].get(k) for k in ("activity", "description"))):
+            raise ValueError("game accepted closing context differs from original review")
     expected = spoken
     if games:
-        last = games[-1]
         if last + 2 >= len(frames):
             raise ValueError("game remains visible at the end of closing evidence")
         if samples[last + 1]["time"] - samples[last]["time"] > .251:
@@ -95,7 +114,7 @@ def bind_quote(cues, window, quote):
     return {"start": first["start"], "end": last["end"]}
 
 
-def check_original_extraction(path, source, time, end=None):
+def check_original_extraction(path, source, time, end=None, original_resolution=False):
     receipt_path = Path(str(path) + ".complete.json")
     receipt = json.loads(receipt_path.read_text(encoding="utf-8-sig"))
     identity = {k: source[k] for k in ("mediaPath", "mediaBytes", "mediaMtimeNs")}
@@ -109,7 +128,8 @@ def check_original_extraction(path, source, time, end=None):
     if end is not None and (len(args) != 17 or args[5] != "-t" or not math.isfinite(float(args[6])) or abs(float(args[6]) - (end-time)) > .001
             or args[7:-1] != ["-vn", "-ac", "1", "-ar", "16000", "-c:a", "libmp3lame", "-b:a", "64k"]):
         raise ValueError("independent game audio extraction differs from original window")
-    if end is None and args[5:-1] != ["-frames:v", "1", "-vf", "scale=960:-2", "-q:v", "3"]:
+    frame_args = ["-frames:v", "1", "-q:v", "2"] if original_resolution else ["-frames:v", "1", "-vf", "scale=960:-2", "-q:v", "3"]
+    if end is None and args[5:-1] != frame_args:
         raise ValueError("independent game frame extraction differs from original time")
     return receipt_path, receipt
 
@@ -145,7 +165,7 @@ def read_independent_audio(bundle, source):
     return rows
 
 
-def check_independent_audio_quote(excerpt, window, quote, expected, source, audio_path, index):
+def check_independent_audio_quote(excerpt, window, quote, expected, source, audio_path, index, source_cues):
     evidence = excerpt.get("localAudioEvidence") or {}
     primary = evidence.get("primary") or {}
     if (evidence.get("version") != 1 or evidence.get("method") != "independent_local_asr"
@@ -153,7 +173,7 @@ def check_independent_audio_quote(excerpt, window, quote, expected, source, audi
             or Path(primary.get("audioPath") or "").resolve() != audio_path.resolve()
             or not isinstance(evidence.get("retranscriptions"), list)):
         raise ValueError("independent boundary is missing its actual original-audio transcription")
-    matches = []
+    matches, unresolved, bundles = [], [], [primary] + evidence["retranscriptions"]
     for context_index, bundle in enumerate([primary] + evidence["retranscriptions"]):
         rows = read_independent_audio(bundle, source)
         if bundle["start"] < window["start"] or bundle["end"] > window["end"]:
@@ -163,16 +183,179 @@ def check_independent_audio_quote(excerpt, window, quote, expected, source, audi
         except ValueError:
             continue
         anchor = "start" if index == 0 else "end"
-        if (bound["start"] > expected["end"]+3 or expected["start"] > bound["end"]+3
-                or abs(bound[anchor]-expected[anchor]) > 3):
-            raise ValueError("independent audio and source subtitles disagree about boundary time")
-        matches.append({"contextIndex": context_index, "quoteSource": bound})
+        agrees = lambda a: a["start"] <= expected["end"]+3 and expected["start"] <= a["end"]+3 and abs(a[anchor]-expected[anchor]) <= 3
+        match = {"contextIndex": context_index, "quoteSource": bound}
+        if not agrees(bound):
+            words = "".join(c["text"] for c in source_cues if c["start"] >= expected["start"]-.001 and c["end"] <= expected["end"]+.001)
+            normalized = "".join(c for c in words.lower() if c.isalnum())
+            context_bound = None
+            try:
+                context_bound = bind_quote(rows, window, normalized)
+            except ValueError:
+                pass
+            aligned, mode, context_words = context_bound, "whole_cues", words
+            if aligned is None or not agrees(aligned):
+                at = normalized.find(quote)
+                edge = normalized[:at] if index == 0 else normalized[at+len(quote):]
+                context_bound = None
+                if at >= 0 and len(edge) >= 4:
+                    try:
+                        context_bound = bind_quote(rows, window, edge)
+                    except ValueError:
+                        pass
+                continuous = context_bound is not None and (
+                    context_bound["end"] <= bound["start"]+.001 and bound["start"]-context_bound["end"] <= 3 if index == 0
+                    else context_bound["start"] >= bound["end"]-.001 and context_bound["start"]-bound["end"] <= 3)
+                aligned = ({"start": context_bound["start"] if index == 0 else bound["start"],
+                            "end": bound["end"] if index == 0 else context_bound["end"]} if continuous else None)
+                mode = "leading_cue_prefix" if index == 0 else "trailing_cue_suffix"
+                context_words = edge
+            if aligned is None or not agrees(aligned):
+                unresolved.append(match)
+            else:
+                match["alignedSourceContext"] = {"mode": mode, "words": context_words, "quoteSource": context_bound}
+        matches.append(match)
     if not matches:
         raise ValueError("boundary phrase is absent or ambiguous in independent original-audio decode")
+    consistent = [m for m in matches if m not in unresolved]
+    for coarse in unresolved:
+        span, a = bundles[coarse["contextIndex"]], coarse["quoteSource"]
+        def refines(match):
+            narrower, b = bundles[match["contextIndex"]], match["quoteSource"]
+            return (match["contextIndex"] > 0 and narrower["start"] >= span["start"] and narrower["end"] <= span["end"]
+                and narrower["end"]-narrower["start"] < span["end"]-span["start"]
+                and b["end"]-b["start"] < a["end"]-a["start"] and b["start"] >= a["start"]-3 and b["end"] <= a["end"]+3)
+        if not any(refines(m) for m in consistent):
+            raise ValueError("independent audio and source subtitles disagree about boundary time")
+    selected = consistent[0]
     saved = excerpt.get("independentlyTranscribedQuote") or {}
-    if saved.get("contextIndex") != matches[0]["contextIndex"] or any(
-            abs((saved.get("quoteSource") or {}).get(k, -1000)-matches[0]["quoteSource"][k]) > .001 for k in ("start", "end")):
+    if saved.get("contextIndex") != selected["contextIndex"] or any(
+            abs((saved.get("quoteSource") or {}).get(k, -1000)-selected["quoteSource"][k]) > .001 for k in ("start", "end")):
         raise ValueError("independently transcribed boundary quote differs from original evidence")
+    if saved.get("alignedSourceContext") != selected.get("alignedSourceContext"):
+        raise ValueError("independently transcribed sentence context differs from original evidence")
+    if saved.get("resolvedCoarseQuotes", []) != unresolved:
+        raise ValueError("independently refined boundary differs from original coarse evidence")
+
+
+def check_visual_start(verification, window, excerpt, duration, source):
+    """Recompute a silent opening from original frames and the independent lead-in review."""
+    review = verification.get("startFrameReview") or {}
+    number = lambda v: not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v)
+    identity = {k: source[k] for k in ("mediaPath", "mediaBytes", "mediaMtimeNs")}
+    bracket = review.get("bracket") or {}
+    samples, frames, batches = (review.get(k) or [] for k in ("samples", "frames", "batches"))
+    if (verification.get("version") != 4 or verification.get("protocolVersion", 0) < 12
+            or verification.get("evidenceMethod") != "independent_local_asr"
+            or review.get("version") not in (1, 2) or review.get("timingSource") not in ("original_visual_transition", "original_visual_context")
+            or review.get("version") == 2 and verification.get("protocolVersion", 0) < 13
+            or review.get("source") != identity or review.get("window") != window
+            or review.get("sampleSeconds") != 2 or review.get("resolutionSeconds") != .25
+            or not all(number(bracket.get(k)) for k in ("start", "end"))
+            or not window["start"] <= bracket["start"] < bracket["end"] <= window["end"] <= duration
+            or bracket["end"] - bracket["start"] > 30 or not 3 <= len(samples) <= 64 or len(samples) != len(frames)):
+        raise ValueError("game original visual opening evidence is incomplete")
+    if (excerpt.get("decision") != "keep" or excerpt.get("observed") is not True
+            or excerpt.get("timingSource") != review.get("timingSource")
+            or excerpt.get("boundaryAnchor") != ("before_retained_context" if review.get("timingSource") == "original_visual_context" else "before_visual_transition") or excerpt.get("heardWords") is not None
+            or not str(excerpt.get("reason") or "").strip()
+            or any(k in excerpt for k in ("quoteSource", "independentlyTranscribedQuote"))
+            or verification["audioObservations"][0] != {"index": 1, "timingSource": review.get("timingSource"), "heardWords": None}):
+        raise ValueError("game visual opening cannot impersonate a spoken boundary quote")
+    evidence = review.get("localAudioEvidence") or {}
+    primary = evidence.get("primary") or {}
+    if (evidence.get("version") != 1 or evidence.get("method") != "independent_local_asr"
+            or primary.get("start") != window["start"] or primary.get("end") != window["end"]
+            or Path(primary.get("audioPath") or "").resolve() != (Path(verification["evidenceDirectory"]) / "audio-1.mp3").resolve()
+            or not isinstance(evidence.get("retranscriptions"), list)):
+        raise ValueError("game visual opening needs the complete independent lead-in transcription")
+    for bundle in [primary] + evidence["retranscriptions"]:
+        read_independent_audio(bundle, source)
+        if bundle["start"] < window["start"] or bundle["end"] > window["end"]:
+            raise ValueError("game visual opening retranscription exceeds the original window")
+    indices = [sample.get("index") for sample in samples]
+    if (any(not isinstance(i, int) or isinstance(i, bool) for i in indices)
+            or sorted(indices) != list(range(1, len(samples) + 1))):
+        raise ValueError("game original visual opening sample identities are invalid")
+    previous = None
+    for sample, frame in zip(samples, frames):
+        time = sample.get("time")
+        if (frame.get("index") != sample["index"] or not number(time)
+                or not window["start"] <= time <= bracket["end"] or previous is not None and time <= previous
+                or frame.get("activity") not in ("game", "other") or not str(frame.get("description") or "").strip()):
+            raise ValueError("game visual opening frames are incomplete or uncertain")
+        if file_digest(sample["path"]) != sample.get("sha256"):
+            raise ValueError("game original visual opening frame changed")
+        receipt_path, _ = check_original_extraction(sample["path"], source, time)
+        if str(receipt_path) != sample.get("receiptPath") or file_digest(receipt_path) != sample.get("receiptSha256"):
+            raise ValueError("game original visual opening frame receipt changed")
+        previous = time
+    if (abs(samples[0]["time"] - window["start"]) > .001 or abs(samples[-1]["time"] - bracket["end"]) > .001
+            or frames[0]["activity"] != "other"):
+        raise ValueError("game visual opening window already starts during possible setup or gameplay")
+    def response_row(value, expected_binding):
+        response_path = Path(value.get("responsePath") or "")
+        if not response_path.is_file() or file_digest(response_path) != value.get("responseSha256"):
+            raise ValueError("game original visual opening response changed")
+        raw = json.loads(response_path.read_text(encoding="utf-8-sig"))
+        if raw.get("requestBinding") != expected_binding:
+            raise ValueError("game original visual opening response request binding changed")
+        return json.loads(re.sub(r"\s*```$", "", re.sub(r"^```(?:json)?\s*", "", raw["text"].strip())))
+    sample_by_id = {sample["index"]: sample for sample in samples}
+    frame_by_id = {frame["index"]: frame for frame in frames}
+    bind_samples = lambda selected: [{k: sample[k] for k in ("index", "time", "sha256")} for sample in selected]
+    covered = []
+    for batch in batches:
+        indices = batch.get("indices") or []
+        if not 1 <= len(indices) <= 8 or any(not isinstance(i, int) or isinstance(i, bool) or i not in sample_by_id for i in indices):
+            raise ValueError("game visual opening review has invalid sample identities")
+        parsed = response_row(batch, {"version": 1, "source": identity,
+            "samples": bind_samples([sample_by_id[i] for i in indices])})
+        if not str(parsed.get("reason") or "").strip() or parsed.get("frames") != [frame_by_id[i] for i in indices]:
+            raise ValueError("game visual opening frames differ from their original review")
+        covered.extend(indices)
+    if sorted(covered) != list(range(1, len(samples) + 1)):
+        raise ValueError("game visual opening review does not cover every original frame once")
+    context = review.get("contextReview") or {}
+    raw_context = response_row(context, {"version": 1, "source": identity, "window": window,
+        "localAudioEvidence": evidence, "samples": bind_samples(samples)})
+    keys = (("decision", "reason", "windowStartsUnrelated", "earlierContextClosed", "allPossibleSetupRetained", "ownGameTransition", "retainedContentAllowed", "retainedLeadIn")
+            if review.get("version") == 2 else ("decision", "reason", "windowStartsUnrelated", "noEarlierSetup", "noAmbiguousSetup", "silentTransition"))
+    if (any(context.get(k) != raw_context.get(k) for k in keys) or context.get("decision") != "keep"
+            or not str(context.get("reason") or "").strip() or any(context.get(k) is not True for k in (keys[2:-1] if review.get("version") == 2 else keys[2:]))):
+        raise ValueError("game visual opening lead-in has unresolved earlier setup")
+    first_game = next((i for i, frame in enumerate(frames) if frame["activity"] == "game"), -1)
+    dense = [i for i, sample in enumerate(samples) if bracket["start"] <= sample["time"] <= bracket["end"]]
+    if (first_game <= 0 or any(frame["activity"] != "game" for frame in frames[first_game:]) or len(dense) < 2
+            or abs(samples[dense[0]]["time"] - bracket["start"]) > .001
+            or abs(samples[dense[-1]]["time"] - bracket["end"]) > .001
+            or frames[dense[0]]["activity"] != "other" or frames[dense[-1]]["activity"] != "game"
+            or first_game not in dense or first_game - 1 not in dense
+            or any(samples[b]["time"] - samples[a]["time"] > 2.001 for a, b in zip(dense, dense[1:]))
+            or samples[first_game]["time"] - samples[first_game - 1]["time"] > .251):
+        raise ValueError("game original visual opening transition is not densely bracketed")
+    expected = samples[first_game - 1]["time"]
+    if review.get("version") == 2:
+        lead = context.get("retainedLeadIn")
+        if lead is not None:
+            transcript = read_independent_audio(primary, source)
+            index = lead.get("transcriptIndex") if isinstance(lead, dict) else None
+            if not isinstance(index, int) or isinstance(index, bool) or not 1 <= index <= len(transcript):
+                raise ValueError("game retained lead-in transcription identity changed")
+            row = transcript[index - 1]
+            if (lead != {"transcriptIndex": index, "start": row["start"], "end": row["end"], "text": row["text"]}
+                    or not window["start"] < row["start"] < expected or review["timingSource"] != "original_visual_context"):
+                raise ValueError("game retained lead-in differs from independent transcription")
+            expected = row["start"]
+        elif review["timingSource"] != "original_visual_transition":
+            raise ValueError("game visual opening context method changed")
+    elif review["timingSource"] != "original_visual_transition":
+        raise ValueError("legacy game opening cannot claim retained context")
+    if (not number(review.get("start")) or abs(review["start"] - expected) > .001
+            or not number(verification.get("start")) or abs(verification["start"] - expected) > .001
+            or not number(excerpt.get("seconds")) or abs(excerpt["seconds"] + window["start"] - expected) > .001):
+        raise ValueError("game accepted opening differs from original visual transition")
+    return expected
 
 
 def check_boundary_quotes(verification, source_srt, duration, source=None):
@@ -188,6 +371,11 @@ def check_boundary_quotes(verification, source_srt, duration, source=None):
     for i, (window, excerpt) in enumerate(zip(windows, excerpts)):
         if not all(number(window.get(k)) for k in ("start", "end")) or not 0 <= window["start"] < window["end"] <= duration + .01:
             raise ValueError("game original boundary audio window is invalid")
+        if i == 0 and excerpt.get("timingSource") in ("original_visual_transition", "original_visual_context"):
+            if not source:
+                raise ValueError("game visual opening needs its original recording identity")
+            check_visual_start(verification, window, excerpt, duration, source)
+            continue
         quote = normalize(excerpt.get("heardWords"))
         expected_anchor = "before_phrase" if i == 0 else "after_phrase"
         if excerpt.get("decision") != "keep" or excerpt.get("observed") is not True or excerpt.get("boundaryAnchor") != expected_anchor or excerpt.get("timingSource") != "original_transcript_quote" or len(quote) < 4:
@@ -206,7 +394,7 @@ def check_boundary_quotes(verification, source_srt, duration, source=None):
             if not source:
                 raise ValueError("independent boundary needs its original recording identity")
             check_independent_audio_quote(excerpt, window, quote, expected, source,
-                Path(verification["evidenceDirectory"]) / f"audio-{i+1}.mp3", i)
+                Path(verification["evidenceDirectory"]) / f"audio-{i+1}.mp3", i, cues)
 
 
 def check_original_game_frames(verification, source):
@@ -218,8 +406,10 @@ def check_original_game_frames(verification, source):
         if frame.get("index") != i+1 or frame.get("time") != time or file_digest(frame["path"]) != frame.get("sha256"):
             raise ValueError("game original frame evidence changed")
         check_original_extraction(frame["path"], source, time)
-    for sample in (verification.get("endFrameReview") or {}).get("samples") or []:
-        check_original_extraction(sample["path"], source, sample["time"])
+    closing = verification.get("endFrameReview") or {}
+    full_resolution = {s["path"] for c in closing.get("contextReviews") or [] for s in c["samples"] if abs(s["time"] - c["time"]) < .001}
+    for sample in closing.get("samples") or []:
+        check_original_extraction(sample["path"], source, sample["time"], original_resolution=sample["path"] in full_resolution)
 
 
 def check_source_window(event):
@@ -236,7 +426,8 @@ def check_source_window(event):
 
 def chapter_phase_end(event, index):
     chapters = event.get("chapters") or []
-    return chapters[index+1]["start"] if index+1 < len(chapters) else (event.get("sourceWindow") or event)["end"]
+    return next((c["start"] for c in chapters[index+1:] if c["start"] > chapters[index]["start"]),
+                (event.get("sourceWindow") or event)["end"])
 
 
 def check_frame_names(event, source):
@@ -372,7 +563,10 @@ def check_artifacts(metadata):
         if verification.get("version") in (2, 3, 4):
             frames, times = verification.get("frameObservations") or [], verification.get("frameTimes") or []
             audio = verification.get("audioObservations") or []
-            if len(audio) != 2 or any(a.get("index") != i + 1 or not str(a.get("heardWords") or "").strip() for i, a in enumerate(audio)):
+            visual_start = (verification.get("protocolVersion", 0) >= 12 and verification.get("version") == 4
+                and ((verification.get("boundaryReview") or {}).get("excerptReviews") or [{}])[0].get("timingSource") in ("original_visual_transition", "original_visual_context"))
+            if len(audio) != 2 or any(a.get("index") != i + 1 or not (i == 0 and visual_start)
+                    and not str(a.get("heardWords") or "").strip() for i, a in enumerate(audio)):
                 raise ValueError("game original audio observations are incomplete")
             if not frames or len(frames) != len(times) or any(f.get("index") != i + 1 or f.get("activity") not in ("gameplay", "other", "watching_game", "black")
                     or not str(f.get("description") or "").strip() for i, f in enumerate(frames)):

@@ -1225,7 +1225,8 @@ async function generateTextWithGemini(prompt, options = {}) {
     console.log(`   模型: ${geminiConfig.model}`);
     console.log(`   温度: ${geminiConfig.temperature}`);
 
-    let originalFetch = null;
+    let originalFetch = null, geminiResponse;
+    const geminiAttempt = { provider: 'gemini', model: geminiConfig.model, requestStarted: false };
     try {
         // 获取超时时间 (默认 90 秒)
         const timeoutMs = config.timeouts?.aiApiTimeout || 90000;
@@ -1264,9 +1265,10 @@ async function generateTextWithGemini(prompt, options = {}) {
         });
 
         const apiPromise = (async () => {
+            geminiAttempt.requestStarted = true;
             const result = await model.generateContent(prompt);
-            const response = await result.response;
-            return response.text();
+            geminiResponse = await result.response;
+            return geminiResponse.text();
         })();
 
         const text = await Promise.race([apiPromise, timeoutPromise]);
@@ -1285,13 +1287,19 @@ async function generateTextWithGemini(prompt, options = {}) {
         }
 
         console.log('✅ Gemini API调用成功');
+        Object.assign(geminiAttempt, require('./workflow-runtime').loadWorkflow('ai/usage').mediaUsage(geminiResponse?.usageMetadata),
+            { status: 'success', usageFinal: true });
+        logAiUsage(geminiAttempt);
         return createGenerationResult(text, {
             provider: 'gemini',
             model: geminiConfig.model,
             fallback: false,
-            attempts: [{ provider: 'gemini', model: geminiConfig.model, status: 'success' }]
+            attempts: [geminiAttempt]
         });
     } catch (error) {
+        Object.assign(geminiAttempt, require('./workflow-runtime').loadWorkflow('ai/usage').mediaUsage(geminiResponse?.usageMetadata),
+            { status: 'failure', usageFinal: geminiResponse ? true : null });
+        logAiUsage(geminiAttempt);
         // 恢复原始 fetch(如果被覆盖了)
         if (originalFetch !== null) {
             global.fetch = originalFetch;

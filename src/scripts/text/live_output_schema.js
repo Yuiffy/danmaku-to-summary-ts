@@ -28,4 +28,31 @@ function buildSharedLiveResponseFormat() {
     ]}})};
 }
 
-module.exports={ACTIVITY_TYPES,EVIDENCE_TARGETS,ACTOR_KINDS,buildCombinedResponseFormat,buildSharedLiveResponseFormat};
+function buildLiveContentResponseFormat({ includeActivityTimeline = false, timelineVersion = 1 } = {}) {
+    const properties = { ...buildCombinedResponseFormat().schema.properties.content.properties };
+    if (includeActivityTimeline) {
+        const sourceId = { type: 'string', pattern: '^[TD][0-9]+$' };
+        const event = {
+            start: { type: 'number', minimum: 0 }, end: { type: 'number', minimum: 0 },
+            name: { type: ['string', 'null'] },
+            startObserved: { type: 'boolean' }, endObserved: { type: 'boolean' },
+            evidenceIds: { type: 'array', items: sourceId, minItems: 1 },
+            titleEvidenceIds: { type: 'array', items: sourceId }
+        };
+        properties.activityTimeline = object({
+            version: { type: 'integer', enum: [timelineVersion] },
+            status: { type: 'string', enum: ['complete', 'incomplete'] },
+            events: { type: 'array', items: { anyOf: [
+                object({ kind: { type: 'string', enum: ['song'] }, ...event,
+                    performance: { type: 'string', enum: ['full', 'fragment'] } }),
+                object({ kind: { type: 'string', enum: ['watch'] }, ...event,
+                    mediaKind: { type: 'string', enum: ['movie', 'anime', 'video'] } })
+            ] } }
+        });
+    }
+    return { type: 'json_schema', name: includeActivityTimeline ? 'live_content_activity_summary' : 'live_content_summary',
+        strict: true, schema: object(properties) };
+}
+
+module.exports={ACTIVITY_TYPES,EVIDENCE_TARGETS,ACTOR_KINDS,buildCombinedResponseFormat,buildSharedLiveResponseFormat,
+    buildLiveContentResponseFormat};

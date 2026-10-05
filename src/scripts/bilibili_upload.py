@@ -383,6 +383,14 @@ def resolve_auto_collection_section(section_id: int, credential: Credential, *, 
     raise RuntimeError(f'合集 {title} 已创建 season_id={new_id}，但尚未查询到小节 ID')
 
 
+def collection_episode_title(archive_title: str) -> str:
+    """Activity collections display names/dates while archives keep their column prefix."""
+    for prefix in ('【岁己歌切】', '【岁己同步视听】'):
+        if archive_title.startswith(prefix):
+            return archive_title[len(prefix):].strip()
+    return archive_title
+
+
 def add_episode_to_section(
     section_id: int,
     aid: int,
@@ -516,6 +524,8 @@ async def attach_video_to_collection(
                 print(f'[WARN] 查询失败: {view_data}')
         except Exception as e:
             print(f'[WARN] 补全 aid/cid 异常: {e}')
+
+    title = collection_episode_title(title)
 
     if aid in (None, ''):
         print(f'[WARN] 已上传但没有 aid，跳过合集关联 section_id={section_id}')

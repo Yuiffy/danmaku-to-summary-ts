@@ -1,6 +1,66 @@
 const visual = require('./stream_game_visual');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const sharp = require('sharp');
+const { getGameConfig } = require('./stream_game_plan');
+const { mediaSettings } = require('./stream_game_verification');
 
 describe('independent full gameplay timeline', () => {
+  test.each([
+    [{}, { provider: 'daiYu', apiMode: 'openai_chat', model: 'sub-model' }],
+    [{ ai: { frameModel: 'frame-model' } }, { provider: 'daiYu', apiMode: 'openai_chat', model: 'frame-model' }],
+    [{ visual: { provider: 'tuZi', apiMode: 'gemini_native', model: 'explicit-visual-model' } },
+      { provider: 'tuZi', apiMode: 'gemini_native', model: 'explicit-visual-model' }]
+  ])('full timeline sends the resolved media route to its request adapter (%j)', async (gameSettings, expected) => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'game-timeline-routing-'));
+    try {
+      const overrides = gameSettings as any;
+      const root = { ai: { text: { daiYu: { textModel: 'sub-model' }, gemini: { model: 'paid-gemini' } } },
+        streamGameClips: { ...overrides, ai: { timeoutMs: 1234, maxTokens: 3333, ...overrides.ai } } };
+      const jpeg = await sharp({ create: { width: 480, height: 270, channels: 3, background: '#101010' } }).jpeg().toBuffer();
+      const visualRequest = jest.fn(async (_prompt: string, inputs: any[], _root: any, settings: any) => {
+        expect(settings).toEqual({ ...expected, timeoutMs: 600000 });
+        expect(inputs.every(input => input.mimeType.startsWith('image/'))).toBe(true);
+        return { text: JSON.stringify({ ranges: [{ first: 1, last: 2, kind: 'other', note: 'Talking scene' }] }) };
+      });
+      const plan = { source: { mediaPath: 'fixture.flv' }, duration: 1, streamerName: 'Host' };
+      const extract = jest.fn(async (args: string[]) => fs.writeFileSync(args.at(-1), jpeg));
+      const options = { config: root, mediaPath: 'fixture.flv', visualRequest, extract };
+      const first = await visual.auditGameTimeline(plan, options, getGameConfig(root), { directory });
+      expect(await visual.auditGameTimeline(plan, options, getGameConfig(root), { directory })).toEqual(first);
+      expect(visualRequest).toHaveBeenCalledTimes(1);
+      expect(extract).toHaveBeenCalledTimes(2);
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  test('uncertain samples use independent local ASR by default without sending audio to the image provider', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'game-sample-routing-'));
+    try {
+      const config = getGameConfig({}), source = { mediaPath: 'original.flv' };
+      const timeline = { key: 'local-audio', samples: [{ index: 1, time: 60 }],
+        ranges: [{ first: 1, last: 1, kind: 'uncertain', note: 'Need original context' }] };
+      const transcribe = jest.fn(async () => ({ segments: [{ start: 2, end: 5, text: '昨天已经打完了今天只讨论' }] }));
+      const visualRequest = jest.fn(async (prompt: string, inputs: any[], _root: any, settings: any) => {
+        expect(settings).toMatchObject({ provider: 'daiYu', apiMode: 'openai_chat' });
+        expect(inputs).toHaveLength(5);
+        expect(inputs.every(input => input.mimeType === 'image/jpeg')).toBe(true);
+        expect(prompt).toContain('ASR and images, NOT audio');
+        expect(prompt).toContain('昨天已经打完了今天只讨论');
+        return { text: JSON.stringify({ kind: 'other', heardWords: '昨天已经打完了', reason: 'Discussing earlier gameplay',
+          frames: inputs.map((_input, index) => ({ index: index + 1, activity: 'other', description: 'Talking avatar' })) }) };
+      });
+      const result = await visual.resolveUncertainSamples(timeline, { source, duration: 120, streamerName: 'Host' },
+        { config: {}, mediaPath: source.mediaPath, transcribe, visualRequest,
+          extract: async (args: string[]) => fs.writeFileSync(args.at(-1), Buffer.alloc(1280)) }, config,
+        { directory }, mediaSettings({}, config, 'visual'), path.join(directory, 'TIMELINE.json'));
+      expect(result.ranges[0].kind).toBe('other');
+      expect(result.temporalReviews[0]).toMatchObject({ version: 3, evidenceMethod: 'independent_local_asr' });
+      expect(transcribe).toHaveBeenCalledTimes(1);
+      expect(visualRequest).toHaveBeenCalledTimes(1);
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
   test('requires complete visual coverage and an allowed game', () => {
     const games = [{ id: 'elden-ring' }];
     const ranges = [{ first: 1, last: 2, kind: 'other', note: 'avatar' },

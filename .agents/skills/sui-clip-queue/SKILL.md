@@ -30,10 +30,26 @@ Do not repeat a full-stream scan or whole-recording ASR for each normal stream;
 `--scan` is an explicit diagnostic workflow, never an automatic fallback.
 Use the dedicated `【岁己歌切】` / `【岁己同步视听】` title prefixes and local
 music/cinema cover templates, separate from ordinary `【小岁】` highlights.
+Song covers prominently display actual song names and the recording date; never
+use a large generic `歌切` label. Song collection episode titles omit
+`【岁己歌切】`, while the archive title retains it. Preserve existing online
+human title edits when updating an already published cover.
+Viewing titles put the actual film/work name before the recording date. Covers
+use the full original viewing screenshot with a small name/date overlay, never
+a large generic `同步视听` headline. An unresolved film name remains a draft
+and cannot pass publication review. Reuse the existing overview and the session's
+source citations to recover a missing name; do not add a separate AI naming pass.
 For pending bundles, `activity:clips restyle --manifest <UPLOAD_MANIFEST.json>`
 updates presentation under the same IDs without AI, ASR or video re-encoding.
 Inspect original audio/frame verification and unknown title/boundary warnings.
 Use its `approve --metadata ... --note ... [--enqueue]` command after review.
+Configured `streamActivityClips.automaticPublication` may approve only new, current,
+independently verified complete summary-mode packages through its bound final AI
+review and existing upload worker. Keep automatic authority distinct from human
+review. Report statuses in the existing list only, without individual BV/success
+messages. Known source-timing repair and pending-ID revisions use the maintained
+`--repair-timing --transcript-record ... --revision-note ...` flow documented there;
+never approve the original mismatched videos or alter queue JSON.
 Keep the dedicated collections separate from ordinary topic/highlight routing;
 do not enqueue each song or viewing P as a standalone short clip.
 
@@ -230,7 +246,41 @@ Approval registers the short ID and enqueues it for the existing single-instance
 
 ### 5. Automatic post-stream selection
 
-For the live-end automatic path, inspect `REVIEW.md`. Run the optional `RESIDUAL_REVIEW.md` audit only when the task calls for extra recall. Automatic selection is a recall layer, not upload authorization. Convert accepted candidates into `manual_clip_queue` tasks so both automatic and manually found topics use identical cutting and burning.
+For the live-end automatic path, inspect `REVIEW.md`. Run the optional `RESIDUAL_REVIEW.md`
+audit only when the task calls for extra recall. Selection alone does not authorize
+upload. An explicit configured authorization is the exception: when
+`ownStreamClips.automaticPublication.mode` is `auto`, the room is in its allowlist,
+and a new automatic artifact was generated after `activatedAt`, the pipeline may
+enqueue its existing ID only after the final current-artifact review passes.
+The default remains `off`; production currently authorizes room `25788785`.
+The final review binds source evidence, actual media, subtitles, cover and public
+copy, and the existing single upload worker revalidates that binding. Retain the
+source recording for this asynchronous validation. Review uses complete retained
+text, full media decoding and sampled final-video frames; unresolved listening or
+motion-dependent questions still need human review. Read
+[the automatic publication contract](../../../docs/clip-publication-policy.md#审核通过后自动投稿).
+
+This authorization does not cover historical backfill, manual plan replay,
+`clips:review` refresh, ID registration or an already uploaded ID. Keep pending
+items under their existing IDs and use their supported review/rebuild commands;
+only manually selected material without an ID needs a `manual_clip_queue` task.
+Automatic enqueue failures and unknown outcomes belong in the existing complete
+WeCom list. Show confirmed uploaded, queued, duplicate and pending states honestly;
+duplicates point to the existing ID and need no additional approval. Do not send
+individual success messages or BV links. Combine ordinary and precision results
+in the final list, and do not override human changes made on Bilibili.
+
+Keyword/topic clips have a separate authorized policy:
+`clipTopics.automaticPublication` with `mode: auto`, `scope: configured_keywords`
+and `policyVersion: topic-v1`. It covers the existing configured keyword source
+rooms except `ignoredRoomIds`, not arbitrary clips or the own-stream allowlist.
+Only freshly rendered preflight-`ready` finals generated after its `activatedAt`
+may enter the same upload worker after a current bound final review passes.
+Legacy `clipTopics.autoUpload` never supplies this authorization. Historical ID
+imports, manual pending-candidate corrections and old-plan/group replay retain
+their existing explicit review/enqueue path. Report outcomes only in the existing
+topic list, with no per-success notification or BV link. Read
+[the keyword publication contract](../../../docs/topic-event-editorial.md#关键词切片最终审核后自动投稿).
 
 Read [references/auto-selection.md](references/auto-selection.md) for the staged selection design, scoring signals, diversity rules, and operational checks.
 

@@ -144,7 +144,7 @@ function prepareWindow(metadata, metadataPath, options, config, evidence) {
     if ((options.start === undefined) !== (options.end === undefined)) throw new Error('Supply both --start and --end');
     const start = Number(options.start ?? metadata.window.start);
     const end = Number(options.end ?? metadata.window.end);
-    const changed = start !== metadata.window.start || end !== metadata.window.end;
+    const changed = Boolean(options.transcriptRecord) || start !== metadata.window.start || end !== metadata.window.end;
     const editorialPlan = rejection && rejection.reason !== 'duration_out_of_bounds'
         ? require('./clipping/rejected_replan').reviewEditorialReplan(metadata, options, evidence, start, end) : null;
     const limits = metadata.mode === 'own_stream_fun_review'
@@ -201,12 +201,26 @@ async function updateRevision(metadataPath, options, config = require('./config-
     const { lock, lockPath } = acquireCandidateLock(metadataPath, options.candidateId);
     try {
         const before = fs.readFileSync(metadataPath, 'utf8');
-        const metadata = JSON.parse(before);
+        let metadata = JSON.parse(before);
         const id = identity(metadata, metadataPath, options);
         bindLegacyManualSource(metadata, options);
         const checked = checkedSource(metadata, options);
-        const evidence = checked.evidence;
+        let evidence = checked.evidence;
         let snapshot = checked.snapshot;
+        if (options.transcriptRecord) {
+            if (options.action !== 'prepare') throw new Error('Timing transcript requires rebuild');
+            const descriptor = JSON.parse(fs.readFileSync(options.transcriptRecord, 'utf8').replace(/^\uFEFF/u, ''));
+            // A later editorial revision may already use this bound aligned transcript.
+            const originalSnapshot = path.resolve(metadata.source.srtPath) === path.resolve(descriptor.path)
+                ? sourceSnapshot({ source: { ...metadata.source, srtPath: descriptor.originalSrtPath } }) : snapshot;
+            const transcript = require('./clipping/stream_activity_transcript').readTimingTranscript(options.transcriptRecord, originalSnapshot, config, true);
+            metadata = require('./workflow-runtime').loadWorkflow('clipping/ownTimingRecovery')
+                .prepareRenderedTimingRevision(metadata, transcript, originalSnapshot, options.reviewNote);
+            evidence = buildSubtitleEvidence(topic.parseTopicSrt(metadata.source.srtPath).segments);
+            metadata.grounding = { sourceSha256: evidence.sourceSha256 };
+            snapshot = sourceSnapshot(metadata);
+            metadata.preRenderSource = snapshot;
+        }
         if (options.xml !== undefined) {
             if (options.action !== 'prepare' || !String(options.reviewNote || '').trim()) throw new Error('Attach XML with an explicit rebuild review');
             const xmlPath = path.resolve(options.xml);
@@ -292,16 +306,44 @@ async function renderRevision(metadataPath, options, config = require('./config-
             output: { ...rendered.output, metadataPath, mediaError: null, coverError: null },
             renderedSubtitles: { ...draft, renderedSha256: draft.sha256, renderedRevision: draft.revision } };
         delete updated.preRenderHold;
+        if (updated.renderedTimingRepair) updated.renderedTimingRepair = { ...updated.renderedTimingRepair,
+            rendered: { window: { start: updated.window.start, end: updated.window.end },
+                video: fileDigest(updated.output.mediaPath), subtitles: fileDigest(updated.output.srtPath) } };
         writeJsonAtomic(staging, updated);
         const audit = childProcess.spawnSync('python', [path.join(__dirname, 'audit_bilibili_clip.py'),
             '--video', updated.output.mediaPath, '--srt', updated.output.srtPath, '--metadata', staging,
             '--cover', updated.output.coverPath, '--strict-warnings'],
         { encoding: 'utf8', windowsHide: true, timeout: 120000 });
         if (audit.error || audit.status !== 0) throw new Error(`Rebuilt media audit failed: ${audit.error?.message || audit.stdout || audit.stderr}`);
-        await require('./review_rendered_clip').approveRenderedClip(staging, { id,
-            reviewIndex: metadata.reviewIndex, reviewNote: options.reviewNote || review.note,
-            sourceKind: review.sourceKind, ...metadata.copy, preparedCover: rendered.output.coverPath }, config);
-        const approved = JSON.parse(fs.readFileSync(staging, 'utf8'));
+        let approved;
+        if (options.automaticReview === 'yes') {
+            const publication = require('./clipping/own_automatic_publication');
+            const context = require('./clipping/own_publication_context').reviewContext(updated, config);
+            updated.generatedAt = new Date().toISOString();
+            updated.uploadReady = true;
+            delete updated.ownStreamHumanReview;
+            approved = updated;
+            if (updated.renderedTimingRepair) {
+                const settings = asr.getAsrConfig(config), backend = settings.fun_asr_nano;
+                if (backend.python_path_map?.length) throw new Error('Final timing audio requires native Python paths');
+                approved = await require('./workflow-runtime').loadWorkflow('clipping/ownTimingRecovery').verifyRenderedTimingAudio(updated, {
+                    python: asr.resolvePythonCommand(backend), scriptPath: path.join(__dirname, 'python/ordinary_subtitle_audio.py'),
+                    settings: { model: backend.model, sensevoiceModel: settings.sensevoice.model, vadModel: backend.vad_model || 'fsmn-vad',
+                        device: backend.device, use_itn: false, resource_guard: { ...backend.resource_guard, torch_num_threads: 2 },
+                        gpu_throttle: backend.gpu_throttle, ffmpeg: config.audio?.ffmpeg?.path || 'ffmpeg', ffmpegThreads: 2 } });
+            }
+            approved = await publication.reviewArtifactCopy(approved, ['修复时间轴后重新核对原话及人物归属'], context);
+            if (approved.copy.title !== updated.copy.title || approved.copy.coverText !== updated.copy.coverText) {
+                approved.output = { ...approved.output, coverPath: await publication.renderCopyCover(approved, context) };
+            }
+            approved = (await publication.inspectFinals([approved], context))[0];
+        } else {
+            if (updated.renderedTimingRepair) throw new Error('Timing repair requires --automatic-review; no implicit human approval');
+            await require('./review_rendered_clip').approveRenderedClip(staging, { id,
+                reviewIndex: metadata.reviewIndex, reviewNote: options.reviewNote || review.note,
+                sourceKind: review.sourceKind, ...metadata.copy, preparedCover: rendered.output.coverPath }, config);
+            approved = JSON.parse(fs.readFileSync(staging, 'utf8'));
+        }
         if (!same(sourceSnapshot(metadata), snapshot) || fileDigest(draft.path) !== draft.sha256) {
             throw new Error('Source or approved subtitles changed during rendering');
         }

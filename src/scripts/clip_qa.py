@@ -3,6 +3,10 @@ import hashlib
 import json
 import math
 from pathlib import Path
+try:
+    from .clip_auto_publication import validate_publication_review, validate_saved_authorization
+except ImportError:
+    from clip_auto_publication import validate_publication_review, validate_saved_authorization
 
 
 def _file_digest(value):
@@ -54,6 +58,8 @@ def validate_metadata_qa(metadata):
     if metadata.get("ownStreamHumanReview"):
         validate_human_review(metadata)
         return
+    if metadata.get("automaticPublicationRequired"):
+        validate_publication_review(metadata)
     if metadata.get("mode") == "own_stream_fun_review" and metadata.get("uploadReady") is False:
         raise ValueError("own-stream clip is not upload ready")
     candidate = metadata.get("candidate") or {}
@@ -144,13 +150,18 @@ def validate_registry_qa(groups):
                 continue
             metadata_path = clip.get("metadataPath")
             if not metadata_path:
-                if clip.get("qaRequired") or clip.get("attributionRequired") or clip.get("humanReviewRequired") or clip.get("activityReviewRequired") or clip.get("gameReviewRequired"):
+                if clip.get("qaRequired") or clip.get("attributionRequired") or clip.get("humanReviewRequired") or clip.get("activityReviewRequired") or clip.get("gameReviewRequired") or clip.get("automaticPublicationRequired") or clip.get("automaticPublicationAuthorization"):
                     errors.append("reviewed clip is missing metadataPath")
                 continue
-            if not Path(metadata_path).exists() and not (clip.get("qaRequired") or clip.get("attributionRequired") or clip.get("humanReviewRequired") or clip.get("activityReviewRequired") or clip.get("gameReviewRequired")):
+            if not Path(metadata_path).exists() and not (clip.get("qaRequired") or clip.get("attributionRequired") or clip.get("humanReviewRequired") or clip.get("activityReviewRequired") or clip.get("gameReviewRequired") or clip.get("automaticPublicationRequired") or clip.get("automaticPublicationAuthorization")):
                 continue
             try:
                 metadata = json.loads(Path(metadata_path).read_text(encoding="utf-8-sig"))
+                if clip.get("automaticPublicationRequired") and metadata.get("automaticPublicationRequired") is not True:
+                    raise ValueError("required final publication review was removed")
+                if clip.get("automaticPublicationAuthorization"):
+                    validate_publication_review(metadata)
+                    validate_saved_authorization(metadata, clip)
                 if clip.get("activityReviewRequired") and metadata.get("type") != "stream_activity_submission":
                     raise ValueError("required activity review was removed")
                 if clip.get("gameReviewRequired") and metadata.get("type") != "stream_game_submission":
@@ -164,7 +175,7 @@ def validate_registry_qa(groups):
                 if clip.get("humanReviewRequired") and metadata["ownStreamHumanReview"].get("clipId") != clip.get("id"):
                     raise ValueError("human review belongs to a different clip ID")
                 validate_metadata_qa(metadata)
-                if metadata.get("qaRequired") or metadata.get("attributionRequired") or metadata.get("ownStreamHumanReview") or metadata.get("type") == "stream_game_submission" or clip.get("activityReviewRequired") or clip.get("gameReviewRequired"):
+                if metadata.get("qaRequired") or metadata.get("attributionRequired") or metadata.get("ownStreamHumanReview") or metadata.get("automaticPublicationRequired") or metadata.get("type") == "stream_game_submission" or clip.get("activityReviewRequired") or clip.get("gameReviewRequired"):
                     expected = {"title": metadata["copy"]["title"], "description": metadata["copy"]["description"],
                                 "mediaPath": metadata["output"]["mediaPath"], "coverPath": metadata["output"]["coverPath"]}
                     for key, value in expected.items():

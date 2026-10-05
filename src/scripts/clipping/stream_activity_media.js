@@ -39,7 +39,7 @@ async function activityCover(part, coverPath, config, presentation) {
     const directory = path.join(path.dirname(coverPath), 'temp', 'presentation', path.basename(coverPath, '.jpg'));
     fs.mkdirSync(directory, { recursive: true });
     const framePath = path.join(directory, 'frame.jpg'), presentationPath = path.join(directory, 'presentation.json');
-    await runFfmpeg(['-y', '-ss', String(Math.min(part.duration / 2, 90)), '-i', part.mediaPath,
+    await runFfmpeg(['-y', '-ss', String(presentation.kind === 'watch' ? part.duration / 2 : Math.min(part.duration / 2, 90)), '-i', part.mediaPath,
         '-frames:v', '1', '-vf', 'scale=1920:-2', '-q:v', '2', framePath],
     { ffmpegPath: config.audio?.ffmpeg?.path || 'ffmpeg', stage: '活动切片封面', timeoutMs: 60000 });
     writeJsonAtomic(presentationPath, presentation);

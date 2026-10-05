@@ -140,9 +140,12 @@ function approveCandidateDraft(metadata, evidence, note) {
 function hasDraftApproval(metadata, evidence, expectedSha256 = null) {
     const draft = readCandidateDraft(metadata, evidence);
     const approval = draft.approval;
-    return approval?.authority === 'user' && approval.sourceSha256 === evidence.sourceSha256
+    const direct = approval?.authority === 'user' && approval.sourceSha256 === evidence.sourceSha256
         && approval.sha256 === draft.sha256 && approval.revision === draft.revision
         && approval.copySha256 === copyDigest(metadata.copy) && (!expectedSha256 || expectedSha256 === draft.sha256);
+    return direct || (metadata.candidateRecovery?.status === 'ready'
+        && require('../workflow-runtime').loadWorkflow('clipping/topicRecovery')
+            .recoveryAuthorizes(metadata, evidence.sourceSha256, expectedSha256));
 }
 
 function candidateDraftEvidence(metadata, evidence) {
@@ -158,4 +161,4 @@ function candidateDraftEvidence(metadata, evidence) {
 }
 
 module.exports = { ensureCandidateDraft, readCandidateDraft, correctCandidateDraft, approveCandidateDraft,
-    hasDraftApproval, candidateDraftEvidence, writeJsonAtomic, digest };
+    hasDraftApproval, candidateDraftEvidence, writeJsonAtomic, writeRevision, digest };

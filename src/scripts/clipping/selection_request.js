@@ -29,6 +29,11 @@ function recordSelectionDiagnostic(diagnostics, context, result = null, error = 
 }
 
 async function requestSelectionText(prompt, requestOptions, config, rootConfig, info, phase, diagnostics, validate) {
+    return require('../workflow-runtime').loadWorkflow('ai/usage').withUsagePhase(phase, () =>
+        requestSelectionTextInPhase(prompt, requestOptions, config, rootConfig, info, phase, diagnostics, validate));
+}
+
+async function requestSelectionTextInPhase(prompt, requestOptions, config, rootConfig, info, phase, diagnostics, validate) {
     const key = requestOptions.structuredOutputKey || (phase.startsWith('actor-review-') ? 'reviews' : phase.startsWith('dialogue-evidence-') ? 'windows'
         : phase === 'global-rank' ? 'decisions' : 'clips');
     requestOptions = { ...requestOptions, structuredOutputKey: key, requestPhase: phase,
@@ -51,7 +56,7 @@ async function requestSelectionText(prompt, requestOptions, config, rootConfig, 
         }
     }
     const generator = require('../ai_text_generator');
-    const provider = rootConfig.ai?.text?.provider || 'gemini';
+    const provider = config.ai?.provider || rootConfig.ai?.text?.provider || 'gemini';
     const textConfig = rootConfig.ai?.text || {};
     const settings = name => {
         const { apiKey, proxy, retry, transientMaxAttempts, transientRetryDelayMs, ...rest } = textConfig[name] || {};

@@ -78,6 +78,8 @@ def import_json(args: argparse.Namespace, api: ModuleType) -> int:
             "sourceFormat": "json", "qaRequired": bool(clip.get("qaRequired")),
             "attributionRequired": bool(clip.get("attributionRequired")),
             "humanReviewRequired": bool(clip.get("humanReviewRequired")),
+            "automaticPublicationRequired": bool(clip.get("automaticPublicationRequired")),
+            "publicationIdentity": clip.get("publicationIdentity") or "",
             "reviewPending": bool(clip.get("reviewPending")),
             "reviewIssues": clip.get("reviewIssues") or [],
             "publicCopyPending": bool(clip.get("publicCopyPending")),
@@ -107,11 +109,19 @@ def import_json(args: argparse.Namespace, api: ModuleType) -> int:
                 continue
             if not record_data["reviewPlanPath"]:
                 record_data["reviewPlanPath"] = record.get("reviewPlanPath") or ""
-            for required in ("qaRequired", "attributionRequired", "humanReviewRequired", "activityReviewRequired"):
+            for required in ("qaRequired", "attributionRequired", "humanReviewRequired", "activityReviewRequired", "gameReviewRequired", "automaticPublicationRequired"):
                 if record.get(required) and not record_data.get(required):
                     record_data[required] = True
                     record_data["reviewPending"] = True
                     record_data["reviewIssues"].append(f"required review flag removed: {required}")
+            if record.get("automaticPublicationAuthorization") and record.get("publicationIdentity") != record_data["publicationIdentity"]:
+                record_data["reviewPending"] = True
+                record_data["reviewIssues"].append("automatic publication source identity changed")
+            if record.get("publicationIdentity") and (record.get("automaticPublicationAuthorization")
+                    or record.get("status") in ("uploaded", "queued", "uploading")):
+                record_data["publicationIdentity"] = record["publicationIdentity"]
+            if not record_data["publicationIdentity"]:
+                record_data["publicationIdentity"] = record.get("publicationIdentity") or ""
             # A stale preflight import must not erase an already rendered clip.
             if not clip.get("pendingCut") or not record.get("mediaPath"):
                 if record.get("pendingCut") and not clip.get("pendingCut") and record.get("reviewPath"):

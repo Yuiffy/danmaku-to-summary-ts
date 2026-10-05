@@ -351,7 +351,8 @@ function buildTopicBursts(segments = [], matches = [], options = {}) {
                 start: m.segment.start,
                 end: m.segment.end,
                 text: m.segment.text,
-                matchedKeywords: m.matchedKeywords
+                matchedKeywords: m.matchedKeywords,
+                ...(m.recall ? { recall: m.recall } : {})
             })),
             boundarySegments: candidateSegments,
             allSegments: allSegs,

@@ -60,6 +60,30 @@ class UpdateCoverTests(unittest.IsolatedAsyncioTestCase):
             await update_cover.submit_cover("BVfixture", None, self.archive, "cover")
         self.submit.assert_not_called()
 
+    async def test_explicit_movie_copy_changes_names_and_description_without_replacing_media_or_settings(self):
+        self.detail['videos'].append({'cid': 456, 'title': 'Part two', 'desc': 'Second description', 'filename': 'second-file'})
+        before = copy.deepcopy(self.detail['videos'])
+        await update_cover.submit_cover('BVfixture', None, self.archive, 'cover', title='【岁己同步视听】《雷神3》｜2026.10.4',
+            description='本场观看《雷神3》', part_titles=['《雷神3》 01/02', '《雷神3》 02/02'], expected_videos=before)
+        payload = self.submit.call_args.args[0]
+        self.assertEqual(payload['title'], '【岁己同步视听】《雷神3》｜2026.10.4')
+        self.assertEqual(payload['desc'], '本场观看《雷神3》')
+        for index, page in enumerate(payload['videos']):
+            for field in ('cid', 'filename', 'desc'):
+                self.assertEqual(page[field], before[index][field])
+            self.assertEqual(page['title'], f'《雷神3》 {index+1:02d}/02')
+        self.assertEqual(payload['tag'], self.archive['tag'])
+        self.assertEqual(payload['subtitles'], {'open': 1, 'lan': 'zh-CN'})
+
+    async def test_refuses_concurrent_page_title_edits_and_missing_titles_before_submission(self):
+        expected = copy.deepcopy(self.detail['videos'])
+        self.detail['videos'][0]['title'] = 'Human edit'
+        with self.assertRaisesRegex(RuntimeError, 'Ps changed'):
+            await update_cover.submit_cover('BVfixture', None, self.archive, 'cover', part_titles=['New title'], expected_videos=expected)
+        with self.assertRaisesRegex(ValueError, 'all existing pages'):
+            await update_cover.submit_cover('BVfixture', None, self.archive, 'cover', part_titles=[])
+        self.submit.assert_not_called()
+
     async def test_refuses_unmapped_archive_controls(self):
         self.detail["archive"]["attribute"] = 8
         with self.assertRaisesRegex(RuntimeError, "explicit cover-only"):

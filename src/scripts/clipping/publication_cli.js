@@ -29,7 +29,7 @@ function originalClips(plan) {
 }
 function parseArgs(argv) {
     const options = { command: argv[0] || 'help' };
-    const values = new Set(['plan', 'output', 'mode', 'min-score', 'max-standalone', 'standout-score', 'indices', 'group', 'room']);
+    const values = new Set(['plan', 'output', 'mode', 'min-score', 'max-standalone', 'standout-score', 'indices', 'recall-indices', 'group', 'room']);
     for (let i = 1; i < argv.length; i++) {
         const key = argv[i].replace(/^--/, '');
         if (key === 'suggest-bundles' || key === 'all') options[key] = true;
@@ -42,6 +42,7 @@ async function run(options, dependencies = {}) {
     if (options.command === 'help') {
         console.log('clips:publication preview --plan PLAN.json --output preview.json [--mode curated|score|shadow|all] [--min-score 80] [--max-standalone 18] [--standout-score 92] [--suggest-bundles]\n'
             + 'clips:publication restore --plan PLAN.json --indices 2,5 --output restored.json (or --all)\n'
+            + 'clips:publication restore --plan PLAN.json --recall-indices 3,8 --output restored-recall.json (R3/R8; detail planning still required)\n'
             + 'clips:publication build-bundle --plan preview.json --group 1 --output bundle.mp4\n'
             + 'All commands save new local files. No registration, notifications or upload.');
         return;
@@ -52,6 +53,19 @@ async function run(options, dependencies = {}) {
     const plan = readJson(options.plan);
     if (!Array.isArray(plan.clips)) throw new Error('Missing plan.clips');
     if (options.command === 'restore') {
+        if (options['recall-indices']) {
+            if (options.indices || options.all) throw new Error('Choose recall indices or publication indices, not both');
+            const indices = String(options['recall-indices']).split(',').map(Number);
+            const skipped = plan.aiStatus?.ranking?.skipped || [];
+            if (!indices.length || new Set(indices).size !== indices.length || indices.some(n => !Number.isSafeInteger(n) || n < 1)) throw new Error('Invalid recall indices');
+            const candidates = indices.map(index => skipped.find(row => Number(row.candidateIndex) === index)?.candidate);
+            if (!plan.aiStatus?.ranking?.sourceSha256 || candidates.some(candidate => !candidate)) throw new Error('Saved recall source candidates are unavailable');
+            const restored = { version:1, source:plan.source, clips:[], requiresDetailPlanning:true,
+                recallCandidates:candidates, recallSourceSha256:plan.aiStatus.ranking.sourceSha256, restoredFrom:path.resolve(options.plan) };
+            saveNew(options.output,restored);
+            console.log(`Exported ${candidates.length} recall candidates. Render with own_stream_clipper --use-plan and --publication-mode all; detail and source review run first.`);
+            return restored;
+        }
         const clips = originalClips(plan);
         if (!options.all && !options.indices) throw new Error('Choose --indices or --all explicitly');
         const indices = options.all ? clips.map((_, index) => index + 1) : String(options.indices).split(',').map(Number);

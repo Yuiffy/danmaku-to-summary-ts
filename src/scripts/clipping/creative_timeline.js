@@ -33,6 +33,12 @@ function assertTimeline(timeline, sourceDuration) {
             || span.end <= span.start || (i && span.start < timeline.keep[i - 1].end - .001)) throw new Error('Editorial spans overlap, reorder, or exceed source');
         duration += span.end - span.start;
     }
+    if (timeline.holds?.length) {
+        const pieces = require('../workflow-runtime').loadWorkflow('clipping/enhancement').reactionPieces(timeline);
+        const added = pieces.reduce((n, p) => n + p.hold, 0);
+        if (Math.abs(added - timeline.addedSeconds) > .002) throw new Error('Reaction pause duration mismatch');
+        duration += added;
+    }
     if (Math.abs(duration - timeline.duration) > .002) throw new Error('Editorial duration does not match retained spans');
 }
 
@@ -74,6 +80,12 @@ function validateStoryPlan(raw, cues, sourceDuration, protectedSpans = [], profi
 }
 
 function mapTimelineCues(cues, timeline) {
+    if (timeline.holds?.length) {
+        const { reactionOutputTime } = require('../workflow-runtime').loadWorkflow('clipping/enhancement');
+        for (const h of timeline.holds) if (cues.some(c => c.start < h.after - .001 && c.end > h.after + .001)) throw new Error('Reaction pause would split speech');
+        return cues.filter(c => timeline.keep.some(s => c.start >= s.start - .001 && c.end <= s.end + .001))
+            .map(c => ({ ...c, start: reactionOutputTime(c.start, timeline), end: reactionOutputTime(c.end, timeline, 'end') }));
+    }
     let offset = 0;
     return timeline.keep.flatMap(span => {
         const rows = cues.filter(c => overlap(c, span)).map(c => ({ ...c,
@@ -98,6 +110,7 @@ function storyReviewEvidence(cues, timeline, protectedSpans) {
 
 function sourceTimeForOutput(time, timeline) {
     if (!timeline) return time;
+    if (timeline.holds?.length) return require('../workflow-runtime').loadWorkflow('clipping/enhancement').reactionSourceTime(time, timeline);
     let offset = 0;
     for (const span of timeline.keep) {
         const length = span.end - span.start;
@@ -116,8 +129,11 @@ function absoluteEditPlan(timeline, sourceId, window) {
 }
 
 function audioTimelineFilter(timeline, origin = 0, input = '0:a:0', output = 'baseaudio') {
-    const rows = timeline.keep.map((s, i) => `[${input}]atrim=start=${origin + s.start}:end=${origin + s.end},asetpts=PTS-STARTPTS[ta${i}]`);
-    rows.push(`${timeline.keep.map((_, i) => `[ta${i}]`).join('')}concat=n=${timeline.keep.length}:v=0:a=1[${output}]`);
+    const pieces = timeline.holds?.length ? require('../workflow-runtime').loadWorkflow('clipping/enhancement').reactionPieces(timeline)
+        : timeline.keep.map(s => ({ ...s, hold: 0 }));
+    const rows = pieces.map((s, i) => `[${input}]atrim=start=${origin + s.start}:end=${origin + s.end},asetpts=PTS-STARTPTS`
+        + (s.hold ? `,apad=pad_dur=${s.hold}` : '') + `[ta${i}]`);
+    rows.push(`${pieces.map((_, i) => `[ta${i}]`).join('')}concat=n=${pieces.length}:v=0:a=1[${output}]`);
     return rows.join(';');
 }
 

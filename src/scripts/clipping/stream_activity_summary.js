@@ -32,12 +32,14 @@ async function getActivitySummary(args) {
     const input = await summaryInputs(args);
     const summary = require('../live_content_summary');
     const experiment = summary.getFullLiveContextExperiment(args.options.config, args.info.roomId) || {};
-    const result = await (args.options.generateSummary || summary.generateLiveContentSummary)({
+    const usage = require('../workflow-runtime').loadWorkflow('ai/usage');
+    const result = await usage.withUsagePhase('activity-summary', () => (args.options.generateSummary || summary.generateLiveContentSummary)({
         highlightPath: input.highlightPath, fullLiveContextPath: input.contextPath, outputPath: input.summaryPath,
         roomId: args.info.roomId, config: args.options.config, includeActivityTimeline: true,
         srtPath: args.transcript.path, xmlPath: args.source.xmlPath,
         experiment: { ...experiment, enabled: true, tasks: ['summary'], maxAttempts: 1 }
-    });
+    }));
+    if (result?.reused === true || result?.pending === true) usage.recordUsageReuse('activity-summary', 'shared_summary');
     let payload = result?.payload;
     if (result?.pending) {
         const deadline = Date.now() + 180000;
@@ -49,8 +51,12 @@ async function getActivitySummary(args) {
     if (payload?.status !== 'success' || payload.source?.sourceSha256 !== input.context.sourceSha256
         || payload.source?.activityTimelineVersion !== TIMELINE_VERSION
         || payload.source?.inputSources?.srtSha256 !== input.inputs.srtSha256
-        || payload.source?.inputSources?.xmlSha256 !== input.inputs.xmlSha256) throw new Error('A matching completed summary activity timeline is not ready; no separate full-stream scan was started');
-    const timeline = normalizeTimeline(payload.activityTimeline, input.context);
+        || payload.source?.inputSources?.xmlSha256 !== input.inputs.xmlSha256) throw new Error('A matching completed summary activity timeline is not ready; no separate full-stream scan was started'
+            + (payload?.status === 'failed' && payload.error ? `; ${payload.error}` : ''));
+    const titles = require('../workflow-runtime').loadWorkflow('clipping/activityTitles');
+    const rawTimeline = { ...payload.activityTimeline, events: titles.recoverWatchNames(payload.activityTimeline?.events || [],
+        payload.content?.overview, evidenceFromContext(input.context)) };
+    const timeline = normalizeTimeline(rawTimeline, input.context);
     return { ...input, timeline, payload, reused: result?.reused === true,
         rows: evidenceFromContext(input.context), sha256: fileDigest(input.summaryPath) };
 }

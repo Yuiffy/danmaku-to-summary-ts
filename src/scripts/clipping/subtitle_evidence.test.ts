@@ -69,6 +69,78 @@ describe('subtitle evidence', () => {
     expect(linked.status).toBe('needs_review');
   });
 
+  test('accepts the cited SC amount in Chinese without rewriting copy or certifying other review issues', () => {
+    const packed = evidence.buildSubtitleEvidence([{ start: 5189.229, end: 5191.93,
+      text: 'Sc要三十块钱喊两句咋了' }]);
+    const clip = { start: 4996.102, end: 5430.899,
+      title: '30元SC喊两句，礼礼说刚刚声音很正常',
+      description: '礼礼提到30元SC喊两句，随后强调刚刚没有发出很大的声音。',
+      coverText: '三十块喊两句\n我刚刚声音很正常' };
+    const raw = { ...clip, evidenceCueIds: ['G1'], sourceKind: 'live_speech' };
+    const before = JSON.stringify({ raw, packed: packed.cues });
+    const grounding = evidence.linkClipEvidence(raw, clip, packed);
+    expect(grounding.issues).toEqual([]);
+    expect(evidence.revalidateClipEvidence({ ...clip, grounding }, packed, []).grounding).toEqual(grounding);
+    expect(JSON.stringify({ raw, packed: packed.cues })).toBe(before);
+    const uncertain = evidence.linkClipEvidence({ ...raw, sourceKind: 'uncertain' }, clip, packed);
+    expect(uncertain.issues).toEqual(['uncertain_source']);
+  });
+
+  test.each(['三十块钱', '30元'])('requires cited, provided and in-clip numeric evidence: %s', text => {
+    const packed = evidence.buildSubtitleEvidence([
+      { start: 0, end: 10, text }, { start: 20, end: 30, text: 'No amount was mentioned.' }
+    ], { groupSegments: false });
+    const raw = { title: '30元SC', evidenceCueIds: ['G1'], sourceKind: 'live_speech' };
+    for (const linked of [
+      evidence.linkClipEvidence({ ...raw, evidenceCueIds: ['G2'] }, { start: 0, end: 30 }, packed),
+      evidence.linkClipEvidence(raw, { start: 0, end: 10 }, packed, [], { cueIds: new Set() }),
+      evidence.linkClipEvidence(raw, { start: 20, end: 30 }, packed),
+    ]) {
+      expect(linked.issues).toContain('unsupported_number:title:30');
+      expect(linked.status).toBe('needs_review');
+    }
+  });
+
+  test('does not use hidden raw ASR text or join number and unit across cues', () => {
+    const raw = { title: '30元SC', evidenceCueIds: ['G1', 'G2'], sourceKind: 'live_speech' };
+    const packed = evidence.buildSubtitleEvidence([
+      { start: 0, end: 2, text: 'The amount is uncertain.',
+        asrEvidence: { sourceSpan: { rawText: '三十块钱' } } },
+      { start: 3, end: 4, text: 'The price needs listening.' }
+    ], { groupSegments: false });
+    const separate = evidence.buildSubtitleEvidence([
+      { start: 0, end: 2, text: '三十' }, { start: 3, end: 4, text: '块钱' }
+    ], { groupSegments: false });
+    for (const source of [packed, separate]) {
+      expect(evidence.linkClipEvidence(raw, { start: 0, end: 4 }, source).issues)
+        .toContain('unsupported_number:title:30');
+    }
+  });
+
+  test('requires cited, provided and in-clip audience evidence for a spoken amount', () => {
+    const packed = evidence.buildSubtitleEvidence([{ start: 0, end: 10, text: 'A source fact.' }]);
+    const raw = { title: '弹幕提到30元', evidenceCueIds: ['G1'], evidenceDanmakuIds: ['D1'], sourceKind: 'audience' };
+    const audience = [{ time: 5, text: '三十块钱' }];
+    expect(evidence.linkClipEvidence(raw, { start: 0, end: 10 }, packed, audience).issues).toEqual([]);
+    for (const linked of [
+      evidence.linkClipEvidence({ ...raw, evidenceDanmakuIds: [] }, { start: 0, end: 10 }, packed, audience),
+      evidence.linkClipEvidence(raw, { start: 0, end: 10 }, packed, audience, { danmakuIds: new Set() }),
+      evidence.linkClipEvidence(raw, { start: 0, end: 10 }, packed, [{ time: 20, text: '三十块钱' }]),
+    ]) expect(linked.issues).toContain('unsupported_number:title:30');
+  });
+
+  test.each([
+    ['三十块钱', '50元'], ['三百块钱', '30元'], ['三十块钱', '30次'],
+    ['三十次', '30元'], ['十九点五十二分', '52元'], ['二零二零年十二月', '2020元'],
+    ['三十万块钱', '30元'], ['二三十块钱', '30元'], ['一百二块钱', '102元'],
+    ['三十点五块钱', '30元'],
+  ])('keeps mismatched units, values and ambiguous quantities blocked: %s -> %s', (text, title) => {
+    const packed = evidence.buildSubtitleEvidence([{ start: 0, end: 10, text }]);
+    const linked = evidence.linkClipEvidence({ title, evidenceCueIds: ['G1'], sourceKind: 'live_speech' },
+      { start: 0, end: 10 }, packed);
+    expect(linked.issues.some((issue: string) => issue.startsWith('unsupported_number:title:'))).toBe(true);
+  });
+
   test('unprovided evidence remains flagged after final boundary revalidation', () => {
     const packed = evidence.buildSubtitleEvidence([{ start: 1, end: 5, text: 'source' }]);
     const danmaku = [{ time: 3, text: 'a comment not included in the model input' }];

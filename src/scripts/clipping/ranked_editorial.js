@@ -158,7 +158,10 @@ async function rankThenEdit(candidates, parsed, danmaku, info, config, rootConfi
         rows.forEach(card => new Set(card.viewingAngles.map(angle => angle.label)).forEach(label => { counts[label] = (counts[label] || 0) + 1; }));
         return counts;
     };
-    diagnostics.ranking = { version: 2, promptChars: prompt.length, sourceSha256: packet.sourceSha256, skipped,
+    diagnostics.ranking = { version: 2, promptChars: prompt.length, sourceSha256: packet.sourceSha256, skipped: skipped.map(row => {
+        const candidate = candidates.find(candidate => String(candidate.index) === String(row.candidateIndex));
+        return { ...row, start: candidate.start, end: candidate.end, title: candidate.event || candidate.title || `初选话题 ${candidate.index}`, candidate };
+    }),
         viewingAngleCoverage: { candidates: tagCounts(packet.cards), selected: tagCounts(packet.cards.filter(card => selected.some(row => row.candidateIndex === card.candidateIndex))) },
         candidateCount: candidates.length, selected, skippedCandidateIds: candidates.filter(c => !selected.some(row => String(row.candidateIndex) === String(c.index))).map(c => c.index) };
     const selectedById = new Map(selected.map(row => [String(row.candidateIndex), row]));

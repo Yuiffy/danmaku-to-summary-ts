@@ -14,10 +14,25 @@ async function produceOwnClips(context, hooks) {
     const reviewPath = path.join(outputRoot, base ? `REVIEW_${base}.md` : 'REVIEW.md');
     Object.assign(metadata, { planPath, reviewPath, uploadManifestPath: path.join(outputRoot, base ? `${base}_UPLOAD_MANIFEST.json` : 'UPLOAD_MANIFEST.json') });
     const source = { mediaPath: options.mediaPath, srtPath: options.srtPath, xmlPath: options.xmlPath || null };
+    const sourceReview = batch => require('../workflow-runtime').loadWorkflow('clipping/ownSourceReview').reviewOwnSourceCandidates(batch, {
+        enabled: config.attribution?.sourceReviewBeforeRender === true && (config.attribution.roomIds || []).map(String).includes(String(info.roomId)),
+        roomId: info.roomId, streamerName: info.streamerName || metadata.streamerName, sourceSha256: evidence.sourceSha256,
+        cues: evidence.cues, audience: danmaku, excludedCategories: config.selectionPolicy?.excludedCategories || [],
+        aiEnabled: config.ai?.enabled === true && rootConfig.ai?.text?.enabled !== false,
+        diagnostics, maxRequests: config.attribution?.maxRequests, maxBatchChars: config.attribution?.maxBatchChars
+    }, { snapshot: () => JSON.stringify(require('./source_snapshot').sourceSnapshot({ source })),
+        request: hooks.sourceReviewRequest || ((prompt, phase, validate) => require('./selection_request').requestSelectionText(prompt,
+            { primaryModel: config.attribution?.model || config.ai?.model, reasoningEffort: config.attribution?.reasoningEffort || 'high',
+                timeoutMs: config.attribution?.timeoutMs || 600000, maxTokens: config.attribution?.maxTokens || 12000,
+                structuredOutputKey: 'reviews', strictEvaluation: true }, config, rootConfig, info, phase, diagnostics, validate)) });
     const savePlan = (current, status) => {
         metadata.aiStatus.requests = diagnostics.requests || [];
         if (diagnostics.attribution) metadata.aiStatus.attribution = diagnostics.attribution;
+        if (diagnostics.sourceReview) metadata.aiStatus.sourceReview = diagnostics.sourceReview;
         writeJsonAtomic(planPath, { version: 1, generatedAt: new Date().toISOString(), status, source,
+            ...(options.timingRecord ? { transcriptRepair: options.timingRecord } : {}),
+            ...(options.timingRecovery ? { timingRevision: { id: options.timingRecovery.id, note: options.timingRecovery.note,
+                backupDirectory: options.timingRecovery.backupDirectory, startedAt: options.timingRecovery.startedAt } } : {}),
             config: { maxCandidates: config.maxCandidates, maxClips: config.maxClips, minClipSeconds: config.minClipSeconds,
                 maxClipSeconds: config.maxClipSeconds, aiDurationPolicy: 'content_complete', chunkSeconds: config.chunkSeconds, aiConcurrency: config.aiConcurrency,
                 clipConcurrency: config.clipConcurrency, clipFfmpegThreads: config.clipFfmpegThreads,
@@ -56,7 +71,10 @@ async function produceOwnClips(context, hooks) {
         metadata.progressPath = incremental.progressPath;
         savePlan(clips.map(clip => ({ ...clip, publicCopyPending: true, uploadReady: false })), 'reviewing');
         let reviewError;
-        try { await hooks.review(clips, { onBatchReviewed: incremental.submitBatch }); }
+        try { await hooks.review(clips, { onBatchReviewed: async items => {
+            const reviewed = await sourceReview(items.map(item => item.clip));
+            return incremental.submitBatch(items.map((item, index) => ({ ...item, clip: reviewed[index] })));
+        } }); }
         catch (error) { reviewError = error; }
         const produced = await incremental.finish();
         if (reviewError) throw reviewError;
@@ -95,7 +113,7 @@ async function produceOwnClips(context, hooks) {
         }
         savePlan(clips, 'complete');
     } else {
-        clips = await hooks.review(clips);
+        clips = await sourceReview(await hooks.review(clips));
         experiment = await hooks.prepare(clips, options); clips = experiment.clips;
         savePlan(clips, 'complete');
         if (!options.planOnly) {

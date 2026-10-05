@@ -7,10 +7,16 @@ const { withSelectionCache } = require('./selection_cache');
 const { sha } = require('./stream_activity_plan');
 const { parseVerification, requestMediaVerification } = require('./stream_activity_verification');
 const { recordSelectionDiagnostic } = require('./selection_request');
+const { fileDigest } = require('./source_snapshot');
+const { extractEvidence } = require('./stream_game_evidence');
+const { promisify } = require('util');
+const execFile = promisify(require('child_process').execFile);
+const localStage = () => require('../workflow-runtime').loadWorkflow('clipping/activityAudio');
 
 const VERSION = 2;
-function boundaryIntervals(event, duration, settings) {
+function boundaryIntervals(event, duration, settings, reviewPrelude = false) {
     const context = settings.boundaryContextSeconds;
+    if (reviewPrelude && event.kind === 'song') return [{ start: Math.max(0, event.start - context), end: Math.min(duration, event.end + context) }];
     const inside = Math.min(15, (event.end - event.start) / 2);
     if (event.kind === 'song' && event.performance === 'fragment' && event.end - event.start <= 90) return [
         { start: Math.max(0, event.start - Math.min(context, 15)), end: Math.min(duration, event.end + Math.min(context, 15)) }
@@ -39,10 +45,10 @@ function uncertain(event, reason, evidence, duration, settings) {
             event.kind === 'song' ? 'performance_boundary_provisional' : 'watch_boundary_provisional'])],
         verification: { decision: 'uncertain', reason, ...evidence } };
 }
-function groupBoundaries(events, duration, settings) {
+function groupBoundaries(events, duration, settings, reviewPrelude = false) {
     const batches = [];
     for (const event of events) {
-        const intervals = boundaryIntervals(event, duration, settings);
+        const intervals = boundaryIntervals(event, duration, settings, reviewPrelude);
         const seconds = intervals.reduce((n, span) => n + span.end - span.start, 0);
         let batch = batches.at(-1);
         if (!batch || batch.events.length >= settings.batchMaxEvents || batch.audioSeconds + seconds > settings.batchMaxAudioSeconds) {
@@ -52,7 +58,7 @@ function groupBoundaries(events, duration, settings) {
     }
     return batches;
 }
-async function extractPacket(batch, directory, source, root, extract = runFfmpeg) {
+async function extractPacket(batch, directory, source, root, extract = runFfmpeg, local = false) {
     const audio = [], frames = [];
     fs.mkdirSync(directory, { recursive: true });
     for (const row of batch.events) {
@@ -60,7 +66,13 @@ async function extractPacket(batch, directory, source, root, extract = runFfmpeg
         for (const span of row.intervals) {
             const index = audio.length + 1, audioPath = path.join(directory, `audio-${index}.mp3`);
             const pcmPath = path.join(directory, `audio-${index}.pcm`), duration = span.end - span.start;
-            await extract(['-y', '-ss', String(span.start), '-i', source.mediaPath,
+            if (local) {
+                await extractEvidence(extract, ['-y', '-ss', String(span.start), '-i', source.mediaPath, '-t', String(duration),
+                    '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'libmp3lame', '-b:a', '64k', audioPath],
+                { ffmpegPath: root.audio?.ffmpeg?.path || 'ffmpeg', stage: '本地活动复核原音', timeoutMs: 60000, sourceIdentity: source });
+                await extract(['-y', '-i', audioPath, '-vn', '-ac', '1', '-ar', '8000', '-c:a', 'pcm_s16le', '-f', 's16le', pcmPath],
+                    { ffmpegPath: root.audio?.ffmpeg?.path || 'ffmpeg', stage: '活动复核能量', timeoutMs: 60000 });
+            } else await extract(['-y', '-ss', String(span.start), '-i', source.mediaPath,
                 '-map', '0:a:0', '-vn', '-t', String(duration), '-ac', '1', '-ar', '16000', '-c:a', 'libmp3lame', '-b:a', '64k', audioPath,
                 '-map', '0:a:0', '-vn', '-t', String(duration), '-ac', '1', '-ar', '8000', '-c:a', 'pcm_s16le', '-f', 's16le', pcmPath],
             { ffmpegPath: root.audio?.ffmpeg?.path || 'ffmpeg', stage: '活动边界短音频', timeoutMs: 60000 });
@@ -72,12 +84,17 @@ async function extractPacket(batch, directory, source, root, extract = runFfmpeg
             audio.push({ ...span, path: audioPath, mimeType: 'audio/mpeg', energy, energyPath });
             row.audioIndices.push(index);
         }
-        if (row.event.kind === 'watch') {
-            const time = (row.event.start + row.event.end) / 2;
-            const framePath = path.join(directory, `${row.event.id}.jpg`);
-            await extract(['-y', '-ss', String(time), '-i', source.mediaPath, '-frames:v', '1', '-vf', 'scale=640:-2', '-q:v', '3', framePath],
-                { ffmpegPath: root.audio?.ffmpeg?.path || 'ffmpeg', stage: '视听内容画面', timeoutMs: 60000 });
-            frames.push({ time, activityId: row.event.id, path: framePath, mimeType: 'image/jpeg' });
+        if (row.event.kind === 'watch' || local) {
+            const times = local && row.event.kind === 'song'
+                ? row.reviewPrelude ? Array.from({ length: Math.ceil((row.event.end - row.event.start) / 30) + 1 }, (_, i) => Math.min(row.event.start + i * 30, row.event.end))
+                    : [row.event.start + 10, row.event.end - 10] : [(row.event.start + row.event.end) / 2];
+            for (const [i, time] of times.entries()) {
+                const framePath = path.join(directory, `${row.event.id}-${i}.jpg`);
+                const args = ['-y', '-ss', String(time), '-i', source.mediaPath, '-frames:v', '1', '-vf', 'scale=640:-2', '-q:v', '3', framePath];
+                const settings = { ffmpegPath: root.audio?.ffmpeg?.path || 'ffmpeg', stage: '活动内容原帧', timeoutMs: 60000, sourceIdentity: source };
+                if (local) await extractEvidence(extract, args, settings); else await extract(args, settings);
+                frames.push({ time, activityId: row.event.id, path: framePath, mimeType: 'image/jpeg', ...(local ? { sha256: fileDigest(framePath) } : {}) });
+            }
         }
     }
     return { audio, frames };
@@ -113,46 +130,89 @@ function parseBatch(response, batch, packet, rows, duration, evidence, settings)
                 || result.events?.some(e => !row.audioIndices.includes(e.start?.audioIndex) || !row.audioIndices.includes(e.end?.audioIndex)))) throw new Error('Boundary references another candidate audio');
             const window = { index: 1, start: row.event.start, end: row.event.end,
                 from: row.intervals[0].start, to: row.intervals.at(-1).end, rows };
-            const checked = parseVerification({ text: JSON.stringify(result) }, row.event, window, duration, packet.audio);
+            const candidate = result.preludeCorrection && evidence.method === 'independent_local_asr'
+                ? localStage().revisePrelude(result, row, evidence.localAudioEvidence, packet.frames) : row.event;
+            const checked = parseVerification({ text: JSON.stringify(result) }, candidate, window, duration, packet.audio);
             if (checked.decision === 'exclude') rejected.push({ ...row.event, verification: { ...checked, ...evidence } });
             else if (checked.decision === 'uncertain') events.push(uncertain(row.event, checked.reason, evidence, duration, settings));
-            else events.push(...checked.events.map(event => ({ ...event, verification: { ...checked, events: undefined, ...evidence } })));
+            else events.push(...checked.events.map(event => ({ ...event, id: row.event.id,
+                verification: { ...checked, events: undefined, ...evidence,
+                    ...(result.evidenceRefs ? { evidenceRefs: result.evidenceRefs, boundaryPolicy: 'complete_context_enclosure' } : {}),
+                    ...(result.preludeCorrection ? { preludeCorrection: result.preludeCorrection } : {}) } })));
         } catch (error) { events.push(uncertain(row.event, error.message, evidence, duration, settings)); }
     }
     return { events, rejected };
 }
 async function calibrateBoundaries(events, args) {
     const { config, root, source, info, directory, rows, duration, diagnostics } = args;
-    const settings = config.verification, batches = groupBoundaries(events, duration, settings);
-    const result = { events: [], rejected: [], requests: 0, audioSeconds: 0, cacheHits: 0, maxRequests: settings.maxBatchRequests };
-    for (const [index, batch] of batches.entries()) {
-        const signature = { version: VERSION, source, events: batch.events.map(r => r.event), settings, transcriptSha256: args.transcriptSha256 };
+    const settings = config.verification, batches = groupBoundaries(events, duration, settings, args.reviewPrelude);
+    if (args.reviewPrelude) for (const batch of batches) for (const row of batch.events) row.reviewPrelude = true;
+    const local = settings.evidenceMethod === 'independent_local_asr';
+    const maxRequests = args.maxRequests ?? settings.maxBatchRequests;
+    const result = { events: [], rejected: [], requests: 0, audioSeconds: 0, cacheHits: 0, maxRequests };
+    for (const batch of batches) {
+        const signature = { version: VERSION, source, events: batch.events.map(r => r.event), settings, transcriptSha256: args.transcriptSha256,
+            ...(args.reviewPrelude ? { reviewPrelude: true } : {}),
+            ...(local ? { localImplementation: fileDigest(path.join(__dirname, '../python/activity_audio_evidence.py')) } : {}),
+            ...(args.retryId ? { retryId: args.retryId } : {}) };
         const evidenceDirectory = path.join(directory, 'temp', 'boundary-verification', sha(signature).slice(0, 16));
-        const evidence = { evidenceDirectory, method: 'short_audio_energy_batch', audioIntervals: batch.events.flatMap(r => r.intervals),
+        const evidence = { evidenceDirectory, method: local ? 'independent_local_asr' : 'short_audio_energy_batch', audioIntervals: batch.events.flatMap(r => r.intervals),
             model: settings.model || root.ai?.text?.gemini?.model, apiMode: settings.apiMode };
         const unavailable = !args.request && !root.ai?.text?.[settings.provider || 'tuZi']?.apiKey;
-        if (!settings.enabled || unavailable || batch.audioSeconds > settings.batchMaxAudioSeconds || index >= settings.maxBatchRequests) {
+        if (!settings.enabled || unavailable || batch.audioSeconds > settings.batchMaxAudioSeconds) {
             const reason = !settings.enabled ? 'Boundary calibration disabled' : unavailable ? 'Boundary verifier unavailable'
-                : batch.audioSeconds > settings.batchMaxAudioSeconds ? 'Boundary packet exceeds configured audio budget' : 'Per-stream AI budget reached';
+                : 'Boundary packet exceeds configured audio budget';
             result.events.push(...batch.events.map(r => uncertain(r.event, reason, evidence, duration, settings)));
             continue;
         }
         try {
+            // Reparse cached model text against the current candidate identities. Older
+            // calibrated cache rows did not retain IDs; audio offsets need no new media IO.
+            const boundaryPacket = { audio: [] };
+            for (const row of batch.events) row.audioIndices = row.intervals.map(span => {
+                boundaryPacket.audio.push(span); return boundaryPacket.audio.length;
+            });
             const response = await withSelectionCache({ directory: path.join(directory, 'temp', 'boundary-cache'), phase: 'activity-boundaries-v1',
                 prompt: JSON.stringify(signature), signature, validate: response => Boolean(response?.calibrated) }, async () => {
-                const packet = await extractPacket(batch, evidenceDirectory, source, root, args.extract);
-                const prompt = boundaryPrompt(batch, packet, info, rows);
+                if ((args.usedRequests || 0) + result.requests >= maxRequests) throw new Error('Per-stream AI budget reached');
+                const packet = await extractPacket(batch, evidenceDirectory, source, root, args.extract, local);
+                let localAudioEvidence;
+                if (local) {
+                    const { recordLocalAsrUsage } = require('../workflow-runtime').loadWorkflow('ai/usage');
+                    localAudioEvidence = await localStage().prepareLocalEvidence(packet, source, settings, evidenceDirectory, signature.localImplementation,
+                        { digest: fileDigest, readJson: file => JSON.parse(fs.readFileSync(file, 'utf8')), writeJson: writeJsonAtomic,
+                            exists: fs.existsSync, recordLocalUsage: recordLocalAsrUsage,
+                            runPython: args.localDecode || (async (input, output) => { await execFile(root.asr?.paraformer?.python_executable || 'python',
+                                [path.join(__dirname, '../python/activity_audio_evidence.py'), input, output],
+                                { windowsHide: true, shell: false, timeout: 600000, maxBuffer: 4 * 1024 * 1024 }); }) });
+                }
+                const prompt = local ? localStage().localBoundaryPrompt(batch, packet, localAudioEvidence, info, rows) : boundaryPrompt(batch, packet, info, rows);
                 result.requests++; result.audioSeconds += batch.audioSeconds;
-                const response = await (args.request || requestMediaVerification)(prompt, [...packet.audio, ...packet.frames], root,
+                const response = await (args.request || requestMediaVerification)(prompt, local ? packet.frames : [...packet.audio, ...packet.frames], root,
                     { ...settings, timeoutMs: settings.boundaryTimeoutMs, maxTokens: 3000,
                         thinkingLevel: /^gemini-3/u.test(settings.model || '') ? 'minimal' : undefined });
                 recordSelectionDiagnostic(diagnostics, { phase: 'activity-boundaries' }, response);
-                const calibrated = parseBatch(response, batch, packet, rows, duration, evidence, settings);
-                writeJsonAtomic(path.join(evidenceDirectory, 'RESULT.json'), { ...response, calibrated });
-                return { ...response, calibrated };
+                const responsePath = path.join(evidenceDirectory, 'RESPONSE.json');
+                let localBinding;
+                if (local) {
+                    writeJsonAtomic(responsePath, { ...response, requestBinding: { source, localAudioSha256: localAudioEvidence.sha256,
+                        candidates: batch.events.map(({event, audioIndices}) => ({ id: event.id, start: event.start, end: event.end, audioIndices })),
+                        frames: packet.frames } });
+                    localBinding = { responsePath, responseSha256: fileDigest(responsePath), localAudioEvidence, frameEvidence: packet.frames };
+                }
+                const calibrated = parseBatch(local ? localStage().bindLocalReply(response, batch, localAudioEvidence, packet.frames) : response, batch, packet,
+                    local ? [...rows, ...localStage().independentRows(localAudioEvidence)] : rows, duration,
+                    local ? { ...evidence, ...localBinding } : evidence, settings);
+                writeJsonAtomic(path.join(evidenceDirectory, 'RESULT.json'), { ...response, calibrated, localAudioEvidence });
+                return { ...response, calibrated, ...(local ? { localAudioEvidence, packet, localBinding } : {}) };
             });
             if (response.meta?.selectionCache?.hit) result.cacheHits++;
-            result.events.push(...response.calibrated.events); result.rejected.push(...response.calibrated.rejected);
+            if (local && (fileDigest(response.localAudioEvidence.resultPath) !== response.localAudioEvidence.sha256
+                || response.packet.frames.some(f => fileDigest(f.path) !== f.sha256))) throw new Error('Local activity evidence changed after verification');
+            const calibrated = parseBatch(local ? localStage().bindLocalReply(response, batch, response.localAudioEvidence, response.packet.frames) : response, batch,
+                local ? response.packet : boundaryPacket, local ? [...rows, ...localStage().independentRows(response.localAudioEvidence)] : rows,
+                duration, local ? { ...evidence, ...response.localBinding } : evidence, settings);
+            result.events.push(...calibrated.events); result.rejected.push(...calibrated.rejected);
         } catch (error) {
             recordSelectionDiagnostic(diagnostics, { phase: 'activity-boundaries' }, null, error);
             result.events.push(...batch.events.map(r => uncertain(r.event, error.message, evidence, duration, settings)));

@@ -123,6 +123,77 @@ describe('pre-render topic workflow', () => {
     expect(JSON.parse(fs.readFileSync(results[0].output.metadataPath, 'utf8')).candidateId).toBe(700);
   });
 
+  test('returns an invalid duration to the same editor for one source-grounded boundary repair', async () => {
+    const { buildPreflightEvidence } = require('./preflight_evidence');
+    const { prepareTopicGroup } = require('./preflight_runner');
+    const evidence = buildPreflightEvidence(topic.parseTopicSrt(srt).segments);
+    const matches = [{ ...evidence.cues[1].items[0], matchedKeywords: ['SUI'] }];
+    const group = { index: 'E1', start: 0, end: 42, cues: evidence.cues.slice(0, 3),
+      matchSegments: matches, bursts: [{ start: 0, end: 42, matchSegments: matches }] };
+    const ordinary = request.getMockImplementation();
+    let count = 0;
+    request.mockImplementation(async (...args) => {
+      const result = await ordinary(...args);
+      if (count++ === 0) {
+        const raw = JSON.parse(result.text);
+        raw.clips[0].startCueId = 'G2';
+        raw.clips[0].endCueId = 'G2';
+        result.text = JSON.stringify(raw);
+      }
+      return result;
+    });
+    const diagnostics = { failures: [], requests: [] };
+    const plan = await prepareTopicGroup(group, evidence, topic.getClipTopicsConfig(config), config,
+      { srtPath: srt, streamerName: 'Host' }, diagnostics);
+    expect(plan.clips[0].status).toBe('ready');
+    expect(plan.clips[0].start).toBe(0);
+    expect(plan.clips[0].end).toBe(42);
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request.mock.calls[1][0]).toContain('Preflight duration outside limits');
+    expect(request.mock.calls[1][0]).toContain('G2');
+    expect(request.mock.calls[1][1].primaryModel).toBe('gpt-6-luna');
+    expect(plan.record.responses).toHaveLength(2);
+    expect(fs.readFileSync(srt, 'utf8')).toContain('SUI has a prise.');
+  });
+
+  test.each([true, false])('an oversized prompt only packs identical ASR text, without dropping context (duplicate=%s)', async duplicate => {
+    const { buildPreflightEvidence, buildPreflightInput } = require('./preflight_evidence');
+    const { buildQualityDraftPrompt } = require('./preflight_quality');
+    const { prepareTopicGroup } = require('./preflight_runner');
+    const rawText = 'Original source text with unchanged context. '.repeat(180);
+    const rows = topic.parseTopicSrt(srt).segments.slice(0, 3).map(row => ({ ...row,
+      asrEvidence: { sourceSpan: { start: row.start, end: row.end, rawText,
+        recognizedText: duplicate ? rawText : `${rawText}A distinct recognition.`, timingPrecision: 'segment', words: null } } }));
+    const evidence = buildPreflightEvidence(rows);
+    const matches = [{ ...evidence.cues[1].items[0], matchedKeywords: ['SUI'] }];
+    const group = { index: 'E2', start: 0, end: 42, cues: evidence.cues, matchSegments: matches,
+      bursts: [{ start: 0, end: 42, matchSegments: matches }] };
+    const root = { ...config, clipTopics: { ...config.clipTopics, review: { ...config.clipTopics.review, qualityRules: true } } };
+    const settings = topic.getClipTopicsConfig(root);
+    const source = { srtPath: srt, streamerName: 'Host' };
+    const input = buildPreflightInput(group, evidence, settings, source);
+    settings.review.maxEvidenceChars = buildQualityDraftPrompt(input).length - 500;
+    const before = JSON.stringify(evidence.cues);
+    const plan = await prepareTopicGroup(group, evidence, settings, root, source, { requests: [], failures: [] });
+    expect(JSON.stringify(evidence.cues)).toBe(before);
+    expect(plan.input.originalAsrSpans).toEqual(input.originalAsrSpans);
+    if (duplicate) {
+      expect(plan.clips[0].status).toBe('ready');
+      expect(request).toHaveBeenCalledTimes(1);
+      const prompt = request.mock.calls[0][0];
+      expect(prompt.length).toBeLessThanOrEqual(settings.review.maxEvidenceChars);
+      const packed = JSON.parse(prompt.split('SOURCE EVIDENCE:\n')[1]);
+      expect(packed.subtitles).toEqual(input.subtitles);
+      expect(packed.hits).toEqual(input.hits);
+      expect(packed.originalAsrSpans).toHaveLength(input.originalAsrSpans.length);
+      expect(packed.originalAsrSpans[0].rawText).toBe(rawText);
+      expect(packed.originalAsrSpans[0].recognizedText).toBeUndefined();
+    } else {
+      expect(plan.record.errors[0].error).toBe('Preflight source exceeds request budget');
+      expect(request).not.toHaveBeenCalled();
+    }
+  });
+
   test('preview failure keeps candidates registered and does not prevent other previews', async () => {
     request.mockRejectedValue(new Error('provider failed'));
     const previewGenerator = jest.fn().mockRejectedValueOnce(new Error('disk unavailable')).mockResolvedValueOnce(null);
@@ -146,7 +217,7 @@ describe('pre-render topic workflow', () => {
     const job = run({ config: { ...config, clipTopics: { ...config.clipTopics,
       review: { ...config.clipTopics.review, qualityRules: true } } } });
     const results = await job.promise;
-    expect(request).toHaveBeenCalledTimes(2); // One request per group, with no extra reviewer round.
+    expect(request).toHaveBeenCalledTimes(4); // One draft and one bounded boundary repair per held group.
     expect(job.mediaGenerator).not.toHaveBeenCalled();
     expect(results.every(result => result.status === 'pending_preflight'
       && result.aiReview.boundaryReview.status === 'needs_review')).toBe(true);

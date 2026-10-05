@@ -530,6 +530,15 @@ describe('own_stream_clipper', () => {
     }).every((line: string) => line.includes('未登记ID'))).toBe(true);
   });
 
+  test('committed upload states suppress stale pending-copy labels unless a new review is pending', () => {
+    const results = [{ reviewIndex: 7, publicCopyPending: true,
+      window: { start: 0, duration: 60 }, copy: { title: 'Clip', description: 'Copy', coverText: 'Cover' } }];
+    const registry = { clipIdsByReviewIndex: { 7: 101 }, clipStatusByReviewIndex: { 7: 'uploaded' } };
+    expect(ownStreamClipper.buildNotifyClipLines(results, { uploadRegistry: registry })[0]).not.toContain('禁止上传');
+    expect(ownStreamClipper.buildNotifyClipLines(results, { uploadRegistry: { ...registry,
+      reviewPendingByReviewIndex: { 7: true } } })[0]).toContain('文案待复核');
+  });
+
   test.each([undefined, null, 0, -1, 1.5, 'invalid'])('labels an invalid or absent upload id as unregistered (%s)', id => {
     expect(ownStreamClipper.buildNotifyClipLines([
       { window: { start: 0, duration: 60 }, copy: { title: 'Clip' } }

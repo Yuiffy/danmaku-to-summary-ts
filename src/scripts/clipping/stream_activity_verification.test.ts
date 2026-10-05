@@ -4,11 +4,62 @@ const fs = require('fs'), os = require('os'), path = require('path');
 const fetch = require('node-fetch');
 const v = require('./stream_activity_verification');
 const p = require('./stream_activity_plan');
+const usage = require('../workflow-runtime').loadWorkflow('ai/usage');
 const event = { kind: 'song', start: 200, end: 400, name: null, performance: 'full', startObserved: false,
     endObserved: false, evidenceIds: ['T1'], titleEvidenceIds: [], windows: [1] };
 const rows = p.evidenceRows([{ start: 185, end: 187, text: '[UNKNOWN] 唱一首告' }, { start: 187, end: 189, text: '[UNKNOWN] 诉我这首歌' },
     { start: 205, end: 380, text: '实际演唱歌词' }]);
 const window = { index: 1, start: 200, end: 400, from: 20, to: 580, rows };
+
+test('DaiYu GPT never receives raw audio or silently uses a native audio provider', async () => {
+    fetch.mockClear();
+    await expect(v.requestMediaVerification('Review', [{ path: 'not-read.mp3', mimeType: 'audio/mpeg' }], {},
+        { provider: 'daiYu', model: 'gpt-6.1-sol', apiMode: 'openai_chat' })).rejects.toThrow('DaiYu GPT audio inputs are unsupported');
+    expect(fetch).not.toHaveBeenCalled();
+});
+
+test('a daiYu verifier without its endpoint never sends its key to the tuZi default URL', async () => {
+    fetch.mockClear();
+    await expect(v.requestMediaVerification('Review', [],
+        { ai: { text: { daiYu: { apiKey: 'daiyu-fixture' }, tuZi: { apiKey: 'tuzi-fixture' } } } },
+        { provider: 'daiYu', model: 'fixture', apiMode: 'openai_chat' }))
+        .rejects.toThrow('daiYu audio/video verification baseUrl is not configured');
+    expect(fetch).not.toHaveBeenCalled();
+});
+test.each(['transport', 'http', 'incomplete'])('failed %s verification records every attempt and preserves returned tokens', async mode => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'activity-usage-'));
+    const send = jest.fn(async () => true);
+    try {
+        if (mode === 'transport') fetch.mockRejectedValueOnce(new Error('ECONNRESET'));
+        else fetch.mockResolvedValueOnce({ ok: mode === 'incomplete', status: mode === 'http' ? 429 : 200,
+            json: async () => ({ error: { message: 'rate limited' }, candidates: [{ finishReason: 'MAX_TOKENS' }],
+                usageMetadata: { promptTokenCount: 90, candidatesTokenCount: 12 } }) });
+        await expect(usage.runClipUsage({ kind: 'songs', directory: dir, mediaPath: 'test.flv', webhookUrl: 'test', sendMarkdown: send },
+            () => v.requestMediaVerification('test', [], { ai: { text: { tuZi: { apiKey: 'test-secret' } } } },
+                { provider: 'tuZi', apiMode: 'gemini_native', model: 'fixture' }))).rejects.toThrow();
+        const ledger = JSON.parse(fs.readFileSync(path.join(dir, 'AI_USAGE.songs.json'), 'utf8'));
+        expect(ledger.summary).toMatchObject({ requests: 1, failedRequests: 1, unknownUsageRequests: mode === 'transport' ? 1 : 0,
+            knownTokens: { promptTokens: mode === 'transport' ? null : 90, completionTokens: mode === 'transport' ? null : 12 } });
+        expect(send).toHaveBeenCalledTimes(1);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('cache retries and later reuse charge only original provider requests under the cache phase', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'activity-cache-usage-'));
+    const { withSelectionCache } = require('./selection_cache');
+    try {
+        fetch.mockResolvedValue({ ok: true, status: 200, json: async () => ({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: '{}' }] } }],
+            usageMetadata: { promptTokenCount: 70, candidatesTokenCount: 9 } }) });
+        const cache = { directory: path.join(dir, 'cache'), phase: 'frame-review', prompt: 'test', signature: {}, validate: () => true };
+        const run = () => withSelectionCache(cache, () => v.requestMediaVerification('test', [],
+            { ai: { text: { tuZi: { apiKey: 'test-secret' } } } }, { provider: 'tuZi', apiMode: 'gemini_native', model: 'fixture' }));
+        const result = await usage.runClipUsage({ kind: 'games', directory: dir, mediaPath: 'test.flv' }, async () => {
+            await run(); await run(); return { status: 'rendered' };
+        });
+        expect(result.aiUsage).toMatchObject({ requests: 1, cacheHits: 1, stages: [{ phase: 'frame-review', requests: 1,
+            knownTokens: { promptTokens: 70, completionTokens: 9 } }, { phase: 'frame-review', cacheHits: 1 }] });
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
 test('media review excludes BGM or retains a complete source-cited named performance', () => {
     expect(v.parseVerification({ text: JSON.stringify({ decision: 'exclude', reason: '开场等待画面，只有播放器放歌', events: [] }) }, event, window, 1000).events).toEqual([]);
     const kept = v.parseVerification({ text: JSON.stringify({ decision: 'keep', timeBasis: 'recording_seconds', audibleEvidence: ['实际演唱歌词'], reason: '原音频确认主播唱完', events: [
@@ -33,7 +84,7 @@ test('configured transport sends original audio and actual frames in declared or
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 test('unavailable media review remains uncertainty, never verification or an empty setlist', async () => {
-    const result = await v.verifyActivity(event, { root: {}, config: p.getActivityConfig({}) });
+    const result = await v.verifyActivity(event, { root: {}, config: p.getActivityConfig({ streamActivityClips: { verification: { ...p.LEGACY_NATIVE_VERIFICATION, evidenceMethod: 'native_audio' } } }) });
     expect(result.decision).toBe('uncertain');
     expect(p.mergeEvents(result.events)[0].reviewIssues).toContain('media_verification_unconfirmed');
 });
@@ -45,7 +96,7 @@ test('viewing verification uses configured audio context to refine a recalled op
         const extract = jest.fn(async args => { fs.writeFileSync(args.at(-1), 'fixture'); });
         const request = jest.fn(async () => ({ text: JSON.stringify({ decision: 'keep', timeBasis: 'recording_seconds', audibleEvidence: ['现在开始看电影'], reason: '边界音频确认实际播放起点',
             events: [{ ...watch, start: 5510, startObserved: true, endObserved: true, evidenceIds: ['T1', 'T2'] }] }) }));
-        const result = await v.verifyActivity(watch, { root: {}, config: p.getActivityConfig({}), source: { mediaPath: 'source.flv' },
+        const result = await v.verifyActivity(watch, { root: {}, config: p.getActivityConfig({ streamActivityClips: { verification: { ...p.LEGACY_NATIVE_VERIFICATION, evidenceMethod: 'native_audio' } } }), source: { mediaPath: 'source.flv' },
             info: { streamerName: '岁己' }, directory: dir, rows: local, duration: 15000, diagnostics: { requests: [] }, extract, request });
         expect(result).toMatchObject({ decision: 'keep', events: [{ start: 5510, end: 12388 }] });
         expect(request.mock.calls[0][1].slice(0, 2).map(row => [row.start, row.end])).toEqual([[5213, 5573], [12208, 12568]]);
@@ -100,7 +151,7 @@ test('one malformed media coordinate response is repaired from the same original
             ...(prompt.includes('FORMAT REPAIR') ? { timeBasis: 'audio_local_seconds' } : {}),
             events: [{ ...event, start: { audioIndex: 2, seconds: 80 }, end: { audioIndex: 3, seconds: 20 },
                 startObserved: true, endObserved: true }] }) }));
-        const result = await v.verifyActivity(event, { root: {}, config: p.getActivityConfig({}), source: { mediaPath: 'source.flv' },
+        const result = await v.verifyActivity(event, { root: {}, config: p.getActivityConfig({ streamActivityClips: { verification: { ...p.LEGACY_NATIVE_VERIFICATION, evidenceMethod: 'native_audio' } } }), source: { mediaPath: 'source.flv' },
             info: { streamerName: '岁己' }, directory: dir, rows, duration: 1000, diagnostics: { requests: [] }, extract, request });
         expect(result).toMatchObject({ decision: 'keep', events: [{ start: 190, end: 390 }] });
         expect(request).toHaveBeenCalledTimes(2);
@@ -119,7 +170,7 @@ test('a full song uses independent musical boundary audio instead of copying its
             audibleEvidence: ['实际演唱歌词'], reason: '先有前奏，随后连续演唱，最后尾奏结束转为说话', events: [{ ...song,
                 start: { audioIndex: 2, seconds: 56 }, end: { audioIndex: 3, seconds: 30 },
                 startObserved: true, endObserved: true }] }) }));
-        const result = await v.verifyActivity(song, { root: {}, config: p.getActivityConfig({}), source: { mediaPath: 'source.flv' },
+        const result = await v.verifyActivity(song, { root: {}, config: p.getActivityConfig({ streamActivityClips: { verification: { ...p.LEGACY_NATIVE_VERIFICATION, evidenceMethod: 'native_audio' } } }), source: { mediaPath: 'source.flv' },
             info: { streamerName: '岁己' }, directory: dir, rows: local, duration: 5000, diagnostics: { requests: [] }, extract, request });
         expect(result).toMatchObject({ decision: 'keep', events: [{ start: 4268, end: 4502 }] });
         expect(request.mock.calls[0][1].slice(0, 3).map(a => [a.start, a.end])).toEqual([[4212, 4532], [4212, 4332], [4472, 4532]]);
@@ -169,12 +220,12 @@ test('unresolved full song boundaries preserve available musical context as a pr
         const request = jest.fn(async () => ({ text: JSON.stringify({ decision: 'keep', timeBasis: 'audio_local_seconds',
             audibleEvidence: ['实际演唱歌词'], reason: '只有后半段实际演唱的边界', events: [{ ...recalled,
                 start: { audioIndex: 2, seconds: 100 }, end: { audioIndex: 3, seconds: 30 } }] }) }));
-        const result = await v.verifyActivity(recalled, { root: {}, config: p.getActivityConfig({}), source: { mediaPath: 'source.flv' },
+        const result = await v.verifyActivity(recalled, { root: {}, config: p.getActivityConfig({ streamActivityClips: { verification: { ...p.LEGACY_NATIVE_VERIFICATION, evidenceMethod: 'native_audio' } } }), source: { mediaPath: 'source.flv' },
             info: { streamerName: '岁己' }, directory: dir, rows, duration: 1000, diagnostics: { requests: [] }, extract, request });
         expect(result).toMatchObject({ decision: 'uncertain', events: [{ start: 200, end: 400, startObserved: false,
             endObserved: false, provisionalWindow: { start: 110, end: 430 }, verification: { decision: 'uncertain' } }] });
         expect(result.events[0].reviewIssues).toContain('performance_boundary_provisional');
-        const events = p.mergeEvents(result.events), parts = p.buildParts(events, 1000, p.getActivityConfig({}));
+        const events = p.mergeEvents(result.events), parts = p.buildParts(events, 1000, p.getActivityConfig({ streamActivityClips: { verification: { ...p.LEGACY_NATIVE_VERIFICATION, evidenceMethod: 'native_audio' } } }));
         expect(parts.songs[0]).toMatchObject({ start: 108, end: 432 });
         expect(p.songRecord({ events, parts }).songs[0]).toMatchObject({ verificationStatus: 'uncertain',
             provisionalWindow: { start: 110, end: 430 } });
@@ -187,7 +238,7 @@ test('short fragments are checked near the actual candidate rather than a long e
         const fragment = { ...event, start: 4514, end: 4525, performance: 'fragment' };
         const extract = jest.fn(async args => fs.writeFileSync(args.at(-1), 'fixture'));
         const request = jest.fn(async () => ({ text: JSON.stringify({ decision: 'exclude', reason: '只有邻近旧录音播放，候选内没有现场演唱', events: [] }) }));
-        const result = await v.verifyActivity(fragment, { root: {}, config: p.getActivityConfig({}), source: { mediaPath: 'source.flv' },
+        const result = await v.verifyActivity(fragment, { root: {}, config: p.getActivityConfig({ streamActivityClips: { verification: { ...p.LEGACY_NATIVE_VERIFICATION, evidenceMethod: 'native_audio' } } }), source: { mediaPath: 'source.flv' },
             info: { streamerName: '岁己' }, directory: dir, rows: [], duration: 5000, diagnostics: { requests: [] }, extract, request });
         expect(result.decision).toBe('exclude');
         expect(request.mock.calls[0][1][0]).toMatchObject({ start: 4484, end: 4555 });

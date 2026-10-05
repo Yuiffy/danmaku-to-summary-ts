@@ -835,7 +835,14 @@ function removeOverlappingClips(clips = [], toleranceSeconds = 0) {
     return selected.sort((a, b) => Number(a.start) - Number(b.start));
 }
 
+function filterClipsBySelection(clips, selectedIndices = null) {
+    if (!Array.isArray(selectedIndices) || selectedIndices.length === 0) return clips;
+    const wanted = new Set(selectedIndices.map(value => Number(value)).filter(Number.isFinite));
+    return clips.filter((_, index) => wanted.has(index + 1));
+}
+
 module.exports = {
+    filterClipsBySelection,
     timeStringToSeconds,
     clamp,
     getEmotionEvidenceForWindow,
