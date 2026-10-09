@@ -84,6 +84,10 @@ Subtitle rebuilding and approval share `clipping/rendered_revision_evidence.js`
 instead of importing each other's entrypoints. Audio configuration policy lives
 in `audio_config.js`, and legacy REVIEW parsing lives in `clip_review_parser.py`;
 the original entrypoints retain their public exports.
+The historical `clipping/media_process.js` and `clipping/rendered_subtitles.js`
+paths forward to `media_runtime.js` and `rendered_revision_evidence.js`.
+`clip_upload_cli.py` forwards parser construction to the registry's current
+factory so both entrypoints expose the same commands and arguments.
 
 `audio_archive_pruning.js` owns archive video traversal and protects exact source
 recordings named in clip replay receipts; naming predicates are injected by the

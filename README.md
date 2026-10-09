@@ -1,549 +1,264 @@
-# 直播摘要自动生成系统
+# 直播摘要与自动切片系统
 
-**弹幕转总结 TypeScript 重构版**
+将直播录播、字幕和弹幕转成 AI 直播梗概、下播回复、漫画与可审核的切片，并通过队列管理 B 站回复和切片投稿。
 
-> 自动化处理录播视频，生成 AI 总结、图片漫画，并回复到 B 站动态。
+主要面向 Windows 本地录播工作站，接入 Mikufans / DDTV 的 Webhook。TypeScript 负责服务、生命周期和调度，JavaScript 编排媒体流程，Python 负责 ASR、说话人识别和媒体工具。
 
-开发或让 AI 修改代码，从 [开发与 AI 协作](docs/development.md) 开始：包含环境准备、
-按改动选择测试的方法，以及验证与生产运行的区别。职责边界见 [架构指南](docs/architecture.md)。
+开发或让 AI 修改代码，从 [开发与 AI 协作](docs/development.md) 开始；职责边界见 [架构指南](docs/architecture.md)。
 
----
+## 能做什么
 
-## 🚀 系统概述
+- **录播后处理**：管理分段、断流重连和直播结束事件，合并视频，按房间策略保留视频或音频。
+- **语音识别**：默认 Paraformer，可选 Whisper、SenseVoice、Fun-ASR-Nano；支持本地微调模型、自适应说话人识别和字幕预校对。
+- **直播梗概与下播回复**：融合字幕、弹幕和房间设定，生成文字；按配置使用完整直播上下文并复用缓存。
+- **漫画与视频生成**：结合直播截图、人物参考图和故事脚本生成漫画，支持独立的视频生成队列。
+- **自动切片**：整场分块召回、全局排序和详细编辑，结合字幕、弹幕及情绪线索选材；也支持关键词话题切片、手工时间段和跨录播话题合集。
+- **切片制作与审核**：生成大字幕成片、封面、标题、简介及审核清单；用全局数字 ID 查看证据、改词、重压和登记审核。
+- **B 站发布**：延迟回复、补图和独立梗概回复；切片通过持久化单实例队列上传，支持重试、频控、去重和合集归档。
+- **资源与运行监控**：ASR/GPU 队列、游戏期间资源降档、企微通知、录播看门狗和用量统计。
+- **直播投票与历史问答**：多房间弹幕投票、录播字幕语义检索及证据问答；连接方式、授权与本地问答实验室见 [直播投票运行指南](docs/live-vote.md)。
 
-本系统是一套围绕直播录播后处理的全自动化管线，通过 Mikufans 录播姬的 Webhook 接收录播完成事件，自动完成从「视频合并」到「B 站动态回复」的全流程处理。
+自动发现或制作切片不会自动获得投稿授权。候选的来源、人物归属、字幕和媒体检查通过后，可按编号确认并入队投稿，或由明确启用的自动投稿策略完成最终审核与入队；配置与约束见 [切片发布策略](docs/clip-publication-policy.md)。
 
-### 主要功能
+## 主流程
 
-- **Webhook 服务**：接收 DDTV / Mikufans 录播姬的事件并自动触发处理
-- **视频合并**：多分段自动合并为完整视频
-- **音频提取**：将视频转换为音频（ASMR / 仅需音频的房间）
-- **多 ASR 后端语音识别**：默认 Paraformer，支持 Whisper、SenseVoice、Fun-ASR-Nano，并可在 ASR 后自适应判断是否执行完整说话人处理
-- **字幕与弹幕融合**：按弹幕热力密度提取高光时刻，生成 `_AI_HIGHLIGHT.txt`
-- **AI 晚安总结**：调用 Gemini/TuZi API 生成晚安回复 Markdown
-- **AI 图片生成**：调用 TuZi 图片 API 生成卡通漫画图
-- **B 站动态回复**：将晚安回复 + 图片发布到 B 站评论区
-- **直播弹幕投票（独立工具）**：支持各房间主播及全局管理员发起 2～9 选项投票，推荐通过 [Yuiffy 的 mikufans fork](https://github.com/Yuiffy/BililiveRecorder) 复用已有弹幕连接；独立模式可直连，但多房间会增加 B 站连接数量和风控风险。详见 [直播投票运行指南](docs/live-vote.md)
+```text
+Mikufans / DDTV 录播事件
+  → Webhook 服务：会话、分段、断流重连与持久化任务
+  → 中央处理队列：资源准入、视频合并、音频准备
+  → ASR：字幕、说话人及情绪 sidecar
+  → 字幕 / 弹幕融合
+      ├─ 直播梗概、下播回复、漫画 → 延迟回复服务 → B 站动态评论
+      └─ 整场 / 关键词选材 → 候选与成片 → 审核清单
+                                             → 按编号确认 → 投稿队列
+```
 
----
+Mikufans 通常由 `StreamEnded` 收口；缺少该事件时，`Streaming:false` 的最终 `FileClosed` 可在分段等待超时后兜底。普通中间分段不会立即触发整场处理。
 
-## ASR 后端
+## 安装与配置
 
-当前默认使用 Paraformer；Whisper、SenseVoice 和 Fun-ASR-Nano 可通过配置或命令行显式选择：
+### 环境
+
+| 依赖 | 用途 |
+| --- | --- |
+| Node.js 22.18+（推荐 24）、pnpm 11 | TypeScript 服务和媒体编排 |
+| Python 3.10+ | ASR、说话人识别和 Python 工具 |
+| FFmpeg / ffprobe，加入 PATH | 音视频处理、字幕烧录和封面截帧 |
+| NVIDIA GPU / 匹配的 PyTorch、CUDA | 推荐用于 ASR 与 NVENC 加速；安装组合见 ASR 文档 |
+| PM2 | 可选，用于后台服务和队列守护 |
+
+在仓库根目录执行：
 
 ```powershell
-node src/scripts/enhanced_auto_summary.js "D:/path/to/video.flv" --asr-backend paraformer
-node src/scripts/enhanced_auto_summary.js "D:/path/to/video.flv" --asr-backend whisper
-node src/scripts/enhanced_auto_summary.js "D:/path/to/video.flv" --asr-backend sensevoice
-node src/scripts/enhanced_auto_summary.js "D:/path/to/video.flv" --asr-compare whisper,sensevoice
-```
-
-ASR 路由、adaptive speaker、sidecar、验证流程和当前限制见 [docs/asr-backends.md](docs/asr-backends.md)。
-
-### Paraformer fine-tuned model
-
-Paraformer 支持 stock 和本地 fine-tuned model。`config/default.json` 保持 `model_profile: "default"`，生产通过 deterministic gray rollout 为部分任务选择 fine-tuned model，并可为指定房间强制启用。
-
-相关配置：
-
-- `asr.paraformer.model_profile`: `default` 或 `finetuned`
-- `asr.paraformer.base_model`: stock model alias，通常为 `paraformer-zh`
-- `asr.paraformer.finetuned_model`: 本地训练目录
-- `asr.gray_rollout`: rollout 比例和强制房间
-
-模型路径属于部署配置，不要从文档复制固定绝对路径。训练流程见 [docs/funasr-finetune.md](docs/funasr-finetune.md)。
-
-## 📁 项目结构
-
-开发与排障先看 [架构和语言边界](docs/architecture.md)，文件放置遵循
-[AGENTS.md](AGENTS.md)。日常完整验证使用 `npm run verify:all`，
-编译产物写入 `build/service`，不会清理或覆盖正在运行的 `dist`。
-
-`docs/`、`plans/` 和通用代码目录只放准备长期维护并提交 Git 的内容。单次任务的计划、
-实验与验收报告、交接记录、页面快照和临时数据放在忽略的 `temp/<日期>-<任务>/`；
-一次性脚本也可放在 [local-scripts/](local-scripts/README.md)。通用结论提炼进现有文档，
-不要把整份任务过程记录提交到公共目录。
-
-```
-danmaku-to-summary-ts/
-├── src/app/main.ts                         # TypeScript 应用入口；构建后为 dist/app/main.js
-├── src/services/webhook/                   # Webhook 服务和 DDTV / Mikufans / B站 API handlers
-│   └── handlers/mikufans/                  # 录播生命周期、队列 Worker、ASR 资源边界
-├── src/services/bilibili/delayed-reply/   # 延迟回复调度、产物解析和诊断
-├── src/scripts/enhanced_auto_summary.js    # 完整媒体处理流程
-├── src/scripts/README.md                    # 脚本目录和迁移约定
-├── src/scripts/asr/                        # backend 路由、统一结果、队列和 speaker-once
-├── src/scripts/clipping/                   # 跨录播合集、事件契约、资源调度和输出路径
-├── src/scripts/python/                     # Whisper、Paraformer、SenseVoice、Nano 与 speaker 引擎
-├── config/
-│   ├── default.json                        # 开发/仓库默认配置
-│   ├── production.json                     # 生产配置
-│   ├── secret.example.json                 # 密钥配置示例
-│   └── secret.json                         # 本地密钥，不应提交
-├── docs/                                   # 长期维护的架构、契约和运行说明
-├── temp/                                   # 单次任务脚本、报告与素材，不提交 Git
-├── local-scripts/                          # 本机一次性工具，仅 README 提交 Git
-├── ecosystem.config.js                     # PM2 进程配置
-└── package.json                            # 命令入口
-```
-
----
-
-## 🛠️ 部署准备
-
-### 1. 环境要求
-
-| 依赖 | 版本要求 | 说明 |
-|------|----------|------|
-| Node.js | 22.18+，推荐 24 | 运行 JS 脚本与测试 |
-| Python | 3.10+ | 运行 Whisper / FunASR 系列脚本 |
-| FFmpeg | 任意 | 视频/音频处理，需在 PATH 中 |
-| CUDA | 推荐 12.x | Paraformer / Whisper GPU 加速；具体设备配置见 ASR 文档 |
-| PM2 | 全局安装 | 进程守护 |
-| pnpm / npm | - | 包管理器 |
-
-### 2. 安装 Python 依赖
-
-默认 Paraformer / SenseVoice / Fun-ASR-Nano 依赖：
-
-```powershell
-pip install -r src/scripts/python/requirements-sensevoice.txt
-```
-
-Whisper 仍是可选 backend；需要时单独安装 `faster-whisper`。RTX 5080、CUDA wheel 和首次模型缓存说明见 [docs/asr-backends.md](docs/asr-backends.md)。
-
-### 3. 安装 Node.js 依赖
-
-```bash
-# 使用 package.json 指定的 pnpm 版本和仓库锁文件
 pnpm install --frozen-lockfile
+python -m pip install -r src/scripts/python/requirements-sensevoice.txt
+python -m pip install -r src/scripts/python/requirements.txt
 ```
 
-### 4. 安装 PM2
+首次 ASR 会下载模型。GPU wheel、模型缓存与各后端的额外依赖见 [ASR 安装与配置](docs/asr-backends.md)；漫画和上传工具的依赖见各自文档。
 
-```bash
-npm install -g pm2
-```
-
----
-
-## ⚙️ 配置文件说明
-
-配置加载优先级为：显式 `CONFIG_PATH`；否则 production/automation 环境读取 `config/production.json`，其他环境读取 `config/default.json`。显式路径不存在会报错，不会悄悄回退。敏感信息由本地 `config/secret.json` 合并；示例见 `config/secret.example.json`。
-
-- `config/default.json`：仓库和开发默认值。
-- `config/production.json`：生产运行值，不会自动叠加到 default 之上。
-- `config/secret.json`：本地 API key、Cookie、企微等敏感值，不应提交。
-- `CONFIG_PATH`：需要完全指定其他配置文件时使用。
-
-配置的实际字段以 `src/core/config/ConfigInterface.ts`、`src/core/config/ConfigLoader.ts` 和脚本侧运行时读取逻辑为准。
-
----
-
-## 🚦 启动服务
-
-### 生产环境（PM2 守护）
-
-```bash
-# 构建项目（首次或代码更新后）
-pnpm build
-
-# 使用 PM2 启动
-npm run pm2:start
-
-# 查看运行状态
-npm run pm2:status
-
-# 实时查看日志
-npm run pm2:logs
-
-# 重启服务
-npm run pm2:restart
-
-# 停止服务
-npm run pm2:stop
-```
-
-**常用 PM2 命令速查：**
-
-```bash
-pm2 list                         # 查看所有进程
-pm2 monit                        # 实时监控面板
-pm2 show danmaku-webhook         # 查看详细状态
-pm2 flush                        # 清空日志
-pm2 startup                      # 配置开机自启
-pm2 save                         # 保存当前进程列表
-```
-
-> 当前 PM2 进程入口为 `dist/app/main.js`，生产端口由 `config/production.json` 的 `webhook.port` 决定（当前 `12523`）。更多说明见 [docs/runtime-notes.md](docs/runtime-notes.md)。
-
-### GPU TDR 证据监控
-
-为尽快保留 NVIDIA 驱动超时、黑屏或 OBS 设备重置时的现场证据，单独启动 GPU TDR 捕获进程：
-
-```bash
-npm run gpu:tdr:start
-npm run gpu:tdr:status
-npm run gpu:tdr:logs
-```
-
-它只读取 Windows 事件日志、`C:\Windows\LiveKernelReports\WATCHDOG`、WER 报告目录和 OBS 日志目录。发现 `nvlddmkm` 153、显示驱动 TDR、LiveKernel/WATCHDOG 相关事件或新转储时，会按约 90 秒合并同一次事故，并保存到 `D:\diagnostics\gpu-tdr`。转储复制会等待文件稳定并重试；平时不会运行 WinDbg，也不会修改显卡、TDR、游戏或 OBS 设置。
-
-停止或重启它不会影响其他 PM2 服务：
-
-```bash
-npm run gpu:tdr:stop
-npm run gpu:tdr:restart
-```
-
-如果 D 盘不可用，可通过 PM2 环境变量 `GPU_TDR_CAPTURE_DIR` 改到其他诊断盘。
-
-### 开发模式（直接运行）
+首次配置时复制密钥示例，再填写实际凭据：
 
 ```powershell
+Copy-Item config/secret.example.json config/secret.json
+```
+
+已有 `secret.json` 时直接编辑本地文件，保留现有凭据。
+
+### 配置如何生效
+
+1. 显式 `CONFIG_PATH` 选择主配置；路径不存在会报错，相对路径按仓库根目录解析。
+2. 未指定时，`NODE_ENV=production` 或 `automation` 读取 `config/production.json`；其他环境读取 `config/default.json`。
+3. 合并本地 `config/secret.json`，再应用支持的环境变量覆盖。
+
+生产配置是独立主配置，不会自动继承 `default.json`。仓库中的房间、录播目录、模型路径和代理是现有部署设置，使用前应改为自己的环境。密钥、Cookie 和企微 Webhook 放在被 Git 忽略的 `secret.json` 中。
+
+| 配置位置 | 主要内容 |
+| --- | --- |
+| `webhook` | 监听地址、端口和录播路径 |
+| `asr` | 默认后端、房间路由、微调模型、说话人和字幕预校对 |
+| `ai.roomSettings`、`config/generation-modes.json` | 房间生成策略、直播上下文和漫画设置 |
+| `ownStreamClips` | 整场自动选材、排序、编辑、烧录与审核 |
+| `clipTopics` | 关键词话题、窗口、预审和通知 |
+| `bilibili` | 动态回复、监测与发布相关设置 |
+
+字段以配置文件和 [统一配置契约](docs/architecture.md#configuration-and-history) 为准。
+
+## 启动与升级
+
+### 首次启动
+
+源码 CLI 依赖编译后的工作流模块；先验证，再激活工作流和构建服务：
+
+```powershell
+npm run verify:all
+npm run workflow:activate
 npm run build
 npm run dev
 ```
 
-`npm run dev` 当前显式使用 `--port 12522 --host 0.0.0.0`。也可以直接运行 `node dist/app/main.js --port <port> --host <host>`；CLI 只识别显式 `--port` / `--host`。
+`npm run dev` 运行 `dist/app/main.js`，监听 `0.0.0.0:12522`，不是自动重编译模式。开发改动后需要重新构建；Next.js 任务页面另用 `npm run dev:next` 启动。
 
----
-
-## 🔄 主链路处理流程
-
-```
-Mikufans 直播事件
-    │  - StreamStarted / SessionStarted 建立会话状态
-    │  - FileOpening / FileClosed 收集录制分段
-    │  - StreamEnded 通常负责最终收口并触发队列任务
-    │  - 缺少 StreamEnded 时，Streaming:false 的最终 FileClosed 可在分段等待超时后兜底收口
-    │  - SessionEnded 维护延迟状态，本身通常不直接开始最终处理
-    ▼
-[1] TypeScript Webhook 服务 (dist/app/main.js, POST /mikufans)
-    │  - MikufansWebhookHandler 归一化事件并持久化任务
-    │  - MikufansSummaryQueueWorker 串行占用 ASR/GPU 槽位并启动媒体子进程
-    │
-    ▼
-[2] 完整媒体流水线 (src/scripts/enhanced_auto_summary.js)
-    │  - 合并分段并准备音频
-    │  - 解析 room/streamer/filename 路由上下文
-    │
-    ▼
-[3] ASR backend 路由
-    │  - 优先级：CLI override > 首条匹配 routing > default_backend
-    │  - 当前默认 Paraformer；也支持 Whisper、SenseVoice、Fun-ASR-Nano
-    │  - Paraformer 先完成 VAD + ASR + 标点，再按需执行自适应 CAM++ speaker 后处理
-    │  - 输出普通 .srt、.asr_meta.json 和 .asr_speakers.json；有 speaker labels 时另写 review .speaker.srt
-    │
-    ▼
-[4] 字幕 + 弹幕融合 (do_fusion_summary.js)
-    │  - 计算弹幕热力并生成 _AI_HIGHLIGHT.txt
-    │  - speaker sidecar 可补充计划/实际参与者上下文
-    │
-    ▼
-[5] AI 文本、漫画与 clips
-    │  - 生成晚安回复和漫画
-    │  - 可用 speaker sidecar 保守选择额外主播参考图
-    │
-    ▼
-[6] 延迟回复服务
-    │  - 将文字和图片发布到 B 站动态评论区
-    │
-    ▼
-✅ 完成
-```
-
-Mikufans 的事件顺序、断流重连和分段收口由 `MikufansWebhookHandler` 管理；
-中央总结队列、GPU/游戏资源准入、ASR 常驻进程和
-`enhanced_auto_summary.js` 子进程由 `MikufansSummaryQueueWorker` 管理。
-handler 通过 Worker 的入队接口提交媒体任务，不直接加载旧 JS 队列模块；两者通过窄回调通信，
-后续不要把队列或子进程控制逻辑重新放回事件处理器。
-
-ASR/speaker 的详细状态机、sidecar 和验证方法见 [docs/asr-backends.md](docs/asr-backends.md)。
-
----
-
-## 🔌 Webhook 端点
-
-服务生产默认监听端口：`12523`。开发脚本 `npm run dev` 使用 `12522`；显式 `--port` 可覆盖。
-
-### Mikufans 录播姬（主入口）
-
-```
-POST http://localhost:12523/mikufans
-```
-
-- `StreamStarted` / `SessionStarted`：建立或恢复直播会话状态
-- `FileOpening` / `FileClosed`：收集分段；`Streaming:false` 的最终 FileClosed 可在缺少 StreamEnded 时兜底收口
-- `StreamEnded`：通常负责最终收口并触发中央队列
-- `SessionEnded`：维护延迟会话状态，本身通常不直接触发最终处理
-
-**在 Mikufans 录播姬中配置 Webhook 地址：**
-```
-http://你的机器IP:12523/mikufans
-```
-
-### DDTV 录播姬（辅助入口）
-
-```
-POST http://localhost:12523/ddtv
-```
-
-- `SaveBulletScreenFile`：弹幕保存事件，等待 fix 视频生成后处理
-- `InvalidLoginStatus`：登录失效，弹出 Windows 提醒弹窗
-
----
-
-## 🧪 其他调用入口
-
-### 通过 Postman / curl 调用单个功能
-
-> 所有 REST API 都在 Webhook 服务器运行时可用。
-
-#### 健康检查
-
-```text
-GET http://localhost:12523/health
-GET http://localhost:12523/status
-GET http://localhost:12523/history
-GET http://localhost:12523/processing-files
-```
-
-#### B 站相关 API
-
-```text
-# 健康检查
-GET  http://localhost:12523/api/bilibili/health
-
-# 检查 Cookie 是否有效
-GET  http://localhost:12523/api/bilibili/check-cookie
-
-# 获取主播动态（按 UID）
-GET  http://localhost:12523/api/bilibili/dynamics/:uid
-
-# 获取主播动态（按房间ID）
-GET  http://localhost:12523/api/bilibili/room/:roomId/dynamics
-
-# 发布评论
-POST http://localhost:12523/api/bilibili/comment
-Content-Type: application/json
-{
-  "dynamicId": "动态ID",
-  "content": "评论内容"
-}
-
-# 上传图片
-POST http://localhost:12523/api/bilibili/upload
-Content-Type: multipart/form-data
-# form field: image=<图片文件>
-
-# 发布带图片的评论
-POST http://localhost:12523/api/bilibili/comment-with-image
-Content-Type: multipart/form-data
-# form fields: dynamicId, content, image（可选）
-
-# 触发延迟回复（独立 handler）
-POST http://localhost:12523/api/delayed-reply
-Content-Type: application/json
-{
-  "roomId": "26966466",
-  "goodnightTextPath": "/path/to/_晚安回复.md",
-  "comicImagePath": "/path/to/_COMIC_FACTORY.png"
-}
-```
-
-#### 手动触发 Mikufans Webhook（模拟录播姬推送）
-
-```text
-POST http://localhost:12523/mikufans
-Content-Type: application/json
-{
-  "EventType": "FileClosed",
-  "EventData": {
-    "RoomId": 26966466,
-    "Name": "栞栞Shiori",
-    "SessionId": "test-session-001",
-    "Streaming": false,
-    "RelativePath": "栞栞Shiori/2024-01-01/录制-26966466-20240101-120000.mp4"
-  }
-}
-```
-
-示例中的 `Streaming:false` 表示这是缺少 `StreamEnded` 时可用于超时兜底收口的最终分段；普通中间 `FileClosed` 不应设置该字段。
-
----
-
-### 本地命令行调用单个功能
-
-以下核心离线处理脚本可直接通过命令行运行，无需启动 Webhook 服务；HTTP handlers 仍需启动 `dist/app/main.js`。
-
-#### 完整处理流程（视频 → AI 总结）
-
-```bash
-# 处理单个视频 + 弹幕 XML
-node src/scripts/enhanced_auto_summary.js \
-  D:/录播/视频.mp4 \
-  D:/录播/弹幕.xml
-
-# 仅处理视频（无弹幕）
-node src/scripts/enhanced_auto_summary.js D:/录播/视频.mp4
-
-# 已有字幕，直接跳到融合 + AI 生成
-node src/scripts/enhanced_auto_summary.js \
-  D:/录播/视频.srt \
-  D:/录播/弹幕.xml
-```
-
-#### 仅运行 Whisper 语音识别
-
-```bash
-# 处理单个视频或目录
-python src/scripts/python/batch_whisper.py D:/录播/视频.mp4
-
-# 批量处理整个目录
-python src/scripts/python/batch_whisper.py D:/录播/2024-01-01/
-```
-
-#### 仅运行字幕 + 弹幕融合
-
-```bash
-# 需要 .srt 和 .xml 文件
-node src/scripts/do_fusion_summary.js \
-  D:/录播/视频.srt \
-  D:/录播/弹幕.xml
-```
-
-#### 检查 audio-only 房间的延迟保留策略
+需要生产守护时：
 
 ```powershell
-node src/scripts/audio_processor.js --retention --dry-run
-node src/scripts/audio_processor.js --retention --limit 10
-```
-
-当前普通单文件命令只识别 room/audioOnly 设置并返回延迟保留状态；启用 retention 时不会立即提取音频。延迟转换/清理通过 `--retention` 运行，先用 `--dry-run` 检查，再用 `--limit` 限制实际批次。
-
-#### 通过拖拽运行（Windows）
-
-项目提供这些 `.bat` 快捷方式：
-
-```text
-src/scripts/拖拽文件夹到我身上生成总结.bat  ← 拖入录播目录，运行完整流程
-drag_generate_goodnight.bat                  ← 生成晚安回复
-drag_generate_comic.bat                      ← 生成漫画图片
-```
-
----
-
-## 🧪 验证与架构门禁
-
-控制面和结构约束：
-
-```powershell
-npm run verify:core
-```
-
-其中包含 TypeScript 类型检查、生产构建只读检查、lint、生产目录架构检查和串行 Jest；自动准备候选 workflows。快速静态检查可用 `npm run verify:quick`。Python ASR、说话人和
-媒体工具保持独立运行时，使用：
-
-```powershell
-npm run test:python
-npm run verify:all
-```
-
-`verify:all` 不构建或覆盖 `dist`；线上 PM2 进程只有在单独审核后才允许 reload。
-
----
-
-## 📊 监控与日志
-
-### PM2 日志
-
-```bash
-# 实时日志（合并输出）
+npm install -g pm2
+pm2 start ecosystem.config.js --only danmaku-webhook --env production
+npm run pm2:status
 npm run pm2:logs
-
-# 实时监控面板
-npm run pm2:monitor
 ```
 
-### 日志文件位置
+生产默认端口为 `12523`，由 `webhook.port` 决定，也可通过 `WEBHOOK_PORT` / `WEBHOOK_HOST` 或显式 CLI 参数覆盖。
 
-```
-logs/
-├── pm2-out.log        # 标准输出日志
-├── pm2-error.log      # 错误日志
-└── pm2-combined.log   # 合并日志
-```
+按需启动独立任务：
 
-### 服务状态检查
-
-```bash
-curl http://localhost:12523/health
-curl http://localhost:12523/status
-curl http://localhost:12523/history
+```powershell
+npm run pm2:clip-upload:start
+npm run pm2:seedance:start
+npm run pm2:recorder:start
 ```
 
----
+`npm run pm2:start` / `pm2:restart` 操作整个 `ecosystem.config.js`；仅管理 Webhook 时使用指定进程的 PM2 命令。
 
-## 🔧 故障排除
+### 已有服务升级
 
-### 常见问题
+`npm run verify:all` 使用候选工作流和隔离构建，不覆盖正在运行的 `dist`，也不激活工作流。线上升级的暂存、队列检查、状态备份和回滚步骤见 [部署流程](docs/architecture.md#pm2-deployment)。源码 JS/Python 会在下一次子进程调用时生效，更新运行目录时也应遵循该流程。
 
-#### 1. ASR 处理卡住 / GPU 显存不足
+## 自动切片与审核
 
-生产任务由 Mikufans 中央队列串行占用 ASR/GPU 槽位，Paraformer worker 会在队列清空或 GPU 忙时释放。先查看 PM2 日志和 `[[ASR_TIMING]]`。完整媒体流程为所有 ASR backend 共用 `.whisper_lock` 兼容锁；确认没有活跃 ASR 进程后，才考虑清理 stale lock。
+### 整场自动选材
 
-#### 2. 服务启动后端口被占用
+在 `ownStreamClips` 中配置启用范围、AI 策略和媒体参数。当前分阶段选材先按块召回，再结合本地线索全局排序，最后逐候选编辑边界和文案。AI 片长按话题完整性决定；字幕、弹幕引用及人物归属分别校验。
 
-```bash
-# 查看占用 12523 端口的进程
-netstat -ano | findstr 12523
+处理后查看 `PLAN.json`、按时间排列的 `REVIEW.md` 和上传清单。待复核、制作失败及被剔除项也保留数字 ID 和原因，便于继续处理。
+
+已有录播可直接运行选材，使用其字幕与弹幕：
+
+```powershell
+node src/scripts/own_stream_clipper.js --media "D:/recordings/live.flv" --srt "D:/recordings/live.srt" --xml "D:/recordings/live.xml" --no-notify
 ```
 
-#### 3. AI 生成失败
+选材与编辑会调用配置的 AI。分阶段策略、诊断和可选残余审计见 [自动选材说明](docs/post-stream-residual-audit.md)。
 
-- 检查 `config/secret.json` 中的 API Key 是否正确
-- 检查 `config/default.json` / `config/production.json` 中的代理配置
-- 查看 PM2 日志获取详细错误信息
+### 关键词、指定时间段与跨录播合集
 
-#### 4. 找不到弹幕 XML 文件
+- **关键词话题**：在 `clipTopics` 配置关键词和房间，生成带原文证据、粗剪预览与字幕的候选包，进入同一编号审核流程。
+- **指定时间段**：通过手工队列提交媒体、SRT、起止秒数和文案，统一制作 MP4、大字幕、封面及 REVIEW。
+- **跨录播合集**：`topic:compile` 按发现来源、搜索证据、生成计划、编译成片四阶段执行。
 
-Webhook 会自动查找与视频同名的 `.xml` 文件（同目录）。确认 Mikufans 录播姬已开启弹幕录制，且保存路径与配置中的 `basePath` 一致。
+手工队列示例（起止时间为原录播秒数）：
 
-#### 5. B 站回复失败
+```powershell
+npm run manual:clips -- add --media "D:/recordings/live.flv" --srt "D:/recordings/live.srt" --start 120 --end 240 --title "片中发生的故事" --description "依据原片填写简介" --cover-text "封面文案"
+npm run manual:clips -- list
+npm run manual:clips -- worker
+```
 
-- 使用 `GET /api/bilibili/check-cookie` 检查 Cookie 是否有效
-- B 站 Cookie 有效期有限，需定期更新 `config/secret.json`
+默认只制作、等待审核。profile、旧录播路径和完整参数见 [手工切片队列](docs/manual-clip-queue.md)；多场拼接见 [跨录播话题合集](docs/topic-compilation.md)。
 
----
+### 按编号查看、改词与投稿
 
-## 📚 延伸阅读
+下面的 `123` 仅为示例，使用审核清单中的真实全局 ID：
 
-- [当前运行说明](docs/runtime-notes.md)
-- [当前架构、模块边界与语言策略](docs/architecture.md)
-- [ASR backend / adaptive speaker 架构与验证](docs/asr-backends.md)
-- [Paraformer 微调](docs/funasr-finetune.md)
-- [vLLM 独立队列](docs/asr-vllm-queue.md)
-- [录播补下载与回填流程](docs/bilibili-recovery-flow.md)
-- [B站上传工具](docs/bilibili-upload-tools.md)
-- [自定义 AI Prompts 说明](自定义AI_Prompts说明.md)
+```powershell
+npm run upload:clips:list
+npm run upload:clips -- show 123
+npm run upload:clips -- subtitles --id 123
 
-`src/scripts/WEBHOOK_README.md`、`BILIBILI_API_README.md` 等文件记录旧 standalone 脚本时代行为，文件顶部会标明历史状态；不要用它们覆盖上述当前文档。
+# 仅修正已核实的词，不投稿
+npm run upload:clips -- correct --id 123 --from "原词" --to "核实后的词"
 
----
+# 已完成审核、明确需要投稿时入队
+npm run upload:clips -- enqueue --ids 123
+npm run upload:clips:queue
+npm run pm2:status:clip-upload
+```
 
-## 📄 许可证
+确认改词并要求投稿时，可在 `correct` 命令上加 `--enqueue`，由后台 worker 按同一 ID 重建、烧录、检查并上传。字幕修订保留版本和原媒体；有证据或文案问题的候选须先完成对应复核，不能仅凭入队解除阻塞。
+
+具体的 `approve-review`、`rebuild`、`cut` 和已投稿限制见 [候选审核与改词](docs/topic-event-editorial.md)、[B 站上传工具](docs/bilibili-upload-tools.md)。
+
+## ASR 与独立处理入口
+
+以下命令需要先激活工作流；无需启动 Webhook 服务：
+
+```powershell
+# 完整处理：视频 + 可选弹幕
+node src/scripts/enhanced_auto_summary.js "D:/recordings/live.flv" "D:/recordings/live.xml"
+
+# 已有字幕，直接进入融合与后续生成
+node src/scripts/enhanced_auto_summary.js "D:/recordings/live.srt" "D:/recordings/live.xml"
+
+# 显式选择 ASR 后端
+node src/scripts/enhanced_auto_summary.js "D:/recordings/live.flv" --asr-backend sensevoice
+
+# 仅字幕与弹幕融合
+node src/scripts/do_fusion_summary.js "D:/recordings/live.srt" "D:/recordings/live.xml"
+```
+
+ASR 路由优先级是 CLI 覆盖、首条匹配的 routing、`default_backend`。Paraformer 支持 `default` / `finetuned` 模型配置和灰度路由；模型目录属于本机配置。输出包括普通 `.srt`、`.asr_meta.json`，按需生成说话人 sidecar 和 `.speaker.srt` 审阅字幕。
+
+完整处理会依房间设置触发 AI、切片及通知。后端、模型安装、自动字幕预校对和设备排障见 [ASR 文档](docs/asr-backends.md)，训练见 [Paraformer 微调](docs/funasr-finetune.md)。
+
+## Webhook 与 API
+
+录播姬配置的生产地址：
+
+```text
+Mikufans: http://localhost:12523/mikufans
+DDTV:     http://localhost:12523/ddtv
+```
+
+| 方法与路径 | 用途 |
+| --- | --- |
+| `GET /health`、`GET /status` | 健康和处理状态 |
+| `GET /history`、`GET /processing-files` | 处理记录和正在处理的文件 |
+| `POST /mikufans`、`POST /ddtv` | 录播事件 |
+| `GET /api/bilibili/check-cookie` | Cookie 检查 |
+| `GET /api/delayed-reply/tasks` | 延迟回复任务列表 |
+| `POST /api/delayed-reply` | 提交延迟回复任务 |
+| `DELETE /api/delayed-reply/tasks/:taskId` | 取消延迟回复任务 |
+
+端口、请求约定、PM2 和常见运行问题见 [运行说明](docs/runtime-notes.md)。当前 handler 源码是请求格式的依据；旧 standalone 脚本文档仅用于历史参考。
+
+## 开发与验证
+
+环境准备与聚焦测试见 [开发指南](docs/development.md)。快速静态检查使用 `npm run verify:quick`。
+
+```powershell
+npm run verify:all        # 完整便携验证
+npm run verify:core       # 工作流构建、类型检查、架构门禁、Jest
+npm run test:node         # Node 测试
+npm run test:python       # Python 便携测试
+npm run test:compiled     # 隔离服务构建及编译产物集成测试
+npm run test:python:asr   # 额外 ASR 设备/资源测试，需要 ML 依赖
+```
+
+便携测试使用模拟依赖，不代表真实模型效果、GPU 性能或 B 站投稿已验收。不要批量执行历史 `src/scripts/test_*`，其中有调用付费服务或发布评论的诊断脚本。
+
+| 目录 | 职责 |
+| --- | --- |
+| `src/app`、`src/services` | TypeScript 入口、HTTP、录播生命周期和调度 |
+| `src/workflows` | 编译并按版本加载的工作流模块 |
+| `src/scripts` | 媒体 CLI、ASR、切片、漫画和 Python 工具 |
+| `scripts`、`tools` | 可复用运维、部署与队列命令 |
+| `config` | 配置、生成预设和本地密钥示例 |
+| `tests`、源码旁测试 | 便携、集成及回归测试 |
+| `docs`、`.agents/skills` | 长期维护的文档与代理工作流 |
+| `data/runtime`、`logs`、`build`、`dist` | 本地运行状态、日志及生成产物 |
+| `temp/<日期>-<任务>`、`local-scripts` | 被忽略的单次任务资料与脚本 |
+
+模块边界、编译工作流、配置契约和升级约束见 [架构说明](docs/architecture.md)；文件放置遵循 [AGENTS.md](AGENTS.md)。
+
+## 更多文档
+
+- [录播补下载与回填](docs/bilibili-recovery-flow.md)
+- [旧录播选材](docs/old-sui-clip-search-playbook.md)
+- [B 站切片验收](docs/bilibili-clip-verification.md)
+- [vLLM 独立 ASR 队列](docs/asr-vllm-queue.md)
+- [自定义 AI Prompts](自定义AI_Prompts说明.md)
+- [脚本目录与迁移约定](src/scripts/README.md)
+
+## 许可证
 
 MIT License
-
----
-
-> **注意**：本项目仍在积极开发中，配置格式可能随版本更新而变化，升级前请备份配置文件。
-
-## 维护约定
-
-项目不强行统一成一种语言：TypeScript 负责 HTTP、生命周期、队列、调度和长期运行的
-控制面；Python 负责 ASR、说话人识别、模型运行时及 Python 原生媒体工具；现有 JavaScript
-保留为媒体工作流兼容层，并在修改时逐步抽出可测试的 TypeScript 模块。跨语言调用只通过
-命令行参数、环境变量、JSON sidecar 或明确的 sentinel 行完成。新增长期服务不要放回
-`src/scripts`，详细边界和迁移顺序见 [docs/architecture.md](docs/architecture.md)。

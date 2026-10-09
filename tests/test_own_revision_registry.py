@@ -36,6 +36,13 @@ class OwnRevisionRegistryTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[0][-1], "--allow-cover-face-overlap")
 
     def setUp(self):
+        # Node child processes must use the test candidate, not a live activation.
+        if not os.environ.get("DANMAKU_WORKFLOW_RELEASE"):
+            candidate = Path(__file__).resolve().parents[1] / "build/workflow-candidate.json"
+            release = json.loads(candidate.read_text(encoding="utf-8"))["releaseDir"]
+            workflow_env = patch.dict(os.environ, {"DANMAKU_WORKFLOW_RELEASE": release})
+            workflow_env.start()
+            self.addCleanup(workflow_env.stop)
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)

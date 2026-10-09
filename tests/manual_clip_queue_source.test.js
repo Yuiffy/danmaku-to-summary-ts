@@ -2,6 +2,14 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+// Match Jest's candidate setup without requiring or changing a live activation.
+if (!process.env.DANMAKU_WORKFLOW_RELEASE) {
+    const candidate = path.join(__dirname, '../build/workflow-candidate.json');
+    process.env.DANMAKU_WORKFLOW_RELEASE = JSON.parse(fs.readFileSync(candidate, 'utf8')).releaseDir;
+}
 
 const {
     buildQueueMediaConfig,
