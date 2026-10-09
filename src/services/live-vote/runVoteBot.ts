@@ -2,10 +2,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 import fetch from 'node-fetch';
 import { RecorderXmlTail } from './RecorderXmlTail';
-import { VoteConfig, VoteSession } from './VoteSession';
+import { VoteConfig, VoteDanmaku, VoteSession } from './VoteSession';
 import { LocalDanmakuClient } from './LocalDanmakuClient';
 import { BilibiliDanmakuClient } from './BilibiliDanmakuClient';
 import { MultiRoomVoteBot } from './MultiRoomVoteBot';
+import { createLiveQuestionAnswerer } from './questions/DaiyuQuestionClient';
+import { LiveQuestionSession } from './questions/LiveQuestionSession';
+import { LiveQuestionConfig, QuestionAnswerer, QuestionRecordWriter } from './questions/QuestionPolicy';
+import { createQuestionRecordWriter } from '../bilibili/question-records/QuestionRecordPublisher';
 
 interface RuntimeConfig extends Omit<VoteConfig, 'authorizedUids'> {
   roomId?: string;
@@ -18,6 +22,7 @@ interface RuntimeConfig extends Omit<VoteConfig, 'authorizedUids'> {
   recorderRoot?: string;
   recorderSocketUrl?: string;
   source?: 'bilibili' | 'recorder' | 'xml';
+  questions?: LiveQuestionConfig;
 }
 
 type VoteCookie = string | (() => string);
@@ -83,7 +88,7 @@ function relayToken(config: RuntimeConfig): string {
     (config.recorderSettingsFile ? readLocalSettings(config.recorderSettingsFile).token : '') || '';
 }
 
-function runAllRecorderRooms(config: RuntimeConfig, live: boolean, cookie: VoteCookie): void {
+function runAllRecorderRooms(config: RuntimeConfig, live: boolean, cookie: VoteCookie, answerer?: QuestionAnswerer, record?: QuestionRecordWriter): void {
   if (!config.recorderSocketUrl || !Array.isArray(config.globalAdminUids) ||
       config.globalAdminUids.some(uid => typeof uid !== 'string' || !/^[1-9]\d*$/u.test(uid)) ||
       (config.statePath && !path.isAbsolute(config.statePath))) {
@@ -121,7 +126,7 @@ function runAllRecorderRooms(config: RuntimeConfig, live: boolean, cookie: VoteC
     console.error('Multi-room vote sending stopped:', error);
     stop();
     process.exitCode = 1;
-  });
+  }, answerer, record);
   source = new LocalDanmakuClient(config.recorderSocketUrl, relayToken(config), '*', message => bot.ingest(message),
     () => { bot.disconnect(); saveState(false); }, rooms => { bot.updateRooms(rooms); saveState(true, rooms); });
   source.start();
@@ -138,9 +143,14 @@ export async function runVoteBot(configPath: string, live = false): Promise<void
   }
   const cookie = () => process.env.BILIBILI_VOTE_COOKIE ||
     (live && config.credentialConfigPath ? readLocalSettings(config.credentialConfigPath).bilibili?.cookie : '') || '';
+  const answerer = createLiveQuestionAnswerer(config.questions, config.botUid);
+  const record = answerer ? createQuestionRecordWriter(config.questions!, config.botUid || '', live, cookie) : undefined;
+  console.log(answerer
+    ? `Recording questions enabled: provider daiYu, model gpt-6-luna, configured rooms: ${Object.keys(config.questions!.recordingRoots).length}.`
+    : 'Recording questions disabled.');
   if (config.rooms !== undefined) {
     if (config.rooms !== 'auto-record' || config.source !== 'recorder') throw new Error('Multi-room mode requires the recorder source');
-    runAllRecorderRooms(config, live, cookie);
+    runAllRecorderRooms(config, live, cookie, answerer, record);
     return;
   }
   if (typeof config.roomId !== 'string' || !/^\d+$/u.test(config.roomId) ||
@@ -156,39 +166,52 @@ export async function runVoteBot(configPath: string, live = false): Promise<void
   let source: { start(): void; stop(): void } | null = null;
   let timer: NodeJS.Timeout | null = null;
   let generation = 0;
+  let roomGeneration = 0;
   let closed = false;
   const stop = (): void => {
     if (closed) return;
     closed = true;
     generation++;
+    roomGeneration++;
     if (timer) clearInterval(timer);
     source?.stop();
     session.cancel();
+    questions?.stop();
   };
-  const session = new VoteSession({ ...config, authorizedUids: config.authorizedUids! }, message => {
-    const current = generation;
-    queue = queue.then(() => sender.send(message, () => !closed && current === generation)).catch(error => {
+  const enqueue = (message: string, isCurrent: () => boolean) => {
+    queue = queue.then(() => sender.send(message, isCurrent)).catch(error => {
       console.error('Sending stopped:', error);
       stop();
       process.exitCode = 1;
     });
+  };
+  const session = new VoteSession({ ...config, authorizedUids: config.authorizedUids! }, message => {
+    const current = generation;
+    enqueue(message, () => !closed && current === generation);
   }, () => { generation++; });
+  const questions = answerer ? new LiveQuestionSession(config.questions!, answerer,
+    (_roomId, message, isCurrent) => enqueue(message, isCurrent), config.botUid, config.maxMessageChars,
+    (_roomId, uid) => config.authorizedUids!.includes(uid), record) : undefined;
+  const ingest = (message: VoteDanmaku) => {
+    const current = roomGeneration;
+    if (!questions?.ingest({ ...message, roomId: config.roomId }, () => !closed && current === roomGeneration)) session.ingest(message);
+  };
   let tail: RecorderXmlTail | null = null;
-  const disconnect = (): void => { generation++; session.cancel(); };
+  const disconnect = (): void => { generation++; roomGeneration++; questions?.disconnect(); session.cancel(); };
   if (config.source === 'xml') {
     if (!config.recorderRoot || !path.isAbsolute(config.recorderRoot)) throw new Error('recorderRoot must be absolute for XML source');
-    tail = new RecorderXmlTail(config.recorderRoot, config.roomId, message => session.ingest(message));
+    tail = new RecorderXmlTail(config.recorderRoot, config.roomId, ingest);
     await tail.poll();
   } else if (config.source === 'recorder') {
     if (!config.recorderSocketUrl) throw new Error('recorderSocketUrl is required');
     source = new LocalDanmakuClient(config.recorderSocketUrl, relayToken(config),
-      config.roomId, message => session.ingest(message), disconnect);
+      config.roomId, ingest, disconnect);
   } else {
     const listenCookie = process.env.BILIBILI_VOTE_LISTEN_COOKIE || process.env.BILIBILI_VOTE_COOKIE || '';
     if (!listenCookie) {
       throw new Error('Direct UID-based voting requires BILIBILI_VOTE_LISTEN_COOKIE or BILIBILI_VOTE_COOKIE; anonymous messages may have UID 0. Dry-run does not send messages.');
     }
-    source = new BilibiliDanmakuClient(Number(config.roomId), message => session.ingest(message), disconnect,
+    source = new BilibiliDanmakuClient(Number(config.roomId), ingest, disconnect,
       undefined, () => { stop(); process.exitCode = 1; }, listenCookie);
   }
   console.log(`Vote bot watching room ${config.roomId} via ${config.source || 'bilibili'} (${live ? 'LIVE SEND' : 'dry-run'}).`);

@@ -1,4 +1,38 @@
-import { compactReviewLines, shortReviewReasons, withReviewExcerpts, deferredReviewLines, compactDiagnosticLines } from './reviewDigest';
+import { compactReviewLines, shortReviewReasons, withReviewExcerpts, deferredReviewLines, compactDiagnosticLines, reviewAttentionLines } from './reviewDigest';
+
+test('notification and local review retain all optional topics in numeric order including low scores and restored entries', () => {
+    const decisions = Array.from({ length: 20 }, (_, i) => ({ index: i + 1, start: i * 100, end: i * 100 + 30,
+        selected: false, score: 60 + i, title: `备选话题${i + 1}`, reason: 'below_score' }));
+    const metadata = { source: { mediaPath: 'stream', srtPath: 'source' }, reviewPath: 'D:/review/REVIEW.md',
+        publication: { policy: { mode: 'curated' }, decisions: [...decisions].reverse() },
+        aiStatus: { ranking: { skipped: [12, 2, 1].map(candidateIndex => ({ candidateIndex, score: 30, title: '初选备选', start: 100 - candidateIndex, end: 150 })) } },
+        deferredResolutions: [{ selectionKey: 'P:stream:source:20:1900:1930', clipId: 900 }] };
+    const before = JSON.stringify(metadata);
+    const compact = deferredReviewLines(metadata, [], { compact: true }).join('\n');
+    expect(compact.match(/^- P\d+ /gmu)).toHaveLength(20);
+    expect(compact).toContain('共23条，按编号排列');
+    expect(compact).toContain('- P20 |');
+    expect(compact).toContain('- P1 |');
+    const labels = [...compact.matchAll(/^- ([PR]\d+) \|/gmu)].map(match => match[1]);
+    expect(labels).toEqual([...decisions.map(row => `P${row.index}`), 'R1', 'R2', 'R12']);
+    expect(compact).toContain('D:/review/REVIEW.md');
+    const full = deferredReviewLines(metadata).join('\n');
+    expect(full.match(/^- P\d+ /gmu)).toHaveLength(20);
+    expect(full).toContain('已补切ID900');
+    expect(compact).toContain('已补切ID900');
+    expect(JSON.stringify(metadata)).toBe(before);
+});
+
+test('attention index distinguishes active review, transport failures and optional rejected items', () => {
+    const text = reviewAttentionLines([{ id: 1, status: '已投稿' }, { id: 2, status: '已排队投稿' },
+        { id: 3, status: '待人工复核' }, { id: 4, status: '已剔除（未切）', rejected: true },
+        { id: 5, status: '投稿失败' }, { id: 6, status: '重复已跳过' }, { id: 7, status: '已投稿（当前资料待复核）' }]).join('\n');
+    expect(text).toContain('ID3：待人工复核');
+    expect(text).toContain('ID5：投稿失败');
+    expect(text).toContain('ID7：已投稿资料有变动');
+    for (const id of [1, 2, 4, 6]) expect(text).not.toContain(`ID${id}：`);
+    expect(reviewAttentionLines([{ status: '待人工复核' }]).join('\n')).toContain('编号待登记');
+});
 
 test('short reasons retain the concrete blocker and omit duplicate codes and passing observations', () => {
     const issues = ['字幕“没有这种被凶的预气”中“预气”疑为错字；需核实并修正，现有证据不足以确认音频原词。',
@@ -15,7 +49,7 @@ test('short reasons retain the concrete blocker and omit duplicate codes and pas
 test('Chinese summaries cover mixed-language reasons and batch errors while preserving original SRT', () => {
     const issue = '字幕多处明显错识，如“had they do with”，无法理解；需核对ASR';
     const lines = compactReviewLines({ reviewExcerpt: { subtitles: [{ start: 10, end: 13, text: 'had they do with' }] } }, [issue]);
-    expect(lines[0]).toBe('   理由: 字幕含疑似乱码或错词，需核对原音');
+    expect(lines[0]).toBe('   理由: 字幕多处明显错识，如“had they do with”，无法理解');
     expect(lines[1]).toContain('“had they do with”');
     const diagnostics = compactDiagnosticLines({ aiStatus: { attribution: { events: [{ phase: 'actor-review', error: 'request_budget_exhausted' }] },
         requests: [{ phase: 'selection', status: 'failure', error: 'Selection transport failed' }] },
@@ -50,6 +84,16 @@ test('review excerpts select the suspect SRT line and nearby viewer text without
     expect(lines).not.toContain('范围外');
     expect(JSON.stringify(row)).toBe(original);
     expect(row.uploadReady).toBe(false);
+});
+
+test('foreign detector hints identify the actual time and words instead of implying a proven error', () => {
+    const row = { subtitleProofreading: { reviewGroups: [{ type: 'possible_foreign_audio', occurrences: [
+        { start: 110, text: 'foreign words' }, { start: 110.001, text: 'foreign words' }] }] } };
+    const text = compactReviewLines(row, ['subtitle_review_groups_pending']).join('\n');
+    expect(text).toContain('尚未证明有错');
+    expect(text).toContain('录播1:50“foreign words”');
+    expect(text.match(/foreign words/gu)).toHaveLength(1);
+    expect(text).toContain('独立复核是否影响主线');
 });
 
 test('current rendered SRT uses local time, source SRT uses absolute time and XML reads are shared per list', async () => {

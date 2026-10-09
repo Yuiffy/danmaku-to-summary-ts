@@ -11,6 +11,7 @@ const asr = require('../asr/asr_backends');
 const topic = require('../topic_clipper');
 const generator = require('../ai_text_generator');
 const { sendWeChatMarkdown } = require('../wechat_work_markdown');
+const { spawnSync } = require('child_process');
 
 const passed = { status: 'passed', checks: { content: true, attribution: true, subtitles: true, visuals: true, policy: true },
     issues: [], resolvedGroundingIssues: [] };
@@ -72,8 +73,9 @@ describe('topic automatic publication integration', () => {
             fs.writeFileSync(output, 'rendered final video');
             return { path: output, burnedSubtitles: true };
         });
-        const coverGenerator = jest.fn(async video => {
-            const file = video.replace(/\.mp4$/u, '.jpg');
+        const coverGenerator = jest.fn(async (video, _title, outputDirectory) => {
+            fs.mkdirSync(outputDirectory, { recursive: true });
+            const file = path.join(outputDirectory, path.basename(video).replace(/\.mp4$/u, '.jpg'));
             fs.writeFileSync(file, 'rendered cover');
             return file;
         });
@@ -123,6 +125,26 @@ describe('topic automatic publication integration', () => {
         expect(results.every(result => !result.automaticPublicationRequired && !result.publicationKind)).toBe(true);
         expect(job.notify).toHaveBeenCalledTimes(1); expect(sendWeChatMarkdown).toHaveBeenCalledTimes(1);
         expect(fs.readFileSync(subtitles, 'utf8')).toBe(sourceBefore);
+    });
+
+    test('final-only candidate recheck returns a fresh review without copy repair, metadata writes or notifications', async () => {
+        const job = run(), results = await job.promise;
+        const artifact = results[0], before = fs.readFileSync(artifact.output.metadataPath, 'utf8');
+        const copyBefore = fs.readFileSync(artifact.output.copyPath, 'utf8');
+        const coverGenerator = jest.fn(), writeCopyMarkdown = jest.fn();
+        const calls = planner.mock.calls.length, notifyCount = sendWeChatMarkdown.mock.calls.length;
+        const request = jest.fn(async () => ({ text: JSON.stringify({ ...passed, status: 'needs_review',
+            checks: { ...passed.checks, attribution: false }, issues: ['另一个人物“小C”与标题归属冲突'] }) }));
+        const result = await require('./topic_automatic_publication').reviewCandidateFinal(artifact, config,
+            { ...topic, buildPreflightEvidence: require('./preflight_evidence').buildPreflightEvidence,
+                buildQueueMediaConfig: () => ({}), coverGenerator, writeCopyMarkdown },
+            { finalOnly: true, publicationAdapters: { request, inspect: job.inspect } });
+        expect(result.publicationDecision.action).toBe('needs_human');
+        expect(request).toHaveBeenCalledTimes(1); expect(planner.mock.calls).toHaveLength(calls);
+        expect(coverGenerator).not.toHaveBeenCalled(); expect(writeCopyMarkdown).not.toHaveBeenCalled();
+        expect(fs.readFileSync(artifact.output.metadataPath, 'utf8')).toBe(before);
+        expect(fs.readFileSync(artifact.output.copyPath, 'utf8')).toBe(copyBefore);
+        expect(sendWeChatMarkdown.mock.calls).toHaveLength(notifyCount);
     });
 
     test('only a passed final enters the queue; held and unrendered siblings remain in the single refreshed list', async () => {
@@ -184,6 +206,60 @@ describe('topic automatic publication integration', () => {
         const message = sendWeChatMarkdown.mock.calls[0][1];
         expect(message).toContain('已排队 2'); expect(message).toContain('fixture encode failed');
         expect(message).not.toContain('ID 8309');
+    });
+
+    test.each(['文案称“小绒念叨”，但原始字幕行的说话人未知，无法确认发言者。',
+        '两句说话人均未知，无法确认“小绒接话”；去掉归属或核实发言者。'])('unsupported speaker copy is repaired once before stable-ID enqueue: %s', async blocker => {
+        config.ownStreamClips.enhancements = { stageDefaults: { provider: 'daiYu', model: 'gpt-6-luna',
+            apiMode: 'responses', reasoningEffort: 'high', maxTokens: 12000, maxInputTokens: 100000, timeoutMs: 60000,
+            capabilities: { reasoningEfforts: ['high'], images: true, imageTokenUpperBound: 2000 } },
+            budget: { mode: 'log_only', ledgerPath: path.join(directory, 'ledger.json') } };
+        const prepare = planner.getMockImplementation();
+        planner.mockImplementation(async (prompt, ...args) => {
+            if (!prompt.includes('PUBLICATION COPY REPAIR:')) return prepare(prompt, ...args);
+            timeline.push('copy-repair');
+            expect(prompt).toContain('omit that subject in all three fields');
+            expect(prompt).toContain('Return a concrete changed copy package');
+            const clipId = prompt.match(/"clipId":"(E\d-1)"/)[1];
+            return { text: JSON.stringify({ clips: [{ clipId, title: '想SUI了，接着说好喜欢他们',
+                description: '聊到想念，随后作出回应。', coverText: '想SUI了\n好喜欢他们',
+                sourceKind: 'live_speech', evidenceCueIds: ['G2'] }] }), meta: { model: 'gpt-6-luna',
+                    attempts: [{ provider: 'daiYu', model: 'gpt-6-luna', responseModel: 'gpt-6-luna', reasoningEffortSent: 'high', apiModeUsed: 'responses' }] } };
+        });
+        const request = jest.fn(async (artifact, prompt) => {
+            timeline.push(`final:${artifact.window.index}`);
+            if (artifact.window.index === 'E1-1' && !artifact.automaticTopicCopyRepair) return {
+                text: JSON.stringify({ ...passed, status: 'needs_review', checks: { ...passed.checks, attribution: false },
+                    issues: [blocker] }) };
+            if (artifact.window.index === 'E2-1') return { text: JSON.stringify({ ...passed, status: 'needs_review',
+                checks: { ...passed.checks, attribution: false }, issues: ['关键词身份未确认；字幕改词不能证明目标。'] }) };
+            if (artifact.window.index === 'E3-1') return { text: JSON.stringify({ ...passed, status: 'needs_review',
+                checks: { ...passed.checks, content: false }, issues: ['片尾缺少必要收尾。'] }) };
+            const evidence = JSON.parse(prompt.split('EVIDENCE_JSON ')[1]);
+            expect(evidence.finalCopy.title).toBe('想SUI了，接着说好喜欢他们');
+            expect(evidence.topicEvidence.editorial.copyGrounding.sourceKind).toBe('live_speech');
+            return { text: JSON.stringify(passed) };
+        });
+        const job = run({ publicationAdapters: { request, inspect: jest.fn(async () => ({ passed: true,
+            issues: [], frames: [picture, picture] })) } }), results = await job.promise;
+        expect(results[0].automaticTopicCopyRepair).not.toHaveProperty('error');
+        expect(results.map(row => row.publicationDecision.action)).toEqual(['auto_queue', 'needs_human', 'needs_human']);
+        expect(timeline.filter(step => step === 'copy-repair')).toHaveLength(1);
+        expect(request).toHaveBeenCalledTimes(4); expect(job.mediaGenerator).toHaveBeenCalledTimes(3);
+        expect(job.coverGenerator).toHaveBeenCalledTimes(4);
+        const repaired = results[0];
+        expect(repaired.automaticTopicCopyRepair.authority).toBe('automatic');
+        expect(repaired.output.coverPath).not.toBe(repaired.automaticTopicCopyRepair.before.coverPath);
+        expect(repaired.humanReview).toBeUndefined(); expect(repaired.ownStreamHumanReview).toBeUndefined();
+        expect(job.automaticEnqueue).toHaveBeenCalledWith([713]);
+        expect(fs.readFileSync(repaired.output.copyPath, 'utf8')).toContain(repaired.copy.title);
+        const validation = spawnSync('python', ['-c',
+            'import json,sys;from pathlib import Path;from src.scripts.clip_auto_publication import validate_publication_review;validate_publication_review(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")))',
+            repaired.output.metadataPath], { cwd: process.cwd(), encoding: 'utf8', windowsHide: true, shell: false });
+        expect(validation.stderr).toBe(''); expect(validation.status).toBe(0);
+        const message = sendWeChatMarkdown.mock.calls[0][1];
+        expect(message).toContain('状态: 已排队投稿'); expect(message).toContain(repaired.copy.title);
+        expect(sendWeChatMarkdown).toHaveBeenCalledTimes(1);
     });
 
     test.each([

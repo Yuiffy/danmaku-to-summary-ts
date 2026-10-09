@@ -99,6 +99,27 @@ class OwnRevisionRegistryTests(unittest.TestCase):
     def queue(self):
         return api.load_json(api.QUEUE_PATH, {}).get("jobs", [])
 
+    def test_automatic_cut_registers_failed_review_without_queueing_or_leaving_pending_rebuild(self):
+        registry = api.load_json(api.REGISTRY_PATH, {})
+        registry["clips"]["1"]["pendingRebuild"] = True
+        registry["clips"]["1"]["status"] = "pending_rebuild"
+        api.save_json(api.REGISTRY_PATH, registry)
+        def render(*_args, **_kwargs):
+            metadata = self.metadata()
+            metadata.pop("ownStreamHumanReview", None)
+            metadata["automaticPublicationRequired"] = True
+            metadata["publicationReview"] = {"status": "needs_review", "issues": ["具体字幕疑点"]}
+            metadata["publicationDecision"] = {"action": "needs_human", "reasons": ["具体字幕疑点"]}
+            metadata["rebuildRequired"] = False
+            self.write_metadata(metadata)
+        with patch.object(api.clip_candidate_queue, "candidate_action", side_effect=render):
+            self.assertEqual(self.command(["cut", "--ids", "1", "--automatic-review", "--review-note", "Fresh review"]), 0)
+        record = self.records()["1"]
+        self.assertEqual(record["status"], "needs_review")
+        self.assertFalse(record.get("pendingRebuild"))
+        self.assertIn("具体字幕疑点", record["reviewIssues"])
+        self.assertFalse(api.QUEUE_PATH.exists())
+
     def approve_fixture(self, metadata):
         source, output, copy = metadata["source"], metadata["output"], metadata["copy"]
         stat = Path(source["mediaPath"]).stat()

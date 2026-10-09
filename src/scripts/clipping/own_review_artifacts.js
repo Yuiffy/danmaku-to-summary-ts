@@ -26,7 +26,10 @@ async function refreshReviewUnlocked(planPath, options = {}) {
         || fs.readdirSync(outputRoot).filter(name => /_fun_.*\.json$/i.test(name)).map(name => path.join(outputRoot, name));
     const results = metadataFiles.map(file => JSON.parse(fs.readFileSync(file, 'utf8')))
         .filter(result => !result.selectionRejection && !result.originalSelectionRejection
-            && path.resolve(result.source?.mediaPath || '.') === path.resolve(plan.source.mediaPath));
+            && path.resolve(result.source?.mediaPath || '.') === path.resolve(plan.source.mediaPath))
+        // A single-ID repair may carry its temporary one-item manifest index.
+        // The saved window index remains the original plan identity.
+        .map(result => ({ ...result, reviewIndex: result.window.index ?? result.reviewIndex }));
     const byIndex = new Map();
     for (const result of results) {
         const index = result.reviewIndex ?? result.window.index;

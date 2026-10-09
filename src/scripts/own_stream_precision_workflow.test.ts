@@ -1,7 +1,8 @@
 export {};
 jest.mock('child_process', () => ({ ...jest.requireActual('child_process'),
     spawnSync: jest.fn(() => ({ status: 0, stdout: '', stderr: '' })),
-    execFile: jest.fn((_file, _args, _options, callback) => callback(null, JSON.stringify({
+    execFile: jest.fn((_file, args, _options, callback) => callback(null, JSON.stringify(args.includes('-read_intervals')
+        ? { frames: [{ best_effort_timestamp_time: '0', width: 640, height: 360 }] } : {
         // The selection pipeline adds the verified three-second closing hold.
         format: { duration: 63 }, streams: [{ codec_type: 'video', width: 640, height: 360, start_time: 0 },
             { codec_type: 'audio', start_time: 0 }] }))) }));

@@ -179,6 +179,44 @@ export async function verifyVisualOpening(options: Data, io: Runtime): Promise<D
     activity: options.frameObservations.find((o: Data) => o.index === f.index)?.activity }))
     .filter((f: Data) => f.time >= audio.start && f.time <= audio.end).sort((a: Data, b: Data) => a.time - b.time);
   const first = known.findIndex((f: Data) => f.activity === 'gameplay');
+  // Sparse chapter frames locate a search interval, not a reason to abandon review.
+  // Probe only this gap; the existing dense pixel/context review independently
+  // checks the resulting bracket again before it can select an accepted boundary.
+  if (first > 0 && known[first - 1].activity === 'other'
+    && known.slice(0, first).every((f: Data) => f.activity === 'other')) {
+    const left = known[first - 1].time, right = known[first].time;
+    if (right - left > 30) {
+      const count = Math.ceil((right - left) / 30);
+      if (count > 25) throw new Error('Opening search gap exceeds the bounded probe budget');
+      const probes: Data[] = [], observations: Data[] = [];
+      // The boundary frame subset still uses the whole-session observation IDs.
+      const maxIndex = Math.max(...options.frames.map((f: Data) => f.index),
+        ...options.frameObservations.map((f: Data) => f.index));
+      for (let i = 1; i < count; i++) probes.push({ index: maxIndex + i, time: left + (right - left) * i / count,
+        path: path.join(directory, `opening-probe-${i}.jpg`), mimeType: 'image/jpeg' });
+      for (const frame of probes) {
+        await io.extract(['-y', '-ss', String(frame.time), '-i', source.mediaPath, '-frames:v', '1', '-vf', 'scale=960:-2', '-q:v', '3', frame.path],
+          { ffmpegPath: root.audio?.ffmpeg?.path || 'ffmpeg', threads: 1, stage: '补齐游戏开局采样间隔', timeoutMs: 120000, sourceIdentity: source });
+        frame.sha256 = io.digest(frame.path);
+      }
+      for (let offset = 0; offset < probes.length; offset += 8) {
+        const batch = probes.slice(offset, offset + 8);
+        const prompt = `Inspect EVERY original ${host} livestream frame to narrow the first live ${gameName} transition search interval. Images are ${JSON.stringify(batch.map(({index,time}) => ({index,recordingSeconds:time})))}.
+Classify actual pixels only: game includes recognizable own-game menus/loading/fades; other is an unrelated talking scene, replay or another player's video. Black, unreadable or ambiguous ownership is uncertain. Do not infer from neighboring frames or assume a boundary. This search never approves a cut; original dense frames and complete independent audio context will be checked separately. No audio is supplied.
+Return ONLY JSON {"reason":"actual pixels","frames":[{"index":original index,"activity":"game|other|uncertain","description":"actual visible content"}]} in supplied order.`;
+        const response = await io.cache({ directory: path.join(directory, '../opening-cache'), phase: 'game-opening-probe-v1', prompt,
+          signature: { source, settings, samples: sampleBinding(batch) },
+          validate: (v: Data) => { try { parseOpeningFrames(v, batch); return true; } catch { return false; } } },
+          () => io.request(prompt, batch, root, settings));
+        io.writeJson(path.join(directory, `opening-probe-response-${offset}.json`), { ...response,
+          requestBinding: { version: 1, source: identity(source), samples: sampleBinding(batch) } });
+        observations.push(...parseOpeningFrames(response, batch).frames.map((f: Data) => ({ ...f,
+          activity: f.activity === 'game' ? 'gameplay' : f.activity })));
+      }
+      return verifyVisualOpening({ ...options, frames: [...options.frames, ...probes],
+        frameObservations: [...options.frameObservations, ...observations] }, io);
+    }
+  }
   if (first < 1 || known[first - 1].activity !== 'other' || known[first].time - known[first - 1].time > 30
     || known.slice(0, first).some((f: Data) => f.activity !== 'other')) throw new Error('No bounded earliest original opening transition');
   const bracket = { start: known[first - 1].time, end: known[first].time };

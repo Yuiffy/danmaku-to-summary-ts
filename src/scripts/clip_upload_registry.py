@@ -1143,11 +1143,8 @@ def timeout_seconds_for_job(job: Dict[str, Any]) -> int:
 def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.CompletedProcess[str]:
     """Upload a group of clips.
 
-    JSON-backed clips go through batch_upload.py using their manifest.
-    Historical REVIEW.md clips keep using the Markdown compatibility path.
-    Self-contained clips NOT in REVIEW.md (manually created) go through
-    bilibili_upload.py individually, then their results are merged into the
-    group's state file so sync_clip_statuses picks them up.
+    JSON-backed clips use their manifest; historical REVIEW clips keep their
+    compatibility path. Self-contained clips upload individually.
     """
     if job.get("automaticPublication"):
         errors = validate_groups([group]) + clip_auto_publication.validate_job_authorizations([group], job, load_upload_runtime_config)
@@ -1199,6 +1196,8 @@ def run_batch(group: List[Dict[str, Any]], job: Dict[str, Any]) -> subprocess.Co
             cmd.append("--force")
         if job.get("automaticPublication"):
             cmd.extend(["--automatic-job", str(job["id"])])
+        if job.get("id"):
+            cmd.extend(["--queue-job", str(job["id"])])
         if job.get("collectionSectionId"):
             cmd.extend(["--collection-section-id", str(job["collectionSectionId"])])
         print("[worker] run:", " ".join(f'"{c}"' if " " in c else c for c in cmd), flush=True)
@@ -2140,7 +2139,7 @@ def run_one_job() -> bool:
         group_ids = [int(clip["id"]) for clip in group]
         before_upload = clip_upload_snapshot(registry, group_ids)
         cp = run_batch(group, job)
-        last_returncode = cp.returncode
+        last_returncode = cp.returncode or last_returncode
         output = cp.stdout or ""
         all_outputs.append(output[-8000:])
         print(output, end="", flush=True)
@@ -2177,7 +2176,8 @@ def run_one_job() -> bool:
             break
         if cp.returncode != 0:
             failed = True
-            break
+            if "submission outcome unknown" not in output or terminal_upload_error_reason(output):
+                break
         if account_upload_limited:
             break
         group_index += 1

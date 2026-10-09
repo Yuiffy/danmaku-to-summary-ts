@@ -25,11 +25,15 @@ test('selection preserves a later example and conclusion in the same chronologic
     const padded = withEndingHold(result[0], segments, 145);
     expect(padded.end).toBe(138);
     const constraints = storyConstraints(padded.topicEditPlan, evidence, padded);
+    // A subtitle-ID plan covers speech. The renderer adds the closing pause;
+    // asking the model to cite that pause as speech creates an impossible draft.
+    expect(constraints.at(-1).end).toBe(125);
     const cues = segments.slice(0, 5).map((c, i) => ({ ...c, id: `C${i+1}`, start: c.start-10, end: c.end-10 }));
     const draft = { keep: [{ fromCue: 'C1', toCue: 'C2', role: 'setup', reason: 'first' },
         { fromCue: 'C4', toCue: 'C5', role: 'closing', reason: 'second and closure' }] };
     const timeline = validateStoryPlan(draft, cues, 128, constraints, { preserveContinuity: false }, 3);
     expect(timeline.keep.at(-1).end).toBe(128);
+    expect(() => require('./creative_timeline').storyReviewEvidence(cues, timeline, constraints)).not.toThrow();
     expect(() => assertDroppedRanges(timeline, padded.topicEditPlan, padded)).not.toThrow();
     expect(() => validateStoryPlan({ keep: [draft.keep[0]] }, cues, 128, constraints, {}, 3)).toThrow('Retain');
     expect(() => assertDroppedRanges({ keep: [{ start: 0, end: 128 }] }, padded.topicEditPlan, padded)).toThrow('dropped');
@@ -64,6 +68,20 @@ test('overlapping descriptions of kept speech retain it once; contradictory dele
     expect(result.ranges.map(r => [r.startCueId, r.endCueId])).toEqual([['G1','G4'],['G5','G5']]);
     expect(() => normalizePlan({ ...shared, ranges: [shared.ranges[0], { ...shared.ranges[1], action: 'drop' }] }, bounds, evidence)).toThrow();
     expect(() => storyConstraints(result, evidence, bounds)).not.toThrow();
+});
+
+test('unassigned interior speech between keep ranges is retained, never silently deleted', () => {
+    const incomplete = { ...raw, ranges: [raw.ranges[0], raw.ranges[2]] };
+    const result = normalizePlan(incomplete, bounds, evidence);
+    expect(result.ranges.map(r => [r.startCueId, r.endCueId, r.action])).toEqual([
+        ['G1', 'G2', 'keep'], ['G3', 'G5', 'keep']
+    ]);
+    expect(result.coverageRepairs).toEqual([{ kind: 'retain_unassigned_groups', cueIds: ['G3'] }]);
+    expect(() => storyConstraints(result, evidence, bounds)).not.toThrow();
+    expect(() => normalizePlan(incomplete, bounds, evidence, new Set(['G1','G2','G4','G5','G6']))).toThrow();
+    expect(() => normalizePlan({ ...incomplete, ranges: [{ ...raw.ranges[0], action: 'drop' }, raw.ranges[2]] }, bounds, evidence)).toThrow();
+    expect(() => normalizePlan({ ...incomplete, ranges: [raw.ranges[0], { ...raw.ranges[2], action: 'drop' }] }, bounds, evidence)).toThrow();
+    expect(() => normalizePlan({ ...incomplete, ranges: [raw.ranges[2]] }, bounds, evidence)).toThrow();
 });
 
 test('seven-second exchange gets breathing room without grabbing next utterance or exceeding recording', () => {

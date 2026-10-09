@@ -5,11 +5,39 @@ import { activityPublicationEnabled, reviewActivityPublications, enqueueActivity
 import { activityTimingRevision } from './activityStages';
 import { validateImageInputs, MAX_INLINE_IMAGES } from '../text/requests';
 import { createHash } from 'crypto';
-import { activityPublicationText, activityPublicationBatchText } from './activityPublicationEvidence';
+import { activityPublicationText, activityPublicationBatchText, activityPublicationBoundaries, activityPublicationEvents } from './activityPublicationEvidence';
 
 const checks = { content: true, boundaries: true, titles: true, visuals: true, policy: true };
 const passed = { status: 'passed', checks, issues: [] };
 const picture = 'data:image/jpeg;base64,/9j/';
+test('shared boundary packets retain every observation once and preserve current event bindings', () => {
+    const audio = { audio: [{ index: 1, chunks: [{ text: '完整独立原音', raw: '原始输出' }] }] };
+    const original = { results: [{ id: 'a', decision: 'keep' }, { id: 'b', decision: 'uncertain' }] };
+    const revised = { results: [{ id: 'b', decision: 'keep', reason: '新增结束证据' }] };
+    const files: Record<string, any> = { audio, original, revised };
+    const read = jest.fn(file => files[file]);
+    const activities = ['a', 'b', 'c'].map((id, i) => ({ id, verification: { decision: 'keep',
+        localAudioEvidence: { resultPath: 'audio', sha256: 'digest', ...audio }, responsePath: i === 1 ? 'revised' : 'original' } }));
+    const packet = activityPublicationBoundaries(activities, read);
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(Object.values(packet.artifacts).map((item: any) => item.evidence)).toEqual([audio, original, revised]);
+    expect(packet.events.map((event: any) => packet.artifacts[event.boundaryAssessmentRef].evidence)).toEqual([original, revised, original]);
+    const compact = activityPublicationEvents(activities);
+    expect(compact[0].verification.localAudioEvidence).toEqual({ resultPath: 'audio', sha256: 'digest' });
+    expect(activities[0].verification.localAudioEvidence.audio).toEqual(audio.audio);
+});
+
+test('long naming audience context is reviewed across P batches without repeating the full activity', () => {
+    const audience = Array.from({ length: 1000 }, (_, time) => ({ time, text: `反应${time}` }));
+    const event = { id: 'a', start: 100, end: 900, cues: [], before: [], after: [],
+        audience: audience.filter(cue => cue.time >= 100 && cue.time <= 900), titleContext: { before: [], after: [], audience } };
+    const complete = { activities: [event] };
+    const batches = [[{ start: 100, end: 500 }], [{ start: 500, end: 900 }]]
+        .map(parts => activityPublicationBatchText(complete, parts).activities[0]);
+    for (const batch of batches) expect(batch.titleContext.audience).toEqual(audience.filter(cue => cue.time < 100 || cue.time > 900));
+    expect(new Set(batches.flatMap(batch => [...batch.audience, ...batch.titleContext.audience].map(cue => cue.time))).size).toBe(1000);
+    expect(event.titleContext.audience).toHaveLength(1000);
+});
 test('timing revision renews both kinds and their source evidence while preserving the existing bundle identity', () => {
     const source = { mediaPath:'source.flv',srtSha256:'original' };
     const previous = {source,signature:'old',uploadManifestPath:'old/UPLOAD_MANIFEST.json',uploadIds:{1:3112},
@@ -48,13 +76,76 @@ function fixture() {
     return {directory,row,config,adapters};
 }
 
+test('source-bound title correction and pre-song audience survive partitioning into the actual final-review prompt', async () => {
+    const f = fixture();
+    try {
+        const titleEvidence = { version: 1, items: [{ activityId: 'a1', name: '小夜子', sourceAlias: '小椰子',
+            method: 'source_transcript_reading', segments: [{ start: 95, end: 99, text: '我唱完这个小椰子' }],
+            note: '同音误识，结合原始上下文复核' }] };
+        const row = { ...f.row, kind: 'songs', presentation: { titleEvidence } };
+        f.adapters.text.mockImplementation(current => activityPublicationText(current, {
+            read: file => fs.readFileSync(file),
+            parse: () => [{ start: 95, end: 99, text: '我唱完这个小椰子' }, { start: 120, end: 124, text: '演唱歌词' }],
+            audience: async () => [{ time: 70, text: '小夜子 18天' }, { time: 250, text: '另一次无关点歌' }]
+        }));
+        // Provide an XML identity to enable the source reader (production verifies its hash).
+        row.sourceSnapshot = { xmlPath: row.transcript.path, xmlSha256: row.transcript.sha256 } as any;
+        f.adapters.request.mockImplementation(async (_row, prompt) => {
+            const text = JSON.parse(prompt.split('EVIDENCE_JSON ')[1]).completeText;
+            expect(text.titleEvidence).toEqual(titleEvidence);
+            expect(text.activities[0].titleContext.before[0].text).toBe('我唱完这个小椰子');
+            expect(text.activities[0].titleContext.audience).toContainEqual({ time: 70, text: '小夜子 18天' });
+            expect(text.titleEvidenceVersion).toBe(1);
+            return { text: JSON.stringify(passed) };
+        });
+        const [result] = await reviewActivityPublications([row], f.config, f.adapters);
+        expect(result.uploadReady).toBe(true);
+        expect(f.adapters.request).toHaveBeenCalledTimes(1);
+        const proof = JSON.parse(fs.readFileSync(result.activityReview.proofPath, 'utf8'));
+        expect(proof.titleEvidenceVersion).toBe(1);
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
+
+test('omitted title evidence permits one explicit bound upgrade, while new rejection and other failed checks remain held', async () => {
+    const f = fixture();
+    try {
+        const proofPath = path.join(f.directory, 'omitted-title.json');
+        const heldChecks = { ...checks, titles: false };
+        const proof = { version: 1, evidenceVersion: 3, binding: { contentSha256: 'fixture' },
+            status: 'needs_review', checks: heldChecks, responses: [{ status: 'needs_review', checks: heldChecks }] };
+        fs.writeFileSync(proofPath, JSON.stringify(proof));
+        const row = { ...f.row, presentation: { titleEvidence: { items: [{ activityId: 'a1', name: '片名' }] } },
+            activityReview: { status: 'pending', authority: 'automatic', checks: heldChecks, proofPath, issues: ['曲名不明'] } };
+        expect(() => assertActivityPublicationRetry(row, { status: 'needs_review' })).not.toThrow();
+        await reviewActivityPublications([row], f.config, f.adapters);
+        expect(f.adapters.request).not.toHaveBeenCalled();
+        f.adapters.request.mockResolvedValue({ text: JSON.stringify({ ...proof, issues: ['曲名仍然不明'] }) });
+        const [held] = await reviewActivityPublications([row], f.config, f.adapters, { retryUnavailable: true });
+        expect(f.adapters.request).toHaveBeenCalledTimes(1);
+        expect(held.uploadReady).toBe(false);
+        expect(() => assertActivityPublicationRetry(held, { status: 'needs_review' })).toThrow();
+        for (const key of ['content', 'boundaries', 'visuals', 'policy']) {
+            const otherChecks = { ...heldChecks, [key]: false };
+            fs.writeFileSync(proofPath, JSON.stringify({ ...proof, checks: otherChecks }));
+            expect(() => assertActivityPublicationRetry({ ...row, activityReview: { ...row.activityReview, checks: otherChecks } },
+                { status: 'needs_review' })).toThrow();
+        }
+        fs.writeFileSync(proofPath, JSON.stringify({ ...proof, binding: { contentSha256: 'changed' } }));
+        f.adapters.request.mockClear();
+        const [changed] = await reviewActivityPublications([row], f.config, f.adapters, { retryUnavailable: true });
+        expect(changed.activityReview.issues[0]).toContain('no longer binds');
+        expect(f.adapters.request).not.toHaveBeenCalled();
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
+
 test('a current independent final review binds complete evidence, real cover/P samples and the existing ID',async()=>{
     const f=fixture();
     try {
         const [approved]=await reviewActivityPublications([f.row],f.config,f.adapters);
         expect(approved.activityReview).toMatchObject({status:'approved',authority:'automatic'});
         const evidence=JSON.parse(f.adapters.request.mock.calls[0][1].split('EVIDENCE_JSON ')[1]);
-        expect(evidence.boundaryEvidence[0].independentAudio.audio[0].text).toBe('独立原音观察');
+        const audioRef = evidence.boundaryEvidence.events[0].independentAudioRef;
+        expect(evidence.boundaryEvidence.artifacts[audioRef].evidence.audio[0].text).toBe('独立原音观察');
         expect(evidence.excludedCategories).toEqual(['全局排除','现实家庭关系']);
         expect(evidence.completeText.activities[0]).toMatchObject({cues:[{text:'片内原话'}],after:[{text:'下次再看，今天结束了'}]});
         expect(f.adapters.inspect).toHaveBeenCalledWith(f.row,f.row.output.parts);

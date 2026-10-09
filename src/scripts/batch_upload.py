@@ -78,6 +78,8 @@ from clip_upload_description import (
     clean_generated_description, split_source_description, build_clip_time_range, build_desc,
 )
 import requests
+from clip_submission_recovery import (find_intent, clear_intent, intent_key, reconcile_intent,
+    validate_queue_submission, SubmissionRecoveryPending, SubmissionRecoveryConflict)
 
 ACCOUNT_MID = 412141275
 DEFAULT_RATE_LIMIT_WAIT = 120
@@ -776,7 +778,7 @@ async def upload_one_guarded(
             result['bvid'] = bvid
             return await enrich_and_attach(result)
 
-        if clip.get('automaticPublicationRequired'):
+        if clip.get('automaticPublicationRequired') or clip.get('queueJobId'):
             print("  [STOP] automatic submission outcome unknown; reconcile the existing attempt before retrying")
             return result
 
@@ -817,6 +819,7 @@ async def main():
     parser.add_argument('--only', default='', help='只传指定序号（逗号分隔）')
     parser.add_argument('--force', action='store_true', help='允许明确授权的修正版跳过同标题查重并重新投稿')
     parser.add_argument('--automatic-job', default=None, help='Revalidate a running automatic job immediately before each submission')
+    parser.add_argument('--queue-job', default=None, help='Running reviewed queue job for safe submission reconciliation')
     parser.add_argument('--dry-run', action='store_true', help='只查重不上传')
     parser.add_argument('--state', default=None, help='状态文件路径')
     parser.add_argument('--rate-limit-wait', type=int, default=DEFAULT_RATE_LIMIT_WAIT, help='B站提示上传过快后的等待秒数')
@@ -941,18 +944,29 @@ async def main():
         elif done_record is not None and args.force:
             print(f"  [{clip['idx']}] [FORCE] 忽略已有状态，准备重新投稿: {full_title}")
 
-        if (clip.get('automaticPublicationRequired') and not args.force
-                and state.get('submission_intents', {}).get(str(clip['idx']))):
+        if not args.force and find_intent(state, clip)[1]:
             try:
                 from .clip_automatic_retry import consume_reconciled_intent
             except ImportError:
                 from clip_automatic_retry import consume_reconciled_intent
             reconciled = bool(args.automatic_job and not args.dry_run
                 and consume_reconciled_intent(state, clip, args.automatic_job))
+            if not reconciled and not args.dry_run:
+                try:
+                    submission_clip = {**clip, 'prefix': args.prefix, 'source': args.source, 'tags': tags, 'tid': args.tid}
+                    reconciled = reconcile_intent(state, submission_clip, full_title, args.queue_job or args.automatic_job,
+                        lambda: fetch_member_archive_rows(cookie_str))
+                except SubmissionRecoveryConflict as error:
+                    print(f"[STOP] {error}")
+                    return 2
+                except (SubmissionRecoveryPending, ArchiveLookupUnavailable) as error:
+                    print(f"[WAIT] submission outcome unknown: {error}")
+                    return 2
             if not reconciled:
                 print(f"  [STOP] automatic submission outcome unknown for #{clip['idx']}; inspect the existing attempt")
                 return 2
             save_upload_state(state_path, state)
+            print(f"  [RECOVERED] #{clip['idx']}: complete archive lookup confirms no prior submission; retrying the bound media")
 
         if full_title in planned_titles:
             print(f"  [{clip['idx']}] SKIP (REVIEW 内同标题重复): {full_title}")
@@ -1045,17 +1059,20 @@ async def main():
 
     results = []
     for i, clip in enumerate(to_upload):
+        clip['queueJobId'] = args.queue_job
         full_title = f"{args.prefix}{clip['title']}"
         print(f"[{i+1}/{len(to_upload)}] #{clip['idx']} {full_title}")
 
         def before_submit():
+            if args.queue_job and not args.force:
+                validate_queue_submission({**clip, 'prefix': args.prefix, 'source': args.source, 'tags': tags, 'tid': args.tid}, args.queue_job)
             if args.automatic_job:
                 import clip_upload_registry as registry_api
                 registry_api.clip_auto_publication.validate_submission_authorization(
                     {**clip, 'prefix': args.prefix, 'source': args.source, 'tags': tags, 'tid': args.tid},
                     args.automatic_job, registry_api)
-            if clip.get('automaticPublicationRequired'):
-                state.setdefault('submission_intents', {})[str(clip['idx'])] = {
+            if clip.get('automaticPublicationRequired') or args.queue_job:
+                state.setdefault('submission_intents', {})[intent_key(clip)] = {
                     'title': full_title, 'mediaPath': clip.get('path') or '',
                     'startedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 }
@@ -1080,11 +1097,11 @@ async def main():
         # An explicit server rejection is known not to have created an archive.
         # Preserve the existing account cooldown; only ambiguous submission outcomes stay held.
         if result.get('status') == 'rate_limited' and result.get('errorCode') == BILIBILI_SUBMISSION_RATE_LIMIT_CODE:
-            state.get('submission_intents', {}).pop(str(clip['idx']), None)
+            clear_intent(state, clip)
 
         # 记录到状态
         if result['status'] in ('ok', 'ok_after_406'):
-            state.get('submission_intents', {}).pop(str(clip['idx']), None)
+            clear_intent(state, clip)
             state.setdefault('done', {})[str(clip['idx'])] = {
                 'title': full_title,
                 'submittedTitle': full_title,
@@ -1130,8 +1147,7 @@ async def main():
         # 保存状态
         save_upload_state(state_path, state)
 
-        if (clip.get('automaticPublicationRequired')
-                and state.get('submission_intents', {}).get(str(clip['idx']))):
+        if find_intent(state, clip)[1]:
             print(f"  [STOP] automatic submission outcome unknown for #{clip['idx']}; inspect the existing attempt")
             return 2
 

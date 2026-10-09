@@ -33,7 +33,9 @@ async function getActivitySummary(args) {
     const summary = require('../live_content_summary');
     const experiment = summary.getFullLiveContextExperiment(args.options.config, args.info.roomId) || {};
     const usage = require('../workflow-runtime').loadWorkflow('ai/usage');
-    const result = await usage.withUsagePhase('activity-summary', () => (args.options.generateSummary || summary.generateLiveContentSummary)({
+    const result = args.options.reuseSummaryOnly
+        ? { reused: true, payload: fs.existsSync(input.summaryPath) ? JSON.parse(fs.readFileSync(input.summaryPath, 'utf8')) : null }
+        : await usage.withUsagePhase('activity-summary', () => (args.options.generateSummary || summary.generateLiveContentSummary)({
         highlightPath: input.highlightPath, fullLiveContextPath: input.contextPath, outputPath: input.summaryPath,
         roomId: args.info.roomId, config: args.options.config, includeActivityTimeline: true,
         srtPath: args.transcript.path, xmlPath: args.source.xmlPath,
@@ -51,10 +53,11 @@ async function getActivitySummary(args) {
     if (payload?.status !== 'success' || payload.source?.sourceSha256 !== input.context.sourceSha256
         || payload.source?.activityTimelineVersion !== TIMELINE_VERSION
         || payload.source?.inputSources?.srtSha256 !== input.inputs.srtSha256
-        || payload.source?.inputSources?.xmlSha256 !== input.inputs.xmlSha256) throw new Error('A matching completed summary activity timeline is not ready; no separate full-stream scan was started'
-            + (payload?.status === 'failed' && payload.error ? `; ${payload.error}` : ''));
+        || payload.source?.inputSources?.xmlSha256 !== input.inputs.xmlSha256) throw Object.assign(new Error('A matching completed summary activity timeline is not ready; no separate full-stream scan was started'
+            + (payload?.status === 'failed' && payload.error ? `; ${payload.error}` : '')), { code: 'ACTIVITY_SUMMARY_NOT_READY' });
     const titles = require('../workflow-runtime').loadWorkflow('clipping/activityTitles');
-    const rawTimeline = { ...payload.activityTimeline, events: titles.recoverWatchNames(payload.activityTimeline?.events || [],
+    const rawTimeline = { ...payload.activityTimeline, events: titles.recoverWatchNames(titles.recoverSongNames(payload.activityTimeline?.events || [],
+        payload.content?.songs, evidenceFromContext(input.context)),
         payload.content?.overview, evidenceFromContext(input.context)) };
     const timeline = normalizeTimeline(rawTimeline, input.context);
     return { ...input, timeline, payload, reused: result?.reused === true,

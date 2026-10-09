@@ -26,8 +26,10 @@ describe('background_clip_runner', () => {
     jest.spyOn(configLoader, 'getConfig').mockReturnValue({ clipTopics: { enabled: false }, ownStreamClips: { enabled: false } });
     jest.spyOn(activity, 'generateStreamActivities').mockRejectedValue(new Error('activity detection unavailable'));
     try {
-      await backgroundClipRunner.runBackgroundClipsFromPayload(payloadPath);
+      await expect(backgroundClipRunner.runBackgroundClipsFromPayload(payloadPath)).rejects.toThrow('Archive stages incomplete');
       expect(fs.existsSync(media)).toBe(true);
+      expect(fs.existsSync(payloadPath)).toBe(true);
+      expect(JSON.parse(fs.readFileSync(`${payloadPath}.progress.json`, 'utf8')).status).toBe('failed');
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
@@ -135,12 +137,21 @@ describe('background_clip_runner', () => {
       await gameStarted;
       expect(order).toEqual(['topic', 'ordinary-start', 'ordinary-finished', 'songs', 'games-start']);
       releaseGame();
-      await task;
+      await expect(task).rejects.toThrow('Archive stages incomplete');
       expect(order).toEqual(['topic', 'ordinary-start', 'ordinary-finished', 'songs', 'games-start', 'games-finished', 'watch']);
       expect(fs.readFileSync(media, 'utf8')).toBe('source');
-      expect(fs.existsSync(payloadPath)).toBe(false);
+      expect(fs.existsSync(payloadPath)).toBe(true);
+      const retry = jest.spyOn(activity, 'generateStreamActivities').mockResolvedValue({ status: 'empty' });
+      retry.mockClear();
+      await backgroundClipRunner.runBackgroundClipsFromPayload(payloadPath);
+      expect(retry).toHaveBeenCalledTimes(1);
+      expect(retry.mock.calls[0][0].kind).toBe('songs');
+      expect(order.filter(value => value === 'topic')).toHaveLength(1);
+      retry.mockClear();
+      await backgroundClipRunner.runBackgroundClipsFromPayload(payloadPath);
+      expect(retry).not.toHaveBeenCalled();
     } finally {
-      releaseOrdinary(); releaseGame(); await task;
+      releaseOrdinary(); releaseGame(); await task.catch(() => {});
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });

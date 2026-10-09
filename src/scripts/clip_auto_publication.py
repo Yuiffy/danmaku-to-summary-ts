@@ -11,10 +11,10 @@ import time
 from contextlib import nullcontext
 from pathlib import Path
 try:
-    from .ordinary_subtitle_evidence import validate_subtitle_audio_evidence
+    from .ordinary_subtitle_evidence import validate_subtitle_audio_evidence, validate_subtitle_diagnostic
     from .clip_source_timing import source_timing_metadata, validate_rendered_timing_repair
 except ImportError:
-    from ordinary_subtitle_evidence import validate_subtitle_audio_evidence
+    from ordinary_subtitle_evidence import validate_subtitle_audio_evidence, validate_subtitle_diagnostic
     from clip_source_timing import source_timing_metadata, validate_rendered_timing_repair
 
 
@@ -147,10 +147,37 @@ def _validate_topic_review(metadata, review):
 
 
 def _validate_unresolved_signals(metadata, review):
+    proof = metadata.get("subtitleProofreading") or {}
+    groups = proof.get("reviewGroups", [])
+    resolutions = review.get("resolvedSubtitleAdvisories", [])
+    if groups or resolutions:
+        window = metadata.get("window") or {}
+        if (proof.get("advisory") is not True or not isinstance(groups, list) or not groups
+                or review.get("subtitleAdvisoryEvidence") != proof or not isinstance(resolutions, list)
+                or len(resolutions) != len(groups)):
+            raise ValueError("subtitle advisory resolution is missing or stale")
+        indices = []
+        for resolution in resolutions:
+            if (not isinstance(resolution, dict) or type(resolution.get("groupIndex")) is not int
+                    or resolution.get("verdict") != "non_material_playback"
+                    or not isinstance(resolution.get("reason"), str) or not resolution["reason"].strip()):
+                raise ValueError("invalid subtitle advisory resolution")
+            indices.append(resolution["groupIndex"])
+        if sorted(indices) != list(range(len(groups))):
+            raise ValueError("subtitle advisory resolution does not cover every group")
+        for group in groups:
+            if (not isinstance(group, dict) or group.get("type") != "possible_foreign_audio"
+                    or not isinstance(group.get("occurrences"), list) or not group["occurrences"]):
+                raise ValueError("subtitle review group requires original audio verification")
+            for row in group["occurrences"]:
+                if (not isinstance(row, dict) or not isinstance(row.get("text"), str) or not row["text"].strip()
+                        or any(type(row.get(key)) not in (int, float) or not math.isfinite(row[key]) for key in ("start", "end"))
+                        or row["end"] <= row["start"] or row["start"] < window.get("start", float('inf')) - 0.01
+                        or row["end"] > window.get("end", float('-inf')) + 0.01):
+                    raise ValueError("subtitle advisory occurrence is outside the reviewed window")
     audio = metadata.get("audioQa") or {}
     creative = metadata.get("creativeResult") or {}
     if (metadata.get("preRenderHold") or metadata.get("sourceExpansionRequest") or metadata.get("storyRepairRequest")
-            or (metadata.get("subtitleProofreading") or {}).get("reviewGroups")
             or "source_window_incomplete" in str(creative.get("reason") or "")
             or any(item.get("stage") == "source_window_incomplete" for item in creative.get("history", []) if isinstance(item, dict))
             or audio and (audio.get("status") != "passed" or audio.get("issues")
@@ -235,6 +262,9 @@ def validate_publication_review(metadata):
     subtitle_audio = validate_subtitle_audio_evidence(metadata, current_source)
     if subtitle_audio:
         digests["subtitleAudio"] = subtitle_audio
+    diagnostic = validate_subtitle_diagnostic(metadata, current_source)
+    if diagnostic:
+        digests["subtitleDiagnostic"] = diagnostic
     timing_audio = validate_rendered_timing_repair(metadata)
     if timing_audio:
         digests['timingAudio'] = timing_audio

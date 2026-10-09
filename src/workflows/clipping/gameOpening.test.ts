@@ -51,6 +51,24 @@ function harness(contextPatch: Data = {}, uncertainAt?: number) {
 }
 
 describe('independent silent visual game opening', () => {
+  test.each([false, true])('a 73-second sparse gap is probed without approving ambiguous pixels (%s)', async uncertain => {
+    const { options, io } = harness({}, uncertain ? 110 + 73 / 3 : undefined);
+    options.audio.end = 200; options.localAudioEvidence.primary.end = 200;
+    options.frames = [{ index: 1, time: 110 }, { index: 2, time: 183 }];
+    options.frameObservations = [{ index: 1, activity: 'other' }, { index: 2, activity: 'gameplay' },
+      { index: 200, activity: 'gameplay' }];
+    if (uncertain) {
+      await expect(verifyVisualOpening(options, io)).rejects.toThrow(/No bounded earliest/);
+    } else {
+      const review = await verifyVisualOpening(options, io);
+      expect(review.start).toBe(117);
+      expect(review.bracket.end - review.bracket.start).toBeLessThanOrEqual(30);
+      expect(validateVisualOpening(review, source, options.audio, io)).toBe(117);
+      expect(io.request.mock.calls.some(([prompt]) => prompt.includes('search interval'))).toBe(true);
+      const probe = io.request.mock.calls.find(([prompt]) => prompt.includes('search interval'))!;
+      expect(probe[1].every((sample: Data) => sample.index > 200)).toBe(true);
+    }
+  });
   test('retains the last certain non-game frame before the first game pixel without inventing speech', async () => {
     const { options, io } = harness(), review = await verifyVisualOpening(options, io);
     expect(review.start).toBe(117);

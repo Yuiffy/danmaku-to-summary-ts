@@ -613,6 +613,25 @@ class ClipUploadRegistryTests(unittest.TestCase):
         self.assertIn("deterministic uploader error", clip["failureReason"])
         self.assertEqual(saved_queue["jobs"][0]["status"], "failed")
 
+    def test_unknown_submission_waits_for_reconciliation_and_continues_other_groups(self):
+        fixture = self.make_fixture(count=2)
+        fixture["queue"]["jobs"][0]["batchSize"] = 1
+        calls = []
+
+        def run_batch(group, job):
+            ids = [clip["id"] for clip in group]
+            calls.append(ids)
+            if ids == [1]:
+                return subprocess.CompletedProcess([], 2, stdout="[WAIT] automatic submission outcome unknown")
+            self.write_done(fixture, [2])
+            return subprocess.CompletedProcess([], 0, stdout="uploaded")
+
+        saved_registry, saved_queue = self.run_job_with(fixture, run_batch)
+        self.assertEqual(calls, [[1], [2]])
+        self.assertEqual(saved_registry["clips"]["2"]["status"], "uploaded")
+        self.assertEqual(saved_queue["jobs"][0]["status"], "retry_wait")
+        self.assertIn("retryAt", saved_queue["jobs"][0])
+
     def test_all_state_success_wins_over_subprocess_exit_code(self):
         fixture = self.make_fixture()
 

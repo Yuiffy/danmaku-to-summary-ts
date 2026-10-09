@@ -889,6 +889,7 @@ async function refineCandidatesWithAI(candidates, parsed, danmaku, info, config,
         '时长由内容完整性决定，不设固定最短或最长秒数；保留必要铺垫、发展、反应和收尾，不为凑时长截断或灌水，也不把无关话题拼成长片。',
         ...require('./clipping/topic_edit_plan').promptLines(),
         ...(stage.topicRepair ? ['上次计划校验未通过，只修复下列具体问题；已确认仍属本题的后续不能重新称为另一话题来缩短窗口。文案引用只列真正支持文案且保留的少量证据，不要枚举全窗口字幕。',
+            ...(stage.topicRepair.phase === 'pre-render' ? ['切前编辑已用工具选定 requestedWindow：必须沿用其 startCueId/endCueId，围绕原看点调整文案和内层编辑，不得重新扩大到后续其他问题。此边界仍须独立审核；无法在固定外窗表达完整事件则返回空 clips。'] : []),
             JSON.stringify(stage.topicRepair)] : []),
         ...anglePromptLines(),
         '候选va字段是带原文锚点的多个看点线索，逐项对照完整字幕；选择其中具体、独立的看点组织本片，别把摘要当唯一看点。结束于本看点收束，不把后续另一场事件或战斗当必需结尾。',
@@ -1220,10 +1221,10 @@ function buildRecommendationScoreLine(value = {}) {
 
 function buildReviewMarkdown(results, metadata) {
     metadata = ownReview.withRegistryIndices(results, metadata);
-    results = ownReview.chronologicalResults(results);
+    results = ownReview.numberedResults(results, metadata);
     const aiStatusLine = buildAiStatusLine(metadata.aiStatus);
     const uploadIds = Array.isArray(metadata.uploadRegistry?.clipIds)
-        ? metadata.uploadRegistry.clipIds
+        ? [...metadata.uploadRegistry.clipIds].sort((a, b) => a - b)
         : [];
     const streamerName = String(metadata.streamerName || '小岁').trim() || '小岁';
     const lines = [
@@ -1241,7 +1242,7 @@ function buildReviewMarkdown(results, metadata) {
         ...buildProcessingSummaryLines(metadata.processingStats),
         '',
         ...ownReview.quickReviewLines(results, metadata),
-        '## 切片总清单（按时间排序）',
+        '## 切片总清单（按上传ID排序）',
         ''
     ].filter(line => line !== null);
     results.forEach((result, index) => {
@@ -1352,26 +1353,14 @@ async function notifyResults(results, metadata, rootConfig) {
     const webhookUrl = String(rootConfig.wechatWork?.webhookUrl || '').trim();
     if (!webhookUrl || (results.length === 0 && !ownReview.diagnosticLines(metadata).length && !metadata.precisionExperiment)) return false;
     metadata = ownReview.withRegistryIndices(results, metadata);
-    results = ownReview.chronologicalResults(results);
+    results = ownReview.numberedResults(results, metadata);
     return require('./clipping/own_notify').sendReviewList(results, metadata, webhookUrl, sendWeChatMarkdown, buildNotifyMarkdown);
 }
 
 async function generateOwnStreamClipJob(context) {
     const {
-    clip,
-    evidenceReview,
-    subtitleEvidence,
-    index,
-    parsed,
-    danmaku,
-    options,
-    outputRoot,
-    source,
-    streamerName,
-    info,
-    config,
-    participantMetadata,
-    execution
+    clip, evidenceReview, subtitleEvidence, index, parsed, danmaku, options,
+    outputRoot, source, streamerName, info, config, participantMetadata, execution
     } = context;
     const processingStartedAt = new Date();
     const processingStartedNs = process.hrtime.bigint();
@@ -1533,6 +1522,7 @@ async function generateOwnStreamClipJob(context) {
             srtPath,
             metadataPath,
             burnedSubtitles: Boolean(mediaResult?.burnedSubtitles),
+            renderSettings: buildCutClipMediaConfig(config, options),
             subtitleBurnFallbackUsed: Boolean(mediaResult?.fallbackUsed),
             twoStageSubtitleBurn: mediaResult?.twoStageSubtitleBurn ?? null,
             twoStageMode: mediaResult?.twoStageMode ?? null,
@@ -1848,8 +1838,12 @@ async function generateOwnStreamClipsInternal(options = {}) {
         parsed, danmaku, evidence: finalEvidence, info, outputRoot, diagnostics: aiDiagnostics, metadata: reviewMetadata }, {
         review: (batch, hooks) => reviewClipActors(batch, parsed, danmaku, finalEvidence, info, config, rootConfig, aiDiagnostics, hooks),
         prepare: (batch, batchOptions) => require('./clipping/enhancement_runner').selectExperimentBatch(batch, parsed, config, rootConfig, info, batchOptions),
+        replan: (candidate, feedback) => refineCandidatesWithAI([candidate], parsed, danmaku, info,
+            { ...config, ai: { ...config.ai, topicContextSeconds: 600 } }, rootConfig, aiDiagnostics, streamerName,
+            { selectedOnly: true, phase: feedback.phase === 'pre-render' ? 'source-boundary-repair' : 'final-boundary-repair',
+                topicRepairAttempt: 2, topicRepair: feedback }),
         render: (clip, index, execution) => generateOwnStreamClipJob({ clip, evidenceReview, subtitleEvidence: finalEvidence,
-            index, parsed, danmaku, options, outputRoot, source, streamerName, info, participantMetadata, execution,
+            index, parsed, danmaku, options, outputRoot: execution.outputRoot || outputRoot, source, streamerName, info, participantMetadata, execution,
             config: execution.profile ? { ...mediaConfig, clipFfmpegThreads: execution.profile.ffmpegThreads } : mediaConfig }),
         enhance: (baseline, clip, index, execution) => finishOwnStreamClipJob({ ...baseline, processing: { ...baseline.processing } },
             { clip, index, execution: { ...execution, resumeEnhancement: true }, evidenceReview, subtitleEvidence: finalEvidence,
@@ -1873,6 +1867,7 @@ async function generateOwnStreamClipsInternal(options = {}) {
     let results = production.results;
     if (publicationRuntime) results = await require('./clipping/own_automatic_publication').reviewFinals(results, {
         runtime: publicationRuntime, automatic, config, rootConfig, info, streamerName, options, mediaConfig,
+        boundaryTools: production.boundaryTools, boundaryCues: finalEvidence.cues,
         evidence: buildSubtitleEvidence, audience: parseDanmakuXml, copyHelpers: { buildClipDescription, buildCoverTitle } });
     if (timingRuntime) results = timingRuntime.retainUnrecoveredTimingRows(results, options.timingRecovery);
     const artifacts = require('./clipping/own_review_state');

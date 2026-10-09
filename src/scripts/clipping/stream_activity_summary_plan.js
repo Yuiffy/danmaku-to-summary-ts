@@ -73,14 +73,15 @@ async function detectSummaryActivities(options, config, source, info, files, aud
         if (plan.rawEvents.some(e => e.end > duration + .01)) throw new Error('Summary activity exceeds the source recording duration');
         plan.coverage = { status: 'complete', duration, method: 'summary_shared_input',
             windows: [{ start: 0, end: duration, status: 'inspected', evidenceRows: summary.rows.length }] };
-        const retryEvents = options.retryBoundaries ? stages.retryBoundaryEvents(plan.rawEvents, plan.events, pending, plan.rejectedActivities || []) : null;
+        const retryEvents = options.retryBoundaries ? stages.retryBoundaryEvents(plan.rawEvents, plan.events, pending, plan.rejectedActivities || [], options.boundaryFeedback) : null;
         const retriedIds = retryEvents?.map(event => event.id);
         plan.status = 'verifying'; save();
         const checked = await (options.calibrate || calibrateBoundaries)(retryEvents || stages.selectEvents(plan.rawEvents, pending), { config, root: options.config, source,
             transcriptSha256: plan.transcript.sha256, info, directory: files.directory, rows: summary.rows, duration,
             diagnostics: plan.diagnostics, request: options.boundaryRequest, extract: options.extractBoundary,
             usedRequests: plan.efficiency?.boundaryRequests || 0, retryId: options.boundaryRetry?.id,
-            maxRequests: plan.boundaryBudget?.limit, localDecode: options.localDecode, reviewPrelude: options.reviewPrelude });
+            maxRequests: plan.boundaryBudget?.limit, localDecode: options.localDecode, reviewPrelude: options.reviewPrelude,
+            reusableEvidence: plan.events?.map(event => event.verification).filter(Boolean), contextEvents: [...plan.rawEvents, ...plan.events] });
         if (plan.transcript.timingReliable === false) for (const event of checked.events) event.reviewIssues.push('source_transcript_timing_unreliable');
         plan.events = p.mergeEvents(retriedIds ? stages.replaceRetriedEvents(plan.events, checked.events, retriedIds)
             : stages.combineEvents(plan.events, checked.events, pending), true);
@@ -91,6 +92,10 @@ async function detectSummaryActivities(options, config, source, info, files, aud
             if (a.end > b.start) { a.reviewIssues.push('overlapping_activity'); b.reviewIssues.push('overlapping_activity'); }
         }
         const parts = p.buildParts(plan.events, duration, config);
+        if (options.retryBoundaries && pending.includes('watch')) {
+            parts.watch = require('../workflow-runtime').loadWorkflow('clipping/activityRecovery')
+                .retainWatchPartBoundaries(parts.watch, plan.parts?.watch || [], config.watch.targetPartSeconds, config.watch.maxPartSeconds);
+        }
         plan.parts ||= { songs: [], watch: [] };
         for (const kind of pending) plan.parts[kind] = parts[kind];
         const current = sourceSnapshot({ source: { mediaPath: options.mediaPath, srtPath: options.srtPath, xmlPath: options.xmlPath } });

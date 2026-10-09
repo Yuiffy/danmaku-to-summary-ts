@@ -1,7 +1,20 @@
 const { parseCopyProposal, repairUnsupportedChapters } = require('./stream_game_editorial');
 const fs = require('fs'), os = require('os'), path = require('path');
 const { fileDigest } = require('./source_snapshot');
+import { chapterForReview } from '../../workflows/clipping/gameEditorial';
 describe('factual game chapter repair proposals',()=>{
+  test('review omits a stale phase detector hint while preserving public and named claims', () => {
+    const phase = { start: 20, kind: 'phase', title: '讨论前进路线', description: '讨论右侧路线。',
+      nameEvidence: '熔炉骑士', evidenceIds: ['T2'], editorialRevision: { policyVersion: 2 } };
+    expect(chapterForReview(phase, 12)).toEqual({ start: 20, kind: 'phase', title: phase.title,
+      description: phase.description, evidenceIds: ['T2'], index: 12 });
+    expect(phase.nameEvidence).toBe('熔炉骑士');
+    expect(chapterForReview({ ...phase, title: '熔炉骑士遭遇' }, 12).nameEvidence).toBe('熔炉骑士');
+    // Named Boss/location metadata can also feed the final submission title.
+    expect(chapterForReview({ ...phase, kind: 'boss' }, 12).nameEvidence).toBe('熔炉骑士');
+    expect(chapterForReview({ ...phase, nameEvidenceSource: 'original_frame', frameNameEvidence: { label: '熔炉骑士' } }, 12))
+      .toMatchObject({ nameEvidence: '熔炉骑士', frameNameEvidence: { label: '熔炉骑士' } });
+  });
   const parse=(value:any,chapter:any={kind:'phase'})=>parseCopyProposal({text:JSON.stringify(value)},chapter);
   const proposal={title:'战后讨论与湖区探索',description:'讨论此前战斗，随后查看地图并沿水域探索。',reason:'Original phase words and water-traversal frames'};
   test('a supported draft changes copy without granting review or changing boundaries',()=>{

@@ -72,7 +72,7 @@ these same rules; a one-clip experiment must not become a hardcoded rule for unr
 ### Numeric candidate corrections
 
 Own-stream rendered clips, including held/failed clips and rejected candidates,
-also reserve numeric IDs. Their single chronological review lists the blocking
+also reserve numeric IDs. Their single review sorted by numeric upload ID lists the blocking
 issues beside each ID. Read `docs/topic-event-editorial.md#own-stream-review-ids`
 for `clips:review`, rendered `subtitles`, and explicit `approve-review` commands.
 Registering or refreshing IDs never approves or uploads a clip. `correct` now

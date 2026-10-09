@@ -62,12 +62,14 @@ describe('original gameplay evidence review', () => {
       const srtPath = path.join(directory, 'source.srt');
       fs.writeFileSync(srtPath, '1\n00:01:40,000 --> 00:01:42,000\n我要打开游戏了\n\n2\n00:08:10,000 --> 00:08:20,000\n今天游戏先玩到这里\n');
       const chapters = Array.from({ length: 12 }, (_, i) => ({ start: firstChapter + i * (500 - firstChapter) / 13, title: '探索与推进',
-        description: '探索游戏场景。', evidenceIds: ['T1'] }));
+        kind: 'phase', nameEvidence: '不应进入审核的旧检测提示', description: '探索游戏场景。', evidenceIds: ['T1'] }));
       const candidate = { id: 'game-1', gameId: 'elden-ring', start: 100, end: 500, chapters, evidenceIds: ['T1', 'T2'],
         visualWindow: { first: 137, last: 487 } };
       const options = { mediaPath: 'source.flv', srtPath, config: { ai: { text: { gemini: { model: 'gemini-3-flash-preview' } } } },
         extract: async (args: string[]) => fs.writeFileSync(args.at(-1), Buffer.alloc(1280)),
         verifyRequest: jest.fn(async (prompt: string, inputs: any[], _root: any, settings: any) => {
+          expect(prompt).not.toContain('不应进入审核的旧检测提示');
+          expect(prompt).toContain('Review the substantive meaning of PUBLIC title and description');
           expect(inputs.length).toBeLessThanOrEqual(8);
           expect(inputs.every(i => i.mimeType === 'image/jpeg')).toBe(true);
           expect(settings.apiMode).toBe('gemini_native');

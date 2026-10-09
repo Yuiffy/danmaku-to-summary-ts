@@ -61,3 +61,34 @@ test('cover repair samples the original source window and moves obstructing text
             expect.objectContaining({ coverSourcePath: '/source.flv', clipStart: 100, clipDuration: 30, textPosition: 'bottom' }));
     } finally { cover.mockRestore(); }
 });
+
+test('ordinary final boundary failure reaches the tool agent and then reviews only its fresh revision', async () => {
+    const source = { mediaPath: '/source.flv', srtPath: '/source.srt' };
+    const artifact = { mode: 'own_stream_fun_review', roomId: '25788785', generatedAt: '2026-10-07T00:00:00Z',
+        uploadReady: true, attributionRequired: true, source, window: { index: 6, start: 10, end: 20, duration: 10 },
+        copy: { title: '聊剧', coverText: '聊剧', description: '聊剧' },
+        output: { metadataPath: '/clip.json', mediaPath: '/old.mp4', srtPath: '/old.srt', coverPath: '/old.jpg', burnedSubtitles: true } };
+    const snapshot = async row => ({ source, digests: { video: row.output.mediaPath, subtitles: row.output.srtPath } });
+    const review = { status: 'needs_review', ...(await snapshot(artifact)), technical: { passed: true },
+        checks: { content: false, attribution: true, subtitles: true, visuals: true, policy: true },
+        issues: ['片尾问题未回答', 'final_content_not_passed'] };
+    const runtime = { publicationSnapshot: snapshot, reviewOwnPublications: jest.fn()
+        .mockImplementationOnce(async rows => rows.map(row => ({ ...row, publicationReview: review })))
+        .mockImplementationOnce(async rows => rows.map(row => ({ ...row, publicationReview: { status: 'passed' } }))) };
+    const current: any = { ...context(runtime), persist: false,
+        automatic: { mode: 'auto', roomIds: ['25788785'], authorizationNote: '自动复核', activatedAt: '2026-10-01T00:00:00Z' },
+        boundaryCues: [{ id: 'G1', start: 10, end: 20, text: '冰火是什么' }, { id: 'G2', start: 21, end: 30, text: '权游，我喜欢的呀' }],
+        boundaryTools: { replan: jest.fn(async window => [{ ...window, boundaryReview: { approved: true }, topicEditPlan: {} }]),
+            render: jest.fn(async clip => ({ ...artifact, window: { index: 6, start: clip.start, end: clip.end, duration: clip.end - clip.start },
+                output: { metadataPath: '/revision.json', mediaPath: '/new.mp4', srtPath: '/new.srt', coverPath: '/new.jpg', burnedSubtitles: true } })) } };
+    const request = jest.spyOn(require('./selection_request'), 'requestSelectionText').mockResolvedValue({ text: JSON.stringify({
+        actions: [{ tool: 'recut', startCueId: 'G1', endCueId: 'G2', reason: '完整问答' }] }) });
+    try {
+        const [result] = await reviewFinals([artifact], current);
+        expect(result.automaticBoundaryRepair?.status).toBe('repaired');
+        expect(result.output).toMatchObject({ mediaPath: '/new.mp4', metadataPath: '/clip.json' });
+        expect(runtime.reviewOwnPublications).toHaveBeenCalledTimes(2);
+        expect(current.boundaryTools.render).toHaveBeenCalledTimes(1);
+        expect(request.mock.calls[0][1]).toMatchObject({ structuredOutputKey: 'actions' });
+    } finally { request.mockRestore(); }
+});

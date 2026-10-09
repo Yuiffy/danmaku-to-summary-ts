@@ -137,6 +137,24 @@ async function repairSubtitles(artifact, context, required = {}) {
 async function reviewFinals(results, context) {
     const reviewed = await inspectFinals(results, context);
     for (let i = 0; i < reviewed.length; i++) {
+        if (context.boundaryTools && context.config.ai?.enabled !== false && context.rootConfig.ai?.text?.enabled !== false) {
+            try {
+                let repair;
+                try { repair = require('../workflow-runtime').loadWorkflow('clipping/ownBoundaryRepair'); }
+                catch (error) { if (error.message !== 'Unknown compiled workflow: clipping/ownBoundaryRepair') throw error; }
+                if (repair) reviewed[i] = await repair.repairOwnBoundary(reviewed[i], context.automatic, context.boundaryCues,
+                    reviewed.filter((_, index) => index !== i), {
+                        snapshot: context.runtime.publicationSnapshot,
+                        request: async prompt => (await require('./selection_request').requestSelectionText(prompt,
+                            { primaryModel: context.config.ai?.model, structuredOutputKey: 'actions', maxTokens: 2000 },
+                            context.config, context.rootConfig, context.info, 'final-boundary-tools', null,
+                            result => { try { return Array.isArray(JSON.parse(result.text).actions); } catch { return false; } })).text,
+                        ...context.boundaryTools,
+                        reviewFinal: async current => (await inspectFinals([current], { ...context, persist: false }))[0],
+                        persist: current => { if (context.persist !== false) require('./candidate_subtitles').writeJsonAtomic(current.output.metadataPath, current); }
+                    });
+            } catch (error) { reviewed[i] = { ...reviewed[i], automaticBoundaryRepairError: String(error.message || error) }; }
+        }
         try { reviewed[i] = await repairPublicCopy(reviewed[i], context); }
         catch (error) { reviewed[i] = { ...reviewed[i], automaticCopyRepairError: String(error.message || error) }; }
         try { reviewed[i] = await repairSubtitles(reviewed[i], context); }

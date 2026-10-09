@@ -20,6 +20,12 @@ function withRegistryIndices(results, metadata = {}) {
         results.map((result, index) => [reviewIndex(result, index), registry.clipIds[index]])) } };
 }
 
+function numberedResults(results, metadata = {}) {
+    metadata = withRegistryIndices(results, metadata);
+    const rows = chronologicalResults(results);
+    return require('../workflow-runtime').loadWorkflow('clipping/reviewSelectionHistory').numberedReviewRows?.(rows, metadata) || rows;
+}
+
 function automaticEnqueueIssue(result, metadata = {}) {
     const publication = metadata.automaticPublication;
     if (!publication?.enabled) return null;
@@ -186,17 +192,24 @@ function reviewDetailLines(result, metadata = {}, options = {}) {
     if (!includeIssues && enqueueIssue?.kind === 'duplicate') return [];
     if (!includeIssues && metadata.automaticPublication?.enabled
         && ['uploaded', 'queued', 'uploading', 'rendering'].includes(state)
-        && !metadata.uploadRegistry?.reviewPendingByReviewIndex?.[result.reviewIndex]) return [];
+        && (state !== 'uploaded' || !metadata.uploadRegistry?.reviewPendingByReviewIndex?.[result.reviewIndex])) return [];
     const issues = reviewIssues(result, metadata);
     if (!includeIssues) {
         const pending = !uploadEligible(result) || metadata.uploadRegistry?.reviewPendingByReviewIndex?.[result.reviewIndex];
         const brief = require('../workflow-runtime').loadWorkflow('clipping/reviewDigest');
+        if (result.selectionRejection) return [...brief.compactReviewLines(result, issues),
+            ...(result.selectionRejection.reason === 'public_copy_evidence_dropped'
+                ? [`   具体问题: 拟发文案“${String(result.copy?.title || result.selectionRejection.title || '').replace(/\s+/g, ' ').slice(0, 90)}”的引用未完整落入裁切窗口。`,
+                    '   下一步: 检查被裁掉的前后原话，补齐窗口或收窄文案后重新审核。'] : []),
+            '   可选恢复；需要补切时再指定编号，完整证据见本地REVIEW。'];
         const lines = pending ? brief.compactReviewLines(result, issues) : [];
         if (enqueueIssue && enqueueIssue.kind !== 'duplicate') lines.unshift(`   自动投稿: ${brief.shortChineseReason(enqueueIssue.message, '入队条件待核')}`);
         if (pending) lines.push(state === 'uploaded' ? '   已投稿；如有异常请在B站修改。' : '   暂不可上传，回复编号＋改法。');
         return lines;
     }
     const lines = require('./review_brief').briefLines(result, issues);
+    if (result.automaticBoundaryRepair) lines.push(`   自动边界修复: ${result.automaticBoundaryRepair.status === 'repaired'
+        ? '已重裁并通过新成片审核' : `已尝试，仍待核对：${String(result.automaticBoundaryRepair.reason || result.publicationReview?.issues?.join('；') || '查看修订记录').replace(/\s+/g, ' ').slice(0, 240)}`}`);
     if (enqueueIssue && enqueueIssue.kind !== 'duplicate') lines.push(`   自动投稿: ${String(enqueueIssue.message).replace(/\s+/g, ' ').replace(/(https?:\/\/[^\s?]+)\?[^\s]+/g, '$1?[redacted]').slice(0, 240)}`);
     if (includeIssues) lines.push(...issues.map(issue => `   核对项: ${explainIssue(issue)}`));
     else if (result.ownStreamHumanReview?.status !== 'approved' && result.publicationReview?.status !== 'passed') {
@@ -257,7 +270,7 @@ function reviewDetailLines(result, metadata = {}, options = {}) {
 
 function quickReviewLines(results, metadata = {}) {
     const lines = [];
-    for (const result of chronologicalResults(results)) {
+    for (const result of numberedResults(results, metadata)) {
         if (result.selectionRejection || (result.ownStreamHumanReview?.status === 'approved' && !result.rebuildRequired)) continue;
         const brief = require('./review_brief').briefLines(result, reviewIssues(result, metadata));
         const groups = result.subtitleProofreading?.reviewGroups || [];
@@ -306,4 +319,4 @@ function diagnosticLines(metadata = {}) {
     return [...new Set(values)].map(value => `- ${String(value).replace(/(https?:\/\/[^\s?]+)\?[^\s]+/g, '$1?[redacted]')}`);
 }
 
-module.exports = { reviewIndex, chronologicalResults, withRegistryIndices, summaryLines, uploadEligible, reviewIssues, reviewStatus, explainIssue, clipId, reviewDetailLines, quickReviewLines, diagnosticLines };
+module.exports = { reviewIndex, chronologicalResults, numberedResults, withRegistryIndices, summaryLines, uploadEligible, reviewIssues, reviewStatus, explainIssue, clipId, reviewDetailLines, quickReviewLines, diagnosticLines };

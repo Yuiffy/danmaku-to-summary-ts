@@ -6,9 +6,9 @@ const publicationPolicy = require('./publication_policy');
 function buildNotifyMarkdown(results, metadata, hooks) {
     metadata = ownReview.withRegistryIndices(results, metadata);
     results = require('../workflow-runtime').loadWorkflow('clipping/reviewSelectionHistory').reviewDisplayRows(results);
-    results = ownReview.chronologicalResults(results);
+    results = ownReview.numberedResults(results, metadata);
     const aiStatusLine = hooks.buildAiStatusLine(metadata.aiStatus);
-    const uploadIds = !metadata.planOnly && Array.isArray(metadata.uploadRegistry?.clipIds) ? metadata.uploadRegistry.clipIds : [];
+    const uploadIds = !metadata.planOnly && Array.isArray(metadata.uploadRegistry?.clipIds) ? [...metadata.uploadRegistry.clipIds].sort((a, b) => a - b) : [];
     const streamerName = String(metadata.streamerName || '岁己').trim() || '岁己';
     const lines = [
         `## ${streamerName}直播有趣切片${metadata.planOnly ? '计划' : '候选'}`, '',
@@ -22,6 +22,11 @@ function buildNotifyMarkdown(results, metadata, hooks) {
         metadata.planOnly ? '状态: 仅规划，尚未生成上传ID；候选序号不是上传ID。' : null,
         aiStatusLine, ...hooks.buildProcessingSummaryLines(metadata.processingStats), '', '\u5207\u7247\u5217\u8868:'
     ].filter(line => line !== null);
+    if (!metadata.planOnly) lines.splice(lines.length - 1, 0,
+        ...(require('../workflow-runtime').loadWorkflow('clipping/reviewDigest').reviewAttentionLines?.(results.map(result => ({
+            id: ownReview.clipId(result, metadata), status: ownReview.reviewStatus(result, metadata),
+            rejected: Boolean(result.selectionRejection || result.sourceReview?.status === 'rejected' || result.publicationDecision?.action === 'rejected')
+        }))) || []), '');
     const entries = hooks.buildNotifyClipLines(results, metadata);
     results.forEach((result, index) => {
         lines.push('');
@@ -29,7 +34,7 @@ function buildNotifyMarkdown(results, metadata, hooks) {
         if (!metadata.planOnly) lines.push(`   状态: ${ownReview.reviewStatus(result, metadata)}`);
         lines.push(...ownReview.reviewDetailLines(result, metadata, { includeIssues: false }));
     });
-    lines.push(...require('../workflow-runtime').loadWorkflow('clipping/reviewDigest').deferredReviewLines(metadata, results));
+    lines.push(...require('../workflow-runtime').loadWorkflow('clipping/reviewDigest').deferredReviewLines(metadata, results, { compact: true }));
     const diagnostics = require('../workflow-runtime').loadWorkflow('clipping/reviewDigest').compactDiagnosticLines(metadata);
     if (diagnostics.length) lines.push('', '批次告警:', ...diagnostics);
     return lines.join('\n');

@@ -201,13 +201,16 @@ function writeBackgroundClipPayload(payload) {
             processedMediaPath: payload.processedMediaPath,
             srtPath: payload.srtPath,
             roomId: payload.roomId,
-            createdAt: Date.now()
+            activityOptions: payload.activityOptions,
+            createdAt: payload.activityOptions ? null : Date.now()
         }))
         .digest('hex')
         .slice(0, 10);
     const payloadPath = path.join(baseDir, `${baseName}_background_clips_${hash}.json`);
     const logPath = path.join(baseDir, `${baseName}_background_clips_${hash}.log`);
-    fs.writeFileSync(payloadPath, JSON.stringify({ ...payload, logPath }, null, 2), 'utf8');
+    if (!payload.activityOptions || !fs.existsSync(payloadPath)) {
+        require('./clipping/candidate_subtitles').writeJsonAtomic(payloadPath, { ...payload, logPath });
+    }
     return { payloadPath, logPath };
 }
 
@@ -269,6 +272,7 @@ function spawnBackgroundClipProcess(payload) {
     }
 
     const queuedJob = backgroundClipQueue.enqueueJob({
+        jobId: payload.activityOptions ? path.basename(payloadPath, '.json') : undefined,
         payloadPath,
         logPath,
         roomId: payload.roomId
@@ -333,34 +337,48 @@ async function runBackgroundClipsFromPayload(payloadPath) {
         // Asynchronous upload and pending human review both revalidate the original source.
         payload.videoPathToDelete = null;
     }
+    const statePath = `${payloadPath}.progress.json`;
+    const { writeJsonAtomic } = require('./clipping/candidate_subtitles');
+    const recovery = require('./workflow-runtime').loadWorkflow('clipping/activityRecovery');
+    const state = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, 'utf8')) : { version: 1, completed: {} };
+    const save = value => writeJsonAtomic(statePath, { ...value, pid: process.pid, updatedAt: new Date().toISOString() });
+    const stage = (name, run) => recovery.resumeStage(state, name, save, run);
     const restoreLogger = installBackgroundClipLogger(payload.logPath);
-
     try {
+        if (state.status === 'completed') return;
         console.log('🎬 后台自动切片 worker 开始处理任务');
         console.log(`   media=${payload.processedMediaPath || payload.originalMediaPath}`);
         console.log(`   srt=${payload.srtPath}`);
         console.log(`   roomId=${payload.roomId || 'unknown'}`);
         const context = payload.context || {};
-        await generateTopicClipsForMedia(
+        if (payload.activityOptions) {
+            const config = payload.suppressActivityNotification ? { ...runtimeConfig,
+                streamActivityClips: { ...runtimeConfig.streamActivityClips,
+                    notify: { ...runtimeConfig.streamActivityClips?.notify, enabled: false } } } : runtimeConfig;
+            const result = await stage('activity', () => streamActivities.generateStreamActivities({ ...payload.activityOptions, config }));
+            console.log(`活动恢复: ${JSON.stringify(result)}`);
+            state.status = 'completed'; save(state); return;
+        }
+        await stage('topics', () => generateTopicClipsForMedia(
             payload.originalMediaPath,
             payload.processedMediaPath,
             payload.srtPath,
             payload.roomId,
             context,
             payload.xmlPath
-        );
-        await generateOwnStreamClipsForMedia(
+        ));
+        await stage('own', () => generateOwnStreamClipsForMedia(
             payload.originalMediaPath,
             payload.srtPath,
             payload.xmlPath,
             payload.roomId,
             context,
             payload.fullLiveContextPath || null
-        );
+        ));
         // Complete ordinary highlights before the longer archive workflows.
-        for (const kind of ['songs', 'games', 'watch']) {
-            const label = { songs: '歌切', games: '游戏完整切片', watch: '同步视听' }[kind];
-            try {
+        const archiveLabel = kind => ({ songs: '歌切', games: '游戏完整切片', watch: '同步视听' }[kind]);
+        const failures = new Map();
+        await require('./workflow-runtime').loadWorkflow('clipping/activityStages').runArchiveStages(async (kind, reuseSummaryOnly) => {
                 const options = {
                     mediaPath: payload.originalMediaPath || payload.processedMediaPath,
                     srtPath: payload.srtPath, xmlPath: payload.xmlPath,
@@ -368,27 +386,30 @@ async function runBackgroundClipsFromPayload(payloadPath) {
                     summaryPath: payload.liveContentSummaryPath || null,
                     context: { ...context, roomId: payload.roomId }
                 };
-                const result = kind === 'games'
-                    ? await streamGames.generateStreamGames(options)
-                    : await streamActivities.generateStreamActivities({ ...options, kind });
-                console.log(`${label}: ${JSON.stringify(result)}`);
+                const result = await stage(kind, () => kind === 'games'
+                    ? streamGames.generateStreamGames(options)
+                    : streamActivities.generateStreamActivities({ ...options, kind, reuseSummaryOnly }));
+                return result;
+            }, (kind, result) => {
+                failures.delete(kind);
+                console.log(`${archiveLabel(kind)}: ${JSON.stringify(result)}`);
                 // Review, upload and subtitle recovery still verify the original source.
                 if (result.pendingReview || result.retainSource || (kind === 'games' && result.status === 'rendered')) {
                     payload.videoPathToDelete = null;
                 }
-            } catch (error) {
+            }, (kind, error) => {
+                failures.set(kind, error.message);
                 payload.videoPathToDelete = null;
-                console.warn(`${label}处理失败，保留原始视频供恢复: ${error.message}`);
-            }
-        }
-        console.log('✅ 后台自动切片子进程完成');
-    } finally {
+                console.warn(`${archiveLabel(kind)}处理失败，保留原始视频供恢复: ${error.message}`);
+            });
+        if (failures.size) throw new Error(`Archive stages incomplete: ${JSON.stringify([...failures])}`);
+        state.status = 'completed'; save(state);
         await deleteOriginalVideoAfterBackgroundClips(payload.videoPathToDelete);
-        try {
-            fs.unlinkSync(payloadPath);
-        } catch (error) {
-            console.warn(`⚠️  删除后台切片 payload 失败: ${error.message}`);
-        }
+        console.log('✅ 后台自动切片子进程完成');
+    } catch (error) {
+        state.status = 'failed'; state.lastError = error.message; save(state);
+        throw error;
+    } finally {
         restoreLogger();
     }
 }
@@ -399,7 +420,7 @@ async function runBackgroundClipQueueWorker() {
     return backgroundClipQueue.runQueueWorker(
         queueConfig,
         async entry => runBackgroundClipsFromPayload(entry.payloadPath),
-        { log: message => console.error(message) }
+        { log: message => console.error(message), keepAlive: process.argv.includes('--loop') }
     );
 }
 

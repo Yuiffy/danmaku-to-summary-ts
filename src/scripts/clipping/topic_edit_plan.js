@@ -37,12 +37,20 @@ function normalizePlan(raw, bounds, evidence, allowedIds) {
     if (!String(raw.closingReason || '').trim() || !['next_topic', 'source_end'].includes(raw.continuation)) throw new Error('topic_needs_more_context');
     const cues = evidence.cues.filter(c => c.start >= bounds.start - .001 && c.end <= bounds.end + .001);
     let cursor = 0;
+    const coverageRepairs = [];
     const ranges = raw.ranges.map(row => {
         let a = cues.findIndex(c => c.id === row.startCueId);
         const b = cues.findIndex(c => c.id === row.endCueId);
         // Two successive keep descriptions can share a boundary group. Keep it once;
         // conflicting keep/drop decisions and reordering still fail.
         const previous = raw.ranges[raw.ranges.indexOf(row) - 1];
+        // Retain omitted interior groups between two explicit keep ranges. This
+        // never invents a cut or drops speech; independent boundary/source review
+        // still decides whether the resulting complete window is publishable.
+        if (a > cursor && b >= a && previous?.action === 'keep' && row.action === 'keep') {
+            coverageRepairs.push({ kind: 'retain_unassigned_groups', cueIds: cues.slice(cursor, a).map(c => c.id) });
+            a = cursor;
+        }
         if (a >= 0 && a < cursor && b >= cursor && previous?.action === row.action
             && row.action === 'keep' && a >= cues.findIndex(c => c.id === previous.startCueId)) a = cursor;
         if (a !== cursor || b < a || !['keep', 'drop'].includes(row.action) || !roles.includes(row.role)
@@ -58,7 +66,8 @@ function normalizePlan(raw, bounds, evidence, allowedIds) {
     if (next ? raw.continuation !== 'next_topic' || raw.nextCueId !== next.id || (allowedIds && !allowedIds.has(next.id))
         : raw.continuation !== 'source_end' || raw.nextCueId !== '') throw new Error('unverified_topic_continuation');
     return { version: 1, sourceSha256: evidence.sourceSha256, sourceStart: bounds.start, sourceEnd: bounds.end,
-        ranges, closingReason: raw.closingReason, continuation: raw.continuation, nextCueId: raw.nextCueId };
+        ranges, closingReason: raw.closingReason, continuation: raw.continuation, nextCueId: raw.nextCueId,
+        ...(coverageRepairs.length ? { coverageRepairs } : {}) };
 }
 
 function withEndingHold(clip, segments, totalDuration, seconds = 3) {
@@ -83,9 +92,11 @@ function validatePlanBinding(plan, evidence, window) {
 
 function storyConstraints(plan, evidence, window, originalWindow = window) {
     validatePlanBinding(plan, evidence, originalWindow);
+    // Protect the selected source speech, including its internal pauses. Closing
+    // padding is added by the timeline renderer and has no subtitle ID to cite.
     return plan.ranges.filter(row => row.action === 'keep').map((row, i) => ({ id: `topic-${i + 1}`,
         start: row.start - window.start,
-        end: (row === plan.ranges.at(-1) ? originalWindow.end : row.end) - window.start,
+        end: row.end - window.start,
         text: row.reason }));
 }
 

@@ -88,6 +88,29 @@ test('source changes invalidate a reused summary timeline', async () => {
         expect(f.generateText).toHaveBeenCalledTimes(2); expect(f.calibrate).toHaveBeenCalledTimes(2);
     } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
 });
+
+test('cache-only song recovery reuses a watch-created summary and never generates one when missing', async () => {
+    const f = fixture();
+    try {
+        await expect(workflow.generateStreamActivities({ ...f.options, kind: 'songs', reuseSummaryOnly: true }))
+            .rejects.toMatchObject({ code: 'ACTIVITY_SUMMARY_NOT_READY' });
+        expect(f.generateText).not.toHaveBeenCalled();
+        await workflow.generateStreamActivities({ ...f.options, kind: 'watch' });
+        const result = await workflow.generateStreamActivities({ ...f.options, kind: 'songs', reuseSummaryOnly: true });
+        expect(f.generateText).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(fs.readFileSync(result.songsPath, 'utf8')).songs).toHaveLength(1);
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
+
+test('overlapping provisional watch intervals fail before encoding any video', async () => {
+    const f = fixture();
+    try {
+        await expect(workflow.generateStreamActivities({ ...f.options, kind: 'watch', calibrate: async events => ({
+            events: [events[0], { ...events[0], id: 'other-work', name: '另一个作品', start: 5990, end: 6100 }],
+            rejected: [], requests: 1, cacheHits: 0, audioSeconds: 240 }) })).rejects.toThrow('overlapping');
+        expect(f.renderPart).not.toHaveBeenCalled();
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
 test('an explicit context path cannot reuse altered timestamp evidence', async () => {
     const f = fixture();
     try {
@@ -250,6 +273,68 @@ test('explicit boundary recovery retains IDs and originals, rebuilds changed med
     } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
 });
 
+test('explicit boundary plus publication retry retains automatic eligibility only for its existing unpublished unavailable review', async () => {
+    const f = fixture();
+    try {
+        const result = await unresolvedSongs(f);
+        const metadataPath = JSON.parse(fs.readFileSync(result.manifestPath, 'utf8')).clips[0].metadataPath;
+        const row = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+        row.activityAutomaticPublicationRequired = true;
+        row.activityReview = { status: 'pending', authority: 'automatic', issues: ['automatic_activity_review_unavailable: invalid intervals'] };
+        fs.writeFileSync(metadataPath, JSON.stringify(row));
+        f.options.config.streamActivityClips.roomIds = ['25788785'];
+        f.options.config.streamActivityClips.automaticPublication = { mode: 'auto', policyVersion: 'stream-activity-v1',
+            roomIds: ['25788785'], activatedAt: '2026-01-01T00:00:00Z', authorizationNote: 'configured stream publication' };
+        const check = jest.fn(async () => { throw new Error('fixture final review retained as pending'); });
+        const retry = { ...f.options, kind: 'songs', retryBoundaries: true, retryPublication: true, revisionNote: 'Repair independent boundary evidence',
+            publicationAdapters: { check }, readRegistry: () => ({ clips: { '42': { id: 42, status: 'needs_review', metadataPath } } }) };
+        await workflow.generateStreamActivities(retry);
+        expect(check).toHaveBeenCalledTimes(1);
+        const after = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+        expect(after).toMatchObject({ activityAutomaticPublicationRequired: true, uploadReady: false, activityReview: { status: 'pending' } });
+        expect(after.output.mediaPath).not.toBe(row.output.mediaPath);
+        expect(fs.existsSync(row.output.mediaPath)).toBe(true);
+        expect(JSON.parse(fs.readFileSync(result.manifestPath, 'utf8')).clips[0].metadataPath).toBe(metadataPath);
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
+
+test('a failed final watch partition can request new boundary evidence without rescanning or inheriting approval', async () => {
+    const f = fixture();
+    try {
+        const result = await workflow.generateStreamActivities({ ...f.options, kind: 'watch' });
+        const metadataPath = JSON.parse(fs.readFileSync(result.manifestPath, 'utf8')).clips[0].metadataPath;
+        const row = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+        const proofPath = path.join(f.directory, 'final-failed.json'), checks = { boundaries: false, titles: true };
+        fs.writeFileSync(proofPath, JSON.stringify({ status: 'needs_review', evidenceVersion: 3, checks,
+            responses: [{ checks, issues: ['末尾包含后续选择'], reviewScope: { partNumbers: [4] } }] }));
+        row.activityAutomaticPublicationRequired = true;
+        row.activityReview = { status: 'pending', authority: 'automatic', checks, proofPath };
+        fs.writeFileSync(metadataPath, JSON.stringify(row));
+        f.options.config.streamActivityClips.roomIds = ['25788785'];
+        f.options.config.streamActivityClips.automaticPublication = { mode: 'auto', policyVersion: 'stream-activity-v1',
+            roomIds: ['25788785'], activatedAt: '2026-01-01T00:00:00Z', authorizationNote: 'configured stream publication' };
+        const check = jest.fn(async () => { throw new Error('new final review required'); });
+        const calibrate = jest.fn(async events => {
+            expect(events).toHaveLength(1);
+            expect(events[0].boundaryFeedback).toMatchObject({ previousEnd: 6000, issues: ['末尾包含后续选择'] });
+            return { events: events.map(event => ({ ...event, end: 6001, verification: { decision: 'keep' } })),
+                rejected: [], requests: 1, audioSeconds: 120, cacheHits: 0 };
+        });
+        await workflow.generateStreamActivities({ ...f.options, kind: 'watch', retryBoundaries: true, retryPublication: true,
+            reviewBoundaryIds: [row.activities[0].id], revisionNote: '重新核实原结束点', calibrate,
+            publicationAdapters: { check }, readRegistry: () => ({ clips: { '42': { id: 42, status: 'needs_review', metadataPath } } }) });
+        expect(calibrate).toHaveBeenCalledTimes(1);
+        expect(check).toHaveBeenCalledTimes(1);
+        expect(f.generateText).toHaveBeenCalledTimes(1);
+        const after = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+        expect(after.activityReview.status).toBe('pending');
+        expect(after.activities[0].end).toBe(6001);
+        const plan = JSON.parse(fs.readFileSync(result.planPath, 'utf8'));
+        expect(plan.efficiency.boundaryRequests).toBe(2);
+        expect(plan.boundaryRetry.feedback[0].proofPath).toBe(proofPath);
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
+
 test.each(['approved', 'queued', 'uploading', 'uploaded', 'budget', 'confirmed', 'lost identity'])('boundary retry refuses %s without requests or plan changes', async state => {
     const f = fixture();
     try {
@@ -323,6 +408,40 @@ test('an explicit verifier revision retains pending IDs and the spent budget whi
         await workflow.generateStreamActivities({ ...f.options, kind: 'songs', calibrate });
         expect(calibrate).toHaveBeenCalledTimes(1);
         expect(JSON.parse(fs.readFileSync(metadataPath, 'utf8')).planSignature).toBe(before.signature);
+        f.options.config.streamActivityClips.verification = { boundaryTimeoutMs: 123456 };
+        await workflow.generateStreamActivities({ ...f.options, kind: 'songs', calibrate });
+        expect(calibrate).toHaveBeenCalledTimes(1);
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
+
+test('an unresolved viewing boundary saves evidence but never begins encoding a doomed package', async () => {
+    const f = fixture();
+    try {
+        await expect(workflow.generateStreamActivities({ ...f.options, kind: 'watch', calibrate: async events => ({
+            events: events.map(event => ({ ...event, verification: { decision: 'uncertain', reason: 'film continues beyond the excerpt' } })),
+            rejected: [], requests: 1, audioSeconds: 120, cacheHits: 0
+        }) })).rejects.toThrow('Viewing boundaries remain unresolved before rendering');
+        expect(f.renderPart).not.toHaveBeenCalled();
+        const files = workflow.pathsFor(f.options.mediaPath, f.options.config, require('./stream_activity_plan').getActivityConfig(f.options.config));
+        expect(JSON.parse(fs.readFileSync(files.plan, 'utf8'))).toMatchObject({ status: 'planned', efficiency: { boundaryRequests: 1 } });
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
+
+test('run binds reviewed viewing names before encoding and preserves the original unknown detection', async () => {
+    const f = fixture();
+    f.raw.activityTimeline.events[1].name = null;
+    f.raw.activityTimeline.events[1].titleEvidenceIds = [];
+    const titleEvidencePath = path.join(f.directory, 'names.json');
+    fs.writeFileSync(titleEvidencePath, JSON.stringify({ items: [{ activityId: 'activity-2', name: '测试电影',
+        sourceAlias: '测试电影', segmentIndices: [3], note: '原话明确说明现在来看测试电影' }] }));
+    try {
+        const result = await workflow.generateStreamActivities({ ...f.options, kind: 'watch', titleEvidencePath });
+        const metadataPath = JSON.parse(fs.readFileSync(result.manifestPath, 'utf8')).clips[0].metadataPath;
+        const row = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+        expect(row.copy.title).toBe('《测试电影》｜2026.10.1');
+        expect(row.presentation.titleEvidence.items[0].transcriptSha256).toBe(row.transcript.sha256);
+        expect(row.activities[0].name).toBeNull();
+        expect(row.uploadReady).toBe(false);
     } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
 });
 
@@ -341,16 +460,51 @@ test('route revision cannot change rendered padding or reuse the same route to g
     }
 });
 
+test('watch boundary recovery can render its first bundle while preserving an already rendered song bundle', async () => {
+    const f = fixture(), watch = { ...f.raw.activityTimeline.events[1],
+        evidenceIds: [f.raw.activityTimeline.events[1].evidenceIds[0]] };
+    f.raw.activityTimeline.events = [f.raw.activityTimeline.events[0],
+        { ...watch, start: 1000, end: 1100 }, { ...watch, start: 1120, end: 1220 }];
+    try {
+        const songs = await workflow.generateStreamActivities({ ...f.options, kind: 'songs' });
+        const songPath = JSON.parse(fs.readFileSync(songs.manifestPath, 'utf8')).clips[0].metadataPath;
+        const original = fs.readFileSync(songPath, 'utf8');
+        await expect(workflow.generateStreamActivities({ ...f.options, kind: 'watch', calibrate: async events => ({
+            events: events.map(event => require('./stream_activity_boundaries').uncertain(event, 'HTTP 502', {}, 6104, { boundaryContextSeconds: 45 })),
+            rejected: [], requests: 1, audioSeconds: 240, cacheHits: 0
+        }) })).rejects.toThrow('overlapping');
+        const calibrate = jest.fn(async events => ({ events: events.map(event => ({ ...event, verification: { decision: 'keep' } })),
+            rejected: [], requests: 1, audioSeconds: 240, cacheHits: 0 }));
+        f.options.config.streamActivityClips.roomIds = ['25788785'];
+        f.options.config.streamActivityClips.automaticPublication = { mode: 'auto', policyVersion: 'stream-activity-v1',
+            roomIds: ['25788785'], activatedAt: '2026-01-01T00:00:00Z', authorizationNote: 'configured stream publication' };
+        const check = jest.fn(async () => { throw new Error('fixture final review retained as pending'); });
+        await workflow.generateStreamActivities({ ...f.options, kind: 'watch', retryBoundaries: true, retryPublication: true,
+            revisionNote: 'Resume first watch bundle after service outage', calibrate, publicationAdapters: { check }, readRegistry: () => ({ clips: {} }) });
+        expect(calibrate.mock.calls[0][0].map(event => event.id)).toEqual(['activity-2', 'activity-3']);
+        expect(calibrate.mock.calls[0][1].usedRequests).toBe(2);
+        expect(fs.readFileSync(songPath, 'utf8')).toBe(original);
+        expect(JSON.parse(fs.readFileSync(songs.manifestPath, 'utf8')).clips).toHaveLength(2);
+        expect(check).toHaveBeenCalledTimes(1);
+        const watchPath = JSON.parse(fs.readFileSync(songs.manifestPath, 'utf8')).clips[1].metadataPath;
+        expect(JSON.parse(fs.readFileSync(watchPath, 'utf8'))).toMatchObject({
+            activityAutomaticPublicationRequired: true, uploadReady: false, activityReview: { status: 'pending' } });
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
+
 test('overlapping provisional watch padding preserves both candidate identities through explicit recovery', async () => {
     const f = fixture();
     const firstWatch = { ...f.raw.activityTimeline.events[1], start: 100, end: 200, name: null,
         evidenceIds: f.raw.activityTimeline.events[0].evidenceIds, titleEvidenceIds: [] };
     f.raw.activityTimeline.events = [firstWatch, { ...firstWatch, start: 220, end: 320 }];
     try {
-        const provisional = await workflow.generateStreamActivities({ ...f.options, kind: 'watch', calibrate: async events => ({
+        await expect(workflow.generateStreamActivities({ ...f.options, kind: 'watch', calibrate: async events => ({
             events: events.map(event => require('./stream_activity_boundaries').uncertain(event, 'HTTP 502', {}, 6104, { boundaryContextSeconds: 45 })),
             rejected: [], requests: 1, audioSeconds: 240, cacheHits: 0
-        }) });
+        }) })).rejects.toThrow('overlapping');
+        expect(f.renderPart).not.toHaveBeenCalled();
+        const provisional = { planPath: workflow.pathsFor(f.options.mediaPath, f.options.config,
+            require('./stream_activity_plan').getActivityConfig(f.options.config)).plan };
         const before = JSON.parse(fs.readFileSync(provisional.planPath, 'utf8'));
         expect(before.events.map(event => event.id)).toEqual(['activity-1', 'activity-2']);
         expect(before.events[0].end).toBeGreaterThan(before.events[1].start);

@@ -52,6 +52,25 @@ export function songSubmissionTitle(events: Data[], date: string, limit: number)
 }
 
 const chineseDigits = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
+
+/** Restore summary-known titles only from this candidate's cited selection speech. */
+export function recoverSongNames(events: Data[], names: unknown, rows: Data[]): Data[] {
+  const candidates = Array.isArray(names) ? names.filter(name => typeof name === 'string' && name.trim()) : [];
+  return events.map(event => {
+    if (event.kind !== 'song' || event.name) return event;
+    const nearby = rows.filter(row => row.source === 'audio_transcript'
+      && row.end >= event.start - 180 && row.start <= event.end + 180);
+    const cited = nearby.filter(row => event.evidenceIds?.includes(row.id));
+    const matches = [...new Set(candidates)].map(name => {
+      const mentions = cited.filter(row => row.text.includes(name) && (row.end <= event.start || row.start >= event.end));
+      const context = nearby.filter(row => mentions.some(mention => row.start <= mention.end + 3 && row.end >= mention.start - 3));
+      return { name, context, valid: mentions.length && context.some(row => /歌|唱|听|伴奏|点歌|《/u.test(row.text)) };
+    }).filter(match => match.valid);
+    if (matches.length !== 1) return event;
+    const { name, context } = matches[0], titleEvidenceIds = context.map(row => row.id);
+    return { ...event, name, titleEvidenceIds, evidenceIds: [...new Set([...(event.evidenceIds || []), ...titleEvidenceIds])] };
+  });
+}
 export function watchTitleAppears(name: string, text: string): boolean {
   const normalized = norm(name);
   if (!normalized) return false;

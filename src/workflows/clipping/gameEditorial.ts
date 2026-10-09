@@ -1,6 +1,19 @@
 type Data = Record<string, any>;
 
 export const GAME_COPY_POLICY_VERSION = 2;
+export const GAME_CHAPTER_REVIEW_VERSION = 3;
+
+/** Phase detector hints cannot enter publicCopy's named Boss/location route. */
+export function chapterForReview(chapter: Data, index: number): Data {
+  const { start, title, description, kind, nameEvidence, nameEvidenceSource, frameNameEvidence, evidenceIds } = chapter;
+  const normalize = (value: unknown) => String(value || '').replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
+  const publicName = nameEvidence && normalize(`${title} ${description}`).includes(normalize(nameEvidence));
+  return { start, title, description, kind, evidenceIds, index,
+    ...(kind !== 'phase' || publicName || nameEvidenceSource === 'original_frame'
+      ? { nameEvidence, nameEvidenceSource, frameNameEvidence } : {}) };
+}
+
+export const GAME_CHAPTER_REVIEW_POLICY = `Review the substantive meaning of PUBLIC title and description. Reject materially unsupported or contradicted names, outcomes, actions, attribution or excluded real-family content. Do not reject for style, minor wording preferences, missing optional detail, or a sparse frame not depicting a text-supported action. Broad phase summaries are sufficient when their main activity or discussion is supported. Internal citation IDs and detector metadata are provenance, not additional public claims; a phase's removed detector name need not be proved. Never require a game boundary or full-session gameplay proof from each chapter: those gates run separately. Still report actual unsupported public assertions with supported=false and a concrete reason.`;
 
 /** One proposal per policy; a previously rejected legacy proposal can upgrade once. */
 export function canRepairChapter(chapter: Data): boolean {

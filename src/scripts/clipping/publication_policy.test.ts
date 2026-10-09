@@ -6,6 +6,16 @@ const clips = [78, 94, 85, 92, 85, 600].map((score, index) => ({ start: index * 
     duration: 20, title: `Story ${index + 1}`, candidateIndex: index + 10, score,
     selectionSource: index === 5 ? 'danmaku_heat' : 'model_global_rerank' }));
 const config = { mode: 'curated', maxStandalone: 2 };
+test('configured broader admission admits 75–79 point model candidates without granting upload authority', () => {
+    for (const name of ['default', 'production']) {
+        const policy = JSON.parse(fs.readFileSync(path.join(__dirname, '../../../config', `${name}.json`), 'utf8')).ownStreamClips.publicationPolicy;
+        const candidates = [74, 75, 79, 80].map((score, index) => ({ ...clips[0], start: index * 40, score }));
+        const result = selectPublication(candidates, policy, '25788785');
+        expect(result.clips.map(row => row.score)).toEqual([75, 79, 80]);
+        expect(result.clips.every(row => !row.uploadReady && !row.publicationReview && !row.publicationDecision)).toBe(true);
+        expect(policy.maxStandalone).toBe(18);
+    }
+});
 test('applies an absolute floor and relative budget without confusing heat with editorial scores', () => {
     const result = selectPublication(clips, config, '25788785');
     expect(result.clips.map(clip => clip.title)).toEqual(['Story 2', 'Story 4']);

@@ -89,7 +89,11 @@ def check_artifacts(metadata):
         if not selected:
             raise ValueError("a source activity is missing from this submission")
         if metadata["kind"] == "songs":
-            if (event.get('verification') or {}).get('decision') == 'uncertain' or any(issue in (event.get('reviewIssues') or [])
+            if __package__:
+                from .activity_audio_review import unresolved_activity_issues
+            else:
+                from activity_audio_review import unresolved_activity_issues
+            if (event.get('verification') or {}).get('decision') == 'uncertain' or any(issue in unresolved_activity_issues(event)
                     for issue in ('media_verification_unconfirmed', 'performance_boundary_provisional', 'start_boundary_unconfirmed', 'end_boundary_unconfirmed')):
                 raise ValueError('song performance or complete boundaries are unresolved')
             if event.get("kind") != "song" or len(selected) != 1 or selected[0]["start"] > event["start"] or selected[0]["end"] < event["end"]:

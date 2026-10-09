@@ -1,7 +1,18 @@
 import * as fs from 'fs';
-import { deferredSelectionRows } from './reviewSelectionHistory';
+import { deferredSelectionRows, numberedDeferredRows } from './reviewSelectionHistory';
 
 type Data = Record<string, any>;
+/** A work index only. Durable IDs and every approval gate remain authoritative. */
+export function reviewAttentionLines(rows: Data[]): string[] {
+    const attention = rows.filter(row => !row.rejected && !/^(?:已投稿|已上传|已排队|正在上传|上传队列正在制作|已跳过|重复已跳过)/u.test(row.status));
+    const changed = rows.filter(row => /当前资料待复核/u.test(row.status));
+    if (!attention.length && !changed.length) return ['本次无需人工处理成片；备选仅供按兴趣补切。'];
+    return ['先处理这些编号（详情和对应原话在下方）:',
+        ...[...attention, ...changed.map(row => ({ id: row.id, status: '已投稿资料有变动，请核对现有稿件' }))]
+            .sort((a, b) => (a.id || Infinity) - (b.id || Infinity))
+            .map(row => `- ${row.id ? `ID${row.id}` : '编号待登记'}：${row.status}`),
+        '已剔除项及备选不要求逐个批准；需要保留时再指定编号。'];
+}
 const short = (text: unknown, limit = 80): string => {
     const value = String(text || '').replace(/\s+/gu, ' ').trim();
     return Array.from(value).length > limit ? Array.from(value).slice(0, limit - 1).join('') + '…' : value;
@@ -15,7 +26,7 @@ const labels: Array<[RegExp, string]> = [
     [/^selection_rejected:overlap/u, '与保留片段重叠'],
     [/^selection_rejected:max_clips_limit/u, '超出本批候选数上限'],
     [/^selection_rejected:public_copy_evidence_dropped/u, '公开文案缺少片内依据'],
-    [/^selection_rejected:topic_boundary_incomplete/u, '话题边界未闭合'],
+    [/^selection_rejected:(?:topic_boundary_incomplete|missing_topic_closure)/u, '话题边界未闭合'],
     [/^subtitle_revision_needs_render/u, '新字幕待重压'],
     [/^media_failed/u, '视频制作失败'], [/^cover_failed/u, '封面制作失败'],
     [/^publication_review_unavailable|^automatic_activity_review_unavailable/u, '未获得可用的最终成片审核'],
@@ -53,6 +64,9 @@ const labels: Array<[RegExp, string]> = [
 /** Machine details stay in local records; original foreign words belong in the separate SRT evidence line. */
 export function shortChineseReason(value: unknown, fallback = '发布文案或证据待确认'): string {
     const text = String(value || '').trim();
+    // Keep concrete Chinese explanations even when the quoted word is foreign.
+    if (/[\u3400-\u9fff]/u.test(text) && /[“「『][^”」』]+[”」』]/u.test(text)
+        && !/^[a-z][a-z_]+:/iu.test(text)) return short(text.split(/[；;\n]/u)[0], 120);
     const label = labels.find(([pattern]) => pattern.test(text))?.[1];
     if (label) return label;
     const translated = text.replace(/\bASR\b/giu, '语音识别').replace(/\bSC\b/gu, '醒目留言').replace(/\bQA\b/giu, '质检').replace(/\bID(?=\d)/giu, '编号');
@@ -77,6 +91,20 @@ export function shortReviewReasons(issues: unknown[], fallback = '发布文案�
 
 export function compactReviewLines(result: Data, issues: unknown[]): string[] {
     const lines = [`   理由: ${shortReviewReasons(issues).join('；')}`];
+    const groups = result.subtitleProofreading?.reviewGroups || [];
+    if (groups.length && !result.publicationReview?.resolvedSubtitleAdvisories?.length) {
+        for (const group of groups.slice(0, 2)) {
+            const rows = (group.occurrences || []).filter((row: Data) => Number.isFinite(row.start) && row.text);
+            const unique = rows.filter((row: Data, index: number) => rows.findIndex((other: Data) => other.text === row.text) === index);
+            lines.push(`   具体疑点: ${group.type === 'possible_foreign_audio' ? '检测到疑似外语（尚未证明有错）' : '字幕疑词'}：${unique.slice(0, 2).map((row: Data) => `录播${clock(row.start)}“${short(row.text, 45)}”`).join(' / ')}`);
+            lines.push('   下一步: 独立复核是否影响主线；影响关键事实时再核对这段原音。');
+        }
+    }
+    if (result.automaticBoundaryRepair) lines.push(`   自动处理: ${result.automaticBoundaryRepair.status === 'repaired' ? '已重裁并重新审核' : `已尝试补上下文/重裁：${short(result.automaticBoundaryRepair.reason || '仍有未解决项', 100)}`}`);
+    if (issues.some(issue => /question_action_removed/u.test(String(issue)))) {
+        lines.push(`   文案冲突: 旧文案含提问动作，新审核未保留。旧文案：“${short(result.attributionReview?.originalCopy?.description || result.attributionReview?.originalCopy?.title, 100)}”`);
+        lines.push(`   当前文案: “${short(result.copy?.description || result.copy?.title, 100)}”；需按原话判定提问还是假设，重新复核文案。`);
+    }
     if (result.reviewPresentation?.windowAuthority === 'recall_context') lines.push('   主题来自原召回记录；展示窗口供查找，裁切边界仍待核。');
     if (result.reviewExcerpt?.timingAuthority === 'recall_context') {
         const topic = String(result.reviewPresentation?.title || result.copy?.title || '');
@@ -159,14 +187,12 @@ export async function withReviewExcerpts(results: Data[], readers: ReviewContext
     }));
 }
 
-export function deferredReviewLines(metadata: Data, results: Data[] = []): string[] {
-    const rows: Data[] = deferredSelectionRows(metadata).map(row => ({ ...row,
+export function deferredReviewLines(metadata: Data, results: Data[] = [], options: { compact?: boolean } = {}): string[] {
+    const rows: Data[] = numberedDeferredRows(deferredSelectionRows(metadata)).map(row => ({ ...row,
         reason: row.phase === 'publication' ? ({below_score:'低于分数线', batch_budget:'本场优先名额以外', unscored:'缺少可比较分数'} as Data)[row.reason] || row.reason : row.reason }));
     if (!rows.length) return [];
-    rows.sort((a, b) => (a.start ?? Infinity) - (b.start ?? Infinity));
     const pathKey = (value: unknown) => String(value || '').replace(/\\/gu, '/').toLowerCase();
-    return ['', '低分及其他未入选话题:', '回复“补切备选编号”可选择；R是初选编号，P是发布筛选编号，均不是上传ID。已补切项仍保留原筛选记录。',
-        ...rows.map(row => {
+    const presented = rows.map(row => {
             const changedTiming = row.sourceSrtPath && metadata.source?.srtPath && pathKey(row.sourceSrtPath) !== pathKey(metadata.source.srtPath);
             const window = Number.isFinite(row.start) && Number.isFinite(row.end) ? `${clock(row.start)}–${clock(row.end)}` : '时间待查';
             const made = results.find(result => !changedTiming && result.output?.burnedSubtitles === true
@@ -174,10 +200,15 @@ export function deferredReviewLines(metadata: Data, results: Data[] = []): strin
                 && pathKey(result.source?.srtPath) === pathKey(row.sourceSrtPath || metadata.source?.srtPath)
                 && result.window?.start <= row.start && result.window?.end >= row.end);
             const id = made && metadata.uploadRegistry?.clipIdsByReviewIndex?.[made.reviewIndex ?? made.window?.index];
-            const resolved = metadata.deferredResolutions?.find((resolution: Data) => resolution.selectionKey === row.selectionKey);
+            const resolved = metadata.deferredResolutions?.find((resolution: Data) => [row.selectionKey, ...(row.selectionAliases || [])].includes(resolution.selectionKey));
             const resolvedId = id || resolved?.clipId;
-            return `- ${row.label} | ${changedTiming ? `原窗口${window}（待校准）` : window} | ${row.score ?? '未评分'}分 | ${short(row.title || `初选话题 ${row.candidateIndex}`, 40)} | ${shortChineseReason(row.reason, '本场暂未优先选择')}${resolvedId ? ` | 已补切ID${resolvedId}` : ''}`;
-        })];
+            return { row, resolvedId, line: `- ${row.label} | ${changedTiming ? `原窗口${window}（待校准）` : window} | ${row.score ?? '未评分'}分 | ${short(row.title || `初选话题 ${row.candidateIndex}`, 40)} | ${shortChineseReason(row.reason, '本场暂未优先选择')}${resolvedId ? ` | 已补切ID${resolvedId}` : ''}` };
+        });
+    return ['', options.compact ? `低分及其他未入选话题（共${rows.length}条，按编号排列）:` : '低分及其他未入选话题:',
+        '回复“补切备选编号”可选择；R是初选编号，P是发布筛选编号，均不是上传ID。已补切项仍保留原筛选记录。',
+        ...presented.map(item => item.line),
+        ...(options.compact ? ['备选全部展示，P、R各按编号升序排列；按兴趣补切，无需逐项批准。',
+            `完整备选: ${metadata.reviewPath || '本场 REVIEW.md'}`] : [])];
 }
 
 export function compactDiagnosticLines(metadata: Data): string[] {

@@ -1,6 +1,7 @@
 """Validate bound local audio proof at final enqueue and submission boundaries; no ML or publication IO."""
 import hashlib
 import json
+import math
 from pathlib import Path
 
 
@@ -10,6 +11,41 @@ def digest(file):
 
 def read(file):
     return json.loads(Path(file).read_text(encoding='utf-8-sig'))
+
+
+def validate_subtitle_diagnostic(metadata, source):
+    attempt = metadata.get('automaticSubtitleRepairAttempt')
+    if not attempt or metadata.get('automaticSubtitleRepair'):
+        return None
+    file = Path(attempt['evidencePath'])
+    request_file = file.parent / 'request.json'
+    if attempt.get('status') != 'inconclusive' or digest(file) != attempt.get('evidenceSha256'):
+        raise ValueError('subtitle diagnostic evidence changed')
+    audio, request = read(file), read(request_file)
+    origin = request['source']
+    rows = audio.get('windows')
+    if (audio.get('version') != 1 or audio.get('requestSha256') != request.get('requestSha256')
+            or audio.get('source') != origin or str(Path(origin['mediaPath']).resolve()) != source['mediaPath']
+            or str(origin['mediaBytes']) != source['mediaBytes']
+            or abs(origin['mediaMtimeMs'] - int(source['mediaMtimeNs']) / 1e6) > .01
+            or str(Path(origin['srtPath']).resolve()) != source['srtPath'] or origin['srtSha256'] != source['srtSha256']
+            or not isinstance(rows, list) or not 1 <= len(rows) <= 4
+            or [{k: row[k] for k in ('id', 'start', 'end')} for row in rows] != request.get('windows')):
+        raise ValueError('subtitle diagnostic source or windows changed')
+    for row in rows:
+        decodes = row.get('decodes') or []
+        if (any(type(row.get(k)) not in (int, float) or not math.isfinite(row[k]) for k in ('start', 'end'))
+                or row['start'] < metadata['window']['start'] or row['end'] > metadata['window']['end']
+                or not 0 < row['end'] - row['start'] <= 30 or Path(row['audioPath']).resolve().parent != file.resolve().parent
+                or digest(row['audioPath']) != row.get('audioSha256') or len(decodes) != 2
+                or [d.get('model') for d in decodes] != [request['settings']['model'], request['settings']['sensevoiceModel']]
+                or len({d.get('model') for d in decodes}) != 2
+                or any(d.get('prompted') is not False or d.get('hotwords') or d.get('useItn') is not False
+                       or not isinstance(d.get('text'), str) for d in decodes)):
+            raise ValueError('subtitle diagnostic audio changed')
+    if sum(row['end'] - row['start'] for row in rows) > 120:
+        raise ValueError('subtitle diagnostic budget exceeded')
+    return hashlib.sha256((attempt['evidenceSha256'] + '\0' + digest(request_file)).encode()).hexdigest()
 
 
 def validate_subtitle_audio_evidence(metadata, source, depth=0):

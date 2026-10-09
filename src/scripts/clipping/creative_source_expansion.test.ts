@@ -114,7 +114,7 @@ test.each(['tail', 'opening', 'twice', 'final_qa', 'in_window_repair', 'final_in
                     value = { approved: !needs, needsSourceExpansion: needs,
                         issues: needs ? ['结尾截在也很，必须扩展原录播以保留难抗拒和后续收束'] : [] };
                     if (needs && outcome === 'many_requirements') value.requiredSourceCueIds = Array.from({ length: 38 }, (_, i) => `R${i + 5}`);
-                    if (needs && outcome === 'structured_qa') value.issues = [{ position: '片尾', issue: '必要后半句在窗外，需扩展素材' }];
+                    if (needs && outcome === 'structured_qa') value.issues = [{ '位置': '片尾', '问题': '必要后半句在窗外，需扩展素材' }];
                 } else if (stage.startsWith('story')) {
                     const offset = ['opening', 'boundary_repaired'].includes(outcome) && sourceAttempt ? 1 : 0;
                     value = { profile, keep: [
@@ -192,6 +192,19 @@ test.each(['tail', 'opening', 'twice', 'final_qa', 'in_window_repair', 'final_in
         } finally { fs.rmSync(dir, { recursive: true, force: true }); }
     });
 
+test('expansion retains the complete required cue that crosses the review context edge', () => {
+    const { expandedWindow, sourceCues } = require('./creative_source_expansion');
+    const cues = sourceCues([{ start: 100, end: 112, text: '原片' },
+        { start: 155, end: 161, text: '审核已看到的完整收尾' }, { start: 163, end: 170, text: '下一话题' }]);
+    // The reviewer sees R2 because it begins before 112 + 45. The expansion
+    // planner must receive the same whole cue rather than dropping its last word.
+    const plan = { startCueId: '', endCueId: 'R2', requiredCueIds: ['R2'], reason: '补齐审核要求的原话' };
+    const result = expandedWindow(plan, cues, { start: 100, end: 112 }, 45);
+    expect(result.window.end).toBe(162.92);
+    expect(result.requiredCueIds).toEqual(['R2']);
+    expect(() => expandedWindow({ ...plan, endCueId: 'R3' }, cues, { start: 100, end: 112 }, 45)).toThrow();
+});
+
 test.each(['unknown', 'inward', 'noop', 'outside_context', 'required_outside'])(
     'source expansion rejects %s boundary evidence', outcome => {
         const { expandedWindow, sourceCues } = require('./creative_source_expansion');
@@ -219,9 +232,12 @@ test('extending a clamped edge cue preserves its approved words while restoring 
         { start: 100, end: 112 }, { start: 98, end: 120 })).toThrow('approved subtitle words');
 });
 
-test('structured QA issues keep their location and quoted defect without granting approval', () => {
+test.each([
+    { position: '片尾 323.761–324.761 秒', issue: '止于我来搜索，下一句才是搜索一下' },
+    { '位置': '片尾 C19 之后', '问题': '撞人、面包掉地等后续尚未保留', requiredSourceCueIds: ['R1544', 'R1556'] },
+    { location: '片尾及文案', detail: '缺少后来发现对方本来就想邀请栞栞的澄清', requiredSourceCueIds: ['R310', 'R315'] }
+])('structured QA issues keep their location and quoted defect without granting approval: %p', issue => {
     const { normalizeCreativeQa } = require('./creative_source_expansion');
-    const issue = { position: '片尾 323.761–324.761 秒', issue: '止于我来搜索，下一句才是搜索一下' };
     const qa = normalizeCreativeQa({ approved: false, needsSourceExpansion: true, issues: [issue] });
     expect(qa.approved).toBe(false); expect(qa.needsSourceExpansion).toBe(true);
     expect(JSON.parse(qa.issues[0])).toEqual(issue);

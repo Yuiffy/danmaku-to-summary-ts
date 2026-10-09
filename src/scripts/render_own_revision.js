@@ -20,7 +20,13 @@ const pending = metadata => Boolean(metadata.rebuildRequired);
 
 function checkedSource(metadata, options = {}) {
     const window = metadata.window;
-    if (!Number.isFinite(window?.start) || !Number.isFinite(window?.end) || window.start < 0 || window.end <= window.start) {
+    const missingDetail = metadata.mode === 'own_stream_fun_review'
+        && metadata.selectionRejection?.reason === 'missing_selected_candidate_detail'
+        && options.action === 'prepare' && (options.replan === true || options.replan === 'yes')
+        && !metadata.output?.mediaPath && !metadata.output?.burnedSubtitles
+        && options.start !== undefined && options.end !== undefined
+        && Number.isFinite(Number(options.start)) && Number.isFinite(Number(options.end));
+    if (!missingDetail && (!Number.isFinite(window?.start) || !Number.isFinite(window?.end) || window.start < 0 || window.end <= window.start)) {
         throw new Error('Invalid existing source window');
     }
     const evidence = buildSubtitleEvidence(topic.parseTopicSrt(metadata.source.srtPath).segments);
@@ -171,7 +177,15 @@ function prepareWindow(metadata, metadataPath, options, config, evidence) {
         const file = path.join(directory, `window-${crypto.randomUUID()}.srt`);
         metadata.copy.description = require('./review_rendered_clip').publicDescription(metadata, metadata.copy.description);
         metadata.window = { ...metadata.window, start, end, duration: end - start };
-        topic.writeClipSrt(topic.parseTopicSrt(metadata.source.srtPath).segments, metadata.window, file);
+        const parsed = topic.parseTopicSrt(metadata.source.srtPath).segments;
+        topic.writeClipSrt(parsed, metadata.window, file);
+        const sourceRows = require('./asr/evidence_sidecar').loadAsrEvidence(metadata.source.srtPath, parsed).segments;
+        const proofreading = require('./asr/subtitle_proofreading');
+        const summary = proofreading.summarizeSubtitleProofreading(sourceRows, metadata.window);
+        const checks = [...(metadata.subtitleProofreading?.reviewGroups || []), ...summary.reviewGroups]
+            .flatMap(group => (group.occurrences || []).map(occurrence => ({ ...group, ...occurrence })));
+        summary.reviewGroups = proofreading.groupSubtitleChecks(checks, metadata.window);
+        metadata.subtitleProofreading = summary;
         metadata.output = { ...metadata.output, srtPath: file };
         delete metadata.renderedSubtitles;
     }

@@ -278,7 +278,59 @@ describe('own-stream subtitle revisions', () => {
       sourceKind: 'live_speech' }, config)).rejects.toThrow('Short clips require');
   });
 
-  test.each(['outside_candidate_context', 'public_copy_evidence_dropped'])('replanning %s preserves its ID and history, then uses the normal render gates', async reason => {
+  test('a selected candidate without detailed boundaries requires an explicit source-bound replan under its reserved ID', async () => {
+    metadata.selectionRejection = { reason: 'missing_selected_candidate_detail' };
+    metadata.window = { index: 4, start: null, end: null, duration: null };
+    metadata.output = { metadataPath: file, mediaPath: null, srtPath: null, coverPath: null, burnedSubtitles: false };
+    delete metadata.ownStreamHumanReview; save();
+    const registryPath = path.join(directory, 'registry.json');
+    fs.writeFileSync(registryPath, JSON.stringify({ clips: { 7: { metadataPath: file, reviewIndex: 4 } } }));
+    const replan = { ...options, registryPath, action: 'prepare', replan: true, start: 2, end: 60,
+      sourceKind: 'live_speech', title: 'Hello world', description: 'Hello world', coverText: 'Hello world' };
+    const before = fs.readFileSync(file, 'utf8');
+    await expect(updateRevision(file, { ...replan, replan: false }, config)).rejects.toThrow('Invalid existing source window');
+    await expect(updateRevision(file, { ...replan, end: 602 }, config)).rejects.toThrow('out-of-source');
+    const sourceText = fs.readFileSync(metadata.source.srtPath, 'utf8');
+    fs.writeFileSync(metadata.source.srtPath, sourceText.replace('Hello world', 'Changed words'));
+    await expect(updateRevision(file, replan, config)).rejects.toThrow('Original source evidence changed');
+    fs.writeFileSync(metadata.source.srtPath, sourceText);
+    fs.writeFileSync(file, before);
+    await updateRevision(file, replan, config);
+    expect(load()).toMatchObject({ uploadId: 7, reviewIndex: 4, rebuildRequired: true,
+      originalSelectionRejection: { reason: 'missing_selected_candidate_detail' },
+      editorialReplan: { originalWindow: { start: null, end: null }, start: 2, end: 60 },
+      window: { start: 2, end: 60 } });
+    expect(load().renderedSubtitles.cues).toHaveLength(1);
+    expect(load().ownStreamHumanReview).toBeUndefined();
+    expect(render).not.toHaveBeenCalled();
+  });
+
+  test.each([{ end: 60, groups: 0 }, { end: 100, groups: 1 }])('a changed window recomputes subtitle risks from retained source cues: %j', async ({ end, groups }) => {
+    fs.writeFileSync(metadata.source.srtPath,
+      '1\n00:00:01,000 --> 00:01:01,000\nHello world\n\n2\n00:01:10,000 --> 00:02:10,000\nThestarsouttotheface\n');
+    metadata.window = { index: 4, start: 1, end: 130, duration: 129 };
+    metadata.grounding.sourceSha256 = buildSubtitleEvidence(topic.parseTopicSrt(metadata.source.srtPath).segments).sourceSha256;
+    delete metadata.attributionReview; delete metadata.ownStreamHumanReview;
+    metadata.subtitleProofreading = { reviewGroups: [{ type: 'possible_foreign_audio', occurrences: [{ start: 70, end: 130 }] }] };
+    save();
+    await updateRevision(file, { ...options, action: 'prepare', start: 2, end, sourceKind: 'live_speech' }, config);
+    expect(load().subtitleProofreading.reviewGroups).toHaveLength(groups);
+    if (groups) expect(load().subtitleProofreading.reviewGroups[0].occurrences)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ text: 'Thestarsouttotheface' })]));
+    expect(load().rebuildRequired).toBe(true);
+    expect(load().ownStreamHumanReview).toBeUndefined();
+  });
+
+  test('a changed window preserves an existing in-window ambiguous-word warning even without an ASR sidecar', async () => {
+    metadata.subtitleProofreading = { reviewGroups: [{ type: 'ambiguous_term', original: 'world', suggestion: 'word',
+      occurrences: [{ start: 10, end: 11, cue: 1, text: 'Hello world' }] }] };
+    save();
+    await updateRevision(file, { ...options, action: 'prepare', start: 2, end: 60, sourceKind: 'live_speech' }, config);
+    expect(load().subtitleProofreading.reviewGroups).toMatchObject([{ type: 'ambiguous_term', original: 'world',
+      suggestion: 'word', occurrences: [{ start: 10, end: 11 }], windows: [{ start: 8, end: 13 }] }]);
+  });
+
+  test.each(['outside_candidate_context', 'public_copy_evidence_dropped', 'topic_needs_more_context', 'topic_boundary_incomplete', 'missing_selected_candidate_detail', 'detail_generation_failed', 'invalid_topic_ranges: expected start G4, got G5-G7', 'missing_topic_closure'])('replanning %s preserves its ID and history, then uses the normal render gates', async reason => {
     metadata.selectionRejection = { reason };
     metadata.output.mediaPath = null; metadata.output.burnedSubtitles = false;
     delete metadata.ownStreamHumanReview; save();
@@ -303,8 +355,8 @@ describe('own-stream subtitle revisions', () => {
     expect(load().originalSelectionRejection.reason).toBe(reason);
   });
 
-  test('replanning refuses overlap with retained clips, including new overlap before queue approval', async () => {
-    metadata.selectionRejection = { reason: 'overlap_after_alignment' }; save();
+  test.each(['overlap_after_alignment', 'topic_needs_more_context', 'detail_generation_failed'])('replanning %s refuses overlap with retained clips, including new overlap before queue approval', async reason => {
+    metadata.selectionRejection = { reason }; save();
     const peerFile = path.join(directory, 'peer.json');
     const registryPath = path.join(directory, 'registry.json');
     fs.writeFileSync(registryPath, JSON.stringify({ clips: {
@@ -337,6 +389,46 @@ describe('own-stream subtitle revisions', () => {
       sourceSha256: metadata.grounding.sourceSha256 };
     save();
     await expect(updateRevision(file, { ...options, action: 'approve' }, config)).rejects.toThrow('matching new editorial plan');
+  });
+
+  test('cancelled unpublished drafts release their window, while a cancelled record with a publication receipt still blocks overlap', async () => {
+    metadata.selectionRejection = { reason: 'missing_selected_candidate_detail' }; save();
+    const registryPath = path.join(directory, 'registry.json'), peerFile = path.join(directory, 'cancelled.json');
+    fs.writeFileSync(peerFile, JSON.stringify({ source: metadata.source, window: { start: 1, end: 61 } }));
+    const registry = { clips: {
+      7: { metadataPath: file, reviewIndex: 4 },
+      8: { metadataPath: peerFile, sourceMediaPath: metadata.source.mediaPath, status: 'cancelled' }
+    } };
+    fs.writeFileSync(registryPath, JSON.stringify(registry));
+    const replan = { ...options, registryPath, action: 'prepare', replan: true, start: 2, end: 60,
+      sourceKind: 'live_speech', title: 'Hello world', description: 'Hello world', coverText: 'Hello world' };
+    await updateRevision(file, replan, config);
+    expect(load().editorialReplan.checkedPeers).toEqual([]);
+    (registry.clips[8] as any).uploadState = { bvid: 'BVpublished' };
+    fs.writeFileSync(registryPath, JSON.stringify(registry));
+    await expect(updateRevision(file, { ...options, registryPath, action: 'approve' }, config))
+      .rejects.toThrow('overlaps retained clip 8');
+  });
+
+  test.each(['stream_game_submission', 'stream_activity_submission'])('a %s archive does not block a separately edited highlight, but an overlapping highlight does', async type => {
+    metadata.selectionRejection = { reason: 'public_copy_evidence_dropped' }; save();
+    const peerFile = path.join(directory, 'game.json');
+    const registryPath = path.join(directory, 'registry.json');
+    const peer = { type, source: metadata.source, window: { start: 0, end: 90 } };
+    fs.writeFileSync(peerFile, JSON.stringify(peer));
+    fs.writeFileSync(registryPath, JSON.stringify({ clips: {
+      7: { metadataPath: file, reviewIndex: 4 },
+      8: { metadataPath: peerFile, sourceMediaPath: metadata.source.mediaPath, status: 'uploaded' }
+    } }));
+    const replan = { ...options, registryPath, action: 'prepare', replan: true, start: 2, end: 60,
+      sourceKind: 'live_speech', title: 'Hello world', description: 'Hello world', coverText: 'Hello world' };
+    await updateRevision(file, replan, config);
+    expect(load().editorialReplan.checkedPeers).toEqual([]);
+    await updateRevision(file, { ...options, registryPath, action: 'approve' }, config);
+    fs.writeFileSync(peerFile, JSON.stringify({ ...peer, type: 'highlight', mode: 'own_stream_fun_review' }));
+    await expect(updateRevision(file, { ...options, registryPath, action: 'approve' }, config))
+      .rejects.toThrow('overlaps retained clip 8');
+    expect(render).not.toHaveBeenCalled();
   });
 
   test('cannot use duration approval to bypass unrelated rejection or change corrected windows', async () => {

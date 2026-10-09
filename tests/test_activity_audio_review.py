@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.scripts.activity_audio_review import check_local_activity, file_digest
+from src.scripts.activity_audio_review import check_local_activity, file_digest, unresolved_activity_issues
 
 
 class LocalActivityReviewTests(unittest.TestCase):
@@ -47,6 +47,44 @@ class LocalActivityReviewTests(unittest.TestCase):
 
     def test_bound_independent_lyrics_preserve_complete_source_enclosure(self):
         check_local_activity(self.event, self.source)
+
+    def test_service_outage_or_missing_assessment_is_a_review_hold(self):
+        for key in ('localAudioEvidence', 'responsePath', 'responseSha256', 'decision'):
+            with self.subTest(key=key):
+                event = copy.deepcopy(self.event)
+                event['verification'].pop(key)
+                with self.assertRaisesRegex(ValueError, 'completed independent assessment'):
+                    check_local_activity(event, self.source)
+        self.event['verification'] = {'method': 'independent_local_asr', 'decision': 'uncertain', 'reason': 'HTTP 502'}
+        with self.assertRaisesRegex(ValueError, 'completed independent assessment'):
+            check_local_activity(self.event, self.source)
+
+    def test_closed_enclosure_preserves_uncertain_exact_onset_without_waiving_other_issues(self):
+        self.event.update(startObserved=False, endObserved=False,
+            reviewIssues=['start_boundary_unconfirmed', 'end_boundary_unconfirmed', 'source_transcript_timing_unreliable'])
+        self.event['verification']['boundaryPolicy'] = 'complete_context_enclosure'
+        check_local_activity(self.event, self.source)
+        self.assertEqual(unresolved_activity_issues(self.event), ['source_transcript_timing_unreliable'])
+        self.raw['results'][0]['startContextClosed'] = False
+        self.response['text'] = json.dumps(self.raw)
+        self.save('RESPONSE.json', self.response)
+        self.event['verification']['responseSha256'] = file_digest(self.root/'RESPONSE.json')
+        with self.assertRaisesRegex(ValueError, 'complete context'):
+            check_local_activity(self.event, self.source)
+
+    def test_short_literal_quote_supplements_but_does_not_replace_substantial_context(self):
+        # Three-character boundary phrase in a real independently bound chunk.
+        self.raw['results'][0]['evidenceRefs'].append({'audioIndex': 1, 'chunkIndex': 2, 'quote': '怎么样'})
+        self.response['text'] = json.dumps(self.raw)
+        self.save('RESPONSE.json', self.response)
+        self.event['verification']['responseSha256'] = file_digest(self.root/'RESPONSE.json')
+        check_local_activity(self.event, self.source)
+        self.raw['results'][0]['evidenceRefs'].pop(0)
+        self.response['text'] = json.dumps(self.raw)
+        self.save('RESPONSE.json', self.response)
+        self.event['verification']['responseSha256'] = file_digest(self.root/'RESPONSE.json')
+        with self.assertRaisesRegex(ValueError, 'substantial'):
+            check_local_activity(self.event, self.source)
 
     def test_changed_audio_response_or_decoder_cannot_pass(self):
         for path in ('audio-1.mp3', 'RESPONSE.json', 'LOCAL_AUDIO.json'):

@@ -70,6 +70,13 @@ function enqueueJob(job, config = {}) {
 
     ensureQueueDirectory(queueConfig.directory);
     const jobId = String(job.jobId || createJobId()).replace(/[^a-zA-Z0-9._-]/g, '_');
+    if (job.jobId) {
+        for (const status of ['pending', 'working', 'done', 'failed']) {
+            const existingPath = path.join(queueConfig.directory, `${jobId}.${status}.json`);
+            if (fs.existsSync(existingPath)) return { ...JSON.parse(fs.readFileSync(existingPath, 'utf8')),
+                status, queueDirectory: queueConfig.directory, entryPath: existingPath, reused: true };
+        }
+    }
     const pendingPath = path.join(queueConfig.directory, `${jobId}.pending.json`);
     const temporaryPath = path.join(
         queueConfig.directory,
@@ -323,7 +330,9 @@ function recoverWorkingEntries(directory) {
     for (const file of fs.readdirSync(directory)) {
         if (!/\.working\.json$/i.test(file)) continue;
         const workingPath = path.join(directory, file);
-        const pendingPath = workingPath.replace(/\.working\.json$/i, '.pending.json');
+        let status = 'pending';
+        try { if (JSON.parse(fs.readFileSync(workingPath, 'utf8')).status === 'failed') status = 'failed'; } catch { /* Claim and record malformed entries. */ }
+        const pendingPath = workingPath.replace(/\.working\.json$/i, `.${status}.json`);
         try {
             fs.renameSync(workingPath, pendingPath);
         } catch (error) {
@@ -339,6 +348,10 @@ function claimNextEntry(directory) {
 
     for (const file of pendingFiles) {
         const pendingPath = path.join(directory, file);
+        try {
+            const pending = JSON.parse(fs.readFileSync(pendingPath, 'utf8'));
+            if (Number(pending.nextAttemptAt || 0) > Date.now()) continue;
+        } catch { /* Claim malformed entries so they become visible failures. */ }
         const workingPath = pendingPath.replace(/\.pending\.json$/i, '.working.json');
         try {
             fs.renameSync(pendingPath, workingPath);
@@ -358,14 +371,6 @@ function claimNextEntry(directory) {
     }
 
     return null;
-}
-
-function removeEntry(entryPath) {
-    try {
-        fs.unlinkSync(entryPath);
-    } catch (error) {
-        if (error?.code !== 'ENOENT') throw error;
-    }
 }
 
 function appendQueueLog(logPath, message) {
@@ -392,7 +397,11 @@ async function runQueueWorker(config, processJob, options = {}) {
     }
 
     const log = options.log || console.log;
-    const lock = acquireWorkerLock(queueConfig.directory, queueConfig.staleLockMs, log);
+    let lock = acquireWorkerLock(queueConfig.directory, queueConfig.staleLockMs, log);
+    while (!lock && options.keepAlive) {
+        await delay(Math.max(1000, queueConfig.pollMs));
+        lock = acquireWorkerLock(queueConfig.directory, queueConfig.staleLockMs, log);
+    }
     if (!lock) {
         return { acquired: false, processed: 0, disabled: false, queueDirectory: queueConfig.directory };
     }
@@ -400,6 +409,7 @@ async function runQueueWorker(config, processJob, options = {}) {
     let processed = 0;
     try {
         clearWorkerLaunchMarker(queueConfig.directory);
+        log(`[background-clip-queue] worker acquired pid=${process.pid} directory=${queueConfig.directory}`);
         recoverWorkingEntries(queueConfig.directory);
         let emptySince = null;
 
@@ -407,7 +417,7 @@ async function runQueueWorker(config, processJob, options = {}) {
             const claimed = claimNextEntry(queueConfig.directory);
             if (!claimed) {
                 if (emptySince === null) emptySince = Date.now();
-                if (Date.now() - emptySince >= queueConfig.idleGraceMs) break;
+                if (!options.keepAlive && Date.now() - emptySince >= queueConfig.idleGraceMs) break;
                 await delay(queueConfig.pollMs);
                 continue;
             }
@@ -419,12 +429,15 @@ async function runQueueWorker(config, processJob, options = {}) {
                 }
                 await processJob(claimed.entry);
                 processed += 1;
+                fs.renameSync(claimed.entryPath, claimed.entryPath.replace(/\.working\.json$/i, '.done.json'));
             } catch (error) {
                 const logMessage = `后台切片队列任务失败: ${error?.stack || error?.message || error}`;
                 appendQueueLog(claimed.entry?.logPath, logMessage);
                 log(`[background-clip-queue] ${logMessage}`);
-            } finally {
-                removeEntry(claimed.entryPath);
+                const failed = require('./workflow-runtime').loadWorkflow('clipping/activityRecovery')
+                    .failedJob(claimed.entry || { attempts: 2 }, error, Date.now());
+                require('./clipping/candidate_subtitles').writeJsonAtomic(claimed.entryPath, failed);
+                fs.renameSync(claimed.entryPath, claimed.entryPath.replace(/\.working\.json$/i, `.${failed.status}.json`));
             }
         }
     } finally {

@@ -6,7 +6,7 @@ import { artifactDigests, fileDigest, Artifact } from './enhancement';
 import { publicationEnabled, publicationPolicyVersion, topicPublicationEvidence, reviewPublication,
     PublicationConfig, PublicationInspection, PublicationSnapshot, TOPIC_PUBLICATION_POLICY_VERSION } from './publicationReview';
 import type { Subtitle } from './editPlan';
-import { subtitleRepairEvidenceDigest } from './ownSubtitleRepairEvidence';
+import { subtitleRepairEvidenceDigest, subtitleDiagnosticEvidence } from './ownSubtitleRepairEvidence';
 import { sourceTimingMetadata, validateRenderedTimingRepair } from './publicationTiming';
 import { projectRetainedSubtitleEvidence } from './subtitleWindowEvidence';
 export { projectRetainedSubtitleEvidence } from './subtitleWindowEvidence';
@@ -56,6 +56,8 @@ export async function publicationSnapshot(artifact: Artifact): Promise<Publicati
     } };
     const subtitleAudio = subtitleRepairEvidenceDigest(artifact, snapshot.source);
     if (subtitleAudio) snapshot.digests.subtitleAudio = subtitleAudio;
+    const diagnostic = subtitleDiagnosticEvidence(artifact, snapshot.source);
+    if (diagnostic) snapshot.digests.subtitleDiagnostic = diagnostic.digest;
     if (timingAudio) snapshot.digests.timingAudio = timingAudio;
     return snapshot;
 }
@@ -160,8 +162,9 @@ export async function reviewOwnPublications(artifacts: Artifact[], context: Publ
                     excludedCategories: context.excludedCategories,
                     speech: speech.filter(row => row.end > start - 30 && row.start < end + 60),
                     retainedSubtitles: retained,
-                    audience: audience.filter(row => row.time >= start && row.time <= end),
-                    evidence: { configuredPeople: context.configuredPeople || [], cues: evidence.cues?.filter(row => row.end > start - 30 && row.start < end + 60)
+                    audience: audience.filter(row => row.time >= start - 30 && row.time <= end + 60),
+                    evidence: { subtitleDiagnostic: subtitleDiagnosticEvidence(artifact, initial.source)?.windows || null,
+                        configuredPeople: context.configuredPeople || [], cues: evidence.cues?.filter(row => row.end > start - 30 && row.start < end + 60)
                         .map(cue => ({ ...cue })) || [] },
                     sourceEvidenceSha256, evidenceSnapshot: initial, now
                 }, {

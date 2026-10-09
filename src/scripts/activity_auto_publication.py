@@ -49,8 +49,15 @@ def ready(metadata, config, check_artifacts, content_digest):
         raise ValueError('activity source timing or coverage remains uncertain')
     for event in events:
         verification = event.get('verification') or {}
-        if (verification.get('decision') != 'keep' or event.get('startObserved') is not True
-                or event.get('endObserved') is not True or event.get('reviewIssues')
+        if __package__:
+            from .activity_audio_review import closed_context_enclosure, unresolved_activity_issues
+        else:
+            from activity_audio_review import closed_context_enclosure, unresolved_activity_issues
+        # check_artifacts above already replayed the original bound decoder, assessment,
+        # closed-context flags and enclosure bounds. Exact musical onset is a separate fact.
+        if (verification.get('decision') != 'keep'
+                or (not closed_context_enclosure(event) and (event.get('startObserved') is not True or event.get('endObserved') is not True))
+                or unresolved_activity_issues(event)
                 or verification.get('method') != 'independent_local_asr'):
             raise ValueError('activity performance/viewing or complete boundaries remain uncertain')
     return dict(version=1, policyVersion=POLICY_VERSION, policy=policy, contentSha256=content_digest(metadata))

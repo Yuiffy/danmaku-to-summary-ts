@@ -17,7 +17,7 @@ function normalizeCreativeQa(value) {
     return { ...value, issues: value.issues.map(issue => {
         if (typeof issue === 'string' && issue.trim()) return issue;
         if (issue && typeof issue === 'object' && !Array.isArray(issue)
-            && ['issue', 'message', 'description', 'reason', 'problem'].some(key => typeof issue[key] === 'string' && issue[key].trim())) {
+            && ['issue', 'message', 'description', 'reason', 'problem', 'detail', '问题'].some(key => typeof issue[key] === 'string' && issue[key].trim())) {
             return JSON.stringify(issue);
         }
         throw new Error(`Invalid creative QA issue: ${JSON.stringify(issue)}`);
@@ -29,8 +29,11 @@ function sourceCues(segments) {
         .filter(row => Number.isFinite(row.start) && Number.isFinite(row.end) && row.start >= 0 && row.end > row.start && row.text?.trim());
 }
 
-function availableCues(cues, window, seconds) {
-    return cues.filter(cue => cue.start >= Math.max(0, window.start - seconds) - .001 && cue.end <= window.end + seconds + .001);
+function availableCues(cues, window, seconds, beforeSeconds = seconds) {
+    // Review and expansion share whole cues intersecting the context horizon.
+    // A visible cue may end just beyond it; dropping that cue makes a legitimate
+    // review requirement impossible for the expansion planner to satisfy.
+    return cues.filter(cue => cue.end > Math.max(0, window.start - beforeSeconds) && cue.start < window.end + seconds);
 }
 
 function expandedWindow(draft, cues, window, seconds) {
@@ -269,5 +272,5 @@ async function rebuildExpandedSource(baseline, original, context, request, depen
         subtitleBurnFallbackUsed: rendered.fallbackUsed, subtitleHwaccel: rendered.subtitleHwaccel === null ? null : config.subtitleHwaccel } };
 }
 
-module.exports = { MAX_EXPANSIONS, expansionDigest, normalizeCreativeQa, sourceCues, expandedWindow, expandedSubtitles,
+module.exports = { MAX_EXPANSIONS, expansionDigest, normalizeCreativeQa, sourceCues, availableCues, expandedWindow, expandedSubtitles,
     validateSourceExpansion, creativeSourceIdentity, rebuildExpandedSource };

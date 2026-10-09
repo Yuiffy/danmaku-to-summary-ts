@@ -1,4 +1,4 @@
-import { bindLocalReply, independentRows, validateLocalEvidence } from './activityAudio';
+import { bindLocalReply, independentRows, validateLocalEvidence, localBoundaryPrompt, encloseSongContext } from './activityAudio';
 
 const settings = { chunkSeconds: 8 };
 const request = { source: { mediaPath: 'original.flv' }, settings, audio: [{ start: 100, end: 116, sha256: 'source-audio' }] };
@@ -12,10 +12,64 @@ const result = { id: 'song-1', decision: 'keep', performer: 'host', startContext
   events: [{ start: { audioIndex: 1, seconds: 0 }, end: { audioIndex: 1, seconds: 16 } }] };
 const response = (value = result) => ({ text: JSON.stringify({ results: [value] }) });
 
+test('song evidence reaches its cited selection and delayed wrap-up without decoding the full performance', () => {
+  const event = { kind: 'song', start: 400, end: 800, evidenceIds: ['T1'] };
+  const intervals = [{ start: 355, end: 415 }, { start: 785, end: 845 }];
+  const rows = [{ id: 'T1', source: 'audio_transcript', start: 290, end: 295, text: '好，爱情讯息' },
+    { id: 'T2', source: 'audio_transcript', start: 875, end: 880, text: '唱完了，无事发生' },
+    { id: 'T3', source: 'audio_transcript', start: 100, end: 105, text: '另一首歌' },
+    { id: 'D1', source: 'danmaku', start: 250, end: 250, text: '我唱完了' }];
+  expect(encloseSongContext(event, intervals, rows, 1000)).toEqual([{ start: 275, end: 415 }, { start: 785, end: 888 }]);
+  expect(intervals).toEqual([{ start: 355, end: 415 }, { start: 785, end: 845 }]);
+  expect(encloseSongContext({ ...event, kind: 'watch' }, intervals, rows, 1000)).toBe(intervals);
+});
+
+test('extra context is bounded and ignores unrelated uncited talk or audience claims', () => {
+  const event = { kind: 'song', start: 400, end: 800, evidenceIds: ['T1'] };
+  const intervals = [{ start: 355, end: 415 }, { start: 785, end: 845 }];
+  expect(encloseSongContext(event, intervals, [
+    { id: 'T1', source: 'audio_transcript', start: 221, end: 225, text: '歌名' },
+    { id: 'T2', source: 'audio_transcript', start: 890, end: 1200, text: '唱完了' }
+  ], 1000)).toEqual([{ start: 220, end: 415 }, { start: 785, end: 935 }]);
+  expect(encloseSongContext(event, intervals, [
+    { id: 'D1', source: 'danmaku', start: 870, end: 880, text: '唱完了' },
+    { id: 'T9', source: 'audio_transcript', start: 240, end: 250, text: '我要唱' }
+  ], 1000)).toEqual(intervals);
+});
+
+test('boundary reasoning receives only source cues overlapping short audio, not an entire movie transcript', () => {
+  const prompt = localBoundaryPrompt(batch, { audio: [{ start: 100, end: 116, energy: { rmsDb: [] } }], frames: [] }, evidence,
+    { streamerName: '岁己' }, [{ source: 'audio_transcript', start: 101, end: 105, text: 'boundary words' },
+      { source: 'audio_transcript', start: 1000, end: 1010, text: 'movie middle must not be sent' }]);
+  expect(prompt).toContain('boundary words');
+  expect(prompt).not.toContain('movie middle must not be sent');
+});
+
 test('independent lyrics can bind despite corrupt source Chinese ASR, with real original time origins', () => {
   validateLocalEvidence(evidence, request);
   expect(JSON.parse(bindLocalReply(response(), batch, evidence).text).results[0].audibleEvidence).toEqual(['original sung lyric']);
   expect(independentRows(evidence)[0]).toMatchObject({ start: 100, end: 108, text: expect.stringContaining('original sung lyric') });
+});
+
+test('literal short Chinese boundary phrases supplement substantial context but cannot establish an activity alone', () => {
+  const local = structuredClone(evidence); local.audio[0].chunks[1].text = '看完了';
+  const raw = structuredClone(result);
+  raw.evidenceRefs.push({ audioIndex: 1, chunkIndex: 2, quote: '看完了' });
+  expect(() => bindLocalReply(response(raw), batch, local)).not.toThrow();
+  raw.evidenceRefs.shift();
+  expect(() => bindLocalReply(response(raw), batch, local)).toThrow('context');
+  raw.evidenceRefs.push({ audioIndex: 1, chunkIndex: 1, quote: 'invented substantial text' });
+  expect(() => bindLocalReply(response(raw), batch, local)).toThrow('quote');
+});
+
+test('one invalid candidate cannot discard valid independent results from the same batch', () => {
+  const sibling = { ...batch.events[0], event: { ...batch.events[0].event, id: 'song-2' } };
+  const bad = { ...structuredClone(result), id: 'song-2', evidenceRefs: [{ audioIndex: 1, chunkIndex: 1, quote: 'invented quote' }] };
+  const input = { text: JSON.stringify({ results: [result, bad] }) };
+  const parsed = JSON.parse(bindLocalReply(input, { events: [...batch.events, sibling] }, evidence, [], true).text);
+  expect(parsed.results[0].decision).toBe('keep');
+  expect(parsed.results[1]).toMatchObject({ decision: 'uncertain', events: [], reason: expect.stringContaining('quote') });
+  expect(JSON.parse(input.text).results[1].decision).toBe('keep');
 });
 
 test('a separate preview can be removed only with complete evidence and the whole formal announcement retained', () => {

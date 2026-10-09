@@ -78,6 +78,23 @@ test('unavailable media verification does no extraction or AI work', async () =>
     } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
 });
 
+test('a service retry reuses extracted packets and counts every request against the shared budget', async () => {
+    const f = fixture(), wait = jest.fn(async () => undefined);
+    const request = jest.fn().mockRejectedValueOnce(new Error('Activity media verification HTTP 502'))
+        .mockImplementation(f.request);
+    try {
+        const result = await b.calibrateBoundaries(f.events, { ...f.args, request, wait });
+        expect(result).toMatchObject({ requests: 2, audioSeconds: 690 });
+        expect(result.events.every(event => event.verification.decision === 'keep')).toBe(true);
+        expect(f.extract).toHaveBeenCalledTimes(6);
+        expect(wait).toHaveBeenCalledWith(2000);
+        expect(result.events[0].verification.transportRetries[0]).toMatchObject({ attempt: 1, delayMs: 2000 });
+        const cached = await b.calibrateBoundaries(f.events, { ...f.args, request, wait, usedRequests: 3 });
+        expect(cached).toMatchObject({ requests: 0, cacheHits: 1 });
+        expect(request).toHaveBeenCalledTimes(2);
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
+
 test('local activity verification sends only original images to DaiYu and reuses the bound decoder and remote result', async () => {
     const f = fixture(), config = p.getActivityConfig({});
     const localDecode = jest.fn(async (input, output) => {
@@ -109,6 +126,14 @@ test('local activity verification sends only original images to DaiYu and reuses
         expect(localDecode).toHaveBeenCalledTimes(1);
         expect(await b.calibrateBoundaries([f.events[0]], args)).toMatchObject({ requests: 0, cacheHits: 1 });
         expect(localDecode).toHaveBeenCalledTimes(1); expect(request).toHaveBeenCalledTimes(1);
+        const failed = await b.calibrateBoundaries([f.events[0]], { ...args, retryId: 'outage', usedRequests: 2,
+            reusableEvidence: [result.events[0].verification], request: async () => { throw new Error('network timeout'); } });
+        expect(failed.events[0].verification).toMatchObject({ decision: 'uncertain', localAudioEvidence: { sha256: expect.any(String) } });
+        expect(localDecode).toHaveBeenCalledTimes(1);
+        const resumed = await b.calibrateBoundaries([f.events[0]], { ...args, retryId: 'recovered',
+            reusableEvidence: [result.events[0].verification] });
+        expect(resumed.events[0].verification.decision).toBe('keep');
+        expect(localDecode).toHaveBeenCalledTimes(1);
     } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
 });
 test('long partial performances also use only boundary excerpts and the batch requests minimal thinking', async () => {

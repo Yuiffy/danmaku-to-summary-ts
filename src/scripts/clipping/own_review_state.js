@@ -99,6 +99,7 @@ function saveReviewState(reviewPath, results, metadata, buildReviewMarkdown) {
     const statePath = reviewPath.replace(/\.md$/i, '_STATE.json');
     const previous = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, 'utf8')).metadata : null;
     const presentation = require('../workflow-runtime').loadWorkflow('clipping/reviewSelectionHistory');
+    Object.assign(metadata, presentation.withReviewSource?.(metadata, results) || metadata);
     Object.assign(metadata, presentation.preserveDeferredSelection(previous, metadata));
     const display = presentation.reviewDisplayRows(results);
     fs.writeFileSync(reviewPath, buildReviewMarkdown(display, metadata) + '\n' + require('../workflow-runtime').loadWorkflow('clipping/reviewDigest').deferredReviewLines(metadata, display).join('\n'), 'utf8');

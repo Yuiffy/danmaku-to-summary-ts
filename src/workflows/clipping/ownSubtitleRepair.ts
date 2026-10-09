@@ -5,14 +5,23 @@ export const normalizedSpeech = (text: string) => text.normalize('NFKC').replace
 
 export function subtitleRepairEligible(artifact: Artifact): boolean {
     const review = artifact.publicationReview;
+    const details = (review?.issues || []).filter((issue: string) => !/^final_(?:subtitles|visuals)_not_passed$/u.test(issue));
+    // Some reviewers classify the same visible transcription error under both checks.
+    // This admits bounded audio diagnosis only; independent final review is still mandatory.
+    const visualTranscriptionOnly = review?.checks?.visuals === false && details.length > 0
+        && details.every((issue: string) => /字幕|原词|错识|识别/u.test(issue) && /[“「"][^”」"]+[”」"]/u.test(issue)
+            && !/封面|遮挡|遮住|排版|出界|裁掉|重叠|错位|不同步|模糊|看不清/u.test(issue));
     return artifact.mode === 'own_stream_fun_review' && artifact.uploadReady === true && !artifact.editPlan
         && !artifact.creativePlan?.timeline && !artifact.selectionRejection && !artifact.rebuildRequired && !artifact.preRenderHold
         && !artifact.ownStreamHumanReview && !artifact.humanReview && !artifact.sourceExpansionRequest
-        && !artifact.renderedSubtitles && !artifact.candidateSubtitles && !artifact.publicCopyPending
+        && (!artifact.renderedSubtitles || artifact.renderedSubtitles.revision === 0
+            && Array.isArray(artifact.renderedSubtitles.edits) && artifact.renderedSubtitles.edits.length === 0)
+        && !artifact.candidateSubtitles && !artifact.publicCopyPending
         && artifact.output.burnedSubtitles === true && !artifact.output.mediaError && !artifact.output.coverError
         && !artifact.subtitleProofreading?.reviewGroups?.length && review?.status === 'needs_review'
         && review.technical?.passed === true && review.checks?.subtitles === false
-        && ['content', 'attribution', 'visuals', 'policy'].every(key => review.checks[key] === true);
+        && ['content', 'attribution', 'policy'].every(key => review.checks[key] === true)
+        && (review.checks.visuals === true || visualTranscriptionOnly);
 }
 
 /** Locate concrete quoted problems; a broad "bad subtitles" verdict never authorizes a whole-clip rewrite. */
@@ -21,7 +30,8 @@ export function planSubtitleProbes(artifact: Artifact, cues: RepairCue[], paddin
     const problems = String((artifact.publicationReview?.issues || []).join('\n')).replace(
         /([“「"][^”」"]{2,80}[”」"])与(?:后文)?[“「"][^”」"]{2,80}[”」"](?=[^。；\n]{0,20}不一致)/gu, '$1');
     const quotes = [...problems.matchAll(/[“「"]([^”」"]{2,80})[”」"]/gu)]
-        .map(match => match[1]).filter(value => !/^[a-z\s]+$/iu.test(value));
+        .flatMap(match => cues.some(cue => cue.text.includes(match[1])) ? [match[1]] : match[1].split(/[\/／]/u))
+        .filter(value => value.length >= 2 && !/^[a-z\s]+$/iu.test(value));
     const targets = new Map<number, string>();
     for (const quote of quotes.sort((a, b) => a.length - b.length)) {
         const matches = cues.map((cue, index) => ({ cue, index })).filter(row => row.cue.text.includes(quote));
@@ -29,8 +39,9 @@ export function planSubtitleProbes(artifact: Artifact, cues: RepairCue[], paddin
     }
     if (!targets.size || targets.size > 4) return [];
     const probes = [...targets].map(([index, quote], order) => {
-        const cue = cues[index], start = Math.max(artifact.window.start, artifact.window.start + cue.start - paddingSeconds);
-        const end = Math.min(artifact.window.end, artifact.window.start + cue.end + paddingSeconds);
+        const cue = cues[index], padding = Math.min(paddingSeconds, Math.max(0, (30 - (cue.end - cue.start)) / 2));
+        const start = Math.max(artifact.window.start, artifact.window.start + cue.start - padding);
+        const end = Math.min(artifact.window.end, artifact.window.start + cue.end + padding);
         const context = cues.filter(row => row.end > start - artifact.window.start && row.start < end - artifact.window.start)
             .map(row => row.text).join('');
         return { id: `A${order + 1}`, index, quote, start, end, original: cue.text, context };

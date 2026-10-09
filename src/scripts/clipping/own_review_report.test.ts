@@ -20,8 +20,13 @@ function clip(index, start, pending = false) {
     output: { mediaPath: `/clips/${index}.mp4`, srtPath: `/clips/${index}.srt` } };
 }
 
-describe('one chronological own-stream review with durable IDs', () => {
+describe('one numbered own-stream review with durable IDs', () => {
   afterEach(() => jest.restoreAllMocks());
+
+  test('a boundary repair hold exposes the exhausted tool reason alongside the original review', () => {
+    const value = { ...clip(1, 10, true), automaticBoundaryRepair: { status: 'needs_review', reason: '后续字幕已耗尽，需要复听' } };
+    expect(report.reviewDetailLines(value).join('\n')).toContain('自动边界修复: 已尝试，仍待核对：后续字幕已耗尽，需要复听');
+  });
 
   test('shows only final-window editorial hints without changing public copy or approval', () => {
     const value = { ...clip(1, 10, true), viewingAngles: [{ label: '角色互动', hook: '寻找伙伴' }],
@@ -46,15 +51,18 @@ describe('one chronological own-stream review with durable IDs', () => {
     expect(report.uploadEligible(value)).toBe(false);
   });
 
-  test('ready, held, and rejected entries remain in one time-ordered list with their actual IDs', () => {
+  test('ready, held, and rejected entries follow upload IDs even when times are out of order', () => {
     const values = [clip(1, 100), clip(2, 20, true), { ...clip(3, 60, true), selectionRejection: { reason: 'duration_out_of_bounds' } }];
     const metadata = { uploadRegistry: { clipIds: [101, 202, 303], clipIdsByReviewIndex: { 1: 101, 2: 202, 3: 303 } },
       aiStatus: { attribution: { dialogueError: 'Invalid dialogue turn evidence' } } };
     const message = own.buildNotifyMarkdown(values, metadata);
-    expect(message.indexOf('1. ID202')).toBeLessThan(message.indexOf('2. ID303'));
-    expect(message.indexOf('2. ID303')).toBeLessThan(message.indexOf('3. ID101'));
-    expect(message).toMatch(/\n\n2\. ID303/u);
-    expect(message).toMatch(/\n\n3\. ID101/u);
+    expect(message).toMatch(/\n\n1\. ID101/u);
+    expect(message).toMatch(/\n\n2\. ID202/u);
+    expect(message).toMatch(/\n\n3\. ID303/u);
+    const local = own.buildReviewMarkdown(values, metadata);
+    expect(local).toMatch(/\n1\. ID101/u);
+    expect(local).toMatch(/\n2\. ID202/u);
+    expect(local).toMatch(/\n3\. ID303/u);
     for (const text of ['复核不可用', '已剔除（未切）', '成片待审核', '未获得可用的人物复核结果', 'Recorded words', '人物或对话证据未通过']) expect(message).toContain(text);
     expect(report.diagnosticLines(metadata).join('\n')).toContain('Invalid dialogue turn evidence');
     expect(message).toContain('上传短ID: 101');
@@ -102,11 +110,11 @@ describe('one chronological own-stream review with durable IDs', () => {
   test('sorting never swaps legacy positional IDs or sparse explicit IDs', () => {
     const values = [clip(1, 100), clip(2, 20)];
     const legacy = own.buildNotifyMarkdown(values, { uploadRegistry: { clipIds: [40, 50] } });
-    expect(legacy).toContain('1. ID50 Clip 2');
-    expect(legacy).toContain('2. ID40 Clip 1');
+    expect(legacy).toContain('1. ID40 Clip 1');
+    expect(legacy).toContain('2. ID50 Clip 2');
     const sparse = own.buildNotifyMarkdown(values, { uploadRegistry: { clipIds: [40], clipIdsByReviewIndex: { 1: 40 } } });
-    expect(sparse).toContain('1. 未登记ID Clip 2');
-    expect(sparse).toContain('2. ID40 Clip 1');
+    expect(sparse).toContain('2. 未登记ID Clip 2');
+    expect(sparse).toContain('1. ID40 Clip 1');
   });
 
   test('exposes media failures, review failures, and skipped planning requests instead of a success-only summary', () => {
@@ -237,12 +245,28 @@ describe('one chronological own-stream review with durable IDs', () => {
     const queued = own.buildNotifyMarkdown([value], metadata);
     expect(queued).not.toContain('请确认');
     expect(queued).not.toContain('暂不可上传');
+    metadata.uploadRegistry.reviewPendingByReviewIndex = { 1: true };
+    const rebuilding = own.buildNotifyMarkdown([{ ...value, rebuildRequired: true }], metadata);
+    expect(rebuilding).toContain('已排队投稿');
+    expect(rebuilding).not.toContain('暂不可上传');
+    expect(rebuilding).not.toContain('回复编号＋改法');
     metadata.uploadRegistry.clipStatusByReviewIndex[1] = 'uploaded';
     metadata.uploadRegistry.reviewPendingByReviewIndex = { 1: true };
     const uploaded = own.buildNotifyMarkdown([value], metadata);
     expect(uploaded).toContain('已投稿（当前资料待复核）');
     expect(uploaded).toContain('如有异常请在B站修改');
     expect(uploaded).not.toContain('暂不可上传');
+  });
+
+  test('rejected candidates remain optional in the notification with full evidence in the local report', () => {
+    const held = { ...clip(2, 100, true), selectionRejection: { reason: 'missing_topic_closure' },
+      grounding: { issues: [], subtitles: [{ text: '保留本地完整证据' }] } };
+    const metadata = { uploadRegistry: { clipIdsByReviewIndex: { 2: 901 } } };
+    const message = own.buildNotifyMarkdown([held], metadata);
+    expect(message).toContain('ID901');
+    expect(message).toContain('可选恢复');
+    expect(message).not.toContain('暂不可上传');
+    expect(own.buildReviewMarkdown([held], metadata)).toContain('保留本地完整证据');
   });
 
   test('explicit human approval resolves the hold without erasing original AI findings', () => {
@@ -320,6 +344,13 @@ describe('one chronological own-stream review with durable IDs', () => {
       expect(first.rejected).toBe(1);
       expect(second.clipIds).toEqual(first.clipIds);
       expect(fetch).toHaveBeenCalledTimes(delivered);
+      const repaired = JSON.parse(fs.readFileSync(results[1].output.metadataPath, 'utf8'));
+      repaired.reviewIndex = 1; // Temporary single-candidate repair manifest.
+      fs.writeFileSync(results[1].output.metadataPath, JSON.stringify(repaired));
+      const repairedRefresh = await artifacts.refreshReview(planPath, { config });
+      expect(repairedRefresh.clipIds).toEqual(first.clipIds);
+      expect(JSON.parse(fs.readFileSync(path.join(directory, 'REVIEW_STATE.json'), 'utf8')).entries
+        .filter(entry => !entry.metadataPath.includes('rejected_candidates')).map(entry => entry.reviewIndex)).toEqual([1, 2]);
       const changedPlan = JSON.parse(fs.readFileSync(planPath, 'utf8'));
       const statePath = path.join(directory, 'REVIEW_STATE.json');
       const saved = JSON.parse(fs.readFileSync(statePath, 'utf8'));

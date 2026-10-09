@@ -6,7 +6,7 @@ import { copyRepairEligible } from './ownPublicationRepair';
 import { subtitleRepairEligible } from './ownSubtitleRepair';
 import type { Artifact } from './enhancement';
 import { randomUUID } from 'crypto';
-import { publicationEnabled } from './publicationReview';
+import { publicationEnabled, subtitleAdvisoriesReviewable } from './publicationReview';
 import type { PublicationConfig } from './publicationReview';
 
 type Data = Record<string, any>;
@@ -14,18 +14,21 @@ interface RecheckAdapters {
     lock(file: string, id: number): { lock: number; lockPath: string };
     repair(artifact: Artifact, required: Data, subtitles: boolean): Promise<Artifact>;
     reviewFinal?(artifact: Artifact, required: Data): Promise<Artifact>;
-    config(room: string): Data;
+    config(room: string, artifact: Artifact): Data;
 }
 const read = (file: string) => JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/u, ''));
 const samePath = (a: string, b: string) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
 
 function finalReviewEligible(artifact: Artifact, config: PublicationConfig & Data): boolean {
-    return artifact.mode === 'own_stream_fun_review' && config.mode === 'auto' && publicationEnabled(config, artifact.roomId)
+    const kindMatches = config.policyVersion === 'topic-v1'
+        ? artifact.mode === 'local_review' && artifact.publicationKind === 'keyword_topic' && artifact.automaticPublicationRequired === true
+        : artifact.mode === 'own_stream_fun_review';
+    return kindMatches && config.mode === 'auto' && publicationEnabled(config, artifact.roomId)
         && Boolean(config.authorizationNote?.trim()) && Number.isFinite(Date.parse(config.activatedAt))
         && Date.parse(artifact.generatedAt) >= Date.parse(config.activatedAt)
         && !artifact.selectionRejection && !artifact.preRenderHold && !artifact.rebuildRequired && !artifact.publicCopyPending
         && !artifact.ownStreamHumanReview && !artifact.humanReview && !artifact.sourceExpansionRequest && !artifact.storyRepairRequest
-        && !artifact.subtitleProofreading?.reviewGroups?.length && !artifact.output?.mediaError && !artifact.output?.coverError
+        && subtitleAdvisoriesReviewable(artifact) && !artifact.output?.mediaError && !artifact.output?.coverError
         && artifact.output?.burnedSubtitles === true && artifact.uploadReady === true;
 }
 
@@ -53,7 +56,7 @@ export async function recheckOwnPublication(argv: string[], io: RecheckAdapters)
     try {
         const before = fs.readFileSync(file, 'utf8'), artifact: Artifact = JSON.parse(before);
         if (!samePath(artifact.output.metadataPath, file) || artifact.uploadId && artifact.uploadId !== id) throw new Error('Metadata belongs to a different ID');
-        const config = io.config(String(artifact.roomId)).automaticPublication;
+        const config = io.config(String(artifact.roomId), artifact).automaticPublication;
         const subtitles = values['repair-subtitles'] === true;
         const finalOnly = values['review-final'] === true;
         if (!(finalOnly ? finalReviewEligible(artifact, config) : subtitles ? subtitleRepairEligible(artifact) : copyRepairEligible(artifact, config))) return { id, status: 'needs_review', changed: false, reason: 'This artifact requires a different source or editorial repair' };

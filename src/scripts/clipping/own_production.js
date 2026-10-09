@@ -14,6 +14,7 @@ async function produceOwnClips(context, hooks) {
     const reviewPath = path.join(outputRoot, base ? `REVIEW_${base}.md` : 'REVIEW.md');
     Object.assign(metadata, { planPath, reviewPath, uploadManifestPath: path.join(outputRoot, base ? `${base}_UPLOAD_MANIFEST.json` : 'UPLOAD_MANIFEST.json') });
     const source = { mediaPath: options.mediaPath, srtPath: options.srtPath, xmlPath: options.xmlPath || null };
+    const reservedWindows = context.clips.map(clip => ({ clip, start: clip.start, end: clip.end }));
     const sourceReview = batch => require('../workflow-runtime').loadWorkflow('clipping/ownSourceReview').reviewOwnSourceCandidates(batch, {
         enabled: config.attribution?.sourceReviewBeforeRender === true && (config.attribution.roomIds || []).map(String).includes(String(info.roomId)),
         roomId: info.roomId, streamerName: info.streamerName || metadata.streamerName, sourceSha256: evidence.sourceSha256,
@@ -21,6 +22,29 @@ async function produceOwnClips(context, hooks) {
         aiEnabled: config.ai?.enabled === true && rootConfig.ai?.text?.enabled !== false,
         diagnostics, maxRequests: config.attribution?.maxRequests, maxBatchChars: config.attribution?.maxBatchChars
     }, { snapshot: () => JSON.stringify(require('./source_snapshot').sourceSnapshot({ source })),
+        replan: async (original, window, feedback) => {
+            const reservation = reservedWindows.find(row => row.clip === original
+                || row.clip.candidateIndex !== undefined && String(row.clip.candidateIndex) === String(original.candidateIndex)
+                || row.start === original.start && row.end === original.end);
+            const checkOverlap = candidate => {
+                if (!reservation || reservedWindows.some(row => row !== reservation
+                    && Math.min(candidate.end, row.end) - Math.max(candidate.start, row.start) > .001)) {
+                    throw new Error('切前边界修复与另一保留片段重叠');
+                }
+            };
+            checkOverlap(window);
+            const planned = await hooks.replan({ index: original.candidateIndex ?? 1, ...window,
+                globalSelection: { reason: original.title } }, feedback);
+            if (planned.length !== 1) throw new Error('切前边界修复没有返回唯一候选');
+            checkOverlap(planned[0]);
+            const [reviewed] = await hooks.review([{ ...planned[0], attributionRequired: true }]);
+            if (!reviewed || reviewed.attributionReview?.status !== 'passed' || reviewed.publicCopyPending) {
+                throw new Error('切前新窗口人物复核未通过');
+            }
+            checkOverlap(reviewed);
+            Object.assign(reservation, { start: reviewed.start, end: reviewed.end });
+            return { ...reviewed, attributionRequired: true, ...(original.qaRequired ? {qaRequired:true} : {}) };
+        },
         request: hooks.sourceReviewRequest || ((prompt, phase, validate) => require('./selection_request').requestSelectionText(prompt,
             { primaryModel: config.attribution?.model || config.ai?.model, reasoningEffort: config.attribution?.reasoningEffort || 'high',
                 timeoutMs: config.attribution?.timeoutMs || 600000, maxTokens: config.attribution?.maxTokens || 12000,
@@ -144,6 +168,22 @@ async function produceOwnClips(context, hooks) {
         metadata.processingStats = { ...hooks.stats(results, ended - started, started.toISOString(), ended.toISOString()),
             overlapsAttributionReview: streaming };
     }
-    return { clips, results, planPath, reviewPath };
+    const boundaryTools = {
+        replan: (window, feedback) => hooks.replan({ index: 1, ...window,
+            globalSelection: { reason: feedback.originalCopy.title } }, feedback),
+        render: async (clip, original) => {
+            const [reviewed] = await sourceReview(await hooks.review([clip]));
+            if (!reviewed || reviewed.publicCopyPending || reviewed.preRenderHold || reviewed.sourceReview?.status === 'needs_review') {
+                throw new Error('Boundary revision failed source or actor review');
+            }
+            const directory = path.join(outputRoot, 'automatic_boundary_revisions', require('crypto').randomUUID());
+            fs.mkdirSync(directory, { recursive: true });
+            const lease = await scheduler.acquire();
+            try { return await hooks.render(reviewed, original.window.index - 1,
+                { profile: lease.profile, deferEnhancement: true, outputRoot: directory }); }
+            finally { lease.release(); }
+        }
+    };
+    return { clips, results, planPath, reviewPath, boundaryTools };
 }
 module.exports = { produceOwnClips };

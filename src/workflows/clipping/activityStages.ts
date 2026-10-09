@@ -7,17 +7,71 @@ type StagePlan = {
 type ManifestClip = { reviewIndex: number; metadataPath: string };
 type VerifiedEvent = ActivityEvent & { id: string; verification?: { decision?: string } };
 
+/** Resume an early stage only after its shared prerequisite recovered. No generation retry loop. */
+export async function runArchiveStages(run: (kind: string, reuseSummaryOnly?: boolean) => Promise<any>,
+  completed: (kind: string, result: any) => void, failed: (kind: string, error: any) => void): Promise<void> {
+  let songsNeedSummary = false;
+  for (const kind of ['songs', 'games', 'watch']) {
+    try {
+      const result = await run(kind);
+      completed(kind, result);
+      if (kind === 'watch' && result.status === 'rendered' && songsNeedSummary) {
+        try { completed('songs', await run('songs', true)); }
+        catch (error) { failed('songs', error); }
+      }
+    } catch (error) {
+      if (kind === 'songs') songsNeedSummary = (error as any).code === 'ACTIVITY_SUMMARY_NOT_READY';
+      failed(kind, error);
+    }
+  }
+}
+
+/** Reject conflicting intervals before rendering. Never trim evidence to fit. */
+export function assertOrderedActivityParts(parts: Array<{ start: number; end: number }>): void {
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    if (!Number.isFinite(part.start) || !Number.isFinite(part.end) || part.start < 0 || part.end <= part.start
+      || (i > 0 && part.start < parts[i - 1].end)) {
+      throw new Error(`Activity P${i + 1} has invalid or overlapping source intervals; resolve boundaries before rendering`);
+    }
+  }
+}
+
 /** Explicit recovery selects unresolved candidates only, preserving confirmed siblings. */
-export function retryBoundaryEvents<T extends VerifiedEvent>(raw: T[], events: VerifiedEvent[], selected: ActivityKind[], rejected: VerifiedEvent[] = []): T[] {
+export function retryBoundaryEvents<T extends VerifiedEvent>(raw: T[], events: VerifiedEvent[], selected: ActivityKind[], rejected: VerifiedEvent[] = [], feedback: any[] = []): T[] {
   const represented = new Set([...events, ...rejected].map(event => event.id));
   if (selectEvents(raw, selected).some(event => !represented.has(event.id))) {
     throw new Error('Original activity identities were merged or lost; use an explicit reviewed revision');
   }
   const ids = new Set(selectEvents(events, selected).filter(event => event.verification?.decision === 'uncertain').map(event => event.id));
+  for (const item of feedback) ids.add(item.id);
   const candidates = raw.filter(event => ids.has(event.id));
   if (candidates.length !== ids.size) throw new Error('Boundary retry is missing original candidate identities');
   if (!candidates.length) throw new Error('No unresolved activity boundaries to retry');
-  return candidates;
+  return candidates.map(event => feedback.some(item => item.id === event.id)
+    ? { ...event, boundaryFeedback: feedback.find(item => item.id === event.id) } : event);
+}
+
+/** A failed final P may reopen its own boundary for new independent evidence, never grant approval. */
+export function activityBoundaryFeedback(row: any, proof: any, registered: any, ids: string[]): any[] {
+  assertPendingBoundaryRetry(row, registered);
+  if (!registered || registered.automaticPublicationAuthorization || registered.uploadState?.bvid || registered.uploadState?.aid
+    || row.activityAutomaticPublicationRequired !== true || row.activityReview?.authority !== 'automatic'
+    || row.activityReview?.status !== 'pending' || row.activityReview?.checks?.boundaries !== false
+    || proof?.status !== 'needs_review' || proof.evidenceVersion !== 3
+    || JSON.stringify(proof.checks) !== JSON.stringify(row.activityReview.checks)
+    || !ids.length || new Set(ids).size !== ids.length || !Array.isArray(proof.responses)) {
+    throw new Error('Boundary feedback requires an unpublished current final boundary rejection');
+  }
+  return ids.map(id => {
+    const event = row.activities.find((event: any) => event.id === id);
+    const failures = proof.responses.filter((response: any) => response.checks?.boundaries === false
+      && response.reviewScope?.partNumbers?.some((number: number) => Number.isInteger(number)
+        && row.output.parts[number - 1]?.activityId === id));
+    if (!event || !failures.length) throw new Error(`Activity ${id} is not in a failed final boundary partition`);
+    return { id, previousStart: event.start, previousEnd: event.end, proofPath: row.activityReview.proofPath,
+      issues: [...new Set(failures.flatMap((response: any) => response.issues))] };
+  });
 }
 
 export function replaceRetriedEvents<T extends VerifiedEvent>(previous: T[], next: T[], ids: string[]): T[] {

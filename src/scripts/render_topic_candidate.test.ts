@@ -68,6 +68,15 @@ describe('render held topic candidate by reserved ID', () => {
     expect(segments[1].text).toBe('The prise is clear.');
   });
 
+  test('automatic review never records human approval and refuses unresolved preflight', () => {
+    const opts = { ...options, automaticReview: 'yes' };
+    expect(() => prepareCandidate(metadata, metadata.output.metadataPath, opts, {})).toThrow('fresh ready preflight');
+    metadata.aiReview.status = 'ready'; metadata.aiReview.quality.issues = [];
+    const task = prepareCandidate(metadata, metadata.output.metadataPath, opts, {});
+    expect(task.sourceMetadata.humanReview).toBeUndefined();
+    expect(task.sourceMetadata.aiReview.applied).toBe(true);
+  });
+
   test('checks an approved spoken date using the recording year without changing subtitles or copy', () => {
     const rows = [{ start: 0, end: 30, text: '不对不对二零年十二月的时候买的' }];
     parse.mockReturnValue({ segments: rows });

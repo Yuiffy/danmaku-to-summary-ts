@@ -3,7 +3,8 @@
 const fs = require('fs');
 const path = require('path');
 
-const REPLANNABLE = new Set(['outside_candidate_context', 'overlap_after_alignment', 'overlap', 'public_copy_evidence_dropped']);
+const REPLANNABLE = new Set(['outside_candidate_context', 'overlap_after_alignment', 'overlap', 'public_copy_evidence_dropped', 'topic_needs_more_context', 'topic_boundary_incomplete', 'missing_selected_candidate_detail', 'detail_generation_failed', 'invalid_topic_ranges', 'missing_topic_closure']);
+const canReplan = reason => REPLANNABLE.has(String(reason || '').split(':')[0]);
 const samePath = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
 
 function checkRegistryOverlap(metadata, options, start, end) {
@@ -14,6 +15,8 @@ function checkRegistryOverlap(metadata, options, start, end) {
     const peers = [];
     for (const [id, record] of Object.entries(records)) {
         if (Number(id) === metadata.uploadId) continue;
+        if (record.status === 'cancelled' && !record.bvid && !record.aid
+            && !record.uploadState?.bvid && !record.uploadState?.aid) continue;
         const knownSource = record.sourceMediaPath;
         if (knownSource && !samePath(knownSource, metadata.source.mediaPath)) continue;
         if (!record.metadataPath || !fs.existsSync(record.metadataPath)) {
@@ -21,6 +24,9 @@ function checkRegistryOverlap(metadata, options, start, end) {
             continue;
         }
         const peer = JSON.parse(fs.readFileSync(record.metadataPath, 'utf8'));
+        // Full activity/gameplay archives and separately edited highlights have different
+        // publication purposes; the archive must not veto every game highlight.
+        if (['stream_game_submission', 'stream_activity_submission'].includes(peer.type)) continue;
         if (!peer.source?.mediaPath || !samePath(peer.source.mediaPath, metadata.source.mediaPath)
             || peer.selectionRejection) continue;
         const window = peer.window;
@@ -39,7 +45,7 @@ function validateEditorialReplan(metadata, options, evidence) {
     const rejection = metadata.originalSelectionRejection;
     if (!rejection || rejection.reason === 'duration_out_of_bounds' || metadata.selectionRejection) return;
     const plan = metadata.editorialReplan;
-    if (!REPLANNABLE.has(rejection.reason) || !plan || plan.clipId !== metadata.uploadId
+    if (!canReplan(rejection.reason) || !plan || plan.clipId !== metadata.uploadId
         || plan.sourceSha256 !== evidence.sourceSha256 || !String(plan.note || '').trim()
         || plan.start !== metadata.window.start || plan.end !== metadata.window.end) {
         throw new Error('Rejected candidate needs a matching new editorial plan');
@@ -57,7 +63,7 @@ function reviewEditorialReplan(metadata, options, evidence, start, end) {
         }
         throw new Error('This rejection needs a new editorial plan; use rebuild --replan with a new window and reviewed copy');
     }
-    if (metadata.mode !== 'own_stream_fun_review' || !REPLANNABLE.has(rejection?.reason)) {
+    if (metadata.mode !== 'own_stream_fun_review' || !canReplan(rejection?.reason)) {
         throw new Error('This selection rejection cannot be recovered by editorial replanning');
     }
     if (options.start === undefined || options.end === undefined

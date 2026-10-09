@@ -12,6 +12,64 @@ Prepared inference-ready directory currently used by gray rollout:
 
 This inference-ready directory contains the assets required by FunASR for rollout.
 
+## Training checkpoint storage and optional cleanup
+
+The experimental training checkpoints can be removed during a future space cleanup.
+They are currently retained by the owner; they are not under automatic expiry.
+The retained training runs total approximately **16.6 GiB** (measured 2026-10-07):
+
+- `paraformer_standard_20260712_official_example`
+- `paraformer_timestamp_base_20260712_longrun`
+
+Their physical storage root is
+`E:/EFiles/disk-archive/2026-10-07/files/videos/asr_finetune_runs`.
+`D:/files/videos/asr_finetune_runs` is a directory junction to that root, so
+deleting these checkpoints frees E space. Each run retains `model.pt`,
+`model.pt.best`, `model.pt.avg10` and `model.pt.ep10`; epochs 1–9 were removed.
+
+Before cleanup, check the effective deployment configuration and running training
+or evaluation jobs. If any active model points into either training run, move that
+consumer to its intended inference assets first. The separately prepared gray
+rollout model at `D:/files/videos/asr_eval/models/paraformer_timestamp_avg10` is
+still in use and is outside this cleanup scope.
+
+Use the following PowerShell preview, then remove `-WhatIf` to delete the eight
+named checkpoint files. Configurations, training commands, logs and evaluation
+metadata remain available for rebuilding the experiment. Missing files are skipped
+so a repeated cleanup is harmless; unexpected junctions or symbolic links abort.
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$checkpointRoot = 'E:\EFiles\disk-archive\2026-10-07\files\videos\asr_finetune_runs'
+$runNames = @(
+    'paraformer_standard_20260712_official_example'
+    'paraformer_timestamp_base_20260712_longrun'
+)
+$weightNames = @('model.pt', 'model.pt.best', 'model.pt.avg10', 'model.pt.ep10')
+$rootItem = Get-Item -LiteralPath $checkpointRoot
+if ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+    throw 'Expected the physical checkpoint root, not a link'
+}
+$weights = foreach ($runName in $runNames) {
+    $runItem = Get-Item -LiteralPath (Join-Path $rootItem.FullName $runName)
+    if ($runItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw 'Unexpected link in training run'
+    }
+    foreach ($weightName in $weightNames) {
+        $weightPath = Join-Path $runItem.FullName $weightName
+        if (Test-Path -LiteralPath $weightPath -PathType Leaf) {
+            $weight = Get-Item -LiteralPath $weightPath
+            if ($weight.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                throw 'Unexpected link in checkpoint file'
+            }
+            $weight
+        }
+    }
+}
+$weights | Select-Object FullName, Length
+$weights | ForEach-Object { Remove-Item -LiteralPath $_.FullName -WhatIf }
+```
+
 ## Project model selection behavior
 
 The project now supports two Paraformer model profiles:

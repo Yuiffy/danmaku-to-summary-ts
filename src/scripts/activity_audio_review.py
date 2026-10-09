@@ -5,6 +5,18 @@ import math
 import re
 from pathlib import Path
 
+def closed_context_enclosure(event):
+    """Only meaningful after check_local_activity revalidates the bound assessment."""
+    verification = event.get('verification') or {}
+    return (verification.get('method') == 'independent_local_asr'
+            and verification.get('decision') == 'keep'
+            and verification.get('boundaryPolicy') == 'complete_context_enclosure')
+
+
+def unresolved_activity_issues(event):
+    informational = {'start_boundary_unconfirmed', 'end_boundary_unconfirmed'} if closed_context_enclosure(event) else set()
+    return [issue for issue in event.get('reviewIssues') or [] if issue not in informational]
+
 def file_digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -37,6 +49,9 @@ def check_local_activity(event, source):
     evidence = event.get('verification') or {}
     if evidence.get('method') != 'independent_local_asr':
         return
+    if (evidence.get('decision') != 'keep' or not evidence.get('localAudioEvidence')
+            or not evidence.get('responsePath') or not evidence.get('responseSha256')):
+        raise ValueError('local activity needs a completed independent assessment')
     bundle = evidence['localAudioEvidence']
     local = read_bound(bundle['resultPath'], bundle['sha256'])
     receipt = read_bound(bundle['receiptPath'], bundle['receiptSha256'])
@@ -73,13 +88,15 @@ def check_local_activity(event, source):
             or not result.get('evidenceRefs') or result.get('timeBasis') != 'audio_local_seconds' or len(result.get('events') or []) != 1):
         raise ValueError('local activity complete context or ownership changed')
     normalize = lambda s: ''.join(c for c in str(s or '').lower() if c.isalnum())
+    if not any(len(normalize(ref.get('quote'))) >= 4 for ref in result['evidenceRefs']):
+        raise ValueError('local activity requires substantial independent context')
     for ref in result['evidenceRefs']:
         if ref['audioIndex'] not in candidate['audioIndices']:
             raise ValueError('local activity quote references another candidate')
         audio = local['audio'][ref['audioIndex']-1]
         chunk = audio['chunks'][ref['chunkIndex']-1]
         texts = [chunk['text']] + [r['text'] for r in audio['transcript'] if r['chunkIndex'] == ref['chunkIndex']]
-        if len(normalize(ref['quote'])) < 4 or not any(normalize(ref['quote']) in normalize(s) for s in texts):
+        if len(normalize(ref['quote'])) < 2 or not any(normalize(ref['quote']) in normalize(s) for s in texts):
             raise ValueError('local activity quote is absent from independent audio')
     observed = result['events'][0]
     for key in ('start', 'end'):

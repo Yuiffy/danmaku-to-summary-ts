@@ -40,7 +40,7 @@ test('zero-precision batches explain the retained ordinary mode inside the same 
     expect(messages[0]).toContain('未调用抽选模型');
 });
 
-test('precision details keep chronological positions and the original review-index ID mapping', async () => {
+test('precision details keep numeric positions and the original review-index ID mapping', async () => {
     fetch.mockReset();
     fetch.mockResolvedValue({ ok: true, json: async () => ({ errcode: 0 }) });
     const results = [
@@ -49,8 +49,8 @@ test('precision details keep chronological positions and the original review-ind
     ];
     await own.notifyResults(results, { uploadRegistry: { clipIds: [123, 456] } }, { wechatWork: { webhookUrl: 'https://example.test/robot' } });
     const messages = fetch.mock.calls.map(([, options]) => JSON.parse(options.body).markdown.content);
-    expect(messages[0]).toContain('2. ID123 Precision');
+    expect(messages[0]).toContain('1. ID123 Precision');
     expect(messages).toHaveLength(1);
-    expect(messages[0]).toContain('2. ID123 Precision：');
+    expect(messages[0]).toContain('1. ID123 Precision：');
     expect(messages[0]).not.toContain('ID456 Precision');
 });

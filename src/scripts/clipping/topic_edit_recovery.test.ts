@@ -7,6 +7,30 @@ const plan = (first, last, next, continuation = 'next_topic') => ({
 const clip = (id, start, end, topicEditPlan) => ({ candidateIndex: id, startCueId: start, endCueId: end, topicEditPlan,
     evidenceCueIds: [start], evidenceDanmakuIds: [], title: '完整事件', coverText: '完整\n话题', description: '事情的经过', reason: '上下文完整', sourceKind: 'recount', score: 90 });
 
+test('retaining an omitted keep group still requires independent boundary approval', async () => {
+    const draft = clip(7, 'G1', 'G3', { ...plan('G1', 'G3', 'G4'), ranges: [
+        { startCueId: 'G1', endCueId: 'G1', action: 'keep', role: 'setup', reason: '起因' },
+        { startCueId: 'G3', endCueId: 'G3', action: 'keep', role: 'closing', reason: '回应' }
+    ] });
+    const generate = jest.spyOn(generator, 'generateTextWithDaiYu').mockImplementation(async (prompt, options) => {
+        if (options.requestPhase.endsWith('-boundary-review')) {
+            expect(prompt).toContain('retain_unassigned_groups');
+            return { text: JSON.stringify({ clips: [{ candidateIndex: 7, approved: false, issues: ['真实结尾仍缺必要回答'], requiredEndCueId: '' }] }), meta: {} };
+        }
+        return { text: JSON.stringify({ clips: [draft] }), meta: {} };
+    });
+    try {
+        const diagnostics: any = { requests: [], errors: [] };
+        const result = await own.refineCandidatesWithAI([{ index: 7, start: 0, end: 30 }], { segments: [
+            { start: 0, end: 5, text: '起因' }, { start: 10, end: 15, text: '漏标的完整原话' },
+            { start: 20, end: 30, text: '回应' }, { start: 40, end: 45, text: '下一话题' }
+        ] }, [], {}, own.getOwnStreamClipsConfig({}), { ai: { text: { provider: 'daiYu' } } }, diagnostics, '主播', { selectedOnly: true });
+        expect(result).toEqual([]);
+        expect(diagnostics.validation.rejected[0].reason).toBe('topic_boundary_incomplete');
+        expect(generate).toHaveBeenCalledTimes(6);
+    } finally { generate.mockRestore(); }
+});
+
 test('expands only unfinished topic, preserves successful short clip, and refuses shortening known continuation', async () => {
     const parsed = { segments: [{ start: 0, end: 10, text: '起因' }, { start: 150, end: 160, text: '第二个例子还未结束' },
         { start: 400, end: 410, text: '真正结尾' }, { start: 420, end: 430, text: '下一话题' },

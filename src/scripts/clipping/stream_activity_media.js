@@ -13,6 +13,35 @@ const execFileAsync = promisify(execFile);
 /** Accurate decoding/encoding avoids keyframe-sized gaps or repeated content between viewing Ps.
  * Keep the original mix: ASR lyrics and film dialogue are not suitable automatic burned subtitles. */
 async function renderActivityPart(mediaPath, part, outputPath, config, profile, hooks = {}) {
+    const receiptPath = `${outputPath}.render.json`;
+    const stat = fs.statSync(mediaPath, { bigint: true });
+    const binding = JSON.stringify({ version: 1, source: path.resolve(mediaPath), bytes: String(stat.size),
+        mtimeNs: String(stat.mtimeNs), start: part.start, end: part.end, duration: part.duration,
+        output: path.resolve(outputPath), settings: config.ownStreamClips || {}, ffmpeg: config.audio?.ffmpeg?.path || 'ffmpeg' });
+    const result = await require('../workflow-runtime').loadWorkflow('clipping/activityRecovery').resumeVerifiedPart(binding, part.duration, {
+        read() { try { return JSON.parse(fs.readFileSync(receiptPath, 'utf8')); } catch { return null; } },
+        async matches(saved) {
+            try { return saved.mediaPath === outputPath && fs.statSync(outputPath).size === saved.bytes
+                && fileDigest(outputPath) === saved.sha256
+                && Math.abs(await (hooks.probe || probeMediaDuration)(outputPath,
+                    resolveFfprobePath(config.audio?.ffmpeg?.path || 'ffmpeg')) - part.duration) <= .25; }
+            catch { return false; }
+        },
+        invalidate() { fs.rmSync(receiptPath, { force: true }); },
+        async render() {
+            // A worker killed by a service restart may leave FFmpeg alive. Its unique
+            // temporary target cannot overwrite the next worker's output or receipt.
+            const temporary = `${outputPath}.${require('crypto').randomUUID()}.partial.mp4`;
+            const rendered = await encodeActivityPart(mediaPath, part, temporary, config, profile, hooks);
+            fs.renameSync(temporary, outputPath);
+            return { ...rendered, mediaPath: outputPath };
+        },
+        save: receipt => writeJsonAtomic(receiptPath, receipt),
+        reused: () => console.log(`完整活动切片断点复用: ${path.basename(outputPath)}`)
+    });
+    return { ...result, ...part };
+}
+async function encodeActivityPart(mediaPath, part, outputPath, config, profile, hooks) {
     const ffmpegPath = config.audio?.ffmpeg?.path || 'ffmpeg';
     const settings = config.ownStreamClips || {};
     const run = hooks.runFfmpeg || runFfmpeg;
@@ -27,7 +56,7 @@ async function renderActivityPart(mediaPath, part, outputPath, config, profile, 
         await run(args(true), options);
     }
     const duration = await (hooks.probe || probeMediaDuration)(outputPath, resolveFfprobePath(ffmpegPath));
-    if (Math.abs(duration - part.duration) > .25) throw new Error(`Activity P duration mismatch: wanted ${part.duration}, got ${duration}`);
+    if (!Number.isFinite(duration) || Math.abs(duration - part.duration) > .25) throw new Error(`Activity P duration mismatch: wanted ${part.duration}, got ${duration}`);
     return { ...part, mediaPath: outputPath, bytes: fs.statSync(outputPath).size, sha256: fileDigest(outputPath), actualDuration: duration,
         processing: { resourceMode: profile?.mode || 'idle', ffmpegThreads: profile?.ffmpegThreads ?? null,
             videoEncoder: fallbackUsed ? 'libx264' : settings.subtitleVideoEncoder || 'libx264',

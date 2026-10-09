@@ -748,6 +748,48 @@ class MultiReferenceComicTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in selected], ["shiori"])
         self.assertEqual(selected[0]["_comicReferenceReason"], "appeared")
 
+    def test_miting_unnamed_memories_do_not_receive_unrelated_character_references(self):
+        production = json.loads((ROOT / "config" / "production.json").read_text(encoding="utf-8"))
+        self.highlight.write_text(
+            "[24m] 第一次和犬绒、羽啾见面，和花礼一起吃饭。\n"
+            "[25m] 犬绒、羽啾和花礼都很可爱。\n"
+            "[108m] 我的声音不像岁己。\n"
+            "[109m] 也不像岁己。\n"
+            "[24m] (💬 听说下周小栞小岁老弥来了又要聚)\n"
+            "[25m] (💬 听说下周小栞小岁老弥来了又要聚)\n"
+            "[26m] (💬 听说下周小栞小岁老弥来了又要聚)",
+            encoding="utf-8",
+        )
+        selected = comic.resolve_image_prompt_extra_streamers(
+            production, "31368705", str(self.highlight),
+            "米汀讲述聚会见闻，回忆框内用无名剪影表现害羞的人躲在另一人身后。",
+        )
+        self.assertEqual(selected, [])
+
+    def test_miting_story_characters_are_selected_from_source_instead_of_fixed_pair(self):
+        production = json.loads((ROOT / "config" / "production.json").read_text(encoding="utf-8"))
+        # Earlier registry entries must not fill the mention budget before the
+        # actual people in the selected memory can be considered.
+        self.highlight.write_text(
+            "岁己和栞栞下周才来。岁己和栞栞下周才来。\n"
+            "昨天和犬绒、花礼、羽啾见面。犬绒、花礼、羽啾一起吃饭。",
+            encoding="utf-8",
+        )
+        selected = comic.resolve_image_prompt_extra_streamers(
+            production, "31368705", str(self.highlight),
+            "米汀回忆昨天和犬绒、花礼、羽啾一起吃饭。羽啾害羞地躲在犬绒身后。",
+        )
+        self.assertEqual({item["id"] for item in selected}, {"mofu", "harei", "chu2u"})
+        self.assertTrue(all(item["_comicReferenceReason"] == "mentioned" for item in selected))
+
+    def test_miting_keeps_source_backed_sui_when_the_script_actually_uses_her(self):
+        production = json.loads((ROOT / "config" / "production.json").read_text(encoding="utf-8"))
+        self.highlight.write_text("米汀聊岁己的歌声。岁己唱歌很好听。", encoding="utf-8")
+        selected = comic.resolve_image_prompt_extra_streamers(
+            production, "31368705", str(self.highlight), "米汀回忆岁己唱歌的片段。",
+        )
+        self.assertEqual([item["id"] for item in selected], ["sui"])
+
     def test_sui_only_uploads_shiori_reference_when_storyboard_uses_her(self):
         production = json.loads((ROOT / "config" / "production.json").read_text(encoding="utf-8"))
         policy = production["ai"]["roomSettings"]["25788785"]["multiReferenceImages"]

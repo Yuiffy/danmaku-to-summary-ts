@@ -1,4 +1,7 @@
 import { MultiRoomVoteBot } from './MultiRoomVoteBot';
+import * as path from 'path';
+import * as os from 'os';
+import { LiveQuestionConfig, QuestionAnswer } from './questions/QuestionPolicy';
 
 const now = 1790259000000;
 const rooms = [
@@ -106,4 +109,89 @@ it('cancels removed, disconnected and owner-changed rooms, invalidating queued m
   bot.disconnect();
   await bot.flush();
   expect(sent).toHaveBeenCalledTimes(1);
+});
+
+const questionConfig: LiveQuestionConfig = {
+  enabled: true, providerConfigPath: path.join(os.tmpdir(), 'provider.json'),
+  recordingRoots: { '100': [path.join(os.tmpdir(), 'room100')], '200': [path.join(os.tmpdir(), 'room200')] }
+};
+
+it('shares one question worker across rooms and preserves its replies when only a vote is cancelled', async () => {
+  const sent: Array<[string, string]> = [];
+  let finish!: (result: QuestionAnswer) => void;
+  const answerer = jest.fn(() => new Promise<QuestionAnswer>(resolve => { finish = resolve; }));
+  const bot = new MultiRoomVoteBot({ globalAdminUids: [], questions: questionConfig }, async (id, text) => { sent.push([id, text]); }, jest.fn(), answerer);
+  bot.updateRooms(rooms);
+  bot.ingest(message('100', '10', '@鹿饼 玩过法环吗？'), now);
+  bot.ingest(message('200', '20', '@鹿饼 有唱过什么歌？'), now);
+  bot.ingest(message('100', '10', '#投票 1甲 2乙'), now);
+  bot.ingest(message('100', '10', '#取消投票'), now);
+  await Promise.resolve();
+  finish({ answer: '玩过法环。' });
+  await bot.flush();
+  expect(answerer).toHaveBeenCalledTimes(1);
+  expect(sent).toContainEqual(['200', '正忙着查「玩过法环吗?」问题，请稍后再问']);
+  expect(sent).toContainEqual(['100', '投票已取消']);
+  expect(sent).toContainEqual(['100', '鹿饼答：玩过法环。']);
+  bot.stop();
+});
+
+it('aborts questions when a room owner changes and suppresses late answers', async () => {
+  let finish!: (result: QuestionAnswer) => void;
+  let signal!: AbortSignal;
+  let unblock!: () => void;
+  const blocker = new Promise<void>(resolve => { unblock = resolve; });
+  const sent: Array<[string, string]> = [];
+  const answerer = jest.fn((_request, requestSignal: AbortSignal) => {
+    signal = requestSignal;
+    return new Promise<QuestionAnswer>(resolve => { finish = resolve; });
+  });
+  const bot = new MultiRoomVoteBot({ globalAdminUids: [], questions: questionConfig }, async (id, text, current) => {
+    await blocker;
+    if (current()) sent.push([id, text]);
+  }, jest.fn(), answerer);
+  bot.updateRooms(rooms);
+  bot.ingest(message('100', '10', '@鹿饼 玩过法环吗？'), now);
+  await Promise.resolve();
+  bot.updateRooms([{ ...rooms[0], ownerUid: '11' }, rooms[1]]);
+  expect(signal.aborted).toBe(true);
+  finish({ answer: '旧主播答案' });
+  unblock();
+  await bot.flush();
+  expect(sent).toEqual([]);
+  bot.stop();
+});
+
+it('drops completed answers waiting behind a send when the source room is removed', async () => {
+  let unblock!: () => void;
+  const blocker = new Promise<void>(resolve => { unblock = resolve; });
+  const sent: string[] = [];
+  const bot = new MultiRoomVoteBot({ globalAdminUids: [], questions: questionConfig }, async (_id, text, current) => {
+    await blocker;
+    if (current()) sent.push(text);
+  }, jest.fn(), async () => ({ answer: '不应发到已经移除的房间' }));
+  bot.updateRooms(rooms);
+  bot.ingest(message('100', '10', '#投票 1甲 2乙'), now);
+  bot.ingest(message('100', '10', '@鹿饼 玩过法环吗？'), now);
+  await new Promise(resolve => setImmediate(resolve));
+  bot.updateRooms([rooms[1]]);
+  unblock();
+  await bot.flush();
+  expect(sent).toEqual([]);
+  bot.stop();
+});
+
+it('accepts question requests only from the local owner or configured global administrator', async () => {
+  const send = jest.fn(async () => {});
+  const answer = jest.fn(async () => ({ answer: '没查到。' }));
+  const bot = new MultiRoomVoteBot({ globalAdminUids: ['42'], questions: questionConfig }, send, jest.fn(), answer);
+  bot.updateRooms(rooms);
+  for (const uid of ['30', '20']) bot.ingest(message('100', uid, '@鹿饼 玩过法环吗？'), now);
+  await bot.flush();
+  expect(answer).not.toHaveBeenCalled();
+  expect(send).not.toHaveBeenCalled();
+  bot.ingest(message('100', '42', '@鹿饼 玩过法环吗？'), now);
+  await bot.flush();
+  expect(answer).toHaveBeenCalledTimes(1);
+  bot.stop();
 });

@@ -112,8 +112,10 @@ function actorReviewPrompt(packets, context, options = {}) {
             '对话推断仍非真值。正文复核需重新读锚点，不能照抄推断。若与直接局部声纹冲突，标记needs_review；旧整簇标签和无声纹不构成反证。'
         ] : []),
         'evidenceDanmakuIds只填本窗口内实际用到的D-ID；引号只保留原文确有的字句。标题18-42字、简介简洁、封面两行，不带发布前缀或来源落款。',
+        '旧文案也可能错误。若旧文案写成提问但原话实际是设想/陈述，可更正并附originalQuestionCorrection:{reason:"说明原话为何不是提问",cueIds:["G-ID"],quote:"对应原话的完整字面句子"}。引用必须属于修订后的动作claim并在片内；不要仅为绕过校验声明更正，真实疑问和条件不得改成确定事实。',
         '观众评论也是独立claim：sourceKind=audience，该claim的evidenceDanmakuIds填D-ID并同步到reviews顶层同名字段；cueIds可为空，绝不能把D-ID放入cueIds或借无关G-ID凑数。narrator/actor填null，speakerCueIds为空，identityBasis=explicit_text。每个使用这条评论的公开字段标明观众/弹幕视角；它只能证明观众这样说，不能证明主播说过或做过。非观众claim的evidenceDanmakuIds填[]。',
         'claims中的人名也必须在引用原话中有依据；人名有ASR变体时，补充本窗口含正确称呼的原话ID，不能只有拼写不同的一个残句。',
+        'target只填一个人/角色的称呼，不填“甲和乙”等并列组合；多人关系放action，必要时拆成claims。原句只有“他/她”或姓名错音时，cueIds必须同时包含本窗口内明确说出正确称呼的上文G-ID；其他claim已经引用那句不能代替本claim引用。',
         ...(packets.some(packet => packet.entityContext) ? roleReferencePromptLines() : []),
         '只输出JSON：{"reviews":[{"clipId":"c1","decision":"repair","copy":{"title":"标题","coverText":"第一行\\n第二行","description":"内容简介"},"claims":[{"fields":["title","coverText","description"],"action":"提问","narrator":"人名或null","actor":"人名或null","target":"人名或null","sourceKind":"recount","identityBasis":"voice","speakerCueIds":["G1"],"cueIds":["G1"]}],"evidenceDanmakuIds":[],"reason":"简短核验依据"}]}',
         ...(encoding === 'compact' ? [
@@ -146,7 +148,14 @@ function validateActorReview(review, packet) {
     const originalQuestion = /(?:询问|追问|(?:直接|试探|忍不住)问|问.{0,5}(?:是不是|是否)|\basked\b)/iu.test(
         [packet.data.copy.title, packet.data.copy.description].join(' '));
     if (originalQuestion && !review.claims.some(claim => /(?:问|询|试探|是否|\bask(?:ed)?\b|question)/iu.test(claim?.action || ''))) {
-        issues.push('question_action_removed');
+        const correction = review.originalQuestionCorrection;
+        const cited = new Set(review.claims.flatMap(claim => Array.isArray(claim?.cueIds) ? claim.cueIds : []));
+        const supportedCorrection = review.decision === 'repair' && correction && typeof correction.reason === 'string'
+            && correction.reason.trim() && typeof correction.quote === 'string' && correction.quote.trim().length >= 8
+            && Array.isArray(correction.cueIds) && correction.cueIds.length > 0
+            && correction.cueIds.every(id => packet.cueIds.has(id) && cited.has(id))
+            && correction.cueIds.some(id => packet.evidence.byId.get(id)?.text === correction.quote);
+        if (!supportedCorrection) issues.push('question_action_removed');
     }
     review.claims.forEach((claim, index) => {
         const initialIssueCount = issues.length;

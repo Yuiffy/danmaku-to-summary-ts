@@ -1,5 +1,5 @@
 import { bindTranscriptTitles, namedEvents, songDate, songTitle, songSubmissionTitle, songCoverSubject,
-  watchTitleAppears, recoverWatchNames, watchCoverSubject, watchSubmissionTitle } from './activityTitles';
+  watchTitleAppears, recoverWatchNames, recoverSongNames, watchCoverSubject, watchSubmissionTitle } from './activityTitles';
 
 test('titles use verified song names and the recording date without zero padding', () => {
   expect(songDate('2026-10-02 20:24:20')).toBe('2026.10.2');
@@ -41,4 +41,17 @@ test('viewing copy puts actual work names before the date and preserves unresolv
   expect(watchCoverSubject(events)).toBe('《雷神3》 / 《奇异博士》');
   expect(watchSubmissionTitle(events, '2026.10.4', 72)).toBe('《雷神3》 / 《奇异博士》｜2026.10.4');
   expect(watchSubmissionTitle([{ name: null }], '2026.10.4', 72)).toContain('待确认片名');
+});
+
+test('recovers a summary-known song from cited title and adjacent selection speech', () => {
+  const event = { kind: 'song', start: 400, end: 800, name: null, evidenceIds: ['T2'] };
+  const rows = [
+    { id: 'T1', source: 'audio_transcript', start: 280, end: 290, text: '我要唱点正常的' },
+    { id: 'T2', source: 'audio_transcript', start: 291, end: 296, text: '好，爱情讯息' },
+    { id: 'T3', source: 'audio_transcript', start: 297, end: 300, text: '唱点没问题的吧' }];
+  expect(recoverSongNames([event], ['爱情讯息'], rows)[0]).toMatchObject({
+    name: '爱情讯息', titleEvidenceIds: ['T1', 'T2', 'T3'], evidenceIds: ['T2', 'T1', 'T3'] });
+  expect(recoverSongNames([event], ['另一首'], rows)[0]).toBe(event);
+  expect(recoverSongNames([event], ['爱情讯息'], rows.map(r => ({ ...r, source: 'danmaku' })))[0]).toBe(event);
+  expect(recoverSongNames([{ ...event, evidenceIds: [] }], ['爱情讯息'], rows)[0]).toHaveProperty('name', null);
 });

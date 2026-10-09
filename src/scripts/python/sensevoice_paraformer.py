@@ -55,13 +55,20 @@ SENTENCE_ENDS = set("。！？；.!?;\n")
 CLAUSE_ENDS = set("，、：…—,:")
 
 
+def _normalize_paraformer_spacing(text):
+    # Chinese token separators are disposable; English word boundaries are not.
+    text = re.sub(r"\s+", " ", str(text or "")).strip()
+    return re.sub(r"(?<=[\u3400-\u9fff]) (?=[\u3400-\u9fff])", "", text)
+
+
 def _paraformer_text_units(text):
     units = []
     index = 0
-    text = str(text or "")
+    text = _normalize_paraformer_spacing(text)
     while index < len(text):
         char = text[index]
         if char.isspace():
+            units.append({"text": " ", "timed": False})
             index += 1
             continue
         ascii_word = ASCII_WORD_RE.match(text, index)
@@ -212,144 +219,31 @@ def paraformer_timestamp_to_sentences(results, meta, punc_model, max_subtitle_ch
     if not isinstance(item, dict):
         return []
 
-    raw_text = item.get("text", "")
-    timestamps = item.get("timestamp")
+    raw_text = _normalize_paraformer_spacing(item.get("text", ""))
+    text = restore_punctuation(punc_model, raw_text)
+    if not text:
+        return []
 
-    if not raw_text or not timestamps:
-        text = restore_punctuation(punc_model, raw_text or "")
-        if not text:
-            return []
-        return [{
-            "start": meta["start"],
-            "end": meta["end"],
-            "text": text,
-            "time_unit": "seconds",
-            "speaker": meta.get("speaker"),
-            "speaker_score": meta.get("speaker_score"),
-        }]
+    # Reuse word-aware alignment: spaces/punctuation consume no timestamps,
+    # while an English word (including contractions) consumes exactly one.
+    segments = paraformer_full_text_to_segments({
+        "text": text, "timestamp": item.get("timestamp"),
+    }, max_subtitle_chars)
+    if segments:
+        offset = float(meta["start"])
+        for segment in segments:
+            segment["start"] = round(offset + segment["start"], 3)
+            segment["end"] = round(offset + segment["end"], 3)
+            segment["speaker"] = meta.get("speaker")
+            segment["speaker_score"] = meta.get("speaker_score")
+        return segments
 
-    chars = raw_text.strip().split()
-    if len(chars) != len(timestamps):
-        text = restore_punctuation(punc_model, raw_text.replace(" ", ""))
-        if not text:
-            return []
-        return [{
-            "start": meta["start"],
-            "end": meta["end"],
-            "text": text,
-            "time_unit": "seconds",
-            "speaker": meta.get("speaker"),
-            "speaker_score": meta.get("speaker_score"),
-        }]
-
-    char_ts = []
-    chunk_offset = float(meta["start"])
-    for ch, (start_ms, end_ms) in zip(chars, timestamps):
-        char_ts.append((
-            ch,
-            chunk_offset + float(start_ms) / 1000.0,
-            chunk_offset + float(end_ms) / 1000.0,
-        ))
-
-    joined_text = "".join(chars)
-    punctuated = restore_punctuation(punc_model, joined_text)
-    punctuated_chars = list(punctuated)
-    original_idx = 0
-    punct_to_char = {}
-    for punct_idx, punct_char in enumerate(punctuated_chars):
-        if original_idx < len(char_ts) and punct_char == char_ts[original_idx][0]:
-            punct_to_char[punct_idx] = original_idx
-            original_idx += 1
-
-    sentence_ends = set("。！？；\n")
-    clause_ends = set("，、：…—")
-
-    sentences = []
-    sent_start = 0
-    for index, punct_char in enumerate(punctuated_chars):
-        if punct_char in sentence_ends:
-            if index > sent_start:
-                sentences.append((sent_start, index + 1))
-                sent_start = index + 1
-    if sent_start < len(punctuated_chars):
-        sentences.append((sent_start, len(punctuated_chars)))
-
-    final_segments = []
-    for sent_start_idx, sent_end_idx in sentences:
-        sent_text = punctuated_chars[sent_start_idx:sent_end_idx]
-        sent_text_str = "".join(sent_text).strip()
-        if not sent_text_str:
-            continue
-
-        char_indices = []
-        for punct_idx in range(sent_start_idx, sent_end_idx):
-            if punct_idx in punct_to_char:
-                char_indices.append(punct_to_char[punct_idx])
-
-        if not char_indices:
-            continue
-
-        if len(sent_text_str) <= max_subtitle_chars:
-            final_segments.append({
-                "start": round(char_ts[char_indices[0]][1], 3),
-                "end": round(char_ts[char_indices[-1]][2], 3),
-                "text": sent_text_str,
-                "time_unit": "seconds",
-                "speaker": meta.get("speaker"),
-                "speaker_score": meta.get("speaker_score"),
-            })
-            continue
-
-        sub_start = sent_start_idx
-        for punct_idx in range(sent_start_idx, sent_end_idx):
-            punct_char = punctuated_chars[punct_idx]
-            current_len = len("".join(punctuated_chars[sub_start:punct_idx + 1]).strip())
-            should_split = False
-            if punct_char in clause_ends and current_len >= max_subtitle_chars * 0.6:
-                should_split = True
-            elif current_len >= max_subtitle_chars and punct_char in clause_ends:
-                should_split = True
-            elif current_len >= max_subtitle_chars * 1.3:
-                should_split = True
-
-            if not should_split:
-                continue
-
-            sub_text = "".join(punctuated_chars[sub_start:punct_idx + 1]).strip()
-            if sub_text:
-                sub_char_indices = []
-                for sub_idx in range(sub_start, punct_idx + 1):
-                    if sub_idx in punct_to_char:
-                        sub_char_indices.append(punct_to_char[sub_idx])
-                if sub_char_indices:
-                    final_segments.append({
-                        "start": round(char_ts[sub_char_indices[0]][1], 3),
-                        "end": round(char_ts[sub_char_indices[-1]][2], 3),
-                        "text": sub_text,
-                        "time_unit": "seconds",
-                        "speaker": meta.get("speaker"),
-                        "speaker_score": meta.get("speaker_score"),
-                    })
-            sub_start = punct_idx + 1
-
-        remaining = "".join(punctuated_chars[sub_start:sent_end_idx]).strip()
-        if not remaining:
-            continue
-        rem_char_indices = []
-        for sub_idx in range(sub_start, sent_end_idx):
-            if sub_idx in punct_to_char:
-                rem_char_indices.append(punct_to_char[sub_idx])
-        if rem_char_indices:
-            final_segments.append({
-                "start": round(char_ts[rem_char_indices[0]][1], 3),
-                "end": round(char_ts[rem_char_indices[-1]][2], 3),
-                "text": remaining,
-                "time_unit": "seconds",
-                "speaker": meta.get("speaker"),
-                "speaker_score": meta.get("speaker_score"),
-            })
-
-    return final_segments
+    # Missing or mismatched timestamps retain the complete chunk text.
+    return [{
+        "start": meta["start"], "end": meta["end"], "text": text,
+        "time_unit": "seconds", "speaker": meta.get("speaker"),
+        "speaker_score": meta.get("speaker_score"),
+    }]
 
 
 def pick_batched_result(results, index):

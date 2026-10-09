@@ -24,6 +24,7 @@ function actorReviewResponseFormat(packets) {
                 speakerCueIds: cues, cueIds: cues, evidenceDanmakuIds: ids([...packet.danmakuIds]),
                 roleEvidence: packet.entityContext ? nullable(object({ actor: role, target: role })) : { type: 'null' } }), { maxItems: 20 }),
             evidenceDanmakuIds: ids([...packet.danmakuIds]), reason: string,
+            originalQuestionCorrection: nullable(object({ reason: string, quote: string, cueIds: cited })),
             humanChecks: list(object({ question: string, suggestion: string, cueIds: cited }), { maxItems: 3 }) });
     });
     return { type: 'json_schema', name: 'actor_reviews', strict: true,

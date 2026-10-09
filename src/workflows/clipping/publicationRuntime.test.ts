@@ -101,6 +101,31 @@ test('reads current XML and complete source cue IDs under the source snapshot; m
     } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
 });
 
+test('final review includes bounded question/answer audience context with original IDs and no metadata writes in read-only mode', async () => {
+    const f = fixture();
+    try {
+        const artifact = f.artifact(1);
+        artifact.window = { start: 100, end: 120, duration: 20 };
+        f.adapters.audience = async () => [
+            { time: 60, text: '无关的旧话题' }, { time: 92, text: '栞神承认自己抄了岁己了' },
+            { time: 110, text: '小岁' }, { time: 180, text: '后续上下文' }, { time: 181, text: '窗外评论' }
+        ];
+        f.adapters.parse = file => [{ start: file === f.source.srtPath ? 101 : 1,
+            end: file === f.source.srtPath ? 115 : 15, text: '我把岁己抄了' }];
+        const before = fs.readFileSync(artifact.output.metadataPath, 'utf8');
+        const [result] = await reviewOwnPublications([artifact], { ...f.context, persist: false }, f.adapters);
+        const prompt = (f.adapters.request as jest.Mock).mock.calls[0][1];
+        const packet = JSON.parse(prompt.split('EVIDENCE_JSON ')[1]);
+        expect(packet.sourceAudience).toEqual([
+            { time: 92, text: '栞神承认自己抄了岁己了', id: 'D2' },
+            { time: 110, text: '小岁', id: 'D3' }, { time: 180, text: '后续上下文', id: 'D4' }
+        ]);
+        expect(packet.sourceWindow).toEqual({ start: 100, end: 120, duration: 20 });
+        expect(result.publicationDecision.action).toBe('auto_queue');
+        expect(fs.readFileSync(artifact.output.metadataPath, 'utf8')).toBe(before);
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
+
 test('preserves exact cue-to-row acoustic evidence without treating unverified human identity as a failed row test', async () => {
     const f = fixture();
     try {

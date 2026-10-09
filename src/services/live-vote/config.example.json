@@ -2,5 +2,10 @@
   "roomId": "628684",
   "authorizedUids": ["123456789", "987654321"],
   "botUid": "1122334455",
-  "maxMessageChars": 40
+  "maxMessageChars": 40,
+  "questions": {
+    "enabled": false,
+    "providerConfigPath": "C:/danmaku-to-summary-ts/config/production.json",
+    "recordingRoots": { "628684": ["D:/recordings/628684_anchor"] }
+  }
 }

@@ -59,6 +59,26 @@ describe('preflight context recovery', () => {
   afterEach(() => { request.mockRestore(); fs.rmSync(directory, { recursive: true, force: true }); });
   const run = (options: any = {}, log = diagnostics()) => prepareTopicGroup(group, evidence, config, root, source, log, options);
 
+  test('audio-dependent ending gets one bounded diagnosis and fresh preflight before any rendering', async () => {
+    config.review.audioChecks = { enabled: true };
+    const checks = { version: 1, status: 'available', windows: [{ id: 'A1', decodes: [{ text: '完整结尾' }] }] };
+    const audio = jest.spyOn(require('../workflow-runtime').loadWorkflow('clipping/topicRecovery'),
+      'prepareBoundaryAudio').mockResolvedValue(checks);
+    try {
+      request.mockImplementation(async (prompt: string) => {
+        const input = inputOf(prompt);
+        if (input.boundaryAudioChecks) return result(input, [clip(input, 'G1', 'G5')]);
+        const held = incomplete(input, 'G5', 'G5'); held.reason = '听音核对尾句';
+        return result(input, [held]);
+      });
+      const output = await run({ boundaryRepair: false });
+      expect(audio).toHaveBeenCalledTimes(1);
+      expect(request).toHaveBeenCalledTimes(2);
+      expect(output.clips[0].status).toBe('ready');
+      expect(preflightSelections(output, group, config)[0].preflight.boundaryAudioChecks).toEqual(checks);
+    } finally { audio.mockRestore(); }
+  });
+
   test('numeric recovery fits newly added context before its one request and retains every original row', async () => {
     const originalIds = group.cues.map(cue => cue.id);
     const requested = { start: 0, end: 320 };
@@ -87,6 +107,45 @@ describe('preflight context recovery', () => {
     expect(request).not.toHaveBeenCalled();
     expect(group.cues.map(cue => cue.id)).toEqual(before);
     expect(plan.record.errors).toContainEqual({ error: 'Preflight source exceeds request budget' });
+  });
+
+  test.each([false, true])('rebudgets enriched audio without rerunning it or dropping protected evidence (oversized=%s)', async oversized => {
+    evidence = buildPreflightEvidence(evidence.cues.map(cue => ({ ...cue.items[0],
+      text: cue.text + '完整上下文'.repeat(300) })));
+    Object.assign(group, { end: 320, cues: evidence.cues });
+    group.matchSegments = [{ ...match(evidence.cues[1]), recall: { requiresSemanticConfirmation: true } }];
+    group.bursts = [{ index: 1, matchSegments: group.matchSegments }];
+    config.review.audioChecks = { enabled: true };
+    config.review.maxEvidenceChars = buildQualityDraftPrompt(buildPreflightInput(group, evidence, config,
+      { ...source, verifiedFacts: [], verifiedEdits: [] })).length;
+    const audioChecks = { version: 1, windows: [{ id: 'A1', hitIds: ['K1'], start: 80, end: 140,
+      status: 'aligned', alignment: { matches: [{ cueId: 'G7', sourceText: evidence.cues[6].text }] },
+      unprompted: { text: '原音证据'.repeat(oversized ? 10000 : 300), prompted: false } }], skipped: [] };
+    const audio = jest.spyOn(require('../workflow-runtime').loadWorkflow('clipping/topicRecovery'),
+      'prepareTopicAudio').mockResolvedValue(audioChecks);
+    try {
+      request.mockImplementation(async (prompt: string) => {
+        const input = inputOf(prompt);
+        expect(prompt.length).toBeLessThanOrEqual(config.review.maxEvidenceChars);
+        expect(input.audioChecks).toEqual(audioChecks);
+        expect(input.subtitles.slice(0, 7).map(cue => cue.id)).toEqual(['G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7']);
+        expect(input.subtitles.length).toBeLessThan(16);
+        expect(input.hits[0]).toMatchObject({ id: 'K1', cueId: 'G2' });
+        return result(input, [clip(input, 'G1', 'G7')]);
+      });
+      const plan = await run({ retainedContext: { start: 0, end: 100 }, boundaryRepair: false });
+      expect(audio).toHaveBeenCalledTimes(1);
+      expect(request).toHaveBeenCalledTimes(oversized ? 0 : 1);
+      expect(plan.record.audioChecks).toEqual(audioChecks);
+      if (oversized) {
+        expect(plan.record.errors).toContainEqual({ error: 'Preflight source exceeds request budget' });
+      } else {
+        expect(plan.record.contextBudget).toMatchObject({ requested: { start: 0, end: 320 },
+          retained: { start: 0, end: 100 }, protectedContext: { start: 0, end: 140 }, includesAudioChecks: true });
+        expect(plan.record.contextBudget.promptChars).toBeLessThanOrEqual(config.review.maxEvidenceChars);
+        expect(plan.record.errors).toEqual([]);
+      }
+    } finally { audio.mockRestore(); }
   });
 
   test('expands exhausted context and can return independent anchored cuts despite a verbose failed draft', async () => {

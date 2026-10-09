@@ -439,6 +439,7 @@ async function cutTask(task, rootConfig, resourceSchedulerOverride = null) {
             copyPath,
             coverPath,
             burnedSubtitles: Boolean(mediaResult.burnedSubtitles),
+            renderSettings: Object.fromEntries(Object.entries(cutConfig).filter(([key, value]) => /^(subtitle|twoStage|burnSubtitles|clipFfmpegThreads|ffmpegTimeoutMs)/u.test(key) && (value === null || typeof value !== 'object'))),
             twoStageMode: mediaResult.twoStageMode || 'copy',
             reusedReviewPreview: Boolean(mediaResult.reusedReviewPreview),
             subtitleSegmentCount: srtResult.segmentCount,

@@ -30,7 +30,7 @@ function parseSrt(srtPath, backend = 'whisper') {
         if (!timeLine) continue;
         const [startRaw, endRaw] = timeLine.split('-->').map(s => s.trim());
         const textStart = lines.indexOf(timeLine) + 1;
-        const text = lines.slice(textStart).join('').trim();
+        const text = joinSubtitleLines(lines.slice(textStart));
         if (!text) continue;
         segments.push({
             start: parseTimestamp(startRaw),
@@ -40,6 +40,16 @@ function parseSrt(srtPath, backend = 'whisper') {
     }
 
     return { backend, segments };
+}
+
+function joinSubtitleLines(lines) {
+    // Keep the legacy compact CJK layout, but never glue wrapped English words.
+    return lines.map(line => line.trim()).filter(Boolean).join('\n')
+        .replace(/([^\n])\n(?=[^\n])/gu, (match, previous, offset, text) => {
+            const next = text[offset + match.length];
+            return previous + (/[\p{Script=Latin}\p{N}]/u.test(next)
+                && /[\p{Script=Latin}\p{N},.!?;:'’"”\)\]]/u.test(previous) ? ' ' : '');
+        }).trim();
 }
 
 function splitTextByLength(text, maxChars) {
@@ -70,4 +80,4 @@ function stripSubtitlePunctuation(text) {
         .trim();
 }
 
-module.exports = { formatTimestamp, parseTimestamp, parseSrt, splitTextByLength, stripSubtitlePunctuation };
+module.exports = { formatTimestamp, parseTimestamp, parseSrt, splitTextByLength, stripSubtitlePunctuation, joinSubtitleLines };

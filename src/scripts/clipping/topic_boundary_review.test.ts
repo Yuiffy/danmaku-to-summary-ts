@@ -29,6 +29,9 @@ test('review packet separates retained closing words from context that is outsid
     expect(packet.includedEnding.map(c => c.id)).toEqual(['G1']);
     expect(packet.excludedAfter.map(c => c.id)).toEqual(['G3']);
     expect(prompt).toContain('绝未进入视频');
+    expect(prompt).toContain('反问、设问、感叹式疑问和完整的调侃可以是收尾');
+    expect(prompt).toContain('真正等待必要答复');
+    expect(prompt).toContain('只有缺失指代确实改变人物、事件或主线理解');
 });
 
 test('enabled creative rooms use their existing QA protocol, model and usage ledger without changing selection config', () => {

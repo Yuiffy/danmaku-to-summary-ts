@@ -637,39 +637,9 @@ async function pruneConvertedRoomBackups(root, retention, outputConfig, context)
 }
 
 async function collectPrunableArchiveVideos(dayDir) {
-    const resolvedDayDir = path.resolve(dayDir);
-    const rootVideos = [];
-    const nestedVideos = [];
-
-    async function walk(currentDir) {
-        let entries;
-        try {
-            entries = await readdir(currentDir, { withFileTypes: true });
-        } catch {
-            return;
-        }
-
-        for (const entry of entries) {
-            const fullPath = path.join(currentDir, entry.name);
-            if (isBakEntryName(entry.name)) continue;
-            if (entry.isDirectory()) {
-                await walk(fullPath);
-            } else if (entry.isFile() && isVideoFile(fullPath)) {
-                if (path.resolve(currentDir) === resolvedDayDir) {
-                    rootVideos.push(fullPath);
-                } else {
-                    nestedVideos.push(fullPath);
-                }
-            }
-        }
-    }
-
-    await walk(resolvedDayDir);
-    const hasMergedRecording = rootVideos.some(isMergedRecordingVideo);
-    const disposableRootVideos = hasMergedRecording
-        ? rootVideos.filter(videoPath => !isMergedRecordingVideo(videoPath))
-        : [];
-    return [...nestedVideos, ...disposableRootVideos];
+    return require('./audio_archive_pruning').collectPrunableArchiveVideos(dayDir, {
+        isBakEntryName, isVideoFile, isMergedRecordingVideo
+    });
 }
 
 async function collectTemporaryAudioOutputs(dayDir) {

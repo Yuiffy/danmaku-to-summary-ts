@@ -72,6 +72,19 @@ class AutomaticActivityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'proof changed'):
             validate(data, self.config, check_artifacts, content_digest)
 
+    def test_enclosing_context_allows_inexact_musical_onset_only_after_provenance_validation(self):
+        event = self.data['activities'][0]
+        event.update(startObserved=False, endObserved=False,
+            reviewIssues=['start_boundary_unconfirmed', 'end_boundary_unconfirmed'])
+        event['verification']['boundaryPolicy'] = 'complete_context_enclosure'
+        ready(self.data, self.config, check_artifacts, content_digest)
+        with patch('src.scripts.activity_audio_review.check_local_activity', side_effect=ValueError('unclosed original context')):
+            with self.assertRaisesRegex(ValueError, 'unclosed original context'):
+                ready(self.data, self.config, check_artifacts, content_digest)
+        event['reviewIssues'].append('media_verification_unconfirmed')
+        with self.assertRaisesRegex(ValueError, 'uncertain'):
+            ready(self.data, self.config, check_artifacts, content_digest)
+
     def test_a_source_or_actual_second_P_change_prevents_approval(self):
         self.fixture.srt.write_bytes(b'changed source')
         with self.assertRaisesRegex(ValueError, 'source evidence changed'):

@@ -15,6 +15,54 @@ const makeArtifact = (): Artifact => ({
     output: { mediaPath: 'clip.mp4', srtPath: 'clip.srt', coverPath: 'cover.png', burnedSubtitles: true }
 });
 
+describe('advisory playback review', () => {
+    const artifact = () => ({ ...makeArtifact(), subtitleProofreading: { advisory: true,
+        reviewGroups: [{ type: 'possible_foreign_audio', occurrences: [{ start: 110, end: 112, text: 'movie dialogue' }] }] } });
+    test('detector warning needs an explicit independent materiality resolution bound to unchanged groups', async () => {
+        const a = artifact(), io = makeIO();
+        expect((await reviewPublication(a, makeInput(), io)).publicationReview.issues).toContain('subtitle_review_groups_pending');
+        const resolutions = [{ groupIndex: 0, verdict: 'non_material_playback', reason: '背景电影台词不影响主线中文评论，文案未引用该句。' }];
+        (io.request as jest.Mock).mockResolvedValue(JSON.stringify({ ...passed, resolvedSubtitleAdvisories: resolutions }));
+        const result = await reviewPublication(a, makeInput(), io);
+        expect(result.publicationDecision.action).toBe('auto_queue');
+        expect(result.publicationReview.subtitleAdvisoryEvidence).toEqual(a.subtitleProofreading);
+        expect(result.publicationReview.subtitleAdvisoryEvidence).not.toBe(a.subtitleProofreading);
+        expect(result.subtitleProofreading).toEqual(a.subtitleProofreading);
+        expect((io.request as jest.Mock).mock.calls[0][0]).toContain('separate simultaneous speech layers');
+        expect((io.request as jest.Mock).mock.calls[0][0]).toContain('Still block unreadable central commentary');
+    });
+    test.each(['ambiguous_term', 'possible_foreign_audio'])('non-advisory or ambiguous %s remains blocked before model review', async type => {
+        const a = artifact(), io = makeIO(); a.subtitleProofreading.reviewGroups[0].type = type;
+        if (type === 'possible_foreign_audio') a.subtitleProofreading.advisory = false;
+        expect((await reviewPublication(a, makeInput(), io)).publicationDecision.action).toBe('needs_human');
+        expect(io.request).not.toHaveBeenCalled();
+    });
+    test('recropped windows exclude stale text and distinguish current advisory indexes from source context', async () => {
+        const a = makeArtifact(), input = makeInput(), io = makeIO();
+        Object.assign(a.window, { allSegmentTexts: ['removed old film dialogue'], postContext: ['old next scene'] });
+        a.subtitleProofreading = { advisory: true, reviewGroups: [] };
+        input.evidence = { cues: [{ id: 'G9', text: 'context film dialogue', sourceGroupIndex: 7 }] };
+        expect((await reviewPublication(a, input, io)).publicationDecision.action).toBe('auto_queue');
+        const prompt = (io.request as jest.Mock).mock.calls[0][0];
+        const packet = JSON.parse(prompt.split('EVIDENCE_JSON ')[1]);
+        expect(packet.sourceWindow).toEqual({ start: 100, end: 160, duration: 60 });
+        expect(packet.subtitleAdvisoryGroups).toEqual([]);
+        expect(packet.evidence).toEqual(input.evidence);
+        expect(prompt).not.toContain('removed old film dialogue');
+        (io.request as jest.Mock).mockResolvedValue(JSON.stringify({ ...passed, resolvedSubtitleAdvisories:
+            [{ groupIndex: 7, verdict: 'non_material_playback', reason: '旧背景台词' }] }));
+        const result = await reviewPublication(a, input, io);
+        expect(result.publicationDecision.action).toBe('needs_human');
+        expect(result.publicationReview.issues).toContain('审核引用了当前片段不存在的字幕疑点编号（7），需按当前窗口重新审核。');
+    });
+    test.each([1, -1, 0.5])('invalid or uncovered group index %s never grants permission', async groupIndex => {
+        const io = makeIO();
+        (io.request as jest.Mock).mockResolvedValue(JSON.stringify({ ...passed, resolvedSubtitleAdvisories:
+            [{ groupIndex, verdict: 'non_material_playback', reason: '背景电影台词' }] }));
+        expect((await reviewPublication(artifact(), makeInput(), io)).publicationDecision.action).toBe('needs_human');
+    });
+});
+
 function topicFixture() {
     const artifact = makeArtifact(), input = makeInput();
     Object.assign(input, { roomId: '31415', streamerName: '另一位主播', sourceEvidenceSha256: OTHER_SHA,
@@ -46,6 +94,17 @@ describe('keyword/topic automatic publication final review', () => {
         const prompt = (io.request as jest.Mock).mock.calls[0][0];
         expect(prompt).toContain('a keyword/topic livestream clip');
         expect(prompt).toContain('not necessarily the source host or speaker');
+        expect(prompt).toContain('Missing diarization or an unknown speaker row alone is not a publication defect');
+        expect(prompt).toContain('does not say who made it');
+        expect(prompt).toContain('Still block a named unsupported subject');
+        expect(prompt).toContain('neither the hook nor public copy depends on who that person is');
+        expect(prompt).toContain('linked question, response and repeated references');
+        expect(prompt).toContain('A referenced person need not speak');
+        expect(prompt).toContain('Repetition of the same ambiguous spelling alone is insufficient');
+        expect(prompt).toContain('Ordinary C级 grades, a distinct person named 小C');
+        expect(prompt).toContain('cannot establish an event absent from retained speech');
+        expect(prompt).toContain('independently supported by a later complete exchange');
+        expect(prompt).toContain('Still block actual corrections, explicit different people, unresolved pronouns');
         expect(prompt).toContain('Rejected subtitle edits were NOT applied');
         const evidence = JSON.parse(prompt.split('EVIDENCE_JSON ')[1]);
         expect(evidence).toMatchObject({ sourceHost: '另一位主播', configuredKeywords: ['岁己', 'SUI'],

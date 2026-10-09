@@ -65,9 +65,9 @@ class AutomaticUploadRecoveryTests(unittest.TestCase):
                 self.assertEqual(asyncio.run(upload.main()), 2)
             self.assertEqual(uploader.await_count, 1)
             saved = json.loads(state_path.read_text(encoding="utf-8"))
-            self.assertEqual(saved["submission_intents"]["1"]["mediaPath"], clip["path"])
+            self.assertEqual(upload.find_intent(saved, clip)[1]["mediaPath"], clip["path"])
             self.assertNotIn("1", saved.get("done", {}))
-            self.assertTrue(has_terminal_upload_error(output.getvalue()))
+            self.assertFalse(has_terminal_upload_error(output.getvalue()))
 
             # A definitive rejection is safe to retry through the existing account cooldown.
             state_path.unlink()
@@ -94,14 +94,15 @@ class AutomaticUploadRecoveryTests(unittest.TestCase):
         callback.assert_not_called()
 
     def test_automatic_406_attempt_does_not_retry_when_lookup_finds_nothing(self):
-        clip = {"idx": 1, "title": "Title", "automaticPublicationRequired": True}
-        with patch.object(upload, "fetch_member_archives", return_value={}), \
-                patch.object(upload, "wait_for_upload_available", AsyncMock(return_value=(True, "ok"))), \
-                patch.object(upload, "upload_one", AsyncMock(return_value={"idx": 1, "title": "Title", "status": "got_406"})) as submit, \
-                patch.object(upload.asyncio, "sleep", AsyncMock()), redirect_stdout(io.StringIO()):
-            result = asyncio.run(upload.upload_one_guarded(clip, object(), "", [], 21, "", "", 30, 3))
-        self.assertEqual(result["status"], "got_406")
-        self.assertEqual(submit.await_count, 1)
+        for authority in ({"automaticPublicationRequired": True}, {"queueJobId": "manual-job"}):
+            clip = {"idx": 1, "title": "Title", **authority}
+            with self.subTest(authority=authority), patch.object(upload, "fetch_member_archives", return_value={}), \
+                    patch.object(upload, "wait_for_upload_available", AsyncMock(return_value=(True, "ok"))), \
+                    patch.object(upload, "upload_one", AsyncMock(return_value={"idx": 1, "title": "Title", "status": "got_406"})) as submit, \
+                    patch.object(upload.asyncio, "sleep", AsyncMock()), redirect_stdout(io.StringIO()):
+                result = asyncio.run(upload.upload_one_guarded(clip, object(), "", [], 21, "", "", 30, 3))
+            self.assertEqual(result["status"], "got_406")
+            self.assertEqual(submit.await_count, 1)
 
 
 if __name__ == "__main__":

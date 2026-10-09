@@ -202,6 +202,18 @@ locations; provenance linkage does not prove identity or semantic truth.
 The comic workflow still reads the complete source and accepted overview through
 the existing storyboard, screenshot and image pipeline.
 
+Miting's comic character references are selected from source-backed people used
+by the completed storyboard. For room `31368705`, production configuration enables
+`filterExtraImagesByComicScript`, `filterMentionedImagesByComicScript` and
+`filterAppearedImagesByComicScript`; it does not restrict the cast to a fixed pair
+of friends. Up to 12 source mentions remain available as identity context before
+script filtering, with at most four extra characters and five total input images.
+Mentions in other events, future plans or audience messages cannot supply an
+unused character reference. An unnamed memory keeps its unnamed people instead
+of assigning them the appearances of other streamers mentioned elsewhere.
+These references establish appearance, not attendance: remembered people remain
+in the remembered event, and acoustic matches alone do not establish a live guest.
+
 Combined generation requests strict JSON Schema output: `content` must be an
 object containing `overview`, `activityTypes`, `songs`, `games` and `topics`;
 material mode additionally requires top-level `moments`. The schema does not

@@ -1,9 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { createHash } from 'crypto';
-import { preflightRepairFeedback } from './topicContext';
+import { preflightRepairFeedback, preflightRecoveryContextCandidates } from './topicContext';
 export { preflightContextCandidates, preflightRecoveryContextCandidates } from './topicContext';
 export { prepareTopicAudio } from './topicAudioRuntime';
+export { prepareBoundaryAudio } from './topicBoundaryAudio';
 export { gateTopicAudioHits, topicAudioHitIssue } from './topicAudio';
 export { mergeTopicRecallMatches, findAmbiguousTopicMatches, topicRecallIdentityIssues,
     topicRecallSubtitleEditSupport, holdUnresolvedTopicRecall } from './topicRecall';
@@ -101,6 +102,21 @@ export async function repairTopicResponse<T>(prompt: string, previous: string, r
 }
 
 type Data = Record<string, any>;
+/** Rebudget the complete request after audio enrichment, retaining audio-linked source as well. */
+export function fitRecoveryContext(group: Data, retained: { start: number; end: number }, config: Data,
+    maxChars: number, buildPrompt: (context: Data) => string, audioChecks?: Data): Data | undefined {
+    const windows = (audioChecks?.windows || []).filter((row: Data) =>
+        Number.isFinite(row.start) && Number.isFinite(row.end));
+    const protectedContext = { start: Math.min(retained.start, ...windows.map((row: Data) => row.start)),
+        end: Math.max(retained.end, ...windows.map((row: Data) => row.end)) };
+    for (const context of preflightRecoveryContextCandidates(group as Data & {
+        start: number; end: number; cues: Cue[]; matchSegments: Array<{ start: number; end: number }>;
+    }, protectedContext, config)) {
+        const prompt = compactPreflightPrompt(buildPrompt(context), maxChars);
+        if (prompt.length <= maxChars) return { context, promptChars: prompt.length, protectedContext };
+    }
+    return undefined;
+}
 interface Cue extends Data { id: string; start: number; end: number; text: string; items: Data[] }
 interface Evidence { sourceSha256: string; cues: Cue[]; byId: Map<string, Cue> }
 export interface CandidateRecoveryIO {

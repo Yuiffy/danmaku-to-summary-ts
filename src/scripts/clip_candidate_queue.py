@@ -264,7 +264,8 @@ def cut_candidates(args, api):
             imported = api.import_json(argparse.Namespace(
                 manifest=str(metadata_path), review=clip["reviewPath"] if rebuilding else str(metadata_path.with_name(metadata_path.stem + "_MANUAL_REVIEW.md")),
                 state=clip["statePath"] if rebuilding else str(metadata_path.with_name(metadata_path.stem + "_upload_state.json")),
-                source="", tags="", prefix="", tid=None, label="", batch_id=""))
+                source="", tags="", prefix="", tid=None, label="", batch_id="",
+                include_pending=bool(getattr(args, "automatic_review", False)) and not getattr(args, "require_approval", False)))
             if imported:
                 return imported
             print(f"[OK] {clip_id}: rendered and registered under the same ID", flush=True)

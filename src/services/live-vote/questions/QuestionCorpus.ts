@@ -1,0 +1,125 @@
+import { Embedder } from './EmbeddingClient';
+import { readGiftCatalog } from './GiftCatalog';
+import { LiveQuestionConfig, QuestionClue, QuestionRequest } from './QuestionPolicy';
+import { embeddingQuestion, isGiftQuestion, QuestionRoom, questionScope } from './QuestionScope';
+import { EvidenceHit, EvidenceSearchHit, QuestionEvidence, RecordingEvidence, StoredEvidence, parseRecordingSearch } from './RecordingEvidence';
+import { loadManifest, searchSubtitleIndex, SemanticMatch } from './SubtitleIndex';
+
+interface RoomCorpus { room: QuestionRoom; recordings: RecordingEvidence; gifts?: Promise<EvidenceSearchHit[]> }
+interface Origin { corpus: RoomCorpus; localId: string; gift?: EvidenceSearchHit }
+
+/** One bounded question, sequential room searches, one shared embedding, room-qualified evidence IDs. */
+export class QuestionCorpus implements QuestionEvidence {
+  readonly scopeDescription: string;
+  readonly rooms: QuestionRoom[];
+  readonly coverage = new Map<string, { indexedFiles: number; indexComplete: boolean; catalogStatus: 'disabled' | 'ready' | 'unavailable' }>();
+  embeddingStatus: 'disabled' | 'ready' | 'unavailable';
+  private readonly corpora: RoomCorpus[];
+  private readonly origins = new Map<string, Origin>();
+  private readonly semanticCache = new Map<string, Promise<SemanticMatch[]>>();
+  private embedder?: Embedder;
+  private vector?: Promise<Float32Array | undefined>;
+
+  constructor(private readonly config: LiveQuestionConfig, private readonly request: Pick<QuestionRequest, 'roomId' | 'question'>,
+    private readonly signal: AbortSignal, botUid?: string, private readonly makeEmbedder?: () => Embedder) {
+    this.rooms = questionScope(config, request.roomId, request.question);
+    this.scopeDescription = `本次查询资料范围：${JSON.stringify(this.rooms.map(({ roomId, name }) => ({ roomId, name })))}。回答与引用必须分清来源。`;
+    this.embeddingStatus = config.semantic?.enabled ? 'unavailable' : 'disabled';
+    this.corpora = this.rooms.map(room => {
+      this.coverage.set(room.roomId, { indexedFiles: 0, indexComplete: false, catalogStatus: config.giftCatalogs?.[room.roomId] ? 'unavailable' : 'disabled' });
+      return { room, recordings: new RecordingEvidence(config.recordingRoots[room.roomId], signal, { botUid, question: request.question,
+        ...(config.semantic?.enabled && makeEmbedder ? { semanticSearch: date => this.semantic(room.roomId, date) } : {}) }) };
+    });
+  }
+
+  private async semantic(roomId: string, date: string | null): Promise<SemanticMatch[]> {
+    const key = `${roomId}:${date || ''}`;
+    let operation = this.semanticCache.get(key);
+    if (!operation) {
+      operation = (async () => {
+        const config = this.config.semantic!, roots = this.config.recordingRoots[roomId];
+        const manifest = await loadManifest(config, roomId, roots);
+        Object.assign(this.coverage.get(roomId)!, { indexedFiles: manifest?.sources.length || 0, indexComplete: !!manifest && !manifest.incomplete });
+        if (!manifest?.sources.length) return [];
+        if (!this.vector) this.vector = (async () => {
+          try {
+            this.embedder = this.makeEmbedder!();
+            const [vector] = await this.embedder.embed([embeddingQuestion(this.request.question)], this.signal, true);
+            this.embeddingStatus = 'ready'; return vector;
+          } catch { this.signal.throwIfAborted(); return undefined; }
+          finally { await this.close(); }
+        })();
+        const vector = await this.vector;
+        return vector ? searchSubtitleIndex(config, roomId, roots, vector, date, this.signal) : [];
+      })();
+      this.semanticCache.set(key, operation);
+    }
+    return operation;
+  }
+
+  private qualify(corpus: RoomCorpus, hit: EvidenceHit, gift?: EvidenceSearchHit): EvidenceHit {
+    const evidenceId = `r${corpus.room.roomId}_${hit.evidenceId}`;
+    this.origins.set(evidenceId, { corpus, localId: hit.evidenceId, gift });
+    return { ...hit, evidenceId, roomId: corpus.room.roomId, roomName: corpus.room.name };
+  }
+  private qualifyContext(corpus: RoomCorpus, cues: EvidenceSearchHit['context'], gift?: EvidenceSearchHit): EvidenceSearchHit['context'] {
+    return cues.map(cue => {
+      if (!cue.evidenceId) return { ...cue };
+      const clue = gift || corpus.recordings.clue(cue.evidenceId);
+      return { ...cue, ...(clue ? { evidenceId: this.qualify(corpus, { ...clue, evidenceId: cue.evidenceId }, gift).evidenceId } : {}) };
+    });
+  }
+
+  async search(args: unknown): Promise<{ hits: EvidenceSearchHit[]; limited: boolean }> {
+    const input = parseRecordingSearch(args);
+    this.signal.throwIfAborted();
+    const lists: EvidenceSearchHit[][] = [];
+    let limited = false;
+    for (const corpus of this.corpora) {
+      this.signal.throwIfAborted();
+      const gifts: EvidenceSearchHit[] = [];
+      const catalog = this.config.giftCatalogs?.[corpus.room.roomId];
+      if (catalog && input.kind !== 'danmaku' && isGiftQuestion(this.request.question + input.terms.join(' '))) {
+        corpus.gifts ??= readGiftCatalog(catalog, this.signal).then(hits => {
+          this.coverage.get(corpus.room.roomId)!.catalogStatus = 'ready'; return hits;
+        }).catch(() => { this.signal.throwIfAborted(); return []; });
+        const entries = (await corpus.gifts).filter(hit => !input.date || hit.catalogMonth!.startsWith(input.date.slice(0, 7)));
+        limited ||= entries.length > 4 || this.coverage.get(corpus.room.roomId)!.catalogStatus !== 'ready';
+        for (const hit of entries.slice(0, 4)) gifts.push({ ...this.qualify(corpus, hit, hit), context: this.qualifyContext(corpus, hit.context, hit) });
+      }
+      const recordings = await corpus.recordings.search(input);
+      limited ||= recordings.limited || !!this.config.semantic?.enabled && !this.coverage.get(corpus.room.roomId)!.indexComplete;
+      lists.push([...gifts, ...recordings.hits.map(hit => ({ ...this.qualify(corpus, hit), context: this.qualifyContext(corpus, hit.context) }))]);
+    }
+    const hits: EvidenceSearchHit[] = [];
+    // Round-robin keeps a busy room from crowding out another room in comparisons.
+    for (let i = 0; i < 16 && hits.length < 16; i++) for (const list of lists) if (list[i] && hits.length < 16) hits.push(list[i]);
+    return { hits, limited: limited || lists.reduce((sum, list) => sum + list.length, 0) > hits.length };
+  }
+
+  context(args: unknown): StoredEvidence | { error: string } {
+    this.signal.throwIfAborted();
+    const input = args as { evidenceId?: unknown };
+    if (!input || Object.keys(input).length !== 1 || typeof input.evidenceId !== 'string') return { error: 'Invalid evidence ID' };
+    const origin = this.origins.get(input.evidenceId);
+    if (!origin) return { error: 'Unknown evidence ID' };
+    const { corpus, gift } = origin;
+    const result = gift ? { hit: gift, context: gift.context } : corpus.recordings.context({ evidenceId: origin.localId });
+    return 'error' in result ? result : { hit: this.qualify(corpus, result.hit, gift), context: this.qualifyContext(corpus, result.context, gift) };
+  }
+  clue(id: string): QuestionClue | undefined {
+    const origin = this.origins.get(id);
+    if (!origin) return undefined;
+    const { corpus, gift } = origin;
+    const clue = gift || corpus.recordings.clue(origin.localId);
+    if (!clue) return undefined;
+    return { kind: clue.kind, date: clue.date, time: clue.time, excerpt: clue.excerpt, roomId: corpus.room.roomId, roomName: corpus.room.name,
+      ...(clue.catalogMonth ? { catalogMonth: clue.catalogMonth } : {}) };
+  }
+  citation(id: string): Omit<QuestionClue, 'excerpt'> | undefined {
+    const clue = this.clue(id);
+    if (!clue) return undefined;
+    const { excerpt, ...source } = clue; void excerpt; return source;
+  }
+  async close(): Promise<void> { const embedder = this.embedder; this.embedder = undefined; await embedder?.close?.(); }
+}

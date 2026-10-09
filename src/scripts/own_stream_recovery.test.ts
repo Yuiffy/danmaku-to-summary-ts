@@ -67,9 +67,9 @@ describe('own-stream planning recovery', () => {
       { window: { start: 0, duration: 60 }, copy: { title: 'Pending clip' } },
       { window: { start: 60, duration: 60 }, copy: { title: 'Ready clip' } }
     ], { uploadRegistry: { clipIds: [2184], clipIdsByReviewIndex: { 2: 2184 } } });
-    expect(markdown).toContain('1. 未登记ID Pending clip');
-    expect(markdown).toContain('2. ID2184 Ready clip');
-    expect(markdown).not.toContain('1. ID2184');
+    expect(markdown).toContain('2. 未登记ID Pending clip');
+    expect(markdown).toContain('1. ID2184 Ready clip');
+    expect(markdown).not.toContain('ID2184 Pending clip');
   });
 
   test('sends every clip and upload ID in order across more than two WeChat messages', async () => {

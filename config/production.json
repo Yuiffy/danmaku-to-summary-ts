@@ -126,6 +126,7 @@
       "deleteBakAfterConversion": true,
       "scanIntervalHours": 24,
       "maxFileAgeDays": null,
+      "publishedClipRetention": { "enabled": true, "afterUploadDays": 3 },
       "archiveEnabled": true,
       "moveToArchiveAfterDays": 33,
       "archiveTargetBasePath": "E:/EFiles/Evideo/DDTV录播-E",
@@ -1324,15 +1325,14 @@
         "comicGenerationProbability": 1,
         "multiReferenceImages": {
           "enabled": true,
-          "maxExtraCharacters": 2,
-          "allowedExtraStreamerIds": [
-            "sui",
-            "shiori"
-          ],
+          "maxExtraCharacters": 4,
+          "maxMentionedContextCharacters": 12,
+          "maxTotalImages": 5,
           "includeMentionedStreamers": true,
           "includeMentionedStreamerImages": true,
-          "filterExtraImagesByComicScript": false,
-          "filterMentionedImagesByComicScript": false,
+          "filterExtraImagesByComicScript": true,
+          "filterMentionedImagesByComicScript": true,
+          "filterAppearedImagesByComicScript": true,
           "appendCharacterDescriptions": true
         }
       },
@@ -1829,7 +1829,7 @@
     "publicationPolicy": {
       "mode": "curated",
       "roomIds": ["25788785"],
-      "minScore": 80,
+      "minScore": 75,
       "maxStandalone": 18,
       "standoutScore": 92,
       "bundles": { "enabled": false, "minScore": 70, "protectScore": 90, "maxGroups": 2, "maxMembers": 3, "maxSeconds": 300, "minCombinedScore": 85, "minScoreGain": 5, "maxCandidates": 20 }

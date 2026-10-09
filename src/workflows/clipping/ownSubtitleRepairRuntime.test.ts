@@ -65,18 +65,32 @@ test('a literal source-audio consensus rebuilds separately and independently rev
     } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
 });
 
-test('disagreement is saved as an inconclusive attempt, with no render, reviewer or blind repeat', async () => {
+test('inconclusive editing returns bound diagnosis to final review without rewriting words or blindly repeating ASR', async () => {
     const f = await fixture();
     try {
         const run = f.io.runAudio!;
         f.io.runAudio = jest.fn(async (input, output) => { await run(input, output); const audio = read(output);
             audio.windows[0].decodes[1].text = f.cues[0].text; fs.writeFileSync(output, JSON.stringify(audio)); });
+        f.io.reviewFinal = jest.fn(async row => ({ ...row, publicationReview: { ...row.publicationReview,
+            ...await publicationSnapshot(row), status: 'needs_review' }, publicationDecision: { action: 'needs_human' } }));
         const result = await repairOwnSubtitles(f.artifact, policy, {}, f.io);
         expect(result.automaticSubtitleRepairAttempt.status).toBe('inconclusive');
         expect(result.output).toBe(f.artifact.output);
-        expect(f.io.render).not.toHaveBeenCalled(); expect(f.io.reviewFinal).not.toHaveBeenCalled();
+        expect(f.io.render).not.toHaveBeenCalled(); expect(f.io.reviewFinal).toHaveBeenCalledTimes(1);
+        expect(result.publicationDecision.action).toBe('needs_human');
+        expect(result.publicationReview.digests.subtitleDiagnostic).toMatch(/^[a-f0-9]{64}$/u);
+        const metadata = path.join(f.directory, 'diagnostic.json'); fs.writeFileSync(metadata, JSON.stringify(result));
+        const checked = spawnSync('python', ['-c', 'import json,sys;from pathlib import Path;from src.scripts.ordinary_subtitle_evidence import validate_subtitle_diagnostic; m=json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")); assert validate_subtitle_diagnostic(m,m["publicationReview"]["source"]) == m["publicationReview"]["digests"]["subtitleDiagnostic"]', metadata],
+            { cwd: process.cwd(), encoding: 'utf8', windowsHide: true, shell: false });
+        expect(checked.stderr).toBe(''); expect(checked.status).toBe(0);
         expect(await repairOwnSubtitles(result, policy, {}, f.io)).toBe(result);
         expect(f.io.runAudio).toHaveBeenCalledTimes(1);
+        const audio = read(result.automaticSubtitleRepairAttempt.evidencePath);
+        fs.writeFileSync(audio.windows[0].audioPath, 'tampered');
+        await expect(publicationSnapshot(result)).rejects.toThrow('diagnostic audio changed');
+        const rejected = spawnSync('python', ['-c', 'import json,sys;from pathlib import Path;from src.scripts.ordinary_subtitle_evidence import validate_subtitle_diagnostic; m=json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")); validate_subtitle_diagnostic(m,m["publicationReview"]["source"])', metadata],
+            { cwd: process.cwd(), encoding: 'utf8', windowsHide: true, shell: false });
+        expect(rejected.status).not.toBe(0);
     } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
 });
 
@@ -95,16 +109,31 @@ test('source mutation, audio hash tampering and legacy required QA stop a repair
     }
 });
 
+test('a source-only rebuild can return audio diagnosis but cannot replace its rendered subtitle receipt', async () => {
+    const f=await fixture();
+    try {
+        f.artifact.renderedSubtitles={revision:0,edits:[],path:f.artifact.output.srtPath,sha256:digest(f.artifact.output.srtPath)};
+        const result=await repairOwnSubtitles(f.artifact,policy,{},f.io);
+        expect(result.automaticSubtitleRepairAttempt.status).toBe('inconclusive');
+        expect(result.renderedSubtitles).toBe(f.artifact.renderedSubtitles);
+        expect(result.output).toBe(f.artifact.output);
+        expect(f.io.render).not.toHaveBeenCalled();expect(f.io.reviewCopy).not.toHaveBeenCalled();
+        expect(result.publicationReview.digests.subtitleDiagnostic).toMatch(/^[a-f0-9]{64}$/u);
+    } finally {fs.rmSync(f.directory,{recursive:true,force:true});}
+});
+
 test('an alignment update reuses hash-bound prior audio without invoking either ASR model again', async () => {
     const f = await fixture();
     try {
         const originalRun = f.io.runAudio!;
         f.io.runAudio = jest.fn(async (input, output) => { await originalRun(input, output); const audio = read(output);
             audio.windows[0].decodes[1].text = f.cues[0].text; fs.writeFileSync(output, JSON.stringify(audio)); });
+        f.io.reviewFinal = jest.fn(async row => ({ ...row, publicationReview: { ...row.publicationReview,
+            ...await publicationSnapshot(row), status: 'needs_review' } }));
         const attempt = await repairOwnSubtitles(f.artifact, policy, {}, f.io);
         delete attempt.automaticSubtitleRepairAttempt.alignmentVersion;
         const resumed = await repairOwnSubtitles(attempt, policy, {}, f.io);
-        expect(resumed.automaticSubtitleRepairAttempt.alignmentVersion).toBe('anchored-literal-v2');
+        expect(resumed.automaticSubtitleRepairAttempt.alignmentVersion).toBe('cue-consensus-v4');
         expect(f.io.runAudio).toHaveBeenCalledTimes(1);
         expect(f.io.render).not.toHaveBeenCalled();
         const originalAudio = read(attempt.automaticSubtitleRepairAttempt.evidencePath), reused = read(resumed.automaticSubtitleRepairAttempt.evidencePath);
@@ -144,6 +173,28 @@ test('a newly quoted blocker gets at most one narrower follow-up and keeps the p
         expect(f.io.runAudio).toHaveBeenCalledTimes(1);
         fs.writeFileSync(first.automaticSubtitleRepair.correctedSrtPath, 'changed first correction');
         await expect(publicationSnapshot(second)).rejects.toThrow('proof changed');
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
+
+test('a newly localized issue merges overlapping probes and counts prior diagnostics against the audio budget', async () => {
+    const f = await fixture();
+    try {
+        const originalRun = f.io.runAudio!;
+        f.io.runAudio = jest.fn(async (input, output) => { await originalRun(input, output); const audio = read(output);
+            audio.windows[0].decodes[1].text = f.cues[0].text; fs.writeFileSync(output, JSON.stringify(audio)); });
+        f.io.reviewFinal = jest.fn(async row => ({ ...row, publicationReview: { ...row.publicationReview,
+            ...await publicationSnapshot(row), status: 'needs_review' } }));
+        const first = await repairOwnSubtitles(f.artifact, policy, {}, f.io);
+        first.automaticSubtitleRepairAttempt.alignmentVersion = 'older';
+        first.publicationReview.issues.push('字幕“其他一句”也需要核对');
+        const second = await repairOwnSubtitles(first, policy, {}, f.io);
+        const request = read(path.join(path.dirname(second.automaticSubtitleRepairAttempt.evidencePath), 'request.json'));
+        expect(request.windows).toEqual([{ id: 'A1', start: 101, end: 120 }]);
+        expect(request.priorWindows).toEqual([{ id: 'A1', start: 101, end: 113 }]);
+        expect(f.io.runAudio).toHaveBeenCalledTimes(2);
+        second.automaticSubtitleRepairAttempt.alignmentVersion = 'older';
+        await repairOwnSubtitles(second, policy, {}, f.io);
+        expect(f.io.runAudio).toHaveBeenCalledTimes(2); // The same merged request reuses its evidence.
     } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
 });
 

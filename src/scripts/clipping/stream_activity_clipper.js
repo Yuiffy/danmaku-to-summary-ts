@@ -305,11 +305,14 @@ async function generateStreamActivities(options = {}) {
     const publication = root.streamActivityClips?.automaticPublication?.mode === 'auto'
         ? require('../workflow-runtime').loadWorkflow('clipping/activityPublication') : null;
     const publicationActive = publication?.activityPublicationEnabled(root, info.roomId) && !options.scan
-        && !options.retryBoundaries && config.detectionMode === 'summary';
-    if (options.retryPublication && (!publicationActive || options.planOnly || options.scan || options.retryBoundaries
+        && (!options.retryBoundaries || options.retryPublication) && config.detectionMode === 'summary';
+    if (options.retryPublication && (!publicationActive || options.planOnly || options.scan
         || options.repairTiming || !String(options.revisionNote || '').trim())) {
-        throw new Error('Publication retry requires enabled automatic publication and a substantive --revision-note; it cannot redetect or rebuild');
+        throw new Error('Publication retry requires enabled automatic publication and a substantive --revision-note; boundary rebuilding also requires --retry-boundaries');
     }
+    if (options.titleEvidencePath && options.retryPublication && !options.retryBoundaries) throw new Error('Use restyle to bind revised titles before retrying an existing publication review');
+    if (options.reviewBoundaryIds && (!options.retryBoundaries || !options.retryPublication || options.kind !== 'watch'
+        || !String(options.revisionNote || '').trim())) throw new Error('Final boundary feedback requires watch --retry-boundaries --retry-publication and a revision note');
     if (options.repairTiming && (options.kind || options.scan || options.retryBoundaries || options.planOnly
         || !options.transcriptRecordPath || !String(options.revisionNote || '').trim() || config.detectionMode !== 'summary')) {
         throw new Error('Timing repair requires run for both kinds, --transcript-record and a substantive --revision-note');
@@ -340,8 +343,22 @@ async function generateStreamActivities(options = {}) {
         if (fs.existsSync(files.plan)) {
             const previous = JSON.parse(fs.readFileSync(files.plan, 'utf8'));
             if (previous.contentSha256 !== planDigest(previous)) throw new Error('Activity plan changed outside the reviewed workflow');
-            if (options.retryPublication && (!previous.uploadManifestPath || previous.status !== 'rendered')) throw new Error('Publication retry requires an existing rendered submission');
-            if (options.retryBoundaries && !previous.uploadManifestPath) throw new Error('Boundary retry requires an existing pending submission');
+            if (!options.reviseVerifier && !options.repairTiming && previous.verificationSettings && sameSource(previous.source, source)) {
+                config.verification = previous.verificationSettings;
+            }
+            if (options.retryPublication && (!previous.uploadManifestPath
+                || previous.status !== 'rendered' && !(options.retryBoundaries && previous.status === 'planned'))) throw new Error('Publication retry requires an existing rendered submission');
+            if (options.retryBoundaries && !previous.uploadManifestPath) {
+                if (previous.status !== 'planned' || !sameSource(previous.source, source) || options.reviseVerifier) {
+                    throw new Error('Boundary retry requires a source-bound planned activity or existing pending submission');
+                }
+                const candidates = stages.retryBoundaryEvents(previous.rawEvents || [], previous.events, selected, previous.rejectedActivities || []);
+                if ((previous.efficiency?.boundaryRequests || 0) >= config.verification.maxBatchRequests) throw new Error('Per-stream AI budget reached; boundary retry is refused');
+                const id = crypto.randomUUID(), backupDirectory = path.join(files.directory, 'temp', 'boundary-revisions', id);
+                fs.mkdirSync(backupDirectory, { recursive: true });
+                for (const file of [files.plan, files.songs]) fs.copyFileSync(file, path.join(backupDirectory, path.basename(file)));
+                options.boundaryRetry = { id, kind: options.kind, eventIds: candidates.map(event => event.id), backupDirectory, startedAt: new Date().toISOString() };
+            }
             if (previous.uploadManifestPath) {
                 if (!sameSource(previous.source, source)) throw new Error('Activity source changed after rendering; use an explicit reviewed revision');
                 const manifest = JSON.parse(fs.readFileSync(previous.uploadManifestPath, 'utf8'));
@@ -355,23 +372,35 @@ async function generateStreamActivities(options = {}) {
                     const registry = options.readRegistry ? options.readRegistry()
                         : JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../../data/runtime/clip_upload_registry.json'), 'utf8'));
                     const rows = manifest.clips.map(clip => JSON.parse(fs.readFileSync(clip.metadataPath, 'utf8'))).filter(row => selected.includes(row.kind));
-                    if (!rows.length) throw new Error('Publication retry has no pending submission for the selected kind');
-                    for (const row of rows) publication.assertActivityPublicationRetry(row, Object.values(registry.clips).find(clip => clip.metadataPath
-                        && path.resolve(clip.metadataPath).toLowerCase() === path.resolve(row.output.metadataPath).toLowerCase()));
+                    if (!rows.length && (!options.retryBoundaries || options.reviseVerifier
+                        || !stages.retryBoundaryEvents(previous.rawEvents || [], previous.events, selected, previous.rejectedActivities || []).length)) {
+                        throw new Error('Publication retry has no pending submission for the selected kind');
+                    }
+                    for (const row of rows) {
+                        const registered = Object.values(registry.clips).find(clip => clip.metadataPath
+                            && path.resolve(clip.metadataPath).toLowerCase() === path.resolve(row.output.metadataPath).toLowerCase());
+                        if (options.reviewBoundaryIds) options.boundaryFeedback = stages.activityBoundaryFeedback(row,
+                            JSON.parse(fs.readFileSync(row.activityReview.proofPath, 'utf8')), registered, options.reviewBoundaryIds);
+                        else publication.assertActivityPublicationRetry(row, registered);
+                    }
                     const id = crypto.randomUUID(), backupDirectory = path.join(files.directory, 'temp', 'publication-retries', id);
                     fs.mkdirSync(backupDirectory, { recursive: true });
                     for (const row of rows) fs.copyFileSync(row.output.metadataPath, path.join(backupDirectory, `${row.kind}.json`));
-                    options.publicationRetryPlan = { ...previous, publicationRetries: [...(previous.publicationRetries || []),
+                    if (!options.retryBoundaries) options.publicationRetryPlan = { ...previous, publicationRetries: [...(previous.publicationRetries || []),
                         { id, note: options.revisionNote, kinds: selected, backupDirectory, startedAt: new Date().toISOString() }] };
                 }
                 if (options.retryBoundaries || options.repairTiming) {
-                    const candidates = options.retryBoundaries ? stages.retryBoundaryEvents(previous.rawEvents || [], previous.events, selected, previous.rejectedActivities || []) : [];
+                    const candidates = options.retryBoundaries ? stages.retryBoundaryEvents(previous.rawEvents || [], previous.events, selected, previous.rejectedActivities || [], options.boundaryFeedback) : [];
                     if (options.retryBoundaries && !options.reviseVerifier && (previous.efficiency?.boundaryRequests || 0) >= (previous.boundaryBudget?.limit || config.verification.maxBatchRequests)) throw new Error('Per-stream AI budget reached; boundary retry is refused');
                     const registryPath = path.resolve(__dirname, '../../../data/runtime/clip_upload_registry.json');
                     const registry = options.readRegistry ? options.readRegistry()
                         : fs.existsSync(registryPath) ? JSON.parse(fs.readFileSync(registryPath, 'utf8')) : { clips: {} };
                     const selectedRows = manifest.clips.map(clip => JSON.parse(fs.readFileSync(clip.metadataPath, 'utf8'))).filter(row => selected.includes(row.kind));
-                    if (!selectedRows.length) throw new Error('Boundary retry has no pending submission for the selected kind');
+                    // A sibling song bundle may already be rendered while watch failed
+                    // its interval check. Recover its original candidates before first render.
+                    if (!selectedRows.length && (!options.retryBoundaries || !candidates.length || options.reviseVerifier)) {
+                        throw new Error('Boundary retry has no pending submission for the selected kind');
+                    }
                     for (const row of selectedRows) {
                         const registered = Object.values(registry.clips).find(clip => clip.metadataPath
                             && path.resolve(clip.metadataPath).toLowerCase() === path.resolve(row.output.metadataPath).toLowerCase());
@@ -387,12 +416,19 @@ async function generateStreamActivities(options = {}) {
                     fs.mkdirSync(path.join(backupDirectory, 'submissions'));
                     for (const row of selectedRows) fs.copyFileSync(row.output.metadataPath, path.join(backupDirectory, 'submissions', `${row.kind}.json`));
                     if (options.repairTiming) options.timingRevision = { id, note: options.revisionNote, backupDirectory, startedAt: new Date().toISOString() };
-                    else options.boundaryRetry = { id, kind: options.kind, eventIds: candidates.map(event => event.id), backupDirectory, startedAt: new Date().toISOString() };
+                    else options.boundaryRetry = { id, kind: options.kind, eventIds: candidates.map(event => event.id),
+                        ...(options.boundaryFeedback ? { feedback: options.boundaryFeedback, note: options.revisionNote } : {}), backupDirectory, startedAt: new Date().toISOString() };
                 }
             }
         }
         const plan = options.publicationRetryPlan || await detectActivities(options, config, source, info, files);
         if (options.planOnly) return { status: plan.status, planPath: files.plan, songsPath: files.songs };
+        if (options.titleEvidencePath) {
+            if (selected.length !== 1 || fileDigest(plan.transcript.path) !== plan.transcript.sha256) throw new Error('Transcript title review requires one unchanged source submission');
+            const requested = JSON.parse(fs.readFileSync(options.titleEvidencePath, 'utf8'));
+            options.titleEvidence = require('../workflow-runtime').loadWorkflow('clipping/activityTitles').bindTranscriptTitles(requested.items,
+                stages.selectEvents(plan.events, selected), asr.parseSrt(plan.transcript.path).segments.map((row, index) => ({ index: index + 1, ...row })), plan.transcript);
+        }
         const runDirectory = plan.timingSignature ? path.dirname(plan.uploadManifestPath) : path.join(files.directory, plan.signature.slice(0, 16));
         fs.mkdirSync(runDirectory, { recursive: true });
         const manifestPath = path.join(runDirectory, 'UPLOAD_MANIFEST.json');
@@ -412,6 +448,12 @@ async function generateStreamActivities(options = {}) {
                 continue;
             }
             const events = plan.events.filter(e => e.kind === (kind === 'songs' ? 'song' : 'watch'));
+            stages.assertOrderedActivityParts(plan.parts[kind]);
+            require('../workflow-runtime').loadWorkflow('clipping/activityWatchContext').assertWatchBoundaries(events);
+            const previousMetadata = fs.existsSync(metadataPath) ? JSON.parse(fs.readFileSync(metadataPath, 'utf8')) : null;
+            const titleEvidence = options.titleEvidence || previousMetadata?.presentation?.titleEvidence || null;
+            if (kind === 'watch' && publicationActive && require('../workflow-runtime').loadWorkflow('clipping/activityTitles')
+                .namedEvents(events, titleEvidence).some(event => !event.name)) throw new Error('Viewing work names remain unresolved before rendering; provide --title-evidence');
             // An unchanged finished bundle is retained, including its review and publication state.
             if (fs.existsSync(metadataPath)) {
                 let old = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
@@ -419,7 +461,7 @@ async function generateStreamActivities(options = {}) {
                     && JSON.stringify(old.activities) === JSON.stringify(events) && old.output.parts.every(p => fs.existsSync(p.mediaPath)
                     && fs.statSync(p.mediaPath).size === p.bytes && fileDigest(p.mediaPath) === p.sha256)
                     && fs.existsSync(old.output.coverPath) && fileDigest(old.output.coverPath) === old.coverSha256) {
-                    if (options.retryPublication) { metadata.push(old); continue; }
+                    if (options.retryPublication && !options.retryBoundaries) { metadata.push(old); continue; }
                     if (old.activityReview?.status !== 'approved') {
                         old = await refreshPresentation(old, plan, root, options);
                         const route = config[kind].collection || {};
@@ -429,7 +471,7 @@ async function generateStreamActivities(options = {}) {
                     }
                     metadata.push(old); continue;
                 }
-                if (options.retryPublication) throw new Error('Publication retry artifacts changed; an explicit reviewed revision is required');
+                if (options.retryPublication && !options.retryBoundaries) throw new Error('Publication retry artifacts changed; an explicit reviewed revision is required');
                 if (old.activityReview?.status === 'approved') throw new Error('Reviewed activity artifacts changed; create a reviewed revision before rebuilding');
             }
             // Preserve provisional videos and covers; only the pending metadata keeps its ID/path.
@@ -439,11 +481,14 @@ async function generateStreamActivities(options = {}) {
             const parts = [];
             for (const [index, part] of plan.parts[kind].entries()) {
                 const outputPath = path.join(mediaDirectory, `${kind}_P${String(index + 1).padStart(3, '0')}.mp4`);
+                const reused = require('../workflow-runtime').loadWorkflow('clipping/activityRecovery').reusableActivityPart(part, previousMetadata, source,
+                    { size: file => fs.statSync(file).size, digest: fileDigest });
+                if (reused) { parts.push(reused); continue; }
                 const lease = await scheduler.acquire();
                 try { parts.push(await (options.renderPart || media.renderActivityPart)(options.mediaPath, part, outputPath, root, lease.profile)); }
                 finally { lease.release(); }
             }
-            const presentation = presentationTools.presentationFor(plan, kind, parts);
+            const presentation = presentationTools.presentationFor(plan, kind, parts, titleEvidence);
             const coverPath = presentationTools.coverPathFor(path.join(mediaDirectory, `${kind}.json`), presentation);
             const lease = await scheduler.acquire();
             try { await (options.cover || media.activityCover)(parts[0], coverPath, root, presentation.cover); } finally { lease.release(); }
@@ -455,7 +500,8 @@ async function generateStreamActivities(options = {}) {
                 window: { start: parts[0].start, end: parts.at(-1).end, duration: parts.reduce((n, p) => n + p.duration, 0) },
                 activities: events, copy: presentation.copy,
                 presentation: { version: presentation.version, style: presentation.profile.style, signature: presentation.signature,
-                    titleFormat: kind === 'songs' ? 'song_name_recording_date' : 'work_name_recording_date', recordingDate: presentation.recordingDate },
+                    titleFormat: kind === 'songs' ? 'song_name_recording_date' : 'work_name_recording_date', recordingDate: presentation.recordingDate,
+                    ...(titleEvidence ? { titleEvidence } : {}) },
                 output: { mediaPath: parts[0].mediaPath, coverPath, metadataPath, parts: presentation.parts }, coverSha256: fileDigest(coverPath),
                 activityReview: { version: 1, status: 'pending', checks: ['host_performance_or_actual_viewing', 'complete_boundaries', 'part_titles', 'public_copy'] },
                 uploadReady: false, upload: { prefix: presentation.profile.prefix, tid: config[kind].tid, tags: config[kind].tags,

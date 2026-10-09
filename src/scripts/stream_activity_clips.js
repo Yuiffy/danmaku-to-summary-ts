@@ -10,7 +10,7 @@ function parseArgs(argv) {
     const [command = 'help', ...args] = argv, options = {};
     for (let i = 0; i < args.length; i++) {
         const key = args[i];
-        if (['--no-register', '--enqueue', '--scan', '--retry-boundaries', '--revise-verifier', '--review-prelude', '--repair-timing', '--retry-publication'].includes(key)) options[key.slice(2)] = true;
+        if (['--background', '--no-notify', '--reuse-summary-only', '--no-register', '--enqueue', '--scan', '--retry-boundaries', '--revise-verifier', '--review-prelude', '--repair-timing', '--retry-publication'].includes(key)) options[key.slice(2)] = true;
         else if (/^--[a-z-]+$/u.test(key) && args[i + 1] && !args[i + 1].startsWith('--')) options[key.slice(2)] = args[++i];
         else throw new Error(`Unknown or incomplete argument: ${key}`);
     }
@@ -60,17 +60,36 @@ async function main(argv = process.argv.slice(2)) {
     }
     if (['run', 'plan'].includes(command)) {
         if (!options.media || !options.srt) throw new Error('run/plan requires --media and --srt');
-        const result = await workflow.generateStreamActivities({ mediaPath: path.resolve(options.media), srtPath: path.resolve(options.srt),
+        const activityOptions = { mediaPath: path.resolve(options.media), srtPath: path.resolve(options.srt),
             xmlPath: options.xml ? path.resolve(options.xml) : null, context: { roomId: options['room-id'] },
             summaryPath: options.summary ? path.resolve(options.summary) : null,
             fullLiveContextPath: options['full-context'] ? path.resolve(options['full-context']) : null, scan: options.scan === true,
             kind: options.kind, retryBoundaries: options['retry-boundaries'] === true,
+            reviewBoundaryIds: options['review-boundary-ids'] ? options['review-boundary-ids'].split(',').map(id => id.trim()) : null,
             reviseVerifier: options['revise-verifier'] === true, revisionNote: options['revision-note'],
             reviewPrelude: options['review-prelude'] === true,
             repairTiming: options['repair-timing'] === true,
             retryPublication: options['retry-publication'] === true,
             transcriptRecordPath: options['transcript-record'] ? path.resolve(options['transcript-record']) : null,
-            planOnly: command === 'plan', registerUpload: !options['no-register'] });
+            reuseSummaryOnly: options['reuse-summary-only'] === true,
+            titleEvidencePath: options['title-evidence'] ? path.resolve(options['title-evidence']) : null,
+            planOnly: command === 'plan', registerUpload: !options['no-register'] };
+        if (options.background) {
+            if (command !== 'run' || options.scan || options['retry-boundaries'] || options['retry-publication']
+                || options['repair-timing'] || options['revise-verifier'] || options['review-prelude']) {
+                throw new Error('--background supports resumable run only; perform explicit revisions before queueing continuation');
+            }
+            const result = require('./background_clip_runner').spawnBackgroundClipProcess({
+                originalMediaPath: activityOptions.mediaPath, srtPath: activityOptions.srtPath,
+                roomId: activityOptions.context.roomId, activityOptions, suppressActivityNotification: options['no-notify'] === true });
+            console.log(JSON.stringify(result, null, 2)); return result;
+        }
+        if (options['no-notify']) {
+            const config = require('./config-loader').getConfig();
+            activityOptions.config = { ...config, streamActivityClips: { ...config.streamActivityClips,
+                notify: { ...config.streamActivityClips?.notify, enabled: false } } };
+        }
+        const result = await workflow.generateStreamActivities(activityOptions);
         console.log(JSON.stringify(result, null, 2)); return result;
     }
     if (command === 'approve') {
@@ -100,7 +119,7 @@ async function main(argv = process.argv.slice(2)) {
         const result = songStatistics(options.root); console.log(JSON.stringify(result, null, 2)); return result;
     }
     if (command !== 'help') throw new Error(`Unknown command: ${command}`);
-    console.log('activity:clips run|plan --media <recording> --srt <SRT> [--xml <XML>] [--summary <LIVE_CONTENT.json>] [--full-context <FULL_LIVE_CONTEXT.json>] [--kind songs|watch] [--retry-boundaries [--revise-verifier --revision-note <note>]] [--scan] [--room-id 25788785] [--no-register]\n'
+    console.log('activity:clips run|plan --media <recording> --srt <SRT> [--xml <XML>] [--summary <LIVE_CONTENT.json>] [--full-context <FULL_LIVE_CONTEXT.json>] [--kind songs|watch] [--background] [--reuse-summary-only] [--no-notify] [--title-evidence <reviewed-names.json>] [--retry-boundaries [--revise-verifier --revision-note <note>]] [--retry-publication --revision-note <note>] [--scan] [--room-id 25788785] [--no-register]\n'
         + 'activity:clips approve --metadata <songs.json|watch.json> --note <review note> [--enqueue]\n'
         + 'activity:clips restyle --manifest <UPLOAD_MANIFEST.json> | --metadata <songs.json|watch.json> [--no-register]\n'
         + 'activity:clips stats --root <recording root>');

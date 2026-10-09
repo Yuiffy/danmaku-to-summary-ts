@@ -938,7 +938,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
 
     if (config.burnSubtitles !== false) {
         // 获取视频分辨率,动态计算字幕样式
-        const videoRes = await getVideoResolution(source.mediaPath, resolveFfprobePath(ffmpegPath));
+        const videoRes = await getVideoResolution(source.mediaPath, resolveFfprobePath(ffmpegPath), Number(window.start));
         const subtitleStyle = calculateSubtitleStyle(videoRes.width, videoRes.height, config);
         const parsedOutput = path.parse(outputPath);
         burnAssPath = path.join(parsedOutput.dir, `${parsedOutput.name}.burn.ass`);
@@ -1887,28 +1887,12 @@ async function generateTopicClips(options = {}) {
     }
 
     if (publicationActive) {
-        const rootConfig = options.config || {};
-        const scheduler = require('./clipping/resource_scheduler').createClipResourceAdaptiveScheduler({ ownConfig: rootConfig.ownStreamClips || {}, rootConfig });
-        const settings = rootConfig.ownStreamClips?.enhancements || {};
-        const selection = require('./clipping/selection_policy').resolveSelectionPolicy;
-        const excludedCategories = [...new Set([
-            ...selection(rootConfig.ownStreamClips?.selectionPolicy, info.roomId).excludedCategories,
-            ...selection(rootConfig.ownStreamClips?.selectionPolicy, '25788785').excludedCategories
-        ])];
         const finals = results.filter(result => !isPendingTopicResult(result));
-        const reviewed = await publicationRuntime.reviewOwnPublications(finals, {
-            config: publicationConfig, roomId: String(info.roomId), streamerName, excludedCategories,
-            ffmpegPath: options.ffmpegPath || 'ffmpeg', ffprobePath: resolveFfprobePath(options.ffmpegPath || 'ffmpeg'),
-            aiEnabled: rootConfig.ai?.text?.enabled !== false
-        }, {
-            parse: file => parseTopicSrt(file).segments, evidence: buildPreflightEvidence, audience: parseDanmakuXml,
-            request: (artifact, prompt, images) => require('./clipping/enhancement_runner').requestStage(
-                { ...settings.stageDefaults, ...settings.stages?.qa }, settings.budget,
-                { ...info, outputContract: { key: 'checks', type: 'object', allowDomainRejected: true } }, `topic-publication-${artifact.window.index}`, prompt, images),
-            withMedia: async work => { const lease = await scheduler.acquire(); try { return await work(lease.profile); } finally { lease.release(); } },
-            runFfmpeg: (args, profile) => runFfmpeg(args, { ffmpegPath: options.ffmpegPath || 'ffmpeg', resourceConfig: clipResourceConfig, threads: profile?.ffmpegThreads }),
-            ...(options.publicationAdapters || {})
-        });
+        const reviewed = await require('./clipping/topic_automatic_publication').reviewTopicFinals(finals, {
+            rootConfig: options.config || {}, info, streamerName, publicationConfig, clipResourceConfig, options,
+            ffmpegTimeoutMs: config.ffmpegTimeoutMs
+        }, { parseTopicSrt, buildPreflightEvidence, parseDanmakuXml, runFfmpeg, resolveFfprobePath,
+            coverGenerator, writeCopyMarkdown });
         finals.forEach((result, index) => { results[results.indexOf(result)] = reviewed[index]; });
     }
 
@@ -2041,7 +2025,7 @@ module.exports = {
     isIgnoredRoom,
     buildDefaultTitle,
     normalizeCoverText,
-    buildClipCopy,
+    buildClipCopy, writeCopyMarkdown,
     findMatchingPacketTime,
     probeRoughCutSourceStart,
     probeVideoPacketsWithHashes,

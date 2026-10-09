@@ -705,6 +705,12 @@ video.compare.json
 
 当前第一版已统一做 segment 清洗、长句切分、避免重叠和 SRT 写回。`strip_punctuation=true` 时只在 SRT 输出阶段去掉常见中英文标点，ASR 原始结果和内部切分仍保留标点信息。`gap_split_threshold` 与 `merge_short_segments` 已预留，后续可以继续增强合并策略。
 
+Paraformer 时间戳后处理仅移除相邻汉字之间的分词空格；英文词间及中英交界已有的空白折叠为一个空格。
+空格和标点不占用词级时间戳，英文单词、缩写及连字符词保持完整；chunk 路径复用相同对齐规则，
+缺失或不匹配的时间戳回退到完整 chunk 文本和时间范围，不通过删除空格凑对齐。
+ASR 的 SRT 读取与证据 sidecar 共用换行合并规则，保留跨行英文词界并维持中文紧凑排版。
+这些规则只保留识别结果已有的词界，不猜测拆分模型已经输出的连写单词；旧字幕和已烧录视频不会自动改写。
+
 SenseVoice 时间轴优先使用 FunASR 返回的 `sentence_info` / `segments` 中的 `start` / `end`；如果当前模型只返回整段文本，则退回到 VAD chunk 级近似时间。默认 `merge_length_s=8`、`max_vad_segment_s=8`，避免把 VAD chunk 合并到过长。SenseVoice 首版时间轴不一定比 Whisper 的 `word_timestamps` 更细，建议用 Compare 模式实测。
 
 ## 说话人处理配置与输出

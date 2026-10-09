@@ -13,7 +13,7 @@ const DEFAULTS = Object.freeze({ enabled: false, roomIds: ['25788785'], outputDi
     verification: { enabled: true, provider: 'daiYu', apiMode: 'openai_chat', model: 'gpt-6.1-sol', evidenceMethod: 'independent_local_asr',
         localAsr: { sensevoiceModel: 'iic/SenseVoiceSmall', whisperModel: 'deepdml/faster-whisper-large-v3-turbo-ct2', device: 'cuda', chunkSeconds: 8 },
         contextSeconds: 180, maxAudioSeconds: 1200, timeoutMs: 180000,
-        boundaryContextSeconds: 45, batchMaxEvents: 8, batchMaxAudioSeconds: 600, maxBatchRequests: 3, boundaryTimeoutMs: 60000 },
+        boundaryContextSeconds: 45, watchContextVersion: 1, batchMaxEvents: 8, batchMaxAudioSeconds: 600, maxBatchRequests: 3, boundaryTimeoutMs: 60000 },
     songs: { enabled: true, paddingSeconds: 2, tid: 31, tags: ['岁己', '小岁', '歌切', '虚拟主播'], collection: {} },
     watch: { enabled: true, targetPartSeconds: 1500, maxPartSeconds: 1800, tid: 21,
         tags: ['岁己', '小岁', '同步视听', '虚拟主播'], collection: {} } });
@@ -111,7 +111,8 @@ function parseEvents(value, window, duration) {
             }).join('; ');
             throw new Error(`Activity ${index + 1} has unseen source citations: ${unseen.map(id => String(id).slice(0, 40)).join(', ')}. ${examples}. T and D are distinct sources; use the exact supplied prefix and ID`);
         }
-        if (raw.evidenceIds.some(id => byId.get(id).end < raw.start - 180 || byId.get(id).start > raw.end + 180)) throw new Error('Activity citations are outside its context');
+        const outside = raw.evidenceIds.filter(id => byId.get(id).end < raw.start - 180 || byId.get(id).start > raw.end + 180);
+        if (outside.length) throw new Error(`Activity ${index + 1} (${raw.kind} ${raw.start}-${raw.end}) citations are outside its context (${raw.start - 180}-${raw.end + 180}): ${outside.map(id => `${id}=${byId.get(id).start}-${byId.get(id).end}`).join(', ')}`);
         let name = typeof raw.name === 'string' ? raw.name.trim() : null;
         if (name && name.length > 64) name = null;
         const titleIds = Array.isArray(raw.titleEvidenceIds) ? raw.titleEvidenceIds : [];

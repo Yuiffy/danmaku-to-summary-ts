@@ -129,4 +129,58 @@ describe('background_clip_queue', () => {
       expect(fs.existsSync(path.join(queueDirectory, 'worker.launch'))).toBe(false);
     });
   });
+
+  test('failure survives restart, backs off, and becomes a visible terminal failure after three attempts', async () => {
+    const job = enqueue('fails');
+    const options = { directory: queueDirectory, pollMs: 1, idleGraceMs: 0, staleLockMs: 1000 };
+    const fail = jest.fn(async () => { throw new Error('encoder unavailable'); });
+    const run = () => backgroundClipQueue.runQueueWorker(options, fail, { log: () => {} });
+    await run();
+    expect(fs.existsSync(job.payloadPath)).toBe(true);
+    const pending = JSON.parse(fs.readFileSync(job.pendingPath, 'utf8'));
+    expect(pending.attempts).toBe(1);
+    expect(pending.lastError).toBe('encoder unavailable');
+    await run(); expect(fail).toHaveBeenCalledTimes(1);
+    for (let i = 0; i < 2; i++) {
+      const next = JSON.parse(fs.readFileSync(job.pendingPath, 'utf8'));
+      fs.writeFileSync(job.pendingPath, JSON.stringify({ ...next, nextAttemptAt: 0 }));
+      await run();
+    }
+    expect(fail).toHaveBeenCalledTimes(3);
+    expect(fs.existsSync(job.pendingPath)).toBe(false);
+    const failed = JSON.parse(fs.readFileSync(job.pendingPath.replace('.pending.', '.failed.'), 'utf8'));
+    expect(failed.attempts).toBe(3);
+    await run(); expect(fail).toHaveBeenCalledTimes(3);
+  });
+
+  test('the same explicit activity identity cannot recreate an already completed job', async () => {
+    const payloadPath = path.join(queueDirectory, 'activity.json');
+    fs.writeFileSync(payloadPath, '{}');
+    const options = { directory: queueDirectory, idleGraceMs: 0 };
+    const first = backgroundClipQueue.enqueueJob({ jobId: 'activity-1', payloadPath }, options);
+    await backgroundClipQueue.runQueueWorker(options, async () => {});
+    const second = backgroundClipQueue.enqueueJob({ jobId: 'activity-1', payloadPath }, options);
+    expect(second.jobId).toBe(first.jobId);
+    expect(second.status).toBe('done');
+    expect(second.reused).toBe(true);
+    expect(backgroundClipQueue.countQueueEntries(queueDirectory)).toBe(0);
+  });
+
+  test('a replacement worker recovers the same job after the owning process exits without cleanup', async () => {
+    const job = enqueue('interrupted');
+    const script = `const queue = require(process.argv[1]);
+      queue.runQueueWorker({directory: process.argv[2], idleGraceMs: 0, staleLockMs: 1000},
+        async () => process.exit(77));`;
+    const child = require('child_process').spawnSync(process.execPath,
+      ['-e', script, require.resolve('./background_clip_queue'), queueDirectory], { timeout: 10000, windowsHide: true });
+    expect(child.status).toBe(77);
+    expect(fs.existsSync(job.pendingPath.replace('.pending.', '.working.'))).toBe(true);
+    const expired = new Date(Date.now() - 2000);
+    fs.utimesSync(path.join(queueDirectory, 'worker.lock'), expired, expired);
+    const resumed = jest.fn(async () => {});
+    await backgroundClipQueue.runQueueWorker({ directory: queueDirectory, idleGraceMs: 0, staleLockMs: 1000 }, resumed);
+    expect(resumed).toHaveBeenCalledTimes(1);
+    expect(resumed.mock.calls[0][0].jobId).toBe(job.jobId);
+    expect(fs.existsSync(job.pendingPath.replace('.pending.', '.done.'))).toBe(true);
+  });
 });

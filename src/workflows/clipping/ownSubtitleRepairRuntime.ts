@@ -8,12 +8,13 @@ import { subtitleRepairEligible, planSubtitleProbes, consensusSubtitleEdit, appl
 import type { Artifact } from './enhancement';
 import type { AutomaticPublicationConfig } from './publicationRuntime';
 import { publicationEnabled } from './publicationReview';
+import { consensusCueEdit } from './subtitleCueConsensus';
 export { projectSubtitleRepairEvidence, subtitleRepairEligible } from './ownSubtitleRepair';
 
 type Data = Record<string, any>;
 const execute = promisify(execFile), hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
 const fileHash = (file: string) => hash(fs.readFileSync(file));
-const ALIGNMENT_VERSION = 'anchored-literal-v2';
+const ALIGNMENT_VERSION = 'cue-consensus-v4';
 export interface RepairIO {
     parse(file: string): RepairCue[];
     write(file: string, cues: RepairCue[]): void;
@@ -58,12 +59,17 @@ export async function repairOwnSubtitles(artifact: Artifact, config: AutomaticPu
     const previousRepair = artifact.automaticSubtitleRepair;
     const cues = io.parse(artifact.output.srtPath), probes = planSubtitleProbes(artifact, cues, previousRepair ? .25 : 5);
     if (!probes.length) return artifact;
-    if (previousRepair && (previousRepair.checks.length + probes.length > 4
-        || [...previousRepair.checks, ...probes].reduce((total, row) => total + row.end - row.start, 0) > 120)) return artifact;
-    const initial = await publicationSnapshot(artifact), inputIdentity = hash(JSON.stringify(initial));
+    const previousChecks = previousRepair?.probeBudgetWindows || previousRepair?.checks || [];
+    if (previousRepair && (previousChecks.length + probes.length > 4
+        || [...previousChecks, ...probes].reduce((total, row) => total + row.end - row.start, 0) > 120)) return artifact;
+    const initial = await publicationSnapshot(artifact);
+    const identitySnapshot = { ...initial, digests: { ...initial.digests } };
+    delete identitySnapshot.digests.subtitleDiagnostic;
+    const inputIdentity = hash(JSON.stringify(identitySnapshot));
     if (JSON.stringify(initial.digests) !== JSON.stringify(artifact.publicationReview.digests)
         || JSON.stringify(initial.source) !== JSON.stringify(artifact.publicationReview.source)) throw new Error('Existing subtitle review evidence changed');
     const previousAttempt = artifact.automaticSubtitleRepairAttempt;
+    const previousBudget: Data[] = previousRepair?.probeBudgetWindows || previousRepair?.checks || [];
     // One additional, narrower probe may address a NEW concrete blocker, never replay the same repaired words.
     if (previousRepair && ((previousRepair.generation || 1) >= 2 || probes.every(probe => previousRepair.edits
         .some((edit: Data) => edit.index === probe.index && [edit.from, edit.to].includes(probe.quote))))
@@ -71,19 +77,42 @@ export async function repairOwnSubtitles(artifact: Artifact, config: AutomaticPu
     const directory = path.join(path.dirname(artifact.output.metadataPath), 'temp', 'automatic-subtitle-repairs', randomUUID());
     fs.mkdirSync(directory, { recursive: true });
     const stat = fs.statSync(artifact.source.mediaPath);
+    const windows: Data[] = [];
+    for (const probe of [...probes].sort((a, b) => a.start - b.start)) {
+        const last = windows.at(-1);
+        if (last && probe.start <= last.end && Math.max(last.end, probe.end) - last.start <= 30) last.end = Math.max(last.end, probe.end);
+        else windows.push({ id: `A${windows.length + 1}`, start: probe.start, end: probe.end });
+    }
     const request: Data = { version: 1, source: { mediaPath: path.resolve(artifact.source.mediaPath), mediaBytes: stat.size,
         mediaMtimeMs: stat.mtimeMs, srtPath: path.resolve(artifact.source.srtPath), srtSha256: initial.source.srtSha256 },
-        settings: io.settings, windows: probes.map(probe => ({ id: probe.id, start: probe.start, end: probe.end })) };
+        settings: io.settings, windows };
+    if (previousAttempt?.inputIdentity === inputIdentity) {
+        const prior = JSON.parse(fs.readFileSync(path.join(path.dirname(previousAttempt.evidencePath), 'request.json'), 'utf8'));
+        if (prior.priorWindows) request.priorWindows = prior.priorWindows;
+    } else if (previousBudget.length) request.priorWindows = previousBudget.map(({ id, start, end }) => ({ id, start, end }));
     request.requestSha256 = hash(JSON.stringify(request) + fileHash(io.scriptPath));
     const input = path.join(directory, 'request.json'), output = path.join(directory, 'audio.json');
     fs.writeFileSync(input, JSON.stringify(request, null, 2), 'utf8');
+    let reusedEvidence = false;
     try {
+        let previous: Data | undefined;
         if (previousAttempt?.inputIdentity === inputIdentity) {
             if (previousAttempt.status !== 'inconclusive' || fileHash(previousAttempt.evidencePath) !== previousAttempt.evidenceSha256) {
                 throw new Error('Previous local subtitle audio evidence changed');
             }
-            const previous = JSON.parse(fs.readFileSync(previousAttempt.evidencePath, 'utf8'));
-            if (previous.requestSha256 !== request.requestSha256) throw new Error('Previous local subtitle audio request differs');
+            previous = JSON.parse(fs.readFileSync(previousAttempt.evidencePath, 'utf8'));
+            if (JSON.stringify(previous!.source) !== JSON.stringify(request.source)) throw new Error('Previous local subtitle audio source differs');
+            if (previous!.requestSha256 !== request.requestSha256) {
+                const all = [...(request.priorWindows || []), ...previous!.windows, ...windows];
+                if (all.length > 4 || all.reduce((total, row) => total + row.end - row.start, 0) > 120) return artifact;
+                request.priorWindows = all.slice(0, -windows.length).map(({ id, start, end }) => ({ id, start, end }));
+                delete request.requestSha256;
+                request.requestSha256 = hash(JSON.stringify(request) + fileHash(io.scriptPath));
+                fs.writeFileSync(input, JSON.stringify(request, null, 2), 'utf8');
+                previous = undefined;
+            }
+        }
+        if (previous) {
             for (const row of previous.windows) {
                 const oldPath = path.resolve(row.audioPath);
                 if (path.dirname(oldPath) !== path.dirname(path.resolve(previousAttempt.evidencePath))
@@ -93,6 +122,7 @@ export async function repairOwnSubtitles(artifact: Artifact, config: AutomaticPu
                 row.audioPath = audioPath;
             }
             fs.writeFileSync(output, JSON.stringify(previous, null, 2), 'utf8');
+            reusedEvidence = true;
         } else if (io.runAudio) await io.runAudio(input, output);
         else {
             const completed = await execute(io.python.executable, [...io.python.args, io.scriptPath, input, output],
@@ -106,17 +136,23 @@ export async function repairOwnSubtitles(artifact: Artifact, config: AutomaticPu
     }
     const audio = JSON.parse(fs.readFileSync(output, 'utf8').replace(/^\uFEFF/u, ''));
     if (audio.version !== 1 || audio.requestSha256 !== request.requestSha256 || JSON.stringify(audio.source) !== JSON.stringify(request.source)
-        || !Array.isArray(audio.windows) || audio.windows.length !== probes.length) throw new Error('Subtitle audio result binding differs');
+        || !Array.isArray(audio.windows) || JSON.stringify(audio.windows.map(({ id, start, end }: Data) => ({ id, start, end })))
+            !== JSON.stringify(windows)) throw new Error('Subtitle audio result binding differs');
     const edits: Data[] = [];
-    for (const [index, probe] of probes.entries()) {
-        const row = audio.windows[index], audioPath = path.resolve(row.audioPath);
+    for (const probe of probes) {
+        const row = audio.windows.find((item: Data) => item.start <= probe.start && item.end >= probe.end), audioPath = path.resolve(row.audioPath);
         if (path.dirname(audioPath) !== directory || fileHash(audioPath) !== row.audioSha256) throw new Error('Subtitle audio evidence changed');
         if (JSON.stringify(row.decodes?.map((decode: Data) => decode.model)) !== JSON.stringify([io.settings.model, io.settings.sensevoiceModel])) {
             throw new Error('Subtitle audio models differ from the requested independent pair');
         }
-        const edit = consensusSubtitleEdit(probe, row, io.protectedNames);
-        if (!edit) return { ...artifact, automaticSubtitleRepairAttempt: { inputIdentity, alignmentVersion: ALIGNMENT_VERSION, status: 'inconclusive',
-            evidencePath: output, evidenceSha256: fileHash(output), attemptedAt: new Date().toISOString() } };
+        const boundProbe = { ...probe, id: row.id, start: row.start, end: row.end };
+        const edit = consensusSubtitleEdit(boundProbe, row, io.protectedNames) || consensusCueEdit(boundProbe, row, io.protectedNames);
+        // A source-only numeric rebuild can be diagnosed, but its bound rendered subtitle receipt is never rewritten here.
+        if (!edit || artifact.renderedSubtitles) {
+            if (JSON.stringify(initial) !== JSON.stringify(await publicationSnapshot(artifact))) throw new Error('Source changed during audio diagnosis');
+            return io.reviewFinal({ ...artifact, automaticSubtitleRepairAttempt: { inputIdentity, alignmentVersion: ALIGNMENT_VERSION, status: 'inconclusive',
+                evidencePath: output, evidenceSha256: fileHash(output), attemptedAt: new Date().toISOString() } });
+        }
         edits.push({ ...edit, sourceStart: artifact.window.start + cues[probe.index].start,
             sourceEnd: artifact.window.start + cues[probe.index].end });
     }
@@ -126,9 +162,10 @@ export async function repairOwnSubtitles(artifact: Artifact, config: AutomaticPu
     const evidence: Data = { version: 1, authority: 'automatic', method: 'unprompted_two_model_consensus', inputIdentity, alignmentVersion: ALIGNMENT_VERSION,
         generation: previousRepair ? (previousRepair.generation || 1) + 1 : 1,
         ...(previousRepair ? { previousRepair, allEdits: [...(previousRepair.allEdits || previousRepair.edits).filter((edit: Data) => edit.from !== edit.to), ...edits] } : {}),
-        ...(previousAttempt?.inputIdentity === inputIdentity ? { reusedEvidencePath: previousAttempt.evidencePath, reusedEvidenceSha256: previousAttempt.evidenceSha256 } : {}),
+        ...(reusedEvidence ? { reusedEvidencePath: previousAttempt.evidencePath, reusedEvidenceSha256: previousAttempt.evidenceSha256 } : {}),
         requestPath: input, requestSha256: fileHash(input), evidencePath: output, evidenceSha256: fileHash(output),
         source: initial.source, edits, checks: audio.windows, correctedSrtPath: srtPath, correctedSrtSha256: fileHash(srtPath),
+        probeBudgetWindows: [...(request.priorWindows || []), ...windows],
         before: { output: artifact.output, copy: artifact.copy, publicationReview: artifact.publicationReview } };
     const proofPath = path.join(directory, 'proof.json');
     fs.writeFileSync(proofPath, JSON.stringify(evidence, null, 2), 'utf8');

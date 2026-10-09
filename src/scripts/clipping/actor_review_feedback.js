@@ -23,6 +23,12 @@ function repairFeedback(packet, review, issues) {
     return { clipId: packet.id, previous: review, issues,
         allowedActionCueIds: [...packet.cueIds], voiceCitations: voiceCitationGuide(packet),
         claims: array(review?.claims).map((claim, index) => ({ claim: index + 1, action: claim?.action,
+            // Literal search results, not identity approval or automatically attached citations.
+            nameCitationCandidates: ['actor', 'target'].filter(role => issues.includes(`unproven_${role}:${index + 1}`))
+                .map(role => ({ role, name: claim[role], candidates: [...packet.cueIds]
+                    .map(id => packet.evidence.byId.get(id)).filter(cue => claim[role] && cue?.text?.includes(claim[role]))
+                    .slice(0, 6).map(({ id, start, end, text }) => ({ id, start, end, text })),
+                instruction: '这些只是片内字面检索结果；判断是否同一讨论对象后，在本条claim补入必要上下文引用，不继承另一条claim的引用。' })),
             invalidActionCueIds: array(claim?.cueIds).filter(id => !packet.cueIds.has(id)),
             invalidSpeakerCueIds: array(claim?.speakerCueIds).filter(id => !packet.cueIds.has(id)
                 || (claim.identityBasis === 'voice' && !array(claim.cueIds).includes(id))) })),

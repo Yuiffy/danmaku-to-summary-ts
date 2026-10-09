@@ -1,0 +1,4 @@
+interface:
+  display_name: "直播记录问答"
+  short_description: "查询直播字幕与弹幕证据，由当前对话模型总结并标注时间线索"
+  default_prompt: "使用 $recording-questions 查询岁己最近直播里聊过的问题，并根据原始证据回答。"

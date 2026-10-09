@@ -1,5 +1,42 @@
-import { enrichSkippedRanking, preserveDeferredSelection, recoverRejectedPresentation, reviewDisplayRows, uniqueRejectedArtifacts } from './reviewSelectionHistory';
+import { deferredSelectionRows, enrichSkippedRanking, preserveDeferredSelection, recoverRejectedPresentation, reviewDisplayRows, uniqueRejectedArtifacts, withReviewSource } from './reviewSelectionHistory';
 import { deferredReviewLines } from './reviewDigest';
+
+test('source-less progressive P13/P14 history collapses only against one identical source-bound decision', () => {
+    const decisions = [13, 14].map(index => ({ index, candidateIndex: index + 10, selected: false,
+        title: `话题${index}`, start: index * 100, end: index * 100 + 20, score: 78, reason: 'below_score' }));
+    const first = { publication: { policy: { mode: 'curated' }, decisions } };
+    const legacy = deferredSelectionRows(first);
+    const metadata = { ...first, source: { mediaPath: 'stream.flv', srtPath: 'source.srt' },
+        deferredSelectionHistory: { rows: legacy }, deferredResolutions: [{ selectionKey: legacy[0].selectionKey, clipId: 900 }] };
+    const before = JSON.stringify(metadata);
+    const rows = deferredSelectionRows(metadata);
+    expect(rows).toHaveLength(2);
+    expect(rows[0].selectionAliases).toContain(legacy[0].selectionKey);
+    const text = deferredReviewLines(metadata).join('\n');
+    expect(text.match(/- P13 \|/gu)).toHaveLength(1);
+    expect(text.match(/- P14 \|/gu)).toHaveLength(1);
+    expect(text).toContain('已补切ID900');
+    const refreshed = { ...metadata, deferredSelectionHistory: { rows } };
+    expect(deferredReviewLines(refreshed).join('\n')).toContain('已补切ID900');
+    expect(deferredSelectionRows(refreshed)).toHaveLength(2);
+    expect(JSON.stringify(metadata)).toBe(before);
+    const different = { ...rows[0], selectionKey: 'other-source', sourceSrtPath: 'repaired.srt' };
+    expect(deferredSelectionRows({ ...metadata, deferredSelectionHistory: { rows: [...legacy, different] } })).toHaveLength(4);
+    const changed = { ...legacy[0], title: '同时间的不同看点', selectionKey: 'another-event' };
+    expect(deferredSelectionRows({ ...metadata, deferredSelectionHistory: { rows: [changed] } })).toHaveLength(3);
+});
+
+test('progressive review obtains a unique source before preserving history without guessing across recordings', () => {
+    const source = { mediaPath: 'stream.flv', srtPath: 'source.srt' };
+    expect(withReviewSource({}, [{ source }]).source).toEqual(source);
+    expect(withReviewSource({}, [{ source }, { source: { ...source, srtPath: 'other.srt' } }]).source).toBeUndefined();
+    const existing = { source: { mediaPath: 'other.flv' } };
+    expect(withReviewSource(existing, [{ source }])).toBe(existing);
+    const metadata = { publication: { decisions: [{ index: 13, start: 100, end: 120, selected: false }] } };
+    const saved = preserveDeferredSelection(null, withReviewSource(metadata, [{ source }]));
+    expect(saved.deferredSelectionHistory.rows[0].selectionKey).not.toContain('P:::');
+    expect(deferredSelectionRows(preserveDeferredSelection(saved, withReviewSource(metadata, [{ source }])))).toHaveLength(1);
+});
 
 test('repeated rejection artifacts collapse without hiding distinct records sharing a review index', () => {
     const first = { reviewIndex: 123, output: { metadataPath: 'D:\\clips\\rejected-a.json' } };

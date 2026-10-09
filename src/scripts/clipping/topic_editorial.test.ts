@@ -142,6 +142,8 @@ describe('topic event editorial policy', () => {
     expect(prompt).not.toContain('OLD COPY');
     expect(prompt).not.toContain('UNRELATED');
     expect(prompt).not.toContain('NEW TOPIC');
+    expect(prompt).toContain('describe the exchange without a named subject');
+    expect(prompt).toContain('sourceKind live_speech without identifying every voice');
     const copy = normalizeTopicCopy(response([finalCopy(clip.window.index)]), clip, evidence, cues);
     expect(copy).toMatchObject({ title: 'The comforting roles reverse', grounding: { status: 'linked', sourceKind: 'recount' } });
     expect(copy.description).not.toContain('Keep the independent');

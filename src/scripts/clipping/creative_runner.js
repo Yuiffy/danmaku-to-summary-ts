@@ -155,8 +155,9 @@ async function runCreativeAttempt(baseline, context, dependencies) {
             throw error;
         }
     };
-    const sourceContext = () => require('./creative_source_expansion').sourceCues(subtitleEvidence.cues.flatMap(c => c.items || []))
-        .filter(row => row.end > baseline.window.start - 30 && row.start < baseline.window.end + require('./topic_edit_plan').contextSeconds(config));
+    const sourceContext = () => require('./creative_source_expansion').availableCues(
+        require('./creative_source_expansion').sourceCues(subtitleEvidence.cues.flatMap(c => c.items || [])),
+        baseline.window, require('./topic_edit_plan').contextSeconds(config), 30);
     const routeSourceRequirements = async (qa, stage) => {
         if (qa.needsSourceExpansion !== true || !Array.isArray(subtitleEvidence.cues)) return qa;
         if (qa.approved !== false) throw new Error('Contradictory source expansion QA: ' + JSON.stringify(qa));
@@ -258,6 +259,7 @@ async function runCreativeAttempt(baseline, context, dependencies) {
             const protectedSpans = timelineTools.protectedStorySpans(clip, subtitleEvidence, danmaku, baseline.window, baseline.sourceExpansion);
             const protectedCues = timelineTools.protectedStoryCues(protectedSpans, sourceCues);
             const protectionRules = 'protectedCues把原始证据组映射到本片字幕编号，列出的cueIds全部必留；protectedSpans的整个时间范围仍须覆盖，包括组内停顿。'
+                + 'keep用字幕编号选择完整原话；程序会在最终保留句后自动留最多3秒余韵，受素材末尾和下一句限制。字幕结束后的片尾留白不需要字幕编号，不构成必留原话冲突。'
                 + '证据组可能包含开场过渡或转写疑词，不得为了精简开头删除其中一句，不把转写疑词当成剪辑错误。'
                 + '若必留内容确实与完整性要求无法兼容，应明确报告冲突并停止，不得要求删除它来通过审核。';
             writeJsonAtomic(path.join(scratch, 'story-input.json'), { sourceDuration, copy: baseline.copy, sourceCues, protectedSpans, protectedCues });
@@ -390,7 +392,7 @@ async function runCreativeAttempt(baseline, context, dependencies) {
             .map((time, index) => ({ id: `T1F${index}`, time, momentId: 'T1' })));
         let sourceFrames = await capture(baseline.output.mediaPath, frameMap.map(row => timelineTools.sourceTimeForOutput(row.time, timeline)), 'source');
         let sourceStrips = await strips(sourceFrames, 'source-strip');
-        const sourceResolution = await topic.getVideoResolution(source.mediaPath, topic.resolveFfprobePath(mediaConfig().ffmpegPath));
+        const sourceResolution = await topic.getVideoResolution(baseline.output.mediaPath, topic.resolveFfprobePath(mediaConfig().ffmpegPath), 0);
         const subtitleStyle = topic.calculateSubtitleStyle(sourceResolution.width, sourceResolution.height, config);
         const subtitleAss = topic.buildBurnAssContentFromSrt(fs.readFileSync(renderSrt, 'utf8'), subtitleStyle);
         const stickerAssets = Object.values(assets).filter(asset => asset.kind === 'sticker');

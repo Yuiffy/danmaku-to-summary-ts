@@ -42,6 +42,17 @@ test('two unprompted independent models must agree, with unique context and no I
     }
 });
 
+test('visible word errors can request local audio even when also classified as visuals, while layout defects cannot', () => {
+    const a = { ...artifact, publicationReview: { ...artifact.publicationReview,
+        checks: { ...artifact.publicationReview.checks, visuals: false }, issues: ['字幕“信爵/星绝死囚了”需核实原词', 'final_visuals_not_passed', 'final_subtitles_not_passed'] } };
+    expect(subtitleRepairEligible(a)).toBe(true);
+    expect(planSubtitleProbes(a, [{ start: 1, end: 3, text: '信爵活没活着呀' }, { start: 4, end: 6, text: '星绝死囚了' }]))
+        .toEqual([expect.objectContaining({ quote: '信爵' }), expect.objectContaining({ quote: '星绝死囚了' })]);
+    for (const issue of ['字幕“信爵”与音轨错位', '字幕“信爵”被封面遮挡', '画面需要核对']) {
+        expect(subtitleRepairEligible({ ...a, publicationReview: { ...a.publicationReview, issues: [issue] } })).toBe(false);
+    }
+});
+
 test('numeric, negative, identity and configured-name changes cannot be adopted', () => {
     for (const [from, to] of [['三套', '五套'], ['要去', '不去'], ['爸爸', '妈妈'], ['他会', '她会'], ['岁吉', '岁己']]) {
         const context = '昨天在直播说到了' + from + '所以我们继续聊下去';
@@ -80,6 +91,20 @@ test('a comparison ASR alternative is not miscounted as a second problematic cue
         issues: ['“就得装够”与“就能装够”识别不一致，关键措辞未确认。'] } };
     const rows = [{ start: 6, end: 8, text: '如果只带行李箱就能装够的话' }, { start: 14, end: 16, text: '就得装够所有会用的东西的话' }];
     expect(planSubtitleProbes(current, rows, .25)).toEqual([expect.objectContaining({ index: 1, quote: '就得装够', start: 113.75, end: 116.25 })]);
+});
+
+test('a long suspect cue keeps its full audio by reducing padding within the thirty-second limit', () => {
+    const current={...artifact,window:{start:100,end:180,duration:80},publicationReview:{...artifact.publicationReview,issues:['字幕“疑句”需要核对']}};
+    const [probe]=planSubtitleProbes(current,[{start:20,end:47,text:'嗯嗯疑句'}]);
+    expect(probe).toMatchObject({start:118.5,end:148.5,quote:'疑句'});
+    expect(planSubtitleProbes(current,[{start:20,end:51,text:'嗯嗯疑句'}])).toEqual([]);
+});
+
+test('source-only rebuilt subtitles permit diagnosis while manual subtitle revisions stay protected', () => {
+    expect(subtitleRepairEligible({...artifact,renderedSubtitles:{revision:0,edits:[]}})).toBe(true);
+    for(const renderedSubtitles of [{revision:1,edits:[]},{revision:0,edits:[{from:'词',to:'字'}]},{}]) {
+        expect(subtitleRepairEligible({...artifact,renderedSubtitles})).toBe(false);
+    }
 });
 
 test('source projection retains G IDs, grouping and voice rows without mutating the source evidence', () => {

@@ -27,6 +27,49 @@ function fixture() {
     return { directory, file, queue, registry, artifact, record, store, args, io };
 }
 
+test('final recheck admits advisory playback for review without clearing the warning or granting approval', async () => {
+    const f = fixture();
+    try {
+        f.artifact.subtitleProofreading = { advisory: true, reviewGroups: [{ type: 'possible_foreign_audio',
+            occurrences: [{ start: 2, end: 3, text: 'movie line' }] }] };
+        fs.writeFileSync(f.file, JSON.stringify(f.artifact));
+        const reviewFinal = jest.fn(async (row: Artifact, required: any) => ({ ...row, ...required,
+            publicationReview: { status: 'needs_review', issues: ['这句是关键台词，需核对原音'] }, publicationDecision: { action: 'needs_human' } }));
+        await expect(recheckOwnPublication([...f.args, '--review-final'], { ...f.io, reviewFinal }))
+            .resolves.toMatchObject({ status: 'needs_review', changed: true });
+        expect(reviewFinal).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(fs.readFileSync(f.file, 'utf8')).subtitleProofreading).toEqual(f.artifact.subtitleProofreading);
+        expect(JSON.parse(fs.readFileSync(f.queue, 'utf8'))).toEqual({ jobs: [] });
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
+
+test.each(['allowed', 'ignored', 'disabled', 'wrong-policy', 'manual', 'historical', 'copy-repair', 'subtitle-repair'])('topic final recheck respects its own policy and repair boundary: %s', async kind => {
+    const f = fixture();
+    try {
+        Object.assign(f.artifact, { mode: 'local_review', publicationKind: 'keyword_topic', automaticPublicationRequired: kind !== 'manual' });
+        fs.writeFileSync(f.file, JSON.stringify(f.artifact));
+        const before = fs.readFileSync(f.file, 'utf8');
+        const config = jest.fn(() => ({ automaticPublication: { mode: kind === 'disabled' ? 'off' : 'auto',
+            policyVersion: kind === 'wrong-policy' ? 'own-stream-v1' : 'topic-v1', scope: 'configured_keywords', enabled: true,
+            keywords: ['岁己'], roomIds: ['25788785'], ignoredRoomIds: kind === 'ignored' ? ['25788785'] : [],
+            activatedAt: kind === 'historical' ? '2026-10-05T00:00:00Z' : '2026-10-03T00:00:00Z', authorizationNote: '关键词自动授权' } }));
+        const reviewFinal = jest.fn(async (row: Artifact, required: any) => ({ ...row, ...required,
+            publicationReview: { status: 'passed' }, publicationDecision: { action: 'auto_queue' } }));
+        const flags = kind === 'copy-repair' ? [] : kind === 'subtitle-repair' ? ['--repair-subtitles'] : ['--review-final'];
+        const result = await recheckOwnPublication([...f.args, ...flags], { ...f.io, config, reviewFinal });
+        expect(config).toHaveBeenCalledWith('25788785', f.artifact);
+        expect(f.io.repair).not.toHaveBeenCalled();
+        if (kind === 'allowed') {
+            expect(result).toMatchObject({ changed: true, decision: 'auto_queue' });
+            const saved = JSON.parse(fs.readFileSync(f.file, 'utf8'));
+            expect(saved.humanReview).toBeUndefined(); expect(saved.ownStreamHumanReview).toBeUndefined();
+        } else {
+            expect(result.changed).toBe(false); expect(reviewFinal).not.toHaveBeenCalled();
+            expect(fs.readFileSync(f.file, 'utf8')).toBe(before);
+        }
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
+
 test('explicit copy recheck saves a backup and keeps numeric identity, source media and subtitle bytes', async () => {
     const f = fixture();
     try {
