@@ -46,10 +46,16 @@ function loadWorkflow(name) {
     return require(path.join(releaseDir, entry));
 }
 
+// Optional observers must not activate/resolve a release during local cache-only work.
+function getLoadedWorkflow(name) {
+    const entry = release?.manifest.entries[name];
+    return entry ? require.cache[path.join(release.releaseDir, entry)]?.exports : undefined;
+}
+
 function checkRuntime() {
     const { releaseDir, manifest } = resolveRelease();
     for (const name of Object.keys(manifest.entries)) loadWorkflow(name);
     return { releaseDir, version: manifest.version, entries: Object.keys(manifest.entries) };
 }
 
-module.exports = { loadWorkflow, checkRuntime };
+module.exports = { loadWorkflow, getLoadedWorkflow, checkRuntime };

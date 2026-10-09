@@ -748,6 +748,79 @@ class MultiReferenceComicTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in selected], ["shiori"])
         self.assertEqual(selected[0]["_comicReferenceReason"], "appeared")
 
+    def test_miting_unnamed_memories_do_not_receive_unrelated_character_references(self):
+        production = json.loads((ROOT / "config" / "production.json").read_text(encoding="utf-8"))
+        self.highlight.write_text(
+            "[24m] 第一次和犬绒、羽啾见面，和花礼一起吃饭。\n"
+            "[25m] 犬绒、羽啾和花礼都很可爱。\n"
+            "[108m] 我的声音不像岁己。\n"
+            "[109m] 也不像岁己。\n"
+            "[24m] (💬 听说下周小栞小岁老弥来了又要聚)\n"
+            "[25m] (💬 听说下周小栞小岁老弥来了又要聚)\n"
+            "[26m] (💬 听说下周小栞小岁老弥来了又要聚)",
+            encoding="utf-8",
+        )
+        selected = comic.resolve_image_prompt_extra_streamers(
+            production, "31368705", str(self.highlight),
+            "米汀讲述聚会见闻，回忆框内用无名剪影表现害羞的人躲在另一人身后。",
+        )
+        self.assertEqual(selected, [])
+
+    def test_miting_story_characters_are_selected_from_source_instead_of_fixed_pair(self):
+        production = json.loads((ROOT / "config" / "production.json").read_text(encoding="utf-8"))
+        # Earlier registry entries must not fill the mention budget before the
+        # actual people in the selected memory can be considered.
+        self.highlight.write_text(
+            "岁己和栞栞下周才来。岁己和栞栞下周才来。\n"
+            "昨天和犬绒、花礼、羽啾见面。犬绒、花礼、羽啾一起吃饭。",
+            encoding="utf-8",
+        )
+        selected = comic.resolve_image_prompt_extra_streamers(
+            production, "31368705", str(self.highlight),
+            "米汀回忆昨天和犬绒、花礼、羽啾一起吃饭。羽啾害羞地躲在犬绒身后。",
+        )
+        self.assertEqual({item["id"] for item in selected}, {"mofu", "harei", "chu2u"})
+        self.assertTrue(all(item["_comicReferenceReason"] == "mentioned" for item in selected))
+
+    def test_miting_keeps_source_backed_sui_when_the_script_actually_uses_her(self):
+        production = json.loads((ROOT / "config" / "production.json").read_text(encoding="utf-8"))
+        self.highlight.write_text("米汀聊岁己的歌声。岁己唱歌很好听。", encoding="utf-8")
+        selected = comic.resolve_image_prompt_extra_streamers(
+            production, "31368705", str(self.highlight), "米汀回忆岁己唱歌的片段。",
+        )
+        self.assertEqual([item["id"] for item in selected], ["sui"])
+
+    def test_sui_only_uploads_shiori_reference_when_storyboard_uses_her(self):
+        production = json.loads((ROOT / "config" / "production.json").read_text(encoding="utf-8"))
+        policy = production["ai"]["roomSettings"]["25788785"]["multiReferenceImages"]
+        self.assertTrue(policy["filterExtraImagesByComicScript"])
+        self.assertTrue(policy["filterMentionedImagesByComicScript"])
+        self.assertTrue(policy["filterAppearedImagesByComicScript"])
+        self.config["roomSettings"]["25788785"]["multiReferenceImages"] = policy
+        self.config["ai"]["streamerRegistry"]["shiori"]["mentionLabels"] = ["Shiori"]
+        self.highlight.write_text("The host mentioned Shiori, but played alone.", encoding="utf-8")
+        solo_script = "Panel 1: Sui plays alone."
+        shiori_script = "Panel 1: Sui and Shiori play together."
+
+        self.assertEqual([], comic.resolve_image_prompt_extra_streamers(
+            self.config, "25788785", str(self.highlight), solo_script,
+        ))
+        selected = comic.resolve_image_prompt_extra_streamers(
+            self.config, "25788785", str(self.highlight), shiori_script,
+        )
+        self.assertEqual([item["id"] for item in selected], ["shiori"])
+        self.assertEqual(selected[0]["_comicReferenceReason"], "mentioned")
+
+        self.write_sidecar(["shiori"])
+        self.assertEqual([], comic.resolve_image_prompt_extra_streamers(
+            self.config, "25788785", str(self.highlight), solo_script,
+        ))
+        selected = comic.resolve_image_prompt_extra_streamers(
+            self.config, "25788785", str(self.highlight), shiori_script,
+        )
+        self.assertEqual([item["id"] for item in selected], ["shiori"])
+        self.assertEqual(selected[0]["_comicReferenceReason"], "appeared")
+
     def test_asr_confirmed_speaker_is_injected_into_first_storyboard_prompt(self):
         self.highlight.write_text(
             "岁己和栞栞一起玩双人自行车，互相提醒左右方向。",
@@ -1000,7 +1073,7 @@ class MultiReferenceComicTests(unittest.TestCase):
 
     def test_second_prompt_build_preserves_fresh_script_provenance(self):
         comic.reset_comic_script_meta()
-        comic.set_comic_script_meta(provider="daiYu", model="gpt-5.6-luna", status="success")
+        comic.set_comic_script_meta(provider="daiYu", model="gpt-6-luna", status="success")
 
         comic.build_comic_prompt(
             "",
@@ -1010,7 +1083,7 @@ class MultiReferenceComicTests(unittest.TestCase):
 
         meta = comic.get_comic_script_meta()
         self.assertEqual(meta["provider"], "daiYu")
-        self.assertEqual(meta["model"], "gpt-5.6-luna")
+        self.assertEqual(meta["model"], "gpt-6-luna")
 
     def test_shiori_unconstrained_asr_miting_cannot_select_image_reference(self):
         self.configure_shiori_incident()
@@ -1233,7 +1306,7 @@ process.stdout.write(context.buildSharedLiveSourcePrefix(
         cache_plan = comic.build_explicit_prompt_cache_plan(
             prompt,
             self.config,
-            "gpt-5.6-luna",
+            "gpt-6-luna",
             comic.get_full_live_context_rollout_percent(
                 self.config,
                 "25788785",

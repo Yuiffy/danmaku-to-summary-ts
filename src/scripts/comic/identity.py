@@ -115,6 +115,7 @@ def get_multi_reference_config(
         "useMentionedOnlyAsContext": True,
         "filterExtraImagesByComicScript": True,
         "filterMentionedImagesByComicScript": True,
+        "filterAppearedImagesByComicScript": False,
         "appendCharacterDescriptions": True,
         "imageOrder": ["host", "appeared_streamers", "cover", "screenshots", "default"],
         "requirePlannedRosterForAppearedCharacters": False,

@@ -1,3 +1,4 @@
+import { recordAiUsage } from '../ai/usage';
 export { parseModelJson } from './json';
 export { resolveRetryPolicy, retryReason, retryDelay } from './retry';
 export interface TextChoice {
@@ -189,5 +190,6 @@ export function buildAiUsageMetrics(attempt: Record<string, unknown> = {}) {
 }
 
 export function logAiUsage(attempt: Record<string, unknown>) {
+    recordAiUsage(attempt);
     console.log(`[AI_USAGE] ${JSON.stringify(buildAiUsageMetrics(attempt))}`);
 }

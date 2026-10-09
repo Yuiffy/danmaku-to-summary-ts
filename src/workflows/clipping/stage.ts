@@ -21,7 +21,7 @@ export interface BudgetConfig {
     holdoutReserveCny?: number;
 }
 export interface StageContext { stage: string; roomId: string; sessionId: string; split?: 'screening' | 'holdout';
-    outputContract?: { key: string; type: string } | null; responseDiagnosticsDirectory?: string }
+    outputContract?: { key: string; type: string; allowDomainRejected?: boolean } | null; responseDiagnosticsDirectory?: string }
 export interface Generation {
     text: string; meta?: { usage?: unknown; attempts?: Array<Record<string, any>>; [key: string]: any };
 }
@@ -180,6 +180,7 @@ async function runStageAttempt(config: StageConfig, budget: BudgetConfig, contex
             apiMode: config.apiMode, maxTokens: config.maxTokens, timeoutMs: config.timeoutMs,
             deadlineAt, images, strictEvaluation: true,
             structuredOutputKey: context.outputContract?.key, structuredOutputType: context.outputContract?.type,
+            structuredOutputAllowDomainRejected: context.outputContract?.allowDomainRejected === true,
             responseDiagnosticsDirectory: context.responseDiagnosticsDirectory, requestPhase: context.stage,
             exactModel: true, fallbackModelsEnabled: false, allowProviderFallback: false, strictResponses: true,
             transientMaxAttempts: 1, promptCacheRolloutPercent: 0 });

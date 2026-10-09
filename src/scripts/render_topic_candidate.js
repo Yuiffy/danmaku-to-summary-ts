@@ -7,7 +7,7 @@ const manual = require('./manual_clip_queue');
 const configLoader = require('./config-loader');
 const { buildPreflightEvidence } = require('./clipping/preflight_evidence');
 const { ensureCandidateDraft, correctCandidateDraft, approveCandidateDraft, hasDraftApproval,
-    candidateDraftEvidence, writeJsonAtomic } = require('./clipping/candidate_subtitles');
+    candidateDraftEvidence, writeJsonAtomic, writeRevision } = require('./clipping/candidate_subtitles');
 const { linkClipEvidence } = require('./clipping/subtitle_evidence');
 const { topicReviewLines } = require('./clipping/topic_review_runner');
 const { ensureCandidatePreview, syncPreviewSubtitles } = require('./clipping/candidate_preview');
@@ -34,6 +34,10 @@ function prepareCandidate(metadata, metadataPath, options, rootConfig) {
     const config = topic.getClipTopicsConfig(rootConfig);
     const draft = ensureCandidateDraft(metadata, metadataPath, evidence, config);
     const approved = hasDraftApproval(metadata, evidence, options.expectedSha256);
+    const automatic = options.automaticReview === 'yes';
+    if (automatic && (approved || draft.edits.length || metadata.humanReview
+        || metadata.aiReview.status !== 'ready' || metadata.aiReview.quality?.issues?.length
+        || metadata.aiReview.keyword?.status !== 'confirmed')) throw new Error('Automatic candidate review requires a fresh ready preflight without human subtitle edits');
     if (options.requireApproval && !approved) throw new Error('Candidate subtitle revision lacks matching upload approval');
     if (metadata.aiReview.keyword?.status !== 'confirmed' && !approved) {
         throw new Error('Keyword identity still needs review; rerun preflight with verified evidence');
@@ -58,7 +62,11 @@ function prepareCandidate(metadata, metadataPath, options, rootConfig) {
     if (reviewedGrounding.issues.length) throw new Error(`Public copy still needs review: ${reviewedGrounding.issues.join('; ')}`);
     const outputDir = path.dirname(metadataPath);
     const outputStem = path.basename(metadataPath, path.extname(metadataPath));
-    const upload = metadata.upload;
+    const upload = { ...metadata.upload };
+    if (options.tags !== undefined) {
+        if (options.requireApproval) throw new Error('Queued upload tags cannot be overridden during rendering');
+        upload.tags = String(options.tags).split(',').map(tag => tag.trim()).filter(Boolean);
+    }
     if (!upload?.prefix || !upload?.source || !upload.tags?.length) throw new Error('Candidate lacks upload identity');
     return {
         id: String(options.candidateId), mediaPath: metadata.source.mediaPath, srtPath: metadata.source.srtPath,
@@ -68,12 +76,13 @@ function prepareCandidate(metadata, metadataPath, options, rootConfig) {
         recordedAt: metadata.recordedAt, streamTitle: metadata.streamTitle,
         subtitleSegments: corrected.segments,
         sourceMetadata: { ...metadata, candidateId: Number(options.candidateId), uploadId: Number(options.candidateId),
-            humanReview: { reviewedAt: new Date().toISOString(), note: options.reviewNote.trim(),
+            ...(!automatic ? { humanReview: { reviewedAt: new Date().toISOString(), note: options.reviewNote.trim(),
+                authority: metadata.candidateRecovery?.status === 'ready' ? 'ai_replan' : 'user',
                 sourceSha256: evidence.sourceSha256, originalCopy: metadata.copy, copy,
                 originalIssues: metadata.aiReview.quality?.issues || [],
                 copyGrounding: reviewedGrounding, appliedSubtitleEdits: metadata.aiReview.subtitleEdits || [],
-                userSubtitleEdits: draft.edits, subtitleApproval: approved ? draft.approval : null },
-            aiReview: { ...metadata.aiReview, applied: true }, autoUploadEnabled: false }
+                userSubtitleEdits: draft.edits, subtitleApproval: approved ? draft.approval : null } } : {}),
+            aiReview: { ...metadata.aiReview, applied: true }, upload, autoUploadEnabled: false }
     };
 }
 
@@ -85,13 +94,48 @@ async function renderCandidate(metadataPath, options, rootConfig = configLoader.
         // Recover an interrupted registry import without overwriting completed media.
         if (metadata.mode === 'topic_candidate_manual_cut' && metadata.status === 'success'
             && Number(metadata.candidateId) === Number(options.candidateId) && fs.existsSync(metadata.output?.mediaPath || '')) {
-            if (options.requireApproval && (metadata.candidateSubtitles?.approval?.sha256 !== options.expectedSha256
-                || !metadata.output.burnedSubtitles || !fs.existsSync(metadata.output.srtPath || '')
-                || !fs.existsSync(metadata.output.coverPath || ''))) throw new Error('Rendered artifact does not match queued approval');
+            if (options.requireApproval) {
+                const evidence = buildPreflightEvidence(topic.parseTopicSrt(metadata.source.srtPath).segments);
+                if (!hasDraftApproval(metadata, evidence, options.expectedSha256) || !metadata.output.burnedSubtitles
+                    || !fs.existsSync(metadata.output.srtPath || '') || !fs.existsSync(metadata.output.coverPath || '')) {
+                    throw new Error('Rendered artifact does not match queued approval');
+                }
+            }
             return metadata;
+        }
+        if (!metadata.editorial?.copyGrounding || metadata.aiReview?.boundaryReview?.status === 'needs_review') {
+            const recovery = require('./workflow-runtime').loadWorkflow('clipping/topicRecovery');
+            const { prepareTopicGroup, preflightSelections } = require('./clipping/preflight_runner');
+            const config = topic.getClipTopicsConfig(rootConfig);
+            const evidence = () => buildPreflightEvidence(topic.parseTopicSrt(metadata.source.srtPath).segments);
+            const source = { ...metadata.source, roomId: metadata.roomId, streamerName: metadata.streamerName,
+                recordedAt: metadata.recordedAt };
+            await recovery.recoverCandidatePlan(metadata, metadataPath, options, config, {
+                evidence, ensureDraft: item => ensureCandidateDraft(item, metadataPath, evidence(), config),
+                approved: item => hasDraftApproval(item, evidence(), options.expectedSha256),
+                corrected: (item, input) => candidateDraftEvidence(item, input).evidence,
+                prepare: async (group, input, diagnostics, retainedContext) => {
+                    const xml = metadata.source.xmlPath || metadata.source.srtPath.replace(/(?:\.speaker)?\.srt$/iu, '.xml');
+                    const danmaku = fs.existsSync(xml) ? await topic.parseDanmakuXml(xml) : [];
+                    return prepareTopicGroup(group, input, config, rootConfig, source, diagnostics,
+                        { danmaku, boundaryRepair: false, retainedContext });
+                }, selections: (plan, group) => preflightSelections(plan, group, config), writeRevision,
+                save: item => writeJsonAtomic(metadataPath, item), now: () => new Date().toISOString()
+            });
         }
         const task = prepareCandidate(metadata, metadataPath, options, rootConfig);
         const result = await manual.cutTask(task, rootConfig);
+        if (options.automaticReview === 'yes') {
+            const final = JSON.parse(fs.readFileSync(result.output.metadataPath, 'utf8'));
+            final.mode = 'local_review';
+            final.publicationKind = 'keyword_topic';
+            final.automaticPublicationRequired = true;
+            final.editorial = { ...final.editorial, status: 'planned', copyStatus: 'prepared' };
+            fs.writeFileSync(result.output.metadataPath, JSON.stringify(final, null, 2), 'utf8');
+            await require('./clipping/topic_automatic_publication').reviewCandidateFinal(final, rootConfig,
+                { ...topic, buildPreflightEvidence, buildQueueMediaConfig: manual.buildQueueMediaConfig,
+                    coverGenerator: topic.generateClipCover });
+        }
         const review = fs.readFileSync(task.reviewPath, 'utf8');
         fs.writeFileSync(task.reviewPath, `${review.trimEnd()}\n   Candidate ID: ${task.id}\n${topicReviewLines(task.sourceMetadata.aiReview, task.sourceMetadata.humanReview).join('\n')}\n`, 'utf8');
         if (options.registryPath && options.sourceReview) {
@@ -143,7 +187,18 @@ function updateCandidate(metadataPath, options, rootConfig = configLoader.getCon
                 metadata.status = 'pending_preflight';
             }
         }
+        if (options.tags !== undefined) {
+            const tags = String(options.tags).split(',').map(tag => tag.trim()).filter(Boolean);
+            if (!tags.length) throw new Error('At least one reviewed upload tag is required');
+            metadata.upload.tags = tags;
+            metadata.candidateSubtitles.approval = null;
+            metadata.status = 'pending_preflight';
+        }
         if (options.action === 'approve' || options.approveUpload === 'yes') {
+            if (['running', 'failed'].includes(metadata.candidateRecovery?.status)) {
+                metadata.candidateRecoveryHistory = [...(metadata.candidateRecoveryHistory || []), metadata.candidateRecovery];
+                metadata.candidateRecovery = null;
+            }
             approveCandidateDraft(metadata, evidence, options.reviewNote);
         }
         metadata.candidateId = Number(options.candidateId);
@@ -158,6 +213,7 @@ function updateCandidate(metadataPath, options, rootConfig = configLoader.getCon
             candidateSrtSha256: draft.sha256, candidateRevision: draft.revision,
             reviewPreview: metadata.reviewPreview || null,
             edits: draft.edits, approval: draft.approval || null, copy: metadata.copy,
+            uploadTags: metadata.upload.tags,
             cues: draft.cues.map((cue, index) => ({ number: index + 1, start: cue.start, end: cue.end, text: cue.text })) };
     } finally { fs.closeSync(lock); fs.unlinkSync(lockPath); }
 }

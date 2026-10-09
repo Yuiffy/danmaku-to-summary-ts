@@ -1,6 +1,5 @@
 'use strict';
 
-const { publicDescription, revisionEvidence } = require('./clipping/rendered_subtitles');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -9,6 +8,9 @@ const topic = require('./topic_clipper');
 const { buildSubtitleEvidence, linkClipEvidence } = require('./clipping/subtitle_evidence');
 const { copyDigest } = require('./clipping/actor_review');
 const { writeJsonAtomic } = require('./clipping/candidate_subtitles');
+const { fileDigest, sourceSnapshot } = require('./clipping/source_snapshot');
+
+const { publicDescription, revisionEvidence } = require('./clipping/rendered_revision_evidence');
 
 const RENDERED_CLIP_MODES = new Set(['own_stream_fun_review', 'local_review', 'topic_candidate_manual_cut', 'manual_clip_queue']);
 
@@ -16,26 +18,6 @@ function sourceEvidenceHash(metadata) {
     return metadata.attributionReview?.sourceSha256 || metadata.grounding?.sourceSha256
         || metadata.selectionRejection?.sourceSha256 || metadata.aiReview?.sourceSha256
         || metadata.editorial?.copyGrounding?.sourceSha256 || metadata.manualRevisionSource?.sourceSha256;
-}
-
-function fileDigest(file) {
-    const hash = crypto.createHash('sha256');
-    const fd = fs.openSync(file, 'r');
-    try {
-        const buffer = Buffer.alloc(1024 * 1024);
-        let count;
-        while ((count = fs.readSync(fd, buffer)) > 0) hash.update(buffer.subarray(0, count));
-    } finally { fs.closeSync(fd); }
-    return hash.digest('hex');
-}
-
-function sourceSnapshot(metadata) {
-    const source = metadata.source;
-    const stat = fs.statSync(source.mediaPath, { bigint: true });
-    return { mediaPath: path.resolve(source.mediaPath), mediaBytes: String(stat.size), mediaMtimeNs: String(stat.mtimeNs),
-        srtPath: path.resolve(source.srtPath), srtSha256: fileDigest(source.srtPath),
-        xmlPath: source.xmlPath ? path.resolve(source.xmlPath) : null,
-        xmlSha256: source.xmlPath ? fileDigest(source.xmlPath) : null };
 }
 
 function assertRenderedRevision(metadata) {

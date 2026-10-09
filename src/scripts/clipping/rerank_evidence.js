@@ -30,8 +30,8 @@ function buildRerankEvidence(candidates, parsed, danmaku, config) {
         const audience = readDanmakuWindow(candidate,
             Math.max(1, Math.floor(Number(config.ai?.maxCandidateDanmakuLines) || 14)));
         const cues = cuesForWindow(subtitleEvidence, {
-            start: candidate.start - Number(config.boundaryStartBacktrackSeconds ?? 12),
-            end: candidate.end + Number(config.boundaryEndExtendSeconds ?? 45)
+            start: candidate.start - (config.requireTopicEditPlan ? require('./topic_edit_plan').contextSeconds(config) : Number(config.boundaryStartBacktrackSeconds ?? 12)),
+            end: candidate.end + (config.requireTopicEditPlan ? require('./topic_edit_plan').contextSeconds(config) : Number(config.boundaryEndExtendSeconds ?? 45))
         });
         cues.forEach(cue => uniqueCues.set(cue.id, cue));
         const samples = audience.sampleItems || [];

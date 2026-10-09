@@ -22,6 +22,12 @@ const good = () => ({ clipId: 'c1', decision: 'repair', copy: { title: 'GuestCli
     sourceKind: 'recount', identityBasis: 'voice', speakerCueIds: ['G1'], cueIds: ['G1'] }], evidenceDanmakuIds: [] });
 
 describe('independent action attribution review', () => {
+  test('a required review survives a revision even when the new copy has no heuristic risk', () => {
+    const value = { start: 10, end: 20, title: '普通聊天', description: '今天聊天', coverText: '聊天',
+      attributionRequired: true, grounding: { sourceKind: 'live_speech' } };
+    expect(attributionRisk(value, source, context)).toContain('required_attribution_review');
+    expect(attributionRisk({ ...value, attributionRequired: false }, source, context)).not.toContain('required_attribution_review');
+  });
   test('carries automatic word normalization as data, without promoting it to speaker identity proof', () => {
     const evidence = buildSubtitleEvidence([{ start: 0, end: 10, text: 'Guest asked Mimi.',
       asrEvidence: { proofreading: { edits: [{ from: 'Gust', to: 'Guest', method: 'curated_context' }] } } }]);
@@ -77,6 +83,9 @@ describe('independent action attribution review', () => {
       expect(validateActorReview(review, p)).toEqual([]);
     }
     const prompt = actorReviewPrompt([p], namedContext);
+    expect(prompt).toContain('允许有原文依据的自然概括');
+    expect(prompt).toContain('不得新增“当面”');
+    expect(prompt).toContain('动物、昆虫、物品不是待实名的人物');
     expect(prompt).toContain('被提及者、转述对象');
     expect(prompt).toContain('本人未出声不意味着故事对象无法具名');
     expect(prompt).toContain('不机械替换代词');
@@ -131,6 +140,29 @@ describe('independent action attribution review', () => {
   test('an identity repair cannot silently replace a question with a declaration', () => {
     const bad = good(); bad.claims[0].action = 'declared affection';
     expect(validateActorReview(bad, packet())).toContain('question_action_removed');
+  });
+  test('independent review can correct a mistaken question in old copy only with a literal in-window action citation', () => {
+    const quote = '到时候你就知道对方是男的还是女的';
+    const evidence = buildSubtitleEvidence([{ start: 0, end: 10, text: quote, speakerEvidence: voice('Guest') }]);
+    const prepared = buildActorReviewPacket({ ...clip, title: 'GuestClip追问对方', description: '追问对方是男是女' }, 'c1', evidence, [], context);
+    const review: any = { ...good(), copy: { title: 'GuestClip设想见面认出对方', coverText: '见面就知道了', description: 'GuestClip设想见面时知道对方的性别' },
+      claims: [{ ...good().claims[0], action: '设想见面时知道对方性别', target: null, sourceKind: 'live_speech' }],
+      originalQuestionCorrection: { reason: '原句是将来见面时知道的设想，没有实施追问', cueIds: ['G1'], quote } };
+    expect(validateActorReview(review, prepared)).toEqual([]);
+    for (const correction of [undefined, { ...review.originalQuestionCorrection, quote: '伪造的原话证据没有出现过' },
+      { ...review.originalQuestionCorrection, cueIds: ['G2'] }]) {
+      expect(validateActorReview({ ...review, originalQuestionCorrection: correction }, prepared)).toContain('question_action_removed');
+    }
+  });
+  test('repair offers literal name context for the failed claim without auto-approving or borrowing outside cues', () => {
+    const p = packet(), review = good(); review.claims[0].target = 'Mimi';
+    const before = JSON.stringify(review);
+    const feedback = require('./actor_review_feedback').repairFeedback(p, review, ['unproven_target:1']);
+    expect(feedback.claims[0].nameCitationCandidates[0].candidates).toEqual([
+      expect.objectContaining({ id: 'G1', text: 'I asked Mimi about it.' })]);
+    expect(JSON.stringify(review)).toBe(before);
+    const schema = require('./actor_review_schema').actorReviewResponseFormat([p]).schema;
+    expect(schema.properties.reviews.items.anyOf[0].properties.originalQuestionCorrection.anyOf[0].properties.cueIds.items.enum).toEqual(['G1']);
   });
   test('past events cannot become live events merely by setting sourceKind to recount', () => {
     const review = good(); review.copy.description = '直播中现场追问米米';
@@ -280,7 +312,7 @@ describe('independent action attribution review', () => {
       const result = await reviewClipActors([clip], { participantContext: mentioned }, [], evidence, { roomId: '1' },
         { attribution: { enabled: true, roomIds: ['1'], dialogueEnabled: true, maxRequests: 3 }, ai: { enabled: true, selectionCacheEnabled: false } },
         { ai: { text: { provider: 'daiYu' } } }, diagnostics);
-      expect(diagnostics.requests.map((row: any) => row.phase)).toEqual(['actor-review-1', 'dialogue-evidence-2']);
+      expect(diagnostics.requests.map((row: any) => row.phase)).toEqual(['actor-review-1', 'dialogue-evidence-2', 'actor-review-3-repair']);
       expect(result[0].publicCopyPending).toBe(true);
       expect(mentioned.people[1].presence).toBe('mentioned_only');
     } finally { spy.mockRestore(); }

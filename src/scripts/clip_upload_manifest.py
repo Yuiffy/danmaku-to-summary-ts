@@ -9,8 +9,10 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 try:
     from .clip_qa import validate_metadata_qa, validate_registry_qa
+    from .clip_auto_publication import optional_publication_identity
 except ImportError:
     from clip_qa import validate_metadata_qa, validate_registry_qa
+    from clip_auto_publication import optional_publication_identity
 
 
 MANIFEST_TYPE = "bilibili_clip_upload_manifest"
@@ -170,6 +172,8 @@ def load_upload_manifest(
         if review_errors:
             review_errors.extend((metadata.get("attributionReview") or {}).get("issues") or [])
             review_errors.extend((metadata.get("grounding") or {}).get("issues") or [])
+            review_errors.extend((metadata.get("publicationReview") or {}).get("issues") or [])
+            review_errors.extend((metadata.get("publicationDecision") or {}).get("reasons") or [])
         copy = metadata.get("copy") if isinstance(metadata.get("copy"), dict) else {}
         output = metadata.get("output") if isinstance(metadata.get("output"), dict) else {}
         window = metadata.get("window") if isinstance(metadata.get("window"), dict) else {}
@@ -273,6 +277,11 @@ def load_upload_manifest(
                 "mediaPath": media_path,
                 "cover": cover_path,
                 "coverPath": cover_path,
+                **({"parts": output["parts"], "activityReviewRequired": metadata.get("type") != "stream_game_submission",
+                    "gameReviewRequired": metadata.get("type") == "stream_game_submission",
+                    "externalSubtitles": upload.get("externalSubtitles") is True, "subtitleLanguage": upload.get("subtitleLanguage") or "zh-CN",
+                    "collectionSectionId": upload.get("collectionSectionId")}
+                   if metadata.get("type") == "stream_activity_submission" or output.get("parts") else {}),
                 "selectionSource": selection_source,
                 "metadataPath": metadata_path,
                 "srtPath": _resolve_optional_path(output.get("srtPath"), path.parent),
@@ -283,6 +292,8 @@ def load_upload_manifest(
                 "publicCopyPending": bool(metadata.get("publicCopyPending")),
                 "attributionStatus": (metadata.get("attributionReview") or {}).get("status"),
                 "humanReviewRequired": bool(metadata.get("ownStreamHumanReview")),
+                "automaticPublicationRequired": metadata.get("automaticPublicationRequired") is True,
+                "publicationIdentity": optional_publication_identity(metadata),
                 "pendingCut": metadata.get("status") in ("pending_preflight", "render_queued") and not media_path,
                 "candidateIndex": str(window.get("index") or ""),
                 "reviewPreview": metadata.get("reviewPreview"),

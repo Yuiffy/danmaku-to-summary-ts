@@ -10,15 +10,19 @@ const { validSelectionResponse } = require('./selection_request');
 const { rankThenEdit } = require('./ranked_editorial');
 
 const rootConfig = { ai: { text: { provider: 'daiYu' } } };
+const topicPlan = (id, next = '') => ({ ranges: [{ startCueId: id, endCueId: id, action: 'keep', role: 'closing', reason: 'Complete exchange' }],
+    closingReason: 'The complete exchange closes before the next topic or recording end', continuation: next ? 'next_topic' : 'source_end', nextCueId: next });
 
 test.each([20, 254.154, 600])('keeps a complete %s-second AI topic through recall, rerank, alignment and cached replay', async duration => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'own-duration-'));
     const parsed = { segments: [{ start: 10, end: 10 + duration, text: 'A complete topic, including the closing reaction.' }] };
     const clip = { startCueId: 'G1', endCueId: 'G1', evidenceCueIds: ['G1'], evidenceDanmakuIds: [], sourceKind: 'live_speech', score: 90 };
     const generate = jest.spyOn(generator, 'generateTextWithDaiYu').mockImplementation(async (_prompt, options) => ({
-        text: JSON.stringify({ clips: [options.requestPhase.startsWith('recall-')
+        text: JSON.stringify({ clips: [options.requestPhase.endsWith('-boundary-review')
+            ? { candidateIndex: 1, approved: true, issues: [], requiredEndCueId: '' }
+            : options.requestPhase.startsWith('recall-')
             ? { ...clip, event: 'A complete topic' }
-            : { candidateIndex: 1, title: 'A complete topic', description: 'The host explains a topic.', coverText: 'Full\nTopic', score: 90 }] }),
+            : { candidateIndex: 1, topicEditPlan: topicPlan('G1'), title: 'A complete topic', description: 'The host explains a topic.', coverText: 'Full\nTopic', score: 90 }] }),
         meta: { model: 'fixture' }
     }));
     const config = own.getOwnStreamClipsConfig({ ownStreamClips: { ai: { rankThenEdit: { enabled: false } } } });
@@ -28,10 +32,11 @@ test.each([20, 254.154, 600])('keeps a complete %s-second AI topic through recal
         expect(first.clips).toHaveLength(1);
         expect(first.clips[0]).toMatchObject({ start: 10, end: 10 + duration,
             grounding: { status: 'linked', reusedRecall: true } });
-        expect(own.alignClipToSubtitleBoundaries(first.clips[0], parsed.segments, config, 20 + duration).end).toBe(10 + duration);
+        expect(own.alignClipToSubtitleBoundaries(first.clips[0], parsed.segments, config, 20 + duration).end).toBeCloseTo(13 + duration, 3);
         expect((await run()).clips).toEqual(first.clips);
-        expect(generate).toHaveBeenCalledTimes(2);
-        for (const [prompt] of generate.mock.calls) {
+        expect(generate).toHaveBeenCalledTimes(3);
+        for (const [prompt, options] of generate.mock.calls) {
+            if (options.requestPhase.endsWith('-boundary-review')) continue;
             expect(prompt).toContain('时长由内容完整性决定');
             expect(prompt).not.toContain('35-210');
             expect(prompt).not.toContain('最多允许5秒边界容差');
@@ -44,9 +49,12 @@ test('ranked detail editing preserves both long and short selected topics under 
         { start: 400, end: 420, text: 'Complete short exchange.' }] };
     const candidates = [{ index: 31, start: 10, end: 264.154 }, { index: 47, start: 400, end: 420 }];
     const generate = jest.spyOn(generator, 'generateTextWithDaiYu').mockImplementation(async (_prompt, options) => ({
-        text: JSON.stringify(options.requestPhase === 'global-rank'
+        text: JSON.stringify(options.requestPhase.endsWith('-boundary-review')
+            ? { clips: candidates.map(c => ({ candidateIndex: c.index, approved: true, issues: [], requiredEndCueId: '' })) }
+            : options.requestPhase === 'global-rank'
             ? { selected: candidates.map(c => ({ candidateIndex: c.index, score: 90, reason: 'Complete topic' })), skipped: [] }
             : { clips: candidates.map((c, index) => ({ candidateIndex: c.index, startCueId: `G${index + 1}`, endCueId: `G${index + 1}`,
+                topicEditPlan: topicPlan(`G${index + 1}`, index === 0 ? 'G2' : ''),
                 evidenceCueIds: [`G${index + 1}`], evidenceDanmakuIds: [], sourceKind: 'live_speech', score: 90,
                 title: 'A complete topic', description: 'The host explains a topic.', coverText: 'Full\nTopic', reason: 'Complete topic' })) }),
         meta: { model: 'fixture' }

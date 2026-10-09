@@ -1,183 +1,100 @@
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
 import { ConfigProvider } from '../../core/config/ConfigProvider';
-import { WeChatWorkNotifier } from '../notification/WeChatWorkNotifier';
 import { DanmuRiskControlMonitor } from './DanmuRiskControlMonitor';
+import { RecorderLogEvent, RecorderLogSnapshot } from '../monitoring/RecorderLogSource';
+import { spawnPython } from '../../utils/pythonProcess';
 
-jest.mock('../../core/logging/LogManager', () => ({
-  getLogger: () => ({ debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() })
-}));
+jest.mock('../../utils/pythonProcess', () => ({ spawnPython: jest.fn() }));
+jest.mock('../../core/logging/LogManager', () => ({ getLogger: () => ({ debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() }) }));
 
-describe('DanmuRiskControlMonitor notifications', () => {
-  const intervalMs = 300000;
-  const notifyCooldownMs = 1800000;
+describe('DanmuRiskControlMonitor from recorder logs', () => {
+  let root: string, statePath: string, now: number, sequence: number;
+  let snapshot: RecorderLogSnapshot, source: { read: jest.Mock }, sendMarkdown: jest.Mock;
   let monitor: DanmuRiskControlMonitor;
-  let sendMarkdown: jest.Mock;
-  let checkRoom: jest.SpyInstance;
-  let getConfig: jest.SpyInstance;
-
-  function result(code: number, roomId = '25788785') {
-    return {
-      roomId, code, message: code === 0 ? 'OK' : String(code),
-      isRiskControl: code === -352, timestamp: new Date()
-    };
-  }
-
-  async function poll(code: number) {
-    checkRoom.mockResolvedValue(result(code));
-    await (monitor as any).check();
-  }
-
-  function nextPoll() {
-    jest.setSystemTime(Date.now() + intervalMs);
-  }
-
-  beforeEach(() => {
-    jest.useFakeTimers();
-    jest.setSystemTime(new Date('2026-09-13T11:12:39.000Z'));
-    getConfig = jest.spyOn(ConfigProvider, 'getConfig').mockReturnValue({
-      bilibili: { danmuRiskControl: {
-        enabled: true, intervalMs, notifyCooldownMs, roomIds: ['25788785']
-      } }
-    } as any);
-    sendMarkdown = jest.fn().mockResolvedValue(true);
-    monitor = new DanmuRiskControlMonitor({ sendMarkdown } as unknown as WeChatWorkNotifier);
-    checkRoom = jest.spyOn(monitor as any, 'checkRoom');
-  });
-
-  afterEach(() => {
-    monitor.stop();
-    jest.restoreAllMocks();
-    jest.useRealTimers();
-  });
-
-  test('pairs a risk alert with one recovery notification inside the cooldown', async () => {
-    await poll(-352);
-    nextPoll();
-    await poll(0);
-    nextPoll();
-    await poll(0);
-
-    expect(sendMarkdown).toHaveBeenCalledTimes(2);
-    expect(sendMarkdown.mock.calls[0][0]).toContain('⚠️ B站弹幕API风控告警');
-    const recovery = sendMarkdown.mock.calls[1][0];
-    expect(recovery).toContain('✅ B站弹幕API风控恢复');
-    expect(recovery).toContain('房间ID: 25788785');
-    expect(recovery).toContain('返回码: 0');
-    expect(recovery).toContain('19:12:39');
-    expect(recovery).toContain('19:17:39');
-    expect(recovery).toContain('5分0秒');
-  });
-
-  test('does not send recovery for a room that has always been healthy', async () => {
-    await poll(0);
-    nextPoll();
-    await poll(0);
-    expect(sendMarkdown).not.toHaveBeenCalled();
-  });
-
-  test('alerts immediately for a new incident after recovery', async () => {
-    await poll(-352);
-    nextPoll();
-    await poll(0);
-    nextPoll();
-    await poll(-352);
-    nextPoll();
-    await poll(0);
-
-    expect(sendMarkdown).toHaveBeenCalledTimes(4);
-    expect(sendMarkdown.mock.calls[2][0]).toContain('⚠️ B站弹幕API风控告警');
-    expect(sendMarkdown.mock.calls[3][0]).toContain('19:22:39');
-    expect(sendMarkdown.mock.calls[3][0]).toContain('5分0秒');
-  });
-
-  test('retains the reminder cooldown within one uninterrupted incident', async () => {
-    await poll(-352);
-    nextPoll();
-    await poll(-352);
-    expect(sendMarkdown).toHaveBeenCalledTimes(1);
-    jest.setSystemTime(Date.now() + notifyCooldownMs);
-    await poll(-352);
-    expect(sendMarkdown).toHaveBeenCalledTimes(2);
-    nextPoll();
-    await poll(0);
-    expect(sendMarkdown.mock.calls[2][0]).toContain('19:12:39');
-    expect(sendMarkdown.mock.calls[2][0]).toContain('40分0秒');
-  });
-
-  test('does not treat other API failures or thrown checks as recovery', async () => {
-    await poll(-352);
-    nextPoll();
-    await poll(-1);
-    checkRoom.mockRejectedValueOnce(new Error('network timeout'));
-    await (monitor as any).check();
-    expect(sendMarkdown).toHaveBeenCalledTimes(1);
-    nextPoll();
-    await poll(0);
-    expect(sendMarkdown).toHaveBeenCalledTimes(2);
-    expect(sendMarkdown.mock.calls[1][0]).toContain('10分0秒');
-  });
-
-  test.each([false, new Error('delivery failed')])('retries an undelivered start alert: %s', async failure => {
-    if (failure instanceof Error) sendMarkdown.mockRejectedValueOnce(failure);
-    else sendMarkdown.mockResolvedValueOnce(failure);
-    await poll(-352);
-    nextPoll();
-    await poll(-352);
-    expect(sendMarkdown).toHaveBeenCalledTimes(2);
-    expect(sendMarkdown.mock.calls[1][0]).toContain('⚠️ B站弹幕API风控告警');
-  });
-
-  test.each([false, new Error('delivery failed')])('retries recovery and preserves the first successful check time: %s', async failure => {
-    await poll(-352);
-    if (failure instanceof Error) sendMarkdown.mockRejectedValueOnce(failure);
-    else sendMarkdown.mockResolvedValueOnce(failure);
-    nextPoll();
-    await poll(0);
-    nextPoll();
-    await poll(0);
-    nextPoll();
-    await poll(0);
-    expect(sendMarkdown).toHaveBeenCalledTimes(3);
-    expect(sendMarkdown.mock.calls[1][0]).toEqual(sendMarkdown.mock.calls[2][0]);
-    expect(sendMarkdown.mock.calls[2][0]).toContain('19:17:39');
-  });
-
-  test('a relapse after an undelivered recovery starts a fresh alert immediately', async () => {
-    await poll(-352);
-    sendMarkdown.mockResolvedValueOnce(false);
-    nextPoll();
-    await poll(0);
-    nextPoll();
-    await poll(-352);
-    expect(sendMarkdown).toHaveBeenCalledTimes(3);
-    expect(sendMarkdown.mock.calls[2][0]).toContain('⚠️ B站弹幕API风控告警');
-  });
-
-  test('does not send an orphan recovery when the start alert was never delivered', async () => {
-    sendMarkdown.mockResolvedValueOnce(false);
-    await poll(-352);
-    nextPoll();
-    await poll(0);
-    expect(sendMarkdown).toHaveBeenCalledTimes(1);
-    nextPoll();
-    await poll(-352);
-    expect(sendMarkdown).toHaveBeenCalledTimes(2);
-  });
-
-  test('tracks incident and recovery independently for each room', async () => {
-    getConfig.mockReturnValue({ bilibili: { danmuRiskControl: {
-      enabled: true, intervalMs, notifyCooldownMs, roomIds: ['25788785', '123']
+  const event = (kind: RecorderLogEvent['kind'], target = 'getDanmuInfo'): void => {
+    snapshot.events.push({ id: String(++sequence), at: now, kind,
+      ...(kind === 'connected' || kind === 'disconnected' ? { roomId: target } : { endpoint: target }) });
+  };
+  const poll = () => (monitor as any).check();
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), 'recorder-monitor-test-'));
+    statePath = path.join(root, 'state.json'); now = Date.now(); sequence = 0;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+    jest.spyOn(ConfigProvider, 'getConfig').mockReturnValue({ bilibili: { danmuRiskControl: {
+      enabled: true, intervalMs: 1800000, notifyCooldownMs: 1800000, roomIds: ['25788785'], monitorStatePath: statePath
     } } } as any);
-    checkRoom.mockImplementation(async roomId => result(-352, roomId));
-    await (monitor as any).check();
-    nextPoll();
-    checkRoom.mockImplementation(async roomId => result(roomId === '25788785' ? 0 : -352, roomId));
-    await (monitor as any).check();
+    snapshot = { identity: 'process-1', events: [], rooms: new Map() };
+    source = { read: jest.fn(async () => snapshot) }; sendMarkdown = jest.fn().mockResolvedValue(true);
+    monitor = new DanmuRiskControlMonitor({ sendMarkdown } as any, source);
+    await monitor.start();
+  });
+  afterEach(async () => { monitor.stop(); jest.restoreAllMocks(); await fs.rm(root, { recursive: true, force: true }); });
+
+  test('pairs real API risk/recovery events, deduplicates repeated reads and never spawns a probe', async () => {
+    now += 1000; event('risk'); await poll();
+    now += 300000; event('api-recovered'); await poll(); await poll();
+    expect(sendMarkdown).toHaveBeenCalledTimes(2);
+    expect(sendMarkdown.mock.calls[0][0]).toContain('接口: getDanmuInfo');
+    expect(sendMarkdown.mock.calls[1][0]).toContain('5分0秒');
+    expect(spawnPython).not.toHaveBeenCalled();
+  });
+
+  test('does not replay historical errors when installed for the first time', async () => {
+    snapshot.events = [{ id: 'old-risk', at: now - 10000, kind: 'risk', endpoint: 'getDanmuInfo' }];
+    await poll(); expect(sendMarkdown).not.toHaveBeenCalled();
+  });
+
+  test('restart resumes the cursor without duplicate alerts and preserves pending recovery', async () => {
+    now += 1000; event('risk'); await poll();
+    monitor.stop(); monitor = new DanmuRiskControlMonitor({ sendMarkdown } as any, source);
+    await monitor.start(); expect(sendMarkdown).toHaveBeenCalledTimes(1);
+    now += 1000; event('api-recovered'); await poll();
+    expect(sendMarkdown).toHaveBeenCalledTimes(2);
+  });
+
+  test('room info, cached tokens and connection authentication cannot clear a shared API cooldown', async () => {
+    now += 1000; event('risk'); await poll();
+    now += 1000; event('api-success', 'getInfoByRoom'); event('api-success'); event('connected', '25788785'); await poll();
+    expect(sendMarkdown).toHaveBeenCalledTimes(1);
+    snapshot.identity = 'process-2'; now += 1000; event('api-success'); await poll();
+    expect(sendMarkdown).toHaveBeenCalledTimes(2);
+  });
+
+  test('records a short outage without alerting and pairs a sustained outage with authenticated recovery', async () => {
+    now += 1000; event('disconnected', '25788785'); await poll();
+    now += 10000; event('connected', '25788785'); await poll();
+    expect(sendMarkdown).not.toHaveBeenCalled();
+    now += 1000; event('disconnected', '25788785'); await poll();
+    now += 60000; await poll(); expect(sendMarkdown).toHaveBeenCalledTimes(1);
+    now += 1000; event('api-recovered'); await poll(); expect(sendMarkdown).toHaveBeenCalledTimes(1);
+    event('connected', '25788785'); await poll();
+    expect(sendMarkdown.mock.calls[1][0]).toContain('弹幕连接恢复');
+  });
+
+  test('delivers start before recovery after a notification failure without new log lines', async () => {
+    sendMarkdown.mockResolvedValueOnce(false);
+    now += 1000; event('risk'); await poll();
+    now += 1000; event('api-recovered'); await poll(); await poll();
     expect(sendMarkdown).toHaveBeenCalledTimes(3);
-    expect(sendMarkdown.mock.calls[2][0]).toContain('房间ID: 25788785');
-    nextPoll();
-    checkRoom.mockImplementation(async roomId => result(0, roomId));
-    await (monitor as any).check();
+    expect(sendMarkdown.mock.calls[0][0]).toEqual(sendMarkdown.mock.calls[1][0]);
+    expect(sendMarkdown.mock.calls[2][0]).toContain('恢复');
+    expect(JSON.parse(await fs.readFile(statePath, 'utf8')).outbox).toEqual([]);
+  });
+
+  test('missing logs cannot announce recovery and unmonitored room failures are ignored', async () => {
+    now += 1000; event('risk'); event('disconnected', '999'); await poll();
+    source.read.mockRejectedValueOnce(new Error('missing log'));
+    now += 1800000; await poll(); expect(sendMarkdown).toHaveBeenCalledTimes(1);
+    await poll(); expect(sendMarkdown).toHaveBeenCalledTimes(1);
+  });
+
+  test('repeated risk events respect cooldown, but a real relapse starts a new incident', async () => {
+    now += 1000; event('risk'); await poll();
+    now += 1000; event('risk'); await poll(); expect(sendMarkdown).toHaveBeenCalledTimes(1);
+    now += 1800000; event('risk'); await poll(); expect(sendMarkdown).toHaveBeenCalledTimes(2);
+    now += 1000; event('api-recovered'); event('risk'); await poll();
     expect(sendMarkdown).toHaveBeenCalledTimes(4);
-    expect(sendMarkdown.mock.calls[3][0]).toContain('房间ID: 123');
   });
 });

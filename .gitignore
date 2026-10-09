@@ -49,6 +49,7 @@ __pycache__/
 /.playwright-mcp/
 /artifacts/
 data/runtime/
+data/models/
 local-scripts/*
 !local-scripts/README.md
 data/delayed_reply_tasks.*

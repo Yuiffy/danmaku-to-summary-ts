@@ -21,6 +21,8 @@ test('finds a transitive dependency cycle but permits shared leaves', () => {
 
 test.each([
   ['src/core/config/fixture.ts', 'src/services/ServiceManager.ts'],
+  ['src/core/config/fixture.ts', 'src/workflows/text/response.ts'],
+  ['src/utils/fixture.ts', 'src/workflows/text/response.ts'],
   ['src/app/api/fixture/route.ts', 'src/services/ServiceManager.ts'],
   ['src/scripts/clipping/topic_selection.js', 'src/scripts/topic_clipper.js'],
   ['src/services/bilibili/delayed-reply/Policy.ts', 'src/services/bilibili/DelayedReplyService.ts']

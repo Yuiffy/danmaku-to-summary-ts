@@ -15,8 +15,9 @@ const {
     buildPhonemeCorrectionPayload
 } = require('./asr_corrections');
 const speakerReferenceCatalog = require('./speaker_reference_catalog');
+const { formatTimestamp, parseTimestamp, parseSrt, splitTextByLength, stripSubtitlePunctuation } = require('./subtitle_text');
 
-const SUPPORTED_BACKENDS = new Set(['whisper', 'sensevoice', 'fun_asr_nano', 'fun_asr_nano_vllm', 'paraformer']);
+const SUPPORTED_BACKENDS = new Set(['whisper', 'sensevoice', 'fun_asr_nano', 'fun_asr_nano_vllm', 'paraformer', 'moss']);
 const BACKEND_ALIASES = new Map([
     ['fun-asr-nano', 'fun_asr_nano'],
     ['fun-asr-nano-vllm', 'fun_asr_nano_vllm'],
@@ -102,6 +103,22 @@ const DEFAULT_ASR_CONFIG = {
         finetuned_room_ids: [],
         finetuned_model: null,
         base_model: 'paraformer-zh'
+    },
+    moss_rollout: { enabled: false, ratio: 0, room_ids: [] },
+    moss: {
+        inference_backend: 'transformers',
+        managed_server: false,
+        request_timeout_s: 600,
+        startup_timeout_s: 600,
+        model: 'OpenMOSS-Team/MOSS-Transcribe-Diarize',
+        revision: 'e8681d68e7042738ffca8ac8212bc8fcb1131ab8',
+        device: 'cuda:0',
+        chunk_seconds: 300,
+        overlap_seconds: 20,
+        process_timeout_s: 10800,
+        python_executable: null,
+        python_args: [],
+        python_path_map: []
     },
     whisper: {
         model: 'deepdml/faster-whisper-large-v3-turbo-ct2',
@@ -285,6 +302,14 @@ function getAsrConfig(config = {}) {
             ...(config.asr?.paraformer || {}),
             resource_guard: resourceGuardFor('paraformer')
         },
+        moss: {
+            ...DEFAULT_ASR_CONFIG.moss,
+            ...(config.asr?.moss || {})
+        },
+        moss_rollout: {
+            ...DEFAULT_ASR_CONFIG.moss_rollout,
+            ...(config.asr?.moss_rollout || {})
+        },
         gray_rollout: {
             ...DEFAULT_ASR_CONFIG.gray_rollout,
             ...(config.asr?.gray_rollout || {})
@@ -345,6 +370,39 @@ function applyParaformerGrayRollout(asrConfig, context = {}, resolved) {
     };
 }
 
+function applyMossRollout(asrConfig, context = {}, resolved) {
+    const rollout = asrConfig.moss_rollout || {};
+    const eligibleBackends = ['paraformer', 'sensevoice', 'fun_asr_nano', 'fun_asr_nano_vllm'];
+    if (!rollout.enabled || !eligibleBackends.includes(resolved.backend)) return resolved;
+    const roomId = String(context.room_id || context.roomId || '').trim();
+    const rooms = Array.isArray(rollout.room_ids) ? rollout.room_ids.map(String) : [];
+    if (!roomId || (rooms.length && !rooms.includes(roomId))) return resolved;
+    if (rollout.eligibility === 'confirmed_multi') {
+        const discovery = getSpeakerRequest(context)?.participantDiscovery;
+        if (discovery?.mode !== 'multi' || discovery.modeStatus !== 'confirmed') return resolved;
+    } else if (rollout.eligibility === 'speaker_enabled') {
+        const request = getSpeakerRequest(context);
+        const discovery = request?.participantDiscovery;
+        const hasMultiEvidence = discovery?.mode === 'multi'
+            && ['candidate', 'planned', 'confirmed'].includes(discovery.modeStatus);
+        const options = { ...asrConfig[resolved.backend], ...resolved.backendOptionsOverride?.[resolved.backend] };
+        if (discovery?.mode === 'solo' && discovery.modeStatus === 'confirmed') return resolved;
+        if (!hasMultiEvidence && (options.enable_speaker !== true || options.speaker_detection_mode === 'off')) return resolved;
+    } else if (resolved.backend !== 'paraformer') {
+        // Legacy rollout remains Paraformer-only unless the new eligibility is explicit.
+        return resolved;
+    }
+    const fileKey = String(context.filename || context.input || '').trim();
+    if (!fileKey) return resolved;
+    const ratio = Number(rollout.ratio);
+    if (!Number.isFinite(ratio) || ratio <= 0) return resolved;
+    const bucket = stableHashString(`${roomId}|${fileKey}`) % 10000;
+    if (bucket >= Math.floor(Math.min(1, ratio) * 10000)) return resolved;
+    const eligibilityReason = rollout.eligibility === 'confirmed_multi' ? ' eligibility=confirmed_multi' : '';
+    return { backend: 'moss', reason: `${resolved.reason}; moss_rollout=${ratio} bucket=${bucket}${eligibilityReason}`,
+        fallbackBackend: resolved };
+}
+
 function getSubtitleConfig(config = {}) {
     return {
         ...DEFAULT_SUBTITLE_CONFIG,
@@ -401,19 +459,19 @@ function resolveAsrBackend(config, context = {}, cliBackend = null) {
         }
         const backend = validateBackendName(rule.backend, `asr.routing[${index}].backend`);
         if (matchesRule(rule.match, context)) {
-            return applyParaformerGrayRollout(asrConfig, context, {
+            return applyMossRollout(asrConfig, context, applyParaformerGrayRollout(asrConfig, context, {
                 backend,
                 reason: `routing[${index}] 命中 ${JSON.stringify(rule.match)}`
-            });
+            }));
         }
     }
 
     const fallback = asrConfig.default_backend || asrConfig.backend || 'whisper';
     const backend = validateBackendName(fallback, 'asr.default_backend');
-    return applyParaformerGrayRollout(asrConfig, context, {
+    return applyMossRollout(asrConfig, context, applyParaformerGrayRollout(asrConfig, context, {
         backend,
         reason: `未命中 routing，使用 default_backend=${backend}`
-    });
+    }));
 }
 
 function resolveAsrHotwords(config, context = {}) {
@@ -455,76 +513,13 @@ function parseCliArgs(args) {
     return { inputPaths, options };
 }
 
-function formatTimestamp(seconds) {
-    const safe = Math.max(0, Number(seconds) || 0);
-    const ms = Math.floor((safe % 1) * 1000);
-    const whole = Math.floor(safe);
-    const h = Math.floor(whole / 3600);
-    const m = Math.floor((whole % 3600) / 60);
-    const s = whole % 60;
-    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
-}
-
-function parseTimestamp(value) {
-    const match = String(value).trim().match(/^(\d{2}):(\d{2}):(\d{2}),(\d{3})$/);
-    if (!match) return 0;
-    return Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]) + Number(match[4]) / 1000;
-}
-
-function parseSrt(srtPath, backend = 'whisper') {
-    const content = fs.readFileSync(srtPath, 'utf8').replace(/\r\n/g, '\n');
-    const blocks = content.split(/\n{2,}/);
-    const segments = [];
-
-    for (const block of blocks) {
-        const lines = block.split('\n').map(line => line.trim()).filter(Boolean);
-        if (lines.length < 2) continue;
-        const timeLine = lines.find(line => line.includes('-->'));
-        if (!timeLine) continue;
-        const [startRaw, endRaw] = timeLine.split('-->').map(s => s.trim());
-        const textStart = lines.indexOf(timeLine) + 1;
-        const text = lines.slice(textStart).join('').trim();
-        if (!text) continue;
-        segments.push({
-            start: parseTimestamp(startRaw),
-            end: parseTimestamp(endRaw),
-            text
-        });
-    }
-
-    return { backend, segments };
-}
-
-function splitTextByLength(text, maxChars) {
-    if (!text || text.length <= maxChars) return [text].filter(Boolean);
-    const parts = [];
-    let current = '';
-    const tokens = String(text).match(/[A-Za-z0-9]+|./gu) || [];
-    for (const token of tokens) {
-        if (current && current.length + token.length > maxChars) {
-            parts.push(current.trim());
-            current = token;
-        } else {
-            current += token;
-        }
-        if (/[，。？！,.?!]/.test(token)) {
-            parts.push(current.trim());
-            current = '';
-        }
-    }
-    if (current.trim()) parts.push(current.trim());
-    return parts;
-}
-
-function stripSubtitlePunctuation(text) {
-    return String(text || '')
-        .replace(/[，。！？；：、,.?!;:"“”‘’'`（）()【】\[\]《》<>…—\-~～]/g, '')
-        .replace(/\s+/g, ' ')
-        .trim();
-}
 
 function normalizeAsrResult(result, subtitleConfig = {}) {
     const cfg = { ...DEFAULT_SUBTITLE_CONFIG, ...subtitleConfig };
+    if (result?.backend === 'moss') {
+        cfg.avoid_overlap = false;
+        cfg.min_duration = 0;
+    }
     const normalized = [];
     const inputSegments = Array.isArray(result?.segments) ? result.segments : [];
 
@@ -606,7 +601,7 @@ function normalizeLabel(value) {
 
 function isUnknownSpeakerLabel(label) {
     const value = String(label || '').trim();
-    return !value || value === 'UNKNOWN' || value === '-1' || /^SPEAKER_\d+$/i.test(value);
+    return !value || value === 'UNKNOWN' || value === '-1' || /^(?:SPEAKER_|S)\d+$/i.test(value);
 }
 
 function hasMultipleSpeakerLabels(result) {
@@ -847,11 +842,14 @@ function writeSpeakerReviewSrt(result, srtPath, subtitleConfig = {}, asrConfig =
             let speaker = require('./speaker_attribution').speakerForSegment(segment);
             let localEvidence = segment.speakerEvidence || segment.speaker_evidence;
             if (filteredLabels.has(speaker)) {
-                speaker = 'UNKNOWN';
                 if (localEvidence) localEvidence = { ...localEvidence, status: 'unqualified', label: null,
                     summaryQualification: 'rejected' };
+                speaker = localEvidence?.anonymousLabel
+                    ? require('./speaker_attribution').speakerForSegment({ ...segment, speakerEvidence: localEvidence })
+                    : 'UNKNOWN';
             }
-            const score = segment.speaker_score === undefined || segment.speaker_score === null || segment.speaker_score === ''
+            const score = (localEvidence?.anonymousLabel === speaker || segment.speaker_score === undefined
+                || segment.speaker_score === null || segment.speaker_score === '')
                 ? ''
                 : ` ${Number(segment.speaker_score).toFixed(2)}`;
             const prefix = `[${speaker}${score}] `;
@@ -963,7 +961,7 @@ function translatePythonPayloadPaths(value, options = {}, key = '') {
     return value;
 }
 
-function runPersistentAsrWorker(payload, label = 'ASR backend') {
+function runPersistentAsrWorker(payload, label = 'ASR backend', requestType = 'transcribe') {
     const port = Number(process.env.ASR_PERSISTENT_WORKER_PORT || 0);
     const token = String(process.env.ASR_PERSISTENT_WORKER_TOKEN || '');
     if (!Number.isInteger(port) || port <= 0 || !token) {
@@ -990,7 +988,7 @@ function runPersistentAsrWorker(payload, label = 'ASR backend') {
         socket.on('error', finishReject);
         socket.on('connect', () => {
             socket.write(`${JSON.stringify({
-                type: 'transcribe',
+                type: requestType,
                 token,
                 payload: translatePythonPayloadPaths(payload, payload)
             })}\n`, 'utf8');
@@ -1014,7 +1012,7 @@ function runPersistentAsrWorker(payload, label = 'ASR backend') {
                 reject(error);
                 return;
             }
-            resolve(message.result);
+            resolve(requestType === 'transcribe' ? message.result : message);
         });
         socket.on('close', () => {
             if (!settled) {
@@ -1210,12 +1208,10 @@ function buildRuntimeSpeakerOverrides(config = {}, context = {}) {
 async function transcribeFunAsrBackend(mediaPath, config = {}, runtimeOptions = {}, backend = 'sensevoice') {
     const asrConfig = getAsrConfig(config);
     const context = runtimeOptions.routingContext || {};
-    const resolved = backend === 'paraformer'
-        ? (
-            runtimeOptions.resolvedBackend?.backend === backend
-                ? runtimeOptions.resolvedBackend
-                : resolveAsrBackend(config, context, 'paraformer')
-        )
+    const resolved = runtimeOptions.resolvedBackend?.backend === backend
+        ? runtimeOptions.resolvedBackend
+        : backend === 'paraformer'
+        ? resolveAsrBackend(config, context, 'paraformer')
         : { backend, reason: runtimeOptions.forceReason || `direct backend=${backend}` };
     const scriptPath = path.join(__dirname, '..', 'python', 'sensevoice_transcribe.py');
     if (!fs.existsSync(scriptPath)) {
@@ -1269,6 +1265,58 @@ async function transcribeParaformer(mediaPath, config = {}, runtimeOptions = {})
     return transcribeFunAsrBackend(mediaPath, config, runtimeOptions, 'paraformer');
 }
 
+async function transcribeMoss(mediaPath, config = {}, runtimeOptions = {}) {
+    const asrConfig = getAsrConfig(config);
+    if (asrConfig.moss.inference_backend === 'vllm' && asrConfig.moss.managed_server) {
+        // The caller holds the ASR lock. Release the idle resident worker before
+        // reserving vLLM memory; its CUDA allocator may retain an entire prior job.
+        // The queue owner restarts it on demand; a same-job fallback uses one shot.
+        const release = runPersistentAsrWorker({ process_timeout_s: 30 }, 'MOSS GPU handoff', 'shutdown');
+        if (release) {
+            await release;
+            console.log('[ASR] MOSS 已释放空闲 Paraformer 常驻模型与显存');
+        }
+    }
+    const referenceBackend = runtimeOptions.resolvedBackend?.fallbackBackend?.backend || 'paraformer';
+    const referenceOptions = asrConfig[referenceBackend] || asrConfig.paraformer;
+    const options = { ...asrConfig.moss,
+        ...buildRuntimeSpeakerOverrides(config, runtimeOptions.routingContext || {}),
+        spk_model: referenceOptions.spk_model,
+        speaker_device: referenceOptions.device,
+        speaker_references: referenceOptions.speaker_references,
+        speaker_embedding_batch_size: referenceOptions.speaker_embedding_batch_size,
+        speaker_reference_prototype_merge_threshold: referenceOptions.speaker_reference_prototype_merge_threshold,
+        speaker_reference_max_prototypes: referenceOptions.speaker_reference_max_prototypes,
+        speaker_reference_prototype_min_support_chunks: referenceOptions.speaker_reference_prototype_min_support_chunks,
+        speaker_row_reference_threshold: referenceOptions.speaker_row_reference_threshold,
+        speaker_row_reference_margin: referenceOptions.speaker_row_reference_margin,
+        speaker_row_reference_top_k: referenceOptions.speaker_row_reference_top_k,
+        backend: 'moss', audio_path: mediaPath };
+    return runJsonPython(path.join(__dirname, '..', 'python', 'moss_transcribe.py'), options, 'MOSS backend');
+}
+
+async function transcribeMossWithFallback(mediaPath, config = {}, runtimeOptions = {}) {
+    const selected = runtimeOptions.resolvedBackend;
+    try {
+        return { result: await transcribeMoss(mediaPath, config, runtimeOptions), resolved: selected };
+    } catch (error) {
+        if (!selected?.fallbackBackend) throw error;
+        const fallbackTranscriber = {
+            paraformer: transcribeParaformer,
+            sensevoice: transcribeSenseVoice,
+            fun_asr_nano: transcribeFunAsrNano,
+            fun_asr_nano_vllm: transcribeFunAsrNanoVllm
+        }[selected.fallbackBackend.backend];
+        if (!fallbackTranscriber) throw error;
+        const reason = String(error.message || error).slice(0, 2000);
+        console.warn(`MOSS 灰度任务失败，回退 ${selected.fallbackBackend.backend}: ${reason}`);
+        const resolved = { ...selected.fallbackBackend,
+            reason: `${selected.reason}; moss_fallback=${reason}` };
+        runtimeOptions.resolvedBackend = resolved;
+        return { result: await fallbackTranscriber(mediaPath, config, runtimeOptions), resolved };
+    }
+}
+
 module.exports = {
     DEFAULT_ASR_CONFIG,
     DEFAULT_SUBTITLE_CONFIG,
@@ -1296,6 +1344,8 @@ module.exports = {
     transcribeFunAsrNano,
     transcribeFunAsrNanoVllm,
     transcribeParaformer,
+    transcribeMoss,
+    transcribeMossWithFallback,
     formatTimestamp,
     parseTimestamp,
     buildPhonemeCorrectionPayload,

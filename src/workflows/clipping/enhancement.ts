@@ -1,11 +1,12 @@
 import * as fs from 'fs';
 import { createHash } from 'crypto';
 import { AudioEvidence, EditPlan, Span, Subtitle, continuousPlan, mapSubtitles, planFromEvidenceIds } from './editPlan';
-import { labelExperimentDescription } from './experiment';
+import { labelExperimentDescription, labelExperimentTitle } from './experiment';
 import { parseModelJson } from '../text/json';
 import { compactEnhancementEvidence } from './enhancement_evidence';
 import { usefulPauseEvidence, pacingSettings, PacingSettings } from './pacing_evidence';
 export { protectedPauseWindows, detectQuietPcm, usefulPauseEvidence, pacingSettings } from './pacing_evidence';
+export { planLaughterTiming, reactionPieces, reactionSourceTime, reactionOutputTime, shiftReactionTime } from './reactionTiming';
 
 export interface Copy { title: string; coverText: string; description: string; [key: string]: unknown }
 export interface Artifact {
@@ -103,7 +104,8 @@ export async function enhancePacing(baseline: Artifact, input: EnhancementInput,
         const mapped = mapSubtitles(input.speech, plan);
         if (JSON.stringify(mapped.map(row => row.text)) !== JSON.stringify(originalDialogue)) throw new Error('Pacing changed or duplicated dialogue');
         let current = await io.renderEdit(plan);
-        current = { ...current, editPlan: plan, copy: { ...original.copy, description: labelExperimentDescription(original.copy.description, true, true) },
+        current = { ...current, editPlan: plan, copy: { ...original.copy, title: labelExperimentTitle(original.copy.title, true),
+            description: labelExperimentDescription(original.copy.description, true, true) },
             qaRequired: true, uploadReady: false };
         if (input.attributionRequired) {
             if (!io.reviewAttribution) throw new Error('Missing retained-evidence review');
@@ -144,7 +146,8 @@ export async function enhanceArtifact(baseline: Artifact, input: EnhancementInpu
     };
     const factualCopy = (copy: Copy) => ({ title: copy.title, coverText: copy.coverText, description: copy.description });
     const review = async (): Promise<boolean> => {
-        current.copy = { ...current.copy, description: labelExperimentDescription(current.copy.description,
+        current.copy = { ...current.copy, title: labelExperimentTitle(current.copy.title, input.experimentSelected === true && plan.removed.length > 0),
+            description: labelExperimentDescription(current.copy.description,
             input.experimentSelected === true, plan.removed.length > 0) };
         const expected = plan.keep.reduce((n, span) => n + span.end - span.start, 0);
         const media = await io.inspectMedia(current, expected);

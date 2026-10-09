@@ -104,7 +104,7 @@ export class ConfigValidator {
           backupOriginals: true,
           copyCover: true,
           nearbySegmentRecovery: true,
-          nearbySegmentMaxGapSeconds: 1800,
+          nearbySegmentMaxGapSeconds: 300,
         },
         mikufansOfflineFallback: {
           enabled: true,
@@ -539,7 +539,7 @@ export class ConfigValidator {
         enabled: false,
         mode: 'local_review',
         keywords: ['岁己', '小岁', '小岁姐', '岁己姐', '饼干岁', 'SUI'],
-        aiModel: 'gpt-5.6-luna',
+        aiModel: 'gpt-6-luna',
         ignoredRoomIds: [],
         prePaddingSeconds: 20,
         postPaddingSeconds: 35,

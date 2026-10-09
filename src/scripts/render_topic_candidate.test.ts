@@ -3,8 +3,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const topic = require('./topic_clipper');
-const media = require('./clipping/media_process');
+const mediaRuntime = require('./clipping/media_runtime');
 const manual = require('./manual_clip_queue');
+const generator = require('./ai_text_generator');
 const { buildPreflightEvidence } = require('./clipping/preflight_evidence');
 const { prepareCandidate, renderCandidate, refreshSourceReview, updateCandidate, previewCandidate } = require('./render_topic_candidate');
 
@@ -38,10 +39,10 @@ describe('render held topic candidate by reserved ID', () => {
     metadata.source.mediaPath = path.join(dir, 'source.mp4');
     fs.writeFileSync(metadata.source.mediaPath, 'source');
     fs.writeFileSync(metadata.output.metadataPath, JSON.stringify(metadata));
-    const run = jest.spyOn(media, 'runFfmpeg').mockImplementation(async args => fs.writeFileSync(args.at(-1), 'preview'));
-    jest.spyOn(media, 'probeRoughCutSourceStart').mockResolvedValue(0);
-    jest.spyOn(media, 'probeVideoPacketsWithHashes').mockResolvedValue([{ pts_time: '0' }]);
-    jest.spyOn(media, 'probeMediaDuration').mockResolvedValue(32);
+    const run = jest.spyOn(mediaRuntime, 'runFfmpeg').mockImplementation(async args => fs.writeFileSync(args.at(-1), 'preview'));
+    jest.spyOn(mediaRuntime, 'probeRoughCutSourceStart').mockResolvedValue(0);
+    jest.spyOn(mediaRuntime, 'probeVideoPacketsWithHashes').mockResolvedValue([{ pts_time: '0' }]);
+    jest.spyOn(mediaRuntime, 'probeMediaDuration').mockResolvedValue(32);
     const result = await previewCandidate(metadata.output.metadataPath, { candidateId: 17, approveUpload: 'yes' }, {});
     const saved = JSON.parse(fs.readFileSync(metadata.output.metadataPath, 'utf8'));
     expect(saved.status).toBe('pending_preflight');
@@ -67,6 +68,15 @@ describe('render held topic candidate by reserved ID', () => {
     expect(segments[1].text).toBe('The prise is clear.');
   });
 
+  test('automatic review never records human approval and refuses unresolved preflight', () => {
+    const opts = { ...options, automaticReview: 'yes' };
+    expect(() => prepareCandidate(metadata, metadata.output.metadataPath, opts, {})).toThrow('fresh ready preflight');
+    metadata.aiReview.status = 'ready'; metadata.aiReview.quality.issues = [];
+    const task = prepareCandidate(metadata, metadata.output.metadataPath, opts, {});
+    expect(task.sourceMetadata.humanReview).toBeUndefined();
+    expect(task.sourceMetadata.aiReview.applied).toBe(true);
+  });
+
   test('checks an approved spoken date using the recording year without changing subtitles or copy', () => {
     const rows = [{ start: 0, end: 30, text: '不对不对二零年十二月的时候买的' }];
     parse.mockReturnValue({ segments: rows });
@@ -85,6 +95,34 @@ describe('render held topic candidate by reserved ID', () => {
     expect(task.description).toBe(metadata.copy.description);
     expect(task.sourceMetadata.humanReview.copyGrounding.issues).toEqual([]);
     expect(fs.readFileSync(approved.candidateSrtPath).equals(before)).toBe(true);
+  });
+
+  test('checks an approved Chinese SC amount without changing its subtitle revision, approval or remaining AI review', () => {
+    const rows = [{ start: 0, end: 30, text: 'Sc要三十块钱喊两句咋了' }];
+    parse.mockReturnValue({ segments: rows });
+    metadata.aiReview.sourceSha256 = buildPreflightEvidence(rows).sourceSha256;
+    metadata.aiReview.subtitleEdits = [];
+    metadata.aiReview.quality.issues = ['unsupported_number:title:30', 'unsupported_number:description:30'];
+    metadata.editorial.copyGrounding.subtitleIds = ['G1'];
+    metadata.copy = { title: '30元SC喊两句，礼礼说刚刚声音很正常',
+      description: '礼礼提到30元SC喊两句，随后强调刚刚没有发出很大的声音。',
+      coverText: '三十块喊两句\n我刚刚声音很正常' };
+    fs.writeFileSync(metadata.output.metadataPath, JSON.stringify(metadata));
+    const approved = updateCandidate(metadata.output.metadataPath, { candidateId: 17, action: 'approve',
+      reviewNote: 'User requested upload' }, {});
+    metadata = JSON.parse(fs.readFileSync(metadata.output.metadataPath, 'utf8'));
+    const before = fs.readFileSync(approved.candidateSrtPath);
+    const revision = JSON.stringify(metadata.candidateSubtitles);
+    const task = prepareCandidate(metadata, metadata.output.metadataPath, { candidateId: 17,
+      reviewNote: 'User requested upload', requireApproval: true, expectedSha256: approved.candidateSrtSha256 }, {});
+    expect(task.title).toBe(metadata.copy.title);
+    expect(task.description).toBe(metadata.copy.description);
+    expect(task.sourceMetadata.humanReview.copyGrounding.issues).toEqual([]);
+    expect(task.sourceMetadata.aiReview.status).toBe('needs_review');
+    expect(JSON.stringify(metadata.candidateSubtitles)).toBe(revision);
+    expect(fs.readFileSync(approved.candidateSrtPath).equals(before)).toBe(true);
+    expect(() => prepareCandidate(metadata, metadata.output.metadataPath,
+      { ...options, description: '50元SC' }, {})).toThrow('unsupported_number:description:50');
   });
 
   test('rejects changed source, unresolved copy, unknown identity and blank review notes', () => {
@@ -123,6 +161,19 @@ describe('render held topic candidate by reserved ID', () => {
       reviewNote: 'Changed snapshot', requireApproval: true, expectedSha256: 'different' }, {})).toThrow('matching upload approval');
   });
 
+  test('saves reviewed public copy and tags with a candidate subtitle correction', () => {
+    fs.writeFileSync(metadata.output.metadataPath, JSON.stringify(metadata));
+    const result = updateCandidate(metadata.output.metadataPath, { candidateId: 17, action: 'correct',
+      from: 'price', to: 'cost', cue: 1, reviewNote: 'Checked the spoken name',
+      title: 'Revised source title', description: 'Revised source description',
+      tags: 'Host,VR clips' }, {});
+    const saved = JSON.parse(fs.readFileSync(metadata.output.metadataPath, 'utf8'));
+    expect(saved.candidateSubtitles.cues[0].text).toContain('cost');
+    expect(saved.copy.title).toBe('Revised source title');
+    expect(saved.upload.tags).toEqual(['Host', 'VR clips']);
+    expect(result.uploadTags).toEqual(['Host', 'VR clips']);
+  });
+
   test('uses the shared media path and releases the per-candidate lock after failure', async () => {
     const file = metadata.output.metadataPath;
     fs.writeFileSync(file, JSON.stringify(metadata));
@@ -144,6 +195,67 @@ describe('render held topic candidate by reserved ID', () => {
     await renderCandidate(metadata.output.metadataPath, options, {});
     expect(cut).not.toHaveBeenCalled();
     expect(parse).not.toHaveBeenCalled();
+  });
+
+  test('queued boundary failure replans, versions and renders the same ID with fresh evidence and copy', async () => {
+    const root = { ai: { text: { provider: 'daiYu' } }, clipTopics: { keywords: ['SUI'],
+      review: { enabled: true, mode: 'preflight', strategy: 'single', qualityRules: true,
+        model: 'gpt-6-luna', reasoningEffort: 'high' }, ai: { selectionCacheEnabled: false } } };
+    metadata.source.mediaPath = path.join(dir, 'source.mp4');
+    fs.writeFileSync(metadata.source.mediaPath, 'source');
+    metadata.candidateId = 17;
+    metadata.window = { ...metadata.window, start: 10, end: 30,
+      matchSegments: [{ ...segments[0], start: 10, end: 20, text: segments[1].text, matchedKeywords: ['SUI'] }] };
+    metadata.aiReview.reason = 'Preflight duration outside limits';
+    metadata.aiReview.keyword = { status: 'needs_review', hits: [] };
+    metadata.aiReview.quality.issues = ['Preflight duration outside limits'];
+    metadata.editorial.copyGrounding = null;
+    metadata.copy = { title: 'Pending candidate', description: '', coverText: '' };
+    const file = metadata.output.metadataPath;
+    fs.writeFileSync(file, JSON.stringify(metadata));
+    const approved = updateCandidate(file, { candidateId: 17, action: 'approve', reviewNote: 'User requested upload' }, root);
+    const before = fs.readFileSync(approved.candidateSrtPath);
+    const registryPath = path.join(dir, 'registry.json');
+    fs.writeFileSync(registryPath, JSON.stringify({ clips: { 17: { id: 17, metadataPath: file, pendingCut: true } } }));
+    const request = jest.spyOn(generator, 'generateTextWithDaiYu').mockImplementation(async prompt => {
+      const input = JSON.parse(prompt.split('SOURCE EVIDENCE:\n')[1]);
+      return { text: JSON.stringify({ hits: input.hits.map(hit => ({ id: hit.id, verdict: 'mention',
+        reason: 'Source-backed mention', evidenceCueIds: [hit.cueId] })), clips: [{ id: 'E1-1',
+        status: 'ready', startCueId: 'G1', endCueId: 'G3', hitIds: ['K1'], event: 'Complete event',
+        reason: 'Setup and closure', score: 80, extensionReason: '', sourceKind: 'live_speech',
+        evidenceCueIds: ['G1', 'G2', 'G3'], evidenceDanmakuIds: [], warnings: [],
+        title: 'SUI has a price', description: 'The price is clear', coverText: 'price\nSUI', subtitleEdits: [],
+        boundaryReview: { setupCueId: 'G1', closureCueId: 'G3', startReason: 'Full setup',
+          endReason: 'Full closure', dependencies: [], unresolvedCueIds: [] } }] }),
+        meta: { model: 'gpt-6-luna', attempts: [{ model: 'gpt-6-luna', responseModel: 'gpt-6-luna',
+          apiModeUsed: 'responses', reasoningEffortSent: 'high' }] } };
+    });
+    const cut = jest.spyOn(manual, 'cutTask').mockImplementation(async task => {
+      expect(task.id).toBe('17');
+      expect(task.start).toBe(0);
+      expect(task.end).toBe(30);
+      expect(task.sourceMetadata.humanReview.authority).toBe('ai_replan');
+      const output = { mediaPath: path.join(dir, 'rendered.mp4'), srtPath: path.join(dir, 'rendered.srt'),
+        coverPath: path.join(dir, 'cover.jpg'), burnedSubtitles: true };
+      for (const file of [output.mediaPath, output.srtPath, output.coverPath]) fs.writeFileSync(file, 'artifact');
+      fs.writeFileSync(task.reviewPath, 'Review');
+      fs.writeFileSync(metadata.output.metadataPath, JSON.stringify({ ...task.sourceMetadata,
+        mode: 'topic_candidate_manual_cut', status: 'success', output }));
+      return { output };
+    });
+    const queued = { candidateId: 17, reviewNote: 'User requested upload', registryPath,
+      requireApproval: true, expectedSha256: approved.candidateSrtSha256 };
+    await renderCandidate(file, queued, root);
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+    expect(saved.candidateRecovery.status).toBe('ready');
+    expect(saved.candidateRecovery.original.window.start).toBe(10);
+    expect(saved.candidateSubtitles.revision).toBe(1);
+    expect(saved.candidateSubtitles.approval).toBeNull();
+    expect(saved.aiReview.status).toBe('ready');
+    expect(fs.readFileSync(approved.candidateSrtPath).equals(before)).toBe(true);
+    await renderCandidate(file, queued, root);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(cut).toHaveBeenCalledTimes(1);
   });
 
   test('refreshes the source review without replacing a newer recording latest review', () => {

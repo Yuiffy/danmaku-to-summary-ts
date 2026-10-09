@@ -131,7 +131,8 @@ export type AsrBackendName =
   | 'fun-asr-nano'
   | 'fun_asr_nano_vllm'
   | 'fun-asr-nano-vllm'
-  | 'paraformer';
+  | 'paraformer'
+  | 'moss';
 
 export interface AsrHotword {
   word: string;
@@ -335,6 +336,20 @@ export interface AsrConfig {
   };
   default_backend: AsrBackendName;
   backend?: AsrBackendName;
+  moss_rollout?: {
+    enabled: boolean;
+    ratio: number;
+    room_ids: Array<string | number>;
+    eligibility?: 'speaker_enabled' | 'confirmed_multi';
+  };
+  moss?: AsrPythonRuntimeConfig & {
+    model?: string;
+    revision?: string;
+    device?: string;
+    chunk_seconds?: number;
+    overlap_seconds?: number;
+    process_timeout_s?: number;
+  };
   common_hotwords?: AsrHotword[];
   corrections?: AsrCorrectionsConfig;
   routing: AsrRoutingRule[];
@@ -800,8 +815,14 @@ export interface DelayedReplyConfig {
 export interface DanmuRiskControlConfig {
   /** 是否启用弹幕风控监控 */
   enabled: boolean;
-  /** 检查间隔（毫秒），默认 300000 (5分钟) */
+  /** 本地录播日志读取间隔（毫秒），默认 1800000 (30分钟)，不请求 B 站 */
   intervalMs: number;
+  /** 留空时从 recorder-watchdog 的当前进程路径定位 logs 目录 */
+  logDirectory?: string;
+  /** 录播进程身份来源，默认 data/runtime/recorder_watchdog.state.json */
+  recorderStatePath?: string;
+  /** 告警、待发通知和日志位置的本地持久化文件 */
+  monitorStatePath?: string;
   /** 要监控的房间ID列表 */
   roomIds: string[];
   /** 通知冷却时间（毫秒），同一房间在此时间内不重复通知，默认 1800000 (30分钟) */
@@ -858,6 +879,47 @@ export interface BilibiliConfig {
 export interface WeChatWorkConfig {
   /** 企业微信机器人webhook URL */
   webhookUrl?: string;
+}
+
+/** Complete per-stream performances and viewing sessions, published as multipart archives. */
+export interface StreamActivityClipsConfig {
+  enabled: boolean;
+  detectionMode?: 'summary' | 'standalone_scan';
+  roomIds: Array<string | number>;
+  outputDirName?: string;
+  chunkSeconds?: number;
+  contextSeconds?: number;
+  maxEvidenceChars?: number;
+  ai?: { model?: string; boundaryModel?: string; timeoutMs?: number; maxTokens?: number };
+  verification?: { enabled?: boolean; provider?: 'tuZi' | 'gemini'; apiMode?: 'gemini_native' | 'openai_chat'; model?: string; contextSeconds?: number; maxAudioSeconds?: number; timeoutMs?: number;
+    boundaryContextSeconds?: number; batchMaxEvents?: number; batchMaxAudioSeconds?: number; maxBatchRequests?: number; boundaryTimeoutMs?: number };
+  songs?: { enabled?: boolean; paddingSeconds?: number; tid?: number; tags?: string[];
+    collection?: { seasonId?: number | null; sectionId?: number | null } };
+  watch?: { enabled?: boolean; targetPartSeconds?: number; maxPartSeconds?: number; tid?: number; tags?: string[];
+    collection?: { seasonId?: number | null; sectionId?: number | null } };
+}
+
+/** Complete allowlisted gameplay, with optional external subtitles and account-aware grouping. */
+export interface StreamGameClipsConfig {
+  enabled: boolean;
+  roomIds: Array<string | number>;
+  outputDirName?: string;
+  chunkSeconds?: number;
+  contextSeconds?: number;
+  maxEvidenceChars?: number;
+  targetPartSeconds?: number;
+  maxPartSeconds?: number;
+  maxSingleVideoSeconds?: number;
+  maxPartsPerSubmission?: number;
+  autoUpload?: boolean;
+  authorizationNote?: string;
+  ai?: { model?: string; boundaryEvidenceMethod?: 'native_audio' | 'independent_local_asr';
+    boundaryModel?: string; boundaryProvider?: 'tuZi' | 'gemini' | 'daiYu';
+    boundaryApiMode?: 'gemini_native' | 'openai_chat'; frameModel?: string; frameProvider?: 'tuZi' | 'gemini' | 'daiYu';
+    frameApiMode?: 'gemini_native' | 'openai_chat'; timeoutMs?: number; maxTokens?: number };
+  visual?: { provider?: 'tuZi' | 'gemini' | 'daiYu'; apiMode?: 'gemini_native' | 'openai_chat'; model?: string; sampleSeconds?: number; timeoutMs?: number };
+  games: Array<{ id: string; name: string; aliases: string[]; tid?: number; tags?: string[];
+    collection?: { seasonId?: number | null; sectionId?: number | null } }>;
 }
 
 export interface RecorderStallDiagnosticsConfig {
@@ -928,6 +990,8 @@ export interface AppConfig {
   ai: AIConfig;
   fusion: FusionConfig;
   clipTopics: ClipTopicsConfig;
+  streamActivityClips?: StreamActivityClipsConfig;
+  streamGameClips?: StreamGameClipsConfig;
   storage: StorageConfig;
   monitoring: MonitoringConfig;
   bilibili: BilibiliConfig;

@@ -230,7 +230,7 @@ describe('LiveSessionManager nearby segment recovery', () => {
     );
     const current = writeRecording(
       currentDateDir,
-      `${RECORD_PREFIX}-${roomId}-20260804-010729-003-night.flv`,
+      `${RECORD_PREFIX}-${roomId}-20260804-010229-003-night.flv`,
       new Date(2026, 7, 4, 1, 56, 12)
     );
 
@@ -239,7 +239,7 @@ describe('LiveSessionManager nearby segment recovery', () => {
       manager,
       roomId,
       current,
-      new Date(2026, 7, 4, 1, 7, 29),
+      new Date(2026, 7, 4, 1, 2, 29),
       new Date(2026, 7, 4, 1, 56, 12)
     );
 
@@ -290,5 +290,42 @@ describe('LiveSessionManager nearby segment recovery', () => {
       path.basename(current)
     ]);
     expect(path.basename(previous)).toContain('200256');
+  });
+
+  test('does not merge a completed stream into a new stream after the reconnect grace period', () => {
+    jest.useFakeTimers();
+    const firstOpenedAt = new Date('2026-09-26T21:58:30+08:00');
+    const firstClosedAt = new Date('2026-09-27T02:05:21+08:00');
+    const secondOpenedAt = new Date('2026-09-27T02:20:50+08:00');
+    const secondClosedAt = new Date('2026-09-27T03:43:27+08:00');
+    jest.setSystemTime(firstClosedAt);
+
+    const manager = new LiveSessionManager();
+    const roomId = '1727074031';
+    const first = writeRecording(
+      tempDir,
+      `${RECORD_PREFIX}-${roomId}-20260926-215830-286-live.flv`,
+      firstClosedAt
+    );
+    const second = writeRecording(
+      tempDir,
+      `${RECORD_PREFIX}-${roomId}-20260927-022050-934-live.flv`,
+      secondClosedAt
+    );
+
+    manager.createOrGetSession(roomId, '羽啾chu2u', 'live');
+    addCurrentSegment(manager, roomId, first, firstOpenedAt, firstClosedAt);
+    manager.markAsCompleted(roomId);
+
+    jest.setSystemTime(secondOpenedAt);
+    manager.createOrGetSession(roomId, '羽啾chu2u', 'live again');
+    addCurrentSegment(manager, roomId, second, secondOpenedAt, secondClosedAt);
+
+    expect(manager.augmentSessionWithNearbySegments(roomId, {
+      maxGapSeconds: 1800,
+      minSizeBytes: 0
+    })).toBe(0);
+    expect(manager.getSession(roomId)?.segments.map(segment => segment.videoPath)).toEqual([second]);
+    expect(manager.shouldMerge(roomId)).toBe(false);
   });
 });

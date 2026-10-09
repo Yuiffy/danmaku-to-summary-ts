@@ -8,8 +8,8 @@ test('reply and comic use an identical strict schema and reusable prefix fingerp
   const prefix=`${live.SHARED_PROMPT_CACHE_START}\nOriginal facts with source identity.\n${live.SHARED_PROMPT_CACHE_END}`;
   const bodies=['reply-summary','comic'].map(task=>{
     const prepared=prepareSharedLiveOutput(prefix+'\nTask '+task,{sharedOutputTask:task});
-    return buildDaiYuResponsesRequest({model:'gpt-5.6-luna',prompt:prepared.prompt,maxTokens:4000,thinkingEnabled:true,reasoningEffort:'high',
-      cachePlan:getExplicitPromptCachePlan(prepared.prompt,{},'gpt-5.6-luna',100),responseFormat:prepared.options.responseFormat});
+    return buildDaiYuResponsesRequest({model:'gpt-6-luna',prompt:prepared.prompt,maxTokens:4000,thinkingEnabled:true,reasoningEffort:'high',
+      cachePlan:getExplicitPromptCachePlan(prepared.prompt,{},'gpt-6-luna',100),responseFormat:prepared.options.responseFormat});
   });
   expect(bodies[0].text).toEqual(bodies[1].text);
   expect(getPromptCacheRequestDiagnostics(bodies[0])).toEqual(getPromptCacheRequestDiagnostics(bodies[1]));

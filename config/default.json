@@ -32,7 +32,7 @@
       "backupOriginals": true,
       "copyCover": true,
       "nearbySegmentRecovery": true,
-      "nearbySegmentMaxGapSeconds": 1800
+      "nearbySegmentMaxGapSeconds": 300
     },
     "mikufansOfflineFallback": {
       "enabled": true,
@@ -85,6 +85,7 @@
       "deleteBakAfterConversion": false,
       "scanIntervalHours": 24,
       "maxFileAgeDays": null,
+      "publishedClipRetention": { "enabled": false, "afterUploadDays": 3 },
       "archiveEnabled": true,
       "moveToArchiveAfterDays": 33,
       "archiveTargetBasePath": "E:/EFiles/Evideo/DDTV录播-E",
@@ -100,7 +101,7 @@
       "visual": {
         "enabled": true,
         "provider": "daiYu",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "maxFrames": 6,
         "timeoutMs": 120000,
         "maxTokens": 7000,
@@ -933,7 +934,7 @@
         "enabled": true,
         "apiKey": "",
         "baseUrl": "https://api.tu-zi.com",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "fallbackModels": [],
         "includeBuiltInFallbackModels": false,
         "apiMode": "responses",
@@ -947,11 +948,11 @@
         "enabled": true,
         "baseUrl": "http://localhost:8080",
         "apiMode": "chatCompletions",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "fallbackModels": [],
         "includeBuiltInFallbackModels": false,
         "fallbackProvider": "tuZi",
-        "fallbackProviderModel": "gpt-5.6-luna",
+        "fallbackProviderModel": "gpt-6-luna",
         "fallbackProviderApiMode": "responses",
         "thinking": {
           "enabled": true,
@@ -1062,16 +1063,16 @@
             "useTuziRetry": false
           },
           {
-            "provider": "tuZi",
+            "provider": "daiYu",
             "model": "gpt-image-2",
-            "flow": "tuZiCompatible",
+            "flow": "openaiImages",
             "maxAttempts": 1,
             "timeoutMs": 1200000,
             "size": "1:1",
             "quality": "high",
             "outputFormat": "png",
             "responseFormat": "b64_json",
-            "useTuziRetry": true
+            "useTuziRetry": false
           }
         ],
         "rollout": {
@@ -1498,7 +1499,7 @@
     "enabled": false,
     "mode": "local_review",
     "keywords": ["岁己", "小岁", "饼干岁", "岁岁", "SUI"],
-    "aiModel": "gpt-5.6-luna",
+    "aiModel": "gpt-6-luna",
     "ignoredRoomIds": [],
     "prePaddingSeconds": 20,
     "postPaddingSeconds": 35,
@@ -1521,12 +1522,15 @@
       "strategy": "single",
       "qualityRules": true,
       "transientMaxAttempts": 2,
-      "model": "gpt-5.6-sol",
+      "model": "gpt-6-sol",
       "reasoningEffort": "high",
       "maxOutputTokens": 24000,
       "maxDanmakuRows": 120,
       "maxEvidenceChars": 80000,
-      "timeoutMs": 600000
+      "timeoutMs": 600000,
+      "audioChecks": {
+        "enabled": false
+      }
     },
     "mergeGapSeconds": 45,
     "burnSubtitles": true,
@@ -1549,6 +1553,14 @@
     "autoUpload": {
       "enabled": false
     },
+    "automaticPublication": {
+      "mode": "off",
+      "scope": "configured_keywords",
+      "policyVersion": "topic-v1",
+      "activatedAt": null,
+      "authorizationNote": "",
+      "concurrency": 2
+    },
     "notify": {
       "enabled": true,
       "includeSubtitleContext": true,
@@ -1558,20 +1570,70 @@
       "danmakuContextSeconds": 45
     }
   },
+  "streamGameClips": {
+    "enabled": false,
+    "roomIds": ["25788785"],
+    "outputDirName": "stream_game_clips",
+    "autoUpload": false,
+    "authorizationNote": "",
+    "maxSingleVideoSeconds": 3600,
+    "requireOriginalStreamCopy": false,
+    "games": [{
+      "id": "elden-ring", "name": "艾尔登法环",
+      "aliases": ["艾尔登法环", "艾登法环", "法环", "老头环", "ELDEN RING"],
+      "tid": 17, "tags": ["岁己", "小岁", "艾尔登法环", "老头环", "游戏实况", "虚拟主播"],
+      "collection": { "seasonId": null, "sectionId": null }
+    }]
+  },
+  "streamActivityClips": {
+    "automaticPublication": { "mode": "off", "roomIds": ["25788785"], "policyVersion": "stream-activity-v1", "activatedAt": null, "authorizationNote": "" },
+    "enabled": false,
+    "detectionMode": "summary",
+    "roomIds": ["25788785"],
+    "outputDirName": "stream_activity_clips",
+    "chunkSeconds": 1800,
+    "contextSeconds": 180,
+    "maxEvidenceChars": 90000,
+    "ai": { "model": "gpt-6-luna", "timeoutMs": 600000, "maxTokens": 16000 },
+    "verification": { "enabled": true, "provider": "daiYu", "apiMode": "openai_chat", "model": "gpt-6.1-sol",
+      "evidenceMethod": "independent_local_asr",
+      "localAsr": {
+        "sensevoiceModel": "iic/SenseVoiceSmall",
+        "whisperModel": "deepdml/faster-whisper-large-v3-turbo-ct2",
+        "device": "cuda",
+        "chunkSeconds": 8
+      }, "contextSeconds": 180, "maxAudioSeconds": 1200, "timeoutMs": 180000,
+      "boundaryContextSeconds": 45, "batchMaxEvents": 8, "batchMaxAudioSeconds": 600, "maxBatchRequests": 3, "boundaryTimeoutMs": 60000 },
+    "songs": {
+      "enabled": true, "paddingSeconds": 2, "tid": 31,
+      "tags": ["岁己", "小岁", "歌切", "虚拟主播"],
+      "collection": { "seasonId": null, "sectionId": null }
+    },
+    "watch": {
+      "enabled": true, "targetPartSeconds": 1500, "maxPartSeconds": 1800, "tid": 21,
+      "tags": ["岁己", "小岁", "同步视听", "虚拟主播"],
+      "collection": { "seasonId": null, "sectionId": null }
+    }
+  },
   "ownStreamClips": {
     "enabled": true,
+    "automaticPublication": {
+      "mode": "off", "roomIds": ["25788785"], "policyVersion": "own-stream-v1",
+      "activatedAt": null, "authorizationNote": "", "concurrency": 2
+    },
     "enhancements": {
       "enabled": true,
-      "workflow": "pacing",
+      "workflow": "creative",
+      "creative": { "style": "compact", "avatarMode": "auto", "focusPlacement": "source", "faceInsetDiameter": 0.60, "allowCoverFaceOverlap": true, "laughAsset": "sitcom_laugh", "laughAssets": ["sitcom_laugh", "sitcom_laugh_chuckle", "sitcom_laugh_warm", "sitcom_laugh_applause"], "maxMoments": 24, "maxZoom": 5, "soundEffects": true, "filters": true, "variety": true, "assetManifest": "config/clip-creative-assets.json" },
       "pacing": { "noiseDb": -40, "nonSpeechVad": true, "minRemovedSeconds": 3, "minRemovedRatio": 0.02, "maxRemovedRatio": 0.2, "maxPausesPerClip": 2, "maxScannedSeconds": 120 },
       "roomIds": ["25788785"],
       "editing": true,
-      "experiment": { "enabled": true, "ratio": 0.25, "maxClips": 5 },
+      "experiment": { "enabled": true, "ratio": 1, "maxClips": 1 },
       "budget": { "mode": "log_only", "ledgerPath": "data/runtime/clip-enhancement-ledger.json" },
       "stageDefaults": {
         "retry": { "maxAttempts": 2, "baseDelayMs": 1000, "maxDelayMs": 10000, "jitterRatio": 0.2 },
         "provider": "daiYu",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "apiMode": "responses",
         "reasoningEffort": "high",
         "maxTokens": 16000,
@@ -1599,6 +1661,8 @@
       "maxRequests": 12,
       "maxElapsedMs": 1200000,
       "repairAttempts": 1,
+      "holdUnresolvedBeforeRender": false,
+      "sourceReviewBeforeRender": false,
       "dialogueEnabled": false,
       "entityReferences": {
         "enabled": false,
@@ -1615,6 +1679,14 @@
     "roomIds": ["25788785"],
     "maxCandidates": 80,
     "maxClips": 50,
+    "publicationPolicy": {
+      "mode": "curated",
+      "roomIds": ["25788785"],
+      "minScore": 75,
+      "maxStandalone": 18,
+      "standoutScore": 92,
+      "bundles": { "enabled": false, "minScore": 70, "protectScore": 90, "maxGroups": 2, "maxMembers": 3, "maxSeconds": 300, "minCombinedScore": 85, "minScoreGain": 5, "maxCandidates": 20 }
+    },
     "chunkSeconds": 2700,
     "aiConcurrency": 4,
     "streamReviewRendering": true,
@@ -1652,7 +1724,7 @@
     "ai": {
       "enabled": true,
       "strategy": "staged",
-      "model": "gpt-5.6-luna",
+      "model": "gpt-6-luna",
       "timeoutMs": 600000,
       "rerankTimeoutMs": 1200000,
       "rerankMaxAttempts": 2,
@@ -1697,6 +1769,11 @@
       }
     },
     "selectionPolicy": {
+      "roomOverrides": {
+        "25788785": {
+          "excludedCategories": ["不切岁己本人现实家庭关系中的负面或争议性内容，包括吵架、冷战、指责、财务纠纷及涉及家人隐私的冲突，避免脱离具体情况引人误解；不得以改标题、搞笑包装或拆短片段绕过。普通家人提及、童年坐车、无冲突的成长经历和日常回忆允许，不因出现爸爸、小时候、亲戚等词就排除；晕车主题里提到以前坐爸爸的车不属于家庭矛盾。游戏虚构角色、明确角色扮演和他人新闻按实际内容判断。"]
+        }
+      },
       "requireTimeCoverage": false,
       "excludedCategories": [],
       "priorityCategories": []
@@ -1795,7 +1872,10 @@
     },
     "danmuRiskControl": {
       "enabled": false,
-      "intervalMs": 300000,
+      "intervalMs": 1800000,
+      "logDirectory": "",
+      "recorderStatePath": "data/runtime/recorder_watchdog.state.json",
+      "monitorStatePath": "data/runtime/recorder_log_monitor.json",
       "roomIds": [],
       "notifyCooldownMs": 1800000
     }

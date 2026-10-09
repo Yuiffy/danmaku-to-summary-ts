@@ -33,7 +33,7 @@
       "backupOriginals": true,
       "copyCover": true,
       "nearbySegmentRecovery": true,
-      "nearbySegmentMaxGapSeconds": 1800
+      "nearbySegmentMaxGapSeconds": 300
     },
     "mikufansOfflineFallback": {
       "enabled": true,
@@ -126,6 +126,7 @@
       "deleteBakAfterConversion": true,
       "scanIntervalHours": 24,
       "maxFileAgeDays": null,
+      "publishedClipRetention": { "enabled": true, "afterUploadDays": 3 },
       "archiveEnabled": true,
       "moveToArchiveAfterDays": 33,
       "archiveTargetBasePath": "E:/EFiles/Evideo/DDTV录播-E",
@@ -174,7 +175,7 @@
         "enabled": true,
         "apiKey": "",
         "baseUrl": "https://api.tu-zi.com",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "fallbackModels": [],
         "includeBuiltInFallbackModels": false,
         "apiMode": "responses",
@@ -188,11 +189,11 @@
         "enabled": true,
         "baseUrl": "http://localhost:8080",
         "apiMode": "responses",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "fallbackModels": [],
         "includeBuiltInFallbackModels": false,
         "fallbackProvider": "tuZi",
-        "fallbackProviderModel": "gpt-5.6-luna",
+        "fallbackProviderModel": "gpt-6-luna",
         "fallbackProviderApiMode": "responses",
         "thinking": {
           "enabled": true,
@@ -301,16 +302,16 @@
             "useTuziRetry": false
           },
           {
-            "provider": "tuZi",
+            "provider": "daiYu",
             "model": "gpt-image-2",
-            "flow": "tuZiCompatible",
+            "flow": "openaiImages",
             "maxAttempts": 1,
             "timeoutMs": 1200000,
             "size": "1:1",
             "quality": "high",
             "outputFormat": "png",
             "responseFormat": "b64_json",
-            "useTuziRetry": true
+            "useTuziRetry": false
           }
         ],
         "rollout": {
@@ -537,7 +538,7 @@
         "referenceImages": [
           "public/reference_images/弥月Mizuki参考图.png"
         ],
-        "characterDescription": "兔川弥月Mizuki，亚麻发异瞳少女，有两个浮游炮机械兔耳。",
+        "characterDescription": "兔川弥月Mizuki，亚麻发异瞳少女，有时有兔耳。",
         "contentHints": [
           "当本场正文只出现孤立的“启动”且直播标题、明确语音、开播前动态均未指向其他游戏时，可将其理解为“原神启动”梗。它不是本场正在玩原神的证据；任何更强证据指向其他游戏时，都禁止据此写成或画成原神。"
         ]
@@ -1155,6 +1156,18 @@
               "useTuziRetry": false
             },
             {
+              "provider": "daiYu",
+              "model": "gpt-image-2",
+              "flow": "openaiImages",
+              "maxAttempts": 1,
+              "timeoutMs": 1200000,
+              "size": "1:1",
+              "quality": "high",
+              "outputFormat": "png",
+              "responseFormat": "b64_json",
+              "useTuziRetry": false
+            },
+            {
               "provider": "tuZi",
               "model": "gpt-image-2",
               "flow": "tuZiCompatible",
@@ -1217,8 +1230,9 @@
           ],
           "includeMentionedStreamers": true,
           "includeMentionedStreamerImages": true,
-          "filterExtraImagesByComicScript": false,
-          "filterMentionedImagesByComicScript": false,
+          "filterExtraImagesByComicScript": true,
+          "filterMentionedImagesByComicScript": true,
+          "filterAppearedImagesByComicScript": true,
           "appendCharacterDescriptions": true
         }
       },
@@ -1311,15 +1325,14 @@
         "comicGenerationProbability": 1,
         "multiReferenceImages": {
           "enabled": true,
-          "maxExtraCharacters": 2,
-          "allowedExtraStreamerIds": [
-            "sui",
-            "shiori"
-          ],
+          "maxExtraCharacters": 4,
+          "maxMentionedContextCharacters": 12,
+          "maxTotalImages": 5,
           "includeMentionedStreamers": true,
           "includeMentionedStreamerImages": true,
-          "filterExtraImagesByComicScript": false,
-          "filterMentionedImagesByComicScript": false,
+          "filterExtraImagesByComicScript": true,
+          "filterMentionedImagesByComicScript": true,
+          "filterAppearedImagesByComicScript": true,
           "appendCharacterDescriptions": true
         }
       },
@@ -1600,7 +1613,7 @@
   "clipTopics": {
     "enabled": true,
     "aiVerify": false,
-    "aiModel": "gpt-5.6-luna",
+    "aiModel": "gpt-6-luna",
     "mode": "local_review",
     "keywords": [
       "岁己",
@@ -1611,6 +1624,38 @@
     "ignoredRoomIds": [
       "25788785"
     ],
+    "ambiguousRecall": {
+      "enabled": true,
+      "contextSeconds": 45,
+      "rules": [
+        {
+          "id": "sui-ambiguous-conversation",
+          "keyword": "岁己",
+          "forms": ["随即", "随机", "最急", "最级", "c机", "赛吉斯", "就己", "废级"],
+          "requireNearby": ["秒回", "吐槽", "怀里", "口癖", "口屁", "吃醋", "好起来", "暴龙", "攻击", "支持", "新衣"],
+          "excludePatterns": ["随机(?:抽取|抽奖|数|种子|生成|匹配|分配|选择)"]
+        },
+        {
+          "id": "sui-reflexive-person-reference",
+          "keyword": "岁己",
+          "forms": ["自己"],
+          "cuePattern": "(?:和|跟|被|对)自己(?:好起来|睡|吐槽|发消息)"
+        },
+        {
+          "id": "sui-episode-message-reference",
+          "keyword": "岁己",
+          "forms": ["这一集"],
+          "cuePattern": "这一集.{0,12}(?:消息|秒回)"
+        },
+        {
+          "id": "sui-small-gift-reference",
+          "keyword": "小岁",
+          "forms": ["小碎"],
+          "requireNearby": ["海獭", "栞栞", "弥月", "小弥", "前辈", "主播"],
+          "excludePatterns": ["小小碎", "小碎(?:步|片|石|花|块|屑|发|钻|机)", "[击打折破摔碾撕咬切压]小碎"]
+        }
+      ]
+    },
     "prePaddingSeconds": 20,
     "postPaddingSeconds": 35,
     "contextPrePaddingSeconds": 180,
@@ -1632,12 +1677,22 @@
       "strategy": "single",
       "qualityRules": true,
       "transientMaxAttempts": 2,
-      "model": "gpt-5.6-sol",
+      "model": "gpt-6-sol",
       "reasoningEffort": "high",
       "maxOutputTokens": 24000,
       "maxDanmakuRows": 120,
       "maxEvidenceChars": 80000,
-      "timeoutMs": 600000
+      "timeoutMs": 600000,
+      "audioChecks": {
+        "enabled": true,
+        "windowSeconds": 30,
+        "maxWindowsPerGroup": 3,
+        "maxWindowsPerRecording": 6,
+        "maxAudioSecondsPerRecording": 180,
+        "timeoutMs": 180000,
+        "maxElapsedMsPerRecording": 360000,
+        "hotwords": ["岁己", "小岁"]
+      }
     },
     "mergeGapSeconds": 45,
     "burnSubtitles": true,
@@ -1660,6 +1715,14 @@
     "autoUpload": {
       "enabled": false
     },
+    "automaticPublication": {
+      "mode": "auto",
+      "scope": "configured_keywords",
+      "policyVersion": "topic-v1",
+      "activatedAt": "2026-10-04T01:17:26Z",
+      "authorizationNote": "用户授权关键词切片通过最终审核后自动入队投稿；沿用现有关键词与忽略房间配置，仅在现有企微列表汇总状态，不单发成功或BV通知。",
+      "concurrency": 2
+    },
     "notify": {
       "enabled": true,
       "includeSubtitleContext": true,
@@ -1669,20 +1732,59 @@
       "danmakuContextSeconds": 45
     }
   },
+  "streamGameClips": {
+    "enabled": true,
+    "roomIds": ["25788785"],
+    "maxSingleVideoSeconds": 3600,
+    "requireOriginalStreamCopy": true,
+    "autoUpload": true,
+    "ai": { "boundaryEvidenceMethod": "independent_local_asr", "boundaryModel": "gemini-3.1-pro-preview", "frameProvider": "daiYu", "frameApiMode": "openai_chat", "frameModel": "gpt-6.1-sol" },
+    "authorizationNote": "用户授权切出并投稿岁己所有艾尔登法环游玩内容，并让以后的艾尔登法环自动投稿；保留游戏音画，上传外挂字幕。用户要求不降码率，超限切短，保留原视频与音频码流。",
+    "games": [{
+      "id": "elden-ring", "name": "艾尔登法环",
+      "aliases": ["艾尔登法环", "艾登法环", "法环", "老头环", "ELDEN RING"],
+      "tid": 17, "tags": ["岁己", "小岁", "艾尔登法环", "老头环", "游戏实况", "虚拟主播"],
+      "collection": { "seasonId": 9223925, "sectionId": 10312687 }
+    }]
+  },
+  "streamActivityClips": {
+    "automaticPublication": {
+      "mode": "auto",
+      "roomIds": [
+        "25788785"
+      ],
+      "policyVersion": "stream-activity-v1",
+      "activatedAt": "2026-10-05T04:47:39.731Z",
+      "authorizationNote": "用户明确要求岁己歌切与同步视听也自动投稿；通过当前原音边界与成片最终审核后进入既有单实例上传队列，仅在既有企微列表汇总状态，不逐条发送成功或BV消息。"
+    },
+    "enabled": true,
+    "detectionMode": "summary",
+    "verification": { "provider": "daiYu", "apiMode": "openai_chat", "model": "gpt-6.1-sol", "evidenceMethod": "independent_local_asr" },
+    "roomIds": ["25788785"],
+    "songs": { "collection": { "seasonId": 9223796, "sectionId": 10312547 } },
+    "watch": { "collection": { "seasonId": 9223831, "sectionId": 10312582 } }
+  },
   "ownStreamClips": {
     "enabled": true,
+    "automaticPublication": {
+      "mode": "auto", "roomIds": ["25788785"], "policyVersion": "own-stream-v1",
+      "activatedAt": "2026-10-02T19:05:41Z",
+      "authorizationNote": "用户授权普通岁己切片审核明确通过后自动入队投稿；仅在现有企微列表汇总状态，不单发成功或BV通知。",
+      "concurrency": 2
+    },
     "enhancements": {
       "enabled": true,
-      "workflow": "pacing",
+      "workflow": "creative",
+      "creative": { "style": "compact", "avatarMode": "auto", "focusPlacement": "source", "faceInsetDiameter": 0.60, "allowCoverFaceOverlap": true, "laughAsset": "sitcom_laugh", "laughAssets": ["sitcom_laugh", "sitcom_laugh_chuckle", "sitcom_laugh_warm", "sitcom_laugh_applause"], "maxMoments": 24, "maxZoom": 5, "soundEffects": true, "filters": true, "variety": true, "assetManifest": "config/clip-creative-assets.json" },
       "pacing": { "noiseDb": -40, "nonSpeechVad": true, "minRemovedSeconds": 3, "minRemovedRatio": 0.02, "maxRemovedRatio": 0.2, "maxPausesPerClip": 2, "maxScannedSeconds": 120 },
       "roomIds": ["25788785"],
       "editing": true,
-      "experiment": { "enabled": true, "ratio": 0.25, "maxClips": 5 },
+      "experiment": { "enabled": true, "ratio": 1, "maxClips": 1 },
       "budget": { "mode": "log_only", "ledgerPath": "data/runtime/clip-enhancement-ledger.json" },
       "stageDefaults": {
         "retry": { "maxAttempts": 2, "baseDelayMs": 1000, "maxDelayMs": 10000, "jitterRatio": 0.2 },
         "provider": "daiYu",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "apiMode": "responses",
         "reasoningEffort": "high",
         "maxTokens": 16000,
@@ -1707,9 +1809,11 @@
       "batchSize": 4,
       "concurrency": 3,
       "maxBatchChars": 36000,
-      "maxRequests": 12,
+      "maxRequests": 32,
       "maxElapsedMs": 1200000,
       "repairAttempts": 1,
+      "holdUnresolvedBeforeRender": true,
+      "sourceReviewBeforeRender": true,
       "dialogueEnabled": true,
       "evidenceEncoding": "compact",
       "timeoutMs": 600000,
@@ -1722,6 +1826,14 @@
     ],
     "maxCandidates": 80,
     "maxClips": 50,
+    "publicationPolicy": {
+      "mode": "curated",
+      "roomIds": ["25788785"],
+      "minScore": 75,
+      "maxStandalone": 18,
+      "standoutScore": 92,
+      "bundles": { "enabled": false, "minScore": 70, "protectScore": 90, "maxGroups": 2, "maxMembers": 3, "maxSeconds": 300, "minCombinedScore": 85, "minScoreGain": 5, "maxCandidates": 20 }
+    },
     "chunkSeconds": 2700,
     "aiConcurrency": 4,
     "streamReviewRendering": true,
@@ -1758,7 +1870,7 @@
     "ai": {
       "enabled": true,
       "strategy": "staged",
-      "model": "gpt-5.6-luna",
+      "model": "gpt-6-luna",
       "timeoutMs": 600000,
       "rerankTimeoutMs": 1200000,
       "rerankMaxAttempts": 2,
@@ -1803,6 +1915,11 @@
       }
     },
     "selectionPolicy": {
+      "roomOverrides": {
+        "25788785": {
+          "excludedCategories": ["不切岁己本人现实家庭关系中的负面或争议性内容，包括吵架、冷战、指责、财务纠纷及涉及家人隐私的冲突，避免脱离具体情况引人误解；不得以改标题、搞笑包装或拆短片段绕过。普通家人提及、童年坐车、无冲突的成长经历和日常回忆允许，不因出现爸爸、小时候、亲戚等词就排除；晕车主题里提到以前坐爸爸的车不属于家庭矛盾。游戏虚构角色、明确角色扮演和他人新闻按实际内容判断。"]
+        }
+      },
       "requireTimeCoverage": false,
       "excludedCategories": [],
       "priorityCategories": ["有辨识度的短台词与语气", "角色相遇、起昵称和求助互动"]
@@ -1838,6 +1955,10 @@
     "anchors": {},
     "upload": {
       "collectionSectionId": 10015117,
+      "autoCollectionRollover": {
+        "enabled": true,
+        "sectionId": 9482593
+      },
       "collectionRouting": {
         "fuyasoul": {
           "seasonId": 8956269,
@@ -1876,7 +1997,10 @@
     },
     "danmuRiskControl": {
       "enabled": true,
-      "intervalMs": 300000,
+      "intervalMs": 1800000,
+      "logDirectory": "",
+      "recorderStatePath": "data/runtime/recorder_watchdog.state.json",
+      "monitorStatePath": "data/runtime/recorder_log_monitor.json",
       "roomIds": [
         "25788785"
       ],
@@ -1923,7 +2047,7 @@
       "visual": {
         "enabled": true,
         "provider": "daiYu",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "maxFrames": 6,
         "timeoutMs": 120000,
         "maxTokens": 7000,
@@ -1931,6 +2055,31 @@
       }
     },
     "default_backend": "paraformer",
+    "moss_rollout": {
+      "enabled": true,
+      "ratio": 0.2,
+      "room_ids": [],
+      "eligibility": "confirmed_multi"
+    },
+    "moss": {
+      "model": "D:/files/videos/asr_eval/models/moss_transcribe_diarize",
+      "revision": "e8681d68e7042738ffca8ac8212bc8fcb1131ab8",
+      "device": "cuda:0",
+      "inference_backend": "vllm",
+      "managed_server": true,
+      "docker_image": "sha256:9f4f4f01b1cc17f4ce9ad0dddfa8e078e4c7a3c185c2c6892e16e19d67533e5c",
+      "cache_dir": "D:/files/videos/asr_eval/vllm_cache",
+      "v2_model_runner": true,
+      "wsl2_pin_memory": true,
+      "max_model_len": 12288,
+      "kv_cache_memory_mb": 1536,
+      "gpu_memory_utilization": 0.4,
+      "startup_timeout_s": 600,
+      "request_timeout_s": 600,
+      "chunk_seconds": 300,
+      "overlap_seconds": 20,
+      "process_timeout_s": 10800
+    },
     "subtitleProofreading": {
       "enabled": true,
       "roomIds": ["25788785"],
@@ -1994,9 +2143,6 @@
           "小紫",
           "小sei"
         ],
-        "ambiguous_aliases": [
-          "小碎"
-        ],
         "hotword_terms": [
           "小岁"
         ]
@@ -2051,6 +2197,16 @@
         "红味": "虹味"
       },
       "ambiguous": [
+        {
+          "from": "小碎",
+          "to": "小岁",
+          "require_nearby": ["主播", "直播", "开播", "SUI", "岁己", "饼干岁", "VR", "VirtuaReal"],
+          "context_window_tokens": 6,
+          "match_mode": "token",
+          "boundary_sensitive": true,
+          "exclude_when": [],
+          "exclude_pattern": []
+        },
         {
           "from": "碎几",
           "to": "岁己",
@@ -2209,7 +2365,36 @@
             "费姐": "岁己",
             "克洛亚": "克罗雅",
             "克利亚": "克罗雅"
-          }
+          },
+          "ambiguous": [
+            {
+              "from": "赛吉斯",
+              "to": "岁己",
+              "require_nearby": ["支持"],
+              "context_window_tokens": 6,
+              "match_mode": "token",
+              "boundary_sensitive": true,
+              "exclude_pattern": ["(?<!支持)赛吉斯"]
+            }
+          ]
+        }
+      },
+      {
+        "match": { "room_id": "1791260716" },
+        "backend": "paraformer",
+        "corrections": {
+          "ambiguous": [
+            {
+              "from": "小碎",
+              "to": "小岁",
+              "require_nearby": ["海獭"],
+              "context_window_tokens": 6,
+              "match_mode": "token",
+              "boundary_sensitive": false,
+              "exclude_when": ["小碎步", "小碎片", "小碎石", "小碎花", "小碎块", "小碎屑", "小碎发", "小碎钻", "小碎机"],
+              "exclude_pattern": ["[击打折破摔碾撕咬切压]小碎", "(?<!给)小碎", "小碎(?!看|买|送)"]
+            }
+          ]
         }
       },
       {

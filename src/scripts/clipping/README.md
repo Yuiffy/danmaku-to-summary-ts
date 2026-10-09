@@ -60,6 +60,13 @@ ignored `temp/` tree until its inputs and behavior are made configurable.
 - `event_manifest.js`: normalize detector output into one event contract and
   perform score-aware overlap selection.
 - `resource_scheduler.js`: adaptive FFmpeg worker and thread scheduling.
+- `stream_activity_timeline.js`, `stream_activity_summary.js`, `stream_activity_summary_plan.js`,
+  `stream_activity_boundaries.js`: reuse recap activity timestamps and batch only nearby
+  audio/energy calibration, with one attempt and a per-stream request budget.
+- `stream_activity_plan.js`, `stream_activity_transcript.js`, `stream_activity_verification.js`, `stream_activity_media.js`,
+  `stream_activity_clipper.js`: complete per-stream singing/viewing planning,
+  source audio/frame verification, continuous parts and multipart archive manifests.
+  See [stream activity clips](../../../docs/stream-activity-clips.md).
 - `output_path.js`: map archive recordings to the active output tree.
 - `*.schema.json`: machine-readable contracts for detector/compiler boundaries.
 
@@ -69,6 +76,12 @@ remain at their historical paths for compatibility. New shared code belongs
 here; the root files should depend on these modules instead of adding more
 cross-workflow helpers.
 
+`publication_policy.js` separates the recall ceiling from the number of standalone
+clips to produce. It retains the deferred pool and protects high scoring singles.
+`publication_bundles.js` proposes optional source-cited related groups for review;
+`publication_cli.js` previews policies, restores candidates, and builds reviewed
+groups through the shared compilation renderer. See [publication policy](../../../docs/clip-publication-policy.md).
+
 These extracted JS modules preserve the existing source-executed Node runtime.
 They must not import their parent workflows. Pure decision changes can be tested
 without FFmpeg, an AI provider, an upload queue, or a service restart.
@@ -77,6 +90,19 @@ without FFmpeg, an AI provider, an upload queue, or a service restart.
 are compatibility entrypoints. New imports should use this directory.
 
 ## Optional Own-Stream Enhancements
+
+`creative_plan.js` validates source-cited moments and a closed effect vocabulary, and compiles zooms,
+ASS stickers and synthesized audio accents before the regular subtitle burn. `creative_runner.js`
+owns visual evidence capture, measured rendering, unchanged-copy attribution binding and final QA.
+`creative_profile.js` chooses content-appropriate pacing/music/humor and rotates distinct laughter excerpts.
+`creative_layout.js` anchors enlargements and reaction stickers to their original subject and reflows
+burned captions around them without changing SRT words or font size. `focus_inset.js` supports in-place
+chat/text/object emphasis; `face_inset.js` provides circular portrait rendering. These rules run in the
+shared creative pipeline for fresh jobs and numeric revisions, with actual frame dimensions rather
+than fixed avatar corners. See the content profile and layout contracts in the precision guide.
+`precision_delivery.js` sends ordinary results before the selected creative job and reports its
+completion or preserved ordinary fallback separately. See [precision workflows](../../../docs/clip-precision-experiment.md).
+`subtitle_encoding.js` shares the existing NVENC/CUDA settings and CPU fallback without changing ordinary output.
 
 `enhancement_runner.js` owns media/provider IO around strictly compiled stages in
 `src/workflows/clipping`. `ownStreamClips.enhancements` requires `enabled: true`

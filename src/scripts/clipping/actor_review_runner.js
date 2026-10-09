@@ -4,6 +4,8 @@ const { requestSelectionText } = require('./selection_request');
 const { dialoguePrompt, parseDialogueEvidence } = require('./dialogue_evidence');
 const { attributionRisk, buildActorReviewPacket, actorReviewPrompt, parseActorReviews,
     validateActorReview, applyActorReview } = require('./actor_review');
+const { repairFeedback } = require('./actor_review_feedback');
+const { actorReviewResponseFormat } = require('./actor_review_schema');
 
 async function reviewClipActors(clips, parsed, danmaku, evidence, info, config, rootConfig, diagnostics, hooks = {}) {
     const publish = items => hooks.onBatchReviewed?.(items.map(({ clip, index }) => ({ clip, index })));
@@ -26,13 +28,18 @@ async function reviewClipActors(clips, parsed, danmaku, evidence, info, config, 
         const packet = buildActorReviewPacket(clip, `c${index + 1}`, evidence, danmaku, context, settings);
         packets.push({ ...packet, index, risks });
     });
-    diagnostics.attribution = { totalClips: clips.length, highRiskClips: packets.length, passed: 0, pending: 0, requests: 0, maxRequests, events: [] };
+    diagnostics.attribution = { totalClips: clips.length, highRiskClips: packets.length, passed: 0, pending: 0,
+        automaticallyRepaired: 0, requests: 0, maxRequests, events: [] };
     let remainingInitialBatches = 0;
     const recordEvent = (phase, current, details) => diagnostics.attribution.events.push({
         phase, clipIds: current.map(packet => packet.id), ...details
     });
     const store = (packet, review, issues) => {
         const updated = applyActorReview(packet, review, issues);
+        if (updated.attributionReview.status !== 'passed') {
+            const fallback = require('./review_brief').fallbackChecks(packet, review, updated.attributionReview.issues);
+            updated.attributionReview.humanChecks = [...updated.attributionReview.humanChecks, ...fallback];
+        }
         updated.attributionReview.risks = packet.risks;
         result[packet.index] = updated;
         diagnostics.attribution[updated.attributionReview.status === 'passed' ? 'passed' : 'pending']++;
@@ -63,9 +70,11 @@ async function reviewClipActors(clips, parsed, danmaku, evidence, info, config, 
         try {
             const firstPrompt = promptFor(current);
             const phase = `actor-review-${++diagnostics.attribution.requests}`;
-            const response = await requestSelectionText(firstPrompt, requestOptions,
+            const response = await requestSelectionText(firstPrompt, { ...requestOptions, responseFormat: actorReviewResponseFormat(current) },
                 config, rootConfig, info, phase, diagnostics, valid(current));
             const reviews = new Map(parseActorReviews(response, current).map(review => [review.clipId, review]));
+            const history = new Map(current.map(packet => [packet.id, [{ phase: 'initial',
+                review: reviews.get(packet.id), issues: validateActorReview(reviews.get(packet.id), packet) }]]));
             const responses = new Map(current.map(packet => [packet.id, response]));
             if (settings.dialogueEnabled === true && settings.repairAttempts !== 0 && Date.now() < deadline
                 && diagnostics.attribution.requests + remainingInitialBatches + 1 < maxRequests) {
@@ -76,9 +85,13 @@ async function reviewClipActors(clips, parsed, danmaku, evidence, info, config, 
                         [review.copy?.title, review.copy?.description].join('\n'));
                     const multipleContext = packet.risks.some(reason => /(?:multiple|copy_voice_conflict|other_person_in_context|conversational_context)/u.test(reason))
                         || context?.people?.some(person => !person.sourceHost && ['planned', 'voice_matched'].includes(person.presence));
-                    return multipleContext && (review.decision === 'needs_review'
+                    const identityQuestion = /(?:说话|谁|声纹|身份|讲述|转述|插话|归属|发言|speaker|identity|narrator)/iu.test(
+                        [review.reason, ...(Array.isArray(review.humanChecks) ? review.humanChecks.map(check => check?.question) : [])].join('\n'));
+                    const unresolvedSpeaker = issues.some(issue => /(?:missing_speaker|unproven_narrator|unresolved_named_actor)/u.test(issue))
+                        || (review.decision === 'needs_review' && identityQuestion);
+                    return unresolvedSpeaker || (multipleContext && (review.decision === 'needs_review'
                         || issues.some(issue => /(?:speaker|narrator|actor|question_action)/u.test(issue))
-                        || (!issues.length && genericPerson && review.claims?.some(claim => !claim.narrator || !claim.actor || !claim.target)));
+                        || (!issues.length && genericPerson && review.claims?.some(claim => !claim.narrator || !claim.actor || !claim.target))));
                 });
                 if (needsDialogue.length) {
                     const prompt = dialoguePrompt(needsDialogue, context);
@@ -104,19 +117,29 @@ async function reviewClipActors(clips, parsed, danmaku, evidence, info, config, 
             }
             const repair = settings.repairAttempts === 0 ? [] : current.filter(packet => {
                 const review = reviews.get(packet.id);
-                return (review.decision !== 'needs_review' && validateActorReview(review, packet).length > 0)
+                return validateActorReview(review, packet).length > 0
                     || packet.dialogueEvidence?.turns.some(turn => turn.supported);
             });
             if (repair.length && Date.now() < deadline && diagnostics.attribution.requests + remainingInitialBatches < maxRequests) {
-                const repairPrompt = promptFor(repair) + '\n只修订以下明确校验问题，不改变原事件，仍无法核验就needs_review：\n'
-                    + JSON.stringify(repair.map(packet => ({ clipId: packet.id, previous: reviews.get(packet.id),
-                        issues: validateActorReview(reviews.get(packet.id), packet),
-                        newDialogueEvidence: Boolean(packet.dialogueEvidence) })));
+                const repairPrompt = promptFor(repair) + '\n这是切片前的最后一次自动修订。重新读取原话并解决以下具体问题，不改变原事件；上一轮needs_review也应尝试用现有证据解决。仍缺原音或事实依据时保留needs_review并写简短humanChecks，禁止为过审猜测。\n'
+                    + JSON.stringify(repair.map(packet => repairFeedback(packet, reviews.get(packet.id),
+                        validateActorReview(reviews.get(packet.id), packet))));
                 if (repairPrompt.length <= maxChars) {
                     try {
-                        const repaired = await requestSelectionText(repairPrompt, requestOptions, config, rootConfig, info,
+                        const repaired = await requestSelectionText(repairPrompt, { ...requestOptions,
+                            responseFormat: actorReviewResponseFormat(repair),
+                            primaryModel: settings.repairModel || requestOptions.primaryModel,
+                            reasoningEffort: settings.repairReasoningEffort || requestOptions.reasoningEffort }, config, rootConfig, info,
                             `actor-review-${++diagnostics.attribution.requests}-repair`, diagnostics, valid(repair));
-                        parseActorReviews(repaired, repair).forEach(review => { reviews.set(review.clipId, review); responses.set(review.clipId, repaired); });
+                        parseActorReviews(repaired, repair).forEach(review => {
+                            const packet = repair.find(packet => packet.id === review.clipId);
+                            const issues = validateActorReview(review, packet);
+                            history.get(packet.id).push({ phase: 'repair', review, issues });
+                            // A speculative repair cannot replace an already valid first result.
+                            if (issues.length && !validateActorReview(reviews.get(packet.id), packet).length) return;
+                            if (!issues.length && history.get(packet.id)[0].issues.length) diagnostics.attribution.automaticallyRepaired++;
+                            reviews.set(review.clipId, review); responses.set(review.clipId, repaired);
+                        });
                     } catch (error) {
                         diagnostics.attribution.repairError = error.message;
                         recordEvent('actor-review-repair', repair, { status: 'failed', error: error.message });
@@ -125,6 +148,7 @@ async function reviewClipActors(clips, parsed, danmaku, evidence, info, config, 
             }
             current.forEach(packet => {
                 store(packet, reviews.get(packet.id));
+                result[packet.index].attributionReview.history = history.get(packet.id);
                 const used = responses.get(packet.id);
                 const last = used.meta?.attempts?.at(-1) || {};
                 result[packet.index].attributionReview.reviewer = { model: used.meta?.model || last.model || null,

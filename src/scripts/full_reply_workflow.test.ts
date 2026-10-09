@@ -20,8 +20,8 @@ describe('combined reply/summary publication workflow', () => {
     {target:'reply',value:'The team defeated the boss',sourceIds:['T1'],actor:'team'},
     {target:'game',value:'Chess',sourceIds:['T3'],actor:'host'}
   ]});
-  const result = (text: string, id: string) => ({ text,meta:{provider:'daiYu',model:'gpt-5.6-luna',attempts:[{
-    provider:'daiYu',model:'gpt-5.6-luna',status:'success',requestStarted:true,responseId:id,requestId:`req-${id}`,
+  const result = (text: string, id: string) => ({ text,meta:{provider:'daiYu',model:'gpt-6-luna',attempts:[{
+    provider:'daiYu',model:'gpt-6-luna',status:'success',requestStarted:true,responseId:id,requestId:`req-${id}`,
     promptTokens:1000,cachedTokens:0,completionTokens:100,reasoningTokens:50,totalTokens:1100
   }]}});
   beforeEach(() => {

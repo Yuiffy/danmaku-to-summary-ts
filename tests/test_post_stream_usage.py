@@ -30,6 +30,12 @@ class PostStreamUsageTest(unittest.TestCase):
         self.assertEqual(row['knownTokenTotal'], 1100)
         self.assertAlmostEqual(row['estimatedTextUsd'], 0.00023)
 
+    def test_gpt6_prices_keep_legacy_estimates_separate(self):
+        for model, expected in (('gpt-6-luna', 0.00010), ('gpt-6-sol', 0.002)):
+            row = usage.request_record({'model': model, 'promptTokens': 1000, 'cachedTokens': 0,
+                                        'completionTokens': 0}, 'goodnight', 'file', 0)
+            self.assertAlmostEqual(row['estimatedTextUsd'], expected)
+
     def test_image_is_not_priced_as_text(self):
         row = usage.request_record({'model': 'gpt-image-2', 'usage': {'input_tokens': 1000, 'output_tokens': 500}}, 'image', 'file', 0)
         self.assertEqual(row['knownTokenTotal'], 1500)

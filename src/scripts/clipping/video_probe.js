@@ -14,9 +14,11 @@ async function videoFileFingerprint(mediaPath) {
     }
 }
 
-async function getVideoResolution(mediaPath, ffprobePath = 'ffprobe') {
+async function getVideoResolution(mediaPath, ffprobePath = 'ffprobe', atSeconds = null) {
+    const timed = atSeconds !== null;
+    if (timed && (!Number.isFinite(atSeconds) || atSeconds < 0)) throw new Error('Invalid video resolution probe time');
     const fingerprint = await videoFileFingerprint(mediaPath);
-    const key = JSON.stringify([path.resolve(String(mediaPath || '')), String(ffprobePath)]);
+    const key = JSON.stringify([path.resolve(String(mediaPath || '')), String(ffprobePath), atSeconds]);
     const cached = videoResolutionCache.get(key);
     if (fingerprint && cached?.fingerprint === fingerprint) return { ...await cached.promise };
 
@@ -26,17 +28,22 @@ async function getVideoResolution(mediaPath, ffprobePath = 'ffprobe') {
             const result = await new Promise((resolve, reject) => childProcess.execFile(ffprobePath, [
                 '-v', 'error',
                 '-select_streams', 'v:0',
-                '-show_entries', 'stream=width,height',
-                '-of', 'csv=p=0',
+                ...(timed ? ['-read_intervals', `${atSeconds}%${atSeconds + 15}`,
+                    '-show_entries', 'frame=width,height,best_effort_timestamp_time', '-of', 'json']
+                    : ['-show_entries', 'stream=width,height', '-of', 'csv=p=0']),
                 String(mediaPath)
             ], {
                 encoding: 'utf8',
                 timeout: 10000,
                 windowsHide: true,
                 shell: false,
-                maxBuffer: 64 * 1024
+                maxBuffer: timed ? 1024 * 1024 : 64 * 1024
             }, (error, stdout) => error ? reject(error) : resolve(String(stdout).trim())));
-            const [width, height] = String(result).split(',').map(Number);
+            // A merged recording can switch orientation after its initial stream header.
+            // Seeking may land at an earlier keyframe; only use a decoded frame in this clip.
+            const frame = timed ? JSON.parse(result).frames?.find(row =>
+                Number(row.best_effort_timestamp_time) >= atSeconds) : null;
+            const [width, height] = timed ? [frame?.width, frame?.height] : String(result).split(',').map(Number);
             if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
                 throw new Error('Invalid video dimensions');
             }
@@ -44,8 +51,9 @@ async function getVideoResolution(mediaPath, ffprobePath = 'ffprobe') {
                 videoResolutionCache.delete(key);
             }
             return { width, height };
-        } catch {
+        } catch (error) {
             if (videoResolutionCache.get(key) === entry) videoResolutionCache.delete(key);
+            if (timed) throw new Error(`Cannot determine clip-local video resolution: ${error.message}`);
             return { width: 1920, height: 1080 };
         }
     })();

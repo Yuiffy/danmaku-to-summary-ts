@@ -4,7 +4,7 @@ const path = require('path');
 const { writeJsonAtomic } = require('./candidate_subtitles');
 const { createClipResourceAdaptiveScheduler } = require('./resource_scheduler');
 const { createIncrementalRender } = require('./incremental_render');
-const { runClipPipeline } = require('./clip_pipeline');
+const { runClipPipeline, createClipPipeline } = require('./clip_pipeline');
 
 async function produceOwnClips(context, hooks) {
     const { options, config, rootConfig, parsed, danmaku, evidence, info, outputRoot, diagnostics, metadata } = context;
@@ -14,24 +14,67 @@ async function produceOwnClips(context, hooks) {
     const reviewPath = path.join(outputRoot, base ? `REVIEW_${base}.md` : 'REVIEW.md');
     Object.assign(metadata, { planPath, reviewPath, uploadManifestPath: path.join(outputRoot, base ? `${base}_UPLOAD_MANIFEST.json` : 'UPLOAD_MANIFEST.json') });
     const source = { mediaPath: options.mediaPath, srtPath: options.srtPath, xmlPath: options.xmlPath || null };
+    const reservedWindows = context.clips.map(clip => ({ clip, start: clip.start, end: clip.end }));
+    const sourceReview = batch => require('../workflow-runtime').loadWorkflow('clipping/ownSourceReview').reviewOwnSourceCandidates(batch, {
+        enabled: config.attribution?.sourceReviewBeforeRender === true && (config.attribution.roomIds || []).map(String).includes(String(info.roomId)),
+        roomId: info.roomId, streamerName: info.streamerName || metadata.streamerName, sourceSha256: evidence.sourceSha256,
+        cues: evidence.cues, audience: danmaku, excludedCategories: config.selectionPolicy?.excludedCategories || [],
+        aiEnabled: config.ai?.enabled === true && rootConfig.ai?.text?.enabled !== false,
+        diagnostics, maxRequests: config.attribution?.maxRequests, maxBatchChars: config.attribution?.maxBatchChars
+    }, { snapshot: () => JSON.stringify(require('./source_snapshot').sourceSnapshot({ source })),
+        replan: async (original, window, feedback) => {
+            const reservation = reservedWindows.find(row => row.clip === original
+                || row.clip.candidateIndex !== undefined && String(row.clip.candidateIndex) === String(original.candidateIndex)
+                || row.start === original.start && row.end === original.end);
+            const checkOverlap = candidate => {
+                if (!reservation || reservedWindows.some(row => row !== reservation
+                    && Math.min(candidate.end, row.end) - Math.max(candidate.start, row.start) > .001)) {
+                    throw new Error('切前边界修复与另一保留片段重叠');
+                }
+            };
+            checkOverlap(window);
+            const planned = await hooks.replan({ index: original.candidateIndex ?? 1, ...window,
+                globalSelection: { reason: original.title } }, feedback);
+            if (planned.length !== 1) throw new Error('切前边界修复没有返回唯一候选');
+            checkOverlap(planned[0]);
+            const [reviewed] = await hooks.review([{ ...planned[0], attributionRequired: true }]);
+            if (!reviewed || reviewed.attributionReview?.status !== 'passed' || reviewed.publicCopyPending) {
+                throw new Error('切前新窗口人物复核未通过');
+            }
+            checkOverlap(reviewed);
+            Object.assign(reservation, { start: reviewed.start, end: reviewed.end });
+            return { ...reviewed, attributionRequired: true, ...(original.qaRequired ? {qaRequired:true} : {}) };
+        },
+        request: hooks.sourceReviewRequest || ((prompt, phase, validate) => require('./selection_request').requestSelectionText(prompt,
+            { primaryModel: config.attribution?.model || config.ai?.model, reasoningEffort: config.attribution?.reasoningEffort || 'high',
+                timeoutMs: config.attribution?.timeoutMs || 600000, maxTokens: config.attribution?.maxTokens || 12000,
+                structuredOutputKey: 'reviews', strictEvaluation: true }, config, rootConfig, info, phase, diagnostics, validate)) });
     const savePlan = (current, status) => {
         metadata.aiStatus.requests = diagnostics.requests || [];
         if (diagnostics.attribution) metadata.aiStatus.attribution = diagnostics.attribution;
+        if (diagnostics.sourceReview) metadata.aiStatus.sourceReview = diagnostics.sourceReview;
         writeJsonAtomic(planPath, { version: 1, generatedAt: new Date().toISOString(), status, source,
+            ...(options.timingRecord ? { transcriptRepair: options.timingRecord } : {}),
+            ...(options.timingRecovery ? { timingRevision: { id: options.timingRecovery.id, note: options.timingRecovery.note,
+                backupDirectory: options.timingRecovery.backupDirectory, startedAt: options.timingRecovery.startedAt } } : {}),
             config: { maxCandidates: config.maxCandidates, maxClips: config.maxClips, minClipSeconds: config.minClipSeconds,
                 maxClipSeconds: config.maxClipSeconds, aiDurationPolicy: 'content_complete', chunkSeconds: config.chunkSeconds, aiConcurrency: config.aiConcurrency,
                 clipConcurrency: config.clipConcurrency, clipFfmpegThreads: config.clipFfmpegThreads,
                 aiStrategy: config.ai?.strategy, aiModel: config.ai?.model,
                 viewingAnglesVersion: 1, recallMaxClipsPerChunk: config.ai?.recallMaxClipsPerChunk,
                 selectionPolicy: config.selectionPolicy,
+                publicationPolicy: metadata.publication?.policy || config.publicationPolicy || null,
                 maxCandidateLines: config.ai?.maxCandidateLines, subtitleEvidenceFormat: `complete_grouped_v${evidence.version}`,
                 subtitleTruncation: false, maxCandidateDanmakuLines: config.ai?.maxCandidateDanmakuLines, parallel: config.parallel,
                 rankThenEdit: config.ai?.rankThenEdit || null, streamReviewRendering: config.streamReviewRendering === true,
                 attribution: config.attribution },
-            aiStatus: metadata.aiStatus, ...(experiment?.summary ? { precisionExperiment: experiment.summary } : {}),
+            aiStatus: metadata.aiStatus, ...(metadata.publication ? { publication: metadata.publication } : {}),
+            ...(experiment?.summary ? { precisionExperiment: experiment.summary } : {}),
             ...(parsed.participantContext ? { participantContext: parsed.participantContext } : {}), clips: current });
     };
     const scheduler = createClipResourceAdaptiveScheduler({ ownConfig: config, rootConfig });
+    const enhancementsEnabled = require('./enhancement_runner').enhancementEnabled(config.enhancements, info.roomId);
+    const creative = enhancementsEnabled && config.enhancements.workflow === 'creative';
     const pipelineOptions = { scheduler, mediaConcurrency: scheduler.enabled ? scheduler.maxConcurrency : config.clipConcurrency,
         enhancementConcurrency: Number(config.enhancementConcurrency) || 3,
         onError: (error, index) => {
@@ -40,21 +83,52 @@ async function produceOwnClips(context, hooks) {
                 start: clips[index].start, end: clips[index].end, error: error.message });
         } };
     const streaming = config.streamReviewRendering === true && !options.planOnly
-        && (!config.enhancements?.enabled || config.enhancements.workflow === 'pacing');
+        && (!enhancementsEnabled || config.enhancements.workflow === 'pacing' || creative);
     let started = new Date();
     if (streaming) {
         const pacingScanBudget = { remainingSeconds: config.enhancements?.pacing?.maxScannedSeconds || 120 };
         const incremental = createIncrementalRender({ outputRoot, source, config, initialClips: clips, pipelineOptions, label: base || 'PLAN',
-            prepare: batch => hooks.prepare(batch, { ...options, pacingScanBudget }), render: hooks.render });
+            // Global creative selection happens after ordinary baselines, never in each review batch.
+            prepare: batch => creative ? { clips: batch.map(clip => ({ ...clip, precisionExperiment: undefined })) }
+                : hooks.prepare(batch, { ...options, pacingScanBudget }),
+            render: (clip, index, execution) => hooks.render(clip, index, { ...execution, deferEnhancement: creative }) });
         metadata.progressPath = incremental.progressPath;
         savePlan(clips.map(clip => ({ ...clip, publicCopyPending: true, uploadReady: false })), 'reviewing');
         let reviewError;
-        try { await hooks.review(clips, { onBatchReviewed: incremental.submitBatch }); }
+        try { await hooks.review(clips, { onBatchReviewed: async items => {
+            const reviewed = await sourceReview(items.map(item => item.clip));
+            return incremental.submitBatch(items.map((item, index) => ({ ...item, clip: reviewed[index] })));
+        } }); }
         catch (error) { reviewError = error; }
         const produced = await incremental.finish();
         if (reviewError) throw reviewError;
         clips = produced.clips; results = produced.results;
-        if (produced.summaries.length) {
+        if (creative) {
+            experiment = await hooks.prepare(clips, options); clips = experiment.clips;
+            if (experiment.summary) metadata.precisionExperiment = experiment.summary;
+            results = results.map(result => ({ ...result, precisionExperiment: clips[result.window.index - 1].precisionExperiment }));
+            results.forEach(result => writeJsonAtomic(result.output.metadataPath, result.precisionExperiment?.selected
+                ? { ...result, uploadReady: false, qaRequired: true, qaResult: { version: 1, status: 'pending' }, creativeResult: { status: 'pending' } }
+                : result));
+            const selected = results.filter(result => result.precisionExperiment?.selected);
+            if (selected.length) {
+                metadata.precisionDelivery = { version: 1, phase: 'ordinary_ready', selected: selected.map(result => ({
+                    index: result.window.index, title: result.copy.title, start: result.window.start, end: result.window.end,
+                    reason: result.precisionExperiment.reason })) };
+                savePlan(clips, 'precision_pending');
+                await hooks.ordinaryReady?.(results.filter(result => !result.precisionExperiment?.selected));
+                const pipeline = createClipPipeline(pipelineOptions);
+                for (const baseline of selected) {
+                    const index = baseline.window.index - 1;
+                    const enhanced = await pipeline.submit(execution => hooks.enhance(baseline, clips[index], index, execution), index);
+                    const result = enhanced || { ...baseline, precisionExperiment: { ...baseline.precisionExperiment, selected: false, attempted: true },
+                        creativeResult: { status: 'kept_original', reason: '精切任务异常，保留已完成的普通版' } };
+                    writeJsonAtomic(result.output.metadataPath, result);
+                    results[index] = result;
+                }
+                metadata.precisionDelivery.phase = 'precision_complete';
+            }
+        } else if (produced.summaries.length) {
             experiment = { summary: { version: 1, workflow: config.enhancements?.workflow, scope: 'review_batches',
                 total: clips.length, maxSelected: Math.min(config.enhancements.experiment.maxClips,
                     Math.floor(clips.length * config.enhancements.experiment.ratio)), batches: produced.summaries,
@@ -63,12 +137,26 @@ async function produceOwnClips(context, hooks) {
         }
         savePlan(clips, 'complete');
     } else {
-        clips = await hooks.review(clips);
+        clips = await sourceReview(await hooks.review(clips));
         experiment = await hooks.prepare(clips, options); clips = experiment.clips;
         savePlan(clips, 'complete');
         if (!options.planOnly) {
             started = new Date();
-            results = await runClipPipeline(clips.map((clip, index) => execution => hooks.render(clip, index, execution)), pipelineOptions);
+            const selected = clips.map((clip, index) => ({ clip, index })).filter(row => row.clip.precisionExperiment?.selected);
+            if (enhancementsEnabled && config.enhancements?.workflow === 'creative' && selected.length) {
+                const pipeline = createClipPipeline(pipelineOptions);
+                metadata.precisionExperiment = experiment.summary;
+                metadata.precisionDelivery = { version: 1, phase: 'ordinary_ready', selected: selected.map(({ clip, index }) =>
+                    ({ index: index + 1, title: clip.title, start: clip.start, end: clip.end, reason: clip.precisionExperiment.reason })) };
+                savePlan(clips, 'precision_pending');
+                const ordinary = clips.map((clip, index) => ({ clip, index })).filter(row => !row.clip.precisionExperiment?.selected);
+                results = (await Promise.all(ordinary.map(({ clip, index }) => pipeline.submit(execution => hooks.render(clip, index, execution), index)))).filter(Boolean);
+                await hooks.ordinaryReady?.(results);
+                await Promise.all(selected.map(({ clip, index }) => pipeline.submit(execution => hooks.render(clip, index, execution), index)));
+                results = await pipeline.drain();
+                metadata.precisionDelivery.phase = 'precision_complete';
+                savePlan(clips, 'complete');
+            } else results = await runClipPipeline(clips.map((clip, index) => execution => hooks.render(clip, index, execution)), pipelineOptions);
         }
     }
     if (experiment?.summary) metadata.precisionExperiment = experiment.summary;
@@ -80,6 +168,22 @@ async function produceOwnClips(context, hooks) {
         metadata.processingStats = { ...hooks.stats(results, ended - started, started.toISOString(), ended.toISOString()),
             overlapsAttributionReview: streaming };
     }
-    return { clips, results, planPath, reviewPath };
+    const boundaryTools = {
+        replan: (window, feedback) => hooks.replan({ index: 1, ...window,
+            globalSelection: { reason: feedback.originalCopy.title } }, feedback),
+        render: async (clip, original) => {
+            const [reviewed] = await sourceReview(await hooks.review([clip]));
+            if (!reviewed || reviewed.publicCopyPending || reviewed.preRenderHold || reviewed.sourceReview?.status === 'needs_review') {
+                throw new Error('Boundary revision failed source or actor review');
+            }
+            const directory = path.join(outputRoot, 'automatic_boundary_revisions', require('crypto').randomUUID());
+            fs.mkdirSync(directory, { recursive: true });
+            const lease = await scheduler.acquire();
+            try { return await hooks.render(reviewed, original.window.index - 1,
+                { profile: lease.profile, deferEnhancement: true, outputRoot: directory }); }
+            finally { lease.release(); }
+        }
+    };
+    return { clips, results, planPath, reviewPath, boundaryTools };
 }
 module.exports = { produceOwnClips };

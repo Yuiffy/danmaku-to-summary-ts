@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from unittest.mock import Mock
 
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -12,6 +13,7 @@ from sensevoice_paraformer import (
     extract_vad_speaker_intervals,
     normalize_model_results_with_meta,
     paraformer_full_text_to_segments,
+    paraformer_timestamp_to_sentences,
     select_paraformer_speaker_intervals,
 )
 from sensevoice_text import extract_sensevoice_metadata, normalize_segments
@@ -85,6 +87,51 @@ class SenseVoiceMetadataTests(unittest.TestCase):
 
 
 class ParaformerTimestampTests(unittest.TestCase):
+    def test_preserves_english_spacing_without_consuming_word_timestamps(self):
+        cases = [
+            ("I want to make a call", "I want to make a call", 6),
+            ("  I\t want\u00a0to  make a call  ", "I want to make a call", 6),
+            ("你 好，I want to make a call。", "你好，I want to make a call。", 8),
+            ("你 好 世 界", "你好世界", 4),
+            ("I'm using Wi-Fi 6 today", "I'm using Wi-Fi 6 today", 5),
+        ]
+        for raw, expected, count in cases:
+            with self.subTest(raw=raw):
+                rows = paraformer_full_text_to_segments({
+                    "text": raw,
+                    "timestamp": [[i * 500, i * 500 + 400] for i in range(count)],
+                }, max_subtitle_chars=80)
+                self.assertEqual(rows, [{"start": 0.0, "end": (count - 1) * .5 + .4,
+                                         "text": expected, "time_unit": "seconds"}])
+
+    def test_wrapping_keeps_whole_english_words_and_their_time_ranges(self):
+        rows = paraformer_full_text_to_segments({
+            "text": "I want to make a call",
+            "timestamp": [[i * 500, i * 500 + 400] for i in range(6)],
+        }, max_subtitle_chars=8)
+        self.assertEqual([row["text"] for row in rows], ["I want to make", "a call"])
+        self.assertEqual([(row["start"], row["end"]) for row in rows], [(0, 1.9), (2, 2.9)])
+
+    def test_chunk_alignment_preserves_spaces_offsets_and_speaker(self):
+        punc = Mock()
+        punc.generate.return_value = [{"text": "你好，I want to make a call。"}]
+        rows = paraformer_timestamp_to_sentences([{
+            "text": "你 好 I want to make a call",
+            "timestamp": [[i * 500, i * 500 + 400] for i in range(8)],
+        }], {"start": 10, "end": 15, "speaker": "Host", "speaker_score": .9}, punc, 80)
+        punc.generate.assert_called_once_with(input="你好 I want to make a call")
+        self.assertEqual(rows, [{"start": 10, "end": 13.9, "text": "你好，I want to make a call。",
+                                 "time_unit": "seconds", "speaker": "Host", "speaker_score": .9}])
+
+    def test_chunk_fallback_keeps_words_when_timestamps_are_missing_or_misaligned(self):
+        for timestamps in (None, [], [[0, 100]]):
+            with self.subTest(timestamps=timestamps):
+                rows = paraformer_timestamp_to_sentences([{
+                    "text": "你 好 I want to make a call", "timestamp": timestamps,
+                }], {"start": 10, "end": 15}, None)
+                self.assertEqual(rows[0]["text"], "你好 I want to make a call")
+                self.assertEqual((rows[0]["start"], rows[0]["end"]), (10, 15))
+
     def test_rebuilds_timestamps_from_punctuated_text_and_ascii_word_tokens(self):
         segments = paraformer_full_text_to_segments({
             "text": "你好，staff！再见。",

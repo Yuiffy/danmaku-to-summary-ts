@@ -314,7 +314,7 @@ describe('DelayedReplyService duplicate reply detection', () => {
     fs.writeFileSync(goodnightTextPath, [
       '---',
       'provider: "daiYu"',
-      'model: "gpt-5.6-luna"',
+      'model: "gpt-6-luna"',
       'fallback: false',
       'attempts:',
       '  - status: "success"',
@@ -327,14 +327,14 @@ describe('DelayedReplyService duplicate reply detection', () => {
     fs.writeFileSync(path.join(outputDir, 'stream_COMIC_SCRIPT_META.json'), JSON.stringify({
       status: 'success',
       provider: 'daiYu',
-      model: 'gpt-5.6-luna',
+      model: 'gpt-6-luna',
       attempts: [{ status: 'success', promptTokens: 7200, cachedTokens: 5120, cacheWriteTokens: 0 }]
     }), 'utf8');
 
     try {
       const info = service.diagnostics.getTextGenerationInfo(goodnightTextPath, comicImagePath);
-      expect(info).toContain('晚安文本: 模型: gpt-5.6-luna，服务: daiYu，输入缓存: 4608/5600 tokens，缓存写入: 1024 tokens');
-      expect(info).toContain('漫画脚本文本: 模型: gpt-5.6-luna，服务: daiYu，状态: 成功，输入缓存: 5120/7200 tokens，缓存写入: 0 tokens');
+      expect(info).toContain('晚安文本: 模型: gpt-6-luna，服务: daiYu，输入缓存: 4608/5600 tokens，缓存写入: 1024 tokens');
+      expect(info).toContain('漫画脚本文本: 模型: gpt-6-luna，服务: daiYu，状态: 成功，输入缓存: 5120/7200 tokens，缓存写入: 0 tokens');
     } finally {
       fs.rmSync(outputDir, { recursive: true, force: true });
     }

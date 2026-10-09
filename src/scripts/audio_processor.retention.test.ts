@@ -57,6 +57,27 @@ describe('recording archive pruning', () => {
     expect(candidates).not.toContain(source);
   });
 
+  test('archives the exact replay source even when a newer merged recording exists', async () => {
+    const source = write('recording.flv');
+    const unused = write('unused.flv');
+    write('recording_merged.flv');
+    const clip = write('clips/other.mp4');
+    const recipe = write('clips/published.media-retention.json');
+    fs.writeFileSync(recipe, JSON.stringify({ version: 1, status: 'deleted', sourceMediaPath: source }));
+    expect(new Set(await collectPrunableArchiveVideos(dayDir))).toEqual(new Set([unused, clip]));
+  });
+
+  test('keeps original recordings when a replay recipe cannot be interpreted', async () => {
+    const source = write('recording.flv');
+    write('recording_merged.flv');
+    const clip = write('clips/other.mp4');
+    const recipe = write('clips/published.media-retention.json');
+    fs.writeFileSync(recipe, '{interrupted');
+    expect(await collectPrunableArchiveVideos(dayDir)).toEqual([clip]);
+    fs.writeFileSync(recipe, JSON.stringify({ version: 2, sourceMediaPath: source }));
+    expect(await collectPrunableArchiveVideos(dayDir)).toEqual([clip]);
+  });
+
   test('recognizes legacy backup names without mistaking normal files', () => {
     expect(isBakEntryName('bak')).toBe(true);
     expect(isBakEntryName('bak_20260704_031712')).toBe(true);

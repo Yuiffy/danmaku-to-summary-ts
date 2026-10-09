@@ -2,6 +2,13 @@ const { buildFullContextSource } = require('../full_live_context');
 const { buildSubtitleEvidence } = require('../clipping/subtitle_evidence');
 
 describe('speaker evidence survives downstream input preparation', () => {
+  it('keeps an anonymous MOSS cluster in a rejected evidence row', () => {
+    const row = { text: 'A voice', speakerEvidence: { version: 1, status: 'unknown',
+      label: null, anonymousLabel: 'S03', observations: [] } };
+    expect(require('./speaker_attribution').speakerForSegment(row)).toBe('S03');
+    expect(require('./speaker_attribution').speakerForSegment({ ...row,
+      speakerEvidence: { ...row.speakerEvidence, anonymousLabel: 'Guest' } })).toBe('UNKNOWN');
+  });
   const parsed = { segments: [
     { start: 0, end: 4, text: '[Host 0.99] This came from another voice.',
       speakerEvidence: { version: 1, status: 'mixed', label: 'Host', observations: [] } },

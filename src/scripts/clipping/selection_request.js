@@ -29,8 +29,13 @@ function recordSelectionDiagnostic(diagnostics, context, result = null, error = 
 }
 
 async function requestSelectionText(prompt, requestOptions, config, rootConfig, info, phase, diagnostics, validate) {
-    const key = phase.startsWith('actor-review-') ? 'reviews' : phase.startsWith('dialogue-evidence-') ? 'windows'
-        : phase === 'global-rank' ? 'decisions' : 'clips';
+    return require('../workflow-runtime').loadWorkflow('ai/usage').withUsagePhase(phase, () =>
+        requestSelectionTextInPhase(prompt, requestOptions, config, rootConfig, info, phase, diagnostics, validate));
+}
+
+async function requestSelectionTextInPhase(prompt, requestOptions, config, rootConfig, info, phase, diagnostics, validate) {
+    const key = requestOptions.structuredOutputKey || (phase.startsWith('actor-review-') ? 'reviews' : phase.startsWith('dialogue-evidence-') ? 'windows'
+        : phase === 'global-rank' ? 'decisions' : 'clips');
     requestOptions = { ...requestOptions, structuredOutputKey: key, requestPhase: phase,
         ...(info?.selectionCacheDirectory ? { responseDiagnosticsDirectory: path.join(info.selectionCacheDirectory, 'rejected-responses') } : {}) };
     const stageName = phase.startsWith('recall-') ? 'recall' : phase.startsWith('actor-review-') ? 'actorReview'
@@ -51,7 +56,7 @@ async function requestSelectionText(prompt, requestOptions, config, rootConfig, 
         }
     }
     const generator = require('../ai_text_generator');
-    const provider = rootConfig.ai?.text?.provider || 'gemini';
+    const provider = config.ai?.provider || rootConfig.ai?.text?.provider || 'gemini';
     const textConfig = rootConfig.ai?.text || {};
     const settings = name => {
         const { apiKey, proxy, retry, transientMaxAttempts, transientRetryDelayMs, ...rest } = textConfig[name] || {};
@@ -110,4 +115,4 @@ function validSelectionResponse(result, evidence, candidateIds = null, config = 
     } catch { return false; }
 }
 
-module.exports = { requestSelectionText, validSelectionResponse };
+module.exports = { requestSelectionText, validSelectionResponse, recordSelectionDiagnostic };

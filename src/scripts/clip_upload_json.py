@@ -49,6 +49,8 @@ def import_json(args: argparse.Namespace, api: ModuleType) -> int:
                 continue
             if metadata_path and api.paths_match(record.get("metadataPath") or "", metadata_path):
                 return int(existing_id)
+            if metadata_path and api.paths_match((record.get("precisionSelection") or {}).get("originalMetadataPath") or "", metadata_path):
+                return int(existing_id)
             same_index = int(record.get("reviewIndex") or 0) == review_index
             same_media = bool(media_path) and api.paths_match(record.get("mediaPath") or "", media_path)
             if same_index and same_media and (record.get("manifestPath") == manifest_str
@@ -76,6 +78,8 @@ def import_json(args: argparse.Namespace, api: ModuleType) -> int:
             "sourceFormat": "json", "qaRequired": bool(clip.get("qaRequired")),
             "attributionRequired": bool(clip.get("attributionRequired")),
             "humanReviewRequired": bool(clip.get("humanReviewRequired")),
+            "automaticPublicationRequired": bool(clip.get("automaticPublicationRequired")),
+            "publicationIdentity": clip.get("publicationIdentity") or "",
             "reviewPending": bool(clip.get("reviewPending")),
             "reviewIssues": clip.get("reviewIssues") or [],
             "publicCopyPending": bool(clip.get("publicCopyPending")),
@@ -86,6 +90,8 @@ def import_json(args: argparse.Namespace, api: ModuleType) -> int:
             "pendingRebuild": bool(clip.get("pendingRebuild")), "subtitleRevisionKind": clip.get("subtitleRevisionKind") or "",
             **{key: clip.get(key) for key in ("candidateSrtPath", "candidateRevision", "candidateSrtSha256")},
             "reviewPreview": clip.get("reviewPreview"),
+            **({key: clip.get(key) for key in ("parts", "activityReviewRequired", "gameReviewRequired", "externalSubtitles", "subtitleLanguage", "collectionSectionId")}
+               if clip.get("activityReviewRequired") or clip.get("gameReviewRequired") else {}),
         }
         if clip_id is None:
             clip_id = int(registry.get("nextClipId") or 1)
@@ -97,13 +103,25 @@ def import_json(args: argparse.Namespace, api: ModuleType) -> int:
             }
         else:
             record = registry["clips"][str(clip_id)]
+            if record.get("precisionSelection") and not api.paths_match(record["metadataPath"], record_data["metadataPath"]):
+                # Refreshing the ordinary manifest must not revert a selected precision revision or allocate a duplicate ID.
+                ids.append(clip_id)
+                continue
             if not record_data["reviewPlanPath"]:
                 record_data["reviewPlanPath"] = record.get("reviewPlanPath") or ""
-            for required in ("qaRequired", "attributionRequired", "humanReviewRequired"):
+            for required in ("qaRequired", "attributionRequired", "humanReviewRequired", "activityReviewRequired", "gameReviewRequired", "automaticPublicationRequired"):
                 if record.get(required) and not record_data.get(required):
                     record_data[required] = True
                     record_data["reviewPending"] = True
                     record_data["reviewIssues"].append(f"required review flag removed: {required}")
+            if record.get("automaticPublicationAuthorization") and record.get("publicationIdentity") != record_data["publicationIdentity"]:
+                record_data["reviewPending"] = True
+                record_data["reviewIssues"].append("automatic publication source identity changed")
+            if record.get("publicationIdentity") and (record.get("automaticPublicationAuthorization")
+                    or record.get("status") in ("uploaded", "queued", "uploading")):
+                record_data["publicationIdentity"] = record["publicationIdentity"]
+            if not record_data["publicationIdentity"]:
+                record_data["publicationIdentity"] = record.get("publicationIdentity") or ""
             # A stale preflight import must not erase an already rendered clip.
             if not clip.get("pendingCut") or not record.get("mediaPath"):
                 if record.get("pendingCut") and not clip.get("pendingCut") and record.get("reviewPath"):

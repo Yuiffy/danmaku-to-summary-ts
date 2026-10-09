@@ -36,9 +36,9 @@ describe('goodnight generator entry point', () => {
     fs.writeFileSync(highlight, 'Synthetic source: the host practiced a game and finished the stream.');
     config = { timeouts: { aiApiTimeout: 1000 }, ai: { text: { enabled: true, provider: 'daiYu',
       sharedPromptCache: { enabled: false }, gemini: { enabled: false },
-      daiYu: { enabled: true, apiMode: 'responses', baseUrl: 'https://provider.invalid', model: 'gpt-5.6-luna',
+      daiYu: { enabled: true, apiMode: 'responses', baseUrl: 'https://provider.invalid', model: 'gpt-6-luna',
         maxTokens: 100000, fallbackModels: [], fallbackProvider: 'none', thinking: { enabled: true, effort: 'high' } },
-      tuZi: { enabled: true, apiMode: 'responses', baseUrl: 'https://fallback.invalid', model: 'gpt-5.6-luna' }
+      tuZi: { enabled: true, apiMode: 'responses', baseUrl: 'https://fallback.invalid', model: 'gpt-6-luna' }
     } } };
     loader.getConfig.mockReturnValue(config);
     loader.getNames.mockReturnValue({ anchor: 'Host', fan: 'Fans' });
@@ -73,7 +73,7 @@ describe('goodnight generator entry point', () => {
     expect(file).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const body = JSON.parse(fetchMock.mock.calls[0][1].body);
-    expect(body.model).toBe('gpt-5.6-luna');
+    expect(body.model).toBe('gpt-6-luna');
     expect(body.reasoning.effort).toBe('high');
     expect(body.background).toBeUndefined();
     expect(body.store).toBe(false);
@@ -106,7 +106,7 @@ describe('goodnight generator entry point', () => {
   test.each([['daiYu', 'queued'], ['daiYu', 'in_progress'], ['tuZi', 'queued'], ['tuZi', 'in_progress']])
     ('does not resubmit a %s %s response at the outer retry boundary', async (provider, status) => {
       config.ai.text.provider = provider;
-      config.ai.text.daiYu.fallbackModels = ['gpt-5.6-sol'];
+      config.ai.text.daiYu.fallbackModels = ['gpt-6-sol'];
       config.ai.text.daiYu.fallbackProvider = 'tuZi';
       fetchMock.mockResolvedValue(pendingResponse(status));
       const output = generateGoodnightReply(highlight, 'fixture');

@@ -1,12 +1,13 @@
 'use strict';
 const fs = require('fs');
+const { joinSubtitleLines } = require('./subtitle_text');
 const { applyCorrectionsToSegments, makeCorrectionStats, logCorrectionStats } = require('./asr_corrections');
 
 function makeSubtitleEvidenceRow(segment, index, correctedText, wrapped, prepared, helpers) {
     const { parseTimestamp, formatTimestamp } = helpers;
     return {
         start: parseTimestamp(formatTimestamp(segment.start)), end: parseTimestamp(formatTimestamp(segment.end)),
-        text: wrapped.split('\n').map(line => line.trim()).join(''),
+        text: joinSubtitleLines(wrapped.split('\n')),
         asr: {
             status: typeof segment.asrSource?.rawText === 'string' ? 'available' : 'raw_unavailable',
             sourceSpan: segment.asrSource || null, recognizedText: String(segment.text || ''), correctedText,

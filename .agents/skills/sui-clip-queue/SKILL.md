@@ -1,6 +1,6 @@
 ---
 name: sui-clip-queue
-description: Manage Sui livestream clip selection from local SRT/XML evidence through queued cutting, trusted ASR correction, universal large-subtitle burning, cover generation, review, and optional Bilibili upload registration. Use when the user asks to find a Sui livestream topic, make a normal 小岁 clip, make an old-recording 老岁片, queue a selected time range, burn subtitles, or improve post-stream automatic clip selection.
+description: Manage Sui livestream selection, queued clipping, subtitle correction/burning, AI precision editing and reviewed Bilibili publication. Use for 小岁/老岁 clips, livestream topic search, 精剪/精切 feedback, or improvements to post-stream automatic selection.
 ---
 
 # 岁己选材切片队列
@@ -18,10 +18,61 @@ Use this skill for the whole path from a selected timestamp to a reviewable, upl
 
 ## Workflow
 
+### Complete song cuts and synchronous viewing
+
+For complete per-stream 歌切 or 同步视听, read `docs/stream-activity-clips.md` and
+use `npm run activity:clips -- run` with the recording/SRT/XML. This dedicated
+workflow preserves full performances and continuous viewing Ps, the original
+audio mix, a per-stream `SONGS.json`, and one multipart submission per kind.
+The daily default reuses `LIVE_CONTENT.json.activityTimeline` from the existing
+summary request and calibrates short boundary audio/energy data in bounded batches.
+Do not repeat a full-stream scan or whole-recording ASR for each normal stream;
+`--scan` is an explicit diagnostic workflow, never an automatic fallback.
+Use the dedicated `【岁己歌切】` / `【岁己同步视听】` title prefixes and local
+music/cinema cover templates, separate from ordinary `【小岁】` highlights.
+Song covers prominently display actual song names and the recording date; never
+use a large generic `歌切` label. Song collection episode titles omit
+`【岁己歌切】`, while the archive title retains it. Preserve existing online
+human title edits when updating an already published cover.
+Viewing titles put the actual film/work name before the recording date. Covers
+use the full original viewing screenshot with a small name/date overlay, never
+a large generic `同步视听` headline. An unresolved film name remains a draft
+and cannot pass publication review. Reuse the existing overview and the session's
+source citations to recover a missing name; do not add a separate AI naming pass.
+For pending bundles, `activity:clips restyle --manifest <UPLOAD_MANIFEST.json>`
+updates presentation under the same IDs without AI, ASR or video re-encoding.
+Inspect original audio/frame verification and unknown title/boundary warnings.
+Use its `approve --metadata ... --note ... [--enqueue]` command after review.
+Configured `streamActivityClips.automaticPublication` may approve only new, current,
+independently verified complete summary-mode packages through its bound final AI
+review and existing upload worker. Keep automatic authority distinct from human
+review. Report statuses in the existing list only, without individual BV/success
+messages. Known source-timing repair and pending-ID revisions use the maintained
+`--repair-timing --transcript-record ... --revision-note ...` flow documented there;
+never approve the original mismatched videos or alter queue JSON.
+Keep the dedicated collections separate from ordinary topic/highlight routing;
+do not enqueue each song or viewing P as a standalone short clip.
+
+### Precision editing and feedback
+
+For complete game archives and future automatic game submissions, read
+`docs/stream-game-clips.md` and use `npm run game:clips -- run`. Preserve the full
+allowlisted gameplay, perform full text and visual coverage checks, verify original
+boundary audio and every public chapter, and query the account's current multi-P
+permission. Keep long complete sessions in a few submissions with chapter timelines
+when multi-P is unavailable. Follow explicit user preferences for external subtitles;
+do not burn them merely because ordinary highlight clips use burned subtitles.
+Upload authorization comes from the user/configured allowlist, not detection.
+Subtitle or collection retry never authorizes resubmitting an already successful BV.
+
+For 精剪/精切, read [references/precision-editing.md](references/precision-editing.md) for how AI chooses
+content, cuts, visual emphasis, placement, audio and final review. The shared automated pipeline uses
+these same rules; a one-clip experiment must not become a hardcoded rule for unrelated material.
+
 ### Numeric candidate corrections
 
 Own-stream rendered clips, including held/failed clips and rejected candidates,
-also reserve numeric IDs. Their single chronological review lists the blocking
+also reserve numeric IDs. Their single review sorted by numeric upload ID lists the blocking
 issues beside each ID. Read `docs/topic-event-editorial.md#own-stream-review-ids`
 for `clips:review`, rendered `subtitles`, and explicit `approve-review` commands.
 Registering or refreshing IDs never approves or uploads a clip. `correct` now
@@ -41,6 +92,46 @@ an editorial rejection: retain a coherent longer topic when its setup, developme
 and ending justify it. Never use a duration note to bypass another rejection.
 Published IDs may be revised/rebuilt locally but cannot be enqueued again, even
 with `--force`; replacing the existing submission is a separate operation.
+
+For a failed creative precision attempt that retained its ordinary own-stream
+video, use `python src/scripts/clip_upload_registry.py precision --id ... --note ...`.
+It verifies the source and reviewed baseline, then renders a separate local
+revision under `precision_revisions/<ID>/`. Read the returned `RESULT.json` and
+QA evidence; a fallback is a failed attempt, not a completed precision clip.
+This command does not upload, replace published media, or send notifications.
+See `docs/clip-precision-experiment.md` for its contract.
+Use `--style compact` when the user wants tight story editing, face/key-object
+closeups, denser effects and background music. It keeps approved subtitle words,
+maps complete retained cue groups to the shortened timeline, and separately
+reviews story continuity, visual focus and actual audio levels. A local retry may
+use `--resume-from <revision-directory>` to reuse matching story/moment drafts;
+an unchanged timeline and moment list may also reuse the visual draft. Source
+and baseline identities are checked again; validation, rendering and final QA rerun.
+When gameplay/routes are important, use `--avatar-mode circle` to keep the main
+scene visible and enlarge the face in a round inset. Review its three-frame
+placement against the character, route, HUD and subtitles. Default
+`creative.focusPlacement: source` keeps the enlargement at the original subject
+and groups reaction stickers nearby; subtitles move/reflow around it without
+shrinking the standard font or changing SRT words. Do not relocate an avatar over
+chat merely because a free corner looks convenient. `focusInset` also supports
+in-place text/chat or object emphasis, using actual frame dimensions.
+For edge avatars, the configured larger face inset may extend beyond the canvas;
+keep all source padding outside the visible screen and preserve eyes, mouth and
+chin. Do not shrink/reposition a full circle merely to fit its border. During a
+full-frame detail zoom, use `faceInset.mode: retain` when the face is cropped out:
+sample the original source separately at 1:1 size so the main detail remains dominant.
+
+New compact plans must choose an `editorialProfile` from the content: gameplay,
+conversation, story, tutorial, performance or mixed, with matching tone and
+density. Preserve tutorial steps and continuous performance; neutral/serious
+material must not inherit canned laughter or playful BGM. Do not use a fixed
+compression ratio to reject a coherent new plan. Reuse a reviewed legacy comic
+profile only for the same bound source and timeline.
+
+The configured `creative.laughAssets` pool rotates distinct approved excerpts,
+prioritizing unused material and avoiding adjacent repeats. Check actual source
+hash plus excerpt boundaries, not just different asset names. Store the chosen
+asset and excerpt in the result and keep source attribution with the catalog.
 
 For an existing numeric candidate ID, use the upload registry directly; do not
 create another manual task or run ASR/FFmpeg yourself. Candidate SRTs exist before
@@ -95,6 +186,7 @@ keep ambiguous short words and one-off full sentences source-bound.
 - Search local `.srt`, `.xml`, `.asr_meta.json`, and related metadata before opening video. For old Sui topics, search years/months broadly and use ASR variants plus danmaku corrections (for example `CPU`, `12400F`, `3050`, `显卡`, `内存`, `任务管理器`, `拔智齿`).
 - Use SRT for the streamer's words and XML for viewer reactions. Do not attribute danmaku text to the streamer.
 - Expand a hit into an origin-to-reaction-to-close window. If the old SRT is unreliable, use a deliberately wide rough window and re-ASR only that clip before final boundary adjustment.
+- Before manual or automatic selection, read `ownStreamClips.selectionPolicy` and its `roomOverrides[roomId].excludedCategories`. Honor the resolved global and room exclusions for new clips, old-recording clips and residual candidates. Sui excludes negative or controversial real-family relationships (arguments, cold wars, blame, financial disputes and private conflicts). Ordinary family mentions, childhood car rides and memories without conflict are allowed. Do not expand the rule just because a kinship word appears, or repackage an actual excluded conflict under another title.
 - Do not apply blanket content exclusions. Treat films, advertisements, greetings, gifts, songs, and ordinary chat according to whether the requested task gives them independent value; only exclude a category when the task explicitly says so.
 
 ### 2. Add a queue task
@@ -154,7 +246,41 @@ Approval registers the short ID and enqueues it for the existing single-instance
 
 ### 5. Automatic post-stream selection
 
-For the live-end automatic path, inspect `REVIEW.md`. Run the optional `RESIDUAL_REVIEW.md` audit only when the task calls for extra recall. Automatic selection is a recall layer, not upload authorization. Convert accepted candidates into `manual_clip_queue` tasks so both automatic and manually found topics use identical cutting and burning.
+For the live-end automatic path, inspect `REVIEW.md`. Run the optional `RESIDUAL_REVIEW.md`
+audit only when the task calls for extra recall. Selection alone does not authorize
+upload. An explicit configured authorization is the exception: when
+`ownStreamClips.automaticPublication.mode` is `auto`, the room is in its allowlist,
+and a new automatic artifact was generated after `activatedAt`, the pipeline may
+enqueue its existing ID only after the final current-artifact review passes.
+The default remains `off`; production currently authorizes room `25788785`.
+The final review binds source evidence, actual media, subtitles, cover and public
+copy, and the existing single upload worker revalidates that binding. Retain the
+source recording for this asynchronous validation. Review uses complete retained
+text, full media decoding and sampled final-video frames; unresolved listening or
+motion-dependent questions still need human review. Read
+[the automatic publication contract](../../../docs/clip-publication-policy.md#审核通过后自动投稿).
+
+This authorization does not cover historical backfill, manual plan replay,
+`clips:review` refresh, ID registration or an already uploaded ID. Keep pending
+items under their existing IDs and use their supported review/rebuild commands;
+only manually selected material without an ID needs a `manual_clip_queue` task.
+Automatic enqueue failures and unknown outcomes belong in the existing complete
+WeCom list. Show confirmed uploaded, queued, duplicate and pending states honestly;
+duplicates point to the existing ID and need no additional approval. Do not send
+individual success messages or BV links. Combine ordinary and precision results
+in the final list, and do not override human changes made on Bilibili.
+
+Keyword/topic clips have a separate authorized policy:
+`clipTopics.automaticPublication` with `mode: auto`, `scope: configured_keywords`
+and `policyVersion: topic-v1`. It covers the existing configured keyword source
+rooms except `ignoredRoomIds`, not arbitrary clips or the own-stream allowlist.
+Only freshly rendered preflight-`ready` finals generated after its `activatedAt`
+may enter the same upload worker after a current bound final review passes.
+Legacy `clipTopics.autoUpload` never supplies this authorization. Historical ID
+imports, manual pending-candidate corrections and old-plan/group replay retain
+their existing explicit review/enqueue path. Report outcomes only in the existing
+topic list, with no per-success notification or BV link. Read
+[the keyword publication contract](../../../docs/topic-event-editorial.md#关键词切片最终审核后自动投稿).
 
 Read [references/auto-selection.md](references/auto-selection.md) for the staged selection design, scoring signals, diversity rules, and operational checks.
 

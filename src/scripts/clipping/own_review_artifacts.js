@@ -3,10 +3,11 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { prepareReviewResults, saveReviewState: persistReviewState } = require('./own_review_state');
+
+const { prepareReviewResults, saveReviewState: writeReviewState } = require('./own_review_state');
 
 function saveReviewState(reviewPath, results, metadata) {
-    return persistReviewState(reviewPath, results, metadata, require('../own_stream_clipper').buildReviewMarkdown);
+    return writeReviewState(reviewPath, results, metadata, require('../own_stream_clipper').buildReviewMarkdown);
 }
 
 async function refreshReviewUnlocked(planPath, options = {}) {
@@ -25,7 +26,10 @@ async function refreshReviewUnlocked(planPath, options = {}) {
         || fs.readdirSync(outputRoot).filter(name => /_fun_.*\.json$/i.test(name)).map(name => path.join(outputRoot, name));
     const results = metadataFiles.map(file => JSON.parse(fs.readFileSync(file, 'utf8')))
         .filter(result => !result.selectionRejection && !result.originalSelectionRejection
-            && path.resolve(result.source?.mediaPath || '.') === path.resolve(plan.source.mediaPath));
+            && path.resolve(result.source?.mediaPath || '.') === path.resolve(plan.source.mediaPath))
+        // A single-ID repair may carry its temporary one-item manifest index.
+        // The saved window index remains the original plan identity.
+        .map(result => ({ ...result, reviewIndex: result.window.index ?? result.reviewIndex }));
     const byIndex = new Map();
     for (const result of results) {
         const index = result.reviewIndex ?? result.window.index;
@@ -43,10 +47,12 @@ async function refreshReviewUnlocked(planPath, options = {}) {
         streamTitle: first.streamTitle, sourceFileName: path.basename(plan.source.mediaPath),
         source: plan.source, outputRoot, reviewPath, planPath, uploadManifestPath: manifestPath,
         aiStatus: plan.aiStatus,
+        ...(plan.publication ? { publication: plan.publication } : {}),
         ...(plan.precisionExperiment ? { precisionExperiment: plan.precisionExperiment } : {}),
         ...(starts.length && ends.length ? { processingStats: own.buildClipProcessingStats(results,
             Math.max(...ends) - Math.min(...starts), new Date(Math.min(...starts)).toISOString(), new Date(Math.max(...ends)).toISOString()) } : {})
     };
+    Object.assign(metadata, require('../workflow-runtime').loadWorkflow('clipping/reviewSelectionHistory').preserveDeferredSelection(previous?.metadata, metadata));
     delete metadata.registrationError;
     const registered = own.registerReviewForUpload(reviewPath, all, metadata);
     if (!registered || registered.clipIds.length !== all.length) throw new Error(metadata.registrationError || 'Incomplete ID registration');
@@ -54,7 +60,7 @@ async function refreshReviewUnlocked(planPath, options = {}) {
     saveReviewState(reviewPath, all, metadata);
     const notification = own.buildNotifyMarkdown(all, metadata);
     const detail = metadata.precisionExperiment || all.some(result => result.precisionExperiment?.selected)
-        ? require('../workflow-runtime').loadWorkflow('clipping/experiment').experimentDetailMarkdown(all, metadata) : null;
+        ? require('../workflow-runtime').loadWorkflow('clipping/experiment').experimentDetailMarkdown(all, metadata, { compact: true }) : null;
     const digest = crypto.createHash('sha256').update(detail ? JSON.stringify([notification, detail]) : notification).digest('hex');
     const receiptPath = reviewPath.replace(/\.md$/i, '_NOTIFICATION.json');
     const receipt = fs.existsSync(receiptPath) ? JSON.parse(fs.readFileSync(receiptPath, 'utf8')) : null;

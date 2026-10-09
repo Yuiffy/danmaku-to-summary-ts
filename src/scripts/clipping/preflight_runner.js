@@ -40,24 +40,73 @@ function preflightRequestOptions(config) {
 
 function requestMatches(result, settings) {
     const actual = result.meta?.attempts?.at(-1);
+    // Providers may resolve the requested model alias to a newer model. Keep the
+    // returned name in request diagnostics, without rejecting that response.
     return Boolean(actual && !result.meta?.fallback && actual.model === settings.primaryModel
         && actual.apiModeUsed === 'responses' && actual.reasoningEffortSent === settings.reasoningEffort
-        && (!actual.responseModel || actual.responseModel === settings.primaryModel)
         && (!actual.reasoningEffortReturned || actual.reasoningEffortReturned === settings.reasoningEffort));
 }
 
 async function prepareTopicGroup(group, evidence, config, rootConfig, source, diagnostics, options = {}) {
-    const verified = loadVerifiedTopicFacts(source.srtPath, group, config.review.verifiedFactsPath);
-    const input = buildPreflightInput(group, evidence, config, { ...source,
-        verifiedFacts: [...(source.verifiedFacts || []), ...verified.verifiedFacts],
-        verifiedEdits: [...(source.verifiedEdits || []), ...verified.verifiedEdits] }, options.danmaku || [], options.checks || []);
-    const settings = preflightRequestOptions(config);
+    const buildInput = context => {
+        const verified = loadVerifiedTopicFacts(source.srtPath, context, config.review.verifiedFactsPath);
+        return buildPreflightInput(context, evidence, config, { ...source,
+            verifiedFacts: [...(source.verifiedFacts || []), ...verified.verifiedFacts],
+            verifiedEdits: [...(source.verifiedEdits || []), ...verified.verifiedEdits] }, options.danmaku || [], options.checks || []);
+    };
     const strategy = config.review.strategy || 'single';
+    const maxEvidenceChars = config.review.maxEvidenceChars || 80000;
+    const requested = { start: group.start, end: group.end };
+    let contextBudget;
+    const fitContext = audioChecks => {
+        const recovery = require('../workflow-runtime').loadWorkflow('clipping/topicRecovery');
+        const fitted = recovery.fitRecoveryContext(group, options.retainedContext, config, maxEvidenceChars, context => {
+            const contextInput = buildInput(context);
+            if (audioChecks) contextInput.audioChecks = audioChecks;
+            return strategy !== 'staged' && (strategy === 'audited' || config.review.qualityRules === true)
+                ? buildQualityDraftPrompt(contextInput) : buildPreflightPrompt(contextInput, strategy === 'staged' ? 'plan' : 'single');
+        }, audioChecks);
+        if (fitted) {
+            const { context, promptChars, protectedContext } = fitted;
+            const beforeAudioPromptChars = contextBudget?.promptChars;
+            contextBudget = { requested, retained: options.retainedContext, protectedContext,
+                supplied: { start: context.start, end: context.end }, promptChars,
+                ...(audioChecks ? { beforeAudioPromptChars, includesAudioChecks: true } : {}) };
+            Object.assign(group, context);
+        } else {
+            contextBudget = undefined;
+        }
+    };
+    if (options.retainedContext) fitContext();
+    let input = buildInput(group);
+    if ((!options.retainedContext || contextBudget) && config.review.audioChecks?.enabled === true
+        && input.hits.some(hit => hit.recall?.requiresSemanticConfirmation)) {
+        const { getAsrConfig, resolvePythonCommand } = require('../asr/asr_backends');
+        const backend = getAsrConfig(rootConfig).fun_asr_nano;
+        const audio = require('../workflow-runtime').loadWorkflow('clipping/topicRecovery');
+        input.audioChecks = audio.prepareTopicAudio ? await audio.prepareTopicAudio(input, config, source, diagnostics, {
+            python: resolvePythonCommand(backend), pathMap: backend.python_path_map,
+            scriptPath: require('path').resolve(__dirname, '../python/topic_audio_checks.py'),
+            model: backend.model, vadModel: backend.vad_model || 'fsmn-vad', device: backend.device,
+            resource_guard: { ...backend.resource_guard, torch_num_threads: 2 }, gpu_throttle: backend.gpu_throttle,
+            ffmpeg: rootConfig.ffmpegPath || 'ffmpeg', ffmpegThreads: rootConfig.ownStreamClips?.clipFfmpegThreads || 2
+        }, options.topicAudioIO) : { windows: [], skipped: input.hits.map(hit => ({ hitIds: [hit.id],
+            status: 'unavailable', reason: 'audio_workflow_not_active' })) };
+        if (options.retainedContext && input.audioChecks) {
+            const audioChecks = input.audioChecks;
+            fitContext(audioChecks);
+            input = { ...buildInput(group), audioChecks };
+        }
+    }
+    const settings = preflightRequestOptions(config);
     const record = { groupId: input.groupId, strategy, model: settings.primaryModel,
-        reasoningEffort: settings.reasoningEffort, sourceSha256: evidence.sourceSha256, responses: [], errors: [] };
+        reasoningEffort: settings.reasoningEffort, sourceSha256: evidence.sourceSha256, responses: [], errors: [],
+        ...(contextBudget ? { contextBudget } : {}),
+        ...(input.audioChecks ? { audioChecks: input.audioChecks } : {}) };
     diagnostics.preflightGroups ||= [];
     diagnostics.preflightGroups.push(record);
     const request = async (phase, lockedClip, hits, auditPlan) => {
+        if (options.retainedContext && !contextBudget) throw new Error('Preflight source exceeds request budget');
         const requestSettings = phase === 'audit' ? { ...settings,
             primaryModel: config.review.auditModel || settings.primaryModel,
             reasoningEffort: config.review.auditReasoningEffort || settings.reasoningEffort } : settings;
@@ -67,16 +116,20 @@ async function prepareTopicGroup(group, evidence, config, rootConfig, source, di
             return item ? { ...cue, text: item.text, items: [item] } : cue;
         }) : evidence.cues;
         const phaseEvidence = prepared ? { ...evidence, cues, byId: new Map(cues.map(cue => [cue.id, cue])) } : evidence;
-        const phaseInput = prepared ? { ...input, subtitles: input.subtitles.map(row => ({ ...row, text: phaseEvidence.byId.get(row.id).text })),
+        let phaseInput = prepared ? { ...input, subtitles: input.subtitles.map(row => ({ ...row, text: phaseEvidence.byId.get(row.id).text })),
             rejectedSubtitleEdits: (lockedClip.rejectedSubtitleEdits || []).map(edit => ({ cueId: edit.cueId,
                 original: edit.original, validationError: edit.validationError })) } : input;
-        const prompt = phase === 'audit' ? buildQualityAuditPrompt(auditPlan, input)
+        const buildPrompt = contextInput => phase === 'audit' ? buildQualityAuditPrompt(auditPlan, contextInput)
             : phase === 'single' && (strategy === 'audited' || config.review.qualityRules === true)
-                ? buildQualityDraftPrompt(phaseInput) : buildPreflightPrompt(phaseInput, phase, lockedClip ? {
+                ? buildQualityDraftPrompt(contextInput) : buildPreflightPrompt(contextInput, phase, lockedClip ? {
             id: lockedClip.id, startCueId: lockedClip.startCueId, endCueId: lockedClip.endCueId,
             hitIds: lockedClip.hitIds, keywordDecisions: hits.map(hit => ({ id: hit.id, cueId: hit.cueId, verdict: hit.verdict }))
         } : null);
-        if (prompt.length > (config.review.maxEvidenceChars || 80000)) throw new Error('Preflight source exceeds request budget');
+        let prompt = buildPrompt(phaseInput);
+        if (prompt.length > maxEvidenceChars) {
+            prompt = require('../workflow-runtime').loadWorkflow('clipping/topicRecovery').compactPreflightPrompt(prompt, maxEvidenceChars);
+        }
+        if (prompt.length > maxEvidenceChars) throw new Error('Preflight source exceeds request budget');
         if (rootConfig.ai?.text?.enabled === false) throw new Error('Preflight requires AI text to be enabled');
         if (!['daiYu', 'tuZi'].includes(rootConfig.ai?.text?.provider)) throw new Error('Preflight requires a Responses-capable provider');
         const normalize = text => phase === 'audit' ? applyQualityAudit(text, auditPlan, input, evidence, config)
@@ -92,7 +145,97 @@ async function prepareTopicGroup(group, evidence, config, rootConfig, source, di
         if (!requestMatches(result, requestSettings)) {
             throw new Error('Preflight model, protocol or reasoning setting changed');
         }
-        const normalized = normalize(result.text);
+        let normalized;
+        let boundaryError;
+        try {
+            normalized = normalize(result.text);
+            if ((phase === 'single' || phase === 'plan') && config.review.audioChecks?.enabled === true) {
+                const recovery = require('../workflow-runtime').loadWorkflow('clipping/topicRecovery');
+                const { getAsrConfig, resolvePythonCommand } = require('../asr/asr_backends');
+                const backend = getAsrConfig(rootConfig).fun_asr_nano;
+                const audio = recovery.prepareBoundaryAudio ? await recovery.prepareBoundaryAudio(normalized, phaseInput, config, source, diagnostics, {
+                    python: resolvePythonCommand(backend), pathMap: backend.python_path_map,
+                    scriptPath: require('path').resolve(__dirname, '../python/ordinary_subtitle_audio.py'),
+                    model: backend.model, sensevoiceModel: 'iic/SenseVoiceSmall', vadModel: backend.vad_model || 'fsmn-vad',
+                    device: backend.device, resource_guard: { ...backend.resource_guard, torch_num_threads: 2 },
+                    gpu_throttle: backend.gpu_throttle, ffmpeg: rootConfig.ffmpegPath || 'ffmpeg', ffmpegThreads: 2
+                }, options.boundaryAudioIO) : null;
+                if (audio) record.boundaryAudioChecks = audio;
+                if (audio?.status === 'available') {
+                    input = { ...input, boundaryAudioChecks: audio };
+                    phaseInput = { ...phaseInput, boundaryAudioChecks: audio };
+                    prompt = buildPrompt(phaseInput);
+                    if (prompt.length > maxEvidenceChars) throw new Error('Boundary audio evidence exceeds request budget');
+                    const reviewed = await requestSelectionText(prompt, requestSettings, config, rootConfig, source,
+                        `topic_preflight_${phase}_boundary_audio_v1`, diagnostics, candidate => {
+                            try { normalize(candidate.text); return requestMatches(candidate, requestSettings); } catch { return false; }
+                        });
+                    record.responses.push({ phase: `${phase}_boundary_audio`, clipId: null, text: reviewed.text,
+                        cacheKey: reviewed.meta?.selectionCache?.key || null, model: reviewed.meta?.model || requestSettings.primaryModel });
+                    if (!requestMatches(reviewed, requestSettings)) throw new Error('Preflight model, protocol or reasoning setting changed');
+                    normalized = normalize(reviewed.text);
+                    result.text = reviewed.text;
+                }
+            }
+            if (phase === 'single' || phase === 'plan') {
+                // Preserve valid semantic decisions if boundary repair later fails.
+                plan = normalized;
+                const issues = require('../workflow-runtime').loadWorkflow('clipping/topicRecovery').boundaryIssues(normalized);
+                if (issues.length) boundaryError = new Error(`Preflight boundary review failed: ${issues.join('; ')}`);
+            }
+        } catch (error) { boundaryError = error; }
+        if (boundaryError) {
+            if (phase !== 'single' && phase !== 'plan') throw boundaryError;
+            if (options.boundaryRepair === false) throw boundaryError;
+            const recovery = require('../workflow-runtime').loadWorkflow('clipping/topicRecovery');
+            if (!recovery.isBoundaryFailure(boundaryError.message)) throw boundaryError;
+            record.errors.push({ phase, error: boundaryError.message, recovery: 'boundary_repair' });
+            normalized = await recovery.repairTopicResponse(prompt, result.text, boundaryError.message, {
+                expand: recovery.preflightContextCandidates ? (previous, reason) => {
+                    const contexts = recovery.preflightContextCandidates(group, phaseEvidence, previous, config, options.recallMatches);
+                    for (const context of contexts) {
+                        const contextInput = buildInput(context);
+                        if (input.audioChecks) contextInput.audioChecks = input.audioChecks;
+                        if (input.boundaryAudioChecks) contextInput.boundaryAudioChecks = input.boundaryAudioChecks;
+                        const contextPrompt = buildPrompt(contextInput);
+                        const repairPrompt = recovery.compactPreflightPrompt(
+                            recovery.boundaryRepairPrompt(contextPrompt, previous, reason), maxEvidenceChars);
+                        if (repairPrompt.length > maxEvidenceChars) continue;
+                        const originalIds = new Set(group.cues.map(cue => cue.id));
+                        record.contextRecovery ||= [];
+                        record.contextRecovery.push({ from: { start: group.start, end: group.end },
+                            to: { start: context.start, end: context.end }, reason, promptChars: repairPrompt.length,
+                            addedCueIds: context.cues.filter(cue => !originalIds.has(cue.id)).map(cue => cue.id),
+                            addedAnchorCount: context.matchSegments.length - group.matchSegments.length });
+                        // The caller uses this same group for anchor metadata and post-speech padding.
+                        Object.assign(group, context);
+                        input = contextInput;
+                        phaseInput = contextInput;
+                        return contextPrompt;
+                    }
+                    if (contexts.length) record.errors.push({ phase, recovery: 'context_expansion',
+                        error: 'Preflight additional context exceeds request budget' });
+                    return undefined;
+                } : undefined,
+                request: repairPrompt => {
+                    repairPrompt = recovery.compactPreflightPrompt(repairPrompt, maxEvidenceChars);
+                    if (repairPrompt.length > maxEvidenceChars) {
+                        throw new Error('Preflight boundary repair exceeds request budget');
+                    }
+                    return requestSelectionText(repairPrompt, requestSettings, config, rootConfig, source,
+                        `topic_preflight_${phase}_boundary_repair_v2`, diagnostics, candidate => {
+                            try { normalize(candidate.text); return requestMatches(candidate, requestSettings); } catch { return false; }
+                        });
+                }, normalize: text => {
+                    const preparedPlan = normalize(text);
+                    plan = preparedPlan;
+                    return preparedPlan;
+                }, issues: recovery.boundaryIssues, matches: candidate => requestMatches(candidate, requestSettings),
+                record: candidate => record.responses.push({ phase: `${phase}_boundary_repair`, clipId: null,
+                    text: candidate.text, cacheKey: candidate.meta?.selectionCache?.key || null,
+                    model: candidate.meta?.model || requestSettings.primaryModel })
+            });
+        }
         if (phase === 'audit') {
             normalized.qualityAudit.model = requestSettings.primaryModel;
             normalized.clips.forEach(clip => { clip.qualityAudit.model = requestSettings.primaryModel; });
@@ -119,6 +262,10 @@ async function prepareTopicGroup(group, evidence, config, rootConfig, source, di
         if (strategy === 'audited') plan = await request('audit', null, null, plan);
         if (plan.qualityAudit?.missedEvent) diagnostics.failures.push({ stage: 'preflight', severity: 'warning',
             window: { start: group.start, end: group.end }, error: 'Quality audit found a potentially missed event; inspect the saved plan' });
+        if (plan.hits.some(hit => hit.recall?.requiresSemanticConfirmation)) {
+            const recall = require('../workflow-runtime').loadWorkflow('clipping/topicRecovery');
+            plan = recall.holdUnresolvedTopicRecall?.(plan, group.bursts.flatMap(burst => buildFallbackAiClipSelection(burst))) || plan;
+        }
         Object.assign(record, { status: 'prepared', hits: plan.hits,
             qualityAudit: plan.qualityAudit || null,
             clips: plan.clips.map(({ subtitleSegments, raw, ...clip }) => clip) });
@@ -145,7 +292,10 @@ async function prepareTopicGroup(group, evidence, config, rootConfig, source, di
 }
 
 function preflightSelections(plan, group, config) {
-    return plan.clips.map((clip, index) => ({ start: clip.start, end: clip.end, sliceIndex: index + 1,
+    const ending = require('./preflight_boundaries').endingWorkflow();
+    return plan.clips.map((original, index) => {
+        const clip = ending?.withPreflightEndingHold(original, group.cues || [], group.end, config.maxClipSeconds, plan.clips[index + 1]?.start) || original;
+        return { start: clip.start, end: clip.end, sliceIndex: index + 1,
         aiTitle: clip.copy?.title || null, aiDescription: clip.copy?.description || null, aiCoverText: clip.copy?.coverText || null,
         aiModel: config.review.model || config.aiModel, subtitleSegments: clip.subtitleSegments,
         editorial: { status: clip.status === 'ready' ? 'planned' : 'pending_preflight', event: clip.event,
@@ -154,13 +304,18 @@ function preflightSelections(plan, group, config) {
             copyWindow: { start: clip.start, end: clip.end }, sourceBurstIndices: group.bursts.filter(burst =>
                 burst.matchSegments.some(hit => hit.end > clip.start && hit.start < clip.end)).map(burst => burst.index) },
         preflight: { version: 1, mode: 'preflight', strategy: plan.record.strategy, status: clip.status,
+            ...(plan.record.audioChecks ? { audioChecks: plan.record.audioChecks } : {}),
+            ...(plan.record.boundaryAudioChecks ? { boundaryAudioChecks: plan.record.boundaryAudioChecks } : {}),
             sourceSha256: plan.sourceSha256, model: plan.record.model, reasoningEffort: plan.record.reasoningEffort,
             keyword: { status: clip.hits?.some(hit => hit.verdict === 'mention') ? 'confirmed' : 'needs_review', hits: clip.hits },
             quality: { status: clip.status === 'ready' ? 'pass' : 'needs_review', issues: clip.issues },
             qualityAudit: clip.qualityAudit || null,
             boundaryReview: clip.boundaryReview || null,
+            ...(plan.record.contextRecovery ? { contextRecovery: plan.record.contextRecovery } : {}),
+            ...(clip.endingHold ? { endingHold: clip.endingHold } : {}),
             subtitleEdits: clip.subtitleEdits, rejectedSubtitleEdits: clip.rejectedSubtitleEdits || [], warnings: clip.warnings, applied: false,
-            window: { start: clip.start, end: clip.end }, reason: clip.reason } }));
+            window: { start: clip.start, end: clip.end }, reason: clip.reason } };
+    });
 }
 
 module.exports = { isPreflightEnabled, preflightRequestOptions, prepareTopicGroup, preflightSelections, sourceFileHash, persistPreflightPlan, requestMatches };

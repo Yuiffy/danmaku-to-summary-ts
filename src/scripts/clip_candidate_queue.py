@@ -38,6 +38,8 @@ def update_record(clip, result, api):
         clip["reviewPreview"] = result["reviewPreview"]
     clip["title"] = result["copy"].get("title", "")
     clip["description"] = result["copy"].get("description", "")
+    if "uploadTags" in result:
+        clip["tags"] = result["uploadTags"]
     if "pendingRebuild" in result:
         clip["pendingRebuild"] = result["pendingRebuild"]
         clip["publicCopyPending"] = bool(result.get("publicCopyPending"))
@@ -98,6 +100,10 @@ def edit_candidate(args, api):
     note = getattr(args, "note", "") or "User-requested literal subtitle correction"
     signature = {"from": getattr(args, "from_text", None), "to": getattr(args, "to_text", None),
                  "cue": getattr(args, "cue", None)}
+    if getattr(args, "drop_cue", False):
+        if args.cue is None or not str(args.note).strip():
+            raise ValueError("--drop-cue requires --cue and --note")
+        signature["drop_cue"] = "yes"
     handle = api.acquire_queue_mutation_lock()
     try:
         registry = api.load_json(api.REGISTRY_PATH, api.default_registry())
@@ -130,6 +136,10 @@ def edit_candidate(args, api):
         options = {"review_note": note}
         if action == "correct":
             options.update(signature)
+            if clip.get("pendingCut"):
+                options.update({key: getattr(args, key, None) for key in ("title", "description", "cover_text", "tags")})
+            elif any(getattr(args, key, None) is not None for key in ("title", "description", "cover_text", "tags")):
+                raise ValueError("Public copy and tag overrides are only supported for unrendered topic candidates")
         result = candidate_action(api, clip, action, options, timeout=120)
         update_record(clip, result, api)
         if action == "correct":
@@ -184,8 +194,10 @@ def prepare_rebuild(args, api):
         if args.enqueue and is_published(clip):
             raise ValueError("Already published: local rebuild only; duplicate upload is not allowed")
         options = {key: getattr(args, key, None) for key in (
-            "review_note", "title", "description", "cover_text", "source_kind", "start", "end", "duration_note", "xml")}
+            "review_note", "title", "description", "cover_text", "source_kind", "start", "end", "duration_note", "xml", "transcript_record")}
         options["allow_long"] = "yes" if args.allow_long else None
+        options["allow_short"] = "yes" if getattr(args, "allow_short", False) else None
+        options["replan"] = "yes" if getattr(args, "replan", False) else None
         result = candidate_action(api, clip, "prepare", options, timeout=120)
         update_record(clip, result, api)
         api.save_json(api.REGISTRY_PATH, registry)
@@ -207,7 +219,7 @@ def cut_candidates(args, api):
     if not ids or not str(args.review_note or "").strip():
         print("[ERROR] candidate IDs and --review-note are required", file=sys.stderr)
         return 2
-    overrides = {field: getattr(args, field, None) for field in ("title", "description", "cover_text")}
+    overrides = {field: getattr(args, field, None) for field in ("title", "description", "cover_text", "tags")}
     if len(ids) != 1 and any(value is not None for value in overrides.values()):
         print("[ERROR] copy overrides require exactly one candidate", file=sys.stderr)
         return 2
@@ -226,6 +238,7 @@ def cut_candidates(args, api):
         try:
             rebuilding = bool(clip.get("pendingRebuild"))
             options = {"review_note": args.review_note, **overrides}
+            options["automatic_review"] = "yes" if getattr(args, "automatic_review", False) else None
             if rebuilding and any(value is not None for value in overrides.values()):
                 raise ValueError("Use rebuild to save revision public-copy changes before cut")
             if getattr(args, "require_approval", False):
@@ -251,7 +264,8 @@ def cut_candidates(args, api):
             imported = api.import_json(argparse.Namespace(
                 manifest=str(metadata_path), review=clip["reviewPath"] if rebuilding else str(metadata_path.with_name(metadata_path.stem + "_MANUAL_REVIEW.md")),
                 state=clip["statePath"] if rebuilding else str(metadata_path.with_name(metadata_path.stem + "_upload_state.json")),
-                source="", tags="", prefix="", tid=None, label="", batch_id=""))
+                source="", tags="", prefix="", tid=None, label="", batch_id="",
+                include_pending=bool(getattr(args, "automatic_review", False)) and not getattr(args, "require_approval", False)))
             if imported:
                 return imported
             print(f"[OK] {clip_id}: rendered and registered under the same ID", flush=True)

@@ -15,6 +15,14 @@ from src.scripts.batch_upload import (
 
 
 class BatchUploadDescriptionTests(unittest.TestCase):
+    def test_precision_details_survive_cleanup_and_follow_source_fields(self):
+        detail = '【AI精切说明】\n00:05.00-00:07.60 后期罐头笑声'
+        description = build_desc('标题（AI精切）', '小岁 直播《测试》2026-09-22 20:00:00', '00:01:00', '00:00:30',
+            '【精切实验模式】本片保留连续时间轴。\n片内内容\n\n' + detail)
+        self.assertTrue(description.endswith(detail))
+        self.assertIn('片内内容', description)
+        self.assertIn('直播开始时间：2026-09-22 20:00:00', description)
+
     def test_submission_rate_limit_matches_exact_bilibili_error_code(self):
         self.assertTrue(
             is_submission_rate_limit_error(

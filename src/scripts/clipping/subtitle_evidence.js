@@ -107,27 +107,32 @@ function linkClipEvidence(raw, clip, evidence, danmaku = [], available = {}) {
     const normalize = text => String(text).replace(/[\s\p{P}\p{S}]/gu, '').toLowerCase();
     const sourceText = [...subtitles, ...audience].map(row => row.text).join(' ');
     const quotedEvidence = normalize(sourceText);
-    const sourceNumbers = new Set(Array.from(sourceText.matchAll(/\d+(?:\.\d+)?/gu), match => match[0]));
     const numericSourceTexts = [
         ...subtitles.filter(row => row.start >= clip.start - 0.001 && row.end <= clip.end + 0.001
             && (!available.cueIds || available.cueIds.has(row.id))),
         ...audience.filter(row => row.time >= clip.start && row.time <= clip.end
             && (!available.danmakuIds || available.danmakuIds.has(row.id)))
     ].map(row => row.text);
+    const sourceNumbers = new Set(numericSourceTexts.flatMap(text => Array.from(text.matchAll(/\d+(?:\.\d+)?/gu), match => match[0])));
+    let quantityEvidence, quantityValues;
     const clockValues = /\d{1,2}:\d{2}/u.test(publicCopy) ? collectSpokenClockValues(numericSourceTexts) : null;
     const sourceDates = /\d+\s*[年月]/u.test(publicCopy) ? collectSpokenDates(numericSourceTexts, available.referenceYear) : [];
     for (const field of ['title', 'description', 'coverText']) {
         const copy = String(raw[field] || '');
         const clocks = clockValues?.size ? supportedClockSpans(copy, clockValues) : null;
         const dates = supportedDateSpans(copy, sourceDates);
+        let quantities;
         for (const match of copy.matchAll(/["“「]([^"”」\n]{2,80})["”」]/gu)) {
             const quote = normalize(match[1]);
             if (quote && !quotedEvidence.includes(quote)) issues.push(`unsupported_quote:${field}:${match[1]}`);
         }
         for (const match of copy.matchAll(/\d{2,}(?:\.\d+)?/gu)) {
-            if (!sourceNumbers.has(match[0]) && ![...(clocks || []), ...dates]
-                .some(span => span.start <= match.index && span.end >= match.index + match[0].length)) {
-                issues.push(`unsupported_number:${field}:${match[0]}`);
+            const containsNumber = span => span.start <= match.index && span.end >= match.index + match[0].length;
+            if (!sourceNumbers.has(match[0]) && ![...(clocks || []), ...dates].some(containsNumber)) {
+                quantityEvidence ||= require('../workflow-runtime').loadWorkflow('clipping/quantityEvidence');
+                quantityValues ||= quantityEvidence.collectSpokenQuantityValues(numericSourceTexts);
+                quantities ||= quantityEvidence.supportedQuantitySpans(copy, quantityValues);
+                if (!quantities.some(containsNumber)) issues.push(`unsupported_number:${field}:${match[0]}`);
             }
         }
     }

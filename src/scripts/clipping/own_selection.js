@@ -708,7 +708,7 @@ function collectTextAfterGap(segments, startIndex, maxSeconds) {
 }
 
 function alignClipToSubtitleBoundaries(clip, segments = [], config = {}, totalDuration = Number.POSITIVE_INFINITY) {
-    if (clip.boundaryFromEvidence) return clip;
+    if (clip.boundaryFromEvidence) return require('./topic_edit_plan').withEndingHold(clip, segments, totalDuration);
     if (!config.alignBoundaries) return clip;
     const start = Number(clip.start);
     const end = Number(clip.end);
@@ -835,7 +835,14 @@ function removeOverlappingClips(clips = [], toleranceSeconds = 0) {
     return selected.sort((a, b) => Number(a.start) - Number(b.start));
 }
 
+function filterClipsBySelection(clips, selectedIndices = null) {
+    if (!Array.isArray(selectedIndices) || selectedIndices.length === 0) return clips;
+    const wanted = new Set(selectedIndices.map(value => Number(value)).filter(Number.isFinite));
+    return clips.filter((_, index) => wanted.has(index + 1));
+}
+
 module.exports = {
+    filterClipsBySelection,
     timeStringToSeconds,
     clamp,
     getEmotionEvidenceForWindow,

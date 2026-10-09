@@ -73,14 +73,14 @@ LAST_IMAGE_GENERATION_META = {
     "attempts": [],
 }
 
-DAIYU_PRIMARY_MODEL = "gpt-5.6-luna"
+DAIYU_PRIMARY_MODEL = "gpt-6-luna"
 DAIYU_MODEL_PATTERN = re.compile(r"^gpt-5(?:[.-]|$)", re.IGNORECASE)
 DAIYU_RESPONSES_COMPATIBILITY_STATUSES = {400, 404, 405, 415, 422, 501}
-OPENAI_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
+OPENAI_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 
 
 def normalize_daiyu_model(model: Optional[str]) -> str:
-    """Keep every GPT-5 daiYu request on the current Luna model."""
+    """Keep legacy GPT-5 daiYu requests on the current Luna model."""
     normalized = str(model or "").strip()
     return DAIYU_PRIMARY_MODEL if DAIYU_MODEL_PATTERN.match(normalized) else (normalized or DAIYU_PRIMARY_MODEL)
 
@@ -1382,7 +1382,7 @@ def call_daiyu_chat_completions(
     prompt: str,
     system_prompt: Optional[str] = None,
     image_paths: Optional[list[str]] = None,
-    model: str = "gpt-5.6-luna",
+    model: str = "gpt-6-luna",
     base_url: str = "http://localhost:8080",
     api_key: str = "",
     proxy_url: str = "",

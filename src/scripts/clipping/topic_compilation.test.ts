@@ -206,6 +206,16 @@ describe('topic_compilation', () => {
     )).toBe('event-1 / 3 / 2026-08-24 20:00:00');
   });
 
+  test('shared compilation honors configured subtitle encoder and adaptive scheduler', () => {
+    const adapter = topicCompilation.resolveCompilationMediaAdapter({ rootConfig: { ownStreamClips: {
+      subtitleVideoEncoder: 'h264_nvenc', subtitleVideoPreset: 'p4', subtitleHwaccel: 'cuda',
+      clipResourceAdaptive: { enabled: true, busyConcurrency: 1 }, clipFfmpegThreads: 2
+    } } });
+    expect(adapter.buildMediaConfig()).toMatchObject({ subtitleVideoEncoder: 'h264_nvenc', subtitleVideoPreset: 'p4', subtitleHwaccel: 'cuda' });
+    expect(adapter.ownConfig.clipResourceAdaptive.busyConcurrency).toBe(1);
+    expect(adapter.ownConfig.clipFfmpegThreads).toBe(2);
+  });
+
   test('uses an injected SRT parser when assembling the compilation subtitle', () => {
     const root = makeTempDir();
     try {

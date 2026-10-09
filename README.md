@@ -4,6 +4,8 @@
 
 主要面向 Windows 本地录播工作站，接入 Mikufans / DDTV 的 Webhook。TypeScript 负责服务、生命周期和调度，JavaScript 编排媒体流程，Python 负责 ASR、说话人识别和媒体工具。
 
+开发或让 AI 修改代码，从 [开发与 AI 协作](docs/development.md) 开始；职责边界见 [架构指南](docs/architecture.md)。
+
 ## 能做什么
 
 - **录播后处理**：管理分段、断流重连和直播结束事件，合并视频，按房间策略保留视频或音频。
@@ -14,8 +16,9 @@
 - **切片制作与审核**：生成大字幕成片、封面、标题、简介及审核清单；用全局数字 ID 查看证据、改词、重压和登记审核。
 - **B 站发布**：延迟回复、补图和独立梗概回复；切片通过持久化单实例队列上传，支持重试、频控、去重和合集归档。
 - **资源与运行监控**：ASR/GPU 队列、游戏期间资源降档、企微通知、录播看门狗和用量统计。
+- **直播投票与历史问答**：多房间弹幕投票、录播字幕语义检索及证据问答；连接方式、授权与本地问答实验室见 [直播投票运行指南](docs/live-vote.md)。
 
-自动发现或制作切片不会自动获得投稿授权。候选的来源、人物归属、字幕和媒体检查通过后，按编号确认并入队投稿。
+自动发现或制作切片不会自动获得投稿授权。候选的来源、人物归属、字幕和媒体检查通过后，可按编号确认并入队投稿，或由明确启用的自动投稿策略完成最终审核与入队；配置与约束见 [切片发布策略](docs/clip-publication-policy.md)。
 
 ## 主流程
 
@@ -38,7 +41,7 @@ Mikufans 通常由 `StreamEnded` 收口；缺少该事件时，`Streaming:false`
 
 | 依赖 | 用途 |
 | --- | --- |
-| Node.js 20+、npm | TypeScript 服务和媒体编排 |
+| Node.js 22.18+（推荐 24）、pnpm 11 | TypeScript 服务和媒体编排 |
 | Python 3.10+ | ASR、说话人识别和 Python 工具 |
 | FFmpeg / ffprobe，加入 PATH | 音视频处理、字幕烧录和封面截帧 |
 | NVIDIA GPU / 匹配的 PyTorch、CUDA | 推荐用于 ASR 与 NVENC 加速；安装组合见 ASR 文档 |
@@ -47,7 +50,7 @@ Mikufans 通常由 `StreamEnded` 收口；缺少该事件时，`Streaming:false`
 在仓库根目录执行：
 
 ```powershell
-npm install
+pnpm install --frozen-lockfile
 python -m pip install -r src/scripts/python/requirements-sensevoice.txt
 python -m pip install -r src/scripts/python/requirements.txt
 ```
@@ -219,6 +222,8 @@ DDTV:     http://localhost:12523/ddtv
 端口、请求约定、PM2 和常见运行问题见 [运行说明](docs/runtime-notes.md)。当前 handler 源码是请求格式的依据；旧 standalone 脚本文档仅用于历史参考。
 
 ## 开发与验证
+
+环境准备与聚焦测试见 [开发指南](docs/development.md)。快速静态检查使用 `npm run verify:quick`。
 
 ```powershell
 npm run verify:all        # 完整便携验证

@@ -1,0 +1,1 @@
+moss-transcribe-diarize @ git+https://github.com/OpenMOSS/MOSS-Transcribe-Diarize.git@cb765f2b0fe6f7a298aa2002e2281ae693d1f3c3

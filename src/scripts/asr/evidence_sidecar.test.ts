@@ -6,6 +6,28 @@ const asr = require('./asr_backends');
 const { evidencePath, loadAsrEvidence } = require('./evidence_sidecar');
 
 describe('ASR replacement provenance', () => {
+  test.each(['I want to make a call', '你好I want to make a call', 'Hello, world!'])
+  ('preserves English word boundaries through wrapped SRT and evidence: %s', text => {
+    const normalized = asr.normalizeAsrResult({ backend: 'paraformer', segments: [
+      { start: 1, end: 5, text, raw_text: text, speaker: 'Host', speaker_score: .9 }
+    ] }, { max_chars_per_segment: 80 });
+    asr.writeSrt(normalized, file, { write_evidence: true, max_chars_per_line: 8 });
+    const parsed = asr.parseSrt(file).segments;
+    expect(fs.readFileSync(file, 'utf8').split('\n').length).toBeGreaterThan(4);
+    expect(parsed).toEqual([{ start: 1, end: 5, text }]);
+    expect(loadAsrEvidence(file, parsed).status).toBe('available');
+    const speakerPath = asr.writeSpeakerReviewSrt(normalized, file, { max_chars_per_line: 8 });
+    const speakerRows = asr.parseSrt(speakerPath).segments;
+    expect(speakerRows[0].text).toBe(`[Host 0.90] ${text}`);
+    expect(loadAsrEvidence(speakerPath, speakerRows).status).toBe('available');
+  });
+
+  test('keeps Chinese wrapping compact and preserves English spaces when stripping punctuation', () => {
+    asr.writeSrt({ segments: [{ start: 1, end: 5, text: '你好世界，I want to make a call。' }] }, file,
+      { max_chars_per_line: 4, strip_punctuation: true });
+    expect(asr.parseSrt(file).segments[0].text).toBe('你好世界I want to make a call');
+  });
+
   test('preserves speaker observations through normalization, plain SRT and hash-bound sidecar', () => {
     const speaker = { version: 1, label: null, status: 'unknown', observations: [
       { start: 0, end: 8, label: 'UNKNOWN', scope: 'row_rejected', row: { score: .44, margin: .02, accepted: false },

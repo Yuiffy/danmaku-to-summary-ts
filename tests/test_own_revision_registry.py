@@ -19,6 +19,22 @@ def digest(value):
 
 
 class OwnRevisionRegistryTests(unittest.TestCase):
+    def test_precision_command_propagates_render_failure_without_uploading(self):
+        args = api.build_parser().parse_args(["precision", "--id", "17", "--note", "重新渲染"])
+        with patch.object(api.subprocess, "run", return_value=subprocess.CompletedProcess([], 1)) as run:
+            self.assertEqual(args.func(args), 1)
+        command = run.call_args.args[0]
+        self.assertEqual(command[0], "node")
+        self.assertTrue(command[1].endswith("precision_revision.js"))
+        self.assertEqual(command[2:], ["--id", "17", "--registry", str(api.REGISTRY_PATH), "--note", "重新渲染"])
+        self.assertFalse(api.QUEUE_PATH.exists())
+
+    def test_precision_cover_face_exception_is_explicit_and_cover_only(self):
+        args = api.build_parser().parse_args(["precision", "--id", "2828", "--allow-cover-face-overlap"])
+        with patch.object(api.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
+            self.assertEqual(args.func(args), 0)
+        self.assertEqual(run.call_args.args[0][-1], "--allow-cover-face-overlap")
+
     def setUp(self):
         # Node child processes must use the test candidate, not a live activation.
         if not os.environ.get("DANMAKU_WORKFLOW_RELEASE"):
@@ -69,8 +85,47 @@ class OwnRevisionRegistryTests(unittest.TestCase):
     def records(self):
         return api.load_json(api.REGISTRY_PATH, {})["clips"]
 
+    def test_replan_cli_preserves_rejected_id_and_requires_new_window(self):
+        metadata = self.metadata()
+        metadata["selectionRejection"] = {"reason": "outside_candidate_context"}
+        metadata["publicCopyPending"] = True
+        metadata["output"]["mediaPath"] = None
+        metadata["output"]["burnedSubtitles"] = False
+        metadata.pop("ownStreamHumanReview", None)
+        self.write_metadata(metadata)
+        command = ["rebuild", "--id", "1", "--replan", "--start", "2", "--end", "60",
+                   "--review-note", "New complete event checked", "--source-kind", "live_speech",
+                   "--title", "Hello world", "--description", "Hello world", "--cover-text", "Hello world"]
+        self.assertEqual(self.command(command), 0)
+        self.assertTrue(self.records()["1"]["pendingRebuild"])
+        self.assertEqual(self.metadata()["editorialReplan"]["clipId"], 1)
+        self.assertEqual(self.metadata()["originalSelectionRejection"]["reason"], "outside_candidate_context")
+        self.assertEqual(self.command(["enqueue", "--ids", "1"]), 0)
+        self.assertEqual(self.queue()[0]["clipIds"], [1])
+
     def queue(self):
         return api.load_json(api.QUEUE_PATH, {}).get("jobs", [])
+
+    def test_automatic_cut_registers_failed_review_without_queueing_or_leaving_pending_rebuild(self):
+        registry = api.load_json(api.REGISTRY_PATH, {})
+        registry["clips"]["1"]["pendingRebuild"] = True
+        registry["clips"]["1"]["status"] = "pending_rebuild"
+        api.save_json(api.REGISTRY_PATH, registry)
+        def render(*_args, **_kwargs):
+            metadata = self.metadata()
+            metadata.pop("ownStreamHumanReview", None)
+            metadata["automaticPublicationRequired"] = True
+            metadata["publicationReview"] = {"status": "needs_review", "issues": ["具体字幕疑点"]}
+            metadata["publicationDecision"] = {"action": "needs_human", "reasons": ["具体字幕疑点"]}
+            metadata["rebuildRequired"] = False
+            self.write_metadata(metadata)
+        with patch.object(api.clip_candidate_queue, "candidate_action", side_effect=render):
+            self.assertEqual(self.command(["cut", "--ids", "1", "--automatic-review", "--review-note", "Fresh review"]), 0)
+        record = self.records()["1"]
+        self.assertEqual(record["status"], "needs_review")
+        self.assertFalse(record.get("pendingRebuild"))
+        self.assertIn("具体字幕疑点", record["reviewIssues"])
+        self.assertFalse(api.QUEUE_PATH.exists())
 
     def approve_fixture(self, metadata):
         source, output, copy = metadata["source"], metadata["output"], metadata["copy"]

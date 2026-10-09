@@ -2,7 +2,7 @@
 
 const { parseJsonResponse, resolveEvidenceBoundaries, linkClipEvidence } = require('./subtitle_evidence');
 const { normalizeCoverText } = require('./selection_result');
-const { requiresBoundaryReview, reviewPreflightBoundaries } = require('./preflight_boundaries');
+const { requiresBoundaryReview, reviewPreflightBoundaries, endingWorkflow } = require('./preflight_boundaries');
 
 const SOURCE_KINDS = ['live_speech', 'recount', 'playback', 'audience', 'uncertain'];
 const nonempty = value => typeof value === 'string' && value.trim().length > 0;
@@ -12,7 +12,7 @@ function normalizePreflightHits(raw, input) {
     if (!Array.isArray(raw) || raw.length !== input.hits.length) throw new Error('Every keyword anchor needs an assessment');
     const pending = new Map(input.hits.map(hit => [hit.id, hit]));
     const allowed = new Set(input.subtitles.map(cue => cue.id));
-    return raw.map(row => {
+    const assessed = raw.map(row => {
         const hit = pending.get(row?.id);
         if (!hit || !['mention', 'false_match', 'uncertain'].includes(row.verdict) || !nonempty(row.reason)
             || !Array.isArray(row.evidenceCueIds) || !row.evidenceCueIds.includes(hit.cueId)
@@ -20,11 +20,21 @@ function normalizePreflightHits(raw, input) {
         pending.delete(row.id);
         return { ...hit, verdict: row.verdict, reason: row.reason.trim(), evidenceCueIds: row.evidenceCueIds };
     });
+    if (!input.audioChecks) return assessed;
+    const gate = require('../workflow-runtime').loadWorkflow('clipping/topicRecovery').gateTopicAudioHits;
+    return gate ? gate(assessed, input.audioChecks) : assessed.map(hit => hit.recall?.requiresSemanticConfirmation
+        ? { ...hit, verdict: 'uncertain', audioIssue: '局部音频复核工作流尚未启用' } : hit);
 }
 
 function editIsCorroborated(edit, cue, input, inside, hits) {
     if ((input.verifiedEdits || []).some(verified => verified.start === cue.start && verified.end === cue.end
         && verified.original === edit.original && verified.replacement === edit.replacement)) return true;
+    if ((input.hits || []).some(hit => hit.recall?.requiresSemanticConfirmation)) {
+        const policy = require('../workflow-runtime').loadWorkflow('clipping/topicRecovery');
+        const supported = policy.topicRecallSubtitleEditSupport?.(edit, cue, input, inside, hits);
+        if (supported !== null && supported !== undefined) return supported;
+        if (!policy.topicRecallSubtitleEditSupport) return false;
+    }
     const replacement = sameSpeech(edit.replacement);
     if (sameSpeech(edit.original) === replacement) return true;
     const offset = cue.text.indexOf(edit.original);
@@ -144,9 +154,15 @@ function normalizePreflightResponse(text, input, evidence, config, options = {})
             throw new Error('Finishing changed the locked edit');
         }
         const issues = [];
+        if (selectedHits.some(hit => hit.recall?.requiresSemanticConfirmation)) {
+            const policy = require('../workflow-runtime').loadWorkflow('clipping/topicRecovery');
+            issues.push(...(policy.topicRecallIdentityIssues?.(selectedHits, input.subtitles, bounds)
+                || ['疑似人名缺少已编译的语义校验规则']));
+        }
         const boundary = reviewPreflightBoundaries(locked ? locked.boundaryReview : raw.boundaryReview,
             bounds, input, requiresBoundaryReview(config));
         issues.push(...boundary.issues);
+        issues.push(...(endingWorkflow()?.endingTimingIssues(bounds, input) || []));
         if (locked?.status === 'needs_review') issues.push(...locked.issues, 'The locked plan still requires human review');
         if (raw.status === 'needs_review' || raw.sourceKind === 'uncertain'
             || !selectedHits.some(hit => hit.verdict === 'mention')) issues.push('Model requests human review or identity remains uncertain');
@@ -154,6 +170,7 @@ function normalizePreflightResponse(text, input, evidence, config, options = {})
             .map(cue => ({ ...cue.items[0] })), evidence };
         let copy = null;
         const finalizing = options.phase !== 'plan';
+        issues.push(...selectedHits.map(hit => hit.audioIssue).filter(Boolean));
         try {
             if (options.phase === 'finish' && raw.subtitleEdits?.length) throw new Error('Final writer changed locked subtitles');
             subtitle = reviewSubtitleEdits(raw.subtitleEdits, bounds, evidence, input, hits);

@@ -33,7 +33,7 @@ describe('daily precision pacing', () => {
         const io = hooks(); const result = await enhancePacing(baseline, input, io);
         expect((io.request as jest.Mock).mock.calls.map(call => call[0])).toEqual(['edit', 'qa']);
         expect(result.pacingResult.status).toBe('edited'); expect(result.pacingResult.removedSeconds).toBeCloseTo(3.4);
-        expect(result.copy.title).toBe(baseline.copy.title); expect(result.qaResult.status).toBe('passed');
+        expect(result.copy.title).toBe(baseline.copy.title + '（AI精切）'); expect(result.qaResult.status).toBe('passed');
     });
     test.each(['keep', 'reject', 'timeout', 'attribution'])('%s restores the ordinary version without a repackaging retry chain', async mode => {
         const io = hooks(mode === 'keep', mode !== 'reject');

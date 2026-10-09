@@ -1,4 +1,5 @@
 {
+  "ignorePatterns": ["src/temp/**", "temp/**", "tmp/**", "build/**", "dist/**", "local-scripts/**"],
   "extends": ["next/core-web-vitals", "next/typescript"],
   "rules": {
     "@typescript-eslint/no-explicit-any": "off",

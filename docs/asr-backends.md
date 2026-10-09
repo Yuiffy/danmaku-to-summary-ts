@@ -1,10 +1,63 @@
 # ASR Backend 配置
 
-> **当前状态（2026-07-16）**：默认 backend 是 `paraformer`，生产 Paraformer 已启用 post-ASR adaptive speaker（`enable_speaker: true`、`speaker_detection_mode: "auto"`）。本页是 ASR 当前架构和验证的权威文档；具体部署值仍以 `config/default.json`、`config/production.json` 与 `DEFAULT_ASR_CONFIG` 为准。
+> **当前状态（2026-09-29）**：默认 backend 是 `paraformer`，生产 Paraformer 已启用 post-ASR adaptive speaker（`enable_speaker: true`、`speaker_detection_mode: "auto"`）。生产仅对已确认多人联动的场次启用 20% MOSS 灰度，其余按原房间路由运行（默认 Paraformer + CAM++）。本页是 ASR 当前架构和验证的权威文档；具体部署值仍以 `config/default.json`、`config/production.json` 与 `DEFAULT_ASR_CONFIG` 为准。
 
-项目支持 Paraformer、Whisper、SenseVoice、Fun-ASR-Nano 和 Fun-ASR-Nano vLLM。Nano 的热词接口是官方 `hotwords: list[str]`，更适合做“岁己 / 小岁”这种词的真实热词测试。
+项目支持 Paraformer、Whisper、SenseVoice、Fun-ASR-Nano、Fun-ASR-Nano vLLM 和 MOSS-Transcribe-Diarize。Nano 的热词接口是官方 `hotwords: list[str]`，更适合做“岁己 / 小岁”这种词的真实热词测试。
 
 岁己房间的生产 Paraformer 流程还支持后置 SenseVoiceSmall 情感分析。它复用 Paraformer 时间轴，不重复 VAD/标点，并把结果提供给晚安回复、漫画脚本和自动切片。配置、输出契约与评分规则见 [sui-emotion-analysis.md](./sui-emotion-analysis.md)。
+
+## MOSS 说话人灰度
+
+生产设置 `asr.moss_rollout.enabled=true`、`ratio=0.2`、`eligibility="confirmed_multi"`、`room_ids=[]`，覆盖所有房间的已确认多人联动场次。只有转写前的 `participantDiscovery.mode="multi"` 且 `modeStatus="confirmed"` 才参与稳定哈希抽样；单播、未知、候选及仅有联动计划都跳过，仅开启 `enable_speaker` 或配置嘉宾名单也不会触发。确认可来自现有参与者发现流程的多帧现场证据或人工确认；这不等于声纹实名验证。没有确认依据时保留原后端，不先运行 MOSS 来决定是否运行 MOSS，也不追加整场 Paraformer 探测。此严格策略可能漏掉未被确认的真实联动。
+
+对 `room_id|filename` 稳定哈希抽取约 20%，相同文件分组固定，并非每五场必有一场。符合条件的 Paraformer、SenseVoice、Fun-ASR-Nano 及其 vLLM 后端均可参与，失败回退至该任务原后端；显式 CLI 后端和一次性 Paraformer 说话人开关仍优先。`routingReason` 的命中记录包含 `eligibility=confirmed_multi`。`room_ids` 非空时是白名单。兼容的 `speaker_enabled` 策略会放宽到开启说话人处理或有多人线索的任务，生产当前不使用它。
+
+灰度命中后，MOSS 负责整场**文字、独立分句、匿名说话人及时间轴**，保留同时说话的独立字幕行。仅把标签贴到 Paraformer 字幕上不能获得这种分句能力，独立 speaker sidecar 仍是另一条尚未实现的方案。模型为自回归联合转写，丢弃生成文字不会减少解码计算；官方 `Speaker-Only Transcription` 提示仍生成文字，只省略时间戳。不要通过缩小 token 上限截断输出来提速。
+
+`moss.inference_backend` 可选 `transformers`（兼容默认）或 `vllm`。两者均使用同一本地模型，维持 300 秒窗口、20 秒重叠及原有跨窗重复语句关联。没有交界语句依据时使用新的匿名标签；整场匿名组数量不等于实际人数。普通 `.srt` 与 `.speaker.srt` 均保留重叠行，长场衔接及分离质量仍需抽查。
+
+### 本机 vLLM 运行环境
+
+使用独立 Linux GPU 容器，不修改 Windows 的 PyTorch/Transformers 环境。基础镜像固定为 vLLM 0.27.1 的 digest；官方基础镜像缺少音频解码依赖，因此必须使用仓库 Dockerfile 安装固定版本的 soundfile、PyAV、soxr：
+
+```powershell
+docker build --file src/scripts/python/moss-vllm.Dockerfile --tag danmaku-moss-vllm:0.27.1-audio src/scripts/python
+docker image inspect --format '{{.Id}}' danmaku-moss-vllm:0.27.1-audio
+```
+
+将返回的不可变 `sha256:...` image ID 配入 `asr.moss.docker_image`；也支持仓库 digest，禁止用浮动 tag。生产任务只使用已安装镜像，不自动拉取或升级。设置 `inference_backend: "vllm"`、`managed_server: true`、本地 `model` 和持久化 `cache_dir`。模型目录以只读方式挂载，服务仅绑定随机的 `127.0.0.1` 端口。外置服务实验可用 `managed_server: false` 和 `base_url`，其生命周期由调用方负责。
+
+受管服务按任务启动并复用所有窗口；`startup_timeout_s` 和 `request_timeout_s` 分别限制启动与单窗请求，`process_timeout_s` 也作为容器硬寿命，限制主进程异常退出后的占用。成功、异常均清理本任务自己的容器，且在 CAM++ 实名匹配前释放 MOSS 显存。不要把受管容器改成常驻，也不要删除其他任务的容器。
+
+调用方沿用全局 ASR 锁。受管 MOSS 启动前通过已认证的本地接口退出空闲的 Paraformer 常驻 worker，避免其上一任务保留的 CUDA 分配与 vLLM 同时占用显存。队列下次按需重建该 worker；同一任务的失败回退在旧端口不可用时走原有单次 Python 路径。
+
+服务为 BF16，单请求、2048 prefill token 分块。生产使用 12288 上下文和 1536 MiB 固定 KV 缓存，通用默认上下文为 16384；按真实的最多 300 秒输入进行多模态内存预估，不使用上游默认的 90 分钟假音频。可通过 `max_model_len` 调整上下文，通过 `kv_cache_memory_mb` 固定 KV 缓存；设置固定缓存后上游不再按 `gpu_memory_utilization` 推算 KV 容量。后者只是 vLLM 预算参数，不是整个系统的硬显存上限，CUDA Graph 和其他应用仍有额外占用。加载权重使用 eager 方式以减少 Windows 挂载目录上的随机读；编译缓存落在任务目录之外。启动时间和纯推理时间必须分别报告，短音频可能被启动成本主导。
+
+本机 625 秒实际岁己录音通过 JS→Python→vLLM 三窗口→CAM++→JSON 解析完整验证：95 条字幕，推理 19.6 秒，声纹匹配 21.9 秒，服务启动 248.0 秒，调用总计 292.6 秒。缓存不消除每次启动的图捕获与预热开销；不能把纯推理加速比当成短任务的端到端加速比，也不能据此承诺整场耗时或说话人准确率。
+
+### WSL2、UVA 与 V2 runner
+
+vLLM 0.27.1 的 CUDA 平台提供官方开关 `VLLM_WSL2_ENABLE_PIN_MEMORY=1`；仅在 WSL2 内核至少为 4.19.121 时允许启用。受管服务对应 `wsl2_pin_memory: true`；`v2_model_runner: true` 对应 `VLLM_USE_V2_MODEL_RUNNER=1`。兼容模式可同时设为 false，继续用 V1 runner。
+
+本机 WSL 2.4.13、内核 5.15.167.4 已满足版本条件；开启该开关后，已实测 pinned CPU tensor 的 GPU 映射读写通过，因此本次 UVA 报错不能解释成“WSL 不支持 UVA”或“必须升级 WSL”。不需要绕过上游检测，也未为此升级/重启 WSL。UVA 与完整 Unified Managed Memory 不同；NVIDIA 仍列出 WSL 的完整托管内存、并发 CPU/GPU 访问及 pinned 内存容量限制，不能把这个小缓冲测试外推为全部 UVM 功能可用。
+
+依据：[固定版本 CUDA 平台实现](https://github.com/vllm-project/vllm/blob/v0.27.1/vllm/platforms/cuda.py)、[NVIDIA WSL 限制](https://docs.nvidia.com/cuda/wsl-user-guide/index.html#known-limitations-for-linux-cuda-applications)、[OpenMOSS 部署入口](https://github.com/OpenMOSS/MOSS-Transcribe-Diarize#quickstart)。
+
+### 结果、身份及失败契约
+
+vLLM 的非流式 `diarized_json` 不提供完整的停止原因/token 用量，不能可靠识别恰好在句末达到输出上限的情况。客户端使用流式 JSON 接口收集原始 `[start][Sxx]text[end]`，要求唯一正常停止、完整结束事件和明确 token 数；逐句完整解析时间戳，任何截断/流错误/无法解析的尾部都失败，绝不把不完整字幕静默写为成功。原始重叠区间不扁平化。每窗请求不自动重试，避免无声重复全量推理。
+
+Python 的 stdout 专用于单个 JSON 结果，依赖导入及推理日志重定向到 stderr。此约束覆盖 FunASR 参考匹配的版本横幅；否则整场 MOSS 虽已完成，主进程仍会因 `funasr version:` 前缀解析失败而回退。`.asr_meta.json` 保存实际 `backend`、`inferenceBackend`、阶段耗时、实际模型及路由原因；灰度失败只回退该任务原先解析出的后端与模型覆盖，不会一律改为 Paraformer。显式指定 MOSS 的失败仍显式报错。
+
+实名继续沿用 `row_verified` 与原后端全量 `speaker_references`。MOSS 转写后释放模型，再用 CAM++ 对至少 2 秒且无其他字幕行重叠的语句逐句验证；同一匿名组中的姓名至少有两条独立语句通过阈值才落名，绝不按整个匿名组传播身份。短句、重叠语音、无参考及局部证据不足保留 `Sxx`，不会据此确认真实参与者。证据 sidecar 保留逐句阈值、分数、匿名组和拒识状态；参考模型失败时保留转写并标记 `referenceIdentity.status=unavailable`。
+
+模型目录使用 Hugging Face revision `e8681d68e7042738ffca8ac8212bc8fcb1131ab8`。原生 Transformers 实验入口仍需固定 helper：
+
+```powershell
+python -m pip install -r src/scripts/python/requirements-moss.txt
+```
+
+Windows 侧需要 requests、FFmpeg/FFprobe；CAM++ 实名匹配继续使用现有 FunASR 环境。具体部署值以 `config/production.json` 为准。已有字幕不因灰度配置变化而重写，正在运行的旧 Python 子进程也不受源码更新影响。
 
 ## 默认 Paraformer 与显式 Whisper
 
@@ -460,6 +513,68 @@ speaker 标签不由此阶段重新分配。
 完整人工真值时报告 CER/WER；否则报告明确的规则覆盖、额外差异和待确认窗口。
 新词表样本不能同时被称作独立测试集。逐次确认不会自动变成全局学习记录。
 
+#### 局部热词对照的验收方法
+
+诊断实验先核对音频内容与字幕时间轴；同名 Opus 和 SRT 不能证明逐段同步。
+当相邻普通对白也对不上时，标记为时间轴未验证并从识别率分母排除，保留原始
+截取参数和哈希。改变 FFmpeg 的 seek 位置不能自动修复源字幕漂移，也不能仅凭
+一次内容匹配给整场应用固定偏移。先解决对齐，再讨论该片段的模型漏词。
+
+用相同窗口分别保存无热词转写和少量规范姓名热词转写；缩短窗口、改变名单的
+试验单列，避免把反复挑出的最佳输出算作独立准确率。热词输出是带提示的假设，
+不得写进 `unpromptedChecks`，也不能单靠出现正确姓名就批准身份或字幕改写。
+至少同时检查普通“随机／随即／自己”用法、静音、句中其他词是否退化；有名字
+但句意、否定或数量仍错时继续待核。只有完整人工真值才能报告总体 CER/WER。
+
+纯静音在送入生成式 ASR 前应由 VAD 门禁跳过；这不等于已经验证背景音乐、低声
+对白或稀疏人声。热词解码与 `postprocess_hotwords` 的拼音模糊替换分开验收：后者
+即使修好了标点和数字边界，也不能区分“随机应变”和人名“岁己”。不得把通用
+模糊替换接成全局人名纠错。升级库或下载新 checkpoint 前，先在隔离环境复查
+这些行为，不能把上游主分支修复当作 PyPI 发布版本已经具备的能力。
+
+参考：[热词导致截断和误替换的社区反馈](https://github.com/modelscope/FunASR/issues/3302)、
+[稀疏电话语音与静音插词反馈](https://github.com/modelscope/FunASR/issues/3718)、
+[拼音后处理边界修复](https://github.com/modelscope/FunASR/pull/3744)。
+这些报告提供负例方向，不代表本项目每个模型都会复现同样问题。
+
+#### 关键词预审的自动局部音频复核
+
+`clipTopics.review.audioChecks.enabled` 显式启用关键词预审中的局部复核，默认关闭。
+它仅处理 `recall.requiresSemanticConfirmation` 的歧义命中，独立于整场 ASR 和上述
+Sui 字幕预校对。`topicAudio.ts` 选择一次固定上下文窗口；`topicAudioRuntime.ts`
+绑定源媒体大小/mtime、原 SRT 哈希、证据哈希及 Python 实现哈希，调用
+`python/topic_audio_checks.py`。没有全场重新转写、自动改变窗口重试或原 SRT 覆盖。
+
+默认单窗上限30秒，每组3窗，每次录播处理最多6窗/180秒音频；单组进程上限180秒，
+每次录播累计耗时上限360秒。配置不能突破代码的硬上限。相邻命中共用窗口；数量、
+时长或耗时用尽的命中继续待核。预算作用域是本次 `generateTopicClips` 调用，人工
+重跑是新调用，不承诺跨重跑累计。只使用本地缓存模型，不自动下载或升级依赖。
+
+先用 FSMN-VAD 判定是否存在语音；无语音不调用 Nano。存在语音时，Nano 先不带
+热词转写，再用两条有足够普通文字、按顺序匹配且不复用转写字符的邻近字幕核对
+局部内容一致性。歧义命中所在 cue 和规范热词不能提供这项对齐依据。少于两条
+可用旁证为 `inconclusive`，未匹配为 `mismatch`；这只是保守的一致性筛查，不能
+证明精确时间戳、完整字幕正确或说话人身份。只有 `aligned` 才运行第二次规范
+热词转写，默认名单为“岁己、小岁”，且必须属于本次配置的目标关键词。
+
+两路文本分别存入 `audioChecks.windows[].unprompted` 和 `biased`，标明提示名单与
+`timingPrecision: window`；不把整窗文本塞进可用于逐词纠错的 `unpromptedChecks.segments`。
+AI 只能把它们当补充假设，带热词结果不能作为独立身份旁证。既有局部改词和人物
+语义门禁仍生效；新音频不会自动授予改词、渲染或投稿许可。
+
+`no_speech/mismatch/inconclusive/unavailable` 会将受影响命中强制保留为 `uncertain`，
+即使模型回答 `mention` 或 `false_match`。空模型选窗由既有未决候选保留路径处理。
+只依赖这些命中的切片保持 `needs_review`。独立、已核对的其他事件仍可按原规则审核。
+`TOPIC_PLAN.json` 的分组和最终候选 `aiReview.audioChecks` 保存证据及错误状态；
+每次尝试的输入、日志、WAV和结果写入源素材旁的 `temp/.../topic_selection/audio_checks/`。
+成功结果经过请求、窗口、热词身份、原始文件复验及 WAV 哈希校验；失败不会重用旧结果。
+
+Python 使用既有 `prepare_asr_runtime`/`GpuThrottle` 的游戏保护、进程策略与GPU节流，
+复用 Nano backend 的配置并限制模型线程为2。已有活动 ASR 资源租约或另一局部复核
+持有系统锁时立即保留待核；等待也受外层进程总超时限制。源执行 JS/Python 由下一次
+子进程读取，新增 TypeScript 需通过 `workflow:activate` 激活；回退可关闭
+`clipTopics.review.audioChecks.enabled`，保留证据文件供复查，不重放历史生产队列。
+
 回归测试：
 
 ```powershell
@@ -538,6 +653,17 @@ ASR 配置支持全局热词、按 routing 命中的房间/主播热词，以及
 
 当前 dispatch 行为：Fun-ASR-Nano / vLLM 会在推理时接收 `hotwords` 数组；Paraformer/SenseVoice 的 `hotword` 字符串当前由 JS adapter 留空，依赖 `phoneme_correction` 与统一 corrections。所有 backend 的 SRT 写出前都会应用 corrections。
 
+生产的会话人名补漏分为受限纠错与疑似召回。栞栞房间只在“支持赛吉斯”局部语境
+纠正为岁己；犬绒房间只在附近有海獭、且同 cue 为“给小碎看／买／送”的收礼人
+句式时纠正“小碎”。后者显式保护小碎步、片、石等普通词及打碎动作，不跨 cue
+拼接词组猜改。“随机／随即／自己／这一集／c机”不加入生产全局替换表，而由
+[关键词预审的疑似召回](topic-event-editorial.md#疑似-asr-人名召回)标记原词再判断语义。
+
+合并顺序为全局 corrections、房间 routing corrections、common/route hotword 派生
+别名。生产“小碎”从 common hotword 的 `ambiguous_aliases` 移至显式全局
+`corrections.ambiguous`，使犬绒的局部覆盖不会被派生别名盖回。全局词条保留原解析
+行为；房间覆盖显式声明排除项。高歧义词不要放进 `safe` 或整场 `contextual` 规则。
+
 `punc_model` 是 best-effort：配置后会尝试加载 FunASR 标点模型并对 SenseVoice 输出文本恢复标点；加载或调用失败只会写 warning 到 stderr，不会中断 ASR。不同 FunASR/SenseVoice 版本对标点模型返回结构支持不完全一致，需要用真实音频验证。
 
 ## Compare 模式
@@ -578,6 +704,12 @@ video.compare.json
 ```
 
 当前第一版已统一做 segment 清洗、长句切分、避免重叠和 SRT 写回。`strip_punctuation=true` 时只在 SRT 输出阶段去掉常见中英文标点，ASR 原始结果和内部切分仍保留标点信息。`gap_split_threshold` 与 `merge_short_segments` 已预留，后续可以继续增强合并策略。
+
+Paraformer 时间戳后处理仅移除相邻汉字之间的分词空格；英文词间及中英交界已有的空白折叠为一个空格。
+空格和标点不占用词级时间戳，英文单词、缩写及连字符词保持完整；chunk 路径复用相同对齐规则，
+缺失或不匹配的时间戳回退到完整 chunk 文本和时间范围，不通过删除空格凑对齐。
+ASR 的 SRT 读取与证据 sidecar 共用换行合并规则，保留跨行英文词界并维持中文紧凑排版。
+这些规则只保留识别结果已有的词界，不猜测拆分模型已经输出的连写单词；旧字幕和已烧录视频不会自动改写。
 
 SenseVoice 时间轴优先使用 FunASR 返回的 `sentence_info` / `segments` 中的 `start` / `end`；如果当前模型只返回整段文本，则退回到 VAD chunk 级近似时间。默认 `merge_length_s=8`、`max_vad_segment_s=8`，避免把 VAD chunk 合并到过长。SenseVoice 首版时间轴不一定比 Whisper 的 `word_timestamps` 更细，建议用 Compare 模式实测。
 

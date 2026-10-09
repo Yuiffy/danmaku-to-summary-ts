@@ -12,7 +12,7 @@ const sha = value => crypto.createHash('sha256').update(JSON.stringify(value)).d
 
 function identity(body, config) {
     if (config.ai?.text?.sharedPromptCache?.continuationEnabled !== true
-        || config.ai.text.sharedPromptCache.enabled === false || !/^gpt-5\.6(?:[.-]|$)/u.test(body?.model || '')
+        || config.ai.text.sharedPromptCache.enabled === false || !/^gpt-(?:5\.6|6)(?:[.-]|$)/u.test(body?.model || '')
         || body.input?.length !== 1 || body.input[0].role !== 'user' || body.tools
         || !body.instructions || !Array.isArray(body.input[0].content)
         || body.input[0].content.some(p => p.type !== 'input_text' || typeof p.text !== 'string')) return null;

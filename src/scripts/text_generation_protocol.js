@@ -75,7 +75,7 @@ function getSharedPromptCacheInfo(prompt) {
 function getExplicitPromptCachePlan(
     prompt,
     config = {},
-    model = 'gpt-5.6-luna',
+    model = 'gpt-6-luna',
     rolloutPercentOverride = undefined,
     staticPrefix = undefined
 ) {
@@ -85,7 +85,7 @@ function getExplicitPromptCachePlan(
         ? rolloutPercentOverride
         : cacheConfig.explicitRolloutPercent;
     const rolloutPercent = Math.max(0, Math.min(100, Number(configuredRolloutPercent) || 0));
-    const modelEligible = /^gpt-5\.6(?:[.-]|$)/i.test(String(model || ''));
+    const modelEligible = /^gpt-(?:5\.6|6)(?:[.-]|$)/i.test(String(model || ''));
     const sourceRoute = info.sharedPromptCacheKey && cacheConfig.enabled !== false && modelEligible
         ? { requestKey: `live:${info.sharedPromptCacheKey.slice(0, 48)}` }
         : {};

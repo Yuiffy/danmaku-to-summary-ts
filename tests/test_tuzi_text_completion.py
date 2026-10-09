@@ -197,7 +197,7 @@ class TuziTextCompletionTests(unittest.TestCase):
         ):
             content = tuzi.call_daiyu_chat_completions(
                 prompt="只回复 DAIYU_OK",
-                model="gpt-5.6-luna",
+                model="gpt-6-luna",
                 base_url="https://daiyu.example/v1",
                 api_key="secret",
                 thinking=True,
@@ -205,7 +205,7 @@ class TuziTextCompletionTests(unittest.TestCase):
             )
 
         self.assertEqual(content, "DAIYU_OK")
-        self.assertEqual(post.call_args.kwargs["json"]["model"], "gpt-5.6-luna")
+        self.assertEqual(post.call_args.kwargs["json"]["model"], "gpt-6-luna")
         self.assertEqual(
             post.call_args.kwargs["json"]["thinking"],
             {"type": "enabled", "budget_tokens": 8192},
@@ -254,7 +254,7 @@ class TuziTextCompletionTests(unittest.TestCase):
                 prompt="全量直播事实\n漫画任务规则",
                 system_prompt="稳定系统指令",
                 image_paths=[str(image_path)],
-                model="gpt-5.6-luna",
+                model="gpt-6-luna",
                 base_url="https://daiyu.example/v1",
                 api_key="secret",
                 max_tokens=4096,
@@ -312,7 +312,7 @@ class TuziTextCompletionTests(unittest.TestCase):
         ):
             content, metadata = tuzi.call_daiyu_chat_completions(
                 prompt="只回复 CHAT_FALLBACK_OK",
-                model="gpt-5.6-luna",
+                model="gpt-6-luna",
                 base_url="https://daiyu.example/v1",
                 api_key="secret",
                 thinking=True,
@@ -355,7 +355,11 @@ class TuziTextCompletionTests(unittest.TestCase):
             )
 
         self.assertEqual(content, "LUNA_OK")
-        self.assertEqual(post.call_args.kwargs["json"]["model"], "gpt-5.6-luna")
+        self.assertEqual(post.call_args.kwargs["json"]["model"], "gpt-6-luna")
+
+    def test_gpt6_sol_model_and_max_effort_are_preserved(self):
+        self.assertEqual(tuzi.normalize_daiyu_model("gpt-6-sol"), "gpt-6-sol")
+        self.assertEqual(tuzi.normalize_openai_reasoning_effort("max"), "max")
 
     def test_images_edits_sends_up_to_twelve_reference_images(self):
         response = FakeResponse({"data": [{"b64_json": "unused"}]})

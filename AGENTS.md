@@ -1,3 +1,26 @@
+## Start here
+
+- Read `docs/development.md` for setup, focused tests and the validation loop.
+  Read `docs/architecture.md` for ownership, dependency direction and runtime contracts.
+- Use the change guide in `docs/architecture.md` to pick an owner, then search that
+  directory with `rg`. Preserve CLI paths, module exports, sidecar fields and sentinels.
+- Prefer small changes at existing ownership boundaries. Keep decisions separate
+  from filesystem/network/process IO; inject external adapters in behavior tests.
+  New Node logic uses TypeScript; existing source-executed JS extractions may stay JS.
+- Run a focused regression test, then `npm run verify:quick`. For cross-module,
+  cross-language or release changes, finish with `npm run verify:all`.
+  `npm test -- --runInBand --runTestsByPath <file.test.ts>` prepares its own workflows.
+- Verification writes candidates under `build/`; it must not activate workflows,
+  overwrite production `dist`, restart PM2 or operate on live queues.
+  Deployment and publication are separate actions requiring task authorization.
+- Never bulk-run `src/scripts/test_*`: some are live diagnostics with provider or
+  publication effects. Use the test commands in `package.json`.
+- When extracting a large module, retain compatibility exports and lower its frozen
+  budget in `src/tools/architecture/checkArchitecture.ts`. Do not raise budgets or
+  disable checks to make verification pass.
+- Update the relevant maintained guide with changed contracts. Final reports state
+  what changed, checks actually run, and any remaining failures or skipped coverage.
+
 ## Windows shell
 
 - Use the shell already provided by the Codex runtime.

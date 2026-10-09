@@ -4,6 +4,8 @@ const path = require('path');
 const ownStreamClipper = require('./own_stream_clipper');
 const fullLiveContext = require('./full_live_context');
 const liveGenerationContext = require('./live_generation_context');
+const completeTopic = (start, end, next = '') => ({ ranges: [{ startCueId: start, endCueId: end, action: 'keep', role: 'closing', reason: '完整话题' }],
+  closingReason: '下一组已切换话题或录播结束', continuation: next ? 'next_topic' : 'source_end', nextCueId: next });
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'own-stream-clipper-'));
@@ -28,9 +30,10 @@ describe('own_stream_clipper', () => {
     const directory = makeTempDir();
     const parsed = { segments: Array.from({ length: 80 }, (_, i) => ({ start: i * 3, end: i * 3 + 3, text: `fact-${i}` })) };
     const selected = { startCueId: 'G1', endCueId: 'G21', evidenceCueIds: ['G9'], sourceKind: 'recount', score: 90 };
-    const generate = jest.spyOn(generator, 'generateTextWithDaiYu').mockImplementation(async (prompt: string) => ({
-      text: JSON.stringify({ clips: prompt.includes('完整候选池')
-        ? [{ ...selected, candidateIndex: 1, title: 'A grounded story', description: 'The host recounts an incident.', coverText: 'A story' }]
+    const generate = jest.spyOn(generator, 'generateTextWithDaiYu').mockImplementation(async (prompt: string, options: any) => ({
+      text: JSON.stringify({ clips: options.requestPhase.endsWith('-boundary-review')
+        ? [{ candidateIndex: 1, approved: true, issues: [], requiredEndCueId: '' }] : prompt.includes('完整候选池')
+        ? [{ ...selected, topicEditPlan: completeTopic('G1', 'G21', 'G25'), candidateIndex: 1, title: 'A grounded story', description: 'The host recounts an incident.', coverText: 'A story' }]
         : [{ ...selected, event: 'A source-grounded incident' }] }),
       meta: { model: 'test-model' }
     }));
@@ -49,7 +52,7 @@ describe('own_stream_clipper', () => {
       expect(generate.mock.calls[1][0]).toContain('fact-15');
       const second = await ownStreamClipper.planClipsWithStagedAI([], parsed, [], info, 240, config, root);
       expect(second.clips).toEqual(first.clips);
-      expect(generate).toHaveBeenCalledTimes(2);
+      expect(generate).toHaveBeenCalledTimes(3);
     } finally { generate.mockRestore(); fs.rmSync(directory, { recursive: true, force: true }); }
   });
 
@@ -293,6 +296,7 @@ describe('own_stream_clipper', () => {
     })).toEqual([
       '内容类型不做默认排除：电影、感谢、唱歌、普通聊天等，只按是否有独立内容价值、完整事件、观点、反应或反差判断。',
       '本次任务明确排除这些类型：电影。',
+      expect.stringContaining('不自行扩大成整个题材禁切'),
       '本次任务优先关注这些类型：电脑升级。',
       '本次任务要求覆盖不同时间段；不要把名额全部集中在同一小段话题内。'
     ]);
@@ -525,6 +529,15 @@ describe('own_stream_clipper', () => {
     expect(ownStreamClipper.buildNotifyClipLines(results, {
       uploadRegistry: { clipIds: [1234, 1289], clipIdsByReviewIndex: {} }
     }).every((line: string) => line.includes('未登记ID'))).toBe(true);
+  });
+
+  test('committed upload states suppress stale pending-copy labels unless a new review is pending', () => {
+    const results = [{ reviewIndex: 7, publicCopyPending: true,
+      window: { start: 0, duration: 60 }, copy: { title: 'Clip', description: 'Copy', coverText: 'Cover' } }];
+    const registry = { clipIdsByReviewIndex: { 7: 101 }, clipStatusByReviewIndex: { 7: 'uploaded' } };
+    expect(ownStreamClipper.buildNotifyClipLines(results, { uploadRegistry: registry })[0]).not.toContain('禁止上传');
+    expect(ownStreamClipper.buildNotifyClipLines(results, { uploadRegistry: { ...registry,
+      reviewPendingByReviewIndex: { 7: true } } })[0]).toContain('文案待复核');
   });
 
   test.each([undefined, null, 0, -1, 1.5, 'invalid'])('labels an invalid or absent upload id as unregistered (%s)', id => {
@@ -914,7 +927,7 @@ describe('own_stream_clipper', () => {
       const callOptions = generateSpy.mock.calls[0][1];
       const cachePlan = generator.getExplicitPromptCachePlan(prompt, {
         ai: { text: { sharedPromptCache: { enabled: true, explicitRolloutPercent: 100 } } }
-      }, 'gpt-5.6-luna');
+      }, 'gpt-6-luna');
       expect(prompt.startsWith(liveGenerationContext.SHARED_PROMPT_CACHE_START)).toBe(true);
       expect(prompt.indexOf(liveGenerationContext.SHARED_PROMPT_CACHE_END))
         .toBeLessThan(prompt.indexOf('你是资深直播切片主编'));
@@ -950,10 +963,11 @@ describe('own_stream_clipper', () => {
 
   test('globally reranks strongest candidates and keeps sustained viewer follow-up in the prompt', async () => {
     const generator = require('./ai_text_generator');
-    const generateSpy = jest.spyOn(generator, 'generateTextWithDaiYu').mockResolvedValue({
+    const generateSpy = jest.spyOn(generator, 'generateTextWithDaiYu').mockResolvedValueOnce({
       text: JSON.stringify({
         clips: [{
           candidateIndex: 3,
+          startCueId: 'G3', endCueId: 'G4', topicEditPlan: completeTopic('G3', 'G4', 'G5'),
           startTime: '00:02:40',
           endTime: '00:03:40',
           title: '一句没说完的话让弹幕集体追问后续',
@@ -964,7 +978,7 @@ describe('own_stream_clipper', () => {
         }]
       }),
       meta: { model: 'test-model' }
-    });
+    }).mockResolvedValue({ text: JSON.stringify({ clips: [{ candidateIndex: 3, approved: true, issues: [], requiredEndCueId: '' }] }), meta: {} });
     const config = ownStreamClipper.getOwnStreamClipsConfig({
       ownStreamClips: {
         maxClips: 50,
@@ -1057,10 +1071,12 @@ describe('own_stream_clipper', () => {
       recallSources: ['local_signals'],
       reason: 'test_signal'
     }));
-    const generateSpy = jest.spyOn(generator, 'generateTextWithDaiYu').mockResolvedValue({
+    const generateSpy = jest.spyOn(generator, 'generateTextWithDaiYu').mockResolvedValueOnce({
       text: JSON.stringify({
         clips: candidates.map((candidate, index) => ({
           candidateIndex: candidate.index,
+          startCueId: `G${index + 1}`, endCueId: `G${index + 1}`,
+          topicEditPlan: completeTopic(`G${index + 1}`, `G${index + 1}`, index < 49 ? `G${index + 2}` : ''),
           startTime: ownStreamClipper.formatClock(candidate.start),
           endTime: ownStreamClipper.formatClock(candidate.end),
           title: `最终候选 ${index + 1}`,
@@ -1071,7 +1087,8 @@ describe('own_stream_clipper', () => {
         }))
       }),
       meta: { model: 'test-model' }
-    });
+    }).mockResolvedValue({ text: JSON.stringify({ clips: candidates.map(c => ({ candidateIndex: c.index,
+      approved: true, issues: [], requiredEndCueId: '' })) }), meta: {} });
     const config = ownStreamClipper.getOwnStreamClipsConfig({
       ownStreamClips: {
         maxClips: 50,

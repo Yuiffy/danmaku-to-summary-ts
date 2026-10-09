@@ -59,7 +59,7 @@ describe('daiYu model routing', () => {
     fetchMock.mockResolvedValueOnce({ ok: false, status: 502, headers: { get: () => null }, text: async () => 'transient' })
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ status: 'completed', output_text: 'RECOVERED',
         usage: { input_tokens: 10, output_tokens: 3 } }) });
-    const result = await generate('facts', { primaryModel: 'gpt-5.6-luna', apiMode: 'responses',
+    const result = await generate('facts', { primaryModel: 'gpt-6-luna', apiMode: 'responses',
       fallbackModelsEnabled: false, allowProviderFallback: false, retry: { maxAttempts: 2, baseDelayMs: 0 } });
     expect(result.text).toBe('RECOVERED'); expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(result.meta.attempts.map(attempt => attempt.status)).toEqual(['failure', 'success']);
@@ -70,7 +70,7 @@ describe('daiYu model routing', () => {
     fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ status: 'completed',
       output_text: '{"clips":[{"title":"谈论 system prompt"}]}', usage: {} }) });
     const generate = provider === 'daiYu' ? generateTextWithDaiYu : generateTextWithTuZi;
-    const result = await generate('Source', { apiMode: 'responses', primaryModel: 'gpt-5.6-luna',
+    const result = await generate('Source', { apiMode: 'responses', primaryModel: 'gpt-6-luna',
       responseFormat: format, structuredOutputKey: 'clips', fallbackModelsEnabled: false, allowProviderFallback: false });
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).text.format).toEqual(format);
     expect(result.text).toContain('system prompt'); expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -82,7 +82,15 @@ describe('daiYu model routing', () => {
     expect(result.text).toBe('LUNA_OK');
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const request = JSON.parse(fetchMock.mock.calls[0][1].body);
-    expect(request.model).toBe('gpt-5.6-luna');
+    expect(request.model).toBe('gpt-6-luna');
+  });
+
+  test('preserves a configured GPT-6 Sol request', async () => {
+    const solConfig = structuredClone(config);
+    solConfig.ai.text.daiYu.model = 'gpt-6-sol';
+    configLoader.getConfig.mockReturnValue(solConfig);
+    await generateTextWithDaiYu('Return JSON.', { fallbackModelsEnabled: false });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).model).toBe('gpt-6-sol');
   });
 
   test('transports accepted history once without leaking it into usage metadata',async()=>{
@@ -95,10 +103,10 @@ describe('daiYu model routing', () => {
     const spy=jest.spyOn(cache,'prepareContinuation').mockImplementation((body,cfg)=>prepare(body,cfg,{directory}));
     const message={type:'message',role:'assistant',status:'completed',id:'real-output',
       content:[{type:'output_text',text:'Complete factual response.',annotations:[]}]};
-    fetchMock.mockResolvedValue({ok:true,status:200,json:async()=>({model:'gpt-5.6-luna',status:'completed',output:[message],
+    fetchMock.mockResolvedValue({ok:true,status:200,json:async()=>({model:'gpt-6-luna',status:'completed',output:[message],
       usage:{input_tokens:1000,input_tokens_details:{cached_tokens:900},output_tokens:30}})});
     const prefix=`${liveGenerationContext.SHARED_PROMPT_CACHE_START}\nFull original stream.\n${liveGenerationContext.SHARED_PROMPT_CACHE_END}`;
-    const options={primaryModel:'gpt-5.6-luna',apiMode:'responses',captureLiveCache:true,promptCacheRolloutPercent:100};
+    const options={primaryModel:'gpt-6-luna',apiMode:'responses',captureLiveCache:true,promptCacheRolloutPercent:100};
     try {
       const first=await generateTextWithDaiYu(prefix+'\nReply task.',options);
       expect(first.cacheSeed.messages).toEqual([message]);
@@ -121,7 +129,7 @@ describe('daiYu model routing', () => {
     const response=(task:string)=>({ok:true,status:200,json:async()=>({status:'completed',id:'response-envelope',
       output_text:JSON.stringify({result:{task,payload:script}}),usage:{input_tokens:300,output_tokens:100,total_tokens:400}})});
     fetchMock.mockResolvedValueOnce(response('comic'));
-    const options={strictEvaluation:true,primaryModel:'gpt-5.6-luna',apiMode:'responses',maxTokens:1000,sharedOutputTask:'comic',minOutputChars:40};
+    const options={strictEvaluation:true,primaryModel:'gpt-6-luna',apiMode:'responses',maxTokens:1000,sharedOutputTask:'comic',minOutputChars:40};
     const result=await generate('Source facts',options);
     expect(result.text).toBe(script);
     expect(result.meta.attempts[0]).toMatchObject({promptTokens:300,completionTokens:100});
@@ -134,7 +142,7 @@ describe('daiYu model routing', () => {
   test('forwards strict nested output schemas through the actual daiYu request path', async () => {
     const responseFormat={type:'json_schema',name:'content',strict:true,schema:{type:'object',
       required:['content'],additionalProperties:false,properties:{content:{type:'object',properties:{},required:[],additionalProperties:false}}}};
-    await generateTextWithDaiYu('Return JSON.', {strictEvaluation:true,primaryModel:'gpt-5.6-luna',apiMode:'responses',
+    await generateTextWithDaiYu('Return JSON.', {strictEvaluation:true,primaryModel:'gpt-6-luna',apiMode:'responses',
       reasoningEffort:'high',maxTokens:2000,responseFormat});
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).text).toEqual({format:responseFormat});
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -156,7 +164,7 @@ describe('daiYu model routing', () => {
   test('strict evaluation does not retry rejected cache hints or fall back protocols/providers', async () => {
     fetchMock.mockResolvedValueOnce({ ok: false, status: 400, text: async () => 'unsupported prompt_cache_key' });
     const prompt = `${liveGenerationContext.SHARED_PROMPT_CACHE_START}\nFacts\n${liveGenerationContext.SHARED_PROMPT_CACHE_END}\nTask`;
-    await expect(generateTextWithDaiYu(prompt, { strictEvaluation: true, primaryModel: 'gpt-5.6-luna',
+    await expect(generateTextWithDaiYu(prompt, { strictEvaluation: true, primaryModel: 'gpt-6-luna',
       reasoningEffort: 'high', maxTokens: 100, apiMode: 'responses' })).rejects.toThrow();
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -168,7 +176,7 @@ describe('daiYu model routing', () => {
       for (const kind of ['empty', 'truncated', 'short', 'nonterminal', 'failed']) {
         fetchMock.mockReset();
         log.mockClear();
-        const data = { id: 'rejected-response', model: 'gpt-5.6-luna',
+        const data = { id: 'rejected-response', model: 'gpt-6-luna',
           usage: { input_tokens: 100, output_tokens: 25, output_tokens_details: { reasoning_tokens: 20 }, total_tokens: 125 },
           ...(kind === 'empty' ? { status: 'completed', output: [{ type: 'message', role: 'assistant', phase: 'commentary',
             content: [{ type: 'output_text', text: 'Still working' }] }] }
@@ -179,7 +187,7 @@ describe('daiYu model routing', () => {
         fetchMock.mockResolvedValueOnce({ ok: true, status: 200, headers: { get: () => 'rejected-request' }, json: async () => data });
         let failure;
         try {
-          await generate('Source text.', { primaryModel: 'gpt-5.6-luna', exactModel: true, apiMode: 'responses', strictResponses: true,
+          await generate('Source text.', { primaryModel: 'gpt-6-luna', exactModel: true, apiMode: 'responses', strictResponses: true,
             fallbackModelsEnabled: false, allowProviderFallback: false, transientMaxAttempts: 1, minOutputChars: kind === 'short' ? 10 : undefined });
         } catch (error) { failure = error; }
         expect(failure).toBeInstanceOf(Error);
@@ -196,7 +204,7 @@ describe('daiYu model routing', () => {
 
   test.each(['daiYu', 'tuZi'])('%s preserves an HTTP failure ID and distinguishes it from a local deadline', async provider => {
     const generate = provider === 'daiYu' ? generateTextWithDaiYu : generateTextWithTuZi;
-    const options = { primaryModel: 'gpt-5.6-luna', exactModel: true, apiMode: 'responses', strictResponses: true,
+    const options = { primaryModel: 'gpt-6-luna', exactModel: true, apiMode: 'responses', strictResponses: true,
       fallbackModelsEnabled: false, allowProviderFallback: false, transientMaxAttempts: 1 };
     fetchMock.mockResolvedValueOnce({ ok: false, status: 502, headers: { get: () => 'failed-http' }, text: async () => 'Upstream unavailable' });
     let failure;
@@ -224,7 +232,7 @@ describe('daiYu model routing', () => {
 
   test('an explicitly pending response does not start another model or provider request', async () => {
     const pendingConfig = structuredClone(config);
-    pendingConfig.ai.text.daiYu.fallbackModels = ['gpt-5.6-sol'];
+    pendingConfig.ai.text.daiYu.fallbackModels = ['gpt-6-sol'];
     pendingConfig.ai.text.daiYu.fallbackProvider = 'tuZi';
     configLoader.getConfig.mockReturnValue(pendingConfig);
     fetchMock.mockResolvedValueOnce({ ok: true, status: 200, headers: { get: () => 'pending-request' },
@@ -354,7 +362,7 @@ describe('daiYu model routing', () => {
     } finally { now.mockRestore(); }
   });
 
-  test.each(['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-6-astra'])('preserves an exact %s max request and its audit metadata', async model => {
+  test.each(['gpt-6-luna', 'gpt-6-sol', 'gpt-6-astra'])('preserves an exact %s max request and its audit metadata', async model => {
     fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ model,
       reasoning: { effort: 'max' }, status: 'completed', output_text: '{"ok":true}', usage: {} }) });
     const result = await generateTextWithDaiYu('Return JSON.', { primaryModel: model, exactModel: true,
@@ -370,7 +378,7 @@ describe('daiYu model routing', () => {
     strictConfig.ai.text.daiYu.fallbackProvider = 'tuZi';
     configLoader.getConfig.mockReturnValue(strictConfig);
     fetchMock.mockResolvedValue({ ok: false, status: 400, text: async () => 'unsupported max' });
-    await expect(generateTextWithDaiYu('Return JSON.', { primaryModel: 'gpt-5.6-sol', exactModel: true,
+    await expect(generateTextWithDaiYu('Return JSON.', { primaryModel: 'gpt-6-sol', exactModel: true,
       reasoningEffort: 'max', apiMode: 'responses', strictResponses: true,
       fallbackModelsEnabled: false, allowProviderFallback: false })).rejects.toThrow('unsupported max');
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -448,7 +456,7 @@ describe('daiYu model routing', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8080/v1/responses');
     const request = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(request).toEqual(expect.objectContaining({
-      model: 'gpt-5.6-luna',
+      model: 'gpt-6-luna',
       max_output_tokens: 1000,
       stream: false,
       store: false,
@@ -530,7 +538,7 @@ describe('daiYu model routing', () => {
 
     await expect(generateTextWithDaiYu('只回复 JSON', {
       fallbackModelsEnabled: false,
-    })).rejects.toThrow('gpt-5.6-luna');
+    })).rejects.toThrow('gpt-6-luna');
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -538,11 +546,11 @@ describe('daiYu model routing', () => {
     const fallbackConfig = structuredClone(config);
     fallbackConfig.ai.text.daiYu.fallbackModels = [];
     fallbackConfig.ai.text.daiYu.fallbackProvider = 'tuZi';
-    fallbackConfig.ai.text.daiYu.fallbackProviderModel = 'gpt-5.6-luna';
+    fallbackConfig.ai.text.daiYu.fallbackProviderModel = 'gpt-6-luna';
     fallbackConfig.ai.text.tuZi = {
       enabled: true,
       baseUrl: 'https://api.tu-zi.com',
-      model: 'gpt-5.6-luna',
+      model: 'gpt-6-luna',
       fallbackModels: [],
       includeBuiltInFallbackModels: false,
       apiMode: 'responses',
@@ -579,11 +587,11 @@ describe('daiYu model routing', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[1][0]).toBe('https://api.tu-zi.com/v1/responses');
     const fallbackRequest = JSON.parse(fetchMock.mock.calls[1][1].body);
-    expect(fallbackRequest.model).toBe('gpt-5.6-luna');
+    expect(fallbackRequest.model).toBe('gpt-6-luna');
     expect(fallbackRequest.input).toBe('只回复 TUZI_LUNA_OK');
     expect(result.meta.attempts).toEqual(expect.arrayContaining([
       expect.objectContaining({ provider: 'daiYu', status: 'failure' }),
-      expect.objectContaining({ provider: 'tuZi', model: 'gpt-5.6-luna', status: 'success' }),
+      expect.objectContaining({ provider: 'tuZi', model: 'gpt-6-luna', status: 'success' }),
     ]));
   });
 
@@ -615,7 +623,7 @@ describe('daiYu model routing', () => {
       expect(usageLine).toBeDefined();
       expect(JSON.parse(usageLine.slice('[AI_USAGE] '.length))).toEqual(expect.objectContaining({
         provider: 'daiYu',
-        model: 'gpt-5.6-luna',
+        model: 'gpt-6-luna',
         promptTokens: 10000,
         cachedTokens: 8192,
         uncachedPromptTokens: 1808,
@@ -683,6 +691,6 @@ describe('daiYu model routing', () => {
     expect(result.text).toBe('LUNA_OK');
     expect(fetchMock.mock.calls[0][0]).toBe('https://api.tu-zi.com/v1/chat/completions');
     const request = JSON.parse(fetchMock.mock.calls[0][1].body);
-    expect(request.model).toBe('gpt-5.6-luna');
+    expect(request.model).toBe('gpt-6-luna');
   });
 });

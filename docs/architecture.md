@@ -3,6 +3,7 @@
 Start here before changing production workflows. This page describes maintained
 contracts and operating procedures; task-specific reviews and measured results
 belong in ignored local storage under the [file-placement rules](../AGENTS.md).
+For setup and focused test commands, use the [development guide](development.md).
 
 ## Runtime map
 
@@ -53,6 +54,11 @@ must be updated before using the new task-list/cancellation adapter.
 | `src/core`, `src/utils` | configuration, logging, errors, shared infrastructure | application/service/workflow imports |
 | `src/services` | long-running state and external adapters | application/UI imports, one-off batches |
 | `services/ai/goodnight` | naming policy, reply prompts and validation | provider HTTP or file persistence |
+| `services/live-vote/questions` | bounded configured-room evidence; `QuestionScope` explicit-name routing, `QuestionCorpus` sequential cross-room retrieval, `GiftCatalog` read-only curated gifts; question agent and global admission/cancellation | shell/arbitrary filesystem tools, media processing, publication, independent send queues |
+| `services/live-vote/questions/SubtitleIndex`, `SubtitleCorpus`, `EmbeddingClient`, `LocalEmbedding` | versioned subtitle shards, bounded semantic recall, fixed embedding adapters; local inference process has fixed executable/script/arguments from trusted config | agent-controlled process execution, chat publication, cross-room retrieval |
+| `tools/live-vote/subtitleIndex` | single-writer incremental index maintenance, daily Shanghai schedule and catch-up | vote admission, active workflow activation, public replies |
+| `live-vote/question-lab`, `questions/EvidenceQuery`, `tools/live-vote/recordingQuery` | loopback question/evidence UI, read-only CLI retrieval, independent local test admission | Bilibili sending, comment publication, bot authorization changes, index mutation |
+| `services/bilibili/question-records` | fixed bot-owned summary-dynamic evidence comments and publication-intent journal | agent tool access, arbitrary targets, existing delayed-task store writes |
 | `handlers/mikufans` | resource admission, durable summary execution, reply coordination | publishing policy |
 | `bilibili/delayed-reply` | task policy, content, artifacts, diagnostics, timers | parent-service imports |
 | `src/scripts` | compatible CLIs and existing media orchestration | new long-running services |
@@ -70,6 +76,25 @@ must be updated before using the new task-list/cancellation adapter.
 Dependencies point from entrypoints to services to shared infrastructure. Leaf
 components must not import their parent. Existing script paths remain facades;
 internal helpers are not exported unless their callers need them.
+
+Clip previews and cutting share `clipping/media_runtime.js` for FFmpeg execution
+and packet probing. `clipping/own_review_state.js` persists review artifacts using
+an injected Markdown renderer; `own_review_artifacts.js` owns refresh orchestration.
+Subtitle rebuilding and approval share `clipping/rendered_revision_evidence.js`
+instead of importing each other's entrypoints. Audio configuration policy lives
+in `audio_config.js`, and legacy REVIEW parsing lives in `clip_review_parser.py`;
+the original entrypoints retain their public exports.
+The historical `clipping/media_process.js` and `clipping/rendered_subtitles.js`
+paths forward to `media_runtime.js` and `rendered_revision_evidence.js`.
+`clip_upload_cli.py` forwards parser construction to the registry's current
+factory so both entrypoints expose the same commands and arguments.
+
+`audio_archive_pruning.js` owns archive video traversal and protects exact source
+recordings named in clip replay receipts; naming predicates are injected by the
+compatible `audio_processor.js` facade. `clip_media_retention.py` owns uploaded
+clip expiry and durable replay recipes, while `clip_media_restore.py` invokes the
+existing media renderers without mutating publication state. The standalone
+Windows maintenance task is described in [clip media retention](clip-media-retention.md).
 
 ## Language decision
 
@@ -157,7 +182,8 @@ to this repository's service on port 12523 and does not deploy other PM2 apps.
 
 | Command | Purpose |
 | --- | --- |
-| `npm run verify:core` | strict application types, service types, architecture, Jest |
+| `npm run verify:quick` | strict application types, service types, lint, architecture |
+| `npm run verify:core` | quick checks, candidate workflow build, Jest |
 | `npm run test:node` | portable Node test-runner cases |
 | `npm run test:python` | portable Python suite under `tests` |
 | `npm run test:integration` | service-owned HTTP and generated-file/reply workflow |
@@ -202,6 +228,7 @@ runtime imports. `--json` produces a machine-readable inventory and violation li
 | recording order, reconnect, segment finalization | `MikufansWebhookHandler`, `LiveSessionManager` |
 | durable queue, GPU admission, child-process progress | `MikufansSummaryQueueWorker`, `MikufansAsrResourceController` |
 | room names or generated goodnight wording | `GoodnightReplyPolicy` |
+| @鹿饼 recording questions, agent tools, query limits | `live-vote/questions`; runtime/send composition stays in `runVoteBot` and `MultiRoomVoteBot` |
 | missing output path or delayed registration | `MikufansDelayedReplyCoordinator`, `DelayedReplyArtifactResolver` |
 | expiry, duplicate identity, retry classification | `DelayedReplyPolicy` |
 | front matter, body cleaning, publishability | `ReplyContentReader` |

@@ -113,6 +113,51 @@ test('legacy configurations keep optional boundary evidence while the quality pr
   expect(prompt).toContain('unresolvedCueIds');
 });
 
+test('draft and independent audit inspect immediate follow-ups before declaring a topic closed', () => {
+  const { buildQualityAuditPrompt } = require('./preflight_quality');
+  for (const prompt of [buildPreflightPrompt(input), buildQualityAuditPrompt(normalize(clip), input)]) {
+    expect(prompt).toContain('next THREE supplied subtitle cues');
+    expect(prompt).toContain('title is written AFTER selecting the complete event');
+    expect(prompt).toContain('not verified acoustic stops');
+    expect(prompt).toContain('No synthetic silence or freeze frame');
+  }
+});
+
+test('a ready claim ending inside a split raw ASR segment is held even under legacy review settings', () => {
+  const changed = { ...input, subtitles: input.subtitles.map(cue => cue.id === 'G13' ? { ...cue, rawRef: 'R1' } : cue),
+    originalAsrSpans: [{ id: 'R1', start: 7025.279, end: 7040.359, timingPrecision: 'segment' }] };
+  for (const settings of [config, getClipTopicsConfig({ clipTopics: { keywords: config.keywords, review: { qualityRules: false } } })]) {
+    const result = normalizePreflightResponse(JSON.stringify({ hits: [hit], clips: [clip] }), changed, evidence, settings).clips[0];
+    expect(result.status).toBe('needs_review');
+    expect(result.issues.some(issue => issue.startsWith('收尾仍在原始ASR段内：G13 / R1'))).toBe(true);
+    expect(result.end).toBe(7032.819);
+  }
+});
+
+test('older active releases keep working but integrity failures never bypass ending validation', () => {
+  const runtime = require('../workflow-runtime');
+  const { endingWorkflow } = require('./preflight_boundaries');
+  const spy = jest.spyOn(runtime, 'loadWorkflow');
+  try {
+    spy.mockImplementation(() => { throw new Error('Unknown compiled workflow: clipping/preflightEnding'); });
+    expect(endingWorkflow()).toBeNull();
+    spy.mockImplementation(() => { throw new Error('Workflow release integrity mismatch: ending.js'); });
+    expect(() => endingWorkflow()).toThrow('integrity mismatch');
+  } finally { spy.mockRestore(); }
+});
+
+test('render selection and review window retain safe breathing room without adding the excluded cue', () => {
+  const plan = normalize({ ...clip, endCueId: 'G12', boundaryReview: { ...boundaryReview, closureCueId: 'G12' } });
+  const originalEnd = plan.clips[0].end;
+  const selection = preflightSelections({ ...plan, record: { strategy: 'single', model: 'test' } }, group, config)[0];
+  expect(selection.end).toBe(originalEnd + 3);
+  expect(selection.preflight.window.end).toBe(selection.end);
+  expect(selection.editorial.copyWindow.end).toBe(selection.end);
+  expect(selection.preflight.endingHold).toMatchObject({ speechEnd: originalEnd, seconds: 3 });
+  expect(selection.subtitleSegments.some(cue => cue.start >= originalEnd)).toBe(false);
+  expect(plan.clips[0].end).toBe(originalEnd);
+});
+
 test('bounded audience sampling retains the target introduction and delayed question lost by uniform sampling', () => {
   const rows = Array.from({ length: 240 }, (_, index) => ({ id: `row-${index}`, time: 6810 + index * 2, text: '嘻嘻' }));
   rows[75] = { id: 'D1711', time: 6958.026, text: '小岁可是魂游高手没想到吧' };

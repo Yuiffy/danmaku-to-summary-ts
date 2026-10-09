@@ -1,0 +1,34 @@
+{
+  "source": "recorder",
+  "rooms": "auto-record",
+  "recorderSocketUrl": "ws://127.0.0.1:17896/api/local/danmaku",
+  "globalAdminUids": ["14279"],
+  "botUid": "412141275",
+  "maxMessageChars": 40,
+  "questions": {
+    "enabled": false,
+    "providerConfigPath": "C:/danmaku-to-summary-ts/config/production.json",
+    "recordingRoots": {
+      "25788785": [
+        "D:/files/videos/DDTV录播/25788785_岁己SUI",
+        "E:/EFiles/Evideo/DDTV录播-E/25788785_岁己SUI"
+      ]
+    },
+    "roomAliases": { "25788785": ["岁己", "小岁", "老岁", "SUI"] },
+    "giftCatalogs": {},
+    "globalCooldownMs": 30000,
+    "userCooldownMs": 120000,
+    "noticeCooldownMs": 15000,
+    "timeoutMs": 90000,
+    "maxQuestionsPerHour": 20,
+    "semantic": {
+      "enabled": false,
+      "backend": "local",
+      "directory": "C:/danmaku-to-summary-ts/data/runtime/subtitle-index",
+      "model": "Xenova/bge-small-zh-v1.5@75c43b069aac4d136ba6bc1122f995fedcfd2781",
+      "dimensions": 512,
+      "modelDirectory": "C:/danmaku-to-summary-ts/data/models/bge-small-zh-v1.5",
+      "python": "python"
+    }
+  }
+}

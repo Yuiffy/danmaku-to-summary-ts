@@ -81,6 +81,20 @@ class ReviewPendingRegistryTests(unittest.TestCase):
             self.assertEqual(self.invoke(["enqueue", "--ids", "2", *flags]), 2)
         self.assertEqual(registry.load_json(registry.QUEUE_PATH, {}).get("jobs", []), [])
 
+    def test_pre_render_hold_keeps_id_and_readable_subtitles_without_becoming_a_keyword_candidate(self):
+        self.held_meta.update(preRenderHold=True, status="held_before_render")
+        self.held_meta["output"].update(mediaPath=None, coverPath=None, burnedSubtitles=False)
+        self.held.write_text(json.dumps(self.held_meta), encoding="utf-8")
+        for _ in range(2):
+            self.assertEqual(self.invoke(["import-json", "--manifest", str(self.manifest), "--include-pending"]), 0)
+        self.assertEqual(set(self.records()), {"1", "2"})
+        held = self.records()["2"]
+        self.assertTrue(held["reviewPending"])
+        self.assertFalse(held["pendingCut"])
+        self.assertFalse(held["mediaPath"])
+        self.assertEqual(self.invoke(["subtitles", "--id", "2"]), 0)
+        self.assertEqual(self.invoke(["enqueue", "--ids", "2", "--force"]), 2)
+
     def test_unselected_pending_metadata_does_not_block_a_ready_upload(self):
         self.assertEqual(len(load_upload_manifest(self.manifest, selected_indices=[3])), 1)
         with self.assertRaises(ValueError):

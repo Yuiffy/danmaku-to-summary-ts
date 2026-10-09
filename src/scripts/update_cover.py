@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Update a Bilibili video's cover.
+"""Update a Bilibili video's cover and explicitly supplied public copy.
 
 This uses bilibili_api's VideoEditor submit path, but avoids the current
 VideoEditor.start() cover bug where upload_cover() returns a string while
@@ -104,6 +104,11 @@ async def submit_cover(
     credential: Credential,
     archive: dict,
     cover_url: str,
+    *,
+    title: Optional[str] = None,
+    description: Optional[str] = None,
+    part_titles: Optional[list[str]] = None,
+    expected_videos: Optional[list[dict]] = None,
 ) -> None:
     meta = {
         "title": archive.get("title", ""),
@@ -132,11 +137,20 @@ async def submit_cover(
     await editor._fetch_configs()
     old_configs = editor._VideoEditor__old_configs
     old_archive = old_configs["archive"]
-    for field in ("title", "copyright", "source", "tag", "desc_format_id", "desc", "dynamic", "tid", "no_reprint"):
+    for field in ("title", "cover", "copyright", "source", "tag", "desc_format_id", "desc", "dynamic", "tid", "no_reprint"):
         if old_archive.get(field) != archive.get(field):
             raise RuntimeError(f"Archive {field} changed while preparing cover update; reload before retrying")
+    if expected_videos is not None:
+        identity = lambda rows: [{k: row.get(k) for k in ('cid', 'title', 'desc', 'filename')} for row in rows]
+        if identity(old_configs.get('videos', [])) != identity(expected_videos):
+            raise RuntimeError('Archive Ps changed while preparing public copy update; reload before retrying')
+    if title is not None and (not title.strip() or len(title) > 80):
+        raise ValueError('Invalid public archive title')
+    if part_titles is not None and (len(part_titles) != len(old_configs.get('videos', []))
+            or any(not isinstance(value, str) or not value.strip() or len(value) > 80 for value in part_titles)):
+        raise ValueError('Public P titles must match all existing pages in order')
 
-    # Cover-only edits must not reset switches to the uploader's defaults.
+    # Presentation edits must not reset switches to the uploader's defaults.
     editor.meta.update({
         "origin_state": old_configs.get("origin_state", 0),
         "act_reserve_create": old_configs.get("act_reserve_create", False),
@@ -158,7 +172,7 @@ async def submit_cover(
             cid = await video.Video(bvid=bvid, credential=credential).get_cid(index)
         videos.append(
             {
-                "title": old_video.get("title", archive.get("title", "")),
+                "title": part_titles[index] if part_titles is not None else old_video.get("title", archive.get("title", "")),
                 "desc": old_video.get("desc", ""),
                 "filename": old_video.get("filename", ""),
                 "cid": cid,
@@ -172,6 +186,10 @@ async def submit_cover(
             "videos": videos,
         }
     )
+    if title is not None:
+        editor.meta['title'] = title
+    if description is not None:
+        editor.meta['desc'] = description
     await editor._submit()
 
 

@@ -61,6 +61,23 @@ describe('candidate subtitle revisions', () => {
     expect(correctCandidateDraft(metadata, file, evidence, options).revision).toBe(1);
   });
 
+  test('explicit false-cue removal preserves source and timing, invalidates approval and cannot delete all cues', () => {
+    const before = ensureCandidateDraft(metadata, file, evidence, config);
+    approveCandidateDraft(metadata, evidence, 'Approved old version');
+    const options = { from: before.cues[0].text, cue: 1, dropCue: 'yes', reviewNote: 'Confirmed playback ASR garbage' };
+    expect(() => correctCandidateDraft(metadata, file, evidence, { ...options, from: 'SUI' })).toThrow('complete text');
+    expect(() => correctCandidateDraft(metadata, file, evidence, { ...options, reviewNote: '' })).toThrow('review note');
+    const after = correctCandidateDraft(metadata, file, evidence, options);
+    expect(after.cues).toEqual([before.cues[1]]);
+    expect(after.approval).toBeNull();
+    expect(after.edits[0].operation).toBe('drop_cue');
+    expect(candidateDraftEvidence(metadata, evidence).evidence.cues).not.toContainEqual(evidence.cues[0]);
+    expect(fs.readFileSync(before.path, 'utf8')).toContain(before.cues[0].text);
+    expect(correctCandidateDraft(metadata, file, evidence, options).revision).toBe(after.revision);
+    expect(() => correctCandidateDraft(metadata, file, evidence, { ...options, from: after.cues[0].text })).toThrow('all subtitle');
+    expect(fs.readFileSync(metadata.source.srtPath, 'utf8')).toBe('original recording subtitles');
+  });
+
   test('missing text or an invalid cue leaves the current revision and approval unchanged', () => {
     ensureCandidateDraft(metadata, file, evidence, config);
     approveCandidateDraft(metadata, evidence, 'User requested upload');

@@ -263,7 +263,8 @@ class ClipUploadRegistryTests(unittest.TestCase):
             "roomId": "1820703922",
             "streamerName": "花礼 Harei",
         }
-        job = {"delay": 0, "rateLimitWait": 30, "rateLimitRetries": 1}
+        job = {"delay": 0, "rateLimitWait": 30, "rateLimitRetries": 1,
+               "collectionSectionId": 9974272}
         completed = subprocess.CompletedProcess([], 0, stdout="uploaded")
         with patch.object(registry.subprocess, "run", return_value=completed) as run:
             result = registry.run_batch([clip], job)
@@ -273,6 +274,7 @@ class ClipUploadRegistryTests(unittest.TestCase):
         self.assertIn("--manifest", command)
         self.assertIn(clip["manifestPath"], command)
         self.assertNotIn("--review", command)
+        self.assertEqual(command[command.index("--collection-section-id") + 1], "9974272")
 
     def make_fixture(self, count=2):
         temp_dir = tempfile.TemporaryDirectory()
@@ -611,6 +613,25 @@ class ClipUploadRegistryTests(unittest.TestCase):
         self.assertIn("deterministic uploader error", clip["failureReason"])
         self.assertEqual(saved_queue["jobs"][0]["status"], "failed")
 
+    def test_unknown_submission_waits_for_reconciliation_and_continues_other_groups(self):
+        fixture = self.make_fixture(count=2)
+        fixture["queue"]["jobs"][0]["batchSize"] = 1
+        calls = []
+
+        def run_batch(group, job):
+            ids = [clip["id"] for clip in group]
+            calls.append(ids)
+            if ids == [1]:
+                return subprocess.CompletedProcess([], 2, stdout="[WAIT] automatic submission outcome unknown")
+            self.write_done(fixture, [2])
+            return subprocess.CompletedProcess([], 0, stdout="uploaded")
+
+        saved_registry, saved_queue = self.run_job_with(fixture, run_batch)
+        self.assertEqual(calls, [[1], [2]])
+        self.assertEqual(saved_registry["clips"]["2"]["status"], "uploaded")
+        self.assertEqual(saved_queue["jobs"][0]["status"], "retry_wait")
+        self.assertIn("retryAt", saved_queue["jobs"][0])
+
     def test_all_state_success_wins_over_subprocess_exit_code(self):
         fixture = self.make_fixture()
 
@@ -759,6 +780,34 @@ class ClipUploadRegistryTests(unittest.TestCase):
         saved_queue = registry.load_json(fixture["queue_path"], {})
         self.assertEqual(saved_registry["clips"]["1"]["status"], "queued")
         self.assertTrue(saved_queue["jobs"][-1]["allowDuplicateTitle"])
+
+    def test_editorial_exclusion_cancels_only_selected_ids_and_blocks_force(self):
+        fixture = self.make_fixture(count=2)
+        fixture["runtime"].mkdir(parents=True, exist_ok=True)
+        registry.save_json(fixture["registry_path"], fixture["registry"])
+        registry.save_json(fixture["queue_path"], fixture["queue"])
+        args = type("Args", (), {"ids": "1", "note": "streamer content restriction"})()
+        with patch.object(registry, "RUNTIME_DIR", fixture["runtime"]), patch.object(
+            registry, "REGISTRY_PATH", fixture["registry_path"]
+        ), patch.object(registry, "QUEUE_PATH", fixture["queue_path"]), patch.object(
+            registry, "acquire_lock", return_value=True
+        ), patch.object(registry, "release_lock"):
+            self.assertEqual(registry.exclude_clips(args), 0)
+            saved = registry.load_json(fixture["registry_path"], {})
+            queue = registry.load_json(fixture["queue_path"], {})
+            self.assertEqual(saved["clips"]["1"]["status"], "cancelled")
+            self.assertEqual(queue["jobs"][0]["clipIds"], [2])
+            self.assertEqual(queue["jobs"][0]["status"], "pending")
+            self.write_done(fixture, [1])
+            registry.sync_clip_statuses(saved, [1])
+            self.assertEqual(saved["clips"]["1"]["status"], "cancelled")
+            upload = type("Args", (), {"ids": "1", "force": True, "dry_run": True})()
+            self.assertEqual(registry.enqueue(upload), 2)
+            self.assertTrue(any("editorially excluded" in e for e in registry.validate_groups([[saved["clips"]["1"]]])))
+            args.ids = "2"
+            self.assertEqual(registry.exclude_clips(args), 0)
+            queue = registry.load_json(fixture["queue_path"], {})
+            self.assertEqual(queue["jobs"][0]["status"], "cancelled")
 
     def test_cancelled_job_clips_can_be_enqueued_again(self):
         fixture = self.make_fixture(count=2)

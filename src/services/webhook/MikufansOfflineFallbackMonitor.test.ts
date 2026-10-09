@@ -72,6 +72,23 @@ describe('MikufansOfflineFallbackMonitor', () => {
     });
   });
 
+  test('requires distinct recorder log samples instead of counting the same cached record repeatedly', async () => {
+    const trigger = jest.fn().mockResolvedValue(undefined);
+    let observedAt = Date.now();
+    const provider = { getRoomLiveStatus: jest.fn(async () => ({ ...offlineStatus(), observedAt })) };
+    const monitor = new MikufansOfflineFallbackMonitor(() => [candidate()], trigger);
+    monitor.setProvider(provider);
+    await monitor.pollOnce();
+    jest.setSystemTime(Date.now() + 360000);
+    await monitor.pollOnce(); await monitor.pollOnce();
+    expect(trigger).not.toHaveBeenCalled();
+    observedAt = Date.now(); await monitor.pollOnce();
+    expect(trigger).not.toHaveBeenCalled();
+    jest.setSystemTime(Date.now() + 360000);
+    observedAt = Date.now(); await monitor.pollOnce();
+    expect(trigger).toHaveBeenCalledTimes(1);
+  });
+
   test('resets the offline streak when the room comes back online', async () => {
     const provider = { getRoomLiveStatus: jest.fn() };
     provider.getRoomLiveStatus

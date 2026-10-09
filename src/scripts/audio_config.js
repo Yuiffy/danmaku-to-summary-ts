@@ -1,3 +1,6 @@
+'use strict';
+
+// Audio format, room and retention policy shared by the source CLI.
 const path = require('path');
 const configLoader = require('./config-loader');
 

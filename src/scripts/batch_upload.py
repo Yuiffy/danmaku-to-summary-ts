@@ -40,6 +40,28 @@ import re
 import time
 import datetime
 import subprocess
+from pathlib import Path
+
+
+def save_upload_state(state_path, state):
+    """Preserve subtitle updates made while the next large video is uploading."""
+    import clip_upload_registry as registry_api
+    handle = registry_api.acquire_queue_mutation_lock()
+    try:
+        path = Path(state_path)
+        latest = registry_api.load_json(path, {})
+        for index, current in state.get('done', {}).items():
+            previous = latest.get('done', {}).get(index) or {}
+            if current.get('bvid') != previous.get('bvid'):
+                continue
+            if current.get('subtitleStatus') == 'complete' and previous.get('subtitleStatus') != 'complete':
+                continue
+            for key in ('subtitleStatus', 'subtitleTaskPath', 'subtitleError', 'subtitlePages'):
+                if key in previous:
+                    current[key] = previous[key]
+        registry_api.save_json(path, state)
+    finally:
+        registry_api.release_queue_mutation_lock(handle)
 
 INTERNAL_REVIEW_LABEL_RE = re.compile(r'^\[(?:模型全量|模型分块|弹幕热度|本地规则)\]\s*')
 REVIEW_SCORE_SUFFIX_RE = re.compile(r'\s+\|\s+\d+(?:\.\d+)?分\s*$')
@@ -52,7 +74,12 @@ from config_loader import get_config, find_secrets_path
 from bilibili_upload import attach_video_to_collection, extract_room_id, get_collection_section_id
 from bilibili_api import Credential, video_uploader, Picture, video, get_client
 from clip_upload_manifest import load_upload_manifest, find_review_manifest
+from clip_upload_description import (
+    clean_generated_description, split_source_description, build_clip_time_range, build_desc,
+)
 import requests
+from clip_submission_recovery import (find_intent, clear_intent, intent_key, reconcile_intent,
+    validate_queue_submission, SubmissionRecoveryPending, SubmissionRecoveryConflict)
 
 ACCOUNT_MID = 412141275
 DEFAULT_RATE_LIMIT_WAIT = 120
@@ -148,6 +175,10 @@ def build_credential(room_id=None, streamer_name=None, source_desc=None, prefix=
     )
 
 
+class ArchiveLookupUnavailable(RuntimeError):
+    """The archive lookup is unknown; an incomplete result cannot authorize upload."""
+
+
 def fetch_member_archive_rows(cookie_str, mid=ACCOUNT_MID, pages=5):
     """通过 member API 实时查询已上传稿件列表（零延迟，不走搜索索引）。"""
     headers = {
@@ -166,9 +197,11 @@ def fetch_member_archive_rows(cookie_str, mid=ACCOUNT_MID, pages=5):
             )
             data = r.json()
             if data.get('code') != 0:
-                print(f"  [WARN] member archives API 返回 code={data.get('code')}: {data.get('message', '')}")
-                break
-            audits = (data.get('data') or {}).get('arc_audits') or []
+                raise ArchiveLookupUnavailable(f"archive lookup unavailable: API code={data.get('code')}")
+            payload = data.get('data')
+            if not isinstance(payload, dict) or not isinstance(payload.get('arc_audits'), list):
+                raise ArchiveLookupUnavailable("archive lookup unavailable: malformed archive response")
+            audits = payload['arc_audits']
             if not audits:
                 break
             for a in audits:
@@ -184,8 +217,7 @@ def fetch_member_archive_rows(cookie_str, mid=ACCOUNT_MID, pages=5):
                         'pubdate': arc.get('pubdate') or arc.get('ctime') or 0,
                     })
         except Exception as e:
-            print(f"  [WARN] member archives 第{pn}页失败: {e}")
-            break
+            raise ArchiveLookupUnavailable(f"archive lookup unavailable on page {pn}: {e}") from e
     return rows
 
 
@@ -530,111 +562,7 @@ def load_generated_description(clip):
     return ''
 
 
-def clean_generated_description(description, clip_title=''):
-    """移除生成简介中将由上传器统一补充的模板字段和重复行。"""
-    title = str(clip_title or '').strip()
-    lines = str(description or '').replace('\r\n', '\n').replace('\r', '\n').split('\n')
-    cleaned = []
-    seen = set()
-
-    for raw_line in lines:
-        line = raw_line.strip()
-        if not line:
-            if cleaned and cleaned[-1] != '':
-                cleaned.append('')
-            continue
-
-        if line == '直播切片' or (title and line == title):
-            continue
-        if re.match(r'^(?:来源|直播开始时间|切片时间)\s*[：:]', line):
-            continue
-        if re.match(r'^来自\s+.+\s+的直播《.*》.*录制时间', line):
-            continue
-        if re.match(r'^片段时间\s+\d{1,2}:\d{2}:\d{2}\s*[-－—~～至]\s*\d{1,2}:\d{2}:\d{2}', line):
-            continue
-
-        dedupe_key = re.sub(r'\s+', '', line)
-        if dedupe_key in seen:
-            continue
-        seen.add(dedupe_key)
-        cleaned.append(line)
-
-    while cleaned and cleaned[-1] == '':
-        cleaned.pop()
-    return '\n'.join(cleaned)
-
-
-def split_source_description(source_desc):
-    """从来源描述末尾拆出录制开始时间，避免把它误解为切片时间。"""
-    source_text = str(source_desc or '').strip()
-    recorded_at_match = re.search(
-        r'(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?!.*\d)',
-        source_text,
-    )
-    if not recorded_at_match:
-        return source_text, ''
-
-    recorded_at = f'{recorded_at_match.group(1)} {recorded_at_match.group(2)}'
-    source_name = (
-        source_text[:recorded_at_match.start()]
-        + source_text[recorded_at_match.end():]
-    ).strip().rstrip('，,;；-')
-    return source_name, recorded_at
-
-
-def build_clip_time_range(source_desc, start_sec, end_sec):
-    """将直播内偏移换算成真实时钟时间；旧数据缺少开播时间时回退到偏移。"""
-    _, recorded_at = split_source_description(source_desc)
-    if recorded_at:
-        try:
-            live_start = datetime.datetime.strptime(
-                recorded_at,
-                '%Y-%m-%d %H:%M:%S',
-            )
-            clip_start = live_start + datetime.timedelta(seconds=start_sec)
-            clip_end = live_start + datetime.timedelta(seconds=end_sec)
-            return clip_start.strftime('%H:%M:%S'), clip_end.strftime('%H:%M:%S')
-        except ValueError:
-            pass
-
-    def offset_to_clock(seconds):
-        hours = seconds // 3600
-        minutes = (seconds % 3600) // 60
-        remaining_seconds = seconds % 60
-        return f'{hours:02d}:{minutes:02d}:{remaining_seconds:02d}'
-
-    return offset_to_clock(start_sec), offset_to_clock(end_sec)
-
-
-def build_desc(clip_title, source_desc, start_str, dur_str, generated_description=''):
-    """用预生成内容和统一的来源/时间字段构建视频简介。"""
-    parts = dur_str.split(':')
-    dur_sec = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-    sparts = start_str.split(':')
-    start_sec = int(sparts[0]) * 3600 + int(sparts[1]) * 60 + int(sparts[2])
-    end_sec = start_sec + dur_sec
-    clip_start_time, clip_end_time = build_clip_time_range(source_desc, start_sec, end_sec)
-    start_min = start_sec // 60
-    sections = []
-    generated = clean_generated_description(generated_description, clip_title)
-    if generated:
-        sections.append(generated)
-    source_name, recorded_at = split_source_description(source_desc)
-    source_lines = []
-    if source_name:
-        source_lines.append(f"来源：{source_name}")
-    if recorded_at:
-        source_lines.append(f"直播开始时间：{recorded_at}")
-    if source_lines:
-        sections.append('\n'.join(source_lines))
-    sections.append(
-        f"切片时间：{clip_start_time} - {clip_end_time}"
-        f"（直播开始后第{start_min}分钟）"
-    )
-    return '\n\n'.join(sections)
-
-
-async def upload_one(clip, credential, prefix, tags, tid, source_desc, collection_section_id=None):
+async def upload_one(clip, credential, prefix, tags, tid, source_desc, collection_section_id=None, before_submit=None):
     """上传单个切片，返回结果 dict"""
     full_title = f"{prefix}{clip['title']}"
     filepath = clip['path']
@@ -643,13 +571,21 @@ async def upload_one(clip, credential, prefix, tags, tid, source_desc, collectio
         print(f"  [SKIP] 文件不存在: {filepath}")
         return {'idx': clip['idx'], 'title': full_title, 'status': 'no_file'}
 
-    video_ok, video_error = validate_video_stream(filepath)
-    if not video_ok:
-        print(f"  [ERROR] 拒绝上传异常视频: {video_error}")
-        return {'idx': clip['idx'], 'title': full_title, 'status': 'invalid_video', 'error': video_error}
+    parts = clip.get('parts') or [{'mediaPath': filepath, 'title': full_title}]
+    if clip.get('gameReviewRequired') or clip.get('activityReviewRequired'):
+        from bilibili_upload_capabilities import validate_upload_parts
+        try:
+            validate_upload_parts(parts, require_subtitles=bool(clip.get('gameReviewRequired')))
+        except Exception as error:
+            return {'idx': clip['idx'], 'title': full_title, 'status': 'capability_blocked', 'error': str(error)[:300]}
+    for part in parts:
+        video_ok, video_error = validate_video_stream(part['mediaPath'])
+        if not video_ok:
+            print(f"  [ERROR] 拒绝上传异常视频: {video_error}")
+            return {'idx': clip['idx'], 'title': full_title, 'status': 'invalid_video', 'error': video_error}
 
     generated_description = load_generated_description(clip)
-    desc = build_desc(
+    desc = generated_description if clip.get('parts') else build_desc(
         clip['title'],
         source_desc,
         clip['start'],
@@ -685,16 +621,21 @@ async def upload_one(clip, credential, prefix, tags, tid, source_desc, collectio
         return {'idx': clip['idx'], 'title': full_title, 'status': 'no_cover'}
 
     # 创建投稿页
-    page = video_uploader.VideoUploaderPage(path=filepath, title=full_title, description=desc)
+    pages = [video_uploader.VideoUploaderPage(path=part['mediaPath'], title=part['title'],
+        description=part.get('description') or ('' if clip.get('parts') else desc)) for part in parts]
 
     try:
         meta = video_uploader.VideoMeta(
             tid=tid, title=full_title, desc=desc, cover=cover,
             tags=tags, original=False, source="直播切片",
+            **({"subtitle": {"open": 1, "lan": clip.get("subtitleLanguage") or "zh-CN"}}
+               if clip.get("externalSubtitles") else {}),
         )
         uploader = video_uploader.VideoUploader(
-            pages=[page], meta=meta, credential=credential,
+            pages=pages, meta=meta, credential=credential,
         )
+        if before_submit:
+            before_submit()
         print(f"  开始上传...")
         result = await uploader.start()
 
@@ -763,8 +704,10 @@ async def upload_one_guarded(
     rate_limit_retries,
     collection_section_id=None,
     allow_duplicate_title=False,
+    before_submit=None,
 ):
     full_title = f"{prefix}{clip['title']}"
+    collection_section_id = clip.get('collectionSectionId') or collection_section_id
 
     async def enrich_and_attach(result):
         """Resolve archive ids before attaching to a collection.
@@ -781,6 +724,13 @@ async def upload_one_guarded(
                 credential,
                 collection_section_id=collection_section_id,
             )
+            if clip.get('externalSubtitles'):
+                from game_subtitle_upload import after_upload
+                try:
+                    result = await after_upload(clip, result, credential, cookie_str)
+                except Exception as error:
+                    result['subtitleStatus'] = 'failed'
+                    result['subtitleError'] = str(error)[:300]
         return result
 
     for attempt in range(rate_limit_retries + 1):
@@ -811,6 +761,7 @@ async def upload_one_guarded(
             tid,
             source_desc,
             collection_section_id=collection_section_id,
+            before_submit=before_submit,
         )
         if result.get('status') == 'ok' and result.get('bvid'):
             result = await enrich_and_attach(result)
@@ -826,6 +777,10 @@ async def upload_one_guarded(
             result['status'] = 'ok_after_406'
             result['bvid'] = bvid
             return await enrich_and_attach(result)
+
+        if clip.get('automaticPublicationRequired') or clip.get('queueJobId'):
+            print("  [STOP] automatic submission outcome unknown; reconcile the existing attempt before retrying")
+            return result
 
         available, message = await probe_upload_available(credential)
         if not is_rate_limit_message(message):
@@ -857,11 +812,14 @@ async def main():
     parser.add_argument('--prefix', default='', help='标题前缀')
     parser.add_argument('--streamer-name', default=None, help='主播名，用于合集路由')
     parser.add_argument('--room-id', default=None, help='直播间号，用于合集路由；未提供时从媒体路径识别')
+    parser.add_argument('--collection-section-id', type=int, default=None, help='本次投稿指定的合集小节 ID')
     parser.add_argument('--tid', type=int, default=None, help='分区ID')
     parser.add_argument('--delay', type=int, default=30, help='上传间隔秒数')
     parser.add_argument('--skip', default='', help='跳过序号（逗号分隔）')
     parser.add_argument('--only', default='', help='只传指定序号（逗号分隔）')
     parser.add_argument('--force', action='store_true', help='允许明确授权的修正版跳过同标题查重并重新投稿')
+    parser.add_argument('--automatic-job', default=None, help='Revalidate a running automatic job immediately before each submission')
+    parser.add_argument('--queue-job', default=None, help='Running reviewed queue job for safe submission reconciliation')
     parser.add_argument('--dry-run', action='store_true', help='只查重不上传')
     parser.add_argument('--state', default=None, help='状态文件路径')
     parser.add_argument('--rate-limit-wait', type=int, default=DEFAULT_RATE_LIMIT_WAIT, help='B站提示上传过快后的等待秒数')
@@ -986,6 +944,30 @@ async def main():
         elif done_record is not None and args.force:
             print(f"  [{clip['idx']}] [FORCE] 忽略已有状态，准备重新投稿: {full_title}")
 
+        if not args.force and find_intent(state, clip)[1]:
+            try:
+                from .clip_automatic_retry import consume_reconciled_intent
+            except ImportError:
+                from clip_automatic_retry import consume_reconciled_intent
+            reconciled = bool(args.automatic_job and not args.dry_run
+                and consume_reconciled_intent(state, clip, args.automatic_job))
+            if not reconciled and not args.dry_run:
+                try:
+                    submission_clip = {**clip, 'prefix': args.prefix, 'source': args.source, 'tags': tags, 'tid': args.tid}
+                    reconciled = reconcile_intent(state, submission_clip, full_title, args.queue_job or args.automatic_job,
+                        lambda: fetch_member_archive_rows(cookie_str))
+                except SubmissionRecoveryConflict as error:
+                    print(f"[STOP] {error}")
+                    return 2
+                except (SubmissionRecoveryPending, ArchiveLookupUnavailable) as error:
+                    print(f"[WAIT] submission outcome unknown: {error}")
+                    return 2
+            if not reconciled:
+                print(f"  [STOP] automatic submission outcome unknown for #{clip['idx']}; inspect the existing attempt")
+                return 2
+            save_upload_state(state_path, state)
+            print(f"  [RECOVERED] #{clip['idx']}: complete archive lookup confirms no prior submission; retrying the bound media")
+
         if full_title in planned_titles:
             print(f"  [{clip['idx']}] SKIP (REVIEW 内同标题重复): {full_title}")
             skipped_review_dup.append(clip)
@@ -1023,8 +1005,7 @@ async def main():
     )
 
     # 保存查重结果到状态
-    with open(state_path, 'w', encoding='utf-8') as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+    save_upload_state(state_path, state)
 
     if args.dry_run:
         print("\n[DRY-RUN] 不实际上传。")
@@ -1062,39 +1043,65 @@ async def main():
     print(f"\n=== 第2步：开始上传（间隔 {args.delay}s）===")
     print("[INFO] 凭证已创建\n")
 
-    collection_section_id = None
-    try:
-        collection_section_id = get_collection_section_id(
-            room_id=room_id,
-            streamer_name=args.streamer_name,
-            source_desc=args.source,
-            prefix=args.prefix,
-        )
-    except Exception as e:
-        print(f"[WARN] 获取合集 section_id 失败，跳过合集：{e}")
+    collection_section_id = args.collection_section_id
+    if collection_section_id is not None and collection_section_id <= 0:
+        parser.error('--collection-section-id must be positive')
+    if collection_section_id is None:
+        try:
+            collection_section_id = get_collection_section_id(
+                room_id=room_id,
+                streamer_name=args.streamer_name,
+                source_desc=args.source,
+                prefix=args.prefix,
+            )
+        except Exception as e:
+            print(f"[WARN] 获取合集 section_id 失败，跳过合集：{e}")
 
     results = []
     for i, clip in enumerate(to_upload):
+        clip['queueJobId'] = args.queue_job
         full_title = f"{args.prefix}{clip['title']}"
         print(f"[{i+1}/{len(to_upload)}] #{clip['idx']} {full_title}")
+
+        def before_submit():
+            if args.queue_job and not args.force:
+                validate_queue_submission({**clip, 'prefix': args.prefix, 'source': args.source, 'tags': tags, 'tid': args.tid}, args.queue_job)
+            if args.automatic_job:
+                import clip_upload_registry as registry_api
+                registry_api.clip_auto_publication.validate_submission_authorization(
+                    {**clip, 'prefix': args.prefix, 'source': args.source, 'tags': tags, 'tid': args.tid},
+                    args.automatic_job, registry_api)
+            if clip.get('automaticPublicationRequired') or args.queue_job:
+                state.setdefault('submission_intents', {})[intent_key(clip)] = {
+                    'title': full_title, 'mediaPath': clip.get('path') or '',
+                    'startedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                }
+                save_upload_state(state_path, state)
 
         result = await upload_one_guarded(
             clip,
             credential,
-            args.prefix,
-            tags,
-            args.tid,
-            args.source,
+            clip.get('prefix', args.prefix) if clip.get('parts') else args.prefix,
+            clip.get('tags', tags) if clip.get('parts') else tags,
+            clip.get('tid', args.tid) if clip.get('parts') else args.tid,
+            clip.get('source', args.source) if clip.get('parts') else args.source,
             cookie_str,
             max(30, args.rate_limit_wait),
             max(0, args.rate_limit_retries),
             collection_section_id,
             allow_duplicate_title=args.force,
+            before_submit=before_submit,
         )
         results.append(result)
 
+        # An explicit server rejection is known not to have created an archive.
+        # Preserve the existing account cooldown; only ambiguous submission outcomes stay held.
+        if result.get('status') == 'rate_limited' and result.get('errorCode') == BILIBILI_SUBMISSION_RATE_LIMIT_CODE:
+            clear_intent(state, clip)
+
         # 记录到状态
         if result['status'] in ('ok', 'ok_after_406'):
+            clear_intent(state, clip)
             state.setdefault('done', {})[str(clip['idx'])] = {
                 'title': full_title,
                 'submittedTitle': full_title,
@@ -1110,6 +1117,10 @@ async def main():
                 'collectionSectionId': result.get('collectionSectionId'),
                 'collectionStatus': result.get('collectionStatus'),
                 'collectionError': result.get('collectionError'),
+                'subtitleStatus': result.get('subtitleStatus'),
+                'subtitleTaskPath': result.get('subtitleTaskPath'),
+                'subtitleError': result.get('subtitleError'),
+                'subtitlePages': result.get('subtitlePages'),
             }
             state.setdefault('title_conflicts', {}).pop(str(clip['idx']), None)
             state.get('got_406', {}).pop(str(clip['idx']), None)
@@ -1134,8 +1145,11 @@ async def main():
             }
 
         # 保存状态
-        with open(state_path, 'w', encoding='utf-8') as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
+        save_upload_state(state_path, state)
+
+        if find_intent(state, clip)[1]:
+            print(f"  [STOP] automatic submission outcome unknown for #{clip['idx']}; inspect the existing attempt")
+            return 2
 
         if result['status'] == 'rate_limited':
             print("  [STOP] B站仍在限速，停止本批次，避免后续条目重复触发风控。")

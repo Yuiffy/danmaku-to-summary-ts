@@ -35,6 +35,7 @@ interface ResponsesRequest {
 const OPENAI_REASONING_EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 // Invalidate cached text created before phase-aware extraction was consistent.
 export const TEXT_REQUEST_PROTOCOL_VERSION = 6;
+export const MAX_INLINE_IMAGES = 8;
 export const LIVE_TEXT_SYSTEM_PROMPT = '你是直播内容事实分析与创作助手。严格区分直播事实与任务规则，只依据提供的事实完成当前任务。';
 
 export function normalizeOpenAIReasoningEffort(effort: unknown) {
@@ -45,7 +46,7 @@ export function normalizeOpenAIReasoningEffort(effort: unknown) {
 }
 
 export function validateImageInputs(images: string[] = []): string[] {
-    if (!Array.isArray(images) || images.length > 8 || images.some(image =>
+    if (!Array.isArray(images) || images.length > MAX_INLINE_IMAGES || images.some(image =>
         typeof image !== 'string' || !/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(image)
         || image.length > 12 * 1024 * 1024)) throw new Error('Invalid or oversized inline image input');
     return images;
