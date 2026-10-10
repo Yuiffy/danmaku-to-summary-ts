@@ -51,6 +51,7 @@ must be updated before using the new task-list/cancellation adapter.
 | --- | --- | --- |
 | `src/app/main.ts` | process/CLI composition | media algorithms, room policy |
 | `src/app/api` | web-to-service HTTP adapters | service instances, durable queues |
+| `services/admin`, `tools/admin` | loopback operator API, fixed config files with revisions/backups, registered media streams and serialized existing CLI intents | media algorithms, direct clip/upload queue mutation, an additional delayed-reply scheduler, process deployment |
 | `src/core`, `src/utils` | configuration, logging, errors, shared infrastructure | application/service/workflow imports |
 | `src/services` | long-running state and external adapters | application/UI imports, one-off batches |
 | `services/ai/goodnight` | naming policy, reply prompts and validation | provider HTTP or file persistence |
@@ -89,6 +90,15 @@ The historical `clipping/media_process.js` and `clipping/rendered_subtitles.js`
 paths forward to `media_runtime.js` and `rendered_revision_evidence.js`.
 `clip_upload_cli.py` forwards parser construction to the registry's current
 factory so both entrypoints expose the same commands and arguments.
+
+The Next workspace proxies `/api/admin` to the loopback operator service (15127),
+using a server-only token; delayed tasks still forward to their webhook owner.
+`core/admin` contains serializable contracts. Reminder operator edits append to
+the reminder inbox and are applied/acknowledged by the existing bot tick; the bot
+remains the sole reminder state writer and preserves send receipts. Private
+workspace evidence queries reuse the question-lab gate and bounded corpus with
+no send/publication adapters. See [web-admin.md](web-admin.md) for configuration
+revisions, media roots, command authorization and startup/validation contracts.
 
 `audio_archive_pruning.js` owns archive video traversal and protects exact source
 recordings named in clip replay receipts; naming predicates are injected by the

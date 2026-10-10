@@ -1,4 +1,5 @@
 import { VoteDanmaku } from '../VoteSession';
+import { applyReminderEdit, ReminderOperatorCommand, validateReminderEdit } from './ReminderCommands';
 import {
   LiveReminderConfig, ReminderReceipt, ReminderRecord, ReminderRoomStatus, ReminderState, isReminderChat,
   parseReminderCommand, quietReminderWindow, reminderOptions, REMINDER_POLL_MS,
@@ -12,6 +13,8 @@ export interface ReminderAdapters {
   notify(record: ReminderRecord): Promise<boolean>;
   onError(error: unknown): void;
   clock?: () => number;
+  commands?: () => ReminderOperatorCommand[];
+  completeCommand?: (id: string, error?: string) => void;
 }
 export type ReminderSend = (roomId: string, message: string, isCurrent: () => boolean,
   beforeSend?: () => void) => Promise<boolean>;
@@ -103,6 +106,8 @@ export class LiveReminderSession {
   }
 
   tick(now = this.clock()): void {
+    if (this.stopped) return;
+    this.consumeCommands();
     if (this.stopped || !this.available) return;
     this.prune(now);
     if (!this.polling && now >= this.nextPoll) {
@@ -154,6 +159,31 @@ export class LiveReminderSession {
     const lastAt = this.state.receipts.at(-1)?.at;
     return (lastAt === undefined || now - lastAt >= this.options.minGapMinutes * 60000) &&
       quietReminderWindow(this.samples, this.observedSince, now, this.options);
+  }
+
+  private consumeCommands(): void {
+    try {
+      for (const command of this.adapters.commands?.() || []) {
+        if (this.state.appliedCommandIds?.includes(command.id)) { this.adapters.completeCommand?.(command.id); continue; }
+        const next = structuredClone(this.state);
+        try {
+          validateReminderEdit(command.edit, this.maxChars);
+          applyReminderEdit(next, command.edit, this.room?.live ? this.room.startedAt : undefined);
+          next.appliedCommandIds = [...(next.appliedCommandIds || []), command.id].slice(-200);
+          validateReminderState(next, this.maxChars);
+        } catch (error) {
+          this.adapters.completeCommand?.(command.id, error instanceof Error ? error.message : '无效操作');
+          continue;
+        }
+        // Retain receipt object identity while a send/notification is in flight.
+        next.receipts = this.state.receipts;
+        this.adapters.save(next);
+        Object.assign(this.state, next);
+        if (!Object.hasOwn(next, 'pausedSession')) delete this.state.pausedSession;
+        this.generation++;
+        this.adapters.completeCommand?.(command.id);
+      }
+    } catch (error) { this.fail(error); }
   }
 
   private async record(record: ReminderRecord): Promise<void> {

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { isLocalAdminRequest } from '../../../core/admin/httpAccess';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,11 +22,13 @@ async function forward(endpoint: string, method = 'GET', body?: unknown) {
   }
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  if (!isLocalAdminRequest(request)) return NextResponse.json({ error: '仅允许本机管理页面访问' }, { status: 403 });
   return forward('/tasks');
 }
 
 export async function POST(request: NextRequest) {
+  if (!isLocalAdminRequest(request)) return NextResponse.json({ error: '仅允许本机管理页面访问' }, { status: 403 });
   let body;
   try {
     body = await request.json();
@@ -39,6 +42,7 @@ export async function POST(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
+  if (!isLocalAdminRequest(request)) return NextResponse.json({ error: '仅允许本机管理页面访问' }, { status: 403 });
   let body;
   try {
     body = await request.json();

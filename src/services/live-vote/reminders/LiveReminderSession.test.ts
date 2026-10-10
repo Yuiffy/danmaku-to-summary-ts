@@ -212,3 +212,37 @@ it('does not resend successful danmaku when the WeChat Work notification fails',
 it('fails closed for invalid durable state rather than discarding reminder history', () => {
   expect(() => fixture({ ...initialReminderState(), version: 2 } as unknown as ReminderState)).toThrow('Invalid live reminder state');
 });
+
+it('cancels a queued send after a web switch and acknowledges a replay without resetting receipts', async () => {
+  let release!: () => void, current!: () => boolean;
+  const f = fixture(initialReminderState(), async (_id, _text, isCurrent, beforeSend) => {
+    current = isCurrent;
+    await new Promise<void>(resolve => { release = resolve; });
+    if (!isCurrent()) return false;
+    beforeSend?.(); return true;
+  });
+  await f.tick(start); await f.tick(start + 14 * 60000 + 40000);
+  f.clock(start + 15 * 60000); f.session.tick();
+  const command = { id: '11111111-1111-1111-1111-111111111111', createdAt: new Date(start).toISOString(), edit: { action: 'switch' as const, enabled: false } };
+  f.adapters.commands = () => [command]; f.adapters.completeCommand = jest.fn();
+  f.session.tick(); expect(current()).toBe(false); release(); await f.session.flush();
+  expect(f.state().receipts).toEqual([]); expect(f.state().enabled).toBe(false);
+  const writes = (f.adapters.save as jest.Mock).mock.calls.length;
+  f.session.tick();
+  expect(f.state().appliedCommandIds).toEqual([command.id]); expect(f.adapters.completeCommand).toHaveBeenCalledTimes(2);
+  expect(f.adapters.save).toHaveBeenCalledTimes(writes);
+});
+
+it('retains the in-flight receipt when a web edit arrives after the HTTP send intent', async () => {
+  let release!: () => void;
+  const f = fixture(initialReminderState(), async (_id, _text, isCurrent, beforeSend) => {
+    if (!isCurrent()) return false;
+    beforeSend?.(); await new Promise<void>(resolve => { release = resolve; }); return true;
+  });
+  await f.tick(start); await f.tick(start + 14 * 60000 + 40000);
+  f.clock(start + 15 * 60000); f.session.tick();
+  expect(f.state().receipts[0].status).toBe('attempted');
+  f.adapters.commands = () => [{ id: '22222222-2222-2222-2222-222222222222', createdAt: new Date(start).toISOString(), edit: { action: 'switch', enabled: false } }];
+  f.adapters.completeCommand = jest.fn(); f.session.tick(); release(); await f.session.flush();
+  expect(f.state().receipts).toHaveLength(1); expect(f.state().receipts[0]).toMatchObject({ status: 'sent', notified: true });
+});

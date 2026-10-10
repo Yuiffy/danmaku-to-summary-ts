@@ -27,6 +27,7 @@ export interface ReminderState {
   lastReminderId?: string;
   pausedSession?: number;
   nextId: number;
+  appliedCommandIds?: string[];
 }
 export interface ReminderRoomStatus {
   roomId: string;
@@ -108,6 +109,8 @@ export function validateReminderState(value: unknown, maxChars: number): asserts
   if (!state || state.version !== 1 || typeof state.enabled !== 'boolean' || !Array.isArray(state.items) ||
       state.items.length > 10 || !Array.isArray(state.receipts) || state.receipts.length > 1000 ||
       !Number.isSafeInteger(state.nextId) || state.nextId < 1 ||
+      state.appliedCommandIds !== undefined && (!Array.isArray(state.appliedCommandIds) || state.appliedCommandIds.length > 200 ||
+        state.appliedCommandIds.some(id => typeof id !== 'string' || !/^[0-9a-f-]{36}$/u.test(id))) ||
       state.pausedSession !== undefined && (!Number.isFinite(state.pausedSession) || state.pausedSession <= 0) ||
       state.items.some(item => !item || !/^[a-z0-9-]{1,40}$/u.test(item.id) || !validText(item.name, 40) ||
         typeof item.enabled !== 'boolean' || !Array.isArray(item.templates) || !item.templates.length ||

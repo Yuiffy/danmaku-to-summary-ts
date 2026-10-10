@@ -12,7 +12,9 @@
   "scripts": {
     "dev": "node dist/app/main.js --port 12522 --host 0.0.0.0",
     "build": "tsc --project tsconfig.build.json",
-    "dev:next": "next dev",
+    "dev:next": "next dev --hostname 127.0.0.1",
+    "admin:dev": "node -r ts-node/register src/tools/admin/server.ts",
+    "admin:start": "node dist/tools/admin/server.js",
     "build:next": "next build",
     "start": "next start",
     "lint": "next lint",

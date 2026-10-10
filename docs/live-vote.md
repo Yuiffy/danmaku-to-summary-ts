@@ -393,6 +393,10 @@ pm2 start ecosystem.config.js --only subtitle-index-daily
 
 ## 本机网页与 Codex 提问技能
 
+[统一 Web 工作台](web-admin.md)提供同一套私有问答/证据检索，以及提醒项目、
+模板、总开关、本场暂停/恢复和发送记录管理。网页管理指令由机器人 tick 接收，
+保存已应用 ID 与原有每日发送 receipt 后返回生效回执；不会另起发送队列。
+
 ### 跨房间和舰礼资料
 
 弹幕来源/网页选择的 `roomId` 是默认房间。`QuestionScope` 从问题中的明确主播全名、

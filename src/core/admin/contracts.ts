@@ -1,0 +1,62 @@
+/** Serializable control-plane contracts shared by the UI and the operator service. */
+export interface ConfigDocument {
+  name: string;
+  revision: string;
+  value: Record<string, any>;
+  updatedAt: string;
+}
+export interface ClipSummary {
+  id: number;
+  title: string;
+  status: string;
+  roomId: string;
+  streamerName: string;
+  start: string;
+  duration: string;
+  issues: string[];
+  pendingCut: boolean;
+  updatedAt: string;
+}
+export interface ClipDetail {
+  clip: ClipSummary;
+  revision: string;
+  title: string;
+  description: string;
+  coverText: string;
+  tags: string[];
+  subtitles: string;
+  previewSubtitles: string;
+  partSubtitles: string;
+  pendingRebuild: boolean;
+  mediaSubtitles: boolean;
+  category: 'clip' | 'activity' | 'game';
+  parts: { title: string; duration: number; subtitles: boolean }[];
+  media: boolean;
+  preview: boolean;
+  cover: boolean;
+  evidence: Record<string, any>;
+}
+export interface AdminJob {
+  id: string;
+  action: string;
+  target: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted';
+  createdAt: string;
+  updatedAt: string;
+  output: string;
+  exitCode?: number;
+}
+export interface ReminderView {
+  configured: boolean;
+  runningEnabled: boolean;
+  roomId?: string;
+  policy?: Record<string, any>;
+  state?: {
+    enabled: boolean;
+    items: { id: string; name: string; enabled: boolean; templates: string[] }[];
+    receipts: { day: string; id: string; at: number; text: string; status: string; notified: boolean }[];
+    pausedSession?: number;
+  };
+  pending: { id: string; createdAt: string; action: string }[];
+  results?: { id: string; at: string; status: string; message: string }[];
+}

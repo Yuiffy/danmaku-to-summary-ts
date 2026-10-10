@@ -19,6 +19,7 @@ npm test -- --runInBand
 候选 workflow release，Jest 使用候选版本；不需要先激活生产工作流。
 
 只修改控制面时不需要安装 GPU 模型、运行 PM2 或填写 API key。
+本机 Web 工作台的双服务启动、操作范围和验收见 [web-admin.md](web-admin.md)。
 完整 Python 回归还需要 `requests[socks]`、`bilibili-api-python`、`Pillow`、`numpy`、
 `google-genai`、`PyYAML` 和 PyTorch（CPU 版即可完成张量相关单测）。
 实际 ASR 模型环境的安装方式见 [asr-backends.md](asr-backends.md)。

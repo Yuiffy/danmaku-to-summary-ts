@@ -4,6 +4,7 @@ import fetch from 'node-fetch';
 import { loadConfigLayers } from '../../../core/config/ConfigLayers';
 import { WeChatWorkNotifier } from '../../notification/WeChatWorkNotifier';
 import { ReminderAdapters } from './LiveReminderSession';
+import { ReminderCommandInbox } from './ReminderCommands';
 import { initialReminderState, LiveReminderConfig, ReminderRoomStatus, ReminderState, reminderOptions } from './ReminderPolicy';
 
 export function writeReminderState(file: string, state: ReminderState): void {
@@ -58,7 +59,10 @@ export function createReminderAdapters(config: LiveReminderConfig | undefined, l
   const notifier = new WeChatWorkNotifier(url);
   // Dry-run never consumes real daily quotas or persists real operator commands.
   const file = live ? config.statePath : `${config.statePath}.dry-run`;
+  const inbox = new ReminderCommandInbox(file);
   return {
+    commands: () => inbox.list(),
+    completeCommand: (id, error) => inbox.complete(id, error),
     load: () => fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/u, '')) : initialReminderState(),
     save: state => writeReminderState(file, state),
     status: roomId => readReminderRoomStatus(roomId),
