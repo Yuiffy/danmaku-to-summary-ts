@@ -9,6 +9,7 @@ import { initialReminderState, LiveReminderConfig } from './ReminderPolicy';
 
 jest.mock('../../../core/config/ConfigLayers', () => ({ loadConfigLayers: jest.fn() }));
 jest.mock('../../notification/WeChatWorkNotifier', () => ({ WeChatWorkNotifier: jest.fn() }));
+jest.mock('node-fetch', () => jest.fn());
 const roomId = '25788785';
 
 it('reads the actual stream start and activity metadata without adding a danmaku connection', async () => {
@@ -63,4 +64,26 @@ it('requires explicit notification credentials only when enabled', () => {
   expect(createReminderAdapters({ enabled: false, roomId, statePath: '', notificationConfigPath: '' }, true)).toBeUndefined();
   (loadConfigLayers as jest.Mock).mockReturnValue({});
   expect(() => createReminderAdapters({ enabled: true, roomId, statePath: path.resolve('ignored-state'), notificationConfigPath: path.resolve('ignored-config') }, true)).toThrow('wechatWork.webhookUrl');
+});
+
+it('reloads the existing bot cookie for metadata requests without sending danmaku or notifications', async () => {
+  const notify = jest.fn(async () => true);
+  (WeChatWorkNotifier as jest.Mock).mockImplementation(() => ({ sendText: notify }));
+  (loadConfigLayers as jest.Mock).mockReturnValue({ wechatWork: { webhookUrl: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=fixture' } });
+  (fetch as unknown as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ code: 0, data: {
+    room_info: { room_id: 25788785, live_status: 0, live_start_time: 0 }
+  } }) });
+  let cookie = 'DedeUserID=99; SESSDATA=old';
+  const adapters = createReminderAdapters({ enabled: true, roomId, statePath: path.resolve('ignored-state'),
+    notificationConfigPath: path.resolve('ignored-config') }, true, () => cookie)!;
+  await adapters.status(roomId);
+  expect(fetch).toHaveBeenLastCalledWith(expect.stringContaining('getInfoByRoom'), expect.objectContaining({
+    headers: expect.objectContaining({ Cookie: cookie, Origin: 'https://live.bilibili.com', 'User-Agent': expect.stringContaining('Chrome/') })
+  }));
+  cookie = 'DedeUserID=99; SESSDATA=rotated';
+  await adapters.status(roomId);
+  expect(fetch).toHaveBeenLastCalledWith(expect.stringContaining('getInfoByRoom'), expect.objectContaining({
+    headers: expect.objectContaining({ Cookie: cookie })
+  }));
+  expect(notify).not.toHaveBeenCalled();
 });

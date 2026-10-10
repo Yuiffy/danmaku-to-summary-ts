@@ -24,6 +24,39 @@ npm run dev:next
 以 `npm run admin:start` 启动管理 API，`npm start -- --hostname 127.0.0.1` 启动网页。
 验证不启动 PM2、不部署 `dist`、不激活工作流；常驻化与升级沿用单独部署授权。
 
+### PM2 常驻与登录恢复
+
+获得常驻部署授权后，使用独立的 `scripts/ecosystem.admin.config.js`，只管理
+`danmaku-admin-api` 和 `danmaku-admin-web`。管理 API 使用 runtime 下的独立
+发布副本，后续验证覆盖 `build/service` 不影响正在运行的版本：
+
+```powershell
+npm run build:isolated
+if ($LASTEXITCODE -ne 0) { throw 'Service build failed' }
+New-Item -ItemType Directory -Path 'data/runtime/admin/service' -Force | Out-Null
+Get-ChildItem -LiteralPath 'build/service' | Copy-Item -Destination 'data/runtime/admin/service' -Recurse -Force
+npm run build:next
+if ($LASTEXITCODE -ne 0) { throw 'Web build failed' }
+pm2 start scripts/ecosystem.admin.config.js
+./scripts/install-web-admin-task.ps1
+```
+
+升级前先停止这两个服务，重新构建并复制，成功后只启动上述独立配置。
+网页使用 `.next` 生产构建；不要在常驻网页运行时执行 `dev:next` 或重建 `.next`。
+PM2 在应用退出后自动重启，关闭 Codex 或浏览器不会终止服务。
+Windows 任务 `Danmaku-Web-Admin` 以当前用户在登录后启动这两个服务，
+不调用全局 `pm2 resurrect`。使用 `./scripts/install-web-admin-task.ps1 -Disable`
+取消登录恢复；`pm2 stop danmaku-admin-api danmaku-admin-web` 停止当前服务。
+任务固定安装时的 PowerShell 和 PM2 路径，升级或移动运行环境后重新安装任务。
+机器休眠或关机期间网页不可用；重启后需该用户登录。查看状态和日志使用：
+
+```powershell
+pm2 status
+pm2 logs danmaku-admin-api --lines 30 --nostream
+pm2 logs danmaku-admin-web --lines 30 --nostream
+Invoke-RestMethod http://127.0.0.1:3000/api/admin/health
+```
+
 管理 API 首次启动生成 `data/runtime/admin/access-token`，只由 Next 服务端读取；
 网页不接收此令牌。两端固定本机地址，并检查网页 Host、Origin 和跨站请求。
 不要把 Next 管理页绑定公网；远程访问需要另行设计认证与访问边界。

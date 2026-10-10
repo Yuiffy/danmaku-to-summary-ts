@@ -18,12 +18,16 @@ export function writeReminderState(file: string, state: ReminderState): void {
   }
 }
 
-export async function readReminderRoomStatus(roomId: string, transport = fetch): Promise<ReminderRoomStatus> {
+export async function readReminderRoomStatus(roomId: string, transport = fetch, cookie = ''): Promise<ReminderRoomStatus> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
   try {
     const response = await transport(`https://api.live.bilibili.com/xlive/web-room/v1/index/getInfoByRoom?room_id=${roomId}`, {
-      headers: { 'User-Agent': 'Mozilla/5.0', Referer: `https://live.bilibili.com/${roomId}` },
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        Referer: `https://live.bilibili.com/${roomId}`, Origin: 'https://live.bilibili.com',
+        Accept: 'application/json, text/plain, */*', ...(cookie ? { Cookie: cookie } : {})
+      },
       signal: controller.signal as any, redirect: 'error', size: 256 * 1024
     });
     if (!response.ok) throw new Error('Room metadata HTTP failure');
@@ -41,7 +45,8 @@ export async function readReminderRoomStatus(roomId: string, transport = fetch):
   } finally { clearTimeout(timeout); }
 }
 
-export function createReminderAdapters(config: LiveReminderConfig | undefined, live: boolean): ReminderAdapters | undefined {
+export function createReminderAdapters(config: LiveReminderConfig | undefined, live: boolean,
+  cookie: string | (() => string) = ''): ReminderAdapters | undefined {
   if (!config) return undefined;
   reminderOptions(config);
   if (!config.enabled) return undefined;
@@ -65,7 +70,7 @@ export function createReminderAdapters(config: LiveReminderConfig | undefined, l
     completeCommand: (id, error) => inbox.complete(id, error),
     load: () => fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/u, '')) : initialReminderState(),
     save: state => writeReminderState(file, state),
-    status: roomId => readReminderRoomStatus(roomId),
+    status: roomId => readReminderRoomStatus(roomId, fetch, typeof cookie === 'function' ? cookie() : cookie),
     notify: async record => {
       const time = new Date(record.at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
       const text = `直播提醒记录\n房间：${record.roomId}\n事项：${record.name} (${record.id})\n时间：${time}\n` +

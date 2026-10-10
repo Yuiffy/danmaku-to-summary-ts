@@ -152,10 +152,10 @@ export async function runVoteBot(configPath: string, live = false): Promise<void
   if (config.reminders?.enabled && (config.source !== 'recorder' || config.rooms !== 'auto-record')) {
     throw new Error('Live reminders require source recorder and rooms auto-record');
   }
-  const reminderAdapters = createReminderAdapters(config.reminders, live);
-  console.log(reminderAdapters ? `Live reminders enabled for room ${config.reminders!.roomId} (preset messages).` : 'Live reminders disabled.');
   const cookie = () => process.env.BILIBILI_VOTE_COOKIE ||
     (live && config.credentialConfigPath ? readLocalSettings(config.credentialConfigPath).bilibili?.cookie : '') || '';
+  const reminderAdapters = createReminderAdapters(config.reminders, live, cookie);
+  console.log(reminderAdapters ? `Live reminders enabled for room ${config.reminders!.roomId} (preset messages).` : 'Live reminders disabled.');
   const answerer = createLiveQuestionAnswerer(config.questions, config.botUid);
   const record = answerer ? createQuestionRecordWriter(config.questions!, config.botUid || '', live, cookie) : undefined;
   console.log(answerer
