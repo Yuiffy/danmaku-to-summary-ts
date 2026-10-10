@@ -61,3 +61,33 @@ it('refuses to send if refreshed credentials belong to another account', async (
   await expect(sender.send('投票30秒')).rejects.toThrow('matching DedeUserID');
   expect(request).not.toHaveBeenCalled();
 });
+
+it('persists reminder intent only after the final queue guard and before the network request', async () => {
+  jest.useFakeTimers({ now: 1000000 });
+  const log = jest.spyOn(console, 'log').mockImplementation();
+  const request = fetch as jest.MockedFunction<typeof fetch>;
+  request.mockClear();
+  const intent = jest.fn();
+  request.mockImplementation(async () => {
+    expect(intent).toHaveBeenCalledTimes(1);
+    return { ok: true, status: 200, json: async () => ({ code: 0 }) } as any;
+  });
+  try {
+    const sender = new VoteSender('100', '99', true, 'DedeUserID=99; SESSDATA=test; bili_jct=test', { lastSentAt: Date.now() });
+    let current = true;
+    const dropped = sender.send('过期提醒', () => current, intent);
+    current = false;
+    await jest.advanceTimersByTimeAsync(3000);
+    await expect(dropped).resolves.toBe(false);
+    expect(intent).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
+    await expect(sender.send('有效提醒', () => true, intent)).resolves.toBe(true);
+    expect(request).toHaveBeenCalledTimes(1);
+    intent.mockClear(); request.mockClear();
+    const failed = sender.send('不能落盘的提醒', () => true, () => { throw new Error('disk full'); });
+    const assertion = expect(failed).rejects.toThrow('disk full');
+    await jest.advanceTimersByTimeAsync(3000);
+    await assertion;
+    expect(request).not.toHaveBeenCalled();
+  } finally { log.mockRestore(); jest.useRealTimers(); }
+});

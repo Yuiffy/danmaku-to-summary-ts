@@ -43,6 +43,29 @@ describe('bounded pre-render boundary audio diagnosis', () => {
         expect(planBoundaryAudio({ clips: [{ ...plan.clips[0], reason: '结尾感觉不好' }] }, input)).toEqual([]);
         expect(planBoundaryAudio({ clips: [{ ...plan.clips[0], boundaryReview: { unresolvedCueIds: ['G99'] } }] }, input)).toEqual([]);
     });
+    test('diagnoses six adjacent doubtful cues within two windows and the shared audio budget', async () => {
+        const cues = [10, 14, 18, 40, 44, 48].map((start, index) => ({
+            id: `G${index + 1}`, start, end: start + 3, text: '需要核对原音的连续字幕'
+        }));
+        const manyInput = { ...input, subtitles: [
+            { id: 'before', start: 0, end: 5, text: '前文' }, ...cues,
+            { id: 'after', start: 60, end: 65, text: '后文' }
+        ] };
+        const manyPlan = { clips: [{ ...plan.clips[0],
+            boundaryReview: { unresolvedCueIds: cues.map(cue => cue.id) } }] };
+        const diagnostics = {}, io = adapter();
+        const result = await prepareBoundaryAudio(manyPlan, manyInput, config, source, diagnostics, runtime, io);
+        expect(result?.status).toBe('available');
+        expect(result?.windows.map(({ start, end, cueIds }: any) => ({ start, end, cueIds }))).toEqual([
+            { start: 7, end: 24, cueIds: ['G1', 'G2', 'G3'] },
+            { start: 37, end: 54, cueIds: ['G4', 'G5', 'G6'] }
+        ]);
+        expect(io.run).toHaveBeenCalledTimes(1);
+        expect(diagnostics).toMatchObject({ topicAudioBudget: { windows: 2, audioSeconds: 34 } });
+        expect(manyPlan.clips[0].status).toBe('needs_review');
+        expect(planBoundaryAudio(manyPlan, { ...manyInput, subtitles: manyInput.subtitles.map(cue =>
+            cue.id === 'G6' ? { ...cue, start: 60, end: 63 } : cue) })).toEqual([]);
+    });
     test('keeps two independent bound hypotheses and leaves all source words unchanged', async () => {
         const io = adapter(), before = JSON.stringify(input), diagnostics = {};
         const result = await prepareBoundaryAudio(plan, input, config, source, diagnostics, runtime, io);

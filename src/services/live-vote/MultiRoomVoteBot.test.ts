@@ -2,6 +2,8 @@ import { MultiRoomVoteBot } from './MultiRoomVoteBot';
 import * as path from 'path';
 import * as os from 'os';
 import { LiveQuestionConfig, QuestionAnswer } from './questions/QuestionPolicy';
+import { ReminderAdapters } from './reminders/LiveReminderSession';
+import { initialReminderState, ReminderState } from './reminders/ReminderPolicy';
 
 const now = 1790259000000;
 const rooms = [
@@ -194,4 +196,53 @@ it('accepts question requests only from the local owner or configured global adm
   await bot.flush();
   expect(answer).toHaveBeenCalledTimes(1);
   bot.stop();
+});
+
+it('integrates target-room reminders with the existing queue, invalidating a pending reminder on an admin switch', async () => {
+  jest.useFakeTimers({ now });
+  let saved: ReminderState = initialReminderState();
+  const adapters: ReminderAdapters = {
+    load: () => saved, save: state => { saved = state; }, onError: jest.fn(), notify: jest.fn(async () => true),
+    status: jest.fn(async roomId => ({ roomId, live: true, startedAt: now, title: '', area: '虚拟日常', parentArea: '虚拟主播' }))
+  };
+  const sent: string[] = [];
+  let release: (() => void) | undefined;
+  let block = false;
+  const sender = jest.fn(async (roomId, text, current, beforeSend?: () => void) => {
+    if (block) await new Promise<void>(resolve => { release = resolve; });
+    if (!current()) return false;
+    beforeSend?.();
+    sent.push(`${roomId}: ${text}`);
+    return true;
+  });
+  const bot = new MultiRoomVoteBot({ globalAdminUids: ['42'], botUid: '99', reminders: {
+    enabled: true, roomId: '100', statePath: '/unused', notificationConfigPath: '/unused'
+  } }, sender, jest.fn(), undefined, undefined, adapters);
+  try {
+    bot.updateRooms(rooms);
+    bot.tick(); await bot.flush();
+    jest.setSystemTime(now + 15 * 60000);
+    bot.tick(); await bot.flush(); bot.tick(); await bot.flush();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatch(/^100: .*反流/u);
+    expect(adapters.notify).toHaveBeenCalledTimes(1);
+    bot.ingest(message('200', '42', '#关闭提醒 全部', Date.now()));
+    expect(saved.enabled).toBe(true);
+    // A vote holds the same queue while the second reminder is scheduled.
+    jest.setSystemTime(now + 25 * 60000);
+    block = true;
+    bot.ingest(message('200', '20', '#投票 1甲 2乙', Date.now()));
+    bot.tick();
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    bot.tick();
+    bot.ingest(message('100', '10', '#关闭提醒 全部', Date.now()));
+    expect(saved.enabled).toBe(true); // Target owner is not a reminder administrator.
+    bot.ingest(message('100', '42', '#关闭提醒 全部', Date.now()));
+    expect(saved.enabled).toBe(false);
+    block = false; release?.();
+    await bot.flush();
+    expect(adapters.notify).toHaveBeenCalledTimes(1);
+    expect(sent.some(text => text.includes('身体乳'))).toBe(false);
+    expect(saved.receipts).toHaveLength(1);
+  } finally { bot.stop(); jest.useRealTimers(); }
 });

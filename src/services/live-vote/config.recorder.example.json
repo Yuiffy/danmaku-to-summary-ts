@@ -5,6 +5,17 @@
   "globalAdminUids": ["14279"],
   "botUid": "412141275",
   "maxMessageChars": 40,
+  "reminders": {
+    "enabled": false,
+    "roomId": "25788785",
+    "statePath": "C:/danmaku-to-summary-ts/data/runtime/live-reminders.json",
+    "notificationConfigPath": "C:/danmaku-to-summary-ts/config/production.json",
+    "startMinutes": 15,
+    "endMinutes": 60,
+    "minGapMinutes": 10,
+    "quietMaxPerMinute": 12,
+    "quietRatio": 0.5
+  },
   "questions": {
     "enabled": false,
     "providerConfigPath": "C:/danmaku-to-summary-ts/config/production.json",

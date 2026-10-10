@@ -2,12 +2,15 @@ import { RelayRoom } from './LocalDanmakuClient';
 import { VoteDanmaku, VoteSession } from './VoteSession';
 import { LiveQuestionSession } from './questions/LiveQuestionSession';
 import { LiveQuestionConfig, QuestionAnswerer, QuestionRecordWriter } from './questions/QuestionPolicy';
+import { LiveReminderSession, ReminderAdapters } from './reminders/LiveReminderSession';
+import { LiveReminderConfig } from './reminders/ReminderPolicy';
 
 export interface MultiRoomVoteConfig {
   globalAdminUids: string[];
   botUid?: string;
   maxMessageChars?: number;
   questions?: LiveQuestionConfig;
+  reminders?: LiveReminderConfig;
 }
 
 interface RoomVote {
@@ -21,10 +24,18 @@ export class MultiRoomVoteBot {
   private queue = Promise.resolve();
   private stopped = false;
   private readonly questions?: LiveQuestionSession;
+  private readonly reminders?: LiveReminderSession;
 
   constructor(private readonly config: MultiRoomVoteConfig,
-    private readonly send: (roomId: string, message: string, isCurrent: () => boolean) => Promise<void>,
-    private readonly onError: (error: unknown) => void, answerer?: QuestionAnswerer, record?: QuestionRecordWriter) {
+    private readonly send: (roomId: string, message: string, isCurrent: () => boolean, beforeSend?: () => void) => Promise<void | boolean>,
+    private readonly onError: (error: unknown) => void, answerer?: QuestionAnswerer, record?: QuestionRecordWriter,
+    reminderAdapters?: ReminderAdapters) {
+    if (config.reminders?.enabled) {
+      if (!reminderAdapters) throw new Error('Enabled reminders require runtime adapters');
+      this.reminders = new LiveReminderSession(config.reminders, config.globalAdminUids, config.botUid,
+        config.maxMessageChars ?? 40, (roomId, message, isCurrent, beforeSend) =>
+          this.enqueue(roomId, message, isCurrent, beforeSend), reminderAdapters);
+    }
     if (config.questions?.enabled) {
       if (!answerer) throw new Error('Enabled questions require a question answerer');
       this.questions = new LiveQuestionSession(config.questions, answerer,
@@ -33,11 +44,16 @@ export class MultiRoomVoteBot {
     }
   }
 
-  private enqueue(roomId: string, message: string, isCurrent: () => boolean): void {
-    this.queue = this.queue.then(() => isCurrent() ? this.send(roomId, message, isCurrent) : undefined).catch(error => {
+  private enqueue(roomId: string, message: string, isCurrent: () => boolean, beforeSend?: () => void): Promise<boolean> {
+    const pending = this.queue.then(async () => {
+      if (!isCurrent()) return false;
+      return (await (beforeSend ? this.send(roomId, message, isCurrent, beforeSend) : this.send(roomId, message, isCurrent))) !== false;
+    });
+    this.queue = pending.then(() => {}).catch(error => {
       this.stop();
       this.onError(error);
     });
+    return pending;
   }
 
   updateRooms(snapshot: RelayRoom[]): void {
@@ -46,6 +62,7 @@ export class MultiRoomVoteBot {
       .map(room => [room.roomId, room]));
     for (const [id, current] of this.rooms) {
       if (available.get(id)?.ownerUid !== current.ownerUid) {
+        if (id === this.config.reminders?.roomId) this.reminders?.setAvailable(false);
         this.questions?.cancelRoom(id);
         current.generation++;
         current.session.cancel();
@@ -65,25 +82,29 @@ export class MultiRoomVoteBot {
       }, () => { current.generation++; });
       this.rooms.set(id, current);
     }
+    this.reminders?.setAvailable(this.rooms.has(this.config.reminders!.roomId));
   }
 
   ingest(message: VoteDanmaku, now = Date.now()): void {
     const room = message.roomId && this.rooms.get(message.roomId);
     if (!room) return;
     const isCurrent = () => !this.stopped && this.rooms.get(message.roomId!) === room;
+    if (this.reminders?.ingest(message, now)) return;
     if (!this.questions?.ingest(message, isCurrent, now)) room.session.ingest(message, now);
   }
 
   tick(now = Date.now()): void {
+    this.reminders?.tick(now);
     for (const room of this.rooms.values()) room.session.tick(now);
   }
 
   disconnect(): void {
+    this.reminders?.setAvailable(false);
     this.questions?.disconnect();
     for (const room of this.rooms.values()) { room.generation++; room.session.cancel(); }
     this.rooms.clear();
   }
 
-  stop(): void { this.stopped = true; this.questions?.stop(); this.disconnect(); }
-  async flush(): Promise<void> { await this.questions?.flush(); await this.queue; }
+  stop(): void { this.stopped = true; this.questions?.stop(); this.reminders?.stop(); this.disconnect(); }
+  async flush(): Promise<void> { await this.questions?.flush(); await this.reminders?.flush(); await this.queue; }
 }

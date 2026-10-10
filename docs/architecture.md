@@ -54,6 +54,7 @@ must be updated before using the new task-list/cancellation adapter.
 | `src/core`, `src/utils` | configuration, logging, errors, shared infrastructure | application/service/workflow imports |
 | `src/services` | long-running state and external adapters | application/UI imports, one-off batches |
 | `services/ai/goodnight` | naming policy, reply prompts and validation | provider HTTP or file persistence |
+| `services/live-vote/reminders` | configured-room daily reminders, quiet-window decisions, durable send intent, admin commands and room/WeChat adapters | independent send queue, recorder connections, medication dosage decisions; composition stays in `runVoteBot` and `MultiRoomVoteBot` |
 | `services/live-vote/questions` | bounded configured-room evidence; `QuestionScope` explicit-name routing, `QuestionCorpus` sequential cross-room retrieval, `GiftCatalog` read-only curated gifts; question agent and global admission/cancellation | shell/arbitrary filesystem tools, media processing, publication, independent send queues |
 | `services/live-vote/questions/SubtitleIndex`, `SubtitleCorpus`, `EmbeddingClient`, `LocalEmbedding` | versioned subtitle shards, bounded semantic recall, fixed embedding adapters; local inference process has fixed executable/script/arguments from trusted config | agent-controlled process execution, chat publication, cross-room retrieval |
 | `tools/live-vote/subtitleIndex` | single-writer incremental index maintenance, daily Shanghai schedule and catch-up | vote admission, active workflow activation, public replies |
@@ -229,6 +230,7 @@ runtime imports. `--json` produces a machine-readable inventory and violation li
 | durable queue, GPU admission, child-process progress | `MikufansSummaryQueueWorker`, `MikufansAsrResourceController` |
 | room names or generated goodnight wording | `GoodnightReplyPolicy` |
 | @鹿饼 recording questions, agent tools, query limits | `live-vote/questions`; runtime/send composition stays in `runVoteBot` and `MultiRoomVoteBot` |
+| 岁己 daily reminders, quiet windows, reminder commands | `live-vote/reminders`; share the bot send queue and persist intent before sending; contracts in `docs/live-vote.md` |
 | missing output path or delayed registration | `MikufansDelayedReplyCoordinator`, `DelayedReplyArtifactResolver` |
 | expiry, duplicate identity, retry classification | `DelayedReplyPolicy` |
 | front matter, body cleaning, publishability | `ReplyContentReader` |

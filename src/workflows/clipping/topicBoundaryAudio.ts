@@ -19,7 +19,8 @@ export function planBoundaryAudio(plan: Data, input: Data): Data[] {
                 boundary.startReason, ...(clip.warnings || [])].join(' '))) continue;
         for (const id of boundary.unresolvedCueIds) ids.add(id);
     }
-    if (!ids.size || ids.size > 4) return [];
+    // Bound the merged audio windows, not the number of short subtitle rows.
+    if (!ids.size) return [];
     const rows = [...ids].map(id => input.subtitles.find((cue: Data) => cue.id === id));
     if (rows.some(row => !row || !Number.isFinite(row.start) || !Number.isFinite(row.end)
         || row.start < 0 || row.end <= row.start || row.end - row.start > 30)) return [];

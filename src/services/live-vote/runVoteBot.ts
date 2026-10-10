@@ -10,6 +10,9 @@ import { createLiveQuestionAnswerer } from './questions/DaiyuQuestionClient';
 import { LiveQuestionSession } from './questions/LiveQuestionSession';
 import { LiveQuestionConfig, QuestionAnswerer, QuestionRecordWriter } from './questions/QuestionPolicy';
 import { createQuestionRecordWriter } from '../bilibili/question-records/QuestionRecordPublisher';
+import { LiveReminderConfig } from './reminders/ReminderPolicy';
+import { ReminderAdapters } from './reminders/LiveReminderSession';
+import { createReminderAdapters } from './reminders/ReminderRuntime';
 
 interface RuntimeConfig extends Omit<VoteConfig, 'authorizedUids'> {
   roomId?: string;
@@ -23,6 +26,7 @@ interface RuntimeConfig extends Omit<VoteConfig, 'authorizedUids'> {
   recorderSocketUrl?: string;
   source?: 'bilibili' | 'recorder' | 'xml';
   questions?: LiveQuestionConfig;
+  reminders?: LiveReminderConfig;
 }
 
 type VoteCookie = string | (() => string);
@@ -45,21 +49,23 @@ export class VoteSender {
     return cookie;
   }
 
-  async send(message: string, isCurrent = () => true): Promise<void> {
-    if (!isCurrent()) return;
+  async send(message: string, isCurrent = () => true, beforeSend?: () => void): Promise<boolean> {
+    if (!isCurrent()) return false;
     if (!this.live) {
+      beforeSend?.();
       console.log(`[dry-run room ${this.roomId}] ${message}`);
-      return;
+      return true;
     }
     const delay = Math.max(0, 3000 - (Date.now() - this.rateLimit.lastSentAt));
     if (delay) await new Promise(resolve => setTimeout(resolve, delay));
-    if (!isCurrent()) return;
+    if (!isCurrent()) return false;
     const cookie = this.readCookie();
     const csrf = /(?:^|;\s*)bili_jct=([^;]+)/u.exec(cookie)![1];
     const body = new URLSearchParams({
       roomid: this.roomId, msg: message, csrf, csrf_token: csrf,
       rnd: String(Math.floor(Date.now() / 1000)), color: '16777215', fontsize: '25', mode: '1'
     });
+    beforeSend?.();
     this.rateLimit.lastSentAt = Date.now();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
@@ -71,6 +77,7 @@ export class VoteSender {
       const data = await response.json() as { code?: number; message?: string };
       if (!response.ok || data.code !== 0) throw new Error(`send failed: HTTP ${response.status}, code ${data.code}, ${data.message || ''}`);
       console.log(`[sent room ${this.roomId}] ${message}`);
+      return true;
     } finally {
       clearTimeout(timeout);
     }
@@ -88,7 +95,8 @@ function relayToken(config: RuntimeConfig): string {
     (config.recorderSettingsFile ? readLocalSettings(config.recorderSettingsFile).token : '') || '';
 }
 
-function runAllRecorderRooms(config: RuntimeConfig, live: boolean, cookie: VoteCookie, answerer?: QuestionAnswerer, record?: QuestionRecordWriter): void {
+function runAllRecorderRooms(config: RuntimeConfig, live: boolean, cookie: VoteCookie, answerer?: QuestionAnswerer,
+  record?: QuestionRecordWriter, reminderAdapters?: ReminderAdapters): void {
   if (!config.recorderSocketUrl || !Array.isArray(config.globalAdminUids) ||
       config.globalAdminUids.some(uid => typeof uid !== 'string' || !/^[1-9]\d*$/u.test(uid)) ||
       (config.statePath && !path.isAbsolute(config.statePath))) {
@@ -118,15 +126,15 @@ function runAllRecorderRooms(config: RuntimeConfig, live: boolean, cookie: VoteC
     bot.stop();
     source?.stop();
   };
-  const bot = new MultiRoomVoteBot({ ...config, globalAdminUids: config.globalAdminUids }, async (roomId, message, isCurrent) => {
+  const bot = new MultiRoomVoteBot({ ...config, globalAdminUids: config.globalAdminUids }, async (roomId, message, isCurrent, beforeSend) => {
     let sender = senders.get(roomId);
     if (!sender) { sender = new VoteSender(roomId, config.botUid || '', live, cookie, rateLimit); senders.set(roomId, sender); }
-    await sender.send(message, isCurrent);
+    return sender.send(message, isCurrent, beforeSend);
   }, error => {
     console.error('Multi-room vote sending stopped:', error);
     stop();
     process.exitCode = 1;
-  }, answerer, record);
+  }, answerer, record, reminderAdapters);
   source = new LocalDanmakuClient(config.recorderSocketUrl, relayToken(config), '*', message => bot.ingest(message),
     () => { bot.disconnect(); saveState(false); }, rooms => { bot.updateRooms(rooms); saveState(true, rooms); });
   source.start();
@@ -141,6 +149,11 @@ export async function runVoteBot(configPath: string, live = false): Promise<void
   if (config.maxMessageChars !== undefined && (!Number.isInteger(config.maxMessageChars) || config.maxMessageChars < 20 || config.maxMessageChars > 40)) {
     throw new Error('maxMessageChars must be between 20 and 40');
   }
+  if (config.reminders?.enabled && (config.source !== 'recorder' || config.rooms !== 'auto-record')) {
+    throw new Error('Live reminders require source recorder and rooms auto-record');
+  }
+  const reminderAdapters = createReminderAdapters(config.reminders, live);
+  console.log(reminderAdapters ? `Live reminders enabled for room ${config.reminders!.roomId} (preset messages).` : 'Live reminders disabled.');
   const cookie = () => process.env.BILIBILI_VOTE_COOKIE ||
     (live && config.credentialConfigPath ? readLocalSettings(config.credentialConfigPath).bilibili?.cookie : '') || '';
   const answerer = createLiveQuestionAnswerer(config.questions, config.botUid);
@@ -150,7 +163,7 @@ export async function runVoteBot(configPath: string, live = false): Promise<void
     : 'Recording questions disabled.');
   if (config.rooms !== undefined) {
     if (config.rooms !== 'auto-record' || config.source !== 'recorder') throw new Error('Multi-room mode requires the recorder source');
-    runAllRecorderRooms(config, live, cookie, answerer, record);
+    runAllRecorderRooms(config, live, cookie, answerer, record, reminderAdapters);
     return;
   }
   if (typeof config.roomId !== 'string' || !/^\d+$/u.test(config.roomId) ||
@@ -179,7 +192,7 @@ export async function runVoteBot(configPath: string, live = false): Promise<void
     questions?.stop();
   };
   const enqueue = (message: string, isCurrent: () => boolean) => {
-    queue = queue.then(() => sender.send(message, isCurrent)).catch(error => {
+    queue = queue.then(async () => { await sender.send(message, isCurrent); }).catch(error => {
       console.error('Sending stopped:', error);
       stop();
       process.exitCode = 1;
