@@ -16,7 +16,7 @@ function fixture(withContinuation = false) {
         { start: 40, end: 50, text: 'Host said the answer was helpful.' },
         ...(withContinuation ? [{ start: 65, end: 70, text: 'Host completed the necessary clarification.' },
             { start: 78, end: 80, text: 'An unrelated topic begins.' }] : [])].map(row => ({ ...row,
-        speakerEvidence: { version: 1, status: 'row_supported', label: 'Host', observations: [{ ...row,
+        speakerEvidence: { version: 1, status: 'row_supported', identityVerified: true, label: 'Host', observations: [{ ...row,
             label: 'Host', scope: 'row', row: { label: 'Host', accepted: true, score: .8, margin: .2 } }] } }));
     const evidence = buildSubtitleEvidence(segments);
     const copy = { title: 'Host asked Guest', coverText: 'Book\nQuestion', description: 'Host recalled asking Guest about a book.' };

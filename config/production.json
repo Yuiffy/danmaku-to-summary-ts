@@ -1636,6 +1636,14 @@
           "excludePatterns": ["随机(?:抽取|抽奖|数|种子|生成|匹配|分配|选择)"]
         },
         {
+          "id": "sui-mofu-colleague-reference",
+          "keyword": "岁己",
+          "forms": ["c几c"],
+          "roomIds": ["1791260716"],
+          "cuePattern": "我又不是\\s*c几c",
+          "requireNearby": ["同事"]
+        },
+        {
           "id": "sui-reflexive-person-reference",
           "keyword": "岁己",
           "forms": ["自己"],
@@ -1761,8 +1769,16 @@
     "detectionMode": "summary",
     "verification": { "provider": "daiYu", "apiMode": "openai_chat", "model": "gpt-6.1-sol", "evidenceMethod": "independent_local_asr" },
     "roomIds": ["25788785"],
-    "songs": { "collection": { "seasonId": 9223796, "sectionId": 10312547 } },
-    "watch": { "collection": { "seasonId": 9223831, "sectionId": 10312582 } }
+    "songs": { "identifyNames": true, "collection": { "seasonId": 9223796, "sectionId": 10312547 } },
+    "watch": {
+      "collection": { "seasonId": 9223831, "sectionId": 10312582 },
+      "blackAlignment": {
+        "enabled": true,
+        "region": [0.27, 0.25, 0.58, 0.55],
+        "searchSeconds": 300,
+        "cadence": { "enabled": true }
+      }
+    }
   },
   "ownStreamClips": {
     "enabled": true,

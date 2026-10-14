@@ -13,7 +13,7 @@ describe('speaker evidence survives downstream input preparation', () => {
     { start: 0, end: 4, text: '[Host 0.99] This came from another voice.',
       speakerEvidence: { version: 1, status: 'mixed', label: 'Host', observations: [] } },
     { start: 4, end: 9, text: 'I have a different story.',
-      speakerEvidence: { version: 1, status: 'row_supported', label: 'Guest', observations: [] } },
+      speakerEvidence: { version: 1, status: 'row_supported', identityVerified: true, label: 'Guest', observations: [] } },
     { start: 9, end: 12, text: '[SPEAKER_02 0.72] Who said that?' }
   ] };
   it.each([false, true])('retains unknown, named guest and anonymous cluster with compact=%s', compactEvidence => {
@@ -23,6 +23,7 @@ describe('speaker evidence survives downstream input preparation', () => {
     expect(source.sourceText).toContain('[SPEAKER_02] Who said that?');
     expect(source.sourceText).not.toContain('[Host');
     if (compactEvidence) expect(source.evidence.speech[0].speakerEvidence.status).toBe('unknown');
+    if (compactEvidence) expect(source.evidence.speech[1].speakerEvidence.identityVerified).toBe(true);
   });
   it('does not merge adjacent different speakers or restore a rejected legacy label', () => {
     const grouped = buildSubtitleEvidence(parsed.segments);

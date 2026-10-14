@@ -5,10 +5,15 @@ const { buildSubtitleEvidence } = require('./subtitle_evidence');
 
 function publicDescription(metadata, value) {
     if (metadata.mode !== 'own_stream_fun_review') return value;
-    const prefix = require('../own_stream_clipper').buildClipDescription({ streamerName: metadata.streamerName,
-        streamTitle: metadata.streamTitle, recordedAt: metadata.recordedAt,
-        start: metadata.window.start, end: metadata.window.end, description: '' });
-    return String(value || '').startsWith(prefix + '\n\n') ? String(value).slice(prefix.length + 2) : value;
+    for (const emotionEvidence of [metadata.candidate?.emotionEvidence, []]) {
+        const prefix = require('../own_stream_clipper').buildClipDescription({ streamerName: metadata.streamerName,
+            streamTitle: metadata.streamTitle, recordedAt: metadata.recordedAt,
+            start: metadata.window.start, end: metadata.window.end, description: '', emotionEvidence });
+        if (String(value || '').startsWith(prefix + '\n\n')) return String(value).slice(prefix.length + 2);
+        const parts = String(value || '').split(/\r?\n\s*\r?\n/u);
+        if (parts.length > 1 && parts[0].replace(/\s/gu, '') === prefix.replace(/\s/gu, '')) return parts.slice(1).join('\n\n');
+    }
+    return value;
 }
 
 function adapter(metadata) {

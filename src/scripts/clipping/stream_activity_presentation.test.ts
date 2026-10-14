@@ -23,8 +23,28 @@ test('viewing titles and screenshot covers identify the watched movie rather tha
     const result = presentationFor({ recordedAt: '2026-10-04 20:38:02', streamerName: '岁己', streamTitle: '唱聊',
         events: [{ id: 'w1', kind: 'watch', name: '雷神3', mediaKind: 'movie' }] }, 'watch',
         [{ activityId: 'w1', sha256: 'one' }, { activityId: 'w1', sha256: 'two' }]);
-    expect(result).toMatchObject({ version: 3, recordingDate: '2026.10.4', profile: { prefix: '【岁己同步视听】' },
-        cover: { version: 2, kind: 'watch', subject: '《雷神3》', date: '2026.10.4' },
-        copy: { title: '《雷神3》｜2026.10.4', coverText: '《雷神3》\n2026.10.4' },
-        parts: [{ title: '《雷神3》 01/02' }, { title: '《雷神3》 02/02' }] });
+    expect(result).toMatchObject({ version: 4, recordingDate: '2026.10.4', profile: { prefix: '【岁己同步视听】' },
+        cover: { version: 2, kind: 'watch', subject: '《锤子哥3》', date: '2026.10.4' },
+        copy: { title: '《锤子哥3》｜2026.10.4', coverText: '《锤子哥3》\n2026.10.4' },
+        parts: [{ title: '《锤子哥3》 01/02' }, { title: '《锤子哥3》 02/02' }],
+        publicNames: [{ activityId: 'w1', name: '雷神3', publicName: '锤子哥3' }] });
+});
+
+test('all public viewing surfaces use aliases while internal identity remains evidenced', () => {
+    const plan = { recordedAt: '2026-10-10 21:03:17', streamerName: '岁己', streamTitle: '一起看银河护卫队3',
+        events: [{ id: 'w1', kind: 'watch', name: '银河护卫队3' },
+            { id: 'w2', kind: 'watch', name: '银河护卫队圣诞特辑（片段）' }] };
+    const result = presentationFor(plan, 'watch', [{ activityId: 'w1', sha256: 'one' }, { activityId: 'w2', sha256: 'two' }]);
+    expect(JSON.stringify({ copy: result.copy, cover: result.cover, parts: result.parts.map((p: any) => p.title), tags: result.tags })).not.toContain('银河护卫队');
+    expect(result.copy.title).toContain('宇宙蹦迪天团圣诞特辑（片段）');
+    expect(plan.events[0].name).toBe('银河护卫队3');
+});
+
+test('new works require a separate descriptive alias and never fall back to the original title', () => {
+    const plan = { recordedAt: '2026-10-10 21:03:17', streamerName: '岁己', streamTitle: '陪你看',
+        events: [{ id: 'w1', kind: 'watch', name: '新作品', publicName: '企鹅老板打工记' }] };
+    const parts = [{ activityId: 'w1', sha256: 'one' }];
+    expect(presentationFor(plan, 'watch', parts).copy.title).toContain('企鹅老板打工记');
+    plan.events[0].publicName = '新作品搞笑版';
+    expect(presentationFor(plan, 'watch', parts).copy.title).toContain('待确认化名');
 });

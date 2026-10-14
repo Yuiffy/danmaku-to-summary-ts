@@ -83,6 +83,29 @@ function topicFixture() {
 }
 
 describe('keyword/topic automatic publication final review', () => {
+    test('explicit user word corrections reach final review only for the matching current rendered cue', async () => {
+        const { artifact, input } = topicFixture(), io = makeIO();
+        input.retainedSubtitles = [{ start: 0, end: 2, text: '小栞今天给我送礼物了' }];
+        const edit = { authority: 'user', original: '小潘', replacement: '小栞', note: '用户已确认',
+            changes: [{ cue: 1, before: '小潘今天给我送礼物了', after: '小栞今天给我送礼物了' }] };
+        artifact.renderedSubtitles = { revision: 1, renderedRevision: 1, edits: [edit,
+            { ...edit, authority: 'model' }, { ...edit, changes: [{ ...edit.changes[0], cue: 9 }] },
+            { ...edit, changes: [{ ...edit.changes[0], after: '旧修订' }] }] };
+        const inspectPacket = () => JSON.parse((io.request as jest.Mock).mock.calls.at(-1)[0].split('EVIDENCE_JSON ')[1]);
+        await reviewPublication(artifact, input, io);
+        expect(inspectPacket().userConfirmedSubtitleEdits).toEqual([
+            { cue: 1, original: '小潘', replacement: '小栞', start: 0, end: 2 }
+        ]);
+        expect((io.request as jest.Mock).mock.calls.at(-1)[0]).toContain('not the whole sentence');
+        artifact.renderedSubtitles.renderedRevision = 0;
+        await reviewPublication(artifact, input, io);
+        expect(inspectPacket().userConfirmedSubtitleEdits).toEqual([]);
+        artifact.renderedSubtitles.renderedRevision = 1;
+        (io.request as jest.Mock).mockResolvedValue(JSON.stringify({ ...passed, status: 'needs_review',
+            checks: { ...passed.checks, content: false }, issues: ['故事结尾缺失'] }));
+        expect((await reviewPublication(artifact, input, io)).publicationDecision.action).toBe('needs_human');
+    });
+
     test('reviews actual final artifacts and binds the whole preflight rather than promoting its ready stamp', async () => {
         const { artifact, input } = topicFixture(), io = makeIO();
         artifact.aiReview.rejectedSubtitleEdits = [{ original: '含糊词', replacement: '猜测', applied: false, validationError: 'unsupported' }];
@@ -221,6 +244,12 @@ describe('ordinary own-stream automatic publication final review', () => {
         expect(prompt).toContain('实际音轨与字幕属于不同话题或持续错位必须阻塞');
         expect(prompt).toContain('不因省略同义的“考虑”再次阻塞');
         expect(prompt).toContain('不能猜词、编造听审');
+        expect(prompt).toContain('允许标题沿用这个最初印象作为叙事钩子');
+        expect(prompt).toContain('一次清楚提及即可');
+        expect(prompt).toContain('把被否认的指控写成最终结论');
+        expect(prompt).toContain('别名未消歧或有真实反证时保留审核');
+        expect(prompt).toContain('紧邻原字幕上下文可确认普通地点或时间背景');
+        expect(prompt).toContain('不能从窗口外借用人物身份、行为、对话引语');
         expect(result.publicationDecision.action).toBe('auto_queue');
         expect(input.retainedSubtitles).toEqual(before);
         expect(result).not.toHaveProperty('automaticSubtitleRepair');
@@ -257,6 +286,25 @@ describe('ordinary own-stream automatic publication final review', () => {
         expect(evidence.excludedCategories).toEqual(['现实家庭关系']);
         expect(io.snapshot).toHaveBeenCalledTimes(2);
         expect(artifact).not.toHaveProperty('publicationReview');
+        expect(result).not.toHaveProperty('ownStreamHumanReview');
+    });
+
+    test('later literal edits are distinct from original ASR and do not discharge independent final review', async () => {
+        const artifact=makeArtifact(), input=makeInput(), io=makeIO();
+        input.speech=[{start:110,end:114,text:'爷爷要检察走了'}];
+        input.retainedSubtitles=[{start:10,end:14,text:'爷爷要警察同志'}];
+        artifact.renderedSubtitles={clipId:123,revision:2,renderedRevision:2,edits:[{original:'检察走了',replacement:'警察同志',
+            note:'画面内对白字幕依据',changes:[{cue:1,before:'爷爷要检察走了',after:'爷爷要警察同志'}]}]};
+        (io.request as jest.Mock).mockResolvedValue(JSON.stringify({...passed,status:'needs_review',
+            checks:{...passed.checks,subtitles:false},issues:['重叠的主播插话仍需独立核对']}));
+        const result=await reviewPublication(artifact,input,io);
+        const prompt=(io.request as jest.Mock).mock.calls[0][0];
+        const packet=JSON.parse(prompt.split('EVIDENCE_JSON ')[1]);
+        expect(packet.completeSourceSpeechAndContext).toEqual(input.speech);
+        expect(packet.completeRetainedSubtitles).toEqual(input.retainedSubtitles);
+        expect(packet.renderedSubtitleRevision).toMatchObject({clipId:123,revision:2,edits:[{original:'检察走了',replacement:'警察同志'}]});
+        expect(prompt).toContain('do not report a replaced old ASR quote');
+        expect(result.publicationDecision.action).toBe('needs_human');
         expect(result).not.toHaveProperty('ownStreamHumanReview');
     });
 

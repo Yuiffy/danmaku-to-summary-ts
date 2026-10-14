@@ -4,7 +4,8 @@
 function speakerForSegment(segment = {}) {
     const evidence = segment.speakerEvidence || segment.speaker_evidence;
     if (evidence) {
-        if (evidence.status === 'row_supported' && evidence.label) return String(evidence.label);
+        const identity = require('../workflow-runtime').loadWorkflow('clipping/speakerIdentity').publicSpeakerIdentity(evidence);
+        if (identity) return identity;
         const anonymous = String(evidence.anonymousLabel || '').trim();
         return /^S\d+$/u.test(anonymous) ? anonymous : 'UNKNOWN';
     }

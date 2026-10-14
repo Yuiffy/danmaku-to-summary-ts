@@ -3,10 +3,26 @@ import * as os from 'os';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
 import { Artifact } from './enhancement';
-import { reviewOwnPublications, enqueueOwnPublications, reviewPublications, enqueuePublications, PublicationContext, PublicationAdapters } from './publicationRuntime';
+import { reviewOwnPublications, enqueueOwnPublications, reviewPublications, enqueuePublications, publicationFrameTimes, inspectPublicationMedia, PublicationContext, PublicationAdapters } from './publicationRuntime';
 
 const passed = { status: 'passed', checks: { content: true, attribution: true, subtitles: true, visuals: true, policy: true }, issues: [] };
 const picture = 'data:image/jpeg;base64,/9j/';
+test('current versioned captions receive bounded final-frame evidence without using stale or out-of-range edits', () => {
+    const subtitles = Array.from({length: 8}, (_, index) => ({start:index*10+1,end:index*10+5,text:`当前${index}`}));
+    const artifact: Artifact = {window:{start:100,end:180,duration:80},copy:{title:'标题',description:'简介',coverText:'封面'},output:{}};
+    const baseline = publicationFrameTimes(artifact,subtitles,80);
+    artifact.renderedSubtitles={revision:2,renderedRevision:2,edits:[{changes:[
+        {cue:2,after:'当前1'}, {cue:3,after:'已不在当前字幕'}, {cue:0,after:'当前7'},
+        {cue:4,after:'当前3'}, {cue:5,after:'当前4'}, {cue:6,after:'当前5'}, {cue:9,after:'窗外'}
+    ]}]};
+    const times=publicationFrameTimes(artifact,subtitles,80);
+    expect(times).toEqual([...baseline,34.9,44.9,54.9]);
+    expect(times).not.toContain(24.9);
+    expect(times.length).toBeLessThanOrEqual(8);
+    artifact.renderedSubtitles.renderedRevision=1;
+    expect(publicationFrameTimes(artifact,subtitles,80)).toEqual(baseline);
+});
+
 function fixture() {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'publication-runtime-'));
     const source = { mediaPath: path.join(directory, 'source.mp4'), srtPath: path.join(directory, 'source.srt'), xmlPath: path.join(directory, 'source.xml') };
@@ -36,6 +52,53 @@ function fixture() {
     };
     return { directory, source, artifact, context, adapters };
 }
+
+test('a voice-only named public claim is held before an AI pass can approve it', async () => {
+    const f = fixture();
+    try {
+        const artifact = f.artifact(1);
+        artifact.copy.title = '灰泽满追问：否定了小女友？';
+        f.adapters.evidence = () => ({ sourceSha256: 'a'.repeat(64), cues: [{ id: 'G1', start: 1, end: 15,
+            text: '这意思是否定了小女友？', items: [{ text: '这意思是否定了小女友？',
+                speakerEvidence: { status: 'row_supported', label: '灰泽满Hazel', identityVerified: false } }] }] });
+        const [result] = await reviewOwnPublications([artifact], f.context, f.adapters);
+        expect(result.publicationDecision.action).toBe('needs_human');
+        expect(result.publicationReview.issues).toContain('unverified_voice_person:title:灰泽满Hazel');
+        expect(f.adapters.request).not.toHaveBeenCalled();
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
+
+test('low-rate video with a longer audio tail samples current video frames and cannot reuse an old image', async () => {
+    const f = fixture();
+    try {
+        const artifact = f.artifact(1);
+        artifact.window.duration = 194.044;
+        const subtitles = [{ start: 0, end: .884, text: '开头' }, { start: 177.594, end: 194.043, text: '结尾' }];
+        const jpeg = Buffer.from([255, 216, 255]);
+        fs.writeFileSync(artifact.output.coverPath, jpeg);
+        f.adapters.probe = async () => ({ format: { duration: '194.044' }, streams: [
+            { codec_type: 'video', width: 960, height: 540, start_time: '0', duration: '193.799', avg_frame_rate: '970000/193799' },
+            { codec_type: 'audio', start_time: '0', duration: '194.044' }
+        ] });
+        const requested: number[] = [];
+        f.adapters.runFfmpeg = async args => {
+            if (!args.includes('-ss')) return;
+            const time = Number(args[args.indexOf('-ss') + 1]);
+            requested.push(time);
+            // FFmpeg exits successfully without a file when seeking beyond the last frame's PTS.
+            if (time <= 193.6) fs.writeFileSync(args.at(-1)!, jpeg);
+        };
+        const inspection = await inspectPublicationMedia(artifact, subtitles, f.context, f.adapters);
+        expect(inspection.passed).toBe(true);
+        expect(requested).toHaveLength(5);
+        expect(requested.at(-1)).toBeCloseTo(193.549);
+        expect(inspection.facts.sampledFrameTimes).toEqual(requested);
+        expect(inspection.frames).toHaveLength(6);
+        // A second extraction producing no output must not accept the previous inspection's frames.
+        f.adapters.runFfmpeg = async () => undefined;
+        await expect(inspectPublicationMedia(artifact, subtitles, f.context, f.adapters)).rejects.toThrow('ENOENT');
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
 
 test('known Paraformer fallback timing blocks review and Python upload validation even when the old model passed', async () => {
     const f = fixture();
@@ -126,7 +189,7 @@ test('final review includes bounded question/answer audience context with origin
     } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
 });
 
-test('preserves exact cue-to-row acoustic evidence without treating unverified human identity as a failed row test', async () => {
+test('preserves exact cue-to-row acoustic evidence while keeping an unverified match separate from public speaker identity', async () => {
     const f = fixture();
     try {
         const cue = { id: 'G1', start: 1, end: 15, text: '完整原话',
@@ -141,7 +204,7 @@ test('preserves exact cue-to-row acoustic evidence without treating unverified h
             expect(evidence.evidence.configuredPeople).toEqual(f.context.configuredPeople);
             expect(prompt).toContain('It only resolves names; it does not prove anyone spoke');
             expect(prompt).toContain('cue.items row');
-            expect(prompt).toContain('not that the row test failed');
+            expect(prompt).toContain('this match cannot independently establish a named speaker');
             expect(prompt).toContain('Return resolvedGroundingIssues:[]');
             return { text: JSON.stringify(passed) };
         });

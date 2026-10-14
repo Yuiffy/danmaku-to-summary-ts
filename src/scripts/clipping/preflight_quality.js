@@ -91,7 +91,9 @@ function applyQualityAudit(text, plan, input, evidence, config) {
         if (row.verdict === 'repair') {
             if (!row.replacement || row.replacement.id !== clip.id) throw new Error('Replacement changed clip identity');
             try {
-                const corrected = normalizePreflightResponse(JSON.stringify({ hits: plan.hits, clips: [row.replacement] }), input, evidence, config);
+                const corrected = normalizePreflightResponse(JSON.stringify({ hits: plan.hits, clips: [row.replacement],
+                    ...(plan.competitionContext ? { competitionContext: plan.competitionContext } : {}) }), input, evidence, config);
+                if (!corrected.clips.length) throw new Error('Quality repair depends only on suppressed competition keywords');
                 finalClip = corrected.clips[0];
                 if (finalClip.rejectedSubtitleEdits.length) {
                     finalClip.status = 'needs_review';

@@ -76,6 +76,20 @@ async function reviewTopicFinals(finals, context, io) {
 
 async function reviewCandidateFinal(artifact, rootConfig, io, options = {}) {
     const config = io.getClipTopicsConfig(rootConfig);
+    if (options.finalOnly) {
+        const { getAsrConfig, resolvePythonCommand } = require('../asr/asr_backends');
+        const backend = getAsrConfig(rootConfig).fun_asr_nano;
+        const evidence = io.buildPreflightEvidence(io.parseTopicSrt(artifact.source.srtPath).segments);
+        if (evidence.sourceSha256 !== artifact.aiReview?.sourceSha256) throw new Error('Keyword audio source evidence changed');
+        artifact = await loadWorkflow('clipping/topicRecovery').diagnoseKeywordAudio(artifact,
+            { target: { names: config.keywords }, subtitles: evidence.cues }, config, artifact.source, {
+                python: resolvePythonCommand(backend), pathMap: backend.python_path_map,
+                scriptPath: path.resolve(__dirname, '../python/ordinary_subtitle_audio.py'),
+                model: backend.model, sensevoiceModel: 'iic/SenseVoiceSmall', vadModel: backend.vad_model || 'fsmn-vad',
+                device: backend.device, resource_guard: { ...backend.resource_guard, torch_num_threads: 2 },
+                gpu_throttle: backend.gpu_throttle, ffmpeg: rootConfig.ffmpegPath || 'ffmpeg', ffmpegThreads: 2
+            }, options.boundaryAudioIO);
+    }
     const publicationConfig = loadWorkflow('clipping/publicationReview').resolveTopicPublicationConfig(rootConfig);
     const [reviewed] = await reviewTopicFinals([artifact], {
         rootConfig, info: { roomId: artifact.roomId, recordedAt: artifact.recordedAt, streamTitle: artifact.streamTitle },

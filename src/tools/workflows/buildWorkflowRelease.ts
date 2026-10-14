@@ -4,6 +4,7 @@ import { createHash } from 'crypto';
 import * as ts from 'typescript';
 
 const entries = {
+  'clipping/speakerIdentity': 'workflows/clipping/speakerIdentity.js',
   'clipping/stage': 'workflows/clipping/stage.js',
   'clipping/editPlan': 'workflows/clipping/editPlan.js',
   'clipping/enhancement': 'workflows/clipping/enhancement.js',
@@ -11,8 +12,14 @@ const entries = {
   'clipping/activityStages': 'workflows/clipping/activityStages.js',
   'clipping/activityRecovery': 'workflows/clipping/activityRecovery.js',
   'clipping/activityWatchContext': 'workflows/clipping/activityWatchContext.js',
+  'clipping/watchBlackPolicy': 'workflows/clipping/watchBlackPolicy.js',
+  'clipping/watchBlackRuntime': 'workflows/clipping/watchBlackRuntime.js',
+  'clipping/watchMovieCadence': 'workflows/clipping/watchMovieCadence.js',
   'clipping/activityAudio': 'workflows/clipping/activityAudio.js',
+  'clipping/activityNativeSegments': 'workflows/clipping/activityNativeSegments.js',
   'clipping/activityTitles': 'workflows/clipping/activityTitles.js',
+  'clipping/watchPublicNames': 'workflows/clipping/watchPublicNames.js',
+  'clipping/songResearchRuntime': 'workflows/clipping/songResearchRuntime.js',
   'clipping/activityPublication': 'workflows/clipping/activityPublication.js',
   'clipping/reviewDigest': 'workflows/clipping/reviewDigest.js',
   'clipping/reviewSelectionHistory': 'workflows/clipping/reviewSelectionHistory.js',

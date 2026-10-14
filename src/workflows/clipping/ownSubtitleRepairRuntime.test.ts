@@ -109,10 +109,11 @@ test('source mutation, audio hash tampering and legacy required QA stop a repair
     }
 });
 
-test('a source-only rebuild can return audio diagnosis but cannot replace its rendered subtitle receipt', async () => {
+test.each([true, false])('a source-only rebuild can return audio diagnosis but cannot replace its rendered subtitle receipt (content=%s)', async content => {
     const f=await fixture();
     try {
         f.artifact.renderedSubtitles={revision:0,edits:[],path:f.artifact.output.srtPath,sha256:digest(f.artifact.output.srtPath)};
+        f.artifact.publicationReview.checks.content=content;
         const result=await repairOwnSubtitles(f.artifact,policy,{},f.io);
         expect(result.automaticSubtitleRepairAttempt.status).toBe('inconclusive');
         expect(result.renderedSubtitles).toBe(f.artifact.renderedSubtitles);
@@ -133,7 +134,7 @@ test('an alignment update reuses hash-bound prior audio without invoking either 
         const attempt = await repairOwnSubtitles(f.artifact, policy, {}, f.io);
         delete attempt.automaticSubtitleRepairAttempt.alignmentVersion;
         const resumed = await repairOwnSubtitles(attempt, policy, {}, f.io);
-        expect(resumed.automaticSubtitleRepairAttempt.alignmentVersion).toBe('cue-consensus-v4');
+        expect(resumed.automaticSubtitleRepairAttempt.alignmentVersion).toBe('cue-consensus-v5');
         expect(f.io.runAudio).toHaveBeenCalledTimes(1);
         expect(f.io.render).not.toHaveBeenCalled();
         const originalAudio = read(attempt.automaticSubtitleRepairAttempt.evidencePath), reused = read(resumed.automaticSubtitleRepairAttempt.evidencePath);

@@ -20,6 +20,24 @@ test.each([10, 1500, 1801, 3001, 3601, 5401, 9000])('watch parts cover %s second
     });
     if (duration >= 2400) expect(Math.min(...parts.map(row => row.duration))).toBeGreaterThanOrEqual(1200);
 });
+
+test.each([[600, 720, 1800, 3], [3600, 4200, 7200, 2]])('review policy can choose a %s-second target and %s-second maximum',
+    (targetPartSeconds, maxPartSeconds, duration, count) => {
+        const config = p.getActivityConfig({ streamActivityClips: { watch: { targetPartSeconds, maxPartSeconds } } });
+        const watch = p.buildParts([event({ kind: 'watch', id: 'film', start: 20, end: 20 + duration })], 20 + duration, config).watch;
+        expect(watch).toHaveLength(count);
+        expect(watch.every(part => part.duration <= maxPartSeconds)).toBe(true);
+        expect(watch[0].start).toBe(20); expect(watch.at(-1).end).toBe(20 + duration);
+        expect(watch.reduce((sum, part) => sum + part.duration, 0)).toBe(duration);
+    });
+
+test('flexible watch sizes still reject invalid durations and excessive part counts', () => {
+    for (const [targetPartSeconds, maxPartSeconds] of [[0, 600], [600, 599], [NaN, 1800], [1500, Infinity]]) {
+        expect(() => p.getActivityConfig({ streamActivityClips: { watch: { targetPartSeconds, maxPartSeconds } } })).toThrow('Watch part');
+        expect(() => p.splitWatch(0, 7200, targetPartSeconds, maxPartSeconds)).toThrow('part size');
+    }
+    expect(() => p.splitWatch(0, 7200, 60, 60)).toThrow('100-P');
+});
 test('song duplicates from detector overlap merge, but distinct repeats and short fragments remain', () => {
     const events = p.mergeEvents([event(), event({ start: 101, end: 402, windows: [2] }),
         event({ start: 500, end: 800 }), event({ start: 900, end: 913, name: null, performance: 'fragment' })]);

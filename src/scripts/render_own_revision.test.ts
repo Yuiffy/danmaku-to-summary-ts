@@ -52,6 +52,42 @@ describe('own-stream subtitle revisions', () => {
   });
   afterEach(() => { jest.restoreAllMocks(); fs.rmSync(directory, { recursive: true, force: true }); });
 
+  test.each([false, true])('keyword rebuild uses fresh topic review and preserves required attribution=%s', async required => {
+    metadata.mode = 'local_review'; metadata.publicationKind = 'keyword_topic'; metadata.status = 'success';
+    metadata.roomId = 'another-room'; metadata.attributionRequired = required;
+    metadata.aiReview = { sourceSha256: metadata.grounding.sourceSha256 };
+    metadata.attributionReview.sourceSha256 = 'stale-actor-source';
+    metadata.publicationReview = { policyVersion: 'topic-v1', status: 'needs_review', issues: ['Old named subject'] };
+    delete metadata.ownStreamHumanReview; save();
+    const publication = require('./clipping/own_automatic_publication');
+    const actor = jest.spyOn(publication, 'reviewArtifactCopy').mockImplementation(async (value, _issues, context) => {
+      expect(context.config.attribution).toMatchObject({ enabled: true });
+      expect(context.config.attribution.roomIds).toContain('another-room');
+      expect(_issues).toContain('Old named subject');
+      return { ...value, attributionReview: { status: 'passed' } };
+    });
+    const ownFinal = jest.spyOn(publication, 'reviewFinals');
+    const final = jest.spyOn(require('./clipping/topic_automatic_publication'), 'reviewCandidateFinal')
+      .mockImplementation(async (value, root, adapters, reviewOptions) => {
+        expect(root).toBe(config); expect(reviewOptions).toEqual({ finalOnly: true });
+        expect(adapters.buildPreflightEvidence).toEqual(expect.any(Function));
+        expect(value.output.mediaPath).not.toBe(metadata.output.mediaPath);
+        expect(value.attributionRequired).toBe(required);
+        return { ...value, publicationReview: { policyVersion: 'topic-v1', status: 'needs_review', issues: ['Fresh blocker'] },
+          publicationDecision: { action: 'needs_human' } };
+      });
+    await updateRevision(file, { ...options, action: 'prepare', sourceKind: 'live_speech' }, config);
+    await renderRevision(file, { ...options, automaticReview: 'yes' }, config);
+    expect(final).toHaveBeenCalledTimes(1); expect(ownFinal).not.toHaveBeenCalled();
+    expect(actor).toHaveBeenCalledTimes(required ? 1 : 0);
+    expect(load()).toMatchObject({ uploadId: 7, attributionRequired: required,
+      publicationReview: { policyVersion: 'topic-v1', status: 'needs_review', issues: ['Fresh blocker'] } });
+    expect(load().ownStreamHumanReview).toBeUndefined();
+    fs.appendFileSync(metadata.source.srtPath, '\n2\n00:10:01,000 --> 00:10:02,000\nChanged source\n');
+    await expect(updateRevision(file, { ...options, action: 'prepare', sourceKind: 'live_speech' }, config))
+      .rejects.toThrow('Original source evidence changed');
+  });
+
   test('timing rebuild renders calibrated subtitles under the same ID and records independent AI authority', async () => {
     const snapshot = sourceSnapshot(metadata);
     const aligned = path.join(directory, 'aligned.srt');
@@ -63,7 +99,7 @@ describe('own-stream subtitle revisions', () => {
     metadata.qaRequired = true; save();
     const publication = require('./clipping/own_automatic_publication');
     jest.spyOn(publication, 'reviewArtifactCopy').mockImplementation(async value => ({ ...value, attributionReview: { status: 'passed' } }));
-    jest.spyOn(publication, 'inspectFinals').mockImplementation(async values => values.map(value => ({ ...value,
+    jest.spyOn(publication, 'reviewFinals').mockImplementation(async values => values.map(value => ({ ...value,
       publicationReview: { status: 'passed' }, publicationDecision: { action: 'auto_queue' } })));
     jest.spyOn(require('./workflow-runtime').loadWorkflow('clipping/ownTimingRecovery'), 'verifyRenderedTimingAudio')
       .mockImplementation(async value => value);
@@ -82,6 +118,22 @@ describe('own-stream subtitle revisions', () => {
     expect(readTranscript).toHaveBeenLastCalledWith(record, snapshot, config, true);
     expect(load()).toMatchObject({ qaRequired: true, attributionRequired: true, rebuildRequired: true,
       renderedTimingRepair: { originalSource: snapshot }, source: { srtPath: aligned } });
+  });
+
+  test.each(['passed', 'needs_review'])('runs the bounded final repair path after an own-stream rebuild and preserves its verdict: %s', async status => {
+    delete metadata.ownStreamHumanReview; save();
+    const publication = require('./clipping/own_automatic_publication');
+    jest.spyOn(publication, 'reviewArtifactCopy').mockImplementation(async value => ({ ...value, attributionReview: { status: 'passed' } }));
+    const final = jest.spyOn(publication, 'reviewFinals').mockImplementation(async values => values.map(value => {
+      expect(value.renderedSubtitles.review.note).toBe(options.reviewNote);
+      expect(value.output.mediaPath).not.toBe(metadata.output.mediaPath);
+      return { ...value, publicationReview: { status, issues: status === 'needs_review' ? ['Unresolved audio'] : [] } };
+    }));
+    await updateRevision(file, { ...options, action: 'prepare', sourceKind: 'live_speech' }, config);
+    await renderRevision(file, { ...options, automaticReview: 'yes' }, config);
+    expect(final).toHaveBeenCalledTimes(1);
+    expect(load()).toMatchObject({ uploadId: 7, publicationReview: { status } });
+    expect(load().ownStreamHumanReview).toBeUndefined();
   });
 
   test('literal corrections preserve old artifacts, cue times, ID and revision history', async () => {
@@ -410,7 +462,7 @@ describe('own-stream subtitle revisions', () => {
       .rejects.toThrow('overlaps retained clip 8');
   });
 
-  test.each(['stream_game_submission', 'stream_activity_submission'])('a %s archive does not block a separately edited highlight, but an overlapping highlight does', async type => {
+  test.each(['stream_game_submission', 'stream_activity_submission', 'danmaku_replay'])('a %s archive does not block a separately edited highlight, but an overlapping highlight does', async type => {
     metadata.selectionRejection = { reason: 'public_copy_evidence_dropped' }; save();
     const peerFile = path.join(directory, 'game.json');
     const registryPath = path.join(directory, 'registry.json');

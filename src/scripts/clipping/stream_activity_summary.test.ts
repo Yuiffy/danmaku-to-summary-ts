@@ -18,7 +18,7 @@ function fixture() {
         activityTimeline: { version: 1, status: 'complete', events: [
             { kind: 'song', start: 100, end: 400, name: '测试曲', performance: 'full', startObserved: true, endObserved: true,
                 evidenceIds: [byText('唱一首'), byText('演唱歌词')], titleEvidenceIds: [byText('唱一首')] },
-            { kind: 'watch', start: 1000, end: 6000, name: '测试电影', mediaKind: 'movie', startObserved: true, endObserved: true,
+            { kind: 'watch', start: 1000, end: 6000, name: '测试电影', publicName: '企鹅老板打工记', mediaKind: 'movie', startObserved: true, endObserved: true,
                 evidenceIds: [byText('来看'), byText('看完了')], titleEvidenceIds: [byText('来看')] }
         ] } };
     const generateText = jest.fn(async () => ({ text: JSON.stringify(raw), meta: {} }));
@@ -53,6 +53,51 @@ test('the existing summary request also supplies timestamps, while clips reuse i
     } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
 });
 
+test('new song packages research names before review and a resumed package never repeats the external research', async () => {
+    const f = fixture();
+    try {
+        f.options.config.streamActivityClips.songs['identifyNames'] = true;
+        const evidencePath = path.join(f.directory, 'names.json');
+        const identifySongs = jest.fn(async ({ metadataPath }) => {
+            const row = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+            expect(row.uploadReady).toBe(false);
+            fs.writeFileSync(evidencePath, JSON.stringify({ items: [{ activityId: row.activities[0].id, name: '测试曲',
+                sourceAlias: '测试曲', segmentIndices: [1], note: '原文明确报幕' }] }));
+            return { status: 'identified', evidencePath, identified: [{ name: '测试曲' }], unresolved: [] };
+        });
+        const options = { ...f.options, kind: 'songs', identifySongs };
+        const result = await workflow.generateStreamActivities(options);
+        const manifest = JSON.parse(fs.readFileSync(result.manifestPath, 'utf8'));
+        const row = JSON.parse(fs.readFileSync(manifest.clips[0].metadataPath, 'utf8'));
+        expect(row.songResearch.status).toBe('identified');
+        expect(row.presentation.titleEvidence.items[0].name).toBe('测试曲');
+        expect(row.uploadReady).toBe(false);
+        await workflow.generateStreamActivities(options);
+        expect(identifySongs).toHaveBeenCalledTimes(1);
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
+
+test('opt-in black alignment changes rendering boundaries, persists evidence and resumes without extra scanning', async () => {
+    const f = fixture();
+    const blackScanRun = jest.fn(async () => ({ stderr: 'black_start:351 black_end:352 black_duration:1' }));
+    f.options.config.streamActivityClips.watch['blackAlignment'] = { cadence: { enabled: false } };
+    try {
+        const options = { ...f.options, kind: 'watch', watchBlackRegion: '.27,.25,.58,.55', blackScanRun };
+        const result = await workflow.generateStreamActivities(options);
+        const plan = JSON.parse(fs.readFileSync(result.planPath, 'utf8'));
+        expect(plan.parts.watch[0].end).toBe(2300.5);
+        expect(plan.parts.watch[0].splitBoundary.method).toBe('movie_region_black');
+        expect(fs.existsSync(plan.parts.watch[0].blackAlignmentEvidence.path)).toBe(true);
+        expect(f.renderPart.mock.calls[0][1].end).toBe(2300.5);
+        expect(plan.parts.watch.at(-1).end).toBe(6000);
+        const scans = blackScanRun.mock.calls.length;
+        await workflow.generateStreamActivities(options);
+        expect(blackScanRun).toHaveBeenCalledTimes(scans); expect(f.renderPart).toHaveBeenCalledTimes(4);
+        await expect(workflow.generateStreamActivities({ ...options, watchBlackRegion: '.3,.25,.5,.55' }))
+            .rejects.toThrow('parameters or shared summary changed');
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
+
 test('a movie named only in the shared overview is recovered from its original session citation without another request', async () => {
     const f = fixture();
     f.raw.overview = '唱歌并观看《测试电影》';
@@ -64,7 +109,31 @@ test('a movie named only in the shared overview is recovered from its original s
         expect(plan.events.find(event => event.kind === 'watch')).toMatchObject({ name: '测试电影', titleEvidenceIds: [f.context.evidence.speech.find(row => row.text.includes('来看')).id] });
         const manifest = JSON.parse(fs.readFileSync(result.manifestPath, 'utf8'));
         const watch = JSON.parse(fs.readFileSync(manifest.clips[1].metadataPath, 'utf8'));
-        expect(watch.copy.title).toBe('《测试电影》｜2026.10.1');
+        expect(watch.copy.title).toBe('《企鹅老板打工记》｜2026.10.1');
+        expect(f.generateText).toHaveBeenCalledTimes(1);
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
+
+test('first-package boundary recovery aligns the corrected movie range before any video exists', async () => {
+    const f = fixture();
+    f.options.config.streamActivityClips.watch['blackAlignment'] = { cadence: { enabled: false } };
+    const blackScanRun = jest.fn(async () => ({ stderr: 'black_start:351 black_end:352 black_duration:1' }));
+    f.calibrate.mockImplementationOnce(async events => ({ events: events.map(e => ({ ...e,
+        verification: { decision: 'uncertain', reason: 'opening missing' },
+        reviewIssues: ['watch_boundary_provisional'] })), rejected: [], requests: 1, audioSeconds: 120, cacheHits: 0 }));
+    try {
+        const options = { ...f.options, kind: 'watch', watchBlackRegion: '.27,.25,.58,.55', blackScanRun };
+        await expect(workflow.generateStreamActivities(options)).rejects.toThrow('Viewing boundaries remain unresolved');
+        expect(f.renderPart).not.toHaveBeenCalled();
+        const firstScans = blackScanRun.mock.calls.length;
+        f.calibrate.mockImplementationOnce(async events => ({ events: events.map(e => ({ ...e, start: e.start - 50,
+            verification: { decision: 'keep' } })), rejected: [], requests: 1, audioSeconds: 180, cacheHits: 0 }));
+        const result = await workflow.generateStreamActivities({ ...options, retryBoundaries: true });
+        const plan = JSON.parse(fs.readFileSync(result.planPath, 'utf8'));
+        expect(plan.parts.watch[0].start).toBe(950);
+        expect(plan.parts.watch[0].splitBoundary?.method).toBe('movie_region_black');
+        expect(blackScanRun.mock.calls.length).toBeGreaterThan(firstScans);
+        expect(plan.efficiency.boundaryRequests).toBe(2);
         expect(f.generateText).toHaveBeenCalledTimes(1);
     } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
 });
@@ -438,7 +507,7 @@ test('run binds reviewed viewing names before encoding and preserves the origina
         const result = await workflow.generateStreamActivities({ ...f.options, kind: 'watch', titleEvidencePath });
         const metadataPath = JSON.parse(fs.readFileSync(result.manifestPath, 'utf8')).clips[0].metadataPath;
         const row = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
-        expect(row.copy.title).toBe('《测试电影》｜2026.10.1');
+        expect(row.copy.title).toBe('《企鹅老板打工记》｜2026.10.1');
         expect(row.presentation.titleEvidence.items[0].transcriptSha256).toBe(row.transcript.sha256);
         expect(row.activities[0].name).toBeNull();
         expect(row.uploadReady).toBe(false);

@@ -37,6 +37,14 @@ test('copy-only repair inherits required review, regenerates a cover and waits f
     expect(JSON.stringify(artifact)).toBe(before);
 });
 
+test('rejects a repair adapter that replaces the operator title even if it claims approval', async () => {
+    const { artifact, io } = fixture();
+    artifact.renderedSubtitles = { review: { note: '标题大意按我的意见', copy: { ...artifact.copy } } };
+    await expect(repairOwnPublicCopy(artifact, config, {}, io)).rejects.toThrow('Operator title changed');
+    expect(io.renderCover).not.toHaveBeenCalled();
+    expect(io.reviewFinal).not.toHaveBeenCalled();
+});
+
 test('unresolved subtitle, policy, boundary, technical or historical issues never enter this copy repair', async () => {
     const { artifact, io } = fixture();
     for (const row of [
@@ -50,6 +58,20 @@ test('unresolved subtitle, policy, boundary, technical or historical issues neve
         await expect(repairOwnPublicCopy(row, config, {}, io)).resolves.toBe(row);
     }
     expect(io.reviewCopy).not.toHaveBeenCalled();
+});
+
+test('a public factual wording defect can be repaired even without a title or description keyword', async () => {
+    const { artifact, io } = fixture();
+    artifact.publicationReview.issues = ['称“终于开门了”，画面未见开门；删去门已打开的事实表述。', 'final_content_not_passed'];
+    expect(copyRepairEligible(artifact, config)).toBe(true);
+    io.reviewCopy = jest.fn(async row => ({ ...row, copy: { title: '草莓快开门', coverText: '草莓快开门', description: '跟着催开门' },
+        attributionReview: { status: 'passed' }, publicCopyPending: false }));
+    const result = await repairOwnPublicCopy(artifact, config, {}, io);
+    expect(result.copy.description).toBe('跟着催开门');
+    expect(io.reviewFinal).toHaveBeenCalledTimes(1);
+    expect(result.output.mediaPath).toBe(artifact.output.mediaPath);
+    artifact.publicationReview.checks.subtitles = false;
+    expect(copyRepairEligible(artifact, config)).toBe(false);
 });
 
 test('a required quality gate cannot be discharged by copy repair or an unbound passed final stamp', async () => {

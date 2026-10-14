@@ -87,7 +87,8 @@ async function detectActivities(options, config, source, info, files) {
         detection: { chunkSeconds: config.chunkSeconds, contextSeconds: config.contextSeconds, maxEvidenceChars: config.maxEvidenceChars, ai: config.ai,
             verification: config.verification, verificationModel: rootVerificationModel(options.config, config) },
         parts: { songsEnabled: config.songs.enabled, songPadding: config.songs.paddingSeconds, watchEnabled: config.watch.enabled,
-            target: config.watch.targetPartSeconds, max: config.watch.maxPartSeconds } });
+            target: config.watch.targetPartSeconds, max: config.watch.maxPartSeconds,
+            ...(config.watch.blackAlignment?.enabled ? { blackAlignment: config.watch.blackAlignment } : {}) } });
     let previous;
     const selected = stages.activityKinds(options.kind).filter(kind => config[kind].enabled);
     if (fs.existsSync(files.plan)) {
@@ -161,6 +162,9 @@ async function detectActivities(options, config, source, info, files) {
             if (a.end > b.start) { a.reviewIssues.push('overlapping_activity'); b.reviewIssues.push('overlapping_activity'); }
         }
         const parts = planTools.buildParts(plan.events, duration, config);
+        if (pending.includes('watch') && config.watch.blackAlignment?.enabled) parts.watch = await require('../workflow-runtime')
+            .loadWorkflow('clipping/watchBlackRuntime').applyWatchBlack(parts.watch,
+                { ...options, blackScanRun: options.blackScanRun || require('./media_runtime').runFfmpeg }, config, source, files.directory);
         plan.parts ||= { songs: [], watch: [] };
         for (const kind of pending) plan.parts[kind] = parts[kind];
         plan.calibratedKinds = stages.completeKinds(plan, pending); delete plan.error;
@@ -215,7 +219,13 @@ async function register(manifestPath, options = {}) {
     return result.stdout;
 }
 async function refreshPresentation(row, plan, root, options = {}) {
-    const titleEvidence = options.titleEvidence || row.presentation?.titleEvidence || null;
+    let titleEvidence = options.titleEvidence || row.presentation?.titleEvidence || null;
+    const titles = require('../workflow-runtime').loadWorkflow('clipping/activityTitles');
+    if (titles.titleItems(titleEvidence).some(item => item.method === 'catalog_lyric_match')) {
+        if (fileDigest(plan.transcript.path) !== plan.transcript.sha256) throw new Error('Song naming transcript changed');
+        const rows = asr.parseSrt(plan.transcript.path).segments.map((item, index) => ({ index: index + 1, ...item }));
+        titleEvidence = titles.bindTranscriptTitles(titles.titleItems(titleEvidence), row.activities, rows, plan.transcript);
+    }
     for (const item of require('../workflow-runtime').loadWorkflow('clipping/activityTitles').titleItems(titleEvidence)) {
         if (item.method === 'source_frame_reading' && fileDigest(item.framePath) !== item.frameSha256
             || item.method === 'source_transcript_reading' && fileDigest(item.transcriptPath) !== item.transcriptSha256) throw new Error('Reviewed activity title evidence changed');
@@ -225,10 +235,13 @@ async function refreshPresentation(row, plan, root, options = {}) {
     if (row.activityReview?.status === 'approved') throw new Error('Approved activity presentation requires an explicit reviewed revision');
     const coverPath = presentationTools.coverPathFor(row.output.metadataPath, presentation);
     await (options.cover || media.activityCover)(presentation.parts[0], coverPath, root, presentation.cover);
-    return { ...row, copy: presentation.copy, upload: { ...row.upload, prefix: presentation.profile.prefix },
+    return { ...row, copy: presentation.copy, upload: { ...row.upload, prefix: presentation.profile.prefix,
+        ...(row.kind === 'watch' ? { tags: presentation.tags,
+            source: require('../workflow-runtime').loadWorkflow('clipping/watchPublicNames').watchPublicText(row.upload.source, row.activities) } : {}) },
         output: { ...row.output, parts: presentation.parts, coverPath }, coverSha256: fileDigest(coverPath),
         presentation: { version: presentation.version, style: presentation.profile.style, signature: presentation.signature,
-            titleFormat: row.kind === 'songs' ? 'song_name_recording_date' : 'work_name_recording_date', recordingDate: presentation.recordingDate,
+            titleFormat: row.kind === 'songs' ? 'song_name_recording_date' : 'work_alias_recording_date', recordingDate: presentation.recordingDate,
+            ...(presentation.publicNames ? { publicNames: presentation.publicNames } : {}),
             ...(titleEvidence ? { titleEvidence } : {}) },
         uploadReady: false, activityReview: { version: 1, status: 'pending', checks: ['host_performance_or_actual_viewing', 'complete_boundaries', 'part_titles', 'public_copy', 'column_cover'] } };
 }
@@ -302,6 +315,10 @@ async function generateStreamActivities(options = {}) {
     if (!planTools.activityEnabled(root, info.roomId)) return { status: 'disabled' };
     options = { ...options, config: root };
     const config = planTools.getActivityConfig(root), files = pathsFor(options.mediaPath, root, config);
+    if (options.watchBlackRegion) config.watch.blackAlignment = require('../workflow-runtime').loadWorkflow('clipping/watchBlackPolicy')
+        .blackSettings({ ...config.watch.blackAlignment, enabled: true, region: options.watchBlackRegion });
+    if (config.watch.blackAlignment?.enabled) config.watch.blackAlignment.cadence = require('../workflow-runtime')
+        .loadWorkflow('clipping/watchMovieCadence').movieCadenceSettings(config.watch.blackAlignment.cadence);
     const publication = root.streamActivityClips?.automaticPublication?.mode === 'auto'
         ? require('../workflow-runtime').loadWorkflow('clipping/activityPublication') : null;
     const publicationActive = publication?.activityPublicationEnabled(root, info.roomId) && !options.scan
@@ -311,8 +328,8 @@ async function generateStreamActivities(options = {}) {
         throw new Error('Publication retry requires enabled automatic publication and a substantive --revision-note; boundary rebuilding also requires --retry-boundaries');
     }
     if (options.titleEvidencePath && options.retryPublication && !options.retryBoundaries) throw new Error('Use restyle to bind revised titles before retrying an existing publication review');
-    if (options.reviewBoundaryIds && (!options.retryBoundaries || !options.retryPublication || options.kind !== 'watch'
-        || !String(options.revisionNote || '').trim())) throw new Error('Final boundary feedback requires watch --retry-boundaries --retry-publication and a revision note');
+    if (options.reviewBoundaryIds && (!options.retryBoundaries || !['songs', 'watch'].includes(options.kind)
+        || !String(options.revisionNote || '').trim())) throw new Error('Final boundary feedback requires songs|watch --retry-boundaries and a revision note');
     if (options.repairTiming && (options.kind || options.scan || options.retryBoundaries || options.planOnly
         || !options.transcriptRecordPath || !String(options.revisionNote || '').trim() || config.detectionMode !== 'summary')) {
         throw new Error('Timing repair requires run for both kinds, --transcript-record and a substantive --revision-note');
@@ -327,6 +344,7 @@ async function generateStreamActivities(options = {}) {
     if (options.reviewPrelude && (!options.retryBoundaries || options.kind !== 'songs' || config.verification.evidenceMethod !== 'independent_local_asr')) {
         throw new Error('Prelude review requires a pending song boundary retry using independent local audio');
     }
+    if (options.reviewAudio && (!options.reviewPrelude || !root.ai?.text?.gemini?.apiKey)) throw new Error('Explicit native listening requires song prelude review and configured Gemini audio access');
     const release = acquire(files.lock);
     let scheduler;
     try {
@@ -368,7 +386,7 @@ async function generateStreamActivities(options = {}) {
                         throw new Error('Existing activity submission differs from its plan or source');
                     }
                 }
-                if (options.retryPublication) {
+                if (options.retryPublication || options.reviewBoundaryIds) {
                     const registry = options.readRegistry ? options.readRegistry()
                         : JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../../data/runtime/clip_upload_registry.json'), 'utf8'));
                     const rows = manifest.clips.map(clip => JSON.parse(fs.readFileSync(clip.metadataPath, 'utf8'))).filter(row => selected.includes(row.kind));
@@ -493,21 +511,37 @@ async function generateStreamActivities(options = {}) {
             const lease = await scheduler.acquire();
             try { await (options.cover || media.activityCover)(parts[0], coverPath, root, presentation.cover); } finally { lease.release(); }
             const collection = config[kind].collection || {};
-            const row = { version: 1, type: 'stream_activity_submission', kind, roomId: info.roomId, generatedAt: new Date().toISOString(),
+            let row = { version: 1, type: 'stream_activity_submission', kind, roomId: info.roomId, generatedAt: new Date().toISOString(),
                 ...(publicationActive ? { activityAutomaticPublicationRequired: true } : {}),
                 streamerName: info.streamerName, source: { mediaPath: options.mediaPath, srtPath: options.srtPath, xmlPath: options.xmlPath || null },
                 sourceSnapshot: source, transcript: plan.transcript, planSignature: plan.signature, planPath: files.plan, coverage: plan.coverage,
                 window: { start: parts[0].start, end: parts.at(-1).end, duration: parts.reduce((n, p) => n + p.duration, 0) },
                 activities: events, copy: presentation.copy,
                 presentation: { version: presentation.version, style: presentation.profile.style, signature: presentation.signature,
-                    titleFormat: kind === 'songs' ? 'song_name_recording_date' : 'work_name_recording_date', recordingDate: presentation.recordingDate,
+                    titleFormat: kind === 'songs' ? 'song_name_recording_date' : 'work_alias_recording_date', recordingDate: presentation.recordingDate,
+                    ...(presentation.publicNames ? { publicNames: presentation.publicNames } : {}),
                     ...(titleEvidence ? { titleEvidence } : {}) },
                 output: { mediaPath: parts[0].mediaPath, coverPath, metadataPath, parts: presentation.parts }, coverSha256: fileDigest(coverPath),
                 activityReview: { version: 1, status: 'pending', checks: ['host_performance_or_actual_viewing', 'complete_boundaries', 'part_titles', 'public_copy'] },
-                uploadReady: false, upload: { prefix: presentation.profile.prefix, tid: config[kind].tid, tags: config[kind].tags,
-                    roomId: info.roomId, streamerName: info.streamerName, source: `${info.streamerName} 直播《${info.streamTitle}》${info.recordedAt}`,
+                uploadReady: false, upload: { prefix: presentation.profile.prefix, tid: config[kind].tid, tags: presentation.tags || config[kind].tags,
+                    roomId: info.roomId, streamerName: info.streamerName, source: kind === 'watch'
+                        ? `${info.streamerName} 直播 ${info.recordedAt}` : `${info.streamerName} 直播《${info.streamTitle}》${info.recordedAt}`,
                     collectionSectionId: collection.sectionId || null, collectionSeasonId: collection.seasonId || null } };
-            writeJsonAtomic(metadataPath, row); metadata.push(row);
+            writeJsonAtomic(metadataPath, row);
+            if (kind === 'songs' && !previousMetadata && config.songs.identifyNames === true) {
+                row = await require('../workflow-runtime').loadWorkflow('clipping/songResearchRuntime').researchNewSongPresentation(row, {
+                    identify: () => (options.identifySongs || identifyStreamSongs)({ metadataPath, config: root }),
+                    apply: async evidencePath => {
+                        const requested = JSON.parse(fs.readFileSync(evidencePath, 'utf8'));
+                        const rows = asr.parseSrt(plan.transcript.path).segments.map((item, index) => ({ index: index + 1, ...item }));
+                        const evidence = require('../workflow-runtime').loadWorkflow('clipping/activityTitles')
+                            .bindTranscriptTitles(requested.items, events, rows, plan.transcript);
+                        return refreshPresentation(row, plan, root, { ...options, titleEvidence: evidence });
+                    }
+                });
+                writeJsonAtomic(metadataPath, row);
+            }
+            metadata.push(row);
         }
         if (!sameSource(sourceSnapshot({ source: { mediaPath: options.mediaPath, srtPath: options.srtPath, xmlPath: options.xmlPath } }), source)) throw new Error('Activity source changed while rendering');
         const clips = stages.mergeManifestClips(previousClips, metadata.map(row => row.output.metadataPath));
@@ -568,5 +602,59 @@ async function generateStreamActivities(options = {}) {
         });
     } finally { await scheduler?.stop?.(); release(); }
 }
+async function identifyStreamSongs(options) {
+    const root = options.config || loader.getConfig(), config = planTools.getActivityConfig(root);
+    const metadata = JSON.parse(fs.readFileSync(options.metadataPath, 'utf8'));
+    const info = recordingInfo(metadata.source.mediaPath, metadata);
+    return require('../workflow-runtime').loadWorkflow('clipping/songResearchRuntime').identifyActivitySongs(options.metadataPath,
+        { activityId: options.activityId, hint: options.hint }, {
+            parse: file => asr.parseSrt(file).segments.map((row, index) => ({ index: index + 1, start: row.start, end: row.end, text: row.text })),
+            audience: async file => (await readAudience(file)).map((row, index) => ({ index: index + 1, ...row })),
+            catalog: options.catalog,
+            propose: options.request || (async prompt => (await requestSelectionText(prompt,
+                { primaryModel: config.ai.model, timeoutMs: config.ai.timeoutMs, maxTokens: 2500, strictEvaluation: true, structuredOutputKey: 'queries' },
+                { ...config, ai: { ...config.ai, enabled: true } }, root, info, 'song-name-research', {}, value => {
+                    try { return Array.isArray(JSON.parse(value.text || value).queries); } catch { return false; }
+                })).text)
+        });
+}
+
+async function reviewStreamActivity(options) {
+    if (!String(options.note || '').trim()) throw new Error('Automatic operator review requires the saved feedback');
+    const metadataPath = path.resolve(options.metadataPath), row = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+    const release = acquire(path.join(path.dirname(row.planPath), '.worker.lock'));
+    let scheduler;
+    try {
+        const root = options.config || loader.getConfig();
+        const registry = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../../data/runtime/clip_upload_registry.json'), 'utf8'));
+        const registered = Object.values(registry.clips).find(clip => clip.metadataPath
+            && path.resolve(clip.metadataPath).toLowerCase() === metadataPath.toLowerCase());
+        stages.assertPendingBoundaryRetry(row, registered);
+        if (!registered) throw new Error('Automatic operator review requires the existing registered ID');
+        const backup = path.join(path.dirname(metadataPath), 'temp', 'operator-reviews', crypto.randomUUID());
+        fs.mkdirSync(backup, { recursive: true }); fs.copyFileSync(metadataPath, path.join(backup, 'before.json'));
+        const pending = { ...row, uploadReady: false, activityReview: { version: 1, status: 'pending' },
+            activityOperatorReview: { version: 1, note: options.note, requestedAt: new Date().toISOString() } };
+        writeJsonAtomic(metadataPath, pending);
+        const publication = require('../workflow-runtime').loadWorkflow('clipping/activityPublication');
+        const settings = root.ownStreamClips?.enhancements || {}, info = recordingInfo(row.source.mediaPath, row);
+        scheduler = createClipResourceAdaptiveScheduler({ ownConfig: root.ownStreamClips || {}, rootConfig: root });
+        const adapters = publication.activityPublicationProcessAdapters(path.resolve(__dirname, '../../..'),
+            (_row, prompt, images) => require('./enhancement_runner').requestStage(
+                { ...settings.stageDefaults, ...settings.stages?.qa }, settings.budget,
+                { ...info, outputContract: { key: 'checks', type: 'object', allowDomainRejected: true } }, 'activity-operator-review', prompt, images),
+            (current, parts) => publication.inspectActivityPublication(current, parts,
+                resolveFfprobePath(root.audio?.ffmpeg?.path || 'ffmpeg'), async args => {
+                    const lease = await scheduler.acquire();
+                    try { return await require('./media_runtime').runFfmpeg(args, { ffmpegPath: root.audio?.ffmpeg?.path || 'ffmpeg',
+                        threads: lease.profile.ffmpegThreads, timeoutMs: 1800000, stage: '活动反馈成片审核' }); }
+                    finally { lease.release(); }
+                }), { parse: file => asr.parseSrt(file).segments, audience: readAudience });
+        const [reviewed] = await publication.reviewActivityPublications([pending], root, adapters, { operatorReview: true });
+        await register(path.join(path.dirname(metadataPath), 'UPLOAD_MANIFEST.json'));
+        if (reviewed.activityReview?.status !== 'approved') throw new Error(`Activity review needs attention: ${(reviewed.activityReview?.issues || []).join('; ')}`);
+        return { status: 'approved', authority: 'automatic', id: registered.id };
+    } finally { await scheduler?.stop?.(); release(); }
+}
 module.exports = { readAudience, recordingInfo, pathsFor, detectActivities, publicCopy, reviewText, register, generateStreamActivities,
-    restyleStreamActivities };
+    restyleStreamActivities, identifyStreamSongs, reviewStreamActivity };

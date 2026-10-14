@@ -26,7 +26,7 @@ function checkRegistryOverlap(metadata, options, start, end) {
         const peer = JSON.parse(fs.readFileSync(record.metadataPath, 'utf8'));
         // Full activity/gameplay archives and separately edited highlights have different
         // publication purposes; the archive must not veto every game highlight.
-        if (['stream_game_submission', 'stream_activity_submission'].includes(peer.type)) continue;
+        if (['stream_game_submission', 'stream_activity_submission', 'danmaku_replay'].includes(peer.type)) continue;
         if (!peer.source?.mediaPath || !samePath(peer.source.mediaPath, metadata.source.mediaPath)
             || peer.selectionRejection) continue;
         const window = peer.window;

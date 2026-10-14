@@ -68,6 +68,10 @@ python scripts/seedance_add_task.py list-tasks
 ```
 
 每个远端提交都会记录到任务的 `inflight`，成功下载后才会增加 `completed`。查询超时、未知状态、下载失败都会保留远端提交，避免重提可能已经扣费的任务。
+提交使用 `--poll 0`：先取得并保存受理ID，再由队列独立查询结果，避免CLI在提交后的
+内联查询失败时丢失stdout中的受理ID。已存在的 `submission_reservations` 若标记
+`needs_review`，先用 `dreamina list_task` 核对刚提交的同一提示词、提交身份与远端状态，
+恢复该次受理记录；不要为了让队列继续而清空未知提交或重新运行生成命令。
 
 ## 并发限制、异常和恢复
 
@@ -81,3 +85,19 @@ python scripts/seedance_queue_admin.py reset-tasks "D:\files\Pictures\AI图保�
 ```
 
 队列读写使用同目录锁文件和原子替换；不要在 PM2 运行时用旧的一次性脚本直接重写 `seedance_queue.json`。
+
+### 查询异常与已确认的生成失败
+
+`submitted` 是本地状态，不能证明远端仍在生成。CLI 查询失败（包括 `get_history_by_ids`
+的错误）也不能直接判定视频生成失败；成功任务也可能受查询接口故障影响。此时保留原
+`inflight` 和提交身份，先核对网页上同一任务的提示词、日期与明确终态。
+
+先运行 `dreamina user_credit` 验证CLI账号。若输出账号ID为0、用户名和会员为空，而网页
+能正常查看账户与积分，不把CLI的0积分当作真实余额；检查登录或访问权限。`dreamina login`
+复用本地OAuth状态并不能证明服务端仍接受该状态。必要时使用 `dreamina relogin --headless`
+发起常规登录续期，在官方授权页完成后，按CLI帮助用 `dreamina login checklogin` 保存
+授权，再核对账号与积分，并用原 `submit_id` 重查结果。保留提交历史，不清空任务或改换ID。
+
+正常查询恢复后，runner能够识别 `gen_status=fail`，释放失败的那次本地活跃容量；普通
+生成失败会按现有三次失败上限重试，达到上限或收到审核/参数拒绝才暂停。`completed`
+不会因为失败而增加。登录续期后观察已有runner的日志与新提交，不需要为此重启PM2。

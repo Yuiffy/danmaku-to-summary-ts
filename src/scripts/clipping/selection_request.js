@@ -47,7 +47,7 @@ async function requestSelectionTextInPhase(prompt, requestOptions, config, rootC
         const started = Date.now();
         try {
             const result = await require('./enhancement_runner').requestStage({ ...stage, retry: { ...retry, ...stage.retry } }, config.ai.stageBudget,
-                { ...info, outputContract: { key, type: 'records' } }, phase, prompt);
+                { ...info, outputContract: { key, type: 'records' } }, phase, prompt, requestOptions.images || []);
             recordSelectionDiagnostic(diagnostics, { phase, elapsedMs: Date.now() - started, provider: stage.provider, model: stage.model }, result);
             return result;
         } catch (error) {

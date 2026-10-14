@@ -23,7 +23,9 @@ DEFAULT_RESOLUTION = "720p"
 SESSION = "15001602620940"
 DURATION = "15"
 DEFAULT_RATIO = "16:9"
-POLL = "30"
+# Persist the accepted submit id before querying; an inline poll can fail after
+# the provider accepted the task and hide that id from the command's stdout.
+POLL = "0"
 DEFAULT_INTERVAL = 30
 ERROR_INTERVAL = 300
 MIN_QUERY_INTERVAL = 60

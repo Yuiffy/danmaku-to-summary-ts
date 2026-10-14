@@ -3,14 +3,13 @@ const fs = require('fs');
 const path = require('path');
 const { promisify } = require('util');
 const { execFile } = require('child_process');
-const workflow = require('./clipping/stream_activity_clipper');
 const execFileAsync = promisify(execFile);
 
 function parseArgs(argv) {
     const [command = 'help', ...args] = argv, options = {};
     for (let i = 0; i < args.length; i++) {
         const key = args[i];
-        if (['--background', '--no-notify', '--reuse-summary-only', '--no-register', '--enqueue', '--scan', '--retry-boundaries', '--revise-verifier', '--review-prelude', '--repair-timing', '--retry-publication'].includes(key)) options[key.slice(2)] = true;
+        if (['--background', '--no-notify', '--reuse-summary-only', '--no-register', '--enqueue', '--scan', '--retry-boundaries', '--revise-verifier', '--review-prelude', '--review-audio', '--repair-timing', '--retry-publication', '--no-periodic', '--candidate'].includes(key)) options[key.slice(2)] = true;
         else if (/^--[a-z-]+$/u.test(key) && args[i + 1] && !args[i + 1].startsWith('--')) options[key.slice(2)] = args[++i];
         else throw new Error(`Unknown or incomplete argument: ${key}`);
     }
@@ -49,6 +48,47 @@ function songStatistics(root) {
 }
 async function main(argv = process.argv.slice(2)) {
     const { command, options } = parseArgs(argv);
+    if (options.candidate && command !== 'watch-splits') throw new Error('--candidate supports local watch-splits previews only');
+    if (command === 'watch-splits') {
+        if (!options.media || !options.region || !options['output-dir'] || !options.start || !options.end) {
+            throw new Error('watch-splits requires --media --start --end --region --output-dir');
+        }
+        if (options.candidate) {
+            const descriptor = path.join(__dirname, '../../build/workflow-candidate.json');
+            if (!fs.existsSync(descriptor)) throw new Error('Preview candidate missing; run npm run build:workflows');
+            process.env.DANMAKU_WORKFLOW_RELEASE = JSON.parse(fs.readFileSync(descriptor, 'utf8')).releaseDir;
+        }
+        const runtime = require('./workflow-runtime');
+        const mediaPath = path.resolve(options.media), directory = path.resolve(options['output-dir']);
+        const stat = fs.statSync(mediaPath);
+        const ffmpegPath = require('./config-loader').getConfig().audio?.ffmpeg?.path || 'ffmpeg';
+        const duration = await require('./clipping/video_probe').probeMediaDuration(mediaPath,
+            require('./clipping/media_runtime').resolveFfprobePath(ffmpegPath));
+        if (Number(options.end) > duration + .01) throw new Error('Viewing preview exceeds the available recording duration');
+        const target = Number(options['target-part-seconds'] ?? 1500), maximum = Number(options['max-part-seconds'] ?? 1800);
+        const parts = require('./clipping/stream_activity_plan').splitWatch(Number(options.start), Number(options.end), target, maximum)
+            .map(part => ({ ...part, activityId: 'preview-watch' }));
+        const settings = runtime.loadWorkflow('clipping/watchBlackPolicy').blackSettings({ enabled: true, region: options.region,
+            cadence: { enabled: !options['no-periodic'], ...(options['movie-part-seeds']
+                ? { seeds: options['movie-part-seeds'].split(',').map(Number) } : {}) },
+            ...(options['search-seconds'] ? { searchSeconds: Number(options['search-seconds']) } : {}) });
+        const result = await runtime.loadWorkflow('clipping/watchBlackRuntime').scanWatchBlack({ mediaPath, directory, parts,
+            source: { mediaPath, size: stat.size, mtimeMs: stat.mtimeMs }, settings, maximum,
+            ffmpegPath,
+            run: require('./clipping/media_runtime').runFfmpeg });
+        console.log(JSON.stringify(result, null, 2)); return result;
+    }
+    const workflow = require('./clipping/stream_activity_clipper');
+    if (command === 'review') {
+        if (!options.metadata || !options.note) throw new Error('review requires --metadata and --note');
+        const result = await workflow.reviewStreamActivity({ metadataPath: options.metadata, note: options.note });
+        console.log(`ACTIVITY_OPERATOR_REVIEW_RESULT ${JSON.stringify(result)}`); return result;
+    }
+    if (command === 'identify-songs') {
+        if (!options.metadata) throw new Error('identify-songs requires --metadata');
+        const result = await workflow.identifyStreamSongs({ metadataPath: path.resolve(options.metadata), activityId: options['activity-id'], hint: options.hint });
+        console.log(`ACTIVITY_SONG_IDENTIFICATION_RESULT ${JSON.stringify(result)}`); return result;
+    }
     if (command === 'restyle') {
         if (!options.metadata && !options.manifest) throw new Error('restyle requires --metadata or --manifest');
         const result = await workflow.restyleStreamActivities({
@@ -65,9 +105,11 @@ async function main(argv = process.argv.slice(2)) {
             summaryPath: options.summary ? path.resolve(options.summary) : null,
             fullLiveContextPath: options['full-context'] ? path.resolve(options['full-context']) : null, scan: options.scan === true,
             kind: options.kind, retryBoundaries: options['retry-boundaries'] === true,
+            watchBlackRegion: options['watch-black-region'],
             reviewBoundaryIds: options['review-boundary-ids'] ? options['review-boundary-ids'].split(',').map(id => id.trim()) : null,
             reviseVerifier: options['revise-verifier'] === true, revisionNote: options['revision-note'],
             reviewPrelude: options['review-prelude'] === true,
+            reviewAudio: options['review-audio'] === true,
             repairTiming: options['repair-timing'] === true,
             retryPublication: options['retry-publication'] === true,
             transcriptRecordPath: options['transcript-record'] ? path.resolve(options['transcript-record']) : null,
@@ -123,6 +165,8 @@ async function main(argv = process.argv.slice(2)) {
         + 'activity:clips approve --metadata <songs.json|watch.json> --note <review note> [--enqueue]\n'
         + 'activity:clips restyle --manifest <UPLOAD_MANIFEST.json> | --metadata <songs.json|watch.json> [--no-register]\n'
         + 'activity:clips stats --root <recording root>');
+    console.log('activity:clips watch-splits --media <recording> --start <seconds> --end <seconds> --region <x,y,width,height 0..1> --output-dir <local directory> [--target-part-seconds 1500] [--max-part-seconds 1800] [--search-seconds 300] [--no-periodic] [--movie-part-seeds <two recording seconds>] [--candidate]\n'
+        + 'activity:clips run|plan ... [--watch-black-region <x,y,width,height 0..1>]');
 }
 module.exports = { parseArgs, songStatistics, main };
 if (require.main === module) main().catch(error => { console.error(`[ERROR] ${error.message}`); process.exitCode = 1; });

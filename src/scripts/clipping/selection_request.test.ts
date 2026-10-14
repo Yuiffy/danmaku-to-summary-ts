@@ -6,6 +6,32 @@ const { requestSelectionText, validSelectionResponse } = require('./selection_re
 const { buildSubtitleEvidence } = require('./subtitle_evidence');
 
 describe('selection usage accounting', () => {
+  test('configured stage routing preserves competition frame attachments', async () => {
+    const enhancement = require('./enhancement_runner');
+    const stage = jest.spyOn(enhancement, 'requestStage').mockResolvedValue({ text: '{"clips":[]}', meta: {} });
+    const images = ['data:image/jpeg;base64,/9j/2Q=='];
+    try {
+      await requestSelectionText('Roster evidence.', { images }, { ai: { stageRoomIds: ['1741667419'],
+        stages: { rerank: { provider: 'daiYu', model: 'fixture' } } } }, {}, { roomId: '1741667419' },
+        'topic_preflight_single_v5', {}, () => true);
+      expect(stage).toHaveBeenCalledTimes(1);
+      expect(stage.mock.calls[0][5]).toEqual(images);
+    } finally { stage.mockRestore(); }
+  });
+
+  test('changed roster image bytes invalidate selection cache while identical attachments reuse it', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'selection-roster-'));
+    const generate = jest.spyOn(generator, 'generateTextWithDaiYu').mockResolvedValue({ text: 'valid', meta: {} });
+    const request = image => requestSelectionText('Same source.', { images: [image] }, {},
+      { ai: { text: { provider: 'daiYu' } } }, { selectionCacheDirectory: directory }, 'topic_preflight_single_v5', {}, () => true);
+    try {
+      await request('data:image/jpeg;base64,/9j/2Q==');
+      await request('data:image/jpeg;base64,/9j/2Q==');
+      await request('data:image/jpeg;base64,/9j/AA==');
+      expect(generate).toHaveBeenCalledTimes(2);
+    } finally { generate.mockRestore(); fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
   test('game detection defaults to daiYu despite a global tuZi provider and preserves failures', async () => {
     const config = require('./stream_game_plan').getGameConfig({});
     const daiYu = jest.spyOn(generator, 'generateTextWithDaiYu').mockResolvedValue({ text: '{"events":[]}', meta: {} });

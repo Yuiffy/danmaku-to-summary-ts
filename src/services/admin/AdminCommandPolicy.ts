@@ -1,4 +1,5 @@
 import { AdminError } from './AdminFiles';
+import { coverSelection } from '../../core/admin/cover';
 
 export interface OperatorCommand { executable: 'python' | 'node'; args: string[]; action: string; target: string; reviewOnly?: boolean }
 function text(body: any, key: string, max = 4000, required = true): string {
@@ -16,6 +17,12 @@ function publication(body: any): void {
 }
 export function clipCommand(idValue: unknown, body: any): OperatorCommand {
   const id = numberId(idValue), action = text(body, 'action', 40), args = ['src/scripts/clip_upload_registry.py'];
+  if (action === 'cover') {
+    let selection;
+    try { selection = coverSelection(body.selection); } catch (error) { throw new AdminError((error as Error).message); }
+    return { executable: 'python', args: [...args, 'cover', '--id', id, '--selection', JSON.stringify(selection),
+      '--note', text(body, 'note', 1000)], action, target: id };
+  }
   if (['subtitles', 'preview', 'correct', 'cut', 'approve-review', 'rebuild', 'enqueue', 'exclude', 'precision'].includes(action) === false) throw new AdminError('不支持的视频操作');
   args.push(action, ['preview', 'cut', 'enqueue', 'exclude'].includes(action) ? '--ids' : '--id', id);
   if (['cut', 'approve-review', 'rebuild'].includes(action)) args.push('--review-note', text(body, 'note', 1000));
@@ -71,6 +78,14 @@ export function manualCommand(body: any): OperatorCommand {
 }
 export function bundleCommand(id: string, body: any, category: 'activity' | 'game', metadataPath: string): OperatorCommand {
   const action = text(body, 'action', 40);
+  if (action === 'automatic-review' && category === 'activity') return { executable: 'node',
+    args: ['src/scripts/stream_activity_clips.js', 'review', '--metadata', metadataPath, '--note', text(body, 'note', 1000)], action, target: id };
+  if (action === 'identify-songs' && category === 'activity') {
+    const args = ['src/scripts/stream_activity_clips.js', 'identify-songs', '--metadata', metadataPath];
+    if (body.activityId) args.push('--activity-id', text(body, 'activityId', 100));
+    if (body.hint) args.push('--hint', text(body, 'hint', 1000));
+    return { executable: 'node', args, action, target: id };
+  }
   if (action === 'enqueue') {
     const command = clipCommand(id, body); command.args.push('--timeout-seconds', '14400', '--batch-size', '1'); return command;
   }

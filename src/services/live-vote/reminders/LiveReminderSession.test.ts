@@ -51,6 +51,44 @@ it('sends the two separate reminders in the 15–60 minute window, ten minutes a
   expect(f.state().receipts.every(receipt => receipt.notified)).toBe(true);
 });
 
+it.each([false, true])('continues with lotion across Shanghai midnight, including after restart: %s', async restart => {
+  const liveStart = Date.parse('2026-10-14T23:20:00+08:00');
+  const f = fixture(initialReminderState(), undefined, liveStart);
+  f.room({ startedAt: liveStart });
+  await f.tick(liveStart);
+  await f.tick(liveStart + 34 * 60000);
+  expect(f.state().receipts[0]).toMatchObject({ day: '2026-10-14', id: 'medicine' });
+
+  const continued = restart ? fixture(f.state(), undefined, liveStart + 40 * 60000) : f;
+  continued.room({ startedAt: liveStart });
+  await continued.tick(liveStart + 40 * 60000);
+  await continued.tick(liveStart + 56 * 60000);
+  expect(continued.records.at(-1)).toMatchObject({ day: '2026-10-15', id: 'lotion' });
+  expect(continued.sent.at(-1)).toContain('身体乳');
+  await continued.tick(liveStart + 59 * 60000);
+  await continued.tick(liveStart + 66 * 60000);
+  expect(continued.state().receipts.map(receipt => receipt.id)).toEqual(['medicine', 'lotion']);
+
+  // A distinct broadcast on a new Shanghai day still receives its daily reminders.
+  continued.room({ startedAt: liveStart + 86400000 });
+  await continued.tick(liveStart + 86400000 + 15 * 60000);
+  expect(continued.records.at(-1)?.id).toBe('medicine');
+});
+
+it('honors legacy ambiguous send receipts across midnight without migrating the state', async () => {
+  const liveStart = Date.parse('2026-10-14T23:20:00+08:00');
+  const saved = initialReminderState();
+  saved.receipts.push({ day: '2026-10-14', id: 'medicine', at: liveStart + 34 * 60000,
+    text: saved.items[0].templates[0], status: 'attempted', notified: false });
+  const f = fixture(saved, undefined, liveStart + 40 * 60000);
+  f.room({ startedAt: liveStart });
+  await f.tick(liveStart + 40 * 60000);
+  await f.tick(liveStart + 56 * 60000);
+  expect(f.sent).toHaveLength(1);
+  expect(f.sent[0]).toContain('身体乳');
+  expect(f.state().receipts[0].status).toBe('attempted');
+});
+
 it.each([
   { title: '还在放OP' }, { title: '同步视听' }, { area: '单机游戏' },
   { parentArea: '网游' }, { title: '', area: '', parentArea: '' }

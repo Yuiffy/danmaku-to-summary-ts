@@ -154,7 +154,10 @@ function parseBatch(response, batch, packet, rows, duration, evidence, settings)
 async function calibrateBoundaries(events, args) {
     const { config, root, source, info, directory, rows, duration, diagnostics } = args;
     const settings = config.verification, batches = groupBoundaries(events, duration, settings, args.reviewPrelude, rows, args.contextEvents);
-    if (args.reviewPrelude) for (const batch of batches) for (const row of batch.events) row.reviewPrelude = true;
+    if (args.reviewPrelude) for (const batch of batches) for (const row of batch.events) {
+        row.reviewPrelude = true;
+        row.allowPreviewRestart = settings.preludeReviewVersion === 3 && args.reviewAudio === true;
+    }
     const local = settings.evidenceMethod === 'independent_local_asr';
     const maxRequests = args.maxRequests ?? settings.maxBatchRequests;
     const result = { events: [], rejected: [], requests: 0, audioSeconds: 0, cacheHits: 0, maxRequests };
@@ -162,6 +165,7 @@ async function calibrateBoundaries(events, args) {
         const signature = { version: VERSION, source, events: batch.events.map(r => r.event), settings, transcriptSha256: args.transcriptSha256,
             ...(local ? { contextVersion: 3, intervals: batch.events.map(r => r.intervals) } : {}),
             ...(args.reviewPrelude ? { reviewPrelude: true } : {}),
+            ...(args.reviewAudio ? { reviewAudio: true } : {}),
             ...(local ? { localImplementation: fileDigest(path.join(__dirname, '../python/activity_audio_evidence.py')) } : {}),
             ...(args.retryId ? { retryId: args.retryId } : {}) };
         const evidenceDirectory = path.join(directory, 'temp', 'boundary-verification', sha(signature).slice(0, 16));
@@ -202,6 +206,43 @@ async function calibrateBoundaries(events, args) {
                 }
                 fs.mkdirSync(evidenceDirectory, { recursive: true });
                 if (localAudioEvidence) Object.assign(evidence, { localAudioEvidence, frameEvidence: packet.frames });
+                if (args.reviewAudio) {
+                    const segmentedStage = require('../workflow-runtime').loadWorkflow('clipping/activityNativeSegments');
+                    const reusedListening = settings.nativeListening?.protocolVersion === 3 ? segmentedStage.reusableNativeListening(batch, packet, source,
+                        (args.reusableEvidence || []).map(row => row.nativeListening).filter(Boolean), settings.nativeListening.model,
+                        { digest: fileDigest, read: file => JSON.parse(fs.readFileSync(file, 'utf8')) }) : null;
+                    if (!reusedListening && (args.usedRequests || 0) + result.requests + 1 >= maxRequests) throw new Error('Native listening and boundary review need two remaining requests');
+                    const listen = (listeningBatch, listeningPacket, listeningSource) => localStage().prepareNativeListening(listeningBatch, listeningPacket, listeningSource, { digest: fileDigest,
+                        request: (prompt, inputs) => require('../workflow-runtime').loadWorkflow('clipping/activityRecovery').retryBoundaryRequest({
+                            available: () => (args.usedRequests || 0) + result.requests + 1 < maxRequests,
+                            wait: args.wait || (ms => new Promise(resolve => setTimeout(resolve, ms))),
+                            failed: error => recordSelectionDiagnostic(diagnostics, { phase: 'activity-native-listening' }, null, error),
+                            request: async () => {
+                                result.requests++; result.audioSeconds += batch.audioSeconds;
+                                return requestMediaVerification(prompt, inputs, root, { provider: 'gemini', apiMode: 'gemini_native',
+                                    model: settings.nativeListening?.model || root.ai?.text?.gemini?.model, timeoutMs: 180000, maxTokens: 10000,
+                                    thinkingLevel: 'minimal' });
+                            }
+                        }) });
+                    const listening = reusedListening || (settings.nativeListening?.protocolVersion === 3
+                        ? await segmentedStage.prepareSegmentedListening(batch, packet, source, evidenceDirectory, {
+                            digest: fileDigest, listen,
+                            extract: (file, start, end) => extractEvidence(args.extract || runFfmpeg,
+                                ['-y', '-ss', String(start), '-i', source.mediaPath, '-t', String(end - start),
+                                    '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'libmp3lame', '-b:a', '64k', file],
+                                { ffmpegPath: root.audio?.ffmpeg?.path || 'ffmpeg', stage: '活动分段补听原音', timeoutMs: 60000, sourceIdentity: source })
+                        }) : await listen(batch, packet, source));
+                    const listeningPath = path.join(evidenceDirectory, 'NATIVE_LISTENING.json');
+                    writeJsonAtomic(listeningPath, listening);
+                    packet.nativeListening = listening.protocolVersion === 3 ? {
+                        observations: listening.observations,
+                        timeMapping: 'Chronology numeric times and audioIndex have already been mapped to YOUR original decoder audio. Free-text explanations still cite the short listening attachments listed below, not your original audio indices. Resolve those references with the mapping; do not treat them as missing audio.',
+                        listeningAttachments: listening.segments.audio.map((segment, index) => ({ listeningAudioIndex: index + 1,
+                            originalAudioIndex: segment.originalAudioIndex, originalLocalStart: segment.start - packet.audio[segment.originalAudioIndex - 1].start,
+                            duration: segment.end - segment.start }))
+                    } : listening.observations;
+                    evidence.nativeListening = { path: listeningPath, sha256: fileDigest(listeningPath) };
+                }
                 const prompt = local ? localStage().localBoundaryPrompt(batch, packet, localAudioEvidence, info, rows) : boundaryPrompt(batch, packet, info, rows);
                 const retryAttempts = [];
                 const response = await require('../workflow-runtime').loadWorkflow('clipping/activityRecovery').retryBoundaryRequest({
@@ -225,9 +266,12 @@ async function calibrateBoundaries(events, args) {
                 let localBinding;
                 if (local) {
                     writeJsonAtomic(responsePath, { ...response, requestBinding: { source, localAudioSha256: localAudioEvidence.sha256,
-                        candidates: batch.events.map(({event, audioIndices}) => ({ id: event.id, start: event.start, end: event.end, audioIndices })),
+                        ...(evidence.nativeListening ? { nativeListening: evidence.nativeListening } : {}),
+                        candidates: batch.events.map(({event, audioIndices, allowPreviewRestart}) => ({ id: event.id, start: event.start, end: event.end, audioIndices,
+                            ...(allowPreviewRestart ? { allowPreviewRestart: true } : {}) })),
                         frames: packet.frames } });
-                    localBinding = { responsePath, responseSha256: fileDigest(responsePath), localAudioEvidence, frameEvidence: packet.frames };
+                    localBinding = { responsePath, responseSha256: fileDigest(responsePath), localAudioEvidence, frameEvidence: packet.frames,
+                        ...(evidence.nativeListening ? { nativeListening: evidence.nativeListening } : {}) };
                 }
                 const calibrated = parseBatch(local ? localStage().bindLocalReply(response, batch, localAudioEvidence, packet.frames, true) : response, batch, packet,
                     local ? [...rows, ...localStage().independentRows(localAudioEvidence)] : rows, duration,
@@ -238,6 +282,7 @@ async function calibrateBoundaries(events, args) {
             if (response.meta?.selectionCache?.hit) result.cacheHits++;
             if (local && (fileDigest(response.localAudioEvidence.resultPath) !== response.localAudioEvidence.sha256
                 || response.packet.frames.some(f => fileDigest(f.path) !== f.sha256))) throw new Error('Local activity evidence changed after verification');
+            if (response.localBinding?.nativeListening && fileDigest(response.localBinding.nativeListening.path) !== response.localBinding.nativeListening.sha256) throw new Error('Native listening evidence changed');
             const calibrated = parseBatch(local ? localStage().bindLocalReply(response, batch, response.localAudioEvidence, response.packet.frames, true) : response, batch,
                 local ? response.packet : boundaryPacket, local ? [...rows, ...localStage().independentRows(response.localAudioEvidence)] : rows,
                 duration, local ? { ...evidence, ...response.localBinding } : evidence, settings);

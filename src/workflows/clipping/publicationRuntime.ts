@@ -27,6 +27,7 @@ export interface PublicationAdapters {
     request(artifact: Artifact, prompt: string, images: string[]): Promise<{ text: string; meta?: Record<string, any> }>;
     withMedia<T>(work: (profile: { ffmpegThreads?: number } | null) => Promise<T>): Promise<T>;
     runFfmpeg(args: string[], profile: { ffmpegThreads?: number } | null): Promise<unknown>;
+    probe?: (file: string, ffprobe: string) => Promise<any>;
     inspect?: (artifact: Artifact, subtitles: Subtitle[]) => Promise<PublicationInspection>;
     now?: () => string;
 }
@@ -77,11 +78,27 @@ function probe(file: string, ffprobe: string): Promise<any> {
         }));
 }
 
+/** A versioned correction needs visual evidence of its current caption, alongside normal whole-clip samples. */
+export function publicationFrameTimes(artifact: Artifact, subtitles: Subtitle[], duration: number,
+    lastSampleTime = duration - .05): number[] {
+    const cueMid = (cue: Subtitle) => (cue.start + cue.end) / 2;
+    const revision = artifact.renderedSubtitles;
+    const changed = revision?.revision > 0 && revision.renderedRevision === revision.revision
+        ? (revision.edits || []).flatMap((edit: any) => (edit.changes || []).flatMap((change: any) => {
+            const index = Number(change.cue) - 1;
+            if (!Number.isSafeInteger(index) || index < 0 || index >= subtitles.length) return [];
+            const cue = subtitles[index];
+            return cue.text === change.after && cue.end > cue.start ? [Math.max(cue.start, cue.end - .1)] : [];
+        })).slice(-3) : [];
+    return [...new Set([0.25, cueMid(subtitles[0]), duration / 2, cueMid(subtitles.at(-1)!), duration - 0.25, ...changed]
+        .map(time => Math.max(0, Math.min(duration - .05, lastSampleTime, time))))];
+}
+
 /** Full decode checks media integrity; the AI sees explicitly labelled sampled frames, not a fictitious full-video review. */
 export async function inspectPublicationMedia(artifact: Artifact, subtitles: Subtitle[], context: PublicationContext,
     adapters: PublicationAdapters): Promise<PublicationInspection> {
     return adapters.withMedia(async profile => {
-        const media = await probe(artifact.output.mediaPath, context.ffprobePath);
+        const media = await (adapters.probe || probe)(artifact.output.mediaPath, context.ffprobePath);
         const streams = Array.isArray(media.streams) ? media.streams : [];
         const video = streams.find((row: any) => row.codec_type === 'video');
         const audio = streams.find((row: any) => row.codec_type === 'audio');
@@ -98,11 +115,15 @@ export async function inspectPublicationMedia(artifact: Artifact, subtitles: Sub
         await adapters.runFfmpeg(['-v', 'error', '-xerror', '-i', artifact.output.mediaPath,
             '-map', '0:v:0', '-map', '0:a:0', '-f', 'null', '-'], profile);
         facts.fullDecode = true;
-        const cueMid = (cue: Subtitle) => (cue.start + cue.end) / 2;
-        const times = [...new Set([0.25, cueMid(subtitles[0]), duration / 2, cueMid(subtitles.at(-1)!), duration - 0.25]
-            .map(time => Math.max(0, Math.min(duration - 0.05, time))))];
+        // The container can end after the final video frame (e.g. a 5 fps clip with longer audio).
+        const [rateNumerator, rateDenominator] = String(video.avg_frame_rate || '').split('/').map(Number);
+        const frameSeconds = rateNumerator > 0 && rateDenominator > 0 ? rateDenominator / rateNumerator : .25;
+        const videoDuration = Number(video.duration);
+        const videoEnd = videoDuration > 0 ? Number(video.start_time || 0) + videoDuration : duration;
+        const times = publicationFrameTimes(artifact, subtitles, duration, videoEnd - Math.max(.25, frameSeconds));
         facts.sampledFrameTimes = times;
-        const scratch = path.join(path.dirname(artifact.output.metadataPath), 'temp', path.basename(artifact.output.metadataPath) + '.publication');
+        const scratch = path.join(path.dirname(artifact.output.metadataPath), 'temp',
+            path.basename(artifact.output.metadataPath) + '.publication', `frames-${randomUUID()}`);
         fs.mkdirSync(scratch, { recursive: true });
         const frames = [image(artifact.output.coverPath!)];
         for (const [index, time] of times.entries()) {

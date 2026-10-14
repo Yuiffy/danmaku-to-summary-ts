@@ -11,6 +11,7 @@ function timelineInstructions() {
 每个事件的 evidenceIds 和 titleEvidenceIds 只引用该事件 start 前 180 秒至 end 后 180 秒内的行；逐项核对引用行自己的时间，不要把同名歌曲或影片在其他时段的提及混入本次活动。titleEvidenceIds 必须同时包含在 evidenceIds 中。
 start/end 是录播起点起算的数字秒数，给出大致完整起止，稍后只校准附近短音频；不猜超出输入的边界。歌名/片名必须有原文依据，不能从歌词猜名。evidenceIds 使用证明实际活动的 T/D 行，并核对相邻上下文，不能仅引用片名提及、计划或观众推荐；titleEvidenceIds 是包含该标题的引用，标题依据不等于播放依据。没有标题依据就 name:null。
 watch 的 name 是实际播放的影片/剧集/视频名称，不能用“电影同看”“同步视听”替代。若 overview 已明确《片名》，同时回查实际会话的标题引文并填写 name 和 titleEvidenceIds；“雷神三”和“雷神3”等序号写法可以对应，不必因此漏掉片名。仅提到另一部电影仍不能当作当前观看作品。
+watch 另附 publicName：可一眼联想到作品的搞笑剧情/人物特征化名，禁用原片名、系列名及其缩写，不是简单谐音或换字。name 仍保留有证据的真实作品身份，publicName 只用于公开包装。例如卷毛医生在线画圈、宇宙蹦迪天团。未知真实片名时 publicName:null；不要为了化名补造观看内容。不要另加一次命名请求。
 activityTimeline 格式：{"version":${TIMELINE_VERSION},"status":"complete","events":[{"kind":"song|watch","start":100,"end":300,"name":null,"performance":"full|fragment"（song）,"mediaKind":"movie|anime|video"（watch）,"startObserved":true,"endObserved":true,"evidenceIds":["T1"],"titleEvidenceIds":[]}]}
 确实没有活动时 events:[]；输入不足或未检查完时 status:"incomplete"，不能把缺少时间线当成没有唱歌。其他梗概字段保持原格式。`;
 }

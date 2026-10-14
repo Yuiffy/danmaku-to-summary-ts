@@ -33,9 +33,14 @@ function buildSubtitleEvidence(segments = [], options = {}) {
                 speaker: item.speaker, text: item.text.trim(), items: [item] });
         }
     }
+    // Keep the v1 source digest independent of the public identity policy. The
+    // historical row label is serialized only here, never exposed as a speaker.
+    const digestSource = source.map(item => ({ ...item,
+        speaker: item.speakerEvidence?.status === 'row_supported' && item.speakerEvidence.label
+            ? String(item.speakerEvidence.label) : item.speaker }));
     return {
         version: 1,
-        sourceSha256: crypto.createHash('sha256').update(JSON.stringify(source)).digest('hex'),
+        sourceSha256: crypto.createHash('sha256').update(JSON.stringify(digestSource)).digest('hex'),
         cues,
         byId: new Map(cues.map(cue => [cue.id, cue]))
     };
@@ -67,7 +72,7 @@ function speakerHint(cue) {
     const labels = new Set(sources.map(source => source.label));
     const rows = sources.flatMap(source => source.observations || []);
     if (sources.length !== cue.items.length || labels.size !== 1 || !sources[0].label
-        || sources.some(source => source.status !== 'row_supported')) return '[V=?] ';
+        || sources.some(source => !require('../workflow-runtime').loadWorkflow('clipping/speakerIdentity').publicSpeakerIdentity(source))) return '[V=?] ';
     const scores = rows.map(row => row.row?.score).filter(value => Number.isFinite(value));
     const margins = rows.map(row => row.row?.margin).filter(value => Number.isFinite(value));
     return `[V=${JSON.stringify(sources[0].label)};sim=${scores.length ? Math.min(...scores).toFixed(2) : '?'};gap=${margins.length ? Math.min(...margins).toFixed(2) : '?'};row/window] `;
@@ -85,7 +90,8 @@ function resolveEvidenceBoundaries(raw, evidence) {
 function linkClipEvidence(raw, clip, evidence, danmaku = [], available = {}) {
     const subtitleIds = Array.from(new Set((Array.isArray(raw.evidenceCueIds) ? raw.evidenceCueIds : []).map(String)));
     const danmakuIds = Array.from(new Set((Array.isArray(raw.evidenceDanmakuIds) ? raw.evidenceDanmakuIds : []).map(String)));
-    const issues = [];
+    const issues = require('../workflow-runtime').loadWorkflow('clipping/speakerIdentity').voiceOnlyCopyIssues(raw,
+        evidence.cues.filter(cue => cue.start >= clip.start - .001 && cue.end <= clip.end + .001), available.personContext);
     const subtitles = subtitleIds.map(id => {
         const cue = evidence.byId.get(id);
         if (available.cueIds && !available.cueIds.has(id)) issues.push(`unseen_subtitle:${id}`);

@@ -11,7 +11,7 @@ const root = { ownStreamClips: { attribution: settings }, ai: { streamerRegistry
   host: { displayName: 'Host', aiClipName: 'Host', roomIds: ['1'] },
   person: { displayName: 'Lin Lan', roomIds: ['2'], aliases: ['Lyn'] }
 }, roomSettings: { '2': { anchorName: 'LanLan' } } } };
-const voice = { status: 'row_supported', label: 'Host', observations: [{ scope: 'row', label: 'Host', row: { accepted: true } }] };
+const voice = { status: 'row_supported', identityVerified: true, label: 'Host', observations: [{ scope: 'row', label: 'Host', row: { accepted: true } }] };
 const rows = [
   { start: 40, end: 44, text: 'A previous topic.' },
   { start: 100, end: 104, text: 'LanLan laughed at my story.', speakerEvidence: voice },

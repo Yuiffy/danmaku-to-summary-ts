@@ -28,6 +28,8 @@ def content_digest(metadata):
         payload['presentation'] = metadata['presentation']
     if metadata.get('activityAutomaticPublicationRequired'):
         payload.update(activityAutomaticPublicationRequired=True, generatedAt=metadata.get('generatedAt'), roomId=metadata.get('roomId'))
+    if metadata.get('activityOperatorReview'):
+        payload['activityOperatorReview'] = metadata['activityOperatorReview']
     return hashlib.sha256(json.dumps(payload, sort_keys=True,
         ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
 

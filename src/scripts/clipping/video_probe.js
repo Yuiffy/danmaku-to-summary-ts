@@ -34,7 +34,9 @@ async function getVideoResolution(mediaPath, ffprobePath = 'ffprobe', atSeconds 
                 String(mediaPath)
             ], {
                 encoding: 'utf8',
-                timeout: 10000,
+                // A local frame probe decodes from the preceding seek point through this window.
+                // Large merged FLVs can already take ten seconds when the machine is idle.
+                timeout: timed ? 60000 : 10000,
                 windowsHide: true,
                 shell: false,
                 maxBuffer: timed ? 1024 * 1024 : 64 * 1024

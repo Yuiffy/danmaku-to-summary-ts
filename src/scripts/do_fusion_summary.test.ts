@@ -20,7 +20,7 @@ describe('do_fusion_summary speaker sidecar support', () => {
       const parsed = require('./asr/asr_backends').parseSrt(srt);
       require('./asr/evidence_sidecar').writeAsrEvidence(srt, text, parsed.segments.map((row: any, index: number) => ({
         ...row, asr: { recognizedText: row.text }, speaker: { version: 1, observations: [],
-          status: index ? 'row_supported' : 'mixed', label: index ? 'Guest' : null }
+          identityVerified: index === 1, status: index ? 'row_supported' : 'mixed', label: index ? 'Guest' : null }
       })), 'paraformer');
       await fusion.processLiveData([srt, xml]);
       const highlight = fs.readFileSync(path.join(dir, 'sample_AI_HIGHLIGHT.txt'), 'utf8');

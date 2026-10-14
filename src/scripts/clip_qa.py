@@ -18,6 +18,8 @@ def _file_digest(value):
 
 
 def validate_metadata_qa(metadata):
+    if metadata.get("coverSelection") and metadata.get("uploadReady") is not True:
+        raise ValueError("manually edited cover requires a fresh final review")
     if metadata.get("type") == "stream_game_submission":
         try:
             from .stream_game_review import validate_game_review

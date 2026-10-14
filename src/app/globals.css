@@ -75,6 +75,7 @@ body {
 .clip-list { max-height: 740px; overflow: auto; }.admin-shell .clip-list > button { display: block; text-align: left; width: 100%; border: 0; border-radius: 0; border-bottom: 1px solid #eff1f3; padding: 16px; background: #fff; }.admin-shell .clip-list > button.selected { background: #f0f6f3; box-shadow: inset 3px 0 var(--accent); }.clip-list strong { display: block; font-size: 13px; font-weight: 550; margin: 8px 0; line-height: 1.65; }.clip-list small { display: block; color: #85918e; }.clip-list small span { padding: 0 6px; }.clip-row-meta { display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: #87928e; }
 .status { color: #737f8a; font-size: 10px; white-space: nowrap; background: #f1f3f5; border-radius: 4px; padding: 3px 6px; }.status-uploaded, .status-succeeded, .status-completed { color: #4e7b63; background: #eaf2ed; }.status-failed, .status-needs_review, .status-interrupted { color: #ac7c43; background: #faf2e6; }.status-running, .status-processing { color: #527b97; background: #edf3f7; }
 .issue-preview { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; margin-top: 8px; color: #af8561; font-size: 10px; }
+.subtitle-excerpt { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; margin-top: 8px; color: #596863; font-size: 12px; line-height: 1.7; }.candidate-excerpt { color: #596863; font-size: 13px; line-height: 1.8; margin-top: 12px; }
 .pagination { display: flex; justify-content: space-between; align-items: center; padding: 13px; gap: 5px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }.pagination button { font-size: 11px; padding: 5px 8px; }
 .review-inspector { padding: 22px 26px; min-width: 0; }.review-empty { min-height: 580px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: var(--muted); }.review-empty > span { font-size: 48px; color: #b2c3b9; margin-bottom: 15px; }.review-empty h2 { color: #536158; margin-bottom: 7px; font-size: 17px; }.review-empty p { font-size: 12px; }
 .inspector-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 13px; color: var(--muted); font-size: 12px; }.clip-title { line-height: 1.6; margin-bottom: 4px !important; }.media-heading { display: flex; align-items: center; justify-content: space-between; margin: 17px 0 10px; gap: 10px; }.media-heading button { font-size: 11px; }.review-video { width: 100%; max-height: 460px; background: #1b2022; border-radius: 5px; }.media-empty { background: #edf0ef; border-radius: 5px; min-height: 220px; display: grid; place-items: center; text-align: center; color: var(--muted); font-size: 12px; padding: 20px; }
@@ -102,3 +103,31 @@ body {
     text-wrap: balance;
   }
 }
+.cover-editor { margin-top: 20px; display: grid; gap: 12px; min-width: 0; }
+.copy-layout:has(.cover-editor) { grid-template-columns: minmax(0, 1fr); }
+.cover-editor h3, .cover-editor p { margin: 0; }
+.cover-editor label { display: grid; gap: 6px; font-size: 12px; }
+.cover-editor input[type="range"] { width: 100%; padding: 0; accent-color: var(--accent); }
+.cover-editor .check-label { display: flex; align-items: center; gap: 8px; }
+.cover-frame { position: relative; overflow: hidden; background: #111; border-radius: 6px; }
+.cover-frame video { display: block; width: 100%; height: 100%; object-fit: contain; }
+.cover-crop { position: absolute; border: 2px solid #fff; box-shadow: 0 0 0 2000px #0008; cursor: move; touch-action: none; }
+.cover-crop span { display: block; width: max-content; max-width: 100%; background: #0009; color: white; font-size: 10px; padding: 3px 6px; pointer-events: none; }
+.cover-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cover-controls input { max-width: 120px; }
+.cover-crop-controls { display: grid; gap: 10px; }
+.cover-result { width: 100%; height: auto; border-radius: 6px; }
+
+/* Optional title drafts and evidence-based naming comparisons. */
+.title-picker, .title-statistics { margin: 16px 0; padding: 14px 18px; border: 1px solid var(--border, #d7dce2); border-radius: 10px; }
+.title-picker summary, .title-statistics summary { cursor: pointer; font-weight: 600; }
+.title-picker fieldset { border: 0; padding: 0; margin: 16px 0; min-width: 0; }
+.title-option { display: flex; align-items: flex-start; gap: 12px; padding: 12px 0; cursor: pointer; }
+.admin-shell .title-option input { flex: 0 0 16px; width: 16px; height: 16px; padding: 0; margin-top: 5px; accent-color: var(--accent); }
+.title-option > span { display: grid; gap: 4px; overflow-wrap: anywhere; }
+.title-option small { color: var(--muted, #697386); }
+.admin-shell .title-picker p, .admin-shell .title-statistics p { margin-top: 10px; margin-bottom: 10px; }
+.title-picker summary:focus-visible, .title-statistics summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.title-stats-scroll { overflow-x: auto; }
+.title-statistics table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.title-statistics th, .title-statistics td { padding: 10px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--border, #d7dce2); }

@@ -1,4 +1,11 @@
 /** Serializable control-plane contracts shared by the UI and the operator service. */
+import type { TitleDecision } from './titles';
+export interface CoverSelection {
+  time: number;
+  part: number;
+  text: string;
+  crop?: { x: number; y: number; width: number; height: number };
+}
 export interface ConfigDocument {
   name: string;
   revision: string;
@@ -9,6 +16,8 @@ export interface ClipSummary {
   id: number;
   title: string;
   status: string;
+  reviewTitle?: string;
+  subtitleExcerpt?: string;
   roomId: string;
   streamerName: string;
   start: string;
@@ -23,15 +32,19 @@ export interface ClipDetail {
   title: string;
   description: string;
   coverText: string;
+  coverSelection?: CoverSelection;
   tags: string[];
   subtitles: string;
   previewSubtitles: string;
+  source: { available: boolean; start: number; end: number; subtitles: string };
   partSubtitles: string;
   pendingRebuild: boolean;
   mediaSubtitles: boolean;
   category: 'clip' | 'activity' | 'game';
   parts: { title: string; duration: number; subtitles: boolean }[];
   media: boolean;
+  mediaRevision?: string;
+  sourceRevision?: string;
   preview: boolean;
   cover: boolean;
   evidence: Record<string, any>;
@@ -45,6 +58,12 @@ export interface AdminJob {
   updatedAt: string;
   output: string;
   exitCode?: number;
+  note?: string;
+  revision?: string;
+  phase?: string;
+  plan?: Record<string, unknown>;
+  edits?: Record<string, unknown>;
+  titleChoice?: TitleDecision;
 }
 export interface ReminderView {
   configured: boolean;

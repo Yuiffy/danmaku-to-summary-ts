@@ -20,7 +20,7 @@ function buildParticipantContext(rootConfig, info, parsed, danmaku, metadata = {
         const referenceHints = settings?.entityReferences?.enabled === true ? referenceHintsFor(entry, rootConfig, person.names) : [];
         const matches = nameMatcher(referenceNames({ ...person, referenceHints }));
         const speakerLabels = new Set([person.label, ...(entry.speakerLabels || [])].map(String));
-        const voiceRows = (parsed.segments || []).filter(row => row.speakerEvidence?.status === 'row_supported'
+        const voiceRows = (parsed.segments || []).filter(row => require('../workflow-runtime').loadWorkflow('clipping/speakerIdentity').publicSpeakerIdentity(row.speakerEvidence)
             && speakerLabels.has(row.speakerEvidence.label));
         const voiceObservations = Array.from(new Map(voiceRows.flatMap(row => row.speakerEvidence.observations || [])
             .filter(row => row.scope === 'row' && speakerLabels.has(row.label))
@@ -43,6 +43,7 @@ function buildParticipantContext(rootConfig, info, parsed, danmaku, metadata = {
 function participantPromptLines(context) {
     if (!context?.people?.length) return [];
     return [
+        require('../workflow-runtime').loadWorkflow('clipping/speakerIdentity').SPEAKER_IDENTITY_RULE,
         '本场人物背景：名单或房主身份不是逐句说话人证据；mentioned_only只表示被提到，不证明在场。',
         ...context.people.map(person => JSON.stringify({ id: person.id, name: person.label, copyName: person.preferredName,
             names: person.names, presence: person.presence,

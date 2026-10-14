@@ -13,6 +13,16 @@ const registry = { ai: { streamerRegistry: {
 } } };
 
 describe('participant context', () => {
+  test('repeated high-scoring but unverified voice matches do not discover a guest', () => {
+    const rows = [0, 10].map(start => ({ start, end: start + 10, text: 'A complete response.',
+      speakerEvidence: { status: 'row_supported', label: 'Guest', identityVerified: false,
+        observations: [{ start, end: start + 10, scope: 'row', label: 'Guest', row: { accepted: true, score: .99 } }] } }));
+    const candidate = buildParticipantContext(registry, { roomId: '1' }, { segments: rows }, []);
+    expect(candidate.people.some(person => person.id === 'guest')).toBe(false);
+    const confirmed = buildParticipantContext(registry, { roomId: '1' }, { segments: rows.map(row => ({ ...row,
+      speakerEvidence: { ...row.speakerEvidence, identityVerified: true } })) }, []);
+    expect(confirmed.people.find(person => person.id === 'guest').presence).toBe('voice_matched');
+  });
   const parsed = { segments: [{ start: 0, end: 60, text: 'Guest called.' }] };
   const comments = Array.from({ length: 60 }, (_, i) => ({ time: i, text: i === 25 ? 'Guest called Host' : 'ha' }));
   test('does not upgrade name mentions into participants or speaker truth', () => {

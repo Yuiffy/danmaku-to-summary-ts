@@ -234,7 +234,8 @@ function buildCompactEvidenceSource(segments, audience, heatLines, emotionLines,
         sourceIndices: cue.items.map(item => item.index),
         ...(cue.items.some(item => item.speakerEvidence) ? { speakerEvidence: {
             version: 1, status: cue.items.every(item => item.speakerEvidence?.status === 'row_supported') ? 'row_supported' : 'unknown',
-            label: cue.speaker === 'UNKNOWN' ? null : cue.speaker, identityVerified: false,
+            label: cue.speaker === 'UNKNOWN' ? null : cue.speaker,
+            identityVerified: cue.items.every(item => item.speakerEvidence?.identityVerified === true),
             timingPrecision: 'acoustic_window'
         } } : {}) }));
     const reactions = audience.map((item,index) => ({ id: `D${index + 1}`, source: 'audience',

@@ -39,9 +39,9 @@ export function copyRepairEligible(artifact: Artifact, config: PublicationConfig
         && artifact.output?.burnedSubtitles === true && artifact.uploadReady === true
         && review?.status === 'needs_review' && review.technical?.passed === true
         && ['subtitles', 'policy'].every(key => review.checks[key] === true)
-        && Array.isArray(review.issues) && review.issues.some((issue: string) => /标题|封面|文案|简介|\b(?:title|cover|copy)\b/iu.test(issue))
+        && Array.isArray(review.issues) && review.issues.some((issue: string) => /标题|封面|文案|简介|事实表述|\b(?:title|cover|copy)\b/iu.test(issue))
         && review.issues.every((issue: string) => /^final_(?:content|attribution|visuals)_not_passed$/u.test(issue)
-            || /标题|封面|文案|简介|\b(?:title|cover|copy)\b/iu.test(issue))
+            || /标题|封面|文案|简介|事实表述|\b(?:title|cover|copy)\b/iu.test(issue))
         && !review.issues.some((issue: string) => /source_window|结尾|片尾|收尾|边界|上下文不完整/u.test(issue));
 }
 
@@ -64,6 +64,10 @@ export async function repairOwnPublicCopy(artifact: Artifact, config: Publicatio
     let updated = coverLayout && artifact.attributionReview?.status === 'passed'
         || prerequisiteRepairEligible(artifact, config) && !attributionRepair ? pending
         : await io.reviewCopy(pending, artifact.publicationReview.issues);
+    const requestedTitle = artifact.renderedSubtitles?.review?.copy?.title;
+    if (requestedTitle && updated.copy.title !== requestedTitle) {
+        throw new Error('Operator title changed during independent copy review; return the conflict to the feedback editor');
+    }
     if (!same(updated.window, artifact.window) || !same(updated.source, artifact.source)
         || updated.output.mediaPath !== artifact.output.mediaPath || updated.output.srtPath !== artifact.output.srtPath
         || updated.output.metadataPath !== artifact.output.metadataPath || updated.ownStreamHumanReview || updated.humanReview) {

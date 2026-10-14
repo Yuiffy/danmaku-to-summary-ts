@@ -48,6 +48,26 @@ class LocalActivityReviewTests(unittest.TestCase):
     def test_bound_independent_lyrics_preserve_complete_source_enclosure(self):
         check_local_activity(self.event, self.source)
 
+    def test_optional_native_listening_rechecks_original_audio_and_local_timestamps(self):
+        request = json.loads((self.root/'LOCAL_INPUT.json').read_text())
+        raw = dict(timeBasis='audio_local_seconds', observations=[dict(id='song-1', ownership='host',
+            chronology=[dict(audioIndex=1, start=0, end=16, kind='host_singing')])])
+        listening = dict(version=1, protocolVersion=2, source=self.source, inputs=request['audio'], observations=raw['observations'],
+            response=dict(text=json.dumps(raw), meta=dict(apiMode='gemini_native')))
+        for changed in (False, True):
+            if changed:
+                raw['observations'][0]['chronology'][0].update(start=100,end=116)
+                listening['response']['text'] = json.dumps(raw)
+            file = self.save('NATIVE.json', listening)
+            reference = dict(path=file, sha256=file_digest(file))
+            self.response['requestBinding']['nativeListening'] = reference
+            self.save('RESPONSE.json', self.response)
+            self.event['verification'].update(nativeListening=reference, responseSha256=file_digest(self.root/'RESPONSE.json'))
+            if changed:
+                with self.assertRaisesRegex(ValueError, 'outside original audio'): check_local_activity(self.event,self.source)
+            else:
+                check_local_activity(self.event,self.source)
+
     def test_service_outage_or_missing_assessment_is_a_review_hold(self):
         for key in ('localAudioEvidence', 'responsePath', 'responseSha256', 'decision'):
             with self.subTest(key=key):
@@ -58,6 +78,40 @@ class LocalActivityReviewTests(unittest.TestCase):
         self.event['verification'] = {'method': 'independent_local_asr', 'decision': 'uncertain', 'reason': 'HTTP 502'}
         with self.assertRaisesRegex(ValueError, 'completed independent assessment'):
             check_local_activity(self.event, self.source)
+
+    def test_segmented_listening_revalidates_audio_partition_and_clock_mapping(self):
+        request = json.loads((self.root/'LOCAL_INPUT.json').read_text())
+        segments = []; inputs = []
+        for i in range(2):
+            file = str(self.root/f'segment-{i}.mp3'); Path(file).write_bytes(b'segment sound')
+            start = 100 + 8 * i; end = start + 8
+            args = ['-y', '-ss', str(start), '-i', self.source['mediaPath'], '-t', '8', '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'libmp3lame', '-b:a', '64k', file]
+            receipt = dict(version=3, source=self.source, args=args, sha256=file_digest(file))
+            receipt['signature'] = hashlib.sha256(json.dumps({'args': args, 'source': self.source}, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+            self.save(f'segment-{i}.mp3.complete.json', receipt)
+            segments.append(dict(path=file, start=start, end=end, originalAudioIndex=1))
+            inputs.append(dict(path=file, start=start, end=end, sha256=file_digest(file)))
+        raw = dict(timeBasis='audio_local_seconds', observations=[dict(id='song-1', ownership='host', chronology=[
+            dict(audioIndex=i+1, start=0, end=8, kind='host_singing') for i in range(2)])])
+        nested = dict(version=1, protocolVersion=2, source=self.source, inputs=inputs, observations=raw['observations'],
+            response=dict(text=json.dumps(raw), meta=dict(apiMode='gemini_native')))
+        mapped = copy.deepcopy(raw['observations'])
+        mapped[0]['chronology'][1].update(audioIndex=1, start=8, end=16)
+        listening = dict(version=1, protocolVersion=3, source=self.source, inputs=request['audio'], response=nested['response'],
+            observations=mapped, segments=dict(audio=segments, listening=nested))
+        def check(value):
+            file = self.save('NATIVE.json', value); reference = dict(path=file, sha256=file_digest(file))
+            self.response['requestBinding']['nativeListening'] = reference
+            self.save('RESPONSE.json', self.response)
+            self.event['verification'].update(nativeListening=reference, responseSha256=file_digest(self.root/'RESPONSE.json'))
+            check_local_activity(self.event, self.source)
+        check(listening)
+        wrong = copy.deepcopy(listening); wrong['observations'][0]['chronology'][1]['start'] = 9
+        with self.assertRaisesRegex(ValueError, 'chronology changed'): check(wrong)
+        wrong = copy.deepcopy(listening); wrong['segments']['audio'][1]['start'] = 109
+        with self.assertRaisesRegex(ValueError, 'coverage changed'): check(wrong)
+        Path(segments[0]['path']).write_bytes(b'changed sound')
+        with self.assertRaisesRegex(ValueError, 'extraction'): check(listening)
 
     def test_closed_enclosure_preserves_uncertain_exact_onset_without_waiving_other_issues(self):
         self.event.update(startObserved=False, endObserved=False,
@@ -114,8 +168,20 @@ class LocalActivityReviewTests(unittest.TestCase):
                     check_local_activity(event, self.source)
 
     def test_separate_preview_revision_replays_announcement_images_and_complete_context(self):
+        self._check_prelude_variant()
+
+    def test_playback_restart_requires_repeated_opening_and_independent_selection(self):
+        self._check_prelude_variant(restart=True)
+
+    def test_trial_singing_can_precede_a_complete_restart_with_bound_native_evidence(self):
+        self._check_prelude_variant(restart=True, preview=True)
+
+    def _check_prelude_variant(self, restart=False, preview=False):
         local = copy.deepcopy(self.local)
         local['audio'][0]['chunks'][1]['text'] = '我开始唱了呀请听'
+        if restart:
+            local['audio'][0]['chunks'] = [dict(index=i+1,start=i*4,end=(i+1)*4,text=text) for i,text in enumerate(
+                ['春天的晚风吹过山坡','这首歌我们来唱吧','春天的晚风吹过山坡','唱完了谢谢大家'])]
         self.save('LOCAL_AUDIO.json', local)
         bundle = {**local, **{k:v for k,v in self.event['verification']['localAudioEvidence'].items()
             if k in ('resultPath','receiptPath')}}
@@ -134,13 +200,41 @@ class LocalActivityReviewTests(unittest.TestCase):
         raw = copy.deepcopy(self.raw); raw['results'][0]['events'][0]['start']['seconds'] = 8
         raw['results'][0]['preludeCorrection'] = revision
         response = copy.deepcopy(self.response)
+        if restart:
+            revision.update(version=2,method='playback_then_restarted_performance',preludeKind='playback',
+                priorPlaybackConfirmed=True,openingRestartConfirmed=True,
+                announcement=dict(audioIndex=1,chunkIndex=2,quote='这首歌我们来唱吧'),
+                openingBefore=dict(audioIndex=1,chunkIndex=1,quote='春天的晚风吹过山坡'),
+                openingAfter=dict(audioIndex=1,chunkIndex=3,quote='春天的晚风吹过山坡'))
+            raw['results'][0]['evidenceRefs'] = [revision['announcement']]
+            raw['results'][0]['events'][0]['start']['seconds'] = 4
+            response['requestBinding']['candidates'][0]['start'] = 100
         response['requestBinding'].update(localAudioSha256=bundle['sha256'],frames=images)
+        if preview:
+            revision.update(version=3, method='preview_then_complete_restart', preludeKind='listening_or_rehearsal', noUniqueVerseLost=True)
+            response['requestBinding']['candidates'][0]['allowPreviewRestart'] = True
+            request = json.loads((self.root/'LOCAL_INPUT.json').read_text())
+            native = dict(timeBasis='audio_local_seconds', observations=[dict(id='song-1', ownership='host',
+                chronology=[dict(audioIndex=1,start=0,end=16,kind='host_singing')])])
+            inputs = request['audio'] + [{k:f[k] for k in ('path','sha256','time','activityId')} for f in images]
+            file = self.save('NATIVE.json', dict(version=1,protocolVersion=2,source=self.source,inputs=inputs,observations=native['observations'],
+                response=dict(text=json.dumps(native),meta=dict(apiMode='gemini_native'))))
+            response['requestBinding']['nativeListening'] = dict(path=file,sha256=file_digest(file))
         response['text'] = json.dumps(raw)
         self.save('RESPONSE.json', response)
-        event = copy.deepcopy(self.event); event['start'] = 108
+        event = copy.deepcopy(self.event); event['start'] = 104 if restart else 108
+        event['verification']['evidenceRefs'] = raw['results'][0]['evidenceRefs']
         event['verification'].update(localAudioEvidence=bundle,frameEvidence=images,preludeCorrection=revision,
             responseSha256=file_digest(self.root/'RESPONSE.json'))
+        if preview:
+            event['verification']['nativeListening'] = response['requestBinding']['nativeListening']
         check_local_activity(event,self.source)
+        if preview:
+            revision['noUniqueVerseLost'] = False
+            response['text'] = json.dumps(raw); self.save('RESPONSE.json', response)
+            event['verification']['responseSha256'] = file_digest(self.root/'RESPONSE.json')
+            with self.assertRaisesRegex(ValueError, 'unique verse'): check_local_activity(event,self.source)
+            revision['noUniqueVerseLost'] = True
         for mutate in (lambda r:r.update(previewContextClosed=False), lambda r:r['announcement'].update(quote='怎么唱的呀')):
             changed = copy.deepcopy(raw); mutate(changed['results'][0]['preludeCorrection'])
             response['text'] = json.dumps(changed); self.save('RESPONSE.json',response)

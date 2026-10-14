@@ -4,10 +4,55 @@ import { titleItems } from './activityTitles';
 type Data = Record<string, any>;
 export const ACTIVITY_REVIEW_EVIDENCE_VERSION = 3;
 export const ACTIVITY_TITLE_EVIDENCE_VERSION = 1;
+export const ACTIVITY_SAMPLE_EVIDENCE_VERSION = 1;
 export interface ActivityTextReaders {
     read(file: string): Buffer;
     parse(file: string): Array<{ start: number; end: number; text: string }>;
     audience(file: string): Promise<Array<{ time: number; text: string }>>;
+}
+
+/** Keep the original anchors; viewing neighbours reveal brief transitions without hiding black frames. */
+export function activityPublicationSamples(kind: string, part: Data): Data[] {
+    const duration = part.end - part.start;
+    if (!Number.isFinite(part.start) || !Number.isFinite(duration) || duration <= 0) throw new Error('Invalid activity sample interval');
+    const last = Math.max(0, duration - .25);
+    const anchors = [{ label: 'BEGIN', time: Math.min(.25, last) },
+        { label: 'MIDDLE', time: Math.min(duration / 2, last) }, { label: 'END', time: last }];
+    const samples = kind === 'watch' ? [anchors[0], { label: 'BEGIN AFTER', time: anchors[0].time + 2 },
+        { label: 'MIDDLE BEFORE', time: anchors[1].time - 2 }, anchors[1], { label: 'MIDDLE AFTER', time: anchors[1].time + 2 },
+        { label: 'END BEFORE', time: anchors[2].time - 2 }, anchors[2]] : anchors;
+    return samples.map(sample => {
+        const localSeconds = Math.max(0, Math.min(last, sample.time));
+        return { label: sample.label, localSeconds, recordingSeconds: part.start + localSeconds };
+    });
+}
+
+/** One explicit upgrade adds temporal context to black-aligned viewing; no other failed check or rejection qualifies. */
+export function temporalActivityEvidenceReview(row: Data, proof: Data): boolean {
+    const review = row.activityReview, parts = row.output?.parts;
+    const otherChecks = ['content', 'boundaries', 'titles', 'policy'];
+    if (row.kind !== 'watch' || row.uploadReady !== false || review?.status !== 'pending' || review.authority !== 'automatic'
+        || proof.version !== 1 || proof.evidenceVersion !== ACTIVITY_REVIEW_EVIDENCE_VERSION || proof.sampleEvidenceVersion !== undefined
+        || proof.completeText?.version !== ACTIVITY_REVIEW_EVIDENCE_VERSION || !proof.completeText.activities?.length
+        || proof.status !== 'needs_review' || proof.checks?.visuals !== false
+        || JSON.stringify(proof.checks) !== JSON.stringify(review.checks) || !otherChecks.every(key => proof.checks?.[key] === true)
+        || !Array.isArray(parts) || !parts.length || !Array.isArray(proof.responses) || !proof.responses.length) return false;
+    const numbers: number[] = [];
+    for (const response of proof.responses) {
+        const scope = response.reviewScope;
+        if (!['passed', 'needs_review'].includes(response.status) || typeof response.checks?.visuals !== 'boolean'
+            || !otherChecks.every(key => response.checks?.[key] === true)
+            || !Array.isArray(scope?.partNumbers) || !scope.partNumbers.length || !Array.isArray(scope.imageManifest)) return false;
+        for (const number of scope.partNumbers) {
+            const part = parts[number - 1], sheet = scope.imageManifest.find((image: Data) => image.kind === 'P_sample_sheet' && image.partNumber === number);
+            if (!Number.isInteger(number) || !part || !Array.isArray(sheet?.samples) || sheet.samples.length !== 3
+                || !['BEGIN', 'MIDDLE', 'END'].every((label, index) => sheet.samples[index].label === label)) return false;
+            numbers.push(number);
+        }
+        if (response.checks?.visuals === false && !scope.partNumbers.some((number: number) => parts[number - 1]?.blackAlignmentEvidence)) return false;
+    }
+    return numbers.length === parts.length && new Set(numbers).size === parts.length
+        && proof.responses.some((response: Data) => response.checks.visuals === false);
 }
 
 /** Shared decoder/assessment artifacts occur once, with explicit per-event references. No observation is truncated. */
@@ -24,6 +69,7 @@ export function activityPublicationBoundaries(activities: Data[], read: (file: s
     };
     const events = activities.map(event => ({ id: event.id,
         independentAudioRef: reference(event.verification.localAudioEvidence.resultPath),
+        ...(event.verification.nativeListening ? { nativeListeningRef: reference(event.verification.nativeListening.path) } : {}),
         boundaryAssessmentRef: reference(event.verification.responsePath) }));
     return { events, artifacts };
 }

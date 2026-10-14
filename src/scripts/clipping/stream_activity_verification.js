@@ -22,8 +22,13 @@ async function requestMediaVerification(prompt, inputs, root, settings) {
     }
     const model = settings.model || root.ai?.text?.gemini?.model;
     if (!model || !/^[a-zA-Z0-9._-]+$/u.test(model)) throw new Error('Invalid activity verification model');
-    const contents = [{ role: 'user', parts: [{ text: prompt }, ...inputs.map(input => ({ inlineData: {
-        mimeType: input.mimeType, data: fs.readFileSync(input.path).toString('base64') } }))] }];
+    let audioIndex = 0, imageIndex = 0;
+    const contents = [{ role: 'user', parts: [{ text: prompt }, ...inputs.flatMap(input => [
+        { text: input.mimeType.startsWith('audio/')
+            ? `Audio attachment audioIndex=${++audioIndex}. This file starts at local second 0.${Number.isFinite(input.start) && Number.isFinite(input.end) ? ` Duration ${input.end - input.start} seconds; recordingStart ${input.start}.` : ''}`
+            : `Original image index=${++imageIndex}.${Number.isFinite(input.time) ? ` Recording time ${input.time}.` : ''}` },
+        { inlineData: { mimeType: input.mimeType, data: fs.readFileSync(input.path).toString('base64') } }
+    ])] }];
     const chat = { model, messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, ...inputs.map(input =>
         input.mimeType.startsWith('audio/') ? { type: 'input_audio', input_audio: { data: fs.readFileSync(input.path).toString('base64'), format: 'mp3' } }
             : { type: 'image_url', image_url: { url: `data:${input.mimeType};base64,${fs.readFileSync(input.path).toString('base64')}` } })] }],

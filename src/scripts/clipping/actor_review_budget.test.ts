@@ -4,7 +4,7 @@ const { buildSubtitleEvidence } = require('./subtitle_evidence');
 test('repair rounds cannot consume the requests reserved for unreviewed batches', async () => {
     const parsed = { participantContext: { people: [{ id: 'host', label: 'Host', preferredName: 'Host', names: ['Host'], sourceHost: true }] },
         segments: Array.from({ length: 12 }, (_, i) => ({ start: i * 100, end: i * 100 + 30, text: 'Host tells a complete story.',
-            speakerEvidence: { status: 'row_supported', label: 'Host', observations: [{ start: i * 100, end: i * 100 + 30,
+            speakerEvidence: { status: 'row_supported', identityVerified: true, label: 'Host', observations: [{ start: i * 100, end: i * 100 + 30,
                 label: 'Host', scope: 'row', row: { accepted: true, score: .8, margin: .2 } }] } })) };
     const clips = parsed.segments.map(row => ({ start: row.start, end: row.end, title: 'Host tells a complete story',
         coverText: 'Complete\nStory', description: 'Host tells a complete story.', grounding: { sourceKind: 'playback' } }));

@@ -2,6 +2,12 @@
 const topic = require('../topic_clipper');
 const { createClipResourceAdaptiveScheduler } = require('./resource_scheduler');
 
+function operatorIntent(artifact) {
+    const review = artifact.renderedSubtitles?.review;
+    return review?.note ? { note: review.note, proposedSourceKind: review.sourceKind, requestedCopy: review.copy || artifact.copy,
+        scope: '用户编辑意见及拟投稿文案，不是整片已核听或已通过画面审核的证明。' } : null;
+}
+
 // Extracted process adapters retain the original final-review behavior.
 async function inspectFinals(results, { runtime, automatic, config, rootConfig, info, streamerName, options, mediaConfig, evidence, audience, persist }) {
     const scheduler = createClipResourceAdaptiveScheduler({ ownConfig: config, rootConfig });
@@ -15,7 +21,8 @@ async function inspectFinals(results, { runtime, automatic, config, rootConfig, 
         };
     const request = (artifact, phase, prompt, images) => require('./enhancement_runner').requestStage(
         { ...settings.stageDefaults, ...settings.stages?.qa }, settings.budget,
-        { ...info, outputContract: { key: 'checks', type: 'object', allowDomainRejected: true } }, `${phase}-${artifact.window.index}`, prompt, images);
+        { ...info, outputContract: { key: 'checks', type: 'object', allowDomainRejected: true } }, `${phase}-${artifact.window.index}`,
+        operatorIntent(artifact) ? `${prompt}\n用户编辑意见仅支持其明确给出的作品/人物称呼和事件关系；不是自动通过或整片核听的证明。独立核验修改后的文案与实际成片，勿因缺少身份标签而拒绝没有指定说话者的动作。省略主语的观看/讨论标题、来源前缀及忠实引用不单独指定主播为播放中人物；仍阻止明确的错误归属。\nUSER_EDITORIAL_CONTEXT ${JSON.stringify(operatorIntent(artifact))}` : prompt, images);
     const adapters = {
             parse: file => topic.parseTopicSrt(file).segments, evidence, audience,
             request: (artifact, prompt, images) => request(artifact, 'publication', prompt, images),
@@ -56,14 +63,17 @@ async function inspectFinals(results, { runtime, automatic, config, rootConfig, 
 }
 
 async function reviewArtifactCopy(current, issues, context) {
-            const parsed = require('../asr/asr_backends').parseSrt(current.source.srtPath, 'own_stream_clip');
-            parsed.segments = require('../asr/evidence_sidecar').loadAsrEvidence(current.source.srtPath, parsed.segments).segments;
+            const keywordTopic = current.publicationKind === 'keyword_topic';
+            const parsed = keywordTopic ? topic.parseTopicSrt(current.source.srtPath)
+                : require('../asr/asr_backends').parseSrt(current.source.srtPath, 'own_stream_clip');
+            if (!keywordTopic) parsed.segments = require('../asr/evidence_sidecar').loadAsrEvidence(current.source.srtPath, parsed.segments).segments;
             const danmaku = current.source.xmlPath ? await context.audience(current.source.xmlPath) : [];
             const participants = require('./participant_context');
             const roster = participants.loadRecordingParticipants(current.source.srtPath, current.source.mediaPath, current.roomId,
                 topic.loadAsrSpeakerSidecarForMediaPath(current.source.srtPath));
             parsed.participantContext = participants.buildParticipantContext(context.rootConfig, context.info, parsed, danmaku, roster);
-            const originalEvidence = context.evidence(parsed.segments), helpers = context.copyHelpers;
+            const originalEvidence = keywordTopic ? require('./preflight_evidence').buildPreflightEvidence(parsed.segments)
+                : context.evidence(parsed.segments), helpers = context.copyHelpers;
             const evidence = current.automaticSubtitleRepair
                 ? require('../workflow-runtime').loadWorkflow('clipping/ownSubtitleRepairRuntime').projectSubtitleRepairEvidence(originalEvidence, current)
                 : originalEvidence;
@@ -72,13 +82,14 @@ async function reviewArtifactCopy(current, issues, context) {
             const original = { ...current.copy, description: current.copy.description.startsWith(prefix + '\n\n')
                 ? current.copy.description.slice(prefix.length + 2) : current.copy.description };
             const clip = { ...original, ...current.window, attributionRequired: true, grounding: current.grounding,
-                publicationRepairFeedback: { issues, instruction: '仅根据完整原话修正这些文案问题，保留条件语气和准确数字；不能更改字幕或窗口，不能为通过审核猜测。',
+                publicationRepairFeedback: { issues, operatorIntent: operatorIntent(current),
+                    instruction: '核对用户给出的修改大意及全部相关文案。保留已有支持的用户标题/看点；不能重新换题、还原相矛盾的旧简介或把播放中人物动作归给主播。仅修复具体证据不支持的文字，保留条件语气和准确数字；不能更改字幕或窗口，不能为通过审核猜测。',
                     ...(current.automaticSubtitleRepair ? { localAudioChecks: { edits: current.automaticSubtitleRepair.edits,
                         checks: current.automaticSubtitleRepair.checks }, audioScope: '局部双模型结果仅用于标记疑词，不能据此推断人物身份。' } : {}) } };
             const [reviewed] = await require('./actor_review_runner').reviewClipActors([clip], parsed, danmaku, evidence,
                 context.info, context.config, context.rootConfig, {});
             const copy = { ...current.copy, title: reviewed.title, coverText: reviewed.coverText,
-                description: helpers.buildClipDescription({ streamerName: current.streamerName, streamTitle: current.streamTitle,
+                description: keywordTopic ? reviewed.description : helpers.buildClipDescription({ streamerName: current.streamerName, streamTitle: current.streamTitle,
                     recordedAt: current.recordedAt, start: current.window.start, end: current.window.end, description: reviewed.description }) };
             const updated = require('./actor_review').finalizeActorReview({ ...current, copy, grounding: reviewed.grounding,
                 publicCopyPending: Boolean(reviewed.publicCopyPending), uploadReady: !reviewed.publicCopyPending }, reviewed, copy, evidence);
@@ -90,8 +101,9 @@ function renderCopyCover(current, context, options = {}) {
             context.copyHelpers.buildCoverTitle(current.copy.title, current.copy.coverText),
             require('path').join(require('path').dirname(current.output.metadataPath), 'automatic_copy_revisions', require('crypto').randomUUID()),
             { streamerName: current.streamerName, clipDuration: current.window.duration,
-                coverSourcePath: current.source.mediaPath, clipStart: current.window.start,
-                textPosition: options.textPosition || 'center' });
+                coverSourcePath: current.coverSelection ? current.output.mediaPath : current.source.mediaPath, clipStart: current.coverSelection ? 0 : current.window.start,
+                preferredTime: (current.coverSelection ? 0 : current.window.start) + current.window.duration * 0.35,
+                textPosition: options.textPosition || 'center', manualSelection: current.coverSelection });
 }
 
 async function repairPublicCopy(artifact, context, required = {}) {

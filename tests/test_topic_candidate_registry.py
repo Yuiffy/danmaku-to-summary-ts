@@ -57,6 +57,37 @@ class TopicCandidateRegistryTests(unittest.TestCase):
         self.assertEqual(saved['reviewPreview'], result['reviewPreview'])
         self.assertFalse(registry.QUEUE_PATH.exists())
 
+    def test_pending_boundary_replan_preserves_id_and_never_approves_or_enqueues(self):
+        file, metadata = self.candidate()
+        self.assertEqual(self.import_file(file), 0)
+        with patch.object(registry.clip_candidate_queue, 'candidate_action', return_value=self.subtitle_result(metadata)) as action:
+            self.assertEqual(registry.main(['rebuild', '--id', '1', '--replan', '--start', '10', '--end', '55',
+                                           '--review-note', 'Extend the closing utterance']), 0)
+        self.assertEqual(action.call_args.args[2], 'prepare')
+        self.assertEqual(action.call_args.args[3]['replan'], 'yes')
+        self.assertEqual(action.call_args.args[3]['end'], 55)
+        self.assertTrue(self.records()['1']['pendingCut'])
+        self.assertFalse(registry.QUEUE_PATH.exists())
+
+    def test_current_word_confirmation_requires_explicit_note_and_cue_and_routes_without_approval(self):
+        file, metadata = self.candidate()
+        self.import_file(file)
+        with patch.object(registry.clip_candidate_queue, 'candidate_action', return_value=self.subtitle_result(metadata)) as action:
+            self.assertEqual(registry.main(['correct', '--id', '1', '--from', 'SUI', '--confirm-current',
+                                           '--cue', '1', '--note', 'User confirmed the existing spelling']), 0)
+        self.assertEqual(action.call_args.args[3]['confirm_current'], 'yes')
+        self.assertNotIn('approve_upload', action.call_args.args[3])
+        self.assertFalse(registry.QUEUE_PATH.exists())
+
+    def test_pending_replan_cannot_enqueue_before_independent_cut_or_omit_boundaries(self):
+        file, _ = self.candidate()
+        self.import_file(file)
+        with patch.object(registry.clip_candidate_queue, 'candidate_action') as action:
+            for flags in ([], ['--replan'], ['--replan', '--start', '10', '--end', '55', '--enqueue']):
+                self.assertEqual(registry.main(['rebuild', '--id', '1', '--review-note', 'Extend', *flags]), 2)
+            action.assert_not_called()
+        self.assertFalse(registry.QUEUE_PATH.exists())
+
     def test_preview_skips_active_uploads_and_continues_after_failure(self):
         for name in ('first', 'second'):
             file, metadata = self.candidate(name)

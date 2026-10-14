@@ -107,6 +107,19 @@ test('source-only rebuilt subtitles permit diagnosis while manual subtitle revis
     }
 });
 
+test('a quoted transcription issue affecting content can diagnose a source-only rebuild but cannot admit story or identity defects', () => {
+    const current = { ...artifact, renderedSubtitles: { revision: 0, edits: [] }, publicationReview: { ...artifact.publicationReview,
+        checks: { ...artifact.publicationReview.checks, content: false },
+        issues: ['字幕“预气”难以确认，需核对该段字幕与文案', 'final_content_not_passed', 'final_subtitles_not_passed'] } };
+    expect(subtitleRepairEligible(current)).toBe(true);
+    expect(subtitleRepairEligible({ ...current, renderedSubtitles: undefined })).toBe(false);
+    for (const issue of ['字幕“预气”附近缺失结尾', '片段上下文不完整', '关键人物未确认', 'final_content_not_passed']) {
+        expect(subtitleRepairEligible({ ...current, publicationReview: { ...current.publicationReview, issues: [issue] } })).toBe(false);
+    }
+    expect(subtitleRepairEligible({ ...current, publicationReview: { ...current.publicationReview,
+        checks: { ...current.publicationReview.checks, attribution: false } } })).toBe(false);
+});
+
 test('source projection retains G IDs, grouping and voice rows without mutating the source evidence', () => {
     const voice = { status: 'row_supported', label: '小岁' };
     const item = { start: 106, end: 108, text, speakerEvidence: voice };

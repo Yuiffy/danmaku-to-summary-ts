@@ -14,7 +14,7 @@ export { projectSubtitleRepairEvidence, subtitleRepairEligible } from './ownSubt
 type Data = Record<string, any>;
 const execute = promisify(execFile), hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
 const fileHash = (file: string) => hash(fs.readFileSync(file));
-const ALIGNMENT_VERSION = 'cue-consensus-v4';
+const ALIGNMENT_VERSION = 'cue-consensus-v5';
 export interface RepairIO {
     parse(file: string): RepairCue[];
     write(file: string, cues: RepairCue[]): void;

@@ -11,8 +11,7 @@ def candidate_action(api, clip, action, options=None, timeout=1800):
     command = ["node", str(api.PROJECT_ROOT / "src/scripts" / script),
                "--metadata", clip["metadataPath"], "--candidate-id", str(clip["id"]), "--action", action]
     review = clip.get("candidateReviewPath") or clip.get("reviewPath")
-    if review or not clip.get("pendingCut"):
-        command.extend(["--registry-path", str(api.REGISTRY_PATH)])
+    command.extend(["--registry-path", str(api.REGISTRY_PATH)])
     if review:
         command.extend(["--source-review", review])
     for key, value in (options or {}).items():
@@ -104,6 +103,10 @@ def edit_candidate(args, api):
         if args.cue is None or not str(args.note).strip():
             raise ValueError("--drop-cue requires --cue and --note")
         signature["drop_cue"] = "yes"
+    if getattr(args, "confirm_current", False):
+        if args.cue is None or not str(args.note).strip():
+            raise ValueError("--confirm-current requires --cue and an explicit --note")
+        signature["confirm_current"] = "yes"
     handle = api.acquire_queue_mutation_lock()
     try:
         registry = api.load_json(api.REGISTRY_PATH, api.default_registry())
@@ -186,8 +189,11 @@ def prepare_rebuild(args, api):
     try:
         registry = api.load_json(api.REGISTRY_PATH, api.default_registry())
         clip = registry.get("clips", {}).get(str(args.id))
-        if not clip or clip.get("pendingCut"):
-            raise ValueError("A rendered clip ID is required; unrendered keyword candidates use cut")
+        if not clip:
+            raise ValueError("Unknown clip ID")
+        if clip.get("pendingCut") and (not getattr(args, "replan", False)
+                                      or args.start is None or args.end is None or args.enqueue):
+            raise ValueError("Pending candidates require --replan --start --end; cut with --automatic-review before enqueue")
         api.sync_clip_statuses(registry, [args.id])
         if args.id in active_ids(api.load_json(api.QUEUE_PATH, api.default_queue())):
             raise ValueError("The upload worker owns this ID; cancel its waiting job before editing")

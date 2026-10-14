@@ -14,6 +14,13 @@ test('final boundary feedback reopens only explicitly identified failed Ps with 
   const raw = [{ id: 'watch', kind: 'watch', start: 20, end: 80 }, { id: 'sibling', kind: 'watch', start: 210, end: 290 }];
   expect(retryBoundaryEvents(raw, row.activities, ['watch'], [], feedback)).toEqual([{ ...raw[0], boundaryFeedback: feedback[0] }]);
   expect(raw[0].end).toBe(80);
+  const unavailable = [{ ...raw[0], boundaryFeedback: feedback[0], verification: { decision: 'uncertain' } }, row.activities[1]];
+  expect(retryBoundaryEvents(raw, unavailable, ['watch'])).toEqual([{ ...raw[0], boundaryFeedback: feedback[0] }]);
+  const operatorSong = { ...row, activityAutomaticPublicationRequired: false,
+    activityOperatorReview: { version: 1, note: '去除开头混入的播放，保留完整重唱', requestedAt: '2026-10-13T00:00:00Z' },
+    activities: row.activities.map((e: any) => ({ ...e, kind: 'song' })) };
+  expect(activityBoundaryFeedback(operatorSong, proof, registry, ['watch'])).toEqual(feedback);
+  expect(() => activityBoundaryFeedback({ ...operatorSong, activityOperatorReview: undefined }, proof, registry, ['watch'])).toThrow();
   expect(() => activityBoundaryFeedback(row, proof, registry, ['sibling'])).toThrow('failed final');
   expect(() => activityBoundaryFeedback(row, proof, registry, ['watch', 'watch'])).toThrow();
   for (const registered of [{ status: 'queued' }, { ...registry, bvid: 'BV1' },

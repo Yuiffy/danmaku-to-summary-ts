@@ -8,7 +8,7 @@ const context = { people: [
   { id: 'host', label: 'Host', names: ['Host'], preferredName: 'Host', sourceHost: true, presence: 'source_host' },
   { id: 'guest', label: 'Guest', names: ['Guest', 'GuestClip'], preferredName: 'GuestClip', sourceHost: false, presence: 'planned' }
 ] };
-const voice = (label: string) => ({ version: 1, status: 'row_supported', label, observations: [
+const voice = (label: string) => ({ version: 1, status: 'row_supported', identityVerified: true, label, observations: [
   { start: 0, end: 10, label, scope: 'row', row: { label, accepted: true, score: .7, margin: .15 } }
 ] });
 const source = buildSubtitleEvidence([{ start: 0, end: 10, text: 'I asked Mimi about it.', speakerEvidence: voice('Guest') },
@@ -22,6 +22,33 @@ const good = () => ({ clipId: 'c1', decision: 'repair', copy: { title: 'GuestCli
     sourceKind: 'recount', identityBasis: 'voice', speakerCueIds: ['G1'], cueIds: ['G1'] }], evidenceDanmakuIds: [] });
 
 describe('independent action attribution review', () => {
+  test('a continuous retelling supplies nearby setting while outside actions remain uncitable', () => {
+    const evidence = buildSubtitleEvidence([{ start: 12, end: 15, text: 'I was on a plane.' },
+      { start: 40, end: 50, text: 'The child said that.' }], { groupSegments: false });
+    const prepared = buildActorReviewPacket({ ...clip, start: 40, end: 50 }, 'c1', evidence, [], context, { contextSeconds: 12 });
+    expect(prepared.data.speech).toContain('I was on a plane.');
+    expect(prepared.data.inRangeCueIds).toEqual(['G2']);
+    const review = good(); review.claims[0].cueIds = ['G1'];
+    expect(validateActorReview(review, prepared).length).toBeGreaterThan(0);
+  });
+  test('an accepted acoustic candidate cannot be cited as verified identity or resurrected during repair', () => {
+    const unverified = buildSubtitleEvidence([{ start: 0, end: 10, text: 'I asked Mimi about it.',
+      speakerEvidence: { ...voice('Guest'), identityVerified: false } }], { groupSegments: false });
+    const prepared = buildActorReviewPacket(clip, 'c1', unverified, [], context);
+    expect(prepared.data.voiceCitations).toEqual([]);
+    expect(prepared.data.speech).toContain('[V=?]');
+    expect(validateActorReview(good(), prepared)).toContain('speaker_citation_conflict:1');
+  });
+  test('a publication repair cannot replace the title selected from operator feedback', () => {
+    const requested = good().copy.title;
+    const prepared = buildActorReviewPacket({ ...clip, title: requested,
+      publicationRepairFeedback: { operatorIntent: { requestedCopy: { title: requested } } } },
+      'c1', source, [], context);
+    const rewritten = good(); rewritten.copy.title = 'GuestClip recalled a question to Mimi';
+    expect(validateActorReview(rewritten, prepared)).toContain('operator_title_changed');
+    expect(applyActorReview(prepared, rewritten)).toMatchObject({ title: requested, publicCopyPending: true });
+    expect(validateActorReview(good(), prepared)).toEqual([]);
+  });
   test('a required review survives a revision even when the new copy has no heuristic risk', () => {
     const value = { start: 10, end: 20, title: '普通聊天', description: '今天聊天', coverText: '聊天',
       attributionRequired: true, grounding: { sourceKind: 'live_speech' } };
@@ -84,6 +111,12 @@ describe('independent action attribution review', () => {
     }
     const prompt = actorReviewPrompt([p], namedContext);
     expect(prompt).toContain('允许有原文依据的自然概括');
+    expect(prompt).toContain('人工选定的标题也按此标准审核并逐字保留');
+    expect(prompt).toContain('一次清楚提及即可');
+    expect(prompt).toContain('凭空添加的误会');
+    expect(prompt).toContain('紧邻原字幕上下文可确认普通地点或时间背景');
+    expect(prompt).toContain('允许省去口头重复');
+    expect(prompt).toContain('不能拼接不同人物的话');
     expect(prompt).toContain('不得新增“当面”');
     expect(prompt).toContain('动物、昆虫、物品不是待实名的人物');
     expect(prompt).toContain('被提及者、转述对象');

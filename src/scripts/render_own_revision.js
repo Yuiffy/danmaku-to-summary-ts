@@ -255,7 +255,7 @@ async function updateRevision(metadataPath, options, config = require('./config-
             correctCandidateDraft(editable, path.join(directory, 'subtitles.json'), evidence, options);
             metadata.renderedSubtitles = editable.candidateSubtitles;
             metadata.copy = editable.copy;
-            if (oldHash !== editable.candidateSubtitles.sha256) metadata.rebuildRequired = true;
+            if (oldHash !== editable.candidateSubtitles.sha256 || options.confirmCurrent) metadata.rebuildRequired = true;
         }
         if (options.action === 'prepare') {
             for (const field of ['title', 'description', 'coverText']) {
@@ -266,7 +266,7 @@ async function updateRevision(metadataPath, options, config = require('./config-
             const reviewed = await validateCopy(metadata, sourceKind, revisionEvidence(metadata, evidence));
             metadata.copy = { ...metadata.copy, ...reviewed.copy };
             metadata.grounding = reviewed.grounding;
-            metadata.renderedSubtitles.review = { note: options.reviewNote.trim(), sourceKind };
+            metadata.renderedSubtitles.review = { note: options.reviewNote.trim(), sourceKind, copy: { ...metadata.copy } };
             metadata.renderedSubtitles.approval = null;
             metadata.rebuildRequired = true;
             metadata.publicCopyPending = false;
@@ -346,11 +346,23 @@ async function renderRevision(metadataPath, options, config = require('./config-
                         device: backend.device, use_itn: false, resource_guard: { ...backend.resource_guard, torch_num_threads: 2 },
                         gpu_throttle: backend.gpu_throttle, ffmpeg: config.audio?.ffmpeg?.path || 'ffmpeg', ffmpegThreads: 2 } });
             }
-            approved = await publication.reviewArtifactCopy(approved, ['修复时间轴后重新核对原话及人物归属'], context);
+            const keywordTopic = updated.publicationKind === 'keyword_topic';
+            if (!keywordTopic || updated.attributionRequired) {
+                // A mandatory review cannot be skipped by the optional room allowlist.
+                const requiredContext = keywordTopic ? { ...context, config: { ...context.config,
+                    attribution: { ...context.config.attribution, enabled: true,
+                        roomIds: [...new Set([...(context.config.attribution?.roomIds || []), String(updated.roomId)])] } } } : context;
+                approved = await publication.reviewArtifactCopy(approved,
+                    [...(updated.publicationReview?.issues || []), '重建后重新核对原话及人物归属'], requiredContext);
+            }
             if (approved.copy.title !== updated.copy.title || approved.copy.coverText !== updated.copy.coverText) {
                 approved.output = { ...approved.output, coverPath: await publication.renderCopyCover(approved, context) };
             }
-            approved = (await publication.inspectFinals([approved], context))[0];
+            approved = keywordTopic
+                ? await require('./clipping/topic_automatic_publication').reviewCandidateFinal(approved, config,
+                    { ...topic, buildPreflightEvidence: require('./clipping/preflight_evidence').buildPreflightEvidence,
+                        buildQueueMediaConfig: manual.buildQueueMediaConfig }, { finalOnly: true })
+                : (await publication.reviewFinals([approved], context))[0];
         } else {
             if (updated.renderedTimingRepair) throw new Error('Timing repair requires --automatic-review; no implicit human approval');
             await require('./review_rendered_clip').approveRenderedClip(staging, { id,

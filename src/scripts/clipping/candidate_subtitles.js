@@ -75,12 +75,16 @@ function ensureCandidateDraft(metadata, metadataPath, evidence, config = {}) {
 function correctCandidateDraft(metadata, metadataPath, evidence, options) {
     const draft = readCandidateDraft(metadata, evidence);
     const original = String(options.from || '');
-    const replacement = String(options.to || '');
+    const confirmation = options.confirmCurrent === true || options.confirmCurrent === 'yes';
+    const replacement = confirmation ? original : String(options.to || '');
     const drop = options.dropCue === true || options.dropCue === 'yes';
+    if (confirmation && (drop || options.to != null || options.cue == null || !String(options.reviewNote || '').trim())) {
+        throw new Error('Current-word confirmation requires cue, exact current word and note, without replacement');
+    }
     if (drop && (options.cue == null || !String(options.reviewNote || '').trim() || options.to != null)) {
         throw new Error('Dropping a cue requires its number, exact text and review note, without --to');
     }
-    if (!original || (!drop && (!replacement || original === replacement))
+    if (!original || (!drop && (!replacement || original === replacement && !confirmation))
         || (drop ? /[\x00-\x09\x0b-\x1f]/u : /[\r\n\x00-\x1f]/u).test(original + replacement)) {
         throw new Error('Correction needs distinct nonempty literal words without control characters');
     }
@@ -121,7 +125,7 @@ function correctCandidateDraft(metadata, metadataPath, evidence, options) {
     }
     metadata.candidateSubtitles = { ...draft, path: file, revision, ...written, approval: null,
         edits: [...draft.edits, { authority: 'user', at: new Date().toISOString(), note: options.reviewNote,
-            ...(drop ? { operation: 'drop_cue' } : {}),
+            ...(drop ? { operation: 'drop_cue' } : confirmation ? { operation: 'confirm_current' } : {}),
             original, replacement, cue: cueIndex, changes, copyChanges, sourceSha256: evidence.sourceSha256 }] };
     metadata.status = 'pending_preflight';
     metadata.output.srtPath = file;

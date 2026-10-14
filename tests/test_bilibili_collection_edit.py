@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from src.scripts.bilibili_collection_edit import rename_episode
+from src.scripts.bilibili_collection_edit import list_section_episodes
 
 
 class CollectionEditTests(unittest.TestCase):
@@ -34,3 +35,22 @@ class CollectionEditTests(unittest.TestCase):
         listing.return_value = [{'part_episodes': [self.episode]}]
         self.assertTrue(rename_episode(self.episode, self.episode['title'], self.credential)['unchanged'])
         post.assert_not_called()
+
+    @patch('src.scripts.bilibili_collection_edit.requests.get')
+    def test_full_section_query_validates_identity_and_includes_later_episodes(self, get):
+        get.return_value.json.return_value = {'code': 0, 'data': {'section': {'id': 55}, 'episodes': [self.episode]}}
+        self.assertEqual(list_section_episodes(55, self.credential), [self.episode])
+        self.assertEqual(get.call_args.kwargs['params'], {'id': 55})
+        get.return_value.json.return_value['data']['section']['id'] = 56
+        with self.assertRaises(RuntimeError): list_section_episodes(55, self.credential)
+
+    @patch('src.scripts.bilibili_collection_edit.list_section_episodes')
+    @patch('src.scripts.bilibili_collection_edit.requests.post')
+    @patch('src.scripts.bilibili_collection_edit.list_collection_seasons')
+    def test_episode_beyond_the_overview_preview_uses_full_section_before_editing(self, listing, post, section):
+        listing.return_value = [{'part_episodes': []}]
+        section.return_value = [self.episode]
+        post.return_value.json.return_value = {'code': 0}
+        rename_episode(self.episode, '新化名', self.credential)
+        section.assert_called_once_with(55, self.credential)
+        self.assertEqual(post.call_args.kwargs['json']['id'], 11)

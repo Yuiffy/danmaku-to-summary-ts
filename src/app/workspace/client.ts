@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 export async function api<T = any>(endpoint: string, body?: unknown, method = 'POST'): Promise<T> {
   const response = await fetch(`/api/admin${endpoint}`, body === undefined ? { cache: 'no-store' } : {
@@ -9,8 +9,9 @@ export async function api<T = any>(endpoint: string, body?: unknown, method = 'P
   if (!response.ok) throw new Error(data.error || `请求失败 (${response.status})`);
   return data as T;
 }
-export function useResource<T>(endpoint: string, interval = 0) {
+export function useResource<T>(endpoint: string, interval = 0, preserveOnRefresh = false) {
   const [data, setData] = useState<T>(), [error, setError] = useState(''), [loading, setLoading] = useState(true), [version, setVersion] = useState(0);
+  const previousEndpoint = useRef<string>();
   const refresh = useCallback(() => setVersion(value => value + 1), []);
   useEffect(() => {
     let current = true;
@@ -24,10 +25,13 @@ export function useResource<T>(endpoint: string, interval = 0) {
       } catch (reason) { if (current) setError(reason instanceof Error ? reason.message : '读取失败'); }
       finally { if (current) setLoading(false); }
     };
-    setLoading(true); setData(undefined); setError(''); void read();
+    setLoading(true);
+    if (!preserveOnRefresh || previousEndpoint.current !== endpoint) setData(undefined);
+    previousEndpoint.current = endpoint;
+    setError(''); void read();
     const timer = interval ? setInterval(() => void read(), interval) : undefined;
     return () => { current = false; controller.abort(); if (timer) clearInterval(timer); };
-  }, [endpoint, interval, version]);
+  }, [endpoint, interval, version, preserveOnRefresh]);
   return { data, error, loading, refresh };
 }
 export function statusText(status: string): string {

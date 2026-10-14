@@ -27,7 +27,7 @@ try:
         strip_review_score_suffix, normalize_registry_media_paths, parse_review,
         INTERNAL_REVIEW_LABEL_RE, REVIEW_SCORE_SUFFIX_RE)
     from .clip_upload_manifest import load_upload_manifest, validate_registry_qa, find_review_manifest
-    from . import clip_candidate_queue, precision_publish, clip_auto_publication, clip_auto_recheck, clip_media_replace, clip_upload_state
+    from . import clip_candidate_queue, precision_publish, clip_auto_publication, clip_auto_recheck, clip_media_replace, clip_upload_state, clip_cover_editor
 except ImportError:
     from clip_upload_errors import (TERMINAL_UPLOAD_ERROR_MARKERS, has_terminal_upload_error,
         terminal_upload_error_reason, format_upload_failure)
@@ -35,7 +35,7 @@ except ImportError:
         strip_review_score_suffix, normalize_registry_media_paths, parse_review,
         INTERNAL_REVIEW_LABEL_RE, REVIEW_SCORE_SUFFIX_RE)
     from clip_upload_manifest import load_upload_manifest, validate_registry_qa, find_review_manifest
-    import clip_candidate_queue, precision_publish, clip_auto_publication, clip_auto_recheck, clip_media_replace, clip_upload_state
+    import clip_candidate_queue, precision_publish, clip_auto_publication, clip_auto_recheck, clip_media_replace, clip_upload_state, clip_cover_editor
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_DIR = PROJECT_ROOT / "data" / "runtime"
@@ -2305,9 +2305,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("show", help="Show clip records as JSON")
     p.add_argument("ids")
     p.set_defaults(func=show_clips)
-
     precision_publish.register_commands(sub, sys.modules[__name__])
     clip_auto_recheck.register_commands(sub, sys.modules[__name__])
+    clip_cover_editor.register_commands(sub, sys.modules[__name__])
     p = sub.add_parser("subtitles", help="Show or prepare the editable candidate SRT by numeric ID")
     p.add_argument("--id", required=True, type=int)
     p.set_defaults(func=edit_candidate)
@@ -2318,6 +2318,7 @@ def build_parser() -> argparse.ArgumentParser:
     replacement = p.add_mutually_exclusive_group(required=True)
     replacement.add_argument("--to", dest="to_text")
     replacement.add_argument("--drop-cue", action="store_true", help="Remove one confirmed false subtitle cue; requires --cue, exact --from and --note")
+    replacement.add_argument("--confirm-current", action="store_true", help="Record explicit user confirmation of existing --from at --cue without changing its words; requires --note")
     p.add_argument("--cue", type=int, default=None)
     p.add_argument("--note", default="")
     p.add_argument("--title", default=None)
@@ -2326,7 +2327,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tags", default=None, help="Comma-separated reviewed upload tags (unrendered topic candidates)")
     p.add_argument("--enqueue", action="store_true")
     p.set_defaults(func=edit_candidate)
-
     p = sub.add_parser("rebuild", help="Prepare a rendered own-stream/topic revision or recover an overlong candidate; never renders immediately")
     p.add_argument("--id", required=True, type=int)
     p.add_argument("--review-note", required=True)

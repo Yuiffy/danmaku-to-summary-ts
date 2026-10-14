@@ -48,6 +48,28 @@ class AutomaticActivityTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate(data, changed, check_artifacts, content_digest)
 
+    def test_explicit_operator_review_still_requires_bound_automatic_proof_and_never_claims_human_review(self):
+        self.config['streamActivityClips']['automaticPublication']['mode'] = 'off'
+        self.data.pop('activityAutomaticPublicationRequired')
+        self.data['activityOperatorReview'] = dict(version=1, note='修复后投稿', requestedAt='2026-10-13T00:00:00Z')
+        self.fixture.save()
+        data = self.approved()
+        self.assertEqual(data['activityReview']['authority'], 'automatic')
+        self.assertEqual(data['activityReview']['policy']['mode'], 'operator')
+        validate(data, self.config, check_artifacts, content_digest)
+        with patch('src.scripts.config_loader.get_config', return_value=self.config):
+            rows = upload_fixtures.load_upload_manifest(self.fixture.manifest)
+            self.assertEqual(upload_fixtures.registry.validate_groups([rows]), [])
+            changed = copy.deepcopy(data)
+            changed.pop('activityOperatorReview')
+            self.fixture.metadata.write_text(json.dumps(changed), encoding='utf-8')
+            errors = upload_fixtures.registry.validate_groups([rows])
+            self.assertTrue(any('does not authorize' in error for error in errors), errors)
+        for mutate in (lambda d: d['activityOperatorReview'].update(note='changed'),
+                       lambda d: d['activities'][0]['verification'].update(decision='uncertain')):
+            changed = copy.deepcopy(data); mutate(changed)
+            with self.assertRaises(ValueError): validate(changed, self.config, check_artifacts, content_digest)
+
     def test_policy_marker_activation_scope_and_complete_boundary_requirements(self):
         mutations = [lambda d: d.update(activityAutomaticPublicationRequired=False), lambda d: d.update(roomId='other'),
             lambda d: d.update(generatedAt='2026-10-04T23:59:59Z'), lambda d: d['activities'][0].update(startObserved=False),

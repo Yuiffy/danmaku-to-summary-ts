@@ -19,6 +19,17 @@ test('a corrected viewing end preserves earlier P boundaries and balances only t
   expect(retainWatchPartBoundaries(old, planned, 1500, 1800)).toEqual(old);
 });
 
+test.each([[600, 720], [3600, 4200]])('boundary revision retains %s-second review parts and only resplits the extended tail', (target, maximum) => {
+  const part = (start: number, end: number) => ({ activityId: 'watch', start, end, duration: end - start });
+  const old = [part(0, target), part(target, target * 2)];
+  const planned = [part(0, target * .9), part(target * .9, target * 1.8), part(target * 1.8, target * 2.7)];
+  expect(retainWatchPartBoundaries(old, old, target, maximum)).toEqual(old);
+  const result = retainWatchPartBoundaries(planned, old, target, maximum);
+  expect(result[0]).toEqual(old[0]);
+  expect(result.at(-1)!.end).toBe(target * 2.7);
+  expect(result.every((p, i) => p.duration <= maximum && (!i || p.start === result[i - 1].end))).toBe(true);
+});
+
 test('boundary review can reuse unchanged original Ps while changed intervals, sources and damaged files must render', () => {
   const part = { activityId: 'watch', start: 10, end: 110, duration: 100 };
   const source = { mediaPath: 'recording', mediaBytes: '500', mediaMtimeNs: '123' };

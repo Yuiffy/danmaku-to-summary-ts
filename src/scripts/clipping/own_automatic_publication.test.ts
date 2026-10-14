@@ -1,6 +1,52 @@
 export {};
 const { reviewFinals, inspectFinals } = require('./own_automatic_publication');
 
+test('mandatory keyword actor review binds the same speaker-aware source hash and cue IDs as topic final review', async () => {
+    const topic = require('../topic_clipper');
+    const segments = [
+        { start: 1, end: 2, text: '这嘴巴很萌', speaker: 'unknown', asrEvidence: { rawText: '这嘴巴很萌' } },
+        { start: 2, end: 3, text: '好可爱呀', speaker: 'unknown', asrEvidence: { rawText: '好可爱呀' } }
+    ];
+    const canonical = require('./preflight_evidence').buildPreflightEvidence(segments);
+    const parse = jest.spyOn(topic, 'parseTopicSrt').mockReturnValue({ segments });
+    const roster = jest.spyOn(require('./participant_context'), 'loadRecordingParticipants').mockReturnValue({});
+    const actor = jest.spyOn(require('./actor_review_runner'), 'reviewClipActors').mockImplementation(async (clips, _parsed, _audience, evidence) => {
+        expect(evidence.sourceSha256).toBe(canonical.sourceSha256);
+        expect(evidence.cues.map(cue => cue.id)).toEqual(['G1', 'G2']);
+        return clips.map(clip => ({ ...clip, attributionRequired: false }));
+    });
+    const value = { publicationKind: 'keyword_topic', source: { srtPath: '/source.speaker.srt', mediaPath: '/source.flv' },
+        copy: { title: '好可爱', description: '好可爱', coverText: '好可爱' }, window: { start: 1, end: 3 }, roomId: 'other' };
+    try {
+        const reviewed = await require('./own_automatic_publication').reviewArtifactCopy(value, [], {
+            evidence: () => { throw new Error('Grouped own-stream evidence must not be used'); },
+            rootConfig: {}, config: {}, info: { roomId: 'other' },
+            copyHelpers: { buildClipDescription: row => `Recording 2026-10-10\n${row.description}` }
+        });
+        expect(reviewed.copy.description).toBe('好可爱');
+        expect(parse).toHaveBeenCalledWith('/source.speaker.srt'); expect(actor).toHaveBeenCalledTimes(1);
+    } finally { parse.mockRestore(); roster.mockRestore(); actor.mockRestore(); }
+});
+
+test('operator copy intent reaches the independent actor review and preserves generated header handling', async () => {
+    const topic = require('../topic_clipper');
+    const parse = jest.spyOn(topic, 'parseTopicSrt').mockReturnValue({ segments: [{ start: 1, end: 2, text: '视频很可爱' }] });
+    const roster = jest.spyOn(require('./participant_context'), 'loadRecordingParticipants').mockReturnValue({});
+    const actor = jest.spyOn(require('./actor_review_runner'), 'reviewClipActors').mockImplementation(async clips => {
+        expect(clips[0].publicationRepairFeedback.operatorIntent).toMatchObject({ note: '标题大意改为看塔宝说你很可爱', requestedCopy: { title: '看塔宝说你很可爱' } });
+        expect(clips[0].publicationRepairFeedback.instruction).toContain('不能重新换题');
+        return clips.map(clip => ({ ...clip, attributionRequired: false }));
+    });
+    const value = { publicationKind: 'keyword_topic', source: { srtPath: '/source.srt', mediaPath: '/source.flv' },
+        copy: { title: '看塔宝说你很可爱', description: '看视频的评论', coverText: '你很可爱' }, window: { start: 1, end: 2 },
+        renderedSubtitles: { review: { note: '标题大意改为看塔宝说你很可爱', sourceKind: 'playback', copy: { title: '看塔宝说你很可爱' } } } };
+    try {
+        const result = await require('./own_automatic_publication').reviewArtifactCopy(value, ['旧问题'], {
+            rootConfig: {}, config: {}, info: {}, copyHelpers: { buildClipDescription: row => row.description } });
+        expect(result.copy.title).toBe(value.copy.title);
+    } finally { parse.mockRestore(); roster.mockRestore(); actor.mockRestore(); }
+});
+
 function context(runtime) {
     return { runtime, automatic: {}, config: { selectionPolicy: { excludedCategories: [] }, enhancements: {} },
         rootConfig: {}, info: { roomId: '25788785' }, streamerName: '岁己SUI', options: {}, mediaConfig: {},
@@ -58,7 +104,8 @@ test('cover repair samples the original source window and moves obstructing text
         await require('./own_automatic_publication').renderCopyCover(artifact,
             { copyHelpers: { buildCoverTitle: (_title: string, text: string) => text } }, { textPosition: 'bottom' });
         expect(cover).toHaveBeenCalledWith('/burned.mp4', artifact.copy.coverText, expect.any(String),
-            expect.objectContaining({ coverSourcePath: '/source.flv', clipStart: 100, clipDuration: 30, textPosition: 'bottom' }));
+            expect.objectContaining({ coverSourcePath: '/source.flv', clipStart: 100, clipDuration: 30,
+                preferredTime: 110.5, textPosition: 'bottom' }));
     } finally { cover.mockRestore(); }
 });
 

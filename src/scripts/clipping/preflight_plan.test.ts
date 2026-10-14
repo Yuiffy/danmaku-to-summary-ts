@@ -23,6 +23,19 @@ const clip = { id: 'E1-1', status: 'ready', startCueId: 'G2', endCueId: 'G3', hi
   title: 'A price story', description: 'A complete answer about the price.', coverText: 'The price\nFull response', subtitleEdits: [edit] };
 const normalize = (value, options = {}) => normalizePreflightResponse(JSON.stringify(value), input, evidence, config, options);
 
+test('unverified acoustic names cannot leak into preflight speaker input or pass public-copy grounding', () => {
+  const rows = segments.map(row => ({ ...row, speaker: '灰泽满Hazel', speakerEvidence: {
+    status: 'row_supported', label: '灰泽满Hazel', identityVerified: false,
+    observations: [{ scope: 'row', label: '灰泽满Hazel', row: { accepted: true, score: .99 } }] } }));
+  const refs = buildPreflightEvidence(rows);
+  const packet = buildPreflightInput({ ...group, cues: refs.cues }, refs, config);
+  expect(packet.subtitles.every(cue => cue.speaker === 'UNKNOWN')).toBe(true);
+  const plan = normalizePreflightResponse(JSON.stringify({ hits: [hit], clips: [{ ...clip,
+    title: '灰泽满提到SUI' }] }), packet, refs, config);
+  expect(plan.clips[0].status).toBe('needs_review');
+  expect(plan.clips[0].grounding.issues).toContain('unverified_voice_person:title:灰泽满Hazel');
+});
+
 test('preserves per-row boundaries and raw provenance without modifying source subtitles', () => {
   expect(evidence.cues).toHaveLength(4);
   expect(input.originalAsrSpans[0].rawText).toBe('SUI shared a price.');

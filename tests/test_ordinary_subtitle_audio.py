@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src/scripts/python'))
-from ordinary_subtitle_audio import validate_request, analyze
+from ordinary_subtitle_audio import validate_request, analyze, decode_speech_blocks
 from src.scripts.ordinary_subtitle_evidence import digest, validate_subtitle_audio_evidence
 
 
@@ -42,6 +42,30 @@ class OrdinarySubtitleAudioTests(unittest.TestCase):
                     analyze({**self.request(), 'source': {}}, Path(directory) / 'audio.json')
             prepare.assert_not_called()
             self.assertEqual(lease.read_text(), 'existing game subtitle task')
+
+    def test_speech_after_a_long_pause_is_decoded_instead_of_lost_in_one_window(self):
+        samples = [1] * 16000 + [0] * 96000 + [2] * 16000
+        def infer(chunk):
+            # A whole-window decoder can stop at the first silence; each speech block must reach it.
+            word = '前一句' if 1 in chunk else '后一句'
+            return [{'text': '<|zh|>' + word}]
+        self.assertEqual(infer(samples)[0]['text'], '<|zh|>前一句')
+        result = decode_speech_blocks(samples, [[0, 1000], [7000, 8000]], infer)
+        self.assertEqual(''.join(row['text'] for row in result), '前一句后一句')
+        self.assertEqual([(row['start'], row['end']) for row in result], [(0, 1.2), (6.8, 8)])
+
+    def test_overlapping_vad_padding_does_not_repeat_words(self):
+        infer = Mock(return_value=[{'text': '连续讲话'}])
+        result = decode_speech_blocks([0] * 48000, [[100, 1000], [1200, 2500]], infer)
+        self.assertEqual(''.join(row['text'] for row in result), '连续讲话')
+        self.assertEqual(infer.call_count, 1)
+
+    def test_invalid_intervals_and_missing_decode_results_do_not_form_evidence(self):
+        for intervals in ([[False, 500]], [[-1, 500]], [[0, 2000]], [[0, float('nan')]], [[600, 900], [0, 100]]):
+            with self.subTest(intervals=intervals), self.assertRaises(ValueError):
+                decode_speech_blocks([0] * 16000, intervals, Mock())
+        with self.assertRaisesRegex(ValueError, 'decode is incomplete'):
+            decode_speech_blocks([0] * 16000, [[0, 1000]], Mock(return_value=[]))
 
     def proof(self, root):
         files = {name: root / name for name in ('request.json', 'audio.json', 'proof.json', 'A1.wav', 'corrected.srt')}

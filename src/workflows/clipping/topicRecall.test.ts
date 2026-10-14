@@ -41,6 +41,21 @@ describe('ambiguous topic recall preserves source words for semantic review', ()
         expect(matches[0]).not.toHaveProperty('verdict');
     });
 
+    test('recalls a room-bound colleague comparison while preserving the unrecognized name', () => {
+        const source = cues(['好友都是同事', '难道还要观测同事在偷玩什么游戏吗',
+            '我又不是c几c说说我说我一下播就打开']);
+        const matches = findAmbiguousTopicMatches(source, config, { roomId: '1791260716' });
+        expect(matches).toHaveLength(1);
+        expect(matches[0]).toMatchObject({ index: 2, segment: source[2],
+            recall: { requiresSemanticConfirmation: true,
+                hypotheses: [{ ruleId: 'sui-mofu-colleague-reference', form: 'c几c', keyword: '岁己' }] } });
+        expect(matches[0].segment.text).not.toContain('岁己');
+        expect(findAmbiguousTopicMatches(source, config, { roomId: 'another-room' })).toEqual([]);
+        expect(findAmbiguousTopicMatches(cues([source[2].text]), config, { roomId: '1791260716' })).toEqual([]);
+        expect(findAmbiguousTopicMatches(cues(['同事发了c几c这个代码']), config,
+            { roomId: '1791260716' })).toEqual([]);
+    });
+
     test('does not use distant context, unrelated keywords, ignored rooms or a legacy/no-AI-review path', () => {
         const source = [{ start: 0, end: 2, text: '随即来了' }, { start: 200, end: 202, text: '必须秒回' }];
         expect(findAmbiguousTopicMatches(source, config)).toEqual([]);

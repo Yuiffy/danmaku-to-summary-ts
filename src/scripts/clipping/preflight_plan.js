@@ -27,6 +27,8 @@ function normalizePreflightHits(raw, input) {
 }
 
 function editIsCorroborated(edit, cue, input, inside, hits) {
+    if (input.competitionContext && require('../workflow-runtime').loadWorkflow('clipping/topicRecovery')
+        .competitionEditBlocked(edit, cue, input.competitionContext, input)) return false;
     if ((input.verifiedEdits || []).some(verified => verified.start === cue.start && verified.end === cue.end
         && verified.original === edit.original && verified.replacement === edit.replacement)) return true;
     if ((input.hits || []).some(hit => hit.recall?.requiresSemanticConfirmation)) {
@@ -125,11 +127,20 @@ function reviewSubtitleEdits(rawEdits, bounds, evidence, input, hits) {
 function normalizePreflightResponse(text, input, evidence, config, options = {}) {
     if (evidence.cues.some(cue => cue.items.length !== 1)) throw new Error('Preflight requires per-subtitle evidence');
     const data = parseJsonResponse(text);
-    const hits = options.lockedHits || normalizePreflightHits(data?.hits, input);
+    const competitionPolicy = input.competitionGuard ? require('../workflow-runtime').loadWorkflow('clipping/topicRecovery') : null;
+    const competitionContext = competitionPolicy ? options.lockedCompetition
+        || competitionPolicy.normalizeCompetitionContext(data?.competitionContext, input) : null;
+    if (competitionContext) input = { ...input, competitionContext };
+    const assessedHits = options.lockedHits || normalizePreflightHits(data?.hits, input);
+    const hits = competitionContext ? competitionPolicy.competitionHitGate(assessedHits, competitionContext, input) : assessedHits;
     if (!Array.isArray(data?.clips)) throw new Error('Missing preflight clips array');
     const allowed = new Set(input.subtitles.map(cue => cue.id));
     const ids = new Set();
-    const clips = data.clips.map(raw => {
+    const clips = data.clips.filter(raw => {
+        // Only discard a proposed edit when every one of its valid anchors was explicitly suppressed.
+        const anchors = Array.isArray(raw?.hitIds) ? raw.hitIds.map(id => hits.find(hit => hit.id === id)) : [];
+        return !anchors.length || !anchors.every(hit => hit?.verdict === 'false_match' && hit.competitionSuppression);
+    }).map(raw => {
         const bounds = resolveEvidenceBoundaries(raw, evidence);
         if (!bounds || !allowed.has(bounds.startCueId) || !allowed.has(bounds.endCueId)
             || !nonempty(raw.id) || !raw.id.startsWith(`${input.groupId}-`) || ids.has(raw.id)
@@ -198,7 +209,8 @@ function normalizePreflightResponse(text, input, evidence, config, options = {})
     }).sort((a, b) => a.start - b.start);
     if (clips.some((clip, index) => index && clip.start < clips[index - 1].end)) throw new Error('Preflight clips overlap');
     if (options.lockedClip && clips.length !== 1) throw new Error('Finishing must return the one locked clip');
-    return { version: 1, groupId: input.groupId, sourceSha256: evidence.sourceSha256, hits, clips };
+    return { version: 1, groupId: input.groupId, sourceSha256: evidence.sourceSha256, hits, clips,
+        ...(competitionContext ? { competitionContext } : {}) };
 }
 
 module.exports = { normalizePreflightHits, applyPreflightSubtitleEdits, normalizePreflightResponse };

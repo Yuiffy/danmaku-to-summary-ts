@@ -10,12 +10,28 @@ except ImportError:
     from bilibili_upload import _build_cookie_str, list_collection_seasons
 
 
+def list_section_episodes(section_id, credential):
+    """The seasons overview contains only four previews, not every episode."""
+    response = requests.get('https://member.bilibili.com/x2/creative/web/season/section',
+        params={'id': int(section_id)}, headers={'Cookie': _build_cookie_str(credential),
+        'User-Agent': 'Mozilla/5.0', 'Referer': 'https://member.bilibili.com/platform/upload-manager'}, timeout=20)
+    response.raise_for_status()
+    payload = response.json()
+    data = payload.get('data') or {}
+    if payload.get('code') != 0 or (data.get('section') or {}).get('id') != int(section_id) or not isinstance(data.get('episodes'), list):
+        raise RuntimeError('Collection section query failed or returned a different section')
+    return data['episodes']
+
+
 def rename_episode(episode, title, credential):
     if not str(title).strip() or len(title) > 80:
         raise ValueError('Invalid collection episode title')
     seasons = list_collection_seasons(credential)
     current = next((row for season in seasons for row in season.get('part_episodes') or []
                     if row.get('id') == episode.get('id')), None)
+    if current is None:
+        current = next((row for row in list_section_episodes(episode['sectionId'], credential)
+                        if row.get('id') == episode.get('id')), None)
     fields = ('id', 'aid', 'cid', 'seasonId', 'sectionId', 'title', 'order')
     if not current or any(current.get(key) != episode.get(key) for key in fields):
         raise RuntimeError('Collection episode changed while preparing its title update')

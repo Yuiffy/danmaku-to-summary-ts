@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { createHash } from 'crypto';
-import { planBoundaryAudio, prepareBoundaryAudio } from './topicBoundaryAudio';
+import { planBoundaryAudio, prepareBoundaryAudio, keywordAudioPlan, diagnoseKeywordAudio } from './topicBoundaryAudio';
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 const input = { target: { names: ['岁己'] }, subtitles: [
@@ -42,6 +42,26 @@ describe('bounded pre-render boundary audio diagnosis', () => {
         expect(planBoundaryAudio({ clips: [{ ...plan.clips[0], status: 'ready' }] }, input)).toEqual([]);
         expect(planBoundaryAudio({ clips: [{ ...plan.clips[0], reason: '结尾感觉不好' }] }, input)).toEqual([]);
         expect(planBoundaryAudio({ clips: [{ ...plan.clips[0], boundaryReview: { unresolvedCueIds: ['G99'] } }] }, input)).toEqual([]);
+    });
+
+    test('explicit keyword diagnosis is bounded, hash verified, non-mutating and never repeated on the same final', async () => {
+        const artifact = { publicationKind: 'keyword_topic', window: { start: 10, end: 40 },
+            publicationReview: { status: 'needs_review', issues: ['名称识别影响关键词指向'] },
+            aiReview: { keyword: { hits: [{ verdict: 'mention', cueId: 'G1', start: 10, end: 18 }] } },
+            copy: { title: 'Original title' }, candidateSubtitles: { revision: 0, edits: [] } };
+        const original = structuredClone(artifact), io = adapter();
+        const result = await diagnoseKeywordAudio(artifact, input, config, source, runtime, io);
+        expect(result.aiReview.boundaryAudioChecks.status).toBe('available');
+        expect(result.aiReview.boundaryAudioChecks.windows[0].cueIds).toEqual(['G1']);
+        expect(result.copy).toEqual(original.copy);
+        expect(result.candidateSubtitles).toEqual(original.candidateSubtitles);
+        expect(artifact).toEqual(original);
+        expect(keywordAudioPlan(result, input)).toBeNull();
+        await diagnoseKeywordAudio(result, input, config, source, runtime, io);
+        expect(io.run).toHaveBeenCalledTimes(1);
+        expect(keywordAudioPlan({ ...artifact, publicationKind: 'own_stream' }, input)).toBeNull();
+        expect(keywordAudioPlan({ ...artifact, publicationReview: { status: 'needs_review', issues: ['封面遮挡'] } }, input)).toBeNull();
+        expect(keywordAudioPlan({ ...artifact, aiReview: { keyword: { hits: [{ verdict: 'mention', cueId: 'unseen', start: 10, end: 18 }] } } }, input)).toBeNull();
     });
     test('diagnoses six adjacent doubtful cues within two windows and the shared audio budget', async () => {
         const cues = [10, 14, 18, 40, 44, 48].map((start, index) => ({

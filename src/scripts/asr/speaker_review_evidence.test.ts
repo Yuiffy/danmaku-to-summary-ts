@@ -12,9 +12,9 @@ test('speaker review SRT retains hash-bound local rejections, identities and raw
       { start: 0, end: 12, text: 'First statement with a rejected speaker', speaker: 'Host', speaker_score: 0.99,
         speakerEvidence: { version: 1, status: 'mixed', label: null, observations: [] } },
       { start: 12, end: 24, text: 'A correctly identified guest tells a different story', speaker: 'Guest', speaker_score: 0.9,
-        speakerEvidence: { version: 1, status: 'row_supported', label: 'Guest', observations: [] } },
+        speakerEvidence: { version: 1, status: 'row_supported', identityVerified: true, label: 'Guest', observations: [] } },
       { start: 24, end: 36, text: 'Low score name must remain rejected', speaker: 'Weak', speaker_score: 0.4,
-        speakerEvidence: { version: 1, status: 'row_supported', label: 'Weak', observations: [] } }
+        speakerEvidence: { version: 1, status: 'row_supported', identityVerified: true, label: 'Weak', observations: [] } }
     ] };
     const config = { ai: { comic: { multiReferenceImages: { minSpeechSeconds: 8, minSpeakerScore: 0.64 } },
       streamerRegistry: { host: { displayName: 'Host', roomIds: ['1'] }, guest: { displayName: 'Guest' }, weak: { displayName: 'Weak' } } } };
@@ -35,7 +35,7 @@ test('MOSS review subtitle preserves a rejected anonymous group', () => {
   try {
     const result = { backend: 'moss', segments: [{ start: 0, end: 4, text: 'A voice',
       speaker: 'Guest', speaker_score: 0.6,
-      speakerEvidence: { version: 1, status: 'row_supported', label: 'Guest', anonymousLabel: 'S02',
+      speakerEvidence: { version: 1, status: 'row_supported', identityVerified: true, label: 'Guest', anonymousLabel: 'S02',
         observations: [] } }] };
     const config = { ai: { comic: { multiReferenceImages: { minSpeechSeconds: 8,
       minSpeakerScore: 0.64 } }, streamerRegistry: { guest: { displayName: 'Guest' } } } };

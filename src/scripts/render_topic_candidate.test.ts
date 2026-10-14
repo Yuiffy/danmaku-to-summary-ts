@@ -68,6 +68,27 @@ describe('render held topic candidate by reserved ID', () => {
     expect(segments[1].text).toBe('The prise is clear.');
   });
 
+  test('pending numeric replan keeps corrected words and old bytes without approving the expanded window', () => {
+    metadata.candidateId = 17;
+    metadata.window.end = 20;
+    metadata.window.matchSegments = [{ ...segments[1], matchedKeywords: ['SUI'] }];
+    fs.writeFileSync(metadata.output.metadataPath, JSON.stringify(metadata));
+    const old = updateCandidate(metadata.output.metadataPath, { candidateId: 17, action: 'correct', from: 'price', to: 'cost' }, {});
+    const bytes = fs.readFileSync(old.candidateSrtPath);
+    const registryPath = path.join(dir, 'registry.json');
+    fs.writeFileSync(registryPath, JSON.stringify({ clips: { 17: { id: 17, metadataPath: metadata.output.metadataPath, pendingCut: true } } }));
+    const prepared = updateCandidate(metadata.output.metadataPath, { candidateId: 17, action: 'prepare',
+      replan: 'yes', start: 0, end: 30, reviewNote: 'Retain the complete closing response', registryPath }, {});
+    const saved = JSON.parse(fs.readFileSync(metadata.output.metadataPath, 'utf8'));
+    expect(prepared.candidateRevision).toBe(2);
+    expect(prepared.approval).toBeNull();
+    expect(prepared.cues.map(cue => cue.text)).toEqual(['SUI has a cost.', 'The cost is clear.', 'Closing reply.']);
+    expect(saved.candidateWindowRepair).toMatchObject({ start: 0, end: 30 });
+    expect(saved.aiReview.status).toBe('needs_review');
+    expect(saved.humanReview).toBeNull();
+    expect(fs.readFileSync(old.candidateSrtPath).equals(bytes)).toBe(true);
+  });
+
   test('automatic review never records human approval and refuses unresolved preflight', () => {
     const opts = { ...options, automaticReview: 'yes' };
     expect(() => prepareCandidate(metadata, metadata.output.metadataPath, opts, {})).toThrow('fresh ready preflight');

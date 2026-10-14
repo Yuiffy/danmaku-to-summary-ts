@@ -1,6 +1,21 @@
-import { bindLocalReply, independentRows, validateLocalEvidence, localBoundaryPrompt, encloseSongContext } from './activityAudio';
+import { bindLocalReply, independentRows, validateLocalEvidence, localBoundaryPrompt, encloseSongContext, prepareNativeListening } from './activityAudio';
 
 const settings = { chunkSeconds: 8 };
+
+test('supplementary listening binds actual audio and frames and detects changes without approving publication', async () => {
+  const packet = { audio: [{ path: 'audio', start: 100, end: 116 }], frames: [{ path: 'frame', time: 103, activityId: 'song-1' }] };
+  const request = jest.fn(async () => ({ text: '{"timeBasis":"audio_local_seconds","observations":[{"id":"song-1","ownership":"uncertain","chronology":[{"audioIndex":1,"start":0,"end":16,"kind":"uncertain"}]}]}' }));
+  const digest = jest.fn(() => 'digest');
+  const result = await prepareNativeListening(batch, packet, { mediaPath: 'source' }, { request, digest });
+  expect(result.inputs).toHaveLength(2); expect(result).not.toHaveProperty('approved');
+  expect(request.mock.calls[0]).toHaveLength(2);
+  let reads = 0;
+  await expect(prepareNativeListening(batch, packet, {}, { request, digest: () => ++reads > 2 ? 'changed' : 'digest' })).rejects.toThrow('source changed');
+  request.mockResolvedValueOnce({ text: '{"timeBasis":"audio_local_seconds","observations":[{"id":"song-1","ownership":"host","chronology":[{"audioIndex":1,"start":100,"end":116,"kind":"host_singing"}]}]}' });
+  await expect(prepareNativeListening(batch, packet, {}, { request, digest })).rejects.toThrow('outside');
+  request.mockResolvedValueOnce({ text: '{"observations":[{"id":"other"}]}' });
+  await expect(prepareNativeListening(batch, packet, {}, { request, digest })).rejects.toThrow('identities');
+});
 const request = { source: { mediaPath: 'original.flv' }, settings, audio: [{ start: 100, end: 116, sha256: 'source-audio' }] };
 const evidence = { version: 1, method: 'independent_local_asr', source: request.source, settings,
   audio: [{ index: 1, ...request.audio[0], chunks: [{ index: 1, start: 0, end: 8, raw: '<|en|>original sung lyric',
@@ -97,6 +112,40 @@ test.each(['gap', 'origin', 'audio', 'duration'])('local decoding rejects change
   if (change === 'audio') changed.audio[0].sha256 = 'different-audio';
   if (change === 'duration') changed.audio[0].transcript[0].end = 10;
   expect(() => validateLocalEvidence(changed, request)).toThrow();
+});
+
+test('a playback restart requires independent selection between matching openings and full retained context', () => {
+  const local = structuredClone(evidence);
+  local.audio[0].chunks = ['春天的晚风吹过山坡', '这首歌我们来唱吧', '春天的晚风吹过山坡', '唱完了谢谢大家'].map((text, i) =>
+    ({ index: i + 1, start: i * 4, end: (i + 1) * 4, text, raw: text, tags: [] }));
+  local.audio[0].transcript = [];
+  const candidates = { events: [{ ...batch.events[0], event: { ...batch.events[0].event, start: 100 } }] };
+  const raw: any = structuredClone(result);
+  raw.evidenceRefs = [{ audioIndex: 1, chunkIndex: 2, quote: '这首歌我们来唱吧' }];
+  raw.events[0].start.seconds = 4;
+  raw.preludeCorrection = { version: 2, method: 'playback_then_restarted_performance', preludeKind: 'playback',
+    previewContextClosed: true, formalPerformanceComplete: true, priorPlaybackConfirmed: true, openingRestartConfirmed: true,
+    reason: 'Independent playback, intervening selection and a complete restart with original image coverage.',
+    announcement: raw.evidenceRefs[0], openingBefore: { audioIndex: 1, chunkIndex: 1, quote: '春天的晚风吹过山坡' },
+    openingAfter: { audioIndex: 1, chunkIndex: 3, quote: '春天的晚风吹过山坡' } };
+  const frames = [{ activityId: 'song-1', time: 100 }];
+  expect(() => bindLocalReply(response(raw), candidates, local, frames)).not.toThrow();
+  const preview = structuredClone(raw);
+  preview.preludeCorrection = { ...preview.preludeCorrection, version: 3, method: 'preview_then_complete_restart',
+    preludeKind: 'listening_or_rehearsal', noUniqueVerseLost: true };
+  expect(() => bindLocalReply(response(preview), candidates, local, frames)).toThrow('unique verse');
+  const authorized = { events: candidates.events.map(row => ({ ...row, allowPreviewRestart: true })) };
+  expect(() => bindLocalReply(response(preview), authorized, local, frames)).not.toThrow();
+  preview.preludeCorrection.noUniqueVerseLost = false;
+  expect(() => bindLocalReply(response(preview), authorized, local, frames)).toThrow('unique verse');
+  for (const mutate of [(r: any) => { r.preludeCorrection.priorPlaybackConfirmed = false; },
+    (r: any) => { r.preludeCorrection.openingAfter.chunkIndex = 1; },
+    (r: any) => { r.preludeCorrection.openingBefore.quote = '模型虚构的开头歌词'; },
+    (r: any) => { r.preludeCorrection.preludeKind = 'listening_or_rehearsal'; },
+    (r: any) => { r.events[0].start.seconds = 5; }]) {
+    const bad = structuredClone(raw); mutate(bad);
+    expect(() => bindLocalReply(response(bad), candidates, local, frames)).toThrow();
+  }
 });
 
 test('GPT cannot substitute invented lyrics, sibling audio, background playback or incomplete context', () => {

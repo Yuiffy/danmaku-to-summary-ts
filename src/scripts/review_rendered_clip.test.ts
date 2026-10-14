@@ -5,6 +5,8 @@ import * as path from 'path';
 const topic = require('./topic_clipper');
 const { buildSubtitleEvidence } = require('./clipping/subtitle_evidence');
 const { approveRenderedClip, fileDigest } = require('./review_rendered_clip');
+const { publicDescription } = require('./clipping/rendered_revision_evidence');
+const { buildClipDescription } = require('./own_stream_clipper');
 
 describe('human review of rendered own-stream clips', () => {
   let directory, metadataPath, metadata, cover;
@@ -40,6 +42,58 @@ describe('human review of rendered own-stream clips', () => {
     expect(saved.ownStreamHumanReview.authority).toBe('human');
     expect(saved.ownStreamHumanReview.digests.video).toBe(fileDigest(metadata.output.mediaPath));
     expect(saved.ownStreamHumanReview.digests.subtitles).toBe(fileDigest(metadata.output.srtPath));
+  });
+  test('passes the saved manual frame and crop through a later human review', async () => {
+    metadata.coverSelection = { time: 3.2, part: 1, text: metadata.copy.coverText,
+      crop: { x: .1, y: .1, width: .8, height: .8 }, mediaIdentity: { path: metadata.output.mediaPath } };
+    fs.writeFileSync(metadataPath, JSON.stringify(metadata));
+    await approveRenderedClip(metadataPath, { id: 88, reviewNote: '核对封面与成片' }, {});
+    expect(cover.mock.calls[0][3].manualSelection).toEqual(metadata.coverSelection);
+    expect(JSON.parse(fs.readFileSync(metadataPath, 'utf8')).coverSelection).toEqual(metadata.coverSelection);
+  });
+
+  test('reviews the editorial text separately from generated recording, timing, and emotion numbers', async () => {
+    metadata.streamTitle = 'Stream'; metadata.recordedAt = '2026-10-12 20:03:05';
+    metadata.candidate = { emotionEvidence: [{ start: 1, end: 7, emotion: 'HAPPY' }, { start: 7, end: 10, emotion: 'ANGRY' }] };
+    metadata.copy.description = buildClipDescription({ ...metadata, ...metadata.window, description: 'Host said hello.', emotionEvidence: metadata.candidate.emotionEvidence });
+    fs.writeFileSync(metadataPath, JSON.stringify(metadata));
+    expect(publicDescription(metadata, metadata.copy.description)).toBe('Host said hello.');
+    await approveRenderedClip(metadataPath, { id: 88, reviewNote: '核对无误', description: metadata.copy.description }, {});
+    const saved = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+    expect(saved.ownStreamHumanReview.status).toBe('approved');
+    expect(saved.copy.description).toBe(metadata.copy.description);
+  });
+
+  test('keeps unsupported numbers in the actual editorial body subject to grounding', async () => {
+    metadata.streamTitle = 'Stream'; metadata.recordedAt = '2026-10-12 20:03:05';
+    metadata.candidate = { emotionEvidence: [{ start: 1, end: 10, emotion: 'HAPPY' }] };
+    metadata.copy.description = buildClipDescription({ ...metadata, ...metadata.window, description: 'Host said hello 98765 times.', emotionEvidence: metadata.candidate.emotionEvidence });
+    fs.writeFileSync(metadataPath, JSON.stringify(metadata));
+    expect(publicDescription(metadata, metadata.copy.description)).toBe('Host said hello 98765 times.');
+    await expect(approveRenderedClip(metadataPath, { id: 88, reviewNote: '核对无误', description: metadata.copy.description }, {})).rejects.toThrow('unsupported_number');
+    expect(cover).not.toHaveBeenCalled();
+  });
+
+  test('accepts whitespace changes only in the metadata-bound generated description prefix', async () => {
+    metadata.streamTitle = 'Stream'; metadata.recordedAt = '2026-10-12 20:03:05';
+    metadata.candidate = { emotionEvidence: [{ start: 1, end: 10, emotion: 'HAPPY' }] };
+    const prefix = buildClipDescription({ ...metadata, ...metadata.window, description: '', emotionEvidence: metadata.candidate.emotionEvidence });
+    metadata.copy.description = `${prefix.replace(/\s/gu, '')}\r\n\r\nHost said hello.`;
+    fs.writeFileSync(metadataPath, JSON.stringify(metadata));
+    expect(publicDescription(metadata, metadata.copy.description)).toBe('Host said hello.');
+    await approveRenderedClip(metadataPath, { id: 88, reviewNote: '核对无误', description: metadata.copy.description }, {});
+    expect(JSON.parse(fs.readFileSync(metadataPath, 'utf8')).ownStreamHumanReview.status).toBe('approved');
+  });
+
+  test('keeps changed provenance and unsupported editorial numbers subject to grounding', async () => {
+    metadata.streamTitle = 'Stream'; metadata.recordedAt = '2026-10-12 20:03:05';
+    const prefix = buildClipDescription({ ...metadata, ...metadata.window, description: '' }).replace(/\s/gu, '');
+    const alteredProvenance = `${prefix.replace('2026-10-12', '2099-10-12')}\n\nHost said hello.`;
+    expect(publicDescription(metadata, alteredProvenance)).toBe(alteredProvenance);
+    const unsupportedBody = `${prefix}\n\nHost said hello 98765 times.`;
+    expect(publicDescription(metadata, unsupportedBody)).toBe('Host said hello 98765 times.');
+    await expect(approveRenderedClip(metadataPath, { id: 88, reviewNote: '核对无误', description: unsupportedBody }, {})).rejects.toThrow('unsupported_number');
+    expect(cover).not.toHaveBeenCalled();
   });
 
   test('does not accept unsupported copy even with a human note', async () => {

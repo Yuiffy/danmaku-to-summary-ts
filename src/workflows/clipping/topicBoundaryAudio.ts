@@ -39,6 +39,33 @@ export function planBoundaryAudio(plan: Data, input: Data): Data[] {
 
 export interface BoundaryAudioIO { run(input: string, output: string): Promise<void>; now(): number }
 
+/** An explicit final recheck can diagnose concrete keyword doubts without changing a subtitle word. */
+export function keywordAudioPlan(artifact: Data, input: Data): Data | null {
+    if (artifact.publicationKind !== 'keyword_topic' || artifact.publicationReview?.status !== 'needs_review'
+        || artifact.finalKeywordAudioAttempt || !/关键词|名称|人名|称呼/u.test((artifact.publicationReview?.issues || []).join(' '))) return null;
+    const hits = artifact.aiReview?.keyword?.hits || [];
+    const ids = [...new Set(hits.filter((hit: Data) => hit.verdict === 'mention'
+        && hit.start >= artifact.window.start && hit.end <= artifact.window.end)
+        .map((hit: Data) => hit.cueId))];
+    if (!ids.length || ids.length > 2 || ids.some(id => !input.subtitles.some((cue: Data) => cue.id === id))) return null;
+    return { clips: [{ status: 'needs_review', reason: '关键词名称需要局部原音核验',
+        boundaryReview: { unresolvedCueIds: ids } }] };
+}
+
+export async function diagnoseKeywordAudio(artifact: Data, input: Data, config: Data, source: Data,
+    runtime: Data, injected?: BoundaryAudioIO): Promise<Data> {
+    const plan = keywordAudioPlan(artifact, input);
+    if (!plan) return artifact;
+    const diagnostics = structuredClone(artifact.finalKeywordAudioDiagnostics || {});
+    const audio = await prepareBoundaryAudio(plan, input, config, source, diagnostics, runtime, injected);
+    return { ...artifact, finalKeywordAudioAttempt: { at: new Date().toISOString(), status: audio?.status || 'disabled',
+        method: 'unprompted_two_model_keyword_diagnosis' }, finalKeywordAudioDiagnostics: diagnostics,
+        ...(audio ? { aiReview: { ...artifact.aiReview,
+            boundaryAudioHistory: [...(artifact.aiReview?.boundaryAudioHistory || []),
+                ...(artifact.aiReview?.boundaryAudioChecks ? [artifact.aiReview.boundaryAudioChecks] : [])],
+            boundaryAudioChecks: audio } } : {}) };
+}
+
 /** Shares the existing per-recording audio budget and preserves hash-bound, unprompted two-model results. */
 export async function prepareBoundaryAudio(plan: Data, input: Data, config: Data, source: Data,
     diagnostics: Data, runtime: Data, injected?: BoundaryAudioIO): Promise<Data | null> {

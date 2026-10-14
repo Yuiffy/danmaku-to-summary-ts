@@ -1,6 +1,21 @@
 const evidence = require('./subtitle_evidence');
 
 describe('subtitle evidence', () => {
+  test('retains the v1 source binding when unverified voice labels become anonymous', () => {
+    const segment = { start: 0, end: 2, text: '原话', speakerEvidence: {
+      status: 'row_supported', label: 'guest', identityVerified: false, anonymousLabel: 'S2' } };
+    const pack = evidence.buildSubtitleEvidence([segment]);
+    expect(pack.sourceSha256).toBe('8a1d2e9fd0a8be2a463b79f6d590629289ce4bf20efc6bcfef154b0fd4aa08d8');
+    expect(pack.cues[0].speaker).toBe('S2');
+    expect(evidence.formatEvidenceCues(pack.cues)).not.toContain('guest');
+    const grounded = evidence.linkClipEvidence({ evidenceCueIds: ['G1'], title: 'guest说了原话' },
+      { start: 0, end: 2 }, pack);
+    expect(grounded.issues).toContain('unverified_voice_person:title:guest');
+    for (const change of [{ text: '不同原话' }, { end: 3 }, { speakerEvidence: {
+      ...segment.speakerEvidence, label: 'other' } }]) {
+      expect(evidence.buildSubtitleEvidence([{ ...segment, ...change }]).sourceSha256).not.toBe(pack.sourceSha256);
+    }
+  });
   test('restores punctuation without changing words, aliases or partial-text overrides', () => {
     const pack = evidence.buildSubtitleEvidence([{ start: 0, end: 4, text: 'Like me no',
       asrEvidence: { correctedText: 'Like me? No.' } }]);

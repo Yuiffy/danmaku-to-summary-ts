@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { createHash } from 'crypto';
-import { compactPreflightPrompt, recoverCandidatePlan, recoveryAuthorizes, repairTopicResponse, type CandidateRecoveryIO } from './topicRecovery';
+import { compactPreflightPrompt, recoverCandidatePlan, recoveryAuthorizes, repairTopicResponse, prepareCandidateWindow, needsCandidateRecovery, type CandidateRecoveryIO } from './topicRecovery';
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 const sourceSha256 = 'a'.repeat(64);
@@ -82,6 +82,61 @@ describe('bounded recovery of a queued topic boundary failure', () => {
   });
   afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
   const run = () => recoverCandidatePlan(metadata, metadata.output.metadataPath, options, config, io);
+
+  test('explicit window repair versions the draft, archives failure and requires fresh independent review', async () => {
+    const original = structuredClone(metadata);
+    metadata.candidateRecovery = { status: 'failed', error: 'truncated ending' };
+    prepareCandidateWindow(metadata, metadata.output.metadataPath, { ...options, replan: 'yes', start: 0, end: 40 }, config, io);
+    expect(metadata.candidateRecoveryHistory).toEqual([{ status: 'failed', error: 'truncated ending' }]);
+    expect(metadata.candidateWindowHistory[0].original.subtitles).toEqual(original.candidateSubtitles);
+    expect(metadata.candidateSubtitles.approval).toBeNull();
+    expect(metadata.candidateSubtitles.revision).toBe(1);
+    expect(metadata.reviewPreview).toBeNull();
+    expect(metadata.output.mediaPath).toBeNull();
+    expect(needsCandidateRecovery(metadata)).toBe(true);
+    expect(io.prepare).not.toHaveBeenCalled();
+    options.requireApproval = false;
+    await run();
+    expect(metadata.candidateRecovery.status).toBe('ready');
+    expect(metadata.candidateSubtitles.revision).toBe(2);
+    expect(metadata.candidateSubtitles.approval).toBeNull();
+  });
+
+  test('an explicit inspected failed window can be retried under the same ID without extending into unrelated topics', () => {
+    metadata.candidateRecovery = { status: 'failed', error: 'unrelated later banter was selected' };
+    prepareCandidateWindow(metadata, metadata.output.metadataPath, { ...options, replan: 'yes', start: 10, end: 40,
+      reviewNote: 'Reassess the same main exchange with complete closure' }, config, io);
+    expect(metadata.candidateWindowRepair.eventCopy).toEqual(copy);
+    expect(metadata.candidateRecoveryHistory[0].error).toContain('unrelated');
+    expect(metadata.candidateSubtitles.approval).toBeNull();
+  });
+
+  test('a planner cannot shrink back to the failed ending after an explicit extension', async () => {
+    metadata.candidateWindowRepair = { start: 0, end: 40, sourceSha256 };
+    selected.end = 30;
+    await expect(run()).rejects.toThrow('explicitly requested complete window');
+    expect(io.writeRevision).not.toHaveBeenCalled();
+    expect(metadata.candidateRecovery.status).toBe('failed');
+  });
+
+  test.each(['source', 'anchor', 'overlap', 'approval', 'unchanged'] as const)(
+    'explicit repair rejects %s before writing a new revision', failure => {
+      const args = { ...options, replan: 'yes', start: 0, end: 40 };
+      if (failure === 'source') metadata.aiReview.sourceSha256 = 'stale';
+      if (failure === 'anchor') args.start = 15;
+      if (failure === 'approval') args.replan = 'no';
+      if (failure === 'unchanged') args.start = 10;
+      if (failure === 'overlap') {
+        const sibling = path.join(dir, 'other.json');
+        fs.writeFileSync(sibling, JSON.stringify({ source: metadata.source, window: { start: 0, end: 8 } }));
+        const registry = JSON.parse(fs.readFileSync(options.registryPath, 'utf8'));
+        registry.clips[18] = { id: 18, metadataPath: sibling, sourceMediaPath: metadata.source.mediaPath, mediaPath: 'rendered.mp4' };
+        fs.writeFileSync(options.registryPath, JSON.stringify(registry));
+      }
+      expect(() => prepareCandidateWindow(metadata, metadata.output.metadataPath, args, config, io)).toThrow();
+      expect(io.writeRevision).not.toHaveBeenCalled();
+      expect(metadata.candidateSubtitles.revision).toBe(0);
+    });
 
   test('versions the new interval and public copy, retaining the original upload intent and subtitle file', async () => {
     const oldSrt = metadata.candidateSubtitles.path;

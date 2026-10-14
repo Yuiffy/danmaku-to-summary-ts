@@ -25,6 +25,23 @@ describe('candidate subtitle revisions', () => {
   afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
   const config = { keywords: ['SUI'] };
 
+  test('explicit current-word confirmation preserves bytes and records only that cue as human evidence', () => {
+    const before = ensureCandidateDraft(metadata, file, evidence, config);
+    approveCandidateDraft(metadata, evidence, 'Earlier authorization');
+    const bytes = fs.readFileSync(before.path);
+    const confirmed = correctCandidateDraft(metadata, file, evidence, { from: 'zzz', confirmCurrent: 'yes', cue: 1,
+      reviewNote: 'User explicitly confirmed the existing word' });
+    expect(fs.readFileSync(confirmed.path).equals(bytes)).toBe(true);
+    expect(confirmed.revision).toBe(1);
+    expect(confirmed.approval).toBeNull();
+    expect(confirmed.edits).toEqual([expect.objectContaining({ authority: 'user', operation: 'confirm_current',
+      original: 'zzz', replacement: 'zzz', changes: [expect.objectContaining({ cue: 1, before: 'SUI says zzz and zzz.', after: 'SUI says zzz and zzz.' })] })]);
+    expect(() => correctCandidateDraft(metadata, file, evidence, { from: 'absent', confirmCurrent: 'yes', cue: 1,
+      reviewNote: 'User confirmed' })).toThrow('No literal subtitle match');
+    expect(() => correctCandidateDraft(metadata, file, evidence, { from: 'zzz', confirmCurrent: 'yes' })).toThrow('requires cue');
+    expect(() => correctCandidateDraft(metadata, file, evidence, { from: 'zzz', to: 'zzz' })).toThrow('distinct');
+  });
+
   test('prepares an independent relative SRT before selection without media or approval', () => {
     const draft = ensureCandidateDraft(metadata, file, evidence, config);
     expect(draft.cues).toHaveLength(2);

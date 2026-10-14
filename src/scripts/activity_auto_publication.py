@@ -18,6 +18,15 @@ def policy_for(metadata, config):
     settings = config.get('streamActivityClips') or {}
     policy = settings.get('automaticPublication') or {}
     room = str(metadata.get('roomId') or (metadata.get('upload') or {}).get('roomId') or '')
+    operator = metadata.get('activityOperatorReview')
+    if operator:
+        if (operator.get('version') != 1 or not str(operator.get('note') or '').strip()
+                or metadata.get('kind') not in ('songs', 'watch') or settings.get('enabled') is not True
+                or room not in [str(item) for item in settings.get('roomIds', [])]):
+            raise ValueError('invalid explicit activity review request')
+        timestamp(operator.get('requestedAt'))
+        return dict(mode='operator', policyVersion=POLICY_VERSION, roomIds=[room],
+                    requestedAt=operator['requestedAt'], authorizationNote=operator['note'])
     if (settings.get('enabled') is not True or policy.get('mode') != 'auto'
             or metadata.get('activityAutomaticPublicationRequired') is not True
             or metadata.get('kind') not in ('songs', 'watch')

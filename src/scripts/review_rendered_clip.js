@@ -15,6 +15,9 @@ const { publicDescription, revisionEvidence } = require('./clipping/rendered_rev
 const RENDERED_CLIP_MODES = new Set(['own_stream_fun_review', 'local_review', 'topic_candidate_manual_cut', 'manual_clip_queue']);
 
 function sourceEvidenceHash(metadata) {
+    // Keyword preflight owns the original source identity; a stale optional
+    // actor review must not redefine it or prevent a fresh independent review.
+    if (metadata.publicationKind === 'keyword_topic') return metadata.aiReview?.sourceSha256;
     return metadata.attributionReview?.sourceSha256 || metadata.grounding?.sourceSha256
         || metadata.selectionRejection?.sourceSha256 || metadata.aiReview?.sourceSha256
         || metadata.editorial?.copyGrounding?.sourceSha256 || metadata.manualRevisionSource?.sourceSha256;
@@ -86,7 +89,7 @@ async function approveRenderedClip(metadataPath, options, config = require('./co
     const coverDirectory = path.join(path.dirname(metadataPath), 'reviewed_covers', `${options.id}-${coverKey}`);
     fs.mkdirSync(coverDirectory, { recursive: true });
     const cover = options.preparedCover || await topic.generateClipCover(output.mediaPath, own.buildCoverTitle(copy.title, copy.coverText), coverDirectory,
-        { streamerName: metadata.streamerName, clipDuration: window.duration });
+        { streamerName: metadata.streamerName, clipDuration: window.duration, manualSelection: metadata.coverSelection });
     if (!cover || !fs.statSync(cover).size) throw new Error('A valid cover is required before approval');
     if (fs.readFileSync(metadataPath, 'utf8') !== before || JSON.stringify(sourceSnapshot(metadata)) !== JSON.stringify(snapshot)
         || fileDigest(output.mediaPath) !== videoHash || fileDigest(output.srtPath) !== subtitleHash) throw new Error('Source or metadata changed during review; no approval saved');
@@ -94,7 +97,8 @@ async function approveRenderedClip(metadataPath, options, config = require('./co
         publicCopyPending: false, uploadReady: true, grounding,
         copy: { ...metadata.copy, ...copy, description: metadata.mode === 'own_stream_fun_review'
             ? own.buildClipDescription({ streamerName: metadata.streamerName, streamTitle: metadata.streamTitle,
-                recordedAt: metadata.recordedAt, start: window.start, end: window.end, description: copy.description })
+                recordedAt: metadata.recordedAt, start: window.start, end: window.end, description: copy.description,
+                emotionEvidence: metadata.candidate?.emotionEvidence })
             : copy.description },
         output: { ...output, coverPath: cover, coverError: null } };
     updated.ownStreamHumanReview = { version: 1, status: 'approved', authority: 'human', clipId: options.id,

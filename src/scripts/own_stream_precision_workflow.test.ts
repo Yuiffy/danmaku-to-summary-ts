@@ -69,7 +69,7 @@ test.each([
         fs.writeFileSync(mediaPath, 'source fixture');
         asr.writeSrt({ backend: 'fixture', segments: Array.from({ length: 4 }, (_, i) => ({
             start: i * 100, end: i * 100 + 10, text: 'Host recalled asking Guest about a book.',
-            speakerEvidence: { version: 1, status: 'row_supported', label: 'Host', observations: [{ start: i * 100,
+            speakerEvidence: { version: 1, status: 'row_supported', identityVerified: true, label: 'Host', observations: [{ start: i * 100,
                 end: i * 100 + 10, label: 'Host', scope: 'row', row: { accepted: true, score: .8, margin: .2 } }] }
         })) }, srtPath, { write_evidence: true });
         const clips = Array.from({ length: 4 }, (_, i) => ({ start: i * 100, end: i * 100 + 60, duration: 60, boundaryFromEvidence: true,

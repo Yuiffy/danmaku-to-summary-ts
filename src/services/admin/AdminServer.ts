@@ -11,12 +11,21 @@ import { ReminderCommandInbox } from '../live-vote/reminders/ReminderCommands';
 import { AdminQueries } from '../live-vote/question-lab/AdminQueries';
 import { LabBusy } from '../live-vote/question-lab/LabGate';
 import { activityRepairCommand, workflowCommand, workflowInputs } from './AdminWorkflowPolicy';
+import { AdminSourceMedia } from './AdminSourceMedia';
+import { AdminFeedback } from './AdminFeedback';
+import { AdminCoverPreview } from './AdminCoverPreview';
+import { coverSelection } from '../../core/admin/cover';
+import { AdminTitles } from './AdminTitles';
 
 export interface AdminAdapters {
   configs: AdminConfigStore;
   clips: AdminClipStore;
   jobs: AdminJobs;
   queries?: AdminQueries;
+  sourceMedia?: AdminSourceMedia;
+  feedback?: AdminFeedback;
+  covers?: AdminCoverPreview;
+  titles?: AdminTitles;
 }
 export function createAdminServer(adapters: AdminAdapters, token: string): Express {
   if (token.length < 32) throw new Error('管理服务需要至少 32 字符的访问令牌');
@@ -52,8 +61,42 @@ export function createAdminServer(adapters: AdminAdapters, token: string): Expre
   app.put('/configs/:name', (req, res) => res.json(adapters.configs.save(req.params.name, req.body.revision, req.body.value)));
   app.get('/clips', (req, res) => res.json(adapters.clips.list({ search: String(req.query.search || ''), status: String(req.query.status || ''), room: String(req.query.room || ''), page: String(req.query.page || '1') })));
   app.get('/clips/:id', (req, res) => res.json(adapters.clips.detail(req.params.id, Number(req.query.part || 1))));
+  const titles = () => { if (!adapters.titles) throw new AdminError('标题候选未配置', 503); return adapters.titles; };
+  app.get('/title-stats', (_req, res) => res.json(titles().stats()));
+  app.get('/clips/:id/titles', (req, res) => res.json(titles().view(req.params.id)));
+  app.post('/clips/:id/titles/generate', (req, res) => res.status(202).json(titles().start(req.params.id, req.body)));
+  app.post('/clips/:id/titles/selection', (req, res) => res.json(titles().select(req.params.id, req.body)));
+  app.post('/clips/:id/titles/exposure', (req, res) => res.json(titles().expose(req.params.id, req.body)));
+  app.post('/clips/:id/cover-preview', async (req, res) => {
+    let selection;
+    try { selection = coverSelection(req.body.selection); } catch (error) { throw new AdminError((error as Error).message); }
+    if (adapters.clips.detail(req.params.id).revision !== req.body.revision) throw new AdminError('视频已变化，请刷新后再编辑封面', 409);
+    const file = adapters.clips.asset(req.params.id, 'media', selection.part);
+    if (!file) throw new AdminError('请先制作成片再选择封面', 404);
+    if (!adapters.covers) throw new AdminError('封面预览未配置', 503);
+    const image = await adapters.covers.render(file, selection);
+    if (adapters.clips.detail(req.params.id).revision !== req.body.revision) throw new AdminError('视频已变化，请刷新后再编辑封面', 409);
+    res.type('image/jpeg').send(image);
+  });
+  const sourcePlayback = async (id: string) => {
+    const clip = adapters.clips.record(id), metadata = adapters.clips.metadata(clip);
+    const file = adapters.clips.asset(id, 'source'), window = adapters.clips.sourceWindow(clip, metadata);
+    if (!file || !window) throw new AdminError('原片或候选时间不存在', 404);
+    if (!adapters.sourceMedia) throw new AdminError('原片预览未配置', 503);
+    return adapters.sourceMedia.prepare(file, window);
+  };
+  app.get('/clips/:id/source-playback', async (req, res) => {
+    const playback = await sourcePlayback(req.params.id);
+    res.json({ origin: playback.origin, start: playback.start, end: playback.end });
+  });
   app.post('/clips/:id/actions', (req, res) => {
     const id = req.params.id, revision = req.body.revision;
+    const prepared = adapters.titles?.prepare(id, req.body);
+    req.body = prepared?.body || { ...req.body, titleChoice: undefined };
+    if (req.body.action === 'feedback-publish') {
+      if (!adapters.feedback) throw new AdminError('修改投稿流程未配置', 503);
+      res.status(202).json(adapters.feedback.submit(id, req.body)); return;
+    }
     const validate = () => { if (adapters.clips.detail(id).revision !== revision) throw new AdminError('视频或审核内容已变化，请刷新后再操作', 409); };
     validate();
     const detail = adapters.clips.detail(id);
@@ -61,13 +104,24 @@ export function createAdminServer(adapters: AdminAdapters, token: string): Expre
     const input = detail.category === 'activity' && ['retry-boundaries', 'repair-timing'].includes(req.body.action)
       ? { ...req.body, mediaPath: metadata.source?.mediaPath, srtPath: metadata.source?.srtPath, xmlPath: metadata.source?.xmlPath, kind: metadata.kind } : req.body;
     for (const [key, extensions] of workflowInputs) if (input[key]) adapters.clips.checkedInput(input[key], extensions);
+    if (input.action === 'cover') {
+      if (['queued', 'uploading', 'uploaded', 'excluded', 'cancelled'].includes(detail.clip.status) || detail.pendingRebuild || detail.clip.pendingCut) throw new AdminError('请在成片制作完成且未入队时修改封面', 409);
+      const command = clipCommand(id, input);
+      if (!adapters.clips.asset(id, 'media', input.selection.part)) throw new AdminError('成片不存在', 404);
+      res.status(202).json(adapters.jobs.submit(command, validate)); return;
+    }
     const command = detail.category === 'clip' ? clipCommand(id, input)
       : ['retry-boundaries', 'repair-timing'].includes(input.action) && detail.category === 'activity' ? activityRepairCommand(id, input)
       : bundleCommand(id, input, detail.category, adapters.clips.checkedInput(adapters.clips.record(id).metadataPath, ['.json']));
-    res.status(202).json(adapters.jobs.submit(command, validate));
+    res.status(202).json(adapters.jobs.submit(command, validate, prepared?.decision));
   });
-  app.get('/clips/:id/assets/:kind', (req, res) => {
+  app.get('/clips/:id/feedback', (req, res) => {
+    adapters.clips.record(req.params.id);
+    res.json({ job: adapters.jobs.latest('feedback-publish', req.params.id) || null });
+  });
+  app.get('/clips/:id/assets/:kind', async (req, res) => {
     const kind = req.params.kind as AssetKind;
+    if (req.params.kind === 'source-preview') { res.sendFile((await sourcePlayback(req.params.id)).file); return; }
     if (!['media', 'preview', 'cover', 'subtitles', 'preview-subtitles', 'media-subtitles'].includes(kind)) throw new AdminError('素材类型不存在', 404);
     const file = adapters.clips.asset(req.params.id, kind, Number(req.query.part || 1));
     if (!file) throw new AdminError('素材不存在', 404);

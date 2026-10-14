@@ -1,7 +1,7 @@
 /** Extending an end must not shift every earlier P and force a full re-encode. */
 export function retainWatchPartBoundaries(planned: Record<string, any>[], previous: Record<string, any>[],
   target: number, maximum: number): Record<string, any>[] {
-  if (!(target >= 1200 && target <= maximum && maximum <= 1800)) throw new Error('Invalid watch part size');
+  if (!(Number.isFinite(target) && Number.isFinite(maximum) && target > 0 && target <= maximum)) throw new Error('Invalid watch part size');
   const result: Record<string, any>[] = [];
   for (const id of new Set(planned.map(p => p.activityId))) {
     const next = planned.filter(p => p.activityId === id), old = previous.filter(p => p.activityId === id);

@@ -5,7 +5,11 @@ import { preflightRepairFeedback, preflightRecoveryContextCandidates } from './t
 export { preflightContextCandidates, preflightRecoveryContextCandidates } from './topicContext';
 export { prepareTopicAudio } from './topicAudioRuntime';
 export { prepareBoundaryAudio } from './topicBoundaryAudio';
+export { diagnoseKeywordAudio } from './topicBoundaryAudio';
 export { gateTopicAudioHits, topicAudioHitIssue } from './topicAudio';
+export { competitionGuardEnabled, competitionPromptRules, normalizeCompetitionContext,
+    competitionHitGate, competitionEditBlocked } from './topicCompetition';
+export { prepareCompetitionEvidence } from './topicCompetitionRuntime';
 export { mergeTopicRecallMatches, findAmbiguousTopicMatches, topicRecallIdentityIssues,
     topicRecallSubtitleEditSupport, holdUnresolvedTopicRecall } from './topicRecall';
 
@@ -142,6 +146,61 @@ export function needsCandidateRecovery(metadata: Data): boolean {
         || boundaryIssues({ clips: [{ issues: metadata.aiReview?.quality?.issues }] }).length > 0;
 }
 
+/** Explicit numeric-ID boundary repair prepares evidence only, never human approval or media. */
+export function prepareCandidateWindow(metadata: Data, metadataPath: string, options: Data, config: Data,
+    io: Pick<CandidateRecoveryIO, 'evidence' | 'ensureDraft' | 'corrected' | 'writeRevision' | 'now'>): void {
+    if (!['pending_preflight', 'render_queued'].includes(metadata.status) || metadata.output?.mediaPath
+        || options.replan !== 'yes' || !String(options.reviewNote || '').trim()) {
+        throw new Error('Pending candidate boundary repair requires --replan and a review note');
+    }
+    if (!Number.isSafeInteger(Number(options.candidateId)) || Number(options.candidateId) < 1
+        || (metadata.candidateId && Number(metadata.candidateId) !== Number(options.candidateId))) {
+        throw new Error('Candidate ID does not match metadata');
+    }
+    const start = Number(options.start), end = Number(options.end);
+    if (options.start == null || options.end == null || !Number.isFinite(start) || !Number.isFinite(end)
+        || start < 0 || end <= start || end - start < config.minClipSeconds || end - start > config.maxClipSeconds
+        || (start === metadata.window.start && end === metadata.window.end && metadata.candidateRecovery?.status !== 'failed')) throw new Error('Invalid new candidate boundaries');
+    const evidence = io.evidence();
+    if (metadata.source?.sourceKind !== 'video' || evidence.sourceSha256 !== metadata.aiReview?.sourceSha256) {
+        throw new Error('Source evidence changed or candidate is not a video');
+    }
+    const anchors = metadata.window.matchSegments || [];
+    if (!anchors.length || anchors.some((row: Data) => row.start < start || row.end > end)) {
+        throw new Error('Boundary repair dropped the original keyword event');
+    }
+    if (end > Math.max(...evidence.cues.map(cue => cue.end)) + .002) throw new Error('Boundary repair exceeds source evidence');
+    const draft = io.ensureDraft(metadata);
+    const corrected = io.corrected(metadata, evidence);
+    const kept = corrected.cues.filter(cue => cue.end > start && cue.start < end);
+    const lockedIds = new Set((draft.edits || []).flatMap((edit: Data) => edit.changes.map((row: Data) => row.cueId)));
+    if ([...lockedIds].some(id => !kept.some(cue => cue.id === id))) throw new Error('Boundary repair dropped a user-confirmed cue');
+    if (!kept.length) throw new Error('Boundary repair has no subtitle cues');
+    metadata.candidateId = Number(options.candidateId);
+    rejectOverlap(metadata, { start, end }, options.registryPath);
+    const original = structuredClone({ window: metadata.window, aiReview: metadata.aiReview,
+        editorial: metadata.editorial, copy: metadata.copy, subtitles: draft, reviewPreview: metadata.reviewPreview });
+    const revision = draft.revision + 1;
+    const file = path.join(path.dirname(metadataPath), `${path.basename(metadataPath, '.json')}_candidate_r${String(revision).padStart(4, '0')}.srt`);
+    const written = io.writeRevision(file, kept.map(cue => ({ cueId: cue.id, sourceStart: cue.start, sourceEnd: cue.end,
+        start: Math.max(0, cue.start - start), end: Math.min(end, cue.end) - start, text: cue.text })));
+    if (metadata.candidateRecovery) metadata.candidateRecoveryHistory = [...(metadata.candidateRecoveryHistory || []), metadata.candidateRecovery];
+    metadata.candidateRecovery = null;
+    metadata.candidateWindowHistory = [...(metadata.candidateWindowHistory || []), { at: io.now(), note: options.reviewNote, original }];
+    metadata.candidateWindowRepair = { start, end, note: options.reviewNote, sourceSha256: evidence.sourceSha256,
+        eventCopy: structuredClone(metadata.copy) };
+    metadata.window = { ...metadata.window, start, end, duration: end - start,
+        contextSegments: kept.map(cue => cue.items[0]), allSegmentTexts: kept.map(cue => cue.text) };
+    metadata.candidateSubtitles = { ...draft, path: file, revision, ...written, window: { start, end }, approval: null };
+    metadata.reviewPreview = null;
+    metadata.humanReview = null;
+    metadata.aiReview = { ...metadata.aiReview, status: 'needs_review', reason: 'Preflight boundary review failed: explicit window repair requested',
+        boundaryReview: { status: 'needs_review' }, quality: { status: 'needs_review', issues: ['Preflight boundary repair requested'] } };
+    metadata.editorial = { ...metadata.editorial, copyGrounding: null };
+    metadata.output = { ...metadata.output, srtPath: file, srtSegmentCount: written.cues.length };
+    metadata.status = 'pending_preflight';
+}
+
 /** The original user upload intent can authorize a freshly reviewed revision of the same anchored event. */
 export function recoveryAuthorizes(metadata: Data, sourceSha256: string, expectedSha256?: string): boolean {
     const recovery = metadata.candidateRecovery;
@@ -189,6 +248,7 @@ function rejectOverlap(metadata: Data, selected: Data, registryPath?: string): v
             if (!samePath(path.dirname(clip.metadataPath), path.dirname(metadata.output.metadataPath))) continue;
         }
         const sibling: Data = JSON.parse(fs.readFileSync(clip.metadataPath, 'utf8').replace(/^\uFEFF/u, ''));
+        if (['stream_game_submission', 'stream_activity_submission', 'danmaku_replay'].includes(sibling.type)) continue;
         if (!sibling.source?.mediaPath || !samePath(sibling.source.mediaPath, metadata.source.mediaPath)) continue;
         if (!Number.isFinite(sibling.window?.start) || !Number.isFinite(sibling.window?.end)) {
             throw new Error(`Cannot verify retained clip ${clip.id} boundaries`);
@@ -250,8 +310,13 @@ export async function recoverCandidatePlan(metadata: Data, metadataPath: string,
             start: Math.min(metadata.window.start, ...contextRows.map((row: Data) => row.start), ...references.map(cue => cue.start)),
             end: Math.max(metadata.window.end, ...contextRows.map((row: Data) => row.end), ...references.map(cue => cue.end))
         };
-        const start = Math.min(retainedContext.start, Math.max(0, metadata.window.start - Number(config.contextPrePaddingSeconds)));
-        const end = Math.max(retainedContext.end, metadata.window.end + Number(config.contextPostPaddingSeconds));
+        const explicit = metadata.candidateWindowRepair;
+        const before = corrected.cues.filter(cue => cue.end <= retainedContext.start).slice(-3);
+        const after = corrected.cues.filter(cue => cue.start >= retainedContext.end).slice(0, 3);
+        const start = explicit ? Math.min(retainedContext.start, ...before.map(cue => cue.start))
+            : Math.min(retainedContext.start, Math.max(0, metadata.window.start - Number(config.contextPrePaddingSeconds)));
+        const end = explicit ? Math.max(retainedContext.end, ...after.map(cue => cue.end))
+            : Math.max(retainedContext.end, metadata.window.end + Number(config.contextPostPaddingSeconds));
         const cues = corrected.cues.filter(cue => cue.end > start && cue.start < end);
         if (!cues.length) throw new Error('Boundary recovery has no source context');
         const group = { index: String(metadata.window.index).replace(/-\d+$/u, ''),
@@ -263,6 +328,11 @@ export async function recoverCandidatePlan(metadata: Data, metadataPath: string,
             throw new Error('Boundary recovery must retain exactly the original anchored event');
         }
         const selected = selections[0];
+        const requested = metadata.candidateWindowRepair;
+        if (requested && (requested.sourceSha256 !== evidence.sourceSha256
+            || selected.start > requested.start + .002 || selected.end < requested.end - .002)) {
+            throw new Error('Boundary recovery did not retain the explicitly requested complete window');
+        }
         if (selected.preflight?.status !== 'ready' || selected.preflight.keyword?.status !== 'confirmed'
             || selected.preflight.quality?.issues?.length || !selected.editorial?.copyGrounding
             || selected.editorial.copyGrounding.issues?.length || selected.editorial.sourceKind === 'uncertain') {

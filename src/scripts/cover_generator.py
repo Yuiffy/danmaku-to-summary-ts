@@ -369,7 +369,12 @@ class CoverGenerator:
         edge_mean = ImageStat.Stat(gray.filter(ImageFilter.FIND_EDGES)).mean[0]
         saturation = ImageStat.Stat(preview.convert("HSV")).mean[1]
         exposure_penalty = abs(brightness - 138.0) * 0.18
-        return contrast * 1.15 + edge_mean * 1.8 + saturation * 0.22 - exposure_penalty
+        # A white player surrounded by dark stream chrome has high contrast,
+        # despite showing none of the clip. Penalize dominant near-white areas
+        # as a ranking hint; bright scenes remain eligible for final review.
+        white_fraction = sum(gray.histogram()[245:]) / (preview.width * preview.height)
+        blank_penalty = max(0.0, white_fraction - 0.35) * 360.0
+        return contrast * 1.15 + edge_mean * 1.8 + saturation * 0.22 - exposure_penalty - blank_penalty
 
     @staticmethod
     def _protected_regions(width: int, height: int, boxes: list[dict], subtitle_band: bool) -> list[tuple[int, int, int, int]]:
@@ -594,7 +599,15 @@ class CoverGenerator:
         text_position: str = "center",
         protected_boxes: Optional[list[dict]] = None,
         protect_subtitle_band: bool = False,
+        manual_selection: Optional[dict] = None,
     ) -> str:
+        if manual_selection:
+            try:
+                from .cover_selection import selected_cover, media_identity
+            except ImportError:
+                from cover_selection import selected_cover, media_identity
+            if manual_selection.get("mediaIdentity") == media_identity(video_path):
+                return selected_cover(self, video_path, {**manual_selection, "text": title}, output_path, text_position)
         if use_key_frame:
             selection = self.select_best_frame(
                 video_path,
@@ -639,10 +652,24 @@ def main() -> int:
     parser.add_argument("--sample-count", type=int, default=7, help="全段均匀采样候选帧数量")
     parser.add_argument("--protected-boxes", type=json.loads, default=None, help="源画面中不允许文字覆盖的归一化矩形 JSON")
     parser.add_argument("--protect-subtitle-band", action="store_true", help="避免文字覆盖底部已烧录字幕")
+    parser.add_argument("--frame-time", type=float, default=None, help="手动选取的视频相对秒数")
+    parser.add_argument("--crop", type=json.loads, default=None, help="归一化裁剪矩形 x/y/width/height")
+    parser.add_argument("--manual-selection", type=json.loads, default=None, help="绑定原视频的已保存选帧，仅同一视频重排文字时复用")
     args = parser.parse_args()
 
     config = {"headline_font_size": args.font_size} if args.font_size else {}
     generator = CoverGenerator(config)
+    if args.frame_time is not None:
+        try:
+            from .cover_selection import selected_cover
+        except ImportError:
+            from cover_selection import selected_cover
+        output = selected_cover(generator, args.video,
+            {"time": args.frame_time, "part": 1, "text": args.title, "crop": args.crop}, args.output, args.position)
+        print(f"\n✅ 封面生成成功: {output}")
+        return 0
+    if args.crop is not None:
+        parser.error("--crop requires --frame-time")
     output = generator.generate_cover(
         video_path=args.video,
         title=args.title,
@@ -656,6 +683,7 @@ def main() -> int:
         text_position=args.position,
         protected_boxes=args.protected_boxes,
         protect_subtitle_band=args.protect_subtitle_band,
+        manual_selection=args.manual_selection,
     )
     print(f"\n✅ 封面生成成功: {output}")
     return 0

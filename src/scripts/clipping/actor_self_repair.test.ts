@@ -6,7 +6,7 @@ const { briefLines } = require('./review_brief');
 const generator = require('../ai_text_generator');
 const context = { people: [{ id: 'host', label: 'Host', names: ['Host'], preferredName: 'Host', sourceHost: true }] };
 const evidence = buildSubtitleEvidence([{ start: 10, end: 15, text: 'Host told a story.',
-    speakerEvidence: { status: 'row_supported', label: 'Host', observations: [] } }]);
+    speakerEvidence: { status: 'row_supported', identityVerified: true, label: 'Host', observations: [] } }]);
 const clip = { start: 10, end: 15, title: 'Host tells a story', description: 'Host told a story.', coverText: 'A story',
     grounding: { sourceKind: 'recount', issues: ['unsupported_quote:title:story'] } };
 const good = () => ({ clipId: 'c1', decision: 'repair', copy: { title: clip.title, description: clip.description, coverText: clip.coverText },

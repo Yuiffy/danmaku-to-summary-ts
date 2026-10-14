@@ -48,11 +48,15 @@ function requestMatches(result, settings) {
 }
 
 async function prepareTopicGroup(group, evidence, config, rootConfig, source, diagnostics, options = {}) {
+    const competitionPolicy = require('../workflow-runtime').loadWorkflow('clipping/topicRecovery');
+    let competitionEvidence;
     const buildInput = context => {
         const verified = loadVerifiedTopicFacts(source.srtPath, context, config.review.verifiedFactsPath);
-        return buildPreflightInput(context, evidence, config, { ...source,
+        return { ...buildPreflightInput(context, evidence, config, { ...source,
+            ...(competitionEvidence ? { competitionGuard: { frames: competitionEvidence.frames, issues: competitionEvidence.issues } } : {}),
             verifiedFacts: [...(source.verifiedFacts || []), ...verified.verifiedFacts],
-            verifiedEdits: [...(source.verifiedEdits || []), ...verified.verifiedEdits] }, options.danmaku || [], options.checks || []);
+            verifiedEdits: [...(source.verifiedEdits || []), ...verified.verifiedEdits] }, options.danmaku || [], options.checks || []),
+            ...(options.requestedWindow ? { requestedWindow: options.requestedWindow } : {}) };
     };
     const strategy = config.review.strategy || 'single';
     const maxEvidenceChars = config.review.maxEvidenceChars || 80000;
@@ -78,6 +82,16 @@ async function prepareTopicGroup(group, evidence, config, rootConfig, source, di
         }
     };
     if (options.retainedContext) fitContext();
+    if (competitionPolicy.competitionGuardEnabled?.(source)) {
+        const io = options.competitionIO || { capture: (time, file) => require('./media_runtime').runFfmpeg([
+            '-y', '-ss', String(time), '-i', source.mediaPath, '-frames:v', '1',
+            '-vf', 'scale=min(1920\\,iw):-2', '-q:v', '2', file
+        ], { ffmpegPath: rootConfig.ffmpegPath || 'ffmpeg', timeoutMs: 30000, threads: 2,
+            stage: '关键词观赛选手抽帧' }) };
+        try { competitionEvidence = await competitionPolicy.prepareCompetitionEvidence(source, group, io); }
+        catch (error) { competitionEvidence = { frames: [], images: [], issues: [error.message] }; }
+        if (options.retainedContext) fitContext();
+    }
     let input = buildInput(group);
     if ((!options.retainedContext || contextBudget) && config.review.audioChecks?.enabled === true
         && input.hits.some(hit => hit.recall?.requiresSemanticConfirmation)) {
@@ -103,13 +117,15 @@ async function prepareTopicGroup(group, evidence, config, rootConfig, source, di
         reasoningEffort: settings.reasoningEffort, sourceSha256: evidence.sourceSha256, responses: [], errors: [],
         ...(contextBudget ? { contextBudget } : {}),
         ...(input.audioChecks ? { audioChecks: input.audioChecks } : {}) };
+    if (input.competitionGuard) record.competitionEvidence = input.competitionGuard;
     diagnostics.preflightGroups ||= [];
     diagnostics.preflightGroups.push(record);
     const request = async (phase, lockedClip, hits, auditPlan) => {
         if (options.retainedContext && !contextBudget) throw new Error('Preflight source exceeds request budget');
-        const requestSettings = phase === 'audit' ? { ...settings,
+        const visualSettings = { ...settings, ...(competitionEvidence?.images.length ? { images: competitionEvidence.images } : {}) };
+        const requestSettings = phase === 'audit' ? { ...visualSettings,
             primaryModel: config.review.auditModel || settings.primaryModel,
-            reasoningEffort: config.review.auditReasoningEffort || settings.reasoningEffort } : settings;
+            reasoningEffort: config.review.auditReasoningEffort || settings.reasoningEffort } : visualSettings;
         const prepared = lockedClip ? new Map(lockedClip.subtitleSegments.map(segment => [segment.index, segment])) : null;
         const cues = prepared ? evidence.cues.map(cue => {
             const item = prepared.get(cue.items[0].index);
@@ -134,10 +150,10 @@ async function prepareTopicGroup(group, evidence, config, rootConfig, source, di
         if (!['daiYu', 'tuZi'].includes(rootConfig.ai?.text?.provider)) throw new Error('Preflight requires a Responses-capable provider');
         const normalize = text => phase === 'audit' ? applyQualityAudit(text, auditPlan, input, evidence, config)
             : normalizePreflightResponse(text, phaseInput, phaseEvidence, config, {
-            phase, ...(lockedClip ? { lockedClip, lockedHits: hits } : {})
+            phase, ...(lockedClip ? { lockedClip, lockedHits: hits, lockedCompetition: plan.competitionContext } : {})
         });
         const result = await requestSelectionText(prompt, requestSettings, config, rootConfig, source,
-            `topic_preflight_${phase}_v4`, diagnostics, result => {
+            `topic_preflight_${phase}_v5`, diagnostics, result => {
                 try { normalize(result.text); return requestMatches(result, requestSettings); } catch { return false; }
             });
         record.responses.push({ phase, clipId: lockedClip?.id || null, text: result.text,
@@ -267,6 +283,7 @@ async function prepareTopicGroup(group, evidence, config, rootConfig, source, di
             plan = recall.holdUnresolvedTopicRecall?.(plan, group.bursts.flatMap(burst => buildFallbackAiClipSelection(burst))) || plan;
         }
         Object.assign(record, { status: 'prepared', hits: plan.hits,
+            ...(plan.competitionContext ? { competitionContext: plan.competitionContext } : {}),
             qualityAudit: plan.qualityAudit || null,
             clips: plan.clips.map(({ subtitleSegments, raw, ...clip }) => clip) });
         return { ...plan, input, record };
@@ -279,6 +296,7 @@ async function prepareTopicGroup(group, evidence, config, rootConfig, source, di
             plan.clips = plan.clips.map(clip => ({ ...clip, status: 'needs_review',
                 issues: [...clip.issues, `Quality review unavailable: ${error.message}`] }));
             record.hits = plan.hits;
+            if (plan.competitionContext) record.competitionContext = plan.competitionContext;
             record.clips = plan.clips.map(({ subtitleSegments, raw, ...clip }) => clip);
             return { ...plan, input, record };
         }
@@ -307,6 +325,7 @@ function preflightSelections(plan, group, config) {
             ...(plan.record.audioChecks ? { audioChecks: plan.record.audioChecks } : {}),
             ...(plan.record.boundaryAudioChecks ? { boundaryAudioChecks: plan.record.boundaryAudioChecks } : {}),
             sourceSha256: plan.sourceSha256, model: plan.record.model, reasoningEffort: plan.record.reasoningEffort,
+            ...(plan.competitionContext ? { competitionContext: plan.competitionContext } : {}),
             keyword: { status: clip.hits?.some(hit => hit.verdict === 'mention') ? 'confirmed' : 'needs_review', hits: clip.hits },
             quality: { status: clip.status === 'ready' ? 'pass' : 'needs_review', issues: clip.issues },
             qualityAudit: clip.qualityAudit || null,

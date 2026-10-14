@@ -892,10 +892,16 @@ export interface StreamActivityClipsConfig {
   maxEvidenceChars?: number;
   ai?: { model?: string; boundaryModel?: string; timeoutMs?: number; maxTokens?: number };
   verification?: { enabled?: boolean; provider?: 'tuZi' | 'gemini'; apiMode?: 'gemini_native' | 'openai_chat'; model?: string; contextSeconds?: number; maxAudioSeconds?: number; timeoutMs?: number;
-    boundaryContextSeconds?: number; batchMaxEvents?: number; batchMaxAudioSeconds?: number; maxBatchRequests?: number; boundaryTimeoutMs?: number };
-  songs?: { enabled?: boolean; paddingSeconds?: number; tid?: number; tags?: string[];
+    boundaryContextSeconds?: number; batchMaxEvents?: number; batchMaxAudioSeconds?: number; maxBatchRequests?: number; boundaryTimeoutMs?: number;
+    preludeReviewVersion?: 3;
+    nativeListening?: { version: 1; protocolVersion?: 2 | 3; model: string } };
+  songs?: { enabled?: boolean; identifyNames?: boolean; paddingSeconds?: number; tid?: number; tags?: string[];
     collection?: { seasonId?: number | null; sectionId?: number | null } };
   watch?: { enabled?: boolean; targetPartSeconds?: number; maxPartSeconds?: number; tid?: number; tags?: string[];
+    blackAlignment?: { enabled?: boolean; region?: [number, number, number, number]; searchSeconds?: number;
+      minBlackSeconds?: number; maxBlackSeconds?: number; pixelThreshold?: number; pictureThreshold?: number; minPartSeconds?: number;
+      cadence?: { enabled?: boolean; bootstrapSeconds?: number; minPeriodSeconds?: number; maxPeriodSeconds?: number;
+        searchSeconds?: number; recoverySeconds?: number; seeds?: [number, number] } };
     collection?: { seasonId?: number | null; sectionId?: number | null } };
 }
 

@@ -5,7 +5,7 @@ import { activityPublicationEnabled, reviewActivityPublications, enqueueActivity
 import { activityTimingRevision } from './activityStages';
 import { validateImageInputs, MAX_INLINE_IMAGES } from '../text/requests';
 import { createHash } from 'crypto';
-import { activityPublicationText, activityPublicationBatchText, activityPublicationBoundaries, activityPublicationEvents } from './activityPublicationEvidence';
+import { activityPublicationText, activityPublicationBatchText, activityPublicationBoundaries, activityPublicationEvents, activityPublicationSamples } from './activityPublicationEvidence';
 
 const checks = { content: true, boundaries: true, titles: true, visuals: true, policy: true };
 const passed = { status: 'passed', checks, issues: [] };
@@ -75,6 +75,22 @@ function fixture() {
         }),enqueue:jest.fn(async()=> 'QUEUE_JOB_ID: upload-123') };
     return {directory,row,config,adapters};
 }
+
+test('an explicit operator request gets complete automatic review without granting background enqueue authority', async () => {
+    const f = fixture();
+    try {
+        f.config.streamActivityClips.automaticPublication.mode = 'off';
+        const row = { ...f.row, activityAutomaticPublicationRequired: false,
+            activityOperatorReview: { version: 1, note: '修改后投稿', requestedAt: '2026-10-13T00:00:00Z' } };
+        expect((await reviewActivityPublications([row], f.config, f.adapters))[0].uploadReady).toBe(false);
+        expect(f.adapters.request).not.toHaveBeenCalled();
+        const [reviewed] = await reviewActivityPublications([row], f.config, f.adapters, { operatorReview: true });
+        expect(reviewed.activityReview).toMatchObject({ status: 'approved', authority: 'automatic' });
+        expect(f.adapters.request).toHaveBeenCalledTimes(1);
+        expect(f.adapters.request.mock.calls[0][1]).toContain('"operatorFeedback":"修改后投稿"');
+        expect(f.adapters.enqueue).not.toHaveBeenCalled();
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
 
 test('source-bound title correction and pre-song audience survive partitioning into the actual final-review prompt', async () => {
     const f = fixture();
@@ -157,6 +173,68 @@ test('a current independent final review binds complete evidence, real cover/P s
     }finally{fs.rmSync(f.directory,{recursive:true,force:true});}
 });
 
+test('viewing review keeps the original black sample and supplies neighbouring frames with exact source times', async () => {
+    const f = fixture();
+    try {
+        f.row.output.parts = [{ mediaPath: 'P4.mp4', start: 7454.941, end: 8893.04, duration: 1438.099 }];
+        f.adapters.inspect.mockResolvedValue([picture, picture]);
+        f.adapters.request.mockImplementation(async (_row, prompt) => {
+            const packet = JSON.parse(prompt.split('EVIDENCE_JSON ')[1]);
+            const samples = packet.reviewScope.imageManifest[1].samples;
+            expect(samples).toHaveLength(7);
+            expect(samples.find(sample => sample.label === 'MIDDLE').recordingSeconds).toBeCloseTo(8173.9905);
+            expect(samples.find(sample => sample.label === 'MIDDLE BEFORE').recordingSeconds).toBeCloseTo(8171.9905);
+            expect(samples.find(sample => sample.label === 'MIDDLE AFTER').recordingSeconds).toBeCloseTo(8175.9905);
+            expect(samples.every(sample => sample.recordingSeconds >= 7454.941 && sample.recordingSeconds < 8893.04)).toBe(true);
+            expect(prompt).toContain('Short black transitions');
+            return { text: JSON.stringify(passed) };
+        });
+        const [result] = await reviewActivityPublications([f.row], f.config, f.adapters);
+        expect(result.uploadReady).toBe(true);
+        expect(JSON.parse(fs.readFileSync(result.activityReview.proofPath, 'utf8')).sampleEvidenceVersion).toBe(1);
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
+
+test('black-aligned viewing held only for visuals gets one explicit temporal-evidence upgrade, without inherited approval', async () => {
+    const f = fixture();
+    try {
+        const heldChecks = { ...checks, visuals: false };
+        f.row.output.parts.forEach(part => Object.assign(part, { blackAlignmentEvidence: { path: 'bound-report.json' } }));
+        const proofPath = path.join(f.directory, 'single-frame-v3.json');
+        const scope = { partNumbers: [1, 2], imageManifest: [{ kind: 'actual_cover' }, ...[1, 2].map(partNumber => ({
+            kind: 'P_sample_sheet', partNumber, samples: ['BEGIN', 'MIDDLE', 'END'].map(label => ({ label })) }))] };
+        const proof = { version: 1, evidenceVersion: 3, binding: { contentSha256: 'fixture' }, status: 'needs_review',
+            checks: heldChecks, completeText: { version: 3, activities: [{ cues: [{ text: '完整原文' }] }] },
+            responses: [{ status: 'needs_review', checks: heldChecks, reviewScope: scope, issues: ['抽帧黑屏待核'] }] };
+        fs.writeFileSync(proofPath, JSON.stringify(proof));
+        const row = { ...f.row, activityReview: { status: 'pending', authority: 'automatic', checks: heldChecks, proofPath } };
+        expect(() => assertActivityPublicationRetry(row, { status: 'needs_review' })).not.toThrow();
+        await reviewActivityPublications([row], f.config, f.adapters);
+        expect(f.adapters.request).not.toHaveBeenCalled();
+        f.adapters.request.mockResolvedValue({ text: JSON.stringify({ status: 'needs_review', checks: heldChecks, issues: ['前后画面仍异常'] }) });
+        const [held] = await reviewActivityPublications([row], f.config, f.adapters, { retryUnavailable: true });
+        expect(held.uploadReady).toBe(false);
+        expect(f.adapters.approve).not.toHaveBeenCalled();
+        expect(JSON.parse(fs.readFileSync(held.activityReview.proofPath, 'utf8'))).toMatchObject({
+            sampleEvidenceVersion: 1, evidenceUpgrade: { fromProofPath: proofPath } });
+        expect(() => assertActivityPublicationRetry(held, { status: 'needs_review' })).toThrow();
+        for (const key of ['content', 'boundaries', 'titles', 'policy']) {
+            const failed = { ...heldChecks, [key]: false };
+            fs.writeFileSync(proofPath, JSON.stringify({ ...proof, checks: failed }));
+            expect(() => assertActivityPublicationRetry({ ...row, activityReview: { ...row.activityReview, checks: failed } }, { status: 'needs_review' })).toThrow();
+        }
+        fs.writeFileSync(proofPath, JSON.stringify({ ...proof, responses: [{ ...proof.responses[0], status: 'rejected' }] }));
+        expect(() => assertActivityPublicationRetry(row, { status: 'needs_review' })).toThrow();
+        fs.writeFileSync(proofPath, JSON.stringify(proof));
+        for (const status of ['queued', 'uploading', 'uploaded']) expect(() => assertActivityPublicationRetry(row, { status })).toThrow();
+        expect(() => assertActivityPublicationRetry({ ...row, kind: 'songs' }, { status: 'needs_review' })).toThrow();
+        f.adapters.check.mockResolvedValue({ contentSha256: 'changed' });
+        f.adapters.request.mockClear();
+        await reviewActivityPublications([row], f.config, f.adapters, { retryUnavailable: true });
+        expect(f.adapters.request).not.toHaveBeenCalled();
+    } finally { fs.rmSync(f.directory, { recursive: true, force: true }); }
+});
+
 test.each([5,6])('%i viewing Ps fit the real image transport limit and every batch must pass before approval',async count=>{
     const f=fixture();
     try {
@@ -171,7 +249,7 @@ test.each([5,6])('%i viewing Ps fit the real image transport limit and every bat
             expect(evidence.reviewScope.partNumbers).toHaveLength(evidence.sampledParts.length);
             expect(evidence.reviewScope.batches).toBe(3);
             expect(evidence.reviewScope.imageManifest).toHaveLength(images.length);
-            expect(evidence.reviewScope.imageManifest.slice(1).every(sheet => sheet.samples.length === 3)).toBe(true);
+            expect(evidence.reviewScope.imageManifest.slice(1).every(sheet => sheet.samples.length === 7)).toBe(true);
             expect(prompt).toContain('checks apply ONLY to reviewScope.partNumbers');
             return {text:JSON.stringify(passed)};
         });
@@ -305,6 +383,30 @@ test('labelled P sample sheets preserve three distinct full frames and place lab
             expect(pixel[(channel + 1) % 3]).toBeLessThan(15);
         }
         await expect(writeActivitySampleSheet(samples.slice(0, 2), output)).rejects.toThrow('BEGIN/MIDDLE/END');
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('viewing context sheets retain the black anchor between visible neighbours, and short Ps keep every sample inside their own interval', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'activity-context-sheet-'));
+    try {
+        const sharp = (await import('sharp')).default;
+        const plan = activityPublicationSamples('watch', { start: 100, end: 100.5 });
+        expect(plan).toHaveLength(7);
+        expect(plan.every(sample => sample.recordingSeconds >= 100 && sample.recordingSeconds < 100.5)).toBe(true);
+        expect(activityPublicationSamples('songs', { start: 100, end: 150 }).map(sample => sample.label)).toEqual(['BEGIN', 'MIDDLE', 'END']);
+        const samples = [];
+        for (const [index, sample] of plan.entries()) {
+            const file = path.join(directory, `${index}.jpg`);
+            await sharp({ create: { width: 320, height: 180, channels: 3, background: index === 3 ? '#000000' : '#ffffff' } }).jpeg().toFile(file);
+            samples.push({ path: file, label: sample.label });
+        }
+        const output = path.join(directory, 'context.jpg');
+        await writeActivitySampleSheet(samples, output);
+        expect(await sharp(output).metadata()).toMatchObject({ width: 2880, height: 1728 });
+        for (const index of [2, 3, 4]) {
+            const pixel = await sharp(output).extract({ left: index % 3 * 960 + 480, top: Math.floor(index / 3) * 576 + 306, width: 1, height: 1 }).raw().toBuffer();
+            expect(pixel[0]).toBe(index === 3 ? 0 : 255);
+        }
     } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 

@@ -49,18 +49,33 @@ export class AdminJobs {
     }
   }
   list(): AdminJob[] { return [...this.jobs.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 100); }
-  submit(command: OperatorCommand, validate = () => {}): AdminJob {
+  latest(action: string, target: string): AdminJob | undefined {
+    return [...this.jobs.values()].reverse().filter(job => job.action === action && job.target === target)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  }
+  titleDecisions(): Pick<AdminJob, 'id' | 'status' | 'titleChoice'>[] {
+    return [...this.jobs.values()].filter(job => job.titleChoice)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.updatedAt.localeCompare(b.updatedAt))
+      .map(({ id, status, titleChoice }) => ({ id, status, titleChoice }));
+  }
+  submit(command: OperatorCommand, validate = () => {}, titleChoice?: AdminJob['titleChoice']): AdminJob {
+    const noteFlag = command.args.findIndex(arg => ['--note', '--review-note'].includes(arg));
+    return this.submitOperation(command.action, command.target, { note: noteFlag < 0 ? undefined : command.args[noteFlag + 1], titleChoice },
+      async output => this.run(command, output), validate);
+  }
+  submitOperation(action: string, target: string, input: Pick<AdminJob, 'note' | 'revision' | 'edits' | 'titleChoice'>,
+    execute: (output: (chunk: string) => void, update: (value: Pick<AdminJob, 'phase' | 'plan'>) => void) => Promise<number>, validate = () => {}): AdminJob {
     if (this.pending >= 20) throw new AdminError('管理操作队列已满', 429);
-    const now = new Date().toISOString(), job: AdminJob = { id: randomUUID(), action: command.action, target: command.target,
+    const now = new Date().toISOString(), job: AdminJob = { id: randomUUID(), action, target, ...input,
       status: 'queued', createdAt: now, updatedAt: now, output: '' };
     this.jobs.set(job.id, job); this.persist(job); this.pending++;
     this.tail = this.tail.then(async () => {
       try {
         validate(); job.status = 'running'; this.persist(job);
-        const code = await this.run(command, chunk => {
+        const code = await execute(chunk => {
           job.output = (job.output + chunk.replace(/(bili_jct|SESSDATA|api[_-]?key|access_token)([=:]\s*)[^\s;,]+/giu, '$1$2[hidden]')).slice(-24000);
           this.persist(job);
-        });
+        }, value => { Object.assign(job, value); this.persist(job); });
         job.exitCode = code; job.status = code === 0 ? 'succeeded' : 'failed';
       } catch (error) {
         job.status = 'failed'; job.output += `\n${error instanceof Error ? error.message : '操作失败'}`;

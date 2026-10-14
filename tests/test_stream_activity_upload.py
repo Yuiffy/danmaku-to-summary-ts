@@ -151,6 +151,24 @@ class ActivityUploadTests(unittest.TestCase):
             with self.assertRaises(ValueError): self.approved()
             self.data = before
 
+    def test_viewing_aliases_bind_internal_identity_and_reject_original_names_and_film_tags(self):
+        self.data['activities'][0]['name'] = '奇异博士'
+        self.data['presentation'] = {'version': 4, 'titleFormat': 'work_alias_recording_date', 'recordingDate': '2026.10.1',
+            'publicNames': [{'activityId': 'a1', 'name': '奇异博士', 'publicName': '卷毛医生在线画圈'}]}
+        self.data['copy'] = {'title': '《卷毛医生在线画圈》｜2026.10.1', 'description': '本场同步视听', 'coverText': '卷毛医生在线画圈'}
+        for i, part in enumerate(self.data['output']['parts']):
+            part['title'] = f'《卷毛医生在线画圈》 {i+1:02d}/03'
+        self.save(); self.approved()
+        for mutate in (lambda d: d['copy'].update(description='今天看奇异博士'),
+                       lambda d: d['upload'].update(tags=['岁己', '漫威']),
+                       lambda d: d['presentation']['publicNames'][0].update(name='另一部'),
+                       lambda d: d['presentation']['publicNames'][0].update(publicName='待确认化名'),
+                       lambda d: d['presentation']['publicNames'].append(d['presentation']['publicNames'][0].copy()),
+                       lambda d: d['output']['parts'][0].update(title='《奇异博士》 01/03')):
+            before = copy.deepcopy(self.data); mutate(self.data); self.save()
+            with self.assertRaises(ValueError): self.approved()
+            self.data = before
+
     def test_transcript_title_names_are_replayed_from_original_rows_before_publication(self):
         self.srt.write_text('1\n00:00:00,000 --> 00:00:01,000\n现在唱泡泡\n', encoding='utf-8')
         digest = hashlib.sha256(self.srt.read_bytes()).hexdigest()
@@ -182,6 +200,7 @@ class ActivityUploadTests(unittest.TestCase):
         self.assertEqual(page.call_count, 3)
         self.assertEqual([call.kwargs['path'] for call in page.call_args_list], [p['mediaPath'] for p in self.parts])
         uploader.return_value.start.assert_awaited_once()
+        self.assertEqual(uploader.call_args.kwargs['line'], batch_upload.video_uploader.Lines.BDA2)
         self.assertEqual(len(uploader.call_args.kwargs['pages']), 3)
         self.assertEqual(meta.call_args.kwargs['desc'], self.data['copy']['description'])
 

@@ -29,6 +29,34 @@ def validate_request(request):
         raise ValueError('two independent local models are required')
 
 
+def decode_speech_blocks(samples, intervals, infer, rate=16000):
+    """Decode all speech after pauses; neither model receives the source subtitle text."""
+    blocks = []
+    duration_ms = len(samples) * 1000 / rate
+    for interval in intervals:
+        if (not isinstance(interval, (list, tuple)) or len(interval) != 2
+                or any(isinstance(value, bool) or not isinstance(value, (int, float))
+                       or not math.isfinite(value) for value in interval)
+                or not 0 <= interval[0] < interval[1] <= duration_ms + 1):
+            raise ValueError('ordinary subtitle speech interval differs from audio')
+        start = max(0, math.floor((interval[0] - 200) * rate / 1000))
+        end = min(len(samples), math.ceil((interval[1] + 200) * rate / 1000))
+        if blocks and start < blocks[-1][0]:
+            raise ValueError('ordinary subtitle speech intervals are out of order')
+        if blocks and start <= blocks[-1][1]:
+            blocks[-1][1] = max(blocks[-1][1], end)
+        else:
+            blocks.append([start, end])
+    decoded = []
+    for start, end in blocks:
+        results = infer(samples[start:end])
+        if not isinstance(results, list) or len(results) != 1 or not isinstance(results[0].get('text'), str):
+            raise ValueError('ordinary subtitle speech decode is incomplete')
+        text = re.sub(r'<\|[^|]+\|>', '', results[0]['text']).strip()
+        decoded.append({'start': start / rate, 'end': end / rate, 'text': text})
+    return decoded
+
+
 def analyze(request, output):
     validate_request(request)
     from sensevoice_runtime import prepare_asr_runtime, GpuThrottle, _resource_claim_file
@@ -74,12 +102,16 @@ def analyze(request, output):
                 if not row['vad']:
                     continue
                 throttle.wait_if_busy('ordinary subtitle audio decode')
-                decoded = model.generate(input=torch.from_numpy(samples_by_id[row['id']]), cache={}, batch_size=1,
-                                         language=language, hotwords=[], use_itn=False, itn=False,
-                                         max_length=512, llm_kwargs={'do_sample': False}, disable_pbar=True)[0]
-                text = re.sub(r'<\|[^|]+\|>', '', str(decoded.get('text', ''))).strip()
+                def infer(chunk):
+                    throttle.wait_if_busy('ordinary subtitle audio speech block')
+                    return model.generate(input=torch.from_numpy(chunk), cache={}, batch_size=1,
+                                          language=language, hotwords=[], use_itn=False, itn=False,
+                                          max_length=512, llm_kwargs={'do_sample': False}, disable_pbar=True)
+                decoded = decode_speech_blocks(samples_by_id[row['id']], row['vad'], infer)
+                text = ''.join(block['text'] for block in decoded)
                 row['decodes'].append({'model': model_name, 'text': text, 'prompted': False,
-                                       'hotwords': [], 'useItn': False, 'timingPrecision': 'window'})
+                                       'hotwords': [], 'useItn': False, 'timingPrecision': 'window',
+                                       'speechBlocks': decoded})
             del model
             gc.collect()
             if torch.cuda.is_available():

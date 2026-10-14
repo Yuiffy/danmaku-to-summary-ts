@@ -41,6 +41,10 @@ export function activityRepairCommand(id: string, body: any): OperatorCommand {
       if (body.kind !== 'songs') throw new AdminError('前奏复核仅适用歌切');
       args.push('--review-prelude');
     }
+    if (body.reviewAudio === true) {
+      if (body.reviewPrelude !== true) throw new AdminError('原音补充核验需要完整前奏复核');
+      args.push('--review-audio');
+    }
   } else args.push('--transcript-record', required(body, 'transcriptRecordPath'));
   return { executable: 'node', args, action: body.action, target: id, reviewOnly: true };
 }

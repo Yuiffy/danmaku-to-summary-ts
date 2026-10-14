@@ -32,7 +32,7 @@ describe('own-stream actor review workflow', () => {
     try {
       fs.writeFileSync(mediaPath, 'fixture');
       asr.writeSrt({ backend: 'fixture', segments: [{ start: 0, end: 10, text: 'I asked Mimi about it.',
-        speakerEvidence: { version: 1, status: 'row_supported', label: 'Guest', observations: [
+        speakerEvidence: { version: 1, status: 'row_supported', identityVerified: true, label: 'Guest', observations: [
           { start: 0, end: 10, label: 'Guest', scope: 'row', row: { accepted: true, score: .7, margin: .15 } }
         ] } }] }, srtPath, { write_evidence: true });
       writeRecordingParticipants({ mediaPath, srtPath, roomId: '1', participantIds: ['guest'] });
@@ -95,7 +95,7 @@ describe('own-stream actor review workflow', () => {
       fs.writeFileSync(mediaPath, 'fixture');
       asr.writeSrt({ backend: 'fixture', segments: [{ start: 100, end: 104, text: 'Buddy laughed.' },
         { start: 108, end: 112, text: 'Asked Buddy.' }].map(row => ({ ...row, speakerEvidence: {
-          version: 1, status: 'row_supported', label: 'Host', observations: [{ start: row.start, end: row.end,
+          version: 1, status: 'row_supported', identityVerified: true, label: 'Host', observations: [{ start: row.start, end: row.end,
             label: 'Host', scope: 'row', row: { accepted: true, score: .8, margin: .2 } }] } })) }, srtPath, { write_evidence: true });
       fs.writeFileSync(planPath, JSON.stringify({ clips: [{ start: 100, end: 112, duration: 12, boundaryFromEvidence: true,
         title: 'Host asked someone', description: 'Host asked someone.', coverText: 'Question\nAnswer', grounding: { sourceKind: 'recount' } }] }));

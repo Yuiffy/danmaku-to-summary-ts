@@ -34,8 +34,14 @@ Song covers prominently display actual song names and the recording date; never
 use a large generic `歌切` label. Song collection episode titles omit
 `【岁己歌切】`, while the archive title retains it. Preserve existing online
 human title edits when updating an already published cover.
-Viewing titles put the actual film/work name before the recording date. Covers
-use the full original viewing screenshot with a small name/date overlay, never
+Viewing public titles use recognizable funny aliases before the recording date,
+never the original film/franchise name or abbreviation. Use the same alias in P
+titles, descriptions, cover text and collection episodes; viewing tags are only
+岁己、小岁、同步视听、虚拟主播. Keep the actual evidenced name internally and
+bind it to `presentation.publicNames`; unknown identities/aliases remain drafts.
+New summary/scan requests supply `publicName` without a separate naming request.
+Covers
+use the full original viewing screenshot with a small alias/date overlay, never
 a large generic `同步视听` headline. An unresolved film name remains a draft
 and cannot pass publication review. Reuse the existing overview and the session's
 source citations to recover a missing name; do not add a separate AI naming pass.

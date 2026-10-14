@@ -701,7 +701,7 @@ async function generateClipCover(videoPath, title, outputDir, info = {}) {
     // 用 Python 调用 cover_generator.py 生成封面
     const scriptPath = path.join(__dirname, 'cover_generator.py');
     const subtitle = info.streamerName || '';
-    const coverSourcePath = info.coverSourcePath && fs.existsSync(info.coverSourcePath)
+    const coverSourcePath = !info.manualSelection && info.coverSourcePath && fs.existsSync(info.coverSourcePath)
         ? info.coverSourcePath
         : videoPath;
     const resourceConfig = info.resourceConfig || getFfmpegResourceConfig(configLoader.getConfig());
@@ -718,7 +718,7 @@ async function generateClipCover(videoPath, title, outputDir, info = {}) {
             '--title', title,
             '--output', coverPath,
             '--position', info.textPosition === 'bottom' ? 'bottom' : 'center',
-            '--key-frame',
+            '--key-frame', ...(info.manualSelection ? ['--manual-selection', JSON.stringify(info.manualSelection)] : []),
         ];
         if (Number.isFinite(Number(info.clipStart))) {
             args.push('--clip-start', String(Number(info.clipStart)));
@@ -1590,7 +1590,7 @@ async function generateTopicClips(options = {}) {
 
             const segments = usePreflight
                 ? preflightSelections(await prepareTopicGroup(burst, editorialEvidence, config, aiConfig,
-                    { ...info, streamerName, mediaPath: source.mediaPath, srtPath: options.srtPath }, diagnostics, { danmaku, recallMatches: bursts.flatMap(item => item.matchSegments) }), burst, config)
+                    { ...info, streamerName, mediaPath: source.mediaPath, srtPath: options.srtPath }, diagnostics, { danmaku, competitionIO: options.competitionIO, recallMatches: bursts.flatMap(item => item.matchSegments) }), burst, config)
                 : useEditorial
                 ? await planTopicEventGroup(burst, editorialEvidence, config, aiConfig, streamerName, info, diagnostics)
                 : await segmentBurstWithAI(burst, parsed, streamerName, info, aiConfig);

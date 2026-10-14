@@ -34,7 +34,8 @@ async function detectSummaryActivities(options, config, source, info, files, aud
             timelineVersion: summary.timeline.version, reused: summary.reused };
         const signatureFor = verification => p.sha({ version: p.VERSION, source, transcript: plan.transcript, summarySha256: summary.sha256,
             verification, parts: { songs: config.songs.enabled, padding: config.songs.paddingSeconds,
-                watch: config.watch.enabled, target: config.watch.targetPartSeconds, max: config.watch.maxPartSeconds } });
+                watch: config.watch.enabled, target: config.watch.targetPartSeconds, max: config.watch.maxPartSeconds,
+                ...(config.watch.blackAlignment?.enabled ? { blackAlignment: config.watch.blackAlignment } : {}) } });
         plan.signature = signatureFor(config.verification);
         plan.verificationSettings = config.verification;
         const currentSignature = previous?.timingSignature || previous?.verificationSignature || previous?.signature;
@@ -80,7 +81,7 @@ async function detectSummaryActivities(options, config, source, info, files, aud
             transcriptSha256: plan.transcript.sha256, info, directory: files.directory, rows: summary.rows, duration,
             diagnostics: plan.diagnostics, request: options.boundaryRequest, extract: options.extractBoundary,
             usedRequests: plan.efficiency?.boundaryRequests || 0, retryId: options.boundaryRetry?.id,
-            maxRequests: plan.boundaryBudget?.limit, localDecode: options.localDecode, reviewPrelude: options.reviewPrelude,
+            maxRequests: plan.boundaryBudget?.limit, localDecode: options.localDecode, reviewPrelude: options.reviewPrelude, reviewAudio: options.reviewAudio,
             reusableEvidence: plan.events?.map(event => event.verification).filter(Boolean), contextEvents: [...plan.rawEvents, ...plan.events] });
         if (plan.transcript.timingReliable === false) for (const event of checked.events) event.reviewIssues.push('source_transcript_timing_unreliable');
         plan.events = p.mergeEvents(retriedIds ? stages.replaceRetriedEvents(plan.events, checked.events, retriedIds)
@@ -95,6 +96,10 @@ async function detectSummaryActivities(options, config, source, info, files, aud
         if (options.retryBoundaries && pending.includes('watch')) {
             parts.watch = require('../workflow-runtime').loadWorkflow('clipping/activityRecovery')
                 .retainWatchPartBoundaries(parts.watch, plan.parts?.watch || [], config.watch.targetPartSeconds, config.watch.maxPartSeconds);
+        }
+        if (pending.includes('watch') && config.watch.blackAlignment?.enabled && (!options.retryBoundaries || !previous?.uploadManifestPath)) {
+            parts.watch = await require('../workflow-runtime').loadWorkflow('clipping/watchBlackRuntime').applyWatchBlack(parts.watch,
+                { ...options, blackScanRun: options.blackScanRun || require('./media_runtime').runFfmpeg }, config, source, files.directory);
         }
         plan.parts ||= { songs: [], watch: [] };
         for (const kind of pending) plan.parts[kind] = parts[kind];

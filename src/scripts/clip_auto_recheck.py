@@ -11,7 +11,7 @@ def register_commands(sub, api):
     parser.add_argument("--enqueue", action="store_true", help="Enqueue only independently passed revisions through automatic policy")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--repair-subtitles", action="store_true", help="Check at most four short audio windows with two unprompted local models before revising subtitles")
-    mode.add_argument("--review-final", action="store_true", help="Independently review the current final artifact without ASR, subtitle edits or rendering")
+    mode.add_argument("--review-final", action="store_true", help="Review the current final without edits or rendering; concrete topic keyword doubts may use bounded audio diagnosis")
     parser.set_defaults(func=lambda args: recheck_auto(args, api))
     retry = sub.add_parser("retry-auto", help="Reconcile a terminal prior automatic attempt and enqueue only the freshly passed repaired artifact")
     retry.add_argument("--id", required=True, type=int)

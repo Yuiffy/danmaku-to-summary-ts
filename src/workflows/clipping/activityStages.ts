@@ -5,7 +5,7 @@ type StagePlan = {
   calibratedKinds?: ActivityKind[];
 };
 type ManifestClip = { reviewIndex: number; metadataPath: string };
-type VerifiedEvent = ActivityEvent & { id: string; verification?: { decision?: string } };
+type VerifiedEvent = ActivityEvent & { id: string; verification?: { decision?: string }; boundaryFeedback?: any };
 
 /** Resume an early stage only after its shared prerequisite recovered. No generation retry loop. */
 export async function runArchiveStages(run: (kind: string, reuseSummaryOnly?: boolean) => Promise<any>,
@@ -48,15 +48,20 @@ export function retryBoundaryEvents<T extends VerifiedEvent>(raw: T[], events: V
   const candidates = raw.filter(event => ids.has(event.id));
   if (candidates.length !== ids.size) throw new Error('Boundary retry is missing original candidate identities');
   if (!candidates.length) throw new Error('No unresolved activity boundaries to retry');
-  return candidates.map(event => feedback.some(item => item.id === event.id)
-    ? { ...event, boundaryFeedback: feedback.find(item => item.id === event.id) } : event);
+  return candidates.map(event => {
+    const previous = events.find(item => item.id === event.id && item.verification?.decision === 'uncertain');
+    const issue = feedback.find(item => item.id === event.id) || previous?.boundaryFeedback;
+    return issue?.id === event.id ? { ...event, boundaryFeedback: issue } : event;
+  });
 }
 
 /** A failed final P may reopen its own boundary for new independent evidence, never grant approval. */
 export function activityBoundaryFeedback(row: any, proof: any, registered: any, ids: string[]): any[] {
   assertPendingBoundaryRetry(row, registered);
+  const operator = row.activityOperatorReview?.version === 1 && String(row.activityOperatorReview.note || '').trim()
+    && Number.isFinite(Date.parse(row.activityOperatorReview.requestedAt));
   if (!registered || registered.automaticPublicationAuthorization || registered.uploadState?.bvid || registered.uploadState?.aid
-    || row.activityAutomaticPublicationRequired !== true || row.activityReview?.authority !== 'automatic'
+    || !operator && row.activityAutomaticPublicationRequired !== true || row.activityReview?.authority !== 'automatic'
     || row.activityReview?.status !== 'pending' || row.activityReview?.checks?.boundaries !== false
     || proof?.status !== 'needs_review' || proof.evidenceVersion !== 3
     || JSON.stringify(proof.checks) !== JSON.stringify(row.activityReview.checks)

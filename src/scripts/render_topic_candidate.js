@@ -118,7 +118,7 @@ async function renderCandidate(metadataPath, options, rootConfig = configLoader.
                     const xml = metadata.source.xmlPath || metadata.source.srtPath.replace(/(?:\.speaker)?\.srt$/iu, '.xml');
                     const danmaku = fs.existsSync(xml) ? await topic.parseDanmakuXml(xml) : [];
                     return prepareTopicGroup(group, input, config, rootConfig, source, diagnostics,
-                        { danmaku, boundaryRepair: false, retainedContext });
+                        { danmaku, boundaryRepair: false, retainedContext, requestedWindow: metadata.candidateWindowRepair });
                 }, selections: (plan, group) => preflightSelections(plan, group, config), writeRevision,
                 save: item => writeJsonAtomic(metadataPath, item), now: () => new Date().toISOString()
             });
@@ -179,6 +179,15 @@ function updateCandidate(metadataPath, options, rootConfig = configLoader.getCon
         }
         const evidence = buildPreflightEvidence(topic.parseTopicSrt(metadata.source.srtPath).segments);
         ensureCandidateDraft(metadata, metadataPath, evidence, topic.getClipTopicsConfig(rootConfig));
+        if (options.action === 'prepare') {
+            require('./workflow-runtime').loadWorkflow('clipping/topicRecovery').prepareCandidateWindow(
+                metadata, metadataPath, options, topic.getClipTopicsConfig(rootConfig), {
+                    evidence: () => evidence,
+                    ensureDraft: item => ensureCandidateDraft(item, metadataPath, evidence, topic.getClipTopicsConfig(rootConfig)),
+                    corrected: (item, input) => candidateDraftEvidence(item, input).evidence,
+                    writeRevision, now: () => new Date().toISOString()
+                });
+        }
         if (options.action === 'correct') correctCandidateDraft(metadata, metadataPath, evidence, options);
         for (const field of ['title', 'description', 'coverText']) {
             if (options[field] !== undefined) {
@@ -282,7 +291,7 @@ if (require.main === module) {
     Promise.resolve().then(() => {
         if (options.action === 'preview') return previewCandidate(path.resolve(options.metadata), options);
         if (options.action && options.action !== 'render') {
-            if (!['draft', 'correct', 'approve'].includes(options.action)) throw new Error('Unknown candidate action');
+            if (!['draft', 'correct', 'approve', 'prepare'].includes(options.action)) throw new Error('Unknown candidate action');
             return updateCandidate(options.metadata, options);
         }
         return renderCandidate(options.metadata, options);

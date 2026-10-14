@@ -15,7 +15,7 @@ async function forwardAdmin(request: NextRequest): Promise<Response> {
     return NextResponse.json({ error: '仅允许本机管理页面访问' }, { status: 403 });
   }
   const endpoint = url.pathname.slice('/api/admin'.length);
-  const allowed = /^\/(health|workflows\/actions|questions\/(rooms|ask|search)|configs(?:\/(production|default|live-vote|secrets|generation-modes))?|clips(?:\/[1-9]\d{0,8}(?:\/actions|\/assets\/(media|preview|cover|subtitles|preview-subtitles|media-subtitles))?)?|manual\/(actions|mcq-\d+(?:\/assets\/(media|cover))?)|jobs|queues(?:\/actions)?|reminders|delayed-tasks(?:\/[a-zA-Z0-9-]+)?)$/u;
+  const allowed = /^\/(health|title-stats|workflows\/actions|questions\/(rooms|ask|search)|configs(?:\/(production|default|live-vote|secrets|generation-modes))?|clips(?:\/[1-9]\d{0,8}(?:\/titles(?:\/(generate|selection|exposure))?|\/actions|\/feedback|\/cover-preview|\/source-playback|\/assets\/(media|preview|cover|subtitles|preview-subtitles|media-subtitles|source-preview))?)?|manual\/(actions|mcq-\d+(?:\/assets\/(media|cover))?)|jobs|queues(?:\/actions)?|reminders|delayed-tasks(?:\/[a-zA-Z0-9-]+)?)$/u;
   if (!allowed.test(endpoint)) return NextResponse.json({ error: '管理接口不存在' }, { status: 404 });
   let body: string | undefined;
   if (!['GET', 'HEAD'].includes(request.method)) {
@@ -34,7 +34,7 @@ async function forwardAdmin(request: NextRequest): Promise<Response> {
       headers.Authorization = `Bearer ${fs.readFileSync(tokenFile, 'utf8').trim()}`;
     }
     const range = request.headers.get('range'); if (range) headers.Range = range;
-    const controller = new AbortController(), timer = setTimeout(() => controller.abort(), endpoint.startsWith('/questions/') ? 100_000 : 30_000);
+    const controller = new AbortController(), timer = setTimeout(() => controller.abort(), endpoint.startsWith('/questions/') || endpoint.endsWith('/source-playback') || endpoint.endsWith('/cover-preview') ? 100_000 : 30_000);
     let upstream: Response;
     try {
       upstream = await fetch(new URL(target + url.search, base), { method: request.method, cache: 'no-store',

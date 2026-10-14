@@ -14,8 +14,26 @@ describe('clip-local video resolution', () => {
     fs.writeFileSync(media, 'source');
   });
   afterEach(() => {
+    jest.useRealTimers();
     jest.restoreAllMocks();
     fs.rmSync(directory, { recursive: true, force: true });
+  });
+
+  test('allows a slow local decode to finish while still using its verified frame dimensions', async () => {
+    jest.useFakeTimers();
+    jest.spyOn(fs.promises, 'stat').mockResolvedValue({ dev: 1, ino: 1, size: 6, mtimeMs: 1, ctimeMs: 1 } as any);
+    jest.spyOn(childProcess, 'execFile').mockImplementation((...args: any[]) => {
+      const callback = args.at(-1);
+      const decoded = setTimeout(() => {
+        clearTimeout(deadline);
+        callback(null, JSON.stringify({ frames: [{ best_effort_timestamp_time: '100', width: 1280, height: 720 }] }));
+      }, 12000);
+      const deadline = setTimeout(() => { clearTimeout(decoded); callback(new Error('probe timed out')); }, args[2].timeout);
+      return {} as any;
+    });
+    const checked = expect(getVideoResolution(media, 'ffprobe', 100)).resolves.toEqual({ width: 1280, height: 720 });
+    await jest.advanceTimersByTimeAsync(12000);
+    await checked;
   });
 
   test('uses decoded frames at the clip start, not the portrait header or an earlier keyframe', async () => {

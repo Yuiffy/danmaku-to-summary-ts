@@ -38,6 +38,19 @@ deploying the emitted files and restarting/reloading that process. Source-execut
 JS/Python edits take effect on the next child invocation, so their CLI and module
 exports must remain compatible even while the old service is running.
 
+The upload runner is an exception to per-job child loading: its Python
+`clip_upload_registry.py worker --loop` process retains imported quality gates
+across jobs. After deploying changes to those Python modules, check that no job
+is running and restart `clip-upload-queue-runner` before enqueueing affected
+clips. Activating a workflow release or restarting the admin API does not refresh
+these imports. A queue receipt confirms admission only; inspect the worker
+failure and submission receipt when diagnosing a failed upload.
+
+The batch uploader pins the SDK's official BDA2 line, matching its preupload
+availability probe. This avoids the SDK's automatic speed test selecting an
+unhealthy alternate CDN. TLS verification stays enabled, and failures still
+pass through the existing durable submission-intent reconciliation before retry.
+
 The Next.js task API forwards to `WEBHOOK_BASE_URL` (default
 `http://127.0.0.1:12523`). It must never initialize its own scheduler or modify
 production task files. The authoritative endpoints are
@@ -79,6 +92,13 @@ Dependencies point from entrypoints to services to shared infrastructure. Leaf
 components must not import their parent. Existing script paths remain facades;
 internal helpers are not exported unless their callers need them.
 
+`services/webhook/FileMerger` owns merged recording XML. Its embedded browser
+preview keeps JavaScript in CDATA so the complete output is well-formed XML.
+Comment text and user attributes are decoded once on read and escaped once on
+write, including when merging a merged file again. Entry parsing tolerates old
+malformed preview markup; relative times still use segment durations plus the
+existing gap policy, and the remaining `p` fields retain their values.
+
 Clip previews and cutting share `clipping/media_runtime.js` for FFmpeg execution
 and packet probing. `clipping/own_review_state.js` persists review artifacts using
 an injected Markdown renderer; `own_review_artifacts.js` owns refresh orchestration.
@@ -91,6 +111,19 @@ paths forward to `media_runtime.js` and `rendered_revision_evidence.js`.
 `clip_upload_cli.py` forwards parser construction to the registry's current
 factory so both entrypoints expose the same commands and arguments.
 
+Viewing black-transition cuts use `workflows/clipping/watchBlackPolicy.ts` for
+normalized movie-region validation, bounded scan windows and joint continuous
+part selection. `watchBlackRuntime.ts` owns source-bound scan evidence/cache and
+accepts the existing `media_runtime.js` FFmpeg adapter; it does not import source
+CLIs, infer upload authority or write queues. The activity CLI's `watch-splits`
+command is a local evidence preview. See [stream activity clips](stream-activity-clips.md)
+for region review, timing/threshold contracts and optional integration.
+Movie transitions only refine the existing editorial part plan. Viewing targets
+and maxima are finite positive seconds chosen for the work's review needs;
+alignment preserves the planned part count and length pattern, including short
+or long parts, and obeys that plan's configured maximum rather than a fixed
+twenty-five-minute target or thirty-minute cap.
+
 The Next workspace proxies `/api/admin` to the loopback operator service (15127),
 using a server-only token; delayed tasks still forward to their webhook owner.
 `core/admin` contains serializable contracts. Reminder operator edits append to
@@ -99,6 +132,29 @@ remains the sole reminder state writer and preserves send receipts. Private
 workspace evidence queries reuse the question-lab gate and bounded corpus with
 no send/publication adapters. See [web-admin.md](web-admin.md) for configuration
 revisions, media roots, command authorization and startup/validation contracts.
+
+Viewing public aliases are pure policy in `workflows/clipping/watchPublicNames`;
+the presentation facade binds each alias to the evidenced internal identity and
+uses it consistently across public copy, Ps and covers. Python upload review
+rechecks those bindings and host/column-only tags. Collection title edits use the
+full section query when the episode is absent from the four-item season preview.
+
+Optional title alternatives use `core/admin/titles` for shared contracts,
+`AdminTitlePolicy` for evidence-bound prompts/validation, and `AdminTitles` for
+admin-only drafts and selection history. Generation never changes the current
+default. Existing CLI-backed review commands apply explicit selections; durable
+job `titleChoice` snapshots measure submitted intent separately from selection
+and task outcome. No direct clip metadata/queue writes or automatic default
+strategy promotion are allowed. See the title statistics contract in `web-admin.md`.
+
+Cover editing uses `core/admin/cover` for normalized video-relative selections,
+`services/admin/AdminCoverPreview` for disposable previews, and the registry's
+`cover` command (`scripts/clip_cover_editor.py`) for locked artifact changes.
+`cover_selection.py` validates time/crop, extracts and crops the frame before the
+existing cover generator adds text. `coverSelection` binds the saved choice to a
+part and media identity; ordinary review/copy repair reuses it only on that same
+video. Saves invalidate prior approval and never enqueue publication. Preview and
+save share the actual renderer, and Web adapters accept registered IDs only.
 
 `audio_archive_pruning.js` owns archive video traversal and protects exact source
 recordings named in clip replay receipts; naming predicates are injected by the
@@ -145,6 +201,18 @@ this one release. `DANMAKU_WORKFLOW_RELEASE` explicitly selects a release direct
 for isolated runs. The bridge verifies the manifest and every file digest before
 loading modules. It does not import TypeScript or ts-node. Keep prior release
 directories for rollback; restore the previous pointer to roll back activation.
+
+When a source-executed CLI adds a `loadWorkflow` entry, register that entry in the
+release builder and its isolated test fixture. Validate and activate the complete
+release before running the updated CLI in production; an older active manifest
+cannot load the newly added entry. Use an explicit release directory for isolated
+validation rather than assuming the latest candidate is active.
+
+`buildSubtitleEvidence().sourceSha256` retains its v1 source serialization when
+public speaker policy changes. Its historical row label is a digest input only;
+cue speakers and public copy still require independently verified identity. A
+policy update must not masquerade as a changed recording or invalidate unchanged
+source/subtitle revisions.
 
 Both `node src/scripts/ai_text_generator.js --check-runtime` and
 `node src/scripts/enhanced_auto_summary.js --check-runtime` validate/load the

@@ -27,7 +27,7 @@ test.each([false, true])('real orchestration renders while another actor request
     try {
         fs.writeFileSync(mediaPath, 'source');
         asr.writeSrt({ backend: 'fixture', segments: Array.from({ length: 8 }, (_, i) => ({ start: i * 100, end: i * 100 + 30,
-            text: 'Host recalled a complete story.', speakerEvidence: { version: 1, status: 'row_supported', label: 'Host',
+            text: 'Host recalled a complete story.', speakerEvidence: { version: 1, status: 'row_supported', identityVerified: true, label: 'Host',
                 observations: [{ start: i * 100, end: i * 100 + 30, label: 'Host', scope: 'row', row: { accepted: true, score: .8, margin: .2 } }] } })) }, srtPath, { write_evidence: true });
         fs.writeFileSync(planPath, JSON.stringify({ clips: Array.from({ length: 8 }, (_, i) => ({ start: i * 100, end: i * 100 + 30,
             title: 'Host recalled a complete story', description: 'Host recalled a complete story.', coverText: 'Complete\nStory',

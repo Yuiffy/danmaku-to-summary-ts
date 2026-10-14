@@ -2,7 +2,7 @@ export {};
 const { buildSubtitleEvidence } = require('./subtitle_evidence');
 const { buildActorReviewPacket, validateActorReview, applyActorReview } = require('./actor_review');
 const evidence = buildSubtitleEvidence([{ start: 0, end: 10, text: 'Host told a story.',
-    speakerEvidence: { status: 'row_supported', label: 'Host', observations: [] } }]);
+    speakerEvidence: { status: 'row_supported', identityVerified: true, label: 'Host', observations: [] } }]);
 const context = { people: [{ id: 'host', label: 'Host', preferredName: 'Host', names: ['Host'], sourceHost: true }] };
 const packet = buildActorReviewPacket({ start: 0, end: 10, title: 'Host讲故事', grounding: { sourceKind: 'live_speech' } },
     'c1', evidence, [{ time: 5, text: '太有趣了' }, { time: 20, text: '片外弹幕' }], context);

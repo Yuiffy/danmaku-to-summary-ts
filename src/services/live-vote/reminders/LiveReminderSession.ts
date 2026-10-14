@@ -124,10 +124,11 @@ export class LiveReminderSession {
     }
     if (this.pending || !this.eligible(now)) return;
     const day = shanghaiDay(now);
-    const item = this.state.items.find(candidate => candidate.enabled &&
-      !this.state.receipts.some(receipt => receipt.day === day && receipt.id === candidate.id));
-    if (!item) return;
     const session = this.room!.startedAt;
+    const item = this.state.items.find(candidate => candidate.enabled &&
+      !this.state.receipts.some(receipt => receipt.id === candidate.id &&
+        (receipt.day === day || receipt.at >= session)));
+    if (!item) return;
     const generation = this.generation;
     const text = item.templates[Math.floor(now / 86400000) % item.templates.length];
     const isCurrent = () => !this.stopped && generation === this.generation && item.enabled &&

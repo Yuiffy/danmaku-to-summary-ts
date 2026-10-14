@@ -11,6 +11,10 @@ export function subtitleRepairEligible(artifact: Artifact): boolean {
     const visualTranscriptionOnly = review?.checks?.visuals === false && details.length > 0
         && details.every((issue: string) => /字幕|原词|错识|识别/u.test(issue) && /[“「"][^”」"]+[”」"]/u.test(issue)
             && !/封面|遮挡|遮住|排版|出界|裁掉|重叠|错位|不同步|模糊|看不清/u.test(issue));
+    const contentDetails = details.filter((issue: string) => issue !== 'final_content_not_passed');
+    const contentTranscriptionOnly = review?.checks?.content === false && !!artifact.renderedSubtitles && contentDetails.length > 0
+        && contentDetails.every((issue: string) => /字幕|原词|错识|识别/u.test(issue) && /[“「"][^”」"]+[”」"]/u.test(issue)
+            && !/边界|结尾|起因|上下文|不完整|中断|断句|缺失|无关|删减/u.test(issue));
     return artifact.mode === 'own_stream_fun_review' && artifact.uploadReady === true && !artifact.editPlan
         && !artifact.creativePlan?.timeline && !artifact.selectionRejection && !artifact.rebuildRequired && !artifact.preRenderHold
         && !artifact.ownStreamHumanReview && !artifact.humanReview && !artifact.sourceExpansionRequest
@@ -20,7 +24,8 @@ export function subtitleRepairEligible(artifact: Artifact): boolean {
         && artifact.output.burnedSubtitles === true && !artifact.output.mediaError && !artifact.output.coverError
         && !artifact.subtitleProofreading?.reviewGroups?.length && review?.status === 'needs_review'
         && review.technical?.passed === true && review.checks?.subtitles === false
-        && ['content', 'attribution', 'policy'].every(key => review.checks[key] === true)
+        && (review.checks.content === true || contentTranscriptionOnly)
+        && ['attribution', 'policy'].every(key => review.checks[key] === true)
         && (review.checks.visuals === true || visualTranscriptionOnly);
 }
 

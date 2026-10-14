@@ -69,7 +69,7 @@ describe('independent text speaker inference', () => {
   });
   test('conflicting direct acoustic evidence is kept for review rather than silently overwritten', () => {
     const rows = source.cues.flatMap((cue: any) => cue.items.map((item: any) => ({ ...item,
-      speakerEvidence: { status: 'row_supported', label: 'Host' } })));
+      speakerEvidence: { status: 'row_supported', identityVerified: true, label: 'Host' } })));
     const conflicting = buildSubtitleEvidence(rows, { groupSegments: false });
     const p = buildActorReviewPacket(clip, 'c1', conflicting, [], context);
     p.dialogueEvidence = parse(answer(), p);
@@ -80,7 +80,7 @@ describe('independent text speaker inference', () => {
   });
   test('a separate identity anchor cannot conceal a voice conflict on the action turn', () => {
     const rows = source.cues.flatMap((cue: any) => cue.items.map((item: any) => ({ ...item,
-      speakerEvidence: { status: 'row_supported', label: cue.id === 'G3' ? 'Host' : 'Guest' } })));
+      speakerEvidence: { status: 'row_supported', identityVerified: true, label: cue.id === 'G3' ? 'Host' : 'Guest' } })));
     const p = buildActorReviewPacket(clip, 'c1', buildSubtitleEvidence(rows, { groupSegments: false }), [], context);
     const value = answer(); value.windows[0].turns[0].cueIds = ['G1', 'G3'];
     p.dialogueEvidence = parse(value, p);

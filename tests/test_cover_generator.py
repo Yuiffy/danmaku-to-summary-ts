@@ -288,6 +288,30 @@ class CoverGeneratorTests(unittest.TestCase):
             CoverGenerator._score_frame(flat),
         )
 
+    def test_frame_selection_prefers_visible_content_over_a_white_player_with_dark_chrome(self):
+        blank = Image.new("RGB", (320, 180), (30, 35, 50))
+        detailed = blank.copy()
+        ImageDraw.Draw(blank).rectangle((70, 20, 307, 158), fill="white")
+        draw = ImageDraw.Draw(detailed)
+        for y in range(20, 159, 12):
+            for x in range(70, 308, 12):
+                draw.rectangle((x, y, min(307, x + 11), min(158, y + 11)),
+                               fill=(135, 105, 78) if (x // 12 + y // 12) % 2 else (95, 120, 145))
+        self.assertGreater(CoverGenerator._score_frame(detailed), CoverGenerator._score_frame(blank))
+        generator = CoverGenerator()
+        with tempfile.TemporaryDirectory() as directory:
+            def extract(_video, timestamp, output):
+                self.assertGreaterEqual(timestamp, 100)
+                self.assertLess(timestamp, 130)
+                (detailed if 110 < timestamp < 120 else blank).save(output)
+
+            with patch.object(generator, "extract_frame", side_effect=extract):
+                output, timestamp = generator.select_best_frame("input.mp4", clip_start=100,
+                    clip_duration=30, sample_count=3, output_path=str(Path(directory) / "selected.jpg"))
+            self.assertGreater(timestamp, 110)
+            self.assertLess(timestamp, 120)
+            self.assertTrue(Path(output).is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,9 +13,44 @@ import { LiveReminderSession } from '../live-vote/reminders/LiveReminderSession'
 import { initialReminderState } from '../live-vote/reminders/ReminderPolicy';
 import { AdminQueries } from '../live-vote/question-lab/AdminQueries';
 import { LabGate } from '../live-vote/question-lab/LabGate';
+import { AdminSourceMedia } from './AdminSourceMedia';
+import { AdminCoverPreview } from './AdminCoverPreview';
 
 const token = 'a'.repeat(64), headers = { Authorization: `Bearer ${token}` };
 const roots: string[] = [];
+it('previews registered frames and dispatches cover edits without publication, including whole-package covers', async () => {
+  const f = fixture(), selection = { time: 1.25, part: 1, text: '新的封面文字', crop: { x: .1, y: .2, width: .8, height: .6 } };
+  const render = jest.fn(async (_exe: string, args: string[]) => { fs.writeFileSync(args[args.indexOf('--output') + 1], 'jpeg'); });
+  const app = createAdminServer({ configs: f.configs, clips: f.clips, jobs: f.jobs, covers: new AdminCoverPreview(f.root, 'python', render) }, token);
+  const detail = f.clips.detail('1');
+  await request(app).post('/clips/1/cover-preview').set(headers).send({ revision: 'old', selection }).expect(409);
+  await request(app).post('/clips/1/cover-preview').set(headers).send({ revision: detail.revision, selection: { ...selection, crop: { x: .5, y: 0, width: 1, height: 1 } } }).expect(400);
+  expect(render).not.toHaveBeenCalled();
+  const preview = await request(app).post('/clips/1/cover-preview').set(headers).send({ revision: detail.revision, selection }).expect(200);
+  expect(preview.headers['content-type']).toContain('image/jpeg');
+  expect(render.mock.calls[0][1]).toContain(path.join(f.assets, 'video.mp4'));
+  await request(app).post('/clips/1/actions').set(headers).send({ action: 'cover', note: '确认封面', selection, revision: detail.revision }).expect(202);
+  await f.jobs.flush();
+  expect(f.run.mock.calls[0][0].args).toEqual(['src/scripts/clip_upload_registry.py', 'cover', '--id', '1', '--selection', JSON.stringify(selection), '--note', '确认封面']);
+  expect(f.run.mock.calls[0][0].args).not.toContain('--enqueue');
+  const metadataPath = path.join(f.assets, 'video.json');
+  atomicJson(metadataPath, { type: 'stream_activity_submission', output: { parts: [{ mediaPath: path.join(f.assets, 'video.mp4'), title: 'P1' }] } });
+  await request(app).post('/clips/1/actions').set(headers).send({ action: 'cover', note: '确认整包封面', selection, revision: f.clips.detail('1').revision }).expect(202);
+  await f.jobs.flush(); expect(f.run.mock.calls[1][0].action).toBe('cover');
+});
+it('rejects stale queued cover jobs and previews that finish after the media changes', async () => {
+  const f = fixture(), selection = { time: 0, part: 1, text: '封面' }, revision = f.clips.detail('1').revision;
+  const covers = new AdminCoverPreview(f.root, 'python', async (_exe, args) => {
+    fs.writeFileSync(args[args.indexOf('--output') + 1], 'jpeg'); fs.appendFileSync(f.srt, '外部修改');
+  });
+  const app = createAdminServer({ configs: f.configs, clips: f.clips, jobs: f.jobs, covers }, token);
+  await request(app).post('/clips/1/cover-preview').set(headers).send({ selection, revision }).expect(409);
+  await request(app).post('/clips/1/actions').set(headers).send({ action: 'cover', note: '确认', selection, revision }).expect(409);
+  const registryPath = path.join(f.root, 'data/runtime/clip_upload_registry.json'), registry = readJson(registryPath);
+  registry.clips['1'].status = 'queued'; atomicJson(registryPath, registry);
+  await request(app).post('/clips/1/actions').set(headers).send({ action: 'cover', note: '确认', selection, revision: f.clips.detail('1').revision }).expect(409);
+  expect(f.run).not.toHaveBeenCalled();
+});
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'admin-workspace-')); roots.push(root);
   const assets = path.join(root, 'recordings'), statePath = path.join(root, 'reminders.json'); fs.mkdirSync(assets);
@@ -180,4 +215,76 @@ it('validates workflow source paths and uses the same registered source for acti
   await f.jobs.flush();
   expect(f.run.mock.calls[1][0]).toMatchObject({ reviewOnly: true, target: '1', args: expect.arrayContaining([media, '--retry-boundaries', '--kind', 'songs', '--revise-verifier']) });
   expect(f.run.mock.calls[1][0].args).not.toContain(outside);
+});
+
+it('shows untitled candidate evidence and seeks registered originals without preparing subtitles or mutating review state', async () => {
+  const f = fixture(), registryFile = path.join(f.root, 'data/runtime/clip_upload_registry.json');
+  const metadataFile = path.join(f.assets, 'video.json'), source = path.join(f.assets, 'video.mp4');
+  fs.writeFileSync(f.srt, '8\n00:45:41,000 --> 00:45:44,000\n这段原话讲电脑\n\n9\n00:45:44,000 --> 00:45:46,000\n接着谈价格\n\n10\n00:50:00,000 --> 00:50:02,000\n范围外\n');
+  atomicJson(metadataFile, { source: { mediaPath: source, srtPath: f.srt }, window: { start: 2742.139, end: 2746 },
+    reviewPresentation: { title: '电脑价格的话题' }, copy: { title: '待复核候选 2' } });
+  const registry = readJson(registryFile);
+  Object.assign(registry.clips['1'], { title: '待复核候选 2', publicCopyPending: true, start: '00:45:42', duration: '00:00:04', srtPath: '', mediaPath: '' });
+  atomicJson(registryFile, registry);
+  const before = fs.readFileSync(registryFile, 'utf8'), metaBefore = fs.readFileSync(metadataFile, 'utf8');
+  const run = jest.fn(), sourceMedia = new AdminSourceMedia(path.join(f.root, 'cache'), () => 'ffmpeg', run);
+  const app = createAdminServer({ configs: f.configs, clips: f.clips, jobs: f.jobs, sourceMedia }, token);
+  const list = (await request(app).get('/clips').set(headers).expect(200)).body;
+  expect(list.clips[0]).toMatchObject({ title: '待复核候选 2', reviewTitle: '电脑价格的话题', subtitleExcerpt: '这段原话讲电脑 接着谈价格' });
+  const detail = (await request(app).get('/clips/1').set(headers).expect(200)).body;
+  expect(detail.title).toBe('待复核候选 2'); expect(detail.source.start).toBe(2742.139);
+  expect(detail.source.subtitles).toContain('00:45:41,000'); expect(detail.source.subtitles).not.toContain('范围外');
+  expect(detail.media).toBe(false); expect(detail.preview).toBe(false);
+  const playback = (await request(app).get('/clips/1/source-playback').set(headers).expect(200)).body;
+  expect(playback).toEqual({ start: 2742.139, end: 2746, origin: 0 });
+  await request(app).get('/clips/1/assets/source-preview').set(headers).set('Range', 'bytes=2-5').expect(206);
+  expect(fs.readFileSync(registryFile, 'utf8')).toBe(before); expect(fs.readFileSync(metadataFile, 'utf8')).toBe(metaBefore);
+  expect(f.run).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled();
+  fs.appendFileSync(f.srt, '\n11\n00:45:45,000 --> 00:45:46,000\n新增原片字幕\n');
+  expect(f.clips.detail('1').revision).not.toBe(detail.revision);
+  const outside = path.join(f.root, 'outside.mp4'); fs.writeFileSync(outside, 'outside');
+  atomicJson(metadataFile, { source: { mediaPath: outside }, window: { start: 1, end: 2 } });
+  await request(app).get('/clips/1/source-playback').set(headers).expect(403);
+});
+
+it('reads one registry snapshot per page while retaining visible candidate evidence and filters', async () => {
+  const f = fixture(), metadata = path.join(f.assets, 'video.json');
+  atomicJson(metadata, { candidateSubtitles: { path: f.srt }, reviewPresentation: { title: '审核看点' } });
+  const clips = Object.fromEntries(Array.from({ length: 85 }, (_, index) => {
+    const id = index + 1;
+    return [String(id), { id, title: '待复核候选 2', publicCopyPending: true, metadataPath: metadata,
+      roomId: id === 85 ? '200' : '100', status: id === 84 ? 'uploaded' : 'needs_review' }];
+  }));
+  const records = jest.spyOn(f.clips, 'records').mockReturnValue(clips);
+  const metadataRead = jest.spyOn(f.clips, 'metadata');
+  const list = (await request(f.app).get('/clips').query({ status: 'needs_review', room: '100', page: 2 }).set(headers).expect(200)).body;
+  expect(records).toHaveBeenCalledTimes(1);
+  expect(metadataRead).toHaveBeenCalledTimes(40);
+  expect(list).toMatchObject({ total: 83, page: 2, counts: { needs_review: 84, uploaded: 1 }, rooms: ['100', '200'] });
+  expect(list.clips.map((clip: any) => clip.id)).toEqual(Array.from({ length: 40 }, (_, index) => 43 - index));
+  expect(list.clips.every((clip: any) => clip.reviewTitle === '审核看点' && clip.subtitleExcerpt === '原字幕')).toBe(true);
+});
+
+it('returns review details while source playback is still loading in its independent request', async () => {
+  const f = fixture(), source = path.join(f.assets, 'source.flv');
+  fs.writeFileSync(source, 'source');
+  atomicJson(path.join(f.assets, 'video.json'), { source: { mediaPath: source, srtPath: f.srt },
+    window: { start: 0, end: 2 }, output: { mediaPath: path.join(f.assets, 'video.mp4'), srtPath: f.srt } });
+  const sourceMedia = new AdminSourceMedia(path.join(f.root, 'cache'), () => 'ffmpeg');
+  let started!: () => void, finish!: () => void;
+  const loading = new Promise<void>(resolve => { started = resolve; });
+  jest.spyOn(sourceMedia, 'prepare').mockImplementation(async () => {
+    started();
+    await new Promise<void>(resolve => { finish = resolve; });
+    return { file: source, start: 0, end: 2, origin: 0, direct: false };
+  });
+  const app = createAdminServer({ configs: f.configs, clips: f.clips, jobs: f.jobs, sourceMedia }, token);
+  const playback = request(app).get('/clips/1/source-playback').set(headers).timeout(2000).expect(200).then(response => response.body);
+  try {
+    await loading;
+    const detail = (await request(app).get('/clips/1').set(headers).timeout(1000).expect(200)).body;
+    expect(detail).toMatchObject({ title: '测试片', media: true, source: { available: true } });
+    expect(detail.subtitles).toContain('原字幕');
+    expect(f.run).not.toHaveBeenCalled();
+  } finally { finish(); await playback; }
 });

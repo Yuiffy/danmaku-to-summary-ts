@@ -192,7 +192,9 @@ test('native Gemini transport preserves multiple audio attachments and their aud
             { provider: 'tuZi', apiMode: 'gemini_native', model: 'gemini-3-flash-preview', timeoutMs: 1000 });
         const body = JSON.parse(fetch.mock.calls.at(-1)[1].body);
         expect(fetch.mock.calls.at(-1)[0]).toBe('https://example.com/v1beta/models/gemini-3-flash-preview:generateContent');
-        expect(body.contents[0].parts.slice(1).map(p => Buffer.from(p.inlineData.data, 'base64').toString())).toEqual(['first-audio', 'second-audio']);
+        expect(body.contents[0].parts.filter(p => p.inlineData).map(p => Buffer.from(p.inlineData.data, 'base64').toString())).toEqual(['first-audio', 'second-audio']);
+        expect(body.contents[0].parts[1].text).toContain('audioIndex=1');
+        expect(body.contents[0].parts[3].text).toContain('audioIndex=2');
         expect(result.meta).toMatchObject({ apiMode: 'gemini_native', attempts: [{ inputAudioTokens: 160 }] });
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

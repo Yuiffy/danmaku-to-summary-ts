@@ -1,3 +1,4 @@
+import { identifySongFromCatalog, validateCatalogTitle } from './songIdentity';
 type Data = Record<string, any>;
 const norm = (s: any) => String(s || '').replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
 
@@ -15,7 +16,19 @@ export function bindTranscriptTitles(items: Data[], events: Data[], rows: Data[]
   if (!Array.isArray(items) || !items.length || new Set(items.map(i => i.activityId)).size !== items.length) throw new Error('Title evidence must bind distinct source activities');
   return { version: 1, items: items.map(item => {
     const event = events.find(e => e.id === item.activityId);
-    const selected = item.segmentIndices?.map((i: number) => rows[i-1]);
+    if (item.method === 'catalog_lyric_match') {
+      if (!event || !Array.isArray(item.segments) || !item.segments.length) throw new Error('Invalid catalog title evidence');
+      // A boundary edit may discard old citations. Check their original content before
+      // rematching the same catalog work using only the newly retained performance.
+      const previousSpan = { ...event, start: Math.min(event.start, ...item.segments.map((r: Data) => r.start)),
+        end: Math.max(event.end, ...item.segments.map((r: Data) => r.end)) };
+      validateCatalogTitle(item, previousSpan as any, rows as any, transcript as any);
+      const refreshed = identifySongFromCatalog(event as any, rows as any, [item.catalog], transcript as any);
+      if (refreshed.status !== 'identified' || refreshed.item.name !== item.name) throw new Error('Current performance no longer supports its catalog title');
+      validateCatalogTitle(refreshed.item, event as any, rows as any, transcript as any);
+      return refreshed.item;
+    }
+    const selected = (item.segmentIndices || item.segments?.map((row: Data) => row.index))?.map((i: number) => rows[i-1]);
     const alias = String(item.sourceAlias || item.name || '').trim();
     if (!event || !String(item.name || '').trim() || !String(item.note || '').trim() || norm(alias).length < 2
       || !Array.isArray(selected) || !selected.length || selected.some((r: Data) => !r || r.end < event.start - 300 || r.start > event.end + 60)

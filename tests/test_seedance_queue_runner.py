@@ -100,6 +100,7 @@ class SeedanceQueueRunnerTests(unittest.TestCase):
         cmd = calls[0][0]
         self.assertEqual(cmd[cmd.index("--model_version") + 1], "seedance2.0_vip")
         self.assertEqual(cmd[cmd.index("--video_resolution") + 1], "1080p")
+        self.assertEqual(cmd[cmd.index("--poll") + 1], "0")
 
     def test_submit_passes_seedance_25_duration_and_audio_reference(self):
         audio = self.root / "voice.mp3"
@@ -234,6 +235,35 @@ class SeedanceQueueRunnerTests(unittest.TestCase):
             store.save(data)
         self.assertEqual(store.load()["tasks"][0]["id"], "one")
         self.assertFalse(store.lock_path.exists())
+
+    def test_remote_failure_releases_slot_and_pauses_after_retry_limit(self):
+        failed = self.task("failed", status="submitted", fail_count=2, submit_ids=["remote-failed"], inflight=[{"submit_id": "remote-failed", "submitted_at": 100}])
+        self.write_queue([failed, self.task("next")])
+        store = store_module.QueueStore(self.queue_path)
+        with patch.object(runner, "query", return_value={"gen_status": "fail", "fail_reason": "generation failed: final generation failed"}):
+            runner.sync_due_attempts(store, dry_run=False)
+        data = store.load()
+        saved = data["tasks"][0]
+        self.assertEqual(saved["status"], "paused")
+        self.assertEqual(saved["completed"], 0)
+        self.assertEqual(saved["repeat"], 1)
+        self.assertEqual(saved["inflight"], [])
+        self.assertEqual(saved["submit_ids"], ["remote-failed"])
+        self.assertEqual(saved["fail_count"], 3)
+        self.assertIn("final generation failed", saved["paused_reason"])
+        selected = runner.select_submission_tasks(data, runner.RunnerOptions())
+        self.assertEqual([task["id"] for task in selected], ["next"])
+
+    def test_query_error_never_confirms_remote_failure_or_releases_slot(self):
+        self.write_queue([self.task("failed", status="submitted", submit_ids=["remote-failed"], inflight=[{"submit_id": "remote-failed", "next_query_at": 0}]), self.task("next")])
+        store = store_module.QueueStore(self.queue_path)
+        with patch.object(runner, "query", side_effect=RuntimeError("get_history_by_ids failed: ret=3018")):
+            runner.sync_due_attempts(store, dry_run=False)
+        data = store.load()
+        self.assertEqual(data["tasks"][0]["status"], "submitted")
+        self.assertEqual(len(data["tasks"][0]["inflight"]), 1)
+        self.assertNotIn("fail_count", data["tasks"][0])
+        self.assertEqual(runner.select_submission_tasks(data, runner.RunnerOptions()), [])
 
 
 if __name__ == "__main__":

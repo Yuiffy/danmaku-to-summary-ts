@@ -633,6 +633,8 @@ async def upload_one(clip, credential, prefix, tags, tid, source_desc, collectio
         )
         uploader = video_uploader.VideoUploader(
             pages=pages, meta=meta, credential=credential,
+            # Match the preupload probe; SDK auto-selection can choose an expired CDN certificate.
+            line=video_uploader.Lines.BDA2,
         )
         if before_submit:
             before_submit()

@@ -7,7 +7,7 @@ function voiceCitationGuide(packet) {
     for (const id of packet.cueIds) {
         const items = packet.evidence.byId.get(id)?.items || [];
         const label = items[0]?.speakerEvidence?.label;
-        if (!label || !items.length || !items.every(item => item.speakerEvidence?.status === 'row_supported'
+        if (!label || !items.length || !items.every(item => require('../workflow-runtime').loadWorkflow('clipping/speakerIdentity').publicSpeakerIdentity(item.speakerEvidence)
             && item.speakerEvidence.label === label)) continue;
         const person = packet.context?.people?.find(person => [person.label, ...(person.names || [])].includes(label));
         if (!person) continue;
