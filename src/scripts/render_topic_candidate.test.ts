@@ -98,6 +98,18 @@ describe('render held topic candidate by reserved ID', () => {
     expect(task.sourceMetadata.aiReview.applied).toBe(true);
   });
 
+  test('explicit feedback accepts the current draft while preserving advisory AI findings', () => {
+    metadata.aiReview.keyword.status = 'uncertain';
+    const task = prepareCandidate(metadata, metadata.output.metadataPath,
+      { ...options, feedbackAuthorized: 'yes', description: metadata.copy.description }, {});
+    expect(task.sourceMetadata.humanReview).toMatchObject({ authority: 'user', acceptanceMode: 'feedback', audioVisualReviewed: false });
+    expect(task.sourceMetadata.humanReview.originalIssues).toEqual(metadata.aiReview.quality.issues);
+    expect(task.sourceMetadata.humanReview.copyGrounding.issues.length).toBeGreaterThan(0);
+    expect(task.subtitleSegments[1].text).toBe('The price is clear.');
+    expect(() => prepareCandidate(metadata, metadata.output.metadataPath,
+      { ...options, feedbackAuthorized: 'yes', automaticReview: 'yes' }, {})).toThrow();
+  });
+
   test('checks an approved spoken date using the recording year without changing subtitles or copy', () => {
     const rows = [{ start: 0, end: 30, text: '不对不对二零年十二月的时候买的' }];
     parse.mockReturnValue({ segments: rows });
@@ -162,6 +174,23 @@ describe('render held topic candidate by reserved ID', () => {
     metadata.candidateId = 17;
     metadata.aiReview.subtitleEdits[0].original = 'absent';
     expect(() => prepareCandidate(metadata, metadata.output.metadataPath, options, {})).toThrow('stale');
+  });
+
+  test('recovers only the exact confirmed external correction into a new immutable revision', () => {
+    fs.writeFileSync(metadata.output.metadataPath, JSON.stringify(metadata));
+    const draft = updateCandidate(metadata.output.metadataPath, { candidateId: 17, action: 'inspect' }, {});
+    const bytes = fs.readFileSync(draft.candidateSrtPath, 'utf8');
+    fs.writeFileSync(draft.candidateSrtPath, bytes.replace(/price/g, 'cost'));
+    expect(() => updateCandidate(metadata.output.metadataPath, { candidateId: 17, action: 'approve', reviewNote: 'Publish' }, {}))
+      .toThrow('outside the correction');
+    const edited = updateCandidate(metadata.output.metadataPath, { candidateId: 17, action: 'correct',
+      from: 'price', to: 'cost', reviewNote: 'User confirmed cost' }, {});
+    expect(edited.candidateRevision).toBe(1);
+    expect(edited.candidateSrtPath).not.toBe(draft.candidateSrtPath);
+    expect(edited.edits[0]).toMatchObject({ original: 'price', replacement: 'cost', authority: 'user' });
+    fs.appendFileSync(edited.candidateSrtPath, '\n999\n00:00:00,000 --> 00:00:01,000\nUnrelated\n');
+    expect(() => updateCandidate(metadata.output.metadataPath, { candidateId: 17, action: 'correct',
+      from: 'cost', to: 'value', reviewNote: 'Another correction' }, {})).toThrow('outside the correction');
   });
 
   test('user correction and upload approval resolve AI uncertainty without another ASR or planning call', () => {

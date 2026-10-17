@@ -215,7 +215,7 @@ function assertRenderPlan(plan, duration, rawSettings, assets = {}, allowEmpty =
 }
 
 /** Effects precede the normal subtitle burn. Audio keeps its full original timeline. */
-function buildCreativeFilter(plan, resolution, trimStart, trimEnd, subtitlePath, stickerPath, bindings = {}) {
+function buildCreativeFilter(plan, resolution, trimStart, trimEnd, subtitlePath, stickerPath, bindings = {}, videoOverlay = '') {
     const { width, height } = resolution;
     if (!Number.isInteger(width) || !Number.isInteger(height) || width < 2 || height < 2
         || !finite(trimStart, 0, 1e9) || !finite(trimEnd, trimStart, 1e9)) throw new Error('Invalid creative render dimensions/window');
@@ -282,7 +282,7 @@ function buildCreativeFilter(plan, resolution, trimStart, trimEnd, subtitlePath,
         }
     });
     const overlays = stickerPath ? `ass='${escapePath(stickerPath)}',` : '';
-    graph.push(`[${video}]${overlays}subtitles='${escapePath(subtitlePath)}'[vout]`);
+    graph.push(`[${video}]${videoOverlay}${overlays}subtitles='${escapePath(subtitlePath)}'[vout]`);
     const sounds = plan.effects.map((row, index) => ({ row, index })).filter(({ row }) => row.sound);
     sounds.forEach(({ row, index }, soundIndex) => {
         const asset = bindings[`${index}:sound`], sound = SOUNDS[soundId(row.sound)];

@@ -9,7 +9,8 @@ import { ACTIVITY_TITLE_EVIDENCE_ERROR, feedbackPrompt, FeedbackPlan, FeedbackPl
 /** One saved operator intent; all media/review/queue mutations remain with the existing CLIs. */
 export class AdminFeedback {
   constructor(private readonly clips: AdminClipStore, private readonly jobs: AdminJobs,
-    private readonly run: CommandRunner, private readonly plan: FeedbackPlanner, private readonly agent?: FeedbackAgentRunner) {}
+    private readonly run: CommandRunner, private readonly plan: FeedbackPlanner, private readonly agent?: FeedbackAgentRunner,
+    private readonly directFeedback = true) {}
 
   submit(id: string, body: any): AdminJob {
     if (body.publishApproved !== true) throw new AdminError('请明确授权修改完成后投稿');
@@ -38,13 +39,14 @@ export class AdminFeedback {
       const initial = this.clips.feedbackDetail(id);
       if (initial.category !== 'clip' && Object.keys(edits).length) throw new AdminError('完整包文案修改需要专用包装流程；意见已保存，未入队');
       const unchangedReview = !Object.keys(edits).length && isUnchangedReview(note);
-      const session = new AdminFeedbackSession(id, note, revision, edits, this.clips, this.run, output, update, () => this.assertEditable(id));
-      if (this.agent && !unchangedReview) {
+      const publishCurrent = this.directFeedback && /^(?:投|投稿)[。.!！]?$/u.test(note);
+      const session = new AdminFeedbackSession(id, note, revision, edits, this.clips, this.run, output, update, () => this.assertEditable(id), this.directFeedback);
+      if (this.agent && !unchangedReview && !publishCurrent) {
         await this.agent(session, initial, edits, (phase, detail) => { update({ phase }); output(`\n${phase}${detail ? `：${detail}` : ''}\n`); });
         return 0;
       }
       let plan: FeedbackPlan = {};
-      if (!unchangedReview) {
+      if (!unchangedReview && !publishCurrent) {
         update({ phase: '正在理解修改意见' });
         const raw = await this.plan(feedbackPrompt(initial, note, edits));
         validate(); // Also catch edits made while the model was planning.
@@ -56,12 +58,12 @@ export class AdminFeedback {
           const repaired = await this.plan(`${feedbackPrompt(initial, note, edits)}\n上一份名称计划未执行，原文引用校验失败：${error.message}。仅使用对应活动附近 titleContext 的真实 index 和逐字 sourceAlias；已有正确名称不用重改。上一份无效答复：${JSON.stringify(raw)}`);
           validate(); plan = parseFeedbackPlan(repaired, initial, note);
         }
-        const missing = missingFeedbackFields({ ...plan, ...edits }, initial);
+        const missing = missingFeedbackFields({ ...plan, ...edits }, initial, this.directFeedback);
         if (missing.length) {
           update({ phase: '正在补齐修改计划', plan: { ...plan } });
           const repaired = await this.plan(`${feedbackPrompt(initial, note, edits)}\n上一份计划缺少执行必需字段：${missing.join('；')}。回查已提供的完整上下文补齐，不借机更换用户看点。上一份计划：${JSON.stringify(plan)}`);
           validate(); plan = parseFeedbackPlan(repaired, initial, note);
-          if (missingFeedbackFields({ ...plan, ...edits }, initial).length) throw new AdminError('修改计划缺少来源类型、完整文案、有效引文或新的完整范围；意见已保存，未入队');
+          if (missingFeedbackFields({ ...plan, ...edits }, initial, this.directFeedback).length) throw new AdminError('修改计划缺少执行必需字段；意见已保存，未入队');
         }
       }
       Object.assign(plan, edits);

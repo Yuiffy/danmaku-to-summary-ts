@@ -2299,11 +2299,12 @@ def build_local_fallback_comic_script(highlight_content: str, room_id: Optional[
             continue
         if any(marker in line.lower() for marker in ["http://", "https://", "[error]", "traceback"]):
             continue
+        if re.match(r'^(?:【(?:摘要|参与者|归属说明|情感概览|情感说明|显著情感时刻|直播标题|标题)】|#{1,6}\s|[-=_]{3,}$)', line):
+            continue
         lines.append(line)
 
     if not lines:
-        compact = re.sub(r'\s+', ' ', cleaned).strip()
-        lines = [compact[i:i + 70] for i in range(0, min(len(compact), 280), 70) if compact[i:i + 70]]
+        return ""
 
     while len(lines) < 4:
         lines.append("以直播间收束气氛呈现，不添加无来源人物、台词或经历。")
@@ -2403,8 +2404,8 @@ def postprocess_generated_comic_script(
 
 
 def return_comic_script_failure(highlight_content: str, room_id: Optional[str], reason: str, attempts=None) -> Tuple[str, bool]:
-    if is_comic_script_fallback_allowed(room_id):
-        fallback_script = build_local_fallback_comic_script(highlight_content, room_id)
+    fallback_script = build_local_fallback_comic_script(highlight_content, room_id) if is_comic_script_fallback_allowed(room_id) else ""
+    if fallback_script:
         print(f"[WARNING]  AI漫画脚本生成失败（{reason}），使用本地兜底分镜继续生图")
         print(f"兜底脚本长度: {len(fallback_script)} 字符")
         print(f"兜底内容预览: {fallback_script[:200]}...")

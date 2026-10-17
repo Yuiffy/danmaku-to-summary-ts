@@ -103,6 +103,8 @@ def classify_target(clip: dict, config: dict) -> Optional[int]:
         source_desc=clip.get("source"),
         title=f"{clip.get('prefix', '')}{clip.get('title', '')}",
         prefix=clip.get("prefix"),
+        publication_kind=clip.get("publicationKind"),
+        media_path=clip.get("mediaPath") or clip.get("metadataPath") or clip.get("reviewPath"),
     )
 
 

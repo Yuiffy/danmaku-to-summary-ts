@@ -33,8 +33,11 @@ function prepareCandidate(metadata, metadataPath, options, rootConfig) {
     }
     const config = topic.getClipTopicsConfig(rootConfig);
     const draft = ensureCandidateDraft(metadata, metadataPath, evidence, config);
+    const feedback = options.feedbackAuthorized === 'yes';
+    if (feedback) approveCandidateDraft(metadata, evidence, options.reviewNote.trim());
     const approved = hasDraftApproval(metadata, evidence, options.expectedSha256);
     const automatic = options.automaticReview === 'yes';
+    if (feedback && automatic) throw new Error('Feedback acceptance and automatic review are distinct modes');
     if (automatic && (approved || draft.edits.length || metadata.humanReview
         || metadata.aiReview.status !== 'ready' || metadata.aiReview.quality?.issues?.length
         || metadata.aiReview.keyword?.status !== 'confirmed')) throw new Error('Automatic candidate review requires a fresh ready preflight without human subtitle edits');
@@ -44,7 +47,9 @@ function prepareCandidate(metadata, metadataPath, options, rootConfig) {
     }
     const remaining = (metadata.aiReview.quality?.issues || []).filter(issue => !/^unsupported_(quote|number):/.test(issue));
     if (remaining.length && !approved) throw new Error(`Preflight still blocked: ${remaining.join('; ')}`);
-    const grounding = metadata.editorial?.copyGrounding;
+    const grounding = metadata.editorial?.copyGrounding || (feedback ? {
+        sourceKind: 'live_speech', subtitleIds: evidence.cues.filter(cue => cue.end > window.start && cue.start < window.end).map(cue => cue.id), danmakuIds: []
+    } : undefined);
     if (!grounding) throw new Error('Candidate has no linked source evidence');
     const corrected = candidateDraftEvidence(metadata, evidence);
     const copy = { ...metadata.copy };
@@ -59,7 +64,7 @@ function prepareCandidate(metadata, metadataPath, options, rootConfig) {
         evidenceCueIds: grounding.subtitleIds, evidenceDanmakuIds: grounding.danmakuIds }, window,
     corrected.evidence, audience, { cueIds: new Set(grounding.subtitleIds), danmakuIds: new Set(grounding.danmakuIds),
         referenceYear: Number(String(metadata.recordedAt || '').match(/^(\d{4})-/u)?.[1]) });
-    if (reviewedGrounding.issues.length) throw new Error(`Public copy still needs review: ${reviewedGrounding.issues.join('; ')}`);
+    if (reviewedGrounding.issues.length && !feedback) throw new Error(`Public copy still needs review: ${reviewedGrounding.issues.join('; ')}`);
     const outputDir = path.dirname(metadataPath);
     const outputStem = path.basename(metadataPath, path.extname(metadataPath));
     const upload = { ...metadata.upload };
@@ -78,6 +83,7 @@ function prepareCandidate(metadata, metadataPath, options, rootConfig) {
         sourceMetadata: { ...metadata, candidateId: Number(options.candidateId), uploadId: Number(options.candidateId),
             ...(!automatic ? { humanReview: { reviewedAt: new Date().toISOString(), note: options.reviewNote.trim(),
                 authority: metadata.candidateRecovery?.status === 'ready' ? 'ai_replan' : 'user',
+                ...(feedback ? { authority: 'user', acceptanceMode: 'feedback', audioVisualReviewed: false } : {}),
                 sourceSha256: evidence.sourceSha256, originalCopy: metadata.copy, copy,
                 originalIssues: metadata.aiReview.quality?.issues || [],
                 copyGrounding: reviewedGrounding, appliedSubtitleEdits: metadata.aiReview.subtitleEdits || [],
@@ -103,7 +109,7 @@ async function renderCandidate(metadataPath, options, rootConfig = configLoader.
             }
             return metadata;
         }
-        if (!metadata.editorial?.copyGrounding || metadata.aiReview?.boundaryReview?.status === 'needs_review') {
+        if (options.feedbackAuthorized !== 'yes' && (!metadata.editorial?.copyGrounding || metadata.aiReview?.boundaryReview?.status === 'needs_review')) {
             const recovery = require('./workflow-runtime').loadWorkflow('clipping/topicRecovery');
             const { prepareTopicGroup, preflightSelections } = require('./clipping/preflight_runner');
             const config = topic.getClipTopicsConfig(rootConfig);
@@ -178,7 +184,7 @@ function updateCandidate(metadataPath, options, rootConfig = configLoader.getCon
             throw new Error('Candidate ID does not match metadata');
         }
         const evidence = buildPreflightEvidence(topic.parseTopicSrt(metadata.source.srtPath).segments);
-        ensureCandidateDraft(metadata, metadataPath, evidence, topic.getClipTopicsConfig(rootConfig));
+        ensureCandidateDraft(metadata, metadataPath, evidence, topic.getClipTopicsConfig(rootConfig), options.action === 'correct' ? options : undefined);
         if (options.action === 'prepare') {
             require('./workflow-runtime').loadWorkflow('clipping/topicRecovery').prepareCandidateWindow(
                 metadata, metadataPath, options, topic.getClipTopicsConfig(rootConfig), {

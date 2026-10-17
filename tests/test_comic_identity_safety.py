@@ -224,6 +224,28 @@ class ComicIdentitySafetyTests(unittest.TestCase):
         self.assertNotIn('岁己在直播间里', script)
         self.assertIn('不转为房主经历', script)
 
+    def test_fallback_uses_dialogue_after_highlight_metadata(self):
+        source = ('【摘要】(保留率: 前35%热度 + 10%随机)\n---\n'
+                  '【参与者】计划参与: 无\n【参与者】实际出声: 无\n'
+                  '【归属说明】名单不证明逐句身份，UNKNOWN不可归给房主。\n'
+                  '【情感概览】开心306段、平静53段\n【情感说明】标签仅作线索\n'
+                  '【显著情感时刻】\n'
+                  '[41m09s] [UNKNOWN] 接电话时对面问你家大人呢。\n'
+                  '[51m38s] [UNKNOWN] 我本来要赢了，结果还是输了。')
+        script = comic.build_local_fallback_comic_script(source, '25788785')
+        self.assertIn('你家大人呢', script)
+        self.assertIn('我本来要赢了', script)
+        for marker in ('保留率', '计划参与', '实际出声', '归属说明', '情感概览', '情感说明'):
+            self.assertNotIn(marker, script)
+
+    def test_metadata_only_fallback_stays_failed_without_generic_image_script(self):
+        source = '【直播标题】陪你过周四！\n【参与者】实际出声: 无\n【摘要】保留率35%'
+        self.assertEqual(comic.build_local_fallback_comic_script(source, '25788785'), '')
+        with mock.patch.object(comic, 'set_comic_script_meta') as metadata:
+            _, success = comic.return_comic_script_failure(source, '25788785', 'upstream unavailable')
+        self.assertFalse(success)
+        self.assertEqual(metadata.call_args.kwargs['status'], 'failure')
+
     def configure_automatic_cast(self):
         settings = self.config['ai']['comic']['multiReferenceImages']
         settings.update({'enabled': False, 'discoveryEnabled': True, 'allowedExtraStreamerIds': ['guest'],

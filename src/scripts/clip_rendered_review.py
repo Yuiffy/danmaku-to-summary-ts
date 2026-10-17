@@ -22,6 +22,8 @@ def approve_review(args, api):
         command = ["node", str(api.PROJECT_ROOT / "src/scripts/review_rendered_clip.js"),
                    "--metadata", clip["metadataPath"], "--id", str(args.id),
                    "--review-index", str(clip["reviewIndex"]), "--review-note", args.review_note]
+        if getattr(args, "feedback_authorized", False):
+            command.append("--feedback-authorized")
         for name in ("title", "description", "cover_text", "source_kind"):
             value = getattr(args, name, None)
             if value is not None:

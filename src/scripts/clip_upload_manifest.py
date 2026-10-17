@@ -283,6 +283,7 @@ def load_upload_manifest(
                     "collectionSectionId": upload.get("collectionSectionId")}
                    if metadata.get("type") == "stream_activity_submission" or output.get("parts") else {}),
                 "selectionSource": selection_source,
+                "publicationKind": metadata.get("publicationKind") or "",
                 "metadataPath": metadata_path,
                 "srtPath": _resolve_optional_path(output.get("srtPath"), path.parent),
                 "sourceMediaPath": _resolve_optional_path((metadata.get("source") or {}).get("mediaPath"), path.parent)

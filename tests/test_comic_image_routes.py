@@ -135,7 +135,10 @@ class ImageRoutesTest(unittest.TestCase):
                         self.assertNotIn('rolloutVariant', retry)
                         room_image = config['ai']['roomSettings'].get(room, {}).get('imageGeneration', {})
                         self.assertEqual(routes[2:], room_image.get('routes', policy['routes'])[2:])
-                        self.assertEqual(len(routes), 5 if name == 'production' and room == '25034104' else 2)
+                        self.assertEqual(len(routes), 5 if name == 'production' and room == '25034104' else 4)
+                        self.assertEqual(routes[2]['provider'], 'tuZi')
+                        self.assertFalse(routes[2]['includeAsyncFallback'])
+                        self.assertEqual(routes[-1]['strategyMode'], 'asyncOnly')
 
     def test_global_fallback_runs_once_only_after_failure_without_redrawing(self):
         variants = [
@@ -204,6 +207,40 @@ class ImageRoutesTest(unittest.TestCase):
         self.assertEqual(fallback['recovery_state_path'], 'recovery.json')
         self.assertFalse(fallback['include_async_fallback'])
         self.assertEqual([a['status'] for a in self.metadata['routeAttempts']], ['failure', 'success'])
+
+    def test_ordinary_room_provider_outage_reaches_tuzi_then_async_with_evidence(self):
+        import json
+        root = Path(__file__).resolve().parents[1]
+        for name in ('default', 'production'):
+            with self.subTest(config=name):
+                config = json.loads((root / 'config' / f'{name}.json').read_text(encoding='utf-8'))
+                config['ai']['providers'] = {
+                    provider: {'baseUrl': 'https://example.invalid', 'apiKey': 'test'}
+                    for provider in ('daiYu', 'tuZi')
+                }
+                config['aiServices'] = {}
+                self.io.images.reset_mock()
+                self.io.compatible.reset_mock()
+                def failed(**kwargs):
+                    self.metadata.update(status='failure', reason='HTTP 502: Upstream request failed')
+                self.io.images.side_effect = failed
+                self.io.compatible.side_effect = [None, 'recovered.png']
+                references = ['host.png', 'evidence.jpg']
+                result = generate_image('original script', references, '26966466', 'recovery.json',
+                                        config=config, io=self.io)
+                self.assertEqual(result, 'recovered.png')
+                self.assertEqual(self.io.images.call_count, 2)
+                self.assertEqual(self.io.compatible.call_count, 2)
+                for call in self.io.compatible.call_args_list:
+                    self.assertEqual(call.kwargs['prompt'], 'original script')
+                    self.assertIs(call.kwargs['reference_image_path'], references)
+                    self.assertEqual(call.kwargs['recovery_state_path'], 'recovery.json')
+                self.assertFalse(self.io.compatible.call_args_list[0].kwargs['include_async_fallback'])
+                self.assertEqual(self.io.compatible.call_args.kwargs['strategy_mode'], 'asyncOnly')
+                self.assertEqual([a['provider'] for a in self.metadata['routeAttempts']],
+                                 ['daiYu', 'daiYu', 'tuZi', 'tuZi'])
+                self.assertEqual([a['status'] for a in self.metadata['routeAttempts']],
+                                 ['failure', 'failure', 'failure', 'success'])
 
     def test_preselected_request_does_not_draw_a_second_variant(self):
         selected = [dict(self.routes[0], flow='openaiImages', model='gpt-image-2.5-sunburst', quality='max')]

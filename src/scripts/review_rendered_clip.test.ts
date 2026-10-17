@@ -74,6 +74,17 @@ describe('human review of rendered own-stream clips', () => {
     expect(cover).not.toHaveBeenCalled();
   });
 
+  test('records explicit feedback publication acceptance without requiring old editorial issues to pass', async () => {
+    metadata.copy.description = 'Host said hello 98765 times.';
+    fs.writeFileSync(metadataPath, JSON.stringify(metadata));
+    await approveRenderedClip(metadataPath, { id: 88, reviewNote: '按反馈修改后直接投稿，不要求再次AI审核', feedbackAuthorized: true }, {});
+    const saved = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+    expect(saved.ownStreamHumanReview).toMatchObject({ authority: 'human', acceptanceMode: 'feedback', audioVisualReviewed: false });
+    expect(saved.grounding.issues).toEqual(expect.arrayContaining([expect.stringContaining('unsupported_number')]));
+    expect(saved.attributionReview.status).toBe('needs_review');
+    expect(saved.uploadReady).toBe(true);
+  });
+
   test('accepts whitespace changes only in the metadata-bound generated description prefix', async () => {
     metadata.streamTitle = 'Stream'; metadata.recordedAt = '2026-10-12 20:03:05';
     metadata.candidate = { emotionEvidence: [{ start: 1, end: 10, emotion: 'HAPPY' }] };

@@ -276,6 +276,7 @@ function getOwnStreamClipsConfig(config = {}, roomId = null) {
 function buildCutClipMediaConfig(config = {}, options = {}) {
     return {
         burnSubtitles: config.burnSubtitles,
+        radioDanmaku: config.radioDanmaku, xmlPath: options.xmlPath,
         twoStageSubtitleBurn: config.twoStageSubtitleBurn,
         twoStageMode: config.twoStageMode,
         twoStagePreRollSeconds: config.twoStagePreRollSeconds,
@@ -1522,6 +1523,7 @@ async function generateOwnStreamClipJob(context) {
             srtPath,
             metadataPath,
             burnedSubtitles: Boolean(mediaResult?.burnedSubtitles),
+            radioDanmaku: mediaResult?.radioDanmaku || null,
             renderSettings: buildCutClipMediaConfig(config, options),
             subtitleBurnFallbackUsed: Boolean(mediaResult?.fallbackUsed),
             twoStageSubtitleBurn: mediaResult?.twoStageSubtitleBurn ?? null,

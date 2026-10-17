@@ -58,7 +58,9 @@ export class AdminClipStore {
     return start !== undefined && end !== undefined && end > start ? { start, end } : undefined;
   }
   private sourceSubtitles(clip: any, metadata: any, context = 0): string {
-    const window = this.sourceWindow(clip, metadata);
+    const recalled = context > 0 ? metadata.reviewPresentation?.window : undefined;
+    const window = this.sourceWindow(clip, metadata) || (Number.isFinite(recalled?.start)
+      && Number.isFinite(recalled?.end) && recalled.start >= 0 && recalled.end > recalled.start ? recalled : undefined);
     const file = this.checkedPath(metadata.source?.srtPath || clip.sourceSrtPath);
     return window && file && path.extname(file).toLowerCase() === '.srt'
       ? sourceWindowSubtitles(readText(file), Math.max(0, window.start - context), window.end + context) : '';
@@ -140,6 +142,7 @@ export class AdminClipStore {
     detail.evidence.sourceKind = metadata.renderedSubtitles?.review?.sourceKind || metadata.grounding?.sourceKind
       || metadata.editorial?.copyGrounding?.sourceKind;
     detail.evidence.selectionRejection = metadata.selectionRejection;
+    detail.evidence.recallWindow = metadata.reviewPresentation?.window;
     detail.evidence.candidateRecovery = metadata.candidateRecovery ? {
       status: metadata.candidateRecovery.status, error: metadata.candidateRecovery.error } : undefined;
     if (detail.category === 'activity') {

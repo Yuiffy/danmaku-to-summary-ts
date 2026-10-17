@@ -214,6 +214,17 @@ class TopicCandidateRegistryTests(unittest.TestCase):
             self.assertEqual(registry.main(["cut", "--ids", "1", "--review-note", "Checked"]), 2)
         self.assertEqual(self.records()["1"]["status"], "pending_cut")
 
+    def test_feedback_cut_forwards_authority_and_fails_actual_media_audit(self):
+        file, _ = self.candidate()
+        self.import_file(file)
+        with patch.object(registry.clip_candidate_queue, "candidate_action") as action, patch.object(
+                registry.subprocess, "run", return_value=subprocess.CompletedProcess([], 2, "Media truncated", "")):
+            self.assertEqual(registry.main(["cut", "--ids", "1", "--feedback-authorized",
+                                           "--review-note", "Apply feedback and publish"]), 2)
+        self.assertEqual(action.call_args.args[3]["feedback_authorized"], "yes")
+        self.assertIsNone(action.call_args.args[3]["automatic_review"])
+        self.assertFalse(registry.QUEUE_PATH.exists())
+
     def subtitle_result(self, metadata):
         return {"candidateSrtPath": str(self.root / "candidate_r0001.srt"), "candidateRevision": 1,
                 "candidateSrtSha256": "saved-subtitle-hash", "copy": metadata["copy"], "cues": []}

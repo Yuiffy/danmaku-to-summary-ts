@@ -77,6 +77,13 @@ these same rules; a one-clip experiment must not become a hardcoded rule for unr
 
 ### Numeric candidate corrections
 
+The admin “按意见修改并投稿” action applies feedback and publishes directly.
+Use the existing numeric `rebuild`, `cut`, or `approve-review` command with
+`--feedback-authorized`; AI findings remain advisory. Preserve explicit user
+titles and corrections. This records feedback acceptance, never a claim of
+audio/visual review. Missing files, failed renders/audits, source changes and
+duplicate publication of the same ID still require actual execution repair.
+
 Own-stream rendered clips, including held/failed clips and rejected candidates,
 also reserve numeric IDs. Their single review sorted by numeric upload ID lists the blocking
 issues beside each ID. Read `docs/topic-event-editorial.md#own-stream-review-ids`
@@ -222,6 +229,12 @@ npm run manual:clips -- add ... --profile old_sui
 `small_sui` uses the `【小岁】` upload prefix. `old_sui` uses the `老岁片 ` prefix and separate old-clip tags. The profile must not change subtitle size, font, two-stage copy-mode burn, cover source, or timing logic.
 
 ### 3. Cut and burn
+
+Sui radio clips default to 200% danmaku alongside the normal bottom subtitles.
+Follow `docs/manual-clip-queue.md#电台弹幕与帧率`: use the original window-bound
+XML, and resample low/variable-rate decoded backgrounds to 30 fps **before**
+rendering moving comments. Output-only frame duplication does not smooth already
+burned comments. Verify the static radio tail's actual motion and frame intervals.
 
 Run the worker after adding tasks:
 

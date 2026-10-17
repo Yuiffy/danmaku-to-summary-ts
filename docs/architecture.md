@@ -46,6 +46,12 @@ clips. Activating a workflow release or restarting the admin API does not refres
 these imports. A queue receipt confirms admission only; inspect the worker
 failure and submission receipt when diagnosing a failed upload.
 
+`scripts/clip_upload_progress.py` consumes SDK page/chunk events and writes a
+throttled, atomic telemetry sidecar beside the first uploaded media file. It has
+no authorization or queue writes. `clip_upload_status.py` joins this observed
+progress into `show`/`queue` output without persisting it into registry records.
+Media transfer reaching 100% is separate from the successful submission receipt.
+
 The batch uploader pins the SDK's official BDA2 line, matching its preupload
 availability probe. This avoids the SDK's automatic speed test selecting an
 unhealthy alternate CDN. TLS verification stays enabled, and failures still
@@ -108,6 +114,11 @@ in `audio_config.js`, and legacy REVIEW parsing lives in `clip_review_parser.py`
 the original entrypoints retain their public exports.
 The historical `clipping/media_process.js` and `clipping/rendered_subtitles.js`
 paths forward to `media_runtime.js` and `rendered_revision_evidence.js`.
+`workflows/clipping/radioDanmaku` owns configured radio scope, source-window XML
+projection, 200% comment layout and the pre-overlay 30 fps filter. The shared
+subtitle renderer supplies decoded dimensions and applies it before speech
+subtitles, including edit/creative timeline projection and CPU fallback. `subtitle_encoding.js`
+owns the extracted subtitle sizing policy; `topic_clipper` retains its export.
 `clip_upload_cli.py` forwards parser construction to the registry's current
 factory so both entrypoints expose the same commands and arguments.
 

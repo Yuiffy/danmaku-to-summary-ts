@@ -87,7 +87,7 @@ export function mapSubtitles(segments: Subtitle[], plan: EditPlan): Subtitle[] {
     });
 }
 
-export function buildEditFilter(plan: EditPlan, sourceOrigin: number, escapedAssPath: string): string {
+export function buildEditFilter(plan: EditPlan, sourceOrigin: number, escapedAssPath: string, videoOverlay = ''): string {
     if (!Number.isFinite(sourceOrigin) || plan.keep.some(span => span.start < sourceOrigin)) throw new Error('Invalid rough-cut origin');
     const streams = plan.keep.flatMap((span, index) => {
         const start = span.start - sourceOrigin, end = span.end - sourceOrigin;
@@ -95,6 +95,6 @@ export function buildEditFilter(plan: EditPlan, sourceOrigin: number, escapedAss
             `[0:a]atrim=start=${start}:end=${end},asetpts=PTS-STARTPTS[a${index}]`];
     });
     streams.push(`${plan.keep.map((_, i) => `[v${i}][a${i}]`).join('')}concat=n=${plan.keep.length}:v=1:a=1[sub_v][sub_a]`);
-    streams.push(`[sub_v]subtitles='${escapedAssPath}'[vout]`);
+    streams.push(`[sub_v]${videoOverlay}subtitles='${escapedAssPath}'[vout]`);
     return streams.join(';');
 }

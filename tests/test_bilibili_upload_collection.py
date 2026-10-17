@@ -1,4 +1,6 @@
 import unittest
+import json
+from pathlib import Path
 from unittest.mock import patch
 import asyncio
 
@@ -302,6 +304,30 @@ class CollectionRoutingTests(unittest.TestCase):
             get_collection_section_id(self.config, streamer_name="栞栞"),
             9974272,
         )
+
+    def test_keyword_route_precedes_custom_streamer_and_sui_routes(self):
+        self.config['bilibili']['upload']['collectionRouting']['keyword'] = {'sectionId': 42}
+        for room in ('1727074031', '22470216', '25788785'):
+            with self.subTest(room=room):
+                self.assertEqual(get_collection_section_id(
+                    self.config, room_id=room, publication_kind='keyword_topic'), 42)
+
+    def test_legacy_topic_directory_is_exact_and_supports_both_path_separators(self):
+        self.config['bilibili']['upload']['collectionRouting']['keyword'] = {'sectionId': 42}
+        for path in ('D:/clips/topic_clips/clip.mp4', r'D:\clips\topic_clips\clip.mp4'):
+            self.assertEqual(get_collection_section_id(self.config, room_id='1727074031', media_path=path), 42)
+        for path in ('D:/clips/not_topic_clips/clip.mp4', 'D:/clips/own_stream_fun_clips/topic_clips.mp4'):
+            self.assertEqual(get_collection_section_id(self.config, room_id='1727074031', media_path=path), 9991476)
+
+    def test_production_routes_all_keyword_clips_and_retires_fuyasoul(self):
+        config = json.loads((Path(__file__).resolve().parents[1] / 'config/production.json').read_text(encoding='utf-8-sig'))
+        routing = config['bilibili']['upload']['collectionRouting']
+        self.assertFalse(any(route.get('sectionId') == 9991476 for route in routing.values()))
+        for room in ('1820703922', '1713546334', '1727074031', '23771092', '22470216', '12345678'):
+            with self.subTest(room=room):
+                self.assertEqual(get_collection_section_id(config, room_id=room), 10015117)
+                self.assertEqual(get_collection_section_id(config, room_id=room, publication_kind='keyword_topic'), 9974272)
+        self.assertEqual(get_collection_section_id(config, room_id='25788785'), 9482593)
 
 
 if __name__ == "__main__":

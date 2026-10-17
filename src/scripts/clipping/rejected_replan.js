@@ -45,12 +45,12 @@ function validateEditorialReplan(metadata, options, evidence) {
     const rejection = metadata.originalSelectionRejection;
     if (!rejection || rejection.reason === 'duration_out_of_bounds' || metadata.selectionRejection) return;
     const plan = metadata.editorialReplan;
-    if (!canReplan(rejection.reason) || !plan || plan.clipId !== metadata.uploadId
+    if ((!canReplan(rejection.reason) && plan?.acceptanceMode !== 'feedback') || !plan || plan.clipId !== metadata.uploadId
         || plan.sourceSha256 !== evidence.sourceSha256 || !String(plan.note || '').trim()
         || plan.start !== metadata.window.start || plan.end !== metadata.window.end) {
         throw new Error('Rejected candidate needs a matching new editorial plan');
     }
-    checkRegistryOverlap(metadata, options, plan.start, plan.end);
+    if (plan.acceptanceMode !== 'feedback') checkRegistryOverlap(metadata, options, plan.start, plan.end);
 }
 
 function reviewEditorialReplan(metadata, options, evidence, start, end) {
@@ -63,7 +63,8 @@ function reviewEditorialReplan(metadata, options, evidence, start, end) {
         }
         throw new Error('This rejection needs a new editorial plan; use rebuild --replan with a new window and reviewed copy');
     }
-    if (metadata.mode !== 'own_stream_fun_review' || !canReplan(rejection?.reason)) {
+    const feedback = options.feedbackAuthorized === 'yes';
+    if (metadata.mode !== 'own_stream_fun_review' || !feedback && !canReplan(rejection?.reason)) {
         throw new Error('This selection rejection cannot be recovered by editorial replanning');
     }
     if (options.start === undefined || options.end === undefined
@@ -71,12 +72,13 @@ function reviewEditorialReplan(metadata, options, evidence, start, end) {
         || ['reviewNote', 'sourceKind', 'title', 'description', 'coverText'].some(key => !String(options[key] || '').trim())) {
         throw new Error('Editorial replan requires explicit start/end, source-kind, review note and complete publishing copy');
     }
-    if (start === metadata.window.start && end === metadata.window.end) {
+    if (!feedback && start === metadata.window.start && end === metadata.window.end) {
         throw new Error('Editorial replan must select a new window, not approve the rejected window unchanged');
     }
-    const peers = checkRegistryOverlap(metadata, options, start, end);
+    const peers = feedback ? [] : checkRegistryOverlap(metadata, options, start, end);
     return { version: 1, clipId: metadata.uploadId, authority: 'user', at: new Date().toISOString(),
         note: options.reviewNote.trim(), sourceSha256: evidence.sourceSha256,
+        ...(feedback ? { acceptanceMode: 'feedback' } : {}),
         originalWindow: { start: metadata.window.start, end: metadata.window.end },
         rejectionReason: rejection.reason, start, end, checkedPeers: peers,
         previousPlan: metadata.editorialReplan || null };

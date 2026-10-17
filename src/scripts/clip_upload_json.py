@@ -73,6 +73,7 @@ def import_json(args: argparse.Namespace, api: ModuleType) -> int:
             "mediaPath": clip.get("mediaPath") or clip.get("path") or "",
             "coverPath": clip.get("coverPath") or clip.get("cover") or "",
             "selectionSource": clip.get("selectionSource") or "", "roomId": clip.get("roomId") or "",
+            "publicationKind": clip.get("publicationKind") or "",
             "streamerName": clip.get("streamerName") or "", "description": clip.get("description") or "",
             "reviewIndex": int(clip.get("reviewIndex") or clip.get("idx") or len(ids) + 1),
             "sourceFormat": "json", "qaRequired": bool(clip.get("qaRequired")),

@@ -634,7 +634,7 @@ async function runCreativeAttempt(baseline, context, dependencies) {
                 ...(mediaReview.audioQa ? { audioQa: mediaReview.audioQa } : {}),
                 copy: require('./precision_copy').labelCreativeCopy(baseline.copy, { creativePlan: plan, editPlan, audioQa: mediaReview.audioQa }, assets),
                 output: { ...baseline.output, mediaPath, srtPath: renderSrt, srtSegmentCount: topic.parseTopicSrt ? topic.parseTopicSrt(renderSrt).segments.length : baseline.output.srtSegmentCount,
-                    subtitleVideoEncoder: rendered.subtitleVideoEncoder || config.subtitleVideoEncoder,
+                    radioDanmaku: rendered.radioDanmaku || null, subtitleVideoEncoder: rendered.subtitleVideoEncoder || config.subtitleVideoEncoder,
                     subtitleBurnFallbackUsed: rendered.fallbackUsed, subtitleHwaccel: rendered.subtitleHwaccel === null ? null : config.subtitleHwaccel } };
             if (clip.attributionRequired) {
                 const review = require('./precision_actor_review').rebindUnchangedPrecisionCopy(current, editPlan,

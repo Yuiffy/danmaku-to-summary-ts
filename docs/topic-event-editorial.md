@@ -1,5 +1,11 @@
 # Topic Clip Event Editing
 
+The admin feedback publication action applies confirmed edits under the existing
+numeric ID and then enqueues directly. Its `rebuild`, `cut`, and `approve-review`
+commands use `--feedback-authorized`: AI findings are advisory and acceptance is
+recorded as feedback, without claiming audio/visual review. Source/revision
+binding, completed media audits and duplicate publication checks still apply.
+
 The keyword workflow also supports a pre-render review path controlled by
 `clipTopics.review.mode: "preflight"`. Its maintained contract is described under
 [Preflight Review](#preflight-review); per-run comparisons belong in ignored task storage.
@@ -165,6 +171,10 @@ python src/scripts/clip_upload_registry.py correct --id 123 --from "zzz" --to "�
 - 字幕修正本身不等于投稿授权。只有用户明确说投稿，才添加 `--enqueue`。
   用户没有确认的其他不确定词不得猜改，也不要把例子里的编号和词用于真实稿件。
 
+已有完整烧录视频和非空字幕、且没有媒体制作错误的普通话题片，即使后续审核使
+元数据停在 `partial`，仍可按原编号准备改词修订。该入口检查实际文件，保留旧成片；
+改词后照常使旧批准失效，重新制作后才能投稿，不把 `partial` 本身视作审核通过。
+
 候选在进入待定区之前就有独立的 `*_candidate.srt`。每次修正写入新的
 `*_candidate_r0001.srt` 等版本，保留旧版本和逐条修改记录；源录播 SRT 不动。
 `subtitles` 与 `show` 始终给出当前字幕版本，不必手动寻找长路径。
@@ -295,6 +305,20 @@ npm run clips:review -- --plan "D:\recordings\own_stream_fun_clips\PLAN.json" --
 python src/scripts/clip_upload_registry.py show 123
 python src/scripts/clip_upload_registry.py subtitles --id 123
 ```
+
+上传进度可用 `clip_upload_registry.py show <ID>` 的 `uploadProgress`，或
+`clip_upload_registry.py queue` 的 `progress ID` 行查询。批量和单视频上传均订阅 SDK
+事件，日志输出 `[UPLOAD_PROGRESS] P2/6 本P 25.0% 整包 20.8% ...`。
+本 P 百分比按成功分块数计算，失败/重复回调不重复累计；整包按各 P 完成比例等权平均，
+不是按字节加权。常规进度最多每分钟写一次，分 P/阶段变化和分块重试也共用此限额；
+上传开始及最终成功/失败立即写入。期间仍在内存累计最新状态，在下一次 SDK 事件达到
+一分钟间隔时输出，不额外启动定时任务或发送心跳日志。
+100% 只表示媒体传输完成，`submitting` 仍在提交，`completed` 才表示收到 BV 回执。
+`failed` 保留失败前进度；新尝试以新的 `runId` 从零开始。
+进度保存在首 P 媒体路径加 `.upload-progress.json` 的原子替换旁文件，不修改授权、
+上传回执或队列状态。查询附带 `updatedAt`，排队/上传中早于当前记录更新时间的快照标记 `stale`
+（文本显示“上次尝试”）；旧任务没有旁文件时不猜测百分比。进度不随查询写回注册表。
+源码改动仅在新上传子进程生效，不能为已运行的 SDK 实例补接事件，勿为此打断上传。
 
 重复刷新保留原 ID，不把重新排列后的行号当作全局 ID。未变化的通知不会重复发送；
 网络调用结果不明确时保留通知回执，禁止直接重发整批。

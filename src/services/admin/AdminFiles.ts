@@ -20,7 +20,15 @@ export function atomicJson(file: string, value: unknown): void {
   const staging = `${file}.${randomUUID()}.tmp`;
   try {
     fs.writeFileSync(staging, JSON.stringify(value, null, 2) + '\n', { encoding: 'utf8', flag: 'wx' });
-    fs.renameSync(staging, file);
+    for (let attempt = 0; ; attempt++) {
+      try { fs.renameSync(staging, file); break; }
+      catch (error) {
+        // Windows readers/antivirus can briefly deny replacing an existing file.
+        // Keep the old JSON intact; never unlink it to work around a sharing lock.
+        if (attempt >= 4 || !['EPERM', 'EACCES', 'EBUSY'].includes((error as NodeJS.ErrnoException).code || '')) throw error;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20 * 2 ** attempt);
+      }
+    }
   } finally { if (fs.existsSync(staging)) fs.unlinkSync(staging); }
 }
 export const HIDDEN = '•••• 已隐藏，保留此值则不修改 ••••';

@@ -66,6 +66,28 @@ node src/scripts/own_stream_clipper.js --media "录播.flv" --srt "录播.srt" -
 - 时间覆盖也不是默认要求；需要时通过 `selectionPolicy.requireTimeCoverage` 打开；
 - 审计结果转为手工队列任务后，再由统一压制和上传流程处理。
 
+## 单场下播任务
+
+需要仅对一场直播替换通常切片阶段时，可由本机操作员在
+`data/runtime/recording_clip_jobs.json` 登记 `{ "jobs": [...] }`。
+每项包含 `id`、`roomId`、`recordingDirectory`、`filenamePrefix`、
+`recordingTitle`、`scriptPath`、`scriptSha256` 和非空 `authorization`。
+目录、房间、日期前缀和完整标题共同限定来源，支持同名 `_merged.flv`；
+不能只用房间号扩大为永久自动投稿授权。登记文件是本机可信操作配置，
+不接受 webhook 或网页传入可执行路径。
+
+现有 `background_clip_runner` 在录制、ASR 和摘要完成后读取登记，在原串行
+worker 内等待该适配器完成，替换此来源的通常关键词/整场/归档阶段。
+适配器通过 `--payload <现有payload路径>` 接收输入；执行文件必须在仓库内，
+内容 hash 必须与登记一致。Node 24 原生加载 TypeScript，无额外转译器。
+没有匹配时保留普通流程；登记冲突、hash 改变或适配器失败时明确失败并
+保留原始视频，不回退到关键词或启动第二个 worker。
+完成状态复用现有 progress receipt，成功事件重放不会重跑适配器。
+适配器仍需自行保留来源、成片审核、数字编号、投稿去重和逐片合集证据；
+这套接入不授予审核通过或投稿权限，不需要 Codex 定时任务。
+适配器恢复临时配置后，worker 在任务边界清除配置缓存，后续任务读取新配置。
+一次任务的脚本、证据和运行记录留在忽略目录，登记撤除后不影响普通处理。
+
 ## 结果解释
 
 `RESIDUAL_REVIEW.md` 中的分数用于排序，不是质量承诺。字幕摘录用于快速判断起止点；最终切片仍应补足起因和收束，并按本次任务的选材政策决定是否保留特殊内容。

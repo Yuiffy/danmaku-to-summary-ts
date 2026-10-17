@@ -160,7 +160,7 @@ async function enhance(metadata, { config, info, parsed, danmaku, source, option
                 ...mediaConfig, ...(profile ? { ffmpegThreads: profile.ffmpegThreads } : {}), editPlan: plan, editSourceId: sourceId, originalSubtitleSegments: segments, editAudioEvidence: audioEvidence
             });
             return { ...metadata, window: { ...metadata.window, duration }, editPlan: plan,
-                output: { ...metadata.output, mediaPath: output.path, srtPath, srtSegmentCount: srtResult.segmentCount, burnedSubtitles: output.burnedSubtitles } };
+                output: { ...metadata.output, radioDanmaku: output.radioDanmaku || null, mediaPath: output.path, srtPath, srtSegmentCount: srtResult.segmentCount, burnedSubtitles: output.burnedSubtitles } };
         }),
         inspectPauses: (artifact, pauses) => withMedia(async profile => {
             const frames = [], activeConfig = { ...mediaConfig, ...(profile ? { ffmpegThreads: profile.ffmpegThreads } : {}) };

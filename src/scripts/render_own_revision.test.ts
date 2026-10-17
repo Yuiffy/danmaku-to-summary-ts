@@ -52,6 +52,30 @@ describe('own-stream subtitle revisions', () => {
   });
   afterEach(() => { jest.restoreAllMocks(); fs.rmSync(directory, { recursive: true, force: true }); });
 
+  test('a partial keyword result with complete burned artifacts can prepare and correct a revision', async () => {
+    metadata.mode = 'local_review'; metadata.publicationKind = 'keyword_topic'; metadata.status = 'partial';
+    metadata.aiReview = { sourceSha256: metadata.grounding.sourceSha256 };
+    delete metadata.ownStreamHumanReview; save();
+    await updateRevision(file, { ...options, action: 'prepare', sourceKind: 'recount', feedbackAuthorized: 'yes' }, config);
+    await correct();
+    expect(load()).toMatchObject({ uploadId: 7, status: 'partial', rebuildRequired: true, uploadReady: false });
+    expect(load().renderedSubtitles.cues[0].text).toBe('Hello friend');
+    expect(fs.readFileSync(metadata.output.mediaPath, 'utf8')).toBe('original burned clip');
+    expect(render).not.toHaveBeenCalled();
+  });
+
+  test.each(['unburned', 'media-error', 'missing-media', 'empty-subtitles'])(
+    'a partial keyword result still rejects incomplete artifacts: %s', async failure => {
+      metadata.mode = 'local_review'; metadata.status = 'partial';
+      if (failure === 'unburned') metadata.output.burnedSubtitles = false;
+      if (failure === 'media-error') metadata.output.mediaError = 'render failed';
+      if (failure === 'missing-media') fs.unlinkSync(metadata.output.mediaPath);
+      if (failure === 'empty-subtitles') fs.writeFileSync(metadata.output.srtPath, '');
+      save();
+      await expect(correct()).rejects.toThrow('Unrendered keyword candidates');
+      expect(load().renderedSubtitles).toBeUndefined();
+    });
+
   test.each([false, true])('keyword rebuild uses fresh topic review and preserves required attribution=%s', async required => {
     metadata.mode = 'local_review'; metadata.publicationKind = 'keyword_topic'; metadata.status = 'success';
     metadata.roomId = 'another-room'; metadata.attributionRequired = required;
@@ -357,6 +381,20 @@ describe('own-stream subtitle revisions', () => {
     expect(render).not.toHaveBeenCalled();
   });
 
+  test('feedback restores a rejected placeholder only with explicit source-bound boundaries', async () => {
+    metadata.selectionRejection = { reason: 'topic_repair_lost_known_continuation' };
+    metadata.window = { index: 4, start: null, end: null };
+    metadata.output = { metadataPath: file, mediaPath: null, burnedSubtitles: false };
+    delete metadata.ownStreamHumanReview; save();
+    const replan = { ...options, action: 'prepare', replan: true, start: 1, end: 61,
+      sourceKind: 'recount', ...metadata.copy, feedbackAuthorized: 'yes' };
+    await expect(updateRevision(file, { ...replan, feedbackAuthorized: undefined }, config)).rejects.toThrow('Invalid existing');
+    await updateRevision(file, replan, config);
+    expect(load().window).toMatchObject({ start: 1, end: 61 });
+    expect(load().editorialReplan.acceptanceMode).toBe('feedback');
+    expect(load().renderedSubtitles.cues[0].text).toBe('Hello world');
+  });
+
   test.each([{ end: 60, groups: 0 }, { end: 100, groups: 1 }])('a changed window recomputes subtitle risks from retained source cues: %j', async ({ end, groups }) => {
     fs.writeFileSync(metadata.source.srtPath,
       '1\n00:00:01,000 --> 00:01:01,000\nHello world\n\n2\n00:01:10,000 --> 00:02:10,000\nThestarsouttotheface\n');
@@ -441,6 +479,22 @@ describe('own-stream subtitle revisions', () => {
       sourceSha256: metadata.grounding.sourceSha256 };
     save();
     await expect(updateRevision(file, { ...options, action: 'approve' }, config)).rejects.toThrow('matching new editorial plan');
+  });
+
+  test('explicit feedback retains a rejected overlapping window and records acceptance without claiming playback review', async () => {
+    metadata.selectionRejection = { reason: 'overlap_after_alignment' }; save();
+    const registryPath = path.join(directory, 'registry.json'), peerFile = path.join(directory, 'peer.json');
+    fs.writeFileSync(peerFile, JSON.stringify({ source: metadata.source, window: { start: 50, end: 90 } }));
+    fs.writeFileSync(registryPath, JSON.stringify({ clips: {
+      7: { metadataPath: file, reviewIndex: 4 },
+      8: { metadataPath: peerFile, sourceMediaPath: metadata.source.mediaPath, status: 'uploaded' }
+    } }));
+    await updateRevision(file, { ...options, registryPath, action: 'prepare', replan: true,
+      start: 1, end: 61, sourceKind: 'live_speech', ...metadata.copy, feedbackAuthorized: 'yes' }, config);
+    expect(load().editorialReplan).toMatchObject({ acceptanceMode: 'feedback', start: 1, end: 61 });
+    await renderRevision(file, { ...options, registryPath, feedbackAuthorized: 'yes' }, config);
+    expect(load().ownStreamHumanReview).toMatchObject({ acceptanceMode: 'feedback', audioVisualReviewed: false });
+    expect(load().output.burnedSubtitles).toBe(true);
   });
 
   test('cancelled unpublished drafts release their window, while a cancelled record with a publication receipt still blocks overlap', async () => {

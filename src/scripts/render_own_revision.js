@@ -21,7 +21,8 @@ const pending = metadata => Boolean(metadata.rebuildRequired);
 function checkedSource(metadata, options = {}) {
     const window = metadata.window;
     const missingDetail = metadata.mode === 'own_stream_fun_review'
-        && metadata.selectionRejection?.reason === 'missing_selected_candidate_detail'
+        && (metadata.selectionRejection?.reason === 'missing_selected_candidate_detail'
+            || options.feedbackAuthorized === 'yes' && metadata.selectionRejection)
         && options.action === 'prepare' && (options.replan === true || options.replan === 'yes')
         && !metadata.output?.mediaPath && !metadata.output?.burnedSubtitles
         && options.start !== undefined && options.end !== undefined
@@ -93,7 +94,16 @@ function identity(metadata, metadataPath, options) {
     if (!RENDERED_CLIP_MODES.has(metadata.mode) || !Number.isSafeInteger(id) || id < 1) {
         throw new Error('A numeric rendered own-stream or topic clip ID is required');
     }
-    if (metadata.mode !== 'own_stream_fun_review' && (metadata.status !== 'success' || !metadata.output?.mediaPath)) {
+    const output = metadata.output || {};
+    // A topic can retain complete burned media while a later review leaves the
+    // overall result partial. Revisions still invalidate approval and rerender.
+    const renderedPartial = metadata.status === 'partial' && output.burnedSubtitles && !output.mediaError
+        && ['mediaPath', 'srtPath'].every(key => {
+            if (typeof output[key] !== 'string' || !fs.existsSync(output[key])) return false;
+            const stat = fs.statSync(output[key]);
+            return stat.isFile() && stat.size > 0;
+        });
+    if (metadata.mode !== 'own_stream_fun_review' && (metadata.status !== 'success' && !renderedPartial || !output.mediaPath)) {
         throw new Error('Unrendered keyword candidates must use cut before revision');
     }
     if ((metadata.uploadId && metadata.uploadId !== id) || (metadata.renderedSubtitles && metadata.renderedSubtitles.clipId !== id)) {
@@ -205,8 +215,9 @@ function result(metadata) {
         copy: metadata.copy, cues: draft.cues.map((cue, index) => ({ ...cue, number: index + 1 })) };
 }
 
-async function validateCopy(metadata, sourceKind, evidence) {
+async function validateCopy(metadata, sourceKind, evidence, feedbackAuthorized = false) {
     return require('./review_rendered_clip').reviewCopy(metadata, { sourceKind,
+        feedbackAuthorized,
         title: metadata.copy.title, description: metadata.copy.description, coverText: metadata.copy.coverText }, evidence);
 }
 
@@ -263,10 +274,11 @@ async function updateRevision(metadataPath, options, config = require('./config-
             }
             if (!String(options.reviewNote || '').trim()) throw new Error('An explicit editorial review note is required');
             const sourceKind = options.sourceKind || metadata.renderedSubtitles.review?.sourceKind;
-            const reviewed = await validateCopy(metadata, sourceKind, revisionEvidence(metadata, evidence));
+            const reviewed = await validateCopy(metadata, sourceKind, revisionEvidence(metadata, evidence), options.feedbackAuthorized === 'yes');
             metadata.copy = { ...metadata.copy, ...reviewed.copy };
             metadata.grounding = reviewed.grounding;
-            metadata.renderedSubtitles.review = { note: options.reviewNote.trim(), sourceKind, copy: { ...metadata.copy } };
+            metadata.renderedSubtitles.review = { note: options.reviewNote.trim(), sourceKind, copy: { ...metadata.copy },
+                ...(options.feedbackAuthorized === 'yes' ? { acceptanceMode: 'feedback' } : {}) };
             metadata.renderedSubtitles.approval = null;
             metadata.rebuildRequired = true;
             metadata.publicCopyPending = false;
@@ -275,7 +287,7 @@ async function updateRevision(metadataPath, options, config = require('./config-
         if (options.action === 'approve') {
             const review = metadata.renderedSubtitles.review;
             if (!review?.note || !review.sourceKind) throw new Error('Confirm public copy and attribution with rebuild --source-kind before enqueueing');
-            await validateCopy(metadata, review.sourceKind, revisionEvidence(metadata, evidence));
+            await validateCopy(metadata, review.sourceKind, revisionEvidence(metadata, evidence), review.acceptanceMode === 'feedback');
             approveCandidateDraft(adapter(metadata), evidence, options.reviewNote || review.note);
         }
         if (!same(sourceSnapshot(metadata), snapshot)) throw new Error('Source changed while preparing revision');
@@ -302,7 +314,7 @@ async function renderRevision(metadataPath, options, config = require('./config-
         }
         const review = draft.review;
         if (!review?.note || !review.sourceKind) throw new Error('Confirm copy and source-kind with rebuild before rendering');
-        await validateCopy(metadata, review.sourceKind, revisionEvidence(metadata, evidence));
+        await validateCopy(metadata, review.sourceKind, revisionEvidence(metadata, evidence), options.feedbackAuthorized === 'yes');
         const upload = metadata.upload;
         if (!upload?.source || !upload.prefix || !upload.tags?.length) throw new Error('Missing upload identity');
         const outputDir = path.join(revisionDirectory(metadataPath, id), `render-r${draft.revision}-${crypto.randomUUID()}`);
@@ -364,10 +376,11 @@ async function renderRevision(metadataPath, options, config = require('./config-
                         buildQueueMediaConfig: manual.buildQueueMediaConfig }, { finalOnly: true })
                 : (await publication.reviewFinals([approved], context))[0];
         } else {
-            if (updated.renderedTimingRepair) throw new Error('Timing repair requires --automatic-review; no implicit human approval');
+            if (updated.renderedTimingRepair && options.feedbackAuthorized !== 'yes') throw new Error('Timing repair requires --automatic-review or explicit feedback acceptance');
             await require('./review_rendered_clip').approveRenderedClip(staging, { id,
                 reviewIndex: metadata.reviewIndex, reviewNote: options.reviewNote || review.note,
-                sourceKind: review.sourceKind, ...metadata.copy, preparedCover: rendered.output.coverPath }, config);
+                sourceKind: review.sourceKind, ...metadata.copy, preparedCover: rendered.output.coverPath,
+                feedbackAuthorized: options.feedbackAuthorized === 'yes' }, config);
             approved = JSON.parse(fs.readFileSync(staging, 'utf8'));
         }
         if (!same(sourceSnapshot(metadata), snapshot) || fileDigest(draft.path) !== draft.sha256) {

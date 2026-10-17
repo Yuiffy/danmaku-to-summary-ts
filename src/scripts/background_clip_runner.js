@@ -346,6 +346,17 @@ async function runBackgroundClipsFromPayload(payloadPath) {
     const restoreLogger = installBackgroundClipLogger(payload.logPath);
     try {
         if (state.status === 'completed') return;
+        const recordingJobs = require('./recording_clip_job.ts');
+        const projectRoot = path.resolve(__dirname, '../..');
+        const recordingJob = recordingJobs.resolveRecordingClipJob(projectRoot, payload);
+        if (recordingJob) {
+            // This source-scoped job replaces ordinary keyword/own stages and always retains evidence.
+            payload.videoPathToDelete = null;
+            try {
+                await stage('recordingJob', () => recordingJobs.executeRecordingClipJob(projectRoot, recordingJob, payloadPath));
+            } finally { configLoader.clearCache(); }
+            state.status = 'completed'; save(state); return;
+        }
         console.log('🎬 后台自动切片 worker 开始处理任务');
         console.log(`   media=${payload.processedMediaPath || payload.originalMediaPath}`);
         console.log(`   srt=${payload.srtPath}`);

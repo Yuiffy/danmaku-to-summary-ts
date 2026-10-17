@@ -133,8 +133,12 @@
   },
   "bilibili": {
     "upload": {
-      "collectionSectionId": 9974272,
+      "collectionSectionId": 10015117,
       "collectionRouting": {
+        "keyword": {
+          "seasonId": 8941979,
+          "sectionId": 9974272
+        },
         "sui": {
           "seasonId": 8513688,
           "sectionId": 9482593,
@@ -142,8 +146,8 @@
           "markers": ["岁己", "小岁", "sui"]
         },
         "other": {
-          "seasonId": 8941979,
-          "sectionId": 9974272
+          "seasonId": 8977005,
+          "sectionId": 10015117
         }
       }
     }

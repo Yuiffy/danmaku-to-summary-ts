@@ -18,9 +18,10 @@ export interface FeedbackPlan {
 export type FeedbackPlanner = (prompt: string) => Promise<string>;
 export const ACTIVITY_TITLE_EVIDENCE_ERROR = '活动名称需绑定本活动附近原文及用户确认；未入队';
 
-export function missingFeedbackFields(plan: FeedbackPlan, detail: ClipDetail): string[] {
+export function missingFeedbackFields(plan: FeedbackPlan, detail: ClipDetail, directFeedback = false): string[] {
   if (plan.blockedReason || detail.category !== 'clip') return [];
   const missing = ['title', 'description', 'coverText'].filter(key => !(plan as any)[key] && !(detail as any)[key]);
+  if (directFeedback) return missing;
   if (!detail.clip.pendingCut && !plan.sourceKind && !detail.evidence.sourceKind) missing.push('sourceKind：需按用户说明区分转述/播放/现场发言，不等同确认每条说话者身份');
   if (detail.evidence.selectionRejection && detail.evidence.selectionRejection.reason !== 'duration_out_of_bounds'
     && (plan.start === undefined || plan.end === undefined || plan.start === detail.source.start && plan.end === detail.source.end)) {
@@ -45,12 +46,39 @@ export function isUnchangedReview(note: string): boolean {
   return clauses.some(clause => confirmation.test(clause)) && clauses.every(clause => confirmation.test(clause) || unchanged.test(clause));
 }
 
+/** Expand only explicit, clip-wide name confirmations; never pass a wildcard to the CLI. */
+function confirmedNameCorrections(detail: ClipDetail, note: string): NonNullable<FeedbackPlan['corrections']> {
+  if (detail.category !== 'clip') return [];
+  const corrections = new Map<string, { from: string; to: string }>();
+  for (const clause of note.split(/[，,。；;！!.\r\n]+/u)) {
+    const match = /^(?:把|将|(?:里面|片中|本片|字幕里|字幕中|字幕)的?)?\s*[“"「]([\p{Script=Han}]{2,20})([xX]{2,8})[”"」]\s*(?:都是|都改成|都改为|都替换成|都替换为|统一改成|统一改为|统一替换成|统一替换为)\s*(?:[“"「]([\p{Script=Han}A-Za-z0-9]{1,30})[”"」]|([\p{Script=Han}]{2,30}))$/u.exec(clause.trim());
+    if (!match) continue;
+    const [, prefix, placeholder, quotedTarget, plainTarget] = match;
+    const to = quotedTarget || plainTarget;
+    const pattern = new RegExp(`${prefix}[\\p{Script=Han}]{${placeholder.length}}`, 'gu');
+    const rows = subtitleRows(detail.subtitles);
+    let matched = false;
+    for (const row of rows) for (const found of row.text.matchAll(pattern)) {
+      matched = true;
+      const from = found[0];
+      if (from === to) continue;
+      if (corrections.has(from) && corrections.get(from)!.to !== to) throw new AdminError('同一字幕原词存在冲突的替换意见；未入队');
+      corrections.set(from, { from, to });
+    }
+    if (!matched && !rows.some(row => row.text.includes(to))) throw new AdminError(`当前切片字幕没有匹配“${prefix}${placeholder}”的原词，请补充具体字幕；未入队`);
+  }
+  if (corrections.size > 30) throw new AdminError('字幕统称匹配超过 30 个原词，请缩小修改范围；未入队');
+  return [...corrections.values()];
+}
+
 export function feedbackPrompt(detail: ClipDetail, note: string, edits: Record<string, unknown>): string {
   if (detail.subtitles.length + detail.source.subtitles.length > 120000) throw new AdminError('本片文本超出单次修改范围；意见已保存，未入队');
   return `你把用户对登记切片的修改意见转换成一个 JSON 修改计划，只输出 JSON。
 允许字段：blockedReason（用户要求确实无法完成时写具体原因），title，description，coverText，sourceKind（live_speech/recount/playback/audience），durationNote（保留完整长/短主题的具体理由），activityTitles，useIdentifiedSongNames，start/end（原录播绝对秒数），corrections（{from,to,cue?} 数组）。
 按用户意见实际改写文案，不能仅把意见抄进备注。完整保留不需要修改的文案，补齐缺失封面文字。
-只有用户明确确认的原词和替换词才可列入 corrections，必须都逐字出现在意见中；不要凭文本猜听不清的字。
+只有用户明确确认的原词和替换词才可列入 corrections，通常必须都逐字出现在意见中；不要凭文本猜听不清的字。
+用户用带固定前缀和 xx 占位的统称明确说“都是/统一改为”某个名字时，下面的已确认字幕替换已按当前切片逐字展开，视为用户确认，必须全部落实；不要再要求用户逐个抄写原词。xx 每个 x 对应一个汉字，不当作任意正则；不扩展到相邻录播。没有明确目标、疑问或局部修改仍不能猜改。
+已确认字幕替换：${JSON.stringify(confirmedNameCorrections(detail, note))}
 用户写“大意”不等于逐字原话。引号内的话必须逐字匹配对应范围的原字幕；大意使用转述，不自行添加逐字引号。
 若需要听音/看画面才能确定修改，且用户没有给出确认，写 blockedReason，不假装已经核听或看过。
 你的职责是准备修改计划；后续现有命令会制作缺失的媒体/封面并执行独立成片审核。旧的审核待定、缺封面、未制作、文案待生成、未标注发言者不是阻止开始修改的理由。
@@ -115,17 +143,30 @@ export function parseFeedbackPlan(raw: string, detail: ClipDetail, note: string)
     if (!rows.length || !Number.isFinite(value.start) || !Number.isFinite(value.end) || value.start < rows[0].at
       || value.end > rows[rows.length - 1].end || value.end <= value.start) throw new AdminError('修改边界超出已提供的原片证据');
   }
+  const confirmed = confirmedNameCorrections(detail, note);
   if (value.corrections !== undefined) {
     if (!Array.isArray(value.corrections) || value.corrections.length > 30) throw new AdminError('字幕修改数量无效');
     for (const edit of value.corrections) {
       if (!edit || Object.keys(edit).some(key => !['from', 'to', 'cue'].includes(key))
         || typeof edit.from !== 'string' || !edit.from || edit.from.length > 2000 || edit.from.includes('\0')
         || typeof edit.to !== 'string' || !edit.to || edit.to.length > 2000 || edit.to.includes('\0')
-        || !note.includes(edit.from) || !note.includes(edit.to)
+        || !(note.includes(edit.from) && note.includes(edit.to)
+          || edit.cue === undefined && confirmed.some(item => item.from === edit.from && item.to === edit.to))
         || edit.cue !== undefined && (!Number.isInteger(edit.cue) || edit.cue < 1)) {
         throw new AdminError('字幕替换必须使用用户明确确认的原词和新词；未入队');
       }
+      if (confirmed.length && /^[\p{Script=Han}]{2,20}[xX]{2,8}$/u.test(edit.from)
+        && !subtitleRows(detail.subtitles).some(row => row.text.includes(edit.from))) {
+        throw new AdminError(`字幕统称需展开为具体原词，请使用已确认字幕替换：${JSON.stringify(confirmed)}；未入队`);
+      }
     }
+  }
+  if (confirmed.length) {
+    const planned = value.corrections || [];
+    if (planned.some((edit: NonNullable<FeedbackPlan['corrections']>[number]) => confirmed.some(item => item.from === edit.from
+      && (item.to !== edit.to || edit.cue !== undefined)))) throw new AdminError('字幕统称替换与用户确认的全片目标冲突；未入队');
+    value.corrections = [...planned, ...confirmed.filter(item => !planned.some((edit: { from: string }) => edit.from === item.from))];
+    if (value.corrections.length > 30) throw new AdminError('字幕修改数量无效');
   }
   return value;
 }

@@ -31,7 +31,7 @@ function writeRevision(file, cues) {
     } finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
 }
 
-function readCandidateDraft(metadata, evidence) {
+function readCandidateDraft(metadata, evidence, correction) {
     const draft = metadata.candidateSubtitles;
     if (!draft || draft.sourceSha256 !== evidence.sourceSha256
         || path.resolve(draft.sourceSrtPath) !== path.resolve(metadata.source.srtPath)
@@ -39,6 +39,18 @@ function readCandidateDraft(metadata, evidence) {
         throw new Error('Candidate subtitle source or boundaries changed');
     }
     if (digest(fs.readFileSync(draft.path)) !== draft.sha256) {
+        // A prior interrupted/manual correction may have changed only the exact
+        // words now explicitly confirmed by the operator. Preserve that file and
+        // let correctCandidateDraft write a new, recorded immutable revision.
+        const actual = asr.parseSrt(draft.path).segments;
+        const from = String(correction?.from || ''), to = String(correction?.to || '');
+        const cue = correction?.cue == null ? null : Number(correction.cue);
+        if (from && to && from !== to && String(correction?.reviewNote || '').trim()
+            && actual.length === draft.cues.length && actual.every((row, index) => {
+                const saved = draft.cues[index];
+                return row.start === saved.start && row.end === saved.end
+                    && row.text === (cue === null || cue === index + 1 ? saved.text.split(from).join(to) : saved.text);
+            })) return draft;
         throw new Error('Candidate SRT changed outside the correction command; approval is invalid');
     }
     const segments = asr.parseSrt(draft.path).segments;
@@ -49,8 +61,8 @@ function readCandidateDraft(metadata, evidence) {
     return draft;
 }
 
-function ensureCandidateDraft(metadata, metadataPath, evidence, config = {}) {
-    if (metadata.candidateSubtitles) return readCandidateDraft(metadata, evidence);
+function ensureCandidateDraft(metadata, metadataPath, evidence, config = {}, correction) {
+    if (metadata.candidateSubtitles) return readCandidateDraft(metadata, evidence, correction);
     if (metadata.aiReview?.sourceSha256 !== evidence.sourceSha256) throw new Error('Source evidence changed; cannot prepare candidate SRT');
     const window = metadata.window;
     const input = buildPreflightInput({ ...window, cues: evidence.cues, matchSegments: window.matchSegments || [] },
@@ -73,7 +85,7 @@ function ensureCandidateDraft(metadata, metadataPath, evidence, config = {}) {
 }
 
 function correctCandidateDraft(metadata, metadataPath, evidence, options) {
-    const draft = readCandidateDraft(metadata, evidence);
+    const draft = readCandidateDraft(metadata, evidence, options);
     const original = String(options.from || '');
     const confirmation = options.confirmCurrent === true || options.confirmCurrent === 'yes';
     const replacement = confirmation ? original : String(options.to || '');

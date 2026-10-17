@@ -203,6 +203,11 @@ class ActivityUploadTests(unittest.TestCase):
         self.assertEqual(uploader.call_args.kwargs['line'], batch_upload.video_uploader.Lines.BDA2)
         self.assertEqual(len(uploader.call_args.kwargs['pages']), 3)
         self.assertEqual(meta.call_args.kwargs['desc'], self.data['copy']['description'])
+        from src.scripts.clip_upload_progress import read_progress
+        progress = read_progress(clip)
+        self.assertEqual(progress['totalParts'], 3)
+        self.assertEqual(progress['phase'], 'completed')
+        self.assertEqual(progress['overallPercent'], 100)
 
     @patch('bilibili_upload_capabilities.fetch_capabilities', return_value={
         'maxParts': 1, 'collectionAllowed': True, 'multipartCollectionAllowed': True, 'externalSubtitlesAllowed': True,

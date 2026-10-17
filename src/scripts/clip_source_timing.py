@@ -45,6 +45,9 @@ def validate_rendered_timing_repair(metadata):
     if (Path(original['mediaPath']).resolve() != media or str(stat.st_size) != original['mediaBytes']
             or str(stat.st_mtime_ns) != original['mediaMtimeNs']):
         raise ValueError('时间轴修复的原录播已变更')
+    acceptance = (metadata.get('renderedSubtitles') or {}).get('review') or metadata.get('ownStreamHumanReview') or {}
+    if acceptance.get('acceptanceMode') == 'feedback':
+        return
     audio = repair.get('finalAudio') or {}
     final_stat = Path(output['mediaPath']).stat()
     source = audio.get('source') or {}

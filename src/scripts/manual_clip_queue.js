@@ -200,6 +200,7 @@ function buildQueueMediaConfig(rootConfig = {}, resourceProfile = null) {
     const own = rootConfig.ownStreamClips || {};
     return {
         ...(rootConfig.clipTopics || {}),
+        radioDanmaku: own.radioDanmaku,
         subtitleVideoEncoder: own.subtitleVideoEncoder || 'h264_nvenc',
         subtitleVideoPreset: own.subtitleVideoPreset || 'p4',
         subtitleVideoCrf: own.subtitleVideoCrf ?? 23,
@@ -375,7 +376,7 @@ async function cutTask(task, rootConfig, resourceSchedulerOverride = null) {
     let mediaResult;
     try {
         mediaResult = await topicClipper.cutClipMedia(
-            { kind: 'video', mediaPath: task.mediaPath },
+            { kind: 'video', mediaPath: task.mediaPath, xmlPath: task.sourceMetadata?.source?.xmlPath },
             window,
             outputSrt,
             outputVideo,
@@ -439,7 +440,9 @@ async function cutTask(task, rootConfig, resourceSchedulerOverride = null) {
             copyPath,
             coverPath,
             burnedSubtitles: Boolean(mediaResult.burnedSubtitles),
+            radioDanmaku: mediaResult.radioDanmaku || null,
             renderSettings: Object.fromEntries(Object.entries(cutConfig).filter(([key, value]) => /^(subtitle|twoStage|burnSubtitles|clipFfmpegThreads|ffmpegTimeoutMs)/u.test(key) && (value === null || typeof value !== 'object'))),
+            radioDanmakuSettings: cutConfig.radioDanmaku || null,
             twoStageMode: mediaResult.twoStageMode || 'copy',
             reusedReviewPreview: Boolean(mediaResult.reusedReviewPreview),
             subtitleSegmentCount: srtResult.segmentCount,

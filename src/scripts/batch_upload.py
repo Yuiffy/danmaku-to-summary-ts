@@ -72,6 +72,7 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src', 'scripts'))
 
 from config_loader import get_config, find_secrets_path
 from bilibili_upload import attach_video_to_collection, extract_room_id, get_collection_section_id
+from clip_upload_progress import UploadProgress
 from bilibili_api import Credential, video_uploader, Picture, video, get_client
 from clip_upload_manifest import load_upload_manifest, find_review_manifest
 from clip_upload_description import (
@@ -147,16 +148,6 @@ def build_credential(room_id=None, streamer_name=None, source_desc=None, prefix=
     with open(secrets_path, 'r', encoding='utf-8-sig') as f:
         secrets = json.load(f)
     cookie_str = secrets.get('bilibili', {}).get('cookie', '')
-    config = get_config()
-    collection_section_id = get_collection_section_id(
-        config,
-        room_id=room_id,
-        streamer_name=streamer_name,
-        source_desc=source_desc,
-        prefix=prefix,
-    )
-    if collection_section_id:
-        print(f"[INFO] 自动加入合集 section_id={collection_section_id}")
     if not cookie_str:
         print("[ERROR] 未找到B站Cookie")
         sys.exit(1)
@@ -639,7 +630,7 @@ async def upload_one(clip, credential, prefix, tags, tid, source_desc, collectio
         if before_submit:
             before_submit()
         print(f"  开始上传...")
-        result = await uploader.start()
+        result = await UploadProgress(pages, filepath).run(uploader)
 
         if result and isinstance(result, dict) and result.get('bvid'):
             bvid = result['bvid']
@@ -710,6 +701,13 @@ async def upload_one_guarded(
 ):
     full_title = f"{prefix}{clip['title']}"
     collection_section_id = clip.get('collectionSectionId') or collection_section_id
+    if collection_section_id is None:
+        collection_section_id = get_collection_section_id(
+            room_id=clip.get('roomId') or extract_room_id(clip.get('path')),
+            streamer_name=clip.get('streamerName'), source_desc=source_desc,
+            title=full_title, prefix=prefix,
+            publication_kind=clip.get('publicationKind'), media_path=clip.get('path'),
+        )
 
     async def enrich_and_attach(result):
         """Resolve archive ids before attaching to a collection.
@@ -1048,19 +1046,10 @@ async def main():
     collection_section_id = args.collection_section_id
     if collection_section_id is not None and collection_section_id <= 0:
         parser.error('--collection-section-id must be positive')
-    if collection_section_id is None:
-        try:
-            collection_section_id = get_collection_section_id(
-                room_id=room_id,
-                streamer_name=args.streamer_name,
-                source_desc=args.source,
-                prefix=args.prefix,
-            )
-        except Exception as e:
-            print(f"[WARN] 获取合集 section_id 失败，跳过合集：{e}")
-
     results = []
     for i, clip in enumerate(to_upload):
+        clip['roomId'] = clip.get('roomId') or room_id
+        clip['streamerName'] = clip.get('streamerName') or args.streamer_name
         clip['queueJobId'] = args.queue_job
         full_title = f"{args.prefix}{clip['title']}"
         print(f"[{i+1}/{len(to_upload)}] #{clip['idx']} {full_title}")

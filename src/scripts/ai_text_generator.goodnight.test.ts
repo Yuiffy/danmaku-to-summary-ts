@@ -143,4 +143,28 @@ describe('goodnight generator entry point', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(warnings.mock.calls.flat().some(value => String(value).startsWith('[GOODNIGHT_OUTCOME_UNKNOWN] '))).toBe(false);
   });
+
+  test('recovers a daiYu upstream outage through configured tuZi with its own proxy', async () => {
+    config.ai.text.daiYu.fallbackProvider = 'tuZi';
+    config.ai.text.daiYu.fallbackProviderModel = 'gpt-6-luna';
+    config.ai.text.daiYu.fallbackProviderApiMode = 'responses';
+    config.ai.text.tuZi.proxy = 'http://127.0.0.1:7890';
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 502,
+      headers: { get: () => 'failed-primary' }, text: async () => 'Upstream service temporarily unavailable' })
+      .mockResolvedValueOnce(completedResponse(valid));
+    const pending = generateGoodnightReply(highlight, 'fixture');
+    await jest.runAllTimersAsync();
+    const file = await pending;
+    expect(file).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.map(call => call[0])).toEqual([
+      'https://provider.invalid/v1/responses', 'https://fallback.invalid/v1/responses'
+    ]);
+    expect(fetchMock.mock.calls[0][1].agent).toBeNull();
+    expect(fetchMock.mock.calls[1][1].agent.proxy.href).toBe('http://127.0.0.1:7890/');
+    const saved = fs.readFileSync(file, 'utf8');
+    expect(saved).toContain('provider: "tuZi"');
+    expect(saved).toContain('fallback: true');
+    expect(saved.endsWith(valid)).toBe(true);
+  });
 });

@@ -204,6 +204,7 @@ def prepare_rebuild(args, api):
         options["allow_long"] = "yes" if args.allow_long else None
         options["allow_short"] = "yes" if getattr(args, "allow_short", False) else None
         options["replan"] = "yes" if getattr(args, "replan", False) else None
+        options["feedback_authorized"] = "yes" if getattr(args, "feedback_authorized", False) else None
         result = candidate_action(api, clip, "prepare", options, timeout=120)
         update_record(clip, result, api)
         api.save_json(api.REGISTRY_PATH, registry)
@@ -245,6 +246,9 @@ def cut_candidates(args, api):
             rebuilding = bool(clip.get("pendingRebuild"))
             options = {"review_note": args.review_note, **overrides}
             options["automatic_review"] = "yes" if getattr(args, "automatic_review", False) else None
+            options["feedback_authorized"] = "yes" if getattr(args, "feedback_authorized", False) else None
+            if options["automatic_review"] and options["feedback_authorized"]:
+                raise ValueError("Choose independent automatic review or feedback acceptance, not both")
             if rebuilding and any(value is not None for value in overrides.values()):
                 raise ValueError("Use rebuild to save revision public-copy changes before cut")
             if getattr(args, "require_approval", False):
@@ -257,7 +261,7 @@ def cut_candidates(args, api):
             print(f"[worker] candidate {clip_id}: burning subtitles and generating cover", flush=True)
             candidate_action(api, clip, "render", options, timeout=getattr(args, "timeout_seconds", 1800))
             metadata_path = Path(clip["metadataPath"])
-            if not rebuilding and getattr(args, "require_approval", False):
+            if not rebuilding and (getattr(args, "require_approval", False) or getattr(args, "feedback_authorized", False)):
                 metadata = api.load_json(metadata_path, {})
                 output = metadata.get("output") or {}
                 audit = api.subprocess.run([sys.executable, str(api.PROJECT_ROOT / "src/scripts/audit_bilibili_clip.py"),

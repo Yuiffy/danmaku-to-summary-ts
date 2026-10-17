@@ -128,6 +128,7 @@ class BatchUploadDescriptionTests(unittest.TestCase):
                             'roomId': '1820703922',
                         },
                         'window': {'start': 65.5, 'duration': 30.4},
+                        'publicationKind': 'keyword_topic',
                         'copy': {'title': 'JSON 标题', 'description': 'JSON 简介'},
                         'output': {
                             'mediaPath': str(root / 'actual.mp4'),
@@ -153,6 +154,7 @@ class BatchUploadDescriptionTests(unittest.TestCase):
             self.assertEqual(clip['metadataPath'], str(metadata_path.resolve()))
             self.assertEqual(clip['tags'], ['主播', '#芙娅之魂'])
             self.assertEqual(clip['roomId'], '1820703922')
+            self.assertEqual(clip['publicationKind'], 'keyword_topic')
             self.assertEqual(
                 load_generated_description(clip),
                 'JSON 简介',

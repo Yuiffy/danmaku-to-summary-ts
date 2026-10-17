@@ -59,7 +59,7 @@ async function reviewCopy(metadata, options, evidence) {
     const cues = evidence.cues.filter(cue => cue.start >= window.start - 0.001 && cue.end <= window.end + 0.001);
     const danmakuIds = audience.flatMap((row, index) => row.time >= window.start && row.time <= window.end ? [`D${index + 1}`] : []);
     const grounding = linkClipEvidence({ ...copy, sourceKind, evidenceCueIds: cues.map(cue => cue.id), evidenceDanmakuIds: danmakuIds }, window, evidence, audience);
-    if (grounding.issues.length) throw new Error(`Public copy still lacks source support: ${grounding.issues.join('; ')}`);
+    if (grounding.issues.length && options.feedbackAuthorized !== true) throw new Error(`Public copy still lacks source support: ${grounding.issues.join('; ')}`);
     return { copy, grounding, sourceKind };
 }
 
@@ -102,6 +102,7 @@ async function approveRenderedClip(metadataPath, options, config = require('./co
             : copy.description },
         output: { ...output, coverPath: cover, coverError: null } };
     updated.ownStreamHumanReview = { version: 1, status: 'approved', authority: 'human', clipId: options.id,
+        ...(options.feedbackAuthorized === true ? { acceptanceMode: 'feedback', audioVisualReviewed: false } : {}),
         reviewedAt: new Date().toISOString(), note: options.reviewNote.trim(), sourceKind,
         source: snapshot, artifactWindow: { start: window.start, end: window.end },
         originalIssues: metadata.attributionReview?.issues || metadata.grounding?.issues || [], originalCopy: metadata.copy,
@@ -116,10 +117,11 @@ module.exports = { approveRenderedClip, sourceSnapshot, fileDigest, reviewCopy, 
 if (require.main === module) {
     const { values } = parseArgs({ options: { metadata: { type: 'string' }, id: { type: 'string' },
         'review-index': { type: 'string' }, 'review-note': { type: 'string' }, title: { type: 'string' },
-        description: { type: 'string' }, 'cover-text': { type: 'string' }, 'source-kind': { type: 'string' } } });
+        description: { type: 'string' }, 'cover-text': { type: 'string' }, 'source-kind': { type: 'string' },
+        'feedback-authorized': { type: 'boolean', default: false } } });
     approveRenderedClip(values.metadata, { id: Number(values.id), reviewIndex: Number(values['review-index']),
         reviewNote: values['review-note'], title: values.title, description: values.description,
-        coverText: values['cover-text'], sourceKind: values['source-kind'] })
+        coverText: values['cover-text'], sourceKind: values['source-kind'], feedbackAuthorized: values['feedback-authorized'] })
         .then(result => console.log('REVIEW_RESULT: ' + JSON.stringify(result)))
         .catch(error => { console.error(error.message); process.exitCode = 1; });
 }

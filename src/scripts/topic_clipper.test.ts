@@ -698,6 +698,24 @@ describe('topic_clipper', () => {
     expect(1928.91 - topicClipper.findMatchingPacketTime(roughPacket, sourcePackets, 1920.91)).toBeCloseTo(12.211, 3);
   });
 
+  test('matches reordered frames using decode time while retaining their presentation timestamp', () => {
+    const rough = { data_hash: 'MD5:reordered' };
+    expect(topicClipper.findMatchingPacketTime(rough, [
+      { data_hash: rough.data_hash, pts_time: '2730.701', dts_time: '2729.900' }
+    ], 2730.17)).toBe(2730.701);
+    expect(topicClipper.findMatchingPacketTime(rough, [
+      { data_hash: rough.data_hash, pts_time: '2734.701', dts_time: '2733.900' }
+    ], 2730.17)).toBeNull();
+  });
+
+  test('calibrates the local first-frame timestamp before trimming both audio and video', async () => {
+    const api = { probeRoughCutSourceStart: jest.fn().mockResolvedValue(2730.701),
+      probeVideoPacketsWithHashes: jest.fn().mockResolvedValue([{ pts_time: '0.801', dts_time: '0' }]) };
+    const origin = await require('./clipping/media_runtime').probeRoughCutTimeOrigin('ffmpeg', 'source', 'rough', 2730.17, api);
+    expect(origin).toBeCloseTo(2729.9, 4);
+    expect(2738.17 - origin).toBeCloseTo(8.27, 4);
+  });
+
   test('terminates a hung ffmpeg process at the configured timeout', async () => {
     const startedAt = Date.now();
 

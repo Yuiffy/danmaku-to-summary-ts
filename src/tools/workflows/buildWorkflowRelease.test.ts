@@ -6,7 +6,7 @@ import { buildWorkflowRelease } from './buildWorkflowRelease';
 test('repeat builds and failed builds clean their staging files without activating or damaging a candidate', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workflow-builder-'));
   try {
-    const entries = ['clipping/speakerIdentity', 'clipping/stage', 'clipping/editPlan', 'clipping/enhancement', 'clipping/experiment',
+    const entries = ['clipping/radioDanmaku', 'clipping/speakerIdentity', 'clipping/stage', 'clipping/editPlan', 'clipping/enhancement', 'clipping/experiment',
       'clipping/activityStages', 'clipping/activityRecovery', 'clipping/activityWatchContext', 'clipping/activityAudio', 'clipping/activityTitles', 'clipping/activityPublication', 'clipping/ownTimingRecovery',
       'clipping/watchBlackPolicy', 'clipping/watchBlackRuntime', 'clipping/watchMovieCadence', 'clipping/songResearchRuntime', 'clipping/activityNativeSegments', 'clipping/watchPublicNames',
       'clipping/reviewDigest', 'clipping/reviewSelectionHistory', 'clipping/ownSourceReview',

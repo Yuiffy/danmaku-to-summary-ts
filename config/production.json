@@ -151,7 +151,7 @@
         "displayName": "tuZi",
         "baseUrl": "https://api.tu-zi.com",
         "apiKey": "",
-        "proxy": null
+        "proxy": "http://127.0.0.1:7890"
       }
     },
     "text": {
@@ -183,7 +183,7 @@
         "transientRetryDelayMs": 10000,
         "temperature": 0.7,
         "maxTokens": 100000,
-        "proxy": null
+        "proxy": "http://127.0.0.1:7890"
       },
       "daiYu": {
         "enabled": true,
@@ -284,7 +284,7 @@
         "apiKey": "",
         "baseUrl": "https://api.tu-zi.com",
         "model": "gpt-image-2",
-        "proxy": null
+        "proxy": "http://127.0.0.1:7890"
       },
       "imageGeneration": {
         "enabled": true,
@@ -312,6 +312,33 @@
             "outputFormat": "png",
             "responseFormat": "b64_json",
             "useTuziRetry": false
+          },
+          {
+            "provider": "tuZi",
+            "model": "gpt-image-2",
+            "flow": "tuZiCompatible",
+            "maxAttempts": 1,
+            "timeoutMs": 1200000,
+            "size": "1:1",
+            "quality": "high",
+            "outputFormat": "png",
+            "responseFormat": "b64_json",
+            "useTuziRetry": true,
+            "includeAsyncFallback": false
+          },
+          {
+            "provider": "tuZi",
+            "model": "gpt-image-2",
+            "flow": "tuZiCompatible",
+            "strategyMode": "asyncOnly",
+            "asyncFallbackModel": "gemini-3-pro-image-preview-async",
+            "maxAttempts": 1,
+            "timeoutMs": 1200000,
+            "size": "1:1",
+            "quality": "high",
+            "outputFormat": "png",
+            "responseFormat": "b64_json",
+            "useTuziRetry": true
           }
         ],
         "rollout": {
@@ -1781,6 +1808,7 @@
     }
   },
   "ownStreamClips": {
+    "radioDanmaku": { "enabled": true, "mode": "portrait", "roomIds": ["25788785"], "fontScale": 2, "fps": 30 },
     "enabled": true,
     "automaticPublication": {
       "mode": "auto", "roomIds": ["25788785"], "policyVersion": "own-stream-v1",
@@ -1976,11 +2004,9 @@
         "sectionId": 9482593
       },
       "collectionRouting": {
-        "fuyasoul": {
-          "seasonId": 8956269,
-          "sectionId": 9991476,
-          "roomIds": ["1820703922", "1713546334", "1727074031", "23771092"],
-          "markers": ["花礼Harei", "灰泽满Hazel", "羽啾chu2u", "又一充电中"]
+        "keyword": {
+          "seasonId": 8941979,
+          "sectionId": 9974272
         },
         "sui": {
           "seasonId": 8513688,
@@ -1988,15 +2014,9 @@
           "roomIds": ["25788785"],
           "markers": ["岁己", "小岁", "sui"]
         },
-        "yua": {
-          "seasonId": 8977005,
-          "sectionId": 10015117,
-          "roomIds": ["22470216"],
-          "markers": ["悠亚Yua", "悠亚", "小悠", "Yua"]
-        },
         "other": {
-          "seasonId": 8941979,
-          "sectionId": 9974272
+          "seasonId": 8977005,
+          "sectionId": 10015117
         }
       }
     },

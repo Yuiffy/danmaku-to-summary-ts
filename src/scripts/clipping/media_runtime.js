@@ -140,8 +140,9 @@ function findMatchingPacketTime(roughPacket, sourcePackets, targetTime) {
     if (!hash) return null;
     const matches = (sourcePackets || [])
         .filter(packet => String(packet?.data_hash || '').trim() === hash)
+        .filter(packet => Number(packet?.dts_time ?? packet?.pts_time) <= Number(targetTime) + 0.5)
         .map(packet => Number(packet?.pts_time ?? packet?.dts_time))
-        .filter(time => Number.isFinite(time) && time >= 0 && time <= Number(targetTime) + 0.5)
+        .filter(time => Number.isFinite(time) && time >= 0)
         .sort((a, b) => b - a);
     return matches.length > 0 ? matches[0] : null;
 }
@@ -177,4 +178,13 @@ async function probeRoughCutSourceStart(ffmpegPath, sourcePath, roughPath, targe
     throw new Error(`could not match rough cut first packet near source time ${targetTime}`);
 }
 
-module.exports = { runFfmpeg, probeVideoPacketsWithHashes, resolveFfprobePath, findMatchingPacketTime, probeRoughCutSourceStart, probeMediaDuration };
+async function probeRoughCutTimeOrigin(ffmpegPath, sourcePath, roughPath, targetTime,
+    api = { probeRoughCutSourceStart, probeVideoPacketsWithHashes }) {
+    const sourceStart = await api.probeRoughCutSourceStart(ffmpegPath, sourcePath, roughPath, targetTime);
+    const [packet] = await api.probeVideoPacketsWithHashes(ffmpegPath, roughPath, '%+#1');
+    const localStart = Number(packet?.pts_time ?? packet?.dts_time);
+    if (!Number.isFinite(localStart)) throw new Error('rough cut has no valid first video timestamp');
+    return sourceStart - localStart;
+}
+
+module.exports = { runFfmpeg, probeVideoPacketsWithHashes, resolveFfprobePath, findMatchingPacketTime, probeRoughCutSourceStart, probeRoughCutTimeOrigin, probeMediaDuration };

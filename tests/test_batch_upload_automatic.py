@@ -12,6 +12,32 @@ from src.scripts.clip_upload_errors import has_terminal_upload_error
 
 
 class AutomaticUploadRecoveryTests(unittest.TestCase):
+    def test_collection_routing_attaches_each_clip_once_without_resubmission(self):
+        config = {'bilibili': {'upload': {'collectionRouting': {
+            'keyword': {'sectionId': 42}, 'other': {'sectionId': 43},
+        }}}}
+        cases = [({'publicationKind': 'keyword_topic'}, 42, None),
+                 ({'path': r'D:\clips\topic_clips\old.mp4'}, 42, None),
+                 ({'path': 'D:/clips/own_stream_fun_clips/clip.mp4'}, 43, None),
+                 ({'publicationKind': 'keyword_topic', 'collectionSectionId': 44}, 44, None),
+                 ({'publicationKind': 'keyword_topic'}, 45, 45)]
+        for fields, expected, override in cases:
+            clip = {'idx': 1, 'title': 'Title', 'roomId': '1727074031', **fields}
+            with self.subTest(fields=fields, override=override), ExitStack() as stack:
+                stack.enter_context(patch('bilibili_upload.get_config', return_value=config))
+                stack.enter_context(patch.object(upload, 'fetch_member_archives', return_value={}))
+                stack.enter_context(patch.object(upload, 'wait_for_upload_available', AsyncMock(return_value=(True, 'ok'))))
+                stack.enter_context(patch.object(upload, 'enrich_upload_result', side_effect=lambda result, _: result))
+                submit = stack.enter_context(patch.object(upload, 'upload_one', AsyncMock(return_value={
+                    'idx': 1, 'title': 'Title', 'status': 'ok', 'bvid': 'BV1', 'aid': 1, 'cid': 2})))
+                add = stack.enter_context(patch('bilibili_upload.add_episode_to_section', return_value={'code': 0}))
+                result = asyncio.run(upload.upload_one_guarded(clip, object(), '', [], 21, '', '', 30, 0,
+                                                               collection_section_id=override))
+                self.assertEqual(result['collectionSectionId'], expected)
+                self.assertEqual(result['collectionStatus'], 'ok')
+                self.assertEqual(submit.await_count, 1)
+                self.assertEqual(add.call_count, 1)
+
     def test_incomplete_archive_lookup_is_unknown_not_empty_or_partial_success(self):
         first = Mock()
         first.json.return_value = {"code": 0, "data": {"arc_audits": [

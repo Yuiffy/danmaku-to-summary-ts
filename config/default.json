@@ -1073,6 +1073,33 @@
             "outputFormat": "png",
             "responseFormat": "b64_json",
             "useTuziRetry": false
+          },
+          {
+            "provider": "tuZi",
+            "model": "gpt-image-2",
+            "flow": "tuZiCompatible",
+            "maxAttempts": 1,
+            "timeoutMs": 1200000,
+            "size": "1:1",
+            "quality": "high",
+            "outputFormat": "png",
+            "responseFormat": "b64_json",
+            "useTuziRetry": true,
+            "includeAsyncFallback": false
+          },
+          {
+            "provider": "tuZi",
+            "model": "gpt-image-2",
+            "flow": "tuZiCompatible",
+            "strategyMode": "asyncOnly",
+            "asyncFallbackModel": "gemini-3-pro-image-preview-async",
+            "maxAttempts": 1,
+            "timeoutMs": 1200000,
+            "size": "1:1",
+            "quality": "high",
+            "outputFormat": "png",
+            "responseFormat": "b64_json",
+            "useTuziRetry": true
           }
         ],
         "rollout": {
@@ -1616,6 +1643,7 @@
     }
   },
   "ownStreamClips": {
+    "radioDanmaku": { "enabled": true, "mode": "portrait", "roomIds": ["25788785"], "fontScale": 2, "fps": 30 },
     "enabled": true,
     "automaticPublication": {
       "mode": "off", "roomIds": ["25788785"], "policyVersion": "own-stream-v1",

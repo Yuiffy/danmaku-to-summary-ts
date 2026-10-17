@@ -48,7 +48,7 @@ const DEFAULT_CLIP_TOPICS_CONFIG = {
 
 function getClipTopicsConfig(config = {}) {
     const raw = config.clipTopics || {};
-    const mediaDefaults = Object.fromEntries(['subtitleVideoEncoder', 'subtitleVideoPreset', 'subtitleVideoCq', 'subtitleHwaccel',
+    const mediaDefaults = Object.fromEntries(['radioDanmaku', 'subtitleVideoEncoder', 'subtitleVideoPreset', 'subtitleVideoCq', 'subtitleHwaccel',
         'twoStageSubtitleBurn', 'twoStageMode'].filter(key => config.ownStreamClips?.[key] !== undefined)
         .map(key => [key, config.ownStreamClips[key]]));
     return {

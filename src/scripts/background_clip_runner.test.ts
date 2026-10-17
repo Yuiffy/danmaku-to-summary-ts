@@ -7,6 +7,29 @@ describe('background_clip_runner', () => {
     jest.restoreAllMocks();
   });
 
+  test('a recording-scoped job replaces ordinary stages, keeps source, and is not repeated after completion', async () => {
+    const fs = require('fs'), os = require('os'), path = require('path');
+    const jobs = require('./recording_clip_job.ts');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'background-scoped-'));
+    const media = path.join(dir, 'recording.flv'), payloadPath = path.join(dir, 'payload.json');
+    fs.writeFileSync(media, 'source');
+    fs.writeFileSync(payloadPath, JSON.stringify({ originalMediaPath: media, roomId: '12', videoPathToDelete: media }));
+    jest.spyOn(configLoader, 'getConfig').mockReturnValue({ clipTopics: { enabled: true } });
+    jest.spyOn(jobs, 'resolveRecordingClipJob').mockReturnValue({ id: 'test' });
+    const execute = jest.spyOn(jobs, 'executeRecordingClipJob').mockRejectedValueOnce(new Error('adapter failed')).mockResolvedValue(undefined);
+    const ordinary = jest.spyOn(topicClipper, 'generateTopicClips');
+    try {
+      await expect(backgroundClipRunner.runBackgroundClipsFromPayload(payloadPath)).rejects.toThrow('adapter failed');
+      expect(fs.existsSync(media)).toBe(true);
+      expect(ordinary).not.toHaveBeenCalled();
+      await backgroundClipRunner.runBackgroundClipsFromPayload(payloadPath);
+      await backgroundClipRunner.runBackgroundClipsFromPayload(payloadPath);
+      expect(execute).toHaveBeenCalledTimes(2);
+      expect(ordinary).not.toHaveBeenCalled();
+      expect(fs.existsSync(media)).toBe(true);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
   test('song/viewing workflow triggers for Sui even when highlight clippers and XML are absent', () => {
     jest.spyOn(configLoader, 'getConfig').mockReturnValue({
       clipTopics: { enabled: false }, ownStreamClips: { enabled: false },

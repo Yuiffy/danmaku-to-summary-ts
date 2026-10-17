@@ -12,7 +12,7 @@ import { createAdminServer } from './AdminServer';
 import { createFeedbackAgent, FeedbackCompletion, FeedbackToolCall } from './AdminFeedbackAgent';
 
 const roots: string[] = [];
-function fixture(plan: any = {}, complete?: FeedbackCompletion) {
+function fixture(plan: any = {}, complete?: FeedbackCompletion, directFeedback = false) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'admin-feedback-')); roots.push(root);
   const assets = path.join(root, 'recordings'); fs.mkdirSync(assets);
   const media = path.join(assets, 'clip.mp4'), cover = path.join(assets, 'cover.jpg'), srt = path.join(assets, 'clip.srt');
@@ -44,7 +44,7 @@ function fixture(plan: any = {}, complete?: FeedbackCompletion) {
     return 0;
   });
   const jobs = new AdminJobs(path.join(root, 'jobs'), run), planner = jest.fn(async () => JSON.stringify(plan));
-  const feedback = new AdminFeedback(clips, jobs, run, planner, complete && createFeedbackAgent(complete));
+  const feedback = new AdminFeedback(clips, jobs, run, planner, complete && createFeedbackAgent(complete), directFeedback);
   const token = 'a'.repeat(64), headers = { Authorization: `Bearer ${token}` };
   const app = createAdminServer({ clips, jobs, feedback, configs: new AdminConfigStore(root) }, token);
   const input = (note = '把“建功”改成“建构”，小岁本人发言，按原窗口制作') => ({ action: 'feedback-publish', note, publishApproved: true, revision: clips.detail('3354').revision });
@@ -105,6 +105,117 @@ it('returns the persisted boundary recovery failure to the editor after a failed
 
 const agentCall = (name: string, args: unknown = {}) => ({ content: null, tool_calls: [{ id: `call_${name}`,
   type: 'function', function: { name, arguments: JSON.stringify(args) } } as FeedbackToolCall] });
+
+it('uses explicit feedback acceptance for an existing video without rerendering or asking AI to approve it', async () => {
+  const f = fixture({}, undefined, true);
+  f.feedback.submit('3354', f.input('投')); await f.jobs.flush();
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['approve-review', 'enqueue']);
+  expect(f.run.mock.calls[0][0].args).toContain('--feedback-authorized');
+  expect(f.run.mock.calls.flatMap(([command]) => command.args)).not.toContain('--automatic-review');
+  expect(f.jobs.latest('feedback-publish', '3354')?.status).toBe('succeeded');
+  expect(f.planner).not.toHaveBeenCalled();
+});
+
+it('applies the requested changes before feedback-authorized rendering and enqueues without AI gating', async () => {
+  const f = fixture({ title: '用户指定的新标题', corrections: [{ from: '建功', to: '建构' }] }, undefined, true);
+  f.feedback.submit('3354', f.input()); await f.jobs.flush();
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['rebuild', 'correct', 'cut', 'enqueue']);
+  for (const [command] of f.run.mock.calls.filter(([command]) => ['rebuild', 'cut'].includes(command.action))) {
+    expect(command.args).toContain('--feedback-authorized');
+    expect(command.args).not.toContain('--automatic-review');
+  }
+  expect(f.clips.detail('3354').title).toBe('用户指定的新标题');
+});
+
+it('does not enqueue after feedback-authorized media creation fails', async () => {
+  const f = fixture({ title: '用户指定标题' }, undefined, true), original = f.run.getMockImplementation()!;
+  f.run.mockImplementation(async (command, output) => command.action === 'cut' ? 2 : original(command, output));
+  f.feedback.submit('3354', f.input('按这个标题投')); await f.jobs.flush();
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['rebuild', 'cut']);
+  expect(f.jobs.latest('feedback-publish', '3354')?.status).toBe('failed');
+});
+
+it('recovers source context for a rejected candidate whose formal window was lost', async () => {
+  const f = fixture({}, undefined, true), metadata = readJson(f.metadataPath);
+  metadata.selectionRejection = { reason: 'missing_selected_candidate_detail' };
+  metadata.window = { start: null, end: null };
+  metadata.reviewPresentation = { window: { start: 0, end: 2 } };
+  metadata.source = { srtPath: f.srt };
+  atomicJson(f.metadataPath, metadata);
+  const context = f.clips.feedbackDetail('3354');
+  expect(context.source.subtitles).toContain('建功');
+  expect(context.evidence.recallWindow).toEqual({ start: 0, end: 2 });
+  f.feedback.submit('3354', f.input('投')); await f.jobs.flush();
+  expect(f.run.mock.calls[0][0].args).toEqual(expect.arrayContaining(['--replan', '--start', '0', '--end', '2', '--feedback-authorized']));
+});
+
+it('continues a feedback retry when its exact replacement is already saved across subtitle cues', async () => {
+  const f = fixture({ corrections: [{ from: '人脸萌', to: '冷脸萌' }] }, undefined, true), metadata = readJson(f.metadataPath);
+  metadata.renderedSubtitles = { cues: [{ text: '像冷脸' }, { text: '萌' }] };
+  atomicJson(f.metadataPath, metadata);
+  f.feedback.submit('3354', f.input('“人脸萌”应该为“冷脸萌”')); await f.jobs.flush();
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['rebuild', 'cut', 'enqueue']);
+  expect(f.jobs.latest('feedback-publish', '3354')?.status).toBe('succeeded');
+});
+
+it('executes every confirmed name variant through literal correct commands before rendering and enqueueing', async () => {
+  const corrections = ['石手心汤', '石手心肠', '石手先生'].map(from => ({ from, to: '时守星沙' }));
+  const complete = jest.fn<ReturnType<FeedbackCompletion>, Parameters<FeedbackCompletion>>()
+    .mockImplementationOnce(async messages => {
+      expect(messages[0].content).toContain(JSON.stringify(corrections));
+      return agentCall('inspect_clip');
+    }).mockResolvedValueOnce(agentCall('revise_and_review', { plan: { corrections: [corrections[0]] } }))
+    .mockImplementationOnce(async messages => {
+      expect(JSON.parse(messages.at(-1)!.content!)).toMatchObject({ ready: true });
+      return agentCall('enqueue_submission');
+    });
+  const f = fixture({}, complete, true);
+  fs.writeFileSync(f.srt, `1\n00:00:00,000 --> 00:00:02,000\n石手心汤 石手心汤 石手心肠 石手先生\n`);
+  f.feedback.submit('3354', f.input('里面的“石手xx”都是时守星沙。')); await f.jobs.flush();
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['rebuild', 'correct', 'correct', 'correct', 'cut', 'enqueue']);
+  const commands = f.run.mock.calls.map(([command]) => command).filter(command => command.action === 'correct');
+  commands.forEach((command, index) => {
+    expect(command.args).toEqual(expect.arrayContaining(['--from', corrections[index].from, '--to', '时守星沙']));
+    expect(command.args).not.toContain('--cue');
+  });
+  expect(f.jobs.latest('feedback-publish', '3354')).toMatchObject({ status: 'succeeded', plan: { corrections } });
+});
+
+it('returns fresh review reasons and cited human checks so the editor can repair copy before enqueue', async () => {
+  const reason = '标题中的人物称呼缺乏片内证据，可省略人名保留请化妆师的事件';
+  const humanChecks = [{ question: '这个称呼是否确实是某人？', cueIds: ['G2'],
+    evidence: [{ id: 'G2', start: 1, end: 2, text: '今天找了化妆师' }] }];
+  const complete = jest.fn<ReturnType<FeedbackCompletion>, Parameters<FeedbackCompletion>>()
+    .mockResolvedValueOnce(agentCall('inspect_clip'))
+    .mockResolvedValueOnce(agentCall('revise_and_review', { plan: { title: '某人请了化妆师' } }))
+    .mockImplementationOnce(async messages => {
+      const result = JSON.parse(messages.at(-1)!.content!);
+      expect(result).toMatchObject({ ready: false, review: { attribution: ['model_requires_review'] },
+        reviewDetails: { attribution: { status: 'needs_review', reason, humanChecks },
+          publication: { status: 'needs_review', issues: ['attribution_not_passed'] } } });
+      expect(JSON.stringify(result)).not.toContain('privateSourcePath');
+      return agentCall('revise_and_review', { plan: { title: '请化妆师，只因要见很多人' } });
+    }).mockResolvedValueOnce(agentCall('enqueue_submission'));
+  const f = fixture({}, complete), original = f.run.getMockImplementation()!;
+  let cuts = 0;
+  f.run.mockImplementation(async (command, output) => {
+    const code = await original(command, output);
+    if (command.action === 'cut') {
+      const metadata = readJson(f.metadataPath), registry = readJson(f.registryPath);
+      const first = ++cuts === 1;
+      metadata.attributionReview = first ? { status: 'needs_review', reason, humanChecks,
+        issues: ['model_requires_review'], history: [{ privateSourcePath: 'not-for-editor' }] }
+        : { status: 'passed', reason: '文案已有片内支持', issues: [], humanChecks: [] };
+      metadata.publicationReview = { status: first ? 'needs_review' : 'passed', issues: first ? ['attribution_not_passed'] : [] };
+      registry.clips['3354'].reviewPending = first;
+      atomicJson(f.metadataPath, metadata); atomicJson(f.registryPath, registry);
+    }
+    return code;
+  });
+  f.feedback.submit('3354', f.input('投')); await f.jobs.flush();
+  expect(f.run.mock.calls.map(([command]) => command.action)).toEqual(['rebuild', 'cut', 'rebuild', 'cut', 'enqueue']);
+  expect(f.jobs.latest('feedback-publish', '3354')?.status).toBe('succeeded');
+});
 
 it('runs an actual inspect/edit/review/enqueue tool conversation and observes the resulting title', async () => {
   const complete = jest.fn<ReturnType<FeedbackCompletion>, Parameters<FeedbackCompletion>>()

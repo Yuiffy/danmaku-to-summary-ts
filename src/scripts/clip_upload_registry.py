@@ -13,6 +13,10 @@ import re
 import secrets
 import subprocess
 import sys
+try:
+    from . import clip_upload_status
+except ImportError:
+    import clip_upload_status
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -845,18 +849,7 @@ def list_clips(args: argparse.Namespace) -> int:
 
 
 def show_clips(args: argparse.Namespace) -> int:
-    ids = parse_int_list(args.ids)
-    registry = load_json(REGISTRY_PATH, default_registry())
-    normalize_registry_media_paths(registry)
-    sync_clip_statuses(registry, ids)
-    save_json(REGISTRY_PATH, registry)
-    for clip_id in ids:
-        clip = registry.get("clips", {}).get(str(clip_id))
-        if not clip:
-            print(f"[MISSING] {clip_id}")
-            continue
-        print(json.dumps(clip, ensure_ascii=False, indent=2))
-    return 0
+    return clip_upload_status.show_clips(args, sys.modules[__name__])
 
 
 def enqueue(args: argparse.Namespace) -> int:
@@ -1056,6 +1049,7 @@ def resume_uploads(args: argparse.Namespace) -> int:
 
 def queue_status(args: argparse.Namespace) -> int:
     queue = load_json(QUEUE_PATH, default_queue())
+    registry = load_json(REGISTRY_PATH, default_registry())
     account_guard = queue.get("accountRollingUploadGuard")
     if isinstance(account_guard, dict):
         print(
@@ -1092,6 +1086,8 @@ def queue_status(args: argparse.Namespace) -> int:
             f"{job.get('id')} {job.get('status')} ids={','.join(str(i) for i in job.get('clipIds', []))} "
             f"updated={job.get('updatedAt')} {' '.join(details)}".rstrip()
         )
+        if job.get("status") in ("running", "pending", "retry_wait", "failed"):
+            clip_upload_status.show_job_progress(job, registry)
         if job.get("error"):
             print(f"  error: {str(job['error'])[:1000]}")
         if job.get("renderFailures") and job.get("status") not in ("failed", "done"):
@@ -2328,6 +2324,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--enqueue", action="store_true")
     p.set_defaults(func=edit_candidate)
     p = sub.add_parser("rebuild", help="Prepare a rendered own-stream/topic revision or recover an overlong candidate; never renders immediately")
+    p.add_argument("--feedback-authorized", action="store_true", help="Apply explicit feedback publication acceptance")
     p.add_argument("--id", required=True, type=int)
     p.add_argument("--review-note", required=True)
     p.add_argument("--title", default=None)
@@ -2349,6 +2346,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout-seconds", type=int, default=1800)
     p.set_defaults(func=lambda args: clip_candidate_queue.preview_candidates(args, sys.modules[__name__]))
     p = sub.add_parser("cut", help="Render held topic candidates by their reserved short IDs; never auto-upload")
+    p.add_argument("--feedback-authorized", action="store_true", help="Apply explicit operator feedback publication authority; AI reviews remain advisory")
     p.add_argument("--automatic-review", action="store_true", help="Fresh independent AI review; do not record human approval")
     p.add_argument("--ids", required=True)
     p.add_argument("--review-note", required=True)
@@ -2359,6 +2357,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cut_candidates)
     clip_media_replace.add_command(sub, sys.modules[__name__])
     p = sub.add_parser("approve-review", help="Save explicit human review for a rendered own-stream clip; never uploads")
+    p.add_argument("--feedback-authorized", action="store_true", help="Record feedback publication acceptance without claiming audio/visual review")
     p.add_argument("--id", required=True, type=int)
     p.add_argument("--review-note", required=True)
     p.add_argument("--title", default=None)
@@ -2414,14 +2413,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--idle-interval", type=int, default=30)
     p.set_defaults(func=worker)
     return parser
-
-
 def main(argv: Optional[List[str]] = None) -> int:
     ensure_runtime_dir()
     parser = build_parser()
     args = parser.parse_args(argv)
     return int(args.func(args) or 0)
-
-
 if __name__ == "__main__":
     raise SystemExit(main())

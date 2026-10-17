@@ -1,4 +1,4 @@
-const { runFfmpeg, probeVideoPacketsWithHashes, resolveFfprobePath, findMatchingPacketTime, probeRoughCutSourceStart } = require('./clipping/media_runtime');
+const { runFfmpeg, probeVideoPacketsWithHashes, resolveFfprobePath, findMatchingPacketTime, probeRoughCutSourceStart, probeRoughCutTimeOrigin } = require('./clipping/media_runtime');
 const { buildSubtitleBurnVideoArgs, buildSubtitleBurnInputArgs, isNvencSubtitleEncoder } = require('./clipping/subtitle_encoding');
 const { normalizeCoverText, buildGroundingReviewLine } = require('./clipping/selection_result');
 const { getVideoResolution, probeMediaDuration } = require('./clipping/video_probe');
@@ -806,60 +806,7 @@ async function generateClipCover(videoPath, title, outputDir, info = {}) {
  * @param {number} height - 视频高度
  * @returns {{ forceStyle: string, maxCharsPerLine: number }}
  */
-function calculateSubtitleStyle(width, height, config = {}) {
-    // ASS 会把 PlayRes 坐标系自动缩放到输出画面。字号必须只按 PlayRes 计算，
-    // 如果再按源视频高度缩放，720p 和 1080p 就会得到不同的画面占比。
-    const videoWidth = Number(width);
-    const videoHeight = Number(height);
-    const isPortrait = Number.isFinite(videoWidth) && videoWidth > 0
-        && Number.isFinite(videoHeight) && videoHeight > videoWidth;
-    const landscapeFontSizeRatio = Number(config.subtitleFontSizeRatio ?? process.env.FFMPEG_SUBTITLE_FONT_SIZE_RATIO ?? 0.094);
-    // 竖屏的可用横向空间明显更窄，单独控制字号，避免为了竖屏缩小所有横屏字幕。
-    const portraitFontSizeRatio = Number(config.subtitlePortraitFontSizeRatio ?? process.env.FFMPEG_SUBTITLE_PORTRAIT_FONT_SIZE_RATIO ?? 0.044);
-    const fontSizeRatio = isPortrait ? portraitFontSizeRatio : landscapeFontSizeRatio;
-    const minFontSize = Number(config.subtitleMinFontSize ?? process.env.FFMPEG_SUBTITLE_MIN_FONT_SIZE ?? 30);
-    const maxFontSize = Number(config.subtitleMaxFontSize ?? process.env.FFMPEG_SUBTITLE_MAX_FONT_SIZE ?? 72);
-    const fontName = String(config.subtitleFontName ?? process.env.FFMPEG_SUBTITLE_FONT_NAME ?? '汉仪有圆 85简').trim() || '汉仪有圆 85简';
-    const playResY = Number(config.subtitlePlayResY ?? process.env.FFMPEG_SUBTITLE_PLAYRES_Y ?? 720);
-    const configuredPlayResX = Number(config.subtitlePlayResX ?? process.env.FFMPEG_SUBTITLE_PLAYRES_X);
-    const playResX = Number.isFinite(configuredPlayResX) && configuredPlayResX > 0
-        ? Math.round(configuredPlayResX)
-        : (
-            Number.isFinite(videoWidth) && videoWidth > 0 && Number.isFinite(videoHeight) && videoHeight > 0
-                ? Math.max(1, Math.round(playResY * videoWidth / videoHeight))
-                : 1280
-        );
-    const fontSize = Math.min(maxFontSize, Math.max(minFontSize, Math.round(playResY * fontSizeRatio)));
-    const outline = Math.max(2, Math.round(fontSize * 0.09));
-    const marginV = Number(config.subtitleMarginV ?? process.env.FFMPEG_SUBTITLE_MARGIN_V ?? 24);
-    const marginL = Math.max(0, Number(config.subtitleMarginL ?? config.subtitleMarginHorizontal ?? process.env.FFMPEG_SUBTITLE_MARGIN_L ?? 32));
-    const marginR = Math.max(0, Number(config.subtitleMarginR ?? config.subtitleMarginHorizontal ?? process.env.FFMPEG_SUBTITLE_MARGIN_R ?? 32));
-    // 汉字实际字面通常略窄于 1em；横屏沿用 0.95em，竖屏则保持保守的 1em 安全估算。
-    const glyphWidthRatio = Math.max(0.5, Number(
-        config.subtitleGlyphWidthRatio
-        ?? process.env.FFMPEG_SUBTITLE_GLYPH_WIDTH_RATIO
-        ?? (isPortrait ? 1 : 0.95)
-    ));
-    const availableWidth = Math.max(fontSize, playResX - marginL - marginR - outline * 2);
-    const calculatedMaxChars = Math.max(1, Math.floor(availableWidth / (fontSize * glyphWidthRatio)));
-    const configuredMaxChars = Number(config.subtitleMaxCharsPerLine);
-    const maxCharsPerLine = Number.isFinite(configuredMaxChars) && configuredMaxChars > 0
-        ? Math.min(calculatedMaxChars, Math.floor(configuredMaxChars))
-        : calculatedMaxChars;
-    const forceStyle = `FontSize=${fontSize},FontName=${fontName},Bold=1,Outline=${outline}`;
-    return {
-        forceStyle,
-        maxCharsPerLine,
-        fontSize,
-        outline,
-        fontName,
-        playResX,
-        playResY,
-        marginL,
-        marginR,
-        marginV
-    };
-}
+function calculateSubtitleStyle(...args) { return require('./clipping/subtitle_encoding').calculateSubtitleStyle(...args); }
 
 function resolveSubtitleBurnPlan(config = {}) {
     const requestedMode = String(
@@ -880,8 +827,6 @@ function resolveSubtitleBurnPlan(config = {}) {
         requestedMode
     };
 }
-
-
 
 
 async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
@@ -913,6 +858,8 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
     let coverTimeOrigin = null;
     let burnAssPath = null;
     let stickerPath = null;
+    let radio = null;
+    let radioAssPath = null;
     let subtitleBurnFailure = null;
     let roughSourceStart = null;
     let roughTrimOffset = null;
@@ -952,6 +899,16 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
             stickerPath = path.join(parsedOutput.dir, `${parsedOutput.name}.effects.ass`);
             fs.writeFileSync(stickerPath, creative.stickerAss(config.creativePlan, videoRes.width, videoRes.height), 'utf8');
         }
+        if (config.radioDanmaku?.enabled === true) {
+            radioAssPath = path.join(parsedOutput.dir, `${parsedOutput.name}.danmaku.ass`);
+            radio = await require('./workflow-runtime').loadWorkflow('clipping/radioDanmaku').prepareRadioDanmaku({
+                mediaPath: source.mediaPath, xmlPath: source.xmlPath || config.xmlPath, assPath: radioAssPath,
+                window, resolution: videoRes, settings: config.radioDanmaku, editKeep: config.editPlan?.keep, timeline: config.creativePlan?.timeline
+            });
+        }
+        const overlay = radio ? require('./workflow-runtime').loadWorkflow('clipping/radioDanmaku')
+            .overlayFilter(escapeSubtitlePathForFfmpegFilter(radio.assPath), radio.fps, radio.duration) + ',' : '';
+        const burnFilter = `${overlay}subtitles='${escapeSubtitlePathForFfmpegFilter(burnAssPath)}'`;
         const subtitleBurnPlan = resolveSubtitleBurnPlan(config);
         const useTwoStageBurn = subtitleBurnPlan.useTwoStageBurn;
         try {
@@ -986,7 +943,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                             '-avoid_negative_ts', 'make_zero',
                             tempPath
                         ], ffmpegOptions);
-                        actualRoughStart = await probeRoughCutSourceStart(
+                        actualRoughStart = await probeRoughCutTimeOrigin(
                             ffmpegPath,
                             source.mediaPath,
                             tempPath,
@@ -1023,9 +980,9 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                         ...buildSubtitleBurnInputArgs(config, { forceCpu: config.editCpuFallbackAttempted === true }),
                         '-i', tempPath,
                         ...(creativeInputs?.args || []),
-                        '-filter_complex', creative ? creative.buildCreativeFilter(config.creativePlan, videoRes, Number(trimStart), Number(trimEnd), burnAssPath, stickerPath, creativeInputs.bindings)
-                            : edit ? edit.buildEditFilter(config.editPlan, actualRoughStart, escapeSubtitlePathForFfmpegFilter(burnAssPath))
-                            : `[0:v]trim=start=${trimStart}:end=${trimEnd},setpts=PTS-STARTPTS[sub_v];[0:a]atrim=start=${trimStart}:end=${trimEnd},asetpts=PTS-STARTPTS[sub_a];[sub_v]subtitles='${escapeSubtitlePathForFfmpegFilter(burnAssPath)}'[vout]`,
+                        '-filter_complex', creative ? creative.buildCreativeFilter(config.creativePlan, videoRes, Number(trimStart), Number(trimEnd), burnAssPath, stickerPath, creativeInputs.bindings, overlay)
+                            : edit ? edit.buildEditFilter(config.editPlan, actualRoughStart, escapeSubtitlePathForFfmpegFilter(burnAssPath), overlay)
+                            : `[0:v]trim=start=${trimStart}:end=${trimEnd},setpts=PTS-STARTPTS[sub_v];[0:a]atrim=start=${trimStart}:end=${trimEnd},asetpts=PTS-STARTPTS[sub_a];[sub_v]${burnFilter}[vout]`,
                         '-map', '[vout]',
                         '-map', '[sub_a]',
                         ...buildSubtitleBurnVideoArgs(config, { forceCpu: config.editCpuFallbackAttempted === true }),
@@ -1049,11 +1006,11 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                 await runFfmpeg([
                     '-y',
                     '-ss', start,
-                    ...buildSubtitleBurnInputArgs(config),
+                    ...buildSubtitleBurnInputArgs(config, { forceCpu: config.editCpuFallbackAttempted === true }),
                     '-i', source.mediaPath,
                     '-t', duration,
-                    '-vf', `subtitles='${escapeSubtitlePathForFfmpegFilter(burnAssPath)}'`,
-                    ...buildSubtitleBurnVideoArgs(config),
+                    '-vf', burnFilter,
+                    ...buildSubtitleBurnVideoArgs(config, { forceCpu: config.editCpuFallbackAttempted === true }),
                     '-c:a', 'copy',
                     '-movflags', '+faststart',
                     outputPath
@@ -1062,6 +1019,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
             return {
                 path: outputPath,
                 burnedSubtitles: true,
+                radioDanmaku: radio,
                 ...(creative ? { creativeEffectsApplied: config.creativePlan.effects.length } : {}),
                 fallbackUsed: false,
                 coverSourcePath,
@@ -1078,7 +1036,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
             };
         } catch (error) {
             subtitleBurnFailure = error.message;
-            if (edit || creative) {
+            if (edit || creative || radio) {
                 if (isNvencSubtitleEncoder(config) && !config.editCpuFallbackAttempted) {
                     const fallback = await cutClipMedia(source, window, srtPath, outputPath, { ...config, editCpuFallbackAttempted: true });
                     return { ...fallback, fallbackUsed: true, fallbackReason: error.message, subtitleVideoEncoder: 'libx264', subtitleHwaccel: null };
@@ -1091,11 +1049,11 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                     await runFfmpeg([
                         '-y',
                         '-ss', start,
-                        ...buildSubtitleBurnInputArgs(config),
+                        ...buildSubtitleBurnInputArgs(config, { forceCpu: config.editCpuFallbackAttempted === true }),
                         '-i', source.mediaPath,
                         '-t', duration,
-                        '-vf', `subtitles='${escapeSubtitlePathForFfmpegFilter(burnAssPath)}'`,
-                        ...buildSubtitleBurnVideoArgs(config),
+                        '-vf', burnFilter,
+                        ...buildSubtitleBurnVideoArgs(config, { forceCpu: config.editCpuFallbackAttempted === true }),
                         '-c:a', 'copy',
                         '-movflags', '+faststart',
                         outputPath
@@ -1103,6 +1061,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                     return {
                         path: outputPath,
                         burnedSubtitles: true,
+                        radioDanmaku: radio,
                         fallbackUsed: true,
                         fallbackReason: subtitleBurnFailure,
                         twoStageSubtitleBurn: false
@@ -1124,7 +1083,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                         ...buildSubtitleBurnInputArgs(config, { forceCpu: true }),
                         '-i', source.mediaPath,
                         '-t', duration,
-                        '-vf', `subtitles='${escapeSubtitlePathForFfmpegFilter(burnAssPath)}'`,
+                        '-vf', burnFilter,
                         ...buildSubtitleBurnVideoArgs(config, { forceCpu: true }),
                         '-c:a', 'copy',
                         '-movflags', '+faststart',
@@ -1133,6 +1092,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
                     return {
                         path: outputPath,
                         burnedSubtitles: true,
+                        radioDanmaku: radio,
                         fallbackUsed: true,
                         fallbackReason: `${subtitleBurnFailure}; NVENC failed, used libx264`,
                         subtitleVideoEncoder: 'libx264',
@@ -1147,6 +1107,7 @@ async function cutClipMedia(source, window, srtPath, outputPath, config = {}) {
             }
         } finally {
             try {
+                if (radioAssPath && fs.existsSync(radioAssPath)) fs.unlinkSync(radioAssPath);
                 if (burnAssPath && fs.existsSync(burnAssPath)) fs.unlinkSync(burnAssPath);
                 if (stickerPath && fs.existsSync(stickerPath)) fs.unlinkSync(stickerPath);
             } catch {
@@ -1752,6 +1713,7 @@ async function generateTopicClips(options = {}) {
                 burnedSubtitles: Boolean(mediaResult?.burnedSubtitles),
                 subtitleBurnFallbackUsed: Boolean(mediaResult?.fallbackUsed),
                 subtitleBurnFallbackReason: mediaResult?.fallbackReason || null,
+                radioDanmaku: mediaResult?.radioDanmaku || null,
                 srtSegmentCount: srtResult.segmentCount,
                 mediaError
             }
@@ -1810,7 +1772,7 @@ async function generateTopicClips(options = {}) {
             stage = 'media';
             try {
                 mediaResult = await mediaGenerator(source, window, srtPath, mediaPath, {
-                    ...config,
+                    ...config, xmlPath: options.xmlPath,
                     burnSubtitles: config.burnSubtitles,
                     subtitleSegments: srtResult.segments,
                     preserveCoverSource: true,

@@ -154,7 +154,7 @@ def _find_collection_route(
     if not isinstance(routing, dict):
         return {}
     for key, entry in routing.items():
-        if key in {'sui', 'other', 'default'} or not isinstance(entry, dict):
+        if key in {'sui', 'keyword', 'other', 'default'} or not isinstance(entry, dict):
             continue
         if _is_collection_route_context(
             entry,
@@ -210,6 +210,8 @@ def get_collection_section_id(
     source_desc: Optional[str] = None,
     title: Optional[str] = None,
     prefix: Optional[str] = None,
+    publication_kind: Optional[str] = None,
+    media_path: Optional[str] = None,
 ) -> Optional[int]:
     """Resolve the upload collection section for a streamer.
 
@@ -238,7 +240,13 @@ def get_collection_section_id(
         title=title,
         prefix=prefix,
     )
-    selected_entry = route_entry or (sui_entry if is_sui else other_entry)
+    # Keyword clips belong to the topic collection regardless of source host.
+    # Older manifests lack publicationKind; their dedicated output directory
+    # preserves that classification without guessing from title mentions/tags.
+    path_parts = str(media_path or '').replace('\\', '/').split('/')
+    is_keyword = publication_kind == 'keyword_topic' or 'topic_clips' in path_parts[:-1]
+    keyword_entry = _routing_entry(upload_cfg, 'keyword') if is_keyword else {}
+    selected_entry = keyword_entry or route_entry or (sui_entry if is_sui else other_entry)
     if selected_entry:
         section_id = _positive_collection_id(selected_entry.get('sectionId'))
     else:
@@ -664,7 +672,8 @@ async def upload_video(
     )
 
     print('[INFO] 开始上传...')
-    result = await uploader.start()
+    from clip_upload_progress import UploadProgress
+    result = await UploadProgress([page], video_path).run(uploader)
     if result:
         if collection_section_id is None:
             collection_section_id = get_collection_section_id(
@@ -672,6 +681,7 @@ async def upload_video(
                 room_id=room_id,
                 source_desc=source_desc,
                 title=title,
+                media_path=video_path,
             )
         await attach_video_to_collection(
             result,
@@ -726,6 +736,7 @@ def main():
             room_id=room_id,
             source_desc=args.source_desc,
             title=args.title,
+            media_path=args.video,
         )
 
     result = asyncio.run(

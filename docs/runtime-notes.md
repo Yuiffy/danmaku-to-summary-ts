@@ -94,6 +94,10 @@ daiYu: `gpt-image-2/high`, or `gpt-image-2.5-sunburst` / `gpt-image-2.5-flare` a
 `low`, `medium`, `high`, `xhigh`, or `max`. If that attempt fails, the next route
 tries `gpt-image-2/high` once, including when the initial draw was image-2/high.
 A successful first attempt skips the fallback; the fallback does not draw again.
+After both daiYu attempts fail, the global route list continues to tuZi's
+synchronous `gpt-image-2` strategies (without an embedded async attempt), then
+tuZi's `asyncOnly` Gemini route. Keep both entries when editing the rollout:
+an enabled tuZi provider alone does not add a fallback to an explicit route list.
 Both default and production configs enable `ai.comic.imageGeneration.rollout`.
 Rooms inherit the full global route list unless they define their own. Room
 `25034104` inserts the same image-2/high retry before its existing fallback chain.
@@ -107,6 +111,19 @@ only at the end and retains recovery state for resuming an existing remote task.
 The image worker reads the current config for each new generation, so these
 config-only policy changes do not require a service restart. Requests that already
 selected their routes retain that selection.
+
+Production tuZi text and image provider settings explicitly use the local HTTP
+proxy at `127.0.0.1:7890`, including `ai.text.tuZi`, `ai.providers.tuZi` and
+`ai.comic.tuZi`. Keep those settings consistent. A provider fallback can be
+selected yet fail before TLS is established; inspect the individual attempts
+rather than treating an absent output as proof that fallback never ran. Check
+connectivity through the configured proxy before replaying failed generation.
+The default config leaves the proxy unset for other installations.
+
+Sui's local storyboard fallback skips highlight headers, participant/attribution
+notes and emotion summaries before selecting dialogue. Metadata alone is not
+usable scene content: it leaves script generation failed for recovery instead
+of reporting a successful generic image script.
 
 The rollout mechanism selects the primary `model` / `quality` variant once per
 image and leaves fallback routes fixed. Room rollout settings override the global

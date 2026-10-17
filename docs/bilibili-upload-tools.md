@@ -57,8 +57,16 @@ To auto-attach uploads to a Bilibili合集/series after success, set:
   add each successful upload to. (`collectionSeriesId` remains supported only
   for legacy configurations.)
 
-Current production routing keeps Sui clips in season `8513688` (section
-`9482593`) and sends other streamers to season `8941979` (section `9974272`).
+Current production routing sends all keyword/topic clips to 环岁圈AI自动切片,
+season `8941979` (section `9974272`), before matching the source streamer.
+Ordinary Sui clips stay in season `8513688` (section `9482593`, with rollover),
+and all other ordinary streamer clips go to 虚拟主播AI自动切片,
+season `8977005` (section `10015117`). 芙娅之魂 no longer receives automatic
+uploads. `collectionRouting.keyword` selects the keyword destination using
+`publicationKind: keyword_topic`; legacy clips use the exact `topic_clips`
+output directory component. Titles, tags, and merely mentioning Sui do not
+classify an ordinary clip as a keyword clip. Explicit section overrides and
+dedicated song/viewing/game destinations retain their existing precedence.
 The user-facing season IDs are recorded alongside the section IDs in
 `bilibili.upload.collectionRouting`; upload code always sends the child
 `sectionId` required by the creator-center API. Historical registry entries can
